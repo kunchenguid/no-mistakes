@@ -3767,3 +3767,51 @@ func TestOutcomeBanner_NoDurationWhenNoStepTimes(t *testing.T) {
 		t.Errorf("expected no elapsed time when no step durations available, got: %s", banner)
 	}
 }
+
+func TestModel_View_LogTailCompact(t *testing.T) {
+	// In small terminals (height 20-29), log tail should show only 3 lines instead of 5.
+	run := testRun()
+	m := NewModel("/tmp/sock", nil, run)
+	m.width = 80
+	m.height = 25 // compact range
+	for i := 1; i <= 10; i++ {
+		m.logs = append(m.logs, fmt.Sprintf("log line %d", i))
+	}
+	view := m.View()
+	count := strings.Count(view, "log line")
+	if count != 3 {
+		t.Errorf("expected 3 log lines in compact mode (height=25), got %d", count)
+	}
+}
+
+func TestModel_View_LogTailHiddenTiny(t *testing.T) {
+	// In very small terminals (height < 20), log box should be hidden entirely.
+	run := testRun()
+	m := NewModel("/tmp/sock", nil, run)
+	m.width = 80
+	m.height = 15 // tiny terminal
+	m.logs = []string{"log line 1", "log line 2", "log line 3"}
+	view := m.View()
+	if strings.Contains(view, "log line") {
+		t.Error("expected log box hidden in tiny terminal (height=15)")
+	}
+	if strings.Contains(view, "Log") {
+		t.Error("expected no Log box title in tiny terminal")
+	}
+}
+
+func TestModel_View_LogTailNormalShowsFive(t *testing.T) {
+	// In normal terminals (height >= 30), log tail should show 5 lines.
+	run := testRun()
+	m := NewModel("/tmp/sock", nil, run)
+	m.width = 80
+	m.height = 40 // normal terminal
+	for i := 1; i <= 10; i++ {
+		m.logs = append(m.logs, fmt.Sprintf("log line %d", i))
+	}
+	view := m.View()
+	count := strings.Count(view, "log line")
+	if count != 5 {
+		t.Errorf("expected 5 log lines in normal mode (height=40), got %d", count)
+	}
+}

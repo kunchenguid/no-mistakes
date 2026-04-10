@@ -206,14 +206,22 @@ func (m Model) View() string {
 		}
 	}
 
-	// Log tail (last 5 lines) in a box - hidden when babysit is active
-	// since log context is integrated into the babysit box.
-	if len(m.logs) > 0 && !isBabysitActive(m.steps) {
+	// Log tail in a box - adaptive line count based on terminal height.
+	// height >= 30: 5 lines, height 20-29: 3 lines, height < 20: hidden.
+	// Also hidden when babysit is active (log context integrated into babysit box).
+	logLines := 5
+	if m.height > 0 && m.height < 30 {
+		logLines = 3
+	}
+	if m.height > 0 && m.height < 20 {
+		logLines = 0
+	}
+	if len(m.logs) > 0 && logLines > 0 && !isBabysitActive(m.steps) {
 		b.WriteString("\n\n")
 		logDimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
 		logGreenStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiGreen))
 		logRedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiRed))
-		start := len(m.logs) - 5
+		start := len(m.logs) - logLines
 		if start < 0 {
 			start = 0
 		}
