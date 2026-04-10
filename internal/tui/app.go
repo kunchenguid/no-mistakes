@@ -54,6 +54,7 @@ type Model struct {
 	quitting         bool
 	done             bool // run completed or failed
 	showDiff         bool // toggle diff viewer
+	showHelp         bool // toggle help overlay
 	diffOffset       int  // scroll position in diff view
 	spinnerFrame     int
 	spinnerScheduled bool
@@ -238,6 +239,16 @@ func (m Model) View() string {
 		b.WriteString("\n")
 	}
 
+	// Help overlay.
+	if m.showHelp {
+		boxWidth := m.width
+		if boxWidth < 20 {
+			boxWidth = 80
+		}
+		b.WriteString("\n\n")
+		b.WriteString(renderHelpOverlay(boxWidth))
+	}
+
 	// Error display.
 	if m.err != nil {
 		errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiRed))
@@ -247,11 +258,11 @@ func (m Model) View() string {
 	// Footer.
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
 	boldKey := lipgloss.NewStyle().Bold(true)
+	qLabel := "detach"
 	if m.done {
-		b.WriteString("\n  " + boldKey.Render("q") + " " + dimStyle.Render("quit") + "\n")
-	} else {
-		b.WriteString("\n  " + boldKey.Render("q") + " " + dimStyle.Render("detach") + "\n")
+		qLabel = "quit"
 	}
+	b.WriteString("\n  " + boldKey.Render("q") + " " + dimStyle.Render(qLabel) + "  " + boldKey.Render("?") + " " + dimStyle.Render("help") + "\n")
 
 	return b.String()
 }
@@ -303,6 +314,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "q", "ctrl+c":
 		m.quitting = true
 		return m, tea.Quit
+
+	case "?":
+		m.showHelp = !m.showHelp
+		return m, nil
 
 	case "d":
 		if awaitingStep(m.steps) != nil {

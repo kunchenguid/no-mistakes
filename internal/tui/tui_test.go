@@ -3488,3 +3488,98 @@ func TestFindingsBox_BothScrollIndicators(t *testing.T) {
 		t.Errorf("expected up scroll indicator inline (not in border), got:\n%s", plain)
 	}
 }
+
+// --- Help Overlay Tests ---
+
+func TestModel_HelpToggle(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	run := testRun()
+	m := NewModel("", nil, run)
+
+	// Initially showHelp is false.
+	if m.showHelp {
+		t.Fatal("expected showHelp to be false initially")
+	}
+
+	// Press ? to toggle help on.
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	m = result.(Model)
+	if !m.showHelp {
+		t.Fatal("expected showHelp to be true after pressing ?")
+	}
+
+	// Press ? again to toggle help off.
+	result, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	m = result.(Model)
+	if m.showHelp {
+		t.Fatal("expected showHelp to be false after pressing ? again")
+	}
+}
+
+func TestModel_View_HelpOverlay(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	m := NewModel("", nil, run)
+	m.width = 80
+	m.height = 40
+	m.showHelp = true
+
+	view := m.View()
+	plain := stripANSI(view)
+
+	// Should show navigation keys.
+	if !strings.Contains(plain, "j/k") {
+		t.Errorf("help overlay should show j/k navigation, got:\n%s", plain)
+	}
+	// Should show g/G keys.
+	if !strings.Contains(plain, "g/G") {
+		t.Errorf("help overlay should show g/G jump keys, got:\n%s", plain)
+	}
+	// Should show Ctrl+d/u keys.
+	if !strings.Contains(plain, "Ctrl+d/u") {
+		t.Errorf("help overlay should show Ctrl+d/u half-page keys, got:\n%s", plain)
+	}
+	// Should show action keys (two-space separated key/description).
+	for _, key := range []string{"a  approve", "f  fix", "s  skip", "x  abort"} {
+		if !strings.Contains(plain, key) {
+			t.Errorf("help overlay should show %q, got:\n%s", key, plain)
+		}
+	}
+	// Should show toggle key.
+	if !strings.Contains(plain, "d  diff") {
+		t.Errorf("help overlay should show d diff toggle, got:\n%s", plain)
+	}
+	// Should show selection keys.
+	if !strings.Contains(plain, "toggle") {
+		t.Errorf("help overlay should show toggle selection, got:\n%s", plain)
+	}
+	// Should be in a box titled "Help".
+	if !strings.Contains(plain, "Help") {
+		t.Errorf("help overlay should be in a box titled Help, got:\n%s", plain)
+	}
+}
+
+func TestModel_View_FooterShowsHelpHint(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	run := testRun()
+	m := NewModel("", nil, run)
+	m.width = 80
+	m.height = 40
+
+	view := m.View()
+	plain := stripANSI(view)
+
+	// Footer should include ? help hint.
+	lines := strings.Split(plain, "\n")
+	foundHelpHint := false
+	for _, line := range lines {
+		if strings.Contains(line, "?") && strings.Contains(line, "help") {
+			foundHelpHint = true
+			break
+		}
+	}
+	if !foundHelpHint {
+		t.Errorf("footer should show ? help hint, got:\n%s", plain)
+	}
+}
