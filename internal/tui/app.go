@@ -342,9 +342,13 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "d":
-		if awaitingStep(m.steps) != nil {
+		if step := awaitingStep(m.steps); step != nil {
 			m.showDiff = !m.showDiff
-			m.diffOffset = 0
+			if m.showDiff {
+				m.diffOffset = m.diffOffsetForCurrentFinding(step.StepName)
+			} else {
+				m.diffOffset = 0
+			}
 		}
 		return m, nil
 
@@ -625,6 +629,29 @@ func (m *Model) selectedFindingIDs(step types.StepName) []string {
 		}
 	}
 	return ids
+}
+
+// diffOffsetForCurrentFinding returns the diff scroll offset that corresponds
+// to the current finding's file:line. Returns 0 if no match.
+func (m Model) diffOffsetForCurrentFinding(step types.StepName) int {
+	items := m.findingItems(step)
+	if len(items) == 0 {
+		return 0
+	}
+	cursor := m.findingCursor[step]
+	if cursor < 0 || cursor >= len(items) {
+		return 0
+	}
+	item := items[cursor]
+	if item.File == "" {
+		return 0
+	}
+	raw := m.stepDiffs[step]
+	if raw == "" {
+		return 0
+	}
+	lines := parseDiffLines(raw)
+	return findDiffOffset(lines, item.File, item.Line)
 }
 
 func (m *Model) moveFindingCursor(step types.StepName, delta int) {

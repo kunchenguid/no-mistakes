@@ -3948,6 +3948,108 @@ func TestAbortConfirmation_SecondPressSendsAbort(t *testing.T) {
 	}
 }
 
+func TestFindDiffOffset_MatchesFileAndHunk(t *testing.T) {
+	// findDiffOffset should return the index of the hunk header
+	// that contains the target file and line number.
+	raw := "diff --git a/foo.go b/foo.go\n" +
+		"--- a/foo.go\n" +
+		"+++ b/foo.go\n" +
+		"@@ -10,5 +10,7 @@ func foo() {\n" +
+		" context\n" +
+		"+added\n" +
+		" context\n" +
+		"@@ -30,3 +32,4 @@ func bar() {\n" +
+		" context\n" +
+		"+another\n"
+	lines := parseDiffLines(raw)
+
+	// Line 12 is in the first hunk (+10,7 covers lines 10-16).
+	offset := findDiffOffset(lines, "foo.go", 12)
+	if offset != 3 { // index of "@@ -10,5 +10,7 @@" line
+		t.Errorf("expected offset=3 for foo.go:12, got %d", offset)
+	}
+
+	// Line 33 is in the second hunk (+32,4 covers lines 32-35).
+	offset = findDiffOffset(lines, "foo.go", 33)
+	if offset != 7 { // index of "@@ -30,3 +32,4 @@" line
+		t.Errorf("expected offset=7 for foo.go:33, got %d", offset)
+	}
+}
+
+func TestFindDiffOffset_FileNotFound(t *testing.T) {
+	// Should return 0 when the file doesn't exist in the diff.
+	raw := "diff --git a/foo.go b/foo.go\n" +
+		"+++ b/foo.go\n" +
+		"@@ -1,3 +1,4 @@\n" +
+		"+added\n"
+	lines := parseDiffLines(raw)
+
+	offset := findDiffOffset(lines, "bar.go", 1)
+	if offset != 0 {
+		t.Errorf("expected offset=0 for non-existent file, got %d", offset)
+	}
+}
+
+func TestFindDiffOffset_ScrollsToFileHeader(t *testing.T) {
+	// When line=0 or line not in any hunk, should scroll to the file header.
+	raw := "diff --git a/foo.go b/foo.go\n" +
+		"--- a/foo.go\n" +
+		"+++ b/foo.go\n" +
+		"@@ -10,3 +10,4 @@\n" +
+		"+added\n"
+	lines := parseDiffLines(raw)
+
+	// Line 0 means "just show me the file".
+	offset := findDiffOffset(lines, "foo.go", 0)
+	if offset != 0 { // index of "diff --git a/foo.go" line
+		t.Errorf("expected offset=0 for foo.go:0, got %d", offset)
+	}
+
+	// Line 99 is beyond any hunk - should still scroll to the file header.
+	offset = findDiffOffset(lines, "foo.go", 99)
+	if offset != 0 {
+		t.Errorf("expected offset=0 for foo.go:99 (beyond all hunks), got %d", offset)
+	}
+}
+
+func TestDiffToggle_AutoScrollsToFinding(t *testing.T) {
+	// When pressing 'd' to switch from findings to diff, diffOffset
+	// should auto-scroll to the location of the current finding.
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	run.Steps[0].FindingsJSON = ptr(`{"summary":"test","items":[` +
+		`{"id":"f1","severity":"error","file":"foo.go","line":33,"description":"bug1"},` +
+		`{"id":"f2","severity":"warning","file":"bar.go","line":5,"description":"bug2"}]}`)
+
+	m := NewModel("/tmp/sock", nil, run)
+	m.width = 80
+	m.height = 40
+	m.stepDiffs[types.StepReview] = "diff --git a/foo.go b/foo.go\n" +
+		"--- a/foo.go\n" +
+		"+++ b/foo.go\n" +
+		"@@ -30,3 +30,4 @@ func bar() {\n" +
+		" context\n" +
+		"+added\n" +
+		"diff --git a/bar.go b/bar.go\n" +
+		"--- a/bar.go\n" +
+		"+++ b/bar.go\n" +
+		"@@ -3,3 +3,4 @@\n" +
+		"+new line\n"
+
+	// Cursor is on finding 0 (foo.go:33). Press 'd' to show diff.
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	model := result.(Model)
+
+	if !model.showDiff {
+		t.Fatal("expected showDiff=true")
+	}
+	// Should auto-scroll to the hunk containing foo.go line 33.
+	// The hunk header "@@ -30,3 +30,4 @@" is at index 3.
+	if model.diffOffset != 3 {
+		t.Errorf("expected diffOffset=3 for foo.go:33, got %d", model.diffOffset)
+	}
+}
+
 func TestAbortConfirmation_OtherKeyResetsConfirm(t *testing.T) {
 	// Pressing any other key after first 'x' should reset confirmAbort.
 	run := testRun()

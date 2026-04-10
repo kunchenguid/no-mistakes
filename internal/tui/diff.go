@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -91,6 +92,70 @@ func diffStats(lines []diffLine) (files, additions, deletions int) {
 	}
 	files = len(seen)
 	return
+}
+
+// findDiffOffset returns the best line index in parsed diff lines to scroll to
+// for a given file path and line number. Returns 0 if not found.
+func findDiffOffset(lines []diffLine, file string, line int) int {
+	// Find the file's "diff --git" header and its hunks.
+	fileHeaderIdx := -1
+	for i, dl := range lines {
+		if dl.Type == diffLineFileHeader && strings.HasPrefix(dl.Text, "diff --git") {
+			// Check if this file header matches the target file.
+			// Format: "diff --git a/path b/path"
+			if strings.Contains(dl.Text, "/"+file) || strings.HasSuffix(dl.Text, " "+file) {
+				fileHeaderIdx = i
+			} else if fileHeaderIdx >= 0 {
+				// We've passed the target file's section.
+				break
+			}
+		}
+		if fileHeaderIdx >= 0 && dl.Type == diffLineHunkHeader && line > 0 {
+			// Parse hunk header: @@ -oldStart,oldCount +newStart,newCount @@
+			start, count := parseHunkNewRange(dl.Text)
+			if start > 0 && line >= start && line < start+count {
+				return i
+			}
+		}
+	}
+
+	// If we found the file but no matching hunk, return the file header.
+	if fileHeaderIdx >= 0 {
+		return fileHeaderIdx
+	}
+	return 0
+}
+
+// parseHunkNewRange extracts the new-file start and count from a hunk header.
+// Input format: "@@ -oldStart,oldCount +newStart,newCount @@ optional context"
+// Returns (start, count). Returns (0, 0) if parsing fails.
+func parseHunkNewRange(header string) (int, int) {
+	// Find "+start,count" or "+start" portion.
+	idx := strings.Index(header, "+")
+	if idx < 0 {
+		return 0, 0
+	}
+	rest := header[idx+1:]
+	end := strings.Index(rest, " ")
+	if end < 0 {
+		return 0, 0
+	}
+	part := rest[:end]
+
+	if comma := strings.Index(part, ","); comma >= 0 {
+		start, err1 := strconv.Atoi(part[:comma])
+		count, err2 := strconv.Atoi(part[comma+1:])
+		if err1 != nil || err2 != nil {
+			return 0, 0
+		}
+		return start, count
+	}
+
+	start, err := strconv.Atoi(part)
+	if err != nil {
+		return 0, 0
+	}
+	return start, 1
 }
 
 // diffLineStyle returns the lipgloss style for a diff line type.
