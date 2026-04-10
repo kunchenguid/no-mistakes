@@ -92,7 +92,8 @@ func formatDuration(ms int64) string {
 }
 
 // renderPipelineView renders the step list with status indicators inside a boxed section.
-func renderPipelineView(run *ipc.RunInfo, steps []ipc.StepResultInfo, width int, spinnerFrame int) string {
+// When height < 30, connector lines between steps are suppressed to save vertical space.
+func renderPipelineView(run *ipc.RunInfo, steps []ipc.StepResultInfo, width int, spinnerFrame int, height int) string {
 	if run == nil {
 		return "No active run."
 	}
@@ -136,8 +137,8 @@ func renderPipelineView(run *ipc.RunInfo, steps []ipc.StepResultInfo, width int,
 		b.WriteString(line)
 		b.WriteString("\n")
 
-		// Connector between steps.
-		if i < len(steps)-1 {
+		// Connector between steps (suppressed in compact mode for small terminals).
+		if i < len(steps)-1 && height >= 30 {
 			b.WriteString(dimStyle.Render("│") + "\n")
 		}
 	}

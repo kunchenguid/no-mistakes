@@ -96,7 +96,7 @@ func TestFormatDuration(t *testing.T) {
 }
 
 func TestRenderPipelineView_NilRun(t *testing.T) {
-	out := renderPipelineView(nil, nil, 80, 0)
+	out := renderPipelineView(nil, nil, 80, 0, 40)
 	if out != "No active run." {
 		t.Errorf("expected 'No active run.', got %q", out)
 	}
@@ -108,7 +108,7 @@ func TestRenderPipelineView_ShowsSteps(t *testing.T) {
 	run.Steps[0].DurationMS = ptr(int64(1200))
 	run.Steps[1].Status = types.StepStatusRunning
 
-	out := renderPipelineView(run, run.Steps, 80, 0)
+	out := renderPipelineView(run, run.Steps, 80, 0, 40)
 	if !strings.Contains(out, "feature/foo") {
 		t.Error("expected branch name in output")
 	}
@@ -132,7 +132,7 @@ func TestRenderPipelineView_ConnectorsBetweenSteps(t *testing.T) {
 	run.Steps[0].DurationMS = ptr(int64(1200))
 	run.Steps[1].Status = types.StepStatusRunning
 
-	out := stripANSI(renderPipelineView(run, run.Steps, 80, 0))
+	out := stripANSI(renderPipelineView(run, run.Steps, 80, 0, 40))
 	lines := strings.Split(out, "\n")
 
 	// Find step lines by looking for step label keywords (inside box borders).
@@ -193,7 +193,7 @@ func TestRenderPipelineView_ApprovalPrompt(t *testing.T) {
 func TestRenderPipelineView_Error(t *testing.T) {
 	run := testRun()
 	run.Error = ptr("something broke")
-	out := renderPipelineView(run, run.Steps, 80, 0)
+	out := renderPipelineView(run, run.Steps, 80, 0, 40)
 	if !strings.Contains(out, "something broke") {
 		t.Error("expected error message in output")
 	}
@@ -204,7 +204,7 @@ func TestRenderPipelineView_StepError(t *testing.T) {
 	run.Steps[1].Status = types.StepStatusFailed
 	run.Steps[1].Error = ptr("tests failed")
 
-	out := renderPipelineView(run, run.Steps, 80, 0)
+	out := renderPipelineView(run, run.Steps, 80, 0, 40)
 	if !strings.Contains(out, "tests failed") {
 		t.Error("expected step error in output")
 	}
@@ -255,7 +255,7 @@ func TestRenderPipelineView_HidesSelectionControlsWithoutFindings(t *testing.T) 
 	run := testRun()
 	run.Steps[0].Status = types.StepStatusAwaitingApproval
 
-	out := stripANSI(renderPipelineView(run, run.Steps, 80, 0))
+	out := stripANSI(renderPipelineView(run, run.Steps, 80, 0, 40))
 	if strings.Contains(out, "f fix") {
 		t.Fatal("expected fix action to be hidden without findings")
 	}
@@ -1755,7 +1755,7 @@ func TestRenderPipelineView_WrappedInBox(t *testing.T) {
 	run.Steps[0].DurationMS = ptr(int64(1200))
 	run.Steps[1].Status = types.StepStatusRunning
 
-	out := stripANSI(renderPipelineView(run, run.Steps, 80, 0))
+	out := stripANSI(renderPipelineView(run, run.Steps, 80, 0, 40))
 	// Pipeline view should be wrapped in a box with rounded corners.
 	if !strings.Contains(out, "╭") || !strings.Contains(out, "╯") {
 		t.Error("expected pipeline view to be wrapped in a box with rounded corners")
@@ -2261,7 +2261,7 @@ func TestRenderPipelineView_StatusSuffixDim(t *testing.T) {
 	run := testRun()
 	run.Steps[1].Status = types.StepStatusAwaitingApproval
 
-	got := renderPipelineView(run, run.Steps, 80, 0)
+	got := renderPipelineView(run, run.Steps, 80, 0, 40)
 
 	// The suffix text "- awaiting approval" should be styled dim (contain ANSI codes).
 	// When stripped, the text should be present; in the raw output, it should be wrapped
@@ -2281,7 +2281,7 @@ func TestRenderPipelineView_FailedErrorDim(t *testing.T) {
 	run.Steps[2].Status = types.StepStatusFailed
 	run.Steps[2].Error = &errMsg
 
-	got := renderPipelineView(run, run.Steps, 80, 0)
+	got := renderPipelineView(run, run.Steps, 80, 0, 40)
 
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
 	styledSuffix := dimStyle.Render("- " + errMsg)
@@ -2905,7 +2905,7 @@ func TestActionBar_OutsidePipelineBox(t *testing.T) {
 	run := testRun()
 	run.Steps[0].Status = types.StepStatusAwaitingApproval
 
-	pipelineOut := stripANSI(renderPipelineView(run, run.Steps, 80, 0))
+	pipelineOut := stripANSI(renderPipelineView(run, run.Steps, 80, 0, 40))
 
 	// The pipeline box content (between ╭ and ╰) should NOT contain action bar keys.
 	if strings.Contains(pipelineOut, "a approve") {
@@ -2984,7 +2984,7 @@ func TestActionBar_IncludesAwaitingLabel(t *testing.T) {
 	}
 
 	// It should NOT be inside the pipeline box.
-	pipelineOut := stripANSI(renderPipelineView(run, run.Steps, 80, 0))
+	pipelineOut := stripANSI(renderPipelineView(run, run.Steps, 80, 0, 40))
 	if strings.Contains(pipelineOut, "awaiting action") {
 		t.Error("'awaiting action' label should not be inside the pipeline box")
 	}
@@ -3678,6 +3678,75 @@ func TestOutcomeBanner_FailureShowsElapsedTime(t *testing.T) {
 	// Total = 2000 + 6500 = 8500ms = 8.5s
 	if !strings.Contains(banner, "8.5s") {
 		t.Errorf("expected elapsed time '8.5s' in failure banner, got: %s", banner)
+	}
+}
+
+// boxContentLine extracts the content between box border │ chars on a line.
+// Returns the trimmed inner content, or empty string if not a box content line.
+func boxContentLine(line string) string {
+	trimmed := strings.TrimSpace(line)
+	if len(trimmed) >= 2 && strings.HasPrefix(trimmed, "│") && strings.HasSuffix(trimmed, "│") {
+		inner := trimmed[len("│") : len(trimmed)-len("│")]
+		return strings.TrimSpace(inner)
+	}
+	return ""
+}
+
+func TestPipelineView_CompactNoConnectors(t *testing.T) {
+	// When terminal height is small (< 30), connector lines between steps should be suppressed.
+	run := testRun()
+	steps := []ipc.StepResultInfo{
+		{StepName: types.StepReview, Status: types.StepStatusCompleted},
+		{StepName: types.StepTest, Status: types.StepStatusRunning},
+		{StepName: types.StepLint, Status: types.StepStatusPending},
+	}
+	compact := stripANSI(renderPipelineView(run, steps, 80, 0, 25))
+	normal := stripANSI(renderPipelineView(run, steps, 80, 0, 40))
+	// Compact should have fewer lines than normal (no connector lines).
+	compactLines := len(strings.Split(compact, "\n"))
+	normalLines := len(strings.Split(normal, "\n"))
+	if compactLines >= normalLines {
+		t.Errorf("compact pipeline (height=25) should have fewer lines than normal (height=40): compact=%d, normal=%d", compactLines, normalLines)
+	}
+}
+
+func TestPipelineView_NormalHasConnectors(t *testing.T) {
+	// When terminal height is >= 30, connector lines should still be present.
+	run := testRun()
+	steps := []ipc.StepResultInfo{
+		{StepName: types.StepReview, Status: types.StepStatusCompleted},
+		{StepName: types.StepTest, Status: types.StepStatusRunning},
+		{StepName: types.StepLint, Status: types.StepStatusPending},
+	}
+	result := stripANSI(renderPipelineView(run, steps, 80, 0, 40))
+	lines := strings.Split(result, "\n")
+	connectorCount := 0
+	for _, line := range lines {
+		inner := boxContentLine(line)
+		if inner == "│" {
+			connectorCount++
+		}
+	}
+	if connectorCount < 2 {
+		t.Errorf("expected at least 2 connector lines in normal mode (height=40), found %d", connectorCount)
+	}
+}
+
+func TestModel_View_CompactPipeline(t *testing.T) {
+	// Integration test: model with small height should produce compact pipeline.
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusCompleted
+	run.Steps[1].Status = types.StepStatusRunning
+	m := NewModel("/tmp/test.sock", nil, run)
+	m.width = 80
+	m.height = 20
+	view := stripANSI(m.View())
+	lines := strings.Split(view, "\n")
+	for _, line := range lines {
+		inner := boxContentLine(line)
+		if inner == "│" {
+			t.Errorf("found connector line in compact view (height=20), should be suppressed")
+		}
 	}
 }
 

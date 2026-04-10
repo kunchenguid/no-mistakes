@@ -142,7 +142,7 @@ func (m Model) View() string {
 	showSelectionActions, allowFix, selectedCount, totalCount := m.awaitingActionState()
 
 	// Pipeline progress view.
-	b.WriteString(renderPipelineView(m.run, m.steps, m.width, m.spinnerFrame))
+	b.WriteString(renderPipelineView(m.run, m.steps, m.width, m.spinnerFrame, m.height))
 
 	// Outcome banner when run is done.
 	if banner := renderOutcomeBanner(m.run, m.steps); banner != "" {
