@@ -219,7 +219,7 @@ func renderFindingsWithSelection(raw string, width int, cursor int, selected map
 	// Scroll-up indicator.
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
 	if start > 0 {
-		b.WriteString(dimStyle.Render(fmt.Sprintf("↑ %d above", start)))
+		b.WriteString(dimStyle.Render(fmt.Sprintf("↑ %d above (j/k)", start)))
 		b.WriteString("\n\n")
 	}
 
@@ -268,7 +268,7 @@ func renderFindingsWithSelection(raw string, width int, cursor int, selected map
 	remaining := len(f.Items) - end
 	if remaining > 0 {
 		b.WriteString("\n")
-		b.WriteString(dimStyle.Render(fmt.Sprintf("↓ %d more below", remaining)))
+		b.WriteString(dimStyle.Render(fmt.Sprintf("↓ %d more below (j/k)", remaining)))
 		b.WriteString("\n")
 	}
 

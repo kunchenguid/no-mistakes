@@ -3321,3 +3321,59 @@ func TestModel_HandleKey_HalfPageUpFindings(t *testing.T) {
 		t.Errorf("expected findingCursor=5 after ctrl+u from 8, got %d", cursor)
 	}
 }
+
+// --- Findings scroll indicator key hints ---
+
+func TestRenderFindings_ScrollDownIncludesKeyHint(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	raw := makeManyFindings(10)
+	selected := map[string]bool{}
+	for i := 1; i <= 10; i++ {
+		selected[fmt.Sprintf("f%d", i)] = true
+	}
+
+	out := renderFindingsWithSelection(raw, 80, 0, selected, 4)
+	plain := stripANSI(out)
+
+	// Down indicator should include (j/k) key hint, matching diff view format.
+	if !strings.Contains(plain, "more below (j/k)") {
+		t.Errorf("expected '↓ N more below (j/k)' with key hint, got:\n%s", plain)
+	}
+}
+
+func TestRenderFindings_ScrollUpIncludesKeyHint(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	raw := makeManyFindings(10)
+	selected := map[string]bool{}
+	for i := 1; i <= 10; i++ {
+		selected[fmt.Sprintf("f%d", i)] = true
+	}
+
+	// Cursor at bottom - should show up indicator with key hint.
+	out := renderFindingsWithSelection(raw, 80, 9, selected, 4)
+	plain := stripANSI(out)
+
+	if !strings.Contains(plain, "above (j/k)") {
+		t.Errorf("expected '↑ N above (j/k)' with key hint, got:\n%s", plain)
+	}
+}
+
+func TestRenderFindings_BothIndicatorsIncludeKeyHints(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	raw := makeManyFindings(10)
+	selected := map[string]bool{}
+	for i := 1; i <= 10; i++ {
+		selected[fmt.Sprintf("f%d", i)] = true
+	}
+
+	// Cursor in the middle - both indicators should have key hints.
+	out := renderFindingsWithSelection(raw, 80, 5, selected, 4)
+	plain := stripANSI(out)
+
+	if !strings.Contains(plain, "above (j/k)") {
+		t.Errorf("expected up indicator with (j/k) hint, got:\n%s", plain)
+	}
+	if !strings.Contains(plain, "more below (j/k)") {
+		t.Errorf("expected down indicator with (j/k) hint, got:\n%s", plain)
+	}
+}
