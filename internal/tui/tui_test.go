@@ -3611,6 +3611,7 @@ func TestModel_View_HelpOverlay(t *testing.T) {
 	m.width = 80
 	m.height = 40
 	m.showHelp = true
+	m.stepDiffs[types.StepReview] = "diff --git a/foo.go b/foo.go\n--- a/foo.go\n+++ b/foo.go\n@@ -1,3 +1,4 @@\n one\n+two\n three\n"
 
 	view := m.View()
 	plain := stripANSI(view)
@@ -3720,6 +3721,7 @@ func TestModel_View_HelpOverlay_HidesSelectionInDiffMode(t *testing.T) {
 	m.height = 40
 	m.showHelp = true
 	m.showDiff = true
+	m.stepDiffs[types.StepReview] = "diff --git a/foo.go b/foo.go\n--- a/foo.go\n+++ b/foo.go\n@@ -1,3 +1,4 @@\n one\n+two\n three\n"
 
 	view := m.View()
 	plain := stripANSI(view)
@@ -5479,5 +5481,66 @@ func TestRenderDiff_ScrolledViewPreservesStatsGap(t *testing.T) {
 	gap := firstContentIdx - statsIdx
 	if gap < 2 {
 		t.Errorf("expected blank line between stats and scrolled diff content, but gap is %d lines", gap)
+	}
+}
+
+func TestModel_View_HelpOverlay_HidesDiffToggleWhenNoDiffData(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	m := NewModel("", nil, run)
+	m.width = 80
+	m.height = 40
+	m.showHelp = true
+	// Step is awaiting approval but no diff data has been set in stepDiffs.
+
+	view := m.View()
+	plain := stripANSI(view)
+
+	// Action keys like approve should still be shown.
+	if !strings.Contains(plain, "a  approve") {
+		t.Errorf("help should show action keys during approval, got:\n%s", plain)
+	}
+	// The d toggle should NOT be shown since there's no diff data.
+	if strings.Contains(plain, "diff/findings toggle") {
+		t.Errorf("help should hide d toggle when no diff data exists, got:\n%s", plain)
+	}
+}
+
+func TestModel_View_HelpOverlay_ShowsDiffToggleWhenDiffDataExists(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	m := NewModel("", nil, run)
+	m.width = 80
+	m.height = 40
+	m.showHelp = true
+	m.stepDiffs[types.StepReview] = "diff --git a/foo.go b/foo.go\n--- a/foo.go\n+++ b/foo.go\n@@ -1,3 +1,4 @@\n one\n+two\n three\n"
+
+	view := m.View()
+	plain := stripANSI(view)
+
+	// The d toggle should be shown since diff data exists.
+	if !strings.Contains(plain, "diff/findings toggle") {
+		t.Errorf("help should show d toggle when diff data exists, got:\n%s", plain)
+	}
+}
+
+func TestModel_View_HelpOverlay_HidesDiffToggleWhenEmptyDiffData(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	m := NewModel("", nil, run)
+	m.width = 80
+	m.height = 40
+	m.showHelp = true
+	m.stepDiffs[types.StepReview] = "" // empty diff data
+
+	view := m.View()
+	plain := stripANSI(view)
+
+	// The d toggle should NOT be shown since diff data is empty.
+	if strings.Contains(plain, "diff/findings toggle") {
+		t.Errorf("help should hide d toggle when diff data is empty, got:\n%s", plain)
 	}
 }

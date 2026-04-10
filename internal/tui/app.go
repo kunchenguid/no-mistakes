@@ -268,7 +268,7 @@ func (m Model) View() string {
 			boxWidth = 80
 		}
 		b.WriteString("\n\n")
-		b.WriteString(renderHelpOverlay(boxWidth, awaitingStep(m.steps) != nil, m.showDiff))
+		b.WriteString(renderHelpOverlay(boxWidth, awaitingStep(m.steps) != nil, m.showDiff, hasDiff))
 	}
 
 	// Error display in a box per DESIGN.md.

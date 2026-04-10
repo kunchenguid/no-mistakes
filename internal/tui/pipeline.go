@@ -302,7 +302,7 @@ func renderOutcomeBanner(run *ipc.RunInfo, steps []ipc.StepResultInfo) string {
 }
 
 // renderHelpOverlay renders a help box showing keybindings relevant to the current state.
-func renderHelpOverlay(width int, hasAwaitingStep bool, showDiff bool) string {
+func renderHelpOverlay(width int, hasAwaitingStep bool, showDiff bool, hasDiff bool) string {
 	boldKey := lipgloss.NewStyle().Bold(true)
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
 
@@ -329,13 +329,16 @@ func renderHelpOverlay(width int, hasAwaitingStep bool, showDiff bool) string {
 	}))
 	if hasAwaitingStep {
 		content.WriteString("\n")
-		content.WriteString(section("Actions", []string{
+		actions := []string{
 			entry("a", "approve"),
 			entry("f", "fix"),
 			entry("s", "skip"),
 			entry("x x", "abort (press twice)"),
-			entry("d", "diff/findings toggle"),
-		}))
+		}
+		if hasDiff {
+			actions = append(actions, entry("d", "diff/findings toggle"))
+		}
+		content.WriteString(section("Actions", actions))
 		if !showDiff {
 			content.WriteString("\n")
 			content.WriteString(section("Selection", []string{
