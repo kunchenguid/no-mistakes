@@ -183,6 +183,11 @@ func renderDiff(raw string, width, viewHeight, offset int, stepLabel string) str
 		return ""
 	}
 
+	boxWidth := width
+	if boxWidth < 20 {
+		boxWidth = 80
+	}
+
 	var b strings.Builder
 
 	// Stats header.
@@ -220,16 +225,21 @@ func renderDiff(raw string, width, viewHeight, offset int, stepLabel string) str
 		offset = 0
 	}
 
-	// Render visible lines.
-	for _, dl := range lines[offset:end] {
-		style := diffLineStyle(dl.Type)
-		b.WriteString(style.Render(dl.Text))
-		b.WriteString("\n")
+	// Content width inside the box (2 border + 2 padding).
+	contentWidth := boxWidth - 4
+	if contentWidth < 1 {
+		contentWidth = 1
 	}
 
-	boxWidth := width
-	if boxWidth < 20 {
-		boxWidth = 80
+	// Render visible lines, truncating to fit inside the box.
+	for _, dl := range lines[offset:end] {
+		text := dl.Text
+		if lipgloss.Width(text) > contentWidth {
+			text, _ = cutText(text, contentWidth)
+		}
+		style := diffLineStyle(dl.Type)
+		b.WriteString(style.Render(text))
+		b.WriteString("\n")
 	}
 
 	// Build scroll hint for the bottom border.

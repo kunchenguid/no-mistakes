@@ -4068,3 +4068,71 @@ func TestAbortConfirmation_OtherKeyResetsConfirm(t *testing.T) {
 		t.Error("expected confirmAbort to be false after pressing a different key")
 	}
 }
+
+func TestRenderDiff_LongLinesTruncated(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	// Create a diff with a line longer than the box content width.
+	longLine := "+" + strings.Repeat("x", 200) // 201 chars total
+	raw := "diff --git a/foo.go b/foo.go\n--- a/foo.go\n+++ b/foo.go\n@@ -1,3 +1,3 @@\n context line\n" + longLine + "\n"
+
+	boxWidth := 80
+	contentWidth := boxWidth - 4 // 2 border + 2 padding = 76
+
+	result := renderDiff(raw, boxWidth, 0, 0, "")
+	plain := stripANSI(result)
+
+	// Check that no content line exceeds the box width.
+	for _, line := range strings.Split(plain, "\n") {
+		if line == "" {
+			continue
+		}
+		// Each line in the box should be exactly boxWidth visual chars wide.
+		w := lipgloss.Width(line)
+		if w > boxWidth {
+			t.Errorf("line exceeds box width (%d > %d): %s", w, boxWidth, line)
+		}
+	}
+
+	// Verify the long line was truncated by checking the content width.
+	// The long line should NOT appear in full inside the box.
+	if strings.Contains(plain, strings.Repeat("x", contentWidth+1)) {
+		t.Error("expected long diff line to be truncated to fit box content width")
+	}
+}
+
+func TestRenderDiff_ShortLinesNotTruncated(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	// A short line should appear in full.
+	raw := "diff --git a/foo.go b/foo.go\n--- a/foo.go\n+++ b/foo.go\n@@ -1,3 +1,3 @@\n context line\n+short addition\n"
+
+	result := renderDiff(raw, 80, 0, 0, "")
+	plain := stripANSI(result)
+
+	if !strings.Contains(plain, "short addition") {
+		t.Error("expected short diff line to appear in full")
+	}
+}
+
+func TestRenderDiff_TruncatedLinePreservesPrefix(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	// A long addition line should still start with "+" after truncation.
+	longLine := "+" + strings.Repeat("a", 200)
+	raw := "diff --git a/foo.go b/foo.go\n--- a/foo.go\n+++ b/foo.go\n@@ -1,3 +1,3 @@\n context\n" + longLine + "\n"
+
+	result := renderDiff(raw, 80, 0, 0, "")
+	plain := stripANSI(result)
+
+	// The truncated line should still contain "+a" (the diff prefix is preserved).
+	// Box lines look like: │ +aaa... │
+	found := false
+	for _, line := range strings.Split(plain, "\n") {
+		// Extract content between box borders.
+		if strings.HasPrefix(strings.TrimSpace(line), "│") && strings.Contains(line, "+a") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected truncated addition line to still start with + prefix")
+	}
+}
