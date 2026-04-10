@@ -4136,3 +4136,74 @@ func TestRenderDiff_TruncatedLinePreservesPrefix(t *testing.T) {
 		t.Error("expected truncated addition line to still start with + prefix")
 	}
 }
+
+// --- Log line truncation tests ---
+
+func TestModel_View_LogLongLinesTruncated(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	run := testRun()
+	m := NewModel("/tmp/sock", nil, run)
+	m.width = 80
+	// Create a log line much longer than the box content width.
+	longLog := "running " + strings.Repeat("x", 200) // well over 80 chars
+	m.logs = []string{longLog}
+
+	view := stripANSI(m.View())
+
+	// No line in the rendered output should exceed the box width.
+	for _, line := range strings.Split(view, "\n") {
+		if line == "" {
+			continue
+		}
+		w := lipgloss.Width(line)
+		if w > 80 {
+			t.Errorf("log line exceeds box width (%d > 80): %s", w, line)
+		}
+	}
+
+	// The full long log text should NOT appear - it should be truncated.
+	if strings.Contains(view, strings.Repeat("x", 77)) { // contentWidth = 80 - 4 = 76
+		t.Error("expected long log line to be truncated to fit box content width")
+	}
+}
+
+func TestModel_View_LogShortLinesNotTruncated(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	run := testRun()
+	m := NewModel("/tmp/sock", nil, run)
+	m.width = 80
+	m.logs = []string{"running go test ./..."}
+
+	view := stripANSI(m.View())
+
+	if !strings.Contains(view, "running go test ./...") {
+		t.Error("expected short log line to appear in full")
+	}
+}
+
+func TestRenderBabysitView_LogLongLinesTruncated(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	run := testRunWithBabysit()
+	run.Steps[5].Status = types.StepStatusRunning
+	longLog := "babysitting PR #42 (timeout: 4h)..."
+	longLog2 := "running " + strings.Repeat("y", 200)
+	logs := []string{longLog, longLog2}
+
+	result := stripANSI(renderBabysitView(run, run.Steps, "", logs, 80))
+
+	// No line should exceed the box width (80).
+	for _, line := range strings.Split(result, "\n") {
+		if line == "" {
+			continue
+		}
+		w := lipgloss.Width(line)
+		if w > 80 {
+			t.Errorf("babysit log line exceeds box width (%d > 80): %s", w, line)
+		}
+	}
+
+	// The full long log text should NOT appear in the output.
+	if strings.Contains(result, strings.Repeat("y", 77)) {
+		t.Error("expected long babysit log line to be truncated to fit box content width")
+	}
+}

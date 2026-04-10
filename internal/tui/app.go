@@ -226,11 +226,17 @@ func (m Model) View() string {
 		if start < 0 {
 			start = 0
 		}
+		boxWidth := m.width
+		if boxWidth < 20 {
+			boxWidth = 80
+		}
+		contentWidth := boxWidth - 4 // 2 border + 2 padding
 		var logContent strings.Builder
 		for i, line := range m.logs[start:] {
 			if i > 0 {
 				logContent.WriteString("\n")
 			}
+			line, _ = cutText(line, contentWidth)
 			switch {
 			case strings.HasPrefix(line, "PASS"):
 				logContent.WriteString(logGreenStyle.Render(line))
@@ -239,10 +245,6 @@ func (m Model) View() string {
 			default:
 				logContent.WriteString(logDimStyle.Render(line))
 			}
-		}
-		boxWidth := m.width
-		if boxWidth < 20 {
-			boxWidth = 80
 		}
 		b.WriteString(renderBox("Log", logContent.String(), boxWidth))
 		b.WriteString("\n")

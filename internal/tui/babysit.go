@@ -151,6 +151,13 @@ func renderBabysitViewWithSelection(run *ipc.RunInfo, steps []ipc.StepResultInfo
 	if height > 0 && height < 20 {
 		logLines = 0
 	}
+	// Comment findings when awaiting approval.
+	boxWidth := width
+	if boxWidth < 20 {
+		boxWidth = 80
+	}
+	contentWidth := boxWidth - 4 // account for box border + padding
+
 	if !isApproval && len(logs) > 0 && logLines > 0 {
 		b.WriteString("\n")
 		logDimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
@@ -161,6 +168,7 @@ func renderBabysitViewWithSelection(run *ipc.RunInfo, steps []ipc.StepResultInfo
 			start = 0
 		}
 		for _, line := range logs[start:] {
+			line, _ = cutText(line, contentWidth)
 			switch {
 			case strings.HasPrefix(line, "PASS"):
 				b.WriteString(logGreenStyle.Render(line) + "\n")
@@ -171,13 +179,6 @@ func renderBabysitViewWithSelection(run *ipc.RunInfo, steps []ipc.StepResultInfo
 			}
 		}
 	}
-
-	// Comment findings when awaiting approval.
-	boxWidth := width
-	if boxWidth < 20 {
-		boxWidth = 80
-	}
-	contentWidth := boxWidth - 4 // account for box border + padding
 	var itemCount int
 	if isApproval && findings != "" {
 		if f, err := parseFindings(findings); err == nil && f != nil {
