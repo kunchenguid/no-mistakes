@@ -260,7 +260,7 @@ func renderApprovalActions(showSelectionActions bool, allowFix bool, showDiff bo
 		result += " " + dimStyle.Render("│") + " " + strings.Join(nav, "  ")
 	}
 
-	return result + "\n"
+	return result
 }
 
 // renderOutcomeBanner returns a styled one-line banner when the run is done.

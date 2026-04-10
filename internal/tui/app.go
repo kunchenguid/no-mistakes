@@ -261,7 +261,6 @@ func (m Model) View() string {
 			logContent.WriteString(styleLogLine(line))
 		}
 		b.WriteString(renderBox("Log", logContent.String(), boxWidth))
-		b.WriteString("\n")
 	}
 
 	// Help overlay.
@@ -307,7 +306,7 @@ func (m Model) View() string {
 	if m.showHelp {
 		helpLabel = "close"
 	}
-	b.WriteString("\n  " + boldKey.Render("q") + " " + dimStyle.Render(qLabel) + "  " + boldKey.Render("?") + " " + dimStyle.Render(helpLabel) + "\n")
+	b.WriteString("\n\n  " + boldKey.Render("q") + " " + dimStyle.Render(qLabel) + "  " + boldKey.Render("?") + " " + dimStyle.Render(helpLabel) + "\n")
 
 	return b.String()
 }
