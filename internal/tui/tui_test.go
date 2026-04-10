@@ -2819,3 +2819,75 @@ func TestModel_View_BabysitFindingsViewportApplied(t *testing.T) {
 		t.Errorf("expected '↓ N more below' scroll indicator when findings overflow viewport, got:\n%s", view)
 	}
 }
+
+func TestRenderBabysitView_LogTailDuringMonitoring(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	run := testRunWithBabysit()
+	run.Steps[5].Status = types.StepStatusRunning
+	logs := []string{
+		"babysitting PR #42 (timeout: 4h)...",
+		"polling CI status...",
+		"all checks passing",
+	}
+
+	out := stripANSI(renderBabysitView(run, run.Steps, "", logs, 80))
+
+	// Log tail lines should appear inside the babysit box during monitoring.
+	if !strings.Contains(out, "polling CI status") {
+		t.Errorf("expected log tail line 'polling CI status' inside babysit box, got:\n%s", out)
+	}
+	if !strings.Contains(out, "all checks passing") {
+		t.Errorf("expected log tail line 'all checks passing' inside babysit box, got:\n%s", out)
+	}
+}
+
+func TestRenderBabysitView_NoLogTailDuringApproval(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	run := testRunWithBabysit()
+	run.Steps[5].Status = types.StepStatusAwaitingApproval
+	logs := []string{
+		"babysitting PR #42 (timeout: 4h)...",
+		"polling CI status...",
+		"all checks passing",
+	}
+	findings := `{"findings":[{"severity":"info","description":"@bob: fix the typo"}],"summary":"1 comment"}`
+
+	out := stripANSI(renderBabysitViewWithSelection(run, run.Steps, findings, logs, 80, 0, 0, nil))
+
+	// During approval, log tail should NOT appear - findings take priority.
+	if strings.Contains(out, "polling CI status") {
+		t.Error("expected no log tail lines inside babysit box during approval state")
+	}
+	// But findings should still show.
+	if !strings.Contains(out, "fix the typo") {
+		t.Error("expected findings to still show during approval")
+	}
+}
+
+func TestModel_View_NoStandaloneLogBoxDuringBabysit(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	run := testRunWithBabysit()
+	m := NewModel("/tmp/sock", nil, run)
+	m.steps = run.Steps
+	m.steps[5].Status = types.StepStatusRunning
+	m.logs = []string{"babysitting PR #42", "polling CI", "checks passing"}
+	m.width = 80
+
+	view := stripANSI(m.View())
+
+	// The standalone Log box should NOT appear when babysit is active.
+	hasStandaloneLogBox := false
+	for _, line := range strings.Split(view, "\n") {
+		if strings.Contains(line, "╭") && strings.Contains(line, "Log") && !strings.Contains(line, "Babysit") {
+			hasStandaloneLogBox = true
+		}
+	}
+	if hasStandaloneLogBox {
+		t.Error("expected no standalone Log box when babysit is active - logs should be inside babysit box")
+	}
+
+	// But log content should still be visible (inside babysit box).
+	if !strings.Contains(view, "checks passing") {
+		t.Error("expected log content to appear inside babysit box")
+	}
+}

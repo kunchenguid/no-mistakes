@@ -141,6 +141,29 @@ func renderBabysitViewWithSelection(run *ipc.RunInfo, steps []ipc.StepResultInfo
 		b.WriteString(dimStyle.Render("Latest: "+activity.LastEvent) + "\n")
 	}
 
+	// Log tail during monitoring (non-approval) states.
+	isApproval := status == types.StepStatusAwaitingApproval || status == types.StepStatusFixReview
+	if !isApproval && len(logs) > 0 {
+		b.WriteString("\n")
+		logDimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
+		logGreenStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiGreen))
+		logRedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiRed))
+		start := len(logs) - 5
+		if start < 0 {
+			start = 0
+		}
+		for _, line := range logs[start:] {
+			switch {
+			case strings.HasPrefix(line, "PASS"):
+				b.WriteString(logGreenStyle.Render(line) + "\n")
+			case strings.HasPrefix(line, "FAIL"):
+				b.WriteString(logRedStyle.Render(line) + "\n")
+			default:
+				b.WriteString(logDimStyle.Render(line) + "\n")
+			}
+		}
+	}
+
 	// Comment findings when awaiting approval.
 	boxWidth := width
 	if boxWidth < 20 {
@@ -148,7 +171,7 @@ func renderBabysitViewWithSelection(run *ipc.RunInfo, steps []ipc.StepResultInfo
 	}
 	contentWidth := boxWidth - 4 // account for box border + padding
 	var itemCount int
-	if (status == types.StepStatusAwaitingApproval || status == types.StepStatusFixReview) && findings != "" {
+	if isApproval && findings != "" {
 		if f, err := parseFindings(findings); err == nil && f != nil {
 			itemCount = len(f.Items)
 		}

@@ -193,8 +193,9 @@ func (m Model) View() string {
 		}
 	}
 
-	// Log tail (last 5 lines) in a box.
-	if len(m.logs) > 0 {
+	// Log tail (last 5 lines) in a box - hidden when babysit is active
+	// since log context is integrated into the babysit box.
+	if len(m.logs) > 0 && !isBabysitActive(m.steps) {
 		b.WriteString("\n\n")
 		logDimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
 		logGreenStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiGreen))
