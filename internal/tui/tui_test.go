@@ -2896,6 +2896,90 @@ func TestModel_View_NoStandaloneLogBoxDuringBabysit(t *testing.T) {
 	}
 }
 
+// --- Babysit adaptive log tail ---
+
+func TestRenderBabysitView_LogTailCompact(t *testing.T) {
+	// At height 25 (compact terminal), babysit log tail should show only 3 lines, not 5.
+	lipgloss.SetColorProfile(termenv.ANSI)
+	run := testRunWithBabysit()
+	run.Steps[5].Status = types.StepStatusRunning
+	logs := []string{
+		"babysitting PR #42 (timeout: 4h)...",
+		"line1",
+		"line2",
+		"line3",
+		"line4",
+		"line5",
+		"line6",
+	}
+
+	out := stripANSI(renderBabysitViewWithSelection(run, run.Steps, "", logs, 80, 25, 0, nil))
+
+	// Should show last 3 lines (line4, line5, line6) but not line2, line3 (which 5-line tail would include).
+	if !strings.Contains(out, "line6") {
+		t.Errorf("expected last log line 'line6' in compact babysit view, got:\n%s", out)
+	}
+	if !strings.Contains(out, "line4") {
+		t.Errorf("expected 'line4' (3rd from end) in compact babysit view, got:\n%s", out)
+	}
+	// line2 would appear with 5-line tail but NOT with 3-line tail.
+	if strings.Contains(out, "line2") {
+		t.Errorf("expected 'line2' to be trimmed in compact babysit view (3 lines max), got:\n%s", out)
+	}
+}
+
+func TestRenderBabysitView_LogTailHiddenTiny(t *testing.T) {
+	// At height < 20 (tiny terminal), babysit log tail should be hidden entirely.
+	lipgloss.SetColorProfile(termenv.ANSI)
+	run := testRunWithBabysit()
+	run.Steps[5].Status = types.StepStatusRunning
+	logs := []string{
+		"babysitting PR #42 (timeout: 4h)...",
+		"polling CI status...",
+		"all checks passing",
+	}
+
+	out := stripANSI(renderBabysitViewWithSelection(run, run.Steps, "", logs, 80, 15, 0, nil))
+
+	// Log tail lines should NOT appear in tiny terminal - only state indicator should show.
+	if strings.Contains(out, "polling CI status") {
+		t.Error("expected no log tail in tiny terminal (height=15)")
+	}
+	if strings.Contains(out, "all checks passing") {
+		t.Error("expected no log tail in tiny terminal (height=15)")
+	}
+}
+
+func TestRenderBabysitView_LogTailNormalShowsFive(t *testing.T) {
+	// At height >= 30, babysit log tail should show 5 lines.
+	// At compact height (25), it should show only 3.
+	// This test verifies the difference by comparing both outputs.
+	lipgloss.SetColorProfile(termenv.ANSI)
+	run := testRunWithBabysit()
+	run.Steps[5].Status = types.StepStatusRunning
+	logs := []string{
+		"babysitting PR #42 (timeout: 4h)...",
+		"line1",
+		"line2",
+		"line3",
+		"line4",
+		"line5",
+		"line6",
+	}
+
+	normal := stripANSI(renderBabysitViewWithSelection(run, run.Steps, "", logs, 80, 40, 0, nil))
+	compact := stripANSI(renderBabysitViewWithSelection(run, run.Steps, "", logs, 80, 25, 0, nil))
+
+	// Normal should show line2 (5th from end).
+	if !strings.Contains(normal, "line2") {
+		t.Errorf("expected 'line2' in normal (height=40) babysit view, got:\n%s", normal)
+	}
+	// Compact should NOT show line2 (only 3 lines from end).
+	if strings.Contains(compact, "line2") {
+		t.Errorf("expected 'line2' to be trimmed in compact (height=25) babysit view, got:\n%s", compact)
+	}
+}
+
 // --- Action Bar placement per DESIGN.md ---
 // DESIGN.md: Action bar "Sits below the pipeline box, above findings/diff"
 

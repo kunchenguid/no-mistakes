@@ -142,13 +142,21 @@ func renderBabysitViewWithSelection(run *ipc.RunInfo, steps []ipc.StepResultInfo
 	}
 
 	// Log tail during monitoring (non-approval) states.
+	// Adaptive line count: 5 for height >= 30, 3 for 20-29, hidden for < 20.
 	isApproval := status == types.StepStatusAwaitingApproval || status == types.StepStatusFixReview
-	if !isApproval && len(logs) > 0 {
+	logLines := 5
+	if height > 0 && height < 30 {
+		logLines = 3
+	}
+	if height > 0 && height < 20 {
+		logLines = 0
+	}
+	if !isApproval && len(logs) > 0 && logLines > 0 {
 		b.WriteString("\n")
 		logDimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
 		logGreenStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiGreen))
 		logRedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiRed))
-		start := len(logs) - 5
+		start := len(logs) - logLines
 		if start < 0 {
 			start = 0
 		}
