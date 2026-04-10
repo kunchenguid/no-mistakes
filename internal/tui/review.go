@@ -198,6 +198,11 @@ func renderFindingsWithSelection(raw string, width int, cursor int, selected map
 	// Individual findings.
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
 	for i, item := range f.Items {
+		// Blank line between findings per DESIGN.md Gutter System.
+		if i > 0 {
+			b.WriteString("\n")
+		}
+
 		icon := severityIcon(item.Severity)
 		style := severityStyle(item.Severity)
 		checkbox := "[ ]"

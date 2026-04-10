@@ -1063,9 +1063,9 @@ func TestRenderDiff_ScrollEnd(t *testing.T) {
 	// Scroll to near the end with a small viewport.
 	got := renderDiff(raw, 80, 3, 3)
 
-	// Should show end-of-diff indicator since we scrolled past start.
-	if !strings.Contains(got, "end of diff") {
-		t.Error("expected end-of-diff indicator")
+	// Should show scroll-up indicator since we scrolled past start.
+	if !strings.Contains(got, "↑") {
+		t.Error("expected ↑ scroll indicator when scrolled to end")
 	}
 }
 
@@ -2157,6 +2157,93 @@ func TestRenderDiff_StatsMatchDesign(t *testing.T) {
 	// Should contain the file count and +/- stats
 	if !strings.Contains(plain, "1 file") {
 		t.Errorf("expected '1 file' in diff stats, got: %s", plain)
+	}
+}
+
+func TestRenderFindings_BlankLineBetweenItems(t *testing.T) {
+	// DESIGN.md Gutter System shows a blank line between each finding item.
+	raw := `{"findings":[
+		{"id":"f1","severity":"error","file":"main.go","line":10,"description":"nil pointer"},
+		{"id":"f2","severity":"warning","file":"util.go","line":5,"description":"unused var"}
+	],"summary":"2 issues"}`
+
+	got := stripANSI(renderFindings(raw, 80))
+	lines := strings.Split(got, "\n")
+
+	// Find the description lines by looking for 8-space indented content.
+	// After each description line, there should be a blank line before the next finding
+	// (except after the last finding).
+	foundBlankBetween := false
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "nil pointer" {
+			// After description of first finding, next line should be blank,
+			// then the second finding's gutter line follows.
+			if i+1 < len(lines) && strings.TrimSpace(lines[i+1]) == "" {
+				foundBlankBetween = true
+			}
+		}
+	}
+	if !foundBlankBetween {
+		t.Errorf("expected blank line between finding items per DESIGN.md, got:\n%s", got)
+	}
+}
+
+func TestRenderDiff_ScrollUpIndicator(t *testing.T) {
+	// When scrolled down (offset > 0) with lines remaining below,
+	// the bottom border should show an up arrow indicating lines above.
+	var b strings.Builder
+	b.WriteString("diff --git a/main.go b/main.go\n")
+	b.WriteString("--- a/main.go\n")
+	b.WriteString("+++ b/main.go\n")
+	b.WriteString("@@ -1,20 +1,20 @@\n")
+	for i := 0; i < 20; i++ {
+		b.WriteString(fmt.Sprintf("+line %d\n", i))
+	}
+
+	// Scroll down 5 lines, view height 5 - should have lines above AND below.
+	got := stripANSI(renderDiff(b.String(), 80, 5, 5))
+	lines := strings.Split(got, "\n")
+	lastLine := ""
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.TrimSpace(lines[i]) != "" {
+			lastLine = lines[i]
+			break
+		}
+	}
+	if !strings.Contains(lastLine, "↑") {
+		t.Errorf("expected ↑ in bottom border when scrolled down, got %q", lastLine)
+	}
+	if !strings.Contains(lastLine, "↓") {
+		t.Errorf("expected ↓ in bottom border when lines remain below, got %q", lastLine)
+	}
+}
+
+func TestRenderDiff_ScrollUpOnlyAtBottom(t *testing.T) {
+	// When scrolled to the very end, should show ↑ but not ↓.
+	var b strings.Builder
+	b.WriteString("diff --git a/main.go b/main.go\n")
+	b.WriteString("--- a/main.go\n")
+	b.WriteString("+++ b/main.go\n")
+	b.WriteString("@@ -1,5 +1,5 @@\n")
+	for i := 0; i < 5; i++ {
+		b.WriteString(fmt.Sprintf("+line %d\n", i))
+	}
+
+	// 9 total lines, view height 5, offset 4 - at the bottom.
+	got := stripANSI(renderDiff(b.String(), 80, 5, 4))
+	lines := strings.Split(got, "\n")
+	lastLine := ""
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.TrimSpace(lines[i]) != "" {
+			lastLine = lines[i]
+			break
+		}
+	}
+	if !strings.Contains(lastLine, "↑") {
+		t.Errorf("expected ↑ in bottom border at end of diff, got %q", lastLine)
+	}
+	if strings.Contains(lastLine, "↓") {
+		t.Errorf("expected no ↓ at end of diff, got %q", lastLine)
 	}
 }
 

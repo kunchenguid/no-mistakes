@@ -171,10 +171,12 @@ func renderDiff(raw string, width, viewHeight, offset int) string {
 	scrollHint := ""
 	if viewHeight > 0 && len(lines) > viewHeight {
 		remaining := len(lines) - end
-		if remaining > 0 {
+		if offset > 0 && remaining > 0 {
+			scrollHint = fmt.Sprintf("↑ %d  ↓ %d more lines (j/k)", offset, remaining)
+		} else if remaining > 0 {
 			scrollHint = fmt.Sprintf("↓ %d more lines (j/k)", remaining)
 		} else if offset > 0 {
-			scrollHint = "end of diff"
+			scrollHint = fmt.Sprintf("↑ %d lines (j/k)", offset)
 		}
 	}
 
