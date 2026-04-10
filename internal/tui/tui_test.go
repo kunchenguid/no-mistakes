@@ -178,7 +178,7 @@ func TestRenderPipelineView_ApprovalPrompt(t *testing.T) {
 	run.Steps[0].Status = types.StepStatusAwaitingApproval
 
 	// Action bar is now rendered outside the pipeline box per DESIGN.md.
-	out := renderActionBar(run.Steps, true, true)
+	out := renderActionBar(run.Steps, true, true, false)
 	if !strings.Contains(out, "awaiting action") {
 		t.Error("expected approval prompt")
 	}
@@ -211,7 +211,7 @@ func TestRenderPipelineView_StepError(t *testing.T) {
 }
 
 func TestRenderApprovalActions_FormatWithSeparator(t *testing.T) {
-	out := stripANSI(renderApprovalActions(true, true))
+	out := stripANSI(renderApprovalActions(true, true, false))
 	// Keys should not be bracket-wrapped - design uses "a approve" not "[a] approve".
 	if strings.Contains(out, "[a]") {
 		t.Error("expected bare key format 'a approve', not '[a] approve'")
@@ -227,7 +227,7 @@ func TestRenderApprovalActions_FormatWithSeparator(t *testing.T) {
 }
 
 func TestRenderApprovalActions_NoSelectionActions(t *testing.T) {
-	out := stripANSI(renderApprovalActions(false, true))
+	out := stripANSI(renderApprovalActions(false, true, false))
 	// Without selection actions, no │ separator should appear.
 	if strings.Contains(out, "│") {
 		t.Error("expected no │ separator when no selection actions")
@@ -242,7 +242,7 @@ func TestRenderPipelineView_HidesFixActionWhenDisabled(t *testing.T) {
 	run.Steps[0].Status = types.StepStatusAwaitingApproval
 
 	// Action bar is now rendered outside the pipeline box per DESIGN.md.
-	out := stripANSI(renderActionBar(run.Steps, true, false))
+	out := stripANSI(renderActionBar(run.Steps, true, false, false))
 	if strings.Contains(out, "f fix") {
 		t.Fatal("expected fix action to be hidden when disabled")
 	}
@@ -1278,7 +1278,7 @@ func TestRenderPipelineView_DiffKey(t *testing.T) {
 	run := testRun()
 	run.Steps[0].Status = types.StepStatusAwaitingApproval
 	// Action bar is now rendered outside the pipeline box per DESIGN.md.
-	out := stripANSI(renderActionBar(run.Steps, true, true))
+	out := stripANSI(renderActionBar(run.Steps, true, true, false))
 	if !strings.Contains(out, "d diff") {
 		t.Error("expected d diff in approval prompt")
 	}
@@ -3031,6 +3031,72 @@ func TestOutcomeBanner_EmptyWhenRunning(t *testing.T) {
 	banner := renderOutcomeBanner(run, run.Steps)
 	if banner != "" {
 		t.Errorf("expected empty banner when running, got: %q", banner)
+	}
+}
+
+func TestActionBar_DiffModeShowsFindings(t *testing.T) {
+	// When viewing the diff, the 'd' key should say "findings" not "diff"
+	// since pressing d will toggle back to findings view.
+	configureTUIColors()
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	m := NewModel("", nil, run)
+	m.width = 80
+	m.height = 50
+	m.showDiff = true
+	m.stepFindings[types.StepReview] = `{"summary":"test","items":[{"id":"f1","severity":"error","file":"foo.go","line":1,"description":"bad"}]}`
+	m.resetFindingSelection(types.StepReview)
+
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "d findings") {
+		t.Errorf("expected 'd findings' in action bar when viewing diff, got:\n%s", view)
+	}
+	if strings.Contains(view, "d diff") {
+		t.Error("should NOT show 'd diff' when already viewing diff")
+	}
+}
+
+func TestActionBar_FindingsModeShowsDiff(t *testing.T) {
+	// When viewing findings (default), the 'd' key should say "diff".
+	configureTUIColors()
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	m := NewModel("", nil, run)
+	m.width = 80
+	m.height = 50
+	m.showDiff = false
+	m.stepFindings[types.StepReview] = `{"summary":"test","items":[{"id":"f1","severity":"error","file":"foo.go","line":1,"description":"bad"}]}`
+	m.resetFindingSelection(types.StepReview)
+
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "d diff") {
+		t.Errorf("expected 'd diff' in action bar when viewing findings, got:\n%s", view)
+	}
+}
+
+func TestActionBar_HidesSelectionInDiffMode(t *testing.T) {
+	// Selection actions (toggle/A/N) should be hidden when viewing diff
+	// since those keys don't work in diff mode.
+	configureTUIColors()
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	m := NewModel("", nil, run)
+	m.width = 80
+	m.height = 50
+	m.showDiff = true
+	m.stepFindings[types.StepReview] = `{"summary":"test","items":[{"id":"f1","severity":"error","file":"foo.go","line":1,"description":"bad"}]}`
+	m.stepDiffs[types.StepReview] = "diff --git a/foo.go b/foo.go\n--- a/foo.go\n+++ b/foo.go\n@@ -1 +1 @@\n-old\n+new\n"
+	m.resetFindingSelection(types.StepReview)
+
+	view := stripANSI(m.View())
+	if strings.Contains(view, "toggle") {
+		t.Error("selection action 'toggle' should NOT appear when viewing diff")
+	}
+	if strings.Contains(view, "A all") {
+		t.Error("selection action 'A all' should NOT appear when viewing diff")
+	}
+	if strings.Contains(view, "N none") {
+		t.Error("selection action 'N none' should NOT appear when viewing diff")
 	}
 }
 

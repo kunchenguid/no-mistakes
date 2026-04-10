@@ -157,7 +157,9 @@ func renderPipelineView(run *ipc.RunInfo, steps []ipc.StepResultInfo, width int,
 
 // renderActionBar renders the approval prompt and action keys as a standalone element.
 // Per DESIGN.md: "Sits below the pipeline box, above findings/diff"
-func renderActionBar(steps []ipc.StepResultInfo, showSelectionActions bool, allowFix bool) string {
+// showDiff controls whether the 'd' key label says "findings" (to toggle back) or "diff".
+// Selection actions are hidden in diff mode since they don't apply.
+func renderActionBar(steps []ipc.StepResultInfo, showSelectionActions bool, allowFix bool, showDiff bool) string {
 	step := awaitingStep(steps)
 	if step == nil {
 		return ""
@@ -167,11 +169,13 @@ func renderActionBar(steps []ipc.StepResultInfo, showSelectionActions bool, allo
 	promptStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiYellow))
 	b.WriteString(promptStyle.Render(fmt.Sprintf("%s awaiting action:", stepLabel(step.StepName))))
 	b.WriteString("\n")
-	b.WriteString(renderApprovalActions(showSelectionActions, allowFix))
+	// Hide selection actions in diff mode since toggle/A/N keys don't work there.
+	effectiveSelection := showSelectionActions && !showDiff
+	b.WriteString(renderApprovalActions(effectiveSelection, allowFix, showDiff))
 	return b.String()
 }
 
-func renderApprovalActions(showSelectionActions bool, allowFix bool) string {
+func renderApprovalActions(showSelectionActions bool, allowFix bool, showDiff bool) string {
 	boldKey := lipgloss.NewStyle().Bold(true)
 	renderAction := func(key, label string) string {
 		return boldKey.Render(key) + " " + label
@@ -181,7 +185,11 @@ func renderApprovalActions(showSelectionActions bool, allowFix bool) string {
 	if allowFix {
 		primary = append(primary, renderAction("f", "fix"))
 	}
-	primary = append(primary, renderAction("s", "skip"), renderAction("x", "abort"), renderAction("d", "diff"))
+	diffLabel := "diff"
+	if showDiff {
+		diffLabel = "findings"
+	}
+	primary = append(primary, renderAction("s", "skip"), renderAction("x", "abort"), renderAction("d", diffLabel))
 
 	result := " " + strings.Join(primary, "  ")
 

@@ -150,7 +150,7 @@ func (m Model) View() string {
 	}
 
 	// Action bar between pipeline box and findings/diff per DESIGN.md.
-	if actionBar := renderActionBar(m.steps, showSelectionActions, allowFix); actionBar != "" {
+	if actionBar := renderActionBar(m.steps, showSelectionActions, allowFix, m.showDiff); actionBar != "" {
 		b.WriteString("\n")
 		b.WriteString(actionBar)
 	}
