@@ -178,7 +178,7 @@ func TestRenderPipelineView_ApprovalPrompt(t *testing.T) {
 	run.Steps[0].Status = types.StepStatusAwaitingApproval
 
 	// Action bar is now rendered outside the pipeline box per DESIGN.md.
-	out := renderActionBar(run.Steps, true, true, false, 5, 5, false)
+	out := renderActionBar(run.Steps, true, true, false, 5, 5, false, true)
 	if !strings.Contains(out, "awaiting action") {
 		t.Error("expected approval prompt")
 	}
@@ -211,7 +211,7 @@ func TestRenderPipelineView_StepError(t *testing.T) {
 }
 
 func TestRenderApprovalActions_FormatWithSeparator(t *testing.T) {
-	out := stripANSI(renderApprovalActions(true, true, false, 5, 5, false))
+	out := stripANSI(renderApprovalActions(true, true, false, 5, 5, false, true))
 	// Keys should not be bracket-wrapped - design uses "a approve" not "[a] approve".
 	if strings.Contains(out, "[a]") {
 		t.Error("expected bare key format 'a approve', not '[a] approve'")
@@ -227,7 +227,7 @@ func TestRenderApprovalActions_FormatWithSeparator(t *testing.T) {
 }
 
 func TestRenderApprovalActions_NoSelectionActions(t *testing.T) {
-	out := stripANSI(renderApprovalActions(false, true, false, 5, 5, false))
+	out := stripANSI(renderApprovalActions(false, true, false, 5, 5, false, true))
 	// Without selection actions, no │ separator should appear.
 	if strings.Contains(out, "│") {
 		t.Error("expected no │ separator when no selection actions")
@@ -242,7 +242,7 @@ func TestRenderPipelineView_HidesFixActionWhenDisabled(t *testing.T) {
 	run.Steps[0].Status = types.StepStatusAwaitingApproval
 
 	// Action bar is now rendered outside the pipeline box per DESIGN.md.
-	out := stripANSI(renderActionBar(run.Steps, true, false, false, 0, 5, false))
+	out := stripANSI(renderActionBar(run.Steps, true, false, false, 0, 5, false, true))
 	if strings.Contains(out, "f fix") {
 		t.Fatal("expected fix action to be hidden when disabled")
 	}
@@ -1278,7 +1278,7 @@ func TestRenderPipelineView_DiffKey(t *testing.T) {
 	run := testRun()
 	run.Steps[0].Status = types.StepStatusAwaitingApproval
 	// Action bar is now rendered outside the pipeline box per DESIGN.md.
-	out := stripANSI(renderActionBar(run.Steps, true, true, false, 5, 5, false))
+	out := stripANSI(renderActionBar(run.Steps, true, true, false, 5, 5, false, true))
 	if !strings.Contains(out, "d diff") {
 		t.Error("expected d diff in approval prompt")
 	}
@@ -3130,6 +3130,7 @@ func TestActionBar_DiffModeShowsFindings(t *testing.T) {
 	m.height = 50
 	m.showDiff = true
 	m.stepFindings[types.StepReview] = `{"summary":"test","items":[{"id":"f1","severity":"error","file":"foo.go","line":1,"description":"bad"}]}`
+	m.stepDiffs[types.StepReview] = "diff --git a/foo.go b/foo.go\n--- a/foo.go\n+++ b/foo.go\n@@ -1 +1 @@\n-old\n+new\n"
 	m.resetFindingSelection(types.StepReview)
 
 	view := stripANSI(m.View())
@@ -3151,6 +3152,7 @@ func TestActionBar_FindingsModeShowsDiff(t *testing.T) {
 	m.height = 50
 	m.showDiff = false
 	m.stepFindings[types.StepReview] = `{"summary":"test","items":[{"id":"f1","severity":"error","file":"foo.go","line":1,"description":"bad"}]}`
+	m.stepDiffs[types.StepReview] = "diff --git a/foo.go b/foo.go\n--- a/foo.go\n+++ b/foo.go\n@@ -1 +1 @@\n-old\n+new\n"
 	m.resetFindingSelection(types.StepReview)
 
 	view := stripANSI(m.View())
@@ -4268,5 +4270,62 @@ func TestRenderFindingsWithSelection_TruncatedGutterPreservesSeverityIcon(t *tes
 	}
 	if !strings.Contains(result, "●") {
 		t.Error("expected severity icon to survive truncation")
+	}
+}
+
+func TestDiffToggle_NoOpWhenNoDiffData(t *testing.T) {
+	// Pressing 'd' when the awaiting step has no diff data should NOT toggle showDiff.
+	// This prevents the bug where showDiff=true hides selection actions
+	// but no diff actually renders.
+	run := testRun()
+	m := NewModel("/tmp/sock", nil, run)
+	m.steps[0].Status = types.StepStatusAwaitingApproval
+	m.stepFindings[types.StepReview] = `{"items":[{"id":"f1","severity":"error","file":"a.go","line":1,"description":"bad"}]}`
+	// No diff data set for this step.
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	model := updated.(Model)
+	if model.showDiff {
+		t.Error("expected showDiff to remain false when no diff data exists for the awaiting step")
+	}
+}
+
+func TestActionBar_HidesDiffWhenNoDiffData(t *testing.T) {
+	// The action bar should NOT show 'd diff' when no diff data exists
+	// for the current awaiting step.
+	configureTUIColors()
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	m := NewModel("", nil, run)
+	m.width = 80
+	m.height = 50
+	m.stepFindings[types.StepReview] = `{"summary":"test","items":[{"id":"f1","severity":"error","file":"foo.go","line":1,"description":"bad"}]}`
+	m.resetFindingSelection(types.StepReview)
+	// No diff data set.
+
+	view := stripANSI(m.View())
+	if strings.Contains(view, "d diff") {
+		t.Error("should NOT show 'd diff' when no diff data exists for the awaiting step")
+	}
+	if strings.Contains(view, "d findings") {
+		t.Error("should NOT show 'd findings' when no diff data exists")
+	}
+}
+
+func TestActionBar_ShowsDiffWhenDiffDataExists(t *testing.T) {
+	// The action bar SHOULD show 'd diff' when diff data exists for the current step.
+	configureTUIColors()
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	m := NewModel("", nil, run)
+	m.width = 80
+	m.height = 50
+	m.stepFindings[types.StepReview] = `{"summary":"test","items":[{"id":"f1","severity":"error","file":"foo.go","line":1,"description":"bad"}]}`
+	m.stepDiffs[types.StepReview] = "diff --git a/foo.go b/foo.go\n--- a/foo.go\n+++ b/foo.go\n@@ -1 +1 @@\n-old\n+new\n"
+	m.resetFindingSelection(types.StepReview)
+
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "d diff") {
+		t.Errorf("expected 'd diff' in action bar when diff data exists, got:\n%s", view)
 	}
 }

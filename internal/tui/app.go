@@ -152,7 +152,12 @@ func (m Model) View() string {
 	}
 
 	// Action bar between pipeline box and findings/diff per DESIGN.md.
-	if actionBar := renderActionBar(m.steps, showSelectionActions, allowFix, m.showDiff, selectedCount, totalCount, m.confirmAbort); actionBar != "" {
+	hasDiff := false
+	if step := awaitingStep(m.steps); step != nil {
+		raw, ok := m.stepDiffs[step.StepName]
+		hasDiff = ok && raw != ""
+	}
+	if actionBar := renderActionBar(m.steps, showSelectionActions, allowFix, m.showDiff, selectedCount, totalCount, m.confirmAbort, hasDiff); actionBar != "" {
 		b.WriteString("\n")
 		b.WriteString(actionBar)
 	}
@@ -345,11 +350,13 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "d":
 		if step := awaitingStep(m.steps); step != nil {
-			m.showDiff = !m.showDiff
-			if m.showDiff {
-				m.diffOffset = m.diffOffsetForCurrentFinding(step.StepName)
-			} else {
-				m.diffOffset = 0
+			if raw, ok := m.stepDiffs[step.StepName]; ok && raw != "" {
+				m.showDiff = !m.showDiff
+				if m.showDiff {
+					m.diffOffset = m.diffOffsetForCurrentFinding(step.StepName)
+				} else {
+					m.diffOffset = 0
+				}
 			}
 		}
 		return m, nil
