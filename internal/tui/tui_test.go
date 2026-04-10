@@ -2568,6 +2568,82 @@ func TestRenderFindings_ViewportScrollUpIndicator(t *testing.T) {
 	}
 }
 
+func TestFindingsBoxTitle_ShowsPositionIndicator(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusCompleted
+	run.Steps[1].Status = types.StepStatusAwaitingApproval
+
+	findingsJSON := makeManyFindings(10)
+	m := NewModel("/tmp/sock", nil, run)
+	m.width = 80
+	m.height = 40
+	m.stepFindings[types.StepTest] = findingsJSON
+	m.resetFindingSelection(types.StepTest)
+
+	// Move cursor to 3rd item (index 2).
+	m.findingCursor[types.StepTest] = 2
+
+	view := m.View()
+	plain := stripANSI(view)
+
+	// The findings box title should show position: "Findings - Test (3/10)".
+	if !strings.Contains(plain, "Findings - Test (3/10)") {
+		t.Errorf("expected findings box title with position '(3/10)', got:\n%s", plain)
+	}
+}
+
+func TestFindingsBoxTitle_PositionUpdatesWithCursor(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+
+	findingsJSON := makeManyFindings(5)
+	m := NewModel("/tmp/sock", nil, run)
+	m.width = 80
+	m.height = 40
+	m.stepFindings[types.StepReview] = findingsJSON
+	m.resetFindingSelection(types.StepReview)
+
+	// Cursor at first item (index 0) -> should show (1/5).
+	m.findingCursor[types.StepReview] = 0
+	view := m.View()
+	plain := stripANSI(view)
+	if !strings.Contains(plain, "(1/5)") {
+		t.Errorf("expected position (1/5) at cursor 0, got:\n%s", plain)
+	}
+
+	// Cursor at last item (index 4) -> should show (5/5).
+	m.findingCursor[types.StepReview] = 4
+	view = m.View()
+	plain = stripANSI(view)
+	if !strings.Contains(plain, "(5/5)") {
+		t.Errorf("expected position (5/5) at cursor 4, got:\n%s", plain)
+	}
+}
+
+func TestFindingsBoxTitle_SingleFinding(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusCompleted
+	run.Steps[1].Status = types.StepStatusAwaitingApproval
+
+	findingsJSON := `{"summary":"one issue","items":[{"id":"f1","severity":"error","file":"foo.go","line":1,"description":"bad"}]}`
+	m := NewModel("/tmp/sock", nil, run)
+	m.width = 80
+	m.height = 40
+	m.stepFindings[types.StepTest] = findingsJSON
+	m.resetFindingSelection(types.StepTest)
+
+	view := m.View()
+	plain := stripANSI(view)
+
+	// Single finding: should show (1/1).
+	if !strings.Contains(plain, "(1/1)") {
+		t.Errorf("expected position (1/1) for single finding, got:\n%s", plain)
+	}
+}
+
 func TestModel_View_FindingsViewportApplied(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.ANSI)
 	run := testRun()

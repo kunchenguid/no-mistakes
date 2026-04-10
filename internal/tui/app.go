@@ -176,14 +176,19 @@ func (m Model) View() string {
 			if findingsHeight > 6 {
 				maxVisible = findingsHeight / 3
 			}
-			rendered := renderFindingsWithSelection(raw, m.width-4, m.findingCursor[step.StepName], m.findingSelections[step.StepName], maxVisible)
+			cursor := m.findingCursor[step.StepName]
+			rendered := renderFindingsWithSelection(raw, m.width-4, cursor, m.findingSelections[step.StepName], maxVisible)
 			if rendered != "" {
 				boxWidth := m.width
 				if boxWidth < 20 {
 					boxWidth = 80
 				}
+				title := "Findings - " + label
+				if items := m.findingItems(step.StepName); len(items) > 0 {
+					title += fmt.Sprintf(" (%d/%d)", cursor+1, len(items))
+				}
 				b.WriteString("\n\n")
-				b.WriteString(renderBox("Findings - "+label, rendered, boxWidth))
+				b.WriteString(renderBox(title, rendered, boxWidth))
 			}
 		}
 	}
