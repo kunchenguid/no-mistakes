@@ -99,13 +99,9 @@ func renderBabysitView(run *ipc.RunInfo, steps []ipc.StepResultInfo, findings st
 func renderBabysitViewWithSelection(run *ipc.RunInfo, steps []ipc.StepResultInfo, findings string, logs []string, width int, cursor int, selected map[string]bool) string {
 	var b strings.Builder
 
-	// Header.
-	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiYellow))
-	b.WriteString(headerStyle.Render("◉ Babysit Monitor"))
-	b.WriteString("\n")
-
-	// PR info — try run.PRURL first, then parse from logs.
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
+
+	// PR info - try run.PRURL first, then parse from logs.
 	if run != nil && run.PRURL != nil && *run.PRURL != "" {
 		b.WriteString(dimStyle.Render("PR: "+*run.PRURL) + "\n")
 	} else if num := extractPRFromLogs(logs); num != "" {
@@ -122,7 +118,7 @@ func renderBabysitViewWithSelection(run *ipc.RunInfo, steps []ipc.StepResultInfo
 	case types.StepStatusRunning:
 		if activity.AutoFixing {
 			style := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBlue))
-			b.WriteString(style.Render("⚙ Auto-fixing CI failures...") + "\n")
+			b.WriteString(style.Render("\u2699 Auto-fixing CI failures...") + "\n")
 		} else {
 			style := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiGreen))
 			b.WriteString(style.Render("◉ Monitoring CI and PR comments...") + "\n")
@@ -132,7 +128,7 @@ func renderBabysitViewWithSelection(run *ipc.RunInfo, steps []ipc.StepResultInfo
 		b.WriteString(style.Render("⚙ Agent addressing PR comments...") + "\n")
 	case types.StepStatusAwaitingApproval, types.StepStatusFixReview:
 		style := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiYellow))
-		b.WriteString(style.Render("⏸ New PR comments — review below") + "\n")
+		b.WriteString(style.Render("⏸ New PR comments - review below") + "\n")
 	}
 
 	// CI auto-fix count.
@@ -146,13 +142,18 @@ func renderBabysitViewWithSelection(run *ipc.RunInfo, steps []ipc.StepResultInfo
 	}
 
 	// Comment findings when awaiting approval.
+	boxWidth := width
+	if boxWidth < 20 {
+		boxWidth = 80
+	}
+	contentWidth := boxWidth - 4 // account for box border + padding
 	if (status == types.StepStatusAwaitingApproval || status == types.StepStatusFixReview) && findings != "" {
-		rendered := renderFindingsWithSelection(findings, width, cursor, selected)
+		rendered := renderFindingsWithSelection(findings, contentWidth, cursor, selected)
 		if rendered != "" {
 			b.WriteString("\n")
 			b.WriteString(rendered)
 		}
 	}
 
-	return b.String()
+	return renderBox("Babysit", b.String(), boxWidth)
 }

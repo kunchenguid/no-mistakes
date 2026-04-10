@@ -1479,8 +1479,8 @@ func TestRenderBabysitView_Monitoring(t *testing.T) {
 
 	out := renderBabysitView(run, run.Steps, "", logs, 80)
 
-	if !strings.Contains(out, "Babysit Monitor") {
-		t.Error("expected header")
+	if !strings.Contains(stripANSI(out), "Babysit") {
+		t.Error("expected Babysit box title")
 	}
 	if !strings.Contains(out, "Monitoring") {
 		t.Error("expected monitoring state")
@@ -1588,8 +1588,8 @@ func TestModel_View_BabysitViewWhenActive(t *testing.T) {
 
 	view := m.View()
 
-	if !strings.Contains(view, "Babysit Monitor") {
-		t.Error("expected babysit view in model output")
+	if !strings.Contains(stripANSI(view), "Babysit") {
+		t.Error("expected babysit box in model output")
 	}
 	if !strings.Contains(view, "Monitoring") {
 		t.Error("expected monitoring state in model output")
@@ -1605,8 +1605,8 @@ func TestModel_View_BabysitAwaitingShowsFindings(t *testing.T) {
 
 	view := m.View()
 
-	if !strings.Contains(view, "Babysit Monitor") {
-		t.Error("expected babysit view header")
+	if !strings.Contains(stripANSI(view), "Babysit") {
+		t.Error("expected babysit box title")
 	}
 	if !strings.Contains(view, "fix the typo") {
 		t.Error("expected comment finding in babysit view")
@@ -1622,8 +1622,15 @@ func TestModel_View_NonBabysitStepUsesGenericFindings(t *testing.T) {
 	view := m.View()
 
 	// Should use generic findings, not babysit view.
-	if strings.Contains(view, "Babysit Monitor") {
-		t.Error("expected generic findings view, not babysit view")
+	// Check that no "Babysit" titled box appears (only Pipeline/Findings boxes).
+	hasBabysitBox := false
+	for _, line := range strings.Split(stripANSI(view), "\n") {
+		if strings.Contains(line, "╭") && strings.Contains(line, "Babysit") {
+			hasBabysitBox = true
+		}
+	}
+	if hasBabysitBox {
+		t.Error("expected generic findings view, not babysit box")
 	}
 	if !strings.Contains(view, "critical bug") {
 		t.Error("expected generic findings content")
@@ -1917,6 +1924,99 @@ func TestModel_View_FindingsInBox(t *testing.T) {
 	}
 	if !hasBottomBorder {
 		t.Error("expected bottom border for Findings box")
+	}
+}
+
+func TestRenderBabysitView_WrappedInBox(t *testing.T) {
+	run := testRunWithBabysit()
+	run.Steps[5].Status = types.StepStatusRunning
+	logs := []string{"babysitting PR #42 (timeout: 4h)..."}
+
+	out := stripANSI(renderBabysitView(run, run.Steps, "", logs, 80))
+
+	// Should be wrapped in a box with "Babysit" title per DESIGN.md.
+	lines := strings.Split(out, "\n")
+	if len(lines) == 0 {
+		t.Fatal("expected non-empty output")
+	}
+	if !strings.Contains(lines[0], "Babysit") {
+		t.Errorf("expected 'Babysit' title in top border, got %q", lines[0])
+	}
+	if !strings.Contains(lines[0], "╭") {
+		t.Error("expected rounded top-left corner in babysit box")
+	}
+	// Should have rounded bottom corner.
+	hasBottom := false
+	for _, line := range lines {
+		if strings.Contains(line, "╰") && strings.Contains(line, "╯") {
+			hasBottom = true
+			break
+		}
+	}
+	if !hasBottom {
+		t.Error("expected rounded bottom border in babysit box")
+	}
+}
+
+func TestRenderBabysitView_NoRedundantHeader(t *testing.T) {
+	// The box title "Babysit" replaces the old "◉ Babysit Monitor" header.
+	run := testRunWithBabysit()
+	run.Steps[5].Status = types.StepStatusRunning
+	logs := []string{"babysitting PR #42 (timeout: 4h)..."}
+
+	out := stripANSI(renderBabysitView(run, run.Steps, "", logs, 80))
+
+	if strings.Contains(out, "Babysit Monitor") {
+		t.Error("expected no redundant 'Babysit Monitor' header - box title handles it")
+	}
+}
+
+func TestRenderBabysitView_ContentInsideBox(t *testing.T) {
+	run := testRunWithBabysit()
+	run.Steps[5].Status = types.StepStatusRunning
+	logs := []string{"babysitting PR #42 (timeout: 4h)..."}
+
+	out := stripANSI(renderBabysitView(run, run.Steps, "", logs, 80))
+
+	// PR info and state should be inside box borders.
+	foundPR := false
+	foundState := false
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "PR #42") && strings.Contains(line, "│") {
+			foundPR = true
+		}
+		if strings.Contains(line, "Monitoring") && strings.Contains(line, "│") {
+			foundState = true
+		}
+	}
+	if !foundPR {
+		t.Error("expected PR info inside box borders")
+	}
+	if !foundState {
+		t.Error("expected state indicator inside box borders")
+	}
+}
+
+func TestModel_View_BabysitViewInBox(t *testing.T) {
+	run := testRunWithBabysit()
+	m := NewModel("/tmp/sock", nil, run)
+	m.steps = run.Steps
+	m.steps[5].Status = types.StepStatusRunning
+	m.logs = []string{"babysitting PR #42 (timeout: 4h)..."}
+	m.width = 80
+
+	view := stripANSI(m.View())
+
+	// The babysit section should be in a box with "Babysit" title.
+	hasBabysitBox := false
+	for _, line := range strings.Split(view, "\n") {
+		if strings.Contains(line, "╭") && strings.Contains(line, "Babysit") && !strings.Contains(line, "Pipeline") {
+			hasBabysitBox = true
+			break
+		}
+	}
+	if !hasBabysitBox {
+		t.Error("expected 'Babysit' titled box in full model view")
 	}
 }
 
