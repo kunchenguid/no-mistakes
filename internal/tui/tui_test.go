@@ -5248,6 +5248,79 @@ func TestRenderDiff_DeletionLinesNoLineNumber(t *testing.T) {
 	}
 }
 
+func TestRenderFindings_FocusedDescriptionNotDim(t *testing.T) {
+	// Focused finding's description should NOT be dim, keeping default style
+	// so it visually pops against the dim unfocused descriptions.
+	raw := `{"findings":[
+		{"id":"f1","severity":"error","file":"a.go","line":1,"description":"focused text"},
+		{"id":"f2","severity":"warning","file":"b.go","line":2,"description":"other text"}
+	],"summary":"2 issues"}`
+
+	selected := map[string]bool{"f1": true, "f2": true}
+	content, _ := renderFindingsWithSelection(raw, 80, 0, selected, 0) // cursor=0, f1 focused
+
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
+
+	// Focused description should NOT be dim-styled.
+	if strings.Contains(content, dimStyle.Render("        focused text")) {
+		t.Error("focused finding description should not be dim-styled")
+	}
+	// But it should still appear (in default style).
+	if !strings.Contains(stripANSI(content), "focused text") {
+		t.Error("focused finding description should appear in output")
+	}
+}
+
+func TestRenderFindings_UnfocusedDescriptionDim(t *testing.T) {
+	// Unfocused findings' descriptions should be dim (bright black) to create
+	// visual contrast with the focused finding.
+	raw := `{"findings":[
+		{"id":"f1","severity":"error","file":"a.go","line":1,"description":"first issue"},
+		{"id":"f2","severity":"warning","file":"b.go","line":2,"description":"second issue"}
+	],"summary":"2 issues"}`
+
+	selected := map[string]bool{"f1": true, "f2": true}
+	content, _ := renderFindingsWithSelection(raw, 80, 0, selected, 0) // cursor=0, f2 unfocused
+
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
+	// wrapIndentedText produces "        second issue" (8-char indent + text).
+	dimSecond := dimStyle.Render("        second issue")
+
+	// Unfocused description should be dim-styled (including its indent).
+	if !strings.Contains(content, dimSecond) {
+		t.Error("unfocused finding description should be dim-styled")
+	}
+}
+
+func TestRenderFindings_FocusChangesDescriptionStyle(t *testing.T) {
+	// Moving cursor from f1 to f2 should swap which description is dim vs default.
+	raw := `{"findings":[
+		{"id":"f1","severity":"error","file":"a.go","line":1,"description":"first issue"},
+		{"id":"f2","severity":"warning","file":"b.go","line":2,"description":"second issue"}
+	],"summary":"2 issues"}`
+
+	selected := map[string]bool{"f1": true, "f2": true}
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
+
+	// Cursor at 0: f1 focused, f2 unfocused (dim).
+	content0, _ := renderFindingsWithSelection(raw, 80, 0, selected, 0)
+	if !strings.Contains(content0, dimStyle.Render("        second issue")) {
+		t.Error("with cursor=0, second issue description should be dim")
+	}
+	if strings.Contains(content0, dimStyle.Render("        first issue")) {
+		t.Error("with cursor=0, first issue description should NOT be dim")
+	}
+
+	// Cursor at 1: f2 focused, f1 unfocused (dim).
+	content1, _ := renderFindingsWithSelection(raw, 80, 1, selected, 0)
+	if !strings.Contains(content1, dimStyle.Render("        first issue")) {
+		t.Error("with cursor=1, first issue description should be dim")
+	}
+	if strings.Contains(content1, dimStyle.Render("        second issue")) {
+		t.Error("with cursor=1, second issue description should NOT be dim")
+	}
+}
+
 func TestRenderDiff_LineNumbersStyledDim(t *testing.T) {
 	raw := `diff --git a/main.go b/main.go
 --- a/main.go

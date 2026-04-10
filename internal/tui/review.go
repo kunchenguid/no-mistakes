@@ -267,9 +267,13 @@ func renderFindingsWithSelection(raw string, width int, cursor int, selected map
 
 		b.WriteString(line + "\n")
 
-		// Description indented.
+		// Description indented. Unfocused descriptions are dim to create contrast.
 		// Gutter width: cursor(1) + sp(1) + checkbox(3) + sp(1) + icon(1) + sp(1) = 8
-		b.WriteString(wrapIndentedText(item.Description, width, 8) + "\n")
+		desc := wrapIndentedText(item.Description, width, 8)
+		if idx != cursor {
+			desc = dimStyle.Render(desc)
+		}
+		b.WriteString(desc + "\n")
 	}
 
 	// Scroll-down footer for the box border.
