@@ -4695,3 +4695,72 @@ func TestRenderBabysitView_ShortPRURLNotTruncated(t *testing.T) {
 		t.Error("expected short PR URL to appear in full")
 	}
 }
+
+func TestModel_View_ErrorBox_LongMessageTruncated(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+
+	m := Model{
+		run:   testRun(),
+		steps: testRun().Steps,
+		width: 80,
+		err:   fmt.Errorf("%s", strings.Repeat("x", 200)),
+	}
+
+	result := m.View()
+	lines := strings.Split(result, "\n")
+
+	// No line should exceed the box width of 80.
+	for _, line := range lines {
+		w := lipgloss.Width(line)
+		if w > 80 {
+			t.Errorf("error box line exceeds box width (%d > 80): %s", w, line)
+		}
+	}
+
+	// The full 200-char error text should NOT appear in the output.
+	if strings.Contains(result, strings.Repeat("x", 200)) {
+		t.Error("expected long error message to be truncated to fit inside box")
+	}
+}
+
+func TestModel_View_ErrorBox_ShortMessageNotTruncated(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+
+	errText := "connection refused"
+	m := Model{
+		run:   testRun(),
+		steps: testRun().Steps,
+		width: 80,
+		err:   fmt.Errorf("%s", errText),
+	}
+
+	result := stripANSI(m.View())
+
+	// Short error message should appear in full.
+	if !strings.Contains(result, errText) {
+		t.Error("expected short error message to appear in full")
+	}
+}
+
+func TestModel_View_ErrorBox_MultiLineMessageTruncated(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+
+	longLine := strings.Repeat("y", 200)
+	m := Model{
+		run:   testRun(),
+		steps: testRun().Steps,
+		width: 80,
+		err:   fmt.Errorf("line1\n%s", longLine),
+	}
+
+	result := m.View()
+	lines := strings.Split(result, "\n")
+
+	// No line should exceed the box width of 80.
+	for _, line := range lines {
+		w := lipgloss.Width(line)
+		if w > 80 {
+			t.Errorf("error box line exceeds box width (%d > 80): %s", w, line)
+		}
+	}
+}

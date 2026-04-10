@@ -271,9 +271,20 @@ func (m Model) View() string {
 		if boxWidth < 20 {
 			boxWidth = 80
 		}
+		contentWidth := boxWidth - 4 // 2 border + 2 padding
 		errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiRed))
+		// Truncate each line of the error message to fit inside the box.
+		errLines := strings.Split(m.err.Error(), "\n")
+		var errContent strings.Builder
+		for i, line := range errLines {
+			if i > 0 {
+				errContent.WriteString("\n")
+			}
+			line, _ = cutText(line, contentWidth)
+			errContent.WriteString(errStyle.Render(line))
+		}
 		b.WriteString("\n\n")
-		b.WriteString(renderBox("Error", errStyle.Render(m.err.Error()), boxWidth))
+		b.WriteString(renderBox("Error", errContent.String(), boxWidth))
 	}
 
 	// Footer.
