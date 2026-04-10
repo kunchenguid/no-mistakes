@@ -223,7 +223,8 @@ func renderFindingsWithSelection(raw string, width int, cursor int, selected map
 		b.WriteString(line + "\n")
 
 		// Description indented.
-		b.WriteString(wrapIndentedText(item.Description, width, 4) + "\n")
+		// Gutter width: cursor(1) + sp(1) + checkbox(3) + sp(1) + icon(1) + sp(1) = 8
+		b.WriteString(wrapIndentedText(item.Description, width, 8) + "\n")
 	}
 
 	return b.String()

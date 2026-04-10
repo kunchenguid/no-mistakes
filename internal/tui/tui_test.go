@@ -1785,6 +1785,141 @@ func TestModel_View_LogTailWrappedInBox(t *testing.T) {
 	}
 }
 
+// --- Findings gutter alignment tests ---
+
+func TestRenderFindings_GutterFixedWidth(t *testing.T) {
+	// DESIGN.md Gutter System: cursor, checkbox, severity icon each get their
+	// own fixed-width column. Content never shifts when selection state changes.
+	//
+	//   > [x] ● src/handler.go:42
+	//            Missing error check on db.Close()
+	//
+	//     [x] ▲ src/config.go:17
+	//            Unused import "fmt"
+
+	raw := `{"findings":[
+		{"id":"f1","severity":"error","file":"main.go","line":10,"description":"nil pointer"},
+		{"id":"f2","severity":"warning","file":"util.go","description":"unused var"}
+	],"summary":"2 issues"}`
+
+	allSelected := map[string]bool{"f1": true, "f2": true}
+	got := stripANSI(renderFindingsWithSelection(raw, 80, 0, allSelected))
+
+	lines := strings.Split(got, "\n")
+
+	// Find the first finding line (has a checkbox).
+	var findingLines []string
+	for _, line := range lines {
+		if strings.Contains(line, "[x]") || strings.Contains(line, "[ ]") {
+			findingLines = append(findingLines, line)
+		}
+	}
+
+	if len(findingLines) < 2 {
+		t.Fatalf("expected at least 2 finding lines, got %d in:\n%s", len(findingLines), got)
+	}
+
+	// The gutter should be: "> [x] ● " or "  [x] ● " (8 chars).
+	// Cursor (1) + space (1) + checkbox (3) + space (1) + icon (1) + space (1) = 8
+	for i, line := range findingLines {
+		// Cursor column: position 0 should be ">" or " "
+		if line[0] != '>' && line[0] != ' ' {
+			t.Errorf("finding %d: expected cursor column at position 0, got %q", i, string(line[0]))
+		}
+		// Space at position 1
+		if line[1] != ' ' {
+			t.Errorf("finding %d: expected space at position 1, got %q", i, string(line[1]))
+		}
+		// Checkbox at positions 2-4: "[x]" or "[ ]"
+		cb := line[2:5]
+		if cb != "[x]" && cb != "[ ]" {
+			t.Errorf("finding %d: expected checkbox at positions 2-4, got %q", i, cb)
+		}
+		// Space at position 5
+		if line[5] != ' ' {
+			t.Errorf("finding %d: expected space at position 5, got %q", i, string(line[5]))
+		}
+	}
+
+	// First finding should have cursor ">"
+	if findingLines[0][0] != '>' {
+		t.Errorf("expected cursor on first finding, got %q", string(findingLines[0][0]))
+	}
+	// Second finding should have space (no cursor)
+	if findingLines[1][0] != ' ' {
+		t.Errorf("expected no cursor on second finding, got %q", string(findingLines[1][0]))
+	}
+}
+
+func TestRenderFindings_DescriptionClearsGutter(t *testing.T) {
+	// Description lines should be indented to clear the gutter (8 chars).
+	raw := `{"findings":[{"id":"f1","severity":"error","file":"main.go","line":10,"description":"buffer overflow risk"}],"summary":"1 issue"}`
+
+	selected := map[string]bool{"f1": true}
+	got := stripANSI(renderFindingsWithSelection(raw, 80, 0, selected))
+
+	lines := strings.Split(got, "\n")
+	// Find the description line (follows the finding line with checkbox).
+	var descLine string
+	for i, line := range lines {
+		if strings.Contains(line, "[x]") && i+1 < len(lines) {
+			descLine = lines[i+1]
+			break
+		}
+	}
+
+	if descLine == "" {
+		t.Fatalf("could not find description line in:\n%s", got)
+	}
+
+	// Description should be indented 8 chars to clear the gutter.
+	if len(descLine) < 8 {
+		t.Fatalf("description line too short: %q", descLine)
+	}
+	indent := descLine[:8]
+	if strings.TrimSpace(indent) != "" {
+		t.Errorf("expected 8-char indent before description, got %q", indent)
+	}
+	if !strings.Contains(descLine, "buffer overflow risk") {
+		t.Errorf("expected description text, got %q", descLine)
+	}
+}
+
+func TestModel_View_FindingsInBox(t *testing.T) {
+	// When findings are shown, they should be wrapped in a "Findings" box.
+	run := testRun()
+	m := NewModel("/tmp/sock", nil, run)
+	m.steps[0].Status = types.StepStatusAwaitingApproval
+	m.stepFindings[types.StepReview] = `{"findings":[{"id":"f1","severity":"error","file":"app.go","line":5,"description":"buffer overflow"}],"summary":"1 issue"}`
+	m.resetFindingSelection(types.StepReview)
+	m.width = 80
+
+	view := stripANSI(m.View())
+
+	// Should have a "Findings" titled box.
+	if !strings.Contains(view, "Findings") {
+		t.Error("expected Findings title in boxed section")
+	}
+
+	// The findings box should have rounded border chars.
+	hasTopBorder := false
+	hasBottomBorder := false
+	for _, line := range strings.Split(view, "\n") {
+		if strings.Contains(line, "╭") && strings.Contains(line, "Findings") {
+			hasTopBorder = true
+		}
+		if strings.Contains(line, "╰") && !strings.Contains(line, "Pipeline") && !strings.Contains(line, "Log") && !strings.Contains(line, "Diff") {
+			hasBottomBorder = true
+		}
+	}
+	if !hasTopBorder {
+		t.Error("expected top border with Findings title")
+	}
+	if !hasBottomBorder {
+		t.Error("expected bottom border for Findings box")
+	}
+}
+
 func TestNewModel_PopulatesStepFindingsFromInitialSteps_DisplaysOnView(t *testing.T) {
 	findings := `{"findings":[{"severity":"warning","description":"stale finding from re-attach"}],"summary":"1 issue"}`
 	run := &ipc.RunInfo{

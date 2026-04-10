@@ -167,10 +167,14 @@ func (m Model) View() string {
 				b.WriteString(renderDiff(raw, m.width, viewHeight, m.diffOffset))
 			}
 		} else if raw, ok := m.stepFindings[step.StepName]; ok {
-			rendered := renderFindingsWithSelection(raw, m.width, m.findingCursor[step.StepName], m.findingSelections[step.StepName])
+			rendered := renderFindingsWithSelection(raw, m.width-4, m.findingCursor[step.StepName], m.findingSelections[step.StepName])
 			if rendered != "" {
+				boxWidth := m.width
+				if boxWidth < 20 {
+					boxWidth = 80
+				}
 				b.WriteString("\n")
-				b.WriteString(rendered)
+				b.WriteString(renderBox("Findings", rendered, boxWidth))
 			}
 		}
 	}
