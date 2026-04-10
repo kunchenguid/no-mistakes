@@ -4555,3 +4555,76 @@ func TestErrorDisplay_RedStyledMessage(t *testing.T) {
 		t.Error("expected error message text to be styled red inside the error box")
 	}
 }
+
+// --- Pipeline content truncation tests ---
+
+func TestPipelineView_LongErrorTruncated(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	run := testRun()
+	longError := strings.Repeat("x", 200)
+	run.Steps[1].Status = types.StepStatusFailed
+	run.Steps[1].Error = &longError
+
+	boxWidth := 80
+	result := renderPipelineView(run, run.Steps, boxWidth, 0, 40)
+	plain := stripANSI(result)
+
+	// No line in the pipeline box should exceed the box width.
+	for _, line := range strings.Split(plain, "\n") {
+		if line == "" {
+			continue
+		}
+		w := lipgloss.Width(line)
+		if w > boxWidth {
+			t.Errorf("pipeline line exceeds box width (%d > %d): %s", w, boxWidth, line)
+		}
+	}
+
+	// The full long error should NOT appear - it should be truncated.
+	if strings.Contains(plain, longError) {
+		t.Error("expected long error message to be truncated to fit box content width")
+	}
+}
+
+func TestPipelineView_LongBranchTruncated(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	longBranch := "feature/" + strings.Repeat("very-long-name-", 10)
+	run := testRun()
+	run.Branch = longBranch
+
+	boxWidth := 80
+	result := renderPipelineView(run, run.Steps, boxWidth, 0, 40)
+	plain := stripANSI(result)
+
+	// No line should exceed the box width.
+	for _, line := range strings.Split(plain, "\n") {
+		if line == "" {
+			continue
+		}
+		w := lipgloss.Width(line)
+		if w > boxWidth {
+			t.Errorf("pipeline line exceeds box width (%d > %d): %s", w, boxWidth, line)
+		}
+	}
+
+	// The full long branch should NOT appear.
+	if strings.Contains(plain, longBranch) {
+		t.Error("expected long branch name to be truncated to fit box content width")
+	}
+}
+
+func TestPipelineView_ShortErrorNotTruncated(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	run := testRun()
+	shortError := "exit code 1"
+	run.Steps[1].Status = types.StepStatusFailed
+	run.Steps[1].Error = &shortError
+
+	result := renderPipelineView(run, run.Steps, 80, 0, 40)
+	plain := stripANSI(result)
+
+	// Short error should appear in full.
+	if !strings.Contains(plain, shortError) {
+		t.Error("expected short error message to appear in full")
+	}
+}

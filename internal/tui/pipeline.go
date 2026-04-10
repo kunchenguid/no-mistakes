@@ -98,11 +98,19 @@ func renderPipelineView(run *ipc.RunInfo, steps []ipc.StepResultInfo, width int,
 		return "No active run."
 	}
 
+	boxWidth := width
+	if boxWidth < 20 {
+		boxWidth = 80
+	}
+	contentWidth := boxWidth - 4 // 2 border + 2 padding
+
 	var b strings.Builder
 
-	// Header.
+	// Header, truncated to fit inside the box.
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
-	b.WriteString(fmt.Sprintf("%s @ %s", run.Branch, run.HeadSHA[:min(8, len(run.HeadSHA))]))
+	header := fmt.Sprintf("%s @ %s", run.Branch, run.HeadSHA[:min(8, len(run.HeadSHA))])
+	header, _ = cutText(header, contentWidth)
+	b.WriteString(header)
 	b.WriteString("\n")
 	b.WriteString(dimStyle.Render(fmt.Sprintf("%s  %s", run.ID, run.Status)))
 	b.WriteString("\n")
@@ -121,6 +129,7 @@ func renderPipelineView(run *ipc.RunInfo, steps []ipc.StepResultInfo, width int,
 		}
 
 		// Add status suffix for non-obvious states (dim per Typography Scale "Meta").
+		// Error messages are truncated to fit within the remaining line width.
 		switch step.Status {
 		case types.StepStatusAwaitingApproval:
 			line += " " + dimStyle.Render("- awaiting approval")
@@ -130,7 +139,12 @@ func renderPipelineView(run *ipc.RunInfo, steps []ipc.StepResultInfo, width int,
 			line += " " + dimStyle.Render("- review fix")
 		case types.StepStatusFailed:
 			if step.Error != nil {
-				line += " " + dimStyle.Render("- "+*step.Error)
+				errText := "- " + *step.Error
+				remaining := contentWidth - lipgloss.Width(line) - 1 // -1 for space before suffix
+				if remaining > 0 && lipgloss.Width(errText) > remaining {
+					errText, _ = cutText(errText, remaining)
+				}
+				line += " " + dimStyle.Render(errText)
 			}
 		}
 
@@ -143,15 +157,12 @@ func renderPipelineView(run *ipc.RunInfo, steps []ipc.StepResultInfo, width int,
 		}
 	}
 
-	// Run error.
+	// Run error, truncated to fit inside the box.
 	if run.Error != nil {
 		errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiRed))
-		b.WriteString("\n" + errStyle.Render("Error: "+*run.Error) + "\n")
-	}
-
-	boxWidth := width
-	if boxWidth < 20 {
-		boxWidth = 80
+		errText := "Error: " + *run.Error
+		errText, _ = cutText(errText, contentWidth)
+		b.WriteString("\n" + errStyle.Render(errText) + "\n")
 	}
 	return renderBox("Pipeline", b.String(), boxWidth)
 }
