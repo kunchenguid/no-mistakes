@@ -11,6 +11,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -86,6 +87,9 @@ func hasPendingChecks(checks []ciCheck) bool {
 		if c.Bucket == "pending" {
 			return true
 		}
+		if c.Bucket != "" {
+			continue
+		}
 		if c.Conclusion == "" && c.Status != "COMPLETED" {
 			return true
 		}
@@ -133,6 +137,25 @@ func truncate(s string, maxLen int) string {
 
 func (s *BabysitStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	ctx := sctx.Ctx
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	provider := scm.DetectProvider(sctx.Repo.UpstreamURL)
+	if provider == scm.ProviderUnknown && sctx.Run.PRURL != nil {
+		provider = scm.DetectProvider(*sctx.Run.PRURL)
+	}
+	if provider != scm.ProviderGitHub {
+		sctx.Log(fmt.Sprintf("skipping babysit: provider %s is not supported yet", provider))
+		return &pipeline.StepOutcome{}, nil
+	}
+	if !scm.CLIAvailable(provider) {
+		sctx.Log("skipping babysit: gh CLI is not installed")
+		return &pipeline.StepOutcome{}, nil
+	}
+	if !scm.AuthConfigured(ctx, provider, sctx.WorkDir) {
+		sctx.Log("skipping babysit: gh CLI is not authenticated")
+		return &pipeline.StepOutcome{}, nil
+	}
 
 	// Initialize seen comments tracking
 	if s.seenComments == nil {
@@ -178,6 +201,9 @@ func (s *BabysitStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome
 	started := time.Now()
 
 	for {
+		checksReadyToExit := false
+		checksSummary := ""
+
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -210,6 +236,13 @@ func (s *BabysitStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome
 			if err := s.autoFixCI(sctx, prNumber, failing); err != nil {
 				sctx.Log(fmt.Sprintf("warning: CI auto-fix failed: %v", err))
 			}
+		} else if !hasPendingChecks(checks) {
+			checksReadyToExit = true
+			if len(checks) == 0 {
+				checksSummary = "no CI checks reported, babysit complete"
+			} else {
+				checksSummary = "all CI checks passed"
+			}
 		}
 
 		// Check for new PR comments — pause for human selection
@@ -229,6 +262,11 @@ func (s *BabysitStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome
 				NeedsApproval: true,
 				Findings:      string(findingsJSON),
 			}, nil
+		}
+
+		if checksReadyToExit {
+			sctx.Log(checksSummary)
+			return &pipeline.StepOutcome{}, nil
 		}
 
 		// Sleep for poll interval

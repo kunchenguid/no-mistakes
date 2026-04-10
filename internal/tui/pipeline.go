@@ -81,6 +81,8 @@ func runStatusStyled(status types.RunStatus) string {
 // stepLabel returns the human-readable label for a step name.
 func stepLabel(name types.StepName) string {
 	switch name {
+	case types.StepRebase:
+		return "Rebase"
 	case types.StepReview:
 		return "Review"
 	case types.StepTest:

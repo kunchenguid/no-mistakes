@@ -115,6 +115,13 @@ func DefaultBranch(ctx context.Context, dir, remote string) string {
 	return "main"
 }
 
+// FetchRemoteBranch fetches a single branch into a remote-tracking ref.
+func FetchRemoteBranch(ctx context.Context, dir, remote, branch string) error {
+	refspec := fmt.Sprintf("refs/heads/%s:refs/remotes/%s/%s", branch, remote, branch)
+	_, err := Run(ctx, dir, "fetch", "--no-tags", remote, refspec)
+	return err
+}
+
 // Push pushes a ref to a remote. If forceWithLease is true, uses
 // --force-with-lease with the expectedSHA for safe force-push.
 func Push(ctx context.Context, dir, remote, ref, expectedSHA string, forceWithLease bool) error {

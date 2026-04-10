@@ -292,6 +292,20 @@ func TestUpdateRunPRURL(t *testing.T) {
 	}
 }
 
+func TestUpdateRunHeadSHA(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
+
+	if err := d.UpdateRunHeadSHA(run.ID, "xyz"); err != nil {
+		t.Fatalf("update head sha: %v", err)
+	}
+	got, _ := d.GetRun(run.ID)
+	if got.HeadSHA != "xyz" {
+		t.Errorf("head sha = %q, want %q", got.HeadSHA, "xyz")
+	}
+}
+
 func TestUpdateRunError(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
@@ -343,8 +357,8 @@ func TestStepInsertAndGet(t *testing.T) {
 	if step.StepName != types.StepReview {
 		t.Errorf("step name = %q, want %q", step.StepName, types.StepReview)
 	}
-	if step.StepOrder != 1 {
-		t.Errorf("step order = %d, want 1", step.StepOrder)
+	if step.StepOrder != types.StepReview.Order() {
+		t.Errorf("step order = %d, want %d", step.StepOrder, types.StepReview.Order())
 	}
 	if step.Status != types.StepStatusPending {
 		t.Errorf("status = %q, want %q", step.Status, types.StepStatusPending)

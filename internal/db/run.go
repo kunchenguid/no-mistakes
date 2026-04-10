@@ -112,6 +112,15 @@ func (d *DB) UpdateRunPRURL(id, prURL string) error {
 	return nil
 }
 
+// UpdateRunHeadSHA updates the run head SHA and timestamp.
+func (d *DB) UpdateRunHeadSHA(id, headSHA string) error {
+	_, err := d.sql.Exec(`UPDATE runs SET head_sha = ?, updated_at = ? WHERE id = ?`, headSHA, now(), id)
+	if err != nil {
+		return fmt.Errorf("update run head sha: %w", err)
+	}
+	return nil
+}
+
 // UpdateRunError sets the error message on a run.
 func (d *DB) UpdateRunError(id, errMsg string) error {
 	_, err := d.sql.Exec(`UPDATE runs SET error = ?, status = ?, updated_at = ? WHERE id = ?`, errMsg, types.RunFailed, now(), id)

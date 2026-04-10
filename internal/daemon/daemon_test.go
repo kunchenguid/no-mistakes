@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
@@ -357,6 +358,19 @@ func (s *mockSlowStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 	}
 	<-sctx.Ctx.Done()
 	return nil, sctx.Ctx.Err()
+}
+
+type mockVerifyDefaultBranchStep struct {
+	name types.StepName
+}
+
+func (s *mockVerifyDefaultBranchStep) Name() types.StepName { return s.name }
+
+func (s *mockVerifyDefaultBranchStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	if _, err := git.Run(sctx.Ctx, sctx.WorkDir, "merge-base", "HEAD", "origin/"+sctx.Repo.DefaultBranch); err != nil {
+		return nil, err
+	}
+	return &pipeline.StepOutcome{}, nil
 }
 
 // startTestDaemonWithSteps starts a daemon with a custom step factory.
@@ -721,6 +735,80 @@ func TestPushReceivedCreatesRun(t *testing.T) {
 	// Verify step was executed.
 	if step.execCnt.Load() == 0 {
 		t.Error("mock step was never executed")
+	}
+}
+
+func TestPushReceivedFetchesDefaultBranchIntoWorktree(t *testing.T) {
+	step := &mockVerifyDefaultBranchStep{name: types.StepReview}
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{step}
+	})
+
+	upstreamDir := filepath.Join(t.TempDir(), "upstream.git")
+	gitCmd(t, "", "init", "--bare", upstreamDir)
+
+	workDir := filepath.Join(t.TempDir(), "work")
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, workDir, "init")
+	gitCmd(t, workDir, "config", "user.email", "test@test.com")
+	gitCmd(t, workDir, "config", "user.name", "Test")
+	gitCmd(t, workDir, "checkout", "-b", "main")
+	if err := os.WriteFile(filepath.Join(workDir, "README.md"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, workDir, "add", ".")
+	gitCmd(t, workDir, "commit", "-m", "initial")
+	gitCmd(t, workDir, "remote", "add", "origin", upstreamDir)
+	gitCmd(t, workDir, "push", "origin", "main")
+
+	gateDir := p.RepoDir("testrepo-origin-main")
+	gitCmd(t, "", "init", "--bare", gateDir)
+	gitCmd(t, gateDir, "remote", "add", "origin", upstreamDir)
+	gitCmd(t, workDir, "remote", "add", "gate", gateDir)
+
+	gitCmd(t, workDir, "checkout", "-b", "feature/scope")
+	if err := os.WriteFile(filepath.Join(workDir, "README.md"), []byte("base\nfeature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, workDir, "add", "README.md")
+	gitCmd(t, workDir, "commit", "-m", "feature change")
+	headSHA := gitOutput(t, workDir, "rev-parse", "HEAD")
+	gitCmd(t, workDir, "push", "gate", "feature/scope")
+
+	if _, err := d.InsertRepoWithID("testrepo-origin-main", workDir, upstreamDir, "main"); err != nil {
+		t.Fatal(err)
+	}
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var result ipc.PushReceivedResult
+	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: gateDir,
+		Ref:  "refs/heads/feature/scope",
+		Old:  "0000000000000000000000000000000000000000",
+		New:  headSHA,
+	}, &result)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	waitForRunTerminalState(t, d, result.RunID)
+	run, err := d.GetRun(result.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != types.RunCompleted {
+		var runErr string
+		if run.Error != nil {
+			runErr = *run.Error
+		}
+		t.Fatalf("run status = %q, want completed (error: %s)", run.Status, runErr)
 	}
 }
 

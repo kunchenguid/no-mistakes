@@ -208,6 +208,11 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 		m.db.UpdateRunError(run.ID, fmt.Sprintf("create worktree: %s", err))
 		return "", fmt.Errorf("create worktree: %w", err)
 	}
+	if repo.DefaultBranch != "" {
+		if err := git.FetchRemoteBranch(ctx, wtDir, "origin", repo.DefaultBranch); err != nil {
+			slog.Warn("failed to fetch default branch into worktree", "run_id", run.ID, "branch", repo.DefaultBranch, "error", err)
+		}
+	}
 
 	// Track whether the background goroutine takes ownership of worktree cleanup.
 	// If setup fails before the goroutine launches, we must clean up here.

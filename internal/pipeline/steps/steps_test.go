@@ -219,14 +219,78 @@ func TestRunShellCommand(t *testing.T) {
 
 func TestAllSteps(t *testing.T) {
 	steps := AllSteps()
-	if len(steps) != 6 {
-		t.Fatalf("AllSteps() returned %d steps, want 6", len(steps))
+	if len(steps) != 7 {
+		t.Fatalf("AllSteps() returned %d steps, want 7", len(steps))
 	}
-	expected := []types.StepName{types.StepReview, types.StepTest, types.StepLint, types.StepPush, types.StepPR, types.StepBabysit}
+	expected := []types.StepName{types.StepRebase, types.StepReview, types.StepTest, types.StepLint, types.StepPush, types.StepPR, types.StepBabysit}
 	for i, s := range steps {
 		if s.Name() != expected[i] {
 			t.Errorf("step %d name = %s, want %s", i, s.Name(), expected[i])
 		}
+	}
+}
+
+func TestRebaseStep_Name(t *testing.T) {
+	s := &RebaseStep{}
+	if s.Name() != types.StepRebase {
+		t.Errorf("Name() = %s, want %s", s.Name(), types.StepRebase)
+	}
+}
+
+func TestRebaseStep_RebasesOntoDefaultBranch(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	os.WriteFile(filepath.Join(dir, "app.txt"), []byte("base\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "base commit")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "main")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature commit")
+	originalHeadSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	gitCmd(t, dir, "checkout", "main")
+	os.WriteFile(filepath.Join(dir, "app.txt"), []byte("base\nmain\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "main update")
+	gitCmd(t, dir, "push", "origin", "main")
+	gitCmd(t, dir, "checkout", "feature")
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, originalHeadSHA, config.Commands{})
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Repo.UpstreamURL = upstream
+
+	step := &RebaseStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatal("expected no approval for clean rebase")
+	}
+	if sctx.Run.HeadSHA == originalHeadSHA {
+		t.Fatal("expected head SHA to change after rebase")
+	}
+	mergeBase := gitCmd(t, dir, "merge-base", "HEAD", "origin/main")
+	originMain := gitCmd(t, dir, "rev-parse", "origin/main")
+	if mergeBase != originMain {
+		t.Fatalf("merge-base = %s, want origin/main %s", mergeBase, originMain)
+	}
+	stored, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored == nil || stored.HeadSHA != sctx.Run.HeadSHA {
+		t.Fatalf("stored head SHA = %v, want %s", stored, sctx.Run.HeadSHA)
 	}
 }
 
@@ -1175,21 +1239,23 @@ func TestPRStep_Name(t *testing.T) {
 }
 
 func TestPRStep_GhNotAvailable(t *testing.T) {
-	// Verify the step handles gh not being available gracefully
+	// Verify the step skips gracefully when the required provider CLI is missing.
 	if _, err := exec.LookPath("gh"); err == nil {
-		// gh is available — we can't test the "not available" case reliably
-		// since gh might actually try to hit GitHub. Skip this test.
+		// gh is available on this machine, so we can't force the missing-CLI path here.
 		t.Skip("gh is available, skipping unavailable test")
 	}
 
 	dir := t.TempDir()
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, "abc", "def", config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, "abc", "def", config.Commands{})
 
 	step := &PRStep{}
-	_, err := step.Execute(sctx)
-	if err == nil {
-		t.Error("expected error when gh is not available")
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("expected skip when gh is unavailable, got: %v", err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatal("expected no approval when PR step skips")
 	}
 }
 
@@ -1202,6 +1268,9 @@ func fakeGH(t *testing.T, prViewURL string) (binDir string, logFile string) {
 
 	script := fmt.Sprintf(`#!/bin/sh
 echo "$@" >> %s
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+  exit 0
+fi
 if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
   if [ "%s" != "" ]; then
     echo "%s"
@@ -1341,6 +1410,137 @@ func TestPRStep_CreatesNewPR(t *testing.T) {
 	}
 	if run.PRURL == nil || *run.PRURL != "https://github.com/test/repo/pull/99" {
 		t.Errorf("PR URL = %v, want https://github.com/test/repo/pull/99", run.PRURL)
+	}
+}
+
+func TestPRStep_UsesAgentGeneratedTitleAndBody(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	binDir, logFile := fakeGH(t, "")
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			payload := json.RawMessage(`{"title":"Improve pipeline header UX","body":"## Summary\n\n- keep branch status readable\n- fix footer truncation"}`)
+			return &agent.Result{Output: payload}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	step := &PRStep{}
+	if _, err := step.Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(ag.calls) != 1 {
+		t.Fatalf("expected 1 agent call, got %d", len(ag.calls))
+	}
+
+	logData, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ghLog := string(logData)
+	if !strings.Contains(ghLog, "--title Improve pipeline header UX") {
+		t.Fatalf("expected generated PR title in gh call, got:\n%s", ghLog)
+	}
+	if !strings.Contains(ghLog, "keep branch status readable") {
+		t.Fatalf("expected generated PR body in gh call, got:\n%s", ghLog)
+	}
+	if strings.Contains(ghLog, "--title feature") {
+		t.Fatalf("expected PR title to avoid raw branch name, got:\n%s", ghLog)
+	}
+}
+
+func fakeGlab(t *testing.T, mrViewJSON string) (binDir string, logFile string) {
+	t.Helper()
+	binDir = t.TempDir()
+	logFile = filepath.Join(t.TempDir(), "glab.log")
+
+	script := fmt.Sprintf(`#!/bin/sh
+echo "$@" >> %s
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+  exit 0
+fi
+if [ "$1" = "mr" ] && [ "$2" = "view" ]; then
+  if [ '%s' != '' ]; then
+    cat <<'EOF'
+%s
+EOF
+    exit 0
+  fi
+  exit 1
+fi
+if [ "$1" = "mr" ] && [ "$2" = "update" ]; then
+  exit 0
+fi
+if [ "$1" = "mr" ] && [ "$2" = "create" ]; then
+  echo "https://gitlab.com/test/repo/-/merge_requests/99"
+  exit 0
+fi
+exit 1
+`, logFile, mrViewJSON, mrViewJSON)
+
+	glabPath := filepath.Join(binDir, "glab")
+	if err := os.WriteFile(glabPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return binDir, logFile
+}
+
+func TestPRStep_GitLabCreatesNewMR(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	binDir, logFile := fakeGlab(t, "")
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			payload := json.RawMessage(`{"title":"Improve gitlab flow","body":"## Summary\n\n- add gitlab support\n\n## Testing\n\n- go test ./..."}`)
+			return &agent.Result{Output: payload}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
+
+	step := &PRStep{}
+	if _, err := step.Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	logData, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ghLog := string(logData)
+	if !strings.Contains(ghLog, "mr create") {
+		t.Fatalf("expected glab mr create to be called, got:\n%s", ghLog)
+	}
+	if !strings.Contains(ghLog, "--title Improve gitlab flow") {
+		t.Fatalf("expected generated title in glab call, got:\n%s", ghLog)
+	}
+}
+
+func TestPRStep_SkipsWhenProviderCLIUnavailable(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
+
+	step := &PRStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("expected skip instead of failure, got: %v", err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatal("expected no approval when PR step skips")
+	}
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.PRURL != nil {
+		t.Fatalf("expected no PR URL when provider CLI unavailable, got %q", *run.PRURL)
 	}
 }
 
@@ -1632,6 +1832,30 @@ func TestBabysitStep_NoPRURL(t *testing.T) {
 	}
 }
 
+func TestBabysitStep_NonGitHubSkips(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	prURL := "https://gitlab.com/test/repo/-/merge_requests/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	step := &BabysitStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatal("expected babysit skip for non-GitHub provider")
+	}
+	if len(logs) == 0 || !strings.Contains(logs[0], "skipping babysit") {
+		t.Fatalf("expected skip log, got: %v", logs)
+	}
+}
+
 func TestBabysitStep_ContextCancelled(t *testing.T) {
 	dir := t.TempDir()
 	ag := &mockAgent{name: "test"}
@@ -1682,11 +1906,11 @@ func TestBabysitStep_TimeoutDoesNotSleepPastDeadline(t *testing.T) {
 
 func TestAllStepsIncludesBabysit(t *testing.T) {
 	steps := AllSteps()
-	if len(steps) != 6 {
-		t.Fatalf("AllSteps() returned %d steps, want 6", len(steps))
+	if len(steps) != 7 {
+		t.Fatalf("AllSteps() returned %d steps, want 7", len(steps))
 	}
-	if steps[5].Name() != types.StepBabysit {
-		t.Errorf("last step = %s, want %s", steps[5].Name(), types.StepBabysit)
+	if steps[6].Name() != types.StepBabysit {
+		t.Errorf("last step = %s, want %s", steps[6].Name(), types.StepBabysit)
 	}
 }
 
@@ -2322,6 +2546,9 @@ func fakeBabysitGH(t *testing.T, state, checksJSON, commentsJSON string) string 
 	// Escape double quotes in JSON for embedding in shell script.
 	script := fmt.Sprintf(`#!/bin/sh
 ARGS="$*"
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+  exit 0
+fi
 # pr view --json state --jq .state
 if echo "$ARGS" | grep -q "pr view.*--json state"; then
   echo "%s"
@@ -2365,6 +2592,9 @@ func fakeBabysitGHNoChecks(t *testing.T) string {
 	binDir := t.TempDir()
 	script := `#!/bin/sh
 ARGS="$*"
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+  exit 0
+fi
 if echo "$ARGS" | grep -q "pr checks"; then
   echo "no checks reported on the 'feature/e2e' branch" >&2
   exit 1
@@ -2623,6 +2853,43 @@ func TestBabysitStep_NewCommentsPausesForApproval(t *testing.T) {
 	}
 }
 
+func TestBabysitStep_AllChecksPassingExitsCleanly(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	checksJSON := `[{"name":"build","state":"SUCCESS","bucket":"pass"},{"name":"test","state":"SUCCESS","bucket":"pass"}]`
+	binDir := fakeBabysitGH(t, "OPEN", checksJSON, "[]")
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.PRURL = &prURL
+	sctx.Config.BabysitTimeout = 10 * time.Second
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	step := &BabysitStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Error("expected no approval when CI checks are already passing")
+	}
+
+	found := false
+	for _, l := range logs {
+		if strings.Contains(l, "all CI checks passed") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected clean-exit CI log, got: %v", logs)
+	}
+}
+
 func TestBabysitStep_AddressCommentsInFixMode_OnlySelectedComments(t *testing.T) {
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
@@ -2682,9 +2949,12 @@ func TestBabysitStep_AddressCommentsInFixMode_OnlySelectedComments(t *testing.T)
 		seenComments: map[string]bool{"IC_200": true, "IC_201": true},
 	}
 
-	_, err := step.Execute(sctx)
-	if err == nil || !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("expected context.DeadlineExceeded, got: %v", err)
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("expected clean exit after addressing comments, got: %v", err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatal("expected no approval after selected comments are addressed")
 	}
 }
 
@@ -2747,10 +3017,12 @@ func TestBabysitStep_AddressCommentsInFixMode(t *testing.T) {
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
-	_, err := step.Execute(sctx)
-	// Expect context deadline exceeded (interrupted during poll sleep after addressing comments)
-	if err == nil || !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("expected context.DeadlineExceeded, got: %v", err)
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("expected clean exit after addressing comments, got: %v", err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatal("expected no approval after addressed comments and clean CI")
 	}
 	if !agentCalled {
 		t.Error("expected agent to be called for comment addressing")

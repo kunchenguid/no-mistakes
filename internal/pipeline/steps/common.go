@@ -36,10 +36,8 @@ func resolveBaseSHA(ctx context.Context, workDir, baseSHA, defaultBranch string)
 	if !isZeroSHA(baseSHA) {
 		return baseSHA
 	}
-	// Try to find merge-base with the default branch
-	mb, err := git.Run(ctx, workDir, "merge-base", "HEAD", defaultBranch)
-	if err == nil && strings.TrimSpace(mb) != "" {
-		return strings.TrimSpace(mb)
+	if mb := mergeBaseWithDefaultBranch(ctx, workDir, defaultBranch); mb != "" {
+		return mb
 	}
 	return emptyTreeSHA
 }
@@ -49,11 +47,23 @@ func resolveBaseSHA(ctx context.Context, workDir, baseSHA, defaultBranch string)
 // not just the last pushed delta. If merge-base cannot be determined, it falls
 // back to resolveBaseSHA.
 func resolveBranchBaseSHA(ctx context.Context, workDir, fallbackBaseSHA, defaultBranch string) string {
-	mb, err := git.Run(ctx, workDir, "merge-base", "HEAD", defaultBranch)
-	if err == nil && strings.TrimSpace(mb) != "" {
-		return strings.TrimSpace(mb)
+	if mb := mergeBaseWithDefaultBranch(ctx, workDir, defaultBranch); mb != "" {
+		return mb
 	}
 	return resolveBaseSHA(ctx, workDir, fallbackBaseSHA, defaultBranch)
+}
+
+func mergeBaseWithDefaultBranch(ctx context.Context, workDir, defaultBranch string) string {
+	if strings.TrimSpace(defaultBranch) == "" {
+		return ""
+	}
+	for _, ref := range []string{"origin/" + defaultBranch, defaultBranch} {
+		mb, err := git.Run(ctx, workDir, "merge-base", "HEAD", ref)
+		if err == nil && strings.TrimSpace(mb) != "" {
+			return strings.TrimSpace(mb)
+		}
+	}
+	return ""
 }
 
 // hasBlockingFindings returns true if any finding has error or warning severity.
@@ -243,6 +253,7 @@ func extractDiffPath(diffLine string) string {
 // AllSteps returns the fixed pipeline step sequence.
 func AllSteps() []pipeline.Step {
 	return []pipeline.Step{
+		&RebaseStep{},
 		&ReviewStep{},
 		&TestStep{},
 		&LintStep{},
