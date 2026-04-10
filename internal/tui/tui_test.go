@@ -4490,3 +4490,68 @@ func TestModel_HelpAutoDismiss_SelectionKey(t *testing.T) {
 		t.Fatal("expected help to auto-dismiss when pressing selection key space")
 	}
 }
+
+func TestErrorDisplay_WrappedInBox(t *testing.T) {
+	run := testRun()
+	m := NewModel("/tmp/sock", nil, run)
+	m.width = 80
+	m.err = &ipc.RPCError{Code: -1, Message: "connection refused"}
+	view := m.View()
+	plain := stripANSI(view)
+	// Error should be in a rounded-border box.
+	if !strings.Contains(plain, "╭") || !strings.Contains(plain, "╯") {
+		t.Error("expected error to be wrapped in a box with rounded corners")
+	}
+	// The error message should appear inside the box borders.
+	lines := strings.Split(plain, "\n")
+	foundInside := false
+	for _, line := range lines {
+		if strings.Contains(line, "│") && strings.Contains(line, "connection refused") {
+			foundInside = true
+			break
+		}
+	}
+	if !foundInside {
+		t.Error("expected error message to appear inside box borders (between │ chars)")
+	}
+}
+
+func TestErrorDisplay_HasErrorTitle(t *testing.T) {
+	run := testRun()
+	m := NewModel("/tmp/sock", nil, run)
+	m.width = 80
+	m.err = &ipc.RPCError{Code: -1, Message: "subscribe failed"}
+	view := m.View()
+	plain := stripANSI(view)
+	// The box should have "Error" in the top border line.
+	if !strings.Contains(plain, "Error") {
+		t.Error("expected 'Error' title in the box top border")
+	}
+	// Specifically, "Error" should be on the same line as the top-left corner.
+	lines := strings.Split(plain, "\n")
+	found := false
+	for _, line := range lines {
+		if strings.Contains(line, "╭") && strings.Contains(line, "Error") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected 'Error' title in top border line with ╭")
+	}
+}
+
+func TestErrorDisplay_RedStyledMessage(t *testing.T) {
+	run := testRun()
+	m := NewModel("/tmp/sock", nil, run)
+	m.width = 80
+	m.err = &ipc.RPCError{Code: -1, Message: "event stream closed"}
+	view := m.View()
+	// Verify the error message content is styled red inside the box.
+	redStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiRed))
+	// The message text itself should be red-styled inside the error box.
+	styledMsg := redStyle.Render("event stream closed")
+	if !strings.Contains(view, styledMsg) {
+		t.Error("expected error message text to be styled red inside the error box")
+	}
+}

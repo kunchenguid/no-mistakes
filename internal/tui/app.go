@@ -265,10 +265,15 @@ func (m Model) View() string {
 		b.WriteString(renderHelpOverlay(boxWidth, awaitingStep(m.steps) != nil, m.showDiff))
 	}
 
-	// Error display.
+	// Error display in a box per DESIGN.md.
 	if m.err != nil {
+		boxWidth := m.width
+		if boxWidth < 20 {
+			boxWidth = 80
+		}
 		errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiRed))
-		b.WriteString("\n" + errStyle.Render("Error: "+m.err.Error()) + "\n")
+		b.WriteString("\n\n")
+		b.WriteString(renderBox("Error", errStyle.Render(m.err.Error()), boxWidth))
 	}
 
 	// Footer.
