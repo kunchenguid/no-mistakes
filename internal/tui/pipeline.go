@@ -91,7 +91,7 @@ func formatDuration(ms int64) string {
 	return fmt.Sprintf("%.1fs", d.Seconds())
 }
 
-// renderPipelineView renders the step list with status indicators.
+// renderPipelineView renders the step list with status indicators inside a boxed section.
 func renderPipelineView(run *ipc.RunInfo, steps []ipc.StepResultInfo, width int, spinnerFrame int, showSelectionActions bool, allowFix bool) string {
 	if run == nil {
 		return "No active run."
@@ -100,20 +100,19 @@ func renderPipelineView(run *ipc.RunInfo, steps []ipc.StepResultInfo, width int,
 	var b strings.Builder
 
 	// Header.
-	headerStyle := lipgloss.NewStyle().Bold(true)
-	b.WriteString(headerStyle.Render(fmt.Sprintf("Pipeline: %s @ %s", run.Branch, run.HeadSHA[:min(8, len(run.HeadSHA))])))
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
+	b.WriteString(fmt.Sprintf("%s @ %s", run.Branch, run.HeadSHA[:min(8, len(run.HeadSHA))]))
 	b.WriteString("\n")
-	b.WriteString(fmt.Sprintf("Run: %s  Status: %s", run.ID, run.Status))
-	b.WriteString("\n\n")
+	b.WriteString(dimStyle.Render(fmt.Sprintf("%s  %s", run.ID, run.Status)))
+	b.WriteString("\n")
 
 	// Step list with connectors.
-	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
 	for i, step := range steps {
 		icon := stepStatusIndicator(step.Status, spinnerFrame)
 		style := stepStatusStyle(step.Status)
 		label := stepLabel(step.StepName)
 
-		line := "  " + style.Render(icon) + " " + label
+		line := style.Render(icon) + " " + label
 
 		// Add duration if completed.
 		if step.DurationMS != nil {
@@ -139,7 +138,7 @@ func renderPipelineView(run *ipc.RunInfo, steps []ipc.StepResultInfo, width int,
 
 		// Connector between steps.
 		if i < len(steps)-1 {
-			b.WriteString("  " + dimStyle.Render("│") + "\n")
+			b.WriteString(dimStyle.Render("│") + "\n")
 		}
 	}
 
@@ -161,7 +160,11 @@ func renderPipelineView(run *ipc.RunInfo, steps []ipc.StepResultInfo, width int,
 		b.WriteString("\n" + errStyle.Render("Error: "+*run.Error) + "\n")
 	}
 
-	return b.String()
+	boxWidth := width
+	if boxWidth < 20 {
+		boxWidth = 80
+	}
+	return renderBox("Pipeline", b.String(), boxWidth)
 }
 
 func renderApprovalActions(showSelectionActions bool, allowFix bool) string {

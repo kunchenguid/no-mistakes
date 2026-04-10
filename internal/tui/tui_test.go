@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -134,13 +135,19 @@ func TestRenderPipelineView_ConnectorsBetweenSteps(t *testing.T) {
 	out := stripANSI(renderPipelineView(run, run.Steps, 80, 0, false, false))
 	lines := strings.Split(out, "\n")
 
-	// Find step lines and verify connectors between them.
+	// Find step lines by looking for step label keywords (inside box borders).
+	stepIcons := []string{"✓", "⠋", "○", "⏸", "✗", "–"}
 	var stepLineIndices []int
 	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		// Step lines start with a status icon.
-		for _, prefix := range []string{"✓", "⠋", "○", "⏸", "✗", "–"} {
-			if strings.HasPrefix(trimmed, prefix) {
+		// Strip box border prefix (│ ) to find step content.
+		content := strings.TrimPrefix(strings.TrimSpace(line), "│")
+		content = strings.TrimSpace(content)
+		// Remove trailing box border.
+		if idx := strings.LastIndex(content, "│"); idx > 0 {
+			content = strings.TrimSpace(content[:idx])
+		}
+		for _, icon := range stepIcons {
+			if strings.HasPrefix(content, icon) {
 				stepLineIndices = append(stepLineIndices, i)
 				break
 			}
@@ -149,11 +156,13 @@ func TestRenderPipelineView_ConnectorsBetweenSteps(t *testing.T) {
 	if len(stepLineIndices) < 2 {
 		t.Fatalf("expected at least 2 step lines, found %d in:\n%s", len(stepLineIndices), out)
 	}
-	// Between each pair of consecutive step lines, there should be a connector line with │.
+	// Between each pair of consecutive step lines, there should be a connector.
+	// Inside the box, connector lines contain multiple │ chars (box borders + connector).
 	for i := 0; i < len(stepLineIndices)-1; i++ {
 		connectorFound := false
 		for j := stepLineIndices[i] + 1; j < stepLineIndices[i+1]; j++ {
-			if strings.Contains(lines[j], "│") {
+			// Connector line has 3 │ chars: left border, connector, right border.
+			if strings.Count(lines[j], "│") >= 3 {
 				connectorFound = true
 				break
 			}
@@ -1060,6 +1069,57 @@ func TestRenderDiff_ScrollEnd(t *testing.T) {
 	}
 }
 
+func TestRenderDiff_WrappedInBox(t *testing.T) {
+	raw := `diff --git a/main.go b/main.go
+--- a/main.go
++++ b/main.go
+@@ -1 +1,2 @@
+ package main
++import "fmt"
+`
+	got := stripANSI(renderDiff(raw, 80, 0, 0))
+	lines := strings.Split(got, "\n")
+	if len(lines) == 0 {
+		t.Fatal("expected non-empty output")
+	}
+	// Should have box with "Diff" title.
+	if !strings.Contains(lines[0], "Diff") {
+		t.Errorf("expected 'Diff' title in top border, got %q", lines[0])
+	}
+	if !strings.Contains(lines[0], "╭") {
+		t.Error("expected rounded top-left corner in diff box")
+	}
+}
+
+func TestRenderDiff_ScrollIndicatorInBottomBorder(t *testing.T) {
+	// Build a diff with many lines.
+	var b strings.Builder
+	b.WriteString("diff --git a/main.go b/main.go\n")
+	b.WriteString("--- a/main.go\n")
+	b.WriteString("+++ b/main.go\n")
+	b.WriteString("@@ -1,20 +1,20 @@\n")
+	for i := 0; i < 20; i++ {
+		b.WriteString(fmt.Sprintf("+line %d\n", i))
+	}
+
+	got := stripANSI(renderDiff(b.String(), 80, 5, 0))
+	lines := strings.Split(got, "\n")
+	// The last non-empty line should be the bottom border with scroll info.
+	lastLine := ""
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.TrimSpace(lines[i]) != "" {
+			lastLine = lines[i]
+			break
+		}
+	}
+	if !strings.Contains(lastLine, "╰") {
+		t.Errorf("expected bottom border with ╰, got %q", lastLine)
+	}
+	if !strings.Contains(lastLine, "more lines") || !strings.Contains(lastLine, "↓") {
+		t.Errorf("expected scroll indicator in bottom border, got %q", lastLine)
+	}
+}
+
 func TestDiffLineStyle_Types(t *testing.T) {
 	// Just verify no panics and styles are created.
 	types := []diffLineType{
@@ -1598,6 +1658,130 @@ func TestNewModel_PopulatesStepFindingsFromInitialSteps(t *testing.T) {
 	// Step without findings should not appear in the map.
 	if _, ok := m.stepFindings[types.StepTest]; ok {
 		t.Error("expected stepFindings to NOT contain test step (no findings)")
+	}
+}
+
+// --- Boxed section tests ---
+
+func TestRenderBox_HasRoundedCorners(t *testing.T) {
+	out := renderBox("Title", "content", 40)
+	if !strings.Contains(out, "╭") || !strings.Contains(out, "╮") {
+		t.Error("expected rounded top corners ╭ and ╮")
+	}
+	if !strings.Contains(out, "╰") || !strings.Contains(out, "╯") {
+		t.Error("expected rounded bottom corners ╰ and ╯")
+	}
+}
+
+func TestRenderBox_TitleInTopBorder(t *testing.T) {
+	out := stripANSI(renderBox("Pipeline", "step content", 40))
+	lines := strings.Split(out, "\n")
+	if len(lines) == 0 {
+		t.Fatal("expected non-empty output")
+	}
+	if !strings.Contains(lines[0], "Pipeline") {
+		t.Errorf("expected title 'Pipeline' in top border line, got %q", lines[0])
+	}
+}
+
+func TestRenderBox_ContentInsideBorders(t *testing.T) {
+	out := stripANSI(renderBox("Test", "hello world", 40))
+	lines := strings.Split(out, "\n")
+	// Find content line (between top and bottom border).
+	foundContent := false
+	for _, line := range lines[1:] {
+		if strings.Contains(line, "hello world") {
+			foundContent = true
+			// Content lines should start with │.
+			if !strings.HasPrefix(strings.TrimSpace(line), "│") {
+				t.Errorf("expected content line to start with │, got %q", line)
+			}
+			break
+		}
+	}
+	if !foundContent {
+		t.Error("expected 'hello world' inside box")
+	}
+}
+
+func TestRenderBox_HorizontalPadding(t *testing.T) {
+	out := stripANSI(renderBox("Test", "X", 20))
+	lines := strings.Split(out, "\n")
+	for _, line := range lines {
+		if strings.Contains(line, "X") {
+			// Content should have at least 1 space padding from border.
+			if strings.Contains(line, "│X") || strings.Contains(line, "X│") {
+				t.Errorf("expected horizontal padding between content and border, got %q", line)
+			}
+			break
+		}
+	}
+}
+
+func TestRenderBox_FillsWidth(t *testing.T) {
+	out := stripANSI(renderBox("Title", "content", 50))
+	lines := strings.Split(out, "\n")
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+		w := lipgloss.Width(line)
+		if w != 50 {
+			t.Errorf("expected line width 50, got %d for line %q", w, line)
+		}
+	}
+}
+
+func TestRenderBox_MultilineContent(t *testing.T) {
+	out := stripANSI(renderBox("Test", "line1\nline2\nline3", 40))
+	if !strings.Contains(out, "line1") || !strings.Contains(out, "line2") || !strings.Contains(out, "line3") {
+		t.Error("expected all content lines in output")
+	}
+}
+
+func TestRenderPipelineView_WrappedInBox(t *testing.T) {
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusCompleted
+	run.Steps[0].DurationMS = ptr(int64(1200))
+	run.Steps[1].Status = types.StepStatusRunning
+
+	out := stripANSI(renderPipelineView(run, run.Steps, 80, 0, false, false))
+	// Pipeline view should be wrapped in a box with rounded corners.
+	if !strings.Contains(out, "╭") || !strings.Contains(out, "╯") {
+		t.Error("expected pipeline view to be wrapped in a box with rounded corners")
+	}
+	// Title should be "Pipeline" in the top border.
+	lines := strings.Split(out, "\n")
+	if !strings.Contains(lines[0], "Pipeline") {
+		t.Errorf("expected 'Pipeline' title in top border, got %q", lines[0])
+	}
+}
+
+func TestModel_View_LogTailWrappedInBox(t *testing.T) {
+	run := testRun()
+	m := NewModel("/tmp/sock", nil, run)
+	m.logs = []string{"running go test ./...", "PASS: TestFoo (0.3s)"}
+
+	view := stripANSI(m.View())
+	// Log section should have "Log" title in a box.
+	if !strings.Contains(view, "Log") {
+		t.Error("expected 'Log' section title")
+	}
+	// The log lines should be inside a box with borders.
+	logSection := false
+	for _, line := range strings.Split(view, "\n") {
+		if strings.Contains(line, "Log") && strings.Contains(line, "╭") {
+			logSection = true
+		}
+		if logSection && strings.Contains(line, "running go test") {
+			if !strings.Contains(line, "│") {
+				t.Errorf("expected log content inside box borders, got %q", line)
+			}
+			break
+		}
+	}
+	if !logSection {
+		t.Error("expected log section to have a boxed title")
 	}
 }
 

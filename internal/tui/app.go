@@ -175,7 +175,7 @@ func (m Model) View() string {
 		}
 	}
 
-	// Log tail (last 5 lines).
+	// Log tail (last 5 lines) in a box.
 	if len(m.logs) > 0 {
 		b.WriteString("\n")
 		dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
@@ -183,9 +183,19 @@ func (m Model) View() string {
 		if start < 0 {
 			start = 0
 		}
-		for _, line := range m.logs[start:] {
-			b.WriteString(dimStyle.Render("  "+line) + "\n")
+		var logContent strings.Builder
+		for i, line := range m.logs[start:] {
+			if i > 0 {
+				logContent.WriteString("\n")
+			}
+			logContent.WriteString(dimStyle.Render(line))
 		}
+		boxWidth := m.width
+		if boxWidth < 20 {
+			boxWidth = 80
+		}
+		b.WriteString(renderBox("Log", logContent.String(), boxWidth))
+		b.WriteString("\n")
 	}
 
 	// Error display.

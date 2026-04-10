@@ -109,7 +109,7 @@ func diffLineStyle(t diffLineType) lipgloss.Style {
 	}
 }
 
-// renderDiff renders a scrollable, color-coded diff view.
+// renderDiff renders a scrollable, color-coded diff view inside a boxed section.
 // offset is the scroll position (first visible line), viewHeight is the number of visible lines.
 // If viewHeight <= 0, all lines are rendered.
 func renderDiff(raw string, width, viewHeight, offset int) string {
@@ -130,7 +130,7 @@ func renderDiff(raw string, width, viewHeight, offset int) string {
 	b.WriteString(addStyle.Render(fmt.Sprintf("+%d", adds)))
 	b.WriteString("  ")
 	b.WriteString(delStyle.Render(fmt.Sprintf("-%d", dels)))
-	b.WriteString("\n\n")
+	b.WriteString("\n")
 
 	// Clamp offset.
 	if offset < 0 {
@@ -158,18 +158,21 @@ func renderDiff(raw string, width, viewHeight, offset int) string {
 		b.WriteString("\n")
 	}
 
-	// Scroll indicator.
+	boxWidth := width
+	if boxWidth < 20 {
+		boxWidth = 80
+	}
+
+	// Build scroll hint for the bottom border.
+	scrollHint := ""
 	if viewHeight > 0 && len(lines) > viewHeight {
-		dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
 		remaining := len(lines) - end
 		if remaining > 0 {
-			b.WriteString(dimStyle.Render(fmt.Sprintf("↓ %d more lines (j/k to scroll)", remaining)))
-			b.WriteString("\n")
+			scrollHint = fmt.Sprintf("↓ %d more lines (j/k)", remaining)
 		} else if offset > 0 {
-			b.WriteString(dimStyle.Render("(end of diff)"))
-			b.WriteString("\n")
+			scrollHint = "end of diff"
 		}
 	}
 
-	return b.String()
+	return renderBoxWithFooter("Diff", b.String(), boxWidth, scrollHint)
 }
