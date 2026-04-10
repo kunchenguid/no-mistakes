@@ -178,7 +178,7 @@ func TestRenderPipelineView_ApprovalPrompt(t *testing.T) {
 	run.Steps[0].Status = types.StepStatusAwaitingApproval
 
 	// Action bar is now rendered outside the pipeline box per DESIGN.md.
-	out := renderActionBar(run.Steps, true, true, false)
+	out := renderActionBar(run.Steps, true, true, false, 5, 5)
 	if !strings.Contains(out, "awaiting action") {
 		t.Error("expected approval prompt")
 	}
@@ -211,7 +211,7 @@ func TestRenderPipelineView_StepError(t *testing.T) {
 }
 
 func TestRenderApprovalActions_FormatWithSeparator(t *testing.T) {
-	out := stripANSI(renderApprovalActions(true, true, false))
+	out := stripANSI(renderApprovalActions(true, true, false, 5, 5))
 	// Keys should not be bracket-wrapped - design uses "a approve" not "[a] approve".
 	if strings.Contains(out, "[a]") {
 		t.Error("expected bare key format 'a approve', not '[a] approve'")
@@ -227,7 +227,7 @@ func TestRenderApprovalActions_FormatWithSeparator(t *testing.T) {
 }
 
 func TestRenderApprovalActions_NoSelectionActions(t *testing.T) {
-	out := stripANSI(renderApprovalActions(false, true, false))
+	out := stripANSI(renderApprovalActions(false, true, false, 5, 5))
 	// Without selection actions, no │ separator should appear.
 	if strings.Contains(out, "│") {
 		t.Error("expected no │ separator when no selection actions")
@@ -242,7 +242,7 @@ func TestRenderPipelineView_HidesFixActionWhenDisabled(t *testing.T) {
 	run.Steps[0].Status = types.StepStatusAwaitingApproval
 
 	// Action bar is now rendered outside the pipeline box per DESIGN.md.
-	out := stripANSI(renderActionBar(run.Steps, true, false, false))
+	out := stripANSI(renderActionBar(run.Steps, true, false, false, 0, 5))
 	if strings.Contains(out, "f fix") {
 		t.Fatal("expected fix action to be hidden when disabled")
 	}
@@ -1278,7 +1278,7 @@ func TestRenderPipelineView_DiffKey(t *testing.T) {
 	run := testRun()
 	run.Steps[0].Status = types.StepStatusAwaitingApproval
 	// Action bar is now rendered outside the pipeline box per DESIGN.md.
-	out := stripANSI(renderActionBar(run.Steps, true, true, false))
+	out := stripANSI(renderActionBar(run.Steps, true, true, false, 5, 5))
 	if !strings.Contains(out, "d diff") {
 		t.Error("expected d diff in approval prompt")
 	}
@@ -3097,6 +3097,82 @@ func TestActionBar_HidesSelectionInDiffMode(t *testing.T) {
 	}
 	if strings.Contains(view, "N none") {
 		t.Error("selection action 'N none' should NOT appear when viewing diff")
+	}
+}
+
+func TestActionBar_FixShowsSelectionCount(t *testing.T) {
+	// When findings are selected for fix, the action bar should show
+	// the selection count like "f fix (3/5)" so users know what they're sending.
+	configureTUIColors()
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	m := NewModel("", nil, run)
+	m.width = 80
+	m.height = 50
+	m.stepFindings[types.StepReview] = `{"summary":"test","items":[
+		{"id":"f1","severity":"error","file":"a.go","line":1,"description":"one"},
+		{"id":"f2","severity":"error","file":"b.go","line":2,"description":"two"},
+		{"id":"f3","severity":"warning","file":"c.go","line":3,"description":"three"},
+		{"id":"f4","severity":"warning","file":"d.go","line":4,"description":"four"},
+		{"id":"f5","severity":"info","file":"e.go","line":5,"description":"five"}
+	]}`
+	m.resetFindingSelection(types.StepReview)
+	// Deselect 2 findings, leaving 3 selected.
+	delete(m.findingSelections[types.StepReview], "f2")
+	delete(m.findingSelections[types.StepReview], "f4")
+
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "f fix (3/5)") {
+		t.Errorf("expected 'f fix (3/5)' in action bar, got:\n%s", view)
+	}
+}
+
+func TestActionBar_FixAllSelectedNoCount(t *testing.T) {
+	// When ALL findings are selected, show "f fix" without count since
+	// the count adds no information (it's the default state).
+	configureTUIColors()
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	m := NewModel("", nil, run)
+	m.width = 80
+	m.height = 50
+	m.stepFindings[types.StepReview] = `{"summary":"test","items":[
+		{"id":"f1","severity":"error","file":"a.go","line":1,"description":"one"},
+		{"id":"f2","severity":"error","file":"b.go","line":2,"description":"two"},
+		{"id":"f3","severity":"warning","file":"c.go","line":3,"description":"three"}
+	]}`
+	m.resetFindingSelection(types.StepReview) // all 3 selected
+
+	view := stripANSI(m.View())
+	// Should have "f fix" but NOT "f fix (3/3)" or similar count
+	if !strings.Contains(view, "f fix") {
+		t.Errorf("expected 'f fix' in action bar, got:\n%s", view)
+	}
+	if strings.Contains(view, "f fix (") {
+		t.Errorf("should NOT show count when all findings are selected, got:\n%s", view)
+	}
+}
+
+func TestActionBar_FixCountUpdatesOnDeselect(t *testing.T) {
+	// Toggling a finding off should update the count in the action bar.
+	configureTUIColors()
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	m := NewModel("", nil, run)
+	m.width = 80
+	m.height = 50
+	m.stepFindings[types.StepReview] = `{"summary":"test","items":[
+		{"id":"f1","severity":"error","file":"a.go","line":1,"description":"one"},
+		{"id":"f2","severity":"error","file":"b.go","line":2,"description":"two"},
+		{"id":"f3","severity":"warning","file":"c.go","line":3,"description":"three"}
+	]}`
+	m.resetFindingSelection(types.StepReview) // all 3 selected
+	// Deselect one finding.
+	delete(m.findingSelections[types.StepReview], "f1")
+
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "f fix (2/3)") {
+		t.Errorf("expected 'f fix (2/3)' after deselecting one finding, got:\n%s", view)
 	}
 }
 

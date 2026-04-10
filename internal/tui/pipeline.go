@@ -159,7 +159,7 @@ func renderPipelineView(run *ipc.RunInfo, steps []ipc.StepResultInfo, width int,
 // Per DESIGN.md: "Sits below the pipeline box, above findings/diff"
 // showDiff controls whether the 'd' key label says "findings" (to toggle back) or "diff".
 // Selection actions are hidden in diff mode since they don't apply.
-func renderActionBar(steps []ipc.StepResultInfo, showSelectionActions bool, allowFix bool, showDiff bool) string {
+func renderActionBar(steps []ipc.StepResultInfo, showSelectionActions bool, allowFix bool, showDiff bool, selectedCount int, totalCount int) string {
 	step := awaitingStep(steps)
 	if step == nil {
 		return ""
@@ -171,11 +171,11 @@ func renderActionBar(steps []ipc.StepResultInfo, showSelectionActions bool, allo
 	b.WriteString("\n")
 	// Hide selection actions in diff mode since toggle/A/N keys don't work there.
 	effectiveSelection := showSelectionActions && !showDiff
-	b.WriteString(renderApprovalActions(effectiveSelection, allowFix, showDiff))
+	b.WriteString(renderApprovalActions(effectiveSelection, allowFix, showDiff, selectedCount, totalCount))
 	return b.String()
 }
 
-func renderApprovalActions(showSelectionActions bool, allowFix bool, showDiff bool) string {
+func renderApprovalActions(showSelectionActions bool, allowFix bool, showDiff bool, selectedCount int, totalCount int) string {
 	boldKey := lipgloss.NewStyle().Bold(true)
 	renderAction := func(key, label string) string {
 		return boldKey.Render(key) + " " + label
@@ -183,7 +183,11 @@ func renderApprovalActions(showSelectionActions bool, allowFix bool, showDiff bo
 
 	primary := []string{renderAction("a", "approve")}
 	if allowFix {
-		primary = append(primary, renderAction("f", "fix"))
+		fixLabel := "fix"
+		if selectedCount > 0 && selectedCount < totalCount {
+			fixLabel = fmt.Sprintf("fix (%d/%d)", selectedCount, totalCount)
+		}
+		primary = append(primary, renderAction("f", fixLabel))
 	}
 	diffLabel := "diff"
 	if showDiff {

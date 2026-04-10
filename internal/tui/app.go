@@ -138,7 +138,7 @@ func (m Model) View() string {
 	}
 
 	var b strings.Builder
-	showSelectionActions, allowFix := m.awaitingActionState()
+	showSelectionActions, allowFix, selectedCount, totalCount := m.awaitingActionState()
 
 	// Pipeline progress view.
 	b.WriteString(renderPipelineView(m.run, m.steps, m.width, m.spinnerFrame))
@@ -150,7 +150,7 @@ func (m Model) View() string {
 	}
 
 	// Action bar between pipeline box and findings/diff per DESIGN.md.
-	if actionBar := renderActionBar(m.steps, showSelectionActions, allowFix, m.showDiff); actionBar != "" {
+	if actionBar := renderActionBar(m.steps, showSelectionActions, allowFix, m.showDiff, selectedCount, totalCount); actionBar != "" {
 		b.WriteString("\n")
 		b.WriteString(actionBar)
 	}
@@ -256,20 +256,22 @@ func (m Model) View() string {
 	return b.String()
 }
 
-func (m Model) awaitingActionState() (showSelectionActions bool, allowFix bool) {
+func (m Model) awaitingActionState() (showSelectionActions bool, allowFix bool, selectedCount int, totalCount int) {
 	step := awaitingStep(m.steps)
 	if step == nil {
-		return false, false
+		return false, false, 0, 0
 	}
 	items := m.findingItems(step.StepName)
 	if len(items) == 0 {
-		return false, false
+		return false, false, 0, 0
 	}
+	totalCount = len(items)
 	selected, ok := m.findingSelections[step.StepName]
 	if !ok {
-		return true, true
+		return true, true, totalCount, totalCount
 	}
-	return true, len(selected) > 0
+	selectedCount = len(selected)
+	return true, selectedCount > 0, selectedCount, totalCount
 }
 
 func (m Model) spinnerTickCmd() tea.Cmd {
