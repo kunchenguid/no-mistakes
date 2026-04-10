@@ -5610,3 +5610,77 @@ func TestModel_View_HelpOverlay_NeverShowsCombinedDetachQuit(t *testing.T) {
 		t.Errorf("help should not show combined 'detach/quit', got:\n%s", plain)
 	}
 }
+
+func TestRenderFindings_FocusedFileRefNotDim(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	// Focused finding's file:line reference should NOT be dim, matching the
+	// description treatment from iteration 47 for complete visual contrast.
+	raw := `{"findings":[
+		{"id":"f1","severity":"error","file":"src/handler.go","line":42,"description":"focused text"},
+		{"id":"f2","severity":"warning","file":"src/config.go","line":17,"description":"other text"}
+	],"summary":"2 issues"}`
+
+	selected := map[string]bool{"f1": true, "f2": true}
+	content, _ := renderFindingsWithSelection(raw, 80, 0, selected, 0) // cursor=0, f1 focused
+
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
+
+	// Focused file ref should NOT be dim-styled.
+	if strings.Contains(content, dimStyle.Render("src/handler.go:42")) {
+		t.Error("focused finding file:line reference should not be dim-styled")
+	}
+	// But it should still appear (in default style).
+	if !strings.Contains(stripANSI(content), "src/handler.go:42") {
+		t.Error("focused finding file:line reference should appear in output")
+	}
+}
+
+func TestRenderFindings_UnfocusedFileRefDim(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	// Unfocused finding's file:line reference should be dim, matching the
+	// description treatment for visual contrast with the focused finding.
+	raw := `{"findings":[
+		{"id":"f1","severity":"error","file":"src/handler.go","line":42,"description":"first issue"},
+		{"id":"f2","severity":"warning","file":"src/config.go","line":17,"description":"second issue"}
+	],"summary":"2 issues"}`
+
+	selected := map[string]bool{"f1": true, "f2": true}
+	content, _ := renderFindingsWithSelection(raw, 80, 0, selected, 0) // cursor=0, f2 unfocused
+
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
+
+	// Unfocused file ref should be dim-styled.
+	if !strings.Contains(content, dimStyle.Render("src/config.go:17")) {
+		t.Error("unfocused finding file:line reference should be dim-styled")
+	}
+}
+
+func TestRenderFindings_FocusChangesFileRefStyle(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	// Moving cursor should swap which file:line reference is dim vs default.
+	raw := `{"findings":[
+		{"id":"f1","severity":"error","file":"src/handler.go","line":42,"description":"first issue"},
+		{"id":"f2","severity":"warning","file":"src/config.go","line":17,"description":"second issue"}
+	],"summary":"2 issues"}`
+
+	selected := map[string]bool{"f1": true, "f2": true}
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
+
+	// Cursor at 0: f1 focused (non-dim ref), f2 unfocused (dim ref).
+	content0, _ := renderFindingsWithSelection(raw, 80, 0, selected, 0)
+	if strings.Contains(content0, dimStyle.Render("src/handler.go:42")) {
+		t.Error("with cursor=0, handler.go ref should NOT be dim")
+	}
+	if !strings.Contains(content0, dimStyle.Render("src/config.go:17")) {
+		t.Error("with cursor=0, config.go ref should be dim")
+	}
+
+	// Cursor at 1: f2 focused (non-dim ref), f1 unfocused (dim ref).
+	content1, _ := renderFindingsWithSelection(raw, 80, 1, selected, 0)
+	if !strings.Contains(content1, dimStyle.Render("src/handler.go:42")) {
+		t.Error("with cursor=1, handler.go ref should be dim")
+	}
+	if strings.Contains(content1, dimStyle.Render("src/config.go:17")) {
+		t.Error("with cursor=1, config.go ref should NOT be dim")
+	}
+}

@@ -262,7 +262,11 @@ func renderFindingsWithSelection(raw string, width int, cursor int, selected map
 			if maxRefWidth > 0 && lipgloss.Width(ref) > maxRefWidth {
 				ref, _ = cutText(ref, maxRefWidth)
 			}
-			line += " " + dimStyle.Render(ref)
+			if idx == cursor {
+				line += " " + ref
+			} else {
+				line += " " + dimStyle.Render(ref)
+			}
 		}
 
 		b.WriteString(line + "\n")
