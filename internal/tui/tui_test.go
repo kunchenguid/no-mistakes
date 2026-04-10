@@ -3192,3 +3192,60 @@ func TestOutcomeBanner_InViewWhenDone(t *testing.T) {
 		t.Errorf("expected 'Pipeline passed' in done view, got:\n%s", view)
 	}
 }
+
+func TestModel_HandleKey_JumpToTopDiff(t *testing.T) {
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	m := NewModel("/tmp/sock", nil, run)
+	m.showDiff = true
+	m.diffOffset = 15
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("g")})
+	model := updated.(Model)
+	if model.diffOffset != 0 {
+		t.Errorf("expected diffOffset=0 after 'g', got %d", model.diffOffset)
+	}
+}
+
+func TestModel_HandleKey_JumpToBottomDiff(t *testing.T) {
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	m := NewModel("/tmp/sock", nil, run)
+	m.showDiff = true
+	m.diffOffset = 0
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("G")})
+	model := updated.(Model)
+	// G sets diffOffset to a large value; renderDiff will clamp it.
+	if model.diffOffset == 0 {
+		t.Error("expected diffOffset > 0 after 'G'")
+	}
+}
+
+func TestModel_HandleKey_JumpToTopFindings(t *testing.T) {
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	m := NewModel("/tmp/sock", nil, run)
+	m.stepFindings[types.StepReview] = `{"findings":[{"id":"f1","severity":"error","description":"a"},{"id":"f2","severity":"warning","description":"b"},{"id":"f3","severity":"info","description":"c"},{"id":"f4","severity":"error","description":"d"},{"id":"f5","severity":"warning","description":"e"}]}`
+	m.findingCursor[types.StepReview] = 4
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("g")})
+	model := updated.(Model)
+	if model.findingCursor[types.StepReview] != 0 {
+		t.Errorf("expected findingCursor=0 after 'g', got %d", model.findingCursor[types.StepReview])
+	}
+}
+
+func TestModel_HandleKey_JumpToBottomFindings(t *testing.T) {
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	m := NewModel("/tmp/sock", nil, run)
+	m.stepFindings[types.StepReview] = `{"findings":[{"id":"f1","severity":"error","description":"a"},{"id":"f2","severity":"warning","description":"b"},{"id":"f3","severity":"info","description":"c"},{"id":"f4","severity":"error","description":"d"},{"id":"f5","severity":"warning","description":"e"}]}`
+	m.findingCursor[types.StepReview] = 0
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("G")})
+	model := updated.(Model)
+	if model.findingCursor[types.StepReview] != 4 {
+		t.Errorf("expected findingCursor=4 after 'G', got %d", model.findingCursor[types.StepReview])
+	}
+}

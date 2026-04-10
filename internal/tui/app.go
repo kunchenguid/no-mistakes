@@ -329,6 +329,25 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case "g", "home":
+		if m.showDiff {
+			m.diffOffset = 0
+		} else if step := awaitingStep(m.steps); step != nil {
+			m.findingCursor[step.StepName] = 0
+		}
+		return m, nil
+
+	case "G", "end":
+		if m.showDiff {
+			m.diffOffset = 1<<31 - 1 // large value, renderDiff clamps
+		} else if step := awaitingStep(m.steps); step != nil {
+			items := m.findingItems(step.StepName)
+			if len(items) > 0 {
+				m.findingCursor[step.StepName] = len(items) - 1
+			}
+		}
+		return m, nil
+
 	case " ":
 		if !m.showDiff {
 			if step := awaitingStep(m.steps); step != nil {
