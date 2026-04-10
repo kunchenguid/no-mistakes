@@ -189,7 +189,7 @@ func (m Model) View() string {
 				maxVisible = findingsHeight / 3
 			}
 			cursor := m.findingCursor[step.StepName]
-			rendered := renderFindingsWithSelection(raw, m.width-4, cursor, m.findingSelections[step.StepName], maxVisible)
+			rendered, scrollFooter := renderFindingsWithSelection(raw, m.width-4, cursor, m.findingSelections[step.StepName], maxVisible)
 			if rendered != "" {
 				boxWidth := m.width
 				if boxWidth < 20 {
@@ -200,7 +200,7 @@ func (m Model) View() string {
 					title += fmt.Sprintf(" (%d/%d)", cursor+1, len(items))
 				}
 				b.WriteString("\n\n")
-				b.WriteString(renderBox(title, rendered, boxWidth))
+				b.WriteString(renderBoxWithFooter(title, rendered, boxWidth, scrollFooter))
 			}
 		}
 	}

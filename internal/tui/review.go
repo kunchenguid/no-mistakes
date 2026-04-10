@@ -156,19 +156,22 @@ func renderFindings(raw string, width int) string {
 			selected[item.ID] = true
 		}
 	}
-	return renderFindingsWithSelection(raw, width, 0, selected, 0)
+	content, _ := renderFindingsWithSelection(raw, width, 0, selected, 0)
+	return content
 }
 
 // renderFindingsWithSelection renders findings with cursor, selection state, and optional
 // viewport limiting. maxVisible <= 0 means show all items (no viewport).
-func renderFindingsWithSelection(raw string, width int, cursor int, selected map[string]bool, maxVisible int) string {
+// Returns (content, scrollFooter) where scrollFooter is a hint for the bottom border
+// (non-empty when items exist below the viewport).
+func renderFindingsWithSelection(raw string, width int, cursor int, selected map[string]bool, maxVisible int) (string, string) {
 	f, err := parseFindings(raw)
 	if err != nil || f == nil {
-		return ""
+		return "", ""
 	}
 
 	if len(f.Items) == 0 && f.Summary == "" {
-		return ""
+		return "", ""
 	}
 
 	var b strings.Builder
@@ -264,13 +267,12 @@ func renderFindingsWithSelection(raw string, width int, cursor int, selected map
 		b.WriteString(wrapIndentedText(item.Description, width, 8) + "\n")
 	}
 
-	// Scroll-down indicator.
+	// Scroll-down footer for the box border.
+	scrollFooter := ""
 	remaining := len(f.Items) - end
 	if remaining > 0 {
-		b.WriteString("\n")
-		b.WriteString(dimStyle.Render(fmt.Sprintf("↓ %d more below (j/k)", remaining)))
-		b.WriteString("\n")
+		scrollFooter = fmt.Sprintf("↓ %d more below (j/k)", remaining)
 	}
 
-	return b.String()
+	return b.String(), scrollFooter
 }

@@ -184,10 +184,17 @@ func renderBabysitViewWithSelection(run *ipc.RunInfo, steps []ipc.StepResultInfo
 				maxVisible = findingsHeight / 3 // ~3 lines per finding
 			}
 		}
-		rendered := renderFindingsWithSelection(findings, contentWidth, cursor, selected, maxVisible)
+		rendered, scrollFooter := renderFindingsWithSelection(findings, contentWidth, cursor, selected, maxVisible)
 		if rendered != "" {
 			b.WriteString("\n")
 			b.WriteString(rendered)
+			// Babysit findings are nested inside the babysit box, so inline the scroll footer.
+			if scrollFooter != "" {
+				dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
+				b.WriteString("\n")
+				b.WriteString(dimStyle.Render(scrollFooter))
+				b.WriteString("\n")
+			}
 		}
 	}
 

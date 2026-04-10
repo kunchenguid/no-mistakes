@@ -1813,7 +1813,8 @@ func TestRenderFindings_GutterFixedWidth(t *testing.T) {
 	],"summary":"2 issues"}`
 
 	allSelected := map[string]bool{"f1": true, "f2": true}
-	got := stripANSI(renderFindingsWithSelection(raw, 80, 0, allSelected, 0))
+	content, _ := renderFindingsWithSelection(raw, 80, 0, allSelected, 0)
+	got := stripANSI(content)
 
 	lines := strings.Split(got, "\n")
 
@@ -1866,7 +1867,8 @@ func TestRenderFindings_DescriptionClearsGutter(t *testing.T) {
 	raw := `{"findings":[{"id":"f1","severity":"error","file":"main.go","line":10,"description":"buffer overflow risk"}],"summary":"1 issue"}`
 
 	selected := map[string]bool{"f1": true}
-	got := stripANSI(renderFindingsWithSelection(raw, 80, 0, selected, 0))
+	content, _ := renderFindingsWithSelection(raw, 80, 0, selected, 0)
+	got := stripANSI(content)
 
 	lines := strings.Split(got, "\n")
 	// Find the description line (follows the finding line with checkbox).
@@ -2295,7 +2297,7 @@ func TestRenderFindings_CursorStyledBlue(t *testing.T) {
 	raw := `{"findings":[{"id":"f1","severity":"error","file":"main.go","line":10,"description":"nil pointer"}],"summary":"1 issue"}`
 	selected := map[string]bool{"f1": true}
 
-	got := renderFindingsWithSelection(raw, 80, 0, selected, 0)
+	got, _ := renderFindingsWithSelection(raw, 80, 0, selected, 0)
 
 	blueStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBlue))
 	styledCursor := blueStyle.Render(">")
@@ -2311,7 +2313,7 @@ func TestRenderFindings_CheckboxSelectedGreen(t *testing.T) {
 	raw := `{"findings":[{"id":"f1","severity":"error","file":"main.go","line":10,"description":"nil pointer"}],"summary":"1 issue"}`
 	selected := map[string]bool{"f1": true}
 
-	got := renderFindingsWithSelection(raw, 80, 0, selected, 0)
+	got, _ := renderFindingsWithSelection(raw, 80, 0, selected, 0)
 
 	greenStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiGreen))
 	styledCheckbox := greenStyle.Render("[x]")
@@ -2327,7 +2329,7 @@ func TestRenderFindings_CheckboxUnselectedDim(t *testing.T) {
 	raw := `{"findings":[{"id":"f1","severity":"error","file":"main.go","line":10,"description":"nil pointer"}],"summary":"1 issue"}`
 	selected := map[string]bool{} // nothing selected
 
-	got := renderFindingsWithSelection(raw, 80, 0, selected, 0)
+	got, _ := renderFindingsWithSelection(raw, 80, 0, selected, 0)
 
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
 	styledCheckbox := dimStyle.Render("[ ]")
@@ -2512,7 +2514,7 @@ func TestRenderFindings_ViewportShowsSubset(t *testing.T) {
 		selected[fmt.Sprintf("f%d", i)] = true
 	}
 
-	out := renderFindingsWithSelection(raw, 80, 0, selected, 4)
+	out, _ := renderFindingsWithSelection(raw, 80, 0, selected, 4)
 	plain := stripANSI(out)
 
 	// Should show first 4 findings (f1 through f4).
@@ -2536,12 +2538,11 @@ func TestRenderFindings_ViewportScrollDownIndicator(t *testing.T) {
 		selected[fmt.Sprintf("f%d", i)] = true
 	}
 
-	out := renderFindingsWithSelection(raw, 80, 0, selected, 4)
-	plain := stripANSI(out)
+	_, scrollFooter := renderFindingsWithSelection(raw, 80, 0, selected, 4)
 
-	// Should show down indicator for 6 more items below.
-	if !strings.Contains(plain, "↓ 6 more") {
-		t.Errorf("expected '↓ 6 more' scroll indicator, got:\n%s", plain)
+	// Down indicator is returned as scrollFooter (for embedding in box border).
+	if !strings.Contains(scrollFooter, "6 more below") {
+		t.Errorf("expected scrollFooter with '6 more below', got: %q", scrollFooter)
 	}
 }
 
@@ -2554,7 +2555,7 @@ func TestRenderFindings_ViewportScrollUpIndicator(t *testing.T) {
 	}
 
 	// Cursor at item 9 (index 9, last item) - should show up indicator.
-	out := renderFindingsWithSelection(raw, 80, 9, selected, 4)
+	out, _ := renderFindingsWithSelection(raw, 80, 9, selected, 4)
 	plain := stripANSI(out)
 
 	// Should show finding 10 (cursor is on it).
@@ -3332,12 +3333,11 @@ func TestRenderFindings_ScrollDownIncludesKeyHint(t *testing.T) {
 		selected[fmt.Sprintf("f%d", i)] = true
 	}
 
-	out := renderFindingsWithSelection(raw, 80, 0, selected, 4)
-	plain := stripANSI(out)
+	_, scrollFooter := renderFindingsWithSelection(raw, 80, 0, selected, 4)
 
-	// Down indicator should include (j/k) key hint, matching diff view format.
-	if !strings.Contains(plain, "more below (j/k)") {
-		t.Errorf("expected '↓ N more below (j/k)' with key hint, got:\n%s", plain)
+	// Down indicator (in scrollFooter) should include (j/k) key hint.
+	if !strings.Contains(scrollFooter, "more below (j/k)") {
+		t.Errorf("expected scrollFooter with 'more below (j/k)' key hint, got: %q", scrollFooter)
 	}
 }
 
@@ -3350,7 +3350,7 @@ func TestRenderFindings_ScrollUpIncludesKeyHint(t *testing.T) {
 	}
 
 	// Cursor at bottom - should show up indicator with key hint.
-	out := renderFindingsWithSelection(raw, 80, 9, selected, 4)
+	out, _ := renderFindingsWithSelection(raw, 80, 9, selected, 4)
 	plain := stripANSI(out)
 
 	if !strings.Contains(plain, "above (j/k)") {
@@ -3367,13 +3367,124 @@ func TestRenderFindings_BothIndicatorsIncludeKeyHints(t *testing.T) {
 	}
 
 	// Cursor in the middle - both indicators should have key hints.
-	out := renderFindingsWithSelection(raw, 80, 5, selected, 4)
+	out, scrollFooter := renderFindingsWithSelection(raw, 80, 5, selected, 4)
 	plain := stripANSI(out)
 
+	// Up indicator stays inline in content.
 	if !strings.Contains(plain, "above (j/k)") {
 		t.Errorf("expected up indicator with (j/k) hint, got:\n%s", plain)
 	}
-	if !strings.Contains(plain, "more below (j/k)") {
-		t.Errorf("expected down indicator with (j/k) hint, got:\n%s", plain)
+	// Down indicator is in scrollFooter.
+	if !strings.Contains(scrollFooter, "more below (j/k)") {
+		t.Errorf("expected scrollFooter with 'more below (j/k)' hint, got: %q", scrollFooter)
+	}
+}
+
+func TestFindingsBox_ScrollDownInBottomBorder(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusCompleted
+	run.Steps[1].Status = types.StepStatusAwaitingApproval
+
+	findingsJSON := makeManyFindings(10)
+	m := NewModel("/tmp/sock", nil, run)
+	m.width = 80
+	m.height = 40
+	m.stepFindings[types.StepTest] = findingsJSON
+	m.resetFindingSelection(types.StepTest)
+	m.findingCursor[types.StepTest] = 0
+
+	view := m.View()
+	plain := stripANSI(view)
+
+	// The findings box bottom border should contain the down scroll indicator,
+	// matching how diff embeds its scroll hint in the border.
+	lines := strings.Split(plain, "\n")
+	foundBorder := false
+	for _, line := range lines {
+		if strings.Contains(line, "╰") && strings.Contains(line, "more below") {
+			foundBorder = true
+			break
+		}
+	}
+	if !foundBorder {
+		t.Errorf("expected findings scroll indicator in bottom border (╰...more below...╯), got:\n%s", plain)
+	}
+}
+
+func TestFindingsBox_ScrollUpStaysInline(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusCompleted
+	run.Steps[1].Status = types.StepStatusAwaitingApproval
+
+	findingsJSON := makeManyFindings(10)
+	m := NewModel("/tmp/sock", nil, run)
+	m.width = 80
+	m.height = 40
+	m.stepFindings[types.StepTest] = findingsJSON
+	m.resetFindingSelection(types.StepTest)
+	// Move to bottom so we get an up indicator.
+	m.findingCursor[types.StepTest] = 9
+
+	view := m.View()
+	plain := stripANSI(view)
+
+	// The up indicator should remain inline (inside the box content), not in the border.
+	// It should appear on a line that does NOT contain ╰ (not in the border).
+	lines := strings.Split(plain, "\n")
+	foundInlineUp := false
+	for _, line := range lines {
+		if strings.Contains(line, "above") && !strings.Contains(line, "╰") {
+			foundInlineUp = true
+			break
+		}
+	}
+	if !foundInlineUp {
+		t.Errorf("expected up scroll indicator inline (not in border), got:\n%s", plain)
+	}
+}
+
+func TestFindingsBox_BothScrollIndicators(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusCompleted
+	run.Steps[1].Status = types.StepStatusAwaitingApproval
+
+	findingsJSON := makeManyFindings(10)
+	m := NewModel("/tmp/sock", nil, run)
+	m.width = 80
+	m.height = 40
+	m.stepFindings[types.StepTest] = findingsJSON
+	m.resetFindingSelection(types.StepTest)
+	// Cursor in middle: should have both up (inline) and down (in border).
+	m.findingCursor[types.StepTest] = 5
+
+	view := m.View()
+	plain := stripANSI(view)
+
+	// Down indicator in the bottom border.
+	lines := strings.Split(plain, "\n")
+	foundDownInBorder := false
+	for _, line := range lines {
+		if strings.Contains(line, "╰") && strings.Contains(line, "more below") {
+			foundDownInBorder = true
+			break
+		}
+	}
+	if !foundDownInBorder {
+		t.Errorf("expected down scroll indicator in bottom border, got:\n%s", plain)
+	}
+
+	// Up indicator inline (not in border).
+	foundUpInline := false
+	for _, line := range lines {
+		if strings.Contains(line, "above") && !strings.Contains(line, "╰") {
+			foundUpInline = true
+			break
+		}
+	}
+	if !foundUpInline {
+		t.Errorf("expected up scroll indicator inline (not in border), got:\n%s", plain)
 	}
 }
