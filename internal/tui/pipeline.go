@@ -334,6 +334,9 @@ func renderHelpOverlay(width int, hasAwaitingStep bool, showDiff bool, hasDiff b
 	if showDiff && hasAwaitingStep {
 		navEntries = append(navEntries, entry("n/p", "next/prev finding"))
 	}
+	if showDiff {
+		navEntries = append(navEntries, entry("esc", "back to findings"))
+	}
 	content.WriteString(section("Navigation", navEntries))
 	if hasAwaitingStep {
 		content.WriteString("\n")

@@ -401,6 +401,11 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.showHelp = false
 			return m, nil
 		}
+		if m.showDiff {
+			m.showDiff = false
+			m.diffOffset = 0
+			return m, nil
+		}
 
 	case "d":
 		if step := awaitingStep(m.steps); step != nil {

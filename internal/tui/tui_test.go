@@ -6186,3 +6186,102 @@ func TestDiffView_NoFindingContextWithoutFindings(t *testing.T) {
 		}
 	}
 }
+
+func TestModel_EscapeReturnsToDiffFromFindings(t *testing.T) {
+	// Pressing Escape while in diff view should return to findings view.
+	lipgloss.SetColorProfile(termenv.Ascii)
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	m := NewModel("", nil, run)
+	m.showDiff = true
+	m.stepDiffs[types.StepReview] = "diff --git a/foo.go b/foo.go\n"
+
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	m = result.(Model)
+
+	if m.showDiff {
+		t.Fatal("expected Escape to return from diff view to findings view")
+	}
+}
+
+func TestModel_EscapeResetsDiffOffset(t *testing.T) {
+	// Pressing Escape while in diff view should also reset diffOffset.
+	lipgloss.SetColorProfile(termenv.Ascii)
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	m := NewModel("", nil, run)
+	m.showDiff = true
+	m.diffOffset = 42
+	m.stepDiffs[types.StepReview] = "diff --git a/foo.go b/foo.go\n"
+
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	m = result.(Model)
+
+	if m.diffOffset != 0 {
+		t.Fatalf("expected Escape to reset diffOffset to 0, got %d", m.diffOffset)
+	}
+}
+
+func TestModel_EscapeNoOpWhenNotInDiffOrHelp(t *testing.T) {
+	// Pressing Escape when not in diff view and help is closed should be a no-op.
+	lipgloss.SetColorProfile(termenv.Ascii)
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	m := NewModel("", nil, run)
+	m.showDiff = false
+	m.showHelp = false
+	m.findingCursor = map[types.StepName]int{types.StepReview: 2}
+
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	m = result.(Model)
+
+	// State should be unchanged.
+	if m.showDiff {
+		t.Fatal("Escape should not toggle diff on")
+	}
+	if m.showHelp {
+		t.Fatal("Escape should not toggle help on")
+	}
+	if m.findingCursor[types.StepReview] != 2 {
+		t.Fatalf("Escape should not change cursor position, got %d", m.findingCursor[types.StepReview])
+	}
+}
+
+func TestModel_View_HelpOverlay_ShowsEscBackInDiffMode(t *testing.T) {
+	// Help overlay in diff mode should show Esc as "back to findings".
+	lipgloss.SetColorProfile(termenv.Ascii)
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	m := NewModel("", nil, run)
+	m.width = 80
+	m.height = 40
+	m.showHelp = true
+	m.showDiff = true
+	m.stepDiffs[types.StepReview] = "diff --git a/foo.go b/foo.go\n"
+	m.stepFindings[types.StepReview] = `[{"id":"1","file":"foo.go","line":10,"description":"test","severity":"error"}]`
+
+	output := stripANSI(m.View())
+
+	if !strings.Contains(output, "esc") || !strings.Contains(output, "back") {
+		t.Errorf("help overlay in diff mode should show 'esc' with 'back' description, got:\n%s", output)
+	}
+}
+
+func TestModel_View_HelpOverlay_NoEscBackOutsideDiffMode(t *testing.T) {
+	// Help overlay NOT in diff mode should NOT show the "back to findings" hint.
+	lipgloss.SetColorProfile(termenv.Ascii)
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	m := NewModel("", nil, run)
+	m.width = 80
+	m.height = 40
+	m.showHelp = true
+	m.showDiff = false
+
+	output := stripANSI(m.View())
+
+	// Should not contain "esc" + "back" combination.
+	if strings.Contains(output, "back to findings") {
+		t.Errorf("help overlay should NOT show 'back to findings' when not in diff mode, got:\n%s", output)
+	}
+}
