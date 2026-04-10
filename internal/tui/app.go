@@ -402,6 +402,24 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case "n":
+		if m.showDiff {
+			if step := awaitingStep(m.steps); step != nil {
+				m.moveFindingCursor(step.StepName, 1)
+				m.diffOffset = m.diffOffsetForCurrentFinding(step.StepName)
+			}
+		}
+		return m, nil
+
+	case "p":
+		if m.showDiff {
+			if step := awaitingStep(m.steps); step != nil {
+				m.moveFindingCursor(step.StepName, -1)
+				m.diffOffset = m.diffOffsetForCurrentFinding(step.StepName)
+			}
+		}
+		return m, nil
+
 	case "j", "down":
 		if m.showDiff {
 			m.diffOffset++

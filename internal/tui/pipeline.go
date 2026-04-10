@@ -322,11 +322,15 @@ func renderHelpOverlay(width int, hasAwaitingStep bool, showDiff bool, hasDiff b
 
 	var content strings.Builder
 
-	content.WriteString(section("Navigation", []string{
+	navEntries := []string{
 		entry("j/k", "scroll line by line"),
 		entry("g/G", "jump to start/end"),
 		entry("Ctrl+d/u", "half-page down/up"),
-	}))
+	}
+	if showDiff && hasAwaitingStep {
+		navEntries = append(navEntries, entry("n/p", "next/prev finding"))
+	}
+	content.WriteString(section("Navigation", navEntries))
 	if hasAwaitingStep {
 		content.WriteString("\n")
 		actions := []string{
