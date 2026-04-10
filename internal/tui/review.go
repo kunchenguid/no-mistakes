@@ -156,10 +156,12 @@ func renderFindings(raw string, width int) string {
 			selected[item.ID] = true
 		}
 	}
-	return renderFindingsWithSelection(raw, width, 0, selected)
+	return renderFindingsWithSelection(raw, width, 0, selected, 0)
 }
 
-func renderFindingsWithSelection(raw string, width int, cursor int, selected map[string]bool) string {
+// renderFindingsWithSelection renders findings with cursor, selection state, and optional
+// viewport limiting. maxVisible <= 0 means show all items (no viewport).
+func renderFindingsWithSelection(raw string, width int, cursor int, selected map[string]bool, maxVisible int) string {
 	f, err := parseFindings(raw)
 	if err != nil || f == nil {
 		return ""
@@ -195,13 +197,39 @@ func renderFindingsWithSelection(raw string, width int, cursor int, selected map
 		b.WriteString("\n\n")
 	}
 
-	// Individual findings.
+	// Compute visible window of items.
+	start := 0
+	end := len(f.Items)
+	if maxVisible > 0 && len(f.Items) > maxVisible {
+		// Center the window on the cursor.
+		start = cursor - maxVisible/2
+		if start < 0 {
+			start = 0
+		}
+		end = start + maxVisible
+		if end > len(f.Items) {
+			end = len(f.Items)
+			start = end - maxVisible
+			if start < 0 {
+				start = 0
+			}
+		}
+	}
+
+	// Scroll-up indicator.
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
+	if start > 0 {
+		b.WriteString(dimStyle.Render(fmt.Sprintf("↑ %d above", start)))
+		b.WriteString("\n\n")
+	}
+
+	// Individual findings.
 	greenStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiGreen))
 	blueStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBlue))
-	for i, item := range f.Items {
+	for idx := start; idx < end; idx++ {
+		item := f.Items[idx]
 		// Blank line between findings per DESIGN.md Gutter System.
-		if i > 0 {
+		if idx > start {
 			b.WriteString("\n")
 		}
 
@@ -214,7 +242,7 @@ func renderFindingsWithSelection(raw string, width int, cursor int, selected map
 		}
 		// Cursor: blue per DESIGN.md "Primary action/focus" for interactive elements.
 		pointer := " "
-		if i == cursor {
+		if idx == cursor {
 			pointer = blueStyle.Render(">")
 		}
 
@@ -234,6 +262,14 @@ func renderFindingsWithSelection(raw string, width int, cursor int, selected map
 		// Description indented.
 		// Gutter width: cursor(1) + sp(1) + checkbox(3) + sp(1) + icon(1) + sp(1) = 8
 		b.WriteString(wrapIndentedText(item.Description, width, 8) + "\n")
+	}
+
+	// Scroll-down indicator.
+	remaining := len(f.Items) - end
+	if remaining > 0 {
+		b.WriteString("\n")
+		b.WriteString(dimStyle.Render(fmt.Sprintf("↓ %d more below", remaining)))
+		b.WriteString("\n")
 	}
 
 	return b.String()

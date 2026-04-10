@@ -168,7 +168,15 @@ func (m Model) View() string {
 				b.WriteString(renderDiff(raw, m.width, viewHeight, m.diffOffset, label))
 			}
 		} else if raw, ok := m.stepFindings[step.StepName]; ok {
-			rendered := renderFindingsWithSelection(raw, m.width-4, m.findingCursor[step.StepName], m.findingSelections[step.StepName])
+			// Compute max visible findings from available height.
+			// Each finding is ~3 lines (gutter + description + blank separator).
+			// Reserve space for summary (2 lines), severity counts (2 lines), and scroll indicators (2 lines).
+			findingsHeight := m.height - 20 // reserve for pipeline, action bar, log, footer
+			maxVisible := 0
+			if findingsHeight > 6 {
+				maxVisible = findingsHeight / 3
+			}
+			rendered := renderFindingsWithSelection(raw, m.width-4, m.findingCursor[step.StepName], m.findingSelections[step.StepName], maxVisible)
 			if rendered != "" {
 				boxWidth := m.width
 				if boxWidth < 20 {

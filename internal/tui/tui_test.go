@@ -1810,7 +1810,7 @@ func TestRenderFindings_GutterFixedWidth(t *testing.T) {
 	],"summary":"2 issues"}`
 
 	allSelected := map[string]bool{"f1": true, "f2": true}
-	got := stripANSI(renderFindingsWithSelection(raw, 80, 0, allSelected))
+	got := stripANSI(renderFindingsWithSelection(raw, 80, 0, allSelected, 0))
 
 	lines := strings.Split(got, "\n")
 
@@ -1863,7 +1863,7 @@ func TestRenderFindings_DescriptionClearsGutter(t *testing.T) {
 	raw := `{"findings":[{"id":"f1","severity":"error","file":"main.go","line":10,"description":"buffer overflow risk"}],"summary":"1 issue"}`
 
 	selected := map[string]bool{"f1": true}
-	got := stripANSI(renderFindingsWithSelection(raw, 80, 0, selected))
+	got := stripANSI(renderFindingsWithSelection(raw, 80, 0, selected, 0))
 
 	lines := strings.Split(got, "\n")
 	// Find the description line (follows the finding line with checkbox).
@@ -2292,7 +2292,7 @@ func TestRenderFindings_CursorStyledBlue(t *testing.T) {
 	raw := `{"findings":[{"id":"f1","severity":"error","file":"main.go","line":10,"description":"nil pointer"}],"summary":"1 issue"}`
 	selected := map[string]bool{"f1": true}
 
-	got := renderFindingsWithSelection(raw, 80, 0, selected)
+	got := renderFindingsWithSelection(raw, 80, 0, selected, 0)
 
 	blueStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBlue))
 	styledCursor := blueStyle.Render(">")
@@ -2308,7 +2308,7 @@ func TestRenderFindings_CheckboxSelectedGreen(t *testing.T) {
 	raw := `{"findings":[{"id":"f1","severity":"error","file":"main.go","line":10,"description":"nil pointer"}],"summary":"1 issue"}`
 	selected := map[string]bool{"f1": true}
 
-	got := renderFindingsWithSelection(raw, 80, 0, selected)
+	got := renderFindingsWithSelection(raw, 80, 0, selected, 0)
 
 	greenStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiGreen))
 	styledCheckbox := greenStyle.Render("[x]")
@@ -2324,7 +2324,7 @@ func TestRenderFindings_CheckboxUnselectedDim(t *testing.T) {
 	raw := `{"findings":[{"id":"f1","severity":"error","file":"main.go","line":10,"description":"nil pointer"}],"summary":"1 issue"}`
 	selected := map[string]bool{} // nothing selected
 
-	got := renderFindingsWithSelection(raw, 80, 0, selected)
+	got := renderFindingsWithSelection(raw, 80, 0, selected, 0)
 
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
 	styledCheckbox := dimStyle.Render("[ ]")
@@ -2487,5 +2487,108 @@ func TestDiffBoxTitle_ReviewStep(t *testing.T) {
 	// Should say "Diff - Review" for the review step.
 	if !strings.Contains(plain, "Diff - Review") {
 		t.Errorf("expected 'Diff - Review' in box title, got:\n%s", plain)
+	}
+}
+
+// --- Findings viewport scrolling tests ---
+
+func makeManyFindings(n int) string {
+	var items []string
+	for i := 1; i <= n; i++ {
+		items = append(items, fmt.Sprintf(`{"id":"f%d","severity":"warning","file":"file%d.go","line":%d,"description":"finding %d description"}`, i, i, i, i))
+	}
+	return fmt.Sprintf(`{"summary":"test summary","items":[%s]}`, strings.Join(items, ","))
+}
+
+func TestRenderFindings_ViewportShowsSubset(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	// 10 findings, viewport fits 4 items, cursor at 0 (top).
+	raw := makeManyFindings(10)
+	selected := map[string]bool{}
+	for i := 1; i <= 10; i++ {
+		selected[fmt.Sprintf("f%d", i)] = true
+	}
+
+	out := renderFindingsWithSelection(raw, 80, 0, selected, 4)
+	plain := stripANSI(out)
+
+	// Should show first 4 findings (f1 through f4).
+	if !strings.Contains(plain, "finding 1 description") {
+		t.Errorf("expected finding 1 visible at cursor=0, got:\n%s", plain)
+	}
+	if !strings.Contains(plain, "finding 4 description") {
+		t.Errorf("expected finding 4 visible at cursor=0, got:\n%s", plain)
+	}
+	// Should NOT show finding 5 (outside viewport).
+	if strings.Contains(plain, "finding 5 description") {
+		t.Errorf("finding 5 should not be visible when viewport=4 and cursor=0, got:\n%s", plain)
+	}
+}
+
+func TestRenderFindings_ViewportScrollDownIndicator(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	raw := makeManyFindings(10)
+	selected := map[string]bool{}
+	for i := 1; i <= 10; i++ {
+		selected[fmt.Sprintf("f%d", i)] = true
+	}
+
+	out := renderFindingsWithSelection(raw, 80, 0, selected, 4)
+	plain := stripANSI(out)
+
+	// Should show down indicator for 6 more items below.
+	if !strings.Contains(plain, "↓ 6 more") {
+		t.Errorf("expected '↓ 6 more' scroll indicator, got:\n%s", plain)
+	}
+}
+
+func TestRenderFindings_ViewportScrollUpIndicator(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	raw := makeManyFindings(10)
+	selected := map[string]bool{}
+	for i := 1; i <= 10; i++ {
+		selected[fmt.Sprintf("f%d", i)] = true
+	}
+
+	// Cursor at item 9 (index 9, last item) - should show up indicator.
+	out := renderFindingsWithSelection(raw, 80, 9, selected, 4)
+	plain := stripANSI(out)
+
+	// Should show finding 10 (cursor is on it).
+	if !strings.Contains(plain, "finding 10 description") {
+		t.Errorf("expected finding 10 visible at cursor=9, got:\n%s", plain)
+	}
+	// Should show up indicator for items above.
+	if !strings.Contains(plain, "↑") {
+		t.Errorf("expected up scroll indicator when cursor at bottom, got:\n%s", plain)
+	}
+	// Should NOT show down indicator when at bottom.
+	if strings.Contains(plain, "↓") {
+		t.Errorf("should not show down indicator at bottom, got:\n%s", plain)
+	}
+}
+
+func TestModel_View_FindingsViewportApplied(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+
+	m := NewModel("/tmp/sock", nil, run)
+	m.width = 80
+	m.height = 30 // small terminal height -> should trigger viewport
+	m.stepFindings[types.StepReview] = makeManyFindings(15)
+	m.resetFindingSelection(types.StepReview)
+
+	view := m.View()
+	plain := stripANSI(view)
+
+	// With 15 findings and height=30, not all should be visible.
+	// The viewport should limit visible findings and show a scroll indicator.
+	if !strings.Contains(plain, "↓") && !strings.Contains(plain, "more below") {
+		t.Errorf("expected scroll-down indicator when findings exceed viewport, got:\n%s", plain)
+	}
+	// Finding 1 should be visible (cursor starts at 0).
+	if !strings.Contains(plain, "finding 1 description") {
+		t.Errorf("expected finding 1 visible (cursor at 0), got:\n%s", plain)
 	}
 }

@@ -148,7 +148,7 @@ func renderBabysitViewWithSelection(run *ipc.RunInfo, steps []ipc.StepResultInfo
 	}
 	contentWidth := boxWidth - 4 // account for box border + padding
 	if (status == types.StepStatusAwaitingApproval || status == types.StepStatusFixReview) && findings != "" {
-		rendered := renderFindingsWithSelection(findings, contentWidth, cursor, selected)
+		rendered := renderFindingsWithSelection(findings, contentWidth, cursor, selected, 0)
 		if rendered != "" {
 			b.WriteString("\n")
 			b.WriteString(rendered)
