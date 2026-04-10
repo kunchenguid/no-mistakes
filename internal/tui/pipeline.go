@@ -302,7 +302,7 @@ func renderOutcomeBanner(run *ipc.RunInfo, steps []ipc.StepResultInfo) string {
 }
 
 // renderHelpOverlay renders a help box showing keybindings relevant to the current state.
-func renderHelpOverlay(width int, hasAwaitingStep bool, showDiff bool, hasDiff bool) string {
+func renderHelpOverlay(width int, hasAwaitingStep bool, showDiff bool, hasDiff bool, done bool) string {
 	boldKey := lipgloss.NewStyle().Bold(true)
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
 
@@ -349,7 +349,11 @@ func renderHelpOverlay(width int, hasAwaitingStep bool, showDiff bool, hasDiff b
 		}
 	}
 	content.WriteString("\n")
-	content.WriteString(entry("q", "detach/quit") + "\n")
+	qLabel := "detach"
+	if done {
+		qLabel = "quit"
+	}
+	content.WriteString(entry("q", qLabel) + "\n")
 	content.WriteString(entry("?", "close help") + "\n")
 
 	return renderBox("Help", content.String(), width)

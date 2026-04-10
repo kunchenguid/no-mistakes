@@ -5544,3 +5544,69 @@ func TestModel_View_HelpOverlay_HidesDiffToggleWhenEmptyDiffData(t *testing.T) {
 		t.Errorf("help should hide d toggle when diff data is empty, got:\n%s", plain)
 	}
 }
+
+func TestModel_View_HelpOverlay_ShowsDetachWhenRunning(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusRunning
+	m := NewModel("", nil, run)
+	m.width = 80
+	m.height = 40
+	m.showHelp = true
+	// Pipeline is still running - done is false (default).
+
+	view := m.View()
+	plain := stripANSI(view)
+
+	// Help overlay should show "q  detach" (not "quit") while pipeline is running.
+	if !strings.Contains(plain, "q  detach") {
+		t.Errorf("help should show 'q  detach' when pipeline is running, got:\n%s", plain)
+	}
+	if strings.Contains(plain, "quit") {
+		t.Errorf("help should NOT show 'quit' when pipeline is running, got:\n%s", plain)
+	}
+}
+
+func TestModel_View_HelpOverlay_ShowsQuitWhenDone(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	run := testRun()
+	run.Status = types.RunCompleted
+	for i := range run.Steps {
+		run.Steps[i].Status = types.StepStatusCompleted
+	}
+	m := NewModel("", nil, run)
+	m.width = 80
+	m.height = 40
+	m.showHelp = true
+	m.done = true
+
+	view := m.View()
+	plain := stripANSI(view)
+
+	// Help overlay should show "q  quit" (not "detach") when pipeline is done.
+	if !strings.Contains(plain, "q  quit") {
+		t.Errorf("help should show 'q  quit' when pipeline is done, got:\n%s", plain)
+	}
+	if strings.Contains(plain, "detach") {
+		t.Errorf("help should NOT show 'detach' when pipeline is done, got:\n%s", plain)
+	}
+}
+
+func TestModel_View_HelpOverlay_NeverShowsCombinedDetachQuit(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	m := NewModel("", nil, run)
+	m.width = 80
+	m.height = 40
+	m.showHelp = true
+	m.stepDiffs[types.StepReview] = "diff --git a/foo.go b/foo.go\n--- a/foo.go\n+++ b/foo.go\n@@ -1,3 +1,4 @@\n one\n+two\n three\n"
+
+	view := m.View()
+	plain := stripANSI(view)
+
+	// Help should never show the combined "detach/quit" label.
+	if strings.Contains(plain, "detach/quit") {
+		t.Errorf("help should not show combined 'detach/quit', got:\n%s", plain)
+	}
+}
