@@ -208,7 +208,11 @@ func renderActionBar(steps []ipc.StepResultInfo, showSelectionActions bool, allo
 
 	var b strings.Builder
 	promptStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiYellow))
-	b.WriteString(promptStyle.Render(fmt.Sprintf("%s awaiting action:", stepLabel(step.StepName))))
+	prompt := fmt.Sprintf("%s awaiting action:", stepLabel(step.StepName))
+	if step.Status == types.StepStatusFixReview {
+		prompt = fmt.Sprintf("%s - review fix:", stepLabel(step.StepName))
+	}
+	b.WriteString(promptStyle.Render(prompt))
 	b.WriteString("\n")
 	// Hide selection actions in diff mode since toggle/A/N keys don't work there.
 	effectiveSelection := showSelectionActions && !showDiff

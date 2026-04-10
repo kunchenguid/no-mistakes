@@ -3075,6 +3075,52 @@ func TestActionBar_IncludesAwaitingLabel(t *testing.T) {
 	}
 }
 
+func TestActionBar_FixReviewPrompt(t *testing.T) {
+	// When step status is FixReview, the prompt should say "review fix" not "awaiting action".
+	configureTUIColors()
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusFixReview
+	out := stripANSI(renderActionBar(run.Steps, true, true, false, 5, 5, false, true))
+	if !strings.Contains(out, "review fix") {
+		t.Errorf("expected 'review fix' in FixReview prompt, got:\n%s", out)
+	}
+	if strings.Contains(out, "awaiting action") {
+		t.Error("FixReview prompt should NOT say 'awaiting action'")
+	}
+}
+
+func TestActionBar_AwaitingApprovalPrompt(t *testing.T) {
+	// When step status is AwaitingApproval, the prompt should say "awaiting action" not "review fix".
+	configureTUIColors()
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	out := stripANSI(renderActionBar(run.Steps, true, true, false, 5, 5, false, true))
+	if !strings.Contains(out, "awaiting action") {
+		t.Errorf("expected 'awaiting action' in AwaitingApproval prompt, got:\n%s", out)
+	}
+	if strings.Contains(out, "review fix") {
+		t.Error("AwaitingApproval prompt should NOT say 'review fix'")
+	}
+}
+
+func TestActionBar_FixReviewPromptInView(t *testing.T) {
+	// Integration test: full model view shows "Review - review fix:" prompt (not "awaiting action").
+	configureTUIColors()
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusFixReview
+	m := NewModel("", nil, run)
+	m.width = 80
+	m.height = 50
+	m.stepFindings[types.StepReview] = `{"summary":"test","items":[{"id":"f1","severity":"error","file":"foo.go","line":1,"description":"bad"}]}`
+	m.resetFindingSelection(types.StepReview)
+
+	view := stripANSI(m.View())
+	// The action bar prompt should say "Review - review fix:" not "Review awaiting action:".
+	if !strings.Contains(view, "Review - review fix:") {
+		t.Errorf("expected 'Review - review fix:' in full view for FixReview step, got:\n%s", view)
+	}
+}
+
 // --- Run Outcome Banner Tests ---
 
 func TestOutcomeBanner_SuccessShowsCheckmark(t *testing.T) {
