@@ -3748,15 +3748,15 @@ func TestModel_View_HelpOverlay(t *testing.T) {
 	if !strings.Contains(plain, "Ctrl+d/u") {
 		t.Errorf("help overlay should show Ctrl+d/u half-page keys, got:\n%s", plain)
 	}
-	// Should show action keys (two-space separated key/description).
-	for _, key := range []string{"a  approve", "f  fix", "s  skip", "x  abort"} {
+	// Should show action keys (aligned with padding).
+	for _, key := range []string{"approve", "fix", "skip", "abort (press twice)"} {
 		if !strings.Contains(plain, key) {
 			t.Errorf("help overlay should show %q, got:\n%s", key, plain)
 		}
 	}
 	// Should show toggle key.
-	if !strings.Contains(plain, "d  diff") {
-		t.Errorf("help overlay should show d diff toggle, got:\n%s", plain)
+	if !strings.Contains(plain, "diff/findings toggle") {
+		t.Errorf("help overlay should show diff/findings toggle, got:\n%s", plain)
 	}
 	// Should show selection keys.
 	if !strings.Contains(plain, "toggle") {
@@ -3823,11 +3823,11 @@ func TestModel_View_HelpOverlay_HidesActionsWhenNoApproval(t *testing.T) {
 		t.Errorf("help should hide navigation keys without approval, got:\n%s", plain)
 	}
 	// Action keys should NOT be shown since no step is awaiting approval.
-	if strings.Contains(plain, "a  approve") {
+	if strings.Contains(plain, "approve") {
 		t.Errorf("help should hide action keys when no step awaiting approval, got:\n%s", plain)
 	}
 	// Selection keys should NOT be shown.
-	if strings.Contains(plain, "A  select all") {
+	if strings.Contains(plain, "select all") {
 		t.Errorf("help should hide selection keys when no step awaiting approval, got:\n%s", plain)
 	}
 }
@@ -3847,15 +3847,15 @@ func TestModel_View_HelpOverlay_HidesSelectionInDiffMode(t *testing.T) {
 	plain := stripANSI(view)
 
 	// Action keys should be shown (approval is active).
-	if !strings.Contains(plain, "a  approve") {
+	if !strings.Contains(plain, "approve") {
 		t.Errorf("help should show action keys during approval, got:\n%s", plain)
 	}
 	// Selection keys should NOT be shown in diff mode.
-	if strings.Contains(plain, "A  select all") {
+	if strings.Contains(plain, "select all") {
 		t.Errorf("help should hide selection keys in diff mode, got:\n%s", plain)
 	}
 	// d toggle should still be shown.
-	if !strings.Contains(plain, "d  ") {
+	if !strings.Contains(plain, "diff/findings toggle") {
 		t.Errorf("help should show d toggle in diff mode, got:\n%s", plain)
 	}
 }
@@ -5618,7 +5618,7 @@ func TestModel_View_HelpOverlay_HidesDiffToggleWhenNoDiffData(t *testing.T) {
 	plain := stripANSI(view)
 
 	// Action keys like approve should still be shown.
-	if !strings.Contains(plain, "a  approve") {
+	if !strings.Contains(plain, "approve") {
 		t.Errorf("help should show action keys during approval, got:\n%s", plain)
 	}
 	// The d toggle should NOT be shown since there's no diff data.
@@ -6482,5 +6482,107 @@ func TestModel_View_HelpOverlay_ShowsNavigationWhenAwaitingStep(t *testing.T) {
 	}
 	if !strings.Contains(plain, "Navigation") {
 		t.Errorf("help should show Navigation section when step is awaiting, got:\n%s", plain)
+	}
+}
+
+// visualColumn returns the visual column position where needle starts in line,
+// using lipgloss.Width to account for multi-byte Unicode characters.
+// Returns -1 if not found.
+func visualColumn(line, needle string) int {
+	idx := strings.Index(line, needle)
+	if idx < 0 {
+		return -1
+	}
+	return lipgloss.Width(line[:idx])
+}
+
+func TestHelpOverlay_NavigationDescriptionsAligned(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	result := renderHelpOverlay(80, true, true, true, false)
+	plain := stripANSI(result)
+	lines := strings.Split(plain, "\n")
+
+	// Find lines containing navigation descriptions and measure their visual column positions.
+	navDescriptions := []string{"scroll line by line", "jump to start/end", "half-page down/up"}
+	var descColumns []int
+	for _, line := range lines {
+		for _, desc := range navDescriptions {
+			if col := visualColumn(line, desc); col >= 0 {
+				descColumns = append(descColumns, col)
+			}
+		}
+	}
+
+	if len(descColumns) < 3 {
+		t.Fatalf("expected at least 3 navigation entries, found %d in:\n%s", len(descColumns), plain)
+	}
+
+	// All descriptions should start at the same visual column.
+	for i := 1; i < len(descColumns); i++ {
+		if descColumns[i] != descColumns[0] {
+			t.Errorf("navigation descriptions not aligned: column %d vs %d in:\n%s",
+				descColumns[0], descColumns[i], plain)
+		}
+	}
+}
+
+func TestHelpOverlay_ActionDescriptionsAligned(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	result := renderHelpOverlay(80, true, false, true, false)
+	plain := stripANSI(result)
+	lines := strings.Split(plain, "\n")
+
+	// Find lines containing action descriptions and measure their visual column positions.
+	actionDescriptions := []string{"approve", "fix", "skip", "abort (press twice)"}
+	var descColumns []int
+	for _, line := range lines {
+		for _, desc := range actionDescriptions {
+			if col := visualColumn(line, desc); col >= 0 {
+				descColumns = append(descColumns, col)
+			}
+		}
+	}
+
+	if len(descColumns) < 4 {
+		t.Fatalf("expected 4 action entries, found %d in:\n%s", len(descColumns), plain)
+	}
+
+	// All descriptions should start at the same visual column.
+	for i := 1; i < len(descColumns); i++ {
+		if descColumns[i] != descColumns[0] {
+			t.Errorf("action descriptions not aligned: column %d vs %d in:\n%s",
+				descColumns[0], descColumns[i], plain)
+		}
+	}
+}
+
+func TestHelpOverlay_SelectionDescriptionsAligned(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	// showDiff=false so selection section is visible.
+	result := renderHelpOverlay(80, true, false, true, false)
+	plain := stripANSI(result)
+	lines := strings.Split(plain, "\n")
+
+	// Find lines containing selection descriptions using visual column positions.
+	selDescriptions := []string{"toggle current", "select all", "select none"}
+	var descColumns []int
+	for _, line := range lines {
+		for _, desc := range selDescriptions {
+			if col := visualColumn(line, desc); col >= 0 {
+				descColumns = append(descColumns, col)
+			}
+		}
+	}
+
+	if len(descColumns) < 3 {
+		t.Fatalf("expected 3 selection entries, found %d in:\n%s", len(descColumns), plain)
+	}
+
+	// All descriptions should start at the same visual column.
+	for i := 1; i < len(descColumns); i++ {
+		if descColumns[i] != descColumns[0] {
+			t.Errorf("selection descriptions not aligned: column %d vs %d in:\n%s",
+				descColumns[0], descColumns[i], plain)
+		}
 	}
 }

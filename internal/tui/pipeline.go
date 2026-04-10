@@ -305,57 +305,73 @@ func renderOutcomeBanner(run *ipc.RunInfo, steps []ipc.StepResultInfo) string {
 	}
 }
 
+// helpEntry is a key-description pair for the help overlay.
+type helpEntry struct {
+	key  string
+	desc string
+}
+
 // renderHelpOverlay renders a help box showing keybindings relevant to the current state.
 func renderHelpOverlay(width int, hasAwaitingStep bool, showDiff bool, hasDiff bool, done bool) string {
 	boldKey := lipgloss.NewStyle().Bold(true)
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
 
-	section := func(title string, entries []string) string {
-		var b strings.Builder
-		b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiCyan)).Render(title))
-		b.WriteString("\n")
+	// renderEntries formats entries with aligned descriptions.
+	// Keys are padded to the max key width in the group.
+	renderEntries := func(entries []helpEntry) string {
+		maxKeyWidth := 0
 		for _, e := range entries {
-			b.WriteString("  " + e + "\n")
+			if w := lipgloss.Width(e.key); w > maxKeyWidth {
+				maxKeyWidth = w
+			}
+		}
+		var b strings.Builder
+		for _, e := range entries {
+			keyWidth := lipgloss.Width(e.key)
+			pad := strings.Repeat(" ", maxKeyWidth-keyWidth)
+			b.WriteString("  " + boldKey.Render(e.key) + pad + "  " + dimStyle.Render(e.desc) + "\n")
 		}
 		return b.String()
 	}
 
-	entry := func(key, desc string) string {
-		return boldKey.Render(key) + "  " + dimStyle.Render(desc)
+	section := func(title string, entries []helpEntry) string {
+		var b strings.Builder
+		b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiCyan)).Render(title))
+		b.WriteString("\n")
+		b.WriteString(renderEntries(entries))
+		return b.String()
 	}
 
 	var content strings.Builder
 
 	if hasAwaitingStep {
-		navEntries := []string{
-			entry("j/k", "scroll line by line"),
-			entry("g/G", "jump to start/end"),
-			entry("Ctrl+d/u", "half-page down/up"),
+		navEntries := []helpEntry{
+			{"j/k", "scroll line by line"},
+			{"g/G", "jump to start/end"},
+			{"Ctrl+d/u", "half-page down/up"},
 		}
 		if showDiff {
-			navEntries = append(navEntries, entry("n/p", "next/prev finding"))
-		}
-		if showDiff {
-			navEntries = append(navEntries, entry("esc", "back to findings"))
+			navEntries = append(navEntries, helpEntry{"n/p", "next/prev finding"})
+			navEntries = append(navEntries, helpEntry{"esc", "back to findings"})
 		}
 		content.WriteString(section("Navigation", navEntries))
 		content.WriteString("\n")
-		actions := []string{
-			entry("a", "approve"),
-			entry("f", "fix"),
-			entry("s", "skip"),
-			entry("x x", "abort (press twice)"),
+		actions := []helpEntry{
+			{"a", "approve"},
+			{"f", "fix"},
+			{"s", "skip"},
+			{"x x", "abort (press twice)"},
 		}
 		if hasDiff {
-			actions = append(actions, entry("d", "diff/findings toggle"))
+			actions = append(actions, helpEntry{"d", "diff/findings toggle"})
 		}
 		content.WriteString(section("Actions", actions))
 		if !showDiff {
 			content.WriteString("\n")
-			content.WriteString(section("Selection", []string{
-				entry("\u2423", "toggle current"),
-				entry("A", "select all"),
-				entry("N", "select none"),
+			content.WriteString(section("Selection", []helpEntry{
+				{"\u2423", "toggle current"},
+				{"A", "select all"},
+				{"N", "select none"},
 			}))
 		}
 	}
@@ -364,8 +380,10 @@ func renderHelpOverlay(width int, hasAwaitingStep bool, showDiff bool, hasDiff b
 	if done {
 		qLabel = "quit"
 	}
-	content.WriteString(entry("q", qLabel) + "\n")
-	content.WriteString(entry("?", "close help") + "\n")
+	content.WriteString(renderEntries([]helpEntry{
+		{"q", qLabel},
+		{"?", "close help"},
+	}))
 
 	return renderBox("Help", content.String(), width)
 }
