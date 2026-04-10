@@ -67,13 +67,13 @@ func runStatusStyled(status types.RunStatus) string {
 	var style lipgloss.Style
 	switch status {
 	case types.RunRunning:
-		style = lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBlue))
+		style = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiBlue))
 	case types.RunCompleted:
-		style = lipgloss.NewStyle().Foreground(lipgloss.Color(ansiGreen))
+		style = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiGreen))
 	case types.RunFailed, types.RunCancelled:
-		style = lipgloss.NewStyle().Foreground(lipgloss.Color(ansiRed))
+		style = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiRed))
 	default:
-		style = lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
+		style = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiBrightBlack))
 	}
 	return style.Render(string(status))
 }
@@ -122,27 +122,21 @@ func renderPipelineView(run *ipc.RunInfo, steps []ipc.StepResultInfo, width int,
 
 	var b strings.Builder
 
-	// Header, truncated to fit inside the box.
+	// Header keeps the default view focused on branch and run status only.
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
-	header := fmt.Sprintf("%s @ %s", run.Branch, run.HeadSHA[:min(8, len(run.HeadSHA))])
-	header, _ = cutText(header, contentWidth)
-	b.WriteString(header)
-	b.WriteString("\n")
-	b.WriteString(dimStyle.Render(run.ID) + "  " + runStatusStyled(run.Status))
-	// Step progress for running pipelines (e.g., "2/5").
-	if run.Status == types.RunRunning {
-		current := 0
-		for _, s := range steps {
-			if s.Status != types.StepStatusPending {
-				current++
-			}
-		}
-		if current == 0 {
-			current = 1
-		}
-		b.WriteString("  " + dimStyle.Render(fmt.Sprintf("%d/%d", current, len(steps))))
+	status := runStatusStyled(run.Status)
+	branchWidth := contentWidth - lipgloss.Width(status) - 1
+	if branchWidth < 1 {
+		branchWidth = 1
 	}
-	b.WriteString("\n")
+	branch, _ := cutText(run.Branch, branchWidth)
+	branchRendered := dimStyle.Render(branch)
+	spacing := contentWidth - lipgloss.Width(branch) - lipgloss.Width(status)
+	if spacing < 1 {
+		spacing = 1
+	}
+	b.WriteString(branchRendered + strings.Repeat(" ", spacing) + status)
+	b.WriteString("\n\n")
 
 	// Step list with connectors.
 	for i, step := range steps {
@@ -316,9 +310,13 @@ type helpEntry struct {
 }
 
 // renderHelpOverlay renders a help box showing keybindings relevant to the current state.
-func renderHelpOverlay(width int, hasAwaitingStep bool, showDiff bool, hasDiff bool, done bool) string {
+func renderHelpOverlay(width int, run *ipc.RunInfo, hasAwaitingStep bool, showDiff bool, hasDiff bool, done bool) string {
 	boldKey := lipgloss.NewStyle().Bold(true)
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
+	contentWidth := width - 4
+	if contentWidth < 1 {
+		contentWidth = 1
+	}
 
 	// renderEntries formats entries with aligned descriptions.
 	// Keys are padded to the max key width in the group.
@@ -329,11 +327,16 @@ func renderHelpOverlay(width int, hasAwaitingStep bool, showDiff bool, hasDiff b
 				maxKeyWidth = w
 			}
 		}
+		maxDescWidth := contentWidth - 4 - maxKeyWidth
+		if maxDescWidth < 1 {
+			maxDescWidth = 1
+		}
 		var b strings.Builder
 		for _, e := range entries {
 			keyWidth := lipgloss.Width(e.key)
 			pad := strings.Repeat(" ", maxKeyWidth-keyWidth)
-			b.WriteString("  " + boldKey.Render(e.key) + pad + "  " + dimStyle.Render(e.desc) + "\n")
+			desc, _ := cutText(e.desc, maxDescWidth)
+			b.WriteString("  " + boldKey.Render(e.key) + pad + "  " + dimStyle.Render(desc) + "\n")
 		}
 		return b.String()
 	}
@@ -378,6 +381,17 @@ func renderHelpOverlay(width int, hasAwaitingStep bool, showDiff bool, hasDiff b
 				{"N", "select none"},
 			}))
 		}
+	}
+	if run != nil {
+		if content.Len() > 0 {
+			content.WriteString("\n")
+		}
+		commit := run.HeadSHA
+		if len(commit) > 8 {
+			commit = commit[:8]
+		}
+		details, _ := cutText(fmt.Sprintf("branch %s  commit %s  pipeline %s", run.Branch, commit, run.ID), contentWidth)
+		content.WriteString(dimStyle.Render(details))
 	}
 	content.WriteString("\n")
 	qLabel := "detach"

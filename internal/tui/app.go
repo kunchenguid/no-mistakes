@@ -310,7 +310,7 @@ func (m Model) View() string {
 		if boxWidth < 20 {
 			boxWidth = 80
 		}
-		appendExtraSection(renderHelpOverlay(boxWidth, awaitingStep(m.steps) != nil, m.showDiff, hasDiff, m.done))
+		appendExtraSection(renderHelpOverlay(boxWidth, m.run, awaitingStep(m.steps) != nil, m.showDiff, hasDiff, m.done))
 	}
 
 	if useResponsiveLayout {

@@ -109,12 +109,18 @@ func TestRenderPipelineView_ShowsSteps(t *testing.T) {
 	run.Steps[0].DurationMS = ptr(int64(1200))
 	run.Steps[1].Status = types.StepStatusRunning
 
-	out := renderPipelineView(run, run.Steps, 80, 0, 40)
+	out := stripANSI(renderPipelineView(run, run.Steps, 80, 0, 40))
 	if !strings.Contains(out, "feature/foo") {
 		t.Error("expected branch name in output")
 	}
-	if !strings.Contains(out, "abc12345") {
-		t.Error("expected truncated SHA in output")
+	if strings.Contains(out, "abc12345") {
+		t.Error("expected commit SHA to be hidden from the pipeline header")
+	}
+	if strings.Contains(out, "run-001") {
+		t.Error("expected pipeline ID to be hidden from the pipeline header")
+	}
+	if strings.Contains(out, "1/5") {
+		t.Error("expected step progress count to be hidden from the pipeline header")
 	}
 	if !strings.Contains(out, "Review") {
 		t.Error("expected Review step")
@@ -124,6 +130,32 @@ func TestRenderPipelineView_ShowsSteps(t *testing.T) {
 	}
 	if !strings.Contains(out, "Test") {
 		t.Error("expected Test step")
+	}
+}
+
+func TestRenderPipelineView_HeaderHasSpacerBeforeSteps(t *testing.T) {
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusRunning
+
+	plain := stripANSI(renderPipelineView(run, run.Steps, 80, 0, 40))
+	var contentLines []string
+	for _, line := range strings.Split(plain, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "│") && strings.HasSuffix(trimmed, "│") {
+			contentLines = append(contentLines, boxContentLine(line))
+		}
+	}
+	if len(contentLines) < 3 {
+		t.Fatalf("expected at least header, spacer, and one step line, got %d lines in:\n%s", len(contentLines), plain)
+	}
+	if !strings.Contains(contentLines[0], "feature/foo") {
+		t.Fatalf("expected header line to include branch name, got %q", contentLines[0])
+	}
+	if !strings.Contains(contentLines[0], "running") {
+		t.Fatalf("expected header line to include run status, got %q", contentLines[0])
+	}
+	if contentLines[1] != "" {
+		t.Fatalf("expected a blank spacer row between header and steps, got %q", contentLines[1])
 	}
 }
 
@@ -5015,8 +5047,8 @@ func TestRenderPipelineView_RunStatusColoredBlue(t *testing.T) {
 	}
 	view := renderPipelineView(run, steps, 80, 0, 40)
 
-	// The run status "running" should be styled blue, not just dim.
-	blueStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBlue))
+	// The run status should stand out as the primary signal in the header.
+	blueStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiBlue))
 	blueRunning := blueStyle.Render("running")
 	if !strings.Contains(view, blueRunning) {
 		t.Errorf("expected run status 'running' to be styled blue, got:\n%s", view)
@@ -5032,15 +5064,25 @@ func TestRenderPipelineView_RunStatusColoredGreen(t *testing.T) {
 	}
 	view := renderPipelineView(run, steps, 80, 0, 40)
 
-	// The run status "completed" should be styled green.
-	greenStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiGreen))
+	greenStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiGreen))
 	greenCompleted := greenStyle.Render("completed")
 	if !strings.Contains(view, greenCompleted) {
 		t.Errorf("expected run status 'completed' to be styled green, got:\n%s", view)
 	}
 }
 
-func TestRenderPipelineView_StepProgressShown(t *testing.T) {
+func TestRenderPipelineView_BranchStyledDim(t *testing.T) {
+	run := testRun()
+	view := renderPipelineView(run, run.Steps, 80, 0, 40)
+
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
+	dimBranch := dimStyle.Render(run.Branch)
+	if !strings.Contains(view, dimBranch) {
+		t.Errorf("expected branch name to be styled dim, got:\n%s", view)
+	}
+}
+
+func TestRenderPipelineView_HidesStepProgress(t *testing.T) {
 	run := testRun()
 	run.Status = types.RunRunning
 	steps := []ipc.StepResultInfo{
@@ -5053,9 +5095,35 @@ func TestRenderPipelineView_StepProgressShown(t *testing.T) {
 	view := renderPipelineView(run, steps, 80, 0, 40)
 	plain := stripANSI(view)
 
-	// Should show step progress "2/5" (step 2 of 5 is currently active).
-	if !strings.Contains(plain, "2/5") {
-		t.Errorf("expected step progress '2/5' in pipeline header, got:\n%s", plain)
+	if strings.Contains(plain, "2/5") {
+		t.Errorf("expected step progress count to be hidden from pipeline header, got:\n%s", plain)
+	}
+}
+
+func TestPipelineView_LongBranchKeepsStatusVisible(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	longBranch := "feature/" + strings.Repeat("very-long-name-", 10)
+	run := testRun()
+	run.Branch = longBranch
+
+	result := stripANSI(renderPipelineView(run, run.Steps, 40, 0, 40))
+	if !strings.Contains(result, "running") {
+		t.Fatalf("expected running status to remain visible when branch is truncated, got:\n%s", result)
+	}
+	if strings.Contains(result, longBranch) {
+		t.Fatal("expected long branch name to be truncated before it reaches the status")
+	}
+}
+
+func TestRenderBoxWithFooter_FitsRequestedWidth(t *testing.T) {
+	plain := stripANSI(renderBoxWithFooter("Findings", "content", 40, "↓ 1 more below (j/k)"))
+	for _, line := range strings.Split(plain, "\n") {
+		if line == "" {
+			continue
+		}
+		if got := lipgloss.Width(line); got != 40 {
+			t.Fatalf("expected every box line to be width 40, got %d for %q", got, line)
+		}
 	}
 }
 
@@ -6725,7 +6793,7 @@ func TestModel_View_Width100UsesResponsiveLayout(t *testing.T) {
 
 func TestHelpOverlay_NavigationDescriptionsAligned(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
-	result := renderHelpOverlay(80, true, true, true, false)
+	result := renderHelpOverlay(80, testRun(), true, true, true, false)
 	plain := stripANSI(result)
 	lines := strings.Split(plain, "\n")
 
@@ -6755,7 +6823,7 @@ func TestHelpOverlay_NavigationDescriptionsAligned(t *testing.T) {
 
 func TestHelpOverlay_ActionDescriptionsAligned(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
-	result := renderHelpOverlay(80, true, false, true, false)
+	result := renderHelpOverlay(80, testRun(), true, false, true, false)
 	plain := stripANSI(result)
 	lines := strings.Split(plain, "\n")
 
@@ -6780,6 +6848,21 @@ func TestHelpOverlay_ActionDescriptionsAligned(t *testing.T) {
 			t.Errorf("action descriptions not aligned: column %d vs %d in:\n%s",
 				descColumns[0], descColumns[i], plain)
 		}
+	}
+}
+
+func TestHelpOverlay_ShowsRunContext(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	run := testRun()
+	result := stripANSI(renderHelpOverlay(80, run, true, false, true, false))
+	if !strings.Contains(result, run.Branch) {
+		t.Fatalf("expected help overlay to show branch name, got:\n%s", result)
+	}
+	if !strings.Contains(result, run.HeadSHA[:8]) {
+		t.Fatalf("expected help overlay to show short commit SHA, got:\n%s", result)
+	}
+	if !strings.Contains(result, run.ID) {
+		t.Fatalf("expected help overlay to show pipeline ID, got:\n%s", result)
 	}
 }
 
@@ -6941,7 +7024,7 @@ func TestModel_View_ConsistentFooterSpacing(t *testing.T) {
 func TestHelpOverlay_SelectionDescriptionsAligned(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
 	// showDiff=false so selection section is visible.
-	result := renderHelpOverlay(80, true, false, true, false)
+	result := renderHelpOverlay(80, testRun(), true, false, true, false)
 	plain := stripANSI(result)
 	lines := strings.Split(plain, "\n")
 

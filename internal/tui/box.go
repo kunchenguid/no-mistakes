@@ -110,11 +110,15 @@ func renderBottomBorder(width int, footer string) string {
 
 	// ╰──── footer ─────╯
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
+	leadDashes := 4
+	maxFooterWidth := width - leadDashes - 5
+	if maxFooterWidth < 1 {
+		maxFooterWidth = 1
+	}
+	footer, _ = cutText(footer, maxFooterWidth)
 	footerRendered := dimStyle.Render(footer)
 	footerWidth := lipgloss.Width(footerRendered)
-	// ╰──── [space] footer [space] ──╯ = 5 + footerWidth + trailingFill + 1
-	leadDashes := 4
-	trailingFill := width - leadDashes - 3 - footerWidth // 3 = ╰ + space + ╯-space
+	trailingFill := width - footerWidth - 8
 	if trailingFill < 1 {
 		trailingFill = 1
 	}
