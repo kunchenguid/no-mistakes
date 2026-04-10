@@ -4764,3 +4764,56 @@ func TestModel_View_ErrorBox_MultiLineMessageTruncated(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderPipelineView_RunStatusColoredBlue(t *testing.T) {
+	run := testRun()
+	run.Status = types.RunRunning
+	steps := []ipc.StepResultInfo{
+		{StepName: types.StepReview, Status: types.StepStatusRunning},
+		{StepName: types.StepTest, Status: types.StepStatusPending},
+	}
+	view := renderPipelineView(run, steps, 80, 0, 40)
+
+	// The run status "running" should be styled blue, not just dim.
+	blueStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBlue))
+	blueRunning := blueStyle.Render("running")
+	if !strings.Contains(view, blueRunning) {
+		t.Errorf("expected run status 'running' to be styled blue, got:\n%s", view)
+	}
+}
+
+func TestRenderPipelineView_RunStatusColoredGreen(t *testing.T) {
+	run := testRun()
+	run.Status = types.RunCompleted
+	steps := []ipc.StepResultInfo{
+		{StepName: types.StepReview, Status: types.StepStatusCompleted},
+		{StepName: types.StepTest, Status: types.StepStatusCompleted},
+	}
+	view := renderPipelineView(run, steps, 80, 0, 40)
+
+	// The run status "completed" should be styled green.
+	greenStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiGreen))
+	greenCompleted := greenStyle.Render("completed")
+	if !strings.Contains(view, greenCompleted) {
+		t.Errorf("expected run status 'completed' to be styled green, got:\n%s", view)
+	}
+}
+
+func TestRenderPipelineView_StepProgressShown(t *testing.T) {
+	run := testRun()
+	run.Status = types.RunRunning
+	steps := []ipc.StepResultInfo{
+		{StepName: types.StepReview, Status: types.StepStatusCompleted},
+		{StepName: types.StepTest, Status: types.StepStatusRunning},
+		{StepName: types.StepLint, Status: types.StepStatusPending},
+		{StepName: types.StepPush, Status: types.StepStatusPending},
+		{StepName: types.StepPR, Status: types.StepStatusPending},
+	}
+	view := renderPipelineView(run, steps, 80, 0, 40)
+	plain := stripANSI(view)
+
+	// Should show step progress "2/5" (step 2 of 5 is currently active).
+	if !strings.Contains(plain, "2/5") {
+		t.Errorf("expected step progress '2/5' in pipeline header, got:\n%s", plain)
+	}
+}

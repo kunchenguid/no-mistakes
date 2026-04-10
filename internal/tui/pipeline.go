@@ -62,6 +62,22 @@ func stepStatusStyle(status types.StepStatus) lipgloss.Style {
 	}
 }
 
+// runStatusStyled returns the run status string styled per DESIGN.md Color Roles.
+func runStatusStyled(status types.RunStatus) string {
+	var style lipgloss.Style
+	switch status {
+	case types.RunRunning:
+		style = lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBlue))
+	case types.RunCompleted:
+		style = lipgloss.NewStyle().Foreground(lipgloss.Color(ansiGreen))
+	case types.RunFailed, types.RunCancelled:
+		style = lipgloss.NewStyle().Foreground(lipgloss.Color(ansiRed))
+	default:
+		style = lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
+	}
+	return style.Render(string(status))
+}
+
 // stepLabel returns the human-readable label for a step name.
 func stepLabel(name types.StepName) string {
 	switch name {
@@ -112,7 +128,20 @@ func renderPipelineView(run *ipc.RunInfo, steps []ipc.StepResultInfo, width int,
 	header, _ = cutText(header, contentWidth)
 	b.WriteString(header)
 	b.WriteString("\n")
-	b.WriteString(dimStyle.Render(fmt.Sprintf("%s  %s", run.ID, run.Status)))
+	b.WriteString(dimStyle.Render(run.ID) + "  " + runStatusStyled(run.Status))
+	// Step progress for running pipelines (e.g., "2/5").
+	if run.Status == types.RunRunning {
+		current := 0
+		for _, s := range steps {
+			if s.Status != types.StepStatusPending {
+				current++
+			}
+		}
+		if current == 0 {
+			current = 1
+		}
+		b.WriteString("  " + dimStyle.Render(fmt.Sprintf("%d/%d", current, len(steps))))
+	}
 	b.WriteString("\n")
 
 	// Step list with connectors.
