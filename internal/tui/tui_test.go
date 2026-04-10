@@ -6614,6 +6614,115 @@ func visualColumn(line, needle string) int {
 	return lipgloss.Width(line[:idx])
 }
 
+func hasLineContainingAll(view string, needles ...string) bool {
+	for _, line := range strings.Split(stripANSI(view), "\n") {
+		match := true
+		for _, needle := range needles {
+			if !strings.Contains(line, needle) {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true
+		}
+	}
+	return false
+}
+
+func hasParallelBoxRow(view string) bool {
+	for _, line := range strings.Split(stripANSI(view), "\n") {
+		if strings.Count(line, "╭") >= 2 || strings.Count(line, "╯") >= 2 || strings.Count(line, "│") >= 4 {
+			return true
+		}
+	}
+	return false
+}
+
+func TestModel_View_WideLayoutPlacesPipelineBesideFindings(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	findings := `{"findings":[{"severity":"error","description":"test finding","id":"f1","file":"foo.go","line":1}],"summary":"1 issue"}`
+	run := &ipc.RunInfo{
+		ID: "run-001", RepoID: "repo-001", Branch: "main", HeadSHA: "abc12345",
+		BaseSHA: "000000", Status: types.RunRunning,
+		Steps: []ipc.StepResultInfo{
+			{ID: "s1", StepName: types.StepReview, StepOrder: 1, Status: types.StepStatusAwaitingApproval, FindingsJSON: &findings},
+			{ID: "s2", StepName: types.StepTest, StepOrder: 2, Status: types.StepStatusPending},
+		},
+	}
+	m := NewModel("/tmp/sock", nil, run)
+	m.width = 140
+	m.height = 40
+
+	view := m.View()
+	if !strings.Contains(stripANSI(view), "Findings - Review") {
+		t.Fatalf("expected findings box in view, got:\n%s", stripANSI(view))
+	}
+	if !hasParallelBoxRow(view) {
+		t.Fatalf("expected wide layout to render parallel boxes, got:\n%s", stripANSI(view))
+	}
+}
+
+func TestModel_View_WideLayoutPlacesPipelineBesideLog(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusRunning
+	m := NewModel("/tmp/sock", nil, run)
+	m.width = 140
+	m.height = 40
+	m.logs = []string{"running go test ./..."}
+
+	view := m.View()
+	if !strings.Contains(stripANSI(view), "Log") {
+		t.Fatalf("expected log box in view, got:\n%s", stripANSI(view))
+	}
+	if !hasParallelBoxRow(view) {
+		t.Fatalf("expected wide layout to render pipeline beside log, got:\n%s", stripANSI(view))
+	}
+}
+
+func TestModel_View_NarrowLayoutKeepsPipelineStackedAboveFindings(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	findings := `{"findings":[{"severity":"error","description":"test finding","id":"f1","file":"foo.go","line":1}],"summary":"1 issue"}`
+	run := &ipc.RunInfo{
+		ID: "run-001", RepoID: "repo-001", Branch: "main", HeadSHA: "abc12345",
+		BaseSHA: "000000", Status: types.RunRunning,
+		Steps: []ipc.StepResultInfo{
+			{ID: "s1", StepName: types.StepReview, StepOrder: 1, Status: types.StepStatusAwaitingApproval, FindingsJSON: &findings},
+			{ID: "s2", StepName: types.StepTest, StepOrder: 2, Status: types.StepStatusPending},
+		},
+	}
+	m := NewModel("/tmp/sock", nil, run)
+	m.width = 80
+	m.height = 40
+
+	view := m.View()
+	if hasParallelBoxRow(view) {
+		t.Fatalf("expected narrow layout to keep pipeline stacked above findings, got:\n%s", stripANSI(view))
+	}
+}
+
+func TestModel_View_Width100UsesResponsiveLayout(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	findings := `{"findings":[{"severity":"error","description":"test finding","id":"f1","file":"foo.go","line":1}],"summary":"1 issue"}`
+	run := &ipc.RunInfo{
+		ID: "run-001", RepoID: "repo-001", Branch: "main", HeadSHA: "abc12345",
+		BaseSHA: "000000", Status: types.RunRunning,
+		Steps: []ipc.StepResultInfo{
+			{ID: "s1", StepName: types.StepReview, StepOrder: 1, Status: types.StepStatusAwaitingApproval, FindingsJSON: &findings},
+			{ID: "s2", StepName: types.StepTest, StepOrder: 2, Status: types.StepStatusPending},
+		},
+	}
+	m := NewModel("/tmp/sock", nil, run)
+	m.width = 100
+	m.height = 40
+
+	view := m.View()
+	if !hasParallelBoxRow(view) {
+		t.Fatalf("expected width 100 to use responsive layout, got:\n%s", stripANSI(view))
+	}
+}
+
 func TestHelpOverlay_NavigationDescriptionsAligned(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
 	result := renderHelpOverlay(80, true, true, true, false)

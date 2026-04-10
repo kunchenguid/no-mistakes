@@ -21,6 +21,14 @@ type spinnerTickMsg struct{}
 
 const spinnerTickInterval = 120 * time.Millisecond
 
+const (
+	responsiveLayoutMinWidth = 100
+	responsiveLayoutGap      = 2
+	responsiveLeftMinWidth   = 38
+	responsiveLeftMaxWidth   = 48
+	responsiveRightMinWidth  = 48
+)
+
 func (e errMsg) Error() string { return e.err.Error() }
 
 // connectedMsg signals that the event subscription is ready.
@@ -144,6 +152,7 @@ func (m Model) View() string {
 	}
 
 	showSelectionActions, allowFix, selectedCount, totalCount := m.awaitingActionState()
+	hasBabysit := isBabysitActive(m.steps)
 	compact := m.height > 0 && m.height < 24
 	sectionGap := "\n\n"
 	sectionGapHeight := 2
@@ -152,20 +161,22 @@ func (m Model) View() string {
 		sectionGapHeight = 1
 	}
 
+	useResponsiveLayout := shouldUseResponsiveLayout(m.width, hasResponsiveSidebarContent(m))
+	leftWidth := m.width
+	rightWidth := m.width
+	if useResponsiveLayout {
+		leftWidth, rightWidth = responsiveColumnWidths(m.width)
+	}
+
 	// Pipeline progress view.
 	// Compute elapsed times for running steps so they display live durations.
 	pipelineSteps := m.stepsWithRunningElapsed()
 	pipelineHeight := m.height
-	if (m.showHelp || isBabysitActive(m.steps)) && (pipelineHeight == 0 || pipelineHeight >= 30) {
+	if (m.showHelp || hasBabysit) && (pipelineHeight == 0 || pipelineHeight >= 30) {
 		pipelineHeight = 29
 	}
-	pipelineView := renderPipelineView(m.run, pipelineSteps, m.width, m.spinnerFrame, pipelineHeight)
-	sections := []string{pipelineView}
-
-	// Outcome banner when run is done.
-	if banner := renderOutcomeBanner(m.run, m.steps); banner != "" {
-		sections = append(sections, banner)
-	}
+	pipelineView := renderPipelineView(m.run, pipelineSteps, leftWidth, m.spinnerFrame, pipelineHeight)
+	banner := renderOutcomeBanner(m.run, m.steps)
 
 	// Action bar between pipeline box and findings/diff per DESIGN.md.
 	hasDiff := false
@@ -173,14 +184,26 @@ func (m Model) View() string {
 		raw, ok := m.stepDiffs[step.StepName]
 		hasDiff = ok && raw != ""
 	}
-	if actionBar := renderActionBar(m.steps, showSelectionActions, allowFix, m.showDiff, selectedCount, totalCount, m.confirmAbort, hasDiff); actionBar != "" {
-		sections = append(sections, actionBar)
-	}
+	actionBar := renderActionBar(m.steps, showSelectionActions, allowFix, m.showDiff, selectedCount, totalCount, m.confirmAbort, hasDiff)
 
 	footer := renderFooter(m.done, m.showHelp)
 	contentBudget := -1
 	if m.height > 0 {
-		contentBudget = m.height - sectionsHeight(sections, sectionGapHeight)
+		baseSections := []string{}
+		if useResponsiveLayout {
+			if actionBar != "" {
+				baseSections = append(baseSections, actionBar)
+			}
+		} else {
+			baseSections = append(baseSections, pipelineView)
+			if banner != "" {
+				baseSections = append(baseSections, banner)
+			}
+			if actionBar != "" {
+				baseSections = append(baseSections, actionBar)
+			}
+		}
+		contentBudget = m.height - sectionsHeight(baseSections, sectionGapHeight)
 		contentBudget -= sectionGapHeight + lipgloss.Height(footer)
 		if contentBudget < 0 {
 			contentBudget = 0
@@ -207,11 +230,11 @@ func (m Model) View() string {
 	}
 
 	if m.err != nil {
-		appendExtraSection(renderErrorBox(m.err, m.width))
+		appendExtraSection(renderErrorBox(m.err, rightWidth))
 	}
 
 	// Babysit-specific view when babysit step is active.
-	if !m.showHelp && isBabysitActive(m.steps) {
+	if !m.showHelp && hasBabysit {
 		findings := ""
 		cursor := 0
 		var selected map[string]bool
@@ -222,9 +245,9 @@ func (m Model) View() string {
 		}
 		status := babysitStepStatus(m.steps)
 		if contentBudget >= 0 && (status == types.StepStatusAwaitingApproval || status == types.StepStatusFixReview) {
-			appendExtraSection(renderBabysitApprovalViewForHeight(m.run, m.steps, findings, m.logs, m.width, contentBudget, cursor, selected))
+			appendExtraSection(renderBabysitApprovalViewForHeight(m.run, m.steps, findings, m.logs, rightWidth, contentBudget, cursor, selected))
 		} else {
-			appendExtraSection(renderBabysitViewWithSelection(m.run, m.steps, findings, m.logs, m.width, m.height, cursor, selected))
+			appendExtraSection(renderBabysitViewWithSelection(m.run, m.steps, findings, m.logs, rightWidth, m.height, cursor, selected))
 		}
 	} else if !m.showHelp {
 		if step := awaitingStep(m.steps); step != nil {
@@ -254,7 +277,7 @@ func (m Model) View() string {
 						viewHeight = contentBudget - fixedLines
 					}
 					if viewHeight > 0 {
-						appendExtraSection(renderDiff(raw, m.width, viewHeight, m.diffOffset, label, findingCtx))
+						appendExtraSection(renderDiff(raw, rightWidth, viewHeight, m.diffOffset, label, findingCtx))
 					}
 				}
 			} else if raw, ok := m.stepFindings[step.StepName]; ok {
@@ -263,7 +286,7 @@ func (m Model) View() string {
 				if contentBudget >= 0 {
 					boxHeight = contentBudget
 				}
-				appendExtraSection(renderFindingsBoxForHeight(raw, m.width, cursor, m.findingSelections[step.StepName], boxHeight, label, len(m.findingItems(step.StepName))))
+				appendExtraSection(renderFindingsBoxForHeight(raw, rightWidth, cursor, m.findingSelections[step.StepName], boxHeight, label, len(m.findingItems(step.StepName))))
 			}
 		}
 	}
@@ -278,18 +301,39 @@ func (m Model) View() string {
 	if m.height > 0 && m.height < 20 {
 		logLines = 0
 	}
-	if len(m.logs) > 0 && logLines > 0 && !isBabysitActive(m.steps) {
-		appendExtraSection(renderLogBox(m.logs, m.width, logLines, contentBudget))
+	if len(m.logs) > 0 && logLines > 0 && !hasBabysit {
+		appendExtraSection(renderLogBox(m.logs, rightWidth, logLines, contentBudget))
 	}
 
 	if m.showHelp {
-		boxWidth := m.width
+		boxWidth := rightWidth
 		if boxWidth < 20 {
 			boxWidth = 80
 		}
 		appendExtraSection(renderHelpOverlay(boxWidth, awaitingStep(m.steps) != nil, m.showDiff, hasDiff, m.done))
 	}
 
+	if useResponsiveLayout {
+		leftSections := []string{pipelineView}
+		if banner != "" {
+			leftSections = append(leftSections, banner)
+		}
+		rightSections := make([]string, 0, len(extraSections)+1)
+		if actionBar != "" {
+			rightSections = append(rightSections, actionBar)
+		}
+		rightSections = append(rightSections, extraSections...)
+		columns := renderResponsiveColumns(joinSections(leftSections, sectionGap), joinSections(rightSections, sectionGap), leftWidth, rightWidth, responsiveLayoutGap)
+		return joinSections([]string{columns, footer}, sectionGap)
+	}
+
+	sections := []string{pipelineView}
+	if banner != "" {
+		sections = append(sections, banner)
+	}
+	if actionBar != "" {
+		sections = append(sections, actionBar)
+	}
 	sections = append(sections, extraSections...)
 	sections = append(sections, footer)
 	return joinSections(sections, sectionGap)
@@ -405,6 +449,75 @@ func joinSections(sections []string, gap string) string {
 		}
 	}
 	return strings.Join(filtered, gap)
+}
+
+func hasResponsiveSidebarContent(m Model) bool {
+	if m.err != nil || m.showHelp || isBabysitActive(m.steps) {
+		return true
+	}
+	if awaitingStep(m.steps) != nil {
+		return true
+	}
+	return len(m.logs) > 0
+}
+
+func shouldUseResponsiveLayout(width int, hasSidebarContent bool) bool {
+	if !hasSidebarContent || width < responsiveLayoutMinWidth {
+		return false
+	}
+	leftWidth, rightWidth := responsiveColumnWidths(width)
+	return leftWidth >= responsiveLeftMinWidth && rightWidth >= responsiveRightMinWidth
+}
+
+func responsiveColumnWidths(width int) (int, int) {
+	leftWidth := width / 3
+	if leftWidth < responsiveLeftMinWidth {
+		leftWidth = responsiveLeftMinWidth
+	}
+	if leftWidth > responsiveLeftMaxWidth {
+		leftWidth = responsiveLeftMaxWidth
+	}
+	rightWidth := width - leftWidth - responsiveLayoutGap
+	if rightWidth < responsiveRightMinWidth {
+		rightWidth = responsiveRightMinWidth
+		leftWidth = width - rightWidth - responsiveLayoutGap
+	}
+	return leftWidth, rightWidth
+}
+
+func renderResponsiveColumns(left, right string, leftWidth, rightWidth, gap int) string {
+	if right == "" {
+		return left
+	}
+	leftLines := strings.Split(left, "\n")
+	rightLines := strings.Split(right, "\n")
+	maxLines := len(leftLines)
+	if len(rightLines) > maxLines {
+		maxLines = len(rightLines)
+	}
+
+	leftStyle := lipgloss.NewStyle().Width(leftWidth)
+	rightStyle := lipgloss.NewStyle().Width(rightWidth)
+	gapStr := strings.Repeat(" ", gap)
+
+	var b strings.Builder
+	for i := 0; i < maxLines; i++ {
+		leftLine := ""
+		if i < len(leftLines) {
+			leftLine = leftLines[i]
+		}
+		rightLine := ""
+		if i < len(rightLines) {
+			rightLine = rightLines[i]
+		}
+		b.WriteString(leftStyle.Render(leftLine))
+		b.WriteString(gapStr)
+		b.WriteString(rightStyle.Render(rightLine))
+		if i < maxLines-1 {
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
 }
 
 func sectionsHeight(sections []string, gapHeight int) int {
