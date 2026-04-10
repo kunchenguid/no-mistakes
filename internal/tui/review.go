@@ -249,7 +249,12 @@ func renderFindingsWithSelection(raw string, width int, cursor int, selected map
 			pointer = blueStyle.Render(">")
 		}
 
-		line := pointer + " " + checkbox + " " + style.Render(icon)
+		// Unfocused severity icons are dim to match description/file ref dimming.
+		iconStyled := style.Render(icon)
+		if idx != cursor {
+			iconStyled = dimStyle.Render(icon)
+		}
+		line := pointer + " " + checkbox + " " + iconStyled
 
 		// File:line reference, truncated to fit within content width.
 		if item.File != "" {

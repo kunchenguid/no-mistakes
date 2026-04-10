@@ -5684,3 +5684,85 @@ func TestRenderFindings_FocusChangesFileRefStyle(t *testing.T) {
 		t.Error("with cursor=1, config.go ref should NOT be dim")
 	}
 }
+
+func TestRenderFindings_FocusedSeverityIconNotDim(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	// Focused finding's severity icon should keep its colored style (not dim),
+	// matching the description and file:line ref treatment for the focused item.
+	raw := `{"findings":[
+		{"id":"f1","severity":"error","file":"src/handler.go","line":42,"description":"focused text"},
+		{"id":"f2","severity":"warning","file":"src/config.go","line":17,"description":"other text"}
+	],"summary":"2 issues"}`
+
+	selected := map[string]bool{"f1": true, "f2": true}
+	content, _ := renderFindingsWithSelection(raw, 80, 0, selected, 0) // cursor=0, f1 focused
+
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
+
+	// Focused severity icon should NOT be dim-styled.
+	if strings.Contains(content, dimStyle.Render("●")) {
+		t.Error("focused finding severity icon should not be dim-styled")
+	}
+	// The colored icon should still be present.
+	errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiRed))
+	if !strings.Contains(content, errStyle.Render("●")) {
+		t.Error("focused finding severity icon should be styled with its severity color")
+	}
+}
+
+func TestRenderFindings_UnfocusedSeverityIconDim(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	// Unfocused finding's severity icon should be dim (bright black), matching
+	// the description and file:line ref dimming for visual contrast.
+	raw := `{"findings":[
+		{"id":"f1","severity":"error","file":"src/handler.go","line":42,"description":"first issue"},
+		{"id":"f2","severity":"warning","file":"src/config.go","line":17,"description":"second issue"}
+	],"summary":"2 issues"}`
+
+	selected := map[string]bool{"f1": true, "f2": true}
+	content, _ := renderFindingsWithSelection(raw, 80, 0, selected, 0) // cursor=0, f2 unfocused
+
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
+
+	// Unfocused severity icon (▲ for warning) should be dim-styled.
+	if !strings.Contains(content, dimStyle.Render("▲")) {
+		t.Error("unfocused finding severity icon should be dim-styled")
+	}
+	// The colored warning icon should NOT appear for unfocused findings.
+	warnStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiYellow))
+	if strings.Contains(content, warnStyle.Render("▲")) {
+		t.Error("unfocused finding severity icon should not use its severity color")
+	}
+}
+
+func TestRenderFindings_FocusChangesSeverityIconStyle(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	// Moving cursor should swap which severity icon is colored vs dim.
+	raw := `{"findings":[
+		{"id":"f1","severity":"error","file":"src/handler.go","line":42,"description":"first issue"},
+		{"id":"f2","severity":"warning","file":"src/config.go","line":17,"description":"second issue"}
+	],"summary":"2 issues"}`
+
+	selected := map[string]bool{"f1": true, "f2": true}
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
+	errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiRed))
+	warnStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiYellow))
+
+	// Cursor at 0: f1 focused (colored ●), f2 unfocused (dim ▲).
+	content0, _ := renderFindingsWithSelection(raw, 80, 0, selected, 0)
+	if !strings.Contains(content0, errStyle.Render("●")) {
+		t.Error("with cursor=0, error icon should be colored red")
+	}
+	if !strings.Contains(content0, dimStyle.Render("▲")) {
+		t.Error("with cursor=0, warning icon should be dim")
+	}
+
+	// Cursor at 1: f2 focused (colored ▲), f1 unfocused (dim ●).
+	content1, _ := renderFindingsWithSelection(raw, 80, 1, selected, 0)
+	if !strings.Contains(content1, dimStyle.Render("●")) {
+		t.Error("with cursor=1, error icon should be dim")
+	}
+	if !strings.Contains(content1, warnStyle.Render("▲")) {
+		t.Error("with cursor=1, warning icon should be colored yellow")
+	}
+}
