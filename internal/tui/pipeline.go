@@ -235,8 +235,8 @@ func renderOutcomeBanner(run *ipc.RunInfo, steps []ipc.StepResultInfo) string {
 	}
 }
 
-// renderHelpOverlay renders a help box showing all keybindings.
-func renderHelpOverlay(width int) string {
+// renderHelpOverlay renders a help box showing keybindings relevant to the current state.
+func renderHelpOverlay(width int, hasAwaitingStep bool, showDiff bool) string {
 	boldKey := lipgloss.NewStyle().Bold(true)
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
 
@@ -261,20 +261,24 @@ func renderHelpOverlay(width int) string {
 		entry("g/G", "jump to start/end"),
 		entry("Ctrl+d/u", "half-page down/up"),
 	}))
-	content.WriteString("\n")
-	content.WriteString(section("Actions", []string{
-		entry("a", "approve"),
-		entry("f", "fix"),
-		entry("s", "skip"),
-		entry("x", "abort"),
-		entry("d", "diff/findings toggle"),
-	}))
-	content.WriteString("\n")
-	content.WriteString(section("Selection", []string{
-		entry("\u2423", "toggle current"),
-		entry("A", "select all"),
-		entry("N", "select none"),
-	}))
+	if hasAwaitingStep {
+		content.WriteString("\n")
+		content.WriteString(section("Actions", []string{
+			entry("a", "approve"),
+			entry("f", "fix"),
+			entry("s", "skip"),
+			entry("x", "abort"),
+			entry("d", "diff/findings toggle"),
+		}))
+		if !showDiff {
+			content.WriteString("\n")
+			content.WriteString(section("Selection", []string{
+				entry("\u2423", "toggle current"),
+				entry("A", "select all"),
+				entry("N", "select none"),
+			}))
+		}
+	}
 	content.WriteString("\n")
 	content.WriteString(entry("q", "detach/quit") + "\n")
 	content.WriteString(entry("?", "close help") + "\n")

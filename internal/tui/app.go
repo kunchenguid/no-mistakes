@@ -246,7 +246,7 @@ func (m Model) View() string {
 			boxWidth = 80
 		}
 		b.WriteString("\n\n")
-		b.WriteString(renderHelpOverlay(boxWidth))
+		b.WriteString(renderHelpOverlay(boxWidth, awaitingStep(m.steps) != nil, m.showDiff))
 	}
 
 	// Error display.
@@ -318,6 +318,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "?":
 		m.showHelp = !m.showHelp
 		return m, nil
+
+	case "esc":
+		if m.showHelp {
+			m.showHelp = false
+			return m, nil
+		}
 
 	case "d":
 		if awaitingStep(m.steps) != nil {

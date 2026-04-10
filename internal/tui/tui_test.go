@@ -3583,3 +3583,70 @@ func TestModel_View_FooterShowsHelpHint(t *testing.T) {
 		t.Errorf("footer should show ? help hint, got:\n%s", plain)
 	}
 }
+
+func TestModel_EscapeDismissesHelp(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	run := testRun()
+	m := NewModel("", nil, run)
+	m.showHelp = true
+
+	// Press Escape to dismiss help.
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	m = result.(Model)
+	if m.showHelp {
+		t.Fatal("expected Escape to dismiss help overlay")
+	}
+}
+
+func TestModel_View_HelpOverlay_HidesActionsWhenNoApproval(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	run := testRun()
+	// All steps pending - no step awaiting approval.
+	m := NewModel("", nil, run)
+	m.width = 80
+	m.height = 40
+	m.showHelp = true
+
+	view := m.View()
+	plain := stripANSI(view)
+
+	// Navigation should still be shown.
+	if !strings.Contains(plain, "j/k") {
+		t.Errorf("help should show navigation keys even without approval, got:\n%s", plain)
+	}
+	// Action keys should NOT be shown since no step is awaiting approval.
+	if strings.Contains(plain, "a  approve") {
+		t.Errorf("help should hide action keys when no step awaiting approval, got:\n%s", plain)
+	}
+	// Selection keys should NOT be shown.
+	if strings.Contains(plain, "A  select all") {
+		t.Errorf("help should hide selection keys when no step awaiting approval, got:\n%s", plain)
+	}
+}
+
+func TestModel_View_HelpOverlay_HidesSelectionInDiffMode(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	m := NewModel("", nil, run)
+	m.width = 80
+	m.height = 40
+	m.showHelp = true
+	m.showDiff = true
+
+	view := m.View()
+	plain := stripANSI(view)
+
+	// Action keys should be shown (approval is active).
+	if !strings.Contains(plain, "a  approve") {
+		t.Errorf("help should show action keys during approval, got:\n%s", plain)
+	}
+	// Selection keys should NOT be shown in diff mode.
+	if strings.Contains(plain, "A  select all") {
+		t.Errorf("help should hide selection keys in diff mode, got:\n%s", plain)
+	}
+	// d toggle should still be shown.
+	if !strings.Contains(plain, "d  ") {
+		t.Errorf("help should show d toggle in diff mode, got:\n%s", plain)
+	}
+}
