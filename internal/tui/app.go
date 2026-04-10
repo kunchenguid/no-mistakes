@@ -602,6 +602,14 @@ func (m *Model) applyEvent(event ipc.Event) {
 		if event.StepName != nil && event.Status != nil {
 			m.updateStepStatus(*event.StepName, types.StepStatus(*event.Status))
 		}
+		// Compute and persist final duration from tracked start time so the
+		// completed step continues to display its elapsed time.
+		if event.StepName != nil {
+			if startTime, ok := m.stepStartTimes[*event.StepName]; ok {
+				elapsed := int64(time.Since(startTime).Milliseconds())
+				m.setStepDuration(*event.StepName, &elapsed)
+			}
+		}
 		if event.StepName != nil && event.Findings != nil && *event.Findings != "" {
 			m.stepFindings[*event.StepName] = *event.Findings
 			// Reset diff view when new findings arrive to prevent stale showDiff
@@ -634,6 +642,15 @@ func (m *Model) updateStepStatus(name types.StepName, status types.StepStatus) {
 	for i := range m.steps {
 		if m.steps[i].StepName == name {
 			m.steps[i].Status = status
+			return
+		}
+	}
+}
+
+func (m *Model) setStepDuration(name types.StepName, durationMS *int64) {
+	for i := range m.steps {
+		if m.steps[i].StepName == name {
+			m.steps[i].DurationMS = durationMS
 			return
 		}
 	}

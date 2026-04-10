@@ -4939,3 +4939,109 @@ func TestOutcomeBanner_CancelledInView(t *testing.T) {
 		t.Errorf("expected 'Pipeline cancelled' in view when run is cancelled, got: %s", view)
 	}
 }
+
+// Test: When a step completes via EventStepCompleted and we had a start time
+// recorded for it, the completed step should show its final duration in the view.
+func TestModel_View_CompletedStepPreservesDuration(t *testing.T) {
+	configureTUIColors()
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusRunning
+	run.Status = types.RunRunning
+
+	m := NewModel("", nil, run)
+	m.width = 80
+	m.height = 40
+
+	// Record a start time 5 seconds ago for the running step.
+	m.stepStartTimes[types.StepReview] = time.Now().Add(-5 * time.Second)
+
+	// Step completes via event.
+	completedStatus := string(types.StepStatusCompleted)
+	stepName := types.StepReview
+	m.applyEvent(ipc.Event{
+		Type:     ipc.EventStepCompleted,
+		StepName: &stepName,
+		Status:   &completedStatus,
+	})
+
+	view := stripANSI(m.View())
+
+	// The completed Review step should show a duration around 5s.
+	lines := strings.Split(view, "\n")
+	found := false
+	for _, line := range lines {
+		if strings.Contains(line, "Review") && strings.Contains(line, "5.") && strings.Contains(line, "s") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected completed Review step to show ~5.0s duration, but it was not found in view:\n%s", view)
+	}
+}
+
+// Test: When EventStepCompleted arrives with a tracked start time, the DurationMS
+// on the step is populated from the elapsed time.
+func TestModel_ApplyEvent_StepCompletedSetsDuration(t *testing.T) {
+	configureTUIColors()
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusRunning
+
+	m := NewModel("", nil, run)
+
+	// Record a start time 3 seconds ago.
+	m.stepStartTimes[types.StepReview] = time.Now().Add(-3 * time.Second)
+
+	// Step completes via event.
+	completedStatus := string(types.StepStatusCompleted)
+	stepName := types.StepReview
+	m.applyEvent(ipc.Event{
+		Type:     ipc.EventStepCompleted,
+		StepName: &stepName,
+		Status:   &completedStatus,
+	})
+
+	// The step should have DurationMS set.
+	for _, s := range m.steps {
+		if s.StepName == types.StepReview {
+			if s.DurationMS == nil {
+				t.Fatal("expected DurationMS to be set on completed step with tracked start time")
+			}
+			// Should be approximately 3000ms (allow 2800-3500 for timing variance).
+			if *s.DurationMS < 2800 || *s.DurationMS > 3500 {
+				t.Errorf("expected DurationMS ~3000ms, got %d", *s.DurationMS)
+			}
+			return
+		}
+	}
+	t.Fatal("Review step not found in model steps")
+}
+
+// Test: When EventStepCompleted arrives without a tracked start time, DurationMS
+// remains nil (no crash, no bogus data).
+func TestModel_ApplyEvent_StepCompletedNoDurationWithoutStartTime(t *testing.T) {
+	configureTUIColors()
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusRunning
+
+	m := NewModel("", nil, run)
+	// No stepStartTimes entry for Review.
+
+	completedStatus := string(types.StepStatusCompleted)
+	stepName := types.StepReview
+	m.applyEvent(ipc.Event{
+		Type:     ipc.EventStepCompleted,
+		StepName: &stepName,
+		Status:   &completedStatus,
+	})
+
+	for _, s := range m.steps {
+		if s.StepName == types.StepReview {
+			if s.DurationMS != nil {
+				t.Errorf("expected DurationMS to remain nil without start time, got %d", *s.DurationMS)
+			}
+			return
+		}
+	}
+	t.Fatal("Review step not found in model steps")
+}
