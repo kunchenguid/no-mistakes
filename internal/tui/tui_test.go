@@ -2357,3 +2357,76 @@ func TestNewModel_PopulatesStepFindingsFromInitialSteps_DisplaysOnView(t *testin
 		t.Error("expected findings from initial step to appear in view on re-attach")
 	}
 }
+
+// --- Iteration 8: Footer visibility during approval + log line coloring ---
+
+func TestFooter_ShowsDetachDuringApproval(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusCompleted
+	run.Steps[1].Status = types.StepStatusAwaitingApproval
+
+	m := NewModel("/tmp/sock", nil, run)
+	m.width = 80
+	view := m.View()
+	plain := stripANSI(view)
+
+	// Footer should show "q detach" even when a step is awaiting approval.
+	if !strings.Contains(plain, "q detach") {
+		t.Errorf("expected 'q detach' footer during approval state, got:\n%s", plain)
+	}
+}
+
+func TestLogTail_PassLinesStyledGreen(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusRunning
+
+	m := NewModel("/tmp/sock", nil, run)
+	m.width = 80
+	m.logs = []string{"running go test ./...", "PASS: TestFoo (0.3s)"}
+	view := m.View()
+
+	// PASS lines should be styled green (ANSI color 2), not just dim.
+	greenStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiGreen))
+	greenPass := greenStyle.Render("PASS: TestFoo (0.3s)")
+	if !strings.Contains(view, greenPass) {
+		t.Error("expected PASS log line to be styled green, not dim")
+	}
+}
+
+func TestLogTail_FailLinesStyledRed(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusRunning
+
+	m := NewModel("/tmp/sock", nil, run)
+	m.width = 80
+	m.logs = []string{"running go test ./...", "FAIL: TestBar (0.1s)"}
+	view := m.View()
+
+	// FAIL lines should be styled red (ANSI color 1), not just dim.
+	redStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiRed))
+	redFail := redStyle.Render("FAIL: TestBar (0.1s)")
+	if !strings.Contains(view, redFail) {
+		t.Error("expected FAIL log line to be styled red, not dim")
+	}
+}
+
+func TestLogTail_RegularLineStaysDim(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusRunning
+
+	m := NewModel("/tmp/sock", nil, run)
+	m.width = 80
+	m.logs = []string{"running go test ./..."}
+	view := m.View()
+
+	// Regular log lines should remain dim (bright black).
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
+	dimLine := dimStyle.Render("running go test ./...")
+	if !strings.Contains(view, dimLine) {
+		t.Error("expected regular log line to remain dim-styled")
+	}
+}

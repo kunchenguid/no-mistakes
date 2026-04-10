@@ -182,7 +182,9 @@ func (m Model) View() string {
 	// Log tail (last 5 lines) in a box.
 	if len(m.logs) > 0 {
 		b.WriteString("\n\n")
-		dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
+		logDimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
+		logGreenStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiGreen))
+		logRedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiRed))
 		start := len(m.logs) - 5
 		if start < 0 {
 			start = 0
@@ -192,7 +194,14 @@ func (m Model) View() string {
 			if i > 0 {
 				logContent.WriteString("\n")
 			}
-			logContent.WriteString(dimStyle.Render(line))
+			switch {
+			case strings.HasPrefix(line, "PASS"):
+				logContent.WriteString(logGreenStyle.Render(line))
+			case strings.HasPrefix(line, "FAIL"):
+				logContent.WriteString(logRedStyle.Render(line))
+			default:
+				logContent.WriteString(logDimStyle.Render(line))
+			}
 		}
 		boxWidth := m.width
 		if boxWidth < 20 {
@@ -213,7 +222,7 @@ func (m Model) View() string {
 	boldKey := lipgloss.NewStyle().Bold(true)
 	if m.done {
 		b.WriteString("\n  " + boldKey.Render("q") + " " + dimStyle.Render("quit") + "\n")
-	} else if awaitingStep(m.steps) == nil {
+	} else {
 		b.WriteString("\n  " + boldKey.Render("q") + " " + dimStyle.Render("detach") + "\n")
 	}
 
