@@ -251,11 +251,16 @@ func renderFindingsWithSelection(raw string, width int, cursor int, selected map
 
 		line := pointer + " " + checkbox + " " + style.Render(icon)
 
-		// File:line reference.
+		// File:line reference, truncated to fit within content width.
 		if item.File != "" {
 			ref := item.File
 			if item.Line > 0 {
 				ref = fmt.Sprintf("%s:%d", item.File, item.Line)
+			}
+			// Gutter prefix: cursor(1) + sp(1) + checkbox(3) + sp(1) + icon(1) + sp(1) = 8
+			maxRefWidth := width - 8 - 1 // -1 for space before ref
+			if maxRefWidth > 0 && lipgloss.Width(ref) > maxRefWidth {
+				ref, _ = cutText(ref, maxRefWidth)
 			}
 			line += " " + dimStyle.Render(ref)
 		}

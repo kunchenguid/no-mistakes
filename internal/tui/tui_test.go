@@ -4207,3 +4207,66 @@ func TestRenderBabysitView_LogLongLinesTruncated(t *testing.T) {
 		t.Error("expected long babysit log line to be truncated to fit box content width")
 	}
 }
+
+func TestRenderFindingsWithSelection_LongFilePathTruncated(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+
+	// Create a finding with a very long file path that would overflow an 80-width box.
+	longPath := "src/internal/very/deeply/nested/package/structure/" + strings.Repeat("x", 100) + "/handler.go"
+	raw := fmt.Sprintf(`{"items":[{"id":"f1","severity":"error","file":"%s","line":42,"description":"Missing error check"}]}`, longPath)
+	selected := map[string]bool{"f1": true}
+
+	// Width is 76 (box content width = 80 - 4 for border/padding).
+	content, _ := renderFindingsWithSelection(raw, 76, 0, selected, 0)
+	result := stripANSI(content)
+
+	// No line in the findings content should exceed 76 chars.
+	for _, line := range strings.Split(result, "\n") {
+		if line == "" {
+			continue
+		}
+		w := lipgloss.Width(line)
+		if w > 76 {
+			t.Errorf("finding gutter line exceeds content width (%d > 76): %s", w, line)
+		}
+	}
+
+	// The full long file path should NOT appear.
+	if strings.Contains(result, longPath) {
+		t.Error("expected long file path to be truncated to fit content width")
+	}
+}
+
+func TestRenderFindingsWithSelection_ShortFilePathNotTruncated(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+
+	raw := `{"items":[{"id":"f1","severity":"error","file":"src/handler.go","line":42,"description":"Missing error check"}]}`
+	selected := map[string]bool{"f1": true}
+
+	content, _ := renderFindingsWithSelection(raw, 76, 0, selected, 0)
+	result := stripANSI(content)
+
+	// Short file path should appear in full.
+	if !strings.Contains(result, "src/handler.go:42") {
+		t.Error("expected short file path to appear in full, got:\n" + result)
+	}
+}
+
+func TestRenderFindingsWithSelection_TruncatedGutterPreservesSeverityIcon(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+
+	longPath := strings.Repeat("z", 200) + "/handler.go"
+	raw := fmt.Sprintf(`{"items":[{"id":"f1","severity":"error","file":"%s","line":1,"description":"test"}]}`, longPath)
+	selected := map[string]bool{"f1": true}
+
+	content, _ := renderFindingsWithSelection(raw, 76, 0, selected, 0)
+	result := stripANSI(content)
+
+	// The severity icon and checkbox should still be present even with truncation.
+	if !strings.Contains(result, "[x]") {
+		t.Error("expected checkbox to survive truncation")
+	}
+	if !strings.Contains(result, "●") {
+		t.Error("expected severity icon to survive truncation")
+	}
+}
