@@ -125,6 +125,45 @@ func TestRenderPipelineView_ShowsSteps(t *testing.T) {
 	}
 }
 
+func TestRenderPipelineView_ConnectorsBetweenSteps(t *testing.T) {
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusCompleted
+	run.Steps[0].DurationMS = ptr(int64(1200))
+	run.Steps[1].Status = types.StepStatusRunning
+
+	out := stripANSI(renderPipelineView(run, run.Steps, 80, 0, false, false))
+	lines := strings.Split(out, "\n")
+
+	// Find step lines and verify connectors between them.
+	var stepLineIndices []int
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		// Step lines start with a status icon.
+		for _, prefix := range []string{"✓", "⠋", "○", "⏸", "✗", "–"} {
+			if strings.HasPrefix(trimmed, prefix) {
+				stepLineIndices = append(stepLineIndices, i)
+				break
+			}
+		}
+	}
+	if len(stepLineIndices) < 2 {
+		t.Fatalf("expected at least 2 step lines, found %d in:\n%s", len(stepLineIndices), out)
+	}
+	// Between each pair of consecutive step lines, there should be a connector line with │.
+	for i := 0; i < len(stepLineIndices)-1; i++ {
+		connectorFound := false
+		for j := stepLineIndices[i] + 1; j < stepLineIndices[i+1]; j++ {
+			if strings.Contains(lines[j], "│") {
+				connectorFound = true
+				break
+			}
+		}
+		if !connectorFound {
+			t.Errorf("expected connector │ between step lines %d and %d", stepLineIndices[i], stepLineIndices[i+1])
+		}
+	}
+}
+
 func TestRenderPipelineView_ApprovalPrompt(t *testing.T) {
 	run := testRun()
 	run.Steps[0].Status = types.StepStatusAwaitingApproval
@@ -133,10 +172,10 @@ func TestRenderPipelineView_ApprovalPrompt(t *testing.T) {
 	if !strings.Contains(out, "awaiting action") {
 		t.Error("expected approval prompt")
 	}
-	if !strings.Contains(out, "[a] approve") {
+	if !strings.Contains(stripANSI(out), "a approve") {
 		t.Error("expected action keys")
 	}
-	if !strings.Contains(out, "[f] fix") {
+	if !strings.Contains(stripANSI(out), "f fix") {
 		t.Error("expected fix action when findings are selected")
 	}
 }
@@ -161,15 +200,42 @@ func TestRenderPipelineView_StepError(t *testing.T) {
 	}
 }
 
+func TestRenderApprovalActions_FormatWithSeparator(t *testing.T) {
+	out := stripANSI(renderApprovalActions(true, true))
+	// Keys should not be bracket-wrapped - design uses "a approve" not "[a] approve".
+	if strings.Contains(out, "[a]") {
+		t.Error("expected bare key format 'a approve', not '[a] approve'")
+	}
+	// Should have │ separator between primary actions and selection actions.
+	if !strings.Contains(out, "│") {
+		t.Error("expected │ separator between primary and selection action groups")
+	}
+	// Selection actions should use ␣ for space.
+	if !strings.Contains(out, "toggle") {
+		t.Error("expected toggle in selection actions")
+	}
+}
+
+func TestRenderApprovalActions_NoSelectionActions(t *testing.T) {
+	out := stripANSI(renderApprovalActions(false, true))
+	// Without selection actions, no │ separator should appear.
+	if strings.Contains(out, "│") {
+		t.Error("expected no │ separator when no selection actions")
+	}
+	if strings.Contains(out, "toggle") {
+		t.Error("expected no selection actions")
+	}
+}
+
 func TestRenderPipelineView_HidesFixActionWhenDisabled(t *testing.T) {
 	run := testRun()
 	run.Steps[0].Status = types.StepStatusAwaitingApproval
 
-	out := renderPipelineView(run, run.Steps, 80, 0, true, false)
-	if strings.Contains(out, "[f] fix") {
+	out := stripANSI(renderPipelineView(run, run.Steps, 80, 0, true, false))
+	if strings.Contains(out, "f fix") {
 		t.Fatal("expected fix action to be hidden when disabled")
 	}
-	if !strings.Contains(out, "[space] toggle") {
+	if !strings.Contains(out, "toggle") {
 		t.Fatal("expected selection controls when findings are present")
 	}
 }
@@ -178,11 +244,11 @@ func TestRenderPipelineView_HidesSelectionControlsWithoutFindings(t *testing.T) 
 	run := testRun()
 	run.Steps[0].Status = types.StepStatusAwaitingApproval
 
-	out := renderPipelineView(run, run.Steps, 80, 0, false, false)
-	if strings.Contains(out, "[f] fix") {
+	out := stripANSI(renderPipelineView(run, run.Steps, 80, 0, false, false))
+	if strings.Contains(out, "f fix") {
 		t.Fatal("expected fix action to be hidden without findings")
 	}
-	if strings.Contains(out, "[space] toggle") {
+	if strings.Contains(out, "toggle") {
 		t.Fatal("expected selection controls to be hidden without findings")
 	}
 }
@@ -391,9 +457,13 @@ func TestModel_View_NoActiveRun(t *testing.T) {
 func TestModel_View_DetachMessage(t *testing.T) {
 	run := testRun()
 	m := NewModel("/tmp/sock", nil, run)
-	view := m.View()
-	if !strings.Contains(view, "detach") {
-		t.Error("expected detach hint when pipeline is running")
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "q detach") {
+		t.Error("expected minimal 'q detach' hint when pipeline is running")
+	}
+	// Should NOT use verbose phrasing.
+	if strings.Contains(view, "Press q") {
+		t.Error("expected minimal footer, not verbose 'Press q...' phrasing")
 	}
 }
 
@@ -401,9 +471,13 @@ func TestModel_View_DoneMessage(t *testing.T) {
 	run := testRun()
 	m := NewModel("/tmp/sock", nil, run)
 	m.done = true
-	view := m.View()
-	if !strings.Contains(view, "Press q to exit") {
-		t.Error("expected exit hint when done")
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "q quit") {
+		t.Error("expected minimal 'q quit' hint when done")
+	}
+	// Should NOT use verbose phrasing.
+	if strings.Contains(view, "Press q") {
+		t.Error("expected minimal footer, not verbose 'Press q...' phrasing")
 	}
 }
 
@@ -736,11 +810,11 @@ func TestModel_View_HidesFixActionWhenNoFindingsSelected(t *testing.T) {
 	m.ensureFindingSelection(types.StepReview)
 	m.clearAllFindings(types.StepReview)
 
-	view := m.View()
-	if strings.Contains(view, "[f] fix") {
+	view := stripANSI(m.View())
+	if strings.Contains(view, "f fix") {
 		t.Fatal("expected fix action to be hidden when no findings are selected")
 	}
-	if !strings.Contains(view, "[space] toggle") {
+	if !strings.Contains(view, "toggle") {
 		t.Fatal("expected selection controls to remain visible")
 	}
 }
@@ -1141,9 +1215,9 @@ func TestModel_View_ShowsFindingsNotDiff(t *testing.T) {
 func TestRenderPipelineView_DiffKey(t *testing.T) {
 	run := testRun()
 	run.Steps[0].Status = types.StepStatusAwaitingApproval
-	out := renderPipelineView(run, run.Steps, 80, 0, true, true)
-	if !strings.Contains(out, "[d] diff") {
-		t.Error("expected [d] diff in approval prompt")
+	out := stripANSI(renderPipelineView(run, run.Steps, 80, 0, true, true))
+	if !strings.Contains(out, "d diff") {
+		t.Error("expected d diff in approval prompt")
 	}
 }
 

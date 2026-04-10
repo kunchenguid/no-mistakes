@@ -106,36 +106,41 @@ func renderPipelineView(run *ipc.RunInfo, steps []ipc.StepResultInfo, width int,
 	b.WriteString(fmt.Sprintf("Run: %s  Status: %s", run.ID, run.Status))
 	b.WriteString("\n\n")
 
-	// Step list.
-	for _, step := range steps {
+	// Step list with connectors.
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
+	for i, step := range steps {
 		icon := stepStatusIndicator(step.Status, spinnerFrame)
 		style := stepStatusStyle(step.Status)
 		label := stepLabel(step.StepName)
 
-		line := style.Render(icon) + " " + label
+		line := "  " + style.Render(icon) + " " + label
 
 		// Add duration if completed.
 		if step.DurationMS != nil {
-			dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
-			line += " " + dimStyle.Render(formatDuration(*step.DurationMS))
+			line += "  " + dimStyle.Render(formatDuration(*step.DurationMS))
 		}
 
 		// Add status suffix for non-obvious states.
 		switch step.Status {
 		case types.StepStatusAwaitingApproval:
-			line += " — awaiting approval"
+			line += " - awaiting approval"
 		case types.StepStatusFixing:
-			line += " — agent fixing..."
+			line += " - agent fixing..."
 		case types.StepStatusFixReview:
-			line += " — review fix"
+			line += " - review fix"
 		case types.StepStatusFailed:
 			if step.Error != nil {
-				line += " — " + *step.Error
+				line += " - " + *step.Error
 			}
 		}
 
 		b.WriteString(line)
 		b.WriteString("\n")
+
+		// Connector between steps.
+		if i < len(steps)-1 {
+			b.WriteString("  " + dimStyle.Render("│") + "\n")
+		}
 	}
 
 	// Approval prompt if any step is awaiting.
@@ -160,15 +165,26 @@ func renderPipelineView(run *ipc.RunInfo, steps []ipc.StepResultInfo, width int,
 }
 
 func renderApprovalActions(showSelectionActions bool, allowFix bool) string {
-	actions := []string{"[a] approve"}
+	boldKey := lipgloss.NewStyle().Bold(true)
+	renderAction := func(key, label string) string {
+		return boldKey.Render(key) + " " + label
+	}
+
+	primary := []string{renderAction("a", "approve")}
 	if allowFix {
-		actions = append(actions, "[f] fix")
+		primary = append(primary, renderAction("f", "fix"))
 	}
-	actions = append(actions, "[s] skip", "[x] abort", "[d] diff")
+	primary = append(primary, renderAction("s", "skip"), renderAction("x", "abort"), renderAction("d", "diff"))
+
+	result := " " + strings.Join(primary, "  ")
+
 	if showSelectionActions {
-		actions = append(actions, "[space] toggle", "[A] all", "[N] none")
+		dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
+		selection := []string{renderAction("\u2423", "toggle"), renderAction("A", "all"), renderAction("N", "none")}
+		result += " " + dimStyle.Render("│") + " " + strings.Join(selection, "  ")
 	}
-	return "  " + strings.Join(actions, "  ") + "\n"
+
+	return result + "\n"
 }
 
 // awaitingStep returns the step that is currently awaiting user action, if any.

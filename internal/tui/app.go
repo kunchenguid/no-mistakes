@@ -195,10 +195,12 @@ func (m Model) View() string {
 	}
 
 	// Footer.
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
+	boldKey := lipgloss.NewStyle().Bold(true)
 	if m.done {
-		b.WriteString("\nPress q to exit.\n")
+		b.WriteString("\n  " + boldKey.Render("q") + " " + dimStyle.Render("quit") + "\n")
 	} else if awaitingStep(m.steps) == nil {
-		b.WriteString("\nPress q to detach (pipeline continues in background).\n")
+		b.WriteString("\n  " + boldKey.Render("q") + " " + dimStyle.Render("detach") + "\n")
 	}
 
 	return b.String()
