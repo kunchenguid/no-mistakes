@@ -153,7 +153,7 @@ func (m Model) View() string {
 			cursor = m.findingCursor[step.StepName]
 			selected = m.findingSelections[step.StepName]
 		}
-		b.WriteString("\n")
+		b.WriteString("\n\n")
 		b.WriteString(renderBabysitViewWithSelection(m.run, m.steps, findings, m.logs, m.width, cursor, selected))
 	} else if step := awaitingStep(m.steps); step != nil {
 		// Generic findings or diff for non-babysit steps awaiting approval.
@@ -163,7 +163,7 @@ func (m Model) View() string {
 				if viewHeight < 5 {
 					viewHeight = 10
 				}
-				b.WriteString("\n")
+				b.WriteString("\n\n")
 				b.WriteString(renderDiff(raw, m.width, viewHeight, m.diffOffset))
 			}
 		} else if raw, ok := m.stepFindings[step.StepName]; ok {
@@ -173,7 +173,7 @@ func (m Model) View() string {
 				if boxWidth < 20 {
 					boxWidth = 80
 				}
-				b.WriteString("\n")
+				b.WriteString("\n\n")
 				b.WriteString(renderBox("Findings", rendered, boxWidth))
 			}
 		}
@@ -181,7 +181,7 @@ func (m Model) View() string {
 
 	// Log tail (last 5 lines) in a box.
 	if len(m.logs) > 0 {
-		b.WriteString("\n")
+		b.WriteString("\n\n")
 		dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
 		start := len(m.logs) - 5
 		if start < 0 {

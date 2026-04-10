@@ -1005,7 +1005,7 @@ func TestRenderDiff_HasStats(t *testing.T) {
 +import "fmt"
 `
 	got := renderDiff(raw, 80, 0, 0)
-	if !strings.Contains(got, "1 file(s) changed") {
+	if !strings.Contains(got, "1 file") {
 		t.Error("expected file count in stats")
 	}
 	if !strings.Contains(got, "+1") {
@@ -1249,7 +1249,7 @@ func TestModel_View_ShowsDiff(t *testing.T) {
 	m.height = 40
 
 	view := m.View()
-	if !strings.Contains(view, "1 file(s) changed") {
+	if !strings.Contains(view, "1 file") {
 		t.Error("expected diff stats in view")
 	}
 	if !strings.Contains(view, "import") {
@@ -2017,6 +2017,146 @@ func TestModel_View_BabysitViewInBox(t *testing.T) {
 	}
 	if !hasBabysitBox {
 		t.Error("expected 'Babysit' titled box in full model view")
+	}
+}
+
+// Spacing Rules: 1 blank line between sections, never more than 1.
+func TestModel_View_OneBlankLineBetweenSections(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	defer lipgloss.SetColorProfile(termenv.ANSI)
+
+	findings := `{"findings":[{"severity":"warning","description":"test finding"}],"summary":"1 issue"}`
+	run := &ipc.RunInfo{
+		ID: "run-001", RepoID: "repo-001", Branch: "main", HeadSHA: "abc123", BaseSHA: "000000",
+		Status: types.RunRunning,
+		Steps: []ipc.StepResultInfo{
+			{ID: "s1", StepName: types.StepReview, StepOrder: 1, Status: types.StepStatusAwaitingApproval, FindingsJSON: &findings},
+			{ID: "s2", StepName: types.StepTest, StepOrder: 2, Status: types.StepStatusPending},
+		},
+	}
+	m := NewModel("/tmp/sock", nil, run)
+	m.width = 60
+	m.logs = []string{"running test"}
+
+	view := m.View()
+	plain := stripANSI(view)
+
+	// Between any two box bottom/top borders, there should be exactly 1 blank line.
+	// That means: ╯ followed by newline, blank line, then ╭
+	lines := strings.Split(plain, "\n")
+	for i := 0; i < len(lines)-1; i++ {
+		trimmed := strings.TrimSpace(lines[i])
+		if strings.HasSuffix(trimmed, "╯") && i+1 < len(lines) {
+			// Next box should be separated by 1 blank line
+			nextContent := -1
+			for j := i + 1; j < len(lines); j++ {
+				if strings.TrimSpace(lines[j]) != "" {
+					nextContent = j
+					break
+				}
+			}
+			if nextContent < 0 {
+				continue // no more content, this is the last box
+			}
+			if strings.Contains(lines[nextContent], "╭") {
+				blankCount := nextContent - i - 1
+				if blankCount != 1 {
+					t.Errorf("expected 1 blank line between sections at lines %d-%d, got %d blank lines\nbetween: %q\nand: %q",
+						i, nextContent, blankCount, lines[i], lines[nextContent])
+				}
+			}
+		}
+	}
+}
+
+// Spacing between Pipeline and Babysit boxes should also have 1 blank line.
+func TestModel_View_OneBlankLineBetweenPipelineAndBabysit(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	defer lipgloss.SetColorProfile(termenv.ANSI)
+
+	run := &ipc.RunInfo{
+		ID: "run-001", RepoID: "repo-001", Branch: "main", HeadSHA: "abc123", BaseSHA: "000000",
+		Status: types.RunRunning,
+		Steps: []ipc.StepResultInfo{
+			{ID: "s1", StepName: types.StepReview, StepOrder: 1, Status: types.StepStatusCompleted},
+			{ID: "s2", StepName: types.StepBabysit, StepOrder: 2, Status: types.StepStatusRunning},
+		},
+	}
+	m := NewModel("/tmp/sock", nil, run)
+	m.width = 60
+	m.logs = []string{"babysitting PR #42"}
+
+	view := m.View()
+	plain := stripANSI(view)
+	lines := strings.Split(plain, "\n")
+
+	for i := 0; i < len(lines)-1; i++ {
+		trimmed := strings.TrimSpace(lines[i])
+		if strings.HasSuffix(trimmed, "╯") {
+			nextContent := -1
+			for j := i + 1; j < len(lines); j++ {
+				if strings.TrimSpace(lines[j]) != "" {
+					nextContent = j
+					break
+				}
+			}
+			if nextContent < 0 {
+				continue
+			}
+			if strings.Contains(lines[nextContent], "╭") {
+				blankCount := nextContent - i - 1
+				if blankCount != 1 {
+					t.Errorf("expected 1 blank line between sections at lines %d-%d, got %d\nbetween: %q\nand: %q",
+						i, nextContent, blankCount, lines[i], lines[nextContent])
+				}
+			}
+		}
+	}
+}
+
+// Diff stats should match DESIGN.md: "3 files  +42  -17" not "3 file(s) changed"
+func TestRenderDiff_StatsPluralization(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	defer lipgloss.SetColorProfile(termenv.ANSI)
+
+	// Multiple files should say "files"
+	raw := "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-old\n+new\ndiff --git a/b.go b/b.go\n--- a/b.go\n+++ b/b.go\n@@ -1 +1 @@\n-old2\n+new2\n"
+	result := renderDiff(raw, 80, 20, 0)
+	plain := stripANSI(result)
+	if !strings.Contains(plain, "2 files") {
+		t.Errorf("expected '2 files' (plural) for multiple files, got: %s", plain)
+	}
+
+	// Single file should say "file"
+	raw2 := "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-old\n+new\n"
+	result2 := renderDiff(raw2, 80, 20, 0)
+	plain2 := stripANSI(result2)
+	if !strings.Contains(plain2, "1 file") {
+		t.Errorf("expected '1 file' (singular) for one file, got: %s", plain2)
+	}
+	if strings.Contains(plain2, "1 files") {
+		t.Errorf("expected '1 file' not '1 files' for one file, got: %s", plain2)
+	}
+}
+
+func TestRenderDiff_StatsMatchDesign(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	defer lipgloss.SetColorProfile(termenv.ANSI)
+
+	raw := "diff --git a/foo.go b/foo.go\nindex abc..def 100644\n--- a/foo.go\n+++ b/foo.go\n@@ -1,3 +1,4 @@\n context\n+added1\n+added2\n-removed\n"
+	result := renderDiff(raw, 80, 20, 0)
+	plain := stripANSI(result)
+
+	// Should say "1 file" (singular) or "3 files" (plural), NOT "file(s) changed"
+	if strings.Contains(plain, "file(s)") {
+		t.Error("diff stats should not contain 'file(s)' - use 'file'/'files' per DESIGN.md")
+	}
+	if strings.Contains(plain, "changed") {
+		t.Error("diff stats should not contain 'changed' - use compact format per DESIGN.md: '1 file  +2  -1'")
+	}
+	// Should contain the file count and +/- stats
+	if !strings.Contains(plain, "1 file") {
+		t.Errorf("expected '1 file' in diff stats, got: %s", plain)
 	}
 }
 

@@ -125,7 +125,11 @@ func renderDiff(raw string, width, viewHeight, offset int) string {
 	statsStyle := lipgloss.NewStyle().Bold(true)
 	addStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiGreen))
 	delStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiRed))
-	b.WriteString(statsStyle.Render(fmt.Sprintf("%d file(s) changed", files)))
+	fileWord := "files"
+	if files == 1 {
+		fileWord = "file"
+	}
+	b.WriteString(statsStyle.Render(fmt.Sprintf("%d %s", files, fileWord)))
 	b.WriteString("  ")
 	b.WriteString(addStyle.Render(fmt.Sprintf("+%d", adds)))
 	b.WriteString("  ")
