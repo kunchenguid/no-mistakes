@@ -348,6 +348,41 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case "ctrl+d":
+		if m.showDiff {
+			half := (m.height - 15) / 2
+			if half < 1 {
+				half = 1
+			}
+			m.diffOffset += half
+		} else if step := awaitingStep(m.steps); step != nil {
+			half := (m.height - 20) / 3 / 2
+			if half < 1 {
+				half = 1
+			}
+			m.moveFindingCursor(step.StepName, half)
+		}
+		return m, nil
+
+	case "ctrl+u":
+		if m.showDiff {
+			half := (m.height - 15) / 2
+			if half < 1 {
+				half = 1
+			}
+			m.diffOffset -= half
+			if m.diffOffset < 0 {
+				m.diffOffset = 0
+			}
+		} else if step := awaitingStep(m.steps); step != nil {
+			half := (m.height - 20) / 3 / 2
+			if half < 1 {
+				half = 1
+			}
+			m.moveFindingCursor(step.StepName, -half)
+		}
+		return m, nil
+
 	case " ":
 		if !m.showDiff {
 			if step := awaitingStep(m.steps); step != nil {

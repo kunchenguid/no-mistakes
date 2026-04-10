@@ -3249,3 +3249,75 @@ func TestModel_HandleKey_JumpToBottomFindings(t *testing.T) {
 		t.Errorf("expected findingCursor=4 after 'G', got %d", model.findingCursor[types.StepReview])
 	}
 }
+
+func TestModel_HandleKey_HalfPageDownDiff(t *testing.T) {
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	m := NewModel("/tmp/sock", nil, run)
+	m.showDiff = true
+	m.diffOffset = 0
+	m.height = 40 // viewHeight = 40 - 15 = 25, half page = 12
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
+	model := updated.(Model)
+	if model.diffOffset != 12 {
+		t.Errorf("expected diffOffset=12 after ctrl+d with height=40, got %d", model.diffOffset)
+	}
+}
+
+func TestModel_HandleKey_HalfPageUpDiff(t *testing.T) {
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	m := NewModel("/tmp/sock", nil, run)
+	m.showDiff = true
+	m.diffOffset = 20
+	m.height = 40 // half page = 12
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlU})
+	model := updated.(Model)
+	if model.diffOffset != 8 {
+		t.Errorf("expected diffOffset=8 after ctrl+u from 20 with height=40, got %d", model.diffOffset)
+	}
+}
+
+func TestModel_HandleKey_HalfPageDownFindings(t *testing.T) {
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	m := NewModel("/tmp/sock", nil, run)
+	// 10 findings so cursor can move meaningfully.
+	items := make([]string, 10)
+	for i := range items {
+		items[i] = fmt.Sprintf(`{"id":"f%d","severity":"error","description":"finding %d"}`, i+1, i+1)
+	}
+	m.stepFindings[types.StepReview] = `{"findings":[` + strings.Join(items, ",") + `]}`
+	m.findingCursor[types.StepReview] = 0
+	m.height = 40 // half page for findings = (40 - 20) / 3 / 2 = ~3
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
+	model := updated.(Model)
+	cursor := model.findingCursor[types.StepReview]
+	// Half page = max(halfViewport, 3) where viewport = (40-20)/3 = 6, half = 3.
+	if cursor != 3 {
+		t.Errorf("expected findingCursor=3 after ctrl+d, got %d", cursor)
+	}
+}
+
+func TestModel_HandleKey_HalfPageUpFindings(t *testing.T) {
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	m := NewModel("/tmp/sock", nil, run)
+	items := make([]string, 10)
+	for i := range items {
+		items[i] = fmt.Sprintf(`{"id":"f%d","severity":"error","description":"finding %d"}`, i+1, i+1)
+	}
+	m.stepFindings[types.StepReview] = `{"findings":[` + strings.Join(items, ",") + `]}`
+	m.findingCursor[types.StepReview] = 8
+	m.height = 40
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlU})
+	model := updated.(Model)
+	cursor := model.findingCursor[types.StepReview]
+	if cursor != 5 {
+		t.Errorf("expected findingCursor=5 after ctrl+u from 8, got %d", cursor)
+	}
+}
