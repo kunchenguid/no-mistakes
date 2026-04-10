@@ -23,8 +23,8 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		branch = strings.TrimPrefix(branch, "refs/heads/")
 	}
 
-	// Resolve base SHA — handles new branch pushes where baseSHA is all-zeros
-	baseSHA := resolveBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
+	// Resolve the branch base so PR summaries cover the full branch delta.
+	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
 
 	// Check if PR already exists for this branch
 	sctx.Log(fmt.Sprintf("checking for existing PR on branch %s...", branch))

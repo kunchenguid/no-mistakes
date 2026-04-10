@@ -16,6 +16,7 @@ func (s *LintStep) Name() types.StepName { return types.StepLint }
 
 func (s *LintStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	ctx := sctx.Ctx
+	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
 
 	// In fix mode, ask agent to fix lint issues first
 	if sctx.Fixing {
@@ -28,13 +29,13 @@ Context:
 - base commit: %s
 - target commit: %s
 
-Rules:
-- Make the minimal change needed.
-- Do not refactor beyond what is needed.
-- Do not run tests or broader behavioral validation.
-- Re-run the relevant lint or format commands before finishing.`,
+			Rules:
+			- Make the minimal change needed.
+			- Do not refactor beyond what is needed.
+			- Do not run tests or broader behavioral validation.
+			- Re-run the relevant lint or format commands before finishing.`,
 			sctx.Run.Branch,
-			sctx.Run.BaseSHA,
+			baseSHA,
 			sctx.Run.HeadSHA,
 		)
 		if sctx.PreviousFindings != "" {
@@ -71,11 +72,11 @@ Task:
 - Only lint or format the relevant changed files when possible.
 - Report any issues found as structured findings.
 
-Rules:
-- Do not run tests or broader behavioral validation.
-- Focus on lint, format, and static-analysis issues only.`,
+			Rules:
+			- Do not run tests or broader behavioral validation.
+			- Focus on lint, format, and static-analysis issues only.`,
 				sctx.Run.Branch,
-				sctx.Run.BaseSHA,
+				baseSHA,
 				sctx.Run.HeadSHA,
 			),
 			CWD:        sctx.WorkDir,

@@ -16,6 +16,7 @@ func (s *TestStep) Name() types.StepName { return types.StepTest }
 
 func (s *TestStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	ctx := sctx.Ctx
+	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
 
 	// In fix mode, ask agent to fix test failures first
 	if sctx.Fixing {
@@ -28,14 +29,14 @@ Context:
 - base commit: %s
 - target commit: %s
 
-Rules:
-- Make the minimal change needed.
-- Do not refactor beyond what is needed.
-- If tests fail, determine whether the problem is a real product/code failure, a setup/environment problem you can fix, or a flaky/infrastructure issue.
-- Do NOT run linters, formatters, or static analysis tools.
-- Re-run the relevant tests before finishing.`,
+			Rules:
+			- Make the minimal change needed.
+			- Do not refactor beyond what is needed.
+			- If tests fail, determine whether the problem is a real product/code failure, a setup/environment problem you can fix, or a flaky/infrastructure issue.
+			- Do NOT run linters, formatters, or static analysis tools.
+			- Re-run the relevant tests before finishing.`,
 			sctx.Run.Branch,
-			sctx.Run.BaseSHA,
+			baseSHA,
 			sctx.Run.HeadSHA,
 		)
 		if sctx.PreviousFindings != "" {
@@ -74,12 +75,12 @@ Task:
 - If tests fail, determine whether the problem is a real product/code failure, a setup/environment problem you can fix, or a flaky/infrastructure issue.
 - If the issue is setup-related and fixable, fix it and retry the tests.
 
-Rules:
-- Do NOT run linters, formatters, or static analysis tools.
-- Focus on testing and test-related fixes only.
-- Return results as structured findings.`,
+			Rules:
+			- Do NOT run linters, formatters, or static analysis tools.
+			- Focus on testing and test-related fixes only.
+			- Return results as structured findings.`,
 				sctx.Run.Branch,
-				sctx.Run.BaseSHA,
+				baseSHA,
 				sctx.Run.HeadSHA,
 			),
 			CWD:        sctx.WorkDir,

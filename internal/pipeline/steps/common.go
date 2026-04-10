@@ -44,6 +44,18 @@ func resolveBaseSHA(ctx context.Context, workDir, baseSHA, defaultBranch string)
 	return emptyTreeSHA
 }
 
+// resolveBranchBaseSHA returns the branch base commit relative to the default
+// branch when possible. This keeps pipeline steps scoped to the full branch,
+// not just the last pushed delta. If merge-base cannot be determined, it falls
+// back to resolveBaseSHA.
+func resolveBranchBaseSHA(ctx context.Context, workDir, fallbackBaseSHA, defaultBranch string) string {
+	mb, err := git.Run(ctx, workDir, "merge-base", "HEAD", defaultBranch)
+	if err == nil && strings.TrimSpace(mb) != "" {
+		return strings.TrimSpace(mb)
+	}
+	return resolveBaseSHA(ctx, workDir, fallbackBaseSHA, defaultBranch)
+}
+
 // hasBlockingFindings returns true if any finding has error or warning severity.
 func hasBlockingFindings(items []Finding) bool {
 	for _, f := range items {

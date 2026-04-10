@@ -432,6 +432,50 @@ func TestReviewStep_ZeroBaseSHA(t *testing.T) {
 	}
 }
 
+func TestReviewStep_ExistingBranchUsesMergeBaseScope(t *testing.T) {
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "base commit")
+	mergeBaseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(dir, "first.txt"), []byte("first\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "first feature commit")
+	oldRemoteSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	os.WriteFile(filepath.Join(dir, "second.txt"), []byte("second\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "second feature commit")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	findingsJSON, _ := json.Marshal(Findings{Summary: "clean"})
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: findingsJSON}, nil
+		},
+	}
+	sctx := newTestContext(t, ag, dir, oldRemoteSHA, headSHA, config.Commands{})
+
+	step := &ReviewStep{}
+	if _, err := step.Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(ag.calls) != 1 {
+		t.Fatalf("expected 1 agent call, got %d", len(ag.calls))
+	}
+	if !strings.Contains(ag.calls[0].Prompt, mergeBaseSHA) {
+		t.Errorf("expected prompt to contain merge-base SHA %s", mergeBaseSHA)
+	}
+	if strings.Contains(ag.calls[0].Prompt, oldRemoteSHA) {
+		t.Errorf("expected prompt to avoid push old SHA %s", oldRemoteSHA)
+	}
+}
+
 func TestReviewStep_FixMode(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
@@ -1297,6 +1341,49 @@ func TestPRStep_CreatesNewPR(t *testing.T) {
 	}
 	if run.PRURL == nil || *run.PRURL != "https://github.com/test/repo/pull/99" {
 		t.Errorf("PR URL = %v, want https://github.com/test/repo/pull/99", run.PRURL)
+	}
+}
+
+func TestPRStep_ExistingBranchUsesMergeBaseCommitLog(t *testing.T) {
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "base commit")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(dir, "first.txt"), []byte("first\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "first feature commit")
+	oldRemoteSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	os.WriteFile(filepath.Join(dir, "second.txt"), []byte("second\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "second feature commit")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	binDir, logFile := fakeGH(t, "")
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, oldRemoteSHA, headSHA, config.Commands{})
+
+	step := &PRStep{}
+	if _, err := step.Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+
+	logData, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ghLog := string(logData)
+	if !strings.Contains(ghLog, "first feature commit") {
+		t.Errorf("expected PR body to include first feature commit, got:\n%s", ghLog)
+	}
+	if !strings.Contains(ghLog, "second feature commit") {
+		t.Errorf("expected PR body to include second feature commit, got:\n%s", ghLog)
 	}
 }
 

@@ -301,6 +301,7 @@ func (s *BabysitStep) getNewComments(ctx context.Context, workDir, prNumber stri
 // autoFixCI runs the agent to fix CI failures, then commits and pushes.
 func (s *BabysitStep) autoFixCI(sctx *pipeline.StepContext, prNumber string, failingNames []string) error {
 	ctx := sctx.Ctx
+	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
 
 	// Attempt to fetch CI failure logs for context
 	var logOutput string
@@ -324,12 +325,12 @@ Context:
 - PR number: %s
 - failing checks: %s
 
-Rules:
-- Make the minimal change needed.
-- Do not refactor beyond what is needed.
-- Verify the fix by running the most relevant commands locally before finishing.`,
+		Rules:
+		- Make the minimal change needed.
+		- Do not refactor beyond what is needed.
+		- Verify the fix by running the most relevant commands locally before finishing.`,
 		sctx.Run.Branch,
-		sctx.Run.BaseSHA,
+		baseSHA,
 		sctx.Run.HeadSHA,
 		prNumber,
 		strings.Join(failingNames, ", "),
@@ -357,6 +358,7 @@ CI logs:
 // addressComments runs the agent to address PR comments, then commits, pushes, and replies.
 func (s *BabysitStep) addressComments(sctx *pipeline.StepContext, prNumber string) error {
 	ctx := sctx.Ctx
+	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
 	selected := selectedFindingIDs(sctx.PreviousFindings)
 
 	// Build prompt from the selected comments that triggered the approval pause.
@@ -395,16 +397,16 @@ Context:
 - target commit: %s
 - PR number: %s
 
-Rules:
-- Make the minimal change needed.
-- Do not refactor beyond what is needed.
-- Do not add comments explaining your fixes.
-- Verify any directly relevant commands before finishing.
+		Rules:
+		- Make the minimal change needed.
+		- Do not refactor beyond what is needed.
+		- Do not add comments explaining your fixes.
+		- Verify any directly relevant commands before finishing.
 
-Comments to address:
-%s`,
+		Comments to address:
+		%s`,
 		sctx.Run.Branch,
-		sctx.Run.BaseSHA,
+		baseSHA,
 		sctx.Run.HeadSHA,
 		prNumber,
 		commentText,
