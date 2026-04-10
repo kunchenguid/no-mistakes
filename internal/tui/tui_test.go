@@ -5161,6 +5161,7 @@ diff --git a/c.go b/c.go
 	lines := strings.Split(plain, "\n")
 
 	// Count blank lines immediately before file headers (inside box borders).
+	// Skip the first file header since its preceding blank is the stats gap, not a file boundary.
 	blankBeforeFile := 0
 	fileHeaders := 0
 	for i, line := range lines {
@@ -5170,8 +5171,8 @@ diff --git a/c.go b/c.go
 		trimmed = strings.TrimSpace(trimmed)
 		if strings.HasPrefix(trimmed, "diff --git") {
 			fileHeaders++
-			// Check if previous line (inside box) is blank.
-			if i > 0 {
+			// Only count blank lines before 2nd+ file headers (file boundary separators).
+			if fileHeaders > 1 && i > 0 {
 				prev := strings.TrimSpace(lines[i-1])
 				prev = strings.TrimLeft(prev, "│")
 				prev = strings.TrimRight(prev, "│")
@@ -5335,5 +5336,148 @@ func TestRenderDiff_LineNumbersStyledDim(t *testing.T) {
 	styledOne := dimStyle.Render("1 ")
 	if !strings.Contains(got, styledOne) {
 		t.Error("expected line numbers to be styled dim (bright black)")
+	}
+}
+
+// --- Iteration 48: Blank line between stats and diff content ---
+
+func TestRenderDiff_BlankLineBetweenStatsAndContent(t *testing.T) {
+	// DESIGN.md Diff View shows a blank line between the stats header and diff content:
+	//   3 files  +42  -17
+	//                          <-- blank line here
+	//   diff --git a/foo.go b/foo.go
+	raw := `diff --git a/main.go b/main.go
+--- a/main.go
++++ b/main.go
+@@ -1 +1,2 @@
+ package main
++import "fmt"
+`
+	got := renderDiff(raw, 80, 0, 0, "")
+	plain := stripANSI(got)
+
+	// Find the stats line and the first diff line inside the box.
+	lines := strings.Split(plain, "\n")
+	statsIdx := -1
+	firstDiffIdx := -1
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		// Stats line contains file count and +/- counts.
+		if strings.Contains(trimmed, "file") && strings.Contains(trimmed, "+") {
+			statsIdx = i
+		}
+		// First diff content line is the "diff --git" header.
+		if strings.Contains(trimmed, "diff --git") && firstDiffIdx == -1 {
+			firstDiffIdx = i
+		}
+	}
+
+	if statsIdx == -1 {
+		t.Fatal("could not find stats line in diff output")
+	}
+	if firstDiffIdx == -1 {
+		t.Fatal("could not find diff --git line in diff output")
+	}
+
+	// There should be at least one blank line between the stats and the diff content.
+	// gap = 2 means: stats at N, blank at N+1, diff at N+2.
+	gap := firstDiffIdx - statsIdx
+	if gap < 2 {
+		t.Errorf("expected blank line between stats and diff content, but gap is %d lines (stats at %d, diff at %d)", gap, statsIdx, firstDiffIdx)
+	}
+}
+
+func TestRenderDiff_StatsBlankLineNotDoubled(t *testing.T) {
+	// Verify there is exactly one blank line between stats and content, not two or more.
+	raw := `diff --git a/main.go b/main.go
+--- a/main.go
++++ b/main.go
+@@ -1 +1,2 @@
+ package main
++import "fmt"
+`
+	got := renderDiff(raw, 80, 0, 0, "")
+	plain := stripANSI(got)
+
+	lines := strings.Split(plain, "\n")
+	statsIdx := -1
+	firstDiffIdx := -1
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.Contains(trimmed, "file") && strings.Contains(trimmed, "+") {
+			statsIdx = i
+		}
+		if strings.Contains(trimmed, "diff --git") && firstDiffIdx == -1 {
+			firstDiffIdx = i
+		}
+	}
+
+	if statsIdx == -1 || firstDiffIdx == -1 {
+		t.Fatal("could not find stats or diff line")
+	}
+
+	// Count blank lines between stats and diff content (inside box, so check trimmed content).
+	blankCount := 0
+	for i := statsIdx + 1; i < firstDiffIdx; i++ {
+		// Inside the box, a blank line looks like "│    │" or similar - trim border chars.
+		inner := strings.TrimSpace(lines[i])
+		inner = strings.TrimLeft(inner, "│")
+		inner = strings.TrimRight(inner, "│")
+		inner = strings.TrimSpace(inner)
+		if inner == "" {
+			blankCount++
+		}
+	}
+
+	if blankCount != 1 {
+		t.Errorf("expected exactly 1 blank line between stats and diff content, got %d", blankCount)
+	}
+}
+
+func TestRenderDiff_ScrolledViewPreservesStatsGap(t *testing.T) {
+	// When scrolled down, the stats header still has a blank line before the visible diff content.
+	var b strings.Builder
+	b.WriteString("diff --git a/main.go b/main.go\n")
+	b.WriteString("--- a/main.go\n")
+	b.WriteString("+++ b/main.go\n")
+	b.WriteString("@@ -1,20 +1,20 @@\n")
+	for i := 0; i < 20; i++ {
+		b.WriteString(fmt.Sprintf("+line %d\n", i))
+	}
+	raw := b.String()
+
+	// Render scrolled down by 5 lines.
+	got := renderDiff(raw, 80, 10, 5, "")
+	plain := stripANSI(got)
+
+	lines := strings.Split(plain, "\n")
+	statsIdx := -1
+	firstContentIdx := -1
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.Contains(trimmed, "file") && strings.Contains(trimmed, "+") {
+			statsIdx = i
+		}
+		// First non-blank content line after stats inside the box.
+		if statsIdx >= 0 && i > statsIdx && firstContentIdx == -1 {
+			inner := strings.TrimLeft(trimmed, "│")
+			inner = strings.TrimRight(inner, "│")
+			inner = strings.TrimSpace(inner)
+			if inner != "" {
+				firstContentIdx = i
+			}
+		}
+	}
+
+	if statsIdx == -1 {
+		t.Fatal("could not find stats line in scrolled diff output")
+	}
+	if firstContentIdx == -1 {
+		t.Fatal("could not find content line after stats in scrolled diff output")
+	}
+
+	gap := firstContentIdx - statsIdx
+	if gap < 2 {
+		t.Errorf("expected blank line between stats and scrolled diff content, but gap is %d lines", gap)
 	}
 }

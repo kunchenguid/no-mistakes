@@ -231,7 +231,7 @@ func renderDiff(raw string, width, viewHeight, offset int, stepLabel string) str
 	b.WriteString(addStyle.Render(fmt.Sprintf("+%d", adds)))
 	b.WriteString("  ")
 	b.WriteString(delStyle.Render(fmt.Sprintf("-%d", dels)))
-	b.WriteString("\n")
+	b.WriteString("\n\n")
 
 	// Clamp offset.
 	if offset < 0 {
