@@ -4312,6 +4312,105 @@ func TestActionBar_HidesDiffWhenNoDiffData(t *testing.T) {
 	}
 }
 
+func TestStaleShowDiff_ResetWhenNewFindingsArrive(t *testing.T) {
+	// Bug: if user was viewing diff for step A, then step B arrives with
+	// findings but no diff data, showDiff stays true from step A.
+	// This causes View() to show neither diff nor findings - a blank state.
+	// Fix: reset showDiff when new findings arrive via EventStepCompleted.
+	configureTUIColors()
+	run := testRun()
+	m := NewModel("/tmp/sock", nil, run)
+	m.width = 80
+	m.height = 50
+
+	// Simulate: Review step has findings + diff, user toggled showDiff on.
+	m.steps[0].Status = types.StepStatusAwaitingApproval
+	m.stepFindings[types.StepReview] = `{"items":[{"id":"f1","severity":"error","file":"a.go","line":1,"description":"bad"}]}`
+	m.stepDiffs[types.StepReview] = "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-old\n+new\n"
+	m.showDiff = true
+
+	// Now: user approves Review, Test step completes with findings but NO diff.
+	m.steps[0].Status = types.StepStatusCompleted
+	m.steps[1].Status = types.StepStatusAwaitingApproval
+	findingsJSON := `{"items":[{"id":"f2","severity":"warning","file":"b.go","line":5,"description":"unused var"}]}`
+	status := string(types.StepStatusAwaitingApproval)
+	stepName := types.StepTest
+	m.applyEvent(ipc.Event{
+		Type:     ipc.EventStepCompleted,
+		StepName: &stepName,
+		Status:   &status,
+		Findings: &findingsJSON,
+		// No Diff field - this step has no diff data.
+	})
+
+	if m.showDiff {
+		t.Error("showDiff should be reset to false when new findings arrive without diff data")
+	}
+
+	// Verify the findings are actually visible in the View.
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "unused var") {
+		t.Errorf("expected Test findings to be visible in view, got:\n%s", view)
+	}
+}
+
+func TestStaleShowDiff_FindingsVisibleAfterStepTransition(t *testing.T) {
+	// Even when showDiff was true from a previous step, the new step's
+	// findings should be shown (not hidden by stale diff state).
+	configureTUIColors()
+	run := testRun()
+	m := NewModel("/tmp/sock", nil, run)
+	m.width = 80
+	m.height = 50
+
+	// Setup: user was viewing diff for Review.
+	m.steps[0].Status = types.StepStatusCompleted
+	m.steps[1].Status = types.StepStatusAwaitingApproval
+	m.stepFindings[types.StepTest] = `{"summary":"Test issues","items":[{"id":"t1","severity":"error","file":"test.go","line":10,"description":"missing assertion"}]}`
+	m.resetFindingSelection(types.StepTest)
+	m.showDiff = true // stale from previous step
+
+	// Apply the event that should reset showDiff.
+	findingsJSON := m.stepFindings[types.StepTest]
+	status := string(types.StepStatusAwaitingApproval)
+	stepName := types.StepTest
+	m.applyEvent(ipc.Event{
+		Type:     ipc.EventStepCompleted,
+		StepName: &stepName,
+		Status:   &status,
+		Findings: &findingsJSON,
+	})
+
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "Findings - Test") {
+		t.Errorf("expected 'Findings - Test' box to be visible, got:\n%s", view)
+	}
+}
+
+func TestStaleShowDiff_DiffResetAlsoResetsOffset(t *testing.T) {
+	// When showDiff is reset due to new findings, diffOffset should also reset
+	// to prevent stale scroll position carrying over.
+	configureTUIColors()
+	run := testRun()
+	m := NewModel("/tmp/sock", nil, run)
+	m.showDiff = true
+	m.diffOffset = 42 // stale offset from previous diff
+
+	findingsJSON := `{"items":[{"id":"f1","severity":"info","file":"c.go","line":1,"description":"note"}]}`
+	status := string(types.StepStatusAwaitingApproval)
+	stepName := types.StepTest
+	m.applyEvent(ipc.Event{
+		Type:     ipc.EventStepCompleted,
+		StepName: &stepName,
+		Status:   &status,
+		Findings: &findingsJSON,
+	})
+
+	if m.diffOffset != 0 {
+		t.Errorf("diffOffset should be reset to 0 when new findings arrive, got %d", m.diffOffset)
+	}
+}
+
 func TestActionBar_ShowsDiffWhenDiffDataExists(t *testing.T) {
 	// The action bar SHOULD show 'd diff' when diff data exists for the current step.
 	configureTUIColors()

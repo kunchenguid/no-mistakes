@@ -556,6 +556,10 @@ func (m *Model) applyEvent(event ipc.Event) {
 		}
 		if event.StepName != nil && event.Findings != nil && *event.Findings != "" {
 			m.stepFindings[*event.StepName] = *event.Findings
+			// Reset diff view when new findings arrive to prevent stale showDiff
+			// from a previous step hiding these findings.
+			m.showDiff = false
+			m.diffOffset = 0
 			if event.Status != nil && (types.StepStatus(*event.Status) == types.StepStatusAwaitingApproval || types.StepStatus(*event.Status) == types.StepStatusFixReview) {
 				m.resetFindingSelection(*event.StepName)
 			}
