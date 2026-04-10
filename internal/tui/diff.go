@@ -232,7 +232,13 @@ func renderDiff(raw string, width, viewHeight, offset int, stepLabel string) str
 	}
 
 	// Render visible lines, truncating to fit inside the box.
-	for _, dl := range lines[offset:end] {
+	// Insert blank line before file headers (except the first in the diff)
+	// for visual separation between files.
+	for idx := offset; idx < end; idx++ {
+		dl := lines[idx]
+		if dl.Type == diffLineFileHeader && strings.HasPrefix(dl.Text, "diff --git") && idx > 0 {
+			b.WriteString("\n")
+		}
 		text := dl.Text
 		if lipgloss.Width(text) > contentWidth {
 			text, _ = cutText(text, contentWidth)
