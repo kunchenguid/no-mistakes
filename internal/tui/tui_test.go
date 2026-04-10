@@ -3188,6 +3188,68 @@ func TestActionBar_HidesSelectionInDiffMode(t *testing.T) {
 	}
 }
 
+func TestActionBar_ShowsNavHintsInDiffMode(t *testing.T) {
+	// When viewing diff, the action bar should show n/p navigation hints
+	// so users can discover finding-to-finding navigation without opening help.
+	configureTUIColors()
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	m := NewModel("", nil, run)
+	m.width = 80
+	m.height = 50
+	m.showDiff = true
+	m.stepFindings[types.StepReview] = `{"summary":"test","items":[{"id":"f1","severity":"error","file":"foo.go","line":1,"description":"bad"},{"id":"f2","severity":"warning","file":"bar.go","line":5,"description":"warn"}]}`
+	m.stepDiffs[types.StepReview] = "diff --git a/foo.go b/foo.go\n--- a/foo.go\n+++ b/foo.go\n@@ -1 +1 @@\n-old\n+new\n"
+	m.resetFindingSelection(types.StepReview)
+
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "n next") {
+		t.Errorf("expected 'n next' hint in action bar when viewing diff, got:\n%s", view)
+	}
+	if !strings.Contains(view, "p prev") {
+		t.Errorf("expected 'p prev' hint in action bar when viewing diff, got:\n%s", view)
+	}
+}
+
+func TestActionBar_HidesNavHintsInFindingsMode(t *testing.T) {
+	// When viewing findings (not diff), n/p hints should NOT appear
+	// since j/k is the primary navigation in findings view.
+	configureTUIColors()
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	m := NewModel("", nil, run)
+	m.width = 80
+	m.height = 50
+	m.showDiff = false
+	m.stepFindings[types.StepReview] = `{"summary":"test","items":[{"id":"f1","severity":"error","file":"foo.go","line":1,"description":"bad"},{"id":"f2","severity":"warning","file":"bar.go","line":5,"description":"warn"}]}`
+	m.stepDiffs[types.StepReview] = "diff --git a/foo.go b/foo.go\n--- a/foo.go\n+++ b/foo.go\n@@ -1 +1 @@\n-old\n+new\n"
+	m.resetFindingSelection(types.StepReview)
+
+	view := stripANSI(m.View())
+	if strings.Contains(view, "n next") {
+		t.Error("'n next' hint should NOT appear when viewing findings")
+	}
+	if strings.Contains(view, "p prev") {
+		t.Error("'p prev' hint should NOT appear when viewing findings")
+	}
+}
+
+func TestActionBar_NavHintsWithSeparator(t *testing.T) {
+	// In diff mode, n/p hints should appear after │ separator (where selection
+	// actions would be in findings mode), giving the secondary action group context.
+	configureTUIColors()
+	out := stripANSI(renderApprovalActions(false, true, true, 5, 5, false, true))
+	if !strings.Contains(out, "│") {
+		t.Error("expected │ separator before n/p hints in diff mode")
+	}
+	if !strings.Contains(out, "n next") {
+		t.Errorf("expected 'n next' after separator in diff mode, got: %s", out)
+	}
+	if !strings.Contains(out, "p prev") {
+		t.Errorf("expected 'p prev' after separator in diff mode, got: %s", out)
+	}
+}
+
 func TestActionBar_FixShowsSelectionCount(t *testing.T) {
 	// When findings are selected for fix, the action bar should show
 	// the selection count like "f fix (3/5)" so users know what they're sending.

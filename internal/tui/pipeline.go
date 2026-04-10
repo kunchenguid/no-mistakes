@@ -250,6 +250,10 @@ func renderApprovalActions(showSelectionActions bool, allowFix bool, showDiff bo
 		dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
 		selection := []string{renderAction("\u2423", "toggle"), renderAction("A", "all"), renderAction("N", "none")}
 		result += " " + dimStyle.Render("│") + " " + strings.Join(selection, "  ")
+	} else if showDiff {
+		dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
+		nav := []string{renderAction("n", "next"), renderAction("p", "prev")}
+		result += " " + dimStyle.Render("│") + " " + strings.Join(nav, "  ")
 	}
 
 	return result + "\n"
