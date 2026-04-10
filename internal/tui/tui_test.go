@@ -3818,9 +3818,9 @@ func TestModel_View_HelpOverlay_HidesActionsWhenNoApproval(t *testing.T) {
 	view := m.View()
 	plain := stripANSI(view)
 
-	// Navigation should still be shown.
-	if !strings.Contains(plain, "j/k") {
-		t.Errorf("help should show navigation keys even without approval, got:\n%s", plain)
+	// Navigation should be hidden (no awaiting step means j/k etc. are no-ops).
+	if strings.Contains(plain, "j/k") {
+		t.Errorf("help should hide navigation keys without approval, got:\n%s", plain)
 	}
 	// Action keys should NOT be shown since no step is awaiting approval.
 	if strings.Contains(plain, "a  approve") {
@@ -6408,5 +6408,79 @@ func TestSpaceToggle_TogglesOriginalNotAdvanced(t *testing.T) {
 	}
 	if !sel["f3"] {
 		t.Fatal("f3 should still be selected (not toggled)")
+	}
+}
+
+func TestModel_View_HelpOverlay_HidesNavigationWhenNoAwaitingStep(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	run := testRun()
+	// All steps pending - no step awaiting approval, no diff available.
+	m := NewModel("", nil, run)
+	m.width = 80
+	m.height = 40
+	m.showHelp = true
+
+	view := m.View()
+	plain := stripANSI(view)
+
+	// Navigation keys should NOT be shown since they're no-ops without an awaiting step.
+	if strings.Contains(plain, "j/k") {
+		t.Errorf("help should hide j/k navigation when no step awaiting, got:\n%s", plain)
+	}
+	if strings.Contains(plain, "g/G") {
+		t.Errorf("help should hide g/G when no step awaiting, got:\n%s", plain)
+	}
+	if strings.Contains(plain, "Ctrl+d/u") {
+		t.Errorf("help should hide Ctrl+d/u when no step awaiting, got:\n%s", plain)
+	}
+	// "Navigation" section title should NOT appear.
+	if strings.Contains(plain, "Navigation") {
+		t.Errorf("help should hide Navigation section when no step awaiting, got:\n%s", plain)
+	}
+}
+
+func TestModel_View_HelpOverlay_ShowsOnlyQAndHelpWhenNoActions(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	run := testRun()
+	// Pipeline running, no step awaiting - minimal help content.
+	m := NewModel("", nil, run)
+	m.width = 80
+	m.height = 40
+	m.showHelp = true
+
+	view := m.View()
+	plain := stripANSI(view)
+
+	// Should still show q and ? since those always work.
+	if !strings.Contains(plain, "detach") {
+		t.Errorf("help should show q detach even without actions, got:\n%s", plain)
+	}
+	if !strings.Contains(plain, "close help") {
+		t.Errorf("help should show ? close help even without actions, got:\n%s", plain)
+	}
+	// Should be in a Help box.
+	if !strings.Contains(plain, "Help") {
+		t.Errorf("help should still be in a Help titled box, got:\n%s", plain)
+	}
+}
+
+func TestModel_View_HelpOverlay_ShowsNavigationWhenAwaitingStep(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	m := NewModel("", nil, run)
+	m.width = 80
+	m.height = 40
+	m.showHelp = true
+
+	view := m.View()
+	plain := stripANSI(view)
+
+	// Navigation should be shown when a step is awaiting approval.
+	if !strings.Contains(plain, "j/k") {
+		t.Errorf("help should show j/k navigation when step is awaiting, got:\n%s", plain)
+	}
+	if !strings.Contains(plain, "Navigation") {
+		t.Errorf("help should show Navigation section when step is awaiting, got:\n%s", plain)
 	}
 }
