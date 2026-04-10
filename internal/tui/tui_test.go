@@ -4428,3 +4428,65 @@ func TestActionBar_ShowsDiffWhenDiffDataExists(t *testing.T) {
 		t.Errorf("expected 'd diff' in action bar when diff data exists, got:\n%s", view)
 	}
 }
+
+func TestModel_HelpAutoDismiss_NavigationKey(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	m := NewModel("", nil, run)
+	m.width = 80
+	m.height = 40
+	m.showHelp = true
+	m.stepFindings[types.StepReview] = `{"summary":"test","items":[{"id":"f1","severity":"error","file":"foo.go","line":1,"description":"bad"},{"id":"f2","severity":"warning","file":"bar.go","line":5,"description":"ugly"}]}`
+	m.resetFindingSelection(types.StepReview)
+
+	// Press j (navigation) while help is open - should dismiss help.
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	m = result.(Model)
+	if m.showHelp {
+		t.Fatal("expected help to auto-dismiss when pressing navigation key j")
+	}
+	// Navigation should still take effect - cursor should have moved.
+	if m.findingCursor[types.StepReview] != 1 {
+		t.Fatalf("expected cursor to move to 1 after j, got %d", m.findingCursor[types.StepReview])
+	}
+}
+
+func TestModel_HelpAutoDismiss_ActionKey(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	m := NewModel("", nil, run)
+	m.width = 80
+	m.height = 40
+	m.showHelp = true
+	m.stepFindings[types.StepReview] = `{"summary":"test","items":[{"id":"f1","severity":"error","file":"foo.go","line":1,"description":"bad"}]}`
+	m.resetFindingSelection(types.StepReview)
+
+	// Press d (toggle diff/findings) while help is open - should dismiss help.
+	m.stepDiffs[types.StepReview] = "diff --git a/foo.go b/foo.go\n--- a/foo.go\n+++ b/foo.go\n@@ -1 +1 @@\n-old\n+new\n"
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	m = result.(Model)
+	if m.showHelp {
+		t.Fatal("expected help to auto-dismiss when pressing action key d")
+	}
+}
+
+func TestModel_HelpAutoDismiss_SelectionKey(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	m := NewModel("", nil, run)
+	m.width = 80
+	m.height = 40
+	m.showHelp = true
+	m.stepFindings[types.StepReview] = `{"summary":"test","items":[{"id":"f1","severity":"error","file":"foo.go","line":1,"description":"bad"}]}`
+	m.resetFindingSelection(types.StepReview)
+
+	// Press space (toggle selection) while help is open - should dismiss help.
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeySpace})
+	m = result.(Model)
+	if m.showHelp {
+		t.Fatal("expected help to auto-dismiss when pressing selection key space")
+	}
+}

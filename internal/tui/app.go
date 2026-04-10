@@ -333,6 +333,11 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.confirmAbort = false
 	}
 
+	// Auto-dismiss help on any key except ? (toggle) and esc (handled below).
+	if m.showHelp && key != "?" && key != "esc" {
+		m.showHelp = false
+	}
+
 	switch key {
 	case "q", "ctrl+c":
 		m.quitting = true
