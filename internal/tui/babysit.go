@@ -93,10 +93,10 @@ func parseBabysitActivity(logs []string) babysitActivity {
 // renderBabysitView renders the babysit-specific monitoring view.
 // Shown instead of generic findings when the babysit step is active.
 func renderBabysitView(run *ipc.RunInfo, steps []ipc.StepResultInfo, findings string, logs []string, width int) string {
-	return renderBabysitViewWithSelection(run, steps, findings, logs, width, 0, nil)
+	return renderBabysitViewWithSelection(run, steps, findings, logs, width, 0, 0, nil)
 }
 
-func renderBabysitViewWithSelection(run *ipc.RunInfo, steps []ipc.StepResultInfo, findings string, logs []string, width int, cursor int, selected map[string]bool) string {
+func renderBabysitViewWithSelection(run *ipc.RunInfo, steps []ipc.StepResultInfo, findings string, logs []string, width int, height int, cursor int, selected map[string]bool) string {
 	var b strings.Builder
 
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
@@ -147,13 +147,30 @@ func renderBabysitViewWithSelection(run *ipc.RunInfo, steps []ipc.StepResultInfo
 		boxWidth = 80
 	}
 	contentWidth := boxWidth - 4 // account for box border + padding
+	var itemCount int
 	if (status == types.StepStatusAwaitingApproval || status == types.StepStatusFixReview) && findings != "" {
-		rendered := renderFindingsWithSelection(findings, contentWidth, cursor, selected, 0)
+		if f, err := parseFindings(findings); err == nil && f != nil {
+			itemCount = len(f.Items)
+		}
+		// Compute viewport size from available height.
+		// Reserve ~10 lines for babysit header content (PR info, state, activity, box border).
+		maxVisible := 0
+		if height > 0 {
+			findingsHeight := height - 25 // reserve for pipeline, babysit header, box borders, footer
+			if findingsHeight > 6 {
+				maxVisible = findingsHeight / 3 // ~3 lines per finding
+			}
+		}
+		rendered := renderFindingsWithSelection(findings, contentWidth, cursor, selected, maxVisible)
 		if rendered != "" {
 			b.WriteString("\n")
 			b.WriteString(rendered)
 		}
 	}
 
-	return renderBox("Babysit", b.String(), boxWidth)
+	title := "Babysit"
+	if itemCount > 0 {
+		title += fmt.Sprintf(" (%d/%d)", cursor+1, itemCount)
+	}
+	return renderBox(title, b.String(), boxWidth)
 }

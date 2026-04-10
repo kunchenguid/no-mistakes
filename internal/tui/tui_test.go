@@ -2728,3 +2728,94 @@ func TestDiffBoxTitle_NoPositionWhenAllVisible(t *testing.T) {
 		t.Errorf("expected 'Diff - Review' in title, got:\n%s", plain)
 	}
 }
+
+// --- Babysit box title position indicator tests ---
+
+func TestRenderBabysitView_TitleShowsPositionWhenFindings(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	run := testRunWithBabysit()
+	run.Steps[5].Status = types.StepStatusAwaitingApproval
+	findings := `{"findings":[
+		{"id":"f1","severity":"info","description":"comment 1"},
+		{"id":"f2","severity":"info","description":"comment 2"},
+		{"id":"f3","severity":"info","description":"comment 3"}
+	],"summary":"3 comments"}`
+
+	out := stripANSI(renderBabysitViewWithSelection(run, run.Steps, findings, nil, 80, 0, 1, nil))
+
+	if !strings.Contains(out, "Babysit (2/3)") {
+		t.Errorf("expected position indicator 'Babysit (2/3)' in title, got:\n%s", out)
+	}
+}
+
+func TestRenderBabysitView_TitleNoPositionWithoutFindings(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	run := testRunWithBabysit()
+	run.Steps[5].Status = types.StepStatusRunning
+	logs := []string{"babysitting PR #42 (timeout: 4h)..."}
+
+	out := stripANSI(renderBabysitView(run, run.Steps, "", logs, 80))
+	lines := strings.Split(out, "\n")
+
+	// Title should be just "Babysit" without any position indicator.
+	titleLine := lines[0]
+	if !strings.Contains(titleLine, "Babysit") {
+		t.Error("expected Babysit in title")
+	}
+	if strings.Contains(titleLine, "(") {
+		t.Errorf("expected no position indicator when no findings, got: %s", titleLine)
+	}
+}
+
+func TestRenderBabysitView_PositionUpdatesWithCursor(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	run := testRunWithBabysit()
+	run.Steps[5].Status = types.StepStatusAwaitingApproval
+	findings := `{"findings":[
+		{"id":"f1","severity":"info","description":"c1"},
+		{"id":"f2","severity":"info","description":"c2"},
+		{"id":"f3","severity":"info","description":"c3"},
+		{"id":"f4","severity":"info","description":"c4"},
+		{"id":"f5","severity":"info","description":"c5"}
+	],"summary":"5 comments"}`
+
+	// Cursor at start.
+	out1 := stripANSI(renderBabysitViewWithSelection(run, run.Steps, findings, nil, 80, 0, 0, nil))
+	if !strings.Contains(out1, "Babysit (1/5)") {
+		t.Errorf("expected 'Babysit (1/5)' at start, got:\n%s", out1)
+	}
+
+	// Cursor at end.
+	out2 := stripANSI(renderBabysitViewWithSelection(run, run.Steps, findings, nil, 80, 0, 4, nil))
+	if !strings.Contains(out2, "Babysit (5/5)") {
+		t.Errorf("expected 'Babysit (5/5)' at end, got:\n%s", out2)
+	}
+}
+
+func TestModel_View_BabysitFindingsViewportApplied(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	run := testRunWithBabysit()
+	m := NewModel("/tmp/sock", nil, run)
+	m.steps = run.Steps
+	m.steps[5].Status = types.StepStatusAwaitingApproval
+
+	// Create 10 findings.
+	var items []string
+	for i := 1; i <= 10; i++ {
+		items = append(items, fmt.Sprintf(`{"id":"f%d","severity":"info","description":"comment %d"}`, i, i))
+	}
+	m.stepFindings[types.StepBabysit] = `{"findings":[` + strings.Join(items, ",") + `],"summary":"10 comments"}`
+	m.resetFindingSelection(types.StepBabysit)
+
+	// Set a terminal height that forces viewport (height - 25 reserve = 15, /3 = 5 max visible).
+	m.width = 80
+	m.height = 40
+
+	view := stripANSI(m.View())
+
+	// With height=30, not all 10 findings should be visible.
+	// Verify scroll indicators appear.
+	if !strings.Contains(view, "more below") {
+		t.Errorf("expected '↓ N more below' scroll indicator when findings overflow viewport, got:\n%s", view)
+	}
+}

@@ -154,7 +154,7 @@ func (m Model) View() string {
 			selected = m.findingSelections[step.StepName]
 		}
 		b.WriteString("\n\n")
-		b.WriteString(renderBabysitViewWithSelection(m.run, m.steps, findings, m.logs, m.width, cursor, selected))
+		b.WriteString(renderBabysitViewWithSelection(m.run, m.steps, findings, m.logs, m.width, m.height, cursor, selected))
 	} else if step := awaitingStep(m.steps); step != nil {
 		// Generic findings or diff for non-babysit steps awaiting approval.
 		label := stepLabel(step.StepName)
