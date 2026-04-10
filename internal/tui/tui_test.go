@@ -6285,3 +6285,62 @@ func TestModel_View_HelpOverlay_NoEscBackOutsideDiffMode(t *testing.T) {
 		t.Errorf("help overlay should NOT show 'back to findings' when not in diff mode, got:\n%s", output)
 	}
 }
+
+func TestSeverityCountBadges_IncludeSeverityIcons(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+
+	raw := `{"summary":"Found issues","items":[
+		{"id":"f1","severity":"error","file":"a.go","line":1,"description":"bad"},
+		{"id":"f2","severity":"error","file":"b.go","line":2,"description":"bad2"},
+		{"id":"f3","severity":"warning","file":"c.go","line":3,"description":"warn"}
+	]}`
+	selected := map[string]bool{"f1": true, "f2": true, "f3": true}
+	content, _ := renderFindingsWithSelection(raw, 80, 0, selected, 0)
+	plain := stripANSI(content)
+
+	// Error count should include the error severity icon ●
+	if !strings.Contains(plain, "● 2 error") {
+		t.Errorf("severity count should include ● icon before error count, got:\n%s", plain)
+	}
+	// Warning count should include the warning severity icon ▲
+	if !strings.Contains(plain, "▲ 1 warning") {
+		t.Errorf("severity count should include ▲ icon before warning count, got:\n%s", plain)
+	}
+}
+
+func TestSeverityCountBadges_InfoIconIncluded(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+
+	raw := `{"summary":"Check results","items":[
+		{"id":"f1","severity":"info","file":"a.go","line":1,"description":"note"},
+		{"id":"f2","severity":"info","file":"b.go","line":2,"description":"note2"}
+	]}`
+	selected := map[string]bool{"f1": true, "f2": true}
+	content, _ := renderFindingsWithSelection(raw, 80, 0, selected, 0)
+	plain := stripANSI(content)
+
+	// Info count should include the info severity icon ○
+	if !strings.Contains(plain, "○ 2 info") {
+		t.Errorf("severity count should include ○ icon before info count, got:\n%s", plain)
+	}
+}
+
+func TestSeverityCountBadges_AllThreeSeverities(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+
+	raw := `{"summary":"Mixed","items":[
+		{"id":"f1","severity":"error","file":"a.go","line":1,"description":"err"},
+		{"id":"f2","severity":"warning","file":"b.go","line":2,"description":"warn"},
+		{"id":"f3","severity":"info","file":"c.go","line":3,"description":"note"}
+	]}`
+	selected := map[string]bool{"f1": true, "f2": true, "f3": true}
+	content, _ := renderFindingsWithSelection(raw, 80, 0, selected, 0)
+	plain := stripANSI(content)
+
+	// All three severity icons should appear in the count line
+	for _, expected := range []string{"● 1 error", "▲ 1 warning", "○ 1 info"} {
+		if !strings.Contains(plain, expected) {
+			t.Errorf("severity count should include %q, got:\n%s", expected, plain)
+		}
+	}
+}

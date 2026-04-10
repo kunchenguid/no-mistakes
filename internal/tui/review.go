@@ -206,7 +206,7 @@ func renderFindingsWithSelection(raw string, width int, cursor int, selected map
 		for _, sev := range []string{"error", "warning", "info"} {
 			if c, ok := counts[sev]; ok {
 				style := severityStyle(sev)
-				parts = append(parts, style.Render(fmt.Sprintf("%d %s", c, sev)))
+				parts = append(parts, style.Render(fmt.Sprintf("%s %d %s", severityIcon(sev), c, sev)))
 			}
 		}
 		b.WriteString(strings.Join(parts, "  "))
