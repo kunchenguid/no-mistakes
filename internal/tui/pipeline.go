@@ -92,7 +92,7 @@ func formatDuration(ms int64) string {
 }
 
 // renderPipelineView renders the step list with status indicators inside a boxed section.
-func renderPipelineView(run *ipc.RunInfo, steps []ipc.StepResultInfo, width int, spinnerFrame int, showSelectionActions bool, allowFix bool) string {
+func renderPipelineView(run *ipc.RunInfo, steps []ipc.StepResultInfo, width int, spinnerFrame int) string {
 	if run == nil {
 		return "No active run."
 	}
@@ -142,18 +142,6 @@ func renderPipelineView(run *ipc.RunInfo, steps []ipc.StepResultInfo, width int,
 		}
 	}
 
-	// Approval prompt if any step is awaiting.
-	for _, step := range steps {
-		if step.Status == types.StepStatusAwaitingApproval || step.Status == types.StepStatusFixReview {
-			b.WriteString("\n")
-			promptStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiYellow))
-			b.WriteString(promptStyle.Render(fmt.Sprintf("%s awaiting action:", stepLabel(step.StepName))))
-			b.WriteString("\n")
-			b.WriteString(renderApprovalActions(showSelectionActions, allowFix))
-			break
-		}
-	}
-
 	// Run error.
 	if run.Error != nil {
 		errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiRed))
@@ -165,6 +153,22 @@ func renderPipelineView(run *ipc.RunInfo, steps []ipc.StepResultInfo, width int,
 		boxWidth = 80
 	}
 	return renderBox("Pipeline", b.String(), boxWidth)
+}
+
+// renderActionBar renders the approval prompt and action keys as a standalone element.
+// Per DESIGN.md: "Sits below the pipeline box, above findings/diff"
+func renderActionBar(steps []ipc.StepResultInfo, showSelectionActions bool, allowFix bool) string {
+	step := awaitingStep(steps)
+	if step == nil {
+		return ""
+	}
+
+	var b strings.Builder
+	promptStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiYellow))
+	b.WriteString(promptStyle.Render(fmt.Sprintf("%s awaiting action:", stepLabel(step.StepName))))
+	b.WriteString("\n")
+	b.WriteString(renderApprovalActions(showSelectionActions, allowFix))
+	return b.String()
 }
 
 func renderApprovalActions(showSelectionActions bool, allowFix bool) string {

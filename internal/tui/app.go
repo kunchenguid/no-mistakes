@@ -141,7 +141,13 @@ func (m Model) View() string {
 	showSelectionActions, allowFix := m.awaitingActionState()
 
 	// Pipeline progress view.
-	b.WriteString(renderPipelineView(m.run, m.steps, m.width, m.spinnerFrame, showSelectionActions, allowFix))
+	b.WriteString(renderPipelineView(m.run, m.steps, m.width, m.spinnerFrame))
+
+	// Action bar between pipeline box and findings/diff per DESIGN.md.
+	if actionBar := renderActionBar(m.steps, showSelectionActions, allowFix); actionBar != "" {
+		b.WriteString("\n")
+		b.WriteString(actionBar)
+	}
 
 	// Babysit-specific view when babysit step is active.
 	if isBabysitActive(m.steps) {
