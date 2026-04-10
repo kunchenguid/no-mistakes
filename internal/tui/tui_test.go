@@ -3650,3 +3650,51 @@ func TestModel_View_HelpOverlay_HidesSelectionInDiffMode(t *testing.T) {
 		t.Errorf("help should show d toggle in diff mode, got:\n%s", plain)
 	}
 }
+
+func TestOutcomeBanner_SuccessShowsElapsedTime(t *testing.T) {
+	run := testRun()
+	run.Status = types.RunCompleted
+	steps := []ipc.StepResultInfo{
+		{StepName: types.StepReview, Status: types.StepStatusCompleted, DurationMS: ptr(int64(1200))},
+		{StepName: types.StepTest, Status: types.StepStatusCompleted, DurationMS: ptr(int64(3400))},
+		{StepName: types.StepPush, Status: types.StepStatusCompleted, DurationMS: ptr(int64(800))},
+	}
+	banner := stripANSI(renderOutcomeBanner(run, steps))
+	// Total = 1200 + 3400 + 800 = 5400ms = 5.4s
+	if !strings.Contains(banner, "5.4s") {
+		t.Errorf("expected elapsed time '5.4s' in success banner, got: %s", banner)
+	}
+}
+
+func TestOutcomeBanner_FailureShowsElapsedTime(t *testing.T) {
+	run := testRun()
+	run.Status = types.RunFailed
+	steps := []ipc.StepResultInfo{
+		{StepName: types.StepReview, Status: types.StepStatusCompleted, DurationMS: ptr(int64(2000))},
+		{StepName: types.StepTest, Status: types.StepStatusFailed, DurationMS: ptr(int64(6500))},
+		{StepName: types.StepLint, Status: types.StepStatusPending},
+	}
+	banner := stripANSI(renderOutcomeBanner(run, steps))
+	// Total = 2000 + 6500 = 8500ms = 8.5s
+	if !strings.Contains(banner, "8.5s") {
+		t.Errorf("expected elapsed time '8.5s' in failure banner, got: %s", banner)
+	}
+}
+
+func TestOutcomeBanner_NoDurationWhenNoStepTimes(t *testing.T) {
+	run := testRun()
+	run.Status = types.RunCompleted
+	steps := []ipc.StepResultInfo{
+		{StepName: types.StepReview, Status: types.StepStatusCompleted},
+		{StepName: types.StepTest, Status: types.StepStatusCompleted},
+	}
+	banner := stripANSI(renderOutcomeBanner(run, steps))
+	// When no steps have DurationMS, no time should be shown.
+	if !strings.Contains(banner, "Pipeline passed") {
+		t.Errorf("expected 'Pipeline passed' in banner, got: %s", banner)
+	}
+	if strings.Contains(banner, "s") && strings.Contains(banner, ".") {
+		// Rough check: shouldn't have a duration string like "0.0s"
+		t.Errorf("expected no elapsed time when no step durations available, got: %s", banner)
+	}
+}

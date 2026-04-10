@@ -212,10 +212,24 @@ func renderOutcomeBanner(run *ipc.RunInfo, steps []ipc.StepResultInfo) string {
 	if run == nil {
 		return ""
 	}
+
+	// Sum step durations for elapsed time.
+	elapsed := ""
+	var totalMS int64
+	for _, s := range steps {
+		if s.DurationMS != nil {
+			totalMS += *s.DurationMS
+		}
+	}
+	if totalMS > 0 {
+		dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
+		elapsed = "  " + dimStyle.Render(formatDuration(totalMS))
+	}
+
 	switch run.Status {
 	case types.RunCompleted:
 		style := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiGreen))
-		return style.Render("✓ Pipeline passed")
+		return style.Render("✓ Pipeline passed") + elapsed
 	case types.RunFailed:
 		// Find which step failed.
 		failedLabel := ""
@@ -227,9 +241,9 @@ func renderOutcomeBanner(run *ipc.RunInfo, steps []ipc.StepResultInfo) string {
 		}
 		style := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiRed))
 		if failedLabel != "" {
-			return style.Render("✗ " + failedLabel + " failed")
+			return style.Render("✗ "+failedLabel+" failed") + elapsed
 		}
-		return style.Render("✗ Pipeline failed")
+		return style.Render("✗ Pipeline failed") + elapsed
 	default:
 		return ""
 	}
