@@ -204,7 +204,9 @@ func diffLineStyle(t diffLineType) lipgloss.Style {
 // renderDiff renders a scrollable, color-coded diff view inside a boxed section.
 // offset is the scroll position (first visible line), viewHeight is the number of visible lines.
 // If viewHeight <= 0, all lines are rendered. stepLabel is included in the box title when non-empty.
-func renderDiff(raw string, width, viewHeight, offset int, stepLabel string) string {
+// findingContext, when non-empty, is displayed below the stats as a dim context line
+// showing the current finding's info (for n/p navigation).
+func renderDiff(raw string, width, viewHeight, offset int, stepLabel string, findingContext string) string {
 	lines := parseDiffLines(raw)
 	if len(lines) == 0 {
 		return ""
@@ -231,7 +233,21 @@ func renderDiff(raw string, width, viewHeight, offset int, stepLabel string) str
 	b.WriteString(addStyle.Render(fmt.Sprintf("+%d", adds)))
 	b.WriteString("  ")
 	b.WriteString(delStyle.Render(fmt.Sprintf("-%d", dels)))
-	b.WriteString("\n\n")
+	b.WriteString("\n")
+
+	// Finding context line showing which finding the user is looking at.
+	if findingContext != "" {
+		dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
+		ctx := findingContext
+		contentWidth := boxWidth - 4
+		if contentWidth > 0 && lipgloss.Width(ctx) > contentWidth {
+			ctx, _ = cutText(ctx, contentWidth)
+		}
+		b.WriteString(dimStyle.Render(ctx))
+		b.WriteString("\n")
+	}
+
+	b.WriteString("\n")
 
 	// Clamp offset.
 	if offset < 0 {

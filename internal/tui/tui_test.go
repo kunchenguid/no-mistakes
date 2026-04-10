@@ -994,7 +994,7 @@ func TestDiffStats_DevNull(t *testing.T) {
 }
 
 func TestRenderDiff_Empty(t *testing.T) {
-	if got := renderDiff("", 80, 20, 0, ""); got != "" {
+	if got := renderDiff("", 80, 20, 0, "", ""); got != "" {
 		t.Errorf("expected empty for empty input, got %q", got)
 	}
 }
@@ -1007,7 +1007,7 @@ func TestRenderDiff_HasStats(t *testing.T) {
  package main
 +import "fmt"
 `
-	got := renderDiff(raw, 80, 0, 0, "")
+	got := renderDiff(raw, 80, 0, 0, "", "")
 	if !strings.Contains(got, "1 file") {
 		t.Error("expected file count in stats")
 	}
@@ -1024,7 +1024,7 @@ func TestRenderDiff_ColoredLines(t *testing.T) {
 -old line
 +new line
 `
-	got := renderDiff(raw, 80, 0, 0, "")
+	got := renderDiff(raw, 80, 0, 0, "", "")
 	// Lines should be present (rendered with styles, but text should be there).
 	if !strings.Contains(got, "old line") {
 		t.Error("expected deletion line in output")
@@ -1047,7 +1047,7 @@ func TestRenderDiff_Scrolling(t *testing.T) {
 	raw := b.String()
 
 	// Render with a small viewport and offset.
-	got := renderDiff(raw, 80, 5, 2, "")
+	got := renderDiff(raw, 80, 5, 2, "", "")
 
 	// Should show scroll indicator since there are more lines.
 	if !strings.Contains(got, "more lines") {
@@ -1064,7 +1064,7 @@ func TestRenderDiff_ScrollEnd(t *testing.T) {
 +new
 `
 	// Scroll to near the end with a small viewport.
-	got := renderDiff(raw, 80, 3, 3, "")
+	got := renderDiff(raw, 80, 3, 3, "", "")
 
 	// Should show scroll-up indicator since we scrolled past start.
 	if !strings.Contains(got, "↑") {
@@ -1080,7 +1080,7 @@ func TestRenderDiff_WrappedInBox(t *testing.T) {
  package main
 +import "fmt"
 `
-	got := stripANSI(renderDiff(raw, 80, 0, 0, ""))
+	got := stripANSI(renderDiff(raw, 80, 0, 0, "", ""))
 	lines := strings.Split(got, "\n")
 	if len(lines) == 0 {
 		t.Fatal("expected non-empty output")
@@ -1105,7 +1105,7 @@ func TestRenderDiff_ScrollIndicatorInBottomBorder(t *testing.T) {
 		b.WriteString(fmt.Sprintf("+line %d\n", i))
 	}
 
-	got := stripANSI(renderDiff(b.String(), 80, 5, 0, ""))
+	got := stripANSI(renderDiff(b.String(), 80, 5, 0, "", ""))
 	lines := strings.Split(got, "\n")
 	// The last non-empty line should be the bottom border with scroll info.
 	lastLine := ""
@@ -2127,7 +2127,7 @@ func TestRenderDiff_StatsPluralization(t *testing.T) {
 
 	// Multiple files should say "files"
 	raw := "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-old\n+new\ndiff --git a/b.go b/b.go\n--- a/b.go\n+++ b/b.go\n@@ -1 +1 @@\n-old2\n+new2\n"
-	result := renderDiff(raw, 80, 20, 0, "")
+	result := renderDiff(raw, 80, 20, 0, "", "")
 	plain := stripANSI(result)
 	if !strings.Contains(plain, "2 files") {
 		t.Errorf("expected '2 files' (plural) for multiple files, got: %s", plain)
@@ -2135,7 +2135,7 @@ func TestRenderDiff_StatsPluralization(t *testing.T) {
 
 	// Single file should say "file"
 	raw2 := "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-old\n+new\n"
-	result2 := renderDiff(raw2, 80, 20, 0, "")
+	result2 := renderDiff(raw2, 80, 20, 0, "", "")
 	plain2 := stripANSI(result2)
 	if !strings.Contains(plain2, "1 file") {
 		t.Errorf("expected '1 file' (singular) for one file, got: %s", plain2)
@@ -2150,7 +2150,7 @@ func TestRenderDiff_StatsMatchDesign(t *testing.T) {
 	defer lipgloss.SetColorProfile(termenv.ANSI)
 
 	raw := "diff --git a/foo.go b/foo.go\nindex abc..def 100644\n--- a/foo.go\n+++ b/foo.go\n@@ -1,3 +1,4 @@\n context\n+added1\n+added2\n-removed\n"
-	result := renderDiff(raw, 80, 20, 0, "")
+	result := renderDiff(raw, 80, 20, 0, "", "")
 	plain := stripANSI(result)
 
 	// Should say "1 file" (singular) or "3 files" (plural), NOT "file(s) changed"
@@ -2207,7 +2207,7 @@ func TestRenderDiff_ScrollUpIndicator(t *testing.T) {
 	}
 
 	// Scroll down 5 lines, view height 5 - should have lines above AND below.
-	got := stripANSI(renderDiff(b.String(), 80, 5, 5, ""))
+	got := stripANSI(renderDiff(b.String(), 80, 5, 5, "", ""))
 	lines := strings.Split(got, "\n")
 	lastLine := ""
 	for i := len(lines) - 1; i >= 0; i-- {
@@ -2236,7 +2236,7 @@ func TestRenderDiff_ScrollUpOnlyAtBottom(t *testing.T) {
 	}
 
 	// 9 total lines, view height 5, offset 4 - at the bottom.
-	got := stripANSI(renderDiff(b.String(), 80, 5, 4, ""))
+	got := stripANSI(renderDiff(b.String(), 80, 5, 4, "", ""))
 	lines := strings.Split(got, "\n")
 	lastLine := ""
 	for i := len(lines) - 1; i >= 0; i-- {
@@ -2687,7 +2687,7 @@ func TestDiffBoxTitle_ShowsScrollPosition(t *testing.T) {
 	raw := strings.Join(diffLines, "\n") + "\n"
 
 	// Render at offset 0 with viewHeight 10. Total lines = 34 (4 headers + 30 additions).
-	out := renderDiff(raw, 80, 10, 0, "Review")
+	out := renderDiff(raw, 80, 10, 0, "Review", "")
 	plain := stripANSI(out)
 
 	// Title should include scroll position: line 1 of total.
@@ -2706,7 +2706,7 @@ func TestDiffBoxTitle_ScrollPositionUpdatesWithOffset(t *testing.T) {
 	raw := strings.Join(diffLines, "\n") + "\n"
 
 	// Render at offset 15 with viewHeight 10. Total = 34.
-	out := renderDiff(raw, 80, 10, 15, "Test")
+	out := renderDiff(raw, 80, 10, 15, "Test", "")
 	plain := stripANSI(out)
 
 	// Title should show line 16 (offset+1) of 34.
@@ -2721,7 +2721,7 @@ func TestDiffBoxTitle_NoPositionWhenAllVisible(t *testing.T) {
 	raw := "diff --git a/foo.go b/foo.go\n--- a/foo.go\n+++ b/foo.go\n@@ -1 +1 @@\n-old\n+new\n"
 
 	// viewHeight 0 means show all.
-	out := renderDiff(raw, 80, 0, 0, "Review")
+	out := renderDiff(raw, 80, 0, 0, "Review", "")
 	plain := stripANSI(out)
 
 	// Should NOT show position indicator when all content is visible.
@@ -4141,7 +4141,7 @@ func TestRenderDiff_LongLinesTruncated(t *testing.T) {
 	boxWidth := 80
 	contentWidth := boxWidth - 4 // 2 border + 2 padding = 76
 
-	result := renderDiff(raw, boxWidth, 0, 0, "")
+	result := renderDiff(raw, boxWidth, 0, 0, "", "")
 	plain := stripANSI(result)
 
 	// Check that no content line exceeds the box width.
@@ -4168,7 +4168,7 @@ func TestRenderDiff_ShortLinesNotTruncated(t *testing.T) {
 	// A short line should appear in full.
 	raw := "diff --git a/foo.go b/foo.go\n--- a/foo.go\n+++ b/foo.go\n@@ -1,3 +1,3 @@\n context line\n+short addition\n"
 
-	result := renderDiff(raw, 80, 0, 0, "")
+	result := renderDiff(raw, 80, 0, 0, "", "")
 	plain := stripANSI(result)
 
 	if !strings.Contains(plain, "short addition") {
@@ -4182,7 +4182,7 @@ func TestRenderDiff_TruncatedLinePreservesPrefix(t *testing.T) {
 	longLine := "+" + strings.Repeat("a", 200)
 	raw := "diff --git a/foo.go b/foo.go\n--- a/foo.go\n+++ b/foo.go\n@@ -1,3 +1,3 @@\n context\n" + longLine + "\n"
 
-	result := renderDiff(raw, 80, 0, 0, "")
+	result := renderDiff(raw, 80, 0, 0, "", "")
 	plain := stripANSI(result)
 
 	// The truncated line should still contain "+a" (the diff prefix is preserved).
@@ -5123,7 +5123,7 @@ diff --git a/bar.go b/bar.go
 -old
 +new
 `
-	got := renderDiff(raw, 80, 0, 0, "")
+	got := renderDiff(raw, 80, 0, 0, "", "")
 	plain := stripANSI(got)
 
 	// Find the last line of first file and first line of second file.
@@ -5168,7 +5168,7 @@ func TestRenderDiff_NoExtraBlankBeforeFirstFile(t *testing.T) {
  package foo
 +import "fmt"
 `
-	got := renderDiff(raw, 80, 0, 0, "")
+	got := renderDiff(raw, 80, 0, 0, "", "")
 	plain := stripANSI(got)
 	lines := strings.Split(plain, "\n")
 
@@ -5216,7 +5216,7 @@ diff --git a/c.go b/c.go
  package c
 +import "io"
 `
-	got := renderDiff(raw, 80, 0, 0, "")
+	got := renderDiff(raw, 80, 0, 0, "", "")
 	plain := stripANSI(got)
 	lines := strings.Split(plain, "\n")
 
@@ -5262,7 +5262,7 @@ func TestRenderDiff_LineNumbersShown(t *testing.T) {
  another context
 +second add
 `
-	got := renderDiff(raw, 80, 0, 0, "")
+	got := renderDiff(raw, 80, 0, 0, "", "")
 	plain := stripANSI(got)
 	// Context line at new-file line 10 should show "10" in the gutter.
 	if !strings.Contains(plain, " 10 ") {
@@ -5290,7 +5290,7 @@ func TestRenderDiff_DeletionLinesNoLineNumber(t *testing.T) {
 -deleted line
  after delete
 `
-	got := renderDiff(raw, 80, 0, 0, "")
+	got := renderDiff(raw, 80, 0, 0, "", "")
 	plain := stripANSI(got)
 	lines := strings.Split(plain, "\n")
 	// Find the line containing "deleted line" and verify it has no line number.
@@ -5390,7 +5390,7 @@ func TestRenderDiff_LineNumbersStyledDim(t *testing.T) {
  context
 +added
 `
-	got := renderDiff(raw, 80, 0, 0, "")
+	got := renderDiff(raw, 80, 0, 0, "", "")
 	// Line number "1" should be styled dim (bright black).
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
 	styledOne := dimStyle.Render("1 ")
@@ -5413,7 +5413,7 @@ func TestRenderDiff_BlankLineBetweenStatsAndContent(t *testing.T) {
  package main
 +import "fmt"
 `
-	got := renderDiff(raw, 80, 0, 0, "")
+	got := renderDiff(raw, 80, 0, 0, "", "")
 	plain := stripANSI(got)
 
 	// Find the stats line and the first diff line inside the box.
@@ -5456,7 +5456,7 @@ func TestRenderDiff_StatsBlankLineNotDoubled(t *testing.T) {
  package main
 +import "fmt"
 `
-	got := renderDiff(raw, 80, 0, 0, "")
+	got := renderDiff(raw, 80, 0, 0, "", "")
 	plain := stripANSI(got)
 
 	lines := strings.Split(plain, "\n")
@@ -5507,7 +5507,7 @@ func TestRenderDiff_ScrolledViewPreservesStatsGap(t *testing.T) {
 	raw := b.String()
 
 	// Render scrolled down by 5 lines.
-	got := renderDiff(raw, 80, 10, 5, "")
+	got := renderDiff(raw, 80, 10, 5, "", "")
 	plain := stripANSI(got)
 
 	lines := strings.Split(plain, "\n")
@@ -6033,5 +6033,94 @@ func TestDiffView_NextFindingKey_NoOpWhenNotInDiffView(t *testing.T) {
 	cursor := model.findingCursor[types.StepReview]
 	if cursor != 0 {
 		t.Errorf("expected finding cursor unchanged at 0 when not in diff view, got %d", cursor)
+	}
+}
+
+func TestDiffView_ShowsFindingContext(t *testing.T) {
+	// When viewing diff with findings, the current finding's info should
+	// appear as a context line so users know which finding they're looking at.
+	lipgloss.SetColorProfile(termenv.ANSI)
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	run.Steps[0].FindingsJSON = ptr(`{"summary":"test","items":[` +
+		`{"id":"f1","severity":"error","file":"foo.go","line":12,"description":"Missing error check"},` +
+		`{"id":"f2","severity":"warning","file":"bar.go","line":5,"description":"Unused import"}]}`)
+
+	m := NewModel("/tmp/sock", nil, run)
+	m.width = 80
+	m.height = 40
+	m.stepDiffs[types.StepReview] = "diff --git a/foo.go b/foo.go\n--- a/foo.go\n+++ b/foo.go\n@@ -10,6 +10,8 @@\n context\n+added line\n"
+	m.showDiff = true
+
+	output := stripANSI(m.View())
+
+	// Should show the focused finding's file:line and description somewhere in the diff view.
+	if !strings.Contains(output, "foo.go:12") {
+		t.Errorf("expected diff view to show current finding file:line 'foo.go:12', got:\n%s", output)
+	}
+	if !strings.Contains(output, "Missing error check") {
+		t.Errorf("expected diff view to show current finding description 'Missing error check', got:\n%s", output)
+	}
+}
+
+func TestDiffView_FindingContextUpdatesOnNavigation(t *testing.T) {
+	// When navigating with 'n' key, the finding context should update to show the next finding.
+	lipgloss.SetColorProfile(termenv.ANSI)
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	run.Steps[0].FindingsJSON = ptr(`{"summary":"test","items":[` +
+		`{"id":"f1","severity":"error","file":"foo.go","line":12,"description":"Missing error check"},` +
+		`{"id":"f2","severity":"warning","file":"bar.go","line":5,"description":"Unused import"}]}`)
+
+	m := NewModel("/tmp/sock", nil, run)
+	m.width = 80
+	m.height = 40
+	m.stepDiffs[types.StepReview] = "diff --git a/foo.go b/foo.go\n--- a/foo.go\n+++ b/foo.go\n@@ -10,6 +10,8 @@\n context\n+added line\ndiff --git a/bar.go b/bar.go\n--- a/bar.go\n+++ b/bar.go\n@@ -3,6 +3,8 @@\n context\n+added\n"
+	m.showDiff = true
+
+	// Press 'n' to move to second finding.
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	model := result.(Model)
+
+	output := stripANSI(model.View())
+
+	// Should now show the second finding's info.
+	if !strings.Contains(output, "bar.go:5") {
+		t.Errorf("expected diff view to show navigated finding 'bar.go:5' after pressing n, got:\n%s", output)
+	}
+	if !strings.Contains(output, "Unused import") {
+		t.Errorf("expected diff view to show navigated finding description 'Unused import' after pressing n, got:\n%s", output)
+	}
+}
+
+func TestDiffView_NoFindingContextWithoutFindings(t *testing.T) {
+	// When diff view has no findings, there should be no finding context line.
+	lipgloss.SetColorProfile(termenv.ANSI)
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+
+	m := NewModel("/tmp/sock", nil, run)
+	m.width = 80
+	m.height = 40
+	m.stepDiffs[types.StepReview] = "diff --git a/foo.go b/foo.go\n--- a/foo.go\n+++ b/foo.go\n@@ -10,6 +10,8 @@\n context\n+added line\n"
+	m.showDiff = true
+
+	output := stripANSI(m.View())
+
+	// Should have the diff content but no finding context (no severity icons in header area).
+	// Check that the diff view renders without error.
+	if !strings.Contains(output, "Diff") {
+		t.Errorf("expected diff view title 'Diff', got:\n%s", output)
+	}
+	// The diff view should NOT have finding-specific content like severity icons
+	// outside of the diff content itself.
+	lines := strings.Split(output, "\n")
+	for _, line := range lines {
+		cleaned := strings.TrimSpace(line)
+		// Finding context would appear between stats and diff content.
+		// If there's no findings, we shouldn't see a "Finding N/M" style line.
+		if strings.HasPrefix(cleaned, "Finding ") {
+			t.Errorf("unexpected finding context line without findings: %q", line)
+		}
 	}
 }

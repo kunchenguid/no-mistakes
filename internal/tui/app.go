@@ -189,8 +189,21 @@ func (m Model) View() string {
 				if viewHeight < 5 {
 					viewHeight = 10
 				}
+				// Build finding context for diff view header.
+				findingCtx := ""
+				if items := m.findingItems(step.StepName); len(items) > 0 {
+					cur := m.findingCursor[step.StepName]
+					if cur >= 0 && cur < len(items) {
+						item := items[cur]
+						ref := item.File
+						if item.Line > 0 {
+							ref = fmt.Sprintf("%s:%d", item.File, item.Line)
+						}
+						findingCtx = fmt.Sprintf("%s %s  %s  (%d/%d)", severityIcon(item.Severity), ref, item.Description, cur+1, len(items))
+					}
+				}
 				b.WriteString("\n\n")
-				b.WriteString(renderDiff(raw, m.width, viewHeight, m.diffOffset, label))
+				b.WriteString(renderDiff(raw, m.width, viewHeight, m.diffOffset, label, findingCtx))
 			}
 		} else if raw, ok := m.stepFindings[step.StepName]; ok {
 			// Compute max visible findings from available height.
