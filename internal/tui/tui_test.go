@@ -4895,3 +4895,47 @@ func TestModel_View_RunningStepNoElapsedWithoutStartTime(t *testing.T) {
 		}
 	}
 }
+
+func TestOutcomeBanner_CancelledShowsBanner(t *testing.T) {
+	run := testRun()
+	run.Status = types.RunCancelled
+	steps := []ipc.StepResultInfo{
+		{StepName: types.StepReview, Status: types.StepStatusCompleted},
+		{StepName: types.StepTest, Status: types.StepStatusFailed},
+	}
+	banner := stripANSI(renderOutcomeBanner(run, steps))
+	if !strings.Contains(banner, "Pipeline cancelled") {
+		t.Errorf("expected 'Pipeline cancelled' in banner, got: %s", banner)
+	}
+	if !strings.Contains(banner, "✗") {
+		t.Errorf("expected ✗ in cancelled banner, got: %s", banner)
+	}
+}
+
+func TestOutcomeBanner_CancelledShowsElapsedTime(t *testing.T) {
+	run := testRun()
+	run.Status = types.RunCancelled
+	d1 := int64(2000)
+	d2 := int64(3500)
+	steps := []ipc.StepResultInfo{
+		{StepName: types.StepReview, Status: types.StepStatusCompleted, DurationMS: &d1},
+		{StepName: types.StepTest, Status: types.StepStatusFailed, DurationMS: &d2},
+	}
+	banner := stripANSI(renderOutcomeBanner(run, steps))
+	if !strings.Contains(banner, "5.5s") {
+		t.Errorf("expected elapsed time '5.5s' in cancelled banner, got: %s", banner)
+	}
+}
+
+func TestOutcomeBanner_CancelledInView(t *testing.T) {
+	run := testRun()
+	run.Status = types.RunCancelled
+	m := NewModel("/tmp/sock", nil, run)
+	m.width = 80
+	m.height = 40
+	m.done = true
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "Pipeline cancelled") {
+		t.Errorf("expected 'Pipeline cancelled' in view when run is cancelled, got: %s", view)
+	}
+}

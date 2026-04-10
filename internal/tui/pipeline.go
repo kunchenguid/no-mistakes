@@ -293,6 +293,9 @@ func renderOutcomeBanner(run *ipc.RunInfo, steps []ipc.StepResultInfo) string {
 			return style.Render("✗ "+failedLabel+" failed") + elapsed
 		}
 		return style.Render("✗ Pipeline failed") + elapsed
+	case types.RunCancelled:
+		style := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiRed))
+		return style.Render("✗ Pipeline cancelled") + elapsed
 	default:
 		return ""
 	}
