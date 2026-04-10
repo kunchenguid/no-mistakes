@@ -2668,3 +2668,63 @@ func TestModel_View_FindingsViewportApplied(t *testing.T) {
 		t.Errorf("expected finding 1 visible (cursor at 0), got:\n%s", plain)
 	}
 }
+
+// --- Diff scroll position indicator tests ---
+
+func TestDiffBoxTitle_ShowsScrollPosition(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	// Create a diff with enough lines to scroll.
+	var diffLines []string
+	diffLines = append(diffLines, "diff --git a/foo.go b/foo.go", "--- a/foo.go", "+++ b/foo.go", "@@ -1,20 +1,20 @@")
+	for i := 1; i <= 30; i++ {
+		diffLines = append(diffLines, fmt.Sprintf("+line %d", i))
+	}
+	raw := strings.Join(diffLines, "\n") + "\n"
+
+	// Render at offset 0 with viewHeight 10. Total lines = 34 (4 headers + 30 additions).
+	out := renderDiff(raw, 80, 10, 0, "Review")
+	plain := stripANSI(out)
+
+	// Title should include scroll position: line 1 of total.
+	if !strings.Contains(plain, "Diff - Review (1/34)") {
+		t.Errorf("expected 'Diff - Review (1/34)' in title at offset=0, got:\n%s", plain)
+	}
+}
+
+func TestDiffBoxTitle_ScrollPositionUpdatesWithOffset(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	var diffLines []string
+	diffLines = append(diffLines, "diff --git a/foo.go b/foo.go", "--- a/foo.go", "+++ b/foo.go", "@@ -1,20 +1,20 @@")
+	for i := 1; i <= 30; i++ {
+		diffLines = append(diffLines, fmt.Sprintf("+line %d", i))
+	}
+	raw := strings.Join(diffLines, "\n") + "\n"
+
+	// Render at offset 15 with viewHeight 10. Total = 34.
+	out := renderDiff(raw, 80, 10, 15, "Test")
+	plain := stripANSI(out)
+
+	// Title should show line 16 (offset+1) of 34.
+	if !strings.Contains(plain, "Diff - Test (16/34)") {
+		t.Errorf("expected 'Diff - Test (16/34)' at offset=15, got:\n%s", plain)
+	}
+}
+
+func TestDiffBoxTitle_NoPositionWhenAllVisible(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	// Small diff that fits entirely in the viewport.
+	raw := "diff --git a/foo.go b/foo.go\n--- a/foo.go\n+++ b/foo.go\n@@ -1 +1 @@\n-old\n+new\n"
+
+	// viewHeight 0 means show all.
+	out := renderDiff(raw, 80, 0, 0, "Review")
+	plain := stripANSI(out)
+
+	// Should NOT show position indicator when all content is visible.
+	if strings.Contains(plain, "(/") || strings.Contains(plain, "(1/") {
+		t.Errorf("expected no position indicator when all content visible, got:\n%s", plain)
+	}
+	// But should still show step name.
+	if !strings.Contains(plain, "Diff - Review") {
+		t.Errorf("expected 'Diff - Review' in title, got:\n%s", plain)
+	}
+}

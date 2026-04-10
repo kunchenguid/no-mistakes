@@ -184,6 +184,10 @@ func renderDiff(raw string, width, viewHeight, offset int, stepLabel string) str
 	if stepLabel != "" {
 		title = "Diff - " + stepLabel
 	}
+	// Add scroll position indicator when content is scrollable.
+	if viewHeight > 0 && len(lines) > viewHeight {
+		title += fmt.Sprintf(" (%d/%d)", offset+1, len(lines))
+	}
 
 	return renderBoxWithFooter(title, b.String(), boxWidth, scrollHint)
 }
