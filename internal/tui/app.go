@@ -157,6 +157,7 @@ func (m Model) View() string {
 		b.WriteString(renderBabysitViewWithSelection(m.run, m.steps, findings, m.logs, m.width, cursor, selected))
 	} else if step := awaitingStep(m.steps); step != nil {
 		// Generic findings or diff for non-babysit steps awaiting approval.
+		label := stepLabel(step.StepName)
 		if m.showDiff {
 			if raw, ok := m.stepDiffs[step.StepName]; ok && raw != "" {
 				viewHeight := m.height - 15 // reserve space for pipeline + footer
@@ -164,7 +165,7 @@ func (m Model) View() string {
 					viewHeight = 10
 				}
 				b.WriteString("\n\n")
-				b.WriteString(renderDiff(raw, m.width, viewHeight, m.diffOffset))
+				b.WriteString(renderDiff(raw, m.width, viewHeight, m.diffOffset, label))
 			}
 		} else if raw, ok := m.stepFindings[step.StepName]; ok {
 			rendered := renderFindingsWithSelection(raw, m.width-4, m.findingCursor[step.StepName], m.findingSelections[step.StepName])
@@ -174,7 +175,7 @@ func (m Model) View() string {
 					boxWidth = 80
 				}
 				b.WriteString("\n\n")
-				b.WriteString(renderBox("Findings", rendered, boxWidth))
+				b.WriteString(renderBox("Findings - "+label, rendered, boxWidth))
 			}
 		}
 	}

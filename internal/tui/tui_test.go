@@ -991,7 +991,7 @@ func TestDiffStats_DevNull(t *testing.T) {
 }
 
 func TestRenderDiff_Empty(t *testing.T) {
-	if got := renderDiff("", 80, 20, 0); got != "" {
+	if got := renderDiff("", 80, 20, 0, ""); got != "" {
 		t.Errorf("expected empty for empty input, got %q", got)
 	}
 }
@@ -1004,7 +1004,7 @@ func TestRenderDiff_HasStats(t *testing.T) {
  package main
 +import "fmt"
 `
-	got := renderDiff(raw, 80, 0, 0)
+	got := renderDiff(raw, 80, 0, 0, "")
 	if !strings.Contains(got, "1 file") {
 		t.Error("expected file count in stats")
 	}
@@ -1021,7 +1021,7 @@ func TestRenderDiff_ColoredLines(t *testing.T) {
 -old line
 +new line
 `
-	got := renderDiff(raw, 80, 0, 0)
+	got := renderDiff(raw, 80, 0, 0, "")
 	// Lines should be present (rendered with styles, but text should be there).
 	if !strings.Contains(got, "old line") {
 		t.Error("expected deletion line in output")
@@ -1044,7 +1044,7 @@ func TestRenderDiff_Scrolling(t *testing.T) {
 	raw := b.String()
 
 	// Render with a small viewport and offset.
-	got := renderDiff(raw, 80, 5, 2)
+	got := renderDiff(raw, 80, 5, 2, "")
 
 	// Should show scroll indicator since there are more lines.
 	if !strings.Contains(got, "more lines") {
@@ -1061,7 +1061,7 @@ func TestRenderDiff_ScrollEnd(t *testing.T) {
 +new
 `
 	// Scroll to near the end with a small viewport.
-	got := renderDiff(raw, 80, 3, 3)
+	got := renderDiff(raw, 80, 3, 3, "")
 
 	// Should show scroll-up indicator since we scrolled past start.
 	if !strings.Contains(got, "↑") {
@@ -1077,7 +1077,7 @@ func TestRenderDiff_WrappedInBox(t *testing.T) {
  package main
 +import "fmt"
 `
-	got := stripANSI(renderDiff(raw, 80, 0, 0))
+	got := stripANSI(renderDiff(raw, 80, 0, 0, ""))
 	lines := strings.Split(got, "\n")
 	if len(lines) == 0 {
 		t.Fatal("expected non-empty output")
@@ -1102,7 +1102,7 @@ func TestRenderDiff_ScrollIndicatorInBottomBorder(t *testing.T) {
 		b.WriteString(fmt.Sprintf("+line %d\n", i))
 	}
 
-	got := stripANSI(renderDiff(b.String(), 80, 5, 0))
+	got := stripANSI(renderDiff(b.String(), 80, 5, 0, ""))
 	lines := strings.Split(got, "\n")
 	// The last non-empty line should be the bottom border with scroll info.
 	lastLine := ""
@@ -2121,7 +2121,7 @@ func TestRenderDiff_StatsPluralization(t *testing.T) {
 
 	// Multiple files should say "files"
 	raw := "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-old\n+new\ndiff --git a/b.go b/b.go\n--- a/b.go\n+++ b/b.go\n@@ -1 +1 @@\n-old2\n+new2\n"
-	result := renderDiff(raw, 80, 20, 0)
+	result := renderDiff(raw, 80, 20, 0, "")
 	plain := stripANSI(result)
 	if !strings.Contains(plain, "2 files") {
 		t.Errorf("expected '2 files' (plural) for multiple files, got: %s", plain)
@@ -2129,7 +2129,7 @@ func TestRenderDiff_StatsPluralization(t *testing.T) {
 
 	// Single file should say "file"
 	raw2 := "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-old\n+new\n"
-	result2 := renderDiff(raw2, 80, 20, 0)
+	result2 := renderDiff(raw2, 80, 20, 0, "")
 	plain2 := stripANSI(result2)
 	if !strings.Contains(plain2, "1 file") {
 		t.Errorf("expected '1 file' (singular) for one file, got: %s", plain2)
@@ -2144,7 +2144,7 @@ func TestRenderDiff_StatsMatchDesign(t *testing.T) {
 	defer lipgloss.SetColorProfile(termenv.ANSI)
 
 	raw := "diff --git a/foo.go b/foo.go\nindex abc..def 100644\n--- a/foo.go\n+++ b/foo.go\n@@ -1,3 +1,4 @@\n context\n+added1\n+added2\n-removed\n"
-	result := renderDiff(raw, 80, 20, 0)
+	result := renderDiff(raw, 80, 20, 0, "")
 	plain := stripANSI(result)
 
 	// Should say "1 file" (singular) or "3 files" (plural), NOT "file(s) changed"
@@ -2201,7 +2201,7 @@ func TestRenderDiff_ScrollUpIndicator(t *testing.T) {
 	}
 
 	// Scroll down 5 lines, view height 5 - should have lines above AND below.
-	got := stripANSI(renderDiff(b.String(), 80, 5, 5))
+	got := stripANSI(renderDiff(b.String(), 80, 5, 5, ""))
 	lines := strings.Split(got, "\n")
 	lastLine := ""
 	for i := len(lines) - 1; i >= 0; i-- {
@@ -2230,7 +2230,7 @@ func TestRenderDiff_ScrollUpOnlyAtBottom(t *testing.T) {
 	}
 
 	// 9 total lines, view height 5, offset 4 - at the bottom.
-	got := stripANSI(renderDiff(b.String(), 80, 5, 4))
+	got := stripANSI(renderDiff(b.String(), 80, 5, 4, ""))
 	lines := strings.Split(got, "\n")
 	lastLine := ""
 	for i := len(lines) - 1; i >= 0; i-- {
@@ -2428,5 +2428,64 @@ func TestLogTail_RegularLineStaysDim(t *testing.T) {
 	dimLine := dimStyle.Render("running go test ./...")
 	if !strings.Contains(view, dimLine) {
 		t.Error("expected regular log line to remain dim-styled")
+	}
+}
+
+func TestDiffBoxTitle_IncludesStepName(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusCompleted
+	run.Steps[1].Status = types.StepStatusAwaitingApproval
+
+	m := NewModel("/tmp/sock", nil, run)
+	m.width = 80
+	m.height = 40
+	m.stepDiffs[types.StepTest] = "diff --git a/foo.go b/foo.go\n--- a/foo.go\n+++ b/foo.go\n@@ -1 +1 @@\n-old\n+new\n"
+	m.showDiff = true
+	view := m.View()
+	plain := stripANSI(view)
+
+	// The diff box title should include the step name, e.g. "Diff - Test".
+	if !strings.Contains(plain, "Diff - Test") {
+		t.Errorf("expected diff box title to include step name 'Diff - Test', got:\n%s", plain)
+	}
+}
+
+func TestFindingsBoxTitle_IncludesStepName(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusCompleted
+	run.Steps[1].Status = types.StepStatusAwaitingApproval
+
+	findingsJSON := `{"summary":"test issues","items":[{"id":"f1","severity":"error","file":"foo.go","line":1,"description":"bad thing"}]}`
+	m := NewModel("/tmp/sock", nil, run)
+	m.width = 80
+	m.stepFindings[types.StepTest] = findingsJSON
+	m.resetFindingSelection(types.StepTest)
+	view := m.View()
+	plain := stripANSI(view)
+
+	// The findings box title should include the step name, e.g. "Findings - Test".
+	if !strings.Contains(plain, "Findings - Test") {
+		t.Errorf("expected findings box title to include step name 'Findings - Test', got:\n%s", plain)
+	}
+}
+
+func TestDiffBoxTitle_ReviewStep(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+
+	m := NewModel("/tmp/sock", nil, run)
+	m.width = 80
+	m.height = 40
+	m.stepDiffs[types.StepReview] = "diff --git a/bar.go b/bar.go\n--- a/bar.go\n+++ b/bar.go\n@@ -1 +1 @@\n-old\n+new\n"
+	m.showDiff = true
+	view := m.View()
+	plain := stripANSI(view)
+
+	// Should say "Diff - Review" for the review step.
+	if !strings.Contains(plain, "Diff - Review") {
+		t.Errorf("expected 'Diff - Review' in box title, got:\n%s", plain)
 	}
 }

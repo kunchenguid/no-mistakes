@@ -111,8 +111,8 @@ func diffLineStyle(t diffLineType) lipgloss.Style {
 
 // renderDiff renders a scrollable, color-coded diff view inside a boxed section.
 // offset is the scroll position (first visible line), viewHeight is the number of visible lines.
-// If viewHeight <= 0, all lines are rendered.
-func renderDiff(raw string, width, viewHeight, offset int) string {
+// If viewHeight <= 0, all lines are rendered. stepLabel is included in the box title when non-empty.
+func renderDiff(raw string, width, viewHeight, offset int, stepLabel string) string {
 	lines := parseDiffLines(raw)
 	if len(lines) == 0 {
 		return ""
@@ -180,5 +180,10 @@ func renderDiff(raw string, width, viewHeight, offset int) string {
 		}
 	}
 
-	return renderBoxWithFooter("Diff", b.String(), boxWidth, scrollHint)
+	title := "Diff"
+	if stepLabel != "" {
+		title = "Diff - " + stepLabel
+	}
+
+	return renderBoxWithFooter(title, b.String(), boxWidth, scrollHint)
 }
