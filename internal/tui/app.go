@@ -290,7 +290,11 @@ func (m Model) View() string {
 	if m.done {
 		qLabel = "quit"
 	}
-	b.WriteString("\n  " + boldKey.Render("q") + " " + dimStyle.Render(qLabel) + "  " + boldKey.Render("?") + " " + dimStyle.Render("help") + "\n")
+	helpLabel := "help"
+	if m.showHelp {
+		helpLabel = "close"
+	}
+	b.WriteString("\n  " + boldKey.Render("q") + " " + dimStyle.Render(qLabel) + "  " + boldKey.Render("?") + " " + dimStyle.Render(helpLabel) + "\n")
 
 	return b.String()
 }
