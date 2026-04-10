@@ -194,6 +194,35 @@ func renderApprovalActions(showSelectionActions bool, allowFix bool) string {
 	return result + "\n"
 }
 
+// renderOutcomeBanner returns a styled one-line banner when the run is done.
+// Empty string when the run is still in progress.
+func renderOutcomeBanner(run *ipc.RunInfo, steps []ipc.StepResultInfo) string {
+	if run == nil {
+		return ""
+	}
+	switch run.Status {
+	case types.RunCompleted:
+		style := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiGreen))
+		return style.Render("✓ Pipeline passed")
+	case types.RunFailed:
+		// Find which step failed.
+		failedLabel := ""
+		for _, s := range steps {
+			if s.Status == types.StepStatusFailed {
+				failedLabel = stepLabel(s.StepName)
+				break
+			}
+		}
+		style := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiRed))
+		if failedLabel != "" {
+			return style.Render("✗ " + failedLabel + " failed")
+		}
+		return style.Render("✗ Pipeline failed")
+	default:
+		return ""
+	}
+}
+
 // awaitingStep returns the step that is currently awaiting user action, if any.
 func awaitingStep(steps []ipc.StepResultInfo) *ipc.StepResultInfo {
 	for i := range steps {

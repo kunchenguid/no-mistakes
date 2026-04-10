@@ -2988,3 +2988,65 @@ func TestActionBar_IncludesAwaitingLabel(t *testing.T) {
 		t.Error("'awaiting action' label should not be inside the pipeline box")
 	}
 }
+
+// --- Run Outcome Banner Tests ---
+
+func TestOutcomeBanner_SuccessShowsCheckmark(t *testing.T) {
+	run := testRun()
+	run.Status = types.RunCompleted
+	steps := []ipc.StepResultInfo{
+		{StepName: types.StepReview, Status: types.StepStatusCompleted},
+		{StepName: types.StepTest, Status: types.StepStatusCompleted},
+		{StepName: types.StepPush, Status: types.StepStatusCompleted},
+	}
+	banner := stripANSI(renderOutcomeBanner(run, steps))
+	if !strings.Contains(banner, "✓") {
+		t.Error("expected ✓ in success banner")
+	}
+	if !strings.Contains(banner, "Pipeline passed") {
+		t.Errorf("expected 'Pipeline passed' in banner, got: %s", banner)
+	}
+}
+
+func TestOutcomeBanner_FailureShowsX(t *testing.T) {
+	run := testRun()
+	run.Status = types.RunFailed
+	steps := []ipc.StepResultInfo{
+		{StepName: types.StepReview, Status: types.StepStatusCompleted},
+		{StepName: types.StepTest, Status: types.StepStatusFailed, Error: ptr("exit code 1")},
+		{StepName: types.StepLint, Status: types.StepStatusPending},
+	}
+	banner := stripANSI(renderOutcomeBanner(run, steps))
+	if !strings.Contains(banner, "✗") {
+		t.Error("expected ✗ in failure banner")
+	}
+	if !strings.Contains(banner, "Test failed") {
+		t.Errorf("expected 'Test failed' in banner, got: %s", banner)
+	}
+}
+
+func TestOutcomeBanner_EmptyWhenRunning(t *testing.T) {
+	run := testRun()
+	run.Status = types.RunRunning
+	banner := renderOutcomeBanner(run, run.Steps)
+	if banner != "" {
+		t.Errorf("expected empty banner when running, got: %q", banner)
+	}
+}
+
+func TestOutcomeBanner_InViewWhenDone(t *testing.T) {
+	run := testRun()
+	run.Status = types.RunCompleted
+	run.Steps = []ipc.StepResultInfo{
+		{StepName: types.StepReview, Status: types.StepStatusCompleted},
+		{StepName: types.StepTest, Status: types.StepStatusCompleted},
+	}
+	m := NewModel("", nil, run)
+	m.width = 80
+	m.height = 40
+	m.done = true
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "Pipeline passed") {
+		t.Errorf("expected 'Pipeline passed' in done view, got:\n%s", view)
+	}
+}

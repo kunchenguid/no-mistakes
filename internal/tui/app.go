@@ -143,6 +143,12 @@ func (m Model) View() string {
 	// Pipeline progress view.
 	b.WriteString(renderPipelineView(m.run, m.steps, m.width, m.spinnerFrame))
 
+	// Outcome banner when run is done.
+	if banner := renderOutcomeBanner(m.run, m.steps); banner != "" {
+		b.WriteString("\n")
+		b.WriteString(banner)
+	}
+
 	// Action bar between pipeline box and findings/diff per DESIGN.md.
 	if actionBar := renderActionBar(m.steps, showSelectionActions, allowFix); actionBar != "" {
 		b.WriteString("\n")
