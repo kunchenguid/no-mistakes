@@ -160,7 +160,7 @@ func renderPipelineView(run *ipc.RunInfo, steps []ipc.StepResultInfo, width int,
 // Per DESIGN.md: "Sits below the pipeline box, above findings/diff"
 // showDiff controls whether the 'd' key label says "findings" (to toggle back) or "diff".
 // Selection actions are hidden in diff mode since they don't apply.
-func renderActionBar(steps []ipc.StepResultInfo, showSelectionActions bool, allowFix bool, showDiff bool, selectedCount int, totalCount int) string {
+func renderActionBar(steps []ipc.StepResultInfo, showSelectionActions bool, allowFix bool, showDiff bool, selectedCount int, totalCount int, confirmAbort bool) string {
 	step := awaitingStep(steps)
 	if step == nil {
 		return ""
@@ -172,11 +172,11 @@ func renderActionBar(steps []ipc.StepResultInfo, showSelectionActions bool, allo
 	b.WriteString("\n")
 	// Hide selection actions in diff mode since toggle/A/N keys don't work there.
 	effectiveSelection := showSelectionActions && !showDiff
-	b.WriteString(renderApprovalActions(effectiveSelection, allowFix, showDiff, selectedCount, totalCount))
+	b.WriteString(renderApprovalActions(effectiveSelection, allowFix, showDiff, selectedCount, totalCount, confirmAbort))
 	return b.String()
 }
 
-func renderApprovalActions(showSelectionActions bool, allowFix bool, showDiff bool, selectedCount int, totalCount int) string {
+func renderApprovalActions(showSelectionActions bool, allowFix bool, showDiff bool, selectedCount int, totalCount int, confirmAbort bool) string {
 	boldKey := lipgloss.NewStyle().Bold(true)
 	renderAction := func(key, label string) string {
 		return boldKey.Render(key) + " " + label
@@ -194,7 +194,12 @@ func renderApprovalActions(showSelectionActions bool, allowFix bool, showDiff bo
 	if showDiff {
 		diffLabel = "findings"
 	}
-	primary = append(primary, renderAction("s", "skip"), renderAction("x", "abort"), renderAction("d", diffLabel))
+	abortLabel := "abort"
+	if confirmAbort {
+		warnStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiRed))
+		abortLabel = warnStyle.Render("x again to abort")
+	}
+	primary = append(primary, renderAction("s", "skip"), renderAction("x", abortLabel), renderAction("d", diffLabel))
 
 	result := " " + strings.Join(primary, "  ")
 
@@ -282,7 +287,7 @@ func renderHelpOverlay(width int, hasAwaitingStep bool, showDiff bool) string {
 			entry("a", "approve"),
 			entry("f", "fix"),
 			entry("s", "skip"),
-			entry("x", "abort"),
+			entry("x x", "abort (press twice)"),
 			entry("d", "diff/findings toggle"),
 		}))
 		if !showDiff {

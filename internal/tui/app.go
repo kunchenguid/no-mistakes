@@ -55,6 +55,7 @@ type Model struct {
 	done             bool // run completed or failed
 	showDiff         bool // toggle diff viewer
 	showHelp         bool // toggle help overlay
+	confirmAbort     bool // true after first x press, next x actually aborts
 	diffOffset       int  // scroll position in diff view
 	spinnerFrame     int
 	spinnerScheduled bool
@@ -151,7 +152,7 @@ func (m Model) View() string {
 	}
 
 	// Action bar between pipeline box and findings/diff per DESIGN.md.
-	if actionBar := renderActionBar(m.steps, showSelectionActions, allowFix, m.showDiff, selectedCount, totalCount); actionBar != "" {
+	if actionBar := renderActionBar(m.steps, showSelectionActions, allowFix, m.showDiff, selectedCount, totalCount, m.confirmAbort); actionBar != "" {
 		b.WriteString("\n")
 		b.WriteString(actionBar)
 	}
@@ -318,7 +319,14 @@ func (m *Model) startSpinnerIfNeeded() tea.Cmd {
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
+	key := msg.String()
+
+	// Reset abort confirmation on any key except 'x'.
+	if key != "x" {
+		m.confirmAbort = false
+	}
+
+	switch key {
 	case "q", "ctrl+c":
 		m.quitting = true
 		return m, tea.Quit
@@ -443,7 +451,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "s":
 		return m, m.respondCmd(types.ActionSkip)
 	case "x":
-		return m, m.respondCmd(types.ActionAbort)
+		if m.confirmAbort {
+			m.confirmAbort = false
+			return m, m.respondCmd(types.ActionAbort)
+		}
+		m.confirmAbort = true
+		return m, nil
 	}
 	return m, nil
 }

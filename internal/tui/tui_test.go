@@ -178,7 +178,7 @@ func TestRenderPipelineView_ApprovalPrompt(t *testing.T) {
 	run.Steps[0].Status = types.StepStatusAwaitingApproval
 
 	// Action bar is now rendered outside the pipeline box per DESIGN.md.
-	out := renderActionBar(run.Steps, true, true, false, 5, 5)
+	out := renderActionBar(run.Steps, true, true, false, 5, 5, false)
 	if !strings.Contains(out, "awaiting action") {
 		t.Error("expected approval prompt")
 	}
@@ -211,7 +211,7 @@ func TestRenderPipelineView_StepError(t *testing.T) {
 }
 
 func TestRenderApprovalActions_FormatWithSeparator(t *testing.T) {
-	out := stripANSI(renderApprovalActions(true, true, false, 5, 5))
+	out := stripANSI(renderApprovalActions(true, true, false, 5, 5, false))
 	// Keys should not be bracket-wrapped - design uses "a approve" not "[a] approve".
 	if strings.Contains(out, "[a]") {
 		t.Error("expected bare key format 'a approve', not '[a] approve'")
@@ -227,7 +227,7 @@ func TestRenderApprovalActions_FormatWithSeparator(t *testing.T) {
 }
 
 func TestRenderApprovalActions_NoSelectionActions(t *testing.T) {
-	out := stripANSI(renderApprovalActions(false, true, false, 5, 5))
+	out := stripANSI(renderApprovalActions(false, true, false, 5, 5, false))
 	// Without selection actions, no │ separator should appear.
 	if strings.Contains(out, "│") {
 		t.Error("expected no │ separator when no selection actions")
@@ -242,7 +242,7 @@ func TestRenderPipelineView_HidesFixActionWhenDisabled(t *testing.T) {
 	run.Steps[0].Status = types.StepStatusAwaitingApproval
 
 	// Action bar is now rendered outside the pipeline box per DESIGN.md.
-	out := stripANSI(renderActionBar(run.Steps, true, false, false, 0, 5))
+	out := stripANSI(renderActionBar(run.Steps, true, false, false, 0, 5, false))
 	if strings.Contains(out, "f fix") {
 		t.Fatal("expected fix action to be hidden when disabled")
 	}
@@ -1278,7 +1278,7 @@ func TestRenderPipelineView_DiffKey(t *testing.T) {
 	run := testRun()
 	run.Steps[0].Status = types.StepStatusAwaitingApproval
 	// Action bar is now rendered outside the pipeline box per DESIGN.md.
-	out := stripANSI(renderActionBar(run.Steps, true, true, false, 5, 5))
+	out := stripANSI(renderActionBar(run.Steps, true, true, false, 5, 5, false))
 	if !strings.Contains(out, "d diff") {
 		t.Error("expected d diff in approval prompt")
 	}
@@ -3897,5 +3897,72 @@ func TestModel_View_LogTailNormalShowsFive(t *testing.T) {
 	count := strings.Count(view, "log line")
 	if count != 5 {
 		t.Errorf("expected 5 log lines in normal mode (height=40), got %d", count)
+	}
+}
+
+// --- Abort Confirmation Tests ---
+
+func TestAbortConfirmation_FirstPressShowsConfirm(t *testing.T) {
+	// First 'x' press should NOT send abort - should set confirmAbort flag
+	// and show a confirmation prompt in the action bar.
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	run.Steps[0].FindingsJSON = ptr(`{"summary":"test","items":[{"id":"f1","severity":"error","file":"a.go","line":1,"description":"bug"}]}`)
+
+	m := NewModel("/tmp/sock", nil, run)
+	m.width = 80
+
+	// Press 'x' once.
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	updated := result.(Model)
+
+	// confirmAbort should be set.
+	if !updated.confirmAbort {
+		t.Error("expected confirmAbort to be true after first x press")
+	}
+
+	// The action bar should show a confirmation hint.
+	view := updated.View()
+	stripped := stripANSI(view)
+	if !strings.Contains(stripped, "x again to abort") {
+		t.Errorf("expected 'x again to abort' in view, got:\n%s", stripped)
+	}
+}
+
+func TestAbortConfirmation_SecondPressSendsAbort(t *testing.T) {
+	// Second 'x' press should actually send the abort command.
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	run.Steps[0].FindingsJSON = ptr(`{"summary":"test","items":[{"id":"f1","severity":"error","file":"a.go","line":1,"description":"bug"}]}`)
+
+	m := NewModel("/tmp/sock", nil, run)
+	m.width = 80
+	m.confirmAbort = true // simulate first press already happened
+
+	// Press 'x' again - this should produce a command (the respond cmd).
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+
+	// Should produce a non-nil command (the abort RPC call).
+	if cmd == nil {
+		t.Error("expected a non-nil command from second x press (abort should be sent)")
+	}
+}
+
+func TestAbortConfirmation_OtherKeyResetsConfirm(t *testing.T) {
+	// Pressing any other key after first 'x' should reset confirmAbort.
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	run.Steps[0].FindingsJSON = ptr(`{"summary":"test","items":[{"id":"f1","severity":"error","file":"a.go","line":1,"description":"bug"}]}`)
+
+	m := NewModel("/tmp/sock", nil, run)
+	m.width = 80
+	m.confirmAbort = true // simulate first press
+
+	// Press 'j' (a navigation key, not 'x').
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	updated := result.(Model)
+
+	if updated.confirmAbort {
+		t.Error("expected confirmAbort to be false after pressing a different key")
 	}
 }
