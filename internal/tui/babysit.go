@@ -99,11 +99,20 @@ func renderBabysitView(run *ipc.RunInfo, steps []ipc.StepResultInfo, findings st
 func renderBabysitViewWithSelection(run *ipc.RunInfo, steps []ipc.StepResultInfo, findings string, logs []string, width int, height int, cursor int, selected map[string]bool) string {
 	var b strings.Builder
 
+	boxWidth := width
+	if boxWidth < 20 {
+		boxWidth = 80
+	}
+	contentWidth := boxWidth - 4 // account for box border + padding
+
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
 
 	// PR info - try run.PRURL first, then parse from logs.
+	// Truncated to fit inside the box.
 	if run != nil && run.PRURL != nil && *run.PRURL != "" {
-		b.WriteString(dimStyle.Render("PR: "+*run.PRURL) + "\n")
+		prText := "PR: " + *run.PRURL
+		prText, _ = cutText(prText, contentWidth)
+		b.WriteString(dimStyle.Render(prText) + "\n")
 	} else if num := extractPRFromLogs(logs); num != "" {
 		b.WriteString(dimStyle.Render("PR #"+num) + "\n")
 	}
@@ -136,9 +145,11 @@ func renderBabysitViewWithSelection(run *ipc.RunInfo, steps []ipc.StepResultInfo
 		b.WriteString(dimStyle.Render(fmt.Sprintf("CI auto-fixes: %d", activity.CIFixes)) + "\n")
 	}
 
-	// Last activity.
+	// Last activity, truncated to fit inside the box.
 	if activity.LastEvent != "" {
-		b.WriteString(dimStyle.Render("Latest: "+activity.LastEvent) + "\n")
+		eventText := "Latest: " + activity.LastEvent
+		eventText, _ = cutText(eventText, contentWidth)
+		b.WriteString(dimStyle.Render(eventText) + "\n")
 	}
 
 	// Log tail during monitoring (non-approval) states.
@@ -151,12 +162,6 @@ func renderBabysitViewWithSelection(run *ipc.RunInfo, steps []ipc.StepResultInfo
 	if height > 0 && height < 20 {
 		logLines = 0
 	}
-	// Comment findings when awaiting approval.
-	boxWidth := width
-	if boxWidth < 20 {
-		boxWidth = 80
-	}
-	contentWidth := boxWidth - 4 // account for box border + padding
 
 	if !isApproval && len(logs) > 0 && logLines > 0 {
 		b.WriteString("\n")

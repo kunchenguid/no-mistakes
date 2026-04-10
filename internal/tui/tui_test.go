@@ -4628,3 +4628,70 @@ func TestPipelineView_ShortErrorNotTruncated(t *testing.T) {
 		t.Error("expected short error message to appear in full")
 	}
 }
+
+func TestRenderBabysitView_LongPRURLTruncated(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	run := testRunWithBabysit()
+	longURL := "https://github.com/some-very-long-organization-name/some-very-long-repository-name-that-goes-on-and-on/pull/12345"
+	run.PRURL = &longURL
+	run.Steps[5].Status = types.StepStatusRunning
+
+	result := stripANSI(renderBabysitView(run, run.Steps, "", nil, 80))
+
+	// No line should exceed the box width (80).
+	for _, line := range strings.Split(result, "\n") {
+		if line == "" {
+			continue
+		}
+		w := lipgloss.Width(line)
+		if w > 80 {
+			t.Errorf("babysit PR URL line exceeds box width (%d > 80): %s", w, line)
+		}
+	}
+
+	// The full long URL should NOT appear in the output.
+	if strings.Contains(result, longURL) {
+		t.Error("expected long PR URL to be truncated to fit box content width")
+	}
+}
+
+func TestRenderBabysitView_LongLastEventTruncated(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	run := testRunWithBabysit()
+	run.Steps[5].Status = types.StepStatusRunning
+	longEvent := "babysitting PR #42 with a very long description " + strings.Repeat("z", 200)
+	logs := []string{longEvent}
+
+	result := stripANSI(renderBabysitView(run, run.Steps, "", logs, 80))
+
+	// No line should exceed the box width (80).
+	for _, line := range strings.Split(result, "\n") {
+		if line == "" {
+			continue
+		}
+		w := lipgloss.Width(line)
+		if w > 80 {
+			t.Errorf("babysit LastEvent line exceeds box width (%d > 80): %s", w, line)
+		}
+	}
+
+	// The full long event text should NOT appear in the output.
+	if strings.Contains(result, strings.Repeat("z", 77)) {
+		t.Error("expected long LastEvent to be truncated to fit box content width")
+	}
+}
+
+func TestRenderBabysitView_ShortPRURLNotTruncated(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	run := testRunWithBabysit()
+	shortURL := "https://github.com/user/repo/pull/99"
+	run.PRURL = &shortURL
+	run.Steps[5].Status = types.StepStatusRunning
+
+	result := stripANSI(renderBabysitView(run, run.Steps, "", nil, 80))
+
+	// Short PR URL should appear in full.
+	if !strings.Contains(result, shortURL) {
+		t.Error("expected short PR URL to appear in full")
+	}
+}
