@@ -232,12 +232,7 @@ func renderFindingsWithSelection(raw string, width int, cursor int, selected map
 		}
 	}
 
-	// Scroll-up indicator.
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
-	if start > 0 {
-		b.WriteString(dimStyle.Render(fmt.Sprintf("↑ %d above (j/k)", start)))
-		b.WriteString("\n\n")
-	}
 
 	// Individual findings.
 	greenStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiGreen))
@@ -298,11 +293,15 @@ func renderFindingsWithSelection(raw string, width int, cursor int, selected map
 		b.WriteString(desc + "\n")
 	}
 
-	// Scroll-down footer for the box border.
+	// Scroll footer for the box border - combines up and down indicators.
 	scrollFooter := ""
 	remaining := len(f.Items) - end
-	if remaining > 0 {
+	if start > 0 && remaining > 0 {
+		scrollFooter = fmt.Sprintf("↑ %d above  ↓ %d more below (j/k)", start, remaining)
+	} else if remaining > 0 {
 		scrollFooter = fmt.Sprintf("↓ %d more below (j/k)", remaining)
+	} else if start > 0 {
+		scrollFooter = fmt.Sprintf("↑ %d above (j/k)", start)
 	}
 
 	return b.String(), scrollFooter

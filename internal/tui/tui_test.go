@@ -2555,21 +2555,21 @@ func TestRenderFindings_ViewportScrollUpIndicator(t *testing.T) {
 		selected[fmt.Sprintf("f%d", i)] = true
 	}
 
-	// Cursor at item 9 (index 9, last item) - should show up indicator.
-	out, _ := renderFindingsWithSelection(raw, 80, 9, selected, 4)
+	// Cursor at item 9 (index 9, last item) - up indicator should be in scrollFooter.
+	out, scrollFooter := renderFindingsWithSelection(raw, 80, 9, selected, 4)
 	plain := stripANSI(out)
 
 	// Should show finding 10 (cursor is on it).
 	if !strings.Contains(plain, "finding 10 description") {
 		t.Errorf("expected finding 10 visible at cursor=9, got:\n%s", plain)
 	}
-	// Should show up indicator for items above.
-	if !strings.Contains(plain, "↑") {
-		t.Errorf("expected up scroll indicator when cursor at bottom, got:\n%s", plain)
+	// Up indicator should be in scrollFooter, not inline content.
+	if !strings.Contains(scrollFooter, "above") {
+		t.Errorf("expected up scroll indicator in scrollFooter, got: %q", scrollFooter)
 	}
 	// Should NOT show down indicator when at bottom.
-	if strings.Contains(plain, "↓") {
-		t.Errorf("should not show down indicator at bottom, got:\n%s", plain)
+	if strings.Contains(scrollFooter, "↓") {
+		t.Errorf("should not show down indicator at bottom, got: %q", scrollFooter)
 	}
 }
 
@@ -3436,12 +3436,11 @@ func TestRenderFindings_ScrollUpIncludesKeyHint(t *testing.T) {
 		selected[fmt.Sprintf("f%d", i)] = true
 	}
 
-	// Cursor at bottom - should show up indicator with key hint.
-	out, _ := renderFindingsWithSelection(raw, 80, 9, selected, 4)
-	plain := stripANSI(out)
+	// Cursor at bottom - up indicator should be in scrollFooter with key hint.
+	_, scrollFooter := renderFindingsWithSelection(raw, 80, 9, selected, 4)
 
-	if !strings.Contains(plain, "above (j/k)") {
-		t.Errorf("expected '↑ N above (j/k)' with key hint, got:\n%s", plain)
+	if !strings.Contains(scrollFooter, "above (j/k)") {
+		t.Errorf("expected 'above (j/k)' in scrollFooter, got: %q", scrollFooter)
 	}
 }
 
@@ -3453,17 +3452,15 @@ func TestRenderFindings_BothIndicatorsIncludeKeyHints(t *testing.T) {
 		selected[fmt.Sprintf("f%d", i)] = true
 	}
 
-	// Cursor in the middle - both indicators should have key hints.
-	out, scrollFooter := renderFindingsWithSelection(raw, 80, 5, selected, 4)
-	plain := stripANSI(out)
+	// Cursor in the middle - both indicators should be in scrollFooter.
+	_, scrollFooter := renderFindingsWithSelection(raw, 80, 5, selected, 4)
 
-	// Up indicator stays inline in content.
-	if !strings.Contains(plain, "above (j/k)") {
-		t.Errorf("expected up indicator with (j/k) hint, got:\n%s", plain)
+	// Both up and down indicators in scrollFooter.
+	if !strings.Contains(scrollFooter, "above") {
+		t.Errorf("expected 'above' in scrollFooter, got: %q", scrollFooter)
 	}
-	// Down indicator is in scrollFooter.
 	if !strings.Contains(scrollFooter, "more below (j/k)") {
-		t.Errorf("expected scrollFooter with 'more below (j/k)' hint, got: %q", scrollFooter)
+		t.Errorf("expected 'more below (j/k)' in scrollFooter, got: %q", scrollFooter)
 	}
 }
 
@@ -3499,7 +3496,7 @@ func TestFindingsBox_ScrollDownInBottomBorder(t *testing.T) {
 	}
 }
 
-func TestFindingsBox_ScrollUpStaysInline(t *testing.T) {
+func TestFindingsBox_ScrollUpInBorder(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.ANSI)
 	run := testRun()
 	run.Steps[0].Status = types.StepStatusCompleted
@@ -3517,22 +3514,27 @@ func TestFindingsBox_ScrollUpStaysInline(t *testing.T) {
 	view := m.View()
 	plain := stripANSI(view)
 
-	// The up indicator should remain inline (inside the box content), not in the border.
-	// It should appear on a line that does NOT contain ╰ (not in the border).
+	// The up indicator should be in the bottom border (╰ line), not inline.
 	lines := strings.Split(plain, "\n")
-	foundInlineUp := false
+	foundUpInBorder := false
 	for _, line := range lines {
-		if strings.Contains(line, "above") && !strings.Contains(line, "╰") {
-			foundInlineUp = true
+		if strings.Contains(line, "╰") && strings.Contains(line, "above") {
+			foundUpInBorder = true
 			break
 		}
 	}
-	if !foundInlineUp {
-		t.Errorf("expected up scroll indicator inline (not in border), got:\n%s", plain)
+	if !foundUpInBorder {
+		t.Errorf("expected up scroll indicator in bottom border, got:\n%s", plain)
+	}
+	// Should NOT appear inline (not in border).
+	for _, line := range lines {
+		if strings.Contains(line, "above") && !strings.Contains(line, "╰") {
+			t.Errorf("up scroll indicator should not be inline, got line: %s", line)
+		}
 	}
 }
 
-func TestFindingsBox_BothScrollIndicators(t *testing.T) {
+func TestFindingsBox_BothScrollIndicatorsInBorder(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.ANSI)
 	run := testRun()
 	run.Steps[0].Status = types.StepStatusCompleted
@@ -3544,35 +3546,91 @@ func TestFindingsBox_BothScrollIndicators(t *testing.T) {
 	m.height = 40
 	m.stepFindings[types.StepTest] = findingsJSON
 	m.resetFindingSelection(types.StepTest)
-	// Cursor in middle: should have both up (inline) and down (in border).
+	// Cursor in middle: both up and down should be in the bottom border.
 	m.findingCursor[types.StepTest] = 5
 
 	view := m.View()
 	plain := stripANSI(view)
 
-	// Down indicator in the bottom border.
+	// Both indicators in the bottom border line.
 	lines := strings.Split(plain, "\n")
-	foundDownInBorder := false
+	foundBorderLine := false
 	for _, line := range lines {
-		if strings.Contains(line, "╰") && strings.Contains(line, "more below") {
-			foundDownInBorder = true
+		if strings.Contains(line, "╰") && strings.Contains(line, "above") && strings.Contains(line, "below") {
+			foundBorderLine = true
 			break
 		}
 	}
-	if !foundDownInBorder {
-		t.Errorf("expected down scroll indicator in bottom border, got:\n%s", plain)
+	if !foundBorderLine {
+		t.Errorf("expected both scroll indicators in bottom border, got:\n%s", plain)
+	}
+}
+
+// --- Findings scroll-up in footer tests ---
+
+func TestRenderFindings_ScrollUpInFooter(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	raw := makeManyFindings(10)
+	selected := map[string]bool{}
+	for i := 1; i <= 10; i++ {
+		selected[fmt.Sprintf("f%d", i)] = true
 	}
 
-	// Up indicator inline (not in border).
-	foundUpInline := false
-	for _, line := range lines {
-		if strings.Contains(line, "above") && !strings.Contains(line, "╰") {
-			foundUpInline = true
-			break
-		}
+	// Cursor at bottom - scroll-up should be in scrollFooter, not inline content.
+	content, scrollFooter := renderFindingsWithSelection(raw, 80, 9, selected, 4)
+	plain := stripANSI(content)
+
+	// Up indicator should NOT appear inline in the content.
+	if strings.Contains(plain, "above") {
+		t.Errorf("scroll-up indicator should not be inline, got:\n%s", plain)
 	}
-	if !foundUpInline {
-		t.Errorf("expected up scroll indicator inline (not in border), got:\n%s", plain)
+	// Up indicator should be in the scrollFooter string.
+	if !strings.Contains(scrollFooter, "above") {
+		t.Errorf("expected scroll-up in scrollFooter, got: %q", scrollFooter)
+	}
+}
+
+func TestRenderFindings_BothIndicatorsInFooter(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	raw := makeManyFindings(10)
+	selected := map[string]bool{}
+	for i := 1; i <= 10; i++ {
+		selected[fmt.Sprintf("f%d", i)] = true
+	}
+
+	// Cursor in middle - both up and down should be in scrollFooter.
+	content, scrollFooter := renderFindingsWithSelection(raw, 80, 5, selected, 4)
+	plain := stripANSI(content)
+
+	// No inline scroll indicators.
+	if strings.Contains(plain, "above") {
+		t.Errorf("scroll-up should not be inline, got:\n%s", plain)
+	}
+	// Footer should have both directions.
+	if !strings.Contains(scrollFooter, "above") {
+		t.Errorf("expected 'above' in scrollFooter, got: %q", scrollFooter)
+	}
+	if !strings.Contains(scrollFooter, "below") {
+		t.Errorf("expected 'below' in scrollFooter, got: %q", scrollFooter)
+	}
+}
+
+func TestRenderFindings_NoScrollUpInFooterAtTop(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	raw := makeManyFindings(10)
+	selected := map[string]bool{}
+	for i := 1; i <= 10; i++ {
+		selected[fmt.Sprintf("f%d", i)] = true
+	}
+
+	// Cursor at top - should have down but no up indicator.
+	_, scrollFooter := renderFindingsWithSelection(raw, 80, 0, selected, 4)
+
+	if strings.Contains(scrollFooter, "above") {
+		t.Errorf("should not have 'above' when at top, got: %q", scrollFooter)
+	}
+	if !strings.Contains(scrollFooter, "below") {
+		t.Errorf("expected 'below' when items exist below, got: %q", scrollFooter)
 	}
 }
 
