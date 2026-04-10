@@ -8,6 +8,7 @@ LDFLAGS := -X github.com/kunchenguid/no-mistakes/internal/buildinfo.Version=$(VE
 .PHONY: build dist install test lint fmt clean
 
 DIST_DIR ?= dist
+INSTALL_BIN := $(shell go env GOPATH)/bin/no-mistakes
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o bin/no-mistakes ./cmd/no-mistakes
@@ -34,7 +35,9 @@ dist:
 	done
 
 install: build
-	install -m 755 bin/no-mistakes $(shell go env GOPATH)/bin/no-mistakes
+	install -m 755 bin/no-mistakes $(INSTALL_BIN)
+	$(INSTALL_BIN) daemon stop
+	$(INSTALL_BIN) daemon start
 
 test:
 	go test -race ./...
