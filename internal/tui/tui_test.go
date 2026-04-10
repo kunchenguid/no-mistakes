@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -4815,5 +4816,82 @@ func TestRenderPipelineView_StepProgressShown(t *testing.T) {
 	// Should show step progress "2/5" (step 2 of 5 is currently active).
 	if !strings.Contains(plain, "2/5") {
 		t.Errorf("expected step progress '2/5' in pipeline header, got:\n%s", plain)
+	}
+}
+
+func TestModel_View_RunningStepShowsElapsedTime(t *testing.T) {
+	configureTUIColors()
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusCompleted
+	run.Steps[0].DurationMS = ptr(int64(1200))
+	run.Steps[1].Status = types.StepStatusRunning
+
+	m := NewModel("", nil, run)
+	m.width = 80
+	m.height = 40
+	// Simulate step started 5 seconds ago.
+	m.stepStartTimes = map[types.StepName]time.Time{
+		types.StepTest: time.Now().Add(-5 * time.Second),
+	}
+
+	view := stripANSI(m.View())
+
+	// Running step should show an elapsed time (approximately 5.0s).
+	// The completed step shows "1.2s", and the running step should show ~"5.0s".
+	if !strings.Contains(view, "5.0s") && !strings.Contains(view, "5.1s") && !strings.Contains(view, "4.9s") {
+		t.Errorf("expected running step to show ~5.0s elapsed time, got:\n%s", view)
+	}
+}
+
+func TestModel_Update_StepStartedRecordsStartTime(t *testing.T) {
+	configureTUIColors()
+	run := testRun()
+	m := NewModel("", nil, run)
+
+	before := time.Now()
+	stepName := types.StepReview
+	m.Update(eventMsg(ipc.Event{
+		Type:     ipc.EventStepStarted,
+		StepName: &stepName,
+	}))
+	after := time.Now()
+
+	startTime, ok := m.stepStartTimes[types.StepReview]
+	if !ok {
+		t.Fatal("expected stepStartTimes to contain entry for Review step")
+	}
+	if startTime.Before(before) || startTime.After(after) {
+		t.Errorf("expected start time between %v and %v, got %v", before, after, startTime)
+	}
+}
+
+func TestModel_View_RunningStepNoElapsedWithoutStartTime(t *testing.T) {
+	configureTUIColors()
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusCompleted
+	run.Steps[0].DurationMS = ptr(int64(1200))
+	run.Steps[1].Status = types.StepStatusRunning
+
+	m := NewModel("", nil, run)
+	m.width = 80
+	m.height = 40
+	// No stepStartTimes set - should not show elapsed time for running step.
+
+	view := stripANSI(m.View())
+
+	// The completed step shows "1.2s", but the running Test step should NOT show any duration.
+	// Find the Test line and verify it doesn't have a duration.
+	lines := strings.Split(view, "\n")
+	for _, line := range lines {
+		if strings.Contains(line, "Test") && !strings.Contains(line, "test-") {
+			// This is the Test step line - should not contain any "s" duration pattern
+			// other than the step name itself.
+			content := strings.TrimSpace(line)
+			content = strings.ReplaceAll(content, "│", "")
+			content = strings.TrimSpace(content)
+			if strings.Contains(content, "Test") && strings.Contains(content, ".") && strings.HasSuffix(strings.TrimSpace(content), "s") {
+				t.Errorf("expected no elapsed time for running step without start time, but found duration-like text in: %q", content)
+			}
+		}
 	}
 }

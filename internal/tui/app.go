@@ -47,6 +47,9 @@ type Model struct {
 	findingCursor     map[types.StepName]int             // step name → current finding cursor
 	logs              []string
 
+	// Timing.
+	stepStartTimes map[types.StepName]time.Time // when each step started running
+
 	// UI.
 	width            int
 	height           int
@@ -74,6 +77,7 @@ func NewModel(socketPath string, client *ipc.Client, run *ipc.RunInfo) Model {
 		stepDiffs:         make(map[types.StepName]string),
 		findingSelections: make(map[types.StepName]map[string]bool),
 		findingCursor:     make(map[types.StepName]int),
+		stepStartTimes:    make(map[types.StepName]time.Time),
 	}
 	// Populate findings from initial step data (for re-attach scenarios).
 	for _, s := range run.Steps {
@@ -143,7 +147,9 @@ func (m Model) View() string {
 	showSelectionActions, allowFix, selectedCount, totalCount := m.awaitingActionState()
 
 	// Pipeline progress view.
-	b.WriteString(renderPipelineView(m.run, m.steps, m.width, m.spinnerFrame, m.height))
+	// Compute elapsed times for running steps so they display live durations.
+	pipelineSteps := m.stepsWithRunningElapsed()
+	b.WriteString(renderPipelineView(m.run, pipelineSteps, m.width, m.spinnerFrame, m.height))
 
 	// Outcome banner when run is done.
 	if banner := renderOutcomeBanner(m.run, m.steps); banner != "" {
@@ -297,6 +303,26 @@ func (m Model) View() string {
 	b.WriteString("\n  " + boldKey.Render("q") + " " + dimStyle.Render(qLabel) + "  " + boldKey.Render("?") + " " + dimStyle.Render("help") + "\n")
 
 	return b.String()
+}
+
+// stepsWithRunningElapsed returns a copy of m.steps with DurationMS set on
+// running/fixing steps based on their recorded start times.
+func (m Model) stepsWithRunningElapsed() []ipc.StepResultInfo {
+	steps := make([]ipc.StepResultInfo, len(m.steps))
+	copy(steps, m.steps)
+	for i := range steps {
+		if steps[i].DurationMS != nil {
+			continue
+		}
+		switch steps[i].Status {
+		case types.StepStatusRunning, types.StepStatusFixing:
+			if startTime, ok := m.stepStartTimes[steps[i].StepName]; ok {
+				elapsed := int64(time.Since(startTime).Milliseconds())
+				steps[i].DurationMS = &elapsed
+			}
+		}
+	}
+	return steps
 }
 
 func (m Model) awaitingActionState() (showSelectionActions bool, allowFix bool, selectedCount int, totalCount int) {
@@ -569,6 +595,7 @@ func (m *Model) applyEvent(event ipc.Event) {
 	case ipc.EventStepStarted:
 		if event.StepName != nil {
 			m.updateStepStatus(*event.StepName, types.StepStatusRunning)
+			m.stepStartTimes[*event.StepName] = time.Now()
 		}
 
 	case ipc.EventStepCompleted:
