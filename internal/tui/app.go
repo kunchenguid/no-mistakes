@@ -514,6 +514,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if !m.showDiff {
 			if step := awaitingStep(m.steps); step != nil {
 				m.toggleCurrentFinding(step.StepName)
+				m.moveFindingCursor(step.StepName, 1)
 			}
 		}
 		return m, nil

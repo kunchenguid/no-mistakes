@@ -6344,3 +6344,69 @@ func TestSeverityCountBadges_AllThreeSeverities(t *testing.T) {
 		}
 	}
 }
+
+// --- Space toggle auto-advance tests ---
+
+func TestSpaceToggle_AutoAdvancesToNextFinding(t *testing.T) {
+	run := testRun()
+	m := NewModel("/tmp/sock", nil, run)
+	m.steps[0].Status = types.StepStatusAwaitingApproval
+	m.stepFindings[types.StepReview] = `{"findings":[{"id":"f1","severity":"error","description":"first"},{"id":"f2","severity":"warning","description":"second"},{"id":"f3","severity":"info","description":"third"}],"summary":"3 issues"}`
+	m.ensureFindingSelection(types.StepReview)
+
+	// Cursor starts at 0.
+	if m.findingCursor[types.StepReview] != 0 {
+		t.Fatalf("cursor should start at 0, got %d", m.findingCursor[types.StepReview])
+	}
+
+	// Press space to toggle finding at cursor 0, then cursor should auto-advance to 1.
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeySpace, Runes: []rune(" ")})
+	model := updated.(Model)
+
+	if model.findingCursor[types.StepReview] != 1 {
+		t.Fatalf("cursor should auto-advance to 1 after space, got %d", model.findingCursor[types.StepReview])
+	}
+}
+
+func TestSpaceToggle_StaysOnLastFinding(t *testing.T) {
+	run := testRun()
+	m := NewModel("/tmp/sock", nil, run)
+	m.steps[0].Status = types.StepStatusAwaitingApproval
+	m.stepFindings[types.StepReview] = `{"findings":[{"id":"f1","severity":"error","description":"first"},{"id":"f2","severity":"warning","description":"second"}],"summary":"2 issues"}`
+	m.ensureFindingSelection(types.StepReview)
+
+	// Move cursor to last item (index 1).
+	m.findingCursor[types.StepReview] = 1
+
+	// Press space - cursor should stay at 1 (last item, can't advance).
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeySpace, Runes: []rune(" ")})
+	model := updated.(Model)
+
+	if model.findingCursor[types.StepReview] != 1 {
+		t.Fatalf("cursor should stay at 1 (last item), got %d", model.findingCursor[types.StepReview])
+	}
+}
+
+func TestSpaceToggle_TogglesOriginalNotAdvanced(t *testing.T) {
+	run := testRun()
+	m := NewModel("/tmp/sock", nil, run)
+	m.steps[0].Status = types.StepStatusAwaitingApproval
+	m.stepFindings[types.StepReview] = `{"findings":[{"id":"f1","severity":"error","description":"first"},{"id":"f2","severity":"warning","description":"second"},{"id":"f3","severity":"info","description":"third"}],"summary":"3 issues"}`
+	m.ensureFindingSelection(types.StepReview)
+
+	// All 3 are selected. Press space at cursor 0.
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeySpace, Runes: []rune(" ")})
+	model := updated.(Model)
+
+	// f1 (cursor was at 0) should be toggled off, f2 and f3 should remain selected.
+	sel := model.findingSelections[types.StepReview]
+	if sel["f1"] {
+		t.Fatal("f1 should have been toggled off")
+	}
+	if !sel["f2"] {
+		t.Fatal("f2 should still be selected (not toggled)")
+	}
+	if !sel["f3"] {
+		t.Fatal("f3 should still be selected (not toggled)")
+	}
+}
