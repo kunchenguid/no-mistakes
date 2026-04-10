@@ -11,6 +11,8 @@ import (
 	"os/exec"
 )
 
+const claudeScannerMaxTokenSize = 256 * 1024 * 1024
+
 // claudeAgent spawns the claude CLI for each invocation.
 type claudeAgent struct {
 	bin string
@@ -145,6 +147,7 @@ type claudeContent struct {
 // It accumulates token usage and captures the final result event.
 func parseClaudeEvents(ctx context.Context, r io.Reader, onChunk func(string), usage *TokenUsage, result **claudeResult) error {
 	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 64*1024), claudeScannerMaxTokenSize)
 	var textBuf string
 
 	for scanner.Scan() {

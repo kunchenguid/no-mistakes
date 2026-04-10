@@ -191,6 +191,46 @@ func TestParseClaudeEvents_ResultEvent(t *testing.T) {
 	}
 }
 
+func TestParseClaudeEvents_LargeAssistantEvent(t *testing.T) {
+	largeText := strings.Repeat("x", 128*1024)
+	line, err := json.Marshal(map[string]any{
+		"type": "assistant",
+		"message": map[string]any{
+			"usage": map[string]any{
+				"input_tokens":  10,
+				"output_tokens": 5,
+			},
+			"content": []map[string]any{{
+				"type": "text",
+				"text": largeText,
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal event: %v", err)
+	}
+
+	var chunks []string
+	var usage TokenUsage
+
+	err = parseClaudeEvents(
+		context.Background(),
+		bytes.NewReader(append(line, '\n')),
+		func(text string) { chunks = append(chunks, text) },
+		&usage,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(chunks) != 1 || chunks[0] != largeText {
+		t.Fatalf("unexpected chunks: got %d chunks", len(chunks))
+	}
+	if usage.InputTokens != 10 || usage.OutputTokens != 5 {
+		t.Fatalf("unexpected usage: %+v", usage)
+	}
+}
+
 func TestParseClaudeEvents_MultipleEvents(t *testing.T) {
 	events := strings.Join([]string{
 		`{"type":"assistant","message":{"usage":{"input_tokens":50,"output_tokens":10},"content":[{"type":"text","text":"thinking..."}]}}`,

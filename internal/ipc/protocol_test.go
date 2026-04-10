@@ -313,6 +313,16 @@ func TestEventTypes(t *testing.T) {
 			},
 		},
 		{
+			name: "run_completed_with_error",
+			event: Event{
+				Type:   EventRunCompleted,
+				RunID:  "run001",
+				RepoID: "repo001",
+				Status: ptrStr(string(types.RunFailed)),
+				Error:  ptrStr("step review failed"),
+			},
+		},
+		{
 			name: "log_chunk",
 			event: Event{
 				Type:    EventLogChunk,
@@ -339,6 +349,11 @@ func TestEventTypes(t *testing.T) {
 			}
 			if got.RunID != tt.event.RunID {
 				t.Errorf("run_id = %q, want %q", got.RunID, tt.event.RunID)
+			}
+			if tt.event.Error != nil {
+				if got.Error == nil || *got.Error != *tt.event.Error {
+					t.Errorf("error = %v, want %q", got.Error, *tt.event.Error)
+				}
 			}
 		})
 	}

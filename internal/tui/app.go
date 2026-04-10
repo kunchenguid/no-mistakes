@@ -143,18 +143,28 @@ func (m Model) View() string {
 		return ""
 	}
 
-	var b strings.Builder
 	showSelectionActions, allowFix, selectedCount, totalCount := m.awaitingActionState()
+	compact := m.height > 0 && m.height < 24
+	sectionGap := "\n\n"
+	sectionGapHeight := 2
+	if compact {
+		sectionGap = "\n"
+		sectionGapHeight = 1
+	}
 
 	// Pipeline progress view.
 	// Compute elapsed times for running steps so they display live durations.
 	pipelineSteps := m.stepsWithRunningElapsed()
-	b.WriteString(renderPipelineView(m.run, pipelineSteps, m.width, m.spinnerFrame, m.height))
+	pipelineHeight := m.height
+	if (m.showHelp || isBabysitActive(m.steps)) && (pipelineHeight == 0 || pipelineHeight >= 30) {
+		pipelineHeight = 29
+	}
+	pipelineView := renderPipelineView(m.run, pipelineSteps, m.width, m.spinnerFrame, pipelineHeight)
+	sections := []string{pipelineView}
 
 	// Outcome banner when run is done.
 	if banner := renderOutcomeBanner(m.run, m.steps); banner != "" {
-		b.WriteString("\n")
-		b.WriteString(banner)
+		sections = append(sections, banner)
 	}
 
 	// Action bar between pipeline box and findings/diff per DESIGN.md.
@@ -164,12 +174,44 @@ func (m Model) View() string {
 		hasDiff = ok && raw != ""
 	}
 	if actionBar := renderActionBar(m.steps, showSelectionActions, allowFix, m.showDiff, selectedCount, totalCount, m.confirmAbort, hasDiff); actionBar != "" {
-		b.WriteString("\n")
-		b.WriteString(actionBar)
+		sections = append(sections, actionBar)
+	}
+
+	footer := renderFooter(m.done, m.showHelp)
+	contentBudget := -1
+	if m.height > 0 {
+		contentBudget = m.height - sectionsHeight(sections, sectionGapHeight)
+		contentBudget -= sectionGapHeight + lipgloss.Height(footer)
+		if contentBudget < 0 {
+			contentBudget = 0
+		}
+	}
+
+	var extraSections []string
+	appendExtraSection := func(section string) bool {
+		if section == "" {
+			return false
+		}
+		if contentBudget >= 0 {
+			needed := lipgloss.Height(section)
+			if len(extraSections) > 0 {
+				needed += sectionGapHeight
+			}
+			if needed > contentBudget {
+				return false
+			}
+			contentBudget -= needed
+		}
+		extraSections = append(extraSections, section)
+		return true
+	}
+
+	if m.err != nil {
+		appendExtraSection(renderErrorBox(m.err, m.width))
 	}
 
 	// Babysit-specific view when babysit step is active.
-	if isBabysitActive(m.steps) {
+	if !m.showHelp && isBabysitActive(m.steps) {
 		findings := ""
 		cursor := 0
 		var selected map[string]bool
@@ -178,55 +220,50 @@ func (m Model) View() string {
 			cursor = m.findingCursor[step.StepName]
 			selected = m.findingSelections[step.StepName]
 		}
-		b.WriteString("\n\n")
-		b.WriteString(renderBabysitViewWithSelection(m.run, m.steps, findings, m.logs, m.width, m.height, cursor, selected))
-	} else if step := awaitingStep(m.steps); step != nil {
-		// Generic findings or diff for non-babysit steps awaiting approval.
-		label := stepLabel(step.StepName)
-		if m.showDiff {
-			if raw, ok := m.stepDiffs[step.StepName]; ok && raw != "" {
-				viewHeight := m.height - 15 // reserve space for pipeline + footer
-				if viewHeight < 5 {
-					viewHeight = 10
-				}
-				// Build finding context for diff view header.
-				findingCtx := ""
-				if items := m.findingItems(step.StepName); len(items) > 0 {
-					cur := m.findingCursor[step.StepName]
-					if cur >= 0 && cur < len(items) {
-						item := items[cur]
-						ref := item.File
-						if item.Line > 0 {
-							ref = fmt.Sprintf("%s:%d", item.File, item.Line)
+		status := babysitStepStatus(m.steps)
+		if contentBudget >= 0 && (status == types.StepStatusAwaitingApproval || status == types.StepStatusFixReview) {
+			appendExtraSection(renderBabysitApprovalViewForHeight(m.run, m.steps, findings, m.logs, m.width, contentBudget, cursor, selected))
+		} else {
+			appendExtraSection(renderBabysitViewWithSelection(m.run, m.steps, findings, m.logs, m.width, m.height, cursor, selected))
+		}
+	} else if !m.showHelp {
+		if step := awaitingStep(m.steps); step != nil {
+			// Generic findings or diff for non-babysit steps awaiting approval.
+			label := stepLabel(step.StepName)
+			if m.showDiff {
+				if raw, ok := m.stepDiffs[step.StepName]; ok && raw != "" {
+					// Build finding context for diff view header.
+					findingCtx := ""
+					if items := m.findingItems(step.StepName); len(items) > 0 {
+						cur := m.findingCursor[step.StepName]
+						if cur >= 0 && cur < len(items) {
+							item := items[cur]
+							ref := item.File
+							if item.Line > 0 {
+								ref = fmt.Sprintf("%s:%d", item.File, item.Line)
+							}
+							findingCtx = fmt.Sprintf("%s %s  %s  (%d/%d)", severityIcon(item.Severity), ref, item.Description, cur+1, len(items))
 						}
-						findingCtx = fmt.Sprintf("%s %s  %s  (%d/%d)", severityIcon(item.Severity), ref, item.Description, cur+1, len(items))
+					}
+					viewHeight := m.height - 15
+					if contentBudget >= 0 {
+						fixedLines := 4
+						if findingCtx != "" {
+							fixedLines++
+						}
+						viewHeight = contentBudget - fixedLines
+					}
+					if viewHeight > 0 {
+						appendExtraSection(renderDiff(raw, m.width, viewHeight, m.diffOffset, label, findingCtx))
 					}
 				}
-				b.WriteString("\n\n")
-				b.WriteString(renderDiff(raw, m.width, viewHeight, m.diffOffset, label, findingCtx))
-			}
-		} else if raw, ok := m.stepFindings[step.StepName]; ok {
-			// Compute max visible findings from available height.
-			// Each finding is ~3 lines (gutter + description + blank separator).
-			// Reserve space for summary (2 lines), severity counts (2 lines), and scroll indicators (2 lines).
-			findingsHeight := m.height - 20 // reserve for pipeline, action bar, log, footer
-			maxVisible := 0
-			if findingsHeight > 6 {
-				maxVisible = findingsHeight / 3
-			}
-			cursor := m.findingCursor[step.StepName]
-			rendered, scrollFooter := renderFindingsWithSelection(raw, m.width-4, cursor, m.findingSelections[step.StepName], maxVisible)
-			if rendered != "" {
-				boxWidth := m.width
-				if boxWidth < 20 {
-					boxWidth = 80
+			} else if raw, ok := m.stepFindings[step.StepName]; ok {
+				cursor := m.findingCursor[step.StepName]
+				boxHeight := m.height
+				if contentBudget >= 0 {
+					boxHeight = contentBudget
 				}
-				title := "Findings - " + label
-				if items := m.findingItems(step.StepName); len(items) > 0 {
-					title += fmt.Sprintf(" (%d/%d)", cursor+1, len(items))
-				}
-				b.WriteString("\n\n")
-				b.WriteString(renderBoxWithFooter(title, rendered, boxWidth, scrollFooter))
+				appendExtraSection(renderFindingsBoxForHeight(raw, m.width, cursor, m.findingSelections[step.StepName], boxHeight, label, len(m.findingItems(step.StepName))))
 			}
 		}
 	}
@@ -242,73 +279,148 @@ func (m Model) View() string {
 		logLines = 0
 	}
 	if len(m.logs) > 0 && logLines > 0 && !isBabysitActive(m.steps) {
-		b.WriteString("\n\n")
-		start := len(m.logs) - logLines
-		if start < 0 {
-			start = 0
-		}
-		boxWidth := m.width
-		if boxWidth < 20 {
-			boxWidth = 80
-		}
-		contentWidth := boxWidth - 4 // 2 border + 2 padding
-		var logContent strings.Builder
-		for i, line := range m.logs[start:] {
-			if i > 0 {
-				logContent.WriteString("\n")
-			}
-			line, _ = cutText(line, contentWidth)
-			logContent.WriteString(styleLogLine(line))
-		}
-		b.WriteString(renderBox("Log", logContent.String(), boxWidth))
+		appendExtraSection(renderLogBox(m.logs, m.width, logLines, contentBudget))
 	}
 
-	// Help overlay.
 	if m.showHelp {
 		boxWidth := m.width
 		if boxWidth < 20 {
 			boxWidth = 80
 		}
-		b.WriteString("\n\n")
-		b.WriteString(renderHelpOverlay(boxWidth, awaitingStep(m.steps) != nil, m.showDiff, hasDiff, m.done))
+		appendExtraSection(renderHelpOverlay(boxWidth, awaitingStep(m.steps) != nil, m.showDiff, hasDiff, m.done))
 	}
 
-	// Error display in a box per DESIGN.md.
-	if m.err != nil {
-		boxWidth := m.width
-		if boxWidth < 20 {
-			boxWidth = 80
-		}
-		contentWidth := boxWidth - 4 // 2 border + 2 padding
-		errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiRed))
-		// Truncate each line of the error message to fit inside the box.
-		errLines := strings.Split(m.err.Error(), "\n")
-		var errContent strings.Builder
-		for i, line := range errLines {
-			if i > 0 {
-				errContent.WriteString("\n")
-			}
-			line, _ = cutText(line, contentWidth)
-			errContent.WriteString(errStyle.Render(line))
-		}
-		b.WriteString("\n\n")
-		b.WriteString(renderBox("Error", errContent.String(), boxWidth))
-	}
+	sections = append(sections, extraSections...)
+	sections = append(sections, footer)
+	return joinSections(sections, sectionGap)
+}
 
-	// Footer.
+func renderFindingsBoxForHeight(raw string, width int, cursor int, selected map[string]bool, boxHeight int, label string, totalItems int) string {
+	if boxHeight > 0 && boxHeight < 3 {
+		return ""
+	}
+	boxWidth := width
+	if boxWidth < 20 {
+		boxWidth = 80
+	}
+	contentHeight := 0
+	if boxHeight > 0 {
+		contentHeight = boxHeight - 2
+	}
+	title := "Findings - " + label
+	if totalItems > 0 {
+		title += fmt.Sprintf(" (%d/%d)", cursor+1, totalItems)
+	}
+	contentWidth := boxWidth - 4
+	if contentWidth < 1 {
+		contentWidth = 1
+	}
+	var rendered string
+	var scrollFooter string
+	if contentHeight > 0 {
+		rendered, scrollFooter = renderFindingsWithSelectionHeight(raw, contentWidth, cursor, selected, contentHeight)
+	} else {
+		rendered, scrollFooter = renderFindingsWithSelection(raw, contentWidth, cursor, selected, 0)
+	}
+	if rendered == "" {
+		return ""
+	}
+	return renderBoxWithFooter(title, rendered, boxWidth, scrollFooter)
+}
+
+func renderLogBox(logs []string, width int, logLines int, remainingBudget int) string {
+	if len(logs) == 0 || logLines <= 0 {
+		return ""
+	}
+	boxWidth := width
+	if boxWidth < 20 {
+		boxWidth = 80
+	}
+	if remainingBudget >= 0 {
+		maxLogLines := remainingBudget - 2
+		if maxLogLines <= 0 {
+			return ""
+		}
+		if logLines > maxLogLines {
+			logLines = maxLogLines
+		}
+	}
+	start := len(logs) - logLines
+	if start < 0 {
+		start = 0
+	}
+	contentWidth := boxWidth - 4
+	var logContent strings.Builder
+	for i, line := range logs[start:] {
+		if i > 0 {
+			logContent.WriteString("\n")
+		}
+		line, _ = cutText(line, contentWidth)
+		logContent.WriteString(styleLogLine(line))
+	}
+	return renderBox("Log", logContent.String(), boxWidth)
+}
+
+func renderErrorBox(err error, width int) string {
+	if err == nil {
+		return ""
+	}
+	boxWidth := width
+	if boxWidth < 20 {
+		boxWidth = 80
+	}
+	contentWidth := boxWidth - 4 // 2 border + 2 padding
+	errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiRed))
+	errLines := strings.Split(err.Error(), "\n")
+	var errContent strings.Builder
+	for i, line := range errLines {
+		if i > 0 {
+			errContent.WriteString("\n")
+		}
+		line, _ = cutText(line, contentWidth)
+		errContent.WriteString(errStyle.Render(line))
+	}
+	return renderBox("Error", errContent.String(), boxWidth)
+}
+
+func renderFooter(done bool, showHelp bool) string {
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
 	boldKey := lipgloss.NewStyle().Bold(true)
 	qLabel := "detach"
-	if m.done {
+	if done {
 		qLabel = "quit"
 	}
 	helpLabel := "help"
-	if m.showHelp {
+	if showHelp {
 		helpLabel = "close"
 	}
-	b.WriteString("\n\n  " + boldKey.Render("q") + " " + dimStyle.Render(qLabel) + "  " + boldKey.Render("?") + " " + dimStyle.Render(helpLabel) + "\n")
+	return "  " + boldKey.Render("q") + " " + dimStyle.Render(qLabel) + "  " + boldKey.Render("?") + " " + dimStyle.Render(helpLabel)
+}
 
-	return b.String()
+func joinSections(sections []string, gap string) string {
+	filtered := make([]string, 0, len(sections))
+	for _, section := range sections {
+		if section != "" {
+			filtered = append(filtered, section)
+		}
+	}
+	return strings.Join(filtered, gap)
+}
+
+func sectionsHeight(sections []string, gapHeight int) int {
+	count := 0
+	height := 0
+	for _, section := range sections {
+		if section == "" {
+			continue
+		}
+		if count > 0 {
+			height += gapHeight
+		}
+		height += lipgloss.Height(section)
+		count++
+	}
+	return height
 }
 
 // stepsWithRunningElapsed returns a copy of m.steps with DurationMS set on
@@ -620,6 +732,9 @@ func (m *Model) applyEvent(event ipc.Event) {
 		if event.Status != nil {
 			m.run.Status = types.RunStatus(*event.Status)
 		}
+		if event.Error != nil {
+			m.run.Error = event.Error
+		}
 		m.done = true
 
 	case ipc.EventStepStarted:
@@ -631,6 +746,9 @@ func (m *Model) applyEvent(event ipc.Event) {
 	case ipc.EventStepCompleted:
 		if event.StepName != nil && event.Status != nil {
 			m.updateStepStatus(*event.StepName, types.StepStatus(*event.Status))
+		}
+		if event.StepName != nil && event.Error != nil {
+			m.setStepError(*event.StepName, event.Error)
 		}
 		// Compute and persist final duration from tracked start time so the
 		// completed step continues to display its elapsed time.
@@ -681,6 +799,15 @@ func (m *Model) setStepDuration(name types.StepName, durationMS *int64) {
 	for i := range m.steps {
 		if m.steps[i].StepName == name {
 			m.steps[i].DurationMS = durationMS
+			return
+		}
+	}
+}
+
+func (m *Model) setStepError(name types.StepName, errMsg *string) {
+	for i := range m.steps {
+		if m.steps[i].StepName == name {
+			m.steps[i].Error = errMsg
 			return
 		}
 	}

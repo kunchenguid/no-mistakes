@@ -169,7 +169,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		outcome, err := step.Execute(sctx)
 		if err != nil {
 			e.db.FailStep(sr.ID, err.Error())
-			e.emitStepEvent(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFailed))
+			e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFailed), "", "", err.Error())
 			return fmt.Errorf("step %s failed: %w", stepName, err)
 		}
 
@@ -205,7 +205,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		response, err := e.waitForApproval(ctx, stepName)
 		if err != nil {
 			e.db.FailStep(sr.ID, err.Error())
-			e.emitStepEvent(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFailed))
+			e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFailed), "", "", err.Error())
 			return fmt.Errorf("step %s: waiting for approval: %w", stepName, err)
 		}
 
@@ -226,7 +226,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 
 		case types.ActionAbort:
 			e.db.FailStep(sr.ID, "aborted by user")
-			e.emitStepEvent(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFailed))
+			e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFailed), "", "", "aborted by user")
 			return fmt.Errorf("step %s: aborted by user", stepName)
 
 		case types.ActionFix:
@@ -284,6 +284,7 @@ func (e *Executor) failRun(run *db.Run, repo *db.Repo, err error, ctxs ...contex
 	}
 	e.db.UpdateRunError(run.ID, errMsg)
 	run.Status = types.RunFailed
+	run.Error = &errMsg
 	e.emitRunEvent(ipc.EventRunCompleted, run, repo)
 	return err
 }
@@ -298,6 +299,7 @@ func (e *Executor) emitRunEvent(eventType ipc.EventType, run *db.Run, repo *db.R
 		RepoID: repo.ID,
 		Status: &status,
 		Branch: &run.Branch,
+		Error:  run.Error,
 	})
 }
 
@@ -310,12 +312,19 @@ func (e *Executor) emitStepEventWithFindings(eventType ipc.EventType, run *db.Ru
 }
 
 func (e *Executor) emitStepEventWithFindingsAndDiff(eventType ipc.EventType, run *db.Run, repo *db.Repo, stepName types.StepName, status string, findings string, diff string) {
+	e.emitStepEventWithFindingsDiffAndError(eventType, run, repo, stepName, status, findings, diff, "")
+}
+
+func (e *Executor) emitStepEventWithFindingsDiffAndError(eventType ipc.EventType, run *db.Run, repo *db.Repo, stepName types.StepName, status string, findings string, diff string, errMsg string) {
 	event := ipc.Event{
 		Type:     eventType,
 		RunID:    run.ID,
 		RepoID:   repo.ID,
 		StepName: &stepName,
 		Status:   &status,
+	}
+	if errMsg != "" {
+		event.Error = &errMsg
 	}
 	if findings != "" {
 		event.Findings = &findings

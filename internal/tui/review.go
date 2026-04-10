@@ -173,18 +173,21 @@ func renderFindings(raw string, width int) string {
 	return content
 }
 
-// renderFindingsWithSelection renders findings with cursor, selection state, and optional
-// viewport limiting. maxVisible <= 0 means show all items (no viewport).
-// Returns (content, scrollFooter) where scrollFooter is a hint for the bottom border
-// (non-empty when items exist below the viewport).
-func renderFindingsWithSelection(raw string, width int, cursor int, selected map[string]bool, maxVisible int) (string, string) {
-	f, err := parseFindings(raw)
-	if err != nil || f == nil {
+func renderFindingsRange(f *findings, width int, cursor int, selected map[string]bool, start int, end int) (string, string) {
+	if f == nil {
 		return "", ""
 	}
-
 	if len(f.Items) == 0 && f.Summary == "" {
 		return "", ""
+	}
+	if start < 0 {
+		start = 0
+	}
+	if end < start {
+		end = start
+	}
+	if end > len(f.Items) {
+		end = len(f.Items)
 	}
 
 	var b strings.Builder
@@ -211,25 +214,6 @@ func renderFindingsWithSelection(raw string, width int, cursor int, selected map
 		}
 		b.WriteString(strings.Join(parts, "  "))
 		b.WriteString("\n\n")
-	}
-
-	// Compute visible window of items.
-	start := 0
-	end := len(f.Items)
-	if maxVisible > 0 && len(f.Items) > maxVisible {
-		// Center the window on the cursor.
-		start = cursor - maxVisible/2
-		if start < 0 {
-			start = 0
-		}
-		end = start + maxVisible
-		if end > len(f.Items) {
-			end = len(f.Items)
-			start = end - maxVisible
-			if start < 0 {
-				start = 0
-			}
-		}
 	}
 
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
@@ -305,4 +289,106 @@ func renderFindingsWithSelection(raw string, width int, cursor int, selected map
 	}
 
 	return b.String(), scrollFooter
+}
+
+func trimRenderedLines(s string, maxLines int) string {
+	if maxLines <= 0 || s == "" {
+		return ""
+	}
+	lines := strings.Split(s, "\n")
+	for len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	if len(lines) <= maxLines {
+		return s
+	}
+	return strings.Join(lines[:maxLines], "\n")
+}
+
+func renderFindingsWithSelectionHeight(raw string, width int, cursor int, selected map[string]bool, maxLines int) (string, string) {
+	f, err := parseFindings(raw)
+	if err != nil || f == nil {
+		return "", ""
+	}
+	if len(f.Items) == 0 && f.Summary == "" {
+		return "", ""
+	}
+	if maxLines <= 0 {
+		return "", ""
+	}
+
+	if len(f.Items) == 0 {
+		content, footer := renderFindingsRange(f, width, 0, selected, 0, 0)
+		return trimRenderedLines(content, maxLines), footer
+	}
+
+	if cursor < 0 {
+		cursor = 0
+	}
+	if cursor >= len(f.Items) {
+		cursor = len(f.Items) - 1
+	}
+
+	fullContent, fullFooter := renderFindingsRange(f, width, cursor, selected, 0, len(f.Items))
+	if lipgloss.Height(fullContent) <= maxLines {
+		return fullContent, fullFooter
+	}
+
+	for visible := len(f.Items); visible >= 1; visible-- {
+		start := cursor - visible/2
+		if start < 0 {
+			start = 0
+		}
+		end := start + visible
+		if end > len(f.Items) {
+			end = len(f.Items)
+			start = end - visible
+			if start < 0 {
+				start = 0
+			}
+		}
+		content, footer := renderFindingsRange(f, width, cursor, selected, start, end)
+		if lipgloss.Height(content) <= maxLines {
+			return content, footer
+		}
+	}
+
+	content, footer := renderFindingsRange(f, width, cursor, selected, cursor, cursor+1)
+	return trimRenderedLines(content, maxLines), footer
+}
+
+// renderFindingsWithSelection renders findings with cursor, selection state, and optional
+// viewport limiting. maxVisible <= 0 means show all items (no viewport).
+// Returns (content, scrollFooter) where scrollFooter is a hint for the bottom border
+// (non-empty when items exist below the viewport).
+func renderFindingsWithSelection(raw string, width int, cursor int, selected map[string]bool, maxVisible int) (string, string) {
+	f, err := parseFindings(raw)
+	if err != nil || f == nil {
+		return "", ""
+	}
+
+	if len(f.Items) == 0 && f.Summary == "" {
+		return "", ""
+	}
+
+	// Compute visible window of items.
+	start := 0
+	end := len(f.Items)
+	if maxVisible > 0 && len(f.Items) > maxVisible {
+		// Center the window on the cursor.
+		start = cursor - maxVisible/2
+		if start < 0 {
+			start = 0
+		}
+		end = start + maxVisible
+		if end > len(f.Items) {
+			end = len(f.Items)
+			start = end - maxVisible
+			if start < 0 {
+				start = 0
+			}
+		}
+	}
+
+	return renderFindingsRange(f, width, cursor, selected, start, end)
 }

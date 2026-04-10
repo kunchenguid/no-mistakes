@@ -208,3 +208,72 @@ func renderBabysitViewWithSelection(run *ipc.RunInfo, steps []ipc.StepResultInfo
 	}
 	return renderBox(title, b.String(), boxWidth)
 }
+
+func renderBabysitApprovalViewForHeight(run *ipc.RunInfo, steps []ipc.StepResultInfo, findings string, logs []string, width int, boxHeight int, cursor int, selected map[string]bool) string {
+	if boxHeight > 0 && boxHeight < 3 {
+		return ""
+	}
+	if boxHeight <= 0 {
+		return renderBabysitViewWithSelection(run, steps, findings, logs, width, 0, cursor, selected)
+	}
+
+	boxWidth := width
+	if boxWidth < 20 {
+		boxWidth = 80
+	}
+	contentWidth := boxWidth - 4
+	contentBudget := boxHeight - 2
+	if contentBudget <= 0 {
+		return ""
+	}
+
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
+	activity := parseBabysitActivity(logs)
+
+	var lines []string
+	if run != nil && run.PRURL != nil && *run.PRURL != "" {
+		prText := "PR: " + *run.PRURL
+		prText, _ = cutText(prText, contentWidth)
+		lines = append(lines, dimStyle.Render(prText))
+	} else if num := extractPRFromLogs(logs); num != "" {
+		lines = append(lines, dimStyle.Render("PR #"+num))
+	}
+	lines = append(lines, "")
+	statusStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiYellow))
+	lines = append(lines, statusStyle.Render("⏸ New PR comments - review below"))
+	if activity.CIFixes > 0 {
+		lines = append(lines, dimStyle.Render(fmt.Sprintf("CI auto-fixes: %d", activity.CIFixes)))
+	}
+	if activity.LastEvent != "" {
+		eventText := "Latest: " + activity.LastEvent
+		eventText, _ = cutText(eventText, contentWidth)
+		lines = append(lines, dimStyle.Render(eventText))
+	}
+
+	header := strings.Join(lines, "\n")
+	remaining := contentBudget - lipgloss.Height(header)
+	content := header
+
+	itemCount := 0
+	if f, err := parseFindings(findings); err == nil && f != nil {
+		itemCount = len(f.Items)
+	}
+	if findings != "" && remaining > 1 {
+		rendered, scrollFooter := renderFindingsWithSelectionHeight(findings, contentWidth, cursor, selected, remaining-1)
+		if scrollFooter != "" && remaining > 2 {
+			rendered, scrollFooter = renderFindingsWithSelectionHeight(findings, contentWidth, cursor, selected, remaining-2)
+		}
+		if rendered != "" {
+			content += "\n" + rendered
+			if scrollFooter != "" {
+				content += "\n" + dimStyle.Render(scrollFooter)
+			}
+		}
+	}
+
+	title := "Babysit"
+	if itemCount > 0 {
+		title += fmt.Sprintf(" (%d/%d)", cursor+1, itemCount)
+	}
+	return renderBox(title, content, boxWidth)
+}

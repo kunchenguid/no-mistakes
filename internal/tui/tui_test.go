@@ -323,6 +323,31 @@ func TestModel_ApplyEvent_StepCompleted(t *testing.T) {
 	}
 }
 
+func TestModel_ApplyEvent_StepCompleted_FailedStoresError(t *testing.T) {
+	run := testRun()
+	m := NewModel("/tmp/sock", nil, run)
+	errMsg := "agent review: claude parse events: bufio.Scanner: token too long"
+
+	m.applyEvent(ipc.Event{
+		Type:     ipc.EventStepCompleted,
+		RunID:    run.ID,
+		StepName: ptr(types.StepReview),
+		Status:   ptr(string(types.StepStatusFailed)),
+		Error:    &errMsg,
+	})
+
+	if m.steps[0].Status != types.StepStatusFailed {
+		t.Fatalf("expected failed, got %s", m.steps[0].Status)
+	}
+	if m.steps[0].Error == nil || *m.steps[0].Error != errMsg {
+		t.Fatalf("expected step error %q, got %v", errMsg, m.steps[0].Error)
+	}
+	out := stripANSI(renderPipelineView(m.run, m.steps, 80, 0, 40))
+	if !strings.Contains(out, errMsg) {
+		t.Fatalf("expected pipeline view to contain step error, got:\n%s", out)
+	}
+}
+
 func TestModel_ApplyEvent_RunCompleted(t *testing.T) {
 	run := testRun()
 	m := NewModel("/tmp/sock", nil, run)
@@ -338,6 +363,33 @@ func TestModel_ApplyEvent_RunCompleted(t *testing.T) {
 	}
 	if m.run.Status != types.RunCompleted {
 		t.Errorf("expected completed status, got %s", m.run.Status)
+	}
+}
+
+func TestModel_ApplyEvent_RunCompleted_FailedStoresError(t *testing.T) {
+	run := testRun()
+	m := NewModel("/tmp/sock", nil, run)
+	errMsg := "step review failed: agent review: claude parse events: bufio.Scanner: token too long"
+
+	m.applyEvent(ipc.Event{
+		Type:   ipc.EventRunCompleted,
+		RunID:  run.ID,
+		Status: ptr(string(types.RunFailed)),
+		Error:  &errMsg,
+	})
+
+	if !m.done {
+		t.Fatal("expected done=true after failed run_completed")
+	}
+	if m.run.Status != types.RunFailed {
+		t.Fatalf("expected failed status, got %s", m.run.Status)
+	}
+	if m.run.Error == nil || *m.run.Error != errMsg {
+		t.Fatalf("expected run error %q, got %v", errMsg, m.run.Error)
+	}
+	out := stripANSI(renderPipelineView(m.run, m.steps, 80, 0, 40))
+	if !strings.Contains(out, "Error: step review failed: agent review: claude parse events") {
+		t.Fatalf("expected pipeline view to contain run error, got:\n%s", out)
 	}
 }
 
@@ -4052,6 +4104,26 @@ func TestModel_View_LogTailHiddenTiny(t *testing.T) {
 	}
 	if strings.Contains(view, "Log") {
 		t.Error("expected no Log box title in tiny terminal")
+	}
+}
+
+func TestModel_View_ShortTerminalDoesNotOverflowHeight(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	run.Steps[0].FindingsJSON = ptr(`{"summary":"The review surfaced several issues that need attention before continuing.","items":[{"id":"f1","severity":"warning","file":"internal/pipeline/steps/review.go","line":101,"description":"This finding has a long description that should wrap across multiple lines in a narrow viewport and still keep the pipeline header visible."},{"id":"f2","severity":"info","file":"internal/pipeline/steps/test.go","line":202,"description":"Another wrapped finding to force the findings panel to compete for height with the pipeline and footer sections."},{"id":"f3","severity":"warning","file":"internal/pipeline/steps/lint.go","line":303,"description":"A third wrapped finding makes the old item-count heuristic overflow the terminal height."}]}`)
+
+	m := NewModel("/tmp/sock", nil, run)
+	m.width = 80
+	m.height = 18
+	view := stripANSI(m.View())
+
+	if got := lipgloss.Height(view); got > m.height {
+		t.Fatalf("expected rendered view height <= terminal height (%d), got %d\n%s", m.height, got, view)
+	}
+	if !strings.Contains(view, "feature/foo") {
+		t.Fatalf("expected pipeline header to remain visible in short terminal\n%s", view)
 	}
 }
 
