@@ -5190,3 +5190,77 @@ diff --git a/c.go b/c.go
 		t.Errorf("expected 2 blank lines before file boundaries, got %d", blankBeforeFile)
 	}
 }
+
+func TestRenderDiff_LineNumbersShown(t *testing.T) {
+	raw := `diff --git a/main.go b/main.go
+--- a/main.go
++++ b/main.go
+@@ -10,3 +10,4 @@
+ context line
++added line
+ another context
++second add
+`
+	got := renderDiff(raw, 80, 0, 0, "")
+	plain := stripANSI(got)
+	// Context line at new-file line 10 should show "10" in the gutter.
+	if !strings.Contains(plain, " 10 ") {
+		t.Errorf("expected line number 10 in diff gutter, got:\n%s", plain)
+	}
+	// Added line at new-file line 11 should show "11".
+	if !strings.Contains(plain, " 11 ") {
+		t.Errorf("expected line number 11 in diff gutter, got:\n%s", plain)
+	}
+	// Context line at 12 and addition at 13.
+	if !strings.Contains(plain, " 12 ") {
+		t.Errorf("expected line number 12 in diff gutter, got:\n%s", plain)
+	}
+	if !strings.Contains(plain, " 13 ") {
+		t.Errorf("expected line number 13 in diff gutter, got:\n%s", plain)
+	}
+}
+
+func TestRenderDiff_DeletionLinesNoLineNumber(t *testing.T) {
+	raw := `diff --git a/main.go b/main.go
+--- a/main.go
++++ b/main.go
+@@ -5,3 +5,2 @@
+ context
+-deleted line
+ after delete
+`
+	got := renderDiff(raw, 80, 0, 0, "")
+	plain := stripANSI(got)
+	lines := strings.Split(plain, "\n")
+	// Find the line containing "deleted line" and verify it has no line number.
+	for _, line := range lines {
+		if strings.Contains(line, "deleted line") {
+			// The line should NOT have a number before the deletion marker.
+			// It should have blank space in the gutter area.
+			trimmed := strings.TrimSpace(line)
+			trimmed = strings.TrimLeft(trimmed, "│")
+			trimmed = strings.TrimSpace(trimmed)
+			if trimmed[0] >= '0' && trimmed[0] <= '9' {
+				t.Errorf("deletion line should not have a line number, got: %q", line)
+			}
+			break
+		}
+	}
+}
+
+func TestRenderDiff_LineNumbersStyledDim(t *testing.T) {
+	raw := `diff --git a/main.go b/main.go
+--- a/main.go
++++ b/main.go
+@@ -1,2 +1,2 @@
+ context
++added
+`
+	got := renderDiff(raw, 80, 0, 0, "")
+	// Line number "1" should be styled dim (bright black).
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
+	styledOne := dimStyle.Render("1 ")
+	if !strings.Contains(got, styledOne) {
+		t.Error("expected line numbers to be styled dim (bright black)")
+	}
+}

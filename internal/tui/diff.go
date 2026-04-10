@@ -158,6 +158,33 @@ func parseHunkNewRange(header string) (int, int) {
 	return start, 1
 }
 
+// computeDiffLineNumbers assigns new-file line numbers to each diff line.
+// Context and addition lines get incrementing new-file numbers; deletion,
+// file header, and hunk header lines get 0 (no number shown).
+func computeDiffLineNumbers(lines []diffLine) []int {
+	nums := make([]int, len(lines))
+	curLine := 0
+	for i, dl := range lines {
+		switch dl.Type {
+		case diffLineHunkHeader:
+			start, _ := parseHunkNewRange(dl.Text)
+			curLine = start
+		case diffLineContext:
+			if curLine > 0 {
+				nums[i] = curLine
+				curLine++
+			}
+		case diffLineAddition:
+			if curLine > 0 {
+				nums[i] = curLine
+				curLine++
+			}
+			// Deletion, file header: no line number (stays 0).
+		}
+	}
+	return nums
+}
+
 // diffLineStyle returns the lipgloss style for a diff line type.
 func diffLineStyle(t diffLineType) lipgloss.Style {
 	switch t {
@@ -231,17 +258,46 @@ func renderDiff(raw string, width, viewHeight, offset int, stepLabel string) str
 		contentWidth = 1
 	}
 
+	// Compute new-file line numbers for each diff line.
+	lineNumbers := computeDiffLineNumbers(lines)
+
+	// Compute gutter width from max line number.
+	maxLineNum := 0
+	for _, n := range lineNumbers {
+		if n > maxLineNum {
+			maxLineNum = n
+		}
+	}
+	gutterWidth := len(fmt.Sprintf("%d", maxLineNum))
+	if gutterWidth < 1 {
+		gutterWidth = 1
+	}
+	dimGutterStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
+
 	// Render visible lines, truncating to fit inside the box.
 	// Insert blank line before file headers (except the first in the diff)
 	// for visual separation between files.
+	textWidth := contentWidth - gutterWidth - 1 // gutter + space
+	if textWidth < 1 {
+		textWidth = 1
+	}
 	for idx := offset; idx < end; idx++ {
 		dl := lines[idx]
 		if dl.Type == diffLineFileHeader && strings.HasPrefix(dl.Text, "diff --git") && idx > 0 {
 			b.WriteString("\n")
 		}
+
+		// Line number gutter.
+		if lineNumbers[idx] > 0 {
+			gutter := fmt.Sprintf("%*d ", gutterWidth, lineNumbers[idx])
+			b.WriteString(dimGutterStyle.Render(gutter))
+		} else {
+			b.WriteString(dimGutterStyle.Render(strings.Repeat(" ", gutterWidth+1)))
+		}
+
 		text := dl.Text
-		if lipgloss.Width(text) > contentWidth {
-			text, _ = cutText(text, contentWidth)
+		if lipgloss.Width(text) > textWidth {
+			text, _ = cutText(text, textWidth)
 		}
 		style := diffLineStyle(dl.Type)
 		b.WriteString(style.Render(text))
