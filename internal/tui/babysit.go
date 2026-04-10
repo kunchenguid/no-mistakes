@@ -165,23 +165,13 @@ func renderBabysitViewWithSelection(run *ipc.RunInfo, steps []ipc.StepResultInfo
 
 	if !isApproval && len(logs) > 0 && logLines > 0 {
 		b.WriteString("\n")
-		logDimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
-		logGreenStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiGreen))
-		logRedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiRed))
 		start := len(logs) - logLines
 		if start < 0 {
 			start = 0
 		}
 		for _, line := range logs[start:] {
 			line, _ = cutText(line, contentWidth)
-			switch {
-			case strings.HasPrefix(line, "PASS"):
-				b.WriteString(logGreenStyle.Render(line) + "\n")
-			case strings.HasPrefix(line, "FAIL"):
-				b.WriteString(logRedStyle.Render(line) + "\n")
-			default:
-				b.WriteString(logDimStyle.Render(line) + "\n")
-			}
+			b.WriteString(styleLogLine(line) + "\n")
 		}
 	}
 	var itemCount int

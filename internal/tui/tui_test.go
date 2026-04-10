@@ -5766,3 +5766,38 @@ func TestRenderFindings_FocusChangesSeverityIconStyle(t *testing.T) {
 		t.Error("with cursor=1, warning icon should be colored yellow")
 	}
 }
+
+// --- styleLogLine tests ---
+
+func TestStyleLogLine_PassLineGreen(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	line := "PASS: TestFoo (0.3s)"
+	styled := styleLogLine(line)
+	greenStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiGreen))
+	expected := greenStyle.Render(line)
+	if styled != expected {
+		t.Errorf("PASS line should be green-styled, got %q", styled)
+	}
+}
+
+func TestStyleLogLine_FailLineRed(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	line := "FAIL: TestBar (0.1s)"
+	styled := styleLogLine(line)
+	redStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiRed))
+	expected := redStyle.Render(line)
+	if styled != expected {
+		t.Errorf("FAIL line should be red-styled, got %q", styled)
+	}
+}
+
+func TestStyleLogLine_DefaultLineDim(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	line := "running go test ./..."
+	styled := styleLogLine(line)
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
+	expected := dimStyle.Render(line)
+	if styled != expected {
+		t.Errorf("default line should be dim-styled, got %q", styled)
+	}
+}

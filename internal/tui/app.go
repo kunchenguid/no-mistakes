@@ -230,9 +230,6 @@ func (m Model) View() string {
 	}
 	if len(m.logs) > 0 && logLines > 0 && !isBabysitActive(m.steps) {
 		b.WriteString("\n\n")
-		logDimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
-		logGreenStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiGreen))
-		logRedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiRed))
 		start := len(m.logs) - logLines
 		if start < 0 {
 			start = 0
@@ -248,14 +245,7 @@ func (m Model) View() string {
 				logContent.WriteString("\n")
 			}
 			line, _ = cutText(line, contentWidth)
-			switch {
-			case strings.HasPrefix(line, "PASS"):
-				logContent.WriteString(logGreenStyle.Render(line))
-			case strings.HasPrefix(line, "FAIL"):
-				logContent.WriteString(logRedStyle.Render(line))
-			default:
-				logContent.WriteString(logDimStyle.Render(line))
-			}
+			logContent.WriteString(styleLogLine(line))
 		}
 		b.WriteString(renderBox("Log", logContent.String(), boxWidth))
 		b.WriteString("\n")

@@ -144,6 +144,19 @@ func wrapIndentedText(text string, width, indent int) string {
 	return b.String()
 }
 
+// styleLogLine applies PASS/FAIL-aware coloring to a single log line.
+// PASS lines are green, FAIL lines are red, everything else is dim.
+func styleLogLine(line string) string {
+	switch {
+	case strings.HasPrefix(line, "PASS"):
+		return lipgloss.NewStyle().Foreground(lipgloss.Color(ansiGreen)).Render(line)
+	case strings.HasPrefix(line, "FAIL"):
+		return lipgloss.NewStyle().Foreground(lipgloss.Color(ansiRed)).Render(line)
+	default:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack)).Render(line)
+	}
+}
+
 // renderFindings renders a findings list for display in the TUI.
 func renderFindings(raw string, width int) string {
 	f, err := parseFindings(raw)
