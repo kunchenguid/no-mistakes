@@ -197,6 +197,8 @@ func renderFindingsWithSelection(raw string, width int, cursor int, selected map
 
 	// Individual findings.
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
+	greenStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiGreen))
+	blueStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBlue))
 	for i, item := range f.Items {
 		// Blank line between findings per DESIGN.md Gutter System.
 		if i > 0 {
@@ -205,13 +207,15 @@ func renderFindingsWithSelection(raw string, width int, cursor int, selected map
 
 		icon := severityIcon(item.Severity)
 		style := severityStyle(item.Severity)
-		checkbox := "[ ]"
+		// Checkbox: green when selected, dim when not (per DESIGN.md Color Roles).
+		checkbox := dimStyle.Render("[ ]")
 		if selected == nil || selected[item.ID] {
-			checkbox = "[x]"
+			checkbox = greenStyle.Render("[x]")
 		}
+		// Cursor: blue per DESIGN.md "Primary action/focus" for interactive elements.
 		pointer := " "
 		if i == cursor {
-			pointer = ">"
+			pointer = blueStyle.Render(">")
 		}
 
 		line := pointer + " " + checkbox + " " + style.Render(icon)

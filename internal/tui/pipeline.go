@@ -119,17 +119,17 @@ func renderPipelineView(run *ipc.RunInfo, steps []ipc.StepResultInfo, width int,
 			line += "  " + dimStyle.Render(formatDuration(*step.DurationMS))
 		}
 
-		// Add status suffix for non-obvious states.
+		// Add status suffix for non-obvious states (dim per Typography Scale "Meta").
 		switch step.Status {
 		case types.StepStatusAwaitingApproval:
-			line += " - awaiting approval"
+			line += " " + dimStyle.Render("- awaiting approval")
 		case types.StepStatusFixing:
-			line += " - agent fixing..."
+			line += " " + dimStyle.Render("- agent fixing...")
 		case types.StepStatusFixReview:
-			line += " - review fix"
+			line += " " + dimStyle.Render("- review fix")
 		case types.StepStatusFailed:
 			if step.Error != nil {
-				line += " - " + *step.Error
+				line += " " + dimStyle.Render("- "+*step.Error)
 			}
 		}
 

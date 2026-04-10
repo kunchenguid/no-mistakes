@@ -2247,6 +2247,93 @@ func TestRenderDiff_ScrollUpOnlyAtBottom(t *testing.T) {
 	}
 }
 
+// --- Color consistency tests per DESIGN.md Color Roles ---
+
+func TestRenderPipelineView_StatusSuffixDim(t *testing.T) {
+	// DESIGN.md Typography Scale: "Meta: Dim (bright black). Durations, file
+	// references, counts, hints, footer." Status suffixes like "- awaiting approval"
+	// are meta-level hints and must be styled dim (bright black).
+	run := testRun()
+	run.Steps[1].Status = types.StepStatusAwaitingApproval
+
+	got := renderPipelineView(run, run.Steps, 80, 0, false, false)
+
+	// The suffix text "- awaiting approval" should be styled dim (contain ANSI codes).
+	// When stripped, the text should be present; in the raw output, it should be wrapped
+	// in dim styling, not appear as plain unstyled text.
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
+	styledSuffix := dimStyle.Render("- awaiting approval")
+
+	if !strings.Contains(got, styledSuffix) {
+		t.Errorf("expected status suffix '- awaiting approval' to be styled dim (bright black), but it was not found as styled text in output")
+	}
+}
+
+func TestRenderPipelineView_FailedErrorDim(t *testing.T) {
+	// Failed step error messages are also meta-level info and should be dim.
+	run := testRun()
+	errMsg := "lint failed"
+	run.Steps[2].Status = types.StepStatusFailed
+	run.Steps[2].Error = &errMsg
+
+	got := renderPipelineView(run, run.Steps, 80, 0, false, false)
+
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
+	styledSuffix := dimStyle.Render("- " + errMsg)
+
+	if !strings.Contains(got, styledSuffix) {
+		t.Errorf("expected failed error suffix to be styled dim, but it was not found as styled text in output")
+	}
+}
+
+func TestRenderFindings_CursorStyledBlue(t *testing.T) {
+	// DESIGN.md Color Roles: "Primary action/focus: blue - interactive elements."
+	// The cursor ">" indicating the focused finding should be styled blue.
+	raw := `{"findings":[{"id":"f1","severity":"error","file":"main.go","line":10,"description":"nil pointer"}],"summary":"1 issue"}`
+	selected := map[string]bool{"f1": true}
+
+	got := renderFindingsWithSelection(raw, 80, 0, selected)
+
+	blueStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBlue))
+	styledCursor := blueStyle.Render(">")
+
+	if !strings.Contains(got, styledCursor) {
+		t.Errorf("expected cursor '>' to be styled blue per DESIGN.md Primary action/focus, but it was not found as styled text")
+	}
+}
+
+func TestRenderFindings_CheckboxSelectedGreen(t *testing.T) {
+	// DESIGN.md Color Roles: "Success: green - completed, additions."
+	// Selected checkboxes "[x]" represent a successful/confirmed selection.
+	raw := `{"findings":[{"id":"f1","severity":"error","file":"main.go","line":10,"description":"nil pointer"}],"summary":"1 issue"}`
+	selected := map[string]bool{"f1": true}
+
+	got := renderFindingsWithSelection(raw, 80, 0, selected)
+
+	greenStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiGreen))
+	styledCheckbox := greenStyle.Render("[x]")
+
+	if !strings.Contains(got, styledCheckbox) {
+		t.Errorf("expected selected checkbox '[x]' to be styled green per DESIGN.md Success color, but it was not found as styled text")
+	}
+}
+
+func TestRenderFindings_CheckboxUnselectedDim(t *testing.T) {
+	// DESIGN.md Color Roles: "Muted/secondary: bright black."
+	// Unselected checkboxes "[ ]" should be dim to de-emphasize.
+	raw := `{"findings":[{"id":"f1","severity":"error","file":"main.go","line":10,"description":"nil pointer"}],"summary":"1 issue"}`
+	selected := map[string]bool{} // nothing selected
+
+	got := renderFindingsWithSelection(raw, 80, 0, selected)
+
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
+	styledCheckbox := dimStyle.Render("[ ]")
+
+	if !strings.Contains(got, styledCheckbox) {
+		t.Errorf("expected unselected checkbox '[ ]' to be styled dim (bright black) per DESIGN.md Muted color, but it was not found as styled text")
+	}
+}
+
 func TestNewModel_PopulatesStepFindingsFromInitialSteps_DisplaysOnView(t *testing.T) {
 	findings := `{"findings":[{"severity":"warning","description":"stale finding from re-attach"}],"summary":"1 issue"}`
 	run := &ipc.RunInfo{
