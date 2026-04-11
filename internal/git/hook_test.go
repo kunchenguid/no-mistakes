@@ -59,6 +59,35 @@ func TestPostReceiveHookScript(t *testing.T) {
 	}
 }
 
+func TestShellSingleQuote(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"plain", "/usr/bin/no-mistakes", "'/usr/bin/no-mistakes'"},
+		{"spaces", "/opt/No Mistakes/bin", "'/opt/No Mistakes/bin'"},
+		{"single_quote", "/opt/it's/bin", "'/opt/it'\"'\"'s/bin'"},
+		{"multiple_quotes", "a'b'c", "'a'\"'\"'b'\"'\"'c'"},
+		{"empty", "", "''"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shellSingleQuote(tt.input)
+			if got != tt.want {
+				t.Errorf("shellSingleQuote(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPostReceiveHookScriptWithQuotedPath(t *testing.T) {
+	script := postReceiveHookScript("/opt/it's here/no-mistakes")
+	if !strings.Contains(script, "NM_BIN='/opt/it'\"'\"'s here/no-mistakes'") {
+		t.Fatal("hook should correctly escape single quotes in the executable path")
+	}
+}
+
 func TestInstallPostReceiveHook(t *testing.T) {
 	ctx := context.Background()
 	bare := filepath.Join(t.TempDir(), "test.git")
