@@ -5,6 +5,7 @@ package ipc
 import (
 	"bufio"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
 	"net"
@@ -150,7 +151,7 @@ func (tl *tokenListener) authenticate(conn net.Conn) {
 		return
 	}
 	conn.SetReadDeadline(time.Time{})
-	if strings.TrimSpace(line) != tl.token {
+	if subtle.ConstantTimeCompare([]byte(strings.TrimSpace(line)), []byte(tl.token)) != 1 {
 		conn.Close()
 		return
 	}
@@ -173,7 +174,6 @@ func (tl *tokenListener) Accept() (net.Conn, error) {
 
 func (tl *tokenListener) Close() error {
 	tl.closeOnce.Do(func() { close(tl.done) })
-	os.Remove(tl.endpoint)
 	return tl.Listener.Close()
 }
 
