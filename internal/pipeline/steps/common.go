@@ -134,7 +134,6 @@ func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summa
 	if _, err := git.Run(ctx, sctx.WorkDir, "add", "-A"); err != nil {
 		return fmt.Errorf("stage %s changes: %w", stepName, err)
 	}
-	summary = strings.Join(strings.Fields(summary), " ")
 	if summary == "" {
 		summary = fallbackSummary
 	}
