@@ -564,9 +564,12 @@ func (s *BabysitStep) commitAndPush(sctx *pipeline.StepContext) error {
 
 	upstreamSHA, lsErr := git.LsRemote(ctx, sctx.WorkDir, sctx.Repo.UpstreamURL, ref)
 	if lsErr != nil {
-		return fmt.Errorf("ls-remote upstream: %w", lsErr)
+		slog.Warn("ls-remote failed, pushing without force-with-lease", "ref", ref, "error", lsErr)
 	}
 	if err := git.Push(ctx, sctx.WorkDir, sctx.Repo.UpstreamURL, ref, upstreamSHA, upstreamSHA != ""); err != nil {
+		if lsErr != nil {
+			return fmt.Errorf("push (ls-remote failed: %v): %w", lsErr, err)
+		}
 		return fmt.Errorf("push: %w", err)
 	}
 
