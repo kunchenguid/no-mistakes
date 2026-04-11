@@ -1,0 +1,121 @@
+name: release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          release-type: go
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  build-and-upload:
+    runs-on: ubuntu-latest
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+          - goos: windows
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build archive
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+          VERSION: ${{ needs.release-please.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          COMMIT="${GITHUB_SHA::7}"
+          BIN="no-mistakes"
+          OUT="dist/${BIN}"
+          if [ "$GOOS" = "windows" ]; then
+            BIN="${BIN}.exe"
+            OUT="dist/${BIN}"
+          fi
+          CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
+            go build -ldflags "-X github.com/kunchenguid/no-mistakes/internal/buildinfo.Version=${TAG} -X github.com/kunchenguid/no-mistakes/internal/buildinfo.Commit=${COMMIT} -X github.com/kunchenguid/no-mistakes/internal/buildinfo.Date=${DATE}" \
+            -o "$OUT" ./cmd/no-mistakes
+          if [ "$GOOS" = "windows" ]; then
+            ARCHIVE="dist/no-mistakes-${TAG}-${GOOS}-${GOARCH}.zip"
+            (
+              cd dist
+              zip -q "$(basename "$ARCHIVE")" "$BIN"
+            )
+          else
+            ARCHIVE="dist/no-mistakes-${TAG}-${GOOS}-${GOARCH}.tar.gz"
+            tar -C dist -czf "$ARCHIVE" "$BIN"
+          fi
+          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+
+      - name: Upload release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: gh release upload "$TAG" "$ARCHIVE" --clobber
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: archive-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: ${{ env.ARCHIVE }}
+
+  checksums:
+    runs-on: ubuntu-latest
+    needs:
+      - release-please
+      - build-and-upload
+    if: needs.release-please.outputs.release_created == 'true'
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          set -euo pipefail
+          (
+            cd dist
+            sha256sum no-mistakes-* > ../checksums.txt
+          )
+
+      - name: Upload checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: gh release upload "$TAG" checksums.txt --clobber
