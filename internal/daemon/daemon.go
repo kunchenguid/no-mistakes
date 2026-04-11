@@ -112,6 +112,7 @@ func RunWithOptions(p *paths.Paths, d *db.DB, stepFactory StepFactory) error {
 	if err := srv.Serve(socketPath); err != nil {
 		return fmt.Errorf("serve: %w", err)
 	}
+	doShutdown("listener closed")
 
 	// Clean up socket file only if we still own the PID file.
 	// A new daemon may have already replaced the socket.

@@ -81,6 +81,7 @@ func (s *Server) Serve(socketPath string) error {
 				return nil
 			default:
 				if errors.Is(err, net.ErrClosed) {
+					s.Close()
 					s.wg.Wait()
 					return nil
 				}
