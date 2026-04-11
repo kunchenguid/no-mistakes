@@ -61,7 +61,10 @@ func (l *tokenStripListener) Accept() (net.Conn, error) {
 		return nil, err
 	}
 	r := bufio.NewReader(conn)
-	r.ReadString('\n') // consume token line
+	if _, err := r.ReadString('\n'); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("read auth token: %w", err)
+	}
 	return &testBufferedConn{Conn: conn, r: r}, nil
 }
 

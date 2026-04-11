@@ -102,11 +102,13 @@ func (tl *tokenListener) Accept() (net.Conn, error) {
 		line, err := r.ReadString('\n')
 		if err != nil {
 			conn.Close()
+			time.Sleep(50 * time.Millisecond)
 			continue
 		}
 		conn.SetReadDeadline(time.Time{})
 		if strings.TrimSpace(line) != tl.token {
 			conn.Close()
+			time.Sleep(50 * time.Millisecond)
 			continue
 		}
 		return &bufferedConn{Conn: conn, r: r}, nil

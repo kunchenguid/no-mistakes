@@ -276,7 +276,7 @@ func TestServerClose(t *testing.T) {
 }
 
 func TestDialNonexistentSocket(t *testing.T) {
-	_, err := ipc.Dial("/tmp/nonexistent-test-socket-12345.sock")
+	_, err := ipc.Dial(filepath.Join(t.TempDir(), "nonexistent.sock"))
 	if err == nil {
 		t.Error("expected error dialing nonexistent socket")
 	}
