@@ -29,11 +29,14 @@ Context:
 - base commit: %s
 - target commit: %s
 
-			Rules:
-			- Make the minimal change needed.
-			- Do not refactor beyond what is needed.
-			- Do not run tests or broader behavioral validation.
-			- Re-run the relevant lint or format commands before finishing.`,
+Rules:
+- Make the minimal change needed.
+- Do not refactor beyond what is needed.
+- Do not run tests or broader behavioral validation.
+- Re-run the relevant lint or format commands before finishing.
+- Return JSON with a single "summary" field when you are done.
+- The summary must be one concise sentence fragment suitable for a git commit subject.
+- Keep the summary under 10 words.`,
 			sctx.Run.Branch,
 			baseSHA,
 			sctx.Run.HeadSHA,
@@ -44,13 +47,21 @@ Context:
 Previous lint findings to address:
 ` + sctx.PreviousFindings
 		}
-		_, err := sctx.Agent.Run(ctx, agent.RunOpts{
-			Prompt:  fixPrompt,
-			CWD:     sctx.WorkDir,
-			OnChunk: sctx.Log,
+		result, err := sctx.Agent.Run(ctx, agent.RunOpts{
+			Prompt:     fixPrompt,
+			CWD:        sctx.WorkDir,
+			JSONSchema: commitSummarySchema,
+			OnChunk:    sctx.Log,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("agent fix lint: %w", err)
+		}
+		summary, err := extractCommitSummary(result)
+		if err != nil {
+			sctx.Log(fmt.Sprintf("warning: could not parse fix summary: %v", err))
+		}
+		if err := commitAgentFixes(sctx, s.Name(), summary, "fix lint issues"); err != nil {
+			return nil, err
 		}
 	}
 
@@ -72,9 +83,9 @@ Task:
 - Only lint or format the relevant changed files when possible.
 - Report any issues found as structured findings.
 
-			Rules:
-			- Do not run tests or broader behavioral validation.
-			- Focus on lint, format, and static-analysis issues only.`,
+Rules:
+- Do not run tests or broader behavioral validation.
+- Focus on lint, format, and static-analysis issues only.`,
 				sctx.Run.Branch,
 				baseSHA,
 				sctx.Run.HeadSHA,

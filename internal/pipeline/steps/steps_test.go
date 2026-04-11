@@ -57,6 +57,16 @@ func gitCmd(t *testing.T, dir string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
+func gitStatusPorcelain(t *testing.T, dir string) string {
+	t.Helper()
+	return gitCmd(t, dir, "status", "--porcelain")
+}
+
+func lastCommitMessage(t *testing.T, dir string) string {
+	t.Helper()
+	return gitCmd(t, dir, "log", "-1", "--pretty=%s")
+}
+
 // setupGitRepo creates a git repo with a base commit on main and a head commit on feature.
 // Returns (repoDir, baseSHA, headSHA).
 func setupGitRepo(t *testing.T) (string, string, string) {
@@ -557,6 +567,7 @@ func TestReviewStep_ExistingBranchUsesMergeBaseScope(t *testing.T) {
 
 func TestReviewStep_FixMode(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
 
 	callCount := 0
 	ag := &mockAgent{
@@ -564,8 +575,8 @@ func TestReviewStep_FixMode(t *testing.T) {
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 			callCount++
 			if callCount == 1 {
-				// Fix call — no structured output needed
-				return &agent.Result{Text: "fixed"}, nil
+				os.WriteFile(filepath.Join(dir, "review-fix.txt"), []byte("fixed"), 0o644)
+				return &agent.Result{Output: json.RawMessage(`{"summary":"address review findings"}`)}, nil
 			}
 			// Review call — return clean findings
 			findings := Findings{Items: nil, Summary: "all clear"}
@@ -574,7 +585,7 @@ func TestReviewStep_FixMode(t *testing.T) {
 		},
 	}
 
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Fixing = true
 	sctx.PreviousFindings = `{"findings":[{"severity":"warning","description":"possible nil dereference"}],"summary":"1 issue"}`
 
@@ -610,8 +621,26 @@ func TestReviewStep_FixMode(t *testing.T) {
 	if !strings.Contains(ag.calls[0].Prompt, "possible nil dereference") {
 		t.Error("expected review fix prompt to include previous findings")
 	}
+	if !strings.Contains(ag.calls[0].Prompt, `Return JSON with a single "summary" field`) {
+		t.Error("expected fix prompt to request structured summary output")
+	}
+	if !strings.Contains(ag.calls[0].Prompt, "Keep the summary under 10 words") {
+		t.Error("expected fix prompt to require a concise summary")
+	}
+	if len(ag.calls[0].JSONSchema) == 0 {
+		t.Error("expected fix call to request structured JSON output")
+	}
 	if strings.Contains(ag.calls[1].Prompt, "feature code") {
 		t.Error("expected review prompt to avoid embedding diff contents in fix mode")
+	}
+	if status := gitStatusPorcelain(t, dir); status != "" {
+		t.Fatalf("expected clean worktree after fix commit, got %q", status)
+	}
+	if got := lastCommitMessage(t, dir); got != "no-mistakes(review): address review findings" {
+		t.Fatalf("last commit message = %q", got)
+	}
+	if branchSHA := gitCmd(t, dir, "rev-parse", "refs/heads/feature"); branchSHA != sctx.Run.HeadSHA {
+		t.Fatalf("branch SHA = %s, want %s", branchSHA, sctx.Run.HeadSHA)
 	}
 }
 
@@ -765,17 +794,19 @@ func TestLintStep_NoCommand_MalformedAgentOutput(t *testing.T) {
 }
 
 func TestTestStep_FixMode(t *testing.T) {
-	dir := t.TempDir()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
 
 	callCount := 0
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 			callCount++
-			return &agent.Result{}, nil
+			os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("fixed"), 0o644)
+			return &agent.Result{Output: json.RawMessage(`{"summary":"fix test failures"}`)}, nil
 		},
 	}
-	sctx := newTestContext(t, ag, dir, "abc", "def", config.Commands{Test: "true"})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Test: "true"})
 	sctx.Fixing = true
 
 	step := &TestStep{}
@@ -800,6 +831,66 @@ func TestTestStep_FixMode(t *testing.T) {
 	}
 	if !strings.Contains(ag.calls[0].Prompt, "Do NOT run linters, formatters, or static analysis tools") {
 		t.Error("expected test fix prompt to forbid lint/format work")
+	}
+	if !strings.Contains(ag.calls[0].Prompt, `Return JSON with a single "summary" field`) {
+		t.Error("expected fix prompt to request structured summary output")
+	}
+	if !strings.Contains(ag.calls[0].Prompt, "Keep the summary under 10 words") {
+		t.Error("expected fix prompt to require a concise summary")
+	}
+	if len(ag.calls[0].JSONSchema) == 0 {
+		t.Error("expected fix call to request structured JSON output")
+	}
+	if status := gitStatusPorcelain(t, dir); status != "" {
+		t.Fatalf("expected clean worktree after fix commit, got %q", status)
+	}
+	if got := lastCommitMessage(t, dir); got != "no-mistakes(test): fix test failures" {
+		t.Fatalf("last commit message = %q", got)
+	}
+}
+
+func TestLintStep_FixMode_CommitsChanges(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	callCount := 0
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			callCount++
+			os.WriteFile(filepath.Join(dir, "lint-fix.txt"), []byte("fixed"), 0o644)
+			return &agent.Result{Output: json.RawMessage(`{"summary":"fix lint issues"}`)}, nil
+		},
+	}
+
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Lint: "true"})
+	sctx.Fixing = true
+
+	step := &LintStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Error("expected no approval after fix with passing lint")
+	}
+	if callCount != 1 {
+		t.Errorf("expected 1 agent call (fix), got %d", callCount)
+	}
+	if !strings.Contains(ag.calls[0].Prompt, `Return JSON with a single "summary" field`) {
+		t.Error("expected fix prompt to request structured summary output")
+	}
+	if !strings.Contains(ag.calls[0].Prompt, "Keep the summary under 10 words") {
+		t.Error("expected fix prompt to require a concise summary")
+	}
+	if len(ag.calls[0].JSONSchema) == 0 {
+		t.Error("expected fix call to request structured JSON output")
+	}
+	if status := gitStatusPorcelain(t, dir); status != "" {
+		t.Fatalf("expected clean worktree after fix commit, got %q", status)
+	}
+	if got := lastCommitMessage(t, dir); got != "no-mistakes(lint): fix lint issues" {
+		t.Fatalf("last commit message = %q", got)
 	}
 }
 
@@ -1178,6 +1269,52 @@ func TestPushStep_RunsFormatCommandBeforeCommit(t *testing.T) {
 	}
 }
 
+func TestPushStep_UpdatesLocalBranchRefAfterDetachedPush(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature")
+	originalHeadSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "feature")
+	gitCmd(t, dir, "checkout", "--detach", originalHeadSHA)
+
+	os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("agent fix"), 0o644)
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, originalHeadSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = upstream
+
+	step := &PushStep{}
+	_, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newHeadSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	branchSHA := gitCmd(t, dir, "rev-parse", "refs/heads/feature")
+	if branchSHA != newHeadSHA {
+		t.Fatalf("branch ref SHA = %s, want %s", branchSHA, newHeadSHA)
+	}
+	upstreamSHA := gitCmd(t, upstream, "rev-parse", "refs/heads/feature")
+	if upstreamSHA != newHeadSHA {
+		t.Fatalf("upstream SHA = %s, want %s", upstreamSHA, newHeadSHA)
+	}
+}
+
 func TestPushStep_SkipsFormatWhenNotConfigured(t *testing.T) {
 	// When no format command is configured, push step should not fail.
 	upstream := t.TempDir()
@@ -1257,6 +1394,58 @@ func TestPushStep_FormatCommandFailureIsWarning(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected warning about format failure in logs, got: %v", logMessages)
+	}
+}
+
+func TestPushStep_ReconcilesStaleDatabaseHeadSHA(t *testing.T) {
+	// When push retries after a prior UpdateRunHeadSHA failure, there are no
+	// uncommitted changes. The step must still reconcile the DB if HeadSHA is stale.
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature")
+	actualHeadSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	baseSHA := gitCmd(t, dir, "rev-parse", "main")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	// Create context with a stale HeadSHA (simulates prior DB write failure)
+	staleHeadSHA := baseSHA // intentionally wrong
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, staleHeadSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = upstream
+
+	step := &PushStep{}
+	_, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// In-memory HeadSHA must match actual HEAD
+	if sctx.Run.HeadSHA != actualHeadSHA {
+		t.Errorf("Run.HeadSHA = %s, want %s", sctx.Run.HeadSHA, actualHeadSHA)
+	}
+
+	// DB record must also be updated
+	dbRun, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dbRun.HeadSHA != actualHeadSHA {
+		t.Errorf("DB HeadSHA = %s, want %s", dbRun.HeadSHA, actualHeadSHA)
 	}
 }
 
@@ -1677,6 +1866,122 @@ func TestFindingsJSON(t *testing.T) {
 	}
 }
 
+// --- Helper function unit tests ---
+
+func TestNormalizedBranchRef(t *testing.T) {
+	tests := []struct {
+		input, want string
+	}{
+		{"feature", "refs/heads/feature"},
+		{"my/branch", "refs/heads/my/branch"},
+		{"refs/heads/feature", "refs/heads/feature"},
+		{"refs/tags/v1", "refs/tags/v1"},
+	}
+	for _, tc := range tests {
+		if got := normalizedBranchRef(tc.input); got != tc.want {
+			t.Errorf("normalizedBranchRef(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestDeterministicFixCommitMessage(t *testing.T) {
+	tests := []struct {
+		step    types.StepName
+		summary string
+		want    string
+	}{
+		{types.StepReview, "address nil dereference", "no-mistakes(review): address nil dereference"},
+		{types.StepTest, "", "no-mistakes(test): apply fixes"},
+		{types.StepLint, "fix formatting", "no-mistakes(lint): fix formatting"},
+	}
+	for _, tc := range tests {
+		if got := deterministicFixCommitMessage(tc.step, tc.summary); got != tc.want {
+			t.Errorf("deterministicFixCommitMessage(%q, %q) = %q, want %q", tc.step, tc.summary, got, tc.want)
+		}
+	}
+}
+
+func TestExtractCommitSummary(t *testing.T) {
+	tests := []struct {
+		name    string
+		result  *agent.Result
+		want    string
+		wantErr bool
+	}{
+		{
+			name:   "valid summary",
+			result: &agent.Result{Output: json.RawMessage(`{"summary":"fix nil pointer"}`)},
+			want:   "fix nil pointer",
+		},
+		{
+			name:   "trims punctuation and whitespace",
+			result: &agent.Result{Output: json.RawMessage(`{"summary":"  'fix lint issues.'  "}`)},
+			want:   "fix lint issues",
+		},
+		{
+			name:    "nil output",
+			result:  &agent.Result{},
+			wantErr: true,
+		},
+		{
+			name:    "malformed JSON",
+			result:  &agent.Result{Output: json.RawMessage(`not json`)},
+			wantErr: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := extractCommitSummary(tc.result)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Errorf("extractCommitSummary() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCommitAgentFixes_NoChanges(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	originalHeadSHA := sctx.Run.HeadSHA
+
+	err := commitAgentFixes(sctx, types.StepReview, "should not commit", "fallback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sctx.Run.HeadSHA != originalHeadSHA {
+		t.Errorf("HeadSHA changed unexpectedly: %s -> %s", originalHeadSHA, sctx.Run.HeadSHA)
+	}
+}
+
+func TestCommitAgentFixes_UsesFallbackSummary(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	os.WriteFile(filepath.Join(dir, "agent-change.txt"), []byte("change"), 0o644)
+	err := commitAgentFixes(sctx, types.StepLint, "", "fallback lint fix")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := lastCommitMessage(t, dir); got != "no-mistakes(lint): fallback lint fix" {
+		t.Errorf("commit message = %q, want fallback-based message", got)
+	}
+}
+
 // --- Babysit step tests ---
 
 func TestBabysitStep_Name(t *testing.T) {
@@ -2016,6 +2321,100 @@ func TestBabysitStep_CommitAndPush_NoChanges(t *testing.T) {
 	// No error expected — just a no-op
 }
 
+func TestBabysitStep_CommitAndPush_NoChanges_ReconcilesStaleDatabaseHeadSHA(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature")
+	actualHeadSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	// Create context with stale HeadSHA (simulates prior DB write failure)
+	staleHeadSHA := baseSHA
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, staleHeadSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "refs/heads/feature"
+
+	step := &BabysitStep{}
+	err := step.commitAndPush(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if sctx.Run.HeadSHA != actualHeadSHA {
+		t.Errorf("Run.HeadSHA = %s, want %s", sctx.Run.HeadSHA, actualHeadSHA)
+	}
+	dbRun, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dbRun.HeadSHA != actualHeadSHA {
+		t.Errorf("DB HeadSHA = %s, want %s", dbRun.HeadSHA, actualHeadSHA)
+	}
+}
+
+func TestBabysitStep_CommitAndPush_UpdatesLocalBranchRefAfterDetachedPush(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature")
+	originalHeadSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "feature")
+	gitCmd(t, dir, "checkout", "--detach", originalHeadSHA)
+	os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("babysit fix"), 0o644)
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, originalHeadSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "refs/heads/feature"
+
+	step := &BabysitStep{}
+	err := step.commitAndPush(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newHeadSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	branchSHA := gitCmd(t, dir, "rev-parse", "refs/heads/feature")
+	if branchSHA != newHeadSHA {
+		t.Fatalf("branch ref SHA = %s, want %s", branchSHA, newHeadSHA)
+	}
+	upstreamSHA := gitCmd(t, upstream, "rev-parse", "refs/heads/feature")
+	if upstreamSHA != newHeadSHA {
+		t.Fatalf("upstream SHA = %s, want %s", upstreamSHA, newHeadSHA)
+	}
+}
+
 func TestCICheckJSON(t *testing.T) {
 	input := `[{"name":"build","status":"COMPLETED","conclusion":"success"},{"name":"test","status":"COMPLETED","conclusion":"failure"}]`
 	var checks []ciCheck
@@ -2176,15 +2575,17 @@ func TestTestStep_AgentWritesNewTests_NeedsApproval(t *testing.T) {
 func TestTestStep_FixMode_AgentWritesNewTests_NeedsApproval(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
+	callCount := 0
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			callCount++
 			// Simulate agent creating a new test file during fix
 			os.WriteFile(filepath.Join(dir, "fix_test.go"), []byte("package main\n"), 0o644)
-			return &agent.Result{}, nil
+			return &agent.Result{Output: json.RawMessage(`{"summary":"add regression test"}`)}, nil
 		},
 	}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{Test: "true"})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Test: "true"})
 	sctx.Fixing = true
 
 	step := &TestStep{}
@@ -2194,6 +2595,9 @@ func TestTestStep_FixMode_AgentWritesNewTests_NeedsApproval(t *testing.T) {
 	}
 	if !outcome.NeedsApproval {
 		t.Error("expected approval needed when agent writes new test files in fix mode")
+	}
+	if callCount != 1 {
+		t.Errorf("expected 1 agent call in fix mode, got %d", callCount)
 	}
 
 	var f Findings
@@ -2456,7 +2860,7 @@ func TestReviewStep_FixMode_IncludesPreviousFindings(t *testing.T) {
 				if !strings.Contains(opts.Prompt, "nil pointer dereference") {
 					t.Error("fix prompt should contain the specific finding description")
 				}
-				return &agent.Result{Text: "fixed"}, nil
+				return &agent.Result{Output: json.RawMessage(`{"summary":"address review findings"}`)}, nil
 			}
 			// Review call
 			findings := Findings{Summary: "all clear"}
@@ -2500,7 +2904,7 @@ func TestTestStep_FixMode_IncludesPreviousFindings(t *testing.T) {
 			if !strings.Contains(opts.Prompt, "Make the minimal change needed") {
 				t.Error("fix prompt should require minimal changes")
 			}
-			return &agent.Result{Text: "fixed"}, nil
+			return &agent.Result{Output: json.RawMessage(`{"summary":"fix test failures"}`)}, nil
 		},
 	}
 
@@ -2539,7 +2943,7 @@ func TestLintStep_FixMode_IncludesPreviousFindings(t *testing.T) {
 			if !strings.Contains(opts.Prompt, "Re-run the relevant lint or format commands") {
 				t.Error("fix prompt should require lint verification")
 			}
-			return &agent.Result{Text: "fixed"}, nil
+			return &agent.Result{Output: json.RawMessage(`{"summary":"fix lint issues"}`)}, nil
 		},
 	}
 

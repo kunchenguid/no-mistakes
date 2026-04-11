@@ -19,6 +19,7 @@ func (s *TestStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
 
 	// In fix mode, ask agent to fix test failures first
+	var newTestsFromFix []string
 	if sctx.Fixing {
 		sctx.Log("asking agent to fix test failures...")
 		fixPrompt := fmt.Sprintf(
@@ -29,12 +30,15 @@ Context:
 - base commit: %s
 - target commit: %s
 
-			Rules:
-			- Make the minimal change needed.
-			- Do not refactor beyond what is needed.
-			- If tests fail, determine whether the problem is a real product/code failure, a setup/environment problem you can fix, or a flaky/infrastructure issue.
-			- Do NOT run linters, formatters, or static analysis tools.
-			- Re-run the relevant tests before finishing.`,
+Rules:
+- Make the minimal change needed.
+- Do not refactor beyond what is needed.
+- If tests fail, determine whether the problem is a real product/code failure, a setup/environment problem you can fix, or a flaky/infrastructure issue.
+- Do NOT run linters, formatters, or static analysis tools.
+- Re-run the relevant tests before finishing.
+- Return JSON with a single "summary" field when you are done.
+- The summary must be one concise sentence fragment suitable for a git commit subject.
+- Keep the summary under 10 words.`,
 			sctx.Run.Branch,
 			baseSHA,
 			sctx.Run.HeadSHA,
@@ -45,13 +49,22 @@ Context:
 Previous test findings to address:
 ` + sctx.PreviousFindings
 		}
-		_, err := sctx.Agent.Run(ctx, agent.RunOpts{
-			Prompt:  fixPrompt,
-			CWD:     sctx.WorkDir,
-			OnChunk: sctx.Log,
+		result, err := sctx.Agent.Run(ctx, agent.RunOpts{
+			Prompt:     fixPrompt,
+			CWD:        sctx.WorkDir,
+			JSONSchema: commitSummarySchema,
+			OnChunk:    sctx.Log,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("agent fix tests: %w", err)
+		}
+		newTestsFromFix = detectNewTestFiles(ctx, sctx.WorkDir)
+		summary, err := extractCommitSummary(result)
+		if err != nil {
+			sctx.Log(fmt.Sprintf("warning: could not parse fix summary: %v", err))
+		}
+		if err := commitAgentFixes(sctx, s.Name(), summary, "fix test failures"); err != nil {
+			return nil, err
 		}
 	}
 
@@ -75,10 +88,10 @@ Task:
 - If tests fail, determine whether the problem is a real product/code failure, a setup/environment problem you can fix, or a flaky/infrastructure issue.
 - If the issue is setup-related and fixable, fix it and retry the tests.
 
-			Rules:
-			- Do NOT run linters, formatters, or static analysis tools.
-			- Focus on testing and test-related fixes only.
-			- Return results as structured findings.`,
+Rules:
+- Do NOT run linters, formatters, or static analysis tools.
+- Focus on testing and test-related fixes only.
+- Return results as structured findings.`,
 				sctx.Run.Branch,
 				baseSHA,
 				sctx.Run.HeadSHA,
@@ -147,25 +160,22 @@ Task:
 	}
 
 	// Check if agent wrote new test files (fix mode uses agent before running tests)
-	if sctx.Fixing {
-		newTests := detectNewTestFiles(ctx, sctx.WorkDir)
-		if len(newTests) > 0 {
-			findings := Findings{
-				Summary: "tests passed, but agent wrote new test files",
-			}
-			for _, f := range newTests {
-				findings.Items = append(findings.Items, Finding{
-					Severity:    "info",
-					File:        f,
-					Description: fmt.Sprintf("new test file written by agent: %s", f),
-				})
-			}
-			findingsJSON, _ := json.Marshal(findings)
-			return &pipeline.StepOutcome{
-				NeedsApproval: true,
-				Findings:      string(findingsJSON),
-			}, nil
+	if sctx.Fixing && len(newTestsFromFix) > 0 {
+		findings := Findings{
+			Summary: "tests passed, but agent wrote new test files",
 		}
+		for _, f := range newTestsFromFix {
+			findings.Items = append(findings.Items, Finding{
+				Severity:    "info",
+				File:        f,
+				Description: fmt.Sprintf("new test file written by agent: %s", f),
+			})
+		}
+		findingsJSON, _ := json.Marshal(findings)
+		return &pipeline.StepOutcome{
+			NeedsApproval: true,
+			Findings:      string(findingsJSON),
+		}, nil
 	}
 
 	sctx.Log("all tests passed")
