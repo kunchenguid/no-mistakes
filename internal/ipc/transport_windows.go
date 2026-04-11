@@ -48,6 +48,7 @@ func listen(endpoint string) (net.Listener, error) {
 	return &tokenListener{
 		Listener: ln,
 		token:    token,
+		endpoint: endpoint,
 		connCh:   make(chan net.Conn),
 		done:     make(chan struct{}),
 	}, nil
@@ -96,6 +97,7 @@ func generateToken() (string, error) {
 type tokenListener struct {
 	net.Listener
 	token     string
+	endpoint  string
 	connCh    chan net.Conn
 	done      chan struct{}
 	startOnce sync.Once
@@ -106,6 +108,8 @@ func (tl *tokenListener) start() {
 	go func() {
 		backoff := time.Duration(0)
 		const maxBackoff = time.Second
+		const maxConsecutiveErrors = 64
+		consecutiveErrors := 0
 		for {
 			raw, err := tl.Listener.Accept()
 			if err != nil {
@@ -113,6 +117,11 @@ func (tl *tokenListener) start() {
 				case <-tl.done:
 					return
 				default:
+				}
+				consecutiveErrors++
+				if consecutiveErrors >= maxConsecutiveErrors {
+					tl.Close()
+					return
 				}
 				if backoff == 0 {
 					backoff = 5 * time.Millisecond
@@ -126,6 +135,7 @@ func (tl *tokenListener) start() {
 				continue
 			}
 			backoff = 0
+			consecutiveErrors = 0
 			go tl.authenticate(raw)
 		}
 	}()
@@ -163,6 +173,7 @@ func (tl *tokenListener) Accept() (net.Conn, error) {
 
 func (tl *tokenListener) Close() error {
 	tl.closeOnce.Do(func() { close(tl.done) })
+	os.Remove(tl.endpoint)
 	return tl.Listener.Close()
 }
 

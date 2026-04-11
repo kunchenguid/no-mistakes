@@ -18,7 +18,7 @@ func rawDial(t *testing.T, endpoint string) net.Conn {
 		t.Fatalf("read endpoint: %v", err)
 	}
 	lines := strings.SplitN(string(data), "\n", 3)
-	if len(lines) < 2 {
+	if len(lines) < 3 {
 		t.Fatalf("invalid endpoint file")
 	}
 	addr := strings.TrimSpace(lines[0])
