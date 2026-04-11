@@ -11,6 +11,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -85,34 +86,64 @@ func generateToken() (string, error) {
 }
 
 // tokenListener wraps a net.Listener to verify auth tokens on accepted connections.
-// Connections that fail to present the correct token are silently closed.
+// Auth is performed in per-connection goroutines so that slow or invalid
+// connections do not block acceptance of other clients.
 type tokenListener struct {
 	net.Listener
-	token string
+	token     string
+	connCh    chan net.Conn
+	done      chan struct{}
+	startOnce sync.Once
+	closeOnce sync.Once
+}
+
+func (tl *tokenListener) start() {
+	tl.connCh = make(chan net.Conn)
+	tl.done = make(chan struct{})
+	go func() {
+		defer close(tl.connCh)
+		for {
+			raw, err := tl.Listener.Accept()
+			if err != nil {
+				return
+			}
+			go tl.authenticate(raw)
+		}
+	}()
+}
+
+func (tl *tokenListener) authenticate(conn net.Conn) {
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	r := bufio.NewReader(conn)
+	line, err := r.ReadString('\n')
+	if err != nil {
+		conn.Close()
+		return
+	}
+	conn.SetReadDeadline(time.Time{})
+	if strings.TrimSpace(line) != tl.token {
+		conn.Close()
+		return
+	}
+	select {
+	case tl.connCh <- &bufferedConn{Conn: conn, r: r}:
+	case <-tl.done:
+		conn.Close()
+	}
 }
 
 func (tl *tokenListener) Accept() (net.Conn, error) {
-	for {
-		conn, err := tl.Listener.Accept()
-		if err != nil {
-			return nil, err
-		}
-		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-		r := bufio.NewReader(conn)
-		line, err := r.ReadString('\n')
-		if err != nil {
-			conn.Close()
-			time.Sleep(50 * time.Millisecond)
-			continue
-		}
-		conn.SetReadDeadline(time.Time{})
-		if strings.TrimSpace(line) != tl.token {
-			conn.Close()
-			time.Sleep(50 * time.Millisecond)
-			continue
-		}
-		return &bufferedConn{Conn: conn, r: r}, nil
+	tl.startOnce.Do(tl.start)
+	conn, ok := <-tl.connCh
+	if !ok {
+		return nil, net.ErrClosed
 	}
+	return conn, nil
+}
+
+func (tl *tokenListener) Close() error {
+	tl.closeOnce.Do(func() { close(tl.done) })
+	return tl.Listener.Close()
 }
 
 // bufferedConn wraps a net.Conn so that bytes already buffered by a
