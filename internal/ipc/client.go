@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// Client connects to the IPC server over a Unix socket.
+// Client connects to the IPC server over the platform transport.
 type Client struct {
 	conn    net.Conn
 	encoder *json.Encoder
@@ -17,7 +17,7 @@ type Client struct {
 	mu      sync.Mutex // serializes calls on a single connection
 }
 
-// Dial connects to the IPC server at the given Unix socket path.
+// Dial connects to the IPC server at the given endpoint path.
 func Dial(socketPath string) (*Client, error) {
 	conn, err := dial(socketPath)
 	if err != nil {

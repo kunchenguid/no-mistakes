@@ -29,13 +29,20 @@ func listen(endpoint string) (net.Listener, error) {
 		return nil, err
 	}
 	content := fmt.Sprintf("%s\n%s\n%d", ln.Addr().String(), token, os.Getpid())
-	if err := os.WriteFile(endpoint, []byte(content), 0o600); err != nil {
+	tmpFile := endpoint + ".tmp"
+	if err := os.WriteFile(tmpFile, []byte(content), 0o600); err != nil {
 		ln.Close()
 		return nil, err
 	}
-	if err := restrictFileACL(endpoint); err != nil {
+	if err := restrictFileACL(tmpFile); err != nil {
+		os.Remove(tmpFile)
 		ln.Close()
 		return nil, fmt.Errorf("restrict endpoint file ACL: %w", err)
+	}
+	if err := os.Rename(tmpFile, endpoint); err != nil {
+		os.Remove(tmpFile)
+		ln.Close()
+		return nil, fmt.Errorf("rename endpoint file: %w", err)
 	}
 	return &tokenListener{Listener: ln, token: token}, nil
 }
