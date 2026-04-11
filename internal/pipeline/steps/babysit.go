@@ -560,10 +560,7 @@ func (s *BabysitStep) commitAndPush(sctx *pipeline.StepContext) error {
 	}
 	newHeadSHA = headSHA
 
-	ref := sctx.Run.Branch
-	if !strings.HasPrefix(ref, "refs/") {
-		ref = "refs/heads/" + ref
-	}
+	ref := normalizedBranchRef(sctx.Run.Branch)
 
 	upstreamSHA, lsErr := git.LsRemote(ctx, sctx.WorkDir, sctx.Repo.UpstreamURL, ref)
 	if lsErr != nil {

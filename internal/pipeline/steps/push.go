@@ -47,10 +47,7 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 		newHeadSHA = headSHA
 	}
 
-	ref := sctx.Run.Branch
-	if !strings.HasPrefix(ref, "refs/") {
-		ref = "refs/heads/" + ref
-	}
+	ref := normalizedBranchRef(sctx.Run.Branch)
 
 	upstream := sctx.Repo.UpstreamURL
 	sctx.Log(fmt.Sprintf("pushing to %s (%s)...", upstream, ref))
