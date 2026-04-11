@@ -545,6 +545,13 @@ func (s *BabysitStep) commitAndPush(sctx *pipeline.StepContext) error {
 	status, _ := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
 	if strings.TrimSpace(status) == "" {
 		sctx.Log("no changes to commit")
+		headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
+		if err == nil && headSHA != sctx.Run.HeadSHA {
+			sctx.Run.HeadSHA = headSHA
+			if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, headSHA); err != nil {
+				return err
+			}
+		}
 		return nil
 	}
 

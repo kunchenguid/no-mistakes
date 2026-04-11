@@ -75,8 +75,15 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 		if _, err := git.Run(ctx, sctx.WorkDir, "update-ref", ref, newHeadSHA); err != nil {
 			return nil, fmt.Errorf("update local branch ref: %w", err)
 		}
-		sctx.Run.HeadSHA = newHeadSHA
-		if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, newHeadSHA); err != nil {
+	}
+
+	headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve HEAD after push: %w", err)
+	}
+	if headSHA != sctx.Run.HeadSHA {
+		sctx.Run.HeadSHA = headSHA
+		if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, headSHA); err != nil {
 			return nil, err
 		}
 	}
