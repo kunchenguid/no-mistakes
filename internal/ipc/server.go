@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net"
 	"sync"
@@ -62,7 +63,9 @@ func (s *Server) Serve(socketPath string) error {
 	if err != nil {
 		return err
 	}
+	s.mu.Lock()
 	s.listener = ln
+	s.mu.Unlock()
 
 	go func() {
 		<-s.done
@@ -77,6 +80,10 @@ func (s *Server) Serve(socketPath string) error {
 				s.wg.Wait()
 				return nil
 			default:
+				if errors.Is(err, net.ErrClosed) {
+					s.wg.Wait()
+					return nil
+				}
 				slog.Error("accept connection", "error", err)
 				continue
 			}
@@ -94,6 +101,18 @@ func (s *Server) Close() {
 	s.closeOnce.Do(func() {
 		close(s.done)
 	})
+}
+
+// CloseListener closes the underlying listener without signaling server
+// shutdown. This causes Accept to return net.ErrClosed, which the server
+// detects and exits cleanly.
+func (s *Server) CloseListener() {
+	s.mu.RLock()
+	ln := s.listener
+	s.mu.RUnlock()
+	if ln != nil {
+		ln.Close()
+	}
 }
 
 func (s *Server) handleConn(conn net.Conn) {

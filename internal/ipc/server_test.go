@@ -433,6 +433,41 @@ func TestCallWithNilResult(t *testing.T) {
 	}
 }
 
+func TestServerExitsWhenListenerClosed(t *testing.T) {
+	sock := socketPath(t)
+	srv := ipc.NewServer()
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.Serve(sock) }()
+
+	// Wait for server to be ready.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		c, err := ipc.Dial(sock)
+		if err == nil {
+			c.Close()
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Simulate the listener being closed externally (e.g. tokenListener
+	// self-close on Windows after too many accept errors) by removing the
+	// socket file and dialing to confirm the server is up, then closing
+	// the server's listener via Close. But we want to test that the server
+	// exits even without s.Close() being called. Instead, we close the
+	// underlying listener by calling srv.CloseListener().
+	srv.CloseListener()
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Errorf("Serve returned unexpected error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("server did not exit after listener was closed")
+	}
+}
+
 func TestServerDoubleClose(t *testing.T) {
 	sock := socketPath(t)
 	srv := ipc.NewServer()
