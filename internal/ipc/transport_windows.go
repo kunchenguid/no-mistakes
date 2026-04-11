@@ -45,7 +45,12 @@ func listen(endpoint string) (net.Listener, error) {
 		ln.Close()
 		return nil, fmt.Errorf("rename endpoint file: %w", err)
 	}
-	return &tokenListener{Listener: ln, token: token}, nil
+	return &tokenListener{
+		Listener: ln,
+		token:    token,
+		connCh:   make(chan net.Conn),
+		done:     make(chan struct{}),
+	}, nil
 }
 
 func dial(endpoint string) (net.Conn, error) {
@@ -98,12 +103,11 @@ type tokenListener struct {
 }
 
 func (tl *tokenListener) start() {
-	tl.connCh = make(chan net.Conn)
-	tl.done = make(chan struct{})
 	go func() {
 		for {
 			raw, err := tl.Listener.Accept()
 			if err != nil {
+				tl.closeOnce.Do(func() { close(tl.done) })
 				return
 			}
 			go tl.authenticate(raw)
