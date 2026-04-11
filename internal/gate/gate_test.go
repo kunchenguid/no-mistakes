@@ -38,6 +38,12 @@ func setupTestRepo(t *testing.T) string {
 	if out, err := exec.Command("git", "init", work).CombinedOutput(); err != nil {
 		t.Fatalf("init work: %v: %s", err, out)
 	}
+	if out, err := exec.Command("git", "-C", work, "config", "user.email", "test@test.com").CombinedOutput(); err != nil {
+		t.Fatalf("config email: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", work, "config", "user.name", "Test").CombinedOutput(); err != nil {
+		t.Fatalf("config name: %v: %s", err, out)
+	}
 	if out, err := exec.Command("git", "-C", work, "remote", "add", "origin", upstream).CombinedOutput(); err != nil {
 		t.Fatalf("add origin: %v: %s", err, out)
 	}
@@ -219,6 +225,12 @@ func TestInitDetectsDefaultBranchFromRemote(t *testing.T) {
 	work := filepath.Join(resolveSymlinks(t, t.TempDir()), "work")
 	if out, err := exec.Command("git", "init", "-b", "develop", work).CombinedOutput(); err != nil {
 		t.Fatalf("init work: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", work, "config", "user.email", "test@test.com").CombinedOutput(); err != nil {
+		t.Fatalf("config email: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", work, "config", "user.name", "Test").CombinedOutput(); err != nil {
+		t.Fatalf("config name: %v: %s", err, out)
 	}
 	if out, err := exec.Command("git", "-C", work, "remote", "add", "origin", upstream).CombinedOutput(); err != nil {
 		t.Fatalf("add origin: %v: %s", err, out)

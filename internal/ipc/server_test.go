@@ -525,11 +525,12 @@ func TestSubscribeMalformedEvent(t *testing.T) {
 	})
 
 	// This approach won't work for malformed events since send always produces valid JSON.
-	// Use a raw socket instead.
+	// Use a raw socket instead on a separate path to avoid a race where the old
+	// listener's Close unlinks the socket after the new listener creates it.
 	srv.Close()
 
 	// Start a fresh minimal server with raw socket control.
-	os.Remove(sock)
+	sock = socketPath(t)
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatal(err)
@@ -568,9 +569,6 @@ func TestSubscribeMalformedEvent(t *testing.T) {
 		s2 := "second"
 		enc.Encode(ipc.Event{Type: ipc.EventRunUpdated, RunID: "r1", Status: &s2})
 	}()
-
-	// Give the server a moment to start.
-	time.Sleep(50 * time.Millisecond)
 
 	ch, cancel, err := ipc.Subscribe(sock, &ipc.SubscribeParams{RunID: "r1"})
 	if err != nil {

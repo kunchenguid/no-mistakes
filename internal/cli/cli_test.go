@@ -49,6 +49,8 @@ func setupTestRepo(t *testing.T) string {
 
 	// Init repo and add origin.
 	run(t, repoDir, "git", "init")
+	run(t, repoDir, "git", "config", "user.email", "test@test.com")
+	run(t, repoDir, "git", "config", "user.name", "Test")
 	run(t, repoDir, "git", "remote", "add", "origin", originDir)
 
 	// Create an initial commit so HEAD exists.

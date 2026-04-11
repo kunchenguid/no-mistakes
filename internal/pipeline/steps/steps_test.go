@@ -64,6 +64,8 @@ func setupGitRepo(t *testing.T) (string, string, string) {
 	dir := t.TempDir()
 
 	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
 	gitCmd(t, dir, "checkout", "-b", "main")
 
 	// Base commit
@@ -136,6 +138,8 @@ func TestResolveBaseSHA_ZeroWithMergeBase(t *testing.T) {
 	// Create a repo with main branch and feature branch diverging
 	dir := t.TempDir()
 	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
 	gitCmd(t, dir, "checkout", "-b", "main")
 	os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base"), 0o644)
 	gitCmd(t, dir, "add", "-A")
@@ -158,6 +162,8 @@ func TestResolveBaseSHA_ZeroNoDefaultBranch(t *testing.T) {
 	// Repo with no "main" branch — should fall back to empty tree SHA
 	dir := t.TempDir()
 	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
 	gitCmd(t, dir, "checkout", "-b", "feature")
 	os.WriteFile(filepath.Join(dir, "f.txt"), []byte("data"), 0o644)
 	gitCmd(t, dir, "add", "-A")
@@ -244,6 +250,8 @@ func TestRebaseStep_RebasesOntoDefaultBranch(t *testing.T) {
 
 	dir := t.TempDir()
 	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
 	gitCmd(t, dir, "checkout", "-b", "main")
 	gitCmd(t, dir, "remote", "add", "origin", upstream)
 	os.WriteFile(filepath.Join(dir, "app.txt"), []byte("base\n"), 0o644)
@@ -307,6 +315,8 @@ func TestReviewStep_Name(t *testing.T) {
 func TestReviewStep_EmptyDiff(t *testing.T) {
 	dir := t.TempDir()
 	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
 	gitCmd(t, dir, "checkout", "-b", "main")
 	os.WriteFile(filepath.Join(dir, "f.txt"), []byte("content"), 0o644)
 	gitCmd(t, dir, "add", "-A")
@@ -451,6 +461,8 @@ func TestReviewStep_ZeroBaseSHA(t *testing.T) {
 	// New branch scenario: baseSHA is all-zeros
 	dir := t.TempDir()
 	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
 	gitCmd(t, dir, "checkout", "-b", "main")
 	os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base"), 0o644)
 	gitCmd(t, dir, "add", "-A")
@@ -500,6 +512,8 @@ func TestReviewStep_ZeroBaseSHA(t *testing.T) {
 func TestReviewStep_ExistingBranchUsesMergeBaseScope(t *testing.T) {
 	dir := t.TempDir()
 	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
 	gitCmd(t, dir, "checkout", "-b", "main")
 	os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base\n"), 0o644)
 	gitCmd(t, dir, "add", "-A")
@@ -890,6 +904,8 @@ func TestPushStep_Success(t *testing.T) {
 	// Create a regular repo and push initial commit to upstream
 	dir := t.TempDir()
 	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
 	gitCmd(t, dir, "checkout", "-b", "main")
 	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
 	gitCmd(t, dir, "add", "-A")
@@ -933,6 +949,8 @@ func TestPushStep_CommitsUncommittedChanges(t *testing.T) {
 	// Create repo with initial push
 	dir := t.TempDir()
 	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
 	gitCmd(t, dir, "checkout", "-b", "main")
 	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
 	gitCmd(t, dir, "add", "-A")
@@ -979,6 +997,8 @@ func TestPushStep_ShortBranch(t *testing.T) {
 
 	dir := t.TempDir()
 	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
 	gitCmd(t, dir, "checkout", "-b", "main")
 	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
 	gitCmd(t, dir, "add", "-A")
@@ -1019,6 +1039,8 @@ func TestPushStep_NewBranchSkipsForceWithLease(t *testing.T) {
 
 	dir := t.TempDir()
 	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
 	gitCmd(t, dir, "checkout", "-b", "main")
 	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
 	gitCmd(t, dir, "add", "-A")
@@ -1063,6 +1085,8 @@ func TestPushStep_ForceWithLeaseUsesExplicitSHA(t *testing.T) {
 
 	dir := t.TempDir()
 	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
 	gitCmd(t, dir, "checkout", "-b", "main")
 	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
 	gitCmd(t, dir, "add", "-A")
@@ -1112,6 +1136,8 @@ func TestPushStep_RunsFormatCommandBeforeCommit(t *testing.T) {
 
 	dir := t.TempDir()
 	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
 	gitCmd(t, dir, "checkout", "-b", "main")
 	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
 	gitCmd(t, dir, "add", "-A")
@@ -1159,6 +1185,8 @@ func TestPushStep_SkipsFormatWhenNotConfigured(t *testing.T) {
 
 	dir := t.TempDir()
 	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
 	gitCmd(t, dir, "checkout", "-b", "main")
 	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
 	gitCmd(t, dir, "add", "-A")
@@ -1191,6 +1219,8 @@ func TestPushStep_FormatCommandFailureIsWarning(t *testing.T) {
 
 	dir := t.TempDir()
 	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
 	gitCmd(t, dir, "checkout", "-b", "main")
 	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
 	gitCmd(t, dir, "add", "-A")
@@ -1341,6 +1371,8 @@ func TestPRStep_ZeroBaseSHA(t *testing.T) {
 	// New branch scenario: baseSHA is all-zeros, commit log should still work
 	dir := t.TempDir()
 	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
 	gitCmd(t, dir, "checkout", "-b", "main")
 	os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base"), 0o644)
 	gitCmd(t, dir, "add", "-A")
@@ -1548,6 +1580,8 @@ func TestPRStep_SkipsWhenProviderCLIUnavailable(t *testing.T) {
 func TestPRStep_ExistingBranchUsesMergeBaseCommitLog(t *testing.T) {
 	dir := t.TempDir()
 	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
 	gitCmd(t, dir, "checkout", "-b", "main")
 	os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base\n"), 0o644)
 	gitCmd(t, dir, "add", "-A")
@@ -1928,6 +1962,8 @@ func TestBabysitStep_CommitAndPush(t *testing.T) {
 	// Create working repo
 	dir := t.TempDir()
 	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
 	gitCmd(t, dir, "checkout", "-b", "main")
 	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
 	gitCmd(t, dir, "add", "-A")
@@ -2366,6 +2402,8 @@ func TestReviewStep_IgnorePatternsFilterAllFiles(t *testing.T) {
 
 	// Create a repo where the only change is a generated file
 	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
 	gitCmd(t, dir, "checkout", "-b", "main")
 	os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base"), 0o644)
 	gitCmd(t, dir, "add", "-A")
@@ -2719,6 +2757,8 @@ func TestBabysitStep_CIFailureAutoFix(t *testing.T) {
 
 	dir := t.TempDir()
 	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
 	gitCmd(t, dir, "checkout", "-b", "main")
 	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
 	gitCmd(t, dir, "add", "-A")
@@ -2905,6 +2945,8 @@ func TestBabysitStep_AddressCommentsInFixMode_OnlySelectedComments(t *testing.T)
 
 	dir := t.TempDir()
 	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
 	gitCmd(t, dir, "checkout", "-b", "main")
 	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
 	gitCmd(t, dir, "add", "-A")
@@ -2974,6 +3016,8 @@ func TestBabysitStep_AddressCommentsInFixMode(t *testing.T) {
 
 	dir := t.TempDir()
 	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
 	gitCmd(t, dir, "checkout", "-b", "main")
 	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
 	gitCmd(t, dir, "add", "-A")
