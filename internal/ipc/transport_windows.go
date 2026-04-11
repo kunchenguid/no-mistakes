@@ -104,12 +104,28 @@ type tokenListener struct {
 
 func (tl *tokenListener) start() {
 	go func() {
+		backoff := time.Duration(0)
+		const maxBackoff = time.Second
 		for {
 			raw, err := tl.Listener.Accept()
 			if err != nil {
-				tl.closeOnce.Do(func() { close(tl.done) })
-				return
+				select {
+				case <-tl.done:
+					return
+				default:
+				}
+				if backoff == 0 {
+					backoff = 5 * time.Millisecond
+				} else {
+					backoff *= 2
+					if backoff > maxBackoff {
+						backoff = maxBackoff
+					}
+				}
+				time.Sleep(backoff)
+				continue
 			}
+			backoff = 0
 			go tl.authenticate(raw)
 		}
 	}()
