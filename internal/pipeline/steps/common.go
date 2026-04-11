@@ -172,7 +172,6 @@ func extractCommitSummary(result *agent.Result) (string, error) {
 }
 
 func deterministicFixCommitMessage(stepName types.StepName, summary string) string {
-	summary = strings.Join(strings.Fields(summary), " ")
 	if summary == "" {
 		summary = "apply fixes"
 	}

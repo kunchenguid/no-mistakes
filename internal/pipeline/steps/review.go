@@ -49,16 +49,16 @@ Context:
 - default branch: %s
 - ignore patterns: %s
 
-		Rules:
-		- Always start with double checking whether the findings are legitimate.
-		- Do not add code comments explaining your fixes.
-		- Verify that the issues are resolved before finishing.
-		- Return JSON with a single "summary" field when you are done.
-		- The summary must be one concise sentence fragment suitable for a git commit subject.
-		- Keep the summary under 10 words.
+Rules:
+- Always start with double checking whether the findings are legitimate.
+- Do not add code comments explaining your fixes.
+- Verify that the issues are resolved before finishing.
+- Return JSON with a single "summary" field when you are done.
+- The summary must be one concise sentence fragment suitable for a git commit subject.
+- Keep the summary under 10 words.
 
-		Previous review findings to address:
-		%s`,
+Previous review findings to address:
+%s`,
 			branch,
 			baseSHA,
 			sctx.Run.HeadSHA,
