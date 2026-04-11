@@ -38,6 +38,9 @@ func TestPostReceiveHookScript(t *testing.T) {
 	if !strings.Contains(script, "\"$NM_BIN\" daemon notify-push") {
 		t.Fatal("hook should execute the embedded binary path")
 	}
+	if !strings.Contains(script, "command -v no-mistakes") {
+		t.Fatal("hook should fall back to PATH when baked-in path doesn't exist")
+	}
 	if !strings.Contains(script, ">/dev/null 2>&1 || true") {
 		t.Fatal("hook should suppress notifier output so pushes stay clean")
 	}

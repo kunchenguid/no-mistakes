@@ -22,6 +22,9 @@ func postReceiveHookScript(command string) string {
 # no-mistakes post-receive hook
 # Notify daemon of push. Non-blocking - push always succeeds.
 NM_BIN=` + shellSingleQuote(command) + `
+if [ ! -x "$NM_BIN" ]; then
+  NM_BIN="$(command -v no-mistakes 2>/dev/null || echo no-mistakes)"
+fi
 while read oldrev newrev refname; do
   NM_HOOK_HELPER=1 "$NM_BIN" daemon notify-push \
     --gate "$(pwd)" \
