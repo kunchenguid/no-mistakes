@@ -1866,6 +1866,122 @@ func TestFindingsJSON(t *testing.T) {
 	}
 }
 
+// --- Helper function unit tests ---
+
+func TestNormalizedBranchRef(t *testing.T) {
+	tests := []struct {
+		input, want string
+	}{
+		{"feature", "refs/heads/feature"},
+		{"my/branch", "refs/heads/my/branch"},
+		{"refs/heads/feature", "refs/heads/feature"},
+		{"refs/tags/v1", "refs/tags/v1"},
+	}
+	for _, tc := range tests {
+		if got := normalizedBranchRef(tc.input); got != tc.want {
+			t.Errorf("normalizedBranchRef(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestDeterministicFixCommitMessage(t *testing.T) {
+	tests := []struct {
+		step    types.StepName
+		summary string
+		want    string
+	}{
+		{types.StepReview, "address nil dereference", "no-mistakes(review): address nil dereference"},
+		{types.StepTest, "", "no-mistakes(test): apply fixes"},
+		{types.StepLint, "fix formatting", "no-mistakes(lint): fix formatting"},
+	}
+	for _, tc := range tests {
+		if got := deterministicFixCommitMessage(tc.step, tc.summary); got != tc.want {
+			t.Errorf("deterministicFixCommitMessage(%q, %q) = %q, want %q", tc.step, tc.summary, got, tc.want)
+		}
+	}
+}
+
+func TestExtractCommitSummary(t *testing.T) {
+	tests := []struct {
+		name    string
+		result  *agent.Result
+		want    string
+		wantErr bool
+	}{
+		{
+			name:   "valid summary",
+			result: &agent.Result{Output: json.RawMessage(`{"summary":"fix nil pointer"}`)},
+			want:   "fix nil pointer",
+		},
+		{
+			name:   "trims punctuation and whitespace",
+			result: &agent.Result{Output: json.RawMessage(`{"summary":"  'fix lint issues.'  "}`)},
+			want:   "fix lint issues",
+		},
+		{
+			name:    "nil output",
+			result:  &agent.Result{},
+			wantErr: true,
+		},
+		{
+			name:    "malformed JSON",
+			result:  &agent.Result{Output: json.RawMessage(`not json`)},
+			wantErr: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := extractCommitSummary(tc.result)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Errorf("extractCommitSummary() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCommitAgentFixes_NoChanges(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	originalHeadSHA := sctx.Run.HeadSHA
+
+	err := commitAgentFixes(sctx, types.StepReview, "should not commit", "fallback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sctx.Run.HeadSHA != originalHeadSHA {
+		t.Errorf("HeadSHA changed unexpectedly: %s -> %s", originalHeadSHA, sctx.Run.HeadSHA)
+	}
+}
+
+func TestCommitAgentFixes_UsesFallbackSummary(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	os.WriteFile(filepath.Join(dir, "agent-change.txt"), []byte("change"), 0o644)
+	err := commitAgentFixes(sctx, types.StepLint, "", "fallback lint fix")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := lastCommitMessage(t, dir); got != "no-mistakes(lint): fallback lint fix" {
+		t.Errorf("commit message = %q, want fallback-based message", got)
+	}
+}
+
 // --- Babysit step tests ---
 
 func TestBabysitStep_Name(t *testing.T) {
