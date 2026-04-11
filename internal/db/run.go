@@ -141,8 +141,14 @@ func (d *DB) UpdateRunErrorStatus(id, errMsg string, status types.RunStatus) err
 func (d *DB) RecoverStaleRuns(errMsg string) (int, error) {
 	ts := now()
 
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
 	// Fail stale steps first (running, awaiting_approval, fixing, fix_review).
-	_, err := d.sql.Exec(
+	_, err = tx.Exec(
 		`UPDATE step_results SET status = ?, error = ?, completed_at = ? WHERE status IN (?, ?, ?, ?)`,
 		types.StepStatusFailed, errMsg, ts,
 		types.StepStatusRunning, types.StepStatusAwaitingApproval, types.StepStatusFixing, types.StepStatusFixReview,
@@ -152,7 +158,7 @@ func (d *DB) RecoverStaleRuns(errMsg string) (int, error) {
 	}
 
 	// Fail stale runs.
-	result, err := d.sql.Exec(
+	result, err := tx.Exec(
 		`UPDATE runs SET status = ?, error = ?, updated_at = ? WHERE status IN (?, ?)`,
 		types.RunFailed, errMsg, ts,
 		types.RunPending, types.RunRunning,
@@ -164,6 +170,10 @@ func (d *DB) RecoverStaleRuns(errMsg string) (int, error) {
 	count, err := result.RowsAffected()
 	if err != nil {
 		return 0, fmt.Errorf("rows affected: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit transaction: %w", err)
 	}
 	return int(count), nil
 }

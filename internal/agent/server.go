@@ -29,8 +29,10 @@ func getAvailablePort() (int, error) {
 }
 
 // startServerWithPort spawns the server process on a given port and waits for health.
+// The process is not tied to ctx - it outlives individual Run calls and is stopped via shutdown().
+// ctx is only used for the health check timeout.
 func startServerWithPort(ctx context.Context, bin string, args []string, cwd string, healthPath string, port int) (*managedServer, error) {
-	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd := exec.Command(bin, args...)
 	cmd.Dir = cwd
 	cmd.Stdin = nil
 	cmd.Stdout = os.Stderr // server stdout goes to our stderr for debugging
@@ -108,5 +110,10 @@ func (s *managedServer) shutdown() {
 	// Force kill
 	slog.Warn("server did not exit gracefully, sending SIGKILL", "pid", s.cmd.Process.Pid)
 	_ = signalManagedProcess(s.cmd, true)
-	<-done
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		slog.Warn("server process did not exit after SIGKILL", "pid", s.cmd.Process.Pid)
+	}
 }

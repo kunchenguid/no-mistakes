@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -14,27 +15,18 @@ import (
 // and sends requests via REST with SSE streaming.
 type opencodeAgent struct {
 	bin    string
+	mu     sync.Mutex
 	server *managedServer
 }
 
 func (a *opencodeAgent) Name() string { return "opencode" }
 
 func (a *opencodeAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
-	// Start server on first invocation
-	if a.server == nil {
-		port, err := getAvailablePort()
-		if err != nil {
-			return nil, fmt.Errorf("opencode port: %w", err)
-		}
-		args := []string{"serve", "--hostname", "127.0.0.1", "--port", fmt.Sprintf("%d", port), "--print-logs"}
-		srv, err := startServerWithPort(ctx, a.bin, args, opts.CWD, "/global/health", port)
-		if err != nil {
-			return nil, fmt.Errorf("opencode server: %w", err)
-		}
-		a.server = srv
+	// Start server on first invocation (synchronized)
+	baseURL, err := a.ensureServer(ctx, opts.CWD)
+	if err != nil {
+		return nil, err
 	}
-
-	baseURL := a.server.baseURL()
 
 	// Create session with blanket permissions
 	sessionID, err := a.createSession(ctx, baseURL, opts.CWD)
@@ -64,9 +56,11 @@ func (a *opencodeAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) 
 		resp *opencodeMessageResponse
 		err  error
 	}
+	msgCtx, msgCancel := context.WithCancel(ctx)
+	defer msgCancel()
 	msgCh := make(chan messageResult, 1)
 	go func() {
-		resp, err := a.sendMessage(ctx, baseURL, sessionID, prompt, opts.JSONSchema)
+		resp, err := a.sendMessage(msgCtx, baseURL, sessionID, prompt, opts.JSONSchema)
 		msgCh <- messageResult{resp: resp, err: err}
 	}()
 
@@ -133,7 +127,28 @@ func (a *opencodeAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) 
 	return finalizeTextResult("opencode", outputText, opts.JSONSchema, state.usage)
 }
 
+func (a *opencodeAgent) ensureServer(ctx context.Context, cwd string) (string, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.server != nil {
+		return a.server.baseURL(), nil
+	}
+	port, err := getAvailablePort()
+	if err != nil {
+		return "", fmt.Errorf("opencode port: %w", err)
+	}
+	args := []string{"serve", "--hostname", "127.0.0.1", "--port", fmt.Sprintf("%d", port), "--print-logs"}
+	srv, err := startServerWithPort(ctx, a.bin, args, cwd, "/global/health", port)
+	if err != nil {
+		return "", fmt.Errorf("opencode server: %w", err)
+	}
+	a.server = srv
+	return srv.baseURL(), nil
+}
+
 func (a *opencodeAgent) Close() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	if a.server != nil {
 		a.server.shutdown()
 		a.server = nil
@@ -219,7 +234,10 @@ func (a *opencodeAgent) deleteSession(baseURL, sessionID string) {
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodDelete, baseURL+"/session/"+sessionID, nil)
 	if req != nil {
-		http.DefaultClient.Do(req)
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil && resp != nil {
+			resp.Body.Close()
+		}
 	}
 }
 

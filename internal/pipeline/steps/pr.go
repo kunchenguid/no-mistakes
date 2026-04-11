@@ -3,6 +3,7 @@ package steps
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"strings"
 
@@ -93,7 +94,9 @@ func (s *PRStep) executeGitHubPR(sctx *pipeline.StepContext, branch string, cont
 				sctx.Log(fmt.Sprintf("warning: failed to update PR body: %s: %v", strings.TrimSpace(string(editOut)), editErr))
 			}
 
-			sctx.DB.UpdateRunPRURL(sctx.Run.ID, prURL)
+			if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, prURL); err != nil {
+				slog.Warn("failed to persist PR URL", "run", sctx.Run.ID, "url", prURL, "err", err)
+			}
 			return &pipeline.StepOutcome{}, nil
 		}
 	}
@@ -115,7 +118,9 @@ func (s *PRStep) executeGitHubPR(sctx *pipeline.StepContext, branch string, cont
 
 	prURL := strings.TrimSpace(string(out))
 	sctx.Log(fmt.Sprintf("created PR: %s", prURL))
-	sctx.DB.UpdateRunPRURL(sctx.Run.ID, prURL)
+	if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, prURL); err != nil {
+		slog.Warn("failed to persist PR URL", "run", sctx.Run.ID, "url", prURL, "err", err)
+	}
 
 	return &pipeline.StepOutcome{}, nil
 }
@@ -134,8 +139,9 @@ func (s *PRStep) executeGitLabMR(sctx *pipeline.StepContext, branch string, cont
 			updateCmd.Dir = sctx.WorkDir
 			if updateOut, updateErr := updateCmd.CombinedOutput(); updateErr != nil {
 				sctx.Log(fmt.Sprintf("warning: failed to update merge request: %s: %v", strings.TrimSpace(string(updateOut)), updateErr))
-			} else {
-				sctx.DB.UpdateRunPRURL(sctx.Run.ID, mrURL)
+			}
+			if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, mrURL); err != nil {
+				slog.Warn("failed to persist PR URL", "run", sctx.Run.ID, "url", mrURL, "err", err)
 			}
 			return &pipeline.StepOutcome{}, nil
 		}
@@ -154,12 +160,11 @@ func (s *PRStep) executeGitLabMR(sctx *pipeline.StepContext, branch string, cont
 	if err != nil {
 		return nil, fmt.Errorf("glab mr create: %s: %w", strings.TrimSpace(string(out)), err)
 	}
-	mrURL := strings.TrimSpace(string(out))
-	if mrURL == "" {
-		mrURL = extractSCMURL(out)
-	}
+	mrURL := extractSCMURL(out)
 	if mrURL != "" {
-		sctx.DB.UpdateRunPRURL(sctx.Run.ID, mrURL)
+		if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, mrURL); err != nil {
+			slog.Warn("failed to persist PR URL", "run", sctx.Run.ID, "url", mrURL, "err", err)
+		}
 	}
 	sctx.Log(fmt.Sprintf("created merge request: %s", mrURL))
 	return &pipeline.StepOutcome{}, nil
@@ -217,6 +222,7 @@ Diff stat:
 		OnChunk:    sctx.Log,
 	})
 	if err != nil {
+		slog.Warn("agent failed for PR content, using fallback", "error", err)
 		return fallbackPRContent(branch, commitLog), nil
 	}
 

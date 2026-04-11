@@ -32,10 +32,20 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	status, _ := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
 	if strings.TrimSpace(status) != "" {
 		sctx.Log("committing agent changes...")
-		git.Run(ctx, sctx.WorkDir, "add", "-A")
+		if _, err := git.Run(ctx, sctx.WorkDir, "add", "-A"); err != nil {
+			return nil, fmt.Errorf("stage agent changes: %w", err)
+		}
 		_, err := git.Run(ctx, sctx.WorkDir, "commit", "-m", "no-mistakes: apply agent fixes")
 		if err != nil {
 			return nil, fmt.Errorf("commit agent changes: %w", err)
+		}
+		headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
+		if err != nil {
+			return nil, fmt.Errorf("resolve head after commit: %w", err)
+		}
+		sctx.Run.HeadSHA = headSHA
+		if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, headSHA); err != nil {
+			return nil, err
 		}
 	}
 
@@ -50,7 +60,10 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	// Query upstream for current ref SHA to enable safe --force-with-lease.
 	// Without an explicit SHA, --force-with-lease offers no protection when
 	// pushing to a URL (no remote tracking refs), silently degrading to --force.
-	upstreamSHA, _ := git.LsRemote(ctx, sctx.WorkDir, upstream, ref)
+	upstreamSHA, lsErr := git.LsRemote(ctx, sctx.WorkDir, upstream, ref)
+	if lsErr != nil {
+		return nil, fmt.Errorf("ls-remote upstream: %w", lsErr)
+	}
 	if upstreamSHA != "" {
 		// Existing branch: force-with-lease with explicit expected SHA
 		if err := git.Push(ctx, sctx.WorkDir, upstream, ref, upstreamSHA, true); err != nil {

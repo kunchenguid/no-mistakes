@@ -6,9 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
-	"os"
 	"os/exec"
+	"sync"
 )
 
 const claudeScannerMaxTokenSize = 256 * 1024 * 1024
@@ -32,6 +31,7 @@ func (a *claudeAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 	}
 
 	var stderrBuf []byte
+	var stderrWG sync.WaitGroup
 	stderrR, err := cmd.StderrPipe()
 	if err != nil {
 		return nil, fmt.Errorf("claude stderr pipe: %w", err)
@@ -41,29 +41,21 @@ func (a *claudeAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 		return nil, fmt.Errorf("claude start: %w", err)
 	}
 
-	// Drain stderr in background
+	stderrWG.Add(1)
 	go func() {
+		defer stderrWG.Done()
 		stderrBuf, _ = io.ReadAll(stderrR)
 	}()
-
-	var logFile *os.File
-	if opts.LogPath != "" {
-		f, err := os.Create(opts.LogPath)
-		if err != nil {
-			slog.Warn("failed to create agent log", "path", opts.LogPath, "err", err)
-		} else {
-			logFile = f
-			defer logFile.Close()
-		}
-	}
 
 	var usage TokenUsage
 	var result *claudeResult
 	if err := parseClaudeEvents(ctx, stdout, opts.OnChunk, &usage, &result); err != nil {
+		stderrWG.Wait()
 		_ = cmd.Wait()
 		return nil, fmt.Errorf("claude parse events: %w", err)
 	}
 
+	stderrWG.Wait()
 	if err := cmd.Wait(); err != nil {
 		return nil, fmt.Errorf("claude exited: %w: %s", err, string(stderrBuf))
 	}

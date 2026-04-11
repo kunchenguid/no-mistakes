@@ -17,6 +17,7 @@ type sseEvent struct {
 // Stops when the reader is exhausted or the handler returns false.
 func parseSSE(r io.Reader, handler func(sseEvent) bool) error {
 	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 64*1024), 256*1024*1024)
 	var name string
 	var dataLines []string
 
@@ -45,9 +46,9 @@ func parseSSE(r io.Reader, handler func(sseEvent) bool) error {
 		}
 
 		if strings.HasPrefix(line, "event:") {
-			name = strings.TrimSpace(line[6:])
+			name = strings.TrimPrefix(line[6:], " ")
 		} else if strings.HasPrefix(line, "data:") {
-			dataLines = append(dataLines, strings.TrimSpace(line[5:]))
+			dataLines = append(dataLines, strings.TrimPrefix(line[5:], " "))
 		}
 		// Ignore other fields (id:, retry:, comments)
 	}

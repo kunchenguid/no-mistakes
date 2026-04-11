@@ -6,9 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
-	"os"
 	"os/exec"
+	"sync"
 )
 
 // codexAgent spawns the codex CLI for each invocation.
@@ -30,6 +29,7 @@ func (a *codexAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 	}
 
 	var stderrBuf []byte
+	var stderrWG sync.WaitGroup
 	stderrR, err := cmd.StderrPipe()
 	if err != nil {
 		return nil, fmt.Errorf("codex stderr pipe: %w", err)
@@ -39,28 +39,21 @@ func (a *codexAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 		return nil, fmt.Errorf("codex start: %w", err)
 	}
 
+	stderrWG.Add(1)
 	go func() {
+		defer stderrWG.Done()
 		stderrBuf, _ = io.ReadAll(stderrR)
 	}()
-
-	var logFile *os.File
-	if opts.LogPath != "" {
-		f, err := os.Create(opts.LogPath)
-		if err != nil {
-			slog.Warn("failed to create agent log", "path", opts.LogPath, "err", err)
-		} else {
-			logFile = f
-			defer logFile.Close()
-		}
-	}
 
 	var usage TokenUsage
 	var lastMessage string
 	if err := parseCodexEvents(ctx, stdout, opts.OnChunk, &usage, &lastMessage); err != nil {
+		stderrWG.Wait()
 		_ = cmd.Wait()
 		return nil, fmt.Errorf("codex parse events: %w", err)
 	}
 
+	stderrWG.Wait()
 	if err := cmd.Wait(); err != nil {
 		return nil, fmt.Errorf("codex exited: %w: %s", err, string(stderrBuf))
 	}
@@ -102,6 +95,7 @@ type codexUsage struct {
 // It captures the last agent_message text and accumulates token usage.
 func parseCodexEvents(ctx context.Context, r io.Reader, onChunk func(string), usage *TokenUsage, lastMessage *string) error {
 	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 64*1024), 256*1024*1024)
 
 	for scanner.Scan() {
 		select {

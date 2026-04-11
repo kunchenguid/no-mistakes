@@ -1109,8 +1109,8 @@ func TestExecutor_ContextCancelCause(t *testing.T) {
 	}
 
 	updated, _ := database.GetRun(run.ID)
-	if updated.Status != types.RunFailed {
-		t.Errorf("expected run status %q, got %q", types.RunFailed, updated.Status)
+	if updated.Status != types.RunCancelled {
+		t.Errorf("expected run status %q, got %q", types.RunCancelled, updated.Status)
 	}
 	if updated.Error == nil || !strings.Contains(*updated.Error, "superseded by new push") {
 		var got string
@@ -1163,6 +1163,9 @@ func TestExecutor_ContextCancelCauseBetweenSteps(t *testing.T) {
 	}
 
 	updated, _ := database.GetRun(run.ID)
+	if updated.Status != types.RunCancelled {
+		t.Errorf("expected run status %q, got %q", types.RunCancelled, updated.Status)
+	}
 	if updated.Error == nil || !strings.Contains(*updated.Error, "superseded by new push") {
 		var got string
 		if updated.Error != nil {

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -15,27 +16,18 @@ import (
 // and sends requests via REST with SSE streaming.
 type rovodevAgent struct {
 	bin    string
+	mu     sync.Mutex
 	server *managedServer
 }
 
 func (a *rovodevAgent) Name() string { return "rovodev" }
 
 func (a *rovodevAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
-	// Start server on first invocation
-	if a.server == nil {
-		port, err := getAvailablePort()
-		if err != nil {
-			return nil, fmt.Errorf("rovodev port: %w", err)
-		}
-		args := []string{"rovodev", "serve", "--disable-session-token", fmt.Sprintf("%d", port)}
-		srv, err := startServerWithPort(ctx, a.bin, args, opts.CWD, "/healthcheck", port)
-		if err != nil {
-			return nil, fmt.Errorf("rovodev server: %w", err)
-		}
-		a.server = srv
+	// Start server on first invocation (synchronized)
+	baseURL, err := a.ensureServer(ctx, opts.CWD)
+	if err != nil {
+		return nil, err
 	}
-
-	baseURL := a.server.baseURL()
 
 	// Create session
 	sessionID, err := a.createSession(ctx, baseURL)
@@ -69,7 +61,28 @@ func (a *rovodevAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 	return finalizeTextResult("rovodev", text, opts.JSONSchema, usage)
 }
 
+func (a *rovodevAgent) ensureServer(ctx context.Context, cwd string) (string, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.server != nil {
+		return a.server.baseURL(), nil
+	}
+	port, err := getAvailablePort()
+	if err != nil {
+		return "", fmt.Errorf("rovodev port: %w", err)
+	}
+	args := []string{"rovodev", "serve", "--disable-session-token", fmt.Sprintf("%d", port)}
+	srv, err := startServerWithPort(ctx, a.bin, args, cwd, "/healthcheck", port)
+	if err != nil {
+		return "", fmt.Errorf("rovodev server: %w", err)
+	}
+	a.server = srv
+	return srv.baseURL(), nil
+}
+
 func (a *rovodevAgent) Close() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	if a.server != nil {
 		a.server.shutdown()
 		a.server = nil
@@ -149,7 +162,10 @@ func (a *rovodevAgent) deleteSession(baseURL, sessionID string) {
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodDelete, baseURL+"/v3/sessions/"+sessionID, nil)
 	if req != nil {
-		http.DefaultClient.Do(req)
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil && resp != nil {
+			resp.Body.Close()
+		}
 	}
 }
 

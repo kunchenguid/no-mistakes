@@ -63,17 +63,16 @@ func NewExecutor(database *db.DB, p *paths.Paths, cfg *config.Config, ag agent.A
 // Returns an error if no step is awaiting approval or if the step name doesn't match.
 func (e *Executor) Respond(step types.StepName, action types.ApprovalAction, findingIDs []string) error {
 	e.mu.Lock()
-	waiting := e.waiting
-	waitingStep := e.waitingStep
-	e.mu.Unlock()
-
-	if !waiting {
+	if !e.waiting {
+		e.mu.Unlock()
 		return fmt.Errorf("no step awaiting approval")
 	}
-
-	if step != waitingStep {
-		return fmt.Errorf("step mismatch: responding to %q but %q is awaiting approval", step, waitingStep)
+	if step != e.waitingStep {
+		e.mu.Unlock()
+		return fmt.Errorf("step mismatch: responding to %q but %q is awaiting approval", step, e.waitingStep)
 	}
+	e.waiting = false
+	e.mu.Unlock()
 
 	e.approvalCh <- approvalResponse{action: action, findingIDs: findingIDs}
 	return nil
@@ -168,7 +167,9 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	for {
 		outcome, err := step.Execute(sctx)
 		if err != nil {
-			e.db.FailStep(sr.ID, err.Error())
+			if dbErr := e.db.FailStep(sr.ID, err.Error()); dbErr != nil {
+				slog.Warn("failed to mark step as failed in db", "step", stepName, "error", dbErr)
+			}
 			e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFailed), "", "", err.Error())
 			return fmt.Errorf("step %s failed: %w", stepName, err)
 		}
@@ -177,9 +178,13 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		finalExitCode = outcome.ExitCode
 
 		if outcome.Findings != "" {
-			e.db.SetStepFindings(sr.ID, outcome.Findings)
+			if dbErr := e.db.SetStepFindings(sr.ID, outcome.Findings); dbErr != nil {
+				slog.Warn("failed to set step findings in db", "step", stepName, "error", dbErr)
+			}
 		} else {
-			e.db.ClearStepFindings(sr.ID)
+			if dbErr := e.db.ClearStepFindings(sr.ID); dbErr != nil {
+				slog.Warn("failed to clear step findings in db", "step", stepName, "error", dbErr)
+			}
 		}
 
 		if !outcome.NeedsApproval {
@@ -193,18 +198,24 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		if sctx.Fixing {
 			approvalStatus = types.StepStatusFixReview
 			// Compute working tree diff to show what the agent changed
-			if d, err := git.DiffHead(ctx, workDir); err == nil && d != "" {
+			if d, err := git.DiffHead(ctx, workDir); err != nil {
+				slog.Warn("failed to compute diff for fix review", "error", err)
+			} else if d != "" {
 				diffText = d
 			}
 		}
 
 		// Step needs approval — wait for user action
-		e.db.UpdateStepStatus(sr.ID, approvalStatus)
+		if dbErr := e.db.UpdateStepStatus(sr.ID, approvalStatus); dbErr != nil {
+			slog.Warn("failed to update step status in db", "step", stepName, "status", approvalStatus, "error", dbErr)
+		}
 		e.emitStepEventWithFindingsAndDiff(ipc.EventStepCompleted, run, repo, stepName, string(approvalStatus), outcome.Findings, diffText)
 
 		response, err := e.waitForApproval(ctx, stepName)
 		if err != nil {
-			e.db.FailStep(sr.ID, err.Error())
+			if dbErr := e.db.FailStep(sr.ID, err.Error()); dbErr != nil {
+				slog.Warn("failed to mark step as failed in db", "step", stepName, "error", dbErr)
+			}
 			e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFailed), "", "", err.Error())
 			return fmt.Errorf("step %s: waiting for approval: %w", stepName, err)
 		}
@@ -220,18 +231,24 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			if err := e.db.CompleteStep(sr.ID, finalExitCode, durationMS, logPath); err != nil {
 				return fmt.Errorf("complete step %s (skip): %w", stepName, err)
 			}
-			e.db.UpdateStepStatus(sr.ID, types.StepStatusSkipped)
+			if dbErr := e.db.UpdateStepStatus(sr.ID, types.StepStatusSkipped); dbErr != nil {
+				slog.Warn("failed to update step status in db", "step", stepName, "status", "skipped", "error", dbErr)
+			}
 			e.emitStepEvent(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusSkipped))
 			return nil
 
 		case types.ActionAbort:
-			e.db.FailStep(sr.ID, "aborted by user")
+			if dbErr := e.db.FailStep(sr.ID, "aborted by user"); dbErr != nil {
+				slog.Warn("failed to mark step as failed in db", "step", stepName, "error", dbErr)
+			}
 			e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFailed), "", "", "aborted by user")
 			return fmt.Errorf("step %s: aborted by user", stepName)
 
 		case types.ActionFix:
 			// Fix — mark step as fixing, re-execute with previous findings
-			e.db.UpdateStepStatus(sr.ID, types.StepStatusFixing)
+			if dbErr := e.db.UpdateStepStatus(sr.ID, types.StepStatusFixing); dbErr != nil {
+				slog.Warn("failed to update step status in db", "step", stepName, "status", "fixing", "error", dbErr)
+			}
 			e.emitStepEvent(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFixing))
 			sctx.Fixing = true
 			sctx.PreviousFindings = filterFindingsJSON(outcome.Findings, response.findingIDs)
@@ -262,6 +279,11 @@ func (e *Executor) waitForApproval(ctx context.Context, stepName types.StepName)
 		e.waiting = false
 		e.waitingStep = ""
 		e.mu.Unlock()
+		// Drain any stale response that arrived after context cancellation
+		select {
+		case <-e.approvalCh:
+		default:
+		}
 	}()
 
 	select {
@@ -284,10 +306,12 @@ func (e *Executor) failRun(run *db.Run, repo *db.Repo, err error, ctxs ...contex
 		}
 	}
 	runStatus := types.RunFailed
-	if errMsg == types.RunCancelReasonAbortedByUser {
+	if errMsg == types.RunCancelReasonAbortedByUser || errMsg == types.RunCancelReasonSuperseded {
 		runStatus = types.RunCancelled
 	}
-	e.db.UpdateRunErrorStatus(run.ID, errMsg, runStatus)
+	if dbErr := e.db.UpdateRunErrorStatus(run.ID, errMsg, runStatus); dbErr != nil {
+		slog.Error("failed to update run error status", "run", run.ID, "error", dbErr)
+	}
 	run.Status = runStatus
 	run.Error = &errMsg
 	e.emitRunEvent(ipc.EventRunCompleted, run, repo)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"time"
 )
 
 // Client connects to the IPC server over a Unix socket.
@@ -46,6 +47,9 @@ func (c *Client) Call(method string, params interface{}, result interface{}) err
 	if err := c.encoder.Encode(req); err != nil {
 		return fmt.Errorf("send request: %w", err)
 	}
+
+	c.conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+	defer c.conn.SetReadDeadline(time.Time{})
 
 	if !c.scanner.Scan() {
 		if err := c.scanner.Err(); err != nil {
@@ -120,8 +124,13 @@ func Subscribe(socketPath string, params *SubscribeParams) (<-chan Event, func()
 
 	// Stream events.
 	ch := make(chan Event, 64)
+	done := make(chan struct{})
+	var once sync.Once
 	cancel := func() {
-		conn.Close()
+		once.Do(func() {
+			close(done)
+			conn.Close()
+		})
 	}
 
 	go func() {
@@ -131,7 +140,11 @@ func Subscribe(socketPath string, params *SubscribeParams) (<-chan Event, func()
 			if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
 				continue // skip malformed events
 			}
-			ch <- event
+			select {
+			case ch <- event:
+			case <-done:
+				return
+			}
 		}
 	}()
 

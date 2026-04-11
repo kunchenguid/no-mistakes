@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"syscall"
 )
 
 // HandlerFunc processes a JSON-RPC request and returns a result or error.
@@ -27,6 +28,7 @@ type Server struct {
 	listener       net.Listener
 	wg             sync.WaitGroup
 	done           chan struct{}
+	closeOnce      sync.Once
 }
 
 // NewServer creates a new IPC server.
@@ -61,7 +63,11 @@ func (s *Server) Serve(socketPath string) error {
 	// remove stale socket file
 	os.Remove(socketPath)
 
+	// Set restrictive umask so the socket is created with 0600 permissions,
+	// avoiding a TOCTOU window between Listen and Chmod.
+	oldMask := syscall.Umask(0077)
 	ln, err := net.Listen("unix", socketPath)
+	syscall.Umask(oldMask)
 	if err != nil {
 		return err
 	}
@@ -94,12 +100,9 @@ func (s *Server) Serve(socketPath string) error {
 
 // Close gracefully shuts down the server.
 func (s *Server) Close() {
-	select {
-	case <-s.done:
-		return // already closed
-	default:
+	s.closeOnce.Do(func() {
 		close(s.done)
-	}
+	})
 }
 
 func (s *Server) handleConn(conn net.Conn) {
@@ -154,7 +157,7 @@ func (s *Server) handleConn(conn net.Conn) {
 			return // connection done after streaming
 		}
 
-		resp := s.dispatch(req)
+		resp := s.dispatch(ctx, req)
 		if err := encoder.Encode(resp); err != nil {
 			slog.Error("write response", "error", err)
 			return
@@ -162,7 +165,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	}
 }
 
-func (s *Server) dispatch(req Request) *Response {
+func (s *Server) dispatch(ctx context.Context, req Request) *Response {
 	s.mu.RLock()
 	handler, ok := s.handlers[req.Method]
 	s.mu.RUnlock()
@@ -171,7 +174,7 @@ func (s *Server) dispatch(req Request) *Response {
 		return NewErrorResponse(req.ID, ErrMethodNotFound, "method not found: "+req.Method)
 	}
 
-	result, err := handler(context.Background(), req.Params)
+	result, err := handler(ctx, req.Params)
 	if err != nil {
 		return NewErrorResponse(req.ID, ErrInternal, err.Error())
 	}

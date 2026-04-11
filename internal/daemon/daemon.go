@@ -8,10 +8,12 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 )
@@ -68,24 +70,39 @@ func RunWithOptions(p *paths.Paths, d *db.DB, stepFactory StepFactory) error {
 	defer cancel()
 
 	mgr := NewRunManager(d, p, stepFactory)
-	registerHandlers(srv, mgr, d, cancel)
+
+	var shutdownOnce sync.Once
+	doShutdown := func(reason string) {
+		shutdownOnce.Do(func() {
+			slog.Info("shutting down", "reason", reason)
+			mgr.Shutdown()
+			cancel()
+			srv.Close()
+		})
+	}
+
+	registerHandlers(srv, mgr, d, func() { doShutdown("ipc request") })
 
 	// Write PID file
 	pidPath := p.PIDFile()
-	if err := os.WriteFile(pidPath, []byte(fmt.Sprintf("%d", os.Getpid())), 0o644); err != nil {
+	myPID := fmt.Sprintf("%d", os.Getpid())
+	if err := os.WriteFile(pidPath, []byte(myPID), 0o644); err != nil {
 		return fmt.Errorf("write pid file: %w", err)
 	}
-	defer os.Remove(pidPath)
+	defer func() {
+		if pidData, err := os.ReadFile(pidPath); err == nil && string(pidData) == myPID {
+			os.Remove(pidPath)
+		}
+	}()
 
 	// Handle OS signals
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
 	go func() {
 		select {
 		case sig := <-sigCh:
-			slog.Info("received signal, shutting down", "signal", sig)
-			cancel()
-			srv.Close()
+			doShutdown(sig.String())
 		case <-ctx.Done():
 		}
 	}()
@@ -97,8 +114,11 @@ func RunWithOptions(p *paths.Paths, d *db.DB, stepFactory StepFactory) error {
 		return fmt.Errorf("serve: %w", err)
 	}
 
-	// Clean up socket file
-	os.Remove(socketPath)
+	// Clean up socket file only if we still own the PID file.
+	// A new daemon may have already replaced the socket.
+	if pidData, err := os.ReadFile(pidPath); err == nil && string(pidData) == myPID {
+		os.Remove(socketPath)
+	}
 	slog.Info("daemon stopped")
 	return nil
 }
@@ -121,11 +141,13 @@ func recoverOnStartup(d *db.DB, p *paths.Paths) {
 	if err != nil {
 		return // directory may not exist yet
 	}
+	ctx := context.Background()
 	for _, repoEntry := range entries {
 		if !repoEntry.IsDir() {
 			continue
 		}
 		repoPath := filepath.Join(wtRoot, repoEntry.Name())
+		gateDir := p.RepoDir(repoEntry.Name())
 		runEntries, err := os.ReadDir(repoPath)
 		if err != nil {
 			continue
@@ -135,8 +157,11 @@ func recoverOnStartup(d *db.DB, p *paths.Paths) {
 				continue
 			}
 			wtPath := filepath.Join(repoPath, runEntry.Name())
-			if err := os.RemoveAll(wtPath); err != nil {
-				slog.Warn("failed to remove orphaned worktree", "path", wtPath, "error", err)
+			if err := git.WorktreeRemove(ctx, gateDir, wtPath); err != nil {
+				slog.Warn("git worktree remove failed, falling back to os.RemoveAll", "path", wtPath, "error", err)
+				if err := os.RemoveAll(wtPath); err != nil {
+					slog.Warn("failed to remove orphaned worktree", "path", wtPath, "error", err)
+				}
 			} else {
 				slog.Info("removed orphaned worktree", "path", wtPath)
 			}
@@ -146,17 +171,13 @@ func recoverOnStartup(d *db.DB, p *paths.Paths) {
 	}
 }
 
-func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, cancelDaemon context.CancelFunc) {
+func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func()) {
 	srv.Handle(ipc.MethodHealth, func(_ context.Context, _ json.RawMessage) (interface{}, error) {
 		return &ipc.HealthResult{Status: "ok"}, nil
 	})
 
 	srv.Handle(ipc.MethodShutdown, func(_ context.Context, _ json.RawMessage) (interface{}, error) {
-		slog.Info("shutdown requested via IPC")
-		go func() {
-			cancelDaemon()
-			srv.Close()
-		}()
+		go shutdown()
 		return &ipc.ShutdownResult{OK: true}, nil
 	})
 

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
@@ -24,15 +26,22 @@ type StepFactory func() []pipeline.Step
 
 // RunManager tracks active pipeline executors and manages run lifecycle.
 type RunManager struct {
-	mu        sync.Mutex
-	executors map[string]*pipeline.Executor      // runID → executor
-	cancels   map[string]context.CancelCauseFunc // runID → cancel function with cause
-	db        *db.DB
-	paths     *paths.Paths
-	steps     StepFactory
+	mu           sync.Mutex
+	executors    map[string]*pipeline.Executor      // runID → executor
+	cancels      map[string]context.CancelCauseFunc // runID → cancel function with cause
+	dones        map[string]chan struct{}           // runID → closed when goroutine exits
+	wg           sync.WaitGroup                     // tracks background run goroutines
+	shuttingDown atomic.Bool                        // prevents new runs during shutdown
+	db           *db.DB
+	paths        *paths.Paths
+	steps        StepFactory
 
-	subMu       sync.RWMutex
-	subscribers map[string][]chan<- ipc.Event // runID → subscriber channels
+	branchLocks sync.Map // repoID+"/"+branch → *sync.Mutex
+
+	subMu          sync.RWMutex
+	subscribers    map[string][]chan<- ipc.Event // runID → subscriber channels
+	completedRuns  map[string]bool               // runIDs whose goroutines have finished
+	completedOrder []string                      // insertion order for FIFO eviction
 }
 
 // NewRunManager creates a RunManager. Pass nil for stepFactory to use default steps.
@@ -41,20 +50,28 @@ func NewRunManager(database *db.DB, p *paths.Paths, stepFactory StepFactory) *Ru
 		stepFactory = func() []pipeline.Step { return steps.AllSteps() }
 	}
 	return &RunManager{
-		executors:   make(map[string]*pipeline.Executor),
-		cancels:     make(map[string]context.CancelCauseFunc),
-		db:          database,
-		paths:       p,
-		steps:       stepFactory,
-		subscribers: make(map[string][]chan<- ipc.Event),
+		executors:     make(map[string]*pipeline.Executor),
+		cancels:       make(map[string]context.CancelCauseFunc),
+		dones:         make(map[string]chan struct{}),
+		db:            database,
+		paths:         p,
+		steps:         stepFactory,
+		subscribers:   make(map[string][]chan<- ipc.Event),
+		completedRuns: make(map[string]bool),
 	}
 }
 
 // Subscribe registers a channel to receive events for a run.
 // Returns the channel and an unsubscribe function.
+// If the run has already completed, the returned channel is immediately closed.
 func (m *RunManager) Subscribe(runID string) (<-chan ipc.Event, func()) {
 	ch := make(chan ipc.Event, 64)
 	m.subMu.Lock()
+	if m.completedRuns[runID] {
+		m.subMu.Unlock()
+		close(ch)
+		return ch, func() {}
+	}
 	m.subscribers[runID] = append(m.subscribers[runID], ch)
 	m.subMu.Unlock()
 
@@ -80,12 +97,13 @@ func (m *RunManager) broadcast(event ipc.Event) {
 		select {
 		case ch <- event:
 		default:
-			// subscriber too slow, drop event
+			slog.Debug("dropped event for slow subscriber", "run_id", event.RunID, "type", event.Type)
 		}
 	}
 }
 
-// closeSubscribers closes all subscriber channels for a run.
+// closeSubscribers closes all subscriber channels for a run and marks it
+// as completed so future Subscribe calls return an immediately-closed channel.
 func (m *RunManager) closeSubscribers(runID string) {
 	m.subMu.Lock()
 	defer m.subMu.Unlock()
@@ -93,6 +111,15 @@ func (m *RunManager) closeSubscribers(runID string) {
 		close(ch)
 	}
 	delete(m.subscribers, runID)
+	m.completedRuns[runID] = true
+	m.completedOrder = append(m.completedOrder, runID)
+	if len(m.completedOrder) > 1000 {
+		half := len(m.completedOrder) / 2
+		for _, id := range m.completedOrder[:half] {
+			delete(m.completedRuns, id)
+		}
+		m.completedOrder = m.completedOrder[half:]
+	}
 }
 
 // repoIDFromGatePath extracts the repo ID from a gate bare repo path.
@@ -111,18 +138,12 @@ func branchFromRef(ref string) string {
 	return strings.TrimPrefix(ref, "refs/heads/")
 }
 
-// isZeroSHA returns true if the SHA is the null/zero ref that git uses for
-// new or deleted branches (40 zeros).
-func isZeroSHA(sha string) bool {
-	return sha == "0000000000000000000000000000000000000000"
-}
-
 // HandlePushReceived processes a push notification from the post-receive hook.
 // It creates a run, sets up a worktree, and launches pipeline execution in the background.
 func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushReceivedParams) (string, error) {
 	// Ref deletion (git push remote :branch) sends new SHA as all-zeros.
-	// Nothing to validate — skip pipeline.
-	if isZeroSHA(params.New) {
+	// Nothing to validate - skip pipeline.
+	if git.IsZeroSHA(params.New) {
 		return "", fmt.Errorf("ref deletion push, no pipeline to run")
 	}
 
@@ -192,6 +213,18 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch string) (st
 
 // startRun creates a run, sets up a worktree, and launches pipeline execution.
 func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA string) (string, error) {
+	if m.shuttingDown.Load() {
+		return "", fmt.Errorf("daemon is shutting down")
+	}
+
+	// Serialize per repo+branch to prevent two concurrent pushes from both
+	// passing cancelActiveRuns and creating duplicate pipelines.
+	lockKey := repo.ID + "/" + branch
+	lockVal, _ := m.branchLocks.LoadOrStore(lockKey, &sync.Mutex{})
+	branchMu := lockVal.(*sync.Mutex)
+	branchMu.Lock()
+	defer branchMu.Unlock()
+
 	// Cancel any active run for this repo+branch.
 	m.cancelActiveRuns(repo.ID, branch)
 
@@ -250,17 +283,26 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	executor := pipeline.NewExecutor(m.db, m.paths, cfg, ag, m.steps(), m.broadcast)
 
 	// Track executor.
+	done := make(chan struct{})
 	m.mu.Lock()
 	m.executors[run.ID] = executor
 	m.cancels[run.ID] = cancel
+	m.dones[run.ID] = done
 	m.mu.Unlock()
 
 	// Background goroutine now owns worktree cleanup.
 	bgOwnsWorktree = true
 
 	// Launch pipeline in background.
+	m.wg.Add(1)
 	go func() {
+		defer m.wg.Done()
+		defer close(done)
 		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("panic in pipeline goroutine", "run_id", run.ID, "panic", r)
+				m.db.UpdateRunError(run.ID, fmt.Sprintf("internal panic: %v", r))
+			}
 			cancel(nil)
 			ag.Close()
 			// Close subscriber channels for this run.
@@ -273,6 +315,7 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 			m.mu.Lock()
 			delete(m.executors, run.ID)
 			delete(m.cancels, run.ID)
+			delete(m.dones, run.ID)
 			m.mu.Unlock()
 		}()
 
@@ -299,6 +342,35 @@ func (m *RunManager) HandleRespond(runID string, step types.StepName, action typ
 	return exec.Respond(step, action, findingIDs)
 }
 
+// Shutdown cancels all active runs. Called during daemon shutdown to prevent
+// orphaned goroutines from continuing agent calls and git operations.
+func (m *RunManager) Shutdown() {
+	m.shuttingDown.Store(true)
+
+	m.mu.Lock()
+	cancels := make(map[string]context.CancelCauseFunc, len(m.cancels))
+	for id, cancel := range m.cancels {
+		cancels[id] = cancel
+	}
+	m.mu.Unlock()
+
+	for id, cancel := range cancels {
+		cancel(fmt.Errorf("daemon shutting down"))
+		slog.Info("cancelled run on shutdown", "run_id", id)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		m.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		slog.Warn("timed out waiting for runs to finish during shutdown")
+	}
+}
+
 // HandleCancel stops an active run and propagates cancellation to the executor.
 func (m *RunManager) HandleCancel(runID string) error {
 	m.mu.Lock()
@@ -313,15 +385,19 @@ func (m *RunManager) HandleCancel(runID string) error {
 	return nil
 }
 
-// cancelActiveRuns cancels any in-progress runs for the given repo+branch.
+// cancelActiveRuns cancels any in-progress runs for the given repo+branch
+// and waits for their goroutines to finish before returning, preventing
+// concurrent pushes to upstream.
 // The cancellation cause is propagated to the executor via context.Cause,
 // which uses it as the run's error message in the DB.
 func (m *RunManager) cancelActiveRuns(repoID, branch string) {
 	runs, err := m.db.GetRunsByRepo(repoID)
 	if err != nil {
+		slog.Error("failed to query active runs for cancellation", "repo", repoID, "branch", branch, "error", err)
 		return
 	}
 
+	var toWait []chan struct{}
 	for _, run := range runs {
 		if run.Branch != branch {
 			continue
@@ -332,6 +408,7 @@ func (m *RunManager) cancelActiveRuns(repoID, branch string) {
 
 		m.mu.Lock()
 		cancel, ok := m.cancels[run.ID]
+		done := m.dones[run.ID]
 		m.mu.Unlock()
 		if !ok {
 			continue
@@ -339,5 +416,18 @@ func (m *RunManager) cancelActiveRuns(repoID, branch string) {
 
 		cancel(fmt.Errorf(types.RunCancelReasonSuperseded))
 		slog.Info("cancelled active run", "run_id", run.ID, "repo_id", repoID, "branch", branch)
+		if done != nil {
+			toWait = append(toWait, done)
+		}
+	}
+
+	timeout := time.After(30 * time.Second)
+	for _, done := range toWait {
+		select {
+		case <-done:
+		case <-timeout:
+			slog.Warn("timed out waiting for cancelled runs to finish")
+			return
+		}
 	}
 }

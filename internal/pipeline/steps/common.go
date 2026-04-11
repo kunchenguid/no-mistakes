@@ -19,27 +19,17 @@ type Finding = types.Finding
 // Findings is the structured output from a review or lint agent call.
 type Findings = types.Findings
 
-// emptyTreeSHA is the well-known SHA of an empty tree in git.
-// Used as a base when there is no prior commit to diff against.
-const emptyTreeSHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
-
-// isZeroSHA returns true if the SHA is the null/zero ref that git uses for
-// new branches (40 zeros), indicating no prior ref existed.
-func isZeroSHA(sha string) bool {
-	return sha == "0000000000000000000000000000000000000000"
-}
-
 // resolveBaseSHA returns a usable base SHA for diff/log operations.
 // When baseSHA is the zero ref (new branch push), it tries git merge-base
 // against the default branch, falling back to the empty tree SHA.
 func resolveBaseSHA(ctx context.Context, workDir, baseSHA, defaultBranch string) string {
-	if !isZeroSHA(baseSHA) {
+	if !git.IsZeroSHA(baseSHA) {
 		return baseSHA
 	}
 	if mb := mergeBaseWithDefaultBranch(ctx, workDir, defaultBranch); mb != "" {
 		return mb
 	}
-	return emptyTreeSHA
+	return git.EmptyTreeSHA
 }
 
 // resolveBranchBaseSHA returns the branch base commit relative to the default
@@ -234,18 +224,24 @@ func filterDiff(diff string, patterns []string) string {
 }
 
 // extractDiffPath extracts the file path from a "diff --git a/<path> b/<path>" header.
+// For non-rename diffs both paths are identical, so we derive the path length from
+// the known structure rather than splitting on " b/" which could appear in filenames.
 func extractDiffPath(diffLine string) string {
-	// Format: "diff --git a/<path> b/<path>"
-	parts := strings.SplitN(diffLine, " b/", 2)
+	const prefix = "diff --git a/"
+	rest := strings.TrimPrefix(diffLine, prefix)
+	if rest == diffLine {
+		return ""
+	}
+	// Non-rename: rest is "<path> b/<path>" where both paths are equal.
+	// Total length = 2*pathLen + len(" b/") = 2*pathLen + 3.
+	pathLen := (len(rest) - 3) / 2
+	if pathLen > 0 && pathLen+3 <= len(rest) && rest[pathLen:pathLen+3] == " b/" {
+		return rest[:pathLen]
+	}
+	// Fallback for renames or unexpected format: split on first " b/".
+	parts := strings.SplitN(rest, " b/", 2)
 	if len(parts) == 2 {
 		return parts[1]
-	}
-	// Fallback: try to extract from a/ prefix
-	parts = strings.SplitN(diffLine, " a/", 2)
-	if len(parts) == 2 {
-		// Split at next space to get just the path
-		p := strings.SplitN(parts[1], " ", 2)
-		return p[0]
 	}
 	return ""
 }

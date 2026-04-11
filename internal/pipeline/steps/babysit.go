@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os/exec"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,7 +21,8 @@ import (
 // BabysitStep monitors CI and PR comments after PR creation,
 // auto-fixing CI failures and presenting PR comments for human selection.
 type BabysitStep struct {
-	seenComments map[string]bool
+	seenComments    map[string]bool
+	lastFixedChecks string // sorted check names from last fix attempt, to avoid re-fixing
 }
 
 func (s *BabysitStep) Name() types.StepName { return types.StepBabysit }
@@ -54,6 +58,9 @@ func extractPRNumber(prURL string) (string, error) {
 	num := parts[len(parts)-1]
 	if num == "" {
 		return "", fmt.Errorf("invalid PR URL: %s", prURL)
+	}
+	if _, err := strconv.Atoi(num); err != nil {
+		return "", fmt.Errorf("invalid PR number %q in URL: %s", num, prURL)
 	}
 	return num, nil
 }
@@ -124,15 +131,16 @@ func commentsToFindings(comments []prComment) Findings {
 	}
 }
 
-// truncate shortens a string to maxLen, adding "..." if truncated.
+// truncate shortens a string to maxLen runes, adding "..." if truncated.
 func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
 		return s
 	}
 	if maxLen <= 3 {
-		return s[:maxLen]
+		return string(runes[:maxLen])
 	}
-	return s[:maxLen-3] + "..."
+	return string(runes[:maxLen-3]) + "..."
 }
 
 func (s *BabysitStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
@@ -232,11 +240,20 @@ func (s *BabysitStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome
 			sctx.Log(fmt.Sprintf("warning: could not check CI: %v", err))
 		} else if hasFailingChecks(checks) {
 			failing := failingCheckNames(checks)
-			sctx.Log(fmt.Sprintf("CI failures detected: %s — auto-fixing...", strings.Join(failing, ", ")))
-			if err := s.autoFixCI(sctx, prNumber, failing); err != nil {
-				sctx.Log(fmt.Sprintf("warning: CI auto-fix failed: %v", err))
+			sort.Strings(failing)
+			fixKey := strings.Join(failing, ",")
+			if fixKey == s.lastFixedChecks {
+				sctx.Log("fix already attempted for these failures, waiting for CI re-run...")
+			} else {
+				sctx.Log(fmt.Sprintf("CI failures detected: %s - auto-fixing...", strings.Join(failing, ", ")))
+				if err := s.autoFixCI(sctx, prNumber, failing); err != nil {
+					sctx.Log(fmt.Sprintf("warning: CI auto-fix failed: %v", err))
+				} else {
+					s.lastFixedChecks = fixKey
+				}
 			}
 		} else if !hasPendingChecks(checks) {
+			s.lastFixedChecks = ""
 			checksReadyToExit = true
 			if len(checks) == 0 {
 				checksSummary = "no CI checks reported, babysit complete"
@@ -341,15 +358,37 @@ func (s *BabysitStep) autoFixCI(sctx *pipeline.StepContext, prNumber string, fai
 	ctx := sctx.Ctx
 	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
 
+	// Find the most recent failing run for this branch so we fetch logs from the right run.
+	var runID string
+	listCmd := exec.CommandContext(ctx, "gh", "run", "list",
+		"--branch", sctx.Run.Branch,
+		"--status", "failure",
+		"--limit", "1",
+		"--json", "databaseId",
+		"--jq", ".[0].databaseId")
+	listCmd.Dir = sctx.WorkDir
+	if listOut, err := listCmd.Output(); err == nil {
+		runID = strings.TrimSpace(string(listOut))
+	}
+
 	// Attempt to fetch CI failure logs for context
+	const maxLogBytes = 32 * 1024
 	var logOutput string
-	for _, name := range failingNames {
-		cmd := exec.CommandContext(ctx, "gh", "run", "view", "--json", "jobs",
-			"--jq", fmt.Sprintf(`.jobs[] | select(.name == "%s") | .steps[] | select(.conclusion == "failure") | .name + ": " + (.log // "")`, name))
+	if runID != "" {
+		cmd := exec.CommandContext(ctx, "gh", "run", "view", runID, "--log-failed")
 		cmd.Dir = sctx.WorkDir
 		out, _ := cmd.Output()
 		if len(out) > 0 {
-			logOutput += fmt.Sprintf("=== %s ===\n%s\n\n", name, strings.TrimSpace(string(out)))
+			logOutput = strings.TrimSpace(string(out))
+			if len(logOutput) > maxLogBytes {
+				logOutput = logOutput[len(logOutput)-maxLogBytes:]
+				for i := 0; i < len(logOutput) && i < 4; i++ {
+					if logOutput[i]&0xC0 != 0x80 {
+						logOutput = logOutput[i:]
+						break
+					}
+				}
+			}
 		}
 	}
 
@@ -408,7 +447,9 @@ func (s *BabysitStep) addressComments(sctx *pipeline.StepContext, prNumber strin
 	}
 
 	var comments []prComment
-	json.Unmarshal(out, &comments)
+	if err := json.Unmarshal(out, &comments); err != nil {
+		return fmt.Errorf("parse PR comments: %w", err)
+	}
 
 	var commentText string
 	for _, c := range comments {
@@ -465,7 +506,10 @@ Context:
 	}
 
 	// Reply to addressed comments (best-effort)
-	headSHA, _ := git.HeadSHA(ctx, sctx.WorkDir)
+	headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
+	if err != nil {
+		slog.Warn("failed to get head SHA for reply comment", "error", err)
+	}
 	if headSHA != "" {
 		replyCmd := exec.CommandContext(ctx, "gh", "pr", "comment", prNumber,
 			"--body", fmt.Sprintf("Addressed in %s", headSHA))
@@ -503,9 +547,19 @@ func (s *BabysitStep) commitAndPush(sctx *pipeline.StepContext) error {
 		return nil
 	}
 
-	git.Run(ctx, sctx.WorkDir, "add", "-A")
+	if _, err := git.Run(ctx, sctx.WorkDir, "add", "-A"); err != nil {
+		return fmt.Errorf("stage babysit changes: %w", err)
+	}
 	if _, err := git.Run(ctx, sctx.WorkDir, "commit", "-m", "no-mistakes: apply babysit fixes"); err != nil {
 		return fmt.Errorf("commit: %w", err)
+	}
+	headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
+	if err != nil {
+		return fmt.Errorf("resolve head after commit: %w", err)
+	}
+	sctx.Run.HeadSHA = headSHA
+	if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, headSHA); err != nil {
+		return err
 	}
 
 	ref := sctx.Run.Branch
@@ -513,7 +567,14 @@ func (s *BabysitStep) commitAndPush(sctx *pipeline.StepContext) error {
 		ref = "refs/heads/" + ref
 	}
 
-	if err := git.Push(ctx, sctx.WorkDir, sctx.Repo.UpstreamURL, ref, "", false); err != nil {
+	upstreamSHA, lsErr := git.LsRemote(ctx, sctx.WorkDir, sctx.Repo.UpstreamURL, ref)
+	if lsErr != nil {
+		slog.Warn("ls-remote failed, pushing without force-with-lease", "ref", ref, "error", lsErr)
+	}
+	if err := git.Push(ctx, sctx.WorkDir, sctx.Repo.UpstreamURL, ref, upstreamSHA, upstreamSHA != ""); err != nil {
+		if lsErr != nil {
+			return fmt.Errorf("push (ls-remote failed: %v): %w", lsErr, err)
+		}
 		return fmt.Errorf("push: %w", err)
 	}
 

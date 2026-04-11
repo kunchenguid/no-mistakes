@@ -677,9 +677,9 @@ func TestIsZeroSHA(t *testing.T) {
 		{"000000", false},
 	}
 	for _, tc := range tests {
-		got := isZeroSHA(tc.sha)
+		got := git.IsZeroSHA(tc.sha)
 		if got != tc.want {
-			t.Errorf("isZeroSHA(%q) = %v, want %v", tc.sha, got, tc.want)
+			t.Errorf("IsZeroSHA(%q) = %v, want %v", tc.sha, got, tc.want)
 		}
 	}
 }
@@ -910,7 +910,7 @@ func TestPushReceivedCancelsActiveRun(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if run1.Status == types.RunFailed {
+		if run1.Status == types.RunCancelled {
 			if run1.Error == nil || !strings.Contains(*run1.Error, "superseded by new push") {
 				var got string
 				if run1.Error != nil {
@@ -1047,7 +1047,7 @@ func TestPushReceivedDoesNotCancelActiveRunOnDifferentBranch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if mainRun.Status == types.RunFailed {
+	if mainRun.Status == types.RunFailed || mainRun.Status == types.RunCancelled {
 		if mainRun.Error != nil && strings.Contains(*mainRun.Error, "superseded by new push") {
 			t.Fatalf("main branch run should not be superseded by a push to a different branch: %q", *mainRun.Error)
 		}
@@ -1384,6 +1384,66 @@ func TestSubscribeToSlowRunReceivesEvents(t *testing.T) {
 done:
 	// We should have received at least the run events before channel closed.
 	// The exact count depends on timing, but the channel MUST close.
+}
+
+func TestSubscribeToCompletedRunReturnsClosedChannel(t *testing.T) {
+	// Use a fast step so the run completes quickly.
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{&mockPassStep{name: types.StepTest}}
+	})
+
+	_, headSHA := setupTestGitRepo(t, p, d, "testrepo-sub-done")
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var pushResult ipc.PushReceivedResult
+	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: p.RepoDir("testrepo-sub-done"),
+		Ref:  "refs/heads/main",
+		Old:  "0000000000000000000000000000000000000000",
+		New:  headSHA,
+	}, &pushResult)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for the run to complete by polling get_run.
+	deadline := time.After(10 * time.Second)
+	for {
+		var result ipc.GetRunResult
+		if err := client.Call(ipc.MethodGetRun, &ipc.GetRunParams{RunID: pushResult.RunID}, &result); err != nil {
+			t.Fatal(err)
+		}
+		if result.Run != nil && (result.Run.Status == types.RunCompleted || result.Run.Status == types.RunFailed || result.Run.Status == types.RunCancelled) {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("run did not complete in time")
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+
+	// Subscribe to the already-completed run. The channel should be immediately closed.
+	ch, cancelSub, err := ipc.Subscribe(p.Socket(), &ipc.SubscribeParams{RunID: pushResult.RunID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancelSub()
+
+	select {
+	case _, ok := <-ch:
+		if ok {
+			t.Fatal("expected channel to be closed for completed run, but received an event")
+		}
+		// Channel closed - expected
+	case <-time.After(5 * time.Second):
+		t.Fatal("channel was not closed for completed run")
+	}
 }
 
 func TestRecoverStaleRunsOnStartup(t *testing.T) {

@@ -15,6 +15,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -117,8 +118,8 @@ func TestIsZeroSHA(t *testing.T) {
 		{"00000", false},
 	}
 	for _, tt := range tests {
-		if got := isZeroSHA(tt.sha); got != tt.want {
-			t.Errorf("isZeroSHA(%q) = %v, want %v", tt.sha, got, tt.want)
+		if got := git.IsZeroSHA(tt.sha); got != tt.want {
+			t.Errorf("IsZeroSHA(%q) = %v, want %v", tt.sha, got, tt.want)
 		}
 	}
 }
@@ -164,8 +165,8 @@ func TestResolveBaseSHA_ZeroNoDefaultBranch(t *testing.T) {
 
 	zeroSHA := "0000000000000000000000000000000000000000"
 	got := resolveBaseSHA(context.Background(), dir, zeroSHA, "main")
-	if got != emptyTreeSHA {
-		t.Errorf("resolveBaseSHA zero no default = %q, want %q", got, emptyTreeSHA)
+	if got != git.EmptyTreeSHA {
+		t.Errorf("resolveBaseSHA zero no default = %q, want %q", got, git.EmptyTreeSHA)
 	}
 }
 
@@ -1662,6 +1663,8 @@ func TestExtractPRNumber(t *testing.T) {
 		{"trailing slash", "https://github.com/owner/repo/pull/42/", "42", false},
 		{"just number", "123", "123", false},
 		{"empty", "", "", true},
+		{"non numeric", "https://github.com/owner/repo/pull/abc", "", true},
+		{"path segment not number", "https://github.com/owner/repo/pull/42/files", "", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1805,6 +1808,9 @@ func TestTruncate(t *testing.T) {
 		{"long", "hello world", 8, "hello..."},
 		{"very short max", "hello", 3, "hel"},
 		{"empty", "", 5, ""},
+		// Multi-byte rune handling: truncate should count runes, not bytes
+		{"multibyte exact", "日本語AB", 5, "日本語AB"},
+		{"multibyte truncated", "日本語ABCD", 5, "日本..."},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -2216,6 +2222,9 @@ func TestExtractDiffPath(t *testing.T) {
 		{"diff --git a/pkg/bar.go b/pkg/bar.go", "pkg/bar.go"},
 		{"diff --git a/vendor/lib.go b/vendor/lib.go", "vendor/lib.go"},
 		{"not a diff line", ""},
+		// Path containing " b/" should not be split incorrectly
+		{"diff --git a/a b/c.go b/a b/c.go", "a b/c.go"},
+		{"diff --git a/x b/y b/z.go b/x b/y b/z.go", "x b/y b/z.go"},
 	}
 	for _, tt := range tests {
 		got := extractDiffPath(tt.line)

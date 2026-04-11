@@ -8,7 +8,15 @@ import (
 	"strings"
 )
 
-const emptyTreeSHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+// EmptyTreeSHA is the well-known SHA of an empty tree in git.
+// Used as a base when there is no prior commit to diff against.
+const EmptyTreeSHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+// IsZeroSHA returns true if the SHA is the null/zero ref that git uses for
+// new or deleted branches (40 zeros).
+func IsZeroSHA(sha string) bool {
+	return sha == "0000000000000000000000000000000000000000"
+}
 
 // Run executes a git command in the given directory and returns trimmed stdout.
 // Returns an error that includes the command and stderr on failure.
@@ -54,6 +62,7 @@ func GetRemoteURL(ctx context.Context, dir, name string) (string, error) {
 }
 
 // FindGitRoot walks up from path to find the git repository root.
+// Resolves symlinks for consistency on macOS (e.g. /tmp -> /private/tmp).
 func FindGitRoot(path string) (string, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -65,7 +74,12 @@ func FindGitRoot(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("not a git repository: %s", abs)
 	}
-	return strings.TrimSpace(string(out)), nil
+	root := strings.TrimSpace(string(out))
+	resolved, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return root, nil
+	}
+	return resolved, nil
 }
 
 // Diff returns the unified diff between two commits.
