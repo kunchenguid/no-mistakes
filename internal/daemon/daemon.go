@@ -9,7 +9,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sync"
-	"syscall"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
@@ -97,7 +96,7 @@ func RunWithOptions(p *paths.Paths, d *db.DB, stepFactory StepFactory) error {
 
 	// Handle OS signals
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(sigCh, daemonSignals()...)
 	defer signal.Stop(sigCh)
 	go func() {
 		select {

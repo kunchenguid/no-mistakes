@@ -19,7 +19,7 @@ type Client struct {
 
 // Dial connects to the IPC server at the given Unix socket path.
 func Dial(socketPath string) (*Client, error) {
-	conn, err := net.Dial("unix", socketPath)
+	conn, err := dial(socketPath)
 	if err != nil {
 		return nil, fmt.Errorf("dial ipc: %w", err)
 	}
@@ -85,7 +85,7 @@ func (c *Client) Close() error {
 // Returns an event channel, a cancel function (to stop and clean up), and an error.
 // The channel is closed when the run completes, the connection drops, or cancel is called.
 func Subscribe(socketPath string, params *SubscribeParams) (<-chan Event, func(), error) {
-	conn, err := net.Dial("unix", socketPath)
+	conn, err := dial(socketPath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("dial ipc: %w", err)
 	}

@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -320,10 +319,7 @@ func TestStreamHandler(t *testing.T) {
 	conn.Close()
 
 	// Use raw connection to test streaming.
-	rawConn, err := net.Dial("unix", sock)
-	if err != nil {
-		t.Fatalf("raw dial: %v", err)
-	}
+	rawConn := rawDial(t, sock)
 	defer rawConn.Close()
 
 	encoder := json.NewEncoder(rawConn)
@@ -395,10 +391,7 @@ func TestServerInvalidJSON(t *testing.T) {
 	startServer(t, sock)
 
 	// Send invalid JSON and verify parse error response.
-	conn, err := net.Dial("unix", sock)
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
+	conn := rawDial(t, sock)
 	defer conn.Close()
 
 	// Write invalid JSON.
@@ -531,10 +524,7 @@ func TestSubscribeMalformedEvent(t *testing.T) {
 
 	// Start a fresh minimal server with raw socket control.
 	sock = socketPath(t)
-	ln, err := net.Listen("unix", sock)
-	if err != nil {
-		t.Fatal(err)
-	}
+	ln := rawListen(t, sock)
 	defer ln.Close()
 
 	go func() {
@@ -598,10 +588,7 @@ func TestSubscribeConnectionClosedBeforeResponse(t *testing.T) {
 	os.Remove(sock)
 
 	// Start a raw server that closes connection immediately after accept.
-	ln, err := net.Listen("unix", sock)
-	if err != nil {
-		t.Fatal(err)
-	}
+	ln := rawListen(t, sock)
 	defer ln.Close()
 
 	go func() {
@@ -617,7 +604,7 @@ func TestSubscribeConnectionClosedBeforeResponse(t *testing.T) {
 
 	time.Sleep(50 * time.Millisecond)
 
-	_, _, err = ipc.Subscribe(sock, &ipc.SubscribeParams{RunID: "r1"})
+	_, _, err := ipc.Subscribe(sock, &ipc.SubscribeParams{RunID: "r1"})
 	if err == nil {
 		t.Fatal("expected error when connection closed before response")
 	}
@@ -635,10 +622,7 @@ func TestServerEmptyLine(t *testing.T) {
 	})
 
 	// Connect raw and send an empty line, then a valid request.
-	conn, err := net.Dial("unix", sock)
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
+	conn := rawDial(t, sock)
 	defer conn.Close()
 
 	// Send empty line first.

@@ -6,9 +6,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net"
-	"os"
 	"sync"
-	"syscall"
 )
 
 // HandlerFunc processes a JSON-RPC request and returns a result or error.
@@ -57,17 +55,10 @@ func (s *Server) HandleStream(method string, fn StreamHandlerFunc) {
 	s.streamHandlers[method] = fn
 }
 
-// Serve starts listening on the given Unix socket path.
+// Serve starts listening on the given IPC endpoint path.
 // It blocks until Close is called, then returns nil.
 func (s *Server) Serve(socketPath string) error {
-	// remove stale socket file
-	os.Remove(socketPath)
-
-	// Set restrictive umask so the socket is created with 0600 permissions,
-	// avoiding a TOCTOU window between Listen and Chmod.
-	oldMask := syscall.Umask(0077)
-	ln, err := net.Listen("unix", socketPath)
-	syscall.Umask(oldMask)
+	ln, err := listen(socketPath)
 	if err != nil {
 		return err
 	}

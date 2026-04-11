@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +22,13 @@ import (
 )
 
 func init() {
+	if os.Getenv("NM_HOOK_HELPER") == "1" {
+		if err := newRootCmd().Execute(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 	if os.Getenv("NM_DAEMON") != "1" || os.Getenv("NM_TEST_START_DAEMON") != "1" {
 		return
 	}
@@ -221,6 +229,10 @@ func TestInitAlreadyInitialized(t *testing.T) {
 }
 
 func TestInitRollsBackWhenDaemonStartFails(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows IPC does not use Unix socket path limits")
+	}
+
 	repoDir := setupTestRepo(t)
 	nmHome := filepath.Join(t.TempDir(), strings.Repeat("a", 160))
 	t.Setenv("NM_HOME", nmHome)

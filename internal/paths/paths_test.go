@@ -7,57 +7,61 @@ import (
 )
 
 func TestWithRoot(t *testing.T) {
-	p := WithRoot("/tmp/nm-test")
+	root := filepath.Join("tmp", "nm-test")
+	p := WithRoot(root)
 
-	if got := p.Root(); got != "/tmp/nm-test" {
-		t.Errorf("Root() = %q, want %q", got, "/tmp/nm-test")
+	if got := p.Root(); got != root {
+		t.Errorf("Root() = %q, want %q", got, root)
 	}
-	if got := p.DB(); got != "/tmp/nm-test/state.sqlite" {
-		t.Errorf("DB() = %q, want %q", got, "/tmp/nm-test/state.sqlite")
+	if got := p.DB(); got != filepath.Join(root, "state.sqlite") {
+		t.Errorf("DB() = %q, want %q", got, filepath.Join(root, "state.sqlite"))
 	}
-	if got := p.Socket(); got != "/tmp/nm-test/socket" {
-		t.Errorf("Socket() = %q, want %q", got, "/tmp/nm-test/socket")
+	if got := p.Socket(); got != filepath.Join(root, "socket") {
+		t.Errorf("Socket() = %q, want %q", got, filepath.Join(root, "socket"))
 	}
-	if got := p.PIDFile(); got != "/tmp/nm-test/daemon.pid" {
-		t.Errorf("PIDFile() = %q, want %q", got, "/tmp/nm-test/daemon.pid")
+	if got := p.PIDFile(); got != filepath.Join(root, "daemon.pid") {
+		t.Errorf("PIDFile() = %q, want %q", got, filepath.Join(root, "daemon.pid"))
 	}
-	if got := p.ConfigFile(); got != "/tmp/nm-test/config.yaml" {
-		t.Errorf("ConfigFile() = %q, want %q", got, "/tmp/nm-test/config.yaml")
+	if got := p.ConfigFile(); got != filepath.Join(root, "config.yaml") {
+		t.Errorf("ConfigFile() = %q, want %q", got, filepath.Join(root, "config.yaml"))
 	}
 }
 
 func TestRepoPaths(t *testing.T) {
-	p := WithRoot("/tmp/nm-test")
+	root := filepath.Join("tmp", "nm-test")
+	p := WithRoot(root)
 
-	if got := p.ReposDir(); got != "/tmp/nm-test/repos" {
+	if got := p.ReposDir(); got != filepath.Join(root, "repos") {
 		t.Errorf("ReposDir() = %q", got)
 	}
-	if got := p.RepoDir("abc123"); got != "/tmp/nm-test/repos/abc123.git" {
+	if got := p.RepoDir("abc123"); got != filepath.Join(root, "repos", "abc123.git") {
 		t.Errorf("RepoDir() = %q", got)
 	}
 }
 
 func TestWorktreePaths(t *testing.T) {
-	p := WithRoot("/tmp/nm-test")
+	root := filepath.Join("tmp", "nm-test")
+	p := WithRoot(root)
 
-	if got := p.WorktreesDir(); got != "/tmp/nm-test/worktrees" {
+	if got := p.WorktreesDir(); got != filepath.Join(root, "worktrees") {
 		t.Errorf("WorktreesDir() = %q", got)
 	}
-	if got := p.WorktreeDir("repo1", "run1"); got != "/tmp/nm-test/worktrees/repo1/run1" {
+	if got := p.WorktreeDir("repo1", "run1"); got != filepath.Join(root, "worktrees", "repo1", "run1") {
 		t.Errorf("WorktreeDir() = %q", got)
 	}
 }
 
 func TestLogPaths(t *testing.T) {
-	p := WithRoot("/tmp/nm-test")
+	root := filepath.Join("tmp", "nm-test")
+	p := WithRoot(root)
 
-	if got := p.LogsDir(); got != "/tmp/nm-test/logs" {
+	if got := p.LogsDir(); got != filepath.Join(root, "logs") {
 		t.Errorf("LogsDir() = %q", got)
 	}
-	if got := p.RunLogDir("run1"); got != "/tmp/nm-test/logs/run1" {
+	if got := p.RunLogDir("run1"); got != filepath.Join(root, "logs", "run1") {
 		t.Errorf("RunLogDir() = %q", got)
 	}
-	if got := p.DaemonLog(); got != "/tmp/nm-test/logs/daemon.log" {
+	if got := p.DaemonLog(); got != filepath.Join(root, "logs", "daemon.log") {
 		t.Errorf("DaemonLog() = %q", got)
 	}
 }

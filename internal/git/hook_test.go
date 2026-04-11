@@ -4,27 +4,21 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
 
 func TestPostReceiveHookScript(t *testing.T) {
-	script := PostReceiveHookScript()
+	script := postReceiveHookScript("/opt/No Mistakes/no-mistakes")
 
 	// should be a shell script
 	if !strings.HasPrefix(script, "#!/bin/sh\n") {
 		t.Fatal("hook should start with #!/bin/sh")
 	}
 
-	// should reference the socket path with NM_HOME support
-	if !strings.Contains(script, "NM_HOME") {
-		t.Fatal("hook should respect NM_HOME env var")
-	}
-	if !strings.Contains(script, "$HOME/.no-mistakes") {
-		t.Fatal("hook should reference default .no-mistakes path")
-	}
-	if !strings.Contains(script, "/socket") {
-		t.Fatal("hook should reference socket")
+	if !strings.Contains(script, "NM_BIN='/opt/No Mistakes/no-mistakes'") {
+		t.Fatal("hook should embed the no-mistakes executable path")
 	}
 
 	// should read oldrev newrev refname
@@ -32,12 +26,20 @@ func TestPostReceiveHookScript(t *testing.T) {
 		t.Fatal("hook should read ref update args")
 	}
 
-	// should send JSON-RPC push_received
-	if !strings.Contains(script, "push_received") {
-		t.Fatal("hook should send push_received method")
+	if !strings.Contains(script, "--gate \"$(pwd)\"") {
+		t.Fatal("hook should pass the gate path as a flag")
 	}
-	if !strings.Contains(script, "nc -U \"$SOCKET\" >/dev/null 2>&1 || true") {
-		t.Fatal("hook should suppress nc output so pushes stay clean")
+	if !strings.Contains(script, "daemon notify-push") {
+		t.Fatal("hook should invoke the CLI notify subcommand")
+	}
+	if strings.Contains(script, "nc -U") {
+		t.Fatal("hook should not depend on netcat")
+	}
+	if !strings.Contains(script, "\"$NM_BIN\" daemon notify-push") {
+		t.Fatal("hook should execute the embedded binary path")
+	}
+	if !strings.Contains(script, ">/dev/null 2>&1 || true") {
+		t.Fatal("hook should suppress notifier output so pushes stay clean")
 	}
 
 	// should print user-facing message to stderr
@@ -74,7 +76,7 @@ func TestInstallPostReceiveHook(t *testing.T) {
 	}
 
 	// verify executable permission
-	if info.Mode()&0o111 == 0 {
+	if runtime.GOOS != "windows" && info.Mode()&0o111 == 0 {
 		t.Fatalf("hook should be executable, got mode %v", info.Mode())
 	}
 
@@ -83,7 +85,11 @@ func TestInstallPostReceiveHook(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(content) != PostReceiveHookScript() {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != postReceiveHookScript(exe) {
 		t.Fatal("hook content doesn't match template")
 	}
 }
