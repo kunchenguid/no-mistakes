@@ -101,7 +101,6 @@ func (tl *tokenListener) start() {
 	tl.connCh = make(chan net.Conn)
 	tl.done = make(chan struct{})
 	go func() {
-		defer close(tl.connCh)
 		for {
 			raw, err := tl.Listener.Accept()
 			if err != nil {
@@ -134,11 +133,12 @@ func (tl *tokenListener) authenticate(conn net.Conn) {
 
 func (tl *tokenListener) Accept() (net.Conn, error) {
 	tl.startOnce.Do(tl.start)
-	conn, ok := <-tl.connCh
-	if !ok {
+	select {
+	case conn := <-tl.connCh:
+		return conn, nil
+	case <-tl.done:
 		return nil, net.ErrClosed
 	}
-	return conn, nil
 }
 
 func (tl *tokenListener) Close() error {
