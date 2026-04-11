@@ -540,6 +540,7 @@ func selectedFindingIDs(raw string) map[string]bool {
 // commitAndPush commits any uncommitted changes and force-pushes to upstream.
 func (s *BabysitStep) commitAndPush(sctx *pipeline.StepContext) error {
 	ctx := sctx.Ctx
+	newHeadSHA := ""
 
 	status, _ := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
 	if strings.TrimSpace(status) == "" {
@@ -557,10 +558,7 @@ func (s *BabysitStep) commitAndPush(sctx *pipeline.StepContext) error {
 	if err != nil {
 		return fmt.Errorf("resolve head after commit: %w", err)
 	}
-	sctx.Run.HeadSHA = headSHA
-	if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, headSHA); err != nil {
-		return err
-	}
+	newHeadSHA = headSHA
 
 	ref := sctx.Run.Branch
 	if !strings.HasPrefix(ref, "refs/") {
@@ -569,13 +567,18 @@ func (s *BabysitStep) commitAndPush(sctx *pipeline.StepContext) error {
 
 	upstreamSHA, lsErr := git.LsRemote(ctx, sctx.WorkDir, sctx.Repo.UpstreamURL, ref)
 	if lsErr != nil {
-		slog.Warn("ls-remote failed, pushing without force-with-lease", "ref", ref, "error", lsErr)
+		return fmt.Errorf("ls-remote upstream: %w", lsErr)
 	}
 	if err := git.Push(ctx, sctx.WorkDir, sctx.Repo.UpstreamURL, ref, upstreamSHA, upstreamSHA != ""); err != nil {
-		if lsErr != nil {
-			return fmt.Errorf("push (ls-remote failed: %v): %w", lsErr, err)
-		}
 		return fmt.Errorf("push: %w", err)
+	}
+
+	if _, err := git.Run(ctx, sctx.WorkDir, "update-ref", ref, newHeadSHA); err != nil {
+		return fmt.Errorf("update local branch ref: %w", err)
+	}
+	sctx.Run.HeadSHA = newHeadSHA
+	if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, newHeadSHA); err != nil {
+		return err
 	}
 
 	sctx.Log("committed and pushed fixes")

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -103,6 +104,80 @@ var findingsSchema = json.RawMessage(`{
 	},
 	"required": ["findings", "summary"]
 }`)
+
+var commitSummarySchema = json.RawMessage(`{
+	"type": "object",
+	"properties": {
+		"summary": {"type": "string"}
+	},
+	"required": ["summary"]
+}`)
+
+type commitSummary struct {
+	Summary string `json:"summary"`
+}
+
+func normalizedBranchRef(ref string) string {
+	if !strings.HasPrefix(ref, "refs/") {
+		return "refs/heads/" + ref
+	}
+	return ref
+}
+
+func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summary, fallbackSummary string) error {
+	ctx := sctx.Ctx
+	status, _ := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
+	if strings.TrimSpace(status) == "" {
+		sctx.Log("no agent changes to commit")
+		return nil
+	}
+	if _, err := git.Run(ctx, sctx.WorkDir, "add", "-A"); err != nil {
+		return fmt.Errorf("stage %s changes: %w", stepName, err)
+	}
+	summary = strings.Join(strings.Fields(summary), " ")
+	if summary == "" {
+		summary = fallbackSummary
+	}
+	commitMessage := deterministicFixCommitMessage(stepName, summary)
+	if _, err := git.Run(ctx, sctx.WorkDir, "commit", "-m", commitMessage); err != nil {
+		return fmt.Errorf("commit %s changes: %w", stepName, err)
+	}
+	headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
+	if err != nil {
+		return fmt.Errorf("resolve head after %s commit: %w", stepName, err)
+	}
+	ref := normalizedBranchRef(sctx.Run.Branch)
+	if _, err := git.Run(ctx, sctx.WorkDir, "update-ref", ref, headSHA); err != nil {
+		return fmt.Errorf("update local branch ref: %w", err)
+	}
+	sctx.Run.HeadSHA = headSHA
+	if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, headSHA); err != nil {
+		return err
+	}
+	sctx.Log(fmt.Sprintf("committed agent fixes: %s", commitMessage))
+	return nil
+}
+
+func extractCommitSummary(result *agent.Result) (string, error) {
+	var summary commitSummary
+	if result.Output == nil {
+		return "", fmt.Errorf("agent returned no structured summary")
+	}
+	if err := json.Unmarshal(result.Output, &summary); err != nil {
+		return "", fmt.Errorf("parse commit summary: %w", err)
+	}
+	cleaned := strings.Join(strings.Fields(summary.Summary), " ")
+	cleaned = strings.Trim(cleaned, " \t\r\n\"'.;:,-")
+	return cleaned, nil
+}
+
+func deterministicFixCommitMessage(stepName types.StepName, summary string) string {
+	summary = strings.Join(strings.Fields(summary), " ")
+	if summary == "" {
+		summary = "apply fixes"
+	}
+	return fmt.Sprintf("no-mistakes(%s): %s", stepName, summary)
+}
 
 // isTestFile returns true if the file path matches common test file naming patterns.
 func isTestFile(path string) bool {

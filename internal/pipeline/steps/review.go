@@ -49,13 +49,16 @@ Context:
 - default branch: %s
 - ignore patterns: %s
 
-Rules:
-- Always start with double checking whether the findings are legitimate.
-- Do not add code comments explaining your fixes.
-- Verify that the issues are resolved before finishing.
+		Rules:
+		- Always start with double checking whether the findings are legitimate.
+		- Do not add code comments explaining your fixes.
+		- Verify that the issues are resolved before finishing.
+		- Return JSON with a single "summary" field when you are done.
+		- The summary must be one concise sentence fragment suitable for a git commit subject.
+		- Keep the summary under 10 words.
 
-Previous review findings to address:
-%s`,
+		Previous review findings to address:
+		%s`,
 			branch,
 			baseSHA,
 			sctx.Run.HeadSHA,
@@ -64,13 +67,21 @@ Previous review findings to address:
 			ignorePatterns,
 			sctx.PreviousFindings,
 		)
-		_, err := sctx.Agent.Run(ctx, agent.RunOpts{
-			Prompt:  fixPrompt,
-			CWD:     sctx.WorkDir,
-			OnChunk: sctx.Log,
+		result, err := sctx.Agent.Run(ctx, agent.RunOpts{
+			Prompt:     fixPrompt,
+			CWD:        sctx.WorkDir,
+			JSONSchema: commitSummarySchema,
+			OnChunk:    sctx.Log,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("agent fix: %w", err)
+		}
+		summary, err := extractCommitSummary(result)
+		if err != nil {
+			sctx.Log(fmt.Sprintf("warning: could not parse fix summary: %v", err))
+		}
+		if err := commitAgentFixes(sctx, s.Name(), summary, "address review findings"); err != nil {
+			return nil, err
 		}
 	}
 

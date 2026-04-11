@@ -16,6 +16,7 @@ func (s *PushStep) Name() types.StepName { return types.StepPush }
 
 func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	ctx := sctx.Ctx
+	newHeadSHA := ""
 
 	// Run format command if configured (before committing, so changes are formatted)
 	if fmtCmd := sctx.Config.Commands.Format; fmtCmd != "" {
@@ -43,10 +44,7 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 		if err != nil {
 			return nil, fmt.Errorf("resolve head after commit: %w", err)
 		}
-		sctx.Run.HeadSHA = headSHA
-		if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, headSHA); err != nil {
-			return nil, err
-		}
+		newHeadSHA = headSHA
 	}
 
 	ref := sctx.Run.Branch
@@ -73,6 +71,16 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 		// New branch: regular push (no force needed)
 		if err := git.Push(ctx, sctx.WorkDir, upstream, ref, "", false); err != nil {
 			return nil, fmt.Errorf("push to upstream: %w", err)
+		}
+	}
+
+	if newHeadSHA != "" {
+		if _, err := git.Run(ctx, sctx.WorkDir, "update-ref", ref, newHeadSHA); err != nil {
+			return nil, fmt.Errorf("update local branch ref: %w", err)
+		}
+		sctx.Run.HeadSHA = newHeadSHA
+		if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, newHeadSHA); err != nil {
+			return nil, err
 		}
 	}
 
