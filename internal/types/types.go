@@ -11,6 +11,11 @@ const (
 	RunCancelled RunStatus = "cancelled"
 )
 
+const (
+	RunCancelReasonAbortedByUser = "cancelled: aborted by user"
+	RunCancelReasonSuperseded    = "cancelled: superseded by new push"
+)
+
 // StepName identifies a pipeline step.
 type StepName string
 

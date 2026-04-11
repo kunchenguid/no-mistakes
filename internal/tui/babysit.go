@@ -165,13 +165,8 @@ func renderBabysitViewWithSelection(run *ipc.RunInfo, steps []ipc.StepResultInfo
 
 	if !isApproval && len(logs) > 0 && logLines > 0 {
 		b.WriteString("\n")
-		start := len(logs) - logLines
-		if start < 0 {
-			start = 0
-		}
-		for _, line := range logs[start:] {
-			line, _ = cutText(line, contentWidth)
-			b.WriteString(styleLogLine(line) + "\n")
+		for _, line := range renderLogTail(logs, contentWidth, logLines) {
+			b.WriteString(line + "\n")
 		}
 	}
 	var itemCount int

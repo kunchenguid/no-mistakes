@@ -86,7 +86,7 @@ func IsRunning(p *paths.Paths) (bool, error) {
 func Stop(p *paths.Paths) error {
 	client, err := ipc.Dial(p.Socket())
 	if err != nil {
-		return fmt.Errorf("daemon not running")
+		return nil
 	}
 	defer client.Close()
 

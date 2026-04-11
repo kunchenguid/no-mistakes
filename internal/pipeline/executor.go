@@ -232,6 +232,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		case types.ActionFix:
 			// Fix — mark step as fixing, re-execute with previous findings
 			e.db.UpdateStepStatus(sr.ID, types.StepStatusFixing)
+			e.emitStepEvent(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFixing))
 			sctx.Fixing = true
 			sctx.PreviousFindings = filterFindingsJSON(outcome.Findings, response.findingIDs)
 			slog.Info("step fix requested, re-executing", "step", stepName)
@@ -282,8 +283,12 @@ func (e *Executor) failRun(run *db.Run, repo *db.Repo, err error, ctxs ...contex
 			break
 		}
 	}
-	e.db.UpdateRunError(run.ID, errMsg)
-	run.Status = types.RunFailed
+	runStatus := types.RunFailed
+	if errMsg == types.RunCancelReasonAbortedByUser {
+		runStatus = types.RunCancelled
+	}
+	e.db.UpdateRunErrorStatus(run.ID, errMsg, runStatus)
+	run.Status = runStatus
 	run.Error = &errMsg
 	e.emitRunEvent(ipc.EventRunCompleted, run, repo)
 	return err

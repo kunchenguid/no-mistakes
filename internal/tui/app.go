@@ -186,7 +186,7 @@ func (m Model) View() string {
 	}
 	actionBar := renderActionBar(m.steps, showSelectionActions, allowFix, m.showDiff, selectedCount, totalCount, m.confirmAbort, hasDiff)
 
-	footer := renderFooter(m.done, m.showHelp)
+	footer := renderFooter(m.done, m.showHelp, m.confirmAbort)
 	contentBudget := -1
 	if m.height > 0 {
 		baseSections := []string{}
@@ -389,19 +389,13 @@ func renderLogBox(logs []string, width int, logLines int, remainingBudget int) s
 			logLines = maxLogLines
 		}
 	}
-	start := len(logs) - logLines
-	if start < 0 {
-		start = 0
-	}
 	contentWidth := boxWidth - 4
-	var logContent strings.Builder
-	for i, line := range logs[start:] {
-		if i > 0 {
-			logContent.WriteString("\n")
-		}
-		line, _ = cutText(line, contentWidth)
-		logContent.WriteString(styleLogLine(line))
+	renderedLines := renderLogTail(logs, contentWidth, logLines)
+	if len(renderedLines) == 0 {
+		return ""
 	}
+	var logContent strings.Builder
+	logContent.WriteString(strings.Join(renderedLines, "\n"))
 	return renderBox("Log", logContent.String(), boxWidth)
 }
 
@@ -427,7 +421,7 @@ func renderErrorBox(err error, width int) string {
 	return renderBox("Error", errContent.String(), boxWidth)
 }
 
-func renderFooter(done bool, showHelp bool) string {
+func renderFooter(done bool, showHelp bool, confirmAbort bool) string {
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
 	boldKey := lipgloss.NewStyle().Bold(true)
 	qLabel := "detach"
@@ -438,7 +432,16 @@ func renderFooter(done bool, showHelp bool) string {
 	if showHelp {
 		helpLabel = "close"
 	}
-	return "  " + boldKey.Render("q") + " " + dimStyle.Render(qLabel) + "  " + boldKey.Render("?") + " " + dimStyle.Render(helpLabel)
+	footer := "  " + boldKey.Render("q") + " " + dimStyle.Render(qLabel)
+	if !done {
+		xLabel := "abort"
+		if confirmAbort {
+			xLabel = "again to abort"
+		}
+		footer += "  " + boldKey.Render("x") + " " + dimStyle.Render(xLabel)
+	}
+	footer += "  " + boldKey.Render("?") + " " + dimStyle.Render(helpLabel)
+	return footer
 }
 
 func joinSections(sections []string, gap string) string {
@@ -766,9 +769,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "s":
 		return m, m.respondCmd(types.ActionSkip)
 	case "x":
+		if m.done || m.run == nil {
+			return m, nil
+		}
 		if m.confirmAbort {
 			m.confirmAbort = false
-			return m, m.respondCmd(types.ActionAbort)
+			return m, m.cancelRunCmd()
 		}
 		m.confirmAbort = true
 		return m, nil
@@ -808,6 +814,21 @@ func (m Model) respondCmd(action types.ApprovalAction) tea.Cmd {
 	}
 }
 
+func (m Model) cancelRunCmd() tea.Cmd {
+	if m.runID == "" {
+		return nil
+	}
+	return func() tea.Msg {
+		params := &ipc.CancelRunParams{RunID: m.runID}
+		var result ipc.CancelRunResult
+		err := m.client.Call(ipc.MethodCancelRun, params, &result)
+		if err != nil {
+			return errMsg{err}
+		}
+		return nil
+	}
+}
+
 func (m Model) subscribeCmd() tea.Cmd {
 	return func() tea.Msg {
 		events, cancel, err := ipc.Subscribe(m.socketPath, &ipc.SubscribeParams{
@@ -837,11 +858,13 @@ func (m Model) waitForEvent() tea.Cmd {
 func (m *Model) applyEvent(event ipc.Event) {
 	switch event.Type {
 	case ipc.EventRunUpdated, ipc.EventRunCreated:
+		m.err = nil
 		if event.Status != nil {
 			m.run.Status = types.RunStatus(*event.Status)
 		}
 
 	case ipc.EventRunCompleted:
+		m.err = nil
 		if event.Status != nil {
 			m.run.Status = types.RunStatus(*event.Status)
 		}
@@ -851,12 +874,14 @@ func (m *Model) applyEvent(event ipc.Event) {
 		m.done = true
 
 	case ipc.EventStepStarted:
+		m.err = nil
 		if event.StepName != nil {
 			m.updateStepStatus(*event.StepName, types.StepStatusRunning)
 			m.stepStartTimes[*event.StepName] = time.Now()
 		}
 
 	case ipc.EventStepCompleted:
+		m.err = nil
 		if event.StepName != nil && event.Status != nil {
 			m.updateStepStatus(*event.StepName, types.StepStatus(*event.Status))
 		}

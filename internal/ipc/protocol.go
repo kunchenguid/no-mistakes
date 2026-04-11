@@ -16,6 +16,7 @@ const (
 	MethodRerun        = "rerun"
 	MethodSubscribe    = "subscribe"
 	MethodRespond      = "respond"
+	MethodCancelRun    = "cancel_run"
 	MethodHealth       = "health"
 	MethodShutdown     = "shutdown"
 )
@@ -97,6 +98,11 @@ type RespondParams struct {
 	FindingIDs []string             `json:"finding_ids,omitempty"`
 }
 
+// CancelRunParams cancels an active pipeline run.
+type CancelRunParams struct {
+	RunID string `json:"run_id"`
+}
+
 // HealthParams has no fields but exists for consistency.
 type HealthParams struct{}
 
@@ -132,6 +138,11 @@ type RerunResult struct {
 
 // RespondResult confirms the action was accepted.
 type RespondResult struct {
+	OK bool `json:"ok"`
+}
+
+// CancelRunResult confirms the run cancellation request was accepted.
+type CancelRunResult struct {
 	OK bool `json:"ok"`
 }
 

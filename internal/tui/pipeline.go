@@ -400,10 +400,12 @@ func renderHelpOverlay(width int, run *ipc.RunInfo, hasAwaitingStep bool, showDi
 	if done {
 		qLabel = "quit"
 	}
-	content.WriteString(renderEntries([]helpEntry{
-		{"q", qLabel},
-		{"?", "close help"},
-	}))
+	footerEntries := []helpEntry{{"q", qLabel}}
+	if !done {
+		footerEntries = append(footerEntries, helpEntry{"x x", "abort pipeline"})
+	}
+	footerEntries = append(footerEntries, helpEntry{"?", "close help"})
+	content.WriteString(renderEntries(footerEntries))
 
 	return renderBox("Help", content.String(), width)
 }

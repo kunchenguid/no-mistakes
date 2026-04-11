@@ -253,6 +253,17 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, cancelDaemon c
 		return &ipc.RespondResult{OK: true}, nil
 	})
 
+	srv.Handle(ipc.MethodCancelRun, func(_ context.Context, params json.RawMessage) (interface{}, error) {
+		var p ipc.CancelRunParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("invalid params: %w", err)
+		}
+		if err := mgr.HandleCancel(p.RunID); err != nil {
+			return nil, err
+		}
+		return &ipc.CancelRunResult{OK: true}, nil
+	})
+
 	srv.HandleStream(ipc.MethodSubscribe, func(ctx context.Context, params json.RawMessage, send func(interface{}) error) error {
 		var p ipc.SubscribeParams
 		if err := json.Unmarshal(params, &p); err != nil {

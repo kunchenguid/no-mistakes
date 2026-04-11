@@ -525,12 +525,12 @@ func TestDaemonStopNotRunning(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := executeCmd("daemon", "stop")
-	if err == nil {
-		t.Fatal("daemon stop should fail when daemon is not running")
+	out, err := executeCmd("daemon", "stop")
+	if err != nil {
+		t.Fatalf("daemon stop should succeed when daemon is not running: %v\noutput: %s", err, out)
 	}
-	if !strings.Contains(err.Error(), "not running") {
-		t.Errorf("expected 'not running' error, got: %v", err)
+	if !strings.Contains(out, "daemon stopped") {
+		t.Errorf("expected 'daemon stopped', got: %s", out)
 	}
 }
 

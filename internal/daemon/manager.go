@@ -299,6 +299,20 @@ func (m *RunManager) HandleRespond(runID string, step types.StepName, action typ
 	return exec.Respond(step, action, findingIDs)
 }
 
+// HandleCancel stops an active run and propagates cancellation to the executor.
+func (m *RunManager) HandleCancel(runID string) error {
+	m.mu.Lock()
+	cancel, ok := m.cancels[runID]
+	m.mu.Unlock()
+
+	if !ok {
+		return fmt.Errorf("no active run %s", runID)
+	}
+
+	cancel(fmt.Errorf(types.RunCancelReasonAbortedByUser))
+	return nil
+}
+
 // cancelActiveRuns cancels any in-progress runs for the given repo+branch.
 // The cancellation cause is propagated to the executor via context.Cause,
 // which uses it as the run's error message in the DB.
@@ -323,7 +337,7 @@ func (m *RunManager) cancelActiveRuns(repoID, branch string) {
 			continue
 		}
 
-		cancel(fmt.Errorf("cancelled: superseded by new push"))
+		cancel(fmt.Errorf(types.RunCancelReasonSuperseded))
 		slog.Info("cancelled active run", "run_id", run.ID, "repo_id", repoID, "branch", branch)
 	}
 }

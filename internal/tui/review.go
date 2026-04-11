@@ -121,6 +121,20 @@ func cutText(text string, width int) (string, string) {
 	return b.String(), ""
 }
 
+func wrapLine(text string, width int) []string {
+	if width <= 0 || text == "" {
+		return []string{text}
+	}
+
+	parts := []string{}
+	for text != "" {
+		part, rest := cutText(text, width)
+		parts = append(parts, part)
+		text = rest
+	}
+	return parts
+}
+
 func wrapIndentedText(text string, width, indent int) string {
 	if text == "" {
 		return strings.Repeat(" ", indent)
@@ -144,17 +158,39 @@ func wrapIndentedText(text string, width, indent int) string {
 	return b.String()
 }
 
+func logLineStyle(line string) lipgloss.Style {
+	switch {
+	case strings.HasPrefix(line, "PASS"):
+		return lipgloss.NewStyle().Foreground(lipgloss.Color(ansiGreen))
+	case strings.HasPrefix(line, "FAIL"):
+		return lipgloss.NewStyle().Foreground(lipgloss.Color(ansiRed))
+	default:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
+	}
+}
+
 // styleLogLine applies PASS/FAIL-aware coloring to a single log line.
 // PASS lines are green, FAIL lines are red, everything else is dim.
 func styleLogLine(line string) string {
-	switch {
-	case strings.HasPrefix(line, "PASS"):
-		return lipgloss.NewStyle().Foreground(lipgloss.Color(ansiGreen)).Render(line)
-	case strings.HasPrefix(line, "FAIL"):
-		return lipgloss.NewStyle().Foreground(lipgloss.Color(ansiRed)).Render(line)
-	default:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack)).Render(line)
+	return logLineStyle(line).Render(line)
+}
+
+func renderLogTail(logs []string, width int, maxLines int) []string {
+	if len(logs) == 0 || width <= 0 || maxLines <= 0 {
+		return nil
 	}
+
+	lines := make([]string, 0, len(logs))
+	for _, line := range logs {
+		style := logLineStyle(line)
+		for _, part := range wrapLine(line, width) {
+			lines = append(lines, style.Render(part))
+		}
+	}
+	if len(lines) > maxLines {
+		lines = lines[len(lines)-maxLines:]
+	}
+	return lines
 }
 
 // renderFindings renders a findings list for display in the TUI.

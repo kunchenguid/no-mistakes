@@ -292,6 +292,23 @@ func TestIsRunningTrueWhenDaemonRunning(t *testing.T) {
 	}
 }
 
+func TestStopNotRunningIsNoop(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "dtest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	p := paths.WithRoot(tmpDir)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Stop(p); err != nil {
+		t.Fatalf("stop should succeed when daemon is not running: %v", err)
+	}
+}
+
 func TestReadPIDNoFile(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "dtest")
 	if err != nil {
@@ -906,6 +923,69 @@ func TestPushReceivedCancelsActiveRun(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Error("first run was not cancelled within timeout")
+}
+
+func TestCancelRunStopsActivePipeline(t *testing.T) {
+	started := make(chan struct{})
+	slowStep := &mockSlowStep{name: types.StepReview, started: started}
+
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{slowStep}
+	})
+
+	_, headSHA := setupTestGitRepo(t, p, d, "testrepo-cancel")
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var pushResult ipc.PushReceivedResult
+	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: p.RepoDir("testrepo-cancel"),
+		Ref:  "refs/heads/main",
+		Old:  "0000000000000000000000000000000000000000",
+		New:  headSHA,
+	}, &pushResult)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("slow step never started")
+	}
+
+	var cancelResult ipc.CancelRunResult
+	err = client.Call(ipc.MethodCancelRun, &ipc.CancelRunParams{RunID: pushResult.RunID}, &cancelResult)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cancelResult.OK {
+		t.Fatal("cancel run should return OK")
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		run, err := d.GetRun(pushResult.RunID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if run.Status == types.RunCancelled {
+			if run.Error == nil || !strings.Contains(*run.Error, "aborted by user") {
+				var got string
+				if run.Error != nil {
+					got = *run.Error
+				}
+				t.Fatalf("expected cancelled run error to mention aborted by user, got %q", got)
+			}
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("run was not cancelled within timeout")
 }
 
 func TestPushReceivedDoesNotCancelActiveRunOnDifferentBranch(t *testing.T) {

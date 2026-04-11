@@ -557,6 +557,9 @@ func TestModel_View_DetachMessage(t *testing.T) {
 	if !strings.Contains(view, "q detach") {
 		t.Error("expected minimal 'q detach' hint when pipeline is running")
 	}
+	if !strings.Contains(view, "x abort") {
+		t.Error("expected top-level 'x abort' hint when pipeline is running")
+	}
 	// Should NOT use verbose phrasing.
 	if strings.Contains(view, "Press q") {
 		t.Error("expected minimal footer, not verbose 'Press q...' phrasing")
@@ -4207,8 +4210,6 @@ func TestAbortConfirmation_FirstPressShowsConfirm(t *testing.T) {
 func TestAbortConfirmation_SecondPressSendsAbort(t *testing.T) {
 	// Second 'x' press should actually send the abort command.
 	run := testRun()
-	run.Steps[0].Status = types.StepStatusAwaitingApproval
-	run.Steps[0].FindingsJSON = ptr(`{"summary":"test","items":[{"id":"f1","severity":"error","file":"a.go","line":1,"description":"bug"}]}`)
 
 	m := NewModel("/tmp/sock", nil, run)
 	m.width = 80
@@ -4220,6 +4221,22 @@ func TestAbortConfirmation_SecondPressSendsAbort(t *testing.T) {
 	// Should produce a non-nil command (the abort RPC call).
 	if cmd == nil {
 		t.Error("expected a non-nil command from second x press (abort should be sent)")
+	}
+}
+
+func TestModel_View_HelpOverlay_ShowsAbortWhenRunning(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	run := testRun()
+	m := NewModel("", nil, run)
+	m.width = 80
+	m.height = 40
+	m.showHelp = true
+
+	view := m.View()
+	plain := stripANSI(view)
+
+	if !strings.Contains(plain, "x x") || !strings.Contains(plain, "abort pipeline") {
+		t.Errorf("help should show top-level abort while pipeline is running, got:\n%s", plain)
 	}
 }
 
@@ -4414,7 +4431,7 @@ func TestRenderDiff_TruncatedLinePreservesPrefix(t *testing.T) {
 
 // --- Log line truncation tests ---
 
-func TestModel_View_LogLongLinesTruncated(t *testing.T) {
+func TestModel_View_LogLongLinesWrapped(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
 	run := testRun()
 	m := NewModel("/tmp/sock", nil, run)
@@ -4436,9 +4453,8 @@ func TestModel_View_LogLongLinesTruncated(t *testing.T) {
 		}
 	}
 
-	// The full long log text should NOT appear - it should be truncated.
-	if strings.Contains(view, strings.Repeat("x", 77)) { // contentWidth = 80 - 4 = 76
-		t.Error("expected long log line to be truncated to fit box content width")
+	if got := strings.Count(view, "x"); got < 200 {
+		t.Errorf("expected wrapped log output to preserve all 200 x characters, got %d", got)
 	}
 }
 
@@ -4456,7 +4472,7 @@ func TestModel_View_LogShortLinesNotTruncated(t *testing.T) {
 	}
 }
 
-func TestRenderBabysitView_LogLongLinesTruncated(t *testing.T) {
+func TestRenderBabysitView_LogLongLinesWrapped(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
 	run := testRunWithBabysit()
 	run.Steps[5].Status = types.StepStatusRunning
@@ -4477,9 +4493,8 @@ func TestRenderBabysitView_LogLongLinesTruncated(t *testing.T) {
 		}
 	}
 
-	// The full long log text should NOT appear in the output.
-	if strings.Contains(result, strings.Repeat("y", 77)) {
-		t.Error("expected long babysit log line to be truncated to fit box content width")
+	if got := strings.Count(result, "y"); got < 200 {
+		t.Errorf("expected wrapped babysit log output to preserve all 200 y characters, got %d", got)
 	}
 }
 
@@ -4826,6 +4841,24 @@ func TestErrorDisplay_RedStyledMessage(t *testing.T) {
 	styledMsg := redStyle.Render("event stream closed")
 	if !strings.Contains(view, styledMsg) {
 		t.Error("expected error message text to be styled red inside the error box")
+	}
+}
+
+func TestModel_ApplyEvent_ClearsTransientErrorOnNextStateEvent(t *testing.T) {
+	run := testRun()
+	m := NewModel("/tmp/sock", nil, run)
+	m.err = &ipc.RPCError{Code: -1, Message: "no step awaiting approval"}
+
+	status := string(types.StepStatusFixReview)
+	stepName := types.StepReview
+	m.applyEvent(ipc.Event{
+		Type:     ipc.EventStepCompleted,
+		StepName: &stepName,
+		Status:   &status,
+	})
+
+	if m.err != nil {
+		t.Fatalf("expected transient error to clear on next state event, got %v", m.err)
 	}
 }
 
@@ -5864,9 +5897,9 @@ func TestModel_View_HelpOverlay_ShowsDetachWhenRunning(t *testing.T) {
 	view := m.View()
 	plain := stripANSI(view)
 
-	// Help overlay should show "q  detach" (not "quit") while pipeline is running.
-	if !strings.Contains(plain, "q  detach") {
-		t.Errorf("help should show 'q  detach' when pipeline is running, got:\n%s", plain)
+	// Help overlay should show a detach hint (not quit) while the pipeline is running.
+	if !strings.Contains(plain, "detach") {
+		t.Errorf("help should show detach when pipeline is running, got:\n%s", plain)
 	}
 	if strings.Contains(plain, "quit") {
 		t.Errorf("help should NOT show 'quit' when pipeline is running, got:\n%s", plain)
