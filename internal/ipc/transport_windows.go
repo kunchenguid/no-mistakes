@@ -12,6 +12,9 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
+
+	"golang.org/x/sys/windows"
 )
 
 func listen(endpoint string) (net.Listener, error) {
@@ -29,6 +32,10 @@ func listen(endpoint string) (net.Listener, error) {
 	if err := os.WriteFile(endpoint, []byte(content), 0o600); err != nil {
 		ln.Close()
 		return nil, err
+	}
+	if err := restrictFileACL(endpoint); err != nil {
+		ln.Close()
+		return nil, fmt.Errorf("restrict endpoint file ACL: %w", err)
 	}
 	return &tokenListener{Listener: ln, token: token}, nil
 }
@@ -83,12 +90,14 @@ func (tl *tokenListener) Accept() (net.Conn, error) {
 		if err != nil {
 			return nil, err
 		}
+		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 		r := bufio.NewReader(conn)
 		line, err := r.ReadString('\n')
 		if err != nil {
 			conn.Close()
 			continue
 		}
+		conn.SetReadDeadline(time.Time{})
 		if strings.TrimSpace(line) != tl.token {
 			conn.Close()
 			continue
@@ -106,6 +115,42 @@ type bufferedConn struct {
 
 func (bc *bufferedConn) Read(p []byte) (int, error) {
 	return bc.r.Read(p)
+}
+
+func restrictFileACL(path string) error {
+	token, err := windows.OpenCurrentProcessToken()
+	if err != nil {
+		return err
+	}
+	defer token.Close()
+
+	user, err := token.GetTokenUser()
+	if err != nil {
+		return err
+	}
+
+	access := []windows.EXPLICIT_ACCESS{{
+		AccessPermissions: windows.GENERIC_ALL,
+		AccessMode:        windows.SET_ACCESS,
+		Inheritance:       windows.NO_INHERITANCE,
+		Trustee: windows.TRUSTEE{
+			TrusteeForm:  windows.TRUSTEE_IS_SID,
+			TrusteeType:  windows.TRUSTEE_IS_USER,
+			TrusteeValue: windows.TrusteeValueFromSID(user.User.Sid),
+		},
+	}}
+
+	acl, err := windows.ACLFromEntries(access, nil)
+	if err != nil {
+		return err
+	}
+
+	return windows.SetNamedSecurityInfo(
+		path,
+		windows.SE_FILE_OBJECT,
+		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
+		nil, nil, acl, nil,
+	)
 }
 
 func processAlive(pid int) bool {

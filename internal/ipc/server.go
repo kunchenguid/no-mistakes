@@ -18,7 +18,7 @@ type HandlerFunc func(ctx context.Context, params json.RawMessage) (interface{},
 // the handler should return.
 type StreamHandlerFunc func(ctx context.Context, params json.RawMessage, send func(interface{}) error) error
 
-// Server listens on a Unix socket and dispatches JSON-RPC requests.
+// Server listens on an IPC endpoint and dispatches JSON-RPC requests.
 type Server struct {
 	mu             sync.RWMutex
 	handlers       map[string]HandlerFunc
