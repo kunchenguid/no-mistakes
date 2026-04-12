@@ -36,4 +36,14 @@ CREATE TABLE IF NOT EXISTS step_results (
     started_at    INTEGER,
     completed_at  INTEGER
 );
+
+CREATE TABLE IF NOT EXISTS step_rounds (
+    id             TEXT PRIMARY KEY,
+    step_result_id TEXT NOT NULL REFERENCES step_results(id) ON DELETE CASCADE,
+    round          INTEGER NOT NULL,
+    trigger_type   TEXT NOT NULL,
+    findings_json  TEXT,
+    duration_ms    INTEGER NOT NULL,
+    created_at     INTEGER NOT NULL
+);
 `

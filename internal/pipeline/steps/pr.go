@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
@@ -204,7 +205,18 @@ func (s *PRStep) buildPRContent(sctx *pipeline.StepContext, branch, baseSHA stri
 	commitLog, _ := git.Log(ctx, sctx.WorkDir, baseSHA, sctx.Run.HeadSHA)
 	diffStat, _ := git.Run(ctx, sctx.WorkDir, "diff", "--stat", baseSHA+".."+sctx.Run.HeadSHA)
 
-	prompt := fmt.Sprintf(`Draft a pull request title and description for the full branch delta.
+	// Build the deterministic pipeline section from step rounds.
+	pipelineMD := s.buildPipelineSection(sctx)
+
+	// Build pipeline context for the agent prompt so it can reference findings in the summary.
+	pipelineContext := ""
+	if pipelineMD != "" {
+		pipelineContext = fmt.Sprintf(`
+Pipeline results (reference these naturally in the summary if relevant):
+%s`, pipelineMD)
+	}
+
+	prompt := fmt.Sprintf(`Draft a pull request title and summary for the full branch delta.
 
 Context:
 - branch: %s
@@ -215,14 +227,14 @@ Context:
 Rules:
 - Cover the full branch delta, not just the latest commit.
 - Title must use conventional commit format: "type(scope): description" or "type: description". Valid types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert. Scope is optional. Do not capitalize the type. Do not use the raw branch name.
-- Body: GitHub-flavored markdown with a short summary and testing section.
+- Body: a "## Summary" section in GitHub-flavored markdown. 1-3 concise bullet points describing what changed and why. If the pipeline flagged anything notable (risk, findings, auto-fixes), mention it briefly. Do not include a Testing section - pipeline results are appended separately.
 - Do not invent tests or behavior.
 
 Commit history:
 %s
 
 Diff stat:
-%s`, branch, baseSHA, sctx.Run.HeadSHA, sctx.Repo.DefaultBranch, commitLog, diffStat)
+%s%s`, branch, baseSHA, sctx.Run.HeadSHA, sctx.Repo.DefaultBranch, commitLog, diffStat, pipelineContext)
 
 	result, err := sctx.Agent.Run(ctx, agent.RunOpts{
 		Prompt:     prompt,
@@ -232,7 +244,7 @@ Diff stat:
 	})
 	if err != nil {
 		slog.Warn("agent failed for PR content, using fallback", "error", err)
-		return fallbackPRContent(branch, commitLog), nil
+		return fallbackPRContent(branch, commitLog, pipelineMD), nil
 	}
 
 	var content prContent
@@ -245,15 +257,46 @@ Diff stat:
 					slog.Warn("agent PR title is not conventional commit format, prepending chore:", "title", content.Title)
 					content.Title = "chore: " + content.Title
 				}
+				content.Body = appendPipelineSection(content.Body, pipelineMD)
 				return content, nil
 			}
 		}
 	}
 
-	return fallbackPRContent(branch, commitLog), nil
+	return fallbackPRContent(branch, commitLog, pipelineMD), nil
 }
 
-func fallbackPRContent(branch, commitLog string) prContent {
+// buildPipelineSection queries step results and rounds from the DB and
+// produces the deterministic pipeline markdown section.
+func (s *PRStep) buildPipelineSection(sctx *pipeline.StepContext) string {
+	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
+	if err != nil {
+		slog.Warn("failed to query step results for pipeline summary", "error", err)
+		return ""
+	}
+
+	rounds := make(map[string][]*db.StepRound, len(steps))
+	for _, sr := range steps {
+		r, err := sctx.DB.GetRoundsByStep(sr.ID)
+		if err != nil {
+			slog.Warn("failed to query rounds for step", "step", sr.StepName, "error", err)
+			continue
+		}
+		rounds[sr.ID] = r
+	}
+
+	return BuildPipelineSummary(steps, rounds)
+}
+
+// appendPipelineSection appends the pipeline markdown after the agent's body.
+func appendPipelineSection(body, pipelineMD string) string {
+	if pipelineMD == "" {
+		return body
+	}
+	return body + "\n\n" + pipelineMD
+}
+
+func fallbackPRContent(branch, commitLog, pipelineMD string) prContent {
 	title := ""
 	for _, line := range strings.Split(commitLog, "\n") {
 		line = strings.TrimSpace(line)
@@ -273,12 +316,13 @@ func fallbackPRContent(branch, commitLog string) prContent {
 	} else if !isConventionalTitle(title) {
 		title = "chore: " + title
 	}
-	body := strings.TrimSpace(commitLog)
-	if body == "" {
-		body = "Not run"
+	body := fmt.Sprintf("## Summary\n\n%s", strings.TrimSpace(commitLog))
+	if body == "## Summary\n\n" {
+		body = fmt.Sprintf("## Summary\n\n- %s", title)
 	}
+	body = appendPipelineSection(body, pipelineMD)
 	return prContent{
 		Title: title,
-		Body:  fmt.Sprintf("## Summary\n\n- %s\n\n## Testing\n\n- %s", title, body),
+		Body:  body,
 	}
 }
