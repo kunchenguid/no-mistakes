@@ -87,6 +87,7 @@ func NewModel(socketPath string, client *ipc.Client, run *ipc.RunInfo) Model {
 		client:            client,
 		runID:             run.ID,
 		run:               run,
+		done:              run.Status == types.RunCompleted || run.Status == types.RunFailed || run.Status == types.RunCancelled,
 		steps:             run.Steps,
 		stepFindings:      make(map[types.StepName]string),
 		stepDiffs:         make(map[types.StepName]string),
@@ -155,6 +156,43 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+// terminalTitle returns the current terminal title string based on run state.
+func (m Model) terminalTitle() string {
+	prefix := "no-mistakes: "
+
+	// Terminal states.
+	if m.done || m.run == nil {
+		switch {
+		case m.run == nil:
+			return prefix + "Pending"
+		case m.run.Status == types.RunCompleted:
+			return prefix + "✓ Completed"
+		case m.run.Status == types.RunFailed:
+			return prefix + "✗ Failed"
+		case m.run.Status == types.RunCancelled:
+			return prefix + "✗ Cancelled"
+		}
+	}
+
+	// Find the most relevant active step.
+	for _, s := range m.steps {
+		icon := stepStatusIcon(s.Status)
+		switch s.Status {
+		case types.StepStatusRunning, types.StepStatusFixing:
+			return prefix + icon + " " + stepLabel(s.StepName)
+		case types.StepStatusAwaitingApproval, types.StepStatusFixReview:
+			return prefix + icon + " " + stepLabel(s.StepName)
+		}
+	}
+
+	return prefix + "Pending"
+}
+
+// setTerminalTitle returns the OSC escape sequence to set the terminal title.
+func setTerminalTitle(title string) string {
+	return "\033]2;" + title + "\007"
 }
 
 func (m Model) View() string {
@@ -348,7 +386,7 @@ func (m Model) View() string {
 		}
 		rightSections = append(rightSections, extraSections...)
 		columns := renderResponsiveColumns(joinSections(leftSections, sectionGap), joinSections(rightSections, sectionGap), leftWidth, rightWidth, responsiveLayoutGap)
-		return joinSections([]string{columns, footer}, sectionGap)
+		return setTerminalTitle(m.terminalTitle()) + joinSections([]string{columns, footer}, sectionGap)
 	}
 
 	sections := []string{pipelineView}
@@ -360,7 +398,7 @@ func (m Model) View() string {
 	}
 	sections = append(sections, extraSections...)
 	sections = append(sections, footer)
-	return joinSections(sections, sectionGap)
+	return setTerminalTitle(m.terminalTitle()) + joinSections(sections, sectionGap)
 }
 
 func renderFindingsBoxForHeight(raw string, width int, cursor int, selected map[string]bool, boxHeight int) string {
@@ -698,7 +736,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch key {
 	case "q", "ctrl+c":
 		m.quitting = true
-		return m, tea.Quit
+		return m, tea.Sequence(tea.SetWindowTitle(""), tea.Quit)
 
 	case "?":
 		m.showHelp = !m.showHelp
