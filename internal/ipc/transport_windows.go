@@ -174,6 +174,7 @@ func (tl *tokenListener) Accept() (net.Conn, error) {
 
 func (tl *tokenListener) Close() error {
 	tl.closeOnce.Do(func() { close(tl.done) })
+	os.Remove(tl.endpoint)
 	return tl.Listener.Close()
 }
 

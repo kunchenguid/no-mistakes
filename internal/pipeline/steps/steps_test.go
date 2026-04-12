@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -1248,7 +1249,12 @@ func TestPushStep_RunsFormatCommandBeforeCommit(t *testing.T) {
 
 	// Use a format command that writes a marker file to prove it ran
 	markerPath := filepath.Join(dir, ".format-ran")
-	formatCmd := fmt.Sprintf("touch %s", markerPath)
+	var formatCmd string
+	if runtime.GOOS == "windows" {
+		formatCmd = fmt.Sprintf("type nul > \"%s\"", markerPath)
+	} else {
+		formatCmd = fmt.Sprintf("touch %s", markerPath)
+	}
 
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{Format: formatCmd})
@@ -1479,6 +1485,30 @@ func TestPRStep_GhNotAvailable(t *testing.T) {
 	}
 }
 
+// prependPATH prepends binDir to PATH using the platform-specific separator.
+func prependPATH(t *testing.T, binDir string) {
+	t.Helper()
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// writeFakeScript writes a shell script (Unix) or batch file (Windows) to binDir.
+// name is the binary name without extension (e.g. "gh"). On Windows, a .bat
+// extension is appended automatically.
+func writeFakeScript(t *testing.T, binDir, name, shScript, batScript string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		p := filepath.Join(binDir, name+".bat")
+		if err := os.WriteFile(p, []byte(batScript), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		p := filepath.Join(binDir, name)
+		if err := os.WriteFile(p, []byte(shScript), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 // fakeGH creates a mock gh script in a temp dir and returns the dir (for PATH prepending).
 // The script records all invocations to a log file and responds based on subcommand.
 func fakeGH(t *testing.T, prViewURL string) (binDir string, logFile string) {
@@ -1486,7 +1516,7 @@ func fakeGH(t *testing.T, prViewURL string) (binDir string, logFile string) {
 	binDir = t.TempDir()
 	logFile = filepath.Join(t.TempDir(), "gh.log")
 
-	script := fmt.Sprintf(`#!/bin/sh
+	shScript := fmt.Sprintf(`#!/bin/sh
 echo "$@" >> %s
 if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
   exit 0
@@ -1508,10 +1538,18 @@ fi
 exit 1
 `, logFile, prViewURL, prViewURL)
 
-	ghPath := filepath.Join(binDir, "gh")
-	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
+	batScript := fmt.Sprintf("@echo off\r\necho %%* >> \"%s\"\r\n", logFile)
+	batScript += "if \"%1\"==\"auth\" if \"%2\"==\"status\" exit /b 0\r\n"
+	if prViewURL != "" {
+		batScript += fmt.Sprintf("if \"%%1\"==\"pr\" if \"%%2\"==\"view\" (\r\n  echo %s\r\n  exit /b 0\r\n)\r\n", prViewURL)
+	} else {
+		batScript += "if \"%1\"==\"pr\" if \"%2\"==\"view\" exit /b 1\r\n"
 	}
+	batScript += "if \"%1\"==\"pr\" if \"%2\"==\"edit\" exit /b 0\r\n"
+	batScript += "if \"%1\"==\"pr\" if \"%2\"==\"create\" (\r\n  echo https://github.com/test/repo/pull/99\r\n  exit /b 0\r\n)\r\n"
+	batScript += "exit /b 1\r\n"
+
+	writeFakeScript(t, binDir, "gh", shScript, batScript)
 	return binDir, logFile
 }
 
@@ -1519,7 +1557,7 @@ func TestPRStep_UpdatesExistingPR(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	binDir, logFile := fakeGH(t, "https://github.com/test/repo/pull/42")
-	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+	prependPATH(t, binDir)
 
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
@@ -1574,7 +1612,7 @@ func TestPRStep_ZeroBaseSHA(t *testing.T) {
 	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
 
 	binDir, logFile := fakeGH(t, "")
-	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+	prependPATH(t, binDir)
 
 	ag := &mockAgent{name: "test"}
 	zeroSHA := "0000000000000000000000000000000000000000"
@@ -1601,7 +1639,7 @@ func TestPRStep_CreatesNewPR(t *testing.T) {
 
 	// No existing PR — pr view returns exit 1
 	binDir, logFile := fakeGH(t, "")
-	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+	prependPATH(t, binDir)
 
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
@@ -1639,7 +1677,7 @@ func TestPRStep_UsesAgentGeneratedTitleAndBody(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	binDir, logFile := fakeGH(t, "")
-	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+	prependPATH(t, binDir)
 
 	ag := &mockAgent{
 		name: "test",
@@ -1679,7 +1717,7 @@ func fakeGlab(t *testing.T, mrViewJSON string) (binDir string, logFile string) {
 	binDir = t.TempDir()
 	logFile = filepath.Join(t.TempDir(), "glab.log")
 
-	script := fmt.Sprintf(`#!/bin/sh
+	shScript := fmt.Sprintf(`#!/bin/sh
 echo "$@" >> %s
 if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
   exit 0
@@ -1703,10 +1741,23 @@ fi
 exit 1
 `, logFile, mrViewJSON, mrViewJSON)
 
-	glabPath := filepath.Join(binDir, "glab")
-	if err := os.WriteFile(glabPath, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
+	batScript := fmt.Sprintf("@echo off\r\necho %%* >> \"%s\"\r\n", logFile)
+	batScript += "if \"%1\"==\"auth\" if \"%2\"==\"status\" exit /b 0\r\n"
+	if mrViewJSON != "" {
+		// Write the JSON to a temp file and type it, since batch heredocs don't exist.
+		jsonFile := filepath.Join(binDir, "mrview.json")
+		if err := os.WriteFile(jsonFile, []byte(mrViewJSON), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		batScript += fmt.Sprintf("if \"%%1\"==\"mr\" if \"%%2\"==\"view\" (\r\n  type \"%s\"\r\n  exit /b 0\r\n)\r\n", jsonFile)
+	} else {
+		batScript += "if \"%1\"==\"mr\" if \"%2\"==\"view\" exit /b 1\r\n"
 	}
+	batScript += "if \"%1\"==\"mr\" if \"%2\"==\"update\" exit /b 0\r\n"
+	batScript += "if \"%1\"==\"mr\" if \"%2\"==\"create\" (\r\n  echo https://gitlab.com/test/repo/-/merge_requests/99\r\n  exit /b 0\r\n)\r\n"
+	batScript += "exit /b 1\r\n"
+
+	writeFakeScript(t, binDir, "glab", shScript, batScript)
 	return binDir, logFile
 }
 
@@ -1714,7 +1765,7 @@ func TestPRStep_GitLabCreatesNewMR(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	binDir, logFile := fakeGlab(t, "")
-	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+	prependPATH(t, binDir)
 
 	ag := &mockAgent{
 		name: "test",
@@ -1788,7 +1839,7 @@ func TestPRStep_ExistingBranchUsesMergeBaseCommitLog(t *testing.T) {
 	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
 
 	binDir, logFile := fakeGH(t, "")
-	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+	prependPATH(t, binDir)
 
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContextWithDBRecords(t, ag, dir, oldRemoteSHA, headSHA, config.Commands{})
@@ -2227,7 +2278,7 @@ func TestBabysitStep_TimeoutDoesNotSleepPastDeadline(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	binDir := fakeBabysitGH(t, "OPEN", "[]", "[]")
-	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+	prependPATH(t, binDir)
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
@@ -2994,8 +3045,7 @@ func fakeBabysitGH(t *testing.T, state, checksJSON, commentsJSON string) string 
 	t.Helper()
 	binDir := t.TempDir()
 
-	// Escape double quotes in JSON for embedding in shell script.
-	script := fmt.Sprintf(`#!/bin/sh
+	shScript := fmt.Sprintf(`#!/bin/sh
 ARGS="$*"
 if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
   exit 0
@@ -3031,17 +3081,53 @@ fi
 exit 1
 `, state, checksJSON, commentsJSON)
 
-	ghPath := filepath.Join(binDir, "gh")
-	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
+	// Write JSON data to files for batch to use via type command.
+	checksFile := filepath.Join(binDir, "checks.json")
+	if err := os.WriteFile(checksFile, []byte(checksJSON), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	commentsFile := filepath.Join(binDir, "comments.json")
+	if err := os.WriteFile(commentsFile, []byte(commentsJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// On Windows, use findstr to match arg patterns.
+	batScript := "@echo off\r\n"
+	batScript += "setlocal\r\n"
+	batScript += "set \"ARGS=%*\"\r\n"
+	batScript += "if \"%1\"==\"auth\" if \"%2\"==\"status\" exit /b 0\r\n"
+	// pr view --json state
+	batScript += "echo %ARGS% | findstr /c:\"pr view\" >nul 2>&1 || goto :notstate\r\n"
+	batScript += "echo %ARGS% | findstr /c:\"--json state\" >nul 2>&1 || goto :notstate\r\n"
+	batScript += fmt.Sprintf("echo %s\r\nexit /b 0\r\n", state)
+	batScript += ":notstate\r\n"
+	// pr checks
+	batScript += "echo %ARGS% | findstr /c:\"pr checks\" >nul 2>&1 || goto :notchecks\r\n"
+	batScript += fmt.Sprintf("type \"%s\"\r\nexit /b 0\r\n", checksFile)
+	batScript += ":notchecks\r\n"
+	// pr view --json comments
+	batScript += "echo %ARGS% | findstr /c:\"pr view\" >nul 2>&1 || goto :notcomments\r\n"
+	batScript += "echo %ARGS% | findstr /c:\"--json comments\" >nul 2>&1 || goto :notcomments\r\n"
+	batScript += fmt.Sprintf("type \"%s\"\r\nexit /b 0\r\n", commentsFile)
+	batScript += ":notcomments\r\n"
+	// pr comment
+	batScript += "echo %ARGS% | findstr /c:\"pr comment\" >nul 2>&1 || goto :notcomment\r\n"
+	batScript += "exit /b 0\r\n"
+	batScript += ":notcomment\r\n"
+	// run view
+	batScript += "echo %ARGS% | findstr /c:\"run view\" >nul 2>&1 || goto :notrunview\r\n"
+	batScript += "echo error log output\r\nexit /b 0\r\n"
+	batScript += ":notrunview\r\n"
+	batScript += "exit /b 1\r\n"
+
+	writeFakeScript(t, binDir, "gh", shScript, batScript)
 	return binDir
 }
 
 func fakeBabysitGHNoChecks(t *testing.T) string {
 	t.Helper()
 	binDir := t.TempDir()
-	script := `#!/bin/sh
+	shScript := `#!/bin/sh
 ARGS="$*"
 if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
   exit 0
@@ -3061,10 +3147,24 @@ fi
 echo "unexpected gh args: $ARGS" >&2
 exit 1
 `
-	ghPath := filepath.Join(binDir, "gh")
-	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	batScript := "@echo off\r\n"
+	batScript += "setlocal\r\n"
+	batScript += "set \"ARGS=%*\"\r\n"
+	batScript += "if \"%1\"==\"auth\" if \"%2\"==\"status\" exit /b 0\r\n"
+	batScript += "echo %ARGS% | findstr /c:\"pr checks\" >nul 2>&1 || goto :notchecks\r\n"
+	batScript += "echo no checks reported on the 'feature/e2e' branch >&2\r\nexit /b 1\r\n"
+	batScript += ":notchecks\r\n"
+	batScript += "echo %ARGS% | findstr /c:\"pr view\" >nul 2>&1 || goto :notstate\r\n"
+	batScript += "echo %ARGS% | findstr /c:\"--json state\" >nul 2>&1 || goto :notstate\r\n"
+	batScript += "echo OPEN\r\nexit /b 0\r\n"
+	batScript += ":notstate\r\n"
+	batScript += "echo %ARGS% | findstr /c:\"pr view\" >nul 2>&1 || goto :notcomments\r\n"
+	batScript += "echo %ARGS% | findstr /c:\"--json comments\" >nul 2>&1 || goto :notcomments\r\n"
+	batScript += "echo []\r\nexit /b 0\r\n"
+	batScript += ":notcomments\r\n"
+	batScript += "echo unexpected gh args: %ARGS% >&2\r\nexit /b 1\r\n"
+
+	writeFakeScript(t, binDir, "gh", shScript, batScript)
 	return binDir
 }
 
@@ -3072,7 +3172,7 @@ func TestBabysitStep_PRMergedExitsEarly(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	binDir := fakeBabysitGH(t, "MERGED", "[]", "[]")
-	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+	prependPATH(t, binDir)
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
@@ -3108,7 +3208,7 @@ func TestBabysitStep_PRClosedExitsEarly(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	binDir := fakeBabysitGH(t, "CLOSED", "[]", "[]")
-	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+	prependPATH(t, binDir)
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
@@ -3142,7 +3242,7 @@ func TestBabysitStep_PRClosedExitsEarly(t *testing.T) {
 
 func TestBabysitStep_GetCIChecksNoChecksReported(t *testing.T) {
 	binDir := fakeBabysitGHNoChecks(t)
-	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+	prependPATH(t, binDir)
 
 	step := &BabysitStep{}
 	checks, err := step.getCIChecks(context.Background(), t.TempDir(), "42")
@@ -3180,7 +3280,7 @@ func TestBabysitStep_CIFailureAutoFix(t *testing.T) {
 
 	checksJSON := `[{"name":"build","status":"COMPLETED","conclusion":"success"},{"name":"test","status":"COMPLETED","conclusion":"failure"}]`
 	binDir := fakeBabysitGH(t, "OPEN", checksJSON, "[]")
-	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+	prependPATH(t, binDir)
 
 	agentCalled := false
 	ag := &mockAgent{
@@ -3253,7 +3353,7 @@ func TestBabysitStep_NewCommentsPausesForApproval(t *testing.T) {
 
 	commentsJSON := `[{"id":"IC_100","author":{"login":"reviewer"},"body":"Please fix the naming","createdAt":"2026-01-01T00:00:00Z","url":"https://github.com/test/repo/pull/42#comment-100"}]`
 	binDir := fakeBabysitGH(t, "OPEN", "[]", commentsJSON)
-	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+	prependPATH(t, binDir)
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
@@ -3311,7 +3411,7 @@ func TestBabysitStep_AllChecksPassingExitsCleanly(t *testing.T) {
 
 	checksJSON := `[{"name":"build","state":"SUCCESS","bucket":"pass"},{"name":"test","state":"SUCCESS","bucket":"pass"}]`
 	binDir := fakeBabysitGH(t, "OPEN", checksJSON, "[]")
-	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+	prependPATH(t, binDir)
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
@@ -3371,7 +3471,7 @@ func TestBabysitStep_AddressCommentsInFixMode_OnlySelectedComments(t *testing.T)
 		{"id":"IC_201","author":{"login":"bob"},"body":"Add more tests","createdAt":"2026-01-01T00:00:01Z","url":"https://github.com/test/repo/pull/42#comment-201"}
 	]`
 	binDir := fakeBabysitGH(t, "OPEN", "[]", commentsJSON)
-	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+	prependPATH(t, binDir)
 
 	ag := &mockAgent{
 		name: "test",
@@ -3439,7 +3539,7 @@ func TestBabysitStep_AddressCommentsInFixMode(t *testing.T) {
 
 	commentsJSON := `[{"id":"IC_200","author":{"login":"alice"},"body":"Rename this function","createdAt":"2026-01-01T00:00:00Z","url":"https://github.com/test/repo/pull/42#comment-200"}]`
 	binDir := fakeBabysitGH(t, "OPEN", "[]", commentsJSON)
-	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+	prependPATH(t, binDir)
 
 	agentCalled := false
 	ag := &mockAgent{

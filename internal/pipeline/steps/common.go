@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
@@ -70,7 +71,12 @@ func hasBlockingFindings(items []Finding) bool {
 // runShellCommand executes a shell command and returns stdout+stderr, exit code, and error.
 // A non-zero exit code is not treated as an error — only exec failures return error.
 func runShellCommand(ctx context.Context, dir, cmdStr string) (string, int, error) {
-	cmd := exec.CommandContext(ctx, "sh", "-c", cmdStr)
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		cmd = exec.CommandContext(ctx, "cmd.exe", "/c", cmdStr)
+	} else {
+		cmd = exec.CommandContext(ctx, "sh", "-c", cmdStr)
+	}
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	if err != nil {
