@@ -18,14 +18,25 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
+const defaultChecksGracePeriod = 60 * time.Second
+
 // BabysitStep monitors CI and PR comments after PR creation,
 // auto-fixing CI failures and presenting PR comments for human selection.
 type BabysitStep struct {
-	seenComments    map[string]bool
-	lastFixedChecks string // sorted check names from last fix attempt, to avoid re-fixing
+	seenComments         map[string]bool
+	lastFixedChecks      string        // sorted check names from last fix attempt, to avoid re-fixing
+	checksGracePeriod    time.Duration // minimum wait before trusting empty CI checks (0 = default 60s)
+	pollIntervalOverride time.Duration // if set, overrides computed poll interval (for testing)
 }
 
 func (s *BabysitStep) Name() types.StepName { return types.StepBabysit }
+
+func (s *BabysitStep) gracePeriod() time.Duration {
+	if s.checksGracePeriod > 0 {
+		return s.checksGracePeriod
+	}
+	return defaultChecksGracePeriod
+}
 
 // ciCheck represents a CI check result from gh pr checks --json.
 type ciCheck struct {
@@ -254,11 +265,16 @@ func (s *BabysitStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome
 			}
 		} else if !hasPendingChecks(checks) {
 			s.lastFixedChecks = ""
-			checksReadyToExit = true
-			if len(checks) == 0 {
-				checksSummary = "no CI checks reported, babysit complete"
+			if len(checks) == 0 && elapsed < s.gracePeriod() {
+				// CI checks may not be registered yet, keep polling
+				sctx.Log("no CI checks reported yet, waiting for checks to register...")
 			} else {
-				checksSummary = "all CI checks passed"
+				checksReadyToExit = true
+				if len(checks) == 0 {
+					checksSummary = "no CI checks reported, babysit complete"
+				} else {
+					checksSummary = "all CI checks passed"
+				}
 			}
 		}
 
@@ -287,7 +303,10 @@ func (s *BabysitStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome
 		}
 
 		// Sleep for poll interval
-		interval := pollInterval(time.Since(started))
+		interval := s.pollIntervalOverride
+		if interval == 0 {
+			interval = pollInterval(time.Since(started))
+		}
 		remaining := timeout - time.Since(started)
 		if remaining < interval {
 			interval = remaining

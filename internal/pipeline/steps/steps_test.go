@@ -3453,6 +3453,96 @@ func TestBabysitStep_AllChecksPassingExitsCleanly(t *testing.T) {
 	}
 }
 
+func TestBabysitStep_EmptyChecksWaitsDuringGracePeriod(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	// Fake gh returns OPEN state, empty checks, no comments
+	binDir := fakeBabysitGH(t, "OPEN", "[]", "[]")
+	prependPATH(t, binDir)
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.PRURL = &prURL
+	sctx.Config.BabysitTimeout = 5 * time.Second
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	step := &BabysitStep{checksGracePeriod: 200 * time.Millisecond, pollIntervalOverride: 10 * time.Millisecond}
+	started := time.Now()
+	outcome, err := step.Execute(sctx)
+	elapsed := time.Since(started)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Error("expected no approval needed")
+	}
+	// Must have waited at least the grace period before exiting
+	if elapsed < 200*time.Millisecond {
+		t.Errorf("babysit exited in %v, expected to wait at least 200ms grace period", elapsed)
+	}
+	// Should exit via grace period expiry, not babysit timeout
+	for _, l := range logs {
+		if strings.Contains(l, "babysit timeout reached") {
+			t.Fatal("expected exit via grace period expiry, not babysit timeout")
+		}
+	}
+	found := false
+	for _, l := range logs {
+		if strings.Contains(l, "babysit complete") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected 'babysit complete' log, got: %v", logs)
+	}
+}
+
+func TestBabysitStep_NonEmptyPassingChecksExitImmediately(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	checksJSON := `[{"name":"build","state":"SUCCESS","bucket":"pass"}]`
+	binDir := fakeBabysitGH(t, "OPEN", checksJSON, "[]")
+	prependPATH(t, binDir)
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.PRURL = &prURL
+	sctx.Config.BabysitTimeout = 10 * time.Second
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	// Even with a long grace period, non-empty passing checks should exit immediately
+	step := &BabysitStep{checksGracePeriod: 10 * time.Second}
+	started := time.Now()
+	outcome, err := step.Execute(sctx)
+	elapsed := time.Since(started)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Error("expected no approval needed")
+	}
+	if elapsed > 5*time.Second {
+		t.Errorf("non-empty passing checks should exit quickly, took %v", elapsed)
+	}
+	found := false
+	for _, l := range logs {
+		if strings.Contains(l, "all CI checks passed") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected 'all CI checks passed' log, got: %v", logs)
+	}
+}
+
 func TestBabysitStep_AddressCommentsInFixMode_OnlySelectedComments(t *testing.T) {
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
@@ -3480,7 +3570,8 @@ func TestBabysitStep_AddressCommentsInFixMode_OnlySelectedComments(t *testing.T)
 		{"id":"IC_200","author":{"login":"alice"},"body":"Rename this function","createdAt":"2026-01-01T00:00:00Z","url":"https://github.com/test/repo/pull/42#comment-200"},
 		{"id":"IC_201","author":{"login":"bob"},"body":"Add more tests","createdAt":"2026-01-01T00:00:01Z","url":"https://github.com/test/repo/pull/42#comment-201"}
 	]`
-	binDir := fakeBabysitGH(t, "OPEN", "[]", commentsJSON)
+	passingChecks := `[{"name":"build","state":"SUCCESS","bucket":"pass"}]`
+	binDir := fakeBabysitGH(t, "OPEN", passingChecks, commentsJSON)
 	prependPATH(t, binDir)
 
 	ag := &mockAgent{
@@ -3548,7 +3639,8 @@ func TestBabysitStep_AddressCommentsInFixMode(t *testing.T) {
 	gitCmd(t, dir, "push", "origin", "feature")
 
 	commentsJSON := `[{"id":"IC_200","author":{"login":"alice"},"body":"Rename this function","createdAt":"2026-01-01T00:00:00Z","url":"https://github.com/test/repo/pull/42#comment-200"}]`
-	binDir := fakeBabysitGH(t, "OPEN", "[]", commentsJSON)
+	passingChecks := `[{"name":"build","state":"SUCCESS","bucket":"pass"}]`
+	binDir := fakeBabysitGH(t, "OPEN", passingChecks, commentsJSON)
 	prependPATH(t, binDir)
 
 	agentCalled := false
