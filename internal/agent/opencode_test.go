@@ -985,6 +985,56 @@ func TestOpencodeAgent_BackfillsMissingResponseSuffixAfterStreaming(t *testing.T
 	}
 }
 
+func TestOpencodeAgent_BackfillsMissingResponseSuffixAfterToolStep(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/session" && r.Method == http.MethodPost:
+			fmt.Fprint(w, `{"id":"s1"}`)
+
+		case r.URL.Path == "/global/event" && r.Method == http.MethodGet:
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, "data: {\"payload\":{\"type\":\"message.part.updated\",\"properties\":{\"sessionID\":\"s1\",\"part\":{\"id\":\"p1\",\"messageID\":\"msg1\",\"type\":\"text\",\"text\":\"hello\"}}}}\n\n")
+			fmt.Fprint(w, "data: {\"payload\":{\"type\":\"message.updated\",\"properties\":{\"sessionID\":\"s1\",\"info\":{\"id\":\"msg1\",\"role\":\"assistant\"}}}}\n\n")
+			fmt.Fprint(w, "data: {\"payload\":{\"type\":\"message.part.updated\",\"properties\":{\"sessionID\":\"s1\",\"part\":{\"id\":\"step1\",\"messageID\":\"msg1\",\"type\":\"step-finish\",\"tokens\":{\"input\":10,\"output\":5}}}}}\n\n")
+			fmt.Fprint(w, "data: {\"payload\":{\"type\":\"session.idle\"}}\n\n")
+
+		case r.URL.Path == "/session/s1/message" && r.Method == http.MethodPost:
+			fmt.Fprint(w, `{"info":{"id":"msg1","role":"assistant"},"parts":[{"type":"text","text":"hello world"}]}`)
+
+		case r.URL.Path == "/session/s1" && r.Method == http.MethodDelete:
+			w.WriteHeader(http.StatusOK)
+
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	a := &opencodeAgent{
+		bin:    "opencode",
+		server: &managedServer{port: mustParsePort(server.URL)},
+	}
+
+	var chunks []string
+	result, err := a.Run(context.Background(), RunOpts{
+		Prompt:  "hello",
+		CWD:     t.TempDir(),
+		OnChunk: func(text string) { chunks = append(chunks, text) },
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Text != "hello world" {
+		t.Fatalf("expected completed response text, got %q", result.Text)
+	}
+	if got := strings.Join(chunks, ""); got != "hello\n\n world" {
+		t.Fatalf("expected streamed and backfilled text with separator, got %q from %v", got, chunks)
+	}
+	if len(chunks) != 3 || chunks[1] != "\n\n" || chunks[2] != " world" {
+		t.Fatalf("expected separator before missing suffix backfill, got %v", chunks)
+	}
+}
+
 // TestOpencodeAgent_NoSchema tests the flow without a JSON schema.
 func TestOpencodeAgent_NoSchema(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

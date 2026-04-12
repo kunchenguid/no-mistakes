@@ -99,6 +99,14 @@ func (a *opencodeAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) 
 	if mr.resp != nil && mr.resp.Info != nil {
 		streamedText := state.lastText
 		streamedFinalText := state.lastFinalText
+		emitResponseChunk := func(chunk string) {
+			if opts.OnChunk == nil || chunk == "" {
+				return
+			}
+			state.emitSeparatorIfNeeded()
+			opts.OnChunk(chunk)
+			state.hasEmittedText = true
+		}
 		if mr.resp.Info.Role == "assistant" && mr.resp.Info.Tokens != nil {
 			state.usageByMsg[mr.resp.Info.ID] = opencodeTokensToUsage(mr.resp.Info.Tokens)
 			state.usage = accumulateUsage(state.usageByMsg)
@@ -128,15 +136,12 @@ func (a *opencodeAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) 
 			}
 			switch {
 			case !state.hasEmittedText:
-				opts.OnChunk(responseText)
-				state.hasEmittedText = true
+				emitResponseChunk(responseText)
 			case streamedResponseText == "":
-				opts.OnChunk(responseText)
+				emitResponseChunk(responseText)
 			case strings.HasPrefix(responseText, streamedResponseText):
 				suffix := responseText[len(streamedResponseText):]
-				if suffix != "" {
-					opts.OnChunk(suffix)
-				}
+				emitResponseChunk(suffix)
 			}
 		}
 	}
