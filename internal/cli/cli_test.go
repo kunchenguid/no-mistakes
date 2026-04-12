@@ -653,9 +653,10 @@ func TestRerunStartsPipelineForCurrentBranch(t *testing.T) {
 func TestRootErrorFromNonGitDir(t *testing.T) {
 	// Running bare `no-mistakes` from a non-git directory should return an
 	// error with a useful message, not fail silently.
+	// No NM_TEST_START_DAEMON needed: attachRun now checks for a git repo
+	// before starting the daemon, so we never spawn a process here.
 	nonGitDir := t.TempDir()
 	t.Setenv("NM_HOME", t.TempDir())
-	t.Setenv("NM_TEST_START_DAEMON", "1")
 	chdir(t, nonGitDir)
 
 	_, err := executeCmd()

@@ -21,6 +21,16 @@ func attachRun(w io.Writer, runID string) error {
 	}
 	defer d.Close()
 
+	// When no run ID is given, resolve the repo before starting the daemon
+	// so we fail fast (and avoid orphan daemon processes) when not in a git repo.
+	var repo *db.Repo
+	if runID == "" {
+		repo, err = findRepo(d)
+		if err != nil {
+			return err
+		}
+	}
+
 	// Ensure daemon is running.
 	if err := daemon.EnsureDaemon(p); err != nil {
 		return fmt.Errorf("start daemon: %w", err)
@@ -44,11 +54,6 @@ func attachRun(w io.Writer, runID string) error {
 		}
 		run = result.Run
 	} else {
-		// Find repo from current directory.
-		repo, err := findRepo(d)
-		if err != nil {
-			return err
-		}
 		repoID = repo.ID
 
 		// Get active run for this repo.

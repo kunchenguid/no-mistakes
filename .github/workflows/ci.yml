@@ -44,7 +44,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Test
-        run: go test -race ./...
+        run: go test ${{ runner.os != 'Windows' && '-race' || '' }} ./...
 
       - name: Build
         run: go build ./cmd/no-mistakes
