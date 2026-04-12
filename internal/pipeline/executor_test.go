@@ -301,6 +301,28 @@ func TestExecutor_StepError_FailsRun(t *testing.T) {
 	}
 }
 
+func TestExecutor_FailedStepRecordsDuration(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	steps := []Step{
+		newFailStep(types.StepReview, fmt.Errorf("review crashed")),
+	}
+
+	exec := NewExecutor(database, p, nil, nil, steps, nil)
+
+	err := exec.Execute(context.Background(), run, repo, workDir)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	// Failed step should still have duration_ms recorded.
+	dbSteps, _ := database.GetStepsByRun(run.ID)
+	if dbSteps[0].DurationMS == nil {
+		t.Error("expected failed step to have duration_ms recorded, got nil")
+	}
+}
+
 func TestExecutor_ApprovalApprove(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir := t.TempDir()
@@ -366,6 +388,71 @@ func TestExecutor_ApprovalApprove(t *testing.T) {
 
 	// Should have awaiting_approval event
 	_ = events // events collected for verification
+}
+
+func TestExecutor_ApprovalDurationExcludesWaitTime(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	steps := []Step{
+		newApprovalStep(types.StepReview, `{"findings":[{"severity":"error","description":"bug"}],"summary":"1 issue"}`),
+	}
+
+	exec := NewExecutor(database, p, nil, nil, steps, nil)
+	events := collectEvents(exec)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- exec.Execute(context.Background(), run, repo, workDir)
+	}()
+
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
+
+	// Duration should be stored in DB while awaiting approval (execution-only time).
+	dbSteps, _ := database.GetStepsByRun(run.ID)
+	if dbSteps[0].DurationMS == nil {
+		t.Fatal("expected duration_ms to be set on awaiting_approval step")
+	}
+	execDuration := *dbSteps[0].DurationMS
+
+	// Simulate user taking time to review.
+	time.Sleep(200 * time.Millisecond)
+
+	exec.Respond(types.StepReview, types.ActionApprove, nil)
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("executor timed out")
+	}
+
+	// Final duration should not include the 200ms+ approval wait time.
+	dbSteps, _ = database.GetStepsByRun(run.ID)
+	finalDuration := *dbSteps[0].DurationMS
+	if finalDuration > execDuration+100 {
+		t.Errorf("final duration %dms should not significantly exceed pre-approval duration %dms (approval wait should be excluded)", finalDuration, execDuration)
+	}
+
+	// The EventStepCompleted event for awaiting_approval should carry duration.
+	awaitingEvent := events.findLast(ipc.EventStepCompleted, string(types.StepStatusAwaitingApproval))
+	if awaitingEvent == nil {
+		t.Fatal("expected awaiting_approval step_completed event")
+	}
+	if awaitingEvent.DurationMS == nil {
+		t.Error("expected awaiting_approval event to carry DurationMS")
+	}
+
+	// The final completed event should also carry duration.
+	completedEvent := events.findLast(ipc.EventStepCompleted, string(types.StepStatusCompleted))
+	if completedEvent == nil {
+		t.Fatal("expected completed step_completed event")
+	}
+	if completedEvent.DurationMS == nil {
+		t.Error("expected completed event to carry DurationMS")
+	}
 }
 
 func TestExecutor_ApprovalApprovePreservesExitCode(t *testing.T) {
@@ -587,10 +674,7 @@ func TestExecutor_FixEmitsDiffAndFixReviewStatus(t *testing.T) {
 	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
 
 	// Verify initial event has awaiting_approval status
-	initialEvent := events.find(ipc.EventStepCompleted, types.StepReview)
-	if initialEvent == nil {
-		t.Fatal("expected step_completed event for review")
-	}
+	initialEvent := waitForStepEvent(t, events, ipc.EventStepCompleted, types.StepReview)
 	if initialEvent.Status == nil || *initialEvent.Status != string(types.StepStatusAwaitingApproval) {
 		t.Errorf("expected awaiting_approval status, got %v", initialEvent.Status)
 	}
@@ -601,14 +685,8 @@ func TestExecutor_FixEmitsDiffAndFixReviewStatus(t *testing.T) {
 	// Send fix action
 	exec.Respond(types.StepReview, types.ActionFix, nil)
 
-	// After fix: step should reach fix_review
-	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
-
 	// Find the fix_review event
-	fixEvent := events.findLast(ipc.EventStepCompleted, string(types.StepStatusFixReview))
-	if fixEvent == nil {
-		t.Fatal("expected step_completed event with fix_review status")
-	}
+	fixEvent := waitForEvent(t, events, ipc.EventStepCompleted, string(types.StepStatusFixReview))
 
 	// Verify diff is included in the event
 	if fixEvent.Diff == nil || *fixEvent.Diff == "" {
@@ -718,13 +796,9 @@ func TestExecutor_FixReviewNoChanges(t *testing.T) {
 
 	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
 	exec.Respond(types.StepReview, types.ActionFix, nil)
-	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
 
 	// No changes made — diff should not be in event
-	fixEvent := events.findLast(ipc.EventStepCompleted, string(types.StepStatusFixReview))
-	if fixEvent == nil {
-		t.Fatal("expected fix_review event")
-	}
+	fixEvent := waitForEvent(t, events, ipc.EventStepCompleted, string(types.StepStatusFixReview))
 	if fixEvent.Diff != nil {
 		t.Error("expected no diff when agent made no changes")
 	}
@@ -814,8 +888,8 @@ func TestExecutor_AssignsFindingIDsBeforePersistingAndEmitting(t *testing.T) {
 
 	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
 
-	paused := events.find(ipc.EventStepCompleted, types.StepReview)
-	if paused == nil || paused.Findings == nil {
+	paused := waitForStepEvent(t, events, ipc.EventStepCompleted, types.StepReview)
+	if paused.Findings == nil {
 		t.Fatal("expected paused step event with findings")
 	}
 
@@ -1707,6 +1781,34 @@ type adaptiveCallStep struct {
 func (a *adaptiveCallStep) Name() types.StepName { return a.name }
 func (a *adaptiveCallStep) Execute(sctx *StepContext) (*StepOutcome, error) {
 	return a.fn(sctx)
+}
+
+// waitForStepEvent polls the event collector until an event with the given type and step name appears.
+func waitForStepEvent(t *testing.T, ec *eventCollector, eventType ipc.EventType, stepName types.StepName) *ipc.Event {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if e := ec.find(eventType, stepName); e != nil {
+			return e
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("event %s for step %s not found within timeout", eventType, stepName)
+	return nil
+}
+
+// waitForEvent polls the event collector until an event with the given type and status appears.
+func waitForEvent(t *testing.T, ec *eventCollector, eventType ipc.EventType, status string) *ipc.Event {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if e := ec.findLast(eventType, status); e != nil {
+			return e
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("event %s with status %q not found within timeout", eventType, status)
+	return nil
 }
 
 // waitForStepStatus polls the DB until a step reaches the expected status.

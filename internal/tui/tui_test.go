@@ -5304,6 +5304,149 @@ func TestModel_ApplyEvent_StepCompletedNoDurationWithoutStartTime(t *testing.T) 
 	t.Fatal("Review step not found in model steps")
 }
 
+// Test: When re-attaching, steps with StartedAt but no DurationMS get their
+// start times seeded into stepStartTimes so elapsed time can be computed.
+func TestNewModel_SeedsStartTimesFromStartedAt(t *testing.T) {
+	configureTUIColors()
+	startedAt := time.Now().Add(-10 * time.Second).UnixMilli()
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	run.Steps[0].StartedAt = &startedAt
+
+	m := NewModel("", nil, run)
+
+	st, ok := m.stepStartTimes[types.StepReview]
+	if !ok {
+		t.Fatal("expected stepStartTimes to contain entry for Review step on re-attach")
+	}
+	// The seeded time should be approximately 10 seconds ago.
+	elapsed := time.Since(st)
+	if elapsed < 9*time.Second || elapsed > 12*time.Second {
+		t.Errorf("expected start time ~10s ago, got %v ago", elapsed)
+	}
+}
+
+// Test: stepsWithRunningElapsed computes elapsed time for AwaitingApproval steps.
+func TestModel_View_AwaitingApprovalShowsElapsedTime(t *testing.T) {
+	configureTUIColors()
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+
+	m := NewModel("", nil, run)
+	m.width = 80
+	m.height = 40
+	m.stepStartTimes[types.StepReview] = time.Now().Add(-7 * time.Second)
+
+	view := stripANSI(m.View())
+
+	if !strings.Contains(view, "7.0s") && !strings.Contains(view, "7.1s") && !strings.Contains(view, "6.9s") {
+		t.Errorf("expected awaiting approval step to show ~7.0s elapsed time, got:\n%s", view)
+	}
+}
+
+// Test: stepsWithRunningElapsed computes elapsed time for FixReview steps.
+func TestModel_View_FixReviewShowsElapsedTime(t *testing.T) {
+	configureTUIColors()
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusFixReview
+
+	m := NewModel("", nil, run)
+	m.width = 80
+	m.height = 40
+	m.stepStartTimes[types.StepReview] = time.Now().Add(-4 * time.Second)
+
+	view := stripANSI(m.View())
+
+	if !strings.Contains(view, "4.0s") && !strings.Contains(view, "4.1s") && !strings.Contains(view, "3.9s") {
+		t.Errorf("expected fix review step to show ~4.0s elapsed time, got:\n%s", view)
+	}
+}
+
+// Test: Re-attach scenario - step is awaiting approval, TUI connects and shows duration
+// computed from StartedAt in the initial run data.
+func TestModel_View_ReattachAwaitingApprovalShowsDuration(t *testing.T) {
+	configureTUIColors()
+	startedAt := time.Now().Add(-15 * time.Second).UnixMilli()
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	run.Steps[0].StartedAt = &startedAt
+
+	m := NewModel("", nil, run)
+	m.width = 80
+	m.height = 40
+
+	view := stripANSI(m.View())
+
+	// Should show ~15s elapsed time even though we re-attached (no EventStepStarted received).
+	if !strings.Contains(view, "15.") && !strings.Contains(view, "14.9") && !strings.Contains(view, "15.0") && !strings.Contains(view, "15.1") {
+		t.Errorf("expected re-attached awaiting approval step to show ~15s elapsed, got:\n%s", view)
+	}
+}
+
+// Test: When EventStepCompleted carries DurationMS, it takes precedence over
+// the computed elapsed time from stepStartTimes.
+func TestModel_ApplyEvent_StepCompletedPrefersEventDuration(t *testing.T) {
+	configureTUIColors()
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusRunning
+
+	m := NewModel("", nil, run)
+	// Record a start time 10 seconds ago.
+	m.stepStartTimes[types.StepReview] = time.Now().Add(-10 * time.Second)
+
+	// Event carries execution-only duration of 2 seconds (excluding approval wait).
+	completedStatus := string(types.StepStatusCompleted)
+	stepName := types.StepReview
+	eventDuration := int64(2000)
+	m.applyEvent(ipc.Event{
+		Type:       ipc.EventStepCompleted,
+		StepName:   &stepName,
+		Status:     &completedStatus,
+		DurationMS: &eventDuration,
+	})
+
+	for _, s := range m.steps {
+		if s.StepName == types.StepReview {
+			if s.DurationMS == nil {
+				t.Fatal("expected DurationMS to be set")
+			}
+			// Should use event's 2000ms, not the computed ~10000ms.
+			if *s.DurationMS != 2000 {
+				t.Errorf("expected DurationMS = 2000 (from event), got %d", *s.DurationMS)
+			}
+			return
+		}
+	}
+	t.Fatal("Review step not found")
+}
+
+func TestModel_FixingEventDoesNotFreezeDuration(t *testing.T) {
+	configureTUIColors()
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusRunning
+
+	m := NewModel("", nil, run)
+	m.stepStartTimes[types.StepReview] = time.Now().Add(-5 * time.Second)
+
+	fixingStatus := string(types.StepStatusFixing)
+	stepName := types.StepReview
+	m.applyEvent(ipc.Event{
+		Type:     ipc.EventStepCompleted,
+		StepName: &stepName,
+		Status:   &fixingStatus,
+	})
+
+	for _, s := range m.steps {
+		if s.StepName == types.StepReview {
+			if s.DurationMS != nil {
+				t.Errorf("expected DurationMS to remain nil during fixing so timer keeps ticking, got %d", *s.DurationMS)
+			}
+			return
+		}
+	}
+	t.Fatal("Review step not found")
+}
+
 func TestRenderDiff_BlankLineBetweenFiles(t *testing.T) {
 	// Multi-file diff should have a blank line before the second file header.
 	raw := `diff --git a/foo.go b/foo.go

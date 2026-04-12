@@ -453,7 +453,7 @@ func TestFailStep(t *testing.T) {
 	run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
 	step, _ := d.InsertStepResult(run.ID, types.StepReview)
 
-	if err := d.FailStep(step.ID, "agent crashed"); err != nil {
+	if err := d.FailStep(step.ID, "agent crashed", 1500); err != nil {
 		t.Fatalf("fail step: %v", err)
 	}
 	got, _ := d.GetStepResult(step.ID)
@@ -462,6 +462,9 @@ func TestFailStep(t *testing.T) {
 	}
 	if got.Error == nil || *got.Error != "agent crashed" {
 		t.Errorf("error = %v, want %q", got.Error, "agent crashed")
+	}
+	if got.DurationMS == nil || *got.DurationMS != 1500 {
+		t.Errorf("duration_ms = %v, want 1500", got.DurationMS)
 	}
 }
 
