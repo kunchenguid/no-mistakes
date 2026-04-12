@@ -27,6 +27,12 @@ const (
 	responsiveLeftMinWidth   = 38
 	responsiveLeftMaxWidth   = 48
 	responsiveRightMinWidth  = 48
+
+	// cappedPipelineHeight is the height passed to renderPipelineView when
+	// an overlay (help) is active in non-responsive (stacked) layout.
+	// Kept below 30 to suppress connector lines and save vertical space
+	// for the overlay that stacks below.
+	cappedPipelineHeight = 29
 )
 
 func (e errMsg) Error() string { return e.err.Error() }
@@ -177,8 +183,8 @@ func (m Model) View() string {
 	// Compute elapsed times for running steps so they display live durations.
 	pipelineSteps := m.stepsWithRunningElapsed()
 	pipelineHeight := m.height
-	if (m.showHelp || hasBabysit) && (pipelineHeight == 0 || pipelineHeight >= 30) {
-		pipelineHeight = 29
+	if !useResponsiveLayout && (m.showHelp || hasBabysit) && (pipelineHeight == 0 || pipelineHeight >= 30) {
+		pipelineHeight = cappedPipelineHeight
 	}
 	pipelineView := renderPipelineView(m.run, pipelineSteps, leftWidth, m.spinnerFrame, pipelineHeight)
 	banner := renderOutcomeBanner(m.run, m.steps)
