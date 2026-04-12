@@ -97,6 +97,8 @@ func (a *opencodeAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) 
 	responseText := ""
 	responseFinalText := ""
 	if mr.resp != nil && mr.resp.Info != nil {
+		streamedText := state.lastText
+		streamedFinalText := state.lastFinalText
 		if mr.resp.Info.Role == "assistant" && mr.resp.Info.Tokens != nil {
 			state.usageByMsg[mr.resp.Info.ID] = opencodeTokensToUsage(mr.resp.Info.Tokens)
 			state.usage = accumulateUsage(state.usageByMsg)
@@ -105,19 +107,37 @@ func (a *opencodeAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) 
 			if part.Type != "text" || strings.TrimSpace(part.Text) == "" {
 				continue
 			}
-			responseText = part.Text
-			state.lastText = part.Text
+			responseText += part.Text
 			if part.Metadata != nil && part.Metadata.OpenAI != nil && part.Metadata.OpenAI.Phase == "final_answer" {
-				responseFinalText = part.Text
-				state.lastFinalText = part.Text
+				responseFinalText += part.Text
 			}
+		}
+		if responseText != "" {
+			state.lastText = responseText
+		}
+		if responseFinalText != "" {
+			state.lastFinalText = responseFinalText
 		}
 		if responseFinalText != "" {
 			responseText = responseFinalText
 		}
-		if !state.hasEmittedText && opts.OnChunk != nil && responseText != "" {
-			opts.OnChunk(responseText)
-			state.hasEmittedText = true
+		if opts.OnChunk != nil && responseText != "" {
+			streamedResponseText := streamedText
+			if streamedFinalText != "" {
+				streamedResponseText = streamedFinalText
+			}
+			switch {
+			case !state.hasEmittedText:
+				opts.OnChunk(responseText)
+				state.hasEmittedText = true
+			case streamedResponseText == "":
+				opts.OnChunk(responseText)
+			case strings.HasPrefix(responseText, streamedResponseText):
+				suffix := responseText[len(streamedResponseText):]
+				if suffix != "" {
+					opts.OnChunk(suffix)
+				}
+			}
 		}
 	}
 
