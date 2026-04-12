@@ -514,8 +514,11 @@ func (s *opencodeStreamState) emitTextPartChunk(part *opencodeTextPart, partID s
 }
 
 func (s *opencodeStreamState) shouldEmitTextPart(part *opencodeTextPart) bool {
-	if part == nil || part.messageID == "" {
-		return part != nil
+	if part == nil {
+		return false
+	}
+	if part.messageID == "" {
+		return false
 	}
 	if s.userMsgIDs[part.messageID] {
 		return false

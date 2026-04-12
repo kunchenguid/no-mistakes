@@ -79,6 +79,10 @@ func TestParseOpencodeSSE_PartDelta(t *testing.T) {
 
 data: {"payload":{"type":"message.part.delta","properties":{"sessionID":"s1","field":"text","partID":"p1","delta":"world"}}}
 
+data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p1","messageID":"asst-msg","type":"text","text":"hello world"}}}}
+
+data: {"payload":{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"asst-msg","role":"assistant"}}}}
+
 data: {"payload":{"type":"session.idle"}}
 
 `
@@ -94,14 +98,11 @@ data: {"payload":{"type":"session.idle"}}
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(chunks) != 2 {
-		t.Fatalf("expected 2 chunks, got %d: %v", len(chunks), chunks)
+	if len(chunks) != 1 {
+		t.Fatalf("expected 1 chunk, got %d: %v", len(chunks), chunks)
 	}
-	if chunks[0] != "hello " {
-		t.Errorf("expected first chunk 'hello ', got %q", chunks[0])
-	}
-	if chunks[1] != "world" {
-		t.Errorf("expected second chunk 'world', got %q", chunks[1])
+	if chunks[0] != "hello world" {
+		t.Errorf("expected chunk 'hello world', got %q", chunks[0])
 	}
 	if state.lastText != "hello world" {
 		t.Errorf("expected lastText 'hello world', got %q", state.lastText)
@@ -109,7 +110,9 @@ data: {"payload":{"type":"session.idle"}}
 }
 
 func TestParseOpencodeSSE_PartUpdated_TextStreamsChunk(t *testing.T) {
-	input := `data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p1","type":"text","text":"streamed text"}}}}
+	input := `data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p1","messageID":"asst-msg","type":"text","text":"streamed text"}}}}
+
+data: {"payload":{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"asst-msg","role":"assistant"}}}}
 
 data: {"payload":{"type":"session.idle"}}
 
@@ -137,7 +140,9 @@ data: {"payload":{"type":"session.idle"}}
 func TestParseOpencodeSSE_PartUpdatedAfterDelta_StreamsOnlySuffix(t *testing.T) {
 	input := `data: {"payload":{"type":"message.part.delta","properties":{"sessionID":"s1","field":"text","partID":"p1","delta":"hello"}}}
 
-data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p1","type":"text","text":"hello world"}}}}
+data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p1","messageID":"asst-msg","type":"text","text":"hello world"}}}}
+
+data: {"payload":{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"asst-msg","role":"assistant"}}}}
 
 data: {"payload":{"type":"session.idle"}}
 
@@ -154,14 +159,11 @@ data: {"payload":{"type":"session.idle"}}
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(chunks) != 2 {
-		t.Fatalf("expected 2 chunks, got %d: %v", len(chunks), chunks)
+	if len(chunks) != 1 {
+		t.Fatalf("expected 1 chunk, got %d: %v", len(chunks), chunks)
 	}
-	if chunks[0] != "hello" {
-		t.Errorf("expected first chunk 'hello', got %q", chunks[0])
-	}
-	if chunks[1] != " world" {
-		t.Errorf("expected suffix chunk ' world', got %q", chunks[1])
+	if chunks[0] != "hello world" {
+		t.Errorf("expected chunk 'hello world', got %q", chunks[0])
 	}
 	if state.lastText != "hello world" {
 		t.Errorf("expected lastText 'hello world', got %q", state.lastText)
@@ -172,11 +174,13 @@ data: {"payload":{"type":"session.idle"}}
 }
 
 func TestParseOpencodeSSE_DeltaAfterUpdated_AppendsFromLatestText(t *testing.T) {
-	input := `data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p1","type":"text","text":"hello"}}}}
+	input := `data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p1","messageID":"asst-msg","type":"text","text":"hello"}}}}
 
-data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p1","type":"text","text":"hello world"}}}}
+data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p1","messageID":"asst-msg","type":"text","text":"hello world"}}}}
 
 data: {"payload":{"type":"message.part.delta","properties":{"sessionID":"s1","field":"text","partID":"p1","delta":"!"}}}
+
+data: {"payload":{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"asst-msg","role":"assistant"}}}}
 
 data: {"payload":{"type":"session.idle"}}
 
@@ -193,17 +197,11 @@ data: {"payload":{"type":"session.idle"}}
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(chunks) != 3 {
-		t.Fatalf("expected 3 chunks, got %d: %v", len(chunks), chunks)
+	if len(chunks) != 1 {
+		t.Fatalf("expected 1 chunk, got %d: %v", len(chunks), chunks)
 	}
-	if chunks[0] != "hello" {
-		t.Errorf("expected first chunk 'hello', got %q", chunks[0])
-	}
-	if chunks[1] != " world" {
-		t.Errorf("expected second chunk ' world', got %q", chunks[1])
-	}
-	if chunks[2] != "!" {
-		t.Errorf("expected third chunk '!', got %q", chunks[2])
+	if chunks[0] != "hello world!" {
+		t.Errorf("expected chunk 'hello world!', got %q", chunks[0])
 	}
 	if state.lastText != "hello world!" {
 		t.Errorf("expected lastText 'hello world!', got %q", state.lastText)
@@ -216,7 +214,9 @@ data: {"payload":{"type":"session.idle"}}
 func TestParseOpencodeSSE_PartUpdated_NonPrefixSnapshotStreamsCorrectedText(t *testing.T) {
 	input := `data: {"payload":{"type":"message.part.delta","properties":{"sessionID":"s1","field":"text","partID":"p1","delta":"hello world"}}}
 
-data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p1","type":"text","text":"hello there"}}}}
+data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p1","messageID":"asst-msg","type":"text","text":"hello there"}}}}
+
+data: {"payload":{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"asst-msg","role":"assistant"}}}}
 
 data: {"payload":{"type":"session.idle"}}
 
@@ -233,14 +233,11 @@ data: {"payload":{"type":"session.idle"}}
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(chunks) != 2 {
-		t.Fatalf("expected 2 chunks, got %d: %v", len(chunks), chunks)
+	if len(chunks) != 1 {
+		t.Fatalf("expected 1 chunk, got %d: %v", len(chunks), chunks)
 	}
-	if chunks[0] != "hello world" {
-		t.Errorf("expected original delta chunk 'hello world', got %q", chunks[0])
-	}
-	if chunks[1] != "hello there" {
-		t.Errorf("expected corrected chunk 'hello there', got %q", chunks[1])
+	if chunks[0] != "hello there" {
+		t.Errorf("expected corrected chunk 'hello there', got %q", chunks[0])
 	}
 	if state.lastText != "hello there" {
 		t.Errorf("expected lastText 'hello there', got %q", state.lastText)
@@ -251,7 +248,9 @@ data: {"payload":{"type":"session.idle"}}
 }
 
 func TestParseOpencodeSSE_PartUpdated_Text(t *testing.T) {
-	input := `data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p1","type":"text","text":"final text","metadata":{"openai":{"phase":"final_answer"}}}}}}
+	input := `data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p1","messageID":"asst-msg","type":"text","text":"final text","metadata":{"openai":{"phase":"final_answer"}}}}}}
+
+data: {"payload":{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"asst-msg","role":"assistant"}}}}
 
 data: {"payload":{"type":"session.idle"}}
 
@@ -328,7 +327,9 @@ data: {"payload":{"type":"session.idle"}}
 func TestParseOpencodeSSE_FiltersOtherSessions(t *testing.T) {
 	input := `data: {"payload":{"type":"message.part.delta","properties":{"sessionID":"other-session","field":"text","partID":"p1","delta":"should be ignored"}}}
 
-data: {"payload":{"type":"message.part.delta","properties":{"sessionID":"s1","field":"text","partID":"p2","delta":"included"}}}
+data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p2","messageID":"asst-msg","type":"text","text":"included"}}}}
+
+data: {"payload":{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"asst-msg","role":"assistant"}}}}
 
 data: {"payload":{"type":"session.idle"}}
 
@@ -358,7 +359,9 @@ func TestParseOpencodeSSE_FiltersUserMessageParts(t *testing.T) {
 		`data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p-user","messageID":"user-msg","type":"text","text":"this is the prompt"}}}}`,
 		``,
 		// Then assistant response
-		`data: {"payload":{"type":"message.part.delta","properties":{"sessionID":"s1","field":"text","partID":"p-asst","delta":"response"}}}`,
+		`data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p-asst","messageID":"asst-msg","type":"text","text":"response"}}}}`,
+		``,
+		`data: {"payload":{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"asst-msg","role":"assistant"}}}}`,
 		``,
 		`data: {"payload":{"type":"session.idle"}}`,
 		``,
@@ -394,7 +397,9 @@ func TestParseOpencodeSSE_DoesNotLeakUserDeltasBeforeRoleIsKnown(t *testing.T) {
 		``,
 		`data: {"payload":{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"user-msg","role":"user"}}}}`,
 		``,
-		`data: {"payload":{"type":"message.part.delta","properties":{"sessionID":"s1","field":"text","partID":"p-asst","delta":"response"}}}`,
+		`data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p-asst","messageID":"asst-msg","type":"text","text":"response"}}}}`,
+		``,
+		`data: {"payload":{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"asst-msg","role":"assistant"}}}}`,
 		``,
 		`data: {"payload":{"type":"session.idle"}}`,
 		``,
@@ -427,6 +432,43 @@ func TestParseOpencodeSSE_DoesNotLeakUserDeltasBeforeRoleIsKnown(t *testing.T) {
 	}
 }
 
+func TestParseOpencodeSSE_DoesNotLeakUnknownDeltaBeforeUserRoleIsKnown(t *testing.T) {
+	input := strings.Join([]string{
+		`data: {"payload":{"type":"message.part.delta","properties":{"sessionID":"s1","field":"text","partID":"p-user","delta":"prompt"}}}`,
+		``,
+		`data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p-user","messageID":"user-msg","type":"text","text":"prompt details"}}}}`,
+		``,
+		`data: {"payload":{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"user-msg","role":"user"}}}}`,
+		``,
+		`data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p-asst","messageID":"asst-msg","type":"text","text":"response"}}}}`,
+		``,
+		`data: {"payload":{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"asst-msg","role":"assistant"}}}}`,
+		``,
+		`data: {"payload":{"type":"session.idle"}}`,
+		``,
+		``,
+	}, "\n")
+
+	state := &opencodeStreamState{
+		sessionID:  "s1",
+		textParts:  make(map[string]*opencodeTextPart),
+		usageByMsg: make(map[string]TokenUsage),
+	}
+	var chunks []string
+	state.onChunk = func(text string) { chunks = append(chunks, text) }
+
+	err := parseOpencodeSSE(strings.NewReader(input), state)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(chunks) != 1 {
+		t.Fatalf("expected 1 chunk, got %d: %v", len(chunks), chunks)
+	}
+	if chunks[0] != "response" {
+		t.Fatalf("expected assistant response only, got %q", chunks[0])
+	}
+}
+
 func TestParseOpencodeSSE_SkipsUserDeltasAfterRoleIsKnown(t *testing.T) {
 	input := strings.Join([]string{
 		`data: {"payload":{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"user-msg","role":"user"}}}}`,
@@ -435,7 +477,9 @@ func TestParseOpencodeSSE_SkipsUserDeltasAfterRoleIsKnown(t *testing.T) {
 		``,
 		`data: {"payload":{"type":"message.part.delta","properties":{"sessionID":"s1","field":"text","partID":"p-user","delta":" more"}}}`,
 		``,
-		`data: {"payload":{"type":"message.part.delta","properties":{"sessionID":"s1","field":"text","partID":"p-asst","delta":"response"}}}`,
+		`data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p-asst","messageID":"asst-msg","type":"text","text":"response"}}}}`,
+		``,
+		`data: {"payload":{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"asst-msg","role":"assistant"}}}}`,
 		``,
 		`data: {"payload":{"type":"session.idle"}}`,
 		``,
@@ -462,13 +506,15 @@ func TestParseOpencodeSSE_SkipsUserDeltasAfterRoleIsKnown(t *testing.T) {
 func TestParseOpencodeSSE_SeparatesAfterToolStep(t *testing.T) {
 	input := strings.Join([]string{
 		// First assistant text
-		`data: {"payload":{"type":"message.part.delta","properties":{"sessionID":"s1","field":"text","partID":"p1","delta":"first"}}}`,
+		`data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p1","messageID":"msg1","type":"text","text":"first"}}}}`,
+		``,
+		`data: {"payload":{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"msg1","role":"assistant"}}}}`,
 		``,
 		// Tool step completes
 		`data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"step1","messageID":"msg1","type":"step-finish","tokens":{"input":10,"output":5}}}}}`,
 		``,
 		// Second assistant text
-		`data: {"payload":{"type":"message.part.delta","properties":{"sessionID":"s1","field":"text","partID":"p2","delta":"second"}}}`,
+		`data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p2","messageID":"msg1","type":"text","text":"second"}}}}`,
 		``,
 		`data: {"payload":{"type":"session.idle"}}`,
 		``,
@@ -504,7 +550,9 @@ func TestParseOpencodeSSE_SeparatesAfterToolStep(t *testing.T) {
 func TestParseOpencodeSSE_MalformedEvents(t *testing.T) {
 	input := `data: not json at all
 
-data: {"payload":{"type":"message.part.delta","properties":{"sessionID":"s1","field":"text","partID":"p1","delta":"ok"}}}
+data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p1","messageID":"asst-msg","type":"text","text":"ok"}}}}
+
+data: {"payload":{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"asst-msg","role":"assistant"}}}}
 
 data: {"payload":{"type":"session.idle"}}
 
@@ -542,8 +590,10 @@ func TestParseOpencodeSSE_EmptyData(t *testing.T) {
 }
 
 func TestParseOpencodeSSE_StreamEndWithoutIdle(t *testing.T) {
-	// Stream closes before session.idle — should not error
-	input := `data: {"payload":{"type":"message.part.delta","properties":{"sessionID":"s1","field":"text","partID":"p1","delta":"partial"}}}
+	// Stream closes before session.idle - should not error
+	input := `data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p1","messageID":"asst-msg","type":"text","text":"partial"}}}}
+
+data: {"payload":{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"asst-msg","role":"assistant"}}}}
 
 `
 	state := &opencodeStreamState{
@@ -591,7 +641,7 @@ func TestOpencodeAgent_FullFlow(t *testing.T) {
 			w.Header().Set("Content-Type", "text/event-stream")
 			w.WriteHeader(http.StatusOK)
 			// Send text delta events then usage and idle
-			fmt.Fprint(w, "data: {\"payload\":{\"type\":\"message.part.delta\",\"properties\":{\"sessionID\":\"test-session-456\",\"field\":\"text\",\"partID\":\"p1\",\"delta\":\"{\\\"success\\\":true,\\\"summary\\\":\\\"all good\\\"}\"}}}\n\n")
+			fmt.Fprint(w, "data: {\"payload\":{\"type\":\"message.part.updated\",\"properties\":{\"sessionID\":\"test-session-456\",\"part\":{\"id\":\"p1\",\"messageID\":\"msg1\",\"type\":\"text\",\"text\":\"{\\\"success\\\":true,\\\"summary\\\":\\\"all good\\\"}\"}}}}\n\n")
 			fmt.Fprint(w, "data: {\"payload\":{\"type\":\"message.updated\",\"properties\":{\"sessionID\":\"test-session-456\",\"info\":{\"id\":\"msg1\",\"role\":\"assistant\",\"tokens\":{\"input\":100,\"output\":50}}}}}\n\n")
 			fmt.Fprint(w, "data: {\"payload\":{\"type\":\"session.idle\"}}\n\n")
 
