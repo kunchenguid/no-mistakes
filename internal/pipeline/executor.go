@@ -236,6 +236,14 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			}
 		}
 
+		// Mark executor as ready to receive approval before updating DB or
+		// emitting events, so that callers who poll the DB status can
+		// immediately call Respond once they see it.
+		e.mu.Lock()
+		e.waiting = true
+		e.waitingStep = stepName
+		e.mu.Unlock()
+
 		// Step needs approval - store execution-only duration and wait for user action.
 		if dbErr := e.db.UpdateStepStatus(sr.ID, approvalStatus); dbErr != nil {
 			slog.Warn("failed to update step status in db", "step", stepName, "status", approvalStatus, "error", dbErr)
@@ -304,12 +312,8 @@ done:
 }
 
 // waitForApproval blocks until a user action arrives or context is cancelled.
+// The caller must set e.waiting and e.waitingStep before calling this method.
 func (e *Executor) waitForApproval(ctx context.Context, stepName types.StepName) (approvalResponse, error) {
-	e.mu.Lock()
-	e.waiting = true
-	e.waitingStep = stepName
-	e.mu.Unlock()
-
 	defer func() {
 		e.mu.Lock()
 		e.waiting = false

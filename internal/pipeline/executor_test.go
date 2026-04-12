@@ -688,14 +688,8 @@ func TestExecutor_FixEmitsDiffAndFixReviewStatus(t *testing.T) {
 	// Send fix action
 	exec.Respond(types.StepReview, types.ActionFix, nil)
 
-	// After fix: step should reach fix_review
-	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
-
 	// Find the fix_review event
-	fixEvent := events.findLast(ipc.EventStepCompleted, string(types.StepStatusFixReview))
-	if fixEvent == nil {
-		t.Fatal("expected step_completed event with fix_review status")
-	}
+	fixEvent := waitForEvent(t, events, ipc.EventStepCompleted, string(types.StepStatusFixReview))
 
 	// Verify diff is included in the event
 	if fixEvent.Diff == nil || *fixEvent.Diff == "" {
@@ -805,13 +799,9 @@ func TestExecutor_FixReviewNoChanges(t *testing.T) {
 
 	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
 	exec.Respond(types.StepReview, types.ActionFix, nil)
-	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
 
 	// No changes made — diff should not be in event
-	fixEvent := events.findLast(ipc.EventStepCompleted, string(types.StepStatusFixReview))
-	if fixEvent == nil {
-		t.Fatal("expected fix_review event")
-	}
+	fixEvent := waitForEvent(t, events, ipc.EventStepCompleted, string(types.StepStatusFixReview))
 	if fixEvent.Diff != nil {
 		t.Error("expected no diff when agent made no changes")
 	}
@@ -1794,6 +1784,20 @@ type adaptiveCallStep struct {
 func (a *adaptiveCallStep) Name() types.StepName { return a.name }
 func (a *adaptiveCallStep) Execute(sctx *StepContext) (*StepOutcome, error) {
 	return a.fn(sctx)
+}
+
+// waitForEvent polls the event collector until an event with the given type and status appears.
+func waitForEvent(t *testing.T, ec *eventCollector, eventType ipc.EventType, status string) *ipc.Event {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if e := ec.findLast(eventType, status); e != nil {
+			return e
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("event %s with status %q not found within timeout", eventType, status)
+	return nil
 }
 
 // waitForStepStatus polls the DB until a step reaches the expected status.
