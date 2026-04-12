@@ -460,14 +460,18 @@ func TestModel_ApplyEvent_RunCompleted_PRURL(t *testing.T) {
 	}
 }
 
-func TestRenderFooter_WithPRURL_FullURL(t *testing.T) {
+func TestRenderFooter_WithPRURL_ShowsOpenAction(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
 	prURL := "https://github.com/test/repo/pull/42"
 	footer := renderFooter(true, false, false, &prURL, 80)
 	stripped := stripANSI(footer)
 
-	if !strings.Contains(stripped, prURL) {
-		t.Errorf("expected footer to contain full URL %q, got: %s", prURL, stripped)
+	if !strings.Contains(stripped, "o") || !strings.Contains(stripped, "open PR") {
+		t.Errorf("expected footer to contain 'o open PR' action, got: %s", stripped)
+	}
+	// Should NOT show the full URL anymore
+	if strings.Contains(stripped, "https://") {
+		t.Errorf("expected footer to not contain full URL, got: %s", stripped)
 	}
 }
 
@@ -476,35 +480,20 @@ func TestRenderFooter_WithoutPRURL(t *testing.T) {
 	footer := renderFooter(false, false, false, nil, 80)
 	stripped := stripANSI(footer)
 
-	if strings.Contains(stripped, "PR") {
-		t.Errorf("expected no PR in footer, got: %s", stripped)
+	if strings.Contains(stripped, "open PR") {
+		t.Errorf("expected no open PR action in footer, got: %s", stripped)
 	}
 }
 
-func TestRenderFooter_PRURL_FallsBackToShortForm(t *testing.T) {
+func TestRenderFooter_PRURL_ActionShownAtNarrowWidth(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
 	prURL := "https://github.com/test/repo/pull/42"
-	// Narrow width - should fall back to "PR #42" instead of full URL
+	// Even at narrow width, "open PR" action should appear
 	footer := renderFooter(true, false, false, &prURL, 40)
 	stripped := stripANSI(footer)
 
-	if !strings.Contains(stripped, "PR #42") {
-		t.Errorf("expected footer to contain PR #42, got: %s", stripped)
-	}
-	if strings.Contains(stripped, "https://") {
-		t.Errorf("expected short form, not full URL at narrow width, got: %s", stripped)
-	}
-}
-
-func TestRenderFooter_PRURL_HiddenWhenTooNarrow(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.Ascii)
-	prURL := "https://github.com/test/repo/pull/42"
-	// Extremely narrow - not even short form fits
-	footer := renderFooter(true, false, false, &prURL, 20)
-	stripped := stripANSI(footer)
-
-	if strings.Contains(stripped, "PR") {
-		t.Errorf("expected no PR at extremely narrow width, got: %s", stripped)
+	if !strings.Contains(stripped, "open PR") {
+		t.Errorf("expected footer to contain 'open PR' action, got: %s", stripped)
 	}
 }
 
@@ -5053,21 +5042,16 @@ func TestRenderBabysitView_LongLastEventTruncated(t *testing.T) {
 	}
 }
 
-func TestRenderBabysitView_ShowsPRContextWhenFooterWouldHideIt(t *testing.T) {
+func TestRenderBabysitView_ShowsPRContext(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
 	run := testRunWithBabysit()
 	shortURL := "https://github.com/user/repo/pull/99"
 	run.PRURL = &shortURL
 	run.Steps[5].Status = types.StepStatusRunning
 
-	footer := stripANSI(renderFooter(false, false, false, &shortURL, 20))
-	if strings.Contains(footer, "PR #99") {
-		t.Fatalf("expected narrow footer to hide PR context, got: %s", footer)
-	}
-
-	result := stripANSI(renderBabysitView(run, run.Steps, "", nil, 20))
+	result := stripANSI(renderBabysitView(run, run.Steps, "", nil, 60))
 	if !strings.Contains(result, "PR #99") {
-		t.Fatalf("expected babysit panel to retain PR context in narrow width, got: %s", result)
+		t.Fatalf("expected babysit panel to show PR context, got: %s", result)
 	}
 }
 

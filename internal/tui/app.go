@@ -2,6 +2,8 @@ package tui
 
 import (
 	"fmt"
+	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 
@@ -529,27 +531,27 @@ func renderFooter(done bool, showHelp bool, confirmAbort bool, prURL *string, wi
 		left += "  " + boldKey.Render("x") + " " + dimStyle.Render(xLabel)
 	}
 	left += "  " + boldKey.Render("?") + " " + dimStyle.Render(helpLabel)
+	if prURL != nil && *prURL != "" {
+		left += "  " + boldKey.Render("o") + " " + dimStyle.Render("open PR")
+	}
+	return left
+}
 
-	if prURL == nil || *prURL == "" {
-		return left
+// openBrowserCmd returns a tea.Cmd that opens the given URL in the default browser.
+func openBrowserCmd(url string) tea.Cmd {
+	return func() tea.Msg {
+		var cmd *exec.Cmd
+		switch runtime.GOOS {
+		case "darwin":
+			cmd = exec.Command("open", url)
+		case "windows":
+			cmd = exec.Command("cmd", "/c", "start", url)
+		default:
+			cmd = exec.Command("xdg-open", url)
+		}
+		_ = cmd.Start()
+		return nil
 	}
-
-	leftWidth := lipgloss.Width(left)
-	// Try full URL first (clickable in terminals), fall back to short form.
-	prText := *prURL
-	available := width - leftWidth - 4 // 4 = leading + trailing padding
-	if available < len(prText) {
-		prText = shortPRLabel(*prURL)
-	}
-	if available < len(prText) {
-		return left
-	}
-	right := dimStyle.Render(prText) + "  "
-	gap := width - leftWidth - lipgloss.Width(right)
-	if gap < 1 {
-		return left
-	}
-	return left + strings.Repeat(" ", gap) + right
 }
 
 // shortPRLabel extracts a compact label like "PR #42" from a PR URL.
@@ -895,6 +897,11 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.respondCmd(types.ActionFix)
 	case "s":
 		return m, m.respondCmd(types.ActionSkip)
+	case "o":
+		if m.run != nil && m.run.PRURL != nil && *m.run.PRURL != "" {
+			return m, openBrowserCmd(*m.run.PRURL)
+		}
+		return m, nil
 	case "x":
 		if m.done || m.run == nil {
 			return m, nil
