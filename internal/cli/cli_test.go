@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/kunchenguid/no-mistakes/internal/buildinfo"
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/db"
@@ -19,6 +20,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/muesli/termenv"
 )
 
 func init() {
@@ -144,6 +146,18 @@ func TestRootHelp(t *testing.T) {
 	}
 	if !strings.Contains(out, "update") {
 		t.Errorf("help output should list update command, got: %s", out)
+	}
+}
+
+func TestSetColorProfileForOutputUsesAsciiForNonTTY(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	defer lipgloss.SetColorProfile(prev)
+
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	setColorProfileForOutput(new(bytes.Buffer))
+
+	if lipgloss.ColorProfile() != termenv.Ascii {
+		t.Fatalf("ColorProfile = %v, want %v", lipgloss.ColorProfile(), termenv.Ascii)
 	}
 }
 
