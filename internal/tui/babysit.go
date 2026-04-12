@@ -102,6 +102,13 @@ func renderBabysitViewWithSelection(run *ipc.RunInfo, steps []ipc.StepResultInfo
 	contentWidth := boxWidth - 4 // account for box border + padding
 
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
+	if run != nil && run.PRURL != nil && *run.PRURL != "" {
+		prText, _ := cutText(shortPRLabel(*run.PRURL), contentWidth)
+		b.WriteString(dimStyle.Render(prText) + "\n")
+	} else if num := extractPRFromLogs(logs); num != "" {
+		prText, _ := cutText("PR #"+num, contentWidth)
+		b.WriteString(dimStyle.Render(prText) + "\n")
+	}
 
 	// State indicator.
 	status := babysitStepStatus(steps)

@@ -1752,16 +1752,15 @@ func TestRenderBabysitView_Monitoring(t *testing.T) {
 	}
 }
 
-func TestRenderBabysitView_NoPRURL(t *testing.T) {
-	// PR URL should not appear in babysit panel - it's shown persistently in the footer.
+func TestRenderBabysitView_ShowsPRContextFromURL(t *testing.T) {
 	run := testRunWithBabysit()
 	run.PRURL = ptr("https://github.com/user/repo/pull/99")
 	run.Steps[5].Status = types.StepStatusRunning
 
-	out := renderBabysitView(run, run.Steps, "", nil, 80)
+	out := stripANSI(renderBabysitView(run, run.Steps, "", nil, 80))
 
-	if strings.Contains(out, "https://github.com/user/repo/pull/99") {
-		t.Error("expected no PR URL in babysit panel - shown in footer instead")
+	if !strings.Contains(out, "PR #99") {
+		t.Fatalf("expected babysit panel to show PR context, got: %s", out)
 	}
 }
 
@@ -4927,8 +4926,7 @@ func TestPipelineView_ShortErrorNotTruncated(t *testing.T) {
 	}
 }
 
-func TestRenderBabysitView_NoPRURLInPanel(t *testing.T) {
-	// PR URL should not appear in babysit panel regardless of length.
+func TestRenderBabysitView_ShowsShortPRContextInPanel(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
 	run := testRunWithBabysit()
 	longURL := "https://github.com/some-very-long-organization-name/some-very-long-repository-name-that-goes-on-and-on/pull/12345"
@@ -4937,8 +4935,11 @@ func TestRenderBabysitView_NoPRURLInPanel(t *testing.T) {
 
 	result := stripANSI(renderBabysitView(run, run.Steps, "", nil, 80))
 
-	if strings.Contains(result, "PR:") {
-		t.Error("expected no PR URL in babysit panel - shown in footer instead")
+	if !strings.Contains(result, "PR #12345") {
+		t.Fatalf("expected babysit panel to show short PR context, got: %s", result)
+	}
+	if strings.Contains(result, longURL) {
+		t.Fatal("expected babysit panel to avoid rendering the full PR URL")
 	}
 }
 
@@ -4968,18 +4969,21 @@ func TestRenderBabysitView_LongLastEventTruncated(t *testing.T) {
 	}
 }
 
-func TestRenderBabysitView_NoPRURLEvenShort(t *testing.T) {
-	// Even short PR URLs should not appear in babysit panel.
+func TestRenderBabysitView_ShowsPRContextWhenFooterWouldHideIt(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
 	run := testRunWithBabysit()
 	shortURL := "https://github.com/user/repo/pull/99"
 	run.PRURL = &shortURL
 	run.Steps[5].Status = types.StepStatusRunning
 
-	result := stripANSI(renderBabysitView(run, run.Steps, "", nil, 80))
+	footer := stripANSI(renderFooter(false, false, false, &shortURL, 20))
+	if strings.Contains(footer, "PR #99") {
+		t.Fatalf("expected narrow footer to hide PR context, got: %s", footer)
+	}
 
-	if strings.Contains(result, shortURL) {
-		t.Error("expected no PR URL in babysit panel - shown in footer instead")
+	result := stripANSI(renderBabysitView(run, run.Steps, "", nil, 20))
+	if !strings.Contains(result, "PR #99") {
+		t.Fatalf("expected babysit panel to retain PR context in narrow width, got: %s", result)
 	}
 }
 
