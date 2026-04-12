@@ -37,6 +37,10 @@ const (
 	cappedPipelineHeight = 29
 )
 
+var runBrowserCommand = func(name string, args ...string) error {
+	return exec.Command(name, args...).Run()
+}
+
 func (e errMsg) Error() string { return e.err.Error() }
 
 // connectedMsg signals that the event subscription is ready.
@@ -540,16 +544,20 @@ func renderFooter(done bool, showHelp bool, confirmAbort bool, prURL *string, wi
 // openBrowserCmd returns a tea.Cmd that opens the given URL in the default browser.
 func openBrowserCmd(url string) tea.Cmd {
 	return func() tea.Msg {
-		var cmd *exec.Cmd
+		var name string
+		var args []string
 		switch runtime.GOOS {
 		case "darwin":
-			cmd = exec.Command("open", url)
+			name = "open"
+			args = []string{url}
 		case "windows":
-			cmd = exec.Command("cmd", "/c", "start", url)
+			name = "cmd"
+			args = []string{"/c", "start", url}
 		default:
-			cmd = exec.Command("xdg-open", url)
+			name = "xdg-open"
+			args = []string{url}
 		}
-		_ = cmd.Start()
+		_ = runBrowserCommand(name, args...)
 		return nil
 	}
 }

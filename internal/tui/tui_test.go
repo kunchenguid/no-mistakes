@@ -497,6 +497,37 @@ func TestRenderFooter_PRURL_ActionShownAtNarrowWidth(t *testing.T) {
 	}
 }
 
+func TestOpenBrowserCmd_WaitsForBrowserCommand(t *testing.T) {
+	original := runBrowserCommand
+	t.Cleanup(func() {
+		runBrowserCommand = original
+	})
+
+	called := false
+	finished := false
+	runBrowserCommand = func(name string, args ...string) error {
+		called = true
+		time.Sleep(50 * time.Millisecond)
+		finished = true
+		return nil
+	}
+
+	start := time.Now()
+	msg := openBrowserCmd("https://example.com")()
+	if msg != nil {
+		t.Fatalf("expected nil msg, got %#v", msg)
+	}
+	if !called {
+		t.Fatal("expected browser command to be invoked")
+	}
+	if !finished {
+		t.Fatal("expected browser command to finish before return")
+	}
+	if elapsed := time.Since(start); elapsed < 50*time.Millisecond {
+		t.Fatalf("expected command to block until completion, returned after %v", elapsed)
+	}
+}
+
 func TestModel_ApplyEvent_LogChunk(t *testing.T) {
 	run := testRun()
 	m := NewModel("/tmp/sock", nil, run)
