@@ -103,7 +103,6 @@ func fakeGlabHandler(args []string) {
 func fakeBabysitGHHandler(args []string) {
 	state := os.Getenv("FAKE_CLI_STATE")
 	checksJSON := os.Getenv("FAKE_CLI_CHECKS")
-	commentsJSON := os.Getenv("FAKE_CLI_COMMENTS")
 	joined := strings.Join(args, " ")
 
 	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
@@ -115,13 +114,6 @@ func fakeBabysitGHHandler(args []string) {
 	}
 	if strings.Contains(joined, "pr checks") {
 		fmt.Println(checksJSON)
-		os.Exit(0)
-	}
-	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json comments") {
-		fmt.Println(commentsJSON)
-		os.Exit(0)
-	}
-	if strings.Contains(joined, "pr comment") {
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "run view") {
@@ -143,10 +135,6 @@ func fakeBabysitGHNoChecksHandler(args []string) {
 	}
 	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json state") {
 		fmt.Println("OPEN")
-		os.Exit(0)
-	}
-	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json comments") {
-		fmt.Println("[]")
 		os.Exit(0)
 	}
 	os.Exit(1)
@@ -2257,58 +2245,6 @@ func TestFailingCheckNames(t *testing.T) {
 	}
 }
 
-func TestCommentsToFindings(t *testing.T) {
-	comments := []prComment{
-		{ID: "1", Body: "Please fix the null check"},
-		{ID: "2", Body: "LGTM"},
-	}
-	comments[0].Author.Login = "alice"
-	comments[1].Author.Login = "bob"
-
-	findings := commentsToFindings(comments)
-	if len(findings.Items) != 2 {
-		t.Fatalf("expected 2 findings, got %d", len(findings.Items))
-	}
-	if findings.Items[0].Severity != "info" {
-		t.Errorf("severity = %s, want info", findings.Items[0].Severity)
-	}
-	if !strings.Contains(findings.Items[0].Description, "@alice") {
-		t.Error("expected finding to contain @alice")
-	}
-	if !strings.Contains(findings.Items[0].Description, "null check") {
-		t.Error("expected finding to contain comment body")
-	}
-	if findings.Summary != "2 PR comment(s) to review" {
-		t.Errorf("summary = %q, want '2 PR comment(s) to review'", findings.Summary)
-	}
-}
-
-func TestTruncate(t *testing.T) {
-	tests := []struct {
-		name   string
-		input  string
-		maxLen int
-		want   string
-	}{
-		{"short", "hello", 10, "hello"},
-		{"exact", "hello", 5, "hello"},
-		{"long", "hello world", 8, "hello..."},
-		{"very short max", "hello", 3, "hel"},
-		{"empty", "", 5, ""},
-		// Multi-byte rune handling: truncate should count runes, not bytes
-		{"multibyte exact", "日本語AB", 5, "日本語AB"},
-		{"multibyte truncated", "日本語ABCD", 5, "日本..."},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := truncate(tt.input, tt.maxLen)
-			if got != tt.want {
-				t.Errorf("truncate(%q, %d) = %q, want %q", tt.input, tt.maxLen, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestBabysitStep_NoPRURL(t *testing.T) {
 	dir := t.TempDir()
 	ag := &mockAgent{name: "test"}
@@ -2374,7 +2310,7 @@ func TestBabysitStep_ContextCancelled(t *testing.T) {
 func TestBabysitStep_TimeoutDoesNotSleepPastDeadline(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
-	binDir := fakeBabysitGH(t, "OPEN", "[]", "[]")
+	binDir := fakeBabysitGH(t, "OPEN", "[]")
 	prependPATH(t, binDir)
 
 	prURL := "https://github.com/test/repo/pull/42"
@@ -2578,23 +2514,6 @@ func TestCICheckJSON(t *testing.T) {
 	names := failingCheckNames(checks)
 	if len(names) != 1 || names[0] != "test" {
 		t.Errorf("failingCheckNames = %v, want [test]", names)
-	}
-}
-
-func TestPRCommentJSON(t *testing.T) {
-	input := `[{"id":"IC_123","author":{"login":"reviewer"},"body":"Please fix this","createdAt":"2026-01-01T00:00:00Z","url":"https://github.com/test/repo/pull/1#comment-123"}]`
-	var comments []prComment
-	if err := json.Unmarshal([]byte(input), &comments); err != nil {
-		t.Fatal(err)
-	}
-	if len(comments) != 1 {
-		t.Fatalf("expected 1 comment, got %d", len(comments))
-	}
-	if comments[0].Author.Login != "reviewer" {
-		t.Errorf("author = %s, want reviewer", comments[0].Author.Login)
-	}
-	if comments[0].Body != "Please fix this" {
-		t.Errorf("body = %s, want 'Please fix this'", comments[0].Body)
 	}
 }
 
@@ -3162,14 +3081,13 @@ func TestReviewStep_FixMode_RequiresPreviousFindings(t *testing.T) {
 
 // fakeBabysitGH creates a fake gh binary that responds to babysit-related
 // commands (pr view --json state, pr checks --json, pr view --json comments).
-func fakeBabysitGH(t *testing.T, state, checksJSON, commentsJSON string) string {
+func fakeBabysitGH(t *testing.T, state, checksJSON string) string {
 	t.Helper()
 	binDir := fakeCLIBinDir(t)
 	linkTestBinary(t, binDir, "gh")
 	t.Setenv("FAKE_CLI_MODE", "babysit-gh")
 	t.Setenv("FAKE_CLI_STATE", state)
 	t.Setenv("FAKE_CLI_CHECKS", checksJSON)
-	t.Setenv("FAKE_CLI_COMMENTS", commentsJSON)
 	return binDir
 }
 
@@ -3184,7 +3102,7 @@ func fakeBabysitGHNoChecks(t *testing.T) string {
 func TestBabysitStep_PRMergedExitsEarly(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
-	binDir := fakeBabysitGH(t, "MERGED", "[]", "[]")
+	binDir := fakeBabysitGH(t, "MERGED", "[]")
 	prependPATH(t, binDir)
 
 	prURL := "https://github.com/test/repo/pull/42"
@@ -3220,7 +3138,7 @@ func TestBabysitStep_PRMergedExitsEarly(t *testing.T) {
 func TestBabysitStep_PRClosedExitsEarly(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
-	binDir := fakeBabysitGH(t, "CLOSED", "[]", "[]")
+	binDir := fakeBabysitGH(t, "CLOSED", "[]")
 	prependPATH(t, binDir)
 
 	prURL := "https://github.com/test/repo/pull/42"
@@ -3292,7 +3210,7 @@ func TestBabysitStep_CIFailureAutoFix(t *testing.T) {
 	gitCmd(t, dir, "push", "origin", "feature")
 
 	checksJSON := `[{"name":"build","status":"COMPLETED","conclusion":"success"},{"name":"test","status":"COMPLETED","conclusion":"failure"}]`
-	binDir := fakeBabysitGH(t, "OPEN", checksJSON, "[]")
+	binDir := fakeBabysitGH(t, "OPEN", checksJSON)
 	prependPATH(t, binDir)
 
 	agentCalled := false
@@ -3361,69 +3279,11 @@ func TestBabysitStep_CIFailureAutoFix(t *testing.T) {
 	}
 }
 
-func TestBabysitStep_NewCommentsPausesForApproval(t *testing.T) {
-	dir, baseSHA, headSHA := setupGitRepo(t)
-
-	commentsJSON := `[{"id":"IC_100","author":{"login":"reviewer"},"body":"Please fix the naming","createdAt":"2026-01-01T00:00:00Z","url":"https://github.com/test/repo/pull/42#comment-100"}]`
-	binDir := fakeBabysitGH(t, "OPEN", "[]", commentsJSON)
-	prependPATH(t, binDir)
-
-	prURL := "https://github.com/test/repo/pull/42"
-	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Run.PRURL = &prURL
-	sctx.Config.BabysitTimeout = 10 * time.Second
-
-	var logs []string
-	sctx.Log = func(s string) { logs = append(logs, s) }
-
-	step := &BabysitStep{}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !outcome.NeedsApproval {
-		t.Error("expected approval needed for new PR comments")
-	}
-	if outcome.Findings == "" {
-		t.Error("expected findings with comment details")
-	}
-
-	// Verify findings contain the comment
-	var findings Findings
-	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
-		t.Fatal(err)
-	}
-	if len(findings.Items) != 1 {
-		t.Fatalf("expected 1 finding, got %d", len(findings.Items))
-	}
-	if findings.Items[0].ID != "IC_100" {
-		t.Fatalf("expected comment ID to be used as finding ID, got %q", findings.Items[0].ID)
-	}
-	if !strings.Contains(findings.Items[0].Description, "reviewer") {
-		t.Errorf("expected reviewer in finding, got: %s", findings.Items[0].Description)
-	}
-	if !strings.Contains(findings.Items[0].Description, "naming") {
-		t.Errorf("expected comment body in finding, got: %s", findings.Items[0].Description)
-	}
-
-	foundCommentLog := false
-	for _, l := range logs {
-		if strings.Contains(l, "new PR comment") {
-			foundCommentLog = true
-			break
-		}
-	}
-	if !foundCommentLog {
-		t.Errorf("expected new comment log, got: %v", logs)
-	}
-}
-
 func TestBabysitStep_AllChecksPassingExitsCleanly(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	checksJSON := `[{"name":"build","state":"SUCCESS","bucket":"pass"},{"name":"test","state":"SUCCESS","bucket":"pass"}]`
-	binDir := fakeBabysitGH(t, "OPEN", checksJSON, "[]")
+	binDir := fakeBabysitGH(t, "OPEN", checksJSON)
 	prependPATH(t, binDir)
 
 	prURL := "https://github.com/test/repo/pull/42"
@@ -3460,7 +3320,7 @@ func TestBabysitStep_EmptyChecksWaitsDuringGracePeriod(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	// Fake gh returns OPEN state, empty checks, no comments
-	binDir := fakeBabysitGH(t, "OPEN", "[]", "[]")
+	binDir := fakeBabysitGH(t, "OPEN", "[]")
 	prependPATH(t, binDir)
 
 	prURL := "https://github.com/test/repo/pull/42"
@@ -3508,7 +3368,7 @@ func TestBabysitStep_NonEmptyPassingChecksExitImmediately(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	checksJSON := `[{"name":"build","state":"SUCCESS","bucket":"pass"}]`
-	binDir := fakeBabysitGH(t, "OPEN", checksJSON, "[]")
+	binDir := fakeBabysitGH(t, "OPEN", checksJSON)
 	prependPATH(t, binDir)
 
 	prURL := "https://github.com/test/repo/pull/42"
@@ -3543,168 +3403,6 @@ func TestBabysitStep_NonEmptyPassingChecksExitImmediately(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected 'all CI checks passed' log, got: %v", logs)
-	}
-}
-
-func TestBabysitStep_AddressCommentsInFixMode_OnlySelectedComments(t *testing.T) {
-	upstream := t.TempDir()
-	gitCmd(t, upstream, "init", "--bare")
-
-	dir := t.TempDir()
-	gitCmd(t, dir, "init")
-	gitCmd(t, dir, "config", "user.name", "test")
-	gitCmd(t, dir, "config", "user.email", "test@test.com")
-	gitCmd(t, dir, "checkout", "-b", "main")
-	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "initial")
-	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
-	gitCmd(t, dir, "remote", "add", "origin", upstream)
-	gitCmd(t, dir, "push", "origin", "main")
-
-	gitCmd(t, dir, "checkout", "-b", "feature")
-	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "feature")
-	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
-	gitCmd(t, dir, "push", "origin", "feature")
-
-	commentsJSON := `[
-		{"id":"IC_200","author":{"login":"alice"},"body":"Rename this function","createdAt":"2026-01-01T00:00:00Z","url":"https://github.com/test/repo/pull/42#comment-200"},
-		{"id":"IC_201","author":{"login":"bob"},"body":"Add more tests","createdAt":"2026-01-01T00:00:01Z","url":"https://github.com/test/repo/pull/42#comment-201"}
-	]`
-	passingChecks := `[{"name":"build","state":"SUCCESS","bucket":"pass"}]`
-	binDir := fakeBabysitGH(t, "OPEN", passingChecks, commentsJSON)
-	prependPATH(t, binDir)
-
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			os.WriteFile(filepath.Join(opts.CWD, "comment-fix.txt"), []byte("fixed"), 0o644)
-			if !strings.Contains(opts.Prompt, "Rename this function") {
-				t.Fatalf("expected selected comment in agent prompt, got: %s", opts.Prompt)
-			}
-			if strings.Contains(opts.Prompt, "Add more tests") {
-				t.Fatalf("did not expect unselected comment in agent prompt, got: %s", opts.Prompt)
-			}
-			return &agent.Result{}, nil
-		},
-	}
-
-	prURL := "https://github.com/test/repo/pull/42"
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Run.PRURL = &prURL
-	sctx.Repo.UpstreamURL = upstream
-	sctx.Run.Branch = "refs/heads/feature"
-	sctx.Fixing = true
-	sctx.PreviousFindings = `{"findings":[{"id":"IC_200","severity":"info","description":"@alice: Rename this function"}],"summary":"1 PR comment(s) to review"}`
-	sctx.Config.BabysitTimeout = 30 * time.Second
-
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	sctx.Ctx = ctx
-
-	step := &BabysitStep{
-		seenComments: map[string]bool{"IC_200": true, "IC_201": true},
-	}
-
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatalf("expected clean exit after addressing comments, got: %v", err)
-	}
-	if outcome.NeedsApproval {
-		t.Fatal("expected no approval after selected comments are addressed")
-	}
-}
-
-func TestBabysitStep_AddressCommentsInFixMode(t *testing.T) {
-	// Set up upstream bare repo for push
-	upstream := t.TempDir()
-	gitCmd(t, upstream, "init", "--bare")
-
-	dir := t.TempDir()
-	gitCmd(t, dir, "init")
-	gitCmd(t, dir, "config", "user.name", "test")
-	gitCmd(t, dir, "config", "user.email", "test@test.com")
-	gitCmd(t, dir, "checkout", "-b", "main")
-	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "initial")
-	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
-	gitCmd(t, dir, "remote", "add", "origin", upstream)
-	gitCmd(t, dir, "push", "origin", "main")
-
-	gitCmd(t, dir, "checkout", "-b", "feature")
-	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "feature")
-	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
-	gitCmd(t, dir, "push", "origin", "feature")
-
-	commentsJSON := `[{"id":"IC_200","author":{"login":"alice"},"body":"Rename this function","createdAt":"2026-01-01T00:00:00Z","url":"https://github.com/test/repo/pull/42#comment-200"}]`
-	passingChecks := `[{"name":"build","state":"SUCCESS","bucket":"pass"}]`
-	binDir := fakeBabysitGH(t, "OPEN", passingChecks, commentsJSON)
-	prependPATH(t, binDir)
-
-	agentCalled := false
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			agentCalled = true
-			// Agent fixes by creating a file
-			os.WriteFile(filepath.Join(opts.CWD, "comment-fix.txt"), []byte("fixed"), 0o644)
-			return &agent.Result{}, nil
-		},
-	}
-
-	prURL := "https://github.com/test/repo/pull/42"
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Run.PRURL = &prURL
-	sctx.Repo.UpstreamURL = upstream
-	sctx.Run.Branch = "refs/heads/feature"
-	sctx.Fixing = true
-	sctx.Config.BabysitTimeout = 30 * time.Second
-
-	// Use a context with short timeout: after addressing comments and entering
-	// the poll loop, the sleep will be interrupted by context deadline.
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	sctx.Ctx = ctx
-
-	// Pre-populate seenComments to simulate comments from previous Execute
-	step := &BabysitStep{
-		seenComments: map[string]bool{"IC_200": true},
-	}
-
-	var logs []string
-	sctx.Log = func(s string) { logs = append(logs, s) }
-
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatalf("expected clean exit after addressing comments, got: %v", err)
-	}
-	if outcome.NeedsApproval {
-		t.Fatal("expected no approval after addressed comments and clean CI")
-	}
-	if !agentCalled {
-		t.Error("expected agent to be called for comment addressing")
-	}
-
-	// Verify agent prompt includes the comment text
-	if len(ag.calls) == 0 {
-		t.Fatal("expected agent call")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "Rename this function") {
-		t.Errorf("expected comment body in agent prompt, got: %s", ag.calls[0].Prompt)
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "Make the minimal change needed") {
-		t.Error("expected comment-fix prompt to require minimal changes")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "Do not refactor beyond what is needed") {
-		t.Error("expected comment-fix prompt to forbid broader refactors")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "Do not add comments explaining your fixes") {
-		t.Error("expected comment-fix prompt to forbid explanatory comments")
 	}
 }
 
