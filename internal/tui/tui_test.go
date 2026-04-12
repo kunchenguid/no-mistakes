@@ -5377,8 +5377,9 @@ func TestModel_View_ReattachAwaitingApprovalShowsDuration(t *testing.T) {
 
 	view := stripANSI(m.View())
 
-	// Should show ~15s elapsed time even though we re-attached (no EventStepStarted received).
-	if !strings.Contains(view, "15.") && !strings.Contains(view, "14.9") && !strings.Contains(view, "15.0") && !strings.Contains(view, "15.1") {
+	// StartedAt is seeded from Unix seconds, so sub-second truncation plus render delay
+	// can round this re-attach duration up to 16.0s on slower CI runners.
+	if !strings.Contains(view, "15.") && !strings.Contains(view, "14.9") && !strings.Contains(view, "15.0") && !strings.Contains(view, "15.1") && !strings.Contains(view, "16.0") {
 		t.Errorf("expected re-attached awaiting approval step to show ~15s elapsed, got:\n%s", view)
 	}
 }
