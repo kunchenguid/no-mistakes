@@ -37,6 +37,44 @@ func excludeFindingsJSON(raw string, ids []string) string {
 	return excludedRaw
 }
 
+func mergeFindingsJSON(existingRaw, additionalRaw string) string {
+	if existingRaw == "" {
+		return additionalRaw
+	}
+	if additionalRaw == "" {
+		return existingRaw
+	}
+	existing, err := types.ParseFindingsJSON(existingRaw)
+	if err != nil {
+		return additionalRaw
+	}
+	additional, err := types.ParseFindingsJSON(additionalRaw)
+	if err != nil {
+		return existingRaw
+	}
+	seen := make(map[string]bool, len(existing.Items)+len(additional.Items))
+	merged := types.Findings{}
+	for _, item := range existing.Items {
+		merged.Items = append(merged.Items, item)
+		seen[item.ID] = true
+	}
+	for _, item := range additional.Items {
+		if seen[item.ID] {
+			continue
+		}
+		merged.Items = append(merged.Items, item)
+		seen[item.ID] = true
+	}
+	if len(merged.Items) == 0 {
+		return ""
+	}
+	mergedRaw, err := types.MarshalFindingsJSON(merged)
+	if err != nil {
+		return existingRaw
+	}
+	return mergedRaw
+}
+
 func filterFindingsJSON(raw string, ids []string) string {
 	if raw == "" || len(ids) == 0 {
 		return raw
