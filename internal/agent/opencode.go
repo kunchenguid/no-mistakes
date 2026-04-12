@@ -418,6 +418,8 @@ func parseOpencodeSSE(r io.Reader, state *opencodeStreamState) error {
 					if existing != nil {
 						if strings.HasPrefix(p.Text, existing.text) {
 							chunk = p.Text[len(existing.text):]
+						} else if p.Text != existing.text {
+							chunk = p.Text
 						}
 						existing.text = p.Text
 						existing.phase = phase

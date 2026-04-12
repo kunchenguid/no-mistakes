@@ -213,7 +213,7 @@ data: {"payload":{"type":"session.idle"}}
 	}
 }
 
-func TestParseOpencodeSSE_PartUpdated_NonPrefixSnapshotDoesNotEmitDuplicateChunk(t *testing.T) {
+func TestParseOpencodeSSE_PartUpdated_NonPrefixSnapshotStreamsCorrectedText(t *testing.T) {
 	input := `data: {"payload":{"type":"message.part.delta","properties":{"sessionID":"s1","field":"text","partID":"p1","delta":"hello world"}}}
 
 data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p1","type":"text","text":"hello there"}}}}
@@ -233,11 +233,14 @@ data: {"payload":{"type":"session.idle"}}
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(chunks) != 1 {
-		t.Fatalf("expected 1 chunk, got %d: %v", len(chunks), chunks)
+	if len(chunks) != 2 {
+		t.Fatalf("expected 2 chunks, got %d: %v", len(chunks), chunks)
 	}
 	if chunks[0] != "hello world" {
 		t.Errorf("expected original delta chunk 'hello world', got %q", chunks[0])
+	}
+	if chunks[1] != "hello there" {
+		t.Errorf("expected corrected chunk 'hello there', got %q", chunks[1])
 	}
 	if state.lastText != "hello there" {
 		t.Errorf("expected lastText 'hello there', got %q", state.lastText)
