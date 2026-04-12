@@ -4068,7 +4068,7 @@ func TestModel_View_ShortTerminalDoesNotOverflowHeight(t *testing.T) {
 
 	m := NewModel("/tmp/sock", nil, run)
 	m.width = 80
-	m.height = 18
+	m.height = 20
 	view := stripANSI(m.View())
 
 	if got := lipgloss.Height(view); got > m.height {
@@ -6888,6 +6888,46 @@ func TestModel_View_ResponsiveLayoutKeepsHelpVisibleWithLogs(t *testing.T) {
 	}
 	if !strings.Contains(view, "close help") {
 		t.Fatalf("expected help overlay content in responsive layout with logs, got:\n%s", view)
+	}
+}
+
+func TestModel_View_ResponsiveLayoutReservesGapBeforeLogBox(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	defer lipgloss.SetColorProfile(termenv.ANSI)
+
+	run := &ipc.RunInfo{
+		ID: "run-001", RepoID: "repo-001", Branch: "main", HeadSHA: "abc12345",
+		BaseSHA: "000000", Status: types.RunRunning,
+		Steps: []ipc.StepResultInfo{
+			{ID: "s1", StepName: types.StepReview, StepOrder: 1, Status: types.StepStatusAwaitingApproval},
+		},
+	}
+	m := NewModel("/tmp/sock", nil, run)
+	m.width = 120
+	m.height = 20
+	m.logs = make([]string, 40)
+	for i := range m.logs {
+		m.logs[i] = fmt.Sprintf("log line %02d", i)
+	}
+
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "q detach") {
+		t.Fatalf("expected footer to remain visible, got:\n%s", view)
+	}
+	if !strings.Contains(view, "approve") {
+		t.Fatalf("expected action bar to remain visible, got:\n%s", view)
+	}
+	if !strings.Contains(view, "Log") {
+		t.Fatalf("expected log box to remain visible, got:\n%s", view)
+	}
+	if strings.Contains(view, "log line 26") {
+		t.Fatalf("expected responsive log box to reserve one line for the action-bar separator, got:\n%s", view)
+	}
+	if !strings.Contains(view, "log line 27") {
+		t.Fatalf("expected responsive log box to keep the newest lines after reserving the separator, got:\n%s", view)
+	}
+	if !hasParallelBoxRow(view) {
+		t.Fatalf("expected responsive layout with side-by-side columns, got:\n%s", view)
 	}
 }
 

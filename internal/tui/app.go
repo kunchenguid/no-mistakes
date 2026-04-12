@@ -294,6 +294,9 @@ func (m Model) View() string {
 	logLines := 5
 	if useResponsiveLayout && !m.showHelp && contentBudget > 0 && len(extraSections) == 0 {
 		logLines = contentBudget - 2 // subtract box borders
+		if actionBar != "" {
+			logLines -= sectionGapHeight
+		}
 	} else if m.height > 0 && m.height < 30 {
 		logLines = 3
 	}
