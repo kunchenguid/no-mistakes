@@ -77,6 +77,10 @@ func setupTestRepo(t *testing.T) string {
 		p := paths.WithRoot(nmHome)
 		_, _ = daemon.IsRunning(p)
 		_ = daemon.Stop(p)
+		// On Windows, the daemon may hold file locks briefly after stopping.
+		if runtime.GOOS == "windows" {
+			time.Sleep(500 * time.Millisecond)
+		}
 	})
 
 	return repoDir
