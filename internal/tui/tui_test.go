@@ -3020,10 +3020,39 @@ func TestRenderBabysitView_LogTailTinyStillShowsSome(t *testing.T) {
 		"all checks passing",
 	}
 
-	out := stripANSI(renderBabysitViewWithSelection(run, run.Steps, "", logs, 80, 8, 0, nil))
+	out := stripANSI(renderBabysitViewWithSelection(run, run.Steps, "", logs, 80, 10, 0, nil))
 
 	if !strings.Contains(out, "all checks passing") {
 		t.Error("expected at least the last log line even in tiny terminal")
+	}
+}
+
+func TestModel_View_BabysitShortTerminalKeepsStatusPanel(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+
+	run := testRunWithBabysit()
+	run.Steps[5].Status = types.StepStatusRunning
+	run.PRURL = ptr("https://github.com/kunchenguid/no-mistakes/pull/42")
+
+	m := NewModel("/tmp/sock", nil, run)
+	m.width = 80
+	m.height = 17
+	m.logs = []string{
+		"line1",
+		"line2",
+		"all checks passing",
+	}
+
+	view := stripANSI(m.View())
+
+	if got := lipgloss.Height(view); got > m.height {
+		t.Fatalf("expected rendered view height <= terminal height (%d), got %d\n%s", m.height, got, view)
+	}
+	if !strings.Contains(view, "Babysit") {
+		t.Fatalf("expected babysit section to remain visible in short terminal\n%s", view)
+	}
+	if !strings.Contains(view, "Monitoring CI checks") {
+		t.Fatalf("expected babysit status panel to remain visible in short terminal\n%s", view)
 	}
 }
 

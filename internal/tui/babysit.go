@@ -149,12 +149,14 @@ func renderBabysitViewWithSelection(run *ipc.RunInfo, steps []ipc.StepResultInfo
 
 		logLines := height - fixedLines
 		if logLines < 1 {
-			logLines = 1
+			logLines = 0
 		}
 
-		b.WriteString("\n")
-		for _, line := range renderLogTail(logs, contentWidth, logLines) {
-			b.WriteString(line + "\n")
+		if logLines > 0 {
+			b.WriteString("\n")
+			for _, line := range renderLogTail(logs, contentWidth, logLines) {
+				b.WriteString(line + "\n")
+			}
 		}
 	} else if len(logs) > 0 {
 		// No height info - show a reasonable default.
