@@ -106,10 +106,10 @@ func LoadGlobal(path string) (*GlobalConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			if mkErr := os.MkdirAll(filepath.Dir(path), 0o755); mkErr == nil {
-				if wErr := os.WriteFile(path, []byte(defaultConfigYAML), 0o644); wErr != nil {
-					slog.Debug("failed to write default config", "path", path, "error", wErr)
-				}
+			if mkErr := os.MkdirAll(filepath.Dir(path), 0o755); mkErr != nil {
+				slog.Debug("failed to create config directory", "path", filepath.Dir(path), "error", mkErr)
+			} else if wErr := os.WriteFile(path, []byte(defaultConfigYAML), 0o644); wErr != nil {
+				slog.Debug("failed to write default config", "path", path, "error", wErr)
 			}
 			return cfg, nil
 		}
