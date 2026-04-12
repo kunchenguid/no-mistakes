@@ -161,4 +161,3 @@ func renderBabysitViewWithSelection(run *ipc.RunInfo, steps []ipc.StepResultInfo
 
 	return renderBox("Babysit", b.String(), boxWidth)
 }
-
