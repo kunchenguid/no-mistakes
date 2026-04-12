@@ -106,7 +106,7 @@ func (s *PRStep) executeGitHubPR(sctx *pipeline.StepContext, branch string, cont
 			if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, prURL); err != nil {
 				slog.Warn("failed to persist PR URL", "run", sctx.Run.ID, "url", prURL, "err", err)
 			}
-			return &pipeline.StepOutcome{}, nil
+			return &pipeline.StepOutcome{PRURL: prURL}, nil
 		}
 	}
 
@@ -131,7 +131,7 @@ func (s *PRStep) executeGitHubPR(sctx *pipeline.StepContext, branch string, cont
 		slog.Warn("failed to persist PR URL", "run", sctx.Run.ID, "url", prURL, "err", err)
 	}
 
-	return &pipeline.StepOutcome{}, nil
+	return &pipeline.StepOutcome{PRURL: prURL}, nil
 }
 
 func (s *PRStep) executeGitLabMR(sctx *pipeline.StepContext, branch string, content prContent) (*pipeline.StepOutcome, error) {
@@ -152,7 +152,7 @@ func (s *PRStep) executeGitLabMR(sctx *pipeline.StepContext, branch string, cont
 			if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, mrURL); err != nil {
 				slog.Warn("failed to persist PR URL", "run", sctx.Run.ID, "url", mrURL, "err", err)
 			}
-			return &pipeline.StepOutcome{}, nil
+			return &pipeline.StepOutcome{PRURL: mrURL}, nil
 		}
 	}
 
@@ -176,7 +176,7 @@ func (s *PRStep) executeGitLabMR(sctx *pipeline.StepContext, branch string, cont
 		}
 	}
 	sctx.Log(fmt.Sprintf("created merge request: %s", mrURL))
-	return &pipeline.StepOutcome{}, nil
+	return &pipeline.StepOutcome{PRURL: mrURL}, nil
 }
 
 func extractSCMURL(raw []byte) string {

@@ -197,7 +197,11 @@ func (m Model) View() string {
 	}
 	actionBar := renderActionBar(m.steps, showSelectionActions, allowFix, m.showDiff, selectedCount, totalCount, m.confirmAbort, hasDiff)
 
-	footer := renderFooter(m.done, m.showHelp, m.confirmAbort)
+	var prURL *string
+	if m.run != nil {
+		prURL = m.run.PRURL
+	}
+	footer := renderFooter(m.done, m.showHelp, m.confirmAbort, prURL, m.width)
 	contentBudget := -1
 	if m.height > 0 {
 		baseSections := []string{}
@@ -452,7 +456,7 @@ func renderErrorBox(err error, width int) string {
 	return renderBox("Error", errContent.String(), boxWidth)
 }
 
-func renderFooter(done bool, showHelp bool, confirmAbort bool) string {
+func renderFooter(done bool, showHelp bool, confirmAbort bool, prURL *string, width int) string {
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
 	boldKey := lipgloss.NewStyle().Bold(true)
 	qLabel := "detach"
@@ -463,16 +467,54 @@ func renderFooter(done bool, showHelp bool, confirmAbort bool) string {
 	if showHelp {
 		helpLabel = "close"
 	}
-	footer := "  " + boldKey.Render("q") + " " + dimStyle.Render(qLabel)
+	left := "  " + boldKey.Render("q") + " " + dimStyle.Render(qLabel)
 	if !done {
 		xLabel := "abort"
 		if confirmAbort {
 			xLabel = "again to abort"
 		}
-		footer += "  " + boldKey.Render("x") + " " + dimStyle.Render(xLabel)
+		left += "  " + boldKey.Render("x") + " " + dimStyle.Render(xLabel)
 	}
-	footer += "  " + boldKey.Render("?") + " " + dimStyle.Render(helpLabel)
-	return footer
+	left += "  " + boldKey.Render("?") + " " + dimStyle.Render(helpLabel)
+
+	if prURL == nil || *prURL == "" {
+		return left
+	}
+
+	leftWidth := lipgloss.Width(left)
+	// Try full URL first (clickable in terminals), fall back to short form.
+	prText := *prURL
+	available := width - leftWidth - 4 // 4 = leading + trailing padding
+	if available < len(prText) {
+		prText = shortPRLabel(*prURL)
+	}
+	if available < len(prText) {
+		return left
+	}
+	right := dimStyle.Render(prText) + "  "
+	gap := width - leftWidth - lipgloss.Width(right)
+	if gap < 1 {
+		return left
+	}
+	return left + strings.Repeat(" ", gap) + right
+}
+
+// shortPRLabel extracts a compact label like "PR #42" from a PR URL.
+func shortPRLabel(url string) string {
+	// GitHub: .../pull/42, GitLab: .../merge_requests/42
+	for _, prefix := range []string{"/pull/", "/merge_requests/"} {
+		if idx := strings.LastIndex(url, prefix); idx >= 0 {
+			num := url[idx+len(prefix):]
+			if num != "" {
+				label := "PR"
+				if prefix == "/merge_requests/" {
+					label = "MR"
+				}
+				return label + " #" + num
+			}
+		}
+	}
+	return url
 }
 
 func joinSections(sections []string, gap string) string {
@@ -894,6 +936,9 @@ func (m *Model) applyEvent(event ipc.Event) {
 		if event.Status != nil {
 			m.run.Status = types.RunStatus(*event.Status)
 		}
+		if event.PRURL != nil {
+			m.run.PRURL = event.PRURL
+		}
 
 	case ipc.EventRunCompleted:
 		m.err = nil
@@ -902,6 +947,9 @@ func (m *Model) applyEvent(event ipc.Event) {
 		}
 		if event.Error != nil {
 			m.run.Error = event.Error
+		}
+		if event.PRURL != nil {
+			m.run.PRURL = event.PRURL
 		}
 		m.flushPartialLog()
 		m.done = true

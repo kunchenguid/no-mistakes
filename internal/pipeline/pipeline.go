@@ -30,6 +30,7 @@ type StepOutcome struct {
 	AutoFixable   bool
 	Findings      string // JSON findings for TUI display (optional)
 	ExitCode      int    // process exit code (0 = success)
+	PRURL         string // PR/MR URL if this step created or found one
 }
 
 // Step is the interface that each pipeline step implements.

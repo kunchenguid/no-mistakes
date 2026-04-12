@@ -216,6 +216,7 @@ type Event struct {
 	Findings   *string         `json:"findings,omitempty"`    // JSON-encoded findings for step_completed events
 	Diff       *string         `json:"diff,omitempty"`        // unified diff for fix_review events
 	DurationMS *int64          `json:"duration_ms,omitempty"` // execution-only duration for step events
+	PRURL      *string         `json:"pr_url,omitempty"`      // PR URL for run_updated/run_completed events
 }
 
 // --- Helpers ---

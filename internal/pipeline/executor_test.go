@@ -1881,3 +1881,44 @@ func writeTestFile(t *testing.T, dir, name, content string) {
 		t.Fatal(err)
 	}
 }
+
+func TestExecutor_StepOutcomePRURL_EmitsRunUpdated(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	prURL := "https://github.com/test/repo/pull/99"
+	prStep := &mockStep{
+		name:    types.StepPR,
+		outcome: &StepOutcome{ExitCode: 0, PRURL: prURL},
+	}
+	steps := []Step{newPassStep(types.StepReview), prStep}
+
+	exec := NewExecutor(database, p, nil, nil, steps, nil)
+	events := collectEvents(exec)
+
+	err := exec.Execute(context.Background(), run, repo, workDir)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	// Should have a run_updated event with the PRURL after the PR step.
+	found := false
+	for _, e := range events.all() {
+		if e.Type == ipc.EventRunUpdated && e.PRURL != nil && *e.PRURL == prURL {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected a run_updated event with PRURL after PR step")
+	}
+
+	// The run_completed event should also carry the PRURL.
+	completedEvent := events.findRunEvent(ipc.EventRunCompleted)
+	if completedEvent == nil {
+		t.Fatal("expected run_completed event")
+	}
+	if completedEvent.PRURL == nil || *completedEvent.PRURL != prURL {
+		t.Errorf("expected run_completed PRURL %q, got %v", prURL, completedEvent.PRURL)
+	}
+}

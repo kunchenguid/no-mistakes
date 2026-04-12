@@ -200,6 +200,12 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			}
 		}
 
+		// If the step produced a PR URL, propagate it to the run and emit an update.
+		if outcome.PRURL != "" {
+			run.PRURL = &outcome.PRURL
+			e.emitRunEvent(ipc.EventRunUpdated, run, repo)
+		}
+
 		if !outcome.NeedsApproval {
 			// Step completed without needing approval
 			break
@@ -362,14 +368,16 @@ func (e *Executor) failRun(run *db.Run, repo *db.Repo, err error, ctxs ...contex
 
 func (e *Executor) emitRunEvent(eventType ipc.EventType, run *db.Run, repo *db.Repo) {
 	status := string(run.Status)
-	e.onEvent(ipc.Event{
+	event := ipc.Event{
 		Type:   eventType,
 		RunID:  run.ID,
 		RepoID: repo.ID,
 		Status: &status,
 		Branch: &run.Branch,
 		Error:  run.Error,
-	})
+		PRURL:  run.PRURL,
+	}
+	e.onEvent(event)
 }
 
 func (e *Executor) emitStepEvent(eventType ipc.EventType, run *db.Run, repo *db.Repo, stepName types.StepName, status string) {
