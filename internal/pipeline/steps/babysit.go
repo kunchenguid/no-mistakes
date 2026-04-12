@@ -23,6 +23,7 @@ const defaultChecksGracePeriod = 60 * time.Second
 // BabysitStep monitors CI checks after PR creation, auto-fixing failures.
 type BabysitStep struct {
 	lastFixedChecks      string        // sorted check names from last fix attempt, to avoid re-fixing
+	ciFixAttempts        int           // number of CI auto-fix attempts made
 	checksGracePeriod    time.Duration // minimum wait before trusting empty CI checks (0 = default 60s)
 	pollIntervalOverride time.Duration // if set, overrides computed poll interval (for testing)
 }
@@ -113,6 +114,21 @@ func failingCheckNames(checks []ciCheck) []string {
 	return names
 }
 
+func ciFailureOutcome(failing []string, summary string) *pipeline.StepOutcome {
+	findings := Findings{Summary: summary}
+	for _, name := range failing {
+		findings.Items = append(findings.Items, Finding{
+			Severity:    "warning",
+			Description: fmt.Sprintf("CI check failing: %s", name),
+		})
+	}
+	findingsJSON, _ := json.Marshal(findings)
+	return &pipeline.StepOutcome{
+		NeedsApproval: true,
+		Findings:      string(findingsJSON),
+	}
+}
+
 func (s *BabysitStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	ctx := sctx.Ctx
 	if err := ctx.Err(); err != nil {
@@ -165,6 +181,7 @@ func (s *BabysitStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome
 
 	sctx.Log(fmt.Sprintf("babysitting PR #%s (timeout: %s)...", prNumber, timeout))
 	started := time.Now()
+	manualFixAttempted := false
 
 	for {
 		checksReadyToExit := false
@@ -192,7 +209,8 @@ func (s *BabysitStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome
 			return &pipeline.StepOutcome{}, nil
 		}
 
-		// Check CI status — auto-fix failures (no approval needed)
+		// Check CI status - auto-fix failures when configured
+		ciFixLimit := sctx.Config.AutoFix.Babysit
 		checks, err := s.getCIChecks(ctx, sctx.WorkDir, prNumber)
 		if err != nil {
 			sctx.Log(fmt.Sprintf("warning: could not check CI: %v", err))
@@ -200,27 +218,46 @@ func (s *BabysitStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome
 			failing := failingCheckNames(checks)
 			sort.Strings(failing)
 			fixKey := strings.Join(failing, ",")
-			if fixKey == s.lastFixedChecks {
+			if sctx.Fixing && !manualFixAttempted {
+				manualFixAttempted = true
+				sctx.Log(fmt.Sprintf("CI failures detected: %s - manual fix requested...", strings.Join(failing, ", ")))
+				if err := s.autoFixCI(sctx, prNumber, failing); err != nil {
+					sctx.Log(fmt.Sprintf("warning: CI manual fix failed: %v", err))
+				} else {
+					s.lastFixedChecks = fixKey
+				}
+			} else if sctx.Fixing && fixKey == s.lastFixedChecks {
+				sctx.Log("fix already attempted for these failures, waiting for CI re-run...")
+			} else if ciFixLimit <= 0 {
+				sctx.Log(fmt.Sprintf("CI failures detected: %s - auto-fix disabled, waiting for manual intervention...", strings.Join(failing, ", ")))
+				return ciFailureOutcome(failing, "CI failures require manual intervention"), nil
+			} else if s.ciFixAttempts >= ciFixLimit {
+				sctx.Log(fmt.Sprintf("CI failures detected: %s - max auto-fix attempts (%d) reached, waiting for manual intervention...", strings.Join(failing, ", "), ciFixLimit))
+				return ciFailureOutcome(failing, "CI failures still present after auto-fix attempts"), nil
+			} else if fixKey == s.lastFixedChecks {
 				sctx.Log("fix already attempted for these failures, waiting for CI re-run...")
 			} else {
-				sctx.Log(fmt.Sprintf("CI failures detected: %s - auto-fixing...", strings.Join(failing, ", ")))
+				s.ciFixAttempts++
+				sctx.Log(fmt.Sprintf("CI failures detected: %s - auto-fixing (attempt %d/%d)...", strings.Join(failing, ", "), s.ciFixAttempts, ciFixLimit))
 				if err := s.autoFixCI(sctx, prNumber, failing); err != nil {
 					sctx.Log(fmt.Sprintf("warning: CI auto-fix failed: %v", err))
 				} else {
 					s.lastFixedChecks = fixKey
 				}
 			}
-		} else if !hasPendingChecks(checks) {
+		} else {
 			s.lastFixedChecks = ""
-			if len(checks) == 0 && elapsed < s.gracePeriod() {
-				// CI checks may not be registered yet, keep polling
-				sctx.Log("no CI checks reported yet, waiting for checks to register...")
-			} else {
-				checksReadyToExit = true
-				if len(checks) == 0 {
-					checksSummary = "no CI checks reported, babysit complete"
+			if !hasPendingChecks(checks) {
+				if len(checks) == 0 && elapsed < s.gracePeriod() {
+					// CI checks may not be registered yet, keep polling
+					sctx.Log("no CI checks reported yet, waiting for checks to register...")
 				} else {
-					checksSummary = "all CI checks passed"
+					checksReadyToExit = true
+					if len(checks) == 0 {
+						checksSummary = "no CI checks reported, babysit complete"
+					} else {
+						checksSummary = "all CI checks passed"
+					}
 				}
 			}
 		}

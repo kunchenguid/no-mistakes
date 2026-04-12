@@ -163,6 +163,13 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		},
 	}
 
+	// Determine auto-fix limit for this step
+	autoFixLimit := 0
+	if e.config != nil {
+		autoFixLimit = e.config.AutoFixLimit(stepName)
+	}
+	autoFixAttempts := 0
+
 	// Execute with possible fix loop
 	for {
 		outcome, err := step.Execute(sctx)
@@ -192,6 +199,19 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			break
 		}
 
+		// Check if auto-fix should be attempted
+		if outcome.AutoFixable && autoFixLimit > 0 && autoFixAttempts < autoFixLimit {
+			autoFixAttempts++
+			slog.Info("auto-fixing step", "step", stepName, "attempt", autoFixAttempts, "max", autoFixLimit)
+			if dbErr := e.db.UpdateStepStatus(sr.ID, types.StepStatusFixing); dbErr != nil {
+				slog.Warn("failed to update step status in db", "step", stepName, "status", "fixing", "error", dbErr)
+			}
+			e.emitStepEvent(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFixing))
+			sctx.Fixing = true
+			sctx.PreviousFindings = outcome.Findings
+			continue
+		}
+
 		// Determine approval status: fix_review after a fix cycle, awaiting_approval otherwise
 		approvalStatus := types.StepStatusAwaitingApproval
 		var diffText string
@@ -205,7 +225,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			}
 		}
 
-		// Step needs approval — wait for user action
+		// Step needs approval - wait for user action
 		if dbErr := e.db.UpdateStepStatus(sr.ID, approvalStatus); dbErr != nil {
 			slog.Warn("failed to update step status in db", "step", stepName, "status", approvalStatus, "error", dbErr)
 		}
@@ -222,11 +242,11 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 
 		switch response.action {
 		case types.ActionApprove:
-			// Approved — break out of fix loop
+			// Approved - break out of fix loop
 			goto done
 
 		case types.ActionSkip:
-			// Skip — mark step skipped and return (not an error)
+			// Skip - mark step skipped and return (not an error)
 			durationMS := time.Since(started).Milliseconds()
 			if err := e.db.CompleteStep(sr.ID, finalExitCode, durationMS, logPath); err != nil {
 				return fmt.Errorf("complete step %s (skip): %w", stepName, err)
@@ -245,7 +265,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			return fmt.Errorf("step %s: aborted by user", stepName)
 
 		case types.ActionFix:
-			// Fix — mark step as fixing, re-execute with previous findings
+			// Fix - mark step as fixing, re-execute with previous findings
 			if dbErr := e.db.UpdateStepStatus(sr.ID, types.StepStatusFixing); dbErr != nil {
 				slog.Warn("failed to update step status in db", "step", stepName, "status", "fixing", "error", dbErr)
 			}

@@ -19,6 +19,7 @@ type GlobalConfig struct {
 	AgentPathOverride map[string]string `yaml:"agent_path_override"`
 	BabysitTimeout    time.Duration     `yaml:"-"`
 	LogLevel          string            `yaml:"log_level"`
+	AutoFix           AutoFixRaw
 }
 
 // globalConfigRaw is the on-disk YAML representation with duration as string.
@@ -27,6 +28,7 @@ type globalConfigRaw struct {
 	AgentPathOverride map[string]string `yaml:"agent_path_override"`
 	BabysitTimeout    string            `yaml:"babysit_timeout"`
 	LogLevel          string            `yaml:"log_level"`
+	AutoFix           AutoFixRaw        `yaml:"auto_fix"`
 }
 
 // RepoConfig represents .no-mistakes.yaml in a repo root.
@@ -34,6 +36,7 @@ type RepoConfig struct {
 	Agent          types.AgentName `yaml:"agent"`
 	Commands       Commands        `yaml:"commands"`
 	IgnorePatterns []string        `yaml:"ignore_patterns"`
+	AutoFix        AutoFixRaw      `yaml:"auto_fix"`
 }
 
 // Commands holds optional per-repo command overrides.
@@ -41,6 +44,24 @@ type Commands struct {
 	Lint   string `yaml:"lint"`
 	Test   string `yaml:"test"`
 	Format string `yaml:"format"`
+}
+
+// AutoFixRaw is the YAML representation of auto-fix config.
+// Pointer fields distinguish "not set" (nil) from "set to 0" (disabled).
+type AutoFixRaw struct {
+	Lint    *int `yaml:"lint"`
+	Test    *int `yaml:"test"`
+	Review  *int `yaml:"review"`
+	Babysit *int `yaml:"babysit"`
+}
+
+// AutoFix holds resolved per-step auto-fix attempt limits.
+// A value of 0 means auto-fix is disabled (requires manual approval).
+type AutoFix struct {
+	Lint    int
+	Test    int
+	Review  int
+	Babysit int
 }
 
 // Config is the merged result of global + per-repo configuration.
@@ -51,6 +72,7 @@ type Config struct {
 	LogLevel          string
 	Commands          Commands
 	IgnorePatterns    []string
+	AutoFix           AutoFix
 }
 
 // defaultConfigYAML is the template written when no global config file exists.
@@ -71,6 +93,13 @@ log_level: info
 # agent_path_override:
 #   claude: /usr/local/bin/claude
 #   codex: /opt/codex
+
+# Maximum auto-fix attempts per step (0 = disabled, requires manual approval)
+auto_fix:
+  lint: 3
+  test: 3
+  review: 3
+  babysit: 3
 `
 
 // defaultBinary maps agent names to their default binary names.
@@ -150,6 +179,7 @@ func LoadGlobal(path string) (*GlobalConfig, error) {
 	if raw.LogLevel != "" {
 		cfg.LogLevel = raw.LogLevel
 	}
+	cfg.AutoFix = raw.AutoFix
 
 	return cfg, nil
 }
@@ -192,9 +222,56 @@ func ParseLogLevel(level string) slog.Level {
 	}
 }
 
+// autoFixDefaults returns the default auto-fix configuration.
+func autoFixDefaults() AutoFix {
+	return AutoFix{
+		Lint:    3,
+		Test:    3,
+		Review:  3,
+		Babysit: 3,
+	}
+}
+
+// applyAutoFixOverrides applies non-nil raw values onto resolved defaults.
+func applyAutoFixOverrides(dst *AutoFix, src *AutoFixRaw) {
+	if src.Lint != nil {
+		dst.Lint = *src.Lint
+	}
+	if src.Test != nil {
+		dst.Test = *src.Test
+	}
+	if src.Review != nil {
+		dst.Review = *src.Review
+	}
+	if src.Babysit != nil {
+		dst.Babysit = *src.Babysit
+	}
+}
+
+// AutoFixLimit returns the max auto-fix attempts for a given step.
+// Steps without auto-fix support return 0.
+func (c *Config) AutoFixLimit(step types.StepName) int {
+	switch step {
+	case types.StepLint:
+		return c.AutoFix.Lint
+	case types.StepTest:
+		return c.AutoFix.Test
+	case types.StepReview:
+		return c.AutoFix.Review
+	case types.StepBabysit:
+		return c.AutoFix.Babysit
+	default:
+		return 0
+	}
+}
+
 // Merge combines global and per-repo config. Per-repo agent overrides global
 // when non-empty. Commands and ignore patterns come from repo config only.
 func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
+	af := autoFixDefaults()
+	applyAutoFixOverrides(&af, &global.AutoFix)
+	applyAutoFixOverrides(&af, &repo.AutoFix)
+
 	cfg := &Config{
 		Agent:             global.Agent,
 		AgentPathOverride: global.AgentPathOverride,
@@ -202,6 +279,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		LogLevel:          global.LogLevel,
 		Commands:          repo.Commands,
 		IgnorePatterns:    repo.IgnorePatterns,
+		AutoFix:           af,
 	}
 
 	if repo.Agent != "" {

@@ -110,6 +110,7 @@ Rules:
 		findingsJSON, _ := json.Marshal(findings)
 		return &pipeline.StepOutcome{
 			NeedsApproval: needsApproval,
+			AutoFixable:   needsApproval,
 			Findings:      string(findingsJSON),
 		}, nil
 	}
@@ -134,6 +135,7 @@ Rules:
 		findingsJSON, _ := json.Marshal(findings)
 		return &pipeline.StepOutcome{
 			NeedsApproval: true,
+			AutoFixable:   true,
 			Findings:      string(findingsJSON),
 			ExitCode:      exitCode,
 		}, nil

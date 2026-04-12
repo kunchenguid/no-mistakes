@@ -459,6 +459,10 @@ func setupTestGitRepo(t *testing.T, p *paths.Paths, d *db.DB, repoID string) (*d
 	if err := os.WriteFile(filepath.Join(workDir, "test.txt"), []byte("hello"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// Disable auto-fix so approval-based tests pause immediately.
+	if err := os.WriteFile(filepath.Join(workDir, ".no-mistakes.yaml"), []byte("auto_fix:\n  lint: 0\n  test: 0\n  review: 0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	gitCmd(t, workDir, "add", ".")
 	gitCmd(t, workDir, "commit", "-m", "initial")
 
