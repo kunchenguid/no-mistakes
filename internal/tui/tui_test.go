@@ -4068,7 +4068,7 @@ func TestModel_View_ShortTerminalDoesNotOverflowHeight(t *testing.T) {
 
 	m := NewModel("/tmp/sock", nil, run)
 	m.width = 80
-	m.height = 20
+	m.height = 18
 	view := stripANSI(m.View())
 
 	if got := lipgloss.Height(view); got > m.height {
@@ -6862,8 +6862,10 @@ func TestModel_View_OneBlankLineBetweenLogAndHelp(t *testing.T) {
 }
 
 func TestModel_View_ResponsiveLayoutKeepsHelpVisibleWithLogs(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	defer lipgloss.SetColorProfile(prev)
+
 	lipgloss.SetColorProfile(termenv.Ascii)
-	defer lipgloss.SetColorProfile(termenv.ANSI)
 
 	run := &ipc.RunInfo{
 		ID: "run-001", RepoID: "repo-001", Branch: "main", HeadSHA: "abc12345",
@@ -6892,8 +6894,10 @@ func TestModel_View_ResponsiveLayoutKeepsHelpVisibleWithLogs(t *testing.T) {
 }
 
 func TestModel_View_ResponsiveLayoutReservesGapBeforeLogBox(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	defer lipgloss.SetColorProfile(prev)
+
 	lipgloss.SetColorProfile(termenv.Ascii)
-	defer lipgloss.SetColorProfile(termenv.ANSI)
 
 	run := &ipc.RunInfo{
 		ID: "run-001", RepoID: "repo-001", Branch: "main", HeadSHA: "abc12345",
