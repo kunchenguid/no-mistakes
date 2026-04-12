@@ -7607,3 +7607,111 @@ func TestPipelineConnectors_SuppressedDuringBabysitInStackedLayout(t *testing.T)
 		t.Fatalf("expected stacked babysit layout to avoid uncapped pipeline height %d", m.height)
 	}
 }
+
+func TestTerminalTitle_AllPending(t *testing.T) {
+	m := NewModel("/tmp/sock", nil, testRun())
+	title := m.terminalTitle()
+	if title != "no-mistakes: Pending" {
+		t.Errorf("expected 'no-mistakes: Pending', got %q", title)
+	}
+}
+
+func TestTerminalTitle_RunningStep(t *testing.T) {
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusRunning
+	m := NewModel("/tmp/sock", nil, run)
+	title := m.terminalTitle()
+	// Should show the spinner prefix and the running step label.
+	if !strings.Contains(title, "Review") {
+		t.Errorf("expected title to contain 'Review', got %q", title)
+	}
+	if !strings.HasPrefix(title, "no-mistakes: ") {
+		t.Errorf("expected title to start with 'no-mistakes: ', got %q", title)
+	}
+}
+
+func TestTerminalTitle_AwaitingApproval(t *testing.T) {
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	m := NewModel("/tmp/sock", nil, run)
+	title := m.terminalTitle()
+	if !strings.Contains(title, "Review") {
+		t.Errorf("expected title to contain 'Review', got %q", title)
+	}
+	if !strings.Contains(title, "⏸") {
+		t.Errorf("expected title to contain pause icon, got %q", title)
+	}
+}
+
+func TestTerminalTitle_Completed(t *testing.T) {
+	run := testRun()
+	run.Status = types.RunCompleted
+	m := NewModel("/tmp/sock", nil, run)
+	m.done = true
+	title := m.terminalTitle()
+	if title != "no-mistakes: ✓ Completed" {
+		t.Errorf("expected 'no-mistakes: ✓ Completed', got %q", title)
+	}
+}
+
+func TestTerminalTitle_Failed(t *testing.T) {
+	run := testRun()
+	run.Status = types.RunFailed
+	m := NewModel("/tmp/sock", nil, run)
+	m.done = true
+	title := m.terminalTitle()
+	if title != "no-mistakes: ✗ Failed" {
+		t.Errorf("expected 'no-mistakes: ✗ Failed', got %q", title)
+	}
+}
+
+func TestTerminalTitle_Cancelled(t *testing.T) {
+	run := testRun()
+	run.Status = types.RunCancelled
+	m := NewModel("/tmp/sock", nil, run)
+	m.done = true
+	title := m.terminalTitle()
+	if title != "no-mistakes: ✗ Cancelled" {
+		t.Errorf("expected 'no-mistakes: ✗ Cancelled', got %q", title)
+	}
+}
+
+func TestTerminalTitle_FixingStep(t *testing.T) {
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusCompleted
+	run.Steps[1].Status = types.StepStatusFixing
+	m := NewModel("/tmp/sock", nil, run)
+	title := m.terminalTitle()
+	if !strings.Contains(title, "Test") {
+		t.Errorf("expected title to contain 'Test', got %q", title)
+	}
+}
+
+func TestView_ContainsTerminalTitleEscape(t *testing.T) {
+	configureTUIColors()
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusRunning
+	m := NewModel("/tmp/sock", nil, run)
+	m.width = 80
+	m.height = 40
+	view := m.View()
+	// The view should start with the OSC title-setting escape sequence.
+	if !strings.HasPrefix(view, "\033]2;no-mistakes: ") {
+		t.Errorf("expected view to start with OSC title escape, got prefix: %q", view[:min(len(view), 40)])
+	}
+	if !strings.Contains(view, "\007") {
+		t.Error("expected view to contain BEL terminator for OSC sequence")
+	}
+}
+
+func TestView_QuittingResetsTerminalTitle(t *testing.T) {
+	configureTUIColors()
+	run := testRun()
+	m := NewModel("/tmp/sock", nil, run)
+	m.quitting = true
+	view := m.View()
+	// When quitting, should emit the reset sequence to restore the title.
+	if !strings.Contains(view, "\033]2;\007") {
+		t.Errorf("expected quitting view to reset terminal title, got: %q", view)
+	}
+}

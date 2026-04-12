@@ -157,9 +157,46 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// terminalTitle returns the current terminal title string based on run state.
+func (m Model) terminalTitle() string {
+	prefix := "no-mistakes: "
+
+	// Terminal states.
+	if m.done || m.run == nil {
+		switch {
+		case m.run == nil:
+			return prefix + "Pending"
+		case m.run.Status == types.RunCompleted:
+			return prefix + "✓ Completed"
+		case m.run.Status == types.RunFailed:
+			return prefix + "✗ Failed"
+		case m.run.Status == types.RunCancelled:
+			return prefix + "✗ Cancelled"
+		}
+	}
+
+	// Find the most relevant active step.
+	for _, s := range m.steps {
+		icon := stepStatusIcon(s.Status)
+		switch s.Status {
+		case types.StepStatusRunning, types.StepStatusFixing:
+			return prefix + icon + " " + stepLabel(s.StepName)
+		case types.StepStatusAwaitingApproval, types.StepStatusFixReview:
+			return prefix + icon + " " + stepLabel(s.StepName)
+		}
+	}
+
+	return prefix + "Pending"
+}
+
+// setTerminalTitle returns the OSC escape sequence to set the terminal title.
+func setTerminalTitle(title string) string {
+	return "\033]2;" + title + "\007"
+}
+
 func (m Model) View() string {
 	if m.quitting {
-		return ""
+		return setTerminalTitle("")
 	}
 
 	showSelectionActions, allowFix, selectedCount, totalCount := m.awaitingActionState()
@@ -353,7 +390,7 @@ func (m Model) View() string {
 	}
 	sections = append(sections, extraSections...)
 	sections = append(sections, footer)
-	return joinSections(sections, sectionGap)
+	return setTerminalTitle(m.terminalTitle()) + joinSections(sections, sectionGap)
 }
 
 func renderFindingsBoxForHeight(raw string, width int, cursor int, selected map[string]bool, boxHeight int) string {
