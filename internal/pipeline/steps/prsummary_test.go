@@ -298,6 +298,56 @@ func TestBuildPipelineSummary_ShowsParseFailureForInvalidRoundFindings(t *testin
 	}
 }
 
+func TestBuildPipelineSummary_DoesNotClaimFixedWhenFinalFindingsUnreadable(t *testing.T) {
+	initialFindings := `{"findings":[{"id":"lint-1","severity":"warning","description":"still broken"}],"summary":"1 issue"}`
+	invalidFinalFindings := `{"findings":[`
+	steps := []*db.StepResult{
+		{ID: "s1", StepName: types.StepLint, Status: types.StepStatusCompleted, FindingsJSON: &invalidFinalFindings},
+	}
+	rounds := map[string][]*db.StepRound{
+		"s1": {
+			{Round: 1, Trigger: "initial", FindingsJSON: &initialFindings, DurationMS: 800},
+			{Round: 2, Trigger: "auto_fix", FindingsJSON: &invalidFinalFindings, DurationMS: 600},
+		},
+	}
+	md := BuildPipelineSummary(steps, rounds)
+
+	if strings.Contains(md, "🔧 **Lint**") {
+		t.Errorf("did not expect fixed status when final findings are unreadable, got:\n%s", md)
+	}
+	if !strings.Contains(md, "⚠️ **Lint** - findings unavailable") {
+		t.Errorf("expected unavailable status when final findings are unreadable, got:\n%s", md)
+	}
+	if !strings.Contains(md, "failed to parse findings") {
+		t.Errorf("expected parse failure details for unreadable final findings, got:\n%s", md)
+	}
+}
+
+func TestBuildPipelineSummary_ReviewDoesNotReuseInitialRiskWhenFinalUnreadable(t *testing.T) {
+	initialFindings := `{"findings":[{"id":"review-1","severity":"warning","description":"risky change"}],"summary":"1 warning","risk_level":"medium","risk_rationale":"initial risk rationale"}`
+	invalidFinalFindings := `{"findings":[`
+	steps := []*db.StepResult{
+		{ID: "s1", StepName: types.StepReview, Status: types.StepStatusCompleted, FindingsJSON: &invalidFinalFindings},
+	}
+	rounds := map[string][]*db.StepRound{
+		"s1": {
+			{Round: 1, Trigger: "initial", FindingsJSON: &initialFindings, DurationMS: 1000},
+			{Round: 2, Trigger: "user_fix", FindingsJSON: &invalidFinalFindings, DurationMS: 700},
+		},
+	}
+	md := BuildPipelineSummary(steps, rounds)
+
+	if !strings.Contains(md, "⚠️ **Review** - findings unavailable") {
+		t.Errorf("expected unavailable review status when final findings are unreadable, got:\n%s", md)
+	}
+	if strings.Contains(md, "medium risk") || strings.Contains(md, "initial risk rationale") {
+		t.Errorf("did not expect stale risk details when final findings are unreadable, got:\n%s", md)
+	}
+	if !strings.Contains(md, "failed to parse findings") {
+		t.Errorf("expected parse failure details for unreadable final review findings, got:\n%s", md)
+	}
+}
+
 func TestBuildPipelineSummary_FindingSeverityEmoji(t *testing.T) {
 	findings := `{"findings":[{"id":"review-1","severity":"error","description":"critical bug"},{"id":"review-2","severity":"warning","description":"minor issue"},{"id":"review-3","severity":"info","description":"suggestion"}],"summary":"3 findings","risk_level":"high","risk_rationale":"critical bug found"}`
 	steps := []*db.StepResult{
