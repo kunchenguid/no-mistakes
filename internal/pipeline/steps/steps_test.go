@@ -1255,7 +1255,9 @@ func TestPushStep_RunsFormatCommandBeforeCommit(t *testing.T) {
 	markerPath := filepath.Join(dir, ".format-ran")
 	var formatCmd string
 	if runtime.GOOS == "windows" {
-		formatCmd = fmt.Sprintf("type nul > \"%s\"", markerPath)
+		bat := filepath.Join(dir, "fmt.bat")
+		os.WriteFile(bat, []byte(fmt.Sprintf("@copy nul \"%s\" >nul\r\n", markerPath)), 0o755)
+		formatCmd = bat
 	} else {
 		formatCmd = fmt.Sprintf("touch %s", markerPath)
 	}
@@ -1543,15 +1545,23 @@ exit 1
 `, logFile, prViewURL, prViewURL)
 
 	batScript := fmt.Sprintf("@echo off\r\necho %%* >> \"%s\"\r\n", logFile)
-	batScript += "if \"%1\"==\"auth\" if \"%2\"==\"status\" exit /b 0\r\n"
+	batScript += "if not \"%1\"==\"pr\" goto :chkauth\r\n"
 	if prViewURL != "" {
-		batScript += fmt.Sprintf("if \"%%1\"==\"pr\" if \"%%2\"==\"view\" (\r\n  echo %s\r\n  exit /b 0\r\n)\r\n", prViewURL)
+		batScript += fmt.Sprintf("if \"%%2\"==\"view\" goto :prview\r\n")
 	} else {
-		batScript += "if \"%1\"==\"pr\" if \"%2\"==\"view\" exit /b 1\r\n"
+		batScript += "if \"%2\"==\"view\" exit /b 1\r\n"
 	}
-	batScript += "if \"%1\"==\"pr\" if \"%2\"==\"edit\" exit /b 0\r\n"
-	batScript += "if \"%1\"==\"pr\" if \"%2\"==\"create\" (\r\n  echo https://github.com/test/repo/pull/99\r\n  exit /b 0\r\n)\r\n"
+	batScript += "if \"%2\"==\"edit\" exit /b 0\r\n"
+	batScript += "if \"%2\"==\"create\" goto :prcreate\r\n"
+	batScript += "goto :fail\r\n"
+	batScript += ":chkauth\r\n"
+	batScript += "if \"%1\"==\"auth\" if \"%2\"==\"status\" exit /b 0\r\n"
+	batScript += ":fail\r\n"
 	batScript += "exit /b 1\r\n"
+	if prViewURL != "" {
+		batScript += fmt.Sprintf(":prview\r\necho %s\r\nexit /b 0\r\n", prViewURL)
+	}
+	batScript += ":prcreate\r\necho https://github.com/test/repo/pull/99\r\nexit /b 0\r\n"
 
 	writeFakeScript(t, binDir, "gh", shScript, batScript)
 	return binDir, logFile
@@ -1746,20 +1756,28 @@ exit 1
 `, logFile, mrViewJSON, mrViewJSON)
 
 	batScript := fmt.Sprintf("@echo off\r\necho %%* >> \"%s\"\r\n", logFile)
-	batScript += "if \"%1\"==\"auth\" if \"%2\"==\"status\" exit /b 0\r\n"
+	batScript += "if not \"%1\"==\"mr\" goto :chkauth\r\n"
 	if mrViewJSON != "" {
-		// Write the JSON to a temp file and type it, since batch heredocs don't exist.
 		jsonFile := filepath.Join(binDir, "mrview.json")
 		if err := os.WriteFile(jsonFile, []byte(mrViewJSON), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		batScript += fmt.Sprintf("if \"%%1\"==\"mr\" if \"%%2\"==\"view\" (\r\n  type \"%s\"\r\n  exit /b 0\r\n)\r\n", jsonFile)
+		batScript += fmt.Sprintf("if \"%%2\"==\"view\" goto :mrview\r\n")
 	} else {
-		batScript += "if \"%1\"==\"mr\" if \"%2\"==\"view\" exit /b 1\r\n"
+		batScript += "if \"%2\"==\"view\" exit /b 1\r\n"
 	}
-	batScript += "if \"%1\"==\"mr\" if \"%2\"==\"update\" exit /b 0\r\n"
-	batScript += "if \"%1\"==\"mr\" if \"%2\"==\"create\" (\r\n  echo https://gitlab.com/test/repo/-/merge_requests/99\r\n  exit /b 0\r\n)\r\n"
+	batScript += "if \"%2\"==\"update\" exit /b 0\r\n"
+	batScript += "if \"%2\"==\"create\" goto :mrcreate\r\n"
+	batScript += "goto :fail\r\n"
+	batScript += ":chkauth\r\n"
+	batScript += "if \"%1\"==\"auth\" if \"%2\"==\"status\" exit /b 0\r\n"
+	batScript += ":fail\r\n"
 	batScript += "exit /b 1\r\n"
+	if mrViewJSON != "" {
+		jsonFile := filepath.Join(binDir, "mrview.json")
+		batScript += fmt.Sprintf(":mrview\r\ntype \"%s\"\r\nexit /b 0\r\n", jsonFile)
+	}
+	batScript += ":mrcreate\r\necho https://gitlab.com/test/repo/-/merge_requests/99\r\nexit /b 0\r\n"
 
 	writeFakeScript(t, binDir, "glab", shScript, batScript)
 	return binDir, logFile
