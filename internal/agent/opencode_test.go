@@ -386,6 +386,79 @@ func TestParseOpencodeSSE_FiltersUserMessageParts(t *testing.T) {
 	}
 }
 
+func TestParseOpencodeSSE_DoesNotLeakUserDeltasBeforeRoleIsKnown(t *testing.T) {
+	input := strings.Join([]string{
+		`data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p-user","messageID":"user-msg","type":"text","text":"prompt"}}}}`,
+		``,
+		`data: {"payload":{"type":"message.part.delta","properties":{"sessionID":"s1","field":"text","partID":"p-user","delta":" details"}}}`,
+		``,
+		`data: {"payload":{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"user-msg","role":"user"}}}}`,
+		``,
+		`data: {"payload":{"type":"message.part.delta","properties":{"sessionID":"s1","field":"text","partID":"p-asst","delta":"response"}}}`,
+		``,
+		`data: {"payload":{"type":"session.idle"}}`,
+		``,
+		``,
+	}, "\n")
+
+	state := &opencodeStreamState{
+		sessionID:  "s1",
+		textParts:  make(map[string]*opencodeTextPart),
+		usageByMsg: make(map[string]TokenUsage),
+	}
+	var chunks []string
+	state.onChunk = func(text string) { chunks = append(chunks, text) }
+
+	err := parseOpencodeSSE(strings.NewReader(input), state)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(chunks) != 1 {
+		t.Fatalf("expected 1 chunk, got %d: %v", len(chunks), chunks)
+	}
+	if chunks[0] != "response" {
+		t.Fatalf("expected assistant response only, got %q", chunks[0])
+	}
+	if _, ok := state.textParts["p-user"]; ok {
+		t.Fatalf("expected user part to be dropped, got %#v", state.textParts["p-user"])
+	}
+	if state.lastText != "response" {
+		t.Fatalf("expected lastText to stay on assistant output, got %q", state.lastText)
+	}
+}
+
+func TestParseOpencodeSSE_SkipsUserDeltasAfterRoleIsKnown(t *testing.T) {
+	input := strings.Join([]string{
+		`data: {"payload":{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"user-msg","role":"user"}}}}`,
+		``,
+		`data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p-user","messageID":"user-msg","type":"text","text":"prompt"}}}}`,
+		``,
+		`data: {"payload":{"type":"message.part.delta","properties":{"sessionID":"s1","field":"text","partID":"p-user","delta":" more"}}}`,
+		``,
+		`data: {"payload":{"type":"message.part.delta","properties":{"sessionID":"s1","field":"text","partID":"p-asst","delta":"response"}}}`,
+		``,
+		`data: {"payload":{"type":"session.idle"}}`,
+		``,
+		``,
+	}, "\n")
+
+	state := &opencodeStreamState{
+		sessionID:  "s1",
+		textParts:  make(map[string]*opencodeTextPart),
+		usageByMsg: make(map[string]TokenUsage),
+	}
+	var chunks []string
+	state.onChunk = func(text string) { chunks = append(chunks, text) }
+
+	err := parseOpencodeSSE(strings.NewReader(input), state)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(chunks) != 1 || chunks[0] != "response" {
+		t.Fatalf("expected assistant response only, got %v", chunks)
+	}
+}
+
 func TestParseOpencodeSSE_SeparatesAfterToolStep(t *testing.T) {
 	input := strings.Join([]string{
 		// First assistant text

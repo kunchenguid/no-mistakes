@@ -331,8 +331,10 @@ type opencodeMessagePart struct {
 
 // opencodeTextPart tracks accumulated text for a part ID during streaming.
 type opencodeTextPart struct {
-	text  string
-	phase string
+	text        string
+	phase       string
+	messageID   string
+	emittedText string
 }
 
 // opencodeStreamState holds mutable state during SSE event processing.
@@ -345,6 +347,8 @@ type opencodeStreamState struct {
 	lastText        string
 	lastFinalText   string
 	userMsgIDs      map[string]bool
+	assistantMsgIDs map[string]bool
+	filteredPartIDs map[string]bool
 	hasEmittedText  bool
 	hadToolActivity bool
 }
@@ -396,52 +400,42 @@ func parseOpencodeSSE(r io.Reader, state *opencodeStreamState) error {
 		switch payload.Type {
 		case "message.part.delta":
 			if props != nil && props.Field == "text" && props.PartID != "" && props.Delta != "" {
+				if state.filteredPartIDs[props.PartID] {
+					break
+				}
 				part := state.textParts[props.PartID]
 				if part == nil {
 					part = &opencodeTextPart{}
 					state.textParts[props.PartID] = part
 				}
 				part.text += props.Delta
-				state.updateText(part.text, part.phase)
-				if state.onChunk != nil {
-					state.emitSeparatorIfNeeded()
-					state.onChunk(props.Delta)
-					state.hasEmittedText = true
-				}
+				state.emitTextPartChunk(part, props.PartID)
 			}
 
 		case "message.part.updated":
 			if props != nil && props.Part != nil {
 				p := props.Part
 				if p.Type == "text" && p.ID != "" {
-					// Skip parts belonging to user messages
-					if p.MessageID != "" && state.userMsgIDs[p.MessageID] {
-						break
-					}
 					phase := ""
 					if p.Metadata != nil && p.Metadata.OpenAI != nil {
 						phase = p.Metadata.OpenAI.Phase
 					}
-					existing := state.textParts[p.ID]
-					chunk := ""
-					if existing != nil {
-						if strings.HasPrefix(p.Text, existing.text) {
-							chunk = p.Text[len(existing.text):]
-						} else if p.Text != existing.text {
-							chunk = p.Text
-						}
-						existing.text = p.Text
-						existing.phase = phase
-					} else {
-						state.textParts[p.ID] = &opencodeTextPart{text: p.Text, phase: phase}
-						chunk = p.Text
+					part := state.textParts[p.ID]
+					if part == nil {
+						part = &opencodeTextPart{}
+						state.textParts[p.ID] = part
 					}
-					state.updateText(p.Text, phase)
-					if state.onChunk != nil && chunk != "" {
-						state.emitSeparatorIfNeeded()
-						state.onChunk(chunk)
-						state.hasEmittedText = true
+					part.text = p.Text
+					part.phase = phase
+					if p.MessageID != "" {
+						part.messageID = p.MessageID
 					}
+					if part.messageID != "" && state.userMsgIDs[part.messageID] {
+						state.markPartFiltered(p.ID)
+						delete(state.textParts, p.ID)
+						break
+					}
+					state.emitTextPartChunk(part, p.ID)
 				}
 				if p.Type == "step-finish" {
 					state.hadToolActivity = true
@@ -459,6 +453,14 @@ func parseOpencodeSSE(r io.Reader, state *opencodeStreamState) error {
 						state.userMsgIDs = make(map[string]bool)
 					}
 					state.userMsgIDs[props.Info.ID] = true
+					state.dropMessageParts(props.Info.ID)
+				}
+				if props.Info.Role == "assistant" {
+					if state.assistantMsgIDs == nil {
+						state.assistantMsgIDs = make(map[string]bool)
+					}
+					state.assistantMsgIDs[props.Info.ID] = true
+					state.emitBufferedMessageParts(props.Info.ID)
 				}
 				if props.Info.Role == "assistant" && props.Info.Tokens != nil {
 					state.usageByMsg[props.Info.ID] = opencodeTokensToUsage(props.Info.Tokens)
@@ -489,6 +491,60 @@ func (s *opencodeStreamState) emitSeparatorIfNeeded() {
 		s.onChunk("\n\n")
 		s.hadToolActivity = false
 	}
+}
+
+func (s *opencodeStreamState) emitTextPartChunk(part *opencodeTextPart, partID string) {
+	if part == nil || !s.shouldEmitTextPart(part) {
+		return
+	}
+	chunk := ""
+	if strings.HasPrefix(part.text, part.emittedText) {
+		chunk = part.text[len(part.emittedText):]
+	} else if part.text != "" {
+		chunk = part.text
+	}
+	s.updateText(part.text, part.phase)
+	if s.onChunk != nil && chunk != "" {
+		s.emitSeparatorIfNeeded()
+		s.onChunk(chunk)
+		s.hasEmittedText = true
+	}
+	part.emittedText = part.text
+	s.textParts[partID] = part
+}
+
+func (s *opencodeStreamState) shouldEmitTextPart(part *opencodeTextPart) bool {
+	if part == nil || part.messageID == "" {
+		return part != nil
+	}
+	if s.userMsgIDs[part.messageID] {
+		return false
+	}
+	return s.assistantMsgIDs[part.messageID]
+}
+
+func (s *opencodeStreamState) dropMessageParts(messageID string) {
+	for partID, part := range s.textParts {
+		if part != nil && part.messageID == messageID {
+			s.markPartFiltered(partID)
+			delete(s.textParts, partID)
+		}
+	}
+}
+
+func (s *opencodeStreamState) emitBufferedMessageParts(messageID string) {
+	for partID, part := range s.textParts {
+		if part != nil && part.messageID == messageID {
+			s.emitTextPartChunk(part, partID)
+		}
+	}
+}
+
+func (s *opencodeStreamState) markPartFiltered(partID string) {
+	if s.filteredPartIDs == nil {
+		s.filteredPartIDs = make(map[string]bool)
+	}
+	s.filteredPartIDs[partID] = true
 }
 
 func (s *opencodeStreamState) updateText(text, phase string) {
