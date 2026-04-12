@@ -279,7 +279,7 @@ func TestEject(t *testing.T) {
 		t.Fatalf("init: %v", err)
 	}
 
-	if err := Eject(ctx, d, p, workDir); err != nil {
+	if _, err := Eject(ctx, d, p, workDir); err != nil {
 		t.Fatalf("eject: %v", err)
 	}
 
@@ -326,7 +326,7 @@ func TestEjectCleansUpWorktrees(t *testing.T) {
 		t.Fatalf("create worktree dir: %v", err)
 	}
 
-	if err := Eject(ctx, d, p, workDir); err != nil {
+	if _, err := Eject(ctx, d, p, workDir); err != nil {
 		t.Fatalf("eject: %v", err)
 	}
 
@@ -350,7 +350,7 @@ func TestEjectNotInitialized(t *testing.T) {
 	}
 	d := openTestDB(t, p)
 
-	err := Eject(context.Background(), d, p, work)
+	_, err := Eject(context.Background(), d, p, work)
 	if err == nil {
 		t.Fatal("expected error when not initialized")
 	}

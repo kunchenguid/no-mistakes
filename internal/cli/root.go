@@ -4,12 +4,18 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/kunchenguid/no-mistakes/internal/buildinfo"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/muesli/termenv"
 	"github.com/spf13/cobra"
 )
+
+func init() {
+	lipgloss.SetColorProfile(termenv.ANSI)
+}
 
 // Execute runs the root CLI command.
 func Execute() {

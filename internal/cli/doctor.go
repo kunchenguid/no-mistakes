@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/db"
@@ -20,51 +21,63 @@ func newDoctorCmd() *cobra.Command {
 			w := cmd.OutOrStdout()
 			allOK := true
 
+			ok := func(label, detail string) {
+				fmt.Fprintf(w, "  %s %s  %s\n", sGreen.Render("✓"), sDim.Render(label), detail)
+			}
+			warn := func(label, detail string) {
+				fmt.Fprintf(w, "  %s %s  %s\n", sYellow.Render("–"), sDim.Render(label), detail)
+			}
+			fail := func(label, detail string) {
+				fmt.Fprintf(w, "  %s %s  %s\n", sRed.Render("✗"), sDim.Render(label), detail)
+			}
+
+			fmt.Fprintf(w, "  %s\n", sCyan.Render("System"))
+
 			// 1. Check git.
 			if _, err := exec.LookPath("git"); err != nil {
-				fmt.Fprintf(w, "  git:            not found\n")
+				fail("git           ", "not found")
 				allOK = false
 			} else {
 				out, err := exec.Command("git", "--version").Output()
 				if err != nil {
-					fmt.Fprintf(w, "  git:            error (%v)\n", err)
+					fail("git           ", fmt.Sprintf("error (%v)", err))
 					allOK = false
 				} else {
-					fmt.Fprintf(w, "  git:            %s", out)
+					ok("git           ", strings.TrimSpace(string(out)))
 				}
 			}
 
 			// 2. Check gh CLI (optional but useful for PR/babysit steps).
 			if _, err := exec.LookPath("gh"); err != nil {
-				fmt.Fprintf(w, "  gh:             not found (optional, needed for PR/babysit)\n")
+				warn("gh            ", "not found "+sDim.Render("(optional, needed for PR/babysit)"))
 			} else {
-				fmt.Fprintf(w, "  gh:             ok\n")
+				ok("gh            ", "ok")
 			}
 
 			// 3. Check data directory.
 			p, err := paths.New()
 			if err != nil {
-				fmt.Fprintf(w, "  data directory: error resolving paths (%v)\n", err)
+				fail("data directory", fmt.Sprintf("error resolving paths (%v)", err))
 				allOK = false
 			} else if _, err := os.Stat(p.Root()); os.IsNotExist(err) {
-				fmt.Fprintf(w, "  data directory: not found (%s)\n", p.Root())
+				fail("data directory", fmt.Sprintf("not found (%s)", p.Root()))
 				allOK = false
 			} else {
-				fmt.Fprintf(w, "  data directory: %s\n", p.Root())
+				ok("data directory", p.Root())
 			}
 
 			// 4. Check database.
 			if p != nil {
 				if _, err := os.Stat(p.DB()); os.IsNotExist(err) {
-					fmt.Fprintf(w, "  database:       not found (will be created on first use)\n")
+					warn("database      ", "not found "+sDim.Render("(will be created on first use)"))
 				} else {
 					d, err := db.Open(p.DB())
 					if err != nil {
-						fmt.Fprintf(w, "  database:       error (%v)\n", err)
+						fail("database      ", fmt.Sprintf("error (%v)", err))
 						allOK = false
 					} else {
 						d.Close()
-						fmt.Fprintf(w, "  database:       ok\n")
+						ok("database      ", "ok")
 					}
 				}
 			}
@@ -73,9 +86,9 @@ func newDoctorCmd() *cobra.Command {
 			if p != nil {
 				alive, _ := daemon.IsRunning(p)
 				if alive {
-					fmt.Fprintf(w, "  daemon:         running\n")
+					ok("daemon        ", "running")
 				} else {
-					fmt.Fprintf(w, "  daemon:         stopped\n")
+					warn("daemon        ", "stopped")
 				}
 			}
 
@@ -89,17 +102,20 @@ func newDoctorCmd() *cobra.Command {
 				{"rovodev", "acli"},
 				{"opencode", "opencode"},
 			}
-			fmt.Fprintf(w, "\nagent binaries:\n")
+			fmt.Fprintln(w)
+			fmt.Fprintf(w, "  %s\n", sCyan.Render("Agents"))
 			for _, a := range agents {
+				label := fmt.Sprintf("%-14s", a.name)
 				if path, err := exec.LookPath(a.binary); err != nil {
-					fmt.Fprintf(w, "  %-14s  not found\n", a.name+":")
+					warn(label, "not found")
 				} else {
-					fmt.Fprintf(w, "  %-14s  %s\n", a.name+":", path)
+					ok(label, path)
 				}
 			}
 
 			if !allOK {
-				fmt.Fprintf(w, "\nsome checks failed\n")
+				fmt.Fprintln(w)
+				fmt.Fprintf(w, "  %s\n", sRed.Render("some checks failed"))
 			}
 
 			return nil

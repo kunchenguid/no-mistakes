@@ -21,11 +21,16 @@ and removes the repo record from the database.`,
 			}
 			defer d.Close()
 
-			if err := gate.Eject(cmd.Context(), d, p, "."); err != nil {
+			repo, err := gate.Eject(cmd.Context(), d, p, ".")
+			if err != nil {
 				return fmt.Errorf("eject: %w", err)
 			}
 
-			fmt.Fprintln(cmd.OutOrStdout(), "ejected no-mistakes gate")
+			w := cmd.OutOrStdout()
+			fmt.Fprintf(w, "  %s Gate removed\n", sGreen.Render("✓"))
+			fmt.Fprintln(w)
+			fmt.Fprintf(w, "  %s  %s\n", sDim.Render("  repo"), repo.WorkingPath)
+			fmt.Fprintf(w, "  %s  %s\n", sDim.Render("remote"), repo.UpstreamURL)
 			return nil
 		},
 	}

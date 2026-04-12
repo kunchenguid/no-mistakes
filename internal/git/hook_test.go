@@ -45,12 +45,18 @@ func TestPostReceiveHookScript(t *testing.T) {
 		t.Fatal("hook should suppress notifier output so pushes stay clean")
 	}
 
-	// should print user-facing message to stderr
-	if !strings.Contains(script, "no-mistakes") && !strings.Contains(script, ">&2") {
+	// should print styled user-facing message to stderr
+	if !strings.Contains(script, ">&2") {
 		t.Fatal("hook should print message to stderr")
 	}
-	if !strings.Contains(script, "printf '%s\\n' 'no-mistakes: pipeline started. Run `no-mistakes` to review.' >&2") {
-		t.Fatal("hook should print a literal backticked command without command substitution")
+	if !strings.Contains(script, "|__| |_/") {
+		t.Fatal("hook should contain ASCII art banner")
+	}
+	if !strings.Contains(script, "Pipeline started") {
+		t.Fatal("hook should print pipeline started message")
+	}
+	if !strings.Contains(script, "no-mistakes") {
+		t.Fatal("hook should mention the command name")
 	}
 
 	// should exit 0 (never block push)

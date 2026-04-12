@@ -50,7 +50,7 @@ func newRerunCmd() *cobra.Command {
 				return fmt.Errorf("rerun pipeline: %w", err)
 			}
 
-			fmt.Fprintf(cmd.OutOrStdout(), "rerun started for %s: %s\n", branch, result.RunID)
+			fmt.Fprintf(cmd.OutOrStdout(), "  %s Rerun started for %s %s\n", sGreen.Render("✓"), branch, sDim.Render(result.RunID))
 			return nil
 		},
 	}
