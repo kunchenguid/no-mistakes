@@ -3027,6 +3027,26 @@ func TestRenderBabysitView_LogTailTinyStillShowsSome(t *testing.T) {
 	}
 }
 
+func TestRenderBabysitView_ZeroHeightOmitsLogTail(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	run := testRunWithBabysit()
+	run.Steps[5].Status = types.StepStatusRunning
+	logs := []string{
+		"babysitting PR #42 (timeout: 4h)...",
+		"polling CI status...",
+		"all checks passing",
+	}
+
+	out := stripANSI(renderBabysitViewWithSelection(run, run.Steps, "", logs, 80, 0, 0, nil))
+
+	if !strings.Contains(out, "Monitoring CI checks") {
+		t.Fatalf("expected babysit status to remain visible, got:\n%s", out)
+	}
+	if strings.Contains(out, "polling CI status") || strings.Contains(out, "all checks passing") {
+		t.Fatalf("expected zero-height babysit view to omit log tail, got:\n%s", out)
+	}
+}
+
 func TestModel_View_BabysitShortTerminalKeepsStatusPanel(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
 

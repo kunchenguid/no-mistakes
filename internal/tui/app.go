@@ -258,7 +258,10 @@ func (m Model) View() string {
 			cursor = m.findingCursor[step.StepName]
 			selected = m.findingSelections[step.StepName]
 		}
-		babysitHeight := m.height
+		babysitHeight := -1
+		if m.height > 0 {
+			babysitHeight = m.height
+		}
 		if contentBudget >= 0 {
 			babysitHeight = contentBudget
 		}

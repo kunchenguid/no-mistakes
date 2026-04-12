@@ -250,6 +250,7 @@ func (s *BabysitStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome
 			if !hasPendingChecks(checks) {
 				if len(checks) == 0 && elapsed < s.gracePeriod() {
 					// CI checks may not be registered yet, keep polling
+					sctx.Log("no CI checks reported yet, waiting for checks to register...")
 				} else {
 					checksReadyToExit = true
 					if len(checks) == 0 {

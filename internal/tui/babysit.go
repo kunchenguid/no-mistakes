@@ -89,7 +89,7 @@ func parseBabysitActivity(logs []string) babysitActivity {
 // renderBabysitView renders the babysit-specific monitoring view.
 // Shown instead of generic findings when the babysit step is active.
 func renderBabysitView(run *ipc.RunInfo, steps []ipc.StepResultInfo, findings string, logs []string, width int) string {
-	return renderBabysitViewWithSelection(run, steps, findings, logs, width, 0, 0, nil)
+	return renderBabysitViewWithSelection(run, steps, findings, logs, width, -1, 0, nil)
 }
 
 func renderBabysitViewWithSelection(run *ipc.RunInfo, steps []ipc.StepResultInfo, findings string, logs []string, width int, height int, cursor int, selected map[string]bool) string {
@@ -141,7 +141,7 @@ func renderBabysitViewWithSelection(run *ipc.RunInfo, steps []ipc.StepResultInfo
 
 	// Log tail during monitoring.
 	// Dynamically fill available height: subtract box borders and fixed content lines.
-	if len(logs) > 0 && height > 0 {
+	if len(logs) > 0 && height >= 0 {
 		// Count fixed lines already written above.
 		fixedLines := 2 // box top + bottom borders
 		fixedLines += lipgloss.Height(b.String())
