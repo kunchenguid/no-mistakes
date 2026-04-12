@@ -7704,14 +7704,29 @@ func TestView_ContainsTerminalTitleEscape(t *testing.T) {
 	}
 }
 
-func TestView_QuittingResetsTerminalTitle(t *testing.T) {
+func TestView_ResponsiveLayoutContainsTerminalTitleEscape(t *testing.T) {
+	configureTUIColors()
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusRunning
+	m := NewModel("/tmp/sock", nil, run)
+	m.width = 120
+	m.height = 40
+	view := m.View()
+	if !strings.HasPrefix(view, "\033]2;no-mistakes: ") {
+		t.Errorf("expected responsive view to start with OSC title escape, got prefix: %q", view[:min(len(view), 40)])
+	}
+	if !strings.Contains(view, "\007") {
+		t.Error("expected responsive view to contain BEL terminator for OSC sequence")
+	}
+}
+
+func TestView_QuittingDoesNotBlankTerminalTitle(t *testing.T) {
 	configureTUIColors()
 	run := testRun()
 	m := NewModel("/tmp/sock", nil, run)
 	m.quitting = true
 	view := m.View()
-	// When quitting, should emit the reset sequence to restore the title.
-	if !strings.Contains(view, "\033]2;\007") {
-		t.Errorf("expected quitting view to reset terminal title, got: %q", view)
+	if strings.Contains(view, "\033]2;") {
+		t.Errorf("expected quitting view to avoid sending a terminal title sequence, got: %q", view)
 	}
 }

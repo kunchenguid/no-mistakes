@@ -196,7 +196,7 @@ func setTerminalTitle(title string) string {
 
 func (m Model) View() string {
 	if m.quitting {
-		return setTerminalTitle("")
+		return ""
 	}
 
 	showSelectionActions, allowFix, selectedCount, totalCount := m.awaitingActionState()
@@ -378,7 +378,7 @@ func (m Model) View() string {
 		}
 		rightSections = append(rightSections, extraSections...)
 		columns := renderResponsiveColumns(joinSections(leftSections, sectionGap), joinSections(rightSections, sectionGap), leftWidth, rightWidth, responsiveLayoutGap)
-		return joinSections([]string{columns, footer}, sectionGap)
+		return setTerminalTitle(m.terminalTitle()) + joinSections([]string{columns, footer}, sectionGap)
 	}
 
 	sections := []string{pipelineView}
