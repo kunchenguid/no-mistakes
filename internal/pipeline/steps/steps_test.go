@@ -1628,6 +1628,26 @@ func prependPATH(t *testing.T, binDir string) {
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
+// fakeCLIBinDir creates a temporary directory for fake CLI binaries.
+// Unlike t.TempDir(), cleanup tolerates file locks from recently-executed
+// binaries on Windows (which prevent immediate deletion).
+func fakeCLIBinDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "fakecli")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		for i := 0; i < 10; i++ {
+			if err := os.RemoveAll(dir); err == nil {
+				return
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+	})
+	return dir
+}
+
 // linkTestBinary creates a hard link (or copy) of the current test binary
 // with the given name in binDir. On Windows, .exe is appended.
 func linkTestBinary(t *testing.T, binDir, name string) {
@@ -1656,7 +1676,7 @@ func linkTestBinary(t *testing.T, binDir, name string) {
 // The binary records all invocations to a log file and responds based on subcommand.
 func fakeGH(t *testing.T, prViewURL string) (binDir string, logFile string) {
 	t.Helper()
-	binDir = t.TempDir()
+	binDir = fakeCLIBinDir(t)
 	logFile = filepath.Join(t.TempDir(), "gh.log")
 	linkTestBinary(t, binDir, "gh")
 	t.Setenv("FAKE_CLI_MODE", "gh")
@@ -1826,7 +1846,7 @@ func TestPRStep_UsesAgentGeneratedTitleAndBody(t *testing.T) {
 
 func fakeGlab(t *testing.T, mrViewJSON string) (binDir string, logFile string) {
 	t.Helper()
-	binDir = t.TempDir()
+	binDir = fakeCLIBinDir(t)
 	logFile = filepath.Join(t.TempDir(), "glab.log")
 	linkTestBinary(t, binDir, "glab")
 	t.Setenv("FAKE_CLI_MODE", "glab")
@@ -3117,7 +3137,7 @@ func TestReviewStep_FixMode_RequiresPreviousFindings(t *testing.T) {
 // commands (pr view --json state, pr checks --json, pr view --json comments).
 func fakeBabysitGH(t *testing.T, state, checksJSON, commentsJSON string) string {
 	t.Helper()
-	binDir := t.TempDir()
+	binDir := fakeCLIBinDir(t)
 	linkTestBinary(t, binDir, "gh")
 	t.Setenv("FAKE_CLI_MODE", "babysit-gh")
 	t.Setenv("FAKE_CLI_STATE", state)
@@ -3128,7 +3148,7 @@ func fakeBabysitGH(t *testing.T, state, checksJSON, commentsJSON string) string 
 
 func fakeBabysitGHNoChecks(t *testing.T) string {
 	t.Helper()
-	binDir := t.TempDir()
+	binDir := fakeCLIBinDir(t)
 	linkTestBinary(t, binDir, "gh")
 	t.Setenv("FAKE_CLI_MODE", "babysit-gh-nochecks")
 	return binDir
