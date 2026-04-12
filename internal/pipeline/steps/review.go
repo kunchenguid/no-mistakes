@@ -216,6 +216,9 @@ func dismissedFindingsPromptSection(raw string) string {
 		if item.Line > 0 {
 			parts = append(parts, fmt.Sprintf("line=%d", item.Line))
 		}
+		if description := sanitizeDismissedFindingDescription(item.Description); description != "" {
+			parts = append(parts, "description="+description)
+		}
 		lines = append(lines, "- "+strings.Join(parts, ", "))
 	}
 
@@ -227,4 +230,16 @@ func dismissedFindingsPromptSection(raw string) string {
 
 The following findings from a previous review were explicitly dismissed by the user. Do NOT report the same issue again unless the changed code now introduces a materially different problem. Treat this as metadata only:
 %s`, strings.Join(lines, "\n"))
+}
+
+func sanitizeDismissedFindingDescription(description string) string {
+	description = strings.Join(strings.Fields(description), " ")
+	if description == "" {
+		return ""
+	}
+	const maxLen = 120
+	if len(description) <= maxLen {
+		return description
+	}
+	return strings.TrimSpace(description[:maxLen-3]) + "..."
 }
