@@ -53,6 +53,7 @@ type AutoFixRaw struct {
 	Test    *int `yaml:"test"`
 	Review  *int `yaml:"review"`
 	Babysit *int `yaml:"babysit"`
+	Rebase  *int `yaml:"rebase"`
 }
 
 // AutoFix holds resolved per-step auto-fix attempt limits.
@@ -62,6 +63,7 @@ type AutoFix struct {
 	Test    int
 	Review  int
 	Babysit int
+	Rebase  int
 }
 
 // Config is the merged result of global + per-repo configuration.
@@ -96,6 +98,7 @@ log_level: info
 
 # Maximum auto-fix attempts per step (0 = disabled, requires manual approval)
 auto_fix:
+  rebase: 3
   lint: 3
   test: 3
   review: 3
@@ -229,6 +232,7 @@ func autoFixDefaults() AutoFix {
 		Test:    3,
 		Review:  3,
 		Babysit: 3,
+		Rebase:  3,
 	}
 }
 
@@ -246,6 +250,9 @@ func applyAutoFixOverrides(dst *AutoFix, src *AutoFixRaw) {
 	if src.Babysit != nil {
 		dst.Babysit = *src.Babysit
 	}
+	if src.Rebase != nil {
+		dst.Rebase = *src.Rebase
+	}
 }
 
 // AutoFixLimit returns the max auto-fix attempts for a given step.
@@ -260,6 +267,8 @@ func (c *Config) AutoFixLimit(step types.StepName) int {
 		return c.AutoFix.Review
 	case types.StepBabysit:
 		return c.AutoFix.Babysit
+	case types.StepRebase:
+		return c.AutoFix.Rebase
 	default:
 		return 0
 	}

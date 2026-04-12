@@ -529,11 +529,14 @@ func TestRebaseStep_ConflictReturnsFindings(t *testing.T) {
 	if !outcome.NeedsApproval {
 		t.Fatal("expected NeedsApproval for conflict")
 	}
+	if !outcome.AutoFixable {
+		t.Fatal("expected AutoFixable for conflict")
+	}
 	if outcome.Findings == "" {
 		t.Fatal("expected findings for conflict")
 	}
-	if !strings.Contains(outcome.Findings, "shared.txt") {
-		t.Errorf("expected findings to mention conflicting file, got: %s", outcome.Findings)
+	if !strings.Contains(outcome.Findings, "origin/main") {
+		t.Errorf("expected findings to mention conflict target, got: %s", outcome.Findings)
 	}
 	// Verify repo is clean (rebase was aborted)
 	status := gitStatusPorcelain(t, dir)
@@ -598,8 +601,11 @@ func TestRebaseStep_ConflictTriesAllTargets(t *testing.T) {
 	if !outcome.NeedsApproval {
 		t.Fatal("expected NeedsApproval for conflict")
 	}
-	if !strings.Contains(outcome.Findings, "shared.txt") {
-		t.Errorf("expected findings to mention shared.txt, got: %s", outcome.Findings)
+	if !outcome.AutoFixable {
+		t.Fatal("expected AutoFixable for conflict")
+	}
+	if !strings.Contains(outcome.Findings, "origin/feature") {
+		t.Errorf("expected findings to mention conflict target, got: %s", outcome.Findings)
 	}
 
 	// The non-conflicting rebase onto origin/main should have succeeded
