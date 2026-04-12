@@ -23,9 +23,10 @@ const defaultChecksGracePeriod = 60 * time.Second
 // BabysitStep monitors CI and PR comments after PR creation,
 // auto-fixing CI failures and presenting PR comments for human selection.
 type BabysitStep struct {
-	seenComments      map[string]bool
-	lastFixedChecks   string        // sorted check names from last fix attempt, to avoid re-fixing
-	checksGracePeriod time.Duration // minimum wait before trusting empty CI checks (0 = default 60s)
+	seenComments         map[string]bool
+	lastFixedChecks      string        // sorted check names from last fix attempt, to avoid re-fixing
+	checksGracePeriod    time.Duration // minimum wait before trusting empty CI checks (0 = default 60s)
+	pollIntervalOverride time.Duration // if set, overrides computed poll interval (for testing)
 }
 
 func (s *BabysitStep) Name() types.StepName { return types.StepBabysit }
@@ -302,7 +303,10 @@ func (s *BabysitStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome
 		}
 
 		// Sleep for poll interval
-		interval := pollInterval(time.Since(started))
+		interval := s.pollIntervalOverride
+		if interval == 0 {
+			interval = pollInterval(time.Since(started))
+		}
 		remaining := timeout - time.Since(started)
 		if remaining < interval {
 			interval = remaining

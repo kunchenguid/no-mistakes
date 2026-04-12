@@ -3445,7 +3445,7 @@ func TestBabysitStep_EmptyChecksWaitsDuringGracePeriod(t *testing.T) {
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
-	step := &BabysitStep{checksGracePeriod: 200 * time.Millisecond}
+	step := &BabysitStep{checksGracePeriod: 200 * time.Millisecond, pollIntervalOverride: 10 * time.Millisecond}
 	started := time.Now()
 	outcome, err := step.Execute(sctx)
 	elapsed := time.Since(started)
@@ -3459,16 +3459,21 @@ func TestBabysitStep_EmptyChecksWaitsDuringGracePeriod(t *testing.T) {
 	if elapsed < 200*time.Millisecond {
 		t.Errorf("babysit exited in %v, expected to wait at least 200ms grace period", elapsed)
 	}
-	// Should eventually exit with the "no CI checks" message
+	// Should exit via grace period expiry, not babysit timeout
+	for _, l := range logs {
+		if strings.Contains(l, "babysit timeout reached") {
+			t.Fatal("expected exit via grace period expiry, not babysit timeout")
+		}
+	}
 	found := false
 	for _, l := range logs {
-		if strings.Contains(l, "no CI checks reported") {
+		if strings.Contains(l, "babysit complete") {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatalf("expected 'no CI checks reported' log, got: %v", logs)
+		t.Fatalf("expected 'babysit complete' log, got: %v", logs)
 	}
 }
 
