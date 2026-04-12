@@ -7,7 +7,6 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/db"
-	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/tui"
 	"github.com/spf13/cobra"
@@ -21,6 +20,16 @@ func attachRun(w io.Writer, runID string) error {
 		return err
 	}
 	defer d.Close()
+
+	// When no run ID is given, resolve the repo before starting the daemon
+	// so we fail fast (and avoid orphan daemon processes) when not in a git repo.
+	var repo *db.Repo
+	if runID == "" {
+		repo, err = findRepo(d)
+		if err != nil {
+			return err
+		}
+	}
 
 	// Ensure daemon is running.
 	if err := daemon.EnsureDaemon(p); err != nil {
@@ -45,18 +54,6 @@ func attachRun(w io.Writer, runID string) error {
 		}
 		run = result.Run
 	} else {
-		// Find repo from current directory.
-		gitRoot, err := git.FindGitRoot(".")
-		if err != nil {
-			return fmt.Errorf("not in a git repository")
-		}
-		repo, err := d.GetRepoByPath(gitRoot)
-		if err != nil {
-			return fmt.Errorf("get repo: %w", err)
-		}
-		if repo == nil {
-			return fmt.Errorf("repo not initialized (run 'no-mistakes init' first)")
-		}
 		repoID = repo.ID
 
 		// Get active run for this repo.

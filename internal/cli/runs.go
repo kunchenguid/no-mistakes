@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/spf13/cobra"
 )
 
@@ -22,14 +21,9 @@ func newRunsCmd() *cobra.Command {
 			}
 			defer d.Close()
 
-			gitRoot, err := git.FindGitRoot(".")
+			repo, err := findRepo(d)
 			if err != nil {
-				return fmt.Errorf("not in a git repository")
-			}
-
-			repo, err := d.GetRepoByPath(gitRoot)
-			if err != nil || repo == nil {
-				return fmt.Errorf("repo not initialized (run 'no-mistakes init' first)")
+				return err
 			}
 
 			runs, err := d.GetRunsByRepo(repo.ID)

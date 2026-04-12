@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -143,6 +145,39 @@ func TestRunsLimit(t *testing.T) {
 	}
 	if dataLines > 10 {
 		t.Errorf("default runs output should show at most 10 runs, got %d", dataLines)
+	}
+}
+
+func TestRunsFromWorktree(t *testing.T) {
+	// Init main repo, create a worktree, chdir into it, and verify that
+	// `runs` (via findRepo) finds the repo through the worktree fallback.
+	repoDir := setupTestRepo(t)
+
+	_, err := executeCmd("init")
+	if err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	// Create a branch and a worktree.
+	run(t, repoDir, "git", "checkout", "-b", "wt-branch")
+	run(t, repoDir, "git", "checkout", "-")
+	wtDir := filepath.Join(t.TempDir(), "worktree")
+	ctx := context.Background()
+	if err := git.WorktreeAdd(ctx, repoDir, wtDir, "wt-branch"); err != nil {
+		t.Fatalf("WorktreeAdd failed: %v", err)
+	}
+	t.Cleanup(func() { git.WorktreeRemove(ctx, repoDir, wtDir) })
+
+	// Move into the worktree directory.
+	chdir(t, wtDir)
+
+	// `runs` should succeed because findRepo falls back to the main repo root.
+	out, err := executeCmd("runs")
+	if err != nil {
+		t.Fatalf("runs from worktree failed: %v\noutput: %s", err, out)
+	}
+	if !strings.Contains(out, "no runs") {
+		t.Errorf("runs output should say 'no runs', got: %s", out)
 	}
 }
 

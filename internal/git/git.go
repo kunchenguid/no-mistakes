@@ -82,6 +82,35 @@ func FindGitRoot(path string) (string, error) {
 	return resolved, nil
 }
 
+// FindMainRepoRoot returns the root of the main working tree for a git
+// repository. For a regular repo this is the same as FindGitRoot. For a
+// worktree it resolves back to the main repository root by inspecting
+// git's common dir.
+func FindMainRepoRoot(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	cmd := exec.Command("git", "rev-parse", "--git-common-dir")
+	cmd.Dir = abs
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("not a git repository: %s", abs)
+	}
+	commonDir := strings.TrimSpace(string(out))
+	// Make absolute if relative (e.g. ".git" in the main repo itself).
+	if !filepath.IsAbs(commonDir) {
+		commonDir = filepath.Join(abs, commonDir)
+	}
+	// commonDir is the .git directory (e.g. /path/to/repo/.git); parent is the repo root.
+	root := filepath.Dir(filepath.Clean(commonDir))
+	resolved, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return root, nil
+	}
+	return resolved, nil
+}
+
 // Diff returns the unified diff between two commits.
 func Diff(ctx context.Context, dir, base, head string) (string, error) {
 	return Run(ctx, dir, "diff", base+".."+head)

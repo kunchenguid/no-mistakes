@@ -22,20 +22,12 @@ func newRerunCmd() *cobra.Command {
 			}
 			defer d.Close()
 
-			gitRoot, err := git.FindGitRoot(".")
+			repo, err := findRepo(d)
 			if err != nil {
-				return fmt.Errorf("not in a git repository")
+				return err
 			}
 
-			repo, err := d.GetRepoByPath(gitRoot)
-			if err != nil {
-				return fmt.Errorf("get repo: %w", err)
-			}
-			if repo == nil {
-				return fmt.Errorf("repo not initialized (run 'no-mistakes init' first)")
-			}
-
-			branch, err := git.CurrentBranch(context.Background(), gitRoot)
+			branch, err := git.CurrentBranch(context.Background(), ".")
 			if err != nil {
 				return fmt.Errorf("get current branch: %w", err)
 			}
