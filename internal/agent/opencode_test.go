@@ -97,14 +97,156 @@ data: {"payload":{"type":"session.idle"}}
 	if len(chunks) != 2 {
 		t.Fatalf("expected 2 chunks, got %d: %v", len(chunks), chunks)
 	}
-	if chunks[0] != "hello" {
-		t.Errorf("expected first chunk 'hello', got %q", chunks[0])
+	if chunks[0] != "hello " {
+		t.Errorf("expected first chunk 'hello ', got %q", chunks[0])
 	}
-	if chunks[1] != "hello world" {
-		t.Errorf("expected second chunk 'hello world', got %q", chunks[1])
+	if chunks[1] != "world" {
+		t.Errorf("expected second chunk 'world', got %q", chunks[1])
 	}
 	if state.lastText != "hello world" {
 		t.Errorf("expected lastText 'hello world', got %q", state.lastText)
+	}
+}
+
+func TestParseOpencodeSSE_PartUpdated_TextStreamsChunk(t *testing.T) {
+	input := `data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p1","type":"text","text":"streamed text"}}}}
+
+data: {"payload":{"type":"session.idle"}}
+
+`
+	state := &opencodeStreamState{
+		sessionID:  "s1",
+		textParts:  make(map[string]*opencodeTextPart),
+		usageByMsg: make(map[string]TokenUsage),
+	}
+	var chunks []string
+	state.onChunk = func(text string) { chunks = append(chunks, text) }
+
+	err := parseOpencodeSSE(strings.NewReader(input), state)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(chunks) != 1 {
+		t.Fatalf("expected 1 chunk, got %d: %v", len(chunks), chunks)
+	}
+	if chunks[0] != "streamed text" {
+		t.Errorf("expected streamed chunk 'streamed text', got %q", chunks[0])
+	}
+}
+
+func TestParseOpencodeSSE_PartUpdatedAfterDelta_StreamsOnlySuffix(t *testing.T) {
+	input := `data: {"payload":{"type":"message.part.delta","properties":{"sessionID":"s1","field":"text","partID":"p1","delta":"hello"}}}
+
+data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p1","type":"text","text":"hello world"}}}}
+
+data: {"payload":{"type":"session.idle"}}
+
+`
+	state := &opencodeStreamState{
+		sessionID:  "s1",
+		textParts:  make(map[string]*opencodeTextPart),
+		usageByMsg: make(map[string]TokenUsage),
+	}
+	var chunks []string
+	state.onChunk = func(text string) { chunks = append(chunks, text) }
+
+	err := parseOpencodeSSE(strings.NewReader(input), state)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(chunks) != 2 {
+		t.Fatalf("expected 2 chunks, got %d: %v", len(chunks), chunks)
+	}
+	if chunks[0] != "hello" {
+		t.Errorf("expected first chunk 'hello', got %q", chunks[0])
+	}
+	if chunks[1] != " world" {
+		t.Errorf("expected suffix chunk ' world', got %q", chunks[1])
+	}
+	if state.lastText != "hello world" {
+		t.Errorf("expected lastText 'hello world', got %q", state.lastText)
+	}
+	if got := state.textParts["p1"]; got == nil || got.text != "hello world" {
+		t.Fatalf("expected cached part text 'hello world', got %#v", got)
+	}
+}
+
+func TestParseOpencodeSSE_DeltaAfterUpdated_AppendsFromLatestText(t *testing.T) {
+	input := `data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p1","type":"text","text":"hello"}}}}
+
+data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p1","type":"text","text":"hello world"}}}}
+
+data: {"payload":{"type":"message.part.delta","properties":{"sessionID":"s1","field":"text","partID":"p1","delta":"!"}}}
+
+data: {"payload":{"type":"session.idle"}}
+
+`
+	state := &opencodeStreamState{
+		sessionID:  "s1",
+		textParts:  make(map[string]*opencodeTextPart),
+		usageByMsg: make(map[string]TokenUsage),
+	}
+	var chunks []string
+	state.onChunk = func(text string) { chunks = append(chunks, text) }
+
+	err := parseOpencodeSSE(strings.NewReader(input), state)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(chunks) != 3 {
+		t.Fatalf("expected 3 chunks, got %d: %v", len(chunks), chunks)
+	}
+	if chunks[0] != "hello" {
+		t.Errorf("expected first chunk 'hello', got %q", chunks[0])
+	}
+	if chunks[1] != " world" {
+		t.Errorf("expected second chunk ' world', got %q", chunks[1])
+	}
+	if chunks[2] != "!" {
+		t.Errorf("expected third chunk '!', got %q", chunks[2])
+	}
+	if state.lastText != "hello world!" {
+		t.Errorf("expected lastText 'hello world!', got %q", state.lastText)
+	}
+	if got := state.textParts["p1"]; got == nil || got.text != "hello world!" {
+		t.Fatalf("expected cached part text 'hello world!', got %#v", got)
+	}
+}
+
+func TestParseOpencodeSSE_PartUpdated_NonPrefixSnapshotStreamsCorrectedText(t *testing.T) {
+	input := `data: {"payload":{"type":"message.part.delta","properties":{"sessionID":"s1","field":"text","partID":"p1","delta":"hello world"}}}
+
+data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p1","type":"text","text":"hello there"}}}}
+
+data: {"payload":{"type":"session.idle"}}
+
+`
+	state := &opencodeStreamState{
+		sessionID:  "s1",
+		textParts:  make(map[string]*opencodeTextPart),
+		usageByMsg: make(map[string]TokenUsage),
+	}
+	var chunks []string
+	state.onChunk = func(text string) { chunks = append(chunks, text) }
+
+	err := parseOpencodeSSE(strings.NewReader(input), state)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(chunks) != 2 {
+		t.Fatalf("expected 2 chunks, got %d: %v", len(chunks), chunks)
+	}
+	if chunks[0] != "hello world" {
+		t.Errorf("expected original delta chunk 'hello world', got %q", chunks[0])
+	}
+	if chunks[1] != "hello there" {
+		t.Errorf("expected corrected chunk 'hello there', got %q", chunks[1])
+	}
+	if state.lastText != "hello there" {
+		t.Errorf("expected lastText 'hello there', got %q", state.lastText)
+	}
+	if got := state.textParts["p1"]; got == nil || got.text != "hello there" {
+		t.Fatalf("expected cached part text 'hello there', got %#v", got)
 	}
 }
 

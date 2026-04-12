@@ -399,7 +399,10 @@ func parseOpencodeSSE(r io.Reader, state *opencodeStreamState) error {
 					state.textParts[props.PartID] = part
 				}
 				part.text += props.Delta
-				state.emitText(props.PartID, part.text, part.phase)
+				state.updateText(part.text, part.phase)
+				if state.onChunk != nil {
+					state.onChunk(props.Delta)
+				}
 			}
 
 		case "message.part.updated":
@@ -411,12 +414,23 @@ func parseOpencodeSSE(r io.Reader, state *opencodeStreamState) error {
 						phase = p.Metadata.OpenAI.Phase
 					}
 					existing := state.textParts[p.ID]
+					chunk := ""
 					if existing != nil {
+						if strings.HasPrefix(p.Text, existing.text) {
+							chunk = p.Text[len(existing.text):]
+						} else if p.Text != existing.text {
+							chunk = p.Text
+						}
+						existing.text = p.Text
 						existing.phase = phase
 					} else {
 						state.textParts[p.ID] = &opencodeTextPart{text: p.Text, phase: phase}
+						chunk = p.Text
 					}
-					state.emitText(p.ID, p.Text, phase)
+					state.updateText(p.Text, phase)
+					if state.onChunk != nil && chunk != "" {
+						state.onChunk(chunk)
+					}
 				}
 				if p.Type == "step-finish" && p.MessageID != "" && p.Tokens != nil {
 					state.usageByMsg[p.MessageID] = opencodeTokensToUsage(p.Tokens)
@@ -448,7 +462,7 @@ func parseOpencodeSSE(r io.Reader, state *opencodeStreamState) error {
 	return nil
 }
 
-func (s *opencodeStreamState) emitText(partID, text, phase string) {
+func (s *opencodeStreamState) updateText(text, phase string) {
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" {
 		return
@@ -456,8 +470,5 @@ func (s *opencodeStreamState) emitText(partID, text, phase string) {
 	s.lastText = text
 	if phase == "final_answer" {
 		s.lastFinalText = text
-	}
-	if s.onChunk != nil {
-		s.onChunk(trimmed)
 	}
 }
