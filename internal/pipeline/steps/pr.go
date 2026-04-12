@@ -242,10 +242,10 @@ Diff stat:
 			content.Body = strings.TrimSpace(content.Body)
 			if content.Title != "" && content.Body != "" {
 				if !isConventionalTitle(content.Title) {
-					slog.Warn("agent PR title is not conventional commit format, using fallback", "title", content.Title)
-				} else {
-					return content, nil
+					slog.Warn("agent PR title is not conventional commit format, prepending chore:", "title", content.Title)
+					content.Title = "chore: " + content.Title
 				}
+				return content, nil
 			}
 		}
 	}

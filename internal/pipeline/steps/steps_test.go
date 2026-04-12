@@ -3798,9 +3798,16 @@ func TestPRStep_AgentNonConventionalTitleFallsBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	ghLog := string(logData)
-	// The title used must be conventional, not the raw agent output
-	if strings.Contains(ghLog, "--title Improve pipeline header UX") {
+	// The title should be prefixed with "chore: ", not the raw agent output
+	if strings.Contains(ghLog, "--title Improve pipeline header UX --") {
 		t.Fatal("non-conventional agent title should have been rejected")
+	}
+	if !strings.Contains(ghLog, "chore: Improve pipeline header UX") {
+		t.Fatal("expected agent title to be prefixed with chore:, got: " + ghLog)
+	}
+	// The agent's body should be preserved, not replaced with fallback
+	if !strings.Contains(ghLog, "## Summary") {
+		t.Fatal("expected agent body to be preserved, got: " + ghLog)
 	}
 }
 
