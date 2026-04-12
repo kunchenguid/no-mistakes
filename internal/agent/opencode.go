@@ -401,9 +401,7 @@ func parseOpencodeSSE(r io.Reader, state *opencodeStreamState) error {
 				part.text += props.Delta
 				state.updateText(part.text, part.phase)
 				if state.onChunk != nil {
-					if d := strings.TrimSpace(props.Delta); d != "" {
-						state.onChunk(d)
-					}
+					state.onChunk(props.Delta)
 				}
 			}
 
@@ -422,6 +420,9 @@ func parseOpencodeSSE(r io.Reader, state *opencodeStreamState) error {
 						state.textParts[p.ID] = &opencodeTextPart{text: p.Text, phase: phase}
 					}
 					state.updateText(p.Text, phase)
+					if state.onChunk != nil && p.Text != "" {
+						state.onChunk(p.Text)
+					}
 				}
 				if p.Type == "step-finish" && p.MessageID != "" && p.Tokens != nil {
 					state.usageByMsg[p.MessageID] = opencodeTokensToUsage(p.Tokens)
