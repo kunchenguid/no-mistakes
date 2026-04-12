@@ -945,14 +945,16 @@ func (m *Model) applyEvent(event ipc.Event) {
 
 	case ipc.EventLogChunk:
 		if event.Content != nil && *event.Content != "" {
+			if m.logPartial != "" && len(m.logs) > 0 && m.logs[len(m.logs)-1] == m.logPartial {
+				m.logs = m.logs[:len(m.logs)-1]
+			}
+
 			text := m.logPartial + *event.Content
 			m.logPartial = ""
 
 			if !strings.HasSuffix(text, "\n") {
-				// No trailing newline - the last segment is a partial line.
 				idx := strings.LastIndex(text, "\n")
 				if idx == -1 {
-					// Entire chunk is partial - buffer it, nothing to commit.
 					m.logPartial = text
 					text = ""
 				} else {
@@ -965,7 +967,9 @@ func (m *Model) applyEvent(event ipc.Event) {
 				lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
 				m.logs = append(m.logs, lines...)
 			}
-			// Keep last 100 lines to bound memory.
+			if m.logPartial != "" {
+				m.logs = append(m.logs, m.logPartial)
+			}
 			if len(m.logs) > 100 {
 				m.logs = m.logs[len(m.logs)-100:]
 			}
@@ -984,6 +988,10 @@ func (m *Model) updateStepStatus(name types.StepName, status types.StepStatus) {
 
 func (m *Model) flushPartialLog() {
 	if m.logPartial == "" {
+		return
+	}
+	if len(m.logs) > 0 && m.logs[len(m.logs)-1] == m.logPartial {
+		m.logPartial = ""
 		return
 	}
 	m.logs = append(m.logs, m.logPartial)

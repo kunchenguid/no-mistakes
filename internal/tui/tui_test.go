@@ -7280,11 +7280,33 @@ func TestModel_ApplyEvent_LogChunk_PartialLines(t *testing.T) {
 		RunID:   run.ID,
 		Content: ptr("hello "),
 	})
+
+	if len(m.logs) != 1 {
+		t.Fatalf("expected partial line to be visible, got %d: %v", len(m.logs), m.logs)
+	}
+	if m.logs[0] != "hello " {
+		t.Fatalf("expected visible partial %q, got %q", "hello ", m.logs[0])
+	}
+	if m.logPartial != "hello " {
+		t.Fatalf("expected buffered partial %q, got %q", "hello ", m.logPartial)
+	}
+
 	m.applyEvent(ipc.Event{
 		Type:    ipc.EventLogChunk,
 		RunID:   run.ID,
 		Content: ptr("world"),
 	})
+
+	if len(m.logs) != 1 {
+		t.Fatalf("expected updated partial line to remain visible, got %d: %v", len(m.logs), m.logs)
+	}
+	if m.logs[0] != "hello world" {
+		t.Fatalf("expected visible partial %q, got %q", "hello world", m.logs[0])
+	}
+	if m.logPartial != "hello world" {
+		t.Fatalf("expected buffered partial %q, got %q", "hello world", m.logPartial)
+	}
+
 	m.applyEvent(ipc.Event{
 		Type:    ipc.EventLogChunk,
 		RunID:   run.ID,
@@ -7311,12 +7333,18 @@ func TestModel_ApplyEvent_LogChunk_MixedPartialAndComplete(t *testing.T) {
 		Content: ptr("line1\npartial"),
 	})
 
-	// Should have committed "line1" and buffered "partial".
-	if len(m.logs) != 1 {
-		t.Fatalf("expected 1 committed line, got %d: %v", len(m.logs), m.logs)
+	// Should have committed "line1" and kept the partial visible.
+	if len(m.logs) != 2 {
+		t.Fatalf("expected 2 visible lines, got %d: %v", len(m.logs), m.logs)
 	}
 	if m.logs[0] != "line1" {
 		t.Errorf("expected %q, got %q", "line1", m.logs[0])
+	}
+	if m.logs[1] != "partial" {
+		t.Errorf("expected %q, got %q", "partial", m.logs[1])
+	}
+	if m.logPartial != "partial" {
+		t.Fatalf("expected buffered partial %q, got %q", "partial", m.logPartial)
 	}
 
 	// Completing the partial line.
