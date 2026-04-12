@@ -100,8 +100,8 @@ data: {"payload":{"type":"session.idle"}}
 	if chunks[0] != "hello" {
 		t.Errorf("expected first chunk 'hello', got %q", chunks[0])
 	}
-	if chunks[1] != "hello world" {
-		t.Errorf("expected second chunk 'hello world', got %q", chunks[1])
+	if chunks[1] != "world" {
+		t.Errorf("expected second chunk 'world', got %q", chunks[1])
 	}
 	if state.lastText != "hello world" {
 		t.Errorf("expected lastText 'hello world', got %q", state.lastText)
