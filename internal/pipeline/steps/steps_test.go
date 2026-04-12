@@ -285,6 +285,7 @@ func newTestContext(t *testing.T, ag agent.Agent, workDir, baseSHA, headSHA stri
 		Config:  &config.Config{Agent: types.AgentClaude, Commands: cmds},
 		DB:      database,
 		Log:     func(s string) {},
+		LogFile: func(s string) {},
 	}
 }
 
@@ -481,6 +482,210 @@ func TestRebaseStep_RebasesOntoDefaultBranch(t *testing.T) {
 	}
 	if stored == nil || stored.HeadSHA != sctx.Run.HeadSHA {
 		t.Fatalf("stored head SHA = %v, want %s", stored, sctx.Run.HeadSHA)
+	}
+}
+
+func TestRebaseStep_ConflictReturnsFindings(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	os.WriteFile(filepath.Join(dir, "shared.txt"), []byte("base content\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "base commit")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "main")
+
+	// Feature branch: modify shared.txt
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(dir, "shared.txt"), []byte("feature change\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature change")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	// Main branch: conflicting change to shared.txt
+	gitCmd(t, dir, "checkout", "main")
+	os.WriteFile(filepath.Join(dir, "shared.txt"), []byte("main change\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "main conflict")
+	gitCmd(t, dir, "push", "origin", "main")
+	gitCmd(t, dir, "checkout", "feature")
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Repo.UpstreamURL = upstream
+
+	step := &RebaseStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("expected NeedsApproval for conflict")
+	}
+	if outcome.Findings == "" {
+		t.Fatal("expected findings for conflict")
+	}
+	if !strings.Contains(outcome.Findings, "shared.txt") {
+		t.Errorf("expected findings to mention conflicting file, got: %s", outcome.Findings)
+	}
+	// Verify repo is clean (rebase was aborted)
+	status := gitStatusPorcelain(t, dir)
+	if status != "" {
+		t.Fatalf("expected clean worktree after abort, got: %s", status)
+	}
+	// Verify no agent calls in detection mode
+	if len(ag.calls) != 0 {
+		t.Errorf("expected 0 agent calls, got %d", len(ag.calls))
+	}
+}
+
+func TestRebaseStep_FixModeCallsAgent(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	os.WriteFile(filepath.Join(dir, "shared.txt"), []byte("base content\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "base commit")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "main")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(dir, "shared.txt"), []byte("feature change\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature change")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	gitCmd(t, dir, "checkout", "main")
+	os.WriteFile(filepath.Join(dir, "shared.txt"), []byte("main change\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "main conflict")
+	gitCmd(t, dir, "push", "origin", "main")
+	gitCmd(t, dir, "checkout", "feature")
+
+	// Agent simulates resolving conflicts: resolve file, git add, git rebase --continue
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			// Resolve the conflict by writing the merged content
+			os.WriteFile(filepath.Join(dir, "shared.txt"), []byte("resolved content\n"), 0o644)
+			cmd := exec.Command("git", "add", "shared.txt")
+			cmd.Dir = dir
+			cmd.Env = append(os.Environ(),
+				"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@test.com",
+				"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@test.com",
+			)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				return nil, fmt.Errorf("git add: %s: %w", out, err)
+			}
+			cmd = exec.Command("git", "rebase", "--continue")
+			cmd.Dir = dir
+			cmd.Env = append(os.Environ(),
+				"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@test.com",
+				"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@test.com",
+			)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				return nil, fmt.Errorf("git rebase --continue: %s: %w", out, err)
+			}
+			return &agent.Result{
+				Output: json.RawMessage(`{"summary":"resolve merge conflict in shared.txt"}`),
+			}, nil
+		},
+	}
+
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Fixing = true
+	sctx.PreviousFindings = `{"findings":[{"severity":"error","file":"shared.txt","description":"merge conflict"}]}`
+
+	step := &RebaseStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatal("expected no approval after successful fix")
+	}
+	if len(ag.calls) != 1 {
+		t.Fatalf("expected 1 agent call, got %d", len(ag.calls))
+	}
+	if !strings.Contains(ag.calls[0].Prompt, "shared.txt") {
+		t.Error("expected agent prompt to mention conflicting file")
+	}
+	// Verify rebase completed - feature is now ahead of origin/main
+	mergeBase := gitCmd(t, dir, "merge-base", "HEAD", "origin/main")
+	originMain := gitCmd(t, dir, "rev-parse", "origin/main")
+	if mergeBase != originMain {
+		t.Fatalf("merge-base = %s, want origin/main %s", mergeBase, originMain)
+	}
+}
+
+func TestRebaseStep_LogFileNotVisibleToUser(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	os.WriteFile(filepath.Join(dir, "f.txt"), []byte("content\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "init")
+	sha := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "main")
+
+	// Feature branch with no upstream ref (will trigger fetch warning)
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(dir, "f2.txt"), []byte("feature\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, sha, headSHA, config.Commands{})
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Repo.UpstreamURL = upstream
+
+	var userLogs []string
+	var fileLogs []string
+	sctx.Log = func(s string) { userLogs = append(userLogs, s) }
+	sctx.LogFile = func(s string) { fileLogs = append(fileLogs, s) }
+
+	step := &RebaseStep{}
+	_, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Fetch warnings should go to file only, not user
+	for _, log := range userLogs {
+		if strings.Contains(log, "could not fetch") {
+			t.Errorf("fetch warning leaked to user logs: %s", log)
+		}
+	}
+	hasFileWarning := false
+	for _, log := range fileLogs {
+		if strings.Contains(log, "could not fetch") {
+			hasFileWarning = true
+		}
+	}
+	if !hasFileWarning {
+		t.Error("expected fetch warning in file logs")
 	}
 }
 
