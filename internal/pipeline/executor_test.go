@@ -674,10 +674,7 @@ func TestExecutor_FixEmitsDiffAndFixReviewStatus(t *testing.T) {
 	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
 
 	// Verify initial event has awaiting_approval status
-	initialEvent := events.find(ipc.EventStepCompleted, types.StepReview)
-	if initialEvent == nil {
-		t.Fatal("expected step_completed event for review")
-	}
+	initialEvent := waitForStepEvent(t, events, ipc.EventStepCompleted, types.StepReview)
 	if initialEvent.Status == nil || *initialEvent.Status != string(types.StepStatusAwaitingApproval) {
 		t.Errorf("expected awaiting_approval status, got %v", initialEvent.Status)
 	}
@@ -891,8 +888,8 @@ func TestExecutor_AssignsFindingIDsBeforePersistingAndEmitting(t *testing.T) {
 
 	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
 
-	paused := events.find(ipc.EventStepCompleted, types.StepReview)
-	if paused == nil || paused.Findings == nil {
+	paused := waitForStepEvent(t, events, ipc.EventStepCompleted, types.StepReview)
+	if paused.Findings == nil {
 		t.Fatal("expected paused step event with findings")
 	}
 
@@ -1784,6 +1781,20 @@ type adaptiveCallStep struct {
 func (a *adaptiveCallStep) Name() types.StepName { return a.name }
 func (a *adaptiveCallStep) Execute(sctx *StepContext) (*StepOutcome, error) {
 	return a.fn(sctx)
+}
+
+// waitForStepEvent polls the event collector until an event with the given type and step name appears.
+func waitForStepEvent(t *testing.T, ec *eventCollector, eventType ipc.EventType, stepName types.StepName) *ipc.Event {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if e := ec.find(eventType, stepName); e != nil {
+			return e
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("event %s for step %s not found within timeout", eventType, stepName)
+	return nil
 }
 
 // waitForEvent polls the event collector until an event with the given type and status appears.
