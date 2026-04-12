@@ -1817,7 +1817,7 @@ func TestPRStep_UsesAgentGeneratedTitleAndBody(t *testing.T) {
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			payload := json.RawMessage(`{"title":"Improve pipeline header UX","body":"## Summary\n\n- keep branch status readable\n- fix footer truncation"}`)
+			payload := json.RawMessage(`{"title":"fix: improve pipeline header UX","body":"## Summary\n\n- keep branch status readable\n- fix footer truncation"}`)
 			return &agent.Result{Output: payload}, nil
 		},
 	}
@@ -1836,7 +1836,7 @@ func TestPRStep_UsesAgentGeneratedTitleAndBody(t *testing.T) {
 		t.Fatal(err)
 	}
 	ghLog := string(logData)
-	if !strings.Contains(ghLog, "--title Improve pipeline header UX") {
+	if !strings.Contains(ghLog, "--title fix: improve pipeline header UX") {
 		t.Fatalf("expected generated PR title in gh call, got:\n%s", ghLog)
 	}
 	if !strings.Contains(ghLog, "keep branch status readable") {
@@ -1867,7 +1867,7 @@ func TestPRStep_GitLabCreatesNewMR(t *testing.T) {
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			payload := json.RawMessage(`{"title":"Improve gitlab flow","body":"## Summary\n\n- add gitlab support\n\n## Testing\n\n- go test ./..."}`)
+			payload := json.RawMessage(`{"title":"feat: improve gitlab flow","body":"## Summary\n\n- add gitlab support\n\n## Testing\n\n- go test ./..."}`)
 			return &agent.Result{Output: payload}, nil
 		},
 	}
@@ -1886,7 +1886,7 @@ func TestPRStep_GitLabCreatesNewMR(t *testing.T) {
 	if !strings.Contains(ghLog, "mr create") {
 		t.Fatalf("expected glab mr create to be called, got:\n%s", ghLog)
 	}
-	if !strings.Contains(ghLog, "--title Improve gitlab flow") {
+	if !strings.Contains(ghLog, "--title feat: improve gitlab flow") {
 		t.Fatalf("expected generated title in glab call, got:\n%s", ghLog)
 	}
 }
@@ -3705,5 +3705,140 @@ func TestBabysitStep_AddressCommentsInFixMode(t *testing.T) {
 	}
 	if !strings.Contains(ag.calls[0].Prompt, "Do not add comments explaining your fixes") {
 		t.Error("expected comment-fix prompt to forbid explanatory comments")
+	}
+}
+
+func TestIsConventionalTitle(t *testing.T) {
+	tests := []struct {
+		title string
+		want  bool
+	}{
+		{"feat: add new feature", true},
+		{"fix: resolve crash on startup", true},
+		{"docs: update README", true},
+		{"style: format code", true},
+		{"refactor: extract helper function", true},
+		{"perf: optimize query", true},
+		{"test: add unit tests", true},
+		{"build: update dependencies", true},
+		{"ci: fix pipeline", true},
+		{"chore: bump version", true},
+		{"revert: undo last change", true},
+		{"feat(auth): add OAuth support", true},
+		{"fix(parser): handle empty input", true},
+		{"chore(deps): update Go to 1.25", true},
+		{"feat!: breaking change", true},
+		{"feat(api)!: breaking change with scope", true},
+		// Invalid titles
+		{"add new feature", false},
+		{"Update pull request", false},
+		{"feature: wrong type", false},
+		{"Feat: capitalized type", false},
+		{"feat:no space after colon", false},
+		{"feat : space before colon", false},
+		{"", false},
+		{"feat:", false},
+		{"feat: ", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.title, func(t *testing.T) {
+			if got := isConventionalTitle(tt.title); got != tt.want {
+				t.Errorf("isConventionalTitle(%q) = %v, want %v", tt.title, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPRStep_PromptRequiresConventionalCommitTitle(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	binDir, _ := fakeGH(t, "")
+	prependPATH(t, binDir)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			if !strings.Contains(opts.Prompt, "conventional commit") {
+				t.Error("expected prompt to mention conventional commit format")
+			}
+			payload := json.RawMessage(`{"title":"feat: add pipeline support","body":"## Summary\n\n- pipeline support"}`)
+			return &agent.Result{Output: payload}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	step := &PRStep{}
+	if _, err := step.Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPRStep_AgentNonConventionalTitleFallsBack(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	binDir, logFile := fakeGH(t, "")
+	prependPATH(t, binDir)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			payload := json.RawMessage(`{"title":"Improve pipeline header UX","body":"## Summary\n\n- improvements"}`)
+			return &agent.Result{Output: payload}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	step := &PRStep{}
+	if _, err := step.Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+
+	logData, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ghLog := string(logData)
+	// The title should be prefixed with "chore: ", not the raw agent output
+	if strings.Contains(ghLog, "--title Improve pipeline header UX --") {
+		t.Fatal("non-conventional agent title should have been rejected")
+	}
+	if !strings.Contains(ghLog, "chore: Improve pipeline header UX") {
+		t.Fatal("expected agent title to be prefixed with chore:, got: " + ghLog)
+	}
+	// The agent's body should be preserved, not replaced with fallback
+	if !strings.Contains(ghLog, "## Summary") {
+		t.Fatal("expected agent body to be preserved, got: " + ghLog)
+	}
+}
+
+func TestFallbackPRContent_ConventionalTitle(t *testing.T) {
+	tests := []struct {
+		name      string
+		branch    string
+		commitLog string
+	}{
+		{
+			name:      "commit message used",
+			branch:    "feature/add-auth",
+			commitLog: "abc123 add OAuth support",
+		},
+		{
+			name:      "empty commit log",
+			branch:    "fix/crash",
+			commitLog: "",
+		},
+		{
+			name:      "conventional commit in log preserved",
+			branch:    "feature/auth",
+			commitLog: "abc123 feat: add OAuth support",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			content := fallbackPRContent(tt.branch, tt.commitLog)
+			if !isConventionalTitle(content.Title) {
+				t.Errorf("fallback title %q is not conventional commit format", content.Title)
+			}
+		})
 	}
 }
