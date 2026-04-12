@@ -2215,6 +2215,47 @@ func TestPRStep_UsesAgentGeneratedTitleAndBody(t *testing.T) {
 	}
 }
 
+func TestPRStep_AppendsRiskOutsideSummaryList(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	binDir, logFile := fakeGH(t, "")
+	prependPATH(t, binDir)
+
+	findings := `{"findings":[],"summary":"clean","risk_level":"medium","risk_rationale":"touches critical error handling"}`
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			payload := json.RawMessage(`{"title":"fix: improve pipeline header UX","body":"## Summary\n\n- keep branch status readable\n- fix footer truncation"}`)
+			return &agent.Result{Output: payload}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.UpdateStepStatus(reviewStep.ID, types.StepStatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.SetStepFindings(reviewStep.ID, findings); err != nil {
+		t.Fatal(err)
+	}
+
+	step := &PRStep{}
+	if _, err := step.Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+
+	logData, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ghLog := string(logData)
+	if !strings.Contains(ghLog, "fix footer truncation\n\n⚠️ medium: touches critical error handling") {
+		t.Fatalf("expected risk note to be separated from summary list, got:\n%s", ghLog)
+	}
+}
+
 func fakeGlab(t *testing.T, mrViewJSON string) (binDir string, logFile string) {
 	t.Helper()
 	binDir = fakeCLIBinDir(t)
@@ -3968,11 +4009,19 @@ func TestFallbackPRContent_ConventionalTitle(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			content := fallbackPRContent(tt.branch, tt.commitLog, "")
+			content := fallbackPRContent(tt.branch, tt.commitLog, "", "")
 			if !isConventionalTitle(content.Title) {
 				t.Errorf("fallback title %q is not conventional commit format", content.Title)
 			}
 		})
+	}
+}
+
+func TestFallbackPRContent_AppendsRiskOutsideSummaryList(t *testing.T) {
+	content := fallbackPRContent("fix/risk", "abc123 fix pipeline risk rendering", "", "⚠️ medium: touches critical error handling")
+
+	if !strings.Contains(content.Body, "abc123 fix pipeline risk rendering\n\n⚠️ medium: touches critical error handling") {
+		t.Fatalf("expected risk note to be separated from summary content, got:\n%s", content.Body)
 	}
 }
 

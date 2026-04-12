@@ -19,10 +19,13 @@ func TestBuildPipelineSummary_AllClean(t *testing.T) {
 		"s2": {{Round: 1, Trigger: "initial", DurationMS: 300}},
 		"s3": {{Round: 1, Trigger: "initial", DurationMS: 200}},
 	}
-	md := BuildPipelineSummary(steps, rounds)
+	md, risk := BuildPipelineSummary(steps, rounds)
 
 	if !strings.Contains(md, "## Pipeline") {
 		t.Error("missing Pipeline heading")
+	}
+	if !strings.Contains(md, "Updates from `git push no-mistakes`") {
+		t.Error("missing pipeline tagline")
 	}
 	// Clean steps should show checkmark
 	if !strings.Contains(md, "✅") {
@@ -31,6 +34,9 @@ func TestBuildPipelineSummary_AllClean(t *testing.T) {
 	// Clean run should have no <details> blocks
 	if strings.Contains(md, "<details>") {
 		t.Error("clean run should not have details blocks")
+	}
+	if risk != "" {
+		t.Errorf("expected empty risk for clean run, got: %q", risk)
 	}
 }
 
@@ -42,13 +48,16 @@ func TestBuildPipelineSummary_ReviewWithRisk(t *testing.T) {
 	rounds := map[string][]*db.StepRound{
 		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 1000}},
 	}
-	md := BuildPipelineSummary(steps, rounds)
+	md, risk := BuildPipelineSummary(steps, rounds)
 
-	if !strings.Contains(md, "low risk") {
-		t.Errorf("expected 'low risk' in output, got:\n%s", md)
+	if !strings.Contains(md, "⚠️ **Review** - 1 warning") {
+		t.Errorf("expected findings count in review line, got:\n%s", md)
 	}
-	if !strings.Contains(md, "straightforward refactor") {
-		t.Errorf("expected risk rationale in output, got:\n%s", md)
+	if !strings.Contains(risk, "low") || !strings.Contains(risk, "straightforward refactor") {
+		t.Errorf("expected risk line with level and rationale, got: %q", risk)
+	}
+	if !strings.Contains(risk, "✅") {
+		t.Errorf("expected checkmark emoji for low risk, got: %q", risk)
 	}
 	// Review with findings should have a details block
 	if !strings.Contains(md, "<details>") {
@@ -70,7 +79,7 @@ func TestBuildPipelineSummary_AutoFix(t *testing.T) {
 			{Round: 2, Trigger: "auto_fix", DurationMS: 600},
 		},
 	}
-	md := BuildPipelineSummary(steps, rounds)
+	md, _ := BuildPipelineSummary(steps, rounds)
 
 	// Should show wrench emoji for auto-fixed
 	if !strings.Contains(md, "🔧") {
@@ -105,7 +114,7 @@ func TestBuildPipelineSummary_MultiRoundWithUserFix(t *testing.T) {
 			{Round: 3, Trigger: "user_fix", DurationMS: 700},
 		},
 	}
-	md := BuildPipelineSummary(steps, rounds)
+	md, _ := BuildPipelineSummary(steps, rounds)
 
 	if !strings.Contains(md, "Round 3") {
 		t.Errorf("expected 3 rounds in details, got:\n%s", md)
@@ -127,7 +136,7 @@ func TestBuildPipelineSummary_MultiRoundStillFailing(t *testing.T) {
 			{Round: 2, Trigger: "auto_fix", FindingsJSON: &findings2, DurationMS: 600},
 		},
 	}
-	md := BuildPipelineSummary(steps, rounds)
+	md, _ := BuildPipelineSummary(steps, rounds)
 
 	if strings.Contains(md, "auto-fixed") {
 		t.Errorf("did not expect fixed status when final round still has findings, got:\n%s", md)
@@ -150,7 +159,7 @@ func TestBuildPipelineSummary_UsesFinalFindingsWithoutInitialRoundData(t *testin
 			{Round: 1, Trigger: "initial", DurationMS: 1000},
 		},
 	}
-	md := BuildPipelineSummary(steps, rounds)
+	md, _ := BuildPipelineSummary(steps, rounds)
 
 	if strings.Contains(md, "passed") {
 		t.Errorf("did not expect passed status when step result still has findings, got:\n%s", md)
@@ -175,7 +184,7 @@ func TestBuildPipelineSummary_SkippedStep(t *testing.T) {
 		"s1": {},
 		"s2": {{Round: 1, Trigger: "initial", DurationMS: 300}},
 	}
-	md := BuildPipelineSummary(steps, rounds)
+	md, _ := BuildPipelineSummary(steps, rounds)
 
 	if !strings.Contains(md, "⏭️") {
 		t.Errorf("expected skip emoji for skipped step, got:\n%s", md)
@@ -198,7 +207,7 @@ func TestBuildPipelineSummary_ExcludesPushPRBabysit(t *testing.T) {
 		"s3": {{Round: 1, Trigger: "initial", DurationMS: 200}},
 		"s4": {{Round: 1, Trigger: "initial", DurationMS: 300}},
 	}
-	md := BuildPipelineSummary(steps, rounds)
+	md, _ := BuildPipelineSummary(steps, rounds)
 
 	// Push, PR, and Babysit should not appear in the summary
 	if strings.Contains(md, "**Push**") || strings.Contains(md, "**PR**") || strings.Contains(md, "**Babysit**") {
@@ -214,14 +223,17 @@ func TestBuildPipelineSummary_ReviewApprovedWithWarnings(t *testing.T) {
 	rounds := map[string][]*db.StepRound{
 		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 1000}},
 	}
-	md := BuildPipelineSummary(steps, rounds)
+	md, risk := BuildPipelineSummary(steps, rounds)
 
-	// Review with findings approved as-is should show warning emoji
-	if !strings.Contains(md, "⚠️") {
-		t.Errorf("expected warning emoji for review with findings, got:\n%s", md)
+	// Review with findings should show findings count like other steps
+	if !strings.Contains(md, "⚠️ **Review** - 1 warning") {
+		t.Errorf("expected findings count in review line, got:\n%s", md)
 	}
-	if !strings.Contains(md, "medium risk") {
-		t.Errorf("expected 'medium risk' in output, got:\n%s", md)
+	if !strings.Contains(risk, "medium") || !strings.Contains(risk, "changes error handling") {
+		t.Errorf("expected risk line with level and rationale, got: %q", risk)
+	}
+	if !strings.Contains(risk, "⚠️") {
+		t.Errorf("expected warning emoji for medium risk, got: %q", risk)
 	}
 }
 
@@ -237,19 +249,22 @@ func TestBuildPipelineSummary_ReviewUsesFinalCleanState(t *testing.T) {
 			{Round: 2, Trigger: "user_fix", FindingsJSON: &finalFindings, DurationMS: 700},
 		},
 	}
-	md := BuildPipelineSummary(steps, rounds)
+	md, risk := BuildPipelineSummary(steps, rounds)
 
-	if !strings.Contains(md, "✅ **Review** - low risk") {
-		t.Errorf("expected clean final review status, got:\n%s", md)
+	if !strings.Contains(md, "🔧 **Review**") {
+		t.Errorf("expected fixed review status, got:\n%s", md)
 	}
-	if strings.Contains(md, "⚠️ **Review**") {
-		t.Errorf("did not expect warning emoji after final clean review, got:\n%s", md)
+	if !strings.Contains(md, "user-fixed") {
+		t.Errorf("expected user-fixed in review line, got:\n%s", md)
 	}
-	if strings.Contains(md, "initial risk rationale") {
-		t.Errorf("did not expect stale initial rationale, got:\n%s", md)
+	if strings.Contains(risk, "initial risk rationale") {
+		t.Errorf("did not expect stale initial rationale in risk, got: %q", risk)
 	}
-	if !strings.Contains(md, "follow-up fixes reduced risk") {
-		t.Errorf("expected final rationale in output, got:\n%s", md)
+	if !strings.Contains(risk, "follow-up fixes reduced risk") {
+		t.Errorf("expected final rationale in risk, got: %q", risk)
+	}
+	if !strings.Contains(risk, "✅") {
+		t.Errorf("expected checkmark for low risk, got: %q", risk)
 	}
 	if !strings.Contains(md, "Round 2") {
 		t.Errorf("expected review details to remain visible for multi-round review, got:\n%s", md)
@@ -264,13 +279,19 @@ func TestBuildPipelineSummary_ReviewShowsWarningForUnresolvedRiskWithoutFindings
 	rounds := map[string][]*db.StepRound{
 		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 1000}},
 	}
-	md := BuildPipelineSummary(steps, rounds)
+	md, risk := BuildPipelineSummary(steps, rounds)
 
 	if !strings.Contains(md, "⚠️ **Review** - medium risk") {
-		t.Errorf("expected warning status for medium risk review without findings, got:\n%s", md)
+		t.Errorf("expected medium-risk review status when no findings, got:\n%s", md)
 	}
-	if strings.Contains(md, "✅ **Review**") {
-		t.Errorf("did not expect passed emoji for medium risk review, got:\n%s", md)
+	if strings.Contains(md, "✅ **Review** - passed") {
+		t.Errorf("did not expect passed review status for medium risk, got:\n%s", md)
+	}
+	if !strings.Contains(risk, "medium") || !strings.Contains(risk, "touches critical error handling") {
+		t.Errorf("expected risk line with medium level, got: %q", risk)
+	}
+	if !strings.Contains(risk, "⚠️") {
+		t.Errorf("expected warning emoji for medium risk, got: %q", risk)
 	}
 }
 
@@ -282,7 +303,7 @@ func TestBuildPipelineSummary_ShowsParseFailureForInvalidRoundFindings(t *testin
 	rounds := map[string][]*db.StepRound{
 		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &invalidFindings, DurationMS: 1000}},
 	}
-	md := BuildPipelineSummary(steps, rounds)
+	md, _ := BuildPipelineSummary(steps, rounds)
 
 	if !strings.Contains(md, "failed to parse findings") {
 		t.Errorf("expected parse failure message for invalid round findings, got:\n%s", md)
@@ -310,7 +331,7 @@ func TestBuildPipelineSummary_DoesNotClaimFixedWhenFinalFindingsUnreadable(t *te
 			{Round: 2, Trigger: "auto_fix", FindingsJSON: &invalidFinalFindings, DurationMS: 600},
 		},
 	}
-	md := BuildPipelineSummary(steps, rounds)
+	md, _ := BuildPipelineSummary(steps, rounds)
 
 	if strings.Contains(md, "🔧 **Lint**") {
 		t.Errorf("did not expect fixed status when final findings are unreadable, got:\n%s", md)
@@ -335,13 +356,13 @@ func TestBuildPipelineSummary_ReviewDoesNotReuseInitialRiskWhenFinalUnreadable(t
 			{Round: 2, Trigger: "user_fix", FindingsJSON: &invalidFinalFindings, DurationMS: 700},
 		},
 	}
-	md := BuildPipelineSummary(steps, rounds)
+	md, risk := BuildPipelineSummary(steps, rounds)
 
 	if !strings.Contains(md, "⚠️ **Review** - findings unavailable") {
 		t.Errorf("expected unavailable review status when final findings are unreadable, got:\n%s", md)
 	}
-	if strings.Contains(md, "medium risk") || strings.Contains(md, "initial risk rationale") {
-		t.Errorf("did not expect stale risk details when final findings are unreadable, got:\n%s", md)
+	if risk != "" {
+		t.Errorf("expected empty risk when final findings are unreadable, got: %q", risk)
 	}
 	if !strings.Contains(md, "failed to parse findings") {
 		t.Errorf("expected parse failure details for unreadable final review findings, got:\n%s", md)
@@ -353,13 +374,16 @@ func TestBuildPipelineSummary_ReviewUnreadableFinalFindingsWithoutRoundsUsesWarn
 	steps := []*db.StepResult{
 		{ID: "s1", StepName: types.StepReview, Status: types.StepStatusCompleted, FindingsJSON: &invalidFinalFindings},
 	}
-	md := BuildPipelineSummary(steps, map[string][]*db.StepRound{"s1": nil})
+	md, risk := BuildPipelineSummary(steps, map[string][]*db.StepRound{"s1": nil})
 
 	if !strings.Contains(md, "⚠️ **Review** - findings unavailable") {
 		t.Errorf("expected warning emoji for unreadable final review findings without rounds, got:\n%s", md)
 	}
 	if strings.Contains(md, "✅ **Review** - findings unavailable") {
 		t.Errorf("did not expect passed emoji for unreadable final review findings without rounds, got:\n%s", md)
+	}
+	if risk != "" {
+		t.Errorf("expected empty risk when final findings are unreadable, got: %q", risk)
 	}
 }
 
@@ -371,7 +395,7 @@ func TestBuildPipelineSummary_FindingSeverityEmoji(t *testing.T) {
 	rounds := map[string][]*db.StepRound{
 		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 1000}},
 	}
-	md := BuildPipelineSummary(steps, rounds)
+	md, risk := BuildPipelineSummary(steps, rounds)
 
 	if !strings.Contains(md, "🚨") {
 		t.Errorf("expected error emoji in details, got:\n%s", md)
@@ -379,12 +403,21 @@ func TestBuildPipelineSummary_FindingSeverityEmoji(t *testing.T) {
 	if !strings.Contains(md, "ℹ️") {
 		t.Errorf("expected info emoji in details, got:\n%s", md)
 	}
+	if !strings.Contains(risk, "high") || !strings.Contains(risk, "critical bug found") {
+		t.Errorf("expected risk line with high level, got: %q", risk)
+	}
+	if !strings.Contains(risk, "🚨") {
+		t.Errorf("expected error emoji for high risk, got: %q", risk)
+	}
 }
 
 func TestBuildPipelineSummary_EmptySteps(t *testing.T) {
-	md := BuildPipelineSummary(nil, nil)
+	md, risk := BuildPipelineSummary(nil, nil)
 	if md != "" {
 		t.Errorf("expected empty string for nil steps, got: %q", md)
+	}
+	if risk != "" {
+		t.Errorf("expected empty risk for nil steps, got: %q", risk)
 	}
 }
 
@@ -396,7 +429,7 @@ func TestBuildPipelineSummary_RebaseWithConflicts(t *testing.T) {
 	rounds := map[string][]*db.StepRound{
 		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 2000}},
 	}
-	md := BuildPipelineSummary(steps, rounds)
+	md, _ := BuildPipelineSummary(steps, rounds)
 
 	if !strings.Contains(md, "**Rebase**") {
 		t.Errorf("expected Rebase in output, got:\n%s", md)
