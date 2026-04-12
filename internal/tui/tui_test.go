@@ -7496,3 +7496,32 @@ func TestPipelineConnectors_NotSuppressedDuringBabysit(t *testing.T) {
 		}
 	}
 }
+
+func TestPipelineConnectors_SuppressedDuringBabysitInStackedLayout(t *testing.T) {
+	// When babysit is active in stacked layout, the pipeline height should be
+	// capped so the babysit panel still has room below it.
+	configureTUIColors()
+	run := testRunWithBabysit()
+	for i := range run.Steps {
+		run.Steps[i].Status = types.StepStatusCompleted
+		dur := int64(1000)
+		run.Steps[i].DurationMS = &dur
+	}
+	run.Steps[len(run.Steps)-1].Status = types.StepStatusRunning
+	run.Steps[len(run.Steps)-1].DurationMS = nil
+
+	m := NewModel("", nil, run)
+	m.width = 80 // narrow enough to force stacked layout
+	m.height = 50
+
+	view := stripANSI(m.View())
+	expectedPipeline := stripANSI(renderPipelineView(run, m.stepsWithRunningElapsed(), m.width, 0, cappedPipelineHeight))
+	uncappedPipeline := stripANSI(renderPipelineView(run, m.stepsWithRunningElapsed(), m.width, 0, m.height))
+
+	if !strings.Contains(view, expectedPipeline) {
+		t.Fatalf("expected stacked babysit layout to use capped pipeline height %d\nview:\n%s\nexpected pipeline:\n%s", cappedPipelineHeight, view, expectedPipeline)
+	}
+	if strings.Contains(view, uncappedPipeline) {
+		t.Fatalf("expected stacked babysit layout to avoid uncapped pipeline height %d", m.height)
+	}
+}
