@@ -206,20 +206,24 @@ func dismissedFindingsPromptSection(raw string) string {
 
 	var lines []string
 	for _, item := range findings.Items {
-		parts := []string{"severity=" + item.Severity}
-		if item.ID != "" {
-			parts = append(parts, "id="+item.ID)
+		payload := struct {
+			Severity    string `json:"severity"`
+			ID          string `json:"id,omitempty"`
+			File        string `json:"file,omitempty"`
+			Line        int    `json:"line,omitempty"`
+			Description string `json:"description,omitempty"`
+		}{
+			Severity:    item.Severity,
+			ID:          item.ID,
+			File:        item.File,
+			Line:        item.Line,
+			Description: sanitizeDismissedFindingDescription(item.Description),
 		}
-		if item.File != "" {
-			parts = append(parts, "file="+item.File)
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			continue
 		}
-		if item.Line > 0 {
-			parts = append(parts, fmt.Sprintf("line=%d", item.Line))
-		}
-		if description := sanitizeDismissedFindingDescription(item.Description); description != "" {
-			parts = append(parts, "description="+description)
-		}
-		lines = append(lines, "- "+strings.Join(parts, ", "))
+		lines = append(lines, "- "+string(encoded))
 	}
 
 	if len(lines) == 0 {
