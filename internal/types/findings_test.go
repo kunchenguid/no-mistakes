@@ -61,6 +61,55 @@ func TestFilterFindings_PreservesRiskFields(t *testing.T) {
 	}
 }
 
+func TestExcludeFindings_KeepsUnselected(t *testing.T) {
+	f := Findings{
+		Items: []Finding{
+			{ID: "f1", Severity: "error", Description: "bad"},
+			{ID: "f2", Severity: "warning", Description: "warn"},
+			{ID: "f3", Severity: "info", Description: "note"},
+		},
+		Summary:       "3 issues",
+		RiskLevel:     "medium",
+		RiskRationale: "Some risk.",
+	}
+	excluded := ExcludeFindings(f, []string{"f1", "f3"})
+	if len(excluded.Items) != 1 {
+		t.Fatalf("Items count = %d, want 1", len(excluded.Items))
+	}
+	if excluded.Items[0].ID != "f2" {
+		t.Errorf("excluded item ID = %q, want %q", excluded.Items[0].ID, "f2")
+	}
+	if excluded.RiskLevel != "medium" {
+		t.Errorf("RiskLevel = %q, want %q", excluded.RiskLevel, "medium")
+	}
+}
+
+func TestExcludeFindings_AllExcluded(t *testing.T) {
+	f := Findings{
+		Items: []Finding{
+			{ID: "f1", Severity: "error", Description: "bad"},
+		},
+		RiskLevel: "high",
+	}
+	excluded := ExcludeFindings(f, []string{"f1"})
+	if len(excluded.Items) != 0 {
+		t.Errorf("Items count = %d, want 0", len(excluded.Items))
+	}
+}
+
+func TestExcludeFindings_NoneExcluded(t *testing.T) {
+	f := Findings{
+		Items: []Finding{
+			{ID: "f1", Severity: "error", Description: "bad"},
+		},
+		RiskLevel: "low",
+	}
+	excluded := ExcludeFindings(f, []string{})
+	if len(excluded.Items) != 1 {
+		t.Errorf("Items count = %d, want 1", len(excluded.Items))
+	}
+}
+
 func TestFilterFindings_EmptyIDs(t *testing.T) {
 	f := Findings{
 		Items:         []Finding{{ID: "f1", Severity: "error", Description: "bad"}},

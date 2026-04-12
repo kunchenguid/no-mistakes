@@ -123,6 +123,15 @@ Previous review findings to address:
 
 	// Ask agent to review
 	sctx.Log("reviewing changes...")
+
+	dismissedSection := ""
+	if sctx.DismissedFindings != "" {
+		dismissedSection = fmt.Sprintf(`
+
+The following findings from a previous review were explicitly dismissed by the user. Do NOT report these same issues again:
+%s`, sctx.DismissedFindings)
+	}
+
 	prompt := fmt.Sprintf(
 		`Review the code changes and return structured findings with a risk assessment.
 
@@ -152,13 +161,14 @@ Risk assessment (after listing all findings):
 - Set risk_level to "low" if the change is well-bounded, mostly cosmetic, or straightforward with little ambiguity.
 - Set risk_level to "medium" if the change has room to improve but is safe to merge first with concerns addressed as follow-ups.
 - Set risk_level to "high" if the change should not be merged without explicit human approval - it is fundamental, risky, ambiguous, or has strong negative signals.
-- Provide a one-sentence risk_rationale explaining why you chose that risk level.`,
+- Provide a one-sentence risk_rationale explaining why you chose that risk level.%s`,
 		branch,
 		baseSHA,
 		sctx.Run.HeadSHA,
 		reviewScope,
 		sctx.Repo.DefaultBranch,
 		ignorePatterns,
+		dismissedSection,
 	)
 
 	result, err := sctx.Agent.Run(ctx, agent.RunOpts{

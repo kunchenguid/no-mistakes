@@ -75,6 +75,24 @@ func FilterFindings(findings Findings, ids []string) Findings {
 	return filtered
 }
 
+// ExcludeFindings keeps only findings whose IDs are NOT in the excluded set.
+func ExcludeFindings(findings Findings, ids []string) Findings {
+	if len(ids) == 0 {
+		return findings
+	}
+	excluded := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		excluded[id] = true
+	}
+	result := Findings{Summary: findings.Summary, RiskLevel: findings.RiskLevel, RiskRationale: findings.RiskRationale}
+	for _, item := range findings.Items {
+		if !excluded[item.ID] {
+			result.Items = append(result.Items, item)
+		}
+	}
+	return result
+}
+
 func summarizeSelectedFindings(count int) string {
 	switch count {
 	case 0:
