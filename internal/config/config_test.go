@@ -95,6 +95,29 @@ func TestEnsureDefaultGlobalConfig_DoesNotOverwrite(t *testing.T) {
 	}
 }
 
+func TestEnsureDefaultGlobalConfig_SkipsOnStatPermissionError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("agent: codex\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o000); err != nil {
+		t.Skip("cannot restrict directory permissions")
+	}
+	t.Cleanup(func() { os.Chmod(dir, 0o755) })
+
+	EnsureDefaultGlobalConfig(path)
+
+	os.Chmod(dir, 0o755)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed to read config: %v", err)
+	}
+	if string(data) != "agent: codex\n" {
+		t.Errorf("config was overwritten despite stat permission error:\ngot:  %q\nwant: %q", string(data), "agent: codex\n")
+	}
+}
+
 func TestEnsureDefaultGlobalConfig_CreatesParentDirs(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "subdir", "config.yaml")

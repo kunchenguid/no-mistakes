@@ -100,6 +100,9 @@ func (c *Config) AgentPath() string {
 func EnsureDefaultGlobalConfig(path string) {
 	if _, err := os.Stat(path); err == nil {
 		return
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		slog.Debug("failed to stat config path", "path", path, "error", err)
+		return
 	}
 	if mkErr := os.MkdirAll(filepath.Dir(path), 0o755); mkErr != nil {
 		slog.Debug("failed to create config directory", "path", filepath.Dir(path), "error", mkErr)
