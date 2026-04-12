@@ -52,18 +52,18 @@ func mergeFindingsJSON(existingRaw, additionalRaw string) string {
 	if err != nil {
 		return existingRaw
 	}
-	seen := make(map[string]bool, len(existing.Items)+len(additional.Items))
+	seen := make(map[types.Finding]bool, len(existing.Items)+len(additional.Items))
 	merged := types.Findings{}
 	for _, item := range existing.Items {
 		merged.Items = append(merged.Items, item)
-		seen[item.ID] = true
+		seen[item] = true
 	}
 	for _, item := range additional.Items {
-		if seen[item.ID] {
+		if seen[item] {
 			continue
 		}
 		merged.Items = append(merged.Items, item)
-		seen[item.ID] = true
+		seen[item] = true
 	}
 	if len(merged.Items) == 0 {
 		return ""

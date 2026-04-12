@@ -1144,6 +1144,71 @@ func TestExecutor_FixAccumulatesDismissedFindingsAcrossCycles(t *testing.T) {
 	}
 }
 
+func TestExecutor_FixRemovesReselectedDismissedFinding(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	var capturedDismissed string
+	callCount := 0
+	step := &adaptiveCallStep{
+		name: types.StepReview,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			callCount++
+			switch callCount {
+			case 1:
+				return &StepOutcome{
+					NeedsApproval: true,
+					Findings:      `{"findings":[{"id":"review-1","severity":"error","description":"first"},{"id":"review-2","severity":"warning","description":"second"}],"summary":"2 findings"}`,
+				}, nil
+			case 2:
+				return &StepOutcome{
+					NeedsApproval: true,
+					Findings:      `{"findings":[{"id":"review-1","severity":"error","description":"first"},{"id":"review-3","severity":"warning","description":"third"}],"summary":"2 findings"}`,
+				}, nil
+			case 3:
+				capturedDismissed = sctx.DismissedFindings
+				return &StepOutcome{}, nil
+			default:
+				return &StepOutcome{}, nil
+			}
+		},
+	}
+
+	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- exec.Execute(context.Background(), run, repo, workDir)
+	}()
+
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
+	if err := exec.Respond(types.StepReview, types.ActionFix, []string{"review-2"}); err != nil {
+		t.Fatal(err)
+	}
+
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
+	if err := exec.Respond(types.StepReview, types.ActionFix, []string{"review-1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("expected no error, got: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("executor timed out")
+	}
+
+	items := mustParseFindingItems(t, capturedDismissed)
+	if len(items) != 1 {
+		t.Fatalf("expected 1 dismissed finding, got %d", len(items))
+	}
+	if items[0].ID != "review-3" {
+		t.Fatalf("unexpected dismissed findings: %#v", items)
+	}
+}
+
 func TestExecutor_PreviousFindingsEmptyOnFirstExecution(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir := t.TempDir()
