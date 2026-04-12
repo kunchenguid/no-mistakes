@@ -281,11 +281,12 @@ func TestBuildPipelineSummary_ReviewShowsWarningForUnresolvedRiskWithoutFindings
 	}
 	md, risk := BuildPipelineSummary(steps, rounds)
 
-	// No findings means passed in the pipeline line
-	if !strings.Contains(md, "✅ **Review** - passed") {
-		t.Errorf("expected passed review status when no findings, got:\n%s", md)
+	if !strings.Contains(md, "⚠️ **Review** - medium risk") {
+		t.Errorf("expected medium-risk review status when no findings, got:\n%s", md)
 	}
-	// Risk is reported separately
+	if strings.Contains(md, "✅ **Review** - passed") {
+		t.Errorf("did not expect passed review status for medium risk, got:\n%s", md)
+	}
 	if !strings.Contains(risk, "medium") || !strings.Contains(risk, "touches critical error handling") {
 		t.Errorf("expected risk line with medium level, got: %q", risk)
 	}

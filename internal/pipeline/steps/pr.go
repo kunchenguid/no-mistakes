@@ -258,7 +258,7 @@ Diff stat:
 					content.Title = "chore: " + content.Title
 				}
 				if riskLine != "" {
-					content.Body += "\n" + riskLine
+					content.Body += "\n\n" + riskLine
 				}
 				content.Body = appendPipelineSection(content.Body, pipelineMD)
 				return content, nil
@@ -324,7 +324,7 @@ func fallbackPRContent(branch, commitLog, pipelineMD, riskLine string) prContent
 		body = fmt.Sprintf("## Summary\n\n- %s", title)
 	}
 	if riskLine != "" {
-		body += "\n" + riskLine
+		body += "\n\n" + riskLine
 	}
 	body = appendPipelineSection(body, pipelineMD)
 	return prContent{

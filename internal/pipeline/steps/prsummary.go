@@ -93,6 +93,16 @@ func buildStepEntry(sr *db.StepResult, rounds []*db.StepRound) (statusLine, deta
 	hadAnyFindings := hadFindings || hasFinalFindings || hasAnyRoundFindings
 	hasUnreadableFinalFindings := sr.FindingsJSON != nil && !finalFindingsParsed
 	wasFixed := hadFindings && len(rounds) > 1 && !hasUnreadableFinalFindings && !hasFinalFindings
+	riskLevel := ""
+	if sr.StepName == types.StepReview {
+		src := finalFindings
+		if src == nil && !hasUnreadableFinalFindings {
+			src = initialFindings
+		}
+		if src != nil {
+			riskLevel = src.RiskLevel
+		}
+	}
 
 	// Unreadable final findings - can't make claims about the outcome.
 	if hasUnreadableFinalFindings {
@@ -101,6 +111,14 @@ func buildStepEntry(sr *db.StepResult, rounds []*db.StepRound) (statusLine, deta
 			detail = buildRoundsDetail(name, rounds)
 		}
 		return fmt.Sprintf("⚠️ **%s** - findings unavailable", name), detail
+	}
+
+	if sr.StepName == types.StepReview && (riskLevel == "medium" || riskLevel == "high") && !hadAnyFindings {
+		detail := ""
+		if hasRoundDetails {
+			detail = buildRoundsDetail(name, rounds)
+		}
+		return fmt.Sprintf("%s **%s** - %s risk", riskEmoji(riskLevel), name, riskLevel), detail
 	}
 
 	if !hadAnyFindings && !hasRoundParseFailure {
