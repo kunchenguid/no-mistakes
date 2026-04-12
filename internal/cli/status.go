@@ -42,7 +42,7 @@ func newStatusCmd() *cobra.Command {
 			}
 
 			// Check for active run.
-			activeRun, err := d.GetActiveRun(repo.ID)
+			activeRun, err := d.GetActiveRun(repo.ID, "")
 			if err != nil {
 				return fmt.Errorf("check active run: %w", err)
 			}

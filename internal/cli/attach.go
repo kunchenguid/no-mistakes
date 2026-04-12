@@ -1,12 +1,14 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/tui"
 	"github.com/spf13/cobra"
@@ -56,9 +58,12 @@ func attachRun(w io.Writer, runID string) error {
 	} else {
 		repoID = repo.ID
 
-		// Get active run for this repo.
+		// Detect current branch to prefer runs on the same branch.
+		branch, _ := git.CurrentBranch(context.Background(), ".")
+
+		// Get active run for this repo, preferring the current branch.
 		var result ipc.GetActiveRunResult
-		if err := client.Call(ipc.MethodGetActiveRun, &ipc.GetActiveRunParams{RepoID: repo.ID}, &result); err != nil {
+		if err := client.Call(ipc.MethodGetActiveRun, &ipc.GetActiveRunParams{RepoID: repo.ID, Branch: branch}, &result); err != nil {
 			return fmt.Errorf("get active run: %w", err)
 		}
 		run = result.Run

@@ -75,8 +75,10 @@ type GetRunsParams struct {
 }
 
 // GetActiveRunParams requests the active run for a repo.
+// When Branch is set, runs on that branch are preferred.
 type GetActiveRunParams struct {
 	RepoID string `json:"repo_id"`
+	Branch string `json:"branch,omitempty"`
 }
 
 // RerunParams requests a new run for the latest gate head on a branch.
