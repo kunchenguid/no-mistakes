@@ -897,6 +897,7 @@ func (m *Model) applyEvent(event ipc.Event) {
 		if event.Error != nil {
 			m.run.Error = event.Error
 		}
+		m.flushPartialLog()
 		m.done = true
 
 	case ipc.EventStepStarted:
@@ -908,6 +909,7 @@ func (m *Model) applyEvent(event ipc.Event) {
 
 	case ipc.EventStepCompleted:
 		m.err = nil
+		m.flushPartialLog()
 		if event.StepName != nil && event.Status != nil {
 			m.updateStepStatus(*event.StepName, types.StepStatus(*event.Status))
 		}
@@ -977,6 +979,17 @@ func (m *Model) updateStepStatus(name types.StepName, status types.StepStatus) {
 			m.steps[i].Status = status
 			return
 		}
+	}
+}
+
+func (m *Model) flushPartialLog() {
+	if m.logPartial == "" {
+		return
+	}
+	m.logs = append(m.logs, m.logPartial)
+	m.logPartial = ""
+	if len(m.logs) > 100 {
+		m.logs = m.logs[len(m.logs)-100:]
 	}
 }
 

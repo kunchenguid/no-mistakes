@@ -7333,3 +7333,71 @@ func TestModel_ApplyEvent_LogChunk_MixedPartialAndComplete(t *testing.T) {
 		t.Errorf("expected %q, got %q", "partial end", m.logs[1])
 	}
 }
+
+func TestModel_ApplyEvent_LogChunk_FlushesPartialOnStepCompleted(t *testing.T) {
+	run := testRun()
+	m := NewModel("/tmp/sock", nil, run)
+
+	m.applyEvent(ipc.Event{
+		Type:    ipc.EventLogChunk,
+		RunID:   run.ID,
+		Content: ptr("last line without newline"),
+	})
+
+	m.applyEvent(ipc.Event{
+		Type:     ipc.EventStepCompleted,
+		RunID:    run.ID,
+		StepName: ptr(types.StepName("review")),
+		Status:   ptr(string(types.StepStatusCompleted)),
+	})
+
+	if len(m.logs) != 1 {
+		t.Fatalf("expected 1 log line, got %d: %v", len(m.logs), m.logs)
+	}
+	if m.logs[0] != "last line without newline" {
+		t.Fatalf("expected flushed log line, got %q", m.logs[0])
+	}
+	if m.logPartial != "" {
+		t.Fatalf("expected partial log buffer to be cleared, got %q", m.logPartial)
+	}
+
+	m.applyEvent(ipc.Event{
+		Type:    ipc.EventLogChunk,
+		RunID:   run.ID,
+		Content: ptr("next line\n"),
+	})
+
+	if len(m.logs) != 2 {
+		t.Fatalf("expected 2 log lines, got %d: %v", len(m.logs), m.logs)
+	}
+	if m.logs[1] != "next line" {
+		t.Fatalf("expected independent next line, got %q", m.logs[1])
+	}
+}
+
+func TestModel_ApplyEvent_LogChunk_FlushesPartialOnRunCompleted(t *testing.T) {
+	run := testRun()
+	m := NewModel("/tmp/sock", nil, run)
+
+	m.applyEvent(ipc.Event{
+		Type:    ipc.EventLogChunk,
+		RunID:   run.ID,
+		Content: ptr("trailing output"),
+	})
+
+	m.applyEvent(ipc.Event{
+		Type:   ipc.EventRunCompleted,
+		RunID:  run.ID,
+		Status: ptr(string(types.RunCompleted)),
+	})
+
+	if len(m.logs) != 1 {
+		t.Fatalf("expected 1 log line, got %d: %v", len(m.logs), m.logs)
+	}
+	if m.logs[0] != "trailing output" {
+		t.Fatalf("expected flushed log line, got %q", m.logs[0])
+	}
+	if m.logPartial != "" {
+		t.Fatalf("expected partial log buffer to be cleared, got %q", m.logPartial)
+	}
+}
