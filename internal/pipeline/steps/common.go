@@ -207,6 +207,7 @@ var reviewFindingsSchema = json.RawMessage(`{
 	},
 	"required": ["findings", "risk_level", "risk_rationale"]
 }`)
+
 // isTestFile returns true if the file path matches common test file naming patterns.
 func isTestFile(path string) bool {
 	base := filepath.Base(path)
