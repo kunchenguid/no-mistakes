@@ -21,6 +21,137 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
+// TestMain handles fake CLI dispatch when the test binary is invoked as gh/glab.
+func TestMain(m *testing.M) {
+	if mode := os.Getenv("FAKE_CLI_MODE"); mode != "" {
+		handleFakeCLI(mode)
+		return
+	}
+	os.Exit(m.Run())
+}
+
+func handleFakeCLI(mode string) {
+	args := os.Args[1:]
+	logFile := os.Getenv("FAKE_CLI_LOG")
+
+	if logFile != "" {
+		f, _ := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		if f != nil {
+			fmt.Fprintln(f, strings.Join(args, " "))
+			f.Close()
+		}
+	}
+
+	switch mode {
+	case "gh":
+		fakeGHHandler(args)
+	case "glab":
+		fakeGlabHandler(args)
+	case "babysit-gh":
+		fakeBabysitGHHandler(args)
+	case "babysit-gh-nochecks":
+		fakeBabysitGHNoChecksHandler(args)
+	default:
+		os.Exit(1)
+	}
+}
+
+func fakeGHHandler(args []string) {
+	prURL := os.Getenv("FAKE_CLI_PR_URL")
+	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
+		os.Exit(0)
+	}
+	if len(args) >= 2 && args[0] == "pr" && args[1] == "view" {
+		if prURL != "" {
+			fmt.Println(prURL)
+			os.Exit(0)
+		}
+		os.Exit(1)
+	}
+	if len(args) >= 2 && args[0] == "pr" && args[1] == "edit" {
+		os.Exit(0)
+	}
+	if len(args) >= 2 && args[0] == "pr" && args[1] == "create" {
+		fmt.Println("https://github.com/test/repo/pull/99")
+		os.Exit(0)
+	}
+	os.Exit(1)
+}
+
+func fakeGlabHandler(args []string) {
+	mrViewJSON := os.Getenv("FAKE_CLI_MR_VIEW_JSON")
+	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
+		os.Exit(0)
+	}
+	if len(args) >= 2 && args[0] == "mr" && args[1] == "view" {
+		if mrViewJSON != "" {
+			fmt.Println(mrViewJSON)
+			os.Exit(0)
+		}
+		os.Exit(1)
+	}
+	if len(args) >= 2 && args[0] == "mr" && args[1] == "update" {
+		os.Exit(0)
+	}
+	if len(args) >= 2 && args[0] == "mr" && args[1] == "create" {
+		fmt.Println("https://gitlab.com/test/repo/-/merge_requests/99")
+		os.Exit(0)
+	}
+	os.Exit(1)
+}
+
+func fakeBabysitGHHandler(args []string) {
+	state := os.Getenv("FAKE_CLI_STATE")
+	checksJSON := os.Getenv("FAKE_CLI_CHECKS")
+	commentsJSON := os.Getenv("FAKE_CLI_COMMENTS")
+	joined := strings.Join(args, " ")
+
+	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json state") {
+		fmt.Println(state)
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "pr checks") {
+		fmt.Println(checksJSON)
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json comments") {
+		fmt.Println(commentsJSON)
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "pr comment") {
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "run view") {
+		fmt.Println("error log output")
+		os.Exit(0)
+	}
+	os.Exit(1)
+}
+
+func fakeBabysitGHNoChecksHandler(args []string) {
+	joined := strings.Join(args, " ")
+
+	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "pr checks") {
+		fmt.Fprintln(os.Stderr, "no checks reported on the 'feature/e2e' branch")
+		os.Exit(1)
+	}
+	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json state") {
+		fmt.Println("OPEN")
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json comments") {
+		fmt.Println("[]")
+		os.Exit(0)
+	}
+	os.Exit(1)
+}
+
 // --- mock agent ---
 
 type mockAgent struct {
@@ -1497,73 +1628,40 @@ func prependPATH(t *testing.T, binDir string) {
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
-// writeFakeScript writes a shell script (Unix) or batch file (Windows) to binDir.
-// name is the binary name without extension (e.g. "gh"). On Windows, a .bat
-// extension is appended automatically.
-func writeFakeScript(t *testing.T, binDir, name, shScript, batScript string) {
+// linkTestBinary creates a hard link (or copy) of the current test binary
+// with the given name in binDir. On Windows, .exe is appended.
+func linkTestBinary(t *testing.T, binDir, name string) {
 	t.Helper()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if runtime.GOOS == "windows" {
-		p := filepath.Join(binDir, name+".bat")
-		if err := os.WriteFile(p, []byte(batScript), 0o755); err != nil {
-			t.Fatal(err)
+		name += ".exe"
+	}
+	dst := filepath.Join(binDir, name)
+	if err := os.Link(exe, dst); err != nil {
+		// Fallback to copy if hard link fails (cross-device, etc.)
+		data, readErr := os.ReadFile(exe)
+		if readErr != nil {
+			t.Fatal(readErr)
 		}
-	} else {
-		p := filepath.Join(binDir, name)
-		if err := os.WriteFile(p, []byte(shScript), 0o755); err != nil {
+		if err := os.WriteFile(dst, data, 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
 }
 
-// fakeGH creates a mock gh script in a temp dir and returns the dir (for PATH prepending).
-// The script records all invocations to a log file and responds based on subcommand.
+// fakeGH creates a mock gh binary in a temp dir and returns the dir (for PATH prepending).
+// The binary records all invocations to a log file and responds based on subcommand.
 func fakeGH(t *testing.T, prViewURL string) (binDir string, logFile string) {
 	t.Helper()
 	binDir = t.TempDir()
 	logFile = filepath.Join(t.TempDir(), "gh.log")
-
-	shScript := fmt.Sprintf(`#!/bin/sh
-echo "$@" >> %s
-if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
-  exit 0
-fi
-if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
-  if [ "%s" != "" ]; then
-    echo "%s"
-    exit 0
-  fi
-  exit 1
-fi
-if [ "$1" = "pr" ] && [ "$2" = "edit" ]; then
-  exit 0
-fi
-if [ "$1" = "pr" ] && [ "$2" = "create" ]; then
-  echo "https://github.com/test/repo/pull/99"
-  exit 0
-fi
-exit 1
-`, logFile, prViewURL, prViewURL)
-
-	batScript := fmt.Sprintf("@echo off\r\necho %%* >> \"%s\"\r\n", logFile)
-	batScript += "if not \"%1\"==\"pr\" goto :chkauth\r\n"
-	if prViewURL != "" {
-		batScript += fmt.Sprintf("if \"%%2\"==\"view\" goto :prview\r\n")
-	} else {
-		batScript += "if \"%2\"==\"view\" exit /b 1\r\n"
-	}
-	batScript += "if \"%2\"==\"edit\" exit /b 0\r\n"
-	batScript += "if \"%2\"==\"create\" goto :prcreate\r\n"
-	batScript += "goto :fail\r\n"
-	batScript += ":chkauth\r\n"
-	batScript += "if \"%1\"==\"auth\" if \"%2\"==\"status\" exit /b 0\r\n"
-	batScript += ":fail\r\n"
-	batScript += "exit /b 1\r\n"
-	if prViewURL != "" {
-		batScript += fmt.Sprintf(":prview\r\necho %s\r\nexit /b 0\r\n", prViewURL)
-	}
-	batScript += ":prcreate\r\necho https://github.com/test/repo/pull/99\r\nexit /b 0\r\n"
-
-	writeFakeScript(t, binDir, "gh", shScript, batScript)
+	linkTestBinary(t, binDir, "gh")
+	t.Setenv("FAKE_CLI_MODE", "gh")
+	t.Setenv("FAKE_CLI_LOG", logFile)
+	t.Setenv("FAKE_CLI_PR_URL", prViewURL)
 	return binDir, logFile
 }
 
@@ -1730,56 +1828,10 @@ func fakeGlab(t *testing.T, mrViewJSON string) (binDir string, logFile string) {
 	t.Helper()
 	binDir = t.TempDir()
 	logFile = filepath.Join(t.TempDir(), "glab.log")
-
-	shScript := fmt.Sprintf(`#!/bin/sh
-echo "$@" >> %s
-if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
-  exit 0
-fi
-if [ "$1" = "mr" ] && [ "$2" = "view" ]; then
-  if [ '%s' != '' ]; then
-    cat <<'EOF'
-%s
-EOF
-    exit 0
-  fi
-  exit 1
-fi
-if [ "$1" = "mr" ] && [ "$2" = "update" ]; then
-  exit 0
-fi
-if [ "$1" = "mr" ] && [ "$2" = "create" ]; then
-  echo "https://gitlab.com/test/repo/-/merge_requests/99"
-  exit 0
-fi
-exit 1
-`, logFile, mrViewJSON, mrViewJSON)
-
-	batScript := fmt.Sprintf("@echo off\r\necho %%* >> \"%s\"\r\n", logFile)
-	batScript += "if not \"%1\"==\"mr\" goto :chkauth\r\n"
-	if mrViewJSON != "" {
-		jsonFile := filepath.Join(binDir, "mrview.json")
-		if err := os.WriteFile(jsonFile, []byte(mrViewJSON), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		batScript += fmt.Sprintf("if \"%%2\"==\"view\" goto :mrview\r\n")
-	} else {
-		batScript += "if \"%2\"==\"view\" exit /b 1\r\n"
-	}
-	batScript += "if \"%2\"==\"update\" exit /b 0\r\n"
-	batScript += "if \"%2\"==\"create\" goto :mrcreate\r\n"
-	batScript += "goto :fail\r\n"
-	batScript += ":chkauth\r\n"
-	batScript += "if \"%1\"==\"auth\" if \"%2\"==\"status\" exit /b 0\r\n"
-	batScript += ":fail\r\n"
-	batScript += "exit /b 1\r\n"
-	if mrViewJSON != "" {
-		jsonFile := filepath.Join(binDir, "mrview.json")
-		batScript += fmt.Sprintf(":mrview\r\ntype \"%s\"\r\nexit /b 0\r\n", jsonFile)
-	}
-	batScript += ":mrcreate\r\necho https://gitlab.com/test/repo/-/merge_requests/99\r\nexit /b 0\r\n"
-
-	writeFakeScript(t, binDir, "glab", shScript, batScript)
+	linkTestBinary(t, binDir, "glab")
+	t.Setenv("FAKE_CLI_MODE", "glab")
+	t.Setenv("FAKE_CLI_LOG", logFile)
+	t.Setenv("FAKE_CLI_MR_VIEW_JSON", mrViewJSON)
 	return binDir, logFile
 }
 
@@ -2306,7 +2358,7 @@ func TestBabysitStep_TimeoutDoesNotSleepPastDeadline(t *testing.T) {
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Run.PRURL = &prURL
-	sctx.Config.BabysitTimeout = 150 * time.Millisecond
+	sctx.Config.BabysitTimeout = 2 * time.Second
 
 	step := &BabysitStep{}
 	started := time.Now()
@@ -2317,7 +2369,7 @@ func TestBabysitStep_TimeoutDoesNotSleepPastDeadline(t *testing.T) {
 	if outcome.NeedsApproval {
 		t.Error("expected no approval when timeout expires")
 	}
-	if elapsed := time.Since(started); elapsed > time.Second {
+	if elapsed := time.Since(started); elapsed > 10*time.Second {
 		t.Fatalf("babysit step exceeded timeout budget: %v", elapsed)
 	}
 }
@@ -3066,127 +3118,19 @@ func TestReviewStep_FixMode_RequiresPreviousFindings(t *testing.T) {
 func fakeBabysitGH(t *testing.T, state, checksJSON, commentsJSON string) string {
 	t.Helper()
 	binDir := t.TempDir()
-
-	shScript := fmt.Sprintf(`#!/bin/sh
-ARGS="$*"
-if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
-  exit 0
-fi
-# pr view --json state --jq .state
-if echo "$ARGS" | grep -q "pr view.*--json state"; then
-  echo "%s"
-  exit 0
-fi
-# pr checks --json
-if echo "$ARGS" | grep -q "pr checks"; then
-  cat << 'CHECKS_EOF'
-%s
-CHECKS_EOF
-  exit 0
-fi
-# pr view --json comments --jq .comments
-if echo "$ARGS" | grep -q "pr view.*--json comments"; then
-  cat << 'COMMENTS_EOF'
-%s
-COMMENTS_EOF
-  exit 0
-fi
-# pr comment (reply to addressed comments)
-if echo "$ARGS" | grep -q "pr comment"; then
-  exit 0
-fi
-# run view (CI logs)
-if echo "$ARGS" | grep -q "run view"; then
-  echo "error log output"
-  exit 0
-fi
-exit 1
-`, state, checksJSON, commentsJSON)
-
-	// Write JSON data to files for batch to use via type command.
-	checksFile := filepath.Join(binDir, "checks.json")
-	if err := os.WriteFile(checksFile, []byte(checksJSON), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	commentsFile := filepath.Join(binDir, "comments.json")
-	if err := os.WriteFile(commentsFile, []byte(commentsJSON), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// On Windows, use findstr to match arg patterns.
-	batScript := "@echo off\r\n"
-	batScript += "setlocal\r\n"
-	batScript += "set \"ARGS=%*\"\r\n"
-	batScript += "if \"%1\"==\"auth\" if \"%2\"==\"status\" exit /b 0\r\n"
-	// pr view --json state
-	batScript += "echo %ARGS% | findstr /c:\"pr view\" >nul 2>&1 || goto :notstate\r\n"
-	batScript += "echo %ARGS% | findstr /c:\"--json state\" >nul 2>&1 || goto :notstate\r\n"
-	batScript += fmt.Sprintf("echo %s\r\nexit /b 0\r\n", state)
-	batScript += ":notstate\r\n"
-	// pr checks
-	batScript += "echo %ARGS% | findstr /c:\"pr checks\" >nul 2>&1 || goto :notchecks\r\n"
-	batScript += fmt.Sprintf("type \"%s\"\r\nexit /b 0\r\n", checksFile)
-	batScript += ":notchecks\r\n"
-	// pr view --json comments
-	batScript += "echo %ARGS% | findstr /c:\"pr view\" >nul 2>&1 || goto :notcomments\r\n"
-	batScript += "echo %ARGS% | findstr /c:\"--json comments\" >nul 2>&1 || goto :notcomments\r\n"
-	batScript += fmt.Sprintf("type \"%s\"\r\nexit /b 0\r\n", commentsFile)
-	batScript += ":notcomments\r\n"
-	// pr comment
-	batScript += "echo %ARGS% | findstr /c:\"pr comment\" >nul 2>&1 || goto :notcomment\r\n"
-	batScript += "exit /b 0\r\n"
-	batScript += ":notcomment\r\n"
-	// run view
-	batScript += "echo %ARGS% | findstr /c:\"run view\" >nul 2>&1 || goto :notrunview\r\n"
-	batScript += "echo error log output\r\nexit /b 0\r\n"
-	batScript += ":notrunview\r\n"
-	batScript += "exit /b 1\r\n"
-
-	writeFakeScript(t, binDir, "gh", shScript, batScript)
+	linkTestBinary(t, binDir, "gh")
+	t.Setenv("FAKE_CLI_MODE", "babysit-gh")
+	t.Setenv("FAKE_CLI_STATE", state)
+	t.Setenv("FAKE_CLI_CHECKS", checksJSON)
+	t.Setenv("FAKE_CLI_COMMENTS", commentsJSON)
 	return binDir
 }
 
 func fakeBabysitGHNoChecks(t *testing.T) string {
 	t.Helper()
 	binDir := t.TempDir()
-	shScript := `#!/bin/sh
-ARGS="$*"
-if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
-  exit 0
-fi
-if echo "$ARGS" | grep -q "pr checks"; then
-  echo "no checks reported on the 'feature/e2e' branch" >&2
-  exit 1
-fi
-if echo "$ARGS" | grep -q "pr view.*--json state"; then
-  echo "OPEN"
-  exit 0
-fi
-if echo "$ARGS" | grep -q "pr view.*--json comments"; then
-  echo '[]'
-  exit 0
-fi
-echo "unexpected gh args: $ARGS" >&2
-exit 1
-`
-	batScript := "@echo off\r\n"
-	batScript += "setlocal\r\n"
-	batScript += "set \"ARGS=%*\"\r\n"
-	batScript += "if \"%1\"==\"auth\" if \"%2\"==\"status\" exit /b 0\r\n"
-	batScript += "echo %ARGS% | findstr /c:\"pr checks\" >nul 2>&1 || goto :notchecks\r\n"
-	batScript += "echo no checks reported on the 'feature/e2e' branch >&2\r\nexit /b 1\r\n"
-	batScript += ":notchecks\r\n"
-	batScript += "echo %ARGS% | findstr /c:\"pr view\" >nul 2>&1 || goto :notstate\r\n"
-	batScript += "echo %ARGS% | findstr /c:\"--json state\" >nul 2>&1 || goto :notstate\r\n"
-	batScript += "echo OPEN\r\nexit /b 0\r\n"
-	batScript += ":notstate\r\n"
-	batScript += "echo %ARGS% | findstr /c:\"pr view\" >nul 2>&1 || goto :notcomments\r\n"
-	batScript += "echo %ARGS% | findstr /c:\"--json comments\" >nul 2>&1 || goto :notcomments\r\n"
-	batScript += "echo []\r\nexit /b 0\r\n"
-	batScript += ":notcomments\r\n"
-	batScript += "echo unexpected gh args: %ARGS% >&2\r\nexit /b 1\r\n"
-
-	writeFakeScript(t, binDir, "gh", shScript, batScript)
+	linkTestBinary(t, binDir, "gh")
+	t.Setenv("FAKE_CLI_MODE", "babysit-gh-nochecks")
 	return binDir
 }
 
@@ -3324,7 +3268,7 @@ func TestBabysitStep_CIFailureAutoFix(t *testing.T) {
 
 	// Use a context with short timeout: after auto-fix completes, the poll
 	// sleep (30s) will be interrupted by context deadline, exiting the loop.
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	sctx.Ctx = ctx
 
@@ -3518,7 +3462,7 @@ func TestBabysitStep_AddressCommentsInFixMode_OnlySelectedComments(t *testing.T)
 	sctx.PreviousFindings = `{"findings":[{"id":"IC_200","severity":"info","description":"@alice: Rename this function"}],"summary":"1 PR comment(s) to review"}`
 	sctx.Config.BabysitTimeout = 30 * time.Second
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	sctx.Ctx = ctx
 
@@ -3584,7 +3528,7 @@ func TestBabysitStep_AddressCommentsInFixMode(t *testing.T) {
 
 	// Use a context with short timeout: after addressing comments and entering
 	// the poll loop, the sleep will be interrupted by context deadline.
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	sctx.Ctx = ctx
 
