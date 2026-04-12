@@ -354,11 +354,13 @@ func renderFindingsRange(f *findings, width int, cursor int, selected map[string
 					selParts = append(selParts, severityStyle(sev).Render(fmt.Sprintf("%s %d", severityIcon(sev), c)))
 				}
 			}
-			selText := strings.Join(selParts, " ") + " selected"
-			if scrollFooter != "" {
-				scrollFooter += "  ·  " + selText
-			} else {
-				scrollFooter = selText
+			if len(selParts) > 0 {
+				selText := strings.Join(selParts, " ") + " selected"
+				if scrollFooter != "" {
+					scrollFooter += "  ·  " + selText
+				} else {
+					scrollFooter = selText
+				}
 			}
 		}
 	}
@@ -383,6 +385,13 @@ func trimRenderedLines(s string, maxLines int) string {
 func renderFindingsWithSelectionHeight(raw string, width int, cursor int, selected map[string]bool, maxLines int) (string, string) {
 	f, err := parseFindings(raw)
 	if err != nil || f == nil {
+		return "", ""
+	}
+	return renderParsedFindingsHeight(f, width, cursor, selected, maxLines)
+}
+
+func renderParsedFindingsHeight(f *findings, width int, cursor int, selected map[string]bool, maxLines int) (string, string) {
+	if f == nil {
 		return "", ""
 	}
 	if len(f.Items) == 0 && f.Summary == "" && f.RiskLevel == "" {
@@ -441,7 +450,13 @@ func renderFindingsWithSelection(raw string, width int, cursor int, selected map
 	if err != nil || f == nil {
 		return "", ""
 	}
+	return renderParsedFindingsViewport(f, width, cursor, selected, maxVisible)
+}
 
+func renderParsedFindingsViewport(f *findings, width int, cursor int, selected map[string]bool, maxVisible int) (string, string) {
+	if f == nil {
+		return "", ""
+	}
 	if len(f.Items) == 0 && f.Summary == "" && f.RiskLevel == "" {
 		return "", ""
 	}

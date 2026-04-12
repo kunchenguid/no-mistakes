@@ -823,6 +823,24 @@ func TestRenderFindings_SelectionFooter_NilSelected(t *testing.T) {
 	}
 }
 
+func TestRenderFindings_SelectionFooter_AllDeselected(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	raw := `{"findings":[
+		{"id":"f1","severity":"error","description":"err"},
+		{"id":"f2","severity":"warning","description":"warn"}
+	],"summary":"2 issues"}`
+
+	// All deselected: selected map present but no IDs true.
+	selected := map[string]bool{"f1": false, "f2": false}
+	_, footer := renderFindingsWithSelection(raw, 80, 0, selected, 0)
+	plain := stripANSI(footer)
+
+	// Should not show "selected" at all when nothing is selected.
+	if strings.Contains(plain, "selected") {
+		t.Errorf("should not show selection footer when all deselected, got: %q", plain)
+	}
+}
+
 func TestRenderFindings_WithFindings(t *testing.T) {
 	raw := `{"findings":[
 		{"severity":"error","file":"main.go","line":10,"description":"nil pointer dereference"},

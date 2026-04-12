@@ -352,20 +352,23 @@ func renderFindingsBoxForHeight(raw string, width int, cursor int, selected map[
 		contentHeight = boxHeight - 2
 	}
 
+	f, err := parseFindings(raw)
+	if err != nil || f == nil {
+		return ""
+	}
+
 	// Build styled title: "Findings - E 2 W 2 I 2" with colorized severity counts.
 	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiCyan))
 	styledTitle := titleStyle.Render("Findings")
-	if f, err := parseFindings(raw); err == nil && f != nil {
-		counts := map[string]int{}
-		for _, item := range f.Items {
-			counts[item.Severity]++
-		}
-		if len(counts) > 0 {
-			styledTitle += titleStyle.Render(" -")
-			for _, sev := range []string{"error", "warning", "info"} {
-				if c, ok := counts[sev]; ok {
-					styledTitle += " " + severityStyle(sev).Render(fmt.Sprintf("%s %d", severityIcon(sev), c))
-				}
+	counts := map[string]int{}
+	for _, item := range f.Items {
+		counts[item.Severity]++
+	}
+	if len(counts) > 0 {
+		styledTitle += titleStyle.Render(" -")
+		for _, sev := range []string{"error", "warning", "info"} {
+			if c, ok := counts[sev]; ok {
+				styledTitle += " " + severityStyle(sev).Render(fmt.Sprintf("%s %d", severityIcon(sev), c))
 			}
 		}
 	}
@@ -377,9 +380,9 @@ func renderFindingsBoxForHeight(raw string, width int, cursor int, selected map[
 	var rendered string
 	var scrollFooter string
 	if contentHeight > 0 {
-		rendered, scrollFooter = renderFindingsWithSelectionHeight(raw, contentWidth, cursor, selected, contentHeight)
+		rendered, scrollFooter = renderParsedFindingsHeight(f, contentWidth, cursor, selected, contentHeight)
 	} else {
-		rendered, scrollFooter = renderFindingsWithSelection(raw, contentWidth, cursor, selected, 0)
+		rendered, scrollFooter = renderParsedFindingsViewport(f, contentWidth, cursor, selected, 0)
 	}
 	if rendered == "" {
 		return ""
