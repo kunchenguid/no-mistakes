@@ -30,13 +30,27 @@ func parseFindings(raw string) (*findings, error) {
 func severityIcon(severity string) string {
 	switch severity {
 	case "error":
-		return "●"
+		return "E"
 	case "warning":
-		return "▲"
+		return "W"
 	case "info":
-		return "○"
+		return "I"
 	default:
 		return "·"
+	}
+}
+
+// riskLevelStyle returns the lipgloss style for a risk level.
+func riskLevelStyle(level string) lipgloss.Style {
+	switch strings.ToLower(level) {
+	case "low":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color(ansiGreen))
+	case "medium":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color(ansiYellow))
+	case "high":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color(ansiRed))
+	default:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
 	}
 }
 
@@ -213,7 +227,7 @@ func renderFindingsRange(f *findings, width int, cursor int, selected map[string
 	if f == nil {
 		return "", ""
 	}
-	if len(f.Items) == 0 && f.Summary == "" {
+	if len(f.Items) == 0 && f.Summary == "" && f.RiskLevel == "" {
 		return "", ""
 	}
 	if start < 0 {
@@ -228,28 +242,25 @@ func renderFindingsRange(f *findings, width int, cursor int, selected map[string
 
 	var b strings.Builder
 
-	// Summary line.
-	if f.Summary != "" {
+	// Risk assessment (review step) or summary fallback (lint/test steps).
+	if f.RiskLevel != "" {
+		boldStyle := lipgloss.NewStyle().Bold(true)
+		rStyle := riskLevelStyle(f.RiskLevel)
+		prefix := boldStyle.Render("Risk:") + " " + rStyle.Render(strings.ToUpper(f.RiskLevel))
+		if f.RiskRationale != "" {
+			dashSep := " - "
+			prefixWidth := lipgloss.Width(prefix) + len(dashSep)
+			rationale := wrapIndentedText(f.RiskRationale, width, prefixWidth)
+			rationale = strings.TrimLeft(rationale, " ")
+			b.WriteString(prefix + dashSep + rationale)
+		} else {
+			b.WriteString(prefix)
+		}
+		b.WriteString("\n")
+	} else if f.Summary != "" {
 		summaryStyle := lipgloss.NewStyle().Bold(true)
 		b.WriteString(summaryStyle.Render(wrapIndentedText(f.Summary, width, 0)))
 		b.WriteString("\n")
-	}
-
-	// Count by severity.
-	counts := map[string]int{}
-	for _, item := range f.Items {
-		counts[item.Severity]++
-	}
-	if len(counts) > 0 {
-		var parts []string
-		for _, sev := range []string{"error", "warning", "info"} {
-			if c, ok := counts[sev]; ok {
-				style := severityStyle(sev)
-				parts = append(parts, style.Render(fmt.Sprintf("%s %d %s", severityIcon(sev), c, sev)))
-			}
-		}
-		b.WriteString(strings.Join(parts, "  "))
-		b.WriteString("\n\n")
 	}
 
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
@@ -324,6 +335,36 @@ func renderFindingsRange(f *findings, width int, cursor int, selected map[string
 		scrollFooter = fmt.Sprintf("↑ %d above (j/k)", start)
 	}
 
+	// Selection count by severity when not all findings are selected.
+	if selected != nil && len(f.Items) > 0 {
+		selCounts := map[string]int{}
+		for _, item := range f.Items {
+			if selected[item.ID] {
+				selCounts[item.Severity]++
+			}
+		}
+		totalSelected := 0
+		for _, c := range selCounts {
+			totalSelected += c
+		}
+		if totalSelected < len(f.Items) {
+			var selParts []string
+			for _, sev := range []string{"error", "warning", "info"} {
+				if c, ok := selCounts[sev]; ok && c > 0 {
+					selParts = append(selParts, severityStyle(sev).Render(fmt.Sprintf("%s %d", severityIcon(sev), c)))
+				}
+			}
+			if len(selParts) > 0 {
+				selText := strings.Join(selParts, " ") + " selected"
+				if scrollFooter != "" {
+					scrollFooter += "  ·  " + selText
+				} else {
+					scrollFooter = selText
+				}
+			}
+		}
+	}
+
 	return b.String(), scrollFooter
 }
 
@@ -346,7 +387,14 @@ func renderFindingsWithSelectionHeight(raw string, width int, cursor int, select
 	if err != nil || f == nil {
 		return "", ""
 	}
-	if len(f.Items) == 0 && f.Summary == "" {
+	return renderParsedFindingsHeight(f, width, cursor, selected, maxLines)
+}
+
+func renderParsedFindingsHeight(f *findings, width int, cursor int, selected map[string]bool, maxLines int) (string, string) {
+	if f == nil {
+		return "", ""
+	}
+	if len(f.Items) == 0 && f.Summary == "" && f.RiskLevel == "" {
 		return "", ""
 	}
 	if maxLines <= 0 {
@@ -402,8 +450,14 @@ func renderFindingsWithSelection(raw string, width int, cursor int, selected map
 	if err != nil || f == nil {
 		return "", ""
 	}
+	return renderParsedFindingsViewport(f, width, cursor, selected, maxVisible)
+}
 
-	if len(f.Items) == 0 && f.Summary == "" {
+func renderParsedFindingsViewport(f *findings, width int, cursor int, selected map[string]bool, maxVisible int) (string, string) {
+	if f == nil {
+		return "", ""
+	}
+	if len(f.Items) == 0 && f.Summary == "" && f.RiskLevel == "" {
 		return "", ""
 	}
 

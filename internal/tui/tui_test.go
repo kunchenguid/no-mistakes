@@ -677,6 +677,20 @@ func TestParseFindings_Valid(t *testing.T) {
 	}
 }
 
+func TestParseFindings_WithRiskAssessment(t *testing.T) {
+	raw := `{"findings":[{"severity":"error","description":"bug"}],"risk_level":"high","risk_rationale":"Critical bug."}`
+	f, err := parseFindings(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.RiskLevel != "high" {
+		t.Errorf("expected risk_level 'high', got %q", f.RiskLevel)
+	}
+	if f.RiskRationale != "Critical bug." {
+		t.Errorf("expected risk_rationale, got %q", f.RiskRationale)
+	}
+}
+
 func TestParseFindings_InvalidJSON(t *testing.T) {
 	_, err := parseFindings("{bad json")
 	if err == nil {
@@ -689,9 +703,9 @@ func TestSeverityIcon(t *testing.T) {
 		severity string
 		icon     string
 	}{
-		{"error", "●"},
-		{"warning", "▲"},
-		{"info", "○"},
+		{"error", "E"},
+		{"warning", "W"},
+		{"info", "I"},
 		{"unknown", "·"},
 	}
 	for _, tt := range tests {
@@ -722,6 +736,111 @@ func TestRenderFindings_SummaryOnly(t *testing.T) {
 	}
 }
 
+func TestRenderFindings_RiskAssessment(t *testing.T) {
+	raw := `{"findings":[{"severity":"error","file":"main.go","line":10,"description":"nil pointer"}],"risk_level":"high","risk_rationale":"Critical concurrency bug could cause data corruption."}`
+	got := renderFindings(raw, 80)
+	plain := stripANSI(got)
+
+	// Should show "Risk: HIGH" instead of a summary.
+	if !strings.Contains(plain, "Risk: HIGH") {
+		t.Errorf("expected 'Risk: HIGH' in output, got:\n%s", plain)
+	}
+	// Should include rationale.
+	if !strings.Contains(plain, "Critical concurrency bug") {
+		t.Errorf("expected risk rationale in output, got:\n%s", plain)
+	}
+}
+
+func TestRenderFindings_RiskAssessmentLow(t *testing.T) {
+	raw := `{"findings":[{"severity":"info","description":"minor style issue"}],"risk_level":"low","risk_rationale":"Straightforward cosmetic change."}`
+	got := renderFindings(raw, 80)
+	plain := stripANSI(got)
+
+	if !strings.Contains(plain, "Risk: LOW") {
+		t.Errorf("expected 'Risk: LOW' in output, got:\n%s", plain)
+	}
+}
+
+func TestRenderFindings_RiskOverridesSummary(t *testing.T) {
+	// When both risk_level and summary are present, risk takes precedence.
+	raw := `{"findings":[{"severity":"warning","description":"check this"}],"summary":"1 issue found","risk_level":"medium","risk_rationale":"Moderate impact."}`
+	got := renderFindings(raw, 80)
+	plain := stripANSI(got)
+
+	if !strings.Contains(plain, "Risk: MEDIUM") {
+		t.Errorf("expected risk assessment, got:\n%s", plain)
+	}
+	if strings.Contains(plain, "1 issue found") {
+		t.Errorf("summary should not appear when risk assessment is present, got:\n%s", plain)
+	}
+}
+
+func TestRenderFindings_SelectionFooter(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	raw := `{"findings":[
+		{"id":"f1","severity":"error","file":"a.go","line":1,"description":"err"},
+		{"id":"f2","severity":"warning","file":"b.go","line":2,"description":"warn"},
+		{"id":"f3","severity":"info","file":"c.go","line":3,"description":"note"}
+	],"summary":"3 issues"}`
+
+	// When some findings are deselected, footer should show selected counts.
+	selected := map[string]bool{"f1": true, "f3": true} // f2 (warning) deselected
+	_, footer := renderFindingsWithSelection(raw, 80, 0, selected, 0)
+	plain := stripANSI(footer)
+
+	if !strings.Contains(plain, "E 1 I 1 selected") {
+		t.Errorf("expected selection footer 'E 1 I 1 selected', got: %q", plain)
+	}
+}
+
+func TestRenderFindings_SelectionFooter_AllSelected(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	raw := `{"findings":[
+		{"id":"f1","severity":"error","description":"err"},
+		{"id":"f2","severity":"warning","description":"warn"}
+	],"summary":"2 issues"}`
+
+	// When all are selected, no selection footer.
+	selected := map[string]bool{"f1": true, "f2": true}
+	_, footer := renderFindingsWithSelection(raw, 80, 0, selected, 0)
+
+	if strings.Contains(stripANSI(footer), "selected") {
+		t.Errorf("should not show selection footer when all selected, got: %q", footer)
+	}
+}
+
+func TestRenderFindings_SelectionFooter_NilSelected(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	raw := `{"findings":[
+		{"id":"f1","severity":"error","description":"err"}
+	],"summary":"1 issue"}`
+
+	// nil selected means all selected (default state).
+	_, footer := renderFindingsWithSelection(raw, 80, 0, nil, 0)
+
+	if strings.Contains(stripANSI(footer), "selected") {
+		t.Errorf("should not show selection footer when selected is nil, got: %q", footer)
+	}
+}
+
+func TestRenderFindings_SelectionFooter_AllDeselected(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	raw := `{"findings":[
+		{"id":"f1","severity":"error","description":"err"},
+		{"id":"f2","severity":"warning","description":"warn"}
+	],"summary":"2 issues"}`
+
+	// All deselected: selected map present but no IDs true.
+	selected := map[string]bool{"f1": false, "f2": false}
+	_, footer := renderFindingsWithSelection(raw, 80, 0, selected, 0)
+	plain := stripANSI(footer)
+
+	// Should not show "selected" at all when nothing is selected.
+	if strings.Contains(plain, "selected") {
+		t.Errorf("should not show selection footer when all deselected, got: %q", plain)
+	}
+}
+
 func TestRenderFindings_WithFindings(t *testing.T) {
 	raw := `{"findings":[
 		{"severity":"error","file":"main.go","line":10,"description":"nil pointer dereference"},
@@ -736,16 +855,7 @@ func TestRenderFindings_WithFindings(t *testing.T) {
 		t.Error("expected summary")
 	}
 
-	// Severity counts present.
-	if !strings.Contains(got, "1 error") {
-		t.Error("expected error count")
-	}
-	if !strings.Contains(got, "1 warning") {
-		t.Error("expected warning count")
-	}
-	if !strings.Contains(got, "1 info") {
-		t.Error("expected info count")
-	}
+	// Severity counts are in the box title now, not the body.
 
 	// File references.
 	if !strings.Contains(got, "main.go:10") {
@@ -2544,7 +2654,7 @@ func TestDiffBoxTitle_IncludesStepName(t *testing.T) {
 	}
 }
 
-func TestFindingsBoxTitle_IncludesStepName(t *testing.T) {
+func TestFindingsBoxTitle_ShowsSeverityCounts(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.ANSI)
 	run := testRun()
 	run.Steps[0].Status = types.StepStatusCompleted
@@ -2558,9 +2668,9 @@ func TestFindingsBoxTitle_IncludesStepName(t *testing.T) {
 	view := m.View()
 	plain := stripANSI(view)
 
-	// The findings box title should include the step name, e.g. "Findings - Test".
-	if !strings.Contains(plain, "Findings - Test") {
-		t.Errorf("expected findings box title to include step name 'Findings - Test', got:\n%s", plain)
+	// The findings box title should show severity counts, e.g. "Findings - E 1".
+	if !strings.Contains(plain, "Findings - E 1") {
+		t.Errorf("expected findings box title with severity counts 'Findings - E 1', got:\n%s", plain)
 	}
 }
 
@@ -2660,32 +2770,33 @@ func TestRenderFindings_ViewportScrollUpIndicator(t *testing.T) {
 	}
 }
 
-func TestFindingsBoxTitle_ShowsPositionIndicator(t *testing.T) {
+func TestFindingsBoxTitle_MultipleSeverities(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.ANSI)
 	run := testRun()
 	run.Steps[0].Status = types.StepStatusCompleted
 	run.Steps[1].Status = types.StepStatusAwaitingApproval
 
-	findingsJSON := makeManyFindings(10)
+	findingsJSON := `{"summary":"issues","items":[
+		{"id":"f1","severity":"error","file":"a.go","line":1,"description":"err"},
+		{"id":"f2","severity":"warning","file":"b.go","line":2,"description":"warn"},
+		{"id":"f3","severity":"warning","file":"c.go","line":3,"description":"warn2"}
+	]}`
 	m := NewModel("/tmp/sock", nil, run)
 	m.width = 80
 	m.height = 40
 	m.stepFindings[types.StepTest] = findingsJSON
 	m.resetFindingSelection(types.StepTest)
 
-	// Move cursor to 3rd item (index 2).
-	m.findingCursor[types.StepTest] = 2
-
 	view := m.View()
 	plain := stripANSI(view)
 
-	// The findings box title should show position: "Findings - Test (3/10)".
-	if !strings.Contains(plain, "Findings - Test (3/10)") {
-		t.Errorf("expected findings box title with position '(3/10)', got:\n%s", plain)
+	// Title should show counts per severity: "Findings - E 1 W 2".
+	if !strings.Contains(plain, "Findings - E 1 W 2") {
+		t.Errorf("expected findings box title with 'Findings - E 1 W 2', got:\n%s", plain)
 	}
 }
 
-func TestFindingsBoxTitle_PositionUpdatesWithCursor(t *testing.T) {
+func TestFindingsBoxTitle_NoCursorPosition(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.ANSI)
 	run := testRun()
 	run.Steps[0].Status = types.StepStatusAwaitingApproval
@@ -2697,42 +2808,16 @@ func TestFindingsBoxTitle_PositionUpdatesWithCursor(t *testing.T) {
 	m.stepFindings[types.StepReview] = findingsJSON
 	m.resetFindingSelection(types.StepReview)
 
-	// Cursor at first item (index 0) -> should show (1/5).
-	m.findingCursor[types.StepReview] = 0
+	// Title should show severity counts, not cursor position.
+	m.findingCursor[types.StepReview] = 2
 	view := m.View()
 	plain := stripANSI(view)
-	if !strings.Contains(plain, "(1/5)") {
-		t.Errorf("expected position (1/5) at cursor 0, got:\n%s", plain)
+	if !strings.Contains(plain, "Findings - W 5") {
+		t.Errorf("expected 'Findings - W 5' in title, got:\n%s", plain)
 	}
-
-	// Cursor at last item (index 4) -> should show (5/5).
-	m.findingCursor[types.StepReview] = 4
-	view = m.View()
-	plain = stripANSI(view)
-	if !strings.Contains(plain, "(5/5)") {
-		t.Errorf("expected position (5/5) at cursor 4, got:\n%s", plain)
-	}
-}
-
-func TestFindingsBoxTitle_SingleFinding(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.ANSI)
-	run := testRun()
-	run.Steps[0].Status = types.StepStatusCompleted
-	run.Steps[1].Status = types.StepStatusAwaitingApproval
-
-	findingsJSON := `{"summary":"one issue","items":[{"id":"f1","severity":"error","file":"foo.go","line":1,"description":"bad"}]}`
-	m := NewModel("/tmp/sock", nil, run)
-	m.width = 80
-	m.height = 40
-	m.stepFindings[types.StepTest] = findingsJSON
-	m.resetFindingSelection(types.StepTest)
-
-	view := m.View()
-	plain := stripANSI(view)
-
-	// Single finding: should show (1/1).
-	if !strings.Contains(plain, "(1/1)") {
-		t.Errorf("expected position (1/1) for single finding, got:\n%s", plain)
+	// Should NOT contain old-style position indicator.
+	if strings.Contains(plain, "(3/5)") {
+		t.Errorf("title should not contain cursor position indicator, got:\n%s", plain)
 	}
 }
 
@@ -4556,7 +4641,7 @@ func TestRenderFindingsWithSelection_TruncatedGutterPreservesSeverityIcon(t *tes
 	if !strings.Contains(result, "[x]") {
 		t.Error("expected checkbox to survive truncation")
 	}
-	if !strings.Contains(result, "●") {
+	if !strings.Contains(result, "E") {
 		t.Error("expected severity icon to survive truncation")
 	}
 }
@@ -4670,8 +4755,8 @@ func TestStaleShowDiff_FindingsVisibleAfterStepTransition(t *testing.T) {
 	})
 
 	view := stripANSI(m.View())
-	if !strings.Contains(view, "Findings - Test") {
-		t.Errorf("expected 'Findings - Test' box to be visible, got:\n%s", view)
+	if !strings.Contains(view, "Findings -") {
+		t.Errorf("expected findings box to be visible, got:\n%s", view)
 	}
 }
 
@@ -6039,12 +6124,12 @@ func TestRenderFindings_FocusedSeverityIconNotDim(t *testing.T) {
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
 
 	// Focused severity icon should NOT be dim-styled.
-	if strings.Contains(content, dimStyle.Render("●")) {
+	if strings.Contains(content, dimStyle.Render("E")) {
 		t.Error("focused finding severity icon should not be dim-styled")
 	}
 	// The colored icon should still be present.
 	errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiRed))
-	if !strings.Contains(content, errStyle.Render("●")) {
+	if !strings.Contains(content, errStyle.Render("E")) {
 		t.Error("focused finding severity icon should be styled with its severity color")
 	}
 }
@@ -6063,13 +6148,13 @@ func TestRenderFindings_UnfocusedSeverityIconDim(t *testing.T) {
 
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
 
-	// Unfocused severity icon (▲ for warning) should be dim-styled.
-	if !strings.Contains(content, dimStyle.Render("▲")) {
+	// Unfocused severity icon (W for warning) should be dim-styled.
+	if !strings.Contains(content, dimStyle.Render("W")) {
 		t.Error("unfocused finding severity icon should be dim-styled")
 	}
 	// The colored warning icon should NOT appear for unfocused findings.
 	warnStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiYellow))
-	if strings.Contains(content, warnStyle.Render("▲")) {
+	if strings.Contains(content, warnStyle.Render("W")) {
 		t.Error("unfocused finding severity icon should not use its severity color")
 	}
 }
@@ -6087,21 +6172,21 @@ func TestRenderFindings_FocusChangesSeverityIconStyle(t *testing.T) {
 	errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiRed))
 	warnStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiYellow))
 
-	// Cursor at 0: f1 focused (colored ●), f2 unfocused (dim ▲).
+	// Cursor at 0: f1 focused (colored E), f2 unfocused (dim W).
 	content0, _ := renderFindingsWithSelection(raw, 80, 0, selected, 0)
-	if !strings.Contains(content0, errStyle.Render("●")) {
+	if !strings.Contains(content0, errStyle.Render("E")) {
 		t.Error("with cursor=0, error icon should be colored red")
 	}
-	if !strings.Contains(content0, dimStyle.Render("▲")) {
+	if !strings.Contains(content0, dimStyle.Render("W")) {
 		t.Error("with cursor=0, warning icon should be dim")
 	}
 
-	// Cursor at 1: f2 focused (colored ▲), f1 unfocused (dim ●).
+	// Cursor at 1: f2 focused (colored W), f1 unfocused (dim E).
 	content1, _ := renderFindingsWithSelection(raw, 80, 1, selected, 0)
-	if !strings.Contains(content1, dimStyle.Render("●")) {
+	if !strings.Contains(content1, dimStyle.Render("E")) {
 		t.Error("with cursor=1, error icon should be dim")
 	}
-	if !strings.Contains(content1, warnStyle.Render("▲")) {
+	if !strings.Contains(content1, warnStyle.Render("W")) {
 		t.Error("with cursor=1, warning icon should be colored yellow")
 	}
 }
@@ -6505,64 +6590,7 @@ func TestModel_View_HelpOverlay_NoEscBackOutsideDiffMode(t *testing.T) {
 	}
 }
 
-func TestSeverityCountBadges_IncludeSeverityIcons(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.ANSI)
-
-	raw := `{"summary":"Found issues","items":[
-		{"id":"f1","severity":"error","file":"a.go","line":1,"description":"bad"},
-		{"id":"f2","severity":"error","file":"b.go","line":2,"description":"bad2"},
-		{"id":"f3","severity":"warning","file":"c.go","line":3,"description":"warn"}
-	]}`
-	selected := map[string]bool{"f1": true, "f2": true, "f3": true}
-	content, _ := renderFindingsWithSelection(raw, 80, 0, selected, 0)
-	plain := stripANSI(content)
-
-	// Error count should include the error severity icon ●
-	if !strings.Contains(plain, "● 2 error") {
-		t.Errorf("severity count should include ● icon before error count, got:\n%s", plain)
-	}
-	// Warning count should include the warning severity icon ▲
-	if !strings.Contains(plain, "▲ 1 warning") {
-		t.Errorf("severity count should include ▲ icon before warning count, got:\n%s", plain)
-	}
-}
-
-func TestSeverityCountBadges_InfoIconIncluded(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.ANSI)
-
-	raw := `{"summary":"Check results","items":[
-		{"id":"f1","severity":"info","file":"a.go","line":1,"description":"note"},
-		{"id":"f2","severity":"info","file":"b.go","line":2,"description":"note2"}
-	]}`
-	selected := map[string]bool{"f1": true, "f2": true}
-	content, _ := renderFindingsWithSelection(raw, 80, 0, selected, 0)
-	plain := stripANSI(content)
-
-	// Info count should include the info severity icon ○
-	if !strings.Contains(plain, "○ 2 info") {
-		t.Errorf("severity count should include ○ icon before info count, got:\n%s", plain)
-	}
-}
-
-func TestSeverityCountBadges_AllThreeSeverities(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.ANSI)
-
-	raw := `{"summary":"Mixed","items":[
-		{"id":"f1","severity":"error","file":"a.go","line":1,"description":"err"},
-		{"id":"f2","severity":"warning","file":"b.go","line":2,"description":"warn"},
-		{"id":"f3","severity":"info","file":"c.go","line":3,"description":"note"}
-	]}`
-	selected := map[string]bool{"f1": true, "f2": true, "f3": true}
-	content, _ := renderFindingsWithSelection(raw, 80, 0, selected, 0)
-	plain := stripANSI(content)
-
-	// All three severity icons should appear in the count line
-	for _, expected := range []string{"● 1 error", "▲ 1 warning", "○ 1 info"} {
-		if !strings.Contains(plain, expected) {
-			t.Errorf("severity count should include %q, got:\n%s", expected, plain)
-		}
-	}
-}
+// Severity count badges tests removed - counts are now in the box title, not body.
 
 // --- Space toggle auto-advance tests ---
 
@@ -6756,7 +6784,7 @@ func TestModel_View_WideLayoutPlacesPipelineBesideFindings(t *testing.T) {
 	m.height = 40
 
 	view := m.View()
-	if !strings.Contains(stripANSI(view), "Findings - Review") {
+	if !strings.Contains(stripANSI(view), "Findings -") {
 		t.Fatalf("expected findings box in view, got:\n%s", stripANSI(view))
 	}
 	if !hasParallelBoxRow(view) {

@@ -124,7 +124,7 @@ Previous review findings to address:
 	// Ask agent to review
 	sctx.Log("reviewing changes...")
 	prompt := fmt.Sprintf(
-		`Review the code changes and return structured findings.
+		`Review the code changes and return structured findings with a risk assessment.
 
 Context:
 - branch: %s
@@ -146,7 +146,13 @@ Rules:
 - Be concise and actionable. No generic advice like "add more tests" or "improve docs".
 - Only comment on things that genuinely matter.
 - Do NOT report styling, formatting, linting, compilation, or type-checking issues.
-- If the change is clean, return an empty findings array.`,
+- If the change is clean, return an empty findings array.
+
+Risk assessment (after listing all findings):
+- Set risk_level to "low" if the change is well-bounded, mostly cosmetic, or straightforward with little ambiguity.
+- Set risk_level to "medium" if the change has room to improve but is safe to merge first with concerns addressed as follow-ups.
+- Set risk_level to "high" if the change should not be merged without explicit human approval - it is fundamental, risky, ambiguous, or has strong negative signals.
+- Provide a one-sentence risk_rationale explaining why you chose that risk level.`,
 		branch,
 		baseSHA,
 		sctx.Run.HeadSHA,
@@ -158,7 +164,7 @@ Rules:
 	result, err := sctx.Agent.Run(ctx, agent.RunOpts{
 		Prompt:     prompt,
 		CWD:        sctx.WorkDir,
-		JSONSchema: findingsSchema,
+		JSONSchema: reviewFindingsSchema,
 		OnChunk:    sctx.Log,
 	})
 	if err != nil {

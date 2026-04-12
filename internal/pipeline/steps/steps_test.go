@@ -2904,6 +2904,30 @@ func TestFilterDiff_MultiplePatterns(t *testing.T) {
 	}
 }
 
+func TestReviewFindingsSchema_ValidJSON(t *testing.T) {
+	if !json.Valid(reviewFindingsSchema) {
+		t.Errorf("reviewFindingsSchema is not valid JSON: %s", string(reviewFindingsSchema))
+	}
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(reviewFindingsSchema, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	required, ok := parsed["required"].([]interface{})
+	if !ok {
+		t.Fatal("expected 'required' array in schema")
+	}
+	want := map[string]bool{"findings": false, "risk_level": false, "risk_rationale": false}
+	for _, r := range required {
+		s, _ := r.(string)
+		want[s] = true
+	}
+	for field, found := range want {
+		if !found {
+			t.Errorf("missing required field %q in schema", field)
+		}
+	}
+}
+
 func TestReviewStep_IgnorePatterns(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 

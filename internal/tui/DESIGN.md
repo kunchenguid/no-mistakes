@@ -141,6 +141,6 @@ Or when the pipeline is still running: `q detach`
 
 | Severity | Icon | Color |
 |----------|------|-------|
-| Error | `●` | red |
-| Warning | `▲` | yellow |
-| Info | `○` | blue |
+| Error | `E` | red |
+| Warning | `W` | yellow |
+| Info | `I` | blue |

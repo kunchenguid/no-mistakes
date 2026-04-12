@@ -9,67 +9,33 @@ import (
 // renderBox renders content inside a rounded-border box with a styled title
 // embedded in the top border, per DESIGN.md Boxed Sections spec.
 func renderBox(title, content string, width int) string {
-	if width < 6 {
-		width = 6
-	}
-
-	borderColor := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
 	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiCyan))
-
-	// Top border: ╭─ Title ──────────────╮
-	titleRendered := titleStyle.Render(title)
-	titleWidth := lipgloss.Width(titleRendered)
-	// Account for: ╭─ [space] title [space] ─...╮ = 5 + titleWidth + fillWidth
-	fillWidth := width - 5 - titleWidth
-	if fillWidth < 1 {
-		fillWidth = 1
-	}
-	topBorder := borderColor.Render("╭─ ") + titleRendered + " " + borderColor.Render(strings.Repeat("─", fillWidth)+"╮")
-
-	// Content width: total minus 2 borders minus 2 padding chars.
-	contentWidth := width - 4
-	if contentWidth < 1 {
-		contentWidth = 1
-	}
-
-	// Content lines: │ content │
-	var lines []string
-	contentLines := strings.Split(content, "\n")
-	// Remove trailing empty line if present.
-	if len(contentLines) > 0 && contentLines[len(contentLines)-1] == "" {
-		contentLines = contentLines[:len(contentLines)-1]
-	}
-	for _, cl := range contentLines {
-		visWidth := lipgloss.Width(cl)
-		pad := contentWidth - visWidth
-		if pad < 0 {
-			pad = 0
-		}
-		line := borderColor.Render("│") + " " + cl + strings.Repeat(" ", pad) + " " + borderColor.Render("│")
-		lines = append(lines, line)
-	}
-
-	return topBorder + "\n" + strings.Join(lines, "\n") + "\n" + renderBottomBorder(width, "")
+	return renderBoxWithStyledTitle(titleStyle.Render(title), content, width, "")
 }
 
 // renderBoxWithFooter renders a box with an optional hint embedded in the bottom border.
 // Per DESIGN.md Diff View: ╰──── ↓ 23 more lines (j/k) ─────────────╯
 func renderBoxWithFooter(title, content string, width int, footer string) string {
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiCyan))
+	return renderBoxWithStyledTitle(titleStyle.Render(title), content, width, footer)
+}
+
+// renderBoxWithStyledTitle renders a box with a pre-styled title and optional footer.
+// Unlike renderBoxWithFooter, the title is used as-is (caller handles styling).
+func renderBoxWithStyledTitle(styledTitle string, content string, width int, footer string) string {
 	if width < 6 {
 		width = 6
 	}
 
 	borderColor := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
-	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiCyan))
 
 	// Top border.
-	titleRendered := titleStyle.Render(title)
-	titleWidth := lipgloss.Width(titleRendered)
+	titleWidth := lipgloss.Width(styledTitle)
 	fillWidth := width - 5 - titleWidth
 	if fillWidth < 1 {
 		fillWidth = 1
 	}
-	topBorder := borderColor.Render("╭─ ") + titleRendered + " " + borderColor.Render(strings.Repeat("─", fillWidth)+"╮")
+	topBorder := borderColor.Render("╭─ ") + styledTitle + " " + borderColor.Render(strings.Repeat("─", fillWidth)+"╮")
 
 	// Content width.
 	contentWidth := width - 4
