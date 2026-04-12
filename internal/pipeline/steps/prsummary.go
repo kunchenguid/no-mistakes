@@ -164,7 +164,7 @@ func buildReviewEntry(name string, finalFindings, initialFindings *types.Finding
 	hasHistoricalFindings := hasInitialFindings || roundsNeedDetail(rounds)
 	hasRoundParseFailure := roundsHaveParseFailure(rounds)
 	emoji := "✅"
-	if hasFinalFindings || hasRoundParseFailure || riskLevel == "medium" || riskLevel == "high" {
+	if hasFinalFindings || hasUnreadableFinalFindings || hasRoundParseFailure || riskLevel == "medium" || riskLevel == "high" {
 		emoji = "⚠️"
 	}
 
