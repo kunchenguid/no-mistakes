@@ -76,6 +76,25 @@ func TestEnsureDefaultGlobalConfig_CreatedConfigIsLoadable(t *testing.T) {
 	}
 }
 
+func TestEnsureDefaultGlobalConfig_DoesNotOverwrite(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	custom := "agent: codex\nlog_level: debug\n"
+	if err := os.WriteFile(path, []byte(custom), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	EnsureDefaultGlobalConfig(path)
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed to read config: %v", err)
+	}
+	if string(data) != custom {
+		t.Errorf("config was overwritten:\ngot:  %q\nwant: %q", string(data), custom)
+	}
+}
+
 func TestEnsureDefaultGlobalConfig_CreatesParentDirs(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "subdir", "config.yaml")
