@@ -75,6 +75,42 @@ func mergeFindingsJSON(existingRaw, additionalRaw string) string {
 	return mergedRaw
 }
 
+func removeMatchingFindingsJSON(existingRaw, removeRaw string) string {
+	if existingRaw == "" || removeRaw == "" {
+		return existingRaw
+	}
+	existing, err := types.ParseFindingsJSON(existingRaw)
+	if err != nil {
+		return existingRaw
+	}
+	remove, err := types.ParseFindingsJSON(removeRaw)
+	if err != nil {
+		return existingRaw
+	}
+	toRemove := make(map[types.Finding]bool, len(remove.Items))
+	for _, item := range remove.Items {
+		item.ID = ""
+		toRemove[item] = true
+	}
+	filtered := types.Findings{Summary: existing.Summary, RiskLevel: existing.RiskLevel, RiskRationale: existing.RiskRationale}
+	for _, item := range existing.Items {
+		match := item
+		match.ID = ""
+		if toRemove[match] {
+			continue
+		}
+		filtered.Items = append(filtered.Items, item)
+	}
+	if len(filtered.Items) == 0 {
+		return ""
+	}
+	filteredRaw, err := types.MarshalFindingsJSON(filtered)
+	if err != nil {
+		return existingRaw
+	}
+	return filteredRaw
+}
+
 func filterFindingsJSON(raw string, ids []string) string {
 	if raw == "" || len(ids) == 0 {
 		return raw

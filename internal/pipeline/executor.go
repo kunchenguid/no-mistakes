@@ -315,9 +315,10 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			}
 			e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFixing), "", "", "", nil)
 			sctx.Fixing = true
-			sctx.PreviousFindings = filterFindingsJSON(outcome.Findings, response.findingIDs)
+			selectedFindings := filterFindingsJSON(outcome.Findings, response.findingIDs)
+			sctx.PreviousFindings = selectedFindings
 			nextTrigger = "user_fix"
-			sctx.DismissedFindings = mergeFindingsJSON(excludeFindingsJSON(sctx.DismissedFindings, response.findingIDs), excludeFindingsJSON(outcome.Findings, response.findingIDs))
+			sctx.DismissedFindings = mergeFindingsJSON(removeMatchingFindingsJSON(sctx.DismissedFindings, selectedFindings), excludeFindingsJSON(outcome.Findings, response.findingIDs))
 			slog.Info("step fix requested, re-executing", "step", stepName)
 			continue // loop back to step.Execute
 		}
