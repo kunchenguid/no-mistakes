@@ -286,7 +286,7 @@ func (m Model) View() string {
 				if contentBudget >= 0 {
 					boxHeight = contentBudget
 				}
-				appendExtraSection(renderFindingsBoxForHeight(raw, rightWidth, cursor, m.findingSelections[step.StepName], boxHeight, label, len(m.findingItems(step.StepName))))
+				appendExtraSection(renderFindingsBoxForHeight(raw, rightWidth, cursor, m.findingSelections[step.StepName], boxHeight))
 			}
 		}
 	}
@@ -339,7 +339,7 @@ func (m Model) View() string {
 	return joinSections(sections, sectionGap)
 }
 
-func renderFindingsBoxForHeight(raw string, width int, cursor int, selected map[string]bool, boxHeight int, label string, totalItems int) string {
+func renderFindingsBoxForHeight(raw string, width int, cursor int, selected map[string]bool, boxHeight int) string {
 	if boxHeight > 0 && boxHeight < 3 {
 		return ""
 	}
@@ -351,10 +351,25 @@ func renderFindingsBoxForHeight(raw string, width int, cursor int, selected map[
 	if boxHeight > 0 {
 		contentHeight = boxHeight - 2
 	}
-	title := "Findings - " + label
-	if totalItems > 0 {
-		title += fmt.Sprintf(" (%d/%d)", cursor+1, totalItems)
+
+	// Build styled title: "Findings - E 2 W 2 I 2" with colorized severity counts.
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiCyan))
+	styledTitle := titleStyle.Render("Findings")
+	if f, err := parseFindings(raw); err == nil && f != nil {
+		counts := map[string]int{}
+		for _, item := range f.Items {
+			counts[item.Severity]++
+		}
+		if len(counts) > 0 {
+			styledTitle += titleStyle.Render(" -")
+			for _, sev := range []string{"error", "warning", "info"} {
+				if c, ok := counts[sev]; ok {
+					styledTitle += " " + severityStyle(sev).Render(fmt.Sprintf("%s %d", severityIcon(sev), c))
+				}
+			}
+		}
 	}
+
 	contentWidth := boxWidth - 4
 	if contentWidth < 1 {
 		contentWidth = 1
@@ -369,7 +384,7 @@ func renderFindingsBoxForHeight(raw string, width int, cursor int, selected map[
 	if rendered == "" {
 		return ""
 	}
-	return renderBoxWithFooter(title, rendered, boxWidth, scrollFooter)
+	return renderBoxWithStyledTitle(styledTitle, rendered, boxWidth, scrollFooter)
 }
 
 func renderLogBox(logs []string, width int, logLines int, remainingBudget int) string {

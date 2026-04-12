@@ -183,6 +183,30 @@ func deterministicFixCommitMessage(stepName types.StepName, summary string) stri
 	return fmt.Sprintf("no-mistakes(%s): %s", stepName, summary)
 }
 
+// reviewFindingsSchema is the JSON schema for structured review output with risk assessment.
+// Field order matters for chain-of-thought: findings first, then risk level, then rationale.
+var reviewFindingsSchema = json.RawMessage(`{
+	"type": "object",
+	"properties": {
+		"findings": {
+			"type": "array",
+			"items": {
+				"type": "object",
+				"properties": {
+					"id": {"type": "string"},
+					"severity": {"type": "string", "enum": ["error", "warning", "info"]},
+					"file": {"type": "string"},
+					"line": {"type": "integer"},
+					"description": {"type": "string"}
+				},
+				"required": ["severity", "description"]
+			}
+		},
+		"risk_level": {"type": "string", "enum": ["low", "medium", "high"]},
+		"risk_rationale": {"type": "string"}
+	},
+	"required": ["findings", "risk_level", "risk_rationale"]
+}`)
 // isTestFile returns true if the file path matches common test file naming patterns.
 func isTestFile(path string) bool {
 	base := filepath.Base(path)

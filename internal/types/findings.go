@@ -16,14 +16,18 @@ type Finding struct {
 
 // Findings is the structured findings payload exchanged across pipeline, IPC, and TUI.
 type Findings struct {
-	Items   []Finding `json:"findings"`
-	Summary string    `json:"summary"`
+	Items         []Finding `json:"findings"`
+	Summary       string    `json:"summary"`
+	RiskLevel     string    `json:"risk_level,omitempty"`
+	RiskRationale string    `json:"risk_rationale,omitempty"`
 }
 
 type findingsWire struct {
-	Items   []Finding `json:"findings"`
-	Legacy  []Finding `json:"items"`
-	Summary string    `json:"summary"`
+	Items         []Finding `json:"findings"`
+	Legacy        []Finding `json:"items"`
+	Summary       string    `json:"summary"`
+	RiskLevel     string    `json:"risk_level"`
+	RiskRationale string    `json:"risk_rationale"`
 }
 
 // ParseFindingsJSON decodes findings JSON, accepting both current and legacy item keys.
@@ -36,7 +40,7 @@ func ParseFindingsJSON(raw string) (Findings, error) {
 	if len(items) == 0 && len(wire.Legacy) > 0 {
 		items = wire.Legacy
 	}
-	return Findings{Items: items, Summary: wire.Summary}, nil
+	return Findings{Items: items, Summary: wire.Summary, RiskLevel: wire.RiskLevel, RiskRationale: wire.RiskRationale}, nil
 }
 
 // NormalizeFindings assigns deterministic IDs to findings that do not have one yet.
@@ -59,7 +63,7 @@ func FilterFindings(findings Findings, ids []string) Findings {
 	for _, id := range ids {
 		selected[id] = true
 	}
-	filtered := Findings{Summary: findings.Summary}
+	filtered := Findings{Summary: findings.Summary, RiskLevel: findings.RiskLevel, RiskRationale: findings.RiskRationale}
 	for _, item := range findings.Items {
 		if selected[item.ID] {
 			filtered.Items = append(filtered.Items, item)
