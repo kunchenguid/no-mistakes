@@ -111,6 +111,42 @@ func removeMatchingFindingsJSON(existingRaw, removeRaw string) string {
 	return filteredRaw
 }
 
+func retainMatchingFindingsJSON(existingRaw, keepRaw string) string {
+	if existingRaw == "" || keepRaw == "" {
+		return ""
+	}
+	existing, err := types.ParseFindingsJSON(existingRaw)
+	if err != nil {
+		return ""
+	}
+	keep, err := types.ParseFindingsJSON(keepRaw)
+	if err != nil {
+		return ""
+	}
+	allowed := make(map[types.Finding]bool, len(keep.Items))
+	for _, item := range keep.Items {
+		item.ID = ""
+		allowed[item] = true
+	}
+	filtered := types.Findings{Summary: existing.Summary, RiskLevel: existing.RiskLevel, RiskRationale: existing.RiskRationale}
+	for _, item := range existing.Items {
+		match := item
+		match.ID = ""
+		if !allowed[match] {
+			continue
+		}
+		filtered.Items = append(filtered.Items, item)
+	}
+	if len(filtered.Items) == 0 {
+		return ""
+	}
+	filteredRaw, err := types.MarshalFindingsJSON(filtered)
+	if err != nil {
+		return ""
+	}
+	return filteredRaw
+}
+
 func filterFindingsJSON(raw string, ids []string) string {
 	if raw == "" || len(ids) == 0 {
 		return raw

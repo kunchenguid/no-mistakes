@@ -318,7 +318,9 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			selectedFindings := filterFindingsJSON(outcome.Findings, response.findingIDs)
 			sctx.PreviousFindings = selectedFindings
 			nextTrigger = "user_fix"
-			sctx.DismissedFindings = mergeFindingsJSON(removeMatchingFindingsJSON(sctx.DismissedFindings, selectedFindings), excludeFindingsJSON(outcome.Findings, response.findingIDs))
+			currentDismissed := excludeFindingsJSON(outcome.Findings, response.findingIDs)
+			previousDismissed := retainMatchingFindingsJSON(removeMatchingFindingsJSON(sctx.DismissedFindings, selectedFindings), outcome.Findings)
+			sctx.DismissedFindings = mergeFindingsJSON(previousDismissed, currentDismissed)
 			slog.Info("step fix requested, re-executing", "step", stepName)
 			continue // loop back to step.Execute
 		}

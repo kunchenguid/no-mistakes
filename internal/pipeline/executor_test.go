@@ -1079,7 +1079,7 @@ func TestExecutor_FixSelectedFindingsRewritesSummary(t *testing.T) {
 	}
 }
 
-func TestExecutor_FixAccumulatesDismissedFindingsAcrossCycles(t *testing.T) {
+func TestExecutor_FixDropsDismissedFindingsThatDisappearAcrossCycles(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir := t.TempDir()
 
@@ -1136,10 +1136,10 @@ func TestExecutor_FixAccumulatesDismissedFindingsAcrossCycles(t *testing.T) {
 	}
 
 	items := mustParseFindingItems(t, capturedDismissed)
-	if len(items) != 2 {
-		t.Fatalf("expected 2 dismissed findings, got %d", len(items))
+	if len(items) != 1 {
+		t.Fatalf("expected 1 dismissed finding, got %d", len(items))
 	}
-	if items[0].ID != "review-1" || items[1].ID != "review-2" {
+	if items[0].ID != "review-2" {
 		t.Fatalf("unexpected dismissed findings: %#v", items)
 	}
 }
@@ -1209,7 +1209,7 @@ func TestExecutor_FixRemovesReselectedDismissedFinding(t *testing.T) {
 	}
 }
 
-func TestExecutor_FixKeepsEarlierDismissedFindingWhenOrdinalReused(t *testing.T) {
+func TestExecutor_FixDropsEarlierDismissedFindingWhenOrdinalReusedForDifferentIssue(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir := t.TempDir()
 
@@ -1266,10 +1266,10 @@ func TestExecutor_FixKeepsEarlierDismissedFindingWhenOrdinalReused(t *testing.T)
 	}
 
 	items := mustParseFindingItems(t, capturedDismissed)
-	if len(items) != 2 {
-		t.Fatalf("expected 2 dismissed findings, got %d", len(items))
+	if len(items) != 1 {
+		t.Fatalf("expected 1 dismissed finding, got %d", len(items))
 	}
-	if items[0].Description != "first" || items[1].Description != "third" {
+	if items[0].Description != "third" {
 		t.Fatalf("unexpected dismissed findings: %#v", items)
 	}
 }
