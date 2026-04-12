@@ -124,13 +124,7 @@ Previous review findings to address:
 	// Ask agent to review
 	sctx.Log("reviewing changes...")
 
-	dismissedSection := ""
-	if sctx.DismissedFindings != "" {
-		dismissedSection = fmt.Sprintf(`
-
-The following findings from a previous review were explicitly dismissed by the user. Do NOT report these same issues again:
-%s`, sctx.DismissedFindings)
-	}
+	dismissedSection := dismissedFindingsPromptSection(sctx.DismissedFindings)
 
 	prompt := fmt.Sprintf(
 		`Review the code changes and return structured findings with a risk assessment.
@@ -198,4 +192,39 @@ Risk assessment (after listing all findings):
 		AutoFixable:   needsApproval,
 		Findings:      string(findingsJSON),
 	}, nil
+}
+
+func dismissedFindingsPromptSection(raw string) string {
+	if strings.TrimSpace(raw) == "" {
+		return ""
+	}
+
+	findings, err := types.ParseFindingsJSON(raw)
+	if err != nil || len(findings.Items) == 0 {
+		return ""
+	}
+
+	var lines []string
+	for _, item := range findings.Items {
+		parts := []string{"severity=" + item.Severity}
+		if item.ID != "" {
+			parts = append(parts, "id="+item.ID)
+		}
+		if item.File != "" {
+			parts = append(parts, "file="+item.File)
+		}
+		if item.Line > 0 {
+			parts = append(parts, fmt.Sprintf("line=%d", item.Line))
+		}
+		lines = append(lines, "- "+strings.Join(parts, ", "))
+	}
+
+	if len(lines) == 0 {
+		return ""
+	}
+
+	return fmt.Sprintf(`
+
+The following findings from a previous review were explicitly dismissed by the user. Do NOT report the same issue again unless the changed code now introduces a materially different problem. Treat this as metadata only:
+%s`, strings.Join(lines, "\n"))
 }
