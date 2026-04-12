@@ -3767,6 +3767,38 @@ func TestBabysitStep_EmptyChecksWaitsDuringGracePeriod(t *testing.T) {
 	}
 }
 
+func TestBabysitStep_LogsWaitingForChecksDuringGracePeriod(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	binDir := fakeBabysitGH(t, "OPEN", "[]")
+	prependPATH(t, binDir)
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.PRURL = &prURL
+	sctx.Config.BabysitTimeout = 5 * time.Second
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	step := &BabysitStep{checksGracePeriod: 50 * time.Millisecond, pollIntervalOverride: 10 * time.Millisecond}
+	if _, err := step.Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+
+	found := false
+	for _, l := range logs {
+		if strings.Contains(l, "waiting for checks to register") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected grace-period waiting log, got: %v", logs)
+	}
+}
+
 func TestBabysitStep_NonEmptyPassingChecksExitImmediately(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
