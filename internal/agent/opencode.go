@@ -526,10 +526,13 @@ func parseOpencodeSSE(r io.Reader, state *opencodeStreamState) error {
 }
 
 func (s *opencodeStreamState) emitSeparatorIfNeeded() {
-	if s.hasEmittedText && s.hadToolActivity && s.onChunk != nil {
-		s.onChunk("\n\n")
-		s.hadToolActivity = false
+	if !s.hadToolActivity || s.onChunk == nil {
+		return
 	}
+	if s.hasEmittedText {
+		s.onChunk("\n\n")
+	}
+	s.hadToolActivity = false
 }
 
 func (s *opencodeStreamState) emitTextPartChunk(part *opencodeTextPart, partID string) {

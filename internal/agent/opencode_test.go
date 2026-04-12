@@ -665,6 +665,44 @@ func TestParseOpencodeSSE_SeparatesAfterToolStep(t *testing.T) {
 	}
 }
 
+func TestParseOpencodeSSE_DoesNotSeparateWhenToolStepPrecedesFirstText(t *testing.T) {
+	input := strings.Join([]string{
+		`data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"step1","messageID":"msg1","type":"step-finish","tokens":{"input":10,"output":5}}}}}`,
+		``,
+		`data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p1","messageID":"msg1","type":"text","text":"hello"}}}}`,
+		``,
+		`data: {"payload":{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"msg1","role":"assistant"}}}}`,
+		``,
+		`data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p1","messageID":"msg1","type":"text","text":"hello world"}}}}`,
+		``,
+		`data: {"payload":{"type":"session.idle"}}`,
+		``,
+		``,
+	}, "\n")
+
+	state := &opencodeStreamState{
+		sessionID:  "s1",
+		textParts:  make(map[string]*opencodeTextPart),
+		usageByMsg: make(map[string]TokenUsage),
+	}
+	var chunks []string
+	state.onChunk = func(text string) { chunks = append(chunks, text) }
+
+	err := parseOpencodeSSE(strings.NewReader(input), state)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(chunks) != 2 {
+		t.Fatalf("expected 2 chunks without separator, got %d: %v", len(chunks), chunks)
+	}
+	if chunks[0] != "hello" {
+		t.Errorf("expected first chunk 'hello', got %q", chunks[0])
+	}
+	if chunks[1] != " world" {
+		t.Errorf("expected suffix chunk ' world', got %q", chunks[1])
+	}
+}
+
 func TestParseOpencodeSSE_MalformedEvents(t *testing.T) {
 	input := `data: not json at all
 
