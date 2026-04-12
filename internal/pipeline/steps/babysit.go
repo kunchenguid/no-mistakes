@@ -181,6 +181,7 @@ func (s *BabysitStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome
 
 	sctx.Log(fmt.Sprintf("babysitting PR #%s (timeout: %s)...", prNumber, timeout))
 	started := time.Now()
+	manualFixAttempted := false
 
 	for {
 		checksReadyToExit := false
@@ -217,7 +218,17 @@ func (s *BabysitStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome
 			failing := failingCheckNames(checks)
 			sort.Strings(failing)
 			fixKey := strings.Join(failing, ",")
-			if ciFixLimit <= 0 {
+			if sctx.Fixing && !manualFixAttempted {
+				manualFixAttempted = true
+				sctx.Log(fmt.Sprintf("CI failures detected: %s - manual fix requested...", strings.Join(failing, ", ")))
+				if err := s.autoFixCI(sctx, prNumber, failing); err != nil {
+					sctx.Log(fmt.Sprintf("warning: CI manual fix failed: %v", err))
+				} else {
+					s.lastFixedChecks = fixKey
+				}
+			} else if sctx.Fixing && fixKey == s.lastFixedChecks {
+				sctx.Log("fix already attempted for these failures, waiting for CI re-run...")
+			} else if ciFixLimit <= 0 {
 				sctx.Log(fmt.Sprintf("CI failures detected: %s - auto-fix disabled, waiting for manual intervention...", strings.Join(failing, ", ")))
 				return ciFailureOutcome(failing, "CI failures require manual intervention"), nil
 			} else if s.ciFixAttempts >= ciFixLimit {
