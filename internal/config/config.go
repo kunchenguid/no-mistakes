@@ -95,6 +95,21 @@ func (c *Config) AgentPath() string {
 	return string(c.Agent)
 }
 
+// EnsureDefaultGlobalConfig writes the default config file at path if it does
+// not already exist. Failures are logged at debug level and silently ignored.
+func EnsureDefaultGlobalConfig(path string) {
+	if _, err := os.Stat(path); err == nil {
+		return
+	}
+	if mkErr := os.MkdirAll(filepath.Dir(path), 0o755); mkErr != nil {
+		slog.Debug("failed to create config directory", "path", filepath.Dir(path), "error", mkErr)
+		return
+	}
+	if wErr := os.WriteFile(path, []byte(defaultConfigYAML), 0o644); wErr != nil {
+		slog.Debug("failed to write default config", "path", path, "error", wErr)
+	}
+}
+
 // LoadGlobal reads global config from path. Returns defaults if file doesn't exist.
 func LoadGlobal(path string) (*GlobalConfig, error) {
 	cfg := &GlobalConfig{
@@ -106,11 +121,6 @@ func LoadGlobal(path string) (*GlobalConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			if mkErr := os.MkdirAll(filepath.Dir(path), 0o755); mkErr != nil {
-				slog.Debug("failed to create config directory", "path", filepath.Dir(path), "error", mkErr)
-			} else if wErr := os.WriteFile(path, []byte(defaultConfigYAML), 0o644); wErr != nil {
-				slog.Debug("failed to write default config", "path", path, "error", wErr)
-			}
 			return cfg, nil
 		}
 		return nil, fmt.Errorf("read global config: %w", err)

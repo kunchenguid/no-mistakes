@@ -28,7 +28,8 @@ func Run() error {
 		return fmt.Errorf("create directories: %w", err)
 	}
 
-	// Load global config and initialize structured logger.
+	// Ensure default config exists, then load it.
+	config.EnsureDefaultGlobalConfig(p.ConfigFile())
 	globalCfg, err := config.LoadGlobal(p.ConfigFile())
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)

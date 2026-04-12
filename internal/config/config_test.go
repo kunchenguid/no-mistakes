@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/types"
+	"gopkg.in/yaml.v3"
 )
 
 func TestLoadGlobal_Defaults(t *testing.T) {
@@ -31,24 +32,12 @@ func TestLoadGlobal_Defaults(t *testing.T) {
 	}
 }
 
-func TestLoadGlobal_CreatesDefaultFile(t *testing.T) {
+func TestEnsureDefaultGlobalConfig_CreatesFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 
-	cfg, err := LoadGlobal(path)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	EnsureDefaultGlobalConfig(path)
 
-	// Should return defaults
-	if cfg.Agent != types.AgentClaude {
-		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentClaude)
-	}
-	if cfg.BabysitTimeout != 4*time.Hour {
-		t.Errorf("babysit_timeout = %v, want %v", cfg.BabysitTimeout, 4*time.Hour)
-	}
-
-	// File should now exist with commented defaults
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("config file not created: %v", err)
@@ -66,16 +55,12 @@ func TestLoadGlobal_CreatesDefaultFile(t *testing.T) {
 	}
 }
 
-func TestLoadGlobal_CreatedConfigIsLoadable(t *testing.T) {
+func TestEnsureDefaultGlobalConfig_CreatedConfigIsLoadable(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 
-	// First call creates the file
-	if _, err := LoadGlobal(path); err != nil {
-		t.Fatalf("unexpected error on create: %v", err)
-	}
+	EnsureDefaultGlobalConfig(path)
 
-	// Second call loads the created file - proves the YAML is valid
 	cfg, err := LoadGlobal(path)
 	if err != nil {
 		t.Fatalf("unexpected error on reload: %v", err)
@@ -91,20 +76,28 @@ func TestLoadGlobal_CreatedConfigIsLoadable(t *testing.T) {
 	}
 }
 
-func TestLoadGlobal_CreatesParentDirs(t *testing.T) {
+func TestEnsureDefaultGlobalConfig_CreatesParentDirs(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "subdir", "config.yaml")
 
-	cfg, err := LoadGlobal(path)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.Agent != types.AgentClaude {
-		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentClaude)
-	}
+	EnsureDefaultGlobalConfig(path)
 
 	if _, err := os.Stat(path); err != nil {
 		t.Errorf("config file not created in nested dir: %v", err)
+	}
+}
+
+func TestLoadGlobal_DoesNotCreateFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+
+	_, err := LoadGlobal(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, err := os.Stat(path); err == nil {
+		t.Error("LoadGlobal should not create config file")
 	}
 }
 
@@ -400,6 +393,27 @@ func TestAgentPath_DefaultBinaries(t *testing.T) {
 		if got := cfg.AgentPath(); got != tt.want {
 			t.Errorf("AgentPath() for %q = %q, want %q", tt.agent, got, tt.want)
 		}
+	}
+}
+
+func TestDefaultConfigYAML_MatchesGoDefaults(t *testing.T) {
+	var raw globalConfigRaw
+	if err := yaml.Unmarshal([]byte(defaultConfigYAML), &raw); err != nil {
+		t.Fatalf("defaultConfigYAML is not valid YAML: %v", err)
+	}
+
+	if raw.Agent != types.AgentClaude {
+		t.Errorf("YAML agent = %q, Go default = %q", raw.Agent, types.AgentClaude)
+	}
+	d, err := time.ParseDuration(raw.BabysitTimeout)
+	if err != nil {
+		t.Fatalf("YAML babysit_timeout %q is not a valid duration: %v", raw.BabysitTimeout, err)
+	}
+	if d != 4*time.Hour {
+		t.Errorf("YAML babysit_timeout = %v, Go default = %v", d, 4*time.Hour)
+	}
+	if raw.LogLevel != "info" {
+		t.Errorf("YAML log_level = %q, Go default = %q", raw.LogLevel, "info")
 	}
 }
 

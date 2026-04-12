@@ -258,7 +258,8 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 		}
 	}()
 
-	// Load config.
+	// Ensure default config exists, then load it.
+	config.EnsureDefaultGlobalConfig(m.paths.ConfigFile())
 	globalCfg, err := config.LoadGlobal(m.paths.ConfigFile())
 	if err != nil {
 		m.db.UpdateRunError(run.ID, fmt.Sprintf("load config: %s", err))
