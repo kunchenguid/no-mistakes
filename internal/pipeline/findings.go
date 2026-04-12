@@ -2,10 +2,31 @@ package pipeline
 
 import "github.com/kunchenguid/no-mistakes/internal/types"
 
-func findingFingerprint(item types.Finding) types.Finding {
+func findingKey(item types.Finding) types.Finding {
 	item.ID = ""
+	return item
+}
+
+func findingFingerprint(item types.Finding) types.Finding {
+	item = findingKey(item)
 	item.Line = 0
 	return item
+}
+
+func countFindingFingerprints(items []types.Finding) map[types.Finding]int {
+	counts := make(map[types.Finding]int, len(items))
+	for _, item := range items {
+		counts[findingFingerprint(item)]++
+	}
+	return counts
+}
+
+func hasFindingMatch(item types.Finding, exact map[types.Finding]bool, itemCounts, candidateCounts map[types.Finding]int) bool {
+	if exact[findingKey(item)] {
+		return true
+	}
+	fingerprint := findingFingerprint(item)
+	return itemCounts[fingerprint] == 1 && candidateCounts[fingerprint] == 1
 }
 
 func normalizeFindingsJSON(raw string, prefix string) string {
@@ -59,17 +80,23 @@ func mergeFindingsJSON(existingRaw, additionalRaw string) string {
 		return existingRaw
 	}
 	seen := make(map[types.Finding]bool, len(existing.Items)+len(additional.Items))
+	existingCounts := countFindingFingerprints(existing.Items)
+	additionalCounts := countFindingFingerprints(additional.Items)
 	merged := types.Findings{}
 	for _, item := range existing.Items {
 		merged.Items = append(merged.Items, item)
-		seen[item] = true
+		seen[findingKey(item)] = true
 	}
 	for _, item := range additional.Items {
-		if seen[item] {
+		if hasFindingMatch(item, seen, additionalCounts, existingCounts) {
+			continue
+		}
+		key := findingKey(item)
+		if seen[key] {
 			continue
 		}
 		merged.Items = append(merged.Items, item)
-		seen[item] = true
+		seen[key] = true
 	}
 	if len(merged.Items) == 0 {
 		return ""
@@ -94,13 +121,14 @@ func removeMatchingFindingsJSON(existingRaw, removeRaw string) string {
 		return existingRaw
 	}
 	toRemove := make(map[types.Finding]bool, len(remove.Items))
+	existingCounts := countFindingFingerprints(existing.Items)
+	removeCounts := countFindingFingerprints(remove.Items)
 	for _, item := range remove.Items {
-		toRemove[findingFingerprint(item)] = true
+		toRemove[findingKey(item)] = true
 	}
 	filtered := types.Findings{Summary: existing.Summary, RiskLevel: existing.RiskLevel, RiskRationale: existing.RiskRationale}
 	for _, item := range existing.Items {
-		match := findingFingerprint(item)
-		if toRemove[match] {
+		if hasFindingMatch(item, toRemove, existingCounts, removeCounts) {
 			continue
 		}
 		filtered.Items = append(filtered.Items, item)
@@ -128,13 +156,14 @@ func retainMatchingFindingsJSON(existingRaw, keepRaw string) string {
 		return ""
 	}
 	allowed := make(map[types.Finding]bool, len(keep.Items))
+	existingCounts := countFindingFingerprints(existing.Items)
+	keepCounts := countFindingFingerprints(keep.Items)
 	for _, item := range keep.Items {
-		allowed[findingFingerprint(item)] = true
+		allowed[findingKey(item)] = true
 	}
 	filtered := types.Findings{Summary: existing.Summary, RiskLevel: existing.RiskLevel, RiskRationale: existing.RiskRationale}
 	for _, item := range existing.Items {
-		match := findingFingerprint(item)
-		if !allowed[match] {
+		if !hasFindingMatch(item, allowed, existingCounts, keepCounts) {
 			continue
 		}
 		filtered.Items = append(filtered.Items, item)

@@ -56,3 +56,37 @@ func TestRetainMatchingFindingsJSON_MatchesFindingsAfterLineShift(t *testing.T) 
 		t.Fatalf("unexpected retained finding: %#v", retained.Items)
 	}
 }
+
+func TestRetainMatchingFindingsJSON_DoesNotKeepDistinctDuplicateLines(t *testing.T) {
+	existingRaw := `{"findings":[{"id":"dismissed-1","severity":"warning","file":"internal/pipeline/findings.go","line":42,"description":"still unresolved"},{"id":"dismissed-2","severity":"warning","file":"internal/pipeline/findings.go","line":57,"description":"still unresolved"}],"summary":"2 findings"}`
+	keepRaw := `{"findings":[{"id":"review-9","severity":"warning","file":"internal/pipeline/findings.go","line":42,"description":"still unresolved"}],"summary":"1 finding"}`
+
+	retainedRaw := retainMatchingFindingsJSON(existingRaw, keepRaw)
+	retained, err := types.ParseFindingsJSON(retainedRaw)
+	if err != nil {
+		t.Fatalf("parse retained findings: %v", err)
+	}
+	if len(retained.Items) != 1 {
+		t.Fatalf("expected 1 finding, got %d", len(retained.Items))
+	}
+	if retained.Items[0].ID != "dismissed-1" {
+		t.Fatalf("unexpected retained findings: %#v", retained.Items)
+	}
+}
+
+func TestMergeFindingsJSON_DeduplicatesShiftedUniqueDismissedFinding(t *testing.T) {
+	existingRaw := `{"findings":[{"id":"dismissed-1","severity":"warning","file":"internal/pipeline/findings.go","line":42,"description":"still unresolved"}],"summary":"1 finding"}`
+	additionalRaw := `{"findings":[{"id":"dismissed-2","severity":"warning","file":"internal/pipeline/findings.go","line":57,"description":"still unresolved"}],"summary":"1 finding"}`
+
+	mergedRaw := mergeFindingsJSON(existingRaw, additionalRaw)
+	merged, err := types.ParseFindingsJSON(mergedRaw)
+	if err != nil {
+		t.Fatalf("parse merged findings: %v", err)
+	}
+	if len(merged.Items) != 1 {
+		t.Fatalf("expected 1 finding, got %d", len(merged.Items))
+	}
+	if merged.Items[0].ID != "dismissed-1" {
+		t.Fatalf("unexpected merged findings: %#v", merged.Items)
+	}
+}
