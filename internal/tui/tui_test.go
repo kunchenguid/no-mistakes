@@ -1750,20 +1750,18 @@ func TestRenderBabysitView_Monitoring(t *testing.T) {
 	if !strings.Contains(out, "Monitoring") {
 		t.Error("expected monitoring state")
 	}
-	if !strings.Contains(out, "PR #42") {
-		t.Error("expected PR number from logs")
-	}
 }
 
-func TestRenderBabysitView_WithPRURL(t *testing.T) {
+func TestRenderBabysitView_NoPRURL(t *testing.T) {
+	// PR URL should not appear in babysit panel - it's shown persistently in the footer.
 	run := testRunWithBabysit()
 	run.PRURL = ptr("https://github.com/user/repo/pull/99")
 	run.Steps[5].Status = types.StepStatusRunning
 
 	out := renderBabysitView(run, run.Steps, "", nil, 80)
 
-	if !strings.Contains(out, "https://github.com/user/repo/pull/99") {
-		t.Error("expected full PR URL")
+	if strings.Contains(out, "https://github.com/user/repo/pull/99") {
+		t.Error("expected no PR URL in babysit panel - shown in footer instead")
 	}
 }
 
@@ -2188,19 +2186,12 @@ func TestRenderBabysitView_ContentInsideBox(t *testing.T) {
 
 	out := stripANSI(renderBabysitView(run, run.Steps, "", logs, 80))
 
-	// PR info and state should be inside box borders.
-	foundPR := false
+	// State should be inside box borders.
 	foundState := false
 	for _, line := range strings.Split(out, "\n") {
-		if strings.Contains(line, "PR #42") && strings.Contains(line, "│") {
-			foundPR = true
-		}
 		if strings.Contains(line, "Monitoring") && strings.Contains(line, "│") {
 			foundState = true
 		}
-	}
-	if !foundPR {
-		t.Error("expected PR info inside box borders")
 	}
 	if !foundState {
 		t.Error("expected state indicator inside box borders")
@@ -2985,8 +2976,41 @@ func TestModel_View_NoStandaloneLogBoxDuringBabysit(t *testing.T) {
 
 // --- Babysit adaptive log tail ---
 
-func TestRenderBabysitView_LogTailCompact(t *testing.T) {
-	// At height 25 (compact terminal), babysit log tail should show only 3 lines, not 5.
+func TestRenderBabysitView_LogTailFillsAvailableHeight(t *testing.T) {
+	// Log tail should dynamically fill available height, not use hardcoded line counts.
+	lipgloss.SetColorProfile(termenv.ANSI)
+	run := testRunWithBabysit()
+	run.Steps[5].Status = types.StepStatusRunning
+
+	manyLogs := []string{"babysitting PR #42 (timeout: 4h)..."}
+	for i := 1; i <= 30; i++ {
+		manyLogs = append(manyLogs, fmt.Sprintf("log-line-%d", i))
+	}
+
+	// With height=20, more logs should show than with height=10.
+	tall := stripANSI(renderBabysitViewWithSelection(run, run.Steps, "", manyLogs, 80, 20, 0, nil))
+	short := stripANSI(renderBabysitViewWithSelection(run, run.Steps, "", manyLogs, 80, 10, 0, nil))
+
+	countLogLines := func(s string) int {
+		n := 0
+		for _, line := range strings.Split(s, "\n") {
+			if strings.Contains(line, "log-line-") {
+				n++
+			}
+		}
+		return n
+	}
+
+	tallCount := countLogLines(tall)
+	shortCount := countLogLines(short)
+
+	if tallCount <= shortCount {
+		t.Errorf("expected more log lines with height=20 (%d) than height=10 (%d)", tallCount, shortCount)
+	}
+}
+
+func TestRenderBabysitView_LogTailTinyStillShowsSome(t *testing.T) {
+	// Even with very small height, at least 1 log line should show.
 	lipgloss.SetColorProfile(termenv.ANSI)
 	run := testRunWithBabysit()
 	run.Steps[5].Status = types.StepStatusRunning
@@ -2994,76 +3018,45 @@ func TestRenderBabysitView_LogTailCompact(t *testing.T) {
 		"babysitting PR #42 (timeout: 4h)...",
 		"line1",
 		"line2",
-		"line3",
-		"line4",
-		"line5",
-		"line6",
-	}
-
-	out := stripANSI(renderBabysitViewWithSelection(run, run.Steps, "", logs, 80, 25, 0, nil))
-
-	// Should show last 3 lines (line4, line5, line6) but not line2, line3 (which 5-line tail would include).
-	if !strings.Contains(out, "line6") {
-		t.Errorf("expected last log line 'line6' in compact babysit view, got:\n%s", out)
-	}
-	if !strings.Contains(out, "line4") {
-		t.Errorf("expected 'line4' (3rd from end) in compact babysit view, got:\n%s", out)
-	}
-	// line2 would appear with 5-line tail but NOT with 3-line tail.
-	if strings.Contains(out, "line2") {
-		t.Errorf("expected 'line2' to be trimmed in compact babysit view (3 lines max), got:\n%s", out)
-	}
-}
-
-func TestRenderBabysitView_LogTailHiddenTiny(t *testing.T) {
-	// At height < 20 (tiny terminal), babysit log tail should be hidden entirely.
-	lipgloss.SetColorProfile(termenv.ANSI)
-	run := testRunWithBabysit()
-	run.Steps[5].Status = types.StepStatusRunning
-	logs := []string{
-		"babysitting PR #42 (timeout: 4h)...",
-		"polling CI status...",
 		"all checks passing",
 	}
 
-	out := stripANSI(renderBabysitViewWithSelection(run, run.Steps, "", logs, 80, 15, 0, nil))
+	out := stripANSI(renderBabysitViewWithSelection(run, run.Steps, "", logs, 80, 8, 0, nil))
 
-	// Log tail lines should NOT appear in tiny terminal - only state indicator should show.
-	if strings.Contains(out, "polling CI status") {
-		t.Error("expected no log tail in tiny terminal (height=15)")
-	}
-	if strings.Contains(out, "all checks passing") {
-		t.Error("expected no log tail in tiny terminal (height=15)")
+	if !strings.Contains(out, "all checks passing") {
+		t.Error("expected at least the last log line even in tiny terminal")
 	}
 }
 
-func TestRenderBabysitView_LogTailNormalShowsFive(t *testing.T) {
-	// At height >= 30, babysit log tail should show 5 lines.
-	// At compact height (25), it should show only 3.
-	// This test verifies the difference by comparing both outputs.
+func TestRenderBabysitView_LogTailScalesWithHeight(t *testing.T) {
+	// Larger height should show more log lines.
 	lipgloss.SetColorProfile(termenv.ANSI)
 	run := testRunWithBabysit()
 	run.Steps[5].Status = types.StepStatusRunning
-	logs := []string{
-		"babysitting PR #42 (timeout: 4h)...",
-		"line1",
-		"line2",
-		"line3",
-		"line4",
-		"line5",
-		"line6",
+
+	manyLogs := []string{"babysitting PR #42 (timeout: 4h)..."}
+	for i := 1; i <= 50; i++ {
+		manyLogs = append(manyLogs, fmt.Sprintf("log-%d", i))
 	}
 
-	normal := stripANSI(renderBabysitViewWithSelection(run, run.Steps, "", logs, 80, 40, 0, nil))
-	compact := stripANSI(renderBabysitViewWithSelection(run, run.Steps, "", logs, 80, 25, 0, nil))
+	tall := stripANSI(renderBabysitViewWithSelection(run, run.Steps, "", manyLogs, 80, 40, 0, nil))
+	compact := stripANSI(renderBabysitViewWithSelection(run, run.Steps, "", manyLogs, 80, 15, 0, nil))
 
-	// Normal should show line2 (5th from end).
-	if !strings.Contains(normal, "line2") {
-		t.Errorf("expected 'line2' in normal (height=40) babysit view, got:\n%s", normal)
+	countLogLines := func(s string) int {
+		n := 0
+		for _, line := range strings.Split(s, "\n") {
+			if strings.Contains(line, "log-") {
+				n++
+			}
+		}
+		return n
 	}
-	// Compact should NOT show line2 (only 3 lines from end).
-	if strings.Contains(compact, "line2") {
-		t.Errorf("expected 'line2' to be trimmed in compact (height=25) babysit view, got:\n%s", compact)
+
+	tallCount := countLogLines(tall)
+	compactCount := countLogLines(compact)
+
+	if tallCount <= compactCount {
+		t.Errorf("expected more log lines at height=40 (%d) than height=15 (%d)", tallCount, compactCount)
 	}
 }
 
@@ -4934,7 +4927,8 @@ func TestPipelineView_ShortErrorNotTruncated(t *testing.T) {
 	}
 }
 
-func TestRenderBabysitView_LongPRURLTruncated(t *testing.T) {
+func TestRenderBabysitView_NoPRURLInPanel(t *testing.T) {
+	// PR URL should not appear in babysit panel regardless of length.
 	lipgloss.SetColorProfile(termenv.Ascii)
 	run := testRunWithBabysit()
 	longURL := "https://github.com/some-very-long-organization-name/some-very-long-repository-name-that-goes-on-and-on/pull/12345"
@@ -4943,20 +4937,8 @@ func TestRenderBabysitView_LongPRURLTruncated(t *testing.T) {
 
 	result := stripANSI(renderBabysitView(run, run.Steps, "", nil, 80))
 
-	// No line should exceed the box width (80).
-	for _, line := range strings.Split(result, "\n") {
-		if line == "" {
-			continue
-		}
-		w := lipgloss.Width(line)
-		if w > 80 {
-			t.Errorf("babysit PR URL line exceeds box width (%d > 80): %s", w, line)
-		}
-	}
-
-	// The full long URL should NOT appear in the output.
-	if strings.Contains(result, longURL) {
-		t.Error("expected long PR URL to be truncated to fit box content width")
+	if strings.Contains(result, "PR:") {
+		t.Error("expected no PR URL in babysit panel - shown in footer instead")
 	}
 }
 
@@ -4986,7 +4968,8 @@ func TestRenderBabysitView_LongLastEventTruncated(t *testing.T) {
 	}
 }
 
-func TestRenderBabysitView_ShortPRURLNotTruncated(t *testing.T) {
+func TestRenderBabysitView_NoPRURLEvenShort(t *testing.T) {
+	// Even short PR URLs should not appear in babysit panel.
 	lipgloss.SetColorProfile(termenv.Ascii)
 	run := testRunWithBabysit()
 	shortURL := "https://github.com/user/repo/pull/99"
@@ -4995,9 +4978,8 @@ func TestRenderBabysitView_ShortPRURLNotTruncated(t *testing.T) {
 
 	result := stripANSI(renderBabysitView(run, run.Steps, "", nil, 80))
 
-	// Short PR URL should appear in full.
-	if !strings.Contains(result, shortURL) {
-		t.Error("expected short PR URL to appear in full")
+	if strings.Contains(result, shortURL) {
+		t.Error("expected no PR URL in babysit panel - shown in footer instead")
 	}
 }
 

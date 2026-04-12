@@ -103,16 +103,6 @@ func renderBabysitViewWithSelection(run *ipc.RunInfo, steps []ipc.StepResultInfo
 
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
 
-	// PR info - try run.PRURL first, then parse from logs.
-	// Truncated to fit inside the box.
-	if run != nil && run.PRURL != nil && *run.PRURL != "" {
-		prText := "PR: " + *run.PRURL
-		prText, _ = cutText(prText, contentWidth)
-		b.WriteString(dimStyle.Render(prText) + "\n")
-	} else if num := extractPRFromLogs(logs); num != "" {
-		b.WriteString(dimStyle.Render("PR #"+num) + "\n")
-	}
-
 	// State indicator.
 	status := babysitStepStatus(steps)
 	activity := parseBabysitActivity(logs)
@@ -143,18 +133,26 @@ func renderBabysitViewWithSelection(run *ipc.RunInfo, steps []ipc.StepResultInfo
 	}
 
 	// Log tail during monitoring.
-	// Adaptive line count: 5 for height >= 30, 3 for 20-29, hidden for < 20.
-	logLines := 5
-	if height > 0 && height < 30 {
-		logLines = 3
-	}
-	if height > 0 && height < 20 {
-		logLines = 0
-	}
+	// Dynamically fill available height: subtract box borders and fixed content lines.
+	if len(logs) > 0 && height > 0 {
+		// Count fixed lines already written above.
+		fixedLines := 2 // box top + bottom borders
+		fixedLines += lipgloss.Height(b.String())
+		fixedLines++ // blank line before log tail
 
-	if len(logs) > 0 && logLines > 0 {
+		logLines := height - fixedLines
+		if logLines < 1 {
+			logLines = 1
+		}
+
 		b.WriteString("\n")
 		for _, line := range renderLogTail(logs, contentWidth, logLines) {
+			b.WriteString(line + "\n")
+		}
+	} else if len(logs) > 0 {
+		// No height info - show a reasonable default.
+		b.WriteString("\n")
+		for _, line := range renderLogTail(logs, contentWidth, 10) {
 			b.WriteString(line + "\n")
 		}
 	}
