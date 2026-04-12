@@ -425,6 +425,88 @@ func TestModel_ApplyEvent_RunCompleted_FailedStoresError(t *testing.T) {
 	}
 }
 
+func TestModel_ApplyEvent_RunUpdated_PRURL(t *testing.T) {
+	run := testRun()
+	m := NewModel("/tmp/sock", nil, run)
+
+	prURL := "https://github.com/test/repo/pull/42"
+	m.applyEvent(ipc.Event{
+		Type:   ipc.EventRunUpdated,
+		RunID:  run.ID,
+		Status: ptr(string(types.RunRunning)),
+		PRURL:  &prURL,
+	})
+
+	if m.run.PRURL == nil || *m.run.PRURL != prURL {
+		t.Errorf("expected run PRURL %q, got %v", prURL, m.run.PRURL)
+	}
+}
+
+func TestModel_ApplyEvent_RunCompleted_PRURL(t *testing.T) {
+	run := testRun()
+	m := NewModel("/tmp/sock", nil, run)
+
+	prURL := "https://github.com/test/repo/pull/42"
+	m.applyEvent(ipc.Event{
+		Type:   ipc.EventRunCompleted,
+		RunID:  run.ID,
+		Status: ptr(string(types.RunCompleted)),
+		PRURL:  &prURL,
+	})
+
+	if m.run.PRURL == nil || *m.run.PRURL != prURL {
+		t.Errorf("expected run PRURL %q, got %v", prURL, m.run.PRURL)
+	}
+}
+
+func TestRenderFooter_WithPRURL_FullURL(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	prURL := "https://github.com/test/repo/pull/42"
+	footer := renderFooter(true, false, false, &prURL, 80)
+	stripped := stripANSI(footer)
+
+	if !strings.Contains(stripped, prURL) {
+		t.Errorf("expected footer to contain full URL %q, got: %s", prURL, stripped)
+	}
+}
+
+func TestRenderFooter_WithoutPRURL(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	footer := renderFooter(false, false, false, nil, 80)
+	stripped := stripANSI(footer)
+
+	if strings.Contains(stripped, "PR") {
+		t.Errorf("expected no PR in footer, got: %s", stripped)
+	}
+}
+
+func TestRenderFooter_PRURL_FallsBackToShortForm(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	prURL := "https://github.com/test/repo/pull/42"
+	// Narrow width - should fall back to "PR #42" instead of full URL
+	footer := renderFooter(true, false, false, &prURL, 40)
+	stripped := stripANSI(footer)
+
+	if !strings.Contains(stripped, "PR #42") {
+		t.Errorf("expected footer to contain PR #42, got: %s", stripped)
+	}
+	if strings.Contains(stripped, "https://") {
+		t.Errorf("expected short form, not full URL at narrow width, got: %s", stripped)
+	}
+}
+
+func TestRenderFooter_PRURL_HiddenWhenTooNarrow(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	prURL := "https://github.com/test/repo/pull/42"
+	// Extremely narrow - not even short form fits
+	footer := renderFooter(true, false, false, &prURL, 20)
+	stripped := stripANSI(footer)
+
+	if strings.Contains(stripped, "PR") {
+		t.Errorf("expected no PR at extremely narrow width, got: %s", stripped)
+	}
+}
+
 func TestModel_ApplyEvent_LogChunk(t *testing.T) {
 	run := testRun()
 	m := NewModel("/tmp/sock", nil, run)
