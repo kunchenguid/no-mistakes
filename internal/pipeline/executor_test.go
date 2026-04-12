@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
@@ -1433,6 +1434,217 @@ func TestExecutor_LogFileMultipleSteps(t *testing.T) {
 	// Review log should NOT contain test message
 	if strings.Contains(string(reviewLog), "test message") {
 		t.Error("review log should not contain test message")
+	}
+}
+
+func TestExecutor_AutoFixTriggersWithoutApproval(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	// Config with auto-fix enabled for review (max 3 attempts)
+	cfg := &config.Config{AutoFix: config.AutoFix{Review: 3}}
+
+	callCount := 0
+	step := &adaptiveCallStep{
+		name: types.StepReview,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			callCount++
+			if callCount == 1 {
+				return &StepOutcome{
+					NeedsApproval: true,
+					Findings:      `{"findings":[{"severity":"error","description":"bug"}],"summary":"1 issue"}`,
+				}, nil
+			}
+			// After auto-fix, verify Fixing is set
+			if !sctx.Fixing {
+				t.Error("expected Fixing to be true on auto-fix re-execution")
+			}
+			if sctx.PreviousFindings == "" {
+				t.Error("expected PreviousFindings to be set on auto-fix")
+			}
+			return &StepOutcome{}, nil
+		},
+	}
+
+	exec := NewExecutor(database, p, cfg, nil, []Step{step}, nil)
+
+	err := exec.Execute(context.Background(), run, repo, workDir)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	if callCount != 2 {
+		t.Errorf("expected step called 2 times (initial + auto-fix), got %d", callCount)
+	}
+
+	updated, _ := database.GetRun(run.ID)
+	if updated.Status != types.RunCompleted {
+		t.Errorf("expected run status %q, got %q", types.RunCompleted, updated.Status)
+	}
+}
+
+func TestExecutor_AutoFixRespectsMaxAttempts(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	// Config with auto-fix limited to 2 attempts for lint
+	cfg := &config.Config{AutoFix: config.AutoFix{Lint: 2}}
+
+	callCount := 0
+	step := &adaptiveCallStep{
+		name: types.StepLint,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			callCount++
+			// Always return NeedsApproval to exhaust auto-fix attempts
+			return &StepOutcome{
+				NeedsApproval: true,
+				Findings:      `{"findings":[{"severity":"warning","description":"style issue"}],"summary":"lint issue"}`,
+			}, nil
+		},
+	}
+
+	exec := NewExecutor(database, p, cfg, nil, []Step{step}, nil)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- exec.Execute(context.Background(), run, repo, workDir)
+	}()
+
+	// After 2 auto-fix attempts fail, should fall back to manual approval
+	// 1 initial + 2 auto-fix = 3 calls, then waits for approval
+	// Status is fix_review since auto-fix cycles ran (sctx.Fixing was true)
+	waitForStepStatus(t, database, run.ID, types.StepLint, types.StepStatusFixReview)
+
+	if callCount != 3 {
+		t.Errorf("expected 3 calls (1 initial + 2 auto-fix), got %d", callCount)
+	}
+
+	// Now approve manually to finish
+	exec.Respond(types.StepLint, types.ActionApprove, nil)
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("expected no error, got: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("executor timed out")
+	}
+}
+
+func TestExecutor_AutoFixDisabledWithZero(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	// Config with auto-fix disabled for review
+	cfg := &config.Config{AutoFix: config.AutoFix{Review: 0}}
+
+	callCount := 0
+	step := &adaptiveCallStep{
+		name: types.StepReview,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			callCount++
+			return &StepOutcome{
+				NeedsApproval: true,
+				Findings:      `{"findings":[{"severity":"error","description":"bug"}],"summary":"1 issue"}`,
+			}, nil
+		},
+	}
+
+	exec := NewExecutor(database, p, cfg, nil, []Step{step}, nil)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- exec.Execute(context.Background(), run, repo, workDir)
+	}()
+
+	// Should immediately wait for approval (no auto-fix)
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
+
+	if callCount != 1 {
+		t.Errorf("expected 1 call (no auto-fix), got %d", callCount)
+	}
+
+	exec.Respond(types.StepReview, types.ActionApprove, nil)
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("expected no error, got: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("executor timed out")
+	}
+}
+
+func TestExecutor_AutoFixNilConfigUsesDefaults(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	// nil config - executor should not panic and should use no auto-fix (backwards compat)
+	callCount := 0
+	step := &adaptiveCallStep{
+		name: types.StepReview,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			callCount++
+			return &StepOutcome{
+				NeedsApproval: true,
+				Findings:      `{"findings":[{"severity":"error","description":"bug"}],"summary":"1 issue"}`,
+			}, nil
+		},
+	}
+
+	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- exec.Execute(context.Background(), run, repo, workDir)
+	}()
+
+	// With nil config, should wait for approval
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
+
+	if callCount != 1 {
+		t.Errorf("expected 1 call (nil config, no auto-fix), got %d", callCount)
+	}
+
+	exec.Respond(types.StepReview, types.ActionAbort, nil)
+	<-done
+}
+
+func TestExecutor_AutoFixEmitsEvents(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	cfg := &config.Config{AutoFix: config.AutoFix{Lint: 1}}
+
+	callCount := 0
+	step := &adaptiveCallStep{
+		name: types.StepLint,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			callCount++
+			if callCount == 1 {
+				return &StepOutcome{
+					NeedsApproval: true,
+					Findings:      `{"findings":[{"severity":"warning","description":"issue"}],"summary":"1 issue"}`,
+				}, nil
+			}
+			return &StepOutcome{}, nil
+		},
+	}
+
+	exec := NewExecutor(database, p, cfg, nil, []Step{step}, nil)
+	events := collectEvents(exec)
+
+	err := exec.Execute(context.Background(), run, repo, workDir)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	// Should have a fixing status event from auto-fix
+	fixingEvent := events.findLast(ipc.EventStepCompleted, string(types.StepStatusFixing))
+	if fixingEvent == nil {
+		t.Error("expected step_completed event with fixing status during auto-fix")
 	}
 }
 

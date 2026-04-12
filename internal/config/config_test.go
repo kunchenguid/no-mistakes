@@ -457,6 +457,200 @@ func TestDefaultConfigYAML_MatchesGoDefaults(t *testing.T) {
 	if raw.LogLevel != "info" {
 		t.Errorf("YAML log_level = %q, Go default = %q", raw.LogLevel, "info")
 	}
+	defaults := autoFixDefaults()
+	if raw.AutoFix.Lint == nil || *raw.AutoFix.Lint != defaults.Lint {
+		t.Errorf("YAML auto_fix.lint = %v, Go default = %d", raw.AutoFix.Lint, defaults.Lint)
+	}
+	if raw.AutoFix.Test == nil || *raw.AutoFix.Test != defaults.Test {
+		t.Errorf("YAML auto_fix.test = %v, Go default = %d", raw.AutoFix.Test, defaults.Test)
+	}
+	if raw.AutoFix.Review == nil || *raw.AutoFix.Review != defaults.Review {
+		t.Errorf("YAML auto_fix.review = %v, Go default = %d", raw.AutoFix.Review, defaults.Review)
+	}
+	if raw.AutoFix.Babysit == nil || *raw.AutoFix.Babysit != defaults.Babysit {
+		t.Errorf("YAML auto_fix.babysit = %v, Go default = %d", raw.AutoFix.Babysit, defaults.Babysit)
+	}
+}
+
+func TestLoadGlobal_AutoFixDefaults(t *testing.T) {
+	cfg, err := LoadGlobal("/nonexistent/config.yaml")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// AutoFix should be nil (unset) in GlobalConfig
+	if cfg.AutoFix.Lint != nil || cfg.AutoFix.Test != nil || cfg.AutoFix.Review != nil ||
+		cfg.AutoFix.Babysit != nil {
+		t.Errorf("expected all AutoFix fields to be nil for defaults, got %+v", cfg.AutoFix)
+	}
+}
+
+func TestLoadGlobal_AutoFixFromFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	data := `auto_fix:
+  lint: 5
+  test: 0
+  review: 2
+  babysit: 1
+`
+	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadGlobal(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.AutoFix.Lint == nil || *cfg.AutoFix.Lint != 5 {
+		t.Errorf("lint = %v, want 5", cfg.AutoFix.Lint)
+	}
+	if cfg.AutoFix.Test == nil || *cfg.AutoFix.Test != 0 {
+		t.Errorf("test = %v, want 0", cfg.AutoFix.Test)
+	}
+	if cfg.AutoFix.Review == nil || *cfg.AutoFix.Review != 2 {
+		t.Errorf("review = %v, want 2", cfg.AutoFix.Review)
+	}
+	if cfg.AutoFix.Babysit == nil || *cfg.AutoFix.Babysit != 1 {
+		t.Errorf("babysit = %v, want 1", cfg.AutoFix.Babysit)
+	}
+}
+
+func TestLoadGlobal_AutoFixPartial(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	data := `auto_fix:
+  lint: 1
+`
+	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadGlobal(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.AutoFix.Lint == nil || *cfg.AutoFix.Lint != 1 {
+		t.Errorf("lint = %v, want 1", cfg.AutoFix.Lint)
+	}
+	// Unset fields should remain nil
+	if cfg.AutoFix.Test != nil {
+		t.Errorf("test = %v, want nil", cfg.AutoFix.Test)
+	}
+}
+
+func TestLoadRepo_AutoFixFromFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".no-mistakes.yaml")
+	data := `auto_fix:
+  review: 0
+  babysit: 2
+`
+	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadRepo(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.AutoFix.Review == nil || *cfg.AutoFix.Review != 0 {
+		t.Errorf("review = %v, want 0", cfg.AutoFix.Review)
+	}
+	if cfg.AutoFix.Babysit == nil || *cfg.AutoFix.Babysit != 2 {
+		t.Errorf("babysit = %v, want 2", cfg.AutoFix.Babysit)
+	}
+}
+
+func TestMerge_AutoFixDefaults(t *testing.T) {
+	global := &GlobalConfig{Agent: types.AgentClaude, BabysitTimeout: 4 * time.Hour, LogLevel: "info"}
+	repo := &RepoConfig{}
+
+	cfg := Merge(global, repo)
+	if cfg.AutoFix.Lint != 3 {
+		t.Errorf("lint = %d, want 3", cfg.AutoFix.Lint)
+	}
+	if cfg.AutoFix.Test != 3 {
+		t.Errorf("test = %d, want 3", cfg.AutoFix.Test)
+	}
+	if cfg.AutoFix.Review != 3 {
+		t.Errorf("review = %d, want 3", cfg.AutoFix.Review)
+	}
+	if cfg.AutoFix.Babysit != 3 {
+		t.Errorf("babysit = %d, want 3", cfg.AutoFix.Babysit)
+	}
+}
+
+func TestMerge_AutoFixGlobalOverridesDefaults(t *testing.T) {
+	five := 5
+	zero := 0
+	global := &GlobalConfig{
+		Agent:          types.AgentClaude,
+		BabysitTimeout: 4 * time.Hour,
+		LogLevel:       "info",
+		AutoFix:        AutoFixRaw{Lint: &five, Babysit: &zero},
+	}
+	repo := &RepoConfig{}
+
+	cfg := Merge(global, repo)
+	if cfg.AutoFix.Lint != 5 {
+		t.Errorf("lint = %d, want 5 (global override)", cfg.AutoFix.Lint)
+	}
+	if cfg.AutoFix.Test != 3 {
+		t.Errorf("test = %d, want 3 (default)", cfg.AutoFix.Test)
+	}
+	if cfg.AutoFix.Babysit != 0 {
+		t.Errorf("babysit = %d, want 0 (global override)", cfg.AutoFix.Babysit)
+	}
+}
+
+func TestMerge_AutoFixRepoOverridesGlobal(t *testing.T) {
+	five := 5
+	one := 1
+	zero := 0
+	global := &GlobalConfig{
+		Agent:          types.AgentClaude,
+		BabysitTimeout: 4 * time.Hour,
+		LogLevel:       "info",
+		AutoFix:        AutoFixRaw{Lint: &five},
+	}
+	repo := &RepoConfig{
+		AutoFix: AutoFixRaw{Lint: &one, Review: &zero},
+	}
+
+	cfg := Merge(global, repo)
+	if cfg.AutoFix.Lint != 1 {
+		t.Errorf("lint = %d, want 1 (repo override)", cfg.AutoFix.Lint)
+	}
+	if cfg.AutoFix.Review != 0 {
+		t.Errorf("review = %d, want 0 (repo override)", cfg.AutoFix.Review)
+	}
+	if cfg.AutoFix.Test != 3 {
+		t.Errorf("test = %d, want 3 (default, no override)", cfg.AutoFix.Test)
+	}
+}
+
+func TestAutoFixLimit(t *testing.T) {
+	cfg := &Config{
+		AutoFix: AutoFix{Lint: 5, Test: 2, Review: 0, Babysit: 3},
+	}
+	tests := []struct {
+		step types.StepName
+		want int
+	}{
+		{types.StepLint, 5},
+		{types.StepTest, 2},
+		{types.StepReview, 0},
+		{types.StepBabysit, 3},
+		{types.StepPush, 0},
+		{types.StepPR, 0},
+		{types.StepRebase, 0},
+	}
+	for _, tt := range tests {
+		got := cfg.AutoFixLimit(tt.step)
+		if got != tt.want {
+			t.Errorf("AutoFixLimit(%q) = %d, want %d", tt.step, got, tt.want)
+		}
+	}
 }
 
 func TestParseLogLevel(t *testing.T) {
