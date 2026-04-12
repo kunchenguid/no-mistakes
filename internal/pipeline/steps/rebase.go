@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
@@ -203,6 +204,9 @@ func rebaseInProgress(ctx context.Context, workDir string) bool {
 		p, err := git.Run(ctx, workDir, "rev-parse", "--git-path", dir)
 		if err != nil {
 			continue
+		}
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(workDir, p)
 		}
 		if _, err := os.Stat(p); err == nil {
 			return true

@@ -209,10 +209,12 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		if outcome.AutoFixable && autoFixLimit > 0 && autoFixAttempts < autoFixLimit {
 			autoFixAttempts++
 			slog.Info("auto-fixing step", "step", stepName, "attempt", autoFixAttempts, "max", autoFixLimit)
+			executionMS += time.Since(phaseStart).Milliseconds()
 			if dbErr := e.db.UpdateStepStatus(sr.ID, types.StepStatusFixing); dbErr != nil {
 				slog.Warn("failed to update step status in db", "step", stepName, "status", "fixing", "error", dbErr)
 			}
-			e.emitStepEvent(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFixing))
+			e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFixing), "", "", "", &executionMS)
+			phaseStart = time.Now()
 			sctx.Fixing = true
 			sctx.PreviousFindings = outcome.Findings
 			continue
