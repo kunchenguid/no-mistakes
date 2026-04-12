@@ -243,12 +243,7 @@ func (m Model) View() string {
 			cursor = m.findingCursor[step.StepName]
 			selected = m.findingSelections[step.StepName]
 		}
-		status := babysitStepStatus(m.steps)
-		if contentBudget >= 0 && (status == types.StepStatusAwaitingApproval || status == types.StepStatusFixReview) {
-			appendExtraSection(renderBabysitApprovalViewForHeight(m.run, m.steps, findings, m.logs, rightWidth, contentBudget, cursor, selected))
-		} else {
-			appendExtraSection(renderBabysitViewWithSelection(m.run, m.steps, findings, m.logs, rightWidth, m.height, cursor, selected))
-		}
+		appendExtraSection(renderBabysitViewWithSelection(m.run, m.steps, findings, m.logs, rightWidth, m.height, cursor, selected))
 	} else if !m.showHelp {
 		if step := awaitingStep(m.steps); step != nil {
 			// Generic findings or diff for non-babysit steps awaiting approval.

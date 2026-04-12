@@ -9,14 +9,12 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-// isBabysitActive returns true if the babysit step is currently active
-// (running, fixing, or awaiting approval).
+// isBabysitActive returns true if the babysit step is currently running.
 func isBabysitActive(steps []ipc.StepResultInfo) bool {
 	for _, s := range steps {
 		if s.StepName == types.StepBabysit {
 			switch s.Status {
-			case types.StepStatusRunning, types.StepStatusFixing,
-				types.StepStatusAwaitingApproval, types.StepStatusFixReview:
+			case types.StepStatusRunning:
 				return true
 			}
 		}
@@ -77,8 +75,6 @@ func parseBabysitActivity(logs []string) babysitActivity {
 			a.LastEvent = line
 		case strings.Contains(line, "babysitting PR"):
 			a.LastEvent = line
-		case strings.Contains(line, "comment"):
-			a.LastEvent = line
 		case strings.Contains(line, "PR has been merged"):
 			a.LastEvent = line
 		case strings.Contains(line, "PR has been closed"):
@@ -130,14 +126,8 @@ func renderBabysitViewWithSelection(run *ipc.RunInfo, steps []ipc.StepResultInfo
 			b.WriteString(style.Render("\u2699 Auto-fixing CI failures...") + "\n")
 		} else {
 			style := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiGreen))
-			b.WriteString(style.Render("◉ Monitoring CI and PR comments...") + "\n")
+			b.WriteString(style.Render("◉ Monitoring CI checks...") + "\n")
 		}
-	case types.StepStatusFixing:
-		style := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBlue))
-		b.WriteString(style.Render("⚙ Agent addressing PR comments...") + "\n")
-	case types.StepStatusAwaitingApproval, types.StepStatusFixReview:
-		style := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiYellow))
-		b.WriteString(style.Render("⏸ New PR comments - review below") + "\n")
 	}
 
 	// CI auto-fix count.
@@ -152,9 +142,8 @@ func renderBabysitViewWithSelection(run *ipc.RunInfo, steps []ipc.StepResultInfo
 		b.WriteString(dimStyle.Render(eventText) + "\n")
 	}
 
-	// Log tail during monitoring (non-approval) states.
+	// Log tail during monitoring.
 	// Adaptive line count: 5 for height >= 30, 3 for 20-29, hidden for < 20.
-	isApproval := status == types.StepStatusAwaitingApproval || status == types.StepStatusFixReview
 	logLines := 5
 	if height > 0 && height < 30 {
 		logLines = 3
@@ -163,112 +152,13 @@ func renderBabysitViewWithSelection(run *ipc.RunInfo, steps []ipc.StepResultInfo
 		logLines = 0
 	}
 
-	if !isApproval && len(logs) > 0 && logLines > 0 {
+	if len(logs) > 0 && logLines > 0 {
 		b.WriteString("\n")
 		for _, line := range renderLogTail(logs, contentWidth, logLines) {
 			b.WriteString(line + "\n")
 		}
 	}
-	var itemCount int
-	if isApproval && findings != "" {
-		if f, err := parseFindings(findings); err == nil && f != nil {
-			itemCount = len(f.Items)
-		}
-		// Compute viewport size from available height.
-		// Reserve ~10 lines for babysit header content (PR info, state, activity, box border).
-		maxVisible := 0
-		if height > 0 {
-			findingsHeight := height - 25 // reserve for pipeline, babysit header, box borders, footer
-			if findingsHeight > 6 {
-				maxVisible = findingsHeight / 3 // ~3 lines per finding
-			}
-		}
-		rendered, scrollFooter := renderFindingsWithSelection(findings, contentWidth, cursor, selected, maxVisible)
-		if rendered != "" {
-			b.WriteString("\n")
-			b.WriteString(rendered)
-			// Babysit findings are nested inside the babysit box, so inline the scroll footer.
-			if scrollFooter != "" {
-				dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
-				b.WriteString("\n")
-				b.WriteString(dimStyle.Render(scrollFooter))
-				b.WriteString("\n")
-			}
-		}
-	}
 
-	title := "Babysit"
-	if itemCount > 0 {
-		title += fmt.Sprintf(" (%d/%d)", cursor+1, itemCount)
-	}
-	return renderBox(title, b.String(), boxWidth)
+	return renderBox("Babysit", b.String(), boxWidth)
 }
 
-func renderBabysitApprovalViewForHeight(run *ipc.RunInfo, steps []ipc.StepResultInfo, findings string, logs []string, width int, boxHeight int, cursor int, selected map[string]bool) string {
-	if boxHeight > 0 && boxHeight < 3 {
-		return ""
-	}
-	if boxHeight <= 0 {
-		return renderBabysitViewWithSelection(run, steps, findings, logs, width, 0, cursor, selected)
-	}
-
-	boxWidth := width
-	if boxWidth < 20 {
-		boxWidth = 80
-	}
-	contentWidth := boxWidth - 4
-	contentBudget := boxHeight - 2
-	if contentBudget <= 0 {
-		return ""
-	}
-
-	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
-	activity := parseBabysitActivity(logs)
-
-	var lines []string
-	if run != nil && run.PRURL != nil && *run.PRURL != "" {
-		prText := "PR: " + *run.PRURL
-		prText, _ = cutText(prText, contentWidth)
-		lines = append(lines, dimStyle.Render(prText))
-	} else if num := extractPRFromLogs(logs); num != "" {
-		lines = append(lines, dimStyle.Render("PR #"+num))
-	}
-	lines = append(lines, "")
-	statusStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiYellow))
-	lines = append(lines, statusStyle.Render("⏸ New PR comments - review below"))
-	if activity.CIFixes > 0 {
-		lines = append(lines, dimStyle.Render(fmt.Sprintf("CI auto-fixes: %d", activity.CIFixes)))
-	}
-	if activity.LastEvent != "" {
-		eventText := "Latest: " + activity.LastEvent
-		eventText, _ = cutText(eventText, contentWidth)
-		lines = append(lines, dimStyle.Render(eventText))
-	}
-
-	header := strings.Join(lines, "\n")
-	remaining := contentBudget - lipgloss.Height(header)
-	content := header
-
-	itemCount := 0
-	if f, err := parseFindings(findings); err == nil && f != nil {
-		itemCount = len(f.Items)
-	}
-	if findings != "" && remaining > 1 {
-		rendered, scrollFooter := renderFindingsWithSelectionHeight(findings, contentWidth, cursor, selected, remaining-1)
-		if scrollFooter != "" && remaining > 2 {
-			rendered, scrollFooter = renderFindingsWithSelectionHeight(findings, contentWidth, cursor, selected, remaining-2)
-		}
-		if rendered != "" {
-			content += "\n" + rendered
-			if scrollFooter != "" {
-				content += "\n" + dimStyle.Render(scrollFooter)
-			}
-		}
-	}
-
-	title := "Babysit"
-	if itemCount > 0 {
-		title += fmt.Sprintf(" (%d/%d)", cursor+1, itemCount)
-	}
-	return renderBox(title, content, boxWidth)
-}
