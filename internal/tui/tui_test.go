@@ -7654,6 +7654,16 @@ func TestTerminalTitle_Completed(t *testing.T) {
 	}
 }
 
+func TestTerminalTitle_ReattachCompletedRun(t *testing.T) {
+	run := testRun()
+	run.Status = types.RunCompleted
+	m := NewModel("/tmp/sock", nil, run)
+	title := m.terminalTitle()
+	if title != "no-mistakes: ✓ Completed" {
+		t.Errorf("expected 'no-mistakes: ✓ Completed', got %q", title)
+	}
+}
+
 func TestTerminalTitle_Failed(t *testing.T) {
 	run := testRun()
 	run.Status = types.RunFailed

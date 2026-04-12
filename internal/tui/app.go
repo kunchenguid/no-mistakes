@@ -87,6 +87,7 @@ func NewModel(socketPath string, client *ipc.Client, run *ipc.RunInfo) Model {
 		client:            client,
 		runID:             run.ID,
 		run:               run,
+		done:              run.Status == types.RunCompleted || run.Status == types.RunFailed || run.Status == types.RunCancelled,
 		steps:             run.Steps,
 		stepFindings:      make(map[types.StepName]string),
 		stepDiffs:         make(map[types.StepName]string),
