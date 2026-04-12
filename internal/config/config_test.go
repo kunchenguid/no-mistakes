@@ -4,10 +4,12 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/types"
+	"gopkg.in/yaml.v3"
 )
 
 func TestLoadGlobal_Defaults(t *testing.T) {
@@ -27,6 +29,117 @@ func TestLoadGlobal_Defaults(t *testing.T) {
 	}
 	if len(cfg.AgentPathOverride) != 0 {
 		t.Errorf("agent_path_override = %v, want empty", cfg.AgentPathOverride)
+	}
+}
+
+func TestEnsureDefaultGlobalConfig_CreatesFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+
+	EnsureDefaultGlobalConfig(path)
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("config file not created: %v", err)
+	}
+	content := string(data)
+	for _, want := range []string{
+		"agent: claude",
+		"babysit_timeout:",
+		"log_level: info",
+		"# agent_path_override:",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("default config missing %q", want)
+		}
+	}
+}
+
+func TestEnsureDefaultGlobalConfig_CreatedConfigIsLoadable(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+
+	EnsureDefaultGlobalConfig(path)
+
+	cfg, err := LoadGlobal(path)
+	if err != nil {
+		t.Fatalf("unexpected error on reload: %v", err)
+	}
+	if cfg.Agent != types.AgentClaude {
+		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentClaude)
+	}
+	if cfg.BabysitTimeout != 4*time.Hour {
+		t.Errorf("babysit_timeout = %v, want %v", cfg.BabysitTimeout, 4*time.Hour)
+	}
+	if cfg.LogLevel != "info" {
+		t.Errorf("log_level = %q, want %q", cfg.LogLevel, "info")
+	}
+}
+
+func TestEnsureDefaultGlobalConfig_DoesNotOverwrite(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	custom := "agent: codex\nlog_level: debug\n"
+	if err := os.WriteFile(path, []byte(custom), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	EnsureDefaultGlobalConfig(path)
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed to read config: %v", err)
+	}
+	if string(data) != custom {
+		t.Errorf("config was overwritten:\ngot:  %q\nwant: %q", string(data), custom)
+	}
+}
+
+func TestEnsureDefaultGlobalConfig_SkipsOnStatPermissionError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("agent: codex\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o000); err != nil {
+		t.Skip("cannot restrict directory permissions")
+	}
+	t.Cleanup(func() { os.Chmod(dir, 0o755) })
+
+	EnsureDefaultGlobalConfig(path)
+
+	os.Chmod(dir, 0o755)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed to read config: %v", err)
+	}
+	if string(data) != "agent: codex\n" {
+		t.Errorf("config was overwritten despite stat permission error:\ngot:  %q\nwant: %q", string(data), "agent: codex\n")
+	}
+}
+
+func TestEnsureDefaultGlobalConfig_CreatesParentDirs(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "subdir", "config.yaml")
+
+	EnsureDefaultGlobalConfig(path)
+
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("config file not created in nested dir: %v", err)
+	}
+}
+
+func TestLoadGlobal_DoesNotCreateFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+
+	_, err := LoadGlobal(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, err := os.Stat(path); err == nil {
+		t.Error("LoadGlobal should not create config file")
 	}
 }
 
@@ -322,6 +435,27 @@ func TestAgentPath_DefaultBinaries(t *testing.T) {
 		if got := cfg.AgentPath(); got != tt.want {
 			t.Errorf("AgentPath() for %q = %q, want %q", tt.agent, got, tt.want)
 		}
+	}
+}
+
+func TestDefaultConfigYAML_MatchesGoDefaults(t *testing.T) {
+	var raw globalConfigRaw
+	if err := yaml.Unmarshal([]byte(defaultConfigYAML), &raw); err != nil {
+		t.Fatalf("defaultConfigYAML is not valid YAML: %v", err)
+	}
+
+	if raw.Agent != types.AgentClaude {
+		t.Errorf("YAML agent = %q, Go default = %q", raw.Agent, types.AgentClaude)
+	}
+	d, err := time.ParseDuration(raw.BabysitTimeout)
+	if err != nil {
+		t.Fatalf("YAML babysit_timeout %q is not a valid duration: %v", raw.BabysitTimeout, err)
+	}
+	if d != 4*time.Hour {
+		t.Errorf("YAML babysit_timeout = %v, Go default = %v", d, 4*time.Hour)
+	}
+	if raw.LogLevel != "info" {
+		t.Errorf("YAML log_level = %q, Go default = %q", raw.LogLevel, "info")
 	}
 }
 

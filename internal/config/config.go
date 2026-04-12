@@ -53,6 +53,26 @@ type Config struct {
 	IgnorePatterns    []string
 }
 
+// defaultConfigYAML is the template written when no global config file exists.
+const defaultConfigYAML = `# no-mistakes global configuration
+
+# Agent to use for code generation
+# Options: claude, codex, rovodev, opencode
+agent: claude
+
+# Maximum time to babysit a run before timing out
+babysit_timeout: "4h"
+
+# Log level for daemon output
+# Options: debug, info, warn, error
+log_level: info
+
+# Override agent binary paths (optional)
+# agent_path_override:
+#   claude: /usr/local/bin/claude
+#   codex: /opt/codex
+`
+
 // defaultBinary maps agent names to their default binary names.
 var defaultBinary = map[types.AgentName]string{
 	types.AgentClaude:   "claude",
@@ -73,6 +93,24 @@ func (c *Config) AgentPath() string {
 		return b
 	}
 	return string(c.Agent)
+}
+
+// EnsureDefaultGlobalConfig writes the default config file at path if it does
+// not already exist. Failures are logged at debug level and silently ignored.
+func EnsureDefaultGlobalConfig(path string) {
+	if _, err := os.Stat(path); err == nil {
+		return
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		slog.Debug("failed to stat config path", "path", path, "error", err)
+		return
+	}
+	if mkErr := os.MkdirAll(filepath.Dir(path), 0o755); mkErr != nil {
+		slog.Debug("failed to create config directory", "path", filepath.Dir(path), "error", mkErr)
+		return
+	}
+	if wErr := os.WriteFile(path, []byte(defaultConfigYAML), 0o644); wErr != nil {
+		slog.Debug("failed to write default config", "path", path, "error", wErr)
+	}
 }
 
 // LoadGlobal reads global config from path. Returns defaults if file doesn't exist.
