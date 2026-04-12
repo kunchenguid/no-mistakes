@@ -2,6 +2,12 @@ package pipeline
 
 import "github.com/kunchenguid/no-mistakes/internal/types"
 
+func findingFingerprint(item types.Finding) types.Finding {
+	item.ID = ""
+	item.Line = 0
+	return item
+}
+
 func normalizeFindingsJSON(raw string, prefix string) string {
 	if raw == "" {
 		return ""
@@ -89,13 +95,11 @@ func removeMatchingFindingsJSON(existingRaw, removeRaw string) string {
 	}
 	toRemove := make(map[types.Finding]bool, len(remove.Items))
 	for _, item := range remove.Items {
-		item.ID = ""
-		toRemove[item] = true
+		toRemove[findingFingerprint(item)] = true
 	}
 	filtered := types.Findings{Summary: existing.Summary, RiskLevel: existing.RiskLevel, RiskRationale: existing.RiskRationale}
 	for _, item := range existing.Items {
-		match := item
-		match.ID = ""
+		match := findingFingerprint(item)
 		if toRemove[match] {
 			continue
 		}
@@ -125,13 +129,11 @@ func retainMatchingFindingsJSON(existingRaw, keepRaw string) string {
 	}
 	allowed := make(map[types.Finding]bool, len(keep.Items))
 	for _, item := range keep.Items {
-		item.ID = ""
-		allowed[item] = true
+		allowed[findingFingerprint(item)] = true
 	}
 	filtered := types.Findings{Summary: existing.Summary, RiskLevel: existing.RiskLevel, RiskRationale: existing.RiskRationale}
 	for _, item := range existing.Items {
-		match := item
-		match.ID = ""
+		match := findingFingerprint(item)
 		if !allowed[match] {
 			continue
 		}

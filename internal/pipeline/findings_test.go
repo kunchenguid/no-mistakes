@@ -39,3 +39,20 @@ func TestRetainMatchingFindingsJSON_DropsFindingsMissingFromLatestReview(t *test
 		t.Fatalf("unexpected retained findings: %#v", retained.Items)
 	}
 }
+
+func TestRetainMatchingFindingsJSON_MatchesFindingsAfterLineShift(t *testing.T) {
+	existingRaw := `{"findings":[{"id":"dismissed-1","severity":"warning","file":"internal/pipeline/findings.go","line":42,"description":"still unresolved"}],"summary":"1 finding"}`
+	keepRaw := `{"findings":[{"id":"review-9","severity":"warning","file":"internal/pipeline/findings.go","line":57,"description":"still unresolved"}],"summary":"1 finding"}`
+
+	retainedRaw := retainMatchingFindingsJSON(existingRaw, keepRaw)
+	retained, err := types.ParseFindingsJSON(retainedRaw)
+	if err != nil {
+		t.Fatalf("parse retained findings: %v", err)
+	}
+	if len(retained.Items) != 1 {
+		t.Fatalf("expected 1 finding, got %d", len(retained.Items))
+	}
+	if retained.Items[0].ID != "dismissed-1" {
+		t.Fatalf("unexpected retained finding: %#v", retained.Items)
+	}
+}
