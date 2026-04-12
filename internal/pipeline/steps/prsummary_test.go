@@ -256,6 +256,42 @@ func TestBuildPipelineSummary_ReviewUsesFinalCleanState(t *testing.T) {
 	}
 }
 
+func TestBuildPipelineSummary_ReviewShowsWarningForUnresolvedRiskWithoutFindings(t *testing.T) {
+	findings := `{"findings":[],"summary":"clean","risk_level":"medium","risk_rationale":"touches critical error handling"}`
+	steps := []*db.StepResult{
+		{ID: "s1", StepName: types.StepReview, Status: types.StepStatusCompleted, FindingsJSON: &findings},
+	}
+	rounds := map[string][]*db.StepRound{
+		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 1000}},
+	}
+	md := BuildPipelineSummary(steps, rounds)
+
+	if !strings.Contains(md, "⚠️ **Review** - medium risk") {
+		t.Errorf("expected warning status for medium risk review without findings, got:\n%s", md)
+	}
+	if strings.Contains(md, "✅ **Review**") {
+		t.Errorf("did not expect passed emoji for medium risk review, got:\n%s", md)
+	}
+}
+
+func TestBuildPipelineSummary_ShowsParseFailureForInvalidRoundFindings(t *testing.T) {
+	invalidFindings := `{"findings":[`
+	steps := []*db.StepResult{
+		{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted},
+	}
+	rounds := map[string][]*db.StepRound{
+		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &invalidFindings, DurationMS: 1000}},
+	}
+	md := BuildPipelineSummary(steps, rounds)
+
+	if !strings.Contains(md, "failed to parse findings") {
+		t.Errorf("expected parse failure message for invalid round findings, got:\n%s", md)
+	}
+	if strings.Contains(md, "**Round 1** - \n") {
+		t.Errorf("did not expect blank round summary for invalid round findings, got:\n%s", md)
+	}
+}
+
 func TestBuildPipelineSummary_FindingSeverityEmoji(t *testing.T) {
 	findings := `{"findings":[{"id":"review-1","severity":"error","description":"critical bug"},{"id":"review-2","severity":"warning","description":"minor issue"},{"id":"review-3","severity":"info","description":"suggestion"}],"summary":"3 findings","risk_level":"high","risk_rationale":"critical bug found"}`
 	steps := []*db.StepResult{
