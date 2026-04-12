@@ -7016,6 +7016,9 @@ func TestHelpOverlay_SelectionDescriptionsAligned(t *testing.T) {
 }
 
 func TestModel_View_LogBoxExpandsToFillRightColumn(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	defer lipgloss.SetColorProfile(prev)
+
 	lipgloss.SetColorProfile(termenv.Ascii)
 	run := testRun()
 	run.Steps[0].Status = types.StepStatusRunning
@@ -7047,6 +7050,9 @@ func TestModel_View_LogBoxExpandsToFillRightColumn(t *testing.T) {
 }
 
 func TestModel_View_LogBoxStaysSmallWhenFindingsPresent(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	defer lipgloss.SetColorProfile(prev)
+
 	lipgloss.SetColorProfile(termenv.Ascii)
 	findings := `{"findings":[{"severity":"error","description":"test finding","id":"f1","file":"foo.go","line":1}],"summary":"1 issue"}`
 	run := &ipc.RunInfo{
