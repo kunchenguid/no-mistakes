@@ -469,7 +469,50 @@ func TestParseOpencodeSSE_DoesNotLeakUnknownDeltaBeforeUserRoleIsKnown(t *testin
 	}
 }
 
-func TestParseOpencodeSSE_EmitsBufferedDeltaOnlyAssistantAfterRoleKnown(t *testing.T) {
+func TestParseOpencodeSSE_DoesNotClaimOrphanBeforeUserRoleArrives(t *testing.T) {
+	input := strings.Join([]string{
+		`data: {"payload":{"type":"message.part.delta","properties":{"sessionID":"s1","field":"text","partID":"p-user","delta":"prompt"}}}`,
+		``,
+		`data: {"payload":{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"asst-msg","role":"assistant"}}}}`,
+		``,
+		`data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p-user","messageID":"user-msg","type":"text","text":"prompt"}}}}`,
+		``,
+		`data: {"payload":{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"user-msg","role":"user"}}}}`,
+		``,
+		`data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p-asst","messageID":"asst-msg","type":"text","text":"response"}}}}`,
+		``,
+		`data: {"payload":{"type":"session.idle"}}`,
+		``,
+		``,
+	}, "\n")
+
+	state := &opencodeStreamState{
+		sessionID:  "s1",
+		textParts:  make(map[string]*opencodeTextPart),
+		usageByMsg: make(map[string]TokenUsage),
+	}
+	var chunks []string
+	state.onChunk = func(text string) { chunks = append(chunks, text) }
+
+	err := parseOpencodeSSE(strings.NewReader(input), state)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(chunks) != 1 {
+		t.Fatalf("expected 1 chunk, got %d: %v", len(chunks), chunks)
+	}
+	if chunks[0] != "response" {
+		t.Fatalf("expected assistant response only, got %q", chunks[0])
+	}
+	if _, ok := state.textParts["p-user"]; ok {
+		t.Fatalf("expected user part to be dropped, got %#v", state.textParts["p-user"])
+	}
+	if state.lastText != "response" {
+		t.Fatalf("expected lastText to stay on assistant output, got %q", state.lastText)
+	}
+}
+
+func TestParseOpencodeSSE_DoesNotEmitDeltaOnlyAssistantWithoutOwnedPart(t *testing.T) {
 	input := strings.Join([]string{
 		`data: {"payload":{"type":"message.part.delta","properties":{"sessionID":"s1","field":"text","partID":"p1","delta":"hello "}}}`,
 		``,
@@ -495,16 +538,13 @@ func TestParseOpencodeSSE_EmitsBufferedDeltaOnlyAssistantAfterRoleKnown(t *testi
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(chunks) != 1 {
-		t.Fatalf("expected 1 chunk, got %d: %v", len(chunks), chunks)
+	if len(chunks) != 0 {
+		t.Fatalf("expected no chunks, got %v", chunks)
 	}
-	if chunks[0] != "hello world" {
-		t.Fatalf("expected buffered assistant delta, got %q", chunks[0])
+	if state.lastText != "" {
+		t.Fatalf("expected lastText to remain empty, got %q", state.lastText)
 	}
-	if state.lastText != "hello world" {
-		t.Fatalf("expected lastText 'hello world', got %q", state.lastText)
-	}
-	if got := state.textParts["p1"]; got == nil || got.text != "hello world" {
+	if got := state.textParts["p1"]; got == nil || got.text != "hello world" || got.messageID != "" {
 		t.Fatalf("expected cached part text 'hello world', got %#v", got)
 	}
 }
@@ -788,6 +828,67 @@ func TestOpencodeAgent_FullFlow(t *testing.T) {
 	}
 	if !calledPaths["POST /session/test-session-456/message"] {
 		t.Error("expected POST /session/{id}/message call")
+	}
+}
+
+func TestOpencodeAgent_BackfillsAssistantTextWhenStreamCannotClassifyOrphans(t *testing.T) {
+	calledPaths := make(map[string]bool)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calledPaths[r.Method+" "+r.URL.Path] = true
+		switch {
+		case r.URL.Path == "/session" && r.Method == http.MethodPost:
+			fmt.Fprint(w, `{"id":"test-session-789"}`)
+
+		case r.URL.Path == "/global/event" && r.Method == http.MethodGet:
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, "data: {\"payload\":{\"type\":\"message.part.delta\",\"properties\":{\"sessionID\":\"test-session-789\",\"field\":\"text\",\"partID\":\"p1\",\"delta\":\"hello \"}}}\n\n")
+			fmt.Fprint(w, "data: {\"payload\":{\"type\":\"message.part.delta\",\"properties\":{\"sessionID\":\"test-session-789\",\"field\":\"text\",\"partID\":\"p2\",\"delta\":\"world\"}}}\n\n")
+			fmt.Fprint(w, "data: {\"payload\":{\"type\":\"message.updated\",\"properties\":{\"sessionID\":\"test-session-789\",\"info\":{\"id\":\"msg1\",\"role\":\"assistant\",\"tokens\":{\"input\":100,\"output\":50}}}}}\n\n")
+			fmt.Fprint(w, "data: {\"payload\":{\"type\":\"session.idle\"}}\n\n")
+
+		case r.URL.Path == "/session/test-session-789/message" && r.Method == http.MethodPost:
+			fmt.Fprint(w, `{"info":{"id":"msg1","role":"assistant","structured":{"summary":"hello world"},"tokens":{"input":100,"output":50}},"parts":[{"type":"text","text":"hello world"}]}`)
+
+		case r.URL.Path == "/session/test-session-789" && r.Method == http.MethodDelete:
+			w.WriteHeader(http.StatusOK)
+
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	a := &opencodeAgent{
+		bin:    "opencode",
+		server: &managedServer{port: mustParsePort(server.URL)},
+	}
+
+	var chunks []string
+	result, err := a.Run(context.Background(), RunOpts{
+		Prompt:     "review this code",
+		CWD:        t.TempDir(),
+		JSONSchema: json.RawMessage(`{"type":"object"}`),
+		OnChunk:    func(text string) { chunks = append(chunks, text) },
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected result")
+	}
+	if len(chunks) != 1 || chunks[0] != "hello world" {
+		t.Fatalf("expected one backfilled chunk, got %v", chunks)
+	}
+	if result.Text != "hello world" {
+		t.Fatalf("expected result text 'hello world', got %q", result.Text)
+	}
+	if string(result.Output) != `{"summary":"hello world"}` {
+		t.Fatalf("expected structured summary 'hello world', got %s", string(result.Output))
+	}
+	if !calledPaths[http.MethodGet+" /global/event"] {
+		t.Fatal("expected event stream to be called")
 	}
 }
 
