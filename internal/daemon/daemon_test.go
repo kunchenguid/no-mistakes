@@ -248,6 +248,58 @@ func TestGetActiveRunHandler(t *testing.T) {
 	}
 }
 
+func TestGetActiveRunHandlerPrefersRequestedBranch(t *testing.T) {
+	p, d := startTestDaemon(t)
+
+	repo, err := d.InsertRepoWithID("test-repo-branch", "/tmp/test-repo-branch", "https://github.com/test/repo-branch", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runA, err := d.InsertRun(repo.ID, "feature-a", "aaa", "000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runB, err := d.InsertRun(repo.ID, "feature-b", "bbb", "000")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var result ipc.GetActiveRunResult
+	if err := client.Call(ipc.MethodGetActiveRun, &ipc.GetActiveRunParams{RepoID: repo.ID, Branch: "feature-a"}, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Run == nil {
+		t.Fatal("expected active run for requested branch")
+	}
+	if result.Run.ID != runA.ID {
+		t.Fatalf("active run id = %q, want %q", result.Run.ID, runA.ID)
+	}
+
+	var fallback ipc.GetActiveRunResult
+	if err := client.Call(ipc.MethodGetActiveRun, &ipc.GetActiveRunParams{RepoID: repo.ID, Branch: "missing-branch"}, &fallback); err != nil {
+		t.Fatal(err)
+	}
+	if fallback.Run == nil {
+		t.Fatal("expected fallback active run")
+	}
+	if fallback.Run.ID != runB.ID {
+		t.Fatalf("fallback active run id = %q, want %q", fallback.Run.ID, runB.ID)
+	}
+	if fallback.Run.Branch != "feature-b" {
+		t.Fatalf("fallback active run branch = %q, want %q", fallback.Run.Branch, "feature-b")
+	}
+	if fallback.Run.ID == runA.ID {
+		t.Fatal("expected fallback to prefer newest run when branch is missing")
+	}
+}
+
 func TestGetRunNotFound(t *testing.T) {
 	p, _ := startTestDaemon(t)
 
