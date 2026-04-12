@@ -107,14 +107,23 @@ func (d *DB) CompleteStep(id string, exitCode int, durationMS int64, logPath str
 	return nil
 }
 
-// FailStep marks a step as failed with an error message.
-func (d *DB) FailStep(id string, errMsg string) error {
+// FailStep marks a step as failed with an error message and duration.
+func (d *DB) FailStep(id string, errMsg string, durationMS int64) error {
 	_, err := d.sql.Exec(
-		`UPDATE step_results SET status = ?, error = ?, completed_at = ? WHERE id = ?`,
-		types.StepStatusFailed, errMsg, now(), id,
+		`UPDATE step_results SET status = ?, error = ?, duration_ms = ?, completed_at = ? WHERE id = ?`,
+		types.StepStatusFailed, errMsg, durationMS, now(), id,
 	)
 	if err != nil {
 		return fmt.Errorf("fail step: %w", err)
+	}
+	return nil
+}
+
+// SetStepDuration sets the execution-only duration on a step result.
+func (d *DB) SetStepDuration(id string, durationMS int64) error {
+	_, err := d.sql.Exec(`UPDATE step_results SET duration_ms = ? WHERE id = ?`, durationMS, id)
+	if err != nil {
+		return fmt.Errorf("set step duration: %w", err)
 	}
 	return nil
 }

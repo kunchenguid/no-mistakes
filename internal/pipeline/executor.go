@@ -139,7 +139,9 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	}
 	e.emitStepEvent(ipc.EventStepStarted, run, repo, stepName, string(types.StepStatusRunning))
 
-	started := time.Now()
+	// Track execution-only time, excluding approval wait periods.
+	phaseStart := time.Now()
+	var executionMS int64
 
 	// Open log file for persistent step logging
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
@@ -161,6 +163,9 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			e.emitLogChunk(run, repo, stepName, text)
 			fmt.Fprintln(logFile, text)
 		},
+		LogFile: func(text string) {
+			fmt.Fprintln(logFile, text)
+		},
 	}
 
 	// Determine auto-fix limit for this step
@@ -174,10 +179,11 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	for {
 		outcome, err := step.Execute(sctx)
 		if err != nil {
-			if dbErr := e.db.FailStep(sr.ID, err.Error()); dbErr != nil {
+			durationMS := executionMS + time.Since(phaseStart).Milliseconds()
+			if dbErr := e.db.FailStep(sr.ID, err.Error(), durationMS); dbErr != nil {
 				slog.Warn("failed to mark step as failed in db", "step", stepName, "error", dbErr)
 			}
-			e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFailed), "", "", err.Error())
+			e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFailed), "", "", err.Error(), &durationMS)
 			return fmt.Errorf("step %s failed: %w", stepName, err)
 		}
 
@@ -212,6 +218,9 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			continue
 		}
 
+		// Freeze execution timer before entering approval wait.
+		executionMS += time.Since(phaseStart).Milliseconds()
+
 		// Determine approval status: fix_review after a fix cycle, awaiting_approval otherwise
 		approvalStatus := types.StepStatusAwaitingApproval
 		var diffText string
@@ -225,51 +234,56 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			}
 		}
 
-		// Step needs approval - wait for user action
+		// Step needs approval - store execution-only duration and wait for user action.
 		if dbErr := e.db.UpdateStepStatus(sr.ID, approvalStatus); dbErr != nil {
 			slog.Warn("failed to update step status in db", "step", stepName, "status", approvalStatus, "error", dbErr)
 		}
-		e.emitStepEventWithFindingsAndDiff(ipc.EventStepCompleted, run, repo, stepName, string(approvalStatus), outcome.Findings, diffText)
+		if dbErr := e.db.SetStepDuration(sr.ID, executionMS); dbErr != nil {
+			slog.Warn("failed to set step duration in db", "step", stepName, "error", dbErr)
+		}
+		e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(approvalStatus), outcome.Findings, diffText, "", &executionMS)
 
 		response, err := e.waitForApproval(ctx, stepName)
 		if err != nil {
-			if dbErr := e.db.FailStep(sr.ID, err.Error()); dbErr != nil {
+			if dbErr := e.db.FailStep(sr.ID, err.Error(), executionMS); dbErr != nil {
 				slog.Warn("failed to mark step as failed in db", "step", stepName, "error", dbErr)
 			}
-			e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFailed), "", "", err.Error())
+			e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFailed), "", "", err.Error(), &executionMS)
 			return fmt.Errorf("step %s: waiting for approval: %w", stepName, err)
 		}
 
 		switch response.action {
 		case types.ActionApprove:
-			// Approved - break out of fix loop
+			// Approved - execution already frozen in executionMS, reset phaseStart
+			// so the done label computes no additional elapsed.
+			phaseStart = time.Now()
 			goto done
 
 		case types.ActionSkip:
 			// Skip - mark step skipped and return (not an error)
-			durationMS := time.Since(started).Milliseconds()
-			if err := e.db.CompleteStep(sr.ID, finalExitCode, durationMS, logPath); err != nil {
+			if err := e.db.CompleteStep(sr.ID, finalExitCode, executionMS, logPath); err != nil {
 				return fmt.Errorf("complete step %s (skip): %w", stepName, err)
 			}
 			if dbErr := e.db.UpdateStepStatus(sr.ID, types.StepStatusSkipped); dbErr != nil {
 				slog.Warn("failed to update step status in db", "step", stepName, "status", "skipped", "error", dbErr)
 			}
-			e.emitStepEvent(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusSkipped))
+			e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusSkipped), "", "", "", &executionMS)
 			return nil
 
 		case types.ActionAbort:
-			if dbErr := e.db.FailStep(sr.ID, "aborted by user"); dbErr != nil {
+			if dbErr := e.db.FailStep(sr.ID, "aborted by user", executionMS); dbErr != nil {
 				slog.Warn("failed to mark step as failed in db", "step", stepName, "error", dbErr)
 			}
-			e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFailed), "", "", "aborted by user")
+			e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFailed), "", "", "aborted by user", &executionMS)
 			return fmt.Errorf("step %s: aborted by user", stepName)
 
 		case types.ActionFix:
-			// Fix - mark step as fixing, re-execute with previous findings
+			// Fix - mark step as fixing, resume execution timer, re-execute.
+			phaseStart = time.Now()
 			if dbErr := e.db.UpdateStepStatus(sr.ID, types.StepStatusFixing); dbErr != nil {
 				slog.Warn("failed to update step status in db", "step", stepName, "status", "fixing", "error", dbErr)
 			}
-			e.emitStepEvent(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFixing))
+			e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFixing), "", "", "", &executionMS)
 			sctx.Fixing = true
 			sctx.PreviousFindings = filterFindingsJSON(outcome.Findings, response.findingIDs)
 			slog.Info("step fix requested, re-executing", "step", stepName)
@@ -278,12 +292,12 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	}
 
 done:
-	// Mark step completed with timing
-	durationMS := time.Since(started).Milliseconds()
+	// Mark step completed with execution-only timing.
+	durationMS := executionMS + time.Since(phaseStart).Milliseconds()
 	if err := e.db.CompleteStep(sr.ID, finalExitCode, durationMS, logPath); err != nil {
 		return fmt.Errorf("complete step %s: %w", stepName, err)
 	}
-	e.emitStepEvent(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusCompleted))
+	e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusCompleted), "", "", "", &durationMS)
 	return nil
 }
 
@@ -361,16 +375,17 @@ func (e *Executor) emitStepEventWithFindings(eventType ipc.EventType, run *db.Ru
 }
 
 func (e *Executor) emitStepEventWithFindingsAndDiff(eventType ipc.EventType, run *db.Run, repo *db.Repo, stepName types.StepName, status string, findings string, diff string) {
-	e.emitStepEventWithFindingsDiffAndError(eventType, run, repo, stepName, status, findings, diff, "")
+	e.emitStepEventWithFindingsDiffAndError(eventType, run, repo, stepName, status, findings, diff, "", nil)
 }
 
-func (e *Executor) emitStepEventWithFindingsDiffAndError(eventType ipc.EventType, run *db.Run, repo *db.Repo, stepName types.StepName, status string, findings string, diff string, errMsg string) {
+func (e *Executor) emitStepEventWithFindingsDiffAndError(eventType ipc.EventType, run *db.Run, repo *db.Repo, stepName types.StepName, status string, findings string, diff string, errMsg string, durationMS *int64) {
 	event := ipc.Event{
-		Type:     eventType,
-		RunID:    run.ID,
-		RepoID:   repo.ID,
-		StepName: &stepName,
-		Status:   &status,
+		Type:       eventType,
+		RunID:      run.ID,
+		RepoID:     repo.ID,
+		StepName:   &stepName,
+		Status:     &status,
+		DurationMS: durationMS,
 	}
 	if errMsg != "" {
 		event.Error = &errMsg

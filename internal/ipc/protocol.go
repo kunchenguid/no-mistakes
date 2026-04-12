@@ -204,17 +204,18 @@ const (
 
 // Event is a real-time update sent to subscribers.
 type Event struct {
-	Type     EventType       `json:"type"`
-	RunID    string          `json:"run_id"`
-	RepoID   string          `json:"repo_id"`
-	StepName *types.StepName `json:"step_name,omitempty"`
-	Status   *string         `json:"status,omitempty"`
-	Error    *string         `json:"error,omitempty"`
-	Stream   *string         `json:"stream,omitempty"`
-	Content  *string         `json:"content,omitempty"`
-	Branch   *string         `json:"branch,omitempty"`
-	Findings *string         `json:"findings,omitempty"` // JSON-encoded findings for step_completed events
-	Diff     *string         `json:"diff,omitempty"`     // unified diff for fix_review events
+	Type       EventType       `json:"type"`
+	RunID      string          `json:"run_id"`
+	RepoID     string          `json:"repo_id"`
+	StepName   *types.StepName `json:"step_name,omitempty"`
+	Status     *string         `json:"status,omitempty"`
+	Error      *string         `json:"error,omitempty"`
+	Stream     *string         `json:"stream,omitempty"`
+	Content    *string         `json:"content,omitempty"`
+	Branch     *string         `json:"branch,omitempty"`
+	Findings   *string         `json:"findings,omitempty"`    // JSON-encoded findings for step_completed events
+	Diff       *string         `json:"diff,omitempty"`        // unified diff for fix_review events
+	DurationMS *int64          `json:"duration_ms,omitempty"` // execution-only duration for step events
 }
 
 // --- Helpers ---

@@ -87,13 +87,17 @@ func NewModel(socketPath string, client *ipc.Client, run *ipc.RunInfo) Model {
 		findingCursor:     make(map[types.StepName]int),
 		stepStartTimes:    make(map[types.StepName]time.Time),
 	}
-	// Populate findings from initial step data (for re-attach scenarios).
+	// Populate findings and start times from initial step data (for re-attach scenarios).
 	for _, s := range run.Steps {
 		if s.FindingsJSON != nil && *s.FindingsJSON != "" {
 			m.stepFindings[s.StepName] = *s.FindingsJSON
 			if s.Status == types.StepStatusAwaitingApproval || s.Status == types.StepStatusFixReview {
 				m.resetFindingSelection(s.StepName)
 			}
+		}
+		// Seed start times from DB so elapsed time can be computed on re-attach.
+		if s.StartedAt != nil && s.DurationMS == nil {
+			m.stepStartTimes[s.StepName] = time.UnixMilli(*s.StartedAt)
 		}
 	}
 	return m
@@ -569,7 +573,8 @@ func (m Model) stepsWithRunningElapsed() []ipc.StepResultInfo {
 			continue
 		}
 		switch steps[i].Status {
-		case types.StepStatusRunning, types.StepStatusFixing:
+		case types.StepStatusRunning, types.StepStatusFixing,
+			types.StepStatusAwaitingApproval, types.StepStatusFixReview:
 			if startTime, ok := m.stepStartTimes[steps[i].StepName]; ok {
 				elapsed := int64(time.Since(startTime).Milliseconds())
 				steps[i].DurationMS = &elapsed
@@ -908,10 +913,12 @@ func (m *Model) applyEvent(event ipc.Event) {
 		if event.StepName != nil && event.Error != nil {
 			m.setStepError(*event.StepName, event.Error)
 		}
-		// Compute and persist final duration from tracked start time so the
-		// completed step continues to display its elapsed time.
+		// Persist duration so the step continues to display its elapsed time.
+		// Prefer the event's execution-only duration; fall back to local timing.
 		if event.StepName != nil {
-			if startTime, ok := m.stepStartTimes[*event.StepName]; ok {
+			if event.DurationMS != nil {
+				m.setStepDuration(*event.StepName, event.DurationMS)
+			} else if startTime, ok := m.stepStartTimes[*event.StepName]; ok {
 				elapsed := int64(time.Since(startTime).Milliseconds())
 				m.setStepDuration(*event.StepName, &elapsed)
 			}
