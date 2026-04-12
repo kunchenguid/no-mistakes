@@ -241,7 +241,7 @@ func TestActiveRun(t *testing.T) {
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
 
 	// no active run initially
-	active, err := d.GetActiveRun(repo.ID)
+	active, err := d.GetActiveRun(repo.ID, "")
 	if err != nil {
 		t.Fatalf("get active run: %v", err)
 	}
@@ -250,16 +250,61 @@ func TestActiveRun(t *testing.T) {
 	}
 
 	run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
-	active, _ = d.GetActiveRun(repo.ID)
+	active, _ = d.GetActiveRun(repo.ID, "")
 	if active == nil || active.ID != run.ID {
 		t.Fatal("expected active run matching inserted run")
 	}
 
 	// after completing, no active run
 	d.UpdateRunStatus(run.ID, types.RunCompleted)
-	active, _ = d.GetActiveRun(repo.ID)
+	active, _ = d.GetActiveRun(repo.ID, "")
 	if active != nil {
 		t.Fatal("expected nil after completing run")
+	}
+}
+
+func TestActiveRunPrefersBranch(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/branchpref", "git@github.com:user/branchpref.git", "main")
+
+	// Create two active runs on different branches.
+	runA, _ := d.InsertRun(repo.ID, "feature-a", "aaa", "000")
+	runB, _ := d.InsertRun(repo.ID, "feature-b", "bbb", "000")
+
+	// Without branch hint, newest (runB) wins.
+	active, err := d.GetActiveRun(repo.ID, "")
+	if err != nil {
+		t.Fatalf("get active run: %v", err)
+	}
+	if active == nil || active.ID != runB.ID {
+		t.Fatalf("expected newest run %q, got %v", runB.ID, active)
+	}
+
+	// With branch hint "feature-a", the older matching run wins.
+	active, err = d.GetActiveRun(repo.ID, "feature-a")
+	if err != nil {
+		t.Fatalf("get active run with branch: %v", err)
+	}
+	if active == nil || active.ID != runA.ID {
+		t.Fatalf("expected branch-matching run %q, got %q", runA.ID, active.ID)
+	}
+
+	// With branch hint "feature-b", runB is returned.
+	active, err = d.GetActiveRun(repo.ID, "feature-b")
+	if err != nil {
+		t.Fatalf("get active run with branch: %v", err)
+	}
+	if active == nil || active.ID != runB.ID {
+		t.Fatalf("expected branch-matching run %q, got %q", runB.ID, active.ID)
+	}
+
+	// With branch hint for a non-existent branch, falls back to newest.
+	active, err = d.GetActiveRun(repo.ID, "feature-c")
+	if err != nil {
+		t.Fatalf("get active run with unknown branch: %v", err)
+	}
+	if active == nil || active.ID != runB.ID {
+		t.Fatalf("expected fallback to newest run %q, got %q", runB.ID, active.ID)
 	}
 }
 

@@ -226,7 +226,7 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("invalid params: %w", err)
 		}
-		run, err := d.GetActiveRun(p.RepoID)
+		run, err := d.GetActiveRun(p.RepoID, p.Branch)
 		if err != nil {
 			return nil, fmt.Errorf("get active run: %w", err)
 		}
