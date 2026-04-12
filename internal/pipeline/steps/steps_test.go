@@ -633,6 +633,55 @@ func TestRebaseStep_FixModeCallsAgent(t *testing.T) {
 	}
 }
 
+func TestRebaseStep_FixModeNonConflictFailureReturnsError(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("base\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "base commit")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "main")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(dir, "b.txt"), []byte("feature\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature change")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	// Advance main so rebase is needed
+	gitCmd(t, dir, "checkout", "main")
+	os.WriteFile(filepath.Join(dir, "c.txt"), []byte("main\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "main advance")
+	gitCmd(t, dir, "push", "origin", "main")
+	gitCmd(t, dir, "checkout", "feature")
+
+	// Dirty the working tree so rebase fails without conflict
+	os.WriteFile(filepath.Join(dir, "b.txt"), []byte("dirty\n"), 0o644)
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Fixing = true
+
+	step := &RebaseStep{}
+	_, err := step.Execute(sctx)
+	if err == nil {
+		t.Fatal("expected error for non-conflict rebase failure")
+	}
+	if len(ag.calls) != 0 {
+		t.Errorf("expected 0 agent calls for non-conflict failure, got %d", len(ag.calls))
+	}
+}
+
 func TestRebaseStep_LogFileNotVisibleToUser(t *testing.T) {
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")

@@ -915,7 +915,8 @@ func (m *Model) applyEvent(event ipc.Event) {
 		}
 		// Persist duration so the step continues to display its elapsed time.
 		// Prefer the event's execution-only duration; fall back to local timing.
-		if event.StepName != nil {
+		// Skip for "fixing" status so stepsWithRunningElapsed keeps the timer ticking.
+		if event.StepName != nil && (event.Status == nil || types.StepStatus(*event.Status) != types.StepStatusFixing) {
 			if event.DurationMS != nil {
 				m.setStepDuration(*event.StepName, event.DurationMS)
 			} else if startTime, ok := m.stepStartTimes[*event.StepName]; ok {

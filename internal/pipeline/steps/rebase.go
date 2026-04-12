@@ -121,6 +121,10 @@ func rebaseWithAgent(ctx context.Context, sctx *pipeline.StepContext, targetRef 
 	}
 
 	conflictFiles := conflictingFiles(ctx, sctx.WorkDir)
+	if len(conflictFiles) == 0 {
+		_, _ = git.Run(ctx, sctx.WorkDir, "rebase", "--abort")
+		return fmt.Errorf("rebase onto %s failed (no conflict files detected)", targetRef)
+	}
 	sctx.Log(fmt.Sprintf("conflicts detected in %d file(s), asking agent to resolve...", len(conflictFiles)))
 
 	prompt := fmt.Sprintf(

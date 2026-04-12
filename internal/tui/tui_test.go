@@ -5420,6 +5420,33 @@ func TestModel_ApplyEvent_StepCompletedPrefersEventDuration(t *testing.T) {
 	t.Fatal("Review step not found")
 }
 
+func TestModel_FixingEventDoesNotFreezeDuration(t *testing.T) {
+	configureTUIColors()
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusRunning
+
+	m := NewModel("", nil, run)
+	m.stepStartTimes[types.StepReview] = time.Now().Add(-5 * time.Second)
+
+	fixingStatus := string(types.StepStatusFixing)
+	stepName := types.StepReview
+	m.applyEvent(ipc.Event{
+		Type:     ipc.EventStepCompleted,
+		StepName: &stepName,
+		Status:   &fixingStatus,
+	})
+
+	for _, s := range m.steps {
+		if s.StepName == types.StepReview {
+			if s.DurationMS != nil {
+				t.Errorf("expected DurationMS to remain nil during fixing so timer keeps ticking, got %d", *s.DurationMS)
+			}
+			return
+		}
+	}
+	t.Fatal("Review step not found")
+}
+
 func TestRenderDiff_BlankLineBetweenFiles(t *testing.T) {
 	// Multi-file diff should have a blank line before the second file header.
 	raw := `diff --git a/foo.go b/foo.go
