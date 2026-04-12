@@ -20,10 +20,8 @@ import (
 
 const defaultChecksGracePeriod = 60 * time.Second
 
-// BabysitStep monitors CI and PR comments after PR creation,
-// auto-fixing CI failures and presenting PR comments for human selection.
+// BabysitStep monitors CI checks after PR creation, auto-fixing failures.
 type BabysitStep struct {
-	seenComments         map[string]bool
 	lastFixedChecks      string        // sorted check names from last fix attempt, to avoid re-fixing
 	checksGracePeriod    time.Duration // minimum wait before trusting empty CI checks (0 = default 60s)
 	pollIntervalOverride time.Duration // if set, overrides computed poll interval (for testing)
@@ -45,17 +43,6 @@ type ciCheck struct {
 	Conclusion string `json:"conclusion"` // legacy fake-test field
 	State      string `json:"state"`      // gh CLI field
 	Bucket     string `json:"bucket"`     // gh CLI field: pass|fail|pending|skipping|cancel
-}
-
-// prComment represents a comment on a PR from gh pr view --json comments.
-type prComment struct {
-	ID     string `json:"id"`
-	Author struct {
-		Login string `json:"login"`
-	} `json:"author"`
-	Body      string `json:"body"`
-	CreatedAt string `json:"createdAt"`
-	URL       string `json:"url"`
 }
 
 // extractPRNumber extracts the PR number from a GitHub PR URL.
@@ -126,34 +113,6 @@ func failingCheckNames(checks []ciCheck) []string {
 	return names
 }
 
-// commentsToFindings converts PR comments to the findings format for TUI display.
-func commentsToFindings(comments []prComment) Findings {
-	var items []Finding
-	for _, c := range comments {
-		items = append(items, Finding{
-			ID:          c.ID,
-			Severity:    "info",
-			Description: fmt.Sprintf("@%s: %s", c.Author.Login, truncate(c.Body, 200)),
-		})
-	}
-	return Findings{
-		Items:   items,
-		Summary: fmt.Sprintf("%d PR comment(s) to review", len(comments)),
-	}
-}
-
-// truncate shortens a string to maxLen runes, adding "..." if truncated.
-func truncate(s string, maxLen int) string {
-	runes := []rune(s)
-	if len(runes) <= maxLen {
-		return s
-	}
-	if maxLen <= 3 {
-		return string(runes[:maxLen])
-	}
-	return string(runes[:maxLen-3]) + "..."
-}
-
 func (s *BabysitStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	ctx := sctx.Ctx
 	if err := ctx.Err(); err != nil {
@@ -174,11 +133,6 @@ func (s *BabysitStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome
 	if !scm.AuthConfigured(ctx, provider, sctx.WorkDir) {
 		sctx.Log("skipping babysit: gh CLI is not authenticated")
 		return &pipeline.StepOutcome{}, nil
-	}
-
-	// Initialize seen comments tracking
-	if s.seenComments == nil {
-		s.seenComments = make(map[string]bool)
 	}
 
 	// Get PR URL from run record
@@ -202,13 +156,6 @@ func (s *BabysitStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome
 	prNumber, err := extractPRNumber(prURL)
 	if err != nil {
 		return nil, fmt.Errorf("extract PR number: %w", err)
-	}
-
-	// If in fix mode, address comments then resume polling
-	if sctx.Fixing {
-		if err := s.addressComments(sctx, prNumber); err != nil {
-			sctx.Log(fmt.Sprintf("warning: could not address comments: %v", err))
-		}
 	}
 
 	timeout := sctx.Config.BabysitTimeout
@@ -278,25 +225,6 @@ func (s *BabysitStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome
 			}
 		}
 
-		// Check for new PR comments — pause for human selection
-		comments, err := s.getNewComments(ctx, sctx.WorkDir, prNumber)
-		if err != nil {
-			sctx.Log(fmt.Sprintf("warning: could not check comments: %v", err))
-		} else if len(comments) > 0 {
-			sctx.Log(fmt.Sprintf("found %d new PR comment(s)", len(comments)))
-			// Mark all as seen
-			for _, c := range comments {
-				s.seenComments[c.ID] = true
-			}
-			// Return with findings for TUI display
-			findings := commentsToFindings(comments)
-			findingsJSON, _ := json.Marshal(findings)
-			return &pipeline.StepOutcome{
-				NeedsApproval: true,
-				Findings:      string(findingsJSON),
-			}, nil
-		}
-
 		if checksReadyToExit {
 			sctx.Log(checksSummary)
 			return &pipeline.StepOutcome{}, nil
@@ -346,30 +274,6 @@ func (s *BabysitStep) getCIChecks(ctx context.Context, workDir, prNumber string)
 		return nil, fmt.Errorf("parse CI checks: %w", err)
 	}
 	return checks, nil
-}
-
-// getNewComments fetches PR comments and returns only unseen ones.
-func (s *BabysitStep) getNewComments(ctx context.Context, workDir, prNumber string) ([]prComment, error) {
-	cmd := exec.CommandContext(ctx, "gh", "pr", "view", prNumber, "--json", "comments", "--jq", ".comments")
-	cmd.Dir = workDir
-	out, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("gh pr comments: %w", err)
-	}
-
-	var comments []prComment
-	if err := json.Unmarshal(out, &comments); err != nil {
-		return nil, fmt.Errorf("parse PR comments: %w", err)
-	}
-
-	// Filter to only new (unseen) comments
-	var newComments []prComment
-	for _, c := range comments {
-		if !s.seenComments[c.ID] {
-			newComments = append(newComments, c)
-		}
-	}
-	return newComments, nil
 }
 
 // autoFixCI runs the agent to fix CI failures, then commits and pushes.
@@ -449,111 +353,6 @@ CI logs:
 	}
 
 	return s.commitAndPush(sctx)
-}
-
-// addressComments runs the agent to address PR comments, then commits, pushes, and replies.
-func (s *BabysitStep) addressComments(sctx *pipeline.StepContext, prNumber string) error {
-	ctx := sctx.Ctx
-	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
-	selected := selectedFindingIDs(sctx.PreviousFindings)
-
-	// Build prompt from the selected comments that triggered the approval pause.
-	cmd := exec.CommandContext(ctx, "gh", "pr", "view", prNumber, "--json", "comments", "--jq", ".comments")
-	cmd.Dir = sctx.WorkDir
-	out, err := cmd.Output()
-	if err != nil {
-		return fmt.Errorf("fetch comments: %w", err)
-	}
-
-	var comments []prComment
-	if err := json.Unmarshal(out, &comments); err != nil {
-		return fmt.Errorf("parse PR comments: %w", err)
-	}
-
-	var commentText string
-	for _, c := range comments {
-		if !s.seenComments[c.ID] {
-			continue
-		}
-		if len(selected) > 0 && !selected[c.ID] {
-			continue
-		}
-		commentText += fmt.Sprintf("@%s:\n%s\n\n", c.Author.Login, c.Body)
-	}
-
-	if commentText == "" {
-		sctx.Log("no comments to address")
-		return nil
-	}
-
-	prompt := fmt.Sprintf(
-		`Address the following PR review comments by making the requested changes.
-
-Context:
-- branch: %s
-- base commit: %s
-- target commit: %s
-- PR number: %s
-
-		Rules:
-		- Make the minimal change needed.
-		- Do not refactor beyond what is needed.
-		- Do not add comments explaining your fixes.
-		- Verify any directly relevant commands before finishing.
-
-		Comments to address:
-		%s`,
-		sctx.Run.Branch,
-		baseSHA,
-		sctx.Run.HeadSHA,
-		prNumber,
-		commentText,
-	)
-
-	sctx.Log("running agent to address PR comments...")
-	_, err = sctx.Agent.Run(ctx, agent.RunOpts{
-		Prompt:  prompt,
-		CWD:     sctx.WorkDir,
-		OnChunk: sctx.Log,
-	})
-	if err != nil {
-		return fmt.Errorf("agent address comments: %w", err)
-	}
-
-	if err := s.commitAndPush(sctx); err != nil {
-		return err
-	}
-
-	// Reply to addressed comments (best-effort)
-	headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
-	if err != nil {
-		slog.Warn("failed to get head SHA for reply comment", "error", err)
-	}
-	if headSHA != "" {
-		replyCmd := exec.CommandContext(ctx, "gh", "pr", "comment", prNumber,
-			"--body", fmt.Sprintf("Addressed in %s", headSHA))
-		replyCmd.Dir = sctx.WorkDir
-		replyCmd.Run() // best-effort, don't fail on reply error
-	}
-
-	return nil
-}
-
-func selectedFindingIDs(raw string) map[string]bool {
-	if raw == "" {
-		return nil
-	}
-	findings, err := types.ParseFindingsJSON(raw)
-	if err != nil {
-		return nil
-	}
-	selected := make(map[string]bool, len(findings.Items))
-	for _, item := range findings.Items {
-		if item.ID != "" {
-			selected[item.ID] = true
-		}
-	}
-	return selected
 }
 
 // commitAndPush commits any uncommitted changes and force-pushes to upstream.

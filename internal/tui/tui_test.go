@@ -1506,24 +1506,6 @@ func TestIsBabysitActive(t *testing.T) {
 		t.Error("expected true when babysit is running")
 	}
 
-	// Fixing → active.
-	run.Steps[5].Status = types.StepStatusFixing
-	if !isBabysitActive(run.Steps) {
-		t.Error("expected true when babysit is fixing")
-	}
-
-	// Awaiting approval → active.
-	run.Steps[5].Status = types.StepStatusAwaitingApproval
-	if !isBabysitActive(run.Steps) {
-		t.Error("expected true when babysit is awaiting approval")
-	}
-
-	// Fix review → active.
-	run.Steps[5].Status = types.StepStatusFixReview
-	if !isBabysitActive(run.Steps) {
-		t.Error("expected true when babysit is in fix review")
-	}
-
 	// Completed → not active.
 	run.Steps[5].Status = types.StepStatusCompleted
 	if isBabysitActive(run.Steps) {
@@ -1722,46 +1704,6 @@ func TestRenderBabysitView_AutoFixing(t *testing.T) {
 	}
 }
 
-func TestRenderBabysitView_FixingComments(t *testing.T) {
-	run := testRunWithBabysit()
-	run.Steps[5].Status = types.StepStatusFixing
-
-	out := renderBabysitView(run, run.Steps, "", nil, 80)
-
-	if !strings.Contains(out, "addressing PR comments") {
-		t.Error("expected addressing comments state")
-	}
-}
-
-func TestRenderBabysitView_AwaitingWithFindings(t *testing.T) {
-	run := testRunWithBabysit()
-	run.Steps[5].Status = types.StepStatusAwaitingApproval
-	findings := `{"findings":[{"severity":"info","description":"@alice: Please add more tests"}],"summary":"1 PR comment(s) to review"}`
-
-	out := renderBabysitView(run, run.Steps, findings, nil, 80)
-
-	if !strings.Contains(out, "review below") {
-		t.Error("expected review prompt")
-	}
-	if !strings.Contains(out, "1 PR comment(s) to review") {
-		t.Error("expected findings summary")
-	}
-	if !strings.Contains(out, "Please add more tests") {
-		t.Error("expected comment content in findings")
-	}
-}
-
-func TestRenderBabysitView_AwaitingNoFindings(t *testing.T) {
-	run := testRunWithBabysit()
-	run.Steps[5].Status = types.StepStatusAwaitingApproval
-
-	out := renderBabysitView(run, run.Steps, "", nil, 80)
-
-	if !strings.Contains(out, "review below") {
-		t.Error("expected review prompt even without findings")
-	}
-}
-
 func TestRenderBabysitView_LastActivity(t *testing.T) {
 	run := testRunWithBabysit()
 	run.Steps[5].Status = types.StepStatusRunning
@@ -1794,23 +1736,6 @@ func TestModel_View_BabysitViewWhenActive(t *testing.T) {
 	}
 	if !strings.Contains(view, "Monitoring") {
 		t.Error("expected monitoring state in model output")
-	}
-}
-
-func TestModel_View_BabysitAwaitingShowsFindings(t *testing.T) {
-	run := testRunWithBabysit()
-	m := NewModel("/tmp/sock", nil, run)
-	m.steps = run.Steps
-	m.steps[5].Status = types.StepStatusAwaitingApproval
-	m.stepFindings[types.StepBabysit] = `{"findings":[{"severity":"info","description":"@bob: fix the typo"}],"summary":"1 comment"}`
-
-	view := m.View()
-
-	if !strings.Contains(stripANSI(view), "Babysit") {
-		t.Error("expected babysit box title")
-	}
-	if !strings.Contains(view, "fix the typo") {
-		t.Error("expected comment finding in babysit view")
 	}
 }
 
@@ -2908,23 +2833,6 @@ func TestDiffBoxTitle_NoPositionWhenAllVisible(t *testing.T) {
 
 // --- Babysit box title position indicator tests ---
 
-func TestRenderBabysitView_TitleShowsPositionWhenFindings(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.ANSI)
-	run := testRunWithBabysit()
-	run.Steps[5].Status = types.StepStatusAwaitingApproval
-	findings := `{"findings":[
-		{"id":"f1","severity":"info","description":"comment 1"},
-		{"id":"f2","severity":"info","description":"comment 2"},
-		{"id":"f3","severity":"info","description":"comment 3"}
-	],"summary":"3 comments"}`
-
-	out := stripANSI(renderBabysitViewWithSelection(run, run.Steps, findings, nil, 80, 0, 1, nil))
-
-	if !strings.Contains(out, "Babysit (2/3)") {
-		t.Errorf("expected position indicator 'Babysit (2/3)' in title, got:\n%s", out)
-	}
-}
-
 func TestRenderBabysitView_TitleNoPositionWithoutFindings(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.ANSI)
 	run := testRunWithBabysit()
@@ -2941,59 +2849,6 @@ func TestRenderBabysitView_TitleNoPositionWithoutFindings(t *testing.T) {
 	}
 	if strings.Contains(titleLine, "(") {
 		t.Errorf("expected no position indicator when no findings, got: %s", titleLine)
-	}
-}
-
-func TestRenderBabysitView_PositionUpdatesWithCursor(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.ANSI)
-	run := testRunWithBabysit()
-	run.Steps[5].Status = types.StepStatusAwaitingApproval
-	findings := `{"findings":[
-		{"id":"f1","severity":"info","description":"c1"},
-		{"id":"f2","severity":"info","description":"c2"},
-		{"id":"f3","severity":"info","description":"c3"},
-		{"id":"f4","severity":"info","description":"c4"},
-		{"id":"f5","severity":"info","description":"c5"}
-	],"summary":"5 comments"}`
-
-	// Cursor at start.
-	out1 := stripANSI(renderBabysitViewWithSelection(run, run.Steps, findings, nil, 80, 0, 0, nil))
-	if !strings.Contains(out1, "Babysit (1/5)") {
-		t.Errorf("expected 'Babysit (1/5)' at start, got:\n%s", out1)
-	}
-
-	// Cursor at end.
-	out2 := stripANSI(renderBabysitViewWithSelection(run, run.Steps, findings, nil, 80, 0, 4, nil))
-	if !strings.Contains(out2, "Babysit (5/5)") {
-		t.Errorf("expected 'Babysit (5/5)' at end, got:\n%s", out2)
-	}
-}
-
-func TestModel_View_BabysitFindingsViewportApplied(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.ANSI)
-	run := testRunWithBabysit()
-	m := NewModel("/tmp/sock", nil, run)
-	m.steps = run.Steps
-	m.steps[5].Status = types.StepStatusAwaitingApproval
-
-	// Create 10 findings.
-	var items []string
-	for i := 1; i <= 10; i++ {
-		items = append(items, fmt.Sprintf(`{"id":"f%d","severity":"info","description":"comment %d"}`, i, i))
-	}
-	m.stepFindings[types.StepBabysit] = `{"findings":[` + strings.Join(items, ",") + `],"summary":"10 comments"}`
-	m.resetFindingSelection(types.StepBabysit)
-
-	// Set a terminal height that forces viewport (height - 25 reserve = 15, /3 = 5 max visible).
-	m.width = 80
-	m.height = 40
-
-	view := stripANSI(m.View())
-
-	// With height=30, not all 10 findings should be visible.
-	// Verify scroll indicators appear.
-	if !strings.Contains(view, "more below") {
-		t.Errorf("expected '↓ N more below' scroll indicator when findings overflow viewport, got:\n%s", view)
 	}
 }
 
@@ -3015,29 +2870,6 @@ func TestRenderBabysitView_LogTailDuringMonitoring(t *testing.T) {
 	}
 	if !strings.Contains(out, "all checks passing") {
 		t.Errorf("expected log tail line 'all checks passing' inside babysit box, got:\n%s", out)
-	}
-}
-
-func TestRenderBabysitView_NoLogTailDuringApproval(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.ANSI)
-	run := testRunWithBabysit()
-	run.Steps[5].Status = types.StepStatusAwaitingApproval
-	logs := []string{
-		"babysitting PR #42 (timeout: 4h)...",
-		"polling CI status...",
-		"all checks passing",
-	}
-	findings := `{"findings":[{"severity":"info","description":"@bob: fix the typo"}],"summary":"1 comment"}`
-
-	out := stripANSI(renderBabysitViewWithSelection(run, run.Steps, findings, logs, 80, 0, 0, nil))
-
-	// During approval, log tail should NOT appear - findings take priority.
-	if strings.Contains(out, "polling CI status") {
-		t.Error("expected no log tail lines inside babysit box during approval state")
-	}
-	// But findings should still show.
-	if !strings.Contains(out, "fix the typo") {
-		t.Error("expected findings to still show during approval")
 	}
 }
 
