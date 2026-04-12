@@ -91,7 +91,9 @@ Task:
 Rules:
 - Do NOT run linters, formatters, or static analysis tools.
 - Focus on testing and test-related fixes only.
-- Return results as structured findings.`,
+- Only report actionable findings: test failures, unfixable setup issues, or flaky tests you identified.
+- Do NOT report passing tests (whether existing or new), test counts, coverage summaries, or other non-actionable information.
+- If all tests pass and there are no issues, return an empty findings array.`,
 				sctx.Run.Branch,
 				baseSHA,
 				sctx.Run.HeadSHA,
