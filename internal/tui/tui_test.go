@@ -549,6 +549,19 @@ func TestOpenBrowserCmd_ReturnsErrMsgOnFailure(t *testing.T) {
 	}
 }
 
+func TestBrowserCommandSpec_WindowsUsesRundll32(t *testing.T) {
+	name, args := browserCommandSpec("windows", "https://example.com/pull/1?foo=1&bar=2")
+
+	if name != "rundll32" {
+		t.Fatalf("expected rundll32 launcher, got %q", name)
+	}
+
+	wantArgs := []string{"url.dll,FileProtocolHandler", "https://example.com/pull/1?foo=1&bar=2"}
+	if !reflect.DeepEqual(args, wantArgs) {
+		t.Fatalf("unexpected args: got %v want %v", args, wantArgs)
+	}
+}
+
 func TestModel_ApplyEvent_LogChunk(t *testing.T) {
 	run := testRun()
 	m := NewModel("/tmp/sock", nil, run)
