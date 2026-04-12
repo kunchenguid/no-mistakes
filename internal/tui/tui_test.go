@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -559,6 +560,47 @@ func TestBrowserCommandSpec_WindowsUsesRundll32(t *testing.T) {
 	wantArgs := []string{"url.dll,FileProtocolHandler", "https://example.com/pull/1?foo=1&bar=2"}
 	if !reflect.DeepEqual(args, wantArgs) {
 		t.Fatalf("unexpected args: got %v want %v", args, wantArgs)
+	}
+}
+
+func TestModel_Update_OpenPRKeyRunsBrowserCommand(t *testing.T) {
+	original := runBrowserCommand
+	t.Cleanup(func() {
+		runBrowserCommand = original
+	})
+
+	prURL := "https://github.com/test/repo/pull/42"
+	run := testRun()
+	run.PRURL = &prURL
+	m := NewModel("/tmp/sock", nil, run)
+
+	called := false
+	var gotName string
+	var gotArgs []string
+	runBrowserCommand = func(name string, args ...string) error {
+		called = true
+		gotName = name
+		gotArgs = append([]string(nil), args...)
+		return nil
+	}
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}})
+	if cmd == nil {
+		t.Fatal("expected browser open command")
+	}
+	if msg := cmd(); msg != nil {
+		t.Fatalf("expected nil msg, got %#v", msg)
+	}
+	if !called {
+		t.Fatal("expected browser launcher to be called")
+	}
+
+	wantName, wantArgs := browserCommandSpec(runtime.GOOS, prURL)
+	if gotName != wantName {
+		t.Fatalf("unexpected command name: got %q want %q", gotName, wantName)
+	}
+	if !reflect.DeepEqual(gotArgs, wantArgs) {
+		t.Fatalf("unexpected command args: got %v want %v", gotArgs, wantArgs)
 	}
 }
 
@@ -7101,6 +7143,21 @@ func TestHelpOverlay_ShowsRunContext(t *testing.T) {
 	}
 	if !strings.Contains(result, run.ID) {
 		t.Fatalf("expected help overlay to show pipeline ID, got:\n%s", result)
+	}
+}
+
+func TestHelpOverlay_ShowsOpenPRActionWhenPRURLPresent(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	run := testRun()
+	prURL := "https://github.com/test/repo/pull/42"
+	run.PRURL = &prURL
+
+	result := stripANSI(renderHelpOverlay(80, run, true, false, true, false))
+	if !strings.Contains(result, "open PR in browser") {
+		t.Fatalf("expected help overlay to include PR browser action, got:\n%s", result)
+	}
+	if !strings.Contains(result, "o") {
+		t.Fatalf("expected help overlay to include 'o' keybinding, got:\n%s", result)
 	}
 }
 
