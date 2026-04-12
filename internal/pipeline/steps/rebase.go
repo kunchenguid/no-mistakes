@@ -48,15 +48,35 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 		return updateHeadSHA(ctx, sctx)
 	}
 
-	// Normal mode: try rebases, return findings on conflict
+	// Normal mode: try all rebases, accumulate conflict findings
+	var allFindings []Finding
+	var allSummaries []string
 	for _, target := range targets {
 		outcome, err := tryRebase(ctx, sctx, target)
 		if err != nil {
 			return nil, err
 		}
-		if outcome != nil {
-			return outcome, nil
+		if outcome != nil && outcome.Findings != "" {
+			var f Findings
+			if json.Unmarshal([]byte(outcome.Findings), &f) == nil {
+				allFindings = append(allFindings, f.Items...)
+				if f.Summary != "" {
+					allSummaries = append(allSummaries, f.Summary)
+				}
+			}
 		}
+	}
+
+	if len(allFindings) > 0 {
+		combined := Findings{
+			Items:   allFindings,
+			Summary: strings.Join(allSummaries, "; "),
+		}
+		findingsJSON, _ := json.Marshal(combined)
+		return &pipeline.StepOutcome{
+			NeedsApproval: true,
+			Findings:      string(findingsJSON),
+		}, nil
 	}
 
 	return updateHeadSHA(ctx, sctx)

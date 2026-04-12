@@ -546,6 +546,80 @@ func TestRebaseStep_ConflictReturnsFindings(t *testing.T) {
 	}
 }
 
+func TestRebaseStep_ConflictTriesAllTargets(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	os.WriteFile(filepath.Join(dir, "shared.txt"), []byte("base\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "other.txt"), []byte("base\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "base commit")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "main")
+
+	// Create feature branch, push it to origin
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(dir, "shared.txt"), []byte("feature-origin\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature origin change")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	// Diverge local feature from origin/feature (conflicting change to shared.txt)
+	gitCmd(t, dir, "reset", "--soft", "HEAD~1")
+	os.WriteFile(filepath.Join(dir, "shared.txt"), []byte("feature-local\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature local change")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	// Advance main with a non-conflicting change, push
+	gitCmd(t, dir, "checkout", "main")
+	os.WriteFile(filepath.Join(dir, "other.txt"), []byte("main update\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "main non-conflicting update")
+	gitCmd(t, dir, "push", "origin", "main")
+	gitCmd(t, dir, "checkout", "feature")
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Repo.UpstreamURL = upstream
+
+	step := &RebaseStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("expected NeedsApproval for conflict")
+	}
+	if !strings.Contains(outcome.Findings, "shared.txt") {
+		t.Errorf("expected findings to mention shared.txt, got: %s", outcome.Findings)
+	}
+
+	// The non-conflicting rebase onto origin/main should have succeeded
+	logOutput := gitCmd(t, dir, "log", "--oneline", "--all")
+	if !strings.Contains(logOutput, "main non-conflicting update") {
+		t.Log("git log:\n" + logOutput)
+	}
+	// Verify HEAD includes the main update (rebase onto origin/main applied)
+	headLog := gitCmd(t, dir, "log", "--oneline")
+	if !strings.Contains(headLog, "main non-conflicting update") {
+		t.Errorf("expected HEAD to include the origin/main rebase; git log:\n%s", headLog)
+	}
+
+	// Verify worktree is clean
+	status := gitStatusPorcelain(t, dir)
+	if status != "" {
+		t.Fatalf("expected clean worktree, got: %s", status)
+	}
+}
+
 func TestRebaseStep_FixModeCallsAgent(t *testing.T) {
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
