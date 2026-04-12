@@ -115,6 +115,31 @@ func TestBuildPipelineSummary_MultiRoundWithUserFix(t *testing.T) {
 	}
 }
 
+func TestBuildPipelineSummary_MultiRoundStillFailing(t *testing.T) {
+	findings1 := `{"findings":[{"id":"lint-1","severity":"error","file":"pkg/foo.go","line":18,"description":"unused import"},{"id":"lint-2","severity":"warning","file":"pkg/bar.go","line":35,"description":"missing error check"}],"summary":"2 issues"}`
+	findings2 := `{"findings":[{"id":"lint-2","severity":"warning","file":"pkg/bar.go","line":35,"description":"missing error check"}],"summary":"1 issue"}`
+	steps := []*db.StepResult{
+		{ID: "s1", StepName: types.StepLint, Status: types.StepStatusCompleted, FindingsJSON: &findings2},
+	}
+	rounds := map[string][]*db.StepRound{
+		"s1": {
+			{Round: 1, Trigger: "initial", FindingsJSON: &findings1, DurationMS: 800},
+			{Round: 2, Trigger: "auto_fix", FindingsJSON: &findings2, DurationMS: 600},
+		},
+	}
+	md := BuildPipelineSummary(steps, rounds)
+
+	if strings.Contains(md, "auto-fixed") {
+		t.Errorf("did not expect fixed status when final round still has findings, got:\n%s", md)
+	}
+	if !strings.Contains(md, "⚠️ **Lint** - 1 warning") {
+		t.Errorf("expected final findings count in status line, got:\n%s", md)
+	}
+	if !strings.Contains(md, "Round 2") || !strings.Contains(md, "missing error check") {
+		t.Errorf("expected final round details to remain visible, got:\n%s", md)
+	}
+}
+
 func TestBuildPipelineSummary_SkippedStep(t *testing.T) {
 	steps := []*db.StepResult{
 		{ID: "s1", StepName: types.StepReview, Status: types.StepStatusSkipped},

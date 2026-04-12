@@ -83,7 +83,8 @@ func buildStepEntry(sr *db.StepResult, rounds []*db.StepRound) (statusLine, deta
 	}
 
 	hadFindings := initialFindings != nil && len(initialFindings.Items) > 0
-	wasFixed := hadFindings && len(rounds) > 1
+	hasFinalFindings := finalFindings != nil && len(finalFindings.Items) > 0
+	wasFixed := hadFindings && len(rounds) > 1 && !hasFinalFindings
 
 	// Special handling for review step - risk level is the primary signal.
 	if sr.StepName == types.StepReview {
@@ -102,8 +103,13 @@ func buildStepEntry(sr *db.StepResult, rounds []*db.StepRound) (statusLine, deta
 		return line, detail
 	}
 
-	// Had findings but only 1 round - approved as-is.
-	count := countFindingsBySeverity(initialFindings)
+	currentFindings := initialFindings
+	if hasFinalFindings {
+		currentFindings = finalFindings
+	}
+
+	// Had findings and the final state still contains them - approved as-is.
+	count := countFindingsBySeverity(currentFindings)
 	line := fmt.Sprintf("⚠️ **%s** - %s", name, count)
 	detail := buildRoundsDetail(name, rounds)
 	return line, detail
