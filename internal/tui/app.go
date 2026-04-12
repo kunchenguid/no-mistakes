@@ -54,6 +54,7 @@ type Model struct {
 	findingSelections map[types.StepName]map[string]bool // step name → finding ID → selected
 	findingCursor     map[types.StepName]int             // step name → current finding cursor
 	logs              []string
+	logPartial        string // buffered partial line (no trailing newline yet)
 
 	// Timing.
 	stepStartTimes map[types.StepName]time.Time // when each step started running
@@ -97,7 +98,7 @@ func NewModel(socketPath string, client *ipc.Client, run *ipc.RunInfo) Model {
 		}
 		// Seed start times from DB so elapsed time can be computed on re-attach.
 		if s.StartedAt != nil && s.DurationMS == nil {
-			m.stepStartTimes[s.StepName] = time.UnixMilli(*s.StartedAt)
+			m.stepStartTimes[s.StepName] = time.Unix(*s.StartedAt, 0)
 		}
 	}
 	return m
@@ -896,6 +897,7 @@ func (m *Model) applyEvent(event ipc.Event) {
 		if event.Error != nil {
 			m.run.Error = event.Error
 		}
+		m.flushPartialLog()
 		m.done = true
 
 	case ipc.EventStepStarted:
@@ -907,6 +909,7 @@ func (m *Model) applyEvent(event ipc.Event) {
 
 	case ipc.EventStepCompleted:
 		m.err = nil
+		m.flushPartialLog()
 		if event.StepName != nil && event.Status != nil {
 			m.updateStepStatus(*event.StepName, types.StepStatus(*event.Status))
 		}
@@ -942,9 +945,31 @@ func (m *Model) applyEvent(event ipc.Event) {
 
 	case ipc.EventLogChunk:
 		if event.Content != nil && *event.Content != "" {
-			lines := strings.Split(strings.TrimRight(*event.Content, "\n"), "\n")
-			m.logs = append(m.logs, lines...)
-			// Keep last 100 lines to bound memory.
+			if m.logPartial != "" && len(m.logs) > 0 && m.logs[len(m.logs)-1] == m.logPartial {
+				m.logs = m.logs[:len(m.logs)-1]
+			}
+
+			text := m.logPartial + *event.Content
+			m.logPartial = ""
+
+			if !strings.HasSuffix(text, "\n") {
+				idx := strings.LastIndex(text, "\n")
+				if idx == -1 {
+					m.logPartial = text
+					text = ""
+				} else {
+					m.logPartial = text[idx+1:]
+					text = text[:idx+1]
+				}
+			}
+
+			if text != "" {
+				lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
+				m.logs = append(m.logs, lines...)
+			}
+			if m.logPartial != "" {
+				m.logs = append(m.logs, m.logPartial)
+			}
 			if len(m.logs) > 100 {
 				m.logs = m.logs[len(m.logs)-100:]
 			}
@@ -958,6 +983,21 @@ func (m *Model) updateStepStatus(name types.StepName, status types.StepStatus) {
 			m.steps[i].Status = status
 			return
 		}
+	}
+}
+
+func (m *Model) flushPartialLog() {
+	if m.logPartial == "" {
+		return
+	}
+	if len(m.logs) > 0 && m.logs[len(m.logs)-1] == m.logPartial {
+		m.logPartial = ""
+		return
+	}
+	m.logs = append(m.logs, m.logPartial)
+	m.logPartial = ""
+	if len(m.logs) > 100 {
+		m.logs = m.logs[len(m.logs)-100:]
 	}
 }
 
