@@ -287,6 +287,12 @@ func TestBuildPipelineSummary_ShowsParseFailureForInvalidRoundFindings(t *testin
 	if !strings.Contains(md, "failed to parse findings") {
 		t.Errorf("expected parse failure message for invalid round findings, got:\n%s", md)
 	}
+	if strings.Contains(md, "✅ **Test** - passed") {
+		t.Errorf("did not expect passed status when round findings cannot be parsed, got:\n%s", md)
+	}
+	if !strings.Contains(md, "⚠️ **Test** - findings unavailable") {
+		t.Errorf("expected warning status when round findings cannot be parsed, got:\n%s", md)
+	}
 	if strings.Contains(md, "**Round 1** - \n") {
 		t.Errorf("did not expect blank round summary for invalid round findings, got:\n%s", md)
 	}

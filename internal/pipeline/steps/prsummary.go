@@ -85,6 +85,7 @@ func buildStepEntry(sr *db.StepResult, rounds []*db.StepRound) (statusLine, deta
 	hadFindings := initialFindings != nil && len(initialFindings.Items) > 0
 	hasFinalFindings := finalFindings != nil && len(finalFindings.Items) > 0
 	hasAnyRoundFindings := roundsHaveFindings(rounds)
+	hasRoundParseFailure := roundsHaveParseFailure(rounds)
 	hasRoundDetails := roundsNeedDetail(rounds)
 	hadAnyFindings := hadFindings || hasFinalFindings || hasAnyRoundFindings
 	wasFixed := hadFindings && len(rounds) > 1 && !hasFinalFindings
@@ -95,12 +96,20 @@ func buildStepEntry(sr *db.StepResult, rounds []*db.StepRound) (statusLine, deta
 	}
 
 	// For test/lint/rebase: determine emoji and result text.
-	if !hadAnyFindings {
+	if !hadAnyFindings && !hasRoundParseFailure {
 		detail := ""
 		if hasRoundDetails {
 			detail = buildRoundsDetail(name, rounds)
 		}
 		return fmt.Sprintf("✅ **%s** - passed", name), detail
+	}
+
+	if hasRoundParseFailure && !hadAnyFindings {
+		detail := ""
+		if hasRoundDetails {
+			detail = buildRoundsDetail(name, rounds)
+		}
+		return fmt.Sprintf("⚠️ **%s** - findings unavailable", name), detail
 	}
 
 	if wasFixed {
@@ -142,8 +151,9 @@ func buildReviewEntry(name string, finalFindings, initialFindings *types.Finding
 	hasInitialFindings := initialFindings != nil && len(initialFindings.Items) > 0
 	hasFinalFindings := finalFindings != nil && len(finalFindings.Items) > 0
 	hasHistoricalFindings := hasInitialFindings || roundsNeedDetail(rounds)
+	hasRoundParseFailure := roundsHaveParseFailure(rounds)
 	emoji := "✅"
-	if hasFinalFindings || riskLevel == "medium" || riskLevel == "high" {
+	if hasFinalFindings || hasRoundParseFailure || riskLevel == "medium" || riskLevel == "high" {
 		emoji = "⚠️"
 	}
 
@@ -153,6 +163,8 @@ func buildReviewEntry(name string, finalFindings, initialFindings *types.Finding
 		if rationale != "" {
 			line += fmt.Sprintf(` - _"%s"_`, rationale)
 		}
+	} else if hasRoundParseFailure {
+		line = fmt.Sprintf("%s **%s** - findings unavailable", emoji, name)
 	} else {
 		line = fmt.Sprintf("%s **%s** - passed", emoji, name)
 	}
@@ -174,6 +186,19 @@ func roundsHaveFindings(rounds []*db.StepRound) bool {
 			continue
 		}
 		if len(f.Items) > 0 {
+			return true
+		}
+	}
+
+	return false
+}
+
+func roundsHaveParseFailure(rounds []*db.StepRound) bool {
+	for _, r := range rounds {
+		if r.FindingsJSON == nil {
+			continue
+		}
+		if _, err := types.ParseFindingsJSON(*r.FindingsJSON); err != nil {
 			return true
 		}
 	}
