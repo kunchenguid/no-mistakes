@@ -650,6 +650,23 @@ func TestRerunStartsPipelineForCurrentBranch(t *testing.T) {
 	}
 }
 
+func TestRootErrorFromNonGitDir(t *testing.T) {
+	// Running bare `no-mistakes` from a non-git directory should return an
+	// error with a useful message, not fail silently.
+	nonGitDir := t.TempDir()
+	t.Setenv("NM_HOME", t.TempDir())
+	t.Setenv("NM_TEST_START_DAEMON", "1")
+	chdir(t, nonGitDir)
+
+	_, err := executeCmd()
+	if err == nil {
+		t.Fatal("expected error when running from non-git directory, got nil")
+	}
+	if !strings.Contains(err.Error(), "git repository") {
+		t.Errorf("error should mention git repository, got: %v", err)
+	}
+}
+
 func TestRootHelpStillWorks(t *testing.T) {
 	// --help should show subcommands, not trigger attach.
 	out, err := executeCmd("--help")

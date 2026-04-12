@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
-	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/spf13/cobra"
 )
 
@@ -23,17 +22,10 @@ func newStatusCmd() *cobra.Command {
 
 			w := cmd.OutOrStdout()
 
-			// Check if we're in a git repo.
-			gitRoot, err := git.FindGitRoot(".")
+			// Look up repo from current directory.
+			repo, err := findRepo(d)
 			if err != nil {
-				fmt.Fprintln(w, "not in a git repository")
-				return nil
-			}
-
-			// Look up repo in DB.
-			repo, err := d.GetRepoByPath(gitRoot)
-			if err != nil || repo == nil {
-				fmt.Fprintln(w, "not initialized (run 'no-mistakes init' first)")
+				fmt.Fprintln(w, err)
 				return nil
 			}
 

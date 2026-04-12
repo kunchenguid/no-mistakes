@@ -366,6 +366,59 @@ func TestWorktreeAddAndRemove(t *testing.T) {
 	}
 }
 
+func TestFindMainRepoRoot(t *testing.T) {
+	ctx := context.Background()
+	mainRepo := initTestRepo(t)
+
+	// For a normal repo, FindMainRepoRoot should return the same as FindGitRoot.
+	mainRoot, err := FindMainRepoRoot(mainRepo)
+	if err != nil {
+		t.Fatalf("FindMainRepoRoot failed for main repo: %v", err)
+	}
+	expectedMain, _ := filepath.EvalSymlinks(mainRepo)
+	gotMain, _ := filepath.EvalSymlinks(mainRoot)
+	if gotMain != expectedMain {
+		t.Fatalf("expected %q, got %q", expectedMain, gotMain)
+	}
+
+	// Create a worktree and verify FindMainRepoRoot returns the main repo root.
+	run(t, mainRepo, "git", "checkout", "-b", "wt-branch")
+	run(t, mainRepo, "git", "checkout", "-") // back to original branch
+	wtDir := filepath.Join(t.TempDir(), "worktree")
+	if err := WorktreeAdd(ctx, mainRepo, wtDir, "wt-branch"); err != nil {
+		t.Fatalf("WorktreeAdd failed: %v", err)
+	}
+	t.Cleanup(func() { WorktreeRemove(ctx, mainRepo, wtDir) })
+
+	// FindGitRoot from worktree returns the worktree path.
+	wtRoot, err := FindGitRoot(wtDir)
+	if err != nil {
+		t.Fatalf("FindGitRoot from worktree failed: %v", err)
+	}
+	resolvedWt, _ := filepath.EvalSymlinks(wtDir)
+	gotWt, _ := filepath.EvalSymlinks(wtRoot)
+	if gotWt != resolvedWt {
+		t.Fatalf("FindGitRoot should return worktree path %q, got %q", resolvedWt, gotWt)
+	}
+
+	// FindMainRepoRoot from worktree should return the main repo root.
+	mainFromWt, err := FindMainRepoRoot(wtDir)
+	if err != nil {
+		t.Fatalf("FindMainRepoRoot from worktree failed: %v", err)
+	}
+	gotFromWt, _ := filepath.EvalSymlinks(mainFromWt)
+	if gotFromWt != expectedMain {
+		t.Fatalf("FindMainRepoRoot from worktree: expected %q, got %q", expectedMain, gotFromWt)
+	}
+}
+
+func TestFindMainRepoRootNotFound(t *testing.T) {
+	_, err := FindMainRepoRoot(t.TempDir())
+	if err == nil {
+		t.Fatal("expected error for non-git directory")
+	}
+}
+
 func TestPush(t *testing.T) {
 	ctx := context.Background()
 	src := initTestRepo(t)
