@@ -350,6 +350,84 @@ data: {"payload":{"type":"session.idle"}}
 	}
 }
 
+func TestParseOpencodeSSE_FiltersUserMessageParts(t *testing.T) {
+	input := strings.Join([]string{
+		// User message comes first
+		`data: {"payload":{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"user-msg","role":"user"}}}}`,
+		``,
+		`data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p-user","messageID":"user-msg","type":"text","text":"this is the prompt"}}}}`,
+		``,
+		// Then assistant response
+		`data: {"payload":{"type":"message.part.delta","properties":{"sessionID":"s1","field":"text","partID":"p-asst","delta":"response"}}}`,
+		``,
+		`data: {"payload":{"type":"session.idle"}}`,
+		``,
+		``,
+	}, "\n")
+
+	state := &opencodeStreamState{
+		sessionID:  "s1",
+		textParts:  make(map[string]*opencodeTextPart),
+		usageByMsg: make(map[string]TokenUsage),
+	}
+	var chunks []string
+	state.onChunk = func(text string) { chunks = append(chunks, text) }
+
+	err := parseOpencodeSSE(strings.NewReader(input), state)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Should only get the assistant response, not the user prompt
+	if len(chunks) != 1 {
+		t.Fatalf("expected 1 chunk, got %d: %v", len(chunks), chunks)
+	}
+	if chunks[0] != "response" {
+		t.Errorf("expected 'response', got %q", chunks[0])
+	}
+}
+
+func TestParseOpencodeSSE_SeparatesAfterToolStep(t *testing.T) {
+	input := strings.Join([]string{
+		// First assistant text
+		`data: {"payload":{"type":"message.part.delta","properties":{"sessionID":"s1","field":"text","partID":"p1","delta":"first"}}}`,
+		``,
+		// Tool step completes
+		`data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"step1","messageID":"msg1","type":"step-finish","tokens":{"input":10,"output":5}}}}}`,
+		``,
+		// Second assistant text
+		`data: {"payload":{"type":"message.part.delta","properties":{"sessionID":"s1","field":"text","partID":"p2","delta":"second"}}}`,
+		``,
+		`data: {"payload":{"type":"session.idle"}}`,
+		``,
+		``,
+	}, "\n")
+
+	state := &opencodeStreamState{
+		sessionID:  "s1",
+		textParts:  make(map[string]*opencodeTextPart),
+		usageByMsg: make(map[string]TokenUsage),
+	}
+	var chunks []string
+	state.onChunk = func(text string) { chunks = append(chunks, text) }
+
+	err := parseOpencodeSSE(strings.NewReader(input), state)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(chunks) != 3 {
+		t.Fatalf("expected 3 chunks (text, separator, text), got %d: %v", len(chunks), chunks)
+	}
+	if chunks[0] != "first" {
+		t.Errorf("expected 'first', got %q", chunks[0])
+	}
+	if chunks[1] != "\n\n" {
+		t.Errorf("expected separator '\\n\\n', got %q", chunks[1])
+	}
+	if chunks[2] != "second" {
+		t.Errorf("expected 'second', got %q", chunks[2])
+	}
+}
+
 func TestParseOpencodeSSE_MalformedEvents(t *testing.T) {
 	input := `data: not json at all
 

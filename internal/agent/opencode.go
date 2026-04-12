@@ -337,13 +337,16 @@ type opencodeTextPart struct {
 
 // opencodeStreamState holds mutable state during SSE event processing.
 type opencodeStreamState struct {
-	sessionID     string
-	onChunk       func(string)
-	textParts     map[string]*opencodeTextPart
-	usageByMsg    map[string]TokenUsage
-	usage         TokenUsage
-	lastText      string
-	lastFinalText string
+	sessionID       string
+	onChunk         func(string)
+	textParts       map[string]*opencodeTextPart
+	usageByMsg      map[string]TokenUsage
+	usage           TokenUsage
+	lastText        string
+	lastFinalText   string
+	userMsgIDs      map[string]bool
+	hasEmittedText  bool
+	hadToolActivity bool
 }
 
 func opencodeTokensToUsage(t *opencodeTokens) TokenUsage {
@@ -401,7 +404,9 @@ func parseOpencodeSSE(r io.Reader, state *opencodeStreamState) error {
 				part.text += props.Delta
 				state.updateText(part.text, part.phase)
 				if state.onChunk != nil {
+					state.emitSeparatorIfNeeded()
 					state.onChunk(props.Delta)
+					state.hasEmittedText = true
 				}
 			}
 
@@ -409,6 +414,10 @@ func parseOpencodeSSE(r io.Reader, state *opencodeStreamState) error {
 			if props != nil && props.Part != nil {
 				p := props.Part
 				if p.Type == "text" && p.ID != "" {
+					// Skip parts belonging to user messages
+					if p.MessageID != "" && state.userMsgIDs[p.MessageID] {
+						break
+					}
 					phase := ""
 					if p.Metadata != nil && p.Metadata.OpenAI != nil {
 						phase = p.Metadata.OpenAI.Phase
@@ -429,19 +438,32 @@ func parseOpencodeSSE(r io.Reader, state *opencodeStreamState) error {
 					}
 					state.updateText(p.Text, phase)
 					if state.onChunk != nil && chunk != "" {
+						state.emitSeparatorIfNeeded()
 						state.onChunk(chunk)
+						state.hasEmittedText = true
 					}
 				}
-				if p.Type == "step-finish" && p.MessageID != "" && p.Tokens != nil {
-					state.usageByMsg[p.MessageID] = opencodeTokensToUsage(p.Tokens)
-					state.usage = accumulateUsage(state.usageByMsg)
+				if p.Type == "step-finish" {
+					state.hadToolActivity = true
+					if p.MessageID != "" && p.Tokens != nil {
+						state.usageByMsg[p.MessageID] = opencodeTokensToUsage(p.Tokens)
+						state.usage = accumulateUsage(state.usageByMsg)
+					}
 				}
 			}
 
 		case "message.updated":
-			if props != nil && props.Info != nil && props.Info.Role == "assistant" && props.Info.Tokens != nil {
-				state.usageByMsg[props.Info.ID] = opencodeTokensToUsage(props.Info.Tokens)
-				state.usage = accumulateUsage(state.usageByMsg)
+			if props != nil && props.Info != nil {
+				if props.Info.Role == "user" {
+					if state.userMsgIDs == nil {
+						state.userMsgIDs = make(map[string]bool)
+					}
+					state.userMsgIDs[props.Info.ID] = true
+				}
+				if props.Info.Role == "assistant" && props.Info.Tokens != nil {
+					state.usageByMsg[props.Info.ID] = opencodeTokensToUsage(props.Info.Tokens)
+					state.usage = accumulateUsage(state.usageByMsg)
+				}
 			}
 
 		case "session.idle":
@@ -460,6 +482,13 @@ func parseOpencodeSSE(r io.Reader, state *opencodeStreamState) error {
 		// will provide the final result
 	}
 	return nil
+}
+
+func (s *opencodeStreamState) emitSeparatorIfNeeded() {
+	if s.hasEmittedText && s.hadToolActivity && s.onChunk != nil {
+		s.onChunk("\n\n")
+		s.hadToolActivity = false
+	}
 }
 
 func (s *opencodeStreamState) updateText(text, phase string) {

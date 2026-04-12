@@ -96,6 +96,7 @@ type codexUsage struct {
 func parseCodexEvents(ctx context.Context, r io.Reader, onChunk func(string), usage *TokenUsage, lastMessage *string) error {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 256*1024*1024)
+	var hasEmittedText bool
 
 	for scanner.Scan() {
 		select {
@@ -117,9 +118,13 @@ func parseCodexEvents(ctx context.Context, r io.Reader, onChunk func(string), us
 		switch event.Type {
 		case "item.completed":
 			if event.Item != nil && event.Item.Type == "agent_message" {
+				if hasEmittedText && onChunk != nil {
+					onChunk("\n\n")
+				}
 				*lastMessage = event.Item.Text
 				if onChunk != nil {
 					onChunk(event.Item.Text)
+					hasEmittedText = true
 				}
 			}
 
