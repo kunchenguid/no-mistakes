@@ -669,6 +669,7 @@ func TestRebaseStep_FixModeCallsAgent(t *testing.T) {
 			cmd.Env = append(os.Environ(),
 				"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@test.com",
 				"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@test.com",
+				"GIT_EDITOR=true",
 			)
 			if out, err := cmd.CombinedOutput(); err != nil {
 				return nil, fmt.Errorf("git rebase --continue: %s: %w", out, err)
