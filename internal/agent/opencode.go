@@ -414,7 +414,7 @@ func parseOpencodeSSE(r io.Reader, state *opencodeStreamState) error {
 						phase = p.Metadata.OpenAI.Phase
 					}
 					existing := state.textParts[p.ID]
-					chunk := p.Text
+					chunk := ""
 					if existing != nil {
 						if strings.HasPrefix(p.Text, existing.text) {
 							chunk = p.Text[len(existing.text):]
@@ -423,6 +423,7 @@ func parseOpencodeSSE(r io.Reader, state *opencodeStreamState) error {
 						existing.phase = phase
 					} else {
 						state.textParts[p.ID] = &opencodeTextPart{text: p.Text, phase: phase}
+						chunk = p.Text
 					}
 					state.updateText(p.Text, phase)
 					if state.onChunk != nil && chunk != "" {

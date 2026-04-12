@@ -213,6 +213,40 @@ data: {"payload":{"type":"session.idle"}}
 	}
 }
 
+func TestParseOpencodeSSE_PartUpdated_NonPrefixSnapshotDoesNotEmitDuplicateChunk(t *testing.T) {
+	input := `data: {"payload":{"type":"message.part.delta","properties":{"sessionID":"s1","field":"text","partID":"p1","delta":"hello world"}}}
+
+data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p1","type":"text","text":"hello there"}}}}
+
+data: {"payload":{"type":"session.idle"}}
+
+`
+	state := &opencodeStreamState{
+		sessionID:  "s1",
+		textParts:  make(map[string]*opencodeTextPart),
+		usageByMsg: make(map[string]TokenUsage),
+	}
+	var chunks []string
+	state.onChunk = func(text string) { chunks = append(chunks, text) }
+
+	err := parseOpencodeSSE(strings.NewReader(input), state)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(chunks) != 1 {
+		t.Fatalf("expected 1 chunk, got %d: %v", len(chunks), chunks)
+	}
+	if chunks[0] != "hello world" {
+		t.Errorf("expected original delta chunk 'hello world', got %q", chunks[0])
+	}
+	if state.lastText != "hello there" {
+		t.Errorf("expected lastText 'hello there', got %q", state.lastText)
+	}
+	if got := state.textParts["p1"]; got == nil || got.text != "hello there" {
+		t.Fatalf("expected cached part text 'hello there', got %#v", got)
+	}
+}
+
 func TestParseOpencodeSSE_PartUpdated_Text(t *testing.T) {
 	input := `data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p1","type":"text","text":"final text","metadata":{"openai":{"phase":"final_answer"}}}}}}
 
