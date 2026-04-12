@@ -334,6 +334,7 @@ func TestWorktreeAddAndRemove(t *testing.T) {
 	if err := InitBare(ctx, bare); err != nil {
 		t.Fatal(err)
 	}
+	run(t, bare, "git", "config", "core.autocrlf", "false")
 	run(t, src, "git", "remote", "add", "bare", bare)
 	run(t, src, "git", "push", "bare", "HEAD:refs/heads/main")
 

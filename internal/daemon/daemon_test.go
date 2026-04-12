@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -506,6 +507,14 @@ func gitOutput(t *testing.T, dir string, args ...string) string {
 
 func writeMockClaude(t *testing.T, dir string) string {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		path := filepath.Join(dir, "claude.bat")
+		script := "@echo off\r\necho {\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"structured_output\":{\"findings\":[],\"summary\":\"clean\"}}\r\n"
+		if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
 	path := filepath.Join(dir, "claude")
 	script := `#!/bin/sh
 printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"structured_output":{"findings":[],"summary":"clean"}}'

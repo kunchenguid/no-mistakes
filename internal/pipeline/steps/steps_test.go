@@ -922,7 +922,11 @@ func TestLintStep_PassingCommand(t *testing.T) {
 func TestLintStep_FailingCommand(t *testing.T) {
 	dir := t.TempDir()
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, "abc", "def", config.Commands{Lint: "echo 'lint error'; exit 1"})
+	lintCmd := "echo 'lint error'; exit 1"
+	if runtime.GOOS == "windows" {
+		lintCmd = "echo lint error & exit /b 1"
+	}
+	sctx := newTestContext(t, ag, dir, "abc", "def", config.Commands{Lint: lintCmd})
 
 	step := &LintStep{}
 	outcome, err := step.Execute(sctx)
