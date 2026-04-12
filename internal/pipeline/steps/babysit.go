@@ -245,17 +245,19 @@ func (s *BabysitStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome
 					s.lastFixedChecks = fixKey
 				}
 			}
-		} else if !hasPendingChecks(checks) {
+		} else {
 			s.lastFixedChecks = ""
-			if len(checks) == 0 && elapsed < s.gracePeriod() {
-				// CI checks may not be registered yet, keep polling
-				sctx.Log("no CI checks reported yet, waiting for checks to register...")
-			} else {
-				checksReadyToExit = true
-				if len(checks) == 0 {
-					checksSummary = "no CI checks reported, babysit complete"
+			if !hasPendingChecks(checks) {
+				if len(checks) == 0 && elapsed < s.gracePeriod() {
+					// CI checks may not be registered yet, keep polling
+					sctx.Log("no CI checks reported yet, waiting for checks to register...")
 				} else {
-					checksSummary = "all CI checks passed"
+					checksReadyToExit = true
+					if len(checks) == 0 {
+						checksSummary = "no CI checks reported, babysit complete"
+					} else {
+						checksSummary = "all CI checks passed"
+					}
 				}
 			}
 		}

@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -49,6 +50,8 @@ func handleFakeCLI(mode string) {
 		fakeGlabHandler(args)
 	case "babysit-gh":
 		fakeBabysitGHHandler(args)
+	case "babysit-gh-seq":
+		fakeBabysitGHSequenceHandler(args)
 	case "babysit-gh-nochecks":
 		fakeBabysitGHNoChecksHandler(args)
 	default:
@@ -114,6 +117,54 @@ func fakeBabysitGHHandler(args []string) {
 	}
 	if strings.Contains(joined, "pr checks") {
 		fmt.Println(checksJSON)
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "run view") {
+		fmt.Println("error log output")
+		os.Exit(0)
+	}
+	os.Exit(1)
+}
+
+func fakeBabysitGHSequenceHandler(args []string) {
+	state := os.Getenv("FAKE_CLI_STATE")
+	checksPath := os.Getenv("FAKE_CLI_CHECKS_PATH")
+	indexPath := os.Getenv("FAKE_CLI_CHECKS_INDEX_PATH")
+	joined := strings.Join(args, " ")
+
+	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json state") {
+		fmt.Println(state)
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "pr checks") {
+		data, err := os.ReadFile(checksPath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		entries := strings.Split(strings.TrimSpace(string(data)), "\n")
+		if len(entries) == 0 || entries[0] == "" {
+			fmt.Println("[]")
+			os.Exit(0)
+		}
+
+		index := 0
+		if rawIndex, err := os.ReadFile(indexPath); err == nil {
+			if parsed, err := strconv.Atoi(strings.TrimSpace(string(rawIndex))); err == nil {
+				index = parsed
+			}
+		}
+		if index >= len(entries) {
+			index = len(entries) - 1
+		}
+		if err := os.WriteFile(indexPath, []byte(strconv.Itoa(index+1)), 0o644); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Println(entries[index])
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "run view") {
@@ -3091,6 +3142,28 @@ func fakeBabysitGH(t *testing.T, state, checksJSON string) string {
 	return binDir
 }
 
+func fakeBabysitGHSequence(t *testing.T, state string, checks []string) string {
+	t.Helper()
+	binDir := fakeCLIBinDir(t)
+	linkTestBinary(t, binDir, "gh")
+
+	checksPath := filepath.Join(t.TempDir(), "checks.txt")
+	indexPath := filepath.Join(t.TempDir(), "checks-index.txt")
+
+	if err := os.WriteFile(checksPath, []byte(strings.Join(checks, "\n")), 0o644); err != nil {
+		t.Fatalf("write checks sequence: %v", err)
+	}
+	if err := os.WriteFile(indexPath, []byte("0"), 0o644); err != nil {
+		t.Fatalf("write checks index: %v", err)
+	}
+
+	t.Setenv("FAKE_CLI_MODE", "babysit-gh-seq")
+	t.Setenv("FAKE_CLI_STATE", state)
+	t.Setenv("FAKE_CLI_CHECKS_PATH", checksPath)
+	t.Setenv("FAKE_CLI_CHECKS_INDEX_PATH", indexPath)
+	return binDir
+}
+
 func fakeBabysitGHNoChecks(t *testing.T) string {
 	t.Helper()
 	binDir := fakeCLIBinDir(t)
@@ -3672,6 +3745,89 @@ func TestBabysitStep_CIAutoFixLimitExhausted(t *testing.T) {
 	}
 	if !foundExhausted {
 		t.Errorf("expected 'max auto-fix attempts' in logs, got: %v", logs)
+	}
+}
+
+func TestBabysitStep_CIAutoFixRetriesAfterChecksRerun(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	checksSequence := []string{
+		`[{"name":"test","status":"COMPLETED","conclusion":"failure","bucket":"fail"}]`,
+		`[{"name":"test","status":"IN_PROGRESS","bucket":"pending"}]`,
+		`[{"name":"test","status":"COMPLETED","conclusion":"failure","bucket":"fail"}]`,
+		`[{"name":"test","status":"IN_PROGRESS","bucket":"pending"}]`,
+		`[{"name":"test","status":"COMPLETED","conclusion":"failure","bucket":"fail"}]`,
+	}
+	binDir := fakeBabysitGHSequence(t, "OPEN", checksSequence)
+	prependPATH(t, binDir)
+
+	fixCount := 0
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			fixCount++
+			os.WriteFile(filepath.Join(opts.CWD, fmt.Sprintf("fix-%d.txt", fixCount)), []byte("fixed"), 0o644)
+			return &agent.Result{}, nil
+		},
+	}
+
+	prURL := "https://github.com/test/repo/pull/42"
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Config.BabysitTimeout = 10 * time.Second
+	sctx.Config.AutoFix = config.AutoFix{Babysit: 2}
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	step := &BabysitStep{
+		pollIntervalOverride: 50 * time.Millisecond,
+	}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("expected approval outcome after retries, got error: %v", err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("expected approval after exhausting rerun-backed retries")
+	}
+	if outcome.AutoFixable {
+		t.Fatal("expected exhausted babysit outcome to be non-auto-fixable")
+	}
+	if fixCount != 2 {
+		t.Fatalf("expected 2 auto-fix attempts after reruns, got %d", fixCount)
+	}
+
+	foundExhausted := false
+	for _, l := range logs {
+		if strings.Contains(l, "max auto-fix attempts (2) reached") {
+			foundExhausted = true
+			break
+		}
+	}
+	if !foundExhausted {
+		t.Fatalf("expected max-attempts log after rerun-backed retries, got: %v", logs)
 	}
 }
 
