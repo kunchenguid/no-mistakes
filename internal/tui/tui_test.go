@@ -5308,7 +5308,7 @@ func TestModel_ApplyEvent_StepCompletedNoDurationWithoutStartTime(t *testing.T) 
 // start times seeded into stepStartTimes so elapsed time can be computed.
 func TestNewModel_SeedsStartTimesFromStartedAt(t *testing.T) {
 	configureTUIColors()
-	startedAt := time.Now().Add(-10 * time.Second).UnixMilli()
+	startedAt := time.Now().Add(-10 * time.Second).Unix()
 	run := testRun()
 	run.Steps[0].Status = types.StepStatusAwaitingApproval
 	run.Steps[0].StartedAt = &startedAt
@@ -5366,7 +5366,7 @@ func TestModel_View_FixReviewShowsElapsedTime(t *testing.T) {
 // computed from StartedAt in the initial run data.
 func TestModel_View_ReattachAwaitingApprovalShowsDuration(t *testing.T) {
 	configureTUIColors()
-	startedAt := time.Now().Add(-15 * time.Second).UnixMilli()
+	startedAt := time.Now().Add(-15 * time.Second).Unix()
 	run := testRun()
 	run.Steps[0].Status = types.StepStatusAwaitingApproval
 	run.Steps[0].StartedAt = &startedAt
@@ -7230,5 +7230,106 @@ func TestModel_View_LogBoxStaysSmallWhenFindingsPresent(t *testing.T) {
 	if logContentLines > 5 {
 		t.Errorf("expected log box to stay <=5 lines when findings present, got %d\nview:\n%s",
 			logContentLines, plain)
+	}
+}
+
+func TestNewModel_ReattachStartedAtUsesUnixSeconds(t *testing.T) {
+	configureTUIColors()
+	run := testRun()
+	// Simulate a running step that started 3 seconds ago, with StartedAt stored
+	// as Unix seconds (as db.now() returns).
+	startedAt := time.Now().Add(-3 * time.Second).Unix()
+	run.Steps[0].Status = types.StepStatusRunning
+	run.Steps[0].StartedAt = &startedAt
+
+	m := NewModel("", nil, run)
+	m.width = 80
+	m.height = 40
+
+	view := stripANSI(m.View())
+
+	// The elapsed time should be approximately 3 seconds, not billions.
+	// If the bug exists (UnixMilli instead of Unix), it would show ~1.7 billion seconds.
+	if strings.Contains(view, "1774") || strings.Contains(view, "17742") {
+		t.Errorf("step duration looks like a raw unix timestamp, re-attach used UnixMilli instead of Unix:\n%s", view)
+	}
+	// Should show a reasonable elapsed time (under 10 seconds, not billions).
+	// Extract the duration from the Review line.
+	for _, line := range strings.Split(view, "\n") {
+		if strings.Contains(line, "Review") {
+			// Duration should be small (a few seconds), not a timestamp.
+			if !strings.Contains(line, "s") {
+				t.Errorf("expected Review line to contain a duration, got: %q", line)
+			}
+			// Should NOT contain any absurdly large number.
+			if strings.Contains(line, "17742") {
+				t.Errorf("duration still looks like a unix timestamp: %q", line)
+			}
+			break
+		}
+	}
+}
+
+func TestModel_ApplyEvent_LogChunk_PartialLines(t *testing.T) {
+	run := testRun()
+	m := NewModel("/tmp/sock", nil, run)
+
+	// Simulate streaming chunks without trailing newlines (like OpenCode SSE deltas).
+	m.applyEvent(ipc.Event{
+		Type:    ipc.EventLogChunk,
+		RunID:   run.ID,
+		Content: ptr("hello "),
+	})
+	m.applyEvent(ipc.Event{
+		Type:    ipc.EventLogChunk,
+		RunID:   run.ID,
+		Content: ptr("world"),
+	})
+	m.applyEvent(ipc.Event{
+		Type:    ipc.EventLogChunk,
+		RunID:   run.ID,
+		Content: ptr("\n"),
+	})
+
+	// "hello world" should be a single log line, not three separate lines.
+	if len(m.logs) != 1 {
+		t.Fatalf("expected 1 log line, got %d: %v", len(m.logs), m.logs)
+	}
+	if m.logs[0] != "hello world" {
+		t.Errorf("expected %q, got %q", "hello world", m.logs[0])
+	}
+}
+
+func TestModel_ApplyEvent_LogChunk_MixedPartialAndComplete(t *testing.T) {
+	run := testRun()
+	m := NewModel("/tmp/sock", nil, run)
+
+	// A chunk that has a complete line and a partial one.
+	m.applyEvent(ipc.Event{
+		Type:    ipc.EventLogChunk,
+		RunID:   run.ID,
+		Content: ptr("line1\npartial"),
+	})
+
+	// Should have committed "line1" and buffered "partial".
+	if len(m.logs) != 1 {
+		t.Fatalf("expected 1 committed line, got %d: %v", len(m.logs), m.logs)
+	}
+	if m.logs[0] != "line1" {
+		t.Errorf("expected %q, got %q", "line1", m.logs[0])
+	}
+
+	// Completing the partial line.
+	m.applyEvent(ipc.Event{
+		Type:    ipc.EventLogChunk,
+		RunID:   run.ID,
+		Content: ptr(" end\n"),
+	})
+
+	if len(m.logs) != 2 {
+		t.Fatalf("expected 2 log lines, got %d: %v", len(m.logs), m.logs)
+	}
+	if m.logs[1] != "partial end" {
+		t.Errorf("expected %q, got %q", "partial end", m.logs[1])
 	}
 }
