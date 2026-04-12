@@ -414,14 +414,19 @@ func parseOpencodeSSE(r io.Reader, state *opencodeStreamState) error {
 						phase = p.Metadata.OpenAI.Phase
 					}
 					existing := state.textParts[p.ID]
+					chunk := p.Text
 					if existing != nil {
+						if strings.HasPrefix(p.Text, existing.text) {
+							chunk = p.Text[len(existing.text):]
+						}
+						existing.text = p.Text
 						existing.phase = phase
 					} else {
 						state.textParts[p.ID] = &opencodeTextPart{text: p.Text, phase: phase}
 					}
 					state.updateText(p.Text, phase)
-					if state.onChunk != nil && p.Text != "" {
-						state.onChunk(p.Text)
+					if state.onChunk != nil && chunk != "" {
+						state.onChunk(chunk)
 					}
 				}
 				if p.Type == "step-finish" && p.MessageID != "" && p.Tokens != nil {
