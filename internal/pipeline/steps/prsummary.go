@@ -18,9 +18,9 @@ var summarySteps = map[types.StepName]bool{
 }
 
 // BuildPipelineSummary produces a deterministic markdown section from step results and rounds.
-func BuildPipelineSummary(steps []*db.StepResult, rounds map[string][]*db.StepRound) string {
+func BuildPipelineSummary(steps []*db.StepResult, rounds map[string][]*db.StepRound) (string, string) {
 	if len(steps) == 0 {
-		return ""
+		return "", ""
 	}
 
 	var statusLines []string
@@ -41,11 +41,11 @@ func BuildPipelineSummary(steps []*db.StepResult, rounds map[string][]*db.StepRo
 	}
 
 	if len(statusLines) == 0 {
-		return ""
+		return "", ""
 	}
 
 	var b strings.Builder
-	b.WriteString("## Pipeline\n\n")
+	b.WriteString("## Pipeline\n\nUpdates from `git push no-mistakes`\n\n")
 	for _, line := range statusLines {
 		b.WriteString(line)
 		b.WriteString("\n")
@@ -56,7 +56,8 @@ func BuildPipelineSummary(steps []*db.StepResult, rounds map[string][]*db.StepRo
 		b.WriteString(detail)
 	}
 
-	return b.String()
+	riskLine := extractRiskLine(steps, rounds)
+	return b.String(), riskLine
 }
 
 func buildStepEntry(sr *db.StepResult, rounds []*db.StepRound) (statusLine, detailBlock string) {
@@ -93,12 +94,15 @@ func buildStepEntry(sr *db.StepResult, rounds []*db.StepRound) (statusLine, deta
 	hasUnreadableFinalFindings := sr.FindingsJSON != nil && !finalFindingsParsed
 	wasFixed := hadFindings && len(rounds) > 1 && !hasUnreadableFinalFindings && !hasFinalFindings
 
-	// Special handling for review step - risk level is the primary signal.
-	if sr.StepName == types.StepReview {
-		return buildReviewEntry(name, finalFindings, initialFindings, rounds, hasUnreadableFinalFindings)
+	// Unreadable final findings - can't make claims about the outcome.
+	if hasUnreadableFinalFindings {
+		detail := ""
+		if hasRoundDetails {
+			detail = buildRoundsDetail(name, rounds)
+		}
+		return fmt.Sprintf("⚠️ **%s** - findings unavailable", name), detail
 	}
 
-	// For test/lint/rebase: determine emoji and result text.
 	if !hadAnyFindings && !hasRoundParseFailure {
 		detail := ""
 		if hasRoundDetails {
@@ -108,14 +112,6 @@ func buildStepEntry(sr *db.StepResult, rounds []*db.StepRound) (statusLine, deta
 	}
 
 	if hasRoundParseFailure && !hadAnyFindings {
-		detail := ""
-		if hasRoundDetails {
-			detail = buildRoundsDetail(name, rounds)
-		}
-		return fmt.Sprintf("⚠️ **%s** - findings unavailable", name), detail
-	}
-
-	if hasUnreadableFinalFindings {
 		detail := ""
 		if hasRoundDetails {
 			detail = buildRoundsDetail(name, rounds)
@@ -145,48 +141,56 @@ func buildStepEntry(sr *db.StepResult, rounds []*db.StepRound) (statusLine, deta
 	return line, detail
 }
 
-func buildReviewEntry(name string, finalFindings, initialFindings *types.Findings, rounds []*db.StepRound, hasUnreadableFinalFindings bool) (string, string) {
-	// Determine risk level and rationale from whichever findings have them.
-	src := finalFindings
-	if src == nil && !hasUnreadableFinalFindings {
-		src = initialFindings
-	}
-
-	riskLevel := ""
-	rationale := ""
-	if src != nil {
-		riskLevel = src.RiskLevel
-		rationale = src.RiskRationale
-	}
-
-	hasInitialFindings := initialFindings != nil && len(initialFindings.Items) > 0
-	hasFinalFindings := finalFindings != nil && len(finalFindings.Items) > 0
-	hasHistoricalFindings := hasInitialFindings || roundsNeedDetail(rounds)
-	hasRoundParseFailure := roundsHaveParseFailure(rounds)
-	emoji := "✅"
-	if hasFinalFindings || hasUnreadableFinalFindings || hasRoundParseFailure || riskLevel == "medium" || riskLevel == "high" {
-		emoji = "⚠️"
-	}
-
-	var line string
-	if hasUnreadableFinalFindings {
-		line = fmt.Sprintf("%s **%s** - findings unavailable", emoji, name)
-	} else if riskLevel != "" {
-		line = fmt.Sprintf("%s **%s** - %s risk", emoji, name, riskLevel)
-		if rationale != "" {
-			line += fmt.Sprintf(` - _"%s"_`, rationale)
+func extractRiskLine(steps []*db.StepResult, rounds map[string][]*db.StepRound) string {
+	for _, sr := range steps {
+		if sr.StepName != types.StepReview {
+			continue
 		}
-	} else if hasRoundParseFailure {
-		line = fmt.Sprintf("%s **%s** - findings unavailable", emoji, name)
-	} else {
-		line = fmt.Sprintf("%s **%s** - passed", emoji, name)
-	}
 
-	detail := ""
-	if hasHistoricalFindings {
-		detail = buildRoundsDetail(name, rounds)
+		var finalFindings *types.Findings
+		hasUnreadableFinal := false
+		if sr.FindingsJSON != nil {
+			if f, err := types.ParseFindingsJSON(*sr.FindingsJSON); err == nil {
+				finalFindings = &f
+			} else {
+				hasUnreadableFinal = true
+			}
+		}
+
+		src := finalFindings
+		if src == nil && !hasUnreadableFinal {
+			stepRounds := rounds[sr.ID]
+			if len(stepRounds) > 0 && stepRounds[0].FindingsJSON != nil {
+				if f, err := types.ParseFindingsJSON(*stepRounds[0].FindingsJSON); err == nil {
+					src = &f
+				}
+			}
+		}
+
+		if src == nil || src.RiskLevel == "" {
+			return ""
+		}
+
+		emoji := riskEmoji(src.RiskLevel)
+		if src.RiskRationale != "" {
+			return fmt.Sprintf("%s %s: %s", emoji, src.RiskLevel, src.RiskRationale)
+		}
+		return fmt.Sprintf("%s %s", emoji, src.RiskLevel)
 	}
-	return line, detail
+	return ""
+}
+
+func riskEmoji(level string) string {
+	switch level {
+	case "low":
+		return "✅"
+	case "medium":
+		return "⚠️"
+	case "high":
+		return "🚨"
+	default:
+		return "ℹ️"
+	}
 }
 
 func roundsHaveFindings(rounds []*db.StepRound) bool {
