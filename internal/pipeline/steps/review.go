@@ -185,6 +185,7 @@ Risk assessment (after listing all findings):
 
 	return &pipeline.StepOutcome{
 		NeedsApproval: needsApproval,
+		AutoFixable:   needsApproval,
 		Findings:      string(findingsJSON),
 	}, nil
 }

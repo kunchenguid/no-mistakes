@@ -115,11 +115,13 @@ Rules:
 		}
 
 		needsApproval := hasBlockingFindings(findings.Items)
+		autoFixable := needsApproval
 
 		// Check if agent wrote new test files
 		newTests := detectNewTestFiles(ctx, sctx.WorkDir)
 		if len(newTests) > 0 {
 			needsApproval = true
+			autoFixable = false
 			for _, f := range newTests {
 				findings.Items = append(findings.Items, Finding{
 					Severity:    "info",
@@ -132,6 +134,7 @@ Rules:
 		findingsJSON, _ := json.Marshal(findings)
 		return &pipeline.StepOutcome{
 			NeedsApproval: needsApproval,
+			AutoFixable:   autoFixable,
 			Findings:      string(findingsJSON),
 		}, nil
 	}
@@ -156,6 +159,7 @@ Rules:
 		findingsJSON, _ := json.Marshal(findings)
 		return &pipeline.StepOutcome{
 			NeedsApproval: true,
+			AutoFixable:   true,
 			Findings:      string(findingsJSON),
 			ExitCode:      exitCode,
 		}, nil

@@ -3564,10 +3564,15 @@ func TestBabysitStep_CIAutoFixDisabledWithZero(t *testing.T) {
 	step := &BabysitStep{
 		pollIntervalOverride: 100 * time.Millisecond, // fast polling for test
 	}
-	_, err := step.Execute(sctx)
-	// Should exit cleanly via babysit timeout (polling without fixing)
+	outcome, err := step.Execute(sctx)
 	if err != nil {
-		t.Fatalf("expected clean exit from babysit timeout, got: %v", err)
+		t.Fatalf("expected approval outcome, got error: %v", err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("expected approval needed when babysit auto-fix is disabled")
+	}
+	if outcome.AutoFixable {
+		t.Fatal("expected manual intervention outcome to be non-auto-fixable")
 	}
 
 	// Agent should NOT have been called
@@ -3635,19 +3640,21 @@ func TestBabysitStep_CIAutoFixLimitExhausted(t *testing.T) {
 	sctx.Config.BabysitTimeout = 30 * time.Second
 	sctx.Config.AutoFix = config.AutoFix{Babysit: 1} // only 1 attempt allowed
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	sctx.Ctx = ctx
-
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
 	step := &BabysitStep{
 		pollIntervalOverride: 100 * time.Millisecond, // fast polling for test
 	}
-	_, err := step.Execute(sctx)
-	if err == nil || !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("expected context.DeadlineExceeded, got: %v", err)
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("expected approval outcome, got error: %v", err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("expected approval needed when babysit auto-fix limit is exhausted")
+	}
+	if outcome.AutoFixable {
+		t.Fatal("expected exhausted babysit outcome to be non-auto-fixable")
 	}
 
 	// Agent should have been called exactly once (limit is 1)

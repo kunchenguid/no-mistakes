@@ -114,6 +114,21 @@ func failingCheckNames(checks []ciCheck) []string {
 	return names
 }
 
+func ciFailureOutcome(failing []string, summary string) *pipeline.StepOutcome {
+	findings := Findings{Summary: summary}
+	for _, name := range failing {
+		findings.Items = append(findings.Items, Finding{
+			Severity:    "warning",
+			Description: fmt.Sprintf("CI check failing: %s", name),
+		})
+	}
+	findingsJSON, _ := json.Marshal(findings)
+	return &pipeline.StepOutcome{
+		NeedsApproval: true,
+		Findings:      string(findingsJSON),
+	}
+}
+
 func (s *BabysitStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	ctx := sctx.Ctx
 	if err := ctx.Err(); err != nil {
@@ -204,8 +219,10 @@ func (s *BabysitStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome
 			fixKey := strings.Join(failing, ",")
 			if ciFixLimit <= 0 {
 				sctx.Log(fmt.Sprintf("CI failures detected: %s - auto-fix disabled, waiting for manual intervention...", strings.Join(failing, ", ")))
+				return ciFailureOutcome(failing, "CI failures require manual intervention"), nil
 			} else if s.ciFixAttempts >= ciFixLimit {
 				sctx.Log(fmt.Sprintf("CI failures detected: %s - max auto-fix attempts (%d) reached, waiting for manual intervention...", strings.Join(failing, ", "), ciFixLimit))
+				return ciFailureOutcome(failing, "CI failures still present after auto-fix attempts"), nil
 			} else if fixKey == s.lastFixedChecks {
 				sctx.Log("fix already attempted for these failures, waiting for CI re-run...")
 			} else {

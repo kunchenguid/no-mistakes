@@ -1452,6 +1452,7 @@ func TestExecutor_AutoFixTriggersWithoutApproval(t *testing.T) {
 			if callCount == 1 {
 				return &StepOutcome{
 					NeedsApproval: true,
+					AutoFixable:   true,
 					Findings:      `{"findings":[{"severity":"error","description":"bug"}],"summary":"1 issue"}`,
 				}, nil
 			}
@@ -1498,6 +1499,7 @@ func TestExecutor_AutoFixRespectsMaxAttempts(t *testing.T) {
 			// Always return NeedsApproval to exhaust auto-fix attempts
 			return &StepOutcome{
 				NeedsApproval: true,
+				AutoFixable:   true,
 				Findings:      `{"findings":[{"severity":"warning","description":"style issue"}],"summary":"lint issue"}`,
 			}, nil
 		},
@@ -1626,6 +1628,7 @@ func TestExecutor_AutoFixEmitsEvents(t *testing.T) {
 			if callCount == 1 {
 				return &StepOutcome{
 					NeedsApproval: true,
+					AutoFixable:   true,
 					Findings:      `{"findings":[{"severity":"warning","description":"issue"}],"summary":"1 issue"}`,
 				}, nil
 			}
@@ -1645,6 +1648,51 @@ func TestExecutor_AutoFixEmitsEvents(t *testing.T) {
 	fixingEvent := events.findLast(ipc.EventStepCompleted, string(types.StepStatusFixing))
 	if fixingEvent == nil {
 		t.Error("expected step_completed event with fixing status during auto-fix")
+	}
+}
+
+func TestExecutor_DoesNotAutoFixManualApprovalOutcome(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	cfg := &config.Config{AutoFix: config.AutoFix{Test: 3}}
+
+	callCount := 0
+	step := &adaptiveCallStep{
+		name: types.StepTest,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			callCount++
+			return &StepOutcome{
+				NeedsApproval: true,
+				Findings:      `{"findings":[{"severity":"info","description":"new test file written by agent: agent_test.go"}],"summary":"tests passed, but agent wrote new test files"}`,
+			}, nil
+		},
+	}
+
+	exec := NewExecutor(database, p, cfg, nil, []Step{step}, nil)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- exec.Execute(context.Background(), run, repo, workDir)
+	}()
+
+	waitForStepStatus(t, database, run.ID, types.StepTest, types.StepStatusAwaitingApproval)
+
+	if callCount != 1 {
+		t.Fatalf("expected 1 call for manual approval outcome, got %d", callCount)
+	}
+
+	if err := exec.Respond(types.StepTest, types.ActionApprove, nil); err != nil {
+		t.Fatalf("respond error: %v", err)
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("expected no error, got: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("executor timed out")
 	}
 }
 
