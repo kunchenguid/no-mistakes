@@ -159,35 +159,43 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // terminalTitle returns the current terminal title string based on run state.
+// Format: "<symbol> <status> - <branch_name>"
 func (m Model) terminalTitle() string {
-	prefix := "no-mistakes: "
+	branch := ""
+	if m.run != nil {
+		branch = m.run.Branch
+	}
+	suffix := ""
+	if branch != "" {
+		suffix = " - " + branch
+	}
 
 	// Terminal states.
 	if m.done || m.run == nil {
 		switch {
 		case m.run == nil:
-			return prefix + "Pending"
+			return "○ Pending" + suffix
 		case m.run.Status == types.RunCompleted:
-			return prefix + "✓ Completed"
+			return "✓ Completed" + suffix
 		case m.run.Status == types.RunFailed:
-			return prefix + "✗ Failed"
+			return "✗ Failed" + suffix
 		case m.run.Status == types.RunCancelled:
-			return prefix + "✗ Cancelled"
+			return "✗ Cancelled" + suffix
 		}
 	}
 
 	// Find the most relevant active step.
 	for _, s := range m.steps {
-		icon := stepStatusIcon(s.Status)
+		icon := stepStatusIndicator(s.Status, m.spinnerFrame)
 		switch s.Status {
 		case types.StepStatusRunning, types.StepStatusFixing:
-			return prefix + icon + " " + stepLabel(s.StepName)
+			return icon + " " + stepLabel(s.StepName) + suffix
 		case types.StepStatusAwaitingApproval, types.StepStatusFixReview:
-			return prefix + icon + " " + stepLabel(s.StepName)
+			return icon + " " + stepLabel(s.StepName) + suffix
 		}
 	}
 
-	return prefix + "Pending"
+	return "○ Pending" + suffix
 }
 
 // setTerminalTitle returns the OSC escape sequence to set the terminal title.

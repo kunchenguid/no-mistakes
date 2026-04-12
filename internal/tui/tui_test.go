@@ -7409,6 +7409,10 @@ func TestNewModel_ReattachStartedAtUsesUnixSeconds(t *testing.T) {
 	// Should show a reasonable elapsed time (under 10 seconds, not billions).
 	// Extract the duration from the Review line.
 	for _, line := range strings.Split(view, "\n") {
+		// Skip the OSC terminal title line which also contains "Review".
+		if strings.Contains(line, "\x1b]2;") || strings.Contains(line, "\007") {
+			continue
+		}
 		if strings.Contains(line, "Review") {
 			// Duration should be small (a few seconds), not a timestamp.
 			if !strings.Contains(line, "s") {
@@ -7681,8 +7685,8 @@ func TestPipelineConnectors_SuppressedDuringBabysitInStackedLayout(t *testing.T)
 func TestTerminalTitle_AllPending(t *testing.T) {
 	m := NewModel("/tmp/sock", nil, testRun())
 	title := m.terminalTitle()
-	if title != "no-mistakes: Pending" {
-		t.Errorf("expected 'no-mistakes: Pending', got %q", title)
+	if title != "○ Pending - feature/foo" {
+		t.Errorf("expected '○ Pending - feature/foo', got %q", title)
 	}
 }
 
@@ -7691,12 +7695,21 @@ func TestTerminalTitle_RunningStep(t *testing.T) {
 	run.Steps[0].Status = types.StepStatusRunning
 	m := NewModel("/tmp/sock", nil, run)
 	title := m.terminalTitle()
-	// Should show the spinner prefix and the running step label.
-	if !strings.Contains(title, "Review") {
-		t.Errorf("expected title to contain 'Review', got %q", title)
+	// Should use the current spinner frame and include the step label and branch.
+	if title != "⠋ Review - feature/foo" {
+		t.Errorf("expected '⠋ Review - feature/foo', got %q", title)
 	}
-	if !strings.HasPrefix(title, "no-mistakes: ") {
-		t.Errorf("expected title to start with 'no-mistakes: ', got %q", title)
+}
+
+func TestTerminalTitle_RunningStepSpinnerAdvances(t *testing.T) {
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusRunning
+	m := NewModel("/tmp/sock", nil, run)
+	m.spinnerFrame = 3
+	title := m.terminalTitle()
+	// Frame 3 is "⠸".
+	if title != "⠸ Review - feature/foo" {
+		t.Errorf("expected '⠸ Review - feature/foo', got %q", title)
 	}
 }
 
@@ -7705,11 +7718,8 @@ func TestTerminalTitle_AwaitingApproval(t *testing.T) {
 	run.Steps[0].Status = types.StepStatusAwaitingApproval
 	m := NewModel("/tmp/sock", nil, run)
 	title := m.terminalTitle()
-	if !strings.Contains(title, "Review") {
-		t.Errorf("expected title to contain 'Review', got %q", title)
-	}
-	if !strings.Contains(title, "⏸") {
-		t.Errorf("expected title to contain pause icon, got %q", title)
+	if title != "⏸ Review - feature/foo" {
+		t.Errorf("expected '⏸ Review - feature/foo', got %q", title)
 	}
 }
 
@@ -7719,8 +7729,8 @@ func TestTerminalTitle_Completed(t *testing.T) {
 	m := NewModel("/tmp/sock", nil, run)
 	m.done = true
 	title := m.terminalTitle()
-	if title != "no-mistakes: ✓ Completed" {
-		t.Errorf("expected 'no-mistakes: ✓ Completed', got %q", title)
+	if title != "✓ Completed - feature/foo" {
+		t.Errorf("expected '✓ Completed - feature/foo', got %q", title)
 	}
 }
 
@@ -7729,8 +7739,8 @@ func TestTerminalTitle_ReattachCompletedRun(t *testing.T) {
 	run.Status = types.RunCompleted
 	m := NewModel("/tmp/sock", nil, run)
 	title := m.terminalTitle()
-	if title != "no-mistakes: ✓ Completed" {
-		t.Errorf("expected 'no-mistakes: ✓ Completed', got %q", title)
+	if title != "✓ Completed - feature/foo" {
+		t.Errorf("expected '✓ Completed - feature/foo', got %q", title)
 	}
 }
 
@@ -7740,8 +7750,8 @@ func TestTerminalTitle_Failed(t *testing.T) {
 	m := NewModel("/tmp/sock", nil, run)
 	m.done = true
 	title := m.terminalTitle()
-	if title != "no-mistakes: ✗ Failed" {
-		t.Errorf("expected 'no-mistakes: ✗ Failed', got %q", title)
+	if title != "✗ Failed - feature/foo" {
+		t.Errorf("expected '✗ Failed - feature/foo', got %q", title)
 	}
 }
 
@@ -7751,8 +7761,8 @@ func TestTerminalTitle_Cancelled(t *testing.T) {
 	m := NewModel("/tmp/sock", nil, run)
 	m.done = true
 	title := m.terminalTitle()
-	if title != "no-mistakes: ✗ Cancelled" {
-		t.Errorf("expected 'no-mistakes: ✗ Cancelled', got %q", title)
+	if title != "✗ Cancelled - feature/foo" {
+		t.Errorf("expected '✗ Cancelled - feature/foo', got %q", title)
 	}
 }
 
@@ -7762,8 +7772,8 @@ func TestTerminalTitle_FixingStep(t *testing.T) {
 	run.Steps[1].Status = types.StepStatusFixing
 	m := NewModel("/tmp/sock", nil, run)
 	title := m.terminalTitle()
-	if !strings.Contains(title, "Test") {
-		t.Errorf("expected title to contain 'Test', got %q", title)
+	if title != "⠋ Test - feature/foo" {
+		t.Errorf("expected '⠋ Test - feature/foo', got %q", title)
 	}
 }
 
@@ -7776,7 +7786,7 @@ func TestView_ContainsTerminalTitleEscape(t *testing.T) {
 	m.height = 40
 	view := m.View()
 	// The view should start with the OSC title-setting escape sequence.
-	if !strings.HasPrefix(view, "\033]2;no-mistakes: ") {
+	if !strings.HasPrefix(view, "\033]2;") {
 		t.Errorf("expected view to start with OSC title escape, got prefix: %q", view[:min(len(view), 40)])
 	}
 	if !strings.Contains(view, "\007") {
@@ -7792,7 +7802,7 @@ func TestView_ResponsiveLayoutContainsTerminalTitleEscape(t *testing.T) {
 	m.width = 120
 	m.height = 40
 	view := m.View()
-	if !strings.HasPrefix(view, "\033]2;no-mistakes: ") {
+	if !strings.HasPrefix(view, "\033]2;") {
 		t.Errorf("expected responsive view to start with OSC title escape, got prefix: %q", view[:min(len(view), 40)])
 	}
 	if !strings.Contains(view, "\007") {
