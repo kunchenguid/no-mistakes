@@ -174,12 +174,16 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		autoFixLimit = e.config.AutoFixLimit(stepName)
 	}
 	autoFixAttempts := 0
+	roundNum := 0
+	nextTrigger := "initial"
 
 	// Execute with possible fix loop
 	for {
 		outcome, err := step.Execute(sctx)
+		roundNum++
+		roundDuration := time.Since(phaseStart).Milliseconds()
 		if err != nil {
-			durationMS := executionMS + time.Since(phaseStart).Milliseconds()
+			durationMS := executionMS + roundDuration
 			if dbErr := e.db.FailStep(sr.ID, err.Error(), durationMS); dbErr != nil {
 				slog.Warn("failed to mark step as failed in db", "step", stepName, "error", dbErr)
 			}
@@ -198,6 +202,15 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			if dbErr := e.db.ClearStepFindings(sr.ID); dbErr != nil {
 				slog.Warn("failed to clear step findings in db", "step", stepName, "error", dbErr)
 			}
+		}
+
+		// Persist this execution round.
+		var findingsPtr *string
+		if outcome.Findings != "" {
+			findingsPtr = &outcome.Findings
+		}
+		if _, dbErr := e.db.InsertStepRound(sr.ID, roundNum, nextTrigger, findingsPtr, roundDuration); dbErr != nil {
+			slog.Warn("failed to insert step round", "step", stepName, "round", roundNum, "error", dbErr)
 		}
 
 		// If the step produced a PR URL, propagate it to the run and emit an update.
@@ -223,6 +236,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			phaseStart = time.Now()
 			sctx.Fixing = true
 			sctx.PreviousFindings = outcome.Findings
+			nextTrigger = "auto_fix"
 			continue
 		}
 
@@ -302,6 +316,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFixing), "", "", "", nil)
 			sctx.Fixing = true
 			sctx.PreviousFindings = filterFindingsJSON(outcome.Findings, response.findingIDs)
+			nextTrigger = "user_fix"
 			slog.Info("step fix requested, re-executing", "step", stepName)
 			continue // loop back to step.Execute
 		}

@@ -3936,7 +3936,7 @@ func TestFallbackPRContent_ConventionalTitle(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			content := fallbackPRContent(tt.branch, tt.commitLog)
+			content := fallbackPRContent(tt.branch, tt.commitLog, "")
 			if !isConventionalTitle(content.Title) {
 				t.Errorf("fallback title %q is not conventional commit format", content.Title)
 			}
