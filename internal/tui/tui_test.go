@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -554,6 +555,40 @@ func TestModel_HandleKey_Quit(t *testing.T) {
 	}
 	if cmd == nil {
 		t.Error("expected quit command")
+	}
+}
+
+func TestModel_HandleKey_QuitClearsTerminalTitle(t *testing.T) {
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusRunning
+	m := NewModel("/tmp/sock", nil, run)
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	if cmd == nil {
+		t.Fatal("expected quit command")
+	}
+
+	msg := cmd()
+	if fmt.Sprintf("%T", msg) != "tea.sequenceMsg" {
+		t.Fatalf("expected sequence message, got %T", msg)
+	}
+
+	cmds := reflect.ValueOf(msg)
+	if cmds.Len() != 2 {
+		t.Fatalf("expected 2 quit commands, got %d", cmds.Len())
+	}
+
+	titleCmd, ok := cmds.Index(0).Interface().(tea.Cmd)
+	if !ok {
+		t.Fatalf("expected first sequence entry to be tea.Cmd, got %T", cmds.Index(0).Interface())
+	}
+
+	titleMsg := titleCmd()
+	if fmt.Sprintf("%T", titleMsg) != "tea.setWindowTitleMsg" {
+		t.Fatalf("expected title reset message, got %T", titleMsg)
+	}
+	if fmt.Sprint(titleMsg) != "" {
+		t.Fatalf("expected blank title reset, got %q", fmt.Sprint(titleMsg))
 	}
 }
 

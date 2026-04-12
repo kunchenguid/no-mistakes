@@ -729,7 +729,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch key {
 	case "q", "ctrl+c":
 		m.quitting = true
-		return m, tea.Quit
+		return m, tea.Sequence(tea.SetWindowTitle(""), tea.Quit)
 
 	case "?":
 		m.showHelp = !m.showHelp
