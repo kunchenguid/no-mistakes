@@ -84,6 +84,8 @@ func buildStepEntry(sr *db.StepResult, rounds []*db.StepRound) (statusLine, deta
 
 	hadFindings := initialFindings != nil && len(initialFindings.Items) > 0
 	hasFinalFindings := finalFindings != nil && len(finalFindings.Items) > 0
+	hasAnyRoundFindings := roundsHaveFindings(rounds)
+	hadAnyFindings := hadFindings || hasFinalFindings || hasAnyRoundFindings
 	wasFixed := hadFindings && len(rounds) > 1 && !hasFinalFindings
 
 	// Special handling for review step - risk level is the primary signal.
@@ -92,7 +94,7 @@ func buildStepEntry(sr *db.StepResult, rounds []*db.StepRound) (statusLine, deta
 	}
 
 	// For test/lint/rebase: determine emoji and result text.
-	if !hadFindings {
+	if !hadAnyFindings {
 		return fmt.Sprintf("✅ **%s** - passed", name), ""
 	}
 
@@ -111,7 +113,10 @@ func buildStepEntry(sr *db.StepResult, rounds []*db.StepRound) (statusLine, deta
 	// Had findings and the final state still contains them - approved as-is.
 	count := countFindingsBySeverity(currentFindings)
 	line := fmt.Sprintf("⚠️ **%s** - %s", name, count)
-	detail := buildRoundsDetail(name, rounds)
+	detail := ""
+	if hasAnyRoundFindings {
+		detail = buildRoundsDetail(name, rounds)
+	}
 	return line, detail
 }
 
@@ -129,9 +134,11 @@ func buildReviewEntry(name string, finalFindings, initialFindings *types.Finding
 		rationale = src.RiskRationale
 	}
 
-	hasFindings := initialFindings != nil && len(initialFindings.Items) > 0
+	hasInitialFindings := initialFindings != nil && len(initialFindings.Items) > 0
+	hasFinalFindings := finalFindings != nil && len(finalFindings.Items) > 0
+	hasHistoricalFindings := hasInitialFindings || roundsHaveFindings(rounds)
 	emoji := "✅"
-	if hasFindings {
+	if hasFinalFindings {
 		emoji = "⚠️"
 	}
 
@@ -146,10 +153,27 @@ func buildReviewEntry(name string, finalFindings, initialFindings *types.Finding
 	}
 
 	detail := ""
-	if hasFindings {
+	if hasHistoricalFindings {
 		detail = buildRoundsDetail(name, rounds)
 	}
 	return line, detail
+}
+
+func roundsHaveFindings(rounds []*db.StepRound) bool {
+	for _, r := range rounds {
+		if r.FindingsJSON == nil {
+			continue
+		}
+		f, err := types.ParseFindingsJSON(*r.FindingsJSON)
+		if err != nil {
+			continue
+		}
+		if len(f.Items) > 0 {
+			return true
+		}
+	}
+
+	return false
 }
 
 func buildFixResultText(rounds []*db.StepRound) string {

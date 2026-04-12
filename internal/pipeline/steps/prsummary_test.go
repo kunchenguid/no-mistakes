@@ -140,6 +140,32 @@ func TestBuildPipelineSummary_MultiRoundStillFailing(t *testing.T) {
 	}
 }
 
+func TestBuildPipelineSummary_UsesFinalFindingsWithoutInitialRoundData(t *testing.T) {
+	finalFindings := `{"findings":[{"id":"test-1","severity":"error","file":"pkg/handler_test.go","line":42,"description":"expected 429 got 200"}],"summary":"1 failure"}`
+	steps := []*db.StepResult{
+		{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &finalFindings},
+	}
+	rounds := map[string][]*db.StepRound{
+		"s1": {
+			{Round: 1, Trigger: "initial", DurationMS: 1000},
+		},
+	}
+	md := BuildPipelineSummary(steps, rounds)
+
+	if strings.Contains(md, "passed") {
+		t.Errorf("did not expect passed status when step result still has findings, got:\n%s", md)
+	}
+	if !strings.Contains(md, "⚠️ **Test** - 1 error") {
+		t.Errorf("expected final findings count in status line, got:\n%s", md)
+	}
+	if strings.Contains(md, "<details>") {
+		t.Errorf("did not expect details block without round findings data, got:\n%s", md)
+	}
+	if strings.Contains(md, "Round 1") {
+		t.Errorf("did not expect round details without round findings data, got:\n%s", md)
+	}
+}
+
 func TestBuildPipelineSummary_SkippedStep(t *testing.T) {
 	steps := []*db.StepResult{
 		{ID: "s1", StepName: types.StepReview, Status: types.StepStatusSkipped},
@@ -196,6 +222,37 @@ func TestBuildPipelineSummary_ReviewApprovedWithWarnings(t *testing.T) {
 	}
 	if !strings.Contains(md, "medium risk") {
 		t.Errorf("expected 'medium risk' in output, got:\n%s", md)
+	}
+}
+
+func TestBuildPipelineSummary_ReviewUsesFinalCleanState(t *testing.T) {
+	initialFindings := `{"findings":[{"id":"review-1","severity":"warning","description":"risky change"}],"summary":"1 warning","risk_level":"medium","risk_rationale":"initial risk rationale"}`
+	finalFindings := `{"findings":[],"summary":"clean","risk_level":"low","risk_rationale":"follow-up fixes reduced risk"}`
+	steps := []*db.StepResult{
+		{ID: "s1", StepName: types.StepReview, Status: types.StepStatusCompleted, FindingsJSON: &finalFindings},
+	}
+	rounds := map[string][]*db.StepRound{
+		"s1": {
+			{Round: 1, Trigger: "initial", FindingsJSON: &initialFindings, DurationMS: 1000},
+			{Round: 2, Trigger: "user_fix", FindingsJSON: &finalFindings, DurationMS: 700},
+		},
+	}
+	md := BuildPipelineSummary(steps, rounds)
+
+	if !strings.Contains(md, "✅ **Review** - low risk") {
+		t.Errorf("expected clean final review status, got:\n%s", md)
+	}
+	if strings.Contains(md, "⚠️ **Review**") {
+		t.Errorf("did not expect warning emoji after final clean review, got:\n%s", md)
+	}
+	if strings.Contains(md, "initial risk rationale") {
+		t.Errorf("did not expect stale initial rationale, got:\n%s", md)
+	}
+	if !strings.Contains(md, "follow-up fixes reduced risk") {
+		t.Errorf("expected final rationale in output, got:\n%s", md)
+	}
+	if !strings.Contains(md, "Round 2") {
+		t.Errorf("expected review details to remain visible for multi-round review, got:\n%s", md)
 	}
 }
 
