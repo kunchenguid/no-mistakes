@@ -503,6 +503,44 @@ func TestParseOpencodeSSE_SkipsUserDeltasAfterRoleIsKnown(t *testing.T) {
 	}
 }
 
+func TestParseOpencodeSSE_PreservesBufferedPartOrder(t *testing.T) {
+	input := strings.Join([]string{
+		`data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p1","messageID":"asst-msg","type":"text","text":"hello "}}}}`,
+		``,
+		`data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1","part":{"id":"p2","messageID":"asst-msg","type":"text","text":"world"}}}}`,
+		``,
+		`data: {"payload":{"type":"message.updated","properties":{"sessionID":"s1","info":{"id":"asst-msg","role":"assistant"}}}}`,
+		``,
+		`data: {"payload":{"type":"session.idle"}}`,
+		``,
+		``,
+	}, "\n")
+
+	for i := 0; i < 200; i++ {
+		state := &opencodeStreamState{
+			sessionID:  "s1",
+			textParts:  make(map[string]*opencodeTextPart),
+			usageByMsg: make(map[string]TokenUsage),
+		}
+		var chunks []string
+		state.onChunk = func(text string) { chunks = append(chunks, text) }
+
+		err := parseOpencodeSSE(strings.NewReader(input), state)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(chunks) != 2 {
+			t.Fatalf("expected 2 chunks, got %d: %v", len(chunks), chunks)
+		}
+		if chunks[0] != "hello " || chunks[1] != "world" {
+			t.Fatalf("expected buffered chunks in order, got %v on iteration %d", chunks, i)
+		}
+		if state.lastText != "world" {
+			t.Fatalf("expected lastText 'world', got %q on iteration %d", state.lastText, i)
+		}
+	}
+}
+
 func TestParseOpencodeSSE_SeparatesAfterToolStep(t *testing.T) {
 	input := strings.Join([]string{
 		// First assistant text

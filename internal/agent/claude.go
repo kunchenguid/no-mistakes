@@ -141,7 +141,6 @@ func parseClaudeEvents(ctx context.Context, r io.Reader, onChunk func(string), u
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), claudeScannerMaxTokenSize)
 	var textBuf string
-	var hasEmittedText bool
 
 	for scanner.Scan() {
 		select {
@@ -172,23 +171,12 @@ func parseClaudeEvents(ctx context.Context, r io.Reader, onChunk func(string), u
 				CacheReadTokens:     msg.Usage.CacheReadInputTokens,
 				CacheCreationTokens: msg.Usage.CacheCreationInputTokens,
 			})
-			hasText := false
-			for _, c := range msg.Content {
-				if c.Type == "text" && c.Text != "" {
-					hasText = true
-					break
-				}
-			}
-			if hasText && hasEmittedText && onChunk != nil {
-				onChunk("\n\n")
-			}
 			for _, c := range msg.Content {
 				if c.Type == "text" && c.Text != "" {
 					textBuf += c.Text
 					if onChunk != nil {
 						onChunk(c.Text)
 					}
-					hasEmittedText = true
 				}
 			}
 

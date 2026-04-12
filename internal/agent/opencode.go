@@ -342,6 +342,7 @@ type opencodeStreamState struct {
 	sessionID       string
 	onChunk         func(string)
 	textParts       map[string]*opencodeTextPart
+	textPartOrder   []string
 	usageByMsg      map[string]TokenUsage
 	usage           TokenUsage
 	lastText        string
@@ -407,6 +408,7 @@ func parseOpencodeSSE(r io.Reader, state *opencodeStreamState) error {
 				if part == nil {
 					part = &opencodeTextPart{}
 					state.textParts[props.PartID] = part
+					state.trackTextPart(props.PartID)
 				}
 				part.text += props.Delta
 				state.emitTextPartChunk(part, props.PartID)
@@ -424,6 +426,7 @@ func parseOpencodeSSE(r io.Reader, state *opencodeStreamState) error {
 					if part == nil {
 						part = &opencodeTextPart{}
 						state.textParts[p.ID] = part
+						state.trackTextPart(p.ID)
 					}
 					part.text = p.Text
 					part.phase = phase
@@ -536,11 +539,21 @@ func (s *opencodeStreamState) dropMessageParts(messageID string) {
 }
 
 func (s *opencodeStreamState) emitBufferedMessageParts(messageID string) {
-	for partID, part := range s.textParts {
+	for _, partID := range s.textPartOrder {
+		part := s.textParts[partID]
 		if part != nil && part.messageID == messageID {
 			s.emitTextPartChunk(part, partID)
 		}
 	}
+}
+
+func (s *opencodeStreamState) trackTextPart(partID string) {
+	for _, existingPartID := range s.textPartOrder {
+		if existingPartID == partID {
+			return
+		}
+	}
+	s.textPartOrder = append(s.textPartOrder, partID)
 }
 
 func (s *opencodeStreamState) markPartFiltered(partID string) {
