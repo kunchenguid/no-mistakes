@@ -867,6 +867,9 @@ func TestTestStep_NoCommand_AgentDetects(t *testing.T) {
 	if !strings.Contains(ag.calls[0].Prompt, "branch: refs/heads/feature") {
 		t.Error("expected prompt to include branch metadata")
 	}
+	if !strings.Contains(ag.calls[0].Prompt, "empty findings array") {
+		t.Error("expected prompt to instruct agent to return empty findings when tests pass")
+	}
 }
 
 func TestTestStep_NoCommand_MalformedAgentOutput(t *testing.T) {
