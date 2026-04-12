@@ -292,7 +292,7 @@ func (m Model) View() string {
 	// pipeline panel height. Otherwise use compact defaults.
 	// Also hidden when babysit is active (log context integrated into babysit box).
 	logLines := 5
-	if useResponsiveLayout && contentBudget > 0 && len(extraSections) == 0 {
+	if useResponsiveLayout && !m.showHelp && contentBudget > 0 && len(extraSections) == 0 {
 		logLines = contentBudget - 2 // subtract box borders
 	} else if m.height > 0 && m.height < 30 {
 		logLines = 3

@@ -6861,6 +6861,36 @@ func TestModel_View_OneBlankLineBetweenLogAndHelp(t *testing.T) {
 	}
 }
 
+func TestModel_View_ResponsiveLayoutKeepsHelpVisibleWithLogs(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	defer lipgloss.SetColorProfile(termenv.ANSI)
+
+	run := &ipc.RunInfo{
+		ID: "run-001", RepoID: "repo-001", Branch: "main", HeadSHA: "abc12345",
+		BaseSHA: "000000", Status: types.RunRunning,
+		Steps: []ipc.StepResultInfo{
+			{ID: "s1", StepName: types.StepReview, StepOrder: 1, Status: types.StepStatusRunning},
+		},
+	}
+	m := NewModel("/tmp/sock", nil, run)
+	m.width = 120
+	m.height = 40
+	m.logs = make([]string, 40)
+	for i := range m.logs {
+		m.logs[i] = fmt.Sprintf("log line %02d", i)
+	}
+	m.showHelp = true
+
+	view := stripANSI(m.View())
+
+	if !strings.Contains(view, "Help") {
+		t.Fatalf("expected help overlay to remain visible in responsive layout with logs, got:\n%s", view)
+	}
+	if !strings.Contains(view, "close help") {
+		t.Fatalf("expected help overlay content in responsive layout with logs, got:\n%s", view)
+	}
+}
+
 // Test: footer should have consistent spacing (1 blank line) after any preceding section.
 func TestModel_View_ConsistentFooterSpacing(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
