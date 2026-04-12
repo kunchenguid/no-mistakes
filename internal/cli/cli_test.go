@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/kunchenguid/no-mistakes/internal/buildinfo"
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/db"
@@ -19,6 +20,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/muesli/termenv"
 )
 
 func init() {
@@ -147,6 +149,18 @@ func TestRootHelp(t *testing.T) {
 	}
 }
 
+func TestSetColorProfileForOutputUsesAsciiForNonTTY(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	defer lipgloss.SetColorProfile(prev)
+
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	setColorProfileForOutput(new(bytes.Buffer))
+
+	if lipgloss.ColorProfile() != termenv.Ascii {
+		t.Fatalf("ColorProfile = %v, want %v", lipgloss.ColorProfile(), termenv.Ascii)
+	}
+}
+
 func TestUpdateCommandDevBuild(t *testing.T) {
 	out, err := executeCmd("update")
 	if err != nil {
@@ -173,6 +187,12 @@ func TestInitAndEject(t *testing.T) {
 	}
 	if !strings.Contains(out, "git push no-mistakes") {
 		t.Errorf("init output should contain push instructions, got: %s", out)
+	}
+	if !strings.Contains(out, "|__| |_/") {
+		t.Errorf("init output should contain ASCII art banner, got: %s", out)
+	}
+	if !strings.Contains(out, "Gate initialized") {
+		t.Errorf("init output should contain success message, got: %s", out)
 	}
 
 	// Verify the no-mistakes remote was added.
@@ -203,8 +223,11 @@ daemonStarted:
 	if err != nil {
 		t.Fatalf("eject failed: %v\noutput: %s", err, out)
 	}
-	if !strings.Contains(out, "ejected") {
-		t.Errorf("eject output should say 'ejected', got: %s", out)
+	if !strings.Contains(out, "Gate removed") {
+		t.Errorf("eject output should say 'Gate removed', got: %s", out)
+	}
+	if !strings.Contains(out, resolved) {
+		t.Errorf("eject output should contain repo path %q, got: %s", resolved, out)
 	}
 
 	// Remote should be gone.
@@ -499,8 +522,8 @@ func TestDaemonStatusRunning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("daemon status failed: %v\noutput: %s", err, out)
 	}
-	if !strings.Contains(out, "daemon running (pid") {
-		t.Errorf("expected 'daemon running (pid N)', got: %s", out)
+	if !strings.Contains(out, "daemon running") {
+		t.Errorf("expected 'daemon running', got: %s", out)
 	}
 }
 
@@ -625,7 +648,7 @@ func TestRerunStartsPipelineForCurrentBranch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("rerun failed: %v\noutput: %s", err, out)
 	}
-	if !strings.Contains(out, "rerun started") {
+	if !strings.Contains(out, "Rerun started") {
 		t.Fatalf("expected rerun started output, got: %s", out)
 	}
 

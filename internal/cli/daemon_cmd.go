@@ -83,7 +83,7 @@ func newDaemonStartCmd() *cobra.Command {
 			if err := daemon.Start(p); err != nil {
 				return err
 			}
-			fmt.Fprintln(cmd.OutOrStdout(), "daemon started")
+			fmt.Fprintf(cmd.OutOrStdout(), "  %s daemon started\n", sGreen.Render("✓"))
 			return nil
 		},
 	}
@@ -101,7 +101,7 @@ func newDaemonStopCmd() *cobra.Command {
 			if err := daemon.Stop(p); err != nil {
 				return err
 			}
-			fmt.Fprintln(cmd.OutOrStdout(), "daemon stopped")
+			fmt.Fprintf(cmd.OutOrStdout(), "  %s daemon stopped\n", sGreen.Render("✓"))
 			return nil
 		},
 	}
@@ -123,12 +123,12 @@ func newDaemonStatusCmd() *cobra.Command {
 			if alive {
 				pid, _ := daemon.ReadPID(p)
 				if pid > 0 {
-					fmt.Fprintf(cmd.OutOrStdout(), "daemon running (pid %d)\n", pid)
+					fmt.Fprintf(cmd.OutOrStdout(), "  %s daemon running %s\n", sGreen.Render("●"), sDim.Render(fmt.Sprintf("(pid %d)", pid)))
 				} else {
-					fmt.Fprintln(cmd.OutOrStdout(), "daemon running")
+					fmt.Fprintf(cmd.OutOrStdout(), "  %s daemon running\n", sGreen.Render("●"))
 				}
 			} else {
-				fmt.Fprintln(cmd.OutOrStdout(), "daemon not running")
+				fmt.Fprintf(cmd.OutOrStdout(), "  %s daemon not running\n", sDim.Render("○"))
 			}
 			return nil
 		},

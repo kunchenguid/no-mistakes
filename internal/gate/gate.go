@@ -95,21 +95,21 @@ func Init(ctx context.Context, d *db.DB, p *paths.Paths, workDir string) (*db.Re
 // Eject removes the no-mistakes gate from the repo at workDir.
 // It removes the remote, deletes the bare repo and worktrees,
 // and deletes the repo record from the database.
-func Eject(ctx context.Context, d *db.DB, p *paths.Paths, workDir string) error {
+func Eject(ctx context.Context, d *db.DB, p *paths.Paths, workDir string) (*db.Repo, error) {
 	// Find git root (resolves symlinks for consistency on macOS).
 	gitRoot, err := git.FindGitRoot(workDir)
 	if err != nil {
-		return fmt.Errorf("find git root: %w", err)
+		return nil, fmt.Errorf("find git root: %w", err)
 	}
 	absRoot := gitRoot
 
 	// Look up repo in DB.
 	repo, err := d.GetRepoByPath(absRoot)
 	if err != nil {
-		return fmt.Errorf("get repo: %w", err)
+		return nil, fmt.Errorf("get repo: %w", err)
 	}
 	if repo == nil {
-		return fmt.Errorf("not initialized for %s", absRoot)
+		return nil, fmt.Errorf("not initialized for %s", absRoot)
 	}
 
 	// Remove remote from working repo (non-fatal).
@@ -125,9 +125,9 @@ func Eject(ctx context.Context, d *db.DB, p *paths.Paths, workDir string) error 
 
 	// Delete repo record (cascades to runs + steps).
 	if err := d.DeleteRepo(repo.ID); err != nil {
-		return fmt.Errorf("delete repo record: %w", err)
+		return nil, fmt.Errorf("delete repo record: %w", err)
 	}
 
 	slog.Info("gate ejected", "repo_id", repo.ID, "path", absRoot)
-	return nil
+	return repo, nil
 }

@@ -39,8 +39,8 @@ func TestStatusInitialized(t *testing.T) {
 	if !strings.Contains(out, "repo:") {
 		t.Errorf("status output should contain repo info, got: %s", out)
 	}
-	if !strings.Contains(out, "upstream:") {
-		t.Errorf("status output should contain upstream info, got: %s", out)
+	if !strings.Contains(out, "remote:") {
+		t.Errorf("status output should contain remote info, got: %s", out)
 	}
 	if !strings.Contains(out, "daemon:") {
 		t.Errorf("status output should contain daemon status, got: %s", out)
@@ -103,8 +103,8 @@ func TestStatusWithActiveRun(t *testing.T) {
 	}
 
 	// Should show active run section.
-	if !strings.Contains(out, "active run:") {
-		t.Errorf("expected 'active run:' section, got: %s", out)
+	if !strings.Contains(out, "Active run") {
+		t.Errorf("expected 'Active run' section, got: %s", out)
 	}
 	if !strings.Contains(out, "feature/auth") {
 		t.Errorf("expected branch 'feature/auth', got: %s", out)

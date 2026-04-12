@@ -8,6 +8,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
+const banner = `_  _ ____    _  _ _ ____ ___ ____ _  _ ____ ____
+|\ | |  |    |\/| | [__   |  |__| |_/  |___ [__
+| \| |__|    |  | | ___]  |  |  | | \_ |___ ___]`
+
 func newInitCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "init",
@@ -29,16 +33,23 @@ Run this from inside a git repository that has an "origin" remote.`,
 				return fmt.Errorf("init: %w", err)
 			}
 			if err := daemon.EnsureDaemon(p); err != nil {
-				if ejectErr := gate.Eject(cmd.Context(), d, p, "."); ejectErr != nil {
+				if _, ejectErr := gate.Eject(cmd.Context(), d, p, "."); ejectErr != nil {
 					return fmt.Errorf("start daemon: %w, rollback init: %v", err, ejectErr)
 				}
 				return fmt.Errorf("start daemon: %w", err)
 			}
 
-			fmt.Fprintf(cmd.OutOrStdout(), "initialized gate for %s\n", repo.WorkingPath)
-			fmt.Fprintf(cmd.OutOrStdout(), "  remote: no-mistakes → %s\n", p.RepoDir(repo.ID))
-			fmt.Fprintf(cmd.OutOrStdout(), "  upstream: %s\n", repo.UpstreamURL)
-			fmt.Fprintf(cmd.OutOrStdout(), "\nPush through the gate with: git push no-mistakes <branch>\n")
+			w := cmd.OutOrStdout()
+			fmt.Fprintln(w, sCyan.Render(banner))
+			fmt.Fprintln(w)
+			fmt.Fprintf(w, "  %s Gate initialized\n", sGreen.Render("✓"))
+			fmt.Fprintln(w)
+			fmt.Fprintf(w, "  %s  %s\n", sDim.Render("  repo"), repo.WorkingPath)
+			fmt.Fprintf(w, "  %s  no-mistakes → %s\n", sDim.Render("  gate"), p.RepoDir(repo.ID))
+			fmt.Fprintf(w, "  %s  %s\n", sDim.Render("remote"), repo.UpstreamURL)
+			fmt.Fprintln(w)
+			fmt.Fprintf(w, "  %s\n", sDim.Render("Push through the gate with:"))
+			fmt.Fprintf(w, "  %s\n", sBold.Render("git push no-mistakes <branch>"))
 			return nil
 		},
 	}

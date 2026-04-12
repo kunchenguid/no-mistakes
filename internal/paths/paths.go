@@ -53,6 +53,7 @@ func (p *Paths) RunLogDir(runID string) string {
 	return filepath.Join(p.root, "logs", runID)
 }
 func (p *Paths) DaemonLog() string { return filepath.Join(p.root, "logs", "daemon.log") }
+func (p *Paths) CLILog() string    { return filepath.Join(p.root, "logs", "cli.log") }
 
 // EnsureDirs creates all required directories under root.
 func (p *Paths) EnsureDirs() error {

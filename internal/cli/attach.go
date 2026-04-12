@@ -82,9 +82,9 @@ func printNoActiveRun(w io.Writer, d *db.DB, repoID string) {
 			if len(shown) > recentRunsLimit {
 				shown = shown[:recentRunsLimit]
 			}
-			fmt.Fprintln(w, "No active run.")
+			fmt.Fprintf(w, "  %s\n", sDim.Render("No active run."))
 			fmt.Fprintln(w)
-			fmt.Fprintln(w, "Recent runs:")
+			fmt.Fprintf(w, "  %s\n", sCyan.Render("Recent runs"))
 			for _, r := range shown {
 				sha := r.HeadSHA
 				if len(sha) > 8 {
@@ -95,19 +95,19 @@ func printNoActiveRun(w io.Writer, d *db.DB, repoID string) {
 				if r.PRURL != nil {
 					pr = fmt.Sprintf("  %s", *r.PRURL)
 				}
-				fmt.Fprintf(w, "  %-12s %-20s %s  %s%s\n", r.Status, r.Branch, sha, age, pr)
+				fmt.Fprintf(w, "  %-12s %-20s %s  %s%s\n", runStatusStyle(r.Status), r.Branch, sDim.Render(sha), sDim.Render(age), pr)
 			}
 			if len(runs) > recentRunsLimit {
-				fmt.Fprintf(w, "  (%d more — run 'no-mistakes runs' to see all)\n", len(runs)-recentRunsLimit)
+				fmt.Fprintf(w, "  %s\n", sDim.Render(fmt.Sprintf("(%d more - run 'no-mistakes runs' to see all)", len(runs)-recentRunsLimit)))
 			}
 			fmt.Fprintln(w)
-			fmt.Fprintln(w, "Start a new pipeline:")
-			fmt.Fprintln(w, "  git push no-mistakes <branch>")
+			fmt.Fprintf(w, "  %s\n", sDim.Render("Start a new pipeline:"))
+			fmt.Fprintf(w, "  %s\n", sBold.Render("git push no-mistakes <branch>"))
 			return
 		}
 	}
-	fmt.Fprintln(w, "No active run. Push through the gate to start a pipeline:")
-	fmt.Fprintln(w, "  git push no-mistakes <branch>")
+	fmt.Fprintf(w, "  %s\n", sDim.Render("No active run. Push through the gate to start a pipeline:"))
+	fmt.Fprintf(w, "  %s\n", sBold.Render("git push no-mistakes <branch>"))
 }
 
 func formatAge(unixSec int64) string {

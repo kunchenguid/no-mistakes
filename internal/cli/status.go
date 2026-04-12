@@ -29,16 +29,16 @@ func newStatusCmd() *cobra.Command {
 				return nil
 			}
 
-			fmt.Fprintf(w, "repo:     %s\n", repo.WorkingPath)
-			fmt.Fprintf(w, "upstream: %s\n", repo.UpstreamURL)
-			fmt.Fprintf(w, "gate:     %s\n", p.RepoDir(repo.ID))
+			fmt.Fprintf(w, "  %s  %s\n", sDim.Render("  repo:"), repo.WorkingPath)
+			fmt.Fprintf(w, "  %s  %s\n", sDim.Render("remote:"), repo.UpstreamURL)
+			fmt.Fprintf(w, "  %s  %s\n", sDim.Render("  gate:"), p.RepoDir(repo.ID))
 
 			// Check daemon status.
 			alive, _ := daemon.IsRunning(p)
 			if alive {
-				fmt.Fprintf(w, "daemon:   running\n")
+				fmt.Fprintf(w, "  %s  %s %s\n", sDim.Render("daemon:"), sGreen.Render("●"), "running")
 			} else {
-				fmt.Fprintf(w, "daemon:   stopped\n")
+				fmt.Fprintf(w, "  %s  %s %s\n", sDim.Render("daemon:"), sDim.Render("○"), "stopped")
 			}
 
 			// Check for active run.
@@ -47,14 +47,17 @@ func newStatusCmd() *cobra.Command {
 				return fmt.Errorf("check active run: %w", err)
 			}
 			if activeRun != nil {
-				fmt.Fprintf(w, "\nactive run:\n")
-				fmt.Fprintf(w, "  id:     %s\n", activeRun.ID)
-				fmt.Fprintf(w, "  branch: %s\n", activeRun.Branch)
-				fmt.Fprintf(w, "  status: %s\n", activeRun.Status)
-				fmt.Fprintf(w, "  head:   %s\n", activeRun.HeadSHA[:minLen(len(activeRun.HeadSHA), 8)])
-				fmt.Fprintf(w, "  started: %s\n", time.Unix(activeRun.CreatedAt, 0).Format(time.DateTime))
+				fmt.Fprintln(w)
+				fmt.Fprintf(w, "  %s\n", sCyan.Render("Active run"))
+				sha := activeRun.HeadSHA[:minLen(len(activeRun.HeadSHA), 8)]
+				ts := time.Unix(activeRun.CreatedAt, 0).Format(time.DateTime)
+				fmt.Fprintf(w, "  %s  %s\n", sDim.Render("     id:"), activeRun.ID)
+				fmt.Fprintf(w, "  %s  %s\n", sDim.Render(" branch:"), activeRun.Branch)
+				fmt.Fprintf(w, "  %s  %s\n", sDim.Render(" status:"), runStatusStyle(activeRun.Status))
+				fmt.Fprintf(w, "  %s  %s\n", sDim.Render("   head:"), sDim.Render(sha))
+				fmt.Fprintf(w, "  %s  %s\n", sDim.Render("started:"), sDim.Render(ts))
 			} else {
-				fmt.Fprintf(w, "\nno active run\n")
+				fmt.Fprintf(w, "\n  %s\n", sDim.Render("no active run"))
 			}
 
 			return nil

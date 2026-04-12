@@ -2,12 +2,15 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"os"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/kunchenguid/no-mistakes/internal/buildinfo"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/muesli/termenv"
 	"github.com/spf13/cobra"
 )
 
@@ -24,6 +27,9 @@ func newRootCmd() *cobra.Command {
 		Use:     "no-mistakes",
 		Short:   "Local Git proxy that validates code before pushing upstream",
 		Version: buildinfo.String(),
+		PersistentPreRun: func(cmd *cobra.Command, args []string) {
+			setColorProfileForOutput(cmd.OutOrStdout())
+		},
 		// Silence cobra's default error/usage printing — we handle it ourselves.
 		SilenceErrors: true,
 		SilenceUsage:  true,
@@ -44,6 +50,10 @@ func newRootCmd() *cobra.Command {
 	cmd.AddCommand(newDoctorCmd())
 
 	return cmd
+}
+
+func setColorProfileForOutput(w io.Writer) {
+	lipgloss.SetColorProfile(termenv.NewOutput(w).EnvColorProfile())
 }
 
 // findRepo looks up the repo for the current directory. If the working
