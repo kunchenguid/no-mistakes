@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
+	"regexp"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
@@ -13,6 +14,14 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+var conventionalTitleRe = regexp.MustCompile(
+	`^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([^)]+\))?!?: .+`,
+)
+
+func isConventionalTitle(title string) bool {
+	return conventionalTitleRe.MatchString(title)
+}
 
 // PRStep creates or updates a pull request via gh CLI.
 type PRStep struct{}
@@ -205,7 +214,7 @@ Context:
 
 Rules:
 - Cover the full branch delta, not just the latest commit.
-- Title: concise and specific. Do not use the raw branch name.
+- Title must use conventional commit format: "type(scope): description" or "type: description". Valid types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert. Scope is optional. Do not capitalize the type. Do not use the raw branch name.
 - Body: GitHub-flavored markdown with a short summary and testing section.
 - Do not invent tests or behavior.
 
@@ -232,7 +241,11 @@ Diff stat:
 			content.Title = strings.TrimSpace(content.Title)
 			content.Body = strings.TrimSpace(content.Body)
 			if content.Title != "" && content.Body != "" {
-				return content, nil
+				if !isConventionalTitle(content.Title) {
+					slog.Warn("agent PR title is not conventional commit format, using fallback", "title", content.Title)
+				} else {
+					return content, nil
+				}
 			}
 		}
 	}
@@ -241,7 +254,7 @@ Diff stat:
 }
 
 func fallbackPRContent(branch, commitLog string) prContent {
-	title := strings.TrimSpace(branch)
+	title := ""
 	for _, line := range strings.Split(commitLog, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -253,7 +266,12 @@ func fallbackPRContent(branch, commitLog string) prContent {
 		break
 	}
 	if title == "" {
-		title = "Update pull request"
+		title = strings.TrimSpace(branch)
+	}
+	if title == "" {
+		title = "chore: update pull request"
+	} else if !isConventionalTitle(title) {
+		title = "chore: " + title
 	}
 	body := strings.TrimSpace(commitLog)
 	if body == "" {
