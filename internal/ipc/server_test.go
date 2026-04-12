@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -277,7 +276,7 @@ func TestServerClose(t *testing.T) {
 }
 
 func TestDialNonexistentSocket(t *testing.T) {
-	_, err := ipc.Dial("/tmp/nonexistent-test-socket-12345.sock")
+	_, err := ipc.Dial(filepath.Join(t.TempDir(), "nonexistent.sock"))
 	if err == nil {
 		t.Error("expected error dialing nonexistent socket")
 	}
@@ -320,10 +319,7 @@ func TestStreamHandler(t *testing.T) {
 	conn.Close()
 
 	// Use raw connection to test streaming.
-	rawConn, err := net.Dial("unix", sock)
-	if err != nil {
-		t.Fatalf("raw dial: %v", err)
-	}
+	rawConn := rawDial(t, sock)
 	defer rawConn.Close()
 
 	encoder := json.NewEncoder(rawConn)
@@ -395,10 +391,7 @@ func TestServerInvalidJSON(t *testing.T) {
 	startServer(t, sock)
 
 	// Send invalid JSON and verify parse error response.
-	conn, err := net.Dial("unix", sock)
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
+	conn := rawDial(t, sock)
 	defer conn.Close()
 
 	// Write invalid JSON.
@@ -437,6 +430,41 @@ func TestCallWithNilResult(t *testing.T) {
 	// Call with nil result pointer — should succeed without unmarshaling result.
 	if err := c.Call("noop", nil, nil); err != nil {
 		t.Fatalf("call with nil result: %v", err)
+	}
+}
+
+func TestServerExitsWhenListenerClosed(t *testing.T) {
+	sock := socketPath(t)
+	srv := ipc.NewServer()
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.Serve(sock) }()
+
+	// Wait for server to be ready.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		c, err := ipc.Dial(sock)
+		if err == nil {
+			c.Close()
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Simulate the listener being closed externally (e.g. tokenListener
+	// self-close on Windows after too many accept errors) by removing the
+	// socket file and dialing to confirm the server is up, then closing
+	// the server's listener via Close. But we want to test that the server
+	// exits even without s.Close() being called. Instead, we close the
+	// underlying listener by calling srv.CloseListener().
+	srv.CloseListener()
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Errorf("Serve returned unexpected error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("server did not exit after listener was closed")
 	}
 }
 
@@ -531,10 +559,7 @@ func TestSubscribeMalformedEvent(t *testing.T) {
 
 	// Start a fresh minimal server with raw socket control.
 	sock = socketPath(t)
-	ln, err := net.Listen("unix", sock)
-	if err != nil {
-		t.Fatal(err)
-	}
+	ln := rawListen(t, sock)
 	defer ln.Close()
 
 	go func() {
@@ -598,10 +623,7 @@ func TestSubscribeConnectionClosedBeforeResponse(t *testing.T) {
 	os.Remove(sock)
 
 	// Start a raw server that closes connection immediately after accept.
-	ln, err := net.Listen("unix", sock)
-	if err != nil {
-		t.Fatal(err)
-	}
+	ln := rawListen(t, sock)
 	defer ln.Close()
 
 	go func() {
@@ -617,7 +639,7 @@ func TestSubscribeConnectionClosedBeforeResponse(t *testing.T) {
 
 	time.Sleep(50 * time.Millisecond)
 
-	_, _, err = ipc.Subscribe(sock, &ipc.SubscribeParams{RunID: "r1"})
+	_, _, err := ipc.Subscribe(sock, &ipc.SubscribeParams{RunID: "r1"})
 	if err == nil {
 		t.Fatal("expected error when connection closed before response")
 	}
@@ -635,10 +657,7 @@ func TestServerEmptyLine(t *testing.T) {
 	})
 
 	// Connect raw and send an empty line, then a valid request.
-	conn, err := net.Dial("unix", sock)
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
+	conn := rawDial(t, sock)
 	defer conn.Close()
 
 	// Send empty line first.

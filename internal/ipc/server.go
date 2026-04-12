@@ -4,11 +4,10 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net"
-	"os"
 	"sync"
-	"syscall"
 )
 
 // HandlerFunc processes a JSON-RPC request and returns a result or error.
@@ -20,7 +19,7 @@ type HandlerFunc func(ctx context.Context, params json.RawMessage) (interface{},
 // the handler should return.
 type StreamHandlerFunc func(ctx context.Context, params json.RawMessage, send func(interface{}) error) error
 
-// Server listens on a Unix socket and dispatches JSON-RPC requests.
+// Server listens on an IPC endpoint and dispatches JSON-RPC requests.
 type Server struct {
 	mu             sync.RWMutex
 	handlers       map[string]HandlerFunc
@@ -57,21 +56,16 @@ func (s *Server) HandleStream(method string, fn StreamHandlerFunc) {
 	s.streamHandlers[method] = fn
 }
 
-// Serve starts listening on the given Unix socket path.
+// Serve starts listening on the given IPC endpoint path.
 // It blocks until Close is called, then returns nil.
 func (s *Server) Serve(socketPath string) error {
-	// remove stale socket file
-	os.Remove(socketPath)
-
-	// Set restrictive umask so the socket is created with 0600 permissions,
-	// avoiding a TOCTOU window between Listen and Chmod.
-	oldMask := syscall.Umask(0077)
-	ln, err := net.Listen("unix", socketPath)
-	syscall.Umask(oldMask)
+	ln, err := listen(socketPath)
 	if err != nil {
 		return err
 	}
+	s.mu.Lock()
 	s.listener = ln
+	s.mu.Unlock()
 
 	go func() {
 		<-s.done
@@ -86,6 +80,11 @@ func (s *Server) Serve(socketPath string) error {
 				s.wg.Wait()
 				return nil
 			default:
+				if errors.Is(err, net.ErrClosed) {
+					s.Close()
+					s.wg.Wait()
+					return nil
+				}
 				slog.Error("accept connection", "error", err)
 				continue
 			}
@@ -103,6 +102,18 @@ func (s *Server) Close() {
 	s.closeOnce.Do(func() {
 		close(s.done)
 	})
+}
+
+// CloseListener closes the underlying listener without signaling server
+// shutdown. This causes Accept to return net.ErrClosed, which the server
+// detects and exits cleanly.
+func (s *Server) CloseListener() {
+	s.mu.RLock()
+	ln := s.listener
+	s.mu.RUnlock()
+	if ln != nil {
+		ln.Close()
+	}
 }
 
 func (s *Server) handleConn(conn net.Conn) {

@@ -34,7 +34,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -47,4 +47,4 @@ jobs:
         run: go test -race ./...
 
       - name: Build
-        run: go build -o no-mistakes ./cmd/no-mistakes
+        run: go build ./cmd/no-mistakes

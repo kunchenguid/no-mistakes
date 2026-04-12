@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
+	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/spf13/cobra"
 )
@@ -17,6 +18,52 @@ func newDaemonCmd() *cobra.Command {
 	cmd.AddCommand(newDaemonStartCmd())
 	cmd.AddCommand(newDaemonStopCmd())
 	cmd.AddCommand(newDaemonStatusCmd())
+	cmd.AddCommand(newDaemonNotifyPushCmd())
+
+	return cmd
+}
+
+func newDaemonNotifyPushCmd() *cobra.Command {
+	var gate string
+	var ref string
+	var oldSHA string
+	var newSHA string
+
+	cmd := &cobra.Command{
+		Use:    "notify-push",
+		Short:  "Notify daemon about a git push",
+		Hidden: true,
+		Args:   cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			p, err := paths.New()
+			if err != nil {
+				return err
+			}
+
+			client, err := ipc.Dial(p.Socket())
+			if err != nil {
+				return fmt.Errorf("connect to daemon: %w", err)
+			}
+			defer client.Close()
+
+			var result ipc.PushReceivedResult
+			return client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+				Gate: gate,
+				Ref:  ref,
+				Old:  oldSHA,
+				New:  newSHA,
+			}, &result)
+		},
+	}
+
+	cmd.Flags().StringVar(&gate, "gate", "", "bare repo path that received the push")
+	cmd.Flags().StringVar(&ref, "ref", "", "git ref name")
+	cmd.Flags().StringVar(&oldSHA, "old", "", "previous commit SHA")
+	cmd.Flags().StringVar(&newSHA, "new", "", "new commit SHA")
+	_ = cmd.MarkFlagRequired("gate")
+	_ = cmd.MarkFlagRequired("ref")
+	_ = cmd.MarkFlagRequired("old")
+	_ = cmd.MarkFlagRequired("new")
 
 	return cmd
 }

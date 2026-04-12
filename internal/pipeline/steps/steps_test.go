@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +20,137 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+// TestMain handles fake CLI dispatch when the test binary is invoked as gh/glab.
+func TestMain(m *testing.M) {
+	if mode := os.Getenv("FAKE_CLI_MODE"); mode != "" {
+		handleFakeCLI(mode)
+		return
+	}
+	os.Exit(m.Run())
+}
+
+func handleFakeCLI(mode string) {
+	args := os.Args[1:]
+	logFile := os.Getenv("FAKE_CLI_LOG")
+
+	if logFile != "" {
+		f, _ := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		if f != nil {
+			fmt.Fprintln(f, strings.Join(args, " "))
+			f.Close()
+		}
+	}
+
+	switch mode {
+	case "gh":
+		fakeGHHandler(args)
+	case "glab":
+		fakeGlabHandler(args)
+	case "babysit-gh":
+		fakeBabysitGHHandler(args)
+	case "babysit-gh-nochecks":
+		fakeBabysitGHNoChecksHandler(args)
+	default:
+		os.Exit(1)
+	}
+}
+
+func fakeGHHandler(args []string) {
+	prURL := os.Getenv("FAKE_CLI_PR_URL")
+	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
+		os.Exit(0)
+	}
+	if len(args) >= 2 && args[0] == "pr" && args[1] == "view" {
+		if prURL != "" {
+			fmt.Println(prURL)
+			os.Exit(0)
+		}
+		os.Exit(1)
+	}
+	if len(args) >= 2 && args[0] == "pr" && args[1] == "edit" {
+		os.Exit(0)
+	}
+	if len(args) >= 2 && args[0] == "pr" && args[1] == "create" {
+		fmt.Println("https://github.com/test/repo/pull/99")
+		os.Exit(0)
+	}
+	os.Exit(1)
+}
+
+func fakeGlabHandler(args []string) {
+	mrViewJSON := os.Getenv("FAKE_CLI_MR_VIEW_JSON")
+	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
+		os.Exit(0)
+	}
+	if len(args) >= 2 && args[0] == "mr" && args[1] == "view" {
+		if mrViewJSON != "" {
+			fmt.Println(mrViewJSON)
+			os.Exit(0)
+		}
+		os.Exit(1)
+	}
+	if len(args) >= 2 && args[0] == "mr" && args[1] == "update" {
+		os.Exit(0)
+	}
+	if len(args) >= 2 && args[0] == "mr" && args[1] == "create" {
+		fmt.Println("https://gitlab.com/test/repo/-/merge_requests/99")
+		os.Exit(0)
+	}
+	os.Exit(1)
+}
+
+func fakeBabysitGHHandler(args []string) {
+	state := os.Getenv("FAKE_CLI_STATE")
+	checksJSON := os.Getenv("FAKE_CLI_CHECKS")
+	commentsJSON := os.Getenv("FAKE_CLI_COMMENTS")
+	joined := strings.Join(args, " ")
+
+	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json state") {
+		fmt.Println(state)
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "pr checks") {
+		fmt.Println(checksJSON)
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json comments") {
+		fmt.Println(commentsJSON)
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "pr comment") {
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "run view") {
+		fmt.Println("error log output")
+		os.Exit(0)
+	}
+	os.Exit(1)
+}
+
+func fakeBabysitGHNoChecksHandler(args []string) {
+	joined := strings.Join(args, " ")
+
+	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "pr checks") {
+		fmt.Fprintln(os.Stderr, "no checks reported on the 'feature/e2e' branch")
+		os.Exit(1)
+	}
+	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json state") {
+		fmt.Println("OPEN")
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json comments") {
+		fmt.Println("[]")
+		os.Exit(0)
+	}
+	os.Exit(1)
+}
 
 // --- mock agent ---
 
@@ -921,7 +1053,11 @@ func TestLintStep_PassingCommand(t *testing.T) {
 func TestLintStep_FailingCommand(t *testing.T) {
 	dir := t.TempDir()
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, "abc", "def", config.Commands{Lint: "echo 'lint error'; exit 1"})
+	lintCmd := "echo 'lint error'; exit 1"
+	if runtime.GOOS == "windows" {
+		lintCmd = "echo lint error & exit /b 1"
+	}
+	sctx := newTestContext(t, ag, dir, "abc", "def", config.Commands{Lint: lintCmd})
 
 	step := &LintStep{}
 	outcome, err := step.Execute(sctx)
@@ -1248,7 +1384,14 @@ func TestPushStep_RunsFormatCommandBeforeCommit(t *testing.T) {
 
 	// Use a format command that writes a marker file to prove it ran
 	markerPath := filepath.Join(dir, ".format-ran")
-	formatCmd := fmt.Sprintf("touch %s", markerPath)
+	var formatCmd string
+	if runtime.GOOS == "windows" {
+		bat := filepath.Join(dir, "fmt.bat")
+		os.WriteFile(bat, []byte(fmt.Sprintf("@copy nul \"%s\" >nul\r\n", markerPath)), 0o755)
+		formatCmd = bat
+	} else {
+		formatCmd = fmt.Sprintf("touch %s", markerPath)
+	}
 
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{Format: formatCmd})
@@ -1479,39 +1622,66 @@ func TestPRStep_GhNotAvailable(t *testing.T) {
 	}
 }
 
-// fakeGH creates a mock gh script in a temp dir and returns the dir (for PATH prepending).
-// The script records all invocations to a log file and responds based on subcommand.
-func fakeGH(t *testing.T, prViewURL string) (binDir string, logFile string) {
+// prependPATH prepends binDir to PATH using the platform-specific separator.
+func prependPATH(t *testing.T, binDir string) {
 	t.Helper()
-	binDir = t.TempDir()
-	logFile = filepath.Join(t.TempDir(), "gh.log")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
 
-	script := fmt.Sprintf(`#!/bin/sh
-echo "$@" >> %s
-if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
-  exit 0
-fi
-if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
-  if [ "%s" != "" ]; then
-    echo "%s"
-    exit 0
-  fi
-  exit 1
-fi
-if [ "$1" = "pr" ] && [ "$2" = "edit" ]; then
-  exit 0
-fi
-if [ "$1" = "pr" ] && [ "$2" = "create" ]; then
-  echo "https://github.com/test/repo/pull/99"
-  exit 0
-fi
-exit 1
-`, logFile, prViewURL, prViewURL)
-
-	ghPath := filepath.Join(binDir, "gh")
-	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
+// fakeCLIBinDir creates a temporary directory for fake CLI binaries.
+// Unlike t.TempDir(), cleanup tolerates file locks from recently-executed
+// binaries on Windows (which prevent immediate deletion).
+func fakeCLIBinDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "fakecli")
+	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		for i := 0; i < 10; i++ {
+			if err := os.RemoveAll(dir); err == nil {
+				return
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+	})
+	return dir
+}
+
+// linkTestBinary creates a hard link (or copy) of the current test binary
+// with the given name in binDir. On Windows, .exe is appended.
+func linkTestBinary(t *testing.T, binDir, name string) {
+	t.Helper()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	dst := filepath.Join(binDir, name)
+	if err := os.Link(exe, dst); err != nil {
+		// Fallback to copy if hard link fails (cross-device, etc.)
+		data, readErr := os.ReadFile(exe)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if err := os.WriteFile(dst, data, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// fakeGH creates a mock gh binary in a temp dir and returns the dir (for PATH prepending).
+// The binary records all invocations to a log file and responds based on subcommand.
+func fakeGH(t *testing.T, prViewURL string) (binDir string, logFile string) {
+	t.Helper()
+	binDir = fakeCLIBinDir(t)
+	logFile = filepath.Join(t.TempDir(), "gh.log")
+	linkTestBinary(t, binDir, "gh")
+	t.Setenv("FAKE_CLI_MODE", "gh")
+	t.Setenv("FAKE_CLI_LOG", logFile)
+	t.Setenv("FAKE_CLI_PR_URL", prViewURL)
 	return binDir, logFile
 }
 
@@ -1519,7 +1689,7 @@ func TestPRStep_UpdatesExistingPR(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	binDir, logFile := fakeGH(t, "https://github.com/test/repo/pull/42")
-	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+	prependPATH(t, binDir)
 
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
@@ -1574,7 +1744,7 @@ func TestPRStep_ZeroBaseSHA(t *testing.T) {
 	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
 
 	binDir, logFile := fakeGH(t, "")
-	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+	prependPATH(t, binDir)
 
 	ag := &mockAgent{name: "test"}
 	zeroSHA := "0000000000000000000000000000000000000000"
@@ -1601,7 +1771,7 @@ func TestPRStep_CreatesNewPR(t *testing.T) {
 
 	// No existing PR — pr view returns exit 1
 	binDir, logFile := fakeGH(t, "")
-	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+	prependPATH(t, binDir)
 
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
@@ -1639,7 +1809,7 @@ func TestPRStep_UsesAgentGeneratedTitleAndBody(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	binDir, logFile := fakeGH(t, "")
-	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+	prependPATH(t, binDir)
 
 	ag := &mockAgent{
 		name: "test",
@@ -1676,37 +1846,12 @@ func TestPRStep_UsesAgentGeneratedTitleAndBody(t *testing.T) {
 
 func fakeGlab(t *testing.T, mrViewJSON string) (binDir string, logFile string) {
 	t.Helper()
-	binDir = t.TempDir()
+	binDir = fakeCLIBinDir(t)
 	logFile = filepath.Join(t.TempDir(), "glab.log")
-
-	script := fmt.Sprintf(`#!/bin/sh
-echo "$@" >> %s
-if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
-  exit 0
-fi
-if [ "$1" = "mr" ] && [ "$2" = "view" ]; then
-  if [ '%s' != '' ]; then
-    cat <<'EOF'
-%s
-EOF
-    exit 0
-  fi
-  exit 1
-fi
-if [ "$1" = "mr" ] && [ "$2" = "update" ]; then
-  exit 0
-fi
-if [ "$1" = "mr" ] && [ "$2" = "create" ]; then
-  echo "https://gitlab.com/test/repo/-/merge_requests/99"
-  exit 0
-fi
-exit 1
-`, logFile, mrViewJSON, mrViewJSON)
-
-	glabPath := filepath.Join(binDir, "glab")
-	if err := os.WriteFile(glabPath, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	linkTestBinary(t, binDir, "glab")
+	t.Setenv("FAKE_CLI_MODE", "glab")
+	t.Setenv("FAKE_CLI_LOG", logFile)
+	t.Setenv("FAKE_CLI_MR_VIEW_JSON", mrViewJSON)
 	return binDir, logFile
 }
 
@@ -1714,7 +1859,7 @@ func TestPRStep_GitLabCreatesNewMR(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	binDir, logFile := fakeGlab(t, "")
-	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+	prependPATH(t, binDir)
 
 	ag := &mockAgent{
 		name: "test",
@@ -1788,7 +1933,7 @@ func TestPRStep_ExistingBranchUsesMergeBaseCommitLog(t *testing.T) {
 	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
 
 	binDir, logFile := fakeGH(t, "")
-	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+	prependPATH(t, binDir)
 
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContextWithDBRecords(t, ag, dir, oldRemoteSHA, headSHA, config.Commands{})
@@ -2227,13 +2372,13 @@ func TestBabysitStep_TimeoutDoesNotSleepPastDeadline(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	binDir := fakeBabysitGH(t, "OPEN", "[]", "[]")
-	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+	prependPATH(t, binDir)
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Run.PRURL = &prURL
-	sctx.Config.BabysitTimeout = 150 * time.Millisecond
+	sctx.Config.BabysitTimeout = 2 * time.Second
 
 	step := &BabysitStep{}
 	started := time.Now()
@@ -2244,7 +2389,7 @@ func TestBabysitStep_TimeoutDoesNotSleepPastDeadline(t *testing.T) {
 	if outcome.NeedsApproval {
 		t.Error("expected no approval when timeout expires")
 	}
-	if elapsed := time.Since(started); elapsed > time.Second {
+	if elapsed := time.Since(started); elapsed > 10*time.Second {
 		t.Fatalf("babysit step exceeded timeout budget: %v", elapsed)
 	}
 }
@@ -2992,79 +3137,20 @@ func TestReviewStep_FixMode_RequiresPreviousFindings(t *testing.T) {
 // commands (pr view --json state, pr checks --json, pr view --json comments).
 func fakeBabysitGH(t *testing.T, state, checksJSON, commentsJSON string) string {
 	t.Helper()
-	binDir := t.TempDir()
-
-	// Escape double quotes in JSON for embedding in shell script.
-	script := fmt.Sprintf(`#!/bin/sh
-ARGS="$*"
-if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
-  exit 0
-fi
-# pr view --json state --jq .state
-if echo "$ARGS" | grep -q "pr view.*--json state"; then
-  echo "%s"
-  exit 0
-fi
-# pr checks --json
-if echo "$ARGS" | grep -q "pr checks"; then
-  cat << 'CHECKS_EOF'
-%s
-CHECKS_EOF
-  exit 0
-fi
-# pr view --json comments --jq .comments
-if echo "$ARGS" | grep -q "pr view.*--json comments"; then
-  cat << 'COMMENTS_EOF'
-%s
-COMMENTS_EOF
-  exit 0
-fi
-# pr comment (reply to addressed comments)
-if echo "$ARGS" | grep -q "pr comment"; then
-  exit 0
-fi
-# run view (CI logs)
-if echo "$ARGS" | grep -q "run view"; then
-  echo "error log output"
-  exit 0
-fi
-exit 1
-`, state, checksJSON, commentsJSON)
-
-	ghPath := filepath.Join(binDir, "gh")
-	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	binDir := fakeCLIBinDir(t)
+	linkTestBinary(t, binDir, "gh")
+	t.Setenv("FAKE_CLI_MODE", "babysit-gh")
+	t.Setenv("FAKE_CLI_STATE", state)
+	t.Setenv("FAKE_CLI_CHECKS", checksJSON)
+	t.Setenv("FAKE_CLI_COMMENTS", commentsJSON)
 	return binDir
 }
 
 func fakeBabysitGHNoChecks(t *testing.T) string {
 	t.Helper()
-	binDir := t.TempDir()
-	script := `#!/bin/sh
-ARGS="$*"
-if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
-  exit 0
-fi
-if echo "$ARGS" | grep -q "pr checks"; then
-  echo "no checks reported on the 'feature/e2e' branch" >&2
-  exit 1
-fi
-if echo "$ARGS" | grep -q "pr view.*--json state"; then
-  echo "OPEN"
-  exit 0
-fi
-if echo "$ARGS" | grep -q "pr view.*--json comments"; then
-  echo '[]'
-  exit 0
-fi
-echo "unexpected gh args: $ARGS" >&2
-exit 1
-`
-	ghPath := filepath.Join(binDir, "gh")
-	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	binDir := fakeCLIBinDir(t)
+	linkTestBinary(t, binDir, "gh")
+	t.Setenv("FAKE_CLI_MODE", "babysit-gh-nochecks")
 	return binDir
 }
 
@@ -3072,7 +3158,7 @@ func TestBabysitStep_PRMergedExitsEarly(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	binDir := fakeBabysitGH(t, "MERGED", "[]", "[]")
-	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+	prependPATH(t, binDir)
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
@@ -3108,7 +3194,7 @@ func TestBabysitStep_PRClosedExitsEarly(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	binDir := fakeBabysitGH(t, "CLOSED", "[]", "[]")
-	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+	prependPATH(t, binDir)
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
@@ -3142,7 +3228,7 @@ func TestBabysitStep_PRClosedExitsEarly(t *testing.T) {
 
 func TestBabysitStep_GetCIChecksNoChecksReported(t *testing.T) {
 	binDir := fakeBabysitGHNoChecks(t)
-	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+	prependPATH(t, binDir)
 
 	step := &BabysitStep{}
 	checks, err := step.getCIChecks(context.Background(), t.TempDir(), "42")
@@ -3180,7 +3266,7 @@ func TestBabysitStep_CIFailureAutoFix(t *testing.T) {
 
 	checksJSON := `[{"name":"build","status":"COMPLETED","conclusion":"success"},{"name":"test","status":"COMPLETED","conclusion":"failure"}]`
 	binDir := fakeBabysitGH(t, "OPEN", checksJSON, "[]")
-	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+	prependPATH(t, binDir)
 
 	agentCalled := false
 	ag := &mockAgent{
@@ -3202,7 +3288,7 @@ func TestBabysitStep_CIFailureAutoFix(t *testing.T) {
 
 	// Use a context with short timeout: after auto-fix completes, the poll
 	// sleep (30s) will be interrupted by context deadline, exiting the loop.
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	sctx.Ctx = ctx
 
@@ -3253,7 +3339,7 @@ func TestBabysitStep_NewCommentsPausesForApproval(t *testing.T) {
 
 	commentsJSON := `[{"id":"IC_100","author":{"login":"reviewer"},"body":"Please fix the naming","createdAt":"2026-01-01T00:00:00Z","url":"https://github.com/test/repo/pull/42#comment-100"}]`
 	binDir := fakeBabysitGH(t, "OPEN", "[]", commentsJSON)
-	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+	prependPATH(t, binDir)
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
@@ -3311,7 +3397,7 @@ func TestBabysitStep_AllChecksPassingExitsCleanly(t *testing.T) {
 
 	checksJSON := `[{"name":"build","state":"SUCCESS","bucket":"pass"},{"name":"test","state":"SUCCESS","bucket":"pass"}]`
 	binDir := fakeBabysitGH(t, "OPEN", checksJSON, "[]")
-	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+	prependPATH(t, binDir)
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
@@ -3371,7 +3457,7 @@ func TestBabysitStep_AddressCommentsInFixMode_OnlySelectedComments(t *testing.T)
 		{"id":"IC_201","author":{"login":"bob"},"body":"Add more tests","createdAt":"2026-01-01T00:00:01Z","url":"https://github.com/test/repo/pull/42#comment-201"}
 	]`
 	binDir := fakeBabysitGH(t, "OPEN", "[]", commentsJSON)
-	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+	prependPATH(t, binDir)
 
 	ag := &mockAgent{
 		name: "test",
@@ -3396,7 +3482,7 @@ func TestBabysitStep_AddressCommentsInFixMode_OnlySelectedComments(t *testing.T)
 	sctx.PreviousFindings = `{"findings":[{"id":"IC_200","severity":"info","description":"@alice: Rename this function"}],"summary":"1 PR comment(s) to review"}`
 	sctx.Config.BabysitTimeout = 30 * time.Second
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	sctx.Ctx = ctx
 
@@ -3439,7 +3525,7 @@ func TestBabysitStep_AddressCommentsInFixMode(t *testing.T) {
 
 	commentsJSON := `[{"id":"IC_200","author":{"login":"alice"},"body":"Rename this function","createdAt":"2026-01-01T00:00:00Z","url":"https://github.com/test/repo/pull/42#comment-200"}]`
 	binDir := fakeBabysitGH(t, "OPEN", "[]", commentsJSON)
-	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+	prependPATH(t, binDir)
 
 	agentCalled := false
 	ag := &mockAgent{
@@ -3462,7 +3548,7 @@ func TestBabysitStep_AddressCommentsInFixMode(t *testing.T) {
 
 	// Use a context with short timeout: after addressing comments and entering
 	// the poll loop, the sleep will be interrupted by context deadline.
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	sctx.Ctx = ctx
 

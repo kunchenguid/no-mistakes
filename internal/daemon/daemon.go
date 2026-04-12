@@ -9,7 +9,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sync"
-	"syscall"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
@@ -97,7 +96,7 @@ func RunWithOptions(p *paths.Paths, d *db.DB, stepFactory StepFactory) error {
 
 	// Handle OS signals
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(sigCh, daemonSignals()...)
 	defer signal.Stop(sigCh)
 	go func() {
 		select {
@@ -113,6 +112,7 @@ func RunWithOptions(p *paths.Paths, d *db.DB, stepFactory StepFactory) error {
 	if err := srv.Serve(socketPath); err != nil {
 		return fmt.Errorf("serve: %w", err)
 	}
+	doShutdown("listener closed")
 
 	// Clean up socket file only if we still own the PID file.
 	// A new daemon may have already replaced the socket.
