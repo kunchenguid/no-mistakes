@@ -535,10 +535,26 @@ func renderFooter(done bool, showHelp bool, confirmAbort bool, prURL *string, wi
 		left += "  " + boldKey.Render("x") + " " + dimStyle.Render(xLabel)
 	}
 	left += "  " + boldKey.Render("?") + " " + dimStyle.Render(helpLabel)
-	if prURL != nil && *prURL != "" {
-		left += "  " + boldKey.Render("o") + " " + dimStyle.Render("open PR")
+	if prURL == nil || *prURL == "" {
+		return left
 	}
-	return left
+
+	left += "  " + boldKey.Render("o") + " " + dimStyle.Render("open PR")
+	leftWidth := lipgloss.Width(left)
+	prText := *prURL
+	available := width - leftWidth - 4
+	if available < len(prText) {
+		prText = shortPRLabel(*prURL)
+	}
+	if available < len(prText) {
+		return left
+	}
+	right := dimStyle.Render(prText) + "  "
+	gap := width - leftWidth - lipgloss.Width(right)
+	if gap < 1 {
+		return left
+	}
+	return left + strings.Repeat(" ", gap) + right
 }
 
 // openBrowserCmd returns a tea.Cmd that opens the given URL in the default browser.
@@ -557,7 +573,9 @@ func openBrowserCmd(url string) tea.Cmd {
 			name = "xdg-open"
 			args = []string{url}
 		}
-		_ = runBrowserCommand(name, args...)
+		if err := runBrowserCommand(name, args...); err != nil {
+			return errMsg{fmt.Errorf("open PR: %w", err)}
+		}
 		return nil
 	}
 }

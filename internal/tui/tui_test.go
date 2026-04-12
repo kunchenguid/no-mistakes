@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"regexp"
@@ -469,9 +470,8 @@ func TestRenderFooter_WithPRURL_ShowsOpenAction(t *testing.T) {
 	if !strings.Contains(stripped, "o") || !strings.Contains(stripped, "open PR") {
 		t.Errorf("expected footer to contain 'o open PR' action, got: %s", stripped)
 	}
-	// Should NOT show the full URL anymore
-	if strings.Contains(stripped, "https://") {
-		t.Errorf("expected footer to not contain full URL, got: %s", stripped)
+	if !strings.Contains(stripped, prURL) {
+		t.Errorf("expected footer to contain full PR URL, got: %s", stripped)
 	}
 }
 
@@ -525,6 +525,27 @@ func TestOpenBrowserCmd_WaitsForBrowserCommand(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed < 50*time.Millisecond {
 		t.Fatalf("expected command to block until completion, returned after %v", elapsed)
+	}
+}
+
+func TestOpenBrowserCmd_ReturnsErrMsgOnFailure(t *testing.T) {
+	original := runBrowserCommand
+	t.Cleanup(func() {
+		runBrowserCommand = original
+	})
+
+	wantErr := errors.New("launcher missing")
+	runBrowserCommand = func(name string, args ...string) error {
+		return wantErr
+	}
+
+	msg := openBrowserCmd("https://example.com")()
+	errMsg, ok := msg.(errMsg)
+	if !ok {
+		t.Fatalf("expected errMsg, got %#v", msg)
+	}
+	if !errors.Is(errMsg.err, wantErr) {
+		t.Fatalf("expected error %v, got %v", wantErr, errMsg.err)
 	}
 }
 
