@@ -254,7 +254,13 @@ func TestParseClaudeEvents_MultipleEvents(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(chunks) != 2 {
-		t.Errorf("expected 2 chunks, got %d", len(chunks))
+		t.Fatalf("expected 2 chunks, got %d: %v", len(chunks), chunks)
+	}
+	if chunks[0] != "thinking..." {
+		t.Errorf("expected first chunk 'thinking...', got %q", chunks[0])
+	}
+	if chunks[1] != "done" {
+		t.Errorf("expected second chunk 'done', got %q", chunks[1])
 	}
 	// Usage accumulates across assistant events
 	if usage.InputTokens != 100 {
@@ -265,6 +271,82 @@ func TestParseClaudeEvents_MultipleEvents(t *testing.T) {
 	}
 	if result == nil {
 		t.Fatal("expected result event")
+	}
+}
+
+func TestParseClaudeEvents_NoSeparatorForFirstMessage(t *testing.T) {
+	events := `{"type":"assistant","message":{"usage":{"input_tokens":10,"output_tokens":5},"content":[{"type":"text","text":"only message"}]}}
+`
+	var chunks []string
+	var usage TokenUsage
+
+	err := parseClaudeEvents(
+		context.Background(),
+		strings.NewReader(events),
+		func(text string) { chunks = append(chunks, text) },
+		&usage,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(chunks) != 1 || chunks[0] != "only message" {
+		t.Errorf("expected 1 chunk 'only message', got %v", chunks)
+	}
+}
+
+func TestParseClaudeEvents_NoSeparatorAfterToolOnlyEvent(t *testing.T) {
+	// First assistant event has only tool_use (no text), second has text.
+	// No separator because no text was emitted before.
+	events := strings.Join([]string{
+		`{"type":"assistant","message":{"usage":{"input_tokens":10,"output_tokens":5},"content":[{"type":"tool_use","text":""}]}}`,
+		`{"type":"assistant","message":{"usage":{"input_tokens":10,"output_tokens":5},"content":[{"type":"text","text":"after tools"}]}}`,
+		"",
+	}, "\n")
+
+	var chunks []string
+	var usage TokenUsage
+
+	err := parseClaudeEvents(
+		context.Background(),
+		strings.NewReader(events),
+		func(text string) { chunks = append(chunks, text) },
+		&usage,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(chunks) != 1 || chunks[0] != "after tools" {
+		t.Errorf("expected 1 chunk 'after tools', got %v", chunks)
+	}
+}
+
+func TestParseClaudeEvents_DoesNotSeparateSplitAssistantReply(t *testing.T) {
+	events := strings.Join([]string{
+		`{"type":"assistant","message":{"usage":{"input_tokens":10,"output_tokens":5},"content":[{"type":"text","text":"hello "}]}}`,
+		`{"type":"assistant","message":{"usage":{"input_tokens":10,"output_tokens":5},"content":[{"type":"text","text":"world"}]}}`,
+		"",
+	}, "\n")
+
+	var chunks []string
+	var usage TokenUsage
+
+	err := parseClaudeEvents(
+		context.Background(),
+		strings.NewReader(events),
+		func(text string) { chunks = append(chunks, text) },
+		&usage,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(chunks) != 2 {
+		t.Fatalf("expected 2 chunks, got %d: %v", len(chunks), chunks)
+	}
+	if chunks[0] != "hello " || chunks[1] != "world" {
+		t.Fatalf("expected streamed reply chunks, got %v", chunks)
 	}
 }
 
@@ -448,6 +530,70 @@ func TestParseCodexEvents_AgentMessage(t *testing.T) {
 	}
 	if usage.CacheReadTokens != 50 {
 		t.Errorf("expected cache read tokens 50, got %d", usage.CacheReadTokens)
+	}
+}
+
+func TestParseCodexEvents_SeparatesMultipleMessages(t *testing.T) {
+	events := strings.Join([]string{
+		`{"type":"item.completed","item":{"type":"agent_message","text":"first"}}`,
+		`{"type":"item.completed","item":{"type":"agent_message","text":"second"}}`,
+		"",
+	}, "\n")
+
+	var chunks []string
+	var usage TokenUsage
+	var lastMessage string
+
+	err := parseCodexEvents(
+		context.Background(),
+		strings.NewReader(events),
+		func(text string) { chunks = append(chunks, text) },
+		&usage,
+		&lastMessage,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(chunks) != 2 {
+		t.Fatalf("expected 2 chunks, got %d: %v", len(chunks), chunks)
+	}
+	if chunks[0] != "first" {
+		t.Errorf("expected 'first', got %q", chunks[0])
+	}
+	if chunks[1] != "second" {
+		t.Errorf("expected 'second', got %q", chunks[1])
+	}
+}
+
+func TestParseCodexEvents_DoesNotSeparateSplitTurnMessages(t *testing.T) {
+	events := strings.Join([]string{
+		`{"type":"item.completed","item":{"type":"agent_message","text":"hello "}}`,
+		`{"type":"item.completed","item":{"type":"agent_message","text":"world"}}`,
+		"",
+	}, "\n")
+
+	var chunks []string
+	var usage TokenUsage
+	var lastMessage string
+
+	err := parseCodexEvents(
+		context.Background(),
+		strings.NewReader(events),
+		func(text string) { chunks = append(chunks, text) },
+		&usage,
+		&lastMessage,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(chunks) != 2 {
+		t.Fatalf("expected 2 chunks, got %d: %v", len(chunks), chunks)
+	}
+	if chunks[0] != "hello " || chunks[1] != "world" {
+		t.Fatalf("expected streamed turn chunks, got %v", chunks)
+	}
+	if lastMessage != "world" {
+		t.Fatalf("expected last message 'world', got %q", lastMessage)
 	}
 }
 

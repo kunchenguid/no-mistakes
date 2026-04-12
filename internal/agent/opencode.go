@@ -94,7 +94,19 @@ func (a *opencodeAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) 
 	}
 
 	// Update usage and text from message response
+	responseText := ""
+	responseFinalText := ""
 	if mr.resp != nil && mr.resp.Info != nil {
+		streamedText := state.lastText
+		streamedFinalText := state.lastFinalText
+		emitResponseChunk := func(chunk string) {
+			if opts.OnChunk == nil || chunk == "" {
+				return
+			}
+			state.emitSeparatorIfNeeded()
+			opts.OnChunk(chunk)
+			state.hasEmittedText = true
+		}
 		if mr.resp.Info.Role == "assistant" && mr.resp.Info.Tokens != nil {
 			state.usageByMsg[mr.resp.Info.ID] = opencodeTokensToUsage(mr.resp.Info.Tokens)
 			state.usage = accumulateUsage(state.usageByMsg)
@@ -103,9 +115,33 @@ func (a *opencodeAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) 
 			if part.Type != "text" || strings.TrimSpace(part.Text) == "" {
 				continue
 			}
-			state.lastText = part.Text
+			responseText += part.Text
 			if part.Metadata != nil && part.Metadata.OpenAI != nil && part.Metadata.OpenAI.Phase == "final_answer" {
-				state.lastFinalText = part.Text
+				responseFinalText += part.Text
+			}
+		}
+		if responseText != "" {
+			state.lastText = responseText
+		}
+		if responseFinalText != "" {
+			state.lastFinalText = responseFinalText
+		}
+		if responseFinalText != "" {
+			responseText = responseFinalText
+		}
+		if opts.OnChunk != nil && responseText != "" {
+			streamedResponseText := streamedText
+			if streamedFinalText != "" {
+				streamedResponseText = streamedFinalText
+			}
+			switch {
+			case !state.hasEmittedText:
+				emitResponseChunk(responseText)
+			case streamedResponseText == "":
+				emitResponseChunk(responseText)
+			case strings.HasPrefix(responseText, streamedResponseText):
+				suffix := responseText[len(streamedResponseText):]
+				emitResponseChunk(suffix)
 			}
 		}
 	}
@@ -331,19 +367,27 @@ type opencodeMessagePart struct {
 
 // opencodeTextPart tracks accumulated text for a part ID during streaming.
 type opencodeTextPart struct {
-	text  string
-	phase string
+	text        string
+	phase       string
+	messageID   string
+	emittedText string
 }
 
 // opencodeStreamState holds mutable state during SSE event processing.
 type opencodeStreamState struct {
-	sessionID     string
-	onChunk       func(string)
-	textParts     map[string]*opencodeTextPart
-	usageByMsg    map[string]TokenUsage
-	usage         TokenUsage
-	lastText      string
-	lastFinalText string
+	sessionID       string
+	onChunk         func(string)
+	textParts       map[string]*opencodeTextPart
+	textPartOrder   []string
+	usageByMsg      map[string]TokenUsage
+	usage           TokenUsage
+	lastText        string
+	lastFinalText   string
+	userMsgIDs      map[string]bool
+	assistantMsgIDs map[string]bool
+	filteredPartIDs map[string]bool
+	hasEmittedText  bool
+	hadToolActivity bool
 }
 
 func opencodeTokensToUsage(t *opencodeTokens) TokenUsage {
@@ -393,16 +437,17 @@ func parseOpencodeSSE(r io.Reader, state *opencodeStreamState) error {
 		switch payload.Type {
 		case "message.part.delta":
 			if props != nil && props.Field == "text" && props.PartID != "" && props.Delta != "" {
+				if state.filteredPartIDs[props.PartID] {
+					break
+				}
 				part := state.textParts[props.PartID]
 				if part == nil {
 					part = &opencodeTextPart{}
 					state.textParts[props.PartID] = part
+					state.trackTextPart(props.PartID)
 				}
 				part.text += props.Delta
-				state.updateText(part.text, part.phase)
-				if state.onChunk != nil {
-					state.onChunk(props.Delta)
-				}
+				state.emitTextPartChunk(part, props.PartID)
 			}
 
 		case "message.part.updated":
@@ -413,35 +458,53 @@ func parseOpencodeSSE(r io.Reader, state *opencodeStreamState) error {
 					if p.Metadata != nil && p.Metadata.OpenAI != nil {
 						phase = p.Metadata.OpenAI.Phase
 					}
-					existing := state.textParts[p.ID]
-					chunk := ""
-					if existing != nil {
-						if strings.HasPrefix(p.Text, existing.text) {
-							chunk = p.Text[len(existing.text):]
-						} else if p.Text != existing.text {
-							chunk = p.Text
-						}
-						existing.text = p.Text
-						existing.phase = phase
-					} else {
-						state.textParts[p.ID] = &opencodeTextPart{text: p.Text, phase: phase}
-						chunk = p.Text
+					part := state.textParts[p.ID]
+					if part == nil {
+						part = &opencodeTextPart{}
+						state.textParts[p.ID] = part
+						state.trackTextPart(p.ID)
 					}
-					state.updateText(p.Text, phase)
-					if state.onChunk != nil && chunk != "" {
-						state.onChunk(chunk)
+					part.text = p.Text
+					part.phase = phase
+					if p.MessageID != "" {
+						part.messageID = p.MessageID
 					}
+					if part.messageID != "" && state.userMsgIDs[part.messageID] {
+						state.markPartFiltered(p.ID)
+						delete(state.textParts, p.ID)
+						break
+					}
+					state.emitTextPartChunk(part, p.ID)
 				}
-				if p.Type == "step-finish" && p.MessageID != "" && p.Tokens != nil {
-					state.usageByMsg[p.MessageID] = opencodeTokensToUsage(p.Tokens)
-					state.usage = accumulateUsage(state.usageByMsg)
+				if p.Type == "step-finish" {
+					state.hadToolActivity = true
+					if p.MessageID != "" && p.Tokens != nil {
+						state.usageByMsg[p.MessageID] = opencodeTokensToUsage(p.Tokens)
+						state.usage = accumulateUsage(state.usageByMsg)
+					}
 				}
 			}
 
 		case "message.updated":
-			if props != nil && props.Info != nil && props.Info.Role == "assistant" && props.Info.Tokens != nil {
-				state.usageByMsg[props.Info.ID] = opencodeTokensToUsage(props.Info.Tokens)
-				state.usage = accumulateUsage(state.usageByMsg)
+			if props != nil && props.Info != nil {
+				if props.Info.Role == "user" {
+					if state.userMsgIDs == nil {
+						state.userMsgIDs = make(map[string]bool)
+					}
+					state.userMsgIDs[props.Info.ID] = true
+					state.dropMessageParts(props.Info.ID)
+				}
+				if props.Info.Role == "assistant" {
+					if state.assistantMsgIDs == nil {
+						state.assistantMsgIDs = make(map[string]bool)
+					}
+					state.assistantMsgIDs[props.Info.ID] = true
+					state.emitBufferedMessageParts(props.Info.ID)
+				}
+				if props.Info.Role == "assistant" && props.Info.Tokens != nil {
+					state.usageByMsg[props.Info.ID] = opencodeTokensToUsage(props.Info.Tokens)
+					state.usage = accumulateUsage(state.usageByMsg)
+				}
 			}
 
 		case "session.idle":
@@ -460,6 +523,83 @@ func parseOpencodeSSE(r io.Reader, state *opencodeStreamState) error {
 		// will provide the final result
 	}
 	return nil
+}
+
+func (s *opencodeStreamState) emitSeparatorIfNeeded() {
+	if !s.hadToolActivity || s.onChunk == nil {
+		return
+	}
+	if s.hasEmittedText {
+		s.onChunk("\n\n")
+	}
+	s.hadToolActivity = false
+}
+
+func (s *opencodeStreamState) emitTextPartChunk(part *opencodeTextPart, partID string) {
+	if part == nil || !s.shouldEmitTextPart(part) {
+		return
+	}
+	chunk := ""
+	if strings.HasPrefix(part.text, part.emittedText) {
+		chunk = part.text[len(part.emittedText):]
+	} else if part.text != "" {
+		chunk = part.text
+	}
+	s.updateText(part.text, part.phase)
+	if s.onChunk != nil && chunk != "" {
+		s.emitSeparatorIfNeeded()
+		s.onChunk(chunk)
+		s.hasEmittedText = true
+	}
+	part.emittedText = part.text
+	s.textParts[partID] = part
+}
+
+func (s *opencodeStreamState) shouldEmitTextPart(part *opencodeTextPart) bool {
+	if part == nil {
+		return false
+	}
+	if part.messageID == "" {
+		return false
+	}
+	if s.userMsgIDs[part.messageID] {
+		return false
+	}
+	return s.assistantMsgIDs[part.messageID]
+}
+
+func (s *opencodeStreamState) dropMessageParts(messageID string) {
+	for partID, part := range s.textParts {
+		if part != nil && part.messageID == messageID {
+			s.markPartFiltered(partID)
+			delete(s.textParts, partID)
+		}
+	}
+}
+
+func (s *opencodeStreamState) emitBufferedMessageParts(messageID string) {
+	for _, partID := range s.textPartOrder {
+		part := s.textParts[partID]
+		if part != nil && part.messageID == messageID {
+			s.emitTextPartChunk(part, partID)
+		}
+	}
+}
+
+func (s *opencodeStreamState) trackTextPart(partID string) {
+	for _, existingPartID := range s.textPartOrder {
+		if existingPartID == partID {
+			return
+		}
+	}
+	s.textPartOrder = append(s.textPartOrder, partID)
+}
+
+func (s *opencodeStreamState) markPartFiltered(partID string) {
+	if s.filteredPartIDs == nil {
+		s.filteredPartIDs = make(map[string]bool)
+	}
+	s.filteredPartIDs[partID] = true
 }
 
 func (s *opencodeStreamState) updateText(text, phase string) {

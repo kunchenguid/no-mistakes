@@ -197,6 +197,7 @@ type rovodevSSEUsage struct {
 // parseRovodevSSE processes the SSE stream from rovodev, extracting text
 // chunks, token usage, and the latest text segment for structured output.
 func parseRovodevSSE(r io.Reader, onChunk func(string), usage *TokenUsage, latestText *string) error {
+	var hasEmittedText, hadToolActivity bool
 	return parseSSE(r, func(ev sseEvent) bool {
 		if ev.Data == "" {
 			return true
@@ -224,15 +225,21 @@ func parseRovodevSSE(r io.Reader, onChunk func(string), usage *TokenUsage, lates
 
 			case "text":
 				if payload.Content != "" {
+					if hasEmittedText && hadToolActivity && onChunk != nil {
+						onChunk("\n\n")
+					}
+					hadToolActivity = false
 					*latestText = payload.Content
 					if onChunk != nil {
 						onChunk(payload.Content)
+						hasEmittedText = true
 					}
 				}
 
 			case "tool-return", "on_call_tools_start":
 				// Reset text buffer — agent is doing tool calls
 				*latestText = ""
+				hadToolActivity = true
 			}
 		}
 

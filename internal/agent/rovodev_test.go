@@ -98,6 +98,42 @@ data: {"content":"after tool"}
 	}
 }
 
+func TestParseRovodevSSE_SeparatesAfterToolReturn(t *testing.T) {
+	input := `event: text
+data: {"content":"before tool"}
+
+event: tool-return
+data: {"content":"ignored"}
+
+event: text
+data: {"content":"after tool"}
+
+`
+	var usage TokenUsage
+	var latestText string
+	var chunks []string
+
+	err := parseRovodevSSE(strings.NewReader(input), func(text string) {
+		chunks = append(chunks, text)
+	}, &usage, &latestText)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(chunks) != 3 {
+		t.Fatalf("expected 3 chunks (text, separator, text), got %d: %v", len(chunks), chunks)
+	}
+	if chunks[0] != "before tool" {
+		t.Errorf("expected 'before tool', got %q", chunks[0])
+	}
+	if chunks[1] != "\n\n" {
+		t.Errorf("expected separator '\\n\\n', got %q", chunks[1])
+	}
+	if chunks[2] != "after tool" {
+		t.Errorf("expected 'after tool', got %q", chunks[2])
+	}
+}
+
 func TestParseRovodevSSE_EventKindFallback(t *testing.T) {
 	// When event: field is missing, fall back to event_kind in JSON
 	input := `data: {"event_kind":"text","content":"fallback text"}
