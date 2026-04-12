@@ -53,6 +53,26 @@ type Config struct {
 	IgnorePatterns    []string
 }
 
+// defaultConfigYAML is the template written when no global config file exists.
+const defaultConfigYAML = `# no-mistakes global configuration
+
+# Agent to use for code generation
+# Options: claude, codex, rovodev, opencode
+agent: claude
+
+# Maximum time to babysit a run before timing out
+babysit_timeout: "4h"
+
+# Log level for daemon output
+# Options: debug, info, warn, error
+log_level: info
+
+# Override agent binary paths (optional)
+# agent_path_override:
+#   claude: /usr/local/bin/claude
+#   codex: /opt/codex
+`
+
 // defaultBinary maps agent names to their default binary names.
 var defaultBinary = map[types.AgentName]string{
 	types.AgentClaude:   "claude",
@@ -86,6 +106,9 @@ func LoadGlobal(path string) (*GlobalConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
+			if mkErr := os.MkdirAll(filepath.Dir(path), 0o755); mkErr == nil {
+				_ = os.WriteFile(path, []byte(defaultConfigYAML), 0o644)
+			}
 			return cfg, nil
 		}
 		return nil, fmt.Errorf("read global config: %w", err)

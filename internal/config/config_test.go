@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,6 +28,83 @@ func TestLoadGlobal_Defaults(t *testing.T) {
 	}
 	if len(cfg.AgentPathOverride) != 0 {
 		t.Errorf("agent_path_override = %v, want empty", cfg.AgentPathOverride)
+	}
+}
+
+func TestLoadGlobal_CreatesDefaultFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+
+	cfg, err := LoadGlobal(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should return defaults
+	if cfg.Agent != types.AgentClaude {
+		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentClaude)
+	}
+	if cfg.BabysitTimeout != 4*time.Hour {
+		t.Errorf("babysit_timeout = %v, want %v", cfg.BabysitTimeout, 4*time.Hour)
+	}
+
+	// File should now exist with commented defaults
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("config file not created: %v", err)
+	}
+	content := string(data)
+	for _, want := range []string{
+		"agent: claude",
+		"babysit_timeout:",
+		"log_level: info",
+		"# agent_path_override:",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("default config missing %q", want)
+		}
+	}
+}
+
+func TestLoadGlobal_CreatedConfigIsLoadable(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+
+	// First call creates the file
+	if _, err := LoadGlobal(path); err != nil {
+		t.Fatalf("unexpected error on create: %v", err)
+	}
+
+	// Second call loads the created file - proves the YAML is valid
+	cfg, err := LoadGlobal(path)
+	if err != nil {
+		t.Fatalf("unexpected error on reload: %v", err)
+	}
+	if cfg.Agent != types.AgentClaude {
+		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentClaude)
+	}
+	if cfg.BabysitTimeout != 4*time.Hour {
+		t.Errorf("babysit_timeout = %v, want %v", cfg.BabysitTimeout, 4*time.Hour)
+	}
+	if cfg.LogLevel != "info" {
+		t.Errorf("log_level = %q, want %q", cfg.LogLevel, "info")
+	}
+}
+
+func TestLoadGlobal_CreatesParentDirs(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "subdir", "config.yaml")
+
+	cfg, err := LoadGlobal(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Agent != types.AgentClaude {
+		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentClaude)
+	}
+
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("config file not created in nested dir: %v", err)
 	}
 }
 
