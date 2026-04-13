@@ -25,8 +25,9 @@ func repoID(absPath string) string {
 // It creates a bare repo, installs the post-receive hook, adds the
 // no-mistakes remote, and records the repo in the database.
 func Init(ctx context.Context, d *db.DB, p *paths.Paths, workDir string) (*db.Repo, error) {
-	// Find git root (resolves symlinks for consistency on macOS).
-	gitRoot, err := git.FindGitRoot(workDir)
+	// Normalize worktrees back to the main repo root so one repo record works
+	// from either the main checkout or any attached worktree.
+	gitRoot, err := git.FindMainRepoRoot(workDir)
 	if err != nil {
 		return nil, fmt.Errorf("find git root: %w", err)
 	}
@@ -96,8 +97,9 @@ func Init(ctx context.Context, d *db.DB, p *paths.Paths, workDir string) (*db.Re
 // It removes the remote, deletes the bare repo and worktrees,
 // and deletes the repo record from the database.
 func Eject(ctx context.Context, d *db.DB, p *paths.Paths, workDir string) (*db.Repo, error) {
-	// Find git root (resolves symlinks for consistency on macOS).
-	gitRoot, err := git.FindGitRoot(workDir)
+	// Normalize worktrees back to the main repo root so eject works no matter
+	// which checkout the user runs it from.
+	gitRoot, err := git.FindMainRepoRoot(workDir)
 	if err != nil {
 		return nil, fmt.Errorf("find git root: %w", err)
 	}

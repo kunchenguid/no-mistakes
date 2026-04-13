@@ -243,6 +243,69 @@ func TestInitAndEject(t *testing.T) {
 	}
 }
 
+func TestInitAndEjectFromWorktreeUseMainRepo(t *testing.T) {
+	repoDir := setupTestRepo(t)
+	nmHome, err := os.MkdirTemp("/tmp", "nmh-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(nmHome) })
+	t.Setenv("NM_HOME", nmHome)
+
+	resolvedRepoDir, err := filepath.EvalSymlinks(repoDir)
+	if err != nil {
+		resolvedRepoDir = repoDir
+	}
+
+	const branch = "wt-init-branch"
+	run(t, repoDir, "git", "checkout", "-b", branch)
+	run(t, repoDir, "git", "checkout", "-")
+
+	wtDir := filepath.Join(t.TempDir(), "worktree")
+	run(t, repoDir, "git", "worktree", "add", wtDir, branch)
+	t.Cleanup(func() { run(t, repoDir, "git", "worktree", "remove", "--force", wtDir) })
+
+	chdir(t, wtDir)
+
+	out, err := executeCmd("init")
+	if err != nil {
+		t.Fatalf("init from worktree failed: %v\noutput: %s", err, out)
+	}
+	if !strings.Contains(out, resolvedRepoDir) {
+		t.Fatalf("init from worktree should report main repo path %q, got: %s", resolvedRepoDir, out)
+	}
+	if strings.Contains(out, wtDir) {
+		t.Fatalf("init from worktree should not report worktree path %q, got: %s", wtDir, out)
+	}
+
+	p := paths.WithRoot(os.Getenv("NM_HOME"))
+	waitForDaemonRunning(t, p)
+
+	chdir(t, repoDir)
+	out, err = executeCmd("status")
+	if err != nil {
+		t.Fatalf("status from main repo after worktree init failed: %v\noutput: %s", err, out)
+	}
+	if !strings.Contains(out, resolvedRepoDir) {
+		t.Fatalf("status should resolve initialized main repo path %q, got: %s", resolvedRepoDir, out)
+	}
+
+	chdir(t, wtDir)
+	out, err = executeCmd("eject")
+	if err != nil {
+		t.Fatalf("eject from worktree failed: %v\noutput: %s", err, out)
+	}
+	if !strings.Contains(out, resolvedRepoDir) {
+		t.Fatalf("eject from worktree should report main repo path %q, got: %s", resolvedRepoDir, out)
+	}
+
+	cmd := exec.Command("git", "remote", "get-url", "no-mistakes")
+	cmd.Dir = repoDir
+	if err := cmd.Run(); err == nil {
+		t.Fatal("no-mistakes remote should have been removed after worktree eject")
+	}
+}
+
 func TestInitAlreadyInitialized(t *testing.T) {
 	setupTestRepo(t)
 
