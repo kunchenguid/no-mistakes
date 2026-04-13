@@ -2954,47 +2954,6 @@ func TestCICheckJSON(t *testing.T) {
 	}
 }
 
-// --- isTestFile tests ---
-
-func TestIsTestFile(t *testing.T) {
-	tests := []struct {
-		path string
-		want bool
-	}{
-		// Go
-		{"foo_test.go", true},
-		{"internal/pkg/bar_test.go", true},
-		// Python
-		{"test_foo.py", true},
-		{"foo_test.py", true},
-		{"tests/test_bar.py", true},
-		// JavaScript/TypeScript
-		{"app.test.js", true},
-		{"app.spec.ts", true},
-		{"src/component.test.tsx", true},
-		{"src/component.spec.jsx", true},
-		// Java
-		{"FooTest.java", true},
-		{"BarTests.java", true},
-		// Rust
-		{"foo_test.rs", true},
-		// Ruby
-		{"test_foo.rb", true},
-		// Non-test files
-		{"main.go", false},
-		{"test.txt", false},
-		{"testing.go", false},
-		{"contest.py", false},
-		{"foo.js", false},
-		{"", false},
-	}
-	for _, tt := range tests {
-		if got := isTestFile(tt.path); got != tt.want {
-			t.Errorf("isTestFile(%q) = %v, want %v", tt.path, got, tt.want)
-		}
-	}
-}
-
 func TestDetectNewTestFiles(t *testing.T) {
 	dir, _, _ := setupGitRepo(t)
 
@@ -3046,8 +3005,8 @@ func TestTestStep_AgentWritesNewTests_NeedsApproval(t *testing.T) {
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			// Simulate agent creating a new test file
-			os.WriteFile(filepath.Join(dir, "agent_test.go"), []byte("package main\n"), 0o644)
+			// Simulate agent creating a new test file in another supported language
+			os.WriteFile(filepath.Join(dir, "agent_test.py"), []byte("def test_agent():\n    pass\n"), 0o644)
 			return &agent.Result{Output: findingsJSON}, nil
 		},
 	}
@@ -3066,13 +3025,13 @@ func TestTestStep_AgentWritesNewTests_NeedsApproval(t *testing.T) {
 	json.Unmarshal([]byte(outcome.Findings), &f)
 	foundTestFile := false
 	for _, item := range f.Items {
-		if strings.Contains(item.Description, "agent_test.go") {
+		if strings.Contains(item.Description, "agent_test.py") {
 			foundTestFile = true
 			break
 		}
 	}
 	if !foundTestFile {
-		t.Errorf("expected finding mentioning agent_test.go, got findings: %+v", f.Items)
+		t.Errorf("expected finding mentioning agent_test.py, got findings: %+v", f.Items)
 	}
 }
 
@@ -3084,8 +3043,8 @@ func TestTestStep_FixMode_AgentWritesNewTests_NeedsApproval(t *testing.T) {
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 			callCount++
-			// Simulate agent creating a new test file during fix
-			os.WriteFile(filepath.Join(dir, "fix_test.go"), []byte("package main\n"), 0o644)
+			// Simulate agent creating a new test file during fix in another supported language
+			os.WriteFile(filepath.Join(dir, "component.spec.tsx"), []byte("export {}\n"), 0o644)
 			return &agent.Result{Output: json.RawMessage(`{"summary":"add regression test"}`)}, nil
 		},
 	}
@@ -3108,13 +3067,13 @@ func TestTestStep_FixMode_AgentWritesNewTests_NeedsApproval(t *testing.T) {
 	json.Unmarshal([]byte(outcome.Findings), &f)
 	foundTestFile := false
 	for _, item := range f.Items {
-		if strings.Contains(item.Description, "fix_test.go") {
+		if strings.Contains(item.Description, "component.spec.tsx") {
 			foundTestFile = true
 			break
 		}
 	}
 	if !foundTestFile {
-		t.Errorf("expected finding mentioning fix_test.go, got findings: %+v", f.Items)
+		t.Errorf("expected finding mentioning component.spec.tsx, got findings: %+v", f.Items)
 	}
 }
 
