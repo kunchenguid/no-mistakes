@@ -12,7 +12,7 @@ agent: codex
 
 commands:
   lint: "golangci-lint run ./..."
-  test: "go test -race ./..."
+  test: "make test"
   format: "gofmt -w ."
 
 ignore_patterns:

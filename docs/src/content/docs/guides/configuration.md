@@ -57,7 +57,7 @@ agent: codex
 # Explicit commands for test/lint/format steps.
 commands:
   lint: "golangci-lint run ./..."
-  test: "go test -race ./..."
+  test: "make test"
   format: "gofmt -w ."
 
 # Ignore these paths during the review step.

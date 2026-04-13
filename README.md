@@ -216,7 +216,7 @@ commands:
   lint: "golangci-lint run ./..."
 
   # If set, use this exact test command.
-  test: "go test -race ./..."
+  test: "make test"
 
   # Optional formatter run before the push step commits agent fixes.
   format: "gofmt -w ."
@@ -258,7 +258,10 @@ auto_fix:
 make build   # Build bin/no-mistakes with version info
 make dist    # Cross-compile release archives into dist/
 make install # Install the built binary into GOPATH/bin
-make test    # Run go test -race ./...
+make test    # Run unit + integration tests
+make test-all # Run unit + integration + e2e tests
+make test-tagged # Run integration + e2e tests without -race
+make test-unit # Run unit tests only
 make lint    # Run go vet ./...
 make fmt     # Run gofmt -w .
 make docs    # Build the Astro docs site in docs/dist
