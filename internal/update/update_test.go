@@ -62,15 +62,6 @@ func TestCompareVersionsRejectsInvalid(t *testing.T) {
 	}
 }
 
-func TestReleaseArchiveName(t *testing.T) {
-	if got := releaseArchiveName("no-mistakes", "v1.2.3", platformSpec{GOOS: "darwin", GOARCH: "arm64"}); got != "no-mistakes-v1.2.3-darwin-arm64.tar.gz" {
-		t.Fatalf("darwin archive = %q", got)
-	}
-	if got := releaseArchiveName("no-mistakes", "v1.2.3", platformSpec{GOOS: "windows", GOARCH: "amd64"}); got != "no-mistakes-v1.2.3-windows-amd64.zip" {
-		t.Fatalf("windows archive = %q", got)
-	}
-}
-
 func TestPickReleaseAssets(t *testing.T) {
 	assets := []releaseAsset{
 		{Name: "no-mistakes-v1.2.3-darwin-arm64.tar.gz", BrowserDownloadURL: "https://example.com/archive"},
@@ -218,46 +209,72 @@ func TestUpdaterCheckLatestAndRefreshCache(t *testing.T) {
 	allowInsecureDownloads = true
 	t.Cleanup(func() { allowInsecureDownloads = false })
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/repos/kunchenguid/no-mistakes/releases/latest" {
-			t.Fatalf("unexpected path %q", r.URL.Path)
-		}
-		fmt.Fprint(w, `{"tag_name":"v1.2.3","assets":[{"name":"no-mistakes-v1.2.3-darwin-arm64.tar.gz","browser_download_url":"http://example.com/archive"},{"name":"checksums.txt","browser_download_url":"http://example.com/checksums"}]}`)
-	}))
-	defer server.Close()
-
-	cachePath := filepath.Join(t.TempDir(), "update-check.json")
-	u := &updater{
-		appName:        "no-mistakes",
-		repo:           "kunchenguid/no-mistakes",
-		currentVersion: "v1.2.2",
-		platform:       platformSpec{GOOS: "darwin", GOARCH: "arm64"},
-		apiBaseURL:     server.URL,
-		httpClient:     server.Client(),
-		cachePath:      cachePath,
-		now:            func() time.Time { return time.Date(2026, 4, 9, 12, 0, 0, 0, time.UTC) },
+	tests := []struct {
+		name        string
+		platform    platformSpec
+		archiveName string
+	}{
+		{
+			name:        "darwin tarball",
+			platform:    platformSpec{GOOS: "darwin", GOARCH: "arm64"},
+			archiveName: "no-mistakes-v1.2.3-darwin-arm64.tar.gz",
+		},
+		{
+			name:        "windows zip",
+			platform:    platformSpec{GOOS: "windows", GOARCH: "amd64"},
+			archiveName: "no-mistakes-v1.2.3-windows-amd64.zip",
+		},
 	}
 
-	plan, err := u.checkLatest(context.Background())
-	if err != nil {
-		t.Fatalf("checkLatest error = %v", err)
-	}
-	if !plan.UpdateAvailable {
-		t.Fatal("expected update to be available")
-	}
-	if plan.LatestVersion != "v1.2.3" {
-		t.Fatalf("LatestVersion = %q", plan.LatestVersion)
-	}
-	if plan.Archive.Name != "no-mistakes-v1.2.3-darwin-arm64.tar.gz" {
-		t.Fatalf("Archive.Name = %q", plan.Archive.Name)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/repos/kunchenguid/no-mistakes/releases/latest" {
+					t.Fatalf("unexpected path %q", r.URL.Path)
+				}
+				fmt.Fprintf(w, `{"tag_name":"v1.2.3","assets":[{"name":%q,"browser_download_url":"http://example.com/archive"},{"name":"checksums.txt","browser_download_url":"http://example.com/checksums"}]}`,
+					tt.archiveName,
+				)
+			}))
+			defer server.Close()
 
-	if err := u.refreshCache(context.Background()); err != nil {
-		t.Fatalf("refreshCache error = %v", err)
-	}
-	cache := readCache(cachePath)
-	if cache == nil || cache.LatestVersion != "v1.2.3" {
-		t.Fatalf("cache = %#v", cache)
+			cachePath := filepath.Join(t.TempDir(), "update-check.json")
+			u := &updater{
+				appName:        "no-mistakes",
+				repo:           "kunchenguid/no-mistakes",
+				currentVersion: "v1.2.2",
+				platform:       tt.platform,
+				apiBaseURL:     server.URL,
+				httpClient:     server.Client(),
+				cachePath:      cachePath,
+				now:            func() time.Time { return time.Date(2026, 4, 9, 12, 0, 0, 0, time.UTC) },
+			}
+
+			plan, err := u.checkLatest(context.Background())
+			if err != nil {
+				t.Fatalf("checkLatest error = %v", err)
+			}
+			if !plan.UpdateAvailable {
+				t.Fatal("expected update to be available")
+			}
+			if plan.LatestVersion != "v1.2.3" {
+				t.Fatalf("LatestVersion = %q", plan.LatestVersion)
+			}
+			if plan.ArchiveName != tt.archiveName {
+				t.Fatalf("ArchiveName = %q, want %q", plan.ArchiveName, tt.archiveName)
+			}
+			if plan.Archive.Name != tt.archiveName {
+				t.Fatalf("Archive.Name = %q, want %q", plan.Archive.Name, tt.archiveName)
+			}
+
+			if err := u.refreshCache(context.Background()); err != nil {
+				t.Fatalf("refreshCache error = %v", err)
+			}
+			cache := readCache(cachePath)
+			if cache == nil || cache.LatestVersion != "v1.2.3" {
+				t.Fatalf("cache = %#v", cache)
+			}
+		})
 	}
 }
 
