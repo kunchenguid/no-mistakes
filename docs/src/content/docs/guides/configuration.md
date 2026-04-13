@@ -30,7 +30,7 @@ agent_path_override:
   opencode: /usr/local/bin/opencode
 
 # How long the babysit step polls CI before giving up.
-babysit_timeout: "4h"  # any Go duration string
+ci_timeout: "4h"  # any Go duration string
 
 # Daemon log verbosity.
 log_level: info  # debug | info | warn | error
@@ -41,7 +41,7 @@ auto_fix:
   lint: 3
   test: 3
   review: 3
-  babysit: 3
+  ci: 3
 ```
 
 See [Global Config Reference](/no-mistakes/reference/global-config/) for the full field listing.
@@ -77,6 +77,7 @@ See [Repo Config Reference](/no-mistakes/reference/repo-config/) for the full fi
 - Repo `agent` overrides global `agent`.
 - `auto_fix` from the repo config overlays global auto_fix. Fields not set in the repo config fall through to the global default.
 - `commands` and `ignore_patterns` are repo-only fields.
+- `ci_timeout` and `auto_fix.ci` are the canonical keys; `babysit_timeout` and `auto_fix.babysit` are still accepted as legacy aliases.
 - If `commands.test` or `commands.lint` is empty, the agent detects and runs relevant commands itself.
 - If `commands.format` is empty, no formatter is run automatically.
 

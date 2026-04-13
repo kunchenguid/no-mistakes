@@ -16,7 +16,7 @@ agent_path_override:
   rovodev: /usr/local/bin/acli
   opencode: /usr/local/bin/opencode
 
-babysit_timeout: "4h"
+ci_timeout: "4h"
 
 log_level: info
 
@@ -25,7 +25,7 @@ auto_fix:
   review: 3
   test: 3
   lint: 3
-  babysit: 3
+  ci: 3
 ```
 
 ## Fields
@@ -58,7 +58,7 @@ Default binary names when no override is set:
 | `rovodev` | `acli` |
 | `opencode` | `opencode` |
 
-### babysit_timeout
+### ci_timeout
 
 How long the babysit step polls CI before giving up.
 
@@ -68,6 +68,8 @@ How long the babysit step polls CI before giving up.
 | Default | `4h` |
 
 Accepts any Go `time.ParseDuration` string: `30m`, `2h`, `4h30m`, etc.
+
+Legacy alias: `babysit_timeout`.
 
 ### log_level
 
@@ -93,7 +95,9 @@ Maximum auto-fix attempts per step. Set a step to `0` to disable auto-fix (findi
 | `auto_fix.review` | `int` | `3` | Review finding auto-fix attempts |
 | `auto_fix.test` | `int` | `3` | Test failure auto-fix attempts |
 | `auto_fix.lint` | `int` | `3` | Lint issue auto-fix attempts |
-| `auto_fix.babysit` | `int` | `3` | CI failure auto-fix attempts |
+| `auto_fix.ci` | `int` | `3` | CI failure auto-fix attempts |
+
+Legacy alias: `auto_fix.babysit`.
 
 These are global defaults. Per-repo config can override individual steps.
 

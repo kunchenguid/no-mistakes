@@ -101,6 +101,8 @@ Override auto-fix attempt limits for specific steps. Fields not set here inherit
 | `auto_fix.review` | `int` | Inherits from global (default `3`) |
 | `auto_fix.test` | `int` | Inherits from global (default `3`) |
 | `auto_fix.lint` | `int` | Inherits from global (default `3`) |
-| `auto_fix.babysit` | `int` | Inherits from global (default `3`) |
+| `auto_fix.ci` | `int` | Inherits from global (default `3`) |
 
 Set to `0` to disable auto-fix for a step (always requires manual approval).
+
+Legacy alias: `auto_fix.babysit`.
