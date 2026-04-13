@@ -183,6 +183,10 @@ Rules:
 			sctx.Log("could not parse structured output, requiring approval")
 			verdict = documentVerdict{Verdict: "updated", Summary: fallbackDocumentSummary(result.Text)}
 			requiresHumanReview = true
+		} else if verdict.Verdict != "updated" && verdict.Verdict != "skipped" {
+			sctx.Log("invalid structured output verdict, requiring approval")
+			verdict = documentVerdict{Verdict: "updated", Summary: fallbackDocumentSummary(verdict.Summary)}
+			requiresHumanReview = true
 		}
 	}
 
@@ -299,10 +303,11 @@ func isDocumentationPath(path string) bool {
 }
 
 func diffContainsOnlyCommentChanges(path, diff string) bool {
-	prefixes := commentPrefixes(filepath.Ext(path))
-	if len(prefixes) == 0 {
+	style := commentStyleFor(filepath.Ext(path))
+	if len(style.linePrefixes) == 0 && !style.block {
 		return false
 	}
+	inBlock := false
 	for _, line := range strings.Split(diff, "\n") {
 		if line == "" || strings.HasPrefix(line, "diff --git ") || strings.HasPrefix(line, "index ") || strings.HasPrefix(line, "--- ") || strings.HasPrefix(line, "+++ ") || strings.HasPrefix(line, "@@") || strings.HasPrefix(line, `\\`) {
 			continue
@@ -315,11 +320,14 @@ func diffContainsOnlyCommentChanges(path, diff string) bool {
 			continue
 		}
 		matched := false
-		for _, prefix := range prefixes {
+		for _, prefix := range style.linePrefixes {
 			if strings.HasPrefix(trimmed, prefix) {
 				matched = true
 				break
 			}
+		}
+		if !matched && style.block {
+			matched, inBlock = matchBlockCommentLine(trimmed, inBlock)
 		}
 		if !matched {
 			return false
@@ -328,15 +336,30 @@ func diffContainsOnlyCommentChanges(path, diff string) bool {
 	return true
 }
 
-func commentPrefixes(ext string) []string {
+type commentStyle struct {
+	linePrefixes []string
+	block        bool
+}
+
+func commentStyleFor(ext string) commentStyle {
 	switch strings.ToLower(ext) {
 	case ".go", ".js", ".jsx", ".ts", ".tsx", ".java", ".rs", ".c", ".cc", ".cpp", ".h", ".hpp":
-		return []string{"//", "/*", "*", "*/"}
+		return commentStyle{linePrefixes: []string{"//"}, block: true}
 	case ".py", ".rb", ".sh", ".bash", ".zsh", ".yaml", ".yml":
-		return []string{"#"}
+		return commentStyle{linePrefixes: []string{"#"}}
 	default:
-		return nil
+		return commentStyle{}
 	}
+}
+
+func matchBlockCommentLine(line string, inBlock bool) (bool, bool) {
+	if inBlock {
+		return true, strings.Count(line, "/*") >= strings.Count(line, "*/")
+	}
+	if !strings.Contains(line, "/*") {
+		return false, false
+	}
+	return true, strings.Count(line, "/*") > strings.Count(line, "*/")
 }
 
 func fallbackDocumentSummary(text string) string {

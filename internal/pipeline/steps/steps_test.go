@@ -1699,6 +1699,52 @@ func TestDocumentStep_NoStructuredOutputRequiresApproval(t *testing.T) {
 	}
 }
 
+func TestDocumentStep_InvalidStructuredVerdictRequiresApproval(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: json.RawMessage(`{"summary":"docs status unavailable"}`)}, nil
+		},
+	}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	step := &DocumentStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("expected invalid structured output to require approval")
+	}
+	if outcome.AutoFixable {
+		t.Fatal("expected invalid structured output finding to require manual review")
+	}
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatalf("unmarshal findings: %v", err)
+	}
+	if len(findings.Items) != 1 {
+		t.Fatalf("expected 1 finding, got %+v", findings.Items)
+	}
+	if !findings.Items[0].RequiresHumanReview {
+		t.Fatal("expected invalid structured output finding to require human review")
+	}
+	if findings.Items[0].Description != "docs status unavailable" {
+		t.Fatalf("finding description = %q, want %q", findings.Items[0].Description, "docs status unavailable")
+	}
+	if findings.Summary != "docs status unavailable" {
+		t.Fatalf("findings summary = %q, want %q", findings.Summary, "docs status unavailable")
+	}
+	if strings.TrimSpace(outcome.Findings) == "" {
+		t.Fatal("expected findings to be recorded")
+	}
+	if len(ag.calls) != 1 {
+		t.Fatalf("expected 1 agent call, got %d", len(ag.calls))
+	}
+}
+
 func TestDocumentStep_PromptIncludesIgnorePatterns(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
@@ -1911,6 +1957,67 @@ func TestDocumentStep_FixMode_RejectsNonDocumentEdits(t *testing.T) {
 	}
 	if status := gitStatusPorcelain(t, dir); !strings.Contains(status, "feature.txt") {
 		t.Fatalf("expected non-document change to remain uncommitted, got %q", status)
+	}
+}
+
+func TestDocumentStep_FixMode_AllowsBlockCommentOnlyEdits(t *testing.T) {
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	baseContent := "package main\n\n/*\noriginal docs\n*/\nfunc main() {}\n"
+	if err := os.WriteFile(filepath.Join(dir, "feature.go"), []byte(baseContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "base commit")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(dir, "feature.go"), []byte("package main\n\n/*\nfeature docs\n*/\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "add feature docs")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	callCount := 0
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			callCount++
+			if callCount == 1 {
+				content := "package main\n\n/*\nupdated docs\n*/\nfunc main() {}\n"
+				if err := os.WriteFile(filepath.Join(dir, "feature.go"), []byte(content), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				return &agent.Result{Output: json.RawMessage(`{"summary":"update comment"}`)}, nil
+			}
+			return &agent.Result{Output: json.RawMessage(`{"verdict":"skipped","summary":"docs are current"}`)}, nil
+		},
+	}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Fixing = true
+	sctx.PreviousFindings = `{"findings":[{"severity":"warning","description":"docs outdated"}],"summary":"docs outdated"}`
+
+	step := &DocumentStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatal("expected block comment only edit to pass document-only validation")
+	}
+	if callCount != 2 {
+		t.Fatalf("expected 2 agent calls, got %d", callCount)
+	}
+	if got := lastCommitMessage(t, dir); got != "no-mistakes(document): update comment" {
+		t.Fatalf("last commit message = %q", got)
+	}
+	if status := gitStatusPorcelain(t, dir); status != "" {
+		t.Fatalf("expected clean worktree after commit, got %q", status)
 	}
 }
 
