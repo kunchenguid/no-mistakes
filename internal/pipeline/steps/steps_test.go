@@ -3027,27 +3027,6 @@ func TestMatchIgnorePattern(t *testing.T) {
 	}
 }
 
-func TestExtractDiffPath(t *testing.T) {
-	tests := []struct {
-		line string
-		want string
-	}{
-		{"diff --git a/foo.go b/foo.go", "foo.go"},
-		{"diff --git a/pkg/bar.go b/pkg/bar.go", "pkg/bar.go"},
-		{"diff --git a/vendor/lib.go b/vendor/lib.go", "vendor/lib.go"},
-		{"not a diff line", ""},
-		// Path containing " b/" should not be split incorrectly
-		{"diff --git a/a b/c.go b/a b/c.go", "a b/c.go"},
-		{"diff --git a/x b/y b/z.go b/x b/y b/z.go", "x b/y b/z.go"},
-	}
-	for _, tt := range tests {
-		got := extractDiffPath(tt.line)
-		if got != tt.want {
-			t.Errorf("extractDiffPath(%q) = %q, want %q", tt.line, got, tt.want)
-		}
-	}
-}
-
 func TestFilterDiff_Empty(t *testing.T) {
 	// No patterns → unchanged
 	diff := "diff --git a/foo.go b/foo.go\n--- a/foo.go\n+++ b/foo.go\n+line\n"
@@ -3130,6 +3109,39 @@ func TestFilterDiff_MultiplePatterns(t *testing.T) {
 	}
 	if strings.Contains(got, "vendor/dep.go") {
 		t.Error("expected vendor/dep.go to be filtered")
+	}
+}
+
+func TestFilterDiff_PathContainingBDividerSequence(t *testing.T) {
+	diff := strings.Join([]string{
+		"diff --git a/a b/c.go b/a b/c.go",
+		"--- a/a b/c.go",
+		"+++ b/a b/c.go",
+		"@@ -1 +1 @@",
+		"+generated change",
+		"diff --git a/keep.go b/keep.go",
+		"--- a/keep.go",
+		"+++ b/keep.go",
+		"@@ -1 +1 @@",
+		"+keep change",
+	}, "\n")
+
+	got := filterDiff(diff, []string{"*.go"})
+
+	if strings.Contains(got, "a b/c.go") {
+		t.Fatalf("expected path containing ' b/' to be filtered via full diff path parsing, got: %q", got)
+	}
+	if strings.Contains(got, "keep.go") {
+		t.Fatalf("expected keep.go to be filtered by basename ignore pattern, got: %q", got)
+	}
+
+	got = filterDiff(diff, []string{"a b/c.go"})
+
+	if strings.Contains(got, "a b/c.go") {
+		t.Fatalf("expected exact path ignore pattern to filter file with embedded ' b/', got: %q", got)
+	}
+	if !strings.Contains(got, "keep.go") {
+		t.Fatalf("expected keep.go to remain when only embedded-' b/' path is ignored, got: %q", got)
 	}
 }
 
