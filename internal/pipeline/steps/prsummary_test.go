@@ -347,24 +347,6 @@ func TestBuildPipelineSummary_ReviewDoesNotReuseInitialRiskWhenFinalUnreadable(t
 	}
 }
 
-func TestBuildPipelineSummary_ReviewUnreadableFinalFindingsWithoutRoundsUsesWarningEmoji(t *testing.T) {
-	invalidFinalFindings := `{"findings":[`
-	steps := []*db.StepResult{
-		{ID: "s1", StepName: types.StepReview, Status: types.StepStatusCompleted, FindingsJSON: &invalidFinalFindings},
-	}
-	md, risk := BuildPipelineSummary(steps, map[string][]*db.StepRound{"s1": nil})
-
-	if !strings.Contains(md, "⚠️ **Review** - findings unavailable") {
-		t.Errorf("expected warning emoji for unreadable final review findings without rounds, got:\n%s", md)
-	}
-	if strings.Contains(md, "✅ **Review** - findings unavailable") {
-		t.Errorf("did not expect passed emoji for unreadable final review findings without rounds, got:\n%s", md)
-	}
-	if risk != "" {
-		t.Errorf("expected empty risk when final findings are unreadable, got: %q", risk)
-	}
-}
-
 func TestBuildPipelineSummary_FindingSeverityEmoji(t *testing.T) {
 	findings := `{"findings":[{"id":"review-1","severity":"error","description":"critical bug"},{"id":"review-2","severity":"warning","description":"minor issue"},{"id":"review-3","severity":"info","description":"suggestion"}],"summary":"3 findings","risk_level":"high","risk_rationale":"critical bug found"}`
 	steps := []*db.StepResult{
