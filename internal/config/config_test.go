@@ -229,6 +229,41 @@ func TestLoadGlobal_InvalidDuration(t *testing.T) {
 	}
 }
 
+func TestLoadGlobal_LegacyBabysitTimeout(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(`babysit_timeout: "90m"`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadGlobal(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.CITimeout != 90*time.Minute {
+		t.Fatalf("ci_timeout = %v, want %v", cfg.CITimeout, 90*time.Minute)
+	}
+}
+
+func TestLoadGlobal_LegacyAutoFixBabysit(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("auto_fix:\n  babysit: 0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadGlobal(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.AutoFix.CI == nil {
+		t.Fatal("ci auto-fix override was not loaded")
+	}
+	if *cfg.AutoFix.CI != 0 {
+		t.Fatalf("ci auto-fix = %d, want 0", *cfg.AutoFix.CI)
+	}
+}
+
 func TestLoadRepo_Defaults(t *testing.T) {
 	// Non-existent directory or no .no-mistakes.yaml
 	cfg, err := LoadRepo("/nonexistent/dir")

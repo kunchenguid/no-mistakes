@@ -27,6 +27,7 @@ type globalConfigRaw struct {
 	Agent             types.AgentName   `yaml:"agent"`
 	AgentPathOverride map[string]string `yaml:"agent_path_override"`
 	CITimeout         string            `yaml:"ci_timeout"`
+	BabysitTimeout    string            `yaml:"babysit_timeout"`
 	LogLevel          string            `yaml:"log_level"`
 	AutoFix           AutoFixRaw        `yaml:"auto_fix"`
 }
@@ -49,11 +50,12 @@ type Commands struct {
 // AutoFixRaw is the YAML representation of auto-fix config.
 // Pointer fields distinguish "not set" (nil) from "set to 0" (disabled).
 type AutoFixRaw struct {
-	Lint   *int `yaml:"lint"`
-	Test   *int `yaml:"test"`
-	Review *int `yaml:"review"`
-	CI     *int `yaml:"ci"`
-	Rebase *int `yaml:"rebase"`
+	Lint    *int `yaml:"lint"`
+	Test    *int `yaml:"test"`
+	Review  *int `yaml:"review"`
+	CI      *int `yaml:"ci"`
+	Babysit *int `yaml:"babysit"`
+	Rebase  *int `yaml:"rebase"`
 }
 
 // AutoFix holds resolved per-step auto-fix attempt limits.
@@ -172,15 +174,22 @@ func LoadGlobal(path string) (*GlobalConfig, error) {
 	if raw.AgentPathOverride != nil {
 		cfg.AgentPathOverride = raw.AgentPathOverride
 	}
-	if raw.CITimeout != "" {
-		d, err := time.ParseDuration(raw.CITimeout)
+	timeoutValue := raw.CITimeout
+	if timeoutValue == "" {
+		timeoutValue = raw.BabysitTimeout
+	}
+	if timeoutValue != "" {
+		d, err := time.ParseDuration(timeoutValue)
 		if err != nil {
-			return nil, fmt.Errorf("parse ci_timeout %q: %w", raw.CITimeout, err)
+			return nil, fmt.Errorf("parse ci_timeout %q: %w", timeoutValue, err)
 		}
 		cfg.CITimeout = d
 	}
 	if raw.LogLevel != "" {
 		cfg.LogLevel = raw.LogLevel
+	}
+	if raw.AutoFix.CI == nil {
+		raw.AutoFix.CI = raw.AutoFix.Babysit
 	}
 	cfg.AutoFix = raw.AutoFix
 
