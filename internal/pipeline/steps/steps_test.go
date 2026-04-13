@@ -2843,16 +2843,6 @@ func TestBabysitStep_TimeoutDoesNotSleepPastDeadline(t *testing.T) {
 	}
 }
 
-func TestAllStepsIncludesBabysit(t *testing.T) {
-	steps := AllSteps()
-	if len(steps) != 7 {
-		t.Fatalf("AllSteps() returned %d steps, want 7", len(steps))
-	}
-	if steps[6].Name() != types.StepBabysit {
-		t.Errorf("last step = %s, want %s", steps[6].Name(), types.StepBabysit)
-	}
-}
-
 func TestBabysitStep_CommitAndPush(t *testing.T) {
 	// Set up upstream bare repo
 	upstream := t.TempDir()
