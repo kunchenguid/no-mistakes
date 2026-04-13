@@ -20,7 +20,7 @@ ignore_patterns:
   - "vendor/**"
 
 auto_fix:
-  rebase: 0
+  rebase: 3
   review: 3
   test: 3
   document: 3
@@ -98,7 +98,7 @@ Override auto-fix attempt limits for specific steps. Fields not set here inherit
 
 | Field | Type | Default |
 |---|---|---|
-| `auto_fix.rebase` | `int` | Inherits from global (default `0`) |
+| `auto_fix.rebase` | `int` | Inherits from global (default `3`) |
 | `auto_fix.review` | `int` | Inherits from global (default `3`) |
 | `auto_fix.test` | `int` | Inherits from global (default `3`) |
 | `auto_fix.document` | `int` | Inherits from global (default `3`) |

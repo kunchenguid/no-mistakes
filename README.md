@@ -183,7 +183,7 @@ ci_timeout: "4h"
 
 # Optional auto-fix attempt limits per step (0 = require approval).
 # auto_fix:
-#   rebase: 0
+#   rebase: 3
 #   lint: 3
 #   test: 3
 #   review: 3
@@ -195,7 +195,7 @@ log_level: "info"
 
 # Maximum auto-fix attempts per step (0 = disabled, requires manual approval)
 auto_fix:
-  rebase: 0
+  rebase: 3
   lint: 3
   test: 3
   review: 3

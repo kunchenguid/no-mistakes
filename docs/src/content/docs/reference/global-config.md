@@ -21,7 +21,7 @@ ci_timeout: "4h"
 log_level: info
 
 auto_fix:
-  rebase: 0
+  rebase: 3
   review: 3
   test: 3
   document: 3
@@ -92,7 +92,7 @@ Maximum auto-fix attempts per step. Set a step to `0` to disable auto-fix (findi
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `auto_fix.rebase` | `int` | `0` | Disabled by default - conflicts always require approval |
+| `auto_fix.rebase` | `int` | `3` | Rebase conflict auto-fix attempts |
 | `auto_fix.review` | `int` | `3` | Review finding auto-fix attempts |
 | `auto_fix.test` | `int` | `3` | Test failure auto-fix attempts |
 | `auto_fix.document` | `int` | `3` | Documentation update auto-fix attempts |

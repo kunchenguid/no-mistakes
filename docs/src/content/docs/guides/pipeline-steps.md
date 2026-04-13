@@ -24,7 +24,7 @@ Fetches the latest upstream and rebases your branch onto it.
 
 **Auto-fix:** when enabled, the agent resolves conflict markers, stages files, and runs `git rebase --continue`. Commits use the message format `no-mistakes(rebase): <summary>`.
 
-**Default auto-fix limit:** `0` (disabled - conflicts always require manual approval).
+**Default auto-fix limit:** `3`.
 
 ## Review
 

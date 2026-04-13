@@ -37,7 +37,7 @@ log_level: info  # debug | info | warn | error
 
 # Max auto-fix attempts per step. 0 = disabled (requires manual approval).
 auto_fix:
-  rebase: 0
+  rebase: 3
   document: 3
   lint: 3
   test: 3
