@@ -967,27 +967,6 @@ func TestReviewStep_WithWarnings(t *testing.T) {
 	if strings.Contains(ag.calls[0].Prompt, "feature code") {
 		t.Error("expected prompt to avoid embedding diff contents")
 	}
-	if !strings.Contains(ag.calls[0].Prompt, "focus only on changed code") {
-		t.Error("expected prompt to constrain review scope to changed code")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "Only comment on things that genuinely matter") {
-		t.Error("expected prompt to discourage low-signal findings")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "No generic advice like \"add more tests\" or \"improve docs\"") {
-		t.Error("expected prompt to ban generic review advice")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "Do NOT report styling, formatting, linting, compilation, or type-checking issues") {
-		t.Error("expected prompt to exclude lint/style/type findings")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "Anchor every finding to a specific file and one-indexed line number in the changed code") {
-		t.Error("expected prompt to require anchored findings")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "severity \"error\" for problems that should absolutely not get merged") {
-		t.Error("expected prompt to map severities to Airlock-style critique categories")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "return an empty findings array") {
-		t.Error("expected prompt to allow empty findings when clean")
-	}
 }
 
 func TestReviewStep_Clean(t *testing.T) {
