@@ -37,6 +37,8 @@ Repo config overlays global config - you can set `auto_fix.lint: 5` in a repo's 
 
 Some review findings are marked `requires_human_review: true` by the agent. These findings always require manual approval regardless of the auto-fix limit. They are never auto-fixed.
 
+This is meant for findings that challenge the author's intent - for example, questioning an intentional product or design choice, or arguing that an intentional addition, removal, or guard should be undone. Routine correctness, reliability, or security fixes still stay auto-fixable even if the smallest fix reintroduces a small amount of previously deleted logic.
+
 ## User-triggered fixes
 
 When the pipeline pauses for approval, you can manually trigger a fix from the TUI:

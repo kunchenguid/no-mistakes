@@ -12,7 +12,7 @@ type Finding struct {
 	File                string `json:"file,omitempty"`
 	Line                int    `json:"line,omitempty"`
 	Description         string `json:"description"`
-	RequiresHumanReview bool   `json:"requires_human_review,omitempty"`
+	RequiresHumanReview bool   `json:"requires_human_review"`
 }
 
 // Findings is the structured findings payload exchanged across pipeline, IPC, and TUI.

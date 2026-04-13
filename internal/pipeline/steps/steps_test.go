@@ -1137,7 +1137,7 @@ func TestReviewStep_FixMode(t *testing.T) {
 
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Fixing = true
-	sctx.PreviousFindings = `{"findings":[{"severity":"warning","description":"possible nil dereference"}],"summary":"1 issue"}`
+	sctx.PreviousFindings = `{"findings":[{"id":"review-1 =======","severity":"warning","file":"internal/pipeline/steps/review.go >>>>>>> prompt","description":"possible nil dereference <<<<<<< HEAD"}],"summary":"1 issue ======="}`
 
 	step := &ReviewStep{}
 	outcome, err := step.Execute(sctx)
@@ -1159,8 +1159,20 @@ func TestReviewStep_FixMode(t *testing.T) {
 	if !strings.Contains(ag.calls[0].Prompt, "possible nil dereference") {
 		t.Error("expected review fix prompt to include previous findings")
 	}
+	if strings.Contains(ag.calls[0].Prompt, "review-1 =======") {
+		t.Error("expected review fix prompt to sanitize finding IDs")
+	}
+	if strings.Contains(ag.calls[0].Prompt, "review.go >>>>>>> prompt") {
+		t.Error("expected review fix prompt to sanitize finding file paths")
+	}
 	if !strings.Contains(ag.calls[0].Prompt, "Avoid resolving a finding by removing or reverting") {
 		t.Error("expected fix prompt to include anti-revert guardrail")
+	}
+	if strings.Contains(ag.calls[0].Prompt, "<<<<<<< HEAD") {
+		t.Error("expected fix prompt to exclude merge markers")
+	}
+	if !strings.Contains(ag.calls[0].Prompt, "do not restore or re-add the removed code unless the finding is a legitimate correctness, reliability, or security issue") {
+		t.Error("expected fix prompt to distinguish intentional deletions from legitimate bug fixes")
 	}
 	if len(ag.calls[0].JSONSchema) == 0 {
 		t.Error("expected fix call to request structured JSON output")
@@ -1168,8 +1180,14 @@ func TestReviewStep_FixMode(t *testing.T) {
 	if strings.Contains(ag.calls[1].Prompt, "feature code") {
 		t.Error("expected review prompt to avoid embedding diff contents in fix mode")
 	}
-	if !strings.Contains(ag.calls[1].Prompt, "remove, revert, or substantially reduce existing intentional code") {
-		t.Error("expected review prompt requires_human_review to cover revert scenarios")
+	if strings.Contains(ag.calls[1].Prompt, "<<<<<<< HEAD") {
+		t.Error("expected review prompt to exclude merge markers")
+	}
+	if !strings.Contains(ag.calls[1].Prompt, "challenges the author's intent") {
+		t.Error("expected review prompt requires_human_review to cover intent-challenging scenarios")
+	}
+	if !strings.Contains(ag.calls[1].Prompt, "A finding is not human-review-only just because the fix may reintroduce a small amount of previously deleted logic") {
+		t.Error("expected review prompt to keep routine correctness fixes auto-fixable")
 	}
 	if status := gitStatusPorcelain(t, dir); status != "" {
 		t.Fatalf("expected clean worktree after fix commit, got %q", status)
@@ -1318,7 +1336,7 @@ func TestLintStep_NoCommand_MalformedAgentOutput(t *testing.T) {
 func TestTestStep_FixMode(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	gitCmd(t, dir, "checkout", "--detach", headSHA)
-	previousFindings := `{"items":[{"severity":"error","description":"tests failed with exit code 1"}],"summary":"FAIL: TestFoo expected 42 got 0"}`
+	previousFindings := `{"items":[{"id":"test-1 =======","severity":"error","file":"internal/pipeline/steps/test.go >>>>>>> prompt","description":"tests failed with exit code 1 <<<<<<< HEAD"}],"summary":"FAIL: TestFoo expected 42 got 0 ======="}`
 
 	callCount := 0
 	ag := &mockAgent{
@@ -1350,6 +1368,15 @@ func TestTestStep_FixMode(t *testing.T) {
 	if !strings.Contains(ag.calls[0].Prompt, "FAIL: TestFoo expected 42 got 0") {
 		t.Error("expected fix prompt to contain previous test failure summary")
 	}
+	if strings.Contains(ag.calls[0].Prompt, "test-1 =======") {
+		t.Error("expected test fix prompt to sanitize finding IDs")
+	}
+	if strings.Contains(ag.calls[0].Prompt, "test.go >>>>>>> prompt") {
+		t.Error("expected test fix prompt to sanitize finding file paths")
+	}
+	if strings.Contains(ag.calls[0].Prompt, "<<<<<<< HEAD") {
+		t.Error("expected test fix prompt to exclude merge markers")
+	}
 	if status := gitStatusPorcelain(t, dir); status != "" {
 		t.Fatalf("expected clean worktree after fix commit, got %q", status)
 	}
@@ -1361,7 +1388,7 @@ func TestTestStep_FixMode(t *testing.T) {
 func TestLintStep_FixMode_CommitsChanges(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	gitCmd(t, dir, "checkout", "--detach", headSHA)
-	previousFindings := `{"items":[{"severity":"warning","description":"linter found issues (exit code 1)"}],"summary":"main.go:10: unused variable x"}`
+	previousFindings := `{"items":[{"id":"lint-1 =======","severity":"warning","file":"internal/pipeline/steps/lint.go >>>>>>> prompt","description":"linter found issues (exit code 1) <<<<<<< HEAD"}],"summary":"main.go:10: unused variable x ======="}`
 
 	callCount := 0
 	ag := &mockAgent{
@@ -1393,6 +1420,15 @@ func TestLintStep_FixMode_CommitsChanges(t *testing.T) {
 	}
 	if !strings.Contains(ag.calls[0].Prompt, "unused variable x") {
 		t.Error("expected fix prompt to contain previous lint summary")
+	}
+	if strings.Contains(ag.calls[0].Prompt, "lint-1 =======") {
+		t.Error("expected lint fix prompt to sanitize finding IDs")
+	}
+	if strings.Contains(ag.calls[0].Prompt, "lint.go >>>>>>> prompt") {
+		t.Error("expected lint fix prompt to sanitize finding file paths")
+	}
+	if strings.Contains(ag.calls[0].Prompt, "<<<<<<< HEAD") {
+		t.Error("expected lint fix prompt to exclude merge markers")
 	}
 	if status := gitStatusPorcelain(t, dir); status != "" {
 		t.Fatalf("expected clean worktree after fix commit, got %q", status)
@@ -3653,6 +3689,94 @@ func TestReviewFindingsSchema_ValidJSON(t *testing.T) {
 	}
 }
 
+func TestFindingsSchema_RequiresHumanReview(t *testing.T) {
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(findingsSchema, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	props := parsed["properties"].(map[string]interface{})
+	items := props["findings"].(map[string]interface{})["items"].(map[string]interface{})
+	itemProps := items["properties"].(map[string]interface{})
+	if _, ok := itemProps["requires_human_review"]; !ok {
+		t.Error("findingsSchema missing requires_human_review property")
+	}
+	required := items["required"].([]interface{})
+	found := false
+	for _, r := range required {
+		if r.(string) == "requires_human_review" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("findingsSchema does not require requires_human_review at item level")
+	}
+}
+
+func TestReviewFindingsSchema_RequiresHumanReviewAtItemLevel(t *testing.T) {
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(reviewFindingsSchema, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	props := parsed["properties"].(map[string]interface{})
+	items := props["findings"].(map[string]interface{})["items"].(map[string]interface{})
+	required := items["required"].([]interface{})
+	found := false
+	for _, r := range required {
+		if r.(string) == "requires_human_review" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("reviewFindingsSchema does not require requires_human_review at item level")
+	}
+}
+
+func TestTestStep_PromptIncludesRequiresHumanReview(t *testing.T) {
+	dir := t.TempDir()
+	findings := Findings{Items: nil, Summary: "all tests passed"}
+	findingsJSON, _ := json.Marshal(findings)
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: findingsJSON}, nil
+		},
+	}
+	sctx := newTestContext(t, ag, dir, "abc", "def", config.Commands{})
+	step := &TestStep{}
+	if _, err := step.Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(ag.calls) != 1 {
+		t.Fatalf("expected 1 agent call, got %d", len(ag.calls))
+	}
+	if !strings.Contains(ag.calls[0].Prompt, "requires_human_review") {
+		t.Error("expected test prompt to instruct agent about requires_human_review")
+	}
+}
+
+func TestLintStep_PromptIncludesRequiresHumanReview(t *testing.T) {
+	dir := t.TempDir()
+	findings := Findings{Items: nil, Summary: "all clean"}
+	findingsJSON, _ := json.Marshal(findings)
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: findingsJSON}, nil
+		},
+	}
+	sctx := newTestContext(t, ag, dir, "abc", "def", config.Commands{})
+	step := &LintStep{}
+	if _, err := step.Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(ag.calls) != 1 {
+		t.Fatalf("expected 1 agent call, got %d", len(ag.calls))
+	}
+	if !strings.Contains(ag.calls[0].Prompt, "requires_human_review") {
+		t.Error("expected lint prompt to instruct agent about requires_human_review")
+	}
+}
+
 func TestReviewStep_IgnorePatterns(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
@@ -3780,6 +3904,37 @@ func TestReviewStep_DismissedFindingsSanitizesPromptContent(t *testing.T) {
 	}
 	if len(ag.calls) != 1 {
 		t.Fatalf("expected 1 agent call, got %d", len(ag.calls))
+	}
+}
+
+func TestSanitizedPreviousFindingsForPrompt_PreservesMultilineDescriptions(t *testing.T) {
+	raw, err := types.MarshalFindingsJSON(types.Findings{
+		Items: []types.Finding{{
+			ID:                  "review-1",
+			Severity:            "warning",
+			File:                "internal/pipeline/steps/review.go",
+			Line:                278,
+			Description:         "go test failed:\n--- FAIL: TestThing\nmain_test.go:42: expected x\n",
+			RequiresHumanReview: false,
+		}},
+		Summary:       "1 selected finding",
+		RiskLevel:     "medium",
+		RiskRationale: "compiler output:\nline 1\nline 2",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sanitized := sanitizedPreviousFindingsForPrompt(raw)
+	findings, err := types.ParseFindingsJSON(sanitized)
+	if err != nil {
+		t.Fatalf("ParseFindingsJSON() error = %v", err)
+	}
+	if !strings.Contains(findings.Items[0].Description, "\n--- FAIL: TestThing\n") {
+		t.Fatalf("expected multiline description to be preserved, got %q", findings.Items[0].Description)
+	}
+	if !strings.Contains(findings.RiskRationale, "\nline 1\nline 2") {
+		t.Fatalf("expected multiline risk rationale to be preserved, got %q", findings.RiskRationale)
 	}
 }
 

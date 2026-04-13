@@ -47,7 +47,7 @@ Rules:
 			fixPrompt += `
 
 Previous test findings to address:
-` + sctx.PreviousFindings
+` + sanitizedPreviousFindingsForPrompt(sctx.PreviousFindings)
 		}
 		result, err := sctx.Agent.Run(ctx, agent.RunOpts{
 			Prompt:     fixPrompt,
@@ -93,7 +93,8 @@ Rules:
 - Focus on testing and test-related fixes only.
 - Only report actionable findings: test failures, unfixable setup issues, or flaky tests you identified.
 - Do NOT report passing tests (whether existing or new), test counts, coverage summaries, or other non-actionable information.
-- If all tests pass and there are no issues, return an empty findings array.`,
+- If all tests pass and there are no issues, return an empty findings array.
+- Set requires_human_review to true only when a test failure seems desired and you question the author's intent of having the test in the first place.`,
 				sctx.Run.Branch,
 				baseSHA,
 				sctx.Run.HeadSHA,

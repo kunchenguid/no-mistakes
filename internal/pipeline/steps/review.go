@@ -36,6 +36,7 @@ func (s *ReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 			return nil, fmt.Errorf("review fix requires previous review findings")
 		}
 		sctx.Log("asking agent to fix identified issues...")
+		previousFindings := sanitizedPreviousFindingsForPrompt(sctx.PreviousFindings)
 		fixPrompt := fmt.Sprintf(
 			`Investigate previous review findings and address legitimate ones. 
 
@@ -51,7 +52,7 @@ Context:
 
 Rules:
 - Always start with double checking whether the findings are legitimate.
-- Avoid resolving a finding by removing or reverting the author's intentional code in their original 1st commit. If the original change introduced something on purpose, fix it forward (e.g. add validation, handle edge cases, tighten logic) rather than deleting it. When in doubt about whether code is intentional, leave it and report the finding as unresolved.
+- Avoid resolving a finding by removing or reverting the author's intentional code in their original 1st commit. If the original change introduced something on purpose, fix it forward (e.g. add validation, handle edge cases, tighten logic) rather than deleting it. Similarly, if the original change intentionally deleted or simplified code, do not restore or re-add the removed code unless the finding is a legitimate correctness, reliability, or security issue and the smallest reasonable fix happens to reintroduce a small amount of previously deleted logic. When in doubt about whether code is intentional, leave it and report the finding as unresolved.
 - Do not add code comments explaining your fixes.
 - Verify that the issues are resolved before finishing.
 - Return JSON with a single "summary" field when you are done.
@@ -66,7 +67,7 @@ Previous review findings to address:
 			reviewScope,
 			sctx.Repo.DefaultBranch,
 			ignorePatterns,
-			sctx.PreviousFindings,
+			previousFindings,
 		)
 		result, err := sctx.Agent.Run(ctx, agent.RunOpts{
 			Prompt:     fixPrompt,
@@ -152,7 +153,7 @@ Rules:
 - Only comment on things that genuinely matter.
 - Do NOT report styling, formatting, linting, compilation, or type-checking issues.
 - If the change is clean, return an empty findings array.
-- Set requires_human_review to true when the finding questions an intentional design or product decision (e.g. "this feature/output/behavior seems unnecessary"), OR when the most natural fix would remove, revert, or substantially reduce existing intentional code or safety guards. If fixing the issue would likely undo something the author deliberately built, it requires human review. Most findings about correctness, error handling, security, performance, and mechanical code quality should be false. When in doubt, default to false.
+- Set requires_human_review to true only when the finding challenges the author's intent - i.e. questions a deliberate design/product decision, or where the natural fix would undo something the author intentionally did (adding, removing, or changing code on purpose). Examples: "this feature seems unnecessary", "this deletion looks wrong", "this guard is redundant". A finding is not human-review-only just because the fix may reintroduce a small amount of previously deleted logic to restore correctness, reliability, or security. Set it to false for findings about objective correctness, error handling, security, performance, and mechanical code quality. When in doubt, default to false.
 
 Risk assessment (after listing all findings):
 - Set risk_level to "low" if the change is well-bounded, mostly cosmetic, or straightforward with little ambiguity.
@@ -240,7 +241,7 @@ The following findings from a previous review were explicitly dismissed by the u
 }
 
 func sanitizeDismissedFindingDescription(description string) string {
-	description = strings.Join(strings.Fields(description), " ")
+	description = sanitizePromptText(description)
 	if description == "" {
 		return ""
 	}
@@ -249,4 +250,40 @@ func sanitizeDismissedFindingDescription(description string) string {
 		return description
 	}
 	return strings.TrimSpace(description[:maxLen-3]) + "..."
+}
+
+func sanitizedPreviousFindingsForPrompt(raw string) string {
+	findings, err := types.ParseFindingsJSON(raw)
+	if err != nil {
+		return sanitizePromptMultilineText(raw)
+	}
+	for i := range findings.Items {
+		findings.Items[i].ID = sanitizePromptText(findings.Items[i].ID)
+		findings.Items[i].Severity = sanitizePromptText(findings.Items[i].Severity)
+		findings.Items[i].File = sanitizePromptText(findings.Items[i].File)
+		findings.Items[i].Description = sanitizePromptMultilineText(findings.Items[i].Description)
+	}
+	findings.Summary = sanitizePromptMultilineText(findings.Summary)
+	findings.RiskLevel = sanitizePromptText(findings.RiskLevel)
+	findings.RiskRationale = sanitizePromptMultilineText(findings.RiskRationale)
+	encoded, err := types.MarshalFindingsJSON(findings)
+	if err != nil {
+		return sanitizePromptMultilineText(raw)
+	}
+	return encoded
+}
+
+func sanitizePromptText(text string) string {
+	return strings.Join(strings.Fields(sanitizePromptMultilineText(text)), " ")
+}
+
+func sanitizePromptMultilineText(text string) string {
+	text = strings.NewReplacer("<<<<<<<", " ", "=======", " ", ">>>>>>>", " ").Replace(text)
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+	lines := strings.Split(text, "\n")
+	for i := range lines {
+		lines[i] = strings.Join(strings.Fields(lines[i]), " ")
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
