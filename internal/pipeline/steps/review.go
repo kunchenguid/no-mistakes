@@ -140,14 +140,14 @@ Context:
 Task:
 - Read the relevant history and diff yourself.
 - focus only on changed code.
-- Analyze for bugs, risks, code simplification opportunities, and documentation gaps.
+- Analyze for bugs, risks, and code simplification opportunities.
 - "Simplification" means reducing code complexity through non-functional refactoring (e.g. deduplication, clearer control flow). It does NOT mean removing features, changing product behavior, or stripping intentional user-facing output.
 - Treat security issues, performance regressions, breaking changes, and insufficient error handling as risks.
 
 Rules:
 - Anchor every finding to a specific file and one-indexed line number in the changed code when possible.
 - Use severity "error" for problems that should absolutely not get merged, "warning" for things that are worth addressing but can be done in a follow up, and "info" for things that are nice to have.
-- Be concise and actionable. No generic advice like "add more tests" or "improve docs".
+- Be concise and actionable. No generic advice like "add more tests".
 - Only comment on things that genuinely matter.
 - Do NOT report styling, formatting, linting, compilation, or type-checking issues.
 - If the change is clean, return an empty findings array.

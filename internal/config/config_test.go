@@ -493,6 +493,9 @@ func TestDefaultConfigYAML_MatchesGoDefaults(t *testing.T) {
 	if raw.AutoFix.Review == nil || *raw.AutoFix.Review != defaults.Review {
 		t.Errorf("YAML auto_fix.review = %v, Go default = %d", raw.AutoFix.Review, defaults.Review)
 	}
+	if raw.AutoFix.Document == nil || *raw.AutoFix.Document != defaults.Document {
+		t.Errorf("YAML auto_fix.document = %v, Go default = %d", raw.AutoFix.Document, defaults.Document)
+	}
 	if raw.AutoFix.CI == nil || *raw.AutoFix.CI != defaults.CI {
 		t.Errorf("YAML auto_fix.ci = %v, Go default = %d", raw.AutoFix.CI, defaults.CI)
 	}
@@ -508,7 +511,7 @@ func TestLoadGlobal_AutoFixDefaults(t *testing.T) {
 	}
 	// AutoFix should be nil (unset) in GlobalConfig
 	if cfg.AutoFix.Lint != nil || cfg.AutoFix.Test != nil || cfg.AutoFix.Review != nil ||
-		cfg.AutoFix.CI != nil || cfg.AutoFix.Rebase != nil {
+		cfg.AutoFix.Document != nil || cfg.AutoFix.CI != nil || cfg.AutoFix.Rebase != nil {
 		t.Errorf("expected all AutoFix fields to be nil for defaults, got %+v", cfg.AutoFix)
 	}
 }
@@ -623,8 +626,11 @@ func TestMerge_AutoFixDefaults(t *testing.T) {
 	if cfg.AutoFix.Review != 3 {
 		t.Errorf("review = %d, want 3", cfg.AutoFix.Review)
 	}
+	if cfg.AutoFix.Document != 3 {
+		t.Errorf("document = %d, want 3", cfg.AutoFix.Document)
+	}
 	if cfg.AutoFix.CI != 3 {
-		t.Errorf("ci =%d, want 3", cfg.AutoFix.CI)
+		t.Errorf("ci = %d, want 3", cfg.AutoFix.CI)
 	}
 	if cfg.AutoFix.Rebase != 0 {
 		t.Errorf("rebase = %d, want 0", cfg.AutoFix.Rebase)
@@ -685,7 +691,7 @@ func TestMerge_AutoFixRepoOverridesGlobal(t *testing.T) {
 
 func TestAutoFixLimit(t *testing.T) {
 	cfg := &Config{
-		AutoFix: AutoFix{Lint: 5, Test: 2, Review: 0, CI: 3, Rebase: 4},
+		AutoFix: AutoFix{Lint: 5, Test: 2, Review: 0, Document: 1, CI: 3, Rebase: 4},
 	}
 	tests := []struct {
 		step types.StepName
@@ -694,6 +700,7 @@ func TestAutoFixLimit(t *testing.T) {
 		{types.StepLint, 5},
 		{types.StepTest, 2},
 		{types.StepReview, 0},
+		{types.StepDocument, 1},
 		{types.StepCI, 3},
 		{types.StepRebase, 4},
 		{types.StepPush, 0},

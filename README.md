@@ -35,7 +35,7 @@ You already have CI, but it usually wakes up after the branch is upstream. You a
 
 - **Push with intent** - `origin` stays untouched, and `no-mistakes` becomes the explicit path for gated pushes.
 - **Agent-agnostic** - use `claude`, `codex`, `rovodev`, or `opencode`, with per-repo overrides if different codebases want different tools.
-- **Human stays in charge** - review, test, lint, PR, and CI steps can pause for approval instead of auto-shipping surprises.
+- **Human stays in charge** - review, test, document, lint, PR, and CI steps can pause for approval instead of auto-shipping surprises.
 
 ## Quick Start
 
@@ -115,6 +115,7 @@ no-mistakes update
        │                                                    │ Pipeline            │
        │                                                    │ review              │
        │                                                    │ test                │
+       │                                                    │ document            │
        │                                                    │ lint                │
        │                                                    │ push                │
        │                                                    │ pr                  │
@@ -127,7 +128,7 @@ no-mistakes update
 
 - **Named remote** - `origin` is never hijacked. If you want the gate, you push to `no-mistakes` on purpose.
 - **Disposable worktrees** - each run happens in its own detached worktree, so the daemon can inspect and modify safely before pushing upstream.
-- **Fixed pipeline** - this is opinionated on purpose: `review -> test -> lint -> push -> pr -> ci`.
+- **Fixed pipeline** - this is opinionated on purpose: `review -> test -> document -> lint -> push -> pr -> ci`. The `document` step checks whether README/docs/comments need updates for the code you changed.
 - **Local state** - metadata lives under `~/.no-mistakes/` by default, or `${NM_HOME}` if you want to relocate it.
 
 ## CLI Reference
@@ -186,10 +187,20 @@ ci_timeout: "4h"
 #   lint: 3
 #   test: 3
 #   review: 3
+#   document: 3
 #   ci: 3
 
 # debug | info | warn | error
 log_level: "info"
+
+# Maximum auto-fix attempts per step (0 = disabled, requires manual approval)
+auto_fix:
+  rebase: 0
+  lint: 3
+  test: 3
+  review: 3
+  document: 0
+  ci: 3
 ```
 
 ### Repo config
@@ -210,10 +221,15 @@ commands:
   # Optional formatter run before the push step commits agent fixes.
   format: "gofmt -w ."
 
-# Ignore these paths during the review step.
+# Ignore these paths during review and documentation checks.
 ignore_patterns:
   - "*.generated.go"
   - "vendor/**"
+
+# Optional per-repo auto-fix overrides.
+auto_fix:
+  review: 3
+  document: 0
 ```
 
 ### Precedence and defaults
@@ -222,11 +238,13 @@ ignore_patterns:
 - `commands` and `ignore_patterns` are repo-only.
 - Missing global config defaults to `agent: claude`, `ci_timeout: 4h`, `log_level: info`.
 - `ci_timeout` replaces `babysit_timeout`, and `auto_fix.ci` replaces `auto_fix.babysit`; legacy keys are still accepted for existing configs.
+- `auto_fix` can be set globally or per repo. All steps default to `3`.
 - `agent_path_override` changes which binary path is launched for a given agent.
 - Default binaries are `claude`, `codex`, `acli` for `rovodev`, and `opencode`.
 - If `commands.test` is empty, the agent detects and runs relevant tests itself.
 - If `commands.lint` is empty, the agent detects and runs lint/format checks itself.
 - If `commands.format` is empty, no formatter is run automatically.
+- All `auto_fix` steps default to `3`. Set a step to `0` to require manual approval.
 
 ### Ignore pattern rules
 

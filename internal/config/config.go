@@ -50,22 +50,24 @@ type Commands struct {
 // AutoFixRaw is the YAML representation of auto-fix config.
 // Pointer fields distinguish "not set" (nil) from "set to 0" (disabled).
 type AutoFixRaw struct {
-	Lint    *int `yaml:"lint"`
-	Test    *int `yaml:"test"`
-	Review  *int `yaml:"review"`
-	CI      *int `yaml:"ci"`
-	Babysit *int `yaml:"babysit"`
-	Rebase  *int `yaml:"rebase"`
+	Lint     *int `yaml:"lint"`
+	Test     *int `yaml:"test"`
+	Review   *int `yaml:"review"`
+	Document *int `yaml:"document"`
+	CI       *int `yaml:"ci"`
+	Babysit  *int `yaml:"babysit"`
+	Rebase   *int `yaml:"rebase"`
 }
 
 // AutoFix holds resolved per-step auto-fix attempt limits.
 // A value of 0 means auto-fix is disabled (requires manual approval).
 type AutoFix struct {
-	Lint   int
-	Test   int
-	Review int
-	CI     int
-	Rebase int
+	Lint     int
+	Test     int
+	Review   int
+	Document int
+	CI       int
+	Rebase   int
 }
 
 // Config is the merged result of global + per-repo configuration.
@@ -104,6 +106,7 @@ auto_fix:
   lint: 3
   test: 3
   review: 3
+  document: 3
   ci: 3
 `
 
@@ -240,11 +243,12 @@ func ParseLogLevel(level string) slog.Level {
 // autoFixDefaults returns the default auto-fix configuration.
 func autoFixDefaults() AutoFix {
 	return AutoFix{
-		Lint:   3,
-		Test:   3,
-		Review: 3,
-		CI:     3,
-		Rebase: 0,
+		Lint:     3,
+		Test:     3,
+		Review:   3,
+		Document: 3,
+		CI:       3,
+		Rebase:   0,
 	}
 }
 
@@ -258,6 +262,9 @@ func applyAutoFixOverrides(dst *AutoFix, src *AutoFixRaw) {
 	}
 	if src.Review != nil {
 		dst.Review = *src.Review
+	}
+	if src.Document != nil {
+		dst.Document = *src.Document
 	}
 	if src.CI != nil {
 		dst.CI = *src.CI
@@ -277,6 +284,8 @@ func (c *Config) AutoFixLimit(step types.StepName) int {
 		return c.AutoFix.Test
 	case types.StepReview:
 		return c.AutoFix.Review
+	case types.StepDocument:
+		return c.AutoFix.Document
 	case types.StepCI:
 		return c.AutoFix.CI
 	case types.StepRebase:

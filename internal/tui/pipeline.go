@@ -89,6 +89,8 @@ func stepLabel(name types.StepName) string {
 		return "Test"
 	case types.StepLint:
 		return "Lint"
+	case types.StepDocument:
+		return "Document"
 	case types.StepPush:
 		return "Push"
 	case types.StepPR:
