@@ -24,8 +24,11 @@ func TestBuildPipelineSummary_AllClean(t *testing.T) {
 	if !strings.Contains(md, "## Pipeline") {
 		t.Error("missing Pipeline heading")
 	}
-	if !strings.Contains(md, "Updates from [`git push no-mistakes`](https://github.com/kunchenguid/no-mistakes)") {
+	if !strings.Contains(md, "Updates from `git push no-mistakes`") {
 		t.Error("missing pipeline tagline")
+	}
+	if strings.Contains(md, "https://github.com/kunchenguid/no-mistakes") {
+		t.Error("did not expect hardcoded repository link in pipeline tagline")
 	}
 	// Clean steps should show checkmark
 	if !strings.Contains(md, "✅") {
