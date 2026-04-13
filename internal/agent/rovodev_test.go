@@ -75,29 +75,6 @@ data: {"usage":{"input_tokens":100,"output_tokens":50,"cache_read_tokens":30,"ca
 	}
 }
 
-func TestParseRovodevSSE_ToolReturnResetsText(t *testing.T) {
-	input := `event: text
-data: {"content":"before tool"}
-
-event: tool-return
-data: {"content":"ignored"}
-
-event: text
-data: {"content":"after tool"}
-
-`
-	var usage TokenUsage
-	var latestText string
-
-	err := parseRovodevSSE(strings.NewReader(input), nil, &usage, &latestText)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if latestText != "after tool" {
-		t.Errorf("expected latest text 'after tool' (reset by tool-return), got %q", latestText)
-	}
-}
-
 func TestParseRovodevSSE_SeparatesAfterToolReturn(t *testing.T) {
 	input := `event: text
 data: {"content":"before tool"}
@@ -131,6 +108,9 @@ data: {"content":"after tool"}
 	}
 	if chunks[2] != "after tool" {
 		t.Errorf("expected 'after tool', got %q", chunks[2])
+	}
+	if latestText != "after tool" {
+		t.Errorf("expected latest text 'after tool' after tool-return reset, got %q", latestText)
 	}
 }
 
