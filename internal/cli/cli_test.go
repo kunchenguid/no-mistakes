@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"os/exec"
@@ -434,11 +435,39 @@ func TestRootNoActiveRunShowsHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Insert a completed and a failed run.
-	r1, _ := d.InsertRun(repo.ID, "feature/login", "abc12345", "000000")
-	d.UpdateRunStatus(r1.ID, "completed")
-	r2, _ := d.InsertRun(repo.ID, "fix/crash", "def67890", "000000")
-	d.UpdateRunError(r2.ID, "lint failed")
+	// Insert enough runs to exercise age formatting and the recent-runs cap.
+	timestamps := []int64{
+		time.Now().Add(-10 * 24 * time.Hour).Unix(),
+		time.Now().Add(-4 * 24 * time.Hour).Unix(),
+		time.Now().Add(-26 * time.Hour).Unix(),
+		time.Now().Add(-2 * time.Hour).Unix(),
+		time.Now().Add(-90 * time.Second).Unix(),
+		time.Now().Unix(),
+	}
+	branches := []string{
+		"oldest/skipped",
+		"feature/cache",
+		"feature/login",
+		"fix/crash",
+		"fix/lint",
+		"feature/recent",
+	}
+	for i, branch := range branches {
+		run, err := d.InsertRun(repo.ID, branch, fmt.Sprintf("head%04d", i), "000000")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i%2 == 0 {
+			if err := d.UpdateRunStatus(run.ID, "completed"); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			if err := d.UpdateRunError(run.ID, "lint failed"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		setRunCreatedAt(t, p.DB(), run.ID, timestamps[i])
+	}
 
 	startTestDaemon(t, p, d)
 
@@ -457,9 +486,34 @@ func TestRootNoActiveRunShowsHistory(t *testing.T) {
 	if !strings.Contains(out, "fix/crash") {
 		t.Errorf("expected branch 'fix/crash' in output, got: %s", out)
 	}
+	for _, want := range []string{"just now", "1 min ago", "2 hours ago", "1 day ago", "4 days ago"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected age %q in output, got: %s", want, out)
+		}
+	}
+	if strings.Contains(out, "oldest/skipped") {
+		t.Errorf("oldest run should be omitted once recent-runs limit is hit, got: %s", out)
+	}
+	if !strings.Contains(out, "(1 more - run 'no-mistakes runs' to see all)") {
+		t.Errorf("expected recent-runs overflow hint, got: %s", out)
+	}
 	// Should still show push instructions.
 	if !strings.Contains(out, "git push no-mistakes") {
 		t.Errorf("expected push instructions, got: %s", out)
+	}
+}
+
+func setRunCreatedAt(t *testing.T, dbPath, runID string, ts int64) {
+	t.Helper()
+
+	sqlDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sqlDB.Close()
+
+	if _, err := sqlDB.Exec(`UPDATE runs SET created_at = ?, updated_at = ? WHERE id = ?`, ts, ts, runID); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -486,31 +540,6 @@ func TestAttachRunIDWithUnknownRunReturnsHelpfulError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "run not found") {
 		t.Fatalf("attach error should mention missing run, got: %v\noutput: %s", err, out)
-	}
-}
-
-func TestFormatAge(t *testing.T) {
-	now := time.Now()
-	tests := []struct {
-		name    string
-		unixSec int64
-		want    string
-	}{
-		{"just now", now.Unix(), "just now"},
-		{"1 min", now.Add(-90 * time.Second).Unix(), "1 min ago"},
-		{"5 mins", now.Add(-5 * time.Minute).Unix(), "5 mins ago"},
-		{"1 hour", now.Add(-90 * time.Minute).Unix(), "1 hour ago"},
-		{"3 hours", now.Add(-3 * time.Hour).Unix(), "3 hours ago"},
-		{"1 day", now.Add(-30 * time.Hour).Unix(), "1 day ago"},
-		{"5 days", now.Add(-5 * 24 * time.Hour).Unix(), "5 days ago"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := formatAge(tt.unixSec)
-			if got != tt.want {
-				t.Errorf("formatAge() = %q, want %q", got, tt.want)
-			}
-		})
 	}
 }
 
