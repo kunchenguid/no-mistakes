@@ -2513,33 +2513,6 @@ func TestCommitAgentFixes_UsesFallbackSummary(t *testing.T) {
 
 // --- Babysit step tests ---
 
-func TestExtractPRNumber(t *testing.T) {
-	tests := []struct {
-		name    string
-		url     string
-		want    string
-		wantErr bool
-	}{
-		{"standard", "https://github.com/owner/repo/pull/42", "42", false},
-		{"trailing slash", "https://github.com/owner/repo/pull/42/", "42", false},
-		{"just number", "123", "123", false},
-		{"empty", "", "", true},
-		{"non numeric", "https://github.com/owner/repo/pull/abc", "", true},
-		{"path segment not number", "https://github.com/owner/repo/pull/42/files", "", true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := extractPRNumber(tt.url)
-			if (err != nil) != tt.wantErr {
-				t.Fatalf("extractPRNumber(%q) error = %v, wantErr %v", tt.url, err, tt.wantErr)
-			}
-			if got != tt.want {
-				t.Errorf("extractPRNumber(%q) = %q, want %q", tt.url, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestPollInterval(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -2576,6 +2549,30 @@ func TestBabysitStep_NoPRURL(t *testing.T) {
 	}
 	if outcome.NeedsApproval {
 		t.Error("expected no approval for missing PR URL")
+	}
+}
+
+func TestBabysitStep_InvalidPRURLReturnsError(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	binDir := fakeBabysitGH(t, "OPEN", "[]")
+	prependPATH(t, binDir)
+
+	prURL := "https://github.com/test/repo/pull/42/files"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.PRURL = &prURL
+
+	step := &BabysitStep{}
+	_, err := step.Execute(sctx)
+	if err == nil {
+		t.Fatal("expected error for invalid PR URL")
+	}
+	if !strings.Contains(err.Error(), "extract PR number") {
+		t.Fatalf("expected extract PR number context, got %v", err)
+	}
+	if !strings.Contains(err.Error(), `invalid PR number "files"`) {
+		t.Fatalf("expected invalid PR number detail, got %v", err)
 	}
 }
 
