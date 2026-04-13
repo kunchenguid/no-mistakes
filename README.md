@@ -85,6 +85,8 @@ make install
 
 You will also need `git`, one supported agent binary, and `gh` if you want PR creation and CI monitoring.
 
+Full documentation is published at <https://kunchenguid.github.io/no-mistakes/>.
+
 To update an existing install in place:
 
 ```sh
@@ -241,5 +243,9 @@ make install # Install the built binary into GOPATH/bin
 make test    # Run go test -race ./...
 make lint    # Run go vet ./...
 make fmt     # Run gofmt -w .
+make docs    # Build the Astro docs site in docs/dist
+make docs-preview # Preview the docs site locally
 make clean   # Remove bin/
 ```
+
+Docs development uses the Astro project under `docs/`. `make docs` installs docs dependencies with `npm ci` and builds the site.

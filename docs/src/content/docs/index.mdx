@@ -1,0 +1,36 @@
+---
+title: no-mistakes
+description: Make git push earn it.
+template: splash
+hero:
+  tagline: A local pre-push gate that runs AI code review, tests, lint, and CI babysitting before your code reaches upstream.
+  actions:
+    - text: Get Started
+      link: /no-mistakes/getting-started/
+      icon: right-arrow
+      variant: primary
+    - text: View on GitHub
+      link: https://github.com/kunchenguid/no-mistakes
+      icon: external
+---
+
+import { Card, CardGrid } from "@astrojs/starlight/components";
+
+<CardGrid>
+  <Card title="Push with intent" icon="rocket">
+    `origin` stays untouched. `no-mistakes` becomes the explicit path for gated
+    pushes. You choose when code goes through the gate.
+  </Card>
+  <Card title="Agent-agnostic" icon="puzzle">
+    Use Claude, Codex, Rovo Dev, or OpenCode. Override the agent per-repo if
+    different codebases want different tools.
+  </Card>
+  <Card title="Human stays in charge" icon="approve-check-circle">
+    Review, test, and lint steps can pause for approval. You see the findings,
+    pick what to fix, and decide when to ship.
+  </Card>
+  <Card title="CI babysitting" icon="sun">
+    After push, the pipeline watches CI checks and auto-fixes failures - so you
+    don't have to babysit your own PR.
+  </Card>
+</CardGrid>

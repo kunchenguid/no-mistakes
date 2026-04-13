@@ -1,0 +1,72 @@
+---
+title: Auto-Fix
+description: How the automatic fix loop works.
+---
+
+When a pipeline step finds issues, `no-mistakes` can automatically ask the agent to fix them before pausing for your approval. This is controlled by the `auto_fix` configuration.
+
+## How it works
+
+1. A step executes and returns findings (e.g., test failures, lint warnings, review issues)
+2. If `auto_fix` is enabled for that step (limit > 0) and the attempt count is below the limit, the executor re-runs the step with `fixing=true`
+3. The agent receives the previous findings and applies fixes
+4. The step re-runs to verify the fixes
+5. If issues remain and attempts are left, the loop continues
+6. Once the limit is reached or all issues are resolved:
+   - If issues remain, the step pauses for user approval
+   - If everything passes, the step completes and the pipeline moves on
+
+## Configuration
+
+Set limits in global or repo config:
+
+```yaml
+auto_fix:
+  rebase: 0    # 0 = disabled, always requires manual approval
+  review: 3    # up to 3 auto-fix attempts
+  test: 3
+  lint: 3
+  ci: 3
+```
+
+Setting a step to `0` means the pipeline always pauses for human input when that step finds issues. This is the default for `rebase` since conflict resolution is high-risk.
+
+Repo config overlays global config - you can set `auto_fix.lint: 5` in a repo's `.no-mistakes.yaml` to override just that step while inheriting the rest from global.
+
+## Human review findings
+
+Some review findings are marked `requires_human_review: true` by the agent. These findings always require manual approval regardless of the auto-fix limit. They are never auto-fixed.
+
+## User-triggered fixes
+
+When the pipeline pauses for approval, you can manually trigger a fix from the TUI:
+
+1. The findings panel shows all findings with checkboxes
+2. Toggle individual findings with `space`, or use `A` (all) / `N` (none)
+3. Press `f` to fix the selected findings
+
+The agent receives only the selected findings. Deselected findings are passed as "dismissed" so the agent knows not to re-report them.
+
+After a user-triggered fix, the step re-runs and pauses again to show you the results (`fix_review` status). You can then approve, fix again, skip, or abort.
+
+## Fix commits
+
+Each auto-fix cycle commits its changes with a descriptive message:
+
+| Step | Commit prefix |
+|---|---|
+| Rebase | `no-mistakes(rebase): <summary>` |
+| Review | `no-mistakes(review): <summary>` |
+| Test | `no-mistakes(test): <summary>` |
+| Lint | `no-mistakes(lint): <summary>` |
+
+The push step commits any remaining uncommitted changes with `no-mistakes: apply agent fixes`.
+
+## Step rounds
+
+Each execution of a step (initial run, auto-fix, user-fix) is recorded as a "round" in the database. The PR body's pipeline section is built from these rounds, giving reviewers visibility into what was fixed and how many attempts it took.
+
+Round trigger types:
+- `initial` - first execution
+- `auto_fix` - triggered by the automatic fix loop
+- `user_fix` - triggered by the user pressing `f` in the TUI
