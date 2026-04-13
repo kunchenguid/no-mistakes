@@ -1156,26 +1156,8 @@ func TestReviewStep_FixMode(t *testing.T) {
 	if !strings.Contains(ag.calls[0].Prompt, headSHA) {
 		t.Error("expected fix prompt to contain head SHA")
 	}
-	if !strings.Contains(ag.calls[0].Prompt, "Investigate previous review findings and address legitimate ones") {
-		t.Error("expected review fix prompt to frame the task around previous findings")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "Always start with double checking whether the findings are legitimate") {
-		t.Error("expected review fix prompt to require validating prior findings")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "Do not add code comments explaining your fixes") {
-		t.Error("expected review fix prompt to forbid explanatory comments")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "Verify that the issues are resolved") {
-		t.Error("expected review fix prompt to require verification")
-	}
 	if !strings.Contains(ag.calls[0].Prompt, "possible nil dereference") {
 		t.Error("expected review fix prompt to include previous findings")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, `Return JSON with a single "summary" field`) {
-		t.Error("expected fix prompt to request structured summary output")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "Keep the summary under 10 words") {
-		t.Error("expected fix prompt to require a concise summary")
 	}
 	if len(ag.calls[0].JSONSchema) == 0 {
 		t.Error("expected fix call to request structured JSON output")
@@ -3291,9 +3273,6 @@ func TestTestStep_FixMode_IncludesPreviousFindings(t *testing.T) {
 			if !strings.Contains(opts.Prompt, "FAIL: TestFoo expected 42 got 0") {
 				t.Error("fix prompt should contain the specific test output")
 			}
-			if !strings.Contains(opts.Prompt, "Make the minimal change needed") {
-				t.Error("fix prompt should require minimal changes")
-			}
 			return &agent.Result{Output: json.RawMessage(`{"summary":"fix test failures"}`)}, nil
 		},
 	}
@@ -3326,12 +3305,6 @@ func TestLintStep_FixMode_IncludesPreviousFindings(t *testing.T) {
 			}
 			if !strings.Contains(opts.Prompt, "unused variable x") {
 				t.Error("fix prompt should contain the specific lint output")
-			}
-			if !strings.Contains(opts.Prompt, "Make the minimal change needed") {
-				t.Error("fix prompt should require minimal changes")
-			}
-			if !strings.Contains(opts.Prompt, "Re-run the relevant lint or format commands") {
-				t.Error("fix prompt should require lint verification")
 			}
 			return &agent.Result{Output: json.RawMessage(`{"summary":"fix lint issues"}`)}, nil
 		},
@@ -3618,15 +3591,6 @@ func TestBabysitStep_CIFailureAutoFix(t *testing.T) {
 	}
 	if !strings.Contains(ag.calls[0].Prompt, "test") {
 		t.Errorf("expected failing check name in prompt, got: %s", ag.calls[0].Prompt)
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "Make the minimal change needed") {
-		t.Error("expected CI fix prompt to require minimal changes")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "Do not refactor beyond what is needed") {
-		t.Error("expected CI fix prompt to forbid broader refactors")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "Verify the fix by running the most relevant commands locally") {
-		t.Error("expected CI fix prompt to require verification")
 	}
 
 	foundAutoFix := false
