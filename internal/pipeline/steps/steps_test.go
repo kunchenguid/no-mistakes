@@ -1159,11 +1159,17 @@ func TestReviewStep_FixMode(t *testing.T) {
 	if !strings.Contains(ag.calls[0].Prompt, "possible nil dereference") {
 		t.Error("expected review fix prompt to include previous findings")
 	}
+	if !strings.Contains(ag.calls[0].Prompt, "Avoid resolving a finding by removing or reverting") {
+		t.Error("expected fix prompt to include anti-revert guardrail")
+	}
 	if len(ag.calls[0].JSONSchema) == 0 {
 		t.Error("expected fix call to request structured JSON output")
 	}
 	if strings.Contains(ag.calls[1].Prompt, "feature code") {
 		t.Error("expected review prompt to avoid embedding diff contents in fix mode")
+	}
+	if !strings.Contains(ag.calls[1].Prompt, "remove, revert, or substantially reduce existing intentional code") {
+		t.Error("expected review prompt requires_human_review to cover revert scenarios")
 	}
 	if status := gitStatusPorcelain(t, dir); status != "" {
 		t.Fatalf("expected clean worktree after fix commit, got %q", status)
