@@ -291,23 +291,6 @@ func newTestContext(t *testing.T, ag agent.Agent, workDir, baseSHA, headSHA stri
 
 // --- common tests ---
 
-func TestIsZeroSHA(t *testing.T) {
-	tests := []struct {
-		sha  string
-		want bool
-	}{
-		{"0000000000000000000000000000000000000000", true},
-		{"abc123", false},
-		{"", false},
-		{"00000", false},
-	}
-	for _, tt := range tests {
-		if got := git.IsZeroSHA(tt.sha); got != tt.want {
-			t.Errorf("IsZeroSHA(%q) = %v, want %v", tt.sha, got, tt.want)
-		}
-	}
-}
-
 func TestResolveBaseSHA_NonZero(t *testing.T) {
 	dir := t.TempDir()
 	got := resolveBaseSHA(context.Background(), dir, "abc123", "main")
