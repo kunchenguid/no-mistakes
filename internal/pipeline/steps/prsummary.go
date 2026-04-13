@@ -45,7 +45,7 @@ func BuildPipelineSummary(steps []*db.StepResult, rounds map[string][]*db.StepRo
 	}
 
 	var b strings.Builder
-	b.WriteString("## Pipeline\n\nUpdates from `git push no-mistakes`\n\n")
+	b.WriteString("## Pipeline\n\nUpdates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)\n\n")
 	for _, line := range statusLines {
 		b.WriteString(line)
 		b.WriteString("\n")
