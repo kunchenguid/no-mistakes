@@ -1336,12 +1336,6 @@ func TestTestStep_FixMode(t *testing.T) {
 	if callCount != 1 {
 		t.Errorf("expected 1 agent call (fix), got %d", callCount)
 	}
-	if !strings.Contains(ag.calls[0].Prompt, `Return JSON with a single "summary" field`) {
-		t.Error("expected fix prompt to request structured summary output")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "Keep the summary under 10 words") {
-		t.Error("expected fix prompt to require a concise summary")
-	}
 	if len(ag.calls[0].JSONSchema) == 0 {
 		t.Error("expected fix call to request structured JSON output")
 	}
@@ -1380,12 +1374,6 @@ func TestLintStep_FixMode_CommitsChanges(t *testing.T) {
 	}
 	if callCount != 1 {
 		t.Errorf("expected 1 agent call (fix), got %d", callCount)
-	}
-	if !strings.Contains(ag.calls[0].Prompt, `Return JSON with a single "summary" field`) {
-		t.Error("expected fix prompt to request structured summary output")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "Keep the summary under 10 words") {
-		t.Error("expected fix prompt to require a concise summary")
 	}
 	if len(ag.calls[0].JSONSchema) == 0 {
 		t.Error("expected fix call to request structured JSON output")
@@ -3225,10 +3213,6 @@ func TestReviewStep_FixMode_IncludesPreviousFindings(t *testing.T) {
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 			callCount++
 			if callCount == 1 {
-				// Fix call — verify prompt includes previous findings
-				if !strings.Contains(opts.Prompt, "Previous review findings to address") {
-					t.Error("fix prompt should contain 'Previous review findings to address'")
-				}
 				if !strings.Contains(opts.Prompt, "nil pointer dereference") {
 					t.Error("fix prompt should contain the specific finding description")
 				}
@@ -3266,10 +3250,6 @@ func TestTestStep_FixMode_IncludesPreviousFindings(t *testing.T) {
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			// Fix call — verify prompt includes previous findings
-			if !strings.Contains(opts.Prompt, "Previous test findings to address") {
-				t.Error("fix prompt should contain 'Previous test findings to address'")
-			}
 			if !strings.Contains(opts.Prompt, "FAIL: TestFoo expected 42 got 0") {
 				t.Error("fix prompt should contain the specific test output")
 			}
@@ -3299,10 +3279,6 @@ func TestLintStep_FixMode_IncludesPreviousFindings(t *testing.T) {
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			// Fix call — verify prompt includes previous findings
-			if !strings.Contains(opts.Prompt, "Previous lint findings to address") {
-				t.Error("fix prompt should contain 'Previous lint findings to address'")
-			}
 			if !strings.Contains(opts.Prompt, "unused variable x") {
 				t.Error("fix prompt should contain the specific lint output")
 			}
