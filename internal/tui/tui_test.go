@@ -3196,23 +3196,6 @@ func TestRenderBabysitView_LogTailScalesWithHeight(t *testing.T) {
 // --- Action Bar placement per DESIGN.md ---
 // DESIGN.md: Action bar "Sits below the pipeline box, above findings/diff"
 
-func TestActionBar_OutsidePipelineBox(t *testing.T) {
-	// The pipeline box should NOT contain action bar keys when a step is awaiting approval.
-	// The action bar should be rendered separately, outside the box.
-	run := testRun()
-	run.Steps[0].Status = types.StepStatusAwaitingApproval
-
-	pipelineOut := stripANSI(renderPipelineView(run, run.Steps, 80, 0, 40))
-
-	// The pipeline box content (between ╭ and ╰) should NOT contain action bar keys.
-	if strings.Contains(pipelineOut, "a approve") {
-		t.Error("action bar keys should NOT be inside the pipeline box - DESIGN.md says it sits below")
-	}
-	if strings.Contains(pipelineOut, "awaiting action") {
-		t.Error("approval prompt should NOT be inside the pipeline box - DESIGN.md says it sits below")
-	}
-}
-
 func TestActionBar_BetweenPipelineAndFindings(t *testing.T) {
 	// In the full model View(), the action bar should appear between the pipeline box
 	// bottom border (╰) and the findings box top border (╭).
@@ -3288,6 +3271,12 @@ func TestActionBar_IncludesAwaitingLabel(t *testing.T) {
 
 	// It should NOT be inside the pipeline box.
 	pipelineOut := stripANSI(renderPipelineView(run, run.Steps, 80, 0, 40))
+	if strings.Contains(pipelineOut, "a approve") {
+		t.Error("approve action should not be inside the pipeline box")
+	}
+	if strings.Contains(pipelineOut, "f fix") {
+		t.Error("fix action should not be inside the pipeline box")
+	}
 	if strings.Contains(pipelineOut, "awaiting action") {
 		t.Error("'awaiting action' label should not be inside the pipeline box")
 	}
