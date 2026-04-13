@@ -359,7 +359,8 @@ func extractDocumentSummary(raw []byte, fallback string) string {
 
 func unmarshalRequiredFindings(raw []byte, findings *Findings) error {
 	var payload struct {
-		Items []struct {
+		Summary string `json:"summary"`
+		Items   []struct {
 			Severity            string `json:"severity"`
 			Description         string `json:"description"`
 			RequiresHumanReview *bool  `json:"requires_human_review"`
@@ -370,6 +371,9 @@ func unmarshalRequiredFindings(raw []byte, findings *Findings) error {
 	}
 	if payload.Items == nil {
 		return fmt.Errorf("missing findings array")
+	}
+	if strings.TrimSpace(payload.Summary) == "" {
+		return fmt.Errorf("missing summary")
 	}
 	for i, item := range payload.Items {
 		if strings.TrimSpace(item.Severity) == "" {

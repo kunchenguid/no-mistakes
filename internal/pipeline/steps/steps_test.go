@@ -1843,6 +1843,46 @@ func TestDocumentStep_MalformedFindingRequiresApproval(t *testing.T) {
 	}
 }
 
+func TestDocumentStep_MissingSummaryRequiresApproval(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: json.RawMessage(`{"findings":[]}`)}, nil
+		},
+	}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	step := &DocumentStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("expected missing summary to require approval")
+	}
+	if outcome.AutoFixable {
+		t.Fatal("expected missing summary finding to require manual review")
+	}
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatalf("unmarshal findings: %v", err)
+	}
+	if len(findings.Items) != 1 {
+		t.Fatalf("expected 1 finding, got %+v", findings.Items)
+	}
+	if !findings.Items[0].RequiresHumanReview {
+		t.Fatal("expected missing summary finding to require human review")
+	}
+	if findings.Summary != "agent returned no structured output" {
+		t.Fatalf("summary = %q, want %q", findings.Summary, "agent returned no structured output")
+	}
+	if findings.Items[0].Description != "agent returned no structured output" {
+		t.Fatalf("description = %q, want %q", findings.Items[0].Description, "agent returned no structured output")
+	}
+}
+
 func TestDocumentStep_PromptIncludesIgnorePatterns(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
