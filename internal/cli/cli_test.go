@@ -341,14 +341,39 @@ func TestEjectNotInitialized(t *testing.T) {
 func startTestDaemon(t *testing.T, p *paths.Paths, d *db.DB) {
 	t.Helper()
 
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
+	errCh := make(chan error, 1)
+
 	go func() {
-		daemon.RunWithResources(p, d)
+		errCh <- daemon.RunWithResources(p, d)
 	}()
 
-	waitForDaemonRunning(t, p)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if alive, _ := daemon.IsRunning(p); alive {
+			break
+		}
+		select {
+		case err := <-errCh:
+			t.Fatalf("daemon exited before becoming responsive: %v", err)
+		default:
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if alive, _ := daemon.IsRunning(p); !alive {
+		t.Fatal("daemon did not become responsive")
+	}
 
 	t.Cleanup(func() {
-		daemon.Stop(p)
+		_ = daemon.Stop(p)
+		select {
+		case <-errCh:
+		case <-time.After(3 * time.Second):
+			t.Error("daemon did not stop within 3s")
+		}
 	})
 }
 
@@ -438,6 +463,32 @@ func TestRootNoActiveRunShowsHistory(t *testing.T) {
 	}
 }
 
+func TestAttachRunIDWithUnknownRunReturnsHelpfulError(t *testing.T) {
+	nmHome, err := os.MkdirTemp("", "nmcli")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(nmHome) })
+	t.Setenv("NM_HOME", nmHome)
+	p := paths.WithRoot(nmHome)
+
+	d, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	startTestDaemon(t, p, d)
+
+	out, err := executeCmd("attach", "--run", "missing-run")
+	if err == nil {
+		t.Fatal("attach should fail for an unknown run ID")
+	}
+	if !strings.Contains(err.Error(), "run not found") {
+		t.Fatalf("attach error should mention missing run, got: %v\noutput: %s", err, out)
+	}
+}
+
 func TestFormatAge(t *testing.T) {
 	now := time.Now()
 	tests := []struct {
@@ -460,23 +511,6 @@ func TestFormatAge(t *testing.T) {
 				t.Errorf("formatAge() = %q, want %q", got, tt.want)
 			}
 		})
-	}
-}
-
-func TestPrintNoActiveRunNoHistory(t *testing.T) {
-	// When repoID is empty (e.g. --run with unknown run), should show simple message.
-	var buf bytes.Buffer
-	printNoActiveRun(&buf, nil, "")
-	out := buf.String()
-	if !strings.Contains(out, "No active run") {
-		t.Errorf("expected 'No active run', got: %s", out)
-	}
-	if !strings.Contains(out, "git push no-mistakes") {
-		t.Errorf("expected push instructions, got: %s", out)
-	}
-	// Should NOT show "Recent runs" header.
-	if strings.Contains(out, "Recent runs") {
-		t.Errorf("should not show 'Recent runs' when no repo context, got: %s", out)
 	}
 }
 
