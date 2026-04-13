@@ -84,21 +84,20 @@ Safest local verification sequence after non-trivial changes:
 
 **Test Tagging**
 
-Tests are split into three tiers using Go build tags. The tag goes on the first
-line of the file, before the `package` declaration. The decision is per-file,
-not per-package - a single package can have both untagged unit tests and tagged
-integration tests (e.g. `internal/ipc` has unit tests in `protocol_test.go` and
-integration tests in `server_test.go`).
+Every test file has an explicit build tag on line 1. The decision is per-file,
+not per-package - a single package can have both unit and integration tests
+(e.g. `internal/ipc` has unit tests in `protocol_test.go` and integration
+tests in `server_test.go`).
 
 | Tier        | Tag                      | When to use                                              |
 | ----------- | ------------------------ | -------------------------------------------------------- |
-| unit        | (none)                   | Pure logic: JSON, config, DB, types, data transforms     |
+| unit        | `//go:build unit`        | Pure logic: JSON, config, DB, types, data transforms     |
 | integration | `//go:build integration` | Real subprocesses, IPC, daemon lifecycle, git operations |
 | e2e         | `//go:build e2e`         | Full CLI command flows, pipeline step execution          |
 
-When adding a new test file, pick the lowest tier that fits:
+When adding a new test file, pick the tier that fits and add the tag:
 
-- Does it only test in-memory logic? Leave untagged (unit).
+- Does it only test in-memory logic? Tag `unit`.
 - Does it spawn a subprocess, open a socket, or exercise OS-specific behavior? Tag `integration`.
 - Does it drive a full command or pipeline flow end-to-end? Tag `e2e`.
 
@@ -108,9 +107,9 @@ When adding a new test file, pick the lowest tier that fits:
 - `make test-all` - unit + integration + e2e (~170s, what CI runs)
 - `make test-unit` - unit only (~3s)
 
-CI runs the full suite (`test-all`) on Linux and macOS. Windows CI runs unit
-tests across all packages, then runs integration and e2e tagged packages
-without the race detector.
+CI runs the full suite (`test-all`) on Linux and macOS. Windows CI runs only
+integration and e2e tagged packages (without the race detector) - unit tests
+are covered by Linux and macOS.
 
 **When Making Changes**
 

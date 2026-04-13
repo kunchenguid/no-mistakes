@@ -44,7 +44,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Test
-        run: go test -tags integration,e2e -race ./...
+        run: go test -tags unit,integration,e2e -race ./...
 
       - name: Build
         run: go build ./cmd/no-mistakes
@@ -58,11 +58,8 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Test (unit)
-        run: go test ./...
-
       - name: Test (integration + e2e)
-        run: go test -tags integration,e2e ./...
+        run: go test -tags integration,e2e ./... # intentionally excluding unit tests for speed
 
       - name: Build
         run: go build ./cmd/no-mistakes
