@@ -158,13 +158,28 @@ func executeCmd(args ...string) (string, error) {
 
 func linkTestBinary(t *testing.T, binDir, name string) string {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		dst := filepath.Join(binDir, name+".cmd")
+		content := "@echo off\r\n" +
+			"if /I \"%~n0\"==\"git\" (\r\n" +
+			"  if \"%1\"==\"--version\" (\r\n" +
+			"    echo git version 9.9.9\r\n" +
+			"    exit /b 0\r\n" +
+			"  )\r\n" +
+			"  exit /b 1\r\n" +
+			")\r\n" +
+			"if /I \"%~n0\"==\"gh\" exit /b 0\r\n" +
+			"if /I \"%~n0\"==\"claude\" exit /b 0\r\n" +
+			"exit /b 1\r\n"
+		if err := os.WriteFile(dst, []byte(content), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return dst
+	}
 
 	exe, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
-	}
-	if runtime.GOOS == "windows" {
-		name += ".exe"
 	}
 	dst := filepath.Join(binDir, name)
 	if err := os.Link(exe, dst); err == nil {
@@ -178,6 +193,28 @@ func linkTestBinary(t *testing.T, binDir, name string) string {
 		t.Fatal(err)
 	}
 	return dst
+}
+
+func cleanupWorktree(t *testing.T, repoDir, wtDir string) {
+	t.Helper()
+
+	t.Cleanup(func() {
+		_ = os.Chdir(repoDir)
+
+		ctx := context.Background()
+		var err error
+		for attempt := 0; attempt < 5; attempt++ {
+			err = git.WorktreeRemove(ctx, repoDir, wtDir)
+			if err == nil {
+				return
+			}
+			if runtime.GOOS != "windows" {
+				break
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+		t.Fatalf("remove worktree %q: %v", wtDir, err)
+	})
 }
 
 func makeSocketSafeTempDir(t *testing.T) string {
@@ -316,7 +353,7 @@ func TestInitAndEjectFromWorktreeUseMainRepo(t *testing.T) {
 
 	wtDir := filepath.Join(t.TempDir(), "worktree")
 	run(t, repoDir, "git", "worktree", "add", wtDir, branch)
-	t.Cleanup(func() { run(t, repoDir, "git", "worktree", "remove", "--force", wtDir) })
+	cleanupWorktree(t, repoDir, wtDir)
 
 	chdir(t, wtDir)
 
@@ -844,7 +881,7 @@ func TestRerunFromWorktreeUsesCurrentWorktreeBranch(t *testing.T) {
 
 	wtDir := filepath.Join(t.TempDir(), "worktree")
 	run(t, repoDir, "git", "worktree", "add", wtDir, branch)
-	t.Cleanup(func() { run(t, repoDir, "git", "worktree", "remove", "--force", wtDir) })
+	cleanupWorktree(t, repoDir, wtDir)
 
 	headSHA, err := git.HeadSHA(context.Background(), wtDir)
 	if err != nil {

@@ -187,7 +187,7 @@ func TestRunsFromWorktreeWithActiveRun(t *testing.T) {
 	if err := git.WorktreeAdd(ctx, repoDir, wtDir, "wt-runs-branch"); err != nil {
 		t.Fatalf("WorktreeAdd failed: %v", err)
 	}
-	t.Cleanup(func() { git.WorktreeRemove(ctx, repoDir, wtDir) })
+	cleanupWorktree(t, repoDir, wtDir)
 
 	gitRoot, err := git.FindGitRoot(repoDir)
 	if err != nil {
