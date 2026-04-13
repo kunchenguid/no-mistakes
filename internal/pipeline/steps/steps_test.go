@@ -1527,13 +1527,10 @@ func TestDocumentStep_EmptyDiff(t *testing.T) {
 
 func TestDocumentStep_Updated(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
-	gitCmd(t, dir, "checkout", "--detach", headSHA)
 
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			// Simulate agent updating a doc file
-			os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Updated docs\n"), 0o644)
 			return &agent.Result{Output: json.RawMessage(`{"verdict":"updated","summary":"updated README"}`)}, nil
 		},
 	}
@@ -1544,8 +1541,11 @@ func TestDocumentStep_Updated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if outcome.NeedsApproval {
-		t.Error("document step should never require approval")
+	if !outcome.NeedsApproval {
+		t.Fatal("document step should require approval before applying edits")
+	}
+	if !outcome.AutoFixable {
+		t.Fatal("document step should be auto-fixable when docs need updates")
 	}
 	if len(ag.calls) != 1 {
 		t.Errorf("expected 1 agent call, got %d", len(ag.calls))
@@ -1559,12 +1559,21 @@ func TestDocumentStep_Updated(t *testing.T) {
 	if !strings.Contains(ag.calls[0].Prompt, "refs/heads/feature") {
 		t.Error("expected prompt to contain branch name")
 	}
-	// Verify changes were committed
-	if status := gitStatusPorcelain(t, dir); status != "" {
-		t.Fatalf("expected clean worktree after doc commit, got %q", status)
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatalf("unmarshal findings: %v", err)
 	}
-	if got := lastCommitMessage(t, dir); got != "no-mistakes(document): updated README" {
-		t.Fatalf("last commit message = %q", got)
+	if len(findings.Items) != 1 || findings.Items[0].Severity != "warning" {
+		t.Fatalf("unexpected findings: %+v", findings.Items)
+	}
+	if findings.Items[0].Description != "updated README" {
+		t.Fatalf("finding description = %q, want %q", findings.Items[0].Description, "updated README")
+	}
+	if status := gitStatusPorcelain(t, dir); status != "" {
+		t.Fatalf("expected clean worktree while awaiting approval, got %q", status)
+	}
+	if got := lastCommitMessage(t, dir); got != "add feature" {
+		t.Fatalf("expected no new commit, but last commit message = %q", got)
 	}
 }
 
@@ -1675,6 +1684,8 @@ func TestDocumentStep_UpdatesHeadSHA(t *testing.T) {
 		},
 	}
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Fixing = true
+	sctx.PreviousFindings = `{"findings":[{"severity":"warning","description":"add README"}],"summary":"add README"}`
 
 	step := &DocumentStep{}
 	_, err := step.Execute(sctx)
@@ -1688,6 +1699,86 @@ func TestDocumentStep_UpdatesHeadSHA(t *testing.T) {
 	// Branch ref should also be updated
 	if branchSHA := gitCmd(t, dir, "rev-parse", "refs/heads/feature"); branchSHA != sctx.Run.HeadSHA {
 		t.Fatalf("branch SHA = %s, want %s", branchSHA, sctx.Run.HeadSHA)
+	}
+}
+
+func TestDocumentStep_FixMode_NonDocumentationEditNeedsApproval(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+	os.WriteFile(filepath.Join(dir, "feature.go"), []byte("package main\n\nfunc feature() {}\n"), 0o644)
+	gitCmd(t, dir, "add", "feature.go")
+	gitCmd(t, dir, "commit", "-m", "add code file")
+	headSHA = gitCmd(t, dir, "rev-parse", "HEAD")
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			os.WriteFile(filepath.Join(dir, "feature.go"), []byte("package main\n\nfunc feature() { println(\"unsafe\") }\n"), 0o644)
+			return &agent.Result{Output: json.RawMessage(`{"verdict":"updated","summary":"updated docs"}`)}, nil
+		},
+	}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Fixing = true
+	sctx.PreviousFindings = `{"findings":[{"severity":"warning","description":"updated docs"}],"summary":"updated docs"}`
+
+	step := &DocumentStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("expected approval when agent edits non-documentation files")
+	}
+	if outcome.AutoFixable {
+		t.Fatal("expected out-of-scope document edits to require manual review")
+	}
+	if got := lastCommitMessage(t, dir); got != "add code file" {
+		t.Fatalf("expected no new commit, but last commit message = %q", got)
+	}
+	if status := gitStatusPorcelain(t, dir); status == "" {
+		t.Fatal("expected non-documentation edit to remain uncommitted for review")
+	}
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatalf("unmarshal findings: %v", err)
+	}
+	if len(findings.Items) != 1 {
+		t.Fatalf("expected 1 finding, got %+v", findings.Items)
+	}
+	if findings.Items[0].File != "feature.go" {
+		t.Fatalf("finding file = %q, want %q", findings.Items[0].File, "feature.go")
+	}
+}
+
+func TestDocumentStep_FixMode_AllowsDocCommentOnlyEdits(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+	os.WriteFile(filepath.Join(dir, "feature.go"), []byte("package main\n\nfunc feature() {}\n"), 0o644)
+	gitCmd(t, dir, "add", "feature.go")
+	gitCmd(t, dir, "commit", "-m", "add go file")
+	headSHA = gitCmd(t, dir, "rev-parse", "HEAD")
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			os.WriteFile(filepath.Join(dir, "feature.go"), []byte("package main\n\n// feature documents the command behavior.\nfunc feature() {}\n"), 0o644)
+			return &agent.Result{Output: json.RawMessage(`{"verdict":"updated","summary":"add doc comment"}`)}, nil
+		},
+	}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Fixing = true
+	sctx.PreviousFindings = `{"findings":[{"severity":"warning","description":"add doc comment"}],"summary":"add doc comment"}`
+
+	step := &DocumentStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatal("expected doc comment edit to commit cleanly")
+	}
+	if got := lastCommitMessage(t, dir); got != "no-mistakes(document): add doc comment" {
+		t.Fatalf("last commit message = %q", got)
 	}
 }
 

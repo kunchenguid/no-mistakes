@@ -1,8 +1,10 @@
 package steps
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
@@ -47,7 +49,7 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 		return &pipeline.StepOutcome{}, nil
 	}
 
-	sctx.Log("updating documentation...")
+	sctx.Log("checking documentation...")
 
 	ignorePatterns := "none"
 	if len(sctx.Config.IgnorePatterns) > 0 {
@@ -55,7 +57,7 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 	}
 
 	prompt := fmt.Sprintf(
-		`Review the code changes and update any project documentation that needs to reflect the changes.
+		`Review the code changes and determine whether project documentation needs to be updated.
 
 Context:
 - branch: %s
@@ -78,15 +80,12 @@ Task:
      - Changed configuration - update config docs or examples
      - Removed functionality - remove or update stale references
 
-3. Make documentation updates
-   - Update only the documentation that is directly affected by this change.
-   - Keep updates minimal and accurate - do not rewrite docs that are already correct.
-   - Match the existing documentation style and conventions of the project.
-   - If no documentation updates are needed (e.g., internal refactoring, test-only changes), skip.
+3. Decide whether documentation updates are needed
+	- If the change requires doc updates, return verdict "updated" with a concise summary of what should change.
+	- If no documentation updates are needed (e.g., internal refactoring, test-only changes), return verdict "skipped".
 
 Rules:
-- Do NOT change any source code - only update documentation files and doc comments.
-- Do NOT create new documentation files unless the change clearly warrants it (e.g., a major new feature with no existing docs).
+- Do NOT make any file changes in this mode.
 - Return JSON with "verdict" ("updated" or "skipped"), "summary" (brief description of what was updated and why), and optional "details".`,
 		sctx.Run.Branch,
 		baseSHA,
@@ -114,14 +113,190 @@ Rules:
 		}
 	}
 
-	// Commit any doc changes the agent made
-	if verdict.Verdict == "updated" {
-		if err := commitAgentFixes(sctx, s.Name(), verdict.Summary, "update documentation"); err != nil {
+	if !sctx.Fixing && verdict.Verdict == "updated" {
+		findings := Findings{
+			Items: []Finding{{
+				Severity:    "warning",
+				Description: verdict.Summary,
+			}},
+			Summary: verdict.Summary,
+		}
+		findingsJSON, _ := json.Marshal(findings)
+		sctx.Log(fmt.Sprintf("document verdict: %s - %s", verdict.Verdict, verdict.Summary))
+		return &pipeline.StepOutcome{
+			NeedsApproval: true,
+			AutoFixable:   true,
+			Findings:      string(findingsJSON),
+		}, nil
+	}
+
+	if sctx.Fixing {
+		outcome, err := s.applyDocumentationUpdates(sctx, baseSHA)
+		if err != nil {
 			return nil, err
+		}
+		if outcome != nil {
+			return outcome, nil
 		}
 	}
 
 	sctx.Log(fmt.Sprintf("document verdict: %s - %s", verdict.Verdict, verdict.Summary))
 
 	return &pipeline.StepOutcome{}, nil
+}
+
+func (s *DocumentStep) applyDocumentationUpdates(sctx *pipeline.StepContext, baseSHA string) (*pipeline.StepOutcome, error) {
+	ctx := sctx.Ctx
+	ignorePatterns := "none"
+	if len(sctx.Config.IgnorePatterns) > 0 {
+		ignorePatterns = strings.Join(sctx.Config.IgnorePatterns, ", ")
+	}
+
+	prompt := fmt.Sprintf(
+		`Update any project documentation that needs to reflect the code changes.
+
+Context:
+- branch: %s
+- base commit: %s
+- target commit: %s
+- default branch: %s
+- ignore patterns: %s
+
+Task:
+- Read the relevant diff and changed files yourself before editing.
+- Update only the documentation directly affected by the change.
+- Keep updates minimal and match the existing documentation style.
+
+Rules:
+- Only edit documentation files or doc comments.
+- Do not change executable code or tests.
+- Return JSON with "verdict" ("updated" or "skipped"), "summary", and optional "details" when finished.`,
+		sctx.Run.Branch,
+		baseSHA,
+		sctx.Run.HeadSHA,
+		sctx.Repo.DefaultBranch,
+		ignorePatterns,
+	)
+	if sctx.PreviousFindings != "" {
+		prompt += "\n\nPrevious documentation findings to address:\n" + sctx.PreviousFindings
+	}
+
+	result, err := sctx.Agent.Run(ctx, agent.RunOpts{
+		Prompt:     prompt,
+		CWD:        sctx.WorkDir,
+		JSONSchema: documentVerdictSchema,
+		OnChunk:    sctx.Log,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("agent document fix: %w", err)
+	}
+
+	var verdict documentVerdict
+	if result.Output != nil {
+		if err := json.Unmarshal(result.Output, &verdict); err != nil {
+			sctx.Log("could not parse structured output, treating as skipped")
+			verdict = documentVerdict{Verdict: "skipped", Summary: result.Text}
+		}
+	}
+
+	if verdict.Verdict != "updated" {
+		return nil, nil
+	}
+
+	findings, err := detectOutOfScopeDocumentEdits(ctx, sctx.WorkDir)
+	if err != nil {
+		return nil, err
+	}
+	if len(findings.Items) > 0 {
+		findingsJSON, _ := json.Marshal(findings)
+		return &pipeline.StepOutcome{
+			NeedsApproval: true,
+			Findings:      string(findingsJSON),
+		}, nil
+	}
+
+	if err := commitAgentFixes(sctx, s.Name(), verdict.Summary, "update documentation"); err != nil {
+		return nil, err
+	}
+	return nil, nil
+}
+
+func detectOutOfScopeDocumentEdits(ctx context.Context, workDir string) (Findings, error) {
+	changedFiles, err := git.Run(ctx, workDir, "diff", "--name-only", "HEAD")
+	if err != nil {
+		return Findings{}, fmt.Errorf("list document edits: %w", err)
+	}
+
+	findings := Findings{Summary: "document step produced out-of-scope edits"}
+	for _, path := range strings.Split(changedFiles, "\n") {
+		path = strings.TrimSpace(path)
+		if path == "" || isDocumentationPath(path) {
+			continue
+		}
+		diff, err := git.Run(ctx, workDir, "diff", "HEAD", "--", path)
+		if err != nil {
+			return Findings{}, fmt.Errorf("diff document edit %s: %w", path, err)
+		}
+		if isDocCommentOnlyDiff(path, diff) {
+			continue
+		}
+		findings.Items = append(findings.Items, Finding{
+			Severity:    "warning",
+			File:        path,
+			Description: "document step modified non-documentation content",
+		})
+	}
+	if len(findings.Items) == 0 {
+		findings.Summary = ""
+	}
+	return findings, nil
+}
+
+func isDocumentationPath(path string) bool {
+	clean := filepath.ToSlash(strings.TrimSpace(path))
+	if clean == "" {
+		return false
+	}
+	base := filepath.Base(clean)
+	upperBase := strings.ToUpper(base)
+	if strings.HasPrefix(clean, "docs/") {
+		return true
+	}
+	if upperBase == "README" || strings.HasPrefix(upperBase, "README.") {
+		return true
+	}
+	for _, name := range []string{"CHANGELOG", "CONTRIBUTING", "LICENSE"} {
+		if upperBase == name || strings.HasPrefix(upperBase, name+".") {
+			return true
+		}
+	}
+	for _, ext := range []string{".md", ".mdx", ".rst", ".adoc", ".txt"} {
+		if strings.HasSuffix(strings.ToLower(base), ext) {
+			return true
+		}
+	}
+	return false
+}
+
+func isDocCommentOnlyDiff(path, diff string) bool {
+	if !strings.HasSuffix(strings.ToLower(path), ".go") {
+		return false
+	}
+	for _, line := range strings.Split(diff, "\n") {
+		if strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---") || strings.HasPrefix(line, "@@") {
+			continue
+		}
+		if len(line) == 0 || (line[0] != '+' && line[0] != '-') {
+			continue
+		}
+		text := strings.TrimSpace(line[1:])
+		if text == "" {
+			continue
+		}
+		if strings.HasPrefix(text, "//") || strings.HasPrefix(text, "/*") || strings.HasPrefix(text, "*") || strings.HasPrefix(text, "*/") {
+			continue
+		}
+		return false
+	}
+	return true
 }
