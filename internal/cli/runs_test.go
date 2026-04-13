@@ -96,6 +96,9 @@ func TestRunsWithData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runs failed: %v\noutput: %s", err, out)
 	}
+	if ansiEscapeRE.MatchString(out) {
+		t.Fatalf("runs output should not include ANSI escape sequences, got: %q", out)
+	}
 	if !strings.Contains(out, "another-branch") {
 		t.Errorf("runs output should contain 'another-branch', got: %s", out)
 	}
