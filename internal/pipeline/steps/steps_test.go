@@ -2512,26 +2512,62 @@ func TestCommitAgentFixes_UsesFallbackSummary(t *testing.T) {
 
 // --- Babysit step tests ---
 
-func TestPollInterval(t *testing.T) {
-	tests := []struct {
-		name    string
-		elapsed time.Duration
-		want    time.Duration
-	}{
-		{"start", 0, 30 * time.Second},
-		{"3 minutes", 3 * time.Minute, 30 * time.Second},
-		{"5 minutes", 5 * time.Minute, 60 * time.Second},
-		{"10 minutes", 10 * time.Minute, 60 * time.Second},
-		{"15 minutes", 15 * time.Minute, 120 * time.Second},
-		{"1 hour", time.Hour, 120 * time.Second},
+func TestBabysitStep_PendingChecksUseAdaptivePollIntervals(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	checksSequence := []string{
+		`[{"name":"build","state":"PENDING","bucket":"pending"}]`,
+		`[{"name":"build","state":"PENDING","bucket":"pending"}]`,
+		`[{"name":"build","state":"PENDING","bucket":"pending"}]`,
+		`[{"name":"build","state":"SUCCESS","bucket":"pass"}]`,
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := pollInterval(tt.elapsed)
-			if got != tt.want {
-				t.Errorf("pollInterval(%v) = %v, want %v", tt.elapsed, got, tt.want)
+	binDir := fakeBabysitGHSequence(t, "OPEN", checksSequence)
+	prependPATH(t, binDir)
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.PRURL = &prURL
+	sctx.Config.BabysitTimeout = 20 * time.Minute
+
+	started := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
+	current := started
+	var waits []time.Duration
+
+	step := &BabysitStep{
+		now: func() time.Time { return current },
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			waits = append(waits, interval)
+			switch len(waits) {
+			case 1:
+				current = started.Add(5 * time.Minute)
+			case 2:
+				current = started.Add(15 * time.Minute)
+			case 3:
+				current = current.Add(interval)
+			default:
+				t.Fatalf("unexpected extra poll wait: %v", interval)
 			}
-		})
+			return nil
+		},
+	}
+
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatal("expected pending checks to exit cleanly once checks pass")
+	}
+
+	want := []time.Duration{30 * time.Second, 60 * time.Second, 120 * time.Second}
+	if len(waits) != len(want) {
+		t.Fatalf("wait count = %d, want %d (%v)", len(waits), len(want), waits)
+	}
+	for i := range want {
+		if waits[i] != want[i] {
+			t.Fatalf("wait %d = %v, want %v (all waits: %v)", i, waits[i], want[i], waits)
+		}
 	}
 }
 
