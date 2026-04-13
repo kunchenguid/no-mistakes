@@ -268,13 +268,20 @@ func TestInitRollsBackWhenDaemonStartFails(t *testing.T) {
 	repoDir := setupTestRepo(t)
 	nmHome := filepath.Join(t.TempDir(), strings.Repeat("a", 160))
 	t.Setenv("NM_HOME", nmHome)
+	t.Setenv("NM_TEST_DAEMON_START_TIMEOUT", "200ms")
+	t.Setenv("NM_TEST_DAEMON_START_POLL_INTERVAL", "10ms")
 
+	start := time.Now()
 	_, err := executeCmd("init")
+	elapsed := time.Since(start)
 	if err == nil {
 		t.Fatal("init should fail when daemon startup fails")
 	}
 	if !strings.Contains(err.Error(), "start daemon") {
 		t.Fatalf("init error = %v, want daemon startup failure", err)
+	}
+	if elapsed >= time.Second {
+		t.Fatalf("init rollback should fail fast in tests, took %v", elapsed)
 	}
 
 	cmd := exec.Command("git", "remote", "get-url", "no-mistakes")
