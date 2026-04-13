@@ -51,7 +51,6 @@ Context:
 
 Rules:
 - Always start with double checking whether the findings are legitimate.
-<<<<<<< HEAD
 - Avoid resolving a finding by removing or reverting the author's intentional code in their original 1st commit. If the original change introduced something on purpose, fix it forward (e.g. add validation, handle edge cases, tighten logic) rather than deleting it. Similarly, if the original change intentionally deleted or simplified code, do not restore or re-add the removed code unless the finding is a legitimate correctness, reliability, or security issue and the smallest reasonable fix happens to reintroduce a small amount of previously deleted logic. When in doubt about whether code is intentional, leave it and report the finding as unresolved.
 - Do not add code comments explaining your fixes.
 - Verify that the issues are resolved before finishing.
@@ -153,7 +152,6 @@ Rules:
 - Only comment on things that genuinely matter.
 - Do NOT report styling, formatting, linting, compilation, or type-checking issues.
 - If the change is clean, return an empty findings array.
-<<<<<<< HEAD
 - Set requires_human_review to true only when the finding challenges the author's intent - i.e. questions a deliberate design/product decision, or where the natural fix would undo something the author intentionally did (adding, removing, or changing code on purpose). Examples: "this feature seems unnecessary", "this deletion looks wrong", "this guard is redundant". A finding is not human-review-only just because the fix may reintroduce a small amount of previously deleted logic to restore correctness, reliability, or security. Set it to false for findings about objective correctness, error handling, security, performance, and mechanical code quality. When in doubt, default to false.
 
 Risk assessment (after listing all findings):

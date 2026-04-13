@@ -1162,10 +1162,10 @@ func TestReviewStep_FixMode(t *testing.T) {
 	if !strings.Contains(ag.calls[0].Prompt, "Avoid resolving a finding by removing or reverting") {
 		t.Error("expected fix prompt to include anti-revert guardrail")
 	}
-	if strings.Contains(ag.calls[0].Prompt, "do not restore or re-add the removed code") {
-		t.Error("expected fix prompt to allow re-adding small deleted logic for legitimate forward fixes")
+	if strings.Contains(ag.calls[0].Prompt, "<<<<<<< HEAD") {
+		t.Error("expected fix prompt to exclude merge markers")
 	}
-	if !strings.Contains(ag.calls[0].Prompt, "Do not undo an intentional deletion unless the finding is a legitimate correctness, reliability, or security issue") {
+	if !strings.Contains(ag.calls[0].Prompt, "do not restore or re-add the removed code unless the finding is a legitimate correctness, reliability, or security issue") {
 		t.Error("expected fix prompt to distinguish intentional deletions from legitimate bug fixes")
 	}
 	if len(ag.calls[0].JSONSchema) == 0 {
@@ -1174,11 +1174,11 @@ func TestReviewStep_FixMode(t *testing.T) {
 	if strings.Contains(ag.calls[1].Prompt, "feature code") {
 		t.Error("expected review prompt to avoid embedding diff contents in fix mode")
 	}
+	if strings.Contains(ag.calls[1].Prompt, "<<<<<<< HEAD") {
+		t.Error("expected review prompt to exclude merge markers")
+	}
 	if !strings.Contains(ag.calls[1].Prompt, "challenges the author's intent") {
 		t.Error("expected review prompt requires_human_review to cover intent-challenging scenarios")
-	}
-	if strings.Contains(ag.calls[1].Prompt, "restore, re-add, or undo a deletion that the author made intentionally") {
-		t.Error("expected review prompt not to classify all re-added deleted logic as human review")
 	}
 	if !strings.Contains(ag.calls[1].Prompt, "A finding is not human-review-only just because the fix may reintroduce a small amount of previously deleted logic") {
 		t.Error("expected review prompt to keep routine correctness fixes auto-fixable")
