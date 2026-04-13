@@ -33,13 +33,13 @@ while read oldrev newrev refname; do
     --new "$newrev" >/dev/null 2>&1 || true
 done
 cat >&2 <<'BANNER'
-` + "\033[36m" + `_  _ ____    _  _ _ ____ ___ ____ _  _ ____ ____
+_  _ ____    _  _ _ ____ ___ ____ _  _ ____ ____
 |\ | |  |    |\/| | [__   |  |__| |_/  |___ [__
-| \| |__|    |  | | ___]  |  |  | | \_ |___ ___]` + "\033[0m" + `
+| \| |__|    |  | | ___]  |  |  | | \_ |___ ___]
 
-  ` + "\033[32m" + `✓` + "\033[0m" + ` Pipeline started
+  * Pipeline started
 
-  ` + "\033[90m" + `Run` + "\033[0m" + ` ` + "\033[1m" + `no-mistakes` + "\033[0m" + ` ` + "\033[90m" + `to review.` + "\033[0m" + `
+  Run no-mistakes to review.
 BANNER
 exit 0
 `

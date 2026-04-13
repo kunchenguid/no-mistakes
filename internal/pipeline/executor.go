@@ -241,7 +241,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			}
 		}
 
-		if !outcome.NeedsApproval {
+		if !outcome.NeedsApproval && !hasHumanReviewFindingsJSON(outcome.Findings) {
 			// Step completed without needing approval.
 			// Any remaining info-only or human-review-only findings
 			// are acceptable and don't block the pipeline.

@@ -198,6 +198,17 @@ func autoFixableFindingsJSON(raw string) string {
 	return fixableRaw
 }
 
+func hasHumanReviewFindingsJSON(raw string) bool {
+	if raw == "" {
+		return false
+	}
+	findings, err := types.ParseFindingsJSON(raw)
+	if err != nil {
+		return false
+	}
+	return types.HasHumanReviewFindings(findings)
+}
+
 func filterFindingsJSON(raw string, ids []string) string {
 	if raw == "" || len(ids) == 0 {
 		return raw

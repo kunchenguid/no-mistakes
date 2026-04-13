@@ -107,6 +107,15 @@ func AutoFixableFindings(findings Findings) Findings {
 	return result
 }
 
+func HasHumanReviewFindings(findings Findings) bool {
+	for _, item := range findings.Items {
+		if item.RequiresHumanReview {
+			return true
+		}
+	}
+	return false
+}
+
 func summarizeSelectedFindings(count int) string {
 	switch count {
 	case 0:
