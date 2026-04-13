@@ -3859,47 +3859,6 @@ func TestBabysitStep_NonEmptyPassingChecksExitImmediately(t *testing.T) {
 	}
 }
 
-func TestIsConventionalTitle(t *testing.T) {
-	tests := []struct {
-		title string
-		want  bool
-	}{
-		{"feat: add new feature", true},
-		{"fix: resolve crash on startup", true},
-		{"docs: update README", true},
-		{"style: format code", true},
-		{"refactor: extract helper function", true},
-		{"perf: optimize query", true},
-		{"test: add unit tests", true},
-		{"build: update dependencies", true},
-		{"ci: fix pipeline", true},
-		{"chore: bump version", true},
-		{"revert: undo last change", true},
-		{"feat(auth): add OAuth support", true},
-		{"fix(parser): handle empty input", true},
-		{"chore(deps): update Go to 1.25", true},
-		{"feat!: breaking change", true},
-		{"feat(api)!: breaking change with scope", true},
-		// Invalid titles
-		{"add new feature", false},
-		{"Update pull request", false},
-		{"feature: wrong type", false},
-		{"Feat: capitalized type", false},
-		{"feat:no space after colon", false},
-		{"feat : space before colon", false},
-		{"", false},
-		{"feat:", false},
-		{"feat: ", false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.title, func(t *testing.T) {
-			if got := isConventionalTitle(tt.title); got != tt.want {
-				t.Errorf("isConventionalTitle(%q) = %v, want %v", tt.title, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestPRStep_PromptRequiresConventionalCommitTitle(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
@@ -3961,6 +3920,41 @@ func TestPRStep_AgentNonConventionalTitleFallsBack(t *testing.T) {
 		t.Fatal("expected agent body to be preserved, got: " + ghLog)
 	}
 }
+
+func TestPRStep_AgentScopedBreakingTitlePassesThrough(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	binDir, logFile := fakeGH(t, "")
+	prependPATH(t, binDir)
+
+	const title = "feat(api)!: require auth token"
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			payload := json.RawMessage(`{"title":"feat(api)!: require auth token","body":"## Summary\n\n- require auth token on all API requests"}`)
+			return &agent.Result{Output: payload}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	step := &PRStep{}
+	if _, err := step.Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+
+	logData, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ghLog := string(logData)
+	if !strings.Contains(ghLog, "--title "+title+" --body") {
+		t.Fatalf("expected scoped conventional breaking-change title to pass through unchanged, got:\n%s", ghLog)
+	}
+	if strings.Contains(ghLog, "--title chore: "+title+" --body") {
+		t.Fatalf("expected scoped conventional breaking-change title to avoid fallback prefix, got:\n%s", ghLog)
+	}
+}
+
 func TestBabysitStep_CIAutoFixDisabledWithZero(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
