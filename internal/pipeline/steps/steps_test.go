@@ -2854,29 +2854,6 @@ func TestBabysitStep_CommitAndPush_UpdatesLocalBranchRefAfterDetachedPush(t *tes
 	}
 }
 
-func TestCICheckJSON(t *testing.T) {
-	input := `[
-		{"name":"build","status":"COMPLETED","conclusion":"success"},
-		{"name":"test","status":"COMPLETED","conclusion":"failure"},
-		{"name":"lint","status":"COMPLETED","conclusion":"action_required"},
-		{"name":"deploy","status":"COMPLETED","conclusion":"neutral"}
-	]`
-	var checks []ciCheck
-	if err := json.Unmarshal([]byte(input), &checks); err != nil {
-		t.Fatal(err)
-	}
-	if len(checks) != 4 {
-		t.Fatalf("expected 4 checks, got %d", len(checks))
-	}
-	if !hasFailingChecks(checks) {
-		t.Error("expected failing checks")
-	}
-	names := failingCheckNames(checks)
-	if len(names) != 2 || names[0] != "test" || names[1] != "lint" {
-		t.Errorf("failingCheckNames = %v, want [test lint]", names)
-	}
-}
-
 func TestDetectNewTestFiles(t *testing.T) {
 	dir, _, _ := setupGitRepo(t)
 
@@ -3994,7 +3971,12 @@ func TestPRStep_AgentScopedBreakingTitlePassesThrough(t *testing.T) {
 func TestBabysitStep_CIAutoFixDisabledWithZero(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
-	checksJSON := `[{"name":"build","state":"SUCCESS","bucket":"pass"},{"name":"test","status":"COMPLETED","conclusion":"failure","bucket":"fail"}]`
+	checksJSON := `[
+		{"name":"build","status":"COMPLETED","conclusion":"success","state":"SUCCESS","bucket":"pass"},
+		{"name":"test","status":"COMPLETED","conclusion":"failure"},
+		{"name":"lint","status":"COMPLETED","conclusion":"action_required"},
+		{"name":"deploy","status":"COMPLETED","conclusion":"neutral"}
+	]`
 	binDir := fakeBabysitGH(t, "OPEN", checksJSON)
 	prependPATH(t, binDir)
 
@@ -4026,6 +4008,23 @@ func TestBabysitStep_CIAutoFixDisabledWithZero(t *testing.T) {
 	}
 	if outcome.AutoFixable {
 		t.Fatal("expected manual intervention outcome to be non-auto-fixable")
+	}
+
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatalf("unmarshal findings: %v", err)
+	}
+	if findings.Summary != "CI failures require manual intervention" {
+		t.Fatalf("findings summary = %q, want %q", findings.Summary, "CI failures require manual intervention")
+	}
+	if len(findings.Items) != 2 {
+		t.Fatalf("expected 2 failing-check findings, got %d: %+v", len(findings.Items), findings.Items)
+	}
+	if findings.Items[0].Description != "CI check failing: lint" {
+		t.Fatalf("first finding = %q, want %q", findings.Items[0].Description, "CI check failing: lint")
+	}
+	if findings.Items[1].Description != "CI check failing: test" {
+		t.Fatalf("second finding = %q, want %q", findings.Items[1].Description, "CI check failing: test")
 	}
 
 	// Agent should NOT have been called
