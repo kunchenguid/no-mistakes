@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -56,16 +58,31 @@ func TestDoctorDataDirMissing(t *testing.T) {
 	}
 }
 
-func TestDoctorAgentCheck(t *testing.T) {
+func TestDoctorAgentsSectionReportsFoundAndMissingBinaries(t *testing.T) {
 	nmHome := t.TempDir()
 	t.Setenv("NM_HOME", nmHome)
+
+	binDir := t.TempDir()
+	claudePath := filepath.Join(binDir, "claude")
+	if err := os.WriteFile(claudePath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake claude: %v", err)
+	}
+	t.Setenv("PATH", binDir)
 
 	out, err := executeCmd("doctor")
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Should check for at least one agent binary.
-	if !strings.Contains(out, "claude") {
-		t.Errorf("doctor output should check for claude agent, got: %s", out)
+
+	for _, label := range []string{"Agents", "claude", "codex", "rovodev", "opencode"} {
+		if !strings.Contains(out, label) {
+			t.Fatalf("doctor output should include %q in agents section, got: %s", label, out)
+		}
+	}
+	if !strings.Contains(out, claudePath) {
+		t.Fatalf("doctor output should report discovered claude path %q, got: %s", claudePath, out)
+	}
+	if got := strings.Count(out, "not found"); got < 3 {
+		t.Fatalf("doctor output should report missing agent binaries, got %d not found markers in: %s", got, out)
 	}
 }
