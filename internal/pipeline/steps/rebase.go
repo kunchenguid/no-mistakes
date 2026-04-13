@@ -264,7 +264,8 @@ func dedupeRebaseFindings(findings []Finding) []Finding {
 	return filtered
 }
 
-// updateHeadSHA syncs the run's head SHA after rebase.
+// updateHeadSHA syncs the run's head SHA after rebase and checks for an empty diff.
+// When the branch diff against the default branch is empty, SkipRemaining is set.
 func updateHeadSHA(ctx context.Context, sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
 	if err != nil {
@@ -277,6 +278,20 @@ func updateHeadSHA(ctx context.Context, sctx *pipeline.StepContext) (*pipeline.S
 		}
 		sctx.Log(fmt.Sprintf("updated head SHA to %s", shortSHA(headSHA)))
 	}
+
+	// Check if the branch has any diff against the default branch.
+	// If the diff is empty (e.g. branch was already merged), skip remaining steps.
+	defaultBranch := strings.TrimSpace(sctx.Repo.DefaultBranch)
+	if defaultBranch == "" {
+		defaultBranch = "main"
+	}
+	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, defaultBranch)
+	diff, err := git.Diff(ctx, sctx.WorkDir, baseSHA, "HEAD")
+	if err == nil && strings.TrimSpace(diff) == "" {
+		sctx.Log("empty diff after rebase, skipping remaining steps")
+		return &pipeline.StepOutcome{SkipRemaining: true}, nil
+	}
+
 	return &pipeline.StepOutcome{}, nil
 }
 

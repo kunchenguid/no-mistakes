@@ -2267,6 +2267,64 @@ func writeTestFile(t *testing.T, dir, name, content string) {
 	}
 }
 
+func TestExecutor_SkipRemaining_SkipsSubsequentSteps(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	skipStep := &mockStep{
+		name:    types.StepRebase,
+		outcome: &StepOutcome{ExitCode: 0, SkipRemaining: true},
+	}
+	reviewStep := newPassStep(types.StepReview)
+	testStep := newPassStep(types.StepTest)
+
+	steps := []Step{skipStep, reviewStep, testStep}
+	exec := NewExecutor(database, p, nil, nil, steps, nil)
+	events := collectEvents(exec)
+
+	err := exec.Execute(context.Background(), run, repo, workDir)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	// Run should be completed
+	updated, _ := database.GetRun(run.ID)
+	if updated.Status != types.RunCompleted {
+		t.Errorf("expected run status %q, got %q", types.RunCompleted, updated.Status)
+	}
+
+	// The rebase step should be completed
+	dbSteps, _ := database.GetStepsByRun(run.ID)
+	if len(dbSteps) != 3 {
+		t.Fatalf("expected 3 steps, got %d", len(dbSteps))
+	}
+	if dbSteps[0].Status != types.StepStatusCompleted {
+		t.Errorf("rebase step: expected status %q, got %q", types.StepStatusCompleted, dbSteps[0].Status)
+	}
+
+	// Subsequent steps should be skipped
+	for _, s := range dbSteps[1:] {
+		if s.Status != types.StepStatusSkipped {
+			t.Errorf("step %s: expected status %q, got %q", s.StepName, types.StepStatusSkipped, s.Status)
+		}
+	}
+
+	// Subsequent steps should NOT have been executed
+	if reviewStep.callCount() != 0 {
+		t.Errorf("review step was called %d times, expected 0", reviewStep.callCount())
+	}
+	if testStep.callCount() != 0 {
+		t.Errorf("test step was called %d times, expected 0", testStep.callCount())
+	}
+
+	// Should have completed events for all steps
+	for _, name := range []types.StepName{types.StepRebase, types.StepReview, types.StepTest} {
+		if e := events.find(ipc.EventStepCompleted, name); e == nil {
+			t.Errorf("missing step_completed event for %s", name)
+		}
+	}
+}
+
 func TestExecutor_StepOutcomePRURL_EmitsRunUpdated(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir := t.TempDir()

@@ -107,14 +107,26 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 	}
 
 	// Execute steps sequentially
-	for _, step := range e.steps {
+	for i, step := range e.steps {
 		if ctx.Err() != nil {
 			return e.failRun(run, repo, context.Cause(ctx))
 		}
 
 		sr := stepRecords[step.Name()]
-		if err := e.executeStep(ctx, step, sr, run, repo, workDir, logDir); err != nil {
+		skipRemaining, err := e.executeStep(ctx, step, sr, run, repo, workDir, logDir)
+		if err != nil {
 			return e.failRun(run, repo, err, ctx)
+		}
+		if skipRemaining {
+			// Mark all subsequent steps as skipped
+			for _, remaining := range e.steps[i+1:] {
+				rsr := stepRecords[remaining.Name()]
+				if dbErr := e.db.UpdateStepStatus(rsr.ID, types.StepStatusSkipped); dbErr != nil {
+					slog.Warn("failed to mark step as skipped", "step", remaining.Name(), "error", dbErr)
+				}
+				e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, remaining.Name(), string(types.StepStatusSkipped), "", "", "", nil)
+			}
+			break
 		}
 	}
 
@@ -128,14 +140,15 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 }
 
 // executeStep runs a single step with approval coordination.
-func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult, run *db.Run, repo *db.Repo, workDir, logDir string) error {
+// Returns (skipRemaining, error).
+func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult, run *db.Run, repo *db.Repo, workDir, logDir string) (bool, error) {
 	stepName := step.Name()
 	logPath := filepath.Join(logDir, string(stepName)+".log")
 	finalExitCode := 0
 
 	// Mark step as running
 	if err := e.db.StartStep(sr.ID); err != nil {
-		return fmt.Errorf("start step %s: %w", stepName, err)
+		return false, fmt.Errorf("start step %s: %w", stepName, err)
 	}
 	e.emitStepEvent(ipc.EventStepStarted, run, repo, stepName, string(types.StepStatusRunning))
 
@@ -146,7 +159,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	// Open log file for persistent step logging
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
-		return fmt.Errorf("create step log file %s: %w", stepName, err)
+		return false, fmt.Errorf("create step log file %s: %w", stepName, err)
 	}
 	defer logFile.Close()
 
@@ -176,6 +189,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	autoFixAttempts := 0
 	roundNum := 0
 	nextTrigger := "initial"
+	skipRemaining := false
 
 	// Execute with possible fix loop
 	for {
@@ -188,7 +202,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 				slog.Warn("failed to mark step as failed in db", "step", stepName, "error", dbErr)
 			}
 			e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFailed), "", "", err.Error(), &durationMS)
-			return fmt.Errorf("step %s failed: %w", stepName, err)
+			return false, fmt.Errorf("step %s failed: %w", stepName, err)
 		}
 
 		outcome.Findings = normalizeFindingsJSON(outcome.Findings, string(stepName))
@@ -245,6 +259,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			// Step completed without needing approval.
 			// Any remaining info-only or human-review-only findings
 			// are acceptable and don't block the pipeline.
+			skipRemaining = outcome.SkipRemaining
 			break
 		}
 
@@ -287,7 +302,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 				slog.Warn("failed to mark step as failed in db", "step", stepName, "error", dbErr)
 			}
 			e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFailed), "", "", err.Error(), &executionMS)
-			return fmt.Errorf("step %s: waiting for approval: %w", stepName, err)
+			return false, fmt.Errorf("step %s: waiting for approval: %w", stepName, err)
 		}
 
 		switch response.action {
@@ -300,20 +315,20 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		case types.ActionSkip:
 			// Skip - mark step skipped and return (not an error)
 			if err := e.db.CompleteStep(sr.ID, finalExitCode, executionMS, logPath); err != nil {
-				return fmt.Errorf("complete step %s (skip): %w", stepName, err)
+				return false, fmt.Errorf("complete step %s (skip): %w", stepName, err)
 			}
 			if dbErr := e.db.UpdateStepStatus(sr.ID, types.StepStatusSkipped); dbErr != nil {
 				slog.Warn("failed to update step status in db", "step", stepName, "status", "skipped", "error", dbErr)
 			}
 			e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusSkipped), "", "", "", &executionMS)
-			return nil
+			return false, nil
 
 		case types.ActionAbort:
 			if dbErr := e.db.FailStep(sr.ID, "aborted by user", executionMS); dbErr != nil {
 				slog.Warn("failed to mark step as failed in db", "step", stepName, "error", dbErr)
 			}
 			e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFailed), "", "", "aborted by user", &executionMS)
-			return fmt.Errorf("step %s: aborted by user", stepName)
+			return false, fmt.Errorf("step %s: aborted by user", stepName)
 
 		case types.ActionFix:
 			// Fix - mark step as fixing, resume execution timer, re-execute.
@@ -338,10 +353,10 @@ done:
 	// Mark step completed with execution-only timing.
 	durationMS := executionMS + time.Since(phaseStart).Milliseconds()
 	if err := e.db.CompleteStep(sr.ID, finalExitCode, durationMS, logPath); err != nil {
-		return fmt.Errorf("complete step %s: %w", stepName, err)
+		return false, fmt.Errorf("complete step %s: %w", stepName, err)
 	}
 	e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusCompleted), "", "", "", &durationMS)
-	return nil
+	return skipRemaining, nil
 }
 
 // waitForApproval blocks until a user action arrives or context is cancelled.
