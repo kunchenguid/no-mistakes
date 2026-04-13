@@ -748,7 +748,7 @@ func TestRebaseStep_FixModeCallsAgent(t *testing.T) {
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Fixing = true
-	sctx.PreviousFindings = `{"findings":[{"severity":"error","file":"shared.txt","description":"merge conflict"}]}`
+	sctx.PreviousFindings = `{"findings":[{"severity":"warning","file":"other.txt","description":"merge conflict rebasing onto origin/feature"}]}`
 
 	step := &RebaseStep{}
 	outcome, err := step.Execute(sctx)
@@ -763,6 +763,9 @@ func TestRebaseStep_FixModeCallsAgent(t *testing.T) {
 	}
 	if !strings.Contains(ag.calls[0].Prompt, "shared.txt") {
 		t.Error("expected agent prompt to mention conflicting file")
+	}
+	if strings.Contains(ag.calls[0].Prompt, "other.txt") && !strings.Contains(ag.calls[0].Prompt, "Current conflicted files") {
+		t.Fatalf("expected prompt to scope fixes using current conflicted files, got: %s", ag.calls[0].Prompt)
 	}
 	// Verify rebase completed - feature is now ahead of origin/main
 	mergeBase := gitCmd(t, dir, "merge-base", "HEAD", "origin/main")

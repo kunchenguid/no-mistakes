@@ -581,8 +581,8 @@ func TestMerge_AutoFixDefaults(t *testing.T) {
 	if cfg.AutoFix.Babysit != 3 {
 		t.Errorf("babysit = %d, want 3", cfg.AutoFix.Babysit)
 	}
-	if cfg.AutoFix.Rebase != 3 {
-		t.Errorf("rebase = %d, want 3", cfg.AutoFix.Rebase)
+	if cfg.AutoFix.Rebase != 0 {
+		t.Errorf("rebase = %d, want 0", cfg.AutoFix.Rebase)
 	}
 }
 
@@ -607,8 +607,8 @@ func TestMerge_AutoFixGlobalOverridesDefaults(t *testing.T) {
 	if cfg.AutoFix.Babysit != 0 {
 		t.Errorf("babysit = %d, want 0 (global override)", cfg.AutoFix.Babysit)
 	}
-	if cfg.AutoFix.Rebase != 3 {
-		t.Errorf("rebase = %d, want 3 (default, no override)", cfg.AutoFix.Rebase)
+	if cfg.AutoFix.Rebase != 0 {
+		t.Errorf("rebase = %d, want 0 (default, no override)", cfg.AutoFix.Rebase)
 	}
 }
 

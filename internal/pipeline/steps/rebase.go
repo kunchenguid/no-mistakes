@@ -137,9 +137,13 @@ func rebaseWithAgent(ctx context.Context, sctx *pipeline.StepContext, targetRef 
 		return fmt.Errorf("rebase onto %s failed (no conflicts detected)", targetRef)
 	}
 	sctx.Log("conflicts detected, asking agent to resolve...")
+	conflictFiles := rebaseConflictFiles(ctx, sctx.WorkDir)
 
 	prompt := fmt.Sprintf(
 		`Resolve git rebase conflicts. The rebase of the current branch onto %s has conflicts.
+
+Current conflicted files:
+- %s
 
 Instructions:
 - Find all conflicting files and resolve the conflict markers (<<<<<<< ======= >>>>>>>).
@@ -151,6 +155,7 @@ Instructions:
 - Return JSON with a single "summary" field describing what you resolved.
 - Keep the summary under 10 words.`,
 		targetRef,
+		strings.Join(conflictFiles, "\n- "),
 	)
 	if sctx.PreviousFindings != "" {
 		prompt += "\n\nPrevious findings:\n" + sctx.PreviousFindings
