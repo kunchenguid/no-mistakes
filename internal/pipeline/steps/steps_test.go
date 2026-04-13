@@ -3954,19 +3954,37 @@ func TestBabysitStep_EmptyChecksWaitsDuringGracePeriod(t *testing.T) {
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
-	step := &BabysitStep{checksGracePeriod: 200 * time.Millisecond, pollIntervalOverride: 10 * time.Millisecond}
-	started := time.Now()
+	started := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
+	current := started
+	var waits []time.Duration
+
+	step := &BabysitStep{
+		checksGracePeriod:    200 * time.Millisecond,
+		pollIntervalOverride: 75 * time.Millisecond,
+		now:                  func() time.Time { return current },
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			waits = append(waits, interval)
+			current = current.Add(interval)
+			return nil
+		},
+	}
 	outcome, err := step.Execute(sctx)
-	elapsed := time.Since(started)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if outcome.NeedsApproval {
 		t.Error("expected no approval needed")
 	}
-	// Must have waited at least the grace period before exiting
-	if elapsed < 200*time.Millisecond {
+	if elapsed := current.Sub(started); elapsed < 200*time.Millisecond {
 		t.Errorf("babysit exited in %v, expected to wait at least 200ms grace period", elapsed)
+	}
+	if len(waits) != 3 {
+		t.Fatalf("expected 3 grace-period waits, got %v", waits)
+	}
+	for _, interval := range waits {
+		if interval != 75*time.Millisecond {
+			t.Fatalf("expected 75ms waits during grace period, got %v", waits)
+		}
 	}
 	// Should exit via grace period expiry, not babysit timeout
 	for _, l := range logs {
@@ -4001,7 +4019,16 @@ func TestBabysitStep_LogsWaitingForChecksDuringGracePeriod(t *testing.T) {
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
-	step := &BabysitStep{checksGracePeriod: 50 * time.Millisecond, pollIntervalOverride: 10 * time.Millisecond}
+	current := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
+	step := &BabysitStep{
+		checksGracePeriod:    50 * time.Millisecond,
+		pollIntervalOverride: 10 * time.Millisecond,
+		now:                  func() time.Time { return current },
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			current = current.Add(interval)
+			return nil
+		},
+	}
 	if _, err := step.Execute(sctx); err != nil {
 		t.Fatal(err)
 	}
