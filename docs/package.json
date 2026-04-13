@@ -1,0 +1,18 @@
+{
+  "name": "no-mistakes-docs",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview"
+  },
+  "dependencies": {
+    "@astrojs/starlight": "0.32.5",
+    "astro": "5.5.5",
+    "sharp": "^0.33"
+  },
+  "overrides": {
+    "@astrojs/sitemap": "3.3.0"
+  }
+}
