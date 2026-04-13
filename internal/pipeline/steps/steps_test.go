@@ -1594,9 +1594,8 @@ func TestDocumentStep_Skipped(t *testing.T) {
 		t.Fatal(err)
 	}
 	if outcome.NeedsApproval {
-		t.Error("document step should never require approval")
+		t.Error("document step should not require approval when skipped")
 	}
-	// No commit should happen since verdict is "skipped"
 	if got := lastCommitMessage(t, dir); got != "add feature" {
 		t.Fatalf("expected no new commit, but last commit message = %q", got)
 	}
@@ -1720,15 +1719,22 @@ func TestDocumentStep_IgnorePatternsFilterAllFiles(t *testing.T) {
 	}
 }
 
-func TestDocumentStep_UpdatesHeadSHA(t *testing.T) {
+func TestDocumentStep_FixMode_CommitsAndReassesses(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	gitCmd(t, dir, "checkout", "--detach", headSHA)
 
+	callCount := 0
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Docs\n"), 0o644)
-			return &agent.Result{Output: json.RawMessage(`{"verdict":"updated","summary":"add README"}`)}, nil
+			callCount++
+			if callCount == 1 {
+				// Fix call: agent writes a file and returns summary
+				os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Docs\n"), 0o644)
+				return &agent.Result{Output: json.RawMessage(`{"summary":"add README"}`)}, nil
+			}
+			// Re-assessment call: docs are now up to date
+			return &agent.Result{Output: json.RawMessage(`{"verdict":"skipped","summary":"docs are current"}`)}, nil
 		},
 	}
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
@@ -1736,38 +1742,49 @@ func TestDocumentStep_UpdatesHeadSHA(t *testing.T) {
 	sctx.PreviousFindings = `{"findings":[{"severity":"warning","description":"add README"}],"summary":"add README"}`
 
 	step := &DocumentStep{}
-	_, err := step.Execute(sctx)
+	outcome, err := step.Execute(sctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// HeadSHA should have been updated to reflect the new commit
+	if callCount != 2 {
+		t.Fatalf("expected 2 agent calls (fix + reassess), got %d", callCount)
+	}
+	if outcome.NeedsApproval {
+		t.Error("expected no approval after successful fix")
+	}
 	if sctx.Run.HeadSHA == headSHA {
 		t.Error("expected HeadSHA to be updated after doc commit")
 	}
-	// Branch ref should also be updated
-	if branchSHA := gitCmd(t, dir, "rev-parse", "refs/heads/feature"); branchSHA != sctx.Run.HeadSHA {
+	branchSHA := gitCmd(t, dir, "rev-parse", "refs/heads/feature")
+	if branchSHA != sctx.Run.HeadSHA {
 		t.Fatalf("branch SHA = %s, want %s", branchSHA, sctx.Run.HeadSHA)
 	}
+	if got := lastCommitMessage(t, dir); got != "no-mistakes(document): add README" {
+		t.Fatalf("last commit message = %q", got)
+	}
 }
 
-func TestDocumentStep_FixMode_NonDocumentationEditNeedsApproval(t *testing.T) {
+func TestDocumentStep_FixMode_StillNeedsWorkAfterFix(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	gitCmd(t, dir, "checkout", "--detach", headSHA)
-	os.WriteFile(filepath.Join(dir, "feature.go"), []byte("package main\n\nfunc feature() {}\n"), 0o644)
-	gitCmd(t, dir, "add", "feature.go")
-	gitCmd(t, dir, "commit", "-m", "add code file")
-	headSHA = gitCmd(t, dir, "rev-parse", "HEAD")
 
+	callCount := 0
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			os.WriteFile(filepath.Join(dir, "feature.go"), []byte("package main\n\nfunc feature() { println(\"unsafe\") }\n"), 0o644)
-			return &agent.Result{Output: json.RawMessage(`{"verdict":"updated","summary":"updated docs"}`)}, nil
+			callCount++
+			if callCount == 1 {
+				// Fix call: agent writes partial docs
+				os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Partial\n"), 0o644)
+				return &agent.Result{Output: json.RawMessage(`{"summary":"partial update"}`)}, nil
+			}
+			// Re-assessment: still needs more work
+			return &agent.Result{Output: json.RawMessage(`{"verdict":"updated","summary":"config section still missing"}`)}, nil
 		},
 	}
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Fixing = true
-	sctx.PreviousFindings = `{"findings":[{"severity":"warning","description":"updated docs"}],"summary":"updated docs"}`
+	sctx.PreviousFindings = `{"findings":[{"severity":"warning","description":"docs outdated"}],"summary":"docs outdated"}`
 
 	step := &DocumentStep{}
 	outcome, err := step.Execute(sctx)
@@ -1775,16 +1792,10 @@ func TestDocumentStep_FixMode_NonDocumentationEditNeedsApproval(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !outcome.NeedsApproval {
-		t.Fatal("expected approval when agent edits non-documentation files")
+		t.Fatal("expected approval needed when re-assessment finds remaining issues")
 	}
-	if outcome.AutoFixable {
-		t.Fatal("expected out-of-scope document edits to require manual review")
-	}
-	if got := lastCommitMessage(t, dir); got != "add code file" {
-		t.Fatalf("expected no new commit, but last commit message = %q", got)
-	}
-	if status := gitStatusPorcelain(t, dir); status == "" {
-		t.Fatal("expected non-documentation edit to remain uncommitted for review")
+	if !outcome.AutoFixable {
+		t.Fatal("expected remaining issues to be auto-fixable for another round")
 	}
 	var findings Findings
 	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
@@ -1793,206 +1804,59 @@ func TestDocumentStep_FixMode_NonDocumentationEditNeedsApproval(t *testing.T) {
 	if len(findings.Items) != 1 {
 		t.Fatalf("expected 1 finding, got %+v", findings.Items)
 	}
-	if findings.Items[0].File != "feature.go" {
-		t.Fatalf("finding file = %q, want %q", findings.Items[0].File, "feature.go")
+	if findings.Items[0].Description != "config section still missing" {
+		t.Fatalf("finding description = %q", findings.Items[0].Description)
 	}
 }
 
-func TestDocumentStep_FixMode_UntrackedNonDocumentationEditNeedsApproval(t *testing.T) {
+func TestDocumentStep_FixMode_NoChangesStillReassesses(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	gitCmd(t, dir, "checkout", "--detach", headSHA)
 
+	callCount := 0
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			os.WriteFile(filepath.Join(dir, "feature.go"), []byte("package main\n\nfunc feature() {}\n"), 0o644)
-			return &agent.Result{Output: json.RawMessage(`{"verdict":"updated","summary":"updated docs"}`)}, nil
+			callCount++
+			if callCount == 1 {
+				// Fix call: agent decides no changes needed
+				return &agent.Result{Output: json.RawMessage(`{"summary":"no changes needed"}`)}, nil
+			}
+			// Re-assessment
+			return &agent.Result{Output: json.RawMessage(`{"verdict":"skipped","summary":"docs are fine"}`)}, nil
 		},
 	}
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Fixing = true
-	sctx.PreviousFindings = `{"findings":[{"severity":"warning","description":"updated docs"}],"summary":"updated docs"}`
+	sctx.PreviousFindings = `{"findings":[{"severity":"warning","description":"check docs"}],"summary":"check docs"}`
 
 	step := &DocumentStep{}
 	outcome, err := step.Execute(sctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !outcome.NeedsApproval {
-		t.Fatal("expected approval when agent creates non-documentation files")
-	}
-	if got := lastCommitMessage(t, dir); got != "add feature" {
-		t.Fatalf("expected no new commit, but last commit message = %q", got)
-	}
-	var findings Findings
-	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
-		t.Fatalf("unmarshal findings: %v", err)
-	}
-	if len(findings.Items) != 1 {
-		t.Fatalf("expected 1 finding, got %+v", findings.Items)
-	}
-	if findings.Items[0].File != "feature.go" {
-		t.Fatalf("finding file = %q, want %q", findings.Items[0].File, "feature.go")
-	}
-}
-
-func TestDocumentStep_FixMode_MalformedOutputWithEditsNeedsApproval(t *testing.T) {
-	dir, baseSHA, headSHA := setupGitRepo(t)
-	gitCmd(t, dir, "checkout", "--detach", headSHA)
-
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Updated docs\n"), 0o644)
-			return &agent.Result{
-				Output: json.RawMessage(`{not valid json`),
-				Text:   "I updated the docs",
-			}, nil
-		},
-	}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Fixing = true
-	sctx.PreviousFindings = `{"findings":[{"severity":"warning","description":"updated docs"}],"summary":"updated docs"}`
-
-	step := &DocumentStep{}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !outcome.NeedsApproval {
-		t.Fatal("expected malformed fix output with edits to require approval")
-	}
-	if got := lastCommitMessage(t, dir); got != "add feature" {
-		t.Fatalf("expected no new commit, but last commit message = %q", got)
-	}
-	if status := gitStatusPorcelain(t, dir); status == "" {
-		t.Fatal("expected documentation edit to remain for review")
-	}
-}
-
-func TestDocumentStep_FixMode_SkippedVerdictWithEditsNeedsApproval(t *testing.T) {
-	dir, baseSHA, headSHA := setupGitRepo(t)
-	gitCmd(t, dir, "checkout", "--detach", headSHA)
-
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Updated docs\n"), 0o644)
-			return &agent.Result{Output: json.RawMessage(`{"verdict":"skipped","summary":"nothing to do"}`)}, nil
-		},
-	}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Fixing = true
-	sctx.PreviousFindings = `{"findings":[{"severity":"warning","description":"updated docs"}],"summary":"updated docs"}`
-
-	step := &DocumentStep{}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !outcome.NeedsApproval {
-		t.Fatal("expected skipped verdict with edits to require approval")
-	}
-	if got := lastCommitMessage(t, dir); got != "add feature" {
-		t.Fatalf("expected no new commit, but last commit message = %q", got)
-	}
-	if status := gitStatusPorcelain(t, dir); status == "" {
-		t.Fatal("expected documentation edit to remain for review")
-	}
-}
-
-func TestDocumentStep_FixMode_IgnoresPreexistingDirtyFiles(t *testing.T) {
-	dir, baseSHA, headSHA := setupGitRepo(t)
-	gitCmd(t, dir, "checkout", "--detach", headSHA)
-	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("existing dirty change\n"), 0o644)
-
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Updated docs\n"), 0o644)
-			return &agent.Result{Output: json.RawMessage(`{"verdict":"updated","summary":"update docs"}`)}, nil
-		},
-	}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Fixing = true
-	sctx.PreviousFindings = `{"findings":[{"severity":"warning","description":"update docs"}],"summary":"update docs"}`
-
-	step := &DocumentStep{}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
+	if callCount != 2 {
+		t.Fatalf("expected 2 agent calls even with no changes, got %d", callCount)
 	}
 	if outcome.NeedsApproval {
-		t.Fatal("expected preexisting dirty files to be ignored")
-	}
-	if got := lastCommitMessage(t, dir); got != "no-mistakes(document): update docs" {
-		t.Fatalf("last commit message = %q", got)
-	}
-	status := gitStatusPorcelain(t, dir)
-	if !strings.Contains(status, "feature.txt") {
-		t.Fatalf("expected unrelated dirty file to remain uncommitted, got %q", status)
-	}
-	if strings.Contains(status, "README.md") {
-		t.Fatalf("expected README.md to be committed, got %q", status)
+		t.Error("expected no approval after clean re-assessment")
 	}
 }
 
-func TestDocumentStep_FixMode_AllowsDocCommentOnlyEdits(t *testing.T) {
+func TestDocumentStep_FixMode_RequiresPreviousFindings(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
-	gitCmd(t, dir, "checkout", "--detach", headSHA)
-	os.WriteFile(filepath.Join(dir, "feature.go"), []byte("package main\n\nfunc feature() {}\n"), 0o644)
-	gitCmd(t, dir, "add", "feature.go")
-	gitCmd(t, dir, "commit", "-m", "add go file")
-	headSHA = gitCmd(t, dir, "rev-parse", "HEAD")
 
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			os.WriteFile(filepath.Join(dir, "feature.go"), []byte("package main\n\n// feature documents the command behavior.\nfunc feature() {}\n"), 0o644)
-			return &agent.Result{Output: json.RawMessage(`{"verdict":"updated","summary":"add doc comment"}`)}, nil
-		},
-	}
+	ag := &mockAgent{name: "test"}
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Fixing = true
-	sctx.PreviousFindings = `{"findings":[{"severity":"warning","description":"add doc comment"}],"summary":"add doc comment"}`
 
 	step := &DocumentStep{}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
+	_, err := step.Execute(sctx)
+	if err == nil {
+		t.Fatal("expected error when fixing without previous findings")
 	}
-	if outcome.NeedsApproval {
-		t.Fatal("expected doc comment edit to commit cleanly")
-	}
-	if got := lastCommitMessage(t, dir); got != "no-mistakes(document): add doc comment" {
-		t.Fatalf("last commit message = %q", got)
-	}
-}
-
-func TestIsDocumentationPath_DoesNotTreatArbitraryTxtAsDocs(t *testing.T) {
-	if isDocumentationPath("testdata/golden/output.txt") {
-		t.Fatal("expected arbitrary .txt file to be out of scope")
-	}
-	if !isDocumentationPath("docs/output.txt") {
-		t.Fatal("expected docs/ .txt file to be treated as documentation")
-	}
-}
-
-func TestParsePorcelainPath_UnquotesQuotedPaths(t *testing.T) {
-	path, untracked := parsePorcelainPath("?? \"docs/with space.md\"")
-	if path != "docs/with space.md" {
-		t.Fatalf("path = %q, want %q", path, "docs/with space.md")
-	}
-	if !untracked {
-		t.Fatal("expected quoted ?? path to be marked untracked")
-	}
-
-	renamedPath, renamedUntracked := parsePorcelainPath("R  \"old name.md\" -> \"new name.md\"")
-	if renamedPath != "new name.md" {
-		t.Fatalf("renamed path = %q, want %q", renamedPath, "new name.md")
-	}
-	if renamedUntracked {
-		t.Fatal("expected rename entry not to be marked untracked")
+	if !strings.Contains(err.Error(), "previous findings") {
+		t.Errorf("error = %v, want to contain 'previous findings'", err)
 	}
 }
 

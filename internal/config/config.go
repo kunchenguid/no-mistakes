@@ -102,11 +102,11 @@ log_level: info
 
 # Maximum auto-fix attempts per step (0 = disabled, requires manual approval)
 auto_fix:
-  rebase: 0
+  rebase: 3
   lint: 3
   test: 3
   review: 3
-  document: 0
+  document: 3
   ci: 3
 `
 
@@ -246,9 +246,9 @@ func autoFixDefaults() AutoFix {
 		Lint:     3,
 		Test:     3,
 		Review:   3,
-		Document: 0,
+		Document: 3,
 		CI:       3,
-		Rebase:   0,
+		Rebase:   3,
 	}
 }
 

@@ -626,14 +626,14 @@ func TestMerge_AutoFixDefaults(t *testing.T) {
 	if cfg.AutoFix.Review != 3 {
 		t.Errorf("review = %d, want 3", cfg.AutoFix.Review)
 	}
-	if cfg.AutoFix.Document != 0 {
-		t.Errorf("document = %d, want 0", cfg.AutoFix.Document)
+	if cfg.AutoFix.Document != 3 {
+		t.Errorf("document = %d, want 3", cfg.AutoFix.Document)
 	}
 	if cfg.AutoFix.CI != 3 {
 		t.Errorf("ci = %d, want 3", cfg.AutoFix.CI)
 	}
-	if cfg.AutoFix.Rebase != 0 {
-		t.Errorf("rebase = %d, want 0", cfg.AutoFix.Rebase)
+	if cfg.AutoFix.Rebase != 3 {
+		t.Errorf("rebase = %d, want 3", cfg.AutoFix.Rebase)
 	}
 }
 
@@ -658,8 +658,8 @@ func TestMerge_AutoFixGlobalOverridesDefaults(t *testing.T) {
 	if cfg.AutoFix.CI != 0 {
 		t.Errorf("ci =%d, want 0 (global override)", cfg.AutoFix.CI)
 	}
-	if cfg.AutoFix.Rebase != 0 {
-		t.Errorf("rebase = %d, want 0 (default, no override)", cfg.AutoFix.Rebase)
+	if cfg.AutoFix.Rebase != 3 {
+		t.Errorf("rebase = %d, want 3 (default, no override)", cfg.AutoFix.Rebase)
 	}
 }
 

@@ -235,13 +235,13 @@ auto_fix:
 - `commands` and `ignore_patterns` are repo-only.
 - Missing global config defaults to `agent: claude`, `ci_timeout: 4h`, `log_level: info`.
 - `ci_timeout` replaces `babysit_timeout`, and `auto_fix.ci` replaces `auto_fix.babysit`; legacy keys are still accepted for existing configs.
-- `auto_fix` can be set globally or per repo. Defaults are `rebase: 0`, `lint: 3`, `test: 3`, `review: 3`, `document: 0`, `ci: 3`.
+- `auto_fix` can be set globally or per repo. All steps default to `3`.
 - `agent_path_override` changes which binary path is launched for a given agent.
 - Default binaries are `claude`, `codex`, `acli` for `rovodev`, and `opencode`.
 - If `commands.test` is empty, the agent detects and runs relevant tests itself.
 - If `commands.lint` is empty, the agent detects and runs lint/format checks itself.
 - If `commands.format` is empty, no formatter is run automatically.
-- `auto_fix.document: 0` keeps documentation changes approval-gated by default.
+- All `auto_fix` steps default to `3`. Set a step to `0` to require manual approval.
 
 ### Ignore pattern rules
 
