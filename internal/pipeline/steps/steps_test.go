@@ -1312,6 +1312,7 @@ func TestLintStep_NoCommand_MalformedAgentOutput(t *testing.T) {
 func TestTestStep_FixMode(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	gitCmd(t, dir, "checkout", "--detach", headSHA)
+	previousFindings := `{"items":[{"severity":"error","description":"tests failed with exit code 1"}],"summary":"FAIL: TestFoo expected 42 got 0"}`
 
 	callCount := 0
 	ag := &mockAgent{
@@ -1324,6 +1325,7 @@ func TestTestStep_FixMode(t *testing.T) {
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Test: "true"})
 	sctx.Fixing = true
+	sctx.PreviousFindings = previousFindings
 
 	step := &TestStep{}
 	outcome, err := step.Execute(sctx)
@@ -1339,6 +1341,9 @@ func TestTestStep_FixMode(t *testing.T) {
 	if len(ag.calls[0].JSONSchema) == 0 {
 		t.Error("expected fix call to request structured JSON output")
 	}
+	if !strings.Contains(ag.calls[0].Prompt, "FAIL: TestFoo expected 42 got 0") {
+		t.Error("expected fix prompt to contain previous test failure summary")
+	}
 	if status := gitStatusPorcelain(t, dir); status != "" {
 		t.Fatalf("expected clean worktree after fix commit, got %q", status)
 	}
@@ -1350,6 +1355,7 @@ func TestTestStep_FixMode(t *testing.T) {
 func TestLintStep_FixMode_CommitsChanges(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	gitCmd(t, dir, "checkout", "--detach", headSHA)
+	previousFindings := `{"items":[{"severity":"warning","description":"linter found issues (exit code 1)"}],"summary":"main.go:10: unused variable x"}`
 
 	callCount := 0
 	ag := &mockAgent{
@@ -1363,6 +1369,7 @@ func TestLintStep_FixMode_CommitsChanges(t *testing.T) {
 
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Lint: "true"})
 	sctx.Fixing = true
+	sctx.PreviousFindings = previousFindings
 
 	step := &LintStep{}
 	outcome, err := step.Execute(sctx)
@@ -1377,6 +1384,9 @@ func TestLintStep_FixMode_CommitsChanges(t *testing.T) {
 	}
 	if len(ag.calls[0].JSONSchema) == 0 {
 		t.Error("expected fix call to request structured JSON output")
+	}
+	if !strings.Contains(ag.calls[0].Prompt, "unused variable x") {
+		t.Error("expected fix prompt to contain previous lint summary")
 	}
 	if status := gitStatusPorcelain(t, dir); status != "" {
 		t.Fatalf("expected clean worktree after fix commit, got %q", status)
@@ -3197,66 +3207,6 @@ func TestReviewStep_IgnorePatternsFilterAllFiles(t *testing.T) {
 	// Agent should not have been called
 	if len(ag.calls) != 0 {
 		t.Errorf("expected no agent calls when diff is empty after filtering, got %d", len(ag.calls))
-	}
-}
-
-// --- Fix prompt with previous findings tests ---
-
-func TestTestStep_FixMode_IncludesPreviousFindings(t *testing.T) {
-	dir := t.TempDir()
-
-	previousFindings := `{"items":[{"severity":"error","description":"tests failed with exit code 1"}],"summary":"FAIL: TestFoo expected 42 got 0"}`
-
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			if !strings.Contains(opts.Prompt, "FAIL: TestFoo expected 42 got 0") {
-				t.Error("fix prompt should contain the specific test output")
-			}
-			return &agent.Result{Output: json.RawMessage(`{"summary":"fix test failures"}`)}, nil
-		},
-	}
-
-	sctx := newTestContext(t, ag, dir, "abc", "def", config.Commands{Test: "true"})
-	sctx.Fixing = true
-	sctx.PreviousFindings = previousFindings
-
-	step := &TestStep{}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if outcome.NeedsApproval {
-		t.Error("expected no approval needed after fix with passing tests")
-	}
-}
-
-func TestLintStep_FixMode_IncludesPreviousFindings(t *testing.T) {
-	dir := t.TempDir()
-
-	previousFindings := `{"items":[{"severity":"warning","description":"linter found issues (exit code 1)"}],"summary":"main.go:10: unused variable x"}`
-
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			if !strings.Contains(opts.Prompt, "unused variable x") {
-				t.Error("fix prompt should contain the specific lint output")
-			}
-			return &agent.Result{Output: json.RawMessage(`{"summary":"fix lint issues"}`)}, nil
-		},
-	}
-
-	sctx := newTestContext(t, ag, dir, "abc", "def", config.Commands{Lint: "true"})
-	sctx.Fixing = true
-	sctx.PreviousFindings = previousFindings
-
-	step := &LintStep{}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if outcome.NeedsApproval {
-		t.Error("expected no approval needed after fix with passing lint")
 	}
 }
 
