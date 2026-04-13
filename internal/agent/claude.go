@@ -4,11 +4,17 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
 	"sync"
 )
+
+const claudeMaxRetries = 3
+
+// errNoStructuredOutput is returned when Claude succeeds but omits structured output.
+var errNoStructuredOutput = errors.New("claude returned no structured output")
 
 const claudeScannerMaxTokenSize = 256 * 1024 * 1024
 
@@ -20,6 +26,27 @@ type claudeAgent struct {
 func (a *claudeAgent) Name() string { return "claude" }
 
 func (a *claudeAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
+	var lastErr error
+	for attempt := 1; attempt <= claudeMaxRetries; attempt++ {
+		if attempt > 1 {
+			if opts.OnChunk != nil {
+				opts.OnChunk(fmt.Sprintf("retrying (attempt %d/%d) - previous attempt returned no structured output", attempt, claudeMaxRetries))
+			}
+		}
+
+		result, err := a.runOnce(ctx, opts)
+		if err == nil {
+			return result, nil
+		}
+		if !errors.Is(err, errNoStructuredOutput) {
+			return nil, err
+		}
+		lastErr = err
+	}
+	return nil, lastErr
+}
+
+func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 	args := a.buildArgs(opts.Prompt, opts.JSONSchema)
 	cmd := exec.CommandContext(ctx, a.bin, args...)
 	cmd.Dir = opts.CWD
@@ -64,7 +91,13 @@ func (a *claudeAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 		return nil, fmt.Errorf("claude returned no result event")
 	}
 
-	return finalizeClaudeResult(result, opts.JSONSchema, usage)
+	res, err := finalizeClaudeResult(result, opts.JSONSchema, usage)
+	if errors.Is(err, errNoStructuredOutput) && opts.OnChunk != nil {
+		opts.OnChunk(fmt.Sprintf("structured output missing: subtype=%s, text_len=%d, input_tokens=%d, output_tokens=%d",
+			result.Subtype, len(result.text), usage.InputTokens, usage.OutputTokens))
+		opts.OnChunk(fmt.Sprintf("raw result event: %s", string(result.rawEvent)))
+	}
+	return res, err
 }
 
 func (a *claudeAgent) Close() error { return nil }
@@ -74,7 +107,7 @@ func finalizeClaudeResult(result *claudeResult, schema json.RawMessage, usage To
 		return nil, fmt.Errorf("claude error: subtype=%s", result.Subtype)
 	}
 	if len(schema) > 0 && result.StructuredOutput == nil {
-		return nil, fmt.Errorf("claude returned no structured output")
+		return nil, errNoStructuredOutput
 	}
 
 	return &Result{
@@ -116,6 +149,7 @@ type claudeResult struct {
 	IsError          bool
 	StructuredOutput json.RawMessage
 	text             string // accumulated text from assistant events
+	rawEvent         json.RawMessage
 }
 
 type claudeUsage struct {
@@ -182,11 +216,14 @@ func parseClaudeEvents(ctx context.Context, r io.Reader, onChunk func(string), u
 
 		case "result":
 			if result != nil {
+				raw := make(json.RawMessage, len(line))
+				copy(raw, line)
 				*result = &claudeResult{
 					Subtype:          event.Subtype,
 					IsError:          event.IsError,
 					StructuredOutput: event.StructuredOutput,
 					text:             textBuf,
+					rawEvent:         raw,
 				}
 			}
 		}

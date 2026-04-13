@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -429,8 +430,39 @@ func TestClaudeAgent_FinalizeResult_WithSchemaRequiresStructuredOutput(t *testin
 	if err == nil {
 		t.Fatal("expected error when structured output is missing")
 	}
-	if !strings.Contains(err.Error(), "no structured output") {
-		t.Fatalf("expected no structured output error, got: %v", err)
+	if !errors.Is(err, errNoStructuredOutput) {
+		t.Fatalf("expected errNoStructuredOutput, got: %v", err)
+	}
+}
+
+func TestClaudeAgent_FinalizeResult_ErrorSubtypeNotRetryable(t *testing.T) {
+	_, err := finalizeClaudeResult(&claudeResult{Subtype: "error", IsError: true}, json.RawMessage(`{"type":"object"}`), TokenUsage{})
+	if err == nil {
+		t.Fatal("expected error for error subtype")
+	}
+	if errors.Is(err, errNoStructuredOutput) {
+		t.Fatal("error subtype should not be retryable")
+	}
+}
+
+func TestParseClaudeEvents_ResultCapturesRawEvent(t *testing.T) {
+	events := `{"type":"result","subtype":"success","is_error":false,"structured_output":null}` + "\n"
+
+	var usage TokenUsage
+	var result *claudeResult
+
+	err := parseClaudeEvents(context.Background(), strings.NewReader(events), nil, &usage, &result)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected result event")
+	}
+	if result.rawEvent == nil {
+		t.Fatal("expected rawEvent to be captured")
+	}
+	if !strings.Contains(string(result.rawEvent), `"subtype":"success"`) {
+		t.Errorf("rawEvent should contain original JSON, got: %s", string(result.rawEvent))
 	}
 }
 
