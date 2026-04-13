@@ -72,6 +72,8 @@ auto_fix:
 
 See [Repo Config Reference](/no-mistakes/reference/repo-config/) for the full field listing.
 
+If you use the repo `commands.test` override, `make test` is the recommended default for this repo. It runs the unit and integration tiers. Use `make test-all` when you also want e2e coverage.
+
 ## Precedence
 
 - Repo `agent` overrides global `agent`.

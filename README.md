@@ -254,6 +254,8 @@ auto_fix:
 
 ## Development
 
+Tests are split into unit, integration, and e2e tiers.
+
 ```sh
 make build   # Build bin/no-mistakes with version info
 make dist    # Cross-compile release archives into dist/
