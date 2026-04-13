@@ -170,13 +170,19 @@ Rules:
 	}
 
 	// Parse verdict
-	var verdict documentVerdict
+	var (
+		verdict             documentVerdict
+		requiresHumanReview bool
+	)
 	if result.Output == nil {
+		sctx.Log("missing structured output, requiring approval")
 		verdict = documentVerdict{Verdict: "updated", Summary: fallbackDocumentSummary(result.Text)}
+		requiresHumanReview = true
 	} else {
 		if err := json.Unmarshal(result.Output, &verdict); err != nil {
 			sctx.Log("could not parse structured output, requiring approval")
-			verdict = documentVerdict{Verdict: "updated", Summary: result.Text}
+			verdict = documentVerdict{Verdict: "updated", Summary: fallbackDocumentSummary(result.Text)}
+			requiresHumanReview = true
 		}
 	}
 
@@ -185,8 +191,9 @@ Rules:
 	if needsApproval {
 		findings = Findings{
 			Items: []Finding{{
-				Severity:    "warning",
-				Description: verdict.Summary,
+				Severity:            "warning",
+				Description:         verdict.Summary,
+				RequiresHumanReview: requiresHumanReview,
 			}},
 			Summary: verdict.Summary,
 		}
@@ -194,10 +201,11 @@ Rules:
 
 	findingsJSON, _ := json.Marshal(findings)
 	sctx.Log(fmt.Sprintf("document verdict: %s - %s", verdict.Verdict, verdict.Summary))
+	autoFixable := len(types.AutoFixableFindings(findings).Items) > 0
 
 	return &pipeline.StepOutcome{
 		NeedsApproval: needsApproval,
-		AutoFixable:   len(findings.Items) > 0,
+		AutoFixable:   autoFixable,
 		Findings:      string(findingsJSON),
 	}, nil
 }

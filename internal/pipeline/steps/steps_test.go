@@ -1644,8 +1644,8 @@ func TestDocumentStep_MalformedOutput(t *testing.T) {
 	if !outcome.NeedsApproval {
 		t.Fatal("expected malformed output to require approval")
 	}
-	if !outcome.AutoFixable {
-		t.Fatal("expected malformed output finding to remain auto-fixable")
+	if outcome.AutoFixable {
+		t.Fatal("expected malformed output finding to require manual review")
 	}
 	var findings Findings
 	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
@@ -1653,6 +1653,9 @@ func TestDocumentStep_MalformedOutput(t *testing.T) {
 	}
 	if len(findings.Items) != 1 {
 		t.Fatalf("expected 1 finding, got %+v", findings.Items)
+	}
+	if !findings.Items[0].RequiresHumanReview {
+		t.Fatal("expected malformed output finding to require human review")
 	}
 	if findings.Items[0].Description != "I updated the docs" {
 		t.Fatalf("finding description = %q, want %q", findings.Items[0].Description, "I updated the docs")
@@ -1678,8 +1681,8 @@ func TestDocumentStep_NoStructuredOutputRequiresApproval(t *testing.T) {
 	if !outcome.NeedsApproval {
 		t.Fatal("expected missing structured output to require approval")
 	}
-	if !outcome.AutoFixable {
-		t.Fatal("expected missing structured output finding to remain auto-fixable")
+	if outcome.AutoFixable {
+		t.Fatal("expected missing structured output finding to require manual review")
 	}
 	var findings Findings
 	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
@@ -1687,6 +1690,9 @@ func TestDocumentStep_NoStructuredOutputRequiresApproval(t *testing.T) {
 	}
 	if len(findings.Items) != 1 {
 		t.Fatalf("expected 1 finding, got %+v", findings.Items)
+	}
+	if !findings.Items[0].RequiresHumanReview {
+		t.Fatal("expected missing structured output finding to require human review")
 	}
 	if findings.Items[0].Description != "docs status unavailable" {
 		t.Fatalf("finding description = %q, want %q", findings.Items[0].Description, "docs status unavailable")
