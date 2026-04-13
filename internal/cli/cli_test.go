@@ -560,7 +560,7 @@ func TestDaemonStatusNotRunning(t *testing.T) {
 	}
 }
 
-func TestDaemonStatusRunning(t *testing.T) {
+func TestDaemonStatusAndStopRunning(t *testing.T) {
 	nmHome := t.TempDir()
 	t.Setenv("NM_HOME", nmHome)
 	p := paths.WithRoot(nmHome)
@@ -583,25 +583,8 @@ func TestDaemonStatusRunning(t *testing.T) {
 	if !strings.Contains(out, "daemon running") {
 		t.Errorf("expected 'daemon running', got: %s", out)
 	}
-}
 
-func TestDaemonStopRunning(t *testing.T) {
-	nmHome := t.TempDir()
-	t.Setenv("NM_HOME", nmHome)
-	p := paths.WithRoot(nmHome)
-	if err := p.EnsureDirs(); err != nil {
-		t.Fatal(err)
-	}
-
-	d, err := db.Open(p.DB())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer d.Close()
-
-	startTestDaemon(t, p, d)
-
-	out, err := executeCmd("daemon", "stop")
+	out, err = executeCmd("daemon", "stop")
 	if err != nil {
 		t.Fatalf("daemon stop failed: %v\noutput: %s", err, out)
 	}
