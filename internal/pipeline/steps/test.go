@@ -94,7 +94,7 @@ Rules:
 - Only report actionable findings: test failures, unfixable setup issues, or flaky tests you identified.
 - Do NOT report passing tests (whether existing or new), test counts, coverage summaries, or other non-actionable information.
 - If all tests pass and there are no issues, return an empty findings array.
-- Set requires_human_review to true only when a test failure seems desired and you question the author's intent of having the test in the first place.`,
+- Set action to "ask-user" only when a test failure seems desired and you question the author's intent of having the test in the first place. Set action to "auto-fix" for objective test failures that can be safely fixed. Set action to "no-op" for informational notes.`,
 				sctx.Run.Branch,
 				baseSHA,
 				sctx.Run.HeadSHA,

@@ -135,7 +135,7 @@ Task:
 Rules:
 - Do NOT make any file changes in this mode.
 - Only report gaps where documentation is missing or stale relative to the code change.
-- Set requires_human_review to false for all findings. Documentation gaps are objective.`,
+- Set action to "auto-fix" for all findings. Documentation gaps are objective.`,
 		sctx.Run.Branch,
 		baseSHA,
 		sctx.Run.HeadSHA,
@@ -159,9 +159,9 @@ Rules:
 		sctx.Log("missing structured output, requiring approval")
 		findings = Findings{
 			Items: []Finding{{
-				Severity:            "warning",
-				Description:         summary,
-				RequiresHumanReview: true,
+				Severity:    "warning",
+				Description: summary,
+				Action:      types.ActionAskUser,
 			}},
 			Summary: summary,
 		}
@@ -170,9 +170,9 @@ Rules:
 		sctx.Log("could not parse structured output, requiring approval")
 		findings = Findings{
 			Items: []Finding{{
-				Severity:            "warning",
-				Description:         summary,
-				RequiresHumanReview: true,
+				Severity:    "warning",
+				Description: summary,
+				Action:      types.ActionAskUser,
 			}},
 			Summary: summary,
 		}
@@ -361,9 +361,9 @@ func unmarshalRequiredFindings(raw []byte, findings *Findings) error {
 	var payload struct {
 		Summary string `json:"summary"`
 		Items   []struct {
-			Severity            string `json:"severity"`
-			Description         string `json:"description"`
-			RequiresHumanReview *bool  `json:"requires_human_review"`
+			Severity    string  `json:"severity"`
+			Description string  `json:"description"`
+			Action      *string `json:"action"`
 		} `json:"findings"`
 	}
 	if err := json.Unmarshal(raw, &payload); err != nil {
@@ -382,8 +382,8 @@ func unmarshalRequiredFindings(raw []byte, findings *Findings) error {
 		if strings.TrimSpace(item.Description) == "" {
 			return fmt.Errorf("finding %d missing description", i)
 		}
-		if item.RequiresHumanReview == nil {
-			return fmt.Errorf("finding %d missing requires_human_review", i)
+		if item.Action == nil {
+			return fmt.Errorf("finding %d missing action", i)
 		}
 	}
 	return json.Unmarshal(raw, findings)

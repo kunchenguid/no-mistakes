@@ -1273,11 +1273,11 @@ func TestReviewStep_FixMode(t *testing.T) {
 	if strings.Contains(ag.calls[1].Prompt, "<<<<<<< HEAD") {
 		t.Error("expected review prompt to exclude merge markers")
 	}
-	if !strings.Contains(ag.calls[1].Prompt, "challenges the author's intent") {
-		t.Error("expected review prompt requires_human_review to cover intent-challenging scenarios")
+	if !strings.Contains(ag.calls[1].Prompt, "challenges the author's deliberate intent") {
+		t.Error("expected review prompt action to cover intent-challenging scenarios")
 	}
-	if !strings.Contains(ag.calls[1].Prompt, "A finding is not human-review-only just because the fix may reintroduce a small amount of previously deleted logic") {
-		t.Error("expected review prompt to keep routine correctness fixes auto-fixable")
+	if !strings.Contains(ag.calls[1].Prompt, `"ask-user"`) {
+		t.Error("expected review prompt to include ask-user action for ambiguous findings")
 	}
 	if status := gitStatusPorcelain(t, dir); status != "" {
 		t.Fatalf("expected clean worktree after fix commit, got %q", status)
@@ -1663,7 +1663,7 @@ func TestDocumentStep_Updated(t *testing.T) {
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			return &agent.Result{Output: json.RawMessage(`{"findings":[{"severity":"warning","description":"README missing new CLI flag","requires_human_review":false}],"summary":"README needs updating"}`)}, nil
+			return &agent.Result{Output: json.RawMessage(`{"findings":[{"severity":"warning","description":"README missing new CLI flag","action":"auto-fix"}],"summary":"README needs updating"}`)}, nil
 		},
 	}
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
@@ -1739,7 +1739,7 @@ func TestDocumentStep_InfoFindingStillRequiresApproval(t *testing.T) {
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			return &agent.Result{Output: json.RawMessage(`{"findings":[{"severity":"info","description":"README should mention the new flag","requires_human_review":false}],"summary":"README needs updating"}`)}, nil
+			return &agent.Result{Output: json.RawMessage(`{"findings":[{"severity":"info","description":"README should mention the new flag","action":"auto-fix"}],"summary":"README needs updating"}`)}, nil
 		},
 	}
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
@@ -1810,7 +1810,7 @@ func TestDocumentStep_MalformedOutput(t *testing.T) {
 	if len(findings.Items) != 1 {
 		t.Fatalf("expected 1 finding, got %+v", findings.Items)
 	}
-	if !findings.Items[0].RequiresHumanReview {
+	if findings.Items[0].Action != types.ActionAskUser {
 		t.Fatal("expected malformed output finding to require human review")
 	}
 }
@@ -1844,7 +1844,7 @@ func TestDocumentStep_NoStructuredOutputRequiresApproval(t *testing.T) {
 	if len(findings.Items) != 1 {
 		t.Fatalf("expected 1 finding, got %+v", findings.Items)
 	}
-	if !findings.Items[0].RequiresHumanReview {
+	if findings.Items[0].Action != types.ActionAskUser {
 		t.Fatal("expected missing structured output finding to require human review")
 	}
 }
@@ -1879,7 +1879,7 @@ func TestDocumentStep_MissingFindingsFieldRequiresApproval(t *testing.T) {
 	if len(findings.Items) != 1 {
 		t.Fatalf("expected 1 finding, got %+v", findings.Items)
 	}
-	if !findings.Items[0].RequiresHumanReview {
+	if findings.Items[0].Action != types.ActionAskUser {
 		t.Fatal("expected missing findings field finding to require human review")
 	}
 	if findings.Summary != "docs status unavailable" {
@@ -1922,7 +1922,7 @@ func TestDocumentStep_MalformedFindingRequiresApproval(t *testing.T) {
 	if len(findings.Items) != 1 {
 		t.Fatalf("expected 1 finding, got %+v", findings.Items)
 	}
-	if !findings.Items[0].RequiresHumanReview {
+	if findings.Items[0].Action != types.ActionAskUser {
 		t.Fatal("expected malformed finding to require human review")
 	}
 	if findings.Summary != "README needs updating" {
@@ -1962,7 +1962,7 @@ func TestDocumentStep_MissingSummaryRequiresApproval(t *testing.T) {
 	if len(findings.Items) != 1 {
 		t.Fatalf("expected 1 finding, got %+v", findings.Items)
 	}
-	if !findings.Items[0].RequiresHumanReview {
+	if findings.Items[0].Action != types.ActionAskUser {
 		t.Fatal("expected missing summary finding to require human review")
 	}
 	if findings.Summary != "agent returned no structured output" {
@@ -2093,7 +2093,7 @@ func TestDocumentStep_FixMode_StillNeedsWorkAfterFix(t *testing.T) {
 				return &agent.Result{Output: json.RawMessage(`{"summary":"partial update"}`)}, nil
 			}
 			// Re-assessment: still needs more work
-			return &agent.Result{Output: json.RawMessage(`{"findings":[{"severity":"warning","description":"config section still missing","requires_human_review":false}],"summary":"config section still missing"}`)}, nil
+			return &agent.Result{Output: json.RawMessage(`{"findings":[{"severity":"warning","description":"config section still missing","action":"auto-fix"}],"summary":"config section still missing"}`)}, nil
 		},
 	}
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
@@ -3934,7 +3934,7 @@ func TestReviewFindingsSchema_ValidJSON(t *testing.T) {
 	}
 }
 
-func TestFindingsSchema_RequiresHumanReview(t *testing.T) {
+func TestFindingsSchema_Action(t *testing.T) {
 	var parsed map[string]interface{}
 	if err := json.Unmarshal(findingsSchema, &parsed); err != nil {
 		t.Fatal(err)
@@ -3942,22 +3942,22 @@ func TestFindingsSchema_RequiresHumanReview(t *testing.T) {
 	props := parsed["properties"].(map[string]interface{})
 	items := props["findings"].(map[string]interface{})["items"].(map[string]interface{})
 	itemProps := items["properties"].(map[string]interface{})
-	if _, ok := itemProps["requires_human_review"]; !ok {
-		t.Error("findingsSchema missing requires_human_review property")
+	if _, ok := itemProps["action"]; !ok {
+		t.Error("findingsSchema missing action property")
 	}
 	required := items["required"].([]interface{})
 	found := false
 	for _, r := range required {
-		if r.(string) == "requires_human_review" {
+		if r.(string) == "action" {
 			found = true
 		}
 	}
 	if !found {
-		t.Error("findingsSchema does not require requires_human_review at item level")
+		t.Error("findingsSchema does not require action at item level")
 	}
 }
 
-func TestReviewFindingsSchema_RequiresHumanReviewAtItemLevel(t *testing.T) {
+func TestReviewFindingsSchema_ActionAtItemLevel(t *testing.T) {
 	var parsed map[string]interface{}
 	if err := json.Unmarshal(reviewFindingsSchema, &parsed); err != nil {
 		t.Fatal(err)
@@ -3967,16 +3967,16 @@ func TestReviewFindingsSchema_RequiresHumanReviewAtItemLevel(t *testing.T) {
 	required := items["required"].([]interface{})
 	found := false
 	for _, r := range required {
-		if r.(string) == "requires_human_review" {
+		if r.(string) == "action" {
 			found = true
 		}
 	}
 	if !found {
-		t.Error("reviewFindingsSchema does not require requires_human_review at item level")
+		t.Error("reviewFindingsSchema does not require action at item level")
 	}
 }
 
-func TestTestStep_PromptIncludesRequiresHumanReview(t *testing.T) {
+func TestTestStep_PromptIncludesAction(t *testing.T) {
 	dir := t.TempDir()
 	findings := Findings{Items: nil, Summary: "all tests passed"}
 	findingsJSON, _ := json.Marshal(findings)
@@ -3994,12 +3994,12 @@ func TestTestStep_PromptIncludesRequiresHumanReview(t *testing.T) {
 	if len(ag.calls) != 1 {
 		t.Fatalf("expected 1 agent call, got %d", len(ag.calls))
 	}
-	if !strings.Contains(ag.calls[0].Prompt, "requires_human_review") {
-		t.Error("expected test prompt to instruct agent about requires_human_review")
+	if !strings.Contains(ag.calls[0].Prompt, "action") {
+		t.Error("expected test prompt to instruct agent about action")
 	}
 }
 
-func TestLintStep_PromptIncludesRequiresHumanReview(t *testing.T) {
+func TestLintStep_PromptIncludesAction(t *testing.T) {
 	dir := t.TempDir()
 	findings := Findings{Items: nil, Summary: "all clean"}
 	findingsJSON, _ := json.Marshal(findings)
@@ -4017,8 +4017,8 @@ func TestLintStep_PromptIncludesRequiresHumanReview(t *testing.T) {
 	if len(ag.calls) != 1 {
 		t.Fatalf("expected 1 agent call, got %d", len(ag.calls))
 	}
-	if !strings.Contains(ag.calls[0].Prompt, "requires_human_review") {
-		t.Error("expected lint prompt to instruct agent about requires_human_review")
+	if !strings.Contains(ag.calls[0].Prompt, "action") {
+		t.Error("expected lint prompt to instruct agent about action")
 	}
 }
 
@@ -4226,15 +4226,80 @@ func TestReviewStep_DismissedFindingsSanitizesPromptContent(t *testing.T) {
 	}
 }
 
+func TestUserCommitMessages_FiltersPipelineCommits(t *testing.T) {
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+
+	os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "base")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+
+	// User commit
+	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "fix(prsummary): link pipeline summary tagline")
+
+	// Pipeline commit - should be filtered out
+	os.WriteFile(filepath.Join(dir, "b.txt"), []byte("b"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "no-mistakes(review): remove hardcoded repo link")
+
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	result := userCommitMessages(context.Background(), dir, baseSHA, headSHA)
+	if !strings.Contains(result, "fix(prsummary): link pipeline summary tagline") {
+		t.Errorf("expected user commit message, got %q", result)
+	}
+	if strings.Contains(result, "no-mistakes(review)") {
+		t.Errorf("expected pipeline commit to be filtered out, got %q", result)
+	}
+}
+
+func TestReviewStep_PromptIncludesUserCommitMessages(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	findingsJSON, _ := json.Marshal(Findings{Summary: "clean"})
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: findingsJSON}, nil
+		},
+	}
+
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	step := &ReviewStep{}
+	_, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(ag.calls) != 1 {
+		t.Fatalf("expected 1 agent call, got %d", len(ag.calls))
+	}
+	// setupGitRepo creates a commit "add feature" - should appear in prompt
+	if !strings.Contains(ag.calls[0].Prompt, "add feature") {
+		t.Error("expected review prompt to include user commit message")
+	}
+	if !strings.Contains(ag.calls[0].Prompt, "author's primary intent") {
+		t.Error("expected review prompt to explain user commit messages as intent")
+	}
+}
+
 func TestSanitizedPreviousFindingsForPrompt_PreservesMultilineDescriptions(t *testing.T) {
 	raw, err := types.MarshalFindingsJSON(types.Findings{
 		Items: []types.Finding{{
-			ID:                  "review-1",
-			Severity:            "warning",
-			File:                "internal/pipeline/steps/review.go",
-			Line:                278,
-			Description:         "go test failed:\n--- FAIL: TestThing\nmain_test.go:42: expected x\n",
-			RequiresHumanReview: false,
+			ID:          "review-1",
+			Severity:    "warning",
+			File:        "internal/pipeline/steps/review.go",
+			Line:        278,
+			Description: "go test failed:\n--- FAIL: TestThing\nmain_test.go:42: expected x\n",
+			Action:      types.ActionAutoFix,
 		}},
 		Summary:       "1 selected finding",
 		RiskLevel:     "medium",

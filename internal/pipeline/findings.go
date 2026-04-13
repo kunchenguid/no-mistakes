@@ -4,7 +4,7 @@ import "github.com/kunchenguid/no-mistakes/internal/types"
 
 func findingKey(item types.Finding) types.Finding {
 	item.ID = ""
-	item.RequiresHumanReview = false
+	item.Action = ""
 	return item
 }
 
@@ -198,7 +198,7 @@ func autoFixableFindingsJSON(raw string) string {
 	return fixableRaw
 }
 
-func hasHumanReviewFindingsJSON(raw string) bool {
+func hasAskUserFindingsJSON(raw string) bool {
 	if raw == "" {
 		return false
 	}
@@ -206,7 +206,7 @@ func hasHumanReviewFindingsJSON(raw string) bool {
 	if err != nil {
 		return false
 	}
-	return types.HasHumanReviewFindings(findings)
+	return types.HasAskUserFindings(findings)
 }
 
 func filterFindingsJSON(raw string, ids []string) string {
