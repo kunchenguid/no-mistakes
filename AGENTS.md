@@ -19,8 +19,8 @@ Most implementation code lives under `internal/`.
 - Plain build: `go build -o ./bin/no-mistakes ./cmd/no-mistakes`
 - Install locally: `make install`
 - Cross-compile archives: `make dist`
-- Run all tests: `make test`
-- Run all tests directly: `go test -race ./...`
+- Run unit + integration tests: `make test`
+- Run all tests (unit + integration + e2e): `make test-all`
 - Run vet: `make lint`
 - Run vet directly: `go vet ./...`
 - Format all Go files: `make fmt`
@@ -38,10 +38,10 @@ Most implementation code lives under `internal/`.
 
 Safest local verification sequence after non-trivial changes:
 
-- `gofmt -w .`
-- `go vet ./...`
-- `go test -race ./...`
-- `go build -o ./bin/no-mistakes ./cmd/no-mistakes`
+- `make fmt`
+- `make lint`
+- `make test`
+- `make build`
 
 **Project Layout**
 
@@ -80,7 +80,36 @@ Safest local verification sequence after non-trivial changes:
 - Use `t.Setenv()` for environment-dependent behavior.
 - Prefer creating real git repos in temp directories instead of relying on heavy mocking.
 - CLI tests often capture output and assert with `strings.Contains`.
-- Prefer targeted package tests while iterating, then finish with `go test -race ./...`.
+- Prefer targeted package tests while iterating, then finish with `make test`.
+
+**Test Tagging**
+
+Tests are split into three tiers using Go build tags. The tag goes on the first
+line of the file, before the `package` declaration. The decision is per-file,
+not per-package - a single package can have both untagged unit tests and tagged
+integration tests (e.g. `internal/ipc` has unit tests in `protocol_test.go` and
+integration tests in `server_test.go`).
+
+| Tier        | Tag                      | When to use                                              |
+| ----------- | ------------------------ | -------------------------------------------------------- |
+| unit        | (none)                   | Pure logic: JSON, config, DB, types, data transforms     |
+| integration | `//go:build integration` | Real subprocesses, IPC, daemon lifecycle, git operations |
+| e2e         | `//go:build e2e`         | Full CLI command flows, pipeline step execution          |
+
+When adding a new test file, pick the lowest tier that fits:
+
+- Does it only test in-memory logic? Leave untagged (unit).
+- Does it spawn a subprocess, open a socket, or exercise OS-specific behavior? Tag `integration`.
+- Does it drive a full command or pipeline flow end-to-end? Tag `e2e`.
+
+**Makefile targets:**
+
+- `make test` - unit + integration (~30s, the local dev loop)
+- `make test-all` - unit + integration + e2e (~170s, what CI runs)
+- `make test-unit` - unit only (~3s)
+
+CI runs the full suite (`test-all`) on Linux and macOS. Windows CI runs only
+packages that contain integration or e2e tagged files to skip redundant unit coverage.
 
 **When Making Changes**
 

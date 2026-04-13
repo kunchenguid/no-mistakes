@@ -5,7 +5,7 @@ LDFLAGS := -X github.com/kunchenguid/no-mistakes/internal/buildinfo.Version=$(VE
            -X github.com/kunchenguid/no-mistakes/internal/buildinfo.Commit=$(COMMIT) \
            -X github.com/kunchenguid/no-mistakes/internal/buildinfo.Date=$(DATE)
 
-.PHONY: build dist install test lint fmt clean docs docs-build docs-preview
+.PHONY: build dist install test test-all test-unit lint fmt clean docs docs-build docs-preview
 
 DIST_DIR ?= dist
 INSTALL_BIN := $(shell go env GOPATH)/bin/no-mistakes
@@ -40,6 +40,12 @@ install: build
 	$(INSTALL_BIN) daemon start
 
 test:
+	go test -tags integration -race ./...
+
+test-all:
+	go test -tags integration,e2e -race ./...
+
+test-unit:
 	go test -race ./...
 
 lint:

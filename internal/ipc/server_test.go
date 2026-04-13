@@ -1,3 +1,5 @@
+//go:build integration
+
 package ipc_test
 
 import (
