@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -13,6 +14,8 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+var ansiEscapeRE = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
 func TestRunsNotInitialized(t *testing.T) {
 	setupTestRepo(t)
