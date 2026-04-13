@@ -26,7 +26,7 @@ auto_fix:
   review: 3    # up to 3 auto-fix attempts
   test: 3
   lint: 3
-  babysit: 3
+  ci: 3
 ```
 
 Setting a step to `0` means the pipeline always pauses for human input when that step finds issues. This is the default for `rebase` since conflict resolution is high-risk.

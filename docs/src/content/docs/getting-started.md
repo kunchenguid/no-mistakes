@@ -36,7 +36,8 @@ make install
 
 - **git** - required
 - **One supported agent binary** - `claude`, `codex`, `acli` (Rovo Dev), or `opencode`
-- **gh** (GitHub CLI) or **glab** (GitLab CLI) - optional, needed for PR/MR creation and CI babysitting
+- **gh** (GitHub CLI) or **glab** (GitLab CLI) - optional, needed for PR/MR creation
+- **gh** (GitHub CLI) - optional, needed for CI babysitting
 
 Run `no-mistakes doctor` to check what's installed and ready.
 
