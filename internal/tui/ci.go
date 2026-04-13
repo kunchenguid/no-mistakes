@@ -9,10 +9,10 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-// isBabysitActive returns true if the babysit step is currently running.
-func isBabysitActive(steps []ipc.StepResultInfo) bool {
+// isCIActive returns true if the CI step is currently running.
+func isCIActive(steps []ipc.StepResultInfo) bool {
 	for _, s := range steps {
-		if s.StepName == types.StepBabysit {
+		if s.StepName == types.StepCI {
 			switch s.Status {
 			case types.StepStatusRunning:
 				return true
@@ -22,18 +22,18 @@ func isBabysitActive(steps []ipc.StepResultInfo) bool {
 	return false
 }
 
-// babysitStepStatus returns the current status of the babysit step.
-func babysitStepStatus(steps []ipc.StepResultInfo) types.StepStatus {
+// ciStepStatus returns the current status of the CI step.
+func ciStepStatus(steps []ipc.StepResultInfo) types.StepStatus {
 	for _, s := range steps {
-		if s.StepName == types.StepBabysit {
+		if s.StepName == types.StepCI {
 			return s.Status
 		}
 	}
 	return types.StepStatusPending
 }
 
-// extractPRFromLogs extracts the PR number from babysit log messages.
-// Looks for the "babysitting PR #42" pattern. Returns empty if not found.
+// extractPRFromLogs extracts the PR number from CI log messages.
+// Looks for the "monitoring CI for PR #42" pattern. Returns empty if not found.
 func extractPRFromLogs(logs []string) string {
 	for _, line := range logs {
 		if idx := strings.Index(line, "PR #"); idx >= 0 {
@@ -51,16 +51,16 @@ func extractPRFromLogs(logs []string) string {
 	return ""
 }
 
-// babysitActivity summarizes what the babysit step has been doing based on logs.
-type babysitActivity struct {
+// ciActivity summarizes what the CI step has been doing based on logs.
+type ciActivity struct {
 	CIFixes    int
 	AutoFixing bool
 	LastEvent  string
 }
 
-// parseBabysitActivity extracts structured activity from babysit log messages.
-func parseBabysitActivity(logs []string) babysitActivity {
-	var a babysitActivity
+// parseCIActivity extracts structured activity from CI log messages.
+func parseCIActivity(logs []string) ciActivity {
+	var a ciActivity
 	for _, line := range logs {
 		switch {
 		case strings.Contains(line, "CI failures detected"):
@@ -73,26 +73,26 @@ func parseBabysitActivity(logs []string) babysitActivity {
 		case strings.Contains(line, "running agent to fix CI"):
 			a.AutoFixing = true
 			a.LastEvent = line
-		case strings.Contains(line, "babysitting PR"):
+		case strings.Contains(line, "monitoring CI for PR"):
 			a.LastEvent = line
 		case strings.Contains(line, "PR has been merged"):
 			a.LastEvent = line
 		case strings.Contains(line, "PR has been closed"):
 			a.LastEvent = line
-		case strings.Contains(line, "babysit timeout"):
+		case strings.Contains(line, "CI timeout"):
 			a.LastEvent = line
 		}
 	}
 	return a
 }
 
-// renderBabysitView renders the babysit-specific monitoring view.
-// Shown instead of generic findings when the babysit step is active.
-func renderBabysitView(run *ipc.RunInfo, steps []ipc.StepResultInfo, findings string, logs []string, width int) string {
-	return renderBabysitViewWithSelection(run, steps, findings, logs, width, -1, 0, nil)
+// renderCIView renders the CI-specific monitoring view.
+// Shown instead of generic findings when the CI step is active.
+func renderCIView(run *ipc.RunInfo, steps []ipc.StepResultInfo, findings string, logs []string, width int) string {
+	return renderCIViewWithSelection(run, steps, findings, logs, width, -1, 0, nil)
 }
 
-func renderBabysitViewWithSelection(run *ipc.RunInfo, steps []ipc.StepResultInfo, findings string, logs []string, width int, height int, cursor int, selected map[string]bool) string {
+func renderCIViewWithSelection(run *ipc.RunInfo, steps []ipc.StepResultInfo, findings string, logs []string, width int, height int, cursor int, selected map[string]bool) string {
 	var b strings.Builder
 
 	boxWidth := width
@@ -111,8 +111,8 @@ func renderBabysitViewWithSelection(run *ipc.RunInfo, steps []ipc.StepResultInfo
 	}
 
 	// State indicator.
-	status := babysitStepStatus(steps)
-	activity := parseBabysitActivity(logs)
+	status := ciStepStatus(steps)
+	activity := parseCIActivity(logs)
 
 	b.WriteString("\n")
 
@@ -166,5 +166,5 @@ func renderBabysitViewWithSelection(run *ipc.RunInfo, steps []ipc.StepResultInfo
 		}
 	}
 
-	return renderBox("Babysit", b.String(), boxWidth)
+	return renderBox("CI", b.String(), boxWidth)
 }

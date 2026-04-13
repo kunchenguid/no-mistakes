@@ -56,7 +56,7 @@ func TestDoctorSystemSectionReportsMissingGitAndDataDirFailures(t *testing.T) {
 		"git",
 		"not found",
 		"gh",
-		"optional, needed for PR/babysit",
+		"optional, needed for PR/CI",
 		"data directory",
 		nmHome,
 		"database",

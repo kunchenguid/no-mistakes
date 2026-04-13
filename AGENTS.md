@@ -48,7 +48,7 @@ Safest local verification sequence after non-trivial changes:
 - `cmd/no-mistakes`: process entrypoint
 - `internal/cli`: cobra commands and CLI wiring
 - `internal/daemon`: background daemon and run management
-- `internal/pipeline` and `internal/pipeline/steps`: orchestration plus review/test/lint/push/PR/babysit steps
+- `internal/pipeline` and `internal/pipeline/steps`: orchestration plus review/test/lint/push/PR/CI steps
 - `internal/agent`: Claude, Codex, Rovo Dev, and OpenCode integrations
 - `internal/git`, `internal/ipc`, `internal/config`, `internal/db`, `internal/paths`, `internal/types`: shared infrastructure
 - `internal/tui`: terminal UI

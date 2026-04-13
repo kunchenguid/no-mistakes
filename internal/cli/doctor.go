@@ -47,9 +47,9 @@ func newDoctorCmd() *cobra.Command {
 				}
 			}
 
-			// 2. Check gh CLI (optional but useful for PR/babysit steps).
+			// 2. Check gh CLI (optional but useful for PR/CI steps).
 			if _, err := exec.LookPath("gh"); err != nil {
-				warn("gh            ", "not found "+sDim.Render("(optional, needed for PR/babysit)"))
+				warn("gh            ", "not found "+sDim.Render("(optional, needed for PR/CI)"))
 			} else {
 				ok("gh            ", "ok")
 			}

@@ -9,7 +9,7 @@ import (
 )
 
 // summarySteps are the steps we include in the pipeline summary.
-// Push, PR, and Babysit are operational - not interesting for the PR reader.
+// Push, PR, and CI are operational - not interesting for the PR reader.
 var summarySteps = map[types.StepName]bool{
 	types.StepRebase: true,
 	types.StepReview: true,

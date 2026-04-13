@@ -21,8 +21,8 @@ func TestLoadGlobal_Defaults(t *testing.T) {
 	if cfg.Agent != types.AgentClaude {
 		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentClaude)
 	}
-	if cfg.BabysitTimeout != 4*time.Hour {
-		t.Errorf("babysit_timeout = %v, want %v", cfg.BabysitTimeout, 4*time.Hour)
+	if cfg.CITimeout != 4*time.Hour {
+		t.Errorf("ci_timeout = %v, want %v", cfg.CITimeout, 4*time.Hour)
 	}
 	if cfg.LogLevel != "info" {
 		t.Errorf("log_level = %q, want %q", cfg.LogLevel, "info")
@@ -45,7 +45,7 @@ func TestEnsureDefaultGlobalConfig_CreatesFile(t *testing.T) {
 	content := string(data)
 	for _, want := range []string{
 		"agent: claude",
-		"babysit_timeout:",
+		"ci_timeout:",
 		"log_level: info",
 		"# agent_path_override:",
 	} {
@@ -68,8 +68,8 @@ func TestEnsureDefaultGlobalConfig_CreatedConfigIsLoadable(t *testing.T) {
 	if cfg.Agent != types.AgentClaude {
 		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentClaude)
 	}
-	if cfg.BabysitTimeout != 4*time.Hour {
-		t.Errorf("babysit_timeout = %v, want %v", cfg.BabysitTimeout, 4*time.Hour)
+	if cfg.CITimeout != 4*time.Hour {
+		t.Errorf("ci_timeout = %v, want %v", cfg.CITimeout, 4*time.Hour)
 	}
 	if cfg.LogLevel != "info" {
 		t.Errorf("log_level = %q, want %q", cfg.LogLevel, "info")
@@ -150,7 +150,7 @@ func TestLoadGlobal_FromFile(t *testing.T) {
 agent_path_override:
   claude: /usr/local/bin/claude
   codex: /opt/codex
-babysit_timeout: "2h30m"
+ci_timeout: "2h30m"
 log_level: "debug"
 `
 	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
@@ -164,8 +164,8 @@ log_level: "debug"
 	if cfg.Agent != types.AgentCodex {
 		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentCodex)
 	}
-	if cfg.BabysitTimeout != 2*time.Hour+30*time.Minute {
-		t.Errorf("babysit_timeout = %v, want %v", cfg.BabysitTimeout, 2*time.Hour+30*time.Minute)
+	if cfg.CITimeout != 2*time.Hour+30*time.Minute {
+		t.Errorf("ci_timeout = %v, want %v", cfg.CITimeout, 2*time.Hour+30*time.Minute)
 	}
 	if cfg.LogLevel != "debug" {
 		t.Errorf("log_level = %q, want %q", cfg.LogLevel, "debug")
@@ -195,8 +195,8 @@ func TestLoadGlobal_PartialOverride(t *testing.T) {
 	if cfg.Agent != types.AgentOpenCode {
 		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentOpenCode)
 	}
-	if cfg.BabysitTimeout != 4*time.Hour {
-		t.Errorf("babysit_timeout = %v, want %v (should be default)", cfg.BabysitTimeout, 4*time.Hour)
+	if cfg.CITimeout != 4*time.Hour {
+		t.Errorf("ci_timeout = %v, want %v (should be default)", cfg.CITimeout, 4*time.Hour)
 	}
 	if cfg.LogLevel != "info" {
 		t.Errorf("log_level = %q, want %q (should be default)", cfg.LogLevel, "info")
@@ -219,7 +219,7 @@ func TestLoadGlobal_InvalidYAML(t *testing.T) {
 func TestLoadGlobal_InvalidDuration(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(path, []byte(`babysit_timeout: "not-a-duration"`), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(`ci_timeout: "not-a-duration"`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -335,9 +335,9 @@ func TestLoadRepo_InvalidYAML(t *testing.T) {
 
 func TestMerge_GlobalOnly(t *testing.T) {
 	global := &GlobalConfig{
-		Agent:          types.AgentClaude,
-		BabysitTimeout: 4 * time.Hour,
-		LogLevel:       "info",
+		Agent:     types.AgentClaude,
+		CITimeout: 4 * time.Hour,
+		LogLevel:  "info",
 	}
 	repo := &RepoConfig{}
 
@@ -345,8 +345,8 @@ func TestMerge_GlobalOnly(t *testing.T) {
 	if cfg.Agent != types.AgentClaude {
 		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentClaude)
 	}
-	if cfg.BabysitTimeout != 4*time.Hour {
-		t.Errorf("babysit_timeout = %v", cfg.BabysitTimeout)
+	if cfg.CITimeout != 4*time.Hour {
+		t.Errorf("ci_timeout = %v", cfg.CITimeout)
 	}
 }
 
@@ -354,7 +354,7 @@ func TestMerge_RepoOverridesAgent(t *testing.T) {
 	global := &GlobalConfig{
 		Agent:             types.AgentClaude,
 		AgentPathOverride: map[string]string{"claude": "/usr/bin/claude"},
-		BabysitTimeout:    4 * time.Hour,
+		CITimeout:         4 * time.Hour,
 		LogLevel:          "info",
 	}
 	repo := &RepoConfig{
@@ -374,16 +374,16 @@ func TestMerge_RepoOverridesAgent(t *testing.T) {
 	if cfg.Commands.Test != "make test" {
 		t.Errorf("test = %q", cfg.Commands.Test)
 	}
-	if cfg.BabysitTimeout != 4*time.Hour {
-		t.Errorf("babysit_timeout = %v", cfg.BabysitTimeout)
+	if cfg.CITimeout != 4*time.Hour {
+		t.Errorf("ci_timeout = %v", cfg.CITimeout)
 	}
 }
 
 func TestMerge_RepoDoesNotOverrideWhenEmpty(t *testing.T) {
 	global := &GlobalConfig{
-		Agent:          types.AgentRovoDev,
-		BabysitTimeout: 2 * time.Hour,
-		LogLevel:       "debug",
+		Agent:     types.AgentRovoDev,
+		CITimeout: 2 * time.Hour,
+		LogLevel:  "debug",
 	}
 	repo := &RepoConfig{
 		// Agent is empty — should not override
@@ -438,12 +438,12 @@ func TestDefaultConfigYAML_MatchesGoDefaults(t *testing.T) {
 	if raw.Agent != types.AgentClaude {
 		t.Errorf("YAML agent = %q, Go default = %q", raw.Agent, types.AgentClaude)
 	}
-	d, err := time.ParseDuration(raw.BabysitTimeout)
+	d, err := time.ParseDuration(raw.CITimeout)
 	if err != nil {
-		t.Fatalf("YAML babysit_timeout %q is not a valid duration: %v", raw.BabysitTimeout, err)
+		t.Fatalf("YAML ci_timeout %q is not a valid duration: %v", raw.CITimeout, err)
 	}
 	if d != 4*time.Hour {
-		t.Errorf("YAML babysit_timeout = %v, Go default = %v", d, 4*time.Hour)
+		t.Errorf("YAML ci_timeout = %v, Go default = %v", d, 4*time.Hour)
 	}
 	if raw.LogLevel != "info" {
 		t.Errorf("YAML log_level = %q, Go default = %q", raw.LogLevel, "info")
@@ -458,8 +458,8 @@ func TestDefaultConfigYAML_MatchesGoDefaults(t *testing.T) {
 	if raw.AutoFix.Review == nil || *raw.AutoFix.Review != defaults.Review {
 		t.Errorf("YAML auto_fix.review = %v, Go default = %d", raw.AutoFix.Review, defaults.Review)
 	}
-	if raw.AutoFix.Babysit == nil || *raw.AutoFix.Babysit != defaults.Babysit {
-		t.Errorf("YAML auto_fix.babysit = %v, Go default = %d", raw.AutoFix.Babysit, defaults.Babysit)
+	if raw.AutoFix.CI == nil || *raw.AutoFix.CI != defaults.CI {
+		t.Errorf("YAML auto_fix.ci = %v, Go default = %d", raw.AutoFix.CI, defaults.CI)
 	}
 	if raw.AutoFix.Rebase == nil || *raw.AutoFix.Rebase != defaults.Rebase {
 		t.Errorf("YAML auto_fix.rebase = %v, Go default = %d", raw.AutoFix.Rebase, defaults.Rebase)
@@ -473,7 +473,7 @@ func TestLoadGlobal_AutoFixDefaults(t *testing.T) {
 	}
 	// AutoFix should be nil (unset) in GlobalConfig
 	if cfg.AutoFix.Lint != nil || cfg.AutoFix.Test != nil || cfg.AutoFix.Review != nil ||
-		cfg.AutoFix.Babysit != nil || cfg.AutoFix.Rebase != nil {
+		cfg.AutoFix.CI != nil || cfg.AutoFix.Rebase != nil {
 		t.Errorf("expected all AutoFix fields to be nil for defaults, got %+v", cfg.AutoFix)
 	}
 }
@@ -485,7 +485,7 @@ func TestLoadGlobal_AutoFixFromFile(t *testing.T) {
   lint: 5
   test: 0
   review: 2
-  babysit: 1
+  ci: 1
 `
 	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
 		t.Fatal(err)
@@ -504,8 +504,8 @@ func TestLoadGlobal_AutoFixFromFile(t *testing.T) {
 	if cfg.AutoFix.Review == nil || *cfg.AutoFix.Review != 2 {
 		t.Errorf("review = %v, want 2", cfg.AutoFix.Review)
 	}
-	if cfg.AutoFix.Babysit == nil || *cfg.AutoFix.Babysit != 1 {
-		t.Errorf("babysit = %v, want 1", cfg.AutoFix.Babysit)
+	if cfg.AutoFix.CI == nil || *cfg.AutoFix.CI != 1 {
+		t.Errorf("ci =%v, want 1", cfg.AutoFix.CI)
 	}
 }
 
@@ -537,7 +537,7 @@ func TestLoadRepo_AutoFixFromFile(t *testing.T) {
 	path := filepath.Join(dir, ".no-mistakes.yaml")
 	data := `auto_fix:
   review: 0
-  babysit: 2
+  ci: 2
 `
 	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
 		t.Fatal(err)
@@ -550,13 +550,13 @@ func TestLoadRepo_AutoFixFromFile(t *testing.T) {
 	if cfg.AutoFix.Review == nil || *cfg.AutoFix.Review != 0 {
 		t.Errorf("review = %v, want 0", cfg.AutoFix.Review)
 	}
-	if cfg.AutoFix.Babysit == nil || *cfg.AutoFix.Babysit != 2 {
-		t.Errorf("babysit = %v, want 2", cfg.AutoFix.Babysit)
+	if cfg.AutoFix.CI == nil || *cfg.AutoFix.CI != 2 {
+		t.Errorf("ci =%v, want 2", cfg.AutoFix.CI)
 	}
 }
 
 func TestMerge_AutoFixDefaults(t *testing.T) {
-	global := &GlobalConfig{Agent: types.AgentClaude, BabysitTimeout: 4 * time.Hour, LogLevel: "info"}
+	global := &GlobalConfig{Agent: types.AgentClaude, CITimeout: 4 * time.Hour, LogLevel: "info"}
 	repo := &RepoConfig{}
 
 	cfg := Merge(global, repo)
@@ -569,8 +569,8 @@ func TestMerge_AutoFixDefaults(t *testing.T) {
 	if cfg.AutoFix.Review != 3 {
 		t.Errorf("review = %d, want 3", cfg.AutoFix.Review)
 	}
-	if cfg.AutoFix.Babysit != 3 {
-		t.Errorf("babysit = %d, want 3", cfg.AutoFix.Babysit)
+	if cfg.AutoFix.CI != 3 {
+		t.Errorf("ci =%d, want 3", cfg.AutoFix.CI)
 	}
 	if cfg.AutoFix.Rebase != 0 {
 		t.Errorf("rebase = %d, want 0", cfg.AutoFix.Rebase)
@@ -581,10 +581,10 @@ func TestMerge_AutoFixGlobalOverridesDefaults(t *testing.T) {
 	five := 5
 	zero := 0
 	global := &GlobalConfig{
-		Agent:          types.AgentClaude,
-		BabysitTimeout: 4 * time.Hour,
-		LogLevel:       "info",
-		AutoFix:        AutoFixRaw{Lint: &five, Babysit: &zero},
+		Agent:     types.AgentClaude,
+		CITimeout: 4 * time.Hour,
+		LogLevel:  "info",
+		AutoFix:   AutoFixRaw{Lint: &five, CI: &zero},
 	}
 	repo := &RepoConfig{}
 
@@ -595,8 +595,8 @@ func TestMerge_AutoFixGlobalOverridesDefaults(t *testing.T) {
 	if cfg.AutoFix.Test != 3 {
 		t.Errorf("test = %d, want 3 (default)", cfg.AutoFix.Test)
 	}
-	if cfg.AutoFix.Babysit != 0 {
-		t.Errorf("babysit = %d, want 0 (global override)", cfg.AutoFix.Babysit)
+	if cfg.AutoFix.CI != 0 {
+		t.Errorf("ci =%d, want 0 (global override)", cfg.AutoFix.CI)
 	}
 	if cfg.AutoFix.Rebase != 0 {
 		t.Errorf("rebase = %d, want 0 (default, no override)", cfg.AutoFix.Rebase)
@@ -608,10 +608,10 @@ func TestMerge_AutoFixRepoOverridesGlobal(t *testing.T) {
 	one := 1
 	zero := 0
 	global := &GlobalConfig{
-		Agent:          types.AgentClaude,
-		BabysitTimeout: 4 * time.Hour,
-		LogLevel:       "info",
-		AutoFix:        AutoFixRaw{Lint: &five},
+		Agent:     types.AgentClaude,
+		CITimeout: 4 * time.Hour,
+		LogLevel:  "info",
+		AutoFix:   AutoFixRaw{Lint: &five},
 	}
 	repo := &RepoConfig{
 		AutoFix: AutoFixRaw{Lint: &one, Review: &zero},
@@ -631,7 +631,7 @@ func TestMerge_AutoFixRepoOverridesGlobal(t *testing.T) {
 
 func TestAutoFixLimit(t *testing.T) {
 	cfg := &Config{
-		AutoFix: AutoFix{Lint: 5, Test: 2, Review: 0, Babysit: 3, Rebase: 4},
+		AutoFix: AutoFix{Lint: 5, Test: 2, Review: 0, CI: 3, Rebase: 4},
 	}
 	tests := []struct {
 		step types.StepName
@@ -640,7 +640,7 @@ func TestAutoFixLimit(t *testing.T) {
 		{types.StepLint, 5},
 		{types.StepTest, 2},
 		{types.StepReview, 0},
-		{types.StepBabysit, 3},
+		{types.StepCI, 3},
 		{types.StepRebase, 4},
 		{types.StepPush, 0},
 		{types.StepPR, 0},

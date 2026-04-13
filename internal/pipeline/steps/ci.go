@@ -20,8 +20,8 @@ import (
 
 const defaultChecksGracePeriod = 60 * time.Second
 
-// BabysitStep monitors CI checks after PR creation, auto-fixing failures.
-type BabysitStep struct {
+// CIStep monitors CI checks after PR creation, auto-fixing failures.
+type CIStep struct {
 	lastFixedChecks      string        // sorted check names from last fix attempt, to avoid re-fixing
 	ciFixAttempts        int           // number of CI auto-fix attempts made
 	checksGracePeriod    time.Duration // minimum wait before trusting empty CI checks (0 = default 60s)
@@ -30,9 +30,9 @@ type BabysitStep struct {
 	now                  func() time.Time
 }
 
-func (s *BabysitStep) Name() types.StepName { return types.StepBabysit }
+func (s *CIStep) Name() types.StepName { return types.StepCI }
 
-func (s *BabysitStep) gracePeriod() time.Duration {
+func (s *CIStep) gracePeriod() time.Duration {
 	if s.checksGracePeriod > 0 {
 		return s.checksGracePeriod
 	}
@@ -66,7 +66,7 @@ func extractPRNumber(prURL string) (string, error) {
 	return num, nil
 }
 
-// pollInterval returns the polling interval based on elapsed time since babysit started.
+// pollInterval returns the polling interval based on elapsed time since CI monitoring started.
 // 30s for first 5min, 60s for 5-15min, 120s after.
 func pollInterval(elapsed time.Duration) time.Duration {
 	switch {
@@ -131,7 +131,7 @@ func ciFailureOutcome(failing []string, summary string) *pipeline.StepOutcome {
 	}
 }
 
-func (s *BabysitStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	ctx := sctx.Ctx
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -141,15 +141,15 @@ func (s *BabysitStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome
 		provider = scm.DetectProvider(*sctx.Run.PRURL)
 	}
 	if provider != scm.ProviderGitHub {
-		sctx.Log(fmt.Sprintf("skipping babysit: provider %s is not supported yet", provider))
+		sctx.Log(fmt.Sprintf("skipping CI: provider %s is not supported yet", provider))
 		return &pipeline.StepOutcome{}, nil
 	}
 	if !scm.CLIAvailable(provider) {
-		sctx.Log("skipping babysit: gh CLI is not installed")
+		sctx.Log("skipping CI: gh CLI is not installed")
 		return &pipeline.StepOutcome{}, nil
 	}
 	if !scm.AuthConfigured(ctx, provider, sctx.WorkDir) {
-		sctx.Log("skipping babysit: gh CLI is not authenticated")
+		sctx.Log("skipping CI: gh CLI is not authenticated")
 		return &pipeline.StepOutcome{}, nil
 	}
 
@@ -167,7 +167,7 @@ func (s *BabysitStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome
 		}
 	}
 	if prURL == "" {
-		sctx.Log("no PR URL found, skipping babysit")
+		sctx.Log("no PR URL found, skipping CI")
 		return &pipeline.StepOutcome{}, nil
 	}
 
@@ -176,12 +176,12 @@ func (s *BabysitStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome
 		return nil, fmt.Errorf("extract PR number: %w", err)
 	}
 
-	timeout := sctx.Config.BabysitTimeout
+	timeout := sctx.Config.CITimeout
 	if timeout == 0 {
 		timeout = 4 * time.Hour
 	}
 
-	sctx.Log(fmt.Sprintf("babysitting PR #%s (timeout: %s)...", prNumber, timeout))
+	sctx.Log(fmt.Sprintf("monitoring CI for PR #%s (timeout: %s)...", prNumber, timeout))
 	now := s.now
 	if now == nil {
 		now = time.Now
@@ -199,11 +199,11 @@ func (s *BabysitStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome
 
 		elapsed := now().Sub(started)
 		if elapsed >= timeout {
-			sctx.Log("babysit timeout reached")
+			sctx.Log("CI timeout reached")
 			return &pipeline.StepOutcome{}, nil
 		}
 
-		// Check PR state (merged/closed → exit)
+		// Check PR state (merged/closed -> exit)
 		state, err := s.getPRState(ctx, sctx.WorkDir, prNumber)
 		if err != nil {
 			sctx.Log(fmt.Sprintf("warning: could not check PR state: %v", err))
@@ -216,7 +216,7 @@ func (s *BabysitStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome
 		}
 
 		// Check CI status - auto-fix failures when configured
-		ciFixLimit := sctx.Config.AutoFix.Babysit
+		ciFixLimit := sctx.Config.AutoFix.CI
 		checks, err := s.getCIChecks(ctx, sctx.WorkDir, prNumber)
 		if err != nil {
 			sctx.Log(fmt.Sprintf("warning: could not check CI: %v", err))
@@ -260,7 +260,7 @@ func (s *BabysitStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome
 				} else {
 					checksReadyToExit = true
 					if len(checks) == 0 {
-						checksSummary = "no CI checks reported, babysit complete"
+						checksSummary = "no CI checks reported, CI monitoring complete"
 					} else {
 						checksSummary = "all CI checks passed"
 					}
@@ -300,7 +300,7 @@ func (s *BabysitStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome
 }
 
 // getPRState returns the PR state (OPEN, MERGED, CLOSED).
-func (s *BabysitStep) getPRState(ctx context.Context, workDir, prNumber string) (string, error) {
+func (s *CIStep) getPRState(ctx context.Context, workDir, prNumber string) (string, error) {
 	cmd := exec.CommandContext(ctx, "gh", "pr", "view", prNumber, "--json", "state", "--jq", ".state")
 	cmd.Dir = workDir
 	out, err := cmd.Output()
@@ -311,7 +311,7 @@ func (s *BabysitStep) getPRState(ctx context.Context, workDir, prNumber string) 
 }
 
 // getCIChecks fetches CI check results for a PR.
-func (s *BabysitStep) getCIChecks(ctx context.Context, workDir, prNumber string) ([]ciCheck, error) {
+func (s *CIStep) getCIChecks(ctx context.Context, workDir, prNumber string) ([]ciCheck, error) {
 	cmd := exec.CommandContext(ctx, "gh", "pr", "checks", prNumber, "--json", "name,state,bucket")
 	cmd.Dir = workDir
 	out, err := cmd.CombinedOutput()
@@ -329,7 +329,7 @@ func (s *BabysitStep) getCIChecks(ctx context.Context, workDir, prNumber string)
 }
 
 // autoFixCI runs the agent to fix CI failures, then commits and pushes.
-func (s *BabysitStep) autoFixCI(sctx *pipeline.StepContext, prNumber string, failingNames []string) error {
+func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, prNumber string, failingNames []string) error {
 	ctx := sctx.Ctx
 	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
 
@@ -408,7 +408,7 @@ CI logs:
 }
 
 // commitAndPush commits any uncommitted changes and force-pushes to upstream.
-func (s *BabysitStep) commitAndPush(sctx *pipeline.StepContext) error {
+func (s *CIStep) commitAndPush(sctx *pipeline.StepContext) error {
 	ctx := sctx.Ctx
 	newHeadSHA := ""
 
@@ -426,9 +426,9 @@ func (s *BabysitStep) commitAndPush(sctx *pipeline.StepContext) error {
 	}
 
 	if _, err := git.Run(ctx, sctx.WorkDir, "add", "-A"); err != nil {
-		return fmt.Errorf("stage babysit changes: %w", err)
+		return fmt.Errorf("stage CI changes: %w", err)
 	}
-	if _, err := git.Run(ctx, sctx.WorkDir, "commit", "-m", "no-mistakes: apply babysit fixes"); err != nil {
+	if _, err := git.Run(ctx, sctx.WorkDir, "commit", "-m", "no-mistakes: apply CI fixes"); err != nil {
 		return fmt.Errorf("commit: %w", err)
 	}
 	headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)

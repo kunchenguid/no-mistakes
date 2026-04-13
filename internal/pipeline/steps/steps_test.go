@@ -48,12 +48,12 @@ func handleFakeCLI(mode string) {
 		fakeGHHandler(args)
 	case "glab":
 		fakeGlabHandler(args)
-	case "babysit-gh":
-		fakeBabysitGHHandler(args)
-	case "babysit-gh-seq":
-		fakeBabysitGHSequenceHandler(args)
-	case "babysit-gh-nochecks":
-		fakeBabysitGHNoChecksHandler(args)
+	case "ci-gh":
+		fakeCIGHHandler(args)
+	case "ci-gh-seq":
+		fakeCIGHSequenceHandler(args)
+	case "ci-gh-nochecks":
+		fakeCIGHNoChecksHandler(args)
 	default:
 		os.Exit(1)
 	}
@@ -103,7 +103,7 @@ func fakeGlabHandler(args []string) {
 	os.Exit(1)
 }
 
-func fakeBabysitGHHandler(args []string) {
+func fakeCIGHHandler(args []string) {
 	state := os.Getenv("FAKE_CLI_STATE")
 	checksJSON := os.Getenv("FAKE_CLI_CHECKS")
 	joined := strings.Join(args, " ")
@@ -126,7 +126,7 @@ func fakeBabysitGHHandler(args []string) {
 	os.Exit(1)
 }
 
-func fakeBabysitGHSequenceHandler(args []string) {
+func fakeCIGHSequenceHandler(args []string) {
 	state := os.Getenv("FAKE_CLI_STATE")
 	checksPath := os.Getenv("FAKE_CLI_CHECKS_PATH")
 	indexPath := os.Getenv("FAKE_CLI_CHECKS_INDEX_PATH")
@@ -174,7 +174,7 @@ func fakeBabysitGHSequenceHandler(args []string) {
 	os.Exit(1)
 }
 
-func fakeBabysitGHNoChecksHandler(args []string) {
+func fakeCIGHNoChecksHandler(args []string) {
 	joined := strings.Join(args, " ")
 
 	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
@@ -373,7 +373,7 @@ func TestAllSteps(t *testing.T) {
 	if len(steps) != 7 {
 		t.Fatalf("AllSteps() returned %d steps, want 7", len(steps))
 	}
-	expected := []types.StepName{types.StepRebase, types.StepReview, types.StepTest, types.StepLint, types.StepPush, types.StepPR, types.StepBabysit}
+	expected := []types.StepName{types.StepRebase, types.StepReview, types.StepTest, types.StepLint, types.StepPush, types.StepPR, types.StepCI}
 	for i, s := range steps {
 		if s.Name() != expected[i] {
 			t.Errorf("step %d name = %s, want %s", i, s.Name(), expected[i])
@@ -2413,9 +2413,9 @@ func TestCommitAgentFixes_UsesFallbackSummary(t *testing.T) {
 	}
 }
 
-// --- Babysit step tests ---
+// --- CI step tests ---
 
-func TestBabysitStep_PendingChecksUseAdaptivePollIntervals(t *testing.T) {
+func TestCIStep_PendingChecksUseAdaptivePollIntervals(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	checksSequence := []string{
@@ -2424,20 +2424,20 @@ func TestBabysitStep_PendingChecksUseAdaptivePollIntervals(t *testing.T) {
 		`[{"name":"build","state":"PENDING","bucket":"pending"}]`,
 		`[{"name":"build","state":"SUCCESS","bucket":"pass"}]`,
 	}
-	binDir := fakeBabysitGHSequence(t, "OPEN", checksSequence)
+	binDir := fakeCIGHSequence(t, "OPEN", checksSequence)
 	prependPATH(t, binDir)
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Run.PRURL = &prURL
-	sctx.Config.BabysitTimeout = 20 * time.Minute
+	sctx.Config.CITimeout = 20 * time.Minute
 
 	started := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
 	current := started
 	var waits []time.Duration
 
-	step := &BabysitStep{
+	step := &CIStep{
 		now: func() time.Time { return current },
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			waits = append(waits, interval)
@@ -2474,13 +2474,13 @@ func TestBabysitStep_PendingChecksUseAdaptivePollIntervals(t *testing.T) {
 	}
 }
 
-func TestBabysitStep_NoPRURL(t *testing.T) {
+func TestCIStep_NoPRURL(t *testing.T) {
 	dir := t.TempDir()
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContext(t, ag, dir, "abc", "def", config.Commands{})
 	sctx.Run.PRURL = nil
 
-	step := &BabysitStep{}
+	step := &CIStep{}
 	outcome, err := step.Execute(sctx)
 	if err != nil {
 		t.Fatal(err)
@@ -2490,10 +2490,10 @@ func TestBabysitStep_NoPRURL(t *testing.T) {
 	}
 }
 
-func TestBabysitStep_InvalidPRURLReturnsError(t *testing.T) {
+func TestCIStep_InvalidPRURLReturnsError(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
-	binDir := fakeBabysitGH(t, "OPEN", "[]")
+	binDir := fakeCIGH(t, "OPEN", "[]")
 	prependPATH(t, binDir)
 
 	prURL := "https://github.com/test/repo/pull/42/files"
@@ -2501,7 +2501,7 @@ func TestBabysitStep_InvalidPRURLReturnsError(t *testing.T) {
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Run.PRURL = &prURL
 
-	step := &BabysitStep{}
+	step := &CIStep{}
 	_, err := step.Execute(sctx)
 	if err == nil {
 		t.Fatal("expected error for invalid PR URL")
@@ -2514,7 +2514,7 @@ func TestBabysitStep_InvalidPRURLReturnsError(t *testing.T) {
 	}
 }
 
-func TestBabysitStep_NonGitHubSkips(t *testing.T) {
+func TestCIStep_NonGitHubSkips(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	prURL := "https://gitlab.com/test/repo/-/merge_requests/42"
 	ag := &mockAgent{name: "test"}
@@ -2525,32 +2525,32 @@ func TestBabysitStep_NonGitHubSkips(t *testing.T) {
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
-	step := &BabysitStep{}
+	step := &CIStep{}
 	outcome, err := step.Execute(sctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if outcome.NeedsApproval {
-		t.Fatal("expected babysit skip for non-GitHub provider")
+		t.Fatal("expected CI skip for non-GitHub provider")
 	}
-	if len(logs) == 0 || !strings.Contains(logs[0], "skipping babysit") {
+	if len(logs) == 0 || !strings.Contains(logs[0], "skipping CI") {
 		t.Fatalf("expected skip log, got: %v", logs)
 	}
 }
 
-func TestBabysitStep_ContextCancelled(t *testing.T) {
+func TestCIStep_ContextCancelled(t *testing.T) {
 	dir := t.TempDir()
 	ag := &mockAgent{name: "test"}
 	prURL := "https://github.com/test/repo/pull/1"
 	sctx := newTestContext(t, ag, dir, "abc", "def", config.Commands{})
 	sctx.Run.PRURL = &prURL
-	sctx.Config.BabysitTimeout = time.Hour
+	sctx.Config.CITimeout = time.Hour
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 	sctx.Ctx = ctx
 
-	step := &BabysitStep{}
+	step := &CIStep{}
 	_, err := step.Execute(sctx)
 	if err == nil {
 		t.Fatal("expected error from cancelled context")
@@ -2560,23 +2560,23 @@ func TestBabysitStep_ContextCancelled(t *testing.T) {
 	}
 }
 
-func TestBabysitStep_TimeoutDoesNotSleepPastDeadline(t *testing.T) {
+func TestCIStep_TimeoutDoesNotSleepPastDeadline(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
-	binDir := fakeBabysitGH(t, "OPEN", "[]")
+	binDir := fakeCIGH(t, "OPEN", "[]")
 	prependPATH(t, binDir)
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Run.PRURL = &prURL
-	sctx.Config.BabysitTimeout = 2 * time.Second
+	sctx.Config.CITimeout = 2 * time.Second
 
 	started := time.Unix(1700000000, 0)
 	now := started
 	var intervals []time.Duration
 
-	step := &BabysitStep{
+	step := &CIStep{
 		now: func() time.Time {
 			return now
 		},
@@ -2601,7 +2601,7 @@ func TestBabysitStep_TimeoutDoesNotSleepPastDeadline(t *testing.T) {
 	}
 }
 
-func TestBabysitStep_CommitAndPush(t *testing.T) {
+func TestCIStep_CommitAndPush(t *testing.T) {
 	// Set up upstream bare repo
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
@@ -2627,14 +2627,14 @@ func TestBabysitStep_CommitAndPush(t *testing.T) {
 	gitCmd(t, dir, "push", "origin", "feature")
 
 	// Add uncommitted changes
-	os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("babysit fix"), 0o644)
+	os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("ci fix"), 0o644)
 
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
 
-	step := &BabysitStep{}
+	step := &CIStep{}
 	err := step.commitAndPush(sctx)
 	if err != nil {
 		t.Fatal(err)
@@ -2643,11 +2643,11 @@ func TestBabysitStep_CommitAndPush(t *testing.T) {
 	// Verify the commit and push happened
 	upstreamSHA := gitCmd(t, upstream, "rev-parse", "refs/heads/feature")
 	if upstreamSHA == headSHA {
-		t.Error("upstream should have a new commit with babysit fixes")
+		t.Error("upstream should have a new commit with CI fixes")
 	}
 }
 
-func TestBabysitStep_CommitAndPush_NoChanges(t *testing.T) {
+func TestCIStep_CommitAndPush_NoChanges(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	ag := &mockAgent{name: "test"}
@@ -2655,7 +2655,7 @@ func TestBabysitStep_CommitAndPush_NoChanges(t *testing.T) {
 	sctx.Repo.UpstreamURL = "dummy"
 	sctx.Run.Branch = "refs/heads/feature"
 
-	step := &BabysitStep{}
+	step := &CIStep{}
 	err := step.commitAndPush(sctx)
 	if err != nil {
 		t.Fatal(err)
@@ -2663,7 +2663,7 @@ func TestBabysitStep_CommitAndPush_NoChanges(t *testing.T) {
 	// No error expected — just a no-op
 }
 
-func TestBabysitStep_CommitAndPush_NoChanges_ReconcilesStaleDatabaseHeadSHA(t *testing.T) {
+func TestCIStep_CommitAndPush_NoChanges_ReconcilesStaleDatabaseHeadSHA(t *testing.T) {
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
 
@@ -2693,7 +2693,7 @@ func TestBabysitStep_CommitAndPush_NoChanges_ReconcilesStaleDatabaseHeadSHA(t *t
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
 
-	step := &BabysitStep{}
+	step := &CIStep{}
 	err := step.commitAndPush(sctx)
 	if err != nil {
 		t.Fatal(err)
@@ -2711,7 +2711,7 @@ func TestBabysitStep_CommitAndPush_NoChanges_ReconcilesStaleDatabaseHeadSHA(t *t
 	}
 }
 
-func TestBabysitStep_CommitAndPush_UpdatesLocalBranchRefAfterDetachedPush(t *testing.T) {
+func TestCIStep_CommitAndPush_UpdatesLocalBranchRefAfterDetachedPush(t *testing.T) {
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
 
@@ -2734,14 +2734,14 @@ func TestBabysitStep_CommitAndPush_UpdatesLocalBranchRefAfterDetachedPush(t *tes
 	originalHeadSHA := gitCmd(t, dir, "rev-parse", "HEAD")
 	gitCmd(t, dir, "push", "origin", "feature")
 	gitCmd(t, dir, "checkout", "--detach", originalHeadSHA)
-	os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("babysit fix"), 0o644)
+	os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("ci fix"), 0o644)
 
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, originalHeadSHA, config.Commands{})
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
 
-	step := &BabysitStep{}
+	step := &CIStep{}
 	err := step.commitAndPush(sctx)
 	if err != nil {
 		t.Fatal(err)
@@ -3233,21 +3233,21 @@ func TestReviewStep_DismissedFindingsSanitizesPromptContent(t *testing.T) {
 	}
 }
 
-// --- babysit Execute tests ---
+// --- CI Execute tests ---
 
-// fakeBabysitGH creates a fake gh binary that responds to babysit-related
+// fakeCIGH creates a fake gh binary that responds to CI-related
 // commands (pr view --json state, pr checks --json, pr view --json comments).
-func fakeBabysitGH(t *testing.T, state, checksJSON string) string {
+func fakeCIGH(t *testing.T, state, checksJSON string) string {
 	t.Helper()
 	binDir := fakeCLIBinDir(t)
 	linkTestBinary(t, binDir, "gh")
-	t.Setenv("FAKE_CLI_MODE", "babysit-gh")
+	t.Setenv("FAKE_CLI_MODE", "ci-gh")
 	t.Setenv("FAKE_CLI_STATE", state)
 	t.Setenv("FAKE_CLI_CHECKS", checksJSON)
 	return binDir
 }
 
-func fakeBabysitGHSequence(t *testing.T, state string, checks []string) string {
+func fakeCIGHSequence(t *testing.T, state string, checks []string) string {
 	t.Helper()
 	binDir := fakeCLIBinDir(t)
 	linkTestBinary(t, binDir, "gh")
@@ -3262,37 +3262,37 @@ func fakeBabysitGHSequence(t *testing.T, state string, checks []string) string {
 		t.Fatalf("write checks index: %v", err)
 	}
 
-	t.Setenv("FAKE_CLI_MODE", "babysit-gh-seq")
+	t.Setenv("FAKE_CLI_MODE", "ci-gh-seq")
 	t.Setenv("FAKE_CLI_STATE", state)
 	t.Setenv("FAKE_CLI_CHECKS_PATH", checksPath)
 	t.Setenv("FAKE_CLI_CHECKS_INDEX_PATH", indexPath)
 	return binDir
 }
 
-func fakeBabysitGHNoChecks(t *testing.T) string {
+func fakeCIGHNoChecks(t *testing.T) string {
 	t.Helper()
 	binDir := fakeCLIBinDir(t)
 	linkTestBinary(t, binDir, "gh")
-	t.Setenv("FAKE_CLI_MODE", "babysit-gh-nochecks")
+	t.Setenv("FAKE_CLI_MODE", "ci-gh-nochecks")
 	return binDir
 }
 
-func TestBabysitStep_PRMergedExitsEarly(t *testing.T) {
+func TestCIStep_PRMergedExitsEarly(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
-	binDir := fakeBabysitGH(t, "MERGED", "[]")
+	binDir := fakeCIGH(t, "MERGED", "[]")
 	prependPATH(t, binDir)
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Run.PRURL = &prURL
-	sctx.Config.BabysitTimeout = 10 * time.Second
+	sctx.Config.CITimeout = 10 * time.Second
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
-	step := &BabysitStep{}
+	step := &CIStep{}
 	outcome, err := step.Execute(sctx)
 	if err != nil {
 		t.Fatal(err)
@@ -3313,22 +3313,22 @@ func TestBabysitStep_PRMergedExitsEarly(t *testing.T) {
 	}
 }
 
-func TestBabysitStep_PRClosedExitsEarly(t *testing.T) {
+func TestCIStep_PRClosedExitsEarly(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
-	binDir := fakeBabysitGH(t, "CLOSED", "[]")
+	binDir := fakeCIGH(t, "CLOSED", "[]")
 	prependPATH(t, binDir)
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Run.PRURL = &prURL
-	sctx.Config.BabysitTimeout = 10 * time.Second
+	sctx.Config.CITimeout = 10 * time.Second
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
-	step := &BabysitStep{}
+	step := &CIStep{}
 	outcome, err := step.Execute(sctx)
 	if err != nil {
 		t.Fatal(err)
@@ -3349,11 +3349,11 @@ func TestBabysitStep_PRClosedExitsEarly(t *testing.T) {
 	}
 }
 
-func TestBabysitStep_GetCIChecksNoChecksReported(t *testing.T) {
-	binDir := fakeBabysitGHNoChecks(t)
+func TestCIStep_GetCIChecksNoChecksReported(t *testing.T) {
+	binDir := fakeCIGHNoChecks(t)
 	prependPATH(t, binDir)
 
-	step := &BabysitStep{}
+	step := &CIStep{}
 	checks, err := step.getCIChecks(context.Background(), t.TempDir(), "42")
 	if err != nil {
 		t.Fatalf("expected no error when gh reports no checks, got: %v", err)
@@ -3363,7 +3363,7 @@ func TestBabysitStep_GetCIChecksNoChecksReported(t *testing.T) {
 	}
 }
 
-func TestBabysitStep_CIFailureAutoFix(t *testing.T) {
+func TestCIStep_CIFailureAutoFix(t *testing.T) {
 	// Set up upstream bare repo for push
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
@@ -3388,7 +3388,7 @@ func TestBabysitStep_CIFailureAutoFix(t *testing.T) {
 	gitCmd(t, dir, "push", "origin", "feature")
 
 	checksJSON := `[{"name":"build","status":"COMPLETED","conclusion":"success"},{"name":"test","status":"COMPLETED","conclusion":"failure"}]`
-	binDir := fakeBabysitGH(t, "OPEN", checksJSON)
+	binDir := fakeCIGH(t, "OPEN", checksJSON)
 	prependPATH(t, binDir)
 
 	agentCalled := false
@@ -3407,8 +3407,8 @@ func TestBabysitStep_CIFailureAutoFix(t *testing.T) {
 	sctx.Run.PRURL = &prURL
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
-	sctx.Config.BabysitTimeout = 30 * time.Second
-	sctx.Config.AutoFix = config.AutoFix{Babysit: 3}
+	sctx.Config.CITimeout = 30 * time.Second
+	sctx.Config.AutoFix = config.AutoFix{CI: 3}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -3418,7 +3418,7 @@ func TestBabysitStep_CIFailureAutoFix(t *testing.T) {
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
 	pollCount := 0
-	step := &BabysitStep{
+	step := &CIStep{
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
 			if pollCount == 2 {
@@ -3452,27 +3452,27 @@ func TestBabysitStep_CIFailureAutoFix(t *testing.T) {
 	}
 }
 
-func TestBabysitStep_AllChecksPassingExitsCleanly(t *testing.T) {
+func TestCIStep_AllChecksPassingExitsCleanly(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	checksSequence := []string{
 		`[{"name":"build","state":"PENDING","bucket":"pending"}]`,
 		`[{"name":"build","state":"SUCCESS","bucket":"pass"},{"name":"test","state":"SUCCESS","bucket":"pass"}]`,
 	}
-	binDir := fakeBabysitGHSequence(t, "OPEN", checksSequence)
+	binDir := fakeCIGHSequence(t, "OPEN", checksSequence)
 	prependPATH(t, binDir)
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Run.PRURL = &prURL
-	sctx.Config.BabysitTimeout = 10 * time.Second
+	sctx.Config.CITimeout = 10 * time.Second
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
 	pollCount := 0
-	step := &BabysitStep{
+	step := &CIStep{
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
 			return nil
@@ -3501,18 +3501,18 @@ func TestBabysitStep_AllChecksPassingExitsCleanly(t *testing.T) {
 	}
 }
 
-func TestBabysitStep_EmptyChecksWaitsDuringGracePeriod(t *testing.T) {
+func TestCIStep_EmptyChecksWaitsDuringGracePeriod(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	// Fake gh returns OPEN state, empty checks, no comments
-	binDir := fakeBabysitGH(t, "OPEN", "[]")
+	binDir := fakeCIGH(t, "OPEN", "[]")
 	prependPATH(t, binDir)
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Run.PRURL = &prURL
-	sctx.Config.BabysitTimeout = 5 * time.Second
+	sctx.Config.CITimeout = 5 * time.Second
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
@@ -3521,7 +3521,7 @@ func TestBabysitStep_EmptyChecksWaitsDuringGracePeriod(t *testing.T) {
 	current := started
 	var waits []time.Duration
 
-	step := &BabysitStep{
+	step := &CIStep{
 		checksGracePeriod:    200 * time.Millisecond,
 		pollIntervalOverride: 75 * time.Millisecond,
 		now:                  func() time.Time { return current },
@@ -3539,7 +3539,7 @@ func TestBabysitStep_EmptyChecksWaitsDuringGracePeriod(t *testing.T) {
 		t.Error("expected no approval needed")
 	}
 	if elapsed := current.Sub(started); elapsed < 200*time.Millisecond {
-		t.Errorf("babysit exited in %v, expected to wait at least 200ms grace period", elapsed)
+		t.Errorf("CI exited in %v, expected to wait at least 200ms grace period", elapsed)
 	}
 	if len(waits) != 3 {
 		t.Fatalf("expected 3 grace-period waits, got %v", waits)
@@ -3549,41 +3549,41 @@ func TestBabysitStep_EmptyChecksWaitsDuringGracePeriod(t *testing.T) {
 			t.Fatalf("expected 75ms waits during grace period, got %v", waits)
 		}
 	}
-	// Should exit via grace period expiry, not babysit timeout
+	// Should exit via grace period expiry, not CI timeout
 	for _, l := range logs {
-		if strings.Contains(l, "babysit timeout reached") {
-			t.Fatal("expected exit via grace period expiry, not babysit timeout")
+		if strings.Contains(l, "CI timeout reached") {
+			t.Fatal("expected exit via grace period expiry, not CI timeout")
 		}
 	}
 	found := false
 	for _, l := range logs {
-		if strings.Contains(l, "babysit complete") {
+		if strings.Contains(l, "CI monitoring complete") {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatalf("expected 'babysit complete' log, got: %v", logs)
+		t.Fatalf("expected 'CI monitoring complete' log, got: %v", logs)
 	}
 }
 
-func TestBabysitStep_LogsWaitingForChecksDuringGracePeriod(t *testing.T) {
+func TestCIStep_LogsWaitingForChecksDuringGracePeriod(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
-	binDir := fakeBabysitGH(t, "OPEN", "[]")
+	binDir := fakeCIGH(t, "OPEN", "[]")
 	prependPATH(t, binDir)
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Run.PRURL = &prURL
-	sctx.Config.BabysitTimeout = 5 * time.Second
+	sctx.Config.CITimeout = 5 * time.Second
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
 	current := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
-	step := &BabysitStep{
+	step := &CIStep{
 		checksGracePeriod:    50 * time.Millisecond,
 		pollIntervalOverride: 10 * time.Millisecond,
 		now:                  func() time.Time { return current },
@@ -3608,24 +3608,24 @@ func TestBabysitStep_LogsWaitingForChecksDuringGracePeriod(t *testing.T) {
 	}
 }
 
-func TestBabysitStep_NonEmptyPassingChecksExitImmediately(t *testing.T) {
+func TestCIStep_NonEmptyPassingChecksExitImmediately(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	checksJSON := `[{"name":"build","state":"SUCCESS","bucket":"pass"}]`
-	binDir := fakeBabysitGH(t, "OPEN", checksJSON)
+	binDir := fakeCIGH(t, "OPEN", checksJSON)
 	prependPATH(t, binDir)
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Run.PRURL = &prURL
-	sctx.Config.BabysitTimeout = 10 * time.Second
+	sctx.Config.CITimeout = 10 * time.Second
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
 	// Even with a long grace period, non-empty passing checks should exit immediately
-	step := &BabysitStep{checksGracePeriod: 10 * time.Second}
+	step := &CIStep{checksGracePeriod: 10 * time.Second}
 	started := time.Now()
 	outcome, err := step.Execute(sctx)
 	elapsed := time.Since(started)
@@ -3722,7 +3722,7 @@ func TestPRStep_AgentScopedBreakingTitlePassesThrough(t *testing.T) {
 	}
 }
 
-func TestBabysitStep_CIAutoFixDisabledWithZero(t *testing.T) {
+func TestCIStep_CIAutoFixDisabledWithZero(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	checksJSON := `[
@@ -3731,7 +3731,7 @@ func TestBabysitStep_CIAutoFixDisabledWithZero(t *testing.T) {
 		{"name":"lint","status":"COMPLETED","conclusion":"action_required"},
 		{"name":"deploy","status":"COMPLETED","conclusion":"neutral"}
 	]`
-	binDir := fakeBabysitGH(t, "OPEN", checksJSON)
+	binDir := fakeCIGH(t, "OPEN", checksJSON)
 	prependPATH(t, binDir)
 
 	ag := &mockAgent{name: "test"}
@@ -3739,15 +3739,15 @@ func TestBabysitStep_CIAutoFixDisabledWithZero(t *testing.T) {
 	prURL := "https://github.com/test/repo/pull/42"
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Run.PRURL = &prURL
-	sctx.Config.BabysitTimeout = 5 * time.Second
-	sctx.Config.AutoFix = config.AutoFix{Babysit: 0} // disabled
-	sctx.Config.BabysitTimeout = 3 * time.Second
+	sctx.Config.CITimeout = 5 * time.Second
+	sctx.Config.AutoFix = config.AutoFix{CI: 0} // disabled
+	sctx.Config.CITimeout = 3 * time.Second
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
 	pollCount := 0
-	step := &BabysitStep{
+	step := &CIStep{
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
 			return nil
@@ -3758,7 +3758,7 @@ func TestBabysitStep_CIAutoFixDisabledWithZero(t *testing.T) {
 		t.Fatalf("expected approval outcome, got error: %v", err)
 	}
 	if !outcome.NeedsApproval {
-		t.Fatal("expected approval needed when babysit auto-fix is disabled")
+		t.Fatal("expected approval needed when CI auto-fix is disabled")
 	}
 	if outcome.AutoFixable {
 		t.Fatal("expected manual intervention outcome to be non-auto-fixable")
@@ -3783,7 +3783,7 @@ func TestBabysitStep_CIAutoFixDisabledWithZero(t *testing.T) {
 
 	// Agent should NOT have been called
 	if len(ag.calls) > 0 {
-		t.Errorf("expected no agent calls when babysit_ci=0, got %d", len(ag.calls))
+		t.Errorf("expected no agent calls when ci=0, got %d", len(ag.calls))
 	}
 
 	// Should log that auto-fix is disabled
@@ -3799,7 +3799,7 @@ func TestBabysitStep_CIAutoFixDisabledWithZero(t *testing.T) {
 	}
 }
 
-func TestBabysitStep_CIAutoFixLimitExhausted(t *testing.T) {
+func TestCIStep_CIAutoFixLimitExhausted(t *testing.T) {
 	// Set up upstream bare repo for push
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
@@ -3824,7 +3824,7 @@ func TestBabysitStep_CIAutoFixLimitExhausted(t *testing.T) {
 	gitCmd(t, dir, "push", "origin", "feature")
 
 	checksJSON := `[{"name":"test","status":"COMPLETED","conclusion":"failure","bucket":"fail"}]`
-	binDir := fakeBabysitGH(t, "OPEN", checksJSON)
+	binDir := fakeCIGH(t, "OPEN", checksJSON)
 	prependPATH(t, binDir)
 
 	fixCount := 0
@@ -3843,14 +3843,14 @@ func TestBabysitStep_CIAutoFixLimitExhausted(t *testing.T) {
 	sctx.Run.PRURL = &prURL
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
-	sctx.Config.BabysitTimeout = 30 * time.Second
-	sctx.Config.AutoFix = config.AutoFix{Babysit: 1} // only 1 attempt allowed
+	sctx.Config.CITimeout = 30 * time.Second
+	sctx.Config.AutoFix = config.AutoFix{CI: 1} // only 1 attempt allowed
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
 	pollCount := 0
-	step := &BabysitStep{
+	step := &CIStep{
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
 			return nil
@@ -3861,10 +3861,10 @@ func TestBabysitStep_CIAutoFixLimitExhausted(t *testing.T) {
 		t.Fatalf("expected approval outcome, got error: %v", err)
 	}
 	if !outcome.NeedsApproval {
-		t.Fatal("expected approval needed when babysit auto-fix limit is exhausted")
+		t.Fatal("expected approval needed when CI auto-fix limit is exhausted")
 	}
 	if outcome.AutoFixable {
-		t.Fatal("expected exhausted babysit outcome to be non-auto-fixable")
+		t.Fatal("expected exhausted CI outcome to be non-auto-fixable")
 	}
 
 	// Agent should have been called exactly once (limit is 1)
@@ -3888,7 +3888,7 @@ func TestBabysitStep_CIAutoFixLimitExhausted(t *testing.T) {
 	}
 }
 
-func TestBabysitStep_CIAutoFixRetriesAfterChecksRerun(t *testing.T) {
+func TestCIStep_CIAutoFixRetriesAfterChecksRerun(t *testing.T) {
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
 
@@ -3918,7 +3918,7 @@ func TestBabysitStep_CIAutoFixRetriesAfterChecksRerun(t *testing.T) {
 		`[{"name":"test","status":"IN_PROGRESS","bucket":"pending"}]`,
 		`[{"name":"test","status":"COMPLETED","conclusion":"failure","bucket":"fail"}]`,
 	}
-	binDir := fakeBabysitGHSequence(t, "OPEN", checksSequence)
+	binDir := fakeCIGHSequence(t, "OPEN", checksSequence)
 	prependPATH(t, binDir)
 
 	fixCount := 0
@@ -3936,14 +3936,14 @@ func TestBabysitStep_CIAutoFixRetriesAfterChecksRerun(t *testing.T) {
 	sctx.Run.PRURL = &prURL
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
-	sctx.Config.BabysitTimeout = 10 * time.Second
-	sctx.Config.AutoFix = config.AutoFix{Babysit: 2}
+	sctx.Config.CITimeout = 10 * time.Second
+	sctx.Config.AutoFix = config.AutoFix{CI: 2}
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
 	pollCount := 0
-	step := &BabysitStep{
+	step := &CIStep{
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
 			return nil
@@ -3957,7 +3957,7 @@ func TestBabysitStep_CIAutoFixRetriesAfterChecksRerun(t *testing.T) {
 		t.Fatal("expected approval after exhausting rerun-backed retries")
 	}
 	if outcome.AutoFixable {
-		t.Fatal("expected exhausted babysit outcome to be non-auto-fixable")
+		t.Fatal("expected exhausted CI outcome to be non-auto-fixable")
 	}
 	if fixCount != 2 {
 		t.Fatalf("expected 2 auto-fix attempts after reruns, got %d", fixCount)
@@ -3978,7 +3978,7 @@ func TestBabysitStep_CIAutoFixRetriesAfterChecksRerun(t *testing.T) {
 	}
 }
 
-func TestBabysitStep_FixMode_ManualInterventionRunsCIFix(t *testing.T) {
+func TestCIStep_FixMode_ManualInterventionRunsCIFix(t *testing.T) {
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
 
@@ -4002,7 +4002,7 @@ func TestBabysitStep_FixMode_ManualInterventionRunsCIFix(t *testing.T) {
 	gitCmd(t, dir, "push", "origin", "feature")
 
 	checksJSON := `[{"name":"test","status":"COMPLETED","conclusion":"failure","bucket":"fail"}]`
-	binDir := fakeBabysitGH(t, "OPEN", checksJSON)
+	binDir := fakeCIGH(t, "OPEN", checksJSON)
 	prependPATH(t, binDir)
 
 	fixCount := 0
@@ -4032,8 +4032,8 @@ func TestBabysitStep_FixMode_ManualInterventionRunsCIFix(t *testing.T) {
 	sctx.Run.PRURL = &prURL
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
-	sctx.Config.BabysitTimeout = 30 * time.Second
-	sctx.Config.AutoFix = config.AutoFix{Babysit: 0}
+	sctx.Config.CITimeout = 30 * time.Second
+	sctx.Config.AutoFix = config.AutoFix{CI: 0}
 	sctx.Fixing = true
 	sctx.PreviousFindings = string(findingsJSON)
 
@@ -4042,7 +4042,7 @@ func TestBabysitStep_FixMode_ManualInterventionRunsCIFix(t *testing.T) {
 	sctx.Ctx = ctx
 
 	pollCount := 0
-	step := &BabysitStep{
+	step := &CIStep{
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
 			if pollCount == 2 {
