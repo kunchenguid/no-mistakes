@@ -200,23 +200,6 @@ func TestRenderPipelineView_ConnectorsBetweenSteps(t *testing.T) {
 	}
 }
 
-func TestRenderPipelineView_ApprovalPrompt(t *testing.T) {
-	run := testRun()
-	run.Steps[0].Status = types.StepStatusAwaitingApproval
-
-	// Action bar is now rendered outside the pipeline box per DESIGN.md.
-	out := renderActionBar(run.Steps, true, true, false, 5, 5, false, true)
-	if !strings.Contains(out, "awaiting action") {
-		t.Error("expected approval prompt")
-	}
-	if !strings.Contains(stripANSI(out), "a approve") {
-		t.Error("expected action keys")
-	}
-	if !strings.Contains(stripANSI(out), "f fix") {
-		t.Error("expected fix action when findings are selected")
-	}
-}
-
 func TestRenderPipelineView_Error(t *testing.T) {
 	run := testRun()
 	run.Error = ptr("something broke")
@@ -3295,6 +3278,12 @@ func TestActionBar_IncludesAwaitingLabel(t *testing.T) {
 	// The "awaiting action:" label should appear outside the pipeline box.
 	if !strings.Contains(view, "Review awaiting action") {
 		t.Error("expected 'Review awaiting action' label in view")
+	}
+	if !strings.Contains(view, "a approve") {
+		t.Error("expected approve action key in full view")
+	}
+	if !strings.Contains(view, "f fix") {
+		t.Error("expected fix action in full view when findings are selected")
 	}
 
 	// It should NOT be inside the pipeline box.
