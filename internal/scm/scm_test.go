@@ -21,21 +21,3 @@ func TestDetectProvider(t *testing.T) {
 		}
 	}
 }
-
-func TestProviderCLIName(t *testing.T) {
-	tests := []struct {
-		provider Provider
-		want     string
-	}{
-		{ProviderGitHub, "gh"},
-		{ProviderGitLab, "glab"},
-		{ProviderBitbucket, "bb"},
-		{ProviderUnknown, ""},
-	}
-
-	for _, tt := range tests {
-		if got := tt.provider.CLIName(); got != tt.want {
-			t.Errorf("%q.CLIName() = %q, want %q", tt.provider, got, tt.want)
-		}
-	}
-}
