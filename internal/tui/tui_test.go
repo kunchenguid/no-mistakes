@@ -5603,6 +5603,70 @@ func TestModel_FixingEventDoesNotFreezeDuration(t *testing.T) {
 	t.Fatal("Review step not found")
 }
 
+// Test: When a step already has DurationMS persisted (e.g. from AwaitingApproval)
+// and then transitions to Fixing, the stale DurationMS must be cleared and the
+// live timer must accumulate from the previous execution time.
+func TestModel_FixingEventClearsStaleDuration(t *testing.T) {
+	configureTUIColors()
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusRunning
+
+	m := NewModel("", nil, run)
+	m.stepStartTimes[types.StepReview] = time.Now().Add(-10 * time.Second)
+
+	// Simulate step entering AwaitingApproval with 10s of persisted execution time.
+	awaitingStatus := string(types.StepStatusAwaitingApproval)
+	stepName := types.StepReview
+	dur := int64(10000)
+	m.applyEvent(ipc.Event{
+		Type:       ipc.EventStepCompleted,
+		StepName:   &stepName,
+		Status:     &awaitingStatus,
+		DurationMS: &dur,
+	})
+
+	// Verify duration was persisted.
+	for _, s := range m.steps {
+		if s.StepName == types.StepReview && s.DurationMS == nil {
+			t.Fatal("expected DurationMS to be set after AwaitingApproval event")
+		}
+	}
+
+	// Now simulate user pressing fix - step transitions to Fixing.
+	fixingStatus := string(types.StepStatusFixing)
+	m.applyEvent(ipc.Event{
+		Type:     ipc.EventStepCompleted,
+		StepName: &stepName,
+		Status:   &fixingStatus,
+	})
+
+	// DurationMS must be nil so stepsWithRunningElapsed computes live elapsed.
+	for _, s := range m.steps {
+		if s.StepName == types.StepReview {
+			if s.DurationMS != nil {
+				t.Errorf("expected DurationMS to be cleared when entering Fixing, got %d", *s.DurationMS)
+			}
+			break
+		}
+	}
+
+	// stepsWithRunningElapsed should accumulate: the 10s of prior execution
+	// plus a small amount of wall time since the Fixing event.
+	elapsed := m.stepsWithRunningElapsed()
+	for _, s := range elapsed {
+		if s.StepName == types.StepReview {
+			if s.DurationMS == nil {
+				t.Fatal("expected stepsWithRunningElapsed to compute live elapsed for Fixing step")
+			}
+			if *s.DurationMS < 9500 || *s.DurationMS > 11000 {
+				t.Errorf("expected accumulated elapsed ~10000ms, got %dms", *s.DurationMS)
+			}
+			return
+		}
+	}
+	t.Fatal("Review step not found")
+}
+
 func TestRenderDiff_BlankLineBetweenFiles(t *testing.T) {
 	// Multi-file diff should have a blank line before the second file header.
 	raw := `diff --git a/foo.go b/foo.go
