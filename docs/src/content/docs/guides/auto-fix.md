@@ -37,7 +37,7 @@ Repo config overlays global config - you can set `auto_fix.lint: 5` in a repo's 
 
 Some review findings are marked `requires_human_review: true` by the agent. These findings always require manual approval regardless of the auto-fix limit. They are never auto-fixed.
 
-This is meant for intentional product or design changes, or cases where the natural fix would remove, revert, or substantially reduce code the author added on purpose. Routine correctness, reliability, or security fixes can still stay auto-fixable even if the smallest fix reintroduces a small amount of previously deleted logic.
+This is meant for intentional product or design changes, or cases where the natural fix would remove, revert, or substantially reduce code the author added on purpose, or would undo an intentional deletion for non-correctness reasons. Routine correctness, reliability, or security fixes can still stay auto-fixable even if the smallest fix reintroduces a small amount of previously deleted logic.
 
 ## User-triggered fixes
 
