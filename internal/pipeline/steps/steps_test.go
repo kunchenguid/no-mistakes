@@ -2199,46 +2199,8 @@ func TestPRStep_UsesAgentGeneratedTitleAndBody(t *testing.T) {
 	binDir, logFile := fakeGH(t, "")
 	prependPATH(t, binDir)
 
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			payload := json.RawMessage(`{"title":"fix: improve pipeline header UX","body":"## Summary\n\n- keep branch status readable\n- fix footer truncation"}`)
-			return &agent.Result{Output: payload}, nil
-		},
-	}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-
-	step := &PRStep{}
-	if _, err := step.Execute(sctx); err != nil {
-		t.Fatal(err)
-	}
-	if len(ag.calls) != 1 {
-		t.Fatalf("expected 1 agent call, got %d", len(ag.calls))
-	}
-
-	logData, err := os.ReadFile(logFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ghLog := string(logData)
-	if !strings.Contains(ghLog, "--title fix: improve pipeline header UX") {
-		t.Fatalf("expected generated PR title in gh call, got:\n%s", ghLog)
-	}
-	if !strings.Contains(ghLog, "keep branch status readable") {
-		t.Fatalf("expected generated PR body in gh call, got:\n%s", ghLog)
-	}
-	if strings.Contains(ghLog, "--title feature") {
-		t.Fatalf("expected PR title to avoid raw branch name, got:\n%s", ghLog)
-	}
-}
-
-func TestPRStep_AppendsRiskOutsideSummaryList(t *testing.T) {
-	dir, baseSHA, headSHA := setupGitRepo(t)
-
-	binDir, logFile := fakeGH(t, "")
-	prependPATH(t, binDir)
-
 	findings := `{"findings":[],"summary":"clean","risk_level":"medium","risk_rationale":"touches critical error handling"}`
+
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
@@ -2262,14 +2224,26 @@ func TestPRStep_AppendsRiskOutsideSummaryList(t *testing.T) {
 	if _, err := step.Execute(sctx); err != nil {
 		t.Fatal(err)
 	}
+	if len(ag.calls) != 1 {
+		t.Fatalf("expected 1 agent call, got %d", len(ag.calls))
+	}
 
 	logData, err := os.ReadFile(logFile)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ghLog := string(logData)
+	if !strings.Contains(ghLog, "--title fix: improve pipeline header UX") {
+		t.Fatalf("expected generated PR title in gh call, got:\n%s", ghLog)
+	}
+	if !strings.Contains(ghLog, "keep branch status readable") {
+		t.Fatalf("expected generated PR body in gh call, got:\n%s", ghLog)
+	}
 	if !strings.Contains(ghLog, "fix footer truncation\n\n⚠️ medium: touches critical error handling") {
-		t.Fatalf("expected risk note to be separated from summary list, got:\n%s", ghLog)
+		t.Fatalf("expected risk note to be separated from generated summary list, got:\n%s", ghLog)
+	}
+	if strings.Contains(ghLog, "--title feature") {
+		t.Fatalf("expected PR title to avoid raw branch name, got:\n%s", ghLog)
 	}
 }
 
