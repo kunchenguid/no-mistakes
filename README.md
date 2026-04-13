@@ -175,8 +175,16 @@ agent_path_override:
   rovodev: /usr/local/bin/acli
   opencode: /usr/local/bin/opencode
 
-# How long the CI step polls checks and PR comments.
+# How long the CI step monitors GitHub checks before timing out.
 ci_timeout: "4h"
+
+# Optional auto-fix attempt limits per step (0 = require approval).
+# auto_fix:
+#   rebase: 0
+#   lint: 3
+#   test: 3
+#   review: 3
+#   ci: 3
 
 # debug | info | warn | error
 log_level: "info"
@@ -211,6 +219,7 @@ ignore_patterns:
 - Repo `agent` overrides global `agent`.
 - `commands` and `ignore_patterns` are repo-only.
 - Missing global config defaults to `agent: claude`, `ci_timeout: 4h`, `log_level: info`.
+- `ci_timeout` replaces `babysit_timeout`, and `auto_fix.ci` replaces `auto_fix.babysit`; legacy keys are still accepted for existing configs.
 - `agent_path_override` changes which binary path is launched for a given agent.
 - Default binaries are `claude`, `codex`, `acli` for `rovodev`, and `opencode`.
 - If `commands.test` is empty, the agent detects and runs relevant tests itself.
