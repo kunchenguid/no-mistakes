@@ -470,6 +470,9 @@ func TestDefaultConfigYAML_MatchesGoDefaults(t *testing.T) {
 	if raw.AutoFix.Babysit == nil || *raw.AutoFix.Babysit != defaults.Babysit {
 		t.Errorf("YAML auto_fix.babysit = %v, Go default = %d", raw.AutoFix.Babysit, defaults.Babysit)
 	}
+	if raw.AutoFix.Rebase == nil || *raw.AutoFix.Rebase != defaults.Rebase {
+		t.Errorf("YAML auto_fix.rebase = %v, Go default = %d", raw.AutoFix.Rebase, defaults.Rebase)
+	}
 }
 
 func TestLoadGlobal_AutoFixDefaults(t *testing.T) {
@@ -479,7 +482,7 @@ func TestLoadGlobal_AutoFixDefaults(t *testing.T) {
 	}
 	// AutoFix should be nil (unset) in GlobalConfig
 	if cfg.AutoFix.Lint != nil || cfg.AutoFix.Test != nil || cfg.AutoFix.Review != nil ||
-		cfg.AutoFix.Babysit != nil {
+		cfg.AutoFix.Babysit != nil || cfg.AutoFix.Rebase != nil {
 		t.Errorf("expected all AutoFix fields to be nil for defaults, got %+v", cfg.AutoFix)
 	}
 }
@@ -578,6 +581,9 @@ func TestMerge_AutoFixDefaults(t *testing.T) {
 	if cfg.AutoFix.Babysit != 3 {
 		t.Errorf("babysit = %d, want 3", cfg.AutoFix.Babysit)
 	}
+	if cfg.AutoFix.Rebase != 0 {
+		t.Errorf("rebase = %d, want 0", cfg.AutoFix.Rebase)
+	}
 }
 
 func TestMerge_AutoFixGlobalOverridesDefaults(t *testing.T) {
@@ -600,6 +606,9 @@ func TestMerge_AutoFixGlobalOverridesDefaults(t *testing.T) {
 	}
 	if cfg.AutoFix.Babysit != 0 {
 		t.Errorf("babysit = %d, want 0 (global override)", cfg.AutoFix.Babysit)
+	}
+	if cfg.AutoFix.Rebase != 0 {
+		t.Errorf("rebase = %d, want 0 (default, no override)", cfg.AutoFix.Rebase)
 	}
 }
 
@@ -631,7 +640,7 @@ func TestMerge_AutoFixRepoOverridesGlobal(t *testing.T) {
 
 func TestAutoFixLimit(t *testing.T) {
 	cfg := &Config{
-		AutoFix: AutoFix{Lint: 5, Test: 2, Review: 0, Babysit: 3},
+		AutoFix: AutoFix{Lint: 5, Test: 2, Review: 0, Babysit: 3, Rebase: 4},
 	}
 	tests := []struct {
 		step types.StepName
@@ -641,9 +650,9 @@ func TestAutoFixLimit(t *testing.T) {
 		{types.StepTest, 2},
 		{types.StepReview, 0},
 		{types.StepBabysit, 3},
+		{types.StepRebase, 4},
 		{types.StepPush, 0},
 		{types.StepPR, 0},
-		{types.StepRebase, 0},
 	}
 	for _, tt := range tests {
 		got := cfg.AutoFixLimit(tt.step)

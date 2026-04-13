@@ -48,33 +48,32 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 		return updateHeadSHA(ctx, sctx)
 	}
 
-	// Normal mode: try all rebases, accumulate conflict findings
-	var allFindings []Finding
-	var allSummaries []string
+	// Normal mode: try all rebases, track which targets had conflicts
+	var conflictTargets []string
+	var conflictFindings []Finding
 	for _, target := range targets {
-		outcome, err := tryRebase(ctx, sctx, target)
+		conflictFiles, err := tryRebase(ctx, sctx, target)
 		if err != nil {
 			return nil, err
 		}
-		if outcome != nil && outcome.Findings != "" {
-			var f Findings
-			if json.Unmarshal([]byte(outcome.Findings), &f) == nil {
-				allFindings = append(allFindings, f.Items...)
-				if f.Summary != "" {
-					allSummaries = append(allSummaries, f.Summary)
-				}
+		if len(conflictFiles) > 0 {
+			conflictTargets = append(conflictTargets, target)
+			for _, file := range conflictFiles {
+				conflictFindings = append(conflictFindings, Finding{
+					Severity:    "warning",
+					File:        file,
+					Description: fmt.Sprintf("merge conflict rebasing onto %s", target),
+				})
 			}
 		}
 	}
 
-	if len(allFindings) > 0 {
-		combined := Findings{
-			Items:   allFindings,
-			Summary: strings.Join(allSummaries, "; "),
-		}
-		findingsJSON, _ := json.Marshal(combined)
+	if len(conflictTargets) > 0 {
+		summary := fmt.Sprintf("conflict rebasing onto %s", strings.Join(conflictTargets, ", "))
+		findingsJSON, _ := json.Marshal(Findings{Items: dedupeRebaseFindings(conflictFindings), Summary: summary})
 		return &pipeline.StepOutcome{
 			NeedsApproval: true,
+			AutoFixable:   true,
 			Findings:      string(findingsJSON),
 		}, nil
 	}
@@ -94,9 +93,9 @@ func rebaseTargets(branch, defaultBranch string) []string {
 	return targets
 }
 
-// tryRebase attempts a rebase onto targetRef. Returns nil outcome on success,
-// or a StepOutcome with conflict findings if conflicts are detected.
-func tryRebase(ctx context.Context, sctx *pipeline.StepContext, targetRef string) (*pipeline.StepOutcome, error) {
+// tryRebase attempts a rebase onto targetRef. Returns conflicted files when the
+// rebase stops on merge conflicts. The rebase is aborted before returning.
+func tryRebase(ctx context.Context, sctx *pipeline.StepContext, targetRef string) ([]string, error) {
 	skip, err := shouldSkipRebase(ctx, sctx, targetRef)
 	if err != nil {
 		return nil, err
@@ -107,20 +106,13 @@ func tryRebase(ctx context.Context, sctx *pipeline.StepContext, targetRef string
 
 	sctx.Log(fmt.Sprintf("rebasing onto %s...", targetRef))
 	if _, err := git.Run(ctx, sctx.WorkDir, "rebase", targetRef); err != nil {
-		// Check for conflict files before aborting
-		conflictFiles := conflictingFiles(ctx, sctx.WorkDir)
+		conflictFiles := rebaseConflictFiles(ctx, sctx.WorkDir)
 		_, _ = git.Run(ctx, sctx.WorkDir, "rebase", "--abort")
 
 		if len(conflictFiles) == 0 {
 			return nil, fmt.Errorf("rebase onto %s: %w", targetRef, err)
 		}
-
-		findings := buildConflictFindings(targetRef, conflictFiles)
-		findingsJSON, _ := json.Marshal(findings)
-		return &pipeline.StepOutcome{
-			NeedsApproval: true,
-			Findings:      string(findingsJSON),
-		}, nil
+		return conflictFiles, nil
 	}
 	return nil, nil
 }
@@ -140,21 +132,21 @@ func rebaseWithAgent(ctx context.Context, sctx *pipeline.StepContext, targetRef 
 		return nil
 	}
 
-	conflictFiles := conflictingFiles(ctx, sctx.WorkDir)
-	if len(conflictFiles) == 0 {
+	if len(rebaseConflictFiles(ctx, sctx.WorkDir)) == 0 {
 		_, _ = git.Run(ctx, sctx.WorkDir, "rebase", "--abort")
-		return fmt.Errorf("rebase onto %s failed (no conflict files detected)", targetRef)
+		return fmt.Errorf("rebase onto %s failed (no conflicts detected)", targetRef)
 	}
-	sctx.Log(fmt.Sprintf("conflicts detected in %d file(s), asking agent to resolve...", len(conflictFiles)))
+	sctx.Log("conflicts detected, asking agent to resolve...")
+	conflictFiles := rebaseConflictFiles(ctx, sctx.WorkDir)
 
 	prompt := fmt.Sprintf(
 		`Resolve git rebase conflicts. The rebase of the current branch onto %s has conflicts.
 
-Conflicting files:
-%s
+Current conflicted files:
+- %s
 
 Instructions:
-- Edit each conflicting file to resolve the conflict markers (<<<<<<< ======= >>>>>>>).
+- Find all conflicting files and resolve the conflict markers (<<<<<<< ======= >>>>>>>).
 - After resolving each file, stage it with: git add <file>
 - After all conflicts are resolved, run: git rebase --continue
 - If additional conflicts arise during rebase --continue, resolve those too.
@@ -163,7 +155,7 @@ Instructions:
 - Return JSON with a single "summary" field describing what you resolved.
 - Keep the summary under 10 words.`,
 		targetRef,
-		strings.Join(conflictFiles, "\n"),
+		strings.Join(conflictFiles, "\n- "),
 	)
 	if sctx.PreviousFindings != "" {
 		prompt += "\n\nPrevious findings:\n" + sctx.PreviousFindings
@@ -239,36 +231,37 @@ func rebaseInProgress(ctx context.Context, workDir string) bool {
 	return false
 }
 
-// conflictingFiles returns the list of files with merge conflicts in the working tree.
-func conflictingFiles(ctx context.Context, workDir string) []string {
+func rebaseConflictFiles(ctx context.Context, workDir string) []string {
 	out, err := git.Run(ctx, workDir, "diff", "--name-only", "--diff-filter=U")
 	if err != nil {
 		return nil
 	}
 	var files []string
-	for _, f := range strings.Split(out, "\n") {
-		f = strings.TrimSpace(f)
-		if f != "" {
-			files = append(files, f)
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
 		}
+		files = append(files, line)
 	}
 	return files
 }
 
-// buildConflictFindings creates a Findings struct from conflict information.
-func buildConflictFindings(targetRef string, files []string) Findings {
-	items := make([]Finding, len(files))
-	for i, f := range files {
-		items[i] = Finding{
-			Severity:    "error",
-			File:        f,
-			Description: fmt.Sprintf("merge conflict during rebase onto %s", targetRef),
+func dedupeRebaseFindings(findings []Finding) []Finding {
+	if len(findings) < 2 {
+		return findings
+	}
+	seen := make(map[string]bool, len(findings))
+	filtered := make([]Finding, 0, len(findings))
+	for _, finding := range findings {
+		key := finding.File + "\x00" + finding.Description
+		if seen[key] {
+			continue
 		}
+		seen[key] = true
+		filtered = append(filtered, finding)
 	}
-	return Findings{
-		Items:   items,
-		Summary: fmt.Sprintf("%d file(s) with merge conflicts rebasing onto %s", len(files), targetRef),
-	}
+	return filtered
 }
 
 // updateHeadSHA syncs the run's head SHA after rebase.
