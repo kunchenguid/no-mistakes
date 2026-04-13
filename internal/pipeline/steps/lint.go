@@ -85,7 +85,8 @@ Task:
 
 Rules:
 - Do not run tests or broader behavioral validation.
-- Focus on lint, format, and static-analysis issues only.`,
+- Focus on lint, format, and static-analysis issues only.
+- Set requires_human_review to false for all findings. Lint findings are objective and do not question the author's intent.`,
 				sctx.Run.Branch,
 				baseSHA,
 				sctx.Run.HeadSHA,

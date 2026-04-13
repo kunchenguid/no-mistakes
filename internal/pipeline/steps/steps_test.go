@@ -1174,8 +1174,8 @@ func TestReviewStep_FixMode(t *testing.T) {
 	if strings.Contains(ag.calls[1].Prompt, "feature code") {
 		t.Error("expected review prompt to avoid embedding diff contents in fix mode")
 	}
-	if !strings.Contains(ag.calls[1].Prompt, "remove, revert, or substantially reduce existing intentional code") {
-		t.Error("expected review prompt requires_human_review to cover revert scenarios")
+	if !strings.Contains(ag.calls[1].Prompt, "challenges the author's intent") {
+		t.Error("expected review prompt requires_human_review to cover intent-challenging scenarios")
 	}
 	if strings.Contains(ag.calls[1].Prompt, "restore, re-add, or undo a deletion that the author made intentionally") {
 		t.Error("expected review prompt not to classify all re-added deleted logic as human review")
@@ -3662,6 +3662,94 @@ func TestReviewFindingsSchema_ValidJSON(t *testing.T) {
 		if !found {
 			t.Errorf("missing required field %q in schema", field)
 		}
+	}
+}
+
+func TestFindingsSchema_RequiresHumanReview(t *testing.T) {
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(findingsSchema, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	props := parsed["properties"].(map[string]interface{})
+	items := props["findings"].(map[string]interface{})["items"].(map[string]interface{})
+	itemProps := items["properties"].(map[string]interface{})
+	if _, ok := itemProps["requires_human_review"]; !ok {
+		t.Error("findingsSchema missing requires_human_review property")
+	}
+	required := items["required"].([]interface{})
+	found := false
+	for _, r := range required {
+		if r.(string) == "requires_human_review" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("findingsSchema does not require requires_human_review at item level")
+	}
+}
+
+func TestReviewFindingsSchema_RequiresHumanReviewAtItemLevel(t *testing.T) {
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(reviewFindingsSchema, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	props := parsed["properties"].(map[string]interface{})
+	items := props["findings"].(map[string]interface{})["items"].(map[string]interface{})
+	required := items["required"].([]interface{})
+	found := false
+	for _, r := range required {
+		if r.(string) == "requires_human_review" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("reviewFindingsSchema does not require requires_human_review at item level")
+	}
+}
+
+func TestTestStep_PromptIncludesRequiresHumanReview(t *testing.T) {
+	dir := t.TempDir()
+	findings := Findings{Items: nil, Summary: "all tests passed"}
+	findingsJSON, _ := json.Marshal(findings)
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: findingsJSON}, nil
+		},
+	}
+	sctx := newTestContext(t, ag, dir, "abc", "def", config.Commands{})
+	step := &TestStep{}
+	if _, err := step.Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(ag.calls) != 1 {
+		t.Fatalf("expected 1 agent call, got %d", len(ag.calls))
+	}
+	if !strings.Contains(ag.calls[0].Prompt, "requires_human_review") {
+		t.Error("expected test prompt to instruct agent about requires_human_review")
+	}
+}
+
+func TestLintStep_PromptIncludesRequiresHumanReview(t *testing.T) {
+	dir := t.TempDir()
+	findings := Findings{Items: nil, Summary: "all clean"}
+	findingsJSON, _ := json.Marshal(findings)
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: findingsJSON}, nil
+		},
+	}
+	sctx := newTestContext(t, ag, dir, "abc", "def", config.Commands{})
+	step := &LintStep{}
+	if _, err := step.Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(ag.calls) != 1 {
+		t.Fatalf("expected 1 agent call, got %d", len(ag.calls))
+	}
+	if !strings.Contains(ag.calls[0].Prompt, "requires_human_review") {
+		t.Error("expected lint prompt to instruct agent about requires_human_review")
 	}
 }
 

@@ -1,6 +1,10 @@
 package types
 
-import "testing"
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+)
 
 func TestParseFindingsJSON_RiskFields(t *testing.T) {
 	raw := `{"findings":[{"severity":"error","description":"bug"}],"risk_level":"high","risk_rationale":"Critical bug."}`
@@ -185,5 +189,17 @@ func TestAutoFixableFindings_NoneHumanReview(t *testing.T) {
 	fixable := AutoFixableFindings(f)
 	if len(fixable.Items) != 2 {
 		t.Errorf("Items count = %d, want 2", len(fixable.Items))
+	}
+}
+
+func TestFinding_RequiresHumanReview_SerializedWhenFalse(t *testing.T) {
+	f := Finding{Severity: "error", Description: "bug", RequiresHumanReview: false}
+	raw, err := json.Marshal(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(raw)
+	if !strings.Contains(s, `"requires_human_review":false`) {
+		t.Errorf("expected requires_human_review to be present when false, got %s", s)
 	}
 }
