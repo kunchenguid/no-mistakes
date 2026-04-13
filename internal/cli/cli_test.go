@@ -533,7 +533,7 @@ func TestAttachRunIDWithUnknownRunReturnsHelpfulError(t *testing.T) {
 	}
 }
 
-func TestDaemonStatusNotRunning(t *testing.T) {
+func TestDaemonStatusAndStopWhenNotRunning(t *testing.T) {
 	nmHome := t.TempDir()
 	t.Setenv("NM_HOME", nmHome)
 	p := paths.WithRoot(nmHome)
@@ -547,6 +547,14 @@ func TestDaemonStatusNotRunning(t *testing.T) {
 	}
 	if !strings.Contains(out, "daemon not running") {
 		t.Errorf("expected 'daemon not running', got: %s", out)
+	}
+
+	out, err = executeCmd("daemon", "stop")
+	if err != nil {
+		t.Fatalf("daemon stop should succeed when daemon is not running: %v\noutput: %s", err, out)
+	}
+	if !strings.Contains(out, "daemon stopped") {
+		t.Errorf("expected 'daemon stopped', got: %s", out)
 	}
 }
 
@@ -586,23 +594,6 @@ func TestDaemonStatusAndStopRunning(t *testing.T) {
 	alive, _ := daemon.IsRunning(p)
 	if alive {
 		t.Error("daemon should not be running after stop")
-	}
-}
-
-func TestDaemonStopNotRunning(t *testing.T) {
-	nmHome := t.TempDir()
-	t.Setenv("NM_HOME", nmHome)
-	p := paths.WithRoot(nmHome)
-	if err := p.EnsureDirs(); err != nil {
-		t.Fatal(err)
-	}
-
-	out, err := executeCmd("daemon", "stop")
-	if err != nil {
-		t.Fatalf("daemon stop should succeed when daemon is not running: %v\noutput: %s", err, out)
-	}
-	if !strings.Contains(out, "daemon stopped") {
-		t.Errorf("expected 'daemon stopped', got: %s", out)
 	}
 }
 
