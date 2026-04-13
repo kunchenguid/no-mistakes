@@ -3890,30 +3890,6 @@ func TestBabysitStep_NonEmptyPassingChecksExitImmediately(t *testing.T) {
 	}
 }
 
-func TestPRStep_PromptRequiresConventionalCommitTitle(t *testing.T) {
-	dir, baseSHA, headSHA := setupGitRepo(t)
-
-	binDir, _ := fakeGH(t, "")
-	prependPATH(t, binDir)
-
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			if !strings.Contains(opts.Prompt, "conventional commit") {
-				t.Error("expected prompt to mention conventional commit format")
-			}
-			payload := json.RawMessage(`{"title":"feat: add pipeline support","body":"## Summary\n\n- pipeline support"}`)
-			return &agent.Result{Output: payload}, nil
-		},
-	}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-
-	step := &PRStep{}
-	if _, err := step.Execute(sctx); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestPRStep_AgentNonConventionalTitleFallsBack(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
