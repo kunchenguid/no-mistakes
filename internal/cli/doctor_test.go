@@ -7,25 +7,44 @@ import (
 	"testing"
 )
 
-func TestDoctorBasic(t *testing.T) {
+func TestDoctorSystemSectionHealthyState(t *testing.T) {
 	nmHome := t.TempDir()
 	t.Setenv("NM_HOME", nmHome)
+
+	binDir := t.TempDir()
+	for name, body := range map[string]string{
+		"git": "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  printf 'git version 9.9.9\\n'\n  exit 0\nfi\nexit 1\n",
+		"gh":  "#!/bin/sh\nexit 0\n",
+	} {
+		path := filepath.Join(binDir, name)
+		if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+			t.Fatalf("write fake %s: %v", name, err)
+		}
+	}
+	t.Setenv("PATH", binDir)
 
 	out, err := executeCmd("doctor")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "git") {
-		t.Errorf("doctor output should check git, got: %s", out)
+
+	for _, want := range []string{
+		"System",
+		"git version 9.9.9",
+		"gh",
+		"ok",
+		nmHome,
+		"database",
+		"will be created on first use",
+		"daemon",
+		"stopped",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("doctor output should include %q, got: %s", want, out)
+		}
 	}
-	if !strings.Contains(out, "data directory") {
-		t.Errorf("doctor output should check data directory, got: %s", out)
-	}
-	if !strings.Contains(out, "database") {
-		t.Errorf("doctor output should check database, got: %s", out)
-	}
-	if !strings.Contains(out, "daemon") {
-		t.Errorf("doctor output should check daemon, got: %s", out)
+	if strings.Contains(out, "some checks failed") {
+		t.Fatalf("doctor output should not report failed checks for healthy system state, got: %s", out)
 	}
 }
 
