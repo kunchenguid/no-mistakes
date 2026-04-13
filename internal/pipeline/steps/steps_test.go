@@ -2179,8 +2179,8 @@ func TestPRStep_CreatesNewPR(t *testing.T) {
 	if !strings.Contains(ghLog, "--title chore: add feature --body") {
 		t.Fatalf("expected fallback PR title to use conventional commit format, got:\n%s", ghLog)
 	}
-	if !strings.Contains(ghLog, "add feature\n\n⚠️ medium: touches critical error handling") {
-		t.Fatalf("expected fallback PR body to append risk note outside summary content, got:\n%s", ghLog)
+	if !strings.Contains(ghLog, "add feature\n\n## Risk Assessment\n\n⚠️ Medium: touches critical error handling") {
+		t.Fatalf("expected fallback PR body to append risk note under Risk Assessment heading, got:\n%s", ghLog)
 	}
 
 	// Verify PR URL was stored
@@ -2239,8 +2239,8 @@ func TestPRStep_UsesAgentGeneratedTitleAndBody(t *testing.T) {
 	if !strings.Contains(ghLog, "keep branch status readable") {
 		t.Fatalf("expected generated PR body in gh call, got:\n%s", ghLog)
 	}
-	if !strings.Contains(ghLog, "fix footer truncation\n\n⚠️ medium: touches critical error handling") {
-		t.Fatalf("expected risk note to be separated from generated summary list, got:\n%s", ghLog)
+	if !strings.Contains(ghLog, "fix footer truncation\n\n## Risk Assessment\n\n⚠️ Medium: touches critical error handling") {
+		t.Fatalf("expected risk note under Risk Assessment heading, got:\n%s", ghLog)
 	}
 	if strings.Contains(ghLog, "--title feature") {
 		t.Fatalf("expected PR title to avoid raw branch name, got:\n%s", ghLog)
