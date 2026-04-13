@@ -36,6 +36,7 @@ func (s *ReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 			return nil, fmt.Errorf("review fix requires previous review findings")
 		}
 		sctx.Log("asking agent to fix identified issues...")
+		previousFindings := sanitizedPreviousFindingsForPrompt(sctx.PreviousFindings)
 		fixPrompt := fmt.Sprintf(
 			`Investigate previous review findings and address legitimate ones. 
 
@@ -66,7 +67,7 @@ Previous review findings to address:
 			reviewScope,
 			sctx.Repo.DefaultBranch,
 			ignorePatterns,
-			sctx.PreviousFindings,
+			previousFindings,
 		)
 		result, err := sctx.Agent.Run(ctx, agent.RunOpts{
 			Prompt:     fixPrompt,
@@ -240,7 +241,7 @@ The following findings from a previous review were explicitly dismissed by the u
 }
 
 func sanitizeDismissedFindingDescription(description string) string {
-	description = strings.Join(strings.Fields(description), " ")
+	description = sanitizePromptText(description)
 	if description == "" {
 		return ""
 	}
@@ -249,4 +250,26 @@ func sanitizeDismissedFindingDescription(description string) string {
 		return description
 	}
 	return strings.TrimSpace(description[:maxLen-3]) + "..."
+}
+
+func sanitizedPreviousFindingsForPrompt(raw string) string {
+	findings, err := types.ParseFindingsJSON(raw)
+	if err != nil {
+		return sanitizePromptText(raw)
+	}
+	for i := range findings.Items {
+		findings.Items[i].Description = sanitizePromptText(findings.Items[i].Description)
+	}
+	findings.Summary = sanitizePromptText(findings.Summary)
+	encoded, err := types.MarshalFindingsJSON(findings)
+	if err != nil {
+		return sanitizePromptText(raw)
+	}
+	return encoded
+}
+
+func sanitizePromptText(text string) string {
+	text = strings.NewReplacer("<<<<<<<", " ", "=======", " ", ">>>>>>>", " ").Replace(text)
+	text = strings.Join(strings.Fields(text), " ")
+	return text
 }

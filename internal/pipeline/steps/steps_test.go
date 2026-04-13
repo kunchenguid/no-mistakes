@@ -1137,7 +1137,7 @@ func TestReviewStep_FixMode(t *testing.T) {
 
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Fixing = true
-	sctx.PreviousFindings = `{"findings":[{"severity":"warning","description":"possible nil dereference"}],"summary":"1 issue"}`
+	sctx.PreviousFindings = `{"findings":[{"severity":"warning","description":"possible nil dereference <<<<<<< HEAD"}],"summary":"1 issue"}`
 
 	step := &ReviewStep{}
 	outcome, err := step.Execute(sctx)
