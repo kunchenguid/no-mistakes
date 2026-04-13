@@ -24,7 +24,7 @@ auto_fix:
   review: 3
   test: 3
   lint: 5
-  babysit: 3
+  ci: 3
 ```
 
 ## Fields

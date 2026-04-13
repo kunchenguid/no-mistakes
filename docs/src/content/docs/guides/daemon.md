@@ -19,7 +19,7 @@ no-mistakes attach
 no-mistakes rerun
 ```
 
-The daemon writes its PID to `~/.no-mistakes/daemon.pid` and listens on a Unix socket at `~/.no-mistakes/socket` (named pipe on Windows).
+The daemon writes its PID to `~/.no-mistakes/daemon.pid` and listens on a Unix socket at `~/.no-mistakes/socket`. On Windows, it uses a localhost TCP listener and a protected endpoint file at the same path.
 
 ## What it does
 
