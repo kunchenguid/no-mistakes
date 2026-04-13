@@ -73,7 +73,7 @@ func TestStepLabel(t *testing.T) {
 		{types.StepLint, "Lint"},
 		{types.StepPush, "Push"},
 		{types.StepPR, "PR"},
-		{types.StepBabysit, "Babysit"},
+		{types.StepCI, "CI"},
 	}
 	for _, tt := range tests {
 		if got := stepLabel(tt.name); got != tt.label {
@@ -1669,56 +1669,56 @@ func TestRenderPipelineView_DiffKey(t *testing.T) {
 	}
 }
 
-// --- Babysit view tests ---
+// --- CI view tests ---
 
-func testRunWithBabysit() *ipc.RunInfo {
+func testRunWithCI() *ipc.RunInfo {
 	run := testRun()
 	run.Steps = append(run.Steps, ipc.StepResultInfo{
-		ID: "s6", StepName: types.StepBabysit, StepOrder: 6, Status: types.StepStatusPending,
+		ID: "s6", StepName: types.StepCI, StepOrder: 6, Status: types.StepStatusPending,
 	})
 	return run
 }
 
-func TestIsBabysitActive(t *testing.T) {
-	run := testRunWithBabysit()
+func TestIsCIActive(t *testing.T) {
+	run := testRunWithCI()
 
 	// Pending → not active.
-	if isBabysitActive(run.Steps) {
-		t.Error("expected false when babysit is pending")
+	if isCIActive(run.Steps) {
+		t.Error("expected false when CI is pending")
 	}
 
 	// Running → active.
 	run.Steps[5].Status = types.StepStatusRunning
-	if !isBabysitActive(run.Steps) {
-		t.Error("expected true when babysit is running")
+	if !isCIActive(run.Steps) {
+		t.Error("expected true when CI is running")
 	}
 
 	// Completed → not active.
 	run.Steps[5].Status = types.StepStatusCompleted
-	if isBabysitActive(run.Steps) {
-		t.Error("expected false when babysit is completed")
+	if isCIActive(run.Steps) {
+		t.Error("expected false when CI is completed")
 	}
 }
 
-func TestIsBabysitActive_NoBabysitStep(t *testing.T) {
-	run := testRun() // no babysit step
-	if isBabysitActive(run.Steps) {
-		t.Error("expected false when no babysit step exists")
+func TestIsCIActive_NoCIStep(t *testing.T) {
+	run := testRun() // no CI step
+	if isCIActive(run.Steps) {
+		t.Error("expected false when no CI step exists")
 	}
 }
 
-func TestBabysitStepStatus(t *testing.T) {
-	run := testRunWithBabysit()
+func TestCIStepStatus(t *testing.T) {
+	run := testRunWithCI()
 	run.Steps[5].Status = types.StepStatusRunning
 
-	if got := babysitStepStatus(run.Steps); got != types.StepStatusRunning {
+	if got := ciStepStatus(run.Steps); got != types.StepStatusRunning {
 		t.Errorf("expected running, got %s", got)
 	}
 }
 
-func TestBabysitStepStatus_NoBabysitStep(t *testing.T) {
+func TestCIStepStatus_NoCIStep(t *testing.T) {
 	run := testRun()
-	if got := babysitStepStatus(run.Steps); got != types.StepStatusPending {
+	if got := ciStepStatus(run.Steps); got != types.StepStatusPending {
 		t.Errorf("expected pending (default), got %s", got)
 	}
 }
@@ -1730,15 +1730,15 @@ func TestExtractPRFromLogs(t *testing.T) {
 		want string
 	}{
 		{
-			name: "standard babysit message",
-			logs: []string{"babysitting PR #42 (timeout: 4h)..."},
+			name: "standard CI message",
+			logs: []string{"monitoring CI for PR #42 (timeout: 4h)..."},
 			want: "42",
 		},
 		{
 			name: "multiple logs",
 			logs: []string{
 				"some other log",
-				"babysitting PR #123 (timeout: 4h)...",
+				"monitoring CI for PR #123 (timeout: 4h)...",
 				"CI failures detected",
 			},
 			want: "123",
@@ -1763,24 +1763,24 @@ func TestExtractPRFromLogs(t *testing.T) {
 	}
 }
 
-func TestParseBabysitActivity(t *testing.T) {
+func TestParseCIActivity(t *testing.T) {
 	t.Run("empty logs", func(t *testing.T) {
-		a := parseBabysitActivity(nil)
+		a := parseCIActivity(nil)
 		if a.CIFixes != 0 || a.AutoFixing || a.LastEvent != "" {
 			t.Error("expected zero activity for empty logs")
 		}
 	})
 
 	t.Run("polling", func(t *testing.T) {
-		a := parseBabysitActivity([]string{"babysitting PR #42 (timeout: 4h)..."})
+		a := parseCIActivity([]string{"monitoring CI for PR #42 (timeout: 4h)..."})
 		if a.LastEvent == "" {
 			t.Error("expected last event set")
 		}
 	})
 
 	t.Run("ci failure detected", func(t *testing.T) {
-		a := parseBabysitActivity([]string{
-			"babysitting PR #42 (timeout: 4h)...",
+		a := parseCIActivity([]string{
+			"monitoring CI for PR #42 (timeout: 4h)...",
 			"CI failures detected: test — auto-fixing...",
 		})
 		if a.CIFixes != 1 {
@@ -1792,7 +1792,7 @@ func TestParseBabysitActivity(t *testing.T) {
 	})
 
 	t.Run("ci fix completed", func(t *testing.T) {
-		a := parseBabysitActivity([]string{
+		a := parseCIActivity([]string{
 			"CI failures detected: test — auto-fixing...",
 			"running agent to fix CI failures...",
 			"committed and pushed fixes",
@@ -1806,7 +1806,7 @@ func TestParseBabysitActivity(t *testing.T) {
 	})
 
 	t.Run("multiple ci fixes", func(t *testing.T) {
-		a := parseBabysitActivity([]string{
+		a := parseCIActivity([]string{
 			"CI failures detected: test",
 			"committed and pushed fixes",
 			"CI failures detected: lint",
@@ -1818,8 +1818,8 @@ func TestParseBabysitActivity(t *testing.T) {
 	})
 
 	t.Run("pr merged", func(t *testing.T) {
-		a := parseBabysitActivity([]string{
-			"babysitting PR #42 (timeout: 4h)...",
+		a := parseCIActivity([]string{
+			"monitoring CI for PR #42 (timeout: 4h)...",
 			"PR has been merged!",
 		})
 		if !strings.Contains(a.LastEvent, "merged") {
@@ -1828,57 +1828,57 @@ func TestParseBabysitActivity(t *testing.T) {
 	})
 
 	t.Run("pr closed", func(t *testing.T) {
-		a := parseBabysitActivity([]string{"PR has been closed"})
+		a := parseCIActivity([]string{"PR has been closed"})
 		if !strings.Contains(a.LastEvent, "closed") {
 			t.Error("expected closed as last event")
 		}
 	})
 
 	t.Run("timeout", func(t *testing.T) {
-		a := parseBabysitActivity([]string{"babysit timeout reached"})
+		a := parseCIActivity([]string{"CI timeout reached"})
 		if !strings.Contains(a.LastEvent, "timeout") {
 			t.Error("expected timeout as last event")
 		}
 	})
 }
 
-func TestRenderBabysitView_Monitoring(t *testing.T) {
-	run := testRunWithBabysit()
+func TestRenderCIView_Monitoring(t *testing.T) {
+	run := testRunWithCI()
 	run.Steps[5].Status = types.StepStatusRunning
-	logs := []string{"babysitting PR #42 (timeout: 4h)..."}
+	logs := []string{"monitoring CI for PR #42 (timeout: 4h)..."}
 
-	out := renderBabysitView(run, run.Steps, "", logs, 80)
+	out := renderCIView(run, run.Steps, "", logs, 80)
 
-	if !strings.Contains(stripANSI(out), "Babysit") {
-		t.Error("expected Babysit box title")
+	if !strings.Contains(stripANSI(out), "CI") {
+		t.Error("expected CI box title")
 	}
 	if !strings.Contains(out, "Monitoring") {
 		t.Error("expected monitoring state")
 	}
 }
 
-func TestRenderBabysitView_ShowsPRContextFromURL(t *testing.T) {
-	run := testRunWithBabysit()
+func TestRenderCIView_ShowsPRContextFromURL(t *testing.T) {
+	run := testRunWithCI()
 	run.PRURL = ptr("https://github.com/user/repo/pull/99")
 	run.Steps[5].Status = types.StepStatusRunning
 
-	out := stripANSI(renderBabysitView(run, run.Steps, "", nil, 80))
+	out := stripANSI(renderCIView(run, run.Steps, "", nil, 80))
 
 	if !strings.Contains(out, "PR #99") {
-		t.Fatalf("expected babysit panel to show PR context, got: %s", out)
+		t.Fatalf("expected CI panel to show PR context, got: %s", out)
 	}
 }
 
-func TestRenderBabysitView_AutoFixing(t *testing.T) {
-	run := testRunWithBabysit()
+func TestRenderCIView_AutoFixing(t *testing.T) {
+	run := testRunWithCI()
 	run.Steps[5].Status = types.StepStatusRunning
 	logs := []string{
-		"babysitting PR #42 (timeout: 4h)...",
+		"monitoring CI for PR #42 (timeout: 4h)...",
 		"CI failures detected: test — auto-fixing...",
 		"running agent to fix CI failures...",
 	}
 
-	out := renderBabysitView(run, run.Steps, "", logs, 80)
+	out := renderCIView(run, run.Steps, "", logs, 80)
 
 	if !strings.Contains(out, "Auto-fixing CI") {
 		t.Error("expected auto-fixing state indicator")
@@ -1888,15 +1888,15 @@ func TestRenderBabysitView_AutoFixing(t *testing.T) {
 	}
 }
 
-func TestRenderBabysitView_LastActivity(t *testing.T) {
-	run := testRunWithBabysit()
+func TestRenderCIView_LastActivity(t *testing.T) {
+	run := testRunWithCI()
 	run.Steps[5].Status = types.StepStatusRunning
 	logs := []string{
-		"babysitting PR #42 (timeout: 4h)...",
+		"monitoring CI for PR #42 (timeout: 4h)...",
 		"committed and pushed fixes",
 	}
 
-	out := renderBabysitView(run, run.Steps, "", logs, 80)
+	out := renderCIView(run, run.Steps, "", logs, 80)
 
 	if !strings.Contains(out, "Latest:") {
 		t.Error("expected latest activity line")
@@ -1906,41 +1906,41 @@ func TestRenderBabysitView_LastActivity(t *testing.T) {
 	}
 }
 
-func TestModel_View_BabysitViewWhenActive(t *testing.T) {
-	run := testRunWithBabysit()
+func TestModel_View_CIViewWhenActive(t *testing.T) {
+	run := testRunWithCI()
 	m := NewModel("/tmp/sock", nil, run)
 	m.steps = run.Steps
 	m.steps[5].Status = types.StepStatusRunning
-	m.logs = []string{"babysitting PR #42 (timeout: 4h)..."}
+	m.logs = []string{"monitoring CI for PR #42 (timeout: 4h)..."}
 
 	view := m.View()
 
-	if !strings.Contains(stripANSI(view), "Babysit") {
-		t.Error("expected babysit box in model output")
+	if !strings.Contains(stripANSI(view), "CI") {
+		t.Error("expected CI box in model output")
 	}
 	if !strings.Contains(view, "Monitoring") {
 		t.Error("expected monitoring state in model output")
 	}
 }
 
-func TestModel_View_NonBabysitStepUsesGenericFindings(t *testing.T) {
-	run := testRun() // no babysit step
+func TestModel_View_NonCIStepUsesGenericFindings(t *testing.T) {
+	run := testRun() // no CI step
 	m := NewModel("/tmp/sock", nil, run)
 	m.steps[0].Status = types.StepStatusAwaitingApproval
 	m.stepFindings[types.StepReview] = `{"findings":[{"severity":"error","description":"critical bug"}],"summary":"1 issue"}`
 
 	view := m.View()
 
-	// Should use generic findings, not babysit view.
-	// Check that no "Babysit" titled box appears (only Pipeline/Findings boxes).
-	hasBabysitBox := false
+	// Should use generic findings, not CI view.
+	// Check that no "CI" titled box appears (only Pipeline/Findings boxes).
+	hasCIBox := false
 	for _, line := range strings.Split(stripANSI(view), "\n") {
-		if strings.Contains(line, "╭") && strings.Contains(line, "Babysit") {
-			hasBabysitBox = true
+		if strings.Contains(line, "╭") && strings.Contains(line, "CI") {
+			hasCIBox = true
 		}
 	}
-	if hasBabysitBox {
-		t.Error("expected generic findings view, not babysit box")
+	if hasCIBox {
+		t.Error("expected generic findings view, not CI box")
 	}
 	if !strings.Contains(view, "critical bug") {
 		t.Error("expected generic findings content")
@@ -2239,23 +2239,23 @@ func TestModel_View_FindingsInBox(t *testing.T) {
 	}
 }
 
-func TestRenderBabysitView_WrappedInBox(t *testing.T) {
-	run := testRunWithBabysit()
+func TestRenderCIView_WrappedInBox(t *testing.T) {
+	run := testRunWithCI()
 	run.Steps[5].Status = types.StepStatusRunning
-	logs := []string{"babysitting PR #42 (timeout: 4h)..."}
+	logs := []string{"monitoring CI for PR #42 (timeout: 4h)..."}
 
-	out := stripANSI(renderBabysitView(run, run.Steps, "", logs, 80))
+	out := stripANSI(renderCIView(run, run.Steps, "", logs, 80))
 
-	// Should be wrapped in a box with "Babysit" title per DESIGN.md.
+	// Should be wrapped in a box with "CI" title per DESIGN.md.
 	lines := strings.Split(out, "\n")
 	if len(lines) == 0 {
 		t.Fatal("expected non-empty output")
 	}
-	if !strings.Contains(lines[0], "Babysit") {
-		t.Errorf("expected 'Babysit' title in top border, got %q", lines[0])
+	if !strings.Contains(lines[0], "CI") {
+		t.Errorf("expected 'CI' title in top border, got %q", lines[0])
 	}
 	if !strings.Contains(lines[0], "╭") {
-		t.Error("expected rounded top-left corner in babysit box")
+		t.Error("expected rounded top-left corner in CI box")
 	}
 	// Should have rounded bottom corner.
 	hasBottom := false
@@ -2266,29 +2266,29 @@ func TestRenderBabysitView_WrappedInBox(t *testing.T) {
 		}
 	}
 	if !hasBottom {
-		t.Error("expected rounded bottom border in babysit box")
+		t.Error("expected rounded bottom border in CI box")
 	}
 }
 
-func TestRenderBabysitView_NoRedundantHeader(t *testing.T) {
-	// The box title "Babysit" replaces the old "◉ Babysit Monitor" header.
-	run := testRunWithBabysit()
+func TestRenderCIView_NoRedundantHeader(t *testing.T) {
+	// The box title "CI" replaces the old "◉ CI Monitor" header.
+	run := testRunWithCI()
 	run.Steps[5].Status = types.StepStatusRunning
-	logs := []string{"babysitting PR #42 (timeout: 4h)..."}
+	logs := []string{"monitoring CI for PR #42 (timeout: 4h)..."}
 
-	out := stripANSI(renderBabysitView(run, run.Steps, "", logs, 80))
+	out := stripANSI(renderCIView(run, run.Steps, "", logs, 80))
 
-	if strings.Contains(out, "Babysit Monitor") {
-		t.Error("expected no redundant 'Babysit Monitor' header - box title handles it")
+	if strings.Contains(out, "CI Monitor") {
+		t.Error("expected no redundant 'CI Monitor' header - box title handles it")
 	}
 }
 
-func TestRenderBabysitView_ContentInsideBox(t *testing.T) {
-	run := testRunWithBabysit()
+func TestRenderCIView_ContentInsideBox(t *testing.T) {
+	run := testRunWithCI()
 	run.Steps[5].Status = types.StepStatusRunning
-	logs := []string{"babysitting PR #42 (timeout: 4h)..."}
+	logs := []string{"monitoring CI for PR #42 (timeout: 4h)..."}
 
-	out := stripANSI(renderBabysitView(run, run.Steps, "", logs, 80))
+	out := stripANSI(renderCIView(run, run.Steps, "", logs, 80))
 
 	// State should be inside box borders.
 	foundState := false
@@ -2302,26 +2302,26 @@ func TestRenderBabysitView_ContentInsideBox(t *testing.T) {
 	}
 }
 
-func TestModel_View_BabysitViewInBox(t *testing.T) {
-	run := testRunWithBabysit()
+func TestModel_View_CIViewInBox(t *testing.T) {
+	run := testRunWithCI()
 	m := NewModel("/tmp/sock", nil, run)
 	m.steps = run.Steps
 	m.steps[5].Status = types.StepStatusRunning
-	m.logs = []string{"babysitting PR #42 (timeout: 4h)..."}
+	m.logs = []string{"monitoring CI for PR #42 (timeout: 4h)..."}
 	m.width = 80
 
 	view := stripANSI(m.View())
 
-	// The babysit section should be in a box with "Babysit" title.
-	hasBabysitBox := false
+	// The CI section should be in a box with "CI" title.
+	hasCIBox := false
 	for _, line := range strings.Split(view, "\n") {
-		if strings.Contains(line, "╭") && strings.Contains(line, "Babysit") && !strings.Contains(line, "Pipeline") {
-			hasBabysitBox = true
+		if strings.Contains(line, "╭") && strings.Contains(line, "CI") && !strings.Contains(line, "Pipeline") {
+			hasCIBox = true
 			break
 		}
 	}
-	if !hasBabysitBox {
-		t.Error("expected 'Babysit' titled box in full model view")
+	if !hasCIBox {
+		t.Error("expected 'CI' titled box in full model view")
 	}
 }
 
@@ -2374,8 +2374,8 @@ func TestModel_View_OneBlankLineBetweenSections(t *testing.T) {
 	}
 }
 
-// Spacing between Pipeline and Babysit boxes should also have 1 blank line.
-func TestModel_View_OneBlankLineBetweenPipelineAndBabysit(t *testing.T) {
+// Spacing between Pipeline and CI boxes should also have 1 blank line.
+func TestModel_View_OneBlankLineBetweenPipelineAndCI(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
 	defer lipgloss.SetColorProfile(termenv.ANSI)
 
@@ -2384,12 +2384,12 @@ func TestModel_View_OneBlankLineBetweenPipelineAndBabysit(t *testing.T) {
 		Status: types.RunRunning,
 		Steps: []ipc.StepResultInfo{
 			{ID: "s1", StepName: types.StepReview, StepOrder: 1, Status: types.StepStatusCompleted},
-			{ID: "s2", StepName: types.StepBabysit, StepOrder: 2, Status: types.StepStatusRunning},
+			{ID: "s2", StepName: types.StepCI, StepOrder: 2, Status: types.StepStatusRunning},
 		},
 	}
 	m := NewModel("/tmp/sock", nil, run)
 	m.width = 60
-	m.logs = []string{"babysitting PR #42"}
+	m.logs = []string{"monitoring CI for PR #42"}
 
 	view := m.View()
 	plain := stripANSI(view)
@@ -2988,92 +2988,92 @@ func TestDiffBoxTitle_NoPositionWhenAllVisible(t *testing.T) {
 	}
 }
 
-// --- Babysit box title position indicator tests ---
+// --- CI box title position indicator tests ---
 
-func TestRenderBabysitView_TitleNoPositionWithoutFindings(t *testing.T) {
+func TestRenderCIView_TitleNoPositionWithoutFindings(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.ANSI)
-	run := testRunWithBabysit()
+	run := testRunWithCI()
 	run.Steps[5].Status = types.StepStatusRunning
-	logs := []string{"babysitting PR #42 (timeout: 4h)..."}
+	logs := []string{"monitoring CI for PR #42 (timeout: 4h)..."}
 
-	out := stripANSI(renderBabysitView(run, run.Steps, "", logs, 80))
+	out := stripANSI(renderCIView(run, run.Steps, "", logs, 80))
 	lines := strings.Split(out, "\n")
 
-	// Title should be just "Babysit" without any position indicator.
+	// Title should be just "CI" without any position indicator.
 	titleLine := lines[0]
-	if !strings.Contains(titleLine, "Babysit") {
-		t.Error("expected Babysit in title")
+	if !strings.Contains(titleLine, "CI") {
+		t.Error("expected CI in title")
 	}
 	if strings.Contains(titleLine, "(") {
 		t.Errorf("expected no position indicator when no findings, got: %s", titleLine)
 	}
 }
 
-func TestRenderBabysitView_LogTailDuringMonitoring(t *testing.T) {
+func TestRenderCIView_LogTailDuringMonitoring(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.ANSI)
-	run := testRunWithBabysit()
+	run := testRunWithCI()
 	run.Steps[5].Status = types.StepStatusRunning
 	logs := []string{
-		"babysitting PR #42 (timeout: 4h)...",
+		"monitoring CI for PR #42 (timeout: 4h)...",
 		"polling CI status...",
 		"all checks passing",
 	}
 
-	out := stripANSI(renderBabysitView(run, run.Steps, "", logs, 80))
+	out := stripANSI(renderCIView(run, run.Steps, "", logs, 80))
 
-	// Log tail lines should appear inside the babysit box during monitoring.
+	// Log tail lines should appear inside the CI box during monitoring.
 	if !strings.Contains(out, "polling CI status") {
-		t.Errorf("expected log tail line 'polling CI status' inside babysit box, got:\n%s", out)
+		t.Errorf("expected log tail line 'polling CI status' inside CI box, got:\n%s", out)
 	}
 	if !strings.Contains(out, "all checks passing") {
-		t.Errorf("expected log tail line 'all checks passing' inside babysit box, got:\n%s", out)
+		t.Errorf("expected log tail line 'all checks passing' inside CI box, got:\n%s", out)
 	}
 }
 
-func TestModel_View_NoStandaloneLogBoxDuringBabysit(t *testing.T) {
+func TestModel_View_NoStandaloneLogBoxDuringCI(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.ANSI)
-	run := testRunWithBabysit()
+	run := testRunWithCI()
 	m := NewModel("/tmp/sock", nil, run)
 	m.steps = run.Steps
 	m.steps[5].Status = types.StepStatusRunning
-	m.logs = []string{"babysitting PR #42", "polling CI", "checks passing"}
+	m.logs = []string{"monitoring CI for PR #42", "polling CI", "checks passing"}
 	m.width = 80
 
 	view := stripANSI(m.View())
 
-	// The standalone Log box should NOT appear when babysit is active.
+	// The standalone Log box should NOT appear when CI is active.
 	hasStandaloneLogBox := false
 	for _, line := range strings.Split(view, "\n") {
-		if strings.Contains(line, "╭") && strings.Contains(line, "Log") && !strings.Contains(line, "Babysit") {
+		if strings.Contains(line, "╭") && strings.Contains(line, "Log") && !strings.Contains(line, "CI") {
 			hasStandaloneLogBox = true
 		}
 	}
 	if hasStandaloneLogBox {
-		t.Error("expected no standalone Log box when babysit is active - logs should be inside babysit box")
+		t.Error("expected no standalone Log box when CI is active - logs should be inside CI box")
 	}
 
-	// But log content should still be visible (inside babysit box).
+	// But log content should still be visible (inside CI box).
 	if !strings.Contains(view, "checks passing") {
-		t.Error("expected log content to appear inside babysit box")
+		t.Error("expected log content to appear inside CI box")
 	}
 }
 
-// --- Babysit adaptive log tail ---
+// --- CI adaptive log tail ---
 
-func TestRenderBabysitView_LogTailFillsAvailableHeight(t *testing.T) {
+func TestRenderCIView_LogTailFillsAvailableHeight(t *testing.T) {
 	// Log tail should dynamically fill available height, not use hardcoded line counts.
 	lipgloss.SetColorProfile(termenv.ANSI)
-	run := testRunWithBabysit()
+	run := testRunWithCI()
 	run.Steps[5].Status = types.StepStatusRunning
 
-	manyLogs := []string{"babysitting PR #42 (timeout: 4h)..."}
+	manyLogs := []string{"monitoring CI for PR #42 (timeout: 4h)..."}
 	for i := 1; i <= 30; i++ {
 		manyLogs = append(manyLogs, fmt.Sprintf("log-line-%d", i))
 	}
 
 	// With height=20, more logs should show than with height=10.
-	tall := stripANSI(renderBabysitViewWithSelection(run, run.Steps, "", manyLogs, 80, 20, 0, nil))
-	short := stripANSI(renderBabysitViewWithSelection(run, run.Steps, "", manyLogs, 80, 10, 0, nil))
+	tall := stripANSI(renderCIViewWithSelection(run, run.Steps, "", manyLogs, 80, 20, 0, nil))
+	short := stripANSI(renderCIViewWithSelection(run, run.Steps, "", manyLogs, 80, 10, 0, nil))
 
 	countLogLines := func(s string) int {
 		n := 0
@@ -3093,49 +3093,49 @@ func TestRenderBabysitView_LogTailFillsAvailableHeight(t *testing.T) {
 	}
 }
 
-func TestRenderBabysitView_LogTailTinyStillShowsSome(t *testing.T) {
+func TestRenderCIView_LogTailTinyStillShowsSome(t *testing.T) {
 	// Even with very small height, at least 1 log line should show.
 	lipgloss.SetColorProfile(termenv.ANSI)
-	run := testRunWithBabysit()
+	run := testRunWithCI()
 	run.Steps[5].Status = types.StepStatusRunning
 	logs := []string{
-		"babysitting PR #42 (timeout: 4h)...",
+		"monitoring CI for PR #42 (timeout: 4h)...",
 		"line1",
 		"line2",
 		"all checks passing",
 	}
 
-	out := stripANSI(renderBabysitViewWithSelection(run, run.Steps, "", logs, 80, 10, 0, nil))
+	out := stripANSI(renderCIViewWithSelection(run, run.Steps, "", logs, 80, 10, 0, nil))
 
 	if !strings.Contains(out, "all checks passing") {
 		t.Error("expected at least the last log line even in tiny terminal")
 	}
 }
 
-func TestRenderBabysitView_ZeroHeightOmitsLogTail(t *testing.T) {
+func TestRenderCIView_ZeroHeightOmitsLogTail(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.ANSI)
-	run := testRunWithBabysit()
+	run := testRunWithCI()
 	run.Steps[5].Status = types.StepStatusRunning
 	logs := []string{
-		"babysitting PR #42 (timeout: 4h)...",
+		"monitoring CI for PR #42 (timeout: 4h)...",
 		"polling CI status...",
 		"all checks passing",
 	}
 
-	out := stripANSI(renderBabysitViewWithSelection(run, run.Steps, "", logs, 80, 0, 0, nil))
+	out := stripANSI(renderCIViewWithSelection(run, run.Steps, "", logs, 80, 0, 0, nil))
 
 	if !strings.Contains(out, "Monitoring CI checks") {
-		t.Fatalf("expected babysit status to remain visible, got:\n%s", out)
+		t.Fatalf("expected CI status to remain visible, got:\n%s", out)
 	}
 	if strings.Contains(out, "polling CI status") || strings.Contains(out, "all checks passing") {
-		t.Fatalf("expected zero-height babysit view to omit log tail, got:\n%s", out)
+		t.Fatalf("expected zero-height CI view to omit log tail, got:\n%s", out)
 	}
 }
 
-func TestModel_View_BabysitShortTerminalKeepsStatusPanel(t *testing.T) {
+func TestModel_View_CIShortTerminalKeepsStatusPanel(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
 
-	run := testRunWithBabysit()
+	run := testRunWithCI()
 	run.Steps[5].Status = types.StepStatusRunning
 	run.PRURL = ptr("https://github.com/kunchenguid/no-mistakes/pull/42")
 
@@ -3153,27 +3153,27 @@ func TestModel_View_BabysitShortTerminalKeepsStatusPanel(t *testing.T) {
 	if got := lipgloss.Height(view); got > m.height {
 		t.Fatalf("expected rendered view height <= terminal height (%d), got %d\n%s", m.height, got, view)
 	}
-	if !strings.Contains(view, "Babysit") {
-		t.Fatalf("expected babysit section to remain visible in short terminal\n%s", view)
+	if !strings.Contains(view, "CI") {
+		t.Fatalf("expected CI section to remain visible in short terminal\n%s", view)
 	}
 	if !strings.Contains(view, "Monitoring CI checks") {
-		t.Fatalf("expected babysit status panel to remain visible in short terminal\n%s", view)
+		t.Fatalf("expected CI status panel to remain visible in short terminal\n%s", view)
 	}
 }
 
-func TestRenderBabysitView_LogTailScalesWithHeight(t *testing.T) {
+func TestRenderCIView_LogTailScalesWithHeight(t *testing.T) {
 	// Larger height should show more log lines.
 	lipgloss.SetColorProfile(termenv.ANSI)
-	run := testRunWithBabysit()
+	run := testRunWithCI()
 	run.Steps[5].Status = types.StepStatusRunning
 
-	manyLogs := []string{"babysitting PR #42 (timeout: 4h)..."}
+	manyLogs := []string{"monitoring CI for PR #42 (timeout: 4h)..."}
 	for i := 1; i <= 50; i++ {
 		manyLogs = append(manyLogs, fmt.Sprintf("log-%d", i))
 	}
 
-	tall := stripANSI(renderBabysitViewWithSelection(run, run.Steps, "", manyLogs, 80, 40, 0, nil))
-	compact := stripANSI(renderBabysitViewWithSelection(run, run.Steps, "", manyLogs, 80, 15, 0, nil))
+	tall := stripANSI(renderCIViewWithSelection(run, run.Steps, "", manyLogs, 80, 40, 0, nil))
+	compact := stripANSI(renderCIViewWithSelection(run, run.Steps, "", manyLogs, 80, 15, 0, nil))
 
 	countLogLines := func(s string) int {
 		n := 0
@@ -4554,15 +4554,15 @@ func TestModel_View_LogShortLinesNotTruncated(t *testing.T) {
 	}
 }
 
-func TestRenderBabysitView_LogLongLinesWrapped(t *testing.T) {
+func TestRenderCIView_LogLongLinesWrapped(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
-	run := testRunWithBabysit()
+	run := testRunWithCI()
 	run.Steps[5].Status = types.StepStatusRunning
-	longLog := "babysitting PR #42 (timeout: 4h)..."
+	longLog := "monitoring CI for PR #42 (timeout: 4h)..."
 	longLog2 := "running " + strings.Repeat("y", 200)
 	logs := []string{longLog, longLog2}
 
-	result := stripANSI(renderBabysitView(run, run.Steps, "", logs, 80))
+	result := stripANSI(renderCIView(run, run.Steps, "", logs, 80))
 
 	// No line should exceed the box width (80).
 	for _, line := range strings.Split(result, "\n") {
@@ -4571,12 +4571,12 @@ func TestRenderBabysitView_LogLongLinesWrapped(t *testing.T) {
 		}
 		w := lipgloss.Width(line)
 		if w > 80 {
-			t.Errorf("babysit log line exceeds box width (%d > 80): %s", w, line)
+			t.Errorf("CI log line exceeds box width (%d > 80): %s", w, line)
 		}
 	}
 
 	if got := strings.Count(result, "y"); got < 200 {
-		t.Errorf("expected wrapped babysit log output to preserve all 200 y characters, got %d", got)
+		t.Errorf("expected wrapped CI log output to preserve all 200 y characters, got %d", got)
 	}
 }
 
@@ -5017,31 +5017,31 @@ func TestPipelineView_ShortErrorNotTruncated(t *testing.T) {
 	}
 }
 
-func TestRenderBabysitView_ShowsShortPRContextInPanel(t *testing.T) {
+func TestRenderCIView_ShowsShortPRContextInPanel(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
-	run := testRunWithBabysit()
+	run := testRunWithCI()
 	longURL := "https://github.com/some-very-long-organization-name/some-very-long-repository-name-that-goes-on-and-on/pull/12345"
 	run.PRURL = &longURL
 	run.Steps[5].Status = types.StepStatusRunning
 
-	result := stripANSI(renderBabysitView(run, run.Steps, "", nil, 80))
+	result := stripANSI(renderCIView(run, run.Steps, "", nil, 80))
 
 	if !strings.Contains(result, "PR #12345") {
-		t.Fatalf("expected babysit panel to show short PR context, got: %s", result)
+		t.Fatalf("expected CI panel to show short PR context, got: %s", result)
 	}
 	if strings.Contains(result, longURL) {
-		t.Fatal("expected babysit panel to avoid rendering the full PR URL")
+		t.Fatal("expected CI panel to avoid rendering the full PR URL")
 	}
 }
 
-func TestRenderBabysitView_LongLastEventTruncated(t *testing.T) {
+func TestRenderCIView_LongLastEventTruncated(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
-	run := testRunWithBabysit()
+	run := testRunWithCI()
 	run.Steps[5].Status = types.StepStatusRunning
-	longEvent := "babysitting PR #42 with a very long description " + strings.Repeat("z", 200)
+	longEvent := "monitoring CI for PR #42 with a very long description " + strings.Repeat("z", 200)
 	logs := []string{longEvent}
 
-	result := stripANSI(renderBabysitView(run, run.Steps, "", logs, 80))
+	result := stripANSI(renderCIView(run, run.Steps, "", logs, 80))
 
 	// No line should exceed the box width (80).
 	for _, line := range strings.Split(result, "\n") {
@@ -5050,7 +5050,7 @@ func TestRenderBabysitView_LongLastEventTruncated(t *testing.T) {
 		}
 		w := lipgloss.Width(line)
 		if w > 80 {
-			t.Errorf("babysit LastEvent line exceeds box width (%d > 80): %s", w, line)
+			t.Errorf("CI LastEvent line exceeds box width (%d > 80): %s", w, line)
 		}
 	}
 
@@ -5060,16 +5060,16 @@ func TestRenderBabysitView_LongLastEventTruncated(t *testing.T) {
 	}
 }
 
-func TestRenderBabysitView_ShowsPRContext(t *testing.T) {
+func TestRenderCIView_ShowsPRContext(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
-	run := testRunWithBabysit()
+	run := testRunWithCI()
 	shortURL := "https://github.com/user/repo/pull/99"
 	run.PRURL = &shortURL
 	run.Steps[5].Status = types.StepStatusRunning
 
-	result := stripANSI(renderBabysitView(run, run.Steps, "", nil, 60))
+	result := stripANSI(renderCIView(run, run.Steps, "", nil, 60))
 	if !strings.Contains(result, "PR #99") {
-		t.Fatalf("expected babysit panel to show PR context, got: %s", result)
+		t.Fatalf("expected CI panel to show PR context, got: %s", result)
 	}
 }
 
@@ -7604,14 +7604,14 @@ func TestModel_ApplyEvent_LogChunk_FlushesPartialOnRunCompleted(t *testing.T) {
 	}
 }
 
-func TestPipelineConnectors_NotSuppressedDuringBabysit(t *testing.T) {
-	// When babysit is active in responsive layout (wide terminal), the pipeline
+func TestPipelineConnectors_NotSuppressedDuringCI(t *testing.T) {
+	// When CI is active in responsive layout (wide terminal), the pipeline
 	// height should not be capped, so connector lines between steps are preserved.
 	// Previously, the cap applied regardless of layout mode, which suppressed
-	// connectors even when the babysit view was in the right column and didn't
+	// connectors even when the CI view was in the right column and didn't
 	// compete for vertical space.
 	configureTUIColors()
-	run := testRunWithBabysit()
+	run := testRunWithCI()
 	for i := range run.Steps {
 		run.Steps[i].Status = types.StepStatusCompleted
 		dur := int64(1000)
@@ -7665,16 +7665,16 @@ func TestPipelineConnectors_NotSuppressedDuringBabysit(t *testing.T) {
 			}
 		}
 		if adjacentSteps > 0 {
-			t.Errorf("expected connector lines between steps in responsive layout during babysit, but %d step pairs are adjacent.\nview:\n%s", adjacentSteps, plain)
+			t.Errorf("expected connector lines between steps in responsive layout during CI, but %d step pairs are adjacent.\nview:\n%s", adjacentSteps, plain)
 		}
 	}
 }
 
-func TestPipelineConnectors_SuppressedDuringBabysitInStackedLayout(t *testing.T) {
-	// When babysit is active in stacked layout, the pipeline height should be
-	// capped so the babysit panel still has room below it.
+func TestPipelineConnectors_SuppressedDuringCIInStackedLayout(t *testing.T) {
+	// When CI is active in stacked layout, the pipeline height should be
+	// capped so the CI panel still has room below it.
 	configureTUIColors()
-	run := testRunWithBabysit()
+	run := testRunWithCI()
 	for i := range run.Steps {
 		run.Steps[i].Status = types.StepStatusCompleted
 		dur := int64(1000)
@@ -7692,10 +7692,10 @@ func TestPipelineConnectors_SuppressedDuringBabysitInStackedLayout(t *testing.T)
 	uncappedPipeline := stripANSI(renderPipelineView(run, m.stepsWithRunningElapsed(), m.width, 0, m.height))
 
 	if !strings.Contains(view, expectedPipeline) {
-		t.Fatalf("expected stacked babysit layout to use capped pipeline height %d\nview:\n%s\nexpected pipeline:\n%s", cappedPipelineHeight, view, expectedPipeline)
+		t.Fatalf("expected stacked CI layout to use capped pipeline height %d\nview:\n%s\nexpected pipeline:\n%s", cappedPipelineHeight, view, expectedPipeline)
 	}
 	if strings.Contains(view, uncappedPipeline) {
-		t.Fatalf("expected stacked babysit layout to avoid uncapped pipeline height %d", m.height)
+		t.Fatalf("expected stacked CI layout to avoid uncapped pipeline height %d", m.height)
 	}
 }
 

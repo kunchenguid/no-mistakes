@@ -1,5 +1,11 @@
 package types
 
+import (
+	"database/sql/driver"
+	"encoding/json"
+	"fmt"
+)
+
 // RunStatus represents the lifecycle state of a pipeline run.
 type RunStatus string
 
@@ -20,14 +26,50 @@ const (
 type StepName string
 
 const (
-	StepRebase  StepName = "rebase"
-	StepReview  StepName = "review"
-	StepTest    StepName = "test"
-	StepLint    StepName = "lint"
-	StepPush    StepName = "push"
-	StepPR      StepName = "pr"
-	StepBabysit StepName = "babysit"
+	StepRebase StepName = "rebase"
+	StepReview StepName = "review"
+	StepTest   StepName = "test"
+	StepLint   StepName = "lint"
+	StepPush   StepName = "push"
+	StepPR     StepName = "pr"
+	StepCI     StepName = "ci"
 )
+
+func normalizeStepName(s StepName) StepName {
+	if s == "babysit" {
+		return StepCI
+	}
+	return s
+}
+
+func (s *StepName) UnmarshalJSON(data []byte) error {
+	var raw string
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*s = normalizeStepName(StepName(raw))
+	return nil
+}
+
+func (s *StepName) Scan(src any) error {
+	switch v := src.(type) {
+	case string:
+		*s = normalizeStepName(StepName(v))
+		return nil
+	case []byte:
+		*s = normalizeStepName(StepName(v))
+		return nil
+	case nil:
+		*s = ""
+		return nil
+	default:
+		return fmt.Errorf("scan StepName from %T", src)
+	}
+}
+
+func (s StepName) Value() (driver.Value, error) {
+	return string(s), nil
+}
 
 // StepOrder returns the fixed execution order for a step (1-indexed).
 func (s StepName) Order() int {
@@ -44,7 +86,7 @@ func (s StepName) Order() int {
 		return 5
 	case StepPR:
 		return 6
-	case StepBabysit:
+	case StepCI:
 		return 7
 	default:
 		return 0
@@ -53,7 +95,7 @@ func (s StepName) Order() int {
 
 // AllSteps returns all pipeline steps in execution order.
 func AllSteps() []StepName {
-	return []StepName{StepRebase, StepReview, StepTest, StepLint, StepPush, StepPR, StepBabysit}
+	return []StepName{StepRebase, StepReview, StepTest, StepLint, StepPush, StepPR, StepCI}
 }
 
 // StepStatus represents the lifecycle state of a pipeline step.

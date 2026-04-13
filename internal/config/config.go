@@ -17,7 +17,7 @@ import (
 type GlobalConfig struct {
 	Agent             types.AgentName   `yaml:"agent"`
 	AgentPathOverride map[string]string `yaml:"agent_path_override"`
-	BabysitTimeout    time.Duration     `yaml:"-"`
+	CITimeout         time.Duration     `yaml:"-"`
 	LogLevel          string            `yaml:"log_level"`
 	AutoFix           AutoFixRaw
 }
@@ -26,6 +26,7 @@ type GlobalConfig struct {
 type globalConfigRaw struct {
 	Agent             types.AgentName   `yaml:"agent"`
 	AgentPathOverride map[string]string `yaml:"agent_path_override"`
+	CITimeout         string            `yaml:"ci_timeout"`
 	BabysitTimeout    string            `yaml:"babysit_timeout"`
 	LogLevel          string            `yaml:"log_level"`
 	AutoFix           AutoFixRaw        `yaml:"auto_fix"`
@@ -52,6 +53,7 @@ type AutoFixRaw struct {
 	Lint    *int `yaml:"lint"`
 	Test    *int `yaml:"test"`
 	Review  *int `yaml:"review"`
+	CI      *int `yaml:"ci"`
 	Babysit *int `yaml:"babysit"`
 	Rebase  *int `yaml:"rebase"`
 }
@@ -59,18 +61,18 @@ type AutoFixRaw struct {
 // AutoFix holds resolved per-step auto-fix attempt limits.
 // A value of 0 means auto-fix is disabled (requires manual approval).
 type AutoFix struct {
-	Lint    int
-	Test    int
-	Review  int
-	Babysit int
-	Rebase  int
+	Lint   int
+	Test   int
+	Review int
+	CI     int
+	Rebase int
 }
 
 // Config is the merged result of global + per-repo configuration.
 type Config struct {
 	Agent             types.AgentName
 	AgentPathOverride map[string]string
-	BabysitTimeout    time.Duration
+	CITimeout         time.Duration
 	LogLevel          string
 	Commands          Commands
 	IgnorePatterns    []string
@@ -84,8 +86,8 @@ const defaultConfigYAML = `# no-mistakes global configuration
 # Options: claude, codex, rovodev, opencode
 agent: claude
 
-# Maximum time to babysit a run before timing out
-babysit_timeout: "4h"
+# Maximum time to monitor CI before timing out
+ci_timeout: "4h"
 
 # Log level for daemon output
 # Options: debug, info, warn, error
@@ -102,7 +104,7 @@ auto_fix:
   lint: 3
   test: 3
   review: 3
-  babysit: 3
+  ci: 3
 `
 
 // defaultBinary maps agent names to their default binary names.
@@ -148,9 +150,9 @@ func EnsureDefaultGlobalConfig(path string) {
 // LoadGlobal reads global config from path. Returns defaults if file doesn't exist.
 func LoadGlobal(path string) (*GlobalConfig, error) {
 	cfg := &GlobalConfig{
-		Agent:          types.AgentClaude,
-		BabysitTimeout: 4 * time.Hour,
-		LogLevel:       "info",
+		Agent:     types.AgentClaude,
+		CITimeout: 4 * time.Hour,
+		LogLevel:  "info",
 	}
 
 	data, err := os.ReadFile(path)
@@ -172,15 +174,22 @@ func LoadGlobal(path string) (*GlobalConfig, error) {
 	if raw.AgentPathOverride != nil {
 		cfg.AgentPathOverride = raw.AgentPathOverride
 	}
-	if raw.BabysitTimeout != "" {
-		d, err := time.ParseDuration(raw.BabysitTimeout)
+	timeoutValue := raw.CITimeout
+	if timeoutValue == "" {
+		timeoutValue = raw.BabysitTimeout
+	}
+	if timeoutValue != "" {
+		d, err := time.ParseDuration(timeoutValue)
 		if err != nil {
-			return nil, fmt.Errorf("parse babysit_timeout %q: %w", raw.BabysitTimeout, err)
+			return nil, fmt.Errorf("parse ci_timeout %q: %w", timeoutValue, err)
 		}
-		cfg.BabysitTimeout = d
+		cfg.CITimeout = d
 	}
 	if raw.LogLevel != "" {
 		cfg.LogLevel = raw.LogLevel
+	}
+	if raw.AutoFix.CI == nil {
+		raw.AutoFix.CI = raw.AutoFix.Babysit
 	}
 	cfg.AutoFix = raw.AutoFix
 
@@ -203,6 +212,9 @@ func LoadRepo(dir string) (*RepoConfig, error) {
 
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("parse repo config: %w", err)
+	}
+	if cfg.AutoFix.CI == nil {
+		cfg.AutoFix.CI = cfg.AutoFix.Babysit
 	}
 
 	return cfg, nil
@@ -228,11 +240,11 @@ func ParseLogLevel(level string) slog.Level {
 // autoFixDefaults returns the default auto-fix configuration.
 func autoFixDefaults() AutoFix {
 	return AutoFix{
-		Lint:    3,
-		Test:    3,
-		Review:  3,
-		Babysit: 3,
-		Rebase:  0,
+		Lint:   3,
+		Test:   3,
+		Review: 3,
+		CI:     3,
+		Rebase: 0,
 	}
 }
 
@@ -247,8 +259,8 @@ func applyAutoFixOverrides(dst *AutoFix, src *AutoFixRaw) {
 	if src.Review != nil {
 		dst.Review = *src.Review
 	}
-	if src.Babysit != nil {
-		dst.Babysit = *src.Babysit
+	if src.CI != nil {
+		dst.CI = *src.CI
 	}
 	if src.Rebase != nil {
 		dst.Rebase = *src.Rebase
@@ -265,8 +277,8 @@ func (c *Config) AutoFixLimit(step types.StepName) int {
 		return c.AutoFix.Test
 	case types.StepReview:
 		return c.AutoFix.Review
-	case types.StepBabysit:
-		return c.AutoFix.Babysit
+	case types.StepCI:
+		return c.AutoFix.CI
 	case types.StepRebase:
 		return c.AutoFix.Rebase
 	default:
@@ -284,7 +296,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 	cfg := &Config{
 		Agent:             global.Agent,
 		AgentPathOverride: global.AgentPathOverride,
-		BabysitTimeout:    global.BabysitTimeout,
+		CITimeout:         global.CITimeout,
 		LogLevel:          global.LogLevel,
 		Commands:          repo.Commands,
 		IgnorePatterns:    repo.IgnorePatterns,

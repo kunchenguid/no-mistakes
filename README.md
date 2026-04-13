@@ -35,7 +35,7 @@ You already have CI, but it usually wakes up after the branch is upstream. You a
 
 - **Push with intent** - `origin` stays untouched, and `no-mistakes` becomes the explicit path for gated pushes.
 - **Agent-agnostic** - use `claude`, `codex`, `rovodev`, or `opencode`, with per-repo overrides if different codebases want different tools.
-- **Human stays in charge** - review, test, lint, PR, and babysit steps can pause for approval instead of auto-shipping surprises.
+- **Human stays in charge** - review, test, lint, PR, and CI steps can pause for approval instead of auto-shipping surprises.
 
 ## Quick Start
 
@@ -83,7 +83,7 @@ make build
 make install
 ```
 
-You will also need `git`, one supported agent binary, and `gh` if you want PR creation and babysitting.
+You will also need `git`, one supported agent binary, and `gh` if you want PR creation and CI monitoring.
 
 To update an existing install in place:
 
@@ -116,7 +116,7 @@ no-mistakes update
        │                                                    │ lint                │
        │                                                    │ push                │
        │                                                    │ pr                  │
-       │                                                    │ babysit             │
+       │                                                    │ ci                  │
        │                                                    └──────────┬──────────┘
        │                                                               │
        └──────────────────────────────────────────────────────────────► │ upstream
@@ -125,7 +125,7 @@ no-mistakes update
 
 - **Named remote** - `origin` is never hijacked. If you want the gate, you push to `no-mistakes` on purpose.
 - **Disposable worktrees** - each run happens in its own detached worktree, so the daemon can inspect and modify safely before pushing upstream.
-- **Fixed pipeline** - this is opinionated on purpose: `review -> test -> lint -> push -> pr -> babysit`.
+- **Fixed pipeline** - this is opinionated on purpose: `review -> test -> lint -> push -> pr -> ci`.
 - **Local state** - metadata lives under `~/.no-mistakes/` by default, or `${NM_HOME}` if you want to relocate it.
 
 ## CLI Reference
@@ -175,8 +175,16 @@ agent_path_override:
   rovodev: /usr/local/bin/acli
   opencode: /usr/local/bin/opencode
 
-# How long the babysit step polls CI and PR comments.
-babysit_timeout: "4h"
+# How long the CI step monitors GitHub checks before timing out.
+ci_timeout: "4h"
+
+# Optional auto-fix attempt limits per step (0 = require approval).
+# auto_fix:
+#   rebase: 0
+#   lint: 3
+#   test: 3
+#   review: 3
+#   ci: 3
 
 # debug | info | warn | error
 log_level: "info"
@@ -210,7 +218,8 @@ ignore_patterns:
 
 - Repo `agent` overrides global `agent`.
 - `commands` and `ignore_patterns` are repo-only.
-- Missing global config defaults to `agent: claude`, `babysit_timeout: 4h`, `log_level: info`.
+- Missing global config defaults to `agent: claude`, `ci_timeout: 4h`, `log_level: info`.
+- `ci_timeout` replaces `babysit_timeout`, and `auto_fix.ci` replaces `auto_fix.babysit`; legacy keys are still accepted for existing configs.
 - `agent_path_override` changes which binary path is launched for a given agent.
 - Default binaries are `claude`, `codex`, `acli` for `rovodev`, and `opencode`.
 - If `commands.test` is empty, the agent detects and runs relevant tests itself.

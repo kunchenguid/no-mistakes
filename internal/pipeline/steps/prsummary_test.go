@@ -197,12 +197,12 @@ func TestBuildPipelineSummary_SkippedStep(t *testing.T) {
 	}
 }
 
-func TestBuildPipelineSummary_ExcludesPushPRBabysit(t *testing.T) {
+func TestBuildPipelineSummary_ExcludesPushPRCI(t *testing.T) {
 	steps := []*db.StepResult{
 		{ID: "s1", StepName: types.StepReview, Status: types.StepStatusCompleted},
 		{ID: "s2", StepName: types.StepPush, Status: types.StepStatusCompleted},
 		{ID: "s3", StepName: types.StepPR, Status: types.StepStatusCompleted},
-		{ID: "s4", StepName: types.StepBabysit, Status: types.StepStatusCompleted},
+		{ID: "s4", StepName: types.StepCI, Status: types.StepStatusCompleted},
 	}
 	rounds := map[string][]*db.StepRound{
 		"s1": {{Round: 1, Trigger: "initial", DurationMS: 500}},
@@ -212,9 +212,9 @@ func TestBuildPipelineSummary_ExcludesPushPRBabysit(t *testing.T) {
 	}
 	md, _ := BuildPipelineSummary(steps, rounds)
 
-	// Push, PR, and Babysit should not appear in the summary
-	if strings.Contains(md, "**Push**") || strings.Contains(md, "**PR**") || strings.Contains(md, "**Babysit**") {
-		t.Errorf("should not include push/pr/babysit steps, got:\n%s", md)
+	// Push, PR, and CI should not appear in the summary
+	if strings.Contains(md, "**Push**") || strings.Contains(md, "**PR**") || strings.Contains(md, "**CI**") {
+		t.Errorf("should not include push/pr/ci steps, got:\n%s", md)
 	}
 }
 

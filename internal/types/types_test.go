@@ -1,6 +1,9 @@
 package types
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestAllStepsOrder(t *testing.T) {
 	steps := AllSteps()
@@ -8,7 +11,7 @@ func TestAllStepsOrder(t *testing.T) {
 		t.Fatalf("expected 7 steps, got %d", len(steps))
 	}
 
-	expected := []StepName{StepRebase, StepReview, StepTest, StepLint, StepPush, StepPR, StepBabysit}
+	expected := []StepName{StepRebase, StepReview, StepTest, StepLint, StepPush, StepPR, StepCI}
 	for i, s := range steps {
 		if s != expected[i] {
 			t.Errorf("step[%d] = %q, want %q", i, s, expected[i])
@@ -27,7 +30,7 @@ func TestStepNameOrder(t *testing.T) {
 		{StepLint, 4},
 		{StepPush, 5},
 		{StepPR, 6},
-		{StepBabysit, 7},
+		{StepCI, 7},
 		{StepName("unknown"), 0},
 	}
 
@@ -35,5 +38,15 @@ func TestStepNameOrder(t *testing.T) {
 		if got := tt.step.Order(); got != tt.want {
 			t.Errorf("%q.Order() = %d, want %d", tt.step, got, tt.want)
 		}
+	}
+}
+
+func TestStepNameUnmarshalJSON_LegacyBabysit(t *testing.T) {
+	var step StepName
+	if err := json.Unmarshal([]byte(`"babysit"`), &step); err != nil {
+		t.Fatalf("unmarshal step name: %v", err)
+	}
+	if step != StepCI {
+		t.Fatalf("step = %q, want %q", step, StepCI)
 	}
 }

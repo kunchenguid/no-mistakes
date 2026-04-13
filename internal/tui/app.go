@@ -215,7 +215,7 @@ func (m Model) View() string {
 	}
 
 	showSelectionActions, allowFix, selectedCount, totalCount := m.awaitingActionState()
-	hasBabysit := isBabysitActive(m.steps)
+	hasCI := isCIActive(m.steps)
 	compact := m.height > 0 && m.height < 24
 	sectionGap := "\n\n"
 	sectionGapHeight := 2
@@ -235,7 +235,7 @@ func (m Model) View() string {
 	// Compute elapsed times for running steps so they display live durations.
 	pipelineSteps := m.stepsWithRunningElapsed()
 	pipelineHeight := m.height
-	if !useResponsiveLayout && (m.showHelp || hasBabysit) && (pipelineHeight == 0 || pipelineHeight >= 30) {
+	if !useResponsiveLayout && (m.showHelp || hasCI) && (pipelineHeight == 0 || pipelineHeight >= 30) {
 		pipelineHeight = cappedPipelineHeight
 	}
 	pipelineView := renderPipelineView(m.run, pipelineSteps, leftWidth, m.spinnerFrame, pipelineHeight)
@@ -300,8 +300,8 @@ func (m Model) View() string {
 		appendExtraSection(renderErrorBox(m.err, rightWidth))
 	}
 
-	// Babysit-specific view when babysit step is active.
-	if !m.showHelp && hasBabysit {
+	// CI-specific view when CI step is active.
+	if !m.showHelp && hasCI {
 		findings := ""
 		cursor := 0
 		var selected map[string]bool
@@ -310,17 +310,17 @@ func (m Model) View() string {
 			cursor = m.findingCursor[step.StepName]
 			selected = m.findingSelections[step.StepName]
 		}
-		babysitHeight := -1
+		ciHeight := -1
 		if m.height > 0 {
-			babysitHeight = m.height
+			ciHeight = m.height
 		}
 		if contentBudget >= 0 {
-			babysitHeight = contentBudget
+			ciHeight = contentBudget
 		}
-		appendExtraSection(renderBabysitViewWithSelection(m.run, m.steps, findings, m.logs, rightWidth, babysitHeight, cursor, selected))
+		appendExtraSection(renderCIViewWithSelection(m.run, m.steps, findings, m.logs, rightWidth, ciHeight, cursor, selected))
 	} else if !m.showHelp {
 		if step := awaitingStep(m.steps); step != nil {
-			// Generic findings or diff for non-babysit steps awaiting approval.
+			// Generic findings or diff for non-CI steps awaiting approval.
 			label := stepLabel(step.StepName)
 			if m.showDiff {
 				if raw, ok := m.stepDiffs[step.StepName]; ok && raw != "" {
@@ -364,7 +364,7 @@ func (m Model) View() string {
 	// In responsive layout with no other right-column content, expand to
 	// fill the remaining vertical budget so the log panel matches the
 	// pipeline panel height. Otherwise use compact defaults.
-	// Also hidden when babysit is active (log context integrated into babysit box).
+	// Also hidden when CI is active (log context integrated into CI box).
 	logLines := 5
 	if useResponsiveLayout && !m.showHelp && contentBudget > 0 && len(extraSections) == 0 {
 		logLines = contentBudget - 2 // subtract box borders
@@ -377,7 +377,7 @@ func (m Model) View() string {
 	if m.height > 0 && m.height < 20 {
 		logLines = 0
 	}
-	if len(m.logs) > 0 && logLines > 0 && !hasBabysit {
+	if len(m.logs) > 0 && logLines > 0 && !hasCI {
 		appendExtraSection(renderLogBox(m.logs, rightWidth, logLines, contentBudget))
 	}
 
@@ -608,7 +608,7 @@ func joinSections(sections []string, gap string) string {
 }
 
 func hasResponsiveSidebarContent(m Model) bool {
-	if m.err != nil || m.showHelp || isBabysitActive(m.steps) {
+	if m.err != nil || m.showHelp || isCIActive(m.steps) {
 		return true
 	}
 	if awaitingStep(m.steps) != nil {
