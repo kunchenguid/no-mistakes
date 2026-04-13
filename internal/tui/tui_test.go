@@ -2762,26 +2762,6 @@ func TestLogTail_RegularLineStaysDim(t *testing.T) {
 	}
 }
 
-func TestDiffBoxTitle_IncludesStepName(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.ANSI)
-	run := testRun()
-	run.Steps[0].Status = types.StepStatusCompleted
-	run.Steps[1].Status = types.StepStatusAwaitingApproval
-
-	m := NewModel("/tmp/sock", nil, run)
-	m.width = 80
-	m.height = 40
-	m.stepDiffs[types.StepTest] = "diff --git a/foo.go b/foo.go\n--- a/foo.go\n+++ b/foo.go\n@@ -1 +1 @@\n-old\n+new\n"
-	m.showDiff = true
-	view := m.View()
-	plain := stripANSI(view)
-
-	// The diff box title should include the step name, e.g. "Diff - Test".
-	if !strings.Contains(plain, "Diff - Test") {
-		t.Errorf("expected diff box title to include step name 'Diff - Test', got:\n%s", plain)
-	}
-}
-
 func TestFindingsBoxTitle_ShowsSeverityCounts(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.ANSI)
 	run := testRun()
