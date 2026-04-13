@@ -35,8 +35,8 @@ type prContent struct {
 var prContentSchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
-		"title": {"type": "string"},
-		"body": {"type": "string"}
+		"title": {"type": "string", "description": "Conventional commit PR title, e.g. fix(scope): short description"},
+		"body": {"type": "string", "description": "GitHub-flavored markdown body starting with ## Summary. Plain text, NOT JSON."}
 	},
 	"required": ["title", "body"]
 }`)
@@ -227,7 +227,7 @@ Context:
 Rules:
 - Cover the full branch delta, not just the latest commit.
 - Title must use conventional commit format: "type(scope): description" or "type: description". Valid types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert. Scope is optional. Do not capitalize the type. Do not use the raw branch name.
-- Body: a "## Summary" section in GitHub-flavored markdown. 1-3 concise bullet points describing what changed and why. Do not include a Testing section - pipeline results are appended separately.
+- Body: a "## Summary" section in GitHub-flavored markdown. 1-3 concise bullet points describing what changed and why. Do not include a Testing section - pipeline results are appended separately. The body value must be plain markdown text, never a JSON object or serialized JSON string.
 - Do not invent tests or behavior.
 
 Commit history:
@@ -252,6 +252,7 @@ Diff stat:
 		if err := json.Unmarshal(result.Output, &content); err == nil {
 			content.Title = strings.TrimSpace(content.Title)
 			content.Body = strings.TrimSpace(content.Body)
+			content.Body = unwrapNestedPRBody(content.Body)
 			if content.Title != "" && content.Body != "" {
 				if !isConventionalTitle(content.Title) {
 					slog.Warn("agent PR title is not conventional commit format, prepending chore:", "title", content.Title)
@@ -289,6 +290,23 @@ func (s *PRStep) buildPipelineSection(sctx *pipeline.StepContext) (string, strin
 	}
 
 	return BuildPipelineSummary(steps, rounds)
+}
+
+// unwrapNestedPRBody detects when the agent returned the body as a
+// serialized prContent JSON string and extracts the real markdown body.
+func unwrapNestedPRBody(body string) string {
+	if len(body) == 0 || body[0] != '{' {
+		return body
+	}
+	var nested prContent
+	if err := json.Unmarshal([]byte(body), &nested); err != nil {
+		return body
+	}
+	if strings.TrimSpace(nested.Body) != "" {
+		slog.Warn("agent returned nested JSON in PR body, unwrapping")
+		return strings.TrimSpace(nested.Body)
+	}
+	return body
 }
 
 // appendPipelineSection appends the pipeline markdown after the agent's body.

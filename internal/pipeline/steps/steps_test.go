@@ -2929,6 +2929,65 @@ func TestPRStep_UsesAgentGeneratedTitleAndBody(t *testing.T) {
 	}
 }
 
+func TestPRStep_UnwrapsNestedJSONBody(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	binDir, logFile := fakeGH(t, "")
+	prependPATH(t, binDir)
+
+	// Agent returns body as the serialized prContent JSON (the bug LLMs sometimes produce).
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			payload := json.RawMessage(`{"title":"fix: improve pipeline header UX","body":"{\"title\":\"fix: improve pipeline header UX\",\"body\":\"## Summary\\n\\n- keep branch status readable\\n- fix footer truncation\"}"}`)
+			return &agent.Result{Output: payload}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	step := &PRStep{}
+	if _, err := step.Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+
+	logData, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ghLog := string(logData)
+
+	// The guard should unwrap the nested body and use the real markdown.
+	if !strings.Contains(ghLog, "keep branch status readable") {
+		t.Fatalf("expected unwrapped PR body in gh call, got:\n%s", ghLog)
+	}
+	if strings.Contains(ghLog, `"title"`) {
+		t.Fatalf("expected JSON wrapper to be stripped from PR body, got:\n%s", ghLog)
+	}
+}
+
+func TestUnwrapNestedPRBody(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "empty string", body: "", want: ""},
+		{name: "plain markdown", body: "## Summary\n\n- bullet one", want: "## Summary\n\n- bullet one"},
+		{name: "invalid JSON starting with brace", body: "{not valid json", want: "{not valid json"},
+		{name: "valid JSON but empty nested body", body: `{"title":"fix: stuff","body":""}`, want: `{"title":"fix: stuff","body":""}`},
+		{name: "nested JSON body is unwrapped", body: `{"title":"fix: stuff","body":"## Summary\n\n- real body"}`, want: "## Summary\n\n- real body"},
+		{name: "nested JSON body with whitespace", body: `{"title":"fix: stuff","body":"  ## Summary  "}`, want: "## Summary"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := unwrapNestedPRBody(tt.body)
+			if got != tt.want {
+				t.Errorf("unwrapNestedPRBody(%q) = %q, want %q", tt.body, got, tt.want)
+			}
+		})
+	}
+}
+
 func fakeGlab(t *testing.T, mrViewJSON string) (binDir string, logFile string) {
 	t.Helper()
 	binDir = fakeCLIBinDir(t)
