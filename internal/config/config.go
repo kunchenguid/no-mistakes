@@ -137,21 +137,17 @@ func (c *Config) ResolveAgent(lookPath func(string) (string, error)) error {
 	}
 	for _, name := range agentProbeOrder {
 		bin := string(name)
-		hasOverride := false
 		if b, ok := defaultBinary[name]; ok {
 			bin = b
 		}
 		if c.AgentPathOverride != nil {
 			if p, ok := c.AgentPathOverride[string(name)]; ok {
 				bin = p
-				hasOverride = true
 			}
 		}
 		if _, err := lookPath(bin); err == nil {
 			c.Agent = name
 			return nil
-		} else if hasOverride && (errors.Is(err, exec.ErrNotFound) || errors.Is(err, fs.ErrNotExist)) {
-			return fmt.Errorf("resolve %s agent from override %q: %w", name, bin, err)
 		} else if !errors.Is(err, exec.ErrNotFound) && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("resolve %s agent from %q: %w", name, bin, err)
 		}
