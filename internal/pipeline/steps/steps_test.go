@@ -370,10 +370,10 @@ func TestRunShellCommand(t *testing.T) {
 
 func TestAllSteps(t *testing.T) {
 	steps := AllSteps()
-	if len(steps) != 7 {
-		t.Fatalf("AllSteps() returned %d steps, want 7", len(steps))
+	if len(steps) != 8 {
+		t.Fatalf("AllSteps() returned %d steps, want 8", len(steps))
 	}
-	expected := []types.StepName{types.StepRebase, types.StepReview, types.StepTest, types.StepLint, types.StepPush, types.StepPR, types.StepCI}
+	expected := []types.StepName{types.StepRebase, types.StepReview, types.StepTest, types.StepDocument, types.StepLint, types.StepPush, types.StepPR, types.StepCI}
 	for i, s := range steps {
 		if s.Name() != expected[i] {
 			t.Errorf("step %d name = %s, want %s", i, s.Name(), expected[i])
@@ -1493,6 +1493,201 @@ func TestLintStep_NoCommand(t *testing.T) {
 	}
 	if !strings.Contains(ag.calls[0].Prompt, "branch: refs/heads/feature") {
 		t.Error("expected lint prompt to include branch metadata")
+	}
+}
+
+// --- Document step tests ---
+
+func TestDocumentStep_EmptyDiff(t *testing.T) {
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	os.WriteFile(filepath.Join(dir, "f.txt"), []byte("content"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+	sha := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, sha, sha, config.Commands{})
+
+	step := &DocumentStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Error("expected no approval needed for empty diff")
+	}
+	if len(ag.calls) != 0 {
+		t.Error("expected no agent calls for empty diff")
+	}
+}
+
+func TestDocumentStep_Updated(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			// Simulate agent updating a doc file
+			os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Updated docs\n"), 0o644)
+			return &agent.Result{Output: json.RawMessage(`{"verdict":"updated","summary":"updated README"}`)}, nil
+		},
+	}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	step := &DocumentStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Error("document step should never require approval")
+	}
+	if len(ag.calls) != 1 {
+		t.Errorf("expected 1 agent call, got %d", len(ag.calls))
+	}
+	if !strings.Contains(ag.calls[0].Prompt, baseSHA) {
+		t.Error("expected prompt to contain base SHA")
+	}
+	if !strings.Contains(ag.calls[0].Prompt, headSHA) {
+		t.Error("expected prompt to contain head SHA")
+	}
+	if !strings.Contains(ag.calls[0].Prompt, "refs/heads/feature") {
+		t.Error("expected prompt to contain branch name")
+	}
+	// Verify changes were committed
+	if status := gitStatusPorcelain(t, dir); status != "" {
+		t.Fatalf("expected clean worktree after doc commit, got %q", status)
+	}
+	if got := lastCommitMessage(t, dir); got != "no-mistakes(document): updated README" {
+		t.Fatalf("last commit message = %q", got)
+	}
+}
+
+func TestDocumentStep_Skipped(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: json.RawMessage(`{"verdict":"skipped","summary":"internal refactoring only"}`)}, nil
+		},
+	}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	step := &DocumentStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Error("document step should never require approval")
+	}
+	// No commit should happen since verdict is "skipped"
+	if got := lastCommitMessage(t, dir); got != "add feature" {
+		t.Fatalf("expected no new commit, but last commit message = %q", got)
+	}
+}
+
+func TestDocumentStep_AgentError(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			return nil, errors.New("agent crashed")
+		},
+	}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	step := &DocumentStep{}
+	_, err := step.Execute(sctx)
+	if err == nil {
+		t.Fatal("expected error from agent failure")
+	}
+	if !strings.Contains(err.Error(), "agent document") {
+		t.Errorf("error = %v, want to contain 'agent document'", err)
+	}
+}
+
+func TestDocumentStep_MalformedOutput(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{
+				Output: json.RawMessage(`{not valid json`),
+				Text:   "I updated the docs",
+			}, nil
+		},
+	}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	step := &DocumentStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Error("document step should never require approval")
+	}
+}
+
+func TestDocumentStep_PromptIncludesIgnorePatterns(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: json.RawMessage(`{"verdict":"skipped","summary":"nothing to update"}`)}, nil
+		},
+	}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.IgnorePatterns = []string{"*.generated.go", "vendor/**"}
+
+	step := &DocumentStep{}
+	_, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ag.calls) != 1 {
+		t.Fatalf("expected 1 agent call, got %d", len(ag.calls))
+	}
+	if !strings.Contains(ag.calls[0].Prompt, "*.generated.go, vendor/**") {
+		t.Error("expected prompt to include ignore patterns")
+	}
+}
+
+func TestDocumentStep_UpdatesHeadSHA(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Docs\n"), 0o644)
+			return &agent.Result{Output: json.RawMessage(`{"verdict":"updated","summary":"add README"}`)}, nil
+		},
+	}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	step := &DocumentStep{}
+	_, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// HeadSHA should have been updated to reflect the new commit
+	if sctx.Run.HeadSHA == headSHA {
+		t.Error("expected HeadSHA to be updated after doc commit")
+	}
+	// Branch ref should also be updated
+	if branchSHA := gitCmd(t, dir, "rev-parse", "refs/heads/feature"); branchSHA != sctx.Run.HeadSHA {
+		t.Fatalf("branch SHA = %s, want %s", branchSHA, sctx.Run.HeadSHA)
 	}
 }
 

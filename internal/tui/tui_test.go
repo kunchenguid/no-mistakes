@@ -71,6 +71,7 @@ func TestStepLabel(t *testing.T) {
 		{types.StepReview, "Review"},
 		{types.StepTest, "Test"},
 		{types.StepLint, "Lint"},
+		{types.StepDocument, "Document"},
 		{types.StepPush, "Push"},
 		{types.StepPR, "PR"},
 		{types.StepCI, "CI"},
