@@ -108,9 +108,9 @@ When adding a new test file, pick the tier that fits and add the tag:
 - `make test-tagged` - integration + e2e without `-race` (used for Windows CI)
 - `make test-unit` - unit only (~3s)
 
-CI runs the full suite (`test-all`) on Linux and macOS. Windows CI runs only
-integration and e2e tagged packages (without the race detector) - unit tests
-are covered by Linux and macOS.
+CI runs the full suite (`test-all`) on Linux and macOS. Windows CI runs unit
+tests in a separate job, then runs integration and e2e tagged packages without
+the race detector.
 
 **When Making Changes**
 
