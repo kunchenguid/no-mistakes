@@ -2,6 +2,8 @@ package tui
 
 import (
 	"fmt"
+	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 
@@ -34,6 +36,10 @@ const (
 	// for the overlay that stacks below.
 	cappedPipelineHeight = 29
 )
+
+var runBrowserCommand = func(name string, args ...string) error {
+	return exec.Command(name, args...).Run()
+}
 
 func (e errMsg) Error() string { return e.err.Error() }
 
@@ -529,15 +535,14 @@ func renderFooter(done bool, showHelp bool, confirmAbort bool, prURL *string, wi
 		left += "  " + boldKey.Render("x") + " " + dimStyle.Render(xLabel)
 	}
 	left += "  " + boldKey.Render("?") + " " + dimStyle.Render(helpLabel)
-
 	if prURL == nil || *prURL == "" {
 		return left
 	}
 
+	left += "  " + boldKey.Render("o") + " " + dimStyle.Render("open PR")
 	leftWidth := lipgloss.Width(left)
-	// Try full URL first (clickable in terminals), fall back to short form.
 	prText := *prURL
-	available := width - leftWidth - 4 // 4 = leading + trailing padding
+	available := width - leftWidth - 4
 	if available < len(prText) {
 		prText = shortPRLabel(*prURL)
 	}
@@ -550,6 +555,28 @@ func renderFooter(done bool, showHelp bool, confirmAbort bool, prURL *string, wi
 		return left
 	}
 	return left + strings.Repeat(" ", gap) + right
+}
+
+// openBrowserCmd returns a tea.Cmd that opens the given URL in the default browser.
+func openBrowserCmd(url string) tea.Cmd {
+	return func() tea.Msg {
+		name, args := browserCommandSpec(runtime.GOOS, url)
+		if err := runBrowserCommand(name, args...); err != nil {
+			return errMsg{fmt.Errorf("open PR: %w", err)}
+		}
+		return nil
+	}
+}
+
+func browserCommandSpec(goos, url string) (string, []string) {
+	switch goos {
+	case "darwin":
+		return "open", []string{url}
+	case "windows":
+		return "rundll32", []string{"url.dll,FileProtocolHandler", url}
+	default:
+		return "xdg-open", []string{url}
+	}
 }
 
 // shortPRLabel extracts a compact label like "PR #42" from a PR URL.
@@ -895,6 +922,11 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.respondCmd(types.ActionFix)
 	case "s":
 		return m, m.respondCmd(types.ActionSkip)
+	case "o":
+		if m.run != nil && m.run.PRURL != nil && *m.run.PRURL != "" {
+			return m, openBrowserCmd(*m.run.PRURL)
+		}
+		return m, nil
 	case "x":
 		if m.done || m.run == nil {
 			return m, nil

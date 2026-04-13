@@ -1,9 +1,11 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -460,14 +462,17 @@ func TestModel_ApplyEvent_RunCompleted_PRURL(t *testing.T) {
 	}
 }
 
-func TestRenderFooter_WithPRURL_FullURL(t *testing.T) {
+func TestRenderFooter_WithPRURL_ShowsOpenAction(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
 	prURL := "https://github.com/test/repo/pull/42"
 	footer := renderFooter(true, false, false, &prURL, 80)
 	stripped := stripANSI(footer)
 
+	if !strings.Contains(stripped, "o") || !strings.Contains(stripped, "open PR") {
+		t.Errorf("expected footer to contain 'o open PR' action, got: %s", stripped)
+	}
 	if !strings.Contains(stripped, prURL) {
-		t.Errorf("expected footer to contain full URL %q, got: %s", prURL, stripped)
+		t.Errorf("expected footer to contain full PR URL, got: %s", stripped)
 	}
 }
 
@@ -476,35 +481,126 @@ func TestRenderFooter_WithoutPRURL(t *testing.T) {
 	footer := renderFooter(false, false, false, nil, 80)
 	stripped := stripANSI(footer)
 
-	if strings.Contains(stripped, "PR") {
-		t.Errorf("expected no PR in footer, got: %s", stripped)
+	if strings.Contains(stripped, "open PR") {
+		t.Errorf("expected no open PR action in footer, got: %s", stripped)
 	}
 }
 
-func TestRenderFooter_PRURL_FallsBackToShortForm(t *testing.T) {
+func TestRenderFooter_PRURL_ActionShownAtNarrowWidth(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
 	prURL := "https://github.com/test/repo/pull/42"
-	// Narrow width - should fall back to "PR #42" instead of full URL
+	// Even at narrow width, "open PR" action should appear
 	footer := renderFooter(true, false, false, &prURL, 40)
 	stripped := stripANSI(footer)
 
-	if !strings.Contains(stripped, "PR #42") {
-		t.Errorf("expected footer to contain PR #42, got: %s", stripped)
-	}
-	if strings.Contains(stripped, "https://") {
-		t.Errorf("expected short form, not full URL at narrow width, got: %s", stripped)
+	if !strings.Contains(stripped, "open PR") {
+		t.Errorf("expected footer to contain 'open PR' action, got: %s", stripped)
 	}
 }
 
-func TestRenderFooter_PRURL_HiddenWhenTooNarrow(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.Ascii)
-	prURL := "https://github.com/test/repo/pull/42"
-	// Extremely narrow - not even short form fits
-	footer := renderFooter(true, false, false, &prURL, 20)
-	stripped := stripANSI(footer)
+func TestOpenBrowserCmd_WaitsForBrowserCommand(t *testing.T) {
+	original := runBrowserCommand
+	t.Cleanup(func() {
+		runBrowserCommand = original
+	})
 
-	if strings.Contains(stripped, "PR") {
-		t.Errorf("expected no PR at extremely narrow width, got: %s", stripped)
+	called := false
+	finished := false
+	runBrowserCommand = func(name string, args ...string) error {
+		called = true
+		time.Sleep(50 * time.Millisecond)
+		finished = true
+		return nil
+	}
+
+	start := time.Now()
+	msg := openBrowserCmd("https://example.com")()
+	if msg != nil {
+		t.Fatalf("expected nil msg, got %#v", msg)
+	}
+	if !called {
+		t.Fatal("expected browser command to be invoked")
+	}
+	if !finished {
+		t.Fatal("expected browser command to finish before return")
+	}
+	if elapsed := time.Since(start); elapsed < 50*time.Millisecond {
+		t.Fatalf("expected command to block until completion, returned after %v", elapsed)
+	}
+}
+
+func TestOpenBrowserCmd_ReturnsErrMsgOnFailure(t *testing.T) {
+	original := runBrowserCommand
+	t.Cleanup(func() {
+		runBrowserCommand = original
+	})
+
+	wantErr := errors.New("launcher missing")
+	runBrowserCommand = func(name string, args ...string) error {
+		return wantErr
+	}
+
+	msg := openBrowserCmd("https://example.com")()
+	errMsg, ok := msg.(errMsg)
+	if !ok {
+		t.Fatalf("expected errMsg, got %#v", msg)
+	}
+	if !errors.Is(errMsg.err, wantErr) {
+		t.Fatalf("expected error %v, got %v", wantErr, errMsg.err)
+	}
+}
+
+func TestBrowserCommandSpec_WindowsUsesRundll32(t *testing.T) {
+	name, args := browserCommandSpec("windows", "https://example.com/pull/1?foo=1&bar=2")
+
+	if name != "rundll32" {
+		t.Fatalf("expected rundll32 launcher, got %q", name)
+	}
+
+	wantArgs := []string{"url.dll,FileProtocolHandler", "https://example.com/pull/1?foo=1&bar=2"}
+	if !reflect.DeepEqual(args, wantArgs) {
+		t.Fatalf("unexpected args: got %v want %v", args, wantArgs)
+	}
+}
+
+func TestModel_Update_OpenPRKeyRunsBrowserCommand(t *testing.T) {
+	original := runBrowserCommand
+	t.Cleanup(func() {
+		runBrowserCommand = original
+	})
+
+	prURL := "https://github.com/test/repo/pull/42"
+	run := testRun()
+	run.PRURL = &prURL
+	m := NewModel("/tmp/sock", nil, run)
+
+	called := false
+	var gotName string
+	var gotArgs []string
+	runBrowserCommand = func(name string, args ...string) error {
+		called = true
+		gotName = name
+		gotArgs = append([]string(nil), args...)
+		return nil
+	}
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}})
+	if cmd == nil {
+		t.Fatal("expected browser open command")
+	}
+	if msg := cmd(); msg != nil {
+		t.Fatalf("expected nil msg, got %#v", msg)
+	}
+	if !called {
+		t.Fatal("expected browser launcher to be called")
+	}
+
+	wantName, wantArgs := browserCommandSpec(runtime.GOOS, prURL)
+	if gotName != wantName {
+		t.Fatalf("unexpected command name: got %q want %q", gotName, wantName)
+	}
+	if !reflect.DeepEqual(gotArgs, wantArgs) {
+		t.Fatalf("unexpected command args: got %v want %v", gotArgs, wantArgs)
 	}
 }
 
@@ -5053,21 +5149,16 @@ func TestRenderBabysitView_LongLastEventTruncated(t *testing.T) {
 	}
 }
 
-func TestRenderBabysitView_ShowsPRContextWhenFooterWouldHideIt(t *testing.T) {
+func TestRenderBabysitView_ShowsPRContext(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
 	run := testRunWithBabysit()
 	shortURL := "https://github.com/user/repo/pull/99"
 	run.PRURL = &shortURL
 	run.Steps[5].Status = types.StepStatusRunning
 
-	footer := stripANSI(renderFooter(false, false, false, &shortURL, 20))
-	if strings.Contains(footer, "PR #99") {
-		t.Fatalf("expected narrow footer to hide PR context, got: %s", footer)
-	}
-
-	result := stripANSI(renderBabysitView(run, run.Steps, "", nil, 20))
+	result := stripANSI(renderBabysitView(run, run.Steps, "", nil, 60))
 	if !strings.Contains(result, "PR #99") {
-		t.Fatalf("expected babysit panel to retain PR context in narrow width, got: %s", result)
+		t.Fatalf("expected babysit panel to show PR context, got: %s", result)
 	}
 }
 
@@ -7052,6 +7143,21 @@ func TestHelpOverlay_ShowsRunContext(t *testing.T) {
 	}
 	if !strings.Contains(result, run.ID) {
 		t.Fatalf("expected help overlay to show pipeline ID, got:\n%s", result)
+	}
+}
+
+func TestHelpOverlay_ShowsOpenPRActionWhenPRURLPresent(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	run := testRun()
+	prURL := "https://github.com/test/repo/pull/42"
+	run.PRURL = &prURL
+
+	result := stripANSI(renderHelpOverlay(80, run, true, false, true, false))
+	if !strings.Contains(result, "open PR in browser") {
+		t.Fatalf("expected help overlay to include PR browser action, got:\n%s", result)
+	}
+	if !strings.Contains(result, "o") {
+		t.Fatalf("expected help overlay to include 'o' keybinding, got:\n%s", result)
 	}
 }
 
