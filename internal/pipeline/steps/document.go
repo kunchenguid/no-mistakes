@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
@@ -56,7 +57,7 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 	if err != nil {
 		return nil, fmt.Errorf("get changed files: %w", err)
 	}
-	if strings.TrimSpace(changedFiles) == "" {
+	if !hasNonIgnoredDocumentChanges(changedFiles, sctx.Config.IgnorePatterns) {
 		sctx.Log("no changes to document")
 		return &pipeline.StepOutcome{}, nil
 	}
@@ -121,10 +122,27 @@ Rules:
 	var verdictErr error
 	if result.Output != nil {
 		if err := json.Unmarshal(result.Output, &verdict); err != nil {
-			sctx.Log("could not parse structured output, treating as skipped")
+			sctx.Log("could not parse structured output, requiring approval")
 			verdictErr = err
 			verdict = documentVerdict{Verdict: "skipped", Summary: result.Text}
 		}
+	}
+
+	if !sctx.Fixing && verdictErr != nil {
+		findings := Findings{
+			Items: []Finding{{
+				Severity:    "warning",
+				Description: verdict.Summary,
+			}},
+			Summary: verdict.Summary,
+		}
+		findingsJSON, _ := json.Marshal(findings)
+		sctx.Log(fmt.Sprintf("document verdict: malformed output - %s", verdict.Summary))
+		return &pipeline.StepOutcome{
+			NeedsApproval: true,
+			AutoFixable:   true,
+			Findings:      string(findingsJSON),
+		}, nil
 	}
 
 	if !sctx.Fixing && verdict.Verdict == "updated" {
@@ -532,7 +550,30 @@ func parsePorcelainPath(line string) (string, bool) {
 	if idx := strings.LastIndex(path, " -> "); idx >= 0 {
 		path = path[idx+4:]
 	}
+	if unquoted, err := strconv.Unquote(path); err == nil {
+		path = unquoted
+	}
 	return path, strings.HasPrefix(line, "??")
+}
+
+func hasNonIgnoredDocumentChanges(changedFiles string, ignorePatterns []string) bool {
+	for _, path := range strings.Split(changedFiles, "\n") {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		ignored := false
+		for _, pattern := range ignorePatterns {
+			if matchIgnorePattern(path, pattern) {
+				ignored = true
+				break
+			}
+		}
+		if !ignored {
+			return true
+		}
+	}
+	return false
 }
 
 func isDocCommentOnlyDiff(path, diff string) bool {

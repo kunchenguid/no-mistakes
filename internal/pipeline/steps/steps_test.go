@@ -1642,8 +1642,21 @@ func TestDocumentStep_MalformedOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if outcome.NeedsApproval {
-		t.Error("document step should never require approval")
+	if !outcome.NeedsApproval {
+		t.Fatal("expected malformed output to require approval")
+	}
+	if !outcome.AutoFixable {
+		t.Fatal("expected malformed output finding to remain auto-fixable")
+	}
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatalf("unmarshal findings: %v", err)
+	}
+	if len(findings.Items) != 1 {
+		t.Fatalf("expected 1 finding, got %+v", findings.Items)
+	}
+	if findings.Items[0].Description != "I updated the docs" {
+		t.Fatalf("finding description = %q, want %q", findings.Items[0].Description, "I updated the docs")
 	}
 }
 
@@ -1669,6 +1682,41 @@ func TestDocumentStep_PromptIncludesIgnorePatterns(t *testing.T) {
 	}
 	if !strings.Contains(ag.calls[0].Prompt, "*.generated.go, vendor/**") {
 		t.Error("expected prompt to include ignore patterns")
+	}
+}
+
+func TestDocumentStep_IgnorePatternsFilterAllFiles(t *testing.T) {
+	dir := t.TempDir()
+
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "base")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(dir, "schema.generated.go"), []byte("package gen\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "add generated")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.IgnorePatterns = []string{"*.generated.go"}
+
+	step := &DocumentStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Error("expected no approval when all changes are ignored")
+	}
+	if len(ag.calls) != 0 {
+		t.Errorf("expected no agent calls when diff is empty after filtering, got %d", len(ag.calls))
 	}
 }
 
@@ -1927,6 +1975,24 @@ func TestIsDocumentationPath_DoesNotTreatArbitraryTxtAsDocs(t *testing.T) {
 	}
 	if !isDocumentationPath("docs/output.txt") {
 		t.Fatal("expected docs/ .txt file to be treated as documentation")
+	}
+}
+
+func TestParsePorcelainPath_UnquotesQuotedPaths(t *testing.T) {
+	path, untracked := parsePorcelainPath("?? \"docs/with space.md\"")
+	if path != "docs/with space.md" {
+		t.Fatalf("path = %q, want %q", path, "docs/with space.md")
+	}
+	if !untracked {
+		t.Fatal("expected quoted ?? path to be marked untracked")
+	}
+
+	renamedPath, renamedUntracked := parsePorcelainPath("R  \"old name.md\" -> \"new name.md\"")
+	if renamedPath != "new name.md" {
+		t.Fatalf("renamed path = %q, want %q", renamedPath, "new name.md")
+	}
+	if renamedUntracked {
+		t.Fatal("expected rename entry not to be marked untracked")
 	}
 }
 
