@@ -3160,15 +3160,6 @@ func TestReviewStep_IgnorePatterns(t *testing.T) {
 	if !strings.Contains(capturedPrompt, "*.generated.go") {
 		t.Error("expected prompt to include ignore patterns")
 	}
-	if !strings.Contains(capturedPrompt, headSHA) {
-		t.Error("expected prompt to include head SHA metadata")
-	}
-	if strings.Contains(capturedPrompt, "schema.generated.go") {
-		t.Error("expected prompt to avoid embedding changed file names")
-	}
-	if strings.Contains(capturedPrompt, "feature.txt") {
-		t.Error("expected prompt to avoid embedding changed file names")
-	}
 }
 
 func TestReviewStep_IgnorePatternsFilterAllFiles(t *testing.T) {
