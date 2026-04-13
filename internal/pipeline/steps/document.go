@@ -2,9 +2,13 @@ package steps
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
@@ -38,6 +42,14 @@ type documentVerdict struct {
 func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	ctx := sctx.Ctx
 	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
+	var fixBaseline map[string]documentSnapshotEntry
+	if sctx.Fixing {
+		var err error
+		fixBaseline, err = captureDocumentWorktreeSnapshot(ctx, sctx.WorkDir)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	// Check whether there are any changed files.
 	changedFiles, err := git.Run(ctx, sctx.WorkDir, "diff", "--name-only", baseSHA+".."+sctx.Run.HeadSHA)
@@ -133,7 +145,7 @@ Rules:
 	}
 
 	if sctx.Fixing {
-		outcome, err := s.applyDocumentationUpdates(sctx, baseSHA, verdictErr)
+		outcome, err := s.applyDocumentationUpdates(sctx, baseSHA, verdictErr, fixBaseline)
 		if err != nil {
 			return nil, err
 		}
@@ -147,10 +159,10 @@ Rules:
 	return &pipeline.StepOutcome{}, nil
 }
 
-func (s *DocumentStep) applyDocumentationUpdates(sctx *pipeline.StepContext, baseSHA string, initialVerdictErr error) (*pipeline.StepOutcome, error) {
+func (s *DocumentStep) applyDocumentationUpdates(sctx *pipeline.StepContext, baseSHA string, initialVerdictErr error, baseline map[string]documentSnapshotEntry) (*pipeline.StepOutcome, error) {
 	ctx := sctx.Ctx
 	if initialVerdictErr != nil {
-		outcome, err := malformedDocumentFixOutcome(ctx, sctx.WorkDir)
+		outcome, err := malformedDocumentFixOutcome(ctx, sctx.WorkDir, baseline)
 		if err != nil {
 			return nil, err
 		}
@@ -207,15 +219,48 @@ Rules:
 	if result.Output != nil {
 		if err := json.Unmarshal(result.Output, &verdict); err != nil {
 			sctx.Log("could not parse structured output, treating as skipped")
-			return malformedDocumentFixOutcome(ctx, sctx.WorkDir)
+			return malformedDocumentFixOutcome(ctx, sctx.WorkDir, baseline)
 		}
 	}
 
+	changes, err := detectDocumentWorktreeChanges(ctx, sctx.WorkDir, baseline)
+	if err != nil {
+		return nil, err
+	}
+
 	if verdict.Verdict != "updated" {
+		if len(changes) == 0 {
+			return nil, nil
+		}
+		findingsJSON, _ := json.Marshal(documentFixChangedFilesFindings(
+			fmt.Sprintf("document step changed files but returned verdict %q", verdict.Verdict),
+			fmt.Sprintf("document step changed files but returned verdict %q", verdict.Verdict),
+			changes,
+		))
+		return &pipeline.StepOutcome{
+			NeedsApproval: true,
+			Findings:      string(findingsJSON),
+		}, nil
+	}
+
+	for _, change := range changes {
+		if change.Preexisting {
+			findingsJSON, _ := json.Marshal(documentFixChangedFilesFindings(
+				"document step modified preexisting worktree changes",
+				"document step modified preexisting worktree changes",
+				changes,
+			))
+			return &pipeline.StepOutcome{
+				NeedsApproval: true,
+				Findings:      string(findingsJSON),
+			}, nil
+		}
+	}
+	if len(changes) == 0 {
 		return nil, nil
 	}
 
-	findings, err := detectOutOfScopeDocumentEdits(ctx, sctx.WorkDir)
+	findings, err := detectOutOfScopeDocumentEdits(ctx, sctx.WorkDir, changes)
 	if err != nil {
 		return nil, err
 	}
@@ -227,24 +272,34 @@ Rules:
 		}, nil
 	}
 
-	if err := commitAgentFixes(sctx, s.Name(), verdict.Summary, "update documentation"); err != nil {
+	if err := commitDocumentFixes(sctx, verdict.Summary, changes); err != nil {
 		return nil, err
 	}
 	return nil, nil
 }
 
-func detectOutOfScopeDocumentEdits(ctx context.Context, workDir string) (Findings, error) {
-	status, err := git.Run(ctx, workDir, "status", "--porcelain", "--untracked-files=all")
-	if err != nil {
-		return Findings{}, fmt.Errorf("list document edits: %w", err)
-	}
+type documentSnapshotEntry struct {
+	Exists bool
+	Hash   string
+}
 
+type documentWorktreeChange struct {
+	Path        string
+	Preexisting bool
+}
+
+func detectOutOfScopeDocumentEdits(ctx context.Context, workDir string, changes []documentWorktreeChange) (Findings, error) {
 	findings := Findings{Summary: "document step produced out-of-scope edits"}
-	for _, line := range strings.Split(status, "\n") {
-		path, untracked := parsePorcelainPath(line)
+	for _, change := range changes {
+		path := change.Path
 		if path == "" || isDocumentationPath(path) {
 			continue
 		}
+		status, err := git.Run(ctx, workDir, "status", "--porcelain", "--untracked-files=all", "--", path)
+		if err != nil {
+			return Findings{}, fmt.Errorf("list document edits: %w", err)
+		}
+		_, untracked := parseFirstPorcelainPath(status)
 		if untracked {
 			findings.Items = append(findings.Items, Finding{
 				Severity:    "warning",
@@ -270,6 +325,136 @@ func detectOutOfScopeDocumentEdits(ctx context.Context, workDir string) (Finding
 		findings.Summary = ""
 	}
 	return findings, nil
+}
+
+func captureDocumentWorktreeSnapshot(ctx context.Context, workDir string) (map[string]documentSnapshotEntry, error) {
+	status, err := git.Run(ctx, workDir, "status", "--porcelain", "--untracked-files=all")
+	if err != nil {
+		return nil, fmt.Errorf("list document edits: %w", err)
+	}
+	paths := collectPorcelainPaths(status)
+	snapshot := make(map[string]documentSnapshotEntry, len(paths))
+	for _, path := range paths {
+		entry, err := readDocumentSnapshotEntry(workDir, path)
+		if err != nil {
+			return nil, err
+		}
+		snapshot[path] = entry
+	}
+	return snapshot, nil
+}
+
+func detectDocumentWorktreeChanges(ctx context.Context, workDir string, baseline map[string]documentSnapshotEntry) ([]documentWorktreeChange, error) {
+	status, err := git.Run(ctx, workDir, "status", "--porcelain", "--untracked-files=all")
+	if err != nil {
+		return nil, fmt.Errorf("list document edits: %w", err)
+	}
+	afterPaths := collectPorcelainPaths(status)
+	afterSet := make(map[string]struct{}, len(afterPaths))
+	changes := make([]documentWorktreeChange, 0, len(afterPaths)+len(baseline))
+	for _, path := range afterPaths {
+		afterSet[path] = struct{}{}
+		before, existedBefore := baseline[path]
+		after, err := readDocumentSnapshotEntry(workDir, path)
+		if err != nil {
+			return nil, err
+		}
+		if !existedBefore || before != after {
+			changes = append(changes, documentWorktreeChange{Path: path, Preexisting: existedBefore})
+		}
+	}
+	for path := range baseline {
+		if _, ok := afterSet[path]; ok {
+			continue
+		}
+		changes = append(changes, documentWorktreeChange{Path: path, Preexisting: true})
+	}
+	sort.Slice(changes, func(i, j int) bool {
+		return changes[i].Path < changes[j].Path
+	})
+	return changes, nil
+}
+
+func readDocumentSnapshotEntry(workDir, path string) (documentSnapshotEntry, error) {
+	absolutePath := filepath.Join(workDir, filepath.FromSlash(path))
+	data, err := os.ReadFile(absolutePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return documentSnapshotEntry{}, nil
+		}
+		return documentSnapshotEntry{}, fmt.Errorf("read %s: %w", path, err)
+	}
+	hash := sha256.Sum256(data)
+	return documentSnapshotEntry{Exists: true, Hash: hex.EncodeToString(hash[:])}, nil
+}
+
+func collectPorcelainPaths(status string) []string {
+	seen := map[string]struct{}{}
+	paths := []string{}
+	for _, line := range strings.Split(status, "\n") {
+		path, _ := parsePorcelainPath(line)
+		if path == "" {
+			continue
+		}
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	return paths
+}
+
+func documentFixChangedFilesFindings(summary, description string, changes []documentWorktreeChange) Findings {
+	findings := Findings{Summary: summary}
+	for _, change := range changes {
+		findings.Items = append(findings.Items, Finding{
+			Severity:    "warning",
+			File:        change.Path,
+			Description: description,
+		})
+	}
+	return findings
+}
+
+func commitDocumentFixes(sctx *pipeline.StepContext, summary string, changes []documentWorktreeChange) error {
+	ctx := sctx.Ctx
+	stepName := types.StepDocument
+	paths := make([]string, 0, len(changes))
+	for _, change := range changes {
+		paths = append(paths, change.Path)
+	}
+	if len(paths) == 0 {
+		sctx.Log("no agent changes to commit")
+		return nil
+	}
+	addArgs := append([]string{"add", "--"}, paths...)
+	if _, err := git.Run(ctx, sctx.WorkDir, addArgs...); err != nil {
+		return fmt.Errorf("stage %s changes: %w", stepName, err)
+	}
+	if summary == "" {
+		summary = "update documentation"
+	}
+	commitMessage := deterministicFixCommitMessage(stepName, summary)
+	commitArgs := append([]string{"commit", "-m", commitMessage, "--"}, paths...)
+	if _, err := git.Run(ctx, sctx.WorkDir, commitArgs...); err != nil {
+		return fmt.Errorf("commit %s changes: %w", stepName, err)
+	}
+	headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
+	if err != nil {
+		return fmt.Errorf("resolve head after %s commit: %w", stepName, err)
+	}
+	ref := normalizedBranchRef(sctx.Run.Branch)
+	if _, err := git.Run(ctx, sctx.WorkDir, "update-ref", ref, headSHA); err != nil {
+		return fmt.Errorf("update local branch ref: %w", err)
+	}
+	sctx.Run.HeadSHA = headSHA
+	if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, headSHA); err != nil {
+		return err
+	}
+	sctx.Log(fmt.Sprintf("committed agent fixes: %s", commitMessage))
+	return nil
 }
 
 func isDocumentationPath(path string) bool {
@@ -298,26 +483,34 @@ func isDocumentationPath(path string) bool {
 	return false
 }
 
-func malformedDocumentFixOutcome(ctx context.Context, workDir string) (*pipeline.StepOutcome, error) {
-	status, err := git.Run(ctx, workDir, "status", "--porcelain", "--untracked-files=all")
+func malformedDocumentFixOutcome(ctx context.Context, workDir string, baseline map[string]documentSnapshotEntry) (*pipeline.StepOutcome, error) {
+	changes, err := detectDocumentWorktreeChanges(ctx, workDir, baseline)
 	if err != nil {
-		return nil, fmt.Errorf("check document fix status: %w", err)
+		return nil, err
 	}
-	if strings.TrimSpace(status) == "" {
+	if len(changes) == 0 {
 		return nil, nil
 	}
-	findings := Findings{
-		Items: []Finding{{
-			Severity:    "warning",
-			Description: "document step changed files but returned malformed structured output",
-		}},
-		Summary: "document step changed files but returned malformed structured output",
-	}
+	findings := documentFixChangedFilesFindings(
+		"document step changed files but returned malformed structured output",
+		"document step changed files but returned malformed structured output",
+		changes,
+	)
 	findingsJSON, _ := json.Marshal(findings)
 	return &pipeline.StepOutcome{
 		NeedsApproval: true,
 		Findings:      string(findingsJSON),
 	}, nil
+}
+
+func parseFirstPorcelainPath(status string) (string, bool) {
+	for _, line := range strings.Split(status, "\n") {
+		path, untracked := parsePorcelainPath(line)
+		if path != "" {
+			return path, untracked
+		}
+	}
+	return "", false
 }
 
 func parsePorcelainPath(line string) (string, bool) {

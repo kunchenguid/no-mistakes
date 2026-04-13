@@ -1822,6 +1822,73 @@ func TestDocumentStep_FixMode_MalformedOutputWithEditsNeedsApproval(t *testing.T
 	}
 }
 
+func TestDocumentStep_FixMode_SkippedVerdictWithEditsNeedsApproval(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Updated docs\n"), 0o644)
+			return &agent.Result{Output: json.RawMessage(`{"verdict":"skipped","summary":"nothing to do"}`)}, nil
+		},
+	}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Fixing = true
+	sctx.PreviousFindings = `{"findings":[{"severity":"warning","description":"updated docs"}],"summary":"updated docs"}`
+
+	step := &DocumentStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("expected skipped verdict with edits to require approval")
+	}
+	if got := lastCommitMessage(t, dir); got != "add feature" {
+		t.Fatalf("expected no new commit, but last commit message = %q", got)
+	}
+	if status := gitStatusPorcelain(t, dir); status == "" {
+		t.Fatal("expected documentation edit to remain for review")
+	}
+}
+
+func TestDocumentStep_FixMode_IgnoresPreexistingDirtyFiles(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("existing dirty change\n"), 0o644)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Updated docs\n"), 0o644)
+			return &agent.Result{Output: json.RawMessage(`{"verdict":"updated","summary":"update docs"}`)}, nil
+		},
+	}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Fixing = true
+	sctx.PreviousFindings = `{"findings":[{"severity":"warning","description":"update docs"}],"summary":"update docs"}`
+
+	step := &DocumentStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatal("expected preexisting dirty files to be ignored")
+	}
+	if got := lastCommitMessage(t, dir); got != "no-mistakes(document): update docs" {
+		t.Fatalf("last commit message = %q", got)
+	}
+	status := gitStatusPorcelain(t, dir)
+	if !strings.Contains(status, "feature.txt") {
+		t.Fatalf("expected unrelated dirty file to remain uncommitted, got %q", status)
+	}
+	if strings.Contains(status, "README.md") {
+		t.Fatalf("expected README.md to be committed, got %q", status)
+	}
+}
+
 func TestDocumentStep_FixMode_AllowsDocCommentOnlyEdits(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	gitCmd(t, dir, "checkout", "--detach", headSHA)
