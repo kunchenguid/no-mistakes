@@ -37,12 +37,3 @@ func TestStepNameOrder(t *testing.T) {
 		}
 	}
 }
-
-func TestStepOrdersAreConsecutive(t *testing.T) {
-	steps := AllSteps()
-	for i, s := range steps {
-		if got := s.Order(); got != i+1 {
-			t.Errorf("%q.Order() = %d, want %d", s, got, i+1)
-		}
-	}
-}

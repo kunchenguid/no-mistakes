@@ -26,6 +26,8 @@ type BabysitStep struct {
 	ciFixAttempts        int           // number of CI auto-fix attempts made
 	checksGracePeriod    time.Duration // minimum wait before trusting empty CI checks (0 = default 60s)
 	pollIntervalOverride time.Duration // if set, overrides computed poll interval (for testing)
+	waitForNextPoll      func(context.Context, time.Duration) error
+	now                  func() time.Time
 }
 
 func (s *BabysitStep) Name() types.StepName { return types.StepBabysit }
@@ -180,7 +182,11 @@ func (s *BabysitStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome
 	}
 
 	sctx.Log(fmt.Sprintf("babysitting PR #%s (timeout: %s)...", prNumber, timeout))
-	started := time.Now()
+	now := s.now
+	if now == nil {
+		now = time.Now
+	}
+	started := now()
 	manualFixAttempted := false
 
 	for {
@@ -191,7 +197,7 @@ func (s *BabysitStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome
 			return nil, err
 		}
 
-		elapsed := time.Since(started)
+		elapsed := now().Sub(started)
 		if elapsed >= timeout {
 			sctx.Log("babysit timeout reached")
 			return &pipeline.StepOutcome{}, nil
@@ -270,16 +276,25 @@ func (s *BabysitStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome
 		// Sleep for poll interval
 		interval := s.pollIntervalOverride
 		if interval == 0 {
-			interval = pollInterval(time.Since(started))
+			interval = pollInterval(now().Sub(started))
 		}
-		remaining := timeout - time.Since(started)
+		remaining := timeout - now().Sub(started)
 		if remaining < interval {
 			interval = remaining
 		}
-		select {
-		case <-time.After(interval):
-		case <-ctx.Done():
-			return nil, ctx.Err()
+		waitForNextPoll := s.waitForNextPoll
+		if waitForNextPoll == nil {
+			waitForNextPoll = func(ctx context.Context, interval time.Duration) error {
+				select {
+				case <-time.After(interval):
+					return nil
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+		}
+		if err := waitForNextPoll(ctx, interval); err != nil {
+			return nil, err
 		}
 	}
 }

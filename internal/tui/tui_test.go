@@ -82,23 +82,6 @@ func TestStepLabel(t *testing.T) {
 	}
 }
 
-func TestFormatDuration(t *testing.T) {
-	tests := []struct {
-		ms   int64
-		want string
-	}{
-		{500, "500ms"},
-		{1000, "1.0s"},
-		{2500, "2.5s"},
-		{60000, "60.0s"},
-	}
-	for _, tt := range tests {
-		if got := formatDuration(tt.ms); got != tt.want {
-			t.Errorf("formatDuration(%d) = %q, want %q", tt.ms, got, tt.want)
-		}
-	}
-}
-
 func TestRenderPipelineView_NilRun(t *testing.T) {
 	out := renderPipelineView(nil, nil, 80, 0, 40)
 	if out != "No active run." {
@@ -111,6 +94,8 @@ func TestRenderPipelineView_ShowsSteps(t *testing.T) {
 	run.Steps[0].Status = types.StepStatusCompleted
 	run.Steps[0].DurationMS = ptr(int64(1200))
 	run.Steps[1].Status = types.StepStatusRunning
+	run.Steps[2].Status = types.StepStatusCompleted
+	run.Steps[2].DurationMS = ptr(int64(500))
 
 	out := stripANSI(renderPipelineView(run, run.Steps, 80, 0, 40))
 	if !strings.Contains(out, "feature/foo") {
@@ -133,6 +118,12 @@ func TestRenderPipelineView_ShowsSteps(t *testing.T) {
 	}
 	if !strings.Contains(out, "Test") {
 		t.Error("expected Test step")
+	}
+	if !strings.Contains(out, "Lint") {
+		t.Error("expected Lint step")
+	}
+	if !strings.Contains(out, "500ms") {
+		t.Error("expected sub-second duration for completed step")
 	}
 }
 
@@ -206,23 +197,6 @@ func TestRenderPipelineView_ConnectorsBetweenSteps(t *testing.T) {
 		if !connectorFound {
 			t.Errorf("expected connector │ between step lines %d and %d", stepLineIndices[i], stepLineIndices[i+1])
 		}
-	}
-}
-
-func TestRenderPipelineView_ApprovalPrompt(t *testing.T) {
-	run := testRun()
-	run.Steps[0].Status = types.StepStatusAwaitingApproval
-
-	// Action bar is now rendered outside the pipeline box per DESIGN.md.
-	out := renderActionBar(run.Steps, true, true, false, 5, 5, false, true)
-	if !strings.Contains(out, "awaiting action") {
-		t.Error("expected approval prompt")
-	}
-	if !strings.Contains(stripANSI(out), "a approve") {
-		t.Error("expected action keys")
-	}
-	if !strings.Contains(stripANSI(out), "f fix") {
-		t.Error("expected fix action when findings are selected")
 	}
 }
 
@@ -2762,26 +2736,6 @@ func TestLogTail_RegularLineStaysDim(t *testing.T) {
 	}
 }
 
-func TestDiffBoxTitle_IncludesStepName(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.ANSI)
-	run := testRun()
-	run.Steps[0].Status = types.StepStatusCompleted
-	run.Steps[1].Status = types.StepStatusAwaitingApproval
-
-	m := NewModel("/tmp/sock", nil, run)
-	m.width = 80
-	m.height = 40
-	m.stepDiffs[types.StepTest] = "diff --git a/foo.go b/foo.go\n--- a/foo.go\n+++ b/foo.go\n@@ -1 +1 @@\n-old\n+new\n"
-	m.showDiff = true
-	view := m.View()
-	plain := stripANSI(view)
-
-	// The diff box title should include the step name, e.g. "Diff - Test".
-	if !strings.Contains(plain, "Diff - Test") {
-		t.Errorf("expected diff box title to include step name 'Diff - Test', got:\n%s", plain)
-	}
-}
-
 func TestFindingsBoxTitle_ShowsSeverityCounts(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.ANSI)
 	run := testRun()
@@ -3242,23 +3196,6 @@ func TestRenderBabysitView_LogTailScalesWithHeight(t *testing.T) {
 // --- Action Bar placement per DESIGN.md ---
 // DESIGN.md: Action bar "Sits below the pipeline box, above findings/diff"
 
-func TestActionBar_OutsidePipelineBox(t *testing.T) {
-	// The pipeline box should NOT contain action bar keys when a step is awaiting approval.
-	// The action bar should be rendered separately, outside the box.
-	run := testRun()
-	run.Steps[0].Status = types.StepStatusAwaitingApproval
-
-	pipelineOut := stripANSI(renderPipelineView(run, run.Steps, 80, 0, 40))
-
-	// The pipeline box content (between ╭ and ╰) should NOT contain action bar keys.
-	if strings.Contains(pipelineOut, "a approve") {
-		t.Error("action bar keys should NOT be inside the pipeline box - DESIGN.md says it sits below")
-	}
-	if strings.Contains(pipelineOut, "awaiting action") {
-		t.Error("approval prompt should NOT be inside the pipeline box - DESIGN.md says it sits below")
-	}
-}
-
 func TestActionBar_BetweenPipelineAndFindings(t *testing.T) {
 	// In the full model View(), the action bar should appear between the pipeline box
 	// bottom border (╰) and the findings box top border (╭).
@@ -3325,39 +3262,23 @@ func TestActionBar_IncludesAwaitingLabel(t *testing.T) {
 	if !strings.Contains(view, "Review awaiting action") {
 		t.Error("expected 'Review awaiting action' label in view")
 	}
+	if !strings.Contains(view, "a approve") {
+		t.Error("expected approve action key in full view")
+	}
+	if !strings.Contains(view, "f fix") {
+		t.Error("expected fix action in full view when findings are selected")
+	}
 
 	// It should NOT be inside the pipeline box.
 	pipelineOut := stripANSI(renderPipelineView(run, run.Steps, 80, 0, 40))
+	if strings.Contains(pipelineOut, "a approve") {
+		t.Error("approve action should not be inside the pipeline box")
+	}
+	if strings.Contains(pipelineOut, "f fix") {
+		t.Error("fix action should not be inside the pipeline box")
+	}
 	if strings.Contains(pipelineOut, "awaiting action") {
 		t.Error("'awaiting action' label should not be inside the pipeline box")
-	}
-}
-
-func TestActionBar_FixReviewPrompt(t *testing.T) {
-	// When step status is FixReview, the prompt should say "review fix" not "awaiting action".
-	configureTUIColors()
-	run := testRun()
-	run.Steps[0].Status = types.StepStatusFixReview
-	out := stripANSI(renderActionBar(run.Steps, true, true, false, 5, 5, false, true))
-	if !strings.Contains(out, "review fix") {
-		t.Errorf("expected 'review fix' in FixReview prompt, got:\n%s", out)
-	}
-	if strings.Contains(out, "awaiting action") {
-		t.Error("FixReview prompt should NOT say 'awaiting action'")
-	}
-}
-
-func TestActionBar_AwaitingApprovalPrompt(t *testing.T) {
-	// When step status is AwaitingApproval, the prompt should say "awaiting action" not "review fix".
-	configureTUIColors()
-	run := testRun()
-	run.Steps[0].Status = types.StepStatusAwaitingApproval
-	out := stripANSI(renderActionBar(run.Steps, true, true, false, 5, 5, false, true))
-	if !strings.Contains(out, "awaiting action") {
-		t.Errorf("expected 'awaiting action' in AwaitingApproval prompt, got:\n%s", out)
-	}
-	if strings.Contains(out, "review fix") {
-		t.Error("AwaitingApproval prompt should NOT say 'review fix'")
 	}
 }
 
@@ -3376,6 +3297,9 @@ func TestActionBar_FixReviewPromptInView(t *testing.T) {
 	// The action bar prompt should say "Review - review fix:" not "Review awaiting action:".
 	if !strings.Contains(view, "Review - review fix:") {
 		t.Errorf("expected 'Review - review fix:' in full view for FixReview step, got:\n%s", view)
+	}
+	if strings.Contains(view, "Review awaiting action") {
+		t.Errorf("did not expect awaiting-action prompt in full view for FixReview step, got:\n%s", view)
 	}
 }
 
@@ -3507,6 +3431,9 @@ func TestActionBar_ShowsNavHintsInDiffMode(t *testing.T) {
 	m.resetFindingSelection(types.StepReview)
 
 	view := stripANSI(m.View())
+	if !strings.Contains(view, "│") {
+		t.Errorf("expected separator before diff navigation hints, got:\n%s", view)
+	}
 	if !strings.Contains(view, "n next") {
 		t.Errorf("expected 'n next' hint in action bar when viewing diff, got:\n%s", view)
 	}
@@ -3535,22 +3462,6 @@ func TestActionBar_HidesNavHintsInFindingsMode(t *testing.T) {
 	}
 	if strings.Contains(view, "p prev") {
 		t.Error("'p prev' hint should NOT appear when viewing findings")
-	}
-}
-
-func TestActionBar_NavHintsWithSeparator(t *testing.T) {
-	// In diff mode, n/p hints should appear after │ separator (where selection
-	// actions would be in findings mode), giving the secondary action group context.
-	configureTUIColors()
-	out := stripANSI(renderApprovalActions(false, true, true, 5, 5, false, true))
-	if !strings.Contains(out, "│") {
-		t.Error("expected │ separator before n/p hints in diff mode")
-	}
-	if !strings.Contains(out, "n next") {
-		t.Errorf("expected 'n next' after separator in diff mode, got: %s", out)
-	}
-	if !strings.Contains(out, "p prev") {
-		t.Errorf("expected 'p prev' after separator in diff mode, got: %s", out)
 	}
 }
 

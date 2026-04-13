@@ -1,81 +1,99 @@
 package cli
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
 
-func TestDoctorBasic(t *testing.T) {
+func TestDoctorSystemSectionHealthyState(t *testing.T) {
 	nmHome := t.TempDir()
 	t.Setenv("NM_HOME", nmHome)
+
+	binDir := t.TempDir()
+	t.Setenv("NM_FAKE_BIN", "1")
+	linkTestBinary(t, binDir, "git")
+	linkTestBinary(t, binDir, "gh")
+	t.Setenv("PATH", binDir)
 
 	out, err := executeCmd("doctor")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "git") {
-		t.Errorf("doctor output should check git, got: %s", out)
+
+	for _, want := range []string{
+		"System",
+		"git version 9.9.9",
+		"gh",
+		"ok",
+		nmHome,
+		"database",
+		"will be created on first use",
+		"daemon",
+		"stopped",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("doctor output should include %q, got: %s", want, out)
+		}
 	}
-	if !strings.Contains(out, "data directory") {
-		t.Errorf("doctor output should check data directory, got: %s", out)
-	}
-	if !strings.Contains(out, "database") {
-		t.Errorf("doctor output should check database, got: %s", out)
-	}
-	if !strings.Contains(out, "daemon") {
-		t.Errorf("doctor output should check daemon, got: %s", out)
+	if strings.Contains(out, "some checks failed") {
+		t.Fatalf("doctor output should not report failed checks for healthy system state, got: %s", out)
 	}
 }
 
-func TestDoctorGitMissing(t *testing.T) {
-	nmHome := t.TempDir()
+func TestDoctorSystemSectionReportsMissingGitAndDataDirFailures(t *testing.T) {
+	nmHome := filepath.Join(t.TempDir(), "missing-nm-home")
 	t.Setenv("NM_HOME", nmHome)
-	// Override PATH to make git unavailable.
 	t.Setenv("PATH", "/nonexistent")
 
 	out, err := executeCmd("doctor")
-	// Doctor should not error — it reports issues inline.
 	if err != nil {
-		t.Fatalf("doctor should not error even with problems: %v", err)
+		t.Fatalf("doctor should not error even when checks fail: %v", err)
 	}
-	if !strings.Contains(out, "not found") {
-		t.Errorf("doctor should report git not found, got: %s", out)
+
+	for _, want := range []string{
+		"System",
+		"git",
+		"not found",
+		"gh",
+		"optional, needed for PR/babysit",
+		"data directory",
+		nmHome,
+		"database",
+		"will be created on first use",
+		"daemon",
+		"stopped",
+		"some checks failed",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("doctor output should include %q, got: %s", want, out)
+		}
 	}
 }
 
-func TestDoctorDataDirMissing(t *testing.T) {
-	nmHome := "/nonexistent/path/no-mistakes"
-	t.Setenv("NM_HOME", nmHome)
-
-	out, err := executeCmd("doctor")
-	if err != nil {
-		t.Fatalf("doctor should not error: %v", err)
-	}
-	if !strings.Contains(out, "not found") || !strings.Contains(out, "data directory") {
-		t.Errorf("doctor should report data directory not found, got: %s", out)
-	}
-}
-
-func TestDoctorAgentCheck(t *testing.T) {
+func TestDoctorAgentsSectionReportsFoundAndMissingBinaries(t *testing.T) {
 	nmHome := t.TempDir()
 	t.Setenv("NM_HOME", nmHome)
 
+	binDir := t.TempDir()
+	t.Setenv("NM_FAKE_BIN", "1")
+	claudePath := linkTestBinary(t, binDir, "claude")
+	t.Setenv("PATH", binDir)
+
 	out, err := executeCmd("doctor")
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Should check for at least one agent binary.
-	if !strings.Contains(out, "claude") {
-		t.Errorf("doctor output should check for claude agent, got: %s", out)
-	}
-}
 
-func TestDoctorHelpListed(t *testing.T) {
-	out, err := executeCmd("--help")
-	if err != nil {
-		t.Fatal(err)
+	for _, label := range []string{"Agents", "claude", "codex", "rovodev", "opencode"} {
+		if !strings.Contains(out, label) {
+			t.Fatalf("doctor output should include %q in agents section, got: %s", label, out)
+		}
 	}
-	if !strings.Contains(out, "doctor") {
-		t.Errorf("help output should list doctor command, got: %s", out)
+	if !strings.Contains(out, claudePath) {
+		t.Fatalf("doctor output should report discovered claude path %q, got: %s", claudePath, out)
+	}
+	if got := strings.Count(out, "not found"); got < 3 {
+		t.Fatalf("doctor output should report missing agent binaries, got %d not found markers in: %s", got, out)
 	}
 }

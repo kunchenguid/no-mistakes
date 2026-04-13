@@ -12,6 +12,26 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 )
 
+func daemonStartTimeout() time.Duration {
+	return durationFromEnv("NM_TEST_DAEMON_START_TIMEOUT", 5*time.Second)
+}
+
+func daemonStartPollInterval() time.Duration {
+	return durationFromEnv("NM_TEST_DAEMON_START_POLL_INTERVAL", 100*time.Millisecond)
+}
+
+func durationFromEnv(name string, fallback time.Duration) time.Duration {
+	value := os.Getenv(name)
+	if value == "" {
+		return fallback
+	}
+	d, err := time.ParseDuration(value)
+	if err != nil || d <= 0 {
+		return fallback
+	}
+	return d
+}
+
 // Start forks a new daemon process by re-executing the current binary
 // with NM_DAEMON=1. It waits up to 5 seconds for the daemon to become
 // responsive on the IPC socket.
@@ -55,16 +75,18 @@ func Start(p *paths.Paths) error {
 	}
 
 	// Poll for the daemon to become responsive.
-	deadline := time.Now().Add(5 * time.Second)
+	timeout := daemonStartTimeout()
+	pollInterval := daemonStartPollInterval()
+	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		if alive, _ := IsRunning(p); alive {
 			slog.Info("daemon is responsive", "pid", pid)
 			return nil
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(pollInterval)
 	}
 
-	return fmt.Errorf("daemon started but did not become responsive within 5s")
+	return fmt.Errorf("daemon started but did not become responsive within %v", timeout)
 }
 
 // IsRunning checks if the daemon is alive by sending a health check via IPC.

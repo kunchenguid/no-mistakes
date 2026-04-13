@@ -10,43 +10,29 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-func TestNew_Claude(t *testing.T) {
-	a, err := New(types.AgentClaude, "claude")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+func TestNew_KnownAgents(t *testing.T) {
+	tests := []struct {
+		name     string
+		agent    types.AgentName
+		bin      string
+		wantName string
+	}{
+		{name: "claude", agent: types.AgentClaude, bin: "claude", wantName: "claude"},
+		{name: "codex", agent: types.AgentCodex, bin: "codex", wantName: "codex"},
+		{name: "rovodev", agent: types.AgentRovoDev, bin: "acli", wantName: "rovodev"},
+		{name: "opencode", agent: types.AgentOpenCode, bin: "opencode", wantName: "opencode"},
 	}
-	if a.Name() != "claude" {
-		t.Errorf("expected name %q, got %q", "claude", a.Name())
-	}
-}
 
-func TestNew_Codex(t *testing.T) {
-	a, err := New(types.AgentCodex, "codex")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if a.Name() != "codex" {
-		t.Errorf("expected name %q, got %q", "codex", a.Name())
-	}
-}
-
-func TestNew_RovoDev(t *testing.T) {
-	a, err := New(types.AgentRovoDev, "acli")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if a.Name() != "rovodev" {
-		t.Errorf("expected name %q, got %q", "rovodev", a.Name())
-	}
-}
-
-func TestNew_OpenCode(t *testing.T) {
-	a, err := New(types.AgentOpenCode, "opencode")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if a.Name() != "opencode" {
-		t.Errorf("expected name %q, got %q", "opencode", a.Name())
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a, err := New(tt.agent, tt.bin)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if a.Name() != tt.wantName {
+				t.Errorf("expected name %q, got %q", tt.wantName, a.Name())
+			}
+		})
 	}
 }
 

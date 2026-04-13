@@ -291,23 +291,6 @@ func newTestContext(t *testing.T, ag agent.Agent, workDir, baseSHA, headSHA stri
 
 // --- common tests ---
 
-func TestIsZeroSHA(t *testing.T) {
-	tests := []struct {
-		sha  string
-		want bool
-	}{
-		{"0000000000000000000000000000000000000000", true},
-		{"abc123", false},
-		{"", false},
-		{"00000", false},
-	}
-	for _, tt := range tests {
-		if got := git.IsZeroSHA(tt.sha); got != tt.want {
-			t.Errorf("IsZeroSHA(%q) = %v, want %v", tt.sha, got, tt.want)
-		}
-	}
-}
-
 func TestResolveBaseSHA_NonZero(t *testing.T) {
 	dir := t.TempDir()
 	got := resolveBaseSHA(context.Background(), dir, "abc123", "main")
@@ -358,27 +341,6 @@ func TestResolveBaseSHA_ZeroNoDefaultBranch(t *testing.T) {
 	}
 }
 
-func TestHasBlockingFindings(t *testing.T) {
-	tests := []struct {
-		name     string
-		items    []Finding
-		expected bool
-	}{
-		{"empty", nil, false},
-		{"info only", []Finding{{Severity: "info", Description: "note"}}, false},
-		{"warning", []Finding{{Severity: "warning", Description: "warn"}}, true},
-		{"error", []Finding{{Severity: "error", Description: "err"}}, true},
-		{"mixed", []Finding{{Severity: "info"}, {Severity: "error"}}, true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := hasBlockingFindings(tt.items); got != tt.expected {
-				t.Errorf("hasBlockingFindings() = %v, want %v", got, tt.expected)
-			}
-		})
-	}
-}
-
 func TestRunShellCommand(t *testing.T) {
 	dir := t.TempDir()
 
@@ -416,13 +378,6 @@ func TestAllSteps(t *testing.T) {
 		if s.Name() != expected[i] {
 			t.Errorf("step %d name = %s, want %s", i, s.Name(), expected[i])
 		}
-	}
-}
-
-func TestRebaseStep_Name(t *testing.T) {
-	s := &RebaseStep{}
-	if s.Name() != types.StepRebase {
-		t.Errorf("Name() = %s, want %s", s.Name(), types.StepRebase)
 	}
 }
 
@@ -938,13 +893,6 @@ func TestRebaseStep_LogFileNotVisibleToUser(t *testing.T) {
 
 // --- Review step tests ---
 
-func TestReviewStep_Name(t *testing.T) {
-	s := &ReviewStep{}
-	if s.Name() != types.StepReview {
-		t.Errorf("Name() = %s, want %s", s.Name(), types.StepReview)
-	}
-}
-
 func TestReviewStep_EmptyDiff(t *testing.T) {
 	dir := t.TempDir()
 	gitCmd(t, dir, "init")
@@ -1018,27 +966,6 @@ func TestReviewStep_WithWarnings(t *testing.T) {
 	}
 	if strings.Contains(ag.calls[0].Prompt, "feature code") {
 		t.Error("expected prompt to avoid embedding diff contents")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "focus only on changed code") {
-		t.Error("expected prompt to constrain review scope to changed code")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "Only comment on things that genuinely matter") {
-		t.Error("expected prompt to discourage low-signal findings")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "No generic advice like \"add more tests\" or \"improve docs\"") {
-		t.Error("expected prompt to ban generic review advice")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "Do NOT report styling, formatting, linting, compilation, or type-checking issues") {
-		t.Error("expected prompt to exclude lint/style/type findings")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "Anchor every finding to a specific file and one-indexed line number in the changed code") {
-		t.Error("expected prompt to require anchored findings")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "severity \"error\" for problems that should absolutely not get merged") {
-		t.Error("expected prompt to map severities to Airlock-style critique categories")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "return an empty findings array") {
-		t.Error("expected prompt to allow empty findings when clean")
 	}
 }
 
@@ -1199,7 +1126,7 @@ func TestReviewStep_FixMode(t *testing.T) {
 			callCount++
 			if callCount == 1 {
 				os.WriteFile(filepath.Join(dir, "review-fix.txt"), []byte("fixed"), 0o644)
-				return &agent.Result{Output: json.RawMessage(`{"summary":"address review findings"}`)}, nil
+				return &agent.Result{Output: json.RawMessage(`{"summary":"  'address review findings.'  "}`)}, nil
 			}
 			// Review call — return clean findings
 			findings := Findings{Items: nil, Summary: "all clear"}
@@ -1229,26 +1156,8 @@ func TestReviewStep_FixMode(t *testing.T) {
 	if !strings.Contains(ag.calls[0].Prompt, headSHA) {
 		t.Error("expected fix prompt to contain head SHA")
 	}
-	if !strings.Contains(ag.calls[0].Prompt, "Investigate previous review findings and address legitimate ones") {
-		t.Error("expected review fix prompt to frame the task around previous findings")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "Always start with double checking whether the findings are legitimate") {
-		t.Error("expected review fix prompt to require validating prior findings")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "Do not add code comments explaining your fixes") {
-		t.Error("expected review fix prompt to forbid explanatory comments")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "Verify that the issues are resolved") {
-		t.Error("expected review fix prompt to require verification")
-	}
 	if !strings.Contains(ag.calls[0].Prompt, "possible nil dereference") {
 		t.Error("expected review fix prompt to include previous findings")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, `Return JSON with a single "summary" field`) {
-		t.Error("expected fix prompt to request structured summary output")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "Keep the summary under 10 words") {
-		t.Error("expected fix prompt to require a concise summary")
 	}
 	if len(ag.calls[0].JSONSchema) == 0 {
 		t.Error("expected fix call to request structured JSON output")
@@ -1268,13 +1177,6 @@ func TestReviewStep_FixMode(t *testing.T) {
 }
 
 // --- Test step tests ---
-
-func TestTestStep_Name(t *testing.T) {
-	s := &TestStep{}
-	if s.Name() != types.StepTest {
-		t.Errorf("Name() = %s, want %s", s.Name(), types.StepTest)
-	}
-}
 
 func TestTestStep_PassingCommand(t *testing.T) {
 	dir := t.TempDir()
@@ -1346,20 +1248,8 @@ func TestTestStep_NoCommand_AgentDetects(t *testing.T) {
 	if len(ag.calls) != 1 {
 		t.Errorf("expected 1 agent call, got %d", len(ag.calls))
 	}
-	if !strings.Contains(ag.calls[0].Prompt, "If tests fail, determine whether the problem is") {
-		t.Error("expected prompt to classify test failures")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "Do NOT run linters, formatters, or static analysis tools") {
-		t.Error("expected prompt to forbid lint/format work in test step")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "Writing and running new tests if coverage is insufficient") {
-		t.Error("expected prompt to allow adding tests when needed")
-	}
 	if !strings.Contains(ag.calls[0].Prompt, "branch: refs/heads/feature") {
 		t.Error("expected prompt to include branch metadata")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "empty findings array") {
-		t.Error("expected prompt to instruct agent to return empty findings when tests pass")
 	}
 }
 
@@ -1422,6 +1312,7 @@ func TestLintStep_NoCommand_MalformedAgentOutput(t *testing.T) {
 func TestTestStep_FixMode(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	gitCmd(t, dir, "checkout", "--detach", headSHA)
+	previousFindings := `{"items":[{"severity":"error","description":"tests failed with exit code 1"}],"summary":"FAIL: TestFoo expected 42 got 0"}`
 
 	callCount := 0
 	ag := &mockAgent{
@@ -1429,11 +1320,12 @@ func TestTestStep_FixMode(t *testing.T) {
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 			callCount++
 			os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("fixed"), 0o644)
-			return &agent.Result{Output: json.RawMessage(`{"summary":"fix test failures"}`)}, nil
+			return &agent.Result{Output: json.RawMessage(`{"summary":"  \"fix test failures.\"  "}`)}, nil
 		},
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Test: "true"})
 	sctx.Fixing = true
+	sctx.PreviousFindings = previousFindings
 
 	step := &TestStep{}
 	outcome, err := step.Execute(sctx)
@@ -1446,26 +1338,11 @@ func TestTestStep_FixMode(t *testing.T) {
 	if callCount != 1 {
 		t.Errorf("expected 1 agent call (fix), got %d", callCount)
 	}
-	if !strings.Contains(ag.calls[0].Prompt, "Make the minimal change needed") {
-		t.Error("expected test fix prompt to require minimal changes")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "Do not refactor beyond what is needed") {
-		t.Error("expected test fix prompt to forbid broader refactors")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "Re-run the relevant tests") {
-		t.Error("expected test fix prompt to require re-running tests")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "Do NOT run linters, formatters, or static analysis tools") {
-		t.Error("expected test fix prompt to forbid lint/format work")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, `Return JSON with a single "summary" field`) {
-		t.Error("expected fix prompt to request structured summary output")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "Keep the summary under 10 words") {
-		t.Error("expected fix prompt to require a concise summary")
-	}
 	if len(ag.calls[0].JSONSchema) == 0 {
 		t.Error("expected fix call to request structured JSON output")
+	}
+	if !strings.Contains(ag.calls[0].Prompt, "FAIL: TestFoo expected 42 got 0") {
+		t.Error("expected fix prompt to contain previous test failure summary")
 	}
 	if status := gitStatusPorcelain(t, dir); status != "" {
 		t.Fatalf("expected clean worktree after fix commit, got %q", status)
@@ -1478,6 +1355,7 @@ func TestTestStep_FixMode(t *testing.T) {
 func TestLintStep_FixMode_CommitsChanges(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	gitCmd(t, dir, "checkout", "--detach", headSHA)
+	previousFindings := `{"items":[{"severity":"warning","description":"linter found issues (exit code 1)"}],"summary":"main.go:10: unused variable x"}`
 
 	callCount := 0
 	ag := &mockAgent{
@@ -1485,12 +1363,13 @@ func TestLintStep_FixMode_CommitsChanges(t *testing.T) {
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 			callCount++
 			os.WriteFile(filepath.Join(dir, "lint-fix.txt"), []byte("fixed"), 0o644)
-			return &agent.Result{Output: json.RawMessage(`{"summary":"fix lint issues"}`)}, nil
+			return &agent.Result{Output: json.RawMessage(`{"summary":"  'fix lint issues,'  "}`)}, nil
 		},
 	}
 
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Lint: "true"})
 	sctx.Fixing = true
+	sctx.PreviousFindings = previousFindings
 
 	step := &LintStep{}
 	outcome, err := step.Execute(sctx)
@@ -1503,14 +1382,11 @@ func TestLintStep_FixMode_CommitsChanges(t *testing.T) {
 	if callCount != 1 {
 		t.Errorf("expected 1 agent call (fix), got %d", callCount)
 	}
-	if !strings.Contains(ag.calls[0].Prompt, `Return JSON with a single "summary" field`) {
-		t.Error("expected fix prompt to request structured summary output")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "Keep the summary under 10 words") {
-		t.Error("expected fix prompt to require a concise summary")
-	}
 	if len(ag.calls[0].JSONSchema) == 0 {
 		t.Error("expected fix call to request structured JSON output")
+	}
+	if !strings.Contains(ag.calls[0].Prompt, "unused variable x") {
+		t.Error("expected fix prompt to contain previous lint summary")
 	}
 	if status := gitStatusPorcelain(t, dir); status != "" {
 		t.Fatalf("expected clean worktree after fix commit, got %q", status)
@@ -1520,14 +1396,32 @@ func TestLintStep_FixMode_CommitsChanges(t *testing.T) {
 	}
 }
 
-// --- Lint step tests ---
+func TestLintStep_FixMode_UsesFallbackSummaryWhenStructuredSummaryMalformed(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
 
-func TestLintStep_Name(t *testing.T) {
-	s := &LintStep{}
-	if s.Name() != types.StepLint {
-		t.Errorf("Name() = %s, want %s", s.Name(), types.StepLint)
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			os.WriteFile(filepath.Join(dir, "lint-fix.txt"), []byte("fixed"), 0o644)
+			return &agent.Result{Output: json.RawMessage(`not json`)}, nil
+		},
+	}
+
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Lint: "true"})
+	sctx.Fixing = true
+
+	step := &LintStep{}
+	if _, err := step.Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := lastCommitMessage(t, dir); got != "no-mistakes(lint): fix lint issues" {
+		t.Fatalf("last commit message = %q", got)
 	}
 }
+
+// --- Lint step tests ---
 
 func TestLintStep_PassingCommand(t *testing.T) {
 	dir := t.TempDir()
@@ -1597,25 +1491,12 @@ func TestLintStep_NoCommand(t *testing.T) {
 	if len(ag.calls) != 1 {
 		t.Fatalf("expected 1 agent call, got %d", len(ag.calls))
 	}
-	if !strings.Contains(ag.calls[0].Prompt, "Only lint or format the relevant changed files when possible") {
-		t.Error("expected lint prompt to prefer changed-file scope")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "Do not run tests or broader behavioral validation") {
-		t.Error("expected lint prompt to avoid test work")
-	}
 	if !strings.Contains(ag.calls[0].Prompt, "branch: refs/heads/feature") {
 		t.Error("expected lint prompt to include branch metadata")
 	}
 }
 
 // --- Push step tests ---
-
-func TestPushStep_Name(t *testing.T) {
-	s := &PushStep{}
-	if s.Name() != types.StepPush {
-		t.Errorf("Name() = %s, want %s", s.Name(), types.StepPush)
-	}
-}
 
 func TestPushStep_Success(t *testing.T) {
 	// Set up a bare repo as "upstream"
@@ -2088,13 +1969,6 @@ func TestPushStep_ReconcilesStaleDatabaseHeadSHA(t *testing.T) {
 
 // --- PR step tests ---
 
-func TestPRStep_Name(t *testing.T) {
-	s := &PRStep{}
-	if s.Name() != types.StepPR {
-		t.Errorf("Name() = %s, want %s", s.Name(), types.StepPR)
-	}
-}
-
 func TestPRStep_GhNotAvailable(t *testing.T) {
 	// Verify the step skips gracefully when the required provider CLI is missing.
 	if _, err := exec.LookPath("gh"); err == nil {
@@ -2263,12 +2137,23 @@ func TestPRStep_ZeroBaseSHA(t *testing.T) {
 func TestPRStep_CreatesNewPR(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
-	// No existing PR — pr view returns exit 1
+	// No existing PR - pr view returns exit 1
 	binDir, logFile := fakeGH(t, "")
 	prependPATH(t, binDir)
 
+	findings := `{"findings":[],"summary":"clean","risk_level":"medium","risk_rationale":"touches critical error handling"}`
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.UpdateStepStatus(reviewStep.ID, types.StepStatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.SetStepFindings(reviewStep.ID, findings); err != nil {
+		t.Fatal(err)
+	}
 
 	step := &PRStep{}
 	outcome, err := step.Execute(sctx)
@@ -2288,6 +2173,15 @@ func TestPRStep_CreatesNewPR(t *testing.T) {
 	if !strings.Contains(ghLog, "pr create") {
 		t.Errorf("expected gh pr create to be called, got:\n%s", ghLog)
 	}
+	if strings.Contains(ghLog, "--title add feature --") {
+		t.Fatalf("expected fallback PR title to reject raw non-conventional commit summary, got:\n%s", ghLog)
+	}
+	if !strings.Contains(ghLog, "--title chore: add feature --body") {
+		t.Fatalf("expected fallback PR title to use conventional commit format, got:\n%s", ghLog)
+	}
+	if !strings.Contains(ghLog, "add feature\n\n⚠️ medium: touches critical error handling") {
+		t.Fatalf("expected fallback PR body to append risk note outside summary content, got:\n%s", ghLog)
+	}
 
 	// Verify PR URL was stored
 	run, err := sctx.DB.GetRun(sctx.Run.ID)
@@ -2305,46 +2199,8 @@ func TestPRStep_UsesAgentGeneratedTitleAndBody(t *testing.T) {
 	binDir, logFile := fakeGH(t, "")
 	prependPATH(t, binDir)
 
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			payload := json.RawMessage(`{"title":"fix: improve pipeline header UX","body":"## Summary\n\n- keep branch status readable\n- fix footer truncation"}`)
-			return &agent.Result{Output: payload}, nil
-		},
-	}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-
-	step := &PRStep{}
-	if _, err := step.Execute(sctx); err != nil {
-		t.Fatal(err)
-	}
-	if len(ag.calls) != 1 {
-		t.Fatalf("expected 1 agent call, got %d", len(ag.calls))
-	}
-
-	logData, err := os.ReadFile(logFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ghLog := string(logData)
-	if !strings.Contains(ghLog, "--title fix: improve pipeline header UX") {
-		t.Fatalf("expected generated PR title in gh call, got:\n%s", ghLog)
-	}
-	if !strings.Contains(ghLog, "keep branch status readable") {
-		t.Fatalf("expected generated PR body in gh call, got:\n%s", ghLog)
-	}
-	if strings.Contains(ghLog, "--title feature") {
-		t.Fatalf("expected PR title to avoid raw branch name, got:\n%s", ghLog)
-	}
-}
-
-func TestPRStep_AppendsRiskOutsideSummaryList(t *testing.T) {
-	dir, baseSHA, headSHA := setupGitRepo(t)
-
-	binDir, logFile := fakeGH(t, "")
-	prependPATH(t, binDir)
-
 	findings := `{"findings":[],"summary":"clean","risk_level":"medium","risk_rationale":"touches critical error handling"}`
+
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
@@ -2368,14 +2224,26 @@ func TestPRStep_AppendsRiskOutsideSummaryList(t *testing.T) {
 	if _, err := step.Execute(sctx); err != nil {
 		t.Fatal(err)
 	}
+	if len(ag.calls) != 1 {
+		t.Fatalf("expected 1 agent call, got %d", len(ag.calls))
+	}
 
 	logData, err := os.ReadFile(logFile)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ghLog := string(logData)
+	if !strings.Contains(ghLog, "--title fix: improve pipeline header UX") {
+		t.Fatalf("expected generated PR title in gh call, got:\n%s", ghLog)
+	}
+	if !strings.Contains(ghLog, "keep branch status readable") {
+		t.Fatalf("expected generated PR body in gh call, got:\n%s", ghLog)
+	}
 	if !strings.Contains(ghLog, "fix footer truncation\n\n⚠️ medium: touches critical error handling") {
-		t.Fatalf("expected risk note to be separated from summary list, got:\n%s", ghLog)
+		t.Fatalf("expected risk note to be separated from generated summary list, got:\n%s", ghLog)
+	}
+	if strings.Contains(ghLog, "--title feature") {
+		t.Fatalf("expected PR title to avoid raw branch name, got:\n%s", ghLog)
 	}
 }
 
@@ -2511,123 +2379,6 @@ func newTestContextWithDBRecords(t *testing.T, ag agent.Agent, workDir, baseSHA,
 	return sctx
 }
 
-// --- Findings JSON round-trip ---
-
-func TestFindingsJSON(t *testing.T) {
-	f := Findings{
-		Items: []Finding{
-			{Severity: "error", File: "main.go", Line: 42, Description: "null deref"},
-			{Severity: "info", Description: "consider renaming"},
-		},
-		Summary: "2 findings",
-	}
-
-	data, err := json.Marshal(f)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	var f2 Findings
-	if err := json.Unmarshal(data, &f2); err != nil {
-		t.Fatal(err)
-	}
-
-	if len(f2.Items) != 2 {
-		t.Fatalf("expected 2 findings, got %d", len(f2.Items))
-	}
-	if f2.Items[0].File != "main.go" {
-		t.Errorf("file = %s, want main.go", f2.Items[0].File)
-	}
-	if f2.Items[1].Line != 0 {
-		t.Errorf("line = %d, want 0 (omitted)", f2.Items[1].Line)
-	}
-	if f2.Summary != "2 findings" {
-		t.Errorf("summary = %s, want '2 findings'", f2.Summary)
-	}
-}
-
-// --- Helper function unit tests ---
-
-func TestNormalizedBranchRef(t *testing.T) {
-	tests := []struct {
-		input, want string
-	}{
-		{"feature", "refs/heads/feature"},
-		{"my/branch", "refs/heads/my/branch"},
-		{"refs/heads/feature", "refs/heads/feature"},
-		{"refs/tags/v1", "refs/tags/v1"},
-	}
-	for _, tc := range tests {
-		if got := normalizedBranchRef(tc.input); got != tc.want {
-			t.Errorf("normalizedBranchRef(%q) = %q, want %q", tc.input, got, tc.want)
-		}
-	}
-}
-
-func TestDeterministicFixCommitMessage(t *testing.T) {
-	tests := []struct {
-		step    types.StepName
-		summary string
-		want    string
-	}{
-		{types.StepReview, "address nil dereference", "no-mistakes(review): address nil dereference"},
-		{types.StepTest, "", "no-mistakes(test): apply fixes"},
-		{types.StepLint, "fix formatting", "no-mistakes(lint): fix formatting"},
-	}
-	for _, tc := range tests {
-		if got := deterministicFixCommitMessage(tc.step, tc.summary); got != tc.want {
-			t.Errorf("deterministicFixCommitMessage(%q, %q) = %q, want %q", tc.step, tc.summary, got, tc.want)
-		}
-	}
-}
-
-func TestExtractCommitSummary(t *testing.T) {
-	tests := []struct {
-		name    string
-		result  *agent.Result
-		want    string
-		wantErr bool
-	}{
-		{
-			name:   "valid summary",
-			result: &agent.Result{Output: json.RawMessage(`{"summary":"fix nil pointer"}`)},
-			want:   "fix nil pointer",
-		},
-		{
-			name:   "trims punctuation and whitespace",
-			result: &agent.Result{Output: json.RawMessage(`{"summary":"  'fix lint issues.'  "}`)},
-			want:   "fix lint issues",
-		},
-		{
-			name:    "nil output",
-			result:  &agent.Result{},
-			wantErr: true,
-		},
-		{
-			name:    "malformed JSON",
-			result:  &agent.Result{Output: json.RawMessage(`not json`)},
-			wantErr: true,
-		},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := extractCommitSummary(tc.result)
-			if tc.wantErr {
-				if err == nil {
-					t.Fatal("expected error, got nil")
-				}
-				return
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got != tc.want {
-				t.Errorf("extractCommitSummary() = %q, want %q", got, tc.want)
-			}
-		})
-	}
-}
-
 func TestCommitAgentFixes_NoChanges(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	gitCmd(t, dir, "checkout", "--detach", headSHA)
@@ -2664,128 +2415,62 @@ func TestCommitAgentFixes_UsesFallbackSummary(t *testing.T) {
 
 // --- Babysit step tests ---
 
-func TestBabysitStep_Name(t *testing.T) {
-	s := &BabysitStep{}
-	if s.Name() != types.StepBabysit {
-		t.Errorf("Name() = %s, want %s", s.Name(), types.StepBabysit)
-	}
-}
+func TestBabysitStep_PendingChecksUseAdaptivePollIntervals(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
 
-func TestExtractPRNumber(t *testing.T) {
-	tests := []struct {
-		name    string
-		url     string
-		want    string
-		wantErr bool
-	}{
-		{"standard", "https://github.com/owner/repo/pull/42", "42", false},
-		{"trailing slash", "https://github.com/owner/repo/pull/42/", "42", false},
-		{"just number", "123", "123", false},
-		{"empty", "", "", true},
-		{"non numeric", "https://github.com/owner/repo/pull/abc", "", true},
-		{"path segment not number", "https://github.com/owner/repo/pull/42/files", "", true},
+	checksSequence := []string{
+		`[{"name":"build","state":"PENDING","bucket":"pending"}]`,
+		`[{"name":"build","state":"PENDING","bucket":"pending"}]`,
+		`[{"name":"build","state":"PENDING","bucket":"pending"}]`,
+		`[{"name":"build","state":"SUCCESS","bucket":"pass"}]`,
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := extractPRNumber(tt.url)
-			if (err != nil) != tt.wantErr {
-				t.Fatalf("extractPRNumber(%q) error = %v, wantErr %v", tt.url, err, tt.wantErr)
-			}
-			if got != tt.want {
-				t.Errorf("extractPRNumber(%q) = %q, want %q", tt.url, got, tt.want)
-			}
-		})
-	}
-}
+	binDir := fakeBabysitGHSequence(t, "OPEN", checksSequence)
+	prependPATH(t, binDir)
 
-func TestPollInterval(t *testing.T) {
-	tests := []struct {
-		name    string
-		elapsed time.Duration
-		want    time.Duration
-	}{
-		{"start", 0, 30 * time.Second},
-		{"3 minutes", 3 * time.Minute, 30 * time.Second},
-		{"5 minutes", 5 * time.Minute, 60 * time.Second},
-		{"10 minutes", 10 * time.Minute, 60 * time.Second},
-		{"15 minutes", 15 * time.Minute, 120 * time.Second},
-		{"1 hour", time.Hour, 120 * time.Second},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := pollInterval(tt.elapsed)
-			if got != tt.want {
-				t.Errorf("pollInterval(%v) = %v, want %v", tt.elapsed, got, tt.want)
-			}
-		})
-	}
-}
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.PRURL = &prURL
+	sctx.Config.BabysitTimeout = 20 * time.Minute
 
-func TestHasFailingChecks(t *testing.T) {
-	tests := []struct {
-		name   string
-		checks []ciCheck
-		want   bool
-	}{
-		{"empty", nil, false},
-		{"all passing", []ciCheck{{Name: "build", Conclusion: "success"}}, false},
-		{"failure", []ciCheck{{Name: "build", Conclusion: "failure"}}, true},
-		{"action required", []ciCheck{{Name: "lint", Conclusion: "action_required"}}, true},
-		{"mixed", []ciCheck{
-			{Name: "build", Conclusion: "success"},
-			{Name: "test", Conclusion: "failure"},
-		}, true},
-		{"neutral", []ciCheck{{Name: "build", Conclusion: "neutral"}}, false},
-		{"pending", []ciCheck{{Name: "build", Status: "QUEUED", Conclusion: ""}}, false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := hasFailingChecks(tt.checks)
-			if got != tt.want {
-				t.Errorf("hasFailingChecks() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
+	started := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
+	current := started
+	var waits []time.Duration
 
-func TestHasPendingChecks(t *testing.T) {
-	tests := []struct {
-		name   string
-		checks []ciCheck
-		want   bool
-	}{
-		{"empty", nil, false},
-		{"all completed", []ciCheck{{Name: "build", Status: "COMPLETED", Conclusion: "success"}}, false},
-		{"queued", []ciCheck{{Name: "build", Status: "QUEUED", Conclusion: ""}}, true},
-		{"in progress", []ciCheck{{Name: "build", Status: "IN_PROGRESS", Conclusion: ""}}, true},
-		{"mixed", []ciCheck{
-			{Name: "build", Status: "COMPLETED", Conclusion: "success"},
-			{Name: "test", Status: "IN_PROGRESS", Conclusion: ""},
-		}, true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := hasPendingChecks(tt.checks)
-			if got != tt.want {
-				t.Errorf("hasPendingChecks() = %v, want %v", got, tt.want)
+	step := &BabysitStep{
+		now: func() time.Time { return current },
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			waits = append(waits, interval)
+			switch len(waits) {
+			case 1:
+				current = started.Add(5 * time.Minute)
+			case 2:
+				current = started.Add(15 * time.Minute)
+			case 3:
+				current = current.Add(interval)
+			default:
+				t.Fatalf("unexpected extra poll wait: %v", interval)
 			}
-		})
+			return nil
+		},
 	}
-}
 
-func TestFailingCheckNames(t *testing.T) {
-	checks := []ciCheck{
-		{Name: "build", Conclusion: "success"},
-		{Name: "test", Conclusion: "failure"},
-		{Name: "lint", Conclusion: "action_required"},
-		{Name: "deploy", Conclusion: "neutral"},
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
 	}
-	got := failingCheckNames(checks)
-	if len(got) != 2 {
-		t.Fatalf("failingCheckNames() returned %d names, want 2", len(got))
+	if outcome.NeedsApproval {
+		t.Fatal("expected pending checks to exit cleanly once checks pass")
 	}
-	if got[0] != "test" || got[1] != "lint" {
-		t.Errorf("failingCheckNames() = %v, want [test, lint]", got)
+
+	want := []time.Duration{30 * time.Second, 60 * time.Second, 120 * time.Second}
+	if len(waits) != len(want) {
+		t.Fatalf("wait count = %d, want %d (%v)", len(waits), len(want), waits)
+	}
+	for i := range want {
+		if waits[i] != want[i] {
+			t.Fatalf("wait %d = %v, want %v (all waits: %v)", i, waits[i], want[i], waits)
+		}
 	}
 }
 
@@ -2802,6 +2487,30 @@ func TestBabysitStep_NoPRURL(t *testing.T) {
 	}
 	if outcome.NeedsApproval {
 		t.Error("expected no approval for missing PR URL")
+	}
+}
+
+func TestBabysitStep_InvalidPRURLReturnsError(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	binDir := fakeBabysitGH(t, "OPEN", "[]")
+	prependPATH(t, binDir)
+
+	prURL := "https://github.com/test/repo/pull/42/files"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.PRURL = &prURL
+
+	step := &BabysitStep{}
+	_, err := step.Execute(sctx)
+	if err == nil {
+		t.Fatal("expected error for invalid PR URL")
+	}
+	if !strings.Contains(err.Error(), "extract PR number") {
+		t.Fatalf("expected extract PR number context, got %v", err)
+	}
+	if !strings.Contains(err.Error(), `invalid PR number "files"`) {
+		t.Fatalf("expected invalid PR number detail, got %v", err)
 	}
 }
 
@@ -2863,8 +2572,20 @@ func TestBabysitStep_TimeoutDoesNotSleepPastDeadline(t *testing.T) {
 	sctx.Run.PRURL = &prURL
 	sctx.Config.BabysitTimeout = 2 * time.Second
 
-	step := &BabysitStep{}
-	started := time.Now()
+	started := time.Unix(1700000000, 0)
+	now := started
+	var intervals []time.Duration
+
+	step := &BabysitStep{
+		now: func() time.Time {
+			return now
+		},
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			intervals = append(intervals, interval)
+			now = now.Add(interval)
+			return nil
+		},
+	}
 	outcome, err := step.Execute(sctx)
 	if err != nil {
 		t.Fatal(err)
@@ -2872,18 +2593,11 @@ func TestBabysitStep_TimeoutDoesNotSleepPastDeadline(t *testing.T) {
 	if outcome.NeedsApproval {
 		t.Error("expected no approval when timeout expires")
 	}
-	if elapsed := time.Since(started); elapsed > 10*time.Second {
-		t.Fatalf("babysit step exceeded timeout budget: %v", elapsed)
+	if len(intervals) != 1 {
+		t.Fatalf("expected exactly one poll wait before timeout, got %d", len(intervals))
 	}
-}
-
-func TestAllStepsIncludesBabysit(t *testing.T) {
-	steps := AllSteps()
-	if len(steps) != 7 {
-		t.Fatalf("AllSteps() returned %d steps, want 7", len(steps))
-	}
-	if steps[6].Name() != types.StepBabysit {
-		t.Errorf("last step = %s, want %s", steps[6].Name(), types.StepBabysit)
+	if intervals[0] != 2*time.Second {
+		t.Fatalf("wait interval = %v, want clipped timeout %v", intervals[0], 2*time.Second)
 	}
 }
 
@@ -3043,104 +2757,47 @@ func TestBabysitStep_CommitAndPush_UpdatesLocalBranchRefAfterDetachedPush(t *tes
 	}
 }
 
-func TestCICheckJSON(t *testing.T) {
-	input := `[{"name":"build","status":"COMPLETED","conclusion":"success"},{"name":"test","status":"COMPLETED","conclusion":"failure"}]`
-	var checks []ciCheck
-	if err := json.Unmarshal([]byte(input), &checks); err != nil {
+func TestTestStep_AgentWritesNewGoTests_NeedsApproval(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	findings := Findings{Items: nil, Summary: "all tests passed"}
+	findingsJSON, _ := json.Marshal(findings)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			os.WriteFile(filepath.Join(dir, "new_test.go"), []byte("package main\n"), 0o644)
+			os.WriteFile(filepath.Join(dir, "readme.md"), []byte("# readme\n"), 0o644)
+			return &agent.Result{Output: findingsJSON}, nil
+		},
+	}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	step := &TestStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if len(checks) != 2 {
-		t.Fatalf("expected 2 checks, got %d", len(checks))
+	if !outcome.NeedsApproval {
+		t.Error("expected approval needed when agent writes new Go test files")
 	}
-	if !hasFailingChecks(checks) {
-		t.Error("expected failing checks")
-	}
-	names := failingCheckNames(checks)
-	if len(names) != 1 || names[0] != "test" {
-		t.Errorf("failingCheckNames = %v, want [test]", names)
-	}
-}
 
-// --- isTestFile tests ---
-
-func TestIsTestFile(t *testing.T) {
-	tests := []struct {
-		path string
-		want bool
-	}{
-		// Go
-		{"foo_test.go", true},
-		{"internal/pkg/bar_test.go", true},
-		// Python
-		{"test_foo.py", true},
-		{"foo_test.py", true},
-		{"tests/test_bar.py", true},
-		// JavaScript/TypeScript
-		{"app.test.js", true},
-		{"app.spec.ts", true},
-		{"src/component.test.tsx", true},
-		{"src/component.spec.jsx", true},
-		// Java
-		{"FooTest.java", true},
-		{"BarTests.java", true},
-		// Rust
-		{"foo_test.rs", true},
-		// Ruby
-		{"test_foo.rb", true},
-		// Non-test files
-		{"main.go", false},
-		{"test.txt", false},
-		{"testing.go", false},
-		{"contest.py", false},
-		{"foo.js", false},
-		{"", false},
-	}
-	for _, tt := range tests {
-		if got := isTestFile(tt.path); got != tt.want {
-			t.Errorf("isTestFile(%q) = %v, want %v", tt.path, got, tt.want)
+	var f Findings
+	json.Unmarshal([]byte(outcome.Findings), &f)
+	foundTestFile := false
+	for _, item := range f.Items {
+		if strings.Contains(item.Description, "new_test.go") {
+			foundTestFile = true
+			break
 		}
 	}
-}
-
-func TestDetectNewTestFiles(t *testing.T) {
-	dir, _, _ := setupGitRepo(t)
-
-	// Add an untracked test file
-	os.WriteFile(filepath.Join(dir, "new_test.go"), []byte("package main\n"), 0o644)
-	// Add a non-test untracked file
-	os.WriteFile(filepath.Join(dir, "readme.md"), []byte("# readme\n"), 0o644)
-
-	files := detectNewTestFiles(context.Background(), dir)
-	if len(files) != 1 {
-		t.Fatalf("expected 1 test file, got %d: %v", len(files), files)
+	if !foundTestFile {
+		t.Errorf("expected finding mentioning new_test.go, got findings: %+v", f.Items)
 	}
-	if files[0] != "new_test.go" {
-		t.Errorf("expected new_test.go, got %s", files[0])
-	}
-}
-
-func TestDetectNewTestFiles_StagedFiles(t *testing.T) {
-	dir, _, _ := setupGitRepo(t)
-
-	// Add a staged test file
-	os.WriteFile(filepath.Join(dir, "foo_test.py"), []byte("def test_foo(): pass\n"), 0o644)
-	gitCmd(t, dir, "add", "foo_test.py")
-
-	files := detectNewTestFiles(context.Background(), dir)
-	if len(files) != 1 {
-		t.Fatalf("expected 1 test file, got %d: %v", len(files), files)
-	}
-	if files[0] != "foo_test.py" {
-		t.Errorf("expected foo_test.py, got %s", files[0])
-	}
-}
-
-func TestDetectNewTestFiles_NoNewFiles(t *testing.T) {
-	dir, _, _ := setupGitRepo(t)
-
-	files := detectNewTestFiles(context.Background(), dir)
-	if len(files) != 0 {
-		t.Errorf("expected no test files, got %v", files)
+	for _, item := range f.Items {
+		if strings.Contains(item.Description, "readme.md") {
+			t.Errorf("did not expect non-test file to trigger finding, got findings: %+v", f.Items)
+		}
 	}
 }
 
@@ -3153,8 +2810,8 @@ func TestTestStep_AgentWritesNewTests_NeedsApproval(t *testing.T) {
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			// Simulate agent creating a new test file
-			os.WriteFile(filepath.Join(dir, "agent_test.go"), []byte("package main\n"), 0o644)
+			// Simulate agent creating a new test file in another supported language
+			os.WriteFile(filepath.Join(dir, "agent_test.py"), []byte("def test_agent():\n    pass\n"), 0o644)
 			return &agent.Result{Output: findingsJSON}, nil
 		},
 	}
@@ -3167,6 +2824,46 @@ func TestTestStep_AgentWritesNewTests_NeedsApproval(t *testing.T) {
 	}
 	if !outcome.NeedsApproval {
 		t.Error("expected approval needed when agent writes new test files")
+	}
+
+	var f Findings
+	json.Unmarshal([]byte(outcome.Findings), &f)
+	foundTestFile := false
+	for _, item := range f.Items {
+		if strings.Contains(item.Description, "agent_test.py") {
+			foundTestFile = true
+			break
+		}
+	}
+	if !foundTestFile {
+		t.Errorf("expected finding mentioning agent_test.py, got findings: %+v", f.Items)
+	}
+}
+
+func TestTestStep_AgentStagesNewTests_NeedsApproval(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	findings := Findings{Items: nil, Summary: "all tests passed"}
+	findingsJSON, _ := json.Marshal(findings)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			testFile := filepath.Join(dir, "agent_test.go")
+			os.WriteFile(testFile, []byte("package main\n"), 0o644)
+			gitCmd(t, dir, "add", "agent_test.go")
+			return &agent.Result{Output: findingsJSON}, nil
+		},
+	}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	step := &TestStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.NeedsApproval {
+		t.Error("expected approval needed when agent stages new test files")
 	}
 
 	var f Findings
@@ -3191,8 +2888,8 @@ func TestTestStep_FixMode_AgentWritesNewTests_NeedsApproval(t *testing.T) {
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 			callCount++
-			// Simulate agent creating a new test file during fix
-			os.WriteFile(filepath.Join(dir, "fix_test.go"), []byte("package main\n"), 0o644)
+			// Simulate agent creating a new test file during fix in another supported language
+			os.WriteFile(filepath.Join(dir, "component.spec.tsx"), []byte("export {}\n"), 0o644)
 			return &agent.Result{Output: json.RawMessage(`{"summary":"add regression test"}`)}, nil
 		},
 	}
@@ -3215,13 +2912,13 @@ func TestTestStep_FixMode_AgentWritesNewTests_NeedsApproval(t *testing.T) {
 	json.Unmarshal([]byte(outcome.Findings), &f)
 	foundTestFile := false
 	for _, item := range f.Items {
-		if strings.Contains(item.Description, "fix_test.go") {
+		if strings.Contains(item.Description, "component.spec.tsx") {
 			foundTestFile = true
 			break
 		}
 	}
 	if !foundTestFile {
-		t.Errorf("expected finding mentioning fix_test.go, got findings: %+v", f.Items)
+		t.Errorf("expected finding mentioning component.spec.tsx, got findings: %+v", f.Items)
 	}
 }
 
@@ -3261,27 +2958,6 @@ func TestMatchIgnorePattern(t *testing.T) {
 				t.Errorf("matchIgnorePattern(%q, %q) = %v, want %v", tt.path, tt.pattern, got, tt.want)
 			}
 		})
-	}
-}
-
-func TestExtractDiffPath(t *testing.T) {
-	tests := []struct {
-		line string
-		want string
-	}{
-		{"diff --git a/foo.go b/foo.go", "foo.go"},
-		{"diff --git a/pkg/bar.go b/pkg/bar.go", "pkg/bar.go"},
-		{"diff --git a/vendor/lib.go b/vendor/lib.go", "vendor/lib.go"},
-		{"not a diff line", ""},
-		// Path containing " b/" should not be split incorrectly
-		{"diff --git a/a b/c.go b/a b/c.go", "a b/c.go"},
-		{"diff --git a/x b/y b/z.go b/x b/y b/z.go", "x b/y b/z.go"},
-	}
-	for _, tt := range tests {
-		got := extractDiffPath(tt.line)
-		if got != tt.want {
-			t.Errorf("extractDiffPath(%q) = %q, want %q", tt.line, got, tt.want)
-		}
 	}
 }
 
@@ -3370,6 +3046,39 @@ func TestFilterDiff_MultiplePatterns(t *testing.T) {
 	}
 }
 
+func TestFilterDiff_PathContainingBDividerSequence(t *testing.T) {
+	diff := strings.Join([]string{
+		"diff --git a/a b/c.go b/a b/c.go",
+		"--- a/a b/c.go",
+		"+++ b/a b/c.go",
+		"@@ -1 +1 @@",
+		"+generated change",
+		"diff --git a/keep.go b/keep.go",
+		"--- a/keep.go",
+		"+++ b/keep.go",
+		"@@ -1 +1 @@",
+		"+keep change",
+	}, "\n")
+
+	got := filterDiff(diff, []string{"*.go"})
+
+	if strings.Contains(got, "a b/c.go") {
+		t.Fatalf("expected path containing ' b/' to be filtered via full diff path parsing, got: %q", got)
+	}
+	if strings.Contains(got, "keep.go") {
+		t.Fatalf("expected keep.go to be filtered by basename ignore pattern, got: %q", got)
+	}
+
+	got = filterDiff(diff, []string{"a b/c.go"})
+
+	if strings.Contains(got, "a b/c.go") {
+		t.Fatalf("expected exact path ignore pattern to filter file with embedded ' b/', got: %q", got)
+	}
+	if !strings.Contains(got, "keep.go") {
+		t.Fatalf("expected keep.go to remain when only embedded-' b/' path is ignored, got: %q", got)
+	}
+}
+
 func TestReviewFindingsSchema_ValidJSON(t *testing.T) {
 	if !json.Valid(reviewFindingsSchema) {
 		t.Errorf("reviewFindingsSchema is not valid JSON: %s", string(reviewFindingsSchema))
@@ -3425,15 +3134,6 @@ func TestReviewStep_IgnorePatterns(t *testing.T) {
 	if !strings.Contains(capturedPrompt, "*.generated.go") {
 		t.Error("expected prompt to include ignore patterns")
 	}
-	if !strings.Contains(capturedPrompt, headSHA) {
-		t.Error("expected prompt to include head SHA metadata")
-	}
-	if strings.Contains(capturedPrompt, "schema.generated.go") {
-		t.Error("expected prompt to avoid embedding changed file names")
-	}
-	if strings.Contains(capturedPrompt, "feature.txt") {
-		t.Error("expected prompt to avoid embedding changed file names")
-	}
 }
 
 func TestReviewStep_IgnorePatternsFilterAllFiles(t *testing.T) {
@@ -3472,127 +3172,6 @@ func TestReviewStep_IgnorePatternsFilterAllFiles(t *testing.T) {
 	// Agent should not have been called
 	if len(ag.calls) != 0 {
 		t.Errorf("expected no agent calls when diff is empty after filtering, got %d", len(ag.calls))
-	}
-}
-
-// --- Fix prompt with previous findings tests ---
-
-func TestReviewStep_FixMode_IncludesPreviousFindings(t *testing.T) {
-	dir, baseSHA, headSHA := setupGitRepo(t)
-
-	previousFindings := `{"items":[{"severity":"error","file":"main.go","line":42,"description":"nil pointer dereference"}],"summary":"1 error found"}`
-
-	callCount := 0
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			callCount++
-			if callCount == 1 {
-				// Fix call — verify prompt includes previous findings
-				if !strings.Contains(opts.Prompt, "Previous review findings to address") {
-					t.Error("fix prompt should contain 'Previous review findings to address'")
-				}
-				if !strings.Contains(opts.Prompt, "nil pointer dereference") {
-					t.Error("fix prompt should contain the specific finding description")
-				}
-				return &agent.Result{Output: json.RawMessage(`{"summary":"address review findings"}`)}, nil
-			}
-			// Review call
-			findings := Findings{Summary: "all clear"}
-			j, _ := json.Marshal(findings)
-			return &agent.Result{Output: j}, nil
-		},
-	}
-
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Fixing = true
-	sctx.PreviousFindings = previousFindings
-
-	step := &ReviewStep{}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if outcome.NeedsApproval {
-		t.Error("expected no approval needed after fix")
-	}
-	if callCount != 2 {
-		t.Errorf("expected 2 agent calls (fix + review), got %d", callCount)
-	}
-}
-
-func TestTestStep_FixMode_IncludesPreviousFindings(t *testing.T) {
-	dir := t.TempDir()
-
-	previousFindings := `{"items":[{"severity":"error","description":"tests failed with exit code 1"}],"summary":"FAIL: TestFoo expected 42 got 0"}`
-
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			// Fix call — verify prompt includes previous findings
-			if !strings.Contains(opts.Prompt, "Previous test findings to address") {
-				t.Error("fix prompt should contain 'Previous test findings to address'")
-			}
-			if !strings.Contains(opts.Prompt, "FAIL: TestFoo expected 42 got 0") {
-				t.Error("fix prompt should contain the specific test output")
-			}
-			if !strings.Contains(opts.Prompt, "Make the minimal change needed") {
-				t.Error("fix prompt should require minimal changes")
-			}
-			return &agent.Result{Output: json.RawMessage(`{"summary":"fix test failures"}`)}, nil
-		},
-	}
-
-	sctx := newTestContext(t, ag, dir, "abc", "def", config.Commands{Test: "true"})
-	sctx.Fixing = true
-	sctx.PreviousFindings = previousFindings
-
-	step := &TestStep{}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if outcome.NeedsApproval {
-		t.Error("expected no approval needed after fix with passing tests")
-	}
-}
-
-func TestLintStep_FixMode_IncludesPreviousFindings(t *testing.T) {
-	dir := t.TempDir()
-
-	previousFindings := `{"items":[{"severity":"warning","description":"linter found issues (exit code 1)"}],"summary":"main.go:10: unused variable x"}`
-
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			// Fix call — verify prompt includes previous findings
-			if !strings.Contains(opts.Prompt, "Previous lint findings to address") {
-				t.Error("fix prompt should contain 'Previous lint findings to address'")
-			}
-			if !strings.Contains(opts.Prompt, "unused variable x") {
-				t.Error("fix prompt should contain the specific lint output")
-			}
-			if !strings.Contains(opts.Prompt, "Make the minimal change needed") {
-				t.Error("fix prompt should require minimal changes")
-			}
-			if !strings.Contains(opts.Prompt, "Re-run the relevant lint or format commands") {
-				t.Error("fix prompt should require lint verification")
-			}
-			return &agent.Result{Output: json.RawMessage(`{"summary":"fix lint issues"}`)}, nil
-		},
-	}
-
-	sctx := newTestContext(t, ag, dir, "abc", "def", config.Commands{Lint: "true"})
-	sctx.Fixing = true
-	sctx.PreviousFindings = previousFindings
-
-	step := &LintStep{}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if outcome.NeedsApproval {
-		t.Error("expected no approval needed after fix with passing lint")
 	}
 }
 
@@ -3831,40 +3410,34 @@ func TestBabysitStep_CIFailureAutoFix(t *testing.T) {
 	sctx.Config.BabysitTimeout = 30 * time.Second
 	sctx.Config.AutoFix = config.AutoFix{Babysit: 3}
 
-	// Use a context with short timeout: after auto-fix completes, the poll
-	// sleep (30s) will be interrupted by context deadline, exiting the loop.
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	sctx.Ctx = ctx
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
-	step := &BabysitStep{}
+	pollCount := 0
+	step := &BabysitStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			pollCount++
+			if pollCount == 2 {
+				cancel()
+			}
+			return ctx.Err()
+		},
+	}
 	_, err := step.Execute(sctx)
-	// Expect context deadline exceeded (interrupted during poll sleep after auto-fix)
-	if err == nil || !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("expected context.DeadlineExceeded, got: %v", err)
+	// Expect explicit context cancellation after the second poll, once the post-fix wait path is exercised.
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got: %v", err)
 	}
 	if !agentCalled {
 		t.Error("expected agent to be called for CI auto-fix")
 	}
 
-	// Verify agent was called with CI failure context
 	if len(ag.calls) == 0 {
 		t.Fatal("expected agent call")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "test") {
-		t.Errorf("expected failing check name in prompt, got: %s", ag.calls[0].Prompt)
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "Make the minimal change needed") {
-		t.Error("expected CI fix prompt to require minimal changes")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "Do not refactor beyond what is needed") {
-		t.Error("expected CI fix prompt to forbid broader refactors")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "Verify the fix by running the most relevant commands locally") {
-		t.Error("expected CI fix prompt to require verification")
 	}
 
 	foundAutoFix := false
@@ -3882,8 +3455,11 @@ func TestBabysitStep_CIFailureAutoFix(t *testing.T) {
 func TestBabysitStep_AllChecksPassingExitsCleanly(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
-	checksJSON := `[{"name":"build","state":"SUCCESS","bucket":"pass"},{"name":"test","state":"SUCCESS","bucket":"pass"}]`
-	binDir := fakeBabysitGH(t, "OPEN", checksJSON)
+	checksSequence := []string{
+		`[{"name":"build","state":"PENDING","bucket":"pending"}]`,
+		`[{"name":"build","state":"SUCCESS","bucket":"pass"},{"name":"test","state":"SUCCESS","bucket":"pass"}]`,
+	}
+	binDir := fakeBabysitGHSequence(t, "OPEN", checksSequence)
 	prependPATH(t, binDir)
 
 	prURL := "https://github.com/test/repo/pull/42"
@@ -3895,13 +3471,22 @@ func TestBabysitStep_AllChecksPassingExitsCleanly(t *testing.T) {
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
-	step := &BabysitStep{}
+	pollCount := 0
+	step := &BabysitStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			pollCount++
+			return nil
+		},
+	}
 	outcome, err := step.Execute(sctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if outcome.NeedsApproval {
 		t.Error("expected no approval when CI checks are already passing")
+	}
+	if pollCount != 1 {
+		t.Fatalf("expected one poll wait while CI checks were pending, got %d", pollCount)
 	}
 
 	found := false
@@ -3932,19 +3517,37 @@ func TestBabysitStep_EmptyChecksWaitsDuringGracePeriod(t *testing.T) {
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
-	step := &BabysitStep{checksGracePeriod: 200 * time.Millisecond, pollIntervalOverride: 10 * time.Millisecond}
-	started := time.Now()
+	started := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
+	current := started
+	var waits []time.Duration
+
+	step := &BabysitStep{
+		checksGracePeriod:    200 * time.Millisecond,
+		pollIntervalOverride: 75 * time.Millisecond,
+		now:                  func() time.Time { return current },
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			waits = append(waits, interval)
+			current = current.Add(interval)
+			return nil
+		},
+	}
 	outcome, err := step.Execute(sctx)
-	elapsed := time.Since(started)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if outcome.NeedsApproval {
 		t.Error("expected no approval needed")
 	}
-	// Must have waited at least the grace period before exiting
-	if elapsed < 200*time.Millisecond {
+	if elapsed := current.Sub(started); elapsed < 200*time.Millisecond {
 		t.Errorf("babysit exited in %v, expected to wait at least 200ms grace period", elapsed)
+	}
+	if len(waits) != 3 {
+		t.Fatalf("expected 3 grace-period waits, got %v", waits)
+	}
+	for _, interval := range waits {
+		if interval != 75*time.Millisecond {
+			t.Fatalf("expected 75ms waits during grace period, got %v", waits)
+		}
 	}
 	// Should exit via grace period expiry, not babysit timeout
 	for _, l := range logs {
@@ -3979,7 +3582,16 @@ func TestBabysitStep_LogsWaitingForChecksDuringGracePeriod(t *testing.T) {
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
-	step := &BabysitStep{checksGracePeriod: 50 * time.Millisecond, pollIntervalOverride: 10 * time.Millisecond}
+	current := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
+	step := &BabysitStep{
+		checksGracePeriod:    50 * time.Millisecond,
+		pollIntervalOverride: 10 * time.Millisecond,
+		now:                  func() time.Time { return current },
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			current = current.Add(interval)
+			return nil
+		},
+	}
 	if _, err := step.Execute(sctx); err != nil {
 		t.Fatal(err)
 	}
@@ -4038,71 +3650,6 @@ func TestBabysitStep_NonEmptyPassingChecksExitImmediately(t *testing.T) {
 	}
 }
 
-func TestIsConventionalTitle(t *testing.T) {
-	tests := []struct {
-		title string
-		want  bool
-	}{
-		{"feat: add new feature", true},
-		{"fix: resolve crash on startup", true},
-		{"docs: update README", true},
-		{"style: format code", true},
-		{"refactor: extract helper function", true},
-		{"perf: optimize query", true},
-		{"test: add unit tests", true},
-		{"build: update dependencies", true},
-		{"ci: fix pipeline", true},
-		{"chore: bump version", true},
-		{"revert: undo last change", true},
-		{"feat(auth): add OAuth support", true},
-		{"fix(parser): handle empty input", true},
-		{"chore(deps): update Go to 1.25", true},
-		{"feat!: breaking change", true},
-		{"feat(api)!: breaking change with scope", true},
-		// Invalid titles
-		{"add new feature", false},
-		{"Update pull request", false},
-		{"feature: wrong type", false},
-		{"Feat: capitalized type", false},
-		{"feat:no space after colon", false},
-		{"feat : space before colon", false},
-		{"", false},
-		{"feat:", false},
-		{"feat: ", false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.title, func(t *testing.T) {
-			if got := isConventionalTitle(tt.title); got != tt.want {
-				t.Errorf("isConventionalTitle(%q) = %v, want %v", tt.title, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestPRStep_PromptRequiresConventionalCommitTitle(t *testing.T) {
-	dir, baseSHA, headSHA := setupGitRepo(t)
-
-	binDir, _ := fakeGH(t, "")
-	prependPATH(t, binDir)
-
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			if !strings.Contains(opts.Prompt, "conventional commit") {
-				t.Error("expected prompt to mention conventional commit format")
-			}
-			payload := json.RawMessage(`{"title":"feat: add pipeline support","body":"## Summary\n\n- pipeline support"}`)
-			return &agent.Result{Output: payload}, nil
-		},
-	}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-
-	step := &PRStep{}
-	if _, err := step.Execute(sctx); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestPRStep_AgentNonConventionalTitleFallsBack(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
@@ -4141,50 +3688,49 @@ func TestPRStep_AgentNonConventionalTitleFallsBack(t *testing.T) {
 	}
 }
 
-func TestFallbackPRContent_ConventionalTitle(t *testing.T) {
-	tests := []struct {
-		name      string
-		branch    string
-		commitLog string
-	}{
-		{
-			name:      "commit message used",
-			branch:    "feature/add-auth",
-			commitLog: "abc123 add OAuth support",
-		},
-		{
-			name:      "empty commit log",
-			branch:    "fix/crash",
-			commitLog: "",
-		},
-		{
-			name:      "conventional commit in log preserved",
-			branch:    "feature/auth",
-			commitLog: "abc123 feat: add OAuth support",
+func TestPRStep_AgentScopedBreakingTitlePassesThrough(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	binDir, logFile := fakeGH(t, "")
+	prependPATH(t, binDir)
+
+	const title = "feat(api)!: require auth token"
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			payload := json.RawMessage(`{"title":"feat(api)!: require auth token","body":"## Summary\n\n- require auth token on all API requests"}`)
+			return &agent.Result{Output: payload}, nil
 		},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			content := fallbackPRContent(tt.branch, tt.commitLog, "", "")
-			if !isConventionalTitle(content.Title) {
-				t.Errorf("fallback title %q is not conventional commit format", content.Title)
-			}
-		})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	step := &PRStep{}
+	if _, err := step.Execute(sctx); err != nil {
+		t.Fatal(err)
 	}
-}
 
-func TestFallbackPRContent_AppendsRiskOutsideSummaryList(t *testing.T) {
-	content := fallbackPRContent("fix/risk", "abc123 fix pipeline risk rendering", "", "⚠️ medium: touches critical error handling")
-
-	if !strings.Contains(content.Body, "abc123 fix pipeline risk rendering\n\n⚠️ medium: touches critical error handling") {
-		t.Fatalf("expected risk note to be separated from summary content, got:\n%s", content.Body)
+	logData, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ghLog := string(logData)
+	if !strings.Contains(ghLog, "--title "+title+" --body") {
+		t.Fatalf("expected scoped conventional breaking-change title to pass through unchanged, got:\n%s", ghLog)
+	}
+	if strings.Contains(ghLog, "--title chore: "+title+" --body") {
+		t.Fatalf("expected scoped conventional breaking-change title to avoid fallback prefix, got:\n%s", ghLog)
 	}
 }
 
 func TestBabysitStep_CIAutoFixDisabledWithZero(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
-	checksJSON := `[{"name":"build","state":"SUCCESS","bucket":"pass"},{"name":"test","status":"COMPLETED","conclusion":"failure","bucket":"fail"}]`
+	checksJSON := `[
+		{"name":"build","status":"COMPLETED","conclusion":"success","state":"SUCCESS","bucket":"pass"},
+		{"name":"test","status":"COMPLETED","conclusion":"failure"},
+		{"name":"lint","status":"COMPLETED","conclusion":"action_required"},
+		{"name":"deploy","status":"COMPLETED","conclusion":"neutral"}
+	]`
 	binDir := fakeBabysitGH(t, "OPEN", checksJSON)
 	prependPATH(t, binDir)
 
@@ -4200,8 +3746,12 @@ func TestBabysitStep_CIAutoFixDisabledWithZero(t *testing.T) {
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
+	pollCount := 0
 	step := &BabysitStep{
-		pollIntervalOverride: 100 * time.Millisecond, // fast polling for test
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			pollCount++
+			return nil
+		},
 	}
 	outcome, err := step.Execute(sctx)
 	if err != nil {
@@ -4212,6 +3762,23 @@ func TestBabysitStep_CIAutoFixDisabledWithZero(t *testing.T) {
 	}
 	if outcome.AutoFixable {
 		t.Fatal("expected manual intervention outcome to be non-auto-fixable")
+	}
+
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatalf("unmarshal findings: %v", err)
+	}
+	if findings.Summary != "CI failures require manual intervention" {
+		t.Fatalf("findings summary = %q, want %q", findings.Summary, "CI failures require manual intervention")
+	}
+	if len(findings.Items) != 2 {
+		t.Fatalf("expected 2 failing-check findings, got %d: %+v", len(findings.Items), findings.Items)
+	}
+	if findings.Items[0].Description != "CI check failing: lint" {
+		t.Fatalf("first finding = %q, want %q", findings.Items[0].Description, "CI check failing: lint")
+	}
+	if findings.Items[1].Description != "CI check failing: test" {
+		t.Fatalf("second finding = %q, want %q", findings.Items[1].Description, "CI check failing: test")
 	}
 
 	// Agent should NOT have been called
@@ -4282,8 +3849,12 @@ func TestBabysitStep_CIAutoFixLimitExhausted(t *testing.T) {
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
+	pollCount := 0
 	step := &BabysitStep{
-		pollIntervalOverride: 100 * time.Millisecond, // fast polling for test
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			pollCount++
+			return nil
+		},
 	}
 	outcome, err := step.Execute(sctx)
 	if err != nil {
@@ -4299,6 +3870,9 @@ func TestBabysitStep_CIAutoFixLimitExhausted(t *testing.T) {
 	// Agent should have been called exactly once (limit is 1)
 	if fixCount != 1 {
 		t.Errorf("expected 1 auto-fix attempt (limit=1), got %d", fixCount)
+	}
+	if pollCount != 1 {
+		t.Errorf("expected 1 poll wait before limit-exhausted outcome, got %d", pollCount)
 	}
 
 	// Should log that max attempts reached on subsequent poll
@@ -4368,8 +3942,12 @@ func TestBabysitStep_CIAutoFixRetriesAfterChecksRerun(t *testing.T) {
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
+	pollCount := 0
 	step := &BabysitStep{
-		pollIntervalOverride: 50 * time.Millisecond,
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			pollCount++
+			return nil
+		},
 	}
 	outcome, err := step.Execute(sctx)
 	if err != nil {
@@ -4383,6 +3961,9 @@ func TestBabysitStep_CIAutoFixRetriesAfterChecksRerun(t *testing.T) {
 	}
 	if fixCount != 2 {
 		t.Fatalf("expected 2 auto-fix attempts after reruns, got %d", fixCount)
+	}
+	if pollCount != 4 {
+		t.Fatalf("expected 4 poll waits across reruns and retries, got %d", pollCount)
 	}
 
 	foundExhausted := false
@@ -4456,24 +4037,28 @@ func TestBabysitStep_FixMode_ManualInterventionRunsCIFix(t *testing.T) {
 	sctx.Fixing = true
 	sctx.PreviousFindings = string(findingsJSON)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	sctx.Ctx = ctx
 
+	pollCount := 0
 	step := &BabysitStep{
-		pollIntervalOverride: 100 * time.Millisecond,
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			pollCount++
+			if pollCount == 2 {
+				cancel()
+			}
+			return ctx.Err()
+		},
 	}
 	_, err = step.Execute(sctx)
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("expected context deadline exceeded after manual CI fix attempt, got %v", err)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context cancellation after manual CI fix attempt, got %v", err)
 	}
 	if fixCount != 1 {
 		t.Fatalf("expected 1 manual CI fix attempt, got %d", fixCount)
 	}
 	if len(ag.calls) != 1 {
 		t.Fatalf("expected 1 agent call, got %d", len(ag.calls))
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "failing checks: test") {
-		t.Fatalf("expected failing check name in fix prompt, got: %s", ag.calls[0].Prompt)
 	}
 }

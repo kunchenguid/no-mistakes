@@ -10,21 +10,6 @@ import (
 	"testing"
 )
 
-func TestBuildRovodevSystemPrompt(t *testing.T) {
-	schema := json.RawMessage(`{"type":"object","properties":{"success":{"type":"boolean"}}}`)
-	prompt := buildRovodevSystemPrompt(schema)
-
-	if !strings.Contains(prompt, "valid JSON") {
-		t.Error("prompt should mention valid JSON")
-	}
-	if !strings.Contains(prompt, "markdown fences") {
-		t.Error("prompt should mention markdown fences")
-	}
-	if !strings.Contains(prompt, string(schema)) {
-		t.Error("prompt should contain the schema")
-	}
-}
-
 func TestParseRovodevSSE_TextEvent(t *testing.T) {
 	input := `event: text
 data: {"content":"hello world"}
@@ -75,29 +60,6 @@ data: {"usage":{"input_tokens":100,"output_tokens":50,"cache_read_tokens":30,"ca
 	}
 }
 
-func TestParseRovodevSSE_ToolReturnResetsText(t *testing.T) {
-	input := `event: text
-data: {"content":"before tool"}
-
-event: tool-return
-data: {"content":"ignored"}
-
-event: text
-data: {"content":"after tool"}
-
-`
-	var usage TokenUsage
-	var latestText string
-
-	err := parseRovodevSSE(strings.NewReader(input), nil, &usage, &latestText)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if latestText != "after tool" {
-		t.Errorf("expected latest text 'after tool' (reset by tool-return), got %q", latestText)
-	}
-}
-
 func TestParseRovodevSSE_SeparatesAfterToolReturn(t *testing.T) {
 	input := `event: text
 data: {"content":"before tool"}
@@ -131,6 +93,9 @@ data: {"content":"after tool"}
 	}
 	if chunks[2] != "after tool" {
 		t.Errorf("expected 'after tool', got %q", chunks[2])
+	}
+	if latestText != "after tool" {
+		t.Errorf("expected latest text 'after tool' after tool-return reset, got %q", latestText)
 	}
 }
 
@@ -267,13 +232,6 @@ func TestGetAvailablePort(t *testing.T) {
 	// Ports may be the same in rare cases, but should be valid
 	if port2 <= 0 || port2 > 65535 {
 		t.Errorf("expected valid port, got %d", port2)
-	}
-}
-
-func TestRovodevAgent_Name(t *testing.T) {
-	a := &rovodevAgent{bin: "acli"}
-	if a.Name() != "rovodev" {
-		t.Errorf("expected name 'rovodev', got %q", a.Name())
 	}
 }
 

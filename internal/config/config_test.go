@@ -411,15 +411,6 @@ func TestAgentPath_Override(t *testing.T) {
 	}
 }
 
-func TestAgentPath_Default(t *testing.T) {
-	cfg := &Config{
-		Agent: types.AgentClaude,
-	}
-	if got := cfg.AgentPath(); got != "claude" {
-		t.Errorf("AgentPath() = %q, want %q (default binary name)", got, "claude")
-	}
-}
-
 func TestAgentPath_DefaultBinaries(t *testing.T) {
 	tests := []struct {
 		agent types.AgentName

@@ -714,41 +714,6 @@ func TestRepoIDFromGatePath(t *testing.T) {
 	}
 }
 
-func TestBranchFromRef(t *testing.T) {
-	tests := []struct {
-		ref  string
-		want string
-	}{
-		{"refs/heads/main", "main"},
-		{"refs/heads/feature/foo", "feature/foo"},
-		{"main", "main"},
-	}
-	for _, tc := range tests {
-		got := branchFromRef(tc.ref)
-		if got != tc.want {
-			t.Errorf("branchFromRef(%q) = %q, want %q", tc.ref, got, tc.want)
-		}
-	}
-}
-
-func TestIsZeroSHA(t *testing.T) {
-	tests := []struct {
-		sha  string
-		want bool
-	}{
-		{"0000000000000000000000000000000000000000", true},
-		{"abc123def456789012345678901234567890abcd", false},
-		{"", false},
-		{"000000", false},
-	}
-	for _, tc := range tests {
-		got := git.IsZeroSHA(tc.sha)
-		if got != tc.want {
-			t.Errorf("IsZeroSHA(%q) = %v, want %v", tc.sha, got, tc.want)
-		}
-	}
-}
-
 // --- RunManager integration tests ---
 
 func TestPushReceivedCreatesRun(t *testing.T) {

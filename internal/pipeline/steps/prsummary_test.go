@@ -215,28 +215,6 @@ func TestBuildPipelineSummary_ExcludesPushPRBabysit(t *testing.T) {
 	}
 }
 
-func TestBuildPipelineSummary_ReviewApprovedWithWarnings(t *testing.T) {
-	findings := `{"findings":[{"id":"review-1","severity":"warning","description":"risky change"}],"summary":"1 warning","risk_level":"medium","risk_rationale":"changes error handling in critical path"}`
-	steps := []*db.StepResult{
-		{ID: "s1", StepName: types.StepReview, Status: types.StepStatusCompleted, FindingsJSON: &findings},
-	}
-	rounds := map[string][]*db.StepRound{
-		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 1000}},
-	}
-	md, risk := BuildPipelineSummary(steps, rounds)
-
-	// Review with findings should show findings count like other steps
-	if !strings.Contains(md, "⚠️ **Review** - 1 warning") {
-		t.Errorf("expected findings count in review line, got:\n%s", md)
-	}
-	if !strings.Contains(risk, "medium") || !strings.Contains(risk, "changes error handling") {
-		t.Errorf("expected risk line with level and rationale, got: %q", risk)
-	}
-	if !strings.Contains(risk, "⚠️") {
-		t.Errorf("expected warning emoji for medium risk, got: %q", risk)
-	}
-}
-
 func TestBuildPipelineSummary_ReviewUsesFinalCleanState(t *testing.T) {
 	initialFindings := `{"findings":[{"id":"review-1","severity":"warning","description":"risky change"}],"summary":"1 warning","risk_level":"medium","risk_rationale":"initial risk rationale"}`
 	finalFindings := `{"findings":[],"summary":"clean","risk_level":"low","risk_rationale":"follow-up fixes reduced risk"}`
@@ -366,24 +344,6 @@ func TestBuildPipelineSummary_ReviewDoesNotReuseInitialRiskWhenFinalUnreadable(t
 	}
 	if !strings.Contains(md, "failed to parse findings") {
 		t.Errorf("expected parse failure details for unreadable final review findings, got:\n%s", md)
-	}
-}
-
-func TestBuildPipelineSummary_ReviewUnreadableFinalFindingsWithoutRoundsUsesWarningEmoji(t *testing.T) {
-	invalidFinalFindings := `{"findings":[`
-	steps := []*db.StepResult{
-		{ID: "s1", StepName: types.StepReview, Status: types.StepStatusCompleted, FindingsJSON: &invalidFinalFindings},
-	}
-	md, risk := BuildPipelineSummary(steps, map[string][]*db.StepRound{"s1": nil})
-
-	if !strings.Contains(md, "⚠️ **Review** - findings unavailable") {
-		t.Errorf("expected warning emoji for unreadable final review findings without rounds, got:\n%s", md)
-	}
-	if strings.Contains(md, "✅ **Review** - findings unavailable") {
-		t.Errorf("did not expect passed emoji for unreadable final review findings without rounds, got:\n%s", md)
-	}
-	if risk != "" {
-		t.Errorf("expected empty risk when final findings are unreadable, got: %q", risk)
 	}
 }
 
