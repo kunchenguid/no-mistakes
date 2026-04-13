@@ -2858,22 +2858,6 @@ func TestDetectNewTestFiles(t *testing.T) {
 	}
 }
 
-func TestDetectNewTestFiles_StagedFiles(t *testing.T) {
-	dir, _, _ := setupGitRepo(t)
-
-	// Add a staged test file
-	os.WriteFile(filepath.Join(dir, "foo_test.py"), []byte("def test_foo(): pass\n"), 0o644)
-	gitCmd(t, dir, "add", "foo_test.py")
-
-	files := detectNewTestFiles(context.Background(), dir)
-	if len(files) != 1 {
-		t.Fatalf("expected 1 test file, got %d: %v", len(files), files)
-	}
-	if files[0] != "foo_test.py" {
-		t.Errorf("expected foo_test.py, got %s", files[0])
-	}
-}
-
 func TestDetectNewTestFiles_NoNewFiles(t *testing.T) {
 	dir, _, _ := setupGitRepo(t)
 
@@ -2919,6 +2903,46 @@ func TestTestStep_AgentWritesNewTests_NeedsApproval(t *testing.T) {
 	}
 	if !foundTestFile {
 		t.Errorf("expected finding mentioning agent_test.py, got findings: %+v", f.Items)
+	}
+}
+
+func TestTestStep_AgentStagesNewTests_NeedsApproval(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	findings := Findings{Items: nil, Summary: "all tests passed"}
+	findingsJSON, _ := json.Marshal(findings)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			testFile := filepath.Join(dir, "agent_test.go")
+			os.WriteFile(testFile, []byte("package main\n"), 0o644)
+			gitCmd(t, dir, "add", "agent_test.go")
+			return &agent.Result{Output: findingsJSON}, nil
+		},
+	}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	step := &TestStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.NeedsApproval {
+		t.Error("expected approval needed when agent stages new test files")
+	}
+
+	var f Findings
+	json.Unmarshal([]byte(outcome.Findings), &f)
+	foundTestFile := false
+	for _, item := range f.Items {
+		if strings.Contains(item.Description, "agent_test.go") {
+			foundTestFile = true
+			break
+		}
+	}
+	if !foundTestFile {
+		t.Errorf("expected finding mentioning agent_test.go, got findings: %+v", f.Items)
 	}
 }
 
