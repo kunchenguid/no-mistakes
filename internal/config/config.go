@@ -85,8 +85,9 @@ type Config struct {
 const defaultConfigYAML = `# no-mistakes global configuration
 
 # Agent to use for code generation
-# Options: claude, codex, rovodev, opencode
-agent: claude
+# Options: auto, claude, codex, rovodev, opencode
+# "auto" detects the first available agent on your system
+agent: auto
 
 # Maximum time to monitor CI before timing out
 ci_timeout: "4h"
@@ -116,6 +117,39 @@ var defaultBinary = map[types.AgentName]string{
 	types.AgentCodex:    "codex",
 	types.AgentRovoDev:  "acli",
 	types.AgentOpenCode: "opencode",
+}
+
+// agentProbeOrder is the priority order for auto-detecting agents.
+var agentProbeOrder = []types.AgentName{
+	types.AgentClaude,
+	types.AgentCodex,
+	types.AgentOpenCode,
+	types.AgentRovoDev,
+}
+
+// ResolveAgent resolves AgentAuto to a concrete agent by probing which binaries
+// are available on the system. If agent is already set to a specific value, this
+// is a no-op. The lookPath function should behave like exec.LookPath.
+func (c *Config) ResolveAgent(lookPath func(string) (string, error)) error {
+	if c.Agent != types.AgentAuto {
+		return nil
+	}
+	for _, name := range agentProbeOrder {
+		bin := string(name)
+		if b, ok := defaultBinary[name]; ok {
+			bin = b
+		}
+		if c.AgentPathOverride != nil {
+			if p, ok := c.AgentPathOverride[string(name)]; ok {
+				bin = p
+			}
+		}
+		if _, err := lookPath(bin); err == nil {
+			c.Agent = name
+			return nil
+		}
+	}
+	return fmt.Errorf("no supported agent found in PATH (looked for: claude, codex, opencode, acli); install one or set 'agent' in ~/.no-mistakes/config.yaml")
 }
 
 // AgentPath returns the binary path for the configured agent,
@@ -153,7 +187,7 @@ func EnsureDefaultGlobalConfig(path string) {
 // LoadGlobal reads global config from path. Returns defaults if file doesn't exist.
 func LoadGlobal(path string) (*GlobalConfig, error) {
 	cfg := &GlobalConfig{
-		Agent:     types.AgentClaude,
+		Agent:     types.AgentAuto,
 		CITimeout: 4 * time.Hour,
 		LogLevel:  "info",
 	}

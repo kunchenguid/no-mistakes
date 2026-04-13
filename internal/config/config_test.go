@@ -3,6 +3,7 @@ package config
 import (
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -18,8 +19,8 @@ func TestLoadGlobal_Defaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Agent != types.AgentClaude {
-		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentClaude)
+	if cfg.Agent != types.AgentAuto {
+		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentAuto)
 	}
 	if cfg.CITimeout != 4*time.Hour {
 		t.Errorf("ci_timeout = %v, want %v", cfg.CITimeout, 4*time.Hour)
@@ -44,7 +45,7 @@ func TestEnsureDefaultGlobalConfig_CreatesFile(t *testing.T) {
 	}
 	content := string(data)
 	for _, want := range []string{
-		"agent: claude",
+		"agent: auto",
 		"ci_timeout:",
 		"log_level: info",
 		"# agent_path_override:",
@@ -65,8 +66,8 @@ func TestEnsureDefaultGlobalConfig_CreatedConfigIsLoadable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error on reload: %v", err)
 	}
-	if cfg.Agent != types.AgentClaude {
-		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentClaude)
+	if cfg.Agent != types.AgentAuto {
+		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentAuto)
 	}
 	if cfg.CITimeout != 4*time.Hour {
 		t.Errorf("ci_timeout = %v, want %v", cfg.CITimeout, 4*time.Hour)
@@ -470,8 +471,8 @@ func TestDefaultConfigYAML_MatchesGoDefaults(t *testing.T) {
 		t.Fatalf("defaultConfigYAML is not valid YAML: %v", err)
 	}
 
-	if raw.Agent != types.AgentClaude {
-		t.Errorf("YAML agent = %q, Go default = %q", raw.Agent, types.AgentClaude)
+	if raw.Agent != types.AgentAuto {
+		t.Errorf("YAML agent = %q, Go default = %q", raw.Agent, types.AgentAuto)
 	}
 	d, err := time.ParseDuration(raw.CITimeout)
 	if err != nil {
@@ -732,5 +733,89 @@ func TestParseLogLevel(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("ParseLogLevel(%q) = %v, want %v", tt.input, got, tt.want)
 		}
+	}
+}
+
+func TestResolveAgent_ExplicitAgent(t *testing.T) {
+	// When agent is explicitly set (not auto), ResolveAgent returns it as-is.
+	cfg := &Config{Agent: types.AgentCodex}
+	err := cfg.ResolveAgent(func(string) (string, error) {
+		t.Fatal("lookPath should not be called for explicit agent")
+		return "", nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Agent != types.AgentCodex {
+		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentCodex)
+	}
+}
+
+func TestResolveAgent_AutoPicksFirstAvailable(t *testing.T) {
+	cfg := &Config{Agent: types.AgentAuto}
+	// Simulate: claude not found, codex found
+	err := cfg.ResolveAgent(func(bin string) (string, error) {
+		if bin == "codex" {
+			return "/usr/bin/codex", nil
+		}
+		return "", &exec.Error{Name: bin, Err: exec.ErrNotFound}
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Agent != types.AgentCodex {
+		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentCodex)
+	}
+}
+
+func TestResolveAgent_AutoPicksClaude(t *testing.T) {
+	cfg := &Config{Agent: types.AgentAuto}
+	err := cfg.ResolveAgent(func(bin string) (string, error) {
+		if bin == "claude" {
+			return "/usr/bin/claude", nil
+		}
+		return "", &exec.Error{Name: bin, Err: exec.ErrNotFound}
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Agent != types.AgentClaude {
+		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentClaude)
+	}
+}
+
+func TestResolveAgent_AutoRespectsPathOverride(t *testing.T) {
+	cfg := &Config{
+		Agent:             types.AgentAuto,
+		AgentPathOverride: map[string]string{"opencode": "/custom/opencode"},
+	}
+	// Only opencode override path exists
+	err := cfg.ResolveAgent(func(bin string) (string, error) {
+		if bin == "/custom/opencode" {
+			return "/custom/opencode", nil
+		}
+		return "", &exec.Error{Name: bin, Err: exec.ErrNotFound}
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Agent != types.AgentOpenCode {
+		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentOpenCode)
+	}
+}
+
+func TestResolveAgent_AutoNoneAvailable(t *testing.T) {
+	cfg := &Config{Agent: types.AgentAuto}
+	err := cfg.ResolveAgent(func(bin string) (string, error) {
+		return "", &exec.Error{Name: bin, Err: exec.ErrNotFound}
+	})
+	if err == nil {
+		t.Fatal("expected error when no agents found")
+	}
+	if !strings.Contains(err.Error(), "no supported agent found") {
+		t.Errorf("expected 'no supported agent found' in error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "config") {
+		t.Errorf("expected config guidance in error, got: %v", err)
 	}
 }

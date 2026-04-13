@@ -79,6 +79,6 @@ func New(name types.AgentName, bin string) (Agent, error) {
 	case types.AgentOpenCode:
 		return &opencodeAgent{bin: bin}, nil
 	default:
-		return nil, fmt.Errorf("unknown agent: %s", name)
+		return nil, fmt.Errorf("unknown agent %q; valid options: claude, codex, rovodev, opencode (set 'agent' in ~/.no-mistakes/config.yaml)", name)
 	}
 }

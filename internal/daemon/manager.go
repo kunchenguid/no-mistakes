@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -269,6 +270,12 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 		return "", fmt.Errorf("load repo config: %w", err)
 	}
 	cfg := config.Merge(globalCfg, repoCfg)
+
+	// Resolve "auto" agent to whichever binary is available.
+	if err := cfg.ResolveAgent(exec.LookPath); err != nil {
+		m.db.UpdateRunError(run.ID, err.Error())
+		return "", err
+	}
 
 	// Create agent.
 	ag, err := agent.New(cfg.Agent, cfg.AgentPath())
