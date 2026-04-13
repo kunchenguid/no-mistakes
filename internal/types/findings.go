@@ -19,8 +19,8 @@ type Finding struct {
 type Findings struct {
 	Items         []Finding `json:"findings"`
 	Summary       string    `json:"summary"`
-	RiskLevel     string    `json:"risk_level,omitempty"`
-	RiskRationale string    `json:"risk_rationale,omitempty"`
+	RiskLevel     string    `json:"risk_level"`
+	RiskRationale string    `json:"risk_rationale"`
 }
 
 type findingsWire struct {

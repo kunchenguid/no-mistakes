@@ -120,7 +120,14 @@ Previous review findings to address:
 
 	if !hasReviewableChanges {
 		sctx.Log("no changes to review")
-		return &pipeline.StepOutcome{}, nil
+		noChangeFindings := Findings{
+			RiskLevel:     "low",
+			RiskRationale: "no reviewable changes",
+		}
+		findingsJSON, _ := json.Marshal(noChangeFindings)
+		return &pipeline.StepOutcome{
+			Findings: string(findingsJSON),
+		}, nil
 	}
 
 	// Ask agent to review

@@ -192,6 +192,23 @@ func TestAutoFixableFindings_NoneHumanReview(t *testing.T) {
 	}
 }
 
+func TestMarshalFindingsJSON_AlwaysIncludesRiskFields(t *testing.T) {
+	f := Findings{
+		Items:   []Finding{{Severity: "info", Description: "note"}},
+		Summary: "ok",
+	}
+	raw, err := MarshalFindingsJSON(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(raw, `"risk_level"`) {
+		t.Errorf("expected risk_level to be present even when empty, got %s", raw)
+	}
+	if !strings.Contains(raw, `"risk_rationale"`) {
+		t.Errorf("expected risk_rationale to be present even when empty, got %s", raw)
+	}
+}
+
 func TestFinding_RequiresHumanReview_SerializedWhenFalse(t *testing.T) {
 	f := Finding{Severity: "error", Description: "bug", RequiresHumanReview: false}
 	raw, err := json.Marshal(f)
