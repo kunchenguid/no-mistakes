@@ -74,6 +74,37 @@ func TestRetainMatchingFindingsJSON_DoesNotKeepDistinctDuplicateLines(t *testing
 	}
 }
 
+func TestAutoFixableFindingsJSON_FiltersHumanReview(t *testing.T) {
+	raw := `{"findings":[{"id":"review-1","severity":"error","description":"bug"},{"id":"review-2","severity":"warning","description":"design choice","requires_human_review":true},{"id":"review-3","severity":"warning","description":"missing check"}],"risk_level":"medium","risk_rationale":"Mixed."}`
+
+	fixableRaw := autoFixableFindingsJSON(raw)
+	fixable, err := types.ParseFindingsJSON(fixableRaw)
+	if err != nil {
+		t.Fatalf("parse auto-fixable findings: %v", err)
+	}
+	if len(fixable.Items) != 2 {
+		t.Fatalf("expected 2 findings, got %d", len(fixable.Items))
+	}
+	if fixable.Items[0].ID != "review-1" || fixable.Items[1].ID != "review-3" {
+		t.Fatalf("unexpected findings: %#v", fixable.Items)
+	}
+}
+
+func TestAutoFixableFindingsJSON_AllHumanReview(t *testing.T) {
+	raw := `{"findings":[{"id":"review-1","severity":"warning","description":"choice","requires_human_review":true}],"risk_level":"high","risk_rationale":"Needs review."}`
+
+	fixableRaw := autoFixableFindingsJSON(raw)
+	if fixableRaw != "" {
+		t.Fatalf("expected empty string for all-human-review findings, got %q", fixableRaw)
+	}
+}
+
+func TestAutoFixableFindingsJSON_EmptyInput(t *testing.T) {
+	if got := autoFixableFindingsJSON(""); got != "" {
+		t.Fatalf("expected empty string for empty input, got %q", got)
+	}
+}
+
 func TestMergeFindingsJSON_DeduplicatesShiftedUniqueDismissedFinding(t *testing.T) {
 	existingRaw := `{"findings":[{"id":"dismissed-1","severity":"warning","file":"internal/pipeline/findings.go","line":42,"description":"still unresolved"}],"summary":"1 finding"}`
 	additionalRaw := `{"findings":[{"id":"dismissed-2","severity":"warning","file":"internal/pipeline/findings.go","line":57,"description":"still unresolved"}],"summary":"1 finding"}`

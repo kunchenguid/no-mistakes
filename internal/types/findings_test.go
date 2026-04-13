@@ -124,3 +124,66 @@ func TestFilterFindings_EmptyIDs(t *testing.T) {
 		t.Errorf("RiskLevel = %q, want %q", filtered.RiskLevel, "low")
 	}
 }
+
+func TestParseFindingsJSON_RequiresHumanReview(t *testing.T) {
+	raw := `{"findings":[{"severity":"warning","description":"design choice","requires_human_review":true},{"severity":"error","description":"bug"}],"risk_level":"medium","risk_rationale":"Mixed."}`
+	f, err := ParseFindingsJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.Items) != 2 {
+		t.Fatalf("Items count = %d, want 2", len(f.Items))
+	}
+	if !f.Items[0].RequiresHumanReview {
+		t.Error("Items[0].RequiresHumanReview = false, want true")
+	}
+	if f.Items[1].RequiresHumanReview {
+		t.Error("Items[1].RequiresHumanReview = true, want false")
+	}
+}
+
+func TestAutoFixableFindings_FiltersOutHumanReview(t *testing.T) {
+	f := Findings{
+		Items: []Finding{
+			{ID: "f1", Severity: "error", Description: "bug", RequiresHumanReview: false},
+			{ID: "f2", Severity: "warning", Description: "design choice", RequiresHumanReview: true},
+			{ID: "f3", Severity: "warning", Description: "missing check", RequiresHumanReview: false},
+		},
+		RiskLevel: "medium",
+	}
+	fixable := AutoFixableFindings(f)
+	if len(fixable.Items) != 2 {
+		t.Fatalf("Items count = %d, want 2", len(fixable.Items))
+	}
+	if fixable.Items[0].ID != "f1" {
+		t.Errorf("Items[0].ID = %q, want %q", fixable.Items[0].ID, "f1")
+	}
+	if fixable.Items[1].ID != "f3" {
+		t.Errorf("Items[1].ID = %q, want %q", fixable.Items[1].ID, "f3")
+	}
+}
+
+func TestAutoFixableFindings_AllHumanReview(t *testing.T) {
+	f := Findings{
+		Items: []Finding{
+			{ID: "f1", Severity: "warning", Description: "choice", RequiresHumanReview: true},
+		},
+	}
+	fixable := AutoFixableFindings(f)
+	if len(fixable.Items) != 0 {
+		t.Errorf("Items count = %d, want 0", len(fixable.Items))
+	}
+}
+
+func TestAutoFixableFindings_NoneHumanReview(t *testing.T) {
+	f := Findings{
+		Items: []Finding{
+			{ID: "f1", Severity: "error", Description: "bug"},
+			{ID: "f2", Severity: "warning", Description: "issue"},
+		},
+	}
+	fixable := AutoFixableFindings(f)
+	if len(fixable.Items) != 2 {
+		t.Errorf("Items count = %d, want 2", len(fixable.Items))
+	}
+}

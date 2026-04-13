@@ -219,25 +219,33 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			e.emitRunEvent(ipc.EventRunUpdated, run, repo)
 		}
 
-		if !outcome.NeedsApproval {
-			// Step completed without needing approval
-			break
+		// Check if auto-fix should be attempted.
+		// Only auto-fix findings that don't require human review.
+		// This runs before the NeedsApproval check so that all severity
+		// levels (including "info") get a chance at automatic fixing.
+		if outcome.AutoFixable && autoFixLimit > 0 && autoFixAttempts < autoFixLimit {
+			fixableFindings := autoFixableFindingsJSON(outcome.Findings)
+			if fixableFindings != "" {
+				autoFixAttempts++
+				slog.Info("auto-fixing step", "step", stepName, "attempt", autoFixAttempts, "max", autoFixLimit)
+				executionMS += time.Since(phaseStart).Milliseconds()
+				if dbErr := e.db.UpdateStepStatus(sr.ID, types.StepStatusFixing); dbErr != nil {
+					slog.Warn("failed to update step status in db", "step", stepName, "status", "fixing", "error", dbErr)
+				}
+				e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFixing), "", "", "", nil)
+				phaseStart = time.Now()
+				sctx.Fixing = true
+				sctx.PreviousFindings = fixableFindings
+				nextTrigger = "auto_fix"
+				continue
+			}
 		}
 
-		// Check if auto-fix should be attempted
-		if outcome.AutoFixable && autoFixLimit > 0 && autoFixAttempts < autoFixLimit {
-			autoFixAttempts++
-			slog.Info("auto-fixing step", "step", stepName, "attempt", autoFixAttempts, "max", autoFixLimit)
-			executionMS += time.Since(phaseStart).Milliseconds()
-			if dbErr := e.db.UpdateStepStatus(sr.ID, types.StepStatusFixing); dbErr != nil {
-				slog.Warn("failed to update step status in db", "step", stepName, "status", "fixing", "error", dbErr)
-			}
-			e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFixing), "", "", "", nil)
-			phaseStart = time.Now()
-			sctx.Fixing = true
-			sctx.PreviousFindings = outcome.Findings
-			nextTrigger = "auto_fix"
-			continue
+		if !outcome.NeedsApproval {
+			// Step completed without needing approval.
+			// Any remaining info-only or human-review-only findings
+			// are acceptable and don't block the pipeline.
+			break
 		}
 
 		// Freeze execution timer before entering approval wait.

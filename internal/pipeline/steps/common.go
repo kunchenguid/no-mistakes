@@ -197,7 +197,8 @@ var reviewFindingsSchema = json.RawMessage(`{
 					"severity": {"type": "string", "enum": ["error", "warning", "info"]},
 					"file": {"type": "string"},
 					"line": {"type": "integer"},
-					"description": {"type": "string"}
+					"description": {"type": "string"},
+					"requires_human_review": {"type": "boolean"}
 				},
 				"required": ["severity", "description"]
 			}

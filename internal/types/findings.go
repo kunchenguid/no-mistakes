@@ -7,11 +7,12 @@ import (
 
 // Finding represents a single review, test, lint, or PR comment finding.
 type Finding struct {
-	ID          string `json:"id,omitempty"`
-	Severity    string `json:"severity"`
-	File        string `json:"file,omitempty"`
-	Line        int    `json:"line,omitempty"`
-	Description string `json:"description"`
+	ID                  string `json:"id,omitempty"`
+	Severity            string `json:"severity"`
+	File                string `json:"file,omitempty"`
+	Line                int    `json:"line,omitempty"`
+	Description         string `json:"description"`
+	RequiresHumanReview bool   `json:"requires_human_review,omitempty"`
 }
 
 // Findings is the structured findings payload exchanged across pipeline, IPC, and TUI.
@@ -87,6 +88,19 @@ func ExcludeFindings(findings Findings, ids []string) Findings {
 	result := Findings{Summary: findings.Summary, RiskLevel: findings.RiskLevel, RiskRationale: findings.RiskRationale}
 	for _, item := range findings.Items {
 		if !excluded[item.ID] {
+			result.Items = append(result.Items, item)
+		}
+	}
+	return result
+}
+
+// AutoFixableFindings returns a new Findings containing only items where
+// RequiresHumanReview is false. These are safe for automatic fixing without
+// user involvement.
+func AutoFixableFindings(findings Findings) Findings {
+	result := Findings{Summary: findings.Summary, RiskLevel: findings.RiskLevel, RiskRationale: findings.RiskRationale}
+	for _, item := range findings.Items {
+		if !item.RequiresHumanReview {
 			result.Items = append(result.Items, item)
 		}
 	}

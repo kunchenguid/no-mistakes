@@ -32,7 +32,15 @@ while read oldrev newrev refname; do
     --old "$oldrev" \
     --new "$newrev" >/dev/null 2>&1 || true
 done
-printf '%s\n' 'Pipeline started. Run no-mistakes to review.' >&2
+cat >&2 <<'BANNER'
+` + "\033[36m" + `_  _ ____    _  _ _ ____ ___ ____ _  _ ____ ____
+|\ | |  |    |\/| | [__   |  |__| |_/  |___ [__
+| \| |__|    |  | | ___]  |  |  | | \_ |___ ___]` + "\033[0m" + `
+
+  ` + "\033[32m" + `✓` + "\033[0m" + ` Pipeline started
+
+  ` + "\033[90m" + `Run` + "\033[0m" + ` ` + "\033[1m" + `no-mistakes` + "\033[0m" + ` ` + "\033[90m" + `to review.` + "\033[0m" + `
+BANNER
 exit 0
 `
 }
