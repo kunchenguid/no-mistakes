@@ -1936,7 +1936,9 @@ func TestDocumentStep_FixMode_RejectsNonDocumentEdits(t *testing.T) {
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature code\nmore code\n"), 0o644)
+			if err := os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature code\nmore code\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
 			return &agent.Result{Output: json.RawMessage(`{"summary":"update docs"}`)}, nil
 		},
 	}
