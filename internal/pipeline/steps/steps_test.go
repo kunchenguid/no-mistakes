@@ -2233,6 +2233,12 @@ func TestPRStep_CreatesNewPR(t *testing.T) {
 	if !strings.Contains(ghLog, "pr create") {
 		t.Errorf("expected gh pr create to be called, got:\n%s", ghLog)
 	}
+	if strings.Contains(ghLog, "--title add feature --") {
+		t.Fatalf("expected fallback PR title to reject raw non-conventional commit summary, got:\n%s", ghLog)
+	}
+	if !strings.Contains(ghLog, "--title chore: add feature --body") {
+		t.Fatalf("expected fallback PR title to use conventional commit format, got:\n%s", ghLog)
+	}
 
 	// Verify PR URL was stored
 	run, err := sctx.DB.GetRun(sctx.Run.ID)
@@ -3903,38 +3909,6 @@ func TestPRStep_AgentNonConventionalTitleFallsBack(t *testing.T) {
 	// The agent's body should be preserved, not replaced with fallback
 	if !strings.Contains(ghLog, "## Summary") {
 		t.Fatal("expected agent body to be preserved, got: " + ghLog)
-	}
-}
-
-func TestFallbackPRContent_ConventionalTitle(t *testing.T) {
-	tests := []struct {
-		name      string
-		branch    string
-		commitLog string
-	}{
-		{
-			name:      "commit message used",
-			branch:    "feature/add-auth",
-			commitLog: "abc123 add OAuth support",
-		},
-		{
-			name:      "empty commit log",
-			branch:    "fix/crash",
-			commitLog: "",
-		},
-		{
-			name:      "conventional commit in log preserved",
-			branch:    "feature/auth",
-			commitLog: "abc123 feat: add OAuth support",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			content := fallbackPRContent(tt.branch, tt.commitLog, "", "")
-			if !isConventionalTitle(content.Title) {
-				t.Errorf("fallback title %q is not conventional commit format", content.Title)
-			}
-		})
 	}
 }
 
