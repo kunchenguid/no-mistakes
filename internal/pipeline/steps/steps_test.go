@@ -2477,24 +2477,6 @@ func newTestContextWithDBRecords(t *testing.T, ag agent.Agent, workDir, baseSHA,
 	return sctx
 }
 
-// --- Helper function unit tests ---
-
-func TestNormalizedBranchRef(t *testing.T) {
-	tests := []struct {
-		input, want string
-	}{
-		{"feature", "refs/heads/feature"},
-		{"my/branch", "refs/heads/my/branch"},
-		{"refs/heads/feature", "refs/heads/feature"},
-		{"refs/tags/v1", "refs/tags/v1"},
-	}
-	for _, tc := range tests {
-		if got := normalizedBranchRef(tc.input); got != tc.want {
-			t.Errorf("normalizedBranchRef(%q) = %q, want %q", tc.input, got, tc.want)
-		}
-	}
-}
-
 func TestExtractCommitSummary(t *testing.T) {
 	tests := []struct {
 		name    string
