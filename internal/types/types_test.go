@@ -1,6 +1,9 @@
 package types
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestAllStepsOrder(t *testing.T) {
 	steps := AllSteps()
@@ -35,5 +38,15 @@ func TestStepNameOrder(t *testing.T) {
 		if got := tt.step.Order(); got != tt.want {
 			t.Errorf("%q.Order() = %d, want %d", tt.step, got, tt.want)
 		}
+	}
+}
+
+func TestStepNameUnmarshalJSON_LegacyBabysit(t *testing.T) {
+	var step StepName
+	if err := json.Unmarshal([]byte(`"babysit"`), &step); err != nil {
+		t.Fatalf("unmarshal step name: %v", err)
+	}
+	if step != StepCI {
+		t.Fatalf("step = %q, want %q", step, StepCI)
 	}
 }

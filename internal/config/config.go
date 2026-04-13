@@ -213,6 +213,9 @@ func LoadRepo(dir string) (*RepoConfig, error) {
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("parse repo config: %w", err)
 	}
+	if cfg.AutoFix.CI == nil {
+		cfg.AutoFix.CI = cfg.AutoFix.Babysit
+	}
 
 	return cfg, nil
 }

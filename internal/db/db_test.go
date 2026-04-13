@@ -40,6 +40,36 @@ func TestOpenCreatesSchema(t *testing.T) {
 	}
 }
 
+func TestGetStepResult_LegacyBabysitStepName(t *testing.T) {
+	d := openTestDB(t)
+	repo, err := d.InsertRepo("/tmp/repo", "git@github.com:test/repo.git", "main")
+	if err != nil {
+		t.Fatalf("insert repo: %v", err)
+	}
+	run, err := d.InsertRun(repo.ID, "feature", "abc123", "def456")
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+	_, err = d.sql.Exec(
+		`INSERT INTO step_results (id, run_id, step_name, step_order, status) VALUES (?, ?, ?, ?, ?)`,
+		"step1", run.ID, "babysit", 7, types.StepStatusPending,
+	)
+	if err != nil {
+		t.Fatalf("insert legacy step result: %v", err)
+	}
+
+	step, err := d.GetStepResult("step1")
+	if err != nil {
+		t.Fatalf("get step result: %v", err)
+	}
+	if step == nil {
+		t.Fatal("expected step result")
+	}
+	if step.StepName != types.StepCI {
+		t.Fatalf("step name = %q, want %q", step.StepName, types.StepCI)
+	}
+}
+
 func TestRepoInsertAndGet(t *testing.T) {
 	d := openTestDB(t)
 	repo, err := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")

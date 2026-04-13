@@ -590,6 +590,25 @@ func TestLoadRepo_AutoFixFromFile(t *testing.T) {
 	}
 }
 
+func TestLoadRepo_LegacyAutoFixBabysit(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".no-mistakes.yaml")
+	if err := os.WriteFile(path, []byte("auto_fix:\n  babysit: 0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadRepo(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.AutoFix.CI == nil {
+		t.Fatal("ci auto-fix override was not loaded")
+	}
+	if *cfg.AutoFix.CI != 0 {
+		t.Fatalf("ci auto-fix = %d, want 0", *cfg.AutoFix.CI)
+	}
+}
+
 func TestMerge_AutoFixDefaults(t *testing.T) {
 	global := &GlobalConfig{Agent: types.AgentClaude, CITimeout: 4 * time.Hour, LogLevel: "info"}
 	repo := &RepoConfig{}
