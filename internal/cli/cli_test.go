@@ -200,6 +200,14 @@ func cleanupWorktree(t *testing.T, repoDir, wtDir string) {
 
 	t.Cleanup(func() {
 		_ = os.Chdir(repoDir)
+		p := paths.WithRoot(os.Getenv("NM_HOME"))
+		_ = daemon.Stop(p)
+		if runtime.GOOS == "windows" {
+			time.Sleep(500 * time.Millisecond)
+		}
+		if resolved, err := filepath.EvalSymlinks(wtDir); err == nil {
+			wtDir = resolved
+		}
 
 		ctx := context.Background()
 		var err error
