@@ -82,23 +82,6 @@ func TestStepLabel(t *testing.T) {
 	}
 }
 
-func TestFormatDuration(t *testing.T) {
-	tests := []struct {
-		ms   int64
-		want string
-	}{
-		{500, "500ms"},
-		{1000, "1.0s"},
-		{2500, "2.5s"},
-		{60000, "60.0s"},
-	}
-	for _, tt := range tests {
-		if got := formatDuration(tt.ms); got != tt.want {
-			t.Errorf("formatDuration(%d) = %q, want %q", tt.ms, got, tt.want)
-		}
-	}
-}
-
 func TestRenderPipelineView_NilRun(t *testing.T) {
 	out := renderPipelineView(nil, nil, 80, 0, 40)
 	if out != "No active run." {
@@ -111,6 +94,8 @@ func TestRenderPipelineView_ShowsSteps(t *testing.T) {
 	run.Steps[0].Status = types.StepStatusCompleted
 	run.Steps[0].DurationMS = ptr(int64(1200))
 	run.Steps[1].Status = types.StepStatusRunning
+	run.Steps[2].Status = types.StepStatusCompleted
+	run.Steps[2].DurationMS = ptr(int64(500))
 
 	out := stripANSI(renderPipelineView(run, run.Steps, 80, 0, 40))
 	if !strings.Contains(out, "feature/foo") {
@@ -133,6 +118,12 @@ func TestRenderPipelineView_ShowsSteps(t *testing.T) {
 	}
 	if !strings.Contains(out, "Test") {
 		t.Error("expected Test step")
+	}
+	if !strings.Contains(out, "Lint") {
+		t.Error("expected Lint step")
+	}
+	if !strings.Contains(out, "500ms") {
+		t.Error("expected sub-second duration for completed step")
 	}
 }
 
