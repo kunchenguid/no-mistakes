@@ -37,7 +37,7 @@ AI code review of your diff.
 - Agent returns findings with severity (`error`, `warning`, `info`), file location, and description
 - Also returns a `risk_level` (`low`, `medium`, `high`) and `risk_rationale`
 
-**Approval:** required if any finding has severity `error` or `warning`. Findings marked `requires_human_review` always require human approval and are never auto-fixed. This is mainly for intentional product or design decisions, or fixes that would undo an intentional deletion for non-correctness reasons, not routine correctness, reliability, or security fixes that may need to re-add a small amount of deleted logic.
+**Approval:** required if any finding has severity `error` or `warning`. Findings marked `requires_human_review` always require human approval and are never auto-fixed. This is for findings that challenge the author's intent, not routine correctness, reliability, or security fixes that may need to re-add a small amount of deleted logic.
 
 **Auto-fix:** the agent receives previous findings and applies fixes, then the review runs again. Fix commits use `no-mistakes(review): <summary>`.
 
