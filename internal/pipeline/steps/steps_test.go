@@ -1659,6 +1659,40 @@ func TestDocumentStep_MalformedOutput(t *testing.T) {
 	}
 }
 
+func TestDocumentStep_NoStructuredOutputRequiresApproval(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Text: "docs status unavailable"}, nil
+		},
+	}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	step := &DocumentStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("expected missing structured output to require approval")
+	}
+	if !outcome.AutoFixable {
+		t.Fatal("expected missing structured output finding to remain auto-fixable")
+	}
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatalf("unmarshal findings: %v", err)
+	}
+	if len(findings.Items) != 1 {
+		t.Fatalf("expected 1 finding, got %+v", findings.Items)
+	}
+	if findings.Items[0].Description != "docs status unavailable" {
+		t.Fatalf("finding description = %q, want %q", findings.Items[0].Description, "docs status unavailable")
+	}
+}
+
 func TestDocumentStep_PromptIncludesIgnorePatterns(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
@@ -1840,6 +1874,37 @@ func TestDocumentStep_FixMode_NoChangesStillReassesses(t *testing.T) {
 	}
 	if outcome.NeedsApproval {
 		t.Error("expected no approval after clean re-assessment")
+	}
+}
+
+func TestDocumentStep_FixMode_RejectsNonDocumentEdits(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature code\nmore code\n"), 0o644)
+			return &agent.Result{Output: json.RawMessage(`{"summary":"update docs"}`)}, nil
+		},
+	}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Fixing = true
+	sctx.PreviousFindings = `{"findings":[{"severity":"warning","description":"docs outdated"}],"summary":"docs outdated"}`
+
+	step := &DocumentStep{}
+	_, err := step.Execute(sctx)
+	if err == nil {
+		t.Fatal("expected error for non-document edits")
+	}
+	if !strings.Contains(err.Error(), "non-document") {
+		t.Fatalf("error = %v, want to mention non-document edits", err)
+	}
+	if got := lastCommitMessage(t, dir); got != "add feature" {
+		t.Fatalf("expected no new commit, got %q", got)
+	}
+	if status := gitStatusPorcelain(t, dir); !strings.Contains(status, "feature.txt") {
+		t.Fatalf("expected non-document change to remain uncommitted, got %q", status)
 	}
 }
 
