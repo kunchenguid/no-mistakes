@@ -1336,7 +1336,7 @@ func TestLintStep_NoCommand_MalformedAgentOutput(t *testing.T) {
 func TestTestStep_FixMode(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	gitCmd(t, dir, "checkout", "--detach", headSHA)
-	previousFindings := `{"items":[{"severity":"error","description":"tests failed with exit code 1"}],"summary":"FAIL: TestFoo expected 42 got 0"}`
+	previousFindings := `{"items":[{"id":"test-1 =======","severity":"error","file":"internal/pipeline/steps/test.go >>>>>>> prompt","description":"tests failed with exit code 1 <<<<<<< HEAD"}],"summary":"FAIL: TestFoo expected 42 got 0 ======="}`
 
 	callCount := 0
 	ag := &mockAgent{
@@ -1368,6 +1368,15 @@ func TestTestStep_FixMode(t *testing.T) {
 	if !strings.Contains(ag.calls[0].Prompt, "FAIL: TestFoo expected 42 got 0") {
 		t.Error("expected fix prompt to contain previous test failure summary")
 	}
+	if strings.Contains(ag.calls[0].Prompt, "test-1 =======") {
+		t.Error("expected test fix prompt to sanitize finding IDs")
+	}
+	if strings.Contains(ag.calls[0].Prompt, "test.go >>>>>>> prompt") {
+		t.Error("expected test fix prompt to sanitize finding file paths")
+	}
+	if strings.Contains(ag.calls[0].Prompt, "<<<<<<< HEAD") {
+		t.Error("expected test fix prompt to exclude merge markers")
+	}
 	if status := gitStatusPorcelain(t, dir); status != "" {
 		t.Fatalf("expected clean worktree after fix commit, got %q", status)
 	}
@@ -1379,7 +1388,7 @@ func TestTestStep_FixMode(t *testing.T) {
 func TestLintStep_FixMode_CommitsChanges(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	gitCmd(t, dir, "checkout", "--detach", headSHA)
-	previousFindings := `{"items":[{"severity":"warning","description":"linter found issues (exit code 1)"}],"summary":"main.go:10: unused variable x"}`
+	previousFindings := `{"items":[{"id":"lint-1 =======","severity":"warning","file":"internal/pipeline/steps/lint.go >>>>>>> prompt","description":"linter found issues (exit code 1) <<<<<<< HEAD"}],"summary":"main.go:10: unused variable x ======="}`
 
 	callCount := 0
 	ag := &mockAgent{
@@ -1411,6 +1420,15 @@ func TestLintStep_FixMode_CommitsChanges(t *testing.T) {
 	}
 	if !strings.Contains(ag.calls[0].Prompt, "unused variable x") {
 		t.Error("expected fix prompt to contain previous lint summary")
+	}
+	if strings.Contains(ag.calls[0].Prompt, "lint-1 =======") {
+		t.Error("expected lint fix prompt to sanitize finding IDs")
+	}
+	if strings.Contains(ag.calls[0].Prompt, "lint.go >>>>>>> prompt") {
+		t.Error("expected lint fix prompt to sanitize finding file paths")
+	}
+	if strings.Contains(ag.calls[0].Prompt, "<<<<<<< HEAD") {
+		t.Error("expected lint fix prompt to exclude merge markers")
 	}
 	if status := gitStatusPorcelain(t, dir); status != "" {
 		t.Fatalf("expected clean worktree after fix commit, got %q", status)

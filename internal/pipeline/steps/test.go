@@ -47,7 +47,7 @@ Rules:
 			fixPrompt += `
 
 Previous test findings to address:
-` + sctx.PreviousFindings
+` + sanitizedPreviousFindingsForPrompt(sctx.PreviousFindings)
 		}
 		result, err := sctx.Agent.Run(ctx, agent.RunOpts{
 			Prompt:     fixPrompt,

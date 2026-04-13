@@ -45,7 +45,7 @@ Rules:
 			fixPrompt += `
 
 Previous lint findings to address:
-` + sctx.PreviousFindings
+` + sanitizedPreviousFindingsForPrompt(sctx.PreviousFindings)
 		}
 		result, err := sctx.Agent.Run(ctx, agent.RunOpts{
 			Prompt:     fixPrompt,
