@@ -26,7 +26,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/configure-pages@v5
+      - if: github.event_name != 'pull_request'
+        uses: actions/configure-pages@v5
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -36,7 +37,8 @@ jobs:
         working-directory: docs
       - run: npm run build
         working-directory: docs
-      - uses: actions/upload-pages-artifact@v3
+      - if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v3
         with:
           path: docs/dist
 
