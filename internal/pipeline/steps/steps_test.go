@@ -1752,10 +1752,21 @@ func TestDocumentStep_MissingFindingsFieldRequiresApproval(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Missing findings field means the output parsed but findings is nil/empty.
-	// This is equivalent to "no gaps found" - should not need approval.
-	if outcome.NeedsApproval {
-		t.Error("expected no approval when findings array is empty/missing")
+	if !outcome.NeedsApproval {
+		t.Fatal("expected missing findings field to require approval")
+	}
+	if outcome.AutoFixable {
+		t.Fatal("expected missing findings field finding to require manual review")
+	}
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatalf("unmarshal findings: %v", err)
+	}
+	if len(findings.Items) != 1 {
+		t.Fatalf("expected 1 finding, got %+v", findings.Items)
+	}
+	if !findings.Items[0].RequiresHumanReview {
+		t.Fatal("expected missing findings field finding to require human review")
 	}
 	if len(ag.calls) != 1 {
 		t.Fatalf("expected 1 agent call, got %d", len(ag.calls))

@@ -164,7 +164,7 @@ Rules:
 			}},
 			Summary: fallbackDocumentSummary(result.Text),
 		}
-	} else if err := json.Unmarshal(result.Output, &findings); err != nil {
+	} else if err := unmarshalRequiredFindings(result.Output, &findings); err != nil {
 		sctx.Log("could not parse structured output, requiring approval")
 		findings = Findings{
 			Items: []Finding{{
@@ -343,4 +343,17 @@ func fallbackDocumentSummary(text string) string {
 		return "agent returned no structured output"
 	}
 	return cleaned
+}
+
+func unmarshalRequiredFindings(raw []byte, findings *Findings) error {
+	var payload struct {
+		Items []Finding `json:"findings"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return err
+	}
+	if payload.Items == nil {
+		return fmt.Errorf("missing findings array")
+	}
+	return json.Unmarshal(raw, findings)
 }
