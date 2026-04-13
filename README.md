@@ -126,7 +126,7 @@ no-mistakes update
 
 - **Named remote** - `origin` is never hijacked. If you want the gate, you push to `no-mistakes` on purpose.
 - **Disposable worktrees** - each run happens in its own detached worktree, so the daemon can inspect and modify safely before pushing upstream.
-- **Fixed pipeline** - this is opinionated on purpose: `review -> test -> document -> lint -> push -> pr -> ci`.
+- **Fixed pipeline** - this is opinionated on purpose: `review -> test -> document -> lint -> push -> pr -> ci`. The `document` step checks whether README/docs/comments need updates for the code you changed.
 - **Local state** - metadata lives under `~/.no-mistakes/` by default, or `${NM_HOME}` if you want to relocate it.
 
 ## CLI Reference
@@ -185,6 +185,7 @@ ci_timeout: "4h"
 #   lint: 3
 #   test: 3
 #   review: 3
+#   document: 3
 #   ci: 3
 
 # debug | info | warn | error
