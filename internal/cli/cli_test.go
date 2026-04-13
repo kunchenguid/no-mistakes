@@ -378,9 +378,14 @@ func startTestDaemon(t *testing.T, p *paths.Paths, d *db.DB) {
 	})
 }
 
-func TestRootDefaultsToAttach(t *testing.T) {
+func TestRootDefaultsToAttachWithAndWithoutHistory(t *testing.T) {
 	setupTestRepo(t)
-	nmHome := os.Getenv("NM_HOME")
+	nmHome, err := os.MkdirTemp("/tmp", "nmh-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(nmHome) })
+	t.Setenv("NM_HOME", nmHome)
 	p := paths.WithRoot(nmHome)
 
 	// Open DB and init gate directly (avoids EnsureDaemon timeout from CLI init).
@@ -397,7 +402,7 @@ func TestRootDefaultsToAttach(t *testing.T) {
 	// Start an in-process daemon.
 	startTestDaemon(t, p, d)
 
-	// Run bare `no-mistakes` (no subcommand) — should default to attach behavior.
+	// Run bare `no-mistakes` (no subcommand) - should default to attach behavior.
 	out, err := executeCmd()
 	if err != nil {
 		t.Fatalf("bare command failed: %v\noutput: %s", err, out)
@@ -408,21 +413,8 @@ func TestRootDefaultsToAttach(t *testing.T) {
 	if !strings.Contains(out, "git push no-mistakes") {
 		t.Errorf("expected push instructions, got: %s", out)
 	}
-}
-
-func TestRootNoActiveRunShowsHistory(t *testing.T) {
-	setupTestRepo(t)
-	nmHome := os.Getenv("NM_HOME")
-	p := paths.WithRoot(nmHome)
-
-	d, err := db.Open(p.DB())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer d.Close()
-
-	if _, err := gate.Init(context.Background(), d, p, "."); err != nil {
-		t.Fatal(err)
+	if strings.Contains(out, "Recent runs") {
+		t.Errorf("did not expect recent runs before history exists, got: %s", out)
 	}
 
 	// Look up the repo to insert runs (use FindGitRoot for macOS symlink consistency).
@@ -469,9 +461,7 @@ func TestRootNoActiveRunShowsHistory(t *testing.T) {
 		setRunCreatedAt(t, p.DB(), run.ID, timestamps[i])
 	}
 
-	startTestDaemon(t, p, d)
-
-	out, err := executeCmd()
+	out, err = executeCmd()
 	if err != nil {
 		t.Fatalf("bare command failed: %v\noutput: %s", err, out)
 	}
