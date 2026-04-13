@@ -4249,8 +4249,12 @@ func TestBabysitStep_CIAutoFixDisabledWithZero(t *testing.T) {
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
+	pollCount := 0
 	step := &BabysitStep{
-		pollIntervalOverride: 100 * time.Millisecond, // fast polling for test
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			pollCount++
+			return nil
+		},
 	}
 	outcome, err := step.Execute(sctx)
 	if err != nil {
@@ -4331,8 +4335,12 @@ func TestBabysitStep_CIAutoFixLimitExhausted(t *testing.T) {
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
+	pollCount := 0
 	step := &BabysitStep{
-		pollIntervalOverride: 100 * time.Millisecond, // fast polling for test
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			pollCount++
+			return nil
+		},
 	}
 	outcome, err := step.Execute(sctx)
 	if err != nil {
@@ -4348,6 +4356,9 @@ func TestBabysitStep_CIAutoFixLimitExhausted(t *testing.T) {
 	// Agent should have been called exactly once (limit is 1)
 	if fixCount != 1 {
 		t.Errorf("expected 1 auto-fix attempt (limit=1), got %d", fixCount)
+	}
+	if pollCount != 1 {
+		t.Errorf("expected 1 poll wait before limit-exhausted outcome, got %d", pollCount)
 	}
 
 	// Should log that max attempts reached on subsequent poll
@@ -4417,8 +4428,12 @@ func TestBabysitStep_CIAutoFixRetriesAfterChecksRerun(t *testing.T) {
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
+	pollCount := 0
 	step := &BabysitStep{
-		pollIntervalOverride: 50 * time.Millisecond,
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			pollCount++
+			return nil
+		},
 	}
 	outcome, err := step.Execute(sctx)
 	if err != nil {
@@ -4432,6 +4447,9 @@ func TestBabysitStep_CIAutoFixRetriesAfterChecksRerun(t *testing.T) {
 	}
 	if fixCount != 2 {
 		t.Fatalf("expected 2 auto-fix attempts after reruns, got %d", fixCount)
+	}
+	if pollCount != 4 {
+		t.Fatalf("expected 4 poll waits across reruns and retries, got %d", pollCount)
 	}
 
 	foundExhausted := false
