@@ -106,9 +106,11 @@ Rules:
 
 	// Parse verdict
 	var verdict documentVerdict
+	var verdictErr error
 	if result.Output != nil {
 		if err := json.Unmarshal(result.Output, &verdict); err != nil {
 			sctx.Log("could not parse structured output, treating as skipped")
+			verdictErr = err
 			verdict = documentVerdict{Verdict: "skipped", Summary: result.Text}
 		}
 	}
@@ -131,7 +133,7 @@ Rules:
 	}
 
 	if sctx.Fixing {
-		outcome, err := s.applyDocumentationUpdates(sctx, baseSHA)
+		outcome, err := s.applyDocumentationUpdates(sctx, baseSHA, verdictErr)
 		if err != nil {
 			return nil, err
 		}
@@ -145,8 +147,18 @@ Rules:
 	return &pipeline.StepOutcome{}, nil
 }
 
-func (s *DocumentStep) applyDocumentationUpdates(sctx *pipeline.StepContext, baseSHA string) (*pipeline.StepOutcome, error) {
+func (s *DocumentStep) applyDocumentationUpdates(sctx *pipeline.StepContext, baseSHA string, initialVerdictErr error) (*pipeline.StepOutcome, error) {
 	ctx := sctx.Ctx
+	if initialVerdictErr != nil {
+		outcome, err := malformedDocumentFixOutcome(ctx, sctx.WorkDir)
+		if err != nil {
+			return nil, err
+		}
+		if outcome != nil {
+			return outcome, nil
+		}
+	}
+
 	ignorePatterns := "none"
 	if len(sctx.Config.IgnorePatterns) > 0 {
 		ignorePatterns = strings.Join(sctx.Config.IgnorePatterns, ", ")
@@ -195,7 +207,7 @@ Rules:
 	if result.Output != nil {
 		if err := json.Unmarshal(result.Output, &verdict); err != nil {
 			sctx.Log("could not parse structured output, treating as skipped")
-			verdict = documentVerdict{Verdict: "skipped", Summary: result.Text}
+			return malformedDocumentFixOutcome(ctx, sctx.WorkDir)
 		}
 	}
 
@@ -222,15 +234,23 @@ Rules:
 }
 
 func detectOutOfScopeDocumentEdits(ctx context.Context, workDir string) (Findings, error) {
-	changedFiles, err := git.Run(ctx, workDir, "diff", "--name-only", "HEAD")
+	status, err := git.Run(ctx, workDir, "status", "--porcelain", "--untracked-files=all")
 	if err != nil {
 		return Findings{}, fmt.Errorf("list document edits: %w", err)
 	}
 
 	findings := Findings{Summary: "document step produced out-of-scope edits"}
-	for _, path := range strings.Split(changedFiles, "\n") {
-		path = strings.TrimSpace(path)
+	for _, line := range strings.Split(status, "\n") {
+		path, untracked := parsePorcelainPath(line)
 		if path == "" || isDocumentationPath(path) {
+			continue
+		}
+		if untracked {
+			findings.Items = append(findings.Items, Finding{
+				Severity:    "warning",
+				File:        path,
+				Description: "document step modified non-documentation content",
+			})
 			continue
 		}
 		diff, err := git.Run(ctx, workDir, "diff", "HEAD", "--", path)
@@ -270,12 +290,56 @@ func isDocumentationPath(path string) bool {
 			return true
 		}
 	}
-	for _, ext := range []string{".md", ".mdx", ".rst", ".adoc", ".txt"} {
+	for _, ext := range []string{".md", ".mdx", ".rst", ".adoc"} {
 		if strings.HasSuffix(strings.ToLower(base), ext) {
 			return true
 		}
 	}
 	return false
+}
+
+func malformedDocumentFixOutcome(ctx context.Context, workDir string) (*pipeline.StepOutcome, error) {
+	status, err := git.Run(ctx, workDir, "status", "--porcelain", "--untracked-files=all")
+	if err != nil {
+		return nil, fmt.Errorf("check document fix status: %w", err)
+	}
+	if strings.TrimSpace(status) == "" {
+		return nil, nil
+	}
+	findings := Findings{
+		Items: []Finding{{
+			Severity:    "warning",
+			Description: "document step changed files but returned malformed structured output",
+		}},
+		Summary: "document step changed files but returned malformed structured output",
+	}
+	findingsJSON, _ := json.Marshal(findings)
+	return &pipeline.StepOutcome{
+		NeedsApproval: true,
+		Findings:      string(findingsJSON),
+	}, nil
+}
+
+func parsePorcelainPath(line string) (string, bool) {
+	line = strings.TrimRight(line, "\r")
+	var path string
+	switch {
+	case strings.HasPrefix(line, "?? "):
+		path = strings.TrimSpace(line[3:])
+	case len(line) >= 4 && line[2] == ' ':
+		path = strings.TrimSpace(line[3:])
+	case len(line) >= 3 && line[1] == ' ':
+		path = strings.TrimSpace(line[2:])
+	default:
+		return "", false
+	}
+	if path == "" {
+		return "", false
+	}
+	if idx := strings.LastIndex(path, " -> "); idx >= 0 {
+		path = path[idx+4:]
+	}
+	return path, strings.HasPrefix(line, "??")
 }
 
 func isDocCommentOnlyDiff(path, diff string) bool {

@@ -1750,6 +1750,78 @@ func TestDocumentStep_FixMode_NonDocumentationEditNeedsApproval(t *testing.T) {
 	}
 }
 
+func TestDocumentStep_FixMode_UntrackedNonDocumentationEditNeedsApproval(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			os.WriteFile(filepath.Join(dir, "feature.go"), []byte("package main\n\nfunc feature() {}\n"), 0o644)
+			return &agent.Result{Output: json.RawMessage(`{"verdict":"updated","summary":"updated docs"}`)}, nil
+		},
+	}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Fixing = true
+	sctx.PreviousFindings = `{"findings":[{"severity":"warning","description":"updated docs"}],"summary":"updated docs"}`
+
+	step := &DocumentStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("expected approval when agent creates non-documentation files")
+	}
+	if got := lastCommitMessage(t, dir); got != "add feature" {
+		t.Fatalf("expected no new commit, but last commit message = %q", got)
+	}
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatalf("unmarshal findings: %v", err)
+	}
+	if len(findings.Items) != 1 {
+		t.Fatalf("expected 1 finding, got %+v", findings.Items)
+	}
+	if findings.Items[0].File != "feature.go" {
+		t.Fatalf("finding file = %q, want %q", findings.Items[0].File, "feature.go")
+	}
+}
+
+func TestDocumentStep_FixMode_MalformedOutputWithEditsNeedsApproval(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Updated docs\n"), 0o644)
+			return &agent.Result{
+				Output: json.RawMessage(`{not valid json`),
+				Text:   "I updated the docs",
+			}, nil
+		},
+	}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Fixing = true
+	sctx.PreviousFindings = `{"findings":[{"severity":"warning","description":"updated docs"}],"summary":"updated docs"}`
+
+	step := &DocumentStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("expected malformed fix output with edits to require approval")
+	}
+	if got := lastCommitMessage(t, dir); got != "add feature" {
+		t.Fatalf("expected no new commit, but last commit message = %q", got)
+	}
+	if status := gitStatusPorcelain(t, dir); status == "" {
+		t.Fatal("expected documentation edit to remain for review")
+	}
+}
+
 func TestDocumentStep_FixMode_AllowsDocCommentOnlyEdits(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	gitCmd(t, dir, "checkout", "--detach", headSHA)
@@ -1779,6 +1851,15 @@ func TestDocumentStep_FixMode_AllowsDocCommentOnlyEdits(t *testing.T) {
 	}
 	if got := lastCommitMessage(t, dir); got != "no-mistakes(document): add doc comment" {
 		t.Fatalf("last commit message = %q", got)
+	}
+}
+
+func TestIsDocumentationPath_DoesNotTreatArbitraryTxtAsDocs(t *testing.T) {
+	if isDocumentationPath("testdata/golden/output.txt") {
+		t.Fatal("expected arbitrary .txt file to be out of scope")
+	}
+	if !isDocumentationPath("docs/output.txt") {
+		t.Fatal("expected docs/ .txt file to be treated as documentation")
 	}
 }
 
