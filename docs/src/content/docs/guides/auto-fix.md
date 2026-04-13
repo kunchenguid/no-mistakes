@@ -22,7 +22,7 @@ Set limits in global or repo config:
 
 ```yaml
 auto_fix:
-  rebase: 0    # 0 = disabled, always requires manual approval
+  rebase: 3
   review: 3    # up to 3 auto-fix attempts
   test: 3
   document: 3
@@ -30,7 +30,7 @@ auto_fix:
   ci: 3
 ```
 
-Setting a step to `0` means the pipeline always pauses for human input when that step finds issues. This is the default for `rebase` since conflict resolution is high-risk.
+Setting a step to `0` means the pipeline always pauses for human input when that step finds issues.
 
 Repo config overlays global config - you can set `auto_fix.lint: 5` in a repo's `.no-mistakes.yaml` to override just that step while inheriting the rest from global.
 
