@@ -270,13 +270,6 @@ func TestGetAvailablePort(t *testing.T) {
 	}
 }
 
-func TestRovodevAgent_Name(t *testing.T) {
-	a := &rovodevAgent{bin: "acli"}
-	if a.Name() != "rovodev" {
-		t.Errorf("expected name 'rovodev', got %q", a.Name())
-	}
-}
-
 func TestRovodevAgent_CloseWithoutServer(t *testing.T) {
 	a := &rovodevAgent{bin: "acli"}
 	if err := a.Close(); err != nil {

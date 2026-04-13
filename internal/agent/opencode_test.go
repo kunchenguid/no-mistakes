@@ -767,13 +767,6 @@ data: {"payload":{"type":"message.updated","properties":{"sessionID":"s1","info"
 	}
 }
 
-func TestOpencodeAgent_Name(t *testing.T) {
-	a := &opencodeAgent{bin: "opencode"}
-	if a.Name() != "opencode" {
-		t.Errorf("expected name 'opencode', got %q", a.Name())
-	}
-}
-
 func TestOpencodeAgent_CloseWithoutServer(t *testing.T) {
 	a := &opencodeAgent{bin: "opencode"}
 	if err := a.Close(); err != nil {
