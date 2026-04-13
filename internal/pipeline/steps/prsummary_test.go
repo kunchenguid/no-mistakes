@@ -377,6 +377,33 @@ func TestBuildPipelineSummary_FindingSeverityEmoji(t *testing.T) {
 	}
 }
 
+func TestBuildPipelineSummary_ReviewUsesLatestRoundNotFirst(t *testing.T) {
+	// When sr.FindingsJSON is nil (cleared), the fallback should use the
+	// latest round's risk assessment, not the first round's stale one.
+	initialFindings := `{"findings":[{"id":"review-1","severity":"warning","description":"issue"}],"summary":"1 warning","risk_level":"medium","risk_rationale":"initial concern"}`
+	latestFindings := `{"findings":[],"summary":"clean","risk_level":"low","risk_rationale":"issues resolved"}`
+	steps := []*db.StepResult{
+		{ID: "s1", StepName: types.StepReview, Status: types.StepStatusCompleted, FindingsJSON: nil},
+	}
+	rounds := map[string][]*db.StepRound{
+		"s1": {
+			{Round: 1, Trigger: "initial", FindingsJSON: &initialFindings, DurationMS: 1000},
+			{Round: 2, Trigger: "auto_fix", FindingsJSON: &latestFindings, DurationMS: 700},
+		},
+	}
+	_, risk := BuildPipelineSummary(steps, rounds)
+
+	if strings.Contains(risk, "initial concern") {
+		t.Errorf("expected latest round risk, not stale first round, got: %q", risk)
+	}
+	if !strings.Contains(risk, "issues resolved") {
+		t.Errorf("expected latest round rationale, got: %q", risk)
+	}
+	if !strings.Contains(risk, "Low") {
+		t.Errorf("expected Low risk from latest round, got: %q", risk)
+	}
+}
+
 func TestBuildPipelineSummary_EmptySteps(t *testing.T) {
 	md, risk := BuildPipelineSummary(nil, nil)
 	if md != "" {

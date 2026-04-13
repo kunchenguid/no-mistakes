@@ -85,6 +85,17 @@ func buildStepEntry(sr *db.StepResult, rounds []*db.StepRound) (statusLine, deta
 		}
 	}
 
+	// Parse latest round findings for risk fallback when final state is cleared.
+	var latestRoundFindings *types.Findings
+	if len(rounds) > 0 {
+		last := rounds[len(rounds)-1]
+		if last.FindingsJSON != nil {
+			if f, err := types.ParseFindingsJSON(*last.FindingsJSON); err == nil {
+				latestRoundFindings = &f
+			}
+		}
+	}
+
 	hadFindings := initialFindings != nil && len(initialFindings.Items) > 0
 	hasFinalFindings := finalFindings != nil && len(finalFindings.Items) > 0
 	hasAnyRoundFindings := roundsHaveFindings(rounds)
@@ -97,7 +108,7 @@ func buildStepEntry(sr *db.StepResult, rounds []*db.StepRound) (statusLine, deta
 	if sr.StepName == types.StepReview {
 		src := finalFindings
 		if src == nil && !hasUnreadableFinalFindings {
-			src = initialFindings
+			src = latestRoundFindings
 		}
 		if src != nil {
 			riskLevel = src.RiskLevel
@@ -178,9 +189,12 @@ func extractRiskLine(steps []*db.StepResult, rounds map[string][]*db.StepRound) 
 		src := finalFindings
 		if src == nil && !hasUnreadableFinal {
 			stepRounds := rounds[sr.ID]
-			if len(stepRounds) > 0 && stepRounds[0].FindingsJSON != nil {
-				if f, err := types.ParseFindingsJSON(*stepRounds[0].FindingsJSON); err == nil {
-					src = &f
+			if len(stepRounds) > 0 {
+				last := stepRounds[len(stepRounds)-1]
+				if last.FindingsJSON != nil {
+					if f, err := types.ParseFindingsJSON(*last.FindingsJSON); err == nil {
+						src = &f
+					}
 				}
 			}
 		}
