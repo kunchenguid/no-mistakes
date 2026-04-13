@@ -9,7 +9,7 @@ The pipeline runs a fixed sequence of steps. The order is not configurable - thi
 rebase → review → test → document → lint → push → pr → babysit
 ```
 
-Each step can produce findings, request approval, or trigger auto-fix. Steps that encounter fatal errors stop the pipeline. Steps can also be skipped by the user.
+Each step can produce findings, request approval, or trigger auto-fix. Steps that encounter fatal errors stop the pipeline. Steps can also be skipped by the user or automatically by the pipeline.
 
 ## Rebase
 

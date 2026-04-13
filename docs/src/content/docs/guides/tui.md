@@ -137,7 +137,7 @@ The `f fix (3/5)` label shows how many findings are selected out of the total.
 
 When a run finishes, a one-line banner appears:
 
-- `✓ Pipeline passed  4.2s` (green) - all steps completed
+- `✓ Pipeline passed  4.2s` (green) - the run finished successfully, even if later steps were auto-skipped
 - `✗ Review failed  1.8s` (red) - names the failing step
 - `✗ Pipeline cancelled` (red) - user aborted
 
