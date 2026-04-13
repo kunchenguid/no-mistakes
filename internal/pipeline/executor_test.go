@@ -2307,6 +2307,9 @@ func TestExecutor_SkipRemaining_SkipsSubsequentSteps(t *testing.T) {
 		if s.Status != types.StepStatusSkipped {
 			t.Errorf("step %s: expected status %q, got %q", s.StepName, types.StepStatusSkipped, s.Status)
 		}
+		if s.CompletedAt == nil {
+			t.Errorf("step %s: completed_at should be set for skipped steps", s.StepName)
+		}
 	}
 
 	// Subsequent steps should NOT have been executed

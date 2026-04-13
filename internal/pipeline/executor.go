@@ -121,6 +121,9 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 			// Mark all subsequent steps as skipped
 			for _, remaining := range e.steps[i+1:] {
 				rsr := stepRecords[remaining.Name()]
+				if dbErr := e.db.CompleteStep(rsr.ID, 0, 0, ""); dbErr != nil {
+					slog.Warn("failed to finalize skipped step", "step", remaining.Name(), "error", dbErr)
+				}
 				if dbErr := e.db.UpdateStepStatus(rsr.ID, types.StepStatusSkipped); dbErr != nil {
 					slog.Warn("failed to mark step as skipped", "step", remaining.Name(), "error", dbErr)
 				}
