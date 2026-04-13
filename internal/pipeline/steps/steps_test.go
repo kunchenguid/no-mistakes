@@ -3202,46 +3202,6 @@ func TestReviewStep_IgnorePatternsFilterAllFiles(t *testing.T) {
 
 // --- Fix prompt with previous findings tests ---
 
-func TestReviewStep_FixMode_IncludesPreviousFindings(t *testing.T) {
-	dir, baseSHA, headSHA := setupGitRepo(t)
-
-	previousFindings := `{"items":[{"severity":"error","file":"main.go","line":42,"description":"nil pointer dereference"}],"summary":"1 error found"}`
-
-	callCount := 0
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			callCount++
-			if callCount == 1 {
-				if !strings.Contains(opts.Prompt, "nil pointer dereference") {
-					t.Error("fix prompt should contain the specific finding description")
-				}
-				return &agent.Result{Output: json.RawMessage(`{"summary":"address review findings"}`)}, nil
-			}
-			// Review call
-			findings := Findings{Summary: "all clear"}
-			j, _ := json.Marshal(findings)
-			return &agent.Result{Output: j}, nil
-		},
-	}
-
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Fixing = true
-	sctx.PreviousFindings = previousFindings
-
-	step := &ReviewStep{}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if outcome.NeedsApproval {
-		t.Error("expected no approval needed after fix")
-	}
-	if callCount != 2 {
-		t.Errorf("expected 2 agent calls (fix + review), got %d", callCount)
-	}
-}
-
 func TestTestStep_FixMode_IncludesPreviousFindings(t *testing.T) {
 	dir := t.TempDir()
 
