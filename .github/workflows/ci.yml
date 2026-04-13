@@ -62,7 +62,7 @@ jobs:
         run: go test ./...
 
       - name: Test (integration + e2e)
-        run: make test-tagged
+        run: go test -tags integration,e2e ./...
 
       - name: Build
         run: go build ./cmd/no-mistakes
