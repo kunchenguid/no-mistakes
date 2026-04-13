@@ -3304,20 +3304,6 @@ func TestActionBar_IncludesAwaitingLabel(t *testing.T) {
 	}
 }
 
-func TestActionBar_FixReviewPrompt(t *testing.T) {
-	// When step status is FixReview, the prompt should say "review fix" not "awaiting action".
-	configureTUIColors()
-	run := testRun()
-	run.Steps[0].Status = types.StepStatusFixReview
-	out := stripANSI(renderActionBar(run.Steps, true, true, false, 5, 5, false, true))
-	if !strings.Contains(out, "review fix") {
-		t.Errorf("expected 'review fix' in FixReview prompt, got:\n%s", out)
-	}
-	if strings.Contains(out, "awaiting action") {
-		t.Error("FixReview prompt should NOT say 'awaiting action'")
-	}
-}
-
 func TestActionBar_FixReviewPromptInView(t *testing.T) {
 	// Integration test: full model view shows "Review - review fix:" prompt (not "awaiting action").
 	configureTUIColors()
@@ -3333,6 +3319,9 @@ func TestActionBar_FixReviewPromptInView(t *testing.T) {
 	// The action bar prompt should say "Review - review fix:" not "Review awaiting action:".
 	if !strings.Contains(view, "Review - review fix:") {
 		t.Errorf("expected 'Review - review fix:' in full view for FixReview step, got:\n%s", view)
+	}
+	if strings.Contains(view, "Review awaiting action") {
+		t.Errorf("did not expect awaiting-action prompt in full view for FixReview step, got:\n%s", view)
 	}
 }
 
