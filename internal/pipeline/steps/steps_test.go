@@ -3831,20 +3831,27 @@ func TestBabysitStep_CIFailureAutoFix(t *testing.T) {
 	sctx.Config.BabysitTimeout = 30 * time.Second
 	sctx.Config.AutoFix = config.AutoFix{Babysit: 3}
 
-	// Use a context with short timeout: after auto-fix completes, the poll
-	// sleep (30s) will be interrupted by context deadline, exiting the loop.
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	sctx.Ctx = ctx
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
-	step := &BabysitStep{}
+	pollCount := 0
+	step := &BabysitStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			pollCount++
+			if pollCount == 2 {
+				cancel()
+			}
+			return ctx.Err()
+		},
+	}
 	_, err := step.Execute(sctx)
-	// Expect context deadline exceeded (interrupted during poll sleep after auto-fix)
-	if err == nil || !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("expected context.DeadlineExceeded, got: %v", err)
+	// Expect explicit context cancellation after the second poll, once the post-fix wait path is exercised.
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got: %v", err)
 	}
 	if !agentCalled {
 		t.Error("expected agent to be called for CI auto-fix")
@@ -4456,16 +4463,23 @@ func TestBabysitStep_FixMode_ManualInterventionRunsCIFix(t *testing.T) {
 	sctx.Fixing = true
 	sctx.PreviousFindings = string(findingsJSON)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	sctx.Ctx = ctx
 
+	pollCount := 0
 	step := &BabysitStep{
-		pollIntervalOverride: 100 * time.Millisecond,
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			pollCount++
+			if pollCount == 2 {
+				cancel()
+			}
+			return ctx.Err()
+		},
 	}
 	_, err = step.Execute(sctx)
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("expected context deadline exceeded after manual CI fix attempt, got %v", err)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context cancellation after manual CI fix attempt, got %v", err)
 	}
 	if fixCount != 1 {
 		t.Fatalf("expected 1 manual CI fix attempt, got %d", fixCount)
