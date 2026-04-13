@@ -50,19 +50,27 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 
 	// Normal mode: try all rebases, track which targets had conflicts
 	var conflictTargets []string
+	var conflictFindings []Finding
 	for _, target := range targets {
-		hadConflict, err := tryRebase(ctx, sctx, target)
+		conflictFiles, err := tryRebase(ctx, sctx, target)
 		if err != nil {
 			return nil, err
 		}
-		if hadConflict {
+		if len(conflictFiles) > 0 {
 			conflictTargets = append(conflictTargets, target)
+			for _, file := range conflictFiles {
+				conflictFindings = append(conflictFindings, Finding{
+					Severity:    "warning",
+					File:        file,
+					Description: fmt.Sprintf("merge conflict rebasing onto %s", target),
+				})
+			}
 		}
 	}
 
 	if len(conflictTargets) > 0 {
 		summary := fmt.Sprintf("conflict rebasing onto %s", strings.Join(conflictTargets, ", "))
-		findingsJSON, _ := json.Marshal(Findings{Summary: summary})
+		findingsJSON, _ := json.Marshal(Findings{Items: dedupeRebaseFindings(conflictFindings), Summary: summary})
 		return &pipeline.StepOutcome{
 			NeedsApproval: true,
 			AutoFixable:   true,
@@ -85,28 +93,28 @@ func rebaseTargets(branch, defaultBranch string) []string {
 	return targets
 }
 
-// tryRebase attempts a rebase onto targetRef. Returns true if there were
-// conflicts (rebase is aborted), false on success or skip.
-func tryRebase(ctx context.Context, sctx *pipeline.StepContext, targetRef string) (bool, error) {
+// tryRebase attempts a rebase onto targetRef. Returns conflicted files when the
+// rebase stops on merge conflicts. The rebase is aborted before returning.
+func tryRebase(ctx context.Context, sctx *pipeline.StepContext, targetRef string) ([]string, error) {
 	skip, err := shouldSkipRebase(ctx, sctx, targetRef)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	if skip {
-		return false, nil
+		return nil, nil
 	}
 
 	sctx.Log(fmt.Sprintf("rebasing onto %s...", targetRef))
 	if _, err := git.Run(ctx, sctx.WorkDir, "rebase", targetRef); err != nil {
-		isConflict := rebaseInProgress(ctx, sctx.WorkDir)
+		conflictFiles := rebaseConflictFiles(ctx, sctx.WorkDir)
 		_, _ = git.Run(ctx, sctx.WorkDir, "rebase", "--abort")
 
-		if !isConflict {
-			return false, fmt.Errorf("rebase onto %s: %w", targetRef, err)
+		if len(conflictFiles) == 0 {
+			return nil, fmt.Errorf("rebase onto %s: %w", targetRef, err)
 		}
-		return true, nil
+		return conflictFiles, nil
 	}
-	return false, nil
+	return nil, nil
 }
 
 // rebaseWithAgent performs a rebase and uses the agent to resolve any conflicts.
@@ -124,7 +132,7 @@ func rebaseWithAgent(ctx context.Context, sctx *pipeline.StepContext, targetRef 
 		return nil
 	}
 
-	if !rebaseInProgress(ctx, sctx.WorkDir) {
+	if len(rebaseConflictFiles(ctx, sctx.WorkDir)) == 0 {
 		_, _ = git.Run(ctx, sctx.WorkDir, "rebase", "--abort")
 		return fmt.Errorf("rebase onto %s failed (no conflicts detected)", targetRef)
 	}
@@ -216,6 +224,39 @@ func rebaseInProgress(ctx context.Context, workDir string) bool {
 		}
 	}
 	return false
+}
+
+func rebaseConflictFiles(ctx context.Context, workDir string) []string {
+	out, err := git.Run(ctx, workDir, "diff", "--name-only", "--diff-filter=U")
+	if err != nil {
+		return nil
+	}
+	var files []string
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		files = append(files, line)
+	}
+	return files
+}
+
+func dedupeRebaseFindings(findings []Finding) []Finding {
+	if len(findings) < 2 {
+		return findings
+	}
+	seen := make(map[string]bool, len(findings))
+	filtered := make([]Finding, 0, len(findings))
+	for _, finding := range findings {
+		key := finding.File + "\x00" + finding.Description
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		filtered = append(filtered, finding)
+	}
+	return filtered
 }
 
 // updateHeadSHA syncs the run's head SHA after rebase.
