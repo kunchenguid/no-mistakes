@@ -1,6 +1,8 @@
 package config
 
 import (
+	"errors"
+	"io/fs"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -801,6 +803,28 @@ func TestResolveAgent_AutoRespectsPathOverride(t *testing.T) {
 	}
 	if cfg.Agent != types.AgentOpenCode {
 		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentOpenCode)
+	}
+}
+
+func TestResolveAgent_AutoReturnsOverrideProbeError(t *testing.T) {
+	cfg := &Config{
+		Agent:             types.AgentAuto,
+		AgentPathOverride: map[string]string{"claude": "/custom/claude"},
+	}
+	wantErr := &exec.Error{Name: "/custom/claude", Err: fs.ErrPermission}
+
+	err := cfg.ResolveAgent(func(bin string) (string, error) {
+		if bin == "/custom/claude" {
+			return "", wantErr
+		}
+		return "", &exec.Error{Name: bin, Err: exec.ErrNotFound}
+	})
+
+	if !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("expected permission error, got %v", err)
+	}
+	if cfg.Agent != types.AgentAuto {
+		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentAuto)
 	}
 }
 

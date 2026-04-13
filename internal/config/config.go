@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"time"
 
@@ -147,6 +148,8 @@ func (c *Config) ResolveAgent(lookPath func(string) (string, error)) error {
 		if _, err := lookPath(bin); err == nil {
 			c.Agent = name
 			return nil
+		} else if !errors.Is(err, exec.ErrNotFound) {
+			return fmt.Errorf("resolve %s agent from %q: %w", name, bin, err)
 		}
 	}
 	return fmt.Errorf("no supported agent found in PATH (looked for: claude, codex, opencode, acli); install one or set 'agent' in ~/.no-mistakes/config.yaml")
