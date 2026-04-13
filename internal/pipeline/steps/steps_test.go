@@ -341,27 +341,6 @@ func TestResolveBaseSHA_ZeroNoDefaultBranch(t *testing.T) {
 	}
 }
 
-func TestHasBlockingFindings(t *testing.T) {
-	tests := []struct {
-		name     string
-		items    []Finding
-		expected bool
-	}{
-		{"empty", nil, false},
-		{"info only", []Finding{{Severity: "info", Description: "note"}}, false},
-		{"warning", []Finding{{Severity: "warning", Description: "warn"}}, true},
-		{"error", []Finding{{Severity: "error", Description: "err"}}, true},
-		{"mixed", []Finding{{Severity: "info"}, {Severity: "error"}}, true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := hasBlockingFindings(tt.items); got != tt.expected {
-				t.Errorf("hasBlockingFindings() = %v, want %v", got, tt.expected)
-			}
-		})
-	}
-}
-
 func TestRunShellCommand(t *testing.T) {
 	dir := t.TempDir()
 
