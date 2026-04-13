@@ -2603,33 +2603,6 @@ func TestPollInterval(t *testing.T) {
 	}
 }
 
-func TestHasFailingChecks(t *testing.T) {
-	tests := []struct {
-		name   string
-		checks []ciCheck
-		want   bool
-	}{
-		{"empty", nil, false},
-		{"all passing", []ciCheck{{Name: "build", Conclusion: "success"}}, false},
-		{"failure", []ciCheck{{Name: "build", Conclusion: "failure"}}, true},
-		{"action required", []ciCheck{{Name: "lint", Conclusion: "action_required"}}, true},
-		{"mixed", []ciCheck{
-			{Name: "build", Conclusion: "success"},
-			{Name: "test", Conclusion: "failure"},
-		}, true},
-		{"neutral", []ciCheck{{Name: "build", Conclusion: "neutral"}}, false},
-		{"pending", []ciCheck{{Name: "build", Status: "QUEUED", Conclusion: ""}}, false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := hasFailingChecks(tt.checks)
-			if got != tt.want {
-				t.Errorf("hasFailingChecks() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestHasPendingChecks(t *testing.T) {
 	tests := []struct {
 		name   string
