@@ -148,7 +148,7 @@ func (c *Config) ResolveAgent(lookPath func(string) (string, error)) error {
 		if _, err := lookPath(bin); err == nil {
 			c.Agent = name
 			return nil
-		} else if !errors.Is(err, exec.ErrNotFound) {
+		} else if !errors.Is(err, exec.ErrNotFound) && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("resolve %s agent from %q: %w", name, bin, err)
 		}
 	}

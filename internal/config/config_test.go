@@ -806,6 +806,31 @@ func TestResolveAgent_AutoRespectsPathOverride(t *testing.T) {
 	}
 }
 
+func TestResolveAgent_AutoSkipsMissingOverridePath(t *testing.T) {
+	cfg := &Config{
+		Agent:             types.AgentAuto,
+		AgentPathOverride: map[string]string{"claude": "/custom/claude"},
+	}
+
+	err := cfg.ResolveAgent(func(bin string) (string, error) {
+		switch bin {
+		case "/custom/claude":
+			return "", &exec.Error{Name: bin, Err: fs.ErrNotExist}
+		case "codex":
+			return "/usr/bin/codex", nil
+		default:
+			return "", &exec.Error{Name: bin, Err: exec.ErrNotFound}
+		}
+	})
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Agent != types.AgentCodex {
+		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentCodex)
+	}
+}
+
 func TestResolveAgent_AutoReturnsOverrideProbeError(t *testing.T) {
 	cfg := &Config{
 		Agent:             types.AgentAuto,
