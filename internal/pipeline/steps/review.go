@@ -140,7 +140,8 @@ Context:
 Task:
 - Read the relevant history and diff yourself.
 - focus only on changed code.
-- Analyze for bugs, risks, simplification opportunities, and documentation gaps.
+- Analyze for bugs, risks, code simplification opportunities, and documentation gaps.
+- "Simplification" means reducing code complexity through non-functional refactoring (e.g. deduplication, clearer control flow). It does NOT mean removing features, changing product behavior, or stripping intentional user-facing output.
 - Treat security issues, performance regressions, breaking changes, and insufficient error handling as risks.
 
 Rules:
@@ -150,6 +151,7 @@ Rules:
 - Only comment on things that genuinely matter.
 - Do NOT report styling, formatting, linting, compilation, or type-checking issues.
 - If the change is clean, return an empty findings array.
+- Set requires_human_review to true ONLY when the finding questions an intentional design or product decision (e.g. "this feature/output/behavior seems unnecessary"). The bar is high - most findings about correctness, error handling, security, performance, and mechanical code quality should be false. When in doubt, default to false.
 
 Risk assessment (after listing all findings):
 - Set risk_level to "low" if the change is well-bounded, mostly cosmetic, or straightforward with little ambiguity.
@@ -189,7 +191,7 @@ Risk assessment (after listing all findings):
 
 	return &pipeline.StepOutcome{
 		NeedsApproval: needsApproval,
-		AutoFixable:   needsApproval,
+		AutoFixable:   len(findings.Items) > 0,
 		Findings:      string(findingsJSON),
 	}, nil
 }

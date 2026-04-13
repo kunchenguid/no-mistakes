@@ -1965,6 +1965,196 @@ func TestExecutor_DoesNotAutoFixManualApprovalOutcome(t *testing.T) {
 	}
 }
 
+func TestExecutor_AutoFixInfoFindings(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	cfg := &config.Config{AutoFix: config.AutoFix{Review: 3}}
+
+	callCount := 0
+	step := &adaptiveCallStep{
+		name: types.StepReview,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			callCount++
+			if callCount == 1 {
+				// Info findings that are auto-fixable (not blocking, but fixable)
+				return &StepOutcome{
+					NeedsApproval: false,
+					AutoFixable:   true,
+					Findings:      `{"findings":[{"severity":"info","description":"could simplify"}],"summary":"1 suggestion"}`,
+				}, nil
+			}
+			// After auto-fix, step passes clean
+			if !sctx.Fixing {
+				t.Error("expected Fixing to be true on auto-fix re-execution")
+			}
+			return &StepOutcome{}, nil
+		},
+	}
+
+	exec := NewExecutor(database, p, cfg, nil, []Step{step}, nil)
+
+	err := exec.Execute(context.Background(), run, repo, workDir)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	if callCount != 2 {
+		t.Errorf("expected 2 calls (initial + auto-fix), got %d", callCount)
+	}
+}
+
+func TestExecutor_AutoFixSkipsHumanReviewFindings(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	cfg := &config.Config{AutoFix: config.AutoFix{Review: 3}}
+
+	callCount := 0
+	step := &adaptiveCallStep{
+		name: types.StepReview,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			callCount++
+			// All findings require human review - auto-fix should not trigger
+			return &StepOutcome{
+				NeedsApproval: true,
+				AutoFixable:   true,
+				Findings:      `{"findings":[{"severity":"warning","description":"design choice","requires_human_review":true}],"summary":"1 issue"}`,
+			}, nil
+		},
+	}
+
+	exec := NewExecutor(database, p, cfg, nil, []Step{step}, nil)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- exec.Execute(context.Background(), run, repo, workDir)
+	}()
+
+	// Should go straight to user approval without auto-fix
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
+
+	if callCount != 1 {
+		t.Fatalf("expected 1 call (no auto-fix for human-review findings), got %d", callCount)
+	}
+
+	exec.Respond(types.StepReview, types.ActionApprove, nil)
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("expected no error, got: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("executor timed out")
+	}
+}
+
+func TestExecutor_HumanReviewFindingsRequireApprovalWithoutNeedsApprovalFlag(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	step := &adaptiveCallStep{
+		name: types.StepReview,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			return &StepOutcome{
+				NeedsApproval: false,
+				AutoFixable:   true,
+				Findings:      `{"findings":[{"severity":"info","description":"design choice","requires_human_review":true}],"summary":"1 issue"}`,
+			}, nil
+		},
+	}
+
+	exec := NewExecutor(database, p, &config.Config{AutoFix: config.AutoFix{Review: 3}}, nil, []Step{step}, nil)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- exec.Execute(context.Background(), run, repo, workDir)
+	}()
+
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
+
+	exec.Respond(types.StepReview, types.ActionApprove, nil)
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("expected no error, got: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("executor timed out")
+	}
+}
+
+func TestExecutor_AutoFixMixedFindings(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	cfg := &config.Config{AutoFix: config.AutoFix{Review: 3}}
+
+	callCount := 0
+	step := &adaptiveCallStep{
+		name: types.StepReview,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			callCount++
+			if callCount == 1 {
+				// Mix: one auto-fixable, one requires human review
+				return &StepOutcome{
+					NeedsApproval: true,
+					AutoFixable:   true,
+					Findings: `{"findings":[
+						{"id":"review-1","severity":"error","description":"bug"},
+						{"id":"review-2","severity":"warning","description":"design choice","requires_human_review":true}
+					],"summary":"2 issues","risk_level":"medium","risk_rationale":"mixed"}`,
+				}, nil
+			}
+			// After auto-fix: verify only fixable finding was sent
+			if sctx.PreviousFindings == "" {
+				t.Error("expected PreviousFindings")
+			}
+			parsed, _ := types.ParseFindingsJSON(sctx.PreviousFindings)
+			if len(parsed.Items) != 1 {
+				t.Errorf("expected 1 fixable finding passed to fix, got %d", len(parsed.Items))
+			}
+			if len(parsed.Items) > 0 && parsed.Items[0].Description != "bug" {
+				t.Errorf("expected fixable finding 'bug', got %q", parsed.Items[0].Description)
+			}
+			// Return only the human-review finding remaining
+			return &StepOutcome{
+				NeedsApproval: true,
+				AutoFixable:   true,
+				Findings:      `{"findings":[{"id":"review-2","severity":"warning","description":"design choice","requires_human_review":true}],"summary":"1 issue"}`,
+			}, nil
+		},
+	}
+
+	exec := NewExecutor(database, p, cfg, nil, []Step{step}, nil)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- exec.Execute(context.Background(), run, repo, workDir)
+	}()
+
+	// After auto-fixing the bug, only human-review finding remains.
+	// No more fixable findings, so falls through to user approval.
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
+
+	if callCount != 2 {
+		t.Errorf("expected 2 calls (initial + 1 auto-fix), got %d", callCount)
+	}
+
+	exec.Respond(types.StepReview, types.ActionApprove, nil)
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("expected no error, got: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("executor timed out")
+	}
+}
+
 // --- helper types ---
 
 // adaptiveCallStep allows custom Execute logic via a function.
