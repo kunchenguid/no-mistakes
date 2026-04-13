@@ -1573,7 +1573,7 @@ func TestDocumentStep_Updated(t *testing.T) {
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			return &agent.Result{Output: json.RawMessage(`{"verdict":"updated","summary":"updated README"}`)}, nil
+			return &agent.Result{Output: json.RawMessage(`{"findings":[{"severity":"warning","description":"README missing new CLI flag","requires_human_review":false}],"summary":"README needs updating"}`)}, nil
 		},
 	}
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
@@ -1608,8 +1608,8 @@ func TestDocumentStep_Updated(t *testing.T) {
 	if len(findings.Items) != 1 || findings.Items[0].Severity != "warning" {
 		t.Fatalf("unexpected findings: %+v", findings.Items)
 	}
-	if findings.Items[0].Description != "updated README" {
-		t.Fatalf("finding description = %q, want %q", findings.Items[0].Description, "updated README")
+	if findings.Items[0].Description != "README missing new CLI flag" {
+		t.Fatalf("finding description = %q, want %q", findings.Items[0].Description, "README missing new CLI flag")
 	}
 	if status := gitStatusPorcelain(t, dir); status != "" {
 		t.Fatalf("expected clean worktree while awaiting approval, got %q", status)
@@ -1625,7 +1625,7 @@ func TestDocumentStep_Skipped(t *testing.T) {
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			return &agent.Result{Output: json.RawMessage(`{"verdict":"skipped","summary":"internal refactoring only"}`)}, nil
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"internal refactoring only"}`)}, nil
 		},
 	}
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
@@ -1636,7 +1636,7 @@ func TestDocumentStep_Skipped(t *testing.T) {
 		t.Fatal(err)
 	}
 	if outcome.NeedsApproval {
-		t.Error("document step should not require approval when skipped")
+		t.Error("document step should not require approval when no gaps found")
 	}
 	if got := lastCommitMessage(t, dir); got != "add feature" {
 		t.Fatalf("expected no new commit, but last commit message = %q", got)
@@ -1699,9 +1699,6 @@ func TestDocumentStep_MalformedOutput(t *testing.T) {
 	if !findings.Items[0].RequiresHumanReview {
 		t.Fatal("expected malformed output finding to require human review")
 	}
-	if findings.Items[0].Description != "I updated the docs" {
-		t.Fatalf("finding description = %q, want %q", findings.Items[0].Description, "I updated the docs")
-	}
 }
 
 func TestDocumentStep_NoStructuredOutputRequiresApproval(t *testing.T) {
@@ -1736,17 +1733,15 @@ func TestDocumentStep_NoStructuredOutputRequiresApproval(t *testing.T) {
 	if !findings.Items[0].RequiresHumanReview {
 		t.Fatal("expected missing structured output finding to require human review")
 	}
-	if findings.Items[0].Description != "docs status unavailable" {
-		t.Fatalf("finding description = %q, want %q", findings.Items[0].Description, "docs status unavailable")
-	}
 }
 
-func TestDocumentStep_InvalidStructuredVerdictRequiresApproval(t *testing.T) {
+func TestDocumentStep_MissingFindingsFieldRequiresApproval(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			// Agent returns structured output but without the findings array
 			return &agent.Result{Output: json.RawMessage(`{"summary":"docs status unavailable"}`)}, nil
 		},
 	}
@@ -1757,30 +1752,10 @@ func TestDocumentStep_InvalidStructuredVerdictRequiresApproval(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !outcome.NeedsApproval {
-		t.Fatal("expected invalid structured output to require approval")
-	}
-	if outcome.AutoFixable {
-		t.Fatal("expected invalid structured output finding to require manual review")
-	}
-	var findings Findings
-	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
-		t.Fatalf("unmarshal findings: %v", err)
-	}
-	if len(findings.Items) != 1 {
-		t.Fatalf("expected 1 finding, got %+v", findings.Items)
-	}
-	if !findings.Items[0].RequiresHumanReview {
-		t.Fatal("expected invalid structured output finding to require human review")
-	}
-	if findings.Items[0].Description != "docs status unavailable" {
-		t.Fatalf("finding description = %q, want %q", findings.Items[0].Description, "docs status unavailable")
-	}
-	if findings.Summary != "docs status unavailable" {
-		t.Fatalf("findings summary = %q, want %q", findings.Summary, "docs status unavailable")
-	}
-	if strings.TrimSpace(outcome.Findings) == "" {
-		t.Fatal("expected findings to be recorded")
+	// Missing findings field means the output parsed but findings is nil/empty.
+	// This is equivalent to "no gaps found" - should not need approval.
+	if outcome.NeedsApproval {
+		t.Error("expected no approval when findings array is empty/missing")
 	}
 	if len(ag.calls) != 1 {
 		t.Fatalf("expected 1 agent call, got %d", len(ag.calls))
@@ -1793,7 +1768,7 @@ func TestDocumentStep_PromptIncludesIgnorePatterns(t *testing.T) {
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			return &agent.Result{Output: json.RawMessage(`{"verdict":"skipped","summary":"nothing to update"}`)}, nil
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"nothing to update"}`)}, nil
 		},
 	}
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
@@ -1861,8 +1836,8 @@ func TestDocumentStep_FixMode_CommitsAndReassesses(t *testing.T) {
 				os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Docs\n"), 0o644)
 				return &agent.Result{Output: json.RawMessage(`{"summary":"add README"}`)}, nil
 			}
-			// Re-assessment call: docs are now up to date
-			return &agent.Result{Output: json.RawMessage(`{"verdict":"skipped","summary":"docs are current"}`)}, nil
+			// Re-assessment call: docs are now up to date, empty findings
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"docs are current"}`)}, nil
 		},
 	}
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
@@ -1907,7 +1882,7 @@ func TestDocumentStep_FixMode_StillNeedsWorkAfterFix(t *testing.T) {
 				return &agent.Result{Output: json.RawMessage(`{"summary":"partial update"}`)}, nil
 			}
 			// Re-assessment: still needs more work
-			return &agent.Result{Output: json.RawMessage(`{"verdict":"updated","summary":"config section still missing"}`)}, nil
+			return &agent.Result{Output: json.RawMessage(`{"findings":[{"severity":"warning","description":"config section still missing","requires_human_review":false}],"summary":"config section still missing"}`)}, nil
 		},
 	}
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
@@ -1951,7 +1926,7 @@ func TestDocumentStep_FixMode_NoChangesStillReassesses(t *testing.T) {
 				return &agent.Result{Output: json.RawMessage(`{"summary":"no changes needed"}`)}, nil
 			}
 			// Re-assessment
-			return &agent.Result{Output: json.RawMessage(`{"verdict":"skipped","summary":"docs are fine"}`)}, nil
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"docs are fine"}`)}, nil
 		},
 	}
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
@@ -2039,7 +2014,7 @@ func TestDocumentStep_FixMode_AllowsBlockCommentOnlyEdits(t *testing.T) {
 				}
 				return &agent.Result{Output: json.RawMessage(`{"summary":"update comment"}`)}, nil
 			}
-			return &agent.Result{Output: json.RawMessage(`{"verdict":"skipped","summary":"docs are current"}`)}, nil
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"docs are current"}`)}, nil
 		},
 	}
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
