@@ -1,8 +1,10 @@
 package steps
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
@@ -91,6 +93,9 @@ Previous documentation findings to address:
 		summary, err := extractCommitSummary(result)
 		if err != nil {
 			sctx.Log(fmt.Sprintf("warning: could not parse fix summary: %v", err))
+		}
+		if err := ensureDocumentOnlyFixes(ctx, sctx.WorkDir); err != nil {
+			return nil, err
 		}
 		if err := commitAgentFixes(sctx, s.Name(), summary, "update documentation"); err != nil {
 			return nil, err
@@ -227,6 +232,134 @@ func hasNonIgnoredDocumentChanges(changedFiles string, ignorePatterns []string) 
 		}
 	}
 	return false
+}
+
+type gitStatusEntry struct {
+	path      string
+	untracked bool
+	status    string
+}
+
+func ensureDocumentOnlyFixes(ctx context.Context, workDir string) error {
+	status, err := git.Run(ctx, workDir, "status", "--porcelain")
+	if err != nil {
+		return fmt.Errorf("inspect document fixes: %w", err)
+	}
+	for _, entry := range parseGitStatus(status) {
+		if isDocumentationPath(entry.path) {
+			continue
+		}
+		if entry.untracked {
+			return fmt.Errorf("document step produced non-document edits in %s", entry.path)
+		}
+		diff, err := git.Run(ctx, workDir, "diff", "--no-color", "--unified=0", "HEAD", "--", entry.path)
+		if err != nil {
+			return fmt.Errorf("inspect document diff for %s: %w", entry.path, err)
+		}
+		if !diffContainsOnlyCommentChanges(entry.path, diff) {
+			return fmt.Errorf("document step produced non-document edits in %s", entry.path)
+		}
+	}
+	return nil
+}
+
+func parseGitStatus(status string) []gitStatusEntry {
+	var entries []gitStatusEntry
+	for _, line := range strings.Split(status, "\n") {
+		if len(line) < 4 {
+			continue
+		}
+		path := strings.TrimSpace(line[3:])
+		if idx := strings.LastIndex(path, " -> "); idx >= 0 {
+			path = path[idx+4:]
+		}
+		entries = append(entries, gitStatusEntry{
+			path:      path,
+			untracked: line[:2] == "??",
+			status:    line[:2],
+		})
+	}
+	return entries
+}
+
+func isDocumentationPath(path string) bool {
+	clean := filepath.ToSlash(strings.TrimSpace(path))
+	if clean == "" {
+		return false
+	}
+	if strings.HasPrefix(clean, "docs/") || strings.HasPrefix(clean, "doc/") {
+		return true
+	}
+	base := strings.ToLower(filepath.Base(clean))
+	if strings.HasPrefix(base, "readme") || strings.HasPrefix(base, "changelog") || strings.HasPrefix(base, "contributing") {
+		return true
+	}
+	switch strings.ToLower(filepath.Ext(base)) {
+	case ".md", ".mdx", ".rst", ".adoc":
+		return true
+	default:
+		return false
+	}
+}
+
+func diffContainsOnlyCommentChanges(path, diff string) bool {
+	style := commentStyleFor(filepath.Ext(path))
+	if len(style.linePrefixes) == 0 && !style.block {
+		return false
+	}
+	inBlock := false
+	for _, line := range strings.Split(diff, "\n") {
+		if line == "" || strings.HasPrefix(line, "diff --git ") || strings.HasPrefix(line, "index ") || strings.HasPrefix(line, "--- ") || strings.HasPrefix(line, "+++ ") || strings.HasPrefix(line, "@@") || strings.HasPrefix(line, `\\`) {
+			continue
+		}
+		if line[0] != '+' && line[0] != '-' {
+			continue
+		}
+		trimmed := strings.TrimSpace(line[1:])
+		if trimmed == "" {
+			continue
+		}
+		matched := false
+		for _, prefix := range style.linePrefixes {
+			if strings.HasPrefix(trimmed, prefix) {
+				matched = true
+				break
+			}
+		}
+		if !matched && style.block {
+			matched, inBlock = matchBlockCommentLine(trimmed, inBlock)
+		}
+		if !matched {
+			return false
+		}
+	}
+	return true
+}
+
+type commentStyle struct {
+	linePrefixes []string
+	block        bool
+}
+
+func commentStyleFor(ext string) commentStyle {
+	switch strings.ToLower(ext) {
+	case ".go", ".js", ".jsx", ".ts", ".tsx", ".java", ".rs", ".c", ".cc", ".cpp", ".h", ".hpp":
+		return commentStyle{linePrefixes: []string{"//"}, block: true}
+	case ".py", ".rb", ".sh", ".bash", ".zsh", ".yaml", ".yml":
+		return commentStyle{linePrefixes: []string{"#"}}
+	default:
+		return commentStyle{}
+	}
+}
+
+func matchBlockCommentLine(line string, inBlock bool) (bool, bool) {
+	if inBlock {
+		return true, strings.Count(line, "/*") >= strings.Count(line, "*/")
+	}
+	if !strings.Contains(line, "/*") {
+		return false, false
+	}
+	return true, strings.Count(line, "/*") > strings.Count(line, "*/")
 }
 
 func fallbackDocumentSummary(text string) string {
