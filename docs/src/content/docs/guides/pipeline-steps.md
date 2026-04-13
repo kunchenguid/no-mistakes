@@ -6,7 +6,7 @@ description: What each step in the validation pipeline does.
 The pipeline runs a fixed sequence of steps. The order is not configurable - this is a deliberate design choice.
 
 ```
-rebase → review → test → lint → push → pr → babysit
+rebase → review → test → document → lint → push → pr → babysit
 ```
 
 Each step can produce findings, request approval, or trigger auto-fix. Steps that encounter fatal errors stop the pipeline. Steps can also be skipped by the user.
@@ -53,6 +53,19 @@ Runs your test suite.
 - If the agent creates new test files (detected via `git status --porcelain`), approval is required even if tests pass.
 
 **Auto-fix:** the agent receives previous failure output and fixes the code, then tests run again. Fix commits use `no-mistakes(test): <summary>`.
+
+**Default auto-fix limit:** `3`.
+
+## Document
+
+Checks whether the code changes need matching documentation updates.
+
+**Behavior:**
+- Diffs the base commit against head and skips the step if there are no non-ignored changed files to document
+- Asks the agent to review the change and return documentation findings for any missing or stale docs
+- Requires approval whenever any documentation finding is returned, including `info` findings
+
+**Auto-fix:** the agent updates only documentation files or doc comments, then the step re-runs and expects an empty findings list before continuing. Fix commits use `no-mistakes(document): <summary>`.
 
 **Default auto-fix limit:** `3`.
 

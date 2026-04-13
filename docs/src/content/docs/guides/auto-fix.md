@@ -25,6 +25,7 @@ auto_fix:
   rebase: 0    # 0 = disabled, always requires manual approval
   review: 3    # up to 3 auto-fix attempts
   test: 3
+  document: 3
   lint: 3
   ci: 3
 ```
@@ -38,6 +39,8 @@ Repo config overlays global config - you can set `auto_fix.lint: 5` in a repo's 
 Some review findings are marked `requires_human_review: true` by the agent. These findings always require manual approval regardless of the auto-fix limit. They are never auto-fixed.
 
 This is meant for findings that challenge the author's intent - for example, questioning an intentional product or design choice, or arguing that an intentional addition, removal, or guard should be undone. Routine correctness, reliability, or security fixes still stay auto-fixable even if the smallest fix reintroduces a small amount of previously deleted logic.
+
+Documentation findings use the same approval loop, but the `document` step treats any finding as a documentation gap that should pause for approval. When auto-fix is enabled, the agent can update docs or doc comments, then the step re-runs and proceeds only after reassessment returns no findings.
 
 ## User-triggered fixes
 
@@ -60,6 +63,7 @@ Each auto-fix cycle commits its changes with a descriptive message:
 | Rebase | `no-mistakes(rebase): <summary>` |
 | Review | `no-mistakes(review): <summary>` |
 | Test | `no-mistakes(test): <summary>` |
+| Document | `no-mistakes(document): <summary>` |
 | Lint | `no-mistakes(lint): <summary>` |
 
 The push step commits any remaining uncommitted changes with `no-mistakes: apply agent fixes`.

@@ -18,23 +18,6 @@ type DocumentStep struct{}
 
 func (s *DocumentStep) Name() types.StepName { return types.StepDocument }
 
-// documentVerdictSchema is the JSON schema for the document step's structured output.
-var documentVerdictSchema = json.RawMessage(`{
-	"type": "object",
-	"properties": {
-		"verdict": {"type": "string", "enum": ["updated", "skipped"]},
-		"summary": {"type": "string"},
-		"details": {"type": "string"}
-	},
-	"required": ["verdict", "summary"]
-}`)
-
-type documentVerdict struct {
-	Verdict string `json:"verdict"`
-	Summary string `json:"summary"`
-	Details string `json:"details,omitempty"`
-}
-
 func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	ctx := sctx.Ctx
 	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
@@ -122,7 +105,7 @@ Previous documentation findings to address:
 	sctx.Log("checking documentation...")
 
 	prompt := fmt.Sprintf(
-		`Review the code changes and determine whether project documentation needs to be updated.
+		`Review the code changes and identify any documentation gaps.
 
 Context:
 - branch: %s
@@ -137,7 +120,7 @@ Task:
    - Read the diff and changed files to understand what was added, modified, or removed.
    - Identify the intent and scope of the change (new feature, API change, config change, behavioral change, etc.).
 
-2. Identify documentation that needs updating
+2. Identify documentation gaps
    - Look for existing documentation files in the project: README.md, docs/, doc comments, config examples, etc.
    - Determine which docs are affected by the change. Common cases:
      - New or changed public APIs - update API docs, doc comments, or usage examples
@@ -145,13 +128,14 @@ Task:
      - Changed configuration - update config docs or examples
      - Removed functionality - remove or update stale references
 
-3. Decide whether documentation updates are needed
-	- If the change requires doc updates, return verdict "updated" with a concise summary of what should change.
-	- If no documentation updates are needed (e.g., internal refactoring, test-only changes), return verdict "skipped".
+3. Return findings
+   - Return a finding for each specific documentation gap (file, description of what needs updating).
+   - If no documentation updates are needed (e.g., internal refactoring, test-only changes, or documentation is already up to date), return an empty findings array.
 
 Rules:
 - Do NOT make any file changes in this mode.
-- Return JSON with "verdict" ("updated" or "skipped"), "summary" (brief description of what was updated and why), and optional "details".`,
+- Only report gaps where documentation is missing or stale relative to the code change.
+- Set requires_human_review to false for all findings. Documentation gaps are objective.`,
 		sctx.Run.Branch,
 		baseSHA,
 		sctx.Run.HeadSHA,
@@ -162,50 +146,43 @@ Rules:
 	result, err := sctx.Agent.Run(ctx, agent.RunOpts{
 		Prompt:     prompt,
 		CWD:        sctx.WorkDir,
-		JSONSchema: documentVerdictSchema,
+		JSONSchema: findingsSchema,
 		OnChunk:    sctx.Log,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("agent document: %w", err)
 	}
 
-	// Parse verdict
-	var (
-		verdict             documentVerdict
-		requiresHumanReview bool
-	)
+	var findings Findings
 	if result.Output == nil {
+		summary := fallbackDocumentSummary(result.Text)
 		sctx.Log("missing structured output, requiring approval")
-		verdict = documentVerdict{Verdict: "updated", Summary: fallbackDocumentSummary(result.Text)}
-		requiresHumanReview = true
-	} else {
-		if err := json.Unmarshal(result.Output, &verdict); err != nil {
-			sctx.Log("could not parse structured output, requiring approval")
-			verdict = documentVerdict{Verdict: "updated", Summary: fallbackDocumentSummary(result.Text)}
-			requiresHumanReview = true
-		} else if verdict.Verdict != "updated" && verdict.Verdict != "skipped" {
-			sctx.Log("invalid structured output verdict, requiring approval")
-			verdict = documentVerdict{Verdict: "updated", Summary: fallbackDocumentSummary(verdict.Summary)}
-			requiresHumanReview = true
-		}
-	}
-
-	needsApproval := verdict.Verdict == "updated"
-	findings := Findings{}
-	if needsApproval {
 		findings = Findings{
 			Items: []Finding{{
 				Severity:            "warning",
-				Description:         verdict.Summary,
-				RequiresHumanReview: requiresHumanReview,
+				Description:         summary,
+				RequiresHumanReview: true,
 			}},
-			Summary: verdict.Summary,
+			Summary: summary,
+		}
+	} else if err := unmarshalRequiredFindings(result.Output, &findings); err != nil {
+		summary := fallbackDocumentSummary(extractDocumentSummary(result.Output, result.Text))
+		sctx.Log("could not parse structured output, requiring approval")
+		findings = Findings{
+			Items: []Finding{{
+				Severity:            "warning",
+				Description:         summary,
+				RequiresHumanReview: true,
+			}},
+			Summary: summary,
 		}
 	}
 
+	needsApproval := len(findings.Items) > 0
 	findingsJSON, _ := json.Marshal(findings)
-	sctx.Log(fmt.Sprintf("document verdict: %s - %s", verdict.Verdict, verdict.Summary))
 	autoFixable := len(types.AutoFixableFindings(findings).Items) > 0
+
+	sctx.Log(fmt.Sprintf("document findings: %d items", len(findings.Items)))
 
 	return &pipeline.StepOutcome{
 		NeedsApproval: needsApproval,
@@ -368,4 +345,46 @@ func fallbackDocumentSummary(text string) string {
 		return "agent returned no structured output"
 	}
 	return cleaned
+}
+
+func extractDocumentSummary(raw []byte, fallback string) string {
+	var payload struct {
+		Summary string `json:"summary"`
+	}
+	if err := json.Unmarshal(raw, &payload); err == nil && strings.TrimSpace(payload.Summary) != "" {
+		return payload.Summary
+	}
+	return fallback
+}
+
+func unmarshalRequiredFindings(raw []byte, findings *Findings) error {
+	var payload struct {
+		Summary string `json:"summary"`
+		Items   []struct {
+			Severity            string `json:"severity"`
+			Description         string `json:"description"`
+			RequiresHumanReview *bool  `json:"requires_human_review"`
+		} `json:"findings"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return err
+	}
+	if payload.Items == nil {
+		return fmt.Errorf("missing findings array")
+	}
+	if strings.TrimSpace(payload.Summary) == "" {
+		return fmt.Errorf("missing summary")
+	}
+	for i, item := range payload.Items {
+		if strings.TrimSpace(item.Severity) == "" {
+			return fmt.Errorf("finding %d missing severity", i)
+		}
+		if strings.TrimSpace(item.Description) == "" {
+			return fmt.Errorf("finding %d missing description", i)
+		}
+		if item.RequiresHumanReview == nil {
+			return fmt.Errorf("finding %d missing requires_human_review", i)
+		}
+	}
+	return json.Unmarshal(raw, findings)
 }

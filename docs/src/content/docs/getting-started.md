@@ -93,10 +93,11 @@ The pipeline runs these steps in order:
 1. **Rebase** - rebase onto the latest upstream
 2. **Review** - AI code review of your diff
 3. **Test** - run tests (configured command or agent-detected)
-4. **Lint** - run linters (configured command or agent-detected)
-5. **Push** - push to the real upstream remote
-6. **PR** - create or update a pull request
-7. **Babysit** - poll CI and auto-fix failures
+4. **Document** - check for required documentation updates
+5. **Lint** - run linters (configured command or agent-detected)
+6. **Push** - push to the real upstream remote
+7. **PR** - create or update a pull request
+8. **Babysit** - poll CI and auto-fix failures
 
 Steps that find issues pause for your approval. You can approve, fix, skip, or abort. See [Pipeline Steps](/no-mistakes/guides/pipeline-steps/) and [Auto-Fix](/no-mistakes/guides/auto-fix/) for details.
 

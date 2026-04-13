@@ -23,6 +23,7 @@ auto_fix:
   rebase: 0
   review: 3
   test: 3
+  document: 3
   lint: 5
   ci: 3
 ```
@@ -100,6 +101,7 @@ Override auto-fix attempt limits for specific steps. Fields not set here inherit
 | `auto_fix.rebase` | `int` | Inherits from global (default `0`) |
 | `auto_fix.review` | `int` | Inherits from global (default `3`) |
 | `auto_fix.test` | `int` | Inherits from global (default `3`) |
+| `auto_fix.document` | `int` | Inherits from global (default `3`) |
 | `auto_fix.lint` | `int` | Inherits from global (default `3`) |
 | `auto_fix.ci` | `int` | Inherits from global (default `3`) |
 
