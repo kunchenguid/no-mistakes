@@ -2208,12 +2208,23 @@ func TestPRStep_ZeroBaseSHA(t *testing.T) {
 func TestPRStep_CreatesNewPR(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
-	// No existing PR — pr view returns exit 1
+	// No existing PR - pr view returns exit 1
 	binDir, logFile := fakeGH(t, "")
 	prependPATH(t, binDir)
 
+	findings := `{"findings":[],"summary":"clean","risk_level":"medium","risk_rationale":"touches critical error handling"}`
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.UpdateStepStatus(reviewStep.ID, types.StepStatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.SetStepFindings(reviewStep.ID, findings); err != nil {
+		t.Fatal(err)
+	}
 
 	step := &PRStep{}
 	outcome, err := step.Execute(sctx)
@@ -2238,6 +2249,9 @@ func TestPRStep_CreatesNewPR(t *testing.T) {
 	}
 	if !strings.Contains(ghLog, "--title chore: add feature --body") {
 		t.Fatalf("expected fallback PR title to use conventional commit format, got:\n%s", ghLog)
+	}
+	if !strings.Contains(ghLog, "add feature\n\n⚠️ medium: touches critical error handling") {
+		t.Fatalf("expected fallback PR body to append risk note outside summary content, got:\n%s", ghLog)
 	}
 
 	// Verify PR URL was stored
@@ -3911,15 +3925,6 @@ func TestPRStep_AgentNonConventionalTitleFallsBack(t *testing.T) {
 		t.Fatal("expected agent body to be preserved, got: " + ghLog)
 	}
 }
-
-func TestFallbackPRContent_AppendsRiskOutsideSummaryList(t *testing.T) {
-	content := fallbackPRContent("fix/risk", "abc123 fix pipeline risk rendering", "", "⚠️ medium: touches critical error handling")
-
-	if !strings.Contains(content.Body, "abc123 fix pipeline risk rendering\n\n⚠️ medium: touches critical error handling") {
-		t.Fatalf("expected risk note to be separated from summary content, got:\n%s", content.Body)
-	}
-}
-
 func TestBabysitStep_CIAutoFixDisabledWithZero(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
