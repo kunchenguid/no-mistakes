@@ -105,6 +105,7 @@ When adding a new test file, pick the tier that fits and add the tag:
 
 - `make test` - unit + integration (~30s, the local dev loop)
 - `make test-all` - unit + integration + e2e (~170s, what CI runs)
+- `make test-tagged` - integration + e2e without `-race` (used for Windows CI)
 - `make test-unit` - unit only (~3s)
 
 CI runs the full suite (`test-all`) on Linux and macOS. Windows CI runs only

@@ -72,7 +72,7 @@ auto_fix:
 
 See [Repo Config Reference](/no-mistakes/reference/repo-config/) for the full field listing.
 
-If you use the repo `commands.test` override, `make test` is the recommended default for this repo. It runs the unit and integration tiers. Use `make test-all` when you also want e2e coverage.
+If you use the repo `commands.test` override, `make test` is the recommended default for this repo. It runs the unit and integration tiers. Use `make test-all` when you also want e2e coverage. For targeted runs, `make test-unit` runs only unit tests and `make test-tagged` runs the integration and e2e tiers without `-race`.
 
 ## Precedence
 

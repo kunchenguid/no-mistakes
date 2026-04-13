@@ -50,7 +50,7 @@ Explicit test command. Run via `sh -c`.
 
 When set, the test step runs this exact command and checks the exit code. When empty, the agent detects and runs relevant tests itself.
 
-In this repo, `make test` is the recommended default because it runs the unit and integration tiers. Use `make test-all` to include e2e tests.
+In this repo, `make test` is the recommended default because it runs the unit and integration tiers. Use `make test-all` to include e2e tests. `make test-unit` runs only unit tests, and `make test-tagged` runs the integration and e2e tiers without `-race`.
 
 ### commands.lint
 
