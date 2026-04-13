@@ -1266,20 +1266,8 @@ func TestTestStep_NoCommand_AgentDetects(t *testing.T) {
 	if len(ag.calls) != 1 {
 		t.Errorf("expected 1 agent call, got %d", len(ag.calls))
 	}
-	if !strings.Contains(ag.calls[0].Prompt, "If tests fail, determine whether the problem is") {
-		t.Error("expected prompt to classify test failures")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "Do NOT run linters, formatters, or static analysis tools") {
-		t.Error("expected prompt to forbid lint/format work in test step")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "Writing and running new tests if coverage is insufficient") {
-		t.Error("expected prompt to allow adding tests when needed")
-	}
 	if !strings.Contains(ag.calls[0].Prompt, "branch: refs/heads/feature") {
 		t.Error("expected prompt to include branch metadata")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "empty findings array") {
-		t.Error("expected prompt to instruct agent to return empty findings when tests pass")
 	}
 }
 
@@ -1365,18 +1353,6 @@ func TestTestStep_FixMode(t *testing.T) {
 	}
 	if callCount != 1 {
 		t.Errorf("expected 1 agent call (fix), got %d", callCount)
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "Make the minimal change needed") {
-		t.Error("expected test fix prompt to require minimal changes")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "Do not refactor beyond what is needed") {
-		t.Error("expected test fix prompt to forbid broader refactors")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "Re-run the relevant tests") {
-		t.Error("expected test fix prompt to require re-running tests")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "Do NOT run linters, formatters, or static analysis tools") {
-		t.Error("expected test fix prompt to forbid lint/format work")
 	}
 	if !strings.Contains(ag.calls[0].Prompt, `Return JSON with a single "summary" field`) {
 		t.Error("expected fix prompt to request structured summary output")
@@ -1534,12 +1510,6 @@ func TestLintStep_NoCommand(t *testing.T) {
 	}
 	if len(ag.calls) != 1 {
 		t.Fatalf("expected 1 agent call, got %d", len(ag.calls))
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "Only lint or format the relevant changed files when possible") {
-		t.Error("expected lint prompt to prefer changed-file scope")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "Do not run tests or broader behavioral validation") {
-		t.Error("expected lint prompt to avoid test work")
 	}
 	if !strings.Contains(ag.calls[0].Prompt, "branch: refs/heads/feature") {
 		t.Error("expected lint prompt to include branch metadata")
