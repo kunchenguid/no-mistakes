@@ -241,6 +241,7 @@ auto_fix:
 - `auto_fix` can be set globally or per repo. All steps default to `3`.
 - `agent_path_override` changes which binary path is launched for a given agent.
 - Default binaries are `claude`, `codex`, `acli` for `rovodev`, and `opencode`.
+- For this repo, `commands.test: "make test"` is the recommended default. Use `make test-all` when you also want e2e coverage.
 - If `commands.test` is empty, the agent detects and runs relevant tests itself.
 - If `commands.lint` is empty, the agent detects and runs lint/format checks itself.
 - If `commands.format` is empty, no formatter is run automatically.
