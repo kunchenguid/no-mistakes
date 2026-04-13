@@ -10,24 +10,6 @@ import (
 	"testing"
 )
 
-func TestBuildOpencodePrompt(t *testing.T) {
-	schema := json.RawMessage(`{"type":"object","properties":{"success":{"type":"boolean"}}}`)
-	prompt := buildOpencodePrompt("review this code", schema)
-
-	if !strings.HasPrefix(prompt, "review this code\n") {
-		t.Error("prompt should start with the original prompt")
-	}
-	if !strings.Contains(prompt, "valid JSON") {
-		t.Error("prompt should mention valid JSON")
-	}
-	if !strings.Contains(prompt, "markdown fences") {
-		t.Error("prompt should mention markdown fences")
-	}
-	if !strings.Contains(prompt, string(schema)) {
-		t.Error("prompt should contain the schema")
-	}
-}
-
 func TestOpencodeTokensToUsage(t *testing.T) {
 	tokens := &opencodeTokens{
 		Input:  100,

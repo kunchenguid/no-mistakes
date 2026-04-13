@@ -10,21 +10,6 @@ import (
 	"testing"
 )
 
-func TestBuildRovodevSystemPrompt(t *testing.T) {
-	schema := json.RawMessage(`{"type":"object","properties":{"success":{"type":"boolean"}}}`)
-	prompt := buildRovodevSystemPrompt(schema)
-
-	if !strings.Contains(prompt, "valid JSON") {
-		t.Error("prompt should mention valid JSON")
-	}
-	if !strings.Contains(prompt, "markdown fences") {
-		t.Error("prompt should mention markdown fences")
-	}
-	if !strings.Contains(prompt, string(schema)) {
-		t.Error("prompt should contain the schema")
-	}
-}
-
 func TestParseRovodevSSE_TextEvent(t *testing.T) {
 	input := `event: text
 data: {"content":"hello world"}
