@@ -359,13 +359,28 @@ func extractDocumentSummary(raw []byte, fallback string) string {
 
 func unmarshalRequiredFindings(raw []byte, findings *Findings) error {
 	var payload struct {
-		Items []Finding `json:"findings"`
+		Items []struct {
+			Severity            string `json:"severity"`
+			Description         string `json:"description"`
+			RequiresHumanReview *bool  `json:"requires_human_review"`
+		} `json:"findings"`
 	}
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return err
 	}
 	if payload.Items == nil {
 		return fmt.Errorf("missing findings array")
+	}
+	for i, item := range payload.Items {
+		if strings.TrimSpace(item.Severity) == "" {
+			return fmt.Errorf("finding %d missing severity", i)
+		}
+		if strings.TrimSpace(item.Description) == "" {
+			return fmt.Errorf("finding %d missing description", i)
+		}
+		if item.RequiresHumanReview == nil {
+			return fmt.Errorf("finding %d missing requires_human_review", i)
+		}
 	}
 	return json.Unmarshal(raw, findings)
 }
