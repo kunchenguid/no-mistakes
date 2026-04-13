@@ -58,6 +58,9 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Test (unit)
+        run: go test ./...
+
       - name: Test (integration + e2e)
         run: go test -tags integration,e2e ./internal/ipc ./internal/daemon ./internal/git ./internal/cli ./internal/pipeline/steps
 

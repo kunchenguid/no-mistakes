@@ -108,8 +108,9 @@ When adding a new test file, pick the lowest tier that fits:
 - `make test-all` - unit + integration + e2e (~170s, what CI runs)
 - `make test-unit` - unit only (~3s)
 
-CI runs the full suite (`test-all`) on Linux and macOS. Windows CI runs only
-packages that contain integration or e2e tagged files to skip redundant unit coverage.
+CI runs the full suite (`test-all`) on Linux and macOS. Windows CI runs unit
+tests across all packages, then runs integration and e2e tagged packages
+without the race detector.
 
 **When Making Changes**
 
