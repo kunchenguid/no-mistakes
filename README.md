@@ -256,6 +256,8 @@ auto_fix:
 
 Tests are split into unit, integration, and e2e tiers.
 
+CI runs `make test-all` on Linux and macOS. On Windows, unit tests and tagged tests run separately without `-race`.
+
 ```sh
 make build   # Build bin/no-mistakes with version info
 make dist    # Cross-compile release archives into dist/
