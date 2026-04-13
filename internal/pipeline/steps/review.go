@@ -255,26 +255,35 @@ func sanitizeDismissedFindingDescription(description string) string {
 func sanitizedPreviousFindingsForPrompt(raw string) string {
 	findings, err := types.ParseFindingsJSON(raw)
 	if err != nil {
-		return sanitizePromptText(raw)
+		return sanitizePromptMultilineText(raw)
 	}
 	for i := range findings.Items {
 		findings.Items[i].ID = sanitizePromptText(findings.Items[i].ID)
 		findings.Items[i].Severity = sanitizePromptText(findings.Items[i].Severity)
 		findings.Items[i].File = sanitizePromptText(findings.Items[i].File)
-		findings.Items[i].Description = sanitizePromptText(findings.Items[i].Description)
+		findings.Items[i].Description = sanitizePromptMultilineText(findings.Items[i].Description)
 	}
-	findings.Summary = sanitizePromptText(findings.Summary)
+	findings.Summary = sanitizePromptMultilineText(findings.Summary)
 	findings.RiskLevel = sanitizePromptText(findings.RiskLevel)
-	findings.RiskRationale = sanitizePromptText(findings.RiskRationale)
+	findings.RiskRationale = sanitizePromptMultilineText(findings.RiskRationale)
 	encoded, err := types.MarshalFindingsJSON(findings)
 	if err != nil {
-		return sanitizePromptText(raw)
+		return sanitizePromptMultilineText(raw)
 	}
 	return encoded
 }
 
 func sanitizePromptText(text string) string {
+	return strings.Join(strings.Fields(sanitizePromptMultilineText(text)), " ")
+}
+
+func sanitizePromptMultilineText(text string) string {
 	text = strings.NewReplacer("<<<<<<<", " ", "=======", " ", ">>>>>>>", " ").Replace(text)
-	text = strings.Join(strings.Fields(text), " ")
-	return text
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+	lines := strings.Split(text, "\n")
+	for i := range lines {
+		lines[i] = strings.Join(strings.Fields(lines[i]), " ")
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
 }

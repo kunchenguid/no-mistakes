@@ -3907,6 +3907,37 @@ func TestReviewStep_DismissedFindingsSanitizesPromptContent(t *testing.T) {
 	}
 }
 
+func TestSanitizedPreviousFindingsForPrompt_PreservesMultilineDescriptions(t *testing.T) {
+	raw, err := types.MarshalFindingsJSON(types.Findings{
+		Items: []types.Finding{{
+			ID:                  "review-1",
+			Severity:            "warning",
+			File:                "internal/pipeline/steps/review.go",
+			Line:                278,
+			Description:         "go test failed:\n--- FAIL: TestThing\nmain_test.go:42: expected x\n",
+			RequiresHumanReview: false,
+		}},
+		Summary:       "1 selected finding",
+		RiskLevel:     "medium",
+		RiskRationale: "compiler output:\nline 1\nline 2",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sanitized := sanitizedPreviousFindingsForPrompt(raw)
+	findings, err := types.ParseFindingsJSON(sanitized)
+	if err != nil {
+		t.Fatalf("ParseFindingsJSON() error = %v", err)
+	}
+	if !strings.Contains(findings.Items[0].Description, "\n--- FAIL: TestThing\n") {
+		t.Fatalf("expected multiline description to be preserved, got %q", findings.Items[0].Description)
+	}
+	if !strings.Contains(findings.RiskRationale, "\nline 1\nline 2") {
+		t.Fatalf("expected multiline risk rationale to be preserved, got %q", findings.RiskRationale)
+	}
+}
+
 // --- CI Execute tests ---
 
 // fakeCIGH creates a fake gh binary that responds to CI-related
