@@ -23,6 +23,7 @@ auto_fix:
   rebase: 0
   review: 3
   test: 3
+  document: 3
   lint: 5
   ci: 3
 ```

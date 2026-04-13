@@ -38,6 +38,7 @@ log_level: info  # debug | info | warn | error
 # Max auto-fix attempts per step. 0 = disabled (requires manual approval).
 auto_fix:
   rebase: 0
+  document: 3
   lint: 3
   test: 3
   review: 3
@@ -67,6 +68,7 @@ ignore_patterns:
 
 # Override auto-fix limits for this repo.
 auto_fix:
+  document: 3
   lint: 5
 ```
 
