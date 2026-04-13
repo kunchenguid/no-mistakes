@@ -190,12 +190,20 @@ func extractRiskLine(steps []*db.StepResult, rounds map[string][]*db.StepRound) 
 		}
 
 		emoji := riskEmoji(src.RiskLevel)
+		label := capitalizeRisk(src.RiskLevel)
 		if src.RiskRationale != "" {
-			return fmt.Sprintf("%s %s: %s", emoji, src.RiskLevel, src.RiskRationale)
+			return fmt.Sprintf("%s %s: %s", emoji, label, src.RiskRationale)
 		}
-		return fmt.Sprintf("%s %s", emoji, src.RiskLevel)
+		return fmt.Sprintf("%s %s", emoji, label)
 	}
 	return ""
+}
+
+func capitalizeRisk(level string) string {
+	if level == "" {
+		return level
+	}
+	return strings.ToUpper(level[:1]) + level[1:]
 }
 
 func riskEmoji(level string) string {

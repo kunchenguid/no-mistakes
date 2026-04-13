@@ -27,6 +27,9 @@ func TestBuildPipelineSummary_AllClean(t *testing.T) {
 	if !strings.Contains(md, "Updates from `git push no-mistakes`") {
 		t.Error("missing pipeline tagline")
 	}
+	if strings.Contains(md, "https://github.com/kunchenguid/no-mistakes") {
+		t.Error("did not expect hardcoded repository link in pipeline tagline")
+	}
 	// Clean steps should show checkmark
 	if !strings.Contains(md, "✅") {
 		t.Error("expected checkmark for clean steps")
@@ -53,8 +56,8 @@ func TestBuildPipelineSummary_ReviewWithRisk(t *testing.T) {
 	if !strings.Contains(md, "⚠️ **Review** - 1 warning") {
 		t.Errorf("expected findings count in review line, got:\n%s", md)
 	}
-	if !strings.Contains(risk, "low") || !strings.Contains(risk, "straightforward refactor") {
-		t.Errorf("expected risk line with level and rationale, got: %q", risk)
+	if !strings.Contains(risk, "Low") || !strings.Contains(risk, "straightforward refactor") {
+		t.Errorf("expected risk line with capitalized level and rationale, got: %q", risk)
 	}
 	if !strings.Contains(risk, "✅") {
 		t.Errorf("expected checkmark emoji for low risk, got: %q", risk)
@@ -241,6 +244,9 @@ func TestBuildPipelineSummary_ReviewUsesFinalCleanState(t *testing.T) {
 	if !strings.Contains(risk, "follow-up fixes reduced risk") {
 		t.Errorf("expected final rationale in risk, got: %q", risk)
 	}
+	if !strings.Contains(risk, "Low") {
+		t.Errorf("expected capitalized Low in risk, got: %q", risk)
+	}
 	if !strings.Contains(risk, "✅") {
 		t.Errorf("expected checkmark for low risk, got: %q", risk)
 	}
@@ -265,8 +271,8 @@ func TestBuildPipelineSummary_ReviewShowsWarningForUnresolvedRiskWithoutFindings
 	if strings.Contains(md, "✅ **Review** - passed") {
 		t.Errorf("did not expect passed review status for medium risk, got:\n%s", md)
 	}
-	if !strings.Contains(risk, "medium") || !strings.Contains(risk, "touches critical error handling") {
-		t.Errorf("expected risk line with medium level, got: %q", risk)
+	if !strings.Contains(risk, "Medium") || !strings.Contains(risk, "touches critical error handling") {
+		t.Errorf("expected risk line with capitalized medium level, got: %q", risk)
 	}
 	if !strings.Contains(risk, "⚠️") {
 		t.Errorf("expected warning emoji for medium risk, got: %q", risk)
@@ -363,8 +369,8 @@ func TestBuildPipelineSummary_FindingSeverityEmoji(t *testing.T) {
 	if !strings.Contains(md, "ℹ️") {
 		t.Errorf("expected info emoji in details, got:\n%s", md)
 	}
-	if !strings.Contains(risk, "high") || !strings.Contains(risk, "critical bug found") {
-		t.Errorf("expected risk line with high level, got: %q", risk)
+	if !strings.Contains(risk, "High") || !strings.Contains(risk, "critical bug found") {
+		t.Errorf("expected risk line with capitalized high level, got: %q", risk)
 	}
 	if !strings.Contains(risk, "🚨") {
 		t.Errorf("expected error emoji for high risk, got: %q", risk)
