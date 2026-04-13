@@ -40,6 +40,7 @@ _  _ ____    _  _ _ ____ ___ ____ _  _ ____ ____
   * Pipeline started
 
   Run no-mistakes to review.
+
 BANNER
 exit 0
 `
