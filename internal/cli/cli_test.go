@@ -143,8 +143,8 @@ func TestRootVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, buildinfo.Version) {
-		t.Errorf("version output %q should contain %q", out, buildinfo.Version)
+	if !strings.Contains(out, buildinfo.String()) {
+		t.Errorf("version output %q should contain %q", out, buildinfo.String())
 	}
 }
 
