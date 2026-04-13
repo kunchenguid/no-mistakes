@@ -1168,7 +1168,7 @@ func TestReviewStep_FixMode(t *testing.T) {
 			callCount++
 			if callCount == 1 {
 				os.WriteFile(filepath.Join(dir, "review-fix.txt"), []byte("fixed"), 0o644)
-				return &agent.Result{Output: json.RawMessage(`{"summary":"address review findings"}`)}, nil
+				return &agent.Result{Output: json.RawMessage(`{"summary":"  'address review findings.'  "}`)}, nil
 			}
 			// Review call — return clean findings
 			findings := Findings{Items: nil, Summary: "all clear"}
@@ -1391,7 +1391,7 @@ func TestTestStep_FixMode(t *testing.T) {
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 			callCount++
 			os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("fixed"), 0o644)
-			return &agent.Result{Output: json.RawMessage(`{"summary":"fix test failures"}`)}, nil
+			return &agent.Result{Output: json.RawMessage(`{"summary":"  \"fix test failures.\"  "}`)}, nil
 		},
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Test: "true"})
@@ -1447,7 +1447,7 @@ func TestLintStep_FixMode_CommitsChanges(t *testing.T) {
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 			callCount++
 			os.WriteFile(filepath.Join(dir, "lint-fix.txt"), []byte("fixed"), 0o644)
-			return &agent.Result{Output: json.RawMessage(`{"summary":"fix lint issues"}`)}, nil
+			return &agent.Result{Output: json.RawMessage(`{"summary":"  'fix lint issues,'  "}`)}, nil
 		},
 	}
 
@@ -1477,6 +1477,31 @@ func TestLintStep_FixMode_CommitsChanges(t *testing.T) {
 	if status := gitStatusPorcelain(t, dir); status != "" {
 		t.Fatalf("expected clean worktree after fix commit, got %q", status)
 	}
+	if got := lastCommitMessage(t, dir); got != "no-mistakes(lint): fix lint issues" {
+		t.Fatalf("last commit message = %q", got)
+	}
+}
+
+func TestLintStep_FixMode_UsesFallbackSummaryWhenStructuredSummaryMalformed(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			os.WriteFile(filepath.Join(dir, "lint-fix.txt"), []byte("fixed"), 0o644)
+			return &agent.Result{Output: json.RawMessage(`not json`)}, nil
+		},
+	}
+
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Lint: "true"})
+	sctx.Fixing = true
+
+	step := &LintStep{}
+	if _, err := step.Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+
 	if got := lastCommitMessage(t, dir); got != "no-mistakes(lint): fix lint issues" {
 		t.Fatalf("last commit message = %q", got)
 	}
