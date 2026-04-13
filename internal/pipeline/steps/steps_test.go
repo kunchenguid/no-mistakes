@@ -419,13 +419,6 @@ func TestAllSteps(t *testing.T) {
 	}
 }
 
-func TestRebaseStep_Name(t *testing.T) {
-	s := &RebaseStep{}
-	if s.Name() != types.StepRebase {
-		t.Errorf("Name() = %s, want %s", s.Name(), types.StepRebase)
-	}
-}
-
 func TestRebaseStep_RebasesOntoDefaultBranch(t *testing.T) {
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
@@ -938,13 +931,6 @@ func TestRebaseStep_LogFileNotVisibleToUser(t *testing.T) {
 
 // --- Review step tests ---
 
-func TestReviewStep_Name(t *testing.T) {
-	s := &ReviewStep{}
-	if s.Name() != types.StepReview {
-		t.Errorf("Name() = %s, want %s", s.Name(), types.StepReview)
-	}
-}
-
 func TestReviewStep_EmptyDiff(t *testing.T) {
 	dir := t.TempDir()
 	gitCmd(t, dir, "init")
@@ -1269,13 +1255,6 @@ func TestReviewStep_FixMode(t *testing.T) {
 
 // --- Test step tests ---
 
-func TestTestStep_Name(t *testing.T) {
-	s := &TestStep{}
-	if s.Name() != types.StepTest {
-		t.Errorf("Name() = %s, want %s", s.Name(), types.StepTest)
-	}
-}
-
 func TestTestStep_PassingCommand(t *testing.T) {
 	dir := t.TempDir()
 	ag := &mockAgent{name: "test"}
@@ -1522,13 +1501,6 @@ func TestLintStep_FixMode_CommitsChanges(t *testing.T) {
 
 // --- Lint step tests ---
 
-func TestLintStep_Name(t *testing.T) {
-	s := &LintStep{}
-	if s.Name() != types.StepLint {
-		t.Errorf("Name() = %s, want %s", s.Name(), types.StepLint)
-	}
-}
-
 func TestLintStep_PassingCommand(t *testing.T) {
 	dir := t.TempDir()
 	ag := &mockAgent{name: "test"}
@@ -1609,13 +1581,6 @@ func TestLintStep_NoCommand(t *testing.T) {
 }
 
 // --- Push step tests ---
-
-func TestPushStep_Name(t *testing.T) {
-	s := &PushStep{}
-	if s.Name() != types.StepPush {
-		t.Errorf("Name() = %s, want %s", s.Name(), types.StepPush)
-	}
-}
 
 func TestPushStep_Success(t *testing.T) {
 	// Set up a bare repo as "upstream"
@@ -2087,13 +2052,6 @@ func TestPushStep_ReconcilesStaleDatabaseHeadSHA(t *testing.T) {
 }
 
 // --- PR step tests ---
-
-func TestPRStep_Name(t *testing.T) {
-	s := &PRStep{}
-	if s.Name() != types.StepPR {
-		t.Errorf("Name() = %s, want %s", s.Name(), types.StepPR)
-	}
-}
 
 func TestPRStep_GhNotAvailable(t *testing.T) {
 	// Verify the step skips gracefully when the required provider CLI is missing.
@@ -2663,13 +2621,6 @@ func TestCommitAgentFixes_UsesFallbackSummary(t *testing.T) {
 }
 
 // --- Babysit step tests ---
-
-func TestBabysitStep_Name(t *testing.T) {
-	s := &BabysitStep{}
-	if s.Name() != types.StepBabysit {
-		t.Errorf("Name() = %s, want %s", s.Name(), types.StepBabysit)
-	}
-}
 
 func TestExtractPRNumber(t *testing.T) {
 	tests := []struct {
