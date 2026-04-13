@@ -133,19 +133,18 @@ func TestRootVersion(t *testing.T) {
 	}
 }
 
-func TestRootHelp(t *testing.T) {
+func TestRootHelpListsSubcommandsWithoutTriggeringAttach(t *testing.T) {
 	out, err := executeCmd("--help")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "init") {
-		t.Errorf("help output should list init command, got: %s", out)
+	for _, sub := range []string{"init", "eject", "attach", "rerun", "status", "runs", "doctor", "daemon", "update"} {
+		if !strings.Contains(out, sub) {
+			t.Errorf("help output should list %q command, got: %s", sub, out)
+		}
 	}
-	if !strings.Contains(out, "eject") {
-		t.Errorf("help output should list eject command, got: %s", out)
-	}
-	if !strings.Contains(out, "update") {
-		t.Errorf("help output should list update command, got: %s", out)
+	if strings.Contains(out, "No active run") {
+		t.Errorf("help output should not trigger attach fallback, got: %s", out)
 	}
 }
 
@@ -688,18 +687,5 @@ func TestRootErrorFromNonGitDir(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "git repository") {
 		t.Errorf("error should mention git repository, got: %v", err)
-	}
-}
-
-func TestRootHelpStillWorks(t *testing.T) {
-	// --help should show subcommands, not trigger attach.
-	out, err := executeCmd("--help")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, sub := range []string{"init", "eject", "attach", "rerun", "status", "runs", "doctor", "daemon"} {
-		if !strings.Contains(out, sub) {
-			t.Errorf("help output should list %q command, got: %s", sub, out)
-		}
 	}
 }

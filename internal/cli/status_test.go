@@ -129,13 +129,3 @@ func TestMinLen(t *testing.T) {
 		t.Errorf("minLen(4, 4) = %d, want 4", got)
 	}
 }
-
-func TestStatusHelpListed(t *testing.T) {
-	out, err := executeCmd("--help")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out, "status") {
-		t.Errorf("help output should list status command, got: %s", out)
-	}
-}

@@ -69,13 +69,3 @@ func TestDoctorAgentCheck(t *testing.T) {
 		t.Errorf("doctor output should check for claude agent, got: %s", out)
 	}
 }
-
-func TestDoctorHelpListed(t *testing.T) {
-	out, err := executeCmd("--help")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out, "doctor") {
-		t.Errorf("help output should list doctor command, got: %s", out)
-	}
-}
