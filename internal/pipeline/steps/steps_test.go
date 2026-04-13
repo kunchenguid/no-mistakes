@@ -2863,8 +2863,20 @@ func TestBabysitStep_TimeoutDoesNotSleepPastDeadline(t *testing.T) {
 	sctx.Run.PRURL = &prURL
 	sctx.Config.BabysitTimeout = 2 * time.Second
 
-	step := &BabysitStep{}
-	started := time.Now()
+	started := time.Unix(1700000000, 0)
+	now := started
+	var intervals []time.Duration
+
+	step := &BabysitStep{
+		now: func() time.Time {
+			return now
+		},
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			intervals = append(intervals, interval)
+			now = now.Add(interval)
+			return nil
+		},
+	}
 	outcome, err := step.Execute(sctx)
 	if err != nil {
 		t.Fatal(err)
@@ -2872,8 +2884,11 @@ func TestBabysitStep_TimeoutDoesNotSleepPastDeadline(t *testing.T) {
 	if outcome.NeedsApproval {
 		t.Error("expected no approval when timeout expires")
 	}
-	if elapsed := time.Since(started); elapsed > 10*time.Second {
-		t.Fatalf("babysit step exceeded timeout budget: %v", elapsed)
+	if len(intervals) != 1 {
+		t.Fatalf("expected exactly one poll wait before timeout, got %d", len(intervals))
+	}
+	if intervals[0] != 2*time.Second {
+		t.Fatalf("wait interval = %v, want clipped timeout %v", intervals[0], 2*time.Second)
 	}
 }
 
