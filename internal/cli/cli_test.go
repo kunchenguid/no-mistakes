@@ -100,6 +100,20 @@ func run(t *testing.T, dir string, name string, args ...string) {
 	}
 }
 
+func waitForDaemonRunning(t *testing.T, p *paths.Paths) {
+	t.Helper()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if alive, _ := daemon.IsRunning(p); alive {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatal("daemon did not become responsive")
+}
+
 // chdir changes to the given directory and restores the original on cleanup.
 func chdir(t *testing.T, dir string) {
 	t.Helper()
@@ -206,16 +220,7 @@ func TestInitAndEject(t *testing.T) {
 	}
 
 	p := paths.WithRoot(os.Getenv("NM_HOME"))
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if alive, _ := daemon.IsRunning(p); alive {
-			goto daemonStarted
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	t.Fatal("daemon did not auto-start after init")
-
-daemonStarted:
+	waitForDaemonRunning(t, p)
 
 	// Eject should succeed.
 	out, err = executeCmd("eject")
@@ -340,16 +345,7 @@ func startTestDaemon(t *testing.T, p *paths.Paths, d *db.DB) {
 		daemon.RunWithResources(p, d)
 	}()
 
-	// Wait for daemon to be responsive.
-	for i := 0; i < 50; i++ {
-		time.Sleep(100 * time.Millisecond)
-		if alive, _ := daemon.IsRunning(p); alive {
-			break
-		}
-		if i == 49 {
-			t.Fatal("daemon did not become responsive")
-		}
-	}
+	waitForDaemonRunning(t, p)
 
 	t.Cleanup(func() {
 		daemon.Stop(p)
