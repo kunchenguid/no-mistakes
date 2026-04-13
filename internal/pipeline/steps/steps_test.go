@@ -2522,23 +2522,6 @@ func TestNormalizedBranchRef(t *testing.T) {
 	}
 }
 
-func TestDeterministicFixCommitMessage(t *testing.T) {
-	tests := []struct {
-		step    types.StepName
-		summary string
-		want    string
-	}{
-		{types.StepReview, "address nil dereference", "no-mistakes(review): address nil dereference"},
-		{types.StepTest, "", "no-mistakes(test): apply fixes"},
-		{types.StepLint, "fix formatting", "no-mistakes(lint): fix formatting"},
-	}
-	for _, tc := range tests {
-		if got := deterministicFixCommitMessage(tc.step, tc.summary); got != tc.want {
-			t.Errorf("deterministicFixCommitMessage(%q, %q) = %q, want %q", tc.step, tc.summary, got, tc.want)
-		}
-	}
-}
-
 func TestExtractCommitSummary(t *testing.T) {
 	tests := []struct {
 		name    string
