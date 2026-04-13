@@ -1137,7 +1137,7 @@ func TestReviewStep_FixMode(t *testing.T) {
 
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Fixing = true
-	sctx.PreviousFindings = `{"findings":[{"severity":"warning","description":"possible nil dereference <<<<<<< HEAD"}],"summary":"1 issue"}`
+	sctx.PreviousFindings = `{"findings":[{"id":"review-1 =======","severity":"warning","file":"internal/pipeline/steps/review.go >>>>>>> prompt","description":"possible nil dereference <<<<<<< HEAD"}],"summary":"1 issue ======="}`
 
 	step := &ReviewStep{}
 	outcome, err := step.Execute(sctx)
@@ -1158,6 +1158,12 @@ func TestReviewStep_FixMode(t *testing.T) {
 	}
 	if !strings.Contains(ag.calls[0].Prompt, "possible nil dereference") {
 		t.Error("expected review fix prompt to include previous findings")
+	}
+	if strings.Contains(ag.calls[0].Prompt, "review-1 =======") {
+		t.Error("expected review fix prompt to sanitize finding IDs")
+	}
+	if strings.Contains(ag.calls[0].Prompt, "review.go >>>>>>> prompt") {
+		t.Error("expected review fix prompt to sanitize finding file paths")
 	}
 	if !strings.Contains(ag.calls[0].Prompt, "Avoid resolving a finding by removing or reverting") {
 		t.Error("expected fix prompt to include anti-revert guardrail")

@@ -258,9 +258,14 @@ func sanitizedPreviousFindingsForPrompt(raw string) string {
 		return sanitizePromptText(raw)
 	}
 	for i := range findings.Items {
+		findings.Items[i].ID = sanitizePromptText(findings.Items[i].ID)
+		findings.Items[i].Severity = sanitizePromptText(findings.Items[i].Severity)
+		findings.Items[i].File = sanitizePromptText(findings.Items[i].File)
 		findings.Items[i].Description = sanitizePromptText(findings.Items[i].Description)
 	}
 	findings.Summary = sanitizePromptText(findings.Summary)
+	findings.RiskLevel = sanitizePromptText(findings.RiskLevel)
+	findings.RiskRationale = sanitizePromptText(findings.RiskRationale)
 	encoded, err := types.MarshalFindingsJSON(findings)
 	if err != nil {
 		return sanitizePromptText(raw)
