@@ -28,10 +28,17 @@ func TestRunsNotInitialized(t *testing.T) {
 
 func TestRunsEmpty(t *testing.T) {
 	setupTestRepo(t)
+	nmHome := os.Getenv("NM_HOME")
+	p := paths.WithRoot(nmHome)
 
-	_, err := executeCmd("init")
+	d, err := db.Open(p.DB())
 	if err != nil {
-		t.Fatalf("init failed: %v", err)
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	if _, err := gate.Init(context.Background(), d, p, "."); err != nil {
+		t.Fatalf("gate.Init failed: %v", err)
 	}
 
 	out, err := executeCmd("runs")
@@ -45,19 +52,20 @@ func TestRunsEmpty(t *testing.T) {
 
 func TestRunsWithData(t *testing.T) {
 	setupTestRepo(t)
+	nmHome := os.Getenv("NM_HOME")
+	p := paths.WithRoot(nmHome)
 
-	_, err := executeCmd("init")
-	if err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
-
-	// Insert a run directly into the DB to simulate data.
-	p, d, err := openResources()
+	d, err := db.Open(p.DB())
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = p
+	defer d.Close()
 
+	if _, err := gate.Init(context.Background(), d, p, "."); err != nil {
+		t.Fatalf("gate.Init failed: %v", err)
+	}
+
+	// Insert a run directly into the DB to simulate data.
 	gitRoot, err := git.FindGitRoot(".")
 	if err != nil {
 		t.Fatal(err)
@@ -83,7 +91,6 @@ func TestRunsWithData(t *testing.T) {
 	if err := d.UpdateRunStatus(run2.ID, types.RunRunning); err != nil {
 		t.Fatal(err)
 	}
-	d.Close()
 
 	out, err := executeCmd("runs")
 	if err != nil {
@@ -105,18 +112,20 @@ func TestRunsWithData(t *testing.T) {
 
 func TestRunsLimit(t *testing.T) {
 	setupTestRepo(t)
+	nmHome := os.Getenv("NM_HOME")
+	p := paths.WithRoot(nmHome)
 
-	_, err := executeCmd("init")
-	if err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
-
-	// Insert many runs.
-	_, d, err := openResources()
+	d, err := db.Open(p.DB())
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer d.Close()
 
+	if _, err := gate.Init(context.Background(), d, p, "."); err != nil {
+		t.Fatalf("gate.Init failed: %v", err)
+	}
+
+	// Insert many runs.
 	gitRoot, err := git.FindGitRoot(".")
 	if err != nil {
 		t.Fatal(err)
@@ -131,7 +140,6 @@ func TestRunsLimit(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	d.Close()
 
 	// Default limit should show max 10 runs.
 	out, err := executeCmd("runs")
