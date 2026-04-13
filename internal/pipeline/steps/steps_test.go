@@ -2724,22 +2724,6 @@ func TestHasPendingChecks(t *testing.T) {
 	}
 }
 
-func TestFailingCheckNames(t *testing.T) {
-	checks := []ciCheck{
-		{Name: "build", Conclusion: "success"},
-		{Name: "test", Conclusion: "failure"},
-		{Name: "lint", Conclusion: "action_required"},
-		{Name: "deploy", Conclusion: "neutral"},
-	}
-	got := failingCheckNames(checks)
-	if len(got) != 2 {
-		t.Fatalf("failingCheckNames() returned %d names, want 2", len(got))
-	}
-	if got[0] != "test" || got[1] != "lint" {
-		t.Errorf("failingCheckNames() = %v, want [test, lint]", got)
-	}
-}
-
 func TestBabysitStep_NoPRURL(t *testing.T) {
 	dir := t.TempDir()
 	ag := &mockAgent{name: "test"}
@@ -3000,20 +2984,25 @@ func TestBabysitStep_CommitAndPush_UpdatesLocalBranchRefAfterDetachedPush(t *tes
 }
 
 func TestCICheckJSON(t *testing.T) {
-	input := `[{"name":"build","status":"COMPLETED","conclusion":"success"},{"name":"test","status":"COMPLETED","conclusion":"failure"}]`
+	input := `[
+		{"name":"build","status":"COMPLETED","conclusion":"success"},
+		{"name":"test","status":"COMPLETED","conclusion":"failure"},
+		{"name":"lint","status":"COMPLETED","conclusion":"action_required"},
+		{"name":"deploy","status":"COMPLETED","conclusion":"neutral"}
+	]`
 	var checks []ciCheck
 	if err := json.Unmarshal([]byte(input), &checks); err != nil {
 		t.Fatal(err)
 	}
-	if len(checks) != 2 {
-		t.Fatalf("expected 2 checks, got %d", len(checks))
+	if len(checks) != 4 {
+		t.Fatalf("expected 4 checks, got %d", len(checks))
 	}
 	if !hasFailingChecks(checks) {
 		t.Error("expected failing checks")
 	}
 	names := failingCheckNames(checks)
-	if len(names) != 1 || names[0] != "test" {
-		t.Errorf("failingCheckNames = %v, want [test]", names)
+	if len(names) != 2 || names[0] != "test" || names[1] != "lint" {
+		t.Errorf("failingCheckNames = %v, want [test lint]", names)
 	}
 }
 
