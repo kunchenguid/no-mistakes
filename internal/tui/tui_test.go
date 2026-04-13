@@ -3431,6 +3431,9 @@ func TestActionBar_ShowsNavHintsInDiffMode(t *testing.T) {
 	m.resetFindingSelection(types.StepReview)
 
 	view := stripANSI(m.View())
+	if !strings.Contains(view, "│") {
+		t.Errorf("expected separator before diff navigation hints, got:\n%s", view)
+	}
 	if !strings.Contains(view, "n next") {
 		t.Errorf("expected 'n next' hint in action bar when viewing diff, got:\n%s", view)
 	}
@@ -3459,22 +3462,6 @@ func TestActionBar_HidesNavHintsInFindingsMode(t *testing.T) {
 	}
 	if strings.Contains(view, "p prev") {
 		t.Error("'p prev' hint should NOT appear when viewing findings")
-	}
-}
-
-func TestActionBar_NavHintsWithSeparator(t *testing.T) {
-	// In diff mode, n/p hints should appear after │ separator (where selection
-	// actions would be in findings mode), giving the secondary action group context.
-	configureTUIColors()
-	out := stripANSI(renderApprovalActions(false, true, true, 5, 5, false, true))
-	if !strings.Contains(out, "│") {
-		t.Error("expected │ separator before n/p hints in diff mode")
-	}
-	if !strings.Contains(out, "n next") {
-		t.Errorf("expected 'n next' after separator in diff mode, got: %s", out)
-	}
-	if !strings.Contains(out, "p prev") {
-		t.Errorf("expected 'p prev' after separator in diff mode, got: %s", out)
 	}
 }
 
