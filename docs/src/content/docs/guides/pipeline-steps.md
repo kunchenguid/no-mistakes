@@ -9,7 +9,7 @@ The pipeline runs a fixed sequence of steps. The order is not configurable - thi
 rebase → review → test → document → lint → push → pr → babysit
 ```
 
-Each step can produce findings, request approval, or trigger auto-fix. Steps that encounter fatal errors stop the pipeline. Steps can also be skipped by the user.
+Each step can produce findings, request approval, or trigger auto-fix. Steps that encounter fatal errors stop the pipeline. Steps can also be skipped by the user or automatically by the pipeline.
 
 ## Rebase
 
@@ -20,6 +20,7 @@ Fetches the latest upstream and rebases your branch onto it.
 - If the branch is not the default branch, tries rebasing onto `origin/<branch>` first, then `origin/<default_branch>`
 - Skips targets that don't exist or are already ancestors
 - If a fast-forward is possible, does a hard-reset instead of a rebase
+- If the diff against the default branch is empty after rebase, completes rebase and skips all remaining pipeline steps
 - On conflict: records conflicting files, aborts the rebase, and reports findings
 
 **Auto-fix:** when enabled, the agent resolves conflict markers, stages files, and runs `git rebase --continue`. Commits use the message format `no-mistakes(rebase): <summary>`.
@@ -141,5 +142,5 @@ Each step progresses through these statuses:
 | `awaiting_approval` | Paused, waiting for user action |
 | `fix_review` | Paused after a fix cycle, showing results for review |
 | `completed` | Finished successfully |
-| `skipped` | User chose to skip |
+| `skipped` | User chose to skip, or the pipeline skipped it automatically |
 | `failed` | Step failed |

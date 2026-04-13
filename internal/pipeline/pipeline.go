@@ -32,6 +32,7 @@ type StepOutcome struct {
 	Findings      string // JSON findings for TUI display (optional)
 	ExitCode      int    // process exit code (0 = success)
 	PRURL         string // PR/MR URL if this step created or found one
+	SkipRemaining bool   // skip all subsequent steps (e.g. empty diff after rebase)
 }
 
 // Step is the interface that each pipeline step implements.
