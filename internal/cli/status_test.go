@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -26,25 +27,49 @@ func TestStatusNotInitialized(t *testing.T) {
 }
 
 func TestStatusInitialized(t *testing.T) {
-	setupTestRepo(t)
+	repoDir := setupTestRepo(t)
+	nmHome := os.Getenv("NM_HOME")
+	p := paths.WithRoot(nmHome)
 
-	_, err := executeCmd("init")
+	d, err := db.Open(p.DB())
 	if err != nil {
-		t.Fatalf("init failed: %v", err)
+		t.Fatal(err)
 	}
+	defer d.Close()
+
+	if _, err := gate.Init(context.Background(), d, p, "."); err != nil {
+		t.Fatal(err)
+	}
+
+	gitRoot, err := git.FindGitRoot(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	remoteOut, err := exec.Command("git", "remote", "get-url", "origin").Output()
+	if err != nil {
+		t.Fatalf("resolve origin remote: %v", err)
+	}
+	upstreamURL := strings.TrimSpace(string(remoteOut))
 
 	out, err := executeCmd("status")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "repo:") {
-		t.Errorf("status output should contain repo info, got: %s", out)
+	if !strings.Contains(out, gitRoot) {
+		t.Errorf("status output should contain repo path %q, got: %s", gitRoot, out)
 	}
-	if !strings.Contains(out, "remote:") {
-		t.Errorf("status output should contain remote info, got: %s", out)
+	if !strings.Contains(out, upstreamURL) {
+		t.Errorf("status output should contain upstream remote %q, got: %s", upstreamURL, out)
 	}
-	if !strings.Contains(out, "daemon:") {
-		t.Errorf("status output should contain daemon status, got: %s", out)
+	if !strings.Contains(out, "daemon:") || !strings.Contains(out, "stopped") {
+		t.Errorf("status output should show stopped daemon, got: %s", out)
+	}
+	if !strings.Contains(out, "no active run") {
+		t.Errorf("status output should show empty active run state, got: %s", out)
+	}
+	if strings.Contains(out, repoDir) && repoDir != gitRoot {
+		t.Logf("status output uses resolved repo path %q instead of temp dir path %q", gitRoot, repoDir)
 	}
 }
 
