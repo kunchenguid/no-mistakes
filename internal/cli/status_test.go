@@ -245,7 +245,7 @@ func TestStatusFromWorktreeWithActiveRun(t *testing.T) {
 	if !strings.Contains(out, "abc12345") {
 		t.Errorf("expected truncated head SHA in status output, got: %s", out)
 	}
-	if !strings.Contains(out, repoDir) {
-		t.Errorf("expected status output to show initialized repo path %q, got: %s", repoDir, out)
+	if !strings.Contains(out, gitRoot) {
+		t.Errorf("expected status output to show initialized repo path %q, got: %s", gitRoot, out)
 	}
 }

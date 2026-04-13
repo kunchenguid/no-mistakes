@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -12,15 +11,9 @@ func TestDoctorSystemSectionHealthyState(t *testing.T) {
 	t.Setenv("NM_HOME", nmHome)
 
 	binDir := t.TempDir()
-	for name, body := range map[string]string{
-		"git": "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  printf 'git version 9.9.9\\n'\n  exit 0\nfi\nexit 1\n",
-		"gh":  "#!/bin/sh\nexit 0\n",
-	} {
-		path := filepath.Join(binDir, name)
-		if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
-			t.Fatalf("write fake %s: %v", name, err)
-		}
-	}
+	t.Setenv("NM_FAKE_BIN", "1")
+	linkTestBinary(t, binDir, "git")
+	linkTestBinary(t, binDir, "gh")
 	t.Setenv("PATH", binDir)
 
 	out, err := executeCmd("doctor")
@@ -83,10 +76,8 @@ func TestDoctorAgentsSectionReportsFoundAndMissingBinaries(t *testing.T) {
 	t.Setenv("NM_HOME", nmHome)
 
 	binDir := t.TempDir()
-	claudePath := filepath.Join(binDir, "claude")
-	if err := os.WriteFile(claudePath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatalf("write fake claude: %v", err)
-	}
+	t.Setenv("NM_FAKE_BIN", "1")
+	claudePath := linkTestBinary(t, binDir, "claude")
 	t.Setenv("PATH", binDir)
 
 	out, err := executeCmd("doctor")

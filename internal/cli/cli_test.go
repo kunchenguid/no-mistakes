@@ -25,6 +25,24 @@ import (
 )
 
 func init() {
+	if os.Getenv("NM_FAKE_BIN") == "1" {
+		name := filepath.Base(os.Args[0])
+		if ext := filepath.Ext(name); ext != "" {
+			name = strings.TrimSuffix(name, ext)
+		}
+		switch name {
+		case "git":
+			if len(os.Args) > 1 && os.Args[1] == "--version" {
+				fmt.Fprintln(os.Stdout, "git version 9.9.9")
+				os.Exit(0)
+			}
+			os.Exit(1)
+		case "gh", "claude":
+			os.Exit(0)
+		default:
+			os.Exit(1)
+		}
+	}
 	if os.Getenv("NM_HOOK_HELPER") == "1" {
 		if err := newRootCmd().Execute(); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -138,6 +156,45 @@ func executeCmd(args ...string) (string, error) {
 	return buf.String(), err
 }
 
+func linkTestBinary(t *testing.T, binDir, name string) string {
+	t.Helper()
+
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	dst := filepath.Join(binDir, name)
+	if err := os.Link(exe, dst); err == nil {
+		return dst
+	}
+	data, err := os.ReadFile(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dst, data, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return dst
+}
+
+func makeSocketSafeTempDir(t *testing.T) string {
+	t.Helper()
+
+	base := os.TempDir()
+	if runtime.GOOS != "windows" {
+		base = "/tmp"
+	}
+	dir, err := os.MkdirTemp(base, "nmh-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
+}
+
 func TestRootVersion(t *testing.T) {
 	out, err := executeCmd("--version")
 	if err != nil {
@@ -245,11 +302,7 @@ func TestInitAndEject(t *testing.T) {
 
 func TestInitAndEjectFromWorktreeUseMainRepo(t *testing.T) {
 	repoDir := setupTestRepo(t)
-	nmHome, err := os.MkdirTemp("/tmp", "nmh-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(nmHome) })
+	nmHome := makeSocketSafeTempDir(t)
 	t.Setenv("NM_HOME", nmHome)
 
 	resolvedRepoDir, err := filepath.EvalSymlinks(repoDir)
@@ -450,11 +503,7 @@ func startTestDaemon(t *testing.T, p *paths.Paths, d *db.DB) {
 
 func TestRootDefaultsToAttachWithAndWithoutHistory(t *testing.T) {
 	setupTestRepo(t)
-	nmHome, err := os.MkdirTemp("/tmp", "nmh-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(nmHome) })
+	nmHome := makeSocketSafeTempDir(t)
 	t.Setenv("NM_HOME", nmHome)
 	p := paths.WithRoot(nmHome)
 

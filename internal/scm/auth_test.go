@@ -3,6 +3,7 @@ package scm
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -32,12 +33,15 @@ func TestAuthCheckCommand(t *testing.T) {
 func TestCLIAvailable(t *testing.T) {
 	binDir := t.TempDir()
 	for _, name := range []string{"gh", "bb"} {
+		if runtime.GOOS == "windows" {
+			name += ".exe"
+		}
 		path := filepath.Join(binDir, name)
-		if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		if err := os.WriteFile(path, []byte(""), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
-	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	if !CLIAvailable(ProviderGitHub) {
 		t.Fatal("expected gh to be available")
