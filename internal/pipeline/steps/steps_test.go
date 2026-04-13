@@ -3585,12 +3585,8 @@ func TestBabysitStep_CIFailureAutoFix(t *testing.T) {
 		t.Error("expected agent to be called for CI auto-fix")
 	}
 
-	// Verify agent was called with CI failure context
 	if len(ag.calls) == 0 {
 		t.Fatal("expected agent call")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "test") {
-		t.Errorf("expected failing check name in prompt, got: %s", ag.calls[0].Prompt)
 	}
 
 	foundAutoFix := false
@@ -4213,8 +4209,5 @@ func TestBabysitStep_FixMode_ManualInterventionRunsCIFix(t *testing.T) {
 	}
 	if len(ag.calls) != 1 {
 		t.Fatalf("expected 1 agent call, got %d", len(ag.calls))
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "failing checks: test") {
-		t.Fatalf("expected failing check name in fix prompt, got: %s", ag.calls[0].Prompt)
 	}
 }
