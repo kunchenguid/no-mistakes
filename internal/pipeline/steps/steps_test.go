@@ -1643,6 +1643,30 @@ func TestDocumentStep_Skipped(t *testing.T) {
 	}
 }
 
+func TestDocumentStep_InfoFindingStillRequiresApproval(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: json.RawMessage(`{"findings":[{"severity":"info","description":"README should mention the new flag","requires_human_review":false}],"summary":"README needs updating"}`)}, nil
+		},
+	}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	step := &DocumentStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("expected any documentation finding to require approval")
+	}
+	if !outcome.AutoFixable {
+		t.Fatal("expected info-level documentation finding to remain auto-fixable")
+	}
+}
+
 func TestDocumentStep_AgentError(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
@@ -1767,6 +1791,12 @@ func TestDocumentStep_MissingFindingsFieldRequiresApproval(t *testing.T) {
 	}
 	if !findings.Items[0].RequiresHumanReview {
 		t.Fatal("expected missing findings field finding to require human review")
+	}
+	if findings.Summary != "docs status unavailable" {
+		t.Fatalf("summary = %q, want %q", findings.Summary, "docs status unavailable")
+	}
+	if findings.Items[0].Description != "docs status unavailable" {
+		t.Fatalf("description = %q, want %q", findings.Items[0].Description, "docs status unavailable")
 	}
 	if len(ag.calls) != 1 {
 		t.Fatalf("expected 1 agent call, got %d", len(ag.calls))

@@ -155,28 +155,30 @@ Rules:
 
 	var findings Findings
 	if result.Output == nil {
+		summary := fallbackDocumentSummary(result.Text)
 		sctx.Log("missing structured output, requiring approval")
 		findings = Findings{
 			Items: []Finding{{
 				Severity:            "warning",
-				Description:         fallbackDocumentSummary(result.Text),
+				Description:         summary,
 				RequiresHumanReview: true,
 			}},
-			Summary: fallbackDocumentSummary(result.Text),
+			Summary: summary,
 		}
 	} else if err := unmarshalRequiredFindings(result.Output, &findings); err != nil {
+		summary := fallbackDocumentSummary(extractDocumentSummary(result.Output, result.Text))
 		sctx.Log("could not parse structured output, requiring approval")
 		findings = Findings{
 			Items: []Finding{{
 				Severity:            "warning",
-				Description:         fallbackDocumentSummary(result.Text),
+				Description:         summary,
 				RequiresHumanReview: true,
 			}},
-			Summary: fallbackDocumentSummary(result.Text),
+			Summary: summary,
 		}
 	}
 
-	needsApproval := hasBlockingFindings(findings.Items)
+	needsApproval := len(findings.Items) > 0
 	findingsJSON, _ := json.Marshal(findings)
 	autoFixable := len(types.AutoFixableFindings(findings).Items) > 0
 
@@ -343,6 +345,16 @@ func fallbackDocumentSummary(text string) string {
 		return "agent returned no structured output"
 	}
 	return cleaned
+}
+
+func extractDocumentSummary(raw []byte, fallback string) string {
+	var payload struct {
+		Summary string `json:"summary"`
+	}
+	if err := json.Unmarshal(raw, &payload); err == nil && strings.TrimSpace(payload.Summary) != "" {
+		return payload.Summary
+	}
+	return fallback
 }
 
 func unmarshalRequiredFindings(raw []byte, findings *Findings) error {
