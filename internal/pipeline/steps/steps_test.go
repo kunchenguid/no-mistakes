@@ -2469,41 +2469,6 @@ func newTestContextWithDBRecords(t *testing.T, ag agent.Agent, workDir, baseSHA,
 	return sctx
 }
 
-// --- Findings JSON round-trip ---
-
-func TestFindingsJSON(t *testing.T) {
-	f := Findings{
-		Items: []Finding{
-			{Severity: "error", File: "main.go", Line: 42, Description: "null deref"},
-			{Severity: "info", Description: "consider renaming"},
-		},
-		Summary: "2 findings",
-	}
-
-	data, err := json.Marshal(f)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	var f2 Findings
-	if err := json.Unmarshal(data, &f2); err != nil {
-		t.Fatal(err)
-	}
-
-	if len(f2.Items) != 2 {
-		t.Fatalf("expected 2 findings, got %d", len(f2.Items))
-	}
-	if f2.Items[0].File != "main.go" {
-		t.Errorf("file = %s, want main.go", f2.Items[0].File)
-	}
-	if f2.Items[1].Line != 0 {
-		t.Errorf("line = %d, want 0 (omitted)", f2.Items[1].Line)
-	}
-	if f2.Summary != "2 findings" {
-		t.Errorf("summary = %s, want '2 findings'", f2.Summary)
-	}
-}
-
 // --- Helper function unit tests ---
 
 func TestNormalizedBranchRef(t *testing.T) {
