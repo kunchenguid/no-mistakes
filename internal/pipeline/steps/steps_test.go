@@ -2603,31 +2603,6 @@ func TestPollInterval(t *testing.T) {
 	}
 }
 
-func TestHasPendingChecks(t *testing.T) {
-	tests := []struct {
-		name   string
-		checks []ciCheck
-		want   bool
-	}{
-		{"empty", nil, false},
-		{"all completed", []ciCheck{{Name: "build", Status: "COMPLETED", Conclusion: "success"}}, false},
-		{"queued", []ciCheck{{Name: "build", Status: "QUEUED", Conclusion: ""}}, true},
-		{"in progress", []ciCheck{{Name: "build", Status: "IN_PROGRESS", Conclusion: ""}}, true},
-		{"mixed", []ciCheck{
-			{Name: "build", Status: "COMPLETED", Conclusion: "success"},
-			{Name: "test", Status: "IN_PROGRESS", Conclusion: ""},
-		}, true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := hasPendingChecks(tt.checks)
-			if got != tt.want {
-				t.Errorf("hasPendingChecks() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestBabysitStep_NoPRURL(t *testing.T) {
 	dir := t.TempDir()
 	ag := &mockAgent{name: "test"}
@@ -3697,8 +3672,11 @@ func TestBabysitStep_CIFailureAutoFix(t *testing.T) {
 func TestBabysitStep_AllChecksPassingExitsCleanly(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
-	checksJSON := `[{"name":"build","state":"SUCCESS","bucket":"pass"},{"name":"test","state":"SUCCESS","bucket":"pass"}]`
-	binDir := fakeBabysitGH(t, "OPEN", checksJSON)
+	checksSequence := []string{
+		`[{"name":"build","state":"PENDING","bucket":"pending"}]`,
+		`[{"name":"build","state":"SUCCESS","bucket":"pass"},{"name":"test","state":"SUCCESS","bucket":"pass"}]`,
+	}
+	binDir := fakeBabysitGHSequence(t, "OPEN", checksSequence)
 	prependPATH(t, binDir)
 
 	prURL := "https://github.com/test/repo/pull/42"
@@ -3710,13 +3688,22 @@ func TestBabysitStep_AllChecksPassingExitsCleanly(t *testing.T) {
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
-	step := &BabysitStep{}
+	pollCount := 0
+	step := &BabysitStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			pollCount++
+			return nil
+		},
+	}
 	outcome, err := step.Execute(sctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if outcome.NeedsApproval {
 		t.Error("expected no approval when CI checks are already passing")
+	}
+	if pollCount != 1 {
+		t.Fatalf("expected one poll wait while CI checks were pending, got %d", pollCount)
 	}
 
 	found := false
