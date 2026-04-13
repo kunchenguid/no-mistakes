@@ -2,12 +2,15 @@ package cli
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/gate"
 	"github.com/kunchenguid/no-mistakes/internal/git"
+	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -148,36 +151,64 @@ func TestRunsLimit(t *testing.T) {
 	}
 }
 
-func TestRunsFromWorktree(t *testing.T) {
-	// Init main repo, create a worktree, chdir into it, and verify that
-	// `runs` (via findRepo) finds the repo through the worktree fallback.
+func TestRunsFromWorktreeWithActiveRun(t *testing.T) {
 	repoDir := setupTestRepo(t)
+	nmHome := os.Getenv("NM_HOME")
+	p := paths.WithRoot(nmHome)
 
-	_, err := executeCmd("init")
+	d, err := db.Open(p.DB())
 	if err != nil {
-		t.Fatalf("init failed: %v", err)
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	if _, err := gate.Init(context.Background(), d, p, repoDir); err != nil {
+		t.Fatalf("gate.Init failed: %v", err)
 	}
 
-	// Create a branch and a worktree.
-	run(t, repoDir, "git", "checkout", "-b", "wt-branch")
+	run(t, repoDir, "git", "checkout", "-b", "wt-runs-branch")
 	run(t, repoDir, "git", "checkout", "-")
 	wtDir := filepath.Join(t.TempDir(), "worktree")
 	ctx := context.Background()
-	if err := git.WorktreeAdd(ctx, repoDir, wtDir, "wt-branch"); err != nil {
+	if err := git.WorktreeAdd(ctx, repoDir, wtDir, "wt-runs-branch"); err != nil {
 		t.Fatalf("WorktreeAdd failed: %v", err)
 	}
 	t.Cleanup(func() { git.WorktreeRemove(ctx, repoDir, wtDir) })
 
-	// Move into the worktree directory.
+	gitRoot, err := git.FindGitRoot(repoDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := d.GetRepoByPath(gitRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := d.InsertRun(repo.ID, "wt-runs-branch", "abc123456789", "0000000000000000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(r.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+
 	chdir(t, wtDir)
 
-	// `runs` should succeed because findRepo falls back to the main repo root.
 	out, err := executeCmd("runs")
 	if err != nil {
 		t.Fatalf("runs from worktree failed: %v\noutput: %s", err, out)
 	}
-	if !strings.Contains(out, "no runs") {
-		t.Errorf("runs output should say 'no runs', got: %s", out)
+	if !strings.Contains(out, "wt-runs-branch") {
+		t.Errorf("expected worktree branch in runs output, got: %s", out)
+	}
+	if !strings.Contains(out, "running") {
+		t.Errorf("expected running status in runs output, got: %s", out)
+	}
+	if !strings.Contains(out, "abc12345") {
+		t.Errorf("expected truncated head SHA in runs output, got: %s", out)
+	}
+	if strings.Contains(out, "no runs") {
+		t.Errorf("runs output should show the active run instead of empty-state text, got: %s", out)
 	}
 }
 
