@@ -253,6 +253,7 @@ Diff stat:
 			content.Title = strings.TrimSpace(content.Title)
 			content.Body = strings.TrimSpace(content.Body)
 			content.Body = unwrapNestedPRBody(content.Body)
+			content.Body = stripGeneratedSections(content.Body)
 			if content.Title != "" && content.Body != "" {
 				if !isConventionalTitle(content.Title) {
 					slog.Warn("agent PR title is not conventional commit format, prepending chore:", "title", content.Title)
@@ -310,6 +311,7 @@ func unwrapNestedPRBody(body string) string {
 
 // appendGeneratedSections appends deterministic sections after the agent's body.
 func appendGeneratedSections(body, riskLine, testingMD, pipelineMD string) string {
+	body = stripGeneratedSections(body)
 	if riskLine != "" {
 		body += "\n\n## Risk Assessment\n\n" + riskLine
 	}
@@ -320,6 +322,49 @@ func appendGeneratedSections(body, riskLine, testingMD, pipelineMD string) strin
 		body += "\n\n" + pipelineMD
 	}
 	return body
+}
+
+func stripGeneratedSections(body string) string {
+	if body == "" {
+		return ""
+	}
+
+	lines := strings.Split(body, "\n")
+	out := make([]string, 0, len(lines))
+	skipping := false
+
+	for _, raw := range lines {
+		line := strings.TrimSpace(raw)
+
+		if skipping {
+			if strings.HasPrefix(line, "## ") {
+				if isGeneratedSectionHeading(line) {
+					continue
+				}
+				skipping = false
+			} else {
+				continue
+			}
+		}
+
+		if isGeneratedSectionHeading(line) {
+			skipping = true
+			continue
+		}
+
+		out = append(out, raw)
+	}
+
+	return strings.TrimSpace(strings.Join(out, "\n"))
+}
+
+func isGeneratedSectionHeading(line string) bool {
+	switch strings.TrimSpace(line) {
+	case "## Risk Assessment", "## Testing", "## Pipeline":
+		return true
+	default:
+		return false
+	}
 }
 
 func fallbackPRContent(branch, commitLog, riskLine, testingMD, pipelineMD string) prContent {

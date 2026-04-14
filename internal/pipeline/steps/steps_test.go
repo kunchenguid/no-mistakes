@@ -3634,6 +3634,30 @@ func TestUnwrapNestedPRBody(t *testing.T) {
 	}
 }
 
+func TestAppendGeneratedSections_StripsAgentGeneratedSections(t *testing.T) {
+	body := "## Summary\n\n- improve PR descriptions\n\n## Testing\n\n- model-added testing\n\n## Risk Assessment\n\nold risk\n\n## Pipeline\n\nold pipeline"
+
+	got := appendGeneratedSections(
+		body,
+		"real risk",
+		"## Testing\n\n- deterministic testing",
+		"## Pipeline\n\n- deterministic pipeline",
+	)
+
+	if strings.Count(got, "## Testing") != 1 {
+		t.Fatalf("expected one Testing section, got:\n%s", got)
+	}
+	if strings.Count(got, "## Risk Assessment") != 1 {
+		t.Fatalf("expected one Risk Assessment section, got:\n%s", got)
+	}
+	if strings.Count(got, "## Pipeline") != 1 {
+		t.Fatalf("expected one Pipeline section, got:\n%s", got)
+	}
+	if strings.Contains(got, "model-added testing") || strings.Contains(got, "old risk") || strings.Contains(got, "old pipeline") {
+		t.Fatalf("expected generated sections to replace agent-provided ones, got:\n%s", got)
+	}
+}
+
 func fakeGlab(t *testing.T, mrViewJSON string) (binDir string, logFile string) {
 	t.Helper()
 	binDir = fakeCLIBinDir(t)
