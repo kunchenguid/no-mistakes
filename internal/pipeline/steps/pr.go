@@ -269,7 +269,7 @@ Diff stat:
 }
 
 // buildPipelineSection queries step results and rounds from the DB and
-// produces the deterministic pipeline markdown section.
+// produces the deterministic pipeline, risk, and testing sections.
 func (s *PRStep) buildPipelineSection(sctx *pipeline.StepContext) (string, string, string) {
 	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
 	if err != nil {
