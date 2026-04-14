@@ -257,6 +257,7 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("invalid params: %w", err)
 		}
+		slog.Info("push received", "ref", p.Ref, "old", p.Old, "new", p.New, "gate", p.Gate)
 		runID, err := mgr.HandlePushReceived(ctx, &p)
 		if err != nil {
 			return nil, err
