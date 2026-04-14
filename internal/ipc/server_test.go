@@ -268,10 +268,18 @@ func TestServerClose(t *testing.T) {
 		t.Errorf("Serve returned unexpected error: %v", err)
 	}
 
-	// dial should fail after close
-	_, err = ipc.Dial(sock)
-	if err == nil {
-		t.Error("expected dial to fail after server close")
+	// dial should fail after close (on Windows named pipes may need a moment)
+	dialDeadline := time.Now().Add(2 * time.Second)
+	for {
+		_, dialErr := ipc.Dial(sock)
+		if dialErr != nil {
+			break
+		}
+		if time.Now().After(dialDeadline) {
+			t.Error("expected dial to fail after server close")
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 

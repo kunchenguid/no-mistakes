@@ -159,8 +159,10 @@ func DefaultBranch(ctx context.Context, dir, remote string) string {
 }
 
 // FetchRemoteBranch fetches a single branch into a remote-tracking ref.
+// Uses a force-update refspec (+) so non-fast-forward updates (e.g. after
+// a force push on the remote) are accepted instead of silently rejected.
 func FetchRemoteBranch(ctx context.Context, dir, remote, branch string) error {
-	refspec := fmt.Sprintf("refs/heads/%s:refs/remotes/%s/%s", branch, remote, branch)
+	refspec := fmt.Sprintf("+refs/heads/%s:refs/remotes/%s/%s", branch, remote, branch)
 	_, err := Run(ctx, dir, "fetch", "--no-tags", remote, refspec)
 	return err
 }

@@ -3,8 +3,10 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -27,17 +29,41 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 		defaultBranch = "main"
 	}
 
+	// Detect force push before fetching so we can skip origin/<branch> sync.
+	// A force push means the user explicitly rewrote the branch - the pushed
+	// commit is authoritative and must not be overwritten by prior pipeline
+	// state on the remote.
+	forcePush := isForcePush(ctx, sctx.WorkDir, branch, sctx.Run.BaseSHA)
+
 	sctx.Log("fetching latest upstream state...")
 	if err := git.FetchRemoteBranch(ctx, sctx.WorkDir, "origin", defaultBranch); err != nil {
 		sctx.LogFile(fmt.Sprintf("warning: could not fetch origin/%s: %v", defaultBranch, err))
 	}
-	if branch != "" && branch != defaultBranch {
+	if !forcePush && branch != "" && branch != defaultBranch {
 		if err := git.FetchRemoteBranch(ctx, sctx.WorkDir, "origin", branch); err != nil {
 			sctx.LogFile(fmt.Sprintf("warning: could not fetch origin/%s: %v", branch, err))
 		}
 	}
+	if forcePush && branch == defaultBranch && remoteDefaultBranchAdvanced(ctx, sctx.WorkDir, defaultBranch, sctx.Run.BaseSHA) {
+		findingsJSON, _ := json.Marshal(Findings{
+			Items: []Finding{{
+				Severity:    "warning",
+				File:        filepath.Join("internal", "pipeline", "steps", "rebase.go"),
+				Description: fmt.Sprintf("origin/%s advanced after the force push; manual review required before updating the default branch", defaultBranch),
+			}},
+			Summary: fmt.Sprintf("remote %s advanced during force push", defaultBranch),
+		})
+		return &pipeline.StepOutcome{
+			NeedsApproval: true,
+			Findings:      string(findingsJSON),
+		}, nil
+	}
 
 	targets := rebaseTargets(branch, defaultBranch)
+	if forcePush {
+		sctx.Log("force push detected, skipping origin/" + branch + " sync")
+		targets = forcePushRebaseTargets(branch, defaultBranch)
+	}
 
 	if sctx.Fixing {
 		for _, target := range targets {
@@ -91,6 +117,71 @@ func rebaseTargets(branch, defaultBranch string) []string {
 		targets = append(targets, "origin/"+defaultBranch)
 	}
 	return targets
+}
+
+// forcePushRebaseTargets returns rebase targets for a force push. The
+// origin/<branch> target is skipped because it may contain autofix commits
+// from prior pipeline runs that the force push intended to discard.
+func forcePushRebaseTargets(branch, defaultBranch string) []string {
+	if branch == defaultBranch {
+		return nil
+	}
+	return []string{"origin/" + defaultBranch}
+}
+
+func remoteDefaultBranchAdvanced(ctx context.Context, workDir, defaultBranch, baseSHA string) bool {
+	if baseSHA == "" || git.IsZeroSHA(baseSHA) {
+		return false
+	}
+	remoteSHA, err := git.Run(ctx, workDir, "rev-parse", "--verify", "origin/"+defaultBranch)
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(remoteSHA) != baseSHA
+}
+
+// isForcePush returns true when the current push is non-fast-forward relative
+// to the previous push (baseSHA). This indicates the user explicitly rewrote
+// history and the pipeline should treat the new HEAD as authoritative.
+func isForcePush(ctx context.Context, workDir, branch, baseSHA string) bool {
+	if git.IsZeroSHA(baseSHA) || baseSHA == "" {
+		return false
+	}
+	_, err := git.Run(ctx, workDir, "merge-base", "--is-ancestor", baseSHA, "HEAD")
+	if err == nil {
+		return false
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		return false
+	}
+	if branch != "" {
+		remoteSHA, err := git.LsRemote(ctx, workDir, "origin", "refs/heads/"+branch)
+		if err == nil && remoteSHA != "" {
+			_, err := git.Run(ctx, workDir, "merge-base", "--is-ancestor", remoteSHA, "HEAD")
+			if err == nil {
+				return false
+			}
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+				return true
+			}
+		}
+		remoteRef := "origin/" + branch
+		if _, err := git.Run(ctx, workDir, "rev-parse", "--verify", remoteRef); err == nil {
+			return isRemoteBranchRewritten(ctx, workDir, remoteRef)
+		}
+	}
+	return false
+}
+
+func isRemoteBranchRewritten(ctx context.Context, workDir, remoteRef string) bool {
+	_, err := git.Run(ctx, workDir, "merge-base", "--is-ancestor", remoteRef, "HEAD")
+	if err == nil {
+		return false
+	}
+	var exitErr *exec.ExitError
+	return errors.As(err, &exitErr) && exitErr.ExitCode() == 1
 }
 
 // tryRebase attempts a rebase onto targetRef. Returns conflicted files when the
