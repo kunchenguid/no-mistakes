@@ -5603,6 +5603,40 @@ func TestModel_FixingEventDoesNotFreezeDuration(t *testing.T) {
 	t.Fatal("Review step not found")
 }
 
+// Test: When a running step auto-fixes (no approval in between), the live timer
+// must continue accumulating from the original start time, not reset to 0.
+func TestModel_AutoFixPreservesAccumulatedElapsed(t *testing.T) {
+	configureTUIColors()
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusRunning
+
+	m := NewModel("", nil, run)
+	m.stepStartTimes[types.StepReview] = time.Now().Add(-5 * time.Second)
+
+	fixingStatus := string(types.StepStatusFixing)
+	stepName := types.StepReview
+	m.applyEvent(ipc.Event{
+		Type:     ipc.EventStepCompleted,
+		StepName: &stepName,
+		Status:   &fixingStatus,
+	})
+
+	// stepsWithRunningElapsed should report ~5s of accumulated time, not 0.
+	elapsed := m.stepsWithRunningElapsed()
+	for _, s := range elapsed {
+		if s.StepName == types.StepReview {
+			if s.DurationMS == nil {
+				t.Fatal("expected stepsWithRunningElapsed to compute live elapsed for Fixing step")
+			}
+			if *s.DurationMS < 4500 {
+				t.Errorf("expected accumulated elapsed >= 4500ms, got %dms (timer reset to 0)", *s.DurationMS)
+			}
+			return
+		}
+	}
+	t.Fatal("Review step not found")
+}
+
 // Test: When a step already has DurationMS persisted (e.g. from AwaitingApproval)
 // and then transitions to Fixing, the stale DurationMS must be cleared and the
 // live timer must accumulate from the previous execution time.
