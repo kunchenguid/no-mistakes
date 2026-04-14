@@ -48,7 +48,8 @@ type findingsWire struct {
 	RiskRationale string    `json:"risk_rationale"`
 }
 
-// ParseFindingsJSON decodes findings JSON, accepting both current and legacy item keys.
+// ParseFindingsJSON decodes findings JSON, accepting current and legacy item
+// keys plus legacy requires_human_review fields.
 func ParseFindingsJSON(raw string) (Findings, error) {
 	var wire findingsWire
 	if err := json.Unmarshal([]byte(raw), &wire); err != nil {
