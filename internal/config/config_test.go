@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -868,7 +869,12 @@ func TestResolveAgent_AutoSkipsRovoDevWithoutSubcommand(t *testing.T) {
 func TestResolveAgent_AutoReturnsRovoDevProbeExitError(t *testing.T) {
 	cfg := &Config{Agent: types.AgentAuto}
 	script := filepath.Join(t.TempDir(), "acli")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+	contents := []byte("#!/bin/sh\nexit 1\n")
+	if runtime.GOOS == "windows" {
+		script += ".cmd"
+		contents = []byte("@echo off\r\nexit /b 1\r\n")
+	}
+	if err := os.WriteFile(script, contents, 0o755); err != nil {
 		t.Fatalf("write probe script: %v", err)
 	}
 
