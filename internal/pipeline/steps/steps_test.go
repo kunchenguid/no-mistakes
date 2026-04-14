@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -48,6 +50,8 @@ func handleFakeCLI(mode string) {
 		fakeGHHandler(args)
 	case "glab":
 		fakeGlabHandler(args)
+	case "git-passthrough":
+		fakeGitPassthroughHandler(args)
 	case "git-status-error":
 		fakeGitStatusErrorHandler(args)
 	case "ci-gh":
@@ -89,6 +93,15 @@ func fakeGitStatusErrorHandler(args []string) {
 		fmt.Fprintln(os.Stderr, "status failed")
 		os.Exit(1)
 	}
+	fakeGitForward(args, realGit)
+}
+
+func fakeGitPassthroughHandler(args []string) {
+	realGit := os.Getenv("FAKE_CLI_REAL_GIT")
+	fakeGitForward(args, realGit)
+}
+
+func fakeGitForward(args []string, realGit string) {
 	if realGit == "" {
 		fmt.Fprintln(os.Stderr, "missing FAKE_CLI_REAL_GIT")
 		os.Exit(1)
@@ -267,31 +280,99 @@ func lastCommitMessage(t *testing.T, dir string) string {
 	return gitCmd(t, dir, "log", "-1", "--pretty=%s")
 }
 
+// gitRepoTemplate holds a cached template repo that setupGitRepo copies from
+// instead of running git init + config + commits each time.
+var gitRepoTemplate struct {
+	once    sync.Once
+	dir     string
+	baseSHA string
+	headSHA string
+}
+
+func ensureGitRepoTemplate(t *testing.T) {
+	t.Helper()
+	gitRepoTemplate.once.Do(func() {
+		dir, err := os.MkdirTemp("", "git-template-*")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		run := func(args ...string) string {
+			cmd := exec.Command("git", args...)
+			cmd.Dir = dir
+			cmd.Env = append(os.Environ(),
+				"GIT_AUTHOR_NAME=test",
+				"GIT_AUTHOR_EMAIL=test@test.com",
+				"GIT_COMMITTER_NAME=test",
+				"GIT_COMMITTER_EMAIL=test@test.com",
+			)
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				panic(fmt.Sprintf("git %v: %v: %s", args, err, out))
+			}
+			return strings.TrimSpace(string(out))
+		}
+
+		run("init")
+		run("config", "user.name", "test")
+		run("config", "user.email", "test@test.com")
+		run("checkout", "-b", "main")
+
+		os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base content"), 0o644)
+		run("add", "-A")
+		run("commit", "-m", "base commit")
+		gitRepoTemplate.baseSHA = run("rev-parse", "HEAD")
+
+		run("checkout", "-b", "feature")
+		os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature code\n"), 0o644)
+		run("add", "-A")
+		run("commit", "-m", "add feature")
+		gitRepoTemplate.headSHA = run("rev-parse", "HEAD")
+
+		gitRepoTemplate.dir = dir
+	})
+}
+
 // setupGitRepo creates a git repo with a base commit on main and a head commit on feature.
 // Returns (repoDir, baseSHA, headSHA).
+// Uses a cached template repo and copies it via cp -a for speed.
 func setupGitRepo(t *testing.T) (string, string, string) {
 	t.Helper()
+	ensureGitRepoTemplate(t)
+
 	dir := t.TempDir()
+	if err := copyDirContents(gitRepoTemplate.dir, dir); err != nil {
+		t.Fatalf("copy template repo: %v", err)
+	}
 
-	gitCmd(t, dir, "init")
-	gitCmd(t, dir, "config", "user.name", "test")
-	gitCmd(t, dir, "config", "user.email", "test@test.com")
-	gitCmd(t, dir, "checkout", "-b", "main")
+	return dir, gitRepoTemplate.baseSHA, gitRepoTemplate.headSHA
+}
 
-	// Base commit
-	os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base content"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "base commit")
-	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+func TestCopyDirContents_PreservesGitRepo(t *testing.T) {
+	t.Parallel()
+	ensureGitRepoTemplate(t)
 
-	// Feature branch with changes
-	gitCmd(t, dir, "checkout", "-b", "feature")
-	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature code\n"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "add feature")
+	dir := t.TempDir()
+	if err := copyDirContents(gitRepoTemplate.dir, dir); err != nil {
+		t.Fatal(err)
+	}
+
 	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	if headSHA != gitRepoTemplate.headSHA {
+		t.Fatalf("HEAD = %q, want %q", headSHA, gitRepoTemplate.headSHA)
+	}
 
-	return dir, baseSHA, headSHA
+	status := gitCmd(t, dir, "status", "--short")
+	if status != "" {
+		t.Fatalf("expected clean copied repo, got %q", status)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
+		t.Fatalf("stat .git: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "feature.txt")); err != nil {
+		t.Fatalf("stat feature.txt: %v", err)
+	}
 }
 
 // newTestContext creates a StepContext for testing with optional config overrides.
@@ -321,6 +402,7 @@ func newTestContext(t *testing.T, ag agent.Agent, workDir, baseSHA, headSHA stri
 // --- common tests ---
 
 func TestResolveBaseSHA_NonZero(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	got := resolveBaseSHA(context.Background(), dir, "abc123", "main")
 	if got != "abc123" {
@@ -329,6 +411,7 @@ func TestResolveBaseSHA_NonZero(t *testing.T) {
 }
 
 func TestResolveBaseSHA_ZeroWithMergeBase(t *testing.T) {
+	t.Parallel()
 	// Create a repo with main branch and feature branch diverging
 	dir := t.TempDir()
 	gitCmd(t, dir, "init")
@@ -353,6 +436,7 @@ func TestResolveBaseSHA_ZeroWithMergeBase(t *testing.T) {
 }
 
 func TestResolveBaseSHA_ZeroNoDefaultBranch(t *testing.T) {
+	t.Parallel()
 	// Repo with no "main" branch — should fall back to empty tree SHA
 	dir := t.TempDir()
 	gitCmd(t, dir, "init")
@@ -371,6 +455,7 @@ func TestResolveBaseSHA_ZeroNoDefaultBranch(t *testing.T) {
 }
 
 func TestRunShellCommand(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	t.Run("success", func(t *testing.T) {
@@ -398,6 +483,7 @@ func TestRunShellCommand(t *testing.T) {
 }
 
 func TestAllSteps(t *testing.T) {
+	t.Parallel()
 	steps := AllSteps()
 	if len(steps) != 8 {
 		t.Fatalf("AllSteps() returned %d steps, want 8", len(steps))
@@ -411,6 +497,7 @@ func TestAllSteps(t *testing.T) {
 }
 
 func TestRebaseStep_RebasesOntoDefaultBranch(t *testing.T) {
+	t.Parallel()
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
 
@@ -470,6 +557,7 @@ func TestRebaseStep_RebasesOntoDefaultBranch(t *testing.T) {
 }
 
 func TestRebaseStep_ConflictReturnsFindings(t *testing.T) {
+	t.Parallel()
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
 
@@ -534,6 +622,7 @@ func TestRebaseStep_ConflictReturnsFindings(t *testing.T) {
 }
 
 func TestRebaseStep_ConflictTriesAllTargets(t *testing.T) {
+	t.Parallel()
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
 
@@ -611,6 +700,7 @@ func TestRebaseStep_ConflictTriesAllTargets(t *testing.T) {
 }
 
 func TestRebaseStep_ConflictFindingsIncludeFiles(t *testing.T) {
+	t.Parallel()
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
 
@@ -669,6 +759,7 @@ func TestRebaseStep_ConflictFindingsIncludeFiles(t *testing.T) {
 }
 
 func TestRebaseStep_FixModeCallsAgent(t *testing.T) {
+	t.Parallel()
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
 
@@ -760,6 +851,7 @@ func TestRebaseStep_FixModeCallsAgent(t *testing.T) {
 }
 
 func TestRebaseStep_FixModeNonConflictFailureReturnsError(t *testing.T) {
+	t.Parallel()
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
 
@@ -809,6 +901,7 @@ func TestRebaseStep_FixModeNonConflictFailureReturnsError(t *testing.T) {
 }
 
 func TestRebaseStep_NonConflictFailureWithRebaseMetadataReturnsError(t *testing.T) {
+	t.Parallel()
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
 
@@ -865,6 +958,7 @@ func TestRebaseStep_NonConflictFailureWithRebaseMetadataReturnsError(t *testing.
 }
 
 func TestRebaseStep_LogFileNotVisibleToUser(t *testing.T) {
+	t.Parallel()
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
 
@@ -921,6 +1015,7 @@ func TestRebaseStep_LogFileNotVisibleToUser(t *testing.T) {
 }
 
 func TestRebaseStep_EmptyDiffAfterRebase_SkipsRemaining(t *testing.T) {
+	t.Parallel()
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
 
@@ -965,6 +1060,7 @@ func TestRebaseStep_EmptyDiffAfterRebase_SkipsRemaining(t *testing.T) {
 }
 
 func TestRebaseStep_NonEmptyDiffAfterRebase_DoesNotSkip(t *testing.T) {
+	t.Parallel()
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
 
@@ -1011,6 +1107,7 @@ func TestRebaseStep_NonEmptyDiffAfterRebase_DoesNotSkip(t *testing.T) {
 }
 
 func TestRebaseStep_ForcePushSkipsOriginBranch(t *testing.T) {
+	t.Parallel()
 	// Simulate the scenario that caused the bug: user force-pushes a commit,
 	// but origin/<branch> on the upstream remote has autofix commits from a
 	// prior pipeline run. The rebase step should skip origin/<branch> entirely
@@ -1088,6 +1185,7 @@ func TestRebaseStep_ForcePushSkipsOriginBranch(t *testing.T) {
 }
 
 func TestRebaseStep_ForcePushOnDefaultBranchSkipsRemoteSync(t *testing.T) {
+	t.Parallel()
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
 
@@ -1145,6 +1243,7 @@ func TestRebaseStep_ForcePushOnDefaultBranchSkipsRemoteSync(t *testing.T) {
 }
 
 func TestRebaseStep_ForcePushOnDefaultBranchAllowsRewrittenRemoteHead(t *testing.T) {
+	t.Parallel()
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
 
@@ -1201,6 +1300,7 @@ func TestRebaseStep_ForcePushOnDefaultBranchAllowsRewrittenRemoteHead(t *testing
 }
 
 func TestRebaseStep_ForcePushOnDefaultBranchStopsWhenRemoteAdvanced(t *testing.T) {
+	t.Parallel()
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
 
@@ -1262,6 +1362,7 @@ func TestRebaseStep_ForcePushOnDefaultBranchStopsWhenRemoteAdvanced(t *testing.T
 }
 
 func TestRebaseStep_NormalPushSyncsOriginBranch(t *testing.T) {
+	t.Parallel()
 	// Verify that a normal (non-force) push still syncs with origin/<branch>.
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
@@ -1317,6 +1418,7 @@ func TestRebaseStep_NormalPushSyncsOriginBranch(t *testing.T) {
 }
 
 func TestIsForcePush_IgnoresMergeBaseLookupErrors(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	gitCmd(t, dir, "init")
 	gitCmd(t, dir, "config", "user.name", "test")
@@ -1332,6 +1434,7 @@ func TestIsForcePush_IgnoresMergeBaseLookupErrors(t *testing.T) {
 }
 
 func TestIsForcePush_RerunAfterNormalRebaseIsNotForcePush(t *testing.T) {
+	t.Parallel()
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
 
@@ -1371,6 +1474,7 @@ func TestIsForcePush_RerunAfterNormalRebaseIsNotForcePush(t *testing.T) {
 }
 
 func TestIsForcePush_RerunWithoutLocalRemoteRefIsNotForcePush(t *testing.T) {
+	t.Parallel()
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
 
@@ -1419,6 +1523,7 @@ func TestIsForcePush_RerunWithoutLocalRemoteRefIsNotForcePush(t *testing.T) {
 }
 
 func TestIsForcePush_StaleLocalRemoteRefUsesAuthoritativeRemoteTip(t *testing.T) {
+	t.Parallel()
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
 
@@ -1468,6 +1573,7 @@ func TestIsForcePush_StaleLocalRemoteRefUsesAuthoritativeRemoteTip(t *testing.T)
 }
 
 func TestIsForcePush_LsRemoteFailureIsNotForcePush(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	gitCmd(t, dir, "init")
 	gitCmd(t, dir, "config", "user.name", "test")
@@ -1491,6 +1597,7 @@ func TestIsForcePush_LsRemoteFailureIsNotForcePush(t *testing.T) {
 }
 
 func TestIsForcePush_MissingRemoteObjectIsNotForcePush(t *testing.T) {
+	t.Parallel()
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
 
@@ -1534,6 +1641,7 @@ func TestIsForcePush_MissingRemoteObjectIsNotForcePush(t *testing.T) {
 // --- Review step tests ---
 
 func TestReviewStep_EmptyDiff(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	gitCmd(t, dir, "init")
 	gitCmd(t, dir, "config", "user.name", "test")
@@ -1562,6 +1670,7 @@ func TestReviewStep_EmptyDiff(t *testing.T) {
 }
 
 func TestReviewStep_WithWarnings(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	findings := Findings{
@@ -1610,6 +1719,7 @@ func TestReviewStep_WithWarnings(t *testing.T) {
 }
 
 func TestReviewStep_Clean(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	findings := Findings{
@@ -1637,6 +1747,7 @@ func TestReviewStep_Clean(t *testing.T) {
 }
 
 func TestReviewStep_AgentError(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	ag := &mockAgent{
@@ -1658,6 +1769,7 @@ func TestReviewStep_AgentError(t *testing.T) {
 }
 
 func TestReviewStep_ZeroBaseSHA(t *testing.T) {
+	t.Parallel()
 	// New branch scenario: baseSHA is all-zeros
 	dir := t.TempDir()
 	gitCmd(t, dir, "init")
@@ -1710,6 +1822,7 @@ func TestReviewStep_ZeroBaseSHA(t *testing.T) {
 }
 
 func TestReviewStep_ExistingBranchUsesMergeBaseScope(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	gitCmd(t, dir, "init")
 	gitCmd(t, dir, "config", "user.name", "test")
@@ -1756,6 +1869,7 @@ func TestReviewStep_ExistingBranchUsesMergeBaseScope(t *testing.T) {
 }
 
 func TestReviewStep_FixMode(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	gitCmd(t, dir, "checkout", "--detach", headSHA)
 
@@ -1843,6 +1957,7 @@ func TestReviewStep_FixMode(t *testing.T) {
 // --- Test step tests ---
 
 func TestTestStep_PassingCommand(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContext(t, ag, dir, "abc", "def", config.Commands{Test: "true"})
@@ -1861,6 +1976,7 @@ func TestTestStep_PassingCommand(t *testing.T) {
 }
 
 func TestTestStep_FailingCommand(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContext(t, ag, dir, "abc", "def", config.Commands{Test: "exit 1"})
@@ -1888,6 +2004,7 @@ func TestTestStep_FailingCommand(t *testing.T) {
 }
 
 func TestTestStep_NoCommand_AgentDetects(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	findings := Findings{Items: nil, Summary: "all tests passed"}
@@ -1918,6 +2035,7 @@ func TestTestStep_NoCommand_AgentDetects(t *testing.T) {
 }
 
 func TestTestStep_NoCommand_MalformedAgentOutput(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	ag := &mockAgent{
@@ -1946,6 +2064,7 @@ func TestTestStep_NoCommand_MalformedAgentOutput(t *testing.T) {
 }
 
 func TestLintStep_NoCommand_MalformedAgentOutput(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	ag := &mockAgent{
@@ -1974,6 +2093,7 @@ func TestLintStep_NoCommand_MalformedAgentOutput(t *testing.T) {
 }
 
 func TestTestStep_FixMode(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	gitCmd(t, dir, "checkout", "--detach", headSHA)
 	previousFindings := `{"items":[{"id":"test-1 =======","severity":"error","file":"internal/pipeline/steps/test.go >>>>>>> prompt","description":"tests failed with exit code 1 <<<<<<< HEAD"}],"summary":"FAIL: TestFoo expected 42 got 0 ======="}`
@@ -2026,6 +2146,7 @@ func TestTestStep_FixMode(t *testing.T) {
 }
 
 func TestLintStep_FixMode_CommitsChanges(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	gitCmd(t, dir, "checkout", "--detach", headSHA)
 	previousFindings := `{"items":[{"id":"lint-1 =======","severity":"warning","file":"internal/pipeline/steps/lint.go >>>>>>> prompt","description":"linter found issues (exit code 1) <<<<<<< HEAD"}],"summary":"main.go:10: unused variable x ======="}`
@@ -2079,6 +2200,7 @@ func TestLintStep_FixMode_CommitsChanges(t *testing.T) {
 }
 
 func TestLintStep_FixMode_UsesFallbackSummaryWhenStructuredSummaryMalformed(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	gitCmd(t, dir, "checkout", "--detach", headSHA)
 
@@ -2106,6 +2228,7 @@ func TestLintStep_FixMode_UsesFallbackSummaryWhenStructuredSummaryMalformed(t *t
 // --- Lint step tests ---
 
 func TestLintStep_PassingCommand(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContext(t, ag, dir, "abc", "def", config.Commands{Lint: "true"})
@@ -2121,6 +2244,7 @@ func TestLintStep_PassingCommand(t *testing.T) {
 }
 
 func TestLintStep_FailingCommand(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	ag := &mockAgent{name: "test"}
 	lintCmd := "echo 'lint error'; exit 1"
@@ -2149,6 +2273,7 @@ func TestLintStep_FailingCommand(t *testing.T) {
 }
 
 func TestLintStep_NoCommand(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	findings := Findings{Items: nil, Summary: "no lint issues"}
@@ -2181,6 +2306,7 @@ func TestLintStep_NoCommand(t *testing.T) {
 // --- Document step tests ---
 
 func TestDocumentStep_EmptyDiff(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	gitCmd(t, dir, "init")
 	gitCmd(t, dir, "config", "user.name", "test")
@@ -2208,6 +2334,7 @@ func TestDocumentStep_EmptyDiff(t *testing.T) {
 }
 
 func TestDocumentStep_Updated(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	ag := &mockAgent{
@@ -2260,6 +2387,7 @@ func TestDocumentStep_Updated(t *testing.T) {
 }
 
 func TestDocumentStep_Skipped(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	ag := &mockAgent{
@@ -2284,6 +2412,7 @@ func TestDocumentStep_Skipped(t *testing.T) {
 }
 
 func TestDocumentStep_InfoFindingStillRequiresApproval(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	ag := &mockAgent{
@@ -2308,6 +2437,7 @@ func TestDocumentStep_InfoFindingStillRequiresApproval(t *testing.T) {
 }
 
 func TestDocumentStep_AgentError(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	ag := &mockAgent{
@@ -2329,6 +2459,7 @@ func TestDocumentStep_AgentError(t *testing.T) {
 }
 
 func TestDocumentStep_MalformedOutput(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	ag := &mockAgent{
@@ -2366,6 +2497,7 @@ func TestDocumentStep_MalformedOutput(t *testing.T) {
 }
 
 func TestDocumentStep_NoStructuredOutputRequiresApproval(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	ag := &mockAgent{
@@ -2400,6 +2532,7 @@ func TestDocumentStep_NoStructuredOutputRequiresApproval(t *testing.T) {
 }
 
 func TestDocumentStep_MissingFindingsFieldRequiresApproval(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	ag := &mockAgent{
@@ -2444,6 +2577,7 @@ func TestDocumentStep_MissingFindingsFieldRequiresApproval(t *testing.T) {
 }
 
 func TestDocumentStep_MalformedFindingRequiresApproval(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	ag := &mockAgent{
@@ -2484,6 +2618,7 @@ func TestDocumentStep_MalformedFindingRequiresApproval(t *testing.T) {
 }
 
 func TestDocumentStep_LegacyFindingsStayAutoFixable(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	ag := &mockAgent{
@@ -2521,6 +2656,7 @@ func TestDocumentStep_LegacyFindingsStayAutoFixable(t *testing.T) {
 }
 
 func TestDocumentStep_MissingSummaryRequiresApproval(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	ag := &mockAgent{
@@ -2561,6 +2697,7 @@ func TestDocumentStep_MissingSummaryRequiresApproval(t *testing.T) {
 }
 
 func TestDocumentStep_PromptIncludesIgnorePatterns(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	ag := &mockAgent{
@@ -2586,6 +2723,7 @@ func TestDocumentStep_PromptIncludesIgnorePatterns(t *testing.T) {
 }
 
 func TestDocumentStep_IgnorePatternsFilterAllFiles(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	gitCmd(t, dir, "init")
@@ -2621,6 +2759,7 @@ func TestDocumentStep_IgnorePatternsFilterAllFiles(t *testing.T) {
 }
 
 func TestDocumentStep_FixMode_CommitsAndReassesses(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	gitCmd(t, dir, "checkout", "--detach", headSHA)
 
@@ -2666,6 +2805,7 @@ func TestDocumentStep_FixMode_CommitsAndReassesses(t *testing.T) {
 }
 
 func TestDocumentStep_FixMode_StillNeedsWorkAfterFix(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	gitCmd(t, dir, "checkout", "--detach", headSHA)
 
@@ -2711,6 +2851,7 @@ func TestDocumentStep_FixMode_StillNeedsWorkAfterFix(t *testing.T) {
 }
 
 func TestDocumentStep_FixMode_NoChangesStillReassesses(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	gitCmd(t, dir, "checkout", "--detach", headSHA)
 
@@ -2745,6 +2886,7 @@ func TestDocumentStep_FixMode_NoChangesStillReassesses(t *testing.T) {
 }
 
 func TestDocumentStep_FixMode_RequiresPreviousFindings(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	ag := &mockAgent{name: "test"}
@@ -2764,6 +2906,7 @@ func TestDocumentStep_FixMode_RequiresPreviousFindings(t *testing.T) {
 // --- Push step tests ---
 
 func TestPushStep_Success(t *testing.T) {
+	t.Parallel()
 	// Set up a bare repo as "upstream"
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
@@ -2809,6 +2952,7 @@ func TestPushStep_Success(t *testing.T) {
 }
 
 func TestPushStep_CommitsUncommittedChanges(t *testing.T) {
+	t.Parallel()
 	// Set up upstream
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
@@ -2858,6 +3002,7 @@ func TestPushStep_CommitsUncommittedChanges(t *testing.T) {
 }
 
 func TestPushStep_ShortBranch(t *testing.T) {
+	t.Parallel()
 	// Set up upstream
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
@@ -2899,6 +3044,7 @@ func TestPushStep_ShortBranch(t *testing.T) {
 }
 
 func TestPushStep_NewBranchSkipsForceWithLease(t *testing.T) {
+	t.Parallel()
 	// When the branch doesn't exist on upstream yet, push should use regular push
 	// (not force-with-lease, which isn't needed for new branches).
 	upstream := t.TempDir()
@@ -2945,6 +3091,7 @@ func TestPushStep_NewBranchSkipsForceWithLease(t *testing.T) {
 }
 
 func TestPushStep_ForceWithLeaseUsesExplicitSHA(t *testing.T) {
+	t.Parallel()
 	// When the branch already exists on upstream, push should use --force-with-lease
 	// with the explicit upstream SHA (queried via ls-remote), not the bare form.
 	upstream := t.TempDir()
@@ -2996,6 +3143,7 @@ func TestPushStep_ForceWithLeaseUsesExplicitSHA(t *testing.T) {
 }
 
 func TestPushStep_RunsFormatCommandBeforeCommit(t *testing.T) {
+	t.Parallel()
 	// When a format command is configured, the push step should run it
 	// before committing, so agent changes are formatted before push.
 	upstream := t.TempDir()
@@ -3053,6 +3201,7 @@ func TestPushStep_RunsFormatCommandBeforeCommit(t *testing.T) {
 }
 
 func TestPushStep_UpdatesLocalBranchRefAfterDetachedPush(t *testing.T) {
+	t.Parallel()
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
 
@@ -3099,6 +3248,7 @@ func TestPushStep_UpdatesLocalBranchRefAfterDetachedPush(t *testing.T) {
 }
 
 func TestPushStep_SkipsFormatWhenNotConfigured(t *testing.T) {
+	t.Parallel()
 	// When no format command is configured, push step should not fail.
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
@@ -3133,6 +3283,7 @@ func TestPushStep_SkipsFormatWhenNotConfigured(t *testing.T) {
 }
 
 func TestPushStep_FormatCommandFailureIsWarning(t *testing.T) {
+	t.Parallel()
 	// If the format command fails, push should still proceed (log warning, don't fail).
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
@@ -3181,6 +3332,7 @@ func TestPushStep_FormatCommandFailureIsWarning(t *testing.T) {
 }
 
 func TestPushStep_ReconcilesStaleDatabaseHeadSHA(t *testing.T) {
+	t.Parallel()
 	// When push retries after a prior UpdateRunHeadSHA failure, there are no
 	// uncommitted changes. The step must still reconcile the DB if HeadSHA is stale.
 	upstream := t.TempDir()
@@ -3235,6 +3387,7 @@ func TestPushStep_ReconcilesStaleDatabaseHeadSHA(t *testing.T) {
 // --- PR step tests ---
 
 func TestPRStep_GhNotAvailable(t *testing.T) {
+	t.Parallel()
 	// Verify the step skips gracefully when the required provider CLI is missing.
 	if _, err := exec.LookPath("gh"); err == nil {
 		// gh is available on this machine, so we can't force the missing-CLI path here.
@@ -3255,10 +3408,16 @@ func TestPRStep_GhNotAvailable(t *testing.T) {
 	}
 }
 
-// prependPATH prepends binDir to PATH using the platform-specific separator.
-func prependPATH(t *testing.T, binDir string) {
-	t.Helper()
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+// fakeCLIEnv builds environment variable entries for a fake CLI binary and PATH override.
+// Returns env entries that should be set on StepContext.Env for parallel-safe tests.
+func fakeCLIEnv(binDir string, vars map[string]string) []string {
+	env := []string{
+		"PATH=" + binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+	}
+	for k, v := range vars {
+		env = append(env, k+"="+v)
+	}
+	return env
 }
 
 // fakeCLIBinDir creates a temporary directory for fake CLI binaries.
@@ -3305,27 +3464,265 @@ func linkTestBinary(t *testing.T, binDir, name string) {
 	}
 }
 
-// fakeGH creates a mock gh binary in a temp dir and returns the dir (for PATH prepending).
+// fakeGH creates a mock gh binary in a temp dir and returns env entries for StepContext.Env.
 // The binary records all invocations to a log file and responds based on subcommand.
-func fakeGH(t *testing.T, prViewURL string) (binDir string, logFile string) {
+func fakeGH(t *testing.T, prViewURL string) (env []string, logFile string) {
 	t.Helper()
-	binDir = fakeCLIBinDir(t)
+	binDir := fakeCLIBinDir(t)
 	logFile = filepath.Join(t.TempDir(), "gh.log")
 	linkTestBinary(t, binDir, "gh")
-	t.Setenv("FAKE_CLI_MODE", "gh")
-	t.Setenv("FAKE_CLI_LOG", logFile)
-	t.Setenv("FAKE_CLI_PR_URL", prViewURL)
-	return binDir, logFile
+	env = fakeCLIEnv(binDir, map[string]string{
+		"FAKE_CLI_MODE":   "gh",
+		"FAKE_CLI_LOG":    logFile,
+		"FAKE_CLI_PR_URL": prViewURL,
+	})
+	return env, logFile
+}
+
+func TestStepCLIAvailable_ResolvesExecutableSuffixFromCustomPath(t *testing.T) {
+	t.Parallel()
+
+	binDir := fakeCLIBinDir(t)
+	logFile := filepath.Join(t.TempDir(), "gh.log")
+	linkTestBinary(t, binDir, "gh")
+
+	sctx := &pipeline.StepContext{
+		Ctx:     context.Background(),
+		WorkDir: t.TempDir(),
+		Env: fakeCLIEnv(binDir, map[string]string{
+			"FAKE_CLI_MODE": "gh",
+			"FAKE_CLI_LOG":  logFile,
+		}),
+	}
+
+	if !stepCLIAvailable(sctx, scm.ProviderGitHub) {
+		t.Fatal("expected gh to be available from custom PATH")
+	}
+
+	cmd := stepCmd(sctx, "gh", "auth", "status")
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("run fake gh: %v", err)
+	}
+
+	logData, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(logData), "auth status") {
+		t.Fatalf("expected fake gh invocation, got %q", string(logData))
+	}
+}
+
+func TestStepCLIAvailable_IgnoresNonExecutableFromCustomPath(t *testing.T) {
+	t.Parallel()
+
+	binDir := t.TempDir()
+	shimPath := filepath.Join(binDir, "gh")
+	if err := os.WriteFile(shimPath, []byte("#!/bin/sh\nexit 0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sctx := &pipeline.StepContext{
+		Ctx:     context.Background(),
+		WorkDir: t.TempDir(),
+		Env:     []string{"PATH=" + binDir},
+	}
+
+	if stepCLIAvailable(sctx, scm.ProviderGitHub) {
+		t.Fatal("expected non-executable gh to be unavailable from custom PATH")
+	}
+
+	cmd := stepCmd(sctx, "gh", "auth", "status")
+	if cmd.Path != shimPath {
+		t.Fatalf("expected missing custom-path lookup to stay inside %q, got %q", binDir, cmd.Path)
+	}
+	if err := cmd.Run(); err == nil {
+		t.Fatal("expected non-executable gh to fail to run")
+	}
+}
+
+func TestPathCandidateUsable_WindowsAcceptsExeWithoutExecBits(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "gh.exe")
+	if err := os.WriteFile(path, []byte("stub"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !pathCandidateUsable("windows", path, info) {
+		t.Fatal("expected .exe without exec bits to be usable on windows")
+	}
+}
+
+func TestEnvValueForOS_WindowsMatchesEmptyMixedCaseOverride(t *testing.T) {
+	t.Parallel()
+
+	value, ok := envValueForOS([]string{"Path=", "PathExt="}, "PATH", "windows")
+	if !ok {
+		t.Fatal("expected empty mixed-case PATH override to be present")
+	}
+	if value != "" {
+		t.Fatalf("expected empty PATH override, got %q", value)
+	}
+
+	value, ok = envValueForOS([]string{"Path=", "PathExt="}, "PATHEXT", "windows")
+	if !ok {
+		t.Fatal("expected empty mixed-case PATHEXT override to be present")
+	}
+	if value != "" {
+		t.Fatalf("expected empty PATHEXT override, got %q", value)
+	}
+}
+
+func TestExecutableCandidatesForOS_WindowsHonorsExplicitEmptyPATHEXT(t *testing.T) {
+	t.Parallel()
+
+	candidates := executableCandidatesForOS("windows", "gh", []string{"PATHEXT="})
+	if len(candidates) != 1 {
+		t.Fatalf("expected only bare command name, got %v", candidates)
+	}
+	if candidates[0] != "gh" {
+		t.Fatalf("expected bare command candidate, got %q", candidates[0])
+	}
+}
+
+func TestStepCmd_ResolvesRelativeCustomPathFromWorkDir(t *testing.T) {
+	t.Parallel()
+
+	// Use os.MkdirTemp instead of t.TempDir so we can retry cleanup on
+	// Windows where the executed exe may briefly hold a file lock.
+	workDir, err := os.MkdirTemp("", "stepCmd-relpath")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		for i := 0; i < 10; i++ {
+			if err := os.RemoveAll(workDir); err == nil {
+				return
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+	})
+	binDir := filepath.Join(workDir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	logFile := filepath.Join(t.TempDir(), "gh.log")
+	linkTestBinary(t, binDir, "gh")
+
+	sctx := &pipeline.StepContext{
+		Ctx:     context.Background(),
+		WorkDir: workDir,
+		Env: []string{
+			"PATH=bin",
+			"FAKE_CLI_MODE=gh",
+			"FAKE_CLI_LOG=" + logFile,
+		},
+	}
+
+	if !stepCLIAvailable(sctx, scm.ProviderGitHub) {
+		t.Fatal("expected gh to be available from workdir-relative custom PATH")
+	}
+
+	cmd := stepCmd(sctx, "gh", "auth", "status")
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("run fake gh from relative custom PATH: %v", err)
+	}
+
+	logData, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(logData), "auth status") {
+		t.Fatalf("expected fake gh invocation, got %q", string(logData))
+	}
+}
+
+func TestStepCmd_DoesNotFallbackToHostPathWhenCustomPathOmitsBinary(t *testing.T) {
+	t.Parallel()
+
+	customPath := t.TempDir()
+	sctx := &pipeline.StepContext{
+		Ctx:     context.Background(),
+		WorkDir: t.TempDir(),
+		Env:     []string{"PATH=" + customPath},
+	}
+
+	cmd := stepCmd(sctx, "git", "--version")
+	if cmd.Path != filepath.Join(customPath, "git") {
+		t.Fatalf("expected custom-path lookup to stay inside %q, got %q", customPath, cmd.Path)
+	}
+	err := cmd.Run()
+	if err == nil {
+		t.Fatal("expected git lookup to fail when custom PATH omits git")
+	}
+}
+
+func TestStepCmd_DoesNotFallbackToHostPathWhenCustomPathIsEmpty(t *testing.T) {
+	t.Parallel()
+
+	sctx := &pipeline.StepContext{
+		Ctx:     context.Background(),
+		WorkDir: t.TempDir(),
+		Env:     []string{"PATH="},
+	}
+
+	cmd := stepCmd(sctx, "git", "--version")
+	if !strings.Contains(cmd.Path, string(filepath.Separator)) {
+		t.Fatalf("expected explicit empty PATH to keep lookup out of host PATH, got %q", cmd.Path)
+	}
+	if err := cmd.Run(); err == nil {
+		t.Fatal("expected git lookup to fail when custom PATH is empty")
+	}
+}
+
+func TestStepCmd_OverridesPathWithoutDuplicateEntries(t *testing.T) {
+	t.Parallel()
+
+	customPath := t.TempDir()
+	sctx := &pipeline.StepContext{
+		Ctx:     context.Background(),
+		WorkDir: t.TempDir(),
+		Env: []string{
+			"PATH=" + customPath,
+			"STEP_TEST_VAR=custom",
+		},
+	}
+
+	cmd := stepCmd(sctx, filepath.Join(string(filepath.Separator), "usr", "bin", "env"))
+
+	pathCount := 0
+	for _, entry := range cmd.Env {
+		switch {
+		case strings.HasPrefix(entry, "PATH="):
+			pathCount++
+			if entry != "PATH="+customPath {
+				t.Fatalf("expected overridden PATH, got %q", entry)
+			}
+		case entry == "STEP_TEST_VAR=custom":
+			continue
+		}
+	}
+	if pathCount != 1 {
+		t.Fatalf("expected exactly one PATH entry, got %d in %v", pathCount, cmd.Env)
+	}
 }
 
 func TestPRStep_UpdatesExistingPR(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
-	binDir, logFile := fakeGH(t, "https://github.com/test/repo/pull/42")
-	prependPATH(t, binDir)
+	env, logFile := fakeGH(t, "https://github.com/test/repo/pull/42")
 
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
 
 	step := &PRStep{}
 	outcome, err := step.Execute(sctx)
@@ -3360,6 +3757,7 @@ func TestPRStep_UpdatesExistingPR(t *testing.T) {
 }
 
 func TestPRStep_ZeroBaseSHA(t *testing.T) {
+	t.Parallel()
 	// New branch scenario: baseSHA is all-zeros, commit log should still work
 	dir := t.TempDir()
 	gitCmd(t, dir, "init")
@@ -3376,12 +3774,12 @@ func TestPRStep_ZeroBaseSHA(t *testing.T) {
 	gitCmd(t, dir, "commit", "-m", "add feature")
 	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
 
-	binDir, logFile := fakeGH(t, "")
-	prependPATH(t, binDir)
+	env, logFile := fakeGH(t, "")
 
 	ag := &mockAgent{name: "test"}
 	zeroSHA := "0000000000000000000000000000000000000000"
 	sctx := newTestContextWithDBRecords(t, ag, dir, zeroSHA, headSHA, config.Commands{})
+	sctx.Env = env
 
 	step := &PRStep{}
 	outcome, err := step.Execute(sctx)
@@ -3400,15 +3798,16 @@ func TestPRStep_ZeroBaseSHA(t *testing.T) {
 }
 
 func TestPRStep_CreatesNewPR(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	// No existing PR - pr view returns exit 1
-	binDir, logFile := fakeGH(t, "")
-	prependPATH(t, binDir)
+	env, logFile := fakeGH(t, "")
 
 	findings := `{"findings":[],"summary":"clean","risk_level":"medium","risk_rationale":"touches critical error handling"}`
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
 	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
 	if err != nil {
 		t.Fatal(err)
@@ -3459,10 +3858,10 @@ func TestPRStep_CreatesNewPR(t *testing.T) {
 }
 
 func TestPRStep_UsesAgentGeneratedTitleAndBody(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
-	binDir, logFile := fakeGH(t, "")
-	prependPATH(t, binDir)
+	env, logFile := fakeGH(t, "")
 
 	findings := `{"findings":[],"summary":"clean","risk_level":"medium","risk_rationale":"touches critical error handling"}`
 
@@ -3474,6 +3873,7 @@ func TestPRStep_UsesAgentGeneratedTitleAndBody(t *testing.T) {
 		},
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
 	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
 	if err != nil {
 		t.Fatal(err)
@@ -3513,10 +3913,10 @@ func TestPRStep_UsesAgentGeneratedTitleAndBody(t *testing.T) {
 }
 
 func TestPRStep_AppendsTestingSectionFromTestStep(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
-	binDir, logFile := fakeGH(t, "")
-	prependPATH(t, binDir)
+	env, logFile := fakeGH(t, "")
 
 	reviewFindings := `{"findings":[],"summary":"clean","risk_level":"medium","risk_rationale":"touches critical error handling"}`
 	testRound1 := `{"findings":[{"id":"test-1","severity":"error","file":"pkg/handler_test.go","line":42,"description":"expected 429 got 200"}],"summary":"1 failure"}`
@@ -3529,6 +3929,7 @@ func TestPRStep_AppendsTestingSectionFromTestStep(t *testing.T) {
 		},
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
 
 	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
 	if err != nil {
@@ -3576,10 +3977,10 @@ func TestPRStep_AppendsTestingSectionFromTestStep(t *testing.T) {
 }
 
 func TestPRStep_UnwrapsNestedJSONBody(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
-	binDir, logFile := fakeGH(t, "")
-	prependPATH(t, binDir)
+	env, logFile := fakeGH(t, "")
 
 	// Agent returns body as the serialized prContent JSON (the bug LLMs sometimes produce).
 	ag := &mockAgent{
@@ -3590,6 +3991,7 @@ func TestPRStep_UnwrapsNestedJSONBody(t *testing.T) {
 		},
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
 
 	step := &PRStep{}
 	if _, err := step.Execute(sctx); err != nil {
@@ -3612,6 +4014,7 @@ func TestPRStep_UnwrapsNestedJSONBody(t *testing.T) {
 }
 
 func TestUnwrapNestedPRBody(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		body string
@@ -3682,22 +4085,24 @@ func TestAppendGeneratedSections_StripsCommonHeadingVariants(t *testing.T) {
 	}
 }
 
-func fakeGlab(t *testing.T, mrViewJSON string) (binDir string, logFile string) {
+func fakeGlab(t *testing.T, mrViewJSON string) (env []string, logFile string) {
 	t.Helper()
-	binDir = fakeCLIBinDir(t)
+	binDir := fakeCLIBinDir(t)
 	logFile = filepath.Join(t.TempDir(), "glab.log")
 	linkTestBinary(t, binDir, "glab")
-	t.Setenv("FAKE_CLI_MODE", "glab")
-	t.Setenv("FAKE_CLI_LOG", logFile)
-	t.Setenv("FAKE_CLI_MR_VIEW_JSON", mrViewJSON)
-	return binDir, logFile
+	env = fakeCLIEnv(binDir, map[string]string{
+		"FAKE_CLI_MODE":         "glab",
+		"FAKE_CLI_LOG":          logFile,
+		"FAKE_CLI_MR_VIEW_JSON": mrViewJSON,
+	})
+	return env, logFile
 }
 
 func TestPRStep_GitLabCreatesNewMR(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
-	binDir, logFile := fakeGlab(t, "")
-	prependPATH(t, binDir)
+	env, logFile := fakeGlab(t, "")
 
 	ag := &mockAgent{
 		name: "test",
@@ -3707,6 +4112,7 @@ func TestPRStep_GitLabCreatesNewMR(t *testing.T) {
 		},
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
 	sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
 
 	step := &PRStep{}
@@ -3727,6 +4133,7 @@ func TestPRStep_GitLabCreatesNewMR(t *testing.T) {
 }
 
 func TestPRStep_SkipsWhenProviderCLIUnavailable(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
@@ -3750,6 +4157,7 @@ func TestPRStep_SkipsWhenProviderCLIUnavailable(t *testing.T) {
 }
 
 func TestPRStep_ExistingBranchUsesMergeBaseCommitLog(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	gitCmd(t, dir, "init")
 	gitCmd(t, dir, "config", "user.name", "test")
@@ -3770,11 +4178,11 @@ func TestPRStep_ExistingBranchUsesMergeBaseCommitLog(t *testing.T) {
 	gitCmd(t, dir, "commit", "-m", "second feature commit")
 	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
 
-	binDir, logFile := fakeGH(t, "")
-	prependPATH(t, binDir)
+	env, logFile := fakeGH(t, "")
 
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContextWithDBRecords(t, ag, dir, oldRemoteSHA, headSHA, config.Commands{})
+	sctx.Env = env
 
 	step := &PRStep{}
 	if _, err := step.Execute(sctx); err != nil {
@@ -3815,6 +4223,7 @@ func newTestContextWithDBRecords(t *testing.T, ag agent.Agent, workDir, baseSHA,
 }
 
 func TestCommitAgentFixes_NoChanges(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	gitCmd(t, dir, "checkout", "--detach", headSHA)
 
@@ -3832,6 +4241,7 @@ func TestCommitAgentFixes_NoChanges(t *testing.T) {
 }
 
 func TestCommitAgentFixes_UsesFallbackSummary(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	gitCmd(t, dir, "checkout", "--detach", headSHA)
 
@@ -3851,6 +4261,7 @@ func TestCommitAgentFixes_UsesFallbackSummary(t *testing.T) {
 // --- CI step tests ---
 
 func TestCIStep_PendingChecksUseAdaptivePollIntervals(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	checksSequence := []string{
@@ -3859,12 +4270,12 @@ func TestCIStep_PendingChecksUseAdaptivePollIntervals(t *testing.T) {
 		`[{"name":"build","state":"PENDING","bucket":"pending"}]`,
 		`[{"name":"build","state":"SUCCESS","bucket":"pass"}]`,
 	}
-	binDir := fakeCIGHSequence(t, "OPEN", checksSequence)
-	prependPATH(t, binDir)
+	env := fakeCIGHSequence(t, "OPEN", checksSequence)
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 20 * time.Minute
 
@@ -3909,7 +4320,42 @@ func TestCIStep_PendingChecksUseAdaptivePollIntervals(t *testing.T) {
 	}
 }
 
+func TestCIStep_UsesStepEnvForCLIStartupChecks(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	hiddenPath := t.TempDir()
+	t.Setenv("PATH", hiddenPath)
+
+	env := fakeCIGH(t, "MERGED", "[]")
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	step := &CIStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatal("expected merged PR to exit cleanly")
+	}
+	for _, logLine := range logs {
+		if strings.Contains(logLine, "gh CLI is not installed") || strings.Contains(logLine, "gh CLI is not authenticated") {
+			t.Fatalf("expected startup checks to use StepContext env, got logs: %v", logs)
+		}
+	}
+	if len(logs) == 0 || !strings.Contains(logs[len(logs)-1], "PR has been merged") {
+		t.Fatalf("expected CI monitoring to reach PR state check, got logs: %v", logs)
+	}
+}
+
 func TestCIStep_NoPRURL(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContext(t, ag, dir, "abc", "def", config.Commands{})
@@ -3926,14 +4372,15 @@ func TestCIStep_NoPRURL(t *testing.T) {
 }
 
 func TestCIStep_InvalidPRURLReturnsError(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
-	binDir := fakeCIGH(t, "OPEN", "[]")
-	prependPATH(t, binDir)
+	env := fakeCIGH(t, "OPEN", "[]")
 
 	prURL := "https://github.com/test/repo/pull/42/files"
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 
 	step := &CIStep{}
@@ -3950,6 +4397,7 @@ func TestCIStep_InvalidPRURLReturnsError(t *testing.T) {
 }
 
 func TestCIStep_NonGitHubSkips(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	prURL := "https://gitlab.com/test/repo/-/merge_requests/42"
 	ag := &mockAgent{name: "test"}
@@ -3974,6 +4422,7 @@ func TestCIStep_NonGitHubSkips(t *testing.T) {
 }
 
 func TestCIStep_ContextCancelled(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	ag := &mockAgent{name: "test"}
 	prURL := "https://github.com/test/repo/pull/1"
@@ -3996,14 +4445,15 @@ func TestCIStep_ContextCancelled(t *testing.T) {
 }
 
 func TestCIStep_TimeoutDoesNotSleepPastDeadline(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
-	binDir := fakeCIGH(t, "OPEN", "[]")
-	prependPATH(t, binDir)
+	env := fakeCIGH(t, "OPEN", "[]")
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 2 * time.Second
 
@@ -4037,6 +4487,7 @@ func TestCIStep_TimeoutDoesNotSleepPastDeadline(t *testing.T) {
 }
 
 func TestCIStep_CommitAndPush(t *testing.T) {
+	t.Parallel()
 	// Set up upstream bare repo
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
@@ -4086,6 +4537,7 @@ func TestCIStep_CommitAndPush(t *testing.T) {
 }
 
 func TestCIStep_CommitAndPush_NoChanges(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	ag := &mockAgent{name: "test"}
@@ -4104,6 +4556,7 @@ func TestCIStep_CommitAndPush_NoChanges(t *testing.T) {
 }
 
 func TestCIStep_CommitAndPush_StatusError(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	realGit, err := exec.LookPath("git")
@@ -4113,12 +4566,14 @@ func TestCIStep_CommitAndPush_StatusError(t *testing.T) {
 
 	binDir := fakeCLIBinDir(t)
 	linkTestBinary(t, binDir, "git")
-	prependPATH(t, binDir)
-	t.Setenv("FAKE_CLI_MODE", "git-status-error")
-	t.Setenv("FAKE_CLI_REAL_GIT", realGit)
+	env := fakeCLIEnv(binDir, map[string]string{
+		"FAKE_CLI_MODE":     "git-status-error",
+		"FAKE_CLI_REAL_GIT": realGit,
+	})
 
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
 	sctx.Repo.UpstreamURL = "dummy"
 	sctx.Run.Branch = "refs/heads/feature"
 
@@ -4138,7 +4593,84 @@ func TestCIStep_CommitAndPush_StatusError(t *testing.T) {
 	}
 }
 
+func TestCIStep_CommitAndPush_UsesStepEnvForAllGitCommands(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "feature")
+	os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("ci fix"), 0o644)
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	binDir := fakeCLIBinDir(t)
+	linkTestBinary(t, binDir, "git")
+	env := fakeCLIEnv(binDir, map[string]string{
+		"FAKE_CLI_MODE":     "git-passthrough",
+		"FAKE_CLI_REAL_GIT": realGit,
+	})
+	t.Setenv("PATH", t.TempDir())
+	realGitCmd := func(dir string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command(realGit, args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=test",
+			"GIT_AUTHOR_EMAIL=test@test.com",
+			"GIT_COMMITTER_NAME=test",
+			"GIT_COMMITTER_EMAIL=test@test.com",
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "refs/heads/feature"
+
+	step := &CIStep{}
+	pushed, err := step.commitAndPush(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pushed {
+		t.Fatal("expected commitAndPush to report changes were pushed")
+	}
+
+	upstreamSHA := realGitCmd(upstream, "rev-parse", "refs/heads/feature")
+	if upstreamSHA == headSHA {
+		t.Fatal("expected upstream to receive CI fix commit")
+	}
+	if sctx.Run.HeadSHA != upstreamSHA {
+		t.Fatalf("Run.HeadSHA = %s, want %s", sctx.Run.HeadSHA, upstreamSHA)
+	}
+}
+
 func TestCIStep_CommitAndPush_NoChanges_ReconcilesStaleDatabaseHeadSHA(t *testing.T) {
+	t.Parallel()
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
 
@@ -4189,7 +4721,71 @@ func TestCIStep_CommitAndPush_NoChanges_ReconcilesStaleDatabaseHeadSHA(t *testin
 	}
 }
 
+func TestCIStep_CommitAndPush_NoChanges_ReconcilesStaleDatabaseHeadSHA_UsesStepEnv(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature")
+	actualHeadSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	binDir := fakeCLIBinDir(t)
+	linkTestBinary(t, binDir, "git")
+	env := fakeCLIEnv(binDir, map[string]string{
+		"FAKE_CLI_MODE":     "git-passthrough",
+		"FAKE_CLI_REAL_GIT": realGit,
+	})
+	t.Setenv("PATH", t.TempDir())
+
+	staleHeadSHA := baseSHA
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, staleHeadSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "refs/heads/feature"
+
+	step := &CIStep{}
+	pushed, err := step.commitAndPush(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pushed {
+		t.Error("expected commitAndPush to report no changes pushed for stale reconcile")
+	}
+
+	if sctx.Run.HeadSHA != actualHeadSHA {
+		t.Errorf("Run.HeadSHA = %s, want %s", sctx.Run.HeadSHA, actualHeadSHA)
+	}
+	dbRun, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dbRun.HeadSHA != actualHeadSHA {
+		t.Errorf("DB HeadSHA = %s, want %s", dbRun.HeadSHA, actualHeadSHA)
+	}
+}
+
 func TestCIStep_CommitAndPush_UpdatesLocalBranchRefAfterDetachedPush(t *testing.T) {
+	t.Parallel()
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
 
@@ -4239,6 +4835,7 @@ func TestCIStep_CommitAndPush_UpdatesLocalBranchRefAfterDetachedPush(t *testing.
 }
 
 func TestTestStep_AgentWritesNewGoTests_NeedsApproval(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	findings := Findings{Items: nil, Summary: "all tests passed"}
@@ -4283,6 +4880,7 @@ func TestTestStep_AgentWritesNewGoTests_NeedsApproval(t *testing.T) {
 }
 
 func TestTestStep_AgentWritesNewTests_NeedsApproval(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	findings := Findings{Items: nil, Summary: "all tests passed"}
@@ -4322,6 +4920,7 @@ func TestTestStep_AgentWritesNewTests_NeedsApproval(t *testing.T) {
 }
 
 func TestTestStep_AgentStagesNewTests_NeedsApproval(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	findings := Findings{Items: nil, Summary: "all tests passed"}
@@ -4362,6 +4961,7 @@ func TestTestStep_AgentStagesNewTests_NeedsApproval(t *testing.T) {
 }
 
 func TestTestStep_FixMode_AgentWritesNewTests_NeedsApproval(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	callCount := 0
@@ -4406,6 +5006,7 @@ func TestTestStep_FixMode_AgentWritesNewTests_NeedsApproval(t *testing.T) {
 // --- ignore patterns tests ---
 
 func TestMatchIgnorePattern(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		path    string
 		pattern string
@@ -4443,6 +5044,7 @@ func TestMatchIgnorePattern(t *testing.T) {
 }
 
 func TestFilterDiff_Empty(t *testing.T) {
+	t.Parallel()
 	// No patterns → unchanged
 	diff := "diff --git a/foo.go b/foo.go\n--- a/foo.go\n+++ b/foo.go\n+line\n"
 	got := filterDiff(diff, nil)
@@ -4458,6 +5060,7 @@ func TestFilterDiff_Empty(t *testing.T) {
 }
 
 func TestFilterDiff_SingleFile(t *testing.T) {
+	t.Parallel()
 	diff := "diff --git a/foo.generated.go b/foo.generated.go\n--- a/foo.generated.go\n+++ b/foo.generated.go\n@@ -0,0 +1 @@\n+generated\n"
 	got := filterDiff(diff, []string{"*.generated.go"})
 	// All lines should be filtered
@@ -4467,6 +5070,7 @@ func TestFilterDiff_SingleFile(t *testing.T) {
 }
 
 func TestFilterDiff_MultipleFiles(t *testing.T) {
+	t.Parallel()
 	diff := strings.Join([]string{
 		"diff --git a/main.go b/main.go",
 		"--- a/main.go",
@@ -4502,6 +5106,7 @@ func TestFilterDiff_MultipleFiles(t *testing.T) {
 }
 
 func TestFilterDiff_MultiplePatterns(t *testing.T) {
+	t.Parallel()
 	diff := strings.Join([]string{
 		"diff --git a/main.go b/main.go",
 		"+++ b/main.go",
@@ -4528,6 +5133,7 @@ func TestFilterDiff_MultiplePatterns(t *testing.T) {
 }
 
 func TestFilterDiff_PathContainingBDividerSequence(t *testing.T) {
+	t.Parallel()
 	diff := strings.Join([]string{
 		"diff --git a/a b/c.go b/a b/c.go",
 		"--- a/a b/c.go",
@@ -4561,6 +5167,7 @@ func TestFilterDiff_PathContainingBDividerSequence(t *testing.T) {
 }
 
 func TestReviewFindingsSchema_ValidJSON(t *testing.T) {
+	t.Parallel()
 	if !json.Valid(reviewFindingsSchema) {
 		t.Errorf("reviewFindingsSchema is not valid JSON: %s", string(reviewFindingsSchema))
 	}
@@ -4585,6 +5192,7 @@ func TestReviewFindingsSchema_ValidJSON(t *testing.T) {
 }
 
 func TestFindingsSchema_Action(t *testing.T) {
+	t.Parallel()
 	var parsed map[string]interface{}
 	if err := json.Unmarshal(findingsSchema, &parsed); err != nil {
 		t.Fatal(err)
@@ -4608,6 +5216,7 @@ func TestFindingsSchema_Action(t *testing.T) {
 }
 
 func TestReviewFindingsSchema_ActionAtItemLevel(t *testing.T) {
+	t.Parallel()
 	var parsed map[string]interface{}
 	if err := json.Unmarshal(reviewFindingsSchema, &parsed); err != nil {
 		t.Fatal(err)
@@ -4627,6 +5236,7 @@ func TestReviewFindingsSchema_ActionAtItemLevel(t *testing.T) {
 }
 
 func TestTestStep_PromptIncludesAction(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	findings := Findings{Items: nil, Summary: "all tests passed"}
 	findingsJSON, _ := json.Marshal(findings)
@@ -4650,6 +5260,7 @@ func TestTestStep_PromptIncludesAction(t *testing.T) {
 }
 
 func TestLintStep_PromptIncludesAction(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	findings := Findings{Items: nil, Summary: "all clean"}
 	findingsJSON, _ := json.Marshal(findings)
@@ -4673,6 +5284,7 @@ func TestLintStep_PromptIncludesAction(t *testing.T) {
 }
 
 func TestReviewStep_IgnorePatterns(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	// Add a generated file to the feature branch
@@ -4706,6 +5318,7 @@ func TestReviewStep_IgnorePatterns(t *testing.T) {
 }
 
 func TestReviewStep_IgnorePatternsFilterAllFiles(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	// Create a repo where the only change is a generated file
@@ -4745,6 +5358,7 @@ func TestReviewStep_IgnorePatternsFilterAllFiles(t *testing.T) {
 }
 
 func TestReviewStep_EmptyDiff_ReturnsLowRisk(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	gitCmd(t, dir, "init")
 	gitCmd(t, dir, "config", "user.name", "test")
@@ -4780,6 +5394,7 @@ func TestReviewStep_EmptyDiff_ReturnsLowRisk(t *testing.T) {
 }
 
 func TestReviewStep_IgnorePatternsFilterAllFiles_ReturnsLowRisk(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	gitCmd(t, dir, "init")
 	gitCmd(t, dir, "config", "user.name", "test")
@@ -4819,6 +5434,7 @@ func TestReviewStep_IgnorePatternsFilterAllFiles_ReturnsLowRisk(t *testing.T) {
 }
 
 func TestReviewStep_FixMode_RequiresPreviousFindings(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	ag := &mockAgent{
@@ -4844,6 +5460,7 @@ func TestReviewStep_FixMode_RequiresPreviousFindings(t *testing.T) {
 }
 
 func TestReviewStep_DismissedFindingsSanitizesPromptContent(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	findingsJSON, _ := json.Marshal(Findings{Summary: "clean"})
@@ -4877,6 +5494,7 @@ func TestReviewStep_DismissedFindingsSanitizesPromptContent(t *testing.T) {
 }
 
 func TestReviewStep_PromptOmitsUserCommitMessages(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	findingsJSON, _ := json.Marshal(Findings{Summary: "clean"})
@@ -4906,6 +5524,7 @@ func TestReviewStep_PromptOmitsUserCommitMessages(t *testing.T) {
 }
 
 func TestSanitizedPreviousFindingsForPrompt_PreservesMultilineDescriptions(t *testing.T) {
+	t.Parallel()
 	raw, err := types.MarshalFindingsJSON(types.Findings{
 		Items: []types.Finding{{
 			ID:          "review-1",
@@ -4940,17 +5559,18 @@ func TestSanitizedPreviousFindingsForPrompt_PreservesMultilineDescriptions(t *te
 
 // fakeCIGH creates a fake gh binary that responds to CI-related
 // commands (pr view --json state, pr checks --json, pr view --json comments).
-func fakeCIGH(t *testing.T, state, checksJSON string) string {
+func fakeCIGH(t *testing.T, state, checksJSON string) []string {
 	t.Helper()
 	binDir := fakeCLIBinDir(t)
 	linkTestBinary(t, binDir, "gh")
-	t.Setenv("FAKE_CLI_MODE", "ci-gh")
-	t.Setenv("FAKE_CLI_STATE", state)
-	t.Setenv("FAKE_CLI_CHECKS", checksJSON)
-	return binDir
+	return fakeCLIEnv(binDir, map[string]string{
+		"FAKE_CLI_MODE":   "ci-gh",
+		"FAKE_CLI_STATE":  state,
+		"FAKE_CLI_CHECKS": checksJSON,
+	})
 }
 
-func fakeCIGHSequence(t *testing.T, state string, checks []string) string {
+func fakeCIGHSequence(t *testing.T, state string, checks []string) []string {
 	t.Helper()
 	binDir := fakeCLIBinDir(t)
 	linkTestBinary(t, binDir, "gh")
@@ -4965,30 +5585,33 @@ func fakeCIGHSequence(t *testing.T, state string, checks []string) string {
 		t.Fatalf("write checks index: %v", err)
 	}
 
-	t.Setenv("FAKE_CLI_MODE", "ci-gh-seq")
-	t.Setenv("FAKE_CLI_STATE", state)
-	t.Setenv("FAKE_CLI_CHECKS_PATH", checksPath)
-	t.Setenv("FAKE_CLI_CHECKS_INDEX_PATH", indexPath)
-	return binDir
+	return fakeCLIEnv(binDir, map[string]string{
+		"FAKE_CLI_MODE":              "ci-gh-seq",
+		"FAKE_CLI_STATE":             state,
+		"FAKE_CLI_CHECKS_PATH":       checksPath,
+		"FAKE_CLI_CHECKS_INDEX_PATH": indexPath,
+	})
 }
 
-func fakeCIGHNoChecks(t *testing.T) string {
+func fakeCIGHNoChecks(t *testing.T) []string {
 	t.Helper()
 	binDir := fakeCLIBinDir(t)
 	linkTestBinary(t, binDir, "gh")
-	t.Setenv("FAKE_CLI_MODE", "ci-gh-nochecks")
-	return binDir
+	return fakeCLIEnv(binDir, map[string]string{
+		"FAKE_CLI_MODE": "ci-gh-nochecks",
+	})
 }
 
 func TestCIStep_PRMergedExitsEarly(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
-	binDir := fakeCIGH(t, "MERGED", "[]")
-	prependPATH(t, binDir)
+	env := fakeCIGH(t, "MERGED", "[]")
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 10 * time.Second
 
@@ -5017,14 +5640,15 @@ func TestCIStep_PRMergedExitsEarly(t *testing.T) {
 }
 
 func TestCIStep_PRClosedExitsEarly(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
-	binDir := fakeCIGH(t, "CLOSED", "[]")
-	prependPATH(t, binDir)
+	env := fakeCIGH(t, "CLOSED", "[]")
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 10 * time.Second
 
@@ -5053,11 +5677,16 @@ func TestCIStep_PRClosedExitsEarly(t *testing.T) {
 }
 
 func TestCIStep_GetCIChecksNoChecksReported(t *testing.T) {
-	binDir := fakeCIGHNoChecks(t)
-	prependPATH(t, binDir)
+	t.Parallel()
+	env := fakeCIGHNoChecks(t)
+
+	dir := t.TempDir()
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, "abc", "def", config.Commands{})
+	sctx.Env = env
 
 	step := &CIStep{}
-	checks, err := step.getCIChecks(context.Background(), t.TempDir(), "42")
+	checks, err := step.getCIChecks(sctx, "42")
 	if err != nil {
 		t.Fatalf("expected no error when gh reports no checks, got: %v", err)
 	}
@@ -5067,6 +5696,7 @@ func TestCIStep_GetCIChecksNoChecksReported(t *testing.T) {
 }
 
 func TestCIStep_CIFailureAutoFix(t *testing.T) {
+	t.Parallel()
 	// Set up upstream bare repo for push
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
@@ -5091,8 +5721,7 @@ func TestCIStep_CIFailureAutoFix(t *testing.T) {
 	gitCmd(t, dir, "push", "origin", "feature")
 
 	checksJSON := `[{"name":"build","status":"COMPLETED","conclusion":"success"},{"name":"test","status":"COMPLETED","conclusion":"failure"}]`
-	binDir := fakeCIGH(t, "OPEN", checksJSON)
-	prependPATH(t, binDir)
+	env := fakeCIGH(t, "OPEN", checksJSON)
 
 	agentCalled := false
 	ag := &mockAgent{
@@ -5107,6 +5736,7 @@ func TestCIStep_CIFailureAutoFix(t *testing.T) {
 
 	prURL := "https://github.com/test/repo/pull/42"
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
@@ -5156,18 +5786,19 @@ func TestCIStep_CIFailureAutoFix(t *testing.T) {
 }
 
 func TestCIStep_AllChecksPassingExitsCleanly(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	checksSequence := []string{
 		`[{"name":"build","state":"PENDING","bucket":"pending"}]`,
 		`[{"name":"build","state":"SUCCESS","bucket":"pass"},{"name":"test","state":"SUCCESS","bucket":"pass"}]`,
 	}
-	binDir := fakeCIGHSequence(t, "OPEN", checksSequence)
-	prependPATH(t, binDir)
+	env := fakeCIGHSequence(t, "OPEN", checksSequence)
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 10 * time.Second
 
@@ -5205,15 +5836,16 @@ func TestCIStep_AllChecksPassingExitsCleanly(t *testing.T) {
 }
 
 func TestCIStep_EmptyChecksWaitsDuringGracePeriod(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	// Fake gh returns OPEN state, empty checks, no comments
-	binDir := fakeCIGH(t, "OPEN", "[]")
-	prependPATH(t, binDir)
+	env := fakeCIGH(t, "OPEN", "[]")
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 5 * time.Second
 
@@ -5271,14 +5903,15 @@ func TestCIStep_EmptyChecksWaitsDuringGracePeriod(t *testing.T) {
 }
 
 func TestCIStep_LogsWaitingForChecksDuringGracePeriod(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
-	binDir := fakeCIGH(t, "OPEN", "[]")
-	prependPATH(t, binDir)
+	env := fakeCIGH(t, "OPEN", "[]")
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 5 * time.Second
 
@@ -5312,15 +5945,16 @@ func TestCIStep_LogsWaitingForChecksDuringGracePeriod(t *testing.T) {
 }
 
 func TestCIStep_NonEmptyPassingChecksExitImmediately(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	checksJSON := `[{"name":"build","state":"SUCCESS","bucket":"pass"}]`
-	binDir := fakeCIGH(t, "OPEN", checksJSON)
-	prependPATH(t, binDir)
+	env := fakeCIGH(t, "OPEN", checksJSON)
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 10 * time.Second
 
@@ -5354,10 +5988,10 @@ func TestCIStep_NonEmptyPassingChecksExitImmediately(t *testing.T) {
 }
 
 func TestPRStep_AgentNonConventionalTitleFallsBack(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
-	binDir, logFile := fakeGH(t, "")
-	prependPATH(t, binDir)
+	env, logFile := fakeGH(t, "")
 
 	ag := &mockAgent{
 		name: "test",
@@ -5367,6 +6001,7 @@ func TestPRStep_AgentNonConventionalTitleFallsBack(t *testing.T) {
 		},
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
 
 	step := &PRStep{}
 	if _, err := step.Execute(sctx); err != nil {
@@ -5392,10 +6027,10 @@ func TestPRStep_AgentNonConventionalTitleFallsBack(t *testing.T) {
 }
 
 func TestPRStep_AgentScopedBreakingTitlePassesThrough(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
-	binDir, logFile := fakeGH(t, "")
-	prependPATH(t, binDir)
+	env, logFile := fakeGH(t, "")
 
 	const title = "feat(api)!: require auth token"
 	ag := &mockAgent{
@@ -5406,6 +6041,7 @@ func TestPRStep_AgentScopedBreakingTitlePassesThrough(t *testing.T) {
 		},
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
 
 	step := &PRStep{}
 	if _, err := step.Execute(sctx); err != nil {
@@ -5426,6 +6062,7 @@ func TestPRStep_AgentScopedBreakingTitlePassesThrough(t *testing.T) {
 }
 
 func TestCIStep_CIAutoFixDisabledWithZero(t *testing.T) {
+	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	checksJSON := `[
@@ -5434,13 +6071,13 @@ func TestCIStep_CIAutoFixDisabledWithZero(t *testing.T) {
 		{"name":"lint","status":"COMPLETED","conclusion":"action_required"},
 		{"name":"deploy","status":"COMPLETED","conclusion":"neutral"}
 	]`
-	binDir := fakeCIGH(t, "OPEN", checksJSON)
-	prependPATH(t, binDir)
+	env := fakeCIGH(t, "OPEN", checksJSON)
 
 	ag := &mockAgent{name: "test"}
 
 	prURL := "https://github.com/test/repo/pull/42"
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 5 * time.Second
 	sctx.Config.AutoFix = config.AutoFix{CI: 0} // disabled
@@ -5503,6 +6140,7 @@ func TestCIStep_CIAutoFixDisabledWithZero(t *testing.T) {
 }
 
 func TestCIStep_CIAutoFixLimitExhausted(t *testing.T) {
+	t.Parallel()
 	// Set up upstream bare repo for push
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
@@ -5527,8 +6165,7 @@ func TestCIStep_CIAutoFixLimitExhausted(t *testing.T) {
 	gitCmd(t, dir, "push", "origin", "feature")
 
 	checksJSON := `[{"name":"test","status":"COMPLETED","conclusion":"failure","bucket":"fail"}]`
-	binDir := fakeCIGH(t, "OPEN", checksJSON)
-	prependPATH(t, binDir)
+	env := fakeCIGH(t, "OPEN", checksJSON)
 
 	fixCount := 0
 	ag := &mockAgent{
@@ -5543,6 +6180,7 @@ func TestCIStep_CIAutoFixLimitExhausted(t *testing.T) {
 
 	prURL := "https://github.com/test/repo/pull/42"
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
@@ -5592,6 +6230,7 @@ func TestCIStep_CIAutoFixLimitExhausted(t *testing.T) {
 }
 
 func TestCIStep_CIAutoFixRetriesAfterChecksRerun(t *testing.T) {
+	t.Parallel()
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
 
@@ -5621,8 +6260,7 @@ func TestCIStep_CIAutoFixRetriesAfterChecksRerun(t *testing.T) {
 		`[{"name":"test","status":"IN_PROGRESS","bucket":"pending"}]`,
 		`[{"name":"test","status":"COMPLETED","conclusion":"failure","bucket":"fail"}]`,
 	}
-	binDir := fakeCIGHSequence(t, "OPEN", checksSequence)
-	prependPATH(t, binDir)
+	env := fakeCIGHSequence(t, "OPEN", checksSequence)
 
 	fixCount := 0
 	ag := &mockAgent{
@@ -5636,6 +6274,7 @@ func TestCIStep_CIAutoFixRetriesAfterChecksRerun(t *testing.T) {
 
 	prURL := "https://github.com/test/repo/pull/42"
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
@@ -5682,6 +6321,7 @@ func TestCIStep_CIAutoFixRetriesAfterChecksRerun(t *testing.T) {
 }
 
 func TestCIStep_FixMode_ManualInterventionRunsCIFix(t *testing.T) {
+	t.Parallel()
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
 
@@ -5705,8 +6345,7 @@ func TestCIStep_FixMode_ManualInterventionRunsCIFix(t *testing.T) {
 	gitCmd(t, dir, "push", "origin", "feature")
 
 	checksJSON := `[{"name":"test","status":"COMPLETED","conclusion":"failure","bucket":"fail"}]`
-	binDir := fakeCIGH(t, "OPEN", checksJSON)
-	prependPATH(t, binDir)
+	env := fakeCIGH(t, "OPEN", checksJSON)
 
 	fixCount := 0
 	ag := &mockAgent{
@@ -5732,6 +6371,7 @@ func TestCIStep_FixMode_ManualInterventionRunsCIFix(t *testing.T) {
 
 	prURL := "https://github.com/test/repo/pull/42"
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
@@ -5770,6 +6410,7 @@ func TestCIStep_FixMode_ManualInterventionRunsCIFix(t *testing.T) {
 // produces no changes (nothing to commit), it still counts as a consumed fix
 // attempt rather than spinning forever with "fix already attempted".
 func TestCIStep_AutoFixNoChanges_CountsAsAttempt(t *testing.T) {
+	t.Parallel()
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
 
@@ -5793,8 +6434,7 @@ func TestCIStep_AutoFixNoChanges_CountsAsAttempt(t *testing.T) {
 	gitCmd(t, dir, "push", "origin", "feature")
 
 	checksJSON := `[{"name":"test","status":"COMPLETED","conclusion":"failure","bucket":"fail"}]`
-	binDir := fakeCIGH(t, "OPEN", checksJSON)
-	prependPATH(t, binDir)
+	env := fakeCIGH(t, "OPEN", checksJSON)
 
 	fixCount := 0
 	ag := &mockAgent{
@@ -5808,6 +6448,7 @@ func TestCIStep_AutoFixNoChanges_CountsAsAttempt(t *testing.T) {
 
 	prURL := "https://github.com/test/repo/pull/42"
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
@@ -5864,6 +6505,7 @@ func TestCIStep_AutoFixNoChanges_CountsAsAttempt(t *testing.T) {
 // TestCIStep_FixMode_NoChanges_CountsAsAttempt verifies the same no-changes
 // behavior for manual fix mode (sctx.Fixing = true).
 func TestCIStep_FixMode_NoChanges_CountsAsAttempt(t *testing.T) {
+	t.Parallel()
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
 
@@ -5887,8 +6529,7 @@ func TestCIStep_FixMode_NoChanges_CountsAsAttempt(t *testing.T) {
 	gitCmd(t, dir, "push", "origin", "feature")
 
 	checksJSON := `[{"name":"test","status":"COMPLETED","conclusion":"failure","bucket":"fail"}]`
-	binDir := fakeCIGH(t, "OPEN", checksJSON)
-	prependPATH(t, binDir)
+	env := fakeCIGH(t, "OPEN", checksJSON)
 
 	fixCount := 0
 	ag := &mockAgent{
@@ -5913,6 +6554,7 @@ func TestCIStep_FixMode_NoChanges_CountsAsAttempt(t *testing.T) {
 
 	prURL := "https://github.com/test/repo/pull/42"
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
@@ -5959,6 +6601,7 @@ func TestCIStep_FixMode_NoChanges_CountsAsAttempt(t *testing.T) {
 // TestCIStep_AutoFixPromptIncludesMustFixInstruction verifies the agent prompt
 // includes a strong instruction that the agent must produce changes.
 func TestCIStep_AutoFixPromptIncludesMustFixInstruction(t *testing.T) {
+	t.Parallel()
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
 
@@ -5982,8 +6625,7 @@ func TestCIStep_AutoFixPromptIncludesMustFixInstruction(t *testing.T) {
 	gitCmd(t, dir, "push", "origin", "feature")
 
 	checksJSON := `[{"name":"test","status":"COMPLETED","conclusion":"failure","bucket":"fail"}]`
-	binDir := fakeCIGH(t, "OPEN", checksJSON)
-	prependPATH(t, binDir)
+	env := fakeCIGH(t, "OPEN", checksJSON)
 
 	var capturedPrompt string
 	ag := &mockAgent{
@@ -5997,6 +6639,7 @@ func TestCIStep_AutoFixPromptIncludesMustFixInstruction(t *testing.T) {
 
 	prURL := "https://github.com/test/repo/pull/42"
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"

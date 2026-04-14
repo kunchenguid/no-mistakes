@@ -23,6 +23,7 @@ type StepContext struct {
 	Fixing            bool         // true when re-executing after a "fix" action
 	PreviousFindings  string       // JSON findings from the previous execution (set during fix loop)
 	DismissedFindings string       // JSON findings the user explicitly deselected (excluded from fix)
+	Env               []string     // extra environment variables for subprocesses (used in tests)
 }
 
 // StepOutcome is the result of executing a pipeline step.

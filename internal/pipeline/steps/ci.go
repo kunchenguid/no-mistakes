@@ -5,14 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os/exec"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
-	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -144,11 +142,11 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		sctx.Log(fmt.Sprintf("skipping CI: provider %s is not supported yet", provider))
 		return &pipeline.StepOutcome{}, nil
 	}
-	if !scm.CLIAvailable(provider) {
+	if !stepCLIAvailable(sctx, provider) {
 		sctx.Log("skipping CI: gh CLI is not installed")
 		return &pipeline.StepOutcome{}, nil
 	}
-	if !scm.AuthConfigured(ctx, provider, sctx.WorkDir) {
+	if !stepAuthConfigured(sctx, provider) {
 		sctx.Log("skipping CI: gh CLI is not authenticated")
 		return &pipeline.StepOutcome{}, nil
 	}
@@ -204,7 +202,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		}
 
 		// Check PR state (merged/closed -> exit)
-		state, err := s.getPRState(ctx, sctx.WorkDir, prNumber)
+		state, err := s.getPRState(sctx, prNumber)
 		if err != nil {
 			sctx.Log(fmt.Sprintf("warning: could not check PR state: %v", err))
 		} else if state == "MERGED" {
@@ -217,7 +215,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 
 		// Check CI status - auto-fix failures when configured
 		ciFixLimit := sctx.Config.AutoFix.CI
-		checks, err := s.getCIChecks(ctx, sctx.WorkDir, prNumber)
+		checks, err := s.getCIChecks(sctx, prNumber)
 		if err != nil {
 			sctx.Log(fmt.Sprintf("warning: could not check CI: %v", err))
 		} else if hasFailingChecks(checks) {
@@ -309,9 +307,8 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 }
 
 // getPRState returns the PR state (OPEN, MERGED, CLOSED).
-func (s *CIStep) getPRState(ctx context.Context, workDir, prNumber string) (string, error) {
-	cmd := exec.CommandContext(ctx, "gh", "pr", "view", prNumber, "--json", "state", "--jq", ".state")
-	cmd.Dir = workDir
+func (s *CIStep) getPRState(sctx *pipeline.StepContext, prNumber string) (string, error) {
+	cmd := stepCmd(sctx, "gh", "pr", "view", prNumber, "--json", "state", "--jq", ".state")
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("gh pr view: %w", err)
@@ -320,9 +317,8 @@ func (s *CIStep) getPRState(ctx context.Context, workDir, prNumber string) (stri
 }
 
 // getCIChecks fetches CI check results for a PR.
-func (s *CIStep) getCIChecks(ctx context.Context, workDir, prNumber string) ([]ciCheck, error) {
-	cmd := exec.CommandContext(ctx, "gh", "pr", "checks", prNumber, "--json", "name,state,bucket")
-	cmd.Dir = workDir
+func (s *CIStep) getCIChecks(sctx *pipeline.StepContext, prNumber string) ([]ciCheck, error) {
+	cmd := stepCmd(sctx, "gh", "pr", "checks", prNumber, "--json", "name,state,bucket")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		if strings.Contains(string(out), "no checks reported") {
@@ -346,13 +342,12 @@ func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, prNumber string, failingN
 
 	// Find the most recent failing run for this branch so we fetch logs from the right run.
 	var runID string
-	listCmd := exec.CommandContext(ctx, "gh", "run", "list",
+	listCmd := stepCmd(sctx, "gh", "run", "list",
 		"--branch", sctx.Run.Branch,
 		"--status", "failure",
 		"--limit", "1",
 		"--json", "databaseId",
 		"--jq", ".[0].databaseId")
-	listCmd.Dir = sctx.WorkDir
 	if listOut, err := listCmd.Output(); err == nil {
 		runID = strings.TrimSpace(string(listOut))
 	}
@@ -361,8 +356,7 @@ func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, prNumber string, failingN
 	const maxLogBytes = 32 * 1024
 	var logOutput string
 	if runID != "" {
-		cmd := exec.CommandContext(ctx, "gh", "run", "view", runID, "--log-failed")
-		cmd.Dir = sctx.WorkDir
+		cmd := stepCmd(sctx, "gh", "run", "view", runID, "--log-failed")
 		out, _ := cmd.Output()
 		if len(out) > 0 {
 			logOutput = strings.TrimSpace(string(out))
@@ -425,16 +419,15 @@ CI logs:
 // Returns (true, nil) when changes were pushed, (false, nil) when there was
 // nothing to commit, or (false, err) on failure.
 func (s *CIStep) commitAndPush(sctx *pipeline.StepContext) (bool, error) {
-	ctx := sctx.Ctx
 	newHeadSHA := ""
 
-	status, err := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
+	status, err := stepGitRun(sctx, "status", "--porcelain")
 	if err != nil {
 		return false, fmt.Errorf("check CI changes: %w", err)
 	}
 	if strings.TrimSpace(status) == "" {
 		sctx.Log("no changes to commit")
-		headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
+		headSHA, err := stepGitHeadSHA(sctx)
 		if err == nil && headSHA != sctx.Run.HeadSHA {
 			sctx.Run.HeadSHA = headSHA
 			if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, headSHA); err != nil {
@@ -444,13 +437,13 @@ func (s *CIStep) commitAndPush(sctx *pipeline.StepContext) (bool, error) {
 		return false, nil
 	}
 
-	if _, err := git.Run(ctx, sctx.WorkDir, "add", "-A"); err != nil {
+	if _, err := stepGitRun(sctx, "add", "-A"); err != nil {
 		return false, fmt.Errorf("stage CI changes: %w", err)
 	}
-	if _, err := git.Run(ctx, sctx.WorkDir, "commit", "-m", "no-mistakes: apply CI fixes"); err != nil {
+	if _, err := stepGitRun(sctx, "commit", "-m", "no-mistakes: apply CI fixes"); err != nil {
 		return false, fmt.Errorf("commit: %w", err)
 	}
-	headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
+	headSHA, err := stepGitHeadSHA(sctx)
 	if err != nil {
 		return false, fmt.Errorf("resolve head after commit: %w", err)
 	}
@@ -458,18 +451,18 @@ func (s *CIStep) commitAndPush(sctx *pipeline.StepContext) (bool, error) {
 
 	ref := normalizedBranchRef(sctx.Run.Branch)
 
-	upstreamSHA, lsErr := git.LsRemote(ctx, sctx.WorkDir, sctx.Repo.UpstreamURL, ref)
+	upstreamSHA, lsErr := stepGitLsRemote(sctx, sctx.Repo.UpstreamURL, ref)
 	if lsErr != nil {
 		slog.Warn("ls-remote failed, pushing without force-with-lease", "ref", ref, "error", lsErr)
 	}
-	if err := git.Push(ctx, sctx.WorkDir, sctx.Repo.UpstreamURL, ref, upstreamSHA, upstreamSHA != ""); err != nil {
+	if err := stepGitPush(sctx, sctx.Repo.UpstreamURL, ref, upstreamSHA, upstreamSHA != ""); err != nil {
 		if lsErr != nil {
 			return false, fmt.Errorf("push (ls-remote failed: %v): %w", lsErr, err)
 		}
 		return false, fmt.Errorf("push: %w", err)
 	}
 
-	if _, err := git.Run(ctx, sctx.WorkDir, "update-ref", ref, newHeadSHA); err != nil {
+	if _, err := stepGitRun(sctx, "update-ref", ref, newHeadSHA); err != nil {
 		return false, fmt.Errorf("update local branch ref: %w", err)
 	}
 	sctx.Run.HeadSHA = newHeadSHA

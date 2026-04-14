@@ -9,6 +9,7 @@ import (
 )
 
 func TestBuildPipelineSummary_AllClean(t *testing.T) {
+	t.Parallel()
 	steps := []*db.StepResult{
 		{ID: "s1", StepName: types.StepReview, Status: types.StepStatusCompleted},
 		{ID: "s2", StepName: types.StepTest, Status: types.StepStatusCompleted},
@@ -90,6 +91,7 @@ func TestBuildPipelineSummary_IncludesAllPipelineSteps(t *testing.T) {
 }
 
 func TestBuildPipelineSummary_ReviewWithRisk(t *testing.T) {
+	t.Parallel()
 	findings := `{"findings":[{"id":"review-1","severity":"warning","file":"cmd/main.go","line":10,"description":"potential nil deref"}],"summary":"1 warning","risk_level":"low","risk_rationale":"straightforward refactor with no behavioral changes"}`
 	steps := []*db.StepResult{
 		{ID: "s1", StepName: types.StepReview, Status: types.StepStatusCompleted, FindingsJSON: &findings},
@@ -118,6 +120,7 @@ func TestBuildPipelineSummary_ReviewWithRisk(t *testing.T) {
 }
 
 func TestBuildPipelineSummary_AutoFix(t *testing.T) {
+	t.Parallel()
 	findings1 := `{"findings":[{"id":"lint-1","severity":"error","file":"pkg/foo.go","line":18,"description":"unused import"},{"id":"lint-2","severity":"warning","file":"pkg/bar.go","line":35,"description":"missing error check"}],"summary":"2 issues"}`
 	steps := []*db.StepResult{
 		{ID: "s1", StepName: types.StepLint, Status: types.StepStatusCompleted},
@@ -151,6 +154,7 @@ func TestBuildPipelineSummary_AutoFix(t *testing.T) {
 }
 
 func TestBuildPipelineSummary_MultiRoundWithUserFix(t *testing.T) {
+	t.Parallel()
 	findings1 := `{"findings":[{"id":"test-1","severity":"error","file":"pkg/handler_test.go","line":42,"description":"expected 429 got 200"},{"id":"test-2","severity":"error","file":"pkg/handler_test.go","line":78,"description":"context deadline exceeded"}],"summary":"2 failures"}`
 	findings2 := `{"findings":[{"id":"test-2","severity":"error","file":"pkg/handler_test.go","line":78,"description":"context deadline exceeded"}],"summary":"1 failure"}`
 	steps := []*db.StepResult{
@@ -174,6 +178,7 @@ func TestBuildPipelineSummary_MultiRoundWithUserFix(t *testing.T) {
 }
 
 func TestBuildPipelineSummary_MultiRoundStillFailing(t *testing.T) {
+	t.Parallel()
 	findings1 := `{"findings":[{"id":"lint-1","severity":"error","file":"pkg/foo.go","line":18,"description":"unused import"},{"id":"lint-2","severity":"warning","file":"pkg/bar.go","line":35,"description":"missing error check"}],"summary":"2 issues"}`
 	findings2 := `{"findings":[{"id":"lint-2","severity":"warning","file":"pkg/bar.go","line":35,"description":"missing error check"}],"summary":"1 issue"}`
 	steps := []*db.StepResult{
@@ -199,6 +204,7 @@ func TestBuildPipelineSummary_MultiRoundStillFailing(t *testing.T) {
 }
 
 func TestBuildPipelineSummary_UsesFinalFindingsWithoutInitialRoundData(t *testing.T) {
+	t.Parallel()
 	finalFindings := `{"findings":[{"id":"test-1","severity":"error","file":"pkg/handler_test.go","line":42,"description":"expected 429 got 200"}],"summary":"1 failure"}`
 	steps := []*db.StepResult{
 		{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &finalFindings},
@@ -225,6 +231,7 @@ func TestBuildPipelineSummary_UsesFinalFindingsWithoutInitialRoundData(t *testin
 }
 
 func TestBuildPipelineSummary_SkippedStep(t *testing.T) {
+	t.Parallel()
 	steps := []*db.StepResult{
 		{ID: "s1", StepName: types.StepReview, Status: types.StepStatusSkipped},
 		{ID: "s2", StepName: types.StepTest, Status: types.StepStatusCompleted},
@@ -243,7 +250,8 @@ func TestBuildPipelineSummary_SkippedStep(t *testing.T) {
 	}
 }
 
-func TestBuildPipelineSummary_IncludesPushPRCI(t *testing.T) {
+func TestBuildPipelineSummary_ExcludesPushPRCI(t *testing.T) {
+	t.Parallel()
 	steps := []*db.StepResult{
 		{ID: "s1", StepName: types.StepReview, Status: types.StepStatusCompleted},
 		{ID: "s2", StepName: types.StepPush, Status: types.StepStatusCompleted},
@@ -288,6 +296,7 @@ func TestBuildPipelineSummary_EscapesFindingDescriptionsInDetails(t *testing.T) 
 }
 
 func TestBuildPipelineSummary_ReviewUsesFinalCleanState(t *testing.T) {
+	t.Parallel()
 	initialFindings := `{"findings":[{"id":"review-1","severity":"warning","description":"risky change"}],"summary":"1 warning","risk_level":"medium","risk_rationale":"initial risk rationale"}`
 	finalFindings := `{"findings":[],"summary":"clean","risk_level":"low","risk_rationale":"follow-up fixes reduced risk"}`
 	steps := []*db.StepResult{
@@ -325,6 +334,7 @@ func TestBuildPipelineSummary_ReviewUsesFinalCleanState(t *testing.T) {
 }
 
 func TestBuildPipelineSummary_ReviewShowsWarningForUnresolvedRiskWithoutFindings(t *testing.T) {
+	t.Parallel()
 	findings := `{"findings":[],"summary":"clean","risk_level":"medium","risk_rationale":"touches critical error handling"}`
 	steps := []*db.StepResult{
 		{ID: "s1", StepName: types.StepReview, Status: types.StepStatusCompleted, FindingsJSON: &findings},
@@ -349,6 +359,7 @@ func TestBuildPipelineSummary_ReviewShowsWarningForUnresolvedRiskWithoutFindings
 }
 
 func TestBuildPipelineSummary_ShowsParseFailureForInvalidRoundFindings(t *testing.T) {
+	t.Parallel()
 	invalidFindings := `{"findings":[`
 	steps := []*db.StepResult{
 		{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted},
@@ -373,6 +384,7 @@ func TestBuildPipelineSummary_ShowsParseFailureForInvalidRoundFindings(t *testin
 }
 
 func TestBuildPipelineSummary_DoesNotClaimFixedWhenFinalFindingsUnreadable(t *testing.T) {
+	t.Parallel()
 	initialFindings := `{"findings":[{"id":"lint-1","severity":"warning","description":"still broken"}],"summary":"1 issue"}`
 	invalidFinalFindings := `{"findings":[`
 	steps := []*db.StepResult{
@@ -398,6 +410,7 @@ func TestBuildPipelineSummary_DoesNotClaimFixedWhenFinalFindingsUnreadable(t *te
 }
 
 func TestBuildPipelineSummary_ReviewDoesNotReuseInitialRiskWhenFinalUnreadable(t *testing.T) {
+	t.Parallel()
 	initialFindings := `{"findings":[{"id":"review-1","severity":"warning","description":"risky change"}],"summary":"1 warning","risk_level":"medium","risk_rationale":"initial risk rationale"}`
 	invalidFinalFindings := `{"findings":[`
 	steps := []*db.StepResult{
@@ -423,6 +436,7 @@ func TestBuildPipelineSummary_ReviewDoesNotReuseInitialRiskWhenFinalUnreadable(t
 }
 
 func TestBuildPipelineSummary_FindingSeverityEmoji(t *testing.T) {
+	t.Parallel()
 	findings := `{"findings":[{"id":"review-1","severity":"error","description":"critical bug"},{"id":"review-2","severity":"warning","description":"minor issue"},{"id":"review-3","severity":"info","description":"suggestion"}],"summary":"3 findings","risk_level":"high","risk_rationale":"critical bug found"}`
 	steps := []*db.StepResult{
 		{ID: "s1", StepName: types.StepReview, Status: types.StepStatusCompleted, FindingsJSON: &findings},
@@ -447,6 +461,7 @@ func TestBuildPipelineSummary_FindingSeverityEmoji(t *testing.T) {
 }
 
 func TestBuildPipelineSummary_ReviewUsesLatestRoundNotFirst(t *testing.T) {
+	t.Parallel()
 	// When sr.FindingsJSON is nil (cleared), the fallback should use the
 	// latest round's risk assessment, not the first round's stale one.
 	initialFindings := `{"findings":[{"id":"review-1","severity":"warning","description":"issue"}],"summary":"1 warning","risk_level":"medium","risk_rationale":"initial concern"}`
@@ -474,6 +489,7 @@ func TestBuildPipelineSummary_ReviewUsesLatestRoundNotFirst(t *testing.T) {
 }
 
 func TestBuildPipelineSummary_EmptySteps(t *testing.T) {
+	t.Parallel()
 	md, risk := BuildPipelineSummary(nil, nil)
 	if md != "" {
 		t.Errorf("expected empty string for nil steps, got: %q", md)
@@ -502,6 +518,7 @@ func TestBuildTestingSummary_DoesNotClaimPassedWithoutRounds(t *testing.T) {
 }
 
 func TestBuildPipelineSummary_RebaseWithConflicts(t *testing.T) {
+	t.Parallel()
 	findings := `{"findings":[{"id":"rebase-1","severity":"warning","file":"pkg/foo.go","description":"merge conflict resolved by agent"}],"summary":"1 conflict resolved"}`
 	steps := []*db.StepResult{
 		{ID: "s1", StepName: types.StepRebase, Status: types.StepStatusCompleted, FindingsJSON: &findings},
