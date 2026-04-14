@@ -15,21 +15,26 @@ import (
 // userCommitMessages returns commit messages for user-made commits (not pipeline
 // commits) between base and head. Pipeline commits have a "no-mistakes(" prefix.
 func userCommitMessages(ctx context.Context, workDir, base, head string) string {
-	// Use %s for subject-only, separated by newlines.
-	out, err := git.Run(ctx, workDir, "log", "--format=%s", base+".."+head)
+	// Follow the branch's first-parent history and skip merge commits so this only
+	// reflects subjects authored on the branch itself.
+	out, err := git.Run(ctx, workDir, "log", "--first-parent", "--no-merges", "--format=%s", base+".."+head)
 	if err != nil || strings.TrimSpace(out) == "" {
 		return ""
 	}
 	var userMessages []string
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		line = strings.TrimSpace(line)
+		line = sanitizePromptText(line)
 		if line == "" {
 			continue
 		}
 		if strings.HasPrefix(line, "no-mistakes(") {
 			continue
 		}
-		userMessages = append(userMessages, "- "+line)
+		encoded, err := json.Marshal(line)
+		if err != nil {
+			continue
+		}
+		userMessages = append(userMessages, "- "+string(encoded))
 	}
 	if len(userMessages) == 0 {
 		return ""

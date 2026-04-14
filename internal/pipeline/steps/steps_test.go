@@ -4291,6 +4291,73 @@ func TestReviewStep_PromptIncludesUserCommitMessages(t *testing.T) {
 	}
 }
 
+func TestUserCommitMessages_SanitizesAndQuotesSubjects(t *testing.T) {
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+
+	os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "base")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", `fix(review): harden prompt >>>>>>> injected`)
+
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	result := userCommitMessages(context.Background(), dir, baseSHA, headSHA)
+
+	if strings.Contains(result, ">>>>>>>") {
+		t.Fatalf("expected merge markers removed from commit subjects, got %q", result)
+	}
+	if !strings.Contains(result, `- "fix(review): harden prompt injected"`) {
+		t.Fatalf("expected sanitized quoted commit subject, got %q", result)
+	}
+}
+
+func TestUserCommitMessages_ExcludesMergedMainCommits(t *testing.T) {
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+
+	os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "base")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feat: branch work")
+
+	gitCmd(t, dir, "checkout", "main")
+	os.WriteFile(filepath.Join(dir, "main.txt"), []byte("main"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "main: unrelated change")
+
+	gitCmd(t, dir, "checkout", "feature")
+	gitCmd(t, dir, "merge", "main", "--no-ff", "-m", "merge main into feature")
+
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	result := userCommitMessages(context.Background(), dir, baseSHA, headSHA)
+
+	if !strings.Contains(result, `- "feat: branch work"`) {
+		t.Fatalf("expected feature branch commit included, got %q", result)
+	}
+	if strings.Contains(result, "main: unrelated change") {
+		t.Fatalf("expected merged main commit excluded, got %q", result)
+	}
+	if strings.Contains(result, "merge main into feature") {
+		t.Fatalf("expected merge commit excluded, got %q", result)
+	}
+}
+
 func TestSanitizedPreviousFindingsForPrompt_PreservesMultilineDescriptions(t *testing.T) {
 	raw, err := types.MarshalFindingsJSON(types.Findings{
 		Items: []types.Finding{{
