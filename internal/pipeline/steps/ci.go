@@ -114,12 +114,18 @@ func failingCheckNames(checks []ciCheck) []string {
 	return names
 }
 
-func ciFailureOutcome(failing []string, summary string) *pipeline.StepOutcome {
+func ciFailureOutcome(failing []string, mergeConflict bool, summary string) *pipeline.StepOutcome {
 	findings := Findings{Summary: summary}
 	for _, name := range failing {
 		findings.Items = append(findings.Items, Finding{
 			Severity:    "warning",
 			Description: fmt.Sprintf("CI check failing: %s", name),
+		})
+	}
+	if mergeConflict {
+		findings.Items = append(findings.Items, Finding{
+			Severity:    "warning",
+			Description: "PR has merge conflicts with the base branch",
 		})
 	}
 	findingsJSON, _ := json.Marshal(findings)
@@ -213,63 +219,93 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			return &pipeline.StepOutcome{}, nil
 		}
 
-		// Check CI status - auto-fix failures when configured
+		// Check mergeable state
+		mergeConflict := false
+		mergeState, mergeErr := s.getMergeableState(sctx, prNumber)
+		if mergeErr != nil {
+			sctx.Log(fmt.Sprintf("warning: could not check mergeable state: %v", mergeErr))
+		} else if isMergeConflict(mergeState) {
+			mergeConflict = true
+		}
+
+		// Check CI status - wait for all checks to complete before fixing
 		ciFixLimit := sctx.Config.AutoFix.CI
 		checks, err := s.getCIChecks(sctx, prNumber)
 		if err != nil {
 			sctx.Log(fmt.Sprintf("warning: could not check CI: %v", err))
-		} else if hasFailingChecks(checks) {
+		} else {
+			pending := hasPendingChecks(checks)
 			failing := failingCheckNames(checks)
 			sort.Strings(failing)
-			fixKey := strings.Join(failing, ",")
-			if sctx.Fixing && !manualFixAttempted {
-				manualFixAttempted = true
-				sctx.Log(fmt.Sprintf("CI failures detected: %s - manual fix requested...", strings.Join(failing, ", ")))
-				pushed, err := s.autoFixCI(sctx, prNumber, failing)
-				if err != nil {
-					sctx.Log(fmt.Sprintf("warning: CI manual fix failed: %v", err))
-				} else if pushed {
-					s.lastFixedChecks = fixKey
-				} else {
-					sctx.Log("CI fix produced no changes, returning for manual intervention...")
-					return ciFailureOutcome(failing, "CI fix produced no changes - failures require manual intervention"), nil
+			hasFailures := len(failing) > 0
+			hasIssues := hasFailures || mergeConflict
+
+			if hasIssues && pending {
+				// Some checks still running - wait for all to complete before fixing
+				sctx.Log("issues detected but checks still pending, waiting for all checks to complete...")
+			} else if hasIssues {
+				// All checks done, issues present - fix or report
+				fixKey := strings.Join(failing, ",")
+				if mergeConflict {
+					fixKey += "+conflict"
 				}
-			} else if sctx.Fixing && fixKey == s.lastFixedChecks {
-				sctx.Log("fix already attempted for these failures, waiting for CI re-run...")
-			} else if ciFixLimit <= 0 {
-				sctx.Log(fmt.Sprintf("CI failures detected: %s - auto-fix disabled, waiting for manual intervention...", strings.Join(failing, ", ")))
-				return ciFailureOutcome(failing, "CI failures require manual intervention"), nil
-			} else if s.ciFixAttempts >= ciFixLimit {
-				sctx.Log(fmt.Sprintf("CI failures detected: %s - max auto-fix attempts (%d) reached, waiting for manual intervention...", strings.Join(failing, ", "), ciFixLimit))
-				return ciFailureOutcome(failing, "CI failures still present after auto-fix attempts"), nil
-			} else if fixKey == s.lastFixedChecks {
-				sctx.Log("fix already attempted for these failures, waiting for CI re-run...")
-			} else {
-				s.ciFixAttempts++
-				sctx.Log(fmt.Sprintf("CI failures detected: %s - auto-fixing (attempt %d/%d)...", strings.Join(failing, ", "), s.ciFixAttempts, ciFixLimit))
-				pushed, err := s.autoFixCI(sctx, prNumber, failing)
-				if err != nil {
-					sctx.Log(fmt.Sprintf("warning: CI auto-fix failed: %v", err))
-				} else if pushed {
-					s.lastFixedChecks = fixKey
-				} else {
-					// No changes produced - don't set lastFixedChecks so next
-					// poll treats this as a new failure and retries if attempts remain.
-					sctx.Log("CI fix produced no changes, will retry if attempts remain...")
-				}
-			}
-		} else {
-			s.lastFixedChecks = ""
-			if !hasPendingChecks(checks) {
-				if len(checks) == 0 && elapsed < s.gracePeriod() {
-					// CI checks may not be registered yet, keep polling
-					sctx.Log("no CI checks reported yet, waiting for checks to register...")
-				} else {
-					checksReadyToExit = true
-					if len(checks) == 0 {
-						checksSummary = "no CI checks reported, CI monitoring complete"
+				issueDesc := strings.Join(failing, ", ")
+				if mergeConflict {
+					if issueDesc != "" {
+						issueDesc += " + merge conflict"
 					} else {
-						checksSummary = "all CI checks passed"
+						issueDesc = "merge conflict"
+					}
+				}
+				if sctx.Fixing && !manualFixAttempted {
+					manualFixAttempted = true
+					sctx.Log(fmt.Sprintf("issues detected: %s - manual fix requested...", issueDesc))
+					pushed, err := s.autoFixCI(sctx, prNumber, failing, mergeConflict)
+					if err != nil {
+						sctx.Log(fmt.Sprintf("warning: CI manual fix failed: %v", err))
+					} else if pushed {
+						s.lastFixedChecks = fixKey
+					} else {
+						sctx.Log("CI fix produced no changes, returning for manual intervention...")
+						return ciFailureOutcome(failing, mergeConflict, "CI fix produced no changes - failures require manual intervention"), nil
+					}
+				} else if sctx.Fixing && fixKey == s.lastFixedChecks {
+					sctx.Log("fix already attempted for these issues, waiting for CI re-run...")
+				} else if ciFixLimit <= 0 {
+					sctx.Log(fmt.Sprintf("issues detected: %s - auto-fix disabled, waiting for manual intervention...", issueDesc))
+					return ciFailureOutcome(failing, mergeConflict, "CI failures require manual intervention"), nil
+				} else if s.ciFixAttempts >= ciFixLimit {
+					sctx.Log(fmt.Sprintf("issues detected: %s - max auto-fix attempts (%d) reached, waiting for manual intervention...", issueDesc, ciFixLimit))
+					return ciFailureOutcome(failing, mergeConflict, "CI failures still present after auto-fix attempts"), nil
+				} else if fixKey == s.lastFixedChecks {
+					sctx.Log("fix already attempted for these issues, waiting for CI re-run...")
+				} else {
+					s.ciFixAttempts++
+					sctx.Log(fmt.Sprintf("issues detected: %s - auto-fixing (attempt %d/%d)...", issueDesc, s.ciFixAttempts, ciFixLimit))
+					pushed, err := s.autoFixCI(sctx, prNumber, failing, mergeConflict)
+					if err != nil {
+						sctx.Log(fmt.Sprintf("warning: CI auto-fix failed: %v", err))
+					} else if pushed {
+						s.lastFixedChecks = fixKey
+					} else {
+						// No changes produced - don't set lastFixedChecks so next
+						// poll treats this as a new failure and retries if attempts remain.
+						sctx.Log("CI fix produced no changes, will retry if attempts remain...")
+					}
+				}
+			} else {
+				s.lastFixedChecks = ""
+				if !pending {
+					if len(checks) == 0 && elapsed < s.gracePeriod() {
+						// CI checks may not be registered yet, keep polling
+						sctx.Log("no CI checks reported yet, waiting for checks to register...")
+					} else {
+						checksReadyToExit = true
+						if len(checks) == 0 {
+							checksSummary = "no CI checks reported, CI monitoring complete"
+						} else {
+							checksSummary = "all CI checks passed"
+						}
 					}
 				}
 			}
@@ -316,6 +352,21 @@ func (s *CIStep) getPRState(sctx *pipeline.StepContext, prNumber string) (string
 	return strings.TrimSpace(string(out)), nil
 }
 
+// getMergeableState returns the PR mergeable state (MERGEABLE, CONFLICTING, UNKNOWN).
+func (s *CIStep) getMergeableState(sctx *pipeline.StepContext, prNumber string) (string, error) {
+	cmd := stepCmd(sctx, "gh", "pr", "view", prNumber, "--json", "mergeable", "--jq", ".mergeable")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("gh pr view mergeable: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// isMergeConflict returns true if the mergeable state indicates conflicts.
+func isMergeConflict(state string) bool {
+	return state == "CONFLICTING"
+}
+
 // getCIChecks fetches CI check results for a PR.
 func (s *CIStep) getCIChecks(sctx *pipeline.StepContext, prNumber string) ([]ciCheck, error) {
 	cmd := stepCmd(sctx, "gh", "pr", "checks", prNumber, "--json", "name,state,bucket")
@@ -333,23 +384,25 @@ func (s *CIStep) getCIChecks(sctx *pipeline.StepContext, prNumber string) ([]ciC
 	return checks, nil
 }
 
-// autoFixCI runs the agent to fix CI failures, then commits and pushes.
+// autoFixCI runs the agent to fix CI failures and/or merge conflicts, then commits and pushes.
 // Returns (true, nil) when changes were committed and pushed, (false, nil)
 // when the agent produced no changes, or (false, err) on failure.
-func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, prNumber string, failingNames []string) (bool, error) {
+func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, prNumber string, failingNames []string, mergeConflict bool) (bool, error) {
 	ctx := sctx.Ctx
 	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
 
 	// Find the most recent failing run for this branch so we fetch logs from the right run.
 	var runID string
-	listCmd := stepCmd(sctx, "gh", "run", "list",
-		"--branch", sctx.Run.Branch,
-		"--status", "failure",
-		"--limit", "1",
-		"--json", "databaseId",
-		"--jq", ".[0].databaseId")
-	if listOut, err := listCmd.Output(); err == nil {
-		runID = strings.TrimSpace(string(listOut))
+	if len(failingNames) > 0 {
+		listCmd := stepCmd(sctx, "gh", "run", "list",
+			"--branch", sctx.Run.Branch,
+			"--status", "failure",
+			"--limit", "1",
+			"--json", "databaseId",
+			"--jq", ".[0].databaseId")
+		if listOut, err := listCmd.Output(); err == nil {
+			runID = strings.TrimSpace(string(listOut))
+		}
 	}
 
 	// Attempt to fetch CI failure logs for context
@@ -372,8 +425,19 @@ func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, prNumber string, failingN
 		}
 	}
 
+	// Build prompt based on what issues are present
+	var promptIntro string
+	switch {
+	case len(failingNames) > 0 && mergeConflict:
+		promptIntro = "The following CI checks have failed and the PR has merge conflicts with the base branch. Diagnose and fix the CI issues, then rebase onto the base branch and resolve the merge conflicts."
+	case mergeConflict:
+		promptIntro = "The PR has merge conflicts with the base branch. Rebase onto the base branch and resolve the merge conflicts."
+	default:
+		promptIntro = "The following CI checks have failed on this PR. Diagnose and fix the issues."
+	}
+
 	prompt := fmt.Sprintf(
-		`The following CI checks have failed on this PR. Diagnose and fix the issues.
+		`%s
 
 Context:
 - branch: %s
@@ -381,6 +445,7 @@ Context:
 - target commit: %s
 - PR number: %s
 - failing checks: %s
+- merge conflict: %v
 
 		Rules:
 		- You MUST produce file changes that fix the failing checks. Do not conclude that nothing needs to change.
@@ -389,11 +454,13 @@ Context:
 		- Make the minimal change needed.
 		- Do not refactor beyond what is needed.
 		- Verify the fix by running the most relevant commands locally before finishing.`,
+		promptIntro,
 		sctx.Run.Branch,
 		baseSHA,
 		sctx.Run.HeadSHA,
 		prNumber,
 		strings.Join(failingNames, ", "),
+		mergeConflict,
 	)
 	if logOutput != "" {
 		prompt += fmt.Sprintf(`
@@ -402,7 +469,7 @@ CI logs:
 %s`, logOutput)
 	}
 
-	sctx.Log("running agent to fix CI failures...")
+	sctx.Log("running agent to fix CI issues...")
 	_, err := sctx.Agent.Run(ctx, agent.RunOpts{
 		Prompt:  prompt,
 		CWD:     sctx.WorkDir,

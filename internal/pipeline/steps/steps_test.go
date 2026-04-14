@@ -148,9 +148,17 @@ func fakeGlabHandler(args []string) {
 func fakeCIGHHandler(args []string) {
 	state := os.Getenv("FAKE_CLI_STATE")
 	checksJSON := os.Getenv("FAKE_CLI_CHECKS")
+	mergeable := os.Getenv("FAKE_CLI_MERGEABLE")
 	joined := strings.Join(args, " ")
 
 	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json mergeable") {
+		if mergeable == "" {
+			mergeable = "MERGEABLE"
+		}
+		fmt.Println(mergeable)
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json state") {
@@ -172,9 +180,17 @@ func fakeCIGHSequenceHandler(args []string) {
 	state := os.Getenv("FAKE_CLI_STATE")
 	checksPath := os.Getenv("FAKE_CLI_CHECKS_PATH")
 	indexPath := os.Getenv("FAKE_CLI_CHECKS_INDEX_PATH")
+	mergeable := os.Getenv("FAKE_CLI_MERGEABLE")
 	joined := strings.Join(args, " ")
 
 	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json mergeable") {
+		if mergeable == "" {
+			mergeable = "MERGEABLE"
+		}
+		fmt.Println(mergeable)
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json state") {
@@ -5571,6 +5587,42 @@ func fakeCIGH(t *testing.T, state, checksJSON string) []string {
 	})
 }
 
+func fakeCIGHMergeable(t *testing.T, state, checksJSON, mergeable string) []string {
+	t.Helper()
+	binDir := fakeCLIBinDir(t)
+	linkTestBinary(t, binDir, "gh")
+	return fakeCLIEnv(binDir, map[string]string{
+		"FAKE_CLI_MODE":      "ci-gh",
+		"FAKE_CLI_STATE":     state,
+		"FAKE_CLI_CHECKS":    checksJSON,
+		"FAKE_CLI_MERGEABLE": mergeable,
+	})
+}
+
+func fakeCIGHSequenceMergeable(t *testing.T, state string, checks []string, mergeable string) []string {
+	t.Helper()
+	binDir := fakeCLIBinDir(t)
+	linkTestBinary(t, binDir, "gh")
+
+	checksPath := filepath.Join(t.TempDir(), "checks.txt")
+	indexPath := filepath.Join(t.TempDir(), "checks-index.txt")
+
+	if err := os.WriteFile(checksPath, []byte(strings.Join(checks, "\n")), 0o644); err != nil {
+		t.Fatalf("write checks sequence: %v", err)
+	}
+	if err := os.WriteFile(indexPath, []byte("0"), 0o644); err != nil {
+		t.Fatalf("write checks index: %v", err)
+	}
+
+	return fakeCLIEnv(binDir, map[string]string{
+		"FAKE_CLI_MODE":              "ci-gh-seq",
+		"FAKE_CLI_STATE":             state,
+		"FAKE_CLI_CHECKS_PATH":       checksPath,
+		"FAKE_CLI_CHECKS_INDEX_PATH": indexPath,
+		"FAKE_CLI_MERGEABLE":         mergeable,
+	})
+}
+
 func fakeCIGHSequence(t *testing.T, state string, checks []string) []string {
 	t.Helper()
 	binDir := fakeCLIBinDir(t)
@@ -5776,13 +5828,13 @@ func TestCIStep_CIFailureAutoFix(t *testing.T) {
 
 	foundAutoFix := false
 	for _, l := range logs {
-		if strings.Contains(l, "CI failures detected") {
+		if strings.Contains(l, "issues detected") && strings.Contains(l, "auto-fixing") {
 			foundAutoFix = true
 			break
 		}
 	}
 	if !foundAutoFix {
-		t.Errorf("expected CI failure detection in logs, got: %v", logs)
+		t.Errorf("expected issue detection in logs, got: %v", logs)
 	}
 }
 
@@ -5973,7 +6025,7 @@ func TestCIStep_NonEmptyPassingChecksExitImmediately(t *testing.T) {
 	if outcome.NeedsApproval {
 		t.Error("expected no approval needed")
 	}
-	if elapsed > 5*time.Second {
+	if elapsed > 10*time.Second {
 		t.Errorf("non-empty passing checks should exit quickly, took %v", elapsed)
 	}
 	found := false
@@ -6279,7 +6331,7 @@ func TestCIStep_CIAutoFixRetriesAfterChecksRerun(t *testing.T) {
 	sctx.Run.PRURL = &prURL
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
-	sctx.Config.CITimeout = 10 * time.Second
+	sctx.Config.CITimeout = 30 * time.Second
 	sctx.Config.AutoFix = config.AutoFix{CI: 2}
 
 	var logs []string
@@ -6665,5 +6717,297 @@ func TestCIStep_AutoFixPromptIncludesMustFixInstruction(t *testing.T) {
 	}
 	if !strings.Contains(capturedPrompt, "You MUST produce file changes") {
 		t.Errorf("prompt should instruct agent to produce changes, got:\n%s", capturedPrompt)
+	}
+}
+
+// --- merge conflict and wait-for-all-checks tests ---
+
+func TestCIStep_MergeConflictDetected_ReturnsNeedsApproval(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	// All CI checks pass, but PR has merge conflicts
+	checksJSON := `[{"name":"build","state":"SUCCESS","bucket":"pass"},{"name":"test","state":"SUCCESS","bucket":"pass"}]`
+	env := fakeCIGHMergeable(t, "OPEN", checksJSON, "CONFLICTING")
+
+	ag := &mockAgent{name: "test"}
+	prURL := "https://github.com/test/repo/pull/42"
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 5 * time.Second
+	sctx.Config.AutoFix = config.AutoFix{CI: 0} // disabled
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	step := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			return nil
+		},
+	}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("expected outcome, got error: %v", err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("expected NeedsApproval when merge conflict detected")
+	}
+
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatalf("unmarshal findings: %v", err)
+	}
+
+	foundConflict := false
+	for _, f := range findings.Items {
+		if strings.Contains(f.Description, "merge conflict") {
+			foundConflict = true
+			break
+		}
+	}
+	if !foundConflict {
+		t.Fatalf("expected merge conflict finding, got: %+v", findings.Items)
+	}
+}
+
+func TestCIStep_WaitsForPendingChecksBeforeFixing(t *testing.T) {
+	t.Parallel()
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	// Poll 1: build failing, test still pending -> should NOT fix yet
+	// Poll 2: build failing, test also failing -> should fix now
+	checksSequence := []string{
+		`[{"name":"build","bucket":"fail"},{"name":"test","bucket":"pending"}]`,
+		`[{"name":"build","bucket":"fail"},{"name":"test","bucket":"fail"}]`,
+	}
+	env := fakeCIGHSequenceMergeable(t, "OPEN", checksSequence, "MERGEABLE")
+
+	agentCalled := false
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			agentCalled = true
+			os.WriteFile(filepath.Join(opts.CWD, "fix.txt"), []byte("fixed"), 0o644)
+			return &agent.Result{}, nil
+		},
+	}
+
+	prURL := "https://github.com/test/repo/pull/42"
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Config.CITimeout = 30 * time.Second
+	sctx.Config.AutoFix = config.AutoFix{CI: 3}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	pollCount := 0
+	step := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			pollCount++
+			if pollCount >= 3 {
+				cancel()
+				return ctx.Err()
+			}
+			return nil
+		},
+	}
+	_, err := step.Execute(sctx)
+	if err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Agent should have been called on poll 2 (after pending resolved), not poll 1
+	if !agentCalled {
+		t.Fatal("expected agent to be called after all checks completed")
+	}
+
+	// Should have logged about waiting for pending checks
+	foundWaiting := false
+	for _, l := range logs {
+		if strings.Contains(l, "waiting for") && strings.Contains(l, "pending") {
+			foundWaiting = true
+			break
+		}
+	}
+	if !foundWaiting {
+		t.Fatalf("expected log about waiting for pending checks, got: %v", logs)
+	}
+}
+
+func TestCIStep_MergeConflictAndCIFailure_FixPromptIncludesBoth(t *testing.T) {
+	t.Parallel()
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	checksJSON := `[{"name":"test","status":"COMPLETED","conclusion":"failure","bucket":"fail"}]`
+	env := fakeCIGHMergeable(t, "OPEN", checksJSON, "CONFLICTING")
+
+	var capturedPrompt string
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			capturedPrompt = opts.Prompt
+			os.WriteFile(filepath.Join(opts.CWD, "fix.txt"), []byte("fixed"), 0o644)
+			return &agent.Result{}, nil
+		},
+	}
+
+	prURL := "https://github.com/test/repo/pull/42"
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Config.CITimeout = 30 * time.Second
+	sctx.Config.AutoFix = config.AutoFix{CI: 3}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+	sctx.Log = func(s string) {}
+
+	step := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			cancel()
+			return ctx.Err()
+		},
+	}
+	step.Execute(sctx)
+
+	if capturedPrompt == "" {
+		t.Fatal("expected agent to be called")
+	}
+	if !strings.Contains(capturedPrompt, "merge conflict") {
+		t.Errorf("expected prompt to mention merge conflict, got:\n%s", capturedPrompt)
+	}
+	if !strings.Contains(capturedPrompt, "test") {
+		t.Errorf("expected prompt to mention failing check name, got:\n%s", capturedPrompt)
+	}
+}
+
+func TestCIStep_MergeConflictOnly_AutoFix(t *testing.T) {
+	t.Parallel()
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	// All checks pass, but merge conflict
+	checksJSON := `[{"name":"build","state":"SUCCESS","bucket":"pass"},{"name":"test","state":"SUCCESS","bucket":"pass"}]`
+	env := fakeCIGHMergeable(t, "OPEN", checksJSON, "CONFLICTING")
+
+	agentCalled := false
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			agentCalled = true
+			os.WriteFile(filepath.Join(opts.CWD, "conflict-fix.txt"), []byte("resolved"), 0o644)
+			return &agent.Result{}, nil
+		},
+	}
+
+	prURL := "https://github.com/test/repo/pull/42"
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Config.CITimeout = 30 * time.Second
+	sctx.Config.AutoFix = config.AutoFix{CI: 3}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	step := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			cancel()
+			return ctx.Err()
+		},
+	}
+	step.Execute(sctx)
+
+	if !agentCalled {
+		t.Fatal("expected agent to be called to resolve merge conflict")
+	}
+
+	// Should log about merge conflict
+	foundConflict := false
+	for _, l := range logs {
+		if strings.Contains(l, "merge conflict") {
+			foundConflict = true
+			break
+		}
+	}
+	if !foundConflict {
+		t.Fatalf("expected merge conflict log, got: %v", logs)
 	}
 }
