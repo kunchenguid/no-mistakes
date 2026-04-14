@@ -72,12 +72,16 @@ func hasBlockingFindings(items []Finding) bool {
 }
 
 func envValue(env []string, key string) (string, bool) {
+	return envValueForOS(env, key, runtime.GOOS)
+}
+
+func envValueForOS(env []string, key, goos string) (string, bool) {
 	prefix := key + "="
 	for _, entry := range env {
 		if strings.HasPrefix(entry, prefix) {
 			return strings.TrimPrefix(entry, prefix), true
 		}
-		if runtime.GOOS == "windows" && len(entry) > len(prefix) && strings.EqualFold(entry[:len(prefix)], prefix) {
+		if goos == "windows" && len(entry) >= len(prefix) && strings.EqualFold(entry[:len(prefix)], prefix) {
 			return entry[len(prefix):], true
 		}
 	}

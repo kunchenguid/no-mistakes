@@ -3559,6 +3559,26 @@ func TestPathCandidateUsable_WindowsAcceptsExeWithoutExecBits(t *testing.T) {
 	}
 }
 
+func TestEnvValueForOS_WindowsMatchesEmptyMixedCaseOverride(t *testing.T) {
+	t.Parallel()
+
+	value, ok := envValueForOS([]string{"Path=", "PathExt="}, "PATH", "windows")
+	if !ok {
+		t.Fatal("expected empty mixed-case PATH override to be present")
+	}
+	if value != "" {
+		t.Fatalf("expected empty PATH override, got %q", value)
+	}
+
+	value, ok = envValueForOS([]string{"Path=", "PathExt="}, "PATHEXT", "windows")
+	if !ok {
+		t.Fatal("expected empty mixed-case PATHEXT override to be present")
+	}
+	if value != "" {
+		t.Fatalf("expected empty PATHEXT override, got %q", value)
+	}
+}
+
 func TestStepCmd_DoesNotFallbackToHostPathWhenCustomPathOmitsBinary(t *testing.T) {
 	t.Parallel()
 
