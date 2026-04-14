@@ -66,7 +66,7 @@ When a step pauses for approval, the findings panel shows structured results:
 - Severity icons: `E` (error, red), `W` (warning, yellow), `I` (info, blue)
 - Checkboxes: `[x]` (selected, green), `[ ]` (deselected, dim)
 - Blue `>` marks the focused finding
-- Scroll hint at the bottom when content overflows: `↑ N above / ↓ N more below (j/k)`
+- Bottom hint shows `↑ N above / ↓ N more below (j/k)` when scrolling, or `(j/k)` whenever there are multiple findings
 
 ### Diff panel
 
