@@ -4811,6 +4811,65 @@ func TestCIStep_CommitAndPush_NoChanges_ReconcilesStaleDatabaseHeadSHA_UsesStepE
 	}
 }
 
+func TestCIStep_CommitAndPush_NoDirtyChangesButHeadAdvanced_PushesNewHead(t *testing.T) {
+	t.Parallel()
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature")
+	originalHeadSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	os.WriteFile(filepath.Join(dir, "resolved.txt"), []byte("resolved"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "resolve conflict")
+	advancedHeadSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, originalHeadSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "refs/heads/feature"
+
+	step := &CIStep{}
+	pushed, err := step.commitAndPush(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pushed {
+		t.Fatal("expected commitAndPush to push advanced clean head")
+	}
+
+	upstreamSHA := gitCmd(t, upstream, "rev-parse", "refs/heads/feature")
+	if upstreamSHA != advancedHeadSHA {
+		t.Fatalf("upstream SHA = %s, want %s", upstreamSHA, advancedHeadSHA)
+	}
+	if sctx.Run.HeadSHA != advancedHeadSHA {
+		t.Fatalf("Run.HeadSHA = %s, want %s", sctx.Run.HeadSHA, advancedHeadSHA)
+	}
+	dbRun, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dbRun.HeadSHA != advancedHeadSHA {
+		t.Fatalf("DB HeadSHA = %s, want %s", dbRun.HeadSHA, advancedHeadSHA)
+	}
+}
+
 func TestCIStep_CommitAndPush_UpdatesLocalBranchRefAfterDetachedPush(t *testing.T) {
 	t.Parallel()
 	upstream := t.TempDir()
@@ -6877,6 +6936,57 @@ func TestCIStep_MergeableLookupErrorDoesNotExitCleanly(t *testing.T) {
 	}
 	if !foundWarning {
 		t.Fatalf("expected mergeable lookup warning, got logs: %v", logs)
+	}
+}
+
+func TestCIStep_TimeoutWithUnknownMergeableState_NeedsApproval(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	checksJSON := `[{"name":"build","state":"SUCCESS","bucket":"pass"}]`
+	env := fakeCIGHMergeable(t, "OPEN", checksJSON, "UNKNOWN")
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 2 * time.Second
+
+	started := time.Unix(1700000000, 0)
+	now := started
+	step := &CIStep{
+		now: func() time.Time {
+			return now
+		},
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			now = now.Add(interval)
+			return nil
+		},
+	}
+
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("expected NeedsApproval when mergeability stays unknown until timeout")
+	}
+
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatalf("unmarshal findings: %v", err)
+	}
+
+	found := false
+	for _, item := range findings.Items {
+		if strings.Contains(strings.ToLower(item.Description), "mergeable") || strings.Contains(strings.ToLower(item.Description), "mergeability") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected unresolved mergeability finding, got %+v", findings.Items)
 	}
 }
 

@@ -135,6 +135,22 @@ func ciFailureOutcome(failing []string, mergeConflict bool, summary string) *pip
 	}
 }
 
+func ciMergeabilityOutcome(summary, description string) *pipeline.StepOutcome {
+	findings := Findings{
+		Summary: summary,
+		Items: []Finding{{
+			Severity:    "warning",
+			Description: description,
+			Action:      types.ActionAskUser,
+		}},
+	}
+	findingsJSON, _ := json.Marshal(findings)
+	return &pipeline.StepOutcome{
+		NeedsApproval: true,
+		Findings:      string(findingsJSON),
+	}
+}
+
 func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	ctx := sctx.Ctx
 	if err := ctx.Err(); err != nil {
@@ -192,6 +208,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	}
 	started := now()
 	manualFixAttempted := false
+	mergeabilityBlockedReason := ""
 
 	for {
 		checksReadyToExit := false
@@ -204,6 +221,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		elapsed := now().Sub(started)
 		if elapsed >= timeout {
 			sctx.Log("CI timeout reached")
+			if mergeabilityBlockedReason != "" {
+				return ciMergeabilityOutcome("mergeability check timed out", mergeabilityBlockedReason), nil
+			}
 			return &pipeline.StepOutcome{}, nil
 		}
 
@@ -225,11 +245,15 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		mergeState, mergeErr := s.getMergeableState(sctx, prNumber)
 		if mergeErr != nil {
 			sctx.Log(fmt.Sprintf("warning: could not check mergeable state: %v", mergeErr))
+			mergeabilityBlockedReason = fmt.Sprintf("PR mergeability could not be determined before timeout: %v", mergeErr)
 		} else {
 			mergeConflict = isMergeConflict(mergeState)
 			mergeabilityKnown = isResolvedMergeableState(mergeState)
 			if !mergeabilityKnown {
 				sctx.Log(fmt.Sprintf("mergeable state still pending: %s", mergeState))
+				mergeabilityBlockedReason = fmt.Sprintf("PR mergeability remained unresolved before timeout: %s", mergeState)
+			} else {
+				mergeabilityBlockedReason = ""
 			}
 		}
 
@@ -495,8 +519,6 @@ CI logs:
 // Returns (true, nil) when changes were pushed, (false, nil) when there was
 // nothing to commit, or (false, err) on failure.
 func (s *CIStep) commitAndPush(sctx *pipeline.StepContext) (bool, error) {
-	newHeadSHA := ""
-
 	status, err := stepGitRun(sctx, "status", "--porcelain")
 	if err != nil {
 		return false, fmt.Errorf("check CI changes: %w", err)
@@ -505,10 +527,7 @@ func (s *CIStep) commitAndPush(sctx *pipeline.StepContext) (bool, error) {
 		sctx.Log("no changes to commit")
 		headSHA, err := stepGitHeadSHA(sctx)
 		if err == nil && headSHA != sctx.Run.HeadSHA {
-			sctx.Run.HeadSHA = headSHA
-			if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, headSHA); err != nil {
-				return false, err
-			}
+			return s.pushUpdatedHeadSHA(sctx, headSHA)
 		}
 		return false, nil
 	}
@@ -523,13 +542,25 @@ func (s *CIStep) commitAndPush(sctx *pipeline.StepContext) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("resolve head after commit: %w", err)
 	}
-	newHeadSHA = headSHA
 
+	return s.pushUpdatedHeadSHA(sctx, headSHA)
+}
+
+func (s *CIStep) pushUpdatedHeadSHA(sctx *pipeline.StepContext, newHeadSHA string) (bool, error) {
 	ref := normalizedBranchRef(sctx.Run.Branch)
 
 	upstreamSHA, lsErr := stepGitLsRemote(sctx, sctx.Repo.UpstreamURL, ref)
 	if lsErr != nil {
 		slog.Warn("ls-remote failed, pushing without force-with-lease", "ref", ref, "error", lsErr)
+	} else if upstreamSHA == newHeadSHA {
+		if _, err := stepGitRun(sctx, "update-ref", ref, newHeadSHA); err != nil {
+			return false, fmt.Errorf("update local branch ref: %w", err)
+		}
+		sctx.Run.HeadSHA = newHeadSHA
+		if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, newHeadSHA); err != nil {
+			return false, err
+		}
+		return false, nil
 	}
 	if err := stepGitPush(sctx, sctx.Repo.UpstreamURL, ref, upstreamSHA, upstreamSHA != ""); err != nil {
 		if lsErr != nil {
