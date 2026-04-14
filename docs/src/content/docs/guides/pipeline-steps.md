@@ -34,11 +34,12 @@ AI code review of your diff.
 **Behavior:**
 - Diffs the base commit against head
 - Filters out files matching `ignore_patterns` from the repo config
+- Includes user-authored commit subjects between base and head as intent context for the agent
 - Sends the filtered diff to the agent with a structured output schema
-- Agent returns findings with severity (`error`, `warning`, `info`), file location, and description
+- Agent returns findings with severity (`error`, `warning`, `info`), file location, description, and an `action` (`no-op`, `auto-fix`, `ask-user`)
 - Also returns a `risk_level` (`low`, `medium`, `high`) and `risk_rationale`
 
-**Approval:** required if any finding has severity `error` or `warning`. Findings marked `requires_human_review` always require human approval and are never auto-fixed. This is for findings that challenge the author's intent, not routine correctness, reliability, or security fixes that may need to re-add a small amount of deleted logic.
+**Approval:** required if any finding has severity `error` or `warning`. Findings with `action: ask-user` always require human approval and are never auto-fixed. This is for findings that challenge the author's intent, not routine correctness, reliability, or security fixes that may need to re-add a small amount of deleted logic. Findings with `action: auto-fix` remain eligible for the fix loop. Findings with `action: no-op` are informational only.
 
 **Auto-fix:** the agent receives previous findings and applies fixes, then the review runs again. Fix commits use `no-mistakes(review): <summary>`.
 
