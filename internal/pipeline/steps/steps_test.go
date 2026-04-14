@@ -981,6 +981,138 @@ func TestRebaseStep_NonEmptyDiffAfterRebase_DoesNotSkip(t *testing.T) {
 	}
 }
 
+func TestRebaseStep_ForcePushSkipsOriginBranch(t *testing.T) {
+	// Simulate the scenario that caused the bug: user force-pushes a commit,
+	// but origin/<branch> on the upstream remote has autofix commits from a
+	// prior pipeline run. The rebase step should skip origin/<branch> entirely
+	// and only rebase onto origin/main.
+
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	os.WriteFile(filepath.Join(dir, "app.txt"), []byte("base\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "base commit")
+	gitCmd(t, dir, "push", "origin", "main")
+
+	// Advance main with another commit
+	os.WriteFile(filepath.Join(dir, "app.txt"), []byte("base\nmain-update\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "main update")
+	gitCmd(t, dir, "push", "origin", "main")
+
+	// Create feature branch with user's original commit
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("user-change\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "user commit")
+	userCommitSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	// Simulate a prior pipeline run that added autofix commits on top and pushed
+	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("autofix-overwrote-user\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "no-mistakes(review): autofix commit")
+	autofixSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	// User force-pushes back to their original commit
+	gitCmd(t, dir, "reset", "--hard", userCommitSHA)
+
+	// baseSHA = autofixSHA (what the gate had before force push)
+	// headSHA = userCommitSHA (what the user force-pushed)
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, autofixSHA, userCommitSHA, config.Commands{})
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Repo.UpstreamURL = upstream
+
+	step := &RebaseStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatal("expected no approval for clean rebase")
+	}
+
+	// After rebase, HEAD should contain the user's feature.txt content, not autofix
+	content, err := os.ReadFile(filepath.Join(dir, "feature.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "user-change\n" {
+		t.Fatalf("feature.txt = %q, want %q; force push was not respected", string(content), "user-change\n")
+	}
+
+	// Should be rebased onto origin/main
+	mergeBase := gitCmd(t, dir, "merge-base", "HEAD", "origin/main")
+	originMain := gitCmd(t, dir, "rev-parse", "origin/main")
+	if mergeBase != originMain {
+		t.Fatalf("merge-base = %s, want origin/main %s", mergeBase, originMain)
+	}
+}
+
+func TestRebaseStep_NormalPushSyncsOriginBranch(t *testing.T) {
+	// Verify that a normal (non-force) push still syncs with origin/<branch>.
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	os.WriteFile(filepath.Join(dir, "app.txt"), []byte("base\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "base commit")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "main")
+
+	// Create feature branch with one commit
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("v1\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature v1")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	// Simulate another commit on origin/feature (e.g. from a prior pipeline run)
+	os.WriteFile(filepath.Join(dir, "extra.txt"), []byte("extra\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "extra commit on feature")
+	gitCmd(t, dir, "push", "origin", "feature")
+	originFeatureSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	// Go back to v1 - simulating a new push that's behind origin/feature
+	// but is NOT a force push (baseSHA is ancestor of headSHA)
+	gitCmd(t, dir, "reset", "--hard", "HEAD~1")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Repo.UpstreamURL = upstream
+
+	step := &RebaseStep{}
+	_, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Should have incorporated origin/feature (fast-forward or rebase)
+	afterSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	// The extra.txt from origin/feature should be present
+	if _, err := os.Stat(filepath.Join(dir, "extra.txt")); os.IsNotExist(err) {
+		t.Fatalf("expected extra.txt from origin/feature to be present after normal push sync (HEAD=%s, origin/feature=%s)", afterSHA, originFeatureSHA)
+	}
+}
+
 // --- Review step tests ---
 
 func TestReviewStep_EmptyDiff(t *testing.T) {

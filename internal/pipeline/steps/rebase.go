@@ -27,17 +27,27 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 		defaultBranch = "main"
 	}
 
+	// Detect force push before fetching so we can skip origin/<branch> sync.
+	// A force push means the user explicitly rewrote the branch - the pushed
+	// commit is authoritative and must not be overwritten by prior pipeline
+	// state on the remote.
+	forcePush := isForcePush(ctx, sctx.WorkDir, sctx.Run.BaseSHA)
+
 	sctx.Log("fetching latest upstream state...")
 	if err := git.FetchRemoteBranch(ctx, sctx.WorkDir, "origin", defaultBranch); err != nil {
 		sctx.LogFile(fmt.Sprintf("warning: could not fetch origin/%s: %v", defaultBranch, err))
 	}
-	if branch != "" && branch != defaultBranch {
+	if !forcePush && branch != "" && branch != defaultBranch {
 		if err := git.FetchRemoteBranch(ctx, sctx.WorkDir, "origin", branch); err != nil {
 			sctx.LogFile(fmt.Sprintf("warning: could not fetch origin/%s: %v", branch, err))
 		}
 	}
 
 	targets := rebaseTargets(branch, defaultBranch)
+	if forcePush {
+		sctx.Log("force push detected, skipping origin/" + branch + " sync")
+		targets = forcePushRebaseTargets(defaultBranch)
+	}
 
 	if sctx.Fixing {
 		for _, target := range targets {
@@ -91,6 +101,24 @@ func rebaseTargets(branch, defaultBranch string) []string {
 		targets = append(targets, "origin/"+defaultBranch)
 	}
 	return targets
+}
+
+// forcePushRebaseTargets returns rebase targets for a force push - only the
+// default branch. The origin/<branch> target is skipped because it may contain
+// autofix commits from prior pipeline runs that the force push intended to discard.
+func forcePushRebaseTargets(defaultBranch string) []string {
+	return []string{"origin/" + defaultBranch}
+}
+
+// isForcePush returns true when the current push is non-fast-forward relative
+// to the previous push (baseSHA). This indicates the user explicitly rewrote
+// history and the pipeline should treat the new HEAD as authoritative.
+func isForcePush(ctx context.Context, workDir, baseSHA string) bool {
+	if git.IsZeroSHA(baseSHA) || baseSHA == "" {
+		return false
+	}
+	_, err := git.Run(ctx, workDir, "merge-base", "--is-ancestor", baseSHA, "HEAD")
+	return err != nil
 }
 
 // tryRebase attempts a rebase onto targetRef. Returns conflicted files when the
