@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -12,6 +13,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -66,6 +68,86 @@ func hasBlockingFindings(items []Finding) bool {
 		}
 	}
 	return false
+}
+
+// stepCmd creates an exec.Cmd that inherits the StepContext's extra Env, if any.
+// When sctx.Env overrides PATH, the binary is resolved from the overridden PATH
+// so that tests can inject fake binaries without modifying the process environment.
+func stepCmd(sctx *pipeline.StepContext, name string, args ...string) *exec.Cmd {
+	resolved := name
+	if len(sctx.Env) > 0 && !strings.Contains(name, string(filepath.Separator)) {
+		for _, e := range sctx.Env {
+			if strings.HasPrefix(e, "PATH=") {
+				customPath := strings.TrimPrefix(e, "PATH=")
+				for _, dir := range filepath.SplitList(customPath) {
+					candidate := filepath.Join(dir, name)
+					if fi, err := os.Stat(candidate); err == nil && !fi.IsDir() {
+						resolved = candidate
+						break
+					}
+				}
+				break
+			}
+		}
+	}
+	cmd := exec.CommandContext(sctx.Ctx, resolved, args...)
+	cmd.Dir = sctx.WorkDir
+	if len(sctx.Env) > 0 {
+		cmd.Env = append(os.Environ(), sctx.Env...)
+	}
+	return cmd
+}
+
+// stepGitRun runs a git command using the StepContext's environment.
+// It is like git.Run but respects sctx.Env so that tests can inject a fake git binary.
+func stepGitRun(sctx *pipeline.StepContext, args ...string) (string, error) {
+	cmd := stepCmd(sctx, "git", args...)
+	out, err := cmd.Output()
+	if err != nil {
+		stderr := ""
+		if ee, ok := err.(*exec.ExitError); ok {
+			stderr = strings.TrimSpace(string(ee.Stderr))
+		}
+		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, stderr)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// stepCLIAvailable checks whether the provider CLI binary is available,
+// respecting any custom PATH in sctx.Env.
+func stepCLIAvailable(sctx *pipeline.StepContext, provider scm.Provider) bool {
+	name := provider.CLIName()
+	if name == "" {
+		return false
+	}
+	if len(sctx.Env) == 0 {
+		return scm.CLIAvailable(provider)
+	}
+	// Search custom PATH from sctx.Env
+	for _, e := range sctx.Env {
+		if strings.HasPrefix(e, "PATH=") {
+			customPath := strings.TrimPrefix(e, "PATH=")
+			for _, dir := range filepath.SplitList(customPath) {
+				candidate := filepath.Join(dir, name)
+				if fi, err := os.Stat(candidate); err == nil && !fi.IsDir() {
+					return true
+				}
+			}
+			return false
+		}
+	}
+	return scm.CLIAvailable(provider)
+}
+
+// stepAuthConfigured checks whether the provider CLI is authenticated,
+// using sctx.Env to resolve the binary and pass environment variables.
+func stepAuthConfigured(sctx *pipeline.StepContext, provider scm.Provider) bool {
+	args := provider.AuthCheckCommand()
+	if len(args) == 0 {
+		return false
+	}
+	cmd := stepCmd(sctx, args[0], args[1:]...)
+	return cmd.Run() == nil
 }
 
 // runShellCommand executes a shell command and returns stdout+stderr, exit code, and error.

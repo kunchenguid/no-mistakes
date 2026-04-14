@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os/exec"
 	"regexp"
 	"strings"
 
@@ -59,11 +58,11 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		sctx.Log(fmt.Sprintf("skipping PR creation: provider %s is not supported yet", provider))
 		return &pipeline.StepOutcome{}, nil
 	}
-	if !scm.CLIAvailable(provider) {
+	if !stepCLIAvailable(sctx, provider) {
 		sctx.Log(fmt.Sprintf("skipping PR creation: %s CLI is not installed", provider.CLIName()))
 		return &pipeline.StepOutcome{}, nil
 	}
-	if !scm.AuthConfigured(ctx, provider, sctx.WorkDir) {
+	if !stepAuthConfigured(sctx, provider) {
 		sctx.Log(fmt.Sprintf("skipping PR creation: %s CLI is not authenticated", provider.CLIName()))
 		return &pipeline.StepOutcome{}, nil
 	}
@@ -86,20 +85,16 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 }
 
 func (s *PRStep) executeGitHubPR(sctx *pipeline.StepContext, branch string, content prContent) (*pipeline.StepOutcome, error) {
-	ctx := sctx.Ctx
-
 	// Check if PR already exists for this branch
 	sctx.Log(fmt.Sprintf("checking for existing PR on branch %s...", branch))
-	cmd := exec.CommandContext(ctx, "gh", "pr", "view", branch, "--json", "url", "--jq", ".url")
-	cmd.Dir = sctx.WorkDir
+	cmd := stepCmd(sctx, "gh", "pr", "view", branch, "--json", "url", "--jq", ".url")
 	out, err := cmd.Output()
 	if err == nil {
 		prURL := strings.TrimSpace(string(out))
 		if prURL != "" {
 			sctx.Log(fmt.Sprintf("PR already exists: %s, updating...", prURL))
 
-			editCmd := exec.CommandContext(ctx, "gh", "pr", "edit", branch, "--title", content.Title, "--body", content.Body)
-			editCmd.Dir = sctx.WorkDir
+			editCmd := stepCmd(sctx, "gh", "pr", "edit", branch, "--title", content.Title, "--body", content.Body)
 			if editOut, editErr := editCmd.CombinedOutput(); editErr != nil {
 				sctx.Log(fmt.Sprintf("warning: failed to update PR body: %s: %v", strings.TrimSpace(string(editOut)), editErr))
 			}
@@ -114,13 +109,12 @@ func (s *PRStep) executeGitHubPR(sctx *pipeline.StepContext, branch string, cont
 	// Create PR
 	sctx.Log("creating pull request...")
 
-	cmd = exec.CommandContext(ctx, "gh", "pr", "create",
+	cmd = stepCmd(sctx, "gh", "pr", "create",
 		"--head", branch,
 		"--base", sctx.Repo.DefaultBranch,
 		"--title", content.Title,
 		"--body", content.Body,
 	)
-	cmd.Dir = sctx.WorkDir
 	out, err = cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("gh pr create: %s: %w", strings.TrimSpace(string(out)), err)
@@ -136,17 +130,14 @@ func (s *PRStep) executeGitHubPR(sctx *pipeline.StepContext, branch string, cont
 }
 
 func (s *PRStep) executeGitLabMR(sctx *pipeline.StepContext, branch string, content prContent) (*pipeline.StepOutcome, error) {
-	ctx := sctx.Ctx
 	sctx.Log(fmt.Sprintf("checking for existing merge request on branch %s...", branch))
-	cmd := exec.CommandContext(ctx, "glab", "mr", "view", branch, "--output", "json")
-	cmd.Dir = sctx.WorkDir
+	cmd := stepCmd(sctx, "glab", "mr", "view", branch, "--output", "json")
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		mrURL := extractSCMURL(out)
 		if mrURL != "" {
 			sctx.Log(fmt.Sprintf("merge request already exists: %s, updating...", mrURL))
-			updateCmd := exec.CommandContext(ctx, "glab", "mr", "update", branch, "--title", content.Title, "--description", content.Body, "--yes")
-			updateCmd.Dir = sctx.WorkDir
+			updateCmd := stepCmd(sctx, "glab", "mr", "update", branch, "--title", content.Title, "--description", content.Body, "--yes")
 			if updateOut, updateErr := updateCmd.CombinedOutput(); updateErr != nil {
 				sctx.Log(fmt.Sprintf("warning: failed to update merge request: %s: %v", strings.TrimSpace(string(updateOut)), updateErr))
 			}
@@ -158,14 +149,13 @@ func (s *PRStep) executeGitLabMR(sctx *pipeline.StepContext, branch string, cont
 	}
 
 	sctx.Log("creating merge request...")
-	cmd = exec.CommandContext(ctx, "glab", "mr", "create",
+	cmd = stepCmd(sctx, "glab", "mr", "create",
 		"--source-branch", branch,
 		"--target-branch", sctx.Repo.DefaultBranch,
 		"--title", content.Title,
 		"--description", content.Body,
 		"--yes",
 	)
-	cmd.Dir = sctx.WorkDir
 	out, err = cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("glab mr create: %s: %w", strings.TrimSpace(string(out)), err)
