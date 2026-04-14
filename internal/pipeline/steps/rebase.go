@@ -48,7 +48,7 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	targets := rebaseTargets(branch, defaultBranch)
 	if forcePush {
 		sctx.Log("force push detected, skipping origin/" + branch + " sync")
-		targets = forcePushRebaseTargets(defaultBranch)
+		targets = forcePushRebaseTargets(branch, defaultBranch)
 	}
 
 	if sctx.Fixing {
@@ -105,10 +105,13 @@ func rebaseTargets(branch, defaultBranch string) []string {
 	return targets
 }
 
-// forcePushRebaseTargets returns rebase targets for a force push - only the
-// default branch. The origin/<branch> target is skipped because it may contain
-// autofix commits from prior pipeline runs that the force push intended to discard.
-func forcePushRebaseTargets(defaultBranch string) []string {
+// forcePushRebaseTargets returns rebase targets for a force push. The
+// origin/<branch> target is skipped because it may contain autofix commits
+// from prior pipeline runs that the force push intended to discard.
+func forcePushRebaseTargets(branch, defaultBranch string) []string {
+	if branch == defaultBranch {
+		return nil
+	}
 	return []string{"origin/" + defaultBranch}
 }
 
@@ -130,7 +133,11 @@ func isForcePush(ctx context.Context, workDir, branch, baseSHA string) bool {
 	if branch != "" {
 		remoteRef := "origin/" + branch
 		if _, err := git.Run(ctx, workDir, "rev-parse", "--verify", remoteRef); err == nil {
-			_, err := git.Run(ctx, workDir, "merge-base", "--is-ancestor", remoteRef, "HEAD")
+			return isRemoteBranchRewritten(ctx, workDir, remoteRef)
+		}
+		remoteSHA, err := git.LsRemote(ctx, workDir, "origin", "refs/heads/"+branch)
+		if err == nil && remoteSHA != "" {
+			_, err := git.Run(ctx, workDir, "merge-base", "--is-ancestor", remoteSHA, "HEAD")
 			if err == nil {
 				return false
 			}
@@ -139,6 +146,15 @@ func isForcePush(ctx context.Context, workDir, branch, baseSHA string) bool {
 		}
 	}
 	return true
+}
+
+func isRemoteBranchRewritten(ctx context.Context, workDir, remoteRef string) bool {
+	_, err := git.Run(ctx, workDir, "merge-base", "--is-ancestor", remoteRef, "HEAD")
+	if err == nil {
+		return false
+	}
+	var exitErr *exec.ExitError
+	return errors.As(err, &exitErr) && exitErr.ExitCode() == 1
 }
 
 // tryRebase attempts a rebase onto targetRef. Returns conflicted files when the

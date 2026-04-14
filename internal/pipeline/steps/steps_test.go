@@ -1058,6 +1058,63 @@ func TestRebaseStep_ForcePushSkipsOriginBranch(t *testing.T) {
 	}
 }
 
+func TestRebaseStep_ForcePushOnDefaultBranchSkipsRemoteSync(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+
+	os.WriteFile(filepath.Join(dir, "app.txt"), []byte("base\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "base commit")
+	gitCmd(t, dir, "push", "origin", "main")
+
+	os.WriteFile(filepath.Join(dir, "app.txt"), []byte("base\nuser-change\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "user commit")
+	userCommitSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "main")
+
+	os.WriteFile(filepath.Join(dir, "app.txt"), []byte("base\nautofix\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "no-mistakes(review): autofix commit")
+	autofixSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "main")
+
+	gitCmd(t, dir, "reset", "--hard", userCommitSHA)
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, autofixSHA, userCommitSHA, config.Commands{})
+	sctx.Run.Branch = "refs/heads/main"
+	sctx.Repo.UpstreamURL = upstream
+
+	step := &RebaseStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatal("expected no approval for clean default-branch force push")
+	}
+
+	content, err := os.ReadFile(filepath.Join(dir, "app.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "base\nuser-change\n" {
+		t.Fatalf("app.txt = %q, want %q; default branch force push was not respected", string(content), "base\nuser-change\n")
+	}
+
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != userCommitSHA {
+		t.Fatalf("HEAD = %s, want %s", got, userCommitSHA)
+	}
+}
+
 func TestRebaseStep_NormalPushSyncsOriginBranch(t *testing.T) {
 	// Verify that a normal (non-force) push still syncs with origin/<branch>.
 	upstream := t.TempDir()
@@ -1164,6 +1221,54 @@ func TestIsForcePush_RerunAfterNormalRebaseIsNotForcePush(t *testing.T) {
 
 	if isForcePush(context.Background(), dir, "feature", baseSHA) {
 		t.Fatal("expected rerun after normal rebase to not be treated as force push")
+	}
+}
+
+func TestIsForcePush_RerunWithoutLocalRemoteRefIsNotForcePush(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	originRepo := t.TempDir()
+	gitCmd(t, originRepo, "init")
+	gitCmd(t, originRepo, "config", "user.name", "test")
+	gitCmd(t, originRepo, "config", "user.email", "test@test.com")
+	gitCmd(t, originRepo, "checkout", "-b", "main")
+	gitCmd(t, originRepo, "remote", "add", "origin", upstream)
+
+	os.WriteFile(filepath.Join(originRepo, "app.txt"), []byte("base\n"), 0o644)
+	gitCmd(t, originRepo, "add", "-A")
+	gitCmd(t, originRepo, "commit", "-m", "base commit")
+	gitCmd(t, originRepo, "push", "origin", "main")
+
+	gitCmd(t, originRepo, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(originRepo, "feature.txt"), []byte("v1\n"), 0o644)
+	gitCmd(t, originRepo, "add", "-A")
+	gitCmd(t, originRepo, "commit", "-m", "feature v1")
+	gitCmd(t, originRepo, "push", "origin", "feature")
+	baseSHA := gitCmd(t, originRepo, "rev-parse", "HEAD")
+
+	gitCmd(t, originRepo, "checkout", "main")
+	os.WriteFile(filepath.Join(originRepo, "app.txt"), []byte("base\nmain update\n"), 0o644)
+	gitCmd(t, originRepo, "add", "-A")
+	gitCmd(t, originRepo, "commit", "-m", "main update")
+	gitCmd(t, originRepo, "push", "origin", "main")
+
+	gitCmd(t, originRepo, "checkout", "feature")
+	gitCmd(t, originRepo, "rebase", "origin/main")
+	gitCmd(t, originRepo, "push", "origin", "feature", "--force-with-lease")
+
+	worktree := t.TempDir()
+	gitCmd(t, worktree, "init")
+	gitCmd(t, worktree, "config", "user.name", "test")
+	gitCmd(t, worktree, "config", "user.email", "test@test.com")
+	gitCmd(t, worktree, "remote", "add", "origin", upstream)
+	gitCmd(t, worktree, "fetch", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main")
+	gitCmd(t, worktree, "fetch", "--no-tags", "origin", "+refs/heads/feature:refs/tmp/feature")
+	gitCmd(t, worktree, "checkout", "--detach", "refs/tmp/feature")
+	gitCmd(t, worktree, "update-ref", "-d", "refs/tmp/feature")
+
+	if isForcePush(context.Background(), worktree, "feature", baseSHA) {
+		t.Fatal("expected rerun without local origin/feature ref to not be treated as force push")
 	}
 }
 
