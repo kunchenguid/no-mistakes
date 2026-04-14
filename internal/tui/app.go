@@ -1063,8 +1063,12 @@ func (m *Model) applyEvent(event ipc.Event) {
 		if event.StepName != nil && event.Status != nil && types.StepStatus(*event.Status) == types.StepStatusFixing {
 			var accumulated time.Duration
 			for _, s := range m.steps {
-				if s.StepName == *event.StepName && s.DurationMS != nil {
-					accumulated = time.Duration(*s.DurationMS) * time.Millisecond
+				if s.StepName == *event.StepName {
+					if s.DurationMS != nil {
+						accumulated = time.Duration(*s.DurationMS) * time.Millisecond
+					} else if startTime, ok := m.stepStartTimes[*event.StepName]; ok {
+						accumulated = time.Since(startTime)
+					}
 					break
 				}
 			}
