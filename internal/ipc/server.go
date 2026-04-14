@@ -186,7 +186,11 @@ func (s *Server) dispatch(ctx context.Context, req Request) *Response {
 		return NewErrorResponse(req.ID, ErrMethodNotFound, "method not found: "+req.Method)
 	}
 
-	slog.Info("ipc request", "method", req.Method)
+	if req.Method == MethodHealth {
+		slog.Debug("ipc request", "method", req.Method)
+	} else {
+		slog.Info("ipc request", "method", req.Method)
+	}
 	result, err := handler(ctx, req.Params)
 	if err != nil {
 		slog.Info("ipc request failed", "method", req.Method, "error", err)

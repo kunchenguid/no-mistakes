@@ -2,9 +2,11 @@ package ipc_test
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -242,6 +244,49 @@ func TestNilParams(t *testing.T) {
 	}
 	if result.Status != "ok" {
 		t.Errorf("got status=%q, want %q", result.Status, "ok")
+	}
+}
+
+func TestHealthRequestsDoNotLogAtInfo(t *testing.T) {
+	sock := socketPath(t)
+	srv := startServer(t, sock)
+
+	srv.Handle(ipc.MethodHealth, func(_ context.Context, _ json.RawMessage) (interface{}, error) {
+		return ipc.HealthResult{Status: "ok"}, nil
+	})
+	srv.Handle("fail", func(_ context.Context, _ json.RawMessage) (interface{}, error) {
+		return nil, fmt.Errorf("something broke")
+	})
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	prev := slog.Default()
+	slog.SetDefault(logger)
+	defer slog.SetDefault(prev)
+
+	c, err := ipc.Dial(sock)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer c.Close()
+
+	var health ipc.HealthResult
+	if err := c.Call(ipc.MethodHealth, nil, &health); err != nil {
+		t.Fatalf("health call: %v", err)
+	}
+
+	var raw json.RawMessage
+	err = c.Call("fail", nil, &raw)
+	if err == nil {
+		t.Fatal("expected fail call error")
+	}
+
+	logOutput := logs.String()
+	if strings.Contains(logOutput, "method=health") {
+		t.Fatalf("health request should not log at info: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "msg=\"ipc request failed\" method=fail") {
+		t.Fatalf("failed request log missing: %s", logOutput)
 	}
 }
 
