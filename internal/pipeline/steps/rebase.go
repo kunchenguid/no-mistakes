@@ -3,8 +3,10 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -118,7 +120,11 @@ func isForcePush(ctx context.Context, workDir, baseSHA string) bool {
 		return false
 	}
 	_, err := git.Run(ctx, workDir, "merge-base", "--is-ancestor", baseSHA, "HEAD")
-	return err != nil
+	if err == nil {
+		return false
+	}
+	var exitErr *exec.ExitError
+	return errors.As(err, &exitErr) && exitErr.ExitCode() == 1
 }
 
 // tryRebase attempts a rebase onto targetRef. Returns conflicted files when the

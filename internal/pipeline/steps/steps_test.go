@@ -1113,6 +1113,21 @@ func TestRebaseStep_NormalPushSyncsOriginBranch(t *testing.T) {
 	}
 }
 
+func TestIsForcePush_IgnoresMergeBaseLookupErrors(t *testing.T) {
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+
+	os.WriteFile(filepath.Join(dir, "app.txt"), []byte("base\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "base commit")
+
+	if isForcePush(context.Background(), dir, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef") {
+		t.Fatal("expected missing base SHA lookup error to not be treated as force push")
+	}
+}
+
 // --- Review step tests ---
 
 func TestReviewStep_EmptyDiff(t *testing.T) {
