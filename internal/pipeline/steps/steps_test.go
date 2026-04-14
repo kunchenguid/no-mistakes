@@ -48,6 +48,8 @@ func handleFakeCLI(mode string) {
 		fakeGHHandler(args)
 	case "glab":
 		fakeGlabHandler(args)
+	case "git-status-error":
+		fakeGitStatusErrorHandler(args)
 	case "ci-gh":
 		fakeCIGHHandler(args)
 	case "ci-gh-seq":
@@ -79,6 +81,33 @@ func fakeGHHandler(args []string) {
 		os.Exit(0)
 	}
 	os.Exit(1)
+}
+
+func fakeGitStatusErrorHandler(args []string) {
+	realGit := os.Getenv("FAKE_CLI_REAL_GIT")
+	if len(args) >= 2 && args[0] == "status" && args[1] == "--porcelain" {
+		fmt.Fprintln(os.Stderr, "status failed")
+		os.Exit(1)
+	}
+	if realGit == "" {
+		fmt.Fprintln(os.Stderr, "missing FAKE_CLI_REAL_GIT")
+		os.Exit(1)
+	}
+	cmd := exec.Command(realGit, args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+	if err := cmd.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			if status := exitErr.ExitCode(); status >= 0 {
+				os.Exit(status)
+			}
+		}
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	os.Exit(0)
 }
 
 func fakeGlabHandler(args []string) {
@@ -3451,12 +3480,10 @@ func TestCIStep_CommitAndPush_StatusError(t *testing.T) {
 	}
 
 	binDir := fakeCLIBinDir(t)
-	gitPath := filepath.Join(binDir, "git")
-	script := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = \"status\" ] && [ \"$2\" = \"--porcelain\" ]; then\n  printf 'status failed\\n' >&2\n  exit 1\nfi\nexec %q \"$@\"\n", realGit)
-	if err := os.WriteFile(gitPath, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	linkTestBinary(t, binDir, "git")
 	prependPATH(t, binDir)
+	t.Setenv("FAKE_CLI_MODE", "git-status-error")
+	t.Setenv("FAKE_CLI_REAL_GIT", realGit)
 
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
