@@ -74,8 +74,8 @@ func TestRetainMatchingFindingsJSON_DoesNotKeepDistinctDuplicateLines(t *testing
 	}
 }
 
-func TestAutoFixableFindingsJSON_FiltersHumanReview(t *testing.T) {
-	raw := `{"findings":[{"id":"review-1","severity":"error","description":"bug"},{"id":"review-2","severity":"warning","description":"design choice","requires_human_review":true},{"id":"review-3","severity":"warning","description":"missing check"}],"risk_level":"medium","risk_rationale":"Mixed."}`
+func TestAutoFixableFindingsJSON_FiltersToAutoFix(t *testing.T) {
+	raw := `{"findings":[{"id":"review-1","severity":"error","description":"bug","action":"auto-fix"},{"id":"review-2","severity":"warning","description":"design choice","action":"ask-user"},{"id":"review-3","severity":"warning","description":"missing check","action":"auto-fix"},{"id":"review-4","severity":"info","description":"note","action":"no-op"}],"risk_level":"medium","risk_rationale":"Mixed."}`
 
 	fixableRaw := autoFixableFindingsJSON(raw)
 	fixable, err := types.ParseFindingsJSON(fixableRaw)
@@ -90,18 +90,27 @@ func TestAutoFixableFindingsJSON_FiltersHumanReview(t *testing.T) {
 	}
 }
 
-func TestAutoFixableFindingsJSON_AllHumanReview(t *testing.T) {
-	raw := `{"findings":[{"id":"review-1","severity":"warning","description":"choice","requires_human_review":true}],"risk_level":"high","risk_rationale":"Needs review."}`
+func TestAutoFixableFindingsJSON_AllAskUser(t *testing.T) {
+	raw := `{"findings":[{"id":"review-1","severity":"warning","description":"choice","action":"ask-user"}],"risk_level":"high","risk_rationale":"Needs review."}`
 
 	fixableRaw := autoFixableFindingsJSON(raw)
 	if fixableRaw != "" {
-		t.Fatalf("expected empty string for all-human-review findings, got %q", fixableRaw)
+		t.Fatalf("expected empty string for all-ask-user findings, got %q", fixableRaw)
 	}
 }
 
 func TestAutoFixableFindingsJSON_EmptyInput(t *testing.T) {
 	if got := autoFixableFindingsJSON(""); got != "" {
 		t.Fatalf("expected empty string for empty input, got %q", got)
+	}
+}
+
+func TestAutoFixableFindingsJSON_AllNoOp(t *testing.T) {
+	raw := `{"findings":[{"id":"review-1","severity":"info","description":"note","action":"no-op"}],"risk_level":"low","risk_rationale":"Clean."}`
+
+	fixableRaw := autoFixableFindingsJSON(raw)
+	if fixableRaw != "" {
+		t.Fatalf("expected empty string for all-no-op findings, got %q", fixableRaw)
 	}
 }
 

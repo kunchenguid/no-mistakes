@@ -135,7 +135,7 @@ Task:
 Rules:
 - Do NOT make any file changes in this mode.
 - Only report gaps where documentation is missing or stale relative to the code change.
-- Set requires_human_review to false for all findings. Documentation gaps are objective.`,
+- Set action to "auto-fix" for all findings. Documentation gaps are objective.`,
 		sctx.Run.Branch,
 		baseSHA,
 		sctx.Run.HeadSHA,
@@ -159,9 +159,9 @@ Rules:
 		sctx.Log("missing structured output, requiring approval")
 		findings = Findings{
 			Items: []Finding{{
-				Severity:            "warning",
-				Description:         summary,
-				RequiresHumanReview: true,
+				Severity:    "warning",
+				Description: summary,
+				Action:      types.ActionAskUser,
 			}},
 			Summary: summary,
 		}
@@ -170,9 +170,9 @@ Rules:
 		sctx.Log("could not parse structured output, requiring approval")
 		findings = Findings{
 			Items: []Finding{{
-				Severity:            "warning",
-				Description:         summary,
-				RequiresHumanReview: true,
+				Severity:    "warning",
+				Description: summary,
+				Action:      types.ActionAskUser,
 			}},
 			Summary: summary,
 		}
@@ -358,33 +358,35 @@ func extractDocumentSummary(raw []byte, fallback string) string {
 }
 
 func unmarshalRequiredFindings(raw []byte, findings *Findings) error {
+	parsed, err := types.ParseFindingsJSON(string(raw))
+	if err != nil {
+		return err
+	}
 	var payload struct {
-		Summary string `json:"summary"`
-		Items   []struct {
-			Severity            string `json:"severity"`
-			Description         string `json:"description"`
-			RequiresHumanReview *bool  `json:"requires_human_review"`
-		} `json:"findings"`
+		Summary  *string            `json:"summary"`
+		Findings *[]json.RawMessage `json:"findings"`
+		Items    *[]json.RawMessage `json:"items"`
 	}
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return err
 	}
-	if payload.Items == nil {
+	if payload.Findings == nil && payload.Items == nil {
 		return fmt.Errorf("missing findings array")
 	}
-	if strings.TrimSpace(payload.Summary) == "" {
+	if payload.Summary == nil || strings.TrimSpace(*payload.Summary) == "" {
 		return fmt.Errorf("missing summary")
 	}
-	for i, item := range payload.Items {
+	for i, item := range parsed.Items {
 		if strings.TrimSpace(item.Severity) == "" {
 			return fmt.Errorf("finding %d missing severity", i)
 		}
 		if strings.TrimSpace(item.Description) == "" {
 			return fmt.Errorf("finding %d missing description", i)
 		}
-		if item.RequiresHumanReview == nil {
-			return fmt.Errorf("finding %d missing requires_human_review", i)
+		if strings.TrimSpace(item.Action) == "" {
+			return fmt.Errorf("finding %d missing action", i)
 		}
 	}
-	return json.Unmarshal(raw, findings)
+	*findings = parsed
+	return nil
 }

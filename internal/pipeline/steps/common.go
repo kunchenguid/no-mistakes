@@ -102,9 +102,9 @@ var findingsSchema = json.RawMessage(`{
 					"file": {"type": "string"},
 					"line": {"type": "integer"},
 					"description": {"type": "string"},
-					"requires_human_review": {"type": "boolean"}
+					"action": {"type": "string", "enum": ["no-op", "auto-fix", "ask-user"]}
 				},
-				"required": ["severity", "description", "requires_human_review"]
+				"required": ["severity", "description", "action"]
 			}
 		},
 		"summary": {"type": "string"}
@@ -199,9 +199,9 @@ var reviewFindingsSchema = json.RawMessage(`{
 					"file": {"type": "string"},
 					"line": {"type": "integer"},
 					"description": {"type": "string"},
-					"requires_human_review": {"type": "boolean"}
+					"action": {"type": "string", "enum": ["no-op", "auto-fix", "ask-user"]}
 				},
-				"required": ["severity", "description", "requires_human_review"]
+				"required": ["severity", "description", "action"]
 			}
 		},
 		"risk_level": {"type": "string", "enum": ["low", "medium", "high"]},

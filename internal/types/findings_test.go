@@ -2,6 +2,7 @@ package types
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -129,8 +130,8 @@ func TestFilterFindings_EmptyIDs(t *testing.T) {
 	}
 }
 
-func TestParseFindingsJSON_RequiresHumanReview(t *testing.T) {
-	raw := `{"findings":[{"severity":"warning","description":"design choice","requires_human_review":true},{"severity":"error","description":"bug"}],"risk_level":"medium","risk_rationale":"Mixed."}`
+func TestParseFindingsJSON_Action(t *testing.T) {
+	raw := `{"findings":[{"severity":"warning","description":"design choice","action":"ask-user"},{"severity":"error","description":"bug","action":"auto-fix"}],"risk_level":"medium","risk_rationale":"Mixed."}`
 	f, err := ParseFindingsJSON(raw)
 	if err != nil {
 		t.Fatal(err)
@@ -138,20 +139,38 @@ func TestParseFindingsJSON_RequiresHumanReview(t *testing.T) {
 	if len(f.Items) != 2 {
 		t.Fatalf("Items count = %d, want 2", len(f.Items))
 	}
-	if !f.Items[0].RequiresHumanReview {
-		t.Error("Items[0].RequiresHumanReview = false, want true")
+	if f.Items[0].Action != ActionAskUser {
+		t.Errorf("Items[0].Action = %q, want %q", f.Items[0].Action, ActionAskUser)
 	}
-	if f.Items[1].RequiresHumanReview {
-		t.Error("Items[1].RequiresHumanReview = true, want false")
+	if f.Items[1].Action != ActionAutoFix {
+		t.Errorf("Items[1].Action = %q, want %q", f.Items[1].Action, ActionAutoFix)
 	}
 }
 
-func TestAutoFixableFindings_FiltersOutHumanReview(t *testing.T) {
+func TestParseFindingsJSON_RequiresHumanReviewCompatibility(t *testing.T) {
+	raw := `{"findings":[{"severity":"warning","description":"design choice","requires_human_review":true},{"severity":"error","description":"bug","requires_human_review":false}]}`
+	f, err := ParseFindingsJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.Items) != 2 {
+		t.Fatalf("Items count = %d, want 2", len(f.Items))
+	}
+	if f.Items[0].Action != ActionAskUser {
+		t.Errorf("Items[0].Action = %q, want %q", f.Items[0].Action, ActionAskUser)
+	}
+	if f.Items[1].Action != ActionAutoFix {
+		t.Errorf("Items[1].Action = %q, want %q", f.Items[1].Action, ActionAutoFix)
+	}
+}
+
+func TestAutoFixableFindings_FiltersToAutoFix(t *testing.T) {
 	f := Findings{
 		Items: []Finding{
-			{ID: "f1", Severity: "error", Description: "bug", RequiresHumanReview: false},
-			{ID: "f2", Severity: "warning", Description: "design choice", RequiresHumanReview: true},
-			{ID: "f3", Severity: "warning", Description: "missing check", RequiresHumanReview: false},
+			{ID: "f1", Severity: "error", Description: "bug", Action: ActionAutoFix},
+			{ID: "f2", Severity: "warning", Description: "design choice", Action: ActionAskUser},
+			{ID: "f3", Severity: "warning", Description: "missing check", Action: ActionAutoFix},
+			{ID: "f4", Severity: "info", Description: "note", Action: ActionNoOp},
 		},
 		RiskLevel: "medium",
 	}
@@ -167,10 +186,10 @@ func TestAutoFixableFindings_FiltersOutHumanReview(t *testing.T) {
 	}
 }
 
-func TestAutoFixableFindings_AllHumanReview(t *testing.T) {
+func TestAutoFixableFindings_AllAskUser(t *testing.T) {
 	f := Findings{
 		Items: []Finding{
-			{ID: "f1", Severity: "warning", Description: "choice", RequiresHumanReview: true},
+			{ID: "f1", Severity: "warning", Description: "choice", Action: ActionAskUser},
 		},
 	}
 	fixable := AutoFixableFindings(f)
@@ -179,16 +198,54 @@ func TestAutoFixableFindings_AllHumanReview(t *testing.T) {
 	}
 }
 
-func TestAutoFixableFindings_NoneHumanReview(t *testing.T) {
+func TestAutoFixableFindings_NoOpExcluded(t *testing.T) {
 	f := Findings{
 		Items: []Finding{
-			{ID: "f1", Severity: "error", Description: "bug"},
-			{ID: "f2", Severity: "warning", Description: "issue"},
+			{ID: "f1", Severity: "info", Description: "note", Action: ActionNoOp},
+			{ID: "f2", Severity: "info", Description: "fyi", Action: ActionNoOp},
 		},
 	}
 	fixable := AutoFixableFindings(f)
-	if len(fixable.Items) != 2 {
-		t.Errorf("Items count = %d, want 2", len(fixable.Items))
+	if len(fixable.Items) != 0 {
+		t.Errorf("Items count = %d, want 0", len(fixable.Items))
+	}
+}
+
+func TestAutoFixableFindings_EmptyActionDefaultsToAutoFix(t *testing.T) {
+	f := Findings{
+		Items: []Finding{
+			{ID: "f1", Severity: "error", Description: "bug"},
+			{ID: "f2", Severity: "warning", Description: "needs approval", Action: ActionAskUser},
+		},
+	}
+	fixable := AutoFixableFindings(f)
+	if len(fixable.Items) != 1 {
+		t.Fatalf("Items count = %d, want 1", len(fixable.Items))
+	}
+	if fixable.Items[0].ID != "f1" {
+		t.Errorf("Items[0].ID = %q, want %q", fixable.Items[0].ID, "f1")
+	}
+}
+
+func TestHasAskUserFindings(t *testing.T) {
+	tests := []struct {
+		name   string
+		items  []Finding
+		expect bool
+	}{
+		{"has ask-user", []Finding{{Action: ActionAskUser}}, true},
+		{"only auto-fix", []Finding{{Action: ActionAutoFix}}, false},
+		{"only no-op", []Finding{{Action: ActionNoOp}}, false},
+		{"mixed", []Finding{{Action: ActionAutoFix}, {Action: ActionAskUser}}, true},
+		{"empty", nil, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := Findings{Items: tt.items}
+			if got := HasAskUserFindings(f); got != tt.expect {
+				t.Errorf("HasAskUserFindings() = %v, want %v", got, tt.expect)
+			}
+		})
 	}
 }
 
@@ -209,14 +266,28 @@ func TestMarshalFindingsJSON_AlwaysIncludesRiskFields(t *testing.T) {
 	}
 }
 
-func TestFinding_RequiresHumanReview_SerializedWhenFalse(t *testing.T) {
-	f := Finding{Severity: "error", Description: "bug", RequiresHumanReview: false}
+func TestFinding_Action_SerializedWhenEmpty(t *testing.T) {
+	f := Finding{Severity: "error", Description: "bug", Action: ""}
 	raw, err := json.Marshal(f)
 	if err != nil {
 		t.Fatal(err)
 	}
 	s := string(raw)
-	if !strings.Contains(s, `"requires_human_review":false`) {
-		t.Errorf("expected requires_human_review to be present when false, got %s", s)
+	if !strings.Contains(s, `"action":`) {
+		t.Errorf("expected action to be present, got %s", s)
+	}
+}
+
+func TestFinding_Action_Values(t *testing.T) {
+	for _, action := range []string{ActionNoOp, ActionAutoFix, ActionAskUser} {
+		f := Finding{Severity: "error", Description: "test", Action: action}
+		raw, err := json.Marshal(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := string(raw)
+		if !strings.Contains(s, fmt.Sprintf(`"action":"%s"`, action)) {
+			t.Errorf("expected action %q in output, got %s", action, s)
+		}
 	}
 }

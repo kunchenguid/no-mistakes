@@ -237,7 +237,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		}
 
 		// Check if auto-fix should be attempted.
-		// Only auto-fix findings that don't require human review.
+		// Only auto-fix findings whose action is "auto-fix".
 		// This runs before the NeedsApproval check so that all severity
 		// levels (including "info") get a chance at automatic fixing.
 		if outcome.AutoFixable && autoFixLimit > 0 && autoFixAttempts < autoFixLimit {
@@ -258,9 +258,9 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			}
 		}
 
-		if !outcome.NeedsApproval && !hasHumanReviewFindingsJSON(outcome.Findings) {
+		if !outcome.NeedsApproval && !hasAskUserFindingsJSON(outcome.Findings) {
 			// Step completed without needing approval.
-			// Any remaining info-only or human-review-only findings
+			// Any remaining info-only or non-blocking findings
 			// are acceptable and don't block the pipeline.
 			skipRemaining = outcome.SkipRemaining
 			break

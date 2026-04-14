@@ -34,11 +34,12 @@ AI code review of your diff.
 **Behavior:**
 - Diffs the base commit against head
 - Filters out files matching `ignore_patterns` from the repo config
+- Includes user-authored commit subjects between base and head as intent context for the agent
 - Sends the filtered diff to the agent with a structured output schema
-- Agent returns findings with severity (`error`, `warning`, `info`), file location, and description
+- Agent returns findings with severity (`error`, `warning`, `info`), file location, description, and an `action` (`no-op`, `auto-fix`, `ask-user`)
 - Also returns a `risk_level` (`low`, `medium`, `high`) and `risk_rationale`
 
-**Approval:** required if any finding has severity `error` or `warning`. Findings marked `requires_human_review` always require human approval and are never auto-fixed. This is for findings that challenge the author's intent, not routine correctness, reliability, or security fixes that may need to re-add a small amount of deleted logic.
+**Approval:** required if any finding has severity `error` or `warning`. Findings with `action: ask-user` always require human approval and are never auto-fixed. This is for findings that challenge the author's intent, not routine correctness, reliability, or security fixes that may need to re-add a small amount of deleted logic. Findings with `action: auto-fix` remain eligible for the fix loop. Findings with `action: no-op` are informational only.
 
 **Auto-fix:** the agent receives previous findings and applies fixes, then the review runs again. Fix commits use `no-mistakes(review): <summary>`.
 
@@ -50,10 +51,12 @@ Runs your test suite.
 
 **Behavior:**
 - If `commands.test` is set in repo config: runs it via `sh -c` and captures output. Non-zero exit produces `error` findings.
-- If `commands.test` is empty: the agent detects and runs relevant tests, returning structured findings.
+- If `commands.test` is empty: the agent detects and runs relevant tests, returning structured findings with severity, description, and `action` (`no-op`, `auto-fix`, `ask-user`).
 - If the agent creates new test files (detected via `git status --porcelain`), approval is required even if tests pass.
 
-**Auto-fix:** the agent receives previous failure output and fixes the code, then tests run again. Fix commits use `no-mistakes(test): <summary>`.
+**Approval:** failing test findings with `action: ask-user` always require human approval. `action: auto-fix` findings stay eligible for the fix loop. `action: no-op` findings are informational only.
+
+**Auto-fix:** the agent receives previous failure output and fixes the code for `action: auto-fix` findings, then tests run again. Fix commits use `no-mistakes(test): <summary>`.
 
 **Default auto-fix limit:** `3`.
 
@@ -63,7 +66,7 @@ Checks whether the code changes need matching documentation updates.
 
 **Behavior:**
 - Diffs the base commit against head and skips the step if there are no non-ignored changed files to document
-- Asks the agent to review the change and return documentation findings for any missing or stale docs
+- Asks the agent to review the change and return documentation findings for any missing or stale docs, using the same `action` field as other agent-driven steps
 - Requires approval whenever any documentation finding is returned, including `info` findings
 
 **Auto-fix:** the agent updates only documentation files or doc comments, then the step re-runs and expects an empty findings list before continuing. Fix commits use `no-mistakes(document): <summary>`.
@@ -76,9 +79,11 @@ Runs linters and static analysis.
 
 **Behavior:**
 - If `commands.lint` is set: runs it via `sh -c`. Non-zero exit produces `warning` findings.
-- If `commands.lint` is empty: the agent detects and runs appropriate linters/formatters.
+- If `commands.lint` is empty: the agent detects and runs appropriate linters/formatters, returning structured findings with severity, description, and `action` (`no-op`, `auto-fix`, `ask-user`).
 
-**Auto-fix:** same pattern as test - agent fixes issues, lint re-runs. Fix commits use `no-mistakes(lint): <summary>`.
+**Approval:** lint findings with `action: ask-user` always require human approval. `action: auto-fix` findings stay eligible for the fix loop. `action: no-op` findings are informational only.
+
+**Auto-fix:** same pattern as test - the agent fixes `action: auto-fix` issues, then lint re-runs. Fix commits use `no-mistakes(lint): <summary>`.
 
 **Default auto-fix limit:** `3`.
 

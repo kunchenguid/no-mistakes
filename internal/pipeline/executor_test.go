@@ -328,7 +328,7 @@ func TestExecutor_ApprovalApprove(t *testing.T) {
 	workDir := t.TempDir()
 
 	steps := []Step{
-		newApprovalStep(types.StepReview, `{"findings":[{"severity":"error","description":"bug found"}],"summary":"1 issue found"}`),
+		newApprovalStep(types.StepReview, `{"findings":[{"severity":"error","description":"bug found","action":"auto-fix"}],"summary":"1 issue found"}`),
 		newPassStep(types.StepTest),
 	}
 
@@ -395,7 +395,7 @@ func TestExecutor_ApprovalDurationExcludesWaitTime(t *testing.T) {
 	workDir := t.TempDir()
 
 	steps := []Step{
-		newApprovalStep(types.StepReview, `{"findings":[{"severity":"error","description":"bug"}],"summary":"1 issue"}`),
+		newApprovalStep(types.StepReview, `{"findings":[{"severity":"error","description":"bug","action":"auto-fix"}],"summary":"1 issue"}`),
 	}
 
 	exec := NewExecutor(database, p, nil, nil, steps, nil)
@@ -464,7 +464,7 @@ func TestExecutor_ApprovalApprovePreservesExitCode(t *testing.T) {
 			name: types.StepTest,
 			outcome: &StepOutcome{
 				NeedsApproval: true,
-				Findings:      `{"findings":[{"severity":"error","description":"tests failed"}],"summary":"failing test output"}`,
+				Findings:      `{"findings":[{"severity":"error","description":"tests failed","action":"auto-fix"}],"summary":"failing test output"}`,
 				ExitCode:      42,
 			},
 		},
@@ -818,7 +818,7 @@ func TestExecutor_FixSetsPreviousFindings(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir := t.TempDir()
 
-	findings := `{"findings":[{"severity":"error","file":"main.go","line":42,"description":"nil pointer dereference"}],"summary":"1 error found"}`
+	findings := `{"findings":[{"severity":"error","file":"main.go","line":42,"description":"nil pointer dereference","action":"auto-fix"}],"summary":"1 error found"}`
 	var capturedFindings string
 
 	callCount := 0
@@ -873,7 +873,7 @@ func TestExecutor_AssignsFindingIDsBeforePersistingAndEmitting(t *testing.T) {
 		fn: func(sctx *StepContext) (*StepOutcome, error) {
 			return &StepOutcome{
 				NeedsApproval: true,
-				Findings:      `{"findings":[{"severity":"error","description":"first"},{"severity":"warning","description":"second"}],"summary":"2 findings"}`,
+				Findings:      `{"findings":[{"severity":"error","description":"first","action":"auto-fix"},{"severity":"warning","description":"second","action":"auto-fix"}],"summary":"2 findings"}`,
 			}, nil
 		},
 	}
@@ -935,7 +935,7 @@ func TestExecutor_FixUsesSelectedFindingIDsOnly(t *testing.T) {
 			if callCount == 1 {
 				return &StepOutcome{
 					NeedsApproval: true,
-					Findings:      `{"findings":[{"id":"review-1","severity":"error","description":"first"},{"id":"review-2","severity":"warning","description":"second"}],"summary":"2 findings"}`,
+					Findings:      `{"findings":[{"id":"review-1","severity":"error","description":"first","action":"auto-fix"},{"id":"review-2","severity":"warning","description":"second","action":"auto-fix"}],"summary":"2 findings"}`,
 				}, nil
 			}
 			capturedFindings = sctx.PreviousFindings
@@ -985,7 +985,7 @@ func TestExecutor_FixClearsStoredFindingsAfterSuccessfulReRun(t *testing.T) {
 			if callCount == 1 {
 				return &StepOutcome{
 					NeedsApproval: true,
-					Findings:      `{"findings":[{"severity":"error","description":"first pass issue"}],"summary":"1 issue"}`,
+					Findings:      `{"findings":[{"severity":"error","description":"first pass issue","action":"auto-fix"}],"summary":"1 issue"}`,
 				}, nil
 			}
 			return &StepOutcome{}, nil
@@ -1035,7 +1035,7 @@ func TestExecutor_FixSelectedFindingsRewritesSummary(t *testing.T) {
 			if callCount == 1 {
 				return &StepOutcome{
 					NeedsApproval: true,
-					Findings:      `{"findings":[{"id":"review-1","severity":"error","description":"first"},{"id":"review-2","severity":"warning","description":"second"}],"summary":"2 findings"}`,
+					Findings:      `{"findings":[{"id":"review-1","severity":"error","description":"first","action":"auto-fix"},{"id":"review-2","severity":"warning","description":"second","action":"auto-fix"}],"summary":"2 findings"}`,
 				}, nil
 			}
 			capturedFindings = sctx.PreviousFindings
@@ -1093,12 +1093,12 @@ func TestExecutor_FixDropsDismissedFindingsThatDisappearAcrossCycles(t *testing.
 			case 1:
 				return &StepOutcome{
 					NeedsApproval: true,
-					Findings:      `{"findings":[{"id":"review-1","severity":"error","description":"first"},{"id":"review-2","severity":"warning","description":"second"}],"summary":"2 findings"}`,
+					Findings:      `{"findings":[{"id":"review-1","severity":"error","description":"first","action":"auto-fix"},{"id":"review-2","severity":"warning","description":"second","action":"auto-fix"}],"summary":"2 findings"}`,
 				}, nil
 			case 2:
 				return &StepOutcome{
 					NeedsApproval: true,
-					Findings:      `{"findings":[{"id":"review-2","severity":"warning","description":"second"},{"id":"review-3","severity":"error","description":"third"}],"summary":"2 findings"}`,
+					Findings:      `{"findings":[{"id":"review-2","severity":"warning","description":"second","action":"auto-fix"},{"id":"review-3","severity":"error","description":"third","action":"auto-fix"}],"summary":"2 findings"}`,
 				}, nil
 			case 3:
 				capturedDismissed = sctx.DismissedFindings
@@ -1158,12 +1158,12 @@ func TestExecutor_FixRemovesReselectedDismissedFinding(t *testing.T) {
 			case 1:
 				return &StepOutcome{
 					NeedsApproval: true,
-					Findings:      `{"findings":[{"id":"review-1","severity":"error","description":"first"},{"id":"review-2","severity":"warning","description":"second"}],"summary":"2 findings"}`,
+					Findings:      `{"findings":[{"id":"review-1","severity":"error","description":"first","action":"auto-fix"},{"id":"review-2","severity":"warning","description":"second","action":"auto-fix"}],"summary":"2 findings"}`,
 				}, nil
 			case 2:
 				return &StepOutcome{
 					NeedsApproval: true,
-					Findings:      `{"findings":[{"id":"review-1","severity":"error","description":"first"},{"id":"review-3","severity":"warning","description":"third"}],"summary":"2 findings"}`,
+					Findings:      `{"findings":[{"id":"review-1","severity":"error","description":"first","action":"auto-fix"},{"id":"review-3","severity":"warning","description":"third","action":"auto-fix"}],"summary":"2 findings"}`,
 				}, nil
 			case 3:
 				capturedDismissed = sctx.DismissedFindings
@@ -1223,12 +1223,12 @@ func TestExecutor_FixDropsEarlierDismissedFindingWhenOrdinalReusedForDifferentIs
 			case 1:
 				return &StepOutcome{
 					NeedsApproval: true,
-					Findings:      `{"findings":[{"id":"review-1","severity":"error","description":"first"},{"id":"review-2","severity":"warning","description":"second"}],"summary":"2 findings"}`,
+					Findings:      `{"findings":[{"id":"review-1","severity":"error","description":"first","action":"auto-fix"},{"id":"review-2","severity":"warning","description":"second","action":"auto-fix"}],"summary":"2 findings"}`,
 				}, nil
 			case 2:
 				return &StepOutcome{
 					NeedsApproval: true,
-					Findings:      `{"findings":[{"id":"review-1","severity":"error","description":"replacement"},{"id":"review-3","severity":"warning","description":"third"}],"summary":"2 findings"}`,
+					Findings:      `{"findings":[{"id":"review-1","severity":"error","description":"replacement","action":"auto-fix"},{"id":"review-3","severity":"warning","description":"third","action":"auto-fix"}],"summary":"2 findings"}`,
 				}, nil
 			case 3:
 				capturedDismissed = sctx.DismissedFindings
@@ -1722,7 +1722,7 @@ func TestExecutor_AutoFixTriggersWithoutApproval(t *testing.T) {
 				return &StepOutcome{
 					NeedsApproval: true,
 					AutoFixable:   true,
-					Findings:      `{"findings":[{"severity":"error","description":"bug"}],"summary":"1 issue"}`,
+					Findings:      `{"findings":[{"severity":"error","description":"bug","action":"auto-fix"}],"summary":"1 issue"}`,
 				}, nil
 			}
 			// After auto-fix, verify Fixing is set
@@ -1769,7 +1769,7 @@ func TestExecutor_AutoFixRespectsMaxAttempts(t *testing.T) {
 			return &StepOutcome{
 				NeedsApproval: true,
 				AutoFixable:   true,
-				Findings:      `{"findings":[{"severity":"warning","description":"style issue"}],"summary":"lint issue"}`,
+				Findings:      `{"findings":[{"severity":"warning","description":"style issue","action":"auto-fix"}],"summary":"lint issue"}`,
 			}, nil
 		},
 	}
@@ -1817,7 +1817,7 @@ func TestExecutor_AutoFixDisabledWithZero(t *testing.T) {
 			callCount++
 			return &StepOutcome{
 				NeedsApproval: true,
-				Findings:      `{"findings":[{"severity":"error","description":"bug"}],"summary":"1 issue"}`,
+				Findings:      `{"findings":[{"severity":"error","description":"bug","action":"auto-fix"}],"summary":"1 issue"}`,
 			}, nil
 		},
 	}
@@ -1860,7 +1860,7 @@ func TestExecutor_AutoFixNilConfigUsesDefaults(t *testing.T) {
 			callCount++
 			return &StepOutcome{
 				NeedsApproval: true,
-				Findings:      `{"findings":[{"severity":"error","description":"bug"}],"summary":"1 issue"}`,
+				Findings:      `{"findings":[{"severity":"error","description":"bug","action":"auto-fix"}],"summary":"1 issue"}`,
 			}, nil
 		},
 	}
@@ -1898,7 +1898,7 @@ func TestExecutor_AutoFixEmitsEvents(t *testing.T) {
 				return &StepOutcome{
 					NeedsApproval: true,
 					AutoFixable:   true,
-					Findings:      `{"findings":[{"severity":"warning","description":"issue"}],"summary":"1 issue"}`,
+					Findings:      `{"findings":[{"severity":"warning","description":"issue","action":"auto-fix"}],"summary":"1 issue"}`,
 				}, nil
 			}
 			return &StepOutcome{}, nil
@@ -1933,7 +1933,7 @@ func TestExecutor_DoesNotAutoFixManualApprovalOutcome(t *testing.T) {
 			callCount++
 			return &StepOutcome{
 				NeedsApproval: true,
-				Findings:      `{"findings":[{"severity":"info","description":"new test file written by agent: agent_test.go"}],"summary":"tests passed, but agent wrote new test files"}`,
+				Findings:      `{"findings":[{"severity":"info","description":"new test file written by agent: agent_test.go","action":"no-op"}],"summary":"tests passed, but agent wrote new test files"}`,
 			}, nil
 		},
 	}
@@ -1981,7 +1981,7 @@ func TestExecutor_AutoFixInfoFindings(t *testing.T) {
 				return &StepOutcome{
 					NeedsApproval: false,
 					AutoFixable:   true,
-					Findings:      `{"findings":[{"severity":"info","description":"could simplify"}],"summary":"1 suggestion"}`,
+					Findings:      `{"findings":[{"severity":"info","description":"could simplify","action":"auto-fix"}],"summary":"1 suggestion"}`,
 				}, nil
 			}
 			// After auto-fix, step passes clean
@@ -2015,11 +2015,11 @@ func TestExecutor_AutoFixSkipsHumanReviewFindings(t *testing.T) {
 		name: types.StepReview,
 		fn: func(sctx *StepContext) (*StepOutcome, error) {
 			callCount++
-			// All findings require human review - auto-fix should not trigger
+			// All findings are ask-user - auto-fix should not trigger
 			return &StepOutcome{
 				NeedsApproval: true,
 				AutoFixable:   true,
-				Findings:      `{"findings":[{"severity":"warning","description":"design choice","requires_human_review":true}],"summary":"1 issue"}`,
+				Findings:      `{"findings":[{"severity":"warning","description":"design choice","action":"ask-user"}],"summary":"1 issue"}`,
 			}, nil
 		},
 	}
@@ -2035,7 +2035,7 @@ func TestExecutor_AutoFixSkipsHumanReviewFindings(t *testing.T) {
 	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
 
 	if callCount != 1 {
-		t.Fatalf("expected 1 call (no auto-fix for human-review findings), got %d", callCount)
+		t.Fatalf("expected 1 call (no auto-fix for ask-user findings), got %d", callCount)
 	}
 
 	exec.Respond(types.StepReview, types.ActionApprove, nil)
@@ -2060,7 +2060,7 @@ func TestExecutor_HumanReviewFindingsRequireApprovalWithoutNeedsApprovalFlag(t *
 			return &StepOutcome{
 				NeedsApproval: false,
 				AutoFixable:   true,
-				Findings:      `{"findings":[{"severity":"info","description":"design choice","requires_human_review":true}],"summary":"1 issue"}`,
+				Findings:      `{"findings":[{"severity":"info","description":"design choice","action":"ask-user"}],"summary":"1 issue"}`,
 			}, nil
 		},
 	}
@@ -2098,13 +2098,13 @@ func TestExecutor_AutoFixMixedFindings(t *testing.T) {
 		fn: func(sctx *StepContext) (*StepOutcome, error) {
 			callCount++
 			if callCount == 1 {
-				// Mix: one auto-fixable, one requires human review
+				// Mix: one auto-fixable, one ask-user
 				return &StepOutcome{
 					NeedsApproval: true,
 					AutoFixable:   true,
 					Findings: `{"findings":[
-						{"id":"review-1","severity":"error","description":"bug"},
-						{"id":"review-2","severity":"warning","description":"design choice","requires_human_review":true}
+						{"id":"review-1","severity":"error","description":"bug","action":"auto-fix"},
+						{"id":"review-2","severity":"warning","description":"design choice","action":"ask-user"}
 					],"summary":"2 issues","risk_level":"medium","risk_rationale":"mixed"}`,
 				}, nil
 			}
@@ -2119,11 +2119,11 @@ func TestExecutor_AutoFixMixedFindings(t *testing.T) {
 			if len(parsed.Items) > 0 && parsed.Items[0].Description != "bug" {
 				t.Errorf("expected fixable finding 'bug', got %q", parsed.Items[0].Description)
 			}
-			// Return only the human-review finding remaining
+			// Return only the ask-user finding remaining
 			return &StepOutcome{
 				NeedsApproval: true,
 				AutoFixable:   true,
-				Findings:      `{"findings":[{"id":"review-2","severity":"warning","description":"design choice","requires_human_review":true}],"summary":"1 issue"}`,
+				Findings:      `{"findings":[{"id":"review-2","severity":"warning","description":"design choice","action":"ask-user"}],"summary":"1 issue"}`,
 			}, nil
 		},
 	}
@@ -2135,7 +2135,7 @@ func TestExecutor_AutoFixMixedFindings(t *testing.T) {
 		done <- exec.Execute(context.Background(), run, repo, workDir)
 	}()
 
-	// After auto-fixing the bug, only human-review finding remains.
+	// After auto-fixing the bug, only ask-user finding remains.
 	// No more fixable findings, so falls through to user approval.
 	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
 

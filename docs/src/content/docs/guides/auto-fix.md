@@ -34,11 +34,17 @@ Setting a step to `0` means the pipeline always pauses for human input when that
 
 Repo config overlays global config - you can set `auto_fix.lint: 5` in a repo's `.no-mistakes.yaml` to override just that step while inheriting the rest from global.
 
-## Human review findings
+## Finding actions
 
-Some review findings are marked `requires_human_review: true` by the agent. These findings always require manual approval regardless of the auto-fix limit. They are never auto-fixed.
+Agent-driven findings now use an `action` field instead of `requires_human_review`:
 
-This is meant for findings that challenge the author's intent - for example, questioning an intentional product or design choice, or arguing that an intentional addition, removal, or guard should be undone. Routine correctness, reliability, or security fixes still stay auto-fixable even if the smallest fix reintroduces a small amount of previously deleted logic.
+- `auto-fix` - objective issues that can be fixed automatically
+- `ask-user` - intent-sensitive or ambiguous issues that always require manual approval and are never auto-fixed
+- `no-op` - informational notes that do not need a fix
+
+`ask-user` is meant for findings that challenge the author's intent - for example, questioning an intentional product or design choice, or arguing that an intentional addition, removal, or guard should be undone. Routine correctness, reliability, or security fixes still stay `auto-fix` even if the smallest fix reintroduces a small amount of previously deleted logic.
+
+The `review`, `test`, and `lint` steps use this shared model directly. The `document` step also uses the same `action` field, but any documentation finding still pauses for approval because even objective doc gaps need an explicit documentation pass before the pipeline continues.
 
 Documentation findings use the same approval loop, but the `document` step treats any finding as a documentation gap that should pause for approval. When auto-fix is enabled, the agent can update docs or doc comments, then the step re-runs and proceeds only after reassessment returns no findings.
 
