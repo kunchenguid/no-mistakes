@@ -84,6 +84,45 @@ func envValue(env []string, key string) (string, bool) {
 	return "", false
 }
 
+func envKey(entry string) string {
+	key, _, found := strings.Cut(entry, "=")
+	if !found {
+		key = entry
+	}
+	if runtime.GOOS == "windows" {
+		return strings.ToUpper(key)
+	}
+	return key
+}
+
+func mergeEnv(extra []string) []string {
+	if len(extra) == 0 {
+		return nil
+	}
+	merged := make([]string, 0, len(os.Environ())+len(extra))
+	overrides := make(map[string]string, len(extra))
+	for _, entry := range extra {
+		overrides[envKey(entry)] = entry
+	}
+	for _, entry := range os.Environ() {
+		key := envKey(entry)
+		if override, ok := overrides[key]; ok {
+			merged = append(merged, override)
+			delete(overrides, key)
+			continue
+		}
+		merged = append(merged, entry)
+	}
+	for _, entry := range extra {
+		key := envKey(entry)
+		if override, ok := overrides[key]; ok {
+			merged = append(merged, override)
+			delete(overrides, key)
+		}
+	}
+	return merged
+}
+
 func executableCandidates(name string, env []string) []string {
 	candidates := []string{name}
 	if runtime.GOOS != "windows" || filepath.Ext(name) != "" {
@@ -117,6 +156,20 @@ func findInCustomPath(env []string, name string) string {
 		}
 	}
 	return ""
+}
+
+func missingFromCustomPath(env []string, name string) string {
+	customPath, ok := envValue(env, "PATH")
+	if !ok {
+		return ""
+	}
+	for _, dir := range filepath.SplitList(customPath) {
+		if strings.TrimSpace(dir) == "" {
+			continue
+		}
+		return filepath.Join(dir, executableCandidates(name, env)[0])
+	}
+	return name
 }
 
 func copyDirContents(srcDir, dstDir string) error {
@@ -182,12 +235,14 @@ func stepCmd(sctx *pipeline.StepContext, name string, args ...string) *exec.Cmd 
 	if len(sctx.Env) > 0 && !strings.Contains(name, string(filepath.Separator)) {
 		if candidate := findInCustomPath(sctx.Env, name); candidate != "" {
 			resolved = candidate
+		} else if _, ok := envValue(sctx.Env, "PATH"); ok {
+			resolved = missingFromCustomPath(sctx.Env, name)
 		}
 	}
 	cmd := exec.CommandContext(sctx.Ctx, resolved, args...)
 	cmd.Dir = sctx.WorkDir
 	if len(sctx.Env) > 0 {
-		cmd.Env = append(os.Environ(), sctx.Env...)
+		cmd.Env = mergeEnv(sctx.Env)
 	}
 	return cmd
 }

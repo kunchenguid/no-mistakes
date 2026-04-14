@@ -3513,6 +3513,58 @@ func TestStepCLIAvailable_ResolvesExecutableSuffixFromCustomPath(t *testing.T) {
 	}
 }
 
+func TestStepCmd_DoesNotFallbackToHostPathWhenCustomPathOmitsBinary(t *testing.T) {
+	t.Parallel()
+
+	customPath := t.TempDir()
+	sctx := &pipeline.StepContext{
+		Ctx:     context.Background(),
+		WorkDir: t.TempDir(),
+		Env:     []string{"PATH=" + customPath},
+	}
+
+	cmd := stepCmd(sctx, "git", "--version")
+	if cmd.Path != filepath.Join(customPath, "git") {
+		t.Fatalf("expected custom-path lookup to stay inside %q, got %q", customPath, cmd.Path)
+	}
+	err := cmd.Run()
+	if err == nil {
+		t.Fatal("expected git lookup to fail when custom PATH omits git")
+	}
+}
+
+func TestStepCmd_OverridesPathWithoutDuplicateEntries(t *testing.T) {
+	t.Parallel()
+
+	customPath := t.TempDir()
+	sctx := &pipeline.StepContext{
+		Ctx:     context.Background(),
+		WorkDir: t.TempDir(),
+		Env: []string{
+			"PATH=" + customPath,
+			"STEP_TEST_VAR=custom",
+		},
+	}
+
+	cmd := stepCmd(sctx, filepath.Join(string(filepath.Separator), "usr", "bin", "env"))
+
+	pathCount := 0
+	for _, entry := range cmd.Env {
+		switch {
+		case strings.HasPrefix(entry, "PATH="):
+			pathCount++
+			if entry != "PATH="+customPath {
+				t.Fatalf("expected overridden PATH, got %q", entry)
+			}
+		case entry == "STEP_TEST_VAR=custom":
+			continue
+		}
+	}
+	if pathCount != 1 {
+		t.Fatalf("expected exactly one PATH entry, got %d in %v", pathCount, cmd.Env)
+	}
+}
+
 func TestPRStep_UpdatesExistingPR(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
