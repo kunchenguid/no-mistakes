@@ -107,6 +107,26 @@ func setupTestRepo(t *testing.T) string {
 	return repoDir
 }
 
+func writeMockClaude(t *testing.T, dir string) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		path := filepath.Join(dir, "claude.bat")
+		script := "@echo off\r\necho {\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"structured_output\":{\"findings\":[],\"summary\":\"clean\"}}\r\n"
+		if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	path := filepath.Join(dir, "claude")
+	script := `#!/bin/sh
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"structured_output":{"findings":[],"summary":"clean"}}'
+`
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func run(t *testing.T, dir string, name string, args ...string) {
 	t.Helper()
 	cmd := exec.Command(name, args...)
@@ -803,6 +823,11 @@ func TestRerunStartsPipelineForCurrentBranch(t *testing.T) {
 	if err := p.EnsureDirs(); err != nil {
 		t.Fatal(err)
 	}
+	mockClaude := writeMockClaude(t, t.TempDir())
+	configYAML := "agent: claude\nagent_path_override:\n  claude: " + mockClaude + "\n"
+	if err := os.WriteFile(p.ConfigFile(), []byte(configYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	d, err := db.Open(p.DB())
 	if err != nil {
@@ -869,6 +894,11 @@ func TestRerunFromWorktreeUsesCurrentWorktreeBranch(t *testing.T) {
 	t.Setenv("NM_HOME", nmHome)
 	p := paths.WithRoot(nmHome)
 	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	mockClaude := writeMockClaude(t, t.TempDir())
+	configYAML := "agent: claude\nagent_path_override:\n  claude: " + mockClaude + "\n"
+	if err := os.WriteFile(p.ConfigFile(), []byte(configYAML), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
