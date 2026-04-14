@@ -149,12 +149,17 @@ func fakeCIGHHandler(args []string) {
 	state := os.Getenv("FAKE_CLI_STATE")
 	checksJSON := os.Getenv("FAKE_CLI_CHECKS")
 	mergeable := os.Getenv("FAKE_CLI_MERGEABLE")
+	mergeableErr := os.Getenv("FAKE_CLI_MERGEABLE_ERR")
 	joined := strings.Join(args, " ")
 
 	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json mergeable") {
+		if mergeableErr != "" {
+			fmt.Fprintln(os.Stderr, mergeableErr)
+			os.Exit(1)
+		}
 		if mergeable == "" {
 			mergeable = "MERGEABLE"
 		}
@@ -181,12 +186,17 @@ func fakeCIGHSequenceHandler(args []string) {
 	checksPath := os.Getenv("FAKE_CLI_CHECKS_PATH")
 	indexPath := os.Getenv("FAKE_CLI_CHECKS_INDEX_PATH")
 	mergeable := os.Getenv("FAKE_CLI_MERGEABLE")
+	mergeableErr := os.Getenv("FAKE_CLI_MERGEABLE_ERR")
 	joined := strings.Join(args, " ")
 
 	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json mergeable") {
+		if mergeableErr != "" {
+			fmt.Fprintln(os.Stderr, mergeableErr)
+			os.Exit(1)
+		}
 		if mergeable == "" {
 			mergeable = "MERGEABLE"
 		}
@@ -5599,6 +5609,18 @@ func fakeCIGHMergeable(t *testing.T, state, checksJSON, mergeable string) []stri
 	})
 }
 
+func fakeCIGHMergeableError(t *testing.T, state, checksJSON, mergeableErr string) []string {
+	t.Helper()
+	binDir := fakeCLIBinDir(t)
+	linkTestBinary(t, binDir, "gh")
+	return fakeCLIEnv(binDir, map[string]string{
+		"FAKE_CLI_MODE":          "ci-gh",
+		"FAKE_CLI_STATE":         state,
+		"FAKE_CLI_CHECKS":        checksJSON,
+		"FAKE_CLI_MERGEABLE_ERR": mergeableErr,
+	})
+}
+
 func fakeCIGHSequenceMergeable(t *testing.T, state string, checks []string, mergeable string) []string {
 	t.Helper()
 	binDir := fakeCLIBinDir(t)
@@ -6768,6 +6790,93 @@ func TestCIStep_MergeConflictDetected_ReturnsNeedsApproval(t *testing.T) {
 	}
 	if !foundConflict {
 		t.Fatalf("expected merge conflict finding, got: %+v", findings.Items)
+	}
+}
+
+func TestCIStep_UnknownMergeableStateDoesNotExitCleanly(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	checksJSON := `[{"name":"build","state":"SUCCESS","bucket":"pass"}]`
+	env := fakeCIGHMergeable(t, "OPEN", checksJSON, "UNKNOWN")
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 10 * time.Second
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	step := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			cancel()
+			return ctx.Err()
+		},
+	}
+
+	_, err := step.Execute(sctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected polling to continue until canceled, got %v", err)
+	}
+
+	for _, l := range logs {
+		if strings.Contains(l, "all CI checks passed") {
+			t.Fatalf("expected UNKNOWN mergeability to block clean exit, got logs: %v", logs)
+		}
+	}
+}
+
+func TestCIStep_MergeableLookupErrorDoesNotExitCleanly(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	checksJSON := `[{"name":"build","state":"SUCCESS","bucket":"pass"}]`
+	env := fakeCIGHMergeableError(t, "OPEN", checksJSON, "gh mergeable failed")
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 10 * time.Second
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	step := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			cancel()
+			return ctx.Err()
+		},
+	}
+
+	_, err := step.Execute(sctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected polling to continue until canceled, got %v", err)
+	}
+
+	foundWarning := false
+	for _, l := range logs {
+		if strings.Contains(l, "could not check mergeable state") {
+			foundWarning = true
+		}
+		if strings.Contains(l, "all CI checks passed") {
+			t.Fatalf("expected mergeable lookup error to block clean exit, got logs: %v", logs)
+		}
+	}
+	if !foundWarning {
+		t.Fatalf("expected mergeable lookup warning, got logs: %v", logs)
 	}
 }
 

@@ -221,11 +221,16 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 
 		// Check mergeable state
 		mergeConflict := false
+		mergeabilityKnown := false
 		mergeState, mergeErr := s.getMergeableState(sctx, prNumber)
 		if mergeErr != nil {
 			sctx.Log(fmt.Sprintf("warning: could not check mergeable state: %v", mergeErr))
-		} else if isMergeConflict(mergeState) {
-			mergeConflict = true
+		} else {
+			mergeConflict = isMergeConflict(mergeState)
+			mergeabilityKnown = isResolvedMergeableState(mergeState)
+			if !mergeabilityKnown {
+				sctx.Log(fmt.Sprintf("mergeable state still pending: %s", mergeState))
+			}
 		}
 
 		// Check CI status - wait for all checks to complete before fixing
@@ -295,7 +300,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 				}
 			} else {
 				s.lastFixedChecks = ""
-				if !pending {
+				if !pending && mergeabilityKnown {
 					if len(checks) == 0 && elapsed < s.gracePeriod() {
 						// CI checks may not be registered yet, keep polling
 						sctx.Log("no CI checks reported yet, waiting for checks to register...")
@@ -365,6 +370,10 @@ func (s *CIStep) getMergeableState(sctx *pipeline.StepContext, prNumber string) 
 // isMergeConflict returns true if the mergeable state indicates conflicts.
 func isMergeConflict(state string) bool {
 	return state == "CONFLICTING"
+}
+
+func isResolvedMergeableState(state string) bool {
+	return state == "MERGEABLE" || state == "CONFLICTING"
 }
 
 // getCIChecks fetches CI check results for a PR.
