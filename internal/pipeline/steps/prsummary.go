@@ -395,16 +395,7 @@ func shouldOmitPipelineStep(sr *db.StepResult) bool {
 		return false
 	}
 
-	if sr.StepName != types.StepPR && sr.StepName != types.StepCI {
-		return false
-	}
-
-	switch sr.Status {
-	case types.StepStatusPending, types.StepStatusRunning, types.StepStatusAwaitingApproval, types.StepStatusFixing, types.StepStatusFixReview:
-		return true
-	default:
-		return false
-	}
+	return sr.StepName == types.StepPR || sr.StepName == types.StepCI
 }
 
 func countFindingsBySeverity(findings *types.Findings) string {

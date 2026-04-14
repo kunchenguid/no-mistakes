@@ -247,12 +247,14 @@ func TestBuildPipelineSummary_IncludesPushPRCI(t *testing.T) {
 	steps := []*db.StepResult{
 		{ID: "s1", StepName: types.StepReview, Status: types.StepStatusCompleted},
 		{ID: "s2", StepName: types.StepPush, Status: types.StepStatusCompleted},
-		{ID: "s3", StepName: types.StepPR, Status: types.StepStatusRunning},
-		{ID: "s4", StepName: types.StepCI, Status: types.StepStatusPending},
+		{ID: "s3", StepName: types.StepPR, Status: types.StepStatusCompleted},
+		{ID: "s4", StepName: types.StepCI, Status: types.StepStatusCompleted},
 	}
 	rounds := map[string][]*db.StepRound{
 		"s1": {{Round: 1, Trigger: "initial", DurationMS: 500}},
 		"s2": {{Round: 1, Trigger: "initial", DurationMS: 100}},
+		"s3": {{Round: 1, Trigger: "initial", DurationMS: 200}},
+		"s4": {{Round: 1, Trigger: "initial", DurationMS: 300}},
 	}
 	md, _ := BuildPipelineSummary(steps, rounds)
 
