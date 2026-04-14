@@ -3599,6 +3599,24 @@ func TestStepCmd_DoesNotFallbackToHostPathWhenCustomPathOmitsBinary(t *testing.T
 	}
 }
 
+func TestStepCmd_DoesNotFallbackToHostPathWhenCustomPathIsEmpty(t *testing.T) {
+	t.Parallel()
+
+	sctx := &pipeline.StepContext{
+		Ctx:     context.Background(),
+		WorkDir: t.TempDir(),
+		Env:     []string{"PATH="},
+	}
+
+	cmd := stepCmd(sctx, "git", "--version")
+	if !strings.Contains(cmd.Path, string(filepath.Separator)) {
+		t.Fatalf("expected explicit empty PATH to keep lookup out of host PATH, got %q", cmd.Path)
+	}
+	if err := cmd.Run(); err == nil {
+		t.Fatal("expected git lookup to fail when custom PATH is empty")
+	}
+}
+
 func TestStepCmd_OverridesPathWithoutDuplicateEntries(t *testing.T) {
 	t.Parallel()
 

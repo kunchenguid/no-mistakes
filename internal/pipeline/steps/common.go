@@ -177,13 +177,14 @@ func missingFromCustomPath(env []string, name string) string {
 	if !ok {
 		return ""
 	}
+	missing := filepath.Join(".", executableCandidates(name, env)[0])
 	for _, dir := range filepath.SplitList(customPath) {
 		if strings.TrimSpace(dir) == "" {
 			continue
 		}
 		return filepath.Join(dir, executableCandidates(name, env)[0])
 	}
-	return name
+	return missing
 }
 
 func copyDirContents(srcDir, dstDir string) error {
@@ -246,17 +247,22 @@ func copyFile(srcPath, dstPath string, perm os.FileMode) error {
 // so that tests can inject fake binaries without modifying the process environment.
 func stepCmd(sctx *pipeline.StepContext, name string, args ...string) *exec.Cmd {
 	resolved := name
+	missingFromPath := false
 	if len(sctx.Env) > 0 && !strings.Contains(name, string(filepath.Separator)) {
 		if candidate := findInCustomPath(sctx.Env, name); candidate != "" {
 			resolved = candidate
 		} else if _, ok := envValue(sctx.Env, "PATH"); ok {
 			resolved = missingFromCustomPath(sctx.Env, name)
+			missingFromPath = true
 		}
 	}
 	cmd := exec.CommandContext(sctx.Ctx, resolved, args...)
 	cmd.Dir = sctx.WorkDir
 	if len(sctx.Env) > 0 {
 		cmd.Env = mergeEnv(sctx.Env)
+	}
+	if missingFromPath {
+		cmd.Err = &exec.Error{Name: name, Err: exec.ErrNotFound}
 	}
 	return cmd
 }
