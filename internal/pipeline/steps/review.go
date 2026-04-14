@@ -1,7 +1,6 @@
 package steps
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -11,36 +10,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
-
-// userCommitMessages returns commit messages for user-made commits (not pipeline
-// commits) between base and head. Pipeline commits have a "no-mistakes(" prefix.
-func userCommitMessages(ctx context.Context, workDir, base, head string) string {
-	// Follow the branch's first-parent history and skip merge commits so this only
-	// reflects subjects authored on the branch itself.
-	out, err := git.Run(ctx, workDir, "log", "--first-parent", "--no-merges", "--format=%s", base+".."+head)
-	if err != nil || strings.TrimSpace(out) == "" {
-		return ""
-	}
-	var userMessages []string
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		line = sanitizePromptText(line)
-		if line == "" {
-			continue
-		}
-		if strings.HasPrefix(line, "no-mistakes(") {
-			continue
-		}
-		encoded, err := json.Marshal(line)
-		if err != nil {
-			continue
-		}
-		userMessages = append(userMessages, "- "+string(encoded))
-	}
-	if len(userMessages) == 0 {
-		return ""
-	}
-	return strings.Join(userMessages, "\n")
-}
 
 // ReviewStep reviews the diff for bugs, security issues, and doc gaps.
 type ReviewStep struct{}
@@ -166,16 +135,6 @@ Previous review findings to address:
 
 	dismissedSection := dismissedFindingsPromptSection(sctx.DismissedFindings)
 
-	// Gather user commit messages to convey author intent.
-	userCommits := userCommitMessages(ctx, sctx.WorkDir, baseSHA, sctx.Run.HeadSHA)
-	userCommitsSection := ""
-	if userCommits != "" {
-		userCommitsSection = fmt.Sprintf(`
-
-User commit messages (these express the author's primary intent - treat them as ground truth for what the change is trying to do):
-%s`, userCommits)
-	}
-
 	prompt := fmt.Sprintf(
 		`Review the code changes and return structured findings with a risk assessment.
 
@@ -185,7 +144,7 @@ Context:
 - target commit: %s
 - review scope: %s
 - default branch: %s
-- ignore patterns: %s%s
+- ignore patterns: %s
 
 Task:
 - Read the relevant history and diff yourself.
@@ -202,9 +161,9 @@ Rules:
 - Do NOT report styling, formatting, linting, compilation, or type-checking issues.
 - If the change is clean, return an empty findings array.
 - For each finding, set the action field to one of:
+  - "ask-user": the finding is about functional requirements or product behavior. Even if it seems obviously wrong, we should ask the user for review. Examples: "this feature seems unnecessary", "this hardcoded value should be configurable", "this deletion looks wrong". When in doubt, default to "ask-user".
+  - "auto-fix": the finding is a non-funcitonal, non user-visible issue (correctness, error handling, security, performance, mechanical code quality) that can be safely fixed without any discussion about the author's intent.
   - "no-op": the finding is informational and does not require any action (e.g. noting a pattern, acknowledging a tradeoff).
-  - "auto-fix": the finding is an objective issue (correctness, error handling, security, performance, mechanical code quality) that can be safely fixed without changing the author's intent.
-  - "ask-user": the finding questions or challenges the author's deliberate intent, or the correct resolution is ambiguous. Examples: "this feature seems unnecessary", "this hardcoded value should be configurable", "this deletion looks wrong". When in doubt, default to "ask-user".
 
 Risk assessment (after listing all findings):
 - Set risk_level to "low" if the change is well-bounded, mostly cosmetic, or straightforward with little ambiguity.
@@ -217,7 +176,6 @@ Risk assessment (after listing all findings):
 		reviewScope,
 		sctx.Repo.DefaultBranch,
 		ignorePatterns,
-		userCommitsSection,
 		dismissedSection,
 	)
 
