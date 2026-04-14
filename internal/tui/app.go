@@ -1115,7 +1115,7 @@ func (m *Model) applyEvent(event ipc.Event) {
 			}
 
 			if text != "" {
-				lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
+				lines := strings.Split(strings.TrimSuffix(text, "\n"), "\n")
 				m.logs = append(m.logs, lines...)
 			}
 			if m.logPartial != "" {

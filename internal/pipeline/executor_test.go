@@ -1569,13 +1569,65 @@ func TestExecutor_LogCallback(t *testing.T) {
 	defer mu.Unlock()
 	found := false
 	for _, msg := range logMessages {
-		if msg == "hello from review" {
+		if strings.TrimSpace(msg) == "hello from review" {
 			found = true
 			break
 		}
 	}
 	if !found {
 		t.Errorf("expected log message 'hello from review' in events, got: %v", logMessages)
+	}
+}
+
+func TestExecutor_LogVsLogChunk(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	var chunks []string
+	var mu sync.Mutex
+
+	step := &adaptiveCallStep{
+		name: types.StepReview,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			// Streaming chunk without trailing newline (simulates agent SSE delta).
+			sctx.LogChunk("streaming partial")
+			// Discrete message after unterminated stream - should get leading \n.
+			sctx.Log("after stream")
+			// Consecutive discrete message - no leading \n needed.
+			sctx.Log("second discrete")
+			// Raw streaming chunk should pass through unchanged.
+			sctx.LogChunk("raw chunk")
+			return &StepOutcome{ExitCode: 0}, nil
+		},
+	}
+
+	onEvent := func(e ipc.Event) {
+		if e.Type == ipc.EventLogChunk && e.Content != nil {
+			mu.Lock()
+			chunks = append(chunks, *e.Content)
+			mu.Unlock()
+		}
+	}
+
+	exec := NewExecutor(database, p, nil, nil, []Step{step}, onEvent)
+	exec.Execute(context.Background(), run, repo, workDir)
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	want := []string{
+		"streaming partial",   // raw chunk, no newline
+		"\nafter stream\n\n",  // leading \n flushes partial, trailing \n\n separates
+		"second discrete\n\n", // no leading \n (previous Log ended with \n)
+		"raw chunk",           // raw chunk, unchanged
+	}
+	if len(chunks) != len(want) {
+		t.Fatalf("expected %d chunks, got %d: %q", len(want), len(chunks), chunks)
+	}
+	for i, w := range want {
+		if chunks[i] != w {
+			t.Errorf("chunks[%d] = %q, want %q", i, chunks[i], w)
+		}
 	}
 }
 

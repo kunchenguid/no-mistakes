@@ -73,7 +73,7 @@ Previous review findings to address:
 			Prompt:     fixPrompt,
 			CWD:        sctx.WorkDir,
 			JSONSchema: commitSummarySchema,
-			OnChunk:    sctx.Log,
+			OnChunk:    sctx.LogChunk,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("agent fix: %w", err)
@@ -183,7 +183,7 @@ Risk assessment (after listing all findings):
 		Prompt:     prompt,
 		CWD:        sctx.WorkDir,
 		JSONSchema: reviewFindingsSchema,
-		OnChunk:    sctx.Log,
+		OnChunk:    sctx.LogChunk,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("agent review: %w", err)

@@ -230,7 +230,7 @@ Diff stat:
 		Prompt:     prompt,
 		CWD:        sctx.WorkDir,
 		JSONSchema: prContentSchema,
-		OnChunk:    sctx.Log,
+		OnChunk:    sctx.LogChunk,
 	})
 	if err != nil {
 		slog.Warn("agent failed for PR content, using fallback", "error", err)

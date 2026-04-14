@@ -18,7 +18,8 @@ type StepContext struct {
 	Agent             agent.Agent
 	Config            *config.Config
 	DB                *db.DB
-	Log               func(string) // streaming log callback (user-visible + file)
+	Log               func(string) // discrete log line (newline-terminated, user-visible + file)
+	LogChunk          func(string) // raw streaming chunk (user-visible + file)
 	LogFile           func(string) // file-only log callback (not shown to user)
 	Fixing            bool         // true when re-executing after a "fix" action
 	PreviousFindings  string       // JSON findings from the previous execution (set during fix loop)

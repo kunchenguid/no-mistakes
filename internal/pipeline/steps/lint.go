@@ -51,7 +51,7 @@ Previous lint findings to address:
 			Prompt:     fixPrompt,
 			CWD:        sctx.WorkDir,
 			JSONSchema: commitSummarySchema,
-			OnChunk:    sctx.Log,
+			OnChunk:    sctx.LogChunk,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("agent fix lint: %w", err)
@@ -93,7 +93,7 @@ Rules:
 			),
 			CWD:        sctx.WorkDir,
 			JSONSchema: findingsSchema,
-			OnChunk:    sctx.Log,
+			OnChunk:    sctx.LogChunk,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("agent lint: %w", err)

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -166,7 +167,10 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	}
 	defer logFile.Close()
 
-	// Build step context with log callback that emits events and writes to file
+	// Build step context with log callback that emits events and writes to file.
+	// lastChunkNewline tracks whether the most recent chunk ended with \n,
+	// so Log knows whether it needs a leading \n to flush a streaming partial.
+	lastChunkNewline := true
 	sctx := &StepContext{
 		Ctx:     ctx,
 		Run:     run,
@@ -176,8 +180,23 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		Config:  e.config,
 		DB:      e.db,
 		Log: func(text string) {
+			if text != "" {
+				prefix := ""
+				if !lastChunkNewline {
+					prefix = "\n"
+				}
+				text = prefix + strings.TrimRight(text, "\n") + "\n\n"
+				lastChunkNewline = true
+			}
 			e.emitLogChunk(run, repo, stepName, text)
-			fmt.Fprintln(logFile, text)
+			fmt.Fprint(logFile, text)
+		},
+		LogChunk: func(text string) {
+			if text != "" {
+				lastChunkNewline = strings.HasSuffix(text, "\n")
+			}
+			e.emitLogChunk(run, repo, stepName, text)
+			fmt.Fprint(logFile, text)
 		},
 		LogFile: func(text string) {
 			fmt.Fprintln(logFile, text)
