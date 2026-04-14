@@ -116,7 +116,7 @@ Creates or updates a pull request.
 - Checks for an existing PR on the branch
 - If one exists, updates it. If not, creates a new one.
 - PR title: agent-generated in conventional commit format (`type(scope): description`)
-- PR body includes: a summary section, risk assessment from the review step, a deterministic testing section, and a pipeline section with per-step round details
+- PR body includes: an agent-authored `## Summary` plus regenerated `## Risk Assessment`, `## Testing`, and `## Pipeline` sections from recorded step results and rounds
 
 Stores the PR URL in the database and streams it to the TUI.
 
