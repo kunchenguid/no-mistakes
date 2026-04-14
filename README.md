@@ -237,7 +237,7 @@ auto_fix:
 
 - Repo `agent` overrides global `agent`.
 - `commands` and `ignore_patterns` are repo-only.
-- Missing global config defaults to `agent: claude`, `ci_timeout: 4h`, `log_level: info`.
+- Missing global config defaults to `agent: auto` (probing `claude`, `codex`, `opencode`, then `rovodev`), `ci_timeout: 4h`, `log_level: info`.
 - `ci_timeout` replaces `babysit_timeout`, and `auto_fix.ci` replaces `auto_fix.babysit`; legacy keys are still accepted for existing configs.
 - `auto_fix` can be set globally or per repo. All steps default to `3`.
 - `agent_path_override` changes which binary path is launched for a given agent.
