@@ -272,7 +272,7 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	cfg := config.Merge(globalCfg, repoCfg)
 
 	// Resolve "auto" agent to whichever binary is available.
-	if err := cfg.ResolveAgent(exec.LookPath); err != nil {
+	if err := cfg.ResolveAgent(ctx, exec.LookPath); err != nil {
 		m.db.UpdateRunError(run.ID, err.Error())
 		return "", err
 	}

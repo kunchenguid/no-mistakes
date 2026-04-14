@@ -130,8 +130,8 @@ var agentProbeOrder = []types.AgentName{
 	types.AgentRovoDev,
 }
 
-var probeRovoDevSupport = func(bin string) (bool, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+var probeRovoDevSupport = func(ctx context.Context, bin string) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, bin, "rovodev", "--help")
@@ -162,7 +162,7 @@ var probeRovoDevSupport = func(bin string) (bool, error) {
 // ResolveAgent resolves AgentAuto to a concrete agent by probing which binaries
 // are available on the system. If agent is already set to a specific value, this
 // is a no-op. The lookPath function should behave like exec.LookPath.
-func (c *Config) ResolveAgent(lookPath func(string) (string, error)) error {
+func (c *Config) ResolveAgent(ctx context.Context, lookPath func(string) (string, error)) error {
 	if c.Agent != types.AgentAuto {
 		return nil
 	}
@@ -181,7 +181,7 @@ func (c *Config) ResolveAgent(lookPath func(string) (string, error)) error {
 		resolvedBin, err := lookPath(bin)
 		if err == nil {
 			if name == types.AgentRovoDev {
-				ok, probeErr := probeRovoDevSupport(resolvedBin)
+				ok, probeErr := probeRovoDevSupport(ctx, resolvedBin)
 				if probeErr != nil {
 					return probeErr
 				}
