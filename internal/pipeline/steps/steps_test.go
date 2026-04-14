@@ -4048,6 +4048,40 @@ func TestCIStep_PendingChecksUseAdaptivePollIntervals(t *testing.T) {
 	}
 }
 
+func TestCIStep_UsesStepEnvForCLIStartupChecks(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	hiddenPath := t.TempDir()
+	t.Setenv("PATH", hiddenPath)
+
+	env := fakeCIGH(t, "MERGED", "[]")
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	step := &CIStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatal("expected merged PR to exit cleanly")
+	}
+	for _, logLine := range logs {
+		if strings.Contains(logLine, "gh CLI is not installed") || strings.Contains(logLine, "gh CLI is not authenticated") {
+			t.Fatalf("expected startup checks to use StepContext env, got logs: %v", logs)
+		}
+	}
+	if len(logs) == 0 || !strings.Contains(logs[len(logs)-1], "PR has been merged") {
+		t.Fatalf("expected CI monitoring to reach PR state check, got logs: %v", logs)
+	}
+}
+
 func TestCIStep_NoPRURL(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

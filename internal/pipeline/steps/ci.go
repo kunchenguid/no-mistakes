@@ -143,11 +143,11 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		sctx.Log(fmt.Sprintf("skipping CI: provider %s is not supported yet", provider))
 		return &pipeline.StepOutcome{}, nil
 	}
-	if !scm.CLIAvailable(provider) {
+	if !stepCLIAvailable(sctx, provider) {
 		sctx.Log("skipping CI: gh CLI is not installed")
 		return &pipeline.StepOutcome{}, nil
 	}
-	if !scm.AuthConfigured(ctx, provider, sctx.WorkDir) {
+	if !stepAuthConfigured(sctx, provider) {
 		sctx.Log("skipping CI: gh CLI is not authenticated")
 		return &pipeline.StepOutcome{}, nil
 	}
