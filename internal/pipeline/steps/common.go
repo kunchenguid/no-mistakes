@@ -207,6 +207,39 @@ func stepGitRun(sctx *pipeline.StepContext, args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
+func stepGitHeadSHA(sctx *pipeline.StepContext) (string, error) {
+	return stepGitRun(sctx, "rev-parse", "HEAD")
+}
+
+func stepGitLsRemote(sctx *pipeline.StepContext, remote, ref string) (string, error) {
+	out, err := stepGitRun(sctx, "ls-remote", remote, ref)
+	if err != nil {
+		return "", err
+	}
+	if out == "" {
+		return "", nil
+	}
+	parts := strings.Fields(out)
+	if len(parts) < 1 {
+		return "", nil
+	}
+	return parts[0], nil
+}
+
+func stepGitPush(sctx *pipeline.StepContext, remote, ref, expectedSHA string, forceWithLease bool) error {
+	args := []string{"push", remote}
+	if forceWithLease {
+		if expectedSHA != "" {
+			args = append(args, fmt.Sprintf("--force-with-lease=%s:%s", ref, expectedSHA))
+		} else {
+			args = append(args, "--force-with-lease")
+		}
+	}
+	args = append(args, "HEAD:"+ref)
+	_, err := stepGitRun(sctx, args...)
+	return err
+}
+
 // stepCLIAvailable checks whether the provider CLI binary is available,
 // respecting any custom PATH in sctx.Env.
 func stepCLIAvailable(sctx *pipeline.StepContext, provider scm.Provider) bool {

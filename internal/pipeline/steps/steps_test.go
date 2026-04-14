@@ -50,6 +50,8 @@ func handleFakeCLI(mode string) {
 		fakeGHHandler(args)
 	case "glab":
 		fakeGlabHandler(args)
+	case "git-passthrough":
+		fakeGitPassthroughHandler(args)
 	case "git-status-error":
 		fakeGitStatusErrorHandler(args)
 	case "ci-gh":
@@ -91,6 +93,15 @@ func fakeGitStatusErrorHandler(args []string) {
 		fmt.Fprintln(os.Stderr, "status failed")
 		os.Exit(1)
 	}
+	fakeGitForward(args, realGit)
+}
+
+func fakeGitPassthroughHandler(args []string) {
+	realGit := os.Getenv("FAKE_CLI_REAL_GIT")
+	fakeGitForward(args, realGit)
+}
+
+func fakeGitForward(args []string, realGit string) {
 	if realGit == "" {
 		fmt.Fprintln(os.Stderr, "missing FAKE_CLI_REAL_GIT")
 		os.Exit(1)
@@ -4378,6 +4389,82 @@ func TestCIStep_CommitAndPush_StatusError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "status failed") {
 		t.Fatalf("expected status stderr in error, got %v", err)
+	}
+}
+
+func TestCIStep_CommitAndPush_UsesStepEnvForAllGitCommands(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "feature")
+	os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("ci fix"), 0o644)
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	binDir := fakeCLIBinDir(t)
+	linkTestBinary(t, binDir, "git")
+	env := fakeCLIEnv(binDir, map[string]string{
+		"FAKE_CLI_MODE":     "git-passthrough",
+		"FAKE_CLI_REAL_GIT": realGit,
+	})
+	t.Setenv("PATH", t.TempDir())
+	realGitCmd := func(dir string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command(realGit, args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=test",
+			"GIT_AUTHOR_EMAIL=test@test.com",
+			"GIT_COMMITTER_NAME=test",
+			"GIT_COMMITTER_EMAIL=test@test.com",
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "refs/heads/feature"
+
+	step := &CIStep{}
+	pushed, err := step.commitAndPush(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pushed {
+		t.Fatal("expected commitAndPush to report changes were pushed")
+	}
+
+	upstreamSHA := realGitCmd(upstream, "rev-parse", "refs/heads/feature")
+	if upstreamSHA == headSHA {
+		t.Fatal("expected upstream to receive CI fix commit")
+	}
+	if sctx.Run.HeadSHA != upstreamSHA {
+		t.Fatalf("Run.HeadSHA = %s, want %s", sctx.Run.HeadSHA, upstreamSHA)
 	}
 }
 

@@ -439,13 +439,13 @@ func (s *CIStep) commitAndPush(sctx *pipeline.StepContext) (bool, error) {
 		return false, nil
 	}
 
-	if _, err := git.Run(ctx, sctx.WorkDir, "add", "-A"); err != nil {
+	if _, err := stepGitRun(sctx, "add", "-A"); err != nil {
 		return false, fmt.Errorf("stage CI changes: %w", err)
 	}
-	if _, err := git.Run(ctx, sctx.WorkDir, "commit", "-m", "no-mistakes: apply CI fixes"); err != nil {
+	if _, err := stepGitRun(sctx, "commit", "-m", "no-mistakes: apply CI fixes"); err != nil {
 		return false, fmt.Errorf("commit: %w", err)
 	}
-	headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
+	headSHA, err := stepGitHeadSHA(sctx)
 	if err != nil {
 		return false, fmt.Errorf("resolve head after commit: %w", err)
 	}
@@ -453,18 +453,18 @@ func (s *CIStep) commitAndPush(sctx *pipeline.StepContext) (bool, error) {
 
 	ref := normalizedBranchRef(sctx.Run.Branch)
 
-	upstreamSHA, lsErr := git.LsRemote(ctx, sctx.WorkDir, sctx.Repo.UpstreamURL, ref)
+	upstreamSHA, lsErr := stepGitLsRemote(sctx, sctx.Repo.UpstreamURL, ref)
 	if lsErr != nil {
 		slog.Warn("ls-remote failed, pushing without force-with-lease", "ref", ref, "error", lsErr)
 	}
-	if err := git.Push(ctx, sctx.WorkDir, sctx.Repo.UpstreamURL, ref, upstreamSHA, upstreamSHA != ""); err != nil {
+	if err := stepGitPush(sctx, sctx.Repo.UpstreamURL, ref, upstreamSHA, upstreamSHA != ""); err != nil {
 		if lsErr != nil {
 			return false, fmt.Errorf("push (ls-remote failed: %v): %w", lsErr, err)
 		}
 		return false, fmt.Errorf("push: %w", err)
 	}
 
-	if _, err := git.Run(ctx, sctx.WorkDir, "update-ref", ref, newHeadSHA); err != nil {
+	if _, err := stepGitRun(sctx, "update-ref", ref, newHeadSHA); err != nil {
 		return false, fmt.Errorf("update local branch ref: %w", err)
 	}
 	sctx.Run.HeadSHA = newHeadSHA
