@@ -33,7 +33,7 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	// A force push means the user explicitly rewrote the branch - the pushed
 	// commit is authoritative and must not be overwritten by prior pipeline
 	// state on the remote.
-	forcePush := isForcePush(ctx, sctx.WorkDir, sctx.Run.BaseSHA)
+	forcePush := isForcePush(ctx, sctx.WorkDir, branch, sctx.Run.BaseSHA)
 
 	sctx.Log("fetching latest upstream state...")
 	if err := git.FetchRemoteBranch(ctx, sctx.WorkDir, "origin", defaultBranch); err != nil {
@@ -115,7 +115,7 @@ func forcePushRebaseTargets(defaultBranch string) []string {
 // isForcePush returns true when the current push is non-fast-forward relative
 // to the previous push (baseSHA). This indicates the user explicitly rewrote
 // history and the pipeline should treat the new HEAD as authoritative.
-func isForcePush(ctx context.Context, workDir, baseSHA string) bool {
+func isForcePush(ctx context.Context, workDir, branch, baseSHA string) bool {
 	if git.IsZeroSHA(baseSHA) || baseSHA == "" {
 		return false
 	}
@@ -124,7 +124,21 @@ func isForcePush(ctx context.Context, workDir, baseSHA string) bool {
 		return false
 	}
 	var exitErr *exec.ExitError
-	return errors.As(err, &exitErr) && exitErr.ExitCode() == 1
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		return false
+	}
+	if branch != "" {
+		remoteRef := "origin/" + branch
+		if _, err := git.Run(ctx, workDir, "rev-parse", "--verify", remoteRef); err == nil {
+			_, err := git.Run(ctx, workDir, "merge-base", "--is-ancestor", remoteRef, "HEAD")
+			if err == nil {
+				return false
+			}
+			var exitErr *exec.ExitError
+			return errors.As(err, &exitErr) && exitErr.ExitCode() == 1
+		}
+	}
+	return true
 }
 
 // tryRebase attempts a rebase onto targetRef. Returns conflicted files when the

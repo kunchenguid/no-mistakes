@@ -1123,8 +1123,47 @@ func TestIsForcePush_IgnoresMergeBaseLookupErrors(t *testing.T) {
 	gitCmd(t, dir, "add", "-A")
 	gitCmd(t, dir, "commit", "-m", "base commit")
 
-	if isForcePush(context.Background(), dir, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef") {
+	if isForcePush(context.Background(), dir, "", "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef") {
 		t.Fatal("expected missing base SHA lookup error to not be treated as force push")
+	}
+}
+
+func TestIsForcePush_RerunAfterNormalRebaseIsNotForcePush(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+
+	os.WriteFile(filepath.Join(dir, "app.txt"), []byte("base\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "base commit")
+	gitCmd(t, dir, "push", "origin", "main")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("v1\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature v1")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	os.WriteFile(filepath.Join(dir, "app.txt"), []byte("base\nmain update\n"), 0o644)
+	gitCmd(t, dir, "checkout", "main")
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "main update")
+	gitCmd(t, dir, "push", "origin", "main")
+
+	gitCmd(t, dir, "checkout", "feature")
+	gitCmd(t, dir, "rebase", "origin/main")
+	gitCmd(t, dir, "push", "origin", "feature", "--force-with-lease")
+
+	if isForcePush(context.Background(), dir, "feature", baseSHA) {
+		t.Fatal("expected rerun after normal rebase to not be treated as force push")
 	}
 }
 
