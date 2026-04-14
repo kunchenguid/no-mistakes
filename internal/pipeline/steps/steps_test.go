@@ -3442,6 +3442,43 @@ func TestCIStep_CommitAndPush_NoChanges(t *testing.T) {
 	}
 }
 
+func TestCIStep_CommitAndPush_StatusError(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	binDir := fakeCLIBinDir(t)
+	gitPath := filepath.Join(binDir, "git")
+	script := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = \"status\" ] && [ \"$2\" = \"--porcelain\" ]; then\n  printf 'status failed\\n' >&2\n  exit 1\nfi\nexec %q \"$@\"\n", realGit)
+	if err := os.WriteFile(gitPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	prependPATH(t, binDir)
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = "dummy"
+	sctx.Run.Branch = "refs/heads/feature"
+
+	step := &CIStep{}
+	pushed, err := step.commitAndPush(sctx)
+	if err == nil {
+		t.Fatal("expected status error")
+	}
+	if pushed {
+		t.Error("expected commitAndPush to report no push on status error")
+	}
+	if !strings.Contains(err.Error(), "git status --porcelain") {
+		t.Fatalf("expected status command in error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "status failed") {
+		t.Fatalf("expected status stderr in error, got %v", err)
+	}
+}
+
 func TestCIStep_CommitAndPush_NoChanges_ReconcilesStaleDatabaseHeadSHA(t *testing.T) {
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")

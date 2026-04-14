@@ -428,7 +428,10 @@ func (s *CIStep) commitAndPush(sctx *pipeline.StepContext) (bool, error) {
 	ctx := sctx.Ctx
 	newHeadSHA := ""
 
-	status, _ := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
+	status, err := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
+	if err != nil {
+		return false, fmt.Errorf("check CI changes: %w", err)
+	}
 	if strings.TrimSpace(status) == "" {
 		sctx.Log("no changes to commit")
 		headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
