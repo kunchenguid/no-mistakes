@@ -16,8 +16,10 @@ Each step can produce findings, request approval, or trigger auto-fix. Steps tha
 Fetches the latest upstream and rebases your branch onto it.
 
 **Behavior:**
-- Fetches `origin/<default_branch>` and `origin/<branch>` into the worktree
+- Fetches `origin/<default_branch>` into the worktree, and also fetches `origin/<branch>` for non-default branches unless the push rewrote branch history
 - If the branch is not the default branch, tries rebasing onto `origin/<branch>` first, then `origin/<default_branch>`
+- If the push rewrote branch history, skips the `origin/<branch>` rebase target so prior remote autofix commits do not get reintroduced
+- If the push rewrote the default branch and `origin/<default_branch>` advanced after that rewrite, pauses for manual approval before updating the branch
 - Skips targets that don't exist or are already ancestors
 - If a fast-forward is possible, does a hard-reset instead of a rebase
 - If the diff against the default branch is empty after rebase, completes rebase and skips all remaining pipeline steps
