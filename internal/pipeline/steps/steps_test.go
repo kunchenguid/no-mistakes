@@ -4395,6 +4395,38 @@ func TestUserCommitMessages_ExcludesMergedMainCommits(t *testing.T) {
 	}
 }
 
+func TestUserCommitMessages_UsesProvidedHeadBound(t *testing.T) {
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+
+	os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "base")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feat: original branch work")
+	targetHeadSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	os.WriteFile(filepath.Join(dir, "later.txt"), []byte("later"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feat: later branch commit")
+
+	result := userCommitMessages(context.Background(), dir, baseSHA, targetHeadSHA)
+
+	if !strings.Contains(result, `- "feat: original branch work"`) {
+		t.Fatalf("expected target head commit included, got %q", result)
+	}
+	if strings.Contains(result, "feat: later branch commit") {
+		t.Fatalf("expected later branch commit excluded, got %q", result)
+	}
+}
+
 func TestSanitizedPreviousFindingsForPrompt_PreservesMultilineDescriptions(t *testing.T) {
 	raw, err := types.MarshalFindingsJSON(types.Findings{
 		Items: []types.Finding{{
