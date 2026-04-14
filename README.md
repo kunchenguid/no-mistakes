@@ -169,7 +169,8 @@ Config is optional and split across two files:
 # ~/.no-mistakes/config.yaml
 
 # Default agent for all repos.
-agent: claude # claude | codex | rovodev | opencode
+# "auto" picks the first available agent on PATH: claude, codex, opencode, then rovodev.
+agent: auto # auto | claude | codex | rovodev | opencode
 
 # Optional binary path overrides.
 agent_path_override:

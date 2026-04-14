@@ -37,7 +37,7 @@ Override the default agent for this repo.
 | | |
 |---|---|
 | Type | `string` |
-| Values | `claude`, `codex`, `rovodev`, `opencode` |
+| Values | `auto`, `claude`, `codex`, `rovodev`, `opencode` |
 | Default | Inherits from global config |
 
 ### commands.test
