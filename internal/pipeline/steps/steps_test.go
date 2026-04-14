@@ -3513,6 +3513,34 @@ func TestStepCLIAvailable_ResolvesExecutableSuffixFromCustomPath(t *testing.T) {
 	}
 }
 
+func TestStepCLIAvailable_IgnoresNonExecutableFromCustomPath(t *testing.T) {
+	t.Parallel()
+
+	binDir := t.TempDir()
+	shimPath := filepath.Join(binDir, "gh")
+	if err := os.WriteFile(shimPath, []byte("#!/bin/sh\nexit 0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sctx := &pipeline.StepContext{
+		Ctx:     context.Background(),
+		WorkDir: t.TempDir(),
+		Env:     []string{"PATH=" + binDir},
+	}
+
+	if stepCLIAvailable(sctx, scm.ProviderGitHub) {
+		t.Fatal("expected non-executable gh to be unavailable from custom PATH")
+	}
+
+	cmd := stepCmd(sctx, "gh", "auth", "status")
+	if cmd.Path != shimPath {
+		t.Fatalf("expected missing custom-path lookup to stay inside %q, got %q", binDir, cmd.Path)
+	}
+	if err := cmd.Run(); err == nil {
+		t.Fatal("expected non-executable gh to fail to run")
+	}
+}
+
 func TestStepCmd_DoesNotFallbackToHostPathWhenCustomPathOmitsBinary(t *testing.T) {
 	t.Parallel()
 

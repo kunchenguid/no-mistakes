@@ -150,7 +150,7 @@ func findInCustomPath(env []string, name string) string {
 	for _, dir := range filepath.SplitList(customPath) {
 		for _, candidateName := range executableCandidates(name, env) {
 			candidate := filepath.Join(dir, candidateName)
-			if fi, err := os.Stat(candidate); err == nil && !fi.IsDir() {
+			if fi, err := os.Stat(candidate); err == nil && !fi.IsDir() && fi.Mode().Perm()&0o111 != 0 {
 				return candidate
 			}
 		}
