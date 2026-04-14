@@ -150,12 +150,22 @@ func findInCustomPath(env []string, name string) string {
 	for _, dir := range filepath.SplitList(customPath) {
 		for _, candidateName := range executableCandidates(name, env) {
 			candidate := filepath.Join(dir, candidateName)
-			if fi, err := os.Stat(candidate); err == nil && !fi.IsDir() && fi.Mode().Perm()&0o111 != 0 {
+			if fi, err := os.Stat(candidate); err == nil && pathCandidateUsable(runtime.GOOS, candidate, fi) {
 				return candidate
 			}
 		}
 	}
 	return ""
+}
+
+func pathCandidateUsable(goos, path string, fi os.FileInfo) bool {
+	if fi.IsDir() {
+		return false
+	}
+	if goos == "windows" {
+		return filepath.Ext(path) != ""
+	}
+	return fi.Mode().Perm()&0o111 != 0
 }
 
 func missingFromCustomPath(env []string, name string) string {

@@ -3541,6 +3541,24 @@ func TestStepCLIAvailable_IgnoresNonExecutableFromCustomPath(t *testing.T) {
 	}
 }
 
+func TestPathCandidateUsable_WindowsAcceptsExeWithoutExecBits(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "gh.exe")
+	if err := os.WriteFile(path, []byte("stub"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !pathCandidateUsable("windows", path, info) {
+		t.Fatal("expected .exe without exec bits to be usable on windows")
+	}
+}
+
 func TestStepCmd_DoesNotFallbackToHostPathWhenCustomPathOmitsBinary(t *testing.T) {
 	t.Parallel()
 
