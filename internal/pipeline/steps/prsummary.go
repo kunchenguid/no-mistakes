@@ -145,6 +145,9 @@ func buildStepEntry(sr *db.StepResult, rounds []*db.StepRound) (statusLine, deta
 	}
 
 	if !hadAnyFindings && !hasRoundParseFailure {
+		if len(rounds) == 0 {
+			return buildDetail(fmt.Sprintf("⚠️ **%s** - findings unavailable", name))
+		}
 		return buildDetail(fmt.Sprintf("✅ **%s** - passed", name))
 	}
 

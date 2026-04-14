@@ -483,6 +483,24 @@ func TestBuildPipelineSummary_EmptySteps(t *testing.T) {
 	}
 }
 
+func TestBuildTestingSummary_DoesNotClaimPassedWithoutRounds(t *testing.T) {
+	steps := []*db.StepResult{
+		{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted},
+	}
+
+	md := BuildTestingSummary(steps, map[string][]*db.StepRound{})
+
+	if md == "" {
+		t.Fatal("expected testing summary for completed test step")
+	}
+	if strings.Contains(md, "passed") {
+		t.Errorf("did not expect passed status without recorded rounds, got:\n%s", md)
+	}
+	if !strings.Contains(md, "findings unavailable") {
+		t.Errorf("expected unavailable status without recorded rounds, got:\n%s", md)
+	}
+}
+
 func TestBuildPipelineSummary_RebaseWithConflicts(t *testing.T) {
 	findings := `{"findings":[{"id":"rebase-1","severity":"warning","file":"pkg/foo.go","description":"merge conflict resolved by agent"}],"summary":"1 conflict resolved"}`
 	steps := []*db.StepResult{
