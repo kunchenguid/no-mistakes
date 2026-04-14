@@ -1046,8 +1046,8 @@ func TestRebaseStep_ForcePushSkipsOriginBranch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(content) != "user-change\n" {
-		t.Fatalf("feature.txt = %q, want %q; force push was not respected", string(content), "user-change\n")
+	if got := strings.ReplaceAll(string(content), "\r\n", "\n"); got != "user-change\n" {
+		t.Fatalf("feature.txt = %q, want %q; force push was not respected", got, "user-change\n")
 	}
 
 	// Should be rebased onto origin/main
@@ -1106,8 +1106,8 @@ func TestRebaseStep_ForcePushOnDefaultBranchSkipsRemoteSync(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(content) != "base\nuser-change\n" {
-		t.Fatalf("app.txt = %q, want %q; default branch force push was not respected", string(content), "base\nuser-change\n")
+	if got := strings.ReplaceAll(string(content), "\r\n", "\n"); got != "base\nuser-change\n" {
+		t.Fatalf("app.txt = %q, want %q; default branch force push was not respected", got, "base\nuser-change\n")
 	}
 
 	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != userCommitSHA {
