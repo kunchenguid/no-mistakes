@@ -359,8 +359,16 @@ func stripGeneratedSections(body string) string {
 }
 
 func isGeneratedSectionHeading(line string) bool {
-	switch strings.TrimSpace(line) {
-	case "## Risk Assessment", "## Testing", "## Pipeline":
+	if !strings.HasPrefix(strings.TrimSpace(line), "##") {
+		return false
+	}
+
+	heading := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "##"))
+	heading = strings.TrimRight(heading, ":.!? ")
+	heading = strings.ToLower(heading)
+
+	switch heading {
+	case "risk assessment", "testing", "tests", "pipeline":
 		return true
 	default:
 		return false
