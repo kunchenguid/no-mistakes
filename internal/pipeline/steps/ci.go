@@ -227,10 +227,14 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			if sctx.Fixing && !manualFixAttempted {
 				manualFixAttempted = true
 				sctx.Log(fmt.Sprintf("CI failures detected: %s - manual fix requested...", strings.Join(failing, ", ")))
-				if err := s.autoFixCI(sctx, prNumber, failing); err != nil {
+				pushed, err := s.autoFixCI(sctx, prNumber, failing)
+				if err != nil {
 					sctx.Log(fmt.Sprintf("warning: CI manual fix failed: %v", err))
-				} else {
+				} else if pushed {
 					s.lastFixedChecks = fixKey
+				} else {
+					sctx.Log("CI fix produced no changes, returning for manual intervention...")
+					return ciFailureOutcome(failing, "CI fix produced no changes - failures require manual intervention"), nil
 				}
 			} else if sctx.Fixing && fixKey == s.lastFixedChecks {
 				sctx.Log("fix already attempted for these failures, waiting for CI re-run...")
@@ -245,10 +249,15 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			} else {
 				s.ciFixAttempts++
 				sctx.Log(fmt.Sprintf("CI failures detected: %s - auto-fixing (attempt %d/%d)...", strings.Join(failing, ", "), s.ciFixAttempts, ciFixLimit))
-				if err := s.autoFixCI(sctx, prNumber, failing); err != nil {
+				pushed, err := s.autoFixCI(sctx, prNumber, failing)
+				if err != nil {
 					sctx.Log(fmt.Sprintf("warning: CI auto-fix failed: %v", err))
-				} else {
+				} else if pushed {
 					s.lastFixedChecks = fixKey
+				} else {
+					// No changes produced - don't set lastFixedChecks so next
+					// poll treats this as a new failure and retries if attempts remain.
+					sctx.Log("CI fix produced no changes, will retry if attempts remain...")
 				}
 			}
 		} else {
@@ -329,7 +338,9 @@ func (s *CIStep) getCIChecks(ctx context.Context, workDir, prNumber string) ([]c
 }
 
 // autoFixCI runs the agent to fix CI failures, then commits and pushes.
-func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, prNumber string, failingNames []string) error {
+// Returns (true, nil) when changes were committed and pushed, (false, nil)
+// when the agent produced no changes, or (false, err) on failure.
+func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, prNumber string, failingNames []string) (bool, error) {
 	ctx := sctx.Ctx
 	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
 
@@ -378,6 +389,9 @@ Context:
 - failing checks: %s
 
 		Rules:
+		- You MUST produce file changes that fix the failing checks. Do not conclude that nothing needs to change.
+		- If a test fails only on a specific OS (e.g. Windows CRLF, path separators), fix the test to be cross-platform.
+		- If a test is flaky, make it deterministic.
 		- Make the minimal change needed.
 		- Do not refactor beyond what is needed.
 		- Verify the fix by running the most relevant commands locally before finishing.`,
@@ -401,14 +415,16 @@ CI logs:
 		OnChunk: sctx.Log,
 	})
 	if err != nil {
-		return fmt.Errorf("agent CI fix: %w", err)
+		return false, fmt.Errorf("agent CI fix: %w", err)
 	}
 
 	return s.commitAndPush(sctx)
 }
 
 // commitAndPush commits any uncommitted changes and force-pushes to upstream.
-func (s *CIStep) commitAndPush(sctx *pipeline.StepContext) error {
+// Returns (true, nil) when changes were pushed, (false, nil) when there was
+// nothing to commit, or (false, err) on failure.
+func (s *CIStep) commitAndPush(sctx *pipeline.StepContext) (bool, error) {
 	ctx := sctx.Ctx
 	newHeadSHA := ""
 
@@ -419,21 +435,21 @@ func (s *CIStep) commitAndPush(sctx *pipeline.StepContext) error {
 		if err == nil && headSHA != sctx.Run.HeadSHA {
 			sctx.Run.HeadSHA = headSHA
 			if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, headSHA); err != nil {
-				return err
+				return false, err
 			}
 		}
-		return nil
+		return false, nil
 	}
 
 	if _, err := git.Run(ctx, sctx.WorkDir, "add", "-A"); err != nil {
-		return fmt.Errorf("stage CI changes: %w", err)
+		return false, fmt.Errorf("stage CI changes: %w", err)
 	}
 	if _, err := git.Run(ctx, sctx.WorkDir, "commit", "-m", "no-mistakes: apply CI fixes"); err != nil {
-		return fmt.Errorf("commit: %w", err)
+		return false, fmt.Errorf("commit: %w", err)
 	}
 	headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
 	if err != nil {
-		return fmt.Errorf("resolve head after commit: %w", err)
+		return false, fmt.Errorf("resolve head after commit: %w", err)
 	}
 	newHeadSHA = headSHA
 
@@ -445,19 +461,19 @@ func (s *CIStep) commitAndPush(sctx *pipeline.StepContext) error {
 	}
 	if err := git.Push(ctx, sctx.WorkDir, sctx.Repo.UpstreamURL, ref, upstreamSHA, upstreamSHA != ""); err != nil {
 		if lsErr != nil {
-			return fmt.Errorf("push (ls-remote failed: %v): %w", lsErr, err)
+			return false, fmt.Errorf("push (ls-remote failed: %v): %w", lsErr, err)
 		}
-		return fmt.Errorf("push: %w", err)
+		return false, fmt.Errorf("push: %w", err)
 	}
 
 	if _, err := git.Run(ctx, sctx.WorkDir, "update-ref", ref, newHeadSHA); err != nil {
-		return fmt.Errorf("update local branch ref: %w", err)
+		return false, fmt.Errorf("update local branch ref: %w", err)
 	}
 	sctx.Run.HeadSHA = newHeadSHA
 	if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, newHeadSHA); err != nil {
-		return err
+		return false, err
 	}
 
 	sctx.Log("committed and pushed fixes")
-	return nil
+	return true, nil
 }
