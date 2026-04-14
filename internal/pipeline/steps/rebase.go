@@ -142,7 +142,10 @@ func isForcePush(ctx context.Context, workDir, branch, baseSHA string) bool {
 				return false
 			}
 			var exitErr *exec.ExitError
-			return errors.As(err, &exitErr) && exitErr.ExitCode() == 1
+			if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+				return true
+			}
+			return true
 		}
 	}
 	return true

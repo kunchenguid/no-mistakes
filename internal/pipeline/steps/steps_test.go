@@ -1272,6 +1272,47 @@ func TestIsForcePush_RerunWithoutLocalRemoteRefIsNotForcePush(t *testing.T) {
 	}
 }
 
+func TestIsForcePush_MissingRemoteObjectTreatsAsForcePush(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	originRepo := t.TempDir()
+	gitCmd(t, originRepo, "init")
+	gitCmd(t, originRepo, "config", "user.name", "test")
+	gitCmd(t, originRepo, "config", "user.email", "test@test.com")
+	gitCmd(t, originRepo, "checkout", "-b", "main")
+	gitCmd(t, originRepo, "remote", "add", "origin", upstream)
+
+	os.WriteFile(filepath.Join(originRepo, "app.txt"), []byte("base\n"), 0o644)
+	gitCmd(t, originRepo, "add", "-A")
+	gitCmd(t, originRepo, "commit", "-m", "base commit")
+	gitCmd(t, originRepo, "push", "origin", "main")
+
+	gitCmd(t, originRepo, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(originRepo, "feature.txt"), []byte("remote feature\n"), 0o644)
+	gitCmd(t, originRepo, "add", "-A")
+	gitCmd(t, originRepo, "commit", "-m", "feature commit")
+	gitCmd(t, originRepo, "push", "origin", "feature")
+
+	worktree := t.TempDir()
+	gitCmd(t, worktree, "init")
+	gitCmd(t, worktree, "config", "user.name", "test")
+	gitCmd(t, worktree, "config", "user.email", "test@test.com")
+	gitCmd(t, worktree, "remote", "add", "origin", upstream)
+	gitCmd(t, worktree, "fetch", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main")
+	gitCmd(t, worktree, "checkout", "--detach", "origin/main")
+
+	os.WriteFile(filepath.Join(worktree, "local.txt"), []byte("local only\n"), 0o644)
+	gitCmd(t, worktree, "add", "-A")
+	gitCmd(t, worktree, "commit", "-m", "local commit")
+	baseSHA := gitCmd(t, worktree, "rev-parse", "HEAD")
+	gitCmd(t, worktree, "checkout", "--detach", "origin/main")
+
+	if !isForcePush(context.Background(), worktree, "feature", baseSHA) {
+		t.Fatal("expected missing remote tip object to be treated as force push")
+	}
+}
+
 // --- Review step tests ---
 
 func TestReviewStep_EmptyDiff(t *testing.T) {
