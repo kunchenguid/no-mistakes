@@ -36,8 +36,7 @@ AI code review of your diff.
 **Behavior:**
 - Diffs the base commit against head
 - Filters out files matching `ignore_patterns` from the repo config
-- Includes user-authored commit subjects between base and head as intent context for the agent
-- Sends the filtered diff to the agent with a structured output schema
+- Sends the filtered diff to the agent with structured review instructions and a structured output schema
 - Agent returns findings with severity (`error`, `warning`, `info`), file location, description, and an `action` (`no-op`, `auto-fix`, `ask-user`)
 - Also returns a `risk_level` (`low`, `medium`, `high`) and `risk_rationale`
 
