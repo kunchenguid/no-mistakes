@@ -128,12 +128,16 @@ func mergeEnv(extra []string) []string {
 }
 
 func executableCandidates(name string, env []string) []string {
+	return executableCandidatesForOS(runtime.GOOS, name, env)
+}
+
+func executableCandidatesForOS(goos, name string, env []string) []string {
 	candidates := []string{name}
-	if runtime.GOOS != "windows" || filepath.Ext(name) != "" {
+	if goos != "windows" || filepath.Ext(name) != "" {
 		return candidates
 	}
 	pathExt := ".COM;.EXE;.BAT;.CMD"
-	if customPathExt, ok := envValue(env, "PATHEXT"); ok && strings.TrimSpace(customPathExt) != "" {
+	if customPathExt, ok := envValueForOS(env, "PATHEXT", goos); ok {
 		pathExt = customPathExt
 	}
 	for _, ext := range strings.Split(pathExt, ";") {
@@ -146,12 +150,18 @@ func executableCandidates(name string, env []string) []string {
 	return candidates
 }
 
-func findInCustomPath(env []string, name string) string {
+func findInCustomPath(workDir string, env []string, name string) string {
 	customPath, ok := envValue(env, "PATH")
 	if !ok {
 		return ""
 	}
 	for _, dir := range filepath.SplitList(customPath) {
+		if dir == "" {
+			continue
+		}
+		if !filepath.IsAbs(dir) {
+			dir = filepath.Join(workDir, dir)
+		}
 		for _, candidateName := range executableCandidates(name, env) {
 			candidate := filepath.Join(dir, candidateName)
 			if fi, err := os.Stat(candidate); err == nil && pathCandidateUsable(runtime.GOOS, candidate, fi) {
@@ -249,7 +259,7 @@ func stepCmd(sctx *pipeline.StepContext, name string, args ...string) *exec.Cmd 
 	resolved := name
 	missingFromPath := false
 	if len(sctx.Env) > 0 && !strings.Contains(name, string(filepath.Separator)) {
-		if candidate := findInCustomPath(sctx.Env, name); candidate != "" {
+		if candidate := findInCustomPath(sctx.WorkDir, sctx.Env, name); candidate != "" {
 			resolved = candidate
 		} else if _, ok := envValue(sctx.Env, "PATH"); ok {
 			resolved = missingFromCustomPath(sctx.Env, name)
@@ -325,7 +335,7 @@ func stepCLIAvailable(sctx *pipeline.StepContext, provider scm.Provider) bool {
 	if len(sctx.Env) == 0 {
 		return scm.CLIAvailable(provider)
 	}
-	if candidate := findInCustomPath(sctx.Env, name); candidate != "" {
+	if candidate := findInCustomPath(sctx.WorkDir, sctx.Env, name); candidate != "" {
 		return true
 	}
 	_, ok := envValue(sctx.Env, "PATH")

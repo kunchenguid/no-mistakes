@@ -3579,6 +3579,58 @@ func TestEnvValueForOS_WindowsMatchesEmptyMixedCaseOverride(t *testing.T) {
 	}
 }
 
+func TestExecutableCandidatesForOS_WindowsHonorsExplicitEmptyPATHEXT(t *testing.T) {
+	t.Parallel()
+
+	candidates := executableCandidatesForOS("windows", "gh", []string{"PATHEXT="})
+	if len(candidates) != 1 {
+		t.Fatalf("expected only bare command name, got %v", candidates)
+	}
+	if candidates[0] != "gh" {
+		t.Fatalf("expected bare command candidate, got %q", candidates[0])
+	}
+}
+
+func TestStepCmd_ResolvesRelativeCustomPathFromWorkDir(t *testing.T) {
+	t.Parallel()
+
+	workDir := t.TempDir()
+	binDir := filepath.Join(workDir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	logFile := filepath.Join(t.TempDir(), "gh.log")
+	linkTestBinary(t, binDir, "gh")
+
+	sctx := &pipeline.StepContext{
+		Ctx:     context.Background(),
+		WorkDir: workDir,
+		Env: []string{
+			"PATH=bin",
+			"FAKE_CLI_MODE=gh",
+			"FAKE_CLI_LOG=" + logFile,
+		},
+	}
+
+	if !stepCLIAvailable(sctx, scm.ProviderGitHub) {
+		t.Fatal("expected gh to be available from workdir-relative custom PATH")
+	}
+
+	cmd := stepCmd(sctx, "gh", "auth", "status")
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("run fake gh from relative custom PATH: %v", err)
+	}
+
+	logData, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(logData), "auth status") {
+		t.Fatalf("expected fake gh invocation, got %q", string(logData))
+	}
+}
+
 func TestStepCmd_DoesNotFallbackToHostPathWhenCustomPathOmitsBinary(t *testing.T) {
 	t.Parallel()
 
