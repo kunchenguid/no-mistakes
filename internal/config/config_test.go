@@ -864,6 +864,34 @@ func TestResolveAgent_AutoSkipsRovoDevWithoutSubcommand(t *testing.T) {
 	}
 }
 
+func TestResolveAgent_AutoReturnsRovoDevProbeExitError(t *testing.T) {
+	cfg := &Config{Agent: types.AgentAuto}
+	script := filepath.Join(t.TempDir(), "acli")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatalf("write probe script: %v", err)
+	}
+
+	err := cfg.ResolveAgent(func(bin string) (string, error) {
+		switch bin {
+		case "claude", "codex", "opencode":
+			return "", &exec.Error{Name: bin, Err: exec.ErrNotFound}
+		case "acli":
+			return script, nil
+		default:
+			t.Fatalf("unexpected probe for %q", bin)
+			return "", nil
+		}
+	})
+
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected exit error, got %v", err)
+	}
+	if cfg.Agent != types.AgentAuto {
+		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentAuto)
+	}
+}
+
 func TestResolveAgent_AutoReturnsOverrideProbeError(t *testing.T) {
 	cfg := &Config{
 		Agent:             types.AgentAuto,

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -136,21 +135,26 @@ var probeRovoDevSupport = func(bin string) (bool, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, bin, "rovodev", "--help")
-	cmd.Stdout = io.Discard
-	cmd.Stderr = io.Discard
-	err := cmd.Run()
+	output, err := cmd.CombinedOutput()
 	if err == nil {
 		return true, nil
 	}
 	if errors.Is(err, exec.ErrNotFound) || errors.Is(err, fs.ErrNotExist) {
 		return false, nil
 	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		return false, nil
-	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return false, fmt.Errorf("probe rovodev support via %q timed out", bin)
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		text := strings.ToLower(string(output))
+		if strings.Contains(text, "unknown command") ||
+			strings.Contains(text, "unknown subcommand") ||
+			strings.Contains(text, "unrecognized command") ||
+			strings.Contains(text, "no help topic for") {
+			return false, nil
+		}
+		return false, fmt.Errorf("probe rovodev support via %q: %w", bin, err)
 	}
 	return false, fmt.Errorf("probe rovodev support via %q: %w", bin, err)
 }
