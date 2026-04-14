@@ -20,6 +20,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -329,13 +330,38 @@ func setupGitRepo(t *testing.T) (string, string, string) {
 	ensureGitRepoTemplate(t)
 
 	dir := t.TempDir()
-	// Copy template contents into the new dir
-	cmd := exec.Command("cp", "-a", gitRepoTemplate.dir+"/.", dir)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("cp template repo: %v: %s", err, out)
+	if err := copyDirContents(gitRepoTemplate.dir, dir); err != nil {
+		t.Fatalf("copy template repo: %v", err)
 	}
 
 	return dir, gitRepoTemplate.baseSHA, gitRepoTemplate.headSHA
+}
+
+func TestCopyDirContents_PreservesGitRepo(t *testing.T) {
+	t.Parallel()
+	ensureGitRepoTemplate(t)
+
+	dir := t.TempDir()
+	if err := copyDirContents(gitRepoTemplate.dir, dir); err != nil {
+		t.Fatal(err)
+	}
+
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	if headSHA != gitRepoTemplate.headSHA {
+		t.Fatalf("HEAD = %q, want %q", headSHA, gitRepoTemplate.headSHA)
+	}
+
+	status := gitCmd(t, dir, "status", "--short")
+	if status != "" {
+		t.Fatalf("expected clean copied repo, got %q", status)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
+		t.Fatalf("stat .git: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "feature.txt")); err != nil {
+		t.Fatalf("stat feature.txt: %v", err)
+	}
 }
 
 // newTestContext creates a StepContext for testing with optional config overrides.
@@ -3440,6 +3466,40 @@ func fakeGH(t *testing.T, prViewURL string) (env []string, logFile string) {
 		"FAKE_CLI_PR_URL": prViewURL,
 	})
 	return env, logFile
+}
+
+func TestStepCLIAvailable_ResolvesExecutableSuffixFromCustomPath(t *testing.T) {
+	t.Parallel()
+
+	binDir := fakeCLIBinDir(t)
+	logFile := filepath.Join(t.TempDir(), "gh.log")
+	linkTestBinary(t, binDir, "gh")
+
+	sctx := &pipeline.StepContext{
+		Ctx:     context.Background(),
+		WorkDir: t.TempDir(),
+		Env: fakeCLIEnv(binDir, map[string]string{
+			"FAKE_CLI_MODE": "gh",
+			"FAKE_CLI_LOG":  logFile,
+		}),
+	}
+
+	if !stepCLIAvailable(sctx, scm.ProviderGitHub) {
+		t.Fatal("expected gh to be available from custom PATH")
+	}
+
+	cmd := stepCmd(sctx, "gh", "auth", "status")
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("run fake gh: %v", err)
+	}
+
+	logData, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(logData), "auth status") {
+		t.Fatalf("expected fake gh invocation, got %q", string(logData))
+	}
 }
 
 func TestPRStep_UpdatesExistingPR(t *testing.T) {

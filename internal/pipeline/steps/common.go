@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -70,24 +71,117 @@ func hasBlockingFindings(items []Finding) bool {
 	return false
 }
 
+func envValue(env []string, key string) (string, bool) {
+	prefix := key + "="
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			return strings.TrimPrefix(entry, prefix), true
+		}
+		if runtime.GOOS == "windows" && len(entry) > len(prefix) && strings.EqualFold(entry[:len(prefix)], prefix) {
+			return entry[len(prefix):], true
+		}
+	}
+	return "", false
+}
+
+func executableCandidates(name string, env []string) []string {
+	candidates := []string{name}
+	if runtime.GOOS != "windows" || filepath.Ext(name) != "" {
+		return candidates
+	}
+	pathExt := ".COM;.EXE;.BAT;.CMD"
+	if customPathExt, ok := envValue(env, "PATHEXT"); ok && strings.TrimSpace(customPathExt) != "" {
+		pathExt = customPathExt
+	}
+	for _, ext := range strings.Split(pathExt, ";") {
+		ext = strings.TrimSpace(ext)
+		if ext == "" {
+			continue
+		}
+		candidates = append(candidates, name+ext)
+	}
+	return candidates
+}
+
+func findInCustomPath(env []string, name string) string {
+	customPath, ok := envValue(env, "PATH")
+	if !ok {
+		return ""
+	}
+	for _, dir := range filepath.SplitList(customPath) {
+		for _, candidateName := range executableCandidates(name, env) {
+			candidate := filepath.Join(dir, candidateName)
+			if fi, err := os.Stat(candidate); err == nil && !fi.IsDir() {
+				return candidate
+			}
+		}
+	}
+	return ""
+}
+
+func copyDirContents(srcDir, dstDir string) error {
+	entries, err := os.ReadDir(srcDir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		srcPath := filepath.Join(srcDir, entry.Name())
+		dstPath := filepath.Join(dstDir, entry.Name())
+		if err := copyPath(srcPath, dstPath); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func copyPath(srcPath, dstPath string) error {
+	info, err := os.Lstat(srcPath)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		target, err := os.Readlink(srcPath)
+		if err != nil {
+			return err
+		}
+		return os.Symlink(target, dstPath)
+	}
+	if info.IsDir() {
+		if err := os.MkdirAll(dstPath, info.Mode().Perm()); err != nil {
+			return err
+		}
+		return copyDirContents(srcPath, dstPath)
+	}
+	return copyFile(srcPath, dstPath, info.Mode().Perm())
+}
+
+func copyFile(srcPath, dstPath string, perm os.FileMode) error {
+	src, err := os.Open(srcPath)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+
+	dst, err := os.OpenFile(dstPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, perm)
+	if err != nil {
+		return err
+	}
+	defer dst.Close()
+
+	if _, err := io.Copy(dst, src); err != nil {
+		return err
+	}
+	return nil
+}
+
 // stepCmd creates an exec.Cmd that inherits the StepContext's extra Env, if any.
 // When sctx.Env overrides PATH, the binary is resolved from the overridden PATH
 // so that tests can inject fake binaries without modifying the process environment.
 func stepCmd(sctx *pipeline.StepContext, name string, args ...string) *exec.Cmd {
 	resolved := name
 	if len(sctx.Env) > 0 && !strings.Contains(name, string(filepath.Separator)) {
-		for _, e := range sctx.Env {
-			if strings.HasPrefix(e, "PATH=") {
-				customPath := strings.TrimPrefix(e, "PATH=")
-				for _, dir := range filepath.SplitList(customPath) {
-					candidate := filepath.Join(dir, name)
-					if fi, err := os.Stat(candidate); err == nil && !fi.IsDir() {
-						resolved = candidate
-						break
-					}
-				}
-				break
-			}
+		if candidate := findInCustomPath(sctx.Env, name); candidate != "" {
+			resolved = candidate
 		}
 	}
 	cmd := exec.CommandContext(sctx.Ctx, resolved, args...)
@@ -123,18 +217,12 @@ func stepCLIAvailable(sctx *pipeline.StepContext, provider scm.Provider) bool {
 	if len(sctx.Env) == 0 {
 		return scm.CLIAvailable(provider)
 	}
-	// Search custom PATH from sctx.Env
-	for _, e := range sctx.Env {
-		if strings.HasPrefix(e, "PATH=") {
-			customPath := strings.TrimPrefix(e, "PATH=")
-			for _, dir := range filepath.SplitList(customPath) {
-				candidate := filepath.Join(dir, name)
-				if fi, err := os.Stat(candidate); err == nil && !fi.IsDir() {
-					return true
-				}
-			}
-			return false
-		}
+	if candidate := findInCustomPath(sctx.Env, name); candidate != "" {
+		return true
+	}
+	_, ok := envValue(sctx.Env, "PATH")
+	if ok {
+		return false
 	}
 	return scm.CLIAvailable(provider)
 }
