@@ -3,7 +3,7 @@ title: Agents
 description: Supported AI agents and how they integrate.
 ---
 
-`no-mistakes` is agent-agnostic. It supports four agents and uses a common interface for all of them. The agent handles code review, test/lint detection (when no explicit command is configured), and auto-fixing.
+`no-mistakes` is agent-agnostic. It supports four agents and uses a common interface for all of them. The default `agent: auto` setting picks the first supported agent available on your system. The agent handles code review, test/lint detection (when no explicit command is configured), and auto-fixing.
 
 ## Supported agents
 
@@ -20,7 +20,7 @@ description: Supported AI agents and how they integrate.
 
 ```yaml
 # ~/.no-mistakes/config.yaml
-agent: claude
+agent: auto
 ```
 
 ### Per-repo override
@@ -34,7 +34,14 @@ Repo config takes precedence over global config.
 
 ## Binary resolution
 
-By default, `no-mistakes` looks for the agent binary on your `PATH`:
+By default, `no-mistakes` resolves `agent: auto` by checking for supported agents on your `PATH` in this order:
+
+1. `claude`
+2. `codex`
+3. `opencode`
+4. `acli` with `rovodev` support
+
+The default binary names are:
 
 | Agent | Default binary name |
 |---|---|

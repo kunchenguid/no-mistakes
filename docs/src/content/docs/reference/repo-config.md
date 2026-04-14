@@ -37,8 +37,10 @@ Override the default agent for this repo.
 | | |
 |---|---|
 | Type | `string` |
-| Values | `claude`, `codex`, `rovodev`, `opencode` |
+| Values | `auto`, `claude`, `codex`, `rovodev`, `opencode` |
 | Default | Inherits from global config |
+
+`auto` resolves to the first supported agent found on `PATH` in this order: `claude`, `codex`, `opencode`, then `acli` with `rovodev` support.
 
 ### commands.test
 

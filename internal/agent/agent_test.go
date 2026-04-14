@@ -45,6 +45,12 @@ func TestNew_Unknown(t *testing.T) {
 	if !strings.Contains(err.Error(), "unknown agent") {
 		t.Errorf("expected 'unknown agent' in error, got: %v", err)
 	}
+	if !strings.Contains(err.Error(), string(types.AgentAuto)) {
+		t.Errorf("expected auto agent option in error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "config.yaml") {
+		t.Errorf("expected config guidance in error, got: %v", err)
+	}
 }
 
 func TestTokenUsage_Total(t *testing.T) {

@@ -1,12 +1,15 @@
 package config
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -85,8 +88,9 @@ type Config struct {
 const defaultConfigYAML = `# no-mistakes global configuration
 
 # Agent to use for code generation
-# Options: claude, codex, rovodev, opencode
-agent: claude
+# Options: auto, claude, codex, rovodev, opencode
+# "auto" detects the first available agent on your system
+agent: auto
 
 # Maximum time to monitor CI before timing out
 ci_timeout: "4h"
@@ -116,6 +120,82 @@ var defaultBinary = map[types.AgentName]string{
 	types.AgentCodex:    "codex",
 	types.AgentRovoDev:  "acli",
 	types.AgentOpenCode: "opencode",
+}
+
+// agentProbeOrder is the priority order for auto-detecting agents.
+var agentProbeOrder = []types.AgentName{
+	types.AgentClaude,
+	types.AgentCodex,
+	types.AgentOpenCode,
+	types.AgentRovoDev,
+}
+
+var probeRovoDevSupport = func(ctx context.Context, bin string) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, bin, "rovodev", "--help")
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, exec.ErrNotFound) || errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return false, fmt.Errorf("probe rovodev support via %q timed out", bin)
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		text := strings.ToLower(string(output))
+		if strings.Contains(text, "unknown command") ||
+			strings.Contains(text, "unknown subcommand") ||
+			strings.Contains(text, "unrecognized command") ||
+			strings.Contains(text, "no help topic for") {
+			return false, nil
+		}
+		return false, fmt.Errorf("probe rovodev support via %q: %w", bin, err)
+	}
+	return false, fmt.Errorf("probe rovodev support via %q: %w", bin, err)
+}
+
+// ResolveAgent resolves AgentAuto to a concrete agent by probing which binaries
+// are available on the system. If agent is already set to a specific value, this
+// is a no-op. The lookPath function should behave like exec.LookPath.
+func (c *Config) ResolveAgent(ctx context.Context, lookPath func(string) (string, error)) error {
+	if c.Agent != types.AgentAuto {
+		return nil
+	}
+	probed := make([]string, 0, len(agentProbeOrder))
+	for _, name := range agentProbeOrder {
+		bin := string(name)
+		if b, ok := defaultBinary[name]; ok {
+			bin = b
+		}
+		if c.AgentPathOverride != nil {
+			if p, ok := c.AgentPathOverride[string(name)]; ok {
+				bin = p
+			}
+		}
+		probed = append(probed, bin)
+		resolvedBin, err := lookPath(bin)
+		if err == nil {
+			if name == types.AgentRovoDev {
+				ok, probeErr := probeRovoDevSupport(ctx, resolvedBin)
+				if probeErr != nil {
+					return probeErr
+				}
+				if !ok {
+					continue
+				}
+			}
+			c.Agent = name
+			return nil
+		} else if !errors.Is(err, exec.ErrNotFound) && !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("resolve %s agent from %q: %w", name, bin, err)
+		}
+	}
+	return fmt.Errorf("no supported agent found in PATH (looked for: %s); install one or set 'agent' in ~/.no-mistakes/config.yaml", strings.Join(probed, ", "))
 }
 
 // AgentPath returns the binary path for the configured agent,
@@ -153,7 +233,7 @@ func EnsureDefaultGlobalConfig(path string) {
 // LoadGlobal reads global config from path. Returns defaults if file doesn't exist.
 func LoadGlobal(path string) (*GlobalConfig, error) {
 	cfg := &GlobalConfig{
-		Agent:     types.AgentClaude,
+		Agent:     types.AgentAuto,
 		CITimeout: 4 * time.Hour,
 		LogLevel:  "info",
 	}

@@ -8,7 +8,7 @@ Global configuration lives at `~/.no-mistakes/config.yaml`. Set `NM_HOME` to rel
 ```yaml
 # ~/.no-mistakes/config.yaml
 
-agent: claude
+agent: auto
 
 agent_path_override:
   claude: /Users/you/bin/claude
@@ -38,8 +38,10 @@ Default agent for all repos. Can be overridden per-repo.
 | | |
 |---|---|
 | Type | `string` |
-| Values | `claude`, `codex`, `rovodev`, `opencode` |
-| Default | `claude` |
+| Values | `auto`, `claude`, `codex`, `rovodev`, `opencode` |
+| Default | `auto` |
+
+`auto` resolves to the first supported agent found on `PATH` in this order: `claude`, `codex`, `opencode`, then `acli` with `rovodev` support.
 
 ### agent_path_override
 

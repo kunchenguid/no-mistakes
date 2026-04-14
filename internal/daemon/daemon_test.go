@@ -458,6 +458,13 @@ func startTestDaemonWithSteps(t *testing.T, sf StepFactory) (*paths.Paths, *db.D
 		t.Fatal(err)
 	}
 
+	// Keep daemon tests hermetic now that the default config auto-detects agents.
+	mockClaude := writeMockClaude(t, t.TempDir())
+	configYAML := "agent: claude\nagent_path_override:\n  claude: " + mockClaude + "\n"
+	if err := os.WriteFile(p.ConfigFile(), []byte(configYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
 	d, err := db.Open(p.DB())
 	if err != nil {
 		t.Fatal(err)

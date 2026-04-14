@@ -3,7 +3,7 @@ title: Configuration
 description: Global and per-repo configuration options.
 ---
 
-Configuration is optional. Without any config files, `no-mistakes` defaults to using Claude as the agent with sensible defaults for everything else.
+Configuration is optional. Without any config files, `no-mistakes` defaults to `agent: auto`, which picks the first supported agent available on your system, with sensible defaults for everything else.
 
 Config is split across two files:
 
@@ -20,7 +20,8 @@ Set `NM_HOME` to relocate the global config directory (the global file becomes `
 # ~/.no-mistakes/config.yaml
 
 # Default agent for all repos.
-agent: claude  # claude | codex | rovodev | opencode
+# "auto" picks the first available agent on PATH.
+agent: auto  # auto | claude | codex | rovodev | opencode
 
 # Optional binary path overrides.
 agent_path_override:
@@ -77,6 +78,7 @@ See [Repo Config Reference](/no-mistakes/reference/repo-config/) for the full fi
 ## Precedence
 
 - Repo `agent` overrides global `agent`.
+- Global `agent: auto` resolves by checking `claude`, `codex`, `opencode`, then `acli` for `rovodev` on `PATH`.
 - `auto_fix` from the repo config overlays global auto_fix. Fields not set in the repo config fall through to the global default.
 - `commands` and `ignore_patterns` are repo-only fields.
 - `ci_timeout` and `auto_fix.ci` are the canonical keys; `babysit_timeout` and `auto_fix.babysit` are still accepted as legacy aliases.
