@@ -8,51 +8,32 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-// summarySteps are the steps we include in the pipeline summary.
-// Push, PR, and CI are operational - not interesting for the PR reader.
-var summarySteps = map[types.StepName]bool{
-	types.StepRebase: true,
-	types.StepReview: true,
-	types.StepTest:   true,
-	types.StepLint:   true,
-}
-
 // BuildPipelineSummary produces a deterministic markdown section from step results and rounds.
 func BuildPipelineSummary(steps []*db.StepResult, rounds map[string][]*db.StepRound) (string, string) {
 	if len(steps) == 0 {
 		return "", ""
 	}
 
-	var statusLines []string
 	var detailBlocks []string
 
 	for _, sr := range steps {
-		if !summarySteps[sr.StepName] {
-			continue
-		}
 		stepRounds := rounds[sr.ID]
 		line, detail := buildStepEntry(sr, stepRounds)
-		if line != "" {
-			statusLines = append(statusLines, line)
-		}
-		if detail != "" {
+		if line != "" && detail != "" {
 			detailBlocks = append(detailBlocks, detail)
 		}
 	}
 
-	if len(statusLines) == 0 {
+	if len(detailBlocks) == 0 {
 		return "", ""
 	}
 
 	var b strings.Builder
 	b.WriteString("## Pipeline\n\nUpdates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)\n\n")
-	for _, line := range statusLines {
-		b.WriteString(line)
-		b.WriteString("\n")
-	}
-
-	for _, detail := range detailBlocks {
-		b.WriteString("\n")
+	for i, detail := range detailBlocks {
+		if i > 0 {
+			b.WriteString("\n")
+		}
 		b.WriteString(detail)
 	}
 
@@ -60,11 +41,47 @@ func BuildPipelineSummary(steps []*db.StepResult, rounds map[string][]*db.StepRo
 	return b.String(), riskLine
 }
 
+// BuildTestingSummary extracts a deterministic Testing section from the test step.
+func BuildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRound) string {
+	for _, sr := range steps {
+		if sr.StepName != types.StepTest {
+			continue
+		}
+
+		line, _ := buildStepEntry(sr, rounds[sr.ID])
+		if line == "" {
+			return ""
+		}
+
+		return "## Testing\n\n- " + line
+	}
+
+	return ""
+}
+
 func buildStepEntry(sr *db.StepResult, rounds []*db.StepRound) (statusLine, detailBlock string) {
 	name := stepDisplayName(sr.StepName)
+	buildDetail := func(line string) (string, string) {
+		return line, buildStepDetails(line, sr, rounds)
+	}
+
+	switch sr.Status {
+	case types.StepStatusPending:
+		return buildDetail(fmt.Sprintf("⏳ **%s** - pending", name))
+	case types.StepStatusRunning:
+		return buildDetail(fmt.Sprintf("⏳ **%s** - running", name))
+	case types.StepStatusAwaitingApproval:
+		return buildDetail(fmt.Sprintf("⏸️ **%s** - awaiting approval", name))
+	case types.StepStatusFixing:
+		return buildDetail(fmt.Sprintf("🔄 **%s** - auto-fixing", name))
+	case types.StepStatusFixReview:
+		return buildDetail(fmt.Sprintf("⏸️ **%s** - review fix", name))
+	case types.StepStatusFailed:
+		return buildDetail(fmt.Sprintf("❌ **%s** - failed", name))
+	}
 
 	if sr.Status == types.StepStatusSkipped {
-		return fmt.Sprintf("⏭️ **%s** - skipped", name), ""
+		return buildDetail(fmt.Sprintf("⏭️ **%s** - skipped", name))
 	}
 
 	// Parse the final findings on the step result (last state).
@@ -100,7 +117,6 @@ func buildStepEntry(sr *db.StepResult, rounds []*db.StepRound) (statusLine, deta
 	hasFinalFindings := finalFindings != nil && len(finalFindings.Items) > 0
 	hasAnyRoundFindings := roundsHaveFindings(rounds)
 	hasRoundParseFailure := roundsHaveParseFailure(rounds)
-	hasRoundDetails := roundsNeedDetail(rounds)
 	hadAnyFindings := hadFindings || hasFinalFindings || hasAnyRoundFindings
 	hasUnreadableFinalFindings := sr.FindingsJSON != nil && !finalFindingsParsed
 	wasFixed := hadFindings && len(rounds) > 1 && !hasUnreadableFinalFindings && !hasFinalFindings
@@ -117,42 +133,25 @@ func buildStepEntry(sr *db.StepResult, rounds []*db.StepRound) (statusLine, deta
 
 	// Unreadable final findings - can't make claims about the outcome.
 	if hasUnreadableFinalFindings {
-		detail := ""
-		if hasRoundDetails {
-			detail = buildRoundsDetail(name, rounds)
-		}
-		return fmt.Sprintf("⚠️ **%s** - findings unavailable", name), detail
+		return buildDetail(fmt.Sprintf("⚠️ **%s** - findings unavailable", name))
 	}
 
 	if sr.StepName == types.StepReview && (riskLevel == "medium" || riskLevel == "high") && !hadAnyFindings {
-		detail := ""
-		if hasRoundDetails {
-			detail = buildRoundsDetail(name, rounds)
-		}
-		return fmt.Sprintf("%s **%s** - %s risk", riskEmoji(riskLevel), name, riskLevel), detail
+		return buildDetail(fmt.Sprintf("%s **%s** - %s risk", riskEmoji(riskLevel), name, riskLevel))
 	}
 
 	if !hadAnyFindings && !hasRoundParseFailure {
-		detail := ""
-		if hasRoundDetails {
-			detail = buildRoundsDetail(name, rounds)
-		}
-		return fmt.Sprintf("✅ **%s** - passed", name), detail
+		return buildDetail(fmt.Sprintf("✅ **%s** - passed", name))
 	}
 
 	if hasRoundParseFailure && !hadAnyFindings {
-		detail := ""
-		if hasRoundDetails {
-			detail = buildRoundsDetail(name, rounds)
-		}
-		return fmt.Sprintf("⚠️ **%s** - findings unavailable", name), detail
+		return buildDetail(fmt.Sprintf("⚠️ **%s** - findings unavailable", name))
 	}
 
 	if wasFixed {
 		result := buildFixResultText(rounds)
 		line := fmt.Sprintf("🔧 **%s** - %s", name, result)
-		detail := buildRoundsDetail(name, rounds)
-		return line, detail
+		return buildDetail(line)
 	}
 
 	currentFindings := initialFindings
@@ -163,11 +162,7 @@ func buildStepEntry(sr *db.StepResult, rounds []*db.StepRound) (statusLine, deta
 	// Had findings and the final state still contains them - approved as-is.
 	count := countFindingsBySeverity(currentFindings)
 	line := fmt.Sprintf("⚠️ **%s** - %s", name, count)
-	detail := ""
-	if hasRoundDetails {
-		detail = buildRoundsDetail(name, rounds)
-	}
-	return line, detail
+	return buildDetail(line)
 }
 
 func extractRiskLine(steps []*db.StepResult, rounds map[string][]*db.StepRound) string {
@@ -263,26 +258,6 @@ func roundsHaveParseFailure(rounds []*db.StepRound) bool {
 	return false
 }
 
-func roundsNeedDetail(rounds []*db.StepRound) bool {
-	for _, r := range rounds {
-		if r.FindingsJSON == nil {
-			continue
-		}
-		if _, err := types.ParseFindingsJSON(*r.FindingsJSON); err != nil {
-			return true
-		}
-		f, err := types.ParseFindingsJSON(*r.FindingsJSON)
-		if err != nil {
-			return true
-		}
-		if len(f.Items) > 0 {
-			return true
-		}
-	}
-
-	return false
-}
-
 func buildFixResultText(rounds []*db.StepRound) string {
 	// Count findings in round 1.
 	var initialCount int
@@ -322,13 +297,18 @@ func buildFixResultText(rounds []*db.StepRound) string {
 	return strings.Join(parts, " → ")
 }
 
-func buildRoundsDetail(name string, rounds []*db.StepRound) string {
+func buildStepDetails(summaryLine string, sr *db.StepResult, rounds []*db.StepRound) string {
+	var b strings.Builder
+	b.WriteString("<details>\n")
+	b.WriteString(fmt.Sprintf("<summary>%s</summary>\n\n", summaryLine))
+
 	if len(rounds) == 0 {
-		return ""
+		writeStepStatusDetail(&b, sr)
+		b.WriteString("</details>\n")
+		return b.String()
 	}
 
-	var b strings.Builder
-	b.WriteString(fmt.Sprintf("<details>\n<summary>%s details</summary>\n\n", name))
+	missingRoundFindingsData := sr.FindingsJSON != nil && !roundsHaveFindings(rounds) && !roundsHaveParseFailure(rounds)
 
 	for _, r := range rounds {
 		triggerLabel := ""
@@ -342,6 +322,10 @@ func buildRoundsDetail(name string, rounds []*db.StepRound) string {
 		}
 
 		if r.FindingsJSON == nil {
+			if missingRoundFindingsData {
+				b.WriteString(fmt.Sprintf("**Round %d**%s - findings not recorded\n\n", r.Round, triggerLabel))
+				continue
+			}
 			b.WriteString(fmt.Sprintf("**Round %d**%s - passed ✅\n\n", r.Round, triggerLabel))
 			continue
 		}
@@ -372,6 +356,34 @@ func buildRoundsDetail(name string, rounds []*db.StepRound) string {
 
 	b.WriteString("</details>\n")
 	return b.String()
+}
+
+func writeStepStatusDetail(b *strings.Builder, sr *db.StepResult) {
+	switch sr.Status {
+	case types.StepStatusPending:
+		b.WriteString("Step has not started yet.\n\n")
+	case types.StepStatusRunning:
+		b.WriteString("Step is currently running.\n\n")
+	case types.StepStatusAwaitingApproval:
+		b.WriteString("Waiting for user approval.\n\n")
+	case types.StepStatusFixing:
+		b.WriteString("Agent is currently applying fixes.\n\n")
+	case types.StepStatusFixReview:
+		b.WriteString("Waiting to review the latest fix.\n\n")
+	case types.StepStatusSkipped:
+		b.WriteString("Step was skipped.\n\n")
+	case types.StepStatusFailed:
+		if sr.Error != nil && strings.TrimSpace(*sr.Error) != "" {
+			b.WriteString(strings.TrimSpace(*sr.Error))
+			b.WriteString("\n\n")
+			return
+		}
+		b.WriteString("Step failed.\n\n")
+	case types.StepStatusCompleted:
+		b.WriteString("No round details recorded.\n\n")
+	default:
+		b.WriteString("Status unavailable.\n\n")
+	}
 }
 
 func countFindingsBySeverity(findings *types.Findings) string {
@@ -436,8 +448,16 @@ func stepDisplayName(name types.StepName) string {
 		return "Review"
 	case types.StepTest:
 		return "Test"
+	case types.StepDocument:
+		return "Document"
 	case types.StepLint:
 		return "Lint"
+	case types.StepPush:
+		return "Push"
+	case types.StepPR:
+		return "PR"
+	case types.StepCI:
+		return "CI"
 	default:
 		return string(name)
 	}

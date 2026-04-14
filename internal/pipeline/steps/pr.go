@@ -205,8 +205,8 @@ func (s *PRStep) buildPRContent(sctx *pipeline.StepContext, branch, baseSHA stri
 	commitLog, _ := git.Log(ctx, sctx.WorkDir, baseSHA, sctx.Run.HeadSHA)
 	diffStat, _ := git.Run(ctx, sctx.WorkDir, "diff", "--stat", baseSHA+".."+sctx.Run.HeadSHA)
 
-	// Build the deterministic pipeline section from step rounds.
-	pipelineMD, riskLine := s.buildPipelineSection(sctx)
+	// Build the deterministic sections from step rounds.
+	pipelineMD, riskLine, testingMD := s.buildPipelineSection(sctx)
 
 	// Build pipeline context for the agent prompt so it can reference findings in the summary.
 	pipelineContext := ""
@@ -227,7 +227,7 @@ Context:
 Rules:
 - Cover the full branch delta, not just the latest commit.
 - Title must use conventional commit format: "type(scope): description" or "type: description". Valid types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert. Scope is optional. Do not capitalize the type. Do not use the raw branch name.
-- Body: a "## Summary" section in GitHub-flavored markdown. 1-3 concise bullet points describing what changed and why. Do not include a Testing section - pipeline results are appended separately. The body value must be plain markdown text, never a JSON object or serialized JSON string.
+- Body: a "## Summary" section in GitHub-flavored markdown. 1-3 concise bullet points describing what changed and why. Do not include Risk Assessment, Testing, or Pipeline sections - those are appended separately. The body value must be plain markdown text, never a JSON object or serialized JSON string.
 - Do not invent tests or behavior.
 
 Commit history:
@@ -244,7 +244,7 @@ Diff stat:
 	})
 	if err != nil {
 		slog.Warn("agent failed for PR content, using fallback", "error", err)
-		return fallbackPRContent(branch, commitLog, pipelineMD, riskLine), nil
+		return fallbackPRContent(branch, commitLog, riskLine, testingMD, pipelineMD), nil
 	}
 
 	var content prContent
@@ -258,25 +258,22 @@ Diff stat:
 					slog.Warn("agent PR title is not conventional commit format, prepending chore:", "title", content.Title)
 					content.Title = "chore: " + content.Title
 				}
-				if riskLine != "" {
-					content.Body += "\n\n## Risk Assessment\n\n" + riskLine
-				}
-				content.Body = appendPipelineSection(content.Body, pipelineMD)
+				content.Body = appendGeneratedSections(content.Body, riskLine, testingMD, pipelineMD)
 				return content, nil
 			}
 		}
 	}
 
-	return fallbackPRContent(branch, commitLog, pipelineMD, riskLine), nil
+	return fallbackPRContent(branch, commitLog, riskLine, testingMD, pipelineMD), nil
 }
 
 // buildPipelineSection queries step results and rounds from the DB and
 // produces the deterministic pipeline markdown section.
-func (s *PRStep) buildPipelineSection(sctx *pipeline.StepContext) (string, string) {
+func (s *PRStep) buildPipelineSection(sctx *pipeline.StepContext) (string, string, string) {
 	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
 	if err != nil {
 		slog.Warn("failed to query step results for pipeline summary", "error", err)
-		return "", ""
+		return "", "", ""
 	}
 
 	rounds := make(map[string][]*db.StepRound, len(steps))
@@ -289,7 +286,9 @@ func (s *PRStep) buildPipelineSection(sctx *pipeline.StepContext) (string, strin
 		rounds[sr.ID] = r
 	}
 
-	return BuildPipelineSummary(steps, rounds)
+	pipelineMD, riskLine := BuildPipelineSummary(steps, rounds)
+	testingMD := BuildTestingSummary(steps, rounds)
+	return pipelineMD, riskLine, testingMD
 }
 
 // unwrapNestedPRBody detects when the agent returned the body as a
@@ -309,15 +308,21 @@ func unwrapNestedPRBody(body string) string {
 	return body
 }
 
-// appendPipelineSection appends the pipeline markdown after the agent's body.
-func appendPipelineSection(body, pipelineMD string) string {
-	if pipelineMD == "" {
-		return body
+// appendGeneratedSections appends deterministic sections after the agent's body.
+func appendGeneratedSections(body, riskLine, testingMD, pipelineMD string) string {
+	if riskLine != "" {
+		body += "\n\n## Risk Assessment\n\n" + riskLine
 	}
-	return body + "\n\n" + pipelineMD
+	if testingMD != "" {
+		body += "\n\n" + testingMD
+	}
+	if pipelineMD != "" {
+		body += "\n\n" + pipelineMD
+	}
+	return body
 }
 
-func fallbackPRContent(branch, commitLog, pipelineMD, riskLine string) prContent {
+func fallbackPRContent(branch, commitLog, riskLine, testingMD, pipelineMD string) prContent {
 	title := ""
 	for _, line := range strings.Split(commitLog, "\n") {
 		line = strings.TrimSpace(line)
@@ -341,10 +346,7 @@ func fallbackPRContent(branch, commitLog, pipelineMD, riskLine string) prContent
 	if body == "## Summary\n\n" {
 		body = fmt.Sprintf("## Summary\n\n- %s", title)
 	}
-	if riskLine != "" {
-		body += "\n\n## Risk Assessment\n\n" + riskLine
-	}
-	body = appendPipelineSection(body, pipelineMD)
+	body = appendGeneratedSections(body, riskLine, testingMD, pipelineMD)
 	return prContent{
 		Title: title,
 		Body:  body,
