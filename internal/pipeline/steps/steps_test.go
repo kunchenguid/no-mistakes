@@ -1115,6 +1115,67 @@ func TestRebaseStep_ForcePushOnDefaultBranchSkipsRemoteSync(t *testing.T) {
 	}
 }
 
+func TestRebaseStep_ForcePushOnDefaultBranchStopsWhenRemoteAdvanced(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+
+	os.WriteFile(filepath.Join(dir, "app.txt"), []byte("base\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "base commit")
+	gitCmd(t, dir, "push", "origin", "main")
+
+	os.WriteFile(filepath.Join(dir, "user.txt"), []byte("user-change\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "user commit")
+	userCommitSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "main")
+
+	os.WriteFile(filepath.Join(dir, "autofix.txt"), []byte("autofix\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "no-mistakes(review): autofix commit")
+	autofixSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "main")
+
+	gitCmd(t, dir, "reset", "--hard", userCommitSHA)
+
+	other := t.TempDir()
+	gitCmd(t, other, "clone", upstream, ".")
+	gitCmd(t, other, "config", "user.name", "test")
+	gitCmd(t, other, "config", "user.email", "test@test.com")
+	gitCmd(t, other, "checkout", "main")
+	os.WriteFile(filepath.Join(other, "remote.txt"), []byte("remote update\n"), 0o644)
+	gitCmd(t, other, "add", "-A")
+	gitCmd(t, other, "commit", "-m", "remote update")
+	gitCmd(t, other, "push", "origin", "main")
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, autofixSHA, userCommitSHA, config.Commands{})
+	sctx.Run.Branch = "refs/heads/main"
+	sctx.Repo.UpstreamURL = upstream
+
+	step := &RebaseStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("expected approval when remote default branch advanced after force push")
+	}
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != userCommitSHA {
+		t.Fatalf("HEAD = %s, want %s", got, userCommitSHA)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "remote.txt")); !os.IsNotExist(err) {
+		t.Fatal("expected remote update to remain unapplied")
+	}
+}
+
 func TestRebaseStep_NormalPushSyncsOriginBranch(t *testing.T) {
 	// Verify that a normal (non-force) push still syncs with origin/<branch>.
 	upstream := t.TempDir()
@@ -1321,7 +1382,30 @@ func TestIsForcePush_StaleLocalRemoteRefUsesAuthoritativeRemoteTip(t *testing.T)
 	}
 }
 
-func TestIsForcePush_MissingRemoteObjectTreatsAsForcePush(t *testing.T) {
+func TestIsForcePush_LsRemoteFailureIsNotForcePush(t *testing.T) {
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	gitCmd(t, dir, "remote", "add", "origin", filepath.Join(t.TempDir(), "missing.git"))
+
+	os.WriteFile(filepath.Join(dir, "app.txt"), []byte("base\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "base commit")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	os.WriteFile(filepath.Join(dir, "app.txt"), []byte("rewritten\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "rewritten commit")
+	gitCmd(t, dir, "reset", "--hard", "HEAD~1")
+
+	if isForcePush(context.Background(), dir, "main", baseSHA) {
+		t.Fatal("expected ls-remote failure to not be treated as force push")
+	}
+}
+
+func TestIsForcePush_MissingRemoteObjectIsNotForcePush(t *testing.T) {
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
 
@@ -1357,8 +1441,8 @@ func TestIsForcePush_MissingRemoteObjectTreatsAsForcePush(t *testing.T) {
 	baseSHA := gitCmd(t, worktree, "rev-parse", "HEAD")
 	gitCmd(t, worktree, "checkout", "--detach", "origin/main")
 
-	if !isForcePush(context.Background(), worktree, "feature", baseSHA) {
-		t.Fatal("expected missing remote tip object to be treated as force push")
+	if isForcePush(context.Background(), worktree, "feature", baseSHA) {
+		t.Fatal("expected missing remote tip object to not be treated as force push")
 	}
 }
 

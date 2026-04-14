@@ -44,6 +44,20 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 			sctx.LogFile(fmt.Sprintf("warning: could not fetch origin/%s: %v", branch, err))
 		}
 	}
+	if forcePush && branch == defaultBranch && remoteDefaultBranchAdvanced(ctx, sctx.WorkDir, defaultBranch, sctx.Run.BaseSHA) {
+		findingsJSON, _ := json.Marshal(Findings{
+			Items: []Finding{{
+				Severity:    "warning",
+				File:        filepath.Join("internal", "pipeline", "steps", "rebase.go"),
+				Description: fmt.Sprintf("origin/%s advanced after the force push; manual review required before updating the default branch", defaultBranch),
+			}},
+			Summary: fmt.Sprintf("remote %s advanced during force push", defaultBranch),
+		})
+		return &pipeline.StepOutcome{
+			NeedsApproval: true,
+			Findings:      string(findingsJSON),
+		}, nil
+	}
 
 	targets := rebaseTargets(branch, defaultBranch)
 	if forcePush {
@@ -115,6 +129,17 @@ func forcePushRebaseTargets(branch, defaultBranch string) []string {
 	return []string{"origin/" + defaultBranch}
 }
 
+func remoteDefaultBranchAdvanced(ctx context.Context, workDir, defaultBranch, baseSHA string) bool {
+	if baseSHA == "" || git.IsZeroSHA(baseSHA) {
+		return false
+	}
+	remoteSHA, err := git.Run(ctx, workDir, "rev-parse", "--verify", "origin/"+defaultBranch)
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(remoteSHA) != baseSHA
+}
+
 // isForcePush returns true when the current push is non-fast-forward relative
 // to the previous push (baseSHA). This indicates the user explicitly rewrote
 // history and the pipeline should treat the new HEAD as authoritative.
@@ -141,14 +166,13 @@ func isForcePush(ctx context.Context, workDir, branch, baseSHA string) bool {
 			if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
 				return true
 			}
-			return true
 		}
 		remoteRef := "origin/" + branch
 		if _, err := git.Run(ctx, workDir, "rev-parse", "--verify", remoteRef); err == nil {
 			return isRemoteBranchRewritten(ctx, workDir, remoteRef)
 		}
 	}
-	return true
+	return false
 }
 
 func isRemoteBranchRewritten(ctx context.Context, workDir, remoteRef string) bool {
