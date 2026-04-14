@@ -147,6 +147,23 @@ func TestParseFindingsJSON_Action(t *testing.T) {
 	}
 }
 
+func TestParseFindingsJSON_RequiresHumanReviewCompatibility(t *testing.T) {
+	raw := `{"findings":[{"severity":"warning","description":"design choice","requires_human_review":true},{"severity":"error","description":"bug","requires_human_review":false}]}`
+	f, err := ParseFindingsJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.Items) != 2 {
+		t.Fatalf("Items count = %d, want 2", len(f.Items))
+	}
+	if f.Items[0].Action != ActionAskUser {
+		t.Errorf("Items[0].Action = %q, want %q", f.Items[0].Action, ActionAskUser)
+	}
+	if f.Items[1].Action != ActionAutoFix {
+		t.Errorf("Items[1].Action = %q, want %q", f.Items[1].Action, ActionAutoFix)
+	}
+}
+
 func TestAutoFixableFindings_FiltersToAutoFix(t *testing.T) {
 	f := Findings{
 		Items: []Finding{
@@ -191,6 +208,22 @@ func TestAutoFixableFindings_NoOpExcluded(t *testing.T) {
 	fixable := AutoFixableFindings(f)
 	if len(fixable.Items) != 0 {
 		t.Errorf("Items count = %d, want 0", len(fixable.Items))
+	}
+}
+
+func TestAutoFixableFindings_EmptyActionDefaultsToAutoFix(t *testing.T) {
+	f := Findings{
+		Items: []Finding{
+			{ID: "f1", Severity: "error", Description: "bug"},
+			{ID: "f2", Severity: "warning", Description: "needs approval", Action: ActionAskUser},
+		},
+	}
+	fixable := AutoFixableFindings(f)
+	if len(fixable.Items) != 1 {
+		t.Fatalf("Items count = %d, want 1", len(fixable.Items))
+	}
+	if fixable.Items[0].ID != "f1" {
+		t.Errorf("Items[0].ID = %q, want %q", fixable.Items[0].ID, "f1")
 	}
 }
 

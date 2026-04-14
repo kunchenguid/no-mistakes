@@ -22,6 +22,16 @@ type Finding struct {
 	Action      string `json:"action"`
 }
 
+type findingWire struct {
+	ID                  string `json:"id,omitempty"`
+	Severity            string `json:"severity"`
+	File                string `json:"file,omitempty"`
+	Line                int    `json:"line,omitempty"`
+	Description         string `json:"description"`
+	Action              string `json:"action"`
+	RequiresHumanReview *bool  `json:"requires_human_review,omitempty"`
+}
+
 // Findings is the structured findings payload exchanged across pipeline, IPC, and TUI.
 type Findings struct {
 	Items         []Finding `json:"findings"`
@@ -107,7 +117,7 @@ func ExcludeFindings(findings Findings, ids []string) Findings {
 func AutoFixableFindings(findings Findings) Findings {
 	result := Findings{Summary: findings.Summary, RiskLevel: findings.RiskLevel, RiskRationale: findings.RiskRationale}
 	for _, item := range findings.Items {
-		if item.Action == ActionAutoFix {
+		if item.actionOrDefault() == ActionAutoFix {
 			result.Items = append(result.Items, item)
 		}
 	}
@@ -156,4 +166,32 @@ func itoa(v int) string {
 		v /= 10
 	}
 	return string(buf[i:])
+}
+
+func (f *Finding) UnmarshalJSON(data []byte) error {
+	var wire findingWire
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	f.ID = wire.ID
+	f.Severity = wire.Severity
+	f.File = wire.File
+	f.Line = wire.Line
+	f.Description = wire.Description
+	f.Action = wire.Action
+	if f.Action == "" && wire.RequiresHumanReview != nil {
+		if *wire.RequiresHumanReview {
+			f.Action = ActionAskUser
+		} else {
+			f.Action = ActionAutoFix
+		}
+	}
+	return nil
+}
+
+func (f Finding) actionOrDefault() string {
+	if f.Action == "" {
+		return ActionAutoFix
+	}
+	return f.Action
 }
