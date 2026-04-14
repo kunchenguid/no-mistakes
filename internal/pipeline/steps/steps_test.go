@@ -1272,6 +1272,55 @@ func TestIsForcePush_RerunWithoutLocalRemoteRefIsNotForcePush(t *testing.T) {
 	}
 }
 
+func TestIsForcePush_StaleLocalRemoteRefUsesAuthoritativeRemoteTip(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	originRepo := t.TempDir()
+	gitCmd(t, originRepo, "init")
+	gitCmd(t, originRepo, "config", "user.name", "test")
+	gitCmd(t, originRepo, "config", "user.email", "test@test.com")
+	gitCmd(t, originRepo, "checkout", "-b", "main")
+	gitCmd(t, originRepo, "remote", "add", "origin", upstream)
+
+	os.WriteFile(filepath.Join(originRepo, "app.txt"), []byte("base\n"), 0o644)
+	gitCmd(t, originRepo, "add", "-A")
+	gitCmd(t, originRepo, "commit", "-m", "base commit")
+	gitCmd(t, originRepo, "push", "origin", "main")
+
+	gitCmd(t, originRepo, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(originRepo, "feature.txt"), []byte("ancestor\n"), 0o644)
+	gitCmd(t, originRepo, "add", "-A")
+	gitCmd(t, originRepo, "commit", "-m", "feature ancestor")
+	ancestorSHA := gitCmd(t, originRepo, "rev-parse", "HEAD")
+	gitCmd(t, originRepo, "push", "origin", "feature")
+
+	worktree := t.TempDir()
+	gitCmd(t, worktree, "init")
+	gitCmd(t, worktree, "config", "user.name", "test")
+	gitCmd(t, worktree, "config", "user.email", "test@test.com")
+	gitCmd(t, worktree, "remote", "add", "origin", upstream)
+	gitCmd(t, worktree, "fetch", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main")
+	gitCmd(t, worktree, "fetch", "--no-tags", "origin", "+refs/heads/feature:refs/remotes/origin/feature")
+	gitCmd(t, worktree, "checkout", "--detach", ancestorSHA)
+
+	os.WriteFile(filepath.Join(originRepo, "feature.txt"), []byte("remote tip\n"), 0o644)
+	gitCmd(t, originRepo, "add", "-A")
+	gitCmd(t, originRepo, "commit", "-m", "remote tip")
+	baseSHA := gitCmd(t, originRepo, "rev-parse", "HEAD")
+	gitCmd(t, originRepo, "push", "origin", "feature")
+	gitCmd(t, worktree, "fetch", "--no-tags", "origin", "+refs/heads/feature:refs/tmp/base")
+	gitCmd(t, worktree, "update-ref", "-d", "refs/tmp/base")
+
+	os.WriteFile(filepath.Join(worktree, "feature.txt"), []byte("rewritten tip\n"), 0o644)
+	gitCmd(t, worktree, "add", "-A")
+	gitCmd(t, worktree, "commit", "-m", "rewritten tip")
+
+	if !isForcePush(context.Background(), worktree, "feature", baseSHA) {
+		t.Fatal("expected stale local origin/feature ref to defer to authoritative remote tip")
+	}
+}
+
 func TestIsForcePush_MissingRemoteObjectTreatsAsForcePush(t *testing.T) {
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")

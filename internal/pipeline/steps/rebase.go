@@ -131,10 +131,6 @@ func isForcePush(ctx context.Context, workDir, branch, baseSHA string) bool {
 		return false
 	}
 	if branch != "" {
-		remoteRef := "origin/" + branch
-		if _, err := git.Run(ctx, workDir, "rev-parse", "--verify", remoteRef); err == nil {
-			return isRemoteBranchRewritten(ctx, workDir, remoteRef)
-		}
 		remoteSHA, err := git.LsRemote(ctx, workDir, "origin", "refs/heads/"+branch)
 		if err == nil && remoteSHA != "" {
 			_, err := git.Run(ctx, workDir, "merge-base", "--is-ancestor", remoteSHA, "HEAD")
@@ -146,6 +142,10 @@ func isForcePush(ctx context.Context, workDir, branch, baseSHA string) bool {
 				return true
 			}
 			return true
+		}
+		remoteRef := "origin/" + branch
+		if _, err := git.Run(ctx, workDir, "rev-parse", "--verify", remoteRef); err == nil {
+			return isRemoteBranchRewritten(ctx, workDir, remoteRef)
 		}
 	}
 	return true
