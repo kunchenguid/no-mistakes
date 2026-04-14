@@ -48,6 +48,8 @@ func handleFakeCLI(mode string) {
 		fakeGHHandler(args)
 	case "glab":
 		fakeGlabHandler(args)
+	case "git-status-error":
+		fakeGitStatusErrorHandler(args)
 	case "ci-gh":
 		fakeCIGHHandler(args)
 	case "ci-gh-seq":
@@ -79,6 +81,33 @@ func fakeGHHandler(args []string) {
 		os.Exit(0)
 	}
 	os.Exit(1)
+}
+
+func fakeGitStatusErrorHandler(args []string) {
+	realGit := os.Getenv("FAKE_CLI_REAL_GIT")
+	if len(args) >= 2 && args[0] == "status" && args[1] == "--porcelain" {
+		fmt.Fprintln(os.Stderr, "status failed")
+		os.Exit(1)
+	}
+	if realGit == "" {
+		fmt.Fprintln(os.Stderr, "missing FAKE_CLI_REAL_GIT")
+		os.Exit(1)
+	}
+	cmd := exec.Command(realGit, args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+	if err := cmd.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			if status := exitErr.ExitCode(); status >= 0 {
+				os.Exit(status)
+			}
+		}
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	os.Exit(0)
 }
 
 func fakeGlabHandler(args []string) {
@@ -3930,9 +3959,12 @@ func TestCIStep_CommitAndPush(t *testing.T) {
 	sctx.Run.Branch = "refs/heads/feature"
 
 	step := &CIStep{}
-	err := step.commitAndPush(sctx)
+	pushed, err := step.commitAndPush(sctx)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !pushed {
+		t.Error("expected commitAndPush to report changes were pushed")
 	}
 
 	// Verify the commit and push happened
@@ -3951,11 +3983,48 @@ func TestCIStep_CommitAndPush_NoChanges(t *testing.T) {
 	sctx.Run.Branch = "refs/heads/feature"
 
 	step := &CIStep{}
-	err := step.commitAndPush(sctx)
+	pushed, err := step.commitAndPush(sctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// No error expected — just a no-op
+	if pushed {
+		t.Error("expected commitAndPush to report no changes pushed")
+	}
+}
+
+func TestCIStep_CommitAndPush_StatusError(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	binDir := fakeCLIBinDir(t)
+	linkTestBinary(t, binDir, "git")
+	prependPATH(t, binDir)
+	t.Setenv("FAKE_CLI_MODE", "git-status-error")
+	t.Setenv("FAKE_CLI_REAL_GIT", realGit)
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = "dummy"
+	sctx.Run.Branch = "refs/heads/feature"
+
+	step := &CIStep{}
+	pushed, err := step.commitAndPush(sctx)
+	if err == nil {
+		t.Fatal("expected status error")
+	}
+	if pushed {
+		t.Error("expected commitAndPush to report no push on status error")
+	}
+	if !strings.Contains(err.Error(), "git status --porcelain") {
+		t.Fatalf("expected status command in error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "status failed") {
+		t.Fatalf("expected status stderr in error, got %v", err)
+	}
 }
 
 func TestCIStep_CommitAndPush_NoChanges_ReconcilesStaleDatabaseHeadSHA(t *testing.T) {
@@ -3989,9 +4058,12 @@ func TestCIStep_CommitAndPush_NoChanges_ReconcilesStaleDatabaseHeadSHA(t *testin
 	sctx.Run.Branch = "refs/heads/feature"
 
 	step := &CIStep{}
-	err := step.commitAndPush(sctx)
+	pushed, err := step.commitAndPush(sctx)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if pushed {
+		t.Error("expected commitAndPush to report no changes pushed for stale reconcile")
 	}
 
 	if sctx.Run.HeadSHA != actualHeadSHA {
@@ -4037,9 +4109,12 @@ func TestCIStep_CommitAndPush_UpdatesLocalBranchRefAfterDetachedPush(t *testing.
 	sctx.Run.Branch = "refs/heads/feature"
 
 	step := &CIStep{}
-	err := step.commitAndPush(sctx)
+	pushed, err := step.commitAndPush(sctx)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !pushed {
+		t.Error("expected commitAndPush to report changes were pushed")
 	}
 	newHeadSHA := gitCmd(t, dir, "rev-parse", "HEAD")
 	branchSHA := gitCmd(t, dir, "rev-parse", "refs/heads/feature")
@@ -5712,5 +5787,263 @@ func TestCIStep_FixMode_ManualInterventionRunsCIFix(t *testing.T) {
 	}
 	if len(ag.calls) != 1 {
 		t.Fatalf("expected 1 agent call, got %d", len(ag.calls))
+	}
+}
+
+// TestCIStep_AutoFixNoChanges_CountsAsAttempt verifies that when the agent
+// produces no changes (nothing to commit), it still counts as a consumed fix
+// attempt rather than spinning forever with "fix already attempted".
+func TestCIStep_AutoFixNoChanges_CountsAsAttempt(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	checksJSON := `[{"name":"test","status":"COMPLETED","conclusion":"failure","bucket":"fail"}]`
+	binDir := fakeCIGH(t, "OPEN", checksJSON)
+	prependPATH(t, binDir)
+
+	fixCount := 0
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			fixCount++
+			// Agent "investigates" but produces NO changes
+			return &agent.Result{}, nil
+		},
+	}
+
+	prURL := "https://github.com/test/repo/pull/42"
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Config.CITimeout = 30 * time.Second
+	sctx.Config.AutoFix = config.AutoFix{CI: 2}
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	pollCount := 0
+	step := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			pollCount++
+			return nil
+		},
+	}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("expected approval outcome, got error: %v", err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("expected approval needed after exhausting fix attempts with no changes")
+	}
+
+	// Agent should be called for each attempt even though no changes were produced
+	if fixCount != 2 {
+		t.Fatalf("expected 2 fix attempts (limit=2), got %d", fixCount)
+	}
+
+	// Should eventually hit max attempts, not spin forever
+	foundExhausted := false
+	for _, l := range logs {
+		if strings.Contains(l, "max auto-fix attempts") {
+			foundExhausted = true
+			break
+		}
+	}
+	if !foundExhausted {
+		t.Errorf("expected 'max auto-fix attempts' in logs, got: %v", logs)
+	}
+
+	// Should never log "fix already attempted" indefinitely
+	waitCount := 0
+	for _, l := range logs {
+		if strings.Contains(l, "fix already attempted") {
+			waitCount++
+		}
+	}
+	if waitCount > 0 {
+		t.Errorf("expected no 'fix already attempted' loops when agent produces no changes, got %d", waitCount)
+	}
+}
+
+// TestCIStep_FixMode_NoChanges_CountsAsAttempt verifies the same no-changes
+// behavior for manual fix mode (sctx.Fixing = true).
+func TestCIStep_FixMode_NoChanges_CountsAsAttempt(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	checksJSON := `[{"name":"test","status":"COMPLETED","conclusion":"failure","bucket":"fail"}]`
+	binDir := fakeCIGH(t, "OPEN", checksJSON)
+	prependPATH(t, binDir)
+
+	fixCount := 0
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			fixCount++
+			// Agent produces NO changes
+			return &agent.Result{}, nil
+		},
+	}
+
+	findingsJSON, err := json.Marshal(Findings{
+		Summary: "CI failures require manual intervention",
+		Items: []Finding{{
+			Severity:    "warning",
+			Description: "CI check failing: test",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	prURL := "https://github.com/test/repo/pull/42"
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Config.CITimeout = 30 * time.Second
+	sctx.Config.AutoFix = config.AutoFix{CI: 0}
+	sctx.Fixing = true
+	sctx.PreviousFindings = string(findingsJSON)
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	pollCount := 0
+	step := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			pollCount++
+			return nil
+		},
+	}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("expected approval outcome, got error: %v", err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("expected approval needed after fix mode with no changes")
+	}
+
+	if fixCount != 1 {
+		t.Fatalf("expected 1 manual fix attempt, got %d", fixCount)
+	}
+
+	// Should return failure outcome, not spin forever
+	foundFailed := false
+	for _, l := range logs {
+		if strings.Contains(l, "CI fix produced no changes") {
+			foundFailed = true
+			break
+		}
+	}
+	if !foundFailed {
+		t.Errorf("expected 'CI fix produced no changes' in logs, got: %v", logs)
+	}
+}
+
+// TestCIStep_AutoFixPromptIncludesMustFixInstruction verifies the agent prompt
+// includes a strong instruction that the agent must produce changes.
+func TestCIStep_AutoFixPromptIncludesMustFixInstruction(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	checksJSON := `[{"name":"test","status":"COMPLETED","conclusion":"failure","bucket":"fail"}]`
+	binDir := fakeCIGH(t, "OPEN", checksJSON)
+	prependPATH(t, binDir)
+
+	var capturedPrompt string
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			capturedPrompt = opts.Prompt
+			os.WriteFile(filepath.Join(opts.CWD, "fix.txt"), []byte("fixed"), 0o644)
+			return &agent.Result{}, nil
+		},
+	}
+
+	prURL := "https://github.com/test/repo/pull/42"
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Config.CITimeout = 30 * time.Second
+	sctx.Config.AutoFix = config.AutoFix{CI: 3}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+	sctx.Log = func(s string) {}
+
+	step := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			cancel()
+			return ctx.Err()
+		},
+	}
+	step.Execute(sctx)
+
+	if capturedPrompt == "" {
+		t.Fatal("expected agent to be called with a prompt")
+	}
+	if !strings.Contains(capturedPrompt, "You MUST produce file changes") {
+		t.Errorf("prompt should instruct agent to produce changes, got:\n%s", capturedPrompt)
 	}
 }
