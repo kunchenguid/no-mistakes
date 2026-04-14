@@ -67,9 +67,9 @@ On startup, the daemon recovers from crashes by marking any stuck runs as failed
 The executor runs each step sequentially and manages the approval/fix loop. It can also end early after `rebase` if the branch has no diff against the default branch, marking the remaining steps as skipped.
 
 1. Execute the step
-2. If the step finds issues and auto-fix is enabled, loop back with the agent to fix them (up to the configured limit)
-3. If issues remain (or require human review), pause and wait for user action
-4. The user can approve, fix (with selected findings), skip, or abort
+2. If the step finds `action: auto-fix` findings and auto-fix is enabled, loop back with the agent to fix them (up to the configured limit)
+3. If blocking findings remain, or any finding has `action: ask-user`, pause and wait for user action
+4. `action: no-op` findings are informational only; the user can approve, fix selected findings, skip, or abort when the step pauses
 
 ### IPC
 
