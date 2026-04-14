@@ -3594,7 +3594,20 @@ func TestExecutableCandidatesForOS_WindowsHonorsExplicitEmptyPATHEXT(t *testing.
 func TestStepCmd_ResolvesRelativeCustomPathFromWorkDir(t *testing.T) {
 	t.Parallel()
 
-	workDir := t.TempDir()
+	// Use os.MkdirTemp instead of t.TempDir so we can retry cleanup on
+	// Windows where the executed exe may briefly hold a file lock.
+	workDir, err := os.MkdirTemp("", "stepCmd-relpath")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		for i := 0; i < 10; i++ {
+			if err := os.RemoveAll(workDir); err == nil {
+				return
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+	})
 	binDir := filepath.Join(workDir, "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatal(err)
