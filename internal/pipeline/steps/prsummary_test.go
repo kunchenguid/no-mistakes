@@ -74,14 +74,17 @@ func TestBuildPipelineSummary_IncludesAllPipelineSteps(t *testing.T) {
 		"<summary>✅ **Document** - passed</summary>",
 		"<summary>✅ **Lint** - passed</summary>",
 		"<summary>✅ **Push** - passed</summary>",
-		"<summary>⏳ **PR** - running</summary>",
-		"<summary>⏳ **CI** - pending</summary>",
 	} {
 		if !strings.Contains(md, want) {
 			t.Errorf("expected %q in pipeline summary, got:\n%s", want, md)
 		}
 	}
-	if strings.Count(md, "<details>") != len(steps) {
+	for _, unwanted := range []string{"<summary>⏳ **PR** - running</summary>", "<summary>⏳ **CI** - pending</summary>"} {
+		if strings.Contains(md, unwanted) {
+			t.Errorf("did not expect %q in pipeline summary, got:\n%s", unwanted, md)
+		}
+	}
+	if strings.Count(md, "<details>") != len(steps)-2 {
 		t.Fatalf("expected one collapsible per pipeline step, got:\n%s", md)
 	}
 }
@@ -244,21 +247,41 @@ func TestBuildPipelineSummary_IncludesPushPRCI(t *testing.T) {
 	steps := []*db.StepResult{
 		{ID: "s1", StepName: types.StepReview, Status: types.StepStatusCompleted},
 		{ID: "s2", StepName: types.StepPush, Status: types.StepStatusCompleted},
-		{ID: "s3", StepName: types.StepPR, Status: types.StepStatusCompleted},
-		{ID: "s4", StepName: types.StepCI, Status: types.StepStatusCompleted},
+		{ID: "s3", StepName: types.StepPR, Status: types.StepStatusRunning},
+		{ID: "s4", StepName: types.StepCI, Status: types.StepStatusPending},
 	}
 	rounds := map[string][]*db.StepRound{
 		"s1": {{Round: 1, Trigger: "initial", DurationMS: 500}},
 		"s2": {{Round: 1, Trigger: "initial", DurationMS: 100}},
-		"s3": {{Round: 1, Trigger: "initial", DurationMS: 200}},
-		"s4": {{Round: 1, Trigger: "initial", DurationMS: 300}},
 	}
 	md, _ := BuildPipelineSummary(steps, rounds)
 
-	for _, want := range []string{"**Push**", "**PR**", "**CI**"} {
+	for _, want := range []string{"**Push**"} {
 		if !strings.Contains(md, want) {
 			t.Errorf("expected %s in pipeline summary, got:\n%s", want, md)
 		}
+	}
+	for _, unwanted := range []string{"**PR**", "**CI**"} {
+		if strings.Contains(md, unwanted) {
+			t.Errorf("did not expect %s in pipeline summary, got:\n%s", unwanted, md)
+		}
+	}
+}
+
+func TestBuildPipelineSummary_EscapesFindingDescriptionsInDetails(t *testing.T) {
+	findings := `{"findings":[{"id":"review-1","severity":"warning","file":"cmd/main.go","line":10,"description":"break </details><summary>oops</summary> after"}],"summary":"1 warning","risk_level":"low","risk_rationale":"safe"}`
+	steps := []*db.StepResult{{ID: "s1", StepName: types.StepReview, Status: types.StepStatusCompleted, FindingsJSON: &findings}}
+	rounds := map[string][]*db.StepRound{
+		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 1000}},
+	}
+
+	md, _ := BuildPipelineSummary(steps, rounds)
+
+	if !strings.Contains(md, "break &lt;/details&gt;&lt;summary&gt;oops&lt;/summary&gt; after") {
+		t.Errorf("expected finding description to be HTML-escaped, got:\n%s", md)
+	}
+	if strings.Contains(md, "- ⚠️ `cmd/main.go:10` - break </details><summary>oops</summary> after") {
+		t.Errorf("did not expect raw HTML in finding description, got:\n%s", md)
 	}
 }
 

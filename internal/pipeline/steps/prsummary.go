@@ -2,6 +2,7 @@ package steps
 
 import (
 	"fmt"
+	"html"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
@@ -17,6 +18,9 @@ func BuildPipelineSummary(steps []*db.StepResult, rounds map[string][]*db.StepRo
 	var detailBlocks []string
 
 	for _, sr := range steps {
+		if shouldOmitPipelineStep(sr) {
+			continue
+		}
 		stepRounds := rounds[sr.ID]
 		line, detail := buildStepEntry(sr, stepRounds)
 		if line != "" && detail != "" {
@@ -343,13 +347,13 @@ func buildStepDetails(summaryLine string, sr *db.StepResult, rounds []*db.StepRo
 			emoji := severityEmoji(f.Severity)
 			loc := ""
 			if f.File != "" {
-				loc = fmt.Sprintf("`%s", f.File)
+				loc = fmt.Sprintf("`%s", html.EscapeString(f.File))
 				if f.Line > 0 {
 					loc += fmt.Sprintf(":%d", f.Line)
 				}
 				loc += "` - "
 			}
-			b.WriteString(fmt.Sprintf("- %s %s%s\n", emoji, loc, f.Description))
+			b.WriteString(fmt.Sprintf("- %s %s%s\n", emoji, loc, html.EscapeString(f.Description)))
 		}
 		b.WriteString("\n")
 	}
@@ -374,7 +378,7 @@ func writeStepStatusDetail(b *strings.Builder, sr *db.StepResult) {
 		b.WriteString("Step was skipped.\n\n")
 	case types.StepStatusFailed:
 		if sr.Error != nil && strings.TrimSpace(*sr.Error) != "" {
-			b.WriteString(strings.TrimSpace(*sr.Error))
+			b.WriteString(html.EscapeString(strings.TrimSpace(*sr.Error)))
 			b.WriteString("\n\n")
 			return
 		}
@@ -383,6 +387,23 @@ func writeStepStatusDetail(b *strings.Builder, sr *db.StepResult) {
 		b.WriteString("No round details recorded.\n\n")
 	default:
 		b.WriteString("Status unavailable.\n\n")
+	}
+}
+
+func shouldOmitPipelineStep(sr *db.StepResult) bool {
+	if sr == nil {
+		return false
+	}
+
+	if sr.StepName != types.StepPR && sr.StepName != types.StepCI {
+		return false
+	}
+
+	switch sr.Status {
+	case types.StepStatusPending, types.StepStatusRunning, types.StepStatusAwaitingApproval, types.StepStatusFixing, types.StepStatusFixReview:
+		return true
+	default:
+		return false
 	}
 }
 
