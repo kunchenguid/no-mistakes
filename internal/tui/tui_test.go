@@ -7669,6 +7669,43 @@ func TestModel_ApplyEvent_LogChunk_FlushesPartialOnRunCompleted(t *testing.T) {
 	}
 }
 
+func TestModel_ApplyEvent_LogChunk_BlankLineSeparators(t *testing.T) {
+	// The executor's Log callback formats discrete messages as "text\n\n",
+	// with a leading \n only when flushing an unterminated streaming partial.
+	run := testRun()
+	m := NewModel("/tmp/sock", nil, run)
+
+	// Streaming agent text without trailing newline (partial).
+	m.applyEvent(ipc.Event{
+		Type:    ipc.EventLogChunk,
+		RunID:   run.ID,
+		Content: ptr("streaming text"),
+	})
+	// Discrete message after unterminated stream: leading \n flushes partial.
+	m.applyEvent(ipc.Event{
+		Type:    ipc.EventLogChunk,
+		RunID:   run.ID,
+		Content: ptr("\ncommitted agent fixes\n\n"),
+	})
+	// Consecutive discrete message: no leading \n (previous ended with \n\n).
+	m.applyEvent(ipc.Event{
+		Type:    ipc.EventLogChunk,
+		RunID:   run.ID,
+		Content: ptr("reviewing changes...\n\n"),
+	})
+
+	// Exactly one blank line between each entry.
+	want := []string{"streaming text", "committed agent fixes", "", "reviewing changes...", ""}
+	if len(m.logs) != len(want) {
+		t.Fatalf("expected %d log entries, got %d: %v", len(want), len(m.logs), m.logs)
+	}
+	for i, w := range want {
+		if m.logs[i] != w {
+			t.Errorf("logs[%d] = %q, want %q", i, m.logs[i], w)
+		}
+	}
+}
+
 func TestPipelineConnectors_NotSuppressedDuringCI(t *testing.T) {
 	// When CI is active in responsive layout (wide terminal), the pipeline
 	// height should not be capped, so connector lines between steps are preserved.

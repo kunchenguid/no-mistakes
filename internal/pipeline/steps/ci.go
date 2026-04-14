@@ -406,7 +406,7 @@ CI logs:
 	_, err := sctx.Agent.Run(ctx, agent.RunOpts{
 		Prompt:  prompt,
 		CWD:     sctx.WorkDir,
-		OnChunk: sctx.Log,
+		OnChunk: sctx.LogChunk,
 	})
 	if err != nil {
 		return false, fmt.Errorf("agent CI fix: %w", err)

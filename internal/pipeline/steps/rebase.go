@@ -256,7 +256,7 @@ Instructions:
 		Prompt:     prompt,
 		CWD:        sctx.WorkDir,
 		JSONSchema: commitSummarySchema,
-		OnChunk:    sctx.Log,
+		OnChunk:    sctx.LogChunk,
 	})
 	if err != nil {
 		_, _ = git.Run(ctx, sctx.WorkDir, "rebase", "--abort")

@@ -53,7 +53,7 @@ Previous test findings to address:
 			Prompt:     fixPrompt,
 			CWD:        sctx.WorkDir,
 			JSONSchema: commitSummarySchema,
-			OnChunk:    sctx.Log,
+			OnChunk:    sctx.LogChunk,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("agent fix tests: %w", err)
@@ -101,7 +101,7 @@ Rules:
 			),
 			CWD:        sctx.WorkDir,
 			JSONSchema: findingsSchema,
-			OnChunk:    sctx.Log,
+			OnChunk:    sctx.LogChunk,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("agent run tests: %w", err)

@@ -66,7 +66,7 @@ Previous documentation findings to address:
 			Prompt:     fixPrompt,
 			CWD:        sctx.WorkDir,
 			JSONSchema: commitSummarySchema,
-			OnChunk:    sctx.Log,
+			OnChunk:    sctx.LogChunk,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("agent document fix: %w", err)
@@ -142,7 +142,7 @@ Rules:
 		Prompt:     prompt,
 		CWD:        sctx.WorkDir,
 		JSONSchema: findingsSchema,
-		OnChunk:    sctx.Log,
+		OnChunk:    sctx.LogChunk,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("agent document: %w", err)
