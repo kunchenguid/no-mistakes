@@ -2,9 +2,11 @@ package ipc_test
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -245,6 +247,49 @@ func TestNilParams(t *testing.T) {
 	}
 }
 
+func TestHealthRequestsDoNotLogAtInfo(t *testing.T) {
+	sock := socketPath(t)
+	srv := startServer(t, sock)
+
+	srv.Handle(ipc.MethodHealth, func(_ context.Context, _ json.RawMessage) (interface{}, error) {
+		return ipc.HealthResult{Status: "ok"}, nil
+	})
+	srv.Handle("fail", func(_ context.Context, _ json.RawMessage) (interface{}, error) {
+		return nil, fmt.Errorf("something broke")
+	})
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	prev := slog.Default()
+	slog.SetDefault(logger)
+	defer slog.SetDefault(prev)
+
+	c, err := ipc.Dial(sock)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer c.Close()
+
+	var health ipc.HealthResult
+	if err := c.Call(ipc.MethodHealth, nil, &health); err != nil {
+		t.Fatalf("health call: %v", err)
+	}
+
+	var raw json.RawMessage
+	err = c.Call("fail", nil, &raw)
+	if err == nil {
+		t.Fatal("expected fail call error")
+	}
+
+	logOutput := logs.String()
+	if strings.Contains(logOutput, "method=health") {
+		t.Fatalf("health request should not log at info: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "msg=\"ipc request failed\" method=fail") {
+		t.Fatalf("failed request log missing: %s", logOutput)
+	}
+}
+
 func TestServerClose(t *testing.T) {
 	sock := socketPath(t)
 	srv := ipc.NewServer()
@@ -363,6 +408,50 @@ func TestStreamHandler(t *testing.T) {
 		if event.Index != i {
 			t.Errorf("event %d: index=%d, want %d", i, event.Index, i)
 		}
+	}
+}
+
+func TestStreamRequestsLogAtInfo(t *testing.T) {
+	sock := socketPath(t)
+	srv := startServer(t, sock)
+
+	type streamEvent struct {
+		Index int `json:"index"`
+	}
+
+	srv.HandleStream("stream_test", func(_ context.Context, _ json.RawMessage, send func(interface{}) error) error {
+		return send(streamEvent{Index: 0})
+	})
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	prev := slog.Default()
+	slog.SetDefault(logger)
+	defer slog.SetDefault(prev)
+
+	rawConn := rawDial(t, sock)
+	defer rawConn.Close()
+
+	encoder := json.NewEncoder(rawConn)
+	scanner := bufio.NewScanner(rawConn)
+	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
+
+	req, _ := ipc.NewRequest("stream_test", nil)
+	if err := encoder.Encode(req); err != nil {
+		t.Fatalf("send request: %v", err)
+	}
+
+	if !scanner.Scan() {
+		t.Fatal("no initial response")
+	}
+
+	if !scanner.Scan() {
+		t.Fatal("no stream event")
+	}
+
+	logOutput := logs.String()
+	if !strings.Contains(logOutput, "msg=\"ipc stream request\" method=stream_test") {
+		t.Fatalf("stream request log missing: %s", logOutput)
 	}
 }
 
