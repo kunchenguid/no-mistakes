@@ -51,10 +51,12 @@ Runs your test suite.
 
 **Behavior:**
 - If `commands.test` is set in repo config: runs it via `sh -c` and captures output. Non-zero exit produces `error` findings.
-- If `commands.test` is empty: the agent detects and runs relevant tests, returning structured findings.
+- If `commands.test` is empty: the agent detects and runs relevant tests, returning structured findings with severity, description, and `action` (`no-op`, `auto-fix`, `ask-user`).
 - If the agent creates new test files (detected via `git status --porcelain`), approval is required even if tests pass.
 
-**Auto-fix:** the agent receives previous failure output and fixes the code, then tests run again. Fix commits use `no-mistakes(test): <summary>`.
+**Approval:** failing test findings with `action: ask-user` always require human approval. `action: auto-fix` findings stay eligible for the fix loop. `action: no-op` findings are informational only.
+
+**Auto-fix:** the agent receives previous failure output and fixes the code for `action: auto-fix` findings, then tests run again. Fix commits use `no-mistakes(test): <summary>`.
 
 **Default auto-fix limit:** `3`.
 
@@ -64,7 +66,7 @@ Checks whether the code changes need matching documentation updates.
 
 **Behavior:**
 - Diffs the base commit against head and skips the step if there are no non-ignored changed files to document
-- Asks the agent to review the change and return documentation findings for any missing or stale docs
+- Asks the agent to review the change and return documentation findings for any missing or stale docs, using the same `action` field as other agent-driven steps
 - Requires approval whenever any documentation finding is returned, including `info` findings
 
 **Auto-fix:** the agent updates only documentation files or doc comments, then the step re-runs and expects an empty findings list before continuing. Fix commits use `no-mistakes(document): <summary>`.
@@ -77,9 +79,11 @@ Runs linters and static analysis.
 
 **Behavior:**
 - If `commands.lint` is set: runs it via `sh -c`. Non-zero exit produces `warning` findings.
-- If `commands.lint` is empty: the agent detects and runs appropriate linters/formatters.
+- If `commands.lint` is empty: the agent detects and runs appropriate linters/formatters, returning structured findings with severity, description, and `action` (`no-op`, `auto-fix`, `ask-user`).
 
-**Auto-fix:** same pattern as test - agent fixes issues, lint re-runs. Fix commits use `no-mistakes(lint): <summary>`.
+**Approval:** lint findings with `action: ask-user` always require human approval. `action: auto-fix` findings stay eligible for the fix loop. `action: no-op` findings are informational only.
+
+**Auto-fix:** same pattern as test - the agent fixes `action: auto-fix` issues, then lint re-runs. Fix commits use `no-mistakes(lint): <summary>`.
 
 **Default auto-fix limit:** `3`.
 
