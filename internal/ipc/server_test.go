@@ -411,6 +411,50 @@ func TestStreamHandler(t *testing.T) {
 	}
 }
 
+func TestStreamRequestsLogAtInfo(t *testing.T) {
+	sock := socketPath(t)
+	srv := startServer(t, sock)
+
+	type streamEvent struct {
+		Index int `json:"index"`
+	}
+
+	srv.HandleStream("stream_test", func(_ context.Context, _ json.RawMessage, send func(interface{}) error) error {
+		return send(streamEvent{Index: 0})
+	})
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	prev := slog.Default()
+	slog.SetDefault(logger)
+	defer slog.SetDefault(prev)
+
+	rawConn := rawDial(t, sock)
+	defer rawConn.Close()
+
+	encoder := json.NewEncoder(rawConn)
+	scanner := bufio.NewScanner(rawConn)
+	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
+
+	req, _ := ipc.NewRequest("stream_test", nil)
+	if err := encoder.Encode(req); err != nil {
+		t.Fatalf("send request: %v", err)
+	}
+
+	if !scanner.Scan() {
+		t.Fatal("no initial response")
+	}
+
+	if !scanner.Scan() {
+		t.Fatal("no stream event")
+	}
+
+	logOutput := logs.String()
+	if !strings.Contains(logOutput, "msg=\"ipc stream request\" method=stream_test") {
+		t.Fatalf("stream request log missing: %s", logOutput)
+	}
+}
+
 func TestStreamHandlerAndRegularCoexist(t *testing.T) {
 	sock := socketPath(t)
 	srv := startServer(t, sock)
