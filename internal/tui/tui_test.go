@@ -3742,6 +3742,20 @@ func TestRenderFindings_BothIndicatorsIncludeKeyHints(t *testing.T) {
 	}
 }
 
+func TestRenderFindings_NoScrollStillShowsJKHint(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI)
+	// 2 findings that all fit on screen - no scrolling needed.
+	raw := makeManyFindings(2)
+	selected := map[string]bool{"f1": true, "f2": true}
+
+	// Large maxVisible so everything fits without scrolling.
+	_, scrollFooter := renderFindingsWithSelection(raw, 80, 0, selected, 10)
+
+	if !strings.Contains(scrollFooter, "j/k") {
+		t.Errorf("expected j/k hint even when all findings fit, got: %q", scrollFooter)
+	}
+}
+
 func TestFindingsBox_ScrollDownInBottomBorder(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.ANSI)
 	run := testRun()

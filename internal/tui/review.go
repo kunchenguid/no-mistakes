@@ -333,6 +333,8 @@ func renderFindingsRange(f *findings, width int, cursor int, selected map[string
 		scrollFooter = fmt.Sprintf("↓ %d more below (j/k)", remaining)
 	} else if start > 0 {
 		scrollFooter = fmt.Sprintf("↑ %d above (j/k)", start)
+	} else if len(f.Items) > 1 {
+		scrollFooter = "(j/k)"
 	}
 
 	// Selection count by severity when not all findings are selected.
