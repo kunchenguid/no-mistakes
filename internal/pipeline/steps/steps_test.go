@@ -4520,6 +4520,69 @@ func TestCIStep_CommitAndPush_NoChanges_ReconcilesStaleDatabaseHeadSHA(t *testin
 	}
 }
 
+func TestCIStep_CommitAndPush_NoChanges_ReconcilesStaleDatabaseHeadSHA_UsesStepEnv(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature")
+	actualHeadSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	binDir := fakeCLIBinDir(t)
+	linkTestBinary(t, binDir, "git")
+	env := fakeCLIEnv(binDir, map[string]string{
+		"FAKE_CLI_MODE":     "git-passthrough",
+		"FAKE_CLI_REAL_GIT": realGit,
+	})
+	t.Setenv("PATH", t.TempDir())
+
+	staleHeadSHA := baseSHA
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, staleHeadSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "refs/heads/feature"
+
+	step := &CIStep{}
+	pushed, err := step.commitAndPush(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pushed {
+		t.Error("expected commitAndPush to report no changes pushed for stale reconcile")
+	}
+
+	if sctx.Run.HeadSHA != actualHeadSHA {
+		t.Errorf("Run.HeadSHA = %s, want %s", sctx.Run.HeadSHA, actualHeadSHA)
+	}
+	dbRun, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dbRun.HeadSHA != actualHeadSHA {
+		t.Errorf("DB HeadSHA = %s, want %s", dbRun.HeadSHA, actualHeadSHA)
+	}
+}
+
 func TestCIStep_CommitAndPush_UpdatesLocalBranchRefAfterDetachedPush(t *testing.T) {
 	t.Parallel()
 	upstream := t.TempDir()

@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
-	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -420,7 +419,6 @@ CI logs:
 // Returns (true, nil) when changes were pushed, (false, nil) when there was
 // nothing to commit, or (false, err) on failure.
 func (s *CIStep) commitAndPush(sctx *pipeline.StepContext) (bool, error) {
-	ctx := sctx.Ctx
 	newHeadSHA := ""
 
 	status, err := stepGitRun(sctx, "status", "--porcelain")
@@ -429,7 +427,7 @@ func (s *CIStep) commitAndPush(sctx *pipeline.StepContext) (bool, error) {
 	}
 	if strings.TrimSpace(status) == "" {
 		sctx.Log("no changes to commit")
-		headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
+		headSHA, err := stepGitHeadSHA(sctx)
 		if err == nil && headSHA != sctx.Run.HeadSHA {
 			sctx.Run.HeadSHA = headSHA
 			if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, headSHA); err != nil {
