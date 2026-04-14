@@ -1,13 +1,16 @@
 package config
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -128,6 +131,30 @@ var agentProbeOrder = []types.AgentName{
 	types.AgentRovoDev,
 }
 
+var probeRovoDevSupport = func(bin string) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, bin, "rovodev", "--help")
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+	err := cmd.Run()
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, exec.ErrNotFound) || errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return false, nil
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return false, fmt.Errorf("probe rovodev support via %q timed out", bin)
+	}
+	return false, fmt.Errorf("probe rovodev support via %q: %w", bin, err)
+}
+
 // ResolveAgent resolves AgentAuto to a concrete agent by probing which binaries
 // are available on the system. If agent is already set to a specific value, this
 // is a no-op. The lookPath function should behave like exec.LookPath.
@@ -135,6 +162,7 @@ func (c *Config) ResolveAgent(lookPath func(string) (string, error)) error {
 	if c.Agent != types.AgentAuto {
 		return nil
 	}
+	probed := make([]string, 0, len(agentProbeOrder))
 	for _, name := range agentProbeOrder {
 		bin := string(name)
 		if b, ok := defaultBinary[name]; ok {
@@ -145,14 +173,25 @@ func (c *Config) ResolveAgent(lookPath func(string) (string, error)) error {
 				bin = p
 			}
 		}
-		if _, err := lookPath(bin); err == nil {
+		probed = append(probed, bin)
+		resolvedBin, err := lookPath(bin)
+		if err == nil {
+			if name == types.AgentRovoDev {
+				ok, probeErr := probeRovoDevSupport(resolvedBin)
+				if probeErr != nil {
+					return probeErr
+				}
+				if !ok {
+					continue
+				}
+			}
 			c.Agent = name
 			return nil
 		} else if !errors.Is(err, exec.ErrNotFound) && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("resolve %s agent from %q: %w", name, bin, err)
 		}
 	}
-	return fmt.Errorf("no supported agent found in PATH (looked for: claude, codex, opencode, acli); install one or set 'agent' in ~/.no-mistakes/config.yaml")
+	return fmt.Errorf("no supported agent found in PATH (looked for: %s); install one or set 'agent' in ~/.no-mistakes/config.yaml", strings.Join(probed, ", "))
 }
 
 // AgentPath returns the binary path for the configured agent,

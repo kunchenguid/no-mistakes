@@ -831,6 +831,39 @@ func TestResolveAgent_AutoSkipsMissingOverrideAndFallsBack(t *testing.T) {
 	}
 }
 
+func TestResolveAgent_AutoSkipsRovoDevWithoutSubcommand(t *testing.T) {
+	cfg := &Config{Agent: types.AgentAuto}
+	originalProbe := probeRovoDevSupport
+	probeRovoDevSupport = func(bin string) (bool, error) {
+		if bin != "/usr/bin/acli" {
+			t.Fatalf("unexpected rovodev probe for %q", bin)
+		}
+		return false, nil
+	}
+	t.Cleanup(func() {
+		probeRovoDevSupport = originalProbe
+	})
+
+	err := cfg.ResolveAgent(func(bin string) (string, error) {
+		switch bin {
+		case "claude", "codex", "opencode":
+			return "", &exec.Error{Name: bin, Err: exec.ErrNotFound}
+		case "acli":
+			return "/usr/bin/acli", nil
+		default:
+			t.Fatalf("unexpected probe for %q", bin)
+			return "", nil
+		}
+	})
+
+	if err == nil {
+		t.Fatal("expected error when rovodev subcommand is unavailable")
+	}
+	if cfg.Agent != types.AgentAuto {
+		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentAuto)
+	}
+}
+
 func TestResolveAgent_AutoReturnsOverrideProbeError(t *testing.T) {
 	cfg := &Config{
 		Agent:             types.AgentAuto,
@@ -866,5 +899,29 @@ func TestResolveAgent_AutoNoneAvailable(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "config") {
 		t.Errorf("expected config guidance in error, got: %v", err)
+	}
+}
+
+func TestResolveAgent_AutoNoneAvailableIncludesOverridePaths(t *testing.T) {
+	cfg := &Config{
+		Agent: types.AgentAuto,
+		AgentPathOverride: map[string]string{
+			"claude":   "/custom/claude",
+			"rovodev":  "/custom/acli",
+			"opencode": "/custom/opencode",
+		},
+	}
+
+	err := cfg.ResolveAgent(func(bin string) (string, error) {
+		return "", &exec.Error{Name: bin, Err: exec.ErrNotFound}
+	})
+
+	if err == nil {
+		t.Fatal("expected error when no agents found")
+	}
+	for _, want := range []string{"/custom/claude", "/custom/opencode", "/custom/acli"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("expected error to mention %q, got: %v", want, err)
+		}
 	}
 }
