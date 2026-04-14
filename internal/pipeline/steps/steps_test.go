@@ -3512,6 +3512,69 @@ func TestPRStep_UsesAgentGeneratedTitleAndBody(t *testing.T) {
 	}
 }
 
+func TestPRStep_AppendsTestingSectionFromTestStep(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	binDir, logFile := fakeGH(t, "")
+	prependPATH(t, binDir)
+
+	reviewFindings := `{"findings":[],"summary":"clean","risk_level":"medium","risk_rationale":"touches critical error handling"}`
+	testRound1 := `{"findings":[{"id":"test-1","severity":"error","file":"pkg/handler_test.go","line":42,"description":"expected 429 got 200"}],"summary":"1 failure"}`
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			payload := json.RawMessage(`{"title":"fix: improve pipeline header UX","body":"## Summary\n\n- keep branch status readable\n- fix footer truncation"}`)
+			return &agent.Result{Output: payload}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.UpdateStepStatus(reviewStep.ID, types.StepStatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.SetStepFindings(reviewStep.ID, reviewFindings); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sctx.DB.InsertStepRound(reviewStep.ID, 1, "initial", &reviewFindings, 500); err != nil {
+		t.Fatal(err)
+	}
+
+	testStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepTest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.UpdateStepStatus(testStep.ID, types.StepStatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sctx.DB.InsertStepRound(testStep.ID, 1, "initial", &testRound1, 800); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sctx.DB.InsertStepRound(testStep.ID, 2, "auto_fix", nil, 600); err != nil {
+		t.Fatal(err)
+	}
+
+	step := &PRStep{}
+	if _, err := step.Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+
+	logData, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ghLog := string(logData)
+
+	wantOrder := "## Risk Assessment\n\n⚠️ Medium: touches critical error handling\n\n## Testing\n\n- 🔧 **Test** - 1 issue found → auto-fixed\n\n## Pipeline"
+	if !strings.Contains(ghLog, wantOrder) {
+		t.Fatalf("expected testing section between risk assessment and pipeline, got:\n%s", ghLog)
+	}
+}
+
 func TestPRStep_UnwrapsNestedJSONBody(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
@@ -3568,6 +3631,54 @@ func TestUnwrapNestedPRBody(t *testing.T) {
 				t.Errorf("unwrapNestedPRBody(%q) = %q, want %q", tt.body, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestAppendGeneratedSections_StripsAgentGeneratedSections(t *testing.T) {
+	body := "## Summary\n\n- improve PR descriptions\n\n## Testing\n\n- model-added testing\n\n## Risk Assessment\n\nold risk\n\n## Pipeline\n\nold pipeline"
+
+	got := appendGeneratedSections(
+		body,
+		"real risk",
+		"## Testing\n\n- deterministic testing",
+		"## Pipeline\n\n- deterministic pipeline",
+	)
+
+	if strings.Count(got, "## Testing") != 1 {
+		t.Fatalf("expected one Testing section, got:\n%s", got)
+	}
+	if strings.Count(got, "## Risk Assessment") != 1 {
+		t.Fatalf("expected one Risk Assessment section, got:\n%s", got)
+	}
+	if strings.Count(got, "## Pipeline") != 1 {
+		t.Fatalf("expected one Pipeline section, got:\n%s", got)
+	}
+	if strings.Contains(got, "model-added testing") || strings.Contains(got, "old risk") || strings.Contains(got, "old pipeline") {
+		t.Fatalf("expected generated sections to replace agent-provided ones, got:\n%s", got)
+	}
+}
+
+func TestAppendGeneratedSections_StripsCommonHeadingVariants(t *testing.T) {
+	body := "## Summary\n\n- improve PR descriptions\n\n## tests:\n\n- model-added testing\n\n## risk assessment\n\nold risk\n\n## Pipeline:\n\nold pipeline"
+
+	got := appendGeneratedSections(
+		body,
+		"real risk",
+		"## Testing\n\n- deterministic testing",
+		"## Pipeline\n\n- deterministic pipeline",
+	)
+
+	if strings.Contains(got, "model-added testing") || strings.Contains(got, "old risk") || strings.Contains(got, "old pipeline") {
+		t.Fatalf("expected generated heading variants to be replaced, got:\n%s", got)
+	}
+	if strings.Count(got, "## Testing") != 1 {
+		t.Fatalf("expected one normalized Testing section, got:\n%s", got)
+	}
+	if strings.Count(got, "## Risk Assessment") != 1 {
+		t.Fatalf("expected one normalized Risk Assessment section, got:\n%s", got)
+	}
+	if strings.Count(got, "## Pipeline") != 1 {
+		t.Fatalf("expected one normalized Pipeline section, got:\n%s", got)
 	}
 }
 
