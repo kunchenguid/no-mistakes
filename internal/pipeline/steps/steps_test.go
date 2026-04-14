@@ -1115,6 +1115,62 @@ func TestRebaseStep_ForcePushOnDefaultBranchSkipsRemoteSync(t *testing.T) {
 	}
 }
 
+func TestRebaseStep_ForcePushOnDefaultBranchAllowsRewrittenRemoteHead(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+
+	os.WriteFile(filepath.Join(dir, "app.txt"), []byte("base\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "base commit")
+	gitCmd(t, dir, "push", "origin", "main")
+
+	os.WriteFile(filepath.Join(dir, "app.txt"), []byte("base\nuser-change\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "user commit")
+	userCommitSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "main")
+
+	os.WriteFile(filepath.Join(dir, "app.txt"), []byte("base\nautofix\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "no-mistakes(review): autofix commit")
+	autofixSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "main")
+
+	gitCmd(t, dir, "reset", "--hard", userCommitSHA)
+	gitCmd(t, dir, "push", "--force", "origin", "main")
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, autofixSHA, userCommitSHA, config.Commands{})
+	sctx.Run.Branch = "refs/heads/main"
+	sctx.Repo.UpstreamURL = upstream
+
+	step := &RebaseStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatal("expected no approval when origin/main matches forced HEAD")
+	}
+
+	if got := gitCmd(t, dir, "rev-parse", "origin/main"); got != userCommitSHA {
+		t.Fatalf("origin/main = %s, want %s", got, userCommitSHA)
+	}
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != userCommitSHA {
+		t.Fatalf("HEAD = %s, want %s", got, userCommitSHA)
+	}
+	if autofixSHA == userCommitSHA {
+		t.Fatal("expected distinct rewritten and previous tips")
+	}
+}
+
 func TestRebaseStep_ForcePushOnDefaultBranchStopsWhenRemoteAdvanced(t *testing.T) {
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
