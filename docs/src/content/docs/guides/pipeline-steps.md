@@ -130,6 +130,7 @@ Monitors PR health after creation and auto-fixes CI failures or merge conflicts.
 - Polls `gh pr checks` at increasing intervals: every 30s for the first 5 minutes, every 60s for 5-15 minutes, every 120s after that
 - Polls `gh pr view --json mergeable` alongside CI checks and waits for GitHub to resolve mergeability before exiting
 - Waits a 60s grace period before trusting empty results (CI checks may not have registered yet)
+- If CI failures or a merge conflict are already known while other checks are still pending: waits for all checks to finish before attempting an auto-fix
 - On CI failure: fetches the failed run log (last 32KiB via `gh run view --log-failed`), sends it to the agent for fixing, and commits and force-pushes only if the agent produces changes
 - On merge conflict: asks the agent to rebase onto the latest default-branch tip and resolve the conflicts with minimal changes
 - If both CI failures and merge conflicts are present: fixes both in the same attempt
