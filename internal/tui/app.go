@@ -98,6 +98,7 @@ type Model struct {
 	err              error
 	quitting         bool
 	done             bool // run completed or failed
+	rerunPending     bool
 	rerunRequestID   uint64
 	showDiff         bool // toggle diff viewer
 	showHelp         bool // toggle help overlay
@@ -169,6 +170,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.requestID != m.rerunRequestID {
 			return m, nil
 		}
+		m.rerunPending = false
 		if m.cancelSub != nil {
 			m.cancelSub()
 		}
@@ -182,6 +184,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.requestID != m.rerunRequestID {
 			return m, nil
 		}
+		m.rerunPending = false
 		m.err = msg.err
 		return m, nil
 
@@ -998,6 +1001,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "r":
+		if m.rerunPending || !canRerun(m.run) {
+			return m, nil
+		}
+		m.rerunPending = true
 		m.rerunRequestID++
 		return m, m.rerunCmd(m.rerunRequestID)
 	case "x":
@@ -1112,7 +1119,7 @@ func (m Model) subscribeCmd() tea.Cmd {
 			RunID: m.runID,
 		})
 		if err != nil {
-			return errMsg{fmt.Errorf("subscribe: %w", err)}
+			return subscriptionErrMsg{err: fmt.Errorf("subscribe: %w", err), subscriptionID: m.subscriptionID}
 		}
 		return connectedMsg{events: events, cancelSub: cancel, subscriptionID: m.subscriptionID}
 	}

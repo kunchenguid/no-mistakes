@@ -746,6 +746,32 @@ func TestModel_Update_RerunStartedSkipsSubscribeForTerminalRun(t *testing.T) {
 	}
 }
 
+func TestModel_SubscribeCmdReturnsScopedError(t *testing.T) {
+	run := testRun()
+	m := NewModel(filepath.Join(t.TempDir(), "missing.sock"), nil, run)
+	m.subscriptionID = 7
+
+	cmd := m.subscribeCmd()
+	if cmd == nil {
+		t.Fatal("expected subscribe command")
+	}
+
+	msg := cmd()
+	subErr, ok := msg.(subscriptionErrMsg)
+	if !ok {
+		t.Fatalf("expected subscriptionErrMsg, got %T", msg)
+	}
+	if subErr.subscriptionID != m.subscriptionID {
+		t.Fatalf("subscriptionID = %d, want %d", subErr.subscriptionID, m.subscriptionID)
+	}
+	if subErr.err == nil || !strings.Contains(subErr.err.Error(), "subscribe:") {
+		t.Fatalf("expected wrapped subscribe error, got %v", subErr.err)
+	}
+	if _, ok := msg.(errMsg); ok {
+		t.Fatal("expected subscribe failure to avoid errMsg")
+	}
+}
+
 func TestModel_Update_IgnoresStaleSubscriptionMessagesAfterRerun(t *testing.T) {
 	run := testRun()
 	m := NewModel("/tmp/sock", nil, run)
@@ -802,6 +828,46 @@ func TestModel_Update_IgnoresStaleSubscriptionMessagesAfterRerun(t *testing.T) {
 	if model.run.Status != types.RunRunning {
 		t.Fatalf("run status = %s, want %s", model.run.Status, types.RunRunning)
 	}
+}
+
+func TestModel_Update_IgnoresRepeatedRerunKeyWhilePending(t *testing.T) {
+	sock := testSocketPath(t)
+	srv := startTestIPCServer(t, sock)
+
+	client, err := ipc.Dial(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	run := testRun()
+	run.Status = types.RunFailed
+	m := NewModel(sock, client, run)
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	model := updated.(Model)
+	if cmd == nil {
+		t.Fatal("expected first rerun key to start rerun")
+	}
+	if !model.rerunPending {
+		t.Fatal("expected rerun to become pending")
+	}
+	if model.rerunRequestID != 1 {
+		t.Fatalf("rerunRequestID = %d, want 1", model.rerunRequestID)
+	}
+
+	updated, secondCmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	model = updated.(Model)
+	if secondCmd != nil {
+		t.Fatal("expected repeated rerun key to be ignored while pending")
+	}
+	if !model.rerunPending {
+		t.Fatal("expected rerun to remain pending")
+	}
+	if model.rerunRequestID != 1 {
+		t.Fatalf("rerunRequestID = %d, want 1", model.rerunRequestID)
+	}
+	_ = srv
 }
 
 func TestModel_Update_IgnoresStaleRerunStartedMessage(t *testing.T) {
