@@ -413,7 +413,7 @@ func (u *updater) run(ctx context.Context) error {
 	}
 	if u.resetDaemon != nil {
 		if err := u.resetDaemon(); err != nil {
-			return fmt.Errorf("reset daemon: %w", err)
+			fmt.Fprintf(u.stderrWriter(), "updated %s to %s, but failed to reset daemon: %v\n", u.appName, plan.LatestVersion, err)
 		}
 	}
 	fmt.Fprintf(u.stdoutWriter(), "updated %s from %s to %s\n", u.appName, u.currentVersion, plan.LatestVersion)

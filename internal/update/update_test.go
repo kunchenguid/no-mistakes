@@ -401,6 +401,77 @@ func TestUpdaterRunResetsDaemonAfterUpdate(t *testing.T) {
 	}
 }
 
+func TestUpdaterRunKeepsSuccessfulUpdateWhenDaemonResetFails(t *testing.T) {
+	allowInsecureDownloads = true
+	t.Cleanup(func() { allowInsecureDownloads = false })
+
+	archiveName := "no-mistakes-v1.2.3-darwin-arm64.tar.gz"
+	archive := makeTarGz(t, map[string][]byte{
+		"bin/no-mistakes": []byte("new-binary"),
+	})
+	sum := sha256.Sum256(archive)
+	checksums := fmt.Sprintf("%s  %s\n", hex.EncodeToString(sum[:]), archiveName)
+
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/kunchenguid/no-mistakes/releases/latest":
+			fmt.Fprintf(w, `{"tag_name":"v1.2.3","assets":[{"name":%q,"browser_download_url":%q},{"name":"checksums.txt","browser_download_url":%q}]}`,
+				archiveName,
+				server.URL+"/archive",
+				server.URL+"/checksums",
+			)
+		case "/archive":
+			w.Write(archive)
+		case "/checksums":
+			fmt.Fprint(w, checksums)
+		default:
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	execPath := filepath.Join(t.TempDir(), "no-mistakes")
+	if err := os.WriteFile(execPath, []byte("old-binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout := new(bytes.Buffer)
+	stderr := new(bytes.Buffer)
+	u := &updater{
+		appName:        "no-mistakes",
+		repo:           "kunchenguid/no-mistakes",
+		currentVersion: "v1.2.2",
+		platform:       platformSpec{GOOS: "darwin", GOARCH: "arm64"},
+		apiBaseURL:     server.URL,
+		httpClient:     server.Client(),
+		executablePath: execPath,
+		stdout:         stdout,
+		stderr:         stderr,
+		now:            func() time.Time { return time.Date(2026, 4, 9, 12, 0, 0, 0, time.UTC) },
+		resetDaemon: func() error {
+			return fmt.Errorf("boom")
+		},
+	}
+
+	if err := u.run(context.Background()); err != nil {
+		t.Fatalf("run error = %v", err)
+	}
+	content, err := os.ReadFile(execPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "new-binary" {
+		t.Fatalf("executable content = %q", string(content))
+	}
+	if !strings.Contains(stdout.String(), "updated no-mistakes") {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "reset daemon") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
 func TestReplaceExecutableDarwinRequiresAtomicReplace(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("darwin-specific behavior")
