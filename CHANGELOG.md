@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.1](https://github.com/kunchenguid/no-mistakes/compare/v1.2.0...v1.2.1) (2026-04-15)
+
+
+### Bug Fixes
+
+* **prompts:** ensure documentation prompts are updated ([#74](https://github.com/kunchenguid/no-mistakes/issues/74)) ([37f5e76](https://github.com/kunchenguid/no-mistakes/commit/37f5e76510c0776a999847564f842180b8e77c72))
+* **update:** guard daemon restarts by executable path ([#76](https://github.com/kunchenguid/no-mistakes/issues/76)) ([8d2782d](https://github.com/kunchenguid/no-mistakes/commit/8d2782ddbef6ff5820b4a5e9ed06b2f0eb2773af))
+
 ## [1.2.0](https://github.com/kunchenguid/no-mistakes/compare/v1.1.1...v1.2.0) (2026-04-15)
 
 
