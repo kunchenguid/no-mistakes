@@ -813,6 +813,30 @@ func TestUpdaterMaybeNotifyAndCheck(t *testing.T) {
 	}
 }
 
+func TestUpdaterCachedLatestVersion(t *testing.T) {
+	cachePath := filepath.Join(t.TempDir(), "update-check.json")
+	if err := writeCache(cachePath, &checkCache{
+		CheckedAt:     time.Date(2026, 4, 8, 12, 0, 0, 0, time.UTC),
+		LatestVersion: "v1.2.3",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	u := &updater{
+		currentVersion: "v1.2.2",
+		cachePath:      cachePath,
+	}
+
+	if got := u.cachedLatestVersion(); got != "v1.2.3" {
+		t.Fatalf("cachedLatestVersion() = %q, want %q", got, "v1.2.3")
+	}
+
+	u.currentVersion = "v1.2.3"
+	if got := u.cachedLatestVersion(); got != "" {
+		t.Fatalf("cachedLatestVersion() = %q, want empty when already current", got)
+	}
+}
+
 func stringsRepeat(s string, count int) string {
 	buf := bytes.NewBuffer(nil)
 	for i := 0; i < count; i++ {

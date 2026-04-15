@@ -152,6 +152,14 @@ func MaybeNotifyAndCheck(args []string, stderr io.Writer) {
 	u.maybeNotifyAndCheck(args)
 }
 
+func CachedLatestVersion() string {
+	u, err := defaultUpdater(io.Discard, io.Discard)
+	if err != nil {
+		return ""
+	}
+	return u.cachedLatestVersion()
+}
+
 func defaultUpdater(stdout, stderr io.Writer) (*updater, error) {
 	p, err := paths.New()
 	if err != nil {
@@ -383,6 +391,21 @@ func (u *updater) maybeNotifyAndCheck(args []string) {
 	if cacheStale(cache, u.currentVersion, u.now()) && u.spawnBackground != nil {
 		_ = u.spawnBackground(u.currentVersion)
 	}
+}
+
+func (u *updater) cachedLatestVersion() string {
+	if u == nil || u.disableBackground || isDevVersion(u.currentVersion) || os.Getenv(noUpdateCheckEnv) == "1" {
+		return ""
+	}
+	cache := readCache(u.cachePath)
+	if cache == nil {
+		return ""
+	}
+	cmp, err := compareVersions(u.currentVersion, cache.LatestVersion)
+	if err != nil || cmp >= 0 {
+		return ""
+	}
+	return cache.LatestVersion
 }
 
 func (u *updater) run(ctx context.Context) error {

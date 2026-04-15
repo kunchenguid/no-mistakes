@@ -95,6 +95,7 @@ type Model struct {
 	// UI.
 	width            int
 	height           int
+	latestVersion    string
 	err              error
 	quitting         bool
 	done             bool // run completed or failed
@@ -311,7 +312,7 @@ func (m Model) View() string {
 	}
 	actionBar := renderActionBar(m.steps, showSelectionActions, allowFix, m.showDiff, selectedCount, totalCount, m.confirmAbort, hasDiff)
 
-	footer := renderFooter(m.done, m.showHelp, m.confirmAbort, m.run, m.width)
+	footer := renderFooter(m.done, m.showHelp, m.confirmAbort, m.run, m.latestVersion, m.width)
 	contentBudget := -1
 	if m.height > 0 {
 		baseSections := []string{}
@@ -580,8 +581,9 @@ func renderErrorBox(err error, width int) string {
 	return renderBox("Error", errContent.String(), boxWidth)
 }
 
-func renderFooter(done bool, showHelp bool, confirmAbort bool, run *ipc.RunInfo, width int) string {
+func renderFooter(done bool, showHelp bool, confirmAbort bool, run *ipc.RunInfo, latestVersion string, width int) string {
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
+	warnStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiYellow))
 	boldKey := lipgloss.NewStyle().Bold(true)
 	qLabel := "detach"
 	if done {
@@ -608,23 +610,43 @@ func renderFooter(done bool, showHelp bool, confirmAbort bool, run *ipc.RunInfo,
 	if run != nil {
 		prURL = run.PRURL
 	}
+
+	rightParts := []string{}
+	if latestVersion != "" {
+		rightParts = append(rightParts, warnStyle.Render(latestVersion+" available"))
+	}
 	if prURL == nil || *prURL == "" {
-		return left
+		if len(rightParts) == 0 {
+			return left
+		}
+		right := strings.Join(rightParts, "  ")
+		gap := width - lipgloss.Width(left) - lipgloss.Width(right)
+		if gap < 2 {
+			return left
+		}
+		return left + strings.Repeat(" ", gap) + right
 	}
 
 	left += "  " + boldKey.Render("o") + " " + dimStyle.Render("open PR")
 	leftWidth := lipgloss.Width(left)
+	reservedRightWidth := 0
+	if len(rightParts) > 0 {
+		reservedRightWidth = lipgloss.Width(strings.Join(rightParts, "  ")) + 2
+	}
+	available := width - leftWidth - reservedRightWidth - 2
 	prText := *prURL
-	available := width - leftWidth - 4
-	if available < len(prText) {
+	if available < lipgloss.Width(prText) {
 		prText = shortPRLabel(*prURL)
 	}
-	if available < len(prText) {
+	if available >= lipgloss.Width(prText) {
+		rightParts = append([]string{dimStyle.Render(prText)}, rightParts...)
+	}
+	if len(rightParts) == 0 {
 		return left
 	}
-	right := dimStyle.Render(prText) + "  "
+	right := strings.Join(rightParts, "  ")
 	gap := width - leftWidth - lipgloss.Width(right)
-	if gap < 1 {
+	if gap < 2 {
 		return left
 	}
 	return left + strings.Repeat(" ", gap) + right
@@ -1426,8 +1448,10 @@ func (m *Model) clearAllFindings(step types.StepName) {
 }
 
 // Run starts the TUI program.
-func Run(socketPath string, client *ipc.Client, run *ipc.RunInfo) error {
+
+func Run(socketPath string, client *ipc.Client, run *ipc.RunInfo, latestVersion string) error {
 	model := NewModel(socketPath, client, run)
+	model.latestVersion = latestVersion
 	p := tea.NewProgram(model, tea.WithAltScreen())
 	_, err := p.Run()
 	return err
