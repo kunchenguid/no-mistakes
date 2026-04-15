@@ -48,19 +48,20 @@ func resolveBranchBaseSHA(ctx context.Context, workDir, fallbackBaseSHA, default
 	return resolveBaseSHA(ctx, workDir, fallbackBaseSHA, defaultBranch)
 }
 
-func resolveDefaultBranchTipSHA(ctx context.Context, workDir, fallbackBaseSHA, defaultBranch string) string {
+func resolveDefaultBranchTipSHA(ctx context.Context, workDir, upstreamURL, fallbackBaseSHA, defaultBranch string) string {
 	if strings.TrimSpace(defaultBranch) != "" {
-		if err := git.FetchRemoteBranch(ctx, workDir, "origin", defaultBranch); err != nil {
+		remoteName := resolveUpstreamRemoteName(ctx, workDir, upstreamURL)
+		if err := git.FetchRemoteBranch(ctx, workDir, remoteName, defaultBranch); err != nil {
+			if !git.IsZeroSHA(fallbackBaseSHA) {
+				return fallbackBaseSHA
+			}
 			sha, localErr := git.Run(ctx, workDir, "rev-parse", "--verify", defaultBranch)
 			if localErr == nil && strings.TrimSpace(sha) != "" {
 				return strings.TrimSpace(sha)
 			}
-			if !git.IsZeroSHA(fallbackBaseSHA) {
-				return fallbackBaseSHA
-			}
 			return git.EmptyTreeSHA
 		}
-		for _, ref := range []string{"origin/" + defaultBranch, defaultBranch} {
+		for _, ref := range []string{remoteName + "/" + defaultBranch, defaultBranch} {
 			sha, err := git.Run(ctx, workDir, "rev-parse", "--verify", ref)
 			if err == nil && strings.TrimSpace(sha) != "" {
 				return strings.TrimSpace(sha)
@@ -68,6 +69,23 @@ func resolveDefaultBranchTipSHA(ctx context.Context, workDir, fallbackBaseSHA, d
 		}
 	}
 	return resolveBaseSHA(ctx, workDir, fallbackBaseSHA, defaultBranch)
+}
+
+func resolveUpstreamRemoteName(ctx context.Context, workDir, upstreamURL string) string {
+	if strings.TrimSpace(upstreamURL) == "" {
+		return "origin"
+	}
+	remotes, err := git.Run(ctx, workDir, "remote")
+	if err != nil {
+		return "origin"
+	}
+	for _, remote := range strings.Fields(remotes) {
+		url, urlErr := git.GetRemoteURL(ctx, workDir, remote)
+		if urlErr == nil && strings.TrimSpace(url) == strings.TrimSpace(upstreamURL) {
+			return remote
+		}
+	}
+	return "origin"
 }
 
 func mergeBaseWithDefaultBranch(ctx context.Context, workDir, defaultBranch string) string {
