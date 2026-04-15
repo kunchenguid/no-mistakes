@@ -1,8 +1,12 @@
 package tui
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"runtime"
@@ -24,6 +28,39 @@ func stripANSI(s string) string {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+func testSocketPath(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "tui-ipc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return filepath.Join(dir, "s.sock")
+}
+
+func startTestIPCServer(t *testing.T, sock string) *ipc.Server {
+	t.Helper()
+	srv := ipc.NewServer()
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.Serve(sock) }()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		c, err := ipc.Dial(sock)
+		if err == nil {
+			_ = c.Close()
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Cleanup(func() {
+		srv.Close()
+		<-errCh
+	})
+	return srv
+}
 
 func testRun() *ipc.RunInfo {
 	return &ipc.RunInfo{
@@ -440,7 +477,10 @@ func TestModel_ApplyEvent_RunCompleted_PRURL(t *testing.T) {
 func TestRenderFooter_WithPRURL_ShowsOpenAction(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
 	prURL := "https://github.com/test/repo/pull/42"
-	footer := renderFooter(true, false, false, &prURL, 80)
+	run := testRun()
+	run.Status = types.RunCompleted
+	run.PRURL = &prURL
+	footer := renderFooter(true, false, false, run, 80)
 	stripped := stripANSI(footer)
 
 	if !strings.Contains(stripped, "o") || !strings.Contains(stripped, "open PR") {
@@ -461,11 +501,26 @@ func TestRenderFooter_WithoutPRURL(t *testing.T) {
 	}
 }
 
+func TestRenderFooter_FailedRun_ShowsRerun(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	run := testRun()
+	run.Status = types.RunFailed
+	footer := renderFooter(true, false, false, run, 80)
+	stripped := stripANSI(footer)
+
+	if !strings.Contains(stripped, "rerun") {
+		t.Fatalf("expected footer to contain rerun action, got: %s", stripped)
+	}
+}
+
 func TestRenderFooter_PRURL_ActionShownAtNarrowWidth(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
 	prURL := "https://github.com/test/repo/pull/42"
 	// Even at narrow width, "open PR" action should appear
-	footer := renderFooter(true, false, false, &prURL, 40)
+	run := testRun()
+	run.Status = types.RunCompleted
+	run.PRURL = &prURL
+	footer := renderFooter(true, false, false, run, 40)
 	stripped := stripANSI(footer)
 
 	if !strings.Contains(stripped, "open PR") {
@@ -576,6 +631,95 @@ func TestModel_Update_OpenPRKeyRunsBrowserCommand(t *testing.T) {
 	}
 	if !reflect.DeepEqual(gotArgs, wantArgs) {
 		t.Fatalf("unexpected command args: got %v want %v", gotArgs, wantArgs)
+	}
+}
+
+func TestModel_Update_RerunKeyStartsNewRunAndSwitchesModel(t *testing.T) {
+	sock := testSocketPath(t)
+	srv := startTestIPCServer(t, sock)
+
+	newRun := testRun()
+	newRun.ID = "run-002"
+	newRun.Status = types.RunRunning
+	newRun.Error = nil
+
+	srv.Handle(ipc.MethodRerun, func(_ context.Context, raw json.RawMessage) (interface{}, error) {
+		var params ipc.RerunParams
+		if err := json.Unmarshal(raw, &params); err != nil {
+			return nil, err
+		}
+		if params.RepoID != "repo-001" || params.Branch != "feature/foo" {
+			return nil, fmt.Errorf("unexpected rerun params: %#v", params)
+		}
+		return &ipc.RerunResult{RunID: newRun.ID}, nil
+	})
+	srv.Handle(ipc.MethodGetRun, func(_ context.Context, raw json.RawMessage) (interface{}, error) {
+		var params ipc.GetRunParams
+		if err := json.Unmarshal(raw, &params); err != nil {
+			return nil, err
+		}
+		if params.RunID != newRun.ID {
+			return nil, fmt.Errorf("unexpected get_run id: %s", params.RunID)
+		}
+		return &ipc.GetRunResult{Run: newRun}, nil
+	})
+	srv.HandleStream(ipc.MethodSubscribe, func(_ context.Context, raw json.RawMessage, send func(interface{}) error) error {
+		var params ipc.SubscribeParams
+		if err := json.Unmarshal(raw, &params); err != nil {
+			return err
+		}
+		if params.RunID != newRun.ID {
+			return fmt.Errorf("unexpected subscribe id: %s", params.RunID)
+		}
+		return nil
+	})
+
+	client, err := ipc.Dial(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	run := testRun()
+	run.Status = types.RunFailed
+	run.Error = ptr("push failed")
+	m := NewModel(sock, client, run)
+	m.width = 80
+	m.height = 24
+	m.err = errors.New("old error")
+	m.logs = []string{"old log"}
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	if cmd == nil {
+		t.Fatal("expected rerun command")
+	}
+	msg := cmd()
+	if _, ok := msg.(rerunStartedMsg); !ok {
+		t.Fatalf("expected rerunStartedMsg, got %T", msg)
+	}
+
+	updated, nextCmd := updated.(Model).Update(msg)
+	model := updated.(Model)
+	if model.runID != newRun.ID {
+		t.Fatalf("runID = %s, want %s", model.runID, newRun.ID)
+	}
+	if model.run == nil || model.run.ID != newRun.ID {
+		t.Fatalf("run = %#v, want new run %#v", model.run, newRun)
+	}
+	if model.run.Status != types.RunRunning {
+		t.Fatalf("run status = %s, want %s", model.run.Status, types.RunRunning)
+	}
+	if model.done {
+		t.Fatal("expected rerun model to no longer be done")
+	}
+	if model.err != nil {
+		t.Fatalf("expected rerun to clear error, got %v", model.err)
+	}
+	if len(model.logs) != 0 {
+		t.Fatalf("expected rerun to clear logs, got %v", model.logs)
+	}
+	if nextCmd == nil {
+		t.Fatal("expected subscribe command after rerun")
 	}
 }
 

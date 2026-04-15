@@ -19,6 +19,9 @@ type eventMsg ipc.Event
 // errMsg wraps an error from async operations.
 type errMsg struct{ err error }
 
+// rerunStartedMsg switches the TUI onto a newly created rerun.
+type rerunStartedMsg struct{ run *ipc.RunInfo }
+
 type spinnerTickMsg struct{}
 
 const spinnerTickInterval = 120 * time.Millisecond
@@ -136,6 +139,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.cancelSub = msg.cancelSub
 		return m, tea.Batch(m.waitForEvent(), m.startSpinnerIfNeeded())
 
+	case rerunStartedMsg:
+		if m.cancelSub != nil {
+			m.cancelSub()
+		}
+		m.resetForRun(msg.run)
+		return m, tea.Batch(m.subscribeCmd(), m.startSpinnerIfNeeded())
+
 	case eventMsg:
 		m.applyEvent(ipc.Event(msg))
 		if m.done {
@@ -249,11 +259,7 @@ func (m Model) View() string {
 	}
 	actionBar := renderActionBar(m.steps, showSelectionActions, allowFix, m.showDiff, selectedCount, totalCount, m.confirmAbort, hasDiff)
 
-	var prURL *string
-	if m.run != nil {
-		prURL = m.run.PRURL
-	}
-	footer := renderFooter(m.done, m.showHelp, m.confirmAbort, prURL, m.width)
+	footer := renderFooter(m.done, m.showHelp, m.confirmAbort, m.run, m.width)
 	contentBudget := -1
 	if m.height > 0 {
 		baseSections := []string{}
@@ -522,7 +528,7 @@ func renderErrorBox(err error, width int) string {
 	return renderBox("Error", errContent.String(), boxWidth)
 }
 
-func renderFooter(done bool, showHelp bool, confirmAbort bool, prURL *string, width int) string {
+func renderFooter(done bool, showHelp bool, confirmAbort bool, run *ipc.RunInfo, width int) string {
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
 	boldKey := lipgloss.NewStyle().Bold(true)
 	qLabel := "detach"
@@ -542,6 +548,14 @@ func renderFooter(done bool, showHelp bool, confirmAbort bool, prURL *string, wi
 		left += "  " + boldKey.Render("x") + " " + dimStyle.Render(xLabel)
 	}
 	left += "  " + boldKey.Render("?") + " " + dimStyle.Render(helpLabel)
+	if canRerun(run) {
+		left += "  " + boldKey.Render("r") + " " + dimStyle.Render("rerun")
+	}
+
+	var prURL *string
+	if run != nil {
+		prURL = run.PRURL
+	}
 	if prURL == nil || *prURL == "" {
 		return left
 	}
@@ -934,6 +948,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, openBrowserCmd(*m.run.PRURL)
 		}
 		return m, nil
+	case "r":
+		return m, m.rerunCmd()
 	case "x":
 		if m.done || m.run == nil {
 			return m, nil
@@ -946,6 +962,48 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, nil
+}
+
+func canRerun(run *ipc.RunInfo) bool {
+	if run == nil {
+		return false
+	}
+	switch run.Status {
+	case types.RunFailed, types.RunCancelled:
+		return true
+	default:
+		return false
+	}
+}
+
+func (m Model) rerunCmd() tea.Cmd {
+	if !canRerun(m.run) || m.client == nil || m.run == nil {
+		return nil
+	}
+	repoID := m.run.RepoID
+	branch := m.run.Branch
+	return func() tea.Msg {
+		var rerun ipc.RerunResult
+		if err := m.client.Call(ipc.MethodRerun, &ipc.RerunParams{RepoID: repoID, Branch: branch}, &rerun); err != nil {
+			return errMsg{err}
+		}
+		var result ipc.GetRunResult
+		if err := m.client.Call(ipc.MethodGetRun, &ipc.GetRunParams{RunID: rerun.RunID}, &result); err != nil {
+			return errMsg{fmt.Errorf("load rerun: %w", err)}
+		}
+		if result.Run == nil {
+			return errMsg{fmt.Errorf("load rerun: run %s not found", rerun.RunID)}
+		}
+		return rerunStartedMsg{run: result.Run}
+	}
+}
+
+func (m *Model) resetForRun(run *ipc.RunInfo) {
+	width, height := m.width, m.height
+	fresh := NewModel(m.socketPath, m.client, run)
+	fresh.width = width
+	fresh.height = height
+	*m = fresh
 }
 
 func (m Model) respondCmd(action types.ApprovalAction) tea.Cmd {
