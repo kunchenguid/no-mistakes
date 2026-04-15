@@ -404,7 +404,7 @@ func TestUpdaterRunResetsDaemonAfterUpdate(t *testing.T) {
 	}
 }
 
-func TestUpdaterRunKeepsSuccessfulUpdateWhenDaemonResetFails(t *testing.T) {
+func TestUpdaterRunFailsWhenDaemonResetFails(t *testing.T) {
 	allowInsecureDownloads = true
 	t.Cleanup(func() { allowInsecureDownloads = false })
 
@@ -457,7 +457,11 @@ func TestUpdaterRunKeepsSuccessfulUpdateWhenDaemonResetFails(t *testing.T) {
 		},
 	}
 
-	if err := u.run(context.Background()); err != nil {
+	err := u.run(context.Background())
+	if err == nil {
+		t.Fatal("run should fail when daemon reset fails")
+	}
+	if !strings.Contains(err.Error(), "failed to reset daemon") {
 		t.Fatalf("run error = %v", err)
 	}
 	content, err := os.ReadFile(execPath)
@@ -467,10 +471,10 @@ func TestUpdaterRunKeepsSuccessfulUpdateWhenDaemonResetFails(t *testing.T) {
 	if string(content) != "new-binary" {
 		t.Fatalf("executable content = %q", string(content))
 	}
-	if !strings.Contains(stdout.String(), "updated no-mistakes") {
+	if stdout.Len() != 0 {
 		t.Fatalf("stdout = %q", stdout.String())
 	}
-	if !strings.Contains(stderr.String(), "reset daemon") {
+	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q", stderr.String())
 	}
 }

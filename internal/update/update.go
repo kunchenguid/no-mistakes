@@ -434,7 +434,7 @@ func (u *updater) run(ctx context.Context) error {
 			if errors.As(err, &resetErr) && resetErr.daemonOffline {
 				return fmt.Errorf("updated %s to %s, but daemon is offline: %w", u.appName, plan.LatestVersion, err)
 			}
-			fmt.Fprintf(u.stderrWriter(), "updated %s to %s, but failed to reset daemon: %v\n", u.appName, plan.LatestVersion, err)
+			return fmt.Errorf("updated %s to %s, but failed to reset daemon: %w", u.appName, plan.LatestVersion, err)
 		}
 	}
 	fmt.Fprintf(u.stdoutWriter(), "updated %s from %s to %s\n", u.appName, u.currentVersion, plan.LatestVersion)
