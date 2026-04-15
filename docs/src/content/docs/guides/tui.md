@@ -83,6 +83,10 @@ During running steps, shows streaming agent output. Lines starting with `PASS` a
 
 On narrow terminals, the log panel expands to fill the remaining vertical space below the pipeline box instead of staying at the compact fixed height used in shorter layouts.
 
+### Footer
+
+The footer shows detach/help actions and, when `no-mistakes attach` has a cached newer release available, a right-aligned `<version> available` indicator. That update indicator stays visible after reruns in the same TUI session.
+
 ## Keybindings
 
 ### Navigation

@@ -480,7 +480,7 @@ func TestRenderFooter_WithPRURL_ShowsOpenAction(t *testing.T) {
 	run := testRun()
 	run.Status = types.RunCompleted
 	run.PRURL = &prURL
-	footer := renderFooter(true, false, false, run, 80)
+	footer := renderFooter(true, false, false, run, "", 80)
 	stripped := stripANSI(footer)
 
 	if !strings.Contains(stripped, "o") || !strings.Contains(stripped, "open PR") {
@@ -493,7 +493,7 @@ func TestRenderFooter_WithPRURL_ShowsOpenAction(t *testing.T) {
 
 func TestRenderFooter_WithoutPRURL(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
-	footer := renderFooter(false, false, false, nil, 80)
+	footer := renderFooter(false, false, false, nil, "", 80)
 	stripped := stripANSI(footer)
 
 	if strings.Contains(stripped, "open PR") {
@@ -505,7 +505,7 @@ func TestRenderFooter_FailedRun_ShowsRerun(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
 	run := testRun()
 	run.Status = types.RunFailed
-	footer := renderFooter(true, false, false, run, 80)
+	footer := renderFooter(true, false, false, run, "", 80)
 	stripped := stripANSI(footer)
 
 	if !strings.Contains(stripped, "rerun") {
@@ -520,11 +520,25 @@ func TestRenderFooter_PRURL_ActionShownAtNarrowWidth(t *testing.T) {
 	run := testRun()
 	run.Status = types.RunCompleted
 	run.PRURL = &prURL
-	footer := renderFooter(true, false, false, run, 40)
+	footer := renderFooter(true, false, false, run, "", 40)
 	stripped := stripANSI(footer)
 
 	if !strings.Contains(stripped, "open PR") {
 		t.Errorf("expected footer to contain 'open PR' action, got: %s", stripped)
+	}
+}
+
+func TestRenderFooter_WithAvailableUpdate_ShowsIndicator(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	footer := renderFooter(false, false, false, nil, "v1.2.3", 80)
+	stripped := stripANSI(footer)
+
+	if !strings.Contains(stripped, "v1.2.3 available") {
+		t.Fatalf("expected footer to contain update indicator, got: %s", stripped)
+	}
+
+	if !strings.HasSuffix(strings.TrimRight(stripped, " "), "v1.2.3 available") {
+		t.Fatalf("expected update indicator at right edge, got: %s", stripped)
 	}
 }
 
@@ -743,6 +757,24 @@ func TestModel_Update_RerunStartedSkipsSubscribeForTerminalRun(t *testing.T) {
 	}
 	if cmd != nil {
 		t.Fatal("expected no subscribe command for terminal rerun")
+	}
+}
+
+func TestModel_Update_RerunPreservesLatestVersion(t *testing.T) {
+	run := testRun()
+	run.Status = types.RunFailed
+	m := NewModel("/tmp/sock", nil, run)
+	m.latestVersion = "v1.2.3"
+
+	newRun := testRun()
+	newRun.ID = "run-002"
+	newRun.Status = types.RunRunning
+
+	updated, _ := m.Update(rerunStartedMsg{run: newRun})
+	model := updated.(Model)
+
+	if model.latestVersion != "v1.2.3" {
+		t.Fatalf("latestVersion = %q, want %q", model.latestVersion, "v1.2.3")
 	}
 }
 
@@ -4612,7 +4644,7 @@ func TestModel_View_StackedLogBoxFillsRemainingHeight(t *testing.T) {
 	}
 
 	pipelineView := renderPipelineView(run, m.stepsWithRunningElapsed(), m.width, 0, m.height)
-	footer := renderFooter(false, false, false, run, m.width)
+	footer := renderFooter(false, false, false, run, "", m.width)
 	expectedLogLines := m.height - sectionsHeight([]string{pipelineView}, 2) - 2 - lipgloss.Height(footer) - 2
 	if expectedLogLines <= 5 {
 		t.Fatalf("expected stacked layout to leave room for more than 5 log lines, got %d", expectedLogLines)

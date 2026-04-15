@@ -11,6 +11,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/tui"
+	"github.com/kunchenguid/no-mistakes/internal/update"
 	"github.com/spf13/cobra"
 )
 
@@ -74,7 +75,7 @@ func attachRun(w io.Writer, runID string) error {
 		return nil
 	}
 
-	return tui.Run(p.Socket(), client, run)
+	return tui.Run(p.Socket(), client, run, update.CachedLatestVersion())
 }
 
 const recentRunsLimit = 5
