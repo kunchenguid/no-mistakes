@@ -180,6 +180,31 @@ func TestBuildPipelineSummary_MultiRoundWithFollowUpFix(t *testing.T) {
 	}
 }
 
+func TestBuildPipelineSummary_LegacyUserFixRoundsRenderAsAutoFix(t *testing.T) {
+	t.Parallel()
+	findings := `{"findings":[{"id":"review-1","severity":"warning","description":"legacy round"}],"summary":"1 warning"}`
+	steps := []*db.StepResult{
+		{ID: "s1", StepName: types.StepReview, Status: types.StepStatusCompleted},
+	}
+	rounds := map[string][]*db.StepRound{
+		"s1": {
+			{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 1000},
+			{Round: 2, Trigger: "user_fix", DurationMS: 700},
+		},
+	}
+	md, _ := BuildPipelineSummary(steps, rounds)
+
+	if !strings.Contains(md, "auto-fixed") {
+		t.Errorf("expected legacy user_fix round to render as auto-fixed, got:\n%s", md)
+	}
+	if !strings.Contains(md, "Round 2** (auto-fix) - passed") {
+		t.Errorf("expected legacy user_fix round label to render as auto-fix, got:\n%s", md)
+	}
+	if strings.Contains(md, "user-fix") || strings.Contains(md, "user-fixed") {
+		t.Errorf("did not expect legacy user-fix wording in summary, got:\n%s", md)
+	}
+}
+
 func TestBuildPipelineSummary_MultiRoundStillFailing(t *testing.T) {
 	t.Parallel()
 	findings1 := `{"findings":[{"id":"lint-1","severity":"error","file":"pkg/foo.go","line":18,"description":"unused import"},{"id":"lint-2","severity":"warning","file":"pkg/bar.go","line":35,"description":"missing error check"}],"summary":"2 issues"}`
