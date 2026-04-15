@@ -469,13 +469,29 @@ func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, prNumber string, failingN
 
 	// Build prompt based on what issues are present
 	var promptIntro string
+	var promptRules string
 	switch {
 	case len(failingNames) > 0 && mergeConflict:
 		promptIntro = "The following CI checks have failed and the PR has merge conflicts with the base branch. Diagnose and fix the CI issues, then rebase onto the base branch and resolve the merge conflicts."
+		promptRules = `- You MUST produce file changes that fix the failing checks. Do not conclude that nothing needs to change.
+		- If a test fails only on a specific OS (e.g. Windows CRLF, path separators), fix the test to be cross-platform.
+		- If a test is flaky, make it deterministic.
+		- Make the minimal change needed.
+		- Do not refactor beyond what is needed.
+		- Verify the fix by running the most relevant commands locally before finishing.`
 	case mergeConflict:
 		promptIntro = "The PR has merge conflicts with the base branch. Rebase onto the base branch and resolve the merge conflicts."
+		promptRules = `- Resolve the merge conflicts by applying the minimal necessary changes.
+		- Do not make unrelated file edits.
+		- Verify the rebase completes cleanly before finishing.`
 	default:
 		promptIntro = "The following CI checks have failed on this PR. Diagnose and fix the issues."
+		promptRules = `- You MUST produce file changes that fix the failing checks. Do not conclude that nothing needs to change.
+		- If a test fails only on a specific OS (e.g. Windows CRLF, path separators), fix the test to be cross-platform.
+		- If a test is flaky, make it deterministic.
+		- Make the minimal change needed.
+		- Do not refactor beyond what is needed.
+		- Verify the fix by running the most relevant commands locally before finishing.`
 	}
 
 	prompt := fmt.Sprintf(
@@ -490,12 +506,7 @@ Context:
 - merge conflict: %v
 
 		Rules:
-		- You MUST produce file changes that fix the failing checks. Do not conclude that nothing needs to change.
-		- If a test fails only on a specific OS (e.g. Windows CRLF, path separators), fix the test to be cross-platform.
-		- If a test is flaky, make it deterministic.
-		- Make the minimal change needed.
-		- Do not refactor beyond what is needed.
-		- Verify the fix by running the most relevant commands locally before finishing.`,
+		%s`,
 		promptIntro,
 		sctx.Run.Branch,
 		baseSHA,
@@ -503,6 +514,7 @@ Context:
 		prNumber,
 		strings.Join(failingNames, ", "),
 		mergeConflict,
+		promptRules,
 	)
 	if logOutput != "" {
 		prompt += fmt.Sprintf(`

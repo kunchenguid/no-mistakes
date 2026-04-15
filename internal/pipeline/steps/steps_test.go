@@ -7312,10 +7312,12 @@ func TestCIStep_MergeConflictOnly_AutoFix(t *testing.T) {
 	env := fakeCIGHMergeable(t, "OPEN", checksJSON, "CONFLICTING")
 
 	agentCalled := false
+	var capturedPrompt string
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 			agentCalled = true
+			capturedPrompt = opts.Prompt
 			os.WriteFile(filepath.Join(opts.CWD, "conflict-fix.txt"), []byte("resolved"), 0o644)
 			return &agent.Result{}, nil
 		},
@@ -7347,6 +7349,12 @@ func TestCIStep_MergeConflictOnly_AutoFix(t *testing.T) {
 
 	if !agentCalled {
 		t.Fatal("expected agent to be called to resolve merge conflict")
+	}
+	if strings.Contains(capturedPrompt, "You MUST produce file changes that fix the failing checks") {
+		t.Fatalf("merge-conflict-only prompt should not require file changes for failing checks, got:\n%s", capturedPrompt)
+	}
+	if !strings.Contains(capturedPrompt, "Rebase onto the base branch and resolve the merge conflicts") {
+		t.Fatalf("expected merge-conflict-only prompt to focus on rebase flow, got:\n%s", capturedPrompt)
 	}
 
 	// Should log about merge conflict
