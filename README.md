@@ -95,6 +95,8 @@ To update an existing install in place:
 no-mistakes update
 ```
 
+This replaces the binary and resets the background daemon so it picks up the new executable. If the daemon does not come back cleanly, the new binary stays installed but the command reports the daemon reset failure.
+
 ## How It Works
 
 ```text
@@ -139,7 +141,7 @@ no-mistakes update
 | --------------------------- | ------------------------------------------------------ |
 | `no-mistakes`               | Attach to the active pipeline run for the current repo |
 | `no-mistakes init`          | Initialize the gate for the current repository         |
-| `no-mistakes update`        | Update the installed binary from GitHub Releases       |
+| `no-mistakes update`        | Update the binary and reset the daemon                 |
 | `no-mistakes eject`         | Remove the gate from the current repository            |
 | `no-mistakes attach`        | Attach to the active pipeline run                      |
 | `no-mistakes rerun`         | Rerun the pipeline for the current branch              |

@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -22,6 +23,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/buildinfo"
+	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 )
 
@@ -39,6 +41,22 @@ const (
 
 var allowInsecureDownloads bool
 var githubAPIBaseURL = "https://api.github.com"
+var daemonIsRunning = daemon.IsRunning
+var daemonStop = daemon.Stop
+var daemonStart = daemon.Start
+
+type daemonResetError struct {
+	err           error
+	daemonOffline bool
+}
+
+func (e *daemonResetError) Error() string {
+	return e.err.Error()
+}
+
+func (e *daemonResetError) Unwrap() error {
+	return e.err
+}
 
 type platformSpec struct {
 	GOOS   string
@@ -82,6 +100,7 @@ type updater struct {
 	stderr            io.Writer
 	now               func() time.Time
 	spawnBackground   func(currentVersion string) error
+	resetDaemon       func() error
 	disableBackground bool
 	noColor           bool
 }
@@ -155,6 +174,9 @@ func defaultUpdater(stdout, stderr io.Writer) (*updater, error) {
 		stderr:          stderr,
 		now:             time.Now,
 		spawnBackground: defaultSpawnBackground,
+		resetDaemon: func() error {
+			return defaultResetDaemon(p)
+		},
 	}, nil
 }
 
@@ -406,8 +428,45 @@ func (u *updater) run(ctx context.Context) error {
 	if err := replaceExecutable(u.executablePath, binaryData); err != nil {
 		return err
 	}
+	if u.resetDaemon != nil {
+		if err := u.resetDaemon(); err != nil {
+			var resetErr *daemonResetError
+			if errors.As(err, &resetErr) && resetErr.daemonOffline {
+				return fmt.Errorf("updated %s to %s, but daemon is offline: %w", u.appName, plan.LatestVersion, err)
+			}
+			return fmt.Errorf("updated %s to %s, but failed to reset daemon: %w", u.appName, plan.LatestVersion, err)
+		}
+	}
 	fmt.Fprintf(u.stdoutWriter(), "updated %s from %s to %s\n", u.appName, u.currentVersion, plan.LatestVersion)
 	return nil
+}
+
+func defaultResetDaemon(p *paths.Paths) error {
+	if p == nil {
+		return nil
+	}
+	alive, err := daemonIsRunning(p)
+	if err == nil && !alive && !daemonArtifactsExist(p) {
+		return nil
+	}
+	if err := daemonStop(p); err != nil {
+		return fmt.Errorf("stop daemon: %w", err)
+	}
+	if err := daemonStart(p); err != nil {
+		running, checkErr := daemonIsRunning(p)
+		offline := checkErr == nil && !running
+		return &daemonResetError{err: fmt.Errorf("start daemon: %w", err), daemonOffline: offline}
+	}
+	return nil
+}
+
+func daemonArtifactsExist(p *paths.Paths) bool {
+	for _, path := range []string{p.Socket(), p.PIDFile()} {
+		if _, err := os.Stat(path); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func (u *updater) fetchLatestRelease(ctx context.Context) (*releaseResponse, error) {
