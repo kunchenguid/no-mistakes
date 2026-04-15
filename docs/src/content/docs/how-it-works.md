@@ -58,7 +58,7 @@ A long-running background process that manages pipeline runs. It:
 - Persists state to SQLite
 - Streams events to connected TUI clients via IPC
 
-The daemon auto-starts when needed (`init`, `attach`, `rerun`) and can be managed explicitly with `no-mistakes daemon start|stop|status`.
+The daemon auto-starts when needed (`init`, `attach`, `rerun`), and `update` resets it after replacing the binary when the daemon is running or stale daemon artifacts exist. You can also manage it explicitly with `no-mistakes daemon start|stop|status`.
 
 On startup, the daemon recovers from crashes by marking any stuck runs as failed and cleaning up orphaned worktrees.
 

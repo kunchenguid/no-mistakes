@@ -17,7 +17,12 @@ no-mistakes daemon status
 no-mistakes init
 no-mistakes attach
 no-mistakes rerun
+
+# Resets the daemon after replacing the binary
+no-mistakes update
 ```
+
+`no-mistakes update` stops and starts the daemon when it is running, or when stale daemon artifacts exist, so the new executable is used.
 
 The daemon writes its PID to `~/.no-mistakes/daemon.pid` and listens on a Unix socket at `~/.no-mistakes/socket`. On Windows, it uses a localhost TCP listener and a protected endpoint file at the same path.
 

@@ -107,7 +107,7 @@ Uses indicators: `✓` (available), `–` (not found, optional), `✗` (problem 
 
 ## no-mistakes update
 
-Update the installed binary from GitHub Releases.
+Update the installed binary and reset the daemon.
 
 ```sh
 no-mistakes update
