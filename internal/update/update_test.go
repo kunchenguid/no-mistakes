@@ -645,6 +645,90 @@ func TestUpdaterRunFailsWhenDaemonUsesDifferentExecutable(t *testing.T) {
 	}
 }
 
+func TestUpdaterRunFailsWhenDaemonExecutableCannotBeResolved(t *testing.T) {
+	allowInsecureDownloads = true
+	t.Cleanup(func() { allowInsecureDownloads = false })
+
+	archiveName := "no-mistakes-v1.2.3-darwin-arm64.tar.gz"
+	archive := makeTarGz(t, map[string][]byte{
+		"bin/no-mistakes": []byte("new-binary"),
+	})
+	sum := sha256.Sum256(archive)
+	checksums := fmt.Sprintf("%s  %s\n", hex.EncodeToString(sum[:]), archiveName)
+
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/kunchenguid/no-mistakes/releases/latest":
+			fmt.Fprintf(w, `{"tag_name":"v1.2.3","assets":[{"name":%q,"browser_download_url":%q},{"name":"checksums.txt","browser_download_url":%q}]}`,
+				archiveName,
+				server.URL+"/archive",
+				server.URL+"/checksums",
+			)
+		case "/archive":
+			w.Write(archive)
+		case "/checksums":
+			fmt.Fprint(w, checksums)
+		default:
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	execDir := t.TempDir()
+	execPath := filepath.Join(execDir, "no-mistakes")
+	if err := os.WriteFile(execPath, []byte("old-binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	origDaemonIsRunning := daemonIsRunning
+	origDaemonExecutablePath := daemonExecutablePath
+	t.Cleanup(func() {
+		daemonIsRunning = origDaemonIsRunning
+		daemonExecutablePath = origDaemonExecutablePath
+	})
+
+	checks := 0
+	daemonIsRunning = func(*paths.Paths) (bool, error) {
+		checks++
+		return true, nil
+	}
+	daemonExecutablePath = func(*paths.Paths) (string, error) {
+		return "", errors.New("pid lookup failed")
+	}
+
+	resetCalled := false
+	u := &updater{
+		appName:        "no-mistakes",
+		repo:           "kunchenguid/no-mistakes",
+		currentVersion: "v1.2.2",
+		platform:       platformSpec{GOOS: "darwin", GOARCH: "arm64"},
+		apiBaseURL:     server.URL,
+		httpClient:     server.Client(),
+		executablePath: execPath,
+		now:            func() time.Time { return time.Date(2026, 4, 9, 12, 0, 0, 0, time.UTC) },
+		resetDaemon: func() error {
+			resetCalled = true
+			return nil
+		},
+		paths: paths.WithRoot(t.TempDir()),
+	}
+
+	err := u.run(context.Background())
+	if err == nil {
+		t.Fatal("run should fail when daemon executable cannot be resolved")
+	}
+	if !strings.Contains(err.Error(), "cannot determine daemon executable path") {
+		t.Fatalf("run error = %v", err)
+	}
+	if checks == 0 {
+		t.Fatal("expected daemon health check before update")
+	}
+	if resetCalled {
+		t.Fatal("reset daemon should not run when daemon executable cannot be resolved")
+	}
+}
+
 func TestDefaultResetDaemonReportsOfflineWhenRestartFails(t *testing.T) {
 	origIsRunning := daemonIsRunning
 	origStop := daemonStop

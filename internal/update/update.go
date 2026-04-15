@@ -480,7 +480,10 @@ func (u *updater) ensureDaemonUsesCurrentExecutable() error {
 	}
 	runningPath, err := daemonExecutablePath(u.paths)
 	if err != nil || runningPath == "" {
-		return nil
+		if err != nil {
+			return fmt.Errorf("cannot determine daemon executable path: %w", err)
+		}
+		return errors.New("cannot determine daemon executable path")
 	}
 	currentPath := resolveExecutablePath(u.executablePath)
 	runningPath = resolveExecutablePath(runningPath)
@@ -526,16 +529,26 @@ func runningDaemonExecutablePath(p *paths.Paths) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve daemon executable: %w", err)
 	}
-	cmd := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "comm=")
-	out, err := cmd.Output()
+	path, err := executablePathForPID(pid)
 	if err != nil {
 		return "", fmt.Errorf("resolve daemon executable: %w", err)
 	}
-	line := strings.TrimSpace(string(out))
-	if line == "" {
+	if path == "" {
 		return "", fmt.Errorf("resolve daemon executable: empty process command")
 	}
-	return resolveExecutablePath(line), nil
+	return resolveExecutablePath(path), nil
+}
+
+func executablePathForPID(pid int) (string, error) {
+	if runtime.GOOS == "linux" {
+		return os.Readlink(filepath.Join("/proc", strconv.Itoa(pid), "exe"))
+	}
+	cmd := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "comm=")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 func resolveExecutablePath(path string) string {
