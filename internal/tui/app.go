@@ -28,7 +28,15 @@ type subscriptionErrMsg struct {
 }
 
 // rerunStartedMsg switches the TUI onto a newly created rerun.
-type rerunStartedMsg struct{ run *ipc.RunInfo }
+type rerunStartedMsg struct {
+	run       *ipc.RunInfo
+	requestID uint64
+}
+
+type rerunErrMsg struct {
+	err       error
+	requestID uint64
+}
 
 type spinnerTickMsg struct{}
 
@@ -90,6 +98,7 @@ type Model struct {
 	err              error
 	quitting         bool
 	done             bool // run completed or failed
+	rerunRequestID   uint64
 	showDiff         bool // toggle diff viewer
 	showHelp         bool // toggle help overlay
 	confirmAbort     bool // true after first x press, next x actually aborts
@@ -157,6 +166,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.waitForEvent(), m.startSpinnerIfNeeded())
 
 	case rerunStartedMsg:
+		if msg.requestID != m.rerunRequestID {
+			return m, nil
+		}
 		if m.cancelSub != nil {
 			m.cancelSub()
 		}
@@ -165,6 +177,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, tea.Batch(m.subscribeCmd(), m.startSpinnerIfNeeded())
+
+	case rerunErrMsg:
+		if msg.requestID != m.rerunRequestID {
+			return m, nil
+		}
+		m.err = msg.err
+		return m, nil
 
 	case eventMsg:
 		if msg.subscriptionID != m.subscriptionID {
@@ -979,7 +998,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "r":
-		return m, m.rerunCmd()
+		m.rerunRequestID++
+		return m, m.rerunCmd(m.rerunRequestID)
 	case "x":
 		if m.done || m.run == nil {
 			return m, nil
@@ -1006,7 +1026,7 @@ func canRerun(run *ipc.RunInfo) bool {
 	}
 }
 
-func (m Model) rerunCmd() tea.Cmd {
+func (m Model) rerunCmd(requestID uint64) tea.Cmd {
 	if !canRerun(m.run) || m.client == nil || m.run == nil {
 		return nil
 	}
@@ -1015,16 +1035,16 @@ func (m Model) rerunCmd() tea.Cmd {
 	return func() tea.Msg {
 		var rerun ipc.RerunResult
 		if err := m.client.Call(ipc.MethodRerun, &ipc.RerunParams{RepoID: repoID, Branch: branch}, &rerun); err != nil {
-			return errMsg{err}
+			return rerunErrMsg{err: err, requestID: requestID}
 		}
 		var result ipc.GetRunResult
 		if err := m.client.Call(ipc.MethodGetRun, &ipc.GetRunParams{RunID: rerun.RunID}, &result); err != nil {
-			return errMsg{fmt.Errorf("load rerun: %w", err)}
+			return rerunErrMsg{err: fmt.Errorf("load rerun: %w", err), requestID: requestID}
 		}
 		if result.Run == nil {
-			return errMsg{fmt.Errorf("load rerun: run %s not found", rerun.RunID)}
+			return rerunErrMsg{err: fmt.Errorf("load rerun: run %s not found", rerun.RunID), requestID: requestID}
 		}
-		return rerunStartedMsg{run: result.Run}
+		return rerunStartedMsg{run: result.Run, requestID: requestID}
 	}
 }
 
@@ -1035,6 +1055,7 @@ func (m *Model) resetForRun(run *ipc.RunInfo) {
 	fresh.width = width
 	fresh.height = height
 	fresh.subscriptionID = nextSubscriptionID
+	fresh.rerunRequestID = m.rerunRequestID
 	*m = fresh
 }
 

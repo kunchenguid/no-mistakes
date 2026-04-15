@@ -804,6 +804,46 @@ func TestModel_Update_IgnoresStaleSubscriptionMessagesAfterRerun(t *testing.T) {
 	}
 }
 
+func TestModel_Update_IgnoresStaleRerunStartedMessage(t *testing.T) {
+	run := testRun()
+	m := NewModel("/tmp/sock", nil, run)
+	m.rerunRequestID = 2
+
+	staleRun := testRun()
+	staleRun.ID = "run-002"
+	staleRun.Status = types.RunRunning
+
+	updated, cmd := m.Update(rerunStartedMsg{run: staleRun, requestID: 1})
+	model := updated.(Model)
+
+	if model.runID != run.ID {
+		t.Fatalf("runID = %s, want %s", model.runID, run.ID)
+	}
+	if model.run == nil || model.run.ID != run.ID {
+		t.Fatalf("run = %#v, want original run %#v", model.run, run)
+	}
+	if cmd != nil {
+		t.Fatal("expected stale rerun message to be ignored")
+	}
+
+	currentRun := testRun()
+	currentRun.ID = "run-003"
+	currentRun.Status = types.RunRunning
+
+	updated, cmd = model.Update(rerunStartedMsg{run: currentRun, requestID: 2})
+	model = updated.(Model)
+
+	if model.runID != currentRun.ID {
+		t.Fatalf("runID = %s, want %s", model.runID, currentRun.ID)
+	}
+	if model.run == nil || model.run.ID != currentRun.ID {
+		t.Fatalf("run = %#v, want current run %#v", model.run, currentRun)
+	}
+	if cmd == nil {
+		t.Fatal("expected current rerun message to subscribe")
+	}
+}
+
 func TestModel_ApplyEvent_LogChunk(t *testing.T) {
 	run := testRun()
 	m := NewModel("/tmp/sock", nil, run)
