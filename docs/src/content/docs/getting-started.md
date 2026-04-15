@@ -109,7 +109,7 @@ To update an existing install in place:
 no-mistakes update
 ```
 
-This downloads the latest release from GitHub, verifies the SHA-256 checksum, atomically replaces the binary, and resets the daemon so it starts using the new executable. If the daemon does not come back cleanly, the command reports that failure after the binary update.
+This downloads the latest release from GitHub, verifies the SHA-256 checksum, atomically replaces the binary, and resets the daemon so it starts using the new executable when the running daemon is already using the same executable path. If the daemon executable path cannot be determined or it was started from a different binary, the update aborts before replacing the binary. If the daemon does not come back cleanly after a successful replacement, the command reports that failure.
 
 ## Remove from a repo
 
