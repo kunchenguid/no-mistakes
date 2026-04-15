@@ -14,10 +14,29 @@ import (
 )
 
 // eventMsg wraps an IPC event received from the daemon.
-type eventMsg ipc.Event
+type eventMsg struct {
+	event          ipc.Event
+	subscriptionID uint64
+}
 
 // errMsg wraps an error from async operations.
 type errMsg struct{ err error }
+
+type subscriptionErrMsg struct {
+	err            error
+	subscriptionID uint64
+}
+
+// rerunStartedMsg switches the TUI onto a newly created rerun.
+type rerunStartedMsg struct {
+	run       *ipc.RunInfo
+	requestID uint64
+}
+
+type rerunErrMsg struct {
+	err       error
+	requestID uint64
+}
 
 type spinnerTickMsg struct{}
 
@@ -45,18 +64,20 @@ func (e errMsg) Error() string { return e.err.Error() }
 
 // connectedMsg signals that the event subscription is ready.
 type connectedMsg struct {
-	events    <-chan ipc.Event
-	cancelSub func()
+	events         <-chan ipc.Event
+	cancelSub      func()
+	subscriptionID uint64
 }
 
 // Model is the root bubbletea model for the TUI.
 type Model struct {
 	// Connection.
-	socketPath string
-	client     *ipc.Client
-	events     <-chan ipc.Event
-	cancelSub  func()
-	runID      string
+	socketPath     string
+	client         *ipc.Client
+	events         <-chan ipc.Event
+	cancelSub      func()
+	runID          string
+	subscriptionID uint64
 
 	// State.
 	run               *ipc.RunInfo
@@ -77,6 +98,8 @@ type Model struct {
 	err              error
 	quitting         bool
 	done             bool // run completed or failed
+	rerunPending     bool
+	rerunRequestID   uint64
 	showDiff         bool // toggle diff viewer
 	showHelp         bool // toggle help overlay
 	confirmAbort     bool // true after first x press, next x actually aborts
@@ -92,6 +115,7 @@ func NewModel(socketPath string, client *ipc.Client, run *ipc.RunInfo) Model {
 		socketPath:        socketPath,
 		client:            client,
 		runID:             run.ID,
+		subscriptionID:    1,
 		run:               run,
 		done:              run.Status == types.RunCompleted || run.Status == types.RunFailed || run.Status == types.RunCancelled,
 		steps:             run.Steps,
@@ -132,16 +156,54 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case connectedMsg:
+		if msg.subscriptionID != m.subscriptionID {
+			if msg.cancelSub != nil {
+				msg.cancelSub()
+			}
+			return m, nil
+		}
 		m.events = msg.events
 		m.cancelSub = msg.cancelSub
 		return m, tea.Batch(m.waitForEvent(), m.startSpinnerIfNeeded())
 
+	case rerunStartedMsg:
+		if msg.requestID != m.rerunRequestID {
+			return m, nil
+		}
+		m.rerunPending = false
+		if m.cancelSub != nil {
+			m.cancelSub()
+		}
+		m.resetForRun(msg.run)
+		if m.done {
+			return m, nil
+		}
+		return m, tea.Batch(m.subscribeCmd(), m.startSpinnerIfNeeded())
+
+	case rerunErrMsg:
+		if msg.requestID != m.rerunRequestID {
+			return m, nil
+		}
+		m.rerunPending = false
+		m.err = msg.err
+		return m, nil
+
 	case eventMsg:
-		m.applyEvent(ipc.Event(msg))
+		if msg.subscriptionID != m.subscriptionID {
+			return m, nil
+		}
+		m.applyEvent(msg.event)
 		if m.done {
 			return m, nil
 		}
 		return m, tea.Batch(m.waitForEvent(), m.startSpinnerIfNeeded())
+
+	case subscriptionErrMsg:
+		if msg.subscriptionID != m.subscriptionID {
+			return m, nil
+		}
+		m.err = msg.err
+		return m, nil
 
 	case spinnerTickMsg:
 		m.spinnerScheduled = false
@@ -249,11 +311,7 @@ func (m Model) View() string {
 	}
 	actionBar := renderActionBar(m.steps, showSelectionActions, allowFix, m.showDiff, selectedCount, totalCount, m.confirmAbort, hasDiff)
 
-	var prURL *string
-	if m.run != nil {
-		prURL = m.run.PRURL
-	}
-	footer := renderFooter(m.done, m.showHelp, m.confirmAbort, prURL, m.width)
+	footer := renderFooter(m.done, m.showHelp, m.confirmAbort, m.run, m.width)
 	contentBudget := -1
 	if m.height > 0 {
 		baseSections := []string{}
@@ -522,7 +580,7 @@ func renderErrorBox(err error, width int) string {
 	return renderBox("Error", errContent.String(), boxWidth)
 }
 
-func renderFooter(done bool, showHelp bool, confirmAbort bool, prURL *string, width int) string {
+func renderFooter(done bool, showHelp bool, confirmAbort bool, run *ipc.RunInfo, width int) string {
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
 	boldKey := lipgloss.NewStyle().Bold(true)
 	qLabel := "detach"
@@ -542,6 +600,14 @@ func renderFooter(done bool, showHelp bool, confirmAbort bool, prURL *string, wi
 		left += "  " + boldKey.Render("x") + " " + dimStyle.Render(xLabel)
 	}
 	left += "  " + boldKey.Render("?") + " " + dimStyle.Render(helpLabel)
+	if canRerun(run) {
+		left += "  " + boldKey.Render("r") + " " + dimStyle.Render("rerun")
+	}
+
+	var prURL *string
+	if run != nil {
+		prURL = run.PRURL
+	}
 	if prURL == nil || *prURL == "" {
 		return left
 	}
@@ -934,6 +1000,13 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, openBrowserCmd(*m.run.PRURL)
 		}
 		return m, nil
+	case "r":
+		if m.rerunPending || !canRerun(m.run) {
+			return m, nil
+		}
+		m.rerunPending = true
+		m.rerunRequestID++
+		return m, m.rerunCmd(m.rerunRequestID)
 	case "x":
 		if m.done || m.run == nil {
 			return m, nil
@@ -946,6 +1019,51 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, nil
+}
+
+func canRerun(run *ipc.RunInfo) bool {
+	if run == nil {
+		return false
+	}
+	switch run.Status {
+	case types.RunFailed, types.RunCancelled:
+		return true
+	default:
+		return false
+	}
+}
+
+func (m Model) rerunCmd(requestID uint64) tea.Cmd {
+	if !canRerun(m.run) || m.client == nil || m.run == nil {
+		return nil
+	}
+	repoID := m.run.RepoID
+	branch := m.run.Branch
+	return func() tea.Msg {
+		var rerun ipc.RerunResult
+		if err := m.client.Call(ipc.MethodRerun, &ipc.RerunParams{RepoID: repoID, Branch: branch}, &rerun); err != nil {
+			return rerunErrMsg{err: err, requestID: requestID}
+		}
+		var result ipc.GetRunResult
+		if err := m.client.Call(ipc.MethodGetRun, &ipc.GetRunParams{RunID: rerun.RunID}, &result); err != nil {
+			return rerunErrMsg{err: fmt.Errorf("load rerun: %w", err), requestID: requestID}
+		}
+		if result.Run == nil {
+			return rerunErrMsg{err: fmt.Errorf("load rerun: run %s not found", rerun.RunID), requestID: requestID}
+		}
+		return rerunStartedMsg{run: result.Run, requestID: requestID}
+	}
+}
+
+func (m *Model) resetForRun(run *ipc.RunInfo) {
+	width, height := m.width, m.height
+	nextSubscriptionID := m.subscriptionID + 1
+	fresh := NewModel(m.socketPath, m.client, run)
+	fresh.width = width
+	fresh.height = height
+	fresh.subscriptionID = nextSubscriptionID
+	fresh.rerunRequestID = m.rerunRequestID
+	*m = fresh
 }
 
 func (m Model) respondCmd(action types.ApprovalAction) tea.Cmd {
@@ -1001,9 +1119,9 @@ func (m Model) subscribeCmd() tea.Cmd {
 			RunID: m.runID,
 		})
 		if err != nil {
-			return errMsg{fmt.Errorf("subscribe: %w", err)}
+			return subscriptionErrMsg{err: fmt.Errorf("subscribe: %w", err), subscriptionID: m.subscriptionID}
 		}
-		return connectedMsg{events: events, cancelSub: cancel}
+		return connectedMsg{events: events, cancelSub: cancel, subscriptionID: m.subscriptionID}
 	}
 }
 
@@ -1015,9 +1133,9 @@ func (m Model) waitForEvent() tea.Cmd {
 	return func() tea.Msg {
 		event, ok := <-events
 		if !ok {
-			return errMsg{fmt.Errorf("event stream closed")}
+			return subscriptionErrMsg{err: fmt.Errorf("event stream closed"), subscriptionID: m.subscriptionID}
 		}
-		return eventMsg(event)
+		return eventMsg{event: event, subscriptionID: m.subscriptionID}
 	}
 }
 

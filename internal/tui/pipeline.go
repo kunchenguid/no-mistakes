@@ -407,6 +407,9 @@ func renderHelpOverlay(width int, run *ipc.RunInfo, hasAwaitingStep bool, showDi
 		footerEntries = append(footerEntries, helpEntry{"x x", "abort pipeline"})
 	}
 	footerEntries = append(footerEntries, helpEntry{"?", "close help"})
+	if canRerun(run) {
+		footerEntries = append(footerEntries, helpEntry{"r", "rerun pipeline"})
+	}
 	if run != nil && run.PRURL != nil && *run.PRURL != "" {
 		footerEntries = append(footerEntries, helpEntry{"o", "open PR in browser"})
 	}

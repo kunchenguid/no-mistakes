@@ -114,10 +114,12 @@ Dim content inside a subtle frame:
 Minimal dim hint at the very bottom, outside all boxes:
 
 ```
-  q quit
+  q quit  ? help
 ```
 
-Or when the pipeline is still running: `q detach`
+While the pipeline is still running, the footer shows `q detach` instead of `q quit`.
+
+After a failed or cancelled run, it also shows `r rerun`.
 
 ## Spacing Rules
 
