@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -40,6 +41,22 @@ const (
 
 var allowInsecureDownloads bool
 var githubAPIBaseURL = "https://api.github.com"
+var daemonIsRunning = daemon.IsRunning
+var daemonStop = daemon.Stop
+var daemonStart = daemon.Start
+
+type daemonResetError struct {
+	err           error
+	daemonOffline bool
+}
+
+func (e *daemonResetError) Error() string {
+	return e.err.Error()
+}
+
+func (e *daemonResetError) Unwrap() error {
+	return e.err
+}
 
 type platformSpec struct {
 	GOOS   string
@@ -413,6 +430,10 @@ func (u *updater) run(ctx context.Context) error {
 	}
 	if u.resetDaemon != nil {
 		if err := u.resetDaemon(); err != nil {
+			var resetErr *daemonResetError
+			if errors.As(err, &resetErr) && resetErr.daemonOffline {
+				return fmt.Errorf("updated %s to %s, but daemon is offline: %w", u.appName, plan.LatestVersion, err)
+			}
 			fmt.Fprintf(u.stderrWriter(), "updated %s to %s, but failed to reset daemon: %v\n", u.appName, plan.LatestVersion, err)
 		}
 	}
@@ -424,18 +445,18 @@ func defaultResetDaemon(p *paths.Paths) error {
 	if p == nil {
 		return nil
 	}
-	alive, err := daemon.IsRunning(p)
+	alive, err := daemonIsRunning(p)
 	if err != nil {
 		return fmt.Errorf("check daemon: %w", err)
 	}
 	if !alive {
 		return nil
 	}
-	if err := daemon.Stop(p); err != nil {
+	if err := daemonStop(p); err != nil {
 		return fmt.Errorf("stop daemon: %w", err)
 	}
-	if err := daemon.Start(p); err != nil {
-		return fmt.Errorf("start daemon: %w", err)
+	if err := daemonStart(p); err != nil {
+		return &daemonResetError{err: fmt.Errorf("start daemon: %w", err), daemonOffline: true}
 	}
 	return nil
 }
