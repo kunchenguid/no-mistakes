@@ -45,21 +45,31 @@ echo "Downloading no-mistakes ${VERSION} for ${OS}/${ARCH}..."
 curl -fsSL "$URL" -o "${TMPDIR}/${FILENAME}"
 tar xzf "${TMPDIR}/${FILENAME}" -C "$TMPDIR"
 
-mkdir -p "$INSTALL_DIR" 2>/dev/null || true
+if ! mkdir -p "$INSTALL_DIR" 2>/dev/null; then
+  echo "Could not create install directory: $INSTALL_DIR"
+  exit 1
+fi
 
 mv "${TMPDIR}/no-mistakes" "$BIN_PATH"
 chmod 755 "$BIN_PATH" 2>/dev/null || true
 
-mkdir -p "$LINK_DIR" 2>/dev/null || true
-
-if [ -w "$LINK_DIR" ]; then
-  rm -f "$LINK_PATH"
-  ln -s "$BIN_PATH" "$LINK_PATH"
+if [ "$BIN_PATH" = "$LINK_PATH" ]; then
+  echo "Install dir and link dir are the same; skipping symlink."
 else
-  echo "Linking ${LINK_PATH} to ${BIN_PATH} (requires sudo)..."
-  sudo mkdir -p "$LINK_DIR"
-  sudo rm -f "$LINK_PATH"
-  sudo ln -s "$BIN_PATH" "$LINK_PATH"
+  if ! mkdir -p "$LINK_DIR" 2>/dev/null; then
+    echo "Could not create link directory: $LINK_DIR"
+    exit 1
+  fi
+
+  if [ -w "$LINK_DIR" ]; then
+    rm -f "$LINK_PATH"
+    ln -s "$BIN_PATH" "$LINK_PATH"
+  else
+    echo "Linking ${LINK_PATH} to ${BIN_PATH} (requires sudo)..."
+    sudo mkdir -p "$LINK_DIR"
+    sudo rm -f "$LINK_PATH"
+    sudo ln -s "$BIN_PATH" "$LINK_PATH"
+  fi
 fi
 
 echo "no-mistakes ${VERSION} installed to ${BIN_PATH}"
