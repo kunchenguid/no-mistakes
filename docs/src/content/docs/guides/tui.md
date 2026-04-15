@@ -119,6 +119,7 @@ On narrow terminals, the log panel expands to fill the remaining vertical space 
 | `d` | Toggle diff view (after fix cycle) |
 | `esc` | Exit diff view back to findings |
 | `?` | Toggle help overlay |
+| `r` | Start a rerun after a failed or cancelled run |
 | `q` | Detach from TUI (or quit if run is done) |
 
 In diff view, `n`/`p` jumps the viewport to the file and line of the next/previous finding.
@@ -142,6 +143,8 @@ When a run finishes, a one-line banner appears:
 - `✓ Pipeline passed  4.2s` (green) - the run finished successfully, even if later steps were auto-skipped
 - `✗ Review failed  1.8s` (red) - names the failing step
 - `✗ Pipeline cancelled` (red) - user aborted
+
+After a failed or cancelled run, press `r` to start a rerun. The TUI switches to the new run automatically.
 
 ## Detaching
 
