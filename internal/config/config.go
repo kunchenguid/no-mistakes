@@ -109,7 +109,7 @@ auto_fix:
   rebase: 3
   lint: 3
   test: 3
-  review: 3
+  review: 0
   document: 3
   ci: 3
 `
@@ -325,7 +325,7 @@ func autoFixDefaults() AutoFix {
 	return AutoFix{
 		Lint:     3,
 		Test:     3,
-		Review:   3,
+		Review:   0,
 		Document: 3,
 		CI:       3,
 		Rebase:   3,

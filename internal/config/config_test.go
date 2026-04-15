@@ -628,8 +628,8 @@ func TestMerge_AutoFixDefaults(t *testing.T) {
 	if cfg.AutoFix.Test != 3 {
 		t.Errorf("test = %d, want 3", cfg.AutoFix.Test)
 	}
-	if cfg.AutoFix.Review != 3 {
-		t.Errorf("review = %d, want 3", cfg.AutoFix.Review)
+	if cfg.AutoFix.Review != 0 {
+		t.Errorf("review = %d, want 0", cfg.AutoFix.Review)
 	}
 	if cfg.AutoFix.Document != 3 {
 		t.Errorf("document = %d, want 3", cfg.AutoFix.Document)
