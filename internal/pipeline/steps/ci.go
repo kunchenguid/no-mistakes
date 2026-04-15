@@ -209,6 +209,8 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	started := now()
 	manualFixAttempted := false
 	mergeabilityBlockedReason := ""
+	timeoutFailingChecks := []string{}
+	timeoutMergeConflict := false
 
 	for {
 		checksReadyToExit := false
@@ -221,6 +223,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		elapsed := now().Sub(started)
 		if elapsed >= timeout {
 			sctx.Log("CI timeout reached")
+			if len(timeoutFailingChecks) > 0 || timeoutMergeConflict {
+				return ciFailureOutcome(timeoutFailingChecks, timeoutMergeConflict, "CI timed out with known failures still present"), nil
+			}
 			if mergeabilityBlockedReason != "" {
 				return ciMergeabilityOutcome("mergeability check timed out", mergeabilityBlockedReason), nil
 			}
@@ -268,6 +273,8 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			sort.Strings(failing)
 			hasFailures := len(failing) > 0
 			hasIssues := hasFailures || mergeConflict
+			timeoutFailingChecks = append(timeoutFailingChecks[:0], failing...)
+			timeoutMergeConflict = mergeConflict
 
 			if hasIssues && pending {
 				// Some checks still running - wait for all to complete before fixing
@@ -289,10 +296,11 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 				if sctx.Fixing && !manualFixAttempted {
 					manualFixAttempted = true
 					sctx.Log(fmt.Sprintf("issues detected: %s - manual fix requested...", issueDesc))
+					previousHeadSHA := sctx.Run.HeadSHA
 					pushed, err := s.autoFixCI(sctx, prNumber, failing, mergeConflict)
 					if err != nil {
 						sctx.Log(fmt.Sprintf("warning: CI manual fix failed: %v", err))
-					} else if pushed {
+					} else if pushed || sctx.Run.HeadSHA != previousHeadSHA {
 						s.lastFixedChecks = fixKey
 					} else {
 						sctx.Log("CI fix produced no changes, returning for manual intervention...")
@@ -311,10 +319,11 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 				} else {
 					s.ciFixAttempts++
 					sctx.Log(fmt.Sprintf("issues detected: %s - auto-fixing (attempt %d/%d)...", issueDesc, s.ciFixAttempts, ciFixLimit))
+					previousHeadSHA := sctx.Run.HeadSHA
 					pushed, err := s.autoFixCI(sctx, prNumber, failing, mergeConflict)
 					if err != nil {
 						sctx.Log(fmt.Sprintf("warning: CI auto-fix failed: %v", err))
-					} else if pushed {
+					} else if pushed || sctx.Run.HeadSHA != previousHeadSHA {
 						s.lastFixedChecks = fixKey
 					} else {
 						// No changes produced - don't set lastFixedChecks so next

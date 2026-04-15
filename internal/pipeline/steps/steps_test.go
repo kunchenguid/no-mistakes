@@ -4870,6 +4870,81 @@ func TestCIStep_CommitAndPush_NoDirtyChangesButHeadAdvanced_PushesNewHead(t *tes
 	}
 }
 
+func TestCIStep_Execute_FixMode_RemoteAlreadyUpdatedDoesNotReturnManualIntervention(t *testing.T) {
+	t.Parallel()
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature")
+	originalHeadSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	os.WriteFile(filepath.Join(dir, "resolved.txt"), []byte("resolved"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "resolve conflict")
+	advancedHeadSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "--force-with-lease", "origin", "HEAD:refs/heads/feature")
+
+	checksJSON := `[{"name":"build","state":"FAILURE","bucket":"fail"}]`
+	env := fakeCIGHMergeable(t, "OPEN", checksJSON, "MERGEABLE")
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, originalHeadSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "refs/heads/feature"
+	prURL := "https://github.com/test/repo/pull/42"
+	sctx.Run.PRURL = &prURL
+	sctx.Fixing = true
+	sctx.Config.CITimeout = 30 * time.Second
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	step := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			cancel()
+			return ctx.Err()
+		},
+	}
+	_, err := step.Execute(sctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected polling to continue after head reconciliation, got %v", err)
+	}
+
+	if sctx.Run.HeadSHA != advancedHeadSHA {
+		t.Fatalf("Run.HeadSHA = %s, want %s", sctx.Run.HeadSHA, advancedHeadSHA)
+	}
+	dbRun, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dbRun.HeadSHA != advancedHeadSHA {
+		t.Fatalf("DB HeadSHA = %s, want %s", dbRun.HeadSHA, advancedHeadSHA)
+	}
+}
+
 func TestCIStep_CommitAndPush_UpdatesLocalBranchRefAfterDetachedPush(t *testing.T) {
 	t.Parallel()
 	upstream := t.TempDir()
@@ -6987,6 +7062,62 @@ func TestCIStep_TimeoutWithUnknownMergeableState_NeedsApproval(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected unresolved mergeability finding, got %+v", findings.Items)
+	}
+}
+
+func TestCIStep_TimeoutWithKnownFailureAndPendingCheck_NeedsApproval(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	checksJSON := `[{"name":"build","state":"FAILURE","bucket":"fail"},{"name":"test","state":"PENDING","bucket":"pending"}]`
+	env := fakeCIGHMergeable(t, "OPEN", checksJSON, "CONFLICTING")
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 2 * time.Second
+	sctx.Config.AutoFix = config.AutoFix{CI: 3}
+
+	started := time.Unix(1700000000, 0)
+	now := started
+	step := &CIStep{
+		now: func() time.Time {
+			return now
+		},
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			now = now.Add(interval)
+			return nil
+		},
+	}
+
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("expected NeedsApproval when known CI issues remain at timeout")
+	}
+
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatalf("unmarshal findings: %v", err)
+	}
+
+	foundFailure := false
+	foundConflict := false
+	for _, item := range findings.Items {
+		desc := strings.ToLower(item.Description)
+		if strings.Contains(desc, "build") {
+			foundFailure = true
+		}
+		if strings.Contains(desc, "merge conflict") {
+			foundConflict = true
+		}
+	}
+	if !foundFailure || !foundConflict {
+		t.Fatalf("expected failing check and merge conflict findings, got %+v", findings.Items)
 	}
 }
 
