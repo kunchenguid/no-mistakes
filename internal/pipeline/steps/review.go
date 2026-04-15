@@ -142,6 +142,7 @@ Task:
 - Analyze for bugs, risks, and code simplification opportunities.
 - "Simplification" means reducing code complexity through non-functional refactoring (e.g. deduplication, clearer control flow). It does NOT mean removing features, changing product behavior, or stripping intentional user-facing output.
 - Treat security issues, performance regressions, breaking changes, and insufficient error handling as risks.
+- Do a full review pass before returning. Do not stop after the first valid finding. Continue inspecting the rest of the changed code until you have enumerated all material issues you can substantiate.
 
 Rules:
 - Anchor every finding to a specific file and one-indexed line number in the changed code when possible.
