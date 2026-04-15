@@ -7,12 +7,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 )
 
 func TestInstallScriptInstallsUserOwnedBinaryAndPathSymlink(t *testing.T) {
+	skipInstallScriptTestsOnWindows(t)
+
 	home := t.TempDir()
 	archivePath := filepath.Join(t.TempDir(), "no-mistakes-v1.2.3-darwin-arm64.tar.gz")
 	makeInstallArchive(t, archivePath, "new-binary")
@@ -32,6 +35,8 @@ func TestInstallScriptInstallsUserOwnedBinaryAndPathSymlink(t *testing.T) {
 }
 
 func TestInstallScriptReplacesExistingPathEntryWithSymlink(t *testing.T) {
+	skipInstallScriptTestsOnWindows(t)
+
 	home := t.TempDir()
 	archivePath := filepath.Join(t.TempDir(), "no-mistakes-v1.2.3-darwin-arm64.tar.gz")
 	makeInstallArchive(t, archivePath, "new-binary")
@@ -53,6 +58,13 @@ func TestInstallScriptReplacesExistingPathEntryWithSymlink(t *testing.T) {
 	realBin := filepath.Join(home, ".no-mistakes", "bin", "no-mistakes")
 	assertFileContent(t, realBin, "new-binary")
 	assertSymlinkTarget(t, oldPath, realBin)
+}
+
+func skipInstallScriptTestsOnWindows(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("install.sh is a POSIX installer; Windows uses install.ps1")
+	}
 }
 
 func runInstallScript(t *testing.T, home, fakeBin string, extraEnv map[string]string) {
