@@ -109,4 +109,6 @@ Override auto-fix attempt limits for specific steps. Fields not set here inherit
 
 Set to `0` to disable auto-fix for a step (always requires manual approval).
 
+`auto_fix.ci` covers the Babysit step's CI failure and merge-conflict auto-fix attempts.
+
 Legacy alias: `auto_fix.babysit`.
