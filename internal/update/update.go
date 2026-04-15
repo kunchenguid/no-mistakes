@@ -41,9 +41,12 @@ const (
 
 var allowInsecureDownloads bool
 var githubAPIBaseURL = "https://api.github.com"
+var currentGOOS = runtime.GOOS
 var daemonIsRunning = daemon.IsRunning
+var daemonExecutablePath = runningDaemonExecutablePath
 var daemonStop = daemon.Stop
 var daemonStart = daemon.Start
+var windowsExecutablePathForPID = defaultWindowsExecutablePathForPID
 
 type daemonResetError struct {
 	err           error
@@ -101,6 +104,7 @@ type updater struct {
 	now               func() time.Time
 	spawnBackground   func(currentVersion string) error
 	resetDaemon       func() error
+	paths             *paths.Paths
 	disableBackground bool
 	noColor           bool
 }
@@ -181,6 +185,7 @@ func defaultUpdater(stdout, stderr io.Writer) (*updater, error) {
 		stdout:          stdout,
 		stderr:          stderr,
 		now:             time.Now,
+		paths:           p,
 		spawnBackground: defaultSpawnBackground,
 		resetDaemon: func() error {
 			return defaultResetDaemon(p)
@@ -424,6 +429,9 @@ func (u *updater) run(ctx context.Context) error {
 		fmt.Fprintf(u.stdoutWriter(), "%s is already up to date (%s)\n", u.appName, u.currentVersion)
 		return nil
 	}
+	if err := u.ensureDaemonUsesCurrentExecutable(); err != nil {
+		return err
+	}
 
 	archiveData, err := u.downloadAsset(ctx, plan.Archive.BrowserDownloadURL, maxDownloadSize)
 	if err != nil {
@@ -464,6 +472,38 @@ func (u *updater) run(ctx context.Context) error {
 	return nil
 }
 
+func (u *updater) ensureDaemonUsesCurrentExecutable() error {
+	if u == nil || u.paths == nil || u.executablePath == "" {
+		return nil
+	}
+	alive, err := daemonIsRunning(u.paths)
+	if err != nil || !alive {
+		return nil
+	}
+	runningPath, err := daemonExecutablePath(u.paths)
+	if err != nil || runningPath == "" {
+		if err != nil {
+			return fmt.Errorf("cannot determine daemon executable path: %w", err)
+		}
+		return errors.New("cannot determine daemon executable path")
+	}
+	currentPath := resolveExecutablePath(u.executablePath)
+	runningPath = resolveExecutablePath(runningPath)
+	if executablePathsMatch(currentPath, runningPath) {
+		return nil
+	}
+	return fmt.Errorf("daemon is running from %s, but update is running from %s; run update using the same binary that started the daemon, or restart the daemon from this binary first", runningPath, currentPath)
+}
+
+func executablePathsMatch(a, b string) bool {
+	if currentGOOS != "windows" {
+		return a == b
+	}
+	a = filepath.Clean(strings.ReplaceAll(a, `\`, "/"))
+	b = filepath.Clean(strings.ReplaceAll(b, `\`, "/"))
+	return strings.EqualFold(a, b)
+}
+
 func defaultResetDaemon(p *paths.Paths) error {
 	if p == nil {
 		return nil
@@ -490,6 +530,49 @@ func daemonArtifactsExist(p *paths.Paths) bool {
 		}
 	}
 	return false
+}
+
+func runningDaemonExecutablePath(p *paths.Paths) (string, error) {
+	if p == nil {
+		return "", fmt.Errorf("resolve daemon executable: nil paths")
+	}
+	pid, err := daemon.ReadPID(p)
+	if err != nil {
+		return "", fmt.Errorf("resolve daemon executable: %w", err)
+	}
+	path, err := executablePathForPID(pid)
+	if err != nil {
+		return "", fmt.Errorf("resolve daemon executable: %w", err)
+	}
+	if path == "" {
+		return "", fmt.Errorf("resolve daemon executable: empty process command")
+	}
+	return resolveExecutablePath(path), nil
+}
+
+func executablePathForPID(pid int) (string, error) {
+	if currentGOOS == "linux" {
+		return os.Readlink(filepath.Join("/proc", strconv.Itoa(pid), "exe"))
+	}
+	if currentGOOS == "windows" {
+		return windowsExecutablePathForPID(pid)
+	}
+	cmd := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "comm=")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func resolveExecutablePath(path string) string {
+	if path == "" {
+		return ""
+	}
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
+	return path
 }
 
 func (u *updater) fetchLatestRelease(ctx context.Context) (*releaseResponse, error) {

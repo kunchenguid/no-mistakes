@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -549,6 +550,274 @@ func TestUpdaterRunFailsWhenDaemonResetLeavesDaemonOffline(t *testing.T) {
 	}
 }
 
+func TestUpdaterRunFailsWhenDaemonUsesDifferentExecutable(t *testing.T) {
+	allowInsecureDownloads = true
+	t.Cleanup(func() { allowInsecureDownloads = false })
+
+	archiveName := "no-mistakes-v1.2.3-darwin-arm64.tar.gz"
+	archive := makeTarGz(t, map[string][]byte{
+		"bin/no-mistakes": []byte("new-binary"),
+	})
+	sum := sha256.Sum256(archive)
+	checksums := fmt.Sprintf("%s  %s\n", hex.EncodeToString(sum[:]), archiveName)
+
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/kunchenguid/no-mistakes/releases/latest":
+			fmt.Fprintf(w, `{"tag_name":"v1.2.3","assets":[{"name":%q,"browser_download_url":%q},{"name":"checksums.txt","browser_download_url":%q}]}`,
+				archiveName,
+				server.URL+"/archive",
+				server.URL+"/checksums",
+			)
+		case "/archive":
+			w.Write(archive)
+		case "/checksums":
+			fmt.Fprint(w, checksums)
+		default:
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	execDir := t.TempDir()
+	execPath := filepath.Join(execDir, "no-mistakes")
+	if err := os.WriteFile(execPath, []byte("old-binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	otherExecPath := filepath.Join(execDir, "other-no-mistakes")
+	if err := os.WriteFile(otherExecPath, []byte("other-binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	origDaemonIsRunning := daemonIsRunning
+	origDaemonExecutablePath := daemonExecutablePath
+	t.Cleanup(func() {
+		daemonIsRunning = origDaemonIsRunning
+		daemonExecutablePath = origDaemonExecutablePath
+	})
+
+	checks := 0
+	daemonIsRunning = func(*paths.Paths) (bool, error) {
+		checks++
+		return true, nil
+	}
+	daemonExecutablePath = func(*paths.Paths) (string, error) {
+		return otherExecPath, nil
+	}
+
+	resetCalled := false
+	u := &updater{
+		appName:        "no-mistakes",
+		repo:           "kunchenguid/no-mistakes",
+		currentVersion: "v1.2.2",
+		platform:       platformSpec{GOOS: "darwin", GOARCH: "arm64"},
+		apiBaseURL:     server.URL,
+		httpClient:     server.Client(),
+		executablePath: execPath,
+		now:            func() time.Time { return time.Date(2026, 4, 9, 12, 0, 0, 0, time.UTC) },
+		resetDaemon: func() error {
+			resetCalled = true
+			return nil
+		},
+		paths: paths.WithRoot(t.TempDir()),
+	}
+
+	err := u.run(context.Background())
+	if err == nil {
+		t.Fatal("run should fail when daemon uses a different executable")
+	}
+	if !strings.Contains(err.Error(), "daemon is running from") {
+		t.Fatalf("run error = %v", err)
+	}
+	if checks == 0 {
+		t.Fatal("expected daemon health check before update")
+	}
+	if resetCalled {
+		t.Fatal("reset daemon should not run when executables mismatch")
+	}
+	content, readErr := os.ReadFile(execPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(content) != "old-binary" {
+		t.Fatalf("executable content = %q", string(content))
+	}
+}
+
+func TestEnsureDaemonUsesCurrentExecutableAllowsWindowsCaseDifferences(t *testing.T) {
+	origGOOS := currentGOOS
+	origDaemonIsRunning := daemonIsRunning
+	origDaemonExecutablePath := daemonExecutablePath
+	t.Cleanup(func() {
+		currentGOOS = origGOOS
+		daemonIsRunning = origDaemonIsRunning
+		daemonExecutablePath = origDaemonExecutablePath
+	})
+
+	currentGOOS = "windows"
+	daemonIsRunning = func(*paths.Paths) (bool, error) {
+		return true, nil
+	}
+	daemonExecutablePath = func(*paths.Paths) (string, error) {
+		return `c:\program files\no-mistakes\NO-MISTAKES.exe`, nil
+	}
+
+	u := &updater{
+		executablePath: `C:\Program Files\No-Mistakes\no-mistakes.exe`,
+		paths:          paths.WithRoot(t.TempDir()),
+	}
+
+	if err := u.ensureDaemonUsesCurrentExecutable(); err != nil {
+		t.Fatalf("ensureDaemonUsesCurrentExecutable error = %v", err)
+	}
+}
+
+func TestUpdaterRunFailsWhenDaemonExecutableCannotBeResolved(t *testing.T) {
+	allowInsecureDownloads = true
+	t.Cleanup(func() { allowInsecureDownloads = false })
+
+	archiveName := "no-mistakes-v1.2.3-darwin-arm64.tar.gz"
+	archive := makeTarGz(t, map[string][]byte{
+		"bin/no-mistakes": []byte("new-binary"),
+	})
+	sum := sha256.Sum256(archive)
+	checksums := fmt.Sprintf("%s  %s\n", hex.EncodeToString(sum[:]), archiveName)
+
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/kunchenguid/no-mistakes/releases/latest":
+			fmt.Fprintf(w, `{"tag_name":"v1.2.3","assets":[{"name":%q,"browser_download_url":%q},{"name":"checksums.txt","browser_download_url":%q}]}`,
+				archiveName,
+				server.URL+"/archive",
+				server.URL+"/checksums",
+			)
+		case "/archive":
+			w.Write(archive)
+		case "/checksums":
+			fmt.Fprint(w, checksums)
+		default:
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	execDir := t.TempDir()
+	execPath := filepath.Join(execDir, "no-mistakes")
+	if err := os.WriteFile(execPath, []byte("old-binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	origDaemonIsRunning := daemonIsRunning
+	origDaemonExecutablePath := daemonExecutablePath
+	t.Cleanup(func() {
+		daemonIsRunning = origDaemonIsRunning
+		daemonExecutablePath = origDaemonExecutablePath
+	})
+
+	checks := 0
+	daemonIsRunning = func(*paths.Paths) (bool, error) {
+		checks++
+		return true, nil
+	}
+	daemonExecutablePath = func(*paths.Paths) (string, error) {
+		return "", errors.New("pid lookup failed")
+	}
+
+	resetCalled := false
+	u := &updater{
+		appName:        "no-mistakes",
+		repo:           "kunchenguid/no-mistakes",
+		currentVersion: "v1.2.2",
+		platform:       platformSpec{GOOS: "darwin", GOARCH: "arm64"},
+		apiBaseURL:     server.URL,
+		httpClient:     server.Client(),
+		executablePath: execPath,
+		now:            func() time.Time { return time.Date(2026, 4, 9, 12, 0, 0, 0, time.UTC) },
+		resetDaemon: func() error {
+			resetCalled = true
+			return nil
+		},
+		paths: paths.WithRoot(t.TempDir()),
+	}
+
+	err := u.run(context.Background())
+	if err == nil {
+		t.Fatal("run should fail when daemon executable cannot be resolved")
+	}
+	if !strings.Contains(err.Error(), "cannot determine daemon executable path") {
+		t.Fatalf("run error = %v", err)
+	}
+	if checks == 0 {
+		t.Fatal("expected daemon health check before update")
+	}
+	if resetCalled {
+		t.Fatal("reset daemon should not run when daemon executable cannot be resolved")
+	}
+}
+
+func TestUpdaterRunSkipsDaemonExecutableCheckWhenAlreadyUpToDate(t *testing.T) {
+	allowInsecureDownloads = true
+	t.Cleanup(func() { allowInsecureDownloads = false })
+
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/kunchenguid/no-mistakes/releases/latest":
+			fmt.Fprint(w, `{"tag_name":"v1.2.2","assets":[]}`)
+		default:
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	execPath := filepath.Join(t.TempDir(), "no-mistakes")
+	if err := os.WriteFile(execPath, []byte("current-binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	origDaemonIsRunning := daemonIsRunning
+	origDaemonExecutablePath := daemonExecutablePath
+	t.Cleanup(func() {
+		daemonIsRunning = origDaemonIsRunning
+		daemonExecutablePath = origDaemonExecutablePath
+	})
+
+	checks := 0
+	daemonIsRunning = func(*paths.Paths) (bool, error) {
+		checks++
+		return true, nil
+	}
+	daemonExecutablePath = func(*paths.Paths) (string, error) {
+		return "", errors.New("pid lookup failed")
+	}
+
+	stdout := new(bytes.Buffer)
+	u := &updater{
+		appName:        "no-mistakes",
+		repo:           "kunchenguid/no-mistakes",
+		currentVersion: "v1.2.2",
+		platform:       platformSpec{GOOS: "darwin", GOARCH: "arm64"},
+		apiBaseURL:     server.URL,
+		httpClient:     server.Client(),
+		executablePath: execPath,
+		stdout:         stdout,
+		now:            func() time.Time { return time.Date(2026, 4, 9, 12, 0, 0, 0, time.UTC) },
+		paths:          paths.WithRoot(t.TempDir()),
+	}
+
+	if err := u.run(context.Background()); err != nil {
+		t.Fatalf("run error = %v", err)
+	}
+	if checks != 0 {
+		t.Fatalf("expected no daemon executable check when already up to date, got %d checks", checks)
+	}
+	if !strings.Contains(stdout.String(), "already up to date") {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+}
+
 func TestDefaultResetDaemonReportsOfflineWhenRestartFails(t *testing.T) {
 	origIsRunning := daemonIsRunning
 	origStop := daemonStop
@@ -586,6 +855,107 @@ func TestDefaultResetDaemonReportsOfflineWhenRestartFails(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "start daemon") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestRunningDaemonExecutablePathUsesPIDFile(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	if err := os.WriteFile(p.PIDFile(), []byte(fmt.Sprintf("%d", os.Getpid())), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := runningDaemonExecutablePath(p)
+	if err != nil {
+		t.Fatalf("runningDaemonExecutablePath error = %v", err)
+	}
+	want, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != resolveExecutablePath(want) {
+		t.Fatalf("runningDaemonExecutablePath = %q, want %q", got, resolveExecutablePath(want))
+	}
+}
+
+func TestRunningDaemonExecutablePathHandlesExecutablePathsWithSpaces(t *testing.T) {
+	if os.Getenv("NO_MISTAKES_TEST_CHILD") == "1" {
+		time.Sleep(10 * time.Second)
+		return
+	}
+
+	originalPath, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalInfo, err := os.Stat(originalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binary, err := os.ReadFile(originalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dir := filepath.Join(t.TempDir(), "dir with spaces")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	copyPath := filepath.Join(dir, "no mistakes test binary"+filepath.Ext(originalPath))
+	if err := os.WriteFile(copyPath, binary, originalInfo.Mode().Perm()); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command(copyPath, "-test.run=^TestRunningDaemonExecutablePathHandlesExecutablePathsWithSpaces$")
+	cmd.Env = append(os.Environ(), "NO_MISTAKES_TEST_CHILD=1")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+	})
+
+	p := paths.WithRoot(t.TempDir())
+	if err := os.WriteFile(p.PIDFile(), []byte(fmt.Sprintf("%d", cmd.Process.Pid)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := runningDaemonExecutablePath(p)
+	if err != nil {
+		t.Fatalf("runningDaemonExecutablePath error = %v", err)
+	}
+	if got != resolveExecutablePath(copyPath) {
+		t.Fatalf("runningDaemonExecutablePath = %q, want %q", got, resolveExecutablePath(copyPath))
+	}
+}
+
+func TestExecutablePathForPIDUsesWindowsResolver(t *testing.T) {
+	origGOOS := currentGOOS
+	origWindowsResolver := windowsExecutablePathForPID
+	t.Cleanup(func() {
+		currentGOOS = origGOOS
+		windowsExecutablePathForPID = origWindowsResolver
+	})
+
+	currentGOOS = "windows"
+	called := false
+	windowsExecutablePathForPID = func(pid int) (string, error) {
+		called = true
+		if pid != 4321 {
+			t.Fatalf("pid = %d, want %d", pid, 4321)
+		}
+		return `C:\Program Files\no-mistakes\no-mistakes.exe`, nil
+	}
+
+	got, err := executablePathForPID(4321)
+	if err != nil {
+		t.Fatalf("executablePathForPID error = %v", err)
+	}
+	if !called {
+		t.Fatal("expected windows resolver to be used")
+	}
+	if got != `C:\Program Files\no-mistakes\no-mistakes.exe` {
+		t.Fatalf("executablePathForPID = %q", got)
 	}
 }
 
