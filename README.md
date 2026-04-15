@@ -95,7 +95,7 @@ To update an existing install in place:
 no-mistakes update
 ```
 
-This replaces the binary and resets the background daemon so it picks up the new executable. If the daemon does not come back cleanly, the update still succeeds but reports the daemon reset failure.
+This replaces the binary and resets the background daemon so it picks up the new executable. If the daemon does not come back cleanly, the new binary stays installed but the command reports the daemon reset failure.
 
 ## How It Works
 
