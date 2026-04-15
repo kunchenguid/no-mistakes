@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/kunchenguid/no-mistakes/compare/v1.1.0...v1.1.1) (2026-04-15)
+
+
+### Bug Fixes
+
+* **config:** disable auto-fix review by default ([#63](https://github.com/kunchenguid/no-mistakes/issues/63)) ([c7a55df](https://github.com/kunchenguid/no-mistakes/commit/c7a55dfcb2ce6f334596f59721176d88d7eddd0f))
+
 ## [1.1.0](https://github.com/kunchenguid/no-mistakes/compare/v1.0.0...v1.1.0) (2026-04-14)
 
 
