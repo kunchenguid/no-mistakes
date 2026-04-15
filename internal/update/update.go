@@ -446,17 +446,16 @@ func defaultResetDaemon(p *paths.Paths) error {
 		return nil
 	}
 	alive, err := daemonIsRunning(p)
-	if err != nil {
-		return fmt.Errorf("check daemon: %w", err)
-	}
-	if !alive {
+	if err == nil && !alive {
 		return nil
 	}
 	if err := daemonStop(p); err != nil {
 		return fmt.Errorf("stop daemon: %w", err)
 	}
 	if err := daemonStart(p); err != nil {
-		return &daemonResetError{err: fmt.Errorf("start daemon: %w", err), daemonOffline: true}
+		running, checkErr := daemonIsRunning(p)
+		offline := checkErr == nil && !running
+		return &daemonResetError{err: fmt.Errorf("start daemon: %w", err), daemonOffline: offline}
 	}
 	return nil
 }

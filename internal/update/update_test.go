@@ -559,7 +559,14 @@ func TestDefaultResetDaemonReportsOfflineWhenRestartFails(t *testing.T) {
 		daemonStart = origStart
 	})
 
-	daemonIsRunning = func(*paths.Paths) (bool, error) { return true, nil }
+	checks := 0
+	daemonIsRunning = func(*paths.Paths) (bool, error) {
+		checks++
+		if checks == 1 {
+			return true, nil
+		}
+		return false, nil
+	}
 	daemonStop = func(*paths.Paths) error { return nil }
 	daemonStart = func(*paths.Paths) error { return errors.New("boom") }
 
@@ -574,8 +581,81 @@ func TestDefaultResetDaemonReportsOfflineWhenRestartFails(t *testing.T) {
 	if !resetErr.daemonOffline {
 		t.Fatal("expected daemon to be marked offline")
 	}
+	if checks < 2 {
+		t.Fatalf("expected follow-up daemon check, got %d checks", checks)
+	}
 	if !strings.Contains(err.Error(), "start daemon") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestDefaultResetDaemonRecoversWhenHealthCheckErrors(t *testing.T) {
+	origIsRunning := daemonIsRunning
+	origStop := daemonStop
+	origStart := daemonStart
+	t.Cleanup(func() {
+		daemonIsRunning = origIsRunning
+		daemonStop = origStop
+		daemonStart = origStart
+	})
+
+	stopCalled := false
+	startCalled := false
+	daemonIsRunning = func(*paths.Paths) (bool, error) { return false, errors.New("health check failed") }
+	daemonStop = func(*paths.Paths) error {
+		stopCalled = true
+		return nil
+	}
+	daemonStart = func(*paths.Paths) error {
+		startCalled = true
+		return nil
+	}
+
+	if err := defaultResetDaemon(&paths.Paths{}); err != nil {
+		t.Fatalf("defaultResetDaemon error = %v", err)
+	}
+	if !stopCalled {
+		t.Fatal("expected stop to be attempted after health-check error")
+	}
+	if !startCalled {
+		t.Fatal("expected start to be attempted after health-check error")
+	}
+}
+
+func TestDefaultResetDaemonDoesNotReportOfflineWhenRestartLeavesDaemonRunning(t *testing.T) {
+	origIsRunning := daemonIsRunning
+	origStop := daemonStop
+	origStart := daemonStart
+	t.Cleanup(func() {
+		daemonIsRunning = origIsRunning
+		daemonStop = origStop
+		daemonStart = origStart
+	})
+
+	checks := 0
+	daemonIsRunning = func(*paths.Paths) (bool, error) {
+		checks++
+		if checks == 1 {
+			return true, nil
+		}
+		return true, nil
+	}
+	daemonStop = func(*paths.Paths) error { return nil }
+	daemonStart = func(*paths.Paths) error { return errors.New("daemon already running") }
+
+	err := defaultResetDaemon(&paths.Paths{})
+	if err == nil {
+		t.Fatal("defaultResetDaemon should fail when restart fails")
+	}
+	var resetErr *daemonResetError
+	if !errors.As(err, &resetErr) {
+		t.Fatalf("expected daemonResetError, got %T", err)
+	}
+	if resetErr.daemonOffline {
+		t.Fatal("expected daemon to stay online")
+	}
+	if checks < 2 {
+		t.Fatalf("expected follow-up daemon check, got %d checks", checks)
 	}
 }
 
