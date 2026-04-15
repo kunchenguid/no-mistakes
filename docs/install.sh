@@ -2,11 +2,18 @@
 set -e
 
 REPO="kunchenguid/no-mistakes"
+INSTALL_DIR="${NO_MISTAKES_INSTALL_DIR:-$HOME/.no-mistakes/bin}"
+LINK_DIR="${NO_MISTAKES_LINK_DIR:-}"
 
-case ":$PATH:" in
-  *":$HOME/.local/bin:"*) INSTALL_DIR="$HOME/.local/bin" ;;
-  *) INSTALL_DIR="/usr/local/bin" ;;
-esac
+if [ -z "$LINK_DIR" ]; then
+  case ":$PATH:" in
+    *":$HOME/.local/bin:"*) LINK_DIR="$HOME/.local/bin" ;;
+    *) LINK_DIR="/usr/local/bin" ;;
+  esac
+fi
+
+BIN_PATH="$INSTALL_DIR/no-mistakes"
+LINK_PATH="$LINK_DIR/no-mistakes"
 
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 ARCH="$(uname -m)"
@@ -40,13 +47,25 @@ tar xzf "${TMPDIR}/${FILENAME}" -C "$TMPDIR"
 
 mkdir -p "$INSTALL_DIR" 2>/dev/null || true
 
-if [ -w "$INSTALL_DIR" ]; then
-  mv "${TMPDIR}/no-mistakes" "${INSTALL_DIR}/no-mistakes"
+mv "${TMPDIR}/no-mistakes" "$BIN_PATH"
+chmod 755 "$BIN_PATH" 2>/dev/null || true
+
+mkdir -p "$LINK_DIR" 2>/dev/null || true
+
+if [ -w "$LINK_DIR" ]; then
+  rm -f "$LINK_PATH"
+  ln -s "$BIN_PATH" "$LINK_PATH"
 else
-  echo "Installing to ${INSTALL_DIR} (requires sudo)..."
-  sudo mkdir -p "$INSTALL_DIR"
-  sudo mv "${TMPDIR}/no-mistakes" "${INSTALL_DIR}/no-mistakes"
+  echo "Linking ${LINK_PATH} to ${BIN_PATH} (requires sudo)..."
+  sudo mkdir -p "$LINK_DIR"
+  sudo rm -f "$LINK_PATH"
+  sudo ln -s "$BIN_PATH" "$LINK_PATH"
 fi
 
-chmod 755 "${INSTALL_DIR}/no-mistakes" 2>/dev/null || true
-echo "no-mistakes ${VERSION} installed to ${INSTALL_DIR}/no-mistakes"
+echo "no-mistakes ${VERSION} installed to ${BIN_PATH}"
+echo "Command path: ${LINK_PATH} -> ${BIN_PATH}"
+
+case ":$PATH:" in
+  *":$LINK_DIR:"*) ;;
+  *) echo "Add ${LINK_DIR} to your PATH and restart your terminal." ;;
+esac
