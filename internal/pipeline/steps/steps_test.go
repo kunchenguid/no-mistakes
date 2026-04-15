@@ -50,6 +50,8 @@ func handleFakeCLI(mode string) {
 		fakeGHHandler(args)
 	case "glab":
 		fakeGlabHandler(args)
+	case "record-success":
+		fakeRecordSuccessHandler()
 	case "git-passthrough":
 		fakeGitPassthroughHandler(args)
 	case "git-status-error":
@@ -63,6 +65,18 @@ func handleFakeCLI(mode string) {
 	default:
 		os.Exit(1)
 	}
+}
+
+func fakeRecordSuccessHandler() {
+	logFile := os.Getenv("FAKE_CLI_LOG")
+	if logFile != "" {
+		f, _ := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		if f != nil {
+			fmt.Fprintln(f, filepath.Base(os.Args[0]))
+			f.Close()
+		}
+	}
+	os.Exit(0)
 }
 
 func fakeGHHandler(args []string) {
@@ -1976,6 +1990,37 @@ func TestTestStep_PassingCommand(t *testing.T) {
 	}
 }
 
+func TestTestStep_ConfiguredCommand_UsesStepEnv(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	binDir := fakeCLIBinDir(t)
+	logFile := filepath.Join(t.TempDir(), "test-command.log")
+	linkTestBinary(t, binDir, "nm-testcmd")
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, "abc", "def", config.Commands{Test: "nm-testcmd"})
+	sctx.Env = fakeCLIEnv(binDir, map[string]string{
+		"FAKE_CLI_MODE": "record-success",
+		"FAKE_CLI_LOG":  logFile,
+	})
+
+	step := &TestStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatal("expected configured test command from StepContext env to pass")
+	}
+	logData, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(logData), "nm-testcmd") {
+		t.Fatalf("expected env-resolved test command to run, got %q", string(logData))
+	}
+}
+
 func TestTestStep_FailingCommand(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -2200,6 +2245,66 @@ func TestLintStep_FixMode_CommitsChanges(t *testing.T) {
 	}
 }
 
+func TestTestStep_FixMode_UsesFallbackSummaryWhenStructuredSummaryMalformed(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("fixed"), 0o644)
+			return &agent.Result{Output: json.RawMessage(`{"not_summary":"oops"}`)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Test: "true"})
+	sctx.Fixing = true
+	sctx.PreviousFindings = `{"findings":[{"severity":"error","description":"tests failed"}],"summary":"tests failed"}`
+
+	step := &TestStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatal("expected no approval after fallback summary commit and passing tests")
+	}
+	if got := lastCommitMessage(t, dir); got != "no-mistakes(test): fix test failures" {
+		t.Fatalf("last commit message = %q", got)
+	}
+}
+
+func TestLintStep_ConfiguredCommand_UsesStepEnv(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	binDir := fakeCLIBinDir(t)
+	logFile := filepath.Join(t.TempDir(), "lint-command.log")
+	linkTestBinary(t, binDir, "nm-lintcmd")
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, "abc", "def", config.Commands{Lint: "nm-lintcmd"})
+	sctx.Env = fakeCLIEnv(binDir, map[string]string{
+		"FAKE_CLI_MODE": "record-success",
+		"FAKE_CLI_LOG":  logFile,
+	})
+
+	step := &LintStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatal("expected configured lint command from StepContext env to pass")
+	}
+	logData, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(logData), "nm-lintcmd") {
+		t.Fatalf("expected env-resolved lint command to run, got %q", string(logData))
+	}
+}
+
 func TestLintStep_FixMode_UsesFallbackSummaryWhenStructuredSummaryMalformed(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
@@ -2222,6 +2327,40 @@ func TestLintStep_FixMode_UsesFallbackSummaryWhenStructuredSummaryMalformed(t *t
 	}
 
 	if got := lastCommitMessage(t, dir); got != "no-mistakes(lint): fix lint issues" {
+		t.Fatalf("last commit message = %q", got)
+	}
+}
+
+func TestDocumentStep_FixMode_UsesFallbackSummaryWhenStructuredSummaryMalformed(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	callCount := 0
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			callCount++
+			if callCount == 1 {
+				os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Updated\n"), 0o644)
+				return &agent.Result{Output: json.RawMessage(`{"not_summary":"oops"}`)}, nil
+			}
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"docs are fine"}`)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Fixing = true
+	sctx.PreviousFindings = `{"findings":[{"severity":"warning","description":"docs outdated"}],"summary":"docs outdated"}`
+
+	step := &DocumentStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatal("expected no approval after fallback summary commit and clean reassessment")
+	}
+	if got := lastCommitMessage(t, dir); got != "no-mistakes(document): update documentation" {
 		t.Fatalf("last commit message = %q", got)
 	}
 }
@@ -3198,6 +3337,56 @@ func TestPushStep_RunsFormatCommandBeforeCommit(t *testing.T) {
 	// Verify the format command ran (marker file exists)
 	if _, err := os.Stat(markerPath); os.IsNotExist(err) {
 		t.Error("format command was not executed before commit")
+	}
+}
+
+func TestPushStep_FormatCommandUsesStepEnv(t *testing.T) {
+	t.Parallel()
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("agent fix"), 0o644)
+
+	binDir := fakeCLIBinDir(t)
+	logFile := filepath.Join(t.TempDir(), "format-command.log")
+	linkTestBinary(t, binDir, "nm-formatcmd")
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{Format: "nm-formatcmd"})
+	sctx.Env = fakeCLIEnv(binDir, map[string]string{
+		"FAKE_CLI_MODE": "record-success",
+		"FAKE_CLI_LOG":  logFile,
+	})
+	sctx.Repo.UpstreamURL = upstream
+
+	step := &PushStep{}
+	_, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logData, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(logData), "nm-formatcmd") {
+		t.Fatalf("expected env-resolved format command to run, got %q", string(logData))
 	}
 }
 
