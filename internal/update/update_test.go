@@ -900,7 +900,7 @@ func TestRunningDaemonExecutablePathHandlesExecutablePathsWithSpaces(t *testing.
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	copyPath := filepath.Join(dir, "no mistakes test binary")
+	copyPath := filepath.Join(dir, "no mistakes test binary"+filepath.Ext(originalPath))
 	if err := os.WriteFile(copyPath, binary, originalInfo.Mode().Perm()); err != nil {
 		t.Fatal(err)
 	}
