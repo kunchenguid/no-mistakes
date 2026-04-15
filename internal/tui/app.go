@@ -1080,11 +1080,13 @@ func (m Model) rerunCmd(requestID uint64) tea.Cmd {
 func (m *Model) resetForRun(run *ipc.RunInfo) {
 	width, height := m.width, m.height
 	nextSubscriptionID := m.subscriptionID + 1
+	latestVersion := m.latestVersion
 	fresh := NewModel(m.socketPath, m.client, run)
 	fresh.width = width
 	fresh.height = height
 	fresh.subscriptionID = nextSubscriptionID
 	fresh.rerunRequestID = m.rerunRequestID
+	fresh.latestVersion = latestVersion
 	*m = fresh
 }
 

@@ -760,6 +760,24 @@ func TestModel_Update_RerunStartedSkipsSubscribeForTerminalRun(t *testing.T) {
 	}
 }
 
+func TestModel_Update_RerunPreservesLatestVersion(t *testing.T) {
+	run := testRun()
+	run.Status = types.RunFailed
+	m := NewModel("/tmp/sock", nil, run)
+	m.latestVersion = "v1.2.3"
+
+	newRun := testRun()
+	newRun.ID = "run-002"
+	newRun.Status = types.RunRunning
+
+	updated, _ := m.Update(rerunStartedMsg{run: newRun})
+	model := updated.(Model)
+
+	if model.latestVersion != "v1.2.3" {
+		t.Fatalf("latestVersion = %q, want %q", model.latestVersion, "v1.2.3")
+	}
+}
+
 func TestModel_SubscribeCmdReturnsScopedError(t *testing.T) {
 	run := testRun()
 	m := NewModel(filepath.Join(t.TempDir(), "missing.sock"), nil, run)
