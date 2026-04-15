@@ -153,7 +153,7 @@ func TestBuildPipelineSummary_AutoFix(t *testing.T) {
 	}
 }
 
-func TestBuildPipelineSummary_MultiRoundWithUserFix(t *testing.T) {
+func TestBuildPipelineSummary_MultiRoundWithFollowUpFix(t *testing.T) {
 	t.Parallel()
 	findings1 := `{"findings":[{"id":"test-1","severity":"error","file":"pkg/handler_test.go","line":42,"description":"expected 429 got 200"},{"id":"test-2","severity":"error","file":"pkg/handler_test.go","line":78,"description":"context deadline exceeded"}],"summary":"2 failures"}`
 	findings2 := `{"findings":[{"id":"test-2","severity":"error","file":"pkg/handler_test.go","line":78,"description":"context deadline exceeded"}],"summary":"1 failure"}`
@@ -164,7 +164,7 @@ func TestBuildPipelineSummary_MultiRoundWithUserFix(t *testing.T) {
 		"s1": {
 			{Round: 1, Trigger: "initial", FindingsJSON: &findings1, DurationMS: 1000},
 			{Round: 2, Trigger: "auto_fix", FindingsJSON: &findings2, DurationMS: 900},
-			{Round: 3, Trigger: "user_fix", DurationMS: 700},
+			{Round: 3, Trigger: "auto_fix", DurationMS: 700},
 		},
 	}
 	md, _ := BuildPipelineSummary(steps, rounds)
@@ -172,8 +172,36 @@ func TestBuildPipelineSummary_MultiRoundWithUserFix(t *testing.T) {
 	if !strings.Contains(md, "Round 3") {
 		t.Errorf("expected 3 rounds in details, got:\n%s", md)
 	}
-	if !strings.Contains(md, "user-fix") || !strings.Contains(md, "auto-fix") {
-		t.Errorf("expected both fix types mentioned, got:\n%s", md)
+	if strings.Contains(md, "user-fix") || strings.Contains(md, "user-fixed") {
+		t.Errorf("did not expect user-fix wording, got:\n%s", md)
+	}
+	if !strings.Contains(md, "auto-fixed (2)") {
+		t.Errorf("expected consolidated auto-fix count, got:\n%s", md)
+	}
+}
+
+func TestBuildPipelineSummary_LegacyUserFixRoundsRenderAsAutoFix(t *testing.T) {
+	t.Parallel()
+	findings := `{"findings":[{"id":"review-1","severity":"warning","description":"legacy round"}],"summary":"1 warning"}`
+	steps := []*db.StepResult{
+		{ID: "s1", StepName: types.StepReview, Status: types.StepStatusCompleted},
+	}
+	rounds := map[string][]*db.StepRound{
+		"s1": {
+			{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 1000},
+			{Round: 2, Trigger: "user_fix", DurationMS: 700},
+		},
+	}
+	md, _ := BuildPipelineSummary(steps, rounds)
+
+	if !strings.Contains(md, "auto-fixed") {
+		t.Errorf("expected legacy user_fix round to render as auto-fixed, got:\n%s", md)
+	}
+	if !strings.Contains(md, "Round 2** (auto-fix) - passed") {
+		t.Errorf("expected legacy user_fix round label to render as auto-fix, got:\n%s", md)
+	}
+	if strings.Contains(md, "user-fix") || strings.Contains(md, "user-fixed") {
+		t.Errorf("did not expect legacy user-fix wording in summary, got:\n%s", md)
 	}
 }
 
@@ -305,7 +333,7 @@ func TestBuildPipelineSummary_ReviewUsesFinalCleanState(t *testing.T) {
 	rounds := map[string][]*db.StepRound{
 		"s1": {
 			{Round: 1, Trigger: "initial", FindingsJSON: &initialFindings, DurationMS: 1000},
-			{Round: 2, Trigger: "user_fix", FindingsJSON: &finalFindings, DurationMS: 700},
+			{Round: 2, Trigger: "auto_fix", FindingsJSON: &finalFindings, DurationMS: 700},
 		},
 	}
 	md, risk := BuildPipelineSummary(steps, rounds)
@@ -313,8 +341,11 @@ func TestBuildPipelineSummary_ReviewUsesFinalCleanState(t *testing.T) {
 	if !strings.Contains(md, "🔧 **Review**") {
 		t.Errorf("expected fixed review status, got:\n%s", md)
 	}
-	if !strings.Contains(md, "user-fixed") {
-		t.Errorf("expected user-fixed in review line, got:\n%s", md)
+	if !strings.Contains(md, "auto-fixed") {
+		t.Errorf("expected auto-fixed in review line, got:\n%s", md)
+	}
+	if strings.Contains(md, "user-fixed") {
+		t.Errorf("did not expect user-fixed in review line, got:\n%s", md)
 	}
 	if strings.Contains(risk, "initial risk rationale") {
 		t.Errorf("did not expect stale initial rationale in risk, got: %q", risk)
@@ -419,7 +450,7 @@ func TestBuildPipelineSummary_ReviewDoesNotReuseInitialRiskWhenFinalUnreadable(t
 	rounds := map[string][]*db.StepRound{
 		"s1": {
 			{Round: 1, Trigger: "initial", FindingsJSON: &initialFindings, DurationMS: 1000},
-			{Round: 2, Trigger: "user_fix", FindingsJSON: &invalidFinalFindings, DurationMS: 700},
+			{Round: 2, Trigger: "auto_fix", FindingsJSON: &invalidFinalFindings, DurationMS: 700},
 		},
 	}
 	md, risk := BuildPipelineSummary(steps, rounds)

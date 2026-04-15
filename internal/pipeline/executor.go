@@ -362,7 +362,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			sctx.Fixing = true
 			selectedFindings := filterFindingsJSON(outcome.Findings, response.findingIDs)
 			sctx.PreviousFindings = selectedFindings
-			nextTrigger = "user_fix"
+			nextTrigger = "auto_fix"
 			currentDismissed := excludeFindingsJSON(outcome.Findings, response.findingIDs)
 			previousDismissed := retainMatchingFindingsJSON(removeMatchingFindingsJSON(sctx.DismissedFindings, selectedFindings), outcome.Findings)
 			sctx.DismissedFindings = mergeFindingsJSON(previousDismissed, currentDismissed)

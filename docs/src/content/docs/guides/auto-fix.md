@@ -78,9 +78,11 @@ The push step commits any remaining uncommitted changes with `no-mistakes: apply
 
 ## Step rounds
 
-Each execution of a step (initial run, auto-fix, user-fix) is recorded as a "round" in the database. The PR body's deterministic risk assessment, testing, and pipeline sections are built from these rounds, giving reviewers visibility into test results, review risk, what was fixed, and how many attempts it took.
+Each execution of a step (initial run or follow-up auto-fix run) is recorded as a "round" in the database. The PR body's deterministic risk assessment, testing, and pipeline sections are built from these rounds, giving reviewers visibility into test results, review risk, what was fixed, and how many attempts it took.
 
 Round trigger types:
 - `initial` - first execution
 - `auto_fix` - triggered by the automatic fix loop
-- `user_fix` - triggered by the user pressing `f` in the TUI
+- `auto_fix` - also used when you press `f` in the TUI to run a follow-up fix
+
+Legacy `user_fix` rounds are still rendered as `auto-fix` in PR summaries for backward compatibility.
