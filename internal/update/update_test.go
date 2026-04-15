@@ -840,6 +840,36 @@ func TestRunningDaemonExecutablePathHandlesExecutablePathsWithSpaces(t *testing.
 	}
 }
 
+func TestExecutablePathForPIDUsesWindowsResolver(t *testing.T) {
+	origGOOS := currentGOOS
+	origWindowsResolver := windowsExecutablePathForPID
+	t.Cleanup(func() {
+		currentGOOS = origGOOS
+		windowsExecutablePathForPID = origWindowsResolver
+	})
+
+	currentGOOS = "windows"
+	called := false
+	windowsExecutablePathForPID = func(pid int) (string, error) {
+		called = true
+		if pid != 4321 {
+			t.Fatalf("pid = %d, want %d", pid, 4321)
+		}
+		return `C:\Program Files\no-mistakes\no-mistakes.exe`, nil
+	}
+
+	got, err := executablePathForPID(4321)
+	if err != nil {
+		t.Fatalf("executablePathForPID error = %v", err)
+	}
+	if !called {
+		t.Fatal("expected windows resolver to be used")
+	}
+	if got != `C:\Program Files\no-mistakes\no-mistakes.exe` {
+		t.Fatalf("executablePathForPID = %q", got)
+	}
+}
+
 func TestDefaultResetDaemonRecoversWhenHealthCheckErrors(t *testing.T) {
 	origIsRunning := daemonIsRunning
 	origStop := daemonStop

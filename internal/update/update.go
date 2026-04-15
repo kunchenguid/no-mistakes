@@ -41,10 +41,12 @@ const (
 
 var allowInsecureDownloads bool
 var githubAPIBaseURL = "https://api.github.com"
+var currentGOOS = runtime.GOOS
 var daemonIsRunning = daemon.IsRunning
 var daemonExecutablePath = runningDaemonExecutablePath
 var daemonStop = daemon.Stop
 var daemonStart = daemon.Start
+var windowsExecutablePathForPID = defaultWindowsExecutablePathForPID
 
 type daemonResetError struct {
 	err           error
@@ -540,8 +542,11 @@ func runningDaemonExecutablePath(p *paths.Paths) (string, error) {
 }
 
 func executablePathForPID(pid int) (string, error) {
-	if runtime.GOOS == "linux" {
+	if currentGOOS == "linux" {
 		return os.Readlink(filepath.Join("/proc", strconv.Itoa(pid), "exe"))
+	}
+	if currentGOOS == "windows" {
+		return windowsExecutablePathForPID(pid)
 	}
 	cmd := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "comm=")
 	out, err := cmd.Output()
