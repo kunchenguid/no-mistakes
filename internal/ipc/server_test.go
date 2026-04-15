@@ -53,7 +53,7 @@ func startServer(t *testing.T, sock string) *ipc.Server {
 	return srv
 }
 
-func TestServerClientRoundTrip(t *testing.T) {
+func TestServerClientRoundTrip_EnableWindowsCI(t *testing.T) {
 	sock := socketPath(t)
 	srv := startServer(t, sock)
 
@@ -142,7 +142,7 @@ func TestHandlerError(t *testing.T) {
 	}
 }
 
-func TestMultipleClients(t *testing.T) {
+func TestMultipleClients_EnableWindowsCI(t *testing.T) {
 	sock := socketPath(t)
 	srv := startServer(t, sock)
 
@@ -290,7 +290,7 @@ func TestHealthRequestsDoNotLogAtInfo(t *testing.T) {
 	}
 }
 
-func TestServerClose(t *testing.T) {
+func TestServerClose_EnableWindowsCI(t *testing.T) {
 	sock := socketPath(t)
 	srv := ipc.NewServer()
 	errCh := make(chan error, 1)
@@ -328,14 +328,14 @@ func TestServerClose(t *testing.T) {
 	}
 }
 
-func TestDialNonexistentSocket(t *testing.T) {
+func TestDialNonexistentSocket_EnableWindowsCI(t *testing.T) {
 	_, err := ipc.Dial(filepath.Join(t.TempDir(), "nonexistent.sock"))
 	if err == nil {
 		t.Error("expected error dialing nonexistent socket")
 	}
 }
 
-func TestStreamHandler(t *testing.T) {
+func TestStreamHandler_EnableWindowsCI(t *testing.T) {
 	sock := socketPath(t)
 	srv := startServer(t, sock)
 
@@ -779,7 +779,7 @@ func TestServerEmptyLine(t *testing.T) {
 	}
 }
 
-func TestSubscribeClient(t *testing.T) {
+func TestSubscribeClient_EnableWindowsCI(t *testing.T) {
 	sock := socketPath(t)
 	srv := startServer(t, sock)
 

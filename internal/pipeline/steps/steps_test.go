@@ -3908,7 +3908,7 @@ func fakeGH(t *testing.T, prViewURL string) (env []string, logFile string) {
 	return env, logFile
 }
 
-func TestStepCLIAvailable_ResolvesExecutableSuffixFromCustomPath(t *testing.T) {
+func TestStepCLIAvailable_ResolvesExecutableSuffixFromCustomPath_EnableWindowsCI(t *testing.T) {
 	t.Parallel()
 
 	binDir := fakeCLIBinDir(t)
@@ -3942,7 +3942,7 @@ func TestStepCLIAvailable_ResolvesExecutableSuffixFromCustomPath(t *testing.T) {
 	}
 }
 
-func TestStepCLIAvailable_IgnoresNonExecutableFromCustomPath(t *testing.T) {
+func TestStepCLIAvailable_IgnoresNonExecutableFromCustomPath_EnableWindowsCI(t *testing.T) {
 	t.Parallel()
 
 	binDir := t.TempDir()
@@ -3970,7 +3970,7 @@ func TestStepCLIAvailable_IgnoresNonExecutableFromCustomPath(t *testing.T) {
 	}
 }
 
-func TestPathCandidateUsable_WindowsAcceptsExeWithoutExecBits(t *testing.T) {
+func TestPathCandidateUsable_WindowsAcceptsExeWithoutExecBits_EnableWindowsCI(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "gh.exe")
@@ -3988,7 +3988,7 @@ func TestPathCandidateUsable_WindowsAcceptsExeWithoutExecBits(t *testing.T) {
 	}
 }
 
-func TestEnvValueForOS_WindowsMatchesEmptyMixedCaseOverride(t *testing.T) {
+func TestEnvValueForOS_WindowsMatchesEmptyMixedCaseOverride_EnableWindowsCI(t *testing.T) {
 	t.Parallel()
 
 	value, ok := envValueForOS([]string{"Path=", "PathExt="}, "PATH", "windows")
@@ -4008,7 +4008,7 @@ func TestEnvValueForOS_WindowsMatchesEmptyMixedCaseOverride(t *testing.T) {
 	}
 }
 
-func TestExecutableCandidatesForOS_WindowsHonorsExplicitEmptyPATHEXT(t *testing.T) {
+func TestExecutableCandidatesForOS_WindowsHonorsExplicitEmptyPATHEXT_EnableWindowsCI(t *testing.T) {
 	t.Parallel()
 
 	candidates := executableCandidatesForOS("windows", "gh", []string{"PATHEXT="})
@@ -4020,7 +4020,7 @@ func TestExecutableCandidatesForOS_WindowsHonorsExplicitEmptyPATHEXT(t *testing.
 	}
 }
 
-func TestStepCmd_ResolvesRelativeCustomPathFromWorkDir(t *testing.T) {
+func TestStepCmd_ResolvesRelativeCustomPathFromWorkDir_EnableWindowsCI(t *testing.T) {
 	t.Parallel()
 
 	// Use os.MkdirTemp instead of t.TempDir so we can retry cleanup on
@@ -4073,7 +4073,7 @@ func TestStepCmd_ResolvesRelativeCustomPathFromWorkDir(t *testing.T) {
 	}
 }
 
-func TestStepCmd_DoesNotFallbackToHostPathWhenCustomPathOmitsBinary(t *testing.T) {
+func TestStepCmd_DoesNotFallbackToHostPathWhenCustomPathOmitsBinary_EnableWindowsCI(t *testing.T) {
 	t.Parallel()
 
 	customPath := t.TempDir()
@@ -4093,7 +4093,7 @@ func TestStepCmd_DoesNotFallbackToHostPathWhenCustomPathOmitsBinary(t *testing.T
 	}
 }
 
-func TestStepCmd_DoesNotFallbackToHostPathWhenCustomPathIsEmpty(t *testing.T) {
+func TestStepCmd_DoesNotFallbackToHostPathWhenCustomPathIsEmpty_EnableWindowsCI(t *testing.T) {
 	t.Parallel()
 
 	sctx := &pipeline.StepContext{
@@ -4111,7 +4111,7 @@ func TestStepCmd_DoesNotFallbackToHostPathWhenCustomPathIsEmpty(t *testing.T) {
 	}
 }
 
-func TestStepCmd_OverridesPathWithoutDuplicateEntries(t *testing.T) {
+func TestStepCmd_OverridesPathWithoutDuplicateEntries_EnableWindowsCI(t *testing.T) {
 	t.Parallel()
 
 	customPath := t.TempDir()

@@ -645,7 +645,7 @@ func TestUpdaterRunFailsWhenDaemonUsesDifferentExecutable(t *testing.T) {
 	}
 }
 
-func TestEnsureDaemonUsesCurrentExecutableAllowsWindowsCaseDifferences(t *testing.T) {
+func TestEnsureDaemonUsesCurrentExecutableAllowsWindowsCaseDifferences_EnableWindowsCI(t *testing.T) {
 	origGOOS := currentGOOS
 	origDaemonIsRunning := daemonIsRunning
 	origDaemonExecutablePath := daemonExecutablePath
@@ -877,7 +877,7 @@ func TestRunningDaemonExecutablePathUsesPIDFile(t *testing.T) {
 	}
 }
 
-func TestRunningDaemonExecutablePathHandlesExecutablePathsWithSpaces(t *testing.T) {
+func TestRunningDaemonExecutablePathHandlesExecutablePathsWithSpaces_EnableWindowsCI(t *testing.T) {
 	if os.Getenv("NO_MISTAKES_TEST_CHILD") == "1" {
 		time.Sleep(10 * time.Second)
 		return
@@ -929,7 +929,7 @@ func TestRunningDaemonExecutablePathHandlesExecutablePathsWithSpaces(t *testing.
 	}
 }
 
-func TestExecutablePathForPIDUsesWindowsResolver(t *testing.T) {
+func TestExecutablePathForPIDUsesWindowsResolver_EnableWindowsCI(t *testing.T) {
 	origGOOS := currentGOOS
 	origWindowsResolver := windowsExecutablePathForPID
 	t.Cleanup(func() {

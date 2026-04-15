@@ -81,6 +81,8 @@ Safest local verification sequence after non-trivial changes:
 - Prefer creating real git repos in temp directories instead of relying on heavy mocking.
 - CLI tests often capture output and assert with `strings.Contains`.
 - Prefer targeted package tests while iterating, then finish with `go test -race ./...`.
+- Tests whose main value is keeping Windows pull request CI coverage should use the `_EnableWindowsCI` suffix.
+- Use `_EnableWindowsCI` only for tests that exercise Windows-specific behavior or Windows-only regression risk worth keeping in the reduced PR suite. Do not add the suffix to general cross-platform coverage.
 
 **When Making Changes**
 
