@@ -81,6 +81,8 @@ After a fix cycle, press `d` to toggle the diff view:
 
 During running steps, shows streaming agent output. Lines starting with `PASS` are green, `FAIL` are red, everything else is dim.
 
+On narrow terminals, the log panel expands to fill the remaining vertical space below the pipeline box instead of staying at the compact fixed height used in shorter layouts.
+
 ## Keybindings
 
 ### Navigation
