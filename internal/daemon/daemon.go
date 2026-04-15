@@ -15,7 +15,10 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
+
+var applyShellEnvToProcess = shellenv.ApplyToProcess
 
 // Run starts the daemon process. It blocks until a shutdown signal is received
 // or the shutdown IPC method is called. This is called when NM_DAEMON=1.
@@ -26,6 +29,9 @@ func Run() error {
 	}
 	if err := p.EnsureDirs(); err != nil {
 		return fmt.Errorf("create directories: %w", err)
+	}
+	if err := prepareDaemonEnvironment(); err != nil {
+		return err
 	}
 
 	// Ensure default config exists, then load it.
@@ -43,6 +49,24 @@ func Run() error {
 	defer d.Close()
 
 	return RunWithResources(p, d)
+}
+
+func prepareDaemonEnvironment() error {
+	for _, key := range []string{
+		"CLAUDECODE",
+		"CLAUDE_CODE_ENTRYPOINT",
+		"CLAUDE_CODE_ENTRY_POINT",
+		"CLAUDE_CODE_SESSION_ID",
+		"CLAUDE_CODE_SESSION_ACCESS_TOKEN",
+	} {
+		if err := os.Unsetenv(key); err != nil {
+			return fmt.Errorf("unset %s: %w", key, err)
+		}
+	}
+	if err := applyShellEnvToProcess(); err != nil {
+		return fmt.Errorf("apply login shell environment: %w", err)
+	}
+	return nil
 }
 
 // initLogger sets up the global slog handler with the configured log level.

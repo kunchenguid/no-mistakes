@@ -2,12 +2,15 @@ package cli
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/spf13/cobra"
 )
+
+var daemonRun = daemon.Run
 
 func newDaemonCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -18,6 +21,7 @@ func newDaemonCmd() *cobra.Command {
 	cmd.AddCommand(newDaemonStartCmd())
 	cmd.AddCommand(newDaemonStopCmd())
 	cmd.AddCommand(newDaemonStatusCmd())
+	cmd.AddCommand(newDaemonRunCmd())
 	cmd.AddCommand(newDaemonNotifyPushCmd())
 
 	return cmd
@@ -133,4 +137,26 @@ func newDaemonStatusCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func newDaemonRunCmd() *cobra.Command {
+	var root string
+
+	cmd := &cobra.Command{
+		Use:    "run",
+		Short:  "Run the daemon in the foreground",
+		Hidden: true,
+		Args:   cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if root != "" {
+				if err := os.Setenv("NM_HOME", root); err != nil {
+					return fmt.Errorf("set NM_HOME: %w", err)
+				}
+			}
+			return daemonRun()
+		},
+	}
+
+	cmd.Flags().StringVar(&root, "root", "", "override no-mistakes data directory")
+	return cmd
 }

@@ -1,0 +1,344 @@
+package daemon
+
+import (
+	"bytes"
+	"encoding/xml"
+	"fmt"
+	"os"
+	"os/exec"
+	"os/user"
+	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
+
+	"github.com/kunchenguid/no-mistakes/internal/paths"
+)
+
+const (
+	launchdServiceLabel = "com.kunchenguid.no-mistakes.daemon"
+	systemdServiceName  = "no-mistakes-daemon.service"
+	windowsTaskName     = "no-mistakes-daemon"
+)
+
+var runtimeGOOS = runtime.GOOS
+var serviceUserHomeDir = os.UserHomeDir
+var serviceCurrentUser = user.Current
+var serviceExecutablePath = os.Executable
+var serviceCommandRunner = runServiceCommand
+var serviceManagerBypassed = func() bool {
+	return os.Getenv("NM_TEST_START_DAEMON") == "1"
+}
+
+func installManagedService(p *paths.Paths) (bool, error) {
+	if serviceManagerBypassed() {
+		return false, nil
+	}
+	exe, err := serviceExecutablePath()
+	if err != nil {
+		return false, fmt.Errorf("resolve executable: %w", err)
+	}
+	switch runtimeGOOS {
+	case "darwin":
+		return true, installLaunchAgent(p, exe)
+	case "linux":
+		return true, installSystemdUserService(p, exe)
+	case "windows":
+		return true, installWindowsTask(p, exe)
+	default:
+		return false, nil
+	}
+}
+
+func startManagedService(p *paths.Paths) (bool, error) {
+	if serviceManagerBypassed() {
+		return false, nil
+	}
+	switch runtimeGOOS {
+	case "darwin":
+		return true, startLaunchAgent(p)
+	case "linux":
+		return true, startSystemdUserService()
+	case "windows":
+		return true, startWindowsTask()
+	default:
+		return false, nil
+	}
+}
+
+func stopManagedService(p *paths.Paths) (bool, error) {
+	if serviceManagerBypassed() || !managedServiceInstalled(p) {
+		return false, nil
+	}
+	switch runtimeGOOS {
+	case "darwin":
+		return true, stopLaunchAgent(p)
+	case "linux":
+		return true, stopSystemdUserService()
+	case "windows":
+		return true, stopWindowsTask()
+	default:
+		return false, nil
+	}
+}
+
+func managedServiceInstalled(p *paths.Paths) bool {
+	if serviceManagerBypassed() {
+		return false
+	}
+	switch runtimeGOOS {
+	case "darwin":
+		_, err := os.Stat(launchAgentPath())
+		return err == nil
+	case "linux":
+		_, err := os.Stat(systemdUserServicePath())
+		return err == nil
+	case "windows":
+		return p != nil
+	default:
+		return false
+	}
+}
+
+func installLaunchAgent(p *paths.Paths, exe string) error {
+	path := launchAgentPath()
+	home, err := serviceUserHomeDir()
+	if err != nil {
+		return fmt.Errorf("resolve user home: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create launch agents directory: %w", err)
+	}
+	if err := os.WriteFile(path, []byte(renderLaunchAgent(exe, p, home)), 0o644); err != nil {
+		return fmt.Errorf("write launch agent: %w", err)
+	}
+	return nil
+}
+
+func startLaunchAgent(p *paths.Paths) error {
+	domain, err := launchdDomainTarget()
+	if err != nil {
+		return err
+	}
+	serviceTarget := domain + "/" + launchdServiceLabel
+	path := launchAgentPath()
+	_, _ = serviceCommandRunner("launchctl", "bootout", serviceTarget)
+	_, bootstrapErr := serviceCommandRunner("launchctl", "bootstrap", domain, path)
+	_, kickstartErr := serviceCommandRunner("launchctl", "kickstart", "-k", serviceTarget)
+	if kickstartErr != nil {
+		if bootstrapErr != nil {
+			return fmt.Errorf("launchctl bootstrap: %v; kickstart: %w", bootstrapErr, kickstartErr)
+		}
+		return fmt.Errorf("launchctl kickstart: %w", kickstartErr)
+	}
+	return nil
+}
+
+func stopLaunchAgent(_ *paths.Paths) error {
+	domain, err := launchdDomainTarget()
+	if err != nil {
+		return err
+	}
+	_, err = serviceCommandRunner("launchctl", "bootout", domain+"/"+launchdServiceLabel)
+	if err != nil {
+		return fmt.Errorf("launchctl bootout: %w", err)
+	}
+	return nil
+}
+
+func installSystemdUserService(p *paths.Paths, exe string) error {
+	path := systemdUserServicePath()
+	home, err := serviceUserHomeDir()
+	if err != nil {
+		return fmt.Errorf("resolve user home: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create systemd user directory: %w", err)
+	}
+	if err := os.WriteFile(path, []byte(renderSystemdUnit(exe, p, home)), 0o644); err != nil {
+		return fmt.Errorf("write systemd unit: %w", err)
+	}
+	if _, err := serviceCommandRunner("systemctl", "--user", "daemon-reload"); err != nil {
+		return fmt.Errorf("systemctl daemon-reload: %w", err)
+	}
+	if _, err := serviceCommandRunner("systemctl", "--user", "enable", systemdServiceName); err != nil {
+		return fmt.Errorf("systemctl enable: %w", err)
+	}
+	return nil
+}
+
+func startSystemdUserService() error {
+	_, err := serviceCommandRunner("systemctl", "--user", "start", systemdServiceName)
+	if err != nil {
+		return fmt.Errorf("systemctl start: %w", err)
+	}
+	return nil
+}
+
+func stopSystemdUserService() error {
+	_, err := serviceCommandRunner("systemctl", "--user", "stop", systemdServiceName)
+	if err != nil {
+		return fmt.Errorf("systemctl stop: %w", err)
+	}
+	return nil
+}
+
+func installWindowsTask(p *paths.Paths, exe string) error {
+	args := []string{
+		"/Create",
+		"/TN", windowsTaskName,
+		"/SC", "ONLOGON",
+		"/RL", "LIMITED",
+		"/F",
+		"/TR", buildWindowsTaskCommand(exe, p.Root()),
+	}
+	if _, err := serviceCommandRunner("schtasks", args...); err != nil {
+		return fmt.Errorf("schtasks create: %w", err)
+	}
+	return nil
+}
+
+func startWindowsTask() error {
+	_, err := serviceCommandRunner("schtasks", "/Run", "/TN", windowsTaskName)
+	if err != nil {
+		return fmt.Errorf("schtasks run: %w", err)
+	}
+	return nil
+}
+
+func stopWindowsTask() error {
+	_, err := serviceCommandRunner("schtasks", "/End", "/TN", windowsTaskName)
+	if err != nil {
+		return fmt.Errorf("schtasks end: %w", err)
+	}
+	return nil
+}
+
+func launchAgentPath() string {
+	home, err := serviceUserHomeDir()
+	if err != nil {
+		return filepath.Join("", "Library", "LaunchAgents", launchdServiceLabel+".plist")
+	}
+	return filepath.Join(home, "Library", "LaunchAgents", launchdServiceLabel+".plist")
+}
+
+func systemdUserServicePath() string {
+	home, err := serviceUserHomeDir()
+	if err != nil {
+		return filepath.Join("", ".config", "systemd", "user", systemdServiceName)
+	}
+	return filepath.Join(home, ".config", "systemd", "user", systemdServiceName)
+}
+
+func launchdDomainTarget() (string, error) {
+	u, err := serviceCurrentUser()
+	if err != nil {
+		return "", fmt.Errorf("resolve current user: %w", err)
+	}
+	if u == nil || u.Uid == "" {
+		return "", fmt.Errorf("resolve current user: empty uid")
+	}
+	return "gui/" + u.Uid, nil
+}
+
+func renderLaunchAgent(exe string, p *paths.Paths, home string) string {
+	values := []string{exe, "daemon", "run", "--root", p.Root()}
+	var args strings.Builder
+	for _, value := range values {
+		args.WriteString("    <string>")
+		args.WriteString(xmlEscaped(value))
+		args.WriteString("</string>\n")
+	}
+	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>%s</string>
+  <key>ProgramArguments</key>
+  <array>
+%s  </array>
+  <key>WorkingDirectory</key>
+  <string>%s</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>%s</string>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>%s</string>
+  <key>StandardErrorPath</key>
+  <string>%s</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+</dict>
+</plist>
+`, xmlEscaped(launchdServiceLabel), args.String(), xmlEscaped(p.Root()), xmlEscaped(home), xmlEscaped(p.DaemonLog()), xmlEscaped(p.DaemonLog()))
+}
+
+func renderSystemdUnit(exe string, p *paths.Paths, home string) string {
+	command := strings.Join([]string{
+		systemdEscapeArg(exe),
+		systemdEscapeArg("daemon"),
+		systemdEscapeArg("run"),
+		systemdEscapeArg("--root"),
+		systemdEscapeArg(p.Root()),
+	}, " ")
+	return fmt.Sprintf(`[Unit]
+Description=no-mistakes background daemon
+
+[Service]
+Type=simple
+ExecStart=%s
+WorkingDirectory=%s
+Environment=%s
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target
+`, command, systemdEscapeArg(p.Root()), strconv.Quote("HOME="+home))
+}
+
+func buildWindowsTaskCommand(exe, root string) string {
+	args := []string{quoteWindowsTaskArg(exe), "daemon", "run", "--root", quoteWindowsTaskArg(root)}
+	return strings.Join(args, " ")
+}
+
+func systemdEscapeArg(arg string) string {
+	if arg == "" {
+		return `""`
+	}
+	if strings.ContainsAny(arg, " \t\n\r\"'\\") {
+		return strconv.Quote(arg)
+	}
+	return arg
+}
+
+func quoteWindowsTaskArg(arg string) string {
+	if !strings.ContainsAny(arg, " \t\"") {
+		return arg
+	}
+	return strconv.Quote(arg)
+}
+
+func xmlEscaped(value string) string {
+	var buf bytes.Buffer
+	_ = xml.EscapeText(&buf, []byte(value))
+	return buf.String()
+}
+
+func runServiceCommand(name string, args ...string) ([]byte, error) {
+	path, err := exec.LookPath(name)
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.Command(path, args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return output, fmt.Errorf("%s %s: %w: %s", path, strings.Join(args, " "), err, strings.TrimSpace(string(output)))
+	}
+	return output, nil
+}

@@ -18,7 +18,8 @@ func TestInstallScriptInstallsUserOwnedBinaryAndPathSymlink(t *testing.T) {
 
 	home := t.TempDir()
 	archivePath := filepath.Join(t.TempDir(), "no-mistakes-v1.2.3-darwin-arm64.tar.gz")
-	makeInstallArchive(t, archivePath, "new-binary")
+	binaryScript := "#!/bin/sh\nexit 0\n"
+	makeInstallArchive(t, archivePath, binaryScript)
 	fakeBin := makeFakeInstallCommands(t)
 	localBin := filepath.Join(home, ".local", "bin")
 	if err := os.MkdirAll(localBin, 0o755); err != nil {
@@ -30,7 +31,7 @@ func TestInstallScriptInstallsUserOwnedBinaryAndPathSymlink(t *testing.T) {
 	})
 
 	realBin := filepath.Join(home, ".no-mistakes", "bin", "no-mistakes")
-	assertFileContent(t, realBin, "new-binary")
+	assertFileContent(t, realBin, binaryScript)
 	assertSymlinkTarget(t, filepath.Join(localBin, "no-mistakes"), realBin)
 }
 
@@ -39,7 +40,8 @@ func TestInstallScriptReplacesExistingPathEntryWithSymlink(t *testing.T) {
 
 	home := t.TempDir()
 	archivePath := filepath.Join(t.TempDir(), "no-mistakes-v1.2.3-darwin-arm64.tar.gz")
-	makeInstallArchive(t, archivePath, "new-binary")
+	binaryScript := "#!/bin/sh\nexit 0\n"
+	makeInstallArchive(t, archivePath, binaryScript)
 	fakeBin := makeFakeInstallCommands(t)
 	linkDir := filepath.Join(t.TempDir(), "link-bin")
 	if err := os.MkdirAll(linkDir, 0o755); err != nil {
@@ -56,8 +58,35 @@ func TestInstallScriptReplacesExistingPathEntryWithSymlink(t *testing.T) {
 	})
 
 	realBin := filepath.Join(home, ".no-mistakes", "bin", "no-mistakes")
-	assertFileContent(t, realBin, "new-binary")
+	assertFileContent(t, realBin, binaryScript)
 	assertSymlinkTarget(t, oldPath, realBin)
+}
+
+func TestInstallScriptStartsDaemonAfterInstall(t *testing.T) {
+	skipInstallScriptTestsOnWindows(t)
+
+	home := t.TempDir()
+	archivePath := filepath.Join(t.TempDir(), "no-mistakes-v1.2.3-darwin-arm64.tar.gz")
+	callLog := filepath.Join(t.TempDir(), "calls.log")
+	makeInstallArchive(t, archivePath, "#!/bin/sh\nprintf '%s\n' \"$*\" >> \"$NO_MISTAKES_CALL_LOG\"\n")
+	fakeBin := makeFakeInstallCommands(t)
+	localBin := filepath.Join(home, ".local", "bin")
+	if err := os.MkdirAll(localBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	runInstallScript(t, home, fakeBin, map[string]string{
+		"FAKE_RELEASE_ARCHIVE": archivePath,
+		"NO_MISTAKES_CALL_LOG": callLog,
+	})
+
+	data, err := os.ReadFile(callLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "daemon start") {
+		t.Fatalf("install.sh should start the daemon after install, got calls %q", string(data))
+	}
 }
 
 func skipInstallScriptTestsOnWindows(t *testing.T) {

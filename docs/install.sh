@@ -77,6 +77,8 @@ fi
 echo "no-mistakes ${VERSION} installed to ${BIN_PATH}"
 echo "Command path: ${LINK_PATH} -> ${BIN_PATH}"
 
+"$BIN_PATH" daemon start >/dev/null
+
 case ":$PATH:" in
   *":$LINK_DIR:"*) ;;
   *) echo "Add ${LINK_DIR} to your PATH and restart your terminal." ;;
