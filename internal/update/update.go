@@ -418,9 +418,6 @@ func (u *updater) run(ctx context.Context) error {
 		fmt.Fprintf(u.stdoutWriter(), "self-update unavailable for development builds (%s)\n", u.currentVersion)
 		return nil
 	}
-	if err := u.ensureDaemonUsesCurrentExecutable(); err != nil {
-		return err
-	}
 	plan, err := u.checkLatest(ctx)
 	if err != nil {
 		return err
@@ -431,6 +428,9 @@ func (u *updater) run(ctx context.Context) error {
 	if !plan.UpdateAvailable {
 		fmt.Fprintf(u.stdoutWriter(), "%s is already up to date (%s)\n", u.appName, u.currentVersion)
 		return nil
+	}
+	if err := u.ensureDaemonUsesCurrentExecutable(); err != nil {
+		return err
 	}
 
 	archiveData, err := u.downloadAsset(ctx, plan.Archive.BrowserDownloadURL, maxDownloadSize)

@@ -729,6 +729,67 @@ func TestUpdaterRunFailsWhenDaemonExecutableCannotBeResolved(t *testing.T) {
 	}
 }
 
+func TestUpdaterRunSkipsDaemonExecutableCheckWhenAlreadyUpToDate(t *testing.T) {
+	allowInsecureDownloads = true
+	t.Cleanup(func() { allowInsecureDownloads = false })
+
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/kunchenguid/no-mistakes/releases/latest":
+			fmt.Fprint(w, `{"tag_name":"v1.2.2","assets":[]}`)
+		default:
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	execPath := filepath.Join(t.TempDir(), "no-mistakes")
+	if err := os.WriteFile(execPath, []byte("current-binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	origDaemonIsRunning := daemonIsRunning
+	origDaemonExecutablePath := daemonExecutablePath
+	t.Cleanup(func() {
+		daemonIsRunning = origDaemonIsRunning
+		daemonExecutablePath = origDaemonExecutablePath
+	})
+
+	checks := 0
+	daemonIsRunning = func(*paths.Paths) (bool, error) {
+		checks++
+		return true, nil
+	}
+	daemonExecutablePath = func(*paths.Paths) (string, error) {
+		return "", errors.New("pid lookup failed")
+	}
+
+	stdout := new(bytes.Buffer)
+	u := &updater{
+		appName:        "no-mistakes",
+		repo:           "kunchenguid/no-mistakes",
+		currentVersion: "v1.2.2",
+		platform:       platformSpec{GOOS: "darwin", GOARCH: "arm64"},
+		apiBaseURL:     server.URL,
+		httpClient:     server.Client(),
+		executablePath: execPath,
+		stdout:         stdout,
+		now:            func() time.Time { return time.Date(2026, 4, 9, 12, 0, 0, 0, time.UTC) },
+		paths:          paths.WithRoot(t.TempDir()),
+	}
+
+	if err := u.run(context.Background()); err != nil {
+		t.Fatalf("run error = %v", err)
+	}
+	if checks != 0 {
+		t.Fatalf("expected no daemon executable check when already up to date, got %d checks", checks)
+	}
+	if !strings.Contains(stdout.String(), "already up to date") {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+}
+
 func TestDefaultResetDaemonReportsOfflineWhenRestartFails(t *testing.T) {
 	origIsRunning := daemonIsRunning
 	origStop := daemonStop
