@@ -538,6 +538,45 @@ func TestResolveDefaultBranchTipSHA_FetchesRemoteTip(t *testing.T) {
 	}
 }
 
+func TestResolveDefaultBranchTipSHA_FetchFailureAvoidsStaleOriginRef(t *testing.T) {
+	t.Parallel()
+
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	seed := t.TempDir()
+	gitCmd(t, seed, "init")
+	gitCmd(t, seed, "config", "user.name", "test")
+	gitCmd(t, seed, "config", "user.email", "test@test.com")
+	gitCmd(t, seed, "checkout", "-b", "main")
+	if err := os.WriteFile(filepath.Join(seed, "base.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, seed, "add", "base.txt")
+	gitCmd(t, seed, "commit", "-m", "base")
+	gitCmd(t, seed, "remote", "add", "origin", upstream)
+	gitCmd(t, seed, "push", "origin", "main")
+
+	workDir := t.TempDir()
+	gitCmd(t, workDir, "init")
+	gitCmd(t, workDir, "config", "user.name", "test")
+	gitCmd(t, workDir, "config", "user.email", "test@test.com")
+	gitCmd(t, workDir, "remote", "add", "origin", upstream)
+	gitCmd(t, workDir, "fetch", "origin", "+refs/heads/main:refs/remotes/origin/main")
+	gitCmd(t, workDir, "checkout", "-b", "feature", "origin/main")
+	staleOriginTip := gitCmd(t, workDir, "rev-parse", "origin/main")
+	gitCmd(t, workDir, "remote", "set-url", "origin", filepath.Join(upstream, "missing"))
+
+	fallbackBaseSHA := "abc123"
+	got := resolveDefaultBranchTipSHA(context.Background(), workDir, fallbackBaseSHA, "main")
+	if got != fallbackBaseSHA {
+		t.Fatalf("resolveDefaultBranchTipSHA = %q, want fallback base %q when fetch fails", got, fallbackBaseSHA)
+	}
+	if got == staleOriginTip {
+		t.Fatalf("resolveDefaultBranchTipSHA reused stale origin/main %q after fetch failure", got)
+	}
+}
+
 func TestRunShellCommand(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

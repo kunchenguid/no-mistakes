@@ -50,7 +50,16 @@ func resolveBranchBaseSHA(ctx context.Context, workDir, fallbackBaseSHA, default
 
 func resolveDefaultBranchTipSHA(ctx context.Context, workDir, fallbackBaseSHA, defaultBranch string) string {
 	if strings.TrimSpace(defaultBranch) != "" {
-		_ = git.FetchRemoteBranch(ctx, workDir, "origin", defaultBranch)
+		if err := git.FetchRemoteBranch(ctx, workDir, "origin", defaultBranch); err != nil {
+			sha, localErr := git.Run(ctx, workDir, "rev-parse", "--verify", defaultBranch)
+			if localErr == nil && strings.TrimSpace(sha) != "" {
+				return strings.TrimSpace(sha)
+			}
+			if !git.IsZeroSHA(fallbackBaseSHA) {
+				return fallbackBaseSHA
+			}
+			return git.EmptyTreeSHA
+		}
 		for _, ref := range []string{"origin/" + defaultBranch, defaultBranch} {
 			sha, err := git.Run(ctx, workDir, "rev-parse", "--verify", ref)
 			if err == nil && strings.TrimSpace(sha) != "" {
