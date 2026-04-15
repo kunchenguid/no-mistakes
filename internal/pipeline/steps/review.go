@@ -32,10 +32,6 @@ func (s *ReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 
 	// In fix mode, ask the agent to fix issues first
 	if sctx.Fixing {
-		if sctx.PreviousFindings == "" {
-			return nil, fmt.Errorf("review fix requires previous review findings")
-		}
-		sctx.Log("asking agent to fix identified issues...")
 		previousFindings := sanitizedPreviousFindingsForPrompt(sctx.PreviousFindings)
 		fixPrompt := fmt.Sprintf(
 			`Investigate previous review findings and address legitimate ones. 
@@ -69,20 +65,14 @@ Previous review findings to address:
 			ignorePatterns,
 			previousFindings,
 		)
-		result, err := sctx.Agent.Run(ctx, agent.RunOpts{
-			Prompt:     fixPrompt,
-			CWD:        sctx.WorkDir,
-			JSONSchema: commitSummarySchema,
-			OnChunk:    sctx.LogChunk,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("agent fix: %w", err)
-		}
-		summary, err := extractCommitSummary(result)
-		if err != nil {
-			sctx.Log(fmt.Sprintf("warning: could not parse fix summary: %v", err))
-		}
-		if err := commitAgentFixes(sctx, s.Name(), summary, "address review findings"); err != nil {
+		if err := executeFixMode(sctx, s.Name(), fixExecutionOptions{
+			RequirePreviousFindings: true,
+			MissingFindingsError:    "review fix requires previous review findings",
+			LogMessage:              "asking agent to fix identified issues...",
+			Prompt:                  fixPrompt,
+			ErrorPrefix:             "agent fix",
+			FallbackSummary:         "address review findings",
+		}); err != nil {
 			return nil, err
 		}
 	}

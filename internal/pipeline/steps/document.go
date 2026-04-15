@@ -27,10 +27,6 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 
 	// In fix mode, ask the agent to apply documentation updates first
 	if sctx.Fixing {
-		if sctx.PreviousFindings == "" {
-			return nil, fmt.Errorf("document fix requires previous findings")
-		}
-		sctx.Log("asking agent to update documentation...")
 		fixPrompt := fmt.Sprintf(
 			`Update any project documentation that needs to reflect the code changes.
 
@@ -62,20 +58,14 @@ Previous documentation findings to address:
 			ignorePatterns,
 			sctx.PreviousFindings,
 		)
-		result, err := sctx.Agent.Run(ctx, agent.RunOpts{
-			Prompt:     fixPrompt,
-			CWD:        sctx.WorkDir,
-			JSONSchema: commitSummarySchema,
-			OnChunk:    sctx.LogChunk,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("agent document fix: %w", err)
-		}
-		summary, err := extractCommitSummary(result)
-		if err != nil {
-			sctx.Log(fmt.Sprintf("warning: could not parse fix summary: %v", err))
-		}
-		if err := commitAgentFixes(sctx, s.Name(), summary, "update documentation"); err != nil {
+		if err := executeFixMode(sctx, s.Name(), fixExecutionOptions{
+			RequirePreviousFindings: true,
+			MissingFindingsError:    "document fix requires previous findings",
+			LogMessage:              "asking agent to update documentation...",
+			Prompt:                  fixPrompt,
+			ErrorPrefix:             "agent document fix",
+			FallbackSummary:         "update documentation",
+		}); err != nil {
 			return nil, err
 		}
 	}

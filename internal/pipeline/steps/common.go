@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -17,6 +18,16 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+type fixExecutionOptions struct {
+	RequirePreviousFindings bool
+	MissingFindingsError    string
+	LogMessage              string
+	Prompt                  string
+	ErrorPrefix             string
+	FallbackSummary         string
+	AfterAgentRun           func(*agent.Result) error
+}
 
 // Finding represents a single code review or lint finding.
 type Finding = types.Finding
@@ -357,8 +368,16 @@ func stepAuthConfigured(sctx *pipeline.StepContext, provider scm.Provider) bool 
 }
 
 // runShellCommand executes a shell command and returns stdout+stderr, exit code, and error.
-// A non-zero exit code is not treated as an error — only exec failures return error.
+// A non-zero exit code is not treated as an error - only exec failures return error.
 func runShellCommand(ctx context.Context, dir, cmdStr string) (string, int, error) {
+	return runShellCommandWithEnv(ctx, dir, nil, cmdStr)
+}
+
+func runStepShellCommand(sctx *pipeline.StepContext, cmdStr string) (string, int, error) {
+	return runShellCommandWithEnv(sctx.Ctx, sctx.WorkDir, sctx.Env, cmdStr)
+}
+
+func runShellCommandWithEnv(ctx context.Context, dir string, env []string, cmdStr string) (string, int, error) {
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
 		cmd = exec.CommandContext(ctx, "cmd.exe", "/c", cmdStr)
@@ -366,6 +385,9 @@ func runShellCommand(ctx context.Context, dir, cmdStr string) (string, int, erro
 		cmd = exec.CommandContext(ctx, "sh", "-c", cmdStr)
 	}
 	cmd.Dir = dir
+	if len(env) > 0 {
+		cmd.Env = mergeEnv(env)
+	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
@@ -470,6 +492,37 @@ func deterministicFixCommitMessage(stepName types.StepName, summary string) stri
 		summary = "apply fixes"
 	}
 	return fmt.Sprintf("no-mistakes(%s): %s", stepName, summary)
+}
+
+func executeFixMode(sctx *pipeline.StepContext, stepName types.StepName, opts fixExecutionOptions) error {
+	if !sctx.Fixing {
+		return nil
+	}
+	if opts.RequirePreviousFindings && sctx.PreviousFindings == "" {
+		return errors.New(opts.MissingFindingsError)
+	}
+	if opts.LogMessage != "" {
+		sctx.Log(opts.LogMessage)
+	}
+	result, err := sctx.Agent.Run(sctx.Ctx, agent.RunOpts{
+		Prompt:     opts.Prompt,
+		CWD:        sctx.WorkDir,
+		JSONSchema: commitSummarySchema,
+		OnChunk:    sctx.LogChunk,
+	})
+	if err != nil {
+		return fmt.Errorf("%s: %w", opts.ErrorPrefix, err)
+	}
+	if opts.AfterAgentRun != nil {
+		if err := opts.AfterAgentRun(result); err != nil {
+			return err
+		}
+	}
+	summary, err := extractCommitSummary(result)
+	if err != nil {
+		sctx.Log(fmt.Sprintf("warning: could not parse fix summary: %v", err))
+	}
+	return commitAgentFixes(sctx, stepName, summary, opts.FallbackSummary)
 }
 
 // reviewFindingsSchema is the JSON schema for structured review output with risk assessment.

@@ -20,7 +20,6 @@ func (s *LintStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 
 	// In fix mode, ask agent to fix lint issues first
 	if sctx.Fixing {
-		sctx.Log("asking agent to fix lint issues...")
 		fixPrompt := fmt.Sprintf(
 			`Fix the lint issues in this repository. Run the linter, identify all issues, and fix them.
 
@@ -47,20 +46,12 @@ Rules:
 Previous lint findings to address:
 ` + sanitizedPreviousFindingsForPrompt(sctx.PreviousFindings)
 		}
-		result, err := sctx.Agent.Run(ctx, agent.RunOpts{
-			Prompt:     fixPrompt,
-			CWD:        sctx.WorkDir,
-			JSONSchema: commitSummarySchema,
-			OnChunk:    sctx.LogChunk,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("agent fix lint: %w", err)
-		}
-		summary, err := extractCommitSummary(result)
-		if err != nil {
-			sctx.Log(fmt.Sprintf("warning: could not parse fix summary: %v", err))
-		}
-		if err := commitAgentFixes(sctx, s.Name(), summary, "fix lint issues"); err != nil {
+		if err := executeFixMode(sctx, s.Name(), fixExecutionOptions{
+			LogMessage:      "asking agent to fix lint issues...",
+			Prompt:          fixPrompt,
+			ErrorPrefix:     "agent fix lint",
+			FallbackSummary: "fix lint issues",
+		}); err != nil {
 			return nil, err
 		}
 	}
@@ -118,7 +109,7 @@ Rules:
 
 	// Run configured lint command
 	sctx.Log(fmt.Sprintf("running linter: %s", lintCmd))
-	output, exitCode, err := runShellCommand(ctx, sctx.WorkDir, lintCmd)
+	output, exitCode, err := runStepShellCommand(sctx, lintCmd)
 	if err != nil {
 		return nil, fmt.Errorf("run lint command: %w", err)
 	}

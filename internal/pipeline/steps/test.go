@@ -21,7 +21,6 @@ func (s *TestStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	// In fix mode, ask agent to fix test failures first
 	var newTestsFromFix []string
 	if sctx.Fixing {
-		sctx.Log("asking agent to fix test failures...")
 		fixPrompt := fmt.Sprintf(
 			`Fix the failing tests in this repository. Run the tests, identify failures, and fix either the tests or the code to make them pass.
 
@@ -49,21 +48,16 @@ Rules:
 Previous test findings to address:
 ` + sanitizedPreviousFindingsForPrompt(sctx.PreviousFindings)
 		}
-		result, err := sctx.Agent.Run(ctx, agent.RunOpts{
-			Prompt:     fixPrompt,
-			CWD:        sctx.WorkDir,
-			JSONSchema: commitSummarySchema,
-			OnChunk:    sctx.LogChunk,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("agent fix tests: %w", err)
-		}
-		newTestsFromFix = detectNewTestFiles(ctx, sctx.WorkDir)
-		summary, err := extractCommitSummary(result)
-		if err != nil {
-			sctx.Log(fmt.Sprintf("warning: could not parse fix summary: %v", err))
-		}
-		if err := commitAgentFixes(sctx, s.Name(), summary, "fix test failures"); err != nil {
+		if err := executeFixMode(sctx, s.Name(), fixExecutionOptions{
+			LogMessage:      "asking agent to fix test failures...",
+			Prompt:          fixPrompt,
+			ErrorPrefix:     "agent fix tests",
+			FallbackSummary: "fix test failures",
+			AfterAgentRun: func(*agent.Result) error {
+				newTestsFromFix = detectNewTestFiles(ctx, sctx.WorkDir)
+				return nil
+			},
+		}); err != nil {
 			return nil, err
 		}
 	}
@@ -142,7 +136,7 @@ Rules:
 
 	// Run configured test command
 	sctx.Log(fmt.Sprintf("running tests: %s", testCmd))
-	output, exitCode, err := runShellCommand(ctx, sctx.WorkDir, testCmd)
+	output, exitCode, err := runStepShellCommand(sctx, testCmd)
 	if err != nil {
 		return nil, fmt.Errorf("run test command: %w", err)
 	}
