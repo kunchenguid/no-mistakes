@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.2.0](https://github.com/kunchenguid/no-mistakes/compare/v1.1.1...v1.2.0) (2026-04-15)
+
+
+### Features
+
+* **tui:** add rerun action for completed pipeline runs ([#71](https://github.com/kunchenguid/no-mistakes/issues/71)) ([0759e07](https://github.com/kunchenguid/no-mistakes/commit/0759e077a03b71de8f79a87fe85858ce949ac0f9))
+* **tui:** show cached update indicator in footer ([#72](https://github.com/kunchenguid/no-mistakes/issues/72)) ([09f0e0d](https://github.com/kunchenguid/no-mistakes/commit/09f0e0d8b2d0e1e82fe07b759f670b9e5f1f0d10))
+
+
+### Bug Fixes
+
+* **ci:** handle merge conflicts in babysit and harden mergeability checks ([#69](https://github.com/kunchenguid/no-mistakes/issues/69)) ([9e86144](https://github.com/kunchenguid/no-mistakes/commit/9e861448314cc4ccddd259e5acd1f1bd03ec73ba))
+* **pipeline:** rename follow-up fix rounds to auto-fix ([#73](https://github.com/kunchenguid/no-mistakes/issues/73)) ([23e92a8](https://github.com/kunchenguid/no-mistakes/commit/23e92a826ea635c2614ab497ca729f500323b210))
+* **tui:** use available height for stacked log tail ([#68](https://github.com/kunchenguid/no-mistakes/issues/68)) ([4a5a99a](https://github.com/kunchenguid/no-mistakes/commit/4a5a99ab9484eba0091c17294891138e8d89ff6a))
+* updater self-update and install.sh for user-owned paths on macOS ([#66](https://github.com/kunchenguid/no-mistakes/issues/66)) ([119665e](https://github.com/kunchenguid/no-mistakes/commit/119665e8843ffb0360feea9ef74f59f803a5a34c))
+* **update:** reset daemon after self-update and document failure handling ([#70](https://github.com/kunchenguid/no-mistakes/issues/70)) ([c1001d8](https://github.com/kunchenguid/no-mistakes/commit/c1001d8da5e12e5c51069b84752b4cf298617fde))
+
 ## [1.1.1](https://github.com/kunchenguid/no-mistakes/compare/v1.1.0...v1.1.1) (2026-04-15)
 
 
