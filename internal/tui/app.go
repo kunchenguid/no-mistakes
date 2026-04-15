@@ -363,13 +363,20 @@ func (m Model) View() string {
 	// Log tail in a box - adaptive line count based on terminal height.
 	// In responsive layout with no other right-column content, expand to
 	// fill the remaining vertical budget so the log panel matches the
-	// pipeline panel height. Otherwise use compact defaults.
+	// pipeline panel height. In stacked layout, use the remaining content
+	// budget so the log box can consume the available terminal height.
 	// Also hidden when CI is active (log context integrated into CI box).
 	logLines := 5
-	if useResponsiveLayout && !m.showHelp && contentBudget > 0 && len(extraSections) == 0 {
-		logLines = contentBudget - 2 // subtract box borders
-		if actionBar != "" {
-			logLines -= sectionGapHeight
+	if !m.showHelp && contentBudget > 0 {
+		if useResponsiveLayout {
+			if len(extraSections) == 0 {
+				logLines = contentBudget - 2 // subtract box borders
+				if actionBar != "" {
+					logLines -= sectionGapHeight
+				}
+			}
+		} else {
+			logLines = contentBudget - 2 // subtract box borders
 		}
 	} else if m.height > 0 && m.height < 30 {
 		logLines = 3

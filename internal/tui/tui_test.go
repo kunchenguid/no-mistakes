@@ -4208,18 +4208,26 @@ func TestOutcomeBanner_NoDurationWhenNoStepTimes(t *testing.T) {
 }
 
 func TestModel_View_LogTailCompact(t *testing.T) {
-	// In small terminals (height 20-29), log tail should show only 3 lines instead of 5.
+	// In stacked layout, compact terminals should still use the remaining height budget.
+	prev := lipgloss.ColorProfile()
+	defer lipgloss.SetColorProfile(prev)
+
+	lipgloss.SetColorProfile(termenv.Ascii)
 	run := testRun()
 	m := NewModel("/tmp/sock", nil, run)
 	m.width = 80
-	m.height = 25 // compact range
-	for i := 1; i <= 10; i++ {
+	m.height = 25
+	for i := 1; i <= 20; i++ {
 		m.logs = append(m.logs, fmt.Sprintf("log line %d", i))
 	}
-	view := m.View()
+
+	view := stripANSI(m.View())
 	count := strings.Count(view, "log line")
-	if count != 3 {
-		t.Errorf("expected 3 log lines in compact mode (height=25), got %d", count)
+	if count <= 3 {
+		t.Fatalf("expected compact stacked layout to expand beyond the old 3-line cap, got %d\n%s", count, view)
+	}
+	if got := lipgloss.Height(view); got != m.height {
+		t.Fatalf("expected compact stacked layout to use full terminal height %d, got %d\n%s", m.height, got, view)
 	}
 }
 
@@ -4259,19 +4267,33 @@ func TestModel_View_ShortTerminalDoesNotOverflowHeight(t *testing.T) {
 	}
 }
 
-func TestModel_View_LogTailNormalShowsFive(t *testing.T) {
-	// In normal terminals (height >= 30), log tail should show 5 lines.
+func TestModel_View_StackedLogBoxFillsRemainingHeight(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	defer lipgloss.SetColorProfile(prev)
+
+	lipgloss.SetColorProfile(termenv.Ascii)
 	run := testRun()
 	m := NewModel("/tmp/sock", nil, run)
 	m.width = 80
-	m.height = 40 // normal terminal
-	for i := 1; i <= 10; i++ {
+	m.height = 40
+	for i := 1; i <= 40; i++ {
 		m.logs = append(m.logs, fmt.Sprintf("log line %d", i))
 	}
-	view := m.View()
+
+	pipelineView := renderPipelineView(run, m.stepsWithRunningElapsed(), m.width, 0, m.height)
+	footer := renderFooter(false, false, false, run.PRURL, m.width)
+	expectedLogLines := m.height - sectionsHeight([]string{pipelineView}, 2) - 2 - lipgloss.Height(footer) - 2
+	if expectedLogLines <= 5 {
+		t.Fatalf("expected stacked layout to leave room for more than 5 log lines, got %d", expectedLogLines)
+	}
+
+	view := stripANSI(m.View())
 	count := strings.Count(view, "log line")
-	if count != 5 {
-		t.Errorf("expected 5 log lines in normal mode (height=40), got %d", count)
+	if count != expectedLogLines {
+		t.Fatalf("expected stacked log box to fill remaining height with %d log lines, got %d\n%s", expectedLogLines, count, view)
+	}
+	if got := lipgloss.Height(view); got > m.height {
+		t.Fatalf("expected rendered view height <= terminal height (%d), got %d\n%s", m.height, got, view)
 	}
 }
 
