@@ -128,14 +128,16 @@ Monitors PR health after creation and auto-fixes CI failures or merge conflicts.
 
 **Behavior:**
 - Polls `gh pr checks` at increasing intervals: every 30s for the first 5 minutes, every 60s for 5-15 minutes, every 120s after that
-- Polls `gh pr view --json mergeable` alongside CI checks and waits for GitHub to resolve mergeability before exiting cleanly
+- Polls `gh pr view --json mergeable` alongside CI checks and waits for GitHub to resolve mergeability before exiting
 - Waits a 60s grace period before trusting empty results (CI checks may not have registered yet)
 - On CI failure: fetches the failed run log (last 32KiB via `gh run view --log-failed`), sends it to the agent for fixing, and commits and force-pushes only if the agent produces changes
 - On merge conflict: asks the agent to rebase onto the latest default-branch tip and resolve the conflicts with minimal changes
 - If both CI failures and merge conflicts are present: fixes both in the same attempt
 - If a fix attempt produces no changes: automatic mode leaves the failure undeduplicated so it can retry until the auto-fix limit, while manual fix mode returns immediately for manual intervention
 - Deduplicates fix attempts only after a fix is actually committed and pushed
-- Exits cleanly when the PR is merged or closed, or when the timeout is reached (default 4h)
+- Exits cleanly when the PR is merged or closed, or when the timeout is reached with no known CI failures, merge conflicts, or unresolved mergeability state (default 4h)
+- If the timeout is reached while CI failures or a merge conflict are still known: pauses for user approval with findings for the remaining issues
+- If the timeout is reached while PR mergeability is still unresolved: pauses for user approval with a finding describing the unresolved mergeability state
 - If CI failures or merge conflicts persist after the auto-fix limit: pauses for user approval with findings listing each failing check and/or the merge conflict
 
 **Default auto-fix limit:** `3` total CI/Babysit auto-fix attempts.

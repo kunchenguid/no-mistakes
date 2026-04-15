@@ -63,7 +63,7 @@ Default binary names when no override is set:
 
 ### ci_timeout
 
-How long the babysit step polls CI before giving up.
+How long the babysit step waits for CI and PR mergeability before timing out.
 
 | | |
 |---|---|

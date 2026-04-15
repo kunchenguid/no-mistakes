@@ -30,7 +30,7 @@ agent_path_override:
   rovodev: /usr/local/bin/acli
   opencode: /usr/local/bin/opencode
 
-# How long the babysit step polls CI before giving up.
+# How long the babysit step waits for CI and PR mergeability before timing out.
 ci_timeout: "4h"  # any Go duration string
 
 # Daemon log verbosity.
