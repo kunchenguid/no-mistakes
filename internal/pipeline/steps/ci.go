@@ -259,6 +259,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 				mergeabilityBlockedReason = fmt.Sprintf("PR mergeability remained unresolved before timeout: %s", mergeState)
 			} else {
 				mergeabilityBlockedReason = ""
+				timeoutMergeConflict = mergeConflict
 			}
 		}
 
@@ -274,7 +275,6 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			hasFailures := len(failing) > 0
 			hasIssues := hasFailures || mergeConflict
 			timeoutFailingChecks = append(timeoutFailingChecks[:0], failing...)
-			timeoutMergeConflict = mergeConflict
 
 			if hasIssues && pending {
 				// Some checks still running - wait for all to complete before fixing

@@ -148,6 +148,7 @@ func fakeGlabHandler(args []string) {
 func fakeCIGHHandler(args []string) {
 	state := os.Getenv("FAKE_CLI_STATE")
 	checksJSON := os.Getenv("FAKE_CLI_CHECKS")
+	checksErr := os.Getenv("FAKE_CLI_CHECKS_ERR")
 	mergeable := os.Getenv("FAKE_CLI_MERGEABLE")
 	mergeableErr := os.Getenv("FAKE_CLI_MERGEABLE_ERR")
 	joined := strings.Join(args, " ")
@@ -171,6 +172,10 @@ func fakeCIGHHandler(args []string) {
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "pr checks") {
+		if checksErr != "" {
+			fmt.Fprintln(os.Stderr, checksErr)
+			os.Exit(1)
+		}
 		fmt.Println(checksJSON)
 		os.Exit(0)
 	}
@@ -478,6 +483,58 @@ func TestResolveBaseSHA_ZeroNoDefaultBranch(t *testing.T) {
 	got := resolveBaseSHA(context.Background(), dir, zeroSHA, "main")
 	if got != git.EmptyTreeSHA {
 		t.Errorf("resolveBaseSHA zero no default = %q, want %q", got, git.EmptyTreeSHA)
+	}
+}
+
+func TestResolveDefaultBranchTipSHA_FetchesRemoteTip(t *testing.T) {
+	t.Parallel()
+
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	seed := t.TempDir()
+	gitCmd(t, seed, "init")
+	gitCmd(t, seed, "config", "user.name", "test")
+	gitCmd(t, seed, "config", "user.email", "test@test.com")
+	gitCmd(t, seed, "checkout", "-b", "main")
+	if err := os.WriteFile(filepath.Join(seed, "base.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, seed, "add", "base.txt")
+	gitCmd(t, seed, "commit", "-m", "base")
+	gitCmd(t, seed, "remote", "add", "origin", upstream)
+	gitCmd(t, seed, "push", "origin", "main")
+
+	workDir := t.TempDir()
+	gitCmd(t, workDir, "clone", upstream, ".")
+	gitCmd(t, workDir, "checkout", "-b", "feature", "origin/main")
+
+	updater := t.TempDir()
+	gitCmd(t, updater, "clone", upstream, ".")
+	gitCmd(t, updater, "config", "user.name", "test")
+	gitCmd(t, updater, "config", "user.email", "test@test.com")
+	gitCmd(t, updater, "checkout", "main")
+	if err := os.WriteFile(filepath.Join(updater, "base.txt"), []byte("base updated\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, updater, "add", "base.txt")
+	gitCmd(t, updater, "commit", "-m", "main update")
+	remoteTip := gitCmd(t, updater, "rev-parse", "HEAD")
+	gitCmd(t, updater, "push", "origin", "main")
+
+	staleOriginTip := gitCmd(t, workDir, "rev-parse", "origin/main")
+	if staleOriginTip == remoteTip {
+		t.Fatal("expected origin/main to be stale before resolveDefaultBranchTipSHA")
+	}
+
+	got := resolveDefaultBranchTipSHA(context.Background(), workDir, staleOriginTip, "main")
+	if got != remoteTip {
+		t.Fatalf("resolveDefaultBranchTipSHA = %q, want remote tip %q", got, remoteTip)
+	}
+
+	fetchedOriginTip := gitCmd(t, workDir, "rev-parse", "origin/main")
+	if fetchedOriginTip != remoteTip {
+		t.Fatalf("origin/main after resolve = %q, want %q", fetchedOriginTip, remoteTip)
 	}
 }
 
@@ -5755,6 +5812,18 @@ func fakeCIGHMergeableError(t *testing.T, state, checksJSON, mergeableErr string
 	})
 }
 
+func fakeCIGHChecksError(t *testing.T, state, mergeable, checksErr string) []string {
+	t.Helper()
+	binDir := fakeCLIBinDir(t)
+	linkTestBinary(t, binDir, "gh")
+	return fakeCLIEnv(binDir, map[string]string{
+		"FAKE_CLI_MODE":       "ci-gh",
+		"FAKE_CLI_STATE":      state,
+		"FAKE_CLI_MERGEABLE":  mergeable,
+		"FAKE_CLI_CHECKS_ERR": checksErr,
+	})
+}
+
 func fakeCIGHSequenceMergeable(t *testing.T, state string, checks []string, mergeable string) []string {
 	t.Helper()
 	binDir := fakeCLIBinDir(t)
@@ -7116,6 +7185,56 @@ func TestCIStep_TimeoutWithKnownFailureAndPendingCheck_NeedsApproval(t *testing.
 	}
 	if !foundFailure || !foundConflict {
 		t.Fatalf("expected failing check and merge conflict findings, got %+v", findings.Items)
+	}
+}
+
+func TestCIStep_TimeoutWithMergeConflictAndCheckLookupError_NeedsApproval(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	env := fakeCIGHChecksError(t, "OPEN", "CONFLICTING", "gh checks failed")
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 2 * time.Second
+
+	started := time.Unix(1700000000, 0)
+	now := started
+	step := &CIStep{
+		now: func() time.Time {
+			return now
+		},
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			now = now.Add(interval)
+			return nil
+		},
+	}
+
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("expected NeedsApproval when merge conflict remains known but checks lookup fails")
+	}
+
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatalf("unmarshal findings: %v", err)
+	}
+
+	foundConflict := false
+	for _, item := range findings.Items {
+		if strings.Contains(strings.ToLower(item.Description), "merge conflict") {
+			foundConflict = true
+			break
+		}
+	}
+	if !foundConflict {
+		t.Fatalf("expected merge conflict finding, got %+v", findings.Items)
 	}
 }
 
