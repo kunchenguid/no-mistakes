@@ -489,10 +489,19 @@ func (u *updater) ensureDaemonUsesCurrentExecutable() error {
 	}
 	currentPath := resolveExecutablePath(u.executablePath)
 	runningPath = resolveExecutablePath(runningPath)
-	if currentPath == runningPath {
+	if executablePathsMatch(currentPath, runningPath) {
 		return nil
 	}
 	return fmt.Errorf("daemon is running from %s, but update is running from %s; run update using the same binary that started the daemon, or restart the daemon from this binary first", runningPath, currentPath)
+}
+
+func executablePathsMatch(a, b string) bool {
+	if currentGOOS != "windows" {
+		return a == b
+	}
+	a = filepath.Clean(strings.ReplaceAll(a, `\`, "/"))
+	b = filepath.Clean(strings.ReplaceAll(b, `\`, "/"))
+	return strings.EqualFold(a, b)
 }
 
 func defaultResetDaemon(p *paths.Paths) error {

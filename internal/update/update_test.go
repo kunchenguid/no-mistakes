@@ -645,6 +645,34 @@ func TestUpdaterRunFailsWhenDaemonUsesDifferentExecutable(t *testing.T) {
 	}
 }
 
+func TestEnsureDaemonUsesCurrentExecutableAllowsWindowsCaseDifferences(t *testing.T) {
+	origGOOS := currentGOOS
+	origDaemonIsRunning := daemonIsRunning
+	origDaemonExecutablePath := daemonExecutablePath
+	t.Cleanup(func() {
+		currentGOOS = origGOOS
+		daemonIsRunning = origDaemonIsRunning
+		daemonExecutablePath = origDaemonExecutablePath
+	})
+
+	currentGOOS = "windows"
+	daemonIsRunning = func(*paths.Paths) (bool, error) {
+		return true, nil
+	}
+	daemonExecutablePath = func(*paths.Paths) (string, error) {
+		return `c:\program files\no-mistakes\NO-MISTAKES.exe`, nil
+	}
+
+	u := &updater{
+		executablePath: `C:\Program Files\No-Mistakes\no-mistakes.exe`,
+		paths:          paths.WithRoot(t.TempDir()),
+	}
+
+	if err := u.ensureDaemonUsesCurrentExecutable(); err != nil {
+		t.Fatalf("ensureDaemonUsesCurrentExecutable error = %v", err)
+	}
+}
+
 func TestUpdaterRunFailsWhenDaemonExecutableCannotBeResolved(t *testing.T) {
 	allowInsecureDownloads = true
 	t.Cleanup(func() { allowInsecureDownloads = false })
