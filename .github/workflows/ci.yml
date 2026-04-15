@@ -43,8 +43,17 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Test
-        run: go test ${{ runner.os != 'Windows' && '-race' || '' }} ./...
+      - name: Test on Unix
+        if: runner.os != 'Windows'
+        run: go test -race ./...
+
+      - name: Test on Windows (PR)
+        if: runner.os == 'Windows' && github.event_name == 'pull_request'
+        run: go test ./... -run '_EnableWindowsCI$'
+
+      - name: Test on Windows (Main)
+        if: runner.os == 'Windows' && github.event_name != 'pull_request'
+        run: go test ./...
 
       - name: Build
         run: go build ./cmd/no-mistakes
