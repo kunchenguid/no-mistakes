@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -233,7 +234,7 @@ func cleanupWorktree(t *testing.T, repoDir, wtDir string) {
 		var err error
 		for attempt := 0; attempt < 5; attempt++ {
 			err = git.WorktreeRemove(ctx, repoDir, wtDir)
-			if err == nil {
+			if err == nil || isMissingWorktreeError(err) {
 				return
 			}
 			if runtime.GOOS != "windows" {
@@ -243,6 +244,28 @@ func cleanupWorktree(t *testing.T, repoDir, wtDir string) {
 		}
 		t.Fatalf("remove worktree %q: %v", wtDir, err)
 	})
+}
+
+func isMissingWorktreeError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "is not a working tree")
+}
+
+func TestIsMissingWorktreeError(t *testing.T) {
+	t.Parallel()
+
+	if isMissingWorktreeError(nil) {
+		t.Fatal("nil should not be treated as a missing worktree error")
+	}
+
+	err := errors.New("git worktree remove --force C:\\temp\\worktree: exit status 128: fatal: 'C:\\temp\\worktree' is not a working tree")
+	if !isMissingWorktreeError(err) {
+		t.Fatal("expected missing worktree error to be ignored during cleanup")
+	}
+
+	err = errors.New("git worktree remove failed: permission denied")
+	if isMissingWorktreeError(err) {
+		t.Fatal("unexpected error should not be treated as a missing worktree error")
+	}
 }
 
 func makeSocketSafeTempDir(t *testing.T) string {
