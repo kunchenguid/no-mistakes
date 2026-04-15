@@ -179,7 +179,7 @@ agent_path_override:
   rovodev: /usr/local/bin/acli
   opencode: /usr/local/bin/opencode
 
-# How long the CI step monitors GitHub checks before timing out.
+# How long the babysit step waits for CI and PR mergeability before timing out.
 ci_timeout: "4h"
 
 # Optional auto-fix attempt limits per step (0 = require approval).
@@ -189,7 +189,7 @@ ci_timeout: "4h"
 #   test: 3
 #   review: 3
 #   document: 3
-#   ci: 3
+#   ci: 3        # shared by Babysit for CI failures and merge conflicts
 
 # debug | info | warn | error
 log_level: "info"
