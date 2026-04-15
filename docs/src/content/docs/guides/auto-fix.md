@@ -27,10 +27,12 @@ auto_fix:
   test: 3
   document: 3
   lint: 3
-  ci: 3
+  ci: 3        # shared by Babysit for CI failures and merge conflicts
 ```
 
 Setting a step to `0` means the pipeline always pauses for human input when that step finds issues.
+
+`auto_fix.ci` applies to the Babysit step. The same limit covers both CI-failure fixes and merge-conflict fixes.
 
 Repo config overlays global config - you can set `auto_fix.lint: 5` in a repo's `.no-mistakes.yaml` to override just that step while inheriting the rest from global.
 
