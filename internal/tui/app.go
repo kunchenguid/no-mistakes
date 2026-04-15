@@ -144,6 +144,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cancelSub()
 		}
 		m.resetForRun(msg.run)
+		if m.done {
+			return m, nil
+		}
 		return m, tea.Batch(m.subscribeCmd(), m.startSpinnerIfNeeded())
 
 	case eventMsg:

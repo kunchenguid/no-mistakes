@@ -723,6 +723,29 @@ func TestModel_Update_RerunKeyStartsNewRunAndSwitchesModel(t *testing.T) {
 	}
 }
 
+func TestModel_Update_RerunStartedSkipsSubscribeForTerminalRun(t *testing.T) {
+	run := testRun()
+	m := NewModel("/tmp/sock", nil, run)
+
+	terminalRun := testRun()
+	terminalRun.ID = "run-002"
+	terminalRun.Status = types.RunFailed
+	terminalRun.Error = ptr("fast failure")
+
+	updated, cmd := m.Update(rerunStartedMsg{run: terminalRun})
+	model := updated.(Model)
+
+	if model.runID != terminalRun.ID {
+		t.Fatalf("runID = %s, want %s", model.runID, terminalRun.ID)
+	}
+	if !model.done {
+		t.Fatal("expected terminal rerun to mark model done")
+	}
+	if cmd != nil {
+		t.Fatal("expected no subscribe command for terminal rerun")
+	}
+}
+
 func TestModel_ApplyEvent_LogChunk(t *testing.T) {
 	run := testRun()
 	m := NewModel("/tmp/sock", nil, run)
@@ -4425,7 +4448,7 @@ func TestModel_View_StackedLogBoxFillsRemainingHeight(t *testing.T) {
 	}
 
 	pipelineView := renderPipelineView(run, m.stepsWithRunningElapsed(), m.width, 0, m.height)
-	footer := renderFooter(false, false, false, run.PRURL, m.width)
+	footer := renderFooter(false, false, false, run, m.width)
 	expectedLogLines := m.height - sectionsHeight([]string{pipelineView}, 2) - 2 - lipgloss.Height(footer) - 2
 	if expectedLogLines <= 5 {
 		t.Fatalf("expected stacked layout to leave room for more than 5 log lines, got %d", expectedLogLines)
