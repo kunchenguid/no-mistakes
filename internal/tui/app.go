@@ -14,10 +14,18 @@ import (
 )
 
 // eventMsg wraps an IPC event received from the daemon.
-type eventMsg ipc.Event
+type eventMsg struct {
+	event          ipc.Event
+	subscriptionID uint64
+}
 
 // errMsg wraps an error from async operations.
 type errMsg struct{ err error }
+
+type subscriptionErrMsg struct {
+	err            error
+	subscriptionID uint64
+}
 
 // rerunStartedMsg switches the TUI onto a newly created rerun.
 type rerunStartedMsg struct{ run *ipc.RunInfo }
@@ -48,18 +56,20 @@ func (e errMsg) Error() string { return e.err.Error() }
 
 // connectedMsg signals that the event subscription is ready.
 type connectedMsg struct {
-	events    <-chan ipc.Event
-	cancelSub func()
+	events         <-chan ipc.Event
+	cancelSub      func()
+	subscriptionID uint64
 }
 
 // Model is the root bubbletea model for the TUI.
 type Model struct {
 	// Connection.
-	socketPath string
-	client     *ipc.Client
-	events     <-chan ipc.Event
-	cancelSub  func()
-	runID      string
+	socketPath     string
+	client         *ipc.Client
+	events         <-chan ipc.Event
+	cancelSub      func()
+	runID          string
+	subscriptionID uint64
 
 	// State.
 	run               *ipc.RunInfo
@@ -95,6 +105,7 @@ func NewModel(socketPath string, client *ipc.Client, run *ipc.RunInfo) Model {
 		socketPath:        socketPath,
 		client:            client,
 		runID:             run.ID,
+		subscriptionID:    1,
 		run:               run,
 		done:              run.Status == types.RunCompleted || run.Status == types.RunFailed || run.Status == types.RunCancelled,
 		steps:             run.Steps,
@@ -135,6 +146,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case connectedMsg:
+		if msg.subscriptionID != m.subscriptionID {
+			if msg.cancelSub != nil {
+				msg.cancelSub()
+			}
+			return m, nil
+		}
 		m.events = msg.events
 		m.cancelSub = msg.cancelSub
 		return m, tea.Batch(m.waitForEvent(), m.startSpinnerIfNeeded())
@@ -150,11 +167,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.subscribeCmd(), m.startSpinnerIfNeeded())
 
 	case eventMsg:
-		m.applyEvent(ipc.Event(msg))
+		if msg.subscriptionID != m.subscriptionID {
+			return m, nil
+		}
+		m.applyEvent(msg.event)
 		if m.done {
 			return m, nil
 		}
 		return m, tea.Batch(m.waitForEvent(), m.startSpinnerIfNeeded())
+
+	case subscriptionErrMsg:
+		if msg.subscriptionID != m.subscriptionID {
+			return m, nil
+		}
+		m.err = msg.err
+		return m, nil
 
 	case spinnerTickMsg:
 		m.spinnerScheduled = false
@@ -1003,9 +1030,11 @@ func (m Model) rerunCmd() tea.Cmd {
 
 func (m *Model) resetForRun(run *ipc.RunInfo) {
 	width, height := m.width, m.height
+	nextSubscriptionID := m.subscriptionID + 1
 	fresh := NewModel(m.socketPath, m.client, run)
 	fresh.width = width
 	fresh.height = height
+	fresh.subscriptionID = nextSubscriptionID
 	*m = fresh
 }
 
@@ -1064,7 +1093,7 @@ func (m Model) subscribeCmd() tea.Cmd {
 		if err != nil {
 			return errMsg{fmt.Errorf("subscribe: %w", err)}
 		}
-		return connectedMsg{events: events, cancelSub: cancel}
+		return connectedMsg{events: events, cancelSub: cancel, subscriptionID: m.subscriptionID}
 	}
 }
 
@@ -1076,9 +1105,9 @@ func (m Model) waitForEvent() tea.Cmd {
 	return func() tea.Msg {
 		event, ok := <-events
 		if !ok {
-			return errMsg{fmt.Errorf("event stream closed")}
+			return subscriptionErrMsg{err: fmt.Errorf("event stream closed"), subscriptionID: m.subscriptionID}
 		}
-		return eventMsg(event)
+		return eventMsg{event: event, subscriptionID: m.subscriptionID}
 	}
 }
 

@@ -746,6 +746,64 @@ func TestModel_Update_RerunStartedSkipsSubscribeForTerminalRun(t *testing.T) {
 	}
 }
 
+func TestModel_Update_IgnoresStaleSubscriptionMessagesAfterRerun(t *testing.T) {
+	run := testRun()
+	m := NewModel("/tmp/sock", nil, run)
+
+	oldEvents := make(chan ipc.Event)
+	oldCancelled := false
+	updated, _ := m.Update(connectedMsg{events: oldEvents, cancelSub: func() { oldCancelled = true }, subscriptionID: m.subscriptionID})
+	model := updated.(Model)
+
+	newRun := testRun()
+	newRun.ID = "run-002"
+	newRun.Status = types.RunRunning
+
+	updated, cmd := model.Update(rerunStartedMsg{run: newRun})
+	model = updated.(Model)
+
+	if !oldCancelled {
+		t.Fatal("expected rerun to cancel the previous subscription")
+	}
+	if cmd == nil {
+		t.Fatal("expected rerun to subscribe to the new run")
+	}
+
+	newEvents := make(chan ipc.Event)
+	updated, _ = model.Update(connectedMsg{events: newEvents, cancelSub: func() {}, subscriptionID: model.subscriptionID})
+	model = updated.(Model)
+
+	staleCancelled := false
+	updated, _ = model.Update(connectedMsg{events: make(chan ipc.Event), cancelSub: func() { staleCancelled = true }, subscriptionID: model.subscriptionID - 1})
+	model = updated.(Model)
+	if !staleCancelled {
+		t.Fatal("expected stale connected message to be cancelled")
+	}
+	if model.events != newEvents {
+		t.Fatal("expected stale connected message to be ignored")
+	}
+
+	updated, _ = model.Update(subscriptionErrMsg{err: errors.New("event stream closed"), subscriptionID: model.subscriptionID - 1})
+	model = updated.(Model)
+	if model.err != nil {
+		t.Fatalf("expected stale subscription error to be ignored, got %v", model.err)
+	}
+
+	staleStatus := string(types.RunFailed)
+	staleError := "stale completion"
+	updated, _ = model.Update(eventMsg{event: ipc.Event{Type: ipc.EventRunCompleted, Status: &staleStatus, Error: &staleError}, subscriptionID: model.subscriptionID - 1})
+	model = updated.(Model)
+	if model.done {
+		t.Fatal("expected stale event to be ignored")
+	}
+	if model.run == nil || model.run.ID != newRun.ID {
+		t.Fatalf("run = %#v, want rerun %#v", model.run, newRun)
+	}
+	if model.run.Status != types.RunRunning {
+		t.Fatalf("run status = %s, want %s", model.run.Status, types.RunRunning)
+	}
+}
+
 func TestModel_ApplyEvent_LogChunk(t *testing.T) {
 	run := testRun()
 	m := NewModel("/tmp/sock", nil, run)
@@ -882,11 +940,11 @@ func TestModel_Update_StepStartedBeginsSpinnerLoop(t *testing.T) {
 	run := testRun()
 	m := NewModel("/tmp/sock", nil, run)
 
-	updated, cmd := m.Update(eventMsg(ipc.Event{
+	updated, cmd := m.Update(eventMsg{event: ipc.Event{
 		Type:     ipc.EventStepStarted,
 		RunID:    run.ID,
 		StepName: ptr(types.StepReview),
-	}))
+	}, subscriptionID: m.subscriptionID})
 	model := updated.(Model)
 
 	if model.steps[0].Status != types.StepStatusRunning {
@@ -976,7 +1034,7 @@ func TestModel_ConnectedMsg(t *testing.T) {
 	ch := make(chan ipc.Event, 1)
 	cancel := func() {}
 
-	updated, _ := m.Update(connectedMsg{events: ch, cancelSub: cancel})
+	updated, _ := m.Update(connectedMsg{events: ch, cancelSub: cancel, subscriptionID: m.subscriptionID})
 	model := updated.(Model)
 	if model.events == nil {
 		t.Error("expected events channel to be set")
@@ -5466,10 +5524,10 @@ func TestModel_Update_StepStartedRecordsStartTime(t *testing.T) {
 
 	before := time.Now()
 	stepName := types.StepReview
-	m.Update(eventMsg(ipc.Event{
+	m.Update(eventMsg{event: ipc.Event{
 		Type:     ipc.EventStepStarted,
 		StepName: &stepName,
-	}))
+	}, subscriptionID: m.subscriptionID})
 	after := time.Now()
 
 	startTime, ok := m.stepStartTimes[types.StepReview]
