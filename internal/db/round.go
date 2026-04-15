@@ -7,7 +7,7 @@ type StepRound struct {
 	ID           string
 	StepResultID string
 	Round        int
-	Trigger      string  // "initial", "auto_fix", "user_fix"
+	Trigger      string  // "initial", "auto_fix"; legacy "user_fix" is treated as "auto_fix"
 	FindingsJSON *string // nullable - findings produced by this round
 	DurationMS   int64
 	CreatedAt    int64

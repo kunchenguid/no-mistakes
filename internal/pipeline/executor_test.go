@@ -1022,6 +1022,69 @@ func TestExecutor_FixClearsStoredFindingsAfterSuccessfulReRun(t *testing.T) {
 	}
 }
 
+func TestExecutor_FixPersistsFollowUpRoundAsAutoFix(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	callCount := 0
+	step := &adaptiveCallStep{
+		name: types.StepReview,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			callCount++
+			if callCount == 1 {
+				return &StepOutcome{
+					NeedsApproval: true,
+					Findings:      `{"findings":[{"severity":"error","description":"first pass issue","action":"auto-fix"}],"summary":"1 issue"}`,
+				}, nil
+			}
+			return &StepOutcome{}, nil
+		},
+	}
+
+	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- exec.Execute(context.Background(), run, repo, workDir)
+	}()
+
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
+	if err := exec.Respond(types.StepReview, types.ActionFix, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("expected no error, got: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("executor timed out")
+	}
+
+	dbSteps, err := database.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dbSteps) != 1 {
+		t.Fatalf("expected 1 step, got %d", len(dbSteps))
+	}
+
+	rounds, err := database.GetRoundsByStep(dbSteps[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rounds) != 2 {
+		t.Fatalf("expected 2 rounds, got %d", len(rounds))
+	}
+	if rounds[0].Trigger != "initial" {
+		t.Fatalf("round 1 trigger = %q, want %q", rounds[0].Trigger, "initial")
+	}
+	if rounds[1].Trigger != "auto_fix" {
+		t.Fatalf("round 2 trigger = %q, want %q", rounds[1].Trigger, "auto_fix")
+	}
+}
+
 func TestExecutor_FixSelectedFindingsRewritesSummary(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir := t.TempDir()

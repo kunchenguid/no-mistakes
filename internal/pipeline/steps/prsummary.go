@@ -274,15 +274,14 @@ func buildFixResultText(rounds []*db.StepRound) string {
 		}
 	}
 
-	// Categorize fix rounds.
+	// Categorize fix rounds. Legacy "user_fix" rounds are rendered as auto-fix.
 	autoFixRounds := 0
-	userFixRounds := 0
 	for _, r := range rounds[1:] {
 		switch r.Trigger {
 		case "auto_fix":
 			autoFixRounds++
 		case "user_fix":
-			userFixRounds++
+			autoFixRounds++
 		}
 	}
 
@@ -293,12 +292,10 @@ func buildFixResultText(rounds []*db.StepRound) string {
 
 	parts := []string{fmt.Sprintf("%d %s found", initialCount, noun)}
 
-	if autoFixRounds > 0 && userFixRounds > 0 {
-		parts = append(parts, fmt.Sprintf("auto-fixed (%d) + user-fixed (%d)", autoFixRounds, userFixRounds))
-	} else if autoFixRounds > 0 {
+	if autoFixRounds > 1 {
+		parts = append(parts, fmt.Sprintf("auto-fixed (%d)", autoFixRounds))
+	} else if autoFixRounds == 1 {
 		parts = append(parts, "auto-fixed")
-	} else if userFixRounds > 0 {
-		parts = append(parts, "user-fixed")
 	}
 
 	return strings.Join(parts, " → ")
@@ -325,7 +322,7 @@ func buildStepDetails(summaryLine string, sr *db.StepResult, rounds []*db.StepRo
 		case "auto_fix":
 			triggerLabel = " (auto-fix)"
 		case "user_fix":
-			triggerLabel = " (user-fix)"
+			triggerLabel = " (auto-fix)"
 		}
 
 		if r.FindingsJSON == nil {
