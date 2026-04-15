@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -700,6 +701,58 @@ func TestRunningDaemonExecutablePathUsesPIDFile(t *testing.T) {
 	}
 	if got != resolveExecutablePath(want) {
 		t.Fatalf("runningDaemonExecutablePath = %q, want %q", got, resolveExecutablePath(want))
+	}
+}
+
+func TestRunningDaemonExecutablePathHandlesExecutablePathsWithSpaces(t *testing.T) {
+	if os.Getenv("NO_MISTAKES_TEST_CHILD") == "1" {
+		time.Sleep(10 * time.Second)
+		return
+	}
+
+	originalPath, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalInfo, err := os.Stat(originalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binary, err := os.ReadFile(originalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dir := filepath.Join(t.TempDir(), "dir with spaces")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	copyPath := filepath.Join(dir, "no mistakes test binary")
+	if err := os.WriteFile(copyPath, binary, originalInfo.Mode().Perm()); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command(copyPath, "-test.run=^TestRunningDaemonExecutablePathHandlesExecutablePathsWithSpaces$")
+	cmd.Env = append(os.Environ(), "NO_MISTAKES_TEST_CHILD=1")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+	})
+
+	p := paths.WithRoot(t.TempDir())
+	if err := os.WriteFile(p.PIDFile(), []byte(fmt.Sprintf("%d", cmd.Process.Pid)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := runningDaemonExecutablePath(p)
+	if err != nil {
+		t.Fatalf("runningDaemonExecutablePath error = %v", err)
+	}
+	if got != resolveExecutablePath(copyPath) {
+		t.Fatalf("runningDaemonExecutablePath = %q, want %q", got, resolveExecutablePath(copyPath))
 	}
 }
 

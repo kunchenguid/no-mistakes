@@ -526,7 +526,7 @@ func runningDaemonExecutablePath(p *paths.Paths) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve daemon executable: %w", err)
 	}
-	cmd := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "command=")
+	cmd := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "comm=")
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("resolve daemon executable: %w", err)
@@ -535,11 +535,7 @@ func runningDaemonExecutablePath(p *paths.Paths) (string, error) {
 	if line == "" {
 		return "", fmt.Errorf("resolve daemon executable: empty process command")
 	}
-	fields := strings.Fields(line)
-	if len(fields) == 0 {
-		return "", fmt.Errorf("resolve daemon executable: empty process command")
-	}
-	return resolveExecutablePath(fields[0]), nil
+	return resolveExecutablePath(line), nil
 }
 
 func resolveExecutablePath(path string) string {
