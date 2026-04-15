@@ -622,6 +622,44 @@ func TestDefaultResetDaemonRecoversWhenHealthCheckErrors(t *testing.T) {
 	}
 }
 
+func TestDefaultResetDaemonRecoversWhenDaemonArtifactsRemain(t *testing.T) {
+	origIsRunning := daemonIsRunning
+	origStop := daemonStop
+	origStart := daemonStart
+	t.Cleanup(func() {
+		daemonIsRunning = origIsRunning
+		daemonStop = origStop
+		daemonStart = origStart
+	})
+
+	p := paths.WithRoot(t.TempDir())
+	if err := os.WriteFile(p.Socket(), []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stopCalled := false
+	startCalled := false
+	daemonIsRunning = func(*paths.Paths) (bool, error) { return false, nil }
+	daemonStop = func(*paths.Paths) error {
+		stopCalled = true
+		return nil
+	}
+	daemonStart = func(*paths.Paths) error {
+		startCalled = true
+		return nil
+	}
+
+	if err := defaultResetDaemon(p); err != nil {
+		t.Fatalf("defaultResetDaemon error = %v", err)
+	}
+	if !stopCalled {
+		t.Fatal("expected stop to be attempted when daemon artifacts remain")
+	}
+	if !startCalled {
+		t.Fatal("expected start to be attempted when daemon artifacts remain")
+	}
+}
+
 func TestDefaultResetDaemonDoesNotReportOfflineWhenRestartLeavesDaemonRunning(t *testing.T) {
 	origIsRunning := daemonIsRunning
 	origStop := daemonStop

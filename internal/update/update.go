@@ -446,7 +446,7 @@ func defaultResetDaemon(p *paths.Paths) error {
 		return nil
 	}
 	alive, err := daemonIsRunning(p)
-	if err == nil && !alive {
+	if err == nil && !alive && !daemonArtifactsExist(p) {
 		return nil
 	}
 	if err := daemonStop(p); err != nil {
@@ -458,6 +458,15 @@ func defaultResetDaemon(p *paths.Paths) error {
 		return &daemonResetError{err: fmt.Errorf("start daemon: %w", err), daemonOffline: offline}
 	}
 	return nil
+}
+
+func daemonArtifactsExist(p *paths.Paths) bool {
+	for _, path := range []string{p.Socket(), p.PIDFile()} {
+		if _, err := os.Stat(path); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func (u *updater) fetchLatestRelease(ctx context.Context) (*releaseResponse, error) {
