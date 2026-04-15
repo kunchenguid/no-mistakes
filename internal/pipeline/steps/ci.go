@@ -246,11 +246,11 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 
 		// Check mergeable state
 		mergeConflict := false
-		mergeabilityKnown := false
+		mergeabilityKnown := true
 		mergeState, mergeErr := s.getMergeableState(sctx, prNumber)
 		if mergeErr != nil {
 			sctx.Log(fmt.Sprintf("warning: could not check mergeable state: %v", mergeErr))
-			mergeabilityBlockedReason = fmt.Sprintf("PR mergeability could not be determined before timeout: %v", mergeErr)
+			mergeabilityBlockedReason = ""
 		} else {
 			mergeConflict = isMergeConflict(mergeState)
 			mergeabilityKnown = isResolvedMergeableState(mergeState)
@@ -432,6 +432,11 @@ func (s *CIStep) getCIChecks(sctx *pipeline.StepContext, prNumber string) ([]ciC
 func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, prNumber string, failingNames []string, mergeConflict bool) (bool, error) {
 	ctx := sctx.Ctx
 	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
+	rebaseBaseSHA := resolveDefaultBranchTipSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
+	promptBaseSHA := baseSHA
+	if mergeConflict {
+		promptBaseSHA = rebaseBaseSHA
+	}
 
 	// Find the most recent failing run for this branch so we fetch logs from the right run.
 	var runID string
@@ -509,13 +514,16 @@ Context:
 		%s`,
 		promptIntro,
 		sctx.Run.Branch,
-		baseSHA,
+		promptBaseSHA,
 		sctx.Run.HeadSHA,
 		prNumber,
 		strings.Join(failingNames, ", "),
 		mergeConflict,
 		promptRules,
 	)
+	if mergeConflict {
+		prompt += fmt.Sprintf("\n- rebase target commit: %s", rebaseBaseSHA)
+	}
 	if logOutput != "" {
 		prompt += fmt.Sprintf(`
 

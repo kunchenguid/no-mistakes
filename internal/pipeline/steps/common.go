@@ -48,6 +48,18 @@ func resolveBranchBaseSHA(ctx context.Context, workDir, fallbackBaseSHA, default
 	return resolveBaseSHA(ctx, workDir, fallbackBaseSHA, defaultBranch)
 }
 
+func resolveDefaultBranchTipSHA(ctx context.Context, workDir, fallbackBaseSHA, defaultBranch string) string {
+	if strings.TrimSpace(defaultBranch) != "" {
+		for _, ref := range []string{"origin/" + defaultBranch, defaultBranch} {
+			sha, err := git.Run(ctx, workDir, "rev-parse", "--verify", ref)
+			if err == nil && strings.TrimSpace(sha) != "" {
+				return strings.TrimSpace(sha)
+			}
+		}
+	}
+	return resolveBaseSHA(ctx, workDir, fallbackBaseSHA, defaultBranch)
+}
+
 func mergeBaseWithDefaultBranch(ctx context.Context, workDir, defaultBranch string) string {
 	if strings.TrimSpace(defaultBranch) == "" {
 		return ""
