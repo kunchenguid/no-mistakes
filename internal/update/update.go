@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/buildinfo"
+	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 )
 
@@ -82,6 +83,7 @@ type updater struct {
 	stderr            io.Writer
 	now               func() time.Time
 	spawnBackground   func(currentVersion string) error
+	resetDaemon       func() error
 	disableBackground bool
 	noColor           bool
 }
@@ -155,6 +157,9 @@ func defaultUpdater(stdout, stderr io.Writer) (*updater, error) {
 		stderr:          stderr,
 		now:             time.Now,
 		spawnBackground: defaultSpawnBackground,
+		resetDaemon: func() error {
+			return defaultResetDaemon(p)
+		},
 	}, nil
 }
 
@@ -406,7 +411,32 @@ func (u *updater) run(ctx context.Context) error {
 	if err := replaceExecutable(u.executablePath, binaryData); err != nil {
 		return err
 	}
+	if u.resetDaemon != nil {
+		if err := u.resetDaemon(); err != nil {
+			return fmt.Errorf("reset daemon: %w", err)
+		}
+	}
 	fmt.Fprintf(u.stdoutWriter(), "updated %s from %s to %s\n", u.appName, u.currentVersion, plan.LatestVersion)
+	return nil
+}
+
+func defaultResetDaemon(p *paths.Paths) error {
+	if p == nil {
+		return nil
+	}
+	alive, err := daemon.IsRunning(p)
+	if err != nil {
+		return fmt.Errorf("check daemon: %w", err)
+	}
+	if !alive {
+		return nil
+	}
+	if err := daemon.Stop(p); err != nil {
+		return fmt.Errorf("stop daemon: %w", err)
+	}
+	if err := daemon.Start(p); err != nil {
+		return fmt.Errorf("start daemon: %w", err)
+	}
 	return nil
 }
 
