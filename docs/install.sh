@@ -63,7 +63,7 @@ REAL_LINK_DIR="$(resolve_path "$LINK_DIR" 2>/dev/null || echo "")"
 if [ -n "$REAL_INSTALL_DIR" ] && [ "$REAL_INSTALL_DIR" = "$REAL_LINK_DIR" ]; then
   echo "Install dir and link dir resolve to the same path; skipping symlink."
 else
-  if [ -w "$LINK_DIR" ] || mkdir -p "$LINK_DIR" 2>/dev/null; then
+  if [ -w "$LINK_DIR" ] || (mkdir -p "$LINK_DIR" 2>/dev/null && [ -w "$LINK_DIR" ]); then
     rm -f "$LINK_PATH"
     ln -s "$BIN_PATH" "$LINK_PATH"
   else
