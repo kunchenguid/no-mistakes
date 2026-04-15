@@ -45,7 +45,7 @@ echo "Downloading no-mistakes ${VERSION} for ${OS}/${ARCH}..."
 curl -fsSL "$URL" -o "${TMPDIR}/${FILENAME}"
 tar xzf "${TMPDIR}/${FILENAME}" -C "$TMPDIR"
 
-if ! mkdir -p "$INSTALL_DIR" 2>/dev/null; then
+if ! mkdir -p "$INSTALL_DIR"; then
   echo "Could not create install directory: $INSTALL_DIR"
   exit 1
 fi
@@ -53,15 +53,17 @@ fi
 mv "${TMPDIR}/no-mistakes" "$BIN_PATH"
 chmod 755 "$BIN_PATH" 2>/dev/null || true
 
-if [ "$BIN_PATH" = "$LINK_PATH" ]; then
-  echo "Install dir and link dir are the same; skipping symlink."
-else
-  if ! mkdir -p "$LINK_DIR" 2>/dev/null; then
-    echo "Could not create link directory: $LINK_DIR"
-    exit 1
-  fi
+resolve_path() {
+  (cd "$1" 2>/dev/null && pwd -P)
+}
 
-  if [ -w "$LINK_DIR" ]; then
+REAL_INSTALL_DIR="$(resolve_path "$INSTALL_DIR")"
+REAL_LINK_DIR="$(resolve_path "$LINK_DIR" 2>/dev/null || echo "")"
+
+if [ -n "$REAL_INSTALL_DIR" ] && [ "$REAL_INSTALL_DIR" = "$REAL_LINK_DIR" ]; then
+  echo "Install dir and link dir resolve to the same path; skipping symlink."
+else
+  if [ -w "$LINK_DIR" ] || mkdir -p "$LINK_DIR" 2>/dev/null; then
     rm -f "$LINK_PATH"
     ln -s "$BIN_PATH" "$LINK_PATH"
   else
