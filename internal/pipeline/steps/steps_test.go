@@ -1958,6 +1958,12 @@ func TestReviewStep_WithWarnings(t *testing.T) {
 	if strings.Contains(ag.calls[0].Prompt, "feature code") {
 		t.Error("expected prompt to avoid embedding diff contents")
 	}
+	if !strings.Contains(ag.calls[0].Prompt, "Do a full review pass before returning.") {
+		t.Error("expected review prompt to require a full pass before returning")
+	}
+	if !strings.Contains(ag.calls[0].Prompt, "Do not stop after the first valid finding.") {
+		t.Error("expected review prompt to discourage stopping at the first finding")
+	}
 }
 
 func TestReviewStep_Clean(t *testing.T) {
@@ -2734,6 +2740,12 @@ func TestDocumentStep_Updated(t *testing.T) {
 	}
 	if !strings.Contains(ag.calls[0].Prompt, "refs/heads/feature") {
 		t.Error("expected prompt to contain branch name")
+	}
+	if !strings.Contains(ag.calls[0].Prompt, "Do a full documentation pass before returning.") {
+		t.Error("expected document prompt to require a full pass before returning")
+	}
+	if !strings.Contains(ag.calls[0].Prompt, "Do not stop after the first documentation gap.") {
+		t.Error("expected document prompt to discourage stopping at the first gap")
 	}
 	var findings Findings
 	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {

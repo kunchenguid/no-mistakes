@@ -114,8 +114,9 @@ Task:
      - Removed functionality - remove or update stale references
 
 3. Return findings
-   - Return a finding for each specific documentation gap (file, description of what needs updating).
-   - If no documentation updates are needed (e.g., internal refactoring, test-only changes, or documentation is already up to date), return an empty findings array.
+    - Return a finding for each specific documentation gap (file, description of what needs updating).
+    - If no documentation updates are needed (e.g., internal refactoring, test-only changes, or documentation is already up to date), return an empty findings array.
+    - Do a full documentation pass before returning. Do not stop after the first documentation gap. Continue checking the rest of the affected docs until you have enumerated all specific gaps you can substantiate.
 
 Rules:
 - Do NOT make any file changes in this mode.
