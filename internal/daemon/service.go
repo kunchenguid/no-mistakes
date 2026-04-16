@@ -94,6 +94,9 @@ func serviceInstanceSuffix(p *paths.Paths) string {
 	if abs, err := filepath.Abs(root); err == nil {
 		root = abs
 	}
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
 	root = filepath.Clean(root)
 	sum := sha256.Sum256([]byte(root))
 	return hex.EncodeToString(sum[:4])

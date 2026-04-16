@@ -579,6 +579,38 @@ func TestStartWithUnstubbedPathsDoesNotInvokeRealServiceCommands(t *testing.T) {
 	}
 }
 
+func TestServiceInstanceSuffixResolvesSymlinkedRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink setup is environment-dependent on Windows")
+	}
+
+	base := t.TempDir()
+	realRoot := filepath.Join(base, "real", "nm-home")
+	if err := os.MkdirAll(realRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linkRoot := filepath.Join(base, "alias")
+	if err := os.Symlink(filepath.Join(base, "real"), linkRoot); err != nil {
+		t.Skipf("symlink setup unavailable: %v", err)
+	}
+
+	realPaths := paths.WithRoot(realRoot)
+	aliasPaths := paths.WithRoot(filepath.Join(linkRoot, "nm-home"))
+
+	if got, want := serviceInstanceSuffix(aliasPaths), serviceInstanceSuffix(realPaths); got != want {
+		t.Fatalf("serviceInstanceSuffix(alias) = %q, want %q", got, want)
+	}
+	if got, want := launchdServiceLabel(aliasPaths), launchdServiceLabel(realPaths); got != want {
+		t.Fatalf("launchdServiceLabel(alias) = %q, want %q", got, want)
+	}
+	if got, want := systemdServiceName(aliasPaths), systemdServiceName(realPaths); got != want {
+		t.Fatalf("systemdServiceName(alias) = %q, want %q", got, want)
+	}
+	if got, want := windowsTaskName(aliasPaths), windowsTaskName(realPaths); got != want {
+		t.Fatalf("windowsTaskName(alias) = %q, want %q", got, want)
+	}
+}
+
 // TestStopDoesNotTouchManagedDaemonOwnedByDifferentNMHome is the structural
 // regression test for the per-NM_HOME scoping. Before scoping, the launchd
 // label / systemd unit / Windows task name were globally unique per user.
