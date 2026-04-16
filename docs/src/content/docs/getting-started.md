@@ -41,7 +41,7 @@ make install
 - **git** - required
 - **One supported agent binary** - `claude`, `codex`, `acli` (Rovo Dev), or `opencode`
 - **gh** (GitHub CLI) or **glab** (GitLab CLI) - optional, needed for PR/MR creation
-- **gh** (GitHub CLI) - optional, needed for CI babysitting
+- **gh** (GitHub CLI) - optional, needed for CI monitoring
 
 Run `no-mistakes doctor` to check what's installed and ready.
 
@@ -101,7 +101,7 @@ The pipeline runs these steps in order:
 5. **Lint** - run linters (configured command or agent-detected)
 6. **Push** - push to the real upstream remote
 7. **PR** - create or update a pull request
-8. **Babysit** - poll CI, watch PR mergeability, and auto-fix failures or merge conflicts
+8. **CI** - poll CI, watch PR mergeability, and auto-fix failures or merge conflicts
 
 Steps that find issues pause for your approval. You can approve, fix, skip, or abort. See [Pipeline Steps](/no-mistakes/guides/pipeline-steps/) and [Auto-Fix](/no-mistakes/guides/auto-fix/) for details.
 

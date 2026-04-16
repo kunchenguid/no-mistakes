@@ -30,7 +30,7 @@ agent_path_override:
   rovodev: /usr/local/bin/acli
   opencode: /usr/local/bin/opencode
 
-# How long the babysit step waits for CI and PR mergeability before timing out.
+# How long the CI step waits for checks and PR mergeability before timing out.
 ci_timeout: "4h"  # any Go duration string
 
 # Daemon log verbosity.
@@ -42,7 +42,7 @@ auto_fix:
   document: 3
   lint: 3
   test: 3
-  review: 3
+  review: 0
   ci: 3
 ```
 
@@ -62,7 +62,7 @@ commands:
   test: "go test -race ./..."
   format: "gofmt -w ."
 
-# Ignore these paths during the review step.
+# Ignore these paths during review and documentation checks.
 ignore_patterns:
   - "*.generated.go"
   - "vendor/**"
@@ -87,7 +87,7 @@ See [Repo Config Reference](/no-mistakes/reference/repo-config/) for the full fi
 
 ## Ignore pattern rules
 
-Patterns in `ignore_patterns` control which files are excluded from the review step's diff:
+Patterns in `ignore_patterns` control which files are excluded from review and documentation checks:
 
 | Pattern | Match rule |
 |---|---|

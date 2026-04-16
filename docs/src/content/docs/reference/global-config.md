@@ -22,7 +22,7 @@ log_level: info
 
 auto_fix:
   rebase: 3
-  review: 3
+  review: 0
   test: 3
   document: 3
   lint: 3
@@ -63,7 +63,7 @@ Default binary names when no override is set:
 
 ### ci_timeout
 
-How long the babysit step waits for CI and PR mergeability before timing out.
+How long the CI step waits for checks and PR mergeability before timing out.
 
 | | |
 |---|---|
@@ -95,11 +95,11 @@ Maximum auto-fix attempts per step. Set a step to `0` to disable auto-fix (findi
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `auto_fix.rebase` | `int` | `3` | Rebase conflict auto-fix attempts |
-| `auto_fix.review` | `int` | `3` | Review finding auto-fix attempts |
+| `auto_fix.review` | `int` | `0` | Review finding auto-fix attempts |
 | `auto_fix.test` | `int` | `3` | Test failure auto-fix attempts |
 | `auto_fix.document` | `int` | `3` | Documentation update auto-fix attempts |
 | `auto_fix.lint` | `int` | `3` | Lint issue auto-fix attempts |
-| `auto_fix.ci` | `int` | `3` | CI/Babysit auto-fix attempts for CI failures and merge conflicts |
+| `auto_fix.ci` | `int` | `3` | CI auto-fix attempts for CI failures and merge conflicts |
 
 Legacy alias: `auto_fix.babysit`.
 

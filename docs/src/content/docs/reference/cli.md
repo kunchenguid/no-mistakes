@@ -97,7 +97,7 @@ no-mistakes doctor
 
 Checks:
 - `git` binary
-- `gh` CLI (optional, needed for PR and babysit steps)
+- `gh` CLI (optional, needed for PR and CI steps)
 - Data directory (`~/.no-mistakes/`)
 - SQLite database
 - Daemon status

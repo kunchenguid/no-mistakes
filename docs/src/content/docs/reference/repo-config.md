@@ -75,7 +75,7 @@ Formatter command run before the push step commits agent fixes.
 
 ### ignore_patterns
 
-Paths to exclude from the review step's diff.
+Paths to exclude from review and documentation checks.
 
 | | |
 |---|---|
@@ -101,7 +101,7 @@ Override auto-fix attempt limits for specific steps. Fields not set here inherit
 | Field | Type | Default |
 |---|---|---|
 | `auto_fix.rebase` | `int` | Inherits from global (default `3`) |
-| `auto_fix.review` | `int` | Inherits from global (default `3`) |
+| `auto_fix.review` | `int` | Inherits from global (default `0`) |
 | `auto_fix.test` | `int` | Inherits from global (default `3`) |
 | `auto_fix.document` | `int` | Inherits from global (default `3`) |
 | `auto_fix.lint` | `int` | Inherits from global (default `3`) |
@@ -109,6 +109,6 @@ Override auto-fix attempt limits for specific steps. Fields not set here inherit
 
 Set to `0` to disable auto-fix for a step (always requires manual approval).
 
-`auto_fix.ci` covers the Babysit step's CI failure and merge-conflict auto-fix attempts.
+`auto_fix.ci` covers the CI step's CI failure and merge-conflict auto-fix attempts.
 
 Legacy alias: `auto_fix.babysit`.

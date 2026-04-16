@@ -6,7 +6,7 @@ description: What each step in the validation pipeline does.
 The pipeline runs a fixed sequence of steps. The order is not configurable - this is a deliberate design choice.
 
 ```
-rebase → review → test → document → lint → push → pr → babysit
+rebase → review → test → document → lint → push → pr → ci
 ```
 
 Each step can produce findings, request approval, or trigger auto-fix. Steps that encounter fatal errors stop the pipeline. Steps can also be skipped by the user or automatically by the pipeline.
@@ -44,7 +44,7 @@ AI code review of your diff.
 
 **Auto-fix:** the agent receives previous findings and applies fixes, then the review runs again. Fix commits use `no-mistakes(review): <summary>`.
 
-**Default auto-fix limit:** `3`.
+**Default auto-fix limit:** `0`.
 
 ## Test
 
@@ -120,7 +120,7 @@ Creates or updates a pull request.
 
 Stores the PR URL in the database and streams it to the TUI.
 
-## Babysit
+## CI
 
 Monitors PR health after creation and auto-fixes CI failures or merge conflicts.
 
@@ -141,7 +141,7 @@ Monitors PR health after creation and auto-fixes CI failures or merge conflicts.
 - If the timeout is reached while PR mergeability is still unresolved: pauses for user approval with a finding describing the unresolved mergeability state
 - If CI failures or merge conflicts persist after the auto-fix limit: pauses for user approval with findings listing each failing check and/or the merge conflict
 
-**Default auto-fix limit:** `3` total CI/Babysit auto-fix attempts.
+**Default auto-fix limit:** `3` total CI auto-fix attempts.
 
 ## Step statuses
 

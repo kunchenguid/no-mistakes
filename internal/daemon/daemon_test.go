@@ -799,6 +799,57 @@ func TestPushReceivedCreatesRun(t *testing.T) {
 	}
 }
 
+func TestPushReceivedDemoModeBypassesAgentResolution(t *testing.T) {
+	t.Setenv("NM_DEMO", "1")
+
+	step := &mockPassStep{name: types.StepReview}
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{step}
+	})
+
+	if err := os.WriteFile(p.ConfigFile(), []byte("agent: claude\nagent_path_override:\n  claude: /path/that/does/not/exist\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, headSHA := setupTestGitRepo(t, p, d, "testrepo-demo")
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var result ipc.PushReceivedResult
+	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: p.RepoDir("testrepo-demo"),
+		Ref:  "refs/heads/main",
+		Old:  "0000000000000000000000000000000000000000",
+		New:  headSHA,
+	}, &result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RunID == "" {
+		t.Fatal("expected non-empty run ID")
+	}
+
+	waitForRunTerminalState(t, d, result.RunID)
+	run, err := d.GetRun(result.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != types.RunCompleted {
+		var runErr string
+		if run.Error != nil {
+			runErr = *run.Error
+		}
+		t.Fatalf("run status = %q, want %q (error: %s)", run.Status, types.RunCompleted, runErr)
+	}
+	if step.execCnt.Load() == 0 {
+		t.Error("mock step was never executed")
+	}
+}
+
 func TestPushReceivedFetchesDefaultBranchIntoWorktree(t *testing.T) {
 	step := &mockVerifyDefaultBranchStep{name: types.StepReview}
 	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
