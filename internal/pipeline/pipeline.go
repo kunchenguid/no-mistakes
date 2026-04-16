@@ -35,6 +35,11 @@ type StepOutcome struct {
 	ExitCode      int    // process exit code (0 = success)
 	PRURL         string // PR/MR URL if this step created or found one
 	SkipRemaining bool   // skip all subsequent steps (e.g. empty diff after rebase)
+
+	// DurationOverrideMS, when positive, replaces the wall-clock duration
+	// reported for this step. Used by demo mode to show realistic durations
+	// without actually waiting.
+	DurationOverrideMS int64
 }
 
 // Step is the interface that each pipeline step implements.

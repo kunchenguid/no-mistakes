@@ -271,17 +271,21 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	}
 	cfg := config.Merge(globalCfg, repoCfg)
 
-	// Resolve "auto" agent to whichever binary is available.
-	if err := cfg.ResolveAgent(ctx, exec.LookPath); err != nil {
-		m.db.UpdateRunError(run.ID, err.Error())
-		return "", err
-	}
-
-	// Create agent.
-	ag, err := agent.New(cfg.Agent, cfg.AgentPath())
-	if err != nil {
-		m.db.UpdateRunError(run.ID, fmt.Sprintf("create agent: %s", err))
-		return "", fmt.Errorf("create agent: %w", err)
+	// Create agent. In demo mode, skip resolution and use a no-op agent.
+	var ag agent.Agent
+	if steps.IsDemoMode() {
+		ag = agent.NewNoop()
+	} else {
+		if err := cfg.ResolveAgent(ctx, exec.LookPath); err != nil {
+			m.db.UpdateRunError(run.ID, err.Error())
+			return "", err
+		}
+		var agErr error
+		ag, agErr = agent.New(cfg.Agent, cfg.AgentPath())
+		if agErr != nil {
+			m.db.UpdateRunError(run.ID, fmt.Sprintf("create agent: %s", agErr))
+			return "", fmt.Errorf("create agent: %w", agErr)
+		}
 	}
 
 	// Create executor with event broadcast.

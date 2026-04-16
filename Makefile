@@ -5,7 +5,7 @@ LDFLAGS := -X github.com/kunchenguid/no-mistakes/internal/buildinfo.Version=$(VE
            -X github.com/kunchenguid/no-mistakes/internal/buildinfo.Commit=$(COMMIT) \
            -X github.com/kunchenguid/no-mistakes/internal/buildinfo.Date=$(DATE)
 
-.PHONY: build dist install test lint fmt clean docs docs-build docs-preview
+.PHONY: build dist install test lint fmt clean docs docs-build docs-preview demo
 
 DIST_DIR ?= dist
 INSTALL_BIN := $(shell go env GOPATH)/bin/no-mistakes
@@ -55,6 +55,19 @@ docs-build:
 
 docs-preview:
 	cd docs && npm run preview
+
+demo: build
+	vhs demo.tape
+	ffmpeg -i demo_raw.gif -filter_complex "\
+		[0:v]split[orig][zoom_src];\
+		[zoom_src]crop=963:570:0:0,scale=1100:650:flags=lanczos[zoomed];\
+		[orig]scale=1100:650:flags=lanczos[base];\
+		[base][zoomed]overlay=0:0:enable='lt(t,4.3)',setpts=1.9*PTS,\
+		split[s0][s1];\
+		[s0]palettegen=max_colors=128[p];\
+		[s1][p]paletteuse=dither=sierra2_4a\
+	" -r 10 -y demo.gif
+	rm -f demo_raw.gif
 
 clean:
 	rm -rf bin/

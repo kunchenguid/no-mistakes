@@ -159,6 +159,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	// Track execution-only time, excluding approval wait periods.
 	phaseStart := time.Now()
 	var executionMS int64
+	var durationOverrideMS int64 // sum of step-reported overrides (demo mode)
 
 	// Open log file for persistent step logging
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
@@ -229,6 +230,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 
 		outcome.Findings = normalizeFindingsJSON(outcome.Findings, string(stepName))
 		finalExitCode = outcome.ExitCode
+		durationOverrideMS += outcome.DurationOverrideMS
 
 		if outcome.Findings != "" {
 			if dbErr := e.db.SetStepFindings(sr.ID, outcome.Findings); dbErr != nil {
@@ -374,6 +376,9 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 done:
 	// Mark step completed with execution-only timing.
 	durationMS := executionMS + time.Since(phaseStart).Milliseconds()
+	if durationOverrideMS > 0 {
+		durationMS = durationOverrideMS
+	}
 	if err := e.db.CompleteStep(sr.ID, finalExitCode, durationMS, logPath); err != nil {
 		return false, fmt.Errorf("complete step %s: %w", stepName, err)
 	}

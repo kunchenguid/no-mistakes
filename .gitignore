@@ -25,6 +25,9 @@ vendor/
 .DS_Store
 Thumbs.db
 
+# Demo intermediate
+demo_raw.gif
+
 # Environment
 .env
 .env.local
