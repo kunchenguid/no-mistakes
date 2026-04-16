@@ -195,6 +195,16 @@ func managedServiceInstalled(p *paths.Paths) bool {
 	}
 }
 
+func serviceDefinitionMatchesRoot(data []byte, p *paths.Paths) bool {
+	if len(data) == 0 {
+		return false
+	}
+	if p == nil {
+		return true
+	}
+	return strings.Contains(string(data), p.Root())
+}
+
 func installLaunchAgent(p *paths.Paths, exe string) error {
 	path := launchAgentPath(p)
 	home, err := serviceUserHomeDir()

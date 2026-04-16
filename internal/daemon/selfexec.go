@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
@@ -71,9 +72,7 @@ func stopManagedFallback(p *paths.Paths) error {
 }
 
 func startDetachedDaemon(p *paths.Paths) error {
-	// Clean up stale socket/pid files
-	os.Remove(p.Socket())
-	os.Remove(p.PIDFile())
+	cleanupDaemonArtifacts(p)
 
 	exe, err := os.Executable()
 	if err != nil {
@@ -87,7 +86,8 @@ func startDetachedDaemon(p *paths.Paths) error {
 	defer logFile.Close()
 
 	cmd := exec.Command(exe)
-	cmd.Env = append(os.Environ(), "NM_DAEMON=1")
+	cmd.Env = upsertEnv(os.Environ(), "NM_HOME", p.Root())
+	cmd.Env = upsertEnv(cmd.Env, "NM_DAEMON", "1")
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	// Detach from parent process group so daemon survives CLI exit.
@@ -172,6 +172,7 @@ func Stop(p *paths.Paths) error {
 func stopDetachedDaemon(p *paths.Paths) error {
 	client, err := ipc.Dial(p.Socket())
 	if err != nil {
+		cleanupDaemonArtifacts(p)
 		return nil
 	}
 	defer client.Close()
@@ -188,6 +189,7 @@ func waitForDaemonStop(p *paths.Paths) error {
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if alive, _ := daemonHealthCheck(p); !alive {
+			cleanupDaemonArtifacts(p)
 			slog.Info("daemon stopped gracefully")
 			return nil
 		}
@@ -201,8 +203,34 @@ func waitForDaemonStop(p *paths.Paths) error {
 			proc.Kill()
 		}
 	}
+	cleanupDaemonArtifacts(p)
 
 	return nil
+}
+
+func cleanupDaemonArtifacts(p *paths.Paths) {
+	_ = os.Remove(p.Socket())
+	_ = os.Remove(p.PIDFile())
+}
+
+func upsertEnv(env []string, key, value string) []string {
+	prefix := key + "="
+	updated := false
+	result := make([]string, 0, len(env)+1)
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			if !updated {
+				result = append(result, prefix+value)
+				updated = true
+			}
+			continue
+		}
+		result = append(result, entry)
+	}
+	if !updated {
+		result = append(result, prefix+value)
+	}
+	return result
 }
 
 // EnsureDaemon starts the daemon if it's not already running.

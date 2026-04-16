@@ -374,6 +374,38 @@ func TestStartFallsBackToDetachedDaemonWhenManagedStartFails(t *testing.T) {
 	_ = os.Remove(p.Socket())
 }
 
+func TestStartDetachedDaemonUsesProvidedRootViaNMHome(t *testing.T) {
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	capturePath := filepath.Join(t.TempDir(), "nm-home.txt")
+
+	t.Setenv("NM_DAEMON_HELPER_PROCESS", "1")
+	t.Setenv("NM_CAPTURE_NM_HOME_FILE", capturePath)
+	t.Setenv("NM_HOME", "")
+
+	cleanup := stubServiceRuntime(t)
+	defer cleanup()
+	checks := 0
+	daemonHealthCheck = func(*paths.Paths) (bool, error) {
+		checks++
+		return checks >= 2, nil
+	}
+
+	if err := startDetachedDaemon(p); err != nil {
+		t.Fatalf("startDetachedDaemon should succeed: %v", err)
+	}
+
+	data, err := os.ReadFile(capturePath)
+	if err != nil {
+		t.Fatalf("read captured NM_HOME: %v", err)
+	}
+	if got := string(data); got != p.Root() {
+		t.Fatalf("child NM_HOME = %q, want %q", got, p.Root())
+	}
+}
+
 func TestStartStopsManagedServiceBeforeDetachedFallbackAfterTimeout(t *testing.T) {
 	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
 	if err := p.EnsureDirs(); err != nil {
@@ -459,7 +491,7 @@ func TestStopUsesManagedServiceWhenInstalled(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(unitPath, []byte("[Unit]\n"), 0o644); err != nil {
+	if err := os.WriteFile(unitPath, []byte("WorkingDirectory="+p.Root()+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -481,6 +513,32 @@ func TestStopUsesManagedServiceWhenInstalled(t *testing.T) {
 	}
 }
 
+func TestManagedServiceInstalledRequiresMatchingRoot(t *testing.T) {
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
+	home := t.TempDir()
+
+	cleanup := stubServiceRuntime(t)
+	defer cleanup()
+	runtimeGOOS = "darwin"
+	serviceUserHomeDir = func() (string, error) { return home, nil }
+
+	otherRoot := filepath.Join(t.TempDir(), "other-root")
+	plistPath := filepath.Join(home, "Library", "LaunchAgents", launchdServiceLabel(paths.WithRoot(otherRoot))+".plist")
+	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(plistPath, []byte(renderLaunchAgent("/opt/no-mistakes/bin/no-mistakes", paths.WithRoot(otherRoot), home)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if managedServiceInstalled(p) {
+		t.Fatal("expected mismatched launch agent root to be ignored")
+	}
+	if !managedServiceInstalled(paths.WithRoot(otherRoot)) {
+		t.Fatal("expected matching launch agent root to be detected")
+	}
+}
+
 func TestStopFallsBackToDetachedDaemonWhenManagedStopFails(t *testing.T) {
 	p, _ := startTestDaemon(t)
 	home := t.TempDir()
@@ -494,7 +552,7 @@ func TestStopFallsBackToDetachedDaemonWhenManagedStopFails(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(unitPath, []byte("[Unit]\n"), 0o644); err != nil {
+	if err := os.WriteFile(unitPath, []byte("WorkingDirectory="+p.Root()+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

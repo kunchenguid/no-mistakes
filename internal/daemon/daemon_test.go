@@ -22,6 +22,9 @@ import (
 
 func TestMain(m *testing.M) {
 	if os.Getenv("NM_DAEMON_HELPER_PROCESS") == "1" {
+		if capturePath := os.Getenv("NM_CAPTURE_NM_HOME_FILE"); capturePath != "" {
+			_ = os.WriteFile(capturePath, []byte(os.Getenv("NM_HOME")), 0o644)
+		}
 		os.Exit(0)
 	}
 	os.Exit(m.Run())
@@ -366,6 +369,35 @@ func TestStopNotRunningIsNoop(t *testing.T) {
 
 	if err := Stop(p); err != nil {
 		t.Fatalf("stop should succeed when daemon is not running: %v", err)
+	}
+}
+
+func TestStopNotRunningRemovesStaleArtifacts(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "dtest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	p := paths.WithRoot(tmpDir)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.PIDFile(), []byte("12345"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.Socket(), []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Stop(p); err != nil {
+		t.Fatalf("stop should succeed when daemon is not running: %v", err)
+	}
+	if _, err := os.Stat(p.PIDFile()); !os.IsNotExist(err) {
+		t.Fatalf("expected stale pid file to be removed, got err=%v", err)
+	}
+	if _, err := os.Stat(p.Socket()); !os.IsNotExist(err) {
+		t.Fatalf("expected stale socket file to be removed, got err=%v", err)
 	}
 }
 

@@ -2233,6 +2233,18 @@ func TestRenderCIView_ShowsPRContextFromURL(t *testing.T) {
 	}
 }
 
+func TestRenderCIView_ShowsBitbucketPRContextFromURL(t *testing.T) {
+	run := testRunWithCI()
+	run.PRURL = ptr("https://bitbucket.org/user/repo/pull-requests/77")
+	run.Steps[5].Status = types.StepStatusRunning
+
+	out := stripANSI(renderCIView(run, run.Steps, "", nil, 80))
+
+	if !strings.Contains(out, "PR #77") {
+		t.Fatalf("expected CI panel to show Bitbucket PR context, got: %s", out)
+	}
+}
+
 func TestRenderCIView_AutoFixing(t *testing.T) {
 	run := testRunWithCI()
 	run.Steps[5].Status = types.StepStatusRunning
