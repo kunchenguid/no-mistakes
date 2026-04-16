@@ -240,7 +240,7 @@ func validateDaemonPIDFallback(p *paths.Paths, pid int) error {
 	if err != nil {
 		return fmt.Errorf("inspect daemon pid %d: %w", pid, err)
 	}
-	if info.ModTime().Before(startTime.Add(-time.Second)) {
+	if startTime.Sub(info.ModTime()) > time.Second || info.ModTime().Sub(startTime) > time.Second {
 		return fmt.Errorf("daemon pid %d does not match pid file instance", pid)
 	}
 	return nil
