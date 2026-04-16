@@ -24,7 +24,7 @@ func isConventionalTitle(title string) bool {
 	return conventionalTitleRe.MatchString(title)
 }
 
-// PRStep creates or updates a pull request via gh CLI.
+// PRStep creates or updates a pull request via the provider CLI or API.
 type PRStep struct{}
 
 type prContent struct {
