@@ -15,6 +15,8 @@ import (
 
 var daemonHealthCheck = daemonIsRunningViaIPC
 var daemonDial = ipc.Dial
+var daemonProcessRunning = processRunning
+var daemonKillPID = killPID
 
 func daemonStartTimeout() time.Duration {
 	return durationFromEnv("NM_TEST_DAEMON_START_TIMEOUT", 5*time.Second)
@@ -181,7 +183,10 @@ func stopDetachedDaemon(p *paths.Paths) error {
 			cleanupDaemonArtifacts(p)
 			return nil
 		}
-		return fmt.Errorf("dial daemon: %w", err)
+		if killErr := stopDetachedDaemonByPID(p); killErr != nil {
+			return fmt.Errorf("dial daemon: %w; pid fallback: %v", err, killErr)
+		}
+		return nil
 	}
 	defer client.Close()
 
@@ -190,6 +195,39 @@ func stopDetachedDaemon(p *paths.Paths) error {
 		return fmt.Errorf("shutdown request: %w", err)
 	}
 	return waitForDaemonStop(p)
+}
+
+func stopDetachedDaemonByPID(p *paths.Paths) error {
+	pid, err := ReadPID(p)
+	if err != nil {
+		return err
+	}
+	if err := daemonKillPID(pid); err != nil {
+		return fmt.Errorf("kill daemon pid %d: %w", pid, err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		running, err := daemonProcessRunning(pid)
+		if err != nil {
+			return err
+		}
+		if !running {
+			cleanupDaemonArtifacts(p)
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	return fmt.Errorf("daemon pid %d still running after kill", pid)
+}
+
+func killPID(pid int) error {
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return fmt.Errorf("find process: %w", err)
+	}
+	return proc.Kill()
 }
 
 func staleDaemonArtifacts(p *paths.Paths) (bool, error) {
@@ -208,7 +246,7 @@ func staleDaemonArtifacts(p *paths.Paths) (bool, error) {
 		}
 		return false, err
 	}
-	running, err := processRunning(pid)
+	running, err := daemonProcessRunning(pid)
 	if err != nil {
 		return false, err
 	}

@@ -25,7 +25,8 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	if os.Getenv("NM_DAEMON_HELPER_PROCESS") == "1" {
+	switch os.Getenv("NM_DAEMON_HELPER_PROCESS") {
+	case "1":
 		if capturePath := os.Getenv("NM_CAPTURE_NM_HOME_FILE"); capturePath != "" {
 			_ = os.WriteFile(capturePath, []byte(os.Getenv("NM_HOME")), 0o644)
 		}
@@ -447,7 +448,7 @@ func TestWaitForDaemonStopKeepsArtifactsWhenKillFails(t *testing.T) {
 	}
 }
 
-func TestStopDetachedDaemonKeepsArtifactsOnDialFailure(t *testing.T) {
+func TestStopDetachedDaemonFallsBackToPIDWhenSocketIsBroken(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("unix socket setup is platform-specific")
 	}
@@ -462,7 +463,8 @@ func TestStopDetachedDaemonKeepsArtifactsOnDialFailure(t *testing.T) {
 	if err := p.EnsureDirs(); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(p.PIDFile(), []byte(fmt.Sprintf("%d", os.Getpid())), 0o644); err != nil {
+	const pid = 424242
+	if err := os.WriteFile(p.PIDFile(), []byte(fmt.Sprintf("%d", pid)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	ln, err := net.Listen("unix", p.Socket())
@@ -478,16 +480,42 @@ func TestStopDetachedDaemonKeepsArtifactsOnDialFailure(t *testing.T) {
 	defer func() {
 		daemonDial = originalDial
 	}()
+	originalProcessRunning := daemonProcessRunning
+	runningChecks := 0
+	daemonProcessRunning = func(checkPID int) (bool, error) {
+		if checkPID != pid {
+			t.Fatalf("processRunning pid = %d, want %d", checkPID, pid)
+		}
+		runningChecks++
+		return runningChecks == 1, nil
+	}
+	defer func() {
+		daemonProcessRunning = originalProcessRunning
+	}()
+	originalKillPID := daemonKillPID
+	killedPID := 0
+	daemonKillPID = func(killPID int) error {
+		killedPID = killPID
+		return nil
+	}
+	defer func() {
+		daemonKillPID = originalKillPID
+	}()
 
-	err = stopDetachedDaemon(p)
-	if err == nil {
-		t.Fatal("expected stopDetachedDaemon to fail when IPC dial fails")
+	if err := stopDetachedDaemon(p); err != nil {
+		t.Fatalf("expected stopDetachedDaemon to stop live pid when IPC dial fails, got %v", err)
 	}
-	if _, statErr := os.Stat(p.PIDFile()); statErr != nil {
-		t.Fatalf("expected pid file to remain after dial failure, got err=%v", statErr)
+	if killedPID != pid {
+		t.Fatalf("expected pid fallback to kill pid %d, got %d", pid, killedPID)
 	}
-	if _, statErr := os.Stat(p.Socket()); statErr != nil {
-		t.Fatalf("expected socket file to remain after dial failure, got err=%v", statErr)
+	if runningChecks == 0 {
+		t.Fatal("expected pid fallback to check process state")
+	}
+	if _, statErr := os.Stat(p.PIDFile()); !os.IsNotExist(statErr) {
+		t.Fatalf("expected pid file to be removed after PID fallback, got err=%v", statErr)
+	}
+	if _, statErr := os.Stat(p.Socket()); !os.IsNotExist(statErr) {
+		t.Fatalf("expected socket file to be removed after PID fallback, got err=%v", statErr)
 	}
 }
 
