@@ -11,7 +11,7 @@ description: Install no-mistakes and run your first gated push.
 curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.sh | sh
 ```
 
-This installs the binary and starts the background daemon automatically, preferring a managed service and falling back to a detached daemon if needed.
+This installs the binary and attempts to start the background daemon automatically, preferring a managed service and falling back to a detached daemon if needed. If startup still fails, run `no-mistakes daemon start` manually.
 
 ### Windows (PowerShell)
 
@@ -19,7 +19,7 @@ This installs the binary and starts the background daemon automatically, preferr
 irm https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.ps1 | iex
 ```
 
-This installs the binary and starts the background daemon automatically, preferring a managed service and falling back to a detached daemon if needed.
+This installs the binary and attempts to start the background daemon automatically, preferring a managed service and falling back to a detached daemon if needed. If startup still fails, run `no-mistakes daemon start` manually.
 
 ### Go install
 

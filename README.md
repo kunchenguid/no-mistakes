@@ -62,7 +62,7 @@ $ no-mistakes
 curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.sh | sh
 ```
 
-The installer keeps the real binary in `~/.no-mistakes/bin` and exposes `no-mistakes` through a symlink in `~/.local/bin` or `/usr/local/bin`. That keeps future `no-mistakes update` runs in a user-owned location instead of rewriting a system binary in place. It also installs and starts the background daemon for you so the command is ready immediately, preferring a managed service and falling back to a detached daemon if that path is unavailable.
+The installer keeps the real binary in `~/.no-mistakes/bin` and exposes `no-mistakes` through a symlink in `~/.local/bin` or `/usr/local/bin`. That keeps future `no-mistakes update` runs in a user-owned location instead of rewriting a system binary in place. It also attempts to install and start the background daemon for you so the command is ready immediately, preferring a managed service and falling back to a detached daemon if that path is unavailable. If startup still fails, run `no-mistakes daemon start` manually.
 
 **Windows (PowerShell)**
 
@@ -70,7 +70,7 @@ The installer keeps the real binary in `~/.no-mistakes/bin` and exposes `no-mist
 irm https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.ps1 | iex
 ```
 
-This installs the binary and starts the background daemon automatically, preferring a managed service and falling back to a detached daemon if needed.
+This installs the binary and attempts to start the background daemon automatically, preferring a managed service and falling back to a detached daemon if needed. If startup still fails, run `no-mistakes daemon start` manually.
 
 **Go install**
 
