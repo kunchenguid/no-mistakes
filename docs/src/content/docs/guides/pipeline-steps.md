@@ -117,7 +117,7 @@ Creates or updates a pull request.
 - Checks for an existing PR on the branch
 - If one exists, updates it. If not, creates a new one.
 - Uses the provider CLI for GitHub/GitLab and the Bitbucket API for Bitbucket Cloud
-- PR title: agent-generated in conventional commit format (`type(scope): description`)
+- PR title: agent-generated in conventional commit format (`type(scope): description` or `type: description`); when a scope is used, it should be the primary affected real module/package from the changed paths and kept broad rather than file-level
 - PR body includes: an agent-authored `## Summary` plus regenerated `## Risk Assessment`, `## Testing`, and `## Pipeline` sections from recorded step results and rounds
 
 Stores the PR URL in the database and streams it to the TUI.
