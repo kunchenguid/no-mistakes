@@ -10,6 +10,49 @@ import (
 	"time"
 )
 
+func TestParseRepoRefRejectsLookalikeHosts(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		wantErr string
+	}{
+		{
+			name:    "rejects lookalike host",
+			raw:     "https://bitbucket.org.evil.example/workspace/repo.git",
+			wantErr: `unsupported Bitbucket host "bitbucket.org.evil.example"`,
+		},
+		{
+			name: "accepts exact host",
+			raw:  "https://bitbucket.org/workspace/repo.git",
+		},
+		{
+			name: "accepts subdomain host",
+			raw:  "https://foo.bitbucket.org/workspace/repo.git",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo, err := ParseRepoRef(tt.raw)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatal("expected error")
+				}
+				if err.Error() != tt.wantErr {
+					t.Fatalf("error = %q, want %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ParseRepoRef returned error: %v", err)
+			}
+			if repo != (RepoRef{Workspace: "workspace", RepoSlug: "repo"}) {
+				t.Fatalf("repo = %#v, want workspace/repo", repo)
+			}
+		})
+	}
+}
+
 func TestListPRStatusesFollowsPagination(t *testing.T) {
 	repo := RepoRef{Workspace: "test", RepoSlug: "repo"}
 	var pageCalls int

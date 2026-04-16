@@ -3,6 +3,8 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -441,6 +443,50 @@ func TestWaitForDaemonStopKeepsArtifactsWhenKillFails(t *testing.T) {
 	}
 	if _, err := os.Stat(p.Socket()); err != nil {
 		t.Fatalf("expected socket file to remain after failed kill, got err=%v", err)
+	}
+}
+
+func TestStopDetachedDaemonKeepsArtifactsOnDialFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix socket setup is platform-specific")
+	}
+
+	tmpDir, err := os.MkdirTemp("", "dtest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	p := paths.WithRoot(tmpDir)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.PIDFile(), []byte("12345"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("unix", p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	originalDial := daemonDial
+	daemonDial = func(string) (*ipc.Client, error) {
+		return nil, fmt.Errorf("transient ipc failure")
+	}
+	defer func() {
+		daemonDial = originalDial
+	}()
+
+	err = stopDetachedDaemon(p)
+	if err == nil {
+		t.Fatal("expected stopDetachedDaemon to fail when IPC dial fails")
+	}
+	if _, statErr := os.Stat(p.PIDFile()); statErr != nil {
+		t.Fatalf("expected pid file to remain after dial failure, got err=%v", statErr)
+	}
+	if _, statErr := os.Stat(p.Socket()); statErr != nil {
+		t.Fatalf("expected socket file to remain after dial failure, got err=%v", statErr)
 	}
 }
 

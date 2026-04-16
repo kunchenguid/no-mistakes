@@ -96,7 +96,8 @@ func ParseRepoRef(raw string) (RepoRef, error) {
 	if err != nil {
 		return RepoRef{}, fmt.Errorf("parse bitbucket repo URL: %w", err)
 	}
-	if !strings.Contains(strings.ToLower(parsed.Host), "bitbucket.org") {
+	host := strings.ToLower(parsed.Hostname())
+	if host != "bitbucket.org" && !strings.HasSuffix(host, ".bitbucket.org") {
 		return RepoRef{}, fmt.Errorf("unsupported Bitbucket host %q", parsed.Host)
 	}
 	return parseRepoPath(strings.TrimPrefix(parsed.Path, "/"))

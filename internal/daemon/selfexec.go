@@ -14,6 +14,7 @@ import (
 )
 
 var daemonHealthCheck = daemonIsRunningViaIPC
+var daemonDial = ipc.Dial
 
 func daemonStartTimeout() time.Duration {
 	return durationFromEnv("NM_TEST_DAEMON_START_TIMEOUT", 5*time.Second)
@@ -170,10 +171,17 @@ func Stop(p *paths.Paths) error {
 }
 
 func stopDetachedDaemon(p *paths.Paths) error {
-	client, err := ipc.Dial(p.Socket())
+	client, err := daemonDial(p.Socket())
 	if err != nil {
-		cleanupDaemonArtifacts(p)
-		return nil
+		stale, staleErr := staleDaemonArtifacts(p)
+		if staleErr != nil {
+			return staleErr
+		}
+		if stale {
+			cleanupDaemonArtifacts(p)
+			return nil
+		}
+		return fmt.Errorf("dial daemon: %w", err)
 	}
 	defer client.Close()
 
@@ -182,6 +190,26 @@ func stopDetachedDaemon(p *paths.Paths) error {
 		return fmt.Errorf("shutdown request: %w", err)
 	}
 	return waitForDaemonStop(p)
+}
+
+func staleDaemonArtifacts(p *paths.Paths) (bool, error) {
+	info, err := os.Stat(p.Socket())
+	if os.IsNotExist(err) {
+		return true, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("stat daemon socket: %w", err)
+	}
+	if info.Mode()&os.ModeSocket == 0 {
+		return true, nil
+	}
+	if _, err := ReadPID(p); err != nil {
+		if os.IsNotExist(err) {
+			return true, nil
+		}
+		return false, err
+	}
+	return false, nil
 }
 
 func waitForDaemonStop(p *paths.Paths) error {
