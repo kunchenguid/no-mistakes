@@ -139,6 +139,7 @@ Context:
 Task:
 - Read the relevant history and diff yourself.
 - focus only on changed code.
+- Do NOT run tests during review. The pipeline has a dedicated test step after review.
 - Analyze for bugs, risks, and code simplification opportunities.
 - "Simplification" means reducing code complexity through non-functional refactoring (e.g. deduplication, clearer control flow). It does NOT mean removing features, changing product behavior, or stripping intentional user-facing output.
 - Treat security issues, performance regressions, breaking changes, and insufficient error handling as risks.
