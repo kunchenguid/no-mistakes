@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -11,10 +12,10 @@ import (
 
 func withoutDemoSleep(t *testing.T) {
 	t.Helper()
-	prev := demoSleep
-	demoSleep = func(time.Duration) {}
+	prev := demoWait
+	demoWait = func(context.Context, time.Duration) bool { return true }
 	t.Cleanup(func() {
-		demoSleep = prev
+		demoWait = prev
 	})
 }
 
@@ -172,5 +173,66 @@ func TestDemoStepPRURL(t *testing.T) {
 	}
 	if outcome.PRURL == "" {
 		t.Fatal("expected PR URL from PR step")
+	}
+}
+
+func TestStreamDemoLogStopsAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	prev := demoWait
+	demoWait = func(context.Context, time.Duration) bool {
+		cancel()
+		return false
+	}
+	t.Cleanup(func() {
+		demoWait = prev
+	})
+
+	var logs []string
+	streamDemoLog(&pipeline.StepContext{
+		Ctx:      ctx,
+		Log:      func(s string) { logs = append(logs, s) },
+		LogChunk: func(string) {},
+		LogFile:  func(string) {},
+	}, "first\nsecond", 2*time.Second)
+
+	if len(logs) != 1 {
+		t.Fatalf("expected logging to stop after cancellation, got %d lines", len(logs))
+	}
+	if logs[0] != "first" {
+		t.Fatalf("got first log %q, want %q", logs[0], "first")
+	}
+}
+
+func TestDemoCIStepStopsAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	prev := demoWait
+	demoWait = func(context.Context, time.Duration) bool {
+		cancel()
+		return false
+	}
+	t.Cleanup(func() {
+		demoWait = prev
+	})
+
+	var logs []string
+	step := &demoCIStep{displayDur: 120 * time.Second}
+	_, err := step.Execute(&pipeline.StepContext{
+		Ctx:      ctx,
+		Log:      func(s string) { logs = append(logs, s) },
+		LogChunk: func(string) {},
+		LogFile:  func(string) {},
+	})
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+	if len(logs) != 1 {
+		t.Fatalf("expected CI demo to stop after cancellation, got %d lines", len(logs))
+	}
+	if logs[0] != "monitoring CI for PR #42" {
+		t.Fatalf("got first log %q, want %q", logs[0], "monitoring CI for PR #42")
 	}
 }

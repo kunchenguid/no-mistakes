@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"time"
@@ -9,7 +10,23 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-var demoSleep = time.Sleep
+var demoWait = func(ctx context.Context, d time.Duration) bool {
+	if d <= 0 {
+		return ctx == nil || ctx.Err() == nil
+	}
+	if ctx == nil {
+		time.Sleep(d)
+		return true
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
 
 // IsDemoMode returns true when the NM_DEMO environment variable is set.
 func IsDemoMode() bool {
@@ -142,6 +159,9 @@ func streamDemoLog(sctx *pipeline.StepContext, text string, total time.Duration)
 	if text == "" {
 		return
 	}
+	if sctx.Ctx != nil && sctx.Ctx.Err() != nil {
+		return
+	}
 	lines := splitLines(text)
 	if len(lines) == 0 {
 		return
@@ -151,8 +171,11 @@ func streamDemoLog(sctx *pipeline.StepContext, text string, total time.Duration)
 		pause = 50 * time.Millisecond
 	}
 	for i, line := range lines {
-		if i > 0 {
-			demoSleep(pause)
+		if sctx.Ctx != nil && sctx.Ctx.Err() != nil {
+			return
+		}
+		if i > 0 && !demoWait(sctx.Ctx, pause) {
+			return
 		}
 		sctx.Log(line)
 	}
@@ -168,39 +191,63 @@ type demoCIStep struct {
 func (s *demoCIStep) Name() types.StepName { return types.StepCI }
 
 func (s *demoCIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
-	pause := func(d time.Duration) { demoSleep(d) }
+	pause := func(d time.Duration) bool { return demoWait(sctx.Ctx, d) }
 
 	// Phase 1: initial monitoring, find a failure.
 	sctx.Log("monitoring CI for PR #42")
-	pause(2 * time.Second)
+	if !pause(2 * time.Second) {
+		return &pipeline.StepOutcome{DurationOverrideMS: s.displayDur.Milliseconds()}, nil
+	}
 	sctx.Log("")
 	sctx.Log("  ✓  build (12s)")
-	pause(1 * time.Second)
+	if !pause(1 * time.Second) {
+		return &pipeline.StepOutcome{DurationOverrideMS: s.displayDur.Milliseconds()}, nil
+	}
 	sctx.Log("  ✗  test (45s)")
-	pause(500 * time.Millisecond)
+	if !pause(500 * time.Millisecond) {
+		return &pipeline.StepOutcome{DurationOverrideMS: s.displayDur.Milliseconds()}, nil
+	}
 	sctx.Log("  ✓  lint (8s)")
-	pause(1 * time.Second)
+	if !pause(1 * time.Second) {
+		return &pipeline.StepOutcome{DurationOverrideMS: s.displayDur.Milliseconds()}, nil
+	}
 
 	// Phase 2: failure detected, auto-fix triggered.
 	sctx.Log("CI failures detected: test")
-	pause(1 * time.Second)
+	if !pause(1 * time.Second) {
+		return &pipeline.StepOutcome{DurationOverrideMS: s.displayDur.Milliseconds()}, nil
+	}
 	sctx.Log("running agent to fix CI")
-	pause(1 * time.Second)
+	if !pause(1 * time.Second) {
+		return &pipeline.StepOutcome{DurationOverrideMS: s.displayDur.Milliseconds()}, nil
+	}
 	sctx.Log("Diagnosing test failure from CI logs...")
-	pause(2 * time.Second)
+	if !pause(2 * time.Second) {
+		return &pipeline.StepOutcome{DurationOverrideMS: s.displayDur.Milliseconds()}, nil
+	}
 	sctx.Log("Fix: updated handler_test.go to match new nil-check signature")
-	pause(1 * time.Second)
+	if !pause(1 * time.Second) {
+		return &pipeline.StepOutcome{DurationOverrideMS: s.displayDur.Milliseconds()}, nil
+	}
 	sctx.Log("committed and pushed fixes")
-	pause(2 * time.Second)
+	if !pause(2 * time.Second) {
+		return &pipeline.StepOutcome{DurationOverrideMS: s.displayDur.Milliseconds()}, nil
+	}
 
 	// Phase 3: re-monitor, all checks pass.
 	sctx.Log("")
 	sctx.Log("  ✓  build (11s)")
-	pause(1 * time.Second)
+	if !pause(1 * time.Second) {
+		return &pipeline.StepOutcome{DurationOverrideMS: s.displayDur.Milliseconds()}, nil
+	}
 	sctx.Log("  ✓  test (44s)")
-	pause(500 * time.Millisecond)
+	if !pause(500 * time.Millisecond) {
+		return &pipeline.StepOutcome{DurationOverrideMS: s.displayDur.Milliseconds()}, nil
+	}
 	sctx.Log("  ✓  lint (8s)")
-	pause(1 * time.Second)
+	if !pause(1 * time.Second) {
+		return &pipeline.StepOutcome{DurationOverrideMS: s.displayDur.Milliseconds()}, nil
+	}
 	sctx.Log("")
 	sctx.Log("All checks passed.")
 
