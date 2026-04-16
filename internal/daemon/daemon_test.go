@@ -663,6 +663,39 @@ func TestStaleDaemonArtifactsKeepsPIDForLiveProcessWithoutSocket(t *testing.T) {
 	}
 }
 
+func TestStaleDaemonArtifactsKeepsRegularEndpointFileForLiveProcess(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "dtest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	p := paths.WithRoot(tmpDir)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.PIDFile(), []byte(fmt.Sprintf("%d", os.Getpid())), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.Socket(), []byte("127.0.0.1:1234\ntoken\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	original := daemonEndpointUsesRegularFile
+	daemonEndpointUsesRegularFile = func() bool { return true }
+	defer func() {
+		daemonEndpointUsesRegularFile = original
+	}()
+
+	stale, err := staleDaemonArtifacts(p)
+	if err != nil {
+		t.Fatalf("staleDaemonArtifacts returned error: %v", err)
+	}
+	if stale {
+		t.Fatal("expected live pid with regular endpoint file to be treated as non-stale")
+	}
+}
+
 func TestReadPIDNoFile(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "dtest")
 	if err != nil {

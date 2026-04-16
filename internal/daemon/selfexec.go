@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -18,6 +19,7 @@ var daemonDial = ipc.Dial
 var daemonProcessRunning = processRunning
 var daemonProcessStartTime = processStartTime
 var daemonKillPID = killPID
+var daemonEndpointUsesRegularFile = func() bool { return runtime.GOOS == "windows" }
 
 func daemonStartTimeout() time.Duration {
 	return durationFromEnv("NM_TEST_DAEMON_START_TIMEOUT", 5*time.Second)
@@ -258,7 +260,7 @@ func staleDaemonArtifacts(p *paths.Paths) (bool, error) {
 	if err != nil && !missingSocket {
 		return false, fmt.Errorf("stat daemon socket: %w", err)
 	}
-	if err == nil && info.Mode()&os.ModeSocket == 0 {
+	if err == nil && info.Mode()&os.ModeSocket == 0 && !daemonEndpointUsesRegularFile() {
 		return true, nil
 	}
 	pid, err := ReadPID(p)

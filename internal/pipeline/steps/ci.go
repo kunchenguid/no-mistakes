@@ -451,6 +451,7 @@ func (s *CIStep) getCIChecks(sctx *pipeline.StepContext, provider scm.Provider, 
 		if err != nil {
 			return nil, err
 		}
+		statuses = latestBitbucketStatuses(statuses)
 		checks := make([]ciCheck, 0, len(statuses))
 		for _, status := range statuses {
 			checks = append(checks, ciCheck{
@@ -474,6 +475,27 @@ func (s *CIStep) getCIChecks(sctx *pipeline.StepContext, provider scm.Provider, 
 		return nil, fmt.Errorf("parse CI checks: %w", err)
 	}
 	return checks, nil
+}
+
+func latestBitbucketStatuses(statuses []bitbucket.CommitStatus) []bitbucket.CommitStatus {
+	latest := make([]bitbucket.CommitStatus, 0, len(statuses))
+	seen := make(map[string]struct{}, len(statuses))
+	for _, status := range statuses {
+		id := strings.TrimSpace(status.Key)
+		if id == "" {
+			id = strings.TrimSpace(status.Name)
+		}
+		if id == "" {
+			latest = append(latest, status)
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		latest = append(latest, status)
+	}
+	return latest
 }
 
 func bitbucketStatusBucket(state string) string {

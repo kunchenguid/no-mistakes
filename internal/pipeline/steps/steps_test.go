@@ -6927,6 +6927,32 @@ func TestCIStep_GetCIChecksNoChecksReported(t *testing.T) {
 	}
 }
 
+func TestLatestBitbucketStatusesKeepsNewestStatusPerCheck(t *testing.T) {
+	t.Parallel()
+
+	statuses := []bitbucket.CommitStatus{
+		{Name: "build", State: "SUCCESSFUL", Key: "build"},
+		{Name: "tests", State: "FAILED", Key: "tests"},
+		{Name: "build", State: "FAILED", Key: "build"},
+		{Name: "tests", State: "SUCCESSFUL", Key: "tests"},
+		{Name: "lint", State: "INPROGRESS"},
+	}
+
+	got := latestBitbucketStatuses(statuses)
+	if len(got) != 3 {
+		t.Fatalf("len(got) = %d, want 3", len(got))
+	}
+	if got[0].Name != "build" || got[0].State != "SUCCESSFUL" {
+		t.Fatalf("got[0] = %#v, want latest successful build", got[0])
+	}
+	if got[1].Name != "tests" || got[1].State != "FAILED" {
+		t.Fatalf("got[1] = %#v, want latest failed tests", got[1])
+	}
+	if got[2].Name != "lint" || got[2].State != "INPROGRESS" {
+		t.Fatalf("got[2] = %#v, want pending lint", got[2])
+	}
+}
+
 func TestCIStep_CIFailureAutoFix(t *testing.T) {
 	t.Parallel()
 	// Set up upstream bare repo for push

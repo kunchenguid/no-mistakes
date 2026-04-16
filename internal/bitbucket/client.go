@@ -33,6 +33,7 @@ type PullRequest struct {
 
 type CommitStatus struct {
 	Name        string `json:"name"`
+	Key         string `json:"key"`
 	State       string `json:"state"`
 	Description string `json:"description"`
 	URL         string `json:"url"`
