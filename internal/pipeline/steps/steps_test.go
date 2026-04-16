@@ -4373,6 +4373,35 @@ func TestPRStep_BitbucketUpdatesExistingPR(t *testing.T) {
 	}
 }
 
+func TestPRStep_BitbucketUpdatesExistingPRWithoutHTMLLink(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	api := newFakeBitbucketPRAPI(t, 42, "")
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = fakeBitbucketEnv(api.server.URL)
+	sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
+
+	step := &PRStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatal("bitbucket PR step should never need approval")
+	}
+	if api.listCalls != 1 {
+		t.Fatalf("list calls = %d, want 1", api.listCalls)
+	}
+	if api.updateCalls != 1 {
+		t.Fatalf("update calls = %d, want 1", api.updateCalls)
+	}
+	if api.createCalls != 0 {
+		t.Fatalf("create calls = %d, want 0", api.createCalls)
+	}
+}
+
 func TestPRStep_ZeroBaseSHA(t *testing.T) {
 	t.Parallel()
 	// New branch scenario: baseSHA is all-zeros, commit log should still work

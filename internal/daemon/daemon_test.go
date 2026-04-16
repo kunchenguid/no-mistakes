@@ -492,6 +492,16 @@ func TestStopDetachedDaemonFallsBackToPIDWhenSocketIsBroken(t *testing.T) {
 	defer func() {
 		daemonProcessRunning = originalProcessRunning
 	}()
+	originalProcessStartTime := daemonProcessStartTime
+	daemonProcessStartTime = func(checkPID int) (time.Time, error) {
+		if checkPID != pid {
+			t.Fatalf("processStartTime pid = %d, want %d", checkPID, pid)
+		}
+		return time.Now(), nil
+	}
+	defer func() {
+		daemonProcessStartTime = originalProcessStartTime
+	}()
 	originalKillPID := daemonKillPID
 	killedPID := 0
 	daemonKillPID = func(killPID int) error {
@@ -516,6 +526,66 @@ func TestStopDetachedDaemonFallsBackToPIDWhenSocketIsBroken(t *testing.T) {
 	}
 	if _, statErr := os.Stat(p.Socket()); !os.IsNotExist(statErr) {
 		t.Fatalf("expected socket file to be removed after PID fallback, got err=%v", statErr)
+	}
+}
+
+func TestStopDetachedDaemonRejectsStalePIDFallback(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix socket setup is platform-specific")
+	}
+
+	tmpDir, err := os.MkdirTemp("", "dtest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	p := paths.WithRoot(tmpDir)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.PIDFile(), []byte(fmt.Sprintf("%d", os.Getpid())), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldTime := time.Now().Add(-24 * time.Hour)
+	if err := os.Chtimes(p.PIDFile(), oldTime, oldTime); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("unix", p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	originalDial := daemonDial
+	daemonDial = func(string) (*ipc.Client, error) {
+		return nil, fmt.Errorf("transient ipc failure")
+	}
+	defer func() {
+		daemonDial = originalDial
+	}()
+	originalKillPID := daemonKillPID
+	killCalled := false
+	daemonKillPID = func(int) error {
+		killCalled = true
+		return nil
+	}
+	defer func() {
+		daemonKillPID = originalKillPID
+	}()
+
+	err = stopDetachedDaemon(p)
+	if err == nil {
+		t.Fatal("expected stale pid fallback to fail")
+	}
+	if killCalled {
+		t.Fatal("expected stale pid fallback to avoid killing the process")
+	}
+	if _, statErr := os.Stat(p.PIDFile()); statErr != nil {
+		t.Fatalf("expected pid file to remain after rejected pid fallback, got err=%v", statErr)
+	}
+	if _, statErr := os.Stat(p.Socket()); statErr != nil {
+		t.Fatalf("expected socket file to remain after rejected pid fallback, got err=%v", statErr)
 	}
 }
 

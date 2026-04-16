@@ -157,8 +157,12 @@ func (s *PRStep) executeBitbucketPR(sctx *pipeline.StepContext, branch string, c
 	if err != nil {
 		return nil, err
 	}
-	if existingPR != nil && existingPR.URL != "" {
-		sctx.Log(fmt.Sprintf("pull request already exists: %s, updating...", existingPR.URL))
+	if existingPR != nil {
+		if existingPR.URL != "" {
+			sctx.Log(fmt.Sprintf("pull request already exists: %s, updating...", existingPR.URL))
+		} else {
+			sctx.Log(fmt.Sprintf("pull request already exists: #%d, updating...", existingPR.ID))
+		}
 		updatedPR, err := client.UpdatePR(sctx.Ctx, repo, existingPR.ID, content.Title, content.Body)
 		if err != nil {
 			return nil, err

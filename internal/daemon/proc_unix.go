@@ -4,8 +4,11 @@ package daemon
 
 import (
 	"errors"
+	"fmt"
 	"os/exec"
+	"strings"
 	"syscall"
+	"time"
 )
 
 func setSysProcAttr(cmd *exec.Cmd) {
@@ -24,4 +27,24 @@ func processRunning(pid int) (bool, error) {
 		return true, nil
 	}
 	return false, err
+}
+
+func processStartTime(pid int) (time.Time, error) {
+	if pid <= 0 {
+		return time.Time{}, fmt.Errorf("invalid pid %d", pid)
+	}
+	cmd := exec.Command("ps", "-p", fmt.Sprintf("%d", pid), "-o", "lstart=")
+	out, err := cmd.Output()
+	if err != nil {
+		return time.Time{}, err
+	}
+	startedAt := strings.TrimSpace(string(out))
+	if startedAt == "" {
+		return time.Time{}, fmt.Errorf("missing process start time")
+	}
+	parsed, err := time.Parse("Mon Jan 2 15:04:05 2006", startedAt)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return parsed, nil
 }

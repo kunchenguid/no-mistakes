@@ -16,6 +16,7 @@ import (
 var daemonHealthCheck = daemonIsRunningViaIPC
 var daemonDial = ipc.Dial
 var daemonProcessRunning = processRunning
+var daemonProcessStartTime = processStartTime
 var daemonKillPID = killPID
 
 func daemonStartTimeout() time.Duration {
@@ -202,6 +203,9 @@ func stopDetachedDaemonByPID(p *paths.Paths) error {
 	if err != nil {
 		return err
 	}
+	if err := validateDaemonPIDFallback(p, pid); err != nil {
+		return err
+	}
 	if err := daemonKillPID(pid); err != nil {
 		return fmt.Errorf("kill daemon pid %d: %w", pid, err)
 	}
@@ -220,6 +224,24 @@ func stopDetachedDaemonByPID(p *paths.Paths) error {
 	}
 
 	return fmt.Errorf("daemon pid %d still running after kill", pid)
+}
+
+func validateDaemonPIDFallback(p *paths.Paths, pid int) error {
+	if pid <= 0 {
+		return fmt.Errorf("invalid daemon pid %d", pid)
+	}
+	info, err := os.Stat(p.PIDFile())
+	if err != nil {
+		return fmt.Errorf("stat pid file: %w", err)
+	}
+	startTime, err := daemonProcessStartTime(pid)
+	if err != nil {
+		return fmt.Errorf("inspect daemon pid %d: %w", pid, err)
+	}
+	if info.ModTime().Before(startTime.Add(-time.Second)) {
+		return fmt.Errorf("daemon pid %d does not match pid file instance", pid)
+	}
+	return nil
 }
 
 func killPID(pid int) error {

@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"os/exec"
+	"time"
 
 	"golang.org/x/sys/windows"
 )
@@ -32,4 +33,24 @@ func processRunning(pid int) (bool, error) {
 		return false, err
 	}
 	return exitCode == windowsStillActive, nil
+}
+
+func processStartTime(pid int) (time.Time, error) {
+	if pid <= 0 {
+		return time.Time{}, windows.ERROR_INVALID_PARAMETER
+	}
+	handle, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+	if err != nil {
+		return time.Time{}, err
+	}
+	defer windows.CloseHandle(handle)
+
+	var created windows.Filetime
+	var exited windows.Filetime
+	var kernel windows.Filetime
+	var user windows.Filetime
+	if err := windows.GetProcessTimes(handle, &created, &exited, &kernel, &user); err != nil {
+		return time.Time{}, err
+	}
+	return time.Unix(0, created.Nanoseconds()), nil
 }
