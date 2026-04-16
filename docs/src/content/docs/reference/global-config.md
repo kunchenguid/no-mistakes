@@ -63,7 +63,7 @@ Default binary names when no override is set:
 
 ### ci_timeout
 
-How long the CI step waits for checks and PR mergeability before timing out.
+How long the CI step waits for provider CI status, and on GitHub for PR mergeability, before timing out.
 
 | | |
 |---|---|
@@ -99,7 +99,7 @@ Maximum auto-fix attempts per step. Set a step to `0` to disable auto-fix (findi
 | `auto_fix.test` | `int` | `3` | Test failure auto-fix attempts |
 | `auto_fix.document` | `int` | `3` | Documentation update auto-fix attempts |
 | `auto_fix.lint` | `int` | `3` | Lint issue auto-fix attempts |
-| `auto_fix.ci` | `int` | `3` | CI auto-fix attempts for CI failures and merge conflicts |
+| `auto_fix.ci` | `int` | `3` | CI auto-fix attempts for CI failures, plus GitHub merge conflicts |
 
 Legacy alias: `auto_fix.babysit`.
 
@@ -110,4 +110,7 @@ These are global defaults. Per-repo config can override individual steps.
 | Variable | Description |
 |---|---|
 | `NM_HOME` | Override the data directory (default `~/.no-mistakes/`) |
+| `NO_MISTAKES_BITBUCKET_EMAIL` | Bitbucket Cloud email used for Bitbucket Cloud PR creation and CI monitoring |
+| `NO_MISTAKES_BITBUCKET_API_TOKEN` | Bitbucket Cloud API token used for Bitbucket Cloud PR creation and CI monitoring |
+| `NO_MISTAKES_BITBUCKET_API_BASE_URL` | Override the Bitbucket Cloud API base URL (optional) |
 | `NO_MISTAKES_NO_UPDATE_CHECK` | Set to `1` to suppress background update checks |

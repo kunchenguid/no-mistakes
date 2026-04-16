@@ -108,13 +108,15 @@ Creates or updates a pull request.
 
 **Skipped when:**
 - The branch is the default branch
-- The upstream host is not GitHub or GitLab
-- The SCM CLI (`gh` or `glab`) is not installed
-- The CLI is not authenticated
+- The upstream host is not GitHub, GitLab, or Bitbucket Cloud (`bitbucket.org`)
+- The provider CLI (`gh` or `glab`) is not installed for GitHub or GitLab
+- The provider CLI is not authenticated for GitHub or GitLab
+- Bitbucket Cloud credentials are missing (`NO_MISTAKES_BITBUCKET_EMAIL` or `NO_MISTAKES_BITBUCKET_API_TOKEN`)
 
 **Behavior:**
 - Checks for an existing PR on the branch
 - If one exists, updates it. If not, creates a new one.
+- Uses the provider CLI for GitHub/GitLab and the Bitbucket API for Bitbucket Cloud
 - PR title: agent-generated in conventional commit format (`type(scope): description`)
 - PR body includes: an agent-authored `## Summary` plus regenerated `## Risk Assessment`, `## Testing`, and `## Pipeline` sections from recorded step results and rounds
 
@@ -122,24 +124,27 @@ Stores the PR URL in the database and streams it to the TUI.
 
 ## CI
 
-Monitors PR health after creation and auto-fixes CI failures or merge conflicts.
+Monitors PR health after creation and auto-fixes CI failures. Mergeability polling and merge-conflict handling currently remain GitHub-only.
 
-**Only active for GitHub** (requires `gh` CLI, authenticated).
+**Active for GitHub and Bitbucket Cloud (`bitbucket.org`)**.
+
+- GitHub requires `gh` CLI, installed and authenticated.
+- Bitbucket Cloud requires `NO_MISTAKES_BITBUCKET_EMAIL` and `NO_MISTAKES_BITBUCKET_API_TOKEN`.
 
 **Behavior:**
-- Polls `gh pr checks` at increasing intervals: every 30s for the first 5 minutes, every 60s for 5-15 minutes, every 120s after that
-- Polls `gh pr view --json mergeable` alongside CI checks and waits for GitHub to resolve mergeability before exiting
+- Polls provider CI status at increasing intervals: every 30s for the first 5 minutes, every 60s for 5-15 minutes, every 120s after that
+- On GitHub, polls `gh pr view --json mergeable` alongside CI checks and waits for GitHub to resolve mergeability before exiting
 - Waits a 60s grace period before trusting empty results (CI checks may not have registered yet)
-- If CI failures or a merge conflict are already known while other checks are still pending: waits for all checks to finish before attempting an auto-fix
-- On CI failure: fetches the failed run log (last 32KiB via `gh run view --log-failed`), sends it to the agent for fixing, and commits and force-pushes only if the agent produces changes
-- On merge conflict: asks the agent to rebase onto the latest default-branch tip and resolve the conflicts with minimal changes
-- If both CI failures and merge conflicts are present: fixes both in the same attempt
+- If CI failures or, on GitHub, a merge conflict are already known while other checks are still pending: waits for all checks to finish before attempting an auto-fix
+- On CI failure: fetches failed job logs (GitHub via `gh run view --log-failed`, Bitbucket Cloud via failed pipeline step logs), sends them to the agent for fixing, and commits and force-pushes only if the agent produces changes
+- On GitHub merge conflict: asks the agent to rebase onto the latest default-branch tip and resolve the conflicts with minimal changes
+- If both CI failures and a GitHub merge conflict are present: fixes both in the same attempt
 - If a fix attempt produces no changes: automatic mode leaves the failure undeduplicated so it can retry until the auto-fix limit, while manual fix mode returns immediately for manual intervention
 - Deduplicates fix attempts only after a fix is actually committed and pushed
-- Exits cleanly when the PR is merged or closed, or when the timeout is reached with no known CI failures, merge conflicts, or unresolved mergeability state (default 4h)
-- If the timeout is reached while CI failures or a merge conflict are still known: pauses for user approval with findings for the remaining issues
-- If the timeout is reached while PR mergeability is still unresolved: pauses for user approval with a finding describing the unresolved mergeability state
-- If CI failures or merge conflicts persist after the auto-fix limit: pauses for user approval with findings listing each failing check and/or the merge conflict
+- Exits cleanly when the PR is merged, closed, or declined, or when the timeout is reached with no known CI failures, merge conflicts, or unresolved mergeability state (default 4h)
+- If the timeout is reached while CI failures or, on GitHub, a merge conflict are still known: pauses for user approval with findings for the remaining issues
+- If the timeout is reached while GitHub PR mergeability is still unresolved: pauses for user approval with a finding describing the unresolved mergeability state
+- If CI failures or a GitHub merge conflict persist after the auto-fix limit: pauses for user approval with findings listing each failing check and/or the merge conflict
 
 **Default auto-fix limit:** `3` total CI auto-fix attempts.
 

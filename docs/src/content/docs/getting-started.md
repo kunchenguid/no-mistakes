@@ -40,8 +40,9 @@ make install
 
 - **git** - required
 - **One supported agent binary** - `claude`, `codex`, `acli` (Rovo Dev), or `opencode`
-- **gh** (GitHub CLI) or **glab** (GitLab CLI) - optional, needed for PR/MR creation
-- **gh** (GitHub CLI) - optional, needed for CI monitoring
+- **gh** (GitHub CLI) or **glab** (GitLab CLI) - optional, needed for GitHub/GitLab PR creation
+- **Bitbucket API credentials** - optional, needed for Bitbucket Cloud PR creation and CI monitoring: `NO_MISTAKES_BITBUCKET_EMAIL` and `NO_MISTAKES_BITBUCKET_API_TOKEN`
+- **gh** (GitHub CLI) - optional, needed for GitHub CI monitoring
 
 Run `no-mistakes doctor` to check what's installed and ready.
 
@@ -101,7 +102,7 @@ The pipeline runs these steps in order:
 5. **Lint** - run linters (configured command or agent-detected)
 6. **Push** - push to the real upstream remote
 7. **PR** - create or update a pull request
-8. **CI** - poll CI, watch PR mergeability, and auto-fix failures or merge conflicts
+8. **CI** - poll CI, and on GitHub also watch PR mergeability, then auto-fix CI failures or merge conflicts when supported
 
 Steps that find issues pause for your approval. You can approve, fix, skip, or abort. See [Pipeline Steps](/no-mistakes/guides/pipeline-steps/) and [Auto-Fix](/no-mistakes/guides/auto-fix/) for details.
 

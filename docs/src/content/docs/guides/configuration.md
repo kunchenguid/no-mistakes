@@ -30,7 +30,7 @@ agent_path_override:
   rovodev: /usr/local/bin/acli
   opencode: /usr/local/bin/opencode
 
-# How long the CI step waits for checks and PR mergeability before timing out.
+# How long the CI step waits for provider CI status, and GitHub PR mergeability, before timing out.
 ci_timeout: "4h"  # any Go duration string
 
 # Daemon log verbosity.
@@ -47,6 +47,14 @@ auto_fix:
 ```
 
 See [Global Config Reference](/no-mistakes/reference/global-config/) for the full field listing.
+
+## Environment variables
+
+Bitbucket Cloud PR creation and CI monitoring use environment variables instead of a provider CLI:
+
+- `NO_MISTAKES_BITBUCKET_EMAIL`
+- `NO_MISTAKES_BITBUCKET_API_TOKEN`
+- `NO_MISTAKES_BITBUCKET_API_BASE_URL` - optional API base URL override
 
 ## Repo config
 

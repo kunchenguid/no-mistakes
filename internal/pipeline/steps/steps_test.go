@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +19,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/bitbucket"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
@@ -3911,6 +3915,153 @@ func fakeGH(t *testing.T, prViewURL string) (env []string, logFile string) {
 	return env, logFile
 }
 
+type fakeBitbucketPRAPI struct {
+	server         *httptest.Server
+	listCalls      int
+	createCalls    int
+	updateCalls    int
+	lastAuthHeader string
+	lastCreateBody string
+	lastUpdateBody string
+	existingPRID   int
+	existingPRURL  string
+	createdPRURL   string
+}
+
+func newFakeBitbucketPRAPI(t *testing.T, existingPRID int, existingPRURL string) *fakeBitbucketPRAPI {
+	t.Helper()
+
+	api := &fakeBitbucketPRAPI{
+		existingPRID:  existingPRID,
+		existingPRURL: existingPRURL,
+		createdPRURL:  "https://bitbucket.org/test/repo/pull-requests/99",
+	}
+
+	api.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		api.lastAuthHeader = r.Header.Get("Authorization")
+
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/2.0/repositories/test/repo/pullrequests":
+			api.listCalls++
+			w.Header().Set("Content-Type", "application/json")
+			if api.existingPRID == 0 {
+				fmt.Fprint(w, `{"values":[]}`)
+				return
+			}
+			fmt.Fprintf(w, `{"values":[{"id":%d,"links":{"html":{"href":%q}}}]}`,
+				api.existingPRID,
+				api.existingPRURL,
+			)
+		case r.Method == http.MethodPost && r.URL.Path == "/2.0/repositories/test/repo/pullrequests":
+			api.createCalls++
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatalf("read create body: %v", err)
+			}
+			api.lastCreateBody = string(body)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprintf(w, `{"id":99,"links":{"html":{"href":%q}}}`,
+				api.createdPRURL,
+			)
+		case r.Method == http.MethodPut && r.URL.Path == fmt.Sprintf("/2.0/repositories/test/repo/pullrequests/%d", api.existingPRID):
+			api.updateCalls++
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatalf("read update body: %v", err)
+			}
+			api.lastUpdateBody = string(body)
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{"id":%d,"links":{"html":{"href":%q}}}`,
+				api.existingPRID,
+				api.existingPRURL,
+			)
+		default:
+			t.Fatalf("unexpected Bitbucket PR API request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	t.Cleanup(api.server.Close)
+
+	return api
+}
+
+func fakeBitbucketEnv(apiBaseURL string) []string {
+	return []string{
+		"NO_MISTAKES_BITBUCKET_EMAIL=test@example.com",
+		"NO_MISTAKES_BITBUCKET_API_TOKEN=test-token",
+		"NO_MISTAKES_BITBUCKET_API_BASE_URL=" + apiBaseURL,
+	}
+}
+
+type fakeBitbucketCIAPI struct {
+	server         *httptest.Server
+	prState        string
+	statusesJSON   string
+	pipelinesJSON  string
+	stepsJSON      string
+	stepLog        string
+	stepsByPath    map[string]string
+	stepLogsByPath map[string]string
+	prSourceSHA    string
+	prStateCalls   int
+	statusesCalls  int
+	pipelinesCalls int
+	stepsCalls     int
+	stepLogCalls   int
+	lastAuthHeader string
+	lastStatusesQ  string
+	lastPipelineQ  string
+}
+
+func newFakeBitbucketCIAPI(t *testing.T, prState, statusesJSON string) *fakeBitbucketCIAPI {
+	t.Helper()
+
+	api := &fakeBitbucketCIAPI{
+		prState:      prState,
+		statusesJSON: statusesJSON,
+	}
+
+	api.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		api.lastAuthHeader = r.Header.Get("Authorization")
+
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/2.0/repositories/test/repo/pullrequests/42":
+			api.prStateCalls++
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{"id":42,"state":%q,"source":{"commit":{"hash":%q}}}`, api.prState, api.prSourceSHA)
+		case r.Method == http.MethodGet && r.URL.Path == "/2.0/repositories/test/repo/pullrequests/42/statuses":
+			api.statusesCalls++
+			api.lastStatusesQ = r.URL.Query().Get("q")
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, api.statusesJSON)
+		case r.Method == http.MethodGet && r.URL.Path == "/2.0/repositories/test/repo/pipelines" && api.pipelinesJSON != "":
+			api.pipelinesCalls++
+			api.lastPipelineQ = r.URL.Query().Get("target.commit.hash")
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, api.pipelinesJSON)
+		case r.Method == http.MethodGet && api.stepsByPath[r.URL.Path] != "":
+			api.stepsCalls++
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, api.stepsByPath[r.URL.Path])
+		case r.Method == http.MethodGet && api.stepLogsByPath[r.URL.Path] != "":
+			api.stepLogCalls++
+			fmt.Fprint(w, api.stepLogsByPath[r.URL.Path])
+		case r.Method == http.MethodGet && r.URL.Path == "/2.0/repositories/test/repo/pipelines/{pipeline-1}/steps" && api.stepsJSON != "":
+			api.stepsCalls++
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, api.stepsJSON)
+		case r.Method == http.MethodGet && r.URL.Path == "/2.0/repositories/test/repo/pipelines/{pipeline-1}/steps/{step-1}/log" && api.stepLog != "":
+			api.stepLogCalls++
+			fmt.Fprint(w, api.stepLog)
+		default:
+			t.Fatalf("unexpected Bitbucket CI API request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	t.Cleanup(api.server.Close)
+
+	return api
+}
+
 func TestStepCLIAvailable_ResolvesExecutableSuffixFromCustomPath_EnableWindowsCI(t *testing.T) {
 	t.Parallel()
 
@@ -4188,6 +4339,117 @@ func TestPRStep_UpdatesExistingPR(t *testing.T) {
 	}
 }
 
+func TestPRStep_BitbucketUpdatesExistingPR(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	api := newFakeBitbucketPRAPI(t, 42, "https://bitbucket.org/test/repo/pull-requests/42")
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = fakeBitbucketEnv(api.server.URL)
+	sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
+
+	step := &PRStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatal("bitbucket PR step should never need approval")
+	}
+	if api.listCalls != 1 {
+		t.Fatalf("list calls = %d, want 1", api.listCalls)
+	}
+	if api.updateCalls != 1 {
+		t.Fatalf("update calls = %d, want 1", api.updateCalls)
+	}
+	if api.createCalls != 0 {
+		t.Fatalf("create calls = %d, want 0", api.createCalls)
+	}
+	if api.lastAuthHeader == "" {
+		t.Fatal("expected Authorization header for Bitbucket API")
+	}
+	if !strings.Contains(api.lastUpdateBody, "title") || !strings.Contains(api.lastUpdateBody, "description") {
+		t.Fatalf("expected Bitbucket PR update payload to include title and description, got %q", api.lastUpdateBody)
+	}
+
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.PRURL == nil || *run.PRURL != "https://bitbucket.org/test/repo/pull-requests/42" {
+		t.Fatalf("PR URL = %v, want Bitbucket PR URL", run.PRURL)
+	}
+}
+
+func TestPRStep_BitbucketUpdatesExistingPRWithoutHTMLLink(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	api := newFakeBitbucketPRAPI(t, 42, "https://bitbucket.org/test/repo/pull-requests/42")
+	api.existingPRURL = "https://bitbucket.org/test/repo/pull-requests/42"
+	api.createdPRURL = ""
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = fakeBitbucketEnv(api.server.URL)
+	sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
+	api.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		api.lastAuthHeader = r.Header.Get("Authorization")
+
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/2.0/repositories/test/repo/pullrequests":
+			api.listCalls++
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{"values":[{"id":%d,"links":{"html":{"href":%q}}}]}`,
+				api.existingPRID,
+				api.existingPRURL,
+			)
+		case r.Method == http.MethodPut && r.URL.Path == fmt.Sprintf("/2.0/repositories/test/repo/pullrequests/%d", api.existingPRID):
+			api.updateCalls++
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatalf("read update body: %v", err)
+			}
+			api.lastUpdateBody = string(body)
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{"id":%d}`,
+				api.existingPRID,
+			)
+		default:
+			t.Fatalf("unexpected Bitbucket PR API request: %s %s", r.Method, r.URL.String())
+		}
+	})
+
+	step := &PRStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatal("bitbucket PR step should never need approval")
+	}
+	if api.listCalls != 1 {
+		t.Fatalf("list calls = %d, want 1", api.listCalls)
+	}
+	if api.updateCalls != 1 {
+		t.Fatalf("update calls = %d, want 1", api.updateCalls)
+	}
+	if api.createCalls != 0 {
+		t.Fatalf("create calls = %d, want 0", api.createCalls)
+	}
+	if outcome.PRURL != api.existingPRURL {
+		t.Fatalf("outcome PR URL = %q, want %q", outcome.PRURL, api.existingPRURL)
+	}
+
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.PRURL == nil || *run.PRURL != api.existingPRURL {
+		t.Fatalf("PR URL = %v, want %q", run.PRURL, api.existingPRURL)
+	}
+}
+
 func TestPRStep_ZeroBaseSHA(t *testing.T) {
 	t.Parallel()
 	// New branch scenario: baseSHA is all-zeros, commit log should still work
@@ -4286,6 +4548,176 @@ func TestPRStep_CreatesNewPR(t *testing.T) {
 	}
 	if run.PRURL == nil || *run.PRURL != "https://github.com/test/repo/pull/99" {
 		t.Errorf("PR URL = %v, want https://github.com/test/repo/pull/99", run.PRURL)
+	}
+}
+
+func TestPRStep_BitbucketCreatesNewPR(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	api := newFakeBitbucketPRAPI(t, 0, "")
+
+	findings := `{"findings":[],"summary":"clean","risk_level":"medium","risk_rationale":"touches critical error handling"}`
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = fakeBitbucketEnv(api.server.URL)
+	sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
+	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.UpdateStepStatus(reviewStep.ID, types.StepStatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.SetStepFindings(reviewStep.ID, findings); err != nil {
+		t.Fatal(err)
+	}
+
+	step := &PRStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatal("bitbucket PR step should never need approval")
+	}
+	if api.listCalls != 1 {
+		t.Fatalf("list calls = %d, want 1", api.listCalls)
+	}
+	if api.createCalls != 1 {
+		t.Fatalf("create calls = %d, want 1", api.createCalls)
+	}
+	if api.updateCalls != 0 {
+		t.Fatalf("update calls = %d, want 0", api.updateCalls)
+	}
+	if !strings.Contains(api.lastCreateBody, `"source"`) || !strings.Contains(api.lastCreateBody, `"destination"`) {
+		t.Fatalf("expected Bitbucket PR create payload to include source and destination, got %q", api.lastCreateBody)
+	}
+
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.PRURL == nil || *run.PRURL != api.createdPRURL {
+		t.Fatalf("PR URL = %v, want %q", run.PRURL, api.createdPRURL)
+	}
+}
+
+func TestPRStep_BitbucketCreatesNewPRWithoutHTMLLink(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	api := newFakeBitbucketPRAPI(t, 0, "")
+	api.createdPRURL = ""
+
+	findings := `{"findings":[],"summary":"clean","risk_level":"medium","risk_rationale":"touches critical error handling"}`
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = fakeBitbucketEnv(api.server.URL)
+	sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
+	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.UpdateStepStatus(reviewStep.ID, types.StepStatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.SetStepFindings(reviewStep.ID, findings); err != nil {
+		t.Fatal(err)
+	}
+	api.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		api.lastAuthHeader = r.Header.Get("Authorization")
+
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/2.0/repositories/test/repo/pullrequests":
+			api.listCalls++
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"values":[]}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/2.0/repositories/test/repo/pullrequests":
+			api.createCalls++
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatalf("read create body: %v", err)
+			}
+			api.lastCreateBody = string(body)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{"id":99}`)
+		default:
+			t.Fatalf("unexpected Bitbucket PR API request: %s %s", r.Method, r.URL.String())
+		}
+	})
+
+	step := &PRStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatal("bitbucket PR step should never need approval")
+	}
+	if outcome.PRURL != "https://bitbucket.org/test/repo/pull-requests/99" {
+		t.Fatalf("PR URL = %q, want derived Bitbucket PR URL", outcome.PRURL)
+	}
+
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.PRURL == nil || *run.PRURL != "https://bitbucket.org/test/repo/pull-requests/99" {
+		t.Fatalf("PR URL = %v, want derived Bitbucket PR URL", run.PRURL)
+	}
+}
+
+func TestPRStep_BitbucketMissingEnvSkipsBeforeBuildingContent(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
+
+	step := &PRStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatal("bitbucket PR step should never need approval")
+	}
+	if len(ag.calls) != 0 {
+		t.Fatalf("expected Bitbucket PR step to skip before building content, got %d agent calls", len(ag.calls))
+	}
+}
+
+func TestPRStep_BitbucketUsesProcessEnvWhenStepEnvIsNil(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	api := newFakeBitbucketPRAPI(t, 0, "")
+	t.Setenv("NO_MISTAKES_BITBUCKET_EMAIL", "test@example.com")
+	t.Setenv("NO_MISTAKES_BITBUCKET_API_TOKEN", "test-token")
+	t.Setenv("NO_MISTAKES_BITBUCKET_API_BASE_URL", api.server.URL)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			payload := json.RawMessage(`{"title":"fix: process env bitbucket pr","body":"## Summary\n\n- create PR via process env"}`)
+			return &agent.Result{Output: payload}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
+
+	step := &PRStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatal("bitbucket PR step should never need approval")
+	}
+	if outcome.PRURL != api.createdPRURL {
+		t.Fatalf("PR URL = %q, want %q", outcome.PRURL, api.createdPRURL)
+	}
+	if api.createCalls != 1 {
+		t.Fatalf("expected Bitbucket PR create API to be called once, got %d", api.createCalls)
 	}
 }
 
@@ -4588,6 +5020,33 @@ func TestPRStep_SkipsWhenProviderCLIUnavailable(t *testing.T) {
 	}
 }
 
+func TestPRStep_SkipsBeforeBuildingContentWhenProviderCLIUnavailable(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			t.Fatal("expected PR content generation to be skipped when CLI is unavailable")
+			return nil, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
+	sctx.Env = []string{"PATH=" + t.TempDir()}
+
+	step := &PRStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("expected skip instead of failure, got: %v", err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatal("expected no approval when PR step skips")
+	}
+	if len(ag.calls) != 0 {
+		t.Fatalf("expected no agent calls when provider CLI unavailable, got %d", len(ag.calls))
+	}
+}
+
 func TestPRStep_ExistingBranchUsesMergeBaseCommitLog(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -4749,6 +5208,376 @@ func TestCIStep_PendingChecksUseAdaptivePollIntervals(t *testing.T) {
 		if waits[i] != want[i] {
 			t.Fatalf("wait %d = %v, want %v (all waits: %v)", i, waits[i], want[i], waits)
 		}
+	}
+}
+
+func TestCIStep_BitbucketPassesWhenStatusesPass(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	api := newFakeBitbucketCIAPI(t, "OPEN", `{"values":[{"name":"build","state":"SUCCESSFUL"}]}`)
+
+	prURL := "https://bitbucket.org/test/repo/pull-requests/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = fakeBitbucketEnv(api.server.URL)
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
+	sctx.Config.CITimeout = 30 * time.Second
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	step := &CIStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatal("expected Bitbucket CI pass to complete without approval")
+	}
+	if api.prStateCalls == 0 {
+		t.Fatal("expected Bitbucket PR state endpoint to be called")
+	}
+	if api.statusesCalls == 0 {
+		t.Fatal("expected Bitbucket statuses endpoint to be called")
+	}
+	foundPassed := false
+	for _, line := range logs {
+		if strings.Contains(line, "all CI checks passed") {
+			foundPassed = true
+			break
+		}
+	}
+	if !foundPassed {
+		t.Fatalf("expected successful Bitbucket CI logs, got %v", logs)
+	}
+}
+
+func TestCIStep_BitbucketUsesProcessEnvWhenStepEnvIsNil(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	api := newFakeBitbucketCIAPI(t, "OPEN", `{"values":[{"name":"build","state":"SUCCESSFUL"}]}`)
+	t.Setenv("NO_MISTAKES_BITBUCKET_EMAIL", "test@example.com")
+	t.Setenv("NO_MISTAKES_BITBUCKET_API_TOKEN", "test-token")
+	t.Setenv("NO_MISTAKES_BITBUCKET_API_BASE_URL", api.server.URL)
+
+	prURL := "https://bitbucket.org/test/repo/pull-requests/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
+	sctx.Config.CITimeout = 30 * time.Second
+
+	step := &CIStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatal("expected Bitbucket CI pass to complete without approval")
+	}
+	if api.prStateCalls == 0 || api.statusesCalls == 0 {
+		t.Fatalf("expected Bitbucket CI endpoints to be called, got state=%d statuses=%d", api.prStateCalls, api.statusesCalls)
+	}
+}
+
+func TestCIStep_BitbucketFailureNeedsApproval(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	api := newFakeBitbucketCIAPI(t, "OPEN", `{"values":[{"name":"build","state":"FAILED"}]}`)
+
+	prURL := "https://bitbucket.org/test/repo/pull-requests/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = fakeBitbucketEnv(api.server.URL)
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
+	sctx.Config.CITimeout = 30 * time.Second
+	sctx.Config.AutoFix = config.AutoFix{CI: 0}
+
+	step := &CIStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("expected Bitbucket CI failures to require approval when auto-fix is disabled")
+	}
+	if api.prStateCalls == 0 || api.statusesCalls == 0 {
+		t.Fatalf("expected Bitbucket CI endpoints to be called, got state=%d statuses=%d", api.prStateCalls, api.statusesCalls)
+	}
+
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatalf("unmarshal findings: %v", err)
+	}
+	if len(findings.Items) == 0 || !strings.Contains(findings.Items[0].Description, "build") {
+		t.Fatalf("expected failing Bitbucket check finding, got %+v", findings.Items)
+	}
+}
+
+func TestCIStep_BitbucketStoppedDoesNotNeedApproval(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	api := newFakeBitbucketCIAPI(t, "OPEN", `{"values":[{"name":"build","state":"STOPPED"}]}`)
+
+	prURL := "https://bitbucket.org/test/repo/pull-requests/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = fakeBitbucketEnv(api.server.URL)
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
+	sctx.Config.CITimeout = 30 * time.Second
+
+	step := &CIStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatal("expected stopped Bitbucket CI to avoid failure handling")
+	}
+}
+
+func TestCIStep_BitbucketAutoFixIncludesPipelineLogs(t *testing.T) {
+	t.Parallel()
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	api := newFakeBitbucketCIAPI(t, "OPEN", `{"values":[{"name":"test","state":"FAILED"}]}`)
+	api.pipelinesJSON = `{"values":[{"uuid":"{pipeline-1}"}]}`
+	api.stepsJSON = `{"values":[{"uuid":"{step-1}","state":{"name":"COMPLETED","result":{"name":"FAILED"}}}]}`
+	api.stepLog = "error log output"
+
+	var capturedPrompt string
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			capturedPrompt = opts.Prompt
+			os.WriteFile(filepath.Join(opts.CWD, "ci-fix.txt"), []byte("fixed"), 0o644)
+			return &agent.Result{}, nil
+		},
+	}
+
+	prURL := "https://bitbucket.org/test/repo/pull-requests/42"
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = fakeBitbucketEnv(api.server.URL)
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Config.CITimeout = 30 * time.Second
+	sctx.Config.AutoFix = config.AutoFix{CI: 1}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	step := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			cancel()
+			return ctx.Err()
+		},
+	}
+	_, err := step.Execute(sctx)
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context cancellation after auto-fix poll, got %v", err)
+	}
+	if capturedPrompt == "" {
+		t.Fatal("expected Bitbucket auto-fix to call the agent")
+	}
+	if !strings.Contains(capturedPrompt, "CI logs:") || !strings.Contains(capturedPrompt, "error log output") {
+		t.Fatalf("expected Bitbucket auto-fix prompt to include pipeline logs, got:\n%s", capturedPrompt)
+	}
+	if api.pipelinesCalls == 0 || api.stepsCalls == 0 || api.stepLogCalls == 0 {
+		t.Fatalf("expected Bitbucket pipeline log endpoints to be called, got pipelines=%d steps=%d log=%d", api.pipelinesCalls, api.stepsCalls, api.stepLogCalls)
+	}
+}
+
+func TestCIStep_BitbucketAutoFixUsesLivePRHeadSHAForLogs(t *testing.T) {
+	t.Parallel()
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	if err := os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	api := newFakeBitbucketCIAPI(t, "OPEN", `{"values":[{"name":"test","state":"FAILED"}]}`)
+	api.pipelinesJSON = `{"values":[{"uuid":"{pipeline-1}"}]}`
+	api.stepsJSON = `{"values":[{"uuid":"{step-1}","state":{"name":"COMPLETED","result":{"name":"FAILED"}}}]}`
+	api.stepLog = "error log output"
+	api.prSourceSHA = headSHA
+
+	staleHeadSHA := strings.Repeat("a", 40)
+	var capturedPrompt string
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			capturedPrompt = opts.Prompt
+			if err := os.WriteFile(filepath.Join(opts.CWD, "ci-fix.txt"), []byte("fixed"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return &agent.Result{}, nil
+		},
+	}
+
+	prURL := "https://bitbucket.org/test/repo/pull-requests/42"
+	sctx := newTestContext(t, ag, dir, baseSHA, staleHeadSHA, config.Commands{})
+	sctx.Env = fakeBitbucketEnv(api.server.URL)
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Config.CITimeout = 30 * time.Second
+	sctx.Config.AutoFix = config.AutoFix{CI: 1}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	step := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			cancel()
+			return ctx.Err()
+		},
+	}
+	_, err := step.Execute(sctx)
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context cancellation after auto-fix poll, got %v", err)
+	}
+	if capturedPrompt == "" {
+		t.Fatal("expected Bitbucket auto-fix to call the agent")
+	}
+	if api.lastPipelineQ != headSHA {
+		t.Fatalf("pipeline commit SHA = %q, want live PR source commit %q", api.lastPipelineQ, headSHA)
+	}
+	if api.lastPipelineQ == staleHeadSHA {
+		t.Fatalf("pipeline lookup used stale run head SHA %q", staleHeadSHA)
+	}
+}
+
+func TestCIStep_BitbucketAutoFixUsesMatchingPipelineLogs(t *testing.T) {
+	t.Parallel()
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	if err := os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	api := newFakeBitbucketCIAPI(t, "OPEN", `{"values":[{"name":"test","state":"FAILED","url":"https://bitbucket.org/test/repo/addon/pipelines/home#!/results/pipeline-2"}]}`)
+	api.pipelinesJSON = `{"values":[{"uuid":"{pipeline-1}"},{"uuid":"{pipeline-2}"}]}`
+	api.stepsByPath = map[string]string{
+		"/2.0/repositories/test/repo/pipelines/{pipeline-1}/steps": `{"values":[{"uuid":"{step-1}","state":{"name":"COMPLETED","result":{"name":"FAILED"}}}]}`,
+		"/2.0/repositories/test/repo/pipelines/{pipeline-2}/steps": `{"values":[{"uuid":"{step-2}","state":{"name":"COMPLETED","result":{"name":"FAILED"}}}]}`,
+	}
+	api.stepLogsByPath = map[string]string{
+		"/2.0/repositories/test/repo/pipelines/{pipeline-1}/steps/{step-1}/log": "wrong pipeline log",
+		"/2.0/repositories/test/repo/pipelines/{pipeline-2}/steps/{step-2}/log": "matching pipeline log",
+	}
+	api.prSourceSHA = headSHA
+
+	var capturedPrompt string
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			capturedPrompt = opts.Prompt
+			if err := os.WriteFile(filepath.Join(opts.CWD, "ci-fix.txt"), []byte("fixed"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return &agent.Result{}, nil
+		},
+	}
+
+	prURL := "https://bitbucket.org/test/repo/pull-requests/42"
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = fakeBitbucketEnv(api.server.URL)
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Config.CITimeout = 30 * time.Second
+	sctx.Config.AutoFix = config.AutoFix{CI: 1}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	step := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			cancel()
+			return ctx.Err()
+		},
+	}
+	_, err := step.Execute(sctx)
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context cancellation after auto-fix poll, got %v", err)
+	}
+	if capturedPrompt == "" {
+		t.Fatal("expected Bitbucket auto-fix to call the agent")
+	}
+	if !strings.Contains(capturedPrompt, "matching pipeline log") {
+		t.Fatalf("expected prompt to include matching pipeline log, got:\n%s", capturedPrompt)
+	}
+	if strings.Contains(capturedPrompt, "wrong pipeline log") {
+		t.Fatalf("expected prompt to exclude unrelated pipeline log, got:\n%s", capturedPrompt)
+	}
+	if api.stepLogCalls != 1 {
+		t.Fatalf("expected exactly one Bitbucket step log fetch, got %d", api.stepLogCalls)
 	}
 }
 
@@ -6312,12 +7141,89 @@ func TestCIStep_GetCIChecksNoChecksReported(t *testing.T) {
 	sctx.Env = env
 
 	step := &CIStep{}
-	checks, err := step.getCIChecks(sctx, "42")
+	checks, err := step.getCIChecks(sctx, scm.ProviderGitHub, nil, bitbucket.RepoRef{}, "42")
 	if err != nil {
 		t.Fatalf("expected no error when gh reports no checks, got: %v", err)
 	}
 	if len(checks) != 0 {
 		t.Fatalf("expected no checks, got: %#v", checks)
+	}
+}
+
+func TestLatestBitbucketStatusesKeepsNewestStatusPerCheck(t *testing.T) {
+	t.Parallel()
+
+	statuses := []bitbucket.CommitStatus{
+		{Name: "build", State: "SUCCESSFUL", Key: "build"},
+		{Name: "tests", State: "FAILED", Key: "tests"},
+		{Name: "build", State: "FAILED", Key: "build"},
+		{Name: "tests", State: "SUCCESSFUL", Key: "tests"},
+		{Name: "lint", State: "INPROGRESS"},
+	}
+
+	got := latestBitbucketStatuses(statuses)
+	if len(got) != 3 {
+		t.Fatalf("len(got) = %d, want 3", len(got))
+	}
+	if got[0].Name != "build" || got[0].State != "SUCCESSFUL" {
+		t.Fatalf("got[0] = %#v, want latest successful build", got[0])
+	}
+	if got[1].Name != "tests" || got[1].State != "FAILED" {
+		t.Fatalf("got[1] = %#v, want latest failed tests", got[1])
+	}
+	if got[2].Name != "lint" || got[2].State != "INPROGRESS" {
+		t.Fatalf("got[2] = %#v, want pending lint", got[2])
+	}
+}
+
+func TestLatestBitbucketStatusesDeduplicatesByKeyBeforeName(t *testing.T) {
+	t.Parallel()
+
+	statuses := []bitbucket.CommitStatus{
+		{Name: "build v2", Key: "build", State: "SUCCESSFUL"},
+		{Name: "build", Key: "build", State: "FAILED"},
+		{Name: "tests", State: "SUCCESSFUL"},
+		{Name: "tests", State: "FAILED"},
+	}
+
+	got := latestBitbucketStatuses(statuses)
+	if len(got) != 2 {
+		t.Fatalf("len(got) = %d, want 2", len(got))
+	}
+	if got[0].Key != "build" || got[0].Name != "build v2" || got[0].State != "SUCCESSFUL" {
+		t.Fatalf("got[0] = %#v, want newest keyed build status", got[0])
+	}
+	if got[1].Key != "" || got[1].Name != "tests" || got[1].State != "SUCCESSFUL" {
+		t.Fatalf("got[1] = %#v, want newest unnamed tests status", got[1])
+	}
+}
+
+func TestCIStep_GetCIChecksBitbucketFallsBackToKeyWhenNameMissing(t *testing.T) {
+	t.Parallel()
+
+	api := newFakeBitbucketCIAPI(t, "OPEN", `{"values":[{"key":"build","state":"FAILED"}]}`)
+	client, err := bitbucket.NewClientFromEnv(fakeBitbucketEnv(api.server.URL))
+	if err != nil {
+		t.Fatalf("new bitbucket client: %v", err)
+	}
+
+	dir := t.TempDir()
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, "abc", "def", config.Commands{})
+	step := &CIStep{}
+
+	checks, err := step.getCIChecks(sctx, scm.ProviderBitbucket, client, bitbucket.RepoRef{Workspace: "test", RepoSlug: "repo"}, "42")
+	if err != nil {
+		t.Fatalf("getCIChecks returned error: %v", err)
+	}
+	if len(checks) != 1 {
+		t.Fatalf("len(checks) = %d, want 1", len(checks))
+	}
+	if checks[0].Name != "build" {
+		t.Fatalf("checks[0].Name = %q, want build", checks[0].Name)
+	}
+	if checks[0].Bucket != "fail" {
+		t.Fatalf("checks[0].Bucket = %q, want fail", checks[0].Bucket)
 	}
 }
 

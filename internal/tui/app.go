@@ -676,8 +676,8 @@ func browserCommandSpec(goos, url string) (string, []string) {
 
 // shortPRLabel extracts a compact label like "PR #42" from a PR URL.
 func shortPRLabel(url string) string {
-	// GitHub: .../pull/42, GitLab: .../merge_requests/42
-	for _, prefix := range []string{"/pull/", "/merge_requests/"} {
+	// GitHub: .../pull/42, GitLab: .../merge_requests/42, Bitbucket: .../pull-requests/42
+	for _, prefix := range []string{"/pull/", "/merge_requests/", "/pull-requests/"} {
 		if idx := strings.LastIndex(url, prefix); idx >= 0 {
 			num := url[idx+len(prefix):]
 			if num != "" {

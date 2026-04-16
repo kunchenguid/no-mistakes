@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/bitbucket"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -160,17 +162,32 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	if provider == scm.ProviderUnknown && sctx.Run.PRURL != nil {
 		provider = scm.DetectProvider(*sctx.Run.PRURL)
 	}
-	if provider != scm.ProviderGitHub {
+	if provider != scm.ProviderGitHub && provider != scm.ProviderBitbucket {
 		sctx.Log(fmt.Sprintf("skipping CI: provider %s is not supported yet", provider))
 		return &pipeline.StepOutcome{}, nil
 	}
-	if !stepCLIAvailable(sctx, provider) {
-		sctx.Log("skipping CI: gh CLI is not installed")
-		return &pipeline.StepOutcome{}, nil
-	}
-	if !stepAuthConfigured(sctx, provider) {
-		sctx.Log("skipping CI: gh CLI is not authenticated")
-		return &pipeline.StepOutcome{}, nil
+	var bitbucketClient *bitbucket.Client
+	var bitbucketRepo bitbucket.RepoRef
+	if provider == scm.ProviderGitHub {
+		if !stepCLIAvailable(sctx, provider) {
+			sctx.Log("skipping CI: gh CLI is not installed")
+			return &pipeline.StepOutcome{}, nil
+		}
+		if !stepAuthConfigured(sctx, provider) {
+			sctx.Log("skipping CI: gh CLI is not authenticated")
+			return &pipeline.StepOutcome{}, nil
+		}
+	} else {
+		var err error
+		bitbucketClient, err = bitbucket.NewClientFromEnv(sctx.Env)
+		if err != nil {
+			sctx.Log(fmt.Sprintf("skipping CI: %v", err))
+			return &pipeline.StepOutcome{}, nil
+		}
+		bitbucketRepo, err = resolveBitbucketRepoRef(sctx.Repo.UpstreamURL, sctx.Run.PRURL)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// Get PR URL from run record
@@ -233,13 +250,13 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		}
 
 		// Check PR state (merged/closed -> exit)
-		state, err := s.getPRState(sctx, prNumber)
+		state, err := s.getPRState(sctx, provider, bitbucketClient, bitbucketRepo, prNumber)
 		if err != nil {
 			sctx.Log(fmt.Sprintf("warning: could not check PR state: %v", err))
 		} else if state == "MERGED" {
 			sctx.Log("PR has been merged!")
 			return &pipeline.StepOutcome{}, nil
-		} else if state == "CLOSED" {
+		} else if state == "CLOSED" || state == "DECLINED" {
 			sctx.Log("PR has been closed")
 			return &pipeline.StepOutcome{}, nil
 		}
@@ -247,25 +264,27 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		// Check mergeable state
 		mergeConflict := false
 		mergeabilityKnown := true
-		mergeState, mergeErr := s.getMergeableState(sctx, prNumber)
-		if mergeErr != nil {
-			sctx.Log(fmt.Sprintf("warning: could not check mergeable state: %v", mergeErr))
-			mergeabilityBlockedReason = ""
-		} else {
-			mergeConflict = isMergeConflict(mergeState)
-			mergeabilityKnown = isResolvedMergeableState(mergeState)
-			if !mergeabilityKnown {
-				sctx.Log(fmt.Sprintf("mergeable state still pending: %s", mergeState))
-				mergeabilityBlockedReason = fmt.Sprintf("PR mergeability remained unresolved before timeout: %s", mergeState)
-			} else {
+		if provider == scm.ProviderGitHub {
+			mergeState, mergeErr := s.getMergeableState(sctx, prNumber)
+			if mergeErr != nil {
+				sctx.Log(fmt.Sprintf("warning: could not check mergeable state: %v", mergeErr))
 				mergeabilityBlockedReason = ""
-				timeoutMergeConflict = mergeConflict
+			} else {
+				mergeConflict = isMergeConflict(mergeState)
+				mergeabilityKnown = isResolvedMergeableState(mergeState)
+				if !mergeabilityKnown {
+					sctx.Log(fmt.Sprintf("mergeable state still pending: %s", mergeState))
+					mergeabilityBlockedReason = fmt.Sprintf("PR mergeability remained unresolved before timeout: %s", mergeState)
+				} else {
+					mergeabilityBlockedReason = ""
+					timeoutMergeConflict = mergeConflict
+				}
 			}
 		}
 
 		// Check CI status - wait for all checks to complete before fixing
 		ciFixLimit := sctx.Config.AutoFix.CI
-		checks, err := s.getCIChecks(sctx, prNumber)
+		checks, err := s.getCIChecks(sctx, provider, bitbucketClient, bitbucketRepo, prNumber)
 		if err != nil {
 			sctx.Log(fmt.Sprintf("warning: could not check CI: %v", err))
 		} else {
@@ -381,7 +400,19 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 }
 
 // getPRState returns the PR state (OPEN, MERGED, CLOSED).
-func (s *CIStep) getPRState(sctx *pipeline.StepContext, prNumber string) (string, error) {
+
+func (s *CIStep) getPRState(sctx *pipeline.StepContext, provider scm.Provider, bitbucketClient *bitbucket.Client, bitbucketRepo bitbucket.RepoRef, prNumber string) (string, error) {
+	if provider == scm.ProviderBitbucket {
+		prID, err := strconv.Atoi(prNumber)
+		if err != nil {
+			return "", err
+		}
+		pr, err := bitbucketClient.GetPR(sctx.Ctx, bitbucketRepo, prID)
+		if err != nil {
+			return "", err
+		}
+		return pr.State, nil
+	}
 	cmd := stepCmd(sctx, "gh", "pr", "view", prNumber, "--json", "state", "--jq", ".state")
 	out, err := cmd.Output()
 	if err != nil {
@@ -410,7 +441,28 @@ func isResolvedMergeableState(state string) bool {
 }
 
 // getCIChecks fetches CI check results for a PR.
-func (s *CIStep) getCIChecks(sctx *pipeline.StepContext, prNumber string) ([]ciCheck, error) {
+
+func (s *CIStep) getCIChecks(sctx *pipeline.StepContext, provider scm.Provider, bitbucketClient *bitbucket.Client, bitbucketRepo bitbucket.RepoRef, prNumber string) ([]ciCheck, error) {
+	if provider == scm.ProviderBitbucket {
+		prID, err := strconv.Atoi(prNumber)
+		if err != nil {
+			return nil, err
+		}
+		statuses, err := bitbucketClient.ListPRStatuses(sctx.Ctx, bitbucketRepo, prID)
+		if err != nil {
+			return nil, err
+		}
+		statuses = latestBitbucketStatuses(statuses)
+		checks := make([]ciCheck, 0, len(statuses))
+		for _, status := range statuses {
+			checks = append(checks, ciCheck{
+				Name:   bitbucketStatusName(status),
+				State:  status.State,
+				Bucket: bitbucketStatusBucket(status.State),
+			})
+		}
+		return checks, nil
+	}
 	cmd := stepCmd(sctx, "gh", "pr", "checks", prNumber, "--json", "name,state,bucket")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -426,6 +478,162 @@ func (s *CIStep) getCIChecks(sctx *pipeline.StepContext, prNumber string) ([]ciC
 	return checks, nil
 }
 
+func latestBitbucketStatuses(statuses []bitbucket.CommitStatus) []bitbucket.CommitStatus {
+	latest := make([]bitbucket.CommitStatus, 0, len(statuses))
+	seen := make(map[string]struct{}, len(statuses))
+	for _, status := range statuses {
+		id := strings.TrimSpace(status.Key)
+		if id == "" {
+			id = bitbucketStatusName(status)
+		}
+		if id == "" {
+			latest = append(latest, status)
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		latest = append(latest, status)
+	}
+	return latest
+}
+
+func bitbucketStatusName(status bitbucket.CommitStatus) string {
+	name := strings.TrimSpace(status.Name)
+	if name != "" {
+		return name
+	}
+	return strings.TrimSpace(status.Key)
+}
+
+func bitbucketStatusBucket(state string) string {
+	switch strings.ToUpper(strings.TrimSpace(state)) {
+	case "SUCCESSFUL", "SUCCESS":
+		return "pass"
+	case "FAILED", "FAILURE", "ERROR":
+		return "fail"
+	case "STOPPED":
+		return "cancel"
+	case "INPROGRESS", "IN_PROGRESS", "PENDING":
+		return "pending"
+	default:
+		return ""
+	}
+}
+
+func resolveBitbucketRepoRef(upstreamURL string, prURL *string) (bitbucket.RepoRef, error) {
+	if repo, err := bitbucket.ParseRepoRef(upstreamURL); err == nil {
+		return repo, nil
+	}
+	if prURL != nil && strings.TrimSpace(*prURL) != "" {
+		return bitbucket.ParseRepoRef(*prURL)
+	}
+	return bitbucket.RepoRef{}, fmt.Errorf("resolve Bitbucket repository from upstream %q", upstreamURL)
+}
+
+func trimLogOutput(logOutput string, maxBytes int) string {
+	if len(logOutput) <= maxBytes {
+		return logOutput
+	}
+	logOutput = logOutput[len(logOutput)-maxBytes:]
+	for i := 0; i < len(logOutput) && i < 4; i++ {
+		if logOutput[i]&0xC0 != 0x80 {
+			return logOutput[i:]
+		}
+	}
+	return logOutput
+}
+
+func normalizeBitbucketPipelineUUID(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	trimmed = strings.Trim(trimmed, "{}")
+	if trimmed == "" {
+		return ""
+	}
+	return strings.ToLower(trimmed)
+}
+
+func bitbucketPipelineUUIDFromStatusURL(raw string) string {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return ""
+	}
+	fragments := []string{parsed.Fragment, parsed.Path}
+	for _, fragment := range fragments {
+		idx := strings.LastIndex(fragment, "/results/")
+		if idx < 0 {
+			continue
+		}
+		uuid := fragment[idx+len("/results/"):]
+		uuid = strings.TrimSpace(strings.SplitN(uuid, "?", 2)[0])
+		uuid = strings.TrimSpace(strings.SplitN(uuid, "/", 2)[0])
+		return normalizeBitbucketPipelineUUID(uuid)
+	}
+	return ""
+}
+
+func bitbucketFailedPipelineUUIDs(statuses []bitbucket.CommitStatus, failingNames []string) map[string]struct{} {
+	if len(failingNames) == 0 {
+		return nil
+	}
+	failing := make(map[string]struct{}, len(failingNames))
+	for _, name := range failingNames {
+		trimmed := strings.TrimSpace(name)
+		if trimmed != "" {
+			failing[trimmed] = struct{}{}
+		}
+	}
+	if len(failing) == 0 {
+		return nil
+	}
+	targets := map[string]struct{}{}
+	for _, status := range latestBitbucketStatuses(statuses) {
+		if _, ok := failing[bitbucketStatusName(status)]; !ok {
+			continue
+		}
+		uuid := bitbucketPipelineUUIDFromStatusURL(status.URL)
+		if uuid != "" {
+			targets[uuid] = struct{}{}
+		}
+	}
+	if len(targets) == 0 {
+		return nil
+	}
+	return targets
+}
+
+func (s *CIStep) fetchBitbucketFailedStepLogs(sctx *pipeline.StepContext, client *bitbucket.Client, repo bitbucket.RepoRef, commitSHA string, targetPipelines map[string]struct{}) string {
+	if client == nil || strings.TrimSpace(commitSHA) == "" {
+		return ""
+	}
+	pipelines, err := client.ListPipelinesByCommit(sctx.Ctx, repo, commitSHA)
+	if err != nil {
+		return ""
+	}
+	for _, pipelineRun := range pipelines {
+		if len(targetPipelines) > 0 {
+			if _, ok := targetPipelines[normalizeBitbucketPipelineUUID(pipelineRun.UUID)]; !ok {
+				continue
+			}
+		}
+		steps, err := client.ListPipelineSteps(sctx.Ctx, repo, pipelineRun.UUID)
+		if err != nil {
+			continue
+		}
+		for _, step := range steps {
+			if strings.EqualFold(step.State.Result.Name, "FAILED") {
+				logOutput, err := client.GetStepLog(sctx.Ctx, repo, pipelineRun.UUID, step.UUID)
+				if err != nil || strings.TrimSpace(logOutput) == "" {
+					continue
+				}
+				return trimLogOutput(strings.TrimSpace(logOutput), 32*1024)
+			}
+		}
+	}
+	return ""
+}
+
 // autoFixCI runs the agent to fix CI failures and/or merge conflicts, then commits and pushes.
 // Returns (true, nil) when changes were committed and pushed, (false, nil)
 // when the agent produced no changes, or (false, err) on failure.
@@ -439,8 +647,34 @@ func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, prNumber string, failingN
 	}
 
 	// Find the most recent failing run for this branch so we fetch logs from the right run.
+	provider := scm.DetectProvider(sctx.Repo.UpstreamURL)
+	if provider == scm.ProviderUnknown && sctx.Run.PRURL != nil {
+		provider = scm.DetectProvider(*sctx.Run.PRURL)
+	}
+
 	var runID string
-	if len(failingNames) > 0 {
+	const maxLogBytes = 32 * 1024
+	var logOutput string
+	if provider == scm.ProviderBitbucket {
+		client, err := bitbucket.NewClientFromEnv(sctx.Env)
+		if err == nil {
+			repo, repoErr := resolveBitbucketRepoRef(sctx.Repo.UpstreamURL, sctx.Run.PRURL)
+			if repoErr == nil {
+				prID, convErr := strconv.Atoi(prNumber)
+				if convErr == nil {
+					commitSHA := strings.TrimSpace(sctx.Run.HeadSHA)
+					var targetPipelines map[string]struct{}
+					if pr, prErr := client.GetPR(sctx.Ctx, repo, prID); prErr == nil && pr != nil && strings.TrimSpace(pr.SourceCommitHash) != "" {
+						commitSHA = strings.TrimSpace(pr.SourceCommitHash)
+					}
+					if statuses, statusErr := client.ListPRStatuses(sctx.Ctx, repo, prID); statusErr == nil {
+						targetPipelines = bitbucketFailedPipelineUUIDs(statuses, failingNames)
+					}
+					logOutput = s.fetchBitbucketFailedStepLogs(sctx, client, repo, commitSHA, targetPipelines)
+				}
+			}
+		}
+	} else if len(failingNames) > 0 {
 		listCmd := stepCmd(sctx, "gh", "run", "list",
 			"--branch", sctx.Run.Branch,
 			"--status", "failure",
@@ -453,22 +687,12 @@ func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, prNumber string, failingN
 	}
 
 	// Attempt to fetch CI failure logs for context
-	const maxLogBytes = 32 * 1024
-	var logOutput string
 	if runID != "" {
 		cmd := stepCmd(sctx, "gh", "run", "view", runID, "--log-failed")
 		out, _ := cmd.Output()
 		if len(out) > 0 {
 			logOutput = strings.TrimSpace(string(out))
-			if len(logOutput) > maxLogBytes {
-				logOutput = logOutput[len(logOutput)-maxLogBytes:]
-				for i := 0; i < len(logOutput) && i < 4; i++ {
-					if logOutput[i]&0xC0 != 0x80 {
-						logOutput = logOutput[i:]
-						break
-					}
-				}
-			}
+			logOutput = trimLogOutput(logOutput, maxLogBytes)
 		}
 	}
 

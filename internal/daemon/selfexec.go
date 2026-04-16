@@ -3,9 +3,12 @@ package daemon
 import (
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
@@ -13,6 +16,11 @@ import (
 )
 
 var daemonHealthCheck = daemonIsRunningViaIPC
+var daemonDial = ipc.Dial
+var daemonProcessRunning = processRunning
+var daemonProcessStartTime = processStartTime
+var daemonKillPID = killPID
+var daemonEndpointUsesRegularFile = func() bool { return runtime.GOOS == "windows" }
 
 func daemonStartTimeout() time.Duration {
 	return durationFromEnv("NM_TEST_DAEMON_START_TIMEOUT", 5*time.Second)
@@ -71,9 +79,7 @@ func stopManagedFallback(p *paths.Paths) error {
 }
 
 func startDetachedDaemon(p *paths.Paths) error {
-	// Clean up stale socket/pid files
-	os.Remove(p.Socket())
-	os.Remove(p.PIDFile())
+	cleanupDaemonArtifacts(p)
 
 	exe, err := os.Executable()
 	if err != nil {
@@ -87,7 +93,8 @@ func startDetachedDaemon(p *paths.Paths) error {
 	defer logFile.Close()
 
 	cmd := exec.Command(exe)
-	cmd.Env = append(os.Environ(), "NM_DAEMON=1")
+	cmd.Env = upsertEnv(os.Environ(), "NM_HOME", p.Root())
+	cmd.Env = upsertEnv(cmd.Env, "NM_DAEMON", "1")
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	// Detach from parent process group so daemon survives CLI exit.
@@ -170,8 +177,19 @@ func Stop(p *paths.Paths) error {
 }
 
 func stopDetachedDaemon(p *paths.Paths) error {
-	client, err := ipc.Dial(p.Socket())
+	client, err := daemonDial(p.Socket())
 	if err != nil {
+		stale, staleErr := staleDaemonArtifacts(p)
+		if staleErr != nil {
+			return staleErr
+		}
+		if stale {
+			cleanupDaemonArtifacts(p)
+			return nil
+		}
+		if killErr := stopDetachedDaemonByPID(p); killErr != nil {
+			return fmt.Errorf("dial daemon: %w; pid fallback: %v", err, killErr)
+		}
 		return nil
 	}
 	defer client.Close()
@@ -183,11 +201,112 @@ func stopDetachedDaemon(p *paths.Paths) error {
 	return waitForDaemonStop(p)
 }
 
+func stopDetachedDaemonByPID(p *paths.Paths) error {
+	pid, err := ReadPID(p)
+	if err != nil {
+		return err
+	}
+	if err := validateDaemonPIDFallback(p, pid); err != nil {
+		return err
+	}
+	if err := daemonKillPID(pid); err != nil {
+		return fmt.Errorf("kill daemon pid %d: %w", pid, err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		running, err := daemonProcessRunning(pid)
+		if err != nil {
+			return err
+		}
+		if !running {
+			cleanupDaemonArtifacts(p)
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	return fmt.Errorf("daemon pid %d still running after kill", pid)
+}
+
+func validateDaemonPIDFallback(p *paths.Paths, pid int) error {
+	if pid <= 0 {
+		return fmt.Errorf("invalid daemon pid %d", pid)
+	}
+	info, err := os.Stat(p.PIDFile())
+	if err != nil {
+		return fmt.Errorf("stat pid file: %w", err)
+	}
+	startTime, err := daemonProcessStartTime(pid)
+	if err != nil {
+		return fmt.Errorf("inspect daemon pid %d: %w", pid, err)
+	}
+	if startTime.Sub(info.ModTime()) > time.Second || info.ModTime().Sub(startTime) > time.Second {
+		return fmt.Errorf("daemon pid %d does not match pid file instance", pid)
+	}
+	return nil
+}
+
+func killPID(pid int) error {
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return fmt.Errorf("find process: %w", err)
+	}
+	return proc.Kill()
+}
+
+func staleDaemonArtifacts(p *paths.Paths) (bool, error) {
+	info, err := os.Stat(p.Socket())
+	missingSocket := os.IsNotExist(err)
+	if err != nil && !missingSocket {
+		return false, fmt.Errorf("stat daemon socket: %w", err)
+	}
+	if err == nil && info.Mode()&os.ModeSocket == 0 && !daemonEndpointUsesRegularFile() {
+		return true, nil
+	}
+	pid, err := ReadPID(p)
+	if err != nil {
+		if os.IsNotExist(err) {
+			if missingSocket {
+				return true, nil
+			}
+			if daemonEndpointUsesRegularFile() {
+				return false, nil
+			}
+			alive, err := daemonSocketAcceptingConnections(p.Socket())
+			if err != nil {
+				return false, err
+			}
+			return !alive, nil
+		}
+		return false, err
+	}
+	running, err := daemonProcessRunning(pid)
+	if err != nil {
+		return false, err
+	}
+	if missingSocket && running {
+		return false, nil
+	}
+	return !running, nil
+}
+
+func daemonSocketAcceptingConnections(path string) (bool, error) {
+	conn, err := net.DialTimeout("unix", path, 200*time.Millisecond)
+	if err != nil {
+		return false, nil
+	}
+	defer conn.Close()
+	return true, nil
+}
+
 func waitForDaemonStop(p *paths.Paths) error {
 	// Wait for daemon to actually stop (socket becomes unavailable).
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if alive, _ := daemonHealthCheck(p); !alive {
+		alive, err := daemonHealthCheck(p)
+		if err == nil && !alive {
+			cleanupDaemonArtifacts(p)
 			slog.Info("daemon stopped gracefully")
 			return nil
 		}
@@ -196,13 +315,56 @@ func waitForDaemonStop(p *paths.Paths) error {
 
 	// Try to kill by PID as last resort.
 	if pid, err := ReadPID(p); err == nil {
-		if proc, err := os.FindProcess(pid); err == nil {
-			slog.Warn("daemon did not stop gracefully, killing", "pid", pid)
-			proc.Kill()
+		if err := validateDaemonPIDFallback(p, pid); err != nil {
+			return err
 		}
+		slog.Warn("daemon did not stop gracefully, killing", "pid", pid)
+		if err := daemonKillPID(pid); err != nil {
+			return fmt.Errorf("kill daemon pid %d: %w", pid, err)
+		}
+
+		killDeadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(killDeadline) {
+			running, err := daemonProcessRunning(pid)
+			if err != nil {
+				return err
+			}
+			if !running {
+				cleanupDaemonArtifacts(p)
+				slog.Warn("daemon killed after shutdown timeout", "pid", pid)
+				return nil
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		return fmt.Errorf("daemon pid %d still running after kill", pid)
 	}
 
-	return nil
+	return fmt.Errorf("daemon did not stop within timeout")
+}
+
+func cleanupDaemonArtifacts(p *paths.Paths) {
+	_ = os.Remove(p.Socket())
+	_ = os.Remove(p.PIDFile())
+}
+
+func upsertEnv(env []string, key, value string) []string {
+	prefix := key + "="
+	updated := false
+	result := make([]string, 0, len(env)+1)
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			if !updated {
+				result = append(result, prefix+value)
+				updated = true
+			}
+			continue
+		}
+		result = append(result, entry)
+	}
+	if !updated {
+		result = append(result, prefix+value)
+	}
+	return result
 }
 
 // EnsureDaemon starts the daemon if it's not already running.
@@ -222,6 +384,9 @@ func ReadPID(p *paths.Paths) (int, error) {
 	pid, err := strconv.Atoi(string(data))
 	if err != nil {
 		return 0, fmt.Errorf("invalid pid file: %w", err)
+	}
+	if pid <= 0 {
+		return 0, fmt.Errorf("invalid pid file: pid must be positive")
 	}
 	return pid, nil
 }

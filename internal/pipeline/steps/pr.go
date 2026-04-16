@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/bitbucket"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
@@ -23,7 +24,7 @@ func isConventionalTitle(title string) bool {
 	return conventionalTitleRe.MatchString(title)
 }
 
-// PRStep creates or updates a pull request via gh CLI.
+// PRStep creates or updates a pull request via the provider CLI or API.
 type PRStep struct{}
 
 type prContent struct {
@@ -54,17 +55,24 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		return &pipeline.StepOutcome{}, nil
 	}
 	provider := scm.DetectProvider(sctx.Repo.UpstreamURL)
-	if provider == scm.ProviderUnknown || provider == scm.ProviderBitbucket {
+	if provider == scm.ProviderUnknown {
 		sctx.Log(fmt.Sprintf("skipping PR creation: provider %s is not supported yet", provider))
 		return &pipeline.StepOutcome{}, nil
 	}
-	if !stepCLIAvailable(sctx, provider) {
-		sctx.Log(fmt.Sprintf("skipping PR creation: %s CLI is not installed", provider.CLIName()))
-		return &pipeline.StepOutcome{}, nil
-	}
-	if !stepAuthConfigured(sctx, provider) {
-		sctx.Log(fmt.Sprintf("skipping PR creation: %s CLI is not authenticated", provider.CLIName()))
-		return &pipeline.StepOutcome{}, nil
+	if provider != scm.ProviderBitbucket {
+		if !stepCLIAvailable(sctx, provider) {
+			sctx.Log(fmt.Sprintf("skipping PR creation: %s CLI is not installed", provider.CLIName()))
+			return &pipeline.StepOutcome{}, nil
+		}
+		if !stepAuthConfigured(sctx, provider) {
+			sctx.Log(fmt.Sprintf("skipping PR creation: %s CLI is not authenticated", provider.CLIName()))
+			return &pipeline.StepOutcome{}, nil
+		}
+	} else {
+		if _, err := bitbucket.NewClientFromEnv(sctx.Env); err != nil {
+			sctx.Log(fmt.Sprintf("skipping PR creation: %v", err))
+			return &pipeline.StepOutcome{}, nil
+		}
 	}
 
 	// Resolve the branch base so PR summaries cover the full branch delta.
@@ -73,6 +81,10 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	if err != nil {
 		return nil, err
 	}
+	if provider == scm.ProviderBitbucket {
+		return s.executeBitbucketPR(sctx, branch, content)
+	}
+
 	switch provider {
 	case scm.ProviderGitHub:
 		return s.executeGitHubPR(sctx, branch, content)
@@ -127,6 +139,75 @@ func (s *PRStep) executeGitHubPR(sctx *pipeline.StepContext, branch string, cont
 	}
 
 	return &pipeline.StepOutcome{PRURL: prURL}, nil
+}
+
+func (s *PRStep) executeBitbucketPR(sctx *pipeline.StepContext, branch string, content prContent) (*pipeline.StepOutcome, error) {
+	client, err := bitbucket.NewClientFromEnv(sctx.Env)
+	if err != nil {
+		sctx.Log(fmt.Sprintf("skipping PR creation: %v", err))
+		return &pipeline.StepOutcome{}, nil
+	}
+	repo, err := bitbucket.ParseRepoRef(sctx.Repo.UpstreamURL)
+	if err != nil {
+		return nil, err
+	}
+
+	sctx.Log(fmt.Sprintf("checking for existing pull request on branch %s...", branch))
+	existingPR, err := client.FindOpenPRBySourceBranch(sctx.Ctx, repo, branch, sctx.Repo.DefaultBranch)
+	if err != nil {
+		return nil, err
+	}
+	if existingPR != nil {
+		existingPRURL := bitbucketPRURL(repo, existingPR.ID, existingPR.URL)
+		if existingPRURL != "" {
+			sctx.Log(fmt.Sprintf("pull request already exists: %s, updating...", existingPRURL))
+		} else {
+			sctx.Log(fmt.Sprintf("pull request already exists: #%d, updating...", existingPR.ID))
+		}
+		updatedPR, err := client.UpdatePR(sctx.Ctx, repo, existingPR.ID, content.Title, content.Body)
+		if err != nil {
+			return nil, err
+		}
+		prURL := existingPRURL
+		if updatedPR != nil {
+			prURL = bitbucketPRURL(repo, updatedPR.ID, updatedPR.URL)
+		}
+		if prURL != "" {
+			if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, prURL); err != nil {
+				slog.Warn("failed to persist PR URL", "run", sctx.Run.ID, "url", prURL, "err", err)
+			}
+			return &pipeline.StepOutcome{PRURL: prURL}, nil
+		}
+		return &pipeline.StepOutcome{}, nil
+	}
+
+	sctx.Log("creating pull request...")
+	createdPR, err := client.CreatePR(sctx.Ctx, repo, branch, sctx.Repo.DefaultBranch, content.Title, content.Body)
+	if err != nil {
+		return nil, err
+	}
+	createdPRURL := ""
+	if createdPR != nil {
+		createdPRURL = bitbucketPRURL(repo, createdPR.ID, createdPR.URL)
+	}
+	if createdPRURL != "" {
+		sctx.Log(fmt.Sprintf("created pull request: %s", createdPRURL))
+		if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, createdPRURL); err != nil {
+			slog.Warn("failed to persist PR URL", "run", sctx.Run.ID, "url", createdPRURL, "err", err)
+		}
+		return &pipeline.StepOutcome{PRURL: createdPRURL}, nil
+	}
+	return &pipeline.StepOutcome{}, nil
+}
+
+func bitbucketPRURL(repo bitbucket.RepoRef, prID int, rawURL string) string {
+	if url := strings.TrimSpace(rawURL); url != "" {
+		return url
+	}
+	if prID <= 0 || strings.TrimSpace(repo.Workspace) == "" || strings.TrimSpace(repo.RepoSlug) == "" {
+		return ""
+	}
+	return fmt.Sprintf("https://bitbucket.org/%s/%s/pull-requests/%d", repo.Workspace, repo.RepoSlug, prID)
 }
 
 func (s *PRStep) executeGitLabMR(sctx *pipeline.StepContext, branch string, content prContent) (*pipeline.StepOutcome, error) {
