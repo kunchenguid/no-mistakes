@@ -194,13 +194,11 @@ func stopDetachedDaemon(p *paths.Paths) error {
 
 func staleDaemonArtifacts(p *paths.Paths) (bool, error) {
 	info, err := os.Stat(p.Socket())
-	if os.IsNotExist(err) {
-		return true, nil
-	}
-	if err != nil {
+	missingSocket := os.IsNotExist(err)
+	if err != nil && !missingSocket {
 		return false, fmt.Errorf("stat daemon socket: %w", err)
 	}
-	if info.Mode()&os.ModeSocket == 0 {
+	if err == nil && info.Mode()&os.ModeSocket == 0 {
 		return true, nil
 	}
 	pid, err := ReadPID(p)
@@ -213,6 +211,9 @@ func staleDaemonArtifacts(p *paths.Paths) (bool, error) {
 	running, err := processRunning(pid)
 	if err != nil {
 		return false, err
+	}
+	if missingSocket && running {
+		return false, nil
 	}
 	return !running, nil
 }

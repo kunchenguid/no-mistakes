@@ -541,6 +541,30 @@ func TestStopDetachedDaemonRemovesArtifactsForDeadPID(t *testing.T) {
 	}
 }
 
+func TestStaleDaemonArtifactsKeepsPIDForLiveProcessWithoutSocket(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "dtest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	p := paths.WithRoot(tmpDir)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.PIDFile(), []byte(fmt.Sprintf("%d", os.Getpid())), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stale, err := staleDaemonArtifacts(p)
+	if err != nil {
+		t.Fatalf("staleDaemonArtifacts returned error: %v", err)
+	}
+	if stale {
+		t.Fatal("expected live pid without socket to be treated as non-stale")
+	}
+}
+
 func TestReadPIDNoFile(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "dtest")
 	if err != nil {
