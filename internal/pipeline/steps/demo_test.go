@@ -3,10 +3,20 @@ package steps
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+func withoutDemoSleep(t *testing.T) {
+	t.Helper()
+	prev := demoSleep
+	demoSleep = func(time.Duration) {}
+	t.Cleanup(func() {
+		demoSleep = prev
+	})
+}
 
 func TestIsDemoMode(t *testing.T) {
 	if IsDemoMode() {
@@ -19,6 +29,8 @@ func TestIsDemoMode(t *testing.T) {
 }
 
 func TestDemoSteps(t *testing.T) {
+	withoutDemoSleep(t)
+
 	steps := DemoSteps()
 	want := []types.StepName{
 		types.StepRebase,
@@ -41,6 +53,8 @@ func TestDemoSteps(t *testing.T) {
 }
 
 func TestAllStepsDemoMode(t *testing.T) {
+	withoutDemoSleep(t)
+
 	t.Setenv("NM_DEMO", "1")
 	steps := AllSteps()
 	// Verify we get demo steps, not real ones, by checking the type.
@@ -55,6 +69,8 @@ func TestAllStepsDemoMode(t *testing.T) {
 }
 
 func TestDemoStepExecute(t *testing.T) {
+	withoutDemoSleep(t)
+
 	steps := DemoSteps()
 	for _, step := range steps {
 		t.Run(string(step.Name()), func(t *testing.T) {
@@ -79,6 +95,8 @@ func TestDemoStepExecute(t *testing.T) {
 }
 
 func TestDemoStepReviewAutoFix(t *testing.T) {
+	withoutDemoSleep(t)
+
 	steps := DemoSteps()
 	var review pipeline.Step
 	for _, s := range steps {
@@ -131,6 +149,8 @@ func TestDemoStepReviewAutoFix(t *testing.T) {
 }
 
 func TestDemoStepPRURL(t *testing.T) {
+	withoutDemoSleep(t)
+
 	steps := DemoSteps()
 	var pr pipeline.Step
 	for _, s := range steps {

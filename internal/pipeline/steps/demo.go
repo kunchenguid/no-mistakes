@@ -9,6 +9,8 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
+var demoSleep = time.Sleep
+
 // IsDemoMode returns true when the NM_DEMO environment variable is set.
 func IsDemoMode() bool {
 	return os.Getenv("NM_DEMO") == "1"
@@ -150,7 +152,7 @@ func streamDemoLog(sctx *pipeline.StepContext, text string, total time.Duration)
 	}
 	for i, line := range lines {
 		if i > 0 {
-			time.Sleep(pause)
+			demoSleep(pause)
 		}
 		sctx.Log(line)
 	}
@@ -166,7 +168,7 @@ type demoCIStep struct {
 func (s *demoCIStep) Name() types.StepName { return types.StepCI }
 
 func (s *demoCIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
-	pause := func(d time.Duration) { time.Sleep(d) }
+	pause := func(d time.Duration) { demoSleep(d) }
 
 	// Phase 1: initial monitoring, find a failure.
 	sctx.Log("monitoring CI for PR #42")
