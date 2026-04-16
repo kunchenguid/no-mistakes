@@ -3,11 +3,15 @@ package shellenv
 import (
 	"os"
 	"reflect"
+	"runtime"
 	"testing"
 	"time"
 )
 
 func TestResolve_UsesLoginShellAndCapturesEnv(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Resolve short-circuits to os.Environ() on Windows")
+	}
 	resetForTests()
 	t.Setenv("SHELL", "/bin/bash")
 
@@ -43,6 +47,9 @@ func TestResolve_UsesLoginShellAndCapturesEnv(t *testing.T) {
 }
 
 func TestApplyToProcess_SetsResolvedEnvEntries(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Resolve short-circuits to os.Environ() on Windows")
+	}
 	resetForTests()
 	t.Setenv("SHELL", "/bin/zsh")
 	t.Setenv("KEEP_ME", "1")
@@ -71,6 +78,57 @@ func TestApplyToProcess_SetsResolvedEnvEntries(t *testing.T) {
 	}
 	if got := os.Getenv("KEEP_ME"); got != "1" {
 		t.Fatalf("KEEP_ME = %q", got)
+	}
+}
+
+func TestResolve_ReturnsProcessEnvOnWindows_EnableWindowsCI(t *testing.T) {
+	resetForTests()
+	oldGOOS := runtimeGOOS
+	oldOutput := shellCommandOutput
+	defer func() {
+		runtimeGOOS = oldGOOS
+		shellCommandOutput = oldOutput
+		resetForTests()
+	}()
+
+	runtimeGOOS = "windows"
+	t.Setenv("SHELLENV_WINDOWS_RESOLVE", "1")
+	shellCommandOutput = func(string, ...string) ([]byte, error) {
+		t.Fatal("Resolve should not shell out on Windows")
+		return nil, nil
+	}
+
+	env, err := Resolve()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsEnvEntry(env, "SHELLENV_WINDOWS_RESOLVE=1") {
+		t.Fatalf("expected resolved env to contain process env entry, got %v", env)
+	}
+}
+
+func TestApplyToProcess_UsesProcessEnvOnWindows_EnableWindowsCI(t *testing.T) {
+	resetForTests()
+	oldGOOS := runtimeGOOS
+	oldOutput := shellCommandOutput
+	defer func() {
+		runtimeGOOS = oldGOOS
+		shellCommandOutput = oldOutput
+		resetForTests()
+	}()
+
+	runtimeGOOS = "windows"
+	t.Setenv("SHELLENV_WINDOWS_APPLY", "1")
+	shellCommandOutput = func(string, ...string) ([]byte, error) {
+		t.Fatal("ApplyToProcess should not shell out on Windows")
+		return nil, nil
+	}
+
+	if err := ApplyToProcess(); err != nil {
+		t.Fatal(err)
+	}
+	if got := os.Getenv("SHELLENV_WINDOWS_APPLY"); got != "1" {
+		t.Fatalf("SHELLENV_WINDOWS_APPLY = %q", got)
 	}
 }
 

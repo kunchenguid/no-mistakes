@@ -1,35 +1,34 @@
+//go:build windows
+
 package steps
 
 import (
 	"context"
 	"os"
 	"path/filepath"
-	"runtime"
+	"strings"
 	"testing"
 )
 
-func TestRunShellCommandWithEnv_UsesShAndIgnoresUserShell(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Windows uses cmd.exe; SHELL is only honored on POSIX")
-	}
+func TestRunShellCommandWithEnv_UsesCmdAndIgnoresUserShell_EnableWindowsCI(t *testing.T) {
 	workDir := t.TempDir()
 	marker := filepath.Join(t.TempDir(), "user-shell-used")
-	shellPath := filepath.Join(t.TempDir(), "bash")
-	script := "#!/bin/sh\nprintf used > \"$USER_SHELL_MARKER\"\nexit 99\n"
+	shellPath := filepath.Join(t.TempDir(), "fake-shell.cmd")
+	script := "@echo off\r\n> \"%USER_SHELL_MARKER%\" echo used\r\nexit /b 99\r\n"
 	if err := os.WriteFile(shellPath, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("SHELL", shellPath)
 	t.Setenv("USER_SHELL_MARKER", marker)
 
-	output, exitCode, err := runShellCommandWithEnv(context.Background(), workDir, []string{"STEP_SPECIAL=from-step"}, "printf %s \"$STEP_SPECIAL\"")
+	output, exitCode, err := runShellCommandWithEnv(context.Background(), workDir, []string{"STEP_SPECIAL=from-step"}, `echo %STEP_SPECIAL%`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if exitCode != 0 {
 		t.Fatalf("exitCode = %d", exitCode)
 	}
-	if output != "from-step" {
+	if strings.TrimSpace(output) != "from-step" {
 		t.Fatalf("output = %q", output)
 	}
 	if _, err := os.Stat(marker); err == nil {

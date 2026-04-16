@@ -5,6 +5,8 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -77,6 +79,9 @@ func TestStartInstallsLaunchAgentAndBootstrapsManagedDaemon(t *testing.T) {
 }
 
 func TestStartInstallsSystemdUnitAndStartsManagedDaemon(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("systemd unit rendering depends on POSIX path formatting")
+	}
 	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
 	if err := p.EnsureDirs(); err != nil {
 		t.Fatal(err)
@@ -134,6 +139,48 @@ func TestStartInstallsSystemdUnitAndStartsManagedDaemon(t *testing.T) {
 		if commands[i] != wantCmd {
 			t.Fatalf("command[%d] = %q, want %q", i, commands[i], wantCmd)
 		}
+	}
+}
+
+func TestStartInstallsWindowsTaskAndStartsManagedDaemon_EnableWindowsCI(t *testing.T) {
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm home"))
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
+	cleanup := stubServiceRuntime(t)
+	defer cleanup()
+	runtimeGOOS = "windows"
+	exe := `C:\Program Files\no-mistakes\no-mistakes.exe`
+	serviceExecutablePath = func() (string, error) { return exe, nil }
+
+	var commands []string
+	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
+		commands = append(commands, name+" "+strings.Join(args, " "))
+		return nil, nil
+	}
+	checks := 0
+	daemonHealthCheck = func(*paths.Paths) (bool, error) {
+		checks++
+		return checks >= 2, nil
+	}
+
+	if err := Start(p); err != nil {
+		t.Fatal(err)
+	}
+
+	wantTaskCommand := strconv.Quote(exe) + " daemon run --root " + strconv.Quote(p.Root())
+	wantCreate := "schtasks /Create /TN " + windowsTaskName +
+		" /SC ONLOGON /RL LIMITED /F /TR " + wantTaskCommand
+	wantRun := "schtasks /Run /TN " + windowsTaskName
+	if len(commands) != 2 {
+		t.Fatalf("expected schtasks create and run, got %v", commands)
+	}
+	if commands[0] != wantCreate {
+		t.Fatalf("create command = %q, want %q", commands[0], wantCreate)
+	}
+	if commands[1] != wantRun {
+		t.Fatalf("run command = %q, want %q", commands[1], wantRun)
 	}
 }
 
