@@ -130,6 +130,41 @@ func TestListPRStatusesRejectsCrossOriginPagination(t *testing.T) {
 	}
 }
 
+func TestFindOpenPRBySourceAndDestinationBranchFiltersDestination(t *testing.T) {
+	repo := RepoRef{Workspace: "test", RepoSlug: "repo"}
+	var gotQ string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/2.0/repositories/test/repo/pullrequests" {
+			t.Fatalf("path = %q, want %q", r.URL.Path, "/2.0/repositories/test/repo/pullrequests")
+		}
+		gotQ = r.URL.Query().Get("q")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"values":[{"id":42,"links":{"html":{"href":"https://bitbucket.org/test/repo/pull-requests/42"}}}]}`))
+	}))
+	defer server.Close()
+
+	client := &Client{
+		baseURL: server.URL,
+		email:   "test@example.com",
+		token:   "token",
+		httpClient: &http.Client{
+			Timeout: time.Second,
+		},
+	}
+
+	pr, err := client.FindOpenPRBySourceBranch(context.Background(), repo, "feature", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pr == nil || pr.ID != 42 {
+		t.Fatalf("pr = %#v, want id 42", pr)
+	}
+	if gotQ != `source.branch.name="feature" AND destination.branch.name="main" AND state="OPEN"` {
+		t.Fatalf("q = %q, want destination branch filter", gotQ)
+	}
+}
+
 func TestListPipelinesByCommitFollowsPagination(t *testing.T) {
 	repo := RepoRef{Workspace: "test", RepoSlug: "repo"}
 	var pageCalls int

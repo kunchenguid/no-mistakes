@@ -6953,6 +6953,28 @@ func TestLatestBitbucketStatusesKeepsNewestStatusPerCheck(t *testing.T) {
 	}
 }
 
+func TestLatestBitbucketStatusesDeduplicatesByKeyBeforeName(t *testing.T) {
+	t.Parallel()
+
+	statuses := []bitbucket.CommitStatus{
+		{Name: "build v2", Key: "build", State: "SUCCESSFUL"},
+		{Name: "build", Key: "build", State: "FAILED"},
+		{Name: "tests", State: "SUCCESSFUL"},
+		{Name: "tests", State: "FAILED"},
+	}
+
+	got := latestBitbucketStatuses(statuses)
+	if len(got) != 2 {
+		t.Fatalf("len(got) = %d, want 2", len(got))
+	}
+	if got[0].Key != "build" || got[0].Name != "build v2" || got[0].State != "SUCCESSFUL" {
+		t.Fatalf("got[0] = %#v, want newest keyed build status", got[0])
+	}
+	if got[1].Key != "" || got[1].Name != "tests" || got[1].State != "SUCCESSFUL" {
+		t.Fatalf("got[1] = %#v, want newest unnamed tests status", got[1])
+	}
+}
+
 func TestCIStep_GetCIChecksBitbucketFallsBackToKeyWhenNameMissing(t *testing.T) {
 	t.Parallel()
 

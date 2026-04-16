@@ -112,9 +112,14 @@ func parseRepoPath(path string) (RepoRef, error) {
 	return RepoRef{Workspace: parts[0], RepoSlug: parts[1]}, nil
 }
 
-func (c *Client) FindOpenPRBySourceBranch(ctx context.Context, repo RepoRef, branch string) (*PullRequest, error) {
+func (c *Client) FindOpenPRBySourceBranch(ctx context.Context, repo RepoRef, branch, destBranch string) (*PullRequest, error) {
 	query := url.Values{}
-	query.Set("q", fmt.Sprintf(`source.branch.name=%q AND state=%q`, branch, "OPEN"))
+	clauses := []string{fmt.Sprintf(`source.branch.name=%q`, branch)}
+	if strings.TrimSpace(destBranch) != "" {
+		clauses = append(clauses, fmt.Sprintf(`destination.branch.name=%q`, destBranch))
+	}
+	clauses = append(clauses, fmt.Sprintf(`state=%q`, "OPEN"))
+	query.Set("q", strings.Join(clauses, " AND "))
 
 	var response struct {
 		Values []bitbucketPullRequest `json:"values"`

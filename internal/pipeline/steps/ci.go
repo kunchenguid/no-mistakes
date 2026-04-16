@@ -481,7 +481,10 @@ func latestBitbucketStatuses(statuses []bitbucket.CommitStatus) []bitbucket.Comm
 	latest := make([]bitbucket.CommitStatus, 0, len(statuses))
 	seen := make(map[string]struct{}, len(statuses))
 	for _, status := range statuses {
-		id := bitbucketStatusName(status)
+		id := strings.TrimSpace(status.Key)
+		if id == "" {
+			id = bitbucketStatusName(status)
+		}
 		if id == "" {
 			latest = append(latest, status)
 			continue

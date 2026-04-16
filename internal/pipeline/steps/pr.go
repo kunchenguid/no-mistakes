@@ -153,7 +153,7 @@ func (s *PRStep) executeBitbucketPR(sctx *pipeline.StepContext, branch string, c
 	}
 
 	sctx.Log(fmt.Sprintf("checking for existing pull request on branch %s...", branch))
-	existingPR, err := client.FindOpenPRBySourceBranch(sctx.Ctx, repo, branch)
+	existingPR, err := client.FindOpenPRBySourceBranch(sctx.Ctx, repo, branch, sctx.Repo.DefaultBranch)
 	if err != nil {
 		return nil, err
 	}
