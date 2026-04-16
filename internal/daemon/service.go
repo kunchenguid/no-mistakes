@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 )
@@ -26,8 +27,27 @@ var serviceUserHomeDir = os.UserHomeDir
 var serviceCurrentUser = user.Current
 var serviceExecutablePath = os.Executable
 var serviceCommandRunner = runServiceCommand
-var serviceManagerBypassed = func() bool {
-	return os.Getenv("NM_TEST_START_DAEMON") == "1"
+var serviceManagerBypassed = defaultServiceManagerBypassed
+
+// defaultServiceManagerBypassed reports whether managed-service plumbing
+// (launchctl/systemctl/schtasks) should be skipped.
+//
+// It returns true when NM_TEST_START_DAEMON=1 is set (the production escape
+// hatch used by demo recordings and similar) or when the process is running
+// under `go test`. The test-binary guard is critical because the managed
+// service label, plist path, systemd unit path, and schtasks task name are
+// all globally scoped under the current user - they do not honor the
+// *paths.Paths argument. Without this guard, any daemon test that calls
+// Start/Stop with an unstubbed paths.Paths would reach into the developer's
+// real ~/Library/LaunchAgents (or systemd user unit dir, or scheduled tasks)
+// and tear down a live daemon. Tests that specifically want to exercise the
+// managed path (service_test.go) override serviceManagerBypassed via
+// stubServiceRuntime.
+func defaultServiceManagerBypassed() bool {
+	if os.Getenv("NM_TEST_START_DAEMON") == "1" {
+		return true
+	}
+	return testing.Testing()
 }
 
 func installManagedService(p *paths.Paths) (bool, error) {

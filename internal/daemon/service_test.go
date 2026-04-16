@@ -445,6 +445,129 @@ func TestStopFallsBackToDetachedDaemonOnWindowsWithoutManagedService(t *testing.
 	}
 }
 
+// TestDefaultServiceManagerBypassedIsTrueUnderGoTest locks in the contract
+// that protects developer machines: under `go test`, the default bypass
+// function must short-circuit managed-service plumbing so unstubbed daemon
+// tests cannot invoke real launchctl/systemctl/schtasks. A regression here
+// previously caused TestStopNotRunningIsNoop to tear down the live
+// LaunchAgent-managed daemon on macOS.
+func TestDefaultServiceManagerBypassedIsTrueUnderGoTest(t *testing.T) {
+	if !defaultServiceManagerBypassed() {
+		t.Fatal("defaultServiceManagerBypassed() must return true under `go test` so daemon tests cannot reach real launchctl/systemctl/schtasks state")
+	}
+}
+
+// TestStopWithUnstubbedPathsDoesNotInvokeRealServiceCommands is the
+// end-to-end regression test: it simulates a managed service having been
+// installed at the user's real-looking home (plist / systemd unit) and
+// asserts that Stop(p), when called from a test binary with only a temp
+// paths.Paths, does not invoke any service-manager commands. Before the
+// fix, Stop went through stopManagedService -> managedServiceInstalled ->
+// os.Stat(launchAgentPath()) which used the real os.UserHomeDir, found the
+// real plist, then ran real `launchctl bootout` and killed the live daemon.
+func TestStopWithUnstubbedPathsDoesNotInvokeRealServiceCommands(t *testing.T) {
+	cleanup := stubServiceRuntime(t)
+	defer cleanup()
+
+	// Unlike other tests using stubServiceRuntime, we deliberately restore
+	// the production bypass function. That is the code under test here.
+	serviceManagerBypassed = defaultServiceManagerBypassed
+
+	home := t.TempDir()
+	serviceUserHomeDir = func() (string, error) { return home, nil }
+	serviceCurrentUser = func() (*user.User, error) { return &user.User{Uid: "99999"}, nil }
+	runtimeGOOS = runtime.GOOS
+
+	// Seed a managed-service artifact so that if the bypass ever regresses,
+	// managedServiceInstalled() would return true and Stop would call
+	// serviceCommandRunner. We detect that below.
+	switch runtime.GOOS {
+	case "darwin":
+		plistDir := filepath.Join(home, "Library", "LaunchAgents")
+		if err := os.MkdirAll(plistDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(plistDir, launchdServiceLabel+".plist"), []byte("<plist/>"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	case "linux":
+		unitDir := filepath.Join(home, ".config", "systemd", "user")
+		if err := os.MkdirAll(unitDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(unitDir, systemdServiceName), []byte("[Unit]\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var called []string
+	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
+		called = append(called, name+" "+strings.Join(args, " "))
+		// Pretend the task/service exists on Windows so the "is installed"
+		// probe cannot short-circuit via an error return.
+		return nil, nil
+	}
+
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Stop(p); err != nil {
+		t.Fatalf("Stop(p) with unstubbed paths must be a no-op under go test, got error: %v", err)
+	}
+	if len(called) > 0 {
+		t.Fatalf("Stop(p) under go test must not invoke any service-manager commands, got: %v", called)
+	}
+}
+
+// TestStartWithUnstubbedPathsDoesNotInvokeRealServiceCommands mirrors the
+// Stop regression for Start(). Start also goes through
+// installManagedService -> startManagedService, both of which rely on the
+// bypass guard to stay out of real launchctl/systemctl/schtasks when called
+// from a test binary with only a temp paths.Paths.
+func TestStartWithUnstubbedPathsDoesNotInvokeRealServiceCommands(t *testing.T) {
+	cleanup := stubServiceRuntime(t)
+	defer cleanup()
+
+	serviceManagerBypassed = defaultServiceManagerBypassed
+
+	// Force the detached fallback path to short-circuit as well: TestMain
+	// already exits immediately when NM_DAEMON_HELPER_PROCESS=1, so the
+	// re-exec does not spawn a persistent daemon.
+	t.Setenv("NM_DAEMON_HELPER_PROCESS", "1")
+
+	home := t.TempDir()
+	serviceUserHomeDir = func() (string, error) { return home, nil }
+	serviceCurrentUser = func() (*user.User, error) { return &user.User{Uid: "99999"}, nil }
+	serviceExecutablePath = func() (string, error) { return os.Args[0], nil }
+	runtimeGOOS = runtime.GOOS
+
+	var called []string
+	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
+		called = append(called, name+" "+strings.Join(args, " "))
+		return nil, nil
+	}
+	// Report "not running" for all health checks so Start exercises the
+	// full managed-install-then-fallback decision tree.
+	daemonHealthCheck = func(*paths.Paths) (bool, error) { return false, nil }
+
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Start will fall back to the detached daemon which re-execs the test
+	// binary; with NM_DAEMON_HELPER_PROCESS=1 the helper exits and the
+	// health check never returns ok, so Start reports "did not become
+	// responsive". That error is fine - we only care that no service
+	// commands were invoked.
+	_ = Start(p)
+	if len(called) > 0 {
+		t.Fatalf("Start(p) under go test must not invoke any service-manager commands, got: %v", called)
+	}
+}
+
 func stubServiceRuntime(t *testing.T) func() {
 	t.Helper()
 	oldGOOS := runtimeGOOS
