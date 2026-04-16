@@ -3,6 +3,7 @@
 package daemon
 
 import (
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -45,6 +46,30 @@ func TestProcessStartTimeCommandForcesCLocale(t *testing.T) {
 	if countEnvEntries(cmd.Env, "LANG") != 1 {
 		t.Fatalf("expected one LANG entry, got %v", cmd.Env)
 	}
+}
+
+func TestProcessRunningTreatsZombieAsNotRunning(t *testing.T) {
+	cmd := exec.Command("/bin/sh", "-c", "exit 0")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start child: %v", err)
+	}
+	defer func() {
+		_ = cmd.Wait()
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		running, err := processRunning(cmd.Process.Pid)
+		if err != nil {
+			t.Fatalf("processRunning returned error: %v", err)
+		}
+		if !running {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatalf("expected zombie pid %d to be treated as not running", cmd.Process.Pid)
 }
 
 func containsEnvEntry(env []string, want string) bool {

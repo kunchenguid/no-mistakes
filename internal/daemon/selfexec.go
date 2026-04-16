@@ -3,6 +3,7 @@ package daemon
 import (
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/exec"
 	"runtime"
@@ -266,7 +267,17 @@ func staleDaemonArtifacts(p *paths.Paths) (bool, error) {
 	pid, err := ReadPID(p)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return true, nil
+			if missingSocket {
+				return true, nil
+			}
+			if daemonEndpointUsesRegularFile() {
+				return false, nil
+			}
+			alive, err := daemonSocketAcceptingConnections(p.Socket())
+			if err != nil {
+				return false, err
+			}
+			return !alive, nil
 		}
 		return false, err
 	}
@@ -278,6 +289,15 @@ func staleDaemonArtifacts(p *paths.Paths) (bool, error) {
 		return false, nil
 	}
 	return !running, nil
+}
+
+func daemonSocketAcceptingConnections(path string) (bool, error) {
+	conn, err := net.DialTimeout("unix", path, 200*time.Millisecond)
+	if err != nil {
+		return false, nil
+	}
+	defer conn.Close()
+	return true, nil
 }
 
 func waitForDaemonStop(p *paths.Paths) error {

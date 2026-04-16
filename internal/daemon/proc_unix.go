@@ -19,6 +19,13 @@ func setSysProcAttr(cmd *exec.Cmd) {
 func processRunning(pid int) (bool, error) {
 	err := syscall.Kill(pid, 0)
 	if err == nil {
+		state, err := processState(pid)
+		if err != nil {
+			return false, err
+		}
+		if strings.HasPrefix(state, "Z") {
+			return false, nil
+		}
 		return true, nil
 	}
 	if errors.Is(err, syscall.ESRCH) {
@@ -28,6 +35,17 @@ func processRunning(pid int) (bool, error) {
 		return true, nil
 	}
 	return false, err
+}
+
+func processState(pid int) (string, error) {
+	cmd := exec.Command("/bin/ps", "-p", fmt.Sprintf("%d", pid), "-o", "stat=")
+	env := upsertEnv(os.Environ(), "LC_ALL", "C")
+	cmd.Env = upsertEnv(env, "LANG", "C")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 func processStartTime(pid int) (time.Time, error) {

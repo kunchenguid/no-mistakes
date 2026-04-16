@@ -762,6 +762,46 @@ func TestStaleDaemonArtifactsKeepsRegularEndpointFileForLiveProcess(t *testing.T
 	}
 }
 
+func TestStopDetachedDaemonKeepsArtifactsWhenPIDMissingButDaemonLooksLive(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix socket setup is platform-specific")
+	}
+
+	tmpDir, err := os.MkdirTemp("", "dtest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	p := paths.WithRoot(tmpDir)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("unix", p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	originalDial := daemonDial
+	daemonDial = func(string) (*ipc.Client, error) {
+		return nil, fmt.Errorf("transient ipc failure")
+	}
+	defer func() {
+		daemonDial = originalDial
+	}()
+	err = stopDetachedDaemon(p)
+	if err == nil {
+		t.Fatal("expected stopDetachedDaemon to fail without a pid file")
+	}
+	if _, statErr := os.Stat(p.Socket()); statErr != nil {
+		t.Fatalf("expected socket file to remain when daemon looks live, got err=%v", statErr)
+	}
+	if _, statErr := os.Stat(p.PIDFile()); !os.IsNotExist(statErr) {
+		t.Fatalf("expected pid file to remain missing, got err=%v", statErr)
+	}
+}
+
 func TestStaleDaemonArtifactsRejectsNonPositivePID(t *testing.T) {
 	tests := []struct {
 		name string

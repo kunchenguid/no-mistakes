@@ -455,7 +455,7 @@ func (s *CIStep) getCIChecks(sctx *pipeline.StepContext, provider scm.Provider, 
 		checks := make([]ciCheck, 0, len(statuses))
 		for _, status := range statuses {
 			checks = append(checks, ciCheck{
-				Name:   status.Name,
+				Name:   bitbucketStatusName(status),
 				State:  status.State,
 				Bucket: bitbucketStatusBucket(status.State),
 			})
@@ -481,10 +481,7 @@ func latestBitbucketStatuses(statuses []bitbucket.CommitStatus) []bitbucket.Comm
 	latest := make([]bitbucket.CommitStatus, 0, len(statuses))
 	seen := make(map[string]struct{}, len(statuses))
 	for _, status := range statuses {
-		id := strings.TrimSpace(status.Key)
-		if id == "" {
-			id = strings.TrimSpace(status.Name)
-		}
+		id := bitbucketStatusName(status)
 		if id == "" {
 			latest = append(latest, status)
 			continue
@@ -496,6 +493,14 @@ func latestBitbucketStatuses(statuses []bitbucket.CommitStatus) []bitbucket.Comm
 		latest = append(latest, status)
 	}
 	return latest
+}
+
+func bitbucketStatusName(status bitbucket.CommitStatus) string {
+	name := strings.TrimSpace(status.Name)
+	if name != "" {
+		return name
+	}
+	return strings.TrimSpace(status.Key)
 }
 
 func bitbucketStatusBucket(state string) string {

@@ -6953,6 +6953,35 @@ func TestLatestBitbucketStatusesKeepsNewestStatusPerCheck(t *testing.T) {
 	}
 }
 
+func TestCIStep_GetCIChecksBitbucketFallsBackToKeyWhenNameMissing(t *testing.T) {
+	t.Parallel()
+
+	api := newFakeBitbucketCIAPI(t, "OPEN", `{"values":[{"key":"build","state":"FAILED"}]}`)
+	client, err := bitbucket.NewClientFromEnv(fakeBitbucketEnv(api.server.URL))
+	if err != nil {
+		t.Fatalf("new bitbucket client: %v", err)
+	}
+
+	dir := t.TempDir()
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, "abc", "def", config.Commands{})
+	step := &CIStep{}
+
+	checks, err := step.getCIChecks(sctx, scm.ProviderBitbucket, client, bitbucket.RepoRef{Workspace: "test", RepoSlug: "repo"}, "42")
+	if err != nil {
+		t.Fatalf("getCIChecks returned error: %v", err)
+	}
+	if len(checks) != 1 {
+		t.Fatalf("len(checks) = %d, want 1", len(checks))
+	}
+	if checks[0].Name != "build" {
+		t.Fatalf("checks[0].Name = %q, want build", checks[0].Name)
+	}
+	if checks[0].Bucket != "fail" {
+		t.Fatalf("checks[0].Bucket = %q, want fail", checks[0].Bucket)
+	}
+}
+
 func TestCIStep_CIFailureAutoFix(t *testing.T) {
 	t.Parallel()
 	// Set up upstream bare repo for push
