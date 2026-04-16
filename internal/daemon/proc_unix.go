@@ -42,9 +42,16 @@ func processStartTime(pid int) (time.Time, error) {
 	if startedAt == "" {
 		return time.Time{}, fmt.Errorf("missing process start time")
 	}
-	parsed, err := time.Parse("Mon Jan 2 15:04:05 2006", startedAt)
+	parsed, err := parseProcessStartTime(startedAt, time.Local)
 	if err != nil {
 		return time.Time{}, err
 	}
 	return parsed, nil
+}
+
+func parseProcessStartTime(value string, loc *time.Location) (time.Time, error) {
+	if loc == nil {
+		loc = time.Local
+	}
+	return time.ParseInLocation("Mon Jan 2 15:04:05 2006", value, loc)
 }
