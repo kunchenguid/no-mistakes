@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -20,14 +21,14 @@ func TestRunShellCommandWithEnv_UsesCmdAndIgnoresUserShell_EnableWindowsCI(t *te
 	t.Setenv("SHELL", shellPath)
 	t.Setenv("USER_SHELL_MARKER", marker)
 
-	output, exitCode, err := runShellCommandWithEnv(context.Background(), workDir, []string{"STEP_SPECIAL=from-step"}, `<nul set /p =%STEP_SPECIAL%`)
+	output, exitCode, err := runShellCommandWithEnv(context.Background(), workDir, []string{"STEP_SPECIAL=from-step"}, `echo %STEP_SPECIAL%`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if exitCode != 0 {
 		t.Fatalf("exitCode = %d", exitCode)
 	}
-	if output != "from-step" {
+	if strings.TrimSpace(output) != "from-step" {
 		t.Fatalf("output = %q", output)
 	}
 	if _, err := os.Stat(marker); err == nil {
