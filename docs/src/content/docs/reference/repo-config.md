@@ -44,7 +44,7 @@ Override the default agent for this repo.
 
 ### commands.test
 
-Explicit test command. Run via `sh -c`.
+Explicit test command. Run via the platform shell - `sh -c` on POSIX, `cmd.exe /c` on Windows.
 
 | | |
 |---|---|
@@ -55,7 +55,7 @@ When set, the test step runs this exact command and checks the exit code. When e
 
 ### commands.lint
 
-Explicit lint command. Run via `sh -c`.
+Explicit lint command. Run via the platform shell - `sh -c` on POSIX, `cmd.exe /c` on Windows.
 
 | | |
 |---|---|

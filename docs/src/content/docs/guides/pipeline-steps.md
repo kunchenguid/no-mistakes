@@ -51,7 +51,7 @@ AI code review of your diff.
 Runs your test suite.
 
 **Behavior:**
-- If `commands.test` is set in repo config: runs it via `sh -c` and captures output. Non-zero exit produces `error` findings.
+- If `commands.test` is set in repo config: runs it via the platform shell (`sh -c` on POSIX, `cmd.exe /c` on Windows) and captures output. Non-zero exit produces `error` findings.
 - If `commands.test` is empty: the agent detects and runs relevant tests, returning structured findings with severity, description, and `action` (`no-op`, `auto-fix`, `ask-user`).
 - If the agent creates new test files (detected via `git status --porcelain`), approval is required even if tests pass.
 
@@ -79,7 +79,7 @@ Checks whether the code changes need matching documentation updates.
 Runs linters and static analysis.
 
 **Behavior:**
-- If `commands.lint` is set: runs it via `sh -c`. Non-zero exit produces `warning` findings.
+- If `commands.lint` is set: runs it via the platform shell (`sh -c` on POSIX, `cmd.exe /c` on Windows). Non-zero exit produces `warning` findings.
 - If `commands.lint` is empty: the agent detects and runs appropriate linters/formatters, returning structured findings with severity, description, and `action` (`no-op`, `auto-fix`, `ask-user`).
 
 **Approval:** lint findings with `action: ask-user` always require human approval. `action: auto-fix` findings stay eligible for the fix loop. `action: no-op` findings are informational only.
