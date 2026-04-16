@@ -7593,6 +7593,46 @@ func TestPRStep_AgentScopedBreakingTitlePassesThrough(t *testing.T) {
 	}
 }
 
+// TestPRStep_PromptGuidesScopeToRealModule verifies the PR prompt instructs
+// the agent to pick a scope that is a real, primary, not-too-granular
+// module/package name in the codebase.
+func TestPRStep_PromptGuidesScopeToRealModule(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	env, _ := fakeGH(t, "")
+
+	var capturedPrompt string
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			capturedPrompt = opts.Prompt
+			payload := json.RawMessage(`{"title":"fix(daemon): tidy logs","body":"## Summary\n\n- tidy"}`)
+			return &agent.Result{Output: payload}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+
+	step := &PRStep{}
+	if _, err := step.Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(capturedPrompt, "real package/module name that exists in the codebase") {
+		t.Errorf("expected PR prompt to require scope be a real package/module name in the codebase, got:\n%s", capturedPrompt)
+	}
+	if !strings.Contains(capturedPrompt, "primary module affected") {
+		t.Errorf("expected PR prompt to require scope be the primary module affected, got:\n%s", capturedPrompt)
+	}
+	if !strings.Contains(capturedPrompt, "not too granular") {
+		t.Errorf("expected PR prompt to warn scope should not be too granular, got:\n%s", capturedPrompt)
+	}
+	if !strings.Contains(capturedPrompt, "fewer than 10 distinct") {
+		t.Errorf("expected PR prompt to convey typical module count heuristic, got:\n%s", capturedPrompt)
+	}
+}
+
 func TestCIStep_CIAutoFixDisabledWithZero(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
