@@ -130,7 +130,7 @@ func TestListPRStatusesRejectsCrossOriginPagination(t *testing.T) {
 	}
 }
 
-func TestFindOpenPRBySourceAndDestinationBranchFiltersDestination(t *testing.T) {
+func TestFindOpenPRBySourceAndDestinationBranchFiltersSourceRepo(t *testing.T) {
 	repo := RepoRef{Workspace: "test", RepoSlug: "repo"}
 	var gotQ string
 
@@ -160,8 +160,8 @@ func TestFindOpenPRBySourceAndDestinationBranchFiltersDestination(t *testing.T) 
 	if pr == nil || pr.ID != 42 {
 		t.Fatalf("pr = %#v, want id 42", pr)
 	}
-	if gotQ != `source.branch.name="feature" AND destination.branch.name="main" AND state="OPEN"` {
-		t.Fatalf("q = %q, want destination branch filter", gotQ)
+	if gotQ != `source.branch.name="feature" AND source.repository.full_name="test/repo" AND destination.branch.name="main" AND state="OPEN"` {
+		t.Fatalf("q = %q, want source repo and destination branch filters", gotQ)
 	}
 }
 

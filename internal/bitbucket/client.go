@@ -114,7 +114,10 @@ func parseRepoPath(path string) (RepoRef, error) {
 
 func (c *Client) FindOpenPRBySourceBranch(ctx context.Context, repo RepoRef, branch, destBranch string) (*PullRequest, error) {
 	query := url.Values{}
-	clauses := []string{fmt.Sprintf(`source.branch.name=%q`, branch)}
+	clauses := []string{
+		fmt.Sprintf(`source.branch.name=%q`, branch),
+		fmt.Sprintf(`source.repository.full_name=%q`, repo.Workspace+"/"+repo.RepoSlug),
+	}
 	if strings.TrimSpace(destBranch) != "" {
 		clauses = append(clauses, fmt.Sprintf(`destination.branch.name=%q`, destBranch))
 	}

@@ -38,14 +38,19 @@ func processRunning(pid int) (bool, error) {
 }
 
 func processState(pid int) (string, error) {
-	cmd := exec.Command("/bin/ps", "-p", fmt.Sprintf("%d", pid), "-o", "stat=")
-	env := upsertEnv(os.Environ(), "LC_ALL", "C")
-	cmd.Env = upsertEnv(env, "LANG", "C")
+	cmd := processStateCommand(pid)
 	out, err := cmd.Output()
 	if err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+func processStateCommand(pid int) *exec.Cmd {
+	cmd := exec.Command(psExecutable(), "-p", fmt.Sprintf("%d", pid), "-o", "stat=")
+	env := upsertEnv(os.Environ(), "LC_ALL", "C")
+	cmd.Env = upsertEnv(env, "LANG", "C")
+	return cmd
 }
 
 func processStartTime(pid int) (time.Time, error) {
@@ -69,10 +74,20 @@ func processStartTime(pid int) (time.Time, error) {
 }
 
 func processStartTimeCommand(pid int) *exec.Cmd {
-	cmd := exec.Command("ps", "-p", fmt.Sprintf("%d", pid), "-o", "lstart=")
+	cmd := exec.Command(psExecutable(), "-p", fmt.Sprintf("%d", pid), "-o", "lstart=")
 	env := upsertEnv(os.Environ(), "LC_ALL", "C")
 	cmd.Env = upsertEnv(env, "LANG", "C")
 	return cmd
+}
+
+func psExecutable() string {
+	if path, err := exec.LookPath("ps"); err == nil {
+		return path
+	}
+	if _, err := os.Stat("/bin/ps"); err == nil {
+		return "/bin/ps"
+	}
+	return "ps"
 }
 
 func parseProcessStartTime(value string, loc *time.Location) (time.Time, error) {

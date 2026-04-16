@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -31,8 +32,37 @@ func TestProcessStartTimeCommandForcesCLocale(t *testing.T) {
 
 	cmd := processStartTimeCommand(123)
 
-	if got := strings.Join(cmd.Args, " "); got != "ps -p 123 -o lstart=" {
-		t.Fatalf("args = %q, want %q", got, "ps -p 123 -o lstart=")
+	if got := strings.Join(cmd.Args[1:], " "); got != "-p 123 -o lstart=" {
+		t.Fatalf("args = %q, want %q", got, "-p 123 -o lstart=")
+	}
+	if filepath.Base(cmd.Path) != "ps" {
+		t.Fatalf("path = %q, want ps executable", cmd.Path)
+	}
+	if !containsEnvEntry(cmd.Env, "LC_ALL=C") {
+		t.Fatalf("expected LC_ALL=C in env, got %v", cmd.Env)
+	}
+	if !containsEnvEntry(cmd.Env, "LANG=C") {
+		t.Fatalf("expected LANG=C in env, got %v", cmd.Env)
+	}
+	if countEnvEntries(cmd.Env, "LC_ALL") != 1 {
+		t.Fatalf("expected one LC_ALL entry, got %v", cmd.Env)
+	}
+	if countEnvEntries(cmd.Env, "LANG") != 1 {
+		t.Fatalf("expected one LANG entry, got %v", cmd.Env)
+	}
+}
+
+func TestProcessStateCommandForcesCLocale(t *testing.T) {
+	t.Setenv("LC_ALL", "fr_FR.UTF-8")
+	t.Setenv("LANG", "fr_FR.UTF-8")
+
+	cmd := processStateCommand(123)
+
+	if got := strings.Join(cmd.Args[1:], " "); got != "-p 123 -o stat=" {
+		t.Fatalf("args = %q, want %q", got, "-p 123 -o stat=")
+	}
+	if filepath.Base(cmd.Path) != "ps" {
+		t.Fatalf("path = %q, want ps executable", cmd.Path)
 	}
 	if !containsEnvEntry(cmd.Env, "LC_ALL=C") {
 		t.Fatalf("expected LC_ALL=C in env, got %v", cmd.Env)
