@@ -365,5 +365,8 @@ func ReadPID(p *paths.Paths) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("invalid pid file: %w", err)
 	}
+	if pid <= 0 {
+		return 0, fmt.Errorf("invalid pid file: pid must be positive")
+	}
 	return pid, nil
 }

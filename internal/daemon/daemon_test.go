@@ -696,6 +696,55 @@ func TestStaleDaemonArtifactsKeepsRegularEndpointFileForLiveProcess(t *testing.T
 	}
 }
 
+func TestStaleDaemonArtifactsRejectsNonPositivePID(t *testing.T) {
+	tests := []struct {
+		name string
+		pid  string
+	}{
+		{name: "zero", pid: "0"},
+		{name: "negative", pid: "-1"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir, err := os.MkdirTemp("", "dtest")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer os.RemoveAll(tmpDir)
+
+			p := paths.WithRoot(tmpDir)
+			if err := p.EnsureDirs(); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(p.PIDFile(), []byte(tt.pid), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			called := false
+			original := daemonProcessRunning
+			daemonProcessRunning = func(int) (bool, error) {
+				called = true
+				return false, nil
+			}
+			defer func() {
+				daemonProcessRunning = original
+			}()
+
+			_, err = staleDaemonArtifacts(p)
+			if err == nil {
+				t.Fatal("expected invalid pid error")
+			}
+			if !strings.Contains(err.Error(), "invalid") {
+				t.Fatalf("error = %q, want invalid pid error", err)
+			}
+			if called {
+				t.Fatal("expected invalid pid to avoid process probe")
+			}
+		})
+	}
+}
+
 func TestReadPIDNoFile(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "dtest")
 	if err != nil {
@@ -832,6 +881,39 @@ func TestReadPIDInvalid(t *testing.T) {
 	_, err = ReadPID(p)
 	if err == nil {
 		t.Error("expected error for invalid PID content")
+	}
+}
+
+func TestReadPIDRejectsNonPositiveValues(t *testing.T) {
+	tests := []struct {
+		name string
+		pid  string
+	}{
+		{name: "zero", pid: "0"},
+		{name: "negative", pid: "-1"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir, err := os.MkdirTemp("", "dtest")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer os.RemoveAll(tmpDir)
+
+			p := paths.WithRoot(tmpDir)
+			if err := os.WriteFile(filepath.Join(tmpDir, "daemon.pid"), []byte(tt.pid), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err = ReadPID(p)
+			if err == nil {
+				t.Fatal("expected invalid pid error")
+			}
+			if !strings.Contains(err.Error(), "invalid") {
+				t.Fatalf("error = %q, want invalid pid error", err)
+			}
+		})
 	}
 }
 

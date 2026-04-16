@@ -17,6 +17,7 @@ const (
 	envEmail          = "NO_MISTAKES_BITBUCKET_EMAIL"
 	envToken          = "NO_MISTAKES_BITBUCKET_API_TOKEN"
 	envAPIBaseURL     = "NO_MISTAKES_BITBUCKET_API_BASE_URL"
+	maxStepLogBytes   = 32 * 1024
 )
 
 type RepoRef struct {
@@ -195,24 +196,53 @@ func (c *Client) ListPipelinesByCommit(ctx context.Context, repo RepoRef, commit
 	query.Set("target.commit.hash", commitSHA)
 	query.Set("sort", "-created_on")
 
-	var response struct {
-		Values []Pipeline `json:"values"`
+	next := fmt.Sprintf("%s/2.0/repositories/%s/%s/pipelines?%s", c.baseURL, repo.Workspace, repo.RepoSlug, query.Encode())
+	pipelines := make([]Pipeline, 0)
+	for next != "" {
+		var response struct {
+			Values []Pipeline `json:"values"`
+			Next   string     `json:"next"`
+		}
+		if err := c.doJSONPathOrURL(ctx, http.MethodGet, next, nil, &response); err != nil {
+			return nil, err
+		}
+		pipelines = append(pipelines, response.Values...)
+		if response.Next == "" {
+			next = ""
+			continue
+		}
+		validatedNext, err := c.validatePaginationURL(response.Next)
+		if err != nil {
+			return nil, err
+		}
+		next = validatedNext
 	}
-	if err := c.doJSON(ctx, http.MethodGet, fmt.Sprintf("/2.0/repositories/%s/%s/pipelines", repo.Workspace, repo.RepoSlug), query, nil, &response); err != nil {
-		return nil, err
-	}
-	return response.Values, nil
+	return pipelines, nil
 }
 
 func (c *Client) ListPipelineSteps(ctx context.Context, repo RepoRef, pipelineUUID string) ([]PipelineStep, error) {
-	var response struct {
-		Values []PipelineStep `json:"values"`
+	next := fmt.Sprintf("%s/2.0/repositories/%s/%s/pipelines/%s/steps", c.baseURL, repo.Workspace, repo.RepoSlug, pipelineUUID)
+	steps := make([]PipelineStep, 0)
+	for next != "" {
+		var response struct {
+			Values []PipelineStep `json:"values"`
+			Next   string         `json:"next"`
+		}
+		if err := c.doJSONPathOrURL(ctx, http.MethodGet, next, nil, &response); err != nil {
+			return nil, err
+		}
+		steps = append(steps, response.Values...)
+		if response.Next == "" {
+			next = ""
+			continue
+		}
+		validatedNext, err := c.validatePaginationURL(response.Next)
+		if err != nil {
+			return nil, err
+		}
+		next = validatedNext
 	}
-	path := fmt.Sprintf("/2.0/repositories/%s/%s/pipelines/%s/steps", repo.Workspace, repo.RepoSlug, pipelineUUID)
-	if err := c.doJSON(ctx, http.MethodGet, path, nil, nil, &response); err != nil {
-		return nil, err
-	}
-	return response.Values, nil
+	return steps, nil
 }
 
 func (c *Client) GetStepLog(ctx context.Context, repo RepoRef, pipelineUUID, stepUUID string) (string, error) {
@@ -232,11 +262,42 @@ func (c *Client) GetStepLog(ctx context.Context, repo RepoRef, pipelineUUID, ste
 		data, _ := io.ReadAll(resp.Body)
 		return "", fmt.Errorf("Bitbucket GET %s: status %d: %s", path, resp.StatusCode, strings.TrimSpace(string(data)))
 	}
-	data, err := io.ReadAll(resp.Body)
+	data, err := readTail(resp.Body, maxStepLogBytes)
 	if err != nil {
 		return "", fmt.Errorf("read Bitbucket step log: %w", err)
 	}
 	return strings.TrimSpace(string(data)), nil
+}
+
+func readTail(r io.Reader, maxBytes int) ([]byte, error) {
+	if maxBytes <= 0 {
+		return nil, nil
+	}
+	buf := make([]byte, 0, maxBytes)
+	tmp := make([]byte, 4096)
+	for {
+		n, err := r.Read(tmp)
+		if n > 0 {
+			chunk := tmp[:n]
+			if len(chunk) >= maxBytes {
+				buf = append(buf[:0], chunk[len(chunk)-maxBytes:]...)
+			} else {
+				overflow := len(buf) + len(chunk) - maxBytes
+				if overflow > 0 {
+					buf = append(buf[overflow:], chunk...)
+				} else {
+					buf = append(buf, chunk...)
+				}
+			}
+		}
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, err
+		}
+	}
+	return append([]byte(nil), buf...), nil
 }
 
 type bitbucketPullRequest struct {
