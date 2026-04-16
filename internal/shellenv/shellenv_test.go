@@ -3,11 +3,15 @@ package shellenv
 import (
 	"os"
 	"reflect"
+	"runtime"
 	"testing"
 	"time"
 )
 
 func TestResolve_UsesLoginShellAndCapturesEnv(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Resolve short-circuits to os.Environ() on Windows")
+	}
 	resetForTests()
 	t.Setenv("SHELL", "/bin/bash")
 
@@ -43,6 +47,9 @@ func TestResolve_UsesLoginShellAndCapturesEnv(t *testing.T) {
 }
 
 func TestApplyToProcess_SetsResolvedEnvEntries(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Resolve short-circuits to os.Environ() on Windows")
+	}
 	resetForTests()
 	t.Setenv("SHELL", "/bin/zsh")
 	t.Setenv("KEEP_ME", "1")
