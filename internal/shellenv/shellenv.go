@@ -109,12 +109,54 @@ func parseEnvOutput(out []byte) []string {
 	parts := strings.Split(string(out), "\x00")
 	env := make([]string, 0, len(parts))
 	for _, part := range parts {
-		if part == "" {
+		entry, ok := parseEnvEntry(part)
+		if !ok {
 			continue
 		}
-		env = append(env, part)
+		env = append(env, entry)
 	}
 	return env
+}
+
+func parseEnvEntry(part string) (string, bool) {
+	if part == "" {
+		return "", false
+	}
+	candidateStarts := []int{0}
+	for i := 0; i < len(part); i++ {
+		if part[i] == '\n' || part[i] == '\r' {
+			candidateStarts = append(candidateStarts, i+1)
+		}
+	}
+	for _, start := range candidateStarts {
+		candidate := strings.TrimLeft(part[start:], "\r\n")
+		if candidate == "" {
+			continue
+		}
+		key, _, found := strings.Cut(candidate, "=")
+		if found && validEnvKey(key) {
+			return candidate, true
+		}
+	}
+	return "", false
+}
+
+func validEnvKey(key string) bool {
+	if key == "" {
+		return false
+	}
+	for i, r := range key {
+		if i == 0 {
+			if !((r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || r == '_') {
+				return false
+			}
+			continue
+		}
+		if !((r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_') {
+			return false
+		}
+	}
+	return true
 }
 
 func ensureShellEntry(env []string, shell string) []string {

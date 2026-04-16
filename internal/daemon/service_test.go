@@ -240,6 +240,56 @@ func TestStopUsesManagedServiceWhenInstalled(t *testing.T) {
 	}
 }
 
+func TestStopFallsBackToDetachedDaemonWhenManagedStopFails(t *testing.T) {
+	p, _ := startTestDaemon(t)
+	home := t.TempDir()
+
+	cleanup := stubServiceRuntime(t)
+	defer cleanup()
+	runtimeGOOS = "linux"
+	serviceUserHomeDir = func() (string, error) { return home, nil }
+
+	unitPath := filepath.Join(home, ".config", "systemd", "user", systemdServiceName)
+	if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(unitPath, []byte("[Unit]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var commands []string
+	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
+		commands = append(commands, name+" "+strings.Join(args, " "))
+		return nil, fmt.Errorf("user manager unavailable")
+	}
+
+	if err := Stop(p); err != nil {
+		t.Fatalf("Stop should fall back to detached daemon shutdown: %v", err)
+	}
+
+	if len(commands) != 1 {
+		t.Fatalf("expected one managed stop command before fallback, got %v", commands)
+	}
+	if want := "systemctl --user stop " + systemdServiceName; commands[0] != want {
+		t.Fatalf("stop command = %q, want %q", commands[0], want)
+	}
+
+	alive, err := IsRunning(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if alive {
+		t.Fatal("daemon should be stopped")
+	}
+	if _, err := os.Stat(unitPath); err != nil {
+		t.Fatalf("managed unit should remain installed after fallback stop: %v", err)
+	}
+	_ = os.Remove(unitPath)
+	_ = os.Remove(filepath.Dir(unitPath))
+	_ = os.Remove(filepath.Dir(filepath.Dir(unitPath)))
+	_ = os.Remove(filepath.Dir(filepath.Dir(filepath.Dir(unitPath))))
+}
+
 func TestStopFallsBackToDetachedDaemonOnWindowsWithoutManagedService(t *testing.T) {
 	p, _ := startTestDaemon(t)
 

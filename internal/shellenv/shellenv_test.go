@@ -73,6 +73,15 @@ func TestApplyToProcess_SetsResolvedEnvEntries(t *testing.T) {
 	}
 }
 
+func TestParseEnvOutput_IgnoresShellNoiseBeforeEnv(t *testing.T) {
+	env := parseEnvOutput([]byte("banner text\nPATH=/resolved/bin\x00HOME=/Users/test\x00SPECIAL=1\x00"))
+
+	want := []string{"PATH=/resolved/bin", "HOME=/Users/test", "SPECIAL=1"}
+	if !reflect.DeepEqual(env, want) {
+		t.Fatalf("env = %v, want %v", env, want)
+	}
+}
+
 func containsEnvEntry(env []string, want string) bool {
 	for _, entry := range env {
 		if entry == want {

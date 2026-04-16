@@ -145,7 +145,10 @@ func Stop(p *paths.Paths) error {
 			if alive, _ := daemonHealthCheck(p); !alive {
 				return nil
 			}
-			return err
+			if detachedErr := stopDetachedDaemon(p); detachedErr != nil {
+				return fmt.Errorf("%w; detached shutdown: %v", err, detachedErr)
+			}
+			return nil
 		}
 		return waitForDaemonStop(p)
 	}

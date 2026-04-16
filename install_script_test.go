@@ -119,6 +119,26 @@ func TestInstallScriptSucceedsWhenDaemonStartFails(t *testing.T) {
 	}
 }
 
+func TestPowerShellInstallScriptAllowsDaemonStartFailure(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("docs", "install.ps1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if !strings.Contains(text, "$oldErrorActionPreference = $ErrorActionPreference") {
+		t.Fatal("install.ps1 should preserve the current error preference before daemon start")
+	}
+	if !strings.Contains(text, "$ErrorActionPreference = \"Continue\"") {
+		t.Fatal("install.ps1 should relax error handling around daemon start")
+	}
+	if !strings.Contains(text, "& \"$installDir\\no-mistakes.exe\" daemon start | Out-Null") {
+		t.Fatal("install.ps1 should still attempt daemon start")
+	}
+	if !strings.Contains(text, "$ErrorActionPreference = $oldErrorActionPreference") {
+		t.Fatal("install.ps1 should restore the previous error preference")
+	}
+}
+
 func skipInstallScriptTestsOnWindows(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
