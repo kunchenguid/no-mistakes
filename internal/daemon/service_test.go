@@ -718,7 +718,7 @@ func TestServiceInstanceSuffixResolvesSymlinkedRoot(t *testing.T) {
 	}
 }
 
-func TestServiceInstanceSuffixKeepsRelativeRootStableAcrossWorkingDirs(t *testing.T) {
+func TestServiceInstanceSuffixDistinguishesRelativeRootsAcrossWorkingDirs(t *testing.T) {
 	cleanup := stubServiceRuntime(t)
 	defer cleanup()
 
@@ -753,8 +753,8 @@ func TestServiceInstanceSuffixKeepsRelativeRootStableAcrossWorkingDirs(t *testin
 	}
 	second := serviceInstanceSuffix(relativePaths)
 
-	if first != second {
-		t.Fatalf("serviceInstanceSuffix(relative root) changed across working directories: %q vs %q", first, second)
+	if first == second {
+		t.Fatalf("serviceInstanceSuffix(relative root) = %q for both working directories", first)
 	}
 }
 
