@@ -89,6 +89,36 @@ func TestInstallScriptStartsDaemonAfterInstall(t *testing.T) {
 	}
 }
 
+func TestInstallScriptSucceedsWhenDaemonStartFails(t *testing.T) {
+	skipInstallScriptTestsOnWindows(t)
+
+	home := t.TempDir()
+	archivePath := filepath.Join(t.TempDir(), "no-mistakes-v1.2.3-darwin-arm64.tar.gz")
+	callLog := filepath.Join(t.TempDir(), "calls.log")
+	makeInstallArchive(t, archivePath, "#!/bin/sh\nprintf '%s\n' \"$*\" >> \"$NO_MISTAKES_CALL_LOG\"\nif [ \"$1\" = \"daemon\" ] && [ \"$2\" = \"start\" ]; then\n  exit 23\nfi\n")
+	fakeBin := makeFakeInstallCommands(t)
+	localBin := filepath.Join(home, ".local", "bin")
+	if err := os.MkdirAll(localBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	output, err := runInstallScriptCommand(t, home, fakeBin, map[string]string{
+		"FAKE_RELEASE_ARCHIVE": archivePath,
+		"NO_MISTAKES_CALL_LOG": callLog,
+	})
+	if err != nil {
+		t.Fatalf("install.sh should succeed even when daemon start fails: %v\n%s", err, output)
+	}
+
+	data, err := os.ReadFile(callLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "daemon start") {
+		t.Fatalf("install.sh should still attempt daemon start, got calls %q", string(data))
+	}
+}
+
 func skipInstallScriptTestsOnWindows(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
@@ -97,6 +127,14 @@ func skipInstallScriptTestsOnWindows(t *testing.T) {
 }
 
 func runInstallScript(t *testing.T, home, fakeBin string, extraEnv map[string]string) {
+	t.Helper()
+	output, err := runInstallScriptCommand(t, home, fakeBin, extraEnv)
+	if err != nil {
+		t.Fatalf("install.sh failed: %v\n%s", err, output)
+	}
+}
+
+func runInstallScriptCommand(t *testing.T, home, fakeBin string, extraEnv map[string]string) ([]byte, error) {
 	t.Helper()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -110,10 +148,7 @@ func runInstallScript(t *testing.T, home, fakeBin string, extraEnv map[string]st
 	for key, value := range extraEnv {
 		cmd.Env = append(cmd.Env, key+"="+value)
 	}
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("install.sh failed: %v\n%s", err, output)
-	}
+	return cmd.CombinedOutput()
 }
 
 func filteredEnv(env []string, excluded ...string) []string {

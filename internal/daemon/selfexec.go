@@ -44,12 +44,13 @@ func Start(p *paths.Paths) error {
 	if alive, _ := daemonHealthCheck(p); alive {
 		return fmt.Errorf("daemon already running")
 	}
-	if managed, err := installManagedService(p); err != nil {
-		return err
-	} else if managed {
-		if err := startManagedDaemon(p); err != nil {
-			return err
+	if managed, err := installManagedService(p); err == nil {
+		if managed {
+			if err := startManagedDaemon(p); err == nil {
+				return nil
+			}
 		}
+	} else if alive, _ := daemonHealthCheck(p); alive {
 		return nil
 	}
 	return startDetachedDaemon(p)

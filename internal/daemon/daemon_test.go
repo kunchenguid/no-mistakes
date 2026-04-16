@@ -20,6 +20,13 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
+func TestMain(m *testing.M) {
+	if os.Getenv("NM_DAEMON_HELPER_PROCESS") == "1" {
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
+
 // startTestDaemon starts RunWithResources in a goroutine with a temp root.
 // Returns paths, db, and a cleanup function that stops the daemon.
 func startTestDaemon(t *testing.T) (*paths.Paths, *db.DB) {

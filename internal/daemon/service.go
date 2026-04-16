@@ -94,7 +94,11 @@ func managedServiceInstalled(p *paths.Paths) bool {
 		_, err := os.Stat(systemdUserServicePath())
 		return err == nil
 	case "windows":
-		return p != nil
+		if p == nil {
+			return false
+		}
+		_, err := serviceCommandRunner("schtasks", "/Query", "/TN", windowsTaskName)
+		return err == nil
 	default:
 		return false
 	}
