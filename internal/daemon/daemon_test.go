@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -386,7 +387,7 @@ func TestStopNotRunningRemovesStaleArtifacts(t *testing.T) {
 	if err := p.EnsureDirs(); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(p.PIDFile(), []byte("12345"), 0o644); err != nil {
+	if err := os.WriteFile(p.PIDFile(), []byte(fmt.Sprintf("%d", os.Getpid())), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(p.Socket(), []byte("stale"), 0o644); err != nil {
@@ -461,7 +462,7 @@ func TestStopDetachedDaemonKeepsArtifactsOnDialFailure(t *testing.T) {
 	if err := p.EnsureDirs(); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(p.PIDFile(), []byte("12345"), 0o644); err != nil {
+	if err := os.WriteFile(p.PIDFile(), []byte(fmt.Sprintf("%d", os.Getpid())), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	ln, err := net.Listen("unix", p.Socket())
@@ -487,6 +488,56 @@ func TestStopDetachedDaemonKeepsArtifactsOnDialFailure(t *testing.T) {
 	}
 	if _, statErr := os.Stat(p.Socket()); statErr != nil {
 		t.Fatalf("expected socket file to remain after dial failure, got err=%v", statErr)
+	}
+}
+
+func TestStopDetachedDaemonRemovesArtifactsForDeadPID(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix socket setup is platform-specific")
+	}
+
+	tmpDir, err := os.MkdirTemp("", "dtest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	p := paths.WithRoot(tmpDir)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.PIDFile(), []byte("999999"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fd, err := syscall.Socket(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := &syscall.SockaddrUnix{Name: p.Socket()}
+	if err := syscall.Bind(fd, addr); err != nil {
+		_ = syscall.Close(fd)
+		t.Fatal(err)
+	}
+	if err := syscall.Close(fd); err != nil {
+		t.Fatal(err)
+	}
+
+	originalDial := daemonDial
+	daemonDial = func(string) (*ipc.Client, error) {
+		return nil, fmt.Errorf("transient ipc failure")
+	}
+	defer func() {
+		daemonDial = originalDial
+	}()
+
+	if err := stopDetachedDaemon(p); err != nil {
+		t.Fatalf("expected stopDetachedDaemon to clean stale artifacts, got %v", err)
+	}
+	if _, statErr := os.Stat(p.PIDFile()); !os.IsNotExist(statErr) {
+		t.Fatalf("expected stale pid file to be removed, got err=%v", statErr)
+	}
+	if _, statErr := os.Stat(p.Socket()); !os.IsNotExist(statErr) {
+		t.Fatalf("expected stale socket file to be removed, got err=%v", statErr)
 	}
 }
 

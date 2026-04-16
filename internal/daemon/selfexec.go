@@ -203,13 +203,18 @@ func staleDaemonArtifacts(p *paths.Paths) (bool, error) {
 	if info.Mode()&os.ModeSocket == 0 {
 		return true, nil
 	}
-	if _, err := ReadPID(p); err != nil {
+	pid, err := ReadPID(p)
+	if err != nil {
 		if os.IsNotExist(err) {
 			return true, nil
 		}
 		return false, err
 	}
-	return false, nil
+	running, err := processRunning(pid)
+	if err != nil {
+		return false, err
+	}
+	return !running, nil
 }
 
 func waitForDaemonStop(p *paths.Paths) error {
