@@ -63,11 +63,14 @@ func TestListPRStatusesFollowsPagination(t *testing.T) {
 		if r.URL.Path != "/2.0/repositories/test/repo/pullrequests/42/statuses" {
 			t.Fatalf("path = %q, want %q", r.URL.Path, "/2.0/repositories/test/repo/pullrequests/42/statuses")
 		}
+		if got := r.URL.Query().Get("sort"); got != "-created_on" {
+			t.Fatalf("sort = %q, want -created_on", got)
+		}
 		pageCalls++
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Query().Get("page") {
 		case "", "1":
-			_, _ = w.Write([]byte(`{"values":[{"name":"build","state":"SUCCESSFUL"}],"next":"` + server.URL + `/2.0/repositories/test/repo/pullrequests/42/statuses?page=2"}`))
+			_, _ = w.Write([]byte(`{"values":[{"name":"build","state":"SUCCESSFUL"}],"next":"` + server.URL + `/2.0/repositories/test/repo/pullrequests/42/statuses?sort=-created_on&page=2"}`))
 		case "2":
 			_, _ = w.Write([]byte(`{"values":[{"name":"tests","state":"FAILED"}]}`))
 		default:

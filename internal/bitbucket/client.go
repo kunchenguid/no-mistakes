@@ -167,7 +167,10 @@ func (c *Client) GetPR(ctx context.Context, repo RepoRef, prID int) (*PullReques
 }
 
 func (c *Client) ListPRStatuses(ctx context.Context, repo RepoRef, prID int) ([]CommitStatus, error) {
-	next := fmt.Sprintf("%s/%d/statuses", repoPRPath(repo), prID)
+	query := url.Values{}
+	query.Set("sort", "-created_on")
+
+	next := fmt.Sprintf("%s/%d/statuses?%s", repoPRPath(repo), prID, query.Encode())
 	statuses := make([]CommitStatus, 0)
 	for next != "" {
 		var response struct {
