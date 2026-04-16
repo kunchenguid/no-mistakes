@@ -4000,6 +4000,8 @@ type fakeBitbucketCIAPI struct {
 	pipelinesJSON  string
 	stepsJSON      string
 	stepLog        string
+	stepsByPath    map[string]string
+	stepLogsByPath map[string]string
 	prSourceSHA    string
 	prStateCalls   int
 	statusesCalls  int
@@ -4037,6 +4039,13 @@ func newFakeBitbucketCIAPI(t *testing.T, prState, statusesJSON string) *fakeBitb
 			api.lastPipelineQ = r.URL.Query().Get("target.commit.hash")
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, api.pipelinesJSON)
+		case r.Method == http.MethodGet && api.stepsByPath[r.URL.Path] != "":
+			api.stepsCalls++
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, api.stepsByPath[r.URL.Path])
+		case r.Method == http.MethodGet && api.stepLogsByPath[r.URL.Path] != "":
+			api.stepLogCalls++
+			fmt.Fprint(w, api.stepLogsByPath[r.URL.Path])
 		case r.Method == http.MethodGet && r.URL.Path == "/2.0/repositories/test/repo/pipelines/{pipeline-1}/steps" && api.stepsJSON != "":
 			api.stepsCalls++
 			w.Header().Set("Content-Type", "application/json")
@@ -5355,6 +5364,95 @@ func TestCIStep_BitbucketAutoFixUsesLivePRHeadSHAForLogs(t *testing.T) {
 	}
 	if api.lastPipelineQ == staleHeadSHA {
 		t.Fatalf("pipeline lookup used stale run head SHA %q", staleHeadSHA)
+	}
+}
+
+func TestCIStep_BitbucketAutoFixUsesMatchingPipelineLogs(t *testing.T) {
+	t.Parallel()
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	if err := os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	api := newFakeBitbucketCIAPI(t, "OPEN", `{"values":[{"name":"test","state":"FAILED","url":"https://bitbucket.org/test/repo/addon/pipelines/home#!/results/pipeline-2"}]}`)
+	api.pipelinesJSON = `{"values":[{"uuid":"{pipeline-1}"},{"uuid":"{pipeline-2}"}]}`
+	api.stepsByPath = map[string]string{
+		"/2.0/repositories/test/repo/pipelines/{pipeline-1}/steps": `{"values":[{"uuid":"{step-1}","state":{"name":"COMPLETED","result":{"name":"FAILED"}}}]}`,
+		"/2.0/repositories/test/repo/pipelines/{pipeline-2}/steps": `{"values":[{"uuid":"{step-2}","state":{"name":"COMPLETED","result":{"name":"FAILED"}}}]}`,
+	}
+	api.stepLogsByPath = map[string]string{
+		"/2.0/repositories/test/repo/pipelines/{pipeline-1}/steps/{step-1}/log": "wrong pipeline log",
+		"/2.0/repositories/test/repo/pipelines/{pipeline-2}/steps/{step-2}/log": "matching pipeline log",
+	}
+	api.prSourceSHA = headSHA
+
+	var capturedPrompt string
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			capturedPrompt = opts.Prompt
+			if err := os.WriteFile(filepath.Join(opts.CWD, "ci-fix.txt"), []byte("fixed"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return &agent.Result{}, nil
+		},
+	}
+
+	prURL := "https://bitbucket.org/test/repo/pull-requests/42"
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = fakeBitbucketEnv(api.server.URL)
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Config.CITimeout = 30 * time.Second
+	sctx.Config.AutoFix = config.AutoFix{CI: 1}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	step := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			cancel()
+			return ctx.Err()
+		},
+	}
+	_, err := step.Execute(sctx)
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context cancellation after auto-fix poll, got %v", err)
+	}
+	if capturedPrompt == "" {
+		t.Fatal("expected Bitbucket auto-fix to call the agent")
+	}
+	if !strings.Contains(capturedPrompt, "matching pipeline log") {
+		t.Fatalf("expected prompt to include matching pipeline log, got:\n%s", capturedPrompt)
+	}
+	if strings.Contains(capturedPrompt, "wrong pipeline log") {
+		t.Fatalf("expected prompt to exclude unrelated pipeline log, got:\n%s", capturedPrompt)
+	}
+	if api.stepLogCalls != 1 {
+		t.Fatalf("expected exactly one Bitbucket step log fetch, got %d", api.stepLogCalls)
 	}
 }
 

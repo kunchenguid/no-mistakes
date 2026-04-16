@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -544,7 +545,65 @@ func trimLogOutput(logOutput string, maxBytes int) string {
 	return logOutput
 }
 
-func (s *CIStep) fetchBitbucketFailedStepLogs(sctx *pipeline.StepContext, client *bitbucket.Client, repo bitbucket.RepoRef, commitSHA string) string {
+func normalizeBitbucketPipelineUUID(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	trimmed = strings.Trim(trimmed, "{}")
+	if trimmed == "" {
+		return ""
+	}
+	return strings.ToLower(trimmed)
+}
+
+func bitbucketPipelineUUIDFromStatusURL(raw string) string {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return ""
+	}
+	fragments := []string{parsed.Fragment, parsed.Path}
+	for _, fragment := range fragments {
+		idx := strings.LastIndex(fragment, "/results/")
+		if idx < 0 {
+			continue
+		}
+		uuid := fragment[idx+len("/results/"):]
+		uuid = strings.TrimSpace(strings.SplitN(uuid, "?", 2)[0])
+		uuid = strings.TrimSpace(strings.SplitN(uuid, "/", 2)[0])
+		return normalizeBitbucketPipelineUUID(uuid)
+	}
+	return ""
+}
+
+func bitbucketFailedPipelineUUIDs(statuses []bitbucket.CommitStatus, failingNames []string) map[string]struct{} {
+	if len(failingNames) == 0 {
+		return nil
+	}
+	failing := make(map[string]struct{}, len(failingNames))
+	for _, name := range failingNames {
+		trimmed := strings.TrimSpace(name)
+		if trimmed != "" {
+			failing[trimmed] = struct{}{}
+		}
+	}
+	if len(failing) == 0 {
+		return nil
+	}
+	targets := map[string]struct{}{}
+	for _, status := range latestBitbucketStatuses(statuses) {
+		if _, ok := failing[bitbucketStatusName(status)]; !ok {
+			continue
+		}
+		uuid := bitbucketPipelineUUIDFromStatusURL(status.URL)
+		if uuid != "" {
+			targets[uuid] = struct{}{}
+		}
+	}
+	if len(targets) == 0 {
+		return nil
+	}
+	return targets
+}
+
+func (s *CIStep) fetchBitbucketFailedStepLogs(sctx *pipeline.StepContext, client *bitbucket.Client, repo bitbucket.RepoRef, commitSHA string, targetPipelines map[string]struct{}) string {
 	if client == nil || strings.TrimSpace(commitSHA) == "" {
 		return ""
 	}
@@ -553,6 +612,11 @@ func (s *CIStep) fetchBitbucketFailedStepLogs(sctx *pipeline.StepContext, client
 		return ""
 	}
 	for _, pipelineRun := range pipelines {
+		if len(targetPipelines) > 0 {
+			if _, ok := targetPipelines[normalizeBitbucketPipelineUUID(pipelineRun.UUID)]; !ok {
+				continue
+			}
+		}
 		steps, err := client.ListPipelineSteps(sctx.Ctx, repo, pipelineRun.UUID)
 		if err != nil {
 			continue
@@ -599,10 +663,14 @@ func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, prNumber string, failingN
 				prID, convErr := strconv.Atoi(prNumber)
 				if convErr == nil {
 					commitSHA := strings.TrimSpace(sctx.Run.HeadSHA)
+					var targetPipelines map[string]struct{}
 					if pr, prErr := client.GetPR(sctx.Ctx, repo, prID); prErr == nil && pr != nil && strings.TrimSpace(pr.SourceCommitHash) != "" {
 						commitSHA = strings.TrimSpace(pr.SourceCommitHash)
 					}
-					logOutput = s.fetchBitbucketFailedStepLogs(sctx, client, repo, commitSHA)
+					if statuses, statusErr := client.ListPRStatuses(sctx.Ctx, repo, prID); statusErr == nil {
+						targetPipelines = bitbucketFailedPipelineUUIDs(statuses, failingNames)
+					}
+					logOutput = s.fetchBitbucketFailedStepLogs(sctx, client, repo, commitSHA, targetPipelines)
 				}
 			}
 		}
