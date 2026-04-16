@@ -152,9 +152,14 @@ func TestStartFallsBackToDetachedDaemonWhenManagedStartFails(t *testing.T) {
 	serviceExecutablePath = func() (string, error) { return "/usr/local/bin/no-mistakes", nil }
 
 	var commands []string
+	var managedStopped bool
 	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
 		command := name + " " + strings.Join(args, " ")
 		commands = append(commands, command)
+		if command == "systemctl --user stop "+systemdServiceName {
+			managedStopped = true
+			return nil, nil
+		}
 		if command == "systemctl --user start "+systemdServiceName {
 			return nil, fmt.Errorf("user manager unavailable")
 		}
@@ -170,19 +175,23 @@ func TestStartFallsBackToDetachedDaemonWhenManagedStartFails(t *testing.T) {
 		t.Fatalf("Start should fall back to detached mode: %v", err)
 	}
 
-	if len(commands) != 3 {
-		t.Fatalf("expected managed service install and start before fallback, got %v", commands)
+	if len(commands) != 4 {
+		t.Fatalf("expected managed start, stop, and detached fallback, got %v", commands)
 	}
 	if want := []string{
 		"systemctl --user daemon-reload",
 		"systemctl --user enable " + systemdServiceName,
 		"systemctl --user start " + systemdServiceName,
+		"systemctl --user stop " + systemdServiceName,
 	}; len(commands) == len(want) {
 		for i, wantCmd := range want {
 			if commands[i] != wantCmd {
 				t.Fatalf("command[%d] = %q, want %q", i, commands[i], wantCmd)
 			}
 		}
+	}
+	if !managedStopped {
+		t.Fatal("managed service should be stopped before detached fallback")
 	}
 	if _, err := os.Stat(p.DaemonLog()); err != nil {
 		t.Fatalf("detached fallback should open daemon log: %v", err)
@@ -195,6 +204,74 @@ func TestStartFallsBackToDetachedDaemonWhenManagedStartFails(t *testing.T) {
 	}
 	if checks < 3 {
 		t.Fatalf("expected health checks for preflight, managed failure, and detached wait, got %d", checks)
+	}
+	_ = os.Remove(p.DaemonLog())
+	_ = os.Remove(p.PIDFile())
+	_ = os.Remove(p.Socket())
+}
+
+func TestStartStopsManagedServiceBeforeDetachedFallbackAfterTimeout(t *testing.T) {
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+
+	cleanup := stubServiceRuntime(t)
+	defer cleanup()
+	t.Setenv("NM_DAEMON_HELPER_PROCESS", "1")
+	t.Setenv("NM_TEST_DAEMON_START_TIMEOUT", "20ms")
+	t.Setenv("NM_TEST_DAEMON_START_POLL_INTERVAL", "1ms")
+	runtimeGOOS = "linux"
+	serviceUserHomeDir = func() (string, error) { return home, nil }
+	serviceExecutablePath = func() (string, error) { return "/usr/local/bin/no-mistakes", nil }
+
+	var commands []string
+	var managedStopped bool
+	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
+		command := name + " " + strings.Join(args, " ")
+		commands = append(commands, command)
+		if command == "systemctl --user stop "+systemdServiceName {
+			managedStopped = true
+		}
+		return nil, nil
+	}
+	checks := 0
+	daemonHealthCheck = func(*paths.Paths) (bool, error) {
+		checks++
+		if !managedStopped {
+			return false, nil
+		}
+		return checks > 2, nil
+	}
+
+	if err := Start(p); err != nil {
+		t.Fatalf("Start should fall back to detached mode after managed timeout: %v", err)
+	}
+
+	if len(commands) != 4 {
+		t.Fatalf("expected managed start, stop, and detached fallback, got %v", commands)
+	}
+	if want := []string{
+		"systemctl --user daemon-reload",
+		"systemctl --user enable " + systemdServiceName,
+		"systemctl --user start " + systemdServiceName,
+		"systemctl --user stop " + systemdServiceName,
+	}; len(commands) == len(want) {
+		for i, wantCmd := range want {
+			if commands[i] != wantCmd {
+				t.Fatalf("command[%d] = %q, want %q", i, commands[i], wantCmd)
+			}
+		}
+	}
+	if !managedStopped {
+		t.Fatal("managed service should be stopped before detached fallback")
+	}
+	if _, err := os.Stat(p.DaemonLog()); err != nil {
+		t.Fatalf("detached fallback should open daemon log: %v", err)
+	}
+	if checks < 3 {
+		t.Fatalf("expected health checks during managed timeout and detached wait, got %d", checks)
 	}
 	_ = os.Remove(p.DaemonLog())
 	_ = os.Remove(p.PIDFile())

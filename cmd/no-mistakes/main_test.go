@@ -68,6 +68,11 @@ func TestDaemonRunRootFromArgs(t *testing.T) {
 		{name: "daemon run root flag", args: []string{"daemon", "run", "--root", "/tmp/nm"}, wantRoot: "/tmp/nm", wantOK: true},
 		{name: "daemon run root equals", args: []string{"daemon", "run", "--root=/tmp/nm"}, wantRoot: "/tmp/nm", wantOK: true},
 		{name: "daemon run missing root value", args: []string{"daemon", "run", "--root"}, wantErr: "missing value for --root"},
+		{name: "daemon run help", args: []string{"daemon", "run", "--help"}},
+		{name: "daemon run short help", args: []string{"daemon", "run", "-h"}},
+		{name: "daemon run unknown flag", args: []string{"daemon", "run", "--bogus"}},
+		{name: "daemon run extra arg", args: []string{"daemon", "run", "extra"}},
+		{name: "daemon run root plus extra arg", args: []string{"daemon", "run", "--root", "/tmp/nm", "extra"}},
 	}
 
 	for _, tt := range tests {

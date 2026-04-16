@@ -56,19 +56,26 @@ func daemonRunRootFromArgs(args []string) (string, bool, error) {
 	if len(args) < 2 || args[0] != "daemon" || args[1] != "run" {
 		return "", false, nil
 	}
-	for i := 2; i < len(args); i++ {
-		arg := args[i]
+	if len(args) == 2 {
+		return "", true, nil
+	}
+	if len(args) == 3 {
+		arg := args[2]
+		if arg == "--help" || arg == "-h" {
+			return "", false, nil
+		}
 		if arg == "--root" {
-			if i+1 >= len(args) {
-				return "", false, fmt.Errorf("missing value for --root")
-			}
-			return args[i+1], true, nil
+			return "", false, fmt.Errorf("missing value for --root")
 		}
 		if value, ok := strings.CutPrefix(arg, "--root="); ok {
 			return value, true, nil
 		}
+		return "", false, nil
 	}
-	return "", true, nil
+	if len(args) == 4 && args[2] == "--root" {
+		return args[3], true, nil
+	}
+	return "", false, nil
 }
 
 // cliLogWriter returns a writer for CLI logs. Falls back to io.Discard

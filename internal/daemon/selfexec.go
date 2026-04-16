@@ -48,12 +48,25 @@ func Start(p *paths.Paths) error {
 		if managed {
 			if err := startManagedDaemon(p); err == nil {
 				return nil
+			} else if err := stopManagedFallback(p); err != nil {
+				return err
 			}
 		}
 	} else if alive, _ := daemonHealthCheck(p); alive {
 		return nil
 	}
 	return startDetachedDaemon(p)
+}
+
+func stopManagedFallback(p *paths.Paths) error {
+	managed, err := stopManagedService(p)
+	if !managed || err == nil {
+		return nil
+	}
+	if alive, _ := daemonHealthCheck(p); alive {
+		return fmt.Errorf("managed daemon is still running: %w", err)
+	}
+	return fmt.Errorf("stop managed daemon before detached fallback: %w", err)
 }
 
 func startDetachedDaemon(p *paths.Paths) error {
