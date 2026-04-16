@@ -91,11 +91,10 @@ func serviceInstanceSuffix(p *paths.Paths) string {
 	if p != nil {
 		root = p.Root()
 	}
-	if abs, err := filepath.Abs(root); err == nil {
-		root = abs
-	}
-	if resolved, err := filepath.EvalSymlinks(root); err == nil {
-		root = resolved
+	if filepath.IsAbs(root) {
+		if resolved, err := filepath.EvalSymlinks(root); err == nil {
+			root = resolved
+		}
 	}
 	root = filepath.Clean(root)
 	if runtimeGOOS == "windows" {

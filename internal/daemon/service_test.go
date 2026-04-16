@@ -718,6 +718,46 @@ func TestServiceInstanceSuffixResolvesSymlinkedRoot(t *testing.T) {
 	}
 }
 
+func TestServiceInstanceSuffixKeepsRelativeRootStableAcrossWorkingDirs(t *testing.T) {
+	cleanup := stubServiceRuntime(t)
+	defer cleanup()
+
+	base := t.TempDir()
+	firstWD := filepath.Join(base, "first")
+	secondWD := filepath.Join(base, "second")
+	for _, dir := range []string{firstWD, secondWD} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := os.Chdir(originalWD); err != nil {
+			t.Fatalf("restore working directory: %v", err)
+		}
+	}()
+
+	relativePaths := paths.WithRoot(filepath.Join(".", "nm-home"))
+
+	if err := os.Chdir(firstWD); err != nil {
+		t.Fatal(err)
+	}
+	first := serviceInstanceSuffix(relativePaths)
+
+	if err := os.Chdir(secondWD); err != nil {
+		t.Fatal(err)
+	}
+	second := serviceInstanceSuffix(relativePaths)
+
+	if first != second {
+		t.Fatalf("serviceInstanceSuffix(relative root) changed across working directories: %q vs %q", first, second)
+	}
+}
+
 func TestServiceInstanceSuffixNormalizesCaseOnWindows_EnableWindowsCI(t *testing.T) {
 	cleanup := stubServiceRuntime(t)
 	defer cleanup()
