@@ -401,6 +401,48 @@ func TestStopNotRunningRemovesStaleArtifacts(t *testing.T) {
 	}
 }
 
+func TestWaitForDaemonStopKeepsArtifactsWhenKillFails(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "dtest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	p := paths.WithRoot(tmpDir)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.PIDFile(), []byte("999999"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.Socket(), []byte("still-there"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	originalHealthCheck := daemonHealthCheck
+	daemonHealthCheck = func(*paths.Paths) (bool, error) {
+		return true, nil
+	}
+	defer func() {
+		daemonHealthCheck = originalHealthCheck
+	}()
+
+	started := time.Now()
+	err = waitForDaemonStop(p)
+	if err == nil {
+		t.Fatal("expected waitForDaemonStop to fail when kill fails")
+	}
+	if time.Since(started) < 5*time.Second {
+		t.Fatalf("waitForDaemonStop returned too early after %v", time.Since(started))
+	}
+	if _, err := os.Stat(p.PIDFile()); err != nil {
+		t.Fatalf("expected pid file to remain after failed kill, got err=%v", err)
+	}
+	if _, err := os.Stat(p.Socket()); err != nil {
+		t.Fatalf("expected socket file to remain after failed kill, got err=%v", err)
+	}
+}
+
 func TestReadPIDNoFile(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "dtest")
 	if err != nil {

@@ -200,12 +200,24 @@ func waitForDaemonStop(p *paths.Paths) error {
 	if pid, err := ReadPID(p); err == nil {
 		if proc, err := os.FindProcess(pid); err == nil {
 			slog.Warn("daemon did not stop gracefully, killing", "pid", pid)
-			proc.Kill()
+			if err := proc.Kill(); err != nil {
+				return fmt.Errorf("kill daemon pid %d: %w", pid, err)
+			}
+
+			killDeadline := time.Now().Add(2 * time.Second)
+			for time.Now().Before(killDeadline) {
+				if alive, _ := daemonHealthCheck(p); !alive {
+					cleanupDaemonArtifacts(p)
+					slog.Warn("daemon killed after shutdown timeout", "pid", pid)
+					return nil
+				}
+				time.Sleep(100 * time.Millisecond)
+			}
+			return fmt.Errorf("daemon pid %d still running after kill", pid)
 		}
 	}
-	cleanupDaemonArtifacts(p)
 
-	return nil
+	return fmt.Errorf("daemon did not stop within timeout")
 }
 
 func cleanupDaemonArtifacts(p *paths.Paths) {

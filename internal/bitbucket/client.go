@@ -164,13 +164,20 @@ func (c *Client) GetPR(ctx context.Context, repo RepoRef, prID int) (*PullReques
 }
 
 func (c *Client) ListPRStatuses(ctx context.Context, repo RepoRef, prID int) ([]CommitStatus, error) {
-	var response struct {
-		Values []CommitStatus `json:"values"`
+	next := fmt.Sprintf("%s/%d/statuses", repoPRPath(repo), prID)
+	statuses := make([]CommitStatus, 0)
+	for next != "" {
+		var response struct {
+			Values []CommitStatus `json:"values"`
+			Next   string         `json:"next"`
+		}
+		if err := c.doJSONPathOrURL(ctx, http.MethodGet, next, nil, &response); err != nil {
+			return nil, err
+		}
+		statuses = append(statuses, response.Values...)
+		next = response.Next
 	}
-	if err := c.doJSON(ctx, http.MethodGet, fmt.Sprintf("%s/%d/statuses", repoPRPath(repo), prID), nil, nil, &response); err != nil {
-		return nil, err
-	}
-	return response.Values, nil
+	return statuses, nil
 }
 
 func (c *Client) ListPipelinesByCommit(ctx context.Context, repo RepoRef, commitSHA string) ([]Pipeline, error) {
@@ -237,6 +244,14 @@ func (pr bitbucketPullRequest) toPullRequest() *PullRequest {
 }
 
 func (c *Client) doJSON(ctx context.Context, method, path string, query url.Values, requestBody any, responseBody any) error {
+	endpoint := c.baseURL + path
+	if len(query) > 0 {
+		endpoint += "?" + query.Encode()
+	}
+	return c.doJSONPathOrURL(ctx, method, endpoint, requestBody, responseBody)
+}
+
+func (c *Client) doJSONPathOrURL(ctx context.Context, method, pathOrURL string, requestBody any, responseBody any) error {
 	var bodyReader io.Reader = http.NoBody
 	if requestBody != nil {
 		payload, err := json.Marshal(requestBody)
@@ -246,9 +261,10 @@ func (c *Client) doJSON(ctx context.Context, method, path string, query url.Valu
 		bodyReader = bytes.NewReader(payload)
 	}
 
-	endpoint := c.baseURL + path
-	if len(query) > 0 {
-		endpoint += "?" + query.Encode()
+	endpoint := pathOrURL
+	requestLabel := pathOrURL
+	if !strings.HasPrefix(pathOrURL, "http://") && !strings.HasPrefix(pathOrURL, "https://") {
+		endpoint = c.baseURL + pathOrURL
 	}
 	req, err := http.NewRequestWithContext(ctx, method, endpoint, bodyReader)
 	if err != nil {
@@ -262,13 +278,13 @@ func (c *Client) doJSON(ctx context.Context, method, path string, query url.Valu
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("Bitbucket %s %s: %w", method, path, err)
+		return fmt.Errorf("Bitbucket %s %s: %w", method, requestLabel, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		data, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("Bitbucket %s %s: status %d: %s", method, path, resp.StatusCode, strings.TrimSpace(string(data)))
+		return fmt.Errorf("Bitbucket %s %s: status %d: %s", method, requestLabel, resp.StatusCode, strings.TrimSpace(string(data)))
 	}
 	if responseBody == nil {
 		return nil
