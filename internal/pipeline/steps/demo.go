@@ -130,11 +130,15 @@ func (s *demoStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	// Fix round: emit fix log and return clean.
 	if sctx.Fixing && s.fixLog != "" && !s.fixed {
 		s.fixed = true
-		streamDemoLog(sctx, s.fixLog, s.fixDelay)
+		if err := streamDemoLog(sctx, s.fixLog, s.fixDelay); err != nil {
+			return nil, err
+		}
 		return &pipeline.StepOutcome{}, nil
 	}
 
-	streamDemoLog(sctx, s.log, s.delay)
+	if err := streamDemoLog(sctx, s.log, s.delay); err != nil {
+		return nil, err
+	}
 
 	outcome := &pipeline.StepOutcome{
 		PRURL:              s.prURL,
@@ -155,16 +159,16 @@ func (s *demoStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 }
 
 // streamDemoLog emits log text in chunks with realistic pacing.
-func streamDemoLog(sctx *pipeline.StepContext, text string, total time.Duration) {
+func streamDemoLog(sctx *pipeline.StepContext, text string, total time.Duration) error {
 	if text == "" {
-		return
+		return nil
 	}
 	if sctx.Ctx != nil && sctx.Ctx.Err() != nil {
-		return
+		return sctx.Ctx.Err()
 	}
 	lines := splitLines(text)
 	if len(lines) == 0 {
-		return
+		return nil
 	}
 	pause := total / time.Duration(len(lines))
 	if pause < 50*time.Millisecond {
@@ -172,13 +176,17 @@ func streamDemoLog(sctx *pipeline.StepContext, text string, total time.Duration)
 	}
 	for i, line := range lines {
 		if sctx.Ctx != nil && sctx.Ctx.Err() != nil {
-			return
+			return sctx.Ctx.Err()
 		}
 		if i > 0 && !demoWait(sctx.Ctx, pause) {
-			return
+			if sctx.Ctx != nil && sctx.Ctx.Err() != nil {
+				return sctx.Ctx.Err()
+			}
+			return nil
 		}
 		sctx.Log(line)
 	}
+	return nil
 }
 
 // demoCIStep simulates the CI monitor's failure-fix-retry flow.
@@ -192,61 +200,67 @@ func (s *demoCIStep) Name() types.StepName { return types.StepCI }
 
 func (s *demoCIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	pause := func(d time.Duration) bool { return demoWait(sctx.Ctx, d) }
+	canceled := func() (*pipeline.StepOutcome, error) {
+		if sctx.Ctx != nil && sctx.Ctx.Err() != nil {
+			return nil, sctx.Ctx.Err()
+		}
+		return &pipeline.StepOutcome{DurationOverrideMS: s.displayDur.Milliseconds()}, nil
+	}
 
 	// Phase 1: initial monitoring, find a failure.
 	sctx.Log("monitoring CI for PR #42")
 	if !pause(2 * time.Second) {
-		return &pipeline.StepOutcome{DurationOverrideMS: s.displayDur.Milliseconds()}, nil
+		return canceled()
 	}
 	sctx.Log("")
 	sctx.Log("  ✓  build (12s)")
 	if !pause(1 * time.Second) {
-		return &pipeline.StepOutcome{DurationOverrideMS: s.displayDur.Milliseconds()}, nil
+		return canceled()
 	}
 	sctx.Log("  ✗  test (45s)")
 	if !pause(500 * time.Millisecond) {
-		return &pipeline.StepOutcome{DurationOverrideMS: s.displayDur.Milliseconds()}, nil
+		return canceled()
 	}
 	sctx.Log("  ✓  lint (8s)")
 	if !pause(1 * time.Second) {
-		return &pipeline.StepOutcome{DurationOverrideMS: s.displayDur.Milliseconds()}, nil
+		return canceled()
 	}
 
 	// Phase 2: failure detected, auto-fix triggered.
 	sctx.Log("CI failures detected: test")
 	if !pause(1 * time.Second) {
-		return &pipeline.StepOutcome{DurationOverrideMS: s.displayDur.Milliseconds()}, nil
+		return canceled()
 	}
 	sctx.Log("running agent to fix CI")
 	if !pause(1 * time.Second) {
-		return &pipeline.StepOutcome{DurationOverrideMS: s.displayDur.Milliseconds()}, nil
+		return canceled()
 	}
 	sctx.Log("Diagnosing test failure from CI logs...")
 	if !pause(2 * time.Second) {
-		return &pipeline.StepOutcome{DurationOverrideMS: s.displayDur.Milliseconds()}, nil
+		return canceled()
 	}
 	sctx.Log("Fix: updated handler_test.go to match new nil-check signature")
 	if !pause(1 * time.Second) {
-		return &pipeline.StepOutcome{DurationOverrideMS: s.displayDur.Milliseconds()}, nil
+		return canceled()
 	}
 	sctx.Log("committed and pushed fixes")
 	if !pause(2 * time.Second) {
-		return &pipeline.StepOutcome{DurationOverrideMS: s.displayDur.Milliseconds()}, nil
+		return canceled()
 	}
 
 	// Phase 3: re-monitor, all checks pass.
 	sctx.Log("")
 	sctx.Log("  ✓  build (11s)")
 	if !pause(1 * time.Second) {
-		return &pipeline.StepOutcome{DurationOverrideMS: s.displayDur.Milliseconds()}, nil
+		return canceled()
 	}
 	sctx.Log("  ✓  test (44s)")
 	if !pause(500 * time.Millisecond) {
-		return &pipeline.StepOutcome{DurationOverrideMS: s.displayDur.Milliseconds()}, nil
+		return canceled()
 	}
 	sctx.Log("  ✓  lint (8s)")
 	if !pause(1 * time.Second) {
-		return &pipeline.StepOutcome{DurationOverrideMS: s.displayDur.Milliseconds()}, nil
+		return canceled()
 	}
 	sctx.Log("")
 	sctx.Log("All checks passed.")

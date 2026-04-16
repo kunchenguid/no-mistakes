@@ -2,6 +2,7 @@ package steps
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -92,6 +93,50 @@ func TestDemoStepExecute(t *testing.T) {
 				t.Error("expected log output")
 			}
 		})
+	}
+}
+
+func TestDemoStepExecuteReturnsContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	prev := demoWait
+	demoWait = func(context.Context, time.Duration) bool {
+		cancel()
+		return false
+	}
+	t.Cleanup(func() {
+		demoWait = prev
+	})
+
+	step := &demoStep{
+		name:  types.StepReview,
+		delay: 2 * time.Second,
+		log:   "first\nsecond",
+	}
+
+	var logs []string
+	outcome, err := step.Execute(&pipeline.StepContext{
+		Ctx:      ctx,
+		Log:      func(s string) { logs = append(logs, s) },
+		LogChunk: func(string) {},
+		LogFile:  func(string) {},
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+	if outcome != nil {
+		t.Fatalf("expected nil outcome, got %#v", outcome)
+	}
+	if len(logs) != 1 {
+		t.Fatalf("expected logging to stop after cancellation, got %d lines", len(logs))
+	}
+	if logs[0] != "first" {
+		t.Fatalf("got first log %q, want %q", logs[0], "first")
+	}
+	if !step.fixed {
+		// sanity check that we did not accidentally enter the fix path
+		step.fixed = false
 	}
 }
 
@@ -220,14 +265,17 @@ func TestDemoCIStepStopsAfterCancellation(t *testing.T) {
 
 	var logs []string
 	step := &demoCIStep{displayDur: 120 * time.Second}
-	_, err := step.Execute(&pipeline.StepContext{
+	outcome, err := step.Execute(&pipeline.StepContext{
 		Ctx:      ctx,
 		Log:      func(s string) { logs = append(logs, s) },
 		LogChunk: func(string) {},
 		LogFile:  func(string) {},
 	})
-	if err != nil {
-		t.Fatalf("Execute() error: %v", err)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+	if outcome != nil {
+		t.Fatalf("expected nil outcome, got %#v", outcome)
 	}
 	if len(logs) != 1 {
 		t.Fatalf("expected CI demo to stop after cancellation, got %d lines", len(logs))
