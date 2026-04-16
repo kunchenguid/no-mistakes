@@ -82,3 +82,13 @@ func New(name types.AgentName, bin string) (Agent, error) {
 		return nil, fmt.Errorf("unknown agent %q; valid options: auto, claude, codex, rovodev, opencode (set 'agent' in ~/.no-mistakes/config.yaml)", name)
 	}
 }
+
+// NewNoop returns an agent that does nothing. Used for demo mode where
+// mock steps handle all logic without calling a real agent.
+func NewNoop() Agent { return &noopAgent{} }
+
+type noopAgent struct{}
+
+func (n *noopAgent) Name() string                                      { return "noop" }
+func (n *noopAgent) Run(_ context.Context, _ RunOpts) (*Result, error) { return &Result{}, nil }
+func (n *noopAgent) Close() error                                      { return nil }

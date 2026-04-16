@@ -1721,6 +1721,33 @@ func TestExecutor_StepResultHasDuration(t *testing.T) {
 	}
 }
 
+func TestExecutor_StepResultUsesDurationOverride(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	step := &mockStep{
+		name: types.StepReview,
+		outcome: &StepOutcome{
+			ExitCode:           0,
+			DurationOverrideMS: 45000,
+		},
+	}
+
+	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
+	exec.Execute(context.Background(), run, repo, workDir)
+
+	dbSteps, _ := database.GetStepsByRun(run.ID)
+	if len(dbSteps) != 1 {
+		t.Fatalf("expected 1 step, got %d", len(dbSteps))
+	}
+	if dbSteps[0].DurationMS == nil {
+		t.Fatal("expected duration_ms to be set")
+	}
+	if got := *dbSteps[0].DurationMS; got != 45000 {
+		t.Fatalf("duration_ms = %d, want %d", got, 45000)
+	}
+}
+
 func TestExecutor_RunLogDir(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir := t.TempDir()

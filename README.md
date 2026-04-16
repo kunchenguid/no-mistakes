@@ -1,4 +1,4 @@
-<h1 align="center">no-mistakes</h1>
+<h1 align="center"><code>git push no-mistakes</code></h1>
 <p align="center">
   <a href="https://github.com/kunchenguid/no-mistakes/actions/workflows/ci.yml"
     ><img
@@ -27,31 +27,43 @@
   /></a>
 </p>
 
-<h3 align="center">Make <code>git push</code> earn it.</h3>
+<h3 align="center">Kill all the slop. Raise clean PR.</h3>
 
-You already have CI, but it usually wakes up after the branch is upstream. You already have review, but that also tends to happen after the push. That is backwards if the goal is to stop bad code before it escapes.
+<p align="center">
+  <img src="https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/demo.gif" alt="no-mistakes demo" width="800" />
+</p>
 
-`no-mistakes` puts a local gate in front of your real remote. You push to `no-mistakes`, it spins up a disposable worktree, runs a fixed validation pipeline with your agent of choice, then forwards upstream only after the branch survives the checks.
+`no-mistakes` puts a local git proxy in front of your real remote.
+Push to `no-mistakes` instead of `origin`, and it spins up a disposable worktree, runs a validation pipeline with your AI agent of choice, forwards upstream only after the branch survives every check, and creates a clean PR automatically.
 
-- **Push with intent** - `origin` stays untouched, and `no-mistakes` becomes the explicit path for gated pushes.
-- **Agent-agnostic** - use `claude`, `codex`, `rovodev`, or `opencode`, with per-repo overrides if different codebases want different tools.
-- **Human stays in charge** - review, test, document, lint, PR, and CI steps can pause for approval instead of auto-shipping surprises.
+- **Non-blocking** - the whole pipeline runs in an isolated worktree without disrupting your workflow.
+- **Agent-agnostic** - runs your agent of choice. Currently supports `claude`, `codex`, `rovodev`, and `opencode`.
+- **Human stays in charge** - choose to auto-fix or review agent findings.
 
 ## Quick Start
 
 ```sh
 $ no-mistakes init
-initialized gate for /Users/you/src/my-repo
-  remote: no-mistakes -> /Users/you/.no-mistakes/repos/abc123def456.git
-  upstream: git@github.com:you/my-repo.git
+  ✓ Gate initialized
 
-Push through the gate with: git push no-mistakes <branch>
+    repo  /Users/you/src/my-repo
+    gate  no-mistakes → /Users/you/.no-mistakes/repos/abc123def456.git
+  remote  git@github.com:you/my-repo.git
 
-$ git push no-mistakes feature/login-fix
-remote: no-mistakes: pipeline started. Run `no-mistakes` to review.
+  Push through the gate with:
+  git push no-mistakes <branch>
+
+$ git checkout my-branch
+
+# do some work in the branch...
+
+$ git push no-mistakes
+  * Pipeline started
+
+  Run no-mistakes to review.
 
 $ no-mistakes
-# opens the TUI for the active run in this repo
+# opens the TUI for the active run
 ```
 
 ## Install
@@ -63,7 +75,6 @@ curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/i
 ```
 
 The installer keeps the real binary in `~/.no-mistakes/bin` and exposes `no-mistakes` through a symlink in `~/.local/bin` or `/usr/local/bin`. That keeps future `no-mistakes update` runs in a user-owned location instead of rewriting a system binary in place. It also attempts to install and start the background daemon for you so the command is ready immediately, preferring a managed service and falling back to a detached daemon if that path is unavailable. If startup still fails, run `no-mistakes daemon start` manually.
-
 **Windows (PowerShell)**
 
 ```powershell
@@ -87,7 +98,7 @@ make build
 make install
 ```
 
-You will also need `git`, one supported agent binary, and `gh` if you want PR creation and CI monitoring.
+You will also need `git` and one supported agent binary. For PR creation, install `gh` (GitHub) or `glab` (GitLab). CI monitoring currently only supports Github.
 
 Full documentation is published at <https://kunchenguid.github.io/no-mistakes/>.
 
@@ -98,27 +109,27 @@ no-mistakes update
 ```
 
 This replaces the binary and resets the background daemon so it picks up the new executable, preferring the managed service path and falling back to a detached daemon if service startup is unavailable or fails. It only proceeds if the running daemon is already using the same executable path. If the daemon executable path cannot be determined or it was started from a different binary, the update aborts before replacing the binary. If the daemon does not come back cleanly after a successful replacement, the new binary stays installed but the command reports the daemon reset failure.
-
 ## How It Works
 
 ```text
-┌──────────────┐        git push no-mistakes <branch>        ┌─────────────────────┐
+┌──────────────┐          git push no-mistakes              ┌──────────────────────┐
 │ Your repo    │ ─────────────────────────────────────────► │ Local gate repo      │
 │ origin       │                                            │ ~/.no-mistakes/...   │
 │ no-mistakes  │ ◄──────────── added by init ────────────── │ hooks/post-receive   │
-└──────┬───────┘                                            └──────────┬──────────┘
+└──────┬───────┘                                            └──────────┬───────────┘
        │                                                               │
-       │                                         notifies daemon        │
+       │                                         notifies daemon       │
        │                                                               ▼
        │                                                    ┌─────────────────────┐
        │                                                    │ Daemon              │
-       │                                                    │ SQLite + Unix socket│
        │                                                    └──────────┬──────────┘
        │                                                               │
        │                                                creates detached worktree
        │                                                               ▼
        │                                                    ┌─────────────────────┐
        │                                                    │ Pipeline            │
+       │                                                    │                     │
+       │                                                    │ rebase              │
        │                                                    │ review              │
        │                                                    │ test                │
        │                                                    │ document            │
@@ -128,13 +139,13 @@ This replaces the binary and resets the background daemon so it picks up the new
        │                                                    │ ci                  │
        │                                                    └──────────┬──────────┘
        │                                                               │
-       └──────────────────────────────────────────────────────────────► │ upstream
-                                                                        └──────────
+       └─────────────────────────────────────────────────────────────► │ upstream
+                                                                       └──────────
 ```
 
-- **Named remote** - `origin` is never hijacked. If you want the gate, you push to `no-mistakes` on purpose.
+- **Named remote** - `origin` is never touched. If you want the gate, you push to `no-mistakes` on purpose.
 - **Disposable worktrees** - each run happens in its own detached worktree, so the daemon can inspect and modify safely before pushing upstream.
-- **Fixed pipeline** - this is opinionated on purpose: `review -> test -> document -> lint -> push -> pr -> ci`. The `document` step checks whether README/docs/comments need updates for the code you changed.
+- **Fixed pipeline** - this is opinionated on purpose: `rebase -> review -> test -> document -> lint -> push -> pr -> ci`. The `document` step checks whether README/docs/comments need updates for the code you changed.
 - **Local state** - metadata lives under `~/.no-mistakes/` by default, or `${NM_HOME}` if you want to relocate it.
 
 ## CLI Reference
@@ -147,7 +158,7 @@ This replaces the binary and resets the background daemon so it picks up the new
 | `no-mistakes eject`         | Remove the gate from the current repository            |
 | `no-mistakes attach`        | Attach to the active pipeline run                      |
 | `no-mistakes rerun`         | Rerun the pipeline for the current branch              |
-| `no-mistakes status`        | Show repo, daemon, and active run status               |
+| `no-mistakes status`        | Show status of the current repository                  |
 | `no-mistakes runs`          | List recorded pipeline runs for the current repo       |
 | `no-mistakes doctor`        | Check system health and dependencies                   |
 | `no-mistakes daemon start`  | Start the daemon, installing the service when possible |
@@ -185,28 +196,19 @@ agent_path_override:
   rovodev: /usr/local/bin/acli
   opencode: /usr/local/bin/opencode
 
-# How long the babysit step waits for CI and PR mergeability before timing out.
+# How long the CI step waits for checks and PR mergeability before timing out.
 ci_timeout: "4h"
-
-# Optional auto-fix attempt limits per step (0 = require approval).
-# auto_fix:
-#   rebase: 3
-#   lint: 3
-#   test: 3
-#   review: 3
-#   document: 3
-#   ci: 3        # shared by Babysit for CI failures and merge conflicts
 
 # debug | info | warn | error
 log_level: "info"
 
-# Maximum auto-fix attempts per step (0 = disabled, requires manual approval)
+# Maximum auto-fix attempts per step (0 = disabled, requires manual approval).
 auto_fix:
   rebase: 3
   lint: 3
   test: 3
-  review: 3
-  document: 0
+  review: 0
+  document: 3
   ci: 3
 ```
 
@@ -245,13 +247,13 @@ auto_fix:
 - `commands` and `ignore_patterns` are repo-only.
 - Missing global config defaults to `agent: auto` (probing `claude`, `codex`, `opencode`, then `rovodev`), `ci_timeout: 4h`, `log_level: info`.
 - `ci_timeout` replaces `babysit_timeout`, and `auto_fix.ci` replaces `auto_fix.babysit`; legacy keys are still accepted for existing configs.
-- `auto_fix` can be set globally or per repo. All steps default to `3`.
+- `auto_fix` can be set globally or per repo. All steps default to `3` except `review` which defaults to `0`.
 - `agent_path_override` changes which binary path is launched for a given agent.
 - Default binaries are `claude`, `codex`, `acli` for `rovodev`, and `opencode`.
 - If `commands.test` is empty, the agent detects and runs relevant tests itself.
 - If `commands.lint` is empty, the agent detects and runs lint/format checks itself.
 - If `commands.format` is empty, no formatter is run automatically.
-- All `auto_fix` steps default to `3`. Set a step to `0` to require manual approval.
+- All `auto_fix` steps default to `3` except `review` which defaults to `0`. Set a step to `0` to require manual approval.
 
 ### Ignore pattern rules
 
@@ -264,6 +266,7 @@ auto_fix:
 ```sh
 make build   # Build bin/no-mistakes with version info
 make dist    # Cross-compile release archives into dist/
+make demo    # Regenerate demo.gif from demo.tape
 make install # Install the built binary into GOPATH/bin
 make test    # Run go test -race ./...
 make lint    # Run go vet ./...
@@ -274,3 +277,5 @@ make clean   # Remove bin/
 ```
 
 Docs development uses the Astro project under `docs/`. `make docs` installs docs dependencies with `npm ci` and builds the site.
+
+To regenerate `demo.gif`, run `make demo`. This target requires both `vhs` and `ffmpeg` to be installed locally.

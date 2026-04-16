@@ -31,7 +31,7 @@ Shows the branch name and run status in the header, followed by each step:
   │
   ○ PR
   │
-  ○ Babysit
+  ○ CI
 ```
 
 Step status icons:
