@@ -181,16 +181,123 @@ func TestStartInstallsWindowsTaskAndStartsManagedDaemon_EnableWindowsCI(t *testi
 		" /SC ONLOGON /RL LIMITED /F /TR " + wantTaskCommand
 	wantRun := "schtasks /Run /TN " + windowsTaskName(p)
 	if len(commands) != 3 {
-		t.Fatalf("expected legacy query + schtasks create and run, got %v", commands)
+		t.Fatalf("expected schtasks create, legacy query, and run, got %v", commands)
 	}
-	if commands[0] != wantQueryLegacy {
-		t.Fatalf("legacy query command = %q, want %q", commands[0], wantQueryLegacy)
+	if commands[0] != wantCreate {
+		t.Fatalf("create command = %q, want %q", commands[0], wantCreate)
 	}
-	if commands[1] != wantCreate {
-		t.Fatalf("create command = %q, want %q", commands[1], wantCreate)
+	if commands[1] != wantQueryLegacy {
+		t.Fatalf("legacy query command = %q, want %q", commands[1], wantQueryLegacy)
 	}
 	if commands[2] != wantRun {
 		t.Fatalf("run command = %q, want %q", commands[2], wantRun)
+	}
+}
+
+func TestInstallLaunchAgentKeepsLegacyPlistOnScopedWriteFailure(t *testing.T) {
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+
+	cleanup := stubServiceRuntime(t)
+	defer cleanup()
+	runtimeGOOS = "darwin"
+	serviceUserHomeDir = func() (string, error) { return home, nil }
+
+	legacyPath := filepath.Join(home, "Library", "LaunchAgents", legacyLaunchdServiceLabel+".plist")
+	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyPath, []byte("<plist/>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(launchAgentPath(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	err := installLaunchAgent(p, "/opt/no-mistakes/bin/no-mistakes")
+	if err == nil {
+		t.Fatal("installLaunchAgent should fail when scoped plist path is a directory")
+	}
+	if _, statErr := os.Stat(legacyPath); statErr != nil {
+		t.Fatalf("legacy plist should remain after failed scoped install: %v", statErr)
+	}
+}
+
+func TestInstallSystemdUserServiceKeepsLegacyUnitOnEnableFailure(t *testing.T) {
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+
+	cleanup := stubServiceRuntime(t)
+	defer cleanup()
+	runtimeGOOS = "linux"
+	serviceUserHomeDir = func() (string, error) { return home, nil }
+
+	legacyPath := filepath.Join(home, ".config", "systemd", "user", legacySystemdServiceName)
+	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyPath, []byte("[Unit]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var commands []string
+	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
+		command := name + " " + strings.Join(args, " ")
+		commands = append(commands, command)
+		if command == "systemctl --user enable "+systemdServiceName(p) {
+			return nil, fmt.Errorf("enable failed")
+		}
+		return nil, nil
+	}
+
+	err := installSystemdUserService(p, "/usr/local/bin/no-mistakes")
+	if err == nil {
+		t.Fatal("installSystemdUserService should fail when enable fails")
+	}
+	if _, statErr := os.Stat(legacyPath); statErr != nil {
+		t.Fatalf("legacy unit should remain after failed scoped install: %v", statErr)
+	}
+	for _, command := range commands {
+		if strings.Contains(command, "--user disable "+legacySystemdServiceName) || strings.Contains(command, "--user stop "+legacySystemdServiceName) {
+			t.Fatalf("legacy cleanup should not run before successful scoped install, got %q", command)
+		}
+	}
+}
+
+func TestInstallWindowsTaskKeepsLegacyTaskOnCreateFailure_EnableWindowsCI(t *testing.T) {
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm home"))
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
+	cleanup := stubServiceRuntime(t)
+	defer cleanup()
+	runtimeGOOS = "windows"
+
+	var commands []string
+	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
+		command := name + " " + strings.Join(args, " ")
+		commands = append(commands, command)
+		if name == "schtasks" && len(args) > 0 && args[0] == "/Create" {
+			return nil, fmt.Errorf("create failed")
+		}
+		return nil, nil
+	}
+
+	err := installWindowsTask(p, `C:\Program Files\no-mistakes\no-mistakes.exe`)
+	if err == nil {
+		t.Fatal("installWindowsTask should fail when schtasks create fails")
+	}
+	for _, command := range commands {
+		if strings.Contains(command, "/End /TN "+legacyWindowsTaskName) || strings.Contains(command, "/Delete /TN "+legacyWindowsTaskName+" /F") {
+			t.Fatalf("legacy cleanup should not run before successful scoped install, got %q", command)
+		}
 	}
 }
 
@@ -608,6 +715,20 @@ func TestServiceInstanceSuffixResolvesSymlinkedRoot(t *testing.T) {
 	}
 	if got, want := windowsTaskName(aliasPaths), windowsTaskName(realPaths); got != want {
 		t.Fatalf("windowsTaskName(alias) = %q, want %q", got, want)
+	}
+}
+
+func TestServiceInstanceSuffixNormalizesCaseOnWindows_EnableWindowsCI(t *testing.T) {
+	cleanup := stubServiceRuntime(t)
+	defer cleanup()
+	runtimeGOOS = "windows"
+
+	base := filepath.Join(t.TempDir(), "Nm-Home")
+	upper := paths.WithRoot(strings.ToUpper(base))
+	lower := paths.WithRoot(strings.ToLower(base))
+
+	if got, want := serviceInstanceSuffix(upper), serviceInstanceSuffix(lower); got != want {
+		t.Fatalf("serviceInstanceSuffix(upper) = %q, want %q", got, want)
 	}
 }
 

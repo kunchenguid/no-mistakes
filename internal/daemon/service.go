@@ -98,6 +98,9 @@ func serviceInstanceSuffix(p *paths.Paths) string {
 		root = resolved
 	}
 	root = filepath.Clean(root)
+	if runtimeGOOS == "windows" {
+		root = strings.ToLower(root)
+	}
 	sum := sha256.Sum256([]byte(root))
 	return hex.EncodeToString(sum[:4])
 }
@@ -189,7 +192,6 @@ func managedServiceInstalled(p *paths.Paths) bool {
 }
 
 func installLaunchAgent(p *paths.Paths, exe string) error {
-	cleanupLegacyLaunchAgent()
 	path := launchAgentPath(p)
 	home, err := serviceUserHomeDir()
 	if err != nil {
@@ -201,6 +203,7 @@ func installLaunchAgent(p *paths.Paths, exe string) error {
 	if err := os.WriteFile(path, []byte(renderLaunchAgent(exe, p, home)), 0o644); err != nil {
 		return fmt.Errorf("write launch agent: %w", err)
 	}
+	cleanupLegacyLaunchAgent()
 	return nil
 }
 
@@ -253,7 +256,6 @@ func stopLaunchAgent(p *paths.Paths) error {
 }
 
 func installSystemdUserService(p *paths.Paths, exe string) error {
-	cleanupLegacySystemdUnit()
 	path := systemdUserServicePath(p)
 	home, err := serviceUserHomeDir()
 	if err != nil {
@@ -271,6 +273,7 @@ func installSystemdUserService(p *paths.Paths, exe string) error {
 	if _, err := serviceCommandRunner("systemctl", "--user", "enable", systemdServiceName(p)); err != nil {
 		return fmt.Errorf("systemctl enable: %w", err)
 	}
+	cleanupLegacySystemdUnit()
 	return nil
 }
 
@@ -301,7 +304,6 @@ func stopSystemdUserService(p *paths.Paths) error {
 }
 
 func installWindowsTask(p *paths.Paths, exe string) error {
-	cleanupLegacyWindowsTask()
 	args := []string{
 		"/Create",
 		"/TN", windowsTaskName(p),
@@ -313,6 +315,7 @@ func installWindowsTask(p *paths.Paths, exe string) error {
 	if _, err := serviceCommandRunner("schtasks", args...); err != nil {
 		return fmt.Errorf("schtasks create: %w", err)
 	}
+	cleanupLegacyWindowsTask()
 	return nil
 }
 
