@@ -388,19 +388,37 @@ func TestStopNotRunningRemovesStaleArtifacts(t *testing.T) {
 	if err := p.EnsureDirs(); err != nil {
 		t.Fatal(err)
 	}
-	// Use a pid that is not running so Stop() recognizes the artifacts as
-	// stale on all platforms. os.Getpid() would be a live process that the
-	// Windows pid-fallback validator correctly rejects as "not the daemon",
-	// because the test runner's start time predates the pid file.
-	if err := os.WriteFile(p.PIDFile(), []byte("999999"), 0o644); err != nil {
+	const pid = 424242
+	if err := os.WriteFile(p.PIDFile(), []byte(fmt.Sprintf("%d", pid)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(p.Socket(), []byte("stale"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
+	originalUsesRegularFile := daemonEndpointUsesRegularFile
+	daemonEndpointUsesRegularFile = func() bool { return true }
+	defer func() {
+		daemonEndpointUsesRegularFile = originalUsesRegularFile
+	}()
+	originalProcessRunning := daemonProcessRunning
+	processRunningChecks := 0
+	daemonProcessRunning = func(checkPID int) (bool, error) {
+		if checkPID != pid {
+			t.Fatalf("processRunning pid = %d, want %d", checkPID, pid)
+		}
+		processRunningChecks++
+		return false, nil
+	}
+	defer func() {
+		daemonProcessRunning = originalProcessRunning
+	}()
+
 	if err := Stop(p); err != nil {
 		t.Fatalf("stop should succeed when daemon is not running: %v", err)
+	}
+	if processRunningChecks == 0 {
+		t.Fatal("expected stale-artifact detection to check process state")
 	}
 	if _, err := os.Stat(p.PIDFile()); !os.IsNotExist(err) {
 		t.Fatalf("expected stale pid file to be removed, got err=%v", err)
@@ -674,7 +692,8 @@ func TestStopDetachedDaemonRemovesArtifactsForDeadPID(t *testing.T) {
 	if err := p.EnsureDirs(); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(p.PIDFile(), []byte("999999"), 0o644); err != nil {
+	const pid = 424242
+	if err := os.WriteFile(p.PIDFile(), []byte(fmt.Sprintf("%d", pid)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	fd, err := syscall.Socket(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
@@ -697,9 +716,24 @@ func TestStopDetachedDaemonRemovesArtifactsForDeadPID(t *testing.T) {
 	defer func() {
 		daemonDial = originalDial
 	}()
+	originalProcessRunning := daemonProcessRunning
+	processRunningChecks := 0
+	daemonProcessRunning = func(checkPID int) (bool, error) {
+		if checkPID != pid {
+			t.Fatalf("processRunning pid = %d, want %d", checkPID, pid)
+		}
+		processRunningChecks++
+		return false, nil
+	}
+	defer func() {
+		daemonProcessRunning = originalProcessRunning
+	}()
 
 	if err := stopDetachedDaemon(p); err != nil {
 		t.Fatalf("expected stopDetachedDaemon to clean stale artifacts, got %v", err)
+	}
+	if processRunningChecks == 0 {
+		t.Fatal("expected stale-artifact detection to check process state")
 	}
 	if _, statErr := os.Stat(p.PIDFile()); !os.IsNotExist(statErr) {
 		t.Fatalf("expected stale pid file to be removed, got err=%v", statErr)
