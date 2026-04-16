@@ -5,6 +5,7 @@ package daemon
 import (
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"syscall"
@@ -33,7 +34,7 @@ func processStartTime(pid int) (time.Time, error) {
 	if pid <= 0 {
 		return time.Time{}, fmt.Errorf("invalid pid %d", pid)
 	}
-	cmd := exec.Command("ps", "-p", fmt.Sprintf("%d", pid), "-o", "lstart=")
+	cmd := processStartTimeCommand(pid)
 	out, err := cmd.Output()
 	if err != nil {
 		return time.Time{}, err
@@ -47,6 +48,12 @@ func processStartTime(pid int) (time.Time, error) {
 		return time.Time{}, err
 	}
 	return parsed, nil
+}
+
+func processStartTimeCommand(pid int) *exec.Cmd {
+	cmd := exec.Command("ps", "-p", fmt.Sprintf("%d", pid), "-o", "lstart=")
+	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C")
+	return cmd
 }
 
 func parseProcessStartTime(value string, loc *time.Location) (time.Time, error) {

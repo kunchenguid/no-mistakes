@@ -480,8 +480,10 @@ func bitbucketStatusBucket(state string) string {
 	switch strings.ToUpper(strings.TrimSpace(state)) {
 	case "SUCCESSFUL", "SUCCESS":
 		return "pass"
-	case "FAILED", "FAILURE", "ERROR", "STOPPED":
+	case "FAILED", "FAILURE", "ERROR":
 		return "fail"
+	case "STOPPED":
+		return "cancel"
 	case "INPROGRESS", "IN_PROGRESS", "PENDING":
 		return "pending"
 	default:

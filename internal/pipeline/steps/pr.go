@@ -167,11 +167,15 @@ func (s *PRStep) executeBitbucketPR(sctx *pipeline.StepContext, branch string, c
 		if err != nil {
 			return nil, err
 		}
+		prURL := existingPR.URL
 		if updatedPR != nil && updatedPR.URL != "" {
-			if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, updatedPR.URL); err != nil {
-				slog.Warn("failed to persist PR URL", "run", sctx.Run.ID, "url", updatedPR.URL, "err", err)
+			prURL = updatedPR.URL
+		}
+		if prURL != "" {
+			if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, prURL); err != nil {
+				slog.Warn("failed to persist PR URL", "run", sctx.Run.ID, "url", prURL, "err", err)
 			}
-			return &pipeline.StepOutcome{PRURL: updatedPR.URL}, nil
+			return &pipeline.StepOutcome{PRURL: prURL}, nil
 		}
 		return &pipeline.StepOutcome{}, nil
 	}
