@@ -5,7 +5,7 @@ description: Background process management and recovery.
 
 The daemon is a long-running background process that manages pipeline runs. The installer prefers setting it up as a managed background service, and `init`, `attach`, `rerun`, and `update` keep that service installed and running for you when that path is available.
 
-On macOS this is a per-user `launchd` agent, on Linux a per-user `systemd` service, and on Windows a Task Scheduler task. Those service managers keep the daemon available across CLI invocations and restart it after `no-mistakes update` replaces the binary. If managed service install or startup is unavailable or fails, `no-mistakes` falls back to starting a detached daemon process instead.
+On macOS this is a per-user `launchd` agent, on Linux a per-user `systemd` service, and on Windows a Task Scheduler task. Those service managers keep the daemon available across CLI invocations and restart it after `no-mistakes update` replaces the binary. Before a managed daemon run starts, `no-mistakes` reloads the environment from your login shell so agent and tool discovery matches the shell you use interactively. If managed service install or startup is unavailable or fails, `no-mistakes` falls back to starting a detached daemon process instead.
 
 ## Starting and stopping
 
