@@ -298,6 +298,8 @@ Context:
 Rules:
 - Cover the full branch delta, not just the latest commit.
 - Title must use conventional commit format: "type(scope): description" or "type: description". Valid types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert. Scope is optional. Do not capitalize the type. Do not use the raw branch name.
+- When including a scope, it MUST be a real package/module name that exists in the codebase (for example, a directory under internal/, cmd/, or the equivalent top-level grouping for this project), identified by inspecting the changed paths. Pick the primary module affected by the change, not a secondary or incidental one.
+- Keep the scope at a coarse level, not too granular: a codebase typically has fewer than 10 distinct scopes in use across its history. Prefer a broad module name (e.g. "daemon", "pipeline", "cli") over a narrow file or sub-feature name. If you cannot confidently identify a real primary module, omit the scope and use "type: description".
 - Body: a "## Summary" section in GitHub-flavored markdown. 1-3 concise bullet points describing what changed and why. Do not include Risk Assessment, Testing, or Pipeline sections - those are appended separately. The body value must be plain markdown text, never a JSON object or serialized JSON string.
 - Do not invent tests or behavior.
 
