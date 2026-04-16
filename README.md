@@ -62,13 +62,15 @@ $ no-mistakes
 curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.sh | sh
 ```
 
-The installer keeps the real binary in `~/.no-mistakes/bin` and exposes `no-mistakes` through a symlink in `~/.local/bin` or `/usr/local/bin`. That keeps future `no-mistakes update` runs in a user-owned location instead of rewriting a system binary in place.
+The installer keeps the real binary in `~/.no-mistakes/bin` and exposes `no-mistakes` through a symlink in `~/.local/bin` or `/usr/local/bin`. That keeps future `no-mistakes update` runs in a user-owned location instead of rewriting a system binary in place. It also attempts to install and start the background daemon for you so the command is ready immediately, preferring a managed service and falling back to a detached daemon if that path is unavailable. If startup still fails, run `no-mistakes daemon start` manually.
 
 **Windows (PowerShell)**
 
 ```powershell
 irm https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.ps1 | iex
 ```
+
+This installs the binary and attempts to start the background daemon automatically, preferring a managed service and falling back to a detached daemon if needed. If startup still fails, run `no-mistakes daemon start` manually.
 
 **Go install**
 
@@ -95,7 +97,7 @@ To update an existing install in place:
 no-mistakes update
 ```
 
-This replaces the binary and resets the background daemon so it picks up the new executable, but only if the running daemon is already using the same executable path. If the daemon executable path cannot be determined or it was started from a different binary, the update aborts before replacing the binary. If the daemon does not come back cleanly after a successful replacement, the new binary stays installed but the command reports the daemon reset failure.
+This replaces the binary and resets the background daemon so it picks up the new executable, preferring the managed service path and falling back to a detached daemon if service startup is unavailable or fails. It only proceeds if the running daemon is already using the same executable path. If the daemon executable path cannot be determined or it was started from a different binary, the update aborts before replacing the binary. If the daemon does not come back cleanly after a successful replacement, the new binary stays installed but the command reports the daemon reset failure.
 
 ## How It Works
 
@@ -148,8 +150,8 @@ This replaces the binary and resets the background daemon so it picks up the new
 | `no-mistakes status`        | Show repo, daemon, and active run status               |
 | `no-mistakes runs`          | List recorded pipeline runs for the current repo       |
 | `no-mistakes doctor`        | Check system health and dependencies                   |
-| `no-mistakes daemon start`  | Start the daemon in the background                     |
-| `no-mistakes daemon stop`   | Stop the running daemon                                |
+| `no-mistakes daemon start`  | Start the daemon, installing the service when possible |
+| `no-mistakes daemon stop`   | Stop the running daemon process                        |
 | `no-mistakes daemon status` | Check whether the daemon is running                    |
 
 ### Flags

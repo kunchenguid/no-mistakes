@@ -11,11 +11,15 @@ description: Install no-mistakes and run your first gated push.
 curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.sh | sh
 ```
 
+This installs the binary and attempts to start the background daemon automatically, preferring a managed service and falling back to a detached daemon if needed. If startup still fails, run `no-mistakes daemon start` manually.
+
 ### Windows (PowerShell)
 
 ```powershell
 irm https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.ps1 | iex
 ```
+
+This installs the binary and attempts to start the background daemon automatically, preferring a managed service and falling back to a detached daemon if needed. If startup still fails, run `no-mistakes daemon start` manually.
 
 ### Go install
 
@@ -54,7 +58,7 @@ This does the following:
 1. Creates a local bare git repo at `~/.no-mistakes/repos/<id>.git`
 2. Installs a `post-receive` hook in that bare repo
 3. Adds a git remote named `no-mistakes` to your working repo
-4. Starts the background daemon (if not already running)
+4. Ensures the background daemon is running, installing the managed service when available and falling back to a detached daemon otherwise
 5. Records the repo in the local SQLite database
 
 ```
@@ -109,7 +113,7 @@ To update an existing install in place:
 no-mistakes update
 ```
 
-This downloads the latest release from GitHub, verifies the SHA-256 checksum, atomically replaces the binary, and resets the daemon so it starts using the new executable when the running daemon is already using the same executable path. If the daemon executable path cannot be determined or it was started from a different binary, the update aborts before replacing the binary. If the daemon does not come back cleanly after a successful replacement, the command reports that failure.
+This downloads the latest release from GitHub, verifies the SHA-256 checksum, atomically replaces the binary, and resets the daemon so it starts using the new executable when the running daemon is already using the same executable path, preferring the managed service path and falling back to a detached daemon if service startup is unavailable or fails. If the daemon executable path cannot be determined or it was started from a different binary, the update aborts before replacing the binary. If the daemon does not come back cleanly after a successful replacement, the command reports that failure.
 
 ## Remove from a repo
 

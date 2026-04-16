@@ -77,6 +77,10 @@ fi
 echo "no-mistakes ${VERSION} installed to ${BIN_PATH}"
 echo "Command path: ${LINK_PATH} -> ${BIN_PATH}"
 
+if ! "$BIN_PATH" daemon start >/dev/null 2>&1; then
+  echo "Warning: failed to auto-start daemon; run 'no-mistakes daemon start' manually." >&2
+fi
+
 case ":$PATH:" in
   *":$LINK_DIR:"*) ;;
   *) echo "Add ${LINK_DIR} to your PATH and restart your terminal." ;;

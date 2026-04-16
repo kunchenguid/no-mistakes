@@ -12,6 +12,8 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 )
 
+var daemonHealthCheck = daemonIsRunningViaIPC
+
 func daemonStartTimeout() time.Duration {
 	return durationFromEnv("NM_TEST_DAEMON_START_TIMEOUT", 5*time.Second)
 }
@@ -32,14 +34,43 @@ func durationFromEnv(name string, fallback time.Duration) time.Duration {
 	return d
 }
 
-// Start forks a new daemon process by re-executing the current binary
-// with NM_DAEMON=1. It waits up to 5 seconds for the daemon to become
-// responsive on the IPC socket.
+// Start installs or refreshes the managed daemon service when supported and
+// starts it, falling back to a detached re-exec with NM_DAEMON=1 when managed
+// startup is unavailable or fails. It waits up to 5 seconds for the daemon to
+// become responsive on the IPC socket.
 func Start(p *paths.Paths) error {
-	if alive, _ := IsRunning(p); alive {
+	if err := p.EnsureDirs(); err != nil {
+		return err
+	}
+	if alive, _ := daemonHealthCheck(p); alive {
 		return fmt.Errorf("daemon already running")
 	}
+	if managed, err := installManagedService(p); err == nil {
+		if managed {
+			if err := startManagedDaemon(p); err == nil {
+				return nil
+			} else if err := stopManagedFallback(p); err != nil {
+				return err
+			}
+		}
+	} else if alive, _ := daemonHealthCheck(p); alive {
+		return nil
+	}
+	return startDetachedDaemon(p)
+}
 
+func stopManagedFallback(p *paths.Paths) error {
+	managed, err := stopManagedService(p)
+	if !managed || err == nil {
+		return nil
+	}
+	if alive, _ := daemonHealthCheck(p); alive {
+		return fmt.Errorf("managed daemon is still running: %w", err)
+	}
+	return fmt.Errorf("stop managed daemon before detached fallback: %w", err)
+}
+
+func startDetachedDaemon(p *paths.Paths) error {
 	// Clean up stale socket/pid files
 	os.Remove(p.Socket())
 	os.Remove(p.PIDFile())
@@ -73,13 +104,26 @@ func Start(p *paths.Paths) error {
 	if err := cmd.Process.Release(); err != nil {
 		return fmt.Errorf("release daemon process: %w", err)
 	}
+	return waitForDaemonStart(p, pid)
+}
 
+func startManagedDaemon(p *paths.Paths) error {
+	if _, err := startManagedService(p); err != nil {
+		if alive, _ := daemonHealthCheck(p); alive {
+			return nil
+		}
+		return err
+	}
+	return waitForDaemonStart(p, 0)
+}
+
+func waitForDaemonStart(p *paths.Paths, pid int) error {
 	// Poll for the daemon to become responsive.
 	timeout := daemonStartTimeout()
 	pollInterval := daemonStartPollInterval()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		if alive, _ := IsRunning(p); alive {
+		if alive, _ := daemonHealthCheck(p); alive {
 			slog.Info("daemon is responsive", "pid", pid)
 			return nil
 		}
@@ -91,6 +135,10 @@ func Start(p *paths.Paths) error {
 
 // IsRunning checks if the daemon is alive by sending a health check via IPC.
 func IsRunning(p *paths.Paths) (bool, error) {
+	return daemonHealthCheck(p)
+}
+
+func daemonIsRunningViaIPC(p *paths.Paths) (bool, error) {
 	client, err := ipc.Dial(p.Socket())
 	if err != nil {
 		return false, nil
@@ -106,6 +154,22 @@ func IsRunning(p *paths.Paths) (bool, error) {
 
 // Stop sends a shutdown request to the running daemon and waits for it to exit.
 func Stop(p *paths.Paths) error {
+	if managed, err := stopManagedService(p); managed {
+		if err != nil {
+			if alive, _ := daemonHealthCheck(p); !alive {
+				return nil
+			}
+			if detachedErr := stopDetachedDaemon(p); detachedErr != nil {
+				return fmt.Errorf("%w; detached shutdown: %v", err, detachedErr)
+			}
+			return nil
+		}
+		return waitForDaemonStop(p)
+	}
+	return stopDetachedDaemon(p)
+}
+
+func stopDetachedDaemon(p *paths.Paths) error {
 	client, err := ipc.Dial(p.Socket())
 	if err != nil {
 		return nil
@@ -116,11 +180,14 @@ func Stop(p *paths.Paths) error {
 	if err := client.Call(ipc.MethodShutdown, &ipc.ShutdownParams{}, &result); err != nil {
 		return fmt.Errorf("shutdown request: %w", err)
 	}
+	return waitForDaemonStop(p)
+}
 
+func waitForDaemonStop(p *paths.Paths) error {
 	// Wait for daemon to actually stop (socket becomes unavailable).
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if alive, _ := IsRunning(p); !alive {
+		if alive, _ := daemonHealthCheck(p); !alive {
 			slog.Info("daemon stopped gracefully")
 			return nil
 		}
@@ -140,7 +207,7 @@ func Stop(p *paths.Paths) error {
 
 // EnsureDaemon starts the daemon if it's not already running.
 func EnsureDaemon(p *paths.Paths) error {
-	if alive, _ := IsRunning(p); alive {
+	if alive, _ := daemonHealthCheck(p); alive {
 		return nil
 	}
 	return Start(p)

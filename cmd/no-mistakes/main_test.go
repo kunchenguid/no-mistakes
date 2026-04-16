@@ -52,3 +52,56 @@ func TestCLILogWriterAppendsToFileWhenLogsDirExists(t *testing.T) {
 		t.Fatalf("cli.log contents = %q, want %q", string(b), "hello\n")
 	}
 }
+
+func TestDaemonRunRootFromArgs(t *testing.T) {
+	t.Setenv("NM_DAEMON", "")
+
+	tests := []struct {
+		name     string
+		args     []string
+		wantRoot string
+		wantOK   bool
+		wantErr  string
+	}{
+		{name: "non-daemon command", args: []string{"daemon", "status"}},
+		{name: "daemon run no root", args: []string{"daemon", "run"}, wantOK: true},
+		{name: "daemon run root flag", args: []string{"daemon", "run", "--root", "/tmp/nm"}, wantRoot: "/tmp/nm", wantOK: true},
+		{name: "daemon run root equals", args: []string{"daemon", "run", "--root=/tmp/nm"}, wantRoot: "/tmp/nm", wantOK: true},
+		{name: "daemon run missing root value", args: []string{"daemon", "run", "--root"}, wantErr: "missing value for --root"},
+		{name: "daemon run help", args: []string{"daemon", "run", "--help"}},
+		{name: "daemon run short help", args: []string{"daemon", "run", "-h"}},
+		{name: "daemon run unknown flag", args: []string{"daemon", "run", "--bogus"}},
+		{name: "daemon run extra arg", args: []string{"daemon", "run", "extra"}},
+		{name: "daemon run root plus extra arg", args: []string{"daemon", "run", "--root", "/tmp/nm", "extra"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotRoot, gotOK, err := daemonRunRootFromArgs(tt.args)
+			if tt.wantErr != "" {
+				if err == nil || err.Error() != tt.wantErr {
+					t.Fatalf("err = %v, want %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected err: %v", err)
+			}
+			if gotRoot != tt.wantRoot || gotOK != tt.wantOK {
+				t.Fatalf("got (%q, %v), want (%q, %v)", gotRoot, gotOK, tt.wantRoot, tt.wantOK)
+			}
+		})
+	}
+}
+
+func TestDaemonRunRootFromArgs_EnvForcesDaemonMode(t *testing.T) {
+	t.Setenv("NM_DAEMON", "1")
+
+	gotRoot, gotOK, err := daemonRunRootFromArgs([]string{"status"})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if gotRoot != "" || !gotOK {
+		t.Fatalf("got (%q, %v), want (%q, %v)", gotRoot, gotOK, "", true)
+	}
+}

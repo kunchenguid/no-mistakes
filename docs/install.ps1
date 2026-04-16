@@ -32,4 +32,9 @@ if ($userPath -notlike "*$installDir*") {
     Write-Host "Added $installDir to user PATH. Restart your terminal."
 }
 
+$oldErrorActionPreference = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+& "$installDir\no-mistakes.exe" daemon start | Out-Null
+$ErrorActionPreference = $oldErrorActionPreference
+
 Write-Host "no-mistakes $version installed to $installDir\no-mistakes.exe"

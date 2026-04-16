@@ -21,7 +21,7 @@ Initialize the gate for the current repository.
 no-mistakes init
 ```
 
-Creates a local bare repo, installs the post-receive hook, adds the `no-mistakes` git remote, detects the default branch, records the repo in SQLite, and starts the daemon if needed.
+Creates a local bare repo, installs the post-receive hook, adds the `no-mistakes` git remote, detects the default branch, records the repo in SQLite, and ensures the daemon is running, installing the managed service when available and falling back to a detached daemon otherwise.
 
 Rolls back all changes if any step fails.
 
@@ -113,25 +113,29 @@ Update the installed binary and reset the daemon.
 no-mistakes update
 ```
 
-Downloads the latest release, verifies the SHA-256 checksum, atomically replaces the running binary, and resets the daemon when it is running or stale daemon artifacts exist so the new executable is picked up. If the daemon is running, update first requires it to already be using the same executable path as the binary running `no-mistakes update`; if that daemon executable path cannot be determined or it points to a different binary, the update aborts before replacement. If the daemon does not come back cleanly after a successful replacement, the command reports that failure. On macOS, removes the quarantine extended attribute.
+Downloads the latest release, verifies the SHA-256 checksum, atomically replaces the running binary, and resets the daemon when it is running or stale daemon artifacts exist so the new executable is picked up, preferring the managed service path and falling back to a detached daemon if service startup is unavailable or fails. If the daemon is running, update first requires it to already be using the same executable path as the binary running `no-mistakes update`; if that daemon executable path cannot be determined or it points to a different binary, the update aborts before replacement. If the daemon does not come back cleanly after a successful replacement, the command reports that failure. On macOS, removes the quarantine extended attribute.
 
 Background update checks run automatically on each CLI invocation (except `update` itself). If a newer version is available, a notification is printed to stderr. Suppressed for dev builds or when `NO_MISTAKES_NO_UPDATE_CHECK=1` is set.
 
 ## no-mistakes daemon start
 
-Start the daemon in the background.
+Start the daemon, installing or refreshing the managed service when possible.
 
 ```sh
 no-mistakes daemon start
 ```
 
+Prefers the managed service path and falls back to a detached daemon if service install or startup is unavailable or fails.
+
 ## no-mistakes daemon stop
 
-Stop the running daemon.
+Stop the running daemon process.
 
 ```sh
 no-mistakes daemon stop
 ```
+
+This does not remove the managed service. A later `no-mistakes daemon start`, `init`, `attach`, `rerun`, or `update` can start the daemon again through the same service manager when available, or as a detached daemon otherwise.
 
 ## no-mistakes daemon status
 

@@ -3,7 +3,9 @@ title: Daemon
 description: Background process management and recovery.
 ---
 
-The daemon is a long-running background process that manages pipeline runs. It auto-starts when needed and runs until explicitly stopped.
+The daemon is a long-running background process that manages pipeline runs. The installer prefers setting it up as a managed background service, and `init`, `attach`, `rerun`, and `update` keep that service installed and running for you when that path is available.
+
+On macOS this is a per-user `launchd` agent, on Linux a per-user `systemd` service, and on Windows a Task Scheduler task. The installed artifacts are `~/Library/LaunchAgents/com.kunchenguid.no-mistakes.daemon.plist`, `~/.config/systemd/user/no-mistakes-daemon.service`, and the Windows task `no-mistakes-daemon`. Those service managers keep the daemon available across CLI invocations and restart it after `no-mistakes update` replaces the binary. Before a managed daemon run starts, `no-mistakes` reloads the environment from your login shell so agent and tool discovery matches the shell you use interactively. If managed service install or startup is unavailable or fails, `no-mistakes` falls back to starting a detached daemon process instead.
 
 ## Starting and stopping
 
@@ -13,7 +15,7 @@ no-mistakes daemon start
 no-mistakes daemon stop
 no-mistakes daemon status
 
-# Auto-starts on these commands if not running
+# Ensures the daemon is running, using the managed service when possible
 no-mistakes init
 no-mistakes attach
 no-mistakes rerun
@@ -22,7 +24,7 @@ no-mistakes rerun
 no-mistakes update
 ```
 
-`no-mistakes update` stops and starts the daemon when it is running, or when stale daemon artifacts exist, so the new executable is used. If the daemon is already running, update only proceeds when the daemon is using the same executable path as the binary running the update command; if that path cannot be determined or points to a different binary, the update aborts before replacing anything.
+`no-mistakes update` stops and starts the daemon when it is running, or when stale daemon artifacts exist, so the new executable is used. It prefers the managed service path and falls back to a detached daemon if service startup is unavailable or fails. If the daemon is already running, update only proceeds when the daemon is using the same executable path as the binary running the update command; if that path cannot be determined or points to a different binary, the update aborts before replacing anything.
 
 The daemon writes its PID to `~/.no-mistakes/daemon.pid` and listens on a Unix socket at `~/.no-mistakes/socket`. On Windows, it uses a localhost TCP listener and a protected endpoint file at the same path.
 
@@ -64,7 +66,7 @@ log_level: debug  # debug | info | warn | error
 
 ## Shutdown
 
-`no-mistakes daemon stop` initiates a graceful shutdown:
+`no-mistakes daemon stop` stops the current daemon process without removing the managed service. The next `no-mistakes daemon start`, `init`, `attach`, `rerun`, or `update` will start it again through the same service manager when available, or as a detached daemon otherwise.
 
 1. Cancels all active runs
 2. Waits up to 30 seconds for goroutines to finish
