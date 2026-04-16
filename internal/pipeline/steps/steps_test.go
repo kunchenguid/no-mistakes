@@ -1964,6 +1964,9 @@ func TestReviewStep_WithWarnings(t *testing.T) {
 	if !strings.Contains(ag.calls[0].Prompt, "Do not stop after the first valid finding.") {
 		t.Error("expected review prompt to discourage stopping at the first finding")
 	}
+	if !strings.Contains(ag.calls[0].Prompt, "Do NOT run tests during review.") {
+		t.Error("expected review prompt to avoid running tests during review")
+	}
 }
 
 func TestReviewStep_Clean(t *testing.T) {
