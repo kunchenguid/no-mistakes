@@ -11,6 +11,7 @@ Set Padding 50
 Set Theme "Catppuccin Mocha"
 
 Env NM_DEMO "1"
+Env NM_TEST_START_DAEMON "1"
 Env NO_MISTAKES_NO_UPDATE_CHECK "1"
 Env SHELL "/bin/bash"
 Env GIT_AUTHOR_NAME "demo"
@@ -40,4 +41,3 @@ Sleep 30s
 
 # Let the completed state linger
 Sleep 2s
-
