@@ -81,6 +81,57 @@ func TestApplyToProcess_SetsResolvedEnvEntries(t *testing.T) {
 	}
 }
 
+func TestResolve_ReturnsProcessEnvOnWindows_EnableWindowsCI(t *testing.T) {
+	resetForTests()
+	oldGOOS := runtimeGOOS
+	oldOutput := shellCommandOutput
+	defer func() {
+		runtimeGOOS = oldGOOS
+		shellCommandOutput = oldOutput
+		resetForTests()
+	}()
+
+	runtimeGOOS = "windows"
+	t.Setenv("SHELLENV_WINDOWS_RESOLVE", "1")
+	shellCommandOutput = func(string, ...string) ([]byte, error) {
+		t.Fatal("Resolve should not shell out on Windows")
+		return nil, nil
+	}
+
+	env, err := Resolve()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsEnvEntry(env, "SHELLENV_WINDOWS_RESOLVE=1") {
+		t.Fatalf("expected resolved env to contain process env entry, got %v", env)
+	}
+}
+
+func TestApplyToProcess_UsesProcessEnvOnWindows_EnableWindowsCI(t *testing.T) {
+	resetForTests()
+	oldGOOS := runtimeGOOS
+	oldOutput := shellCommandOutput
+	defer func() {
+		runtimeGOOS = oldGOOS
+		shellCommandOutput = oldOutput
+		resetForTests()
+	}()
+
+	runtimeGOOS = "windows"
+	t.Setenv("SHELLENV_WINDOWS_APPLY", "1")
+	shellCommandOutput = func(string, ...string) ([]byte, error) {
+		t.Fatal("ApplyToProcess should not shell out on Windows")
+		return nil, nil
+	}
+
+	if err := ApplyToProcess(); err != nil {
+		t.Fatal(err)
+	}
+	if got := os.Getenv("SHELLENV_WINDOWS_APPLY"); got != "1" {
+		t.Fatalf("SHELLENV_WINDOWS_APPLY = %q", got)
+	}
+}
+
 func TestParseEnvOutput_IgnoresShellNoiseBeforeEnv(t *testing.T) {
 	env := parseEnvOutput([]byte("banner text\nPATH=/resolved/bin\x00HOME=/Users/test\x00SPECIAL=1\x00"))
 

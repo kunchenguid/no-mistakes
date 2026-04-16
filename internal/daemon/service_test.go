@@ -6,6 +6,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -142,7 +143,7 @@ func TestStartInstallsSystemdUnitAndStartsManagedDaemon(t *testing.T) {
 }
 
 func TestStartInstallsWindowsTaskAndStartsManagedDaemon_EnableWindowsCI(t *testing.T) {
-	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm home"))
 	if err := p.EnsureDirs(); err != nil {
 		t.Fatal(err)
 	}
@@ -168,8 +169,9 @@ func TestStartInstallsWindowsTaskAndStartsManagedDaemon_EnableWindowsCI(t *testi
 		t.Fatal(err)
 	}
 
+	wantTaskCommand := strconv.Quote(exe) + " daemon run --root " + strconv.Quote(p.Root())
 	wantCreate := "schtasks /Create /TN " + windowsTaskName +
-		" /SC ONLOGON /RL LIMITED /F /TR " + buildWindowsTaskCommand(exe, p.Root())
+		" /SC ONLOGON /RL LIMITED /F /TR " + wantTaskCommand
 	wantRun := "schtasks /Run /TN " + windowsTaskName
 	if len(commands) != 2 {
 		t.Fatalf("expected schtasks create and run, got %v", commands)
