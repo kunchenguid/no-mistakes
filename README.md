@@ -75,6 +75,7 @@ curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/i
 ```
 
 The installer keeps the real binary in `~/.no-mistakes/bin` and exposes `no-mistakes` through a symlink in `~/.local/bin` or `/usr/local/bin`. That keeps future `no-mistakes update` runs in a user-owned location instead of rewriting a system binary in place. It also attempts to install and start the background daemon for you so the command is ready immediately, preferring a managed service and falling back to a detached daemon if that path is unavailable. If startup still fails, run `no-mistakes daemon start` manually.
+
 **Windows (PowerShell)**
 
 ```powershell
@@ -109,6 +110,7 @@ no-mistakes update
 ```
 
 This replaces the binary and resets the background daemon so it picks up the new executable, preferring the managed service path and falling back to a detached daemon if service startup is unavailable or fails. It only proceeds if the running daemon is already using the same executable path. If the daemon executable path cannot be determined or it was started from a different binary, the update aborts before replacing the binary. If the daemon does not come back cleanly after a successful replacement, the new binary stays installed but the command reports the daemon reset failure.
+
 ## How It Works
 
 ```text
