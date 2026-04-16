@@ -59,6 +59,16 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		sctx.Log(fmt.Sprintf("skipping PR creation: provider %s is not supported yet", provider))
 		return &pipeline.StepOutcome{}, nil
 	}
+	if provider != scm.ProviderBitbucket {
+		if !stepCLIAvailable(sctx, provider) {
+			sctx.Log(fmt.Sprintf("skipping PR creation: %s CLI is not installed", provider.CLIName()))
+			return &pipeline.StepOutcome{}, nil
+		}
+		if !stepAuthConfigured(sctx, provider) {
+			sctx.Log(fmt.Sprintf("skipping PR creation: %s CLI is not authenticated", provider.CLIName()))
+			return &pipeline.StepOutcome{}, nil
+		}
+	}
 
 	// Resolve the branch base so PR summaries cover the full branch delta.
 	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
@@ -68,15 +78,6 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	}
 	if provider == scm.ProviderBitbucket {
 		return s.executeBitbucketPR(sctx, branch, content)
-	}
-
-	if !stepCLIAvailable(sctx, provider) {
-		sctx.Log(fmt.Sprintf("skipping PR creation: %s CLI is not installed", provider.CLIName()))
-		return &pipeline.StepOutcome{}, nil
-	}
-	if !stepAuthConfigured(sctx, provider) {
-		sctx.Log(fmt.Sprintf("skipping PR creation: %s CLI is not authenticated", provider.CLIName()))
-		return &pipeline.StepOutcome{}, nil
 	}
 
 	switch provider {

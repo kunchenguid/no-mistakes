@@ -188,7 +188,8 @@ func waitForDaemonStop(p *paths.Paths) error {
 	// Wait for daemon to actually stop (socket becomes unavailable).
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if alive, _ := daemonHealthCheck(p); !alive {
+		alive, err := daemonHealthCheck(p)
+		if err == nil && !alive {
 			cleanupDaemonArtifacts(p)
 			slog.Info("daemon stopped gracefully")
 			return nil
@@ -206,7 +207,8 @@ func waitForDaemonStop(p *paths.Paths) error {
 
 			killDeadline := time.Now().Add(2 * time.Second)
 			for time.Now().Before(killDeadline) {
-				if alive, _ := daemonHealthCheck(p); !alive {
+				alive, err := daemonHealthCheck(p)
+				if err == nil && !alive {
 					cleanupDaemonArtifacts(p)
 					slog.Warn("daemon killed after shutdown timeout", "pid", pid)
 					return nil

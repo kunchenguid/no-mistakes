@@ -4821,6 +4821,33 @@ func TestPRStep_SkipsWhenProviderCLIUnavailable(t *testing.T) {
 	}
 }
 
+func TestPRStep_SkipsBeforeBuildingContentWhenProviderCLIUnavailable(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			t.Fatal("expected PR content generation to be skipped when CLI is unavailable")
+			return nil, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
+	sctx.Env = []string{"PATH=" + t.TempDir()}
+
+	step := &PRStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("expected skip instead of failure, got: %v", err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatal("expected no approval when PR step skips")
+	}
+	if len(ag.calls) != 0 {
+		t.Fatalf("expected no agent calls when provider CLI unavailable, got %d", len(ag.calls))
+	}
+}
+
 func TestPRStep_ExistingBranchUsesMergeBaseCommitLog(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
