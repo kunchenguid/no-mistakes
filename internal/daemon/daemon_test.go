@@ -388,7 +388,11 @@ func TestStopNotRunningRemovesStaleArtifacts(t *testing.T) {
 	if err := p.EnsureDirs(); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(p.PIDFile(), []byte(fmt.Sprintf("%d", os.Getpid())), 0o644); err != nil {
+	// Use a pid that is not running so Stop() recognizes the artifacts as
+	// stale on all platforms. os.Getpid() would be a live process that the
+	// Windows pid-fallback validator correctly rejects as "not the daemon",
+	// because the test runner's start time predates the pid file.
+	if err := os.WriteFile(p.PIDFile(), []byte("999999"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(p.Socket(), []byte("stale"), 0o644); err != nil {

@@ -10,7 +10,53 @@ permissions:
   pull-requests: write
 
 jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Format check
+        run: |
+          output=$(gofmt -l .)
+          if [ -n "$output" ]; then
+            echo "Files not formatted:"
+            echo "$output"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Test on Unix
+        if: runner.os != 'Windows'
+        run: go test -race ./...
+
+      - name: Test on Windows
+        if: runner.os == 'Windows'
+        run: go test ./...
+
+      - name: Build
+        run: go build ./cmd/no-mistakes
+
   release-please:
+    needs: [check, test]
     runs-on: ubuntu-latest
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
@@ -46,6 +92,8 @@ jobs:
             goarch: arm64
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
 
       - uses: actions/setup-go@v6
         with:
