@@ -109,7 +109,7 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          COMMIT="${GITHUB_SHA::7}"
+          COMMIT="$(git rev-parse --short=7 HEAD)"
           BIN="no-mistakes"
           OUT="dist/${BIN}"
           if [ "$GOOS" = "windows" ]; then
