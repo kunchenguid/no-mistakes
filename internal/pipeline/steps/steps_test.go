@@ -4623,6 +4623,39 @@ func TestPRStep_BitbucketMissingEnvSkipsBeforeBuildingContent(t *testing.T) {
 	}
 }
 
+func TestPRStep_BitbucketUsesProcessEnvWhenStepEnvIsNil(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	api := newFakeBitbucketPRAPI(t, 0, "")
+	t.Setenv("NO_MISTAKES_BITBUCKET_EMAIL", "test@example.com")
+	t.Setenv("NO_MISTAKES_BITBUCKET_API_TOKEN", "test-token")
+	t.Setenv("NO_MISTAKES_BITBUCKET_API_BASE_URL", api.server.URL)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			payload := json.RawMessage(`{"title":"fix: process env bitbucket pr","body":"## Summary\n\n- create PR via process env"}`)
+			return &agent.Result{Output: payload}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
+
+	step := &PRStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatal("bitbucket PR step should never need approval")
+	}
+	if outcome.PRURL != api.createdPRURL {
+		t.Fatalf("PR URL = %q, want %q", outcome.PRURL, api.createdPRURL)
+	}
+	if api.createCalls != 1 {
+		t.Fatalf("expected Bitbucket PR create API to be called once, got %d", api.createCalls)
+	}
+}
+
 func TestPRStep_UsesAgentGeneratedTitleAndBody(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
@@ -5152,6 +5185,33 @@ func TestCIStep_BitbucketPassesWhenStatusesPass(t *testing.T) {
 	}
 	if !foundPassed {
 		t.Fatalf("expected successful Bitbucket CI logs, got %v", logs)
+	}
+}
+
+func TestCIStep_BitbucketUsesProcessEnvWhenStepEnvIsNil(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	api := newFakeBitbucketCIAPI(t, "OPEN", `{"values":[{"name":"build","state":"SUCCESSFUL"}]}`)
+	t.Setenv("NO_MISTAKES_BITBUCKET_EMAIL", "test@example.com")
+	t.Setenv("NO_MISTAKES_BITBUCKET_API_TOKEN", "test-token")
+	t.Setenv("NO_MISTAKES_BITBUCKET_API_BASE_URL", api.server.URL)
+
+	prURL := "https://bitbucket.org/test/repo/pull-requests/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
+	sctx.Config.CITimeout = 30 * time.Second
+
+	step := &CIStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatal("expected Bitbucket CI pass to complete without approval")
+	}
+	if api.prStateCalls == 0 || api.statusesCalls == 0 {
+		t.Fatalf("expected Bitbucket CI endpoints to be called, got state=%d statuses=%d", api.prStateCalls, api.statusesCalls)
 	}
 }
 

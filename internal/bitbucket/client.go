@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 )
@@ -415,6 +416,9 @@ func lookupEnv(env []string, key string) string {
 		if strings.HasPrefix(entry, prefix) {
 			return strings.TrimPrefix(entry, prefix)
 		}
+	}
+	if value, ok := os.LookupEnv(key); ok {
+		return value
 	}
 	return ""
 }
