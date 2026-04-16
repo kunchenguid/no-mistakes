@@ -719,6 +719,74 @@ func TestWaitForDaemonStopDoesNotTreatHealthCheckErrorsAsStopped(t *testing.T) {
 	}
 }
 
+func TestWaitForDaemonStopRejectsStalePIDBeforeKill(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "dtest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	p := paths.WithRoot(tmpDir)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.PIDFile(), []byte(fmt.Sprintf("%d", os.Getpid())), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldTime := time.Now().Add(-24 * time.Hour)
+	if err := os.Chtimes(p.PIDFile(), oldTime, oldTime); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.Socket(), []byte("still-there"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	originalHealthCheck := daemonHealthCheck
+	daemonHealthCheck = func(*paths.Paths) (bool, error) {
+		return true, nil
+	}
+	defer func() {
+		daemonHealthCheck = originalHealthCheck
+	}()
+	originalProcessStartTime := daemonProcessStartTime
+	daemonProcessStartTime = func(checkPID int) (time.Time, error) {
+		if checkPID != os.Getpid() {
+			t.Fatalf("processStartTime pid = %d, want %d", checkPID, os.Getpid())
+		}
+		return time.Now(), nil
+	}
+	defer func() {
+		daemonProcessStartTime = originalProcessStartTime
+	}()
+	originalKillPID := daemonKillPID
+	killCalled := false
+	daemonKillPID = func(int) error {
+		killCalled = true
+		return nil
+	}
+	defer func() {
+		daemonKillPID = originalKillPID
+	}()
+
+	started := time.Now()
+	err = waitForDaemonStop(p)
+	if err == nil {
+		t.Fatal("expected waitForDaemonStop to fail for stale pid")
+	}
+	if time.Since(started) < 5*time.Second {
+		t.Fatalf("waitForDaemonStop returned too early after %v", time.Since(started))
+	}
+	if killCalled {
+		t.Fatal("expected stale pid to avoid killing the process")
+	}
+	if _, err := os.Stat(p.PIDFile()); err != nil {
+		t.Fatalf("expected pid file to remain after rejected kill, got err=%v", err)
+	}
+	if _, err := os.Stat(p.Socket()); err != nil {
+		t.Fatalf("expected socket file to remain after rejected kill, got err=%v", err)
+	}
+}
+
 func TestReadPIDInvalid(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "dtest")
 	if err != nil {

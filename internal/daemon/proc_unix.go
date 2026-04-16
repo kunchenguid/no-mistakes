@@ -52,7 +52,8 @@ func processStartTime(pid int) (time.Time, error) {
 
 func processStartTimeCommand(pid int) *exec.Cmd {
 	cmd := exec.Command("ps", "-p", fmt.Sprintf("%d", pid), "-o", "lstart=")
-	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C")
+	env := upsertEnv(os.Environ(), "LC_ALL", "C")
+	cmd.Env = upsertEnv(env, "LANG", "C")
 	return cmd
 }
 

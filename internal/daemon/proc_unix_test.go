@@ -25,6 +25,9 @@ func TestParseProcessStartTimeUsesProvidedLocation(t *testing.T) {
 }
 
 func TestProcessStartTimeCommandForcesCLocale(t *testing.T) {
+	t.Setenv("LC_ALL", "fr_FR.UTF-8")
+	t.Setenv("LANG", "fr_FR.UTF-8")
+
 	cmd := processStartTimeCommand(123)
 
 	if got := strings.Join(cmd.Args, " "); got != "ps -p 123 -o lstart=" {
@@ -36,6 +39,12 @@ func TestProcessStartTimeCommandForcesCLocale(t *testing.T) {
 	if !containsEnvEntry(cmd.Env, "LANG=C") {
 		t.Fatalf("expected LANG=C in env, got %v", cmd.Env)
 	}
+	if countEnvEntries(cmd.Env, "LC_ALL") != 1 {
+		t.Fatalf("expected one LC_ALL entry, got %v", cmd.Env)
+	}
+	if countEnvEntries(cmd.Env, "LANG") != 1 {
+		t.Fatalf("expected one LANG entry, got %v", cmd.Env)
+	}
 }
 
 func containsEnvEntry(env []string, want string) bool {
@@ -45,4 +54,15 @@ func containsEnvEntry(env []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func countEnvEntries(env []string, key string) int {
+	prefix := key + "="
+	count := 0
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			count++
+		}
+	}
+	return count
 }
