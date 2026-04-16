@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.3.0](https://github.com/kunchenguid/no-mistakes/compare/v1.2.1...v1.3.0) (2026-04-16)
+
+
+### Features
+
+* **daemon:** add managed daemon service startup with fallback ([#78](https://github.com/kunchenguid/no-mistakes/issues/78)) ([c52463f](https://github.com/kunchenguid/no-mistakes/commit/c52463fe4e053fb898653e585d2c86bec38f9c5f))
+* **demo:** add scripted demo pipeline workflow ([#83](https://github.com/kunchenguid/no-mistakes/issues/83)) ([af25153](https://github.com/kunchenguid/no-mistakes/commit/af25153229303fa782c480b8ba016ac8b6d1d6b1))
+
+
+### Bug Fixes
+
+* **daemon:** ensure service manager is bypassed during go test ([#82](https://github.com/kunchenguid/no-mistakes/issues/82)) ([fef7527](https://github.com/kunchenguid/no-mistakes/commit/fef752776b93c8cc59f584eac22edf4a001396ce))
+* **daemon:** scope managed service names by NM_HOME ([#84](https://github.com/kunchenguid/no-mistakes/issues/84)) ([65375dc](https://github.com/kunchenguid/no-mistakes/commit/65375dc3ff98f7ed61f17358df5cb19d1c555e37))
+* **review:** add note to avoid running tests during review ([#81](https://github.com/kunchenguid/no-mistakes/issues/81)) ([594db31](https://github.com/kunchenguid/no-mistakes/commit/594db3189c45c6882a3a13fedc1de2ce7a6589a0))
+
 ## [1.2.1](https://github.com/kunchenguid/no-mistakes/compare/v1.2.0...v1.2.1) (2026-04-15)
 
 
