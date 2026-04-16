@@ -70,6 +70,8 @@ The installer keeps the real binary in `~/.no-mistakes/bin` and exposes `no-mist
 irm https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.ps1 | iex
 ```
 
+This installs the binary and starts the background daemon automatically.
+
 **Go install**
 
 ```sh
@@ -95,7 +97,7 @@ To update an existing install in place:
 no-mistakes update
 ```
 
-This replaces the binary and resets the background daemon so it picks up the new executable, but only if the running daemon is already using the same executable path. If the daemon executable path cannot be determined or it was started from a different binary, the update aborts before replacing the binary. If the daemon does not come back cleanly after a successful replacement, the new binary stays installed but the command reports the daemon reset failure.
+This replaces the binary and resets the background daemon service so it picks up the new executable, but only if the running daemon is already using the same executable path. If the daemon executable path cannot be determined or it was started from a different binary, the update aborts before replacing the binary. If the daemon does not come back cleanly after a successful replacement, the new binary stays installed but the command reports the daemon reset failure.
 
 ## How It Works
 
@@ -141,15 +143,15 @@ This replaces the binary and resets the background daemon so it picks up the new
 | --------------------------- | ------------------------------------------------------ |
 | `no-mistakes`               | Attach to the active pipeline run for the current repo |
 | `no-mistakes init`          | Initialize the gate for the current repository         |
-| `no-mistakes update`        | Update the binary and reset the daemon                 |
+| `no-mistakes update`        | Update the binary and reset the daemon service         |
 | `no-mistakes eject`         | Remove the gate from the current repository            |
 | `no-mistakes attach`        | Attach to the active pipeline run                      |
 | `no-mistakes rerun`         | Rerun the pipeline for the current branch              |
 | `no-mistakes status`        | Show repo, daemon, and active run status               |
 | `no-mistakes runs`          | List recorded pipeline runs for the current repo       |
 | `no-mistakes doctor`        | Check system health and dependencies                   |
-| `no-mistakes daemon start`  | Start the daemon in the background                     |
-| `no-mistakes daemon stop`   | Stop the running daemon                                |
+| `no-mistakes daemon start`  | Install the daemon service and start it                |
+| `no-mistakes daemon stop`   | Stop the running daemon process                        |
 | `no-mistakes daemon status` | Check whether the daemon is running                    |
 
 ### Flags

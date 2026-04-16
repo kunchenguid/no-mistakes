@@ -75,7 +75,7 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 func newDaemonStartCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "start",
-		Short: "Start the daemon in the background",
+		Short: "Install or refresh the managed daemon service and start it",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			p, err := paths.New()
 			if err != nil {

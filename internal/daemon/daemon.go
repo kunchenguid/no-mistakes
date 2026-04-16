@@ -21,7 +21,8 @@ import (
 var applyShellEnvToProcess = shellenv.ApplyToProcess
 
 // Run starts the daemon process. It blocks until a shutdown signal is received
-// or the shutdown IPC method is called. This is called when NM_DAEMON=1.
+// or the shutdown IPC method is called. This is called when NM_DAEMON=1 or via
+// the hidden `no-mistakes daemon run` entrypoint used by the managed service.
 func Run() error {
 	p, err := paths.New()
 	if err != nil {

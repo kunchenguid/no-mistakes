@@ -5,6 +5,8 @@ description: Background process management and recovery.
 
 The daemon is a long-running background process that manages pipeline runs. The installer sets it up as a managed background service, and `init`, `attach`, `rerun`, and `update` keep that service installed and running for you.
 
+On macOS this is a per-user `launchd` agent, on Linux a per-user `systemd` service, and on Windows a Task Scheduler task. Those service managers keep the daemon available across CLI invocations and restart it after `no-mistakes update` replaces the binary.
+
 ## Starting and stopping
 
 ```sh
@@ -64,7 +66,7 @@ log_level: debug  # debug | info | warn | error
 
 ## Shutdown
 
-`no-mistakes daemon stop` stops the current daemon process without removing the managed service:
+`no-mistakes daemon stop` stops the current daemon process without removing the managed service. The next `no-mistakes daemon start`, `init`, `attach`, `rerun`, or `update` will start it again through the same service manager.
 
 1. Cancels all active runs
 2. Waits up to 30 seconds for goroutines to finish

@@ -34,9 +34,10 @@ func durationFromEnv(name string, fallback time.Duration) time.Duration {
 	return d
 }
 
-// Start forks a new daemon process by re-executing the current binary
-// with NM_DAEMON=1. It waits up to 5 seconds for the daemon to become
-// responsive on the IPC socket.
+// Start installs or refreshes the managed daemon service when supported and
+// starts it, falling back to a detached re-exec with NM_DAEMON=1 when managed
+// startup is unavailable or fails. It waits up to 5 seconds for the daemon to
+// become responsive on the IPC socket.
 func Start(p *paths.Paths) error {
 	if err := p.EnsureDirs(); err != nil {
 		return err
