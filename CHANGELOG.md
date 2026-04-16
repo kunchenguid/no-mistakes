@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.4.0](https://github.com/kunchenguid/no-mistakes/compare/v1.3.0...v1.4.0) (2026-04-16)
+
+
+### Features
+
+* **bitbucket:** add Bitbucket Cloud PR and CI support ([#85](https://github.com/kunchenguid/no-mistakes/issues/85)) ([800f0e9](https://github.com/kunchenguid/no-mistakes/commit/800f0e9a4db73deb46cf6bca3aa2858c59552ee1))
+
+
+### Bug Fixes
+
+* **pipeline:** tighten PR title scope selection ([#87](https://github.com/kunchenguid/no-mistakes/issues/87)) ([08bb185](https://github.com/kunchenguid/no-mistakes/commit/08bb1857b6d1843e4625452c390cc70a6dc7bbd4))
+
 ## [1.3.0](https://github.com/kunchenguid/no-mistakes/compare/v1.2.1...v1.3.0) (2026-04-16)
 
 
