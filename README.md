@@ -99,7 +99,7 @@ make build
 make install
 ```
 
-You will also need `git` and one supported agent binary. For PR creation, install `gh` (GitHub) or `glab` (GitLab), or set `NO_MISTAKES_BITBUCKET_EMAIL` and `NO_MISTAKES_BITBUCKET_API_TOKEN` for Bitbucket. CI monitoring supports GitHub via `gh` and Bitbucket via those Bitbucket API credentials.
+You will also need `git` and one supported agent binary. For PR creation, install `gh` (GitHub) or `glab` (GitLab), or set `NO_MISTAKES_BITBUCKET_EMAIL` and `NO_MISTAKES_BITBUCKET_API_TOKEN` for Bitbucket Cloud. CI monitoring supports GitHub via `gh` and Bitbucket Cloud via those Bitbucket API credentials.
 
 Full documentation is published at <https://kunchenguid.github.io/no-mistakes/>.
 

@@ -108,15 +108,15 @@ Creates or updates a pull request.
 
 **Skipped when:**
 - The branch is the default branch
-- The upstream host is not GitHub, GitLab, or Bitbucket
+- The upstream host is not GitHub, GitLab, or Bitbucket Cloud (`bitbucket.org`)
 - The provider CLI (`gh` or `glab`) is not installed for GitHub or GitLab
 - The provider CLI is not authenticated for GitHub or GitLab
-- Bitbucket credentials are missing (`NO_MISTAKES_BITBUCKET_EMAIL` or `NO_MISTAKES_BITBUCKET_API_TOKEN`)
+- Bitbucket Cloud credentials are missing (`NO_MISTAKES_BITBUCKET_EMAIL` or `NO_MISTAKES_BITBUCKET_API_TOKEN`)
 
 **Behavior:**
 - Checks for an existing PR on the branch
 - If one exists, updates it. If not, creates a new one.
-- Uses the provider CLI for GitHub/GitLab and the Bitbucket API for Bitbucket
+- Uses the provider CLI for GitHub/GitLab and the Bitbucket API for Bitbucket Cloud
 - PR title: agent-generated in conventional commit format (`type(scope): description`)
 - PR body includes: an agent-authored `## Summary` plus regenerated `## Risk Assessment`, `## Testing`, and `## Pipeline` sections from recorded step results and rounds
 
@@ -126,17 +126,17 @@ Stores the PR URL in the database and streams it to the TUI.
 
 Monitors PR health after creation and auto-fixes CI failures or merge conflicts.
 
-**Active for GitHub and Bitbucket**.
+**Active for GitHub and Bitbucket Cloud (`bitbucket.org`)**.
 
 - GitHub requires `gh` CLI, installed and authenticated.
-- Bitbucket requires `NO_MISTAKES_BITBUCKET_EMAIL` and `NO_MISTAKES_BITBUCKET_API_TOKEN`.
+- Bitbucket Cloud requires `NO_MISTAKES_BITBUCKET_EMAIL` and `NO_MISTAKES_BITBUCKET_API_TOKEN`.
 
 **Behavior:**
 - Polls provider CI status at increasing intervals: every 30s for the first 5 minutes, every 60s for 5-15 minutes, every 120s after that
 - On GitHub, polls `gh pr view --json mergeable` alongside CI checks and waits for GitHub to resolve mergeability before exiting
 - Waits a 60s grace period before trusting empty results (CI checks may not have registered yet)
 - If CI failures or a merge conflict are already known while other checks are still pending: waits for all checks to finish before attempting an auto-fix
-- On CI failure: fetches failed job logs (GitHub via `gh run view --log-failed`, Bitbucket via failed pipeline step logs), sends them to the agent for fixing, and commits and force-pushes only if the agent produces changes
+- On CI failure: fetches failed job logs (GitHub via `gh run view --log-failed`, Bitbucket Cloud via failed pipeline step logs), sends them to the agent for fixing, and commits and force-pushes only if the agent produces changes
 - On merge conflict: asks the agent to rebase onto the latest default-branch tip and resolve the conflicts with minimal changes
 - If both CI failures and merge conflicts are present: fixes both in the same attempt
 - If a fix attempt produces no changes: automatic mode leaves the failure undeduplicated so it can retry until the auto-fix limit, while manual fix mode returns immediately for manual intervention

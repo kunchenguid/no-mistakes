@@ -110,7 +110,7 @@ These are global defaults. Per-repo config can override individual steps.
 | Variable | Description |
 |---|---|
 | `NM_HOME` | Override the data directory (default `~/.no-mistakes/`) |
-| `NO_MISTAKES_BITBUCKET_EMAIL` | Bitbucket email used for Bitbucket PR creation and CI monitoring |
-| `NO_MISTAKES_BITBUCKET_API_TOKEN` | Bitbucket API token used for Bitbucket PR creation and CI monitoring |
-| `NO_MISTAKES_BITBUCKET_API_BASE_URL` | Override the Bitbucket API base URL (optional) |
+| `NO_MISTAKES_BITBUCKET_EMAIL` | Bitbucket Cloud email used for Bitbucket Cloud PR creation and CI monitoring |
+| `NO_MISTAKES_BITBUCKET_API_TOKEN` | Bitbucket Cloud API token used for Bitbucket Cloud PR creation and CI monitoring |
+| `NO_MISTAKES_BITBUCKET_API_BASE_URL` | Override the Bitbucket Cloud API base URL (optional) |
 | `NO_MISTAKES_NO_UPDATE_CHECK` | Set to `1` to suppress background update checks |
