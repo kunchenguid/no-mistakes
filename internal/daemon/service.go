@@ -217,7 +217,7 @@ func installLaunchAgent(p *paths.Paths, exe string) error {
 	if err := os.WriteFile(path, []byte(renderLaunchAgent(exe, p, home)), 0o644); err != nil {
 		return fmt.Errorf("write launch agent: %w", err)
 	}
-	cleanupLegacyLaunchAgent()
+	cleanupLegacyLaunchAgent(p)
 	return nil
 }
 
@@ -227,9 +227,10 @@ func installLaunchAgent(p *paths.Paths, exe string) error {
 // before deleting so an already-loaded legacy daemon is released from
 // launchd (it will exit on SIGTERM). Any error is best-effort: if there's
 // no legacy plist or launchctl refuses, we proceed with the scoped install.
-func cleanupLegacyLaunchAgent() {
+func cleanupLegacyLaunchAgent(p *paths.Paths) {
 	path := legacyLaunchAgentPath()
-	if _, err := os.Stat(path); err != nil {
+	data, err := os.ReadFile(path)
+	if err != nil || !serviceDefinitionMatchesRoot(data, p) {
 		return
 	}
 	if domain, err := launchdDomainTarget(); err == nil {
@@ -287,13 +288,14 @@ func installSystemdUserService(p *paths.Paths, exe string) error {
 	if _, err := serviceCommandRunner("systemctl", "--user", "enable", systemdServiceName(p)); err != nil {
 		return fmt.Errorf("systemctl enable: %w", err)
 	}
-	cleanupLegacySystemdUnit()
+	cleanupLegacySystemdUnit(p)
 	return nil
 }
 
-func cleanupLegacySystemdUnit() {
+func cleanupLegacySystemdUnit(p *paths.Paths) {
 	path := legacySystemdUserServicePath()
-	if _, err := os.Stat(path); err != nil {
+	data, err := os.ReadFile(path)
+	if err != nil || !serviceDefinitionMatchesRoot(data, p) {
 		return
 	}
 	_, _ = serviceCommandRunner("systemctl", "--user", "stop", legacySystemdServiceName)
@@ -329,15 +331,13 @@ func installWindowsTask(p *paths.Paths, exe string) error {
 	if _, err := serviceCommandRunner("schtasks", args...); err != nil {
 		return fmt.Errorf("schtasks create: %w", err)
 	}
-	cleanupLegacyWindowsTask()
+	cleanupLegacyWindowsTask(p)
 	return nil
 }
 
-func cleanupLegacyWindowsTask() {
-	// schtasks /Query returns a non-zero exit when the task doesn't exist,
-	// so we only issue the destructive Delete when the legacy task is
-	// actually present.
-	if _, err := serviceCommandRunner("schtasks", "/Query", "/TN", legacyWindowsTaskName); err != nil {
+func cleanupLegacyWindowsTask(p *paths.Paths) {
+	data, err := serviceCommandRunner("schtasks", "/Query", "/TN", legacyWindowsTaskName, "/XML")
+	if err != nil || !serviceDefinitionMatchesRoot(data, p) {
 		return
 	}
 	_, _ = serviceCommandRunner("schtasks", "/End", "/TN", legacyWindowsTaskName)

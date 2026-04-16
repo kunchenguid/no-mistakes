@@ -160,7 +160,7 @@ func TestStartInstallsWindowsTaskAndStartsManagedDaemon_EnableWindowsCI(t *testi
 		// Simulate fresh-install: the legacy unsuffixed task is absent, so
 		// the pre-install cleanup query fails and cleanupLegacyWindowsTask
 		// returns without issuing End/Delete.
-		if name == "schtasks" && len(args) >= 3 && args[0] == "/Query" && args[2] == legacyWindowsTaskName {
+		if name == "schtasks" && len(args) >= 4 && args[0] == "/Query" && args[2] == legacyWindowsTaskName && args[3] == "/XML" {
 			return nil, fmt.Errorf("task not found")
 		}
 		return nil, nil
@@ -176,7 +176,7 @@ func TestStartInstallsWindowsTaskAndStartsManagedDaemon_EnableWindowsCI(t *testi
 	}
 
 	wantTaskCommand := strconv.Quote(exe) + " daemon run --root " + strconv.Quote(p.Root())
-	wantQueryLegacy := "schtasks /Query /TN " + legacyWindowsTaskName
+	wantQueryLegacy := "schtasks /Query /TN " + legacyWindowsTaskName + " /XML"
 	wantCreate := "schtasks /Create /TN " + windowsTaskName(p) +
 		" /SC ONLOGON /RL LIMITED /F /TR " + wantTaskCommand
 	wantRun := "schtasks /Run /TN " + windowsTaskName(p)
@@ -223,6 +223,116 @@ func TestInstallLaunchAgentKeepsLegacyPlistOnScopedWriteFailure(t *testing.T) {
 	}
 	if _, statErr := os.Stat(legacyPath); statErr != nil {
 		t.Fatalf("legacy plist should remain after failed scoped install: %v", statErr)
+	}
+}
+
+func TestInstallLaunchAgentDoesNotRemoveLegacyPlistForDifferentRoot(t *testing.T) {
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+
+	cleanup := stubServiceRuntime(t)
+	defer cleanup()
+	runtimeGOOS = "darwin"
+	serviceUserHomeDir = func() (string, error) { return home, nil }
+	serviceCurrentUser = func() (*user.User, error) { return &user.User{Uid: "501"}, nil }
+
+	legacyPath := filepath.Join(home, "Library", "LaunchAgents", legacyLaunchdServiceLabel+".plist")
+	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	otherRoot := filepath.Join(t.TempDir(), "other-nm-home")
+	legacyPlist := renderLaunchAgent("/opt/no-mistakes/bin/no-mistakes", paths.WithRoot(otherRoot), home)
+	if err := os.WriteFile(legacyPath, []byte(legacyPlist), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var commands []string
+	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
+		commands = append(commands, name+" "+strings.Join(args, " "))
+		return nil, nil
+	}
+
+	if err := installLaunchAgent(p, "/opt/no-mistakes/bin/no-mistakes"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(legacyPath); err != nil {
+		t.Fatalf("legacy plist for different root should remain: %v", err)
+	}
+	if len(commands) != 0 {
+		t.Fatalf("install should not boot out unrelated legacy daemon, got commands %v", commands)
+	}
+}
+
+func TestInstallSystemdUserServiceDoesNotRemoveLegacyUnitForDifferentRoot(t *testing.T) {
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+
+	cleanup := stubServiceRuntime(t)
+	defer cleanup()
+	runtimeGOOS = "linux"
+	serviceUserHomeDir = func() (string, error) { return home, nil }
+
+	legacyPath := filepath.Join(home, ".config", "systemd", "user", legacySystemdServiceName)
+	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	otherRoot := filepath.Join(t.TempDir(), "other-nm-home")
+	legacyUnit := renderSystemdUnit("/usr/local/bin/no-mistakes", paths.WithRoot(otherRoot), home)
+	if err := os.WriteFile(legacyPath, []byte(legacyUnit), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var commands []string
+	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
+		commands = append(commands, name+" "+strings.Join(args, " "))
+		return nil, nil
+	}
+
+	if err := installSystemdUserService(p, "/usr/local/bin/no-mistakes"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(legacyPath); err != nil {
+		t.Fatalf("legacy unit for different root should remain: %v", err)
+	}
+	if len(commands) != 2 {
+		t.Fatalf("install should not stop unrelated legacy service, got commands %v", commands)
+	}
+}
+
+func TestInstallWindowsTaskDoesNotRemoveLegacyTaskForDifferentRoot_EnableWindowsCI(t *testing.T) {
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
+	cleanup := stubServiceRuntime(t)
+	defer cleanup()
+	runtimeGOOS = "windows"
+
+	var commands []string
+	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
+		commands = append(commands, name+" "+strings.Join(args, " "))
+		if name == "schtasks" && len(args) >= 4 && args[0] == "/Query" && args[2] == legacyWindowsTaskName && args[3] == "/XML" {
+			otherRoot := filepath.Join(t.TempDir(), "other-nm-home")
+			return []byte(`<Task><Exec><Command>C:\nm.exe</Command><Arguments>daemon run --root ` + otherRoot + `</Arguments></Exec></Task>`), nil
+		}
+		return nil, nil
+	}
+
+	if err := installWindowsTask(p, `C:\Program Files\no-mistakes\no-mistakes.exe`); err != nil {
+		t.Fatal(err)
+	}
+	if len(commands) != 2 {
+		t.Fatalf("install should not end or delete unrelated legacy task, got commands %v", commands)
+	}
+	if commands[1] != "schtasks /Query /TN "+legacyWindowsTaskName+" /XML" {
+		t.Fatalf("legacy query command = %q", commands[1])
 	}
 }
 
