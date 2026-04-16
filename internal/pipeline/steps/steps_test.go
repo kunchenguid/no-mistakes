@@ -4000,6 +4000,7 @@ type fakeBitbucketCIAPI struct {
 	pipelinesJSON  string
 	stepsJSON      string
 	stepLog        string
+	prSourceSHA    string
 	prStateCalls   int
 	statusesCalls  int
 	pipelinesCalls int
@@ -4007,6 +4008,7 @@ type fakeBitbucketCIAPI struct {
 	stepLogCalls   int
 	lastAuthHeader string
 	lastStatusesQ  string
+	lastPipelineQ  string
 }
 
 func newFakeBitbucketCIAPI(t *testing.T, prState, statusesJSON string) *fakeBitbucketCIAPI {
@@ -4024,7 +4026,7 @@ func newFakeBitbucketCIAPI(t *testing.T, prState, statusesJSON string) *fakeBitb
 		case r.Method == http.MethodGet && r.URL.Path == "/2.0/repositories/test/repo/pullrequests/42":
 			api.prStateCalls++
 			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprintf(w, `{"id":42,"state":%q}`, api.prState)
+			fmt.Fprintf(w, `{"id":42,"state":%q,"source":{"commit":{"hash":%q}}}`, api.prState, api.prSourceSHA)
 		case r.Method == http.MethodGet && r.URL.Path == "/2.0/repositories/test/repo/pullrequests/42/statuses":
 			api.statusesCalls++
 			api.lastStatusesQ = r.URL.Query().Get("q")
@@ -4032,6 +4034,7 @@ func newFakeBitbucketCIAPI(t *testing.T, prState, statusesJSON string) *fakeBitb
 			fmt.Fprint(w, api.statusesJSON)
 		case r.Method == http.MethodGet && r.URL.Path == "/2.0/repositories/test/repo/pipelines" && api.pipelinesJSON != "":
 			api.pipelinesCalls++
+			api.lastPipelineQ = r.URL.Query().Get("target.commit.hash")
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, api.pipelinesJSON)
 		case r.Method == http.MethodGet && r.URL.Path == "/2.0/repositories/test/repo/pipelines/{pipeline-1}/steps" && api.stepsJSON != "":
@@ -4519,6 +4522,27 @@ func TestPRStep_BitbucketCreatesNewPR(t *testing.T) {
 	}
 	if run.PRURL == nil || *run.PRURL != api.createdPRURL {
 		t.Fatalf("PR URL = %v, want %q", run.PRURL, api.createdPRURL)
+	}
+}
+
+func TestPRStep_BitbucketMissingEnvSkipsBeforeBuildingContent(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
+
+	step := &PRStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatal("bitbucket PR step should never need approval")
+	}
+	if len(ag.calls) != 0 {
+		t.Fatalf("expected Bitbucket PR step to skip before building content, got %d agent calls", len(ag.calls))
 	}
 }
 
@@ -5159,6 +5183,87 @@ func TestCIStep_BitbucketAutoFixIncludesPipelineLogs(t *testing.T) {
 	}
 	if api.pipelinesCalls == 0 || api.stepsCalls == 0 || api.stepLogCalls == 0 {
 		t.Fatalf("expected Bitbucket pipeline log endpoints to be called, got pipelines=%d steps=%d log=%d", api.pipelinesCalls, api.stepsCalls, api.stepLogCalls)
+	}
+}
+
+func TestCIStep_BitbucketAutoFixUsesLivePRHeadSHAForLogs(t *testing.T) {
+	t.Parallel()
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	if err := os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	api := newFakeBitbucketCIAPI(t, "OPEN", `{"values":[{"name":"test","state":"FAILED"}]}`)
+	api.pipelinesJSON = `{"values":[{"uuid":"{pipeline-1}"}]}`
+	api.stepsJSON = `{"values":[{"uuid":"{step-1}","state":{"name":"COMPLETED","result":{"name":"FAILED"}}}]}`
+	api.stepLog = "error log output"
+	api.prSourceSHA = headSHA
+
+	staleHeadSHA := strings.Repeat("a", 40)
+	var capturedPrompt string
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			capturedPrompt = opts.Prompt
+			if err := os.WriteFile(filepath.Join(opts.CWD, "ci-fix.txt"), []byte("fixed"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return &agent.Result{}, nil
+		},
+	}
+
+	prURL := "https://bitbucket.org/test/repo/pull-requests/42"
+	sctx := newTestContext(t, ag, dir, baseSHA, staleHeadSHA, config.Commands{})
+	sctx.Env = fakeBitbucketEnv(api.server.URL)
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Config.CITimeout = 30 * time.Second
+	sctx.Config.AutoFix = config.AutoFix{CI: 1}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	step := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			cancel()
+			return ctx.Err()
+		},
+	}
+	_, err := step.Execute(sctx)
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context cancellation after auto-fix poll, got %v", err)
+	}
+	if capturedPrompt == "" {
+		t.Fatal("expected Bitbucket auto-fix to call the agent")
+	}
+	if api.lastPipelineQ != headSHA {
+		t.Fatalf("pipeline commit SHA = %q, want live PR source commit %q", api.lastPipelineQ, headSHA)
+	}
+	if api.lastPipelineQ == staleHeadSHA {
+		t.Fatalf("pipeline lookup used stale run head SHA %q", staleHeadSHA)
 	}
 }
 

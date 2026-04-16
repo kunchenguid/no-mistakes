@@ -68,6 +68,11 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			sctx.Log(fmt.Sprintf("skipping PR creation: %s CLI is not authenticated", provider.CLIName()))
 			return &pipeline.StepOutcome{}, nil
 		}
+	} else {
+		if _, err := bitbucket.NewClientFromEnv(sctx.Env); err != nil {
+			sctx.Log(fmt.Sprintf("skipping PR creation: %v", err))
+			return &pipeline.StepOutcome{}, nil
+		}
 	}
 
 	// Resolve the branch base so PR summaries cover the full branch delta.

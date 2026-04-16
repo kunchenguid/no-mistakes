@@ -26,9 +26,10 @@ type RepoRef struct {
 }
 
 type PullRequest struct {
-	ID    int
-	URL   string
-	State string
+	ID               int
+	URL              string
+	State            string
+	SourceCommitHash string
 }
 
 type CommitStatus struct {
@@ -175,6 +176,14 @@ func (c *Client) ListPRStatuses(ctx context.Context, repo RepoRef, prID int) ([]
 			return nil, err
 		}
 		statuses = append(statuses, response.Values...)
+		if response.Next != "" {
+			validatedNext, err := c.validatePaginationURL(response.Next)
+			if err != nil {
+				return nil, err
+			}
+			next = validatedNext
+			continue
+		}
 		next = response.Next
 	}
 	return statuses, nil
@@ -230,8 +239,13 @@ func (c *Client) GetStepLog(ctx context.Context, repo RepoRef, pipelineUUID, ste
 }
 
 type bitbucketPullRequest struct {
-	ID    int    `json:"id"`
-	State string `json:"state"`
+	ID     int    `json:"id"`
+	State  string `json:"state"`
+	Source struct {
+		Commit struct {
+			Hash string `json:"hash"`
+		} `json:"commit"`
+	} `json:"source"`
 	Links struct {
 		HTML struct {
 			Href string `json:"href"`
@@ -240,7 +254,30 @@ type bitbucketPullRequest struct {
 }
 
 func (pr bitbucketPullRequest) toPullRequest() *PullRequest {
-	return &PullRequest{ID: pr.ID, URL: strings.TrimSpace(pr.Links.HTML.Href), State: strings.TrimSpace(pr.State)}
+	return &PullRequest{
+		ID:               pr.ID,
+		URL:              strings.TrimSpace(pr.Links.HTML.Href),
+		State:            strings.TrimSpace(pr.State),
+		SourceCommitHash: strings.TrimSpace(pr.Source.Commit.Hash),
+	}
+}
+
+func (c *Client) validatePaginationURL(rawURL string) (string, error) {
+	base, err := url.Parse(c.baseURL)
+	if err != nil {
+		return "", fmt.Errorf("parse Bitbucket base URL: %w", err)
+	}
+	nextURL, err := url.Parse(rawURL)
+	if err != nil {
+		return "", fmt.Errorf("parse Bitbucket pagination URL: %w", err)
+	}
+	if !nextURL.IsAbs() {
+		return rawURL, nil
+	}
+	if !strings.EqualFold(nextURL.Scheme, base.Scheme) || !strings.EqualFold(nextURL.Host, base.Host) {
+		return "", fmt.Errorf("reject cross-origin Bitbucket pagination URL %q", rawURL)
+	}
+	return rawURL, nil
 }
 
 func (c *Client) doJSON(ctx context.Context, method, path string, query url.Values, requestBody any, responseBody any) error {

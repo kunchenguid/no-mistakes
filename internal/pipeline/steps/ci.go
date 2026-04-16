@@ -564,7 +564,14 @@ func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, prNumber string, failingN
 		if err == nil {
 			repo, repoErr := resolveBitbucketRepoRef(sctx.Repo.UpstreamURL, sctx.Run.PRURL)
 			if repoErr == nil {
-				logOutput = s.fetchBitbucketFailedStepLogs(sctx, client, repo, sctx.Run.HeadSHA)
+				prID, convErr := strconv.Atoi(prNumber)
+				if convErr == nil {
+					commitSHA := strings.TrimSpace(sctx.Run.HeadSHA)
+					if pr, prErr := client.GetPR(sctx.Ctx, repo, prID); prErr == nil && pr != nil && strings.TrimSpace(pr.SourceCommitHash) != "" {
+						commitSHA = strings.TrimSpace(pr.SourceCommitHash)
+					}
+					logOutput = s.fetchBitbucketFailedStepLogs(sctx, client, repo, commitSHA)
+				}
 			}
 		}
 	} else if len(failingNames) > 0 {
