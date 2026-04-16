@@ -4,6 +4,7 @@ import (
 	"os"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestResolve_UsesLoginShellAndCapturesEnv(t *testing.T) {
@@ -79,6 +80,23 @@ func TestParseEnvOutput_IgnoresShellNoiseBeforeEnv(t *testing.T) {
 	want := []string{"PATH=/resolved/bin", "HOME=/Users/test", "SPECIAL=1"}
 	if !reflect.DeepEqual(env, want) {
 		t.Fatalf("env = %v, want %v", env, want)
+	}
+}
+
+func TestDefaultShellCommandOutput_TimesOut(t *testing.T) {
+	oldTimeout := shellCommandTimeout
+	defer func() {
+		shellCommandTimeout = oldTimeout
+	}()
+
+	shellCommandTimeout = 20 * time.Millisecond
+	start := time.Now()
+	_, err := defaultShellCommandOutput("/bin/sh", "-c", "sleep 1")
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if elapsed := time.Since(start); elapsed >= 500*time.Millisecond {
+		t.Fatalf("command ran too long: %v", elapsed)
 	}
 }
 

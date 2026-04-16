@@ -1,6 +1,7 @@
 package shellenv
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -9,12 +10,14 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 )
 
 var runtimeGOOS = runtime.GOOS
 var lookupEnv = os.LookupEnv
 var currentUser = user.Current
 var shellCommandOutput = defaultShellCommandOutput
+var shellCommandTimeout = 2 * time.Second
 
 var cacheMu sync.Mutex
 var cachedEnv []string
@@ -214,7 +217,9 @@ func currentUsername() string {
 }
 
 func defaultShellCommandOutput(name string, args ...string) ([]byte, error) {
-	cmd := exec.Command(name, args...)
+	ctx, cancel := context.WithTimeout(context.Background(), shellCommandTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
 	return cmd.Output()
 }
 
