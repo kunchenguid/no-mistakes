@@ -4602,6 +4602,71 @@ func TestPRStep_BitbucketCreatesNewPR(t *testing.T) {
 	}
 }
 
+func TestPRStep_BitbucketCreatesNewPRWithoutHTMLLink(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	api := newFakeBitbucketPRAPI(t, 0, "")
+	api.createdPRURL = ""
+
+	findings := `{"findings":[],"summary":"clean","risk_level":"medium","risk_rationale":"touches critical error handling"}`
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = fakeBitbucketEnv(api.server.URL)
+	sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
+	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.UpdateStepStatus(reviewStep.ID, types.StepStatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.SetStepFindings(reviewStep.ID, findings); err != nil {
+		t.Fatal(err)
+	}
+	api.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		api.lastAuthHeader = r.Header.Get("Authorization")
+
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/2.0/repositories/test/repo/pullrequests":
+			api.listCalls++
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"values":[]}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/2.0/repositories/test/repo/pullrequests":
+			api.createCalls++
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatalf("read create body: %v", err)
+			}
+			api.lastCreateBody = string(body)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{"id":99}`)
+		default:
+			t.Fatalf("unexpected Bitbucket PR API request: %s %s", r.Method, r.URL.String())
+		}
+	})
+
+	step := &PRStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatal("bitbucket PR step should never need approval")
+	}
+	if outcome.PRURL != "https://bitbucket.org/test/repo/pull-requests/99" {
+		t.Fatalf("PR URL = %q, want derived Bitbucket PR URL", outcome.PRURL)
+	}
+
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.PRURL == nil || *run.PRURL != "https://bitbucket.org/test/repo/pull-requests/99" {
+		t.Fatalf("PR URL = %v, want derived Bitbucket PR URL", run.PRURL)
+	}
+}
+
 func TestPRStep_BitbucketMissingEnvSkipsBeforeBuildingContent(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

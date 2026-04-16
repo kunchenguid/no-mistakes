@@ -158,8 +158,9 @@ func (s *PRStep) executeBitbucketPR(sctx *pipeline.StepContext, branch string, c
 		return nil, err
 	}
 	if existingPR != nil {
-		if existingPR.URL != "" {
-			sctx.Log(fmt.Sprintf("pull request already exists: %s, updating...", existingPR.URL))
+		existingPRURL := bitbucketPRURL(repo, existingPR.ID, existingPR.URL)
+		if existingPRURL != "" {
+			sctx.Log(fmt.Sprintf("pull request already exists: %s, updating...", existingPRURL))
 		} else {
 			sctx.Log(fmt.Sprintf("pull request already exists: #%d, updating...", existingPR.ID))
 		}
@@ -167,9 +168,9 @@ func (s *PRStep) executeBitbucketPR(sctx *pipeline.StepContext, branch string, c
 		if err != nil {
 			return nil, err
 		}
-		prURL := existingPR.URL
-		if updatedPR != nil && updatedPR.URL != "" {
-			prURL = updatedPR.URL
+		prURL := existingPRURL
+		if updatedPR != nil {
+			prURL = bitbucketPRURL(repo, updatedPR.ID, updatedPR.URL)
 		}
 		if prURL != "" {
 			if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, prURL); err != nil {
@@ -185,14 +186,28 @@ func (s *PRStep) executeBitbucketPR(sctx *pipeline.StepContext, branch string, c
 	if err != nil {
 		return nil, err
 	}
-	if createdPR != nil && createdPR.URL != "" {
-		sctx.Log(fmt.Sprintf("created pull request: %s", createdPR.URL))
-		if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, createdPR.URL); err != nil {
-			slog.Warn("failed to persist PR URL", "run", sctx.Run.ID, "url", createdPR.URL, "err", err)
+	createdPRURL := ""
+	if createdPR != nil {
+		createdPRURL = bitbucketPRURL(repo, createdPR.ID, createdPR.URL)
+	}
+	if createdPRURL != "" {
+		sctx.Log(fmt.Sprintf("created pull request: %s", createdPRURL))
+		if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, createdPRURL); err != nil {
+			slog.Warn("failed to persist PR URL", "run", sctx.Run.ID, "url", createdPRURL, "err", err)
 		}
-		return &pipeline.StepOutcome{PRURL: createdPR.URL}, nil
+		return &pipeline.StepOutcome{PRURL: createdPRURL}, nil
 	}
 	return &pipeline.StepOutcome{}, nil
+}
+
+func bitbucketPRURL(repo bitbucket.RepoRef, prID int, rawURL string) string {
+	if url := strings.TrimSpace(rawURL); url != "" {
+		return url
+	}
+	if prID <= 0 || strings.TrimSpace(repo.Workspace) == "" || strings.TrimSpace(repo.RepoSlug) == "" {
+		return ""
+	}
+	return fmt.Sprintf("https://bitbucket.org/%s/%s/pull-requests/%d", repo.Workspace, repo.RepoSlug, prID)
 }
 
 func (s *PRStep) executeGitLabMR(sctx *pipeline.StepContext, branch string, content prContent) (*pipeline.StepOutcome, error) {

@@ -202,7 +202,26 @@ func serviceDefinitionMatchesRoot(data []byte, p *paths.Paths) bool {
 	if p == nil {
 		return true
 	}
-	return strings.Contains(string(data), p.Root())
+	root := p.Root()
+	text := string(data)
+	if strings.Contains(text, "<string>"+xmlEscaped(root)+"</string>") {
+		return true
+	}
+	for _, line := range strings.Split(text, "\n") {
+		if strings.TrimSpace(line) == "WorkingDirectory="+systemdEscapeArg(root) {
+			return true
+		}
+	}
+	windowsRoot := quoteWindowsTaskArg(root)
+	for _, suffix := range []string{
+		"--root " + windowsRoot + "</Arguments>",
+		"--root " + xmlEscaped(windowsRoot) + "</Arguments>",
+	} {
+		if strings.Contains(text, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 func installLaunchAgent(p *paths.Paths, exe string) error {
