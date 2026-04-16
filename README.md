@@ -266,6 +266,7 @@ auto_fix:
 ```sh
 make build   # Build bin/no-mistakes with version info
 make dist    # Cross-compile release archives into dist/
+make demo    # Regenerate demo.gif from demo.tape
 make install # Install the built binary into GOPATH/bin
 make test    # Run go test -race ./...
 make lint    # Run go vet ./...
@@ -276,3 +277,5 @@ make clean   # Remove bin/
 ```
 
 Docs development uses the Astro project under `docs/`. `make docs` installs docs dependencies with `npm ci` and builds the site.
+
+To regenerate `demo.gif`, run `make demo`. This target requires both `vhs` and `ffmpeg` to be installed locally.

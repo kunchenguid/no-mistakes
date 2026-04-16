@@ -3,7 +3,7 @@ title: no-mistakes
 description: Make git push earn it.
 template: splash
 hero:
-  tagline: A local pre-push gate that runs AI code review, tests, lint, and CI babysitting before your code reaches upstream.
+  tagline: A local pre-push gate that runs AI code review, tests, lint, and CI monitoring before your code reaches upstream.
   actions:
     - text: Get Started
       link: /no-mistakes/getting-started/
@@ -29,8 +29,8 @@ import { Card, CardGrid } from "@astrojs/starlight/components";
     Review, test, and lint steps can pause for approval. You see the findings,
     pick what to fix, and decide when to ship.
   </Card>
-  <Card title="CI babysitting" icon="sun">
+  <Card title="CI monitoring" icon="sun">
     After push, the pipeline watches CI and PR mergeability, and auto-fixes
-    failures or merge conflicts - so you don't have to babysit your own PR.
+    failures or merge conflicts before the branch is considered done.
   </Card>
 </CardGrid>
