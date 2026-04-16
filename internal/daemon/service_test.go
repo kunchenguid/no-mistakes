@@ -42,7 +42,7 @@ func TestStartInstallsLaunchAgentAndBootstrapsManagedDaemon(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	plistPath := filepath.Join(home, "Library", "LaunchAgents", launchdServiceLabel+".plist")
+	plistPath := filepath.Join(home, "Library", "LaunchAgents", launchdServiceLabel(p)+".plist")
 	data, err := os.ReadFile(plistPath)
 	if err != nil {
 		t.Fatal(err)
@@ -67,13 +67,13 @@ func TestStartInstallsLaunchAgentAndBootstrapsManagedDaemon(t *testing.T) {
 	if len(commands) != 3 {
 		t.Fatalf("expected bootout, bootstrap, and kickstart, got %v", commands)
 	}
-	if want := "launchctl bootout gui/501/" + launchdServiceLabel; commands[0] != want {
+	if want := "launchctl bootout gui/501/" + launchdServiceLabel(p); commands[0] != want {
 		t.Fatalf("bootout command = %q, want %q", commands[0], want)
 	}
 	if want := "launchctl bootstrap gui/501 " + plistPath; commands[1] != want {
 		t.Fatalf("bootstrap command = %q, want %q", commands[1], want)
 	}
-	if want := "launchctl kickstart -k gui/501/" + launchdServiceLabel; commands[2] != want {
+	if want := "launchctl kickstart -k gui/501/" + launchdServiceLabel(p); commands[2] != want {
 		t.Fatalf("kickstart command = %q, want %q", commands[2], want)
 	}
 }
@@ -109,7 +109,7 @@ func TestStartInstallsSystemdUnitAndStartsManagedDaemon(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	unitPath := filepath.Join(home, ".config", "systemd", "user", systemdServiceName)
+	unitPath := filepath.Join(home, ".config", "systemd", "user", systemdServiceName(p))
 	data, err := os.ReadFile(unitPath)
 	if err != nil {
 		t.Fatal(err)
@@ -129,8 +129,8 @@ func TestStartInstallsSystemdUnitAndStartsManagedDaemon(t *testing.T) {
 	}
 	want := []string{
 		"systemctl --user daemon-reload",
-		"systemctl --user enable " + systemdServiceName,
-		"systemctl --user start " + systemdServiceName,
+		"systemctl --user enable " + systemdServiceName(p),
+		"systemctl --user start " + systemdServiceName(p),
 	}
 	if len(commands) != len(want) {
 		t.Fatalf("expected %d systemctl commands, got %v", len(want), commands)
@@ -157,6 +157,12 @@ func TestStartInstallsWindowsTaskAndStartsManagedDaemon_EnableWindowsCI(t *testi
 	var commands []string
 	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
 		commands = append(commands, name+" "+strings.Join(args, " "))
+		// Simulate fresh-install: the legacy unsuffixed task is absent, so
+		// the pre-install cleanup query fails and cleanupLegacyWindowsTask
+		// returns without issuing End/Delete.
+		if name == "schtasks" && len(args) >= 3 && args[0] == "/Query" && args[2] == legacyWindowsTaskName {
+			return nil, fmt.Errorf("task not found")
+		}
 		return nil, nil
 	}
 	checks := 0
@@ -170,17 +176,21 @@ func TestStartInstallsWindowsTaskAndStartsManagedDaemon_EnableWindowsCI(t *testi
 	}
 
 	wantTaskCommand := strconv.Quote(exe) + " daemon run --root " + strconv.Quote(p.Root())
-	wantCreate := "schtasks /Create /TN " + windowsTaskName +
+	wantQueryLegacy := "schtasks /Query /TN " + legacyWindowsTaskName
+	wantCreate := "schtasks /Create /TN " + windowsTaskName(p) +
 		" /SC ONLOGON /RL LIMITED /F /TR " + wantTaskCommand
-	wantRun := "schtasks /Run /TN " + windowsTaskName
-	if len(commands) != 2 {
-		t.Fatalf("expected schtasks create and run, got %v", commands)
+	wantRun := "schtasks /Run /TN " + windowsTaskName(p)
+	if len(commands) != 3 {
+		t.Fatalf("expected legacy query + schtasks create and run, got %v", commands)
 	}
-	if commands[0] != wantCreate {
-		t.Fatalf("create command = %q, want %q", commands[0], wantCreate)
+	if commands[0] != wantQueryLegacy {
+		t.Fatalf("legacy query command = %q, want %q", commands[0], wantQueryLegacy)
 	}
-	if commands[1] != wantRun {
-		t.Fatalf("run command = %q, want %q", commands[1], wantRun)
+	if commands[1] != wantCreate {
+		t.Fatalf("create command = %q, want %q", commands[1], wantCreate)
+	}
+	if commands[2] != wantRun {
+		t.Fatalf("run command = %q, want %q", commands[2], wantRun)
 	}
 }
 
@@ -203,11 +213,11 @@ func TestStartFallsBackToDetachedDaemonWhenManagedStartFails(t *testing.T) {
 	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
 		command := name + " " + strings.Join(args, " ")
 		commands = append(commands, command)
-		if command == "systemctl --user stop "+systemdServiceName {
+		if command == "systemctl --user stop "+systemdServiceName(p) {
 			managedStopped = true
 			return nil, nil
 		}
-		if command == "systemctl --user start "+systemdServiceName {
+		if command == "systemctl --user start "+systemdServiceName(p) {
 			return nil, fmt.Errorf("user manager unavailable")
 		}
 		return nil, nil
@@ -227,9 +237,9 @@ func TestStartFallsBackToDetachedDaemonWhenManagedStartFails(t *testing.T) {
 	}
 	if want := []string{
 		"systemctl --user daemon-reload",
-		"systemctl --user enable " + systemdServiceName,
-		"systemctl --user start " + systemdServiceName,
-		"systemctl --user stop " + systemdServiceName,
+		"systemctl --user enable " + systemdServiceName(p),
+		"systemctl --user start " + systemdServiceName(p),
+		"systemctl --user stop " + systemdServiceName(p),
 	}; len(commands) == len(want) {
 		for i, wantCmd := range want {
 			if commands[i] != wantCmd {
@@ -243,7 +253,7 @@ func TestStartFallsBackToDetachedDaemonWhenManagedStartFails(t *testing.T) {
 	if _, err := os.Stat(p.DaemonLog()); err != nil {
 		t.Fatalf("detached fallback should open daemon log: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(home, ".config", "systemd", "user", systemdServiceName)); err != nil {
+	if _, err := os.Stat(filepath.Join(home, ".config", "systemd", "user", systemdServiceName(p))); err != nil {
 		t.Fatalf("managed service install should still write unit file: %v", err)
 	}
 	if pidData, err := os.ReadFile(p.PIDFile()); err == nil && len(pidData) > 0 {
@@ -278,7 +288,7 @@ func TestStartStopsManagedServiceBeforeDetachedFallbackAfterTimeout(t *testing.T
 	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
 		command := name + " " + strings.Join(args, " ")
 		commands = append(commands, command)
-		if command == "systemctl --user stop "+systemdServiceName {
+		if command == "systemctl --user stop "+systemdServiceName(p) {
 			managedStopped = true
 		}
 		return nil, nil
@@ -301,9 +311,9 @@ func TestStartStopsManagedServiceBeforeDetachedFallbackAfterTimeout(t *testing.T
 	}
 	if want := []string{
 		"systemctl --user daemon-reload",
-		"systemctl --user enable " + systemdServiceName,
-		"systemctl --user start " + systemdServiceName,
-		"systemctl --user stop " + systemdServiceName,
+		"systemctl --user enable " + systemdServiceName(p),
+		"systemctl --user start " + systemdServiceName(p),
+		"systemctl --user stop " + systemdServiceName(p),
 	}; len(commands) == len(want) {
 		for i, wantCmd := range want {
 			if commands[i] != wantCmd {
@@ -338,7 +348,7 @@ func TestStopUsesManagedServiceWhenInstalled(t *testing.T) {
 	serviceUserHomeDir = func() (string, error) { return home, nil }
 	daemonHealthCheck = func(*paths.Paths) (bool, error) { return false, nil }
 
-	unitPath := filepath.Join(home, ".config", "systemd", "user", systemdServiceName)
+	unitPath := filepath.Join(home, ".config", "systemd", "user", systemdServiceName(p))
 	if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -359,7 +369,7 @@ func TestStopUsesManagedServiceWhenInstalled(t *testing.T) {
 	if len(commands) != 1 {
 		t.Fatalf("expected one stop command, got %v", commands)
 	}
-	if want := "systemctl --user stop " + systemdServiceName; commands[0] != want {
+	if want := "systemctl --user stop " + systemdServiceName(p); commands[0] != want {
 		t.Fatalf("stop command = %q, want %q", commands[0], want)
 	}
 }
@@ -373,7 +383,7 @@ func TestStopFallsBackToDetachedDaemonWhenManagedStopFails(t *testing.T) {
 	runtimeGOOS = "linux"
 	serviceUserHomeDir = func() (string, error) { return home, nil }
 
-	unitPath := filepath.Join(home, ".config", "systemd", "user", systemdServiceName)
+	unitPath := filepath.Join(home, ".config", "systemd", "user", systemdServiceName(p))
 	if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -394,7 +404,7 @@ func TestStopFallsBackToDetachedDaemonWhenManagedStopFails(t *testing.T) {
 	if len(commands) != 1 {
 		t.Fatalf("expected one managed stop command before fallback, got %v", commands)
 	}
-	if want := "systemctl --user stop " + systemdServiceName; commands[0] != want {
+	if want := "systemctl --user stop " + systemdServiceName(p); commands[0] != want {
 		t.Fatalf("stop command = %q, want %q", commands[0], want)
 	}
 
@@ -432,7 +442,7 @@ func TestStopFallsBackToDetachedDaemonOnWindowsWithoutManagedService(t *testing.
 	if len(commands) != 1 {
 		t.Fatalf("expected one scheduled-task query, got %v", commands)
 	}
-	if want := "schtasks /Query /TN " + windowsTaskName; commands[0] != want {
+	if want := "schtasks /Query /TN " + windowsTaskName(p); commands[0] != want {
 		t.Fatalf("query command = %q, want %q", commands[0], want)
 	}
 
@@ -478,16 +488,22 @@ func TestStopWithUnstubbedPathsDoesNotInvokeRealServiceCommands(t *testing.T) {
 	serviceCurrentUser = func() (*user.User, error) { return &user.User{Uid: "99999"}, nil }
 	runtimeGOOS = runtime.GOOS
 
-	// Seed a managed-service artifact so that if the bypass ever regresses,
-	// managedServiceInstalled() would return true and Stop would call
-	// serviceCommandRunner. We detect that below.
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Seed a managed-service artifact at the SCOPED path for this p so that
+	// if the testing.Testing() bypass ever regresses, managedServiceInstalled(p)
+	// would return true and Stop(p) would call serviceCommandRunner. We detect
+	// that below.
 	switch runtime.GOOS {
 	case "darwin":
 		plistDir := filepath.Join(home, "Library", "LaunchAgents")
 		if err := os.MkdirAll(plistDir, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(plistDir, launchdServiceLabel+".plist"), []byte("<plist/>"), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(plistDir, launchdServiceLabel(p)+".plist"), []byte("<plist/>"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	case "linux":
@@ -495,7 +511,7 @@ func TestStopWithUnstubbedPathsDoesNotInvokeRealServiceCommands(t *testing.T) {
 		if err := os.MkdirAll(unitDir, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(unitDir, systemdServiceName), []byte("[Unit]\n"), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(unitDir, systemdServiceName(p)), []byte("[Unit]\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -506,11 +522,6 @@ func TestStopWithUnstubbedPathsDoesNotInvokeRealServiceCommands(t *testing.T) {
 		// Pretend the task/service exists on Windows so the "is installed"
 		// probe cannot short-circuit via an error return.
 		return nil, nil
-	}
-
-	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
-	if err := p.EnsureDirs(); err != nil {
-		t.Fatal(err)
 	}
 
 	if err := Stop(p); err != nil {
@@ -565,6 +576,92 @@ func TestStartWithUnstubbedPathsDoesNotInvokeRealServiceCommands(t *testing.T) {
 	_ = Start(p)
 	if len(called) > 0 {
 		t.Fatalf("Start(p) under go test must not invoke any service-manager commands, got: %v", called)
+	}
+}
+
+// TestStopDoesNotTouchManagedDaemonOwnedByDifferentNMHome is the structural
+// regression test for the per-NM_HOME scoping. Before scoping, the launchd
+// label / systemd unit / Windows task name were globally unique per user.
+// Any `go test ./internal/daemon` in any checkout - including worktrees
+// without the testing.Testing() bypass - called TestStopNotRunningIsNoop
+// -> Stop(tmpdir-p), which matched the global identifier and tore down the
+// user's live LaunchAgent-managed daemon. This test pins in the scoping:
+// with serviceManagerBypassed explicitly disabled (simulating worktrees
+// without the testing.Testing() guard), Stop(p) for a tmpdir paths.Paths
+// must still not invoke any destructive service-manager command against
+// artifacts owned by a different NM_HOME.
+func TestStopDoesNotTouchManagedDaemonOwnedByDifferentNMHome(t *testing.T) {
+	cleanup := stubServiceRuntime(t)
+	defer cleanup()
+
+	// Explicitly bypass the testing.Testing() guard. This simulates a
+	// test binary compiled from a codebase that predates or lacks the
+	// bypass, which is exactly the failure mode observed in pipeline
+	// worktrees rebased onto older main branches.
+	serviceManagerBypassed = func() bool { return false }
+
+	home := t.TempDir()
+	serviceUserHomeDir = func() (string, error) { return home, nil }
+	serviceCurrentUser = func() (*user.User, error) { return &user.User{Uid: "99999"}, nil }
+	runtimeGOOS = runtime.GOOS
+
+	// Simulate a live managed daemon owned by a DIFFERENT NM_HOME - i.e.
+	// the user's real ~/.no-mistakes - by seeding the artifact that an
+	// older unscoped binary would have installed (the legacy global name),
+	// plus the scoped artifact a modern binary would install for that
+	// other NM_HOME. Stop(p) for a test p.Root() must touch neither.
+	otherP := paths.WithRoot(filepath.Join(home, "real-nm-home"))
+	switch runtime.GOOS {
+	case "darwin":
+		plistDir := filepath.Join(home, "Library", "LaunchAgents")
+		if err := os.MkdirAll(plistDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(plistDir, legacyLaunchdServiceLabel+".plist"), []byte("<plist/>"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(plistDir, launchdServiceLabel(otherP)+".plist"), []byte("<plist/>"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	case "linux":
+		unitDir := filepath.Join(home, ".config", "systemd", "user")
+		if err := os.MkdirAll(unitDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(unitDir, legacySystemdServiceName), []byte("[Unit]\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(unitDir, systemdServiceName(otherP)), []byte("[Unit]\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var called []string
+	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
+		called = append(called, name+" "+strings.Join(args, " "))
+		// For Windows: pretend the scoped task for this test p is NOT
+		// installed (the test p has its own scoped suffix, different from
+		// the "owner" otherP). Any query for the legacy or otherP's task
+		// would still succeed, but only the test-p query path reaches
+		// serviceCommandRunner inside managedServiceInstalled(p).
+		return nil, fmt.Errorf("not found")
+	}
+
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "test-nm-home"))
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Stop(p); err != nil {
+		t.Fatalf("Stop(p) should be a no-op when no managed daemon is owned by this NM_HOME: %v", err)
+	}
+	for _, cmd := range called {
+		// Destructive subcommands that would tear down another NM_HOME's daemon.
+		for _, forbidden := range []string{"bootout", "/End", "/Delete", "--user stop", "--user disable"} {
+			if strings.Contains(cmd, forbidden) {
+				t.Fatalf("Stop(p) must not touch managed daemon owned by a different NM_HOME, got destructive command: %q", cmd)
+			}
+		}
 	}
 }
 
