@@ -46,3 +46,27 @@ func TestPrepareDaemonEnvironment_RemovesClaudeSessionVarsAndAppliesShellEnv(t *
 		t.Fatalf("expected applied PATH, got %q", got)
 	}
 }
+
+func TestPrepareDaemonEnvironment_PreservesExistingNMHome(t *testing.T) {
+	t.Setenv("NM_HOME", "/service/root")
+
+	oldApply := applyShellEnvToProcess
+	defer func() { applyShellEnvToProcess = oldApply }()
+
+	applyShellEnvToProcess = func() error {
+		if err := os.Setenv("NM_HOME", "/login/shell/root"); err != nil {
+			return err
+		}
+		return os.Setenv("PATH", "/resolved/bin")
+	}
+
+	if err := prepareDaemonEnvironment(); err != nil {
+		t.Fatal(err)
+	}
+	if got := os.Getenv("NM_HOME"); got != "/service/root" {
+		t.Fatalf("NM_HOME = %q, want %q", got, "/service/root")
+	}
+	if got := os.Getenv("PATH"); got != "/resolved/bin" {
+		t.Fatalf("PATH = %q, want %q", got, "/resolved/bin")
+	}
+}

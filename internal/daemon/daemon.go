@@ -52,6 +52,7 @@ func Run() error {
 }
 
 func prepareDaemonEnvironment() error {
+	nmHome := os.Getenv("NM_HOME")
 	for _, key := range []string{
 		"CLAUDECODE",
 		"CLAUDE_CODE_ENTRYPOINT",
@@ -65,6 +66,11 @@ func prepareDaemonEnvironment() error {
 	}
 	if err := applyShellEnvToProcess(); err != nil {
 		return fmt.Errorf("apply login shell environment: %w", err)
+	}
+	if nmHome != "" {
+		if err := os.Setenv("NM_HOME", nmHome); err != nil {
+			return fmt.Errorf("restore NM_HOME: %w", err)
+		}
 	}
 	return nil
 }

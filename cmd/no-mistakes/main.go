@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/cli"
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
@@ -13,7 +14,16 @@ import (
 )
 
 func main() {
-	if os.Getenv("NM_DAEMON") == "1" {
+	if root, ok, err := daemonRunRootFromArgs(os.Args[1:]); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	} else if ok {
+		if root != "" {
+			if err := os.Setenv("NM_HOME", root); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+		}
 		if err := daemon.Run(); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
@@ -37,6 +47,28 @@ func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(cliLogWriter(), nil)))
 
 	cli.Execute()
+}
+
+func daemonRunRootFromArgs(args []string) (string, bool, error) {
+	if os.Getenv("NM_DAEMON") == "1" {
+		return "", true, nil
+	}
+	if len(args) < 2 || args[0] != "daemon" || args[1] != "run" {
+		return "", false, nil
+	}
+	for i := 2; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--root" {
+			if i+1 >= len(args) {
+				return "", false, fmt.Errorf("missing value for --root")
+			}
+			return args[i+1], true, nil
+		}
+		if value, ok := strings.CutPrefix(arg, "--root="); ok {
+			return value, true, nil
+		}
+	}
+	return "", true, nil
 }
 
 // cliLogWriter returns a writer for CLI logs. Falls back to io.Discard
