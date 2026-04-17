@@ -77,7 +77,7 @@ Communication between the CLI and daemon uses JSON-RPC 2.0 over the Unix socket.
 
 ### Database
 
-SQLite at `~/.no-mistakes/state.sqlite` tracks repos, runs, step results, and step rounds. Step rounds record each execution attempt (initial, auto-fix) with its own findings and duration. Legacy `user_fix` rounds are still read as `auto-fix` for backward compatibility.
+SQLite at `~/.no-mistakes/state.sqlite` tracks repos, runs, step results, and step rounds. Step rounds record each execution attempt (initial, auto-fix) with its own findings and duration, plus selected finding IDs, whether the selection came from the user or auto-fix filtering, and the one-line fix summary for fix rounds. Legacy `user_fix` rounds are still read as `auto-fix` for backward compatibility.
 
 ## Local state
 
