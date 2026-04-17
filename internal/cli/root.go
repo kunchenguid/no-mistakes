@@ -33,7 +33,8 @@ func newRootCmd() *cobra.Command {
 		// Silence cobra's default error/usage printing — we handle it ourselves.
 		SilenceErrors: true,
 		SilenceUsage:  true,
-		// When run without a subcommand, default to attach behavior.
+		// When run without a subcommand, attach to the current branch run or
+		// route interactive users into the setup wizard when no run is active.
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return attachRun(cmd.OutOrStdout(), "", true)
 		},
