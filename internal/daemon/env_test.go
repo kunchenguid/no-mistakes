@@ -15,6 +15,7 @@ func TestPrepareDaemonEnvironment_RemovesClaudeSessionVarsAndAppliesShellEnv(t *
 	} {
 		t.Setenv(key, value)
 	}
+	t.Setenv("PATH", os.Getenv("PATH"))
 
 	oldApply := applyShellEnvToProcess
 	defer func() { applyShellEnvToProcess = oldApply }()
@@ -49,6 +50,7 @@ func TestPrepareDaemonEnvironment_RemovesClaudeSessionVarsAndAppliesShellEnv(t *
 
 func TestPrepareDaemonEnvironment_PreservesExistingNMHome(t *testing.T) {
 	t.Setenv("NM_HOME", "/service/root")
+	t.Setenv("PATH", os.Getenv("PATH"))
 
 	oldApply := applyShellEnvToProcess
 	defer func() { applyShellEnvToProcess = oldApply }()

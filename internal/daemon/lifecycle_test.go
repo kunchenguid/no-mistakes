@@ -1,0 +1,709 @@
+package daemon
+
+import (
+	"errors"
+	"fmt"
+	"net"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"syscall"
+	"testing"
+	"time"
+
+	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/paths"
+)
+
+func TestIsRunningFalseWhenNoSocket(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "dtest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	p := paths.WithRoot(tmpDir)
+	alive, err := IsRunning(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if alive {
+		t.Error("expected not running when no socket exists")
+	}
+}
+
+func TestIsRunningTrueWhenDaemonRunning(t *testing.T) {
+	p, _ := startTestDaemon(t)
+
+	alive, err := IsRunning(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !alive {
+		t.Error("expected running when daemon is started")
+	}
+}
+
+func TestStopNotRunningIsNoop(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "dtest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	p := paths.WithRoot(tmpDir)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Stop(p); err != nil {
+		t.Fatalf("stop should succeed when daemon is not running: %v", err)
+	}
+}
+
+func TestStopNotRunningRemovesStaleArtifacts(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "dtest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	p := paths.WithRoot(tmpDir)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.PIDFile(), []byte(fmt.Sprintf("%d", os.Getpid())), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.Socket(), []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Stop(p); err != nil {
+		t.Fatalf("stop should succeed when daemon is not running: %v", err)
+	}
+	if _, err := os.Stat(p.PIDFile()); !os.IsNotExist(err) {
+		t.Fatalf("expected stale pid file to be removed, got err=%v", err)
+	}
+	if _, err := os.Stat(p.Socket()); !os.IsNotExist(err) {
+		t.Fatalf("expected stale socket file to be removed, got err=%v", err)
+	}
+}
+
+func TestWaitForDaemonStopKeepsArtifactsWhenKillFails(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "dtest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	p := paths.WithRoot(tmpDir)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.PIDFile(), []byte("999999"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.Socket(), []byte("still-there"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	originalHealthCheck := daemonHealthCheck
+	daemonHealthCheck = func(*paths.Paths) (bool, error) {
+		return true, nil
+	}
+	defer func() {
+		daemonHealthCheck = originalHealthCheck
+	}()
+
+	started := time.Now()
+	err = waitForDaemonStop(p)
+	if err == nil {
+		t.Fatal("expected waitForDaemonStop to fail when kill fails")
+	}
+	if time.Since(started) < 5*time.Second {
+		t.Fatalf("waitForDaemonStop returned too early after %v", time.Since(started))
+	}
+	if _, err := os.Stat(p.PIDFile()); err != nil {
+		t.Fatalf("expected pid file to remain after failed kill, got err=%v", err)
+	}
+	if _, err := os.Stat(p.Socket()); err != nil {
+		t.Fatalf("expected socket file to remain after failed kill, got err=%v", err)
+	}
+}
+
+func TestStopDetachedDaemonFallsBackToPIDWhenSocketIsBroken(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix socket setup is platform-specific")
+	}
+
+	tmpDir, err := os.MkdirTemp("", "dtest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	p := paths.WithRoot(tmpDir)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	const pid = 424242
+	if err := os.WriteFile(p.PIDFile(), []byte(fmt.Sprintf("%d", pid)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("unix", p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	originalDial := daemonDial
+	daemonDial = func(string) (*ipc.Client, error) {
+		return nil, fmt.Errorf("transient ipc failure")
+	}
+	defer func() {
+		daemonDial = originalDial
+	}()
+	originalProcessRunning := daemonProcessRunning
+	runningChecks := 0
+	daemonProcessRunning = func(checkPID int) (bool, error) {
+		if checkPID != pid {
+			t.Fatalf("processRunning pid = %d, want %d", checkPID, pid)
+		}
+		runningChecks++
+		return runningChecks == 1, nil
+	}
+	defer func() {
+		daemonProcessRunning = originalProcessRunning
+	}()
+	originalProcessStartTime := daemonProcessStartTime
+	daemonProcessStartTime = func(checkPID int) (time.Time, error) {
+		if checkPID != pid {
+			t.Fatalf("processStartTime pid = %d, want %d", checkPID, pid)
+		}
+		return time.Now(), nil
+	}
+	defer func() {
+		daemonProcessStartTime = originalProcessStartTime
+	}()
+	originalKillPID := daemonKillPID
+	killedPID := 0
+	daemonKillPID = func(killPID int) error {
+		killedPID = killPID
+		return nil
+	}
+	defer func() {
+		daemonKillPID = originalKillPID
+	}()
+
+	if err := stopDetachedDaemon(p); err != nil {
+		t.Fatalf("expected stopDetachedDaemon to stop live pid when IPC dial fails, got %v", err)
+	}
+	if killedPID != pid {
+		t.Fatalf("expected pid fallback to kill pid %d, got %d", pid, killedPID)
+	}
+	if runningChecks == 0 {
+		t.Fatal("expected pid fallback to check process state")
+	}
+	if _, statErr := os.Stat(p.PIDFile()); !os.IsNotExist(statErr) {
+		t.Fatalf("expected pid file to be removed after PID fallback, got err=%v", statErr)
+	}
+	if _, statErr := os.Stat(p.Socket()); !os.IsNotExist(statErr) {
+		t.Fatalf("expected socket file to be removed after PID fallback, got err=%v", statErr)
+	}
+}
+
+func TestStopDetachedDaemonRejectsStalePIDFallback(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix socket setup is platform-specific")
+	}
+
+	tmpDir, err := os.MkdirTemp("", "dtest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	p := paths.WithRoot(tmpDir)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.PIDFile(), []byte(fmt.Sprintf("%d", os.Getpid())), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldTime := time.Now().Add(-24 * time.Hour)
+	if err := os.Chtimes(p.PIDFile(), oldTime, oldTime); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("unix", p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	originalDial := daemonDial
+	daemonDial = func(string) (*ipc.Client, error) {
+		return nil, fmt.Errorf("transient ipc failure")
+	}
+	defer func() {
+		daemonDial = originalDial
+	}()
+	originalKillPID := daemonKillPID
+	killCalled := false
+	daemonKillPID = func(int) error {
+		killCalled = true
+		return nil
+	}
+	defer func() {
+		daemonKillPID = originalKillPID
+	}()
+
+	err = stopDetachedDaemon(p)
+	if err == nil {
+		t.Fatal("expected stale pid fallback to fail")
+	}
+	if killCalled {
+		t.Fatal("expected stale pid fallback to avoid killing the process")
+	}
+	if _, statErr := os.Stat(p.PIDFile()); statErr != nil {
+		t.Fatalf("expected pid file to remain after rejected pid fallback, got err=%v", statErr)
+	}
+	if _, statErr := os.Stat(p.Socket()); statErr != nil {
+		t.Fatalf("expected socket file to remain after rejected pid fallback, got err=%v", statErr)
+	}
+}
+
+func TestStopDetachedDaemonRejectsUnrelatedLiveProcessPIDFallback(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix socket setup is platform-specific")
+	}
+
+	tmpDir, err := os.MkdirTemp("", "dtest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	p := paths.WithRoot(tmpDir)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.PIDFile(), []byte(fmt.Sprintf("%d", os.Getpid())), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("unix", p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	originalDial := daemonDial
+	daemonDial = func(string) (*ipc.Client, error) {
+		return nil, fmt.Errorf("transient ipc failure")
+	}
+	defer func() {
+		daemonDial = originalDial
+	}()
+	originalProcessStartTime := daemonProcessStartTime
+	daemonProcessStartTime = func(checkPID int) (time.Time, error) {
+		if checkPID != os.Getpid() {
+			t.Fatalf("processStartTime pid = %d, want %d", checkPID, os.Getpid())
+		}
+		return time.Now().Add(-time.Hour), nil
+	}
+	defer func() {
+		daemonProcessStartTime = originalProcessStartTime
+	}()
+	originalKillPID := daemonKillPID
+	killCalled := false
+	daemonKillPID = func(int) error {
+		killCalled = true
+		return nil
+	}
+	defer func() {
+		daemonKillPID = originalKillPID
+	}()
+
+	err = stopDetachedDaemon(p)
+	if err == nil {
+		t.Fatal("expected unrelated live process pid fallback to fail")
+	}
+	if killCalled {
+		t.Fatal("expected unrelated live process pid fallback to avoid killing the process")
+	}
+	if _, statErr := os.Stat(p.PIDFile()); statErr != nil {
+		t.Fatalf("expected pid file to remain after rejected pid fallback, got err=%v", statErr)
+	}
+	if _, statErr := os.Stat(p.Socket()); statErr != nil {
+		t.Fatalf("expected socket file to remain after rejected pid fallback, got err=%v", statErr)
+	}
+}
+
+func TestStopDetachedDaemonRemovesArtifactsForDeadPID(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix socket setup is platform-specific")
+	}
+
+	tmpDir, err := os.MkdirTemp("", "dtest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	p := paths.WithRoot(tmpDir)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.PIDFile(), []byte("999999"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fd, err := syscall.Socket(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := &syscall.SockaddrUnix{Name: p.Socket()}
+	if err := syscall.Bind(fd, addr); err != nil {
+		_ = syscall.Close(fd)
+		t.Fatal(err)
+	}
+	if err := syscall.Close(fd); err != nil {
+		t.Fatal(err)
+	}
+
+	originalDial := daemonDial
+	daemonDial = func(string) (*ipc.Client, error) {
+		return nil, fmt.Errorf("transient ipc failure")
+	}
+	defer func() {
+		daemonDial = originalDial
+	}()
+
+	if err := stopDetachedDaemon(p); err != nil {
+		t.Fatalf("expected stopDetachedDaemon to clean stale artifacts, got %v", err)
+	}
+	if _, statErr := os.Stat(p.PIDFile()); !os.IsNotExist(statErr) {
+		t.Fatalf("expected stale pid file to be removed, got err=%v", statErr)
+	}
+	if _, statErr := os.Stat(p.Socket()); !os.IsNotExist(statErr) {
+		t.Fatalf("expected stale socket file to be removed, got err=%v", statErr)
+	}
+}
+
+func TestStaleDaemonArtifactsKeepsPIDForLiveProcessWithoutSocket(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "dtest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	p := paths.WithRoot(tmpDir)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.PIDFile(), []byte(fmt.Sprintf("%d", os.Getpid())), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stale, err := staleDaemonArtifacts(p)
+	if err != nil {
+		t.Fatalf("staleDaemonArtifacts returned error: %v", err)
+	}
+	if stale {
+		t.Fatal("expected live pid without socket to be treated as non-stale")
+	}
+}
+
+func TestStaleDaemonArtifactsKeepsRegularEndpointFileForLiveProcess(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "dtest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	p := paths.WithRoot(tmpDir)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.PIDFile(), []byte(fmt.Sprintf("%d", os.Getpid())), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.Socket(), []byte("127.0.0.1:1234\ntoken\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	original := daemonEndpointUsesRegularFile
+	daemonEndpointUsesRegularFile = func() bool { return true }
+	defer func() {
+		daemonEndpointUsesRegularFile = original
+	}()
+
+	stale, err := staleDaemonArtifacts(p)
+	if err != nil {
+		t.Fatalf("staleDaemonArtifacts returned error: %v", err)
+	}
+	if stale {
+		t.Fatal("expected live pid with regular endpoint file to be treated as non-stale")
+	}
+}
+
+func TestStopDetachedDaemonKeepsArtifactsWhenPIDMissingButDaemonLooksLive(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix socket setup is platform-specific")
+	}
+
+	tmpDir, err := os.MkdirTemp("", "dtest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	p := paths.WithRoot(tmpDir)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("unix", p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	originalDial := daemonDial
+	daemonDial = func(string) (*ipc.Client, error) {
+		return nil, fmt.Errorf("transient ipc failure")
+	}
+	defer func() {
+		daemonDial = originalDial
+	}()
+	err = stopDetachedDaemon(p)
+	if err == nil {
+		t.Fatal("expected stopDetachedDaemon to fail without a pid file")
+	}
+	if _, statErr := os.Stat(p.Socket()); statErr != nil {
+		t.Fatalf("expected socket file to remain when daemon looks live, got err=%v", statErr)
+	}
+	if _, statErr := os.Stat(p.PIDFile()); !os.IsNotExist(statErr) {
+		t.Fatalf("expected pid file to remain missing, got err=%v", statErr)
+	}
+}
+
+func TestStaleDaemonArtifactsRejectsNonPositivePID(t *testing.T) {
+	tests := []struct {
+		name string
+		pid  string
+	}{
+		{name: "zero", pid: "0"},
+		{name: "negative", pid: "-1"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir, err := os.MkdirTemp("", "dtest")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer os.RemoveAll(tmpDir)
+
+			p := paths.WithRoot(tmpDir)
+			if err := p.EnsureDirs(); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(p.PIDFile(), []byte(tt.pid), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			called := false
+			original := daemonProcessRunning
+			daemonProcessRunning = func(int) (bool, error) {
+				called = true
+				return false, nil
+			}
+			defer func() {
+				daemonProcessRunning = original
+			}()
+
+			_, err = staleDaemonArtifacts(p)
+			if err == nil {
+				t.Fatal("expected invalid pid error")
+			}
+			if !strings.Contains(err.Error(), "invalid") {
+				t.Fatalf("error = %q, want invalid pid error", err)
+			}
+			if called {
+				t.Fatal("expected invalid pid to avoid process probe")
+			}
+		})
+	}
+}
+
+func TestReadPIDNoFile(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "dtest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	p := paths.WithRoot(tmpDir)
+	_, err = ReadPID(p)
+	if err == nil {
+		t.Error("expected error when no PID file")
+	}
+}
+
+func TestWaitForDaemonStopDoesNotTreatHealthCheckErrorsAsStopped(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "dtest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	p := paths.WithRoot(tmpDir)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.PIDFile(), []byte("999999"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.Socket(), []byte("still-there"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	originalHealthCheck := daemonHealthCheck
+	daemonHealthCheck = func(*paths.Paths) (bool, error) {
+		return false, errors.New("transient ipc failure")
+	}
+	defer func() {
+		daemonHealthCheck = originalHealthCheck
+	}()
+
+	started := time.Now()
+	err = waitForDaemonStop(p)
+	if err == nil {
+		t.Fatal("expected waitForDaemonStop to fail when health checks only error")
+	}
+	if time.Since(started) < 5*time.Second {
+		t.Fatalf("waitForDaemonStop returned too early after %v", time.Since(started))
+	}
+	if _, err := os.Stat(p.PIDFile()); err != nil {
+		t.Fatalf("expected pid file to remain after health-check errors, got err=%v", err)
+	}
+	if _, err := os.Stat(p.Socket()); err != nil {
+		t.Fatalf("expected socket file to remain after health-check errors, got err=%v", err)
+	}
+}
+
+func TestWaitForDaemonStopRejectsStalePIDBeforeKill(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "dtest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	p := paths.WithRoot(tmpDir)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.PIDFile(), []byte(fmt.Sprintf("%d", os.Getpid())), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldTime := time.Now().Add(-24 * time.Hour)
+	if err := os.Chtimes(p.PIDFile(), oldTime, oldTime); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.Socket(), []byte("still-there"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	originalHealthCheck := daemonHealthCheck
+	daemonHealthCheck = func(*paths.Paths) (bool, error) {
+		return true, nil
+	}
+	defer func() {
+		daemonHealthCheck = originalHealthCheck
+	}()
+	originalProcessStartTime := daemonProcessStartTime
+	daemonProcessStartTime = func(checkPID int) (time.Time, error) {
+		if checkPID != os.Getpid() {
+			t.Fatalf("processStartTime pid = %d, want %d", checkPID, os.Getpid())
+		}
+		return time.Now(), nil
+	}
+	defer func() {
+		daemonProcessStartTime = originalProcessStartTime
+	}()
+	originalKillPID := daemonKillPID
+	killCalled := false
+	daemonKillPID = func(int) error {
+		killCalled = true
+		return nil
+	}
+	defer func() {
+		daemonKillPID = originalKillPID
+	}()
+
+	started := time.Now()
+	err = waitForDaemonStop(p)
+	if err == nil {
+		t.Fatal("expected waitForDaemonStop to fail for stale pid")
+	}
+	if time.Since(started) < 5*time.Second {
+		t.Fatalf("waitForDaemonStop returned too early after %v", time.Since(started))
+	}
+	if killCalled {
+		t.Fatal("expected stale pid to avoid killing the process")
+	}
+	if _, err := os.Stat(p.PIDFile()); err != nil {
+		t.Fatalf("expected pid file to remain after rejected kill, got err=%v", err)
+	}
+	if _, err := os.Stat(p.Socket()); err != nil {
+		t.Fatalf("expected socket file to remain after rejected kill, got err=%v", err)
+	}
+}
+
+func TestReadPIDInvalid(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "dtest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	p := paths.WithRoot(tmpDir)
+	os.WriteFile(filepath.Join(tmpDir, "daemon.pid"), []byte("notanumber"), 0o644)
+	_, err = ReadPID(p)
+	if err == nil {
+		t.Error("expected error for invalid PID content")
+	}
+}
+
+func TestReadPIDRejectsNonPositiveValues(t *testing.T) {
+	tests := []struct {
+		name string
+		pid  string
+	}{
+		{name: "zero", pid: "0"},
+		{name: "negative", pid: "-1"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir, err := os.MkdirTemp("", "dtest")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer os.RemoveAll(tmpDir)
+
+			p := paths.WithRoot(tmpDir)
+			if err := os.WriteFile(filepath.Join(tmpDir, "daemon.pid"), []byte(tt.pid), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err = ReadPID(p)
+			if err == nil {
+				t.Fatal("expected invalid pid error")
+			}
+			if !strings.Contains(err.Error(), "invalid") {
+				t.Fatalf("error = %q, want invalid pid error", err)
+			}
+		})
+	}
+}

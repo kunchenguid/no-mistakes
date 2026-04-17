@@ -9,6 +9,32 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 )
 
+func TestAttachRunIDWithUnknownRunReturnsHelpfulError(t *testing.T) {
+	nmHome, err := os.MkdirTemp("", "nmcli")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(nmHome) })
+	t.Setenv("NM_HOME", nmHome)
+	p := paths.WithRoot(nmHome)
+
+	d, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	startTestDaemon(t, p, d)
+
+	out, err := executeCmd("attach", "--run", "missing-run")
+	if err == nil {
+		t.Fatal("attach should fail for an unknown run ID")
+	}
+	if !strings.Contains(err.Error(), "run not found") {
+		t.Fatalf("attach error should mention missing run, got: %v\noutput: %s", err, out)
+	}
+}
+
 // TestAttachNotInitialized verifies that running bare `no-mistakes` in a git
 // repo that hasn't been initialized returns a clear error instead of panicking.
 // This is the exact scenario that caused the nil pointer dereference: db.GetRepoByPath
