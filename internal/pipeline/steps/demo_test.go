@@ -140,7 +140,7 @@ func TestDemoStepExecuteReturnsContextCancellation(t *testing.T) {
 	}
 }
 
-func TestDemoStepReviewAutoFix(t *testing.T) {
+func TestDemoStepReviewRequiresApproval(t *testing.T) {
 	withoutDemoSleep(t)
 
 	steps := DemoSteps()
@@ -159,7 +159,7 @@ func TestDemoStepReviewAutoFix(t *testing.T) {
 		LogFile:  func(string) {},
 	}
 
-	// First execution should return findings.
+	// First execution should return findings that require human approval.
 	outcome, err := review.Execute(sctx)
 	if err != nil {
 		t.Fatalf("first Execute() error: %v", err)
@@ -167,8 +167,20 @@ func TestDemoStepReviewAutoFix(t *testing.T) {
 	if outcome.Findings == "" {
 		t.Fatal("expected findings on first execution")
 	}
-	if !outcome.AutoFixable {
-		t.Fatal("expected AutoFixable=true")
+	if !outcome.NeedsApproval {
+		t.Fatal("expected NeedsApproval=true so the demo pauses on the approval screen")
+	}
+	if outcome.AutoFixable {
+		t.Fatal("expected AutoFixable=false so auto-fix does not bypass the approval screen")
+	}
+	parsed, err := types.ParseFindingsJSON(outcome.Findings)
+	if err != nil {
+		t.Fatalf("parse findings: %v", err)
+	}
+	for _, f := range parsed.Items {
+		if f.Action != types.ActionAskUser {
+			t.Errorf("finding %q: Action=%q, want %q", f.ID, f.Action, types.ActionAskUser)
+		}
 	}
 
 	// Fix execution should return clean.
