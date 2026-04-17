@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.5.0](https://github.com/kunchenguid/no-mistakes/compare/v1.4.0...v1.5.0) (2026-04-17)
+
+
+### Features
+
+* **pipeline:** track round history across fix cycles ([#94](https://github.com/kunchenguid/no-mistakes/issues/94)) ([9596176](https://github.com/kunchenguid/no-mistakes/commit/9596176c4943665e9ecf4abf3b605b3c198c1634))
+* **wizard:** add branch-aware setup flow for run startup ([#96](https://github.com/kunchenguid/no-mistakes/issues/96)) ([da3daf4](https://github.com/kunchenguid/no-mistakes/commit/da3daf4a0dd964417986e507ee3fe6dd6d54b6fd))
+
+
+### Bug Fixes
+
+* **agent:** harden rovodev SSE parsing and server health checks ([#93](https://github.com/kunchenguid/no-mistakes/issues/93)) ([e7e377f](https://github.com/kunchenguid/no-mistakes/commit/e7e377ff347c63c801b4143e6d28af3955f68bf9))
+* **pipeline:** generate MP4 demos and gate review fixes ([#91](https://github.com/kunchenguid/no-mistakes/issues/91)) ([87b6801](https://github.com/kunchenguid/no-mistakes/commit/87b68013ba7ad050574804249be7d6602e399ddb))
+
 ## [1.4.0](https://github.com/kunchenguid/no-mistakes/compare/v1.3.0...v1.4.0) (2026-04-16)
 
 
