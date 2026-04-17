@@ -151,6 +151,34 @@ func TestGetChecksReturnsPrimaryStatusErrorWhenMRFlagIsSupported(t *testing.T) {
 	}
 }
 
+func TestGetChecksFallsBackForVariantUnsupportedMRFlagErrors(t *testing.T) {
+	t.Parallel()
+
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab ci status --mr 123 --output json": {
+			stderr: "error: unrecognized arguments: --mr\n",
+			code:   1,
+		},
+		"glab mr view 123 --output json": {
+			stdout: `{"head_pipeline":{"id":77}}` + "\n",
+		},
+		"glab ci get --pipeline-id 77 --output json --with-job-details": {
+			stdout: `[{"name":"test","status":"success"}]` + "\n",
+		},
+	}), nil)
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 1 {
+		t.Fatalf("len(checks) = %d, want 1", len(checks))
+	}
+	if checks[0].Name != "test" || checks[0].Bucket != scm.CheckBucketPass {
+		t.Fatalf("checks[0] = %+v, want passing test job", checks[0])
+	}
+}
+
 func TestFindPRWithoutIIDKeepsNumberEmptyAndUpdatesByNumberFromURL(t *testing.T) {
 	t.Parallel()
 

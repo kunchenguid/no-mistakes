@@ -181,7 +181,26 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 
 func isUnsupportedMRFlagError(out []byte) bool {
 	msg := strings.ToLower(strings.TrimSpace(string(out)))
-	return strings.Contains(msg, "unknown flag: --mr") || strings.Contains(msg, "unknown option: --mr")
+	if !strings.Contains(msg, "--mr") {
+		return false
+	}
+	for _, marker := range []string{
+		"unknown flag",
+		"unknown option",
+		"unsupported flag",
+		"unsupported option",
+		"unrecognized argument",
+		"unrecognized arguments",
+		"unrecognized option",
+		"unknown argument",
+		"unexpected argument",
+		"flag provided but not defined",
+	} {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *Host) getChecksFallback(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
