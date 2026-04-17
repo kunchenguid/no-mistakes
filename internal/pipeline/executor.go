@@ -255,9 +255,10 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			fixSummaryPtr = &s
 		}
 		if inserted, dbErr := e.db.InsertStepRound(sr.ID, roundNum, nextTrigger, findingsPtr, fixSummaryPtr, roundDuration); dbErr != nil {
+			currentRoundID = roundInsertID(currentRoundID, inserted, dbErr)
 			slog.Warn("failed to insert step round", "step", stepName, "round", roundNum, "error", dbErr)
 		} else {
-			currentRoundID = inserted.ID
+			currentRoundID = roundInsertID(currentRoundID, inserted, nil)
 		}
 
 		// If the step produced a PR URL, propagate it to the run and emit an update.
@@ -282,7 +283,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 				e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFixing), "", "", "", nil)
 				if currentRoundID != "" {
 					if idsJSON := findingIDsJSON(fixableFindings); idsJSON != "" {
-						if dbErr := e.db.SetStepRoundSelectedFindingIDs(currentRoundID, &idsJSON); dbErr != nil {
+						if dbErr := e.db.SetStepRoundSelection(currentRoundID, &idsJSON, db.RoundSelectionSourceAutoFix); dbErr != nil {
 							slog.Warn("failed to record selected finding ids", "step", stepName, "round", roundNum, "error", dbErr)
 						}
 					}
@@ -383,7 +384,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			nextTrigger = "auto_fix"
 			if currentRoundID != "" {
 				if idsJSON := marshalFindingIDs(response.findingIDs); idsJSON != "" {
-					if dbErr := e.db.SetStepRoundSelectedFindingIDs(currentRoundID, &idsJSON); dbErr != nil {
+					if dbErr := e.db.SetStepRoundSelection(currentRoundID, &idsJSON, db.RoundSelectionSourceUser); dbErr != nil {
 						slog.Warn("failed to record selected finding ids", "step", stepName, "round", roundNum, "error", dbErr)
 					}
 				}
@@ -404,6 +405,13 @@ done:
 	}
 	e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusCompleted), "", "", "", &durationMS)
 	return skipRemaining, nil
+}
+
+func roundInsertID(_ string, inserted *db.StepRound, err error) string {
+	if err != nil || inserted == nil {
+		return ""
+	}
+	return inserted.ID
 }
 
 // waitForApproval blocks until a user action arrives or context is cancelled.

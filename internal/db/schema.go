@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS step_rounds (
     trigger_type         TEXT NOT NULL,
     findings_json        TEXT,
     selected_finding_ids TEXT,
+    selection_source     TEXT,
     fix_summary          TEXT,
     duration_ms          INTEGER NOT NULL,
     created_at           INTEGER NOT NULL
@@ -55,5 +56,6 @@ CREATE TABLE IF NOT EXISTS step_rounds (
 // idempotent via its error being tolerated when the column already exists.
 var migrationStatements = []string{
 	`ALTER TABLE step_rounds ADD COLUMN selected_finding_ids TEXT`,
+	`ALTER TABLE step_rounds ADD COLUMN selection_source TEXT`,
 	`ALTER TABLE step_rounds ADD COLUMN fix_summary TEXT`,
 }

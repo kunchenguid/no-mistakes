@@ -531,7 +531,7 @@ func TestReviewStep_RoundHistorySanitizesAgentInput(t *testing.T) {
 			if !strings.Contains(opts.Prompt, "Previous rounds for this step") {
 				t.Fatal("expected prompt to include the round history section")
 			}
-			if !strings.Contains(opts.Prompt, "Do NOT re-report findings whose IDs appear under user_chose_to_ignore") {
+			if !strings.Contains(opts.Prompt, "Do NOT re-report findings listed under user_chose_to_ignore") {
 				t.Fatal("expected prompt to include the ignore-list instruction")
 			}
 			// Sanitized fields should appear inside the JSON-encoded finding line:

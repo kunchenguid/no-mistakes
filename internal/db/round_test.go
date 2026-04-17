@@ -41,6 +41,9 @@ func TestStepRoundInsertAndGet(t *testing.T) {
 	if r.SelectedFindingIDs != nil {
 		t.Errorf("expected nil selected_finding_ids on fresh insert, got %v", r.SelectedFindingIDs)
 	}
+	if r.SelectionSource != nil {
+		t.Errorf("expected nil selection_source on fresh insert, got %v", r.SelectionSource)
+	}
 	if r.FixSummary != nil {
 		t.Errorf("expected nil fix_summary on non-fix round, got %v", r.FixSummary)
 	}
@@ -152,7 +155,7 @@ func TestSetStepRoundSelectedFindingIDs(t *testing.T) {
 	}
 
 	selected := `["review-1"]`
-	if err := d.SetStepRoundSelectedFindingIDs(r.ID, &selected); err != nil {
+	if err := d.SetStepRoundSelection(r.ID, &selected, RoundSelectionSourceUser); err != nil {
 		t.Fatalf("set selected: %v", err)
 	}
 
@@ -166,9 +169,12 @@ func TestSetStepRoundSelectedFindingIDs(t *testing.T) {
 	if rounds[0].SelectedFindingIDs == nil || *rounds[0].SelectedFindingIDs != selected {
 		t.Errorf("selected_finding_ids = %v, want %q", rounds[0].SelectedFindingIDs, selected)
 	}
+	if rounds[0].SelectionSource == nil || *rounds[0].SelectionSource != RoundSelectionSourceUser {
+		t.Errorf("selection_source = %v, want %q", rounds[0].SelectionSource, RoundSelectionSourceUser)
+	}
 
 	// Clearing the selection resets the column to NULL.
-	if err := d.SetStepRoundSelectedFindingIDs(r.ID, nil); err != nil {
+	if err := d.SetStepRoundSelection(r.ID, nil, RoundSelectionSourceUser); err != nil {
 		t.Fatalf("clear selected: %v", err)
 	}
 	rounds, err = d.GetRoundsByStep(step.ID)
@@ -177,5 +183,8 @@ func TestSetStepRoundSelectedFindingIDs(t *testing.T) {
 	}
 	if rounds[0].SelectedFindingIDs != nil {
 		t.Errorf("expected nil after clear, got %v", rounds[0].SelectedFindingIDs)
+	}
+	if rounds[0].SelectionSource != nil {
+		t.Errorf("expected nil selection_source after clear, got %v", rounds[0].SelectionSource)
 	}
 }

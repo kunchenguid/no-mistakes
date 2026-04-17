@@ -64,7 +64,7 @@ func TestRoundHistoryPromptSection_RendersFindingsSelectionsAndFixSummary(t *tes
 		t.Fatal(err)
 	}
 	selected := `["review-1"]`
-	if err := sctx.DB.SetStepRoundSelectedFindingIDs(r1.ID, &selected); err != nil {
+	if err := sctx.DB.SetStepRoundSelection(r1.ID, &selected, db.RoundSelectionSourceUser); err != nil {
 		t.Fatal(err)
 	}
 
@@ -80,12 +80,14 @@ func TestRoundHistoryPromptSection_RendersFindingsSelectionsAndFixSummary(t *tes
 
 	wants := []string{
 		"Previous rounds for this step",
-		"Do NOT re-report findings whose IDs appear under user_chose_to_ignore",
+		"Do NOT re-report findings listed under user_chose_to_ignore",
 		"Round 1 (initial)",
 		`"id":"review-1"`,
 		`"description":"panic risk"`,
-		`user_chose_to_fix: ["review-1"]`,
-		`user_chose_to_ignore: ["review-2"]`,
+		`user_chose_to_fix:`,
+		`"description":"panic risk"`,
+		`user_chose_to_ignore:`,
+		`"description":"style"`,
 		"Round 2 (auto_fix)",
 		`fix_summary: "guard against nil deref"`,
 	}
@@ -93,6 +95,31 @@ func TestRoundHistoryPromptSection_RendersFindingsSelectionsAndFixSummary(t *tes
 		if !strings.Contains(got, w) {
 			t.Errorf("expected history to contain %q, got:\n%s", w, got)
 		}
+	}
+}
+
+func TestRoundHistoryPromptSection_DoesNotTreatAutoFixFilteringAsUserIgnore(t *testing.T) {
+	sctx, stepID := newRoundHistoryContext(t)
+
+	round1 := `{"findings":[{"id":"review-1","severity":"warning","description":"cheap fix","action":"auto-fix"},{"id":"review-2","severity":"error","description":"needs review","action":"ask-user"}],"summary":"2"}`
+	r1, err := sctx.DB.InsertStepRound(stepID, 1, "initial", &round1, nil, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected := `["review-1"]`
+	if err := sctx.DB.SetStepRoundSelection(r1.ID, &selected, db.RoundSelectionSourceAutoFix); err != nil {
+		t.Fatal(err)
+	}
+
+	got := roundHistoryPromptSection(sctx)
+	if strings.Contains(got, "user_chose_to_ignore:") {
+		t.Fatalf("expected auto-fix filtering to avoid user ignore metadata, got:\n%s", got)
+	}
+	if !strings.Contains(got, "auto_selected_to_fix") {
+		t.Fatalf("expected auto-fix metadata to be rendered, got:\n%s", got)
+	}
+	if !strings.Contains(got, `"description":"needs review"`) {
+		t.Fatalf("expected unresolved ask-user finding to remain visible, got:\n%s", got)
 	}
 }
 

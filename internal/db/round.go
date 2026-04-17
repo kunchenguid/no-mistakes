@@ -2,6 +2,11 @@ package db
 
 import "fmt"
 
+const (
+	RoundSelectionSourceUser    = "user"
+	RoundSelectionSourceAutoFix = "auto_fix"
+)
+
 // StepRound represents one execution round within a pipeline step.
 type StepRound struct {
 	ID           string
@@ -15,6 +20,7 @@ type StepRound struct {
 	// round, so that later rounds' prompts can tell which findings were
 	// deliberately left unselected.
 	SelectedFindingIDs *string
+	SelectionSource    *string
 	// FixSummary, when non-nil, is the agent's one-line commit summary for
 	// the fix attempt performed during this round. It is only set when the
 	// round itself was a fix round (trigger=="auto_fix").
@@ -37,8 +43,8 @@ func (d *DB) InsertStepRound(stepResultID string, round int, trigger string, fin
 		CreatedAt:    now(),
 	}
 	_, err := d.sql.Exec(
-		`INSERT INTO step_rounds (id, step_result_id, round, trigger_type, findings_json, selected_finding_ids, fix_summary, duration_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, r.StepResultID, r.Round, r.Trigger, r.FindingsJSON, r.SelectedFindingIDs, r.FixSummary, r.DurationMS, r.CreatedAt,
+		`INSERT INTO step_rounds (id, step_result_id, round, trigger_type, findings_json, selected_finding_ids, selection_source, fix_summary, duration_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.StepResultID, r.Round, r.Trigger, r.FindingsJSON, r.SelectedFindingIDs, r.SelectionSource, r.FixSummary, r.DurationMS, r.CreatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert step round: %w", err)
@@ -46,23 +52,34 @@ func (d *DB) InsertStepRound(stepResultID string, round int, trigger string, fin
 	return r, nil
 }
 
-// SetStepRoundSelectedFindingIDs records which findings were selected for fix
-// AFTER the given round produced its findings. Passing a nil or empty JSON
-// array clears the column.
-func (d *DB) SetStepRoundSelectedFindingIDs(id string, selectedFindingIDs *string) error {
+// SetStepRoundSelection records which findings were selected for fix AFTER the
+// given round produced its findings, along with whether that selection came
+// from the user or auto-fix filtering. Passing a nil or empty JSON array clears
+// both columns.
+func (d *DB) SetStepRoundSelection(id string, selectedFindingIDs *string, source string) error {
+	var selectionSource *string
+	if selectedFindingIDs != nil && *selectedFindingIDs != "" && source != "" {
+		selectionSource = &source
+	}
 	if _, err := d.sql.Exec(
-		`UPDATE step_rounds SET selected_finding_ids = ? WHERE id = ?`,
-		selectedFindingIDs, id,
+		`UPDATE step_rounds SET selected_finding_ids = ?, selection_source = ? WHERE id = ?`,
+		selectedFindingIDs, selectionSource, id,
 	); err != nil {
-		return fmt.Errorf("set step round selected finding ids: %w", err)
+		return fmt.Errorf("set step round selection: %w", err)
 	}
 	return nil
+}
+
+// SetStepRoundSelectedFindingIDs preserves the old API for callers that do not
+// need to distinguish how the selection was made.
+func (d *DB) SetStepRoundSelectedFindingIDs(id string, selectedFindingIDs *string) error {
+	return d.SetStepRoundSelection(id, selectedFindingIDs, RoundSelectionSourceUser)
 }
 
 // GetRoundsByStep returns all rounds for a step result, ordered by round number.
 func (d *DB) GetRoundsByStep(stepResultID string) ([]*StepRound, error) {
 	rows, err := d.sql.Query(
-		`SELECT id, step_result_id, round, trigger_type, findings_json, selected_finding_ids, fix_summary, duration_ms, created_at FROM step_rounds WHERE step_result_id = ? ORDER BY round`,
+		`SELECT id, step_result_id, round, trigger_type, findings_json, selected_finding_ids, selection_source, fix_summary, duration_ms, created_at FROM step_rounds WHERE step_result_id = ? ORDER BY round`,
 		stepResultID,
 	)
 	if err != nil {
@@ -72,7 +89,7 @@ func (d *DB) GetRoundsByStep(stepResultID string) ([]*StepRound, error) {
 	var rounds []*StepRound
 	for rows.Next() {
 		r := &StepRound{}
-		if err := rows.Scan(&r.ID, &r.StepResultID, &r.Round, &r.Trigger, &r.FindingsJSON, &r.SelectedFindingIDs, &r.FixSummary, &r.DurationMS, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.StepResultID, &r.Round, &r.Trigger, &r.FindingsJSON, &r.SelectedFindingIDs, &r.SelectionSource, &r.FixSummary, &r.DurationMS, &r.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan step round: %w", err)
 		}
 		rounds = append(rounds, r)

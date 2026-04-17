@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -634,6 +635,16 @@ func TestExecutor_AutoFixRecordsSelectedFindingIDs(t *testing.T) {
 	}
 	if rounds[1].FixSummary == nil || *rounds[1].FixSummary != "apply cheap fix" {
 		t.Fatalf("expected fix_summary persisted on round 2, got %v", rounds[1].FixSummary)
+	}
+}
+
+func TestRoundInsertIDClearsOnInsertFailure(t *testing.T) {
+	round := &db.StepRound{ID: "round-2"}
+	if got := roundInsertID("round-1", round, nil); got != "round-2" {
+		t.Fatalf("roundInsertID success = %q, want %q", got, "round-2")
+	}
+	if got := roundInsertID("round-1", nil, context.Canceled); got != "" {
+		t.Fatalf("roundInsertID failure = %q, want empty", got)
 	}
 }
 
