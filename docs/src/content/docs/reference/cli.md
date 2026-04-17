@@ -5,7 +5,7 @@ description: Complete reference for all no-mistakes commands and flags.
 
 ## no-mistakes
 
-Attach to the active pipeline run for the current repo. Bare `no-mistakes` first looks for an active run on the current branch. If none exists and you're in an interactive TTY session, it can start the setup wizard to create a branch, commit changes, push through the gate, and then attach once the new run appears. In non-interactive contexts, it falls back to showing the last 5 runs inline.
+Attach to the active pipeline run for the current branch when one exists. If none exists and you're in an interactive TTY session, bare `no-mistakes` can start the setup wizard to create a branch, commit changes, push through the gate, and then attach once the new run appears. In non-interactive contexts, it falls back to showing the last 5 runs inline.
 
 ```sh
 no-mistakes

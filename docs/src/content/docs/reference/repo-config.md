@@ -32,7 +32,7 @@ auto_fix:
 
 ### agent
 
-Override the default agent for this repo.
+Override the default agent for this repo and its setup-wizard suggestions.
 
 | | |
 |---|---|

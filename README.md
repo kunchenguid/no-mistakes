@@ -192,7 +192,7 @@ Config is optional and split across two files:
 ```yaml
 # ~/.no-mistakes/config.yaml
 
-# Default agent for all repos.
+# Default agent for all repos and setup-wizard suggestions.
 # "auto" picks the first available agent on PATH: claude, codex, opencode, then rovodev.
 agent: auto # auto | claude | codex | rovodev | opencode
 
