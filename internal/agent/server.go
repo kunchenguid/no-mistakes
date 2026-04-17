@@ -13,8 +13,10 @@ import (
 
 // managedServer manages a persistent HTTP server process (used by rovodev and opencode agents).
 type managedServer struct {
-	cmd  *exec.Cmd
-	port int
+	cmd     *exec.Cmd
+	port    int
+	exited  chan struct{} // closed exactly once when cmd.Wait returns
+	waitErr error         // result of cmd.Wait; only read after exited is closed
 }
 
 // getAvailablePort finds an ephemeral port by binding to :0 and releasing.
@@ -43,7 +45,11 @@ func startServerWithPort(ctx context.Context, bin string, args []string, cwd str
 		return nil, fmt.Errorf("start server %s: %w", bin, err)
 	}
 
-	srv := &managedServer{cmd: cmd, port: port}
+	srv := &managedServer{cmd: cmd, port: port, exited: make(chan struct{})}
+	go func() {
+		srv.waitErr = cmd.Wait()
+		close(srv.exited)
+	}()
 
 	// Wait for health check to pass
 	if err := srv.waitForHealth(ctx, healthPath); err != nil {
@@ -60,6 +66,8 @@ func (s *managedServer) baseURL() string {
 }
 
 // waitForHealth polls the health endpoint until it returns 200 or timeout.
+// If the server process exits before becoming healthy, it returns immediately
+// with an exit error instead of waiting out the 30s deadline.
 func (s *managedServer) waitForHealth(ctx context.Context, path string) error {
 	url := s.baseURL() + path
 	client := &http.Client{Timeout: 2 * time.Second}
@@ -69,6 +77,8 @@ func (s *managedServer) waitForHealth(ctx context.Context, path string) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-s.exited:
+			return fmt.Errorf("server exited before becoming healthy: %w", s.waitErr)
 		case <-deadline:
 			return fmt.Errorf("server health check timed out after 30s")
 		default:
@@ -82,37 +92,42 @@ func (s *managedServer) waitForHealth(ctx context.Context, path string) error {
 			}
 		}
 
-		time.Sleep(250 * time.Millisecond)
+		select {
+		case <-s.exited:
+			return fmt.Errorf("server exited before becoming healthy: %w", s.waitErr)
+		case <-time.After(250 * time.Millisecond):
+		}
 	}
 }
 
-// shutdown gracefully stops the server process.
+// shutdown gracefully stops the server process. The long-running goroutine
+// spawned in startServerWithPort owns cmd.Wait(); shutdown signals the
+// process and waits on s.exited to observe termination.
 func (s *managedServer) shutdown() {
 	if s.cmd == nil || s.cmd.Process == nil {
 		return
 	}
 
+	// Already exited (e.g. early-exit path)?
+	select {
+	case <-s.exited:
+		return
+	default:
+	}
+
 	_ = signalManagedProcess(s.cmd, false)
 
-	// Wait up to 3 seconds for graceful exit
-	done := make(chan struct{})
-	go func() {
-		_ = s.cmd.Wait()
-		close(done)
-	}()
-
 	select {
-	case <-done:
+	case <-s.exited:
 		return
 	case <-time.After(3 * time.Second):
 	}
 
-	// Force kill
 	slog.Warn("server did not exit gracefully, sending SIGKILL", "pid", s.cmd.Process.Pid)
 	_ = signalManagedProcess(s.cmd, true)
 
 	select {
-	case <-done:
+	case <-s.exited:
 	case <-time.After(5 * time.Second):
 		slog.Warn("server process did not exit after SIGKILL", "pid", s.cmd.Process.Pid)
 	}

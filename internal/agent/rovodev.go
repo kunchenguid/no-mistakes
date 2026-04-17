@@ -180,67 +180,132 @@ func buildRovodevSystemPrompt(schema json.RawMessage) string {
 	}, "\n")
 }
 
-// rovodevSSEEvent is the JSON payload from a rovodev SSE data field.
+// rovodevSSEEvent captures every field we care about from a rovodev SSE
+// data payload. Real rovodev emits text content via part_start / part_delta
+// events (not a single "text" event) and puts request-usage fields at the
+// top level of the payload, not nested under "usage". Shape matches the
+// well-proven gnhf integration.
 type rovodevSSEEvent struct {
-	EventKind string           `json:"event_kind,omitempty"`
-	Content   string           `json:"content,omitempty"`
-	Usage     *rovodevSSEUsage `json:"usage,omitempty"`
+	EventKind string `json:"event_kind,omitempty"`
+	Content   string `json:"content,omitempty"`
+
+	// request-usage
+	InputTokens      int `json:"input_tokens,omitempty"`
+	OutputTokens     int `json:"output_tokens,omitempty"`
+	CacheReadTokens  int `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
+
+	// part_start
+	Index int             `json:"index,omitempty"`
+	Part  *rovodevSSEPart `json:"part,omitempty"`
+
+	// part_delta
+	Delta *rovodevSSEDelta `json:"delta,omitempty"`
 }
 
-type rovodevSSEUsage struct {
-	InputTokens      int `json:"input_tokens"`
-	OutputTokens     int `json:"output_tokens"`
-	CacheReadTokens  int `json:"cache_read_tokens"`
-	CacheWriteTokens int `json:"cache_write_tokens"`
+type rovodevSSEPart struct {
+	Content  string `json:"content"`
+	PartKind string `json:"part_kind"`
+}
+
+type rovodevSSEDelta struct {
+	ContentDelta  string `json:"content_delta"`
+	PartDeltaKind string `json:"part_delta_kind"`
 }
 
 // parseRovodevSSE processes the SSE stream from rovodev, extracting text
-// chunks, token usage, and the latest text segment for structured output.
+// chunks, token usage, and the latest assembled text for structured output.
+//
+// Text arrives in three possible shapes:
+//   - "text" events carry the full current message in `content`.
+//   - "part_start" events start a new text part at an index.
+//   - "part_delta" events append to the part at the given index.
+//
+// Tool activity ("tool-return", "on_call_tools_start") resets the buffer so
+// only the final post-tool text segment is returned as the structured answer.
 func parseRovodevSSE(r io.Reader, onChunk func(string), usage *TokenUsage, latestText *string) error {
+	var parts []string
+	partIndex := map[int]int{}
 	var hasEmittedText, hadToolActivity bool
+
+	updateLatest := func() {
+		*latestText = strings.TrimSpace(strings.Join(parts, ""))
+	}
+	resetParts := func() {
+		parts = nil
+		partIndex = map[int]int{}
+		*latestText = ""
+	}
+	emitSeparator := func() {
+		if hasEmittedText && hadToolActivity && onChunk != nil {
+			onChunk("\n\n")
+		}
+		hadToolActivity = false
+	}
+	emitChunk := func(s string) {
+		if onChunk != nil {
+			onChunk(s)
+			hasEmittedText = true
+		}
+	}
+
 	return parseSSE(r, func(ev sseEvent) bool {
 		if ev.Data == "" {
 			return true
 		}
 
-		// Determine event kind from SSE event name or JSON payload
 		kind := ev.Name
-
 		var payload rovodevSSEEvent
-		if err := json.Unmarshal([]byte(ev.Data), &payload); err == nil {
-			if kind == "" && payload.EventKind != "" {
-				kind = payload.EventKind
+		if err := json.Unmarshal([]byte(ev.Data), &payload); err != nil {
+			return true
+		}
+		if kind == "" && payload.EventKind != "" {
+			kind = payload.EventKind
+		}
+
+		switch kind {
+		case "request-usage":
+			usage.Add(TokenUsage{
+				InputTokens:         payload.InputTokens,
+				OutputTokens:        payload.OutputTokens,
+				CacheReadTokens:     payload.CacheReadTokens,
+				CacheCreationTokens: payload.CacheWriteTokens,
+			})
+
+		case "text":
+			if payload.Content != "" {
+				emitSeparator()
+				parts = []string{payload.Content}
+				partIndex = map[int]int{0: 0}
+				updateLatest()
+				emitChunk(payload.Content)
 			}
 
-			switch kind {
-			case "request-usage":
-				if payload.Usage != nil {
-					usage.Add(TokenUsage{
-						InputTokens:         payload.Usage.InputTokens,
-						OutputTokens:        payload.Usage.OutputTokens,
-						CacheReadTokens:     payload.Usage.CacheReadTokens,
-						CacheCreationTokens: payload.Usage.CacheWriteTokens,
-					})
-				}
-
-			case "text":
-				if payload.Content != "" {
-					if hasEmittedText && hadToolActivity && onChunk != nil {
-						onChunk("\n\n")
-					}
-					hadToolActivity = false
-					*latestText = payload.Content
-					if onChunk != nil {
-						onChunk(payload.Content)
-						hasEmittedText = true
-					}
-				}
-
-			case "tool-return", "on_call_tools_start":
-				// Reset text buffer — agent is doing tool calls
-				*latestText = ""
-				hadToolActivity = true
+		case "part_start":
+			if payload.Part != nil && payload.Part.PartKind == "text" && payload.Part.Content != "" {
+				emitSeparator()
+				parts = append(parts, payload.Part.Content)
+				partIndex[payload.Index] = len(parts) - 1
+				updateLatest()
+				emitChunk(payload.Part.Content)
 			}
+
+		case "part_delta":
+			if payload.Delta != nil && payload.Delta.PartDeltaKind == "text" && payload.Delta.ContentDelta != "" {
+				if idx, ok := partIndex[payload.Index]; ok {
+					parts[idx] += payload.Delta.ContentDelta
+				} else {
+					emitSeparator()
+					parts = append(parts, payload.Delta.ContentDelta)
+					partIndex[payload.Index] = len(parts) - 1
+				}
+				updateLatest()
+				emitChunk(payload.Delta.ContentDelta)
+			}
+
+		case "tool-return", "on_call_tools_start":
+			resetParts()
+			hadToolActivity = true
 		}
 
 		return true
