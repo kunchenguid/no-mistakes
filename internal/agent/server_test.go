@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -12,8 +13,10 @@ import (
 // flags, or port bind failure), startup fails fast instead of waiting the
 // full 30s health-check deadline.
 func TestStartServerWithPort_DetectsEarlyExit(t *testing.T) {
-	// /usr/bin/true exits 0 immediately without opening a listener.
-	const bin = "/usr/bin/true"
+	bin, err := exec.LookPath("true")
+	if err != nil {
+		t.Skip("true binary not available")
+	}
 
 	start := time.Now()
 	srv, err := startServerWithPort(context.Background(), bin, nil, t.TempDir(), "/healthcheck", 1)

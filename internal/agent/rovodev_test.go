@@ -250,6 +250,26 @@ data: {"index":0,"delta":{"content_delta":"orphan","part_delta_kind":"text"},"ev
 	}
 }
 
+func TestParseRovodevSSE_PreservesWhitespaceInAssembledText(t *testing.T) {
+	input := `event: part_start
+data: {"index":0,"part":{"content":"  hello","part_kind":"text"},"event_kind":"part_start"}
+
+event: part_delta
+data: {"index":0,"delta":{"content_delta":" world\n","part_delta_kind":"text"},"event_kind":"part_delta"}
+
+`
+	var usage TokenUsage
+	var latestText string
+
+	err := parseRovodevSSE(strings.NewReader(input), nil, &usage, &latestText)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if latestText != "  hello world\n" {
+		t.Errorf("expected whitespace-preserved latest text, got %q", latestText)
+	}
+}
+
 func TestParseRovodevSSE_GnhfFixture(t *testing.T) {
 	// Full stream replay from gnhf's primary rovodev integration test, which
 	// exercises part_start + part_delta assembly and top-level request-usage.

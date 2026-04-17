@@ -229,7 +229,7 @@ func parseRovodevSSE(r io.Reader, onChunk func(string), usage *TokenUsage, lates
 	var hasEmittedText, hadToolActivity bool
 
 	updateLatest := func() {
-		*latestText = strings.TrimSpace(strings.Join(parts, ""))
+		*latestText = strings.Join(parts, "")
 	}
 	resetParts := func() {
 		parts = nil
