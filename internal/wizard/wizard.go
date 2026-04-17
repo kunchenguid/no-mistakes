@@ -67,7 +67,9 @@ type step struct {
 
 // Model is the bubbletea model for the wizard.
 type Model struct {
-	cfg Config
+	cfg    Config
+	ctx    context.Context
+	cancel context.CancelFunc
 
 	steps  []*step
 	active int // index of the currently active step, or len(steps) when finished
@@ -114,9 +116,12 @@ func NewModel(cfg Config) Model {
 	ti := textinput.New()
 	ti.Prompt = "› "
 	ti.CharLimit = 80
+	ctx, cancel := context.WithCancel(context.Background())
 
 	m := Model{
 		cfg:          cfg,
+		ctx:          ctx,
+		cancel:       cancel,
 		input:        ti,
 		targetBranch: cfg.CurrentBranch,
 	}
@@ -222,6 +227,7 @@ func (m Model) setupActive() Model {
 	if s == nil {
 		m.success = m.pushed
 		m.quitting = true
+		m.cancel()
 		return m
 	}
 	switch s.id {
@@ -254,6 +260,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if s == nil {
 		// Already finished; any key quits.
 		m.quitting = true
+		m.cancel()
 		return m, tea.Quit
 	}
 
@@ -261,6 +268,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+c":
 		m.aborted = true
 		m.quitting = true
+		m.cancel()
 		return m, tea.Quit
 	case "q":
 		if m.hasSideEffects() && !m.confirmQuit {
@@ -269,6 +277,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.aborted = true
 		m.quitting = true
+		m.cancel()
 		return m, tea.Quit
 	}
 
@@ -311,6 +320,7 @@ func (m Model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "n", "N":
 		m.aborted = true
 		m.quitting = true
+		m.cancel()
 		return m, tea.Quit
 	}
 	return m, nil
@@ -425,7 +435,7 @@ func (m *Model) scheduleSpinner() tea.Cmd {
 
 func (m Model) suggestCmd(id stepID) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		ctx, cancel := context.WithTimeout(m.ctx, 60*time.Second)
 		defer cancel()
 		switch id {
 		case stepBranch:

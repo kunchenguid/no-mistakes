@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -402,6 +403,55 @@ func TestConfirmQuit_ResetsOnOtherKey(t *testing.T) {
 	m = advance(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
 	if m.confirmQuit {
 		t.Fatal("non-q key should clear confirmQuit")
+	}
+}
+
+func TestQuit_CancelsInFlightSuggestion(t *testing.T) {
+	ctxCh := make(chan context.Context, 1)
+	done := make(chan tea.Msg, 1)
+
+	cfg := baseConfig(&recorder{})
+	cfg.SuggestBranch = func(ctx context.Context) (string, error) {
+		ctxCh <- ctx
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
+
+	m := NewModel(cfg)
+	cmd := m.suggestCmd(stepBranch)
+	go func() {
+		done <- cmd()
+	}()
+
+	var suggestCtx context.Context
+	select {
+	case suggestCtx = <-ctxCh:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for suggestion to start")
+	}
+
+	if err := suggestCtx.Err(); err != nil {
+		t.Fatalf("suggestion context should start active, got %v", err)
+	}
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	m = next.(Model)
+
+	if !m.aborted || !m.quitting {
+		t.Fatal("quit should abort the wizard")
+	}
+
+	select {
+	case msg := <-done:
+		suggestion, ok := msg.(suggestionMsg)
+		if !ok {
+			t.Fatalf("expected suggestionMsg, got %T", msg)
+		}
+		if !errors.Is(suggestion.err, context.Canceled) {
+			t.Fatalf("expected context canceled, got %v", suggestion.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for suggestion cancellation")
 	}
 }
 
