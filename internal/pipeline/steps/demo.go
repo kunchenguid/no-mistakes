@@ -43,16 +43,17 @@ func DemoSteps() []pipeline.Step {
 			log:        "Fetching origin...\nChecking default branch...\nRebasing onto origin/main...\nAlready up to date.",
 		},
 		&demoStep{
-			name:       types.StepReview,
-			delay:      5 * time.Second,
-			fixDelay:   4 * time.Second,
-			displayDur: 45 * time.Second,
-			log:        "Reviewing diff against main...\nAnalyzing changed files...\nChecking for bugs, security issues, and design problems...",
-			fixLog:     "Fixing review findings...\nApplied fix: added nil check in handler\nApplied fix: removed unused import",
+			name:          types.StepReview,
+			delay:         5 * time.Second,
+			fixDelay:      4 * time.Second,
+			displayDur:    45 * time.Second,
+			log:           "Reviewing diff against main...\nAnalyzing changed files...\nChecking for bugs, security issues, and design problems...",
+			fixLog:        "Fixing review findings...\nApplied fix: added nil check in handler\nApplied fix: removed unused import",
+			needsApproval: true,
 			findings: demoFindings{
 				Items: []types.Finding{
-					{ID: "review-1", Severity: "error", File: "internal/handler.go", Line: 42, Description: "Nil pointer dereference: req.Body used without nil check", Action: types.ActionAutoFix},
-					{ID: "review-2", Severity: "warning", File: "internal/handler.go", Line: 5, Description: "Unused import \"fmt\"", Action: types.ActionAutoFix},
+					{ID: "review-1", Severity: "error", File: "internal/handler.go", Line: 42, Description: "Nil pointer dereference: req.Body used without nil check", Action: types.ActionAskUser},
+					{ID: "review-2", Severity: "warning", File: "internal/handler.go", Line: 5, Description: "Unused import \"fmt\"", Action: types.ActionAskUser},
 				},
 				Summary:       "2 findings: 1 error, 1 warning",
 				RiskLevel:     "medium",
@@ -113,15 +114,16 @@ type demoFindings struct {
 }
 
 type demoStep struct {
-	name       types.StepName
-	delay      time.Duration
-	fixDelay   time.Duration
-	displayDur time.Duration // duration shown in TUI (overrides wall clock)
-	log        string
-	fixLog     string
-	findings   demoFindings
-	prURL      string
-	fixed      bool
+	name          types.StepName
+	delay         time.Duration
+	fixDelay      time.Duration
+	displayDur    time.Duration // duration shown in TUI (overrides wall clock)
+	log           string
+	fixLog        string
+	findings      demoFindings
+	needsApproval bool
+	prURL         string
+	fixed         bool
 }
 
 func (s *demoStep) Name() types.StepName { return s.name }
@@ -152,7 +154,11 @@ func (s *demoStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 			return nil, err
 		}
 		outcome.Findings = string(raw)
-		outcome.AutoFixable = true
+		if s.needsApproval {
+			outcome.NeedsApproval = true
+		} else {
+			outcome.AutoFixable = true
+		}
 	}
 
 	return outcome, nil

@@ -62,11 +62,17 @@ demo: build
 		[0:v]split[orig][zoom_src];\
 		[zoom_src]crop=963:570:0:0,scale=1100:650:flags=lanczos[zoomed];\
 		[orig]scale=1100:650:flags=lanczos[base];\
-		[base][zoomed]overlay=0:0:enable='lt(t,4.3)',setpts=1.9*PTS,\
+		[base][zoomed]overlay=0:0:enable='lt(t,4.04)',setpts=1.9*PTS,\
 		split[s0][s1];\
 		[s0]palettegen=max_colors=128[p];\
 		[s1][p]paletteuse=dither=sierra2_4a\
 	" -r 10 -y demo.gif
+	ffmpeg -i demo_raw.gif -filter_complex "\
+		[0:v]split[orig][zoom_src];\
+		[zoom_src]crop=963:570:0:0,scale=1100:650:flags=lanczos[zoomed];\
+		[orig]scale=1100:650:flags=lanczos[base];\
+		[base][zoomed]overlay=0:0:enable='lt(t,4.04)',setpts=1.9*PTS\
+	" -c:v libx264 -pix_fmt yuv420p -movflags +faststart -r 30 -y demo.mp4
 	rm -f demo_raw.gif
 
 clean:

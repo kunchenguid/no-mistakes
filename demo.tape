@@ -37,7 +37,16 @@ Sleep 2s
 Type "no-mistakes"
 Sleep 3s
 Enter
-Sleep 30s
+
+# Wait for the review step to stream its log and surface the approval screen.
+Sleep 9s
+
+# Linger on the approval screen so the human-in-the-loop moment is clear.
+Sleep 2.5s
+
+# Press `f` to fix the reported findings, then watch the rest of the pipeline.
+Type "f"
+Sleep 29s
 
 # Let the completed state linger
 Sleep 2s
