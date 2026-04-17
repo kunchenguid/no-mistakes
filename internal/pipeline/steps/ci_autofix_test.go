@@ -40,7 +40,7 @@ func TestCIStep_CIFailureAutoFix(t *testing.T) {
 	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
 	gitCmd(t, dir, "push", "origin", "feature")
 
-	checksJSON := `[{"name":"build","status":"COMPLETED","conclusion":"success"},{"name":"test","status":"COMPLETED","conclusion":"failure"}]`
+	checksJSON := `[{"name":"build","state":"SUCCESS","bucket":"pass"},{"name":"test","state":"FAILURE","bucket":"fail"}]`
 	env := fakeCIGH(t, "OPEN", checksJSON)
 
 	agentCalled := false
@@ -110,10 +110,10 @@ func TestCIStep_CIAutoFixDisabledWithZero(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	checksJSON := `[
-		{"name":"build","status":"COMPLETED","conclusion":"success","state":"SUCCESS","bucket":"pass"},
-		{"name":"test","status":"COMPLETED","conclusion":"failure"},
-		{"name":"lint","status":"COMPLETED","conclusion":"action_required"},
-		{"name":"deploy","status":"COMPLETED","conclusion":"neutral"}
+		{"name":"build","state":"SUCCESS","bucket":"pass"},
+		{"name":"test","state":"FAILURE","bucket":"fail"},
+		{"name":"lint","state":"ACTION_REQUIRED","bucket":"fail"},
+		{"name":"deploy","state":"NEUTRAL"}
 	]`
 	env := fakeCIGH(t, "OPEN", checksJSON)
 

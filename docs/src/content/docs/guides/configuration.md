@@ -30,7 +30,7 @@ agent_path_override:
   rovodev: /usr/local/bin/acli
   opencode: /usr/local/bin/opencode
 
-# How long the CI step waits for provider CI status, and GitHub PR mergeability, before timing out.
+# How long the CI step waits for provider CI status, and GitHub/GitLab PR mergeability, before timing out.
 ci_timeout: "4h"  # any Go duration string
 
 # Daemon log verbosity.

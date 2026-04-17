@@ -99,7 +99,7 @@ make build
 make install
 ```
 
-You will also need `git` and one supported agent binary. For PR creation, install `gh` (GitHub) or `glab` (GitLab), or set `NO_MISTAKES_BITBUCKET_EMAIL` and `NO_MISTAKES_BITBUCKET_API_TOKEN` for Bitbucket Cloud. CI monitoring supports GitHub via `gh` and Bitbucket Cloud via those Bitbucket API credentials.
+You will also need `git` and one supported agent binary. For PR creation, install `gh` (GitHub) or `glab` (GitLab), or set `NO_MISTAKES_BITBUCKET_EMAIL` and `NO_MISTAKES_BITBUCKET_API_TOKEN` for Bitbucket Cloud. CI monitoring supports GitHub via `gh`, GitLab via `glab`, and Bitbucket Cloud via those Bitbucket API credentials.
 
 Full documentation is published at <https://kunchenguid.github.io/no-mistakes/>.
 
@@ -198,7 +198,7 @@ agent_path_override:
   rovodev: /usr/local/bin/acli
   opencode: /usr/local/bin/opencode
 
-# How long the CI step waits for provider CI status, and GitHub PR mergeability, before timing out.
+# How long the CI step waits for provider CI status, and GitHub/GitLab PR mergeability, before timing out.
 ci_timeout: "4h"
 
 # debug | info | warn | error

@@ -11,6 +11,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
 
 func TestCIStep_MergeConflictDetected_ReturnsNeedsApproval(t *testing.T) {
@@ -283,7 +284,12 @@ func TestCIStep_MergeConflictAutoFixPromptUsesBaseBranchTip(t *testing.T) {
 	sctx.Config.AutoFix = config.AutoFix{CI: 1}
 
 	step := &CIStep{}
-	_, err := step.autoFixCI(sctx, "42", nil, true)
+	host, skip := buildHost(sctx, scm.ProviderGitHub)
+	if host == nil {
+		t.Fatalf("buildHost returned nil: %s", skip)
+	}
+	pr := &scm.PR{Number: "42", URL: prURL}
+	_, err := step.autoFixCI(sctx, host, pr, nil, true)
 	if err != nil {
 		t.Fatalf("auto-fix CI: %v", err)
 	}
