@@ -111,6 +111,7 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 	}
 	var raw []struct {
 		Name   string `json:"name"`
+		State  string `json:"state"`
 		Bucket string `json:"bucket"`
 	}
 	if err := json.Unmarshal(out, &raw); err != nil {
@@ -118,7 +119,7 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 	}
 	checks := make([]scm.Check, 0, len(raw))
 	for _, r := range raw {
-		checks = append(checks, scm.Check{Name: r.Name, Bucket: scm.CheckBucket(r.Bucket)})
+		checks = append(checks, scm.Check{Name: r.Name, Bucket: normalizeCheckBucket(r.Bucket, r.State)})
 	}
 	return checks, nil
 }
@@ -179,5 +180,26 @@ func normalizeMergeableState(raw string) scm.MergeableState {
 		return scm.MergeablePending
 	default:
 		return scm.MergeableState(raw)
+	}
+}
+
+func normalizeCheckBucket(bucket, state string) scm.CheckBucket {
+	if normalized := scm.CheckBucket(strings.TrimSpace(bucket)); normalized != "" {
+		return normalized
+	}
+
+	switch strings.ToUpper(strings.TrimSpace(state)) {
+	case "SUCCESS":
+		return scm.CheckBucketPass
+	case "FAILURE", "ERROR", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE":
+		return scm.CheckBucketFail
+	case "PENDING", "QUEUED", "IN_PROGRESS", "WAITING", "REQUESTED", "EXPECTED":
+		return scm.CheckBucketPending
+	case "CANCELLED":
+		return scm.CheckBucketCancel
+	case "SKIPPED", "NEUTRAL", "STALE":
+		return scm.CheckBucketSkip
+	default:
+		return ""
 	}
 }
