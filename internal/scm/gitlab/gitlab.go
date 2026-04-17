@@ -139,8 +139,7 @@ func (h *Host) GetMergeableState(ctx context.Context, pr *scm.PR) (scm.Mergeable
 	case "checking", "unchecked", "ci_still_running", "":
 		return scm.MergeablePending, nil
 	default:
-		// blocked_status, discussions_not_resolved, draft_status etc - treat as still resolving
-		return scm.MergeablePending, nil
+		return scm.MergeableOK, nil
 	}
 }
 
@@ -180,7 +179,7 @@ func (h *Host) getChecksFallback(ctx context.Context, pr *scm.PR) ([]scm.Check, 
 			ID int `json:"id"`
 		} `json:"head_pipeline"`
 	}
-	if err := json.Unmarshal(out, &payload); err != nil || payload.HeadPipeline.ID == 0 {
+	if trimmed := bytesTrimToJSON(out); len(trimmed) == 0 || json.Unmarshal(trimmed, &payload) != nil || payload.HeadPipeline.ID == 0 {
 		return nil, nil
 	}
 	jobsCmd := h.cmd(ctx, "glab", "ci", "get", "--pipeline-id", fmt.Sprintf("%d", payload.HeadPipeline.ID), "--output", "json")
@@ -206,7 +205,7 @@ func (h *Host) FetchFailedCheckLogs(ctx context.Context, pr *scm.PR, _ string, _
 			ID int `json:"id"`
 		} `json:"head_pipeline"`
 	}
-	if err := json.Unmarshal(viewOut, &payload); err != nil || payload.HeadPipeline.ID == 0 {
+	if trimmed := bytesTrimToJSON(viewOut); len(trimmed) == 0 || json.Unmarshal(trimmed, &payload) != nil || payload.HeadPipeline.ID == 0 {
 		return "", nil
 	}
 	jobsCmd := h.cmd(ctx, "glab", "ci", "get", "--pipeline-id", fmt.Sprintf("%d", payload.HeadPipeline.ID), "--output", "json")
@@ -329,7 +328,9 @@ func gitlabStatusBucket(state string) scm.CheckBucket {
 		return scm.CheckBucketCancel
 	case "skipped":
 		return scm.CheckBucketSkip
-	case "pending", "running", "created", "waiting_for_resource", "preparing", "scheduled", "manual":
+	case "manual":
+		return scm.CheckBucketSkip
+	case "pending", "running", "created", "waiting_for_resource", "preparing", "scheduled":
 		return scm.CheckBucketPending
 	default:
 		return ""
