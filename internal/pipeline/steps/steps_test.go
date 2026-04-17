@@ -49,6 +49,10 @@ func handleFakeCLI(mode string) {
 		fakeCIGHSequenceHandler(args)
 	case "ci-gh-nochecks":
 		fakeCIGHNoChecksHandler(args)
+	case "ci-glab":
+		fakeCIGlabHandler(args)
+	case "ci-glab-seq":
+		fakeCIGlabSequenceHandler(args)
 	default:
 		os.Exit(1)
 	}
@@ -243,6 +247,120 @@ func fakeCIGHSequenceHandler(args []string) {
 	}
 	if strings.Contains(joined, "run view") {
 		fmt.Println("error log output")
+		os.Exit(0)
+	}
+	os.Exit(1)
+}
+
+func fakeCIGlabHandler(args []string) {
+	state := os.Getenv("FAKE_CLI_STATE")
+	if state == "" {
+		state = "opened"
+	}
+	checksJSON := os.Getenv("FAKE_CLI_CHECKS")
+	if checksJSON == "" {
+		checksJSON = "[]"
+	}
+	conflicts := "false"
+	if os.Getenv("FAKE_CLI_MR_CONFLICTS") == "true" {
+		conflicts = "true"
+	}
+	mergeStatus := os.Getenv("FAKE_CLI_MERGE_STATUS")
+	if mergeStatus == "" {
+		mergeStatus = "mergeable"
+	}
+	traceOutput := os.Getenv("FAKE_CLI_TRACE")
+	if traceOutput == "" {
+		traceOutput = "gitlab job trace output"
+	}
+	joined := strings.Join(args, " ")
+
+	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "mr view") {
+		fmt.Printf(`{"iid":42,"web_url":"https://gitlab.com/test/repo/-/merge_requests/42","state":%q,"has_conflicts":%s,"detailed_merge_status":%q,"head_pipeline":{"id":7}}`,
+			state, conflicts, mergeStatus)
+		fmt.Println()
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "mr create") {
+		fmt.Println("https://gitlab.com/test/repo/-/merge_requests/99")
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "mr update") {
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "ci status") {
+		fmt.Println(checksJSON)
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "ci get") {
+		fmt.Println(checksJSON)
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "ci trace") {
+		fmt.Println(traceOutput)
+		os.Exit(0)
+	}
+	os.Exit(1)
+}
+
+func fakeCIGlabSequenceHandler(args []string) {
+	state := os.Getenv("FAKE_CLI_STATE")
+	if state == "" {
+		state = "opened"
+	}
+	conflicts := "false"
+	if os.Getenv("FAKE_CLI_MR_CONFLICTS") == "true" {
+		conflicts = "true"
+	}
+	mergeStatus := os.Getenv("FAKE_CLI_MERGE_STATUS")
+	if mergeStatus == "" {
+		mergeStatus = "mergeable"
+	}
+	checksPath := os.Getenv("FAKE_CLI_CHECKS_PATH")
+	indexPath := os.Getenv("FAKE_CLI_CHECKS_INDEX_PATH")
+	joined := strings.Join(args, " ")
+
+	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "mr view") {
+		fmt.Printf(`{"iid":42,"web_url":"https://gitlab.com/test/repo/-/merge_requests/42","state":%q,"has_conflicts":%s,"detailed_merge_status":%q,"head_pipeline":{"id":7}}`,
+			state, conflicts, mergeStatus)
+		fmt.Println()
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "ci status") || strings.Contains(joined, "ci get") {
+		data, err := os.ReadFile(checksPath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		entries := strings.Split(strings.TrimSpace(string(data)), "\n")
+		if len(entries) == 0 || entries[0] == "" {
+			fmt.Println("[]")
+			os.Exit(0)
+		}
+		index := 0
+		if rawIndex, err := os.ReadFile(indexPath); err == nil {
+			if parsed, err := strconv.Atoi(strings.TrimSpace(string(rawIndex))); err == nil {
+				index = parsed
+			}
+		}
+		if index >= len(entries) {
+			index = len(entries) - 1
+		}
+		if err := os.WriteFile(indexPath, []byte(strconv.Itoa(index+1)), 0o644); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Println(entries[index])
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "ci trace") {
+		fmt.Println("gitlab job trace output")
 		os.Exit(0)
 	}
 	os.Exit(1)

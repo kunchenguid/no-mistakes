@@ -515,3 +515,68 @@ func fakeCIGHNoChecks(t *testing.T) []string {
 		"FAKE_CLI_MODE": "ci-gh-nochecks",
 	})
 }
+
+// fakeCIGlab creates a fake glab binary that serves the CI monitoring endpoints.
+// state is the MR state ("opened", "merged", "closed"); checksJSON is a JSON
+// array of jobs for `glab ci status` / `glab ci get`.
+func fakeCIGlab(t *testing.T, state, checksJSON string) []string {
+	t.Helper()
+	binDir := fakeCLIBinDir(t)
+	linkTestBinary(t, binDir, "glab")
+	return fakeCLIEnv(binDir, map[string]string{
+		"FAKE_CLI_MODE":   "ci-glab",
+		"FAKE_CLI_STATE":  state,
+		"FAKE_CLI_CHECKS": checksJSON,
+	})
+}
+
+func fakeCIGlabConflict(t *testing.T, state, checksJSON string, conflict bool) []string {
+	t.Helper()
+	binDir := fakeCLIBinDir(t)
+	linkTestBinary(t, binDir, "glab")
+	conflicts := "false"
+	if conflict {
+		conflicts = "true"
+	}
+	return fakeCLIEnv(binDir, map[string]string{
+		"FAKE_CLI_MODE":         "ci-glab",
+		"FAKE_CLI_STATE":        state,
+		"FAKE_CLI_CHECKS":       checksJSON,
+		"FAKE_CLI_MR_CONFLICTS": conflicts,
+	})
+}
+
+func fakeCIGlabWithTrace(t *testing.T, state, checksJSON, trace string) []string {
+	t.Helper()
+	binDir := fakeCLIBinDir(t)
+	linkTestBinary(t, binDir, "glab")
+	return fakeCLIEnv(binDir, map[string]string{
+		"FAKE_CLI_MODE":   "ci-glab",
+		"FAKE_CLI_STATE":  state,
+		"FAKE_CLI_CHECKS": checksJSON,
+		"FAKE_CLI_TRACE":  trace,
+	})
+}
+
+func fakeCIGlabSequence(t *testing.T, state string, checks []string) []string {
+	t.Helper()
+	binDir := fakeCLIBinDir(t)
+	linkTestBinary(t, binDir, "glab")
+
+	checksPath := filepath.Join(t.TempDir(), "checks.txt")
+	indexPath := filepath.Join(t.TempDir(), "checks-index.txt")
+
+	if err := os.WriteFile(checksPath, []byte(strings.Join(checks, "\n")), 0o644); err != nil {
+		t.Fatalf("write checks sequence: %v", err)
+	}
+	if err := os.WriteFile(indexPath, []byte("0"), 0o644); err != nil {
+		t.Fatalf("write checks index: %v", err)
+	}
+
+	return fakeCLIEnv(binDir, map[string]string{
+		"FAKE_CLI_MODE":              "ci-glab-seq",
+		"FAKE_CLI_STATE":             state,
+		"FAKE_CLI_CHECKS_PATH":       checksPath,
+		"FAKE_CLI_CHECKS_INDEX_PATH": indexPath,
+	})
+}

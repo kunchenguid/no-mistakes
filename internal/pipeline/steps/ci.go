@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kunchenguid/no-mistakes/internal/bitbucket"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -43,32 +42,14 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	if provider == scm.ProviderUnknown && sctx.Run.PRURL != nil {
 		provider = scm.DetectProvider(*sctx.Run.PRURL)
 	}
-	if provider != scm.ProviderGitHub && provider != scm.ProviderBitbucket {
-		sctx.Log(fmt.Sprintf("skipping CI: provider %s is not supported yet", provider))
+	host, skipReason := buildHost(sctx, provider)
+	if host == nil {
+		sctx.Log(fmt.Sprintf("skipping CI: %s", skipReason))
 		return &pipeline.StepOutcome{}, nil
 	}
-	var bitbucketClient *bitbucket.Client
-	var bitbucketRepo bitbucket.RepoRef
-	if provider == scm.ProviderGitHub {
-		if !stepCLIAvailable(sctx, provider) {
-			sctx.Log("skipping CI: gh CLI is not installed")
-			return &pipeline.StepOutcome{}, nil
-		}
-		if !stepAuthConfigured(sctx, provider) {
-			sctx.Log("skipping CI: gh CLI is not authenticated")
-			return &pipeline.StepOutcome{}, nil
-		}
-	} else {
-		var err error
-		bitbucketClient, err = bitbucket.NewClientFromEnv(sctx.Env)
-		if err != nil {
-			sctx.Log(fmt.Sprintf("skipping CI: %v", err))
-			return &pipeline.StepOutcome{}, nil
-		}
-		bitbucketRepo, err = resolveBitbucketRepoRef(sctx.Repo.UpstreamURL, sctx.Run.PRURL)
-		if err != nil {
-			return nil, err
-		}
+	if err := host.Available(ctx); err != nil {
+		sctx.Log(fmt.Sprintf("skipping CI: %v", err))
+		return &pipeline.StepOutcome{}, nil
 	}
 
 	// Get PR URL from run record
@@ -89,10 +70,11 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		return &pipeline.StepOutcome{}, nil
 	}
 
-	prNumber, err := extractPRNumber(prURL)
+	prNumber, err := scm.ExtractPRNumber(prURL)
 	if err != nil {
 		return nil, fmt.Errorf("extract PR number: %w", err)
 	}
+	pr := &scm.PR{Number: prNumber, URL: prURL}
 
 	timeout := sctx.Config.CITimeout
 	if timeout == 0 {
@@ -131,28 +113,28 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		}
 
 		// Check PR state (merged/closed -> exit)
-		state, err := s.getPRState(sctx, provider, bitbucketClient, bitbucketRepo, prNumber)
+		state, err := host.GetPRState(ctx, pr)
 		if err != nil {
 			sctx.Log(fmt.Sprintf("warning: could not check PR state: %v", err))
-		} else if state == "MERGED" {
+		} else if state == scm.PRStateMerged {
 			sctx.Log("PR has been merged!")
 			return &pipeline.StepOutcome{}, nil
-		} else if state == "CLOSED" || state == "DECLINED" {
+		} else if state == scm.PRStateClosed {
 			sctx.Log("PR has been closed")
 			return &pipeline.StepOutcome{}, nil
 		}
 
-		// Check mergeable state
+		// Check mergeable state if the provider supports it
 		mergeConflict := false
 		mergeabilityKnown := true
-		if provider == scm.ProviderGitHub {
-			mergeState, mergeErr := s.getMergeableState(sctx, prNumber)
+		if host.Capabilities().MergeableState {
+			mergeState, mergeErr := host.GetMergeableState(ctx, pr)
 			if mergeErr != nil {
 				sctx.Log(fmt.Sprintf("warning: could not check mergeable state: %v", mergeErr))
 				mergeabilityBlockedReason = ""
 			} else {
-				mergeConflict = isMergeConflict(mergeState)
-				mergeabilityKnown = isResolvedMergeableState(mergeState)
+				mergeConflict = mergeState.Conflict()
+				mergeabilityKnown = mergeState.Resolved()
 				if !mergeabilityKnown {
 					sctx.Log(fmt.Sprintf("mergeable state still pending: %s", mergeState))
 					mergeabilityBlockedReason = fmt.Sprintf("PR mergeability remained unresolved before timeout: %s", mergeState)
@@ -165,7 +147,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 
 		// Check CI status - wait for all checks to complete before fixing
 		ciFixLimit := sctx.Config.AutoFix.CI
-		checks, err := s.getCIChecks(sctx, provider, bitbucketClient, bitbucketRepo, prNumber)
+		checks, err := host.GetChecks(ctx, pr)
 		if err != nil {
 			sctx.Log(fmt.Sprintf("warning: could not check CI: %v", err))
 		} else {
@@ -197,7 +179,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 					manualFixAttempted = true
 					sctx.Log(fmt.Sprintf("issues detected: %s - manual fix requested...", issueDesc))
 					previousHeadSHA := sctx.Run.HeadSHA
-					pushed, err := s.autoFixCI(sctx, prNumber, failing, mergeConflict)
+					pushed, err := s.autoFixCI(sctx, host, pr, failing, mergeConflict)
 					if err != nil {
 						sctx.Log(fmt.Sprintf("warning: CI manual fix failed: %v", err))
 					} else if pushed || sctx.Run.HeadSHA != previousHeadSHA {
@@ -220,7 +202,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 					s.ciFixAttempts++
 					sctx.Log(fmt.Sprintf("issues detected: %s - auto-fixing (attempt %d/%d)...", issueDesc, s.ciFixAttempts, ciFixLimit))
 					previousHeadSHA := sctx.Run.HeadSHA
-					pushed, err := s.autoFixCI(sctx, prNumber, failing, mergeConflict)
+					pushed, err := s.autoFixCI(sctx, host, pr, failing, mergeConflict)
 					if err != nil {
 						sctx.Log(fmt.Sprintf("warning: CI auto-fix failed: %v", err))
 					} else if pushed || sctx.Run.HeadSHA != previousHeadSHA {

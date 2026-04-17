@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
-	"github.com/kunchenguid/no-mistakes/internal/bitbucket"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
@@ -55,24 +54,14 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		return &pipeline.StepOutcome{}, nil
 	}
 	provider := scm.DetectProvider(sctx.Repo.UpstreamURL)
-	if provider == scm.ProviderUnknown {
-		sctx.Log(fmt.Sprintf("skipping PR creation: provider %s is not supported yet", provider))
+	host, skipReason := buildHost(sctx, provider)
+	if host == nil {
+		sctx.Log(fmt.Sprintf("skipping PR creation: %s", skipReason))
 		return &pipeline.StepOutcome{}, nil
 	}
-	if provider != scm.ProviderBitbucket {
-		if !stepCLIAvailable(sctx, provider) {
-			sctx.Log(fmt.Sprintf("skipping PR creation: %s CLI is not installed", provider.CLIName()))
-			return &pipeline.StepOutcome{}, nil
-		}
-		if !stepAuthConfigured(sctx, provider) {
-			sctx.Log(fmt.Sprintf("skipping PR creation: %s CLI is not authenticated", provider.CLIName()))
-			return &pipeline.StepOutcome{}, nil
-		}
-	} else {
-		if _, err := bitbucket.NewClientFromEnv(sctx.Env); err != nil {
-			sctx.Log(fmt.Sprintf("skipping PR creation: %v", err))
-			return &pipeline.StepOutcome{}, nil
-		}
+	if err := host.Available(ctx); err != nil {
+		sctx.Log(fmt.Sprintf("skipping PR creation: %v", err))
+		return &pipeline.StepOutcome{}, nil
 	}
 
 	// Resolve the branch base so PR summaries cover the full branch delta.
@@ -81,192 +70,52 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	if err != nil {
 		return nil, err
 	}
-	if provider == scm.ProviderBitbucket {
-		return s.executeBitbucketPR(sctx, branch, content)
-	}
-
-	switch provider {
-	case scm.ProviderGitHub:
-		return s.executeGitHubPR(sctx, branch, content)
-	case scm.ProviderGitLab:
-		return s.executeGitLabMR(sctx, branch, content)
-	default:
-		sctx.Log(fmt.Sprintf("skipping PR creation: provider %s is not supported yet", provider))
-		return &pipeline.StepOutcome{}, nil
-	}
-}
-
-func (s *PRStep) executeGitHubPR(sctx *pipeline.StepContext, branch string, content prContent) (*pipeline.StepOutcome, error) {
-	// Check if PR already exists for this branch
-	sctx.Log(fmt.Sprintf("checking for existing PR on branch %s...", branch))
-	cmd := stepCmd(sctx, "gh", "pr", "view", branch, "--json", "url", "--jq", ".url")
-	out, err := cmd.Output()
-	if err == nil {
-		prURL := strings.TrimSpace(string(out))
-		if prURL != "" {
-			sctx.Log(fmt.Sprintf("PR already exists: %s, updating...", prURL))
-
-			editCmd := stepCmd(sctx, "gh", "pr", "edit", branch, "--title", content.Title, "--body", content.Body)
-			if editOut, editErr := editCmd.CombinedOutput(); editErr != nil {
-				sctx.Log(fmt.Sprintf("warning: failed to update PR body: %s: %v", strings.TrimSpace(string(editOut)), editErr))
-			}
-
-			if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, prURL); err != nil {
-				slog.Warn("failed to persist PR URL", "run", sctx.Run.ID, "url", prURL, "err", err)
-			}
-			return &pipeline.StepOutcome{PRURL: prURL}, nil
-		}
-	}
-
-	// Create PR
-	sctx.Log("creating pull request...")
-
-	cmd = stepCmd(sctx, "gh", "pr", "create",
-		"--head", branch,
-		"--base", sctx.Repo.DefaultBranch,
-		"--title", content.Title,
-		"--body", content.Body,
-	)
-	out, err = cmd.CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("gh pr create: %s: %w", strings.TrimSpace(string(out)), err)
-	}
-
-	prURL := strings.TrimSpace(string(out))
-	sctx.Log(fmt.Sprintf("created PR: %s", prURL))
-	if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, prURL); err != nil {
-		slog.Warn("failed to persist PR URL", "run", sctx.Run.ID, "url", prURL, "err", err)
-	}
-
-	return &pipeline.StepOutcome{PRURL: prURL}, nil
-}
-
-func (s *PRStep) executeBitbucketPR(sctx *pipeline.StepContext, branch string, content prContent) (*pipeline.StepOutcome, error) {
-	client, err := bitbucket.NewClientFromEnv(sctx.Env)
-	if err != nil {
-		sctx.Log(fmt.Sprintf("skipping PR creation: %v", err))
-		return &pipeline.StepOutcome{}, nil
-	}
-	repo, err := bitbucket.ParseRepoRef(sctx.Repo.UpstreamURL)
-	if err != nil {
-		return nil, err
-	}
 
 	sctx.Log(fmt.Sprintf("checking for existing pull request on branch %s...", branch))
-	existingPR, err := client.FindOpenPRBySourceBranch(sctx.Ctx, repo, branch, sctx.Repo.DefaultBranch)
+	existing, err := host.FindPR(ctx, branch, sctx.Repo.DefaultBranch)
 	if err != nil {
 		return nil, err
 	}
-	if existingPR != nil {
-		existingPRURL := bitbucketPRURL(repo, existingPR.ID, existingPR.URL)
-		if existingPRURL != "" {
-			sctx.Log(fmt.Sprintf("pull request already exists: %s, updating...", existingPRURL))
-		} else {
-			sctx.Log(fmt.Sprintf("pull request already exists: #%d, updating...", existingPR.ID))
-		}
-		updatedPR, err := client.UpdatePR(sctx.Ctx, repo, existingPR.ID, content.Title, content.Body)
+	if existing != nil {
+		sctx.Log(fmt.Sprintf("pull request already exists: %s, updating...", describePR(existing)))
+		updated, err := host.UpdatePR(ctx, existing, scm.PRContent(content))
 		if err != nil {
-			return nil, err
+			sctx.Log(fmt.Sprintf("warning: failed to update PR: %v", err))
+			updated = existing
 		}
-		prURL := existingPRURL
-		if updatedPR != nil {
-			prURL = bitbucketPRURL(repo, updatedPR.ID, updatedPR.URL)
-		}
-		if prURL != "" {
-			if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, prURL); err != nil {
-				slog.Warn("failed to persist PR URL", "run", sctx.Run.ID, "url", prURL, "err", err)
+		if updated != nil && updated.URL != "" {
+			if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, updated.URL); err != nil {
+				slog.Warn("failed to persist PR URL", "run", sctx.Run.ID, "url", updated.URL, "err", err)
 			}
-			return &pipeline.StepOutcome{PRURL: prURL}, nil
+			return &pipeline.StepOutcome{PRURL: updated.URL}, nil
 		}
 		return &pipeline.StepOutcome{}, nil
 	}
 
 	sctx.Log("creating pull request...")
-	createdPR, err := client.CreatePR(sctx.Ctx, repo, branch, sctx.Repo.DefaultBranch, content.Title, content.Body)
+	created, err := host.CreatePR(ctx, branch, sctx.Repo.DefaultBranch, scm.PRContent(content))
 	if err != nil {
 		return nil, err
 	}
-	createdPRURL := ""
-	if createdPR != nil {
-		createdPRURL = bitbucketPRURL(repo, createdPR.ID, createdPR.URL)
+	if created == nil || strings.TrimSpace(created.URL) == "" {
+		return &pipeline.StepOutcome{}, nil
 	}
-	if createdPRURL != "" {
-		sctx.Log(fmt.Sprintf("created pull request: %s", createdPRURL))
-		if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, createdPRURL); err != nil {
-			slog.Warn("failed to persist PR URL", "run", sctx.Run.ID, "url", createdPRURL, "err", err)
-		}
-		return &pipeline.StepOutcome{PRURL: createdPRURL}, nil
+	sctx.Log(fmt.Sprintf("created pull request: %s", created.URL))
+	if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, created.URL); err != nil {
+		slog.Warn("failed to persist PR URL", "run", sctx.Run.ID, "url", created.URL, "err", err)
 	}
-	return &pipeline.StepOutcome{}, nil
+	return &pipeline.StepOutcome{PRURL: created.URL}, nil
 }
 
-func bitbucketPRURL(repo bitbucket.RepoRef, prID int, rawURL string) string {
-	if url := strings.TrimSpace(rawURL); url != "" {
-		return url
-	}
-	if prID <= 0 || strings.TrimSpace(repo.Workspace) == "" || strings.TrimSpace(repo.RepoSlug) == "" {
+func describePR(pr *scm.PR) string {
+	if pr == nil {
 		return ""
 	}
-	return fmt.Sprintf("https://bitbucket.org/%s/%s/pull-requests/%d", repo.Workspace, repo.RepoSlug, prID)
-}
-
-func (s *PRStep) executeGitLabMR(sctx *pipeline.StepContext, branch string, content prContent) (*pipeline.StepOutcome, error) {
-	sctx.Log(fmt.Sprintf("checking for existing merge request on branch %s...", branch))
-	cmd := stepCmd(sctx, "glab", "mr", "view", branch, "--output", "json")
-	out, err := cmd.CombinedOutput()
-	if err == nil {
-		mrURL := extractSCMURL(out)
-		if mrURL != "" {
-			sctx.Log(fmt.Sprintf("merge request already exists: %s, updating...", mrURL))
-			updateCmd := stepCmd(sctx, "glab", "mr", "update", branch, "--title", content.Title, "--description", content.Body, "--yes")
-			if updateOut, updateErr := updateCmd.CombinedOutput(); updateErr != nil {
-				sctx.Log(fmt.Sprintf("warning: failed to update merge request: %s: %v", strings.TrimSpace(string(updateOut)), updateErr))
-			}
-			if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, mrURL); err != nil {
-				slog.Warn("failed to persist PR URL", "run", sctx.Run.ID, "url", mrURL, "err", err)
-			}
-			return &pipeline.StepOutcome{PRURL: mrURL}, nil
-		}
+	if pr.URL != "" {
+		return pr.URL
 	}
-
-	sctx.Log("creating merge request...")
-	cmd = stepCmd(sctx, "glab", "mr", "create",
-		"--source-branch", branch,
-		"--target-branch", sctx.Repo.DefaultBranch,
-		"--title", content.Title,
-		"--description", content.Body,
-		"--yes",
-	)
-	out, err = cmd.CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("glab mr create: %s: %w", strings.TrimSpace(string(out)), err)
-	}
-	mrURL := extractSCMURL(out)
-	if mrURL != "" {
-		if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, mrURL); err != nil {
-			slog.Warn("failed to persist PR URL", "run", sctx.Run.ID, "url", mrURL, "err", err)
-		}
-	}
-	sctx.Log(fmt.Sprintf("created merge request: %s", mrURL))
-	return &pipeline.StepOutcome{PRURL: mrURL}, nil
-}
-
-func extractSCMURL(raw []byte) string {
-	text := strings.TrimSpace(string(raw))
-	for _, line := range strings.Split(text, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "http://") || strings.HasPrefix(line, "https://") {
-			return line
-		}
-	}
-	var payload map[string]any
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		return ""
-	}
-	for _, key := range []string{"url", "web_url", "webUrl"} {
-		if value, ok := payload[key].(string); ok && strings.TrimSpace(value) != "" {
-			return strings.TrimSpace(value)
-		}
+	if pr.Number != "" {
+		return "#" + pr.Number
 	}
 	return ""
 }

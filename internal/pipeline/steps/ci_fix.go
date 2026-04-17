@@ -3,11 +3,9 @@ package steps
 import (
 	"fmt"
 	"log/slog"
-	"strconv"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
-	"github.com/kunchenguid/no-mistakes/internal/bitbucket"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
@@ -15,7 +13,7 @@ import (
 // autoFixCI runs the agent to fix CI failures and/or merge conflicts, then commits and pushes.
 // Returns (true, nil) when changes were committed and pushed, (false, nil)
 // when the agent produced no changes, or (false, err) on failure.
-func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, prNumber string, failingNames []string, mergeConflict bool) (bool, error) {
+func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, failingNames []string, mergeConflict bool) (bool, error) {
 	ctx := sctx.Ctx
 	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
 	rebaseBaseSHA := resolveDefaultBranchTipSHA(ctx, sctx.WorkDir, sctx.Repo.UpstreamURL, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
@@ -24,53 +22,15 @@ func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, prNumber string, failingN
 		promptBaseSHA = rebaseBaseSHA
 	}
 
-	// Find the most recent failing run for this branch so we fetch logs from the right run.
-	provider := scm.DetectProvider(sctx.Repo.UpstreamURL)
-	if provider == scm.ProviderUnknown && sctx.Run.PRURL != nil {
-		provider = scm.DetectProvider(*sctx.Run.PRURL)
-	}
-
-	var runID string
 	const maxLogBytes = 32 * 1024
 	var logOutput string
-	if provider == scm.ProviderBitbucket {
-		client, err := bitbucket.NewClientFromEnv(sctx.Env)
-		if err == nil {
-			repo, repoErr := resolveBitbucketRepoRef(sctx.Repo.UpstreamURL, sctx.Run.PRURL)
-			if repoErr == nil {
-				prID, convErr := strconv.Atoi(prNumber)
-				if convErr == nil {
-					commitSHA := strings.TrimSpace(sctx.Run.HeadSHA)
-					var targetPipelines map[string]struct{}
-					if pr, prErr := client.GetPR(sctx.Ctx, repo, prID); prErr == nil && pr != nil && strings.TrimSpace(pr.SourceCommitHash) != "" {
-						commitSHA = strings.TrimSpace(pr.SourceCommitHash)
-					}
-					if statuses, statusErr := client.ListPRStatuses(sctx.Ctx, repo, prID); statusErr == nil {
-						targetPipelines = bitbucketFailedPipelineUUIDs(statuses, failingNames)
-					}
-					logOutput = s.fetchBitbucketFailedStepLogs(sctx, client, repo, commitSHA, targetPipelines)
-				}
-			}
+	if host.Capabilities().FailedCheckLogs {
+		raw, err := host.FetchFailedCheckLogs(ctx, pr, sctx.Run.Branch, sctx.Run.HeadSHA, failingNames)
+		if err != nil && err != scm.ErrUnsupported {
+			slog.Warn("failed to fetch CI logs", "err", err)
 		}
-	} else if len(failingNames) > 0 {
-		listCmd := stepCmd(sctx, "gh", "run", "list",
-			"--branch", sctx.Run.Branch,
-			"--status", "failure",
-			"--limit", "1",
-			"--json", "databaseId",
-			"--jq", ".[0].databaseId")
-		if listOut, err := listCmd.Output(); err == nil {
-			runID = strings.TrimSpace(string(listOut))
-		}
-	}
-
-	// Attempt to fetch CI failure logs for context
-	if runID != "" {
-		cmd := stepCmd(sctx, "gh", "run", "view", runID, "--log-failed")
-		out, _ := cmd.Output()
-		if len(out) > 0 {
-			logOutput = strings.TrimSpace(string(out))
-			logOutput = trimLogOutput(logOutput, maxLogBytes)
+		if raw != "" {
+			logOutput = trimLogOutput(strings.TrimSpace(raw), maxLogBytes)
 		}
 	}
 
@@ -118,7 +78,7 @@ Context:
 		sctx.Run.Branch,
 		promptBaseSHA,
 		sctx.Run.HeadSHA,
-		prNumber,
+		pr.Number,
 		strings.Join(failingNames, ", "),
 		mergeConflict,
 		promptRules,

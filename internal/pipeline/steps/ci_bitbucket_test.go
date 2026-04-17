@@ -397,7 +397,7 @@ func TestLatestBitbucketStatusesKeepsNewestStatusPerCheck(t *testing.T) {
 		{Name: "lint", State: "INPROGRESS"},
 	}
 
-	got := latestBitbucketStatuses(statuses)
+	got := bitbucket.LatestStatuses(statuses)
 	if len(got) != 3 {
 		t.Fatalf("len(got) = %d, want 3", len(got))
 	}
@@ -422,7 +422,7 @@ func TestLatestBitbucketStatusesDeduplicatesByKeyBeforeName(t *testing.T) {
 		{Name: "tests", State: "FAILED"},
 	}
 
-	got := latestBitbucketStatuses(statuses)
+	got := bitbucket.LatestStatuses(statuses)
 	if len(got) != 2 {
 		t.Fatalf("len(got) = %d, want 2", len(got))
 	}
@@ -443,14 +443,10 @@ func TestCIStep_GetCIChecksBitbucketFallsBackToKeyWhenNameMissing(t *testing.T) 
 		t.Fatalf("new bitbucket client: %v", err)
 	}
 
-	dir := t.TempDir()
-	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, "abc", "def", config.Commands{})
-	step := &CIStep{}
-
-	checks, err := step.getCIChecks(sctx, scm.ProviderBitbucket, client, bitbucket.RepoRef{Workspace: "test", RepoSlug: "repo"}, "42")
+	host := bitbucket.NewHost(client, bitbucket.RepoRef{Workspace: "test", RepoSlug: "repo"})
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "42"})
 	if err != nil {
-		t.Fatalf("getCIChecks returned error: %v", err)
+		t.Fatalf("GetChecks returned error: %v", err)
 	}
 	if len(checks) != 1 {
 		t.Fatalf("len(checks) = %d, want 1", len(checks))

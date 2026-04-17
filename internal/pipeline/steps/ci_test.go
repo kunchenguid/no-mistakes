@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
-	"github.com/kunchenguid/no-mistakes/internal/bitbucket"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
@@ -151,14 +150,14 @@ func TestCIStep_InvalidPRURLReturnsError(t *testing.T) {
 	}
 }
 
-func TestCIStep_NonGitHubSkips(t *testing.T) {
+func TestCIStep_UnknownProviderSkips(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
-	prURL := "https://gitlab.com/test/repo/-/merge_requests/42"
+	prURL := "https://example.invalid/pulls/42"
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Run.PRURL = &prURL
-	sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
+	sctx.Repo.UpstreamURL = "https://example.invalid/test/repo.git"
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
@@ -169,7 +168,7 @@ func TestCIStep_NonGitHubSkips(t *testing.T) {
 		t.Fatal(err)
 	}
 	if outcome.NeedsApproval {
-		t.Fatal("expected CI skip for non-GitHub provider")
+		t.Fatal("expected CI skip for unknown provider")
 	}
 	if len(logs) == 0 || !strings.Contains(logs[0], "skipping CI") {
 		t.Fatalf("expected skip log, got: %v", logs)
@@ -357,8 +356,11 @@ func TestCIStep_GetCIChecksNoChecksReported(t *testing.T) {
 	sctx := newTestContext(t, ag, dir, "abc", "def", config.Commands{})
 	sctx.Env = env
 
-	step := &CIStep{}
-	checks, err := step.getCIChecks(sctx, scm.ProviderGitHub, nil, bitbucket.RepoRef{}, "42")
+	host, skip := buildHost(sctx, scm.ProviderGitHub)
+	if host == nil {
+		t.Fatalf("buildHost returned nil: %s", skip)
+	}
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "42"})
 	if err != nil {
 		t.Fatalf("expected no error when gh reports no checks, got: %v", err)
 	}
