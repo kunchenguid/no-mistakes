@@ -1,10 +1,5 @@
 <h1 align="center"><code>git push no-mistakes</code></h1>
 <p align="center">
-  <a href="https://github.com/kunchenguid/no-mistakes/actions/workflows/ci.yml"
-    ><img
-      alt="CI"
-      src="https://img.shields.io/github/actions/workflow/status/kunchenguid/no-mistakes/ci.yml?style=flat-square&label=ci"
-  /></a>
   <a href="https://github.com/kunchenguid/no-mistakes/actions/workflows/release.yml"
     ><img
       alt="Release"
@@ -57,11 +52,6 @@ $ git checkout my-branch
 
 # do some work in the branch...
 
-$ no-mistakes
-# if no active run exists on this branch, the setup wizard can
-# create a branch, commit local changes, push through the gate,
-# and then open the TUI for the new run
-
 $ git push no-mistakes
   * Pipeline started
 
@@ -69,6 +59,11 @@ $ git push no-mistakes
 
 $ no-mistakes
 # opens the TUI for the active run
+
+# you can also skip git push, and directly run no-mistakes after making
+# code changes. you will see a setup wizard which can help you
+# create a branch, commit local changes, push through the gate,
+# and then open the TUI for the new run
 ```
 
 ## Install
@@ -157,20 +152,20 @@ This replaces the binary and resets the background daemon so it picks up the new
 
 ## CLI Reference
 
-| Command                     | Description                                            |
-| --------------------------- | ------------------------------------------------------ |
+| Command                     | Description                                                 |
+| --------------------------- | ----------------------------------------------------------- |
 | `no-mistakes`               | Attach to the current branch run, or start the setup wizard |
-| `no-mistakes init`          | Initialize the gate for the current repository         |
-| `no-mistakes update`        | Update the binary and reset the daemon                 |
-| `no-mistakes eject`         | Remove the gate from the current repository            |
-| `no-mistakes attach`        | Attach to the active pipeline run in the current repo  |
-| `no-mistakes rerun`         | Rerun the pipeline for the current branch              |
-| `no-mistakes status`        | Show status of the current repository                  |
-| `no-mistakes runs`          | List recorded pipeline runs for the current repo       |
-| `no-mistakes doctor`        | Check system health and dependencies                   |
-| `no-mistakes daemon start`  | Start the daemon, installing the service when possible |
-| `no-mistakes daemon stop`   | Stop the running daemon process                        |
-| `no-mistakes daemon status` | Check whether the daemon is running                    |
+| `no-mistakes init`          | Initialize the gate for the current repository              |
+| `no-mistakes update`        | Update the binary and reset the daemon                      |
+| `no-mistakes eject`         | Remove the gate from the current repository                 |
+| `no-mistakes attach`        | Attach to the active pipeline run in the current repo       |
+| `no-mistakes rerun`         | Rerun the pipeline for the current branch                   |
+| `no-mistakes status`        | Show status of the current repository                       |
+| `no-mistakes runs`          | List recorded pipeline runs for the current repo            |
+| `no-mistakes doctor`        | Check system health and dependencies                        |
+| `no-mistakes daemon start`  | Start the daemon, installing the service when possible      |
+| `no-mistakes daemon stop`   | Stop the running daemon process                             |
+| `no-mistakes daemon status` | Check whether the daemon is running                         |
 
 ### Flags
 
