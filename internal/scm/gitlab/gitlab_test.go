@@ -69,6 +69,66 @@ func TestGetChecksFallbackParsesMRJSONAfterPreamble(t *testing.T) {
 	}
 }
 
+func TestGetChecksReturnsFallbackErrors(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		responses  map[string]gitlabTestResponse
+		wantErrSub string
+	}{
+		{
+			name: "invalid mr json",
+			responses: map[string]gitlabTestResponse{
+				"glab ci status --mr 123 --output json": {
+					stderr: "unknown flag: --mr\n",
+					code:   1,
+				},
+				"glab mr view 123 --output json": {
+					stdout: "notice\nnot json\n",
+				},
+			},
+			wantErrSub: "invalid JSON output",
+		},
+		{
+			name: "pipeline jobs fetch fails",
+			responses: map[string]gitlabTestResponse{
+				"glab ci status --mr 123 --output json": {
+					stderr: "unknown flag: --mr\n",
+					code:   1,
+				},
+				"glab mr view 123 --output json": {
+					stdout: `{"head_pipeline":{"id":77}}` + "\n",
+				},
+				"glab ci get --pipeline-id 77 --output json": {
+					stderr: "gitlab unavailable\n",
+					code:   1,
+				},
+			},
+			wantErrSub: "glab ci get",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			host := New(gitlabTestCmdFactory(tt.responses), nil)
+
+			checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+			if err == nil {
+				t.Fatalf("GetChecks() error = nil, want error containing %q", tt.wantErrSub)
+			}
+			if !strings.Contains(err.Error(), tt.wantErrSub) {
+				t.Fatalf("GetChecks() error = %v, want substring %q", err, tt.wantErrSub)
+			}
+			if checks != nil {
+				t.Fatalf("GetChecks() checks = %+v, want nil", checks)
+			}
+		})
+	}
+}
+
 func TestFetchFailedCheckLogsParsesMRJSONAfterPreamble(t *testing.T) {
 	t.Parallel()
 

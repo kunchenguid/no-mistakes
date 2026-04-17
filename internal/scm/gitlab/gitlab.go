@@ -179,13 +179,20 @@ func (h *Host) getChecksFallback(ctx context.Context, pr *scm.PR) ([]scm.Check, 
 			ID int `json:"id"`
 		} `json:"head_pipeline"`
 	}
-	if trimmed := bytesTrimToJSON(out); len(trimmed) == 0 || json.Unmarshal(trimmed, &payload) != nil || payload.HeadPipeline.ID == 0 {
+	trimmed := bytesTrimToJSON(out)
+	if len(trimmed) == 0 {
+		return nil, fmt.Errorf("glab mr view: invalid JSON output: %s", strings.TrimSpace(string(out)))
+	}
+	if err := json.Unmarshal(trimmed, &payload); err != nil {
+		return nil, fmt.Errorf("glab mr view: invalid JSON output: %s", strings.TrimSpace(string(out)))
+	}
+	if payload.HeadPipeline.ID == 0 {
 		return nil, nil
 	}
 	jobsCmd := h.cmd(ctx, "glab", "ci", "get", "--pipeline-id", fmt.Sprintf("%d", payload.HeadPipeline.ID), "--output", "json")
 	jobsOut, err := jobsCmd.CombinedOutput()
 	if err != nil {
-		return nil, nil
+		return nil, fmt.Errorf("glab ci get: %s: %w", strings.TrimSpace(string(jobsOut)), err)
 	}
 	return parseGitlabJobs(jobsOut)
 }
