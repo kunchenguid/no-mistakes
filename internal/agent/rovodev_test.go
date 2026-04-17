@@ -35,8 +35,10 @@ data: {"content":"hello world"}
 }
 
 func TestParseRovodevSSE_UsageEvent(t *testing.T) {
+	// Real rovodev emits usage fields at the top level of the data payload,
+	// matching the fixture format used by the gnhf integration.
 	input := `event: request-usage
-data: {"usage":{"input_tokens":100,"output_tokens":50,"cache_read_tokens":30,"cache_write_tokens":10}}
+data: {"input_tokens":100,"output_tokens":50,"cache_read_tokens":30,"cache_write_tokens":10}
 
 `
 	var usage TokenUsage
@@ -118,10 +120,10 @@ func TestParseRovodevSSE_EventKindFallback(t *testing.T) {
 
 func TestParseRovodevSSE_MultipleUsageAccumulates(t *testing.T) {
 	input := `event: request-usage
-data: {"usage":{"input_tokens":50,"output_tokens":20}}
+data: {"input_tokens":50,"output_tokens":20}
 
 event: request-usage
-data: {"usage":{"input_tokens":100,"output_tokens":30}}
+data: {"input_tokens":100,"output_tokens":30}
 
 `
 	var usage TokenUsage
@@ -136,6 +138,181 @@ data: {"usage":{"input_tokens":100,"output_tokens":30}}
 	}
 	if usage.OutputTokens != 50 {
 		t.Errorf("expected accumulated output tokens 50, got %d", usage.OutputTokens)
+	}
+}
+
+func TestParseRovodevSSE_PartStart(t *testing.T) {
+	input := `event: part_start
+data: {"index":0,"part":{"content":"hello","part_kind":"text"},"event_kind":"part_start"}
+
+`
+	var usage TokenUsage
+	var latestText string
+	var chunks []string
+
+	err := parseRovodevSSE(strings.NewReader(input), func(text string) {
+		chunks = append(chunks, text)
+	}, &usage, &latestText)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if latestText != "hello" {
+		t.Errorf("expected latest text 'hello', got %q", latestText)
+	}
+	if len(chunks) != 1 || chunks[0] != "hello" {
+		t.Errorf("expected 1 chunk 'hello', got %v", chunks)
+	}
+}
+
+func TestParseRovodevSSE_PartStartThenDelta(t *testing.T) {
+	// Matches the shape used by gnhf's "starts the server..." fixture: the
+	// final JSON answer arrives as a part_start (initial chunk) followed by
+	// one or more part_deltas carrying incremental content_delta strings.
+	input := `event: part_start
+data: {"index":0,"part":{"content":"{\"success\":true","part_kind":"text"},"event_kind":"part_start"}
+
+event: part_delta
+data: {"index":0,"delta":{"content_delta":",\"summary\":\"done\"}","part_delta_kind":"text"},"event_kind":"part_delta"}
+
+`
+	var usage TokenUsage
+	var latestText string
+	var chunks []string
+
+	err := parseRovodevSSE(strings.NewReader(input), func(text string) {
+		chunks = append(chunks, text)
+	}, &usage, &latestText)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	wantText := `{"success":true,"summary":"done"}`
+	if latestText != wantText {
+		t.Errorf("expected latest text %q, got %q", wantText, latestText)
+	}
+	if len(chunks) != 2 {
+		t.Fatalf("expected 2 chunks (start, delta), got %d: %v", len(chunks), chunks)
+	}
+	if chunks[0] != `{"success":true` {
+		t.Errorf("first chunk wrong: %q", chunks[0])
+	}
+	if chunks[1] != `,"summary":"done"}` {
+		t.Errorf("second chunk wrong: %q", chunks[1])
+	}
+}
+
+func TestParseRovodevSSE_PartStartResetsAfterToolActivity(t *testing.T) {
+	// Mirrors gnhf's "treats text separated by tool activity as distinct
+	// message segments" fixture: prose text, then tool activity, then the
+	// real JSON answer. The text between tool events must be discarded.
+	input := `event: part_start
+data: {"index":0,"part":{"content":"I will inspect the file.","part_kind":"text"},"event_kind":"part_start"}
+
+event: on_call_tools_start
+data: {"parts":[{"tool_name":"open_files","part_kind":"tool-call"}]}
+
+event: tool-return
+data: {"tool_name":"open_files","content":"ok","part_kind":"tool-return"}
+
+event: part_start
+data: {"index":0,"part":{"content":"{\"success\":true}","part_kind":"text"},"event_kind":"part_start"}
+
+`
+	var usage TokenUsage
+	var latestText string
+
+	err := parseRovodevSSE(strings.NewReader(input), nil, &usage, &latestText)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if latestText != `{"success":true}` {
+		t.Errorf("expected final JSON text only, got %q", latestText)
+	}
+}
+
+func TestParseRovodevSSE_PartDeltaWithoutStart(t *testing.T) {
+	// Defensive: a part_delta that arrives before any part_start still
+	// accumulates into the buffer instead of being dropped.
+	input := `event: part_delta
+data: {"index":0,"delta":{"content_delta":"orphan","part_delta_kind":"text"},"event_kind":"part_delta"}
+
+`
+	var usage TokenUsage
+	var latestText string
+
+	err := parseRovodevSSE(strings.NewReader(input), nil, &usage, &latestText)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if latestText != "orphan" {
+		t.Errorf("expected 'orphan', got %q", latestText)
+	}
+}
+
+func TestParseRovodevSSE_PreservesWhitespaceInAssembledText(t *testing.T) {
+	input := `event: part_start
+data: {"index":0,"part":{"content":"  hello","part_kind":"text"},"event_kind":"part_start"}
+
+event: part_delta
+data: {"index":0,"delta":{"content_delta":" world\n","part_delta_kind":"text"},"event_kind":"part_delta"}
+
+`
+	var usage TokenUsage
+	var latestText string
+
+	err := parseRovodevSSE(strings.NewReader(input), nil, &usage, &latestText)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if latestText != "  hello world\n" {
+		t.Errorf("expected whitespace-preserved latest text, got %q", latestText)
+	}
+}
+
+func TestParseRovodevSSE_GnhfFixture(t *testing.T) {
+	// Full stream replay from gnhf's primary rovodev integration test, which
+	// exercises part_start + part_delta assembly and top-level request-usage.
+	input := strings.Join([]string{
+		"event: user-prompt",
+		`data: {"content":"test","part_kind":"user-prompt"}`,
+		"",
+		"event: part_start",
+		`data: {"index":0,"part":{"content":"{\"success\":true","part_kind":"text"},"event_kind":"part_start"}`,
+		"",
+		"event: part_delta",
+		`data: {"index":0,"delta":{"content_delta":",\"summary\":\"done\",\"key_changes_made\":[\"a\"],\"key_learnings\":[\"b\"]}","part_delta_kind":"text"},"event_kind":"part_delta"}`,
+		"",
+		"event: request-usage",
+		`data: {"input_tokens":10,"cache_write_tokens":2,"cache_read_tokens":3,"output_tokens":4}`,
+		"",
+		"event: close",
+		"data: ",
+		"",
+	}, "\n")
+
+	var usage TokenUsage
+	var latestText string
+	err := parseRovodevSSE(strings.NewReader(input), nil, &usage, &latestText)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	wantText := `{"success":true,"summary":"done","key_changes_made":["a"],"key_learnings":["b"]}`
+	if latestText != wantText {
+		t.Errorf("latestText mismatch:\n  want %q\n  got  %q", wantText, latestText)
+	}
+	if usage.InputTokens != 10 {
+		t.Errorf("input tokens: want 10, got %d", usage.InputTokens)
+	}
+	if usage.OutputTokens != 4 {
+		t.Errorf("output tokens: want 4, got %d", usage.OutputTokens)
+	}
+	if usage.CacheReadTokens != 3 {
+		t.Errorf("cache read tokens: want 3, got %d", usage.CacheReadTokens)
+	}
+	if usage.CacheCreationTokens != 2 {
+		t.Errorf("cache creation tokens: want 2, got %d", usage.CacheCreationTokens)
 	}
 }
 
@@ -272,9 +449,11 @@ func TestRovodevAgent_FullFlow(t *testing.T) {
 			}
 			w.Header().Set("Content-Type", "text/event-stream")
 			w.WriteHeader(http.StatusOK)
-			// Send usage event then text event with JSON output
-			fmt.Fprint(w, "event: request-usage\ndata: {\"usage\":{\"input_tokens\":100,\"output_tokens\":50}}\n\n")
-			fmt.Fprint(w, "event: text\ndata: {\"content\":\"{\\\"success\\\":true,\\\"summary\\\":\\\"all good\\\"}\"}\n\n")
+			// Real rovodev emits top-level usage fields and streams text
+			// via part_start + part_delta events.
+			fmt.Fprint(w, "event: request-usage\ndata: {\"input_tokens\":100,\"output_tokens\":50}\n\n")
+			fmt.Fprint(w, "event: part_start\ndata: {\"index\":0,\"part\":{\"content\":\"{\\\"success\\\":true\",\"part_kind\":\"text\"},\"event_kind\":\"part_start\"}\n\n")
+			fmt.Fprint(w, "event: part_delta\ndata: {\"index\":0,\"delta\":{\"content_delta\":\",\\\"summary\\\":\\\"all good\\\"}\",\"part_delta_kind\":\"text\"},\"event_kind\":\"part_delta\"}\n\n")
 
 		case r.URL.Path == "/v3/sessions/test-session-123" && r.Method == http.MethodDelete:
 			step++
@@ -317,8 +496,9 @@ func TestRovodevAgent_FullFlow(t *testing.T) {
 	if result.Usage.OutputTokens != 50 {
 		t.Errorf("expected output tokens 50, got %d", result.Usage.OutputTokens)
 	}
-	if len(chunks) != 1 {
-		t.Errorf("expected 1 chunk, got %d", len(chunks))
+	// Streamed as part_start + part_delta, so onChunk fires twice.
+	if len(chunks) != 2 {
+		t.Errorf("expected 2 streamed chunks (part_start + part_delta), got %d: %v", len(chunks), chunks)
 	}
 
 	// Verify structured output parsed
@@ -348,7 +528,7 @@ func TestRovodevAgent_NoSchema(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 		case r.URL.Path == "/v3/stream_chat":
 			w.Header().Set("Content-Type", "text/event-stream")
-			fmt.Fprint(w, "event: text\ndata: {\"content\":\"done\"}\n\n")
+			fmt.Fprint(w, "event: part_start\ndata: {\"index\":0,\"part\":{\"content\":\"done\",\"part_kind\":\"text\"},\"event_kind\":\"part_start\"}\n\n")
 		case r.URL.Path == "/v3/sessions/s1":
 			w.WriteHeader(http.StatusOK)
 		default:
