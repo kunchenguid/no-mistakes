@@ -129,6 +129,65 @@ func TestGetChecksReturnsFallbackErrors(t *testing.T) {
 	}
 }
 
+func TestGetChecksReturnsPrimaryStatusErrorWhenMRFlagIsSupported(t *testing.T) {
+	t.Parallel()
+
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab ci status --mr 123 --output json": {
+			stderr: "gitlab unavailable\n",
+			code:   1,
+		},
+	}), nil)
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+	if err == nil {
+		t.Fatal("GetChecks() error = nil, want primary ci status error")
+	}
+	if !strings.Contains(err.Error(), "glab ci status") {
+		t.Fatalf("GetChecks() error = %v, want glab ci status context", err)
+	}
+	if checks != nil {
+		t.Fatalf("GetChecks() checks = %+v, want nil", checks)
+	}
+}
+
+func TestFindPRWithoutIIDKeepsNumberEmptyAndUpdatesByURL(t *testing.T) {
+	t.Parallel()
+
+	branch := "feature/refactor"
+	url := "https://gitlab.example.com/group/project/-/merge_requests/42"
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab mr view " + branch + " --output json": {
+			stdout: fmt.Sprintf(`{"web_url":%q}`+"\n", url),
+		},
+		"glab mr update " + url + " --title updated --description body --yes": {
+			stdout: "updated\n",
+		},
+	}), nil)
+
+	pr, err := host.FindPR(context.Background(), branch, "main")
+	if err != nil {
+		t.Fatalf("FindPR() error = %v", err)
+	}
+	if pr == nil {
+		t.Fatal("FindPR() = nil, want PR")
+	}
+	if pr.Number != "" {
+		t.Fatalf("FindPR() number = %q, want empty", pr.Number)
+	}
+	if pr.URL != url {
+		t.Fatalf("FindPR() URL = %q, want %q", pr.URL, url)
+	}
+
+	updated, err := host.UpdatePR(context.Background(), pr, scm.PRContent{Title: "updated", Body: "body"})
+	if err != nil {
+		t.Fatalf("UpdatePR() error = %v", err)
+	}
+	if updated != pr {
+		t.Fatalf("UpdatePR() returned unexpected PR: %+v", updated)
+	}
+}
+
 func TestFetchFailedCheckLogsParsesMRJSONAfterPreamble(t *testing.T) {
 	t.Parallel()
 

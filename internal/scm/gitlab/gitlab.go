@@ -58,7 +58,11 @@ func (p mrPayload) toPR() *scm.PR {
 	if url == "" {
 		url = strings.TrimSpace(p.URL)
 	}
-	return &scm.PR{URL: url, Number: fmt.Sprintf("%d", p.IID)}
+	pr := &scm.PR{URL: url}
+	if p.IID > 0 {
+		pr.Number = fmt.Sprintf("%d", p.IID)
+	}
+	return pr
 }
 
 func (h *Host) FindPR(ctx context.Context, branch, _ string) (*scm.PR, error) {
@@ -162,9 +166,17 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 	cmd := h.cmd(ctx, "glab", "ci", "status", "--mr", pr.Number, "--output", "json")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		if !isUnsupportedMRFlagError(out) {
+			return nil, fmt.Errorf("glab ci status: %s: %w", strings.TrimSpace(string(out)), err)
+		}
 		return h.getChecksFallback(ctx, pr)
 	}
 	return parseGitlabJobs(out)
+}
+
+func isUnsupportedMRFlagError(out []byte) bool {
+	msg := strings.ToLower(strings.TrimSpace(string(out)))
+	return strings.Contains(msg, "unknown flag: --mr") || strings.Contains(msg, "unknown option: --mr")
 }
 
 func (h *Host) getChecksFallback(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
