@@ -100,7 +100,12 @@ func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PR
 
 func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) (*scm.PR, error) {
 	id := pr.Number
-	if id == "" {
+	if id == "" && pr != nil {
+		if num, err := scm.ExtractPRNumber(pr.URL); err == nil {
+			id = num
+		}
+	}
+	if id == "" && pr != nil {
 		id = pr.URL
 	}
 	cmd := h.cmd(ctx, "glab", "mr", "update", id,
@@ -201,7 +206,7 @@ func (h *Host) getChecksFallback(ctx context.Context, pr *scm.PR) ([]scm.Check, 
 	if payload.HeadPipeline.ID == 0 {
 		return nil, nil
 	}
-	jobsCmd := h.cmd(ctx, "glab", "ci", "get", "--pipeline-id", fmt.Sprintf("%d", payload.HeadPipeline.ID), "--output", "json")
+	jobsCmd := h.cmd(ctx, "glab", "ci", "get", "--pipeline-id", fmt.Sprintf("%d", payload.HeadPipeline.ID), "--output", "json", "--with-job-details")
 	jobsOut, err := jobsCmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("glab ci get: %s: %w", strings.TrimSpace(string(jobsOut)), err)
@@ -227,7 +232,7 @@ func (h *Host) FetchFailedCheckLogs(ctx context.Context, pr *scm.PR, _ string, _
 	if trimmed := bytesTrimToJSON(viewOut); len(trimmed) == 0 || json.Unmarshal(trimmed, &payload) != nil || payload.HeadPipeline.ID == 0 {
 		return "", nil
 	}
-	jobsCmd := h.cmd(ctx, "glab", "ci", "get", "--pipeline-id", fmt.Sprintf("%d", payload.HeadPipeline.ID), "--output", "json")
+	jobsCmd := h.cmd(ctx, "glab", "ci", "get", "--pipeline-id", fmt.Sprintf("%d", payload.HeadPipeline.ID), "--output", "json", "--with-job-details")
 	jobsOut, err := jobsCmd.CombinedOutput()
 	if err != nil {
 		return "", nil

@@ -52,7 +52,7 @@ func TestGetChecksFallbackParsesMRJSONAfterPreamble(t *testing.T) {
 		"glab mr view 123 --output json": {
 			stdout: "notice\n{\"head_pipeline\":{\"id\":77}}\n",
 		},
-		"glab ci get --pipeline-id 77 --output json": {
+		"glab ci get --pipeline-id 77 --output json --with-job-details": {
 			stdout: `[{"name":"test","status":"success"}]` + "\n",
 		},
 	}), nil)
@@ -151,7 +151,7 @@ func TestGetChecksReturnsPrimaryStatusErrorWhenMRFlagIsSupported(t *testing.T) {
 	}
 }
 
-func TestFindPRWithoutIIDKeepsNumberEmptyAndUpdatesByURL(t *testing.T) {
+func TestFindPRWithoutIIDKeepsNumberEmptyAndUpdatesByNumberFromURL(t *testing.T) {
 	t.Parallel()
 
 	branch := "feature/refactor"
@@ -160,7 +160,7 @@ func TestFindPRWithoutIIDKeepsNumberEmptyAndUpdatesByURL(t *testing.T) {
 		"glab mr view " + branch + " --output json": {
 			stdout: fmt.Sprintf(`{"web_url":%q}`+"\n", url),
 		},
-		"glab mr update " + url + " --title updated --description body --yes": {
+		"glab mr update 42 --title updated --description body --yes": {
 			stdout: "updated\n",
 		},
 	}), nil)
@@ -188,6 +188,54 @@ func TestFindPRWithoutIIDKeepsNumberEmptyAndUpdatesByURL(t *testing.T) {
 	}
 }
 
+func TestGetChecksFallbackRequestsJobDetails(t *testing.T) {
+	t.Parallel()
+
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab mr view 123 --output json": {
+			stdout: `{"head_pipeline":{"id":77}}` + "\n",
+		},
+		"glab ci get --pipeline-id 77 --output json --with-job-details": {
+			stdout: `{"jobs":[{"name":"lint","status":"failed"}]}` + "\n",
+		},
+	}), nil)
+
+	checks, err := host.getChecksFallback(context.Background(), &scm.PR{Number: "123"})
+	if err != nil {
+		t.Fatalf("getChecksFallback() error = %v", err)
+	}
+	if len(checks) != 1 {
+		t.Fatalf("len(checks) = %d, want 1", len(checks))
+	}
+	if checks[0].Name != "lint" || checks[0].Bucket != scm.CheckBucketFail {
+		t.Fatalf("checks[0] = %+v, want failing lint job", checks[0])
+	}
+}
+
+func TestFetchFailedCheckLogsRequestsJobDetails(t *testing.T) {
+	t.Parallel()
+
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab mr view 123 --output json": {
+			stdout: `{"head_pipeline":{"id":77}}` + "\n",
+		},
+		"glab ci get --pipeline-id 77 --output json --with-job-details": {
+			stdout: `{"jobs":[{"id":55,"name":"lint","status":"failed"}]}` + "\n",
+		},
+		"glab ci trace 55": {
+			stdout: "lint failed\n",
+		},
+	}), nil)
+
+	logs, err := host.FetchFailedCheckLogs(context.Background(), &scm.PR{Number: "123"}, "", "", []string{"lint"})
+	if err != nil {
+		t.Fatalf("FetchFailedCheckLogs() error = %v", err)
+	}
+	if logs != "lint failed" {
+		t.Fatalf("FetchFailedCheckLogs() = %q, want %q", logs, "lint failed")
+	}
+}
+
 func TestFetchFailedCheckLogsParsesMRJSONAfterPreamble(t *testing.T) {
 	t.Parallel()
 
@@ -195,7 +243,7 @@ func TestFetchFailedCheckLogsParsesMRJSONAfterPreamble(t *testing.T) {
 		"glab mr view 123 --output json": {
 			stdout: "notice\n{\"head_pipeline\":{\"id\":77}}\n",
 		},
-		"glab ci get --pipeline-id 77 --output json": {
+		"glab ci get --pipeline-id 77 --output json --with-job-details": {
 			stdout: `[{"id":55,"name":"lint","status":"failed"}]` + "\n",
 		},
 		"glab ci trace 55": {
