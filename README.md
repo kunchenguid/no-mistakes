@@ -154,11 +154,11 @@ This replaces the binary and resets the background daemon so it picks up the new
 
 | Command                     | Description                                            |
 | --------------------------- | ------------------------------------------------------ |
-| `no-mistakes`               | Attach to the active pipeline run for the current repo |
+| `no-mistakes`               | Attach to the current branch run, or start the setup wizard |
 | `no-mistakes init`          | Initialize the gate for the current repository         |
 | `no-mistakes update`        | Update the binary and reset the daemon                 |
 | `no-mistakes eject`         | Remove the gate from the current repository            |
-| `no-mistakes attach`        | Attach to the active pipeline run                      |
+| `no-mistakes attach`        | Attach to the active pipeline run in the current repo  |
 | `no-mistakes rerun`         | Rerun the pipeline for the current branch              |
 | `no-mistakes status`        | Show status of the current repository                  |
 | `no-mistakes runs`          | List recorded pipeline runs for the current repo       |
