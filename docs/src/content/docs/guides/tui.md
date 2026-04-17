@@ -152,6 +152,6 @@ After a failed or cancelled run, press `r` to start a rerun. The TUI switches to
 
 ## Detaching
 
-Press `q` to detach from the TUI. The pipeline continues running in the background. Run `no-mistakes` again to reattach.
+Press `q` to detach from the TUI. The pipeline continues running in the background. Run `no-mistakes` again to reattach to the active run on your current branch, or `no-mistakes attach` to reattach to the repo's active run without branch scoping.
 
 If the run is already finished, `q` exits the TUI.

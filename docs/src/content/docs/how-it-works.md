@@ -58,7 +58,7 @@ A long-running background process that manages pipeline runs. It:
 - Persists state to SQLite
 - Streams events to connected TUI clients via IPC
 
-The installer prefers setting up the daemon as a managed background service, and `init`, `attach`, `rerun`, and `update` make sure the daemon is running when needed. If managed service install or startup is unavailable or fails, startup falls back to a detached daemon process. `update` resets the daemon after replacing the binary when the daemon is running or stale daemon artifacts exist. If the daemon is already running, `update` first checks that it was started from the same executable path and aborts if the daemon executable path cannot be determined or points to a different binary. You can also manage it explicitly with `no-mistakes daemon start|stop|status`.
+The installer prefers setting up the daemon as a managed background service, and `no-mistakes`, `init`, `attach`, `rerun`, and `update` make sure the daemon is running when needed. Bare `no-mistakes` then attaches to the active run on the current branch when one exists, or routes to the setup wizard when it needs to create a new branch/run. If managed service install or startup is unavailable or fails, startup falls back to a detached daemon process. `update` resets the daemon after replacing the binary when the daemon is running or stale daemon artifacts exist. If the daemon is already running, `update` first checks that it was started from the same executable path and aborts if the daemon executable path cannot be determined or points to a different binary. You can also manage it explicitly with `no-mistakes daemon start|stop|status`.
 
 On startup, the daemon recovers from crashes by marking any stuck runs as failed and cleaning up orphaned worktrees.
 
@@ -94,5 +94,6 @@ Everything lives under `~/.no-mistakes/` by default. Set `NM_HOME` to relocate i
 | `worktrees/<repoID>/<runID>/` | Disposable worktrees (cleaned up after each run) |
 | `logs/<runID>/<step>.log` | Per-step log files |
 | `logs/daemon.log` | Daemon log |
+| `logs/wizard-agent.log` | Managed agent-server output captured during setup wizard runs |
 
 The repo ID is the first 6 bytes (12 hex chars) of `sha256(absolute_working_path)`.
