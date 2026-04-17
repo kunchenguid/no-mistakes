@@ -457,14 +457,14 @@ func (m Model) suggestCmd(id stepID) tea.Cmd {
 
 func (m Model) runCreateBranch(name string) tea.Cmd {
 	return func() tea.Msg {
-		err := m.cfg.CreateBranch(context.Background(), name)
+		err := m.cfg.CreateBranch(m.ctx, name)
 		return actionMsg{id: stepBranch, err: err}
 	}
 }
 
 func (m Model) runCommit(msg string) tea.Cmd {
 	return func() tea.Msg {
-		err := m.cfg.CommitAll(context.Background(), msg)
+		err := m.cfg.CommitAll(m.ctx, msg)
 		return actionMsg{id: stepCommit, err: err}
 	}
 }
@@ -472,7 +472,7 @@ func (m Model) runCommit(msg string) tea.Cmd {
 func (m Model) runPush() tea.Cmd {
 	branch := m.targetBranch
 	return func() tea.Msg {
-		err := m.cfg.Push(context.Background(), branch)
+		err := m.cfg.Push(m.ctx, branch)
 		return actionMsg{id: stepPush, err: err}
 	}
 }

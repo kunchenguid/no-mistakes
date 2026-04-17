@@ -455,6 +455,85 @@ func TestQuit_CancelsInFlightSuggestion(t *testing.T) {
 	}
 }
 
+func TestQuit_CancelsInFlightGitActions(t *testing.T) {
+	tests := []struct {
+		name    string
+		run     func(Model, string) tea.Cmd
+		wantMsg stepID
+	}{
+		{name: "create branch", run: func(m Model, value string) tea.Cmd { return m.runCreateBranch(value) }, wantMsg: stepBranch},
+		{name: "commit", run: func(m Model, value string) tea.Cmd { return m.runCommit(value) }, wantMsg: stepCommit},
+		{name: "push", run: func(m Model, value string) tea.Cmd { return m.runPush() }, wantMsg: stepPush},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctxCh := make(chan context.Context, 1)
+			done := make(chan tea.Msg, 1)
+
+			cfg := baseConfig(&recorder{})
+			cfg.CurrentBranch = "feat/x"
+			cfg.NeedsBranch = false
+			cfg.IsDirty = false
+			cfg.CreateBranch = func(ctx context.Context, _ string) error {
+				ctxCh <- ctx
+				<-ctx.Done()
+				return ctx.Err()
+			}
+			cfg.CommitAll = func(ctx context.Context, _ string) error {
+				ctxCh <- ctx
+				<-ctx.Done()
+				return ctx.Err()
+			}
+			cfg.Push = func(ctx context.Context, _ string) error {
+				ctxCh <- ctx
+				<-ctx.Done()
+				return ctx.Err()
+			}
+
+			m := NewModel(cfg)
+			cmd := tc.run(m, "value")
+			go func() {
+				done <- cmd()
+			}()
+
+			var actionCtx context.Context
+			select {
+			case actionCtx = <-ctxCh:
+			case <-time.After(time.Second):
+				t.Fatal("timed out waiting for action to start")
+			}
+
+			if err := actionCtx.Err(); err != nil {
+				t.Fatalf("action context should start active, got %v", err)
+			}
+
+			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+			m = next.(Model)
+
+			if !m.aborted || !m.quitting {
+				t.Fatal("quit should abort the wizard")
+			}
+
+			select {
+			case msg := <-done:
+				action, ok := msg.(actionMsg)
+				if !ok {
+					t.Fatalf("expected actionMsg, got %T", msg)
+				}
+				if action.id != tc.wantMsg {
+					t.Fatalf("expected action id %v, got %v", tc.wantMsg, action.id)
+				}
+				if !errors.Is(action.err, context.Canceled) {
+					t.Fatalf("expected context canceled, got %v", action.err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("timed out waiting for action cancellation")
+			}
+		})
+	}
+}
+
 func TestCtrlCAborts(t *testing.T) {
 	m := NewModel(baseConfig(&recorder{}))
 	m = drain(m, m.Init())

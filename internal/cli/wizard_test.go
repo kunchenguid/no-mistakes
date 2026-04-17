@@ -1,6 +1,13 @@
 package cli
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/types"
+)
 
 func TestShouldRouteToWizard(t *testing.T) {
 	tests := []struct {
@@ -64,5 +71,27 @@ func TestNeedsBranch(t *testing.T) {
 				t.Fatalf("needsBranch() = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestWizardAgentSuggester_IsLazy(t *testing.T) {
+	t.Helper()
+
+	lookups := 0
+	suggester := newWizardAgentSuggester(&config.Config{Agent: types.AgentAuto}, "/tmp/repo", func(context.Context, *config.Config) error {
+		lookups++
+		return errors.New("no supported agent found")
+	}, nil)
+	defer suggester.Close()
+
+	if lookups != 0 {
+		t.Fatalf("expected no agent resolution during setup, got %d", lookups)
+	}
+
+	if _, err := suggester.suggestBranch(context.Background()); err == nil {
+		t.Fatal("expected suggestion to fail when no agent is available")
+	}
+	if lookups != 1 {
+		t.Fatalf("expected one lazy resolution attempt, got %d", lookups)
 	}
 }

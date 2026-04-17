@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
@@ -15,8 +16,73 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/kunchenguid/no-mistakes/internal/wizard"
 )
+
+var resolveWizardAgent = func(ctx context.Context, cfg *config.Config) error {
+	return cfg.ResolveAgent(ctx, exec.LookPath)
+}
+
+var newWizardAgent = agent.New
+
+type wizardAgentSuggester struct {
+	cfg     *config.Config
+	workDir string
+	resolve func(context.Context, *config.Config) error
+	new     func(types.AgentName, string) (agent.Agent, error)
+
+	once sync.Once
+	ag   agent.Agent
+	err  error
+}
+
+func newWizardAgentSuggester(cfg *config.Config, workDir string, resolve func(context.Context, *config.Config) error, new func(types.AgentName, string) (agent.Agent, error)) *wizardAgentSuggester {
+	if resolve == nil {
+		resolve = resolveWizardAgent
+	}
+	if new == nil {
+		new = newWizardAgent
+	}
+	return &wizardAgentSuggester{cfg: cfg, workDir: workDir, resolve: resolve, new: new}
+}
+
+func (s *wizardAgentSuggester) ensure(ctx context.Context) error {
+	s.once.Do(func() {
+		if err := s.resolve(ctx, s.cfg); err != nil {
+			s.err = fmt.Errorf("resolve agent: %w", err)
+			return
+		}
+		ag, err := s.new(s.cfg.Agent, s.cfg.AgentPath())
+		if err != nil {
+			s.err = fmt.Errorf("create agent: %w", err)
+			return
+		}
+		s.ag = ag
+	})
+	return s.err
+}
+
+func (s *wizardAgentSuggester) suggestBranch(ctx context.Context) (string, error) {
+	if err := s.ensure(ctx); err != nil {
+		return "", err
+	}
+	return agent.SuggestBranchName(ctx, s.ag, s.workDir)
+}
+
+func (s *wizardAgentSuggester) suggestCommit(ctx context.Context) (string, error) {
+	if err := s.ensure(ctx); err != nil {
+		return "", err
+	}
+	return agent.SuggestCommitMessage(ctx, s.ag, s.workDir)
+}
+
+func (s *wizardAgentSuggester) Close() error {
+	if s.ag == nil {
+		return nil
+	}
+	return s.ag.Close()
+}
 
 // repoState captures the git state the wizard routing and the wizard itself
 // both need to know about.
@@ -77,7 +143,7 @@ func detectRepoState(ctx context.Context, repo *db.Repo) (*repoState, error) {
 	}, nil
 }
 
-// runWizard prepares an agent for suggestion calls and runs the interactive
+// runWizard prepares optional suggestion hooks and runs the interactive
 // onboarding wizard against the supplied repo state.
 func runWizard(ctx context.Context, p *paths.Paths, state *repoState) (wizard.Result, error) {
 	workDir := state.workDir
@@ -91,20 +157,14 @@ func runWizard(ctx context.Context, p *paths.Paths, state *repoState) (wizard.Re
 		return wizard.Result{}, fmt.Errorf("load repo config: %w", err)
 	}
 	cfg := config.Merge(globalCfg, repoCfg)
-	if err := cfg.ResolveAgent(ctx, exec.LookPath); err != nil {
-		return wizard.Result{}, fmt.Errorf("resolve agent: %w", err)
-	}
 	// Route agent-server stdout/stderr to a log file so lines don't corrupt
 	// the wizard's alt-screen display. Any opencode/rovodev server started
 	// during the wizard inherits this sink.
 	restoreOutput := captureAgentServerOutput(p)
 	defer restoreOutput()
 
-	ag, err := agent.New(cfg.Agent, cfg.AgentPath())
-	if err != nil {
-		return wizard.Result{}, fmt.Errorf("create agent: %w", err)
-	}
-	defer ag.Close()
+	suggester := newWizardAgentSuggester(cfg, workDir, nil, nil)
+	defer suggester.Close()
 
 	wizCfg := wizard.Config{
 		RepoDir:       workDir,
@@ -124,10 +184,10 @@ func runWizard(ctx context.Context, p *paths.Paths, state *repoState) (wizard.Re
 			return git.Push(ctx, workDir, gate.RemoteName, "refs/heads/"+branch, "", false)
 		},
 		SuggestBranch: func(ctx context.Context) (string, error) {
-			return agent.SuggestBranchName(ctx, ag, workDir)
+			return suggester.suggestBranch(ctx)
 		},
 		SuggestCommit: func(ctx context.Context) (string, error) {
-			return agent.SuggestCommitMessage(ctx, ag, workDir)
+			return suggester.suggestCommit(ctx)
 		},
 	}
 

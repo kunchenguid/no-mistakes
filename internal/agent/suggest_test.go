@@ -79,6 +79,29 @@ func TestSuggestBranchNameSanitizes(t *testing.T) {
 	}
 }
 
+func TestSuggestBranchNameRejectsInvalidGitRefs(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		{name: "double dot", raw: "feat/bug..fix"},
+		{name: "double slash", raw: "feat//wizard"},
+		{name: "lock suffix", raw: "feat/wizard.lock"},
+		{name: "lock path component", raw: "feat/topic.lock/extra"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ag := &stubAgent{result: &Result{
+				Output: json.RawMessage(`{"name":` + jsonQuote(tc.raw) + `}`),
+			}}
+			if _, err := SuggestBranchName(context.Background(), ag, "/tmp"); err == nil {
+				t.Fatalf("expected invalid ref %q to be rejected", tc.raw)
+			}
+		})
+	}
+}
+
 func TestSuggestBranchNameLengthCapped(t *testing.T) {
 	long := "feat/really-long-branch-name-that-exceeds-the-limit-we-enforce-for-clarity"
 	ag := &stubAgent{result: &Result{

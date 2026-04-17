@@ -134,7 +134,43 @@ func sanitizeBranchName(raw string) string {
 		s = s[:60]
 		s = strings.Trim(s, "-/.")
 	}
+	if !isValidBranchName(s) {
+		return ""
+	}
 	return s
+}
+
+func isValidBranchName(name string) bool {
+	if name == "" || name == "@" {
+		return false
+	}
+	if strings.HasPrefix(name, "-") || strings.HasPrefix(name, "/") {
+		return false
+	}
+	if strings.HasSuffix(name, "/") || strings.HasSuffix(name, ".") {
+		return false
+	}
+	if strings.Contains(name, "..") || strings.Contains(name, "//") || strings.Contains(name, "@{") {
+		return false
+	}
+	for _, r := range name {
+		if r < ' ' || r == 0x7f {
+			return false
+		}
+		switch r {
+		case ' ', '~', '^', ':', '?', '*', '[', '\\':
+			return false
+		}
+	}
+	for _, part := range strings.Split(name, "/") {
+		if part == "" || part == "." || part == ".." {
+			return false
+		}
+		if strings.HasPrefix(part, ".") || strings.HasSuffix(part, ".lock") {
+			return false
+		}
+	}
+	return true
 }
 
 // sanitizeCommitSubject trims whitespace and keeps only the first line.
