@@ -137,7 +137,7 @@ Stop the running daemon process.
 no-mistakes daemon stop
 ```
 
-This does not remove the managed service. A later `no-mistakes daemon start`, `init`, `attach`, `rerun`, or `update` can start the daemon again through the same service manager when available, or as a detached daemon otherwise.
+This does not remove the managed service. A later `no-mistakes`, `no-mistakes daemon start`, `init`, `attach`, `rerun`, or `update` can start the daemon again through the same service manager when available, or as a detached daemon otherwise.
 
 ## no-mistakes daemon status
 
