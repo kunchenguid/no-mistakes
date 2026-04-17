@@ -77,7 +77,7 @@ func TestAttachNotInitializedCommands(t *testing.T) {
 // repo returns a clear error.
 func TestAttachNotGitRepoCommands(t *testing.T) {
 	tmpDir := t.TempDir()
-	nmHome := t.TempDir()
+	nmHome := makeSocketSafeTempDir(t)
 	t.Setenv("NM_HOME", nmHome)
 	p := paths.WithRoot(nmHome)
 

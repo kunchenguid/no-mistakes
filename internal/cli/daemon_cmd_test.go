@@ -12,7 +12,7 @@ import (
 )
 
 func TestDaemonStatusAndStopWhenNotRunning(t *testing.T) {
-	nmHome := t.TempDir()
+	nmHome := makeSocketSafeTempDir(t)
 	t.Setenv("NM_HOME", nmHome)
 	p := paths.WithRoot(nmHome)
 	if err := p.EnsureDirs(); err != nil {
@@ -37,7 +37,7 @@ func TestDaemonStatusAndStopWhenNotRunning(t *testing.T) {
 }
 
 func TestDaemonStatusAndStopRunning(t *testing.T) {
-	nmHome := t.TempDir()
+	nmHome := makeSocketSafeTempDir(t)
 	t.Setenv("NM_HOME", nmHome)
 	p := paths.WithRoot(nmHome)
 	if err := p.EnsureDirs(); err != nil {

@@ -61,9 +61,9 @@ func init() {
 func setupTestRepo(t *testing.T) string {
 	t.Helper()
 
-	// Create temp dirs for the repo and NM_HOME.
+	// Keep NM_HOME under a short temp root so the daemon socket path fits.
 	repoDir := t.TempDir()
-	nmHome := t.TempDir()
+	nmHome := makeSocketSafeTempDir(t)
 	t.Setenv("NM_HOME", nmHome)
 	t.Setenv("NM_TEST_START_DAEMON", "1")
 
