@@ -74,7 +74,7 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 	cmd := h.cmd(ctx, "glab", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return nil, nil
+		return nil, fmt.Errorf("glab mr list: %s: %w", strings.TrimSpace(string(out)), err)
 	}
 	trimmed := bytesTrimToJSON(out)
 	if len(trimmed) == 0 {

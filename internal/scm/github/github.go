@@ -50,9 +50,9 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 	}
 	args = append(args, "--state", "open", "--json", "number,url")
 	cmd := h.cmd(ctx, "gh", args...)
-	out, err := cmd.Output()
+	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return nil, nil
+		return nil, fmt.Errorf("gh pr list: %s: %w", strings.TrimSpace(string(out)), err)
 	}
 	var prs []struct {
 		Number int    `json:"number"`

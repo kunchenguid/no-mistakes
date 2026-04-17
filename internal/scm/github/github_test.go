@@ -86,6 +86,28 @@ func TestFindPRFiltersByBaseBranch(t *testing.T) {
 	}
 }
 
+func TestFindPRReturnsCLIError(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr list --head feature/refactor --base main --state open --json number,url": {
+			stderr: "api unavailable\n",
+			code:   1,
+		},
+	}), nil)
+
+	pr, err := host.FindPR(context.Background(), "feature/refactor", "main")
+	if err == nil {
+		t.Fatal("FindPR() error = nil, want CLI error")
+	}
+	if !strings.Contains(err.Error(), "gh pr list") {
+		t.Fatalf("FindPR() error = %v, want gh pr list context", err)
+	}
+	if pr != nil {
+		t.Fatalf("FindPR() PR = %+v, want nil", pr)
+	}
+}
+
 type githubTestResponse struct {
 	stdout string
 	stderr string

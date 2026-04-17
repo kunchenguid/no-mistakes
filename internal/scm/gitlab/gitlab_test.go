@@ -240,6 +240,28 @@ func TestFindPRFiltersByBaseBranch(t *testing.T) {
 	}
 }
 
+func TestFindPRReturnsCLIError(t *testing.T) {
+	t.Parallel()
+
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab mr list --source-branch feature/refactor --target-branch main --state opened --output json": {
+			stderr: "gitlab unavailable\n",
+			code:   1,
+		},
+	}), nil)
+
+	pr, err := host.FindPR(context.Background(), "feature/refactor", "main")
+	if err == nil {
+		t.Fatal("FindPR() error = nil, want CLI error")
+	}
+	if !strings.Contains(err.Error(), "glab mr list") {
+		t.Fatalf("FindPR() error = %v, want glab mr list context", err)
+	}
+	if pr != nil {
+		t.Fatalf("FindPR() PR = %+v, want nil", pr)
+	}
+}
+
 func TestGetChecksFallbackRequestsJobDetails(t *testing.T) {
 	t.Parallel()
 
