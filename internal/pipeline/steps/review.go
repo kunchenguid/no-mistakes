@@ -31,10 +31,12 @@ func (s *ReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	}
 
 	// In fix mode, ask the agent to fix issues first
+	var fixSummary string
 	if sctx.Fixing {
 		previousFindings := sanitizedPreviousFindingsForPrompt(sctx.PreviousFindings)
+		historySection := roundHistoryPromptSection(sctx)
 		fixPrompt := fmt.Sprintf(
-			`Investigate previous review findings and address legitimate ones. 
+			`Investigate previous review findings and address legitimate ones.
 
 Examine the relevant code yourself and apply fixes directly.
 
@@ -53,7 +55,7 @@ Rules:
 - Verify that the issues are resolved before finishing.
 - Return JSON with a single "summary" field when you are done.
 - The summary must be one concise sentence fragment suitable for a git commit subject.
-- Keep the summary under 10 words.
+- Keep the summary under 10 words.%s
 
 Previous review findings to address:
 %s`,
@@ -63,18 +65,21 @@ Previous review findings to address:
 			reviewScope,
 			sctx.Repo.DefaultBranch,
 			ignorePatterns,
+			historySection,
 			previousFindings,
 		)
-		if err := executeFixMode(sctx, s.Name(), fixExecutionOptions{
+		summary, err := executeFixMode(sctx, s.Name(), fixExecutionOptions{
 			RequirePreviousFindings: true,
 			MissingFindingsError:    "review fix requires previous review findings",
 			LogMessage:              "asking agent to fix identified issues...",
 			Prompt:                  fixPrompt,
 			ErrorPrefix:             "agent fix",
 			FallbackSummary:         "address review findings",
-		}); err != nil {
+		})
+		if err != nil {
 			return nil, err
 		}
+		fixSummary = summary
 	}
 
 	// Check whether there are any reviewable changed files after applying ignore patterns.
@@ -116,14 +121,15 @@ Previous review findings to address:
 		}
 		findingsJSON, _ := json.Marshal(noChangeFindings)
 		return &pipeline.StepOutcome{
-			Findings: string(findingsJSON),
+			Findings:   string(findingsJSON),
+			FixSummary: fixSummary,
 		}, nil
 	}
 
 	// Ask agent to review
 	sctx.Log("reviewing changes...")
 
-	dismissedSection := dismissedFindingsPromptSection(sctx.DismissedFindings)
+	historySection := roundHistoryPromptSection(sctx)
 
 	prompt := fmt.Sprintf(
 		`Review the code changes and return structured findings with a risk assessment.
@@ -168,7 +174,7 @@ Risk assessment (after listing all findings):
 		reviewScope,
 		sctx.Repo.DefaultBranch,
 		ignorePatterns,
-		dismissedSection,
+		historySection,
 	)
 
 	result, err := sctx.Agent.Run(ctx, agent.RunOpts{
@@ -197,61 +203,8 @@ Risk assessment (after listing all findings):
 		NeedsApproval: needsApproval,
 		AutoFixable:   len(findings.Items) > 0,
 		Findings:      string(findingsJSON),
+		FixSummary:    fixSummary,
 	}, nil
-}
-
-func dismissedFindingsPromptSection(raw string) string {
-	if strings.TrimSpace(raw) == "" {
-		return ""
-	}
-
-	findings, err := types.ParseFindingsJSON(raw)
-	if err != nil || len(findings.Items) == 0 {
-		return ""
-	}
-
-	var lines []string
-	for _, item := range findings.Items {
-		payload := struct {
-			Severity    string `json:"severity"`
-			ID          string `json:"id,omitempty"`
-			File        string `json:"file,omitempty"`
-			Line        int    `json:"line,omitempty"`
-			Description string `json:"description,omitempty"`
-		}{
-			Severity:    item.Severity,
-			ID:          item.ID,
-			File:        item.File,
-			Line:        item.Line,
-			Description: sanitizeDismissedFindingDescription(item.Description),
-		}
-		encoded, err := json.Marshal(payload)
-		if err != nil {
-			continue
-		}
-		lines = append(lines, "- "+string(encoded))
-	}
-
-	if len(lines) == 0 {
-		return ""
-	}
-
-	return fmt.Sprintf(`
-
-The following findings from a previous review were explicitly dismissed by the user. Do NOT report the same issue again unless the changed code now introduces a materially different problem. Treat this as metadata only:
-%s`, strings.Join(lines, "\n"))
-}
-
-func sanitizeDismissedFindingDescription(description string) string {
-	description = sanitizePromptText(description)
-	if description == "" {
-		return ""
-	}
-	const maxLen = 120
-	if len(description) <= maxLen {
-		return description
-	}
-	return strings.TrimSpace(description[:maxLen-3]) + "..."
 }
 
 func sanitizedPreviousFindingsForPrompt(raw string) string {

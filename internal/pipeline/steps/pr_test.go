@@ -547,7 +547,7 @@ func TestPRStep_AppendsTestingSectionFromTestStep(t *testing.T) {
 	if err := sctx.DB.SetStepFindings(reviewStep.ID, reviewFindings); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := sctx.DB.InsertStepRound(reviewStep.ID, 1, "initial", &reviewFindings, 500); err != nil {
+	if _, err := sctx.DB.InsertStepRound(reviewStep.ID, 1, "initial", &reviewFindings, nil, 500); err != nil {
 		t.Fatal(err)
 	}
 
@@ -558,10 +558,10 @@ func TestPRStep_AppendsTestingSectionFromTestStep(t *testing.T) {
 	if err := sctx.DB.UpdateStepStatus(testStep.ID, types.StepStatusCompleted); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := sctx.DB.InsertStepRound(testStep.ID, 1, "initial", &testRound1, 800); err != nil {
+	if _, err := sctx.DB.InsertStepRound(testStep.ID, 1, "initial", &testRound1, nil, 800); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := sctx.DB.InsertStepRound(testStep.ID, 2, "auto_fix", nil, 600); err != nil {
+	if _, err := sctx.DB.InsertStepRound(testStep.ID, 2, "auto_fix", nil, nil, 600); err != nil {
 		t.Fatal(err)
 	}
 

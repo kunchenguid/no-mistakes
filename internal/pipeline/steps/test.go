@@ -20,7 +20,9 @@ func (s *TestStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 
 	// In fix mode, ask agent to fix test failures first
 	var newTestsFromFix []string
+	var fixSummary string
 	if sctx.Fixing {
+		historySection := roundHistoryPromptSection(sctx)
 		fixPrompt := fmt.Sprintf(
 			`Fix the failing tests in this repository. Run the tests, identify failures, and fix either the tests or the code to make them pass.
 
@@ -37,10 +39,11 @@ Rules:
 - Re-run the relevant tests before finishing.
 - Return JSON with a single "summary" field when you are done.
 - The summary must be one concise sentence fragment suitable for a git commit subject.
-- Keep the summary under 10 words.`,
+- Keep the summary under 10 words.%s`,
 			sctx.Run.Branch,
 			baseSHA,
 			sctx.Run.HeadSHA,
+			historySection,
 		)
 		if sctx.PreviousFindings != "" {
 			fixPrompt += `
@@ -48,7 +51,7 @@ Rules:
 Previous test findings to address:
 ` + sanitizedPreviousFindingsForPrompt(sctx.PreviousFindings)
 		}
-		if err := executeFixMode(sctx, s.Name(), fixExecutionOptions{
+		summary, err := executeFixMode(sctx, s.Name(), fixExecutionOptions{
 			LogMessage:      "asking agent to fix test failures...",
 			Prompt:          fixPrompt,
 			ErrorPrefix:     "agent fix tests",
@@ -57,15 +60,18 @@ Previous test findings to address:
 				newTestsFromFix = detectNewTestFiles(ctx, sctx.WorkDir)
 				return nil
 			},
-		}); err != nil {
+		})
+		if err != nil {
 			return nil, err
 		}
+		fixSummary = summary
 	}
 
 	testCmd := sctx.Config.Commands.Test
 	if testCmd == "" {
 		// No test command configured — ask agent to detect and run tests
 		sctx.Log("no test command configured, asking agent to run tests...")
+		reassessHistory := roundHistoryPromptSection(sctx)
 		result, err := sctx.Agent.Run(ctx, agent.RunOpts{
 			Prompt: fmt.Sprintf(
 				`You are validating a code change by testing it. Examine the repository and run the appropriate tests yourself.
@@ -88,10 +94,11 @@ Rules:
 - Only report actionable findings: test failures, unfixable setup issues, or flaky tests you identified.
 - Do NOT report passing tests (whether existing or new), test counts, coverage summaries, or other non-actionable information.
 - If all tests pass and there are no issues, return an empty findings array.
-- Set action to "ask-user" only when a test failure seems desired and you question the author's intent of having the test in the first place. Set action to "auto-fix" for objective test failures that can be safely fixed. Set action to "no-op" for informational notes.`,
+- Set action to "ask-user" only when a test failure seems desired and you question the author's intent of having the test in the first place. Set action to "auto-fix" for objective test failures that can be safely fixed. Set action to "no-op" for informational notes.%s`,
 				sctx.Run.Branch,
 				baseSHA,
 				sctx.Run.HeadSHA,
+				reassessHistory,
 			),
 			CWD:        sctx.WorkDir,
 			JSONSchema: findingsSchema,
@@ -131,6 +138,7 @@ Rules:
 			NeedsApproval: needsApproval,
 			AutoFixable:   autoFixable,
 			Findings:      string(findingsJSON),
+			FixSummary:    fixSummary,
 		}, nil
 	}
 
@@ -157,6 +165,7 @@ Rules:
 			AutoFixable:   true,
 			Findings:      string(findingsJSON),
 			ExitCode:      exitCode,
+			FixSummary:    fixSummary,
 		}, nil
 	}
 
@@ -176,9 +185,10 @@ Rules:
 		return &pipeline.StepOutcome{
 			NeedsApproval: true,
 			Findings:      string(findingsJSON),
+			FixSummary:    fixSummary,
 		}, nil
 	}
 
 	sctx.Log("all tests passed")
-	return &pipeline.StepOutcome{}, nil
+	return &pipeline.StepOutcome{FixSummary: fixSummary}, nil
 }

@@ -11,20 +11,22 @@ import (
 
 // StepContext provides shared resources to pipeline steps during execution.
 type StepContext struct {
-	Ctx               context.Context
-	Run               *db.Run
-	Repo              *db.Repo
-	WorkDir           string
-	Agent             agent.Agent
-	Config            *config.Config
-	DB                *db.DB
-	Log               func(string) // discrete log line (newline-terminated, user-visible + file)
-	LogChunk          func(string) // raw streaming chunk (user-visible + file)
-	LogFile           func(string) // file-only log callback (not shown to user)
-	Fixing            bool         // true when re-executing after a "fix" action
-	PreviousFindings  string       // JSON findings from the previous execution (set during fix loop)
-	DismissedFindings string       // JSON findings the user explicitly deselected (excluded from fix)
-	Env               []string     // extra environment variables for subprocesses (used in tests)
+	Ctx              context.Context
+	Run              *db.Run
+	Repo             *db.Repo
+	WorkDir          string
+	Agent            agent.Agent
+	Config           *config.Config
+	DB               *db.DB
+	Log              func(string) // discrete log line (newline-terminated, user-visible + file)
+	LogChunk         func(string) // raw streaming chunk (user-visible + file)
+	LogFile          func(string) // file-only log callback (not shown to user)
+	Fixing           bool         // true when re-executing after a "fix" action
+	PreviousFindings string       // JSON findings from the previous execution (set during fix loop)
+	// StepResultID is the DB row ID of the current step's step_results record.
+	// Steps use it to query their own round history for multi-round prompts.
+	StepResultID string
+	Env          []string // extra environment variables for subprocesses (used in tests)
 }
 
 // StepOutcome is the result of executing a pipeline step.
@@ -35,6 +37,11 @@ type StepOutcome struct {
 	ExitCode      int    // process exit code (0 = success)
 	PRURL         string // PR/MR URL if this step created or found one
 	SkipRemaining bool   // skip all subsequent steps (e.g. empty diff after rebase)
+	// FixSummary, when non-empty, is the agent's one-line commit summary for
+	// the fix attempt performed during this round. Steps populate it in fix
+	// mode so the executor can persist it on the round record and later
+	// rounds can reference what was previously attempted.
+	FixSummary string
 
 	// DurationOverrideMS, when positive, replaces the wall-clock duration
 	// reported for this step. Used by demo mode to show realistic durations

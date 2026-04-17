@@ -1,6 +1,44 @@
 package pipeline
 
-import "github.com/kunchenguid/no-mistakes/internal/types"
+import (
+	"encoding/json"
+
+	"github.com/kunchenguid/no-mistakes/internal/types"
+)
+
+// findingIDsJSON extracts the finding IDs from a findings JSON payload and
+// returns them as a JSON array string. Empty result means there were no
+// findings or parsing failed.
+func findingIDsJSON(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	findings, err := types.ParseFindingsJSON(raw)
+	if err != nil {
+		return ""
+	}
+	ids := make([]string, 0, len(findings.Items))
+	for _, item := range findings.Items {
+		if item.ID == "" {
+			continue
+		}
+		ids = append(ids, item.ID)
+	}
+	return marshalFindingIDs(ids)
+}
+
+// marshalFindingIDs encodes a list of finding IDs as a JSON array. Empty
+// input returns an empty string so the caller can leave the DB column NULL.
+func marshalFindingIDs(ids []string) string {
+	if len(ids) == 0 {
+		return ""
+	}
+	encoded, err := json.Marshal(ids)
+	if err != nil {
+		return ""
+	}
+	return string(encoded)
+}
 
 func findingKey(item types.Finding) types.Finding {
 	item.ID = ""

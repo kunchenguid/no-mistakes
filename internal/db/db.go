@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,7 +33,23 @@ func Open(path string) (*DB, error) {
 		sqlDB.Close()
 		return nil, fmt.Errorf("migrate db: %w", err)
 	}
+	for _, stmt := range migrationStatements {
+		if _, err := sqlDB.Exec(stmt); err != nil && !isDuplicateColumnErr(err) {
+			sqlDB.Close()
+			return nil, fmt.Errorf("migrate db: %w", err)
+		}
+	}
 	return &DB{sql: sqlDB}, nil
+}
+
+// isDuplicateColumnErr reports whether err is SQLite's "duplicate column name"
+// error, which ALTER TABLE ADD COLUMN emits when the column already exists.
+// Treating this as a no-op keeps migrations idempotent without a version table.
+func isDuplicateColumnErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "duplicate column name")
 }
 
 // Close closes the database connection.
