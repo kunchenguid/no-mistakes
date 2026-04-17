@@ -19,7 +19,9 @@ func (s *LintStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
 
 	// In fix mode, ask agent to fix lint issues first
+	var fixSummary string
 	if sctx.Fixing {
+		historySection := roundHistoryPromptSection(sctx)
 		fixPrompt := fmt.Sprintf(
 			`Fix the lint issues in this repository. Run the linter, identify all issues, and fix them.
 
@@ -35,10 +37,11 @@ Rules:
 - Re-run the relevant lint or format commands before finishing.
 - Return JSON with a single "summary" field when you are done.
 - The summary must be one concise sentence fragment suitable for a git commit subject.
-- Keep the summary under 10 words.`,
+- Keep the summary under 10 words.%s`,
 			sctx.Run.Branch,
 			baseSHA,
 			sctx.Run.HeadSHA,
+			historySection,
 		)
 		if sctx.PreviousFindings != "" {
 			fixPrompt += `
@@ -46,20 +49,23 @@ Rules:
 Previous lint findings to address:
 ` + sanitizedPreviousFindingsForPrompt(sctx.PreviousFindings)
 		}
-		if err := executeFixMode(sctx, s.Name(), fixExecutionOptions{
+		summary, err := executeFixMode(sctx, s.Name(), fixExecutionOptions{
 			LogMessage:      "asking agent to fix lint issues...",
 			Prompt:          fixPrompt,
 			ErrorPrefix:     "agent fix lint",
 			FallbackSummary: "fix lint issues",
-		}); err != nil {
+		})
+		if err != nil {
 			return nil, err
 		}
+		fixSummary = summary
 	}
 
 	lintCmd := sctx.Config.Commands.Lint
 	if lintCmd == "" {
 		// No lint command configured — ask agent to detect and run linter
 		sctx.Log("no lint command configured, asking agent to lint...")
+		reassessHistory := roundHistoryPromptSection(sctx)
 		result, err := sctx.Agent.Run(ctx, agent.RunOpts{
 			Prompt: fmt.Sprintf(
 				`Detect the linting and formatting tools for this project and run the relevant checks yourself.
@@ -77,10 +83,11 @@ Task:
 Rules:
 - Do not run tests or broader behavioral validation.
 - Focus on lint, format, and static-analysis issues only.
-- Set action to "auto-fix" for all findings. Lint findings are objective and do not question the author's intent.`,
+- Set action to "auto-fix" for all findings. Lint findings are objective and do not question the author's intent.%s`,
 				sctx.Run.Branch,
 				baseSHA,
 				sctx.Run.HeadSHA,
+				reassessHistory,
 			),
 			CWD:        sctx.WorkDir,
 			JSONSchema: findingsSchema,
@@ -104,6 +111,7 @@ Rules:
 			NeedsApproval: needsApproval,
 			AutoFixable:   needsApproval,
 			Findings:      string(findingsJSON),
+			FixSummary:    fixSummary,
 		}, nil
 	}
 
@@ -130,9 +138,10 @@ Rules:
 			AutoFixable:   true,
 			Findings:      string(findingsJSON),
 			ExitCode:      exitCode,
+			FixSummary:    fixSummary,
 		}, nil
 	}
 
 	sctx.Log("lint passed")
-	return &pipeline.StepOutcome{}, nil
+	return &pipeline.StepOutcome{FixSummary: fixSummary}, nil
 }

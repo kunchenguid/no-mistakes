@@ -173,13 +173,14 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	// so Log knows whether it needs a leading \n to flush a streaming partial.
 	lastChunkNewline := true
 	sctx := &StepContext{
-		Ctx:     ctx,
-		Run:     run,
-		Repo:    repo,
-		WorkDir: workDir,
-		Agent:   e.agent,
-		Config:  e.config,
-		DB:      e.db,
+		Ctx:          ctx,
+		Run:          run,
+		Repo:         repo,
+		WorkDir:      workDir,
+		Agent:        e.agent,
+		Config:       e.config,
+		DB:           e.db,
+		StepResultID: sr.ID,
 		Log: func(text string) {
 			if text != "" {
 				prefix := ""
@@ -213,6 +214,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	roundNum := 0
 	nextTrigger := "initial"
 	skipRemaining := false
+	var currentRoundID string // id of the most recently inserted round
 
 	// Execute with possible fix loop
 	for {
@@ -247,8 +249,16 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		if outcome.Findings != "" {
 			findingsPtr = &outcome.Findings
 		}
-		if _, dbErr := e.db.InsertStepRound(sr.ID, roundNum, nextTrigger, findingsPtr, roundDuration); dbErr != nil {
+		var fixSummaryPtr *string
+		if outcome.FixSummary != "" {
+			s := outcome.FixSummary
+			fixSummaryPtr = &s
+		}
+		if inserted, dbErr := e.db.InsertStepRound(sr.ID, roundNum, nextTrigger, findingsPtr, fixSummaryPtr, roundDuration); dbErr != nil {
+			currentRoundID = roundInsertID(currentRoundID, inserted, dbErr)
 			slog.Warn("failed to insert step round", "step", stepName, "round", roundNum, "error", dbErr)
+		} else {
+			currentRoundID = roundInsertID(currentRoundID, inserted, nil)
 		}
 
 		// If the step produced a PR URL, propagate it to the run and emit an update.
@@ -271,6 +281,13 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 					slog.Warn("failed to update step status in db", "step", stepName, "status", "fixing", "error", dbErr)
 				}
 				e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFixing), "", "", "", nil)
+				if currentRoundID != "" {
+					if idsJSON := findingIDsJSON(fixableFindings); idsJSON != "" {
+						if dbErr := e.db.SetStepRoundSelection(currentRoundID, &idsJSON, db.RoundSelectionSourceAutoFix); dbErr != nil {
+							slog.Warn("failed to record selected finding ids", "step", stepName, "round", roundNum, "error", dbErr)
+						}
+					}
+				}
 				phaseStart = time.Now()
 				sctx.Fixing = true
 				sctx.PreviousFindings = fixableFindings
@@ -365,9 +382,13 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			selectedFindings := filterFindingsJSON(outcome.Findings, response.findingIDs)
 			sctx.PreviousFindings = selectedFindings
 			nextTrigger = "auto_fix"
-			currentDismissed := excludeFindingsJSON(outcome.Findings, response.findingIDs)
-			previousDismissed := retainMatchingFindingsJSON(removeMatchingFindingsJSON(sctx.DismissedFindings, selectedFindings), outcome.Findings)
-			sctx.DismissedFindings = mergeFindingsJSON(previousDismissed, currentDismissed)
+			if currentRoundID != "" {
+				if idsJSON := marshalFindingIDs(response.findingIDs); idsJSON != "" {
+					if dbErr := e.db.SetStepRoundSelection(currentRoundID, &idsJSON, db.RoundSelectionSourceUser); dbErr != nil {
+						slog.Warn("failed to record selected finding ids", "step", stepName, "round", roundNum, "error", dbErr)
+					}
+				}
+			}
 			slog.Info("step fix requested, re-executing", "step", stepName)
 			continue // loop back to step.Execute
 		}
@@ -384,6 +405,13 @@ done:
 	}
 	e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusCompleted), "", "", "", &durationMS)
 	return skipRemaining, nil
+}
+
+func roundInsertID(_ string, inserted *db.StepRound, err error) string {
+	if err != nil || inserted == nil {
+		return ""
+	}
+	return inserted.ID
 }
 
 // waitForApproval blocks until a user action arrives or context is cancelled.

@@ -26,7 +26,9 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 	}
 
 	// In fix mode, ask the agent to apply documentation updates first
+	var fixSummary string
 	if sctx.Fixing {
+		historySection := roundHistoryPromptSection(sctx)
 		fixPrompt := fmt.Sprintf(
 			`Update any project documentation that needs to reflect the code changes.
 
@@ -47,7 +49,7 @@ Rules:
 - Do not change executable code or tests.
 - Return JSON with a single "summary" field when you are done.
 - The summary must be one concise sentence fragment suitable for a git commit subject.
-- Keep the summary under 10 words.
+- Keep the summary under 10 words.%s
 
 Previous documentation findings to address:
 %s`,
@@ -56,18 +58,21 @@ Previous documentation findings to address:
 			sctx.Run.HeadSHA,
 			sctx.Repo.DefaultBranch,
 			ignorePatterns,
+			historySection,
 			sctx.PreviousFindings,
 		)
-		if err := executeFixMode(sctx, s.Name(), fixExecutionOptions{
+		summary, err := executeFixMode(sctx, s.Name(), fixExecutionOptions{
 			RequirePreviousFindings: true,
 			MissingFindingsError:    "document fix requires previous findings",
 			LogMessage:              "asking agent to update documentation...",
 			Prompt:                  fixPrompt,
 			ErrorPrefix:             "agent document fix",
 			FallbackSummary:         "update documentation",
-		}); err != nil {
+		})
+		if err != nil {
 			return nil, err
 		}
+		fixSummary = summary
 	}
 
 	// Check whether there are any changed files.
@@ -83,12 +88,13 @@ Previous documentation findings to address:
 	}
 	if !hasNonIgnoredDocumentChanges(changedFiles, sctx.Config.IgnorePatterns) {
 		sctx.Log("no changes to document")
-		return &pipeline.StepOutcome{}, nil
+		return &pipeline.StepOutcome{FixSummary: fixSummary}, nil
 	}
 
 	// Assess documentation state
 	sctx.Log("checking documentation...")
 
+	reassessHistory := roundHistoryPromptSection(sctx)
 	prompt := fmt.Sprintf(
 		`Review the code changes and identify any documentation gaps.
 
@@ -121,12 +127,13 @@ Task:
 Rules:
 - Do NOT make any file changes in this mode.
 - Only report gaps where documentation is missing or stale relative to the code change.
-- Set action to "auto-fix" for all findings. Documentation gaps are objective.`,
+- Set action to "auto-fix" for all findings. Documentation gaps are objective.%s`,
 		sctx.Run.Branch,
 		baseSHA,
 		sctx.Run.HeadSHA,
 		sctx.Repo.DefaultBranch,
 		ignorePatterns,
+		reassessHistory,
 	)
 
 	result, err := sctx.Agent.Run(ctx, agent.RunOpts{
@@ -174,6 +181,7 @@ Rules:
 		NeedsApproval: needsApproval,
 		AutoFixable:   autoFixable,
 		Findings:      string(findingsJSON),
+		FixSummary:    fixSummary,
 	}, nil
 }
 

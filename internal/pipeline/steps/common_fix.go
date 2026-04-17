@@ -97,12 +97,16 @@ func deterministicFixCommitMessage(stepName types.StepName, summary string) stri
 	return fmt.Sprintf("no-mistakes(%s): %s", stepName, summary)
 }
 
-func executeFixMode(sctx *pipeline.StepContext, stepName types.StepName, opts fixExecutionOptions) error {
+// executeFixMode runs the fix agent and commits any resulting changes. It
+// returns the agent's one-line fix summary (empty when the agent returned
+// nothing parseable), which the caller should place on StepOutcome.FixSummary
+// so the executor can persist it on the round record.
+func executeFixMode(sctx *pipeline.StepContext, stepName types.StepName, opts fixExecutionOptions) (string, error) {
 	if !sctx.Fixing {
-		return nil
+		return "", nil
 	}
 	if opts.RequirePreviousFindings && sctx.PreviousFindings == "" {
-		return errors.New(opts.MissingFindingsError)
+		return "", errors.New(opts.MissingFindingsError)
 	}
 	if opts.LogMessage != "" {
 		sctx.Log(opts.LogMessage)
@@ -114,16 +118,19 @@ func executeFixMode(sctx *pipeline.StepContext, stepName types.StepName, opts fi
 		OnChunk:    sctx.LogChunk,
 	})
 	if err != nil {
-		return fmt.Errorf("%s: %w", opts.ErrorPrefix, err)
+		return "", fmt.Errorf("%s: %w", opts.ErrorPrefix, err)
 	}
 	if opts.AfterAgentRun != nil {
 		if err := opts.AfterAgentRun(result); err != nil {
-			return err
+			return "", err
 		}
 	}
 	summary, err := extractCommitSummary(result)
 	if err != nil {
 		sctx.Log(fmt.Sprintf("warning: could not parse fix summary: %v", err))
 	}
-	return commitAgentFixes(sctx, stepName, summary, opts.FallbackSummary)
+	if err := commitAgentFixes(sctx, stepName, summary, opts.FallbackSummary); err != nil {
+		return "", err
+	}
+	return summary, nil
 }

@@ -13,7 +13,7 @@ func TestStepRoundInsertAndGet(t *testing.T) {
 	step, _ := d.InsertStepResult(run.ID, types.StepReview)
 
 	findings := `{"findings":[{"id":"review-1","severity":"warning","description":"unused var"}],"summary":"1 issue"}`
-	r, err := d.InsertStepRound(step.ID, 1, "initial", &findings, 1200)
+	r, err := d.InsertStepRound(step.ID, 1, "initial", &findings, nil, 1200)
 	if err != nil {
 		t.Fatalf("insert round: %v", err)
 	}
@@ -38,6 +38,15 @@ func TestStepRoundInsertAndGet(t *testing.T) {
 	if r.CreatedAt == 0 {
 		t.Error("expected non-zero created_at")
 	}
+	if r.SelectedFindingIDs != nil {
+		t.Errorf("expected nil selected_finding_ids on fresh insert, got %v", r.SelectedFindingIDs)
+	}
+	if r.SelectionSource != nil {
+		t.Errorf("expected nil selection_source on fresh insert, got %v", r.SelectionSource)
+	}
+	if r.FixSummary != nil {
+		t.Errorf("expected nil fix_summary on non-fix round, got %v", r.FixSummary)
+	}
 }
 
 func TestStepRoundNullFindings(t *testing.T) {
@@ -46,7 +55,7 @@ func TestStepRoundNullFindings(t *testing.T) {
 	run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
 	step, _ := d.InsertStepResult(run.ID, types.StepTest)
 
-	r, err := d.InsertStepRound(step.ID, 1, "initial", nil, 500)
+	r, err := d.InsertStepRound(step.ID, 1, "initial", nil, nil, 500)
 	if err != nil {
 		t.Fatalf("insert round: %v", err)
 	}
@@ -62,8 +71,9 @@ func TestGetRoundsByStep(t *testing.T) {
 	step, _ := d.InsertStepResult(run.ID, types.StepLint)
 
 	findings1 := `{"findings":[{"id":"lint-1","severity":"error","description":"missing check"}],"summary":"1 error"}`
-	d.InsertStepRound(step.ID, 1, "initial", &findings1, 800)
-	d.InsertStepRound(step.ID, 2, "auto_fix", nil, 600)
+	d.InsertStepRound(step.ID, 1, "initial", &findings1, nil, 800)
+	fixSummary := "fix missing check"
+	d.InsertStepRound(step.ID, 2, "auto_fix", nil, &fixSummary, 600)
 
 	rounds, err := d.GetRoundsByStep(step.ID)
 	if err != nil {
@@ -81,6 +91,9 @@ func TestGetRoundsByStep(t *testing.T) {
 	if rounds[0].FindingsJSON == nil {
 		t.Fatal("expected non-nil findings on round 1")
 	}
+	if rounds[0].FixSummary != nil {
+		t.Errorf("expected nil fix_summary on initial round, got %v", rounds[0].FixSummary)
+	}
 	if rounds[1].Round != 2 {
 		t.Errorf("second round = %d, want 2", rounds[1].Round)
 	}
@@ -89,6 +102,9 @@ func TestGetRoundsByStep(t *testing.T) {
 	}
 	if rounds[1].FindingsJSON != nil {
 		t.Errorf("expected nil findings on round 2, got %v", rounds[1].FindingsJSON)
+	}
+	if rounds[1].FixSummary == nil || *rounds[1].FixSummary != fixSummary {
+		t.Errorf("second fix_summary = %v, want %q", rounds[1].FixSummary, fixSummary)
 	}
 }
 
@@ -112,9 +128,8 @@ func TestStepRoundCascadeDelete(t *testing.T) {
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
 	run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
 	step, _ := d.InsertStepResult(run.ID, types.StepReview)
-	d.InsertStepRound(step.ID, 1, "initial", nil, 100)
+	d.InsertStepRound(step.ID, 1, "initial", nil, nil, 100)
 
-	// Deleting repo should cascade to runs -> step_results -> step_rounds
 	if err := d.DeleteRepo(repo.ID); err != nil {
 		t.Fatalf("delete repo: %v", err)
 	}
@@ -124,5 +139,52 @@ func TestStepRoundCascadeDelete(t *testing.T) {
 	}
 	if len(rounds) != 0 {
 		t.Errorf("got %d rounds after cascade delete, want 0", len(rounds))
+	}
+}
+
+func TestSetStepRoundSelectedFindingIDs(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
+	step, _ := d.InsertStepResult(run.ID, types.StepReview)
+
+	findings := `{"findings":[{"id":"review-1","severity":"warning","description":"x"},{"id":"review-2","severity":"error","description":"y"}],"summary":"2"}`
+	r, err := d.InsertStepRound(step.ID, 1, "initial", &findings, nil, 50)
+	if err != nil {
+		t.Fatalf("insert round: %v", err)
+	}
+
+	selected := `["review-1"]`
+	if err := d.SetStepRoundSelection(r.ID, &selected, RoundSelectionSourceUser); err != nil {
+		t.Fatalf("set selected: %v", err)
+	}
+
+	rounds, err := d.GetRoundsByStep(step.ID)
+	if err != nil {
+		t.Fatalf("get rounds: %v", err)
+	}
+	if len(rounds) != 1 {
+		t.Fatalf("expected 1 round, got %d", len(rounds))
+	}
+	if rounds[0].SelectedFindingIDs == nil || *rounds[0].SelectedFindingIDs != selected {
+		t.Errorf("selected_finding_ids = %v, want %q", rounds[0].SelectedFindingIDs, selected)
+	}
+	if rounds[0].SelectionSource == nil || *rounds[0].SelectionSource != RoundSelectionSourceUser {
+		t.Errorf("selection_source = %v, want %q", rounds[0].SelectionSource, RoundSelectionSourceUser)
+	}
+
+	// Clearing the selection resets the column to NULL.
+	if err := d.SetStepRoundSelection(r.ID, nil, RoundSelectionSourceUser); err != nil {
+		t.Fatalf("clear selected: %v", err)
+	}
+	rounds, err = d.GetRoundsByStep(step.ID)
+	if err != nil {
+		t.Fatalf("get rounds: %v", err)
+	}
+	if rounds[0].SelectedFindingIDs != nil {
+		t.Errorf("expected nil after clear, got %v", rounds[0].SelectedFindingIDs)
+	}
+	if rounds[0].SelectionSource != nil {
+		t.Errorf("expected nil selection_source after clear, got %v", rounds[0].SelectionSource)
 	}
 }

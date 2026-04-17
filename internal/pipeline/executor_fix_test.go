@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -514,33 +516,22 @@ func TestExecutor_FixSelectedFindingsRewritesSummary(t *testing.T) {
 	}
 }
 
-func TestExecutor_FixDropsDismissedFindingsThatDisappearAcrossCycles(t *testing.T) {
+func TestExecutor_UserFixRecordsSelectedFindingIDsAndFixSummary(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir := t.TempDir()
 
-	var capturedDismissed string
 	callCount := 0
 	step := &adaptiveCallStep{
 		name: types.StepReview,
 		fn: func(sctx *StepContext) (*StepOutcome, error) {
 			callCount++
-			switch callCount {
-			case 1:
+			if callCount == 1 {
 				return &StepOutcome{
 					NeedsApproval: true,
 					Findings:      `{"findings":[{"id":"review-1","severity":"error","description":"first","action":"auto-fix"},{"id":"review-2","severity":"warning","description":"second","action":"auto-fix"}],"summary":"2 findings"}`,
 				}, nil
-			case 2:
-				return &StepOutcome{
-					NeedsApproval: true,
-					Findings:      `{"findings":[{"id":"review-2","severity":"warning","description":"second","action":"auto-fix"},{"id":"review-3","severity":"error","description":"third","action":"auto-fix"}],"summary":"2 findings"}`,
-				}, nil
-			case 3:
-				capturedDismissed = sctx.DismissedFindings
-				return &StepOutcome{}, nil
-			default:
-				return &StepOutcome{}, nil
 			}
+			return &StepOutcome{FixSummary: "fix the warning"}, nil
 		},
 	}
 
@@ -556,11 +547,6 @@ func TestExecutor_FixDropsDismissedFindingsThatDisappearAcrossCycles(t *testing.
 		t.Fatal(err)
 	}
 
-	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
-	if err := exec.Respond(types.StepReview, types.ActionFix, []string{"review-3"}); err != nil {
-		t.Fatal(err)
-	}
-
 	select {
 	case err := <-done:
 		if err != nil {
@@ -570,142 +556,125 @@ func TestExecutor_FixDropsDismissedFindingsThatDisappearAcrossCycles(t *testing.
 		t.Fatal("executor timed out")
 	}
 
-	items := mustParseFindingItems(t, capturedDismissed)
-	if len(items) != 1 {
-		t.Fatalf("expected 1 dismissed finding, got %d", len(items))
+	dbSteps, err := database.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if items[0].ID != "review-2" {
-		t.Fatalf("unexpected dismissed findings: %#v", items)
+	if len(dbSteps) != 1 {
+		t.Fatalf("expected 1 step, got %d", len(dbSteps))
+	}
+	rounds, err := database.GetRoundsByStep(dbSteps[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rounds) != 2 {
+		t.Fatalf("expected 2 rounds, got %d", len(rounds))
+	}
+
+	if rounds[0].SelectedFindingIDs == nil {
+		t.Fatal("expected selected_finding_ids set on round 1")
+	}
+	var ids []string
+	if err := json.Unmarshal([]byte(*rounds[0].SelectedFindingIDs), &ids); err != nil {
+		t.Fatalf("parse selected_finding_ids: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != "review-2" {
+		t.Fatalf("unexpected selected ids: %v", ids)
+	}
+
+	if rounds[1].FixSummary == nil || *rounds[1].FixSummary != "fix the warning" {
+		t.Fatalf("expected fix_summary %q on round 2, got %v", "fix the warning", rounds[1].FixSummary)
 	}
 }
 
-func TestExecutor_FixRemovesReselectedDismissedFinding(t *testing.T) {
+func TestExecutor_AutoFixRecordsSelectedFindingIDs(t *testing.T) {
 	database, p, run, repo := setupTest(t)
+	cfg := &config.Config{AutoFix: config.AutoFix{Review: 1}}
 	workDir := t.TempDir()
 
-	var capturedDismissed string
 	callCount := 0
 	step := &adaptiveCallStep{
 		name: types.StepReview,
 		fn: func(sctx *StepContext) (*StepOutcome, error) {
 			callCount++
-			switch callCount {
-			case 1:
+			if callCount == 1 {
 				return &StepOutcome{
-					NeedsApproval: true,
-					Findings:      `{"findings":[{"id":"review-1","severity":"error","description":"first","action":"auto-fix"},{"id":"review-2","severity":"warning","description":"second","action":"auto-fix"}],"summary":"2 findings"}`,
+					AutoFixable: true,
+					Findings:    `{"findings":[{"id":"review-1","severity":"warning","description":"a","action":"auto-fix"},{"id":"review-2","severity":"warning","description":"b","action":"ask-user"}],"summary":"2"}`,
 				}, nil
-			case 2:
-				return &StepOutcome{
-					NeedsApproval: true,
-					Findings:      `{"findings":[{"id":"review-1","severity":"error","description":"first","action":"auto-fix"},{"id":"review-3","severity":"warning","description":"third","action":"auto-fix"}],"summary":"2 findings"}`,
-				}, nil
-			case 3:
-				capturedDismissed = sctx.DismissedFindings
-				return &StepOutcome{}, nil
-			default:
-				return &StepOutcome{}, nil
 			}
+			return &StepOutcome{FixSummary: "apply cheap fix"}, nil
 		},
 	}
 
-	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
+	exec := NewExecutor(database, p, cfg, nil, []Step{step}, nil)
+	if err := exec.Execute(context.Background(), run, repo, workDir); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
 
-	done := make(chan error, 1)
-	go func() {
-		done <- exec.Execute(context.Background(), run, repo, workDir)
-	}()
-
-	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
-	if err := exec.Respond(types.StepReview, types.ActionFix, []string{"review-2"}); err != nil {
+	dbSteps, err := database.GetStepsByRun(run.ID)
+	if err != nil {
 		t.Fatal(err)
 	}
-
-	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
-	if err := exec.Respond(types.StepReview, types.ActionFix, []string{"review-1"}); err != nil {
+	rounds, err := database.GetRoundsByStep(dbSteps[0].ID)
+	if err != nil {
 		t.Fatal(err)
 	}
-
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("expected no error, got: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("executor timed out")
+	if len(rounds) != 2 {
+		t.Fatalf("expected 2 rounds, got %d", len(rounds))
 	}
-
-	items := mustParseFindingItems(t, capturedDismissed)
-	if len(items) != 1 {
-		t.Fatalf("expected 1 dismissed finding, got %d", len(items))
+	if rounds[0].SelectedFindingIDs == nil {
+		t.Fatal("expected selected_finding_ids set on round 1 after auto-fix")
 	}
-	if items[0].ID != "review-3" {
-		t.Fatalf("unexpected dismissed findings: %#v", items)
+	var ids []string
+	if err := json.Unmarshal([]byte(*rounds[0].SelectedFindingIDs), &ids); err != nil {
+		t.Fatalf("parse selected_finding_ids: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != "review-1" {
+		t.Fatalf("expected only auto-fixable id to be recorded, got %v", ids)
+	}
+	if rounds[1].FixSummary == nil || *rounds[1].FixSummary != "apply cheap fix" {
+		t.Fatalf("expected fix_summary persisted on round 2, got %v", rounds[1].FixSummary)
 	}
 }
 
-func TestExecutor_FixDropsEarlierDismissedFindingWhenOrdinalReusedForDifferentIssue(t *testing.T) {
+func TestRoundInsertIDClearsOnInsertFailure(t *testing.T) {
+	round := &db.StepRound{ID: "round-2"}
+	if got := roundInsertID("round-1", round, nil); got != "round-2" {
+		t.Fatalf("roundInsertID success = %q, want %q", got, "round-2")
+	}
+	if got := roundInsertID("round-1", nil, context.Canceled); got != "" {
+		t.Fatalf("roundInsertID failure = %q, want empty", got)
+	}
+}
+
+func TestExecutor_StepResultIDIsExposedToSteps(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir := t.TempDir()
 
-	var capturedDismissed string
-	callCount := 0
+	var capturedStepResultID string
 	step := &adaptiveCallStep{
 		name: types.StepReview,
 		fn: func(sctx *StepContext) (*StepOutcome, error) {
-			callCount++
-			switch callCount {
-			case 1:
-				return &StepOutcome{
-					NeedsApproval: true,
-					Findings:      `{"findings":[{"id":"review-1","severity":"error","description":"first","action":"auto-fix"},{"id":"review-2","severity":"warning","description":"second","action":"auto-fix"}],"summary":"2 findings"}`,
-				}, nil
-			case 2:
-				return &StepOutcome{
-					NeedsApproval: true,
-					Findings:      `{"findings":[{"id":"review-1","severity":"error","description":"replacement","action":"auto-fix"},{"id":"review-3","severity":"warning","description":"third","action":"auto-fix"}],"summary":"2 findings"}`,
-				}, nil
-			case 3:
-				capturedDismissed = sctx.DismissedFindings
-				return &StepOutcome{}, nil
-			default:
-				return &StepOutcome{}, nil
-			}
+			capturedStepResultID = sctx.StepResultID
+			return &StepOutcome{}, nil
 		},
 	}
 
 	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
+	if err := exec.Execute(context.Background(), run, repo, workDir); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
 
-	done := make(chan error, 1)
-	go func() {
-		done <- exec.Execute(context.Background(), run, repo, workDir)
-	}()
-
-	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
-	if err := exec.Respond(types.StepReview, types.ActionFix, []string{"review-2"}); err != nil {
+	if capturedStepResultID == "" {
+		t.Fatal("expected StepContext.StepResultID to be populated")
+	}
+	dbSteps, err := database.GetStepsByRun(run.ID)
+	if err != nil {
 		t.Fatal(err)
 	}
-
-	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
-	if err := exec.Respond(types.StepReview, types.ActionFix, []string{"review-1"}); err != nil {
-		t.Fatal(err)
-	}
-
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("expected no error, got: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("executor timed out")
-	}
-
-	items := mustParseFindingItems(t, capturedDismissed)
-	if len(items) != 1 {
-		t.Fatalf("expected 1 dismissed finding, got %d", len(items))
-	}
-	if items[0].Description != "third" {
-		t.Fatalf("unexpected dismissed findings: %#v", items)
+	if len(dbSteps) != 1 || dbSteps[0].ID != capturedStepResultID {
+		t.Fatalf("StepResultID did not match the step's DB row (got %q, want %q)", capturedStepResultID, dbSteps[0].ID)
 	}
 }
 

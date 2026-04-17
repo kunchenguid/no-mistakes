@@ -38,12 +38,24 @@ CREATE TABLE IF NOT EXISTS step_results (
 );
 
 CREATE TABLE IF NOT EXISTS step_rounds (
-    id             TEXT PRIMARY KEY,
-    step_result_id TEXT NOT NULL REFERENCES step_results(id) ON DELETE CASCADE,
-    round          INTEGER NOT NULL,
-    trigger_type   TEXT NOT NULL,
-    findings_json  TEXT,
-    duration_ms    INTEGER NOT NULL,
-    created_at     INTEGER NOT NULL
+    id                   TEXT PRIMARY KEY,
+    step_result_id       TEXT NOT NULL REFERENCES step_results(id) ON DELETE CASCADE,
+    round                INTEGER NOT NULL,
+    trigger_type         TEXT NOT NULL,
+    findings_json        TEXT,
+    selected_finding_ids TEXT,
+    selection_source     TEXT,
+    fix_summary          TEXT,
+    duration_ms          INTEGER NOT NULL,
+    created_at           INTEGER NOT NULL
 );
 `
+
+// migrationStatements hold additive schema changes applied to databases that
+// were created before the referenced columns existed. Each statement must be
+// idempotent via its error being tolerated when the column already exists.
+var migrationStatements = []string{
+	`ALTER TABLE step_rounds ADD COLUMN selected_finding_ids TEXT`,
+	`ALTER TABLE step_rounds ADD COLUMN selection_source TEXT`,
+	`ALTER TABLE step_rounds ADD COLUMN fix_summary TEXT`,
+}
