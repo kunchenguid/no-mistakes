@@ -11,7 +11,7 @@ Attach to the active pipeline run for the current repo. Bare `no-mistakes` first
 no-mistakes
 ```
 
-Equivalent to `no-mistakes attach` when a run is active on the current branch.
+Unlike `no-mistakes attach`, bare `no-mistakes` only auto-attaches to an active run on the current branch.
 
 ## no-mistakes init
 
