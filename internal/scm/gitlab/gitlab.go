@@ -65,17 +65,30 @@ func (p mrPayload) toPR() *scm.PR {
 	return pr
 }
 
-func (h *Host) FindPR(ctx context.Context, branch, _ string) (*scm.PR, error) {
-	cmd := h.cmd(ctx, "glab", "mr", "view", branch, "--output", "json")
+func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error) {
+	args := []string{"mr", "list", "--source-branch", branch}
+	if strings.TrimSpace(base) != "" {
+		args = append(args, "--target-branch", base)
+	}
+	args = append(args, "--state", "opened", "--output", "json")
+	cmd := h.cmd(ctx, "glab", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, nil
 	}
-	mr, ok := parseMRPayload(out)
-	if !ok || strings.TrimSpace(mr.WebURL) == "" && strings.TrimSpace(mr.URL) == "" {
+	trimmed := bytesTrimToJSON(out)
+	if len(trimmed) == 0 {
 		return nil, nil
 	}
-	return mr.toPR(), nil
+	var mrs []mrPayload
+	if err := json.Unmarshal(trimmed, &mrs); err != nil || len(mrs) == 0 {
+		return nil, nil
+	}
+	pr := mrs[0].toPR()
+	if pr.URL == "" {
+		return nil, nil
+	}
+	return pr, nil
 }
 
 func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PRContent) (*scm.PR, error) {

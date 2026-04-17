@@ -43,19 +43,32 @@ func (h *Host) Available(ctx context.Context) error {
 	return nil
 }
 
-func (h *Host) FindPR(ctx context.Context, branch, _ string) (*scm.PR, error) {
-	cmd := h.cmd(ctx, "gh", "pr", "view", branch, "--json", "url", "--jq", ".url")
+func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error) {
+	args := []string{"pr", "list", "--head", branch}
+	if strings.TrimSpace(base) != "" {
+		args = append(args, "--base", base)
+	}
+	args = append(args, "--state", "open", "--json", "number,url")
+	cmd := h.cmd(ctx, "gh", args...)
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, nil
 	}
-	url := strings.TrimSpace(string(out))
-	if url == "" {
+	var prs []struct {
+		Number int    `json:"number"`
+		URL    string `json:"url"`
+	}
+	if err := json.Unmarshal(out, &prs); err != nil || len(prs) == 0 {
 		return nil, nil
 	}
-	pr := &scm.PR{URL: url}
-	if num, nerr := scm.ExtractPRNumber(url); nerr == nil {
+	pr := &scm.PR{URL: strings.TrimSpace(prs[0].URL)}
+	if prs[0].Number > 0 {
+		pr.Number = fmt.Sprintf("%d", prs[0].Number)
+	} else if num, nerr := scm.ExtractPRNumber(pr.URL); nerr == nil {
 		pr.Number = num
+	}
+	if pr.URL == "" {
+		return nil, nil
 	}
 	return pr, nil
 }

@@ -62,6 +62,30 @@ func TestFetchFailedCheckLogsSelectsMatchingRunForHeadSHA(t *testing.T) {
 	}
 }
 
+func TestFindPRFiltersByBaseBranch(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr list --head feature/refactor --base release/1.0 --state open --json number,url": {
+			stdout: `[{"number":42,"url":"https://github.example.com/org/repo/pull/42"}]` + "\n",
+		},
+	}), nil)
+
+	pr, err := host.FindPR(context.Background(), "feature/refactor", "release/1.0")
+	if err != nil {
+		t.Fatalf("FindPR() error = %v", err)
+	}
+	if pr == nil {
+		t.Fatal("FindPR() = nil, want PR")
+	}
+	if pr.Number != "42" {
+		t.Fatalf("FindPR() number = %q, want %q", pr.Number, "42")
+	}
+	if pr.URL != "https://github.example.com/org/repo/pull/42" {
+		t.Fatalf("FindPR() URL = %q, want matching base PR", pr.URL)
+	}
+}
+
 type githubTestResponse struct {
 	stdout string
 	stderr string

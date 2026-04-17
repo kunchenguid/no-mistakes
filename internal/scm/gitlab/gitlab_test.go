@@ -185,8 +185,8 @@ func TestFindPRWithoutIIDKeepsNumberEmptyAndUpdatesByNumberFromURL(t *testing.T)
 	branch := "feature/refactor"
 	url := "https://gitlab.example.com/group/project/-/merge_requests/42"
 	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
-		"glab mr view " + branch + " --output json": {
-			stdout: fmt.Sprintf(`{"web_url":%q}`+"\n", url),
+		"glab mr list --source-branch " + branch + " --target-branch main --state opened --output json": {
+			stdout: fmt.Sprintf(`[{"web_url":%q}]`+"\n", url),
 		},
 		"glab mr update 42 --title updated --description body --yes": {
 			stdout: "updated\n",
@@ -213,6 +213,30 @@ func TestFindPRWithoutIIDKeepsNumberEmptyAndUpdatesByNumberFromURL(t *testing.T)
 	}
 	if updated != pr {
 		t.Fatalf("UpdatePR() returned unexpected PR: %+v", updated)
+	}
+}
+
+func TestFindPRFiltersByBaseBranch(t *testing.T) {
+	t.Parallel()
+
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab mr list --source-branch feature/refactor --target-branch release/1.0 --state opened --output json": {
+			stdout: `[{"iid":42,"web_url":"https://gitlab.example.com/group/project/-/merge_requests/42"}]` + "\n",
+		},
+	}), nil)
+
+	pr, err := host.FindPR(context.Background(), "feature/refactor", "release/1.0")
+	if err != nil {
+		t.Fatalf("FindPR() error = %v", err)
+	}
+	if pr == nil {
+		t.Fatal("FindPR() = nil, want PR")
+	}
+	if pr.Number != "42" {
+		t.Fatalf("FindPR() number = %q, want %q", pr.Number, "42")
+	}
+	if pr.URL != "https://gitlab.example.com/group/project/-/merge_requests/42" {
+		t.Fatalf("FindPR() URL = %q, want matching base MR", pr.URL)
 	}
 }
 
