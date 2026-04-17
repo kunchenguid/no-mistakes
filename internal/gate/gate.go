@@ -13,7 +13,8 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 )
 
-const remoteName = "no-mistakes"
+// RemoteName is the name of the git remote that points to the local gate.
+const RemoteName = "no-mistakes"
 
 // repoID generates a deterministic 12-char hex ID from an absolute path.
 func repoID(absPath string) string {
@@ -72,7 +73,7 @@ func Init(ctx context.Context, d *db.DB, p *paths.Paths, workDir string) (*db.Re
 	}
 
 	// Add remote to working repo.
-	if err := git.AddRemote(ctx, absRoot, remoteName, bareDir); err != nil {
+	if err := git.AddRemote(ctx, absRoot, RemoteName, bareDir); err != nil {
 		os.RemoveAll(bareDir)
 		return nil, fmt.Errorf("add remote: %w", err)
 	}
@@ -84,7 +85,7 @@ func Init(ctx context.Context, d *db.DB, p *paths.Paths, workDir string) (*db.Re
 	repo, err := d.InsertRepoWithID(id, absRoot, upstreamURL, branch)
 	if err != nil {
 		// Rollback: remove remote and bare repo.
-		git.RemoveRemote(ctx, absRoot, remoteName)
+		git.RemoveRemote(ctx, absRoot, RemoteName)
 		os.RemoveAll(bareDir)
 		return nil, fmt.Errorf("insert repo: %w", err)
 	}
@@ -115,7 +116,7 @@ func Eject(ctx context.Context, d *db.DB, p *paths.Paths, workDir string) (*db.R
 	}
 
 	// Remove remote from working repo (non-fatal).
-	_ = git.RemoveRemote(ctx, absRoot, remoteName)
+	_ = git.RemoveRemote(ctx, absRoot, RemoteName)
 
 	// Delete bare repo.
 	bareDir := p.RepoDir(repo.ID)

@@ -3,13 +3,42 @@ package agent
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
+	"sync"
 	"time"
 )
+
+// managedServerOutput holds the writer used for managed-server stdout and
+// stderr. Defaults to os.Stderr so debug output is visible in normal CLI
+// sessions; callers rendering to a raw terminal (e.g. the setup wizard
+// alt-screen) should override it so log lines don't corrupt the display.
+var (
+	managedServerOutputMu sync.Mutex
+	managedServerOutput   io.Writer = os.Stderr
+)
+
+// SetManagedServerOutput routes future managed-server stdout/stderr to w.
+// Passing nil resets to the default (os.Stderr). Only affects servers
+// started after this call; already-running servers keep their original fds.
+func SetManagedServerOutput(w io.Writer) {
+	managedServerOutputMu.Lock()
+	defer managedServerOutputMu.Unlock()
+	if w == nil {
+		w = os.Stderr
+	}
+	managedServerOutput = w
+}
+
+func currentManagedServerOutput() io.Writer {
+	managedServerOutputMu.Lock()
+	defer managedServerOutputMu.Unlock()
+	return managedServerOutput
+}
 
 // managedServer manages a persistent HTTP server process (used by rovodev and opencode agents).
 type managedServer struct {
@@ -37,8 +66,9 @@ func startServerWithPort(ctx context.Context, bin string, args []string, cwd str
 	cmd := exec.Command(bin, args...)
 	cmd.Dir = cwd
 	cmd.Stdin = nil
-	cmd.Stdout = os.Stderr // server stdout goes to our stderr for debugging
-	cmd.Stderr = os.Stderr
+	out := currentManagedServerOutput()
+	cmd.Stdout = out // server stdout goes to the configured sink for debugging
+	cmd.Stderr = out
 	configureManagedServerCmd(cmd)
 
 	if err := cmd.Start(); err != nil {

@@ -79,14 +79,23 @@ func (d *DB) GetRunsByRepo(repoID string) ([]*Run, error) {
 	return runs, rows.Err()
 }
 
-// GetActiveRun returns the currently active run (pending or running) for a repo, if any.
-// When branch is non-empty, runs matching that branch are preferred; otherwise
-// falls back to the most recently created active run.
+// GetActiveRun returns the currently active run (pending or running) for a repo,
+// if any. When branch is non-empty, only a run on that exact branch is returned
+// — the setup wizard relies on this to decide whether a new run is needed for
+// the current branch. When branch is empty, returns the most recently created
+// active run across any branch.
 func (d *DB) GetActiveRun(repoID, branch string) (*Run, error) {
 	r := &Run{}
-	err := d.sql.QueryRow(
-		`SELECT id, repo_id, branch, head_sha, base_sha, status, pr_url, error, created_at, updated_at FROM runs WHERE repo_id = ? AND status IN ('pending', 'running') ORDER BY (branch = ?) DESC, created_at DESC, id DESC LIMIT 1`, repoID, branch,
-	).Scan(&r.ID, &r.RepoID, &r.Branch, &r.HeadSHA, &r.BaseSHA, &r.Status, &r.PRURL, &r.Error, &r.CreatedAt, &r.UpdatedAt)
+	var err error
+	if branch == "" {
+		err = d.sql.QueryRow(
+			`SELECT id, repo_id, branch, head_sha, base_sha, status, pr_url, error, created_at, updated_at FROM runs WHERE repo_id = ? AND status IN ('pending', 'running') ORDER BY created_at DESC, id DESC LIMIT 1`, repoID,
+		).Scan(&r.ID, &r.RepoID, &r.Branch, &r.HeadSHA, &r.BaseSHA, &r.Status, &r.PRURL, &r.Error, &r.CreatedAt, &r.UpdatedAt)
+	} else {
+		err = d.sql.QueryRow(
+			`SELECT id, repo_id, branch, head_sha, base_sha, status, pr_url, error, created_at, updated_at FROM runs WHERE repo_id = ? AND branch = ? AND status IN ('pending', 'running') ORDER BY created_at DESC, id DESC LIMIT 1`, repoID, branch,
+		).Scan(&r.ID, &r.RepoID, &r.Branch, &r.HeadSHA, &r.BaseSHA, &r.Status, &r.PRURL, &r.Error, &r.CreatedAt, &r.UpdatedAt)
+	}
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

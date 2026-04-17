@@ -162,3 +162,162 @@ func TestFindGitRootNotFound(t *testing.T) {
 		t.Fatal("expected error for non-git directory")
 	}
 }
+
+func TestHasUncommittedChangesClean(t *testing.T) {
+	dir := initTestRepo(t)
+	ctx := context.Background()
+
+	dirty, err := HasUncommittedChanges(ctx, dir)
+	if err != nil {
+		t.Fatalf("HasUncommittedChanges failed: %v", err)
+	}
+	if dirty {
+		t.Fatal("expected clean repo, got dirty")
+	}
+}
+
+func TestHasUncommittedChangesModifiedFile(t *testing.T) {
+	dir := initTestRepo(t)
+	ctx := context.Background()
+
+	writeFile(t, filepath.Join(dir, "README.md"), "# changed\n")
+
+	dirty, err := HasUncommittedChanges(ctx, dir)
+	if err != nil {
+		t.Fatalf("HasUncommittedChanges failed: %v", err)
+	}
+	if !dirty {
+		t.Fatal("expected dirty repo after modifying file")
+	}
+}
+
+func TestHasUncommittedChangesUntrackedFile(t *testing.T) {
+	dir := initTestRepo(t)
+	ctx := context.Background()
+
+	writeFile(t, filepath.Join(dir, "new.txt"), "new\n")
+
+	dirty, err := HasUncommittedChanges(ctx, dir)
+	if err != nil {
+		t.Fatalf("HasUncommittedChanges failed: %v", err)
+	}
+	if !dirty {
+		t.Fatal("expected dirty repo with untracked file")
+	}
+}
+
+func TestHasUncommittedChangesStagedOnly(t *testing.T) {
+	dir := initTestRepo(t)
+	ctx := context.Background()
+
+	writeFile(t, filepath.Join(dir, "staged.txt"), "staged\n")
+	run(t, dir, "git", "add", "staged.txt")
+
+	dirty, err := HasUncommittedChanges(ctx, dir)
+	if err != nil {
+		t.Fatalf("HasUncommittedChanges failed: %v", err)
+	}
+	if !dirty {
+		t.Fatal("expected dirty repo with staged-only change")
+	}
+}
+
+func TestCreateBranch(t *testing.T) {
+	dir := initTestRepo(t)
+	ctx := context.Background()
+
+	if err := CreateBranch(ctx, dir, "feature/new"); err != nil {
+		t.Fatalf("CreateBranch failed: %v", err)
+	}
+
+	branch, err := CurrentBranch(ctx, dir)
+	if err != nil {
+		t.Fatalf("CurrentBranch failed: %v", err)
+	}
+	if branch != "feature/new" {
+		t.Fatalf("expected 'feature/new', got %q", branch)
+	}
+}
+
+func TestCreateBranchDuplicate(t *testing.T) {
+	dir := initTestRepo(t)
+	ctx := context.Background()
+
+	if err := CreateBranch(ctx, dir, "dup"); err != nil {
+		t.Fatalf("first CreateBranch failed: %v", err)
+	}
+	// Switch away so we can try to create the same branch again.
+	run(t, dir, "git", "checkout", "-")
+
+	if err := CreateBranch(ctx, dir, "dup"); err == nil {
+		t.Fatal("expected error creating duplicate branch")
+	}
+}
+
+func TestCommitAll(t *testing.T) {
+	dir := initTestRepo(t)
+	ctx := context.Background()
+
+	writeFile(t, filepath.Join(dir, "a.txt"), "a\n")
+	writeFile(t, filepath.Join(dir, "b.txt"), "b\n")
+
+	if err := CommitAll(ctx, dir, "add a and b"); err != nil {
+		t.Fatalf("CommitAll failed: %v", err)
+	}
+
+	dirty, err := HasUncommittedChanges(ctx, dir)
+	if err != nil {
+		t.Fatalf("HasUncommittedChanges after commit failed: %v", err)
+	}
+	if dirty {
+		t.Fatal("expected clean repo after CommitAll")
+	}
+
+	msg := run(t, dir, "git", "log", "-1", "--pretty=%B")
+	if !strings.Contains(msg, "add a and b") {
+		t.Fatalf("commit message missing subject, got %q", msg)
+	}
+}
+
+func TestCommitAllNoChanges(t *testing.T) {
+	dir := initTestRepo(t)
+	ctx := context.Background()
+
+	if err := CommitAll(ctx, dir, "nothing"); err == nil {
+		t.Fatal("expected error committing with no changes")
+	}
+}
+
+func TestIsDetachedHEADOnBranch(t *testing.T) {
+	dir := initTestRepo(t)
+	ctx := context.Background()
+
+	detached, err := IsDetachedHEAD(ctx, dir)
+	if err != nil {
+		t.Fatalf("IsDetachedHEAD failed: %v", err)
+	}
+	if detached {
+		t.Fatal("fresh repo on a branch should not be detached")
+	}
+}
+
+func TestIsDetachedHEADWhenDetached(t *testing.T) {
+	dir := initTestRepo(t)
+	ctx := context.Background()
+
+	// Make a second commit so we have a specific SHA to detach onto.
+	writeFile(t, filepath.Join(dir, "two.txt"), "two\n")
+	run(t, dir, "git", "add", ".")
+	run(t, dir, "git", "commit", "-m", "second")
+	sha := run(t, dir, "git", "rev-parse", "HEAD~1")
+
+	run(t, dir, "git", "checkout", sha)
+
+	detached, err := IsDetachedHEAD(ctx, dir)
+	if err != nil {
+		t.Fatalf("IsDetachedHEAD failed: %v", err)
+	}
+	if !detached {
+		t.Fatal("expected detached HEAD after checking out a commit SHA")
+	}
+}

@@ -90,7 +90,7 @@ func TestActiveRun(t *testing.T) {
 	}
 }
 
-func TestActiveRunPrefersBranch(t *testing.T) {
+func TestActiveRunStrictBranchMatch(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/branchpref", "git@github.com:user/branchpref.git", "main")
 
@@ -107,7 +107,7 @@ func TestActiveRunPrefersBranch(t *testing.T) {
 		t.Fatalf("expected newest run %q, got %v", runB.ID, active)
 	}
 
-	// With branch hint "feature-a", the older matching run wins.
+	// With branch hint "feature-a", the matching run is returned.
 	active, err = d.GetActiveRun(repo.ID, "feature-a")
 	if err != nil {
 		t.Fatalf("get active run with branch: %v", err)
@@ -125,13 +125,15 @@ func TestActiveRunPrefersBranch(t *testing.T) {
 		t.Fatalf("expected branch-matching run %q, got %q", runB.ID, active.ID)
 	}
 
-	// With branch hint for a non-existent branch, falls back to newest.
+	// With branch hint for a non-existent branch, return nil (strict match,
+	// no fallback). This is what lets the setup wizard know a fresh run is
+	// needed for the current branch.
 	active, err = d.GetActiveRun(repo.ID, "feature-c")
 	if err != nil {
 		t.Fatalf("get active run with unknown branch: %v", err)
 	}
-	if active == nil || active.ID != runB.ID {
-		t.Fatalf("expected fallback to newest run %q, got %q", runB.ID, active.ID)
+	if active != nil {
+		t.Fatalf("expected nil with no matching branch, got run %q on %q", active.ID, active.Branch)
 	}
 }
 

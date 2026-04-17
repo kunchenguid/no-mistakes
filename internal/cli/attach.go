@@ -4,14 +4,15 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/db"
-	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/tui"
 	"github.com/kunchenguid/no-mistakes/internal/update"
+	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 )
 
@@ -48,6 +49,7 @@ func attachRun(w io.Writer, runID string) error {
 
 	var run *ipc.RunInfo
 	var repoID string
+	var state *repoState
 
 	if runID != "" {
 		// Fetch specific run.
@@ -59,23 +61,62 @@ func attachRun(w io.Writer, runID string) error {
 	} else {
 		repoID = repo.ID
 
-		// Detect current branch to prefer runs on the same branch.
-		branch, _ := git.CurrentBranch(context.Background(), ".")
-
-		// Get active run for this repo, preferring the current branch.
-		var result ipc.GetActiveRunResult
-		if err := client.Call(ipc.MethodGetActiveRun, &ipc.GetActiveRunParams{RepoID: repo.ID, Branch: branch}, &result); err != nil {
-			return fmt.Errorf("get active run: %w", err)
+		// Detect current state so we can decide between attach and wizard
+		// consistently with what the wizard itself will see.
+		state, err = detectRepoState(context.Background(), repo)
+		if err != nil {
+			return err
 		}
-		run = result.Run
+
+		// Skip the active-run check entirely when the state clearly calls
+		// for the wizard (detached HEAD, or default branch with pending
+		// changes) — pipelines for the user's current situation don't
+		// match any existing run.
+		if !state.shouldRouteToWizard() {
+			var result ipc.GetActiveRunResult
+			if err := client.Call(ipc.MethodGetActiveRun, &ipc.GetActiveRunParams{RepoID: repo.ID, Branch: state.currentBranch}, &result); err != nil {
+				return fmt.Errorf("get active run: %w", err)
+			}
+			run = result.Run
+		}
 	}
 
 	if run == nil {
-		printNoActiveRun(w, d, repoID)
-		return nil
+		// No active run — if the user ran bare `no-mistakes` in their repo
+		// from a TTY, offer the interactive setup wizard instead of just
+		// dumping a hint. Skip the wizard in non-interactive contexts
+		// (tests, CI, piped output) and fall back to the old behavior.
+		if runID == "" && repo != nil && state != nil && isInteractive() {
+			res, wErr := runWizard(context.Background(), p, state)
+			if wErr != nil {
+				return wErr
+			}
+			if res.Success {
+				run, err = waitForActiveRun(client, repo.ID, res.TargetBranch, 5*time.Second)
+				if err != nil {
+					return fmt.Errorf("wait for active run: %w", err)
+				}
+			}
+			if run == nil {
+				if !res.Aborted {
+					printNoActiveRun(w, d, repoID)
+				}
+				return nil
+			}
+		} else {
+			printNoActiveRun(w, d, repoID)
+			return nil
+		}
 	}
 
 	return tui.Run(p.Socket(), client, run, update.CachedLatestVersion())
+}
+
+// isInteractive reports whether stdin and stdout are both connected to a
+// terminal. The wizard needs a real TTY to read keystrokes; in non-interactive
+// contexts we fall back to printing hints.
+func isInteractive() bool {
+	return isatty.IsTerminal(os.Stdin.Fd()) && isatty.IsTerminal(os.Stdout.Fd())
 }
 
 const recentRunsLimit = 5
