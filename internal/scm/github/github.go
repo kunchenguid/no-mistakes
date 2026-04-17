@@ -133,28 +133,117 @@ func (h *Host) GetMergeableState(ctx context.Context, pr *scm.PR) (scm.Mergeable
 	return normalizeMergeableState(strings.TrimSpace(string(out))), nil
 }
 
-func (h *Host) FetchFailedCheckLogs(ctx context.Context, _ *scm.PR, branch, _ string, failingNames []string) (string, error) {
+func (h *Host) FetchFailedCheckLogs(ctx context.Context, _ *scm.PR, branch, headSHA string, failingNames []string) (string, error) {
 	if len(failingNames) == 0 {
 		return "", nil
 	}
-	listCmd := h.cmd(ctx, "gh", "run", "list",
-		"--branch", branch,
+	targets := make(map[string]struct{}, len(failingNames))
+	for _, name := range failingNames {
+		name = normalizeRunName(name)
+		if name != "" {
+			targets[name] = struct{}{}
+		}
+	}
+	if len(targets) == 0 {
+		return "", nil
+	}
+	args := []string{"run", "list", "--branch", branch}
+	if strings.TrimSpace(headSHA) != "" {
+		args = append(args, "--commit", strings.TrimSpace(headSHA))
+	}
+	args = append(args,
 		"--status", "failure",
-		"--limit", "1",
-		"--json", "databaseId",
-		"--jq", ".[0].databaseId",
+		"--limit", "20",
+		"--json", "databaseId,headSha,name,displayTitle,workflowName",
 	)
+	listCmd := h.cmd(ctx, "gh", args...)
 	listOut, err := listCmd.Output()
 	if err != nil {
 		return "", nil
 	}
-	runID := strings.TrimSpace(string(listOut))
-	if runID == "" {
+	var runs []githubRun
+	if err := json.Unmarshal(listOut, &runs); err != nil {
 		return "", nil
 	}
-	viewCmd := h.cmd(ctx, "gh", "run", "view", runID, "--log-failed")
-	out, _ := viewCmd.Output()
-	return strings.TrimSpace(string(out)), nil
+	for _, run := range runs {
+		if !runMatchesTargets(ctx, h, run, targets) {
+			continue
+		}
+		viewCmd := h.cmd(ctx, "gh", "run", "view", fmt.Sprintf("%d", run.DatabaseID), "--log-failed")
+		out, err := viewCmd.Output()
+		if err != nil {
+			continue
+		}
+		logs := strings.TrimSpace(string(out))
+		if logs != "" {
+			return logs, nil
+		}
+	}
+	return "", nil
+}
+
+type githubRun struct {
+	DatabaseID   int    `json:"databaseId"`
+	HeadSHA      string `json:"headSha"`
+	Name         string `json:"name"`
+	DisplayTitle string `json:"displayTitle"`
+	WorkflowName string `json:"workflowName"`
+}
+
+type githubRunView struct {
+	Jobs []githubRunJob `json:"jobs"`
+}
+
+type githubRunJob struct {
+	Name       string `json:"name"`
+	Conclusion string `json:"conclusion"`
+	Status     string `json:"status"`
+}
+
+func runMatchesTargets(ctx context.Context, h *Host, run githubRun, targets map[string]struct{}) bool {
+	for _, candidate := range []string{run.Name, run.DisplayTitle, run.WorkflowName} {
+		if _, ok := targets[normalizeRunName(candidate)]; ok {
+			return true
+		}
+	}
+	if run.DatabaseID == 0 {
+		return false
+	}
+	viewCmd := h.cmd(ctx, "gh", "run", "view", fmt.Sprintf("%d", run.DatabaseID), "--json", "jobs")
+	out, err := viewCmd.Output()
+	if err != nil {
+		return false
+	}
+	var payload githubRunView
+	if err := json.Unmarshal(out, &payload); err != nil {
+		return false
+	}
+	for _, job := range payload.Jobs {
+		if !isFailedJob(job) {
+			continue
+		}
+		if _, ok := targets[normalizeRunName(job.Name)]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func isFailedJob(job githubRunJob) bool {
+	state := strings.ToUpper(strings.TrimSpace(job.Conclusion))
+	if state == "" {
+		state = strings.ToUpper(strings.TrimSpace(job.Status))
+	}
+	switch state {
+	case "FAILURE", "FAILED", "ERROR", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeRunName(name string) string {
+	return strings.ToLower(strings.TrimSpace(name))
 }
 
 func normalizePRState(raw string) scm.PRState {

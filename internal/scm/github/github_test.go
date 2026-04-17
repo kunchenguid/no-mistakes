@@ -35,6 +35,33 @@ func TestGetChecksFallsBackToStateWhenBucketMissing(t *testing.T) {
 	}
 }
 
+func TestFetchFailedCheckLogsSelectsMatchingRunForHeadSHA(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh run list --branch feature --commit abc123 --status failure --limit 20 --json databaseId,headSha,name,displayTitle,workflowName": {
+			stdout: `[{"databaseId":101,"headSha":"abc123","name":"CI","displayTitle":"feature","workflowName":"CI"},{"databaseId":102,"headSha":"abc123","name":"Lint","displayTitle":"lint","workflowName":"Lint"}]` + "\n",
+		},
+		"gh run view 101 --json jobs": {
+			stdout: `{"jobs":[{"name":"unit","conclusion":"failure"}]}` + "\n",
+		},
+		"gh run view 102 --json jobs": {
+			stdout: `{"jobs":[{"name":"lint","conclusion":"failure"}]}` + "\n",
+		},
+		"gh run view 102 --log-failed": {
+			stdout: "lint failed\n",
+		},
+	}), nil)
+
+	logs, err := host.FetchFailedCheckLogs(context.Background(), &scm.PR{Number: "123"}, "feature", "abc123", []string{"lint"})
+	if err != nil {
+		t.Fatalf("FetchFailedCheckLogs() error = %v", err)
+	}
+	if logs != "lint failed" {
+		t.Fatalf("FetchFailedCheckLogs() = %q, want %q", logs, "lint failed")
+	}
+}
+
 type githubTestResponse struct {
 	stdout string
 	stderr string
