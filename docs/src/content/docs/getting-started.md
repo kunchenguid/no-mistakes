@@ -40,9 +40,9 @@ make install
 
 - **git** - required
 - **One supported agent binary** - `claude`, `codex`, `acli` (Rovo Dev), or `opencode`
-- **gh** (GitHub CLI) or **glab** (GitLab CLI) - optional, needed for GitHub/GitLab PR creation
+- **gh** (GitHub CLI) or **glab** (GitLab CLI) - optional, needed for GitHub/GitLab PR creation and CI monitoring
 - **Bitbucket API credentials** - optional, needed for Bitbucket Cloud PR creation and CI monitoring: `NO_MISTAKES_BITBUCKET_EMAIL` and `NO_MISTAKES_BITBUCKET_API_TOKEN`
-- **gh** (GitHub CLI) - optional, needed for GitHub CI monitoring
+- **gh** (GitHub CLI) - optional, needed for GitHub CI monitoring and mergeability checks
 
 Run `no-mistakes doctor` to check what's installed and ready.
 
