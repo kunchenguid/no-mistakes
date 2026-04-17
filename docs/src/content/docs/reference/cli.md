@@ -105,7 +105,7 @@ Checks:
 
 Uses indicators: `✓` (available), `–` (not found, optional), `✗` (problem detected).
 
-For GitLab PR and CI steps, install `glab`. For Bitbucket Cloud PR and CI steps, set `NO_MISTAKES_BITBUCKET_EMAIL` and `NO_MISTAKES_BITBUCKET_API_TOKEN`.
+`doctor` currently checks `gh` availability only. For GitLab PR and CI steps, install and authenticate `glab`. For Bitbucket Cloud PR and CI steps, set `NO_MISTAKES_BITBUCKET_EMAIL` and `NO_MISTAKES_BITBUCKET_API_TOKEN`.
 
 ## no-mistakes update
 
