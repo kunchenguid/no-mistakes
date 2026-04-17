@@ -124,27 +124,28 @@ Stores the PR URL in the database and streams it to the TUI.
 
 ## CI
 
-Monitors PR health after creation and auto-fixes CI failures. Mergeability polling and merge-conflict handling currently remain GitHub-only.
+Monitors PR health after creation and auto-fixes CI failures. Mergeability polling and merge-conflict handling now apply to both GitHub and GitLab.
 
-**Active for GitHub and Bitbucket Cloud (`bitbucket.org`)**.
+**Active for GitHub, GitLab, and Bitbucket Cloud (`bitbucket.org`)**.
 
 - GitHub requires `gh` CLI, installed and authenticated.
+- GitLab requires `glab` CLI, installed and authenticated.
 - Bitbucket Cloud requires `NO_MISTAKES_BITBUCKET_EMAIL` and `NO_MISTAKES_BITBUCKET_API_TOKEN`.
 
 **Behavior:**
 - Polls provider CI status at increasing intervals: every 30s for the first 5 minutes, every 60s for 5-15 minutes, every 120s after that
-- On GitHub, polls `gh pr view --json mergeable` alongside CI checks and waits for GitHub to resolve mergeability before exiting
+- On GitHub and GitLab, polls provider mergeability alongside CI checks and waits for that state to resolve before exiting
 - Waits a 60s grace period before trusting empty results (CI checks may not have registered yet)
-- If CI failures or, on GitHub, a merge conflict are already known while other checks are still pending: waits for all checks to finish before attempting an auto-fix
-- On CI failure: fetches failed job logs (GitHub via `gh run view --log-failed`, Bitbucket Cloud via failed pipeline step logs), sends them to the agent for fixing, and commits and force-pushes only if the agent produces changes
-- On GitHub merge conflict: asks the agent to rebase onto the latest default-branch tip and resolve the conflicts with minimal changes
-- If both CI failures and a GitHub merge conflict are present: fixes both in the same attempt
+- If CI failures or, on GitHub or GitLab, a merge conflict are already known while other checks are still pending: waits for all checks to finish before attempting an auto-fix
+- On CI failure: fetches failed job logs (GitHub via `gh run view --log-failed`, GitLab via `glab ci trace`, Bitbucket Cloud via failed pipeline step logs), sends them to the agent for fixing, and commits and force-pushes only if the agent produces changes
+- On GitHub or GitLab merge conflict: asks the agent to rebase onto the latest default-branch tip and resolve the conflicts with minimal changes
+- If both CI failures and a GitHub or GitLab merge conflict are present: fixes both in the same attempt
 - If a fix attempt produces no changes: automatic mode leaves the failure undeduplicated so it can retry until the auto-fix limit, while manual fix mode returns immediately for manual intervention
 - Deduplicates fix attempts only after a fix is actually committed and pushed
 - Exits cleanly when the PR is merged, closed, or declined, or when the timeout is reached with no known CI failures, merge conflicts, or unresolved mergeability state (default 4h)
-- If the timeout is reached while CI failures or, on GitHub, a merge conflict are still known: pauses for user approval with findings for the remaining issues
-- If the timeout is reached while GitHub PR mergeability is still unresolved: pauses for user approval with a finding describing the unresolved mergeability state
-- If CI failures or a GitHub merge conflict persist after the auto-fix limit: pauses for user approval with findings listing each failing check and/or the merge conflict
+- If the timeout is reached while CI failures or, on GitHub or GitLab, a merge conflict are still known: pauses for user approval with findings for the remaining issues
+- If the timeout is reached while GitHub or GitLab PR mergeability is still unresolved: pauses for user approval with a finding describing the unresolved mergeability state
+- If CI failures or a GitHub or GitLab merge conflict persist after the auto-fix limit: pauses for user approval with findings listing each failing check and/or the merge conflict
 
 **Default auto-fix limit:** `3` total CI auto-fix attempts.
 

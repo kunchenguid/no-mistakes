@@ -3,6 +3,7 @@ package steps
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -75,6 +76,15 @@ func fakeGHHandler(args []string) {
 	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
 		os.Exit(0)
 	}
+	if len(args) >= 2 && args[0] == "pr" && args[1] == "list" {
+		if prURL == "" {
+			fmt.Println("[]")
+			os.Exit(0)
+		}
+		number := extractTrailingNumber(prURL)
+		fmt.Printf("[{\"number\":%d,\"url\":%q}]\n", number, prURL)
+		os.Exit(0)
+	}
 	if len(args) >= 2 && args[0] == "pr" && args[1] == "view" {
 		if prURL != "" {
 			fmt.Println(prURL)
@@ -133,6 +143,14 @@ func fakeGlabHandler(args []string) {
 	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
 		os.Exit(0)
 	}
+	if len(args) >= 2 && args[0] == "mr" && args[1] == "list" {
+		if mrViewJSON == "" {
+			fmt.Println("[]")
+			os.Exit(0)
+		}
+		fmt.Println("[" + mrViewJSON + "]")
+		os.Exit(0)
+	}
 	if len(args) >= 2 && args[0] == "mr" && args[1] == "view" {
 		if mrViewJSON != "" {
 			fmt.Println(mrViewJSON)
@@ -148,6 +166,22 @@ func fakeGlabHandler(args []string) {
 		os.Exit(0)
 	}
 	os.Exit(1)
+}
+
+func extractTrailingNumber(rawURL string) int {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return 0
+	}
+	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	if len(parts) == 0 {
+		return 0
+	}
+	number, err := strconv.Atoi(parts[len(parts)-1])
+	if err != nil {
+		return 0
+	}
+	return number
 }
 
 func fakeCIGHHandler(args []string) {

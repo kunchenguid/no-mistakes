@@ -102,7 +102,7 @@ The pipeline runs these steps in order:
 5. **Lint** - run linters (configured command or agent-detected)
 6. **Push** - push to the real upstream remote
 7. **PR** - create or update a pull request
-8. **CI** - poll CI, and on GitHub also watch PR mergeability, then auto-fix CI failures or merge conflicts when supported
+8. **CI** - poll CI, watch PR mergeability on GitHub and GitLab, then auto-fix CI failures or merge conflicts when supported
 
 Steps that find issues pause for your approval. You can approve, fix, skip, or abort. See [Pipeline Steps](/no-mistakes/guides/pipeline-steps/) and [Auto-Fix](/no-mistakes/guides/auto-fix/) for details.
 
