@@ -19,7 +19,7 @@ Set `NM_HOME` to relocate the global config directory (the global file becomes `
 ```yaml
 # ~/.no-mistakes/config.yaml
 
-# Default agent for all repos.
+# Default agent for all repos and setup-wizard suggestions.
 # "auto" picks the first available agent on PATH.
 agent: auto  # auto | claude | codex | rovodev | opencode
 
@@ -61,7 +61,7 @@ Bitbucket Cloud PR creation and CI monitoring use environment variables instead 
 ```yaml
 # .no-mistakes.yaml (in repo root)
 
-# Override the agent for this repo only.
+# Override the agent for this repo and its setup-wizard suggestions.
 agent: codex
 
 # Explicit commands for test/lint/format steps.

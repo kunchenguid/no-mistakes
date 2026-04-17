@@ -88,6 +88,8 @@ Run `no-mistakes` (or `no-mistakes attach`) to open the TUI and watch the pipeli
 no-mistakes
 ```
 
+If the current branch already has an active run, `no-mistakes` attaches to it directly. If you're in an interactive terminal with no active run on the current branch, `no-mistakes` can instead walk you through creating a branch, committing local changes, and pushing to the `no-mistakes` remote before attaching to the new run. `no-mistakes attach` skips that branch-scoped wizard path and attaches to any active run in the repo.
+
 The TUI shows each step's progress, streams agent output, and pauses for your approval when findings need attention. See the [TUI guide](/no-mistakes/guides/tui/) for keybindings and layout.
 
 ## What happens next

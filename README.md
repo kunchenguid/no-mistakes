@@ -34,7 +34,7 @@
 </p>
 
 `no-mistakes` puts a local git proxy in front of your real remote.
-Push to `no-mistakes` instead of `origin`, and it spins up a disposable worktree, runs a validation pipeline with your AI agent of choice, forwards upstream only after the branch survives every check, and creates a clean PR automatically.
+Push to `no-mistakes` instead of `origin`, and it spins up a disposable worktree, runs a validation pipeline with your AI agent of choice, forwards upstream only after the branch survives every check, and creates a clean PR automatically. If you run bare `no-mistakes` with no active run on the current branch, it can also walk you through creating a branch, committing local changes, and pushing through the gate before opening the TUI.
 
 - **Non-blocking** - the whole pipeline runs in an isolated worktree without disrupting your workflow.
 - **Agent-agnostic** - runs your agent of choice. Currently supports `claude`, `codex`, `rovodev`, and `opencode`.
@@ -56,6 +56,11 @@ $ no-mistakes init
 $ git checkout my-branch
 
 # do some work in the branch...
+
+$ no-mistakes
+# if no active run exists on this branch, the setup wizard can
+# create a branch, commit local changes, push through the gate,
+# and then open the TUI for the new run
 
 $ git push no-mistakes
   * Pipeline started
@@ -154,11 +159,11 @@ This replaces the binary and resets the background daemon so it picks up the new
 
 | Command                     | Description                                            |
 | --------------------------- | ------------------------------------------------------ |
-| `no-mistakes`               | Attach to the active pipeline run for the current repo |
+| `no-mistakes`               | Attach to the current branch run, or start the setup wizard |
 | `no-mistakes init`          | Initialize the gate for the current repository         |
 | `no-mistakes update`        | Update the binary and reset the daemon                 |
 | `no-mistakes eject`         | Remove the gate from the current repository            |
-| `no-mistakes attach`        | Attach to the active pipeline run                      |
+| `no-mistakes attach`        | Attach to the active pipeline run in the current repo  |
 | `no-mistakes rerun`         | Rerun the pipeline for the current branch              |
 | `no-mistakes status`        | Show status of the current repository                  |
 | `no-mistakes runs`          | List recorded pipeline runs for the current repo       |
@@ -187,7 +192,7 @@ Config is optional and split across two files:
 ```yaml
 # ~/.no-mistakes/config.yaml
 
-# Default agent for all repos.
+# Default agent for all repos and setup-wizard suggestions.
 # "auto" picks the first available agent on PATH: claude, codex, opencode, then rovodev.
 agent: auto # auto | claude | codex | rovodev | opencode
 

@@ -33,7 +33,7 @@ auto_fix:
 
 ### agent
 
-Default agent for all repos. Can be overridden per-repo.
+Default agent for all repos and setup-wizard suggestions. Can be overridden per-repo.
 
 | | |
 |---|---|

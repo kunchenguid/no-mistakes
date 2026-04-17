@@ -1,0 +1,504 @@
+// Package wizard provides the pre-pipeline onboarding UI: it detects repo
+// state, optionally creates a branch, commits uncommitted changes, and pushes
+// to the no-mistakes gate, then hands off to the main TUI.
+package wizard
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"time"
+
+	"github.com/charmbracelet/bubbles/textinput"
+	tea "github.com/charmbracelet/bubbletea"
+)
+
+// Config describes the repo state and dependencies the wizard needs.
+// Callers pre-detect git state so the wizard can decide up-front which
+// steps to skip.
+type Config struct {
+	RepoDir       string
+	CurrentBranch string
+	DefaultBranch string
+	// NeedsBranch is true when the user has no usable feature branch yet —
+	// either they're on the default branch, or HEAD is detached. The branch
+	// step is only active when this is true.
+	NeedsBranch bool
+	IsDirty     bool
+	GateRemote  string
+
+	CreateBranch  func(ctx context.Context, name string) error
+	CommitAll     func(ctx context.Context, msg string) error
+	Push          func(ctx context.Context, branch string) error
+	SuggestBranch func(ctx context.Context) (string, error)
+	SuggestCommit func(ctx context.Context) (string, error)
+}
+
+// stepID identifies one of the three wizard steps.
+type stepID int
+
+const (
+	stepBranch stepID = iota
+	stepCommit
+	stepPush
+)
+
+// stepStatus is the visual + logical state of a single step.
+type stepStatus int
+
+const (
+	statPending stepStatus = iota
+	statInput              // awaiting text input from user (branch / commit)
+	statAgent              // agent generating a suggestion
+	statConfirm            // awaiting y/n (push)
+	statRunning            // git action in flight
+	statDone
+	statSkipped
+	statFailed
+)
+
+type step struct {
+	id         stepID
+	status     stepStatus
+	result     string // displayed when done
+	skipReason string // displayed when skipped
+	errMsg     string
+}
+
+// Model is the bubbletea model for the wizard.
+type Model struct {
+	cfg    Config
+	ctx    context.Context
+	cancel context.CancelFunc
+
+	steps  []*step
+	active int // index of the currently active step, or len(steps) when finished
+
+	input textinput.Model
+
+	targetBranch string // the branch we intend to end up on / push
+
+	// Tracks side-effects for abort-copy and for the final Result.
+	branchCreated bool
+	commitMade    bool
+	pushed        bool
+
+	width, height int
+
+	spinnerFrame int
+	spinnerAlive bool
+
+	confirmQuit bool // true after first q press while side-effects exist
+
+	err      error
+	quitting bool
+	success  bool // all needed steps completed; pipeline pushed
+	aborted  bool // user explicitly aborted
+}
+
+// Result reports what the wizard did. Success means a push to the gate
+// succeeded and the caller should re-attach to pick up the new run.
+type Result struct {
+	Success       bool
+	Aborted       bool
+	BranchCreated bool
+	CommitMade    bool
+	Pushed        bool
+	TargetBranch  string
+	Err           error
+}
+
+// NewModel constructs a wizard Model. Which steps end up active depends on
+// the supplied Config: if the current branch already differs from the default,
+// the branch step is skipped; if the working tree is clean, the commit step
+// is skipped; the push step always runs.
+func NewModel(cfg Config) Model {
+	ti := textinput.New()
+	ti.Prompt = "› "
+	ti.CharLimit = 80
+	ctx, cancel := context.WithCancel(context.Background())
+
+	m := Model{
+		cfg:          cfg,
+		ctx:          ctx,
+		cancel:       cancel,
+		input:        ti,
+		targetBranch: cfg.CurrentBranch,
+	}
+
+	branch := &step{id: stepBranch, status: statPending}
+	commit := &step{id: stepCommit, status: statPending}
+	push := &step{id: stepPush, status: statPending}
+
+	if !cfg.NeedsBranch {
+		branch.status = statSkipped
+		branch.skipReason = "already on " + cfg.CurrentBranch
+	}
+	if !cfg.IsDirty {
+		commit.status = statSkipped
+		commit.skipReason = "no uncommitted changes"
+	}
+	m.steps = []*step{branch, commit, push}
+	m.active = m.firstPending()
+	m = m.setupActive()
+	return m
+}
+
+// Init returns the initial Cmd for the active step. State was already
+// prepared in NewModel.
+func (m Model) Init() tea.Cmd {
+	if m.quitting {
+		return tea.Quit
+	}
+	s := m.activeStep()
+	if s != nil && s.status == statInput {
+		return textinput.Blink
+	}
+	return nil
+}
+
+// Update handles bubbletea events and drives the state machine.
+func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		return m, nil
+
+	case tea.KeyMsg:
+		return m.handleKey(msg)
+
+	case suggestionMsg:
+		return m.handleSuggestion(msg)
+
+	case actionMsg:
+		return m.handleAction(msg)
+
+	case spinnerTickMsg:
+		m.spinnerAlive = false
+		if !m.anySpinnerActive() {
+			return m, nil
+		}
+		m.spinnerFrame = (m.spinnerFrame + 1) % len(spinnerFrames)
+		return m, m.scheduleSpinner()
+	}
+	return m, nil
+}
+
+// Result returns the terminal state of the wizard. Only meaningful once the
+// program has exited.
+func (m Model) Result() Result {
+	return Result{
+		Success:       m.success,
+		Aborted:       m.aborted,
+		BranchCreated: m.branchCreated,
+		CommitMade:    m.commitMade,
+		Pushed:        m.pushed,
+		TargetBranch:  m.targetBranch,
+		Err:           m.err,
+	}
+}
+
+// firstPending returns the index of the first step that still needs work.
+// Returns len(steps) if none are pending.
+func (m Model) firstPending() int {
+	for i, s := range m.steps {
+		if s.status == statPending {
+			return i
+		}
+	}
+	return len(m.steps)
+}
+
+// activeStep returns the step currently being worked on, or nil if the
+// wizard has finished.
+func (m *Model) activeStep() *step {
+	if m.active < 0 || m.active >= len(m.steps) {
+		return nil
+	}
+	return m.steps[m.active]
+}
+
+// setupActive transitions the active step into its initial interactive
+// state (input for branch/commit, confirm for push). When no step is
+// pending, it marks the wizard as finished.
+func (m Model) setupActive() Model {
+	s := m.activeStep()
+	if s == nil {
+		m.success = m.pushed
+		m.quitting = true
+		m.cancel()
+		return m
+	}
+	switch s.id {
+	case stepBranch, stepCommit:
+		s.status = statInput
+		m.input.SetValue("")
+		m.input.Focus()
+		m.input.Placeholder = "blank = let agent suggest"
+	case stepPush:
+		s.status = statConfirm
+		m.input.Blur()
+	}
+	return m
+}
+
+// afterEnterCmd returns the Cmd to kick off after transitioning to a new step.
+func (m Model) afterEnterCmd() tea.Cmd {
+	if m.quitting {
+		return tea.Quit
+	}
+	s := m.activeStep()
+	if s != nil && s.status == statInput {
+		return textinput.Blink
+	}
+	return nil
+}
+
+func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	s := m.activeStep()
+	if s == nil {
+		// Already finished; any key quits.
+		m.quitting = true
+		m.cancel()
+		return m, tea.Quit
+	}
+
+	switch msg.String() {
+	case "ctrl+c":
+		m.aborted = true
+		m.quitting = true
+		m.cancel()
+		return m, tea.Quit
+	case "q":
+		if m.hasSideEffects() && !m.confirmQuit {
+			m.confirmQuit = true
+			return m, nil
+		}
+		m.aborted = true
+		m.quitting = true
+		m.cancel()
+		return m, tea.Quit
+	}
+
+	// Any non-q key clears the abort confirmation.
+	m.confirmQuit = false
+
+	switch s.status {
+	case statInput:
+		return m.handleInputKey(msg)
+	case statConfirm:
+		return m.handleConfirmKey(msg)
+	case statFailed:
+		return m.handleFailedKey(msg)
+	}
+	return m, nil
+}
+
+func (m Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	s := m.activeStep()
+	switch msg.String() {
+	case "enter":
+		value := strings.TrimSpace(m.input.Value())
+		if value == "" {
+			// Agent suggestion path.
+			s.status = statAgent
+			return m, tea.Batch(m.suggestCmd(s.id), m.scheduleSpinner())
+		}
+		return m.executeStep(s, value)
+	}
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	return m, cmd
+}
+
+func (m Model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	s := m.activeStep()
+	switch msg.String() {
+	case "y", "Y", "enter":
+		return m.executeStep(s, "")
+	case "n", "N":
+		m.aborted = true
+		m.quitting = true
+		m.cancel()
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (m Model) handleFailedKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "r":
+		s := m.activeStep()
+		s.status = statPending
+		s.errMsg = ""
+		m = m.setupActive()
+		return m, m.afterEnterCmd()
+	}
+	return m, nil
+}
+
+// executeStep runs the git action for the step. For branch/commit, value is
+// the user-supplied or agent-generated string. For push, value is ignored.
+func (m *Model) executeStep(s *step, value string) (tea.Model, tea.Cmd) {
+	s.status = statRunning
+	s.result = value
+	m.input.Blur()
+	switch s.id {
+	case stepBranch:
+		return *m, tea.Batch(m.runCreateBranch(value), m.scheduleSpinner())
+	case stepCommit:
+		return *m, tea.Batch(m.runCommit(value), m.scheduleSpinner())
+	case stepPush:
+		return *m, tea.Batch(m.runPush(), m.scheduleSpinner())
+	}
+	return *m, nil
+}
+
+func (m Model) handleSuggestion(msg suggestionMsg) (tea.Model, tea.Cmd) {
+	if m.active >= len(m.steps) || m.steps[m.active].id != msg.id {
+		return m, nil
+	}
+	s := m.steps[m.active]
+	if msg.err != nil {
+		// Fall back to asking the user to type.
+		s.status = statInput
+		m.input.SetValue("")
+		m.input.Placeholder = "agent unavailable: " + truncate(msg.err.Error(), 40)
+		m.input.Focus()
+		return m, textinput.Blink
+	}
+	return m.executeStep(s, msg.value)
+}
+
+func (m Model) handleAction(msg actionMsg) (tea.Model, tea.Cmd) {
+	if m.active >= len(m.steps) || m.steps[m.active].id != msg.id {
+		return m, nil
+	}
+	s := m.steps[m.active]
+	if msg.err != nil {
+		s.status = statFailed
+		s.errMsg = msg.err.Error()
+		return m, nil
+	}
+	switch s.id {
+	case stepBranch:
+		m.branchCreated = true
+		m.targetBranch = s.result
+	case stepCommit:
+		m.commitMade = true
+	case stepPush:
+		m.pushed = true
+	}
+	s.status = statDone
+	m.active = m.firstPending()
+	m = m.setupActive()
+	return m, m.afterEnterCmd()
+}
+
+func (m Model) hasSideEffects() bool {
+	return m.branchCreated || m.commitMade
+}
+
+func (m Model) anySpinnerActive() bool {
+	s := m.activeStep()
+	if s == nil {
+		return false
+	}
+	return s.status == statAgent || s.status == statRunning
+}
+
+// Commands.
+
+type suggestionMsg struct {
+	id    stepID
+	value string
+	err   error
+}
+
+type actionMsg struct {
+	id  stepID
+	err error
+}
+
+type spinnerTickMsg struct{}
+
+const spinnerInterval = 120 * time.Millisecond
+
+func (m *Model) scheduleSpinner() tea.Cmd {
+	if m.spinnerAlive {
+		return nil
+	}
+	m.spinnerAlive = true
+	return tea.Tick(spinnerInterval, func(time.Time) tea.Msg { return spinnerTickMsg{} })
+}
+
+func (m Model) suggestCmd(id stepID) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(m.ctx, 60*time.Second)
+		defer cancel()
+		switch id {
+		case stepBranch:
+			if m.cfg.SuggestBranch == nil {
+				return suggestionMsg{id: id, err: errors.New("no branch suggester configured")}
+			}
+			v, err := m.cfg.SuggestBranch(ctx)
+			return suggestionMsg{id: id, value: v, err: err}
+		case stepCommit:
+			if m.cfg.SuggestCommit == nil {
+				return suggestionMsg{id: id, err: errors.New("no commit suggester configured")}
+			}
+			v, err := m.cfg.SuggestCommit(ctx)
+			return suggestionMsg{id: id, value: v, err: err}
+		}
+		return suggestionMsg{id: id, err: errors.New("unknown step")}
+	}
+}
+
+func (m Model) runCreateBranch(name string) tea.Cmd {
+	return func() tea.Msg {
+		err := m.cfg.CreateBranch(m.ctx, name)
+		return actionMsg{id: stepBranch, err: err}
+	}
+}
+
+func (m Model) runCommit(msg string) tea.Cmd {
+	return func() tea.Msg {
+		err := m.cfg.CommitAll(m.ctx, msg)
+		return actionMsg{id: stepCommit, err: err}
+	}
+}
+
+func (m Model) runPush() tea.Cmd {
+	branch := m.targetBranch
+	return func() tea.Msg {
+		err := m.cfg.Push(m.ctx, branch)
+		return actionMsg{id: stepPush, err: err}
+	}
+}
+
+// Run invokes the wizard as an interactive bubbletea program. Returns the
+// terminal Result describing what happened.
+func Run(cfg Config) (Result, error) {
+	m := NewModel(cfg)
+	p := tea.NewProgram(m, tea.WithAltScreen())
+	final, err := p.Run()
+	if err != nil {
+		return Result{Err: err}, err
+	}
+	fm, ok := final.(Model)
+	if !ok {
+		return Result{}, errors.New("wizard: unexpected terminal model type")
+	}
+	return fm.Result(), nil
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	if n < 1 {
+		return ""
+	}
+	return s[:n-1] + "…"
+}

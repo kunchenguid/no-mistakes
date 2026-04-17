@@ -137,6 +137,24 @@ func CurrentBranch(ctx context.Context, dir string) (string, error) {
 	return Run(ctx, dir, "rev-parse", "--abbrev-ref", "HEAD")
 }
 
+// IsDetachedHEAD reports whether the working tree is in a detached-HEAD state
+// (HEAD points at a commit rather than a branch ref). Uses `git symbolic-ref`
+// which fails cleanly when HEAD is not a symbolic ref.
+func IsDetachedHEAD(ctx context.Context, dir string) (bool, error) {
+	cmd := exec.CommandContext(ctx, "git", "symbolic-ref", "-q", "HEAD")
+	cmd.Dir = dir
+	if err := cmd.Run(); err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			// Exit 1 means HEAD is not a symbolic ref — detached.
+			if ee.ExitCode() == 1 {
+				return true, nil
+			}
+		}
+		return false, fmt.Errorf("git symbolic-ref: %w", err)
+	}
+	return false, nil
+}
+
 // DefaultBranch queries a remote to determine its default branch name.
 // Uses git ls-remote --symref to read the remote's HEAD symref.
 // Falls back to "main" if detection fails (e.g. empty remote, unreachable).
@@ -198,6 +216,41 @@ func LsRemote(ctx context.Context, dir, remote, ref string) (string, error) {
 		return "", nil
 	}
 	return parts[0], nil
+}
+
+// HasUncommittedChanges reports whether the working tree or index differs from HEAD.
+// Returns true if any tracked file is modified, staged, or deleted, or if there are
+// untracked files. Equivalent to a non-empty `git status --porcelain`.
+func HasUncommittedChanges(ctx context.Context, dir string) (bool, error) {
+	out, err := Run(ctx, dir, "status", "--porcelain")
+	if err != nil {
+		return false, err
+	}
+	return out != "", nil
+}
+
+// CreateBranch creates a new branch with the given name and switches to it.
+// Fails if the branch already exists.
+func CreateBranch(ctx context.Context, dir, name string) error {
+	_, err := Run(ctx, dir, "checkout", "-b", name)
+	return err
+}
+
+// CommitAll stages every change in the working tree and creates a single commit
+// with the given message. Fails if there are no changes to commit.
+func CommitAll(ctx context.Context, dir, message string) error {
+	if _, err := Run(ctx, dir, "add", "-A"); err != nil {
+		return err
+	}
+	dirty, err := HasUncommittedChanges(ctx, dir)
+	if err != nil {
+		return err
+	}
+	if !dirty {
+		return fmt.Errorf("no changes to commit")
+	}
+	_, err = Run(ctx, dir, "commit", "-m", message)
+	return err
 }
 
 // WorktreeAdd creates a detached worktree at wtPath checked out to the given SHA.

@@ -5,13 +5,13 @@ description: Complete reference for all no-mistakes commands and flags.
 
 ## no-mistakes
 
-Attach to the active pipeline run for the current repo. If no active run exists, shows the last 5 runs inline.
+Attach to the active pipeline run for the current branch when one exists. If none exists and you're in an interactive TTY session, bare `no-mistakes` can start the setup wizard to create a branch, commit changes, push through the gate, and then attach once the new run appears. In non-interactive contexts, it falls back to showing the last 5 runs inline.
 
 ```sh
 no-mistakes
 ```
 
-Equivalent to `no-mistakes attach` when a run is active.
+Unlike `no-mistakes attach`, bare `no-mistakes` only auto-attaches to an active run on the current branch.
 
 ## no-mistakes init
 
@@ -47,7 +47,7 @@ no-mistakes attach [--run <id>]
 |---|---|---|---|
 | `--run` | `string` | (none) | Attach to a specific run ID instead of the active run |
 
-Opens the TUI for the active run on the current branch. If `--run` is specified, attaches to that specific run regardless of branch.
+Opens the TUI for the active run anywhere in the current repo. If `--run` is specified, attaches to that specific run regardless of branch. Unlike bare `no-mistakes`, this does not stay branch-scoped before falling back.
 
 ## no-mistakes rerun
 
@@ -137,7 +137,7 @@ Stop the running daemon process.
 no-mistakes daemon stop
 ```
 
-This does not remove the managed service. A later `no-mistakes daemon start`, `init`, `attach`, `rerun`, or `update` can start the daemon again through the same service manager when available, or as a detached daemon otherwise.
+This does not remove the managed service. A later `no-mistakes`, `no-mistakes daemon start`, `init`, `attach`, `rerun`, or `update` can start the daemon again through the same service manager when available, or as a detached daemon otherwise.
 
 ## no-mistakes daemon status
 

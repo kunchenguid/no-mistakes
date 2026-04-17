@@ -9,6 +9,26 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 )
 
+func TestActiveRunBranchUsesRepoWideLookupForExplicitAttach(t *testing.T) {
+	tests := []struct {
+		name        string
+		rootDefault bool
+		want        string
+	}{
+		{name: "root command stays branch scoped", rootDefault: true, want: "feature/current"},
+		{name: "attach subcommand falls back across branches", rootDefault: false, want: ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			state := &repoState{currentBranch: "feature/current"}
+			if got := activeRunBranch(state, tc.rootDefault); got != tc.want {
+				t.Fatalf("activeRunBranch() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestAttachRunIDWithUnknownRunReturnsHelpfulError(t *testing.T) {
 	nmHome, err := os.MkdirTemp("", "nmcli")
 	if err != nil {
