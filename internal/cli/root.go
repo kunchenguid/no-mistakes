@@ -35,7 +35,7 @@ func newRootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		// When run without a subcommand, default to attach behavior.
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return attachRun(cmd.OutOrStdout(), "")
+			return attachRun(cmd.OutOrStdout(), "", true)
 		},
 	}
 
