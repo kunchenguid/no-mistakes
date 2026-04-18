@@ -1,10 +1,12 @@
 import { defineConfig } from "astro/config";
+import mermaid from "astro-mermaid";
 import starlight from "@astrojs/starlight";
 
 export default defineConfig({
   site: "https://kunchenguid.github.io",
   base: "/no-mistakes",
   integrations: [
+    mermaid({ enableLog: false }),
     starlight({
       title: "git push no-mistakes",
       social: {

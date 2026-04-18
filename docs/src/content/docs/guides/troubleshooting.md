@@ -3,9 +3,28 @@ title: Troubleshooting
 description: Common problems and how to debug them.
 ---
 
-Most problems fall into one of three buckets: daemon not running, agent not found, or push not triggering the pipeline. This page walks each one.
+Most problems fall into one of three buckets: daemon not running, agent not
+found, or push not triggering the pipeline. This page walks each one.
 
 First stop for anything: `no-mistakes doctor`.
+
+## Debug in this order
+
+```mermaid
+flowchart TD
+  problem["Something is wrong"] --> doctor["Run no-mistakes doctor"]
+  doctor --> daemon{"Daemon issue?"}
+  daemon -- "yes" --> daemonpath["Check daemon status and daemon.log"]
+  daemon -- "no" --> triggered{"Did the push trigger a run?"}
+  triggered -- "no" --> gate["Check remote, hook, and socket"]
+  triggered -- "yes" --> provider["Check agent or provider setup"]
+```
+
+That order matches the actual boundaries in the system:
+
+- local environment and binaries
+- daemon and gate wiring
+- provider-specific PR or CI integration
 
 ## Daemon won't start
 

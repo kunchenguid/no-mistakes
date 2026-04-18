@@ -14,23 +14,61 @@ hero:
       icon: external
 ---
 
-import { Card, CardGrid } from "@astrojs/starlight/components";
+## The Bottleneck Moved
 
-<CardGrid>
-  <Card title="Non-blocking" icon="rocket">
-    The pipeline runs in a disposable worktree so your working directory stays
-    untouched. Keep coding while the gate validates your push.
-  </Card>
-  <Card title="Agent-agnostic" icon="puzzle">
-    Use `claude`, `codex`, `rovodev`, or `opencode`. Override per-repo when
-    different codebases want different tools.
-  </Card>
-  <Card title="Human stays in charge" icon="approve-check-circle">
-    Every step can pause for approval. You see the findings, pick what to fix,
-    and decide when to ship.
-  </Card>
-  <Card title="Clean PRs by default" icon="sun">
-    Push, open the PR, watch CI, and auto-fix failures in one shot. On GitHub
-    and GitLab, it also watches PR mergeability and fixes merge conflicts.
-  </Card>
-</CardGrid>
+AI made writing code cheaper. The slower part now is validation: reviewing the
+diff, catching obvious breakage, updating docs, waiting for CI, and turning
+"the agent says it is done" into "I am comfortable sharing this branch."
+
+Most of that quality infrastructure still lives in the outer loop, after the
+branch is already public. `no-mistakes` moves more of that loop closer to where
+you are working.
+
+```mermaid
+flowchart LR
+  subgraph before[" Before "]
+    direction TB
+    A["Local branch"] -->|"git push origin"| B["Remote branch"]
+    B --> C["CI + review churn"]
+    C --> D["More pushes"]
+    D --> A
+  end
+
+  subgraph after[" With no-mistakes "]
+    direction TB
+    E["Local branch"] -->|"git push no-mistakes"| F["Local gate"]
+    F --> G["Rebase, review, test, docs, lint"]
+    G --> H["Push upstream + open PR"]
+    H --> I["Watch CI + auto-fix"]
+  end
+
+  before ~~~ after
+```
+
+## Why The Gate Is Explicit
+
+`no-mistakes` does not hijack `origin`. It adds a separate `no-mistakes`
+remote and asks you to push to it on purpose.
+
+- `git push origin` still works when you want the escape hatch.
+- `git push no-mistakes` means "run the full gate before this branch leaves my machine."
+- A passed gate means the same thing everywhere because the pipeline order stays fixed.
+
+## What Comes Out The Other Side
+
+A gated push is trying to turn a rough branch into a cleaner handoff:
+
+| Before the gate | After the gate |
+|---|---|
+| Raw branch diff | Rebases onto fresh upstream |
+| Review debt | AI review findings surfaced early |
+| Unknown test health | Tests run before push |
+| Missing docs | Documentation gaps called out |
+| Formatting and lint churn | Linters run after code settles |
+| Blind PR wait | PR opened and CI watched automatically |
+
+## Start Here
+
+- [Quick Start](/no-mistakes/start-here/quick-start/) - first gated push in a few minutes
+- [Introduction](/no-mistakes/start-here/introduction/) - why the tool exists and how to think about it
+- [The Gate Model](/no-mistakes/concepts/gate-model/) - architecture, push flow, and design choices

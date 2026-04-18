@@ -3,7 +3,24 @@ title: Provider Integration
 description: Set up GitHub, GitLab, or Bitbucket Cloud for PR creation and CI monitoring.
 ---
 
-The PR and CI steps need to talk to your git host. Three hosts are supported: GitHub, GitLab, and Bitbucket Cloud (`bitbucket.org`). Everything else short-circuits the PR step with `skipped`.
+The PR and CI steps need to talk to your git host. Three hosts are supported:
+GitHub, GitLab, and Bitbucket Cloud (`bitbucket.org`). Everything else
+short-circuits the PR and CI steps with `skipped`.
+
+Provider integration is optional for the local gate. You only need it for the
+steps that happen after validation: opening or updating the PR, watching hosted
+CI, and fixing remote-only failures.
+
+Without any provider setup, `no-mistakes` still gives you the local gate:
+
+- rebase
+- review
+- test
+- document
+- lint
+- push through normal Git transport
+
+What you do not get is PR automation and CI babysitting.
 
 ## What each step needs
 
@@ -13,6 +30,16 @@ The PR and CI steps need to talk to your git host. Three hosts are supported: Gi
 | **CI** (polling, auto-fix) | `gh` CLI | `glab` CLI | same env vars |
 | **Merge conflict auto-fix** | `gh` CLI | `glab` CLI | not supported |
 | **Mergeability polling** | `gh` CLI | `glab` CLI | not supported |
+
+## What changes when provider wiring is present
+
+Once the host is wired up, `no-mistakes` can keep owning the branch after the
+upstream push:
+
+- create or update the PR automatically
+- poll hosted CI without you refreshing a browser tab
+- fetch failing job logs for the CI auto-fix loop
+- on GitHub and GitLab, watch mergeability and fix merge conflicts when possible
 
 ## GitHub
 

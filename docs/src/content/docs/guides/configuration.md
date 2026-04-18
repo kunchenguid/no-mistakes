@@ -3,7 +3,16 @@ title: Configuration
 description: Global and per-repo configuration options.
 ---
 
-Configuration is optional. Without any config files, `no-mistakes` defaults to `agent: auto`, which picks the first supported agent available on your system, with sensible defaults for everything else.
+Configuration is optional. Without any config files, `no-mistakes` defaults to
+`agent: auto`, which picks the first supported agent available on your system,
+with sensible defaults for everything else.
+
+The goal is not to make you configure a mini CI system. The default path should
+work. Config exists for the parts that genuinely vary by machine or repo:
+
+- which agent you prefer
+- which test or lint commands are the canonical ones for this repo
+- how aggressive the auto-fix loop should be
 
 Config is split across two files:
 
@@ -13,6 +22,24 @@ Config is split across two files:
 | `<repo>/.no-mistakes.yaml` | Per-repo overrides |
 
 Set `NM_HOME` to relocate the global config directory (the global file becomes `$NM_HOME/config.yaml`).
+
+## How to think about config
+
+- **Global config** is for your machine-level defaults.
+- **Repo config** is for codebase-specific behavior that should travel with the repo.
+
+In practice, most teams should keep personal preferences global and repo policy
+local.
+
+## What to configure first
+
+If you are not sure where to start, configure these in this order:
+
+1. Set `commands.test` and `commands.lint` in repo config so the gate runs the exact commands your repo expects.
+2. Override `agent` per repo only when one codebase clearly works better with a different tool.
+3. Tune `auto_fix` after you have seen how much automation you actually want.
+
+Everything else can usually wait.
 
 ## Global config
 
@@ -92,6 +119,9 @@ See [Repo Config Reference](/no-mistakes/reference/repo-config/) for the full fi
 - `ci_timeout` and `auto_fix.ci` are the canonical keys; `babysit_timeout` and `auto_fix.babysit` are still accepted as legacy aliases.
 - If `commands.test` or `commands.lint` is empty, the agent detects and runs relevant commands itself.
 - If `commands.format` is empty, no formatter is run automatically.
+
+The practical implication is simple: explicit commands give you deterministic
+repo behavior, while leaving commands empty asks the agent to fill in the gap.
 
 ## Ignore pattern rules
 
