@@ -31,6 +31,8 @@ Official release binaries installed this way may already have telemetry enabled 
 go install github.com/kunchenguid/no-mistakes/cmd/no-mistakes@latest
 ```
 
+`go install` builds the CLI without an embedded telemetry website ID, so telemetry stays off by default unless you later set `NO_MISTAKES_UMAMI_WEBSITE_ID` at runtime.
+
 ## From source
 
 ```sh
@@ -62,6 +64,8 @@ no-mistakes update
 ```
 
 This downloads the latest release from GitHub, verifies the SHA-256 checksum, atomically replaces the binary, and resets the daemon so it picks up the new executable. It prefers the managed service path and falls back to a detached daemon if service startup is unavailable or fails.
+
+Because `update` installs the latest official release binary, it may change telemetry behavior if that release has a telemetry website ID embedded at build time.
 
 It only proceeds if the running daemon is already using the same executable path. If the daemon executable path cannot be determined or it was started from a different binary, the update aborts before replacing the binary. If the daemon does not come back cleanly after a successful replacement, the new binary stays installed but the command reports the daemon reset failure.
 
