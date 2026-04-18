@@ -100,6 +100,29 @@ func TestMakeBuildStripsInlineCommentsFromDotEnvUmamiWebsiteID(t *testing.T) {
 	}
 }
 
+func TestMakeBuildPreservesQuotedHashInDotEnvUmamiWebsiteID(t *testing.T) {
+	skipMakeBuildTestsOnWindows(t)
+
+	makePath, err := exec.LookPath("make")
+	if err != nil {
+		t.Skip("make not available")
+	}
+
+	workDir := writeTestMakeWorkspace(t)
+	if err := os.WriteFile(filepath.Join(workDir, ".env"), []byte("NO_MISTAKES_UMAMI_WEBSITE_ID=\"website # dev\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	output := runMakeDryBuild(t, makePath, workDir, nil)
+
+	if !strings.Contains(output, "TelemetryWebsiteID=website # dev") {
+		t.Fatalf("make build output should preserve quoted hashes in dotenv website id, got:\n%s", output)
+	}
+	if strings.Contains(output, "TelemetryWebsiteID=\"website") {
+		t.Fatalf("make build output should not truncate quoted dotenv website id, got:\n%s", output)
+	}
+}
+
 func skipMakeBuildTestsOnWindows(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
