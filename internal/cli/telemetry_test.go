@@ -3,10 +3,14 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
 	"path/filepath"
 	"sync"
 	"testing"
 
+	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 )
 
@@ -21,6 +25,19 @@ type telemetryRecorder struct {
 }
 
 func (r *telemetryRecorder) Track(name string, fields telemetry.Fields) {
+	r.record(name, fields)
+}
+
+func (r *telemetryRecorder) Pageview(path string, fields telemetry.Fields) {
+	clone := make(telemetry.Fields, len(fields)+1)
+	for k, v := range fields {
+		clone[k] = v
+	}
+	clone["path"] = path
+	r.record("pageview", clone)
+}
+
+func (r *telemetryRecorder) record(name string, fields telemetry.Fields) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -118,5 +135,52 @@ func TestDoctorTracksFailedChecksAsError(t *testing.T) {
 	}
 	if got := event.fields["status"]; got != "error" {
 		t.Fatalf("status = %v, want error", got)
+	}
+}
+
+func TestAttachTracksTUIPageview(t *testing.T) {
+	nmHome := makeSocketSafeTempDir(t)
+	t.Setenv("NM_HOME", nmHome)
+	p := paths.WithRoot(nmHome)
+
+	d, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	repo, err := d.InsertRepoWithID("repo-1", "/tmp/repo", "https://github.com/test/repo", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	startTestDaemon(t, p, d)
+
+	run, err := d.InsertRun(repo.ID, "feature/test", "abc123", "def456")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := &telemetryRecorder{}
+	restore := telemetry.SetDefaultForTesting(recorder)
+	defer restore()
+
+	prevRunTUI := runTUI
+	runTUI = func(string, *ipc.Client, *ipc.RunInfo, string) error { return nil }
+	defer func() { runTUI = prevRunTUI }()
+
+	if err := attachRun(io.Discard, run.ID, false); err != nil {
+		t.Fatalf("attachRun() error = %v", err)
+	}
+
+	event := recorder.find("pageview", "path", "/tui")
+	if event == nil {
+		t.Fatal("expected TUI pageview telemetry")
+	}
+	if got := event.fields["entrypoint"]; got != "attach" {
+		t.Fatalf("entrypoint = %v, want attach", got)
+	}
+	if got := fmt.Sprint(event.fields["run_status"]); got != "pending" {
+		t.Fatalf("run_status = %v, want pending", got)
 	}
 }

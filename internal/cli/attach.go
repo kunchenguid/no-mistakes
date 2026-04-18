@@ -10,11 +10,14 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/tui"
 	"github.com/kunchenguid/no-mistakes/internal/update"
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 )
+
+var runTUI = tui.Run
 
 // attachRun is the shared logic for attaching to a pipeline run. It's used by
 // both the root command (bare `no-mistakes`) and the `attach` subcommand.
@@ -109,7 +112,20 @@ func attachRun(w io.Writer, runID string, rootDefault bool) error {
 		}
 	}
 
-	return tui.Run(p.Socket(), client, run, update.CachedLatestVersion())
+	telemetry.Pageview("/tui", telemetry.Fields{
+		"entrypoint":      attachEntrypoint(rootDefault, runID),
+		"run_status":      run.Status,
+		"explicit_run_id": runID != "",
+	})
+
+	return runTUI(p.Socket(), client, run, update.CachedLatestVersion())
+}
+
+func attachEntrypoint(rootDefault bool, runID string) string {
+	if rootDefault && runID == "" {
+		return "root"
+	}
+	return "attach"
 }
 
 func activeRunBranch(state *repoState, rootDefault bool) string {
