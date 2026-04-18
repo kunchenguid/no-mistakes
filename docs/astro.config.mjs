@@ -6,7 +6,7 @@ export default defineConfig({
   base: "/no-mistakes",
   integrations: [
     starlight({
-      title: "no-mistakes",
+      title: "git push no-mistakes",
       social: {
         github: "https://github.com/kunchenguid/no-mistakes",
         discord: "https://discord.gg/Wsy2NpnZDu",
