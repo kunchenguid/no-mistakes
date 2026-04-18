@@ -16,27 +16,39 @@ export default defineConfig({
         {
           label: "Start Here",
           items: [
-            { label: "Getting Started", slug: "getting-started" },
-            { label: "How It Works", slug: "how-it-works" },
+            { label: "Introduction", slug: "start-here/introduction" },
+            { label: "Quick Start", slug: "start-here/quick-start" },
+            { label: "Installation", slug: "start-here/installation" },
+          ],
+        },
+        {
+          label: "Concepts",
+          items: [
+            { label: "The Gate Model", slug: "concepts/gate-model" },
+            { label: "Pipeline", slug: "concepts/pipeline" },
+            { label: "Auto-Fix Loop", slug: "concepts/auto-fix" },
+            { label: "Daemon & Worktrees", slug: "concepts/daemon" },
           ],
         },
         {
           label: "Guides",
           items: [
             { label: "Configuration", slug: "guides/configuration" },
-            { label: "Pipeline Steps", slug: "guides/pipeline-steps" },
-            { label: "Auto-Fix", slug: "guides/auto-fix" },
-            { label: "Agents", slug: "guides/agents" },
-            { label: "TUI", slug: "guides/tui" },
-            { label: "Daemon", slug: "guides/daemon" },
+            { label: "Choosing an Agent", slug: "guides/agents" },
+            { label: "Provider Integration", slug: "guides/provider-integration" },
+            { label: "Setup Wizard", slug: "guides/setup-wizard" },
+            { label: "Using the TUI", slug: "guides/tui" },
+            { label: "Troubleshooting", slug: "guides/troubleshooting" },
           ],
         },
         {
           label: "Reference",
           items: [
             { label: "CLI Commands", slug: "reference/cli" },
-            { label: "Repo Config", slug: "reference/repo-config" },
+            { label: "Pipeline Steps", slug: "reference/pipeline-steps" },
             { label: "Global Config", slug: "reference/global-config" },
+            { label: "Repo Config", slug: "reference/repo-config" },
+            { label: "Environment Variables", slug: "reference/environment" },
           ],
         },
       ],

@@ -1,9 +1,9 @@
 ---
 title: Pipeline Steps
-description: What each step in the validation pipeline does.
+description: Reference for each step in the validation pipeline.
 ---
 
-The pipeline runs a fixed sequence of steps. The order is not configurable - this is a deliberate design choice.
+This is the per-step reference. For the overview and rationale, see [Pipeline](/no-mistakes/concepts/pipeline/). For the fix loop, see [Auto-Fix Loop](/no-mistakes/concepts/auto-fix/).
 
 ```
 rebase → review → test → document → lint → push → pr → ci

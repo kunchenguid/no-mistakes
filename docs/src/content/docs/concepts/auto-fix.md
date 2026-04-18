@@ -1,5 +1,5 @@
 ---
-title: Auto-Fix
+title: Auto-Fix Loop
 description: How the automatic fix loop works.
 ---
 

@@ -1,11 +1,9 @@
 ---
-title: How It Works
+title: The Gate Model
 description: Architecture and data flow of no-mistakes.
 ---
 
-## The gate model
-
-`no-mistakes` intercepts pushes by placing a local bare git repo between your working repo and the real upstream remote.
+`no-mistakes` intercepts pushes by placing a local bare git repo between your working repo and the real upstream remote. That bare repo is the "gate."
 
 ```
 ┌──────────────┐     git push no-mistakes <branch>     ┌─────────────────────┐

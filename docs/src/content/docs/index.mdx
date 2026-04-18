@@ -1,12 +1,12 @@
 ---
 title: no-mistakes
-description: Make git push earn it.
+description: Kill all the slop. Raise clean PR.
 template: splash
 hero:
-  tagline: A local pre-push gate that runs AI code review, tests, lint, and CI monitoring before your code reaches upstream.
+  tagline: A local git proxy that runs AI review, tests, lint, docs, and CI monitoring in a disposable worktree before your code reaches upstream.
   actions:
     - text: Get Started
-      link: /no-mistakes/getting-started/
+      link: /no-mistakes/start-here/quick-start/
       icon: right-arrow
       variant: primary
     - text: View on GitHub
@@ -17,21 +17,20 @@ hero:
 import { Card, CardGrid } from "@astrojs/starlight/components";
 
 <CardGrid>
-  <Card title="Push with intent" icon="rocket">
-    `origin` stays untouched. `no-mistakes` becomes the explicit path for gated
-    pushes. Or run bare `no-mistakes` to create a branch, commit local changes,
-    and send them through the gate before attaching to the new run.
+  <Card title="Non-blocking" icon="rocket">
+    The pipeline runs in a disposable worktree so your working directory stays
+    untouched. Keep coding while the gate validates your push.
   </Card>
   <Card title="Agent-agnostic" icon="puzzle">
-    Use Claude, Codex, Rovo Dev, or OpenCode. Override the agent per-repo if
+    Use `claude`, `codex`, `rovodev`, or `opencode`. Override per-repo when
     different codebases want different tools.
   </Card>
   <Card title="Human stays in charge" icon="approve-check-circle">
-    Review, test, and lint steps can pause for approval. You see the findings,
-    pick what to fix, and decide when to ship.
+    Every step can pause for approval. You see the findings, pick what to fix,
+    and decide when to ship.
   </Card>
-  <Card title="CI monitoring" icon="sun">
-    After push, the pipeline watches CI and auto-fixes failures. On GitHub and
-    GitLab it also watches PR mergeability and can fix merge conflicts.
+  <Card title="Clean PRs by default" icon="sun">
+    Push, open the PR, watch CI, and auto-fix failures in one shot. On GitHub
+    and GitLab, it also watches PR mergeability and fixes merge conflicts.
   </Card>
 </CardGrid>

@@ -1,23 +1,11 @@
 ---
-title: TUI
+title: Using the TUI
 description: Terminal UI layout, keybindings, and approval workflow.
 ---
 
 The TUI is how you interact with running pipelines. Launch it with `no-mistakes` or `no-mistakes attach`.
 
-Bare `no-mistakes` can also open a separate setup wizard first when there is no active run on the current branch and you need to create one.
-
-## Setup wizard
-
-The setup wizard is a full-screen flow that prepares a new run before the main pipeline TUI opens. It walks through up to three steps:
-
-- **Branch** - shown when you're on the default branch or detached `HEAD`
-- **Commit** - shown when you have uncommitted changes
-- **Push** - always shown before creating the new run
-
-Leave the branch name or commit message blank to ask the configured agent for a suggestion. During the push step, press `y` to push to the `no-mistakes` gate or `n` to stop. If a step fails, press `r` to retry.
-
-Press `q` to quit. After the wizard has created a branch or commit, quitting requires pressing `q` twice so you do not accidentally leave those side effects behind.
+Bare `no-mistakes` can also open the [Setup Wizard](/no-mistakes/guides/setup-wizard/) first when there is no active run on the current branch and you need to create one.
 
 ## Layout
 
