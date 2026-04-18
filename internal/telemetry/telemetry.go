@@ -395,9 +395,21 @@ func parseDotEnv(data []byte) map[string]string {
 		if key == "" {
 			continue
 		}
-		values[key] = dotenvValue(trimDotEnvInlineComment(strings.TrimSpace(value)))
+		trimmedValue := strings.TrimSpace(value)
+		if !isQuotedDotEnvValue(trimmedValue) {
+			trimmedValue = trimDotEnvInlineComment(trimmedValue)
+		}
+		values[key] = dotenvValue(trimmedValue)
 	}
 	return values
+}
+
+func isQuotedDotEnvValue(value string) bool {
+	if len(value) < 2 {
+		return false
+	}
+	quote := value[0]
+	return (quote == '"' || quote == '\'') && value[len(value)-1] == quote
 }
 
 func trimDotEnvInlineComment(value string) string {

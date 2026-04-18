@@ -144,3 +144,11 @@ func TestParseDotEnvStripsInlineCommentsFromUnquotedValues(t *testing.T) {
 		t.Fatalf("website ID = %q, want %q", got, "abc123")
 	}
 }
+
+func TestParseDotEnvPreservesHashesInQuotedValues(t *testing.T) {
+	values := parseDotEnv([]byte("NO_MISTAKES_UMAMI_WEBSITE_ID=\"abc # dev\"\n"))
+
+	if got := values[umamiWebsiteIDEnv]; got != "abc # dev" {
+		t.Fatalf("website ID = %q, want %q", got, "abc # dev")
+	}
+}
