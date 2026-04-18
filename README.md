@@ -45,8 +45,6 @@ curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/i
 
 Windows, Go install, and build-from-source instructions are in the [installation guide](https://kunchenguid.github.io/no-mistakes/start-here/installation/).
 
-Release builds may send telemetry when a telemetry website ID is embedded at build time. Local builds can opt in by setting `UMAMI_WEBSITE_ID` or `NO_MISTAKES_UMAMI_WEBSITE_ID`; see the [installation guide](https://kunchenguid.github.io/no-mistakes/start-here/installation/) and [environment reference](https://kunchenguid.github.io/no-mistakes/reference/environment/).
-
 ## Quick Start
 
 ```sh

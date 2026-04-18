@@ -53,6 +53,12 @@ Safest local verification sequence after non-trivial changes:
 - `internal/git`, `internal/ipc`, `internal/config`, `internal/db`, `internal/paths`, `internal/types`: shared infrastructure
 - `internal/tui`: terminal UI
 
+**Documentation**
+
+- Keep `README.md` concise and high-level. The bar needs to be extremely high for what has to show up there.
+- Do not put technical details or deep reference material in `README.md`.
+- Most documentation should live in `docs/` which is the published docs site.
+
 **Context, Concurrency, and Processes**
 
 - Thread `context.Context` through long-running, subprocess, and networked work.
