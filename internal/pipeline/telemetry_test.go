@@ -29,6 +29,10 @@ func (r *telemetryRecorder) Track(name string, fields telemetry.Fields) {
 	r.events = append(r.events, recordedTelemetryEvent{name: name, fields: clone})
 }
 
+func (r *telemetryRecorder) Pageview(path string, fields telemetry.Fields) {
+	r.Track("pageview", fields)
+}
+
 func (r *telemetryRecorder) Close(context.Context) error { return nil }
 
 func (r *telemetryRecorder) find(name, field string, want any) *recordedTelemetryEvent {

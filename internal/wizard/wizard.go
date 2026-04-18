@@ -32,6 +32,7 @@ type Config struct {
 	Push          func(ctx context.Context, branch string) error
 	SuggestBranch func(ctx context.Context) (string, error)
 	SuggestCommit func(ctx context.Context) (string, error)
+	Track         func(action string, fields map[string]any)
 }
 
 // stepID identifies one of the three wizard steps.
@@ -63,6 +64,7 @@ type step struct {
 	result     string // displayed when done
 	skipReason string // displayed when skipped
 	errMsg     string
+	source     string
 }
 
 // Model is the bubbletea model for the wizard.
@@ -226,6 +228,13 @@ func (m Model) setupActive() Model {
 	s := m.activeStep()
 	if s == nil {
 		m.success = m.pushed
+		if m.success {
+			m.track("completed", map[string]any{
+				"branch_created": m.branchCreated,
+				"commit_made":    m.commitMade,
+				"pushed":         m.pushed,
+			})
+		}
 		m.quitting = true
 		m.cancel()
 		return m
@@ -266,6 +275,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch msg.String() {
 	case "ctrl+c":
+		m.trackAbort("interrupt")
 		m.aborted = true
 		m.quitting = true
 		m.cancel()
@@ -275,6 +285,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.confirmQuit = true
 			return m, nil
 		}
+		m.trackAbort("quit")
 		m.aborted = true
 		m.quitting = true
 		m.cancel()
@@ -303,8 +314,10 @@ func (m Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if value == "" {
 			// Agent suggestion path.
 			s.status = statAgent
+			s.source = "agent"
 			return m, tea.Batch(m.suggestCmd(s.id), m.scheduleSpinner())
 		}
+		s.source = "user"
 		return m.executeStep(s, value)
 	}
 	var cmd tea.Cmd
@@ -316,8 +329,10 @@ func (m Model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	s := m.activeStep()
 	switch msg.String() {
 	case "y", "Y", "enter":
+		s.source = "user"
 		return m.executeStep(s, "")
 	case "n", "N":
+		m.trackAbort("decline_push")
 		m.aborted = true
 		m.quitting = true
 		m.cancel()
@@ -363,6 +378,7 @@ func (m Model) handleSuggestion(msg suggestionMsg) (tea.Model, tea.Cmd) {
 	if msg.err != nil {
 		// Fall back to asking the user to type.
 		s.status = statInput
+		s.source = ""
 		m.input.SetValue("")
 		m.input.Placeholder = "agent unavailable: " + truncate(msg.err.Error(), 40)
 		m.input.Focus()
@@ -385,10 +401,13 @@ func (m Model) handleAction(msg actionMsg) (tea.Model, tea.Cmd) {
 	case stepBranch:
 		m.branchCreated = true
 		m.targetBranch = s.result
+		m.track("branch_created", map[string]any{"step": stepName(s.id), "source": stepSource(s.source)})
 	case stepCommit:
 		m.commitMade = true
+		m.track("committed", map[string]any{"step": stepName(s.id), "source": stepSource(s.source)})
 	case stepPush:
 		m.pushed = true
+		m.track("pushed", map[string]any{"step": stepName(s.id), "source": stepSource(s.source)})
 	}
 	s.status = statDone
 	m.active = m.firstPending()
@@ -398,6 +417,24 @@ func (m Model) handleAction(msg actionMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) hasSideEffects() bool {
 	return m.branchCreated || m.commitMade
+}
+
+func (m Model) track(action string, fields map[string]any) {
+	if m.cfg.Track == nil {
+		return
+	}
+	if fields == nil {
+		fields = map[string]any{}
+	}
+	m.cfg.Track(action, fields)
+}
+
+func (m Model) trackAbort(reason string) {
+	fields := map[string]any{"reason": reason}
+	if s := m.activeStep(); s != nil {
+		fields["step"] = stepName(s.id)
+	}
+	m.track("aborted", fields)
 }
 
 func (m Model) anySpinnerActive() bool {
@@ -491,6 +528,26 @@ func Run(cfg Config) (Result, error) {
 		return Result{}, errors.New("wizard: unexpected terminal model type")
 	}
 	return fm.Result(), nil
+}
+
+func stepName(id stepID) string {
+	switch id {
+	case stepBranch:
+		return "branch"
+	case stepCommit:
+		return "commit"
+	case stepPush:
+		return "push"
+	default:
+		return "unknown"
+	}
+}
+
+func stepSource(source string) string {
+	if source == "" {
+		return "user"
+	}
+	return source
 }
 
 func truncate(s string, n int) string {

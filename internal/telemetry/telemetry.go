@@ -34,6 +34,7 @@ type Fields map[string]any
 
 type Sink interface {
 	Track(name string, fields Fields)
+	Pageview(path string, fields Fields)
 	Close(ctx context.Context) error
 }
 
@@ -73,7 +74,7 @@ type collectPayload struct {
 	Hostname  string         `json:"hostname"`
 	Title     string         `json:"title"`
 	URL       string         `json:"url"`
-	Name      string         `json:"name"`
+	Name      string         `json:"name,omitempty"`
 	Data      map[string]any `json:"data,omitempty"`
 	Timestamp int64          `json:"timestamp,omitempty"`
 }
@@ -169,6 +170,10 @@ func Track(name string, fields Fields) {
 	Default().Track(name, fields)
 }
 
+func Pageview(path string, fields Fields) {
+	Default().Pageview(path, fields)
+}
+
 func Close(ctx context.Context) error {
 	return Default().Close(ctx)
 }
@@ -178,7 +183,33 @@ func (c *Client) Track(name string, fields Fields) {
 		return
 	}
 
-	body, err := c.newRequest(name, fields)
+	body, err := c.newRequest(name, eventURL(c.app, name), fields)
+	if err != nil {
+		return
+	}
+
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return
+	}
+	c.wg.Add(1)
+	c.mu.Unlock()
+
+	go func(payload []byte) {
+		defer c.wg.Done()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		c.send(ctx, payload)
+	}(body)
+}
+
+func (c *Client) Pageview(path string, fields Fields) {
+	if c == nil {
+		return
+	}
+
+	body, err := c.newRequest("", normalizePagePath(path), fields)
 	if err != nil {
 		return
 	}
@@ -224,9 +255,11 @@ func (c *Client) Close(ctx context.Context) error {
 
 func (noopSink) Track(string, Fields) {}
 
+func (noopSink) Pageview(string, Fields) {}
+
 func (noopSink) Close(context.Context) error { return nil }
 
-func (c *Client) newRequest(name string, fields Fields) ([]byte, error) {
+func (c *Client) newRequest(name, url string, fields Fields) ([]byte, error) {
 	data := make(map[string]any, len(fields)+4)
 	for k, v := range fields {
 		data[k] = v
@@ -242,7 +275,7 @@ func (c *Client) newRequest(name string, fields Fields) ([]byte, error) {
 			Website:   c.websiteID,
 			Hostname:  defaultHostname,
 			Title:     defaultTitle,
-			URL:       eventURL(c.app, name),
+			URL:       url,
 			Name:      name,
 			Data:      data,
 			Timestamp: time.Now().Unix(),
@@ -301,6 +334,17 @@ func buildChannel(version string) string {
 		return "dev"
 	}
 	return "release"
+}
+
+func normalizePagePath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "/"
+	}
+	if strings.HasPrefix(path, "/") {
+		return path
+	}
+	return "/" + path
 }
 
 func defaultWebsiteID() string {

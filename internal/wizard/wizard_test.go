@@ -15,6 +15,7 @@ type recorder struct {
 	createdBranch string
 	commitMsg     string
 	pushedBranch  string
+	telemetry     []wizardTelemetryEvent
 
 	createBranchErr error
 	commitErr       error
@@ -24,6 +25,11 @@ type recorder struct {
 	suggestCommit    string
 	suggestBranchErr error
 	suggestCommitErr error
+}
+
+type wizardTelemetryEvent struct {
+	action string
+	fields map[string]any
 }
 
 func (r *recorder) deps() Config {
@@ -45,6 +51,13 @@ func (r *recorder) deps() Config {
 		},
 		SuggestCommit: func(_ context.Context) (string, error) {
 			return r.suggestCommit, r.suggestCommitErr
+		},
+		Track: func(action string, fields map[string]any) {
+			clone := make(map[string]any, len(fields))
+			for k, v := range fields {
+				clone[k] = v
+			}
+			r.telemetry = append(r.telemetry, wizardTelemetryEvent{action: action, fields: clone})
 		},
 	}
 }
@@ -284,6 +297,74 @@ func TestPushStep_Confirm(t *testing.T) {
 	if !m.success {
 		t.Fatal("wizard should report success")
 	}
+}
+
+func TestWizardTracksCompletedKeyActions(t *testing.T) {
+	r := &recorder{}
+	m := NewModel(baseConfig(r))
+	m = drain(m, m.Init())
+
+	m = advance(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("feat/wizard")})
+	m = advance(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = advance(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("feat: add wizard telemetry")})
+	m = advance(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = advance(m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	if !containsWizardEvent(r.telemetry, "branch_created", "source", "user") {
+		t.Fatal("expected branch_created telemetry with user source")
+	}
+	if !containsWizardEvent(r.telemetry, "committed", "source", "user") {
+		t.Fatal("expected committed telemetry with user source")
+	}
+	if !containsWizardEvent(r.telemetry, "pushed", "step", "push") {
+		t.Fatal("expected pushed telemetry")
+	}
+	if !containsWizardEvent(r.telemetry, "completed", "pushed", true) {
+		t.Fatal("expected completed telemetry")
+	}
+}
+
+func TestWizardTracksAbortOnPushDecline(t *testing.T) {
+	r := &recorder{}
+	cfg := baseConfig(r)
+	cfg.CurrentBranch = "feat/x"
+	cfg.NeedsBranch = false
+	cfg.IsDirty = false
+	m := NewModel(cfg)
+	m = drain(m, m.Init())
+
+	m = advance(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+
+	if !containsWizardEvent(r.telemetry, "aborted", "reason", "decline_push") {
+		t.Fatal("expected aborted telemetry with decline_push reason")
+	}
+}
+
+func TestWizardTracksAgentSourcedBranchAction(t *testing.T) {
+	r := &recorder{suggestBranch: "feat/agent"}
+	m := NewModel(baseConfig(r))
+	m = drain(m, m.Init())
+
+	m = advance(m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	if !containsWizardEvent(r.telemetry, "branch_created", "source", "agent") {
+		t.Fatal("expected branch_created telemetry with agent source")
+	}
+}
+
+func containsWizardEvent(events []wizardTelemetryEvent, action, field string, want any) bool {
+	for _, event := range events {
+		if event.action != action {
+			continue
+		}
+		if field == "" {
+			return true
+		}
+		if got, ok := event.fields[field]; ok && got == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestPushStep_DeclineAborts(t *testing.T) {

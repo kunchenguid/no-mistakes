@@ -16,6 +16,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/kunchenguid/no-mistakes/internal/wizard"
 )
@@ -25,6 +26,7 @@ var resolveWizardAgent = func(ctx context.Context, cfg *config.Config) error {
 }
 
 var newWizardAgent = agent.New
+var wizardRun = wizard.Run
 
 type wizardAgentSuggester struct {
 	cfg     *config.Config
@@ -189,9 +191,30 @@ func runWizard(ctx context.Context, p *paths.Paths, state *repoState) (wizard.Re
 		SuggestCommit: func(ctx context.Context) (string, error) {
 			return suggester.suggestCommit(ctx)
 		},
+		Track: func(action string, fields map[string]any) {
+			telemetry.Track("wizard", mergeTelemetryFields(fields, telemetry.Fields{"action": action}))
+		},
 	}
 
-	return wizard.Run(wizCfg)
+	telemetry.Pageview("/wizard", telemetry.Fields{
+		"entrypoint":          "wizard",
+		"needs_branch":        state.needsBranch(),
+		"is_dirty":            state.dirty,
+		"detached":            state.detached,
+		"current_branch_role": wizardBranchRole(state.currentBranch, state.defaultBranch, state.detached),
+	})
+
+	res, err := wizardRun(wizCfg)
+	if err == nil {
+		telemetry.Track("wizard", telemetry.Fields{
+			"action":         "result",
+			"status":         wizardResultStatus(res),
+			"branch_created": res.BranchCreated,
+			"commit_made":    res.CommitMade,
+			"pushed":         res.Pushed,
+		})
+	}
+	return res, err
 }
 
 // captureAgentServerOutput routes managed-server logs to a file under
@@ -235,4 +258,35 @@ func waitForActiveRun(client *ipc.Client, repoID, branch string, timeout time.Du
 		}
 		time.Sleep(150 * time.Millisecond)
 	}
+}
+
+func wizardBranchRole(currentBranch, defaultBranch string, detached bool) string {
+	if detached {
+		return "detached"
+	}
+	if currentBranch != "" && currentBranch == defaultBranch {
+		return "default"
+	}
+	return "feature"
+}
+
+func wizardResultStatus(res wizard.Result) string {
+	if res.Success {
+		return "completed"
+	}
+	if res.Aborted {
+		return "aborted"
+	}
+	return "closed"
+}
+
+func mergeTelemetryFields(fields map[string]any, extra telemetry.Fields) telemetry.Fields {
+	merged := make(telemetry.Fields, len(fields)+len(extra))
+	for k, v := range fields {
+		merged[k] = v
+	}
+	for k, v := range extra {
+		merged[k] = v
+	}
+	return merged
 }
