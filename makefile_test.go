@@ -77,6 +77,29 @@ func TestMakeBuildIgnoresUnrelatedDotEnvEntries(t *testing.T) {
 	}
 }
 
+func TestMakeBuildStripsInlineCommentsFromDotEnvUmamiWebsiteID(t *testing.T) {
+	skipMakeBuildTestsOnWindows(t)
+
+	makePath, err := exec.LookPath("make")
+	if err != nil {
+		t.Skip("make not available")
+	}
+
+	workDir := writeTestMakeWorkspace(t)
+	if err := os.WriteFile(filepath.Join(workDir, ".env"), []byte("NO_MISTAKES_UMAMI_WEBSITE_ID=website-from-dotenv # dev\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	output := runMakeDryBuild(t, makePath, workDir, nil)
+
+	if !strings.Contains(output, "TelemetryWebsiteID=website-from-dotenv") {
+		t.Fatalf("make build output should strip inline comments from dotenv website id, got:\n%s", output)
+	}
+	if strings.Contains(output, "TelemetryWebsiteID=website-from-dotenv # dev") {
+		t.Fatalf("make build output should not embed inline comments in website id, got:\n%s", output)
+	}
+}
+
 func skipMakeBuildTestsOnWindows(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS == "windows" {

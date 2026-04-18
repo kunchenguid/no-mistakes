@@ -3,7 +3,6 @@ package cli
 import (
 	"fmt"
 	"io"
-	"os"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/kunchenguid/no-mistakes/internal/buildinfo"
@@ -15,11 +14,12 @@ import (
 )
 
 // Execute runs the root CLI command.
-func Execute() {
+func Execute() int {
 	if err := newRootCmd().Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		fmt.Fprintln(newRootCmd().ErrOrStderr(), err)
+		return 1
 	}
+	return 0
 }
 
 func newRootCmd() *cobra.Command {
