@@ -13,6 +13,8 @@ The installer keeps the real binary in `~/.no-mistakes/bin` and exposes `no-mist
 
 It also attempts to install and start the background daemon for you, preferring a managed service (launchd on macOS, systemd user service on Linux) and falling back to a detached daemon if that path is unavailable. If startup fails, run `no-mistakes daemon start` manually.
 
+Official release binaries installed this way may already have telemetry enabled if a telemetry website ID was embedded at build time.
+
 ## Windows (PowerShell)
 
 ```powershell
@@ -20,6 +22,8 @@ irm https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.
 ```
 
 Installs the binary and attempts to start the background daemon automatically, preferring a managed Task Scheduler task and falling back to a detached daemon if needed.
+
+Official release binaries installed this way may already have telemetry enabled if a telemetry website ID was embedded at build time.
 
 ## Go install
 

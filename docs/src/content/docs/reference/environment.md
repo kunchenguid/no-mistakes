@@ -75,7 +75,7 @@ Override or enable the telemetry website ID.
 | Type | `string` |
 | Default | unset |
 
-When set, telemetry uses this website ID at runtime. In dev builds, if the variable is unset, `no-mistakes` also checks a repo-local `.env` file for `NO_MISTAKES_UMAMI_WEBSITE_ID`. Release builds instead use any website ID embedded at build time.
+When set, telemetry uses this website ID at runtime. If it is unset in a dev build, `no-mistakes` also checks a repo-local `.env` file for `NO_MISTAKES_UMAMI_WEBSITE_ID`. If no runtime value is found, it falls back to any website ID embedded at build time.
 
 ## Environment the daemon sees
 
