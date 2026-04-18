@@ -92,3 +92,47 @@ func TestDefaultPrefersEnvVarWebsiteIDAndIgnoresHostOverride(t *testing.T) {
 		t.Fatalf("websiteID = %q, want %q", client.websiteID, "website-from-env")
 	}
 }
+
+func TestDefaultIgnoresDotEnvOutsideRepo(t *testing.T) {
+	prevSink := defaultSink
+	defaultSink = nil
+	defer func() { defaultSink = prevSink }()
+
+	prevWebsiteID := buildinfo.TelemetryWebsiteID
+	defer func() {
+		buildinfo.TelemetryWebsiteID = prevWebsiteID
+	}()
+	buildinfo.TelemetryWebsiteID = ""
+
+	t.Setenv(umamiWebsiteIDEnv, "")
+
+	parentDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(parentDir, ".env"), []byte("NO_MISTAKES_UMAMI_WEBSITE_ID=outside-repo\n"), 0o644); err != nil {
+		t.Fatalf("write parent .env: %v", err)
+	}
+
+	repoDir := filepath.Join(parentDir, "repo")
+	if err := os.Mkdir(repoDir, 0o755); err != nil {
+		t.Fatalf("mkdir repo: %v", err)
+	}
+	subDir := filepath.Join(repoDir, "nested")
+	if err := os.Mkdir(subDir, 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(repoDir, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+
+	prevWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd(): %v", err)
+	}
+	if err := os.Chdir(subDir); err != nil {
+		t.Fatalf("Chdir(): %v", err)
+	}
+	defer os.Chdir(prevWD)
+
+	if _, ok := Default().(*Client); ok {
+		t.Fatal("Default() should ignore dotenv outside repo")
+	}
+}

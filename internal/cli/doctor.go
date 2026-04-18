@@ -18,7 +18,7 @@ func newDoctorCmd() *cobra.Command {
 		Short: "Check system health and dependencies",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return trackCommand("doctor", func() error {
+			return trackCommandStatus("doctor", func() (string, error) {
 				w := cmd.OutOrStdout()
 				allOK := true
 
@@ -111,9 +111,10 @@ func newDoctorCmd() *cobra.Command {
 				if !allOK {
 					fmt.Fprintln(w)
 					fmt.Fprintf(w, "  %s\n", sRed.Render("some checks failed"))
+					return "error", nil
 				}
 
-				return nil
+				return "success", nil
 			})
 		},
 	}

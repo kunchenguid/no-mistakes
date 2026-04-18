@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"sync"
 	"testing"
 
@@ -73,5 +74,49 @@ func TestInitTracksCommandTelemetry(t *testing.T) {
 	}
 	if _, ok := event.fields["duration_ms"]; !ok {
 		t.Fatal("expected duration_ms in command telemetry")
+	}
+}
+
+func TestStatusTracksSoftFailureAsError(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("NM_HOME", t.TempDir())
+	chdir(t, tmpDir)
+
+	recorder := &telemetryRecorder{}
+	restore := telemetry.SetDefaultForTesting(recorder)
+	defer restore()
+
+	if _, err := executeCmd("status"); err != nil {
+		t.Fatalf("status failed: %v", err)
+	}
+
+	event := recorder.find("command", "command", "status")
+	if event == nil {
+		t.Fatal("expected command telemetry for status")
+	}
+	if got := event.fields["status"]; got != "error" {
+		t.Fatalf("status = %v, want error", got)
+	}
+}
+
+func TestDoctorTracksFailedChecksAsError(t *testing.T) {
+	nmHome := filepath.Join(t.TempDir(), "missing-nm-home")
+	t.Setenv("NM_HOME", nmHome)
+	t.Setenv("PATH", "/nonexistent")
+
+	recorder := &telemetryRecorder{}
+	restore := telemetry.SetDefaultForTesting(recorder)
+	defer restore()
+
+	if _, err := executeCmd("doctor"); err != nil {
+		t.Fatalf("doctor failed: %v", err)
+	}
+
+	event := recorder.find("command", "command", "doctor")
+	if event == nil {
+		t.Fatal("expected command telemetry for doctor")
+	}
+	if got := event.fields["status"]; got != "error" {
+		t.Fatalf("status = %v, want error", got)
 	}
 }

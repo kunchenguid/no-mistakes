@@ -338,10 +338,34 @@ func loadDotEnvValues() map[string]string {
 }
 
 func findDotEnv(dir string) (string, bool) {
+	repoRoot, ok := findRepoRoot(dir)
+	if !ok {
+		path := filepath.Join(dir, ".env")
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			return path, true
+		}
+		return "", false
+	}
+
 	for {
 		path := filepath.Join(dir, ".env")
 		if info, err := os.Stat(path); err == nil && !info.IsDir() {
 			return path, true
+		}
+		if dir == repoRoot {
+			return "", false
+		}
+
+		parent := filepath.Dir(dir)
+		dir = parent
+	}
+}
+
+func findRepoRoot(dir string) (string, bool) {
+	for {
+		path := filepath.Join(dir, ".git")
+		if _, err := os.Stat(path); err == nil {
+			return dir, true
 		}
 
 		parent := filepath.Dir(dir)

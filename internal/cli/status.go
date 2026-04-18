@@ -14,10 +14,10 @@ func newStatusCmd() *cobra.Command {
 		Short: "Show status of the current repository",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return trackCommand("status", func() error {
+			return trackCommandStatus("status", func() (string, error) {
 				p, d, err := openResources()
 				if err != nil {
-					return err
+					return "", err
 				}
 				defer d.Close()
 
@@ -27,7 +27,7 @@ func newStatusCmd() *cobra.Command {
 				repo, err := findRepo(d)
 				if err != nil {
 					fmt.Fprintln(w, err)
-					return nil
+					return "error", nil
 				}
 
 				fmt.Fprintf(w, "  %s  %s\n", sDim.Render("  repo:"), repo.WorkingPath)
@@ -45,7 +45,7 @@ func newStatusCmd() *cobra.Command {
 				// Check for active run.
 				activeRun, err := d.GetActiveRun(repo.ID, "")
 				if err != nil {
-					return fmt.Errorf("check active run: %w", err)
+					return "", fmt.Errorf("check active run: %w", err)
 				}
 				if activeRun != nil {
 					fmt.Fprintln(w)
@@ -61,7 +61,7 @@ func newStatusCmd() *cobra.Command {
 					fmt.Fprintf(w, "\n  %s\n", sDim.Render("no active run"))
 				}
 
-				return nil
+				return "success", nil
 			})
 		},
 	}
