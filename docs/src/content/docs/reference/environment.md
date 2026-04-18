@@ -77,6 +77,8 @@ Override or enable the telemetry website ID.
 
 When set, telemetry uses this website ID at runtime. If it is unset in a dev build, `no-mistakes` also checks a repo-local `.env` file for `NO_MISTAKES_UMAMI_WEBSITE_ID`. If no runtime value is found, it falls back to any website ID embedded at build time.
 
+When telemetry is enabled, `no-mistakes` sends command, run, step, approval, and fix events plus app version, platform, and build-channel metadata.
+
 ## Environment the daemon sees
 
 When the daemon runs through a managed service (launchd, systemd user service, Task Scheduler), it reloads environment from your login shell on macOS and Linux before each run so `PATH` and `NO_MISTAKES_*` vars match what you'd see in an interactive shell. On Windows it reuses the current process environment.
