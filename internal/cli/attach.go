@@ -200,7 +200,9 @@ func newAttachCmd() *cobra.Command {
 If no run ID is specified, attaches to the active run for the current repo.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return attachRun(cmd.OutOrStdout(), runID, false)
+			return trackCommand("attach", func() error {
+				return attachRun(cmd.OutOrStdout(), runID, false)
+			})
 		},
 	}
 

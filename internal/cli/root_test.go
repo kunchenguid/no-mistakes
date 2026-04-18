@@ -197,3 +197,13 @@ func TestRootErrorFromNonGitDir(t *testing.T) {
 		t.Errorf("error should mention git repository, got: %v", err)
 	}
 }
+
+func TestExecuteReturnsExitCodeOnCommandError(t *testing.T) {
+	nonGitDir := t.TempDir()
+	t.Setenv("NM_HOME", t.TempDir())
+	chdir(t, nonGitDir)
+
+	if code := Execute(); code != 1 {
+		t.Fatalf("Execute() = %d, want 1", code)
+	}
+}

@@ -1,42 +1,49 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/cli"
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/update"
 )
 
 func main() {
+	os.Exit(run())
+}
+
+func run() int {
 	if root, ok, err := daemonRunRootFromArgs(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		return 1
 	} else if ok {
 		if root != "" {
 			if err := os.Setenv("NM_HOME", root); err != nil {
 				fmt.Fprintln(os.Stderr, err)
-				os.Exit(1)
+				return 1
 			}
 		}
 		if err := daemon.Run(); err != nil {
 			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
+			return 1
 		}
-		return
+		return 0
 	}
 
 	if handled, err := update.MaybeHandleBackgroundCheck(os.Args[1:]); handled {
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
+			return 1
 		}
-		return
+		return 0
 	}
 
 	update.MaybeNotifyAndCheck(os.Args[1:], os.Stderr)
@@ -45,8 +52,13 @@ func main() {
 	// leak into user-facing output. The daemon process sets up its own
 	// file-based logger before reaching this point.
 	slog.SetDefault(slog.New(slog.NewTextHandler(cliLogWriter(), nil)))
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 750*time.Millisecond)
+		defer cancel()
+		_ = telemetry.Close(ctx)
+	}()
 
-	cli.Execute()
+	return cli.Execute()
 }
 
 func daemonRunRootFromArgs(args []string) (string, bool, error) {

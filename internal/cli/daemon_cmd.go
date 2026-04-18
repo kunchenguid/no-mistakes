@@ -77,18 +77,20 @@ func newDaemonStartCmd() *cobra.Command {
 		Use:   "start",
 		Short: "Install or refresh the managed daemon service and start it",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			p, err := paths.New()
-			if err != nil {
-				return err
-			}
-			if err := p.EnsureDirs(); err != nil {
-				return err
-			}
-			if err := daemon.Start(p); err != nil {
-				return err
-			}
-			fmt.Fprintf(cmd.OutOrStdout(), "  %s daemon started\n", sGreen.Render("✓"))
-			return nil
+			return trackCommand("daemon.start", func() error {
+				p, err := paths.New()
+				if err != nil {
+					return err
+				}
+				if err := p.EnsureDirs(); err != nil {
+					return err
+				}
+				if err := daemon.Start(p); err != nil {
+					return err
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "  %s daemon started\n", sGreen.Render("✓"))
+				return nil
+			})
 		},
 	}
 }
@@ -98,15 +100,17 @@ func newDaemonStopCmd() *cobra.Command {
 		Use:   "stop",
 		Short: "Stop the running daemon",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			p, err := paths.New()
-			if err != nil {
-				return err
-			}
-			if err := daemon.Stop(p); err != nil {
-				return err
-			}
-			fmt.Fprintf(cmd.OutOrStdout(), "  %s daemon stopped\n", sGreen.Render("✓"))
-			return nil
+			return trackCommand("daemon.stop", func() error {
+				p, err := paths.New()
+				if err != nil {
+					return err
+				}
+				if err := daemon.Stop(p); err != nil {
+					return err
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "  %s daemon stopped\n", sGreen.Render("✓"))
+				return nil
+			})
 		},
 	}
 }
@@ -116,25 +120,27 @@ func newDaemonStatusCmd() *cobra.Command {
 		Use:   "status",
 		Short: "Check if the daemon is running",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			p, err := paths.New()
-			if err != nil {
-				return err
-			}
-			alive, err := daemon.IsRunning(p)
-			if err != nil {
-				return err
-			}
-			if alive {
-				pid, _ := daemon.ReadPID(p)
-				if pid > 0 {
-					fmt.Fprintf(cmd.OutOrStdout(), "  %s daemon running %s\n", sGreen.Render("●"), sDim.Render(fmt.Sprintf("(pid %d)", pid)))
-				} else {
-					fmt.Fprintf(cmd.OutOrStdout(), "  %s daemon running\n", sGreen.Render("●"))
+			return trackCommand("daemon.status", func() error {
+				p, err := paths.New()
+				if err != nil {
+					return err
 				}
-			} else {
-				fmt.Fprintf(cmd.OutOrStdout(), "  %s daemon not running\n", sDim.Render("○"))
-			}
-			return nil
+				alive, err := daemon.IsRunning(p)
+				if err != nil {
+					return err
+				}
+				if alive {
+					pid, _ := daemon.ReadPID(p)
+					if pid > 0 {
+						fmt.Fprintf(cmd.OutOrStdout(), "  %s daemon running %s\n", sGreen.Render("●"), sDim.Render(fmt.Sprintf("(pid %d)", pid)))
+					} else {
+						fmt.Fprintf(cmd.OutOrStdout(), "  %s daemon running\n", sGreen.Render("●"))
+					}
+				} else {
+					fmt.Fprintf(cmd.OutOrStdout(), "  %s daemon not running\n", sDim.Render("○"))
+				}
+				return nil
+			})
 		},
 	}
 }

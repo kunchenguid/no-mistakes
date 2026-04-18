@@ -13,6 +13,8 @@ curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/i
 
 The installer drops the binary in `~/.no-mistakes/bin`, links it into `~/.local/bin` or `/usr/local/bin`, and starts the background daemon. If startup fails, run `no-mistakes daemon start` manually.
 
+Official release binaries installed this way may already have telemetry enabled if a telemetry website ID was embedded at build time.
+
 ## 2. Check prerequisites
 
 ```sh

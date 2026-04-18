@@ -117,6 +117,8 @@ no-mistakes update
 
 Downloads the latest release, verifies the SHA-256 checksum, atomically replaces the running binary, and resets the daemon when it is running or stale daemon artifacts exist so the new executable is picked up, preferring the managed service path and falling back to a detached daemon if service startup is unavailable or fails. If the daemon is running, update first requires it to already be using the same executable path as the binary running `no-mistakes update`; if that daemon executable path cannot be determined or it points to a different binary, the update aborts before replacement. If the daemon does not come back cleanly after a successful replacement, the command reports that failure. On macOS, removes the quarantine extended attribute.
 
+Because `update` installs the latest official release binary, the replacement binary may already have telemetry enabled if a telemetry website ID was embedded at build time.
+
 Background update checks run automatically on each CLI invocation (except `update` itself). If a newer version is available, a notification is printed to stderr. Suppressed for dev builds or when `NO_MISTAKES_NO_UPDATE_CHECK=1` is set.
 
 ## no-mistakes daemon start

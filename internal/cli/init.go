@@ -22,35 +22,37 @@ adds a "no-mistakes" git remote, and records the repo in the database.
 Run this from inside a git repository that has an "origin" remote.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			p, d, err := openResources()
-			if err != nil {
-				return err
-			}
-			defer d.Close()
-
-			repo, err := gate.Init(cmd.Context(), d, p, ".")
-			if err != nil {
-				return fmt.Errorf("init: %w", err)
-			}
-			if err := daemon.EnsureDaemon(p); err != nil {
-				if _, ejectErr := gate.Eject(cmd.Context(), d, p, "."); ejectErr != nil {
-					return fmt.Errorf("start daemon: %w, rollback init: %v", err, ejectErr)
+			return trackCommand("init", func() error {
+				p, d, err := openResources()
+				if err != nil {
+					return err
 				}
-				return fmt.Errorf("start daemon: %w", err)
-			}
+				defer d.Close()
 
-			w := cmd.OutOrStdout()
-			fmt.Fprintln(w, sCyan.Render(banner))
-			fmt.Fprintln(w)
-			fmt.Fprintf(w, "  %s Gate initialized\n", sGreen.Render("✓"))
-			fmt.Fprintln(w)
-			fmt.Fprintf(w, "  %s  %s\n", sDim.Render("  repo"), repo.WorkingPath)
-			fmt.Fprintf(w, "  %s  no-mistakes → %s\n", sDim.Render("  gate"), p.RepoDir(repo.ID))
-			fmt.Fprintf(w, "  %s  %s\n", sDim.Render("remote"), repo.UpstreamURL)
-			fmt.Fprintln(w)
-			fmt.Fprintf(w, "  %s\n", sDim.Render("Push through the gate with:"))
-			fmt.Fprintf(w, "  %s\n", sBold.Render("git push no-mistakes <branch>"))
-			return nil
+				repo, err := gate.Init(cmd.Context(), d, p, ".")
+				if err != nil {
+					return fmt.Errorf("init: %w", err)
+				}
+				if err := daemon.EnsureDaemon(p); err != nil {
+					if _, ejectErr := gate.Eject(cmd.Context(), d, p, "."); ejectErr != nil {
+						return fmt.Errorf("start daemon: %w, rollback init: %v", err, ejectErr)
+					}
+					return fmt.Errorf("start daemon: %w", err)
+				}
+
+				w := cmd.OutOrStdout()
+				fmt.Fprintln(w, sCyan.Render(banner))
+				fmt.Fprintln(w)
+				fmt.Fprintf(w, "  %s Gate initialized\n", sGreen.Render("✓"))
+				fmt.Fprintln(w)
+				fmt.Fprintf(w, "  %s  %s\n", sDim.Render("  repo"), repo.WorkingPath)
+				fmt.Fprintf(w, "  %s  no-mistakes → %s\n", sDim.Render("  gate"), p.RepoDir(repo.ID))
+				fmt.Fprintf(w, "  %s  %s\n", sDim.Render("remote"), repo.UpstreamURL)
+				fmt.Fprintln(w)
+				fmt.Fprintf(w, "  %s\n", sDim.Render("Push through the gate with:"))
+				fmt.Fprintf(w, "  %s\n", sBold.Render("git push no-mistakes <branch>"))
+				return nil
+			})
 		},
 	}
 }

@@ -13,6 +13,8 @@ The installer keeps the real binary in `~/.no-mistakes/bin` and exposes `no-mist
 
 It also attempts to install and start the background daemon for you, preferring a managed service (launchd on macOS, systemd user service on Linux) and falling back to a detached daemon if that path is unavailable. If startup fails, run `no-mistakes daemon start` manually.
 
+Official release binaries installed this way may already have telemetry enabled if a telemetry website ID was embedded at build time.
+
 ## Windows (PowerShell)
 
 ```powershell
@@ -21,11 +23,15 @@ irm https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.
 
 Installs the binary and attempts to start the background daemon automatically, preferring a managed Task Scheduler task and falling back to a detached daemon if needed.
 
+Official release binaries installed this way may already have telemetry enabled if a telemetry website ID was embedded at build time.
+
 ## Go install
 
 ```sh
 go install github.com/kunchenguid/no-mistakes/cmd/no-mistakes@latest
 ```
+
+`go install` builds the CLI without an embedded telemetry website ID, so telemetry stays off by default unless you later set `NO_MISTAKES_UMAMI_WEBSITE_ID` at runtime.
 
 ## From source
 
@@ -35,6 +41,8 @@ cd no-mistakes
 make build
 make install
 ```
+
+`make build` embeds the telemetry website ID from `NO_MISTAKES_UMAMI_WEBSITE_ID` in a repo-local `.env` first, then `UMAMI_WEBSITE_ID` from the shell if no `.env` value is present. If neither is set, the binary is built without telemetry enabled.
 
 ## Prerequisites
 
@@ -56,6 +64,8 @@ no-mistakes update
 ```
 
 This downloads the latest release from GitHub, verifies the SHA-256 checksum, atomically replaces the binary, and resets the daemon so it picks up the new executable. It prefers the managed service path and falls back to a detached daemon if service startup is unavailable or fails.
+
+Because `update` installs the latest official release binary, it may change telemetry behavior if that release has a telemetry website ID embedded at build time.
 
 It only proceeds if the running daemon is already using the same executable path. If the daemon executable path cannot be determined or it was started from a different binary, the update aborts before replacing the binary. If the daemon does not come back cleanly after a successful replacement, the new binary stays installed but the command reports the daemon reset failure.
 
