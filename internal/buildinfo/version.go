@@ -8,9 +8,10 @@ import "runtime/debug"
 //	          -X github.com/kunchenguid/no-mistakes/internal/buildinfo.Commit=abc1234
 //	          -X github.com/kunchenguid/no-mistakes/internal/buildinfo.Date=2024-01-01"
 var (
-	Version = "dev"
-	Commit  = "unknown"
-	Date    = "unknown"
+	Version            = "dev"
+	Commit             = "unknown"
+	Date               = "unknown"
+	TelemetryWebsiteID = ""
 )
 
 func CurrentVersion() string {

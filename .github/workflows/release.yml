@@ -105,6 +105,7 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           TAG: ${{ needs.release-please.outputs.tag_name }}
           VERSION: ${{ needs.release-please.outputs.version }}
+          UMAMI_WEBSITE_ID: ${{ vars.UMAMI_WEBSITE_ID }}
         run: |
           set -euo pipefail
           mkdir -p dist
@@ -117,7 +118,7 @@ jobs:
             OUT="dist/${BIN}"
           fi
           CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
-            go build -ldflags "-X github.com/kunchenguid/no-mistakes/internal/buildinfo.Version=${TAG} -X github.com/kunchenguid/no-mistakes/internal/buildinfo.Commit=${COMMIT} -X github.com/kunchenguid/no-mistakes/internal/buildinfo.Date=${DATE}" \
+            go build -ldflags "-X github.com/kunchenguid/no-mistakes/internal/buildinfo.Version=${TAG} -X github.com/kunchenguid/no-mistakes/internal/buildinfo.Commit=${COMMIT} -X github.com/kunchenguid/no-mistakes/internal/buildinfo.Date=${DATE} -X github.com/kunchenguid/no-mistakes/internal/buildinfo.TelemetryWebsiteID=${UMAMI_WEBSITE_ID}" \
             -o "$OUT" ./cmd/no-mistakes
           if [ "$GOOS" = "windows" ]; then
             ARCHIVE="dist/no-mistakes-${TAG}-${GOOS}-${GOARCH}.zip"

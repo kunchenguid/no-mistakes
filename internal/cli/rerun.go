@@ -16,42 +16,44 @@ func newRerunCmd() *cobra.Command {
 		Short: "Rerun the pipeline for the current branch",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			p, d, err := openResources()
-			if err != nil {
-				return err
-			}
-			defer d.Close()
+			return trackCommand("rerun", func() error {
+				p, d, err := openResources()
+				if err != nil {
+					return err
+				}
+				defer d.Close()
 
-			repo, err := findRepo(d)
-			if err != nil {
-				return err
-			}
+				repo, err := findRepo(d)
+				if err != nil {
+					return err
+				}
 
-			branch, err := git.CurrentBranch(context.Background(), ".")
-			if err != nil {
-				return fmt.Errorf("get current branch: %w", err)
-			}
-			if branch == "HEAD" {
-				return fmt.Errorf("not on a branch")
-			}
+				branch, err := git.CurrentBranch(context.Background(), ".")
+				if err != nil {
+					return fmt.Errorf("get current branch: %w", err)
+				}
+				if branch == "HEAD" {
+					return fmt.Errorf("not on a branch")
+				}
 
-			if err := daemon.EnsureDaemon(p); err != nil {
-				return fmt.Errorf("start daemon: %w", err)
-			}
+				if err := daemon.EnsureDaemon(p); err != nil {
+					return fmt.Errorf("start daemon: %w", err)
+				}
 
-			client, err := ipc.Dial(p.Socket())
-			if err != nil {
-				return fmt.Errorf("connect to daemon: %w", err)
-			}
-			defer client.Close()
+				client, err := ipc.Dial(p.Socket())
+				if err != nil {
+					return fmt.Errorf("connect to daemon: %w", err)
+				}
+				defer client.Close()
 
-			var result ipc.RerunResult
-			if err := client.Call(ipc.MethodRerun, &ipc.RerunParams{RepoID: repo.ID, Branch: branch}, &result); err != nil {
-				return fmt.Errorf("rerun pipeline: %w", err)
-			}
+				var result ipc.RerunResult
+				if err := client.Call(ipc.MethodRerun, &ipc.RerunParams{RepoID: repo.ID, Branch: branch}, &result); err != nil {
+					return fmt.Errorf("rerun pipeline: %w", err)
+				}
 
-			fmt.Fprintf(cmd.OutOrStdout(), "  %s Rerun started for %s %s\n", sGreen.Render("✓"), branch, sDim.Render(result.RunID))
-			return nil
+				fmt.Fprintf(cmd.OutOrStdout(), "  %s Rerun started for %s %s\n", sGreen.Render("✓"), branch, sDim.Render(result.RunID))
+				return nil
+			})
 		},
 	}
 }

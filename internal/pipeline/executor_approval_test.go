@@ -2,11 +2,14 @@ package pipeline
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -323,6 +326,124 @@ func TestExecutor_ApprovalFix(t *testing.T) {
 	// Step should have been called twice (initial + after fix)
 	if callCount != 2 {
 		t.Errorf("expected step to be called 2 times, got %d", callCount)
+	}
+}
+
+func TestExecutor_TracksApprovalAndUserFixTelemetry(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	recorder := &telemetryRecorder{}
+	restore := telemetry.SetDefaultForTesting(recorder)
+	defer restore()
+
+	callCount := 0
+	step := &adaptiveCallStep{
+		name: types.StepReview,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			callCount++
+			if callCount == 1 {
+				return &StepOutcome{NeedsApproval: true, Findings: `{"findings":[{"severity":"error","description":"bug one","action":"auto-fix"},{"severity":"warn","description":"bug two","action":"ask-user"}],"summary":"2 issues"}`}, nil
+			}
+			return &StepOutcome{ExitCode: 0}, nil
+		},
+	}
+
+	exec := NewExecutor(database, p, &config.Config{Agent: types.AgentClaude}, nil, []Step{step}, nil)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- exec.Execute(context.Background(), run, repo, workDir)
+	}()
+
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
+
+	if err := exec.Respond(types.StepReview, types.ActionFix, nil); err != nil {
+		t.Fatalf("respond error: %v", err)
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("expected no error, got: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("executor timed out")
+	}
+
+	approvalEvent := recorder.find("approval", "action", "fix")
+	if approvalEvent == nil {
+		t.Fatal("expected approval telemetry event")
+	}
+	if got := approvalEvent.fields["step"]; got != string(types.StepReview) {
+		t.Fatalf("approval step = %v, want %q", got, types.StepReview)
+	}
+	if got := approvalEvent.fields["selected_findings_count"]; fmt.Sprint(got) != "2" {
+		t.Fatalf("approval selected_findings_count = %v, want 2", got)
+	}
+
+	fixEvent := recorder.find("fix", "source", "user")
+	if fixEvent == nil {
+		t.Fatal("expected user fix telemetry event")
+	}
+	if got := fixEvent.fields["selected_findings_count"]; fmt.Sprint(got) != "2" {
+		t.Fatalf("fix selected_findings_count = %v, want 2", got)
+	}
+
+	stepEvent := recorder.find("step", "status", string(types.StepStatusAwaitingApproval))
+	if stepEvent == nil {
+		t.Fatal("expected awaiting approval step telemetry event")
+	}
+	if got := stepEvent.fields["findings_count"]; fmt.Sprint(got) != "2" {
+		t.Fatalf("step findings_count = %v, want 2", got)
+	}
+	if got := stepEvent.fields["agent"]; got != string(types.AgentClaude) {
+		t.Fatalf("step agent = %v, want %q", got, types.AgentClaude)
+	}
+}
+
+func TestExecutor_TracksAutoFixTelemetry(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	recorder := &telemetryRecorder{}
+	restore := telemetry.SetDefaultForTesting(recorder)
+	defer restore()
+
+	callCount := 0
+	step := &adaptiveCallStep{
+		name: types.StepReview,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			callCount++
+			if callCount == 1 {
+				return &StepOutcome{
+					AutoFixable: true,
+					Findings:    `{"findings":[{"severity":"error","description":"fix me","action":"auto-fix"}],"summary":"1 issue"}`,
+				}, nil
+			}
+			return &StepOutcome{ExitCode: 0}, nil
+		},
+	}
+
+	cfg := &config.Config{Agent: types.AgentClaude, AutoFix: config.AutoFix{Review: 1}}
+	exec := NewExecutor(database, p, cfg, nil, []Step{step}, nil)
+
+	if err := exec.Execute(context.Background(), run, repo, workDir); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	fixEvent := recorder.find("fix", "source", "auto")
+	if fixEvent == nil {
+		t.Fatal("expected auto-fix telemetry event")
+	}
+	if got := fixEvent.fields["step"]; got != string(types.StepReview) {
+		t.Fatalf("fix step = %v, want %q", got, types.StepReview)
+	}
+	if got := fixEvent.fields["selected_findings_count"]; fmt.Sprint(got) != "1" {
+		t.Fatalf("fix selected_findings_count = %v, want 1", got)
+	}
+	if got := fixEvent.fields["attempt"]; fmt.Sprint(got) != "1" {
+		t.Fatalf("fix attempt = %v, want 1", got)
 	}
 }
 

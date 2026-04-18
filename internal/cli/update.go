@@ -11,7 +11,9 @@ func newUpdateCmd() *cobra.Command {
 		Short: "Update no-mistakes and reset the daemon",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return update.Run(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr())
+			return trackCommand("update", func() error {
+				return update.Run(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr())
+			})
 		},
 	}
 }

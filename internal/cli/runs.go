@@ -17,45 +17,47 @@ func newRunsCmd() *cobra.Command {
 		Short: "List pipeline runs for the current repository",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			_, d, err := openResources()
-			if err != nil {
-				return err
-			}
-			defer d.Close()
+			return trackCommand("runs", func() error {
+				_, d, err := openResources()
+				if err != nil {
+					return err
+				}
+				defer d.Close()
 
-			repo, err := findRepo(d)
-			if err != nil {
-				return err
-			}
+				repo, err := findRepo(d)
+				if err != nil {
+					return err
+				}
 
-			runs, err := d.GetRunsByRepo(repo.ID)
-			if err != nil {
-				return fmt.Errorf("list runs: %w", err)
-			}
+				runs, err := d.GetRunsByRepo(repo.ID)
+				if err != nil {
+					return fmt.Errorf("list runs: %w", err)
+				}
 
-			w := cmd.OutOrStdout()
+				w := cmd.OutOrStdout()
 
-			if len(runs) == 0 {
-				fmt.Fprintf(w, "  %s\n", sDim.Render("no runs yet. Push through the gate to start a pipeline:"))
-				fmt.Fprintf(w, "  %s\n", sBold.Render("git push no-mistakes <branch>"))
+				if len(runs) == 0 {
+					fmt.Fprintf(w, "  %s\n", sDim.Render("no runs yet. Push through the gate to start a pipeline:"))
+					fmt.Fprintf(w, "  %s\n", sBold.Render("git push no-mistakes <branch>"))
+					return nil
+				}
+
+				// Apply limit.
+				shown := runs
+				if limit > 0 && len(shown) > limit {
+					shown = shown[:limit]
+				}
+
+				for _, r := range shown {
+					printRunLine(w, r)
+				}
+
+				if len(runs) > len(shown) {
+					fmt.Fprintf(w, "\n  %s\n", sDim.Render(fmt.Sprintf("(%d more runs, use --limit to see more)", len(runs)-len(shown))))
+				}
+
 				return nil
-			}
-
-			// Apply limit.
-			shown := runs
-			if limit > 0 && len(shown) > limit {
-				shown = shown[:limit]
-			}
-
-			for _, r := range shown {
-				printRunLine(w, r)
-			}
-
-			if len(runs) > len(shown) {
-				fmt.Fprintf(w, "\n  %s\n", sDim.Render(fmt.Sprintf("(%d more runs, use --limit to see more)", len(runs)-len(shown))))
-			}
-
-			return nil
+			})
 		},
 	}
 

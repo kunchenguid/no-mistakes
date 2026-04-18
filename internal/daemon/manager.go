@@ -19,6 +19,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
+	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -162,7 +163,7 @@ func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushRec
 	}
 
 	branch := branchFromRef(params.Ref)
-	return m.startRun(ctx, repo, branch, params.New, params.Old)
+	return m.startRun(ctx, repo, branch, params.New, params.Old, "push")
 }
 
 // HandleRerun creates a new run for the latest gate head on a branch.
@@ -209,12 +210,23 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch string) (st
 		baseSHA = matchingHead.BaseSHA
 	}
 
-	return m.startRun(ctx, repo, branch, headSHA, baseSHA)
+	return m.startRun(ctx, repo, branch, headSHA, baseSHA, "rerun")
 }
 
 // startRun creates a run, sets up a worktree, and launches pipeline execution.
-func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA string) (string, error) {
+func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string) (string, error) {
+	branchRole := telemetryBranchRole(branch, repo.DefaultBranch)
+	trackStartFailure := func(stage string) {
+		telemetry.Track("run", telemetry.Fields{
+			"action":      "start_failed",
+			"trigger":     trigger,
+			"branch_role": branchRole,
+			"stage":       stage,
+		})
+	}
+
 	if m.shuttingDown.Load() {
+		trackStartFailure("daemon_shutdown")
 		return "", fmt.Errorf("daemon is shutting down")
 	}
 
@@ -232,6 +244,7 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	// Create run record.
 	run, err := m.db.InsertRun(repo.ID, branch, headSHA, baseSHA)
 	if err != nil {
+		trackStartFailure("create_run")
 		return "", fmt.Errorf("create run: %w", err)
 	}
 
@@ -240,6 +253,7 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	wtDir := m.paths.WorktreeDir(repo.ID, run.ID)
 	if err := git.WorktreeAdd(ctx, gateDir, wtDir, headSHA); err != nil {
 		m.db.UpdateRunError(run.ID, fmt.Sprintf("create worktree: %s", err))
+		trackStartFailure("create_worktree")
 		return "", fmt.Errorf("create worktree: %w", err)
 	}
 	if repo.DefaultBranch != "" {
@@ -262,11 +276,13 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	globalCfg, err := config.LoadGlobal(m.paths.ConfigFile())
 	if err != nil {
 		m.db.UpdateRunError(run.ID, fmt.Sprintf("load config: %s", err))
+		trackStartFailure("load_global_config")
 		return "", fmt.Errorf("load global config: %w", err)
 	}
 	repoCfg, err := config.LoadRepo(wtDir)
 	if err != nil {
 		m.db.UpdateRunError(run.ID, fmt.Sprintf("load config: %s", err))
+		trackStartFailure("load_repo_config")
 		return "", fmt.Errorf("load repo config: %w", err)
 	}
 	cfg := config.Merge(globalCfg, repoCfg)
@@ -278,19 +294,31 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	} else {
 		if err := cfg.ResolveAgent(ctx, exec.LookPath); err != nil {
 			m.db.UpdateRunError(run.ID, err.Error())
+			trackStartFailure("resolve_agent")
 			return "", err
 		}
 		var agErr error
 		ag, agErr = agent.New(cfg.Agent, cfg.AgentPath())
 		if agErr != nil {
 			m.db.UpdateRunError(run.ID, fmt.Sprintf("create agent: %s", agErr))
+			trackStartFailure("create_agent")
 			return "", fmt.Errorf("create agent: %w", agErr)
 		}
 	}
 
+	execSteps := m.steps()
+	telemetry.Track("run", telemetry.Fields{
+		"action":      "started",
+		"trigger":     trigger,
+		"agent":       string(cfg.Agent),
+		"branch_role": branchRole,
+		"step_count":  len(execSteps),
+		"demo_mode":   steps.IsDemoMode(),
+	})
+
 	// Create executor with event broadcast.
 	runCtx, cancel := context.WithCancelCause(context.Background())
-	executor := pipeline.NewExecutor(m.db, m.paths, cfg, ag, m.steps(), m.broadcast)
+	executor := pipeline.NewExecutor(m.db, m.paths, cfg, ag, execSteps, m.broadcast)
 
 	// Track executor.
 	done := make(chan struct{})
@@ -306,6 +334,7 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	// Launch pipeline in background.
 	m.wg.Add(1)
 	go func() {
+		startedAt := time.Now()
 		defer m.wg.Done()
 		defer close(done)
 		defer func() {
@@ -330,13 +359,60 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 		}()
 
 		if err := executor.Execute(runCtx, run, repo, wtDir); err != nil {
+			fields := telemetry.Fields{
+				"action":      "finished",
+				"trigger":     trigger,
+				"agent":       string(cfg.Agent),
+				"branch_role": branchRole,
+				"status":      string(run.Status),
+				"duration_ms": time.Since(startedAt).Milliseconds(),
+				"step_count":  len(execSteps),
+				"pr_created":  run.PRURL != nil && *run.PRURL != "",
+			}
+			if failedStep := telemetryFailedStepName(m.db, run.ID); failedStep != "" {
+				fields["failed_step"] = failedStep
+			}
+			telemetry.Track("run", fields)
 			slog.Error("pipeline failed", "run_id", run.ID, "error", err)
 		} else {
+			telemetry.Track("run", telemetry.Fields{
+				"action":      "finished",
+				"trigger":     trigger,
+				"agent":       string(cfg.Agent),
+				"branch_role": branchRole,
+				"status":      string(run.Status),
+				"duration_ms": time.Since(startedAt).Milliseconds(),
+				"step_count":  len(execSteps),
+				"pr_created":  run.PRURL != nil && *run.PRURL != "",
+			})
 			slog.Info("pipeline completed", "run_id", run.ID)
 		}
 	}()
 
 	return run.ID, nil
+}
+
+func telemetryBranchRole(branch, defaultBranch string) string {
+	if branch == "" {
+		return "unknown"
+	}
+	if defaultBranch != "" && branch == defaultBranch {
+		return "default"
+	}
+	return "feature"
+}
+
+func telemetryFailedStepName(database *db.DB, runID string) string {
+	steps, err := database.GetStepsByRun(runID)
+	if err != nil {
+		return ""
+	}
+	for _, step := range steps {
+		if step.Status == types.StepStatusFailed {
+			return string(step.StepName)
+		}
+	}
+	return ""
 }
 
 // HandleRespond routes a user approval action to the executor for the given run.
