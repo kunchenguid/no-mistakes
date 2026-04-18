@@ -28,12 +28,22 @@
   <img src="https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/demo.gif" alt="no-mistakes demo" width="800" />
 </p>
 
-`no-mistakes` puts a local git proxy in front of your real remote.
-Push to `no-mistakes` instead of `origin`, and it spins up a disposable worktree, runs a validation pipeline with your AI agent of choice, forwards upstream only after the branch survives every check, and creates a clean PR automatically. If you run bare `no-mistakes` with no active run on the current branch, it can also walk you through creating a branch, committing local changes, and pushing through the gate before opening the TUI.
+`no-mistakes` puts a local git proxy in front of your real remote. Push to `no-mistakes` instead of `origin`, and it spins up a disposable worktree, runs an AI-driven validation pipeline, forwards upstream only after every check passes, and opens a clean PR automatically.
 
-- **Non-blocking** - the whole pipeline runs in an isolated worktree without disrupting your workflow.
-- **Agent-agnostic** - runs your agent of choice. Currently supports `claude`, `codex`, `rovodev`, and `opencode`.
-- **Human stays in charge** - choose to auto-fix or review agent findings.
+- **Non-blocking** - the pipeline runs in an isolated worktree without disrupting your work.
+- **Agent-agnostic** - `claude`, `codex`, `rovodev`, or `opencode`.
+- **Human stays in charge** - auto-fix or review findings, your call.
+- **Clean PRs by default** - push, open PR, watch CI, and auto-fix failures in one shot.
+
+Full documentation: <https://kunchenguid.github.io/no-mistakes/>
+
+## Install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.sh | sh
+```
+
+Windows, Go install, and build-from-source instructions are in the [installation guide](https://kunchenguid.github.io/no-mistakes/start-here/installation/).
 
 ## Quick Start
 
@@ -59,225 +69,21 @@ $ git push no-mistakes
 
 $ no-mistakes
 # opens the TUI for the active run
-
-# you can also skip git push, and directly run no-mistakes after making
-# code changes. you will see a setup wizard which can help you
-# create a branch, commit local changes, push through the gate,
-# and then open the TUI for the new run
 ```
 
-## Install
+You can also skip `git push` and run `no-mistakes` directly after making changes. The setup wizard walks you through creating a branch, committing, pushing through the gate, and attaching to the new run.
 
-**macOS / Linux**
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.sh | sh
-```
-
-The installer keeps the real binary in `~/.no-mistakes/bin` and exposes `no-mistakes` through a symlink in `~/.local/bin` or `/usr/local/bin`. That keeps future `no-mistakes update` runs in a user-owned location instead of rewriting a system binary in place. It also attempts to install and start the background daemon for you so the command is ready immediately, preferring a managed service and falling back to a detached daemon if that path is unavailable. If startup still fails, run `no-mistakes daemon start` manually.
-
-**Windows (PowerShell)**
-
-```powershell
-irm https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.ps1 | iex
-```
-
-This installs the binary and attempts to start the background daemon automatically, preferring a managed service and falling back to a detached daemon if needed. If startup still fails, run `no-mistakes daemon start` manually.
-
-**Go install**
-
-```sh
-go install github.com/kunchenguid/no-mistakes/cmd/no-mistakes@latest
-```
-
-**From source**
-
-```sh
-git clone git@github.com:kunchenguid/no-mistakes.git
-cd no-mistakes
-make build
-make install
-```
-
-You will also need `git` and one supported agent binary. For PR creation, install `gh` (GitHub) or `glab` (GitLab), or set `NO_MISTAKES_BITBUCKET_EMAIL` and `NO_MISTAKES_BITBUCKET_API_TOKEN` for Bitbucket Cloud. CI monitoring supports GitHub via `gh`, GitLab via `glab`, and Bitbucket Cloud via those Bitbucket API credentials.
-
-Full documentation is published at <https://kunchenguid.github.io/no-mistakes/>.
-
-To update an existing install in place:
-
-```sh
-no-mistakes update
-```
-
-This replaces the binary and resets the background daemon so it picks up the new executable, preferring the managed service path and falling back to a detached daemon if service startup is unavailable or fails. It only proceeds if the running daemon is already using the same executable path. If the daemon executable path cannot be determined or it was started from a different binary, the update aborts before replacing the binary. If the daemon does not come back cleanly after a successful replacement, the new binary stays installed but the command reports the daemon reset failure.
-
-## How It Works
-
-```text
-┌──────────────┐          git push no-mistakes              ┌──────────────────────┐
-│ Your repo    │ ─────────────────────────────────────────► │ Local gate repo      │
-│ origin       │                                            │ ~/.no-mistakes/...   │
-│ no-mistakes  │ ◄──────────── added by init ────────────── │ hooks/post-receive   │
-└──────┬───────┘                                            └──────────┬───────────┘
-       │                                                               │
-       │                                         notifies daemon       │
-       │                                                               ▼
-       │                                                    ┌─────────────────────┐
-       │                                                    │ Daemon              │
-       │                                                    └──────────┬──────────┘
-       │                                                               │
-       │                                                creates detached worktree
-       │                                                               ▼
-       │                                                    ┌─────────────────────┐
-       │                                                    │ Pipeline            │
-       │                                                    │                     │
-       │                                                    │ rebase              │
-       │                                                    │ review              │
-       │                                                    │ test                │
-       │                                                    │ document            │
-       │                                                    │ lint                │
-       │                                                    │ push                │
-       │                                                    │ pr                  │
-       │                                                    │ ci                  │
-       │                                                    └──────────┬──────────┘
-       │                                                               │
-       └─────────────────────────────────────────────────────────────► │ upstream
-                                                                       └──────────
-```
-
-- **Named remote** - `origin` is never touched. If you want the gate, you push to `no-mistakes` on purpose.
-- **Disposable worktrees** - each run happens in its own detached worktree, so the daemon can inspect and modify safely before pushing upstream.
-- **Fixed pipeline** - this is opinionated on purpose: `rebase -> review -> test -> document -> lint -> push -> pr -> ci`. The `document` step checks whether README/docs/comments need updates for the code you changed.
-- **Local state** - metadata lives under `~/.no-mistakes/` by default, or `${NM_HOME}` if you want to relocate it.
-
-## CLI Reference
-
-| Command                     | Description                                                 |
-| --------------------------- | ----------------------------------------------------------- |
-| `no-mistakes`               | Attach to the current branch run, or start the setup wizard |
-| `no-mistakes init`          | Initialize the gate for the current repository              |
-| `no-mistakes update`        | Update the binary and reset the daemon                      |
-| `no-mistakes eject`         | Remove the gate from the current repository                 |
-| `no-mistakes attach`        | Attach to the active pipeline run in the current repo       |
-| `no-mistakes rerun`         | Rerun the pipeline for the current branch                   |
-| `no-mistakes status`        | Show status of the current repository                       |
-| `no-mistakes runs`          | List recorded pipeline runs for the current repo            |
-| `no-mistakes doctor`        | Check system health and dependencies                        |
-| `no-mistakes daemon start`  | Start the daemon, installing the service when possible      |
-| `no-mistakes daemon stop`   | Stop the running daemon process                             |
-| `no-mistakes daemon status` | Check whether the daemon is running                         |
-
-### Flags
-
-| Command  | Flag          | Description                       |
-| -------- | ------------- | --------------------------------- |
-| `attach` | `--run <id>`  | Attach to a specific run ID       |
-| `runs`   | `--limit <n>` | Maximum number of runs to display |
-
-## Configuration
-
-Config is optional and split across two files:
-
-- Global: `~/.no-mistakes/config.yaml`
-- Repo-local: `<repo>/.no-mistakes.yaml`
-- Home override: set `NM_HOME` and the global file becomes `${NM_HOME}/config.yaml`
-
-### Global config
-
-```yaml
-# ~/.no-mistakes/config.yaml
-
-# Default agent for all repos and setup-wizard suggestions.
-# "auto" picks the first available agent on PATH: claude, codex, opencode, then rovodev.
-agent: auto # auto | claude | codex | rovodev | opencode
-
-# Optional binary path overrides.
-agent_path_override:
-  claude: /Users/you/bin/claude
-  codex: /opt/homebrew/bin/codex
-  rovodev: /usr/local/bin/acli
-  opencode: /usr/local/bin/opencode
-
-# How long the CI step waits for provider CI status, and GitHub/GitLab PR mergeability, before timing out.
-ci_timeout: "4h"
-
-# debug | info | warn | error
-log_level: "info"
-
-# Maximum auto-fix attempts per step (0 = disabled, requires manual approval).
-auto_fix:
-  rebase: 3
-  lint: 3
-  test: 3
-  review: 0
-  document: 3
-  ci: 3
-```
-
-### Repo config
-
-```yaml
-# .no-mistakes.yaml
-
-# Optional override for this repo only.
-agent: codex
-
-commands:
-  # If set, use this exact lint command.
-  lint: "golangci-lint run ./..."
-
-  # If set, use this exact test command.
-  test: "go test -race ./..."
-
-  # Optional formatter run before the push step commits agent fixes.
-  format: "gofmt -w ."
-
-# Ignore these paths during review and documentation checks.
-ignore_patterns:
-  - "*.generated.go"
-  - "vendor/**"
-
-# Optional per-repo auto-fix overrides.
-auto_fix:
-  review: 3
-  document: 0
-```
-
-### Precedence and defaults
-
-- Repo `agent` overrides global `agent`.
-- `commands` and `ignore_patterns` are repo-only.
-- Missing global config defaults to `agent: auto` (probing `claude`, `codex`, `opencode`, then `rovodev`), `ci_timeout: 4h`, `log_level: info`.
-- `ci_timeout` replaces `babysit_timeout`, and `auto_fix.ci` replaces `auto_fix.babysit`; legacy keys are still accepted for existing configs.
-- `auto_fix` can be set globally or per repo. All steps default to `3` except `review` which defaults to `0`.
-- `agent_path_override` changes which binary path is launched for a given agent.
-- Default binaries are `claude`, `codex`, `acli` for `rovodev`, and `opencode`.
-- If `commands.test` is empty, the agent detects and runs relevant tests itself.
-- If `commands.lint` is empty, the agent detects and runs lint/format checks itself.
-- If `commands.format` is empty, no formatter is run automatically.
-- All `auto_fix` steps default to `3` except `review` which defaults to `0`. Set a step to `0` to require manual approval.
-
-### Ignore pattern rules
-
-- `*.generated.go` matches by basename.
-- `vendor/**` matches an entire subtree.
-- Patterns containing a slash use full-path glob matching.
+See the [quick start](https://kunchenguid.github.io/no-mistakes/start-here/quick-start/) for the full first-run walkthrough.
 
 ## Development
 
 ```sh
 make build   # Build bin/no-mistakes with version info
-make dist    # Cross-compile release archives into dist/
- make demo    # Regenerate demo.gif and demo.mp4 from demo.tape
-make install # Install the built binary into GOPATH/bin
 make test    # Run go test -race ./...
 make lint    # Run go vet ./...
 make fmt     # Run gofmt -w .
+make demo    # Regenerate demo.gif and demo.mp4 (needs vhs and ffmpeg)
 make docs    # Build the Astro docs site in docs/dist
-make docs-preview # Preview the docs site locally
-make clean   # Remove bin/
 ```
 
-Docs development uses the Astro project under `docs/`. `make docs` installs docs dependencies with `npm ci` and builds the site.
-
-To regenerate `demo.gif` and `demo.mp4`, run `make demo`. This target requires both `vhs` and `ffmpeg` to be installed locally.
+See `Makefile` for the full target list.

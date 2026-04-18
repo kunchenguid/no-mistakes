@@ -1,6 +1,6 @@
 ---
-title: Agents
-description: Supported AI agents and how they integrate.
+title: Choosing an Agent
+description: Supported AI agents, how to pick one, and how they integrate.
 ---
 
 `no-mistakes` is agent-agnostic. It supports four agents and uses a common interface for all of them. The default `agent: auto` setting picks the first supported agent available on your system. The agent handles code review, test/lint detection (when no explicit command is configured), auto-fixing, and setup-wizard suggestions for branch names and commit subjects when you leave those prompts blank.
