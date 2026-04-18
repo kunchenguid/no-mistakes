@@ -282,6 +282,59 @@ func TestPushReceivedTracksRunTelemetry(t *testing.T) {
 	}
 }
 
+func TestPushReceivedTracksRunTelemetryAfterPanic(t *testing.T) {
+	recorder := &telemetryRecorder{}
+	restore := telemetry.SetDefaultForTesting(recorder)
+	defer restore()
+
+	step := &mockPanicStep{name: types.StepReview}
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{step}
+	})
+
+	_, headSHA := setupTestGitRepo(t, p, d, "telemetry-panic-repo")
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var result ipc.PushReceivedResult
+	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: p.RepoDir("telemetry-panic-repo"),
+		Ref:  "refs/heads/main",
+		Old:  "0000000000000000000000000000000000000000",
+		New:  headSHA,
+	}, &result)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		run, err := d.GetRun(result.RunID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if run != nil && run.Error != nil && strings.Contains(*run.Error, "internal panic") {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	finished := recorder.find("run", "action", "finished")
+	if finished == nil {
+		t.Fatal("expected run finished telemetry event after panic")
+	}
+	if got := finished.fields["status"]; got != string(types.RunFailed) {
+		t.Fatalf("finished status = %v, want %q", got, types.RunFailed)
+	}
+	if _, ok := finished.fields["duration_ms"]; !ok {
+		t.Fatal("expected duration_ms in run finished telemetry after panic")
+	}
+}
+
 func TestPushReceivedDemoModeBypassesAgentResolution(t *testing.T) {
 	t.Setenv("NM_DEMO", "1")
 

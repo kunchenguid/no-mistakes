@@ -339,8 +339,27 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 		defer close(done)
 		defer func() {
 			if r := recover(); r != nil {
+				errMsg := fmt.Sprintf("internal panic: %v", r)
 				slog.Error("panic in pipeline goroutine", "run_id", run.ID, "panic", r)
-				m.db.UpdateRunError(run.ID, fmt.Sprintf("internal panic: %v", r))
+				if dbErr := m.db.UpdateRunErrorStatus(run.ID, errMsg, types.RunFailed); dbErr != nil {
+					slog.Error("failed to update run after panic", "run_id", run.ID, "error", dbErr)
+				}
+				run.Status = types.RunFailed
+				run.Error = &errMsg
+				fields := telemetry.Fields{
+					"action":      "finished",
+					"trigger":     trigger,
+					"agent":       string(cfg.Agent),
+					"branch_role": branchRole,
+					"status":      string(run.Status),
+					"duration_ms": time.Since(startedAt).Milliseconds(),
+					"step_count":  len(execSteps),
+					"pr_created":  run.PRURL != nil && *run.PRURL != "",
+				}
+				if failedStep := telemetryFailedStepName(m.db, run.ID); failedStep != "" {
+					fields["failed_step"] = failedStep
+				}
+				telemetry.Track("run", fields)
 			}
 			cancel(nil)
 			ag.Close()

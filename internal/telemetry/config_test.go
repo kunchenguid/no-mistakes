@@ -136,3 +136,11 @@ func TestDefaultIgnoresDotEnvOutsideRepo(t *testing.T) {
 		t.Fatal("Default() should ignore dotenv outside repo")
 	}
 }
+
+func TestParseDotEnvStripsInlineCommentsFromUnquotedValues(t *testing.T) {
+	values := parseDotEnv([]byte("NO_MISTAKES_UMAMI_WEBSITE_ID=abc123 # dev\n"))
+
+	if got := values[umamiWebsiteIDEnv]; got != "abc123" {
+		t.Fatalf("website ID = %q, want %q", got, "abc123")
+	}
+}

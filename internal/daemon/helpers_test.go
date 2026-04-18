@@ -122,6 +122,15 @@ func (s *mockSlowStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 	return nil, sctx.Ctx.Err()
 }
 
+type mockPanicStep struct {
+	name types.StepName
+}
+
+func (s *mockPanicStep) Name() types.StepName { return s.name }
+func (s *mockPanicStep) Execute(_ *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	panic("boom")
+}
+
 type mockVerifyDefaultBranchStep struct {
 	name types.StepName
 }

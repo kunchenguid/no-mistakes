@@ -395,9 +395,21 @@ func parseDotEnv(data []byte) map[string]string {
 		if key == "" {
 			continue
 		}
-		values[key] = dotenvValue(strings.TrimSpace(value))
+		values[key] = dotenvValue(trimDotEnvInlineComment(strings.TrimSpace(value)))
 	}
 	return values
+}
+
+func trimDotEnvInlineComment(value string) string {
+	for i := 0; i < len(value); i++ {
+		if value[i] != '#' {
+			continue
+		}
+		if i == 0 || value[i-1] == ' ' || value[i-1] == '\t' {
+			return strings.TrimSpace(value[:i])
+		}
+	}
+	return value
 }
 
 func dotenvValue(value string) string {
