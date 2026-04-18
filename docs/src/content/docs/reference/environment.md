@@ -66,6 +66,17 @@ Disable background update checks.
 
 Update checks run on every CLI invocation except `update` itself, hit GitHub releases, cache the result in `$NM_HOME/update-check.json`, and print a one-line notification to stderr when a newer version is available. Dev builds (non-semver versions) suppress the check automatically.
 
+## `NO_MISTAKES_UMAMI_WEBSITE_ID`
+
+Override or enable the telemetry website ID.
+
+| | |
+|---|---|
+| Type | `string` |
+| Default | unset |
+
+When set, telemetry uses this website ID at runtime. In dev builds, if the variable is unset, `no-mistakes` also checks a repo-local `.env` file for `NO_MISTAKES_UMAMI_WEBSITE_ID`. Release builds instead use any website ID embedded at build time.
+
 ## Environment the daemon sees
 
 When the daemon runs through a managed service (launchd, systemd user service, Task Scheduler), it reloads environment from your login shell on macOS and Linux before each run so `PATH` and `NO_MISTAKES_*` vars match what you'd see in an interactive shell. On Windows it reuses the current process environment.

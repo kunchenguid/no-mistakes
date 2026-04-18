@@ -36,6 +36,8 @@ make build
 make install
 ```
 
+`make build` embeds the telemetry website ID from `NO_MISTAKES_UMAMI_WEBSITE_ID` in a repo-local `.env` first, then `UMAMI_WEBSITE_ID` from the shell if no `.env` value is present. If neither is set, the binary is built without telemetry enabled.
+
 ## Prerequisites
 
 - **git** - required
