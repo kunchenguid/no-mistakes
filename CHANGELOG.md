@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.6.0](https://github.com/kunchenguid/no-mistakes/compare/v1.5.0...v1.6.0) (2026-04-18)
+
+
+### Features
+
+* **telemetry:** add CLI and pipeline telemetry tracking ([#98](https://github.com/kunchenguid/no-mistakes/issues/98)) ([234a900](https://github.com/kunchenguid/no-mistakes/commit/234a9005da13b7eede50ead93393776f55eb977f))
+* **telemetry:** track wizard and tui pageviews ([#100](https://github.com/kunchenguid/no-mistakes/issues/100)) ([6056357](https://github.com/kunchenguid/no-mistakes/commit/605635782508f6ce5764c09d6c0d6f3eb215f936))
+
 ## [1.5.0](https://github.com/kunchenguid/no-mistakes/compare/v1.4.0...v1.5.0) (2026-04-17)
 
 
