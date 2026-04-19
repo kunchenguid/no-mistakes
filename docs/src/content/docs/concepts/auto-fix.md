@@ -5,6 +5,20 @@ description: How the automatic fix loop works.
 
 When a pipeline step finds issues, `no-mistakes` can automatically ask the agent to fix them before pausing for your approval. This is controlled by the `auto_fix` configuration.
 
+```mermaid
+flowchart TD
+  run["Run step"] --> findings{"Findings?"}
+  findings -- "no" --> done["Step completes"]
+  findings -- "yes" --> eligible{"Auto-fix enabled and eligible findings?"}
+  eligible -- "no" --> pause["Pause for user approval"]
+  eligible -- "yes" --> fix["Agent applies fixes"]
+  fix --> rerun["Re-run step"]
+  rerun --> clean{"Blocking findings remain?"}
+  clean -- "no" --> done
+  clean -- "yes, attempts left" --> eligible
+  clean -- "yes, limit hit" --> pause
+```
+
 ## How it works
 
 1. A step executes and returns findings (e.g., test failures, lint warnings, review issues)

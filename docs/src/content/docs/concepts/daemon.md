@@ -3,11 +3,36 @@ title: Daemon & Worktrees
 description: Background process management, worktrees, state, and recovery.
 ---
 
-The daemon is a long-running background process that manages pipeline runs. The installer prefers setting it up as a managed background service, and `no-mistakes`, `init`, `attach`, `rerun`, and `update` keep that service installed and running for you when that path is available.
+The daemon is a long-running background process that manages pipeline runs. The
+installer prefers setting it up as a managed background service, and
+`no-mistakes`, `init`, `attach`, `rerun`, and `update` keep that service
+installed and running for you when that path is available.
+
+## Why a daemon exists
+
+The daemon exists so `git push no-mistakes` stays fast and the gate can keep
+working after your shell command returns.
+
+- Git hands the push to the local gate repo.
+- The hook notifies the daemon and exits immediately.
+- The daemon owns the long-running work: worktrees, pipeline execution, TUI
+  events, state, cleanup, and crash recovery.
+
+```mermaid
+flowchart LR
+  push["git push no-mistakes"] --> gate["Gate repo hook"] --> daemon["Daemon"]
+  daemon --> run["Run in detached worktree"]
+  daemon --> state["Persist state + logs"]
+  run --> tui["TUI can attach or detach"]
+  run --> cleanup["Cleanup when run finishes"]
+```
 
 On macOS this is a per-user `launchd` agent, on Linux a per-user `systemd` service, and on Windows a Task Scheduler task. The installed artifact names are scoped by `NM_HOME` with a short stable suffix, so the paths and service identifiers look like `~/Library/LaunchAgents/com.kunchenguid.no-mistakes.daemon.<suffix>.plist`, `~/.config/systemd/user/no-mistakes-daemon-<suffix>.service`, and the Windows task `no-mistakes-daemon-<suffix>`. That keeps multiple `no-mistakes` installs from colliding when they use different `NM_HOME` roots. Those service managers keep the daemon available across CLI invocations and restart it after `no-mistakes update` replaces the binary. Before a managed daemon run starts, `no-mistakes` reloads the environment from your login shell on macOS and Linux so agent and tool discovery matches the shell you use interactively. On Windows it reuses the current process environment instead of shelling out to a login shell. If managed service install or startup is unavailable or fails, `no-mistakes` falls back to starting a detached daemon process instead.
 
 ## Starting and stopping
+
+Most people do not need to manage the daemon directly. The usual commands
+already make sure it exists when needed.
 
 ```sh
 # Explicit management
@@ -47,6 +72,9 @@ If you push to the same branch while a run is already active, the daemon:
 3. Starts a new run with the latest push
 
 Pushes to different branches run concurrently.
+
+This is another reason the daemon exists: branch-level coordination is easier to
+reason about in one long-lived process than inside independent hook invocations.
 
 ## Crash recovery
 

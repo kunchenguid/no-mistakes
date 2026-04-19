@@ -9,7 +9,26 @@ The pipeline runs a fixed, opinionated sequence of steps. Order is not configura
 rebase → review → test → document → lint → push → pr → ci
 ```
 
+```mermaid
+flowchart LR
+  rebase["Rebase"] --> review["Review"] --> test["Test"] --> document["Document"] --> lint["Lint"] --> push["Push"] --> pr["PR"] --> ci["CI"]
+  review -. findings .-> action["Approve / fix / skip / abort"]
+  test -. findings .-> action
+  document -. findings .-> action
+  lint -. findings .-> action
+  ci -. failures .-> action
+```
+
 This page is the overview. For each step's exact behavior, defaults, skip rules, and fix-commit format, see [Pipeline Steps](/no-mistakes/reference/pipeline-steps/).
+
+## What a passed gate means
+
+The pipeline is opinionated so that "passed the gate" has a stable meaning:
+
+- the branch was checked against fresh upstream first
+- review, tests, docs, and lint happened before any upstream push
+- the human stayed in control when a step needed judgment
+- push, PR creation, and CI monitoring only happened after the local gate was satisfied
 
 ## The eight steps
 

@@ -3,7 +3,23 @@ title: Choosing an Agent
 description: Supported AI agents, how to pick one, and how they integrate.
 ---
 
-`no-mistakes` is agent-agnostic. It supports four agents and uses a common interface for all of them. The default `agent: auto` setting picks the first supported agent available on your system. The agent handles code review, test/lint detection (when no explicit command is configured), auto-fixing, and setup-wizard suggestions for branch names and commit subjects when you leave those prompts blank.
+`no-mistakes` is agent-agnostic by design. The gate should mean the same thing
+regardless of which agent you prefer. The default `agent: auto` setting picks
+the first supported agent available on your system.
+
+The agent is responsible for the parts of the gate that benefit from judgment:
+code review, test or lint detection when you have not configured explicit
+commands, auto-fixing, and setup-wizard suggestions when you leave prompts
+blank.
+
+## How to choose quickly
+
+- Leave `agent: auto` if one good agent is already installed and you do not need repo-specific behavior.
+- Set a repo-level `agent` override when one codebase clearly works better with a different tool.
+- Set explicit `commands.test` and `commands.lint` if you want deterministic command execution regardless of agent choice.
+
+That last point matters: the agent helps fill in gaps, but explicit repo
+commands are still the strongest way to make the gate predictable.
 
 ## Supported agents
 
@@ -31,6 +47,17 @@ agent: codex
 ```
 
 Repo config takes precedence over global config.
+
+## Where agent choice matters most
+
+Changing agents most directly affects:
+
+- review quality and tone
+- test and lint detection when commands are not configured
+- how good auto-fix attempts are for your stack
+- branch name and commit subject suggestions in the setup wizard
+
+It does **not** change the pipeline order or the meaning of a passed gate.
 
 ## Binary resolution
 

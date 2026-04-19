@@ -51,6 +51,9 @@ $ no-mistakes init
   git push no-mistakes <branch>
 ```
 
+`origin` is unchanged. If you need to bypass the gate for a specific push, use
+`git push origin <branch>`.
+
 ## 4. Push through the gate
 
 Instead of `git push origin`, push to the `no-mistakes` remote:

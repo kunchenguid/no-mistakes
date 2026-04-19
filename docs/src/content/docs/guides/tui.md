@@ -3,9 +3,34 @@ title: Using the TUI
 description: Terminal UI layout, keybindings, and approval workflow.
 ---
 
-The TUI is how you interact with running pipelines. Launch it with `no-mistakes` or `no-mistakes attach`.
+The TUI is how you interact with running pipelines. Launch it with
+`no-mistakes` or `no-mistakes attach`.
+
+Think of it as the control surface for the gate. It is optimized for one job:
+show you where the run is, why it paused, what changed, and what your choices
+are without making you bounce between logs, diffs, and provider tabs.
 
 Bare `no-mistakes` can also open the [Setup Wizard](/no-mistakes/guides/setup-wizard/) first when there is no active run on the current branch and you need to create one.
+
+## What the TUI is for
+
+```mermaid
+flowchart LR
+  running["Step running"] --> decision{"Needs human judgment?"}
+  decision -- "no" --> next["Advance to next step"]
+  decision -- "yes" --> pause["Pause in TUI"]
+  pause --> approve["Approve"]
+  pause --> fix["Fix selected findings"]
+  pause --> skip["Skip"]
+  pause --> abort["Abort"]
+```
+
+In practice, each part of the screen answers a different question:
+
+- **Pipeline box** - where am I in the run?
+- **Findings panel** - why did this pause?
+- **Diff panel** - what changed during the fix cycle?
+- **Log tail** - what is the step doing right now?
 
 ## Layout
 

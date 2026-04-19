@@ -3,37 +3,67 @@ title: Introduction
 description: What no-mistakes is and why it exists.
 ---
 
-`no-mistakes` puts a local git proxy in front of your real remote. Push to `no-mistakes` instead of `origin`, and it spins up a disposable worktree, runs an AI-driven validation pipeline, forwards upstream only after every check passes, and opens a clean PR automatically.
+`no-mistakes` puts a local git proxy in front of your real remote. Push to
+`no-mistakes` instead of `origin`, and it spins up a disposable worktree, runs
+an AI-driven validation pipeline, forwards upstream only after every check
+passes, and opens a clean PR automatically.
 
-## Why
+## The Bottleneck Moved
 
-Shipping code is too often "commit, push, wait for CI, watch it fail, push again, watch CI fail again." Pre-commit hooks help but block your workflow and don't run heavy checks. CI runs everything but you only see failures after the push is already public. Branch protection catches a few things but can't fix them for you.
+AI agents can write and modify code faster than most teams can validate it. The
+expensive part is no longer producing the diff. It is making sure the diff is
+rebased, reviewed, tested, documented, linted, and safe to share.
 
-`no-mistakes` sits in between. It's a local gate you push to on purpose:
+Pre-commit hooks help, but they need to stay lightweight and they block your
+working tree. CI helps, but it usually runs after the push is already public.
+Branch protection can reject bad outcomes, but it does not help get a branch
+ready.
+
+`no-mistakes` sits in that gap. It gives you a deliberate local gate before the
+branch reaches upstream:
 
 - **Before** the code is public, it rebases, runs a structured AI code review, runs your tests, checks that docs are in sync, runs lint, and only then pushes upstream and opens the PR.
 - **After** the push, it watches CI and auto-fixes failures. On GitHub and GitLab it also watches PR mergeability and fixes merge conflicts on the branch.
 - **Throughout**, every step can pause for your approval. You see the findings, pick what to fix, and decide when to ship.
 
-The whole thing runs in a disposable worktree. Your working directory is never touched, so you can keep coding while the pipeline runs.
+The whole thing runs in a disposable worktree. Your working directory is never
+touched, so you can keep coding while the pipeline runs.
+
+## Why The Remote Is Named
+
+`no-mistakes` is a separate remote on purpose.
+
+- `origin` is never rewritten or hijacked.
+- `git push origin` still behaves exactly like normal Git.
+- `git push no-mistakes` is an explicit signal that this branch should go
+  through the full gate.
+
+That design matters for trust. The tool is not trying to hide Git from you. It
+is trying to make one deliberate path mean something consistent.
 
 ## Mental model
 
-```
-  you                        no-mistakes                upstream
-  ───                        ───────────                ────────
-  git push no-mistakes  →    local gate repo            origin
-                             ↓
-                             worktree
-                             ↓
-                             rebase → review → test →
-                             document → lint →
-                                                 → push → origin
-                                                 → pr
-                                                 → ci watch + auto-fix
+```mermaid
+flowchart LR
+  repo["Your repo"] -->|"git push no-mistakes"| gate["Local gate repo"]
+  gate --> hook["post-receive hook"]
+  hook --> daemon["Daemon"]
+  daemon --> worktree["Disposable worktree"]
+  worktree --> pipeline["rebase -> review -> test -> document -> lint -> push -> pr -> ci"]
+  pipeline --> upstream["Upstream remote"]
 ```
 
-`origin` is never hijacked. Regular `git push` still works normally. You opt into the gate by pushing to the `no-mistakes` remote.
+`origin` is never hijacked. Regular `git push` still works normally. You opt
+into the gate by pushing to the `no-mistakes` remote.
+
+## What "Passed The Gate" Means
+
+When a branch passes the gate, it means:
+
+- it was checked against fresh upstream
+- the fixed pipeline ran in order
+- review, tests, docs, and lint happened before the upstream push
+- you had a chance to approve, fix, skip, or abort any blocking step
 
 ## What you get
 
