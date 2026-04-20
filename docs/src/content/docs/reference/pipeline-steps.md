@@ -53,6 +53,7 @@ Runs your test suite.
 **Behavior:**
 - If `commands.test` is set in repo config: runs it via the platform shell (`sh -c` on POSIX, `cmd.exe /c` on Windows) and captures output. Non-zero exit produces `error` findings.
 - If `commands.test` is empty: the agent detects and runs relevant tests, returning structured findings with severity, description, and `action` (`no-op`, `auto-fix`, `ask-user`).
+- The step also records the exact tests it exercised in a `tested` array and may include a short natural-language `testing_summary`; these are persisted even when tests pass so later steps can reuse them.
 - If the agent creates new test files (detected via `git status --porcelain`), approval is required even if tests pass.
 
 **Approval:** failing test findings with `action: ask-user` always require human approval. `action: auto-fix` findings stay eligible for the fix loop. `action: no-op` findings are informational only.
@@ -119,6 +120,7 @@ Creates or updates a pull request.
 - Uses the provider CLI for GitHub/GitLab and the Bitbucket API for Bitbucket Cloud
 - PR title: agent-generated in conventional commit format (`type(scope): description` or `type: description`); when a scope is used, it should be the primary affected real module/package from the changed paths and kept broad rather than file-level
 - PR body includes: an agent-authored `## Summary` plus regenerated `## Risk Assessment`, `## Testing`, and `## Pipeline` sections from recorded step results and rounds
+- The regenerated `## Testing` section prefers the recorded `testing_summary`, lists deduplicated `tested` commands or selectors, and ends with the overall outcome including run count and total duration when available
 
 Stores the PR URL in the database and streams it to the TUI.
 
