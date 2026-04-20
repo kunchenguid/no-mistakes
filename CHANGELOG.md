@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.8.0](https://github.com/kunchenguid/no-mistakes/compare/v1.7.0...v1.8.0) (2026-04-20)
+
+
+### Features
+
+* **cli:** keep the setup wizard visible for interactive --yes runs ([#109](https://github.com/kunchenguid/no-mistakes/issues/109)) ([dffa857](https://github.com/kunchenguid/no-mistakes/commit/dffa857b721db761c0505ca43af785f4d453f137))
+
+
+### Bug Fixes
+
+* **daemon:** update panic error status after telemetry ([#106](https://github.com/kunchenguid/no-mistakes/issues/106)) ([c188e12](https://github.com/kunchenguid/no-mistakes/commit/c188e12cf47f144de9ad02a083cccceec315a063))
+* **wizard:** render branch step input and status inline ([#108](https://github.com/kunchenguid/no-mistakes/issues/108)) ([d945e2d](https://github.com/kunchenguid/no-mistakes/commit/d945e2dbd6130504a9f3e4861ca8f37ef1c0eda2))
+
 ## [1.7.0](https://github.com/kunchenguid/no-mistakes/compare/v1.6.0...v1.7.0) (2026-04-20)
 
 
