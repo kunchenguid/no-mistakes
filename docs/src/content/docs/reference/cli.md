@@ -5,11 +5,15 @@ description: Complete reference for all no-mistakes commands and flags.
 
 ## no-mistakes
 
-Attach to the active pipeline run for the current branch when one exists. If none exists and you're in an interactive TTY session, bare `no-mistakes` can start the setup wizard to create a branch, commit changes, push through the gate, and then attach once the new run appears. In non-interactive contexts, it falls back to showing the last 5 runs inline.
+Attach to the active pipeline run for the current branch when one exists. If none exists, bare `no-mistakes` can start the setup wizard to create a branch, commit changes, push through the gate, and then attach once the new run appears. By default this wizard path is interactive and only runs in a TTY session. In non-interactive contexts, bare `no-mistakes` falls back to showing the last 5 runs inline unless you pass `-y` or `--yes` to run the wizard non-interactively and accept defaults.
 
 ```sh
 no-mistakes
 ```
+
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `-y`, `--yes` | `bool` | `false` | Run setup wizard non-interactively, accepting defaults |
 
 Unlike `no-mistakes attach`, bare `no-mistakes` only auto-attaches to an active run on the current branch.
 
