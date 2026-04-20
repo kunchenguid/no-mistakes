@@ -20,7 +20,7 @@ The wizard kicks in when:
 
 In non-interactive contexts, bare `no-mistakes` without `-y` falls back to listing the last 5 runs instead.
 
-With `-y` / `--yes`, the wizard runs non-interactively and takes the default automated path for each step: use agent suggestions for branch and commit when needed, then push to the gate.
+With `-y` / `--yes`, the wizard takes the default automated path for each step: use agent suggestions for branch and commit when needed, then push to the gate. In a TTY, that path stays visible and auto-advances through the wizard. Without a TTY, it falls back to the headless path.
 
 If you want to attach to *any* active run in the repo (not just the current branch), use `no-mistakes attach` - that path skips the wizard entirely.
 
@@ -40,7 +40,7 @@ flowchart TD
 
 ## Steps
 
-The interactive wizard is a full-screen flow that runs only the steps your current repo state needs, up to three total. The `-y` / `--yes` path runs the same steps without the TUI and accepts the automated default at each one.
+The interactive wizard is a full-screen flow that runs only the steps your current repo state needs, up to three total. The `-y` / `--yes` path runs the same steps and accepts the automated default at each one. In a TTY, the TUI stays visible and auto-advances. Without a TTY, it runs headlessly.
 
 ### 1. Branch
 
@@ -73,7 +73,7 @@ not ask for one. If everything is already committed, it skips straight to push.
 
 If any step fails (git error, agent error, network error), the interactive wizard shows the error and lets you press `r` to retry the step without restarting the whole flow.
 
-With `-y` / `--yes`, the non-interactive path exits on the first error instead of prompting to retry.
+With `-y` / `--yes`, the wizard exits on the first error instead of prompting to retry, whether it is auto-advancing in a TTY or running headlessly.
 
 ## Quitting safely
 

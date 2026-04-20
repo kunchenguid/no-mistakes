@@ -153,8 +153,8 @@ func activeRunBranch(state *repoState, rootDefault bool) string {
 }
 
 // isInteractive reports whether stdin and stdout are both connected to a
-// terminal. The interactive wizard needs a real TTY to read keystrokes; the
-// --yes path can still run the wizard non-interactively and accept defaults.
+// terminal. The visible wizard needs a real TTY to read keystrokes; without
+// one, the --yes path falls back to the headless auto-accept flow.
 func isInteractive() bool {
 	return isatty.IsTerminal(os.Stdin.Fd()) && isatty.IsTerminal(os.Stdout.Fd())
 }
