@@ -134,11 +134,8 @@ func newDaemonRestartCmd() *cobra.Command {
 				if err := p.EnsureDirs(); err != nil {
 					return err
 				}
-				alive, err := daemonIsRunningFn(p)
-				if err != nil || alive {
-					if err := daemonStopFn(p); err != nil {
-						return fmt.Errorf("stop daemon: %w", err)
-					}
+				if err := daemonStopFn(p); err != nil {
+					return fmt.Errorf("stop daemon: %w", err)
 				}
 				if err := daemonStartFn(p); err != nil {
 					return fmt.Errorf("start daemon: %w", err)
