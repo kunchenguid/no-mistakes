@@ -89,7 +89,7 @@ func TestInstallScriptRestartsDaemonAfterInstall(t *testing.T) {
 	}
 }
 
-func TestInstallScriptSucceedsWhenDaemonRestartFails(t *testing.T) {
+func TestInstallScriptFailsWhenDaemonRestartFails(t *testing.T) {
 	skipInstallScriptTestsOnWindows(t)
 
 	home := t.TempDir()
@@ -106,8 +106,8 @@ func TestInstallScriptSucceedsWhenDaemonRestartFails(t *testing.T) {
 		"FAKE_RELEASE_ARCHIVE": archivePath,
 		"NO_MISTAKES_CALL_LOG": callLog,
 	})
-	if err != nil {
-		t.Fatalf("install.sh should succeed even when daemon restart fails: %v\n%s", err, output)
+	if err == nil {
+		t.Fatalf("install.sh should fail when daemon restart fails\n%s", output)
 	}
 
 	data, err := os.ReadFile(callLog)
@@ -119,23 +119,23 @@ func TestInstallScriptSucceedsWhenDaemonRestartFails(t *testing.T) {
 	}
 }
 
-func TestPowerShellInstallScriptAllowsDaemonRestartFailure(t *testing.T) {
+func TestPowerShellInstallScriptChecksDaemonRestartFailure(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("docs", "install.ps1"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(data)
-	if !strings.Contains(text, "$oldErrorActionPreference = $ErrorActionPreference") {
-		t.Fatal("install.ps1 should preserve the current error preference before daemon restart")
+	if !strings.Contains(text, "$restart = Start-Process -FilePath \"$installDir\\no-mistakes.exe\" -ArgumentList @(") {
+		t.Fatal("install.ps1 should run daemon restart in a way that exposes the exit code")
 	}
-	if !strings.Contains(text, "$ErrorActionPreference = \"Continue\"") {
-		t.Fatal("install.ps1 should relax error handling around daemon restart")
+	if !strings.Contains(text, "-Wait -PassThru") {
+		t.Fatal("install.ps1 should wait for daemon restart to finish and inspect the process result")
 	}
-	if !strings.Contains(text, "& \"$installDir\\no-mistakes.exe\" daemon restart | Out-Null") {
-		t.Fatal("install.ps1 should still attempt daemon restart")
+	if !strings.Contains(text, "if ($restart.ExitCode -ne 0)") {
+		t.Fatal("install.ps1 should fail the install when daemon restart returns a non-zero exit code")
 	}
-	if !strings.Contains(text, "$ErrorActionPreference = $oldErrorActionPreference") {
-		t.Fatal("install.ps1 should restore the previous error preference")
+	if !strings.Contains(text, "throw \"Failed to restart daemon (exit code $($restart.ExitCode))\"") {
+		t.Fatal("install.ps1 should surface the daemon restart exit code")
 	}
 }
 

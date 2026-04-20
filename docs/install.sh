@@ -77,9 +77,7 @@ fi
 echo "no-mistakes ${VERSION} installed to ${BIN_PATH}"
 echo "Command path: ${LINK_PATH} -> ${BIN_PATH}"
 
-if ! "$BIN_PATH" daemon restart >/dev/null 2>&1; then
-  echo "Warning: failed to auto-start daemon; run 'no-mistakes daemon restart' manually." >&2
-fi
+"$BIN_PATH" daemon restart >/dev/null
 
 case ":$PATH:" in
   *":$LINK_DIR:"*) ;;
