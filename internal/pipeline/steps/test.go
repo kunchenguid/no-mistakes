@@ -85,12 +85,16 @@ Task:
 - Understand the change before testing it.
 - Run existing tests that are relevant to the change.
 - Writing and running new tests if coverage is insufficient.
+- Include a concise "testing_summary" sentence describing what you exercised and the overall result.
+- Record the exact tests you ran in a "tested" array. Prefer concrete commands or test selectors wrapped in backticks.
 - If tests fail, determine whether the problem is a real product/code failure, a setup/environment problem you can fix, or a flaky/infrastructure issue.
 - If the issue is setup-related and fixable, fix it and retry the tests.
 
 Rules:
 - Do NOT run linters, formatters, or static analysis tools.
 - Focus on testing and test-related fixes only.
+- Keep "testing_summary" high-signal and natural language. Avoid raw logs and noisy counts.
+- Always return a non-empty "tested" array describing what you exercised, even when all tests pass.
 - Only report actionable findings: test failures, unfixable setup issues, or flaky tests you identified.
 - Do NOT report passing tests (whether existing or new), test counts, coverage summaries, or other non-actionable information.
 - If all tests pass and there are no issues, return an empty findings array.
@@ -148,6 +152,7 @@ Rules:
 	if err != nil {
 		return nil, fmt.Errorf("run test command: %w", err)
 	}
+	tested := []string{testCmd}
 
 	sctx.Log(output)
 
@@ -158,6 +163,7 @@ Rules:
 				Description: fmt.Sprintf("tests failed with exit code %d", exitCode),
 			}},
 			Summary: output,
+			Tested:  tested,
 		}
 		findingsJSON, _ := json.Marshal(findings)
 		return &pipeline.StepOutcome{
@@ -173,6 +179,7 @@ Rules:
 	if sctx.Fixing && len(newTestsFromFix) > 0 {
 		findings := Findings{
 			Summary: "tests passed, but agent wrote new test files",
+			Tested:  tested,
 		}
 		for _, f := range newTestsFromFix {
 			findings.Items = append(findings.Items, Finding{
@@ -190,5 +197,6 @@ Rules:
 	}
 
 	sctx.Log("all tests passed")
-	return &pipeline.StepOutcome{FixSummary: fixSummary}, nil
+	findingsJSON, _ := json.Marshal(Findings{Tested: tested})
+	return &pipeline.StepOutcome{Findings: string(findingsJSON), FixSummary: fixSummary}, nil
 }

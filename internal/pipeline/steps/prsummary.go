@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"html"
 	"strings"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -52,15 +53,162 @@ func BuildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRou
 			continue
 		}
 
-		line, _ := buildStepEntry(sr, rounds[sr.ID])
+		stepRounds := rounds[sr.ID]
+		line, _ := buildStepEntry(sr, stepRounds)
 		if line == "" {
 			return ""
 		}
 
-		return "## Testing\n\n- " + line
+		testingSummary := collectTestingSummary(sr, stepRounds)
+		tested := collectTestingDetails(sr, stepRounds)
+		if testingSummary == "" && len(tested) == 0 {
+			return "## Testing\n\n- " + line
+		}
+
+		var b strings.Builder
+		b.WriteString("## Testing\n\n")
+		if testingSummary != "" {
+			rendered := renderTestingSummary(testingSummary)
+			if rendered != "" {
+				b.WriteString("- Summary: ")
+				b.WriteString(rendered)
+				b.WriteString("\n")
+			}
+		}
+		for _, detail := range tested {
+			rendered := renderTestedDetail(detail)
+			if rendered == "" {
+				continue
+			}
+			b.WriteString("- ")
+			b.WriteString(rendered)
+			b.WriteString("\n")
+		}
+		if outcome := buildTestingOutcomeLine(line, stepRounds); outcome != "" {
+			b.WriteString("- ")
+			b.WriteString(outcome)
+			b.WriteString("\n")
+		}
+
+		return strings.TrimSpace(b.String())
 	}
 
 	return ""
+}
+
+func collectTestingSummary(sr *db.StepResult, rounds []*db.StepRound) string {
+	if summary := testingSummaryFromFindings(sr.FindingsJSON); summary != "" {
+		return summary
+	}
+	for i := len(rounds) - 1; i >= 0; i-- {
+		if summary := testingSummaryFromFindings(rounds[i].FindingsJSON); summary != "" {
+			return summary
+		}
+	}
+	return ""
+}
+
+func testingSummaryFromFindings(raw *string) string {
+	if raw == nil || strings.TrimSpace(*raw) == "" {
+		return ""
+	}
+	findings, err := types.ParseFindingsJSON(*raw)
+	if err != nil {
+		return ""
+	}
+	return sanitizePromptMultilineText(findings.TestingSummary)
+}
+
+func collectTestingDetails(sr *db.StepResult, rounds []*db.StepRound) []string {
+	seen := map[string]bool{}
+	details := appendTestingDetails(nil, seen, sr.FindingsJSON)
+	for _, r := range rounds {
+		details = appendTestingDetails(details, seen, r.FindingsJSON)
+	}
+	return details
+}
+
+func appendTestingDetails(details []string, seen map[string]bool, raw *string) []string {
+	if raw == nil || strings.TrimSpace(*raw) == "" {
+		return details
+	}
+	findings, err := types.ParseFindingsJSON(*raw)
+	if err != nil {
+		return details
+	}
+	for _, detail := range findings.Tested {
+		clean := sanitizePromptText(detail)
+		if clean == "" || seen[clean] {
+			continue
+		}
+		seen[clean] = true
+		details = append(details, clean)
+	}
+	return details
+}
+
+func renderTestedDetail(detail string) string {
+	clean := sanitizePromptMultilineText(detail)
+	if clean == "" {
+		return ""
+	}
+	if strings.HasPrefix(clean, "`") && strings.HasSuffix(clean, "`") && strings.Count(clean, "`") == 2 && !strings.Contains(clean[1:len(clean)-1], "\n") {
+		return clean
+	}
+	if !strings.Contains(clean, "`") && !strings.Contains(clean, "\n") {
+		return fmt.Sprintf("`%s`", clean)
+	}
+	escaped := html.EscapeString(clean)
+	escaped = strings.ReplaceAll(escaped, "\n", "&#10;")
+	return fmt.Sprintf("<code>%s</code>", escaped)
+}
+
+func renderTestingSummary(summary string) string {
+	clean := sanitizePromptMultilineText(summary)
+	if clean == "" {
+		return ""
+	}
+	if strings.ContainsAny(clean, "`\n<>") {
+		return renderTestedDetail(clean)
+	}
+	return clean
+}
+
+func buildTestingOutcomeLine(summaryLine string, rounds []*db.StepRound) string {
+	outcome := strings.TrimSpace(strings.Replace(summaryLine, "**Test** - ", "", 1))
+	if outcome == "" {
+		return ""
+	}
+	if len(rounds) == 0 {
+		return "Outcome: " + outcome
+	}
+	runLabel := "1 run"
+	if len(rounds) != 1 {
+		runLabel = fmt.Sprintf("%d runs", len(rounds))
+	}
+	totalDuration := int64(0)
+	for _, r := range rounds {
+		totalDuration += r.DurationMS
+	}
+	if totalDuration > 0 {
+		return fmt.Sprintf("Outcome: %s across %s (%s)", outcome, runLabel, formatTestingDuration(totalDuration))
+	}
+	return fmt.Sprintf("Outcome: %s across %s", outcome, runLabel)
+}
+
+func formatTestingDuration(ms int64) string {
+	if ms < 1000 {
+		return fmt.Sprintf("%dms", ms)
+	}
+	d := time.Duration(ms) * time.Millisecond
+	if d < time.Minute {
+		seconds := float64(ms) / 1000
+		if ms%1000 == 0 {
+			return fmt.Sprintf("%ds", ms/1000)
+		}
+		return fmt.Sprintf("%.1fs", seconds)
+	}
+	return d.Round(time.Second).String()
 }
 
 func buildStepEntry(sr *db.StepResult, rounds []*db.StepRound) (statusLine, detailBlock string) {
@@ -339,6 +487,20 @@ func buildStepDetails(summaryLine string, sr *db.StepResult, rounds []*db.StepRo
 			b.WriteString(fmt.Sprintf("**Round %d**%s - failed to parse findings\n\n", r.Round, triggerLabel))
 			continue
 		}
+		if len(findings.Items) == 0 {
+			b.WriteString(fmt.Sprintf("**Round %d**%s - passed ✅\n", r.Round, triggerLabel))
+			if sr.StepName == types.StepTest {
+				for _, detail := range findings.Tested {
+					rendered := renderTestedDetail(detail)
+					if rendered == "" {
+						continue
+					}
+					b.WriteString(fmt.Sprintf("- %s\n", rendered))
+				}
+			}
+			b.WriteString("\n")
+			continue
+		}
 
 		count := countFindingsBySeverity(&findings)
 		b.WriteString(fmt.Sprintf("**Round %d**%s - found %s\n", r.Round, triggerLabel, count))
@@ -354,6 +516,15 @@ func buildStepDetails(summaryLine string, sr *db.StepResult, rounds []*db.StepRo
 				loc += "` - "
 			}
 			b.WriteString(fmt.Sprintf("- %s %s%s\n", emoji, loc, html.EscapeString(f.Description)))
+		}
+		if sr.StepName == types.StepTest {
+			for _, detail := range findings.Tested {
+				rendered := renderTestedDetail(detail)
+				if rendered == "" {
+					continue
+				}
+				b.WriteString(fmt.Sprintf("- %s\n", rendered))
+			}
 		}
 		b.WriteString("\n")
 	}

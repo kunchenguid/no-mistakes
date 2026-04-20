@@ -816,6 +816,41 @@ func TestFindingsSchema_Action(t *testing.T) {
 	}
 }
 
+func TestFindingsSchema_IncludesTestedArray(t *testing.T) {
+	t.Parallel()
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(findingsSchema, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	props := parsed["properties"].(map[string]interface{})
+	tested, ok := props["tested"].(map[string]interface{})
+	if !ok {
+		t.Fatal("findingsSchema missing tested property")
+	}
+	if tested["type"] != "array" {
+		t.Fatalf("expected tested to be an array, got %#v", tested["type"])
+	}
+	if tested["items"].(map[string]interface{})["type"] != "string" {
+		t.Fatalf("expected tested items to be strings, got %#v", tested["items"])
+	}
+}
+
+func TestFindingsSchema_IncludesTestingSummary(t *testing.T) {
+	t.Parallel()
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(findingsSchema, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	props := parsed["properties"].(map[string]interface{})
+	field, ok := props["testing_summary"].(map[string]interface{})
+	if !ok {
+		t.Fatal("findingsSchema missing testing_summary property")
+	}
+	if field["type"] != "string" {
+		t.Fatalf("expected testing_summary to be a string, got %#v", field["type"])
+	}
+}
+
 func TestReviewFindingsSchema_ActionAtItemLevel(t *testing.T) {
 	t.Parallel()
 	var parsed map[string]interface{}
