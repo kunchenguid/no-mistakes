@@ -72,7 +72,7 @@ The push lands in the local bare repo, the hook notifies the daemon, and the dae
 no-mistakes
 ```
 
-If the current branch has an active run, this attaches directly. If not, the setup wizard can walk you through creating a branch, committing, and pushing through the gate before attaching. By default that path is interactive in a TTY. In non-interactive contexts, use `no-mistakes -y` to run the same setup path and accept defaults automatically.
+If the current branch has an active run, this attaches directly. If not, the setup wizard can walk you through creating a branch, committing, and pushing through the gate before attaching. By default that path is interactive in a TTY. With `no-mistakes -y`, the wizard accepts defaults automatically, stays visible and auto-advances in a TTY, and falls back to the headless path without a TTY.
 
 The TUI shows each step's progress, streams agent output, and pauses for your approval when findings need attention. See [Using the TUI](/no-mistakes/guides/tui/) for keybindings and layout.
 
