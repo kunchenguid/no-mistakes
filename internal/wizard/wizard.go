@@ -424,6 +424,12 @@ func (m Model) handleAction(msg actionMsg) (tea.Model, tea.Cmd) {
 	if msg.err != nil {
 		s.status = statFailed
 		s.errMsg = msg.err.Error()
+		if m.cfg.AutoAdvance {
+			m.err = msg.err
+			m.quitting = true
+			m.cancel()
+			return m, tea.Quit
+		}
 		return m, nil
 	}
 	switch s.id {

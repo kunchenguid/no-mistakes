@@ -423,6 +423,35 @@ func TestAutoAdvance_SuggestionErrorFailsFast(t *testing.T) {
 	}
 }
 
+func TestAutoAdvance_ActionErrorFailsFast(t *testing.T) {
+	r := &recorder{createBranchErr: errors.New("branch exists")}
+	cfg := baseConfig(r)
+	cfg.AutoAdvance = true
+
+	m := NewModel(cfg)
+	m = drain(m, m.Init())
+
+	if m.err == nil {
+		t.Fatal("expected auto-advance action failure to be recorded")
+	}
+	if !strings.Contains(m.err.Error(), "branch exists") {
+		t.Fatalf("error should mention branch failure, got %v", m.err)
+	}
+	if !m.quitting {
+		t.Fatal("expected auto-advance action failure to quit")
+	}
+	if m.steps[0].status != statFailed {
+		t.Fatalf("expected branch step to fail, got %v", m.steps[0].status)
+	}
+	if r.commitMsg != "" || r.pushedBranch != "" {
+		t.Fatalf("auto-advance should stop after branch failure, got commit=%q push=%q", r.commitMsg, r.pushedBranch)
+	}
+	res := m.Result()
+	if !errors.Is(res.Err, m.err) {
+		t.Fatalf("result error = %v, want %v", res.Err, m.err)
+	}
+}
+
 func TestRunAuto_SuggestionErrorReturnsFailure(t *testing.T) {
 	r := &recorder{suggestBranchErr: errors.New("agent down")}
 
