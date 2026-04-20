@@ -106,6 +106,9 @@ func attachRun(w io.Writer, runID string, rootDefault bool, autoYes bool) error 
 				if err != nil {
 					return fmt.Errorf("wait for active run: %w", err)
 				}
+				if autoYes && run == nil {
+					return fmt.Errorf("no active run appeared after pushing %q", res.TargetBranch)
+				}
 			}
 			if run == nil {
 				if !res.Aborted {

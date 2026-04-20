@@ -223,6 +223,39 @@ func TestRootYesRunsWizardNonInteractively(t *testing.T) {
 	}
 }
 
+func TestRootYesFailsWhenWizardPushProducesNoRun(t *testing.T) {
+	setupTestRepo(t)
+	nmHome := makeSocketSafeTempDir(t)
+	t.Setenv("NM_HOME", nmHome)
+	p := paths.WithRoot(nmHome)
+
+	d, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	if _, err := gate.Init(context.Background(), d, p, "."); err != nil {
+		t.Fatal(err)
+	}
+
+	startTestDaemon(t, p, d)
+
+	prevAuto := runWizardAuto
+	runWizardAuto = func(ctx context.Context, p *paths.Paths, state *repoState) (wizard.Result, error) {
+		return wizard.Result{Success: true, Pushed: true, TargetBranch: "feat/missing"}, nil
+	}
+	defer func() { runWizardAuto = prevAuto }()
+
+	_, err = executeCmd("-y")
+	if err == nil {
+		t.Fatal("expected -y to fail when no active run appears after push")
+	}
+	if !strings.Contains(err.Error(), "no active run") {
+		t.Fatalf("error should mention missing active run, got %v", err)
+	}
+}
+
 func setRunCreatedAt(t *testing.T, dbPath, runID string, ts int64) {
 	t.Helper()
 

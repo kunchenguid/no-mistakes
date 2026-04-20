@@ -17,6 +17,7 @@ import (
 // Callers pre-detect git state so the wizard can decide up-front which
 // steps to skip.
 type Config struct {
+	Context       context.Context
 	RepoDir       string
 	CurrentBranch string
 	DefaultBranch string
@@ -535,7 +536,11 @@ func Run(cfg Config) (Result, error) {
 // then push to the gate. Suggestion failures are returned immediately.
 func RunAuto(cfg Config) (Result, error) {
 	res := Result{TargetBranch: cfg.CurrentBranch}
-	ctx, cancel := context.WithCancel(context.Background())
+	baseCtx := cfg.Context
+	if baseCtx == nil {
+		baseCtx = context.Background()
+	}
+	ctx, cancel := context.WithCancel(baseCtx)
 	defer cancel()
 
 	track := func(action string, fields map[string]any) {

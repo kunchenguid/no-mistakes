@@ -357,6 +357,32 @@ func TestRunAuto_SuggestionErrorReturnsFailure(t *testing.T) {
 	}
 }
 
+func TestRunAuto_UsesCallerContext(t *testing.T) {
+	r := &recorder{}
+	cfg := baseConfig(r)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cfg.Context = ctx
+	cfg.SuggestBranch = func(ctx context.Context) (string, error) {
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
+
+	res, err := RunAuto(cfg)
+	if err == nil {
+		t.Fatal("expected RunAuto to fail when caller context is canceled")
+	}
+	if !strings.Contains(err.Error(), context.Canceled.Error()) {
+		t.Fatalf("error should mention canceled context, got %v", err)
+	}
+	if res.Success {
+		t.Fatal("RunAuto should not report success when caller context is canceled")
+	}
+	if r.createdBranch != "" || r.commitMsg != "" || r.pushedBranch != "" {
+		t.Fatalf("RunAuto should stop before side effects, got branch=%q commit=%q push=%q", r.createdBranch, r.commitMsg, r.pushedBranch)
+	}
+}
+
 func TestWizardTracksCompletedKeyActions(t *testing.T) {
 	r := &recorder{}
 	m := NewModel(baseConfig(r))

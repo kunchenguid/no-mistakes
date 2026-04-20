@@ -177,6 +177,7 @@ func runWizardWithMode(ctx context.Context, p *paths.Paths, state *repoState, au
 	defer suggester.Close()
 
 	wizCfg := wizard.Config{
+		Context:       ctx,
 		RepoDir:       workDir,
 		CurrentBranch: state.currentBranch,
 		DefaultBranch: state.defaultBranch,
