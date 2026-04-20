@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.7.0](https://github.com/kunchenguid/no-mistakes/compare/v1.6.0...v1.7.0) (2026-04-20)
+
+
+### Features
+
+* **cli:** add daemon restart command ([#102](https://github.com/kunchenguid/no-mistakes/issues/102)) ([795a42d](https://github.com/kunchenguid/no-mistakes/commit/795a42da12eb72bd1952beda902f77f79a6cc2ea))
+* **cli:** add non-interactive setup wizard with --yes ([#105](https://github.com/kunchenguid/no-mistakes/issues/105)) ([99d2715](https://github.com/kunchenguid/no-mistakes/commit/99d27152f064a78864dc0fe08392d0d41f545d3f))
+* **docs:** add custom hero CSS and update docs ([8d5e020](https://github.com/kunchenguid/no-mistakes/commit/8d5e0209195b67b366cf192f8330cf8dc21bfec1))
+* **pipeline:** add testing details to PR summaries ([#104](https://github.com/kunchenguid/no-mistakes/issues/104)) ([7adb743](https://github.com/kunchenguid/no-mistakes/commit/7adb743b14033508a4f6f7aa42631d9a0ae6e914))
+
 ## [1.6.0](https://github.com/kunchenguid/no-mistakes/compare/v1.5.0...v1.6.0) (2026-04-18)
 
 
