@@ -400,6 +400,44 @@ func TestRunAuto_UsesCallerContext(t *testing.T) {
 	}
 }
 
+func TestRunAuto_WrapsUnderlyingContextError(t *testing.T) {
+	r := &recorder{}
+	cfg := baseConfig(r)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cfg.Context = ctx
+	cfg.SuggestBranch = func(ctx context.Context) (string, error) {
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
+
+	_, err := RunAuto(cfg)
+	if err == nil {
+		t.Fatal("expected RunAuto to fail when caller context is canceled")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("errors.Is(err, context.Canceled) = false, err = %v", err)
+	}
+}
+
+func TestRun_UsesCallerContext(t *testing.T) {
+	cfg := baseConfig(&recorder{})
+	cfg.CurrentBranch = "feat/existing"
+	cfg.NeedsBranch = false
+	cfg.IsDirty = false
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cfg.Context = ctx
+
+	_, err := Run(cfg)
+	if err == nil {
+		t.Fatal("expected Run to fail when caller context is canceled")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run() error = %v, want wrapped context.Canceled", err)
+	}
+}
+
 func TestWizardTracksCompletedKeyActions(t *testing.T) {
 	r := &recorder{}
 	m := NewModel(baseConfig(r))

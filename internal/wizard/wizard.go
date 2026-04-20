@@ -6,6 +6,7 @@ package wizard
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -522,8 +523,15 @@ func (m Model) runPush() tea.Cmd {
 // Run invokes the wizard as an interactive bubbletea program. Returns the
 // terminal Result describing what happened.
 func Run(cfg Config) (Result, error) {
+	baseCtx := cfg.Context
+	if baseCtx == nil {
+		baseCtx = context.Background()
+	}
+	if err := baseCtx.Err(); err != nil {
+		return Result{Err: err}, err
+	}
 	m := NewModel(cfg)
-	p := tea.NewProgram(m, tea.WithAltScreen())
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithContext(baseCtx))
 	final, err := p.Run()
 	if err != nil {
 		return Result{Err: err}, err
@@ -567,7 +575,7 @@ func RunAuto(cfg Config) (Result, error) {
 		branch, err := cfg.SuggestBranch(suggestCtx)
 		suggestCancel()
 		if err != nil {
-			err = errors.New("suggest branch: " + err.Error())
+			err = fmt.Errorf("suggest branch: %w", err)
 			res.Err = err
 			return res, err
 		}
@@ -577,7 +585,7 @@ func RunAuto(cfg Config) (Result, error) {
 			return res, err
 		}
 		if err := cfg.CreateBranch(ctx, branch); err != nil {
-			err = errors.New("create branch: " + err.Error())
+			err = fmt.Errorf("create branch: %w", err)
 			res.Err = err
 			return res, err
 		}
@@ -596,7 +604,7 @@ func RunAuto(cfg Config) (Result, error) {
 		commitMsg, err := cfg.SuggestCommit(suggestCtx)
 		suggestCancel()
 		if err != nil {
-			err = errors.New("suggest commit: " + err.Error())
+			err = fmt.Errorf("suggest commit: %w", err)
 			res.Err = err
 			return res, err
 		}
@@ -606,7 +614,7 @@ func RunAuto(cfg Config) (Result, error) {
 			return res, err
 		}
 		if err := cfg.CommitAll(ctx, commitMsg); err != nil {
-			err = errors.New("commit changes: " + err.Error())
+			err = fmt.Errorf("commit changes: %w", err)
 			res.Err = err
 			return res, err
 		}
@@ -620,7 +628,7 @@ func RunAuto(cfg Config) (Result, error) {
 		return res, err
 	}
 	if err := cfg.Push(ctx, res.TargetBranch); err != nil {
-		err = errors.New("push branch: " + err.Error())
+		err = fmt.Errorf("push branch: %w", err)
 		res.Err = err
 		return res, err
 	}
