@@ -71,7 +71,9 @@ not ask for one. If everything is already committed, it skips straight to push.
 
 ## Retry on failure
 
-If any step fails (git error, agent error, network error), the wizard shows the error and lets you press `r` to retry the step without restarting the whole flow.
+If any step fails (git error, agent error, network error), the interactive wizard shows the error and lets you press `r` to retry the step without restarting the whole flow.
+
+With `-y` / `--yes`, the non-interactive path exits on the first error instead of prompting to retry.
 
 ## Quitting safely
 
