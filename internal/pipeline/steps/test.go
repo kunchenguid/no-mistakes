@@ -152,7 +152,7 @@ Rules:
 	if err != nil {
 		return nil, fmt.Errorf("run test command: %w", err)
 	}
-	tested := []string{fmt.Sprintf("`%s`", testCmd)}
+	tested := []string{testCmd}
 
 	sctx.Log(output)
 

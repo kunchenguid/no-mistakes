@@ -146,3 +146,22 @@ func TestBuildPipelineSummary_UsesFinalFindingsWithoutInitialRoundData(t *testin
 		t.Errorf("expected missing round findings data to be called out explicitly, got:\n%s", md)
 	}
 }
+
+func TestBuildPipelineSummary_FailedTestRoundIncludesTestedDetails(t *testing.T) {
+	t.Parallel()
+	findings := `{"findings":[{"id":"test-1","severity":"error","description":"expected 429 got 200"}],"tested":["go test ./internal/cli -run '^TestDoctorBasic$' -count=1"],"summary":"1 failure"}`
+	steps := []*db.StepResult{
+		{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings},
+	}
+	rounds := map[string][]*db.StepRound{
+		"s1": {
+			{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 300},
+		},
+	}
+
+	md, _ := BuildPipelineSummary(steps, rounds)
+
+	if !strings.Contains(md, "- `go test ./internal/cli -run '^TestDoctorBasic$' -count=1`") {
+		t.Fatalf("expected failed test round to include tested command details, got:\n%s", md)
+	}
+}

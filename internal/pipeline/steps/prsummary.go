@@ -73,8 +73,12 @@ func BuildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRou
 			b.WriteString("\n")
 		}
 		for _, detail := range tested {
+			rendered := renderTestedDetail(detail)
+			if rendered == "" {
+				continue
+			}
 			b.WriteString("- ")
-			b.WriteString(detail)
+			b.WriteString(rendered)
 			b.WriteString("\n")
 		}
 		if outcome := buildTestingOutcomeLine(line, stepRounds); outcome != "" {
@@ -138,6 +142,22 @@ func appendTestingDetails(details []string, seen map[string]bool, raw *string) [
 		details = append(details, clean)
 	}
 	return details
+}
+
+func renderTestedDetail(detail string) string {
+	clean := sanitizePromptMultilineText(detail)
+	if clean == "" {
+		return ""
+	}
+	if strings.HasPrefix(clean, "`") && strings.HasSuffix(clean, "`") && strings.Count(clean, "`") == 2 && !strings.Contains(clean[1:len(clean)-1], "\n") {
+		return clean
+	}
+	if !strings.Contains(clean, "`") && !strings.Contains(clean, "\n") {
+		return fmt.Sprintf("`%s`", clean)
+	}
+	escaped := html.EscapeString(clean)
+	escaped = strings.ReplaceAll(escaped, "\n", "&#10;")
+	return fmt.Sprintf("<code>%s</code>", escaped)
 }
 
 func buildTestingOutcomeLine(summaryLine string, rounds []*db.StepRound) string {
@@ -457,11 +477,11 @@ func buildStepDetails(summaryLine string, sr *db.StepResult, rounds []*db.StepRo
 			b.WriteString(fmt.Sprintf("**Round %d**%s - passed ✅\n", r.Round, triggerLabel))
 			if sr.StepName == types.StepTest {
 				for _, detail := range findings.Tested {
-					clean := strings.TrimSpace(detail)
-					if clean == "" {
+					rendered := renderTestedDetail(detail)
+					if rendered == "" {
 						continue
 					}
-					b.WriteString(fmt.Sprintf("- %s\n", html.EscapeString(clean)))
+					b.WriteString(fmt.Sprintf("- %s\n", rendered))
 				}
 			}
 			b.WriteString("\n")
@@ -482,6 +502,15 @@ func buildStepDetails(summaryLine string, sr *db.StepResult, rounds []*db.StepRo
 				loc += "` - "
 			}
 			b.WriteString(fmt.Sprintf("- %s %s%s\n", emoji, loc, html.EscapeString(f.Description)))
+		}
+		if sr.StepName == types.StepTest {
+			for _, detail := range findings.Tested {
+				rendered := renderTestedDetail(detail)
+				if rendered == "" {
+					continue
+				}
+				b.WriteString(fmt.Sprintf("- %s\n", rendered))
+			}
 		}
 		b.WriteString("\n")
 	}

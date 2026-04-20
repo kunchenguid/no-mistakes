@@ -34,7 +34,7 @@ func TestTestStep_PassingCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseFindingsJSON() error = %v", err)
 	}
-	if len(findings.Tested) != 1 || findings.Tested[0] != "`true`" {
+	if len(findings.Tested) != 1 || findings.Tested[0] != "true" {
 		t.Fatalf("expected passing command to record executed test command, got %+v", findings.Tested)
 	}
 }
@@ -95,6 +95,9 @@ func TestTestStep_FailingCommand(t *testing.T) {
 	}
 	if findings.Items[0].Severity != "error" {
 		t.Errorf("severity = %s, want error", findings.Items[0].Severity)
+	}
+	if len(findings.Tested) != 1 || findings.Tested[0] != "exit 1" {
+		t.Fatalf("expected failing command to record raw executed test command, got %+v", findings.Tested)
 	}
 }
 
