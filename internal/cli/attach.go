@@ -22,7 +22,7 @@ var runTUI = tui.Run
 
 // attachRun is the shared logic for attaching to a pipeline run. It's used by
 // both the root command (bare `no-mistakes`) and the `attach` subcommand.
-func attachRun(w io.Writer, runID string, rootDefault bool, autoYes bool) error {
+func attachRun(ctx context.Context, w io.Writer, runID string, rootDefault bool, autoYes bool) error {
 	p, d, err := openResources()
 	if err != nil {
 		return err
@@ -67,7 +67,7 @@ func attachRun(w io.Writer, runID string, rootDefault bool, autoYes bool) error 
 
 		// Detect current state so we can decide between attach and wizard
 		// consistently with what the wizard itself will see.
-		state, err = detectRepoState(context.Background(), repo)
+		state, err = detectRepoState(ctx, repo)
 		if err != nil {
 			return err
 		}
@@ -94,9 +94,9 @@ func attachRun(w io.Writer, runID string, rootDefault bool, autoYes bool) error 
 			var res wizard.Result
 			var wErr error
 			if autoYes {
-				res, wErr = runWizardAuto(context.Background(), p, state)
+				res, wErr = runWizardAuto(ctx, p, state)
 			} else {
-				res, wErr = runWizard(context.Background(), p, state)
+				res, wErr = runWizard(ctx, p, state)
 			}
 			if wErr != nil {
 				return wErr
@@ -227,7 +227,7 @@ If no run ID is specified, attaches to the active run for the current repo.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return trackCommand("attach", func() error {
-				return attachRun(cmd.OutOrStdout(), runID, false, false)
+				return attachRun(cmd.Context(), cmd.OutOrStdout(), runID, false, false)
 			})
 		},
 	}

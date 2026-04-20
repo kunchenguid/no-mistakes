@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -253,6 +254,45 @@ func TestRootYesFailsWhenWizardPushProducesNoRun(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no active run") {
 		t.Fatalf("error should mention missing active run, got %v", err)
+	}
+}
+
+func TestRootYesPassesCommandContextToWizard(t *testing.T) {
+	setupTestRepo(t)
+	nmHome := makeSocketSafeTempDir(t)
+	t.Setenv("NM_HOME", nmHome)
+	p := paths.WithRoot(nmHome)
+
+	d, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	if _, err := gate.Init(context.Background(), d, p, "."); err != nil {
+		t.Fatal(err)
+	}
+
+	startTestDaemon(t, p, d)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	prevAuto := runWizardAuto
+	runWizardAuto = func(got context.Context, p *paths.Paths, state *repoState) (wizard.Result, error) {
+		if got == nil {
+			t.Fatal("expected command context")
+		}
+		if err := got.Err(); err != context.Canceled {
+			t.Fatalf("wizard context err = %v, want %v", err, context.Canceled)
+		}
+		return wizard.Result{}, got.Err()
+	}
+	defer func() { runWizardAuto = prevAuto }()
+
+	_, err = executeCmdWithContext(ctx, "-y")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("executeCmdWithContext(-y) error = %v, want %v", err, context.Canceled)
 	}
 }
 

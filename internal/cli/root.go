@@ -39,7 +39,7 @@ func newRootCmd() *cobra.Command {
 		// route interactive users into the setup wizard when no run is active.
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return trackCommand("root", func() error {
-				return attachRun(cmd.OutOrStdout(), "", true, autoYes)
+				return attachRun(cmd.Context(), cmd.OutOrStdout(), "", true, autoYes)
 			})
 		},
 	}

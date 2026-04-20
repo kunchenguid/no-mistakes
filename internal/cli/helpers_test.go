@@ -171,6 +171,17 @@ func executeCmd(args ...string) (string, error) {
 	return buf.String(), err
 }
 
+func executeCmdWithContext(ctx context.Context, args ...string) (string, error) {
+	cmd := newRootCmd()
+	buf := new(bytes.Buffer)
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs(args)
+	cmd.SetContext(ctx)
+	err := cmd.Execute()
+	return buf.String(), err
+}
+
 func linkTestBinary(t *testing.T, binDir, name string) string {
 	t.Helper()
 	if runtime.GOOS == "windows" {
