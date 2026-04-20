@@ -70,7 +70,7 @@ func BuildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRou
 		if testingSummary != "" {
 			rendered := renderTestingSummary(testingSummary)
 			if rendered != "" {
-			b.WriteString("- Summary: ")
+				b.WriteString("- Summary: ")
 				b.WriteString(rendered)
 				b.WriteString("\n")
 			}
