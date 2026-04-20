@@ -389,8 +389,8 @@ func TestAutoAdvance_ActsLikePressingEnterThroughWizard(t *testing.T) {
 	if !containsWizardEvent(r.telemetry, "committed", "source", "agent") {
 		t.Fatal("expected committed telemetry with agent source")
 	}
-	if !containsWizardEvent(r.telemetry, "pushed", "source", "user") {
-		t.Fatal("expected pushed telemetry with user source")
+	if !containsWizardEvent(r.telemetry, "pushed", "source", "auto") {
+		t.Fatal("expected pushed telemetry with auto source")
 	}
 }
 
@@ -433,6 +433,9 @@ func TestAutoAdvance_ActionErrorFailsFast(t *testing.T) {
 
 	if m.err == nil {
 		t.Fatal("expected auto-advance action failure to be recorded")
+	}
+	if !strings.Contains(m.err.Error(), "create branch") {
+		t.Fatalf("error should mention branch action, got %v", m.err)
 	}
 	if !strings.Contains(m.err.Error(), "branch exists") {
 		t.Fatalf("error should mention branch failure, got %v", m.err)

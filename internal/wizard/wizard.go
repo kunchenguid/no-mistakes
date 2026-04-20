@@ -281,6 +281,10 @@ func (m Model) handleAutoAdvance() (tea.Model, tea.Cmd) {
 	if s.status != statInput && s.status != statConfirm {
 		return m, nil
 	}
+	if s.status == statConfirm {
+		s.source = "auto"
+		return m.executeStep(s, "")
+	}
 	return m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
 }
 
@@ -422,10 +426,11 @@ func (m Model) handleAction(msg actionMsg) (tea.Model, tea.Cmd) {
 	}
 	s := m.steps[m.active]
 	if msg.err != nil {
+		wrappedErr := fmt.Errorf("%s: %w", stepActionLabel(msg.id), msg.err)
 		s.status = statFailed
-		s.errMsg = msg.err.Error()
+		s.errMsg = wrappedErr.Error()
 		if m.cfg.AutoAdvance {
-			m.err = msg.err
+			m.err = wrappedErr
 			m.quitting = true
 			m.cancel()
 			return m, tea.Quit
@@ -688,6 +693,19 @@ func stepName(id stepID) string {
 		return "push"
 	default:
 		return "unknown"
+	}
+}
+
+func stepActionLabel(id stepID) string {
+	switch id {
+	case stepBranch:
+		return "create branch"
+	case stepCommit:
+		return "commit changes"
+	case stepPush:
+		return "push branch"
+	default:
+		return stepName(id)
 	}
 }
 
