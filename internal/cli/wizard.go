@@ -27,6 +27,10 @@ var resolveWizardAgent = func(ctx context.Context, cfg *config.Config) error {
 
 var newWizardAgent = agent.New
 var wizardRun = wizard.Run
+var wizardRunAuto = wizard.RunAuto
+var runWizardAuto = func(ctx context.Context, p *paths.Paths, state *repoState) (wizard.Result, error) {
+	return runWizardWithMode(ctx, p, state, true)
+}
 
 type wizardAgentSuggester struct {
 	cfg     *config.Config
@@ -148,6 +152,10 @@ func detectRepoState(ctx context.Context, repo *db.Repo) (*repoState, error) {
 // runWizard prepares optional suggestion hooks and runs the interactive
 // onboarding wizard against the supplied repo state.
 func runWizard(ctx context.Context, p *paths.Paths, state *repoState) (wizard.Result, error) {
+	return runWizardWithMode(ctx, p, state, false)
+}
+
+func runWizardWithMode(ctx context.Context, p *paths.Paths, state *repoState, auto bool) (wizard.Result, error) {
 	workDir := state.workDir
 
 	globalCfg, err := config.LoadGlobal(p.ConfigFile())
@@ -169,6 +177,7 @@ func runWizard(ctx context.Context, p *paths.Paths, state *repoState) (wizard.Re
 	defer suggester.Close()
 
 	wizCfg := wizard.Config{
+		Context:       ctx,
 		RepoDir:       workDir,
 		CurrentBranch: state.currentBranch,
 		DefaultBranch: state.defaultBranch,
@@ -197,14 +206,19 @@ func runWizard(ctx context.Context, p *paths.Paths, state *repoState) (wizard.Re
 	}
 
 	telemetry.Pageview("/wizard", telemetry.Fields{
-		"entrypoint":          "wizard",
+		"entrypoint":          wizardEntrypoint(auto),
 		"needs_branch":        state.needsBranch(),
 		"is_dirty":            state.dirty,
 		"detached":            state.detached,
 		"current_branch_role": wizardBranchRole(state.currentBranch, state.defaultBranch, state.detached),
 	})
 
-	res, err := wizardRun(wizCfg)
+	run := wizardRun
+	if auto {
+		run = wizardRunAuto
+	}
+
+	res, err := run(wizCfg)
 	if err == nil {
 		telemetry.Track("wizard", telemetry.Fields{
 			"action":         "result",
@@ -243,9 +257,17 @@ func (discardWriter) Write(p []byte) (int, error) { return len(p), nil }
 // waitForActiveRun polls the daemon until an active run appears for the given
 // repo/branch, or the deadline elapses. The post-receive hook creates the run
 // asynchronously, so a short poll bridges the gap between push and attach.
-func waitForActiveRun(client *ipc.Client, repoID, branch string, timeout time.Duration) (*ipc.RunInfo, error) {
-	deadline := time.Now().Add(timeout)
+func waitForActiveRun(ctx context.Context, client *ipc.Client, repoID, branch string, timeout time.Duration) (*ipc.RunInfo, error) {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+
+	poll := time.NewTicker(150 * time.Millisecond)
+	defer poll.Stop()
+
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		var result ipc.GetActiveRunResult
 		if err := client.Call(ipc.MethodGetActiveRun, &ipc.GetActiveRunParams{RepoID: repoID, Branch: branch}, &result); err != nil {
 			return nil, err
@@ -253,10 +275,13 @@ func waitForActiveRun(client *ipc.Client, repoID, branch string, timeout time.Du
 		if result.Run != nil {
 			return result.Run, nil
 		}
-		if time.Now().After(deadline) {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-deadline.C:
 			return nil, nil
+		case <-poll.C:
 		}
-		time.Sleep(150 * time.Millisecond)
 	}
 }
 
@@ -278,6 +303,13 @@ func wizardResultStatus(res wizard.Result) string {
 		return "aborted"
 	}
 	return "closed"
+}
+
+func wizardEntrypoint(auto bool) string {
+	if auto {
+		return "wizard_auto"
+	}
+	return "wizard"
 }
 
 func mergeTelemetryFields(fields map[string]any, extra telemetry.Fields) telemetry.Fields {

@@ -12,13 +12,15 @@ The point of the wizard is to make bare `no-mistakes` a useful starting
 command, not just an attach command. If you have local work but no run yet, the
 wizard helps turn that state into branch -> commit -> push -> attach.
 
-The wizard only kicks in when:
+The wizard kicks in when:
 
-- You're in an interactive terminal.
+- You're in an interactive terminal, or you passed `no-mistakes -y` / `no-mistakes --yes`.
 - The gate is initialized for the current repo (`no-mistakes init` has been run).
 - There's no active run on the current branch.
 
-In non-interactive contexts, bare `no-mistakes` falls back to listing the last 5 runs instead.
+In non-interactive contexts, bare `no-mistakes` without `-y` falls back to listing the last 5 runs instead.
+
+With `-y` / `--yes`, the wizard runs non-interactively and takes the default automated path for each step: use agent suggestions for branch and commit when needed, then push to the gate.
 
 If you want to attach to *any* active run in the repo (not just the current branch), use `no-mistakes attach` - that path skips the wizard entirely.
 
@@ -28,7 +30,7 @@ If you want to attach to *any* active run in the repo (not just the current bran
 flowchart TD
   start["Run no-mistakes"] --> active{"Active run on current branch?"}
   active -- "yes" --> attach["Attach to run"]
-  active -- "no" --> interactive{"Interactive terminal and gate initialized?"}
+  active -- "no" --> interactive{"Interactive terminal, or -y/--yes, and gate initialized?"}
   interactive -- "no" --> recent["Show recent runs"]
   interactive -- "yes" --> branch["Branch step if needed"]
   branch --> commit["Commit step if needed"]
@@ -38,8 +40,7 @@ flowchart TD
 
 ## Steps
 
-The wizard is a full-screen flow that runs only the steps your current repo
-state needs, up to three total:
+The interactive wizard is a full-screen flow that runs only the steps your current repo state needs, up to three total. The `-y` / `--yes` path runs the same steps without the TUI and accepts the automated default at each one.
 
 ### 1. Branch
 
@@ -70,7 +71,9 @@ not ask for one. If everything is already committed, it skips straight to push.
 
 ## Retry on failure
 
-If any step fails (git error, agent error, network error), the wizard shows the error and lets you press `r` to retry the step without restarting the whole flow.
+If any step fails (git error, agent error, network error), the interactive wizard shows the error and lets you press `r` to retry the step without restarting the whole flow.
+
+With `-y` / `--yes`, the non-interactive path exits on the first error instead of prompting to retry.
 
 ## Quitting safely
 
@@ -95,7 +98,7 @@ The managed agent server (Rovo Dev or OpenCode) writes its output to `~/.no-mist
 The wizard requires:
 
 - The gate to be initialized (`no-mistakes init` has run).
-- A configured agent binary available on `PATH` (or via `agent_path_override`).
 - A clean enough state to commit and push.
+- A configured agent binary available on `PATH` (or via `agent_path_override`) only when the wizard needs to suggest a branch name or commit subject. If you already have a branch and clean working tree, or you enter those values yourself in the interactive flow, the wizard can continue without agent suggestions.
 
 If any of those are missing, the wizard reports the problem and exits. `no-mistakes doctor` is the fastest way to see what's available.
