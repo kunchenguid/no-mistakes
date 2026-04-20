@@ -1,6 +1,7 @@
-// Package wizard provides the pre-pipeline onboarding UI: it detects repo
+// Package wizard provides the pre-pipeline onboarding flow: it detects repo
 // state, optionally creates a branch, commits uncommitted changes, and pushes
-// to the no-mistakes gate, then hands off to the main TUI.
+// to the no-mistakes gate, then hands off to the main TUI. It supports both
+// the interactive wizard UI and the non-interactive auto-accept path.
 package wizard
 
 import (
