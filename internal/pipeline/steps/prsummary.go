@@ -68,9 +68,12 @@ func BuildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRou
 		var b strings.Builder
 		b.WriteString("## Testing\n\n")
 		if testingSummary != "" {
+			rendered := renderTestingSummary(testingSummary)
+			if rendered != "" {
 			b.WriteString("- Summary: ")
-			b.WriteString(testingSummary)
-			b.WriteString("\n")
+				b.WriteString(rendered)
+				b.WriteString("\n")
+			}
 		}
 		for _, detail := range tested {
 			rendered := renderTestedDetail(detail)
@@ -158,6 +161,17 @@ func renderTestedDetail(detail string) string {
 	escaped := html.EscapeString(clean)
 	escaped = strings.ReplaceAll(escaped, "\n", "&#10;")
 	return fmt.Sprintf("<code>%s</code>", escaped)
+}
+
+func renderTestingSummary(summary string) string {
+	clean := sanitizePromptMultilineText(summary)
+	if clean == "" {
+		return ""
+	}
+	if strings.ContainsAny(clean, "`\n<>") {
+		return renderTestedDetail(clean)
+	}
+	return clean
 }
 
 func buildTestingOutcomeLine(summaryLine string, rounds []*db.StepRound) string {

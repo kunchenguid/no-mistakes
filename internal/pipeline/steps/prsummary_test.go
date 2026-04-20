@@ -211,3 +211,20 @@ func TestBuildTestingSummary_IncludesRecordedTestDetails(t *testing.T) {
 		t.Fatalf("expected testing summary before raw test details, got:\n%s", md)
 	}
 }
+
+func TestBuildTestingSummary_EscapesMarkdownInTestingSummary(t *testing.T) {
+	t.Parallel()
+	findings := "{\"findings\":[],\"summary\":\"\",\"testing_summary\":\"Validated `go test ./...`\\nand noted <details> output\",\"tested\":[]}"
+	steps := []*db.StepResult{
+		{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings},
+	}
+	rounds := map[string][]*db.StepRound{
+		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 300}},
+	}
+
+	md := BuildTestingSummary(steps, rounds)
+
+	if !strings.Contains(md, "- Summary: <code>Validated `go test ./...`&#10;and noted &lt;details&gt; output</code>") {
+		t.Fatalf("expected escaped testing summary, got:\n%s", md)
+	}
+}
