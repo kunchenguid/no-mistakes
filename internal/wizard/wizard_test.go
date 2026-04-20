@@ -174,6 +174,23 @@ func TestNewModel_DetachedHEADForcesBranchStep(t *testing.T) {
 	}
 }
 
+func TestNewModel_UsesConfigContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cfg := baseConfig(&recorder{})
+	cfg.Context = ctx
+
+	m := NewModel(cfg)
+	defer m.cancel()
+
+	cancel()
+
+	select {
+	case <-m.ctx.Done():
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("expected model context to be cancelled with config context")
+	}
+}
+
 func TestBranchStep_UserTyped(t *testing.T) {
 	r := &recorder{}
 	m := NewModel(baseConfig(r))

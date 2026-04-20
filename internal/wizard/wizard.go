@@ -119,7 +119,11 @@ func NewModel(cfg Config) Model {
 	ti := textinput.New()
 	ti.Prompt = "› "
 	ti.CharLimit = 80
-	ctx, cancel := context.WithCancel(context.Background())
+	baseCtx := cfg.Context
+	if baseCtx == nil {
+		baseCtx = context.Background()
+	}
+	ctx, cancel := context.WithCancel(baseCtx)
 
 	m := Model{
 		cfg:          cfg,
