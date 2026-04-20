@@ -102,7 +102,7 @@ func attachRun(ctx context.Context, w io.Writer, runID string, rootDefault bool,
 				return wErr
 			}
 			if res.Success {
-				run, err = waitForActiveRun(client, repo.ID, res.TargetBranch, 5*time.Second)
+				run, err = waitForActiveRun(ctx, client, repo.ID, res.TargetBranch, 5*time.Second)
 				if err != nil {
 					return fmt.Errorf("wait for active run: %w", err)
 				}

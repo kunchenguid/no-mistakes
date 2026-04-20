@@ -257,9 +257,17 @@ func (discardWriter) Write(p []byte) (int, error) { return len(p), nil }
 // waitForActiveRun polls the daemon until an active run appears for the given
 // repo/branch, or the deadline elapses. The post-receive hook creates the run
 // asynchronously, so a short poll bridges the gap between push and attach.
-func waitForActiveRun(client *ipc.Client, repoID, branch string, timeout time.Duration) (*ipc.RunInfo, error) {
-	deadline := time.Now().Add(timeout)
+func waitForActiveRun(ctx context.Context, client *ipc.Client, repoID, branch string, timeout time.Duration) (*ipc.RunInfo, error) {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+
+	poll := time.NewTicker(150 * time.Millisecond)
+	defer poll.Stop()
+
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		var result ipc.GetActiveRunResult
 		if err := client.Call(ipc.MethodGetActiveRun, &ipc.GetActiveRunParams{RepoID: repoID, Branch: branch}, &result); err != nil {
 			return nil, err
@@ -267,10 +275,13 @@ func waitForActiveRun(client *ipc.Client, repoID, branch string, timeout time.Du
 		if result.Run != nil {
 			return result.Run, nil
 		}
-		if time.Now().After(deadline) {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-deadline.C:
 			return nil, nil
+		case <-poll.C:
 		}
-		time.Sleep(150 * time.Millisecond)
 	}
 }
 

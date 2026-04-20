@@ -296,6 +296,44 @@ func TestRootYesPassesCommandContextToWizard(t *testing.T) {
 	}
 }
 
+func TestRootYesStopsWaitingForRunWhenContextCanceled(t *testing.T) {
+	setupTestRepo(t)
+	nmHome := makeSocketSafeTempDir(t)
+	t.Setenv("NM_HOME", nmHome)
+	p := paths.WithRoot(nmHome)
+
+	d, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	if _, err := gate.Init(context.Background(), d, p, "."); err != nil {
+		t.Fatal(err)
+	}
+
+	startTestDaemon(t, p, d)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	prevAuto := runWizardAuto
+	runWizardAuto = func(got context.Context, p *paths.Paths, state *repoState) (wizard.Result, error) {
+		cancel()
+		return wizard.Result{Success: true, Pushed: true, TargetBranch: "feat/missing"}, nil
+	}
+	defer func() { runWizardAuto = prevAuto }()
+
+	start := time.Now()
+	_, err = executeCmdWithContext(ctx, "-y")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("executeCmdWithContext(-y) error = %v, want %v", err, context.Canceled)
+	}
+	if elapsed := time.Since(start); elapsed >= time.Second {
+		t.Fatalf("executeCmdWithContext(-y) took %v after cancellation, want under %v", elapsed, time.Second)
+	}
+}
+
 func setRunCreatedAt(t *testing.T, dbPath, runID string, ts int64) {
 	t.Helper()
 
