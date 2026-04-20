@@ -11,7 +11,7 @@ curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/i
 
 The installer keeps the real binary in `~/.no-mistakes/bin` and exposes `no-mistakes` through a symlink in `~/.local/bin` or `/usr/local/bin`. That keeps future `no-mistakes update` runs in a user-owned location instead of rewriting a system binary in place.
 
-It also attempts to install and start the background daemon for you, preferring a managed service (launchd on macOS, systemd user service on Linux) and falling back to a detached daemon if that path is unavailable. If startup fails, run `no-mistakes daemon start` manually.
+It also installs or refreshes the background daemon for you by running `no-mistakes daemon restart`, preferring a managed service (launchd on macOS, systemd user service on Linux) and falling back to a detached daemon if that path is unavailable. If the restart fails, the install command fails.
 
 Official release binaries installed this way may already have telemetry enabled if a telemetry website ID was embedded at build time.
 
@@ -21,7 +21,7 @@ Official release binaries installed this way may already have telemetry enabled 
 irm https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.ps1 | iex
 ```
 
-Installs the binary and attempts to start the background daemon automatically, preferring a managed Task Scheduler task and falling back to a detached daemon if needed.
+Installs the binary and restarts the background daemon automatically with `no-mistakes.exe daemon restart`, preferring a managed Task Scheduler task and falling back to a detached daemon if needed. If the restart fails, the install command fails.
 
 Official release binaries installed this way may already have telemetry enabled if a telemetry website ID was embedded at build time.
 

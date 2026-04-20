@@ -238,6 +238,36 @@ func TestDaemonRestart(t *testing.T) {
 	})
 }
 
+func TestDaemonRestartStartsDaemonWhenNotRunning(t *testing.T) {
+	nmHome := makeSocketSafeTempDir(t)
+	t.Setenv("NM_HOME", nmHome)
+	t.Setenv("NM_TEST_START_DAEMON", "1")
+	p := paths.WithRoot(nmHome)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() {
+		_ = daemon.Stop(p)
+	})
+
+	out, err := executeCmd("daemon", "restart")
+	if err != nil {
+		t.Fatalf("daemon restart failed: %v\noutput: %s", err, out)
+	}
+	if !strings.Contains(out, "daemon restarted") {
+		t.Fatalf("expected 'daemon restarted', got: %s", out)
+	}
+
+	alive, err := daemon.IsRunning(p)
+	if err != nil {
+		t.Fatalf("daemon health check failed after restart: %v", err)
+	}
+	if !alive {
+		t.Fatal("daemon should be running after restart")
+	}
+}
+
 func TestDaemonRunUsesProvidedRoot(t *testing.T) {
 	wantRoot := filepath.Join(t.TempDir(), "nm-home")
 	t.Setenv("NM_HOME", "")

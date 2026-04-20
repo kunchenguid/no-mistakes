@@ -141,6 +141,16 @@ no-mistakes daemon stop
 
 This does not remove the managed service. A later `no-mistakes`, `no-mistakes daemon start`, `init`, `attach`, `rerun`, or `update` can start the daemon again through the same service manager when available, or as a detached daemon otherwise.
 
+## no-mistakes daemon restart
+
+Restart the daemon.
+
+```sh
+no-mistakes daemon restart
+```
+
+Stops the current daemon and starts it again. This works whether the daemon is currently running or not.
+
 ## no-mistakes daemon status
 
 Check whether the daemon is running.
