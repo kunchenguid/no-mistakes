@@ -62,7 +62,7 @@ func TestInstallScriptReplacesExistingPathEntryWithSymlink(t *testing.T) {
 	assertSymlinkTarget(t, oldPath, realBin)
 }
 
-func TestInstallScriptStartsDaemonAfterInstall(t *testing.T) {
+func TestInstallScriptRestartsDaemonAfterInstall(t *testing.T) {
 	skipInstallScriptTestsOnWindows(t)
 
 	home := t.TempDir()
@@ -84,18 +84,18 @@ func TestInstallScriptStartsDaemonAfterInstall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), "daemon start") {
-		t.Fatalf("install.sh should start the daemon after install, got calls %q", string(data))
+	if !strings.Contains(string(data), "daemon restart") {
+		t.Fatalf("install.sh should restart the daemon after install, got calls %q", string(data))
 	}
 }
 
-func TestInstallScriptSucceedsWhenDaemonStartFails(t *testing.T) {
+func TestInstallScriptSucceedsWhenDaemonRestartFails(t *testing.T) {
 	skipInstallScriptTestsOnWindows(t)
 
 	home := t.TempDir()
 	archivePath := filepath.Join(t.TempDir(), "no-mistakes-v1.2.3-darwin-arm64.tar.gz")
 	callLog := filepath.Join(t.TempDir(), "calls.log")
-	makeInstallArchive(t, archivePath, "#!/bin/sh\nprintf '%s\n' \"$*\" >> \"$NO_MISTAKES_CALL_LOG\"\nif [ \"$1\" = \"daemon\" ] && [ \"$2\" = \"start\" ]; then\n  exit 23\nfi\n")
+	makeInstallArchive(t, archivePath, "#!/bin/sh\nprintf '%s\n' \"$*\" >> \"$NO_MISTAKES_CALL_LOG\"\nif [ \"$1\" = \"daemon\" ] && [ \"$2\" = \"restart\" ]; then\n  exit 23\nfi\n")
 	fakeBin := makeFakeInstallCommands(t)
 	localBin := filepath.Join(home, ".local", "bin")
 	if err := os.MkdirAll(localBin, 0o755); err != nil {
@@ -107,32 +107,32 @@ func TestInstallScriptSucceedsWhenDaemonStartFails(t *testing.T) {
 		"NO_MISTAKES_CALL_LOG": callLog,
 	})
 	if err != nil {
-		t.Fatalf("install.sh should succeed even when daemon start fails: %v\n%s", err, output)
+		t.Fatalf("install.sh should succeed even when daemon restart fails: %v\n%s", err, output)
 	}
 
 	data, err := os.ReadFile(callLog)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), "daemon start") {
-		t.Fatalf("install.sh should still attempt daemon start, got calls %q", string(data))
+	if !strings.Contains(string(data), "daemon restart") {
+		t.Fatalf("install.sh should still attempt daemon restart, got calls %q", string(data))
 	}
 }
 
-func TestPowerShellInstallScriptAllowsDaemonStartFailure(t *testing.T) {
+func TestPowerShellInstallScriptAllowsDaemonRestartFailure(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("docs", "install.ps1"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(data)
 	if !strings.Contains(text, "$oldErrorActionPreference = $ErrorActionPreference") {
-		t.Fatal("install.ps1 should preserve the current error preference before daemon start")
+		t.Fatal("install.ps1 should preserve the current error preference before daemon restart")
 	}
 	if !strings.Contains(text, "$ErrorActionPreference = \"Continue\"") {
-		t.Fatal("install.ps1 should relax error handling around daemon start")
+		t.Fatal("install.ps1 should relax error handling around daemon restart")
 	}
-	if !strings.Contains(text, "& \"$installDir\\no-mistakes.exe\" daemon start | Out-Null") {
-		t.Fatal("install.ps1 should still attempt daemon start")
+	if !strings.Contains(text, "& \"$installDir\\no-mistakes.exe\" daemon restart | Out-Null") {
+		t.Fatal("install.ps1 should still attempt daemon restart")
 	}
 	if !strings.Contains(text, "$ErrorActionPreference = $oldErrorActionPreference") {
 		t.Fatal("install.ps1 should restore the previous error preference")

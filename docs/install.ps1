@@ -34,7 +34,7 @@ if ($userPath -notlike "*$installDir*") {
 
 $oldErrorActionPreference = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
-& "$installDir\no-mistakes.exe" daemon start | Out-Null
+& "$installDir\no-mistakes.exe" daemon restart | Out-Null
 $ErrorActionPreference = $oldErrorActionPreference
 
 Write-Host "no-mistakes $version installed to $installDir\no-mistakes.exe"
