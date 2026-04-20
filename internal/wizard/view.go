@@ -30,6 +30,7 @@ func (m Model) View() string {
 	if width < 60 {
 		width = 60
 	}
+	m.width = width
 
 	var content strings.Builder
 
@@ -86,27 +87,32 @@ func (m Model) renderStep(s *step) string {
 		return strings.Join(lines, "\n")
 
 	case statInput:
-		lines := []string{header}
-		lines = append(lines, "    "+dimStyle().Render(inputLabel(s.id)))
-		lines = append(lines, "    "+m.input.View())
-		return strings.Join(lines, "\n")
+		return header + "  " + m.inlineInputView(header)
 
 	case statAgent:
-		lines := []string{header}
-		lines = append(lines, "    "+dimStyle().Render(agentLabel(s.id)))
-		return strings.Join(lines, "\n")
+		return header + "  " + dimStyle().Render(agentLabel(s.id))
 
 	case statRunning:
-		lines := []string{header}
-		lines = append(lines, "    "+dimStyle().Render(runningLabel(s.id, s.result)))
-		return strings.Join(lines, "\n")
+		return header + "  " + dimStyle().Render(runningLabel(s.id, s.result))
 
 	case statConfirm:
-		lines := []string{header}
-		lines = append(lines, "    "+dimStyle().Render(confirmLabel(m.cfg.GateRemote, m.targetBranch)))
-		return strings.Join(lines, "\n")
+		return header + "  " + dimStyle().Render(confirmLabel(m.cfg.GateRemote, m.targetBranch))
 	}
 	return header
+}
+
+func (m Model) inlineInputView(header string) string {
+	input := m.input
+	contentWidth := m.width - 4
+	availableWidth := contentWidth - lipgloss.Width(header) - 2
+	promptWidth := lipgloss.Width(input.Prompt)
+	fieldWidth := availableWidth - promptWidth - 1
+	if fieldWidth < 1 {
+		fieldWidth = 1
+	}
+	input.Width = fieldWidth
+	input.SetCursor(input.Position())
+	return input.View()
 }
 
 func (m Model) renderActionBar() string {
