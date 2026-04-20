@@ -117,10 +117,10 @@ func TestDaemonRestart(t *testing.T) {
 		}
 	})
 
-		t.Run("stops then starts when daemon is not running", func(t *testing.T) {
-			nmHome := makeSocketSafeTempDir(t)
-			t.Setenv("NM_HOME", nmHome)
-			p := paths.WithRoot(nmHome)
+	t.Run("stops then starts when daemon is not running", func(t *testing.T) {
+		nmHome := makeSocketSafeTempDir(t)
+		t.Setenv("NM_HOME", nmHome)
+		p := paths.WithRoot(nmHome)
 		if err := p.EnsureDirs(); err != nil {
 			t.Fatal(err)
 		}
@@ -134,28 +134,28 @@ func TestDaemonRestart(t *testing.T) {
 			daemonIsRunningFn = origAlive
 		})
 
-			var calls []string
-			daemonIsRunningFn = func(*paths.Paths) (bool, error) { return false, nil }
-			daemonStopFn = func(*paths.Paths) error {
-				calls = append(calls, "stop")
-				return nil
-			}
-			daemonStartFn = func(*paths.Paths) error {
-				calls = append(calls, "start")
-				return nil
-			}
+		var calls []string
+		daemonIsRunningFn = func(*paths.Paths) (bool, error) { return false, nil }
+		daemonStopFn = func(*paths.Paths) error {
+			calls = append(calls, "stop")
+			return nil
+		}
+		daemonStartFn = func(*paths.Paths) error {
+			calls = append(calls, "start")
+			return nil
+		}
 
-			out, err := executeCmd("daemon", "restart")
-			if err != nil {
-				t.Fatalf("daemon restart failed: %v\noutput: %s", err, out)
-			}
-			if !strings.Contains(out, "daemon restarted") {
-				t.Errorf("expected 'daemon restarted', got: %s", out)
-			}
-			if len(calls) != 2 || calls[0] != "stop" || calls[1] != "start" {
-				t.Errorf("expected stop then start, got: %v", calls)
-			}
-		})
+		out, err := executeCmd("daemon", "restart")
+		if err != nil {
+			t.Fatalf("daemon restart failed: %v\noutput: %s", err, out)
+		}
+		if !strings.Contains(out, "daemon restarted") {
+			t.Errorf("expected 'daemon restarted', got: %s", out)
+		}
+		if len(calls) != 2 || calls[0] != "stop" || calls[1] != "start" {
+			t.Errorf("expected stop then start, got: %v", calls)
+		}
+	})
 
 	t.Run("stops then starts when health check reports not running", func(t *testing.T) {
 		nmHome := makeSocketSafeTempDir(t)
