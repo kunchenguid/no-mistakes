@@ -396,6 +396,15 @@ func (m Model) handleSuggestion(msg suggestionMsg) (tea.Model, tea.Cmd) {
 	}
 	s := m.steps[m.active]
 	if msg.err != nil {
+		wrappedErr := fmt.Errorf("suggest %s: %w", stepName(msg.id), msg.err)
+		if m.cfg.AutoAdvance {
+			s.status = statFailed
+			s.errMsg = wrappedErr.Error()
+			m.err = wrappedErr
+			m.quitting = true
+			m.cancel()
+			return m, tea.Quit
+		}
 		// Fall back to asking the user to type.
 		s.status = statInput
 		s.source = ""

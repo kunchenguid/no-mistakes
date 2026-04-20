@@ -394,6 +394,35 @@ func TestAutoAdvance_ActsLikePressingEnterThroughWizard(t *testing.T) {
 	}
 }
 
+func TestAutoAdvance_SuggestionErrorFailsFast(t *testing.T) {
+	r := &recorder{suggestBranchErr: errors.New("agent down")}
+	cfg := baseConfig(r)
+	cfg.AutoAdvance = true
+
+	m := NewModel(cfg)
+	m = drain(m, m.Init())
+
+	if m.err == nil {
+		t.Fatal("expected auto-advance suggestion failure to be recorded")
+	}
+	if !strings.Contains(m.err.Error(), "suggest branch") {
+		t.Fatalf("error should mention branch suggestion, got %v", m.err)
+	}
+	if !m.quitting {
+		t.Fatal("expected auto-advance suggestion failure to quit")
+	}
+	if m.steps[0].status != statFailed {
+		t.Fatalf("expected branch step to fail, got %v", m.steps[0].status)
+	}
+	if r.createdBranch != "" || r.commitMsg != "" || r.pushedBranch != "" {
+		t.Fatalf("auto-advance should stop before side effects, got branch=%q commit=%q push=%q", r.createdBranch, r.commitMsg, r.pushedBranch)
+	}
+	res := m.Result()
+	if !errors.Is(res.Err, m.err) {
+		t.Fatalf("result error = %v, want %v", res.Err, m.err)
+	}
+}
+
 func TestRunAuto_SuggestionErrorReturnsFailure(t *testing.T) {
 	r := &recorder{suggestBranchErr: errors.New("agent down")}
 

@@ -223,6 +223,9 @@ func runWizardWithMode(ctx context.Context, p *paths.Paths, state *repoState, au
 	}
 
 	res, err := run(wizCfg)
+	if err == nil && res.Err != nil {
+		err = res.Err
+	}
 	if err == nil {
 		telemetry.Track("wizard", telemetry.Fields{
 			"action":         "result",
