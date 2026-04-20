@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -72,6 +73,198 @@ func TestDaemonStatusAndStopRunning(t *testing.T) {
 	alive, _ := daemon.IsRunning(p)
 	if alive {
 		t.Error("daemon should not be running after stop")
+	}
+}
+
+func TestDaemonRestart(t *testing.T) {
+	t.Run("stops then starts when daemon is running", func(t *testing.T) {
+		nmHome := makeSocketSafeTempDir(t)
+		t.Setenv("NM_HOME", nmHome)
+		p := paths.WithRoot(nmHome)
+		if err := p.EnsureDirs(); err != nil {
+			t.Fatal(err)
+		}
+
+		origStart := daemonStartFn
+		origStop := daemonStopFn
+		origAlive := daemonIsRunningFn
+		t.Cleanup(func() {
+			daemonStartFn = origStart
+			daemonStopFn = origStop
+			daemonIsRunningFn = origAlive
+		})
+
+		var calls []string
+		daemonIsRunningFn = func(*paths.Paths) (bool, error) { return true, nil }
+		daemonStopFn = func(*paths.Paths) error {
+			calls = append(calls, "stop")
+			return nil
+		}
+		daemonStartFn = func(*paths.Paths) error {
+			calls = append(calls, "start")
+			return nil
+		}
+
+		out, err := executeCmd("daemon", "restart")
+		if err != nil {
+			t.Fatalf("daemon restart failed: %v\noutput: %s", err, out)
+		}
+		if !strings.Contains(out, "daemon restarted") {
+			t.Errorf("expected 'daemon restarted', got: %s", out)
+		}
+		if len(calls) != 2 || calls[0] != "stop" || calls[1] != "start" {
+			t.Errorf("expected stop then start, got: %v", calls)
+		}
+	})
+
+	t.Run("stops then starts when daemon is not running", func(t *testing.T) {
+		nmHome := makeSocketSafeTempDir(t)
+		t.Setenv("NM_HOME", nmHome)
+		p := paths.WithRoot(nmHome)
+		if err := p.EnsureDirs(); err != nil {
+			t.Fatal(err)
+		}
+
+		origStart := daemonStartFn
+		origStop := daemonStopFn
+		origAlive := daemonIsRunningFn
+		t.Cleanup(func() {
+			daemonStartFn = origStart
+			daemonStopFn = origStop
+			daemonIsRunningFn = origAlive
+		})
+
+		var calls []string
+		daemonIsRunningFn = func(*paths.Paths) (bool, error) { return false, nil }
+		daemonStopFn = func(*paths.Paths) error {
+			calls = append(calls, "stop")
+			return nil
+		}
+		daemonStartFn = func(*paths.Paths) error {
+			calls = append(calls, "start")
+			return nil
+		}
+
+		out, err := executeCmd("daemon", "restart")
+		if err != nil {
+			t.Fatalf("daemon restart failed: %v\noutput: %s", err, out)
+		}
+		if !strings.Contains(out, "daemon restarted") {
+			t.Errorf("expected 'daemon restarted', got: %s", out)
+		}
+		if len(calls) != 2 || calls[0] != "stop" || calls[1] != "start" {
+			t.Errorf("expected stop then start, got: %v", calls)
+		}
+	})
+
+	t.Run("stops then starts when health check reports not running", func(t *testing.T) {
+		nmHome := makeSocketSafeTempDir(t)
+		t.Setenv("NM_HOME", nmHome)
+		p := paths.WithRoot(nmHome)
+		if err := p.EnsureDirs(); err != nil {
+			t.Fatal(err)
+		}
+
+		origStart := daemonStartFn
+		origStop := daemonStopFn
+		origAlive := daemonIsRunningFn
+		t.Cleanup(func() {
+			daemonStartFn = origStart
+			daemonStopFn = origStop
+			daemonIsRunningFn = origAlive
+		})
+
+		var calls []string
+		daemonIsRunningFn = func(*paths.Paths) (bool, error) { return false, nil }
+		daemonStopFn = func(*paths.Paths) error {
+			calls = append(calls, "stop")
+			return nil
+		}
+		daemonStartFn = func(*paths.Paths) error {
+			calls = append(calls, "start")
+			return nil
+		}
+
+		out, err := executeCmd("daemon", "restart")
+		if err != nil {
+			t.Fatalf("daemon restart failed: %v\noutput: %s", err, out)
+		}
+		if !strings.Contains(out, "daemon restarted") {
+			t.Errorf("expected 'daemon restarted', got: %s", out)
+		}
+		if len(calls) != 2 || calls[0] != "stop" || calls[1] != "start" {
+			t.Errorf("expected stop then start, got: %v", calls)
+		}
+	})
+
+	t.Run("stops then starts when daemon health check errors", func(t *testing.T) {
+		nmHome := makeSocketSafeTempDir(t)
+		t.Setenv("NM_HOME", nmHome)
+		p := paths.WithRoot(nmHome)
+		if err := p.EnsureDirs(); err != nil {
+			t.Fatal(err)
+		}
+
+		origStart := daemonStartFn
+		origStop := daemonStopFn
+		origAlive := daemonIsRunningFn
+		t.Cleanup(func() {
+			daemonStartFn = origStart
+			daemonStopFn = origStop
+			daemonIsRunningFn = origAlive
+		})
+
+		var calls []string
+		daemonIsRunningFn = func(*paths.Paths) (bool, error) { return false, errors.New("health check failed") }
+		daemonStopFn = func(*paths.Paths) error {
+			calls = append(calls, "stop")
+			return nil
+		}
+		daemonStartFn = func(*paths.Paths) error {
+			calls = append(calls, "start")
+			return nil
+		}
+
+		out, err := executeCmd("daemon", "restart")
+		if err != nil {
+			t.Fatalf("daemon restart failed: %v\noutput: %s", err, out)
+		}
+		if !strings.Contains(out, "daemon restarted") {
+			t.Errorf("expected 'daemon restarted', got: %s", out)
+		}
+		if len(calls) != 2 || calls[0] != "stop" || calls[1] != "start" {
+			t.Errorf("expected stop then start, got: %v", calls)
+		}
+	})
+}
+
+func TestDaemonRestartStartsDaemonWhenNotRunning(t *testing.T) {
+	nmHome := makeSocketSafeTempDir(t)
+	t.Setenv("NM_HOME", nmHome)
+	t.Setenv("NM_TEST_START_DAEMON", "1")
+	p := paths.WithRoot(nmHome)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() {
+		_ = daemon.Stop(p)
+	})
+
+	out, err := executeCmd("daemon", "restart")
+	if err != nil {
+		t.Fatalf("daemon restart failed: %v\noutput: %s", err, out)
+	}
+	if !strings.Contains(out, "daemon restarted") {
+		t.Fatalf("expected 'daemon restarted', got: %s", out)
+	}
+
+	alive, err := daemon.IsRunning(p)
+	if err != nil {
+		t.Fatalf("daemon health check failed after restart: %v", err)
+	}
+	if !alive {
+		t.Fatal("daemon should be running after restart")
 	}
 }
 

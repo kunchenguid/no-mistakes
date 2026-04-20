@@ -10,7 +10,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var daemonRun = daemon.Run
+var (
+	daemonRun         = daemon.Run
+	daemonStartFn     = daemon.Start
+	daemonStopFn      = daemon.Stop
+	daemonIsRunningFn = daemon.IsRunning
+)
 
 func newDaemonCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -20,6 +25,7 @@ func newDaemonCmd() *cobra.Command {
 
 	cmd.AddCommand(newDaemonStartCmd())
 	cmd.AddCommand(newDaemonStopCmd())
+	cmd.AddCommand(newDaemonRestartCmd())
 	cmd.AddCommand(newDaemonStatusCmd())
 	cmd.AddCommand(newDaemonRunCmd())
 	cmd.AddCommand(newDaemonNotifyPushCmd())
@@ -85,7 +91,7 @@ func newDaemonStartCmd() *cobra.Command {
 				if err := p.EnsureDirs(); err != nil {
 					return err
 				}
-				if err := daemon.Start(p); err != nil {
+				if err := daemonStartFn(p); err != nil {
 					return err
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "  %s daemon started\n", sGreen.Render("✓"))
@@ -105,10 +111,36 @@ func newDaemonStopCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				if err := daemon.Stop(p); err != nil {
+				if err := daemonStopFn(p); err != nil {
 					return err
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "  %s daemon stopped\n", sGreen.Render("✓"))
+				return nil
+			})
+		},
+	}
+}
+
+func newDaemonRestartCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "restart",
+		Short: "Restart the daemon (stop if running, then start)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return trackCommand("daemon.restart", func() error {
+				p, err := paths.New()
+				if err != nil {
+					return err
+				}
+				if err := p.EnsureDirs(); err != nil {
+					return err
+				}
+				if err := daemonStopFn(p); err != nil {
+					return fmt.Errorf("stop daemon: %w", err)
+				}
+				if err := daemonStartFn(p); err != nil {
+					return fmt.Errorf("start daemon: %w", err)
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "  %s daemon restarted\n", sGreen.Render("✓"))
 				return nil
 			})
 		},
@@ -125,7 +157,7 @@ func newDaemonStatusCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				alive, err := daemon.IsRunning(p)
+				alive, err := daemonIsRunningFn(p)
 				if err != nil {
 					return err
 				}

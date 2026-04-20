@@ -38,6 +38,7 @@ already make sure it exists when needed.
 # Explicit management
 no-mistakes daemon start
 no-mistakes daemon stop
+no-mistakes daemon restart
 no-mistakes daemon status
 
 # Ensures the daemon is running, using the managed service when possible

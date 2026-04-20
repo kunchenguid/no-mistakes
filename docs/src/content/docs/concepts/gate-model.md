@@ -107,7 +107,7 @@ daemon after replacing the binary when the daemon is running or stale daemon
 artifacts exist. If the daemon is already running, `update` first checks that
 it was started from the same executable path and aborts if the daemon
 executable path cannot be determined or points to a different binary. You can
-also manage it explicitly with `no-mistakes daemon start|stop|status`.
+also manage it explicitly with `no-mistakes daemon start|stop|restart|status`.
 
 On startup, the daemon recovers from crashes by marking any stuck runs as failed and cleaning up orphaned worktrees.
 
