@@ -36,7 +36,8 @@ func newRootCmd() *cobra.Command {
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		// When run without a subcommand, attach to the current branch run or
-		// route interactive users into the setup wizard when no run is active.
+		// route users into the setup wizard when no run is active. The default
+		// wizard flow is interactive, while --yes accepts defaults without a TTY.
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return trackCommand("root", func() error {
 				return attachRun(cmd.Context(), cmd.OutOrStdout(), "", true, autoYes)
