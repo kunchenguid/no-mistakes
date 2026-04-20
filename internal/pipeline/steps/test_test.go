@@ -10,6 +10,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 func TestTestStep_PassingCommand(t *testing.T) {
@@ -28,6 +29,13 @@ func TestTestStep_PassingCommand(t *testing.T) {
 	}
 	if len(ag.calls) != 0 {
 		t.Error("expected no agent calls when test command passes")
+	}
+	findings, err := types.ParseFindingsJSON(outcome.Findings)
+	if err != nil {
+		t.Fatalf("ParseFindingsJSON() error = %v", err)
+	}
+	if len(findings.Tested) != 1 || findings.Tested[0] != "`true`" {
+		t.Fatalf("expected passing command to record executed test command, got %+v", findings.Tested)
 	}
 }
 
@@ -94,7 +102,7 @@ func TestTestStep_NoCommand_AgentDetects(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 
-	findings := Findings{Items: nil, Summary: "all tests passed"}
+	findings := Findings{Items: nil, Summary: "all tests passed", TestingSummary: "Validated the CLI doctor path and config loading; both passed.", Tested: []string{"`go test ./internal/cli -run '^TestDoctorBasic$' -count=1`"}}
 	findingsJSON, _ := json.Marshal(findings)
 
 	ag := &mockAgent{
@@ -118,6 +126,16 @@ func TestTestStep_NoCommand_AgentDetects(t *testing.T) {
 	}
 	if !strings.Contains(ag.calls[0].Prompt, "branch: refs/heads/feature") {
 		t.Error("expected prompt to include branch metadata")
+	}
+	parsed, err := types.ParseFindingsJSON(outcome.Findings)
+	if err != nil {
+		t.Fatalf("ParseFindingsJSON() error = %v", err)
+	}
+	if len(parsed.Tested) != 1 || parsed.Tested[0] != findings.Tested[0] {
+		t.Fatalf("expected agent-reported test details to be preserved, got %+v", parsed.Tested)
+	}
+	if parsed.TestingSummary != findings.TestingSummary {
+		t.Fatalf("expected agent-reported testing summary to be preserved, got %q", parsed.TestingSummary)
 	}
 }
 
@@ -404,7 +422,7 @@ func TestTestStep_FixMode_AgentWritesNewTests_NeedsApproval(t *testing.T) {
 func TestTestStep_PromptIncludesAction(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	findings := Findings{Items: nil, Summary: "all tests passed"}
+	findings := Findings{Items: nil, Summary: "all tests passed", Tested: []string{"`go test ./...`"}}
 	findingsJSON, _ := json.Marshal(findings)
 	ag := &mockAgent{
 		name: "test",
@@ -422,5 +440,11 @@ func TestTestStep_PromptIncludesAction(t *testing.T) {
 	}
 	if !strings.Contains(ag.calls[0].Prompt, "action") {
 		t.Error("expected test prompt to instruct agent about action")
+	}
+	if !strings.Contains(ag.calls[0].Prompt, "tested") {
+		t.Error("expected test prompt to request recorded test details")
+	}
+	if !strings.Contains(ag.calls[0].Prompt, "testing_summary") {
+		t.Error("expected test prompt to request a natural-language testing summary")
 	}
 }

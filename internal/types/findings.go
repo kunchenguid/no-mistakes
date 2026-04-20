@@ -34,18 +34,22 @@ type findingWire struct {
 
 // Findings is the structured findings payload exchanged across pipeline, IPC, and TUI.
 type Findings struct {
-	Items         []Finding `json:"findings"`
-	Summary       string    `json:"summary"`
-	RiskLevel     string    `json:"risk_level"`
-	RiskRationale string    `json:"risk_rationale"`
+	Items          []Finding `json:"findings"`
+	Summary        string    `json:"summary"`
+	Tested         []string  `json:"tested,omitempty"`
+	TestingSummary string    `json:"testing_summary,omitempty"`
+	RiskLevel      string    `json:"risk_level"`
+	RiskRationale  string    `json:"risk_rationale"`
 }
 
 type findingsWire struct {
-	Items         []Finding `json:"findings"`
-	Legacy        []Finding `json:"items"`
-	Summary       string    `json:"summary"`
-	RiskLevel     string    `json:"risk_level"`
-	RiskRationale string    `json:"risk_rationale"`
+	Items          []Finding `json:"findings"`
+	Legacy         []Finding `json:"items"`
+	Summary        string    `json:"summary"`
+	Tested         []string  `json:"tested"`
+	TestingSummary string    `json:"testing_summary"`
+	RiskLevel      string    `json:"risk_level"`
+	RiskRationale  string    `json:"risk_rationale"`
 }
 
 // ParseFindingsJSON decodes findings JSON, accepting current and legacy item
@@ -59,7 +63,7 @@ func ParseFindingsJSON(raw string) (Findings, error) {
 	if len(items) == 0 && len(wire.Legacy) > 0 {
 		items = wire.Legacy
 	}
-	return Findings{Items: items, Summary: wire.Summary, RiskLevel: wire.RiskLevel, RiskRationale: wire.RiskRationale}, nil
+	return Findings{Items: items, Summary: wire.Summary, Tested: wire.Tested, TestingSummary: wire.TestingSummary, RiskLevel: wire.RiskLevel, RiskRationale: wire.RiskRationale}, nil
 }
 
 // NormalizeFindings assigns deterministic IDs to findings that do not have one yet.
@@ -82,7 +86,7 @@ func FilterFindings(findings Findings, ids []string) Findings {
 	for _, id := range ids {
 		selected[id] = true
 	}
-	filtered := Findings{Summary: findings.Summary, RiskLevel: findings.RiskLevel, RiskRationale: findings.RiskRationale}
+	filtered := Findings{Summary: findings.Summary, Tested: findings.Tested, TestingSummary: findings.TestingSummary, RiskLevel: findings.RiskLevel, RiskRationale: findings.RiskRationale}
 	for _, item := range findings.Items {
 		if selected[item.ID] {
 			filtered.Items = append(filtered.Items, item)
@@ -103,7 +107,7 @@ func ExcludeFindings(findings Findings, ids []string) Findings {
 	for _, id := range ids {
 		excluded[id] = true
 	}
-	result := Findings{Summary: findings.Summary, RiskLevel: findings.RiskLevel, RiskRationale: findings.RiskRationale}
+	result := Findings{Summary: findings.Summary, Tested: findings.Tested, TestingSummary: findings.TestingSummary, RiskLevel: findings.RiskLevel, RiskRationale: findings.RiskRationale}
 	for _, item := range findings.Items {
 		if !excluded[item.ID] {
 			result.Items = append(result.Items, item)
@@ -116,7 +120,7 @@ func ExcludeFindings(findings Findings, ids []string) Findings {
 // Action is "auto-fix". These are safe for automatic fixing without
 // user involvement.
 func AutoFixableFindings(findings Findings) Findings {
-	result := Findings{Summary: findings.Summary, RiskLevel: findings.RiskLevel, RiskRationale: findings.RiskRationale}
+	result := Findings{Summary: findings.Summary, Tested: findings.Tested, TestingSummary: findings.TestingSummary, RiskLevel: findings.RiskLevel, RiskRationale: findings.RiskRationale}
 	for _, item := range findings.Items {
 		if item.actionOrDefault() == ActionAutoFix {
 			result.Items = append(result.Items, item)

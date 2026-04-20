@@ -185,3 +185,29 @@ func TestBuildTestingSummary_DoesNotClaimPassedWithoutRounds(t *testing.T) {
 		t.Errorf("expected unavailable status without recorded rounds, got:\n%s", md)
 	}
 }
+
+func TestBuildTestingSummary_IncludesRecordedTestDetails(t *testing.T) {
+	t.Parallel()
+	findings := "{\"findings\":[],\"summary\":\"\",\"testing_summary\":\"Validated the CLI doctor path and config loading; both passed.\",\"tested\":[\"`go test ./internal/cli -run '^TestDoctorBasic$' -count=1`\"]}"
+	steps := []*db.StepResult{
+		{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings},
+	}
+	rounds := map[string][]*db.StepRound{
+		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 300}},
+	}
+
+	md := BuildTestingSummary(steps, rounds)
+
+	if !strings.Contains(md, "- Summary: Validated the CLI doctor path and config loading; both passed.") {
+		t.Fatalf("expected natural-language testing summary, got:\n%s", md)
+	}
+	if !strings.Contains(md, "- `go test ./internal/cli -run '^TestDoctorBasic$' -count=1`") {
+		t.Fatalf("expected recorded test command in testing summary, got:\n%s", md)
+	}
+	if !strings.Contains(md, "- Outcome: ✅ passed across 1 run (300ms)") {
+		t.Fatalf("expected outcome line with run count and duration, got:\n%s", md)
+	}
+	if strings.Index(md, "Summary:") > strings.Index(md, "`go test ./internal/cli -run '^TestDoctorBasic$' -count=1`") {
+		t.Fatalf("expected testing summary before raw test details, got:\n%s", md)
+	}
+}

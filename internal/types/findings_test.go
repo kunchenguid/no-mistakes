@@ -41,6 +41,31 @@ func TestParseFindingsJSON_NoRiskFields(t *testing.T) {
 	}
 }
 
+func TestParseFindingsJSON_TestedDetails(t *testing.T) {
+	raw := `{"findings":[],"summary":"ok","tested":["` + "`go test ./...`" + `"]}`
+	f, err := ParseFindingsJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.Tested) != 1 {
+		t.Fatalf("Tested count = %d, want 1", len(f.Tested))
+	}
+	if f.Tested[0] != "`go test ./...`" {
+		t.Fatalf("Tested[0] = %q, want %q", f.Tested[0], "`go test ./...`")
+	}
+}
+
+func TestParseFindingsJSON_TestingSummary(t *testing.T) {
+	raw := `{"findings":[],"summary":"ok","testing_summary":"Validated CLI and config flows; all passed."}`
+	f, err := ParseFindingsJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.TestingSummary != "Validated CLI and config flows; all passed." {
+		t.Fatalf("TestingSummary = %q", f.TestingSummary)
+	}
+}
+
 func TestFilterFindings_PreservesRiskFields(t *testing.T) {
 	f := Findings{
 		Items: []Finding{
@@ -263,6 +288,28 @@ func TestMarshalFindingsJSON_AlwaysIncludesRiskFields(t *testing.T) {
 	}
 	if !strings.Contains(raw, `"risk_rationale"`) {
 		t.Errorf("expected risk_rationale to be present even when empty, got %s", raw)
+	}
+}
+
+func TestMarshalFindingsJSON_IncludesTestedDetails(t *testing.T) {
+	f := Findings{Tested: []string{"`go test ./internal/cli`"}}
+	raw, err := MarshalFindingsJSON(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(raw, `"tested":["\u0060go test ./internal/cli\u0060"]`) && !strings.Contains(raw, `"tested":["`+"`go test ./internal/cli`"+`"]`) {
+		t.Fatalf("expected tested details to be encoded, got %s", raw)
+	}
+}
+
+func TestMarshalFindingsJSON_IncludesTestingSummary(t *testing.T) {
+	f := Findings{TestingSummary: "Validated CLI and config flows; all passed."}
+	raw, err := MarshalFindingsJSON(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(raw, `"testing_summary":"Validated CLI and config flows; all passed."`) {
+		t.Fatalf("expected testing summary to be encoded, got %s", raw)
 	}
 }
 

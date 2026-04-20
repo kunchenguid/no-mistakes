@@ -32,7 +32,14 @@ var findingsSchema = json.RawMessage(`{
 				"required": ["severity", "description", "action"]
 			}
 		},
-		"summary": {"type": "string"}
+		"summary": {"type": "string"},
+		"tested": {
+			"type": "array",
+			"items": {"type": "string"}
+		},
+		"testing_summary": {
+			"type": "string"
+		}
 	},
 	"required": ["findings", "summary"]
 }`)
