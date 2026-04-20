@@ -299,6 +299,64 @@ func TestPushStep_Confirm(t *testing.T) {
 	}
 }
 
+func TestRunAuto_UsesAgentSuggestionsAndPushes(t *testing.T) {
+	r := &recorder{suggestBranch: "feat/auto", suggestCommit: "feat: auto commit"}
+
+	res, err := RunAuto(baseConfig(r))
+	if err != nil {
+		t.Fatalf("RunAuto() error = %v", err)
+	}
+
+	if r.createdBranch != "feat/auto" {
+		t.Fatalf("expected CreateBranch called with agent suggestion, got %q", r.createdBranch)
+	}
+	if r.commitMsg != "feat: auto commit" {
+		t.Fatalf("expected CommitAll called with agent suggestion, got %q", r.commitMsg)
+	}
+	if r.pushedBranch != "feat/auto" {
+		t.Fatalf("expected Push called with created branch, got %q", r.pushedBranch)
+	}
+	if !res.Success {
+		t.Fatal("expected success result")
+	}
+	if !res.BranchCreated || !res.CommitMade || !res.Pushed {
+		t.Fatalf("unexpected result: %+v", res)
+	}
+	if res.TargetBranch != "feat/auto" {
+		t.Fatalf("TargetBranch = %q, want %q", res.TargetBranch, "feat/auto")
+	}
+	if !containsWizardEvent(r.telemetry, "branch_created", "source", "agent") {
+		t.Fatal("expected branch_created telemetry with agent source")
+	}
+	if !containsWizardEvent(r.telemetry, "committed", "source", "agent") {
+		t.Fatal("expected committed telemetry with agent source")
+	}
+	if !containsWizardEvent(r.telemetry, "pushed", "source", "auto") {
+		t.Fatal("expected pushed telemetry with auto source")
+	}
+	if !containsWizardEvent(r.telemetry, "completed", "pushed", true) {
+		t.Fatal("expected completed telemetry")
+	}
+}
+
+func TestRunAuto_SuggestionErrorReturnsFailure(t *testing.T) {
+	r := &recorder{suggestBranchErr: errors.New("agent down")}
+
+	res, err := RunAuto(baseConfig(r))
+	if err == nil {
+		t.Fatal("expected RunAuto to fail when branch suggestion fails")
+	}
+	if !strings.Contains(err.Error(), "suggest branch") {
+		t.Fatalf("error should mention branch suggestion, got %v", err)
+	}
+	if res.Success {
+		t.Fatal("RunAuto should not report success on suggestion error")
+	}
+	if r.createdBranch != "" || r.commitMsg != "" || r.pushedBranch != "" {
+		t.Fatalf("RunAuto should stop before side effects, got branch=%q commit=%q push=%q", r.createdBranch, r.commitMsg, r.pushedBranch)
+	}
+}
+
 func TestWizardTracksCompletedKeyActions(t *testing.T) {
 	r := &recorder{}
 	m := NewModel(baseConfig(r))

@@ -530,6 +530,102 @@ func Run(cfg Config) (Result, error) {
 	return fm.Result(), nil
 }
 
+// RunAuto executes the wizard steps non-interactively. It accepts the default
+// automated path for each step: use agent suggestions for branch and commit,
+// then push to the gate. Suggestion failures are returned immediately.
+func RunAuto(cfg Config) (Result, error) {
+	res := Result{TargetBranch: cfg.CurrentBranch}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	track := func(action string, fields map[string]any) {
+		if cfg.Track == nil {
+			return
+		}
+		if fields == nil {
+			fields = map[string]any{}
+		}
+		cfg.Track(action, fields)
+	}
+
+	if cfg.NeedsBranch {
+		if cfg.SuggestBranch == nil {
+			err := errors.New("no branch suggester configured")
+			res.Err = err
+			return res, err
+		}
+		suggestCtx, suggestCancel := context.WithTimeout(ctx, 60*time.Second)
+		branch, err := cfg.SuggestBranch(suggestCtx)
+		suggestCancel()
+		if err != nil {
+			err = errors.New("suggest branch: " + err.Error())
+			res.Err = err
+			return res, err
+		}
+		if cfg.CreateBranch == nil {
+			err = errors.New("no branch creator configured")
+			res.Err = err
+			return res, err
+		}
+		if err := cfg.CreateBranch(ctx, branch); err != nil {
+			err = errors.New("create branch: " + err.Error())
+			res.Err = err
+			return res, err
+		}
+		res.BranchCreated = true
+		res.TargetBranch = branch
+		track("branch_created", map[string]any{"step": stepName(stepBranch), "source": "agent"})
+	}
+
+	if cfg.IsDirty {
+		if cfg.SuggestCommit == nil {
+			err := errors.New("no commit suggester configured")
+			res.Err = err
+			return res, err
+		}
+		suggestCtx, suggestCancel := context.WithTimeout(ctx, 60*time.Second)
+		commitMsg, err := cfg.SuggestCommit(suggestCtx)
+		suggestCancel()
+		if err != nil {
+			err = errors.New("suggest commit: " + err.Error())
+			res.Err = err
+			return res, err
+		}
+		if cfg.CommitAll == nil {
+			err = errors.New("no commit action configured")
+			res.Err = err
+			return res, err
+		}
+		if err := cfg.CommitAll(ctx, commitMsg); err != nil {
+			err = errors.New("commit changes: " + err.Error())
+			res.Err = err
+			return res, err
+		}
+		res.CommitMade = true
+		track("committed", map[string]any{"step": stepName(stepCommit), "source": "agent"})
+	}
+
+	if cfg.Push == nil {
+		err := errors.New("no push action configured")
+		res.Err = err
+		return res, err
+	}
+	if err := cfg.Push(ctx, res.TargetBranch); err != nil {
+		err = errors.New("push branch: " + err.Error())
+		res.Err = err
+		return res, err
+	}
+	res.Pushed = true
+	res.Success = true
+	track("pushed", map[string]any{"step": stepName(stepPush), "source": "auto"})
+	track("completed", map[string]any{
+		"branch_created": res.BranchCreated,
+		"commit_made":    res.CommitMade,
+		"pushed":         res.Pushed,
+	})
+	return res, nil
+}
+
 func stepName(id stepID) string {
 	switch id {
 	case stepBranch:

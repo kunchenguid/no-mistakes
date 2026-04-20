@@ -13,6 +13,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/tui"
 	"github.com/kunchenguid/no-mistakes/internal/update"
+	"github.com/kunchenguid/no-mistakes/internal/wizard"
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 )
@@ -21,7 +22,7 @@ var runTUI = tui.Run
 
 // attachRun is the shared logic for attaching to a pipeline run. It's used by
 // both the root command (bare `no-mistakes`) and the `attach` subcommand.
-func attachRun(w io.Writer, runID string, rootDefault bool) error {
+func attachRun(w io.Writer, runID string, rootDefault bool, autoYes bool) error {
 	p, d, err := openResources()
 	if err != nil {
 		return err
@@ -85,12 +86,18 @@ func attachRun(w io.Writer, runID string, rootDefault bool) error {
 	}
 
 	if run == nil {
-		// No active run — if the user ran bare `no-mistakes` in their repo
+		// No active run - if the user ran bare `no-mistakes` in their repo
 		// from a TTY, offer the interactive setup wizard instead of just
-		// dumping a hint. Skip the wizard in non-interactive contexts
-		// (tests, CI, piped output) and fall back to the old behavior.
-		if rootDefault && runID == "" && repo != nil && state != nil && isInteractive() {
-			res, wErr := runWizard(context.Background(), p, state)
+		// dumping a hint. `-y` uses the same setup flow non-interactively,
+		// so it is allowed even when stdin/stdout are not TTYs.
+		if rootDefault && runID == "" && repo != nil && state != nil && (autoYes || isInteractive()) {
+			var res wizard.Result
+			var wErr error
+			if autoYes {
+				res, wErr = runWizardAuto(context.Background(), p, state)
+			} else {
+				res, wErr = runWizard(context.Background(), p, state)
+			}
 			if wErr != nil {
 				return wErr
 			}
@@ -217,7 +224,7 @@ If no run ID is specified, attaches to the active run for the current repo.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return trackCommand("attach", func() error {
-				return attachRun(cmd.OutOrStdout(), runID, false)
+				return attachRun(cmd.OutOrStdout(), runID, false, false)
 			})
 		},
 	}

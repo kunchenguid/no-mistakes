@@ -23,6 +23,8 @@ func Execute() int {
 }
 
 func newRootCmd() *cobra.Command {
+	var autoYes bool
+
 	cmd := &cobra.Command{
 		Use:     "no-mistakes",
 		Short:   "Local Git proxy that validates code before pushing upstream",
@@ -37,10 +39,12 @@ func newRootCmd() *cobra.Command {
 		// route interactive users into the setup wizard when no run is active.
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return trackCommand("root", func() error {
-				return attachRun(cmd.OutOrStdout(), "", true)
+				return attachRun(cmd.OutOrStdout(), "", true, autoYes)
 			})
 		},
 	}
+
+	cmd.Flags().BoolVarP(&autoYes, "yes", "y", false, "run setup wizard non-interactively, accepting defaults")
 
 	cmd.AddCommand(newInitCmd())
 	cmd.AddCommand(newEjectCmd())

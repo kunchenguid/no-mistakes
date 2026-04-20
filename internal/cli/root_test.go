@@ -14,7 +14,9 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/gate"
 	"github.com/kunchenguid/no-mistakes/internal/git"
+	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/wizard"
 	"github.com/muesli/termenv"
 )
 
@@ -163,6 +165,61 @@ func TestRootDefaultsToAttachWithAndWithoutHistory(t *testing.T) {
 	// Should still show push instructions.
 	if !strings.Contains(out, "git push no-mistakes") {
 		t.Errorf("expected push instructions, got: %s", out)
+	}
+}
+
+func TestRootYesRunsWizardNonInteractively(t *testing.T) {
+	setupTestRepo(t)
+	nmHome := makeSocketSafeTempDir(t)
+	t.Setenv("NM_HOME", nmHome)
+	p := paths.WithRoot(nmHome)
+
+	d, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	if _, err := gate.Init(context.Background(), d, p, "."); err != nil {
+		t.Fatal(err)
+	}
+
+	startTestDaemon(t, p, d)
+
+	gitRoot, err := git.FindGitRoot(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := d.GetRepoByPath(gitRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	prevAuto := runWizardAuto
+	runWizardAuto = func(ctx context.Context, p *paths.Paths, state *repoState) (wizard.Result, error) {
+		if state == nil {
+			t.Fatal("expected repo state")
+		}
+		if _, err := d.InsertRun(repo.ID, "feat/auto", "head1234", "base5678"); err != nil {
+			return wizard.Result{}, err
+		}
+		return wizard.Result{Success: true, Pushed: true, TargetBranch: "feat/auto"}, nil
+	}
+	defer func() { runWizardAuto = prevAuto }()
+
+	prevRunTUI := runTUI
+	attached := false
+	runTUI = func(string, *ipc.Client, *ipc.RunInfo, string) error {
+		attached = true
+		return nil
+	}
+	defer func() { runTUI = prevRunTUI }()
+
+	if _, err := executeCmd("-y"); err != nil {
+		t.Fatalf("executeCmd(-y) error = %v", err)
+	}
+	if !attached {
+		t.Fatal("expected -y run to attach to the created run")
 	}
 }
 
