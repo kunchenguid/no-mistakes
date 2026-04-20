@@ -356,6 +356,44 @@ func TestRunAuto_UsesAgentSuggestionsAndPushes(t *testing.T) {
 	}
 }
 
+func TestAutoAdvance_ActsLikePressingEnterThroughWizard(t *testing.T) {
+	r := &recorder{suggestBranch: "feat/auto", suggestCommit: "feat: auto commit"}
+	cfg := baseConfig(r)
+	cfg.AutoAdvance = true
+
+	m := NewModel(cfg)
+	m = drain(m, m.Init())
+
+	if r.createdBranch != "feat/auto" {
+		t.Fatalf("expected CreateBranch called with agent suggestion, got %q", r.createdBranch)
+	}
+	if r.commitMsg != "feat: auto commit" {
+		t.Fatalf("expected CommitAll called with agent suggestion, got %q", r.commitMsg)
+	}
+	if r.pushedBranch != "feat/auto" {
+		t.Fatalf("expected Push called with created branch, got %q", r.pushedBranch)
+	}
+	if !m.success || !m.quitting {
+		t.Fatalf("expected auto-advanced wizard to finish successfully, got success=%v quitting=%v", m.success, m.quitting)
+	}
+	out := m.View()
+	if !strings.Contains(out, "feat/auto") {
+		t.Fatalf("expected final view to show created branch, got:\n%s", out)
+	}
+	if !strings.Contains(out, "feat: auto commit") {
+		t.Fatalf("expected final view to show commit message, got:\n%s", out)
+	}
+	if !containsWizardEvent(r.telemetry, "branch_created", "source", "agent") {
+		t.Fatal("expected branch_created telemetry with agent source")
+	}
+	if !containsWizardEvent(r.telemetry, "committed", "source", "agent") {
+		t.Fatal("expected committed telemetry with agent source")
+	}
+	if !containsWizardEvent(r.telemetry, "pushed", "source", "user") {
+		t.Fatal("expected pushed telemetry with user source")
+	}
+}
+
 func TestRunAuto_SuggestionErrorReturnsFailure(t *testing.T) {
 	r := &recorder{suggestBranchErr: errors.New("agent down")}
 

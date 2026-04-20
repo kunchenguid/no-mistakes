@@ -23,6 +23,9 @@ type Config struct {
 	RepoDir       string
 	CurrentBranch string
 	DefaultBranch string
+	// AutoAdvance automatically presses Enter on each active wizard step,
+	// preserving the interactive TUI while accepting the default path.
+	AutoAdvance bool
 	// NeedsBranch is true when the user has no usable feature branch yet —
 	// either they're on the default branch, or HEAD is detached. The branch
 	// step is only active when this is true.
@@ -156,14 +159,7 @@ func NewModel(cfg Config) Model {
 // Init returns the initial Cmd for the active step. State was already
 // prepared in NewModel.
 func (m Model) Init() tea.Cmd {
-	if m.quitting {
-		return tea.Quit
-	}
-	s := m.activeStep()
-	if s != nil && s.status == statInput {
-		return textinput.Blink
-	}
-	return nil
+	return m.afterEnterCmd()
 }
 
 // Update handles bubbletea events and drives the state machine.
@@ -190,6 +186,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.spinnerFrame = (m.spinnerFrame + 1) % len(spinnerFrames)
 		return m, m.scheduleSpinner()
+
+	case autoAdvanceMsg:
+		return m.handleAutoAdvance()
 	}
 	return m, nil
 }
@@ -265,10 +264,24 @@ func (m Model) afterEnterCmd() tea.Cmd {
 		return tea.Quit
 	}
 	s := m.activeStep()
+	if s != nil && m.cfg.AutoAdvance && (s.status == statInput || s.status == statConfirm) {
+		return autoAdvanceCmd()
+	}
 	if s != nil && s.status == statInput {
 		return textinput.Blink
 	}
 	return nil
+}
+
+func (m Model) handleAutoAdvance() (tea.Model, tea.Cmd) {
+	s := m.activeStep()
+	if s == nil {
+		return m, nil
+	}
+	if s.status != statInput && s.status != statConfirm {
+		return m, nil
+	}
+	return m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -467,7 +480,13 @@ type actionMsg struct {
 
 type spinnerTickMsg struct{}
 
+type autoAdvanceMsg struct{}
+
 const spinnerInterval = 120 * time.Millisecond
+
+func autoAdvanceCmd() tea.Cmd {
+	return func() tea.Msg { return autoAdvanceMsg{} }
+}
 
 func (m *Model) scheduleSpinner() tea.Cmd {
 	if m.spinnerAlive {

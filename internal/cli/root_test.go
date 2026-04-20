@@ -224,6 +224,77 @@ func TestRootYesRunsWizardNonInteractively(t *testing.T) {
 	}
 }
 
+func TestRootYesUsesVisibleWizardWhenInteractive(t *testing.T) {
+	setupTestRepo(t)
+	nmHome := makeSocketSafeTempDir(t)
+	t.Setenv("NM_HOME", nmHome)
+	p := paths.WithRoot(nmHome)
+
+	d, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	if _, err := gate.Init(context.Background(), d, p, "."); err != nil {
+		t.Fatal(err)
+	}
+
+	startTestDaemon(t, p, d)
+
+	gitRoot, err := git.FindGitRoot(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := d.GetRepoByPath(gitRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	prevInteractive := terminalInteractive
+	terminalInteractive = func() bool { return true }
+	defer func() { terminalInteractive = prevInteractive }()
+
+	prevVisible := runWizardAutoVisible
+	visible := false
+	runWizardAutoVisible = func(ctx context.Context, p *paths.Paths, state *repoState) (wizard.Result, error) {
+		visible = true
+		if state == nil {
+			t.Fatal("expected repo state")
+		}
+		if _, err := d.InsertRun(repo.ID, "feat/visible", "head1234", "base5678"); err != nil {
+			return wizard.Result{}, err
+		}
+		return wizard.Result{Success: true, Pushed: true, TargetBranch: "feat/visible"}, nil
+	}
+	defer func() { runWizardAutoVisible = prevVisible }()
+
+	prevAuto := runWizardAuto
+	runWizardAuto = func(context.Context, *paths.Paths, *repoState) (wizard.Result, error) {
+		t.Fatal("expected interactive -y path to show the wizard instead of using headless auto mode")
+		return wizard.Result{}, nil
+	}
+	defer func() { runWizardAuto = prevAuto }()
+
+	prevRunTUI := runTUI
+	attached := false
+	runTUI = func(string, *ipc.Client, *ipc.RunInfo, string) error {
+		attached = true
+		return nil
+	}
+	defer func() { runTUI = prevRunTUI }()
+
+	if _, err := executeCmd("-y"); err != nil {
+		t.Fatalf("executeCmd(-y) error = %v", err)
+	}
+	if !visible {
+		t.Fatal("expected -y run to launch the visible wizard path")
+	}
+	if !attached {
+		t.Fatal("expected -y run to attach to the created run")
+	}
+}
+
 func TestRootYesFailsWhenWizardPushProducesNoRun(t *testing.T) {
 	setupTestRepo(t)
 	nmHome := makeSocketSafeTempDir(t)

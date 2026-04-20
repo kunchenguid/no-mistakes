@@ -28,8 +28,11 @@ var resolveWizardAgent = func(ctx context.Context, cfg *config.Config) error {
 var newWizardAgent = agent.New
 var wizardRun = wizard.Run
 var wizardRunAuto = wizard.RunAuto
+var runWizardAutoVisible = func(ctx context.Context, p *paths.Paths, state *repoState) (wizard.Result, error) {
+	return runWizardWithMode(ctx, p, state, true, true)
+}
 var runWizardAuto = func(ctx context.Context, p *paths.Paths, state *repoState) (wizard.Result, error) {
-	return runWizardWithMode(ctx, p, state, true)
+	return runWizardWithMode(ctx, p, state, true, false)
 }
 
 type wizardAgentSuggester struct {
@@ -152,10 +155,10 @@ func detectRepoState(ctx context.Context, repo *db.Repo) (*repoState, error) {
 // runWizard prepares optional suggestion hooks and runs the interactive
 // onboarding wizard against the supplied repo state.
 func runWizard(ctx context.Context, p *paths.Paths, state *repoState) (wizard.Result, error) {
-	return runWizardWithMode(ctx, p, state, false)
+	return runWizardWithMode(ctx, p, state, false, true)
 }
 
-func runWizardWithMode(ctx context.Context, p *paths.Paths, state *repoState, auto bool) (wizard.Result, error) {
+func runWizardWithMode(ctx context.Context, p *paths.Paths, state *repoState, auto bool, visible bool) (wizard.Result, error) {
 	workDir := state.workDir
 
 	globalCfg, err := config.LoadGlobal(p.ConfigFile())
@@ -181,6 +184,7 @@ func runWizardWithMode(ctx context.Context, p *paths.Paths, state *repoState, au
 		RepoDir:       workDir,
 		CurrentBranch: state.currentBranch,
 		DefaultBranch: state.defaultBranch,
+		AutoAdvance:   auto && visible,
 		NeedsBranch:   state.needsBranch(),
 		IsDirty:       state.dirty,
 		GateRemote:    gate.RemoteName,
@@ -214,7 +218,7 @@ func runWizardWithMode(ctx context.Context, p *paths.Paths, state *repoState, au
 	})
 
 	run := wizardRun
-	if auto {
+	if auto && !visible {
 		run = wizardRunAuto
 	}
 

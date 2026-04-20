@@ -37,7 +37,8 @@ func newRootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		// When run without a subcommand, attach to the current branch run or
 		// route users into the setup wizard when no run is active. The default
-		// wizard flow is interactive, while --yes accepts defaults without a TTY.
+		// wizard flow is interactive, while --yes auto-accepts defaults and can
+		// still fall back to headless mode when no TTY is available.
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return trackCommand("root", func() error {
 				return attachRun(cmd.Context(), cmd.OutOrStdout(), "", true, autoYes)
@@ -45,7 +46,7 @@ func newRootCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().BoolVarP(&autoYes, "yes", "y", false, "run setup wizard non-interactively, accepting defaults")
+	cmd.Flags().BoolVarP(&autoYes, "yes", "y", false, "run setup wizard and accept defaults automatically")
 
 	cmd.AddCommand(newInitCmd())
 	cmd.AddCommand(newEjectCmd())
