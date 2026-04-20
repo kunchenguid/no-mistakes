@@ -9,6 +9,7 @@ export default defineConfig({
     mermaid({ enableLog: false }),
     starlight({
       title: "git push no-mistakes",
+      customCss: ["./src/styles/custom.css"],
       social: {
         github: "https://github.com/kunchenguid/no-mistakes",
         discord: "https://discord.gg/Wsy2NpnZDu",

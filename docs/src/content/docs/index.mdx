@@ -3,7 +3,7 @@ title: git push no-mistakes
 description: Kill all the slop. Raise clean PR.
 template: splash
 hero:
-  tagline: A local git proxy that runs AI review, tests, lint, docs, and CI monitoring in a disposable worktree before your code reaches upstream.
+  tagline: Kill all the slop. Raise clean PR.
   actions:
     - text: Get Started
       link: /no-mistakes/start-here/quick-start/
@@ -14,11 +14,11 @@ hero:
       icon: external
 ---
 
-## The Bottleneck Moved
+## The bottleneck has moved
 
-AI made writing code cheaper. The slower part now is validation: reviewing the
-diff, catching obvious breakage, updating docs, waiting for CI, and turning
-"the agent says it is done" into "I am comfortable sharing this branch."
+AI agents generate mountains of code. Some of it is brilliant. Some of it is
+slop. You can't tell which is which at 5,000 lines per diff. The bottleneck
+isn't writing code anymore. It's reviewing and validating it.
 
 Most of that quality infrastructure still lives in the outer loop, after the
 branch is already public. `no-mistakes` moves more of that loop closer to where
@@ -45,29 +45,20 @@ flowchart LR
   before ~~~ after
 ```
 
-## Why The Gate Is Explicit
+## What happens to a gated push
 
-`no-mistakes` does not hijack `origin`. It adds a separate `no-mistakes`
-remote and asks you to push to it on purpose.
-
-- `git push origin` still works when you want the escape hatch.
-- `git push no-mistakes` means "run the full gate before this branch leaves my machine."
-- A passed gate means the same thing everywhere because the pipeline order stays fixed.
-
-## What Comes Out The Other Side
-
-A gated push is trying to turn a rough branch into a cleaner handoff:
+A gated push turns a rough branch into a clean PR:
 
 | Before the gate | After the gate |
 |---|---|
 | Raw branch diff | Rebases onto fresh upstream |
-| Review debt | AI review findings surfaced early |
-| Unknown test health | Tests run before push |
-| Missing docs | Documentation gaps called out |
-| Formatting and lint churn | Linters run after code settles |
-| Blind PR wait | PR opened and CI watched automatically |
+| Bugs and tech debt | AI review catches problems early |
+| Uneven test coverage | Regression + new tests executed |
+| Missing docs | Documentation kept up to date |
+| Formatting and lint churn | Linter and formatter done before push |
+| Manually raise and babysit PR | PR opened and CI watched automatically |
 
-## Start Here
+## Start here
 
 - [Quick Start](/no-mistakes/start-here/quick-start/) - first gated push in a few minutes
 - [Introduction](/no-mistakes/start-here/introduction/) - why the tool exists and how to think about it
