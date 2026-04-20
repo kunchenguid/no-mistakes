@@ -166,3 +166,37 @@ func TestRunWizardTracksPageview(t *testing.T) {
 		t.Fatalf("branch_created = %v, want true", got)
 	}
 }
+
+func TestRunWizardReturnsTerminalWizardError(t *testing.T) {
+	wantErr := errors.New("suggest branch: agent down")
+
+	prevRun := wizardRun
+	wizardRun = func(cfg wizard.Config) (wizard.Result, error) {
+		return wizard.Result{Err: wantErr}, nil
+	}
+	defer func() { wizardRun = prevRun }()
+
+	nmHome := makeSocketSafeTempDir(t)
+	t.Setenv("NM_HOME", nmHome)
+	p := paths.WithRoot(nmHome)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
+	repoDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repoDir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	state := &repoState{
+		workDir:       repoDir,
+		currentBranch: "main",
+		defaultBranch: "main",
+		dirty:         true,
+	}
+
+	_, err := runWizard(context.Background(), p, state)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("runWizard() error = %v, want %v", err, wantErr)
+	}
+}

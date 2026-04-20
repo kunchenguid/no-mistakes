@@ -23,6 +23,9 @@ type Config struct {
 	RepoDir       string
 	CurrentBranch string
 	DefaultBranch string
+	// AutoAdvance automatically presses Enter on each active wizard step,
+	// preserving the interactive TUI while accepting the default path.
+	AutoAdvance bool
 	// NeedsBranch is true when the user has no usable feature branch yet —
 	// either they're on the default branch, or HEAD is detached. The branch
 	// step is only active when this is true.
@@ -156,14 +159,7 @@ func NewModel(cfg Config) Model {
 // Init returns the initial Cmd for the active step. State was already
 // prepared in NewModel.
 func (m Model) Init() tea.Cmd {
-	if m.quitting {
-		return tea.Quit
-	}
-	s := m.activeStep()
-	if s != nil && s.status == statInput {
-		return textinput.Blink
-	}
-	return nil
+	return m.afterEnterCmd()
 }
 
 // Update handles bubbletea events and drives the state machine.
@@ -190,6 +186,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.spinnerFrame = (m.spinnerFrame + 1) % len(spinnerFrames)
 		return m, m.scheduleSpinner()
+
+	case autoAdvanceMsg:
+		return m.handleAutoAdvance()
 	}
 	return m, nil
 }
@@ -265,10 +264,28 @@ func (m Model) afterEnterCmd() tea.Cmd {
 		return tea.Quit
 	}
 	s := m.activeStep()
+	if s != nil && m.cfg.AutoAdvance && (s.status == statInput || s.status == statConfirm) {
+		return autoAdvanceCmd()
+	}
 	if s != nil && s.status == statInput {
 		return textinput.Blink
 	}
 	return nil
+}
+
+func (m Model) handleAutoAdvance() (tea.Model, tea.Cmd) {
+	s := m.activeStep()
+	if s == nil {
+		return m, nil
+	}
+	if s.status != statInput && s.status != statConfirm {
+		return m, nil
+	}
+	if s.status == statConfirm {
+		s.source = "auto"
+		return m.executeStep(s, "")
+	}
+	return m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -383,6 +400,15 @@ func (m Model) handleSuggestion(msg suggestionMsg) (tea.Model, tea.Cmd) {
 	}
 	s := m.steps[m.active]
 	if msg.err != nil {
+		wrappedErr := fmt.Errorf("suggest %s: %w", stepName(msg.id), msg.err)
+		if m.cfg.AutoAdvance {
+			s.status = statFailed
+			s.errMsg = wrappedErr.Error()
+			m.err = wrappedErr
+			m.quitting = true
+			m.cancel()
+			return m, tea.Quit
+		}
 		// Fall back to asking the user to type.
 		s.status = statInput
 		s.source = ""
@@ -400,8 +426,15 @@ func (m Model) handleAction(msg actionMsg) (tea.Model, tea.Cmd) {
 	}
 	s := m.steps[m.active]
 	if msg.err != nil {
+		wrappedErr := fmt.Errorf("%s: %w", stepActionLabel(msg.id), msg.err)
 		s.status = statFailed
-		s.errMsg = msg.err.Error()
+		s.errMsg = wrappedErr.Error()
+		if m.cfg.AutoAdvance {
+			m.err = wrappedErr
+			m.quitting = true
+			m.cancel()
+			return m, tea.Quit
+		}
 		return m, nil
 	}
 	switch s.id {
@@ -467,7 +500,13 @@ type actionMsg struct {
 
 type spinnerTickMsg struct{}
 
+type autoAdvanceMsg struct{}
+
 const spinnerInterval = 120 * time.Millisecond
+
+func autoAdvanceCmd() tea.Cmd {
+	return func() tea.Msg { return autoAdvanceMsg{} }
+}
 
 func (m *Model) scheduleSpinner() tea.Cmd {
 	if m.spinnerAlive {
@@ -654,6 +693,19 @@ func stepName(id stepID) string {
 		return "push"
 	default:
 		return "unknown"
+	}
+}
+
+func stepActionLabel(id stepID) string {
+	switch id {
+	case stepBranch:
+		return "create branch"
+	case stepCommit:
+		return "commit changes"
+	case stepPush:
+		return "push branch"
+	default:
+		return stepName(id)
 	}
 }
 

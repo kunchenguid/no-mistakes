@@ -19,6 +19,7 @@ import (
 )
 
 var runTUI = tui.Run
+var terminalInteractive = isInteractive
 
 // attachRun is the shared logic for attaching to a pipeline run. It's used by
 // both the root command (bare `no-mistakes`) and the `attach` subcommand.
@@ -88,13 +89,19 @@ func attachRun(ctx context.Context, w io.Writer, runID string, rootDefault bool,
 	if run == nil {
 		// No active run - if the user ran bare `no-mistakes` in their repo
 		// from a TTY, offer the interactive setup wizard instead of just
-		// dumping a hint. `-y` uses the same setup flow non-interactively,
-		// so it is allowed even when stdin/stdout are not TTYs.
-		if rootDefault && runID == "" && repo != nil && state != nil && (autoYes || isInteractive()) {
+		// dumping a hint. `-y` auto-accepts the wizard; when a TTY is
+		// available we keep the wizard visible, otherwise we fall back to the
+		// existing headless path.
+		interactive := terminalInteractive()
+		if rootDefault && runID == "" && repo != nil && state != nil && (autoYes || interactive) {
 			var res wizard.Result
 			var wErr error
 			if autoYes {
-				res, wErr = runWizardAuto(ctx, p, state)
+				if interactive {
+					res, wErr = runWizardAutoVisible(ctx, p, state)
+				} else {
+					res, wErr = runWizardAuto(ctx, p, state)
+				}
 			} else {
 				res, wErr = runWizard(ctx, p, state)
 			}
@@ -146,8 +153,8 @@ func activeRunBranch(state *repoState, rootDefault bool) string {
 }
 
 // isInteractive reports whether stdin and stdout are both connected to a
-// terminal. The interactive wizard needs a real TTY to read keystrokes; the
-// --yes path can still run the wizard non-interactively and accept defaults.
+// terminal. The visible wizard needs a real TTY to read keystrokes; without
+// one, the --yes path falls back to the headless auto-accept flow.
 func isInteractive() bool {
 	return isatty.IsTerminal(os.Stdin.Fd()) && isatty.IsTerminal(os.Stdout.Fd())
 }
