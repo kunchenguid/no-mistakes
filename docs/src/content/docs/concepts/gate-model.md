@@ -30,7 +30,7 @@ When you run `no-mistakes init` in a repo:
 
 1. It creates a local bare gate repo under `~/.no-mistakes/repos/<id>.git`.
 2. It installs a `post-receive` hook in that gate repo.
-3. It isolates the gate repo's hooks path from shared local Git config writes.
+3. It best-effort isolates the gate repo's hooks path from shared local Git config writes when Git supports `config --worktree`.
 4. It adds a `no-mistakes` remote to your working repo that points at the gate.
 5. It makes sure the daemon is running so incoming pushes can start runs.
 
@@ -112,7 +112,7 @@ it was started from the same executable path and aborts if the daemon
 executable path cannot be determined or points to a different binary. You can
 also manage it explicitly with `no-mistakes daemon start|stop|restart|status`.
 
-On startup, the daemon recovers from crashes by marking any stuck runs as failed, reaping orphaned managed agent servers, cleaning up orphaned worktrees, and reapplying gate hook-path isolation for older bare repos.
+On startup, the daemon recovers from crashes by marking any stuck runs as failed, reaping orphaned managed agent servers, cleaning up orphaned worktrees, and reapplying gate hook-path isolation for older bare repos when Git supports `config --worktree`.
 
 ### Pipeline executor
 

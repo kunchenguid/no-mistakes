@@ -84,7 +84,7 @@ On startup, the daemon checks for runs that were left in `pending` or `running` 
 - Marks those runs as `failed` with the message "daemon crashed during execution"
 - Reaps orphaned managed agent servers left behind by a crashed daemon or setup wizard
 - Removes any orphaned worktree directories via `git worktree remove --force`
-- Reapplies per-worktree gate hook-path isolation to existing bare repos so shared `core.hookspath` writes cannot disable `post-receive`
+- Reapplies per-worktree gate hook-path isolation to existing bare repos when Git supports `config --worktree`, so shared `core.hookspath` writes cannot disable `post-receive`
 
 ## Logging
 

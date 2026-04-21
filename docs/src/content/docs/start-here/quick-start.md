@@ -37,7 +37,7 @@ Navigate to any git repo with an `origin` remote:
 no-mistakes init
 ```
 
-This creates a local bare repo at `~/.no-mistakes/repos/<id>.git`, installs a post-receive hook, isolates the gate's hooks path from shared local Git config writes, adds a `no-mistakes` git remote to your working repo, and ensures the daemon is running.
+This creates a local bare repo at `~/.no-mistakes/repos/<id>.git`, installs a post-receive hook, best-effort isolates the gate's hooks path from shared local Git config writes when Git supports `config --worktree`, adds a `no-mistakes` git remote to your working repo, and ensures the daemon is running.
 
 ```
 $ no-mistakes init

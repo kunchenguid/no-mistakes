@@ -25,7 +25,7 @@ Initialize the gate for the current repository.
 no-mistakes init
 ```
 
-Creates a local bare repo, installs the post-receive hook, isolates the gate repo's hook path from shared git config changes, adds the `no-mistakes` git remote, detects the default branch, records the repo in SQLite, and ensures the daemon is running, installing the managed service when available and falling back to a detached daemon otherwise.
+Creates a local bare repo, installs the post-receive hook, best-effort isolates the gate repo's hook path from shared git config changes when Git supports `config --worktree`, adds the `no-mistakes` git remote, detects the default branch, records the repo in SQLite, and ensures the daemon is running, installing the managed service when available and falling back to a detached daemon otherwise.
 
 Rolls back all changes if any step fails.
 
