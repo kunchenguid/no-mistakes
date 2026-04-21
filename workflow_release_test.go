@@ -159,8 +159,22 @@ func TestReleaseWorkflowPromotesDraftOnlyAfterAssetsComplete(t *testing.T) {
 	}
 }
 
+func TestExtractJobBlockHandlesCRLF(t *testing.T) {
+	lf := "jobs:\n  foo:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo foo\n  bar:\n    runs-on: ubuntu-latest\n"
+	crlf := strings.ReplaceAll(lf, "\n", "\r\n")
+
+	block := extractJobBlock(t, crlf, "foo")
+	if !strings.Contains(block, "echo foo") {
+		t.Fatalf("CRLF block missing foo body: %q", block)
+	}
+	if strings.Contains(block, "bar:") {
+		t.Fatalf("CRLF block must stop before next job: %q", block)
+	}
+}
+
 func extractJobBlock(t *testing.T, content, name string) string {
 	t.Helper()
+	content = strings.ReplaceAll(content, "\r\n", "\n")
 	header := "\n  " + name + ":\n"
 	start := strings.Index(content, header)
 	if start < 0 {
