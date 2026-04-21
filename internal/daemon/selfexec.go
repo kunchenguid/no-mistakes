@@ -86,8 +86,11 @@ func managedStopErrorAllowsDetachedFallback(err error) bool {
 	if err == nil {
 		return false
 	}
+	if runtimeGOOS != "darwin" {
+		return false
+	}
 	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "no such process") || strings.Contains(message, "not loaded")
+	return strings.Contains(message, "no such process")
 }
 
 func startDetachedDaemon(p *paths.Paths) error {

@@ -185,17 +185,7 @@ func TestStartStopsManagedServiceBeforeDetachedFallbackAfterTimeout(t *testing.T
 	_ = os.Remove(p.Socket())
 }
 
-// TestStartFallsBackToDetachedDaemonWhenManagedStopFailsButDaemonIsDead is
-// the regression test for the install.sh failure observed in v1.8.0 on
-// macOS: `daemon restart` on a fresh install runs `launchctl bootstrap` +
-// `kickstart`, one of them fails, Start falls into stopManagedFallback to
-// clean up, and `launchctl bootout` returns ESRCH ("No such process", exit
-// 3) because the service was never loaded. Before the fix, stopManagedFallback
-// treated that as fatal and short-circuited the detached fallback, leaving
-// the user with no daemon running. The fix: when the managed stop fails but
-// the daemon isn't alive, proceed with the detached fallback - the goal of
-// stop is already satisfied.
-func TestStartFallsBackToDetachedDaemonWhenManagedStopFailsButDaemonIsDead(t *testing.T) {
+func TestStartReturnsManagedStopErrorWhenSystemdStopSaysNotLoaded(t *testing.T) {
 	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
 	if err := p.EnsureDirs(); err != nil {
 		t.Fatal(err)
@@ -224,19 +214,22 @@ func TestStartFallsBackToDetachedDaemonWhenManagedStopFailsButDaemonIsDead(t *te
 	checks := 0
 	daemonHealthCheck = func(*paths.Paths) (bool, error) {
 		checks++
-		return checks >= 4, nil
+		return false, nil
 	}
 
-	if err := Start(p); err != nil {
-		t.Fatalf("Start should fall back to detached mode when managed stop fails but daemon is dead: %v", err)
+	err := Start(p)
+	if err == nil {
+		t.Fatal("Start should return the managed stop error")
 	}
-
-	if _, err := os.Stat(p.DaemonLog()); err != nil {
-		t.Fatalf("detached fallback should open daemon log: %v", err)
+	if !strings.Contains(err.Error(), "stop managed daemon before detached fallback") {
+		t.Fatalf("Start error = %v, want managed stop failure", err)
 	}
-	_ = os.Remove(p.DaemonLog())
-	_ = os.Remove(p.PIDFile())
-	_ = os.Remove(p.Socket())
+	if !strings.Contains(err.Error(), "Unit not loaded") {
+		t.Fatalf("Start error = %v, want original stop error", err)
+	}
+	if checks < 2 {
+		t.Fatalf("expected health checks before and after managed stop failure, got %d", checks)
+	}
 }
 
 func TestStartReturnsManagedStopErrorWhenFallbackCleanupFails(t *testing.T) {
