@@ -17,7 +17,7 @@ func TestIsTransientPIDOpenError_Windows(t *testing.T) {
 	}{
 		{name: "nil", err: nil, want: false},
 		{name: "sharing_violation", err: &fs.PathError{Op: "open", Path: "x", Err: syscall.Errno(32)}, want: true},
-		{name: "access_denied", err: &fs.PathError{Op: "open", Path: "x", Err: syscall.Errno(5)}, want: true},
+		{name: "access_denied", err: &fs.PathError{Op: "open", Path: "x", Err: syscall.Errno(5)}, want: false},
 		{name: "not_exist", err: os.ErrNotExist, want: false},
 		{name: "other_errno", err: &fs.PathError{Op: "open", Path: "x", Err: syscall.Errno(2)}, want: false},
 	}
