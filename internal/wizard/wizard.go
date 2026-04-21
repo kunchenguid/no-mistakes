@@ -261,7 +261,7 @@ func (m Model) setupActive() Model {
 // afterEnterCmd returns the Cmd to kick off after transitioning to a new step.
 func (m Model) afterEnterCmd() tea.Cmd {
 	if m.quitting {
-		return tea.Quit
+		return quitWithTitleReset()
 	}
 	s := m.activeStep()
 	if s != nil && m.cfg.AutoAdvance && (s.status == statInput || s.status == statConfirm) {
@@ -294,7 +294,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Already finished; any key quits.
 		m.quitting = true
 		m.cancel()
-		return m, tea.Quit
+		return m, quitWithTitleReset()
 	}
 
 	switch msg.String() {
@@ -303,7 +303,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.aborted = true
 		m.quitting = true
 		m.cancel()
-		return m, tea.Quit
+		return m, quitWithTitleReset()
 	case "q":
 		if m.hasSideEffects() && !m.confirmQuit {
 			m.confirmQuit = true
@@ -313,7 +313,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.aborted = true
 		m.quitting = true
 		m.cancel()
-		return m, tea.Quit
+		return m, quitWithTitleReset()
 	}
 
 	// Any non-q key clears the abort confirmation.
@@ -360,7 +360,7 @@ func (m Model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.aborted = true
 		m.quitting = true
 		m.cancel()
-		return m, tea.Quit
+		return m, quitWithTitleReset()
 	}
 	return m, nil
 }
@@ -407,7 +407,7 @@ func (m Model) handleSuggestion(msg suggestionMsg) (tea.Model, tea.Cmd) {
 			m.err = wrappedErr
 			m.quitting = true
 			m.cancel()
-			return m, tea.Quit
+			return m, quitWithTitleReset()
 		}
 		// Fall back to asking the user to type.
 		s.status = statInput
@@ -433,7 +433,7 @@ func (m Model) handleAction(msg actionMsg) (tea.Model, tea.Cmd) {
 			m.err = wrappedErr
 			m.quitting = true
 			m.cancel()
-			return m, tea.Quit
+			return m, quitWithTitleReset()
 		}
 		return m, nil
 	}
@@ -457,6 +457,71 @@ func (m Model) handleAction(msg actionMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) hasSideEffects() bool {
 	return m.branchCreated || m.commitMade
+}
+
+// terminalTitle returns the terminal title string reflecting wizard state.
+// Format mirrors internal/tui: "<icon> Setup <step> - <branch>".
+func (m Model) terminalTitle() string {
+	branch := m.targetBranch
+	if branch == "" {
+		branch = m.cfg.CurrentBranch
+	}
+	suffix := ""
+	if branch != "" {
+		suffix = " - " + branch
+	}
+
+	switch {
+	case m.success:
+		return "✓ Setup complete" + suffix
+	case m.aborted:
+		return "✗ Setup aborted" + suffix
+	}
+
+	for _, s := range m.steps {
+		if s.status == statFailed {
+			return "✗ Setup " + stepLabel(s.id) + suffix
+		}
+	}
+
+	s := m.activeStep()
+	if s == nil {
+		return "○ Setup" + suffix
+	}
+	icon := stepTitleIcon(s.status, m.spinnerFrame)
+	return icon + " Setup " + stepLabel(s.id) + suffix
+}
+
+// stepTitleIcon returns a plain-text icon suitable for use in the terminal
+// title bar. It mirrors the visual icons in stepIconAndStyle but without
+// lipgloss styling, since terminal titles can't render ANSI.
+func stepTitleIcon(status stepStatus, spinnerFrame int) string {
+	switch status {
+	case statDone:
+		return "✓"
+	case statSkipped:
+		return "–"
+	case statFailed:
+		return "✗"
+	case statAgent, statRunning:
+		if len(spinnerFrames) == 0 {
+			return "◉"
+		}
+		return spinnerFrames[spinnerFrame%len(spinnerFrames)]
+	case statInput, statConfirm:
+		return "⏸"
+	}
+	return "○"
+}
+
+// setTerminalTitle returns the OSC escape sequence to set the terminal title.
+func setTerminalTitle(title string) string {
+	return "\x1b]2;" + title + "\x07"
+}
+
+// quitWithTitleReset clears the terminal title via bubbletea, then quits.
+func quitWithTitleReset() tea.Cmd {
+	return tea.Sequence(tea.SetWindowTitle(""), tea.Quit)
 }
 
 func (m Model) track(action string, fields map[string]any) {

@@ -46,6 +46,7 @@ func (m Model) View() string {
 	box := renderBox("Setup", strings.TrimRight(content.String(), "\n"), width)
 
 	var out strings.Builder
+	out.WriteString(setTerminalTitle(m.terminalTitle()))
 	out.WriteString(box)
 	out.WriteString("\n")
 
