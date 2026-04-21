@@ -77,6 +77,14 @@ func stopLaunchAgent(p *paths.Paths) error {
 	return nil
 }
 
+func removeLaunchAgent(p *paths.Paths) error {
+	err := os.Remove(launchAgentPath(p))
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 // launchctlBootoutServiceNotLoaded reports whether a launchctl bootout
 // failure is the ESRCH case ("No such process", exit 3) that launchctl
 // emits when the service label isn't currently loaded. That is semantically

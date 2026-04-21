@@ -69,28 +69,21 @@ func Start(p *paths.Paths) error {
 
 func stopManagedFallback(p *paths.Paths) error {
 	managed, err := stopManagedService(p)
-	if !managed || err == nil {
+	if !managed {
+		return nil
+	}
+	if err == nil {
+		if runtimeGOOS == "darwin" {
+			if err := removeLaunchAgent(p); err != nil {
+				return fmt.Errorf("remove launch agent before detached fallback: %w", err)
+			}
+		}
 		return nil
 	}
 	if alive, _ := daemonHealthCheck(p); alive {
 		return fmt.Errorf("managed daemon is still running: %w", err)
 	}
-	if managedStopErrorAllowsDetachedFallback(err) {
-		slog.Debug("managed stop reported daemon already stopped; proceeding with detached fallback", "err", err)
-		return nil
-	}
 	return fmt.Errorf("stop managed daemon before detached fallback: %w", err)
-}
-
-func managedStopErrorAllowsDetachedFallback(err error) bool {
-	if err == nil {
-		return false
-	}
-	if runtimeGOOS != "darwin" {
-		return false
-	}
-	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "no such process")
 }
 
 func startDetachedDaemon(p *paths.Paths) error {
