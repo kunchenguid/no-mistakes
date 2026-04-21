@@ -130,7 +130,7 @@ func TestWriteServerPIDFile_ConcurrentReadersNeverSeePartialJSON(t *testing.T) {
 	stop := make(chan struct{})
 	resultCh := make(chan error, 1)
 	go func() {
-		resultCh <- readPIDFileUntilStopped(path, stop)
+		resultCh <- readPIDFileUntilStopped(path, info.Port, stop)
 	}()
 
 	for i := 0; i < 200; i++ {
@@ -146,12 +146,11 @@ func TestWriteServerPIDFile_ConcurrentReadersNeverSeePartialJSON(t *testing.T) {
 	}
 }
 
-
 func TestReadPIDFileUntilStopped_RequiresSuccessfulRead(t *testing.T) {
 	stop := make(chan struct{})
 	resultCh := make(chan error, 1)
 	go func() {
-		resultCh <- readPIDFileUntilStopped(filepath.Join(t.TempDir(), "missing.json"), stop)
+		resultCh <- readPIDFileUntilStopped(filepath.Join(t.TempDir(), "missing.json"), 0, stop)
 	}()
 
 	time.Sleep(20 * time.Millisecond)
@@ -163,15 +162,56 @@ func TestReadPIDFileUntilStopped_RequiresSuccessfulRead(t *testing.T) {
 	}
 }
 
-var errPIDFileNeverRead = errors.New("pid file was never read successfully")
+func TestReadPIDFileUntilStopped_RequiresUpdatedRead(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "server.json")
+	info := ServerPIDInfo{
+		PID:            12345,
+		Owner:          ServerPIDOwnerDaemon,
+		OwnerPID:       4321,
+		OwnerStartedAt: time.Date(2026, 4, 20, 9, 59, 0, 0, time.UTC),
+		Agent:          "opencode",
+		Bin:            "/usr/local/bin/opencode",
+		Port:           54321,
+		StartedAt:      time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC),
+	}
+	data, err := json.Marshal(info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
 
-func readPIDFileUntilStopped(path string, stop <-chan struct{}) error {
+	stop := make(chan struct{})
+	resultCh := make(chan error, 1)
+	go func() {
+		resultCh <- readPIDFileUntilStopped(path, info.Port, stop)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	close(stop)
+
+	err = <-resultCh
+	if !errors.Is(err, errPIDFileNeverObservedRewrite) {
+		t.Fatalf("readPIDFileUntilStopped() error = %v, want %v", err, errPIDFileNeverObservedRewrite)
+	}
+}
+
+var errPIDFileNeverRead = errors.New("pid file was never read successfully")
+var errPIDFileNeverObservedRewrite = errors.New("pid file rewrite was never read successfully")
+
+func readPIDFileUntilStopped(path string, initialPort int, stop <-chan struct{}) error {
 	var successCount int
+	var sawRewrite bool
 	for {
 		select {
 		case <-stop:
 			if successCount == 0 {
 				return errPIDFileNeverRead
+			}
+			if !sawRewrite {
+				return errPIDFileNeverObservedRewrite
 			}
 			return nil
 		default:
@@ -188,5 +228,8 @@ func readPIDFileUntilStopped(path string, stop <-chan struct{}) error {
 			return fmt.Errorf("saw partial pid file: %w", err)
 		}
 		successCount++
+		if got.Port != initialPort {
+			sawRewrite = true
+		}
 	}
 }
