@@ -546,6 +546,89 @@ func TestCIStep_DoesNotRetryOnUnrelatedPendingCheck(t *testing.T) {
 	}
 }
 
+func TestCIStep_RetriesMergeConflictAfterRerun(t *testing.T) {
+	t.Parallel()
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	checksSequence := []string{
+		`[{"name":"build","status":"COMPLETED","conclusion":"success","bucket":"pass"}]`,
+		`[{"name":"build","status":"IN_PROGRESS","bucket":"pending"}]`,
+		`[{"name":"build","status":"COMPLETED","conclusion":"success","bucket":"pass"}]`,
+		`[{"name":"build","status":"IN_PROGRESS","bucket":"pending"}]`,
+		`[{"name":"build","status":"COMPLETED","conclusion":"success","bucket":"pass"}]`,
+	}
+	env := fakeCIGHSequenceMergeable(t, "OPEN", checksSequence, "CONFLICTING")
+
+	fixCount := 0
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			fixCount++
+			os.WriteFile(filepath.Join(opts.CWD, fmt.Sprintf("conflict-fix-%d.txt", fixCount)), []byte("resolved"), 0o644)
+			return &agent.Result{}, nil
+		},
+	}
+
+	prURL := "https://github.com/test/repo/pull/42"
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Config.CITimeout = 30 * time.Second
+	sctx.Config.AutoFix = config.AutoFix{CI: 2}
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	step := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			return nil
+		},
+	}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("expected approval outcome after retries, got error: %v", err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("expected approval after exhausting conflict rerun-backed retries")
+	}
+	if fixCount != 2 {
+		t.Fatalf("expected 2 auto-fix attempts for persistent merge conflicts after reruns, got %d", fixCount)
+	}
+
+	foundExhausted := false
+	for _, l := range logs {
+		if strings.Contains(l, "max auto-fix attempts (2) reached") {
+			foundExhausted = true
+			break
+		}
+	}
+	if !foundExhausted {
+		t.Fatalf("expected max-attempts log after conflict rerun-backed retries, got: %v", logs)
+	}
+}
+
 func TestCIStep_FixMode_ManualInterventionRunsCIFix(t *testing.T) {
 	t.Parallel()
 	upstream := t.TempDir()

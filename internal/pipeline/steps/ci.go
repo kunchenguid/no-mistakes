@@ -165,10 +165,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 				sctx.Log("issues detected but checks still pending, waiting for all checks to complete...")
 			} else if hasIssues {
 				// All checks done, issues present - fix or report
-				fixKey := strings.Join(failing, ",")
-				if mergeConflict {
-					fixKey += "+conflict"
-				}
+				fixKey := encodeLastFixedChecks(failing, mergeConflict)
 				issueDesc := strings.Join(failing, ", ")
 				if mergeConflict {
 					if issueDesc != "" {
