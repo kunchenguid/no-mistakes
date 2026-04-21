@@ -137,6 +137,93 @@ func TestView_InlineInputFitsInsideBoxAtMinimumWidth(t *testing.T) {
 	}
 }
 
+func TestView_EmitsTerminalTitleEscapeSequence(t *testing.T) {
+	m := NewModel(baseConfig(&recorder{}))
+	m.width = 80
+	out := m.View()
+	if !strings.HasPrefix(out, "\x1b]2;") {
+		t.Fatalf("expected View output to start with OSC 2 terminal title sequence, got: %q", out[:min(40, len(out))])
+	}
+	// Title must end with BEL before the rest of the rendered UI.
+	end := strings.Index(out, "\x07")
+	if end < 0 {
+		t.Fatalf("expected BEL terminator in terminal title sequence, got: %q", out)
+	}
+}
+
+func TestTerminalTitle_BranchInputIncludesCurrentBranch(t *testing.T) {
+	m := NewModel(baseConfig(&recorder{}))
+	got := m.terminalTitle()
+	if !strings.Contains(got, "Branch") {
+		t.Fatalf("expected title to mention Branch step, got: %q", got)
+	}
+	if !strings.Contains(got, "main") {
+		t.Fatalf("expected title to mention current branch %q, got: %q", "main", got)
+	}
+	if !strings.Contains(got, "Setup") {
+		t.Fatalf("expected title to include Setup prefix, got: %q", got)
+	}
+}
+
+func TestTerminalTitle_PushConfirmUsesTargetBranch(t *testing.T) {
+	cfg := baseConfig(&recorder{})
+	cfg.CurrentBranch = "feat/x"
+	cfg.NeedsBranch = false
+	cfg.IsDirty = false
+	m := NewModel(cfg)
+	got := m.terminalTitle()
+	if !strings.Contains(got, "Push") {
+		t.Fatalf("expected title to mention Push step, got: %q", got)
+	}
+	if !strings.Contains(got, "feat/x") {
+		t.Fatalf("expected title to include target branch, got: %q", got)
+	}
+}
+
+func TestTerminalTitle_SuccessShowsComplete(t *testing.T) {
+	m := NewModel(baseConfig(&recorder{}))
+	m.success = true
+	m.pushed = true
+	m.targetBranch = "feat/done"
+	got := m.terminalTitle()
+	if !strings.Contains(got, "complete") {
+		t.Fatalf("expected title to indicate completion, got: %q", got)
+	}
+	if !strings.Contains(got, "feat/done") {
+		t.Fatalf("expected title to include target branch on success, got: %q", got)
+	}
+}
+
+func TestTerminalTitle_AbortedShowsAborted(t *testing.T) {
+	m := NewModel(baseConfig(&recorder{}))
+	m.aborted = true
+	got := m.terminalTitle()
+	if !strings.Contains(got, "aborted") {
+		t.Fatalf("expected title to indicate aborted, got: %q", got)
+	}
+}
+
+func TestTerminalTitle_FailedShowsStepName(t *testing.T) {
+	m := NewModel(baseConfig(&recorder{}))
+	m.steps[0].status = statFailed
+	m.steps[0].errMsg = "boom"
+	got := m.terminalTitle()
+	if !strings.Contains(got, "Branch") {
+		t.Fatalf("expected failed title to mention failing step, got: %q", got)
+	}
+	if !strings.Contains(got, "✗") {
+		t.Fatalf("expected failed title to include ✗ icon, got: %q", got)
+	}
+}
+
+func TestSetTerminalTitle_FormatsOSCSequence(t *testing.T) {
+	got := setTerminalTitle("hello")
+	want := "\x1b]2;hello\x07"
+	if got != want {
+		t.Fatalf("setTerminalTitle: got %q, want %q", got, want)
+	}
+}
+
 func TestView_RendersTransientStatusInlineWithStep(t *testing.T) {
 	tests := []struct {
 		name   string

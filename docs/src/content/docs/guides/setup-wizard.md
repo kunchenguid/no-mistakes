@@ -42,6 +42,8 @@ flowchart TD
 
 The interactive wizard is a full-screen flow that runs only the steps your current repo state needs, up to three total. The `-y` / `--yes` path runs the same steps and accepts the automated default at each one. In a TTY, the TUI stays visible and auto-advances. Without a TTY, it runs headlessly.
 
+While the wizard is running, it also updates your terminal window title with the current setup step and branch. On exit or cancel, it clears that temporary title.
+
 ### 1. Branch
 
 Shown when you're on the default branch or a detached `HEAD`. Prompts for a branch name.
