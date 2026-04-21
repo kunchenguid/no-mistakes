@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"fmt"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -72,6 +73,35 @@ func TestStartInstallsLaunchAgentAndBootstrapsManagedDaemon(t *testing.T) {
 	}
 	if want := "launchctl kickstart -k gui/501/" + launchdServiceLabel(p); commands[2] != want {
 		t.Fatalf("kickstart command = %q, want %q", commands[2], want)
+	}
+}
+
+// TestStopLaunchAgentTreatsBootoutNotLoadedAsSuccess locks in that
+// `launchctl bootout` returning ESRCH ("No such process", exit 3) is
+// treated as a successful no-op. launchctl emits this when the service
+// label isn't currently loaded, which is semantically the same as "already
+// stopped" for stop purposes. Without this, a plain `daemon stop` after
+// the plist was unloaded out-of-band surfaces a scary error and the
+// detached-fallback path in Start() short-circuits on an install where
+// bootstrap/kickstart failed and the service was never loaded.
+func TestStopLaunchAgentTreatsBootoutNotLoadedAsSuccess(t *testing.T) {
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
+	home := t.TempDir()
+
+	cleanup := stubServiceRuntime(t)
+	defer cleanup()
+	runtimeGOOS = "darwin"
+	serviceUserHomeDir = func() (string, error) { return home, nil }
+	serviceCurrentUser = func() (*user.User, error) { return &user.User{Uid: "501"}, nil }
+
+	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
+		target := "gui/501/" + launchdServiceLabel(p)
+		return []byte("Boot-out failed: 3: No such process"),
+			fmt.Errorf("/bin/launchctl bootout %s: exit status 3: Boot-out failed: 3: No such process", target)
+	}
+
+	if err := stopLaunchAgent(p); err != nil {
+		t.Fatalf("stopLaunchAgent should treat ESRCH bootout as success, got: %v", err)
 	}
 }
 
