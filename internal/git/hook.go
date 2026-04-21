@@ -2,11 +2,15 @@ package git
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
+
+var runGit = Run
 
 // PostReceiveHookScript returns the shell script for the post-receive hook.
 // The hook notifies the daemon via the CLI so it works across platforms.
@@ -101,15 +105,26 @@ func InstallPostReceiveHook(bareDir string) error {
 // Idempotent: safe to call on an already-configured bare repo to
 // migrate older installs.
 func IsolateHooksPath(ctx context.Context, bareDir string) error {
-	if _, err := Run(ctx, bareDir, "config", "extensions.worktreeConfig", "true"); err != nil {
+	if _, err := runGit(ctx, bareDir, "config", "extensions.worktreeConfig", "true"); err != nil {
 		return fmt.Errorf("enable worktree config: %w", err)
 	}
 	hooksDir, err := filepath.Abs(filepath.Join(bareDir, "hooks"))
 	if err != nil {
 		return fmt.Errorf("resolve hooks dir: %w", err)
 	}
-	if _, err := Run(ctx, bareDir, "config", "--worktree", "core.hookspath", hooksDir); err != nil {
+	if _, err := runGit(ctx, bareDir, "config", "--worktree", "core.hookspath", hooksDir); err != nil {
+		if isWorktreeConfigUnsupported(err) {
+			return nil
+		}
 		return fmt.Errorf("pin core.hookspath per-worktree: %w", err)
 	}
 	return nil
+}
+
+func isWorktreeConfigUnsupported(err error) bool {
+	if errors.Is(err, exec.ErrNotFound) {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "unknown option") && strings.Contains(msg, "worktree")
 }

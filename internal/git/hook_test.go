@@ -271,6 +271,36 @@ func TestIsolateHooksPath_Idempotent(t *testing.T) {
 	}
 }
 
+func TestIsolateHooksPath_SkipsIsolationWhenWorktreeConfigUnsupported(t *testing.T) {
+	ctx := context.Background()
+	bare := filepath.Join(t.TempDir(), "test.git")
+	if err := InitBare(ctx, bare); err != nil {
+		t.Fatal(err)
+	}
+
+	originalRunGit := runGit
+	runGit = func(_ context.Context, dir string, args ...string) (string, error) {
+		t.Helper()
+		if dir != bare {
+			t.Fatalf("run dir = %q, want %q", dir, bare)
+		}
+		if len(args) >= 3 && args[0] == "config" && args[1] == "--worktree" {
+			return "", exec.ErrNotFound
+		}
+		return originalRunGit(ctx, dir, args...)
+	}
+	defer func() { runGit = originalRunGit }()
+
+	if err := IsolateHooksPath(ctx, bare); err != nil {
+		t.Fatalf("IsolateHooksPath should tolerate missing --worktree support: %v", err)
+	}
+
+	out, err := exec.Command("git", "-C", bare, "config", "--local", "--get", "core.hookspath").CombinedOutput()
+	if err == nil && strings.TrimSpace(string(out)) != "" {
+		t.Fatalf("local core.hookspath should remain unset without worktree support, got %q", strings.TrimSpace(string(out)))
+	}
+}
+
 func TestInstallPostReceiveHookCreatesDir(t *testing.T) {
 	// hooks dir might not exist in some bare repos; installer should create it
 	dir := t.TempDir()

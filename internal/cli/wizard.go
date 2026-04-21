@@ -316,7 +316,11 @@ func awaitDaemonRunRegistration(ctx context.Context, client *ipc.Client, repoID,
 		return err
 	}
 	if run == nil {
-		return fmt.Errorf("daemon did not register a pipeline run for %q within %s - the gate hook may not have fired (check ~/.no-mistakes/repos/<id>.git/notify-push.log and that the daemon is running)", branch, timeout)
+		logPath := filepath.Join("~/.no-mistakes", "repos", repoID+".git", "notify-push.log")
+		if p, pathErr := paths.New(); pathErr == nil {
+			logPath = filepath.Join(p.RepoDir(repoID), "notify-push.log")
+		}
+		return fmt.Errorf("daemon did not register a pipeline run for %q within %s - the gate hook may not have fired (check %s and that the daemon is running)", branch, timeout, logPath)
 	}
 	return nil
 }

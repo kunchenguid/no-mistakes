@@ -520,3 +520,40 @@ func TestAwaitDaemonRunRegistration_ErrorsWhenNoRunAppears(t *testing.T) {
 		t.Errorf("error should name the branch we were waiting for, got: %v", err)
 	}
 }
+
+func TestAwaitDaemonRunRegistration_UsesNMHomeInTimeoutError(t *testing.T) {
+	nmHome := makeSocketSafeTempDir(t)
+	t.Setenv("NM_HOME", nmHome)
+
+	p := paths.WithRoot(nmHome)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
+	d, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	startTestDaemon(t, p, d)
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	err = awaitDaemonRunRegistration(context.Background(), client, "repo123", "feat/missing", 200*time.Millisecond)
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+
+	wantLogPath := filepath.Join(nmHome, "repos", "repo123.git", "notify-push.log")
+	if !strings.Contains(err.Error(), wantLogPath) {
+		t.Fatalf("timeout error = %q, want log path %q", err.Error(), wantLogPath)
+	}
+	if strings.Contains(err.Error(), "<id>") {
+		t.Fatalf("timeout error should not contain placeholder repo id: %q", err.Error())
+	}
+}
