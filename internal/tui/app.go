@@ -51,7 +51,7 @@ type Model struct {
 // NewModel creates a TUI model for the given run.
 // The client should already be connected to the daemon.
 func NewModel(socketPath string, client *ipc.Client, run *ipc.RunInfo) Model {
-	steps := normalizePipelineSteps(run.ID, run.Steps)
+	steps := normalizePipelineSteps(run.ID, run.Status, run.Steps)
 	run.Steps = steps
 	m := Model{
 		socketPath:        socketPath,
@@ -83,9 +83,9 @@ func NewModel(socketPath string, client *ipc.Client, run *ipc.RunInfo) Model {
 	return m
 }
 
-func normalizePipelineSteps(runID string, steps []ipc.StepResultInfo) []ipc.StepResultInfo {
+func normalizePipelineSteps(runID string, runStatus types.RunStatus, steps []ipc.StepResultInfo) []ipc.StepResultInfo {
 	knownSteps := types.AllSteps()
-	if !shouldBackfillPipelineSteps(steps, knownSteps) {
+	if !shouldBackfillPipelineSteps(runStatus, steps, knownSteps) {
 		return steps
 	}
 
@@ -127,9 +127,9 @@ func normalizePipelineSteps(runID string, steps []ipc.StepResultInfo) []ipc.Step
 	return normalized
 }
 
-func shouldBackfillPipelineSteps(steps []ipc.StepResultInfo, knownSteps []types.StepName) bool {
+func shouldBackfillPipelineSteps(runStatus types.RunStatus, steps []ipc.StepResultInfo, knownSteps []types.StepName) bool {
 	if len(steps) == 0 {
-		return true
+		return runStatus == types.RunPending || runStatus == types.RunRunning
 	}
 	if len(steps) >= len(knownSteps) {
 		return false

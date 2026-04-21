@@ -306,6 +306,51 @@ func TestModel_Update_RerunStartedBackfillsMissingPipelineSteps(t *testing.T) {
 	}
 }
 
+func TestModel_Update_RerunStartedBackfillsEmptyRunningPipelineSteps(t *testing.T) {
+	run := testRun()
+	run.Status = types.RunFailed
+	m := NewModel("/tmp/sock", nil, run)
+
+	newRun := &ipc.RunInfo{
+		ID:      "run-002",
+		RepoID:  run.RepoID,
+		Branch:  run.Branch,
+		HeadSHA: run.HeadSHA,
+		BaseSHA: run.BaseSHA,
+		Status:  types.RunRunning,
+	}
+
+	updated, _ := m.Update(rerunStartedMsg{run: newRun})
+	model := updated.(Model)
+
+	if len(model.steps) != len(types.AllSteps()) {
+		t.Fatalf("step count = %d, want %d", len(model.steps), len(types.AllSteps()))
+	}
+	for i, stepName := range types.AllSteps() {
+		if model.steps[i].StepName != stepName {
+			t.Fatalf("step %d = %s, want %s", i, model.steps[i].StepName, stepName)
+		}
+		if model.steps[i].Status != types.StepStatusPending {
+			t.Fatalf("step %s status = %s, want %s", stepName, model.steps[i].Status, types.StepStatusPending)
+		}
+	}
+}
+
+func TestNewModel_DoesNotBackfillEmptyTerminalPipelineSteps(t *testing.T) {
+	run := testRun()
+	run.Status = types.RunFailed
+	run.Steps = nil
+
+	m := NewModel("/tmp/sock", nil, run)
+
+	if len(m.steps) != 0 {
+		t.Fatalf("step count = %d, want 0", len(m.steps))
+	}
+	if len(m.run.Steps) != 0 {
+		t.Fatalf("run step count = %d, want 0", len(m.run.Steps))
+	}
+}
+
 func TestModel_SubscribeCmdReturnsScopedError(t *testing.T) {
 	run := testRun()
 	m := NewModel(filepath.Join(t.TempDir(), "missing.sock"), nil, run)
