@@ -356,6 +356,43 @@ func TestOtherDaemonAlive_FalseWhenPIDReusedByNewerProcess(t *testing.T) {
 	}
 }
 
+func TestOtherDaemonAlive_FalseWhenLegacyPIDFileMatchesReusedPID(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.PIDFile(), []byte("12345"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mtime := time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(p.PIDFile(), mtime, mtime); err != nil {
+		t.Fatal(err)
+	}
+
+	oldRunning := processRunningFunc
+	oldStartTime := processStartTimeFunc
+	processRunningFunc = func(pid int) (bool, error) {
+		if pid != 12345 {
+			t.Fatalf("unexpected pid %d", pid)
+		}
+		return true, nil
+	}
+	processStartTimeFunc = func(pid int) (time.Time, error) {
+		if pid != 12345 {
+			t.Fatalf("unexpected pid %d", pid)
+		}
+		return mtime.Add(time.Hour), nil
+	}
+	t.Cleanup(func() {
+		processRunningFunc = oldRunning
+		processStartTimeFunc = oldStartTime
+	})
+
+	if otherDaemonAlive(p) {
+		t.Error("legacy pid file with reused pid should not block orphan reaping")
+	}
+}
+
 func TestOtherDaemonAlive_TrueWhenDaemonStartTimeMatchesRecord(t *testing.T) {
 	p := paths.WithRoot(t.TempDir())
 	if err := p.EnsureDirs(); err != nil {

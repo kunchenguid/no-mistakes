@@ -178,19 +178,17 @@ func otherDaemonAlive(p *paths.Paths) bool {
 	if !alive {
 		return false
 	}
-	if record.StartedAt.IsZero() {
-		return true
-	}
 	startedAt, err := processStartTimeFunc(record.PID)
 	if err != nil {
 		slog.Warn("check daemon start time", "pid", record.PID, "error", err)
 		return true
 	}
-	diff := startedAt.Sub(record.StartedAt)
-	if diff < 0 {
-		diff = -diff
+	matches, err := daemonPIDRecordMatchesProcess(p.PIDFile(), record, startedAt)
+	if err != nil {
+		slog.Warn("validate daemon pid", "path", p.PIDFile(), "pid", record.PID, "error", err)
+		return true
 	}
-	return diff <= orphanStartTimeTolerance
+	return matches
 }
 
 func readDaemonPIDFile(path string) (daemonPIDFile, error) {
@@ -225,6 +223,22 @@ func orphanStartTimeMatches(info agent.ServerPIDInfo) (bool, error) {
 		return false, err
 	}
 	diff := actual.Sub(info.StartedAt)
+	if diff < 0 {
+		diff = -diff
+	}
+	return diff <= orphanStartTimeTolerance, nil
+}
+
+func daemonPIDRecordMatchesProcess(path string, record daemonPIDFile, actualStart time.Time) (bool, error) {
+	expectedStart := record.StartedAt.UTC()
+	if expectedStart.IsZero() {
+		info, err := os.Stat(path)
+		if err != nil {
+			return false, fmt.Errorf("stat pid file: %w", err)
+		}
+		expectedStart = info.ModTime().UTC()
+	}
+	diff := actualStart.Sub(expectedStart)
 	if diff < 0 {
 		diff = -diff
 	}

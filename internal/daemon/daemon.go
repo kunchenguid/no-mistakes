@@ -22,6 +22,8 @@ import (
 )
 
 var applyShellEnvToProcess = shellenv.ApplyToProcess
+var createDaemonPIDTempFile = os.CreateTemp
+var renameDaemonPIDFile = os.Rename
 
 // Run starts the daemon process. It blocks until a shutdown signal is received
 // or the shutdown IPC method is called. This is called when NM_DAEMON=1 or via
@@ -134,11 +136,7 @@ func RunWithOptions(p *paths.Paths, d *db.DB, stepFactory StepFactory) error {
 	if err != nil {
 		return fmt.Errorf("build pid file: %w", err)
 	}
-	pidData, err := json.Marshal(pidRecord)
-	if err != nil {
-		return fmt.Errorf("marshal pid file: %w", err)
-	}
-	if err := os.WriteFile(pidPath, pidData, 0o644); err != nil {
+	if err := writeDaemonPIDFile(pidPath, pidRecord); err != nil {
 		return fmt.Errorf("write pid file: %w", err)
 	}
 	defer func() {
@@ -191,6 +189,39 @@ func currentDaemonPIDRecord(startTime func(int) (time.Time, error), now func() t
 		}
 	}
 	return daemonPIDFile{PID: pid, StartedAt: startedAt.UTC()}, nil
+}
+
+func writeDaemonPIDFile(path string, record daemonPIDFile) error {
+	data, err := json.Marshal(record)
+	if err != nil {
+		return fmt.Errorf("marshal pid file: %w", err)
+	}
+	tmp, err := createDaemonPIDTempFile(filepath.Dir(path), filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create pid temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer func() {
+		if tmpPath != "" {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("chmod pid temp file: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write pid temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close pid temp file: %w", err)
+	}
+	if err := renameDaemonPIDFile(tmpPath, path); err != nil {
+		return fmt.Errorf("rename pid file: %w", err)
+	}
+	tmpPath = ""
+	return nil
 }
 
 // recoverOnStartup cleans up after a previous daemon crash by marking stale

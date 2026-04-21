@@ -17,6 +17,10 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 )
 
+type failingRenameError string
+
+func (e failingRenameError) Error() string { return string(e) }
+
 func writeDaemonPIDRecord(t *testing.T, path string, record daemonPIDFile) {
 	t.Helper()
 	data, err := json.Marshal(record)
@@ -418,6 +422,42 @@ func TestCurrentDaemonPIDRecord_UsesProcessStartTime(t *testing.T) {
 	}
 	if !record.StartedAt.Equal(want) {
 		t.Fatalf("record started_at = %v, want %v", record.StartedAt, want)
+	}
+}
+
+func TestWriteDaemonPIDFile_LeavesExistingFileUntouchedOnRenameFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "daemon.pid")
+	original := []byte("old-data")
+	if err := os.WriteFile(path, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldRename := renameDaemonPIDFile
+	renameDaemonPIDFile = func(_, _ string) error {
+		return failingRenameError("rename failed")
+	}
+	t.Cleanup(func() {
+		renameDaemonPIDFile = oldRename
+	})
+
+	err := writeDaemonPIDFile(path, daemonPIDFile{PID: 12345, StartedAt: time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC)})
+	if err == nil {
+		t.Fatal("expected writeDaemonPIDFile to fail when rename fails")
+	}
+	data, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("read pid file: %v", readErr)
+	}
+	if string(data) != string(original) {
+		t.Fatalf("pid file changed after failed atomic write: got %q want %q", string(data), string(original))
+	}
+	matches, globErr := filepath.Glob(filepath.Join(tmpDir, "daemon.pid.tmp-*"))
+	if globErr != nil {
+		t.Fatalf("glob temp files: %v", globErr)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("expected temp files to be cleaned up, got %v", matches)
 	}
 }
 

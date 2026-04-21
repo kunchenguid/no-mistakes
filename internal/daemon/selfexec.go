@@ -251,18 +251,11 @@ func validateDaemonPIDFallback(p *paths.Paths, pid int) error {
 	if err != nil {
 		return fmt.Errorf("inspect daemon pid %d: %w", pid, err)
 	}
-	if record.StartedAt.IsZero() {
-		info, err := os.Stat(p.PIDFile())
-		if err != nil {
-			return fmt.Errorf("stat pid file: %w", err)
-		}
-		mtime := info.ModTime().UTC()
-		if startTime.Sub(mtime) > time.Second || mtime.Sub(startTime) > time.Second {
-			return fmt.Errorf("daemon pid %d does not match pid file instance", pid)
-		}
-		return nil
+	matches, err := daemonPIDRecordMatchesProcess(p.PIDFile(), record, startTime)
+	if err != nil {
+		return fmt.Errorf("validate daemon pid %d: %w", pid, err)
 	}
-	if startTime.Sub(record.StartedAt) > time.Second || record.StartedAt.Sub(startTime) > time.Second {
+	if !matches {
 		return fmt.Errorf("daemon pid %d does not match pid file instance", pid)
 	}
 	return nil
