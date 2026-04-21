@@ -16,15 +16,22 @@ import (
 // and deleted after it shuts down cleanly.
 type ServerPIDInfo struct {
 	PID       int       `json:"pid"`
+	Owner     string    `json:"owner,omitempty"`
 	Agent     string    `json:"agent"`
 	Bin       string    `json:"bin"`
 	Port      int       `json:"port"`
 	StartedAt time.Time `json:"started_at"`
 }
 
+const (
+	ServerPIDOwnerDaemon = "daemon"
+	ServerPIDOwnerWizard = "wizard"
+)
+
 var (
 	serverPIDsDirMu sync.RWMutex
 	serverPIDsDir   string
+	serverPIDOwner  string
 )
 
 // SetServerPIDsDir configures where managed-server PID files are written.
@@ -32,9 +39,18 @@ var (
 // paths.ServerPIDsDir(). Empty string disables PID tracking, which is the
 // default for processes that don't own a long-running daemon identity.
 func SetServerPIDsDir(dir string) {
+	owner := ""
+	if dir != "" {
+		owner = ServerPIDOwnerDaemon
+	}
+	SetServerPIDsDirForOwner(dir, owner)
+}
+
+func SetServerPIDsDirForOwner(dir, owner string) {
 	serverPIDsDirMu.Lock()
 	defer serverPIDsDirMu.Unlock()
 	serverPIDsDir = dir
+	serverPIDOwner = owner
 }
 
 func currentServerPIDsDir() string {
@@ -43,9 +59,17 @@ func currentServerPIDsDir() string {
 	return serverPIDsDir
 }
 
+func currentServerPIDOwner() string {
+	serverPIDsDirMu.RLock()
+	defer serverPIDsDirMu.RUnlock()
+	return serverPIDOwner
+}
+
 // CurrentServerPIDsDir returns the configured directory for PID tracking
 // files, or "" if tracking is disabled.
 func CurrentServerPIDsDir() string { return currentServerPIDsDir() }
+
+func CurrentServerPIDOwner() string { return currentServerPIDOwner() }
 
 // writeServerPIDFile serializes info into a uniquely named file under dir
 // and returns the file path. When dir is empty the call is a no-op and the

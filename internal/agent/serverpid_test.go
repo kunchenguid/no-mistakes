@@ -81,14 +81,28 @@ func TestRemoveServerPIDFile_DeletesAndIgnoresMissing(t *testing.T) {
 
 func TestSetServerPIDsDir_RoundTrip(t *testing.T) {
 	prev := currentServerPIDsDir()
-	t.Cleanup(func() { SetServerPIDsDir(prev) })
+	prevOwner := currentServerPIDOwner()
+	t.Cleanup(func() { SetServerPIDsDirForOwner(prev, prevOwner) })
 
 	SetServerPIDsDir("/tmp/pids")
 	if got := currentServerPIDsDir(); got != "/tmp/pids" {
 		t.Errorf("got %q want /tmp/pids", got)
 	}
+	if got := currentServerPIDOwner(); got != ServerPIDOwnerDaemon {
+		t.Errorf("got owner %q want %q", got, ServerPIDOwnerDaemon)
+	}
+	SetServerPIDsDirForOwner("/tmp/wizard", ServerPIDOwnerWizard)
+	if got := currentServerPIDsDir(); got != "/tmp/wizard" {
+		t.Errorf("got %q want /tmp/wizard", got)
+	}
+	if got := currentServerPIDOwner(); got != ServerPIDOwnerWizard {
+		t.Errorf("got owner %q want %q", got, ServerPIDOwnerWizard)
+	}
 	SetServerPIDsDir("")
 	if got := currentServerPIDsDir(); got != "" {
 		t.Errorf("empty reset, got %q", got)
+	}
+	if got := currentServerPIDOwner(); got != "" {
+		t.Errorf("empty reset owner, got %q", got)
 	}
 }

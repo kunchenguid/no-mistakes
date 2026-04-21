@@ -90,6 +90,48 @@ func TestReapOrphanedServers_SkipsAndRemovesOwnPID(t *testing.T) {
 	}
 }
 
+func TestReapOrphanedServers_SkipsWizardOwnedRecord(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	path := writePIDRecord(t, p.ServerPIDsDir(), "opencode-wizard.json", agent.ServerPIDInfo{
+		PID:       12345,
+		Owner:     agent.ServerPIDOwnerWizard,
+		Agent:     "opencode",
+		StartedAt: time.Now().UTC(),
+	})
+
+	oldRunning := processRunningFunc
+	oldStartTime := processStartTimeFunc
+	oldTerminate := terminateOrphanProcessGroupFunc
+	processRunningFunc = func(pid int) (bool, error) {
+		if pid != 12345 {
+			t.Fatalf("unexpected pid %d", pid)
+		}
+		return true, nil
+	}
+	processStartTimeFunc = func(pid int) (time.Time, error) {
+		t.Fatalf("start time should not be checked for wizard-owned pid %d", pid)
+		return time.Time{}, nil
+	}
+	terminateOrphanProcessGroupFunc = func(pid int) error {
+		t.Fatalf("wizard-owned pid %d should not be terminated", pid)
+		return nil
+	}
+	t.Cleanup(func() {
+		processRunningFunc = oldRunning
+		processStartTimeFunc = oldStartTime
+		terminateOrphanProcessGroupFunc = oldTerminate
+	})
+
+	reapOrphanedServers(p)
+
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("wizard-owned pid file should be kept, got err=%v", err)
+	}
+}
+
 func TestOtherDaemonAlive_FalseForMissingFile(t *testing.T) {
 	p := paths.WithRoot(t.TempDir())
 	if otherDaemonAlive(p) {

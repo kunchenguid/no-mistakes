@@ -62,6 +62,9 @@ func reapOrphanedServers(p *paths.Paths) {
 			removeServerPIDFile(path)
 			continue
 		}
+		if info.Owner != "" && info.Owner != agent.ServerPIDOwnerDaemon {
+			continue
+		}
 		alive, err := processRunningFunc(info.PID)
 		if err != nil {
 			slog.Warn("check orphaned server", "pid", info.PID, "error", err)

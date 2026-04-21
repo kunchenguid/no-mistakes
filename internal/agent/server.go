@@ -79,6 +79,7 @@ func startServerWithPort(ctx context.Context, agentName, bin string, args []stri
 
 	pidFile := writeServerPIDFile(currentServerPIDsDir(), ServerPIDInfo{
 		PID:       cmd.Process.Pid,
+		Owner:     currentServerPIDOwner(),
 		Agent:     agentName,
 		Bin:       bin,
 		Port:      port,

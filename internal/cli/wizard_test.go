@@ -429,8 +429,10 @@ func TestRunWizardReturnsTerminalWizardError(t *testing.T) {
 func TestRunWizard_ConfiguresServerPIDsDir(t *testing.T) {
 	prevRun := wizardRun
 	var observedDir string
+	var observedOwner string
 	wizardRun = func(cfg wizard.Config) (wizard.Result, error) {
 		observedDir = agent.CurrentServerPIDsDir()
+		observedOwner = agent.CurrentServerPIDOwner()
 		return wizard.Result{Success: true}, nil
 	}
 	defer func() { wizardRun = prevRun }()
@@ -464,7 +466,13 @@ func TestRunWizard_ConfiguresServerPIDsDir(t *testing.T) {
 	if want := p.ServerPIDsDir(); observedDir != want {
 		t.Fatalf("during wizard, CurrentServerPIDsDir = %q, want %q", observedDir, want)
 	}
+	if observedOwner != agent.ServerPIDOwnerWizard {
+		t.Fatalf("during wizard, CurrentServerPIDOwner = %q, want %q", observedOwner, agent.ServerPIDOwnerWizard)
+	}
 	if got := agent.CurrentServerPIDsDir(); got != "" {
 		t.Fatalf("after wizard, CurrentServerPIDsDir = %q, want empty", got)
+	}
+	if got := agent.CurrentServerPIDOwner(); got != "" {
+		t.Fatalf("after wizard, CurrentServerPIDOwner = %q, want empty", got)
 	}
 }
