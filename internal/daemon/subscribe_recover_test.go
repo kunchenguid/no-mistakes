@@ -1,12 +1,16 @@
 package daemon
 
 import (
+	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	gitpkg "github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
@@ -390,5 +394,44 @@ func TestRecoverCleansUpOrphanedWorktrees(t *testing.T) {
 	// Orphaned worktree directory should be removed.
 	if _, err := os.Stat(orphanDir); !os.IsNotExist(err) {
 		t.Errorf("orphaned worktree dir still exists: %s", orphanDir)
+	}
+}
+
+// TestRecoverIsolatesGateRepoHooksPath covers issue #122 for existing
+// installs: bare repos created before the fix have no per-worktree
+// core.hookspath, so a husky pollution still disables their hook.
+// Daemon startup must migrate them in place.
+func TestRecoverIsolatesGateRepoHooksPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	p := paths.WithRoot(tmpDir)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate an existing install: a bare repo created the old way
+	// (without IsolateHooksPath) whose shared local config has been
+	// poisoned by husky during a prior pipeline run.
+	bareDir := p.RepoDir("legacy-repo")
+	ctx := context.Background()
+	if err := gitpkg.InitBare(ctx, bareDir); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", bareDir, "config", "core.hookspath", ".husky/_").CombinedOutput(); err != nil {
+		t.Fatalf("seed poisoned config: %v: %s", err, out)
+	}
+
+	migrateGateConfigs(ctx, p)
+
+	// Effective core.hookspath should now resolve to the bare's hooks dir.
+	out, err := exec.Command("git", "-C", bareDir, "config", "--get", "core.hookspath").Output()
+	if err != nil {
+		t.Fatalf("get core.hookspath: %v", err)
+	}
+	want, err := filepath.Abs(filepath.Join(bareDir, "hooks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(out)); got != want {
+		t.Errorf("after migration, core.hookspath = %q, want %q", got, want)
 	}
 }

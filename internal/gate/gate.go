@@ -65,6 +65,14 @@ func Init(ctx context.Context, d *db.DB, p *paths.Paths, workDir string) (*db.Re
 		return nil, fmt.Errorf("install hook: %w", err)
 	}
 
+	// Pin core.hookspath in the bare's per-worktree config so subprocess
+	// writes to shared local config (e.g. husky during pnpm install) can't
+	// disable the gate hook. See git.IsolateHooksPath for details.
+	if err := git.IsolateHooksPath(ctx, bareDir); err != nil {
+		os.RemoveAll(bareDir)
+		return nil, fmt.Errorf("isolate hooks path: %w", err)
+	}
+
 	// Record upstream as origin on the gate repo so gh can resolve repository context
 	// from detached worktrees created from the gate.
 	if err := git.AddRemote(ctx, bareDir, "origin", upstreamURL); err != nil {

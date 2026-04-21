@@ -304,6 +304,23 @@ type discardWriter struct{}
 
 func (discardWriter) Write(p []byte) (int, error) { return len(p), nil }
 
+// awaitDaemonRunRegistration waits for the daemon to register a run for
+// the given branch. A missing run within the timeout is treated as a
+// failure: if the push completed but no run exists, the gate hook
+// probably didn't fire (e.g. core.hookspath poisoning from husky, see
+// issue #122) or the daemon isn't receiving events. Surfacing this as an
+// error prevents the wizard from silently declaring success.
+func awaitDaemonRunRegistration(ctx context.Context, client *ipc.Client, repoID, branch string, timeout time.Duration) error {
+	run, err := waitForActiveRun(ctx, client, repoID, branch, timeout)
+	if err != nil {
+		return err
+	}
+	if run == nil {
+		return fmt.Errorf("daemon did not register a pipeline run for %q within %s - the gate hook may not have fired (check ~/.no-mistakes/repos/<id>.git/notify-push.log and that the daemon is running)", branch, timeout)
+	}
+	return nil
+}
+
 // waitForActiveRun polls the daemon until an active run appears for the given
 // repo/branch, or the deadline elapses. The post-receive hook creates the run
 // asynchronously, so a short poll bridges the gap between push and attach.

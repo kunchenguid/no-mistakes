@@ -3,6 +3,7 @@ package git
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -41,8 +42,11 @@ func TestPostReceiveHookScript(t *testing.T) {
 	if !strings.Contains(script, "command -v no-mistakes") {
 		t.Fatal("hook should fall back to PATH when baked-in path doesn't exist")
 	}
-	if !strings.Contains(script, ">/dev/null 2>&1 || true") {
-		t.Fatal("hook should suppress notifier output so pushes stay clean")
+	if strings.Contains(script, ">/dev/null 2>&1 || true") {
+		t.Fatal("hook should not silently swallow notify-push errors (issue #122)")
+	}
+	if !strings.Contains(script, "notify-push.log") {
+		t.Fatal("hook should log notify-push output to a file under the bare repo")
 	}
 
 	// should print plain ASCII banner to stderr
@@ -135,6 +139,135 @@ func TestInstallPostReceiveHook(t *testing.T) {
 	}
 	if string(content) != postReceiveHookScript(exe) {
 		t.Fatal("hook content doesn't match template")
+	}
+}
+
+// TestPostReceiveHook_SurfacesNotifyFailures covers issue #122 defect 2:
+// when notify-push fails (daemon down, missing-hook state, etc.), the user
+// must see the failure on stderr instead of getting a clean-looking push.
+// We also persist failures to <bareDir>/notify-push.log so they survive past
+// the terminal scrollback.
+//
+// Note: post-receive's exit code is ignored by git, so we can't make
+// `git push` exit non-zero. The wizard's push-confirmation step (defect 3)
+// is responsible for surfacing the failure to the user as an error.
+func TestPostReceiveHook_SurfacesNotifyFailures(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("post-receive hook is /bin/sh-only")
+	}
+	ctx := context.Background()
+
+	base := t.TempDir()
+	bare := filepath.Join(base, "test.git")
+	if err := InitBare(ctx, bare); err != nil {
+		t.Fatal(err)
+	}
+	work := filepath.Join(base, "work")
+	if out, err := exec.Command("git", "init", work).CombinedOutput(); err != nil {
+		t.Fatalf("init work: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", work, "config", "user.email", "t@t.com").CombinedOutput(); err != nil {
+		t.Fatalf("config email: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", work, "config", "user.name", "T").CombinedOutput(); err != nil {
+		t.Fatalf("config name: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", work, "remote", "add", "gate", bare).CombinedOutput(); err != nil {
+		t.Fatalf("add remote: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", work, "commit", "--allow-empty", "-m", "init").CombinedOutput(); err != nil {
+		t.Fatalf("commit: %v: %s", err, out)
+	}
+
+	// Fake no-mistakes binary that always fails notify-push with a
+	// distinctive marker on stderr.
+	fakeBin := filepath.Join(base, "fake-no-mistakes")
+	fakeScript := "#!/bin/sh\necho 'TESTMARKER notify failed' >&2\nexit 7\n"
+	if err := os.WriteFile(fakeBin, []byte(fakeScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Install the real hook generated against the fake binary.
+	hooksDir := filepath.Join(bare, "hooks")
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hookPath := filepath.Join(hooksDir, "post-receive")
+	if err := os.WriteFile(hookPath, []byte(postReceiveHookScript(fakeBin)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Push. We don't care whether `git push` exits zero (post-receive
+	// exit code is ignored by git); we care that the failure surfaced.
+	pushOut, _ := exec.Command("git", "-C", work, "push", "gate", "HEAD:refs/heads/main").CombinedOutput()
+
+	if !strings.Contains(string(pushOut), "TESTMARKER notify failed") {
+		t.Errorf("push output should surface notify-push stderr to the client, got:\n%s", pushOut)
+	}
+
+	logPath := filepath.Join(bare, "notify-push.log")
+	logContent, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("notify-push.log should exist at %s: %v", logPath, err)
+	}
+	if !strings.Contains(string(logContent), "TESTMARKER notify failed") {
+		t.Errorf("notify-push.log should contain notify-push stderr, got:\n%s", logContent)
+	}
+}
+
+func TestIsolateHooksPath_OverridesPoisonedSharedConfig(t *testing.T) {
+	ctx := context.Background()
+	bare := filepath.Join(t.TempDir(), "test.git")
+	if err := InitBare(ctx, bare); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate husky writing core.hookspath into the bare's shared local
+	// config (this is what `git config core.hookspath .husky/_` does when
+	// invoked from a linked worktree).
+	if out, err := exec.Command("git", "-C", bare, "config", "core.hookspath", ".husky/_").CombinedOutput(); err != nil {
+		t.Fatalf("seed shared core.hookspath: %v: %s", err, out)
+	}
+
+	if err := IsolateHooksPath(ctx, bare); err != nil {
+		t.Fatalf("IsolateHooksPath: %v", err)
+	}
+
+	out, err := exec.Command("git", "-C", bare, "config", "--get", "core.hookspath").Output()
+	if err != nil {
+		t.Fatalf("get core.hookspath: %v", err)
+	}
+	want, err := filepath.Abs(filepath.Join(bare, "hooks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(out)); got != want {
+		t.Errorf("effective core.hookspath = %q, want %q (per-worktree should win over poisoned shared)", got, want)
+	}
+
+	// Verify the shared poisoning is still observable in the local scope -
+	// we don't try to clean it up because husky will just re-add it on the
+	// next pipeline run. Per-worktree is what protects us.
+	out, err = exec.Command("git", "-C", bare, "config", "--local", "--get", "core.hookspath").Output()
+	if err != nil {
+		t.Fatalf("get local core.hookspath: %v", err)
+	}
+	if got := strings.TrimSpace(string(out)); got != ".husky/_" {
+		t.Errorf("local core.hookspath = %q, want %q", got, ".husky/_")
+	}
+}
+
+func TestIsolateHooksPath_Idempotent(t *testing.T) {
+	ctx := context.Background()
+	bare := filepath.Join(t.TempDir(), "test.git")
+	if err := InitBare(ctx, bare); err != nil {
+		t.Fatal(err)
+	}
+	if err := IsolateHooksPath(ctx, bare); err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	if err := IsolateHooksPath(ctx, bare); err != nil {
+		t.Fatalf("second call should be a no-op: %v", err)
 	}
 }
 

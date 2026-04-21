@@ -743,6 +743,9 @@ func TestWaitForRun_ErrorSurfacesInResult(t *testing.T) {
 	if res.Err == nil {
 		t.Fatal("Result.Err should reflect the wait failure")
 	}
+	if res.Success {
+		t.Fatal("Result.Success must be false when wait fails (issue #122)")
+	}
 }
 
 func TestWaitForRun_CompletedTelemetrySkippedOnWaitError(t *testing.T) {

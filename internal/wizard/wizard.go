@@ -259,8 +259,12 @@ func (m Model) setupActive() Model {
 			m.waitStarted = true
 			return m
 		}
-		m.success = m.pushed
-		if m.success && m.err == nil {
+		// Success requires both the push and the daemon-confirmation wait
+		// to have completed without error. Treating a wait failure as a
+		// success silently masks broken-gate cases like husky disabling
+		// the post-receive hook (issue #122).
+		m.success = m.pushed && m.err == nil
+		if m.success {
 			m.track("completed", map[string]any{
 				"branch_created": m.branchCreated,
 				"commit_made":    m.commitMade,
