@@ -44,6 +44,12 @@ type wizardAgentSuggester struct {
 	once sync.Once
 	ag   agent.Agent
 	err  error
+
+	// cachedCommit holds a commit subject returned as a side-effect of the
+	// branch-name agent call, so the commit step can consume it without
+	// spending another full agent round-trip. Consumed on first read.
+	cacheMu      sync.Mutex
+	cachedCommit string
 }
 
 func newWizardAgentSuggester(cfg *config.Config, workDir string, resolve func(context.Context, *config.Config) error, new func(types.AgentName, string) (agent.Agent, error)) *wizardAgentSuggester {
@@ -76,10 +82,32 @@ func (s *wizardAgentSuggester) suggestBranch(ctx context.Context) (string, error
 	if err := s.ensure(ctx); err != nil {
 		return "", err
 	}
-	return agent.SuggestBranchName(ctx, s.ag, s.workDir)
+	s.cacheMu.Lock()
+	s.cachedCommit = ""
+	s.cacheMu.Unlock()
+	branch, commit, err := agent.SuggestBranchAndCommit(ctx, s.ag, s.workDir)
+	if err != nil {
+		return "", err
+	}
+	s.cacheMu.Lock()
+	s.cachedCommit = commit
+	s.cacheMu.Unlock()
+	return branch, nil
 }
 
 func (s *wizardAgentSuggester) suggestCommit(ctx context.Context) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	s.cacheMu.Lock()
+	cached := s.cachedCommit
+	if cached != "" {
+		s.cachedCommit = ""
+	}
+	s.cacheMu.Unlock()
+	if cached != "" {
+		return cached, nil
+	}
 	if err := s.ensure(ctx); err != nil {
 		return "", err
 	}

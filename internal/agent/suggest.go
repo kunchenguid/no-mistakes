@@ -7,14 +7,26 @@ import (
 	"strings"
 )
 
+// branchNameRules and commitSubjectRules are shared between the single-purpose
+// prompts and the combined prompt so behavior stays in lock-step. The commit
+// rules mirror the PR title rules in internal/pipeline/steps/pr.go so a commit
+// made through the wizard and the PR title generated later feel consistent.
+const branchNameRules = `- Use kebab-case.
+- Prefer a conventional prefix: "feat/", "fix/", "chore/", "refactor/", "docs/", or "test/".
+- Keep it under 40 characters.`
+
+const commitSubjectRules = `- One line only, under 72 characters.
+- Use conventional commit format: "type(scope): description" or "type: description". Valid types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert. Scope is optional. Do not capitalize the type.
+- When including a scope, it MUST be a real package/module name that exists in the codebase (for example, a directory under internal/, cmd/, or the equivalent top-level grouping for this project), identified by inspecting the changed paths. Pick the primary module affected by the change, not a secondary or incidental one.
+- Keep the scope at a coarse level, not too granular: a codebase typically has fewer than 10 distinct scopes in use across its history. Prefer a broad module name (e.g. "daemon", "pipeline", "cli") over a narrow file or sub-feature name. If you cannot confidently identify a real primary module, omit the scope and use "type: description".
+- Do not invent behavior.`
+
 const branchNamePrompt = `Suggest a short, descriptive git branch name for the current working-tree changes in this repository.
 
 Inspect the state yourself (e.g. git status, git diff HEAD, git diff --staged) in the working directory.
 
 Rules:
-- Use kebab-case.
-- Prefer a conventional prefix: "feat/", "fix/", "chore/", "refactor/", "docs/", or "test/".
-- Keep it under 40 characters.
+` + branchNameRules + `
 - Return JSON: {"name":"..."}`
 
 const commitSubjectPrompt = `Suggest a conventional commit subject line summarizing the current working-tree changes.
@@ -22,10 +34,20 @@ const commitSubjectPrompt = `Suggest a conventional commit subject line summariz
 Inspect the state yourself (e.g. git status, git diff HEAD, git diff --staged) in the working directory.
 
 Rules:
-- One line only.
-- Use conventional commit style: "type(scope): description".
-- Keep it under 72 characters.
+` + commitSubjectRules + `
 - Return JSON: {"subject":"..."}`
+
+const branchAndCommitPrompt = `Suggest a git branch name and a conventional commit subject for the current working-tree changes in this repository.
+
+Inspect the state yourself (e.g. git status, git diff HEAD, git diff --staged) in the working directory.
+
+Branch name rules:
+` + branchNameRules + `
+
+Commit subject rules:
+` + commitSubjectRules + `
+
+Return JSON: {"branch":"...","subject":"..."}`
 
 var branchNameSchema = json.RawMessage(`{
 	"type": "object",
@@ -43,11 +65,25 @@ var commitSubjectSchema = json.RawMessage(`{
 	"required": ["subject"]
 }`)
 
+var branchAndCommitSchema = json.RawMessage(`{
+	"type": "object",
+	"properties": {
+		"branch": {"type": "string"},
+		"subject": {"type": "string"}
+	},
+	"required": ["branch", "subject"]
+}`)
+
 type branchSuggestion struct {
 	Name string `json:"name"`
 }
 
 type commitSuggestion struct {
+	Subject string `json:"subject"`
+}
+
+type branchAndCommitSuggestion struct {
+	Branch  string `json:"branch"`
 	Subject string `json:"subject"`
 }
 
@@ -72,6 +108,36 @@ func SuggestBranchName(ctx context.Context, ag Agent, dir string) (string, error
 		return "", fmt.Errorf("agent returned empty or unusable branch name")
 	}
 	return name, nil
+}
+
+// SuggestBranchAndCommit asks the agent to propose both a git branch name and
+// a conventional commit subject for the current working-tree state in a
+// single call. Combining the two saves one full agent round-trip when the
+// wizard needs both (new branch + dirty tree).
+//
+// The branch name must be present and sanitizes to a valid git ref; otherwise
+// an error is returned. The commit subject is best-effort: if the agent
+// returns an empty subject, this function returns an empty string with no
+// error so the caller can fall back to SuggestCommitMessage.
+func SuggestBranchAndCommit(ctx context.Context, ag Agent, dir string) (branch, subject string, err error) {
+	result, err := ag.Run(ctx, RunOpts{
+		Prompt:     branchAndCommitPrompt,
+		CWD:        dir,
+		JSONSchema: branchAndCommitSchema,
+	})
+	if err != nil {
+		return "", "", fmt.Errorf("suggest branch and commit: %w", err)
+	}
+	var parsed branchAndCommitSuggestion
+	if err := unmarshalSuggestion(result, &parsed); err != nil {
+		return "", "", fmt.Errorf("parse branch and commit suggestion: %w", err)
+	}
+	branch = sanitizeBranchName(parsed.Branch)
+	if branch == "" {
+		return "", "", fmt.Errorf("agent returned empty or unusable branch name")
+	}
+	subject = sanitizeCommitSubject(parsed.Subject)
+	return branch, subject, nil
 }
 
 // SuggestCommitMessage asks the agent to propose a single-line commit subject
