@@ -66,7 +66,7 @@ Always shown. Asks whether to push the current branch to the `no-mistakes` gate.
 - Press `y` to push.
 - Press `n` to stop.
 
-If the push succeeds, the wizard hands off to the main TUI and attaches to the new run.
+If the push succeeds, the interactive wizard stays visible in a brief `waiting for run…` state while the daemon registers the new run, then hands off to the main TUI and attaches.
 
 The goal is to keep the setup path short. If you already have a branch, it does
 not ask for one. If everything is already committed, it skips straight to push.
