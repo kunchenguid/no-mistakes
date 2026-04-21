@@ -186,3 +186,39 @@ func TestReapOrphanedServers_KeepsPIDFileWhenTerminateFails(t *testing.T) {
 		t.Error("process should remain alive when terminate hook fails")
 	}
 }
+
+func TestReapOrphanedServers_KeepsPIDFileWhenStartTimeCheckFails(t *testing.T) {
+	cmd, pid := spawnSleepProcess(t)
+	t.Cleanup(func() { killAndWait(cmd) })
+
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	path := writePIDRecord(t, p.ServerPIDsDir(), "opencode-live.json", agent.ServerPIDInfo{
+		PID:       pid,
+		Agent:     "opencode",
+		Bin:       "/bin/sleep",
+		StartedAt: time.Now().UTC(),
+	})
+
+	old := processStartTimeFunc
+	processStartTimeFunc = func(gotPID int) (time.Time, error) {
+		if gotPID != pid {
+			t.Fatalf("unexpected pid %d", gotPID)
+		}
+		return time.Time{}, errors.New("boom")
+	}
+	t.Cleanup(func() { processStartTimeFunc = old })
+
+	reapOrphanedServers(p)
+
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("pid file should be kept for retry after start time check failure, got err=%v", err)
+	}
+	if alive, err := processRunning(pid); err != nil {
+		t.Fatalf("processRunning: %v", err)
+	} else if !alive {
+		t.Error("process should remain alive when start time check fails")
+	}
+}

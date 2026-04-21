@@ -145,3 +145,17 @@ func TestOtherDaemonAlive_TrueWhenLivenessCheckErrors(t *testing.T) {
 		t.Error("liveness-check errors should conservatively block orphan reaping")
 	}
 }
+
+func TestOtherDaemonAlive_TrueWhenPIDFileUnreadable(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(p.PIDFile(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if !otherDaemonAlive(p) {
+		t.Error("pid-file read errors should conservatively block orphan reaping")
+	}
+}

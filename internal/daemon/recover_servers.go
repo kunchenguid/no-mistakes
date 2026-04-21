@@ -20,6 +20,7 @@ import (
 const orphanStartTimeTolerance = 2 * time.Second
 
 var processRunningFunc = processRunning
+var processStartTimeFunc = processStartTime
 var terminateOrphanProcessGroupFunc = terminateOrphanProcessGroup
 
 // reapOrphanedServers kills managed-server subprocesses (opencode,
@@ -70,7 +71,12 @@ func reapOrphanedServers(p *paths.Paths) {
 			removeServerPIDFile(path)
 			continue
 		}
-		if !orphanStartTimeMatches(info) {
+		matches, err := orphanStartTimeMatches(info)
+		if err != nil {
+			slog.Warn("check orphan start time", "pid", info.PID, "error", err)
+			continue
+		}
+		if !matches {
 			slog.Info("orphan pid file stale; pid reused by unrelated process, not killing",
 				"pid", info.PID, "agent", info.Agent)
 			removeServerPIDFile(path)
@@ -109,6 +115,10 @@ func removeServerPIDFile(path string) {
 func otherDaemonAlive(p *paths.Paths) bool {
 	data, err := os.ReadFile(p.PIDFile())
 	if err != nil {
+		if !os.IsNotExist(err) {
+			slog.Warn("read daemon pid file", "path", p.PIDFile(), "error", err)
+			return true
+		}
 		return false
 	}
 	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
@@ -123,14 +133,14 @@ func otherDaemonAlive(p *paths.Paths) bool {
 	return alive
 }
 
-func orphanStartTimeMatches(info agent.ServerPIDInfo) bool {
-	actual, err := processStartTime(info.PID)
+func orphanStartTimeMatches(info agent.ServerPIDInfo) (bool, error) {
+	actual, err := processStartTimeFunc(info.PID)
 	if err != nil {
-		return false
+		return false, err
 	}
 	diff := actual.Sub(info.StartedAt)
 	if diff < 0 {
 		diff = -diff
 	}
-	return diff <= orphanStartTimeTolerance
+	return diff <= orphanStartTimeTolerance, nil
 }
