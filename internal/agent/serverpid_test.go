@@ -2,11 +2,11 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
@@ -128,37 +128,9 @@ func TestWriteServerPIDFile_ConcurrentReadersNeverSeePartialJSON(t *testing.T) {
 	}
 
 	stop := make(chan struct{})
-	errCh := make(chan error, 1)
-	var wg sync.WaitGroup
-	wg.Add(1)
+	resultCh := make(chan error, 1)
 	go func() {
-		defer wg.Done()
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-			}
-			data, err := os.ReadFile(path)
-			if err != nil {
-				if os.IsNotExist(err) || isTransientPIDOpenError(err) {
-					continue
-				}
-				select {
-				case errCh <- fmt.Errorf("read pid file: %w", err):
-				default:
-				}
-				return
-			}
-			var got ServerPIDInfo
-			if err := json.Unmarshal(data, &got); err != nil {
-				select {
-				case errCh <- fmt.Errorf("saw partial pid file: %w", err):
-				default:
-				}
-				return
-			}
-		}
+		resultCh <- readPIDFileUntilStopped(path, stop)
 	}()
 
 	for i := 0; i < 200; i++ {
@@ -169,10 +141,52 @@ func TestWriteServerPIDFile_ConcurrentReadersNeverSeePartialJSON(t *testing.T) {
 	}
 
 	close(stop)
-	wg.Wait()
-	select {
-	case err := <-errCh:
+	if err := <-resultCh; err != nil {
 		t.Fatal(err)
-	default:
+	}
+}
+
+
+func TestReadPIDFileUntilStopped_RequiresSuccessfulRead(t *testing.T) {
+	stop := make(chan struct{})
+	resultCh := make(chan error, 1)
+	go func() {
+		resultCh <- readPIDFileUntilStopped(filepath.Join(t.TempDir(), "missing.json"), stop)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	close(stop)
+
+	err := <-resultCh
+	if !errors.Is(err, errPIDFileNeverRead) {
+		t.Fatalf("readPIDFileUntilStopped() error = %v, want %v", err, errPIDFileNeverRead)
+	}
+}
+
+var errPIDFileNeverRead = errors.New("pid file was never read successfully")
+
+func readPIDFileUntilStopped(path string, stop <-chan struct{}) error {
+	var successCount int
+	for {
+		select {
+		case <-stop:
+			if successCount == 0 {
+				return errPIDFileNeverRead
+			}
+			return nil
+		default:
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			if os.IsNotExist(err) || isTransientPIDOpenError(err) {
+				continue
+			}
+			return fmt.Errorf("read pid file: %w", err)
+		}
+		var got ServerPIDInfo
+		if err := json.Unmarshal(data, &got); err != nil {
+			return fmt.Errorf("saw partial pid file: %w", err)
+		}
+		successCount++
 	}
 }
