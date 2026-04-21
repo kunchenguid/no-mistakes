@@ -442,6 +442,34 @@ func TestValidateDaemonPIDFallback_RejectsLegacyPIDFileTouchedNearLivePID(t *tes
 	}
 }
 
+func TestWaitForProcessExitRetriesTransientInspectionErrors(t *testing.T) {
+	originalProcessRunning := daemonProcessRunning
+	checks := 0
+	daemonProcessRunning = func(pid int) (bool, error) {
+		if pid != 4242 {
+			t.Fatalf("daemonProcessRunning pid = %d, want 4242", pid)
+		}
+		checks++
+		switch checks {
+		case 1:
+			return false, fmt.Errorf("transient failure")
+		case 2:
+			return true, nil
+		default:
+			return false, nil
+		}
+	}
+	t.Cleanup(func() {
+		daemonProcessRunning = originalProcessRunning
+	})
+
+	waitForProcessExit(4242, 50*time.Millisecond)
+
+	if checks < 3 {
+		t.Fatalf("waitForProcessExit stopped after %d checks, want at least 3", checks)
+	}
+}
+
 func TestCurrentDaemonPIDRecord_UsesProcessStartTime(t *testing.T) {
 	want := time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC)
 	now := want.Add(10 * time.Second)

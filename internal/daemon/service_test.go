@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 )
@@ -114,6 +115,68 @@ func TestStartDetachedDaemonUsesProvidedRootViaNMHome(t *testing.T) {
 	}
 	if got := string(data); got != p.Root() {
 		t.Fatalf("child NM_HOME = %q, want %q", got, p.Root())
+	}
+}
+
+func TestStartDetachedDaemonCleansUpChildWhenStartTimeProbeFails(t *testing.T) {
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("NM_DAEMON_HELPER_PROCESS", "block")
+
+	oldStartTime := daemonProcessStartTime
+	startedPID := 0
+	daemonProcessStartTime = func(pid int) (time.Time, error) {
+		startedPID = pid
+		return time.Time{}, fmt.Errorf("inspect failed")
+	}
+	t.Cleanup(func() {
+		daemonProcessStartTime = oldStartTime
+		if startedPID <= 0 {
+			return
+		}
+		running, err := daemonProcessRunning(startedPID)
+		if err == nil && running {
+			_ = daemonKillPID(startedPID)
+			deadline := time.Now().Add(2 * time.Second)
+			for time.Now().Before(deadline) {
+				running, err = daemonProcessRunning(startedPID)
+				if err == nil && !running {
+					return
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+		}
+	})
+
+	err := startDetachedDaemon(p)
+	if err == nil {
+		t.Fatal("startDetachedDaemon should fail when process inspection fails")
+	}
+	if !strings.Contains(err.Error(), "inspect daemon process") {
+		t.Fatalf("startDetachedDaemon error = %v, want process inspection failure", err)
+	}
+	if startedPID <= 0 {
+		t.Fatal("expected startDetachedDaemon to spawn a child process")
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		running, runErr := daemonProcessRunning(startedPID)
+		if runErr == nil && !running {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	running, runErr := daemonProcessRunning(startedPID)
+	if runErr != nil {
+		t.Fatalf("daemonProcessRunning(%d) returned error after inspection failure: %v", startedPID, runErr)
+	}
+	if running {
+		t.Fatalf("child pid %d still running after inspection failure", startedPID)
 	}
 }
 
@@ -762,6 +825,159 @@ func TestStopDoesNotTouchManagedDaemonOwnedByDifferentNMHome(t *testing.T) {
 				t.Fatalf("Stop(p) must not touch managed daemon owned by a different NM_HOME, got destructive command: %q", cmd)
 			}
 		}
+	}
+}
+
+func TestWaitForDaemonStartKillsChildOnTimeout(t *testing.T) {
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
+	startedAt := time.Date(2026, 4, 21, 10, 0, 0, 0, time.UTC)
+
+	t.Setenv("NM_TEST_DAEMON_START_TIMEOUT", "20ms")
+	t.Setenv("NM_TEST_DAEMON_START_POLL_INTERVAL", "1ms")
+
+	oldHealthCheck := daemonHealthCheck
+	daemonHealthCheck = func(*paths.Paths) (bool, error) { return false, nil }
+	defer func() { daemonHealthCheck = oldHealthCheck }()
+
+	oldStartTime := daemonProcessStartTime
+	daemonProcessStartTime = func(pid int) (time.Time, error) {
+		if pid != 4242 {
+			t.Fatalf("daemonProcessStartTime pid = %d, want 4242", pid)
+		}
+		return startedAt, nil
+	}
+	defer func() { daemonProcessStartTime = oldStartTime }()
+
+	oldKill := daemonKillPID
+	killed := 0
+	daemonKillPID = func(pid int) error {
+		killed = pid
+		return nil
+	}
+	defer func() { daemonKillPID = oldKill }()
+
+	err := waitForDaemonStart(p, 4242, startedAt)
+	if err == nil {
+		t.Fatal("waitForDaemonStart should fail when daemon never becomes responsive")
+	}
+	if killed != 4242 {
+		t.Fatalf("waitForDaemonStart should kill pid 4242 on timeout, killed=%d", killed)
+	}
+}
+
+func TestWaitForDaemonStartReturnsCleanupErrorOnTimeout(t *testing.T) {
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
+	startedAt := time.Date(2026, 4, 21, 10, 0, 0, 0, time.UTC)
+
+	t.Setenv("NM_TEST_DAEMON_START_TIMEOUT", "20ms")
+	t.Setenv("NM_TEST_DAEMON_START_POLL_INTERVAL", "1ms")
+
+	oldHealthCheck := daemonHealthCheck
+	daemonHealthCheck = func(*paths.Paths) (bool, error) { return false, nil }
+	defer func() { daemonHealthCheck = oldHealthCheck }()
+
+	oldStartTime := daemonProcessStartTime
+	daemonProcessStartTime = func(pid int) (time.Time, error) {
+		if pid != 4242 {
+			t.Fatalf("daemonProcessStartTime pid = %d, want 4242", pid)
+		}
+		return startedAt, nil
+	}
+	defer func() { daemonProcessStartTime = oldStartTime }()
+
+	oldKill := daemonKillPID
+	daemonKillPID = func(pid int) error {
+		if pid != 4242 {
+			t.Fatalf("daemonKillPID pid = %d, want 4242", pid)
+		}
+		return fmt.Errorf("kill failed")
+	}
+	defer func() { daemonKillPID = oldKill }()
+
+	err := waitForDaemonStart(p, 4242, startedAt)
+	if err == nil {
+		t.Fatal("waitForDaemonStart should fail when cleanup fails")
+	}
+	if !strings.Contains(err.Error(), "kill failed") {
+		t.Fatalf("waitForDaemonStart error = %v, want cleanup failure", err)
+	}
+}
+
+func TestWaitForDaemonStartSkipsKillForReusedPID(t *testing.T) {
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
+	startedAt := time.Date(2026, 4, 21, 10, 0, 0, 0, time.UTC)
+
+	t.Setenv("NM_TEST_DAEMON_START_TIMEOUT", "20ms")
+	t.Setenv("NM_TEST_DAEMON_START_POLL_INTERVAL", "1ms")
+
+	oldHealthCheck := daemonHealthCheck
+	daemonHealthCheck = func(*paths.Paths) (bool, error) { return false, nil }
+	defer func() { daemonHealthCheck = oldHealthCheck }()
+
+	oldStartTime := daemonProcessStartTime
+	daemonProcessStartTime = func(pid int) (time.Time, error) {
+		if pid != 4242 {
+			t.Fatalf("daemonProcessStartTime pid = %d, want 4242", pid)
+		}
+		return startedAt.Add(time.Second), nil
+	}
+	defer func() { daemonProcessStartTime = oldStartTime }()
+
+	oldKill := daemonKillPID
+	killCalled := false
+	daemonKillPID = func(int) error {
+		killCalled = true
+		return nil
+	}
+	defer func() { daemonKillPID = oldKill }()
+
+	err := waitForDaemonStart(p, 4242, startedAt)
+	if err == nil {
+		t.Fatal("waitForDaemonStart should fail when daemon never becomes responsive")
+	}
+	if killCalled {
+		t.Fatal("waitForDaemonStart should not kill when pid start time no longer matches")
+	}
+}
+
+func TestWaitForDaemonStartDoesNotKillWhenPIDZero(t *testing.T) {
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("NM_TEST_DAEMON_START_TIMEOUT", "20ms")
+	t.Setenv("NM_TEST_DAEMON_START_POLL_INTERVAL", "1ms")
+
+	oldHealthCheck := daemonHealthCheck
+	daemonHealthCheck = func(*paths.Paths) (bool, error) { return false, nil }
+	defer func() { daemonHealthCheck = oldHealthCheck }()
+
+	oldKill := daemonKillPID
+	killCalled := false
+	daemonKillPID = func(int) error {
+		killCalled = true
+		return nil
+	}
+	defer func() { daemonKillPID = oldKill }()
+
+	if err := waitForDaemonStart(p, 0, time.Time{}); err == nil {
+		t.Fatal("waitForDaemonStart should fail when daemon never becomes responsive")
+	}
+	if killCalled {
+		t.Fatal("waitForDaemonStart should not kill when pid is 0 (managed daemon case)")
 	}
 }
 

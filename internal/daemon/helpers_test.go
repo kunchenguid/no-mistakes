@@ -25,6 +25,9 @@ func TestMain(m *testing.M) {
 			_ = os.WriteFile(capturePath, []byte(os.Getenv("NM_HOME")), 0o644)
 		}
 		os.Exit(0)
+	case "block":
+		time.Sleep(30 * time.Second)
+		os.Exit(0)
 	}
 	os.Exit(m.Run())
 }
