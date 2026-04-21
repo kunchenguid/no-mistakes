@@ -159,13 +159,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			timeoutFailingChecks = append(timeoutFailingChecks[:0], failing...)
 
 			if hasIssues && pending {
-				// Some checks still running - wait for all to complete before fixing.
-				// A pending check means CI has started a new run (typically because
-				// the previous fix was pushed), so the earlier same-name failure set
-				// is no longer "old, stale data" - clear the guard so that if the
-				// new run finishes with the same failing names, we treat it as a
-				// fresh attempt rather than looping on "fix already attempted".
-				s.lastFixedChecks = ""
+				if pendingCheckMatchesLastFixed(checks, s.lastFixedChecks) {
+					s.lastFixedChecks = ""
+				}
 				sctx.Log("issues detected but checks still pending, waiting for all checks to complete...")
 			} else if hasIssues {
 				// All checks done, issues present - fix or report

@@ -3,6 +3,7 @@ package steps
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
@@ -52,6 +53,35 @@ func failingCheckNames(checks []scm.Check) []string {
 		}
 	}
 	return names
+}
+
+func pendingCheckMatchesLastFixed(checks []scm.Check, lastFixedChecks string) bool {
+	if lastFixedChecks == "" {
+		return false
+	}
+
+	failedNames := map[string]struct{}{}
+	for _, name := range strings.Split(lastFixedChecks, ",") {
+		name = strings.TrimSuffix(name, "+conflict")
+		if name == "" {
+			continue
+		}
+		failedNames[name] = struct{}{}
+	}
+	if len(failedNames) == 0 {
+		return false
+	}
+
+	for _, c := range checks {
+		if !c.Pending() {
+			continue
+		}
+		if _, ok := failedNames[c.Name]; ok {
+			return true
+		}
+	}
+
+	return false
 }
 
 func ciFailureOutcome(failing []string, mergeConflict bool, summary string) *pipeline.StepOutcome {
