@@ -128,16 +128,31 @@ func TestWriteServerPIDFile_ConcurrentReadersNeverSeePartialJSON(t *testing.T) {
 	}
 
 	stop := make(chan struct{})
+	observedInitial := make(chan struct{})
+	observedFinal := make(chan struct{})
 	resultCh := make(chan error, 1)
+	finalPort := info.Port + 199
 	go func() {
-		resultCh <- readPIDFileUntilStopped(path, info.Port, stop)
+		resultCh <- readPIDFileUntilStopped(path, info.Port, finalPort, stop, observedInitial, observedFinal)
 	}()
+
+	select {
+	case <-observedInitial:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reader never observed initial pid file")
+	}
 
 	for i := 0; i < 200; i++ {
 		info.Port = 54321 + i
 		if got := writeServerPIDFile(dir, info); got != path {
 			t.Fatalf("writeServerPIDFile() path = %q, want %q", got, path)
 		}
+	}
+
+	select {
+	case <-observedFinal:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reader never observed final pid file rewrite")
 	}
 
 	close(stop)
@@ -150,7 +165,7 @@ func TestReadPIDFileUntilStopped_RequiresSuccessfulRead(t *testing.T) {
 	stop := make(chan struct{})
 	resultCh := make(chan error, 1)
 	go func() {
-		resultCh <- readPIDFileUntilStopped(filepath.Join(t.TempDir(), "missing.json"), 0, stop)
+		resultCh <- readPIDFileUntilStopped(filepath.Join(t.TempDir(), "missing.json"), 0, 0, stop, nil, nil)
 	}()
 
 	time.Sleep(20 * time.Millisecond)
@@ -186,7 +201,7 @@ func TestReadPIDFileUntilStopped_RequiresUpdatedRead(t *testing.T) {
 	stop := make(chan struct{})
 	resultCh := make(chan error, 1)
 	go func() {
-		resultCh <- readPIDFileUntilStopped(path, info.Port, stop)
+		resultCh <- readPIDFileUntilStopped(path, info.Port, info.Port+1, stop, nil, nil)
 	}()
 
 	time.Sleep(20 * time.Millisecond)
@@ -201,16 +216,19 @@ func TestReadPIDFileUntilStopped_RequiresUpdatedRead(t *testing.T) {
 var errPIDFileNeverRead = errors.New("pid file was never read successfully")
 var errPIDFileNeverObservedRewrite = errors.New("pid file rewrite was never read successfully")
 
-func readPIDFileUntilStopped(path string, initialPort int, stop <-chan struct{}) error {
+func readPIDFileUntilStopped(path string, initialPort int, finalPort int, stop <-chan struct{}, observedInitial chan<- struct{}, observedFinal chan<- struct{}) error {
 	var successCount int
 	var sawRewrite bool
+	var sentInitial bool
+	var sawFinal bool
+	var sentFinal bool
 	for {
 		select {
 		case <-stop:
 			if successCount == 0 {
 				return errPIDFileNeverRead
 			}
-			if !sawRewrite {
+			if !sawRewrite || (finalPort != initialPort && !sawFinal) {
 				return errPIDFileNeverObservedRewrite
 			}
 			return nil
@@ -228,8 +246,23 @@ func readPIDFileUntilStopped(path string, initialPort int, stop <-chan struct{})
 			return fmt.Errorf("saw partial pid file: %w", err)
 		}
 		successCount++
+		if got.Port == initialPort && !sentInitial {
+			sentInitial = true
+			if observedInitial != nil {
+				close(observedInitial)
+			}
+		}
 		if got.Port != initialPort {
 			sawRewrite = true
+		}
+		if got.Port == finalPort {
+			sawFinal = true
+			if !sentFinal {
+				sentFinal = true
+				if observedFinal != nil {
+					close(observedFinal)
+				}
+			}
 		}
 	}
 }
