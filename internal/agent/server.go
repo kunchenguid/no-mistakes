@@ -78,13 +78,14 @@ func startServerWithPort(ctx context.Context, agentName, bin string, args []stri
 	}
 
 	pidFile := writeServerPIDFile(currentServerPIDsDir(), ServerPIDInfo{
-		PID:       cmd.Process.Pid,
-		Owner:     currentServerPIDOwner(),
-		OwnerPID:  os.Getpid(),
-		Agent:     agentName,
-		Bin:       bin,
-		Port:      port,
-		StartedAt: time.Now().UTC(),
+		PID:            cmd.Process.Pid,
+		Owner:          currentServerPIDOwner(),
+		OwnerPID:       os.Getpid(),
+		OwnerStartedAt: CurrentProcessStartedAt(),
+		Agent:          agentName,
+		Bin:            bin,
+		Port:           port,
+		StartedAt:      time.Now().UTC(),
 	})
 
 	srv := &managedServer{cmd: cmd, port: port, pidFile: pidFile, exited: make(chan struct{})}

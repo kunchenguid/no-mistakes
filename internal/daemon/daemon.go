@@ -130,13 +130,19 @@ func RunWithOptions(p *paths.Paths, d *db.DB, stepFactory StepFactory) error {
 
 	// Write PID file
 	pidPath := p.PIDFile()
-	myPID := fmt.Sprintf("%d", os.Getpid())
-	if err := os.WriteFile(pidPath, []byte(myPID), 0o644); err != nil {
+	pidRecord := daemonPIDFile{PID: os.Getpid(), StartedAt: time.Now().UTC()}
+	pidData, err := json.Marshal(pidRecord)
+	if err != nil {
+		return fmt.Errorf("marshal pid file: %w", err)
+	}
+	if err := os.WriteFile(pidPath, pidData, 0o644); err != nil {
 		return fmt.Errorf("write pid file: %w", err)
 	}
 	defer func() {
-		if pidData, err := os.ReadFile(pidPath); err == nil && string(pidData) == myPID {
-			os.Remove(pidPath)
+		if pidData, err := os.ReadFile(pidPath); err == nil {
+			if current, readErr := readDaemonPIDFileData(pidData); readErr == nil && current.PID == pidRecord.PID && current.StartedAt.Equal(pidRecord.StartedAt) {
+				os.Remove(pidPath)
+			}
 		}
 	}()
 
@@ -162,8 +168,11 @@ func RunWithOptions(p *paths.Paths, d *db.DB, stepFactory StepFactory) error {
 
 	// Clean up socket file only if we still own the PID file.
 	// A new daemon may have already replaced the socket.
-	if pidData, err := os.ReadFile(pidPath); err == nil && string(pidData) == myPID {
-		os.Remove(socketPath)
+	if pidData, err := os.ReadFile(pidPath); err == nil {
+		if current, readErr := readDaemonPIDFileData(pidData); readErr == nil && current.PID == pidRecord.PID && current.StartedAt.Equal(pidRecord.StartedAt) {
+			os.Remove(pidPath)
+			os.Remove(socketPath)
+		}
 	}
 	slog.Info("daemon stopped")
 	return nil

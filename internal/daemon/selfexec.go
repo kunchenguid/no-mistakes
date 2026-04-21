@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
-	"strconv"
 	"strings"
 	"time"
 
@@ -241,15 +240,21 @@ func validateDaemonPIDFallback(p *paths.Paths, pid int) error {
 	if pid <= 0 {
 		return fmt.Errorf("invalid daemon pid %d", pid)
 	}
-	info, err := os.Stat(p.PIDFile())
+	record, err := readDaemonPIDFile(p.PIDFile())
 	if err != nil {
-		return fmt.Errorf("stat pid file: %w", err)
+		return fmt.Errorf("read pid file: %w", err)
+	}
+	if record.PID != pid {
+		return fmt.Errorf("daemon pid %d does not match pid file instance", pid)
 	}
 	startTime, err := daemonProcessStartTime(pid)
 	if err != nil {
 		return fmt.Errorf("inspect daemon pid %d: %w", pid, err)
 	}
-	if startTime.Sub(info.ModTime()) > time.Second || info.ModTime().Sub(startTime) > time.Second {
+	if record.StartedAt.IsZero() {
+		return nil
+	}
+	if startTime.Sub(record.StartedAt) > time.Second || record.StartedAt.Sub(startTime) > time.Second {
 		return fmt.Errorf("daemon pid %d does not match pid file instance", pid)
 	}
 	return nil
@@ -385,16 +390,9 @@ func EnsureDaemon(p *paths.Paths) error {
 
 // ReadPID reads the daemon PID from the PID file.
 func ReadPID(p *paths.Paths) (int, error) {
-	data, err := os.ReadFile(p.PIDFile())
+	record, err := readDaemonPIDFile(p.PIDFile())
 	if err != nil {
 		return 0, err
 	}
-	pid, err := strconv.Atoi(string(data))
-	if err != nil {
-		return 0, fmt.Errorf("invalid pid file: %w", err)
-	}
-	if pid <= 0 {
-		return 0, fmt.Errorf("invalid pid file: pid must be positive")
-	}
-	return pid, nil
+	return record.PID, nil
 }

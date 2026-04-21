@@ -14,11 +14,12 @@ import (
 func TestWriteServerPIDFile_WritesJSONInDir(t *testing.T) {
 	dir := t.TempDir()
 	info := ServerPIDInfo{
-		PID:       12345,
-		Agent:     "opencode",
-		Bin:       "/usr/local/bin/opencode",
-		Port:      54321,
-		StartedAt: time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC),
+		PID:            12345,
+		OwnerStartedAt: time.Date(2026, 4, 20, 9, 59, 0, 0, time.UTC),
+		Agent:          "opencode",
+		Bin:            "/usr/local/bin/opencode",
+		Port:           54321,
+		StartedAt:      time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC),
 	}
 
 	path := writeServerPIDFile(dir, info)
@@ -112,13 +113,14 @@ func TestSetServerPIDsDir_RoundTrip(t *testing.T) {
 func TestWriteServerPIDFile_ConcurrentReadersNeverSeePartialJSON(t *testing.T) {
 	dir := t.TempDir()
 	info := ServerPIDInfo{
-		PID:       12345,
-		Owner:     ServerPIDOwnerDaemon,
-		OwnerPID:  4321,
-		Agent:     "opencode",
-		Bin:       strings.Repeat("/usr/local/bin/opencode", 1<<15),
-		Port:      54321,
-		StartedAt: time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC),
+		PID:            12345,
+		Owner:          ServerPIDOwnerDaemon,
+		OwnerPID:       4321,
+		OwnerStartedAt: time.Date(2026, 4, 20, 9, 59, 0, 0, time.UTC),
+		Agent:          "opencode",
+		Bin:            strings.Repeat("/usr/local/bin/opencode", 1<<15),
+		Port:           54321,
+		StartedAt:      time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC),
 	}
 	path := writeServerPIDFile(dir, info)
 	if path == "" {

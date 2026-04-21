@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -22,6 +23,11 @@ const orphanStartTimeTolerance = 2 * time.Second
 var processRunningFunc = processRunning
 var processStartTimeFunc = processStartTime
 var terminateOrphanProcessGroupFunc = terminateOrphanProcessGroup
+
+type daemonPIDFile struct {
+	PID       int       `json:"pid"`
+	StartedAt time.Time `json:"started_at,omitempty"`
+}
 
 // reapOrphanedServers kills managed-server subprocesses (opencode,
 // rovodev) left behind by a crashed predecessor daemon and deletes their
@@ -117,7 +123,14 @@ func shouldSkipOrphanRecord(info agent.ServerPIDInfo) bool {
 		slog.Warn("check wizard owner start time", "pid", info.OwnerPID, "error", err)
 		return true
 	}
-	return !startedAt.After(info.StartedAt.Add(orphanStartTimeTolerance))
+	if info.OwnerStartedAt.IsZero() {
+		return true
+	}
+	diff := startedAt.Sub(info.OwnerStartedAt)
+	if diff < 0 {
+		diff = -diff
+	}
+	return diff <= orphanStartTimeTolerance
 }
 
 func readServerPIDRecord(path string) (agent.ServerPIDInfo, bool) {
@@ -142,15 +155,7 @@ func removeServerPIDFile(path string) {
 // process that isn't us. The recovery path runs before the new daemon
 // writes its own PID file, so any live PID here belongs to a predecessor.
 func otherDaemonAlive(p *paths.Paths) bool {
-	info, statErr := os.Stat(p.PIDFile())
-	if statErr != nil {
-		if !os.IsNotExist(statErr) {
-			slog.Warn("stat daemon pid file", "path", p.PIDFile(), "error", statErr)
-			return true
-		}
-		return false
-	}
-	data, err := os.ReadFile(p.PIDFile())
+	record, err := readDaemonPIDFile(p.PIDFile())
 	if err != nil {
 		if !os.IsNotExist(err) {
 			slog.Warn("read daemon pid file", "path", p.PIDFile(), "error", err)
@@ -158,32 +163,60 @@ func otherDaemonAlive(p *paths.Paths) bool {
 		}
 		return false
 	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil {
-		slog.Warn("parse daemon pid file", "path", p.PIDFile(), "error", err)
-		return true
-	}
-	if pid == os.Getpid() {
+	if record.PID == os.Getpid() {
 		return false
 	}
-	if pid <= 0 {
-		slog.Warn("invalid daemon pid", "path", p.PIDFile(), "pid", pid)
+	if record.PID <= 0 {
+		slog.Warn("invalid daemon pid", "path", p.PIDFile(), "pid", record.PID)
 		return true
 	}
-	alive, err := processRunningFunc(pid)
+	alive, err := processRunningFunc(record.PID)
 	if err != nil {
-		slog.Warn("check daemon pid", "pid", pid, "error", err)
+		slog.Warn("check daemon pid", "pid", record.PID, "error", err)
 		return true
 	}
 	if !alive {
 		return false
 	}
-	startedAt, err := processStartTimeFunc(pid)
-	if err != nil {
-		slog.Warn("check daemon start time", "pid", pid, "error", err)
+	if record.StartedAt.IsZero() {
 		return true
 	}
-	return !startedAt.After(info.ModTime().Add(orphanStartTimeTolerance))
+	startedAt, err := processStartTimeFunc(record.PID)
+	if err != nil {
+		slog.Warn("check daemon start time", "pid", record.PID, "error", err)
+		return true
+	}
+	diff := startedAt.Sub(record.StartedAt)
+	if diff < 0 {
+		diff = -diff
+	}
+	return diff <= orphanStartTimeTolerance
+}
+
+func readDaemonPIDFile(path string) (daemonPIDFile, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return daemonPIDFile{}, err
+	}
+	return readDaemonPIDFileData(data)
+}
+
+func readDaemonPIDFileData(data []byte) (daemonPIDFile, error) {
+	var record daemonPIDFile
+	if err := json.Unmarshal(data, &record); err == nil {
+		if record.PID <= 0 {
+			return daemonPIDFile{}, fmt.Errorf("invalid pid file: pid must be positive")
+		}
+		return record, nil
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		return daemonPIDFile{}, fmt.Errorf("invalid pid file: %w", err)
+	}
+	if pid <= 0 {
+		return daemonPIDFile{}, fmt.Errorf("invalid pid file: pid must be positive")
+	}
+	return daemonPIDFile{PID: pid}, nil
 }
 
 func orphanStartTimeMatches(info agent.ServerPIDInfo) (bool, error) {

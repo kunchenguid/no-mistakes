@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -15,6 +16,17 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 )
+
+func writeDaemonPIDRecord(t *testing.T, path string, record daemonPIDFile) {
+	t.Helper()
+	data, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestIsRunningFalseWhenNoSocket(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "dtest")
@@ -251,13 +263,7 @@ func TestStopDetachedDaemonRejectsStalePIDFallback(t *testing.T) {
 	if err := p.EnsureDirs(); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(p.PIDFile(), []byte(fmt.Sprintf("%d", os.Getpid())), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	oldTime := time.Now().Add(-24 * time.Hour)
-	if err := os.Chtimes(p.PIDFile(), oldTime, oldTime); err != nil {
-		t.Fatal(err)
-	}
+	writeDaemonPIDRecord(t, p.PIDFile(), daemonPIDFile{PID: os.Getpid(), StartedAt: time.Now().Add(-24 * time.Hour)})
 	ln, err := net.Listen("unix", p.Socket())
 	if err != nil {
 		t.Fatal(err)
@@ -311,9 +317,7 @@ func TestStopDetachedDaemonRejectsUnrelatedLiveProcessPIDFallback(t *testing.T) 
 	if err := p.EnsureDirs(); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(p.PIDFile(), []byte(fmt.Sprintf("%d", os.Getpid())), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeDaemonPIDRecord(t, p.PIDFile(), daemonPIDFile{PID: os.Getpid(), StartedAt: time.Now()})
 	ln, err := net.Listen("unix", p.Socket())
 	if err != nil {
 		t.Fatal(err)
@@ -625,13 +629,7 @@ func TestWaitForDaemonStopRejectsStalePIDBeforeKill(t *testing.T) {
 	if err := p.EnsureDirs(); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(p.PIDFile(), []byte(fmt.Sprintf("%d", os.Getpid())), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	oldTime := time.Now().Add(-24 * time.Hour)
-	if err := os.Chtimes(p.PIDFile(), oldTime, oldTime); err != nil {
-		t.Fatal(err)
-	}
+	writeDaemonPIDRecord(t, p.PIDFile(), daemonPIDFile{PID: os.Getpid(), StartedAt: time.Now().Add(-24 * time.Hour)})
 	if err := os.WriteFile(p.Socket(), []byte("still-there"), 0o644); err != nil {
 		t.Fatal(err)
 	}

@@ -15,13 +15,14 @@ import (
 // crashed predecessor. The file is written after the subprocess starts
 // and deleted after it shuts down cleanly.
 type ServerPIDInfo struct {
-	PID       int       `json:"pid"`
-	Owner     string    `json:"owner,omitempty"`
-	OwnerPID  int       `json:"owner_pid,omitempty"`
-	Agent     string    `json:"agent"`
-	Bin       string    `json:"bin"`
-	Port      int       `json:"port"`
-	StartedAt time.Time `json:"started_at"`
+	PID            int       `json:"pid"`
+	Owner          string    `json:"owner,omitempty"`
+	OwnerPID       int       `json:"owner_pid,omitempty"`
+	OwnerStartedAt time.Time `json:"owner_started_at,omitempty"`
+	Agent          string    `json:"agent"`
+	Bin            string    `json:"bin"`
+	Port           int       `json:"port"`
+	StartedAt      time.Time `json:"started_at"`
 }
 
 const (
@@ -30,9 +31,10 @@ const (
 )
 
 var (
-	serverPIDsDirMu sync.RWMutex
-	serverPIDsDir   string
-	serverPIDOwner  string
+	serverPIDsDirMu  sync.RWMutex
+	serverPIDsDir    string
+	serverPIDOwner   string
+	processStartedAt = time.Now().UTC()
 )
 
 // SetServerPIDsDir configures where managed-server PID files are written.
@@ -71,6 +73,8 @@ func currentServerPIDOwner() string {
 func CurrentServerPIDsDir() string { return currentServerPIDsDir() }
 
 func CurrentServerPIDOwner() string { return currentServerPIDOwner() }
+
+func CurrentProcessStartedAt() time.Time { return processStartedAt }
 
 // writeServerPIDFile serializes info into a uniquely named file under dir
 // and returns the file path. When dir is empty the call is a no-op and the

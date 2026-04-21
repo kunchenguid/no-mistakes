@@ -97,11 +97,12 @@ func TestReapOrphanedServers_SkipsWizardOwnedRecord(t *testing.T) {
 	}
 	startedAt := time.Now().UTC()
 	path := writePIDRecord(t, p.ServerPIDsDir(), "opencode-wizard.json", agent.ServerPIDInfo{
-		PID:       12345,
-		Owner:     agent.ServerPIDOwnerWizard,
-		OwnerPID:  os.Getpid(),
-		Agent:     "opencode",
-		StartedAt: startedAt,
+		PID:            12345,
+		Owner:          agent.ServerPIDOwnerWizard,
+		OwnerPID:       os.Getpid(),
+		OwnerStartedAt: startedAt,
+		Agent:          "opencode",
+		StartedAt:      startedAt,
 	})
 
 	oldRunning := processRunningFunc
@@ -143,11 +144,12 @@ func TestReapOrphanedServers_ReapsWizardOwnedRecordWhenOwnerPIDReused(t *testing
 	}
 	startedAt := time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC)
 	path := writePIDRecord(t, p.ServerPIDsDir(), "opencode-wizard-reused.json", agent.ServerPIDInfo{
-		PID:       12345,
-		Owner:     agent.ServerPIDOwnerWizard,
-		OwnerPID:  54321,
-		Agent:     "opencode",
-		StartedAt: startedAt,
+		PID:            12345,
+		Owner:          agent.ServerPIDOwnerWizard,
+		OwnerPID:       54321,
+		OwnerStartedAt: startedAt,
+		Agent:          "opencode",
+		StartedAt:      startedAt,
 	})
 
 	oldRunning := processRunningFunc
@@ -289,8 +291,12 @@ func TestOtherDaemonAlive_FalseWhenPIDReusedByNewerProcess(t *testing.T) {
 	if err := os.WriteFile(p.PIDFile(), []byte("12345"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	pidFileTime := time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC)
-	if err := os.Chtimes(p.PIDFile(), pidFileTime, pidFileTime); err != nil {
+	recordedStart := time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC)
+	pidData, err := json.Marshal(daemonPIDFile{PID: 12345, StartedAt: recordedStart})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.PIDFile(), pidData, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -306,7 +312,7 @@ func TestOtherDaemonAlive_FalseWhenPIDReusedByNewerProcess(t *testing.T) {
 		if pid != 12345 {
 			t.Fatalf("unexpected pid %d", pid)
 		}
-		return pidFileTime.Add(time.Hour), nil
+		return recordedStart.Add(time.Hour), nil
 	}
 	t.Cleanup(func() {
 		processRunningFunc = oldRunning
@@ -315,5 +321,43 @@ func TestOtherDaemonAlive_FalseWhenPIDReusedByNewerProcess(t *testing.T) {
 
 	if otherDaemonAlive(p) {
 		t.Error("reused pid from a newer process should not block orphan reaping")
+	}
+}
+
+func TestOtherDaemonAlive_TrueWhenDaemonStartTimeMatchesRecord(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	recordedStart := time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC)
+	pidData, err := json.Marshal(daemonPIDFile{PID: 12345, StartedAt: recordedStart})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.PIDFile(), pidData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldRunning := processRunningFunc
+	oldStartTime := processStartTimeFunc
+	processRunningFunc = func(pid int) (bool, error) {
+		if pid != 12345 {
+			t.Fatalf("unexpected pid %d", pid)
+		}
+		return true, nil
+	}
+	processStartTimeFunc = func(pid int) (time.Time, error) {
+		if pid != 12345 {
+			t.Fatalf("unexpected pid %d", pid)
+		}
+		return recordedStart.Add(time.Second), nil
+	}
+	t.Cleanup(func() {
+		processRunningFunc = oldRunning
+		processStartTimeFunc = oldStartTime
+	})
+
+	if !otherDaemonAlive(p) {
+		t.Error("matching daemon start time should block orphan reaping")
 	}
 }
