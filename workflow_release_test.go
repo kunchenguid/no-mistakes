@@ -127,6 +127,44 @@ func TestReleasePleaseConfigCreatesDrafts(t *testing.T) {
 	}
 }
 
+func TestReleasePleaseConfigForcesTagCreation(t *testing.T) {
+	data, err := os.ReadFile("release-please-config.json")
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	var cfg struct {
+		Packages map[string]struct {
+			ForceTagCreation bool `json:"force-tag-creation"`
+		} `json:"packages"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+	pkg, ok := cfg.Packages["."]
+	if !ok {
+		t.Fatalf("release-please config missing '.' package")
+	}
+	if !pkg.ForceTagCreation {
+		t.Fatalf("release-please config must force tag creation so an existing GitHub release cannot silently prevent the tag from being recreated")
+	}
+}
+
+func TestReleaseWorkflowDoesNotOverrideReleaseType(t *testing.T) {
+	data, err := os.ReadFile(".github/workflows/release.yml")
+	if err != nil {
+		t.Fatalf("read workflow: %v", err)
+	}
+	content := string(data)
+
+	block := extractJobBlock(t, content, "release-please")
+	if strings.Contains(block, "release-type:") {
+		t.Fatalf("release workflow must not override release-type; release-please should read it from release-please-config.json")
+	}
+	if !strings.Contains(block, "config-file: release-please-config.json") {
+		t.Fatalf("release workflow must point release-please at release-please-config.json")
+	}
+}
+
 func TestReleaseWorkflowPromotesDraftOnlyAfterAssetsComplete(t *testing.T) {
 	data, err := os.ReadFile(".github/workflows/release.yml")
 	if err != nil {
