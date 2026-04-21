@@ -98,6 +98,7 @@ func TestReapOrphanedServers_SkipsWizardOwnedRecord(t *testing.T) {
 	path := writePIDRecord(t, p.ServerPIDsDir(), "opencode-wizard.json", agent.ServerPIDInfo{
 		PID:       12345,
 		Owner:     agent.ServerPIDOwnerWizard,
+		OwnerPID:  os.Getpid(),
 		Agent:     "opencode",
 		StartedAt: time.Now().UTC(),
 	})

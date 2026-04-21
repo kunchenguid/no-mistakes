@@ -17,6 +17,7 @@ import (
 type ServerPIDInfo struct {
 	PID       int       `json:"pid"`
 	Owner     string    `json:"owner,omitempty"`
+	OwnerPID  int       `json:"owner_pid,omitempty"`
 	Agent     string    `json:"agent"`
 	Bin       string    `json:"bin"`
 	Port      int       `json:"port"`
@@ -91,10 +92,31 @@ func writeServerPIDFile(dir string, info ServerPIDInfo) string {
 		slog.Warn("marshal server pid", "error", err)
 		return ""
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	tmp, err := os.CreateTemp(dir, name+".tmp-*")
+	if err != nil {
+		slog.Warn("create server pid temp file", "dir", dir, "error", err)
+		return ""
+	}
+	tmpPath := tmp.Name()
+	defer func() {
+		if tmpPath != "" {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		slog.Warn("write server pid temp file", "path", tmpPath, "error", err)
+		return ""
+	}
+	if err := tmp.Close(); err != nil {
+		slog.Warn("close server pid temp file", "path", tmpPath, "error", err)
+		return ""
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
 		slog.Warn("write server pid file", "path", path, "error", err)
 		return ""
 	}
+	tmpPath = ""
 	return path
 }
 

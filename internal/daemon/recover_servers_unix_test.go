@@ -222,3 +222,35 @@ func TestReapOrphanedServers_KeepsPIDFileWhenStartTimeCheckFails(t *testing.T) {
 		t.Error("process should remain alive when start time check fails")
 	}
 }
+
+func TestReapOrphanedServers_ReapsWizardOwnedRecordWhenWizardGone(t *testing.T) {
+	cmd, pid := spawnSleepProcess(t)
+	t.Cleanup(func() { killAndWait(cmd) })
+
+	started, err := processStartTime(pid)
+	if err != nil {
+		t.Fatalf("read start time: %v", err)
+	}
+
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	path := writePIDRecord(t, p.ServerPIDsDir(), "opencode-wizard-live.json", agent.ServerPIDInfo{
+		PID:       pid,
+		Owner:     agent.ServerPIDOwnerWizard,
+		OwnerPID:  999999,
+		Agent:     "opencode",
+		Bin:       "/bin/sleep",
+		StartedAt: started,
+	})
+
+	reapOrphanedServers(p)
+
+	if !waitForPIDExit(pid, 5*time.Second) {
+		t.Errorf("expected pid %d to be terminated", pid)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("pid file should be removed after reap, got err=%v", err)
+	}
+}

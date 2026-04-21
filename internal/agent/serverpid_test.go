@@ -2,9 +2,11 @@ package agent
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -104,5 +106,71 @@ func TestSetServerPIDsDir_RoundTrip(t *testing.T) {
 	}
 	if got := currentServerPIDOwner(); got != "" {
 		t.Errorf("empty reset owner, got %q", got)
+	}
+}
+
+func TestWriteServerPIDFile_ConcurrentReadersNeverSeePartialJSON(t *testing.T) {
+	dir := t.TempDir()
+	info := ServerPIDInfo{
+		PID:       12345,
+		Owner:     ServerPIDOwnerDaemon,
+		OwnerPID:  4321,
+		Agent:     "opencode",
+		Bin:       strings.Repeat("/usr/local/bin/opencode", 1<<15),
+		Port:      54321,
+		StartedAt: time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC),
+	}
+	path := writeServerPIDFile(dir, info)
+	if path == "" {
+		t.Fatal("expected non-empty path")
+	}
+
+	stop := make(chan struct{})
+	errCh := make(chan error, 1)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				if os.IsNotExist(err) {
+					continue
+				}
+				select {
+				case errCh <- fmt.Errorf("read pid file: %w", err):
+				default:
+				}
+				return
+			}
+			var got ServerPIDInfo
+			if err := json.Unmarshal(data, &got); err != nil {
+				select {
+				case errCh <- fmt.Errorf("saw partial pid file: %w", err):
+				default:
+				}
+				return
+			}
+		}
+	}()
+
+	for i := 0; i < 200; i++ {
+		info.Port = 54321 + i
+		if got := writeServerPIDFile(dir, info); got != path {
+			t.Fatalf("writeServerPIDFile() path = %q, want %q", got, path)
+		}
+	}
+
+	close(stop)
+	wg.Wait()
+	select {
+	case err := <-errCh:
+		t.Fatal(err)
+	default:
 	}
 }

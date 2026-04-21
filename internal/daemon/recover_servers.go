@@ -62,7 +62,7 @@ func reapOrphanedServers(p *paths.Paths) {
 			removeServerPIDFile(path)
 			continue
 		}
-		if info.Owner != "" && info.Owner != agent.ServerPIDOwnerDaemon {
+		if shouldSkipOrphanRecord(info) {
 			continue
 		}
 		alive, err := processRunningFunc(info.PID)
@@ -92,6 +92,24 @@ func reapOrphanedServers(p *paths.Paths) {
 		}
 		removeServerPIDFile(path)
 	}
+}
+
+func shouldSkipOrphanRecord(info agent.ServerPIDInfo) bool {
+	if info.Owner == "" || info.Owner == agent.ServerPIDOwnerDaemon {
+		return false
+	}
+	if info.Owner != agent.ServerPIDOwnerWizard {
+		return true
+	}
+	if info.OwnerPID <= 0 || info.OwnerPID == os.Getpid() {
+		return true
+	}
+	alive, err := processRunningFunc(info.OwnerPID)
+	if err != nil {
+		slog.Warn("check wizard owner pid", "pid", info.OwnerPID, "error", err)
+		return true
+	}
+	return alive
 }
 
 func readServerPIDRecord(path string) (agent.ServerPIDInfo, bool) {
