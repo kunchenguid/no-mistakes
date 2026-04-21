@@ -159,3 +159,17 @@ func TestOtherDaemonAlive_TrueWhenPIDFileUnreadable(t *testing.T) {
 		t.Error("pid-file read errors should conservatively block orphan reaping")
 	}
 }
+
+func TestOtherDaemonAlive_TrueWhenPIDFileCorrupt(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.PIDFile(), []byte("not-a-pid"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if !otherDaemonAlive(p) {
+		t.Error("corrupt pid file should conservatively block orphan reaping")
+	}
+}

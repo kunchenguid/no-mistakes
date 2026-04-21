@@ -122,8 +122,16 @@ func otherDaemonAlive(p *paths.Paths) bool {
 		return false
 	}
 	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil || pid <= 0 || pid == os.Getpid() {
+	if err != nil {
+		slog.Warn("parse daemon pid file", "path", p.PIDFile(), "error", err)
+		return true
+	}
+	if pid == os.Getpid() {
 		return false
+	}
+	if pid <= 0 {
+		slog.Warn("invalid daemon pid", "path", p.PIDFile(), "pid", pid)
+		return true
 	}
 	alive, err := processRunningFunc(pid)
 	if err != nil {
