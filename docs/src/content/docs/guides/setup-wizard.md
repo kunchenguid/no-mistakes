@@ -5,8 +5,8 @@ description: What bare `no-mistakes` does when there's no active run on the curr
 
 When you run `no-mistakes` with no arguments and there is no active run on the
 current branch, `no-mistakes` can walk you through creating a branch,
-committing local changes, and pushing through the gate before attaching to the
-new run. This is the setup wizard.
+committing local changes, and pushing through the gate, then attach if the
+daemon registers the new run. This is the setup wizard.
 
 The point of the wizard is to make bare `no-mistakes` a useful starting
 command, not just an attach command. If you have local work but no run yet, the
