@@ -31,6 +31,27 @@ func TestIsTransientPIDOpenError_Windows(t *testing.T) {
 	}
 }
 
+func TestIsTransientPIDReplaceError_Windows(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "nil", err: nil, want: false},
+		{name: "sharing_violation", err: &fs.PathError{Op: "rename", Path: "x", Err: syscall.Errno(32)}, want: true},
+		{name: "access_denied", err: &fs.PathError{Op: "rename", Path: "x", Err: syscall.Errno(5)}, want: true},
+		{name: "not_exist", err: os.ErrNotExist, want: false},
+		{name: "other_errno", err: &fs.PathError{Op: "rename", Path: "x", Err: syscall.Errno(2)}, want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isTransientPIDReplaceError(tc.err); got != tc.want {
+				t.Fatalf("isTransientPIDReplaceError(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestReplaceServerPIDFile_WindowsRetriesTransientRenameError(t *testing.T) {
 	prevRename := renameServerPIDFile
 	prevSleep := sleepServerPIDRenameRetry

@@ -24,3 +24,21 @@ func isTransientPIDOpenError(err error) bool {
 	}
 	return false
 }
+
+// isTransientPIDReplaceError reports whether err is the brief Windows rename
+// collision that can surface while another process still has the destination
+// PID file open.
+func isTransientPIDReplaceError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var errno syscall.Errno
+	if !errors.As(err, &errno) {
+		return false
+	}
+	switch errno {
+	case syscall.Errno(5), syscall.Errno(32):
+		return true
+	}
+	return false
+}

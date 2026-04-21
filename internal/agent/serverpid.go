@@ -38,7 +38,7 @@ var (
 
 	renameServerPIDFile       = os.Rename
 	sleepServerPIDRenameRetry = func() { time.Sleep(2 * time.Millisecond) }
-	isTransientPIDRenameError = isTransientPIDOpenError
+	isTransientPIDRenameError = isTransientPIDReplaceError
 )
 
 // SetServerPIDsDir configures where managed-server PID files are written.
