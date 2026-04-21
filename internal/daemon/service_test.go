@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 )
@@ -771,12 +772,23 @@ func TestWaitForDaemonStartKillsChildOnTimeout(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	startedAt := time.Date(2026, 4, 21, 10, 0, 0, 0, time.UTC)
+
 	t.Setenv("NM_TEST_DAEMON_START_TIMEOUT", "20ms")
 	t.Setenv("NM_TEST_DAEMON_START_POLL_INTERVAL", "1ms")
 
 	oldHealthCheck := daemonHealthCheck
 	daemonHealthCheck = func(*paths.Paths) (bool, error) { return false, nil }
 	defer func() { daemonHealthCheck = oldHealthCheck }()
+
+	oldStartTime := daemonProcessStartTime
+	daemonProcessStartTime = func(pid int) (time.Time, error) {
+		if pid != 4242 {
+			t.Fatalf("daemonProcessStartTime pid = %d, want 4242", pid)
+		}
+		return startedAt, nil
+	}
+	defer func() { daemonProcessStartTime = oldStartTime }()
 
 	oldKill := daemonKillPID
 	killed := 0
@@ -786,12 +798,53 @@ func TestWaitForDaemonStartKillsChildOnTimeout(t *testing.T) {
 	}
 	defer func() { daemonKillPID = oldKill }()
 
-	err := waitForDaemonStart(p, 4242)
+	err := waitForDaemonStart(p, 4242, startedAt)
 	if err == nil {
 		t.Fatal("waitForDaemonStart should fail when daemon never becomes responsive")
 	}
 	if killed != 4242 {
 		t.Fatalf("waitForDaemonStart should kill pid 4242 on timeout, killed=%d", killed)
+	}
+}
+
+func TestWaitForDaemonStartSkipsKillForReusedPID(t *testing.T) {
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
+	startedAt := time.Date(2026, 4, 21, 10, 0, 0, 0, time.UTC)
+
+	t.Setenv("NM_TEST_DAEMON_START_TIMEOUT", "20ms")
+	t.Setenv("NM_TEST_DAEMON_START_POLL_INTERVAL", "1ms")
+
+	oldHealthCheck := daemonHealthCheck
+	daemonHealthCheck = func(*paths.Paths) (bool, error) { return false, nil }
+	defer func() { daemonHealthCheck = oldHealthCheck }()
+
+	oldStartTime := daemonProcessStartTime
+	daemonProcessStartTime = func(pid int) (time.Time, error) {
+		if pid != 4242 {
+			t.Fatalf("daemonProcessStartTime pid = %d, want 4242", pid)
+		}
+		return startedAt.Add(time.Second), nil
+	}
+	defer func() { daemonProcessStartTime = oldStartTime }()
+
+	oldKill := daemonKillPID
+	killCalled := false
+	daemonKillPID = func(int) error {
+		killCalled = true
+		return nil
+	}
+	defer func() { daemonKillPID = oldKill }()
+
+	err := waitForDaemonStart(p, 4242, startedAt)
+	if err == nil {
+		t.Fatal("waitForDaemonStart should fail when daemon never becomes responsive")
+	}
+	if killCalled {
+		t.Fatal("waitForDaemonStart should not kill when pid start time no longer matches")
 	}
 }
 
@@ -816,7 +869,7 @@ func TestWaitForDaemonStartDoesNotKillWhenPIDZero(t *testing.T) {
 	}
 	defer func() { daemonKillPID = oldKill }()
 
-	if err := waitForDaemonStart(p, 0); err == nil {
+	if err := waitForDaemonStart(p, 0, time.Time{}); err == nil {
 		t.Fatal("waitForDaemonStart should fail when daemon never becomes responsive")
 	}
 	if killCalled {

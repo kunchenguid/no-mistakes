@@ -112,13 +112,17 @@ func startDetachedDaemon(p *paths.Paths) error {
 	}
 
 	pid := cmd.Process.Pid
+	startedAt, err := daemonProcessStartTime(pid)
+	if err != nil {
+		return fmt.Errorf("inspect daemon process %d: %w", pid, err)
+	}
 	slog.Info("daemon process started", "pid", pid, "log", p.DaemonLog())
 
 	// Release the child so it's not reaped when we exit.
 	if err := cmd.Process.Release(); err != nil {
 		return fmt.Errorf("release daemon process: %w", err)
 	}
-	return waitForDaemonStart(p, pid)
+	return waitForDaemonStart(p, pid, startedAt)
 }
 
 func startManagedDaemon(p *paths.Paths) error {
@@ -128,10 +132,10 @@ func startManagedDaemon(p *paths.Paths) error {
 		}
 		return err
 	}
-	return waitForDaemonStart(p, 0)
+	return waitForDaemonStart(p, 0, time.Time{})
 }
 
-func waitForDaemonStart(p *paths.Paths, pid int) error {
+func waitForDaemonStart(p *paths.Paths, pid int, startedAt time.Time) error {
 	// Poll for the daemon to become responsive.
 	timeout := daemonStartTimeout()
 	pollInterval := daemonStartPollInterval()
@@ -147,9 +151,9 @@ func waitForDaemonStart(p *paths.Paths, pid int) error {
 	// Kill the child so it can't race with rollback work (e.g. SQLite writes)
 	// after the caller gives up on it. Skip when pid is 0 (managed service).
 	if pid > 0 {
-		if err := daemonKillPID(pid); err != nil {
+		if err := killTimedOutDaemonPID(pid, startedAt); err != nil {
 			slog.Warn("kill unresponsive daemon child failed", "pid", pid, "error", err)
-		} else {
+		} else if !startedAt.IsZero() {
 			waitForProcessExit(pid, timeout)
 		}
 	}
@@ -157,11 +161,25 @@ func waitForDaemonStart(p *paths.Paths, pid int) error {
 	return fmt.Errorf("daemon started but did not become responsive within %v", timeout)
 }
 
+func killTimedOutDaemonPID(pid int, startedAt time.Time) error {
+	if pid <= 0 || startedAt.IsZero() {
+		return nil
+	}
+	currentStartTime, err := daemonProcessStartTime(pid)
+	if err != nil {
+		return fmt.Errorf("inspect daemon pid %d before kill: %w", pid, err)
+	}
+	if !currentStartTime.Equal(startedAt) {
+		return fmt.Errorf("daemon pid %d no longer matches original process", pid)
+	}
+	return daemonKillPID(pid)
+}
+
 func waitForProcessExit(pid int, timeout time.Duration) {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		running, err := daemonProcessRunning(pid)
-		if err != nil || !running {
+		if err == nil && !running {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
