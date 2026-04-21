@@ -9,9 +9,12 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -476,5 +479,81 @@ func TestRunWizard_ConfiguresServerPIDsDir(t *testing.T) {
 	}
 	if got := agent.CurrentServerPIDOwner(); got != "" {
 		t.Fatalf("after wizard, CurrentServerPIDOwner = %q, want empty", got)
+	}
+}
+
+// TestAwaitDaemonRunRegistration_ErrorsWhenNoRunAppears covers issue #122
+// defect 3. When a push succeeds but the daemon never registers a run
+// (e.g. the gate hook was disabled by husky), the wait must surface an
+// error the caller can propagate. The previous implementation returned nil
+// on timeout, which let the wizard declare success and silently fall
+// through to "No active run".
+func TestAwaitDaemonRunRegistration_ErrorsWhenNoRunAppears(t *testing.T) {
+	nmHome := makeSocketSafeTempDir(t)
+	t.Setenv("NM_HOME", nmHome)
+	p := paths.WithRoot(nmHome)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
+	d, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	startTestDaemon(t, p, d)
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	// Use a short timeout - no run will ever register because nothing
+	// triggers one.
+	err = awaitDaemonRunRegistration(context.Background(), client, "no-such-repo", "feat/missing", 200*time.Millisecond)
+	if err == nil {
+		t.Fatal("expected error when no run registers within the timeout")
+	}
+	if !strings.Contains(err.Error(), "feat/missing") {
+		t.Errorf("error should name the branch we were waiting for, got: %v", err)
+	}
+}
+
+func TestAwaitDaemonRunRegistration_UsesNMHomeInTimeoutError(t *testing.T) {
+	nmHome := makeSocketSafeTempDir(t)
+	t.Setenv("NM_HOME", nmHome)
+
+	p := paths.WithRoot(nmHome)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
+	d, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	startTestDaemon(t, p, d)
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	err = awaitDaemonRunRegistration(context.Background(), client, "repo123", "feat/missing", 200*time.Millisecond)
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+
+	wantLogPath := filepath.Join(nmHome, "repos", "repo123.git", "notify-push.log")
+	if !strings.Contains(err.Error(), wantLogPath) {
+		t.Fatalf("timeout error = %q, want log path %q", err.Error(), wantLogPath)
+	}
+	if strings.Contains(err.Error(), "<id>") {
+		t.Fatalf("timeout error should not contain placeholder repo id: %q", err.Error())
 	}
 }

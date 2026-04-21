@@ -16,10 +16,10 @@ func newInitCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "init",
 		Short: "Initialize no-mistakes gate for the current repository",
-		Long: `Sets up a local bare repo as a gate, installs a post-receive hook,
-adds a "no-mistakes" git remote, and records the repo in the database.
-
-Run this from inside a git repository that has an "origin" remote.`,
+		Long: "Sets up a local bare repo as a gate, installs a post-receive hook,\n" +
+			"best-effort isolates the gate hook path from shared local git config writes when Git supports `config --worktree`,\n" +
+			"adds a \"no-mistakes\" git remote, and records the repo in the database.\n\n" +
+			"Run this from inside a git repository that has an \"origin\" remote.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return trackCommand("init", func() error {

@@ -126,9 +126,13 @@ ls -la <gate-path>/hooks/post-receive
 
 The hook should be executable. If it's missing or non-executable, `no-mistakes init` will reinstall it.
 
+Also check `<gate-path>/notify-push.log`. The hook now appends daemon notification failures there and prints the same error back to the pushing client.
+
 ### Check the daemon socket
 
 The hook talks to the daemon over `~/.no-mistakes/socket`. If the daemon isn't running, the push still succeeds (the hook never blocks), but no pipeline starts. Start the daemon and push again.
+
+If the gate is older, restarting the daemon also reapplies hook-path isolation for existing bare repos when Git supports `config --worktree`. That protects the gate hook if a tool such as Husky wrote `core.hookspath` into shared git config from inside a linked worktree.
 
 ## PR step is skipped
 

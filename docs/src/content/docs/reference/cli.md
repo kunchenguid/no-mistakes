@@ -5,7 +5,7 @@ description: Complete reference for all no-mistakes commands and flags.
 
 ## no-mistakes
 
-Attach to the active pipeline run for the current branch when one exists. If none exists, bare `no-mistakes` can start the setup wizard to create a branch, commit changes, push through the gate, wait for the daemon to register the new run, and then attach. By default this wizard path is interactive and only runs in a TTY session. In non-interactive contexts, bare `no-mistakes` falls back to showing the last 5 runs inline unless you pass `-y` or `--yes` to run the wizard and accept defaults automatically. When a TTY is available, `-y` keeps the wizard visible, shows a brief `waiting for run…` state after push, and auto-advances the default path; without a TTY it falls back to the headless path.
+Attach to the active pipeline run for the current branch when one exists. If none exists, bare `no-mistakes` can start the setup wizard to create a branch, commit changes, push through the gate, wait for the daemon to register the new run, and then attach. If the push succeeds but no run is registered, that wizard path now exits with an explicit error instead of silently falling through. By default this wizard path is interactive and only runs in a TTY session. In non-interactive contexts, bare `no-mistakes` falls back to showing the last 5 runs inline unless you pass `-y` or `--yes` to run the wizard and accept defaults automatically. When a TTY is available, `-y` keeps the wizard visible, shows a brief `waiting for run…` state after push, and auto-advances the default path; without a TTY it falls back to the headless path.
 
 ```sh
 no-mistakes
@@ -25,7 +25,7 @@ Initialize the gate for the current repository.
 no-mistakes init
 ```
 
-Creates a local bare repo, installs the post-receive hook, adds the `no-mistakes` git remote, detects the default branch, records the repo in SQLite, and ensures the daemon is running, installing the managed service when available and falling back to a detached daemon otherwise.
+Creates a local bare repo, installs the post-receive hook, best-effort isolates the gate repo's hook path from shared git config changes when Git supports `config --worktree`, adds the `no-mistakes` git remote, detects the default branch, records the repo in SQLite, and ensures the daemon is running, installing the managed service when available and falling back to a detached daemon otherwise.
 
 Rolls back all changes if any step fails.
 

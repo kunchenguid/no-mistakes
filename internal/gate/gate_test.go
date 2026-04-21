@@ -360,3 +360,55 @@ func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
 }
+
+// TestInit_PostReceiveSurvivesHooksPathPoisoning reproduces issue #122.
+// Husky and similar tools run `git config core.hookspath .husky/_` from
+// inside a worktree of the gate bare repo. That write lands in the bare's
+// shared local config and silently disables the post-receive hook, so
+// subsequent pushes complete but never trigger a pipeline.
+//
+// The gate repo must isolate its own core.hookspath so external writes to
+// the shared config can't reach it.
+func TestInit_PostReceiveSurvivesHooksPathPoisoning(t *testing.T) {
+	workDir := setupTestRepo(t)
+	nmRoot := t.TempDir()
+	p := paths.WithRoot(nmRoot)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+	d := openTestDB(t, p)
+	ctx := context.Background()
+
+	repo, err := Init(ctx, d, p, workDir)
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	bareDir := p.RepoDir(repo.ID)
+
+	// Replace the installed hook with one that touches a marker file so we
+	// can detect whether receive-pack actually invokes hooks/post-receive.
+	markerDir := resolveSymlinks(t, t.TempDir())
+	marker := filepath.Join(markerDir, "fired")
+	hookPath := filepath.Join(bareDir, "hooks", "post-receive")
+	hook := "#!/bin/sh\ntouch '" + marker + "'\nexit 0\n"
+	if err := os.WriteFile(hookPath, []byte(hook), 0o755); err != nil {
+		t.Fatalf("write marker hook: %v", err)
+	}
+
+	// Simulate husky: pnpm install in a pipeline worktree runs
+	// `git config core.hookspath .husky/_`. Because worktrees share local
+	// config with the bare main repo, that write lands in bareDir/config.
+	if out, err := exec.Command("git", "-C", bareDir, "config", "core.hookspath", ".husky/_").CombinedOutput(); err != nil {
+		t.Fatalf("simulate husky poisoning: %v: %s", err, out)
+	}
+
+	// Push to the gate. The bare repo's own core.hookspath must still
+	// resolve to its hooks dir so post-receive fires.
+	if out, err := exec.Command("git", "-C", workDir, "push", "no-mistakes", "HEAD:refs/heads/test-branch").CombinedOutput(); err != nil {
+		t.Fatalf("push: %v: %s", err, out)
+	}
+
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("post-receive did not fire after husky poisoned core.hookspath: %v", err)
+	}
+}

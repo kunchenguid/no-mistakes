@@ -134,7 +134,13 @@ func TestAttachNotGitRepoCommands(t *testing.T) {
 	}
 }
 
-func TestRootInteractiveWizardFallsBackWhenRunRegistrationIsSlow(t *testing.T) {
+// TestRootInteractiveWizardFailsLoudlyWhenRunRegistrationIsSlow covers
+// issue #122 defect 3. Prior behavior: if the daemon didn't register a
+// run after push (e.g. gate hook disabled by husky), the wizard's wait
+// silently returned nil, the wizard declared success, and the command
+// printed "No active run" with exit code 0. That masked the real failure.
+// After the fix, an error surfaces all the way to the CLI.
+func TestRootInteractiveWizardFailsLoudlyWhenRunRegistrationIsSlow(t *testing.T) {
 	setupTestRepo(t)
 	nmHome := makeSocketSafeTempDir(t)
 	t.Setenv("NM_HOME", nmHome)
@@ -175,11 +181,11 @@ func TestRootInteractiveWizardFallsBackWhenRunRegistrationIsSlow(t *testing.T) {
 	}
 	defer func() { runTUI = prevRunTUI }()
 
-	out, err := executeCmd()
-	if err != nil {
-		t.Fatalf("executeCmd() error = %v", err)
+	_, err = executeCmd()
+	if err == nil {
+		t.Fatal("executeCmd() should return an error when the daemon doesn't register a run")
 	}
-	if !strings.Contains(out, "No active run") {
-		t.Fatalf("expected existing fallback output, got %q", out)
+	if !strings.Contains(err.Error(), "feat/slow") {
+		t.Errorf("error should name the branch we were waiting for, got: %v", err)
 	}
 }

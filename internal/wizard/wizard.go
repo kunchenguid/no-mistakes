@@ -122,8 +122,10 @@ type Model struct {
 	waitStarted bool
 }
 
-// Result reports what the wizard did. Success means a push to the gate
-// succeeded and the caller should re-attach to pick up the new run.
+// Result reports what the wizard did. Success means the wizard completed all
+// required steps: the push to the gate succeeded, and when WaitForRun is set,
+// the daemon handoff completed so the caller can re-attach to pick up the new
+// run.
 type Result struct {
 	Success       bool
 	Aborted       bool
@@ -259,8 +261,12 @@ func (m Model) setupActive() Model {
 			m.waitStarted = true
 			return m
 		}
-		m.success = m.pushed
-		if m.success && m.err == nil {
+		// Success requires both the push and the daemon-confirmation wait
+		// to have completed without error. Treating a wait failure as a
+		// success silently masks broken-gate cases like husky disabling
+		// the post-receive hook (issue #122).
+		m.success = m.pushed && m.err == nil
+		if m.success {
 			m.track("completed", map[string]any{
 				"branch_created": m.branchCreated,
 				"commit_made":    m.commitMade,

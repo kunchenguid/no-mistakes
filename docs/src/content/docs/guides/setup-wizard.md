@@ -5,12 +5,13 @@ description: What bare `no-mistakes` does when there's no active run on the curr
 
 When you run `no-mistakes` with no arguments and there is no active run on the
 current branch, `no-mistakes` can walk you through creating a branch,
-committing local changes, and pushing through the gate before attaching to the
-new run. This is the setup wizard.
+committing local changes, and pushing through the gate, then attach if the
+daemon registers the new run. This is the setup wizard.
 
 The point of the wizard is to make bare `no-mistakes` a useful starting
 command, not just an attach command. If you have local work but no run yet, the
-wizard helps turn that state into branch -> commit -> push -> attach.
+wizard helps turn that state into branch -> commit -> push -> attach when the
+daemon registers the new run.
 
 The wizard kicks in when:
 
@@ -35,7 +36,9 @@ flowchart TD
   interactive -- "yes" --> branch["Branch step if needed"]
   branch --> commit["Commit step if needed"]
   commit --> push["Push step"]
-  push --> tui["Attach to new run"]
+  push --> registered{"Run registered?"}
+  registered -- "yes" --> tui["Attach to new run"]
+  registered -- "no" --> error["Show notify-push error"]
 ```
 
 ## Steps
@@ -66,7 +69,7 @@ Always shown. Asks whether to push the current branch to the `no-mistakes` gate.
 - Press `y` to push.
 - Press `n` to stop.
 
-If the push succeeds, the interactive wizard stays visible in a brief `waiting for run…` state while the daemon registers the new run, then hands off to the main TUI and attaches.
+If the push succeeds, the interactive wizard stays visible in a brief `waiting for run…` state while the daemon registers the new run, then hands off to the main TUI and attaches. If no run appears in time, the wizard exits with an error instead of silently falling through, and points you at the gate's `notify-push.log` for hook diagnostics.
 
 The goal is to keep the setup path short. If you already have a branch, it does
 not ask for one. If everything is already committed, it skips straight to push.

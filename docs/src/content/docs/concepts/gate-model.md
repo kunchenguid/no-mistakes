@@ -30,8 +30,9 @@ When you run `no-mistakes init` in a repo:
 
 1. It creates a local bare gate repo under `~/.no-mistakes/repos/<id>.git`.
 2. It installs a `post-receive` hook in that gate repo.
-3. It adds a `no-mistakes` remote to your working repo that points at the gate.
-4. It makes sure the daemon is running so incoming pushes can start runs.
+3. It best-effort isolates the gate repo's hooks path from shared local Git config writes when Git supports `config --worktree`.
+4. It adds a `no-mistakes` remote to your working repo that points at the gate.
+5. It makes sure the daemon is running so incoming pushes can start runs.
 
 After init, your original `origin` still points at the real upstream remote.
 That is a core design choice, not an implementation detail.
@@ -83,8 +84,10 @@ agent edit files, and commit fixes. Your day-to-day working tree stays clean.
 
 When `git push no-mistakes <branch>` lands, the bare repo's `post-receive` hook
 fires. It calls `no-mistakes daemon notify-push` with the gate path, ref name,
-and old/new SHAs. The hook never blocks the push - it runs the notification in
-the background and always exits 0.
+and old/new SHAs. The hook never blocks the push - Git ignores `post-receive`
+exit status, so pushes still succeed - but notification failures are surfaced
+to the pushing client on stderr and appended to `notify-push.log` in the bare
+repo for later inspection.
 
 ### Daemon
 
@@ -109,7 +112,7 @@ it was started from the same executable path and aborts if the daemon
 executable path cannot be determined or points to a different binary. You can
 also manage it explicitly with `no-mistakes daemon start|stop|restart|status`.
 
-On startup, the daemon recovers from crashes by marking any stuck runs as failed, reaping orphaned managed agent servers, and cleaning up orphaned worktrees.
+On startup, the daemon recovers from crashes by marking any stuck runs as failed, reaping orphaned managed agent servers, cleaning up orphaned worktrees, and reapplying gate hook-path isolation for older bare repos when Git supports `config --worktree`.
 
 ### Pipeline executor
 
@@ -148,6 +151,7 @@ Everything lives under `~/.no-mistakes/` by default. Set `NM_HOME` to relocate i
 | `update-check.json` | Cached update check result |
 | `servers/` | PID-tracking records for managed agent servers |
 | `repos/<id>.git` | Bare gate repos |
+| `repos/<id>.git/notify-push.log` | Persistent hook notification failure log |
 | `worktrees/<repoID>/<runID>/` | Disposable worktrees (cleaned up after each run) |
 | `logs/<runID>/<step>.log` | Per-step log files |
 | `logs/daemon.log` | Daemon log |

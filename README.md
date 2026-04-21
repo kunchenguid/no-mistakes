@@ -71,7 +71,7 @@ $ no-mistakes
 # opens the TUI for the active run
 ```
 
-You can also skip `git push` and run `no-mistakes` directly after making changes. The setup wizard walks you through creating a branch, committing, pushing through the gate, and attaching to the new run.
+You can also skip `git push` and run `no-mistakes` directly after making changes. The setup wizard walks you through creating a branch, committing, and pushing through the gate, then attaches if the daemon registers the new run.
 
 See the [quick start](https://kunchenguid.github.io/no-mistakes/start-here/quick-start/) for the full first-run walkthrough.
 

@@ -23,8 +23,10 @@ func repoID(absPath string) string {
 }
 
 // Init sets up a no-mistakes gate for the git repo at workDir.
-// It creates a bare repo, installs the post-receive hook, adds the
-// no-mistakes remote, and records the repo in the database.
+// It creates a bare repo, installs the post-receive hook, best-effort
+// isolates the bare repo's hooks path from shared local config writes when
+// Git supports config --worktree, adds the no-mistakes remote, and records
+// the repo in the database.
 func Init(ctx context.Context, d *db.DB, p *paths.Paths, workDir string) (*db.Repo, error) {
 	// Normalize worktrees back to the main repo root so one repo record works
 	// from either the main checkout or any attached worktree.
@@ -63,6 +65,14 @@ func Init(ctx context.Context, d *db.DB, p *paths.Paths, workDir string) (*db.Re
 		// Rollback: remove bare repo.
 		os.RemoveAll(bareDir)
 		return nil, fmt.Errorf("install hook: %w", err)
+	}
+
+	// Pin core.hookspath in the bare's per-worktree config so subprocess
+	// writes to shared local config (e.g. husky during pnpm install) can't
+	// disable the gate hook. See git.IsolateHooksPath for details.
+	if err := git.IsolateHooksPath(ctx, bareDir); err != nil {
+		os.RemoveAll(bareDir)
+		return nil, fmt.Errorf("isolate hooks path: %w", err)
 	}
 
 	// Record upstream as origin on the gate repo so gh can resolve repository context
