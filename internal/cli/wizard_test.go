@@ -110,6 +110,13 @@ type fakeSuggesterAgent struct {
 	calls []agent.RunOpts
 }
 
+type fakeSuggesterResponseAgent struct {
+	mu              sync.Mutex
+	combinedOutputs []string
+	commitOutput    string
+	calls           []agent.RunOpts
+}
+
 func (f *fakeSuggesterAgent) Name() string { return "fake" }
 func (f *fakeSuggesterAgent) Run(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
 	f.mu.Lock()
@@ -130,6 +137,34 @@ func (f *fakeSuggesterAgent) Run(_ context.Context, opts agent.RunOpts) (*agent.
 func (f *fakeSuggesterAgent) Close() error { return nil }
 
 func (f *fakeSuggesterAgent) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.calls)
+}
+
+func (f *fakeSuggesterResponseAgent) Name() string { return "fake" }
+
+func (f *fakeSuggesterResponseAgent) Run(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, opts)
+	if strings.Contains(opts.Prompt, "Branch name rules") {
+		if len(f.combinedOutputs) == 0 {
+			return &agent.Result{Output: json.RawMessage(`{"branch":"feat/default"}`)}, nil
+		}
+		output := f.combinedOutputs[0]
+		f.combinedOutputs = f.combinedOutputs[1:]
+		return &agent.Result{Output: json.RawMessage(output)}, nil
+	}
+	if strings.Contains(opts.Prompt, `{"subject":"..."}`) {
+		return &agent.Result{Output: json.RawMessage(f.commitOutput)}, nil
+	}
+	return &agent.Result{Output: json.RawMessage(`{}`)}, nil
+}
+
+func (f *fakeSuggesterResponseAgent) Close() error { return nil }
+
+func (f *fakeSuggesterResponseAgent) callCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.calls)
@@ -247,6 +282,42 @@ func TestWizardAgentSuggester_CanceledContextSkipsCachedCommit(t *testing.T) {
 
 	if got := ag.callCount(); got != 1 {
 		t.Fatalf("expected combined agent call only after retry, got %d", got)
+	}
+}
+
+func TestWizardAgentSuggester_EmptyRetryClearsCachedCommit(t *testing.T) {
+	ag := &fakeSuggesterResponseAgent{
+		combinedOutputs: []string{
+			`{"branch":"feat/first","subject":"feat(cli): first"}`,
+			`{"branch":"feat/second"}`,
+		},
+		commitOutput: `{"subject":"feat(cli): standalone"}`,
+	}
+	s := newWizardAgentSuggester(
+		&config.Config{Agent: types.AgentClaude},
+		"/tmp/repo",
+		func(context.Context, *config.Config) error { return nil },
+		func(types.AgentName, string) (agent.Agent, error) { return ag, nil },
+	)
+	defer s.Close()
+
+	if _, err := s.suggestBranch(context.Background()); err != nil {
+		t.Fatalf("first suggestBranch failed: %v", err)
+	}
+	if _, err := s.suggestBranch(context.Background()); err != nil {
+		t.Fatalf("second suggestBranch failed: %v", err)
+	}
+
+	commit, err := s.suggestCommit(context.Background())
+	if err != nil {
+		t.Fatalf("suggestCommit failed: %v", err)
+	}
+	if commit != "feat(cli): standalone" {
+		t.Fatalf("suggestCommit = %q, want standalone subject", commit)
+	}
+
+	if got := ag.callCount(); got != 3 {
+		t.Fatalf("expected two branch calls and one commit call, got %d", got)
 	}
 }
 

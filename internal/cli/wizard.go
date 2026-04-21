@@ -82,15 +82,16 @@ func (s *wizardAgentSuggester) suggestBranch(ctx context.Context) (string, error
 	if err := s.ensure(ctx); err != nil {
 		return "", err
 	}
+	s.cacheMu.Lock()
+	s.cachedCommit = ""
+	s.cacheMu.Unlock()
 	branch, commit, err := agent.SuggestBranchAndCommit(ctx, s.ag, s.workDir)
 	if err != nil {
 		return "", err
 	}
-	if commit != "" {
-		s.cacheMu.Lock()
-		s.cachedCommit = commit
-		s.cacheMu.Unlock()
-	}
+	s.cacheMu.Lock()
+	s.cachedCommit = commit
+	s.cacheMu.Unlock()
 	return branch, nil
 }
 
