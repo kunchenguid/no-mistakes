@@ -69,7 +69,15 @@ func Start(p *paths.Paths) error {
 
 func stopManagedFallback(p *paths.Paths) error {
 	managed, err := stopManagedService(p)
-	if !managed || err == nil {
+	if !managed {
+		return nil
+	}
+	if err == nil {
+		if runtimeGOOS == "darwin" {
+			if err := removeLaunchAgent(p); err != nil {
+				return fmt.Errorf("remove launch agent before detached fallback: %w", err)
+			}
+		}
 		return nil
 	}
 	if alive, _ := daemonHealthCheck(p); alive {

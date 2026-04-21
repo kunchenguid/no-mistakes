@@ -185,6 +185,144 @@ func TestStartStopsManagedServiceBeforeDetachedFallbackAfterTimeout(t *testing.T
 	_ = os.Remove(p.Socket())
 }
 
+func TestStartReturnsManagedStopErrorWhenSystemdStopSaysNotLoaded(t *testing.T) {
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+
+	cleanup := stubServiceRuntime(t)
+	defer cleanup()
+	t.Setenv("NM_DAEMON_HELPER_PROCESS", "1")
+	runtimeGOOS = "linux"
+	serviceUserHomeDir = func() (string, error) { return home, nil }
+	serviceExecutablePath = func() (string, error) { return "/usr/local/bin/no-mistakes", nil }
+
+	var commands []string
+	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
+		command := name + " " + strings.Join(args, " ")
+		commands = append(commands, command)
+		if command == "systemctl --user start "+systemdServiceName(p) {
+			return nil, fmt.Errorf("user manager unavailable")
+		}
+		if command == "systemctl --user stop "+systemdServiceName(p) {
+			return nil, fmt.Errorf("Unit not loaded")
+		}
+		return nil, nil
+	}
+	checks := 0
+	daemonHealthCheck = func(*paths.Paths) (bool, error) {
+		checks++
+		return false, nil
+	}
+
+	err := Start(p)
+	if err == nil {
+		t.Fatal("Start should return the managed stop error")
+	}
+	if !strings.Contains(err.Error(), "stop managed daemon before detached fallback") {
+		t.Fatalf("Start error = %v, want managed stop failure", err)
+	}
+	if !strings.Contains(err.Error(), "Unit not loaded") {
+		t.Fatalf("Start error = %v, want original stop error", err)
+	}
+	if checks < 2 {
+		t.Fatalf("expected health checks before and after managed stop failure, got %d", checks)
+	}
+}
+
+func TestStartReturnsManagedStopErrorWhenFallbackCleanupFails(t *testing.T) {
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+
+	cleanup := stubServiceRuntime(t)
+	defer cleanup()
+	t.Setenv("NM_DAEMON_HELPER_PROCESS", "1")
+	runtimeGOOS = "linux"
+	serviceUserHomeDir = func() (string, error) { return home, nil }
+	serviceExecutablePath = func() (string, error) { return "/usr/local/bin/no-mistakes", nil }
+
+	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
+		command := name + " " + strings.Join(args, " ")
+		if command == "systemctl --user start "+systemdServiceName(p) {
+			return nil, fmt.Errorf("user manager unavailable")
+		}
+		if command == "systemctl --user stop "+systemdServiceName(p) {
+			return nil, fmt.Errorf("permission denied")
+		}
+		return nil, nil
+	}
+	checks := 0
+	daemonHealthCheck = func(*paths.Paths) (bool, error) {
+		checks++
+		return false, nil
+	}
+
+	err := Start(p)
+	if err == nil {
+		t.Fatal("Start should return the managed stop error")
+	}
+	if !strings.Contains(err.Error(), "stop managed daemon before detached fallback") {
+		t.Fatalf("Start error = %v, want managed stop failure", err)
+	}
+	if !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("Start error = %v, want original stop error", err)
+	}
+	if checks < 2 {
+		t.Fatalf("expected health checks before and after managed stop failure, got %d", checks)
+	}
+}
+
+func TestStartRemovesLaunchAgentBeforeDetachedFallbackAfterBootoutESRCH(t *testing.T) {
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+
+	cleanup := stubServiceRuntime(t)
+	defer cleanup()
+	t.Setenv("NM_DAEMON_HELPER_PROCESS", "1")
+	runtimeGOOS = "darwin"
+	serviceUserHomeDir = func() (string, error) { return home, nil }
+	serviceCurrentUser = func() (*user.User, error) { return &user.User{Uid: "501"}, nil }
+	serviceExecutablePath = func() (string, error) { return "/opt/no-mistakes/bin/no-mistakes", nil }
+
+	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
+		command := name + " " + strings.Join(args, " ")
+		switch command {
+		case "launchctl bootout gui/501/" + launchdServiceLabel(p):
+			return []byte("Boot-out failed: 3: No such process"), fmt.Errorf("exit status 3: Boot-out failed: 3: No such process")
+		case "launchctl bootstrap gui/501 " + launchAgentPath(p):
+			return nil, nil
+		case "launchctl kickstart -k gui/501/" + launchdServiceLabel(p):
+			return nil, fmt.Errorf("launchctl kickstart failed")
+		default:
+			return nil, nil
+		}
+	}
+	checks := 0
+	daemonHealthCheck = func(*paths.Paths) (bool, error) {
+		checks++
+		return checks >= 3, nil
+	}
+
+	if err := Start(p); err != nil {
+		t.Fatalf("Start should fall back to detached mode: %v", err)
+	}
+
+	if _, err := os.Stat(launchAgentPath(p)); !os.IsNotExist(err) {
+		t.Fatalf("launch agent plist should be removed before detached fallback, stat err = %v", err)
+	}
+	_ = os.Remove(p.DaemonLog())
+	_ = os.Remove(p.PIDFile())
+	_ = os.Remove(p.Socket())
+}
+
 func TestStopUsesManagedServiceWhenInstalled(t *testing.T) {
 	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
 	if err := p.EnsureDirs(); err != nil {

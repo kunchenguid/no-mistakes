@@ -67,11 +67,34 @@ func stopLaunchAgent(p *paths.Paths) error {
 	if err != nil {
 		return err
 	}
-	_, err = serviceCommandRunner("launchctl", "bootout", domain+"/"+launchdServiceLabel(p))
+	output, err := serviceCommandRunner("launchctl", "bootout", domain+"/"+launchdServiceLabel(p))
 	if err != nil {
+		if launchctlBootoutServiceNotLoaded(err, output) {
+			return nil
+		}
 		return fmt.Errorf("launchctl bootout: %w", err)
 	}
 	return nil
+}
+
+func removeLaunchAgent(p *paths.Paths) error {
+	err := os.Remove(launchAgentPath(p))
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+// launchctlBootoutServiceNotLoaded reports whether a launchctl bootout
+// failure is the ESRCH case ("No such process", exit 3) that launchctl
+// emits when the service label isn't currently loaded. That is semantically
+// a successful stop - the service is already not running.
+func launchctlBootoutServiceNotLoaded(err error, output []byte) bool {
+	if err == nil {
+		return false
+	}
+	combined := strings.ToLower(string(output) + " " + err.Error())
+	return strings.Contains(combined, "no such process")
 }
 
 func launchAgentPath(p *paths.Paths) string {
