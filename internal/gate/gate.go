@@ -23,9 +23,10 @@ func repoID(absPath string) string {
 }
 
 // Init sets up a no-mistakes gate for the git repo at workDir.
-// It creates a bare repo, installs the post-receive hook, isolates the
-// bare repo's hooks path from shared local config writes, adds the
-// no-mistakes remote, and records the repo in the database.
+// It creates a bare repo, installs the post-receive hook, best-effort
+// isolates the bare repo's hooks path from shared local config writes when
+// Git supports config --worktree, adds the no-mistakes remote, and records
+// the repo in the database.
 func Init(ctx context.Context, d *db.DB, p *paths.Paths, workDir string) (*db.Repo, error) {
 	// Normalize worktrees back to the main repo root so one repo record works
 	// from either the main checkout or any attached worktree.

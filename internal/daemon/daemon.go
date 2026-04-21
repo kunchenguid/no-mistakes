@@ -227,8 +227,9 @@ func writeDaemonPIDFile(path string, record daemonPIDFile) error {
 // recoverOnStartup cleans up after a previous daemon crash by marking stale
 // runs/steps as failed, killing orphaned managed-server subprocesses
 // (opencode, rovodev), and removing orphaned worktree directories. It also
-// migrates gate bare repos in place so older installs pick up the
-// per-worktree hookspath isolation introduced for issue #122.
+// best-effort migrates gate bare repos in place so older installs pick up
+// the per-worktree hookspath isolation introduced for issue #122 when Git
+// supports config --worktree.
 func recoverOnStartup(d *db.DB, p *paths.Paths) {
 	reapOrphanedServers(p)
 	migrateGateConfigs(context.Background(), p)
@@ -281,9 +282,10 @@ func recoverOnStartup(d *db.DB, p *paths.Paths) {
 // migrateGateConfigs walks every bare repo under p.ReposDir() and applies
 // git.IsolateHooksPath. The operation is idempotent: bare repos already
 // configured by gate.Init are left effectively unchanged. Older bare repos
-// (from before issue #122 was fixed) get their per-worktree hookspath
-// pinned so subsequent husky-style writes to shared local config can no
-// longer disable the post-receive hook.
+// (from before issue #122 was fixed) best-effort get their per-worktree
+// hookspath pinned when Git supports config --worktree, so subsequent
+// husky-style writes to shared local config can no longer disable the
+// post-receive hook.
 func migrateGateConfigs(ctx context.Context, p *paths.Paths) {
 	entries, err := os.ReadDir(p.ReposDir())
 	if err != nil {
