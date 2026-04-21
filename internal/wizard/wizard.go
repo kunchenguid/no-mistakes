@@ -28,6 +28,8 @@ type Config struct {
 	// AutoAdvance automatically presses Enter on each active wizard step,
 	// preserving the interactive TUI while accepting the default path.
 	AutoAdvance  bool
+	// DisableInput disables Bubble Tea input, which is useful for headless runs
+	// and tests that drive cancellation through the caller context.
 	DisableInput bool
 	// NeedsBranch is true when the user has no usable feature branch yet -
 	// either they're on the default branch, or HEAD is detached. The branch
@@ -35,6 +37,8 @@ type Config struct {
 	NeedsBranch bool
 	IsDirty     bool
 	GateRemote  string
+	// Output overrides the Bubble Tea output writer and is also used for the
+	// terminal-title reset sequence emitted when the wizard shuts down.
 	Output      io.Writer
 
 	CreateBranch  func(ctx context.Context, name string) error
