@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.8.1](https://github.com/kunchenguid/no-mistakes/compare/v1.8.0...v1.8.1) (2026-04-21)
+
+
+### Bug Fixes
+
+* **tui:** backfill rerun pipeline steps without stale placeholders ([#111](https://github.com/kunchenguid/no-mistakes/issues/111)) ([ae4ae8b](https://github.com/kunchenguid/no-mistakes/commit/ae4ae8b91cbc7c830a7ce05b5728887d56f6dc67))
+
 ## [1.8.0](https://github.com/kunchenguid/no-mistakes/compare/v1.7.0...v1.8.0) (2026-04-20)
 
 
