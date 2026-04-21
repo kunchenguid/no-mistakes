@@ -19,6 +19,9 @@ import (
 // gap between cmd.Start() and the time.Now() we record.
 const orphanStartTimeTolerance = 2 * time.Second
 
+var processRunningFunc = processRunning
+var terminateOrphanProcessGroupFunc = terminateOrphanProcessGroup
+
 // reapOrphanedServers kills managed-server subprocesses (opencode,
 // rovodev) left behind by a crashed predecessor daemon and deletes their
 // stale PID files.
@@ -58,7 +61,7 @@ func reapOrphanedServers(p *paths.Paths) {
 			removeServerPIDFile(path)
 			continue
 		}
-		alive, err := processRunning(info.PID)
+		alive, err := processRunningFunc(info.PID)
 		if err != nil {
 			slog.Warn("check orphaned server", "pid", info.PID, "error", err)
 			continue
@@ -74,8 +77,9 @@ func reapOrphanedServers(p *paths.Paths) {
 			continue
 		}
 		slog.Info("reaping orphaned managed server", "pid", info.PID, "agent", info.Agent, "bin", info.Bin)
-		if err := terminateOrphanProcessGroup(info.PID); err != nil {
+		if err := terminateOrphanProcessGroupFunc(info.PID); err != nil {
 			slog.Warn("terminate orphan", "pid", info.PID, "error", err)
+			continue
 		}
 		removeServerPIDFile(path)
 	}
@@ -111,7 +115,11 @@ func otherDaemonAlive(p *paths.Paths) bool {
 	if err != nil || pid <= 0 || pid == os.Getpid() {
 		return false
 	}
-	alive, _ := processRunning(pid)
+	alive, err := processRunningFunc(pid)
+	if err != nil {
+		slog.Warn("check daemon pid", "pid", pid, "error", err)
+		return true
+	}
 	return alive
 }
 

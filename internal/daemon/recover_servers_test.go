@@ -122,3 +122,26 @@ func TestOtherDaemonAlive_FalseForDeadPID(t *testing.T) {
 		t.Error("dead pid should not count as another daemon")
 	}
 }
+
+func TestOtherDaemonAlive_TrueWhenLivenessCheckErrors(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.PIDFile(), []byte("12345"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	old := processRunningFunc
+	processRunningFunc = func(pid int) (bool, error) {
+		if pid != 12345 {
+			t.Fatalf("unexpected pid %d", pid)
+		}
+		return false, fmt.Errorf("transient failure")
+	}
+	t.Cleanup(func() { processRunningFunc = old })
+
+	if !otherDaemonAlive(p) {
+		t.Error("liveness-check errors should conservatively block orphan reaping")
+	}
+}

@@ -4,21 +4,21 @@ package daemon
 
 import (
 	"fmt"
-	"os"
+	"os/exec"
+	"strconv"
+	"strings"
 )
 
-// terminateOrphanProcessGroup forcibly terminates the orphaned process.
-// Windows lacks a Unix-style process group concept, so this maps to
-// TerminateProcess on the top-level PID. Child processes that aren't
-// parented via a Job Object will not be cleaned up by this call, but the
-// managed server itself will be gone.
+// terminateOrphanProcessGroup forcibly terminates the orphaned process tree.
 func terminateOrphanProcessGroup(pid int) error {
-	proc, err := os.FindProcess(pid)
+	cmd := exec.Command("taskkill", "/PID", strconv.Itoa(pid), "/T", "/F")
+	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("find process %d: %w", pid, err)
-	}
-	if err := proc.Kill(); err != nil {
-		return fmt.Errorf("kill process %d: %w", pid, err)
+		output := strings.TrimSpace(string(out))
+		if output != "" {
+			return fmt.Errorf("taskkill pid %d: %w: %s", pid, err, output)
+		}
+		return fmt.Errorf("taskkill pid %d: %w", pid, err)
 	}
 	return nil
 }

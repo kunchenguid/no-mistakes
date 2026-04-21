@@ -3,6 +3,7 @@
 package daemon
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -145,5 +146,43 @@ func TestReapOrphanedServers_SkipsKillWhenStartTimeMismatched(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Errorf("stale pid file should still be removed, got err=%v", err)
+	}
+}
+
+func TestReapOrphanedServers_KeepsPIDFileWhenTerminateFails(t *testing.T) {
+	cmd, pid := spawnSleepProcess(t)
+	t.Cleanup(func() { killAndWait(cmd) })
+
+	started, err := processStartTime(pid)
+	if err != nil {
+		t.Fatalf("read start time: %v", err)
+	}
+
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	path := writePIDRecord(t, p.ServerPIDsDir(), "opencode-live.json", agent.ServerPIDInfo{
+		PID:       pid,
+		Agent:     "opencode",
+		Bin:       "/bin/sleep",
+		StartedAt: started,
+	})
+
+	old := terminateOrphanProcessGroupFunc
+	terminateOrphanProcessGroupFunc = func(pid int) error {
+		return errors.New("boom")
+	}
+	t.Cleanup(func() { terminateOrphanProcessGroupFunc = old })
+
+	reapOrphanedServers(p)
+
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("pid file should be kept for retry after terminate failure, got err=%v", err)
+	}
+	if alive, err := processRunning(pid); err != nil {
+		t.Fatalf("processRunning: %v", err)
+	} else if !alive {
+		t.Error("process should remain alive when terminate hook fails")
 	}
 }
