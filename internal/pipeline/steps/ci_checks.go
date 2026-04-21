@@ -10,6 +10,11 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
+type lastFixedIssues struct {
+	Checks        []string `json:"checks,omitempty"`
+	MergeConflict bool     `json:"mergeConflict,omitempty"`
+}
+
 // pollInterval returns the polling interval based on elapsed time since CI monitoring started.
 // 30s for first 5min, 60s for 5-15min, 120s after.
 func pollInterval(elapsed time.Duration) time.Duration {
@@ -52,6 +57,60 @@ func failingCheckNames(checks []scm.Check) []string {
 		}
 	}
 	return names
+}
+
+func pendingCheckMatchesLastFixed(checks []scm.Check, lastFixedChecks string) bool {
+	issues, ok := decodeLastFixedChecks(lastFixedChecks)
+	if !ok {
+		return false
+	}
+
+	failedNames := map[string]struct{}{}
+	for _, name := range issues.Checks {
+		if name == "" {
+			continue
+		}
+		failedNames[name] = struct{}{}
+	}
+	if len(failedNames) == 0 {
+		return issues.MergeConflict && hasPendingChecks(checks)
+	}
+
+	for _, c := range checks {
+		if !c.Pending() {
+			continue
+		}
+		if _, ok := failedNames[c.Name]; ok {
+			return true
+		}
+	}
+
+	return false
+}
+
+func encodeLastFixedChecks(failing []string, mergeConflict bool) string {
+	if len(failing) == 0 && !mergeConflict {
+		return ""
+	}
+	encoded, err := json.Marshal(lastFixedIssues{Checks: failing, MergeConflict: mergeConflict})
+	if err != nil {
+		return ""
+	}
+	return string(encoded)
+}
+
+func decodeLastFixedChecks(raw string) (lastFixedIssues, bool) {
+	if raw == "" {
+		return lastFixedIssues{}, false
+	}
+	var issues lastFixedIssues
+	if err := json.Unmarshal([]byte(raw), &issues); err != nil {
+		return lastFixedIssues{}, false
+	}
+	if len(issues.Checks) == 0 && !issues.MergeConflict {
+		return lastFixedIssues{}, false
+	}
+	return issues, true
 }
 
 func ciFailureOutcome(failing []string, mergeConflict bool, summary string) *pipeline.StepOutcome {

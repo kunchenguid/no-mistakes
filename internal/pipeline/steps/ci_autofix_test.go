@@ -364,6 +364,271 @@ func TestCIStep_CIAutoFixRetriesAfterChecksRerun(t *testing.T) {
 	}
 }
 
+// TestCIStep_CIAutoFixRetriesWhenSomeChecksStayFailing reproduces the real-world
+// scenario where multiple checks fail, the fix push causes only some of them to
+// re-run (and thus transit through pending) while at least one check keeps
+// reporting as failing throughout. The pipeline should still recognize the
+// post-rerun same-name failure as a new attempt and progress to attempt 2,
+// rather than logging "fix already attempted" indefinitely until CI timeout.
+func TestCIStep_CIAutoFixRetriesWhenSomeChecksStayFailing(t *testing.T) {
+	t.Parallel()
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	// At least one check stays failing throughout the push+rerun transition,
+	// so `failing` is never empty and the original "all pass" reset never fires.
+	checksSequence := []string{
+		`[{"name":"a","status":"COMPLETED","conclusion":"failure","bucket":"fail"},{"name":"b","status":"COMPLETED","conclusion":"failure","bucket":"fail"}]`,
+		`[{"name":"a","status":"IN_PROGRESS","bucket":"pending"},{"name":"b","status":"COMPLETED","conclusion":"failure","bucket":"fail"}]`,
+		`[{"name":"a","status":"COMPLETED","conclusion":"failure","bucket":"fail"},{"name":"b","status":"COMPLETED","conclusion":"failure","bucket":"fail"}]`,
+		`[{"name":"a","status":"IN_PROGRESS","bucket":"pending"},{"name":"b","status":"COMPLETED","conclusion":"failure","bucket":"fail"}]`,
+		`[{"name":"a","status":"COMPLETED","conclusion":"failure","bucket":"fail"},{"name":"b","status":"COMPLETED","conclusion":"failure","bucket":"fail"}]`,
+	}
+	env := fakeCIGHSequence(t, "OPEN", checksSequence)
+
+	fixCount := 0
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			fixCount++
+			os.WriteFile(filepath.Join(opts.CWD, fmt.Sprintf("fix-%d.txt", fixCount)), []byte("fixed"), 0o644)
+			return &agent.Result{}, nil
+		},
+	}
+
+	prURL := "https://github.com/test/repo/pull/42"
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Config.CITimeout = 30 * time.Second
+	sctx.Config.AutoFix = config.AutoFix{CI: 2}
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	pollCount := 0
+	step := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			pollCount++
+			return nil
+		},
+	}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("expected approval outcome after retries, got error: %v", err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("expected approval after exhausting rerun-backed retries")
+	}
+	if fixCount != 2 {
+		t.Fatalf("expected 2 auto-fix attempts when post-push rerun still fails with same check names, got %d (stuck in 'fix already attempted' loop?)", fixCount)
+	}
+
+	foundExhausted := false
+	for _, l := range logs {
+		if strings.Contains(l, "max auto-fix attempts (2) reached") {
+			foundExhausted = true
+			break
+		}
+	}
+	if !foundExhausted {
+		t.Fatalf("expected max-attempts log after rerun-backed retries, got: %v", logs)
+	}
+}
+
+func TestCIStep_DoesNotRetryOnUnrelatedPendingCheck(t *testing.T) {
+	t.Parallel()
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	checksSequence := []string{
+		`[{"name":"test","status":"COMPLETED","conclusion":"failure","bucket":"fail"}]`,
+		`[{"name":"test","status":"COMPLETED","conclusion":"failure","bucket":"fail"},{"name":"docs","status":"IN_PROGRESS","bucket":"pending"}]`,
+		`[{"name":"test","status":"COMPLETED","conclusion":"failure","bucket":"fail"}]`,
+		`[{"name":"test","status":"COMPLETED","conclusion":"failure","bucket":"fail"}]`,
+	}
+	env := fakeCIGHSequence(t, "OPEN", checksSequence)
+
+	fixCount := 0
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			fixCount++
+			os.WriteFile(filepath.Join(opts.CWD, fmt.Sprintf("fix-%d.txt", fixCount)), []byte("fixed"), 0o644)
+			return &agent.Result{}, nil
+		},
+	}
+
+	prURL := "https://github.com/test/repo/pull/42"
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Config.CITimeout = 30 * time.Second
+	sctx.Config.AutoFix = config.AutoFix{CI: 2}
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	pollCount := 0
+	step := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			pollCount++
+			if pollCount == 3 {
+				cancel()
+			}
+			return ctx.Err()
+		},
+	}
+
+	_, err := step.Execute(sctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context cancellation after observing repeated stale failure, got %v", err)
+	}
+	if fixCount != 1 {
+		t.Fatalf("expected unrelated pending checks not to trigger a second auto-fix attempt, got %d", fixCount)
+	}
+
+	foundWait := false
+	for _, l := range logs {
+		if strings.Contains(l, "fix already attempted for these issues") {
+			foundWait = true
+			break
+		}
+	}
+	if !foundWait {
+		t.Fatalf("expected stale failures to stay guarded while unrelated checks finish, got logs: %v", logs)
+	}
+}
+
+func TestCIStep_RetriesMergeConflictAfterRerun(t *testing.T) {
+	t.Parallel()
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	checksSequence := []string{
+		`[{"name":"build","status":"COMPLETED","conclusion":"success","bucket":"pass"}]`,
+		`[{"name":"build","status":"IN_PROGRESS","bucket":"pending"}]`,
+		`[{"name":"build","status":"COMPLETED","conclusion":"success","bucket":"pass"}]`,
+		`[{"name":"build","status":"IN_PROGRESS","bucket":"pending"}]`,
+		`[{"name":"build","status":"COMPLETED","conclusion":"success","bucket":"pass"}]`,
+	}
+	env := fakeCIGHSequenceMergeable(t, "OPEN", checksSequence, "CONFLICTING")
+
+	fixCount := 0
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			fixCount++
+			os.WriteFile(filepath.Join(opts.CWD, fmt.Sprintf("conflict-fix-%d.txt", fixCount)), []byte("resolved"), 0o644)
+			return &agent.Result{}, nil
+		},
+	}
+
+	prURL := "https://github.com/test/repo/pull/42"
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Config.CITimeout = 30 * time.Second
+	sctx.Config.AutoFix = config.AutoFix{CI: 2}
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	step := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			return nil
+		},
+	}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("expected approval outcome after retries, got error: %v", err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("expected approval after exhausting conflict rerun-backed retries")
+	}
+	if fixCount != 2 {
+		t.Fatalf("expected 2 auto-fix attempts for persistent merge conflicts after reruns, got %d", fixCount)
+	}
+
+	foundExhausted := false
+	for _, l := range logs {
+		if strings.Contains(l, "max auto-fix attempts (2) reached") {
+			foundExhausted = true
+			break
+		}
+	}
+	if !foundExhausted {
+		t.Fatalf("expected max-attempts log after conflict rerun-backed retries, got: %v", logs)
+	}
+}
+
 func TestCIStep_FixMode_ManualInterventionRunsCIFix(t *testing.T) {
 	t.Parallel()
 	upstream := t.TempDir()
