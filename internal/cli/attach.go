@@ -98,12 +98,9 @@ func attachRun(ctx context.Context, w io.Writer, runID string, rootDefault bool,
 			// has the run registered, so the handoff to runTUI below is
 			// seamless rather than flashing the pre-wizard terminal.
 			waitFn := func(ctx context.Context, branch string) error {
-				r, werr := waitForActiveRun(ctx, client, repo.ID, branch, 5*time.Second)
+				_, werr := waitForActiveRun(ctx, client, repo.ID, branch, 5*time.Second)
 				if werr != nil {
 					return werr
-				}
-				if r == nil {
-					return fmt.Errorf("no active run appeared after pushing %q", branch)
 				}
 				return nil
 			}

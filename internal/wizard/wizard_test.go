@@ -767,6 +767,46 @@ func TestWaitForRun_CompletedTelemetrySkippedOnWaitError(t *testing.T) {
 	}
 }
 
+func TestWaitForRun_IgnoresStrayKeys(t *testing.T) {
+	cfg := baseConfig(&recorder{})
+	cfg.CurrentBranch = "feat/x"
+	cfg.NeedsBranch = false
+	cfg.IsDirty = false
+	cfg.WaitForRun = func(context.Context, string) error { return nil }
+
+	m := NewModel(cfg)
+	m = drain(m, m.Init())
+
+	next, _ := m.executeStep(m.activeStep(), "")
+	m = next.(Model)
+	next, _ = m.Update(actionMsg{id: stepPush})
+	m = next.(Model)
+
+	if !m.waiting {
+		t.Fatal("expected wizard to be in wait-for-run mode")
+	}
+	if m.quitting {
+		t.Fatal("wait-for-run mode should not already be quitting")
+	}
+
+	for _, key := range []tea.KeyMsg{
+		{Type: tea.KeyRunes, Runes: []rune("x")},
+		{Type: tea.KeyEnter},
+	} {
+		next, _ = m.Update(key)
+		m = next.(Model)
+		if !m.waiting {
+			t.Fatalf("expected wait-for-run mode to ignore %q", key.String())
+		}
+		if m.quitting {
+			t.Fatalf("expected wait-for-run mode to keep running after %q", key.String())
+		}
+		if err := m.ctx.Err(); err != nil {
+			t.Fatalf("expected wait-for-run context to stay active after %q, got %v", key.String(), err)
+		}
+	}
+}
+
 func TestPushStep_DeclineAborts(t *testing.T) {
 	cfg := baseConfig(&recorder{})
 	cfg.CurrentBranch = "feat/x"

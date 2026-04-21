@@ -318,6 +318,15 @@ func (m Model) handleAutoAdvance() (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.waiting {
+		switch msg.String() {
+		case "ctrl+c", "q":
+		default:
+			m.confirmQuit = false
+			return m, nil
+		}
+	}
+
 	s := m.activeStep()
 	if s == nil {
 		// Already finished; any key quits.
