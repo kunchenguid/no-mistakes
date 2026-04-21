@@ -185,3 +185,23 @@ jobs:
           GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.release-please.outputs.tag_name }}
         run: gh release upload "$TAG" checksums.txt --clobber
+
+  finalize:
+    runs-on: ubuntu-latest
+    needs:
+      - release-please
+      - build-and-upload
+      - checksums
+    if: |
+      !cancelled() &&
+      needs.release-please.result == 'success' &&
+      needs.build-and-upload.result == 'success' &&
+      needs.checksums.result == 'success' &&
+      needs.release-please.outputs.release_created == 'true'
+    steps:
+      - name: Publish draft release as latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: gh release edit "$TAG" --draft=false --latest=true

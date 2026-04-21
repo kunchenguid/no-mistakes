@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -91,33 +92,95 @@ func TestReleaseWorkflowRunsBuildAndChecksumsAfterSkippedValidation(t *testing.T
 	}
 
 	for _, j := range jobs {
-		header := "\n  " + j.name + ":\n"
-		start := strings.Index(content, header)
-		if start < 0 {
-			t.Fatalf("could not locate %s job in workflow", j.name)
-		}
-		rest := content[start+len(header):]
-		nextJob := strings.Index(rest, "\n  ")
-		for nextJob >= 0 {
-			line := rest[nextJob+1:]
-			if len(line) > 2 && line[2] != ' ' && line[2] != '#' && line[2] != '\n' {
-				break
-			}
-			next := strings.Index(rest[nextJob+1:], "\n  ")
-			if next < 0 {
-				nextJob = -1
-				break
-			}
-			nextJob = nextJob + 1 + next
-		}
-		block := rest
-		if nextJob > 0 {
-			block = rest[:nextJob]
-		}
+		block := extractJobBlock(t, content, j.name)
 		for _, req := range j.required {
 			if !strings.Contains(block, req) {
 				t.Fatalf("%s job must contain %q so it runs after skipped validation jobs", j.name, req)
 			}
 		}
+	}
+}
+
+// Partial-release protection: release-please must create drafts so that a
+// release is never marked "latest" until all binaries and checksums are
+// uploaded. A separate finalize job gates the promotion on every asset job
+// succeeding.
+func TestReleasePleaseConfigCreatesDrafts(t *testing.T) {
+	data, err := os.ReadFile("release-please-config.json")
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	var cfg struct {
+		Packages map[string]struct {
+			Draft bool `json:"draft"`
+		} `json:"packages"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+	pkg, ok := cfg.Packages["."]
+	if !ok {
+		t.Fatalf("release-please config missing '.' package")
+	}
+	if !pkg.Draft {
+		t.Fatalf("release-please must create releases as drafts; partial releases would otherwise be marked latest before binaries are uploaded")
+	}
+}
+
+func TestReleaseWorkflowPromotesDraftOnlyAfterAssetsComplete(t *testing.T) {
+	data, err := os.ReadFile(".github/workflows/release.yml")
+	if err != nil {
+		t.Fatalf("read workflow: %v", err)
+	}
+	content := string(data)
+
+	block := extractJobBlock(t, content, "finalize")
+
+	required := []string{
+		"!cancelled()",
+		"needs.release-please.result == 'success'",
+		"needs.build-and-upload.result == 'success'",
+		"needs.checksums.result == 'success'",
+		"needs.release-please.outputs.release_created == 'true'",
+		"gh release edit",
+		"--draft=false",
+		"--latest=true",
+	}
+	for _, req := range required {
+		if !strings.Contains(block, req) {
+			t.Fatalf("finalize job must contain %q so a draft is only promoted to latest after every asset job succeeds", req)
+		}
+	}
+
+	for _, dep := range []string{"release-please", "build-and-upload", "checksums"} {
+		if !strings.Contains(block, "- "+dep) {
+			t.Fatalf("finalize job must declare %q in needs so its gate sees all upstream results", dep)
+		}
+	}
+}
+
+func extractJobBlock(t *testing.T, content, name string) string {
+	t.Helper()
+	header := "\n  " + name + ":\n"
+	start := strings.Index(content, header)
+	if start < 0 {
+		t.Fatalf("could not locate %s job in workflow", name)
+	}
+	rest := content[start+len(header):]
+	idx := 0
+	for {
+		next := strings.Index(rest[idx:], "\n  ")
+		if next < 0 {
+			return rest
+		}
+		pos := idx + next + 1
+		if pos+2 >= len(rest) {
+			return rest
+		}
+		ch := rest[pos+2]
+		if ch != ' ' && ch != '#' && ch != '\n' {
+			return rest[:pos]
+		}
+		idx = pos + 1
 	}
 }
