@@ -105,6 +105,11 @@ func InstallPostReceiveHook(bareDir string) error {
 // Idempotent: safe to call on an already-configured bare repo to
 // migrate older installs.
 func IsolateHooksPath(ctx context.Context, bareDir string) error {
+	if _, err := runGit(ctx, bareDir, "config", "--worktree", "--get", "core.hookspath"); err != nil {
+		if isWorktreeConfigUnsupported(err) {
+			return nil
+		}
+	}
 	if _, err := runGit(ctx, bareDir, "config", "extensions.worktreeConfig", "true"); err != nil {
 		return fmt.Errorf("enable worktree config: %w", err)
 	}

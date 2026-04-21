@@ -299,6 +299,11 @@ func TestIsolateHooksPath_SkipsIsolationWhenWorktreeConfigUnsupported(t *testing
 	if err == nil && strings.TrimSpace(string(out)) != "" {
 		t.Fatalf("local core.hookspath should remain unset without worktree support, got %q", strings.TrimSpace(string(out)))
 	}
+
+	out, err = exec.Command("git", "-C", bare, "config", "--local", "--get", "extensions.worktreeConfig").CombinedOutput()
+	if err == nil && strings.TrimSpace(string(out)) != "" {
+		t.Fatalf("extensions.worktreeConfig should remain unset without worktree support, got %q", strings.TrimSpace(string(out)))
+	}
 }
 
 func TestInstallPostReceiveHookCreatesDir(t *testing.T) {
