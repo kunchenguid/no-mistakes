@@ -239,6 +239,51 @@ func TestStartFallsBackToDetachedDaemonWhenManagedStopFailsButDaemonIsDead(t *te
 	_ = os.Remove(p.Socket())
 }
 
+func TestStartReturnsManagedStopErrorWhenFallbackCleanupFails(t *testing.T) {
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+
+	cleanup := stubServiceRuntime(t)
+	defer cleanup()
+	t.Setenv("NM_DAEMON_HELPER_PROCESS", "1")
+	runtimeGOOS = "linux"
+	serviceUserHomeDir = func() (string, error) { return home, nil }
+	serviceExecutablePath = func() (string, error) { return "/usr/local/bin/no-mistakes", nil }
+
+	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
+		command := name + " " + strings.Join(args, " ")
+		if command == "systemctl --user start "+systemdServiceName(p) {
+			return nil, fmt.Errorf("user manager unavailable")
+		}
+		if command == "systemctl --user stop "+systemdServiceName(p) {
+			return nil, fmt.Errorf("permission denied")
+		}
+		return nil, nil
+	}
+	checks := 0
+	daemonHealthCheck = func(*paths.Paths) (bool, error) {
+		checks++
+		return false, nil
+	}
+
+	err := Start(p)
+	if err == nil {
+		t.Fatal("Start should return the managed stop error")
+	}
+	if !strings.Contains(err.Error(), "stop managed daemon before detached fallback") {
+		t.Fatalf("Start error = %v, want managed stop failure", err)
+	}
+	if !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("Start error = %v, want original stop error", err)
+	}
+	if checks < 2 {
+		t.Fatalf("expected health checks before and after managed stop failure, got %d", checks)
+	}
+}
+
 func TestStopUsesManagedServiceWhenInstalled(t *testing.T) {
 	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
 	if err := p.EnsureDirs(); err != nil {

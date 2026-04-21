@@ -75,14 +75,19 @@ func stopManagedFallback(p *paths.Paths) error {
 	if alive, _ := daemonHealthCheck(p); alive {
 		return fmt.Errorf("managed daemon is still running: %w", err)
 	}
-	// The managed stop is best-effort cleanup before the detached fallback.
-	// If the daemon isn't alive, the goal is already met and we should let
-	// Start continue into startDetachedDaemon. Erroring out here previously
-	// masked a healthy recovery path - notably when `launchctl bootout`
-	// returns ESRCH ("No such process") because bootstrap/kickstart never
-	// loaded the service in the first place.
-	slog.Debug("managed stop failed but daemon is not running; proceeding with detached fallback", "err", err)
-	return nil
+	if managedStopErrorAllowsDetachedFallback(err) {
+		slog.Debug("managed stop reported daemon already stopped; proceeding with detached fallback", "err", err)
+		return nil
+	}
+	return fmt.Errorf("stop managed daemon before detached fallback: %w", err)
+}
+
+func managedStopErrorAllowsDetachedFallback(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "no such process") || strings.Contains(message, "not loaded")
 }
 
 func startDetachedDaemon(p *paths.Paths) error {
