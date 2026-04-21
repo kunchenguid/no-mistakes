@@ -420,3 +420,61 @@ func TestRunWizardReturnsTerminalWizardError(t *testing.T) {
 		t.Fatalf("runWizard() error = %v, want %v", err, wantErr)
 	}
 }
+
+// TestRunWizard_ConfiguresServerPIDsDir ensures the wizard points the
+// agent package at its PID tracking dir while running, so orphaned
+// opencode/rovodev processes left behind by a wizard crash can be reaped
+// by the next daemon startup. It also verifies the setting is cleared
+// afterwards.
+func TestRunWizard_ConfiguresServerPIDsDir(t *testing.T) {
+	prevRun := wizardRun
+	var observedDir string
+	var observedOwner string
+	wizardRun = func(cfg wizard.Config) (wizard.Result, error) {
+		observedDir = agent.CurrentServerPIDsDir()
+		observedOwner = agent.CurrentServerPIDOwner()
+		return wizard.Result{Success: true}, nil
+	}
+	defer func() { wizardRun = prevRun }()
+
+	nmHome := makeSocketSafeTempDir(t)
+	t.Setenv("NM_HOME", nmHome)
+	p := paths.WithRoot(nmHome)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	prevDir := agent.CurrentServerPIDsDir()
+	prevOwner := agent.CurrentServerPIDOwner()
+	// Start from a known-empty setting so we can tell if the wizard set it.
+	agent.SetServerPIDsDirForOwner("", "")
+	t.Cleanup(func() { agent.SetServerPIDsDirForOwner(prevDir, prevOwner) })
+
+	repoDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repoDir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	state := &repoState{
+		workDir:       repoDir,
+		currentBranch: "main",
+		defaultBranch: "main",
+		dirty:         true,
+	}
+
+	if _, err := runWizard(context.Background(), p, state, nil); err != nil {
+		t.Fatalf("runWizard() error = %v", err)
+	}
+
+	if want := p.ServerPIDsDir(); observedDir != want {
+		t.Fatalf("during wizard, CurrentServerPIDsDir = %q, want %q", observedDir, want)
+	}
+	if observedOwner != agent.ServerPIDOwnerWizard {
+		t.Fatalf("during wizard, CurrentServerPIDOwner = %q, want %q", observedOwner, agent.ServerPIDOwnerWizard)
+	}
+	if got := agent.CurrentServerPIDsDir(); got != "" {
+		t.Fatalf("after wizard, CurrentServerPIDsDir = %q, want empty", got)
+	}
+	if got := agent.CurrentServerPIDOwner(); got != "" {
+		t.Fatalf("after wizard, CurrentServerPIDOwner = %q, want empty", got)
+	}
+}

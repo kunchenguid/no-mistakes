@@ -55,6 +55,11 @@ func (p *Paths) RunLogDir(runID string) string {
 func (p *Paths) DaemonLog() string { return filepath.Join(p.root, "logs", "daemon.log") }
 func (p *Paths) CLILog() string    { return filepath.Join(p.root, "logs", "cli.log") }
 
+// ServerPIDsDir holds PID-tracking files for managed agent servers
+// (opencode, rovodev) so a freshly started daemon can reap orphans left
+// behind by a crashed predecessor.
+func (p *Paths) ServerPIDsDir() string { return filepath.Join(p.root, "servers") }
+
 // EnsureDirs creates all required directories under root.
 func (p *Paths) EnsureDirs() error {
 	dirs := []string{
@@ -62,6 +67,7 @@ func (p *Paths) EnsureDirs() error {
 		p.ReposDir(),
 		p.WorktreesDir(),
 		p.LogsDir(),
+		p.ServerPIDsDir(),
 	}
 	for _, d := range dirs {
 		if err := os.MkdirAll(d, 0o755); err != nil {

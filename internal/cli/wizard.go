@@ -208,6 +208,10 @@ func runWizardWithMode(ctx context.Context, p *paths.Paths, state *repoState, au
 	// during the wizard inherits this sink.
 	restoreOutput := captureAgentServerOutput(p)
 	defer restoreOutput()
+	// Leave PID breadcrumbs so a daemon startup after a wizard crash can
+	// reap orphaned opencode/rovodev servers.
+	agent.SetServerPIDsDirForOwner(p.ServerPIDsDir(), agent.ServerPIDOwnerWizard)
+	defer agent.SetServerPIDsDirForOwner("", "")
 
 	suggester := newWizardAgentSuggester(cfg, workDir, nil, nil)
 	defer suggester.Close()

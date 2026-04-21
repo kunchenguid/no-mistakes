@@ -179,7 +179,7 @@ When state is genuinely wedged:
 
 ```sh
 no-mistakes daemon stop
-rm -rf ~/.no-mistakes/worktrees ~/.no-mistakes/socket ~/.no-mistakes/daemon.pid
+rm -rf ~/.no-mistakes/worktrees ~/.no-mistakes/servers ~/.no-mistakes/socket ~/.no-mistakes/daemon.pid
 no-mistakes daemon start
 ```
 

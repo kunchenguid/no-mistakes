@@ -1090,3 +1090,38 @@ func TestResult(t *testing.T) {
 		t.Fatalf("expected TargetBranch feat/x, got %q", res.TargetBranch)
 	}
 }
+
+func TestWaitForRun_CalledAfterPush(t *testing.T) {
+	cfg := baseConfig(&recorder{})
+	cfg.CurrentBranch = "feat/x"
+	cfg.NeedsBranch = false
+	cfg.IsDirty = false
+
+	called := 0
+	gotBranch := ""
+	cfg.WaitForRun = func(_ context.Context, branch string) error {
+		called++
+		gotBranch = branch
+		return nil
+	}
+
+	m := NewModel(cfg)
+	m = drain(m, m.Init())
+	m = advance(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+
+	if called != 1 {
+		t.Fatalf("WaitForRun called %d times, want 1", called)
+	}
+	if gotBranch != "feat/x" {
+		t.Fatalf("WaitForRun branch = %q, want %q", gotBranch, "feat/x")
+	}
+	if !m.success || !m.quitting {
+		t.Fatalf("expected successful quit after wait, got success=%v quitting=%v", m.success, m.quitting)
+	}
+	if m.err != nil {
+		t.Fatalf("unexpected wait error: %v", m.err)
+	}
+	if !m.Result().Pushed {
+		t.Fatal("expected pushed result to remain true")
+	}
+}

@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
@@ -21,6 +22,8 @@ import (
 )
 
 var applyShellEnvToProcess = shellenv.ApplyToProcess
+var createDaemonPIDTempFile = os.CreateTemp
+var renameDaemonPIDFile = os.Rename
 
 // Run starts the daemon process. It blocks until a shutdown signal is received
 // or the shutdown IPC method is called. This is called when NM_DAEMON=1 or via
@@ -103,6 +106,11 @@ func RunWithOptions(p *paths.Paths, d *db.DB, stepFactory StepFactory) error {
 	// Recover stale runs from a previous daemon crash.
 	recoverOnStartup(d, p)
 
+	// Point the agent package at our PID tracking dir so any managed
+	// servers we spawn from here on leave crash-recovery breadcrumbs.
+	agent.SetServerPIDsDir(p.ServerPIDsDir())
+	defer agent.SetServerPIDsDir("")
+
 	srv := ipc.NewServer()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -124,13 +132,18 @@ func RunWithOptions(p *paths.Paths, d *db.DB, stepFactory StepFactory) error {
 
 	// Write PID file
 	pidPath := p.PIDFile()
-	myPID := fmt.Sprintf("%d", os.Getpid())
-	if err := os.WriteFile(pidPath, []byte(myPID), 0o644); err != nil {
+	pidRecord, err := currentDaemonPIDRecord(processStartTime, func() time.Time { return time.Now().UTC() })
+	if err != nil {
+		return fmt.Errorf("build pid file: %w", err)
+	}
+	if err := writeDaemonPIDFile(pidPath, pidRecord); err != nil {
 		return fmt.Errorf("write pid file: %w", err)
 	}
 	defer func() {
-		if pidData, err := os.ReadFile(pidPath); err == nil && string(pidData) == myPID {
-			os.Remove(pidPath)
+		if pidData, err := os.ReadFile(pidPath); err == nil {
+			if current, readErr := readDaemonPIDFileData(pidData); readErr == nil && current.PID == pidRecord.PID && current.StartedAt.Equal(pidRecord.StartedAt) {
+				os.Remove(pidPath)
+			}
 		}
 	}()
 
@@ -156,16 +169,67 @@ func RunWithOptions(p *paths.Paths, d *db.DB, stepFactory StepFactory) error {
 
 	// Clean up socket file only if we still own the PID file.
 	// A new daemon may have already replaced the socket.
-	if pidData, err := os.ReadFile(pidPath); err == nil && string(pidData) == myPID {
-		os.Remove(socketPath)
+	if pidData, err := os.ReadFile(pidPath); err == nil {
+		if current, readErr := readDaemonPIDFileData(pidData); readErr == nil && current.PID == pidRecord.PID && current.StartedAt.Equal(pidRecord.StartedAt) {
+			os.Remove(pidPath)
+			os.Remove(socketPath)
+		}
 	}
 	slog.Info("daemon stopped")
 	return nil
 }
 
+func currentDaemonPIDRecord(startTime func(int) (time.Time, error), now func() time.Time) (daemonPIDFile, error) {
+	pid := os.Getpid()
+	startedAt, err := startTime(pid)
+	if err != nil {
+		startedAt = agent.CurrentProcessStartedAt()
+		if startedAt.IsZero() {
+			startedAt = now()
+		}
+	}
+	return daemonPIDFile{PID: pid, StartedAt: startedAt.UTC()}, nil
+}
+
+func writeDaemonPIDFile(path string, record daemonPIDFile) error {
+	data, err := json.Marshal(record)
+	if err != nil {
+		return fmt.Errorf("marshal pid file: %w", err)
+	}
+	tmp, err := createDaemonPIDTempFile(filepath.Dir(path), filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create pid temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer func() {
+		if tmpPath != "" {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("chmod pid temp file: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write pid temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close pid temp file: %w", err)
+	}
+	if err := renameDaemonPIDFile(tmpPath, path); err != nil {
+		return fmt.Errorf("rename pid file: %w", err)
+	}
+	tmpPath = ""
+	return nil
+}
+
 // recoverOnStartup cleans up after a previous daemon crash by marking stale
-// runs/steps as failed and removing orphaned worktree directories.
+// runs/steps as failed, killing orphaned managed-server subprocesses
+// (opencode, rovodev), and removing orphaned worktree directories.
 func recoverOnStartup(d *db.DB, p *paths.Paths) {
+	reapOrphanedServers(p)
+
 	count, err := d.RecoverStaleRuns("daemon crashed during execution")
 	if err != nil {
 		slog.Error("failed to recover stale runs", "error", err)

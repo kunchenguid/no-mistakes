@@ -91,7 +91,7 @@ the background and always exits 0.
 A long-running background process that manages pipeline runs. It:
 
 - Listens on a Unix socket at `~/.no-mistakes/socket`
-- Writes its PID to `~/.no-mistakes/daemon.pid`
+- Writes its identity record to `~/.no-mistakes/daemon.pid`
 - Serializes concurrent pushes to the same branch (new push cancels the in-progress run)
 - Creates and cleans up worktrees
 - Persists state to SQLite
@@ -109,7 +109,7 @@ it was started from the same executable path and aborts if the daemon
 executable path cannot be determined or points to a different binary. You can
 also manage it explicitly with `no-mistakes daemon start|stop|restart|status`.
 
-On startup, the daemon recovers from crashes by marking any stuck runs as failed and cleaning up orphaned worktrees.
+On startup, the daemon recovers from crashes by marking any stuck runs as failed, reaping orphaned managed agent servers, and cleaning up orphaned worktrees.
 
 ### Pipeline executor
 
@@ -143,9 +143,10 @@ Everything lives under `~/.no-mistakes/` by default. Set `NM_HOME` to relocate i
 |---|---|
 | `state.sqlite` | SQLite database |
 | `socket` | Unix domain socket for IPC |
-| `daemon.pid` | Daemon process ID |
+| `daemon.pid` | Daemon identity record |
 | `config.yaml` | Global configuration |
 | `update-check.json` | Cached update check result |
+| `servers/` | PID-tracking records for managed agent servers |
 | `repos/<id>.git` | Bare gate repos |
 | `worktrees/<repoID>/<runID>/` | Disposable worktrees (cleaned up after each run) |
 | `logs/<runID>/<step>.log` | Per-step log files |

@@ -101,7 +101,7 @@ func TestEnsureDirs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, d := range []string{p.Root(), p.ReposDir(), p.WorktreesDir(), p.LogsDir()} {
+	for _, d := range []string{p.Root(), p.ReposDir(), p.WorktreesDir(), p.LogsDir(), p.ServerPIDsDir()} {
 		info, err := os.Stat(d)
 		if err != nil {
 			t.Errorf("expected dir %q to exist: %v", d, err)

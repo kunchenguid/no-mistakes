@@ -72,7 +72,7 @@ func (a *rovodevAgent) ensureServer(ctx context.Context, cwd string) (string, er
 		return "", fmt.Errorf("rovodev port: %w", err)
 	}
 	args := []string{"rovodev", "serve", "--disable-session-token", fmt.Sprintf("%d", port)}
-	srv, err := startServerWithPort(ctx, a.bin, args, cwd, "/healthcheck", port)
+	srv, err := startServerWithPort(ctx, "rovodev", a.bin, args, cwd, "/healthcheck", port)
 	if err != nil {
 		return "", fmt.Errorf("rovodev server: %w", err)
 	}

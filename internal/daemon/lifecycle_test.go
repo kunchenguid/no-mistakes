@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -15,6 +16,21 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 )
+
+type failingRenameError string
+
+func (e failingRenameError) Error() string { return string(e) }
+
+func writeDaemonPIDRecord(t *testing.T, path string, record daemonPIDFile) {
+	t.Helper()
+	data, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestIsRunningFalseWhenNoSocket(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "dtest")
@@ -171,9 +187,8 @@ func TestStopDetachedDaemonFallsBackToPIDWhenSocketIsBroken(t *testing.T) {
 		t.Fatal(err)
 	}
 	const pid = 424242
-	if err := os.WriteFile(p.PIDFile(), []byte(fmt.Sprintf("%d", pid)), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	startedAt := time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC)
+	writeDaemonPIDRecord(t, p.PIDFile(), daemonPIDFile{PID: pid, StartedAt: startedAt})
 	ln, err := net.Listen("unix", p.Socket())
 	if err != nil {
 		t.Fatal(err)
@@ -204,7 +219,7 @@ func TestStopDetachedDaemonFallsBackToPIDWhenSocketIsBroken(t *testing.T) {
 		if checkPID != pid {
 			t.Fatalf("processStartTime pid = %d, want %d", checkPID, pid)
 		}
-		return time.Now(), nil
+		return startedAt, nil
 	}
 	defer func() {
 		daemonProcessStartTime = originalProcessStartTime
@@ -251,13 +266,7 @@ func TestStopDetachedDaemonRejectsStalePIDFallback(t *testing.T) {
 	if err := p.EnsureDirs(); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(p.PIDFile(), []byte(fmt.Sprintf("%d", os.Getpid())), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	oldTime := time.Now().Add(-24 * time.Hour)
-	if err := os.Chtimes(p.PIDFile(), oldTime, oldTime); err != nil {
-		t.Fatal(err)
-	}
+	writeDaemonPIDRecord(t, p.PIDFile(), daemonPIDFile{PID: os.Getpid(), StartedAt: time.Now().Add(-24 * time.Hour)})
 	ln, err := net.Listen("unix", p.Socket())
 	if err != nil {
 		t.Fatal(err)
@@ -311,9 +320,7 @@ func TestStopDetachedDaemonRejectsUnrelatedLiveProcessPIDFallback(t *testing.T) 
 	if err := p.EnsureDirs(); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(p.PIDFile(), []byte(fmt.Sprintf("%d", os.Getpid())), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeDaemonPIDRecord(t, p.PIDFile(), daemonPIDFile{PID: os.Getpid(), StartedAt: time.Now()})
 	ln, err := net.Listen("unix", p.Socket())
 	if err != nil {
 		t.Fatal(err)
@@ -359,6 +366,138 @@ func TestStopDetachedDaemonRejectsUnrelatedLiveProcessPIDFallback(t *testing.T) 
 	}
 	if _, statErr := os.Stat(p.Socket()); statErr != nil {
 		t.Fatalf("expected socket file to remain after rejected pid fallback, got err=%v", statErr)
+	}
+}
+
+func TestValidateDaemonPIDFallback_RejectsLegacyPIDFileForReusedPID(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "dtest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	p := paths.WithRoot(tmpDir)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.PIDFile(), []byte(fmt.Sprintf("%d", os.Getpid())), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	old := daemonProcessStartTime
+	daemonProcessStartTime = func(checkPID int) (time.Time, error) {
+		if checkPID != os.Getpid() {
+			t.Fatalf("processStartTime pid = %d, want %d", checkPID, os.Getpid())
+		}
+		return time.Now().Add(-time.Hour), nil
+	}
+	t.Cleanup(func() {
+		daemonProcessStartTime = old
+	})
+
+	err = validateDaemonPIDFallback(p, os.Getpid())
+	if err == nil {
+		t.Fatal("expected legacy pid fallback to reject reused pid")
+	}
+}
+
+func TestValidateDaemonPIDFallback_RejectsLegacyPIDFileTouchedNearLivePID(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "dtest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	p := paths.WithRoot(tmpDir)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.PIDFile(), []byte(fmt.Sprintf("%d", os.Getpid())), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mtime := time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(p.PIDFile(), mtime, mtime); err != nil {
+		t.Fatal(err)
+	}
+
+	oldStartTime := daemonProcessStartTime
+	oldHealth := daemonHealthCheck
+	daemonProcessStartTime = func(checkPID int) (time.Time, error) {
+		if checkPID != os.Getpid() {
+			t.Fatalf("processStartTime pid = %d, want %d", checkPID, os.Getpid())
+		}
+		return mtime.Add(time.Second), nil
+	}
+	daemonHealthCheck = func(*paths.Paths) (bool, error) {
+		return false, nil
+	}
+	t.Cleanup(func() {
+		daemonProcessStartTime = oldStartTime
+		daemonHealthCheck = oldHealth
+	})
+
+	err = validateDaemonPIDFallback(p, os.Getpid())
+	if err == nil {
+		t.Fatal("expected legacy pid fallback to reject timestamp-only matches")
+	}
+}
+
+func TestCurrentDaemonPIDRecord_UsesProcessStartTime(t *testing.T) {
+	want := time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC)
+	now := want.Add(10 * time.Second)
+
+	record, err := currentDaemonPIDRecord(func(pid int) (time.Time, error) {
+		if pid != os.Getpid() {
+			t.Fatalf("processStartTime pid = %d, want %d", pid, os.Getpid())
+		}
+		return want, nil
+	}, func() time.Time {
+		return now
+	})
+	if err != nil {
+		t.Fatalf("currentDaemonPIDRecord returned error: %v", err)
+	}
+	if record.PID != os.Getpid() {
+		t.Fatalf("record pid = %d, want %d", record.PID, os.Getpid())
+	}
+	if !record.StartedAt.Equal(want) {
+		t.Fatalf("record started_at = %v, want %v", record.StartedAt, want)
+	}
+}
+
+func TestWriteDaemonPIDFile_LeavesExistingFileUntouchedOnRenameFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "daemon.pid")
+	original := []byte("old-data")
+	if err := os.WriteFile(path, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldRename := renameDaemonPIDFile
+	renameDaemonPIDFile = func(_, _ string) error {
+		return failingRenameError("rename failed")
+	}
+	t.Cleanup(func() {
+		renameDaemonPIDFile = oldRename
+	})
+
+	err := writeDaemonPIDFile(path, daemonPIDFile{PID: 12345, StartedAt: time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC)})
+	if err == nil {
+		t.Fatal("expected writeDaemonPIDFile to fail when rename fails")
+	}
+	data, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("read pid file: %v", readErr)
+	}
+	if string(data) != string(original) {
+		t.Fatalf("pid file changed after failed atomic write: got %q want %q", string(data), string(original))
+	}
+	matches, globErr := filepath.Glob(filepath.Join(tmpDir, "daemon.pid.tmp-*"))
+	if globErr != nil {
+		t.Fatalf("glob temp files: %v", globErr)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("expected temp files to be cleaned up, got %v", matches)
 	}
 }
 
@@ -625,13 +764,7 @@ func TestWaitForDaemonStopRejectsStalePIDBeforeKill(t *testing.T) {
 	if err := p.EnsureDirs(); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(p.PIDFile(), []byte(fmt.Sprintf("%d", os.Getpid())), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	oldTime := time.Now().Add(-24 * time.Hour)
-	if err := os.Chtimes(p.PIDFile(), oldTime, oldTime); err != nil {
-		t.Fatal(err)
-	}
+	writeDaemonPIDRecord(t, p.PIDFile(), daemonPIDFile{PID: os.Getpid(), StartedAt: time.Now().Add(-24 * time.Hour)})
 	if err := os.WriteFile(p.Socket(), []byte("still-there"), 0o644); err != nil {
 		t.Fatal(err)
 	}
