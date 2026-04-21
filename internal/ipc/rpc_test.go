@@ -13,7 +13,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 )
 
-func TestServerClientRoundTrip_EnableWindowsCI(t *testing.T) {
+func TestServerClientRoundTrip(t *testing.T) {
 	sock := socketPath(t)
 	srv := startServer(t, sock)
 
@@ -102,7 +102,7 @@ func TestHandlerError(t *testing.T) {
 	}
 }
 
-func TestMultipleClients_EnableWindowsCI(t *testing.T) {
+func TestMultipleClients(t *testing.T) {
 	sock := socketPath(t)
 	srv := startServer(t, sock)
 

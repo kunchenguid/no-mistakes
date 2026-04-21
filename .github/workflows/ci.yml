@@ -44,9 +44,9 @@ jobs:
         if: runner.os != 'Windows'
         run: go test -race ./...
 
-      - name: Test on Windows (PR)
+      - name: Test on Windows
         if: runner.os == 'Windows'
-        run: go test ./... -run '_EnableWindowsCI$'
+        run: go test ./...
 
       - name: Build
         run: go build ./cmd/no-mistakes

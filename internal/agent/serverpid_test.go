@@ -141,7 +141,7 @@ func TestWriteServerPIDFile_ConcurrentReadersNeverSeePartialJSON(t *testing.T) {
 			}
 			data, err := os.ReadFile(path)
 			if err != nil {
-				if os.IsNotExist(err) {
+				if os.IsNotExist(err) || isTransientPIDOpenError(err) {
 					continue
 				}
 				select {

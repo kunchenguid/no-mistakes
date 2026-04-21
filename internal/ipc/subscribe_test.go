@@ -145,7 +145,7 @@ func TestSubscribeConnectionClosedBeforeResponse(t *testing.T) {
 	}
 }
 
-func TestSubscribeClient_EnableWindowsCI(t *testing.T) {
+func TestSubscribeClient(t *testing.T) {
 	sock := socketPath(t)
 	srv := startServer(t, sock)
 

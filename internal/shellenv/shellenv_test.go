@@ -81,7 +81,7 @@ func TestApplyToProcess_SetsResolvedEnvEntries(t *testing.T) {
 	}
 }
 
-func TestResolve_ReturnsProcessEnvOnWindows_EnableWindowsCI(t *testing.T) {
+func TestResolve_ReturnsProcessEnvOnWindows(t *testing.T) {
 	resetForTests()
 	oldGOOS := runtimeGOOS
 	oldOutput := shellCommandOutput
@@ -107,7 +107,7 @@ func TestResolve_ReturnsProcessEnvOnWindows_EnableWindowsCI(t *testing.T) {
 	}
 }
 
-func TestApplyToProcess_UsesProcessEnvOnWindows_EnableWindowsCI(t *testing.T) {
+func TestApplyToProcess_UsesProcessEnvOnWindows(t *testing.T) {
 	resetForTests()
 	oldGOOS := runtimeGOOS
 	oldOutput := shellCommandOutput
