@@ -213,6 +213,43 @@ func TestWizardAgentSuggester_CacheConsumedOnce(t *testing.T) {
 	}
 }
 
+func TestWizardAgentSuggester_CanceledContextSkipsCachedCommit(t *testing.T) {
+	ag := &fakeSuggesterAgent{}
+	s := newFakeSuggester(t, ag)
+	defer s.Close()
+
+	if _, err := s.suggestBranch(context.Background()); err != nil {
+		t.Fatalf("suggestBranch failed: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	commit, err := s.suggestCommit(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("suggestCommit error = %v, want %v", err, context.Canceled)
+	}
+	if commit != "" {
+		t.Fatalf("suggestCommit returned %q, want empty commit", commit)
+	}
+
+	if got := ag.callCount(); got != 1 {
+		t.Fatalf("expected no extra agent call, got %d calls", got)
+	}
+
+	commit, err = s.suggestCommit(context.Background())
+	if err != nil {
+		t.Fatalf("subsequent suggestCommit failed: %v", err)
+	}
+	if commit != "feat(cli): auto thing" {
+		t.Fatalf("expected cached commit after retry, got %q", commit)
+	}
+
+	if got := ag.callCount(); got != 1 {
+		t.Fatalf("expected combined agent call only after retry, got %d", got)
+	}
+}
+
 func TestRunWizardTracksPageview(t *testing.T) {
 	recorder := &telemetryRecorder{}
 	restoreTelemetry := telemetry.SetDefaultForTesting(recorder)

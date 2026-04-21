@@ -95,9 +95,14 @@ func (s *wizardAgentSuggester) suggestBranch(ctx context.Context) (string, error
 }
 
 func (s *wizardAgentSuggester) suggestCommit(ctx context.Context) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	s.cacheMu.Lock()
 	cached := s.cachedCommit
-	s.cachedCommit = ""
+	if cached != "" {
+		s.cachedCommit = ""
+	}
 	s.cacheMu.Unlock()
 	if cached != "" {
 		return cached, nil
