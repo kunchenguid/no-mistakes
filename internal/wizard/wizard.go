@@ -122,8 +122,10 @@ type Model struct {
 	waitStarted bool
 }
 
-// Result reports what the wizard did. Success means a push to the gate
-// succeeded and the caller should re-attach to pick up the new run.
+// Result reports what the wizard did. Success means the wizard completed all
+// required steps: the push to the gate succeeded, and when WaitForRun is set,
+// the daemon handoff completed so the caller can re-attach to pick up the new
+// run.
 type Result struct {
 	Success       bool
 	Aborted       bool
