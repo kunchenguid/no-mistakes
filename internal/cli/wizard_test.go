@@ -443,9 +443,11 @@ func TestRunWizard_ConfiguresServerPIDsDir(t *testing.T) {
 	if err := p.EnsureDirs(); err != nil {
 		t.Fatal(err)
 	}
+	prevDir := agent.CurrentServerPIDsDir()
+	prevOwner := agent.CurrentServerPIDOwner()
 	// Start from a known-empty setting so we can tell if the wizard set it.
-	agent.SetServerPIDsDir("")
-	t.Cleanup(func() { agent.SetServerPIDsDir("") })
+	agent.SetServerPIDsDirForOwner("", "")
+	t.Cleanup(func() { agent.SetServerPIDsDirForOwner(prevDir, prevOwner) })
 
 	repoDir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(repoDir, ".git"), 0o755); err != nil {
