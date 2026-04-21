@@ -50,6 +50,12 @@ func (m Model) View() string {
 	out.WriteString(box)
 	out.WriteString("\n")
 
+	if m.waiting {
+		out.WriteString("\n")
+		out.WriteString(" " + blueStyle().Render(spinnerFrames[m.spinnerFrame%len(spinnerFrames)]) + " " + dimStyle().Render("waiting for run…"))
+		out.WriteString("\n")
+	}
+
 	if bar := m.renderActionBar(); bar != "" {
 		out.WriteString("\n")
 		out.WriteString(bar)

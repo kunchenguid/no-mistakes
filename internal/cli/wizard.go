@@ -25,14 +25,19 @@ var resolveWizardAgent = func(ctx context.Context, cfg *config.Config) error {
 	return cfg.ResolveAgent(ctx, exec.LookPath)
 }
 
+// waitForRunFunc blocks until the daemon-created run for branch is visible.
+// Wired by attach.go; passed into the wizard so the wait happens inside the
+// alt screen and the handoff to the attach TUI is seamless.
+type waitForRunFunc func(ctx context.Context, branch string) error
+
 var newWizardAgent = agent.New
 var wizardRun = wizard.Run
 var wizardRunAuto = wizard.RunAuto
-var runWizardAutoVisible = func(ctx context.Context, p *paths.Paths, state *repoState) (wizard.Result, error) {
-	return runWizardWithMode(ctx, p, state, true, true)
+var runWizardAutoVisible = func(ctx context.Context, p *paths.Paths, state *repoState, wait waitForRunFunc) (wizard.Result, error) {
+	return runWizardWithMode(ctx, p, state, true, true, wait)
 }
-var runWizardAuto = func(ctx context.Context, p *paths.Paths, state *repoState) (wizard.Result, error) {
-	return runWizardWithMode(ctx, p, state, true, false)
+var runWizardAuto = func(ctx context.Context, p *paths.Paths, state *repoState, wait waitForRunFunc) (wizard.Result, error) {
+	return runWizardWithMode(ctx, p, state, true, false, wait)
 }
 
 type wizardAgentSuggester struct {
@@ -182,11 +187,11 @@ func detectRepoState(ctx context.Context, repo *db.Repo) (*repoState, error) {
 
 // runWizard prepares optional suggestion hooks and runs the interactive
 // onboarding wizard against the supplied repo state.
-func runWizard(ctx context.Context, p *paths.Paths, state *repoState) (wizard.Result, error) {
-	return runWizardWithMode(ctx, p, state, false, true)
+func runWizard(ctx context.Context, p *paths.Paths, state *repoState, wait waitForRunFunc) (wizard.Result, error) {
+	return runWizardWithMode(ctx, p, state, false, true, wait)
 }
 
-func runWizardWithMode(ctx context.Context, p *paths.Paths, state *repoState, auto bool, visible bool) (wizard.Result, error) {
+func runWizardWithMode(ctx context.Context, p *paths.Paths, state *repoState, auto bool, visible bool, wait waitForRunFunc) (wizard.Result, error) {
 	workDir := state.workDir
 
 	globalCfg, err := config.LoadGlobal(p.ConfigFile())
@@ -235,6 +240,12 @@ func runWizardWithMode(ctx context.Context, p *paths.Paths, state *repoState, au
 		Track: func(action string, fields map[string]any) {
 			telemetry.Track("wizard", mergeTelemetryFields(fields, telemetry.Fields{"action": action}))
 		},
+	}
+
+	if wait != nil {
+		wizCfg.WaitForRun = func(ctx context.Context, branch string) error {
+			return wait(ctx, branch)
+		}
 	}
 
 	telemetry.Pageview("/wizard", telemetry.Fields{

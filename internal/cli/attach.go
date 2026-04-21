@@ -94,16 +94,29 @@ func attachRun(ctx context.Context, w io.Writer, runID string, rootDefault bool,
 		// existing headless path.
 		interactive := terminalInteractive()
 		if rootDefault && runID == "" && repo != nil && state != nil && (autoYes || interactive) {
+			// waitFn blocks inside the wizard's alt screen until the daemon
+			// has the run registered, so the handoff to runTUI below is
+			// seamless rather than flashing the pre-wizard terminal.
+			waitFn := func(ctx context.Context, branch string) error {
+				r, werr := waitForActiveRun(ctx, client, repo.ID, branch, 5*time.Second)
+				if werr != nil {
+					return werr
+				}
+				if r == nil {
+					return fmt.Errorf("no active run appeared after pushing %q", branch)
+				}
+				return nil
+			}
 			var res wizard.Result
 			var wErr error
 			if autoYes {
 				if interactive {
-					res, wErr = runWizardAutoVisible(ctx, p, state)
+					res, wErr = runWizardAutoVisible(ctx, p, state, waitFn)
 				} else {
-					res, wErr = runWizardAuto(ctx, p, state)
+					res, wErr = runWizardAuto(ctx, p, state, waitFn)
 				}
 			} else {
-				res, wErr = runWizard(ctx, p, state)
+				res, wErr = runWizard(ctx, p, state, waitFn)
 			}
 			if wErr != nil {
 				return wErr
