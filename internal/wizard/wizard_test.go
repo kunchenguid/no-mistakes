@@ -1,6 +1,7 @@
 package wizard
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -534,6 +535,43 @@ func TestRun_UsesCallerContext(t *testing.T) {
 	}
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Run() error = %v, want wrapped context.Canceled", err)
+	}
+}
+
+func TestRun_ContextCancelResetsTerminalTitle(t *testing.T) {
+	var out bytes.Buffer
+	cfg := baseConfig(&recorder{})
+	cfg.CurrentBranch = "feat/existing"
+	cfg.NeedsBranch = false
+	cfg.IsDirty = false
+	cfg.DisableInput = true
+	cfg.Output = &out
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cfg.Context = ctx
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+
+	_, err := Run(cfg)
+	if err == nil {
+		t.Fatal("expected Run to fail when caller context is canceled")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run() error = %v, want wrapped context.Canceled", err)
+	}
+
+	initialTitle := setTerminalTitle("⏸ Setup Push - feat/existing")
+	resetTitle := setTerminalTitle("")
+	if !strings.Contains(out.String(), initialTitle) {
+		t.Fatalf("expected wizard output to include initial title sequence, got %q", out.String())
+	}
+	if !strings.Contains(out.String(), resetTitle) {
+		t.Fatalf("expected wizard output to include title reset sequence on context cancel, got %q", out.String())
+	}
+	if strings.LastIndex(out.String(), resetTitle) < strings.Index(out.String(), initialTitle) {
+		t.Fatalf("expected title reset to be emitted after initial title, got %q", out.String())
 	}
 }
 

@@ -8,6 +8,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"strings"
 	"time"
 
@@ -25,13 +27,15 @@ type Config struct {
 	DefaultBranch string
 	// AutoAdvance automatically presses Enter on each active wizard step,
 	// preserving the interactive TUI while accepting the default path.
-	AutoAdvance bool
-	// NeedsBranch is true when the user has no usable feature branch yet —
+	AutoAdvance  bool
+	DisableInput bool
+	// NeedsBranch is true when the user has no usable feature branch yet -
 	// either they're on the default branch, or HEAD is detached. The branch
 	// step is only active when this is true.
 	NeedsBranch bool
 	IsDirty     bool
 	GateRemote  string
+	Output      io.Writer
 
 	CreateBranch  func(ctx context.Context, name string) error
 	CommitAll     func(ctx context.Context, msg string) error
@@ -524,6 +528,13 @@ func quitWithTitleReset() tea.Cmd {
 	return tea.Sequence(tea.SetWindowTitle(""), tea.Quit)
 }
 
+func resetTerminalTitle(output io.Writer) {
+	if output == nil {
+		output = os.Stdout
+	}
+	_, _ = io.WriteString(output, setTerminalTitle(""))
+}
+
 func (m Model) track(action string, fields map[string]any) {
 	if m.cfg.Track == nil {
 		return
@@ -636,7 +647,15 @@ func Run(cfg Config) (Result, error) {
 		return Result{Err: err}, err
 	}
 	m := NewModel(cfg)
-	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithContext(baseCtx))
+	options := []tea.ProgramOption{tea.WithAltScreen(), tea.WithContext(baseCtx)}
+	if cfg.DisableInput {
+		options = append(options, tea.WithInput(nil))
+	}
+	if cfg.Output != nil {
+		options = append(options, tea.WithOutput(cfg.Output))
+	}
+	defer resetTerminalTitle(cfg.Output)
+	p := tea.NewProgram(m, options...)
 	final, err := p.Run()
 	if err != nil {
 		return Result{Err: err}, err
