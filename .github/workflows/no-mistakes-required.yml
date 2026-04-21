@@ -1,0 +1,54 @@
+name: Require no-mistakes
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: no-mistakes-required-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: PR must be raised via no-mistakes
+    runs-on: ubuntu-latest
+    # Known automation accounts are exempt so the release pipeline keeps working:
+    # - github-actions[bot] opens the release-please PR via GITHUB_TOKEN
+    # - dependabot[bot] opens dependency update PRs
+    # Other authors (human or bot) must raise PRs through `git push no-mistakes`.
+    if: >-
+      github.event.pull_request.user.login != 'github-actions[bot]' &&
+      github.event.pull_request.user.login != 'dependabot[bot]' &&
+      github.event.pull_request.user.login != 'release-please[bot]'
+    steps:
+      - name: Verify no-mistakes signature in PR body
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -eu
+          marker='Updates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)'
+          if printf '%s' "${PR_BODY:-}" | grep -qF -- "$marker"; then
+            echo "Found no-mistakes signature in PR #${PR_NUMBER} body."
+            exit 0
+          fi
+          {
+            echo "::error::This PR was not raised through no-mistakes."
+            echo
+            echo "Contributions to this repository must be submitted via 'git push no-mistakes'."
+            echo "That pipeline runs the required review/test/lint/CI steps and writes a"
+            echo "deterministic '## Pipeline' section into the PR body containing:"
+            echo
+            echo "    $marker"
+            echo
+            echo "See CONTRIBUTING.md for setup and the full workflow."
+            echo
+            echo "PR author: ${PR_AUTHOR}"
+          } >&2
+          exit 1
