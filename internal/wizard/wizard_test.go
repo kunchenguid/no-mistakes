@@ -643,6 +643,170 @@ func containsWizardEvent(events []wizardTelemetryEvent, action, field string, wa
 	return false
 }
 
+func TestWaitForRun_CalledAfterPushWithTargetBranch(t *testing.T) {
+	cfg := baseConfig(&recorder{})
+	cfg.CurrentBranch = "feat/x"
+	cfg.NeedsBranch = false
+	cfg.IsDirty = false
+
+	var gotBranch string
+	var called int
+	cfg.WaitForRun = func(_ context.Context, branch string) error {
+		called++
+		gotBranch = branch
+		return nil
+	}
+
+	m := NewModel(cfg)
+	m = drain(m, m.Init())
+	m = advance(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+
+	if called != 1 {
+		t.Fatalf("WaitForRun called %d times, want 1", called)
+	}
+	if gotBranch != "feat/x" {
+		t.Fatalf("WaitForRun got branch %q, want feat/x", gotBranch)
+	}
+	if !m.success {
+		t.Fatal("expected success after wait completes")
+	}
+	if !m.quitting {
+		t.Fatal("expected wizard to quit after wait completes")
+	}
+	if m.err != nil {
+		t.Fatalf("unexpected err after successful wait: %v", m.err)
+	}
+}
+
+func TestWaitForRun_NotCalledWhenNil(t *testing.T) {
+	cfg := baseConfig(&recorder{})
+	cfg.CurrentBranch = "feat/x"
+	cfg.NeedsBranch = false
+	cfg.IsDirty = false
+	cfg.WaitForRun = nil
+
+	m := NewModel(cfg)
+	m = drain(m, m.Init())
+	m = advance(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+
+	if !m.success || !m.quitting {
+		t.Fatal("nil WaitForRun should fall through to immediate quit")
+	}
+}
+
+func TestWaitForRun_NotCalledWhenUserDeclinesPush(t *testing.T) {
+	cfg := baseConfig(&recorder{})
+	cfg.CurrentBranch = "feat/x"
+	cfg.NeedsBranch = false
+	cfg.IsDirty = false
+	called := false
+	cfg.WaitForRun = func(context.Context, string) error {
+		called = true
+		return nil
+	}
+
+	m := NewModel(cfg)
+	m = drain(m, m.Init())
+	m = advance(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+
+	if called {
+		t.Fatal("WaitForRun must not run when push is declined")
+	}
+	if !m.aborted {
+		t.Fatal("expected aborted on decline")
+	}
+}
+
+func TestWaitForRun_ErrorSurfacesInResult(t *testing.T) {
+	cfg := baseConfig(&recorder{})
+	cfg.CurrentBranch = "feat/x"
+	cfg.NeedsBranch = false
+	cfg.IsDirty = false
+	cfg.WaitForRun = func(context.Context, string) error {
+		return errors.New("run never appeared")
+	}
+
+	m := NewModel(cfg)
+	m = drain(m, m.Init())
+	m = advance(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+
+	if !m.quitting {
+		t.Fatal("wizard should quit even when wait fails")
+	}
+	if m.err == nil || !strings.Contains(m.err.Error(), "run never appeared") {
+		t.Fatalf("expected wait error in m.err, got %v", m.err)
+	}
+	res := m.Result()
+	if !res.Pushed {
+		t.Fatal("Pushed should remain true even if wait errored")
+	}
+	if res.Err == nil {
+		t.Fatal("Result.Err should reflect the wait failure")
+	}
+}
+
+func TestWaitForRun_CompletedTelemetrySkippedOnWaitError(t *testing.T) {
+	r := &recorder{}
+	cfg := baseConfig(r)
+	cfg.CurrentBranch = "feat/x"
+	cfg.NeedsBranch = false
+	cfg.IsDirty = false
+	cfg.WaitForRun = func(context.Context, string) error {
+		return errors.New("timeout")
+	}
+
+	m := NewModel(cfg)
+	m = drain(m, m.Init())
+	m = advance(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+
+	if containsWizardEvent(r.telemetry, "completed", "", nil) {
+		t.Fatal("completed telemetry should not fire when wait fails")
+	}
+	if !containsWizardEvent(r.telemetry, "pushed", "step", "push") {
+		t.Fatal("pushed telemetry should still fire")
+	}
+}
+
+func TestWaitForRun_IgnoresStrayKeys(t *testing.T) {
+	cfg := baseConfig(&recorder{})
+	cfg.CurrentBranch = "feat/x"
+	cfg.NeedsBranch = false
+	cfg.IsDirty = false
+	cfg.WaitForRun = func(context.Context, string) error { return nil }
+
+	m := NewModel(cfg)
+	m = drain(m, m.Init())
+
+	next, _ := m.executeStep(m.activeStep(), "")
+	m = next.(Model)
+	next, _ = m.Update(actionMsg{id: stepPush})
+	m = next.(Model)
+
+	if !m.waiting {
+		t.Fatal("expected wizard to be in wait-for-run mode")
+	}
+	if m.quitting {
+		t.Fatal("wait-for-run mode should not already be quitting")
+	}
+
+	for _, key := range []tea.KeyMsg{
+		{Type: tea.KeyRunes, Runes: []rune("x")},
+		{Type: tea.KeyEnter},
+	} {
+		next, _ = m.Update(key)
+		m = next.(Model)
+		if !m.waiting {
+			t.Fatalf("expected wait-for-run mode to ignore %q", key.String())
+		}
+		if m.quitting {
+			t.Fatalf("expected wait-for-run mode to keep running after %q", key.String())
+		}
+		if err := m.ctx.Err(); err != nil {
+			t.Fatalf("expected wait-for-run context to stay active after %q, got %v", key.String(), err)
+		}
+	}
+}
+
 func TestPushStep_DeclineAborts(t *testing.T) {
 	cfg := baseConfig(&recorder{})
 	cfg.CurrentBranch = "feat/x"

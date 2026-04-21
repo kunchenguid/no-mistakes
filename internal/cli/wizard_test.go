@@ -352,7 +352,7 @@ func TestRunWizardTracksPageview(t *testing.T) {
 		dirty:         true,
 	}
 
-	if _, err := runWizard(context.Background(), p, state); err != nil {
+	if _, err := runWizard(context.Background(), p, state, nil); err != nil {
 		t.Fatalf("runWizard() error = %v", err)
 	}
 
@@ -415,7 +415,7 @@ func TestRunWizardReturnsTerminalWizardError(t *testing.T) {
 		dirty:         true,
 	}
 
-	_, err := runWizard(context.Background(), p, state)
+	_, err := runWizard(context.Background(), p, state, nil)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("runWizard() error = %v, want %v", err, wantErr)
 	}

@@ -47,6 +47,11 @@ type Config struct {
 	SuggestBranch func(ctx context.Context) (string, error)
 	SuggestCommit func(ctx context.Context) (string, error)
 	Track         func(action string, fields map[string]any)
+	// WaitForRun, if set, runs after push succeeds and blocks while the
+	// daemon-created run is still catching up. Keeps the alt screen up so the
+	// handoff to the attach TUI has no visible gap. Only used by the
+	// interactive Run path; headless RunAuto ignores it.
+	WaitForRun func(ctx context.Context, branch string) error
 }
 
 // stepID identifies one of the three wizard steps.
@@ -110,6 +115,11 @@ type Model struct {
 	quitting bool
 	success  bool // all needed steps completed; pipeline pushed
 	aborted  bool // user explicitly aborted
+
+	// waiting is true while the WaitForRun hook is in flight. waitStarted
+	// latches so the hook only runs once even if setupActive is re-entered.
+	waiting     bool
+	waitStarted bool
 }
 
 // Result reports what the wizard did. Success means a push to the gate
@@ -187,6 +197,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case actionMsg:
 		return m.handleAction(msg)
 
+	case waitMsg:
+		return m.handleWait(msg)
+
 	case spinnerTickMsg:
 		m.spinnerAlive = false
 		if !m.anySpinnerActive() {
@@ -241,8 +254,13 @@ func (m *Model) activeStep() *step {
 func (m Model) setupActive() Model {
 	s := m.activeStep()
 	if s == nil {
+		if m.cfg.WaitForRun != nil && m.pushed && !m.waitStarted {
+			m.waiting = true
+			m.waitStarted = true
+			return m
+		}
 		m.success = m.pushed
-		if m.success {
+		if m.success && m.err == nil {
 			m.track("completed", map[string]any{
 				"branch_created": m.branchCreated,
 				"commit_made":    m.commitMade,
@@ -268,6 +286,9 @@ func (m Model) setupActive() Model {
 
 // afterEnterCmd returns the Cmd to kick off after transitioning to a new step.
 func (m Model) afterEnterCmd() tea.Cmd {
+	if m.waiting {
+		return tea.Batch(m.runWaitForRun(), m.scheduleSpinner())
+	}
 	if m.quitting {
 		return quitWithTitleReset()
 	}
@@ -297,6 +318,15 @@ func (m Model) handleAutoAdvance() (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.waiting {
+		switch msg.String() {
+		case "ctrl+c", "q":
+		default:
+			m.confirmQuit = false
+			return m, nil
+		}
+	}
+
 	s := m.activeStep()
 	if s == nil {
 		// Already finished; any key quits.
@@ -463,6 +493,15 @@ func (m Model) handleAction(msg actionMsg) (tea.Model, tea.Cmd) {
 	return m, m.afterEnterCmd()
 }
 
+func (m Model) handleWait(msg waitMsg) (tea.Model, tea.Cmd) {
+	m.waiting = false
+	if msg.err != nil {
+		m.err = fmt.Errorf("wait for run: %w", msg.err)
+	}
+	m = m.setupActive()
+	return m, m.afterEnterCmd()
+}
+
 func (m Model) hasSideEffects() bool {
 	return m.branchCreated || m.commitMade
 }
@@ -490,6 +529,10 @@ func (m Model) terminalTitle() string {
 		if s.status == statFailed {
 			return "✗ Setup " + stepLabel(s.id) + suffix
 		}
+	}
+
+	if m.waiting {
+		return stepTitleIcon(statRunning, m.spinnerFrame) + " Setup attaching" + suffix
 	}
 
 	s := m.activeStep()
@@ -558,6 +601,9 @@ func (m Model) trackAbort(reason string) {
 }
 
 func (m Model) anySpinnerActive() bool {
+	if m.waiting {
+		return true
+	}
 	s := m.activeStep()
 	if s == nil {
 		return false
@@ -575,6 +621,10 @@ type suggestionMsg struct {
 
 type actionMsg struct {
 	id  stepID
+	err error
+}
+
+type waitMsg struct {
 	err error
 }
 
@@ -637,6 +687,15 @@ func (m Model) runPush() tea.Cmd {
 	return func() tea.Msg {
 		err := m.cfg.Push(m.ctx, branch)
 		return actionMsg{id: stepPush, err: err}
+	}
+}
+
+func (m Model) runWaitForRun() tea.Cmd {
+	branch := m.targetBranch
+	hook := m.cfg.WaitForRun
+	ctx := m.ctx
+	return func() tea.Msg {
+		return waitMsg{err: hook(ctx, branch)}
 	}
 }
 
