@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.9.1](https://github.com/kunchenguid/no-mistakes/compare/v1.9.0...v1.9.1) (2026-04-21)
+
+
+### Bug Fixes
+
+* **daemon:** clean up timed-out daemon startups safely ([#128](https://github.com/kunchenguid/no-mistakes/issues/128)) ([b6a2389](https://github.com/kunchenguid/no-mistakes/commit/b6a238921439347e377ed6ed46f4716e95830b6b))
+* **git:** isolate gate hooks from shared hookspath changes ([#127](https://github.com/kunchenguid/no-mistakes/issues/127)) ([a1d5bab](https://github.com/kunchenguid/no-mistakes/commit/a1d5bab0631ae443d9a83943527613b743e95e3b))
+
 ## [1.9.0](https://github.com/kunchenguid/no-mistakes/compare/v1.8.1...v1.9.0) (2026-04-21)
 
 
