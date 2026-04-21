@@ -187,9 +187,8 @@ func TestStopDetachedDaemonFallsBackToPIDWhenSocketIsBroken(t *testing.T) {
 		t.Fatal(err)
 	}
 	const pid = 424242
-	if err := os.WriteFile(p.PIDFile(), []byte(fmt.Sprintf("%d", pid)), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	startedAt := time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC)
+	writeDaemonPIDRecord(t, p.PIDFile(), daemonPIDFile{PID: pid, StartedAt: startedAt})
 	ln, err := net.Listen("unix", p.Socket())
 	if err != nil {
 		t.Fatal(err)
@@ -220,7 +219,7 @@ func TestStopDetachedDaemonFallsBackToPIDWhenSocketIsBroken(t *testing.T) {
 		if checkPID != pid {
 			t.Fatalf("processStartTime pid = %d, want %d", checkPID, pid)
 		}
-		return time.Now(), nil
+		return startedAt, nil
 	}
 	defer func() {
 		daemonProcessStartTime = originalProcessStartTime
@@ -399,6 +398,47 @@ func TestValidateDaemonPIDFallback_RejectsLegacyPIDFileForReusedPID(t *testing.T
 	err = validateDaemonPIDFallback(p, os.Getpid())
 	if err == nil {
 		t.Fatal("expected legacy pid fallback to reject reused pid")
+	}
+}
+
+func TestValidateDaemonPIDFallback_RejectsLegacyPIDFileTouchedNearLivePID(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "dtest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	p := paths.WithRoot(tmpDir)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.PIDFile(), []byte(fmt.Sprintf("%d", os.Getpid())), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mtime := time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(p.PIDFile(), mtime, mtime); err != nil {
+		t.Fatal(err)
+	}
+
+	oldStartTime := daemonProcessStartTime
+	oldHealth := daemonHealthCheck
+	daemonProcessStartTime = func(checkPID int) (time.Time, error) {
+		if checkPID != os.Getpid() {
+			t.Fatalf("processStartTime pid = %d, want %d", checkPID, os.Getpid())
+		}
+		return mtime.Add(time.Second), nil
+	}
+	daemonHealthCheck = func(*paths.Paths) (bool, error) {
+		return false, nil
+	}
+	t.Cleanup(func() {
+		daemonProcessStartTime = oldStartTime
+		daemonHealthCheck = oldHealth
+	})
+
+	err = validateDaemonPIDFallback(p, os.Getpid())
+	if err == nil {
+		t.Fatal("expected legacy pid fallback to reject timestamp-only matches")
 	}
 }
 

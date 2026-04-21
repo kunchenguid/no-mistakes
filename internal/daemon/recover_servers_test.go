@@ -393,6 +393,102 @@ func TestOtherDaemonAlive_FalseWhenLegacyPIDFileMatchesReusedPID(t *testing.T) {
 	}
 }
 
+func TestOtherDaemonAlive_FalseWhenLegacyPIDFileTouchedNearLivePID(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.PIDFile(), []byte("12345"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mtime := time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(p.PIDFile(), mtime, mtime); err != nil {
+		t.Fatal(err)
+	}
+
+	oldRunning := processRunningFunc
+	oldStartTime := processStartTimeFunc
+	oldHealth := daemonHealthCheck
+	processRunningFunc = func(pid int) (bool, error) {
+		if pid != 12345 {
+			t.Fatalf("unexpected pid %d", pid)
+		}
+		return true, nil
+	}
+	processStartTimeFunc = func(pid int) (time.Time, error) {
+		if pid != 12345 {
+			t.Fatalf("unexpected pid %d", pid)
+		}
+		return mtime.Add(time.Second), nil
+	}
+	daemonHealthCheck = func(*paths.Paths) (bool, error) {
+		return false, nil
+	}
+	t.Cleanup(func() {
+		processRunningFunc = oldRunning
+		processStartTimeFunc = oldStartTime
+		daemonHealthCheck = oldHealth
+	})
+
+	if otherDaemonAlive(p) {
+		t.Error("legacy pid file should not trust file timestamps as process identity")
+	}
+}
+
+func TestOtherDaemonAlive_TrueWhenLegacyPIDFileMatchesResponsiveDaemon(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.PIDFile(), []byte("12345"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mtime := time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(p.PIDFile(), mtime, mtime); err != nil {
+		t.Fatal(err)
+	}
+	startedAt := mtime.Add(time.Hour)
+
+	oldRunning := processRunningFunc
+	oldStartTime := processStartTimeFunc
+	oldHealth := daemonHealthCheck
+	processRunningFunc = func(pid int) (bool, error) {
+		if pid != 12345 {
+			t.Fatalf("unexpected pid %d", pid)
+		}
+		return true, nil
+	}
+	processStartTimeFunc = func(pid int) (time.Time, error) {
+		if pid != 12345 {
+			t.Fatalf("unexpected pid %d", pid)
+		}
+		return startedAt, nil
+	}
+	daemonHealthCheck = func(*paths.Paths) (bool, error) {
+		return true, nil
+	}
+	t.Cleanup(func() {
+		processRunningFunc = oldRunning
+		processStartTimeFunc = oldStartTime
+		daemonHealthCheck = oldHealth
+	})
+
+	if !otherDaemonAlive(p) {
+		t.Fatal("responsive legacy daemon should still block orphan reaping")
+	}
+
+	record, err := readDaemonPIDFile(p.PIDFile())
+	if err != nil {
+		t.Fatalf("read upgraded pid file: %v", err)
+	}
+	if record.PID != 12345 {
+		t.Fatalf("upgraded pid = %d, want 12345", record.PID)
+	}
+	if !record.StartedAt.Equal(startedAt.UTC()) {
+		t.Fatalf("upgraded started_at = %v, want %v", record.StartedAt, startedAt.UTC())
+	}
+}
+
 func TestOtherDaemonAlive_TrueWhenDaemonStartTimeMatchesRecord(t *testing.T) {
 	p := paths.WithRoot(t.TempDir())
 	if err := p.EnsureDirs(); err != nil {

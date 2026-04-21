@@ -183,7 +183,7 @@ func otherDaemonAlive(p *paths.Paths) bool {
 		slog.Warn("check daemon start time", "pid", record.PID, "error", err)
 		return true
 	}
-	matches, err := daemonPIDRecordMatchesProcess(p.PIDFile(), record, startedAt)
+	matches, err := daemonPIDRecordMatchesProcess(p, record, startedAt)
 	if err != nil {
 		slog.Warn("validate daemon pid", "path", p.PIDFile(), "pid", record.PID, "error", err)
 		return true
@@ -229,14 +229,21 @@ func orphanStartTimeMatches(info agent.ServerPIDInfo) (bool, error) {
 	return diff <= orphanStartTimeTolerance, nil
 }
 
-func daemonPIDRecordMatchesProcess(path string, record daemonPIDFile, actualStart time.Time) (bool, error) {
+func daemonPIDRecordMatchesProcess(p *paths.Paths, record daemonPIDFile, actualStart time.Time) (bool, error) {
 	expectedStart := record.StartedAt.UTC()
 	if expectedStart.IsZero() {
-		info, err := os.Stat(path)
+		alive, err := daemonHealthCheck(p)
 		if err != nil {
-			return false, fmt.Errorf("stat pid file: %w", err)
+			return false, fmt.Errorf("health check daemon: %w", err)
 		}
-		expectedStart = info.ModTime().UTC()
+		if !alive {
+			return false, nil
+		}
+		upgraded := daemonPIDFile{PID: record.PID, StartedAt: actualStart.UTC()}
+		if err := writeDaemonPIDFile(p.PIDFile(), upgraded); err != nil {
+			slog.Warn("upgrade legacy daemon pid file", "path", p.PIDFile(), "pid", record.PID, "error", err)
+		}
+		return true, nil
 	}
 	diff := actualStart.Sub(expectedStart)
 	if diff < 0 {

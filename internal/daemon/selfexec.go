@@ -251,7 +251,7 @@ func validateDaemonPIDFallback(p *paths.Paths, pid int) error {
 	if err != nil {
 		return fmt.Errorf("inspect daemon pid %d: %w", pid, err)
 	}
-	matches, err := daemonPIDRecordMatchesProcess(p.PIDFile(), record, startTime)
+	matches, err := daemonPIDRecordMatchesProcess(p, record, startTime)
 	if err != nil {
 		return fmt.Errorf("validate daemon pid %d: %w", pid, err)
 	}

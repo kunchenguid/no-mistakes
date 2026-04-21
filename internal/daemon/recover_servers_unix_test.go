@@ -4,7 +4,6 @@ package daemon
 
 import (
 	"errors"
-	"fmt"
 	"os"
 	"os/exec"
 	"syscall"
@@ -96,10 +95,12 @@ func TestReapOrphanedServers_SkipsWhenDaemonAlive(t *testing.T) {
 
 	other, otherPID := spawnSleepProcess(t)
 	t.Cleanup(func() { killAndWait(other) })
-
-	if err := os.WriteFile(p.PIDFile(), []byte(fmt.Sprintf("%d", otherPID)), 0o644); err != nil {
-		t.Fatal(err)
+	startedAt, err := processStartTime(otherPID)
+	if err != nil {
+		t.Fatalf("processStartTime: %v", err)
 	}
+
+	writeDaemonPIDRecord(t, p.PIDFile(), daemonPIDFile{PID: otherPID, StartedAt: startedAt})
 
 	path := writePIDRecord(t, p.ServerPIDsDir(), "opencode-999999.json", agent.ServerPIDInfo{
 		PID:       999999,
