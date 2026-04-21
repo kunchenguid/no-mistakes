@@ -199,12 +199,17 @@ func TestReadPIDFileUntilStopped_RequiresUpdatedRead(t *testing.T) {
 	}
 
 	stop := make(chan struct{})
+	observedInitial := make(chan struct{})
 	resultCh := make(chan error, 1)
 	go func() {
-		resultCh <- readPIDFileUntilStopped(path, info.Port, info.Port+1, stop, nil, nil)
+		resultCh <- readPIDFileUntilStopped(path, info.Port, info.Port+1, stop, observedInitial, nil)
 	}()
 
-	time.Sleep(20 * time.Millisecond)
+	select {
+	case <-observedInitial:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reader never observed initial pid file")
+	}
 	close(stop)
 
 	err = <-resultCh
