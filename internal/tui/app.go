@@ -51,6 +51,8 @@ type Model struct {
 // NewModel creates a TUI model for the given run.
 // The client should already be connected to the daemon.
 func NewModel(socketPath string, client *ipc.Client, run *ipc.RunInfo) Model {
+	steps := normalizePipelineSteps(run.ID, run.Steps)
+	run.Steps = steps
 	m := Model{
 		socketPath:        socketPath,
 		client:            client,
@@ -58,7 +60,7 @@ func NewModel(socketPath string, client *ipc.Client, run *ipc.RunInfo) Model {
 		subscriptionID:    1,
 		run:               run,
 		done:              run.Status == types.RunCompleted || run.Status == types.RunFailed || run.Status == types.RunCancelled,
-		steps:             run.Steps,
+		steps:             steps,
 		stepFindings:      make(map[types.StepName]string),
 		stepDiffs:         make(map[types.StepName]string),
 		findingSelections: make(map[types.StepName]map[string]bool),
@@ -66,7 +68,7 @@ func NewModel(socketPath string, client *ipc.Client, run *ipc.RunInfo) Model {
 		stepStartTimes:    make(map[types.StepName]time.Time),
 	}
 	// Populate findings and start times from initial step data (for re-attach scenarios).
-	for _, s := range run.Steps {
+	for _, s := range steps {
 		if s.FindingsJSON != nil && *s.FindingsJSON != "" {
 			m.stepFindings[s.StepName] = *s.FindingsJSON
 			if s.Status == types.StepStatusAwaitingApproval || s.Status == types.StepStatusFixReview {
@@ -79,6 +81,65 @@ func NewModel(socketPath string, client *ipc.Client, run *ipc.RunInfo) Model {
 		}
 	}
 	return m
+}
+
+func normalizePipelineSteps(runID string, steps []ipc.StepResultInfo) []ipc.StepResultInfo {
+	knownSteps := types.AllSteps()
+	if !shouldBackfillPipelineSteps(steps, knownSteps) {
+		return steps
+	}
+
+	byName := make(map[types.StepName]ipc.StepResultInfo, len(steps))
+	for _, step := range steps {
+		byName[step.StepName] = step
+	}
+
+	normalized := make([]ipc.StepResultInfo, 0, len(knownSteps)+len(steps))
+	for _, stepName := range knownSteps {
+		step, ok := byName[stepName]
+		if !ok {
+			normalized = append(normalized, ipc.StepResultInfo{
+				RunID:     runID,
+				StepName:  stepName,
+				StepOrder: stepName.Order(),
+				Status:    types.StepStatusPending,
+			})
+			continue
+		}
+		if step.RunID == "" {
+			step.RunID = runID
+		}
+		if step.StepOrder == 0 {
+			step.StepOrder = stepName.Order()
+		}
+		normalized = append(normalized, step)
+		delete(byName, stepName)
+	}
+
+	for _, step := range steps {
+		if _, ok := byName[step.StepName]; !ok {
+			continue
+		}
+		normalized = append(normalized, step)
+		delete(byName, step.StepName)
+	}
+
+	return normalized
+}
+
+func shouldBackfillPipelineSteps(steps []ipc.StepResultInfo, knownSteps []types.StepName) bool {
+	if len(steps) == 0 {
+		return true
+	}
+	if len(steps) >= len(knownSteps) {
+		return false
+	}
+	for i, step := range steps {
+		if step.StepName != knownSteps[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func (m Model) Init() tea.Cmd {
