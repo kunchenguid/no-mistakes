@@ -114,15 +114,22 @@ func startDetachedDaemon(p *paths.Paths) error {
 	pid := cmd.Process.Pid
 	startedAt, err := daemonProcessStartTime(pid)
 	if err != nil {
+		if cleanupErr := cleanupStartedDaemonProcess(cmd.Process); cleanupErr != nil {
+			return fmt.Errorf("inspect daemon process %d: %w; cleanup daemon child: %v", pid, err, cleanupErr)
+		}
 		return fmt.Errorf("inspect daemon process %d: %w", pid, err)
 	}
 	slog.Info("daemon process started", "pid", pid, "log", p.DaemonLog())
+
+	if err := waitForDaemonStartWithProcess(p, cmd.Process, pid, startedAt); err != nil {
+		return err
+	}
 
 	// Release the child so it's not reaped when we exit.
 	if err := cmd.Process.Release(); err != nil {
 		return fmt.Errorf("release daemon process: %w", err)
 	}
-	return waitForDaemonStart(p, pid, startedAt)
+	return nil
 }
 
 func startManagedDaemon(p *paths.Paths) error {
@@ -136,6 +143,10 @@ func startManagedDaemon(p *paths.Paths) error {
 }
 
 func waitForDaemonStart(p *paths.Paths, pid int, startedAt time.Time) error {
+	return waitForDaemonStartWithProcess(p, nil, pid, startedAt)
+}
+
+func waitForDaemonStartWithProcess(p *paths.Paths, proc *os.Process, pid int, startedAt time.Time) error {
 	// Poll for the daemon to become responsive.
 	timeout := daemonStartTimeout()
 	pollInterval := daemonStartPollInterval()
@@ -151,14 +162,37 @@ func waitForDaemonStart(p *paths.Paths, pid int, startedAt time.Time) error {
 	// Kill the child so it can't race with rollback work (e.g. SQLite writes)
 	// after the caller gives up on it. Skip when pid is 0 (managed service).
 	if pid > 0 {
-		if err := killTimedOutDaemonPID(pid, startedAt); err != nil {
-			slog.Warn("kill unresponsive daemon child failed", "pid", pid, "error", err)
-		} else if !startedAt.IsZero() {
+		var cleanupErr error
+		if proc != nil {
+			cleanupErr = cleanupStartedDaemonProcess(proc)
+		} else {
+			cleanupErr = killTimedOutDaemonPID(pid, startedAt)
+		}
+		if cleanupErr != nil {
+			return fmt.Errorf("daemon started but did not become responsive within %v: cleanup daemon child %d: %w", timeout, pid, cleanupErr)
+		}
+		if proc == nil && !startedAt.IsZero() {
 			waitForProcessExit(pid, timeout)
 		}
 	}
 
 	return fmt.Errorf("daemon started but did not become responsive within %v", timeout)
+}
+
+func cleanupStartedDaemonProcess(proc *os.Process) error {
+	if proc == nil {
+		return nil
+	}
+	if err := proc.Kill(); err != nil {
+		if _, waitErr := proc.Wait(); waitErr == nil {
+			return nil
+		}
+		return fmt.Errorf("kill daemon child: %w", err)
+	}
+	if _, err := proc.Wait(); err != nil {
+		return fmt.Errorf("wait daemon child exit: %w", err)
+	}
+	return nil
 }
 
 func killTimedOutDaemonPID(pid int, startedAt time.Time) error {
