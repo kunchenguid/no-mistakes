@@ -103,8 +103,11 @@ func InstallPostReceiveHook(bareDir string) error {
 // hooks to its own absolute hooks dir, regardless of what tools write
 // to the shared config.
 //
+// Best-effort only: if the installed Git does not support
+// `git config --worktree`, this returns nil without changing config.
+//
 // Idempotent: safe to call on an already-configured bare repo to
-// migrate older installs.
+// migrate older installs when per-worktree config is available.
 func IsolateHooksPath(ctx context.Context, bareDir string) error {
 	if _, err := runGit(ctx, bareDir, "config", "--worktree", "--get", "core.hookspath"); err != nil {
 		if isWorktreeConfigUnsupported(err) {
