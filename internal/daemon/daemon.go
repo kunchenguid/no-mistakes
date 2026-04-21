@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
@@ -103,6 +104,11 @@ func RunWithOptions(p *paths.Paths, d *db.DB, stepFactory StepFactory) error {
 	// Recover stale runs from a previous daemon crash.
 	recoverOnStartup(d, p)
 
+	// Point the agent package at our PID tracking dir so any managed
+	// servers we spawn from here on leave crash-recovery breadcrumbs.
+	agent.SetServerPIDsDir(p.ServerPIDsDir())
+	defer agent.SetServerPIDsDir("")
+
 	srv := ipc.NewServer()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -164,8 +170,11 @@ func RunWithOptions(p *paths.Paths, d *db.DB, stepFactory StepFactory) error {
 }
 
 // recoverOnStartup cleans up after a previous daemon crash by marking stale
-// runs/steps as failed and removing orphaned worktree directories.
+// runs/steps as failed, killing orphaned managed-server subprocesses
+// (opencode, rovodev), and removing orphaned worktree directories.
 func recoverOnStartup(d *db.DB, p *paths.Paths) {
+	reapOrphanedServers(p)
+
 	count, err := d.RecoverStaleRuns("daemon crashed during execution")
 	if err != nil {
 		slog.Error("failed to recover stale runs", "error", err)

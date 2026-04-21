@@ -44,6 +44,7 @@ func currentManagedServerOutput() io.Writer {
 type managedServer struct {
 	cmd     *exec.Cmd
 	port    int
+	pidFile string        // path to the on-disk PID record; empty if tracking disabled
 	exited  chan struct{} // closed exactly once when cmd.Wait returns
 	waitErr error         // result of cmd.Wait; only read after exited is closed
 }
@@ -62,7 +63,8 @@ func getAvailablePort() (int, error) {
 // startServerWithPort spawns the server process on a given port and waits for health.
 // The process is not tied to ctx - it outlives individual Run calls and is stopped via shutdown().
 // ctx is only used for the health check timeout.
-func startServerWithPort(ctx context.Context, bin string, args []string, cwd string, healthPath string, port int) (*managedServer, error) {
+// agentName tags the PID tracking file so crash-recovery can identify orphans.
+func startServerWithPort(ctx context.Context, agentName, bin string, args []string, cwd string, healthPath string, port int) (*managedServer, error) {
 	cmd := exec.Command(bin, args...)
 	cmd.Dir = cwd
 	cmd.Stdin = nil
@@ -75,7 +77,15 @@ func startServerWithPort(ctx context.Context, bin string, args []string, cwd str
 		return nil, fmt.Errorf("start server %s: %w", bin, err)
 	}
 
-	srv := &managedServer{cmd: cmd, port: port, exited: make(chan struct{})}
+	pidFile := writeServerPIDFile(currentServerPIDsDir(), ServerPIDInfo{
+		PID:       cmd.Process.Pid,
+		Agent:     agentName,
+		Bin:       bin,
+		Port:      port,
+		StartedAt: time.Now().UTC(),
+	})
+
+	srv := &managedServer{cmd: cmd, port: port, pidFile: pidFile, exited: make(chan struct{})}
 	go func() {
 		srv.waitErr = cmd.Wait()
 		close(srv.exited)
@@ -133,14 +143,19 @@ func (s *managedServer) waitForHealth(ctx context.Context, path string) error {
 // shutdown gracefully stops the server process. The long-running goroutine
 // spawned in startServerWithPort owns cmd.Wait(); shutdown signals the
 // process and waits on s.exited to observe termination.
+// The PID tracking file is removed only after the process is confirmed
+// exited - if SIGKILL fails to reap it, the file is left on disk so a
+// future daemon can finish the job.
 func (s *managedServer) shutdown() {
 	if s.cmd == nil || s.cmd.Process == nil {
+		removeServerPIDFile(s.pidFile)
 		return
 	}
 
 	// Already exited (e.g. early-exit path)?
 	select {
 	case <-s.exited:
+		removeServerPIDFile(s.pidFile)
 		return
 	default:
 	}
@@ -149,6 +164,7 @@ func (s *managedServer) shutdown() {
 
 	select {
 	case <-s.exited:
+		removeServerPIDFile(s.pidFile)
 		return
 	case <-time.After(3 * time.Second):
 	}
@@ -158,6 +174,7 @@ func (s *managedServer) shutdown() {
 
 	select {
 	case <-s.exited:
+		removeServerPIDFile(s.pidFile)
 	case <-time.After(5 * time.Second):
 		slog.Warn("server process did not exit after SIGKILL", "pid", s.cmd.Process.Pid)
 	}

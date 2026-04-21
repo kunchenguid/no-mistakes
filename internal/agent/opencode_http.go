@@ -21,7 +21,7 @@ func (a *opencodeAgent) ensureServer(ctx context.Context, cwd string) (string, e
 		return "", fmt.Errorf("opencode port: %w", err)
 	}
 	args := []string{"serve", "--hostname", "127.0.0.1", "--port", fmt.Sprintf("%d", port), "--print-logs"}
-	srv, err := startServerWithPort(ctx, a.bin, args, cwd, "/global/health", port)
+	srv, err := startServerWithPort(ctx, "opencode", a.bin, args, cwd, "/global/health", port)
 	if err != nil {
 		return "", fmt.Errorf("opencode server: %w", err)
 	}
