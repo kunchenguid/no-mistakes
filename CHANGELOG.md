@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.9.0](https://github.com/kunchenguid/no-mistakes/compare/v1.8.1...v1.9.0) (2026-04-21)
+
+
+### Features
+
+* **cli:** cache wizard commit subject from branch suggestions ([#117](https://github.com/kunchenguid/no-mistakes/issues/117)) ([134fadb](https://github.com/kunchenguid/no-mistakes/commit/134fadb3273e11835bcb43b6d8c8866a14d3575a))
+* **wizard:** show setup progress in terminal title ([#116](https://github.com/kunchenguid/no-mistakes/issues/116)) ([4d42a7a](https://github.com/kunchenguid/no-mistakes/commit/4d42a7adabd63c888c1e970829be766897306530))
+
+
+### Bug Fixes
+
+* **daemon:** harden orphaned agent server recovery ([#121](https://github.com/kunchenguid/no-mistakes/issues/121)) ([7600bb7](https://github.com/kunchenguid/no-mistakes/commit/7600bb7de56772dd67c6e023c5deec2608d0572b))
+* **daemon:** tighten detached fallback around managed service stop failures ([#115](https://github.com/kunchenguid/no-mistakes/issues/115)) ([957065a](https://github.com/kunchenguid/no-mistakes/commit/957065a3637cc0b971eadb8d651ecb95feebc76e))
+* **pipeline:** harden CI autofix rerun retry guards ([#123](https://github.com/kunchenguid/no-mistakes/issues/123)) ([ac8cb83](https://github.com/kunchenguid/no-mistakes/commit/ac8cb8360e0dafb90ac1e0c9b13db041cc65d35f))
+* **release:** run publish jobs after skipped validation ([#113](https://github.com/kunchenguid/no-mistakes/issues/113)) ([2fa5d24](https://github.com/kunchenguid/no-mistakes/commit/2fa5d24850aa4bd1fd3b24693554257b32a9d2e5))
+* **wizard:** wait for daemon run before attach handoff ([#119](https://github.com/kunchenguid/no-mistakes/issues/119)) ([ca47098](https://github.com/kunchenguid/no-mistakes/commit/ca47098b34040a18765d95922eb3158052792f28))
+
 ## [1.8.1](https://github.com/kunchenguid/no-mistakes/compare/v1.8.0...v1.8.1) (2026-04-21)
 
 
