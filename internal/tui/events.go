@@ -30,11 +30,16 @@ func (m *Model) applyEvent(event ipc.Event) {
 		if event.PRURL != nil {
 			m.run.PRURL = event.PRURL
 		}
+		if m.syntheticSteps {
+			m.steps = nil
+			m.run.Steps = nil
+		}
 		m.flushPartialLog()
 		m.done = true
 
 	case ipc.EventStepStarted:
 		m.err = nil
+		m.syntheticSteps = false
 		if event.StepName != nil {
 			m.updateStepStatus(*event.StepName, types.StepStatusRunning)
 			m.stepStartTimes[*event.StepName] = time.Now()
@@ -42,6 +47,7 @@ func (m *Model) applyEvent(event ipc.Event) {
 
 	case ipc.EventStepCompleted:
 		m.err = nil
+		m.syntheticSteps = false
 		m.flushPartialLog()
 		if event.StepName != nil && event.Status != nil {
 			m.updateStepStatus(*event.StepName, types.StepStatus(*event.Status))

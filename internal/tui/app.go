@@ -46,11 +46,13 @@ type Model struct {
 	diffOffset       int  // scroll position in diff view
 	spinnerFrame     int
 	spinnerScheduled bool
+	syntheticSteps   bool
 }
 
 // NewModel creates a TUI model for the given run.
 // The client should already be connected to the daemon.
 func NewModel(socketPath string, client *ipc.Client, run *ipc.RunInfo) Model {
+	syntheticSteps := len(run.Steps) == 0 && shouldBackfillPipelineSteps(run.Status, run.Steps, types.AllSteps())
 	steps := normalizePipelineSteps(run.ID, run.Status, run.Steps)
 	run.Steps = steps
 	m := Model{
@@ -66,6 +68,7 @@ func NewModel(socketPath string, client *ipc.Client, run *ipc.RunInfo) Model {
 		findingSelections: make(map[types.StepName]map[string]bool),
 		findingCursor:     make(map[types.StepName]int),
 		stepStartTimes:    make(map[types.StepName]time.Time),
+		syntheticSteps:    syntheticSteps,
 	}
 	// Populate findings and start times from initial step data (for re-attach scenarios).
 	for _, s := range steps {
