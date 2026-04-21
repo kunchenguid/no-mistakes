@@ -461,7 +461,7 @@ func TestRunWizard_ConfiguresServerPIDsDir(t *testing.T) {
 		dirty:         true,
 	}
 
-	if _, err := runWizard(context.Background(), p, state); err != nil {
+	if _, err := runWizard(context.Background(), p, state, nil); err != nil {
 		t.Fatalf("runWizard() error = %v", err)
 	}
 
