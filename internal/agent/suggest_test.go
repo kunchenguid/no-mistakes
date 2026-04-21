@@ -180,6 +180,81 @@ func TestSuggestCommitMessageEmpty(t *testing.T) {
 	}
 }
 
+func TestSuggestBranchAndCommit(t *testing.T) {
+	ag := &stubAgent{result: &Result{
+		Output: json.RawMessage(`{"branch":"feat/onboarding-wizard","subject":"feat(cli): add onboarding wizard"}`),
+	}}
+	branch, subject, err := SuggestBranchAndCommit(context.Background(), ag, "/tmp/repo")
+	if err != nil {
+		t.Fatalf("SuggestBranchAndCommit failed: %v", err)
+	}
+	if branch != "feat/onboarding-wizard" {
+		t.Fatalf("expected feat/onboarding-wizard, got %q", branch)
+	}
+	if subject != "feat(cli): add onboarding wizard" {
+		t.Fatalf("expected commit subject, got %q", subject)
+	}
+	if ag.gotCWD != "/tmp/repo" {
+		t.Fatalf("expected CWD to be forwarded, got %q", ag.gotCWD)
+	}
+	if len(ag.gotSchema) == 0 {
+		t.Fatal("expected JSONSchema to be set on RunOpts")
+	}
+	if ag.gotPrompt == "" {
+		t.Fatal("expected prompt to be non-empty")
+	}
+}
+
+func TestSuggestBranchAndCommitSanitizes(t *testing.T) {
+	ag := &stubAgent{result: &Result{
+		Output: json.RawMessage(`{"branch":"FEAT/New Thing","subject":"feat(cli): clean up thing\n\nbody paragraph"}`),
+	}}
+	branch, subject, err := SuggestBranchAndCommit(context.Background(), ag, "/tmp")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if branch != "feat/new-thing" {
+		t.Fatalf("expected branch to be sanitized, got %q", branch)
+	}
+	if subject != "feat(cli): clean up thing" {
+		t.Fatalf("expected first-line commit subject, got %q", subject)
+	}
+}
+
+func TestSuggestBranchAndCommitEmptyBranchErrors(t *testing.T) {
+	ag := &stubAgent{result: &Result{
+		Output: json.RawMessage(`{"branch":"","subject":"feat: something"}`),
+	}}
+	if _, _, err := SuggestBranchAndCommit(context.Background(), ag, "/tmp"); err == nil {
+		t.Fatal("expected error when branch is empty")
+	}
+}
+
+func TestSuggestBranchAndCommitEmptySubjectReturnsBranch(t *testing.T) {
+	// An empty commit subject is tolerated: callers can fall back to a
+	// dedicated SuggestCommitMessage call rather than failing the wizard.
+	ag := &stubAgent{result: &Result{
+		Output: json.RawMessage(`{"branch":"fix/bug","subject":""}`),
+	}}
+	branch, subject, err := SuggestBranchAndCommit(context.Background(), ag, "/tmp")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if branch != "fix/bug" {
+		t.Fatalf("expected fix/bug, got %q", branch)
+	}
+	if subject != "" {
+		t.Fatalf("expected empty subject, got %q", subject)
+	}
+}
+
+func TestSuggestBranchAndCommitAgentError(t *testing.T) {
+	ag := &stubAgent{err: errors.New("boom")}
+	if _, _, err := SuggestBranchAndCommit(context.Background(), ag, "/tmp"); err == nil {
+		t.Fatal("expected error from agent failure")
+	}
+}
+
 func jsonQuote(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)
