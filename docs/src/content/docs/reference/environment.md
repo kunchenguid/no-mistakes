@@ -20,6 +20,7 @@ When set, everything else moves under this root:
 - Logs: `$NM_HOME/logs/`
 - Database: `$NM_HOME/state.sqlite`
 - Socket / PID: `$NM_HOME/socket` and `$NM_HOME/daemon.pid`
+- Managed agent server PID records: `$NM_HOME/servers/`
 - Managed service names get a short stable suffix derived from `$NM_HOME` so multiple installs don't collide.
 
 ## `NO_MISTAKES_BITBUCKET_EMAIL`
