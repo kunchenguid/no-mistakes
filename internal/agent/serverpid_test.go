@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -158,6 +159,42 @@ func TestWriteServerPIDFile_ConcurrentReadersNeverSeePartialJSON(t *testing.T) {
 	close(stop)
 	if err := <-resultCh; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestWriteServerPIDFile_RetriesTransientRenameError(t *testing.T) {
+	dir := t.TempDir()
+	prevRename := renameServerPIDFile
+	prevSleep := sleepServerPIDRenameRetry
+	prevTransient := isTransientPIDRenameError
+	t.Cleanup(func() {
+		renameServerPIDFile = prevRename
+		sleepServerPIDRenameRetry = prevSleep
+		isTransientPIDRenameError = prevTransient
+	})
+
+	var calls int
+	renameServerPIDFile = func(oldpath, newpath string) error {
+		calls++
+		if calls < 3 {
+			return &fs.PathError{Op: "rename", Path: newpath, Err: errors.New("transient")}
+		}
+		return os.Rename(oldpath, newpath)
+	}
+	sleepServerPIDRenameRetry = func() {}
+	isTransientPIDRenameError = func(err error) bool {
+		return err != nil && strings.Contains(err.Error(), "transient")
+	}
+
+	path := writeServerPIDFile(dir, ServerPIDInfo{PID: 7, Agent: "opencode"})
+	if path == "" {
+		t.Fatal("expected non-empty path")
+	}
+	if calls != 3 {
+		t.Fatalf("rename calls = %d, want 3", calls)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("expected pid file to exist: %v", err)
 	}
 }
 

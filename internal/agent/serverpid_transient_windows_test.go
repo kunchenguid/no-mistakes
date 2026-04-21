@@ -3,6 +3,7 @@
 package agent
 
 import (
+	"errors"
 	"io/fs"
 	"os"
 	"syscall"
@@ -27,5 +28,49 @@ func TestIsTransientPIDOpenError_Windows(t *testing.T) {
 				t.Fatalf("isTransientPIDOpenError(%v) = %v, want %v", tc.err, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestReplaceServerPIDFile_WindowsRetriesTransientRenameError(t *testing.T) {
+	prevRename := renameServerPIDFile
+	prevSleep := sleepServerPIDRenameRetry
+	t.Cleanup(func() {
+		renameServerPIDFile = prevRename
+		sleepServerPIDRenameRetry = prevSleep
+	})
+
+	var calls int
+	renameServerPIDFile = func(oldpath, newpath string) error {
+		calls++
+		if calls < 3 {
+			return &fs.PathError{Op: "rename", Path: newpath, Err: syscall.Errno(5)}
+		}
+		return nil
+	}
+	sleepServerPIDRenameRetry = func() {}
+
+	if err := replaceServerPIDFile("tmp.json", "dst.json"); err != nil {
+		t.Fatalf("replaceServerPIDFile() error = %v", err)
+	}
+	if calls != 3 {
+		t.Fatalf("replaceServerPIDFile() calls = %d, want 3", calls)
+	}
+}
+
+func TestReplaceServerPIDFile_WindowsStopsOnPermanentRenameError(t *testing.T) {
+	prevRename := renameServerPIDFile
+	prevSleep := sleepServerPIDRenameRetry
+	t.Cleanup(func() {
+		renameServerPIDFile = prevRename
+		sleepServerPIDRenameRetry = prevSleep
+	})
+
+	wantErr := &fs.PathError{Op: "rename", Path: "dst.json", Err: errors.New("boom")}
+	renameServerPIDFile = func(oldpath, newpath string) error { return wantErr }
+	sleepServerPIDRenameRetry = func() {}
+
+	err := replaceServerPIDFile("tmp.json", "dst.json")
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("replaceServerPIDFile() error = %v, want %v", err, wantErr)
 	}
 }

@@ -35,6 +35,10 @@ var (
 	serverPIDsDir    string
 	serverPIDOwner   string
 	processStartedAt = time.Now().UTC()
+
+	renameServerPIDFile       = os.Rename
+	sleepServerPIDRenameRetry = func() { time.Sleep(2 * time.Millisecond) }
+	isTransientPIDRenameError = isTransientPIDOpenError
 )
 
 // SetServerPIDsDir configures where managed-server PID files are written.
@@ -116,12 +120,27 @@ func writeServerPIDFile(dir string, info ServerPIDInfo) string {
 		slog.Warn("close server pid temp file", "path", tmpPath, "error", err)
 		return ""
 	}
-	if err := os.Rename(tmpPath, path); err != nil {
+	if err := replaceServerPIDFile(tmpPath, path); err != nil {
 		slog.Warn("write server pid file", "path", path, "error", err)
 		return ""
 	}
 	tmpPath = ""
 	return path
+}
+
+func replaceServerPIDFile(tmpPath, path string) error {
+	const maxAttempts = 50
+
+	for attempt := 0; ; attempt++ {
+		err := renameServerPIDFile(tmpPath, path)
+		if err == nil {
+			return nil
+		}
+		if attempt >= maxAttempts-1 || !isTransientPIDRenameError(err) {
+			return err
+		}
+		sleepServerPIDRenameRetry()
+	}
 }
 
 // removeServerPIDFile deletes path, silently ignoring missing files.
