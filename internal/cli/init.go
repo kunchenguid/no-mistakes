@@ -17,7 +17,8 @@ func newInitCmd() *cobra.Command {
 		Use:   "init",
 		Short: "Initialize no-mistakes gate for the current repository",
 		Long: `Sets up a local bare repo as a gate, installs a post-receive hook,
-adds a "no-mistakes" git remote, and records the repo in the database.
+isolates the gate hook path from shared local git config writes, adds a
+"no-mistakes" git remote, and records the repo in the database.
 
 Run this from inside a git repository that has an "origin" remote.`,
 		Args: cobra.NoArgs,
