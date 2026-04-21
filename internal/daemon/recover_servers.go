@@ -107,7 +107,7 @@ func shouldSkipOrphanRecord(info agent.ServerPIDInfo) bool {
 	if info.Owner != agent.ServerPIDOwnerWizard {
 		return true
 	}
-	if info.OwnerPID <= 0 || info.OwnerPID == os.Getpid() {
+	if info.OwnerPID <= 0 {
 		return true
 	}
 	alive, err := processRunningFunc(info.OwnerPID)

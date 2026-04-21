@@ -96,10 +96,11 @@ func TestReapOrphanedServers_SkipsWizardOwnedRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 	startedAt := time.Now().UTC()
+	const ownerPID = 54321
 	path := writePIDRecord(t, p.ServerPIDsDir(), "opencode-wizard.json", agent.ServerPIDInfo{
 		PID:            12345,
 		Owner:          agent.ServerPIDOwnerWizard,
-		OwnerPID:       os.Getpid(),
+		OwnerPID:       ownerPID,
 		OwnerStartedAt: startedAt,
 		Agent:          "opencode",
 		StartedAt:      startedAt,
@@ -109,16 +110,16 @@ func TestReapOrphanedServers_SkipsWizardOwnedRecord(t *testing.T) {
 	oldStartTime := processStartTimeFunc
 	oldTerminate := terminateOrphanProcessGroupFunc
 	processRunningFunc = func(pid int) (bool, error) {
-		if pid != 12345 {
+		if pid != ownerPID {
 			t.Fatalf("unexpected pid %d", pid)
 		}
 		return true, nil
 	}
 	processStartTimeFunc = func(pid int) (time.Time, error) {
-		if pid != 12345 {
+		if pid != ownerPID {
 			t.Fatalf("unexpected pid %d", pid)
 		}
-		return startedAt.Add(-time.Second), nil
+		return startedAt.Add(time.Second), nil
 	}
 	terminateOrphanProcessGroupFunc = func(pid int) error {
 		t.Fatalf("wizard-owned pid %d should not be terminated", pid)
@@ -196,6 +197,37 @@ func TestReapOrphanedServers_ReapsWizardOwnedRecordWhenOwnerPIDReused(t *testing
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("wizard-owned pid file should be removed after reap, got err=%v", err)
+	}
+}
+
+func TestShouldSkipOrphanRecord_FalseWhenWizardOwnerPIDMatchesCurrentDaemonButStartTimeDiffers(t *testing.T) {
+	startedAt := time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC)
+
+	oldRunning := processRunningFunc
+	oldStartTime := processStartTimeFunc
+	processRunningFunc = func(pid int) (bool, error) {
+		if pid != os.Getpid() {
+			t.Fatalf("unexpected pid %d", pid)
+		}
+		return true, nil
+	}
+	processStartTimeFunc = func(pid int) (time.Time, error) {
+		if pid != os.Getpid() {
+			t.Fatalf("unexpected pid %d", pid)
+		}
+		return startedAt.Add(10 * time.Minute), nil
+	}
+	t.Cleanup(func() {
+		processRunningFunc = oldRunning
+		processStartTimeFunc = oldStartTime
+	})
+
+	if shouldSkipOrphanRecord(agent.ServerPIDInfo{
+		Owner:          agent.ServerPIDOwnerWizard,
+		OwnerPID:       os.Getpid(),
+		OwnerStartedAt: startedAt,
+	}) {
+		t.Fatal("expected mismatched current-daemon pid reuse to be reaped")
 	}
 }
 

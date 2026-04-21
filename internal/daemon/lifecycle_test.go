@@ -366,6 +366,61 @@ func TestStopDetachedDaemonRejectsUnrelatedLiveProcessPIDFallback(t *testing.T) 
 	}
 }
 
+func TestValidateDaemonPIDFallback_RejectsLegacyPIDFileForReusedPID(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "dtest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	p := paths.WithRoot(tmpDir)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.PIDFile(), []byte(fmt.Sprintf("%d", os.Getpid())), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	old := daemonProcessStartTime
+	daemonProcessStartTime = func(checkPID int) (time.Time, error) {
+		if checkPID != os.Getpid() {
+			t.Fatalf("processStartTime pid = %d, want %d", checkPID, os.Getpid())
+		}
+		return time.Now().Add(-time.Hour), nil
+	}
+	t.Cleanup(func() {
+		daemonProcessStartTime = old
+	})
+
+	err = validateDaemonPIDFallback(p, os.Getpid())
+	if err == nil {
+		t.Fatal("expected legacy pid fallback to reject reused pid")
+	}
+}
+
+func TestCurrentDaemonPIDRecord_UsesProcessStartTime(t *testing.T) {
+	want := time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC)
+	now := want.Add(10 * time.Second)
+
+	record, err := currentDaemonPIDRecord(func(pid int) (time.Time, error) {
+		if pid != os.Getpid() {
+			t.Fatalf("processStartTime pid = %d, want %d", pid, os.Getpid())
+		}
+		return want, nil
+	}, func() time.Time {
+		return now
+	})
+	if err != nil {
+		t.Fatalf("currentDaemonPIDRecord returned error: %v", err)
+	}
+	if record.PID != os.Getpid() {
+		t.Fatalf("record pid = %d, want %d", record.PID, os.Getpid())
+	}
+	if !record.StartedAt.Equal(want) {
+		t.Fatalf("record started_at = %v, want %v", record.StartedAt, want)
+	}
+}
+
 func TestStopDetachedDaemonRemovesArtifactsForDeadPID(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("unix socket setup is platform-specific")

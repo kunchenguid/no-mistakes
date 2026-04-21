@@ -130,7 +130,10 @@ func RunWithOptions(p *paths.Paths, d *db.DB, stepFactory StepFactory) error {
 
 	// Write PID file
 	pidPath := p.PIDFile()
-	pidRecord := daemonPIDFile{PID: os.Getpid(), StartedAt: time.Now().UTC()}
+	pidRecord, err := currentDaemonPIDRecord(processStartTime, func() time.Time { return time.Now().UTC() })
+	if err != nil {
+		return fmt.Errorf("build pid file: %w", err)
+	}
 	pidData, err := json.Marshal(pidRecord)
 	if err != nil {
 		return fmt.Errorf("marshal pid file: %w", err)
@@ -176,6 +179,18 @@ func RunWithOptions(p *paths.Paths, d *db.DB, stepFactory StepFactory) error {
 	}
 	slog.Info("daemon stopped")
 	return nil
+}
+
+func currentDaemonPIDRecord(startTime func(int) (time.Time, error), now func() time.Time) (daemonPIDFile, error) {
+	pid := os.Getpid()
+	startedAt, err := startTime(pid)
+	if err != nil {
+		startedAt = agent.CurrentProcessStartedAt()
+		if startedAt.IsZero() {
+			startedAt = now()
+		}
+	}
+	return daemonPIDFile{PID: pid, StartedAt: startedAt.UTC()}, nil
 }
 
 // recoverOnStartup cleans up after a previous daemon crash by marking stale
