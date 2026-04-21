@@ -95,12 +95,13 @@ func TestReapOrphanedServers_SkipsWizardOwnedRecord(t *testing.T) {
 	if err := p.EnsureDirs(); err != nil {
 		t.Fatal(err)
 	}
+	startedAt := time.Now().UTC()
 	path := writePIDRecord(t, p.ServerPIDsDir(), "opencode-wizard.json", agent.ServerPIDInfo{
 		PID:       12345,
 		Owner:     agent.ServerPIDOwnerWizard,
 		OwnerPID:  os.Getpid(),
 		Agent:     "opencode",
-		StartedAt: time.Now().UTC(),
+		StartedAt: startedAt,
 	})
 
 	oldRunning := processRunningFunc
@@ -113,8 +114,10 @@ func TestReapOrphanedServers_SkipsWizardOwnedRecord(t *testing.T) {
 		return true, nil
 	}
 	processStartTimeFunc = func(pid int) (time.Time, error) {
-		t.Fatalf("start time should not be checked for wizard-owned pid %d", pid)
-		return time.Time{}, nil
+		if pid != 12345 {
+			t.Fatalf("unexpected pid %d", pid)
+		}
+		return startedAt.Add(-time.Second), nil
 	}
 	terminateOrphanProcessGroupFunc = func(pid int) error {
 		t.Fatalf("wizard-owned pid %d should not be terminated", pid)
@@ -130,6 +133,67 @@ func TestReapOrphanedServers_SkipsWizardOwnedRecord(t *testing.T) {
 
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("wizard-owned pid file should be kept, got err=%v", err)
+	}
+}
+
+func TestReapOrphanedServers_ReapsWizardOwnedRecordWhenOwnerPIDReused(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	startedAt := time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC)
+	path := writePIDRecord(t, p.ServerPIDsDir(), "opencode-wizard-reused.json", agent.ServerPIDInfo{
+		PID:       12345,
+		Owner:     agent.ServerPIDOwnerWizard,
+		OwnerPID:  54321,
+		Agent:     "opencode",
+		StartedAt: startedAt,
+	})
+
+	oldRunning := processRunningFunc
+	oldStartTime := processStartTimeFunc
+	oldTerminate := terminateOrphanProcessGroupFunc
+	processRunningFunc = func(pid int) (bool, error) {
+		switch pid {
+		case 54321, 12345:
+			return true, nil
+		default:
+			t.Fatalf("unexpected pid %d", pid)
+			return false, nil
+		}
+	}
+	processStartTimeFunc = func(pid int) (time.Time, error) {
+		switch pid {
+		case 54321:
+			return startedAt.Add(time.Hour), nil
+		case 12345:
+			return startedAt, nil
+		default:
+			t.Fatalf("unexpected pid %d", pid)
+			return time.Time{}, nil
+		}
+	}
+	terminated := 0
+	terminateOrphanProcessGroupFunc = func(pid int) error {
+		if pid != 12345 {
+			t.Fatalf("unexpected pid %d", pid)
+		}
+		terminated++
+		return nil
+	}
+	t.Cleanup(func() {
+		processRunningFunc = oldRunning
+		processStartTimeFunc = oldStartTime
+		terminateOrphanProcessGroupFunc = oldTerminate
+	})
+
+	reapOrphanedServers(p)
+
+	if terminated != 1 {
+		t.Fatalf("expected one terminate call, got %d", terminated)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("wizard-owned pid file should be removed after reap, got err=%v", err)
 	}
 }
 
@@ -214,5 +278,42 @@ func TestOtherDaemonAlive_TrueWhenPIDFileCorrupt(t *testing.T) {
 
 	if !otherDaemonAlive(p) {
 		t.Error("corrupt pid file should conservatively block orphan reaping")
+	}
+}
+
+func TestOtherDaemonAlive_FalseWhenPIDReusedByNewerProcess(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.PIDFile(), []byte("12345"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pidFileTime := time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(p.PIDFile(), pidFileTime, pidFileTime); err != nil {
+		t.Fatal(err)
+	}
+
+	oldRunning := processRunningFunc
+	oldStartTime := processStartTimeFunc
+	processRunningFunc = func(pid int) (bool, error) {
+		if pid != 12345 {
+			t.Fatalf("unexpected pid %d", pid)
+		}
+		return true, nil
+	}
+	processStartTimeFunc = func(pid int) (time.Time, error) {
+		if pid != 12345 {
+			t.Fatalf("unexpected pid %d", pid)
+		}
+		return pidFileTime.Add(time.Hour), nil
+	}
+	t.Cleanup(func() {
+		processRunningFunc = oldRunning
+		processStartTimeFunc = oldStartTime
+	})
+
+	if otherDaemonAlive(p) {
+		t.Error("reused pid from a newer process should not block orphan reaping")
 	}
 }

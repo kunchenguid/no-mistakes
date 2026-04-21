@@ -109,7 +109,15 @@ func shouldSkipOrphanRecord(info agent.ServerPIDInfo) bool {
 		slog.Warn("check wizard owner pid", "pid", info.OwnerPID, "error", err)
 		return true
 	}
-	return alive
+	if !alive {
+		return false
+	}
+	startedAt, err := processStartTimeFunc(info.OwnerPID)
+	if err != nil {
+		slog.Warn("check wizard owner start time", "pid", info.OwnerPID, "error", err)
+		return true
+	}
+	return !startedAt.After(info.StartedAt.Add(orphanStartTimeTolerance))
 }
 
 func readServerPIDRecord(path string) (agent.ServerPIDInfo, bool) {
@@ -134,6 +142,14 @@ func removeServerPIDFile(path string) {
 // process that isn't us. The recovery path runs before the new daemon
 // writes its own PID file, so any live PID here belongs to a predecessor.
 func otherDaemonAlive(p *paths.Paths) bool {
+	info, statErr := os.Stat(p.PIDFile())
+	if statErr != nil {
+		if !os.IsNotExist(statErr) {
+			slog.Warn("stat daemon pid file", "path", p.PIDFile(), "error", statErr)
+			return true
+		}
+		return false
+	}
 	data, err := os.ReadFile(p.PIDFile())
 	if err != nil {
 		if !os.IsNotExist(err) {
@@ -159,7 +175,15 @@ func otherDaemonAlive(p *paths.Paths) bool {
 		slog.Warn("check daemon pid", "pid", pid, "error", err)
 		return true
 	}
-	return alive
+	if !alive {
+		return false
+	}
+	startedAt, err := processStartTimeFunc(pid)
+	if err != nil {
+		slog.Warn("check daemon start time", "pid", pid, "error", err)
+		return true
+	}
+	return !startedAt.After(info.ModTime().Add(orphanStartTimeTolerance))
 }
 
 func orphanStartTimeMatches(info agent.ServerPIDInfo) (bool, error) {
