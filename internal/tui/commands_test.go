@@ -253,6 +253,104 @@ func TestModel_Update_RerunPreservesLatestVersion(t *testing.T) {
 	}
 }
 
+func TestModel_Update_RerunStartedBackfillsMissingPipelineSteps(t *testing.T) {
+	run := testRun()
+	run.Status = types.RunFailed
+	m := NewModel("/tmp/sock", nil, run)
+
+	newRun := &ipc.RunInfo{
+		ID:      "run-002",
+		RepoID:  run.RepoID,
+		Branch:  run.Branch,
+		HeadSHA: run.HeadSHA,
+		BaseSHA: run.BaseSHA,
+		Status:  types.RunRunning,
+		Steps: []ipc.StepResultInfo{{
+			ID:        "s1",
+			RunID:     "run-002",
+			StepName:  types.StepRebase,
+			StepOrder: types.StepRebase.Order(),
+			Status:    types.StepStatusRunning,
+		}},
+	}
+
+	updated, _ := m.Update(rerunStartedMsg{run: newRun})
+	model := updated.(Model)
+
+	if len(model.steps) != len(types.AllSteps()) {
+		t.Fatalf("step count = %d, want %d", len(model.steps), len(types.AllSteps()))
+	}
+	for i, stepName := range types.AllSteps() {
+		if model.steps[i].StepName != stepName {
+			t.Fatalf("step %d = %s, want %s", i, model.steps[i].StepName, stepName)
+		}
+	}
+	if model.steps[0].Status != types.StepStatusRunning {
+		t.Fatalf("rebase status = %s, want %s", model.steps[0].Status, types.StepStatusRunning)
+	}
+	if model.steps[1].Status != types.StepStatusPending {
+		t.Fatalf("review status = %s, want %s", model.steps[1].Status, types.StepStatusPending)
+	}
+
+	plain := stripANSI(renderPipelineView(model.run, model.steps, 80, 0, 40))
+	for _, label := range []string{"Rebase", "Review", "Test", "Document", "Lint", "Push", "PR", "CI"} {
+		if !strings.Contains(plain, label) {
+			t.Fatalf("expected pipeline view to contain %q, got:\n%s", label, plain)
+		}
+	}
+
+	review := types.StepReview
+	model.applyEvent(ipc.Event{Type: ipc.EventStepStarted, StepName: &review})
+	if model.steps[1].Status != types.StepStatusRunning {
+		t.Fatalf("review status after event = %s, want %s", model.steps[1].Status, types.StepStatusRunning)
+	}
+}
+
+func TestModel_Update_RerunStartedBackfillsEmptyRunningPipelineSteps(t *testing.T) {
+	run := testRun()
+	run.Status = types.RunFailed
+	m := NewModel("/tmp/sock", nil, run)
+
+	newRun := &ipc.RunInfo{
+		ID:      "run-002",
+		RepoID:  run.RepoID,
+		Branch:  run.Branch,
+		HeadSHA: run.HeadSHA,
+		BaseSHA: run.BaseSHA,
+		Status:  types.RunRunning,
+	}
+
+	updated, _ := m.Update(rerunStartedMsg{run: newRun})
+	model := updated.(Model)
+
+	if len(model.steps) != len(types.AllSteps()) {
+		t.Fatalf("step count = %d, want %d", len(model.steps), len(types.AllSteps()))
+	}
+	for i, stepName := range types.AllSteps() {
+		if model.steps[i].StepName != stepName {
+			t.Fatalf("step %d = %s, want %s", i, model.steps[i].StepName, stepName)
+		}
+		if model.steps[i].Status != types.StepStatusPending {
+			t.Fatalf("step %s status = %s, want %s", stepName, model.steps[i].Status, types.StepStatusPending)
+		}
+	}
+}
+
+func TestNewModel_DoesNotBackfillEmptyTerminalPipelineSteps(t *testing.T) {
+	run := testRun()
+	run.Status = types.RunFailed
+	run.Steps = nil
+
+	m := NewModel("/tmp/sock", nil, run)
+
+	if len(m.steps) != 0 {
+		t.Fatalf("step count = %d, want 0", len(m.steps))
+	}
+	if len(m.run.Steps) != 0 {
+		t.Fatalf("run step count = %d, want 0", len(m.run.Steps))
+	}
+}
+
 func TestModel_SubscribeCmdReturnsScopedError(t *testing.T) {
 	run := testRun()
 	m := NewModel(filepath.Join(t.TempDir(), "missing.sock"), nil, run)

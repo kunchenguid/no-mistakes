@@ -370,6 +370,31 @@ func TestModel_ApplyEvent_RunCompleted_FailedStoresError(t *testing.T) {
 	}
 }
 
+func TestModel_ApplyEvent_RunCompleted_FailedClearsSyntheticBackfill(t *testing.T) {
+	run := testRun()
+	run.Steps = nil
+	m := NewModel("/tmp/sock", nil, run)
+	errMsg := "setup failed before any step started"
+
+	if len(m.steps) == 0 {
+		t.Fatal("expected active run to backfill pipeline steps")
+	}
+
+	m.applyEvent(ipc.Event{
+		Type:   ipc.EventRunCompleted,
+		RunID:  run.ID,
+		Status: ptr(string(types.RunFailed)),
+		Error:  &errMsg,
+	})
+
+	if len(m.steps) != 0 {
+		t.Fatalf("expected synthetic pending steps to be cleared, got %d", len(m.steps))
+	}
+	if m.run.Status != types.RunFailed {
+		t.Fatalf("expected failed status, got %s", m.run.Status)
+	}
+}
+
 func TestModel_ApplyEvent_RunUpdated_PRURL(t *testing.T) {
 	run := testRun()
 	m := NewModel("/tmp/sock", nil, run)
