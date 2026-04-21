@@ -10,7 +10,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 )
 
-func TestStartInstallsWindowsTaskAndStartsManagedDaemon_EnableWindowsCI(t *testing.T) {
+func TestStartInstallsWindowsTaskAndStartsManagedDaemon(t *testing.T) {
 	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm home"))
 	if err := p.EnsureDirs(); err != nil {
 		t.Fatal(err)
@@ -62,7 +62,7 @@ func TestStartInstallsWindowsTaskAndStartsManagedDaemon_EnableWindowsCI(t *testi
 	}
 }
 
-func TestInstallWindowsTaskDoesNotRemoveLegacyTaskForDifferentRoot_EnableWindowsCI(t *testing.T) {
+func TestInstallWindowsTaskDoesNotRemoveLegacyTaskForDifferentRoot(t *testing.T) {
 	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
 	if err := p.EnsureDirs(); err != nil {
 		t.Fatal(err)
@@ -93,7 +93,7 @@ func TestInstallWindowsTaskDoesNotRemoveLegacyTaskForDifferentRoot_EnableWindows
 	}
 }
 
-func TestInstallWindowsTaskKeepsLegacyTaskOnCreateFailure_EnableWindowsCI(t *testing.T) {
+func TestInstallWindowsTaskKeepsLegacyTaskOnCreateFailure(t *testing.T) {
 	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm home"))
 	if err := p.EnsureDirs(); err != nil {
 		t.Fatal(err)

@@ -12,7 +12,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 )
 
-func TestServerClose_EnableWindowsCI(t *testing.T) {
+func TestServerClose(t *testing.T) {
 	sock := socketPath(t)
 	srv := ipc.NewServer()
 	errCh := make(chan error, 1)
@@ -50,7 +50,7 @@ func TestServerClose_EnableWindowsCI(t *testing.T) {
 	}
 }
 
-func TestDialNonexistentSocket_EnableWindowsCI(t *testing.T) {
+func TestDialNonexistentSocket(t *testing.T) {
 	_, err := ipc.Dial(filepath.Join(t.TempDir(), "nonexistent.sock"))
 	if err == nil {
 		t.Error("expected error dialing nonexistent socket")

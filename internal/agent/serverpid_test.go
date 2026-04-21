@@ -2,11 +2,12 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
@@ -128,38 +129,19 @@ func TestWriteServerPIDFile_ConcurrentReadersNeverSeePartialJSON(t *testing.T) {
 	}
 
 	stop := make(chan struct{})
-	errCh := make(chan error, 1)
-	var wg sync.WaitGroup
-	wg.Add(1)
+	observedInitial := make(chan struct{})
+	observedFinal := make(chan struct{})
+	resultCh := make(chan error, 1)
+	finalPort := info.Port + 199
 	go func() {
-		defer wg.Done()
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-			}
-			data, err := os.ReadFile(path)
-			if err != nil {
-				if os.IsNotExist(err) {
-					continue
-				}
-				select {
-				case errCh <- fmt.Errorf("read pid file: %w", err):
-				default:
-				}
-				return
-			}
-			var got ServerPIDInfo
-			if err := json.Unmarshal(data, &got); err != nil {
-				select {
-				case errCh <- fmt.Errorf("saw partial pid file: %w", err):
-				default:
-				}
-				return
-			}
-		}
+		resultCh <- readPIDFileUntilStopped(path, info.Port, finalPort, stop, observedInitial, observedFinal)
 	}()
+
+	select {
+	case <-observedInitial:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reader never observed initial pid file")
+	}
 
 	for i := 0; i < 200; i++ {
 		info.Port = 54321 + i
@@ -168,11 +150,161 @@ func TestWriteServerPIDFile_ConcurrentReadersNeverSeePartialJSON(t *testing.T) {
 		}
 	}
 
-	close(stop)
-	wg.Wait()
 	select {
-	case err := <-errCh:
+	case <-observedFinal:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reader never observed final pid file rewrite")
+	}
+
+	close(stop)
+	if err := <-resultCh; err != nil {
 		t.Fatal(err)
-	default:
+	}
+}
+
+func TestWriteServerPIDFile_RetriesTransientRenameError(t *testing.T) {
+	dir := t.TempDir()
+	prevRename := renameServerPIDFile
+	prevSleep := sleepServerPIDRenameRetry
+	prevTransient := isTransientPIDRenameError
+	t.Cleanup(func() {
+		renameServerPIDFile = prevRename
+		sleepServerPIDRenameRetry = prevSleep
+		isTransientPIDRenameError = prevTransient
+	})
+
+	var calls int
+	renameServerPIDFile = func(oldpath, newpath string) error {
+		calls++
+		if calls < 3 {
+			return &fs.PathError{Op: "rename", Path: newpath, Err: errors.New("transient")}
+		}
+		return os.Rename(oldpath, newpath)
+	}
+	sleepServerPIDRenameRetry = func() {}
+	isTransientPIDRenameError = func(err error) bool {
+		return err != nil && strings.Contains(err.Error(), "transient")
+	}
+
+	path := writeServerPIDFile(dir, ServerPIDInfo{PID: 7, Agent: "opencode"})
+	if path == "" {
+		t.Fatal("expected non-empty path")
+	}
+	if calls != 3 {
+		t.Fatalf("rename calls = %d, want 3", calls)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("expected pid file to exist: %v", err)
+	}
+}
+
+func TestReadPIDFileUntilStopped_RequiresSuccessfulRead(t *testing.T) {
+	stop := make(chan struct{})
+	resultCh := make(chan error, 1)
+	go func() {
+		resultCh <- readPIDFileUntilStopped(filepath.Join(t.TempDir(), "missing.json"), 0, 0, stop, nil, nil)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	close(stop)
+
+	err := <-resultCh
+	if !errors.Is(err, errPIDFileNeverRead) {
+		t.Fatalf("readPIDFileUntilStopped() error = %v, want %v", err, errPIDFileNeverRead)
+	}
+}
+
+func TestReadPIDFileUntilStopped_RequiresUpdatedRead(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "server.json")
+	info := ServerPIDInfo{
+		PID:            12345,
+		Owner:          ServerPIDOwnerDaemon,
+		OwnerPID:       4321,
+		OwnerStartedAt: time.Date(2026, 4, 20, 9, 59, 0, 0, time.UTC),
+		Agent:          "opencode",
+		Bin:            "/usr/local/bin/opencode",
+		Port:           54321,
+		StartedAt:      time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC),
+	}
+	data, err := json.Marshal(info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stop := make(chan struct{})
+	observedInitial := make(chan struct{})
+	resultCh := make(chan error, 1)
+	go func() {
+		resultCh <- readPIDFileUntilStopped(path, info.Port, info.Port+1, stop, observedInitial, nil)
+	}()
+
+	select {
+	case <-observedInitial:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reader never observed initial pid file")
+	}
+	close(stop)
+
+	err = <-resultCh
+	if !errors.Is(err, errPIDFileNeverObservedRewrite) {
+		t.Fatalf("readPIDFileUntilStopped() error = %v, want %v", err, errPIDFileNeverObservedRewrite)
+	}
+}
+
+var errPIDFileNeverRead = errors.New("pid file was never read successfully")
+var errPIDFileNeverObservedRewrite = errors.New("pid file rewrite was never read successfully")
+
+func readPIDFileUntilStopped(path string, initialPort int, finalPort int, stop <-chan struct{}, observedInitial chan<- struct{}, observedFinal chan<- struct{}) error {
+	var successCount int
+	var sawRewrite bool
+	var sentInitial bool
+	var sawFinal bool
+	var sentFinal bool
+	for {
+		select {
+		case <-stop:
+			if successCount == 0 {
+				return errPIDFileNeverRead
+			}
+			if !sawRewrite || (finalPort != initialPort && !sawFinal) {
+				return errPIDFileNeverObservedRewrite
+			}
+			return nil
+		default:
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			if os.IsNotExist(err) || isTransientPIDOpenError(err) {
+				continue
+			}
+			return fmt.Errorf("read pid file: %w", err)
+		}
+		var got ServerPIDInfo
+		if err := json.Unmarshal(data, &got); err != nil {
+			return fmt.Errorf("saw partial pid file: %w", err)
+		}
+		successCount++
+		if got.Port == initialPort && !sentInitial {
+			sentInitial = true
+			if observedInitial != nil {
+				close(observedInitial)
+			}
+		}
+		if got.Port != initialPort {
+			sawRewrite = true
+		}
+		if got.Port == finalPort {
+			sawFinal = true
+			if !sentFinal {
+				sentFinal = true
+				if observedFinal != nil {
+					close(observedFinal)
+				}
+			}
+		}
 	}
 }

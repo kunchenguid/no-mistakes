@@ -13,7 +13,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 )
 
-func TestEnsureDaemonUsesCurrentExecutableAllowsWindowsCaseDifferences_EnableWindowsCI(t *testing.T) {
+func TestEnsureDaemonUsesCurrentExecutableAllowsWindowsCaseDifferences(t *testing.T) {
 	origGOOS := currentGOOS
 	origDaemonIsRunning := daemonIsRunning
 	origDaemonExecutablePath := daemonExecutablePath
@@ -100,7 +100,7 @@ func TestRunningDaemonExecutablePathUsesPIDFile(t *testing.T) {
 	}
 }
 
-func TestRunningDaemonExecutablePathHandlesExecutablePathsWithSpaces_EnableWindowsCI(t *testing.T) {
+func TestRunningDaemonExecutablePathHandlesExecutablePathsWithSpaces(t *testing.T) {
 	if os.Getenv("NO_MISTAKES_TEST_CHILD") == "1" {
 		time.Sleep(10 * time.Second)
 		return
@@ -152,7 +152,7 @@ func TestRunningDaemonExecutablePathHandlesExecutablePathsWithSpaces_EnableWindo
 	}
 }
 
-func TestExecutablePathForPIDUsesWindowsResolver_EnableWindowsCI(t *testing.T) {
+func TestExecutablePathForPIDUsesWindowsResolver(t *testing.T) {
 	origGOOS := currentGOOS
 	origWindowsResolver := windowsExecutablePathForPID
 	t.Cleanup(func() {

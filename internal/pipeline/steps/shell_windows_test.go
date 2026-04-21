@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-func TestRunShellCommandWithEnv_UsesCmdAndIgnoresUserShell_EnableWindowsCI(t *testing.T) {
+func TestRunShellCommandWithEnv_UsesCmdAndIgnoresUserShell(t *testing.T) {
 	workDir := t.TempDir()
 	marker := filepath.Join(t.TempDir(), "user-shell-used")
 	shellPath := filepath.Join(t.TempDir(), "fake-shell.cmd")

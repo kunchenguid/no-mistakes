@@ -12,7 +12,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 )
 
-func TestStreamHandler_EnableWindowsCI(t *testing.T) {
+func TestStreamHandler(t *testing.T) {
 	sock := socketPath(t)
 	srv := startServer(t, sock)
 

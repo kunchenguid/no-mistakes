@@ -665,7 +665,7 @@ func TestServiceInstanceSuffixDistinguishesRelativeRootsAcrossWorkingDirs(t *tes
 	}
 }
 
-func TestServiceInstanceSuffixNormalizesCaseOnWindows_EnableWindowsCI(t *testing.T) {
+func TestServiceInstanceSuffixNormalizesCaseOnWindows(t *testing.T) {
 	cleanup := stubServiceRuntime(t)
 	defer cleanup()
 	runtimeGOOS = "windows"
