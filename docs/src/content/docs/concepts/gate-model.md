@@ -30,8 +30,9 @@ When you run `no-mistakes init` in a repo:
 
 1. It creates a local bare gate repo under `~/.no-mistakes/repos/<id>.git`.
 2. It installs a `post-receive` hook in that gate repo.
-3. It adds a `no-mistakes` remote to your working repo that points at the gate.
-4. It makes sure the daemon is running so incoming pushes can start runs.
+3. It isolates the gate repo's hooks path from shared local Git config writes.
+4. It adds a `no-mistakes` remote to your working repo that points at the gate.
+5. It makes sure the daemon is running so incoming pushes can start runs.
 
 After init, your original `origin` still points at the real upstream remote.
 That is a core design choice, not an implementation detail.
