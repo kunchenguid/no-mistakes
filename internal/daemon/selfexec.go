@@ -144,7 +144,28 @@ func waitForDaemonStart(p *paths.Paths, pid int) error {
 		time.Sleep(pollInterval)
 	}
 
+	// Kill the child so it can't race with rollback work (e.g. SQLite writes)
+	// after the caller gives up on it. Skip when pid is 0 (managed service).
+	if pid > 0 {
+		if err := daemonKillPID(pid); err != nil {
+			slog.Warn("kill unresponsive daemon child failed", "pid", pid, "error", err)
+		} else {
+			waitForProcessExit(pid, timeout)
+		}
+	}
+
 	return fmt.Errorf("daemon started but did not become responsive within %v", timeout)
+}
+
+func waitForProcessExit(pid int, timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		running, err := daemonProcessRunning(pid)
+		if err != nil || !running {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 // IsRunning checks if the daemon is alive by sending a health check via IPC.

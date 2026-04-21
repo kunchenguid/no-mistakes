@@ -168,6 +168,9 @@ func TestInitRollsBackWhenDaemonStartFails(t *testing.T) {
 	if !strings.Contains(err.Error(), "start daemon") {
 		t.Fatalf("init error = %v, want daemon startup failure", err)
 	}
+	if strings.Contains(err.Error(), "rollback init:") {
+		t.Fatalf("rollback should succeed cleanly, got wrapped error: %v", err)
+	}
 	if elapsed >= time.Second {
 		t.Fatalf("init rollback should fail fast in tests, took %v", elapsed)
 	}

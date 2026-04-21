@@ -765,6 +765,65 @@ func TestStopDoesNotTouchManagedDaemonOwnedByDifferentNMHome(t *testing.T) {
 	}
 }
 
+func TestWaitForDaemonStartKillsChildOnTimeout(t *testing.T) {
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("NM_TEST_DAEMON_START_TIMEOUT", "20ms")
+	t.Setenv("NM_TEST_DAEMON_START_POLL_INTERVAL", "1ms")
+
+	oldHealthCheck := daemonHealthCheck
+	daemonHealthCheck = func(*paths.Paths) (bool, error) { return false, nil }
+	defer func() { daemonHealthCheck = oldHealthCheck }()
+
+	oldKill := daemonKillPID
+	killed := 0
+	daemonKillPID = func(pid int) error {
+		killed = pid
+		return nil
+	}
+	defer func() { daemonKillPID = oldKill }()
+
+	err := waitForDaemonStart(p, 4242)
+	if err == nil {
+		t.Fatal("waitForDaemonStart should fail when daemon never becomes responsive")
+	}
+	if killed != 4242 {
+		t.Fatalf("waitForDaemonStart should kill pid 4242 on timeout, killed=%d", killed)
+	}
+}
+
+func TestWaitForDaemonStartDoesNotKillWhenPIDZero(t *testing.T) {
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("NM_TEST_DAEMON_START_TIMEOUT", "20ms")
+	t.Setenv("NM_TEST_DAEMON_START_POLL_INTERVAL", "1ms")
+
+	oldHealthCheck := daemonHealthCheck
+	daemonHealthCheck = func(*paths.Paths) (bool, error) { return false, nil }
+	defer func() { daemonHealthCheck = oldHealthCheck }()
+
+	oldKill := daemonKillPID
+	killCalled := false
+	daemonKillPID = func(int) error {
+		killCalled = true
+		return nil
+	}
+	defer func() { daemonKillPID = oldKill }()
+
+	if err := waitForDaemonStart(p, 0); err == nil {
+		t.Fatal("waitForDaemonStart should fail when daemon never becomes responsive")
+	}
+	if killCalled {
+		t.Fatal("waitForDaemonStart should not kill when pid is 0 (managed daemon case)")
+	}
+}
+
 func stubServiceRuntime(t *testing.T) func() {
 	t.Helper()
 	oldGOOS := runtimeGOOS
