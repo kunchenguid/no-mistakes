@@ -198,9 +198,9 @@ jobs:
       needs.checksums.result == 'success' &&
       needs.release-please.outputs.release_created == 'true'
     steps:
-      - name: Publish draft release as latest
+      - name: Publish draft release as prerelease
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.release-please.outputs.tag_name }}
-        run: gh release edit "$TAG" --draft=false --latest=true
+        run: gh release edit "$TAG" --draft=false --prerelease=true

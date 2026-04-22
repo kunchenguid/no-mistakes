@@ -42,29 +42,35 @@ type platformSpec struct {
 }
 
 type updater struct {
-	appName           string
-	repo              string
-	currentVersion    string
-	platform          platformSpec
-	apiBaseURL        string
-	httpClient        *http.Client
-	cachePath         string
-	executablePath    string
-	stdout            io.Writer
-	stderr            io.Writer
-	now               func() time.Time
-	spawnBackground   func(currentVersion string) error
-	resetDaemon       func() error
-	paths             *paths.Paths
-	disableBackground bool
-	noColor           bool
+	appName            string
+	repo               string
+	currentVersion     string
+	platform           platformSpec
+	apiBaseURL         string
+	httpClient         *http.Client
+	cachePath          string
+	executablePath     string
+	stdout             io.Writer
+	stderr             io.Writer
+	now                func() time.Time
+	spawnBackground    func(currentVersion string) error
+	resetDaemon        func() error
+	paths              *paths.Paths
+	disableBackground  bool
+	noColor            bool
+	includePrereleases bool
 }
 
-func Run(ctx context.Context, stdout, stderr io.Writer) error {
+type RunOptions struct {
+	Beta bool
+}
+
+func Run(ctx context.Context, stdout, stderr io.Writer, opts RunOptions) error {
 	u, err := defaultUpdater(stdout, stderr)
 	if err != nil {
 		return err
 	}
+	u.includePrereleases = opts.Beta
 	return u.run(ctx)
 }
 

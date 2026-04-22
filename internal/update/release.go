@@ -19,8 +19,10 @@ type releaseAsset struct {
 }
 
 type releaseResponse struct {
-	TagName string         `json:"tag_name"`
-	Assets  []releaseAsset `json:"assets"`
+	TagName    string         `json:"tag_name"`
+	Draft      bool           `json:"draft"`
+	Prerelease bool           `json:"prerelease"`
+	Assets     []releaseAsset `json:"assets"`
 }
 
 type releasePlan struct {
@@ -84,6 +86,9 @@ func (u *updater) fetchLatestRelease(ctx context.Context) (*releaseResponse, err
 	if u.httpClient == nil {
 		u.httpClient = &http.Client{Timeout: 30 * time.Second}
 	}
+	if u.includePrereleases {
+		return u.fetchLatestReleaseIncludingPrereleases(ctx)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(u.apiBaseURL, "/")+"/repos/"+u.repo+"/releases/latest", nil)
 	if err != nil {
 		return nil, fmt.Errorf("build release request: %w", err)
@@ -111,6 +116,52 @@ func (u *updater) fetchLatestRelease(ctx context.Context) (*releaseResponse, err
 		return nil, fmt.Errorf("latest release missing tag_name")
 	}
 	return &release, nil
+}
+
+func (u *updater) fetchLatestReleaseIncludingPrereleases(ctx context.Context) (*releaseResponse, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(u.apiBaseURL, "/")+"/repos/"+u.repo+"/releases", nil)
+	if err != nil {
+		return nil, fmt.Errorf("build release request: %w", err)
+	}
+	resp, err := u.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch releases: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetch releases: unexpected status %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxAPIResponseSize+1))
+	if err != nil {
+		return nil, fmt.Errorf("read releases: %w", err)
+	}
+	if len(body) > maxAPIResponseSize {
+		return nil, fmt.Errorf("releases response exceeds %d bytes", maxAPIResponseSize)
+	}
+	var releases []releaseResponse
+	if err := json.Unmarshal(body, &releases); err != nil {
+		return nil, fmt.Errorf("parse releases: %w", err)
+	}
+	var best *releaseResponse
+	var bestVer semVersion
+	for i := range releases {
+		r := &releases[i]
+		if r.Draft || r.TagName == "" {
+			continue
+		}
+		v, err := parseVersion(r.TagName)
+		if err != nil {
+			continue
+		}
+		if best == nil || v.compare(bestVer) > 0 {
+			best = r
+			bestVer = v
+		}
+	}
+	if best == nil {
+		return nil, fmt.Errorf("no releases found")
+	}
+	return best, nil
 }
 
 func (u *updater) downloadAsset(ctx context.Context, assetURL string, limit int64) ([]byte, error) {
