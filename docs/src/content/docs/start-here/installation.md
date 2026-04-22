@@ -61,9 +61,12 @@ See [Provider Integration](/no-mistakes/guides/provider-integration/) for PR and
 
 ```sh
 no-mistakes update
+no-mistakes update --beta
 ```
 
 This downloads the latest release from GitHub, verifies the SHA-256 checksum, atomically replaces the binary, and resets the daemon so it picks up the new executable. It prefers the managed service path and falls back to a detached daemon if service startup is unavailable or fails.
+
+`no-mistakes update` installs the latest stable release. Use `no-mistakes update --beta` to opt into prereleases and install the latest beta when one is newer than the current stable release.
 
 Because `update` installs the latest official release binary, it may change telemetry behavior if that release has a telemetry website ID embedded at build time.
 
