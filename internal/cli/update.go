@@ -6,14 +6,17 @@ import (
 )
 
 func newUpdateCmd() *cobra.Command {
-	return &cobra.Command{
+	var beta bool
+	cmd := &cobra.Command{
 		Use:   "update",
 		Short: "Update no-mistakes and reset the daemon",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return trackCommand("update", func() error {
-				return update.Run(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr())
+				return update.Run(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), update.RunOptions{Beta: beta})
 			})
 		},
 	}
+	cmd.Flags().BoolVar(&beta, "beta", false, "install the latest release including prereleases")
+	return cmd
 }
