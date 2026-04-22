@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -138,13 +139,13 @@ func captureOpencodeFlavour(ctx context.Context, baseURL, dir, prompt, schema st
 		return fmt.Errorf("parse session: %w", err)
 	}
 
-	// Open SSE in the background, capturing to a buffer until session.idle.
+	// Open SSE in the background, capturing to a synchronized buffer until session.idle.
 	sseCtx, sseCancel := context.WithCancel(ctx)
 	defer sseCancel()
 	sseDone := make(chan error, 1)
-	var sseBuf bytes.Buffer
+	sseCapture := newOpencodeSSECapture()
 	go func() {
-		sseDone <- streamSSE(sseCtx, baseURL+"/global/event", &sseBuf)
+		sseDone <- streamSSE(sseCtx, baseURL+"/global/event", sseCapture)
 	}()
 
 	// Tiny gap so the SSE listener is registered server-side before the
@@ -172,20 +173,9 @@ func captureOpencodeFlavour(ctx context.Context, baseURL, dir, prompt, schema st
 		return err
 	}
 
-	// Drain SSE: keep reading for up to 5s after the message returns,
-	// or until session.idle appears in the buffer.
-	deadline := time.Now().Add(5 * time.Second)
-	idleSeen := false
-	for {
-		if bytes.Contains(sseBuf.Bytes(), []byte("\"session.idle\"")) {
-			idleSeen = true
-			break
-		}
-		if time.Now().After(deadline) {
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+	idleCtx, idleCancel := context.WithTimeout(ctx, 5*time.Second)
+	idleSeen := sseCapture.WaitForIdle(idleCtx) == nil
+	idleCancel()
 	sseCancel()
 	if err := <-sseDone; err != nil && !errors.Is(err, context.Canceled) {
 		return fmt.Errorf("capture SSE: %w", err)
@@ -194,7 +184,7 @@ func captureOpencodeFlavour(ctx context.Context, baseURL, dir, prompt, schema st
 		return fmt.Errorf("capture SSE: missing session.idle event")
 	}
 
-	if err := os.WriteFile(filepath.Join(dir, "sse.txt"), sseBuf.Bytes(), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "sse.txt"), sseCapture.Bytes(), 0o644); err != nil {
 		return err
 	}
 
@@ -211,6 +201,49 @@ func captureOpencodeFlavour(ctx context.Context, baseURL, dir, prompt, schema st
 		resp.Body.Close()
 	}
 	return nil
+}
+
+type opencodeSSECapture struct {
+	mu       sync.Mutex
+	buf      bytes.Buffer
+	idleSeen bool
+	idleCh   chan struct{}
+}
+
+func newOpencodeSSECapture() *opencodeSSECapture {
+	return &opencodeSSECapture{idleCh: make(chan struct{})}
+}
+
+func (c *opencodeSSECapture) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n, err := c.buf.Write(p)
+	if !c.idleSeen && bytes.Contains(c.buf.Bytes(), []byte("\"session.idle\"")) {
+		c.idleSeen = true
+		close(c.idleCh)
+	}
+	return n, err
+}
+
+func (c *opencodeSSECapture) WaitForIdle(ctx context.Context) error {
+	select {
+	case <-c.idleDone():
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (c *opencodeSSECapture) Bytes() []byte {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]byte(nil), c.buf.Bytes()...)
+}
+
+func (c *opencodeSSECapture) idleDone() <-chan struct{} {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.idleCh
 }
 
 func waitHealth(ctx context.Context, baseURL string) error {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // fixtureDir returns the agent's fixture directory if FAKEAGENT_FIXTURE
@@ -25,8 +26,7 @@ func fixtureDir(agent string) string {
 
 // readFixtureFile reads a file from the fixture directory. The flavour
 // arg picks between recorded variants ("structured" vs "plain"). Returns
-// (nil, nil) when no fixture exists, so callers can decide whether to
-// fall back to synthetic generation.
+// (nil, nil) only when fixture mode is not configured.
 func readFixtureFile(dir, flavour, name string) ([]byte, error) {
 	if dir == "" {
 		return nil, nil
@@ -47,5 +47,5 @@ func readFixtureFile(dir, flavour, name string) ([]byte, error) {
 			return nil, fmt.Errorf("read fixture %s: %w", p, err)
 		}
 	}
-	return nil, nil
+	return nil, fmt.Errorf("missing fixture for %s/%s (%s)", filepath.Base(dir), flavour, strings.Join(candidates, ", "))
 }
