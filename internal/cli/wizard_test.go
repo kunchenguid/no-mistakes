@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -105,6 +106,46 @@ func TestWizardAgentSuggester_IsLazy(t *testing.T) {
 	}
 	if lookups != 1 {
 		t.Fatalf("expected one lazy resolution attempt, got %d", lookups)
+	}
+}
+
+func TestWizardAgentSuggester_ForwardsAgentArgsOverride(t *testing.T) {
+	t.Helper()
+
+	var (
+		gotName types.AgentName
+		gotBin  string
+		gotArgs []string
+	)
+	suggester := newWizardAgentSuggester(
+		&config.Config{
+			Agent: types.AgentClaude,
+			AgentArgsOverride: map[string][]string{
+				"claude": {"--permission-mode", "acceptEdits"},
+			},
+		},
+		"/tmp/repo",
+		func(context.Context, *config.Config) error { return nil },
+		func(name types.AgentName, bin string, args []string) (agent.Agent, error) {
+			gotName = name
+			gotBin = bin
+			gotArgs = append([]string(nil), args...)
+			return &fakeSuggesterAgent{}, nil
+		},
+	)
+	defer suggester.Close()
+
+	if err := suggester.ensure(context.Background()); err != nil {
+		t.Fatalf("ensure failed: %v", err)
+	}
+	if gotName != types.AgentClaude {
+		t.Fatalf("new agent name = %q, want %q", gotName, types.AgentClaude)
+	}
+	if gotBin != "claude" {
+		t.Fatalf("new agent bin = %q, want %q", gotBin, "claude")
+	}
+	if want := []string{"--permission-mode", "acceptEdits"}; !reflect.DeepEqual(gotArgs, want) {
+		t.Fatalf("new agent args = %v, want %v", gotArgs, want)
 	}
 }
 
