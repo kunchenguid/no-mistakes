@@ -229,12 +229,15 @@ func TestExecutor_FixSetsPreviousFindings(t *testing.T) {
 		t.Fatal("executor timed out")
 	}
 
-	items := mustParseFindingItems(t, capturedFindings)
-	if len(items) != 1 {
-		t.Fatalf("expected 1 finding, got %d", len(items))
+	payload, err := types.ParseFindingsJSON(capturedFindings)
+	if err != nil {
+		t.Fatalf("parse PreviousFindings: %v", err)
 	}
-	if items[0].ID != "review-1" || items[0].Description != "nil pointer dereference" {
-		t.Errorf("unexpected PreviousFindings: %#v", items)
+	if len(payload.Items) != 0 {
+		t.Fatalf("expected 0 findings, got %d", len(payload.Items))
+	}
+	if payload.Summary != "0 selected findings" {
+		t.Fatalf("summary = %q, want %q", payload.Summary, "0 selected findings")
 	}
 }
 
