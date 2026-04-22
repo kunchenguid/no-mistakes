@@ -298,7 +298,7 @@ func mergeUserOverridesJSON(raw string, instructions map[string]string, added []
 }
 
 func filterFindingsJSON(raw string, ids []string) string {
-	if raw == "" || len(ids) == 0 {
+	if raw == "" {
 		return raw
 	}
 	findings, err := types.ParseFindingsJSON(raw)
@@ -306,6 +306,15 @@ func filterFindingsJSON(raw string, ids []string) string {
 		return raw
 	}
 	filtered := types.FilterFindings(findings, ids)
+	if len(ids) == 0 {
+		filtered = types.Findings{
+			Summary:        "0 selected findings",
+			Tested:         findings.Tested,
+			TestingSummary: findings.TestingSummary,
+			RiskLevel:      findings.RiskLevel,
+			RiskRationale:  findings.RiskRationale,
+		}
+	}
 	filteredRaw, err := types.MarshalFindingsJSON(filtered)
 	if err != nil {
 		return raw
