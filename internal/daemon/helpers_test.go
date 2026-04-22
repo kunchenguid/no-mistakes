@@ -29,6 +29,15 @@ func TestMain(m *testing.M) {
 		time.Sleep(30 * time.Second)
 		os.Exit(0)
 	}
+	// The post-receive hook embeds os.Executable() as NM_BIN. In tests that
+	// path is the test binary itself, so every `git push` to a bare gate
+	// would re-enter TestMain and run the whole daemon test suite inside
+	// the hook. Short-circuit: when we're being invoked as the hook's
+	// notifier, exit 0 immediately. Tests that care about the daemon seeing
+	// the push call push_received via IPC directly.
+	if os.Getenv("NM_HOOK_HELPER") == "1" {
+		os.Exit(0)
+	}
 	os.Exit(m.Run())
 }
 
