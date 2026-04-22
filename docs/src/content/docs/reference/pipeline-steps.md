@@ -25,7 +25,7 @@ Fetches the latest upstream and rebases your branch onto it.
 - If the diff against the default branch is empty after rebase, completes rebase and skips all remaining pipeline steps
 - On conflict: records conflicting files, aborts the rebase, and reports findings
 
-**Auto-fix:** when enabled, the agent resolves conflict markers, stages files, and runs `git rebase --continue`. Commits use the message format `no-mistakes(rebase): <summary>`.
+**Auto-fix:** when enabled, the agent resolves conflict markers, stages files, and runs `git rebase --continue`. Manual fix rounds also include any per-conflict user notes, any selected user-authored findings from the TUI, and sanitized prior-round history in the prompt. Commits use the message format `no-mistakes(rebase): <summary>`.
 
 **Default auto-fix limit:** `3`.
 

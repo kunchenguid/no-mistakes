@@ -154,7 +154,7 @@ The footer shows detach/help actions and, when `no-mistakes attach` has a cached
 | `+` | Add a user-authored finding |
 | `D` | Delete the current user-authored finding |
 
-When the instruction editor is open, press `Ctrl+s` to save or `esc` to cancel. In the add-finding editor, use `tab` / `shift+tab` to move between fields, `Ctrl+s` to save, and `esc` to cancel.
+When the instruction editor is open, press `Ctrl+s` or `Ctrl+enter` to save, or `esc` to cancel. In the add-finding editor, use `tab` / `shift+tab` to move between fields, `Ctrl+s` to save, and `esc` to cancel.
 
 ### View
 
