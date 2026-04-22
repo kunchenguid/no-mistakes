@@ -107,6 +107,12 @@ log_level: info
 #   claude: /usr/local/bin/claude
 #   codex: /opt/codex
 
+# Extra agent CLI flags (optional, global only)
+# agent_args_override:
+#   codex:
+#     - -m
+#     - gpt-5.4
+#
 # Maximum auto-fix attempts per step (0 = disabled, requires manual approval)
 auto_fix:
   rebase: 3
