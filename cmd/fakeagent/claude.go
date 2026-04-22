@@ -1,0 +1,166 @@
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"os"
+)
+
+func runClaude(args []string, scenario *Scenario) int {
+	prompt := extractClaudePrompt(args)
+	logInvocation("claude", prompt, args)
+
+	action := scenario.Match(prompt)
+	applyEdits(action.Edits)
+
+	// Fixture mode: replay the real claude wire envelope captured by
+	// recordfixture, but splice in scenario-driven content for the
+	// fields no-mistakes parses (assistant text, result structured
+	// output). The envelope (event ordering, field shapes, system
+	// events, rate-limit events, etc.) stays exactly what real claude
+	// emits, so wire-format drift surfaces here. The content stays
+	// test-deterministic, so happy-path scenarios pass without
+	// depending on whatever the live API happened to return when the
+	// fixture was recorded.
+	flavour := "plain"
+	if hasClaudeSchema(args) {
+		flavour = "structured"
+	}
+	if data, err := readFixtureFile(fixtureDir("claude"), flavour, ".jsonl"); err != nil {
+		fmt.Fprintf(os.Stderr, "fakeagent: claude fixture: %v\n", err)
+		return 1
+	} else if data != nil {
+		patched, err := patchClaudeFixture(data, action)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "fakeagent: claude patch: %v\n", err)
+			return 1
+		}
+		os.Stdout.Write(patched)
+		return 0
+	}
+
+	enc := json.NewEncoder(os.Stdout)
+
+	// Match the real claude CLI's JSONL stream-json format. Real claude
+	// emits init + assistant + result events; no-mistakes' parser ignores
+	// any type it doesn't know, so init is optional. We emit one assistant
+	// event with the text content + a result event with the structured
+	// output and final usage.
+	_ = enc.Encode(map[string]any{
+		"type": "assistant",
+		"message": map[string]any{
+			"usage": map[string]int{
+				"input_tokens":  100,
+				"output_tokens": 50,
+			},
+			"content": []any{
+				map[string]any{"type": "text", "text": action.textOrDefault()},
+			},
+		},
+	})
+	_ = enc.Encode(map[string]any{
+		"type":              "result",
+		"subtype":           "success",
+		"is_error":          false,
+		"structured_output": json.RawMessage(action.structuredJSON()),
+		"usage": map[string]int{
+			"input_tokens":  100,
+			"output_tokens": 50,
+		},
+	})
+	return 0
+}
+
+// patchClaudeFixture rewrites the result event's structured_output to
+// match the scenario action, leaving every other event byte-for-byte.
+// The result event is identified as the one whose top-level "type" is
+// "result" — there's exactly one per session in stream-json output.
+//
+// Why we don't just emit the recorded structured_output: the recorded
+// payload reflects whatever the live model returned at recording time,
+// which may not satisfy the schemas every step in the pipeline expects
+// (e.g. document.go's unmarshalRequiredFindings requires "summary").
+// Patching keeps the wire shape real but the content predictable.
+func patchClaudeFixture(raw []byte, action Action) ([]byte, error) {
+	if action.Structured == nil {
+		return raw, nil
+	}
+	structuredJSON := action.structuredJSON()
+	var out bytes.Buffer
+	for _, line := range bytes.Split(raw, []byte("\n")) {
+		if len(line) == 0 {
+			out.WriteByte('\n')
+			continue
+		}
+		var probe struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(line, &probe); err != nil || probe.Type != "result" {
+			out.Write(line)
+			out.WriteByte('\n')
+			continue
+		}
+		var event map[string]any
+		if err := json.Unmarshal(line, &event); err != nil {
+			return nil, fmt.Errorf("parse result event: %w", err)
+		}
+		event["structured_output"] = json.RawMessage(structuredJSON)
+		// Update the human-readable "result" string too, so logs make
+		// sense; parser doesn't read it but observers do.
+		event["result"] = action.textOrDefault()
+		patched, err := json.Marshal(event)
+		if err != nil {
+			return nil, fmt.Errorf("marshal patched result: %w", err)
+		}
+		out.Write(patched)
+		out.WriteByte('\n')
+	}
+	return out.Bytes(), nil
+}
+
+func hasClaudeSchema(args []string) bool {
+	for _, a := range args {
+		if a == "--json-schema" {
+			return true
+		}
+	}
+	return false
+}
+
+// extractClaudePrompt scans for the value following -p, matching the real
+// claude CLI's argv shape (claude -p "<prompt>" --verbose ...). Other
+// flags carrying values are skipped explicitly so we don't accidentally
+// pick up e.g. --output-format's argument.
+func extractClaudePrompt(args []string) string {
+	flagsWithValues := map[string]bool{
+		"--output-format":    true,
+		"--json-schema":      true,
+		"--permission-mode":  true,
+		"--model":            true,
+		"-m":                 true,
+		"--max-turns":        true,
+		"--system":           true,
+		"--allowed-tools":    true,
+		"--disallowed-tools": true,
+		"--mcp-config":       true,
+		"--continue":         true,
+		"--resume":           true,
+		"--cwd":              true,
+		"--add-dir":          true,
+	}
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-p", "--print":
+			if i+1 < len(args) {
+				return args[i+1]
+			}
+			return ""
+		}
+		if flagsWithValues[args[i]] {
+			i++ // skip the value
+		}
+	}
+	fmt.Fprintln(os.Stderr, "fakeagent: claude prompt missing (no -p found)")
+	return ""
+}

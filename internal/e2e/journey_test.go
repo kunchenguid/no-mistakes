@@ -1,0 +1,173 @@
+//go:build e2e
+
+package e2e
+
+import (
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/kunchenguid/no-mistakes/internal/types"
+)
+
+// TestUserJourney is the consolidated end-to-end test. It walks through
+// the full pipeline once per agent, exercising:
+//
+//   - `no-mistakes init` (gate setup, daemon bootstrap, post-receive
+//     hook installation)
+//   - `git push no-mistakes <branch>` (real git transport, hook fires,
+//     daemon receives push notification)
+//   - the eight pipeline steps in sequence (rebase, review, test,
+//     document, lint, push, pr, ci)
+//   - real subprocess invocations of the agent binary, parsed by
+//     no-mistakes' real agent package
+//   - SQLite persistence and IPC retrieval of run state
+//
+// PR and CI steps gracefully skip because the upstream is a local file://
+// path with no SCM provider. Test/Lint steps don't run real commands
+// because no commands are configured; they delegate to the agent which
+// returns the canned "no findings" response.
+//
+// Adding more journeys: append subtests here rather than spawning new
+// test files. The harness setup is the expensive part; reusing it across
+// scenarios keeps the suite tight.
+func TestUserJourney(t *testing.T) {
+	// Subtests run sequentially: each one calls t.Setenv to point env
+	// vars at its own temp dirs, and t.Setenv is incompatible with
+	// t.Parallel. Three serial runs cost ~30s total on a warm cache.
+	for _, agentName := range []string{"claude", "codex", "opencode"} {
+		agentName := agentName
+		t.Run(agentName, func(t *testing.T) {
+			runHappyPath(t, agentName)
+		})
+	}
+}
+
+func runHappyPath(t *testing.T, agentName string) {
+	h := NewHarness(t, SetupOpts{Agent: agentName})
+
+	// `no-mistakes init` sets up the gate and starts the daemon.
+	if out, err := h.Run("init"); err != nil {
+		t.Fatalf("nm init: %v\n%s", err, out)
+	}
+
+	// Make a feature branch with one trivial change. The fake agent
+	// returns "no issues found" for every prompt, so the pipeline
+	// should sail through without needing approval.
+	h.CommitChange("feature/e2e", "hello.txt", "hello world\n", "add hello.txt")
+
+	// Push triggers the post-receive hook, which notifies the daemon.
+	h.PushToGate("feature/e2e")
+
+	// Wait up to 60s for the run to terminate. Pipelines that include
+	// agent calls + git operations take ~5-15s on a warm machine.
+	run := h.WaitForRun("feature/e2e", 60*time.Second)
+
+	if run.Status != types.RunCompleted {
+		t.Fatalf("run did not complete: status=%s error=%v", run.Status, deref(run.Error))
+	}
+
+	// Sanity-check that every step has a terminal status. A step stuck
+	// in pending or running indicates a harness bug.
+	for _, step := range run.Steps {
+		switch step.Status {
+		case types.StepStatusCompleted, types.StepStatusSkipped:
+			// ok
+		default:
+			t.Errorf("step %s ended in non-terminal status %s (error=%v)", step.StepName, step.Status, deref(step.Error))
+		}
+	}
+
+	// PR and CI must skip: no SCM provider on a file:// origin.
+	for _, step := range run.Steps {
+		if step.StepName == types.StepPR || step.StepName == types.StepCI {
+			if step.Status != types.StepStatusCompleted && step.Status != types.StepStatusSkipped {
+				t.Errorf("expected %s to skip or complete, got %s", step.StepName, step.Status)
+			}
+		}
+	}
+
+	// The agent must have been called at least for review and document.
+	// Test and lint also call the agent because no commands are
+	// configured - the steps delegate detection to the agent.
+	invs := h.AgentInvocations()
+	if len(invs) == 0 {
+		t.Fatalf("expected fake agent to be invoked, got 0 invocations")
+	}
+	for _, inv := range invs {
+		if inv.Agent != agentName {
+			t.Errorf("expected invocations under %q, got %q (%v)", agentName, inv.Agent, inv.Args)
+		}
+	}
+
+	// The review step always runs and always calls the agent. Find the
+	// invocation whose prompt contains the review preamble; if missing
+	// the pipeline didn't reach review or routed it elsewhere.
+	if !sawPromptContaining(invs, "Review the code changes") {
+		t.Errorf("expected a review prompt in invocations, got %d:\n%s", len(invs), summarisePrompts(invs))
+	}
+	if !sawPromptContaining(invs, "Identify documentation gaps") {
+		t.Errorf("expected a document prompt in invocations, got %d:\n%s", len(invs), summarisePrompts(invs))
+	}
+
+	// The push step should have moved the upstream branch forward. We
+	// don't assert SHA equality (the worktree commits agent fixes which
+	// can change SHAs) - just that the run captured a head_sha.
+	if run.HeadSHA == "" {
+		t.Errorf("run completed without a recorded HeadSHA")
+	}
+
+	t.Logf("agent invocations: %d\n%s", len(invs), summarisePrompts(invs))
+	t.Logf("step outcomes:")
+	for _, step := range run.Steps {
+		t.Logf("  %d %-9s %s", step.StepOrder, step.StepName, step.Status)
+	}
+}
+
+func sawPromptContaining(invs []Invocation, needle string) bool {
+	for _, inv := range invs {
+		if strings.Contains(inv.Prompt, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func summarisePrompts(invs []Invocation) string {
+	var b strings.Builder
+	for i, inv := range invs {
+		first := strings.SplitN(inv.Prompt, "\n", 2)[0]
+		if len(first) > 100 {
+			first = first[:100] + "..."
+		}
+		b.WriteString("  ")
+		b.WriteString(itoa(i))
+		b.WriteString(") ")
+		b.WriteString(inv.Agent)
+		b.WriteString(": ")
+		b.WriteString(first)
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var b [16]byte
+	i := len(b)
+	for n > 0 {
+		i--
+		b[i] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(b[i:])
+}
+
+func deref(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}

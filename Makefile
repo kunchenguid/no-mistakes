@@ -8,7 +8,7 @@ LDFLAGS := -X github.com/kunchenguid/no-mistakes/internal/buildinfo.Version=$(VE
            -X github.com/kunchenguid/no-mistakes/internal/buildinfo.Date=$(DATE) \
            -X github.com/kunchenguid/no-mistakes/internal/buildinfo.TelemetryWebsiteID=$(UMAMI_WEBSITE_ID)
 
-.PHONY: build dist install test lint fmt clean docs docs-build docs-preview demo
+.PHONY: build dist install test e2e e2e-record lint fmt clean docs docs-build docs-preview demo
 
 DIST_DIR ?= dist
 INSTALL_BIN := $(shell go env GOPATH)/bin/no-mistakes
@@ -44,6 +44,22 @@ install: build
 
 test:
 	go test -race ./...
+
+# End-to-end suite: drives the real no-mistakes binary against a fake
+# agent through the full push -> pipeline -> push journey for each
+# supported agent backend. Excluded from `make test` because it is
+# behind the `e2e` build tag and rebuilds binaries on each run.
+e2e:
+	go test -tags=e2e -count=1 -timeout 300s ./internal/e2e/...
+
+# Re-record fixtures from the real claude/codex/opencode CLIs and overwrite
+# internal/e2e/fixtures/. Spends real API quota — run only when the upstream
+# wire format changes or when adding a new flavour. Personal paths are
+# scrubbed automatically; review the diff before committing.
+e2e-record:
+	go run ./cmd/recordfixture claude   --out internal/e2e/fixtures/claude
+	go run ./cmd/recordfixture codex    --out internal/e2e/fixtures/codex
+	go run ./cmd/recordfixture opencode --out internal/e2e/fixtures/opencode
 
 lint:
 	go vet ./...

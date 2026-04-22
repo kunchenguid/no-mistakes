@@ -50,3 +50,21 @@ jobs:
 
       - name: Build
         run: go build ./cmd/no-mistakes
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      # The e2e suite drives the real no-mistakes binary against a fake
+      # agent through `git push -> daemon -> pipeline -> push to upstream`
+      # for claude, codex, and opencode. It builds the binary itself, so
+      # no separate build step is needed. Linux-only for now: opencode's
+      # ephemeral HTTP server picks up unused ports via :0, which is
+      # fine on Linux runners but flakes on Windows agent harnesses.
+      - name: End-to-end suite
+        run: make e2e
