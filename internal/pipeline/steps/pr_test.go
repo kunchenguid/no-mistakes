@@ -37,6 +37,9 @@ func TestPRStep_GhNotAvailable(t *testing.T) {
 	if outcome.NeedsApproval {
 		t.Fatal("expected no approval when PR step skips")
 	}
+	if !outcome.Skipped {
+		t.Fatal("expected skipped outcome when PR step skips")
+	}
 }
 
 func TestPRStep_UpdatesExistingPR(t *testing.T) {

@@ -229,6 +229,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	roundNum := 0
 	nextTrigger := "initial"
 	skipRemaining := false
+	stepSkipped := false
 	var currentRoundID string // id of the most recently inserted round
 
 	// Execute with possible fix loop
@@ -317,6 +318,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			// Any remaining info-only or non-blocking findings
 			// are acceptable and don't block the pipeline.
 			skipRemaining = outcome.SkipRemaining
+			stepSkipped = outcome.Skipped
 			break
 		}
 
@@ -441,7 +443,14 @@ done:
 	if err := e.db.CompleteStep(sr.ID, finalExitCode, durationMS, logPath); err != nil {
 		return false, fmt.Errorf("complete step %s: %w", stepName, err)
 	}
-	e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusCompleted), "", "", "", &durationMS)
+	status := types.StepStatusCompleted
+	if stepSkipped {
+		status = types.StepStatusSkipped
+		if dbErr := e.db.UpdateStepStatus(sr.ID, status); dbErr != nil {
+			slog.Warn("failed to update step status in db", "step", stepName, "status", status, "error", dbErr)
+		}
+	}
+	e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(status), "", "", "", &durationMS)
 	return skipRemaining, nil
 }
 

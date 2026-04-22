@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -79,13 +80,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	}
 
 	// PR and CI must skip: no SCM provider on a file:// origin.
-	for _, step := range run.Steps {
-		if step.StepName == types.StepPR || step.StepName == types.StepCI {
-			if step.Status != types.StepStatusCompleted && step.Status != types.StepStatusSkipped {
-				t.Errorf("expected %s to skip or complete, got %s", step.StepName, step.Status)
-			}
-		}
-	}
+	assertStepsSkipped(t, run.Steps, types.StepPR, types.StepCI)
 
 	// The agent must have been called at least for review and document.
 	// Test and lint also call the agent because no commands are
@@ -170,4 +165,32 @@ func deref(p *string) string {
 		return ""
 	}
 	return *p
+}
+
+func assertStepsSkipped(t *testing.T, steps []ipc.StepResultInfo, expected ...types.StepName) {
+	t.Helper()
+	for _, msg := range validateSkippedSteps(steps, expected...) {
+		t.Error(msg)
+	}
+}
+
+func validateSkippedSteps(steps []ipc.StepResultInfo, expected ...types.StepName) []string {
+	var errs []string
+	for _, name := range expected {
+		found := false
+		for _, step := range steps {
+			if step.StepName != name {
+				continue
+			}
+			found = true
+			if step.Status != types.StepStatusSkipped {
+				errs = append(errs, "expected "+string(step.StepName)+" to skip, got "+string(step.Status))
+			}
+			break
+		}
+		if !found {
+			errs = append(errs, "expected step "+string(name)+" to be present")
+		}
+	}
+	return errs
 }

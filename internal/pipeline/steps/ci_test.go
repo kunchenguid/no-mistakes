@@ -170,6 +170,9 @@ func TestCIStep_UnknownProviderSkips(t *testing.T) {
 	if outcome.NeedsApproval {
 		t.Fatal("expected CI skip for unknown provider")
 	}
+	if !outcome.Skipped {
+		t.Fatal("expected skipped outcome for unknown provider")
+	}
 	if len(logs) == 0 || !strings.Contains(logs[0], "skipping CI") {
 		t.Fatalf("expected skip log, got: %v", logs)
 	}

@@ -45,11 +45,11 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	host, skipReason := buildHost(sctx, provider)
 	if host == nil {
 		sctx.Log(fmt.Sprintf("skipping CI: %s", skipReason))
-		return &pipeline.StepOutcome{}, nil
+		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
 	if err := host.Available(ctx); err != nil {
 		sctx.Log(fmt.Sprintf("skipping CI: %v", err))
-		return &pipeline.StepOutcome{}, nil
+		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
 
 	// Get PR URL from run record
@@ -67,7 +67,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	}
 	if prURL == "" {
 		sctx.Log("no PR URL found, skipping CI")
-		return &pipeline.StepOutcome{}, nil
+		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
 
 	prNumber, err := scm.ExtractPRNumber(prURL)

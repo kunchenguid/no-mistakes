@@ -376,3 +376,40 @@ func TestExecutor_StepOutcomePRURL_EmitsRunUpdated(t *testing.T) {
 		t.Errorf("expected run_completed PRURL %q, got %v", prURL, completedEvent.PRURL)
 	}
 }
+
+func TestExecutor_SkippedOutcome_MarksStepSkipped(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	step := &mockStep{
+		name:    types.StepPR,
+		outcome: &StepOutcome{Skipped: true},
+	}
+
+	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
+	events := collectEvents(exec)
+
+	if err := exec.Execute(context.Background(), run, repo, workDir); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	dbSteps, _ := database.GetStepsByRun(run.ID)
+	if len(dbSteps) != 1 {
+		t.Fatalf("expected 1 step, got %d", len(dbSteps))
+	}
+	if dbSteps[0].Status != types.StepStatusSkipped {
+		t.Fatalf("expected skipped status, got %q", dbSteps[0].Status)
+	}
+
+	event := events.find(ipc.EventStepCompleted, types.StepPR)
+	if event == nil {
+		t.Fatal("expected step_completed event")
+	}
+	if event.Status == nil || *event.Status != string(types.StepStatusSkipped) {
+		got := "<nil>"
+		if event.Status != nil {
+			got = *event.Status
+		}
+		t.Fatalf("expected skipped event status, got %q", got)
+	}
+}
