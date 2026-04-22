@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.10.0](https://github.com/kunchenguid/no-mistakes/compare/v1.9.2...v1.10.0) (2026-04-22)
+
+
+### Features
+
+* **agent:** support agent args override ([#133](https://github.com/kunchenguid/no-mistakes/issues/133)) ([18c58ae](https://github.com/kunchenguid/no-mistakes/commit/18c58aef526a7c2b887246e80c9455bbebe27811))
+* **tui:** add finding overrides for manual fix rounds ([#135](https://github.com/kunchenguid/no-mistakes/issues/135)) ([4b62714](https://github.com/kunchenguid/no-mistakes/commit/4b62714cb55be3a09fe1acd1da1532dea39d2583))
+
 ## [1.9.2](https://github.com/kunchenguid/no-mistakes/compare/v1.9.1...v1.9.2) (2026-04-22)
 
 
