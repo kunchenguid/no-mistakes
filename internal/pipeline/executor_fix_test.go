@@ -296,6 +296,101 @@ func TestExecutor_AssignsFindingIDsBeforePersistingAndEmitting(t *testing.T) {
 	<-done
 }
 
+func TestExecutor_FixAppliesUserInstructionsAndAddedFindings(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	var capturedFindings string
+	callCount := 0
+	step := &adaptiveCallStep{
+		name: types.StepReview,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			callCount++
+			if callCount == 1 {
+				return &StepOutcome{
+					NeedsApproval: true,
+					Findings:      `{"findings":[{"id":"review-1","severity":"error","description":"first","action":"auto-fix"},{"id":"review-2","severity":"warning","description":"second","action":"auto-fix"}],"summary":"2 findings"}`,
+				}, nil
+			}
+			capturedFindings = sctx.PreviousFindings
+			return &StepOutcome{}, nil
+		},
+	}
+
+	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- exec.Execute(context.Background(), run, repo, workDir)
+	}()
+
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
+	instructions := map[string]string{"review-1": "only touch parser.go, skip helpers"}
+	added := []types.Finding{{Severity: "warning", Description: "also audit logger init", Action: types.ActionAutoFix}}
+	if err := exec.RespondWithOverrides(types.StepReview, types.ActionFix, []string{"review-1"}, instructions, added); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("expected no error, got: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("executor timed out")
+	}
+
+	items := mustParseFindingItems(t, capturedFindings)
+	if len(items) != 2 {
+		t.Fatalf("expected 2 findings (selected + user-added), got %d: %s", len(items), capturedFindings)
+	}
+	if items[0].ID != "review-1" {
+		t.Errorf("expected selected agent finding first, got %q", items[0].ID)
+	}
+	if items[0].UserInstructions != "only touch parser.go, skip helpers" {
+		t.Errorf("expected instruction attached to review-1, got %q", items[0].UserInstructions)
+	}
+	if items[1].ID != "user-1" {
+		t.Errorf("expected user-added finding to get ID user-1, got %q", items[1].ID)
+	}
+	if items[1].Source != types.FindingSourceUser {
+		t.Errorf("expected user-added finding to be tagged source=user, got %q", items[1].Source)
+	}
+
+	rounds, err := database.GetRoundsByStep(firstStepID(t, database, run.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rounds) == 0 {
+		t.Fatal("expected at least one round")
+	}
+	round := rounds[0]
+	if round.UserFindingsJSON == nil {
+		t.Fatal("expected user_findings_json to be persisted on the selection round")
+	}
+	if !strings.Contains(*round.UserFindingsJSON, "audit logger init") {
+		t.Errorf("expected user findings payload to include user-added description, got %s", *round.UserFindingsJSON)
+	}
+	if round.SelectedFindingIDs == nil {
+		t.Fatal("expected selected_finding_ids to be set")
+	}
+	if !strings.Contains(*round.SelectedFindingIDs, "user-1") {
+		t.Errorf("expected user-added finding id in selected list, got %s", *round.SelectedFindingIDs)
+	}
+}
+
+func firstStepID(t *testing.T, database *db.DB, runID string) string {
+	t.Helper()
+	steps, err := database.GetStepsByRun(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(steps) == 0 {
+		t.Fatal("no steps persisted")
+	}
+	return steps[0].ID
+}
+
 func TestExecutor_FixUsesSelectedFindingIDsOnly(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir := t.TempDir()

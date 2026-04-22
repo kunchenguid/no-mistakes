@@ -123,19 +123,23 @@ func parseRoundFindingLines(raw string) []roundFindingLine {
 	lines := make([]roundFindingLine, 0, len(findings.Items))
 	for _, item := range findings.Items {
 		payload := struct {
-			ID          string `json:"id,omitempty"`
-			Severity    string `json:"severity,omitempty"`
-			File        string `json:"file,omitempty"`
-			Line        int    `json:"line,omitempty"`
-			Description string `json:"description,omitempty"`
-			Action      string `json:"action,omitempty"`
+			ID               string `json:"id,omitempty"`
+			Severity         string `json:"severity,omitempty"`
+			File             string `json:"file,omitempty"`
+			Line             int    `json:"line,omitempty"`
+			Description      string `json:"description,omitempty"`
+			Action           string `json:"action,omitempty"`
+			Source           string `json:"source,omitempty"`
+			UserInstructions string `json:"user_instructions,omitempty"`
 		}{
-			ID:          sanitizePromptText(item.ID),
-			Severity:    sanitizePromptText(item.Severity),
-			File:        sanitizePromptText(item.File),
-			Line:        item.Line,
-			Description: sanitizePromptMultilineText(item.Description),
-			Action:      sanitizePromptText(item.Action),
+			ID:               sanitizePromptText(item.ID),
+			Severity:         sanitizePromptText(item.Severity),
+			File:             sanitizePromptText(item.File),
+			Line:             item.Line,
+			Description:      sanitizePromptMultilineText(item.Description),
+			Action:           sanitizePromptText(item.Action),
+			Source:           sanitizePromptText(item.Source),
+			UserInstructions: sanitizePromptMultilineText(item.UserInstructions),
 		}
 		encoded, err := json.Marshal(payload)
 		if err != nil {

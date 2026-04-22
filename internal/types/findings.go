@@ -12,14 +12,22 @@ const (
 	ActionAskUser = "ask-user"
 )
 
+// Finding source constants. An empty Source is treated as agent-produced.
+const (
+	FindingSourceAgent = "agent"
+	FindingSourceUser  = "user"
+)
+
 // Finding represents a single review, test, lint, or PR comment finding.
 type Finding struct {
-	ID          string `json:"id,omitempty"`
-	Severity    string `json:"severity"`
-	File        string `json:"file,omitempty"`
-	Line        int    `json:"line,omitempty"`
-	Description string `json:"description"`
-	Action      string `json:"action"`
+	ID               string `json:"id,omitempty"`
+	Severity         string `json:"severity"`
+	File             string `json:"file,omitempty"`
+	Line             int    `json:"line,omitempty"`
+	Description      string `json:"description"`
+	Action           string `json:"action"`
+	Source           string `json:"source,omitempty"`
+	UserInstructions string `json:"user_instructions,omitempty"`
 }
 
 type findingWire struct {
@@ -29,6 +37,8 @@ type findingWire struct {
 	Line                int    `json:"line,omitempty"`
 	Description         string `json:"description"`
 	Action              string `json:"action"`
+	Source              string `json:"source,omitempty"`
+	UserInstructions    string `json:"user_instructions,omitempty"`
 	RequiresHumanReview *bool  `json:"requires_human_review,omitempty"`
 }
 
@@ -129,6 +139,57 @@ func AutoFixableFindings(findings Findings) Findings {
 	return result
 }
 
+// MergeUserOverrides applies per-finding user instructions to existing agent
+// findings and appends user-added findings at the end. Added findings have
+// Source stamped to FindingSourceUser and receive deterministic "user-N" IDs
+// if they do not carry an ID. The original Findings is not mutated.
+func MergeUserOverrides(findings Findings, instructions map[string]string, added []Finding) Findings {
+	result := Findings{
+		Summary:        findings.Summary,
+		Tested:         findings.Tested,
+		TestingSummary: findings.TestingSummary,
+		RiskLevel:      findings.RiskLevel,
+		RiskRationale:  findings.RiskRationale,
+	}
+	if len(findings.Items) > 0 {
+		result.Items = make([]Finding, len(findings.Items))
+		copy(result.Items, findings.Items)
+	}
+	for i := range result.Items {
+		if note, ok := instructions[result.Items[i].ID]; ok {
+			result.Items[i].UserInstructions = note
+		}
+	}
+	used := make(map[string]bool, len(result.Items)+len(added))
+	for _, item := range result.Items {
+		if item.ID != "" {
+			used[item.ID] = true
+		}
+	}
+	counter := 0
+	for _, item := range added {
+		item.Source = FindingSourceUser
+		if item.Action == "" {
+			item.Action = ActionAutoFix
+		}
+		if item.ID == "" {
+			for {
+				counter++
+				candidate := "user-" + itoa(counter)
+				if !used[candidate] {
+					item.ID = candidate
+					used[candidate] = true
+					break
+				}
+			}
+		} else {
+			used[item.ID] = true
+		}
+		result.Items = append(result.Items, item)
+	}
+	return result
+}
+
 // HasAskUserFindings returns true if any finding has Action "ask-user".
 func HasAskUserFindings(findings Findings) bool {
 	for _, item := range findings.Items {
@@ -184,6 +245,8 @@ func (f *Finding) UnmarshalJSON(data []byte) error {
 	f.Line = wire.Line
 	f.Description = wire.Description
 	f.Action = wire.Action
+	f.Source = wire.Source
+	f.UserInstructions = wire.UserInstructions
 	if f.Action == "" && wire.RequiresHumanReview != nil {
 		if *wire.RequiresHumanReview {
 			f.Action = ActionAskUser

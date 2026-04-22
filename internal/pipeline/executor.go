@@ -24,8 +24,10 @@ import (
 type EventFunc func(ipc.Event)
 
 type approvalResponse struct {
-	action     types.ApprovalAction
-	findingIDs []string
+	action        types.ApprovalAction
+	findingIDs    []string
+	instructions  map[string]string
+	addedFindings []types.Finding
 }
 
 // Executor runs pipeline steps sequentially and coordinates approval interactions.
@@ -64,6 +66,13 @@ func NewExecutor(database *db.DB, p *paths.Paths, cfg *config.Config, ag agent.A
 // The step parameter must match the step currently awaiting approval.
 // Returns an error if no step is awaiting approval or if the step name doesn't match.
 func (e *Executor) Respond(step types.StepName, action types.ApprovalAction, findingIDs []string) error {
+	return e.RespondWithOverrides(step, action, findingIDs, nil, nil)
+}
+
+// RespondWithOverrides is like Respond but also carries per-finding user
+// instructions and user-authored findings. Both are merged into the round's
+// findings on a fix action before the fix agent runs.
+func (e *Executor) RespondWithOverrides(step types.StepName, action types.ApprovalAction, findingIDs []string, instructions map[string]string, addedFindings []types.Finding) error {
 	e.mu.Lock()
 	if !e.waiting {
 		e.mu.Unlock()
@@ -76,7 +85,12 @@ func (e *Executor) Respond(step types.StepName, action types.ApprovalAction, fin
 	e.waiting = false
 	e.mu.Unlock()
 
-	e.approvalCh <- approvalResponse{action: action, findingIDs: findingIDs}
+	e.approvalCh <- approvalResponse{
+		action:        action,
+		findingIDs:    findingIDs,
+		instructions:  instructions,
+		addedFindings: addedFindings,
+	}
 	return nil
 }
 
@@ -396,12 +410,20 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFixing), "", "", "", nil)
 			sctx.Fixing = true
 			selectedFindings := filterFindingsJSON(outcome.Findings, response.findingIDs)
-			sctx.PreviousFindings = selectedFindings
+			mergedFindings := mergeUserOverridesJSON(selectedFindings, response.instructions, response.addedFindings)
+			sctx.PreviousFindings = mergedFindings
 			nextTrigger = "auto_fix"
 			if currentRoundID != "" {
-				if idsJSON := marshalFindingIDs(response.findingIDs); idsJSON != "" {
+				allSelectedIDs := combineSelectedFindingIDs(response.findingIDs, mergedFindings)
+				if idsJSON := marshalFindingIDs(allSelectedIDs); idsJSON != "" {
 					if dbErr := e.db.SetStepRoundSelection(currentRoundID, &idsJSON, db.RoundSelectionSourceUser); dbErr != nil {
 						slog.Warn("failed to record selected finding ids", "step", stepName, "round", roundNum, "error", dbErr)
+					}
+				}
+				if mergedFindings != "" && mergedFindings != selectedFindings {
+					merged := mergedFindings
+					if dbErr := e.db.SetStepRoundUserFindings(currentRoundID, &merged); dbErr != nil {
+						slog.Warn("failed to record user findings", "step", stepName, "round", roundNum, "error", dbErr)
 					}
 				}
 			}

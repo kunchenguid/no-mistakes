@@ -401,7 +401,7 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("invalid params: %w", err)
 		}
-		if err := mgr.HandleRespond(p.RunID, p.Step, p.Action, p.FindingIDs); err != nil {
+		if err := mgr.HandleRespondWithOverrides(p.RunID, p.Step, p.Action, p.FindingIDs, p.Instructions, p.AddedFindings); err != nil {
 			return nil, err
 		}
 		return &ipc.RespondResult{OK: true}, nil

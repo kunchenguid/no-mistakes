@@ -250,7 +250,7 @@ func renderApprovalActions(showSelectionActions bool, allowFix bool, showDiff bo
 
 	if showSelectionActions {
 		dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
-		selection := []string{renderAction("\u2423", "toggle"), renderAction("A", "all"), renderAction("N", "none")}
+		selection := []string{renderAction("\u2423", "toggle"), renderAction("e", "edit"), renderAction("+", "add"), renderAction("A", "all"), renderAction("N", "none")}
 		result += " " + dimStyle.Render("│") + " " + strings.Join(selection, "  ")
 	} else if showDiff {
 		dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
@@ -383,6 +383,7 @@ func renderHelpOverlay(width int, run *ipc.RunInfo, hasAwaitingStep bool, showDi
 				{"\u2423", "toggle current"},
 				{"A", "select all"},
 				{"N", "select none"},
+				{"e", "edit instruction / + add finding / D delete"},
 			}))
 		}
 	}

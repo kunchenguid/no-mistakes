@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS step_rounds (
     round                INTEGER NOT NULL,
     trigger_type         TEXT NOT NULL,
     findings_json        TEXT,
+    user_findings_json   TEXT,
     selected_finding_ids TEXT,
     selection_source     TEXT,
     fix_summary          TEXT,
@@ -58,4 +59,5 @@ var migrationStatements = []string{
 	`ALTER TABLE step_rounds ADD COLUMN selected_finding_ids TEXT`,
 	`ALTER TABLE step_rounds ADD COLUMN selection_source TEXT`,
 	`ALTER TABLE step_rounds ADD COLUMN fix_summary TEXT`,
+	`ALTER TABLE step_rounds ADD COLUMN user_findings_json TEXT`,
 }

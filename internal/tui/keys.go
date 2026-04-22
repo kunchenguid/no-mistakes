@@ -8,6 +8,12 @@ import (
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 
+	// Route to modal editor first, if one is open. ctrl+c always quits.
+	if m.editorActive() && key != "ctrl+c" {
+		updated, cmd := m.updateEditor(msg)
+		return updated, cmd
+	}
+
 	// Reset abort confirmation on any key except 'x'.
 	if key != "x" {
 		m.confirmAbort = false
@@ -162,6 +168,40 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if !m.showDiff {
 			if step := awaitingStep(m.steps); step != nil {
 				m.clearAllFindings(step.StepName)
+			}
+		}
+		return m, nil
+
+	case "e":
+		if !m.showDiff {
+			if step := awaitingStep(m.steps); step != nil {
+				if item, ok := m.findingAtCursor(step.StepName); ok && item.ID != "" {
+					existing := ""
+					if byStep := m.findingInstructions[step.StepName]; byStep != nil {
+						existing = byStep[item.ID]
+					}
+					if item.Source == types.FindingSourceUser {
+						existing = item.UserInstructions
+					}
+					m.editor = newInstructionEditor(step.StepName, item.ID, existing)
+				}
+			}
+		}
+		return m, nil
+	case "+":
+		if !m.showDiff {
+			if step := awaitingStep(m.steps); step != nil {
+				m.editor = newAddFindingEditor(step.StepName)
+			}
+		}
+		return m, nil
+	case "D":
+		if !m.showDiff {
+			if step := awaitingStep(m.steps); step != nil {
+				if item, ok := m.findingAtCursor(step.StepName); ok && item.Source == types.FindingSourceUser {
+					m.removeUserFinding(step.StepName, item.ID)
+					m.moveFindingCursor(step.StepName, 0)
+				}
 			}
 		}
 		return m, nil

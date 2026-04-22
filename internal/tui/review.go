@@ -295,6 +295,12 @@ func renderFindingsRange(f *findings, width int, cursor int, selected map[string
 		}
 		line := pointer + " " + checkbox + " " + iconStyled
 
+		// Tag user-authored findings right after the icon so they remain
+		// visible when unfocused and do not shift alignment of the ref.
+		if item.Source == nmtypes.FindingSourceUser {
+			line += " " + blueStyle.Render("[user]")
+		}
+
 		// File:line reference, truncated to fit within content width.
 		if item.File != "" {
 			ref := item.File
@@ -322,6 +328,11 @@ func renderFindingsRange(f *findings, width int, cursor int, selected map[string
 			desc = dimStyle.Render(desc)
 		}
 		b.WriteString(desc + "\n")
+
+		if item.UserInstructions != "" {
+			instr := wrapIndentedText("> "+item.UserInstructions, width, 8)
+			b.WriteString(blueStyle.Render(instr) + "\n")
+		}
 	}
 
 	// Scroll footer for the box border - combines up and down indicators.

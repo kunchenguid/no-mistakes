@@ -123,6 +123,21 @@ func TestRoundHistoryPromptSection_DoesNotTreatAutoFixFilteringAsUserIgnore(t *t
 	}
 }
 
+func TestRoundHistoryPromptSection_IncludesSourceAndUserInstructions(t *testing.T) {
+	sctx, stepID := newRoundHistoryContext(t)
+	round1 := `{"findings":[{"id":"review-1","severity":"error","description":"panic risk","action":"auto-fix","user_instructions":"only in parser.go"},{"id":"user-1","severity":"warning","description":"audit logger","action":"auto-fix","source":"user"}],"summary":"2"}`
+	if _, err := sctx.DB.InsertStepRound(stepID, 1, "initial", &round1, nil, 100); err != nil {
+		t.Fatal(err)
+	}
+	got := roundHistoryPromptSection(sctx)
+	if !strings.Contains(got, `"user_instructions":"only in parser.go"`) {
+		t.Errorf("expected user_instructions in round history, got:\n%s", got)
+	}
+	if !strings.Contains(got, `"source":"user"`) {
+		t.Errorf("expected source in round history, got:\n%s", got)
+	}
+}
+
 func TestRoundHistoryPromptSection_SanitizesInjectionAttempts(t *testing.T) {
 	sctx, stepID := newRoundHistoryContext(t)
 

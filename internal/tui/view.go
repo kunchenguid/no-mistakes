@@ -95,8 +95,34 @@ func (m Model) View() string {
 		appendExtraSection(renderErrorBox(m.err, rightWidth))
 	}
 
+	// Modal editor takes priority over findings/logs so it always renders
+	// when active. Bypass the content budget so it never gets dropped on
+	// cramped terminals; the editor is user-driven and must stay visible.
+	if m.editorActive() {
+		boxWidth := rightWidth
+		if boxWidth < 40 {
+			boxWidth = 80
+		}
+		var section string
+		switch m.editor.kind {
+		case editorInstruction:
+			section = m.renderInstructionEditor(boxWidth)
+		case editorAddFinding:
+			section = m.renderAddFindingEditor(boxWidth)
+		}
+		if section != "" {
+			extraSections = append(extraSections, section)
+			if contentBudget > 0 {
+				contentBudget -= lipgloss.Height(section)
+				if contentBudget < 0 {
+					contentBudget = 0
+				}
+			}
+		}
+	}
+
 	// CI-specific view when CI step is active.
-	if !m.showHelp && hasCI {
+	if !m.showHelp && !m.editorActive() && hasCI {
 		findings := ""
 		cursor := 0
 		var selected map[string]bool
@@ -113,7 +139,7 @@ func (m Model) View() string {
 			ciHeight = contentBudget
 		}
 		appendExtraSection(renderCIViewWithSelection(m.run, m.steps, findings, m.logs, rightWidth, ciHeight, cursor, selected))
-	} else if !m.showHelp {
+	} else if !m.showHelp && !m.editorActive() {
 		if step := awaitingStep(m.steps); step != nil {
 			// Generic findings or diff for non-CI steps awaiting approval.
 			label := stepLabel(step.StepName)
@@ -144,12 +170,13 @@ func (m Model) View() string {
 						appendExtraSection(renderDiff(raw, rightWidth, viewHeight, m.diffOffset, label, findingCtx))
 					}
 				}
-			} else if raw, ok := m.stepFindings[step.StepName]; ok {
+			} else if _, ok := m.stepFindings[step.StepName]; ok || len(m.addedFindings[step.StepName]) > 0 {
 				cursor := m.findingCursor[step.StepName]
 				boxHeight := m.height
 				if contentBudget >= 0 {
 					boxHeight = contentBudget
 				}
+				raw := m.combinedFindingsJSON(step.StepName)
 				appendExtraSection(renderFindingsBoxForHeight(raw, rightWidth, cursor, m.findingSelections[step.StepName], boxHeight))
 			}
 		}
@@ -162,6 +189,9 @@ func (m Model) View() string {
 	// budget so the log box can consume the available terminal height.
 	// Also hidden when CI is active (log context integrated into CI box).
 	logLines := 5
+	if m.editorActive() {
+		logLines = 0
+	}
 	if !m.showHelp && contentBudget > 0 {
 		if useResponsiveLayout {
 			if len(extraSections) == 0 {
