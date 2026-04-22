@@ -111,6 +111,31 @@ func TestStaleShowDiff_DiffResetAlsoResetsOffset(t *testing.T) {
 	}
 }
 
+func TestApplyEvent_NewApprovalPayloadClearsPreviousOverrides(t *testing.T) {
+	run := testRun()
+	m := NewModel("", nil, run)
+	m.stepFindings[types.StepReview] = `{"findings":[{"id":"review-1","severity":"error","description":"old","action":"auto-fix"}],"summary":"1"}`
+	m.findingInstructions[types.StepReview] = map[string]string{"review-1": "old note"}
+	m.addedFindings[types.StepReview] = []types.Finding{{ID: "user-1", Severity: "info", Description: "old added", Source: types.FindingSourceUser, Action: types.ActionAutoFix}}
+	m.findingSelections[types.StepReview] = map[string]bool{"review-1": true, "user-1": true}
+
+	findingsJSON := `{"findings":[{"id":"review-2","severity":"warning","description":"new","action":"auto-fix"}],"summary":"1"}`
+	status := string(types.StepStatusAwaitingApproval)
+	stepName := types.StepReview
+	m.applyEvent(ipc.Event{Type: ipc.EventStepCompleted, StepName: &stepName, Status: &status, Findings: &findingsJSON})
+
+	if _, ok := m.findingInstructions[types.StepReview]; ok {
+		t.Fatal("expected stale finding instructions to be cleared")
+	}
+	if len(m.addedFindings[types.StepReview]) != 0 {
+		t.Fatalf("expected stale user-added findings to be cleared, got %d", len(m.addedFindings[types.StepReview]))
+	}
+	selected := m.findingSelections[types.StepReview]
+	if len(selected) != 1 || !selected["review-2"] {
+		t.Fatalf("expected selection reset to only new finding, got %#v", selected)
+	}
+}
+
 func TestActionBar_ShowsDiffWhenDiffDataExists(t *testing.T) {
 	// The action bar SHOULD show 'd diff' when diff data exists for the current step.
 	configureTUIColors()

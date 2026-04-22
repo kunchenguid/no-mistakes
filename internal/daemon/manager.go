@@ -441,6 +441,12 @@ func telemetryFailedStepName(database *db.DB, runID string) string {
 
 // HandleRespond routes a user approval action to the executor for the given run.
 func (m *RunManager) HandleRespond(runID string, step types.StepName, action types.ApprovalAction, findingIDs []string) error {
+	return m.HandleRespondWithOverrides(runID, step, action, findingIDs, nil, nil)
+}
+
+// HandleRespondWithOverrides is like HandleRespond but also forwards user
+// instructions and user-authored findings to the executor.
+func (m *RunManager) HandleRespondWithOverrides(runID string, step types.StepName, action types.ApprovalAction, findingIDs []string, instructions map[string]string, addedFindings []types.Finding) error {
 	m.mu.Lock()
 	exec, ok := m.executors[runID]
 	m.mu.Unlock()
@@ -449,7 +455,7 @@ func (m *RunManager) HandleRespond(runID string, step types.StepName, action typ
 		return fmt.Errorf("no active executor for run %s", runID)
 	}
 
-	return exec.Respond(step, action, findingIDs)
+	return exec.RespondWithOverrides(step, action, findingIDs, instructions, addedFindings)
 }
 
 // Shutdown cancels all active runs. Called during daemon shutdown to prevent

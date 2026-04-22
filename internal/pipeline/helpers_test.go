@@ -215,9 +215,11 @@ func dirExists(path string) bool {
 }
 
 type findingJSON struct {
-	ID          string `json:"id"`
-	Severity    string `json:"severity"`
-	Description string `json:"description"`
+	ID               string `json:"id"`
+	Severity         string `json:"severity"`
+	Description      string `json:"description"`
+	Source           string `json:"source"`
+	UserInstructions string `json:"user_instructions"`
 }
 
 func mustParseFindingItems(t *testing.T, raw string) []findingJSON {

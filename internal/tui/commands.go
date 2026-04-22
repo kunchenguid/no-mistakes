@@ -80,7 +80,8 @@ func (m Model) respondCmd(action types.ApprovalAction) tea.Cmd {
 	}
 	if action == types.ActionFix {
 		ids := m.selectedFindingIDs(step.StepName)
-		if len(ids) == 0 && len(m.findingItems(step.StepName)) > 0 {
+		userAdded := m.selectedUserAddedFindings(step.StepName)
+		if len(ids) == 0 && len(userAdded) == 0 && len(m.findingItems(step.StepName)) > 0 {
 			return nil
 		}
 	}
@@ -94,6 +95,20 @@ func (m Model) respondCmd(action types.ApprovalAction) tea.Cmd {
 			ids := m.selectedFindingIDs(step.StepName)
 			if len(ids) > 0 {
 				params.FindingIDs = ids
+				if byStep := m.findingInstructions[step.StepName]; len(byStep) > 0 {
+					filtered := make(map[string]string, len(byStep))
+					for _, id := range ids {
+						if note, ok := byStep[id]; ok && note != "" {
+							filtered[id] = note
+						}
+					}
+					if len(filtered) > 0 {
+						params.Instructions = filtered
+					}
+				}
+			}
+			if added := m.selectedUserAddedFindings(step.StepName); len(added) > 0 {
+				params.AddedFindings = append([]types.Finding(nil), added...)
 			}
 		}
 		var result ipc.RespondResult

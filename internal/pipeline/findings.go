@@ -43,6 +43,8 @@ func marshalFindingIDs(ids []string) string {
 func findingKey(item types.Finding) types.Finding {
 	item.ID = ""
 	item.Action = ""
+	item.Source = ""
+	item.UserInstructions = ""
 	return item
 }
 
@@ -247,8 +249,56 @@ func hasAskUserFindingsJSON(raw string) bool {
 	return types.HasAskUserFindings(findings)
 }
 
+// combineSelectedFindingIDs returns the ordered list of finding IDs that
+// were dispatched to the fix agent: the user's selected agent-produced
+// IDs plus any user-authored finding IDs (which only appear in the merged
+// list).
+func combineSelectedFindingIDs(selected []string, mergedFindings string) []string {
+	if mergedFindings == "" {
+		return selected
+	}
+	merged, err := types.ParseFindingsJSON(mergedFindings)
+	if err != nil {
+		return selected
+	}
+	seen := make(map[string]bool, len(selected))
+	for _, id := range selected {
+		if id != "" {
+			seen[id] = true
+		}
+	}
+	result := append([]string(nil), selected...)
+	for _, item := range merged.Items {
+		if item.ID == "" || seen[item.ID] {
+			continue
+		}
+		result = append(result, item.ID)
+		seen[item.ID] = true
+	}
+	return result
+}
+
+// mergeUserOverridesJSON takes a findings JSON payload and applies
+// per-finding user instructions and user-authored findings. When no
+// overrides are present the input is returned unchanged.
+func mergeUserOverridesJSON(raw string, instructions map[string]string, added []types.Finding) string {
+	if len(instructions) == 0 && len(added) == 0 {
+		return raw
+	}
+	base, err := types.ParseFindingsJSON(raw)
+	if err != nil {
+		base = types.Findings{}
+	}
+	merged := types.MergeUserOverrides(base, instructions, added)
+	encoded, err := types.MarshalFindingsJSON(merged)
+	if err != nil {
+		return raw
+	}
+	return encoded
+}
+
 func filterFindingsJSON(raw string, ids []string) string {
-	if raw == "" || len(ids) == 0 {
+	if raw == "" {
 		return raw
 	}
 	findings, err := types.ParseFindingsJSON(raw)
@@ -256,6 +306,15 @@ func filterFindingsJSON(raw string, ids []string) string {
 		return raw
 	}
 	filtered := types.FilterFindings(findings, ids)
+	if len(ids) == 0 {
+		filtered = types.Findings{
+			Summary:        "0 selected findings",
+			Tested:         findings.Tested,
+			TestingSummary: findings.TestingSummary,
+			RiskLevel:      findings.RiskLevel,
+			RiskRationale:  findings.RiskRationale,
+		}
+	}
 	filteredRaw, err := types.MarshalFindingsJSON(filtered)
 	if err != nil {
 		return raw

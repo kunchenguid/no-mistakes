@@ -325,6 +325,130 @@ func TestFinding_Action_SerializedWhenEmpty(t *testing.T) {
 	}
 }
 
+func TestParseFindingsJSON_SourceAndUserInstructions(t *testing.T) {
+	raw := `{"findings":[{"severity":"error","description":"bug","source":"user","user_instructions":"focus on handler.go"}]}`
+	f, err := ParseFindingsJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.Items) != 1 {
+		t.Fatalf("Items count = %d, want 1", len(f.Items))
+	}
+	if f.Items[0].Source != FindingSourceUser {
+		t.Errorf("Source = %q, want %q", f.Items[0].Source, FindingSourceUser)
+	}
+	if f.Items[0].UserInstructions != "focus on handler.go" {
+		t.Errorf("UserInstructions = %q", f.Items[0].UserInstructions)
+	}
+}
+
+func TestMarshalFindingsJSON_OmitsEmptySourceAndInstructions(t *testing.T) {
+	f := Findings{Items: []Finding{{Severity: "error", Description: "bug"}}}
+	raw, err := MarshalFindingsJSON(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(raw, `"source"`) {
+		t.Errorf("expected source to be omitted, got %s", raw)
+	}
+	if strings.Contains(raw, `"user_instructions"`) {
+		t.Errorf("expected user_instructions to be omitted, got %s", raw)
+	}
+}
+
+func TestMergeUserOverrides_AttachesInstructions(t *testing.T) {
+	f := Findings{Items: []Finding{
+		{ID: "review-1", Severity: "error", Description: "bug"},
+		{ID: "review-2", Severity: "warning", Description: "style"},
+	}}
+	merged := MergeUserOverrides(f, map[string]string{"review-1": "only touch parser.go"}, nil)
+	if merged.Items[0].UserInstructions != "only touch parser.go" {
+		t.Errorf("expected instruction attached to review-1, got %q", merged.Items[0].UserInstructions)
+	}
+	if merged.Items[1].UserInstructions != "" {
+		t.Errorf("unexpected instruction on review-2: %q", merged.Items[1].UserInstructions)
+	}
+	if f.Items[0].UserInstructions != "" {
+		t.Errorf("original findings mutated: %q", f.Items[0].UserInstructions)
+	}
+}
+
+func TestMergeUserOverrides_AppendsUserFindings(t *testing.T) {
+	f := Findings{Items: []Finding{{ID: "review-1", Severity: "error", Description: "bug"}}}
+	added := []Finding{
+		{Severity: "warning", Description: "also inspect logger usage"},
+		{ID: "custom-xyz", Severity: "info", Description: "low priority"},
+	}
+	merged := MergeUserOverrides(f, nil, added)
+	if len(merged.Items) != 3 {
+		t.Fatalf("Items count = %d, want 3", len(merged.Items))
+	}
+	if merged.Items[1].ID != "user-1" {
+		t.Errorf("Items[1].ID = %q, want user-1", merged.Items[1].ID)
+	}
+	if merged.Items[1].Source != FindingSourceUser {
+		t.Errorf("Items[1].Source = %q, want %q", merged.Items[1].Source, FindingSourceUser)
+	}
+	if merged.Items[1].Action != ActionAutoFix {
+		t.Errorf("Items[1].Action = %q, want %q", merged.Items[1].Action, ActionAutoFix)
+	}
+	if merged.Items[2].ID != "custom-xyz" {
+		t.Errorf("Items[2].ID = %q, want custom-xyz", merged.Items[2].ID)
+	}
+	if merged.Items[2].Source != FindingSourceUser {
+		t.Errorf("Items[2].Source = %q, want %q", merged.Items[2].Source, FindingSourceUser)
+	}
+}
+
+func TestMergeUserOverrides_UpdatesSummaryForAddedFindings(t *testing.T) {
+	f := Findings{Summary: "0 selected findings"}
+	merged := MergeUserOverrides(f, nil, []Finding{{Severity: "warning", Description: "new user finding"}})
+	if merged.Summary != "1 selected finding" {
+		t.Errorf("Summary = %q, want %q", merged.Summary, "1 selected finding")
+	}
+}
+
+func TestMergeUserOverrides_AvoidsIDCollision(t *testing.T) {
+	f := Findings{Items: []Finding{
+		{ID: "user-1", Severity: "error", Description: "existing"},
+	}}
+	added := []Finding{
+		{Severity: "warning", Description: "new one"},
+	}
+	merged := MergeUserOverrides(f, nil, added)
+	if merged.Items[1].ID == "user-1" {
+		t.Fatal("user-added finding collided with existing user-1")
+	}
+	if merged.Items[1].ID != "user-2" {
+		t.Errorf("Items[1].ID = %q, want user-2", merged.Items[1].ID)
+	}
+}
+
+func TestMergeUserOverrides_ReassignsCollidingExplicitUserID(t *testing.T) {
+	f := Findings{Items: []Finding{{ID: "review-1", Severity: "error", Description: "existing"}}}
+	merged := MergeUserOverrides(f, nil, []Finding{{ID: "review-1", Severity: "warning", Description: "new user finding"}})
+	if len(merged.Items) != 2 {
+		t.Fatalf("Items count = %d, want 2", len(merged.Items))
+	}
+	if merged.Items[1].ID == "review-1" {
+		t.Fatal("user-added finding reused existing review-1 ID")
+	}
+	if merged.Items[1].ID != "user-1" {
+		t.Errorf("Items[1].ID = %q, want user-1", merged.Items[1].ID)
+	}
+}
+
+func TestMergeUserOverrides_NoChanges(t *testing.T) {
+	f := Findings{Items: []Finding{{ID: "review-1", Severity: "error", Description: "bug"}}}
+	merged := MergeUserOverrides(f, nil, nil)
+	if len(merged.Items) != 1 {
+		t.Fatalf("Items count = %d, want 1", len(merged.Items))
+	}
+	if merged.Items[0].UserInstructions != "" {
+		t.Errorf("unexpected UserInstructions: %q", merged.Items[0].UserInstructions)
+	}
+}
+
 func TestFinding_Action_Values(t *testing.T) {
 	for _, action := range []string{ActionNoOp, ActionAutoFix, ActionAskUser} {
 		f := Finding{Severity: "error", Description: "test", Action: action}

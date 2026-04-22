@@ -89,6 +89,8 @@ func (m *Model) applyEvent(event ipc.Event) {
 			m.showDiff = false
 			m.diffOffset = 0
 			if event.Status != nil && (types.StepStatus(*event.Status) == types.StepStatusAwaitingApproval || types.StepStatus(*event.Status) == types.StepStatusFixReview) {
+				delete(m.findingInstructions, *event.StepName)
+				delete(m.addedFindings, *event.StepName)
 				m.resetFindingSelection(*event.StepName)
 			}
 		}

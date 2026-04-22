@@ -130,3 +130,19 @@ func TestMergeFindingsJSON_DeduplicatesShiftedUniqueDismissedFinding(t *testing.
 		t.Fatalf("unexpected merged findings: %#v", merged.Items)
 	}
 }
+
+func TestFilterFindingsJSON_EmptySelectionReturnsEmptyFindings(t *testing.T) {
+	raw := `{"findings":[{"id":"review-1","severity":"error","description":"first"}],"summary":"1 finding"}`
+
+	filteredRaw := filterFindingsJSON(raw, nil)
+	filtered, err := types.ParseFindingsJSON(filteredRaw)
+	if err != nil {
+		t.Fatalf("parse filtered findings: %v", err)
+	}
+	if len(filtered.Items) != 0 {
+		t.Fatalf("expected 0 findings, got %d", len(filtered.Items))
+	}
+	if filtered.Summary != "0 selected findings" {
+		t.Fatalf("summary = %q, want %q", filtered.Summary, "0 selected findings")
+	}
+}

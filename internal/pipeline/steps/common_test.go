@@ -902,3 +902,40 @@ func TestSanitizedPreviousFindingsForPrompt_PreservesMultilineDescriptions(t *te
 		t.Fatalf("expected multiline risk rationale to be preserved, got %q", findings.RiskRationale)
 	}
 }
+
+func TestSanitizedPreviousFindingsForPrompt_PreservesSourceAndInstructions(t *testing.T) {
+	t.Parallel()
+	raw, err := types.MarshalFindingsJSON(types.Findings{
+		Items: []types.Finding{
+			{
+				ID:               "review-1",
+				Severity:         "error",
+				File:             "internal/pipeline/steps/review.go",
+				Description:      "missing nil check",
+				Action:           types.ActionAutoFix,
+				UserInstructions: "only touch parser.go",
+			},
+			{
+				ID:          "user-1",
+				Severity:    "warning",
+				Description: "also audit logger init",
+				Action:      types.ActionAutoFix,
+				Source:      types.FindingSourceUser,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sanitized := sanitizedPreviousFindingsForPrompt(raw)
+	findings, err := types.ParseFindingsJSON(sanitized)
+	if err != nil {
+		t.Fatalf("ParseFindingsJSON() error = %v", err)
+	}
+	if findings.Items[0].UserInstructions != "only touch parser.go" {
+		t.Errorf("expected UserInstructions preserved, got %q", findings.Items[0].UserInstructions)
+	}
+	if findings.Items[1].Source != types.FindingSourceUser {
+		t.Errorf("expected Source %q, got %q", types.FindingSourceUser, findings.Items[1].Source)
+	}
+}

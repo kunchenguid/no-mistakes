@@ -85,16 +85,22 @@ When a step pauses for approval, the findings panel shows structured results:
   Potential null pointer in error path
 
   > [x] E  src/handler.go:42
-         Missing nil check before dereferencing resp.Body
+          Missing nil check before dereferencing resp.Body
+         > keep the existing retry behavior
+    [x] I  [user]
+          Also update the CLI help text for this new flag
+         > mention the env var in the docs too
     [x] W  src/handler.go:78
-         Error string should not be capitalized
+          Error string should not be capitalized
     [ ] I  src/handler.go:95
-         Consider extracting this into a helper function
+          Consider extracting this into a helper function
 ```
 
 - Severity icons: `E` (error, red), `W` (warning, yellow), `I` (info, blue)
 - Checkboxes: `[x]` (selected, green), `[ ]` (deselected, dim)
 - Blue `>` marks the focused finding
+- User-added findings are marked with `[user]`
+- Per-finding notes render inline as `> ...` and are sent with the next fix request
 - Bottom hint shows `↑ N above / ↓ N more below (j/k)` when scrolling, or `(j/k)` whenever there are multiple findings
 
 ### Diff panel
@@ -144,6 +150,11 @@ The footer shows detach/help actions and, when `no-mistakes attach` has a cached
 | `space` | Toggle current finding |
 | `A` | Select all findings |
 | `N` | Deselect all findings |
+| `e` | Edit fix note for the current finding |
+| `+` | Add a user-authored finding |
+| `D` | Delete the current user-authored finding |
+
+When the instruction editor is open, press `Ctrl+s` or `Ctrl+enter` to save, or `esc` to cancel. In the add-finding editor, use `tab` / `shift+tab` to move between fields, `Ctrl+s` to save, and `esc` to cancel.
 
 ### View
 
@@ -164,10 +175,12 @@ The action bar appears below the pipeline box when a step is awaiting approval:
 ```
 Review awaiting action:
  a approve  f fix (3/5)  s skip  x abort  d diff
- [space] toggle  A all  N none
+ [space] toggle  e edit  + add  A all  N none
 ```
 
 The `f fix (3/5)` label shows how many findings are selected out of the total.
+
+Press `e` to add or edit extra guidance for the current finding. Press `+` to add your own finding to the list. User-authored findings start selected by default and can be removed with `D`.
 
 ## Outcome banner
 

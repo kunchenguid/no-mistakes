@@ -60,7 +60,7 @@ func renderRoundHistoryEntry(r *db.StepRound) string {
 		}
 	}
 
-	selected, unselected := partitionRoundFindings(r.FindingsJSON, r.SelectedFindingIDs)
+	selected, unselected := partitionRoundFindings(r.FindingsJSON, r.UserFindingsJSON, r.SelectedFindingIDs)
 
 	if r.FindingsJSON != nil && strings.TrimSpace(*r.FindingsJSON) != "" {
 		if items := renderRoundFindingLines(*r.FindingsJSON); len(items) > 0 {
@@ -123,19 +123,23 @@ func parseRoundFindingLines(raw string) []roundFindingLine {
 	lines := make([]roundFindingLine, 0, len(findings.Items))
 	for _, item := range findings.Items {
 		payload := struct {
-			ID          string `json:"id,omitempty"`
-			Severity    string `json:"severity,omitempty"`
-			File        string `json:"file,omitempty"`
-			Line        int    `json:"line,omitempty"`
-			Description string `json:"description,omitempty"`
-			Action      string `json:"action,omitempty"`
+			ID               string `json:"id,omitempty"`
+			Severity         string `json:"severity,omitempty"`
+			File             string `json:"file,omitempty"`
+			Line             int    `json:"line,omitempty"`
+			Description      string `json:"description,omitempty"`
+			Action           string `json:"action,omitempty"`
+			Source           string `json:"source,omitempty"`
+			UserInstructions string `json:"user_instructions,omitempty"`
 		}{
-			ID:          sanitizePromptText(item.ID),
-			Severity:    sanitizePromptText(item.Severity),
-			File:        sanitizePromptText(item.File),
-			Line:        item.Line,
-			Description: sanitizePromptMultilineText(item.Description),
-			Action:      sanitizePromptText(item.Action),
+			ID:               sanitizePromptText(item.ID),
+			Severity:         sanitizePromptText(item.Severity),
+			File:             sanitizePromptText(item.File),
+			Line:             item.Line,
+			Description:      sanitizePromptMultilineText(item.Description),
+			Action:           sanitizePromptText(item.Action),
+			Source:           sanitizePromptText(item.Source),
+			UserInstructions: sanitizePromptMultilineText(item.UserInstructions),
 		}
 		encoded, err := json.Marshal(payload)
 		if err != nil {
@@ -151,11 +155,15 @@ func parseRoundFindingLines(raw string) []roundFindingLine {
 // was chosen. A nil return for either side indicates the information is
 // unavailable, so the caller can omit the line entirely rather than emit a
 // misleading empty set.
-func partitionRoundFindings(findingsJSON *string, selectedJSON *string) (selected []string, unselected []string) {
+func partitionRoundFindings(findingsJSON *string, userFindingsJSON *string, selectedJSON *string) (selected []string, unselected []string) {
 	if findingsJSON == nil || strings.TrimSpace(*findingsJSON) == "" {
 		return nil, nil
 	}
 	allFindings := parseRoundFindingLines(*findingsJSON)
+	selectedFindings := allFindings
+	if userFindingsJSON != nil && strings.TrimSpace(*userFindingsJSON) != "" {
+		selectedFindings = parseRoundFindingLines(*userFindingsJSON)
+	}
 
 	if selectedJSON == nil {
 		return nil, nil
@@ -175,13 +183,17 @@ func partitionRoundFindings(findingsJSON *string, selectedJSON *string) (selecte
 	selected = make([]string, 0, len(selectedSet))
 	unselected = make([]string, 0, len(allFindings))
 	selectedSeen := make(map[string]bool, len(selectedSet))
-	for _, item := range allFindings {
+	for _, item := range selectedFindings {
 		if item.ID != "" && selectedSet[item.ID] {
 			selected = append(selected, item.Line)
 			selectedSeen[item.ID] = true
-		} else {
-			unselected = append(unselected, item.Line)
 		}
+	}
+	for _, item := range allFindings {
+		if item.ID != "" && selectedSet[item.ID] {
+			continue
+		}
+		unselected = append(unselected, item.Line)
 	}
 	for id := range selectedSet {
 		if !selectedSeen[id] {

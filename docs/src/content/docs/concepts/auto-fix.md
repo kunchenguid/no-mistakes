@@ -72,9 +72,10 @@ When the pipeline pauses for approval, you can manually trigger a fix from the T
 
 1. The findings panel shows all findings with checkboxes
 2. Toggle individual findings with `space`, or use `A` (all) / `N` (none)
-3. Press `f` to fix the selected findings
+3. Optionally press `e` to attach a note to the current finding, or `+` to add your own finding to the fix request
+4. Press `f` to fix the selected findings
 
-The agent receives the selected findings plus a sanitized history of previous rounds for that step, including which finding IDs were selected for a prior fix attempt, which findings were left unselected by the user, and any one-line summaries from earlier fix commits. On follow-up review passes, that history tells the agent not to re-report user-ignored findings unless the code now presents a materially different issue.
+The agent receives the merged fix payload for that round: the selected agent findings, any per-finding user notes, any selected user-authored findings added from the TUI, and a sanitized history of previous rounds for that step. That history includes which finding IDs were selected for a prior fix attempt, which findings were left unselected by the user, and any one-line summaries from earlier fix commits. On follow-up review passes, that history tells the agent not to re-report user-ignored findings unless the code now presents a materially different issue.
 
 After a user-triggered fix, the step re-runs and pauses again to show you the results (`fix_review` status). You can then approve, fix again, skip, or abort.
 
@@ -94,7 +95,7 @@ The push step commits any remaining uncommitted changes with `no-mistakes: apply
 
 ## Step rounds
 
-Each execution of a step (initial run or follow-up auto-fix run) is recorded as a "round" in the database. A round stores its findings, duration, any selected finding IDs and whether that selection came from the user or auto-fix filtering, plus the one-line fix summary for fix rounds. The PR body's deterministic risk assessment, testing, and pipeline sections are built from these rounds, giving reviewers visibility into test results, review risk, what was fixed, and how many attempts it took.
+Each execution of a step (initial run or follow-up auto-fix run) is recorded as a "round" in the database. A round stores its findings, duration, any selected finding IDs and whether that selection came from the user or auto-fix filtering, the merged finding payload actually sent to the fix agent for that round, and the one-line fix summary for fix rounds. That merged payload can include per-finding user notes and user-authored findings added from the TUI. The PR body's deterministic risk assessment, testing, and pipeline sections are built from these rounds, giving reviewers visibility into test results, review risk, what was fixed, and how many attempts it took.
 
 Round trigger types:
 - `initial` - first execution

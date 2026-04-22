@@ -123,6 +123,33 @@ func TestRoundHistoryPromptSection_DoesNotTreatAutoFixFilteringAsUserIgnore(t *t
 	}
 }
 
+func TestRoundHistoryPromptSection_IncludesSourceAndUserInstructions(t *testing.T) {
+	sctx, stepID := newRoundHistoryContext(t)
+	round1 := `{"findings":[{"id":"review-1","severity":"error","description":"panic risk","action":"auto-fix"},{"id":"review-2","severity":"warning","description":"secondary","action":"auto-fix"}],"summary":"2"}`
+	r1, err := sctx.DB.InsertStepRound(stepID, 1, "initial", &round1, nil, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected := `["review-1","user-1"]`
+	if err := sctx.DB.SetStepRoundSelection(r1.ID, &selected, db.RoundSelectionSourceUser); err != nil {
+		t.Fatal(err)
+	}
+	userFindings := `{"findings":[{"id":"review-1","severity":"error","description":"panic risk","action":"auto-fix","user_instructions":"only in parser.go"},{"id":"user-1","severity":"info","description":"audit logger","action":"auto-fix","source":"user"}],"summary":"2"}`
+	if err := sctx.DB.SetStepRoundUserFindings(r1.ID, &userFindings); err != nil {
+		t.Fatal(err)
+	}
+	got := roundHistoryPromptSection(sctx)
+	if !strings.Contains(got, `"user_instructions":"only in parser.go"`) {
+		t.Errorf("expected user_instructions in round history, got:\n%s", got)
+	}
+	if !strings.Contains(got, `"source":"user"`) {
+		t.Errorf("expected source in round history, got:\n%s", got)
+	}
+	if !strings.Contains(got, `user_chose_to_ignore:`) || !strings.Contains(got, `"id":"review-2"`) {
+		t.Errorf("expected unselected agent findings to remain visible, got:\n%s", got)
+	}
+}
+
 func TestRoundHistoryPromptSection_SanitizesInjectionAttempts(t *testing.T) {
 	sctx, stepID := newRoundHistoryContext(t)
 

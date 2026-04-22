@@ -25,7 +25,7 @@ Fetches the latest upstream and rebases your branch onto it.
 - If the diff against the default branch is empty after rebase, completes rebase and skips all remaining pipeline steps
 - On conflict: records conflicting files, aborts the rebase, and reports findings
 
-**Auto-fix:** when enabled, the agent resolves conflict markers, stages files, and runs `git rebase --continue`. Commits use the message format `no-mistakes(rebase): <summary>`.
+**Auto-fix:** when enabled, the agent resolves conflict markers, stages files, and runs `git rebase --continue`. Manual fix rounds also include any per-conflict user notes, any selected user-authored findings from the TUI, and sanitized prior-round history in the prompt. Commits use the message format `no-mistakes(rebase): <summary>`.
 
 **Default auto-fix limit:** `3`.
 
@@ -42,7 +42,7 @@ AI code review of your diff.
 
 **Approval:** required if any finding has severity `error` or `warning`. Findings with `action: ask-user` always require human approval and are never auto-fixed. This is for findings that challenge the author's intent, not routine correctness, reliability, or security fixes that may need to re-add a small amount of deleted logic. Findings with `action: auto-fix` remain eligible for the fix loop. Findings with `action: no-op` are informational only.
 
-**Auto-fix:** the agent receives the selected previous findings plus a sanitized history of prior rounds for that step, including earlier fix summaries and which findings the user left unselected. Follow-up review passes use that history to avoid re-reporting user-ignored findings unless the code now has a materially different problem. Fix commits use `no-mistakes(review): <summary>`.
+**Auto-fix:** the agent receives the selected previous findings plus any per-finding user notes, any selected user-authored findings from the TUI, and a sanitized history of prior rounds for that step, including earlier fix summaries and which findings the user left unselected. Follow-up review passes use that history to avoid re-reporting user-ignored findings unless the code now has a materially different problem. Fix commits use `no-mistakes(review): <summary>`.
 
 **Default auto-fix limit:** `0`.
 
@@ -58,7 +58,7 @@ Runs your test suite.
 
 **Approval:** failing test findings with `action: ask-user` always require human approval. `action: auto-fix` findings stay eligible for the fix loop. `action: no-op` findings are informational only.
 
-**Auto-fix:** the agent receives previous failure output plus a sanitized history of prior rounds for that step, including earlier fix summaries and any findings the user left unselected in prior approval cycles, then tests run again. Fix commits use `no-mistakes(test): <summary>`.
+**Auto-fix:** the agent receives the previous test findings plus any per-finding user notes, any selected user-authored findings from the TUI, and a sanitized history of prior rounds for that step, including earlier fix summaries and any findings the user left unselected in prior approval cycles, then tests run again. Fix commits use `no-mistakes(test): <summary>`.
 
 **Default auto-fix limit:** `3`.
 
@@ -71,7 +71,7 @@ Checks whether the code changes need matching documentation updates.
 - Asks the agent to review the change and return documentation findings for any missing or stale docs, using the same `action` field as other agent-driven steps
 - Requires approval whenever any documentation finding is returned, including `info` findings
 
-**Auto-fix:** the agent updates only documentation files or doc comments, using the previous documentation findings plus a sanitized history of prior rounds for that step, including earlier fix summaries and any findings the user left unselected in prior approval cycles. The step then re-runs and expects an empty findings list before continuing. Fix commits use `no-mistakes(document): <summary>`.
+**Auto-fix:** the agent updates only documentation files or doc comments, using the previous documentation findings plus any per-finding user notes, any selected user-authored findings from the TUI, and a sanitized history of prior rounds for that step, including earlier fix summaries and any findings the user left unselected in prior approval cycles. The step then re-runs and expects an empty findings list before continuing. Fix commits use `no-mistakes(document): <summary>`.
 
 **Default auto-fix limit:** `3`.
 
@@ -85,7 +85,7 @@ Runs linters and static analysis.
 
 **Approval:** lint findings with `action: ask-user` always require human approval. `action: auto-fix` findings stay eligible for the fix loop. `action: no-op` findings are informational only.
 
-**Auto-fix:** same pattern as test - the agent fixes `action: auto-fix` issues using the previous findings plus a sanitized history of prior rounds for that step, including earlier fix summaries and any findings the user left unselected in prior approval cycles, then lint re-runs. Fix commits use `no-mistakes(lint): <summary>`.
+**Auto-fix:** same pattern as test - the agent fixes `action: auto-fix` issues using the previous findings plus any per-finding user notes, any selected user-authored findings from the TUI, and a sanitized history of prior rounds for that step, including earlier fix summaries and any findings the user left unselected in prior approval cycles, then lint re-runs. Fix commits use `no-mistakes(lint): <summary>`.
 
 **Default auto-fix limit:** `3`.
 
