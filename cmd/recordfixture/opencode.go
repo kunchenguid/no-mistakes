@@ -143,14 +143,22 @@ func captureOpencodeFlavour(ctx context.Context, baseURL, dir, prompt, schema st
 	sseCtx, sseCancel := context.WithCancel(ctx)
 	defer sseCancel()
 	sseDone := make(chan error, 1)
+	sseReady := make(chan struct{})
 	sseCapture := newOpencodeSSECapture()
 	go func() {
-		sseDone <- streamSSE(sseCtx, baseURL+"/global/event", sseCapture)
+		sseDone <- streamSSE(sseCtx, baseURL+"/global/event", sseCapture, sseReady)
 	}()
 
-	// Tiny gap so the SSE listener is registered server-side before the
-	// message kicks off events.
-	time.Sleep(200 * time.Millisecond)
+	readyCtx, readyCancel := context.WithTimeout(ctx, 5*time.Second)
+	if err := waitForSSEReady(readyCtx, sseReady); err != nil {
+		readyCancel()
+		sseCancel()
+		if streamErr := <-sseDone; streamErr != nil && !errors.Is(streamErr, context.Canceled) {
+			return fmt.Errorf("capture SSE: %w", streamErr)
+		}
+		return fmt.Errorf("capture SSE: %w", err)
+	}
+	readyCancel()
 
 	msgBody := map[string]any{
 		"role":  "user",
@@ -287,7 +295,16 @@ func postJSON(ctx context.Context, url string, body any) (parsed []byte, raw []b
 	return raw, raw, nil
 }
 
-func streamSSE(ctx context.Context, url string, w io.Writer) error {
+func waitForSSEReady(ctx context.Context, ready <-chan struct{}) error {
+	select {
+	case <-ready:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func streamSSE(ctx context.Context, url string, w io.Writer, ready chan<- struct{}) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
@@ -298,6 +315,7 @@ func streamSSE(ctx context.Context, url string, w io.Writer) error {
 		return err
 	}
 	defer resp.Body.Close()
+	close(ready)
 	_, err = io.Copy(w, resp.Body)
 	return err
 }

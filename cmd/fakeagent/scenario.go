@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -98,27 +99,42 @@ func (s *Scenario) Match(prompt string) Action {
 // applyEdits mutates files under CWD (which is the worktree no-mistakes
 // pointed the agent at). Errors are logged to stderr but not fatal so a
 // scenario with a stale path doesn't kill the whole run.
-func applyEdits(edits []Edit) {
+
+func applyEdits(edits []Edit) error {
+	var errs []error
 	for _, e := range edits {
 		if e.Path == "" {
 			continue
 		}
 		if e.Old == "" {
 			if err := os.WriteFile(e.Path, []byte(e.New), 0o644); err != nil {
-				fmt.Fprintf(os.Stderr, "fakeagent: write %s: %v\n", e.Path, err)
+				err = fmt.Errorf("write %s: %w", e.Path, err)
+				fmt.Fprintf(os.Stderr, "fakeagent: %v\n", err)
+				errs = append(errs, err)
 			}
 			continue
 		}
 		data, err := os.ReadFile(e.Path)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "fakeagent: read %s: %v\n", e.Path, err)
+			err = fmt.Errorf("read %s: %w", e.Path, err)
+			fmt.Fprintf(os.Stderr, "fakeagent: %v\n", err)
+			errs = append(errs, err)
+			continue
+		}
+		if !strings.Contains(string(data), e.Old) {
+			err = fmt.Errorf("replace %s: old text not found", e.Path)
+			fmt.Fprintf(os.Stderr, "fakeagent: %v\n", err)
+			errs = append(errs, err)
 			continue
 		}
 		updated := strings.Replace(string(data), e.Old, e.New, 1)
 		if err := os.WriteFile(e.Path, []byte(updated), 0o644); err != nil {
-			fmt.Fprintf(os.Stderr, "fakeagent: write %s: %v\n", e.Path, err)
+			err = fmt.Errorf("write %s: %w", e.Path, err)
+			fmt.Fprintf(os.Stderr, "fakeagent: %v\n", err)
+			errs = append(errs, err)
 		}
 	}
+	return errors.Join(errs...)
 }
 
 // structuredJSON marshals an action's Structured map. Empty structured

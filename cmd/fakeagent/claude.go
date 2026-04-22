@@ -12,7 +12,9 @@ func runClaude(args []string, scenario *Scenario) int {
 	logInvocation("claude", prompt, args)
 
 	action := scenario.Match(prompt)
-	applyEdits(action.Edits)
+	if err := applyEdits(action.Edits); err != nil {
+		return 1
+	}
 
 	// Fixture mode: replay the real claude wire envelope captured by
 	// recordfixture, but splice in scenario-driven content for the

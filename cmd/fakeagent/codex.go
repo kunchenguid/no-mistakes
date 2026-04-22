@@ -12,7 +12,9 @@ func runCodex(args []string, scenario *Scenario) int {
 	logInvocation("codex", prompt, args)
 
 	action := scenario.Match(prompt)
-	applyEdits(action.Edits)
+	if err := applyEdits(action.Edits); err != nil {
+		return 1
+	}
 
 	// Replay recorded codex output if a fixture is available. Codex
 	// doesn't take a schema flag — no-mistakes always nudges it toward

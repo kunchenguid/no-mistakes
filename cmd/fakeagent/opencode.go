@@ -62,8 +62,9 @@ func extractOpencodePort(args []string) (int, error) {
 }
 
 type fakeOpencodeServer struct {
-	scenario *Scenario
-	fixture  *opencodeFixture // nil = synthetic mode
+	scenario   *Scenario
+	fixture    *opencodeFixture // nil = synthetic mode
+	fixtureErr error
 
 	mu          sync.Mutex
 	subscribers []chan []byte // active /global/event listeners (one per request)
@@ -87,7 +88,8 @@ func newFakeOpencodeServer(scenario *Scenario) *fakeOpencodeServer {
 		if fx, err := loadOpencodeFixture(dir, "structured"); err == nil {
 			srv.fixture = fx
 		} else {
-			fmt.Fprintf(os.Stderr, "fakeagent: opencode fixture load: %v\n", err)
+			srv.fixtureErr = fmt.Errorf("opencode fixture load: %w", err)
+			fmt.Fprintf(os.Stderr, "fakeagent: %v\n", srv.fixtureErr)
 		}
 	}
 	return srv
@@ -114,11 +116,21 @@ func loadOpencodeFixture(dir, flavour string) (*opencodeFixture, error) {
 
 func (s *fakeOpencodeServer) routes() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/global/health", s.handleHealth)
-	mux.HandleFunc("/global/event", s.handleEvents)
-	mux.HandleFunc("/session", s.handleSessionRoot)
-	mux.HandleFunc("/session/", s.handleSessionPath)
+	mux.HandleFunc("/global/health", s.withFixtureGuard(s.handleHealth))
+	mux.HandleFunc("/global/event", s.withFixtureGuard(s.handleEvents))
+	mux.HandleFunc("/session", s.withFixtureGuard(s.handleSessionRoot))
+	mux.HandleFunc("/session/", s.withFixtureGuard(s.handleSessionPath))
 	return mux
+}
+
+func (s *fakeOpencodeServer) withFixtureGuard(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.fixtureErr != nil {
+			http.Error(w, s.fixtureErr.Error(), http.StatusInternalServerError)
+			return
+		}
+		next(w, r)
+	}
 }
 
 func (s *fakeOpencodeServer) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -285,7 +297,10 @@ func (s *fakeOpencodeServer) handleMessage(w http.ResponseWriter, r *http.Reques
 		// substituted so happy-path tests don't depend on whatever
 		// the live model returned at recording time.
 		action := s.scenario.Match(prompt)
-		applyEdits(action.Edits)
+		if err := applyEdits(action.Edits); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		s.broadcastRaw(s.fixture.sse)
 		patched, err := patchOpencodeMessage(s.fixture.message, action)
 		if err != nil {
@@ -299,7 +314,10 @@ func (s *fakeOpencodeServer) handleMessage(w http.ResponseWriter, r *http.Reques
 	}
 
 	action := s.scenario.Match(prompt)
-	applyEdits(action.Edits)
+	if err := applyEdits(action.Edits); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	s.mu.Lock()
 	s.msgSeq++
