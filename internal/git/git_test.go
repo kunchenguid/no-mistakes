@@ -116,6 +116,26 @@ func TestRemoveRemote(t *testing.T) {
 	}
 }
 
+func TestCopyLocalUserIdentity(t *testing.T) {
+	ctx := context.Background()
+	src := initTestRepo(t)
+	dst := initTestRepo(t)
+
+	run(t, dst, "git", "config", "--local", "--unset", "user.name")
+	run(t, dst, "git", "config", "--local", "--unset", "user.email")
+
+	if err := CopyLocalUserIdentity(ctx, src, dst); err != nil {
+		t.Fatalf("CopyLocalUserIdentity failed: %v", err)
+	}
+
+	if got := run(t, dst, "git", "config", "--local", "--get", "user.name"); got != "Test" {
+		t.Fatalf("user.name = %q, want %q", got, "Test")
+	}
+	if got := run(t, dst, "git", "config", "--local", "--get", "user.email"); got != "test@test.com" {
+		t.Fatalf("user.email = %q, want %q", got, "test@test.com")
+	}
+}
+
 func TestGetRemoteURLNotFound(t *testing.T) {
 	dir := initTestRepo(t)
 	ctx := context.Background()

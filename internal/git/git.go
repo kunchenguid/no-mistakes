@@ -253,6 +253,24 @@ func CommitAll(ctx context.Context, dir, message string) error {
 	return err
 }
 
+// CopyLocalUserIdentity copies local user.name and user.email from srcDir into
+// dstDir. Missing values in srcDir are ignored.
+func CopyLocalUserIdentity(ctx context.Context, srcDir, dstDir string) error {
+	for _, key := range []string{"user.name", "user.email"} {
+		value, err := Run(ctx, srcDir, "config", "--local", "--get", "--default", "", key)
+		if err != nil {
+			return err
+		}
+		if value == "" {
+			continue
+		}
+		if _, err := Run(ctx, dstDir, "config", "--local", key, value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // WorktreeAdd creates a detached worktree at wtPath checked out to the given SHA.
 func WorktreeAdd(ctx context.Context, repoDir, wtPath, sha string) error {
 	_, err := Run(ctx, repoDir, "worktree", "add", "--detach", wtPath, sha)

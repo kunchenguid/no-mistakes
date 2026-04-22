@@ -1010,6 +1010,13 @@ func TestGateInitPushPipelineRunsInLinkedWorktree(t *testing.T) {
 		t.Skip("post-receive hook + git worktree flow is /bin/sh-only")
 	}
 
+	// Make the regression deterministic: the daemon-created worktree must not
+	// depend on any user-global git identity being present on the machine.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg"))
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(home, "gitconfig"))
+
 	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
 		return []pipeline.Step{&steps.RebaseStep{}}
 	})
