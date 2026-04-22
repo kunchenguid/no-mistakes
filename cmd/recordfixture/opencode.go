@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -30,7 +31,7 @@ import (
 // Two flavours are recorded: "structured" (json_schema format) and
 // "plain" (no format).
 func recordOpencode(ctx context.Context, out string, args []string) int {
-	bin := pickBin(args, "opencode")
+	bin, forward := splitBinArgs(args, "opencode")
 
 	port, err := freePort()
 	if err != nil {
@@ -38,11 +39,14 @@ func recordOpencode(ctx context.Context, out string, args []string) int {
 		return 1
 	}
 
-	srvCmd := exec.CommandContext(ctx, bin, "serve",
+	srvArgs := []string{
+		"serve",
 		"--hostname", "127.0.0.1",
 		"--port", fmt.Sprintf("%d", port),
 		"--print-logs",
-	)
+	}
+	srvArgs = append(srvArgs, forward...)
+	srvCmd := exec.CommandContext(ctx, bin, srvArgs...)
 	srvCmd.SysProcAttr = newProcAttr() // own process group so we can SIGTERM cleanly
 	srvCmd.Stdout = os.Stderr
 	srvCmd.Stderr = os.Stderr
@@ -170,21 +174,25 @@ func captureOpencodeFlavour(ctx context.Context, baseURL, dir, prompt, schema st
 
 	// Drain SSE: keep reading for up to 5s after the message returns,
 	// or until session.idle appears in the buffer.
-	deadline := time.After(5 * time.Second)
+	deadline := time.Now().Add(5 * time.Second)
+	idleSeen := false
 	for {
 		if bytes.Contains(sseBuf.Bytes(), []byte("\"session.idle\"")) {
+			idleSeen = true
 			break
 		}
-		select {
-		case <-deadline:
+		if time.Now().After(deadline) {
 			break
-		case <-time.After(100 * time.Millisecond):
-			continue
 		}
-		break
+		time.Sleep(100 * time.Millisecond)
 	}
 	sseCancel()
-	<-sseDone
+	if err := <-sseDone; err != nil && !errors.Is(err, context.Canceled) {
+		return fmt.Errorf("capture SSE: %w", err)
+	}
+	if !idleSeen {
+		return fmt.Errorf("capture SSE: missing session.idle event")
+	}
 
 	if err := os.WriteFile(filepath.Join(dir, "sse.txt"), sseBuf.Bytes(), 0o644); err != nil {
 		return err

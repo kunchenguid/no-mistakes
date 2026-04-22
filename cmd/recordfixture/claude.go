@@ -14,7 +14,7 @@ import (
 // and without (commit-summary-style). Both are kept tiny by asking for
 // the smallest possible response.
 func recordClaude(ctx context.Context, out string, args []string) int {
-	bin := pickBin(args, "claude")
+	bin, forward := splitBinArgs(args, "claude")
 
 	// 1) Structured-output flavour. Schema mirrors review's
 	// reviewFindingsSchema closely enough that we exercise
@@ -30,14 +30,14 @@ func recordClaude(ctx context.Context, out string, args []string) int {
   "required": ["findings","risk_level","risk_rationale"]
 }`
 	prompt := "Reply with structured JSON: empty findings array, risk_level=low, one short risk_rationale."
-	if err := captureClaude(ctx, bin, prompt, schema, filepath.Join(out, "structured.jsonl")); err != nil {
+	if err := captureClaude(ctx, bin, forward, prompt, schema, filepath.Join(out, "structured.jsonl")); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
 
 	// 2) Plain-text flavour. No schema; tests this codepath even though
 	// no-mistakes' claude steps always pass a schema today.
-	if err := captureClaude(ctx, bin, "Reply with the literal word OK and nothing else.", "", filepath.Join(out, "plain.jsonl")); err != nil {
+	if err := captureClaude(ctx, bin, forward, "Reply with the literal word OK and nothing else.", "", filepath.Join(out, "plain.jsonl")); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
@@ -46,13 +46,14 @@ func recordClaude(ctx context.Context, out string, args []string) int {
 	return 0
 }
 
-func captureClaude(ctx context.Context, bin, prompt, schema, outPath string) error {
+func captureClaude(ctx context.Context, bin string, forward []string, prompt, schema, outPath string) error {
 	cmdArgs := []string{
 		"-p", prompt,
 		"--verbose",
 		"--output-format", "stream-json",
 		"--dangerously-skip-permissions",
 	}
+	cmdArgs = append(cmdArgs, forward...)
 	if schema != "" {
 		cmdArgs = append(cmdArgs, "--json-schema", schema)
 	}
@@ -82,15 +83,4 @@ func captureClaude(ctx context.Context, bin, prompt, schema, outPath string) err
 		return fmt.Errorf("scrub %s: %w", outPath, err)
 	}
 	return nil
-}
-
-// pickBin returns the agent binary path. Falls back to the bare name on
-// PATH unless the caller passed --bin.
-func pickBin(args []string, def string) string {
-	for i := 0; i < len(args); i++ {
-		if args[i] == "--bin" && i+1 < len(args) {
-			return args[i+1]
-		}
-	}
-	return def
 }

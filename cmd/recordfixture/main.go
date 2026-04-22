@@ -71,6 +71,20 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "captures real agent output as e2e fixture files. burns real API quota.")
 }
 
+func splitBinArgs(args []string, def string) (string, []string) {
+	bin := def
+	forwarded := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--bin" && i+1 < len(args) {
+			bin = args[i+1]
+			i++
+			continue
+		}
+		forwarded = append(forwarded, args[i])
+	}
+	return bin, forwarded
+}
+
 // parseOut pulls --out <path> out of args (the only flag the recorder
 // owns; everything else is forwarded to the real binary).
 func parseOut(args []string) (string, []string, error) {
