@@ -128,8 +128,8 @@ func TestAddFinding_OpensEditorEmpty(t *testing.T) {
 	if !m.editorActive() || m.editor.kind != editorAddFinding {
 		t.Fatal("expected add-finding editor to be active")
 	}
-	if m.editor.addFocus != addFieldSeverity {
-		t.Error("expected initial focus on severity field")
+	if m.editor.addFocus != addFieldDescription {
+		t.Error("expected initial focus on description field")
 	}
 }
 
@@ -137,8 +137,6 @@ func TestAddFinding_SaveAppendsUserFinding(t *testing.T) {
 	m := newAwaitingModel(t, `{"findings":[{"id":"review-1","severity":"error","description":"bug","action":"auto-fix"}],"summary":"1"}`)
 	next, _ := m.handleKey(keyMsg("+"))
 	m = next.(Model)
-	// Change severity to info (index 2).
-	m.editor.addSeverityIdx = 2
 	m.editor.addDesc.SetValue("also audit logger init path")
 	m.editor.addInstr.SetValue("prefer slog")
 	next, _ = m.handleKey(keyMsg("ctrl+s"))
@@ -153,6 +151,12 @@ func TestAddFinding_SaveAppendsUserFinding(t *testing.T) {
 	}
 	if added[0].Severity != "info" {
 		t.Errorf("expected severity=info, got %q", added[0].Severity)
+	}
+	if added[0].File != "" {
+		t.Errorf("expected file to stay empty for global finding, got %q", added[0].File)
+	}
+	if added[0].Line != 0 {
+		t.Errorf("expected line to stay zero for global finding, got %d", added[0].Line)
 	}
 	if added[0].Description != "also audit logger init path" {
 		t.Errorf("expected description saved, got %q", added[0].Description)
@@ -195,15 +199,31 @@ func TestAddFinding_TabCyclesFocus(t *testing.T) {
 	m = next.(Model)
 	next, _ = m.handleKey(keyMsg("tab"))
 	m = next.(Model)
-	if m.editor.addFocus != addFieldFile {
-		t.Errorf("expected focus on File after tab, got %d", m.editor.addFocus)
+	if m.editor.addFocus != addFieldInstruction {
+		t.Errorf("expected focus on instruction after tab, got %d", m.editor.addFocus)
 	}
 	for i := 0; i < int(addFieldCount); i++ {
 		next, _ = m.handleKey(keyMsg("tab"))
 		m = next.(Model)
 	}
-	if m.editor.addFocus != addFieldFile {
-		t.Errorf("expected focus to wrap around to File, got %d", m.editor.addFocus)
+	if m.editor.addFocus != addFieldInstruction {
+		t.Errorf("expected focus to wrap around to instruction, got %d", m.editor.addFocus)
+	}
+}
+
+func TestEditInstruction_UserFindingUpdatesAddedFinding(t *testing.T) {
+	m := newAwaitingModel(t, `{"findings":[],"summary":"0"}`)
+	m.addedFindings[types.StepReview] = []types.Finding{{ID: "user-1", Severity: "info", Description: "user idea", Source: types.FindingSourceUser, Action: types.ActionAutoFix, UserInstructions: "old note"}}
+	m.findingSelections[types.StepReview] = map[string]bool{"user-1": true}
+
+	next, _ := m.handleKey(keyMsg("e"))
+	m = next.(Model)
+	m.editor.instruction.SetValue("new note")
+	next, _ = m.handleKey(keyMsg("ctrl+s"))
+	m = next.(Model)
+
+	if got := m.addedFindings[types.StepReview][0].UserInstructions; got != "new note" {
+		t.Fatalf("expected edited user finding note to persist into addedFindings, got %q", got)
 	}
 }
 
@@ -245,8 +265,11 @@ func TestAddFinding_RendersEvenOnSmallTerminal(t *testing.T) {
 	if !strings.Contains(plain, "Add finding") {
 		t.Errorf("expected Add finding editor to render, got:\n%s", plain)
 	}
-	if !strings.Contains(plain, "Severity") {
-		t.Errorf("expected Severity label to render, got:\n%s", plain)
+	if !strings.Contains(plain, "Description") {
+		t.Errorf("expected Description label to render, got:\n%s", plain)
+	}
+	if strings.Contains(plain, "Severity") || strings.Contains(plain, "File") || strings.Contains(plain, "Line") {
+		t.Errorf("expected add-finding editor to omit local fields, got:\n%s", plain)
 	}
 }
 

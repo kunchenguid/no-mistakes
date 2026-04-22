@@ -2,11 +2,9 @@ package tui
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textarea"
-	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -25,15 +23,10 @@ const (
 type addFindingField int
 
 const (
-	addFieldSeverity addFindingField = iota
-	addFieldFile
-	addFieldLine
-	addFieldDescription
+	addFieldDescription addFindingField = iota
 	addFieldInstruction
 	addFieldCount
 )
-
-var addFindingSeverities = []string{"error", "warning", "info"}
 
 // editorState holds in-progress state for the currently open modal editor.
 // Only one editor is active at a time; m.editor is nil when none is open.
@@ -47,12 +40,9 @@ type editorState struct {
 	instruction textarea.Model
 
 	// add-finding editor fields
-	addSeverityIdx int
-	addFile        textinput.Model
-	addLine        textinput.Model
-	addDesc        textarea.Model
-	addInstr       textarea.Model
-	addFocus       addFindingField
+	addDesc  textarea.Model
+	addInstr textarea.Model
+	addFocus addFindingField
 }
 
 func newInstructionEditor(step types.StepName, findingID, existing string) *editorState {
@@ -73,31 +63,13 @@ func newInstructionEditor(step types.StepName, findingID, existing string) *edit
 }
 
 func newAddFindingEditor(step types.StepName) *editorState {
-	file := textinput.New()
-	file.Placeholder = "file (optional, e.g. internal/foo/bar.go)"
-	file.CharLimit = 500
-	file.Width = 70
-
-	line := textinput.New()
-	line.Placeholder = "line (optional)"
-	line.CharLimit = 10
-	line.Width = 12
-	line.Validate = func(s string) error {
-		if s == "" {
-			return nil
-		}
-		if _, err := strconv.Atoi(s); err != nil {
-			return fmt.Errorf("must be a number")
-		}
-		return nil
-	}
-
 	desc := textarea.New()
 	desc.Placeholder = "what's the issue (required)..."
 	desc.ShowLineNumbers = false
 	desc.CharLimit = 4000
 	desc.SetHeight(3)
 	desc.SetWidth(72)
+	desc.Focus()
 
 	instr := textarea.New()
 	instr.Placeholder = "extra guidance for the fix agent (optional)..."
@@ -109,11 +81,9 @@ func newAddFindingEditor(step types.StepName) *editorState {
 	e := &editorState{
 		kind:     editorAddFinding,
 		step:     step,
-		addFile:  file,
-		addLine:  line,
 		addDesc:  desc,
 		addInstr: instr,
-		addFocus: addFieldSeverity,
+		addFocus: addFieldDescription,
 	}
 	return e
 }
@@ -161,6 +131,10 @@ func (m *Model) saveInstruction() {
 	step := m.editor.step
 	id := m.editor.findingID
 	text := strings.TrimSpace(m.editor.instruction.Value())
+	if m.updateUserFindingInstruction(step, id, text) {
+		m.editor = nil
+		return
+	}
 	if m.findingInstructions == nil {
 		m.findingInstructions = make(map[types.StepName]map[string]string)
 	}
@@ -200,28 +174,8 @@ func (m Model) updateAddFindingEditor(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if m.editor.addFocus == addFieldSeverity {
-		switch key {
-		case "left", "h":
-			if m.editor.addSeverityIdx > 0 {
-				m.editor.addSeverityIdx--
-			}
-			return m, nil
-		case "right", "l":
-			if m.editor.addSeverityIdx < len(addFindingSeverities)-1 {
-				m.editor.addSeverityIdx++
-			}
-			return m, nil
-		}
-		return m, nil
-	}
-
 	var cmd tea.Cmd
 	switch m.editor.addFocus {
-	case addFieldFile:
-		m.editor.addFile, cmd = m.editor.addFile.Update(msg)
-	case addFieldLine:
-		m.editor.addLine, cmd = m.editor.addLine.Update(msg)
 	case addFieldDescription:
 		m.editor.addDesc, cmd = m.editor.addDesc.Update(msg)
 	case addFieldInstruction:
@@ -231,15 +185,9 @@ func (m Model) updateAddFindingEditor(msg tea.KeyMsg) (Model, tea.Cmd) {
 }
 
 func (m *Model) applyAddFindingFocus() {
-	m.editor.addFile.Blur()
-	m.editor.addLine.Blur()
 	m.editor.addDesc.Blur()
 	m.editor.addInstr.Blur()
 	switch m.editor.addFocus {
-	case addFieldFile:
-		m.editor.addFile.Focus()
-	case addFieldLine:
-		m.editor.addLine.Focus()
 	case addFieldDescription:
 		m.editor.addDesc.Focus()
 	case addFieldInstruction:
@@ -255,18 +203,8 @@ func (m *Model) saveAddFinding() error {
 	if desc == "" {
 		return fmt.Errorf("description is required")
 	}
-	line := 0
-	if raw := strings.TrimSpace(m.editor.addLine.Value()); raw != "" {
-		n, err := strconv.Atoi(raw)
-		if err != nil {
-			return fmt.Errorf("line must be a number")
-		}
-		line = n
-	}
 	f := types.Finding{
-		Severity:         addFindingSeverities[m.editor.addSeverityIdx],
-		File:             strings.TrimSpace(m.editor.addFile.Value()),
-		Line:             line,
+		Severity:         "info",
 		Description:      desc,
 		Action:           types.ActionAutoFix,
 		Source:           types.FindingSourceUser,
@@ -327,6 +265,19 @@ func (m *Model) removeUserFinding(step types.StepName, id string) bool {
 			}
 			return true
 		}
+	}
+	return false
+}
+
+func (m *Model) updateUserFindingInstruction(step types.StepName, id, text string) bool {
+	items := m.addedFindings[step]
+	for i := range items {
+		if items[i].ID != id {
+			continue
+		}
+		items[i].UserInstructions = text
+		m.addedFindings[step] = items
+		return true
 	}
 	return false
 }
@@ -396,7 +347,6 @@ func (m Model) renderAddFindingEditor(width int) string {
 	if contentWidth < 20 {
 		contentWidth = 20
 	}
-	m.editor.addFile.Width = contentWidth - 2
 	m.editor.addDesc.SetWidth(contentWidth)
 	m.editor.addInstr.SetWidth(contentWidth)
 
@@ -412,33 +362,7 @@ func (m Model) renderAddFindingEditor(width int) string {
 		return labelStyle.Render("  " + text)
 	}
 
-	// Severity row
-	sevRow := ""
-	for i, name := range addFindingSeverities {
-		marker := "  "
-		style := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
-		if i == m.editor.addSeverityIdx {
-			marker = "● "
-			style = severityStyle(name).Bold(true)
-		} else {
-			marker = "○ "
-		}
-		sevRow += style.Render(marker+name) + "  "
-	}
-
 	var body strings.Builder
-	body.WriteString(label(addFieldSeverity, "Severity"))
-	body.WriteString("\n  ")
-	body.WriteString(sevRow)
-	body.WriteString("\n\n")
-	body.WriteString(label(addFieldFile, "File"))
-	body.WriteString("\n")
-	body.WriteString("  " + m.editor.addFile.View())
-	body.WriteString("\n\n")
-	body.WriteString(label(addFieldLine, "Line"))
-	body.WriteString("\n")
-	body.WriteString("  " + m.editor.addLine.View())
-	body.WriteString("\n\n")
 	body.WriteString(label(addFieldDescription, "Description"))
 	body.WriteString("\n")
 	body.WriteString(m.editor.addDesc.View())
