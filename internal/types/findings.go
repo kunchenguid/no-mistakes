@@ -3,6 +3,7 @@ package types
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // Finding action constants.
@@ -167,25 +168,22 @@ func MergeUserOverrides(findings Findings, instructions map[string]string, added
 		}
 	}
 	counter := 0
+	appended := false
 	for _, item := range added {
 		item.Source = FindingSourceUser
 		if item.Action == "" {
 			item.Action = ActionAutoFix
 		}
-		if item.ID == "" {
-			for {
-				counter++
-				candidate := "user-" + itoa(counter)
-				if !used[candidate] {
-					item.ID = candidate
-					used[candidate] = true
-					break
-				}
-			}
+		if item.ID == "" || used[item.ID] {
+			item.ID, counter = nextUserFindingID(used, counter)
 		} else {
 			used[item.ID] = true
 		}
 		result.Items = append(result.Items, item)
+		appended = true
+	}
+	if appended && isSelectedFindingsSummary(result.Summary) {
+		result.Summary = summarizeSelectedFindings(len(result.Items))
 	}
 	return result
 }
@@ -209,6 +207,37 @@ func summarizeSelectedFindings(count int) string {
 	default:
 		return fmt.Sprintf("%d selected findings", count)
 	}
+}
+
+func nextUserFindingID(used map[string]bool, counter int) (string, int) {
+	for {
+		counter++
+		candidate := "user-" + itoa(counter)
+		if used[candidate] {
+			continue
+		}
+		used[candidate] = true
+		return candidate, counter
+	}
+}
+
+func isSelectedFindingsSummary(summary string) bool {
+	if summary == "0 selected findings" || summary == "1 selected finding" {
+		return true
+	}
+	if !strings.HasSuffix(summary, " selected findings") {
+		return false
+	}
+	count := strings.TrimSuffix(summary, " selected findings")
+	if count == "" {
+		return false
+	}
+	for _, r := range count {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // MarshalFindingsJSON encodes findings using the current wire shape.

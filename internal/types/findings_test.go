@@ -400,6 +400,14 @@ func TestMergeUserOverrides_AppendsUserFindings(t *testing.T) {
 	}
 }
 
+func TestMergeUserOverrides_UpdatesSummaryForAddedFindings(t *testing.T) {
+	f := Findings{Summary: "0 selected findings"}
+	merged := MergeUserOverrides(f, nil, []Finding{{Severity: "warning", Description: "new user finding"}})
+	if merged.Summary != "1 selected finding" {
+		t.Errorf("Summary = %q, want %q", merged.Summary, "1 selected finding")
+	}
+}
+
 func TestMergeUserOverrides_AvoidsIDCollision(t *testing.T) {
 	f := Findings{Items: []Finding{
 		{ID: "user-1", Severity: "error", Description: "existing"},
@@ -413,6 +421,20 @@ func TestMergeUserOverrides_AvoidsIDCollision(t *testing.T) {
 	}
 	if merged.Items[1].ID != "user-2" {
 		t.Errorf("Items[1].ID = %q, want user-2", merged.Items[1].ID)
+	}
+}
+
+func TestMergeUserOverrides_ReassignsCollidingExplicitUserID(t *testing.T) {
+	f := Findings{Items: []Finding{{ID: "review-1", Severity: "error", Description: "existing"}}}
+	merged := MergeUserOverrides(f, nil, []Finding{{ID: "review-1", Severity: "warning", Description: "new user finding"}})
+	if len(merged.Items) != 2 {
+		t.Fatalf("Items count = %d, want 2", len(merged.Items))
+	}
+	if merged.Items[1].ID == "review-1" {
+		t.Fatal("user-added finding reused existing review-1 ID")
+	}
+	if merged.Items[1].ID != "user-1" {
+		t.Errorf("Items[1].ID = %q, want user-1", merged.Items[1].ID)
 	}
 }
 
