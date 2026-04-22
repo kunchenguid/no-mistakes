@@ -103,6 +103,13 @@ func InstallPostReceiveHook(bareDir string) error {
 // hooks to its own absolute hooks dir, regardless of what tools write
 // to the shared config.
 //
+// Enabling extensions.worktreeConfig also forces us to relocate
+// core.bare: once the extension is on, Git requires core.bare and
+// core.worktree to live in per-worktree scope only. If we leave
+// core.bare=true in shared config, it leaks into linked worktrees and
+// causes commands like `git rebase` to fail with "this operation must
+// be run in a work tree".
+//
 // Best-effort only: if the installed Git does not support
 // `git config --worktree`, this returns nil without changing config.
 //
@@ -127,7 +134,34 @@ func IsolateHooksPath(ctx context.Context, bareDir string) error {
 		}
 		return fmt.Errorf("pin core.hookspath per-worktree: %w", err)
 	}
+	return relocateCoreBareToWorktreeScope(ctx, bareDir)
+}
+
+// relocateCoreBareToWorktreeScope moves core.bare out of shared local config
+// into the bare's per-worktree config. Required after enabling
+// extensions.worktreeConfig: Git otherwise leaks core.bare=true from shared
+// scope into linked worktrees, breaking rebase/merge/etc.
+func relocateCoreBareToWorktreeScope(ctx context.Context, bareDir string) error {
+	if _, err := runGit(ctx, bareDir, "config", "--worktree", "core.bare", "true"); err != nil {
+		if isWorktreeConfigUnsupported(err) {
+			return nil
+		}
+		return fmt.Errorf("pin core.bare per-worktree: %w", err)
+	}
+	if _, err := runGit(ctx, bareDir, "config", "--local", "--unset", "core.bare"); err != nil {
+		if isConfigKeyMissing(err) {
+			return nil
+		}
+		return fmt.Errorf("unset shared core.bare: %w", err)
+	}
 	return nil
+}
+
+// isConfigKeyMissing reports whether a `git config --unset` failure is the
+// benign "key not set" case (exit 5), which makes the unset idempotent.
+func isConfigKeyMissing(err error) bool {
+	var exitErr *exec.ExitError
+	return errors.As(err, &exitErr) && exitErr.ExitCode() == 5
 }
 
 func isWorktreeConfigUnsupported(err error) bool {

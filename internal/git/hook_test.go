@@ -257,6 +257,181 @@ func TestIsolateHooksPath_OverridesPoisonedSharedConfig(t *testing.T) {
 	}
 }
 
+// TestIsolateHooksPath_LinkedWorktreeCanRebase covers the regression where
+// enabling extensions.worktreeConfig on a bare repo while leaving
+// core.bare=true in shared config caused `git rebase` to fail inside linked
+// worktrees with "fatal: this operation must be run in a work tree". Git
+// requires core.bare to live in per-worktree scope once worktreeConfig is on.
+func TestIsolateHooksPath_LinkedWorktreeCanRebase(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("worktree + shell pipeline is /bin/sh-only")
+	}
+	ctx := context.Background()
+	base := t.TempDir()
+	bare := filepath.Join(base, "gate.git")
+	if err := InitBare(ctx, bare); err != nil {
+		t.Fatal(err)
+	}
+
+	// Seed the bare with one commit on main so worktree add has a ref to check out.
+	seedGate(t, base, bare)
+
+	if err := IsolateHooksPath(ctx, bare); err != nil {
+		t.Fatalf("IsolateHooksPath: %v", err)
+	}
+
+	// The bare repo itself must still look bare to git, otherwise other
+	// operations (ls-remote, receive-pack) regress.
+	if got := strings.TrimSpace(runGitOrFatal(t, bare, "rev-parse", "--is-bare-repository")); got != "true" {
+		t.Fatalf("bare repo should still report is-bare-repository=true, got %q", got)
+	}
+
+	// Hook resolution must still point at the bare's hooks dir (the whole
+	// point of IsolateHooksPath).
+	wantHooks, err := filepath.Abs(filepath.Join(bare, "hooks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(runGitOrFatal(t, bare, "config", "--get", "core.hookspath")); got != wantHooks {
+		t.Fatalf("core.hookspath = %q, want %q", got, wantHooks)
+	}
+
+	// Create a linked worktree and confirm it actually behaves as a work tree.
+	wt := filepath.Join(base, "wt")
+	runGitOrFatal(t, bare, "worktree", "add", "--detach", wt, "refs/heads/main")
+
+	if got := strings.TrimSpace(runGitOrFatal(t, wt, "rev-parse", "--is-inside-work-tree")); got != "true" {
+		t.Fatalf("linked worktree should report is-inside-work-tree=true, got %q", got)
+	}
+
+	// Rebase onto the bare's main. Before the fix this errored with
+	// "fatal: this operation must be run in a work tree" because core.bare=true
+	// leaked from shared config into the linked worktree.
+	runGitOrFatal(t, wt, "fetch", bare, "main")
+	if out, err := exec.Command("git", "-C", wt, "rebase", "FETCH_HEAD").CombinedOutput(); err != nil {
+		t.Fatalf("rebase in linked worktree should succeed, got err=%v output:\n%s", err, out)
+	}
+}
+
+// TestIsolateHooksPath_PushToGateStillWorks guards the other critical path:
+// after IsolateHooksPath moves core.bare to per-worktree scope, a normal
+// `git push` from a working repo to the gate must still land, and the
+// post-receive hook (resolved via the pinned core.hookspath) must still fire.
+func TestIsolateHooksPath_PushToGateStillWorks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("post-receive hook is /bin/sh-only")
+	}
+	ctx := context.Background()
+	base := t.TempDir()
+	bare := filepath.Join(base, "gate.git")
+	if err := InitBare(ctx, bare); err != nil {
+		t.Fatal(err)
+	}
+	work := seedGate(t, base, bare)
+
+	// Install a trivial post-receive hook that writes a marker file so we can
+	// confirm hookspath resolution still finds the bare's hooks dir.
+	hooksDir := filepath.Join(bare, "hooks")
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(base, "hook-ran")
+	hookScript := "#!/bin/sh\necho ran > " + marker + "\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(hooksDir, "post-receive"), []byte(hookScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := IsolateHooksPath(ctx, bare); err != nil {
+		t.Fatalf("IsolateHooksPath: %v", err)
+	}
+
+	// Make a second commit and push it. Push must succeed and the ref on the
+	// bare must advance to the new HEAD.
+	runGitOrFatal(t, work, "commit", "--allow-empty", "-m", "second")
+	newSHA := strings.TrimSpace(runGitOrFatal(t, work, "rev-parse", "HEAD"))
+	if out, err := exec.Command("git", "-C", work, "push", "gate", "HEAD:refs/heads/main").CombinedOutput(); err != nil {
+		t.Fatalf("push to gate should succeed, got err=%v output:\n%s", err, out)
+	}
+	if got := strings.TrimSpace(runGitOrFatal(t, bare, "rev-parse", "refs/heads/main")); got != newSHA {
+		t.Fatalf("bare refs/heads/main = %q, want %q (push did not advance ref)", got, newSHA)
+	}
+
+	// Hook fired via the per-worktree hookspath.
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("post-receive hook should have run, marker missing: %v", err)
+	}
+}
+
+// seedGate creates a working repo under base/work, wires it to the bare as a
+// remote, makes an initial commit, and pushes it as refs/heads/main. Returns
+// the working repo path.
+func seedGate(t *testing.T, base, bare string) string {
+	t.Helper()
+	work := filepath.Join(base, "work")
+	if out, err := exec.Command("git", "init", work).CombinedOutput(); err != nil {
+		t.Fatalf("init work: %v: %s", err, out)
+	}
+	runGitOrFatal(t, work, "config", "user.email", "t@t.com")
+	runGitOrFatal(t, work, "config", "user.name", "T")
+	runGitOrFatal(t, work, "remote", "add", "gate", bare)
+	runGitOrFatal(t, work, "commit", "--allow-empty", "-m", "init")
+	runGitOrFatal(t, work, "push", "gate", "HEAD:refs/heads/main")
+	return work
+}
+
+func runGitOrFatal(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s (in %s): %v: %s", strings.Join(args, " "), dir, err, out)
+	}
+	return string(out)
+}
+
+// TestIsolateHooksPath_MigratesFromPreFixState covers the upgrade path for
+// bare repos created by the previous version of IsolateHooksPath, which left
+// core.bare=true in shared config. Running the new IsolateHooksPath on that
+// state must relocate core.bare to per-worktree scope so linked worktrees
+// stop inheriting core.bare=true.
+func TestIsolateHooksPath_MigratesFromPreFixState(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("worktree + shell pipeline is /bin/sh-only")
+	}
+	ctx := context.Background()
+	base := t.TempDir()
+	bare := filepath.Join(base, "gate.git")
+	if err := InitBare(ctx, bare); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate the pre-fix state: extensions.worktreeConfig on, hookspath
+	// pinned per-worktree, but core.bare still in shared config.
+	hooksDir, err := filepath.Abs(filepath.Join(bare, "hooks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runGitOrFatal(t, bare, "config", "extensions.worktreeConfig", "true")
+	runGitOrFatal(t, bare, "config", "--worktree", "core.hookspath", hooksDir)
+
+	if err := IsolateHooksPath(ctx, bare); err != nil {
+		t.Fatalf("IsolateHooksPath: %v", err)
+	}
+
+	// core.bare must no longer be in shared config.
+	if out, err := exec.Command("git", "-C", bare, "config", "--local", "--get", "core.bare").CombinedOutput(); err == nil {
+		t.Fatalf("core.bare should have been removed from shared config, still set to %q", strings.TrimSpace(string(out)))
+	}
+	// core.bare must now be in per-worktree config with value true.
+	if got := strings.TrimSpace(runGitOrFatal(t, bare, "config", "--worktree", "--get", "core.bare")); got != "true" {
+		t.Fatalf("core.bare in config.worktree = %q, want %q", got, "true")
+	}
+	// Bare still reports as bare.
+	if got := strings.TrimSpace(runGitOrFatal(t, bare, "rev-parse", "--is-bare-repository")); got != "true" {
+		t.Fatalf("bare repo should still report is-bare-repository=true, got %q", got)
+	}
+}
+
 func TestIsolateHooksPath_Idempotent(t *testing.T) {
 	ctx := context.Background()
 	bare := filepath.Join(t.TempDir(), "test.git")
