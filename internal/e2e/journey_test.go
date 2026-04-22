@@ -105,12 +105,7 @@ func runHappyPath(t *testing.T, agentName string) {
 		t.Errorf("expected a document prompt in invocations, got %d:\n%s", len(invs), summarisePrompts(invs))
 	}
 
-	// The push step should have moved the upstream branch forward. We
-	// don't assert SHA equality (the worktree commits agent fixes which
-	// can change SHAs) - just that the run captured a head_sha.
-	if run.HeadSHA == "" {
-		t.Errorf("run completed without a recorded HeadSHA")
-	}
+	assertPushedHead(t, run.HeadSHA, h.UpstreamBranchSHA("feature/e2e"))
 
 	t.Logf("agent invocations: %d\n%s", len(invs), summarisePrompts(invs))
 	t.Logf("step outcomes:")
@@ -174,6 +169,13 @@ func assertStepsSkipped(t *testing.T, steps []ipc.StepResultInfo, expected ...ty
 	}
 }
 
+func assertPushedHead(t *testing.T, runHeadSHA, upstreamHeadSHA string) {
+	t.Helper()
+	for _, msg := range validatePushedHead(runHeadSHA, upstreamHeadSHA) {
+		t.Error(msg)
+	}
+}
+
 func validateSkippedSteps(steps []ipc.StepResultInfo, expected ...types.StepName) []string {
 	var errs []string
 	for _, name := range expected {
@@ -193,4 +195,14 @@ func validateSkippedSteps(steps []ipc.StepResultInfo, expected ...types.StepName
 		}
 	}
 	return errs
+}
+
+func validatePushedHead(runHeadSHA, upstreamHeadSHA string) []string {
+	if runHeadSHA == "" {
+		return []string{"run completed without a recorded HeadSHA"}
+	}
+	if upstreamHeadSHA != "" && runHeadSHA != upstreamHeadSHA {
+		return []string{"run HeadSHA = " + runHeadSHA + ", want upstream " + upstreamHeadSHA}
+	}
+	return nil
 }

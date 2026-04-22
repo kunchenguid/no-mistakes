@@ -264,6 +264,17 @@ func (h *Harness) PushToGate(branch string) {
 	}
 }
 
+func (h *Harness) UpstreamBranchSHA(branch string) string {
+	h.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	sha, err := h.runGit(ctx, h.UpstreamDir, "rev-parse", "refs/heads/"+branch)
+	if err != nil {
+		h.t.Fatalf("rev-parse upstream %s: %v\n%s", branch, err, sha)
+	}
+	return string(bytes.TrimSpace(sha))
+}
+
 // WaitForRun polls the daemon over IPC until a run for branch completes
 // (status != pending|running) or timeout expires. Returns the final
 // RunInfo so the test can assert on per-step outcomes.

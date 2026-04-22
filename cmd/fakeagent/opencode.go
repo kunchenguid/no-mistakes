@@ -179,7 +179,6 @@ func (s *fakeOpencodeServer) unsubscribe(ch chan []byte) {
 			break
 		}
 	}
-	close(ch)
 }
 
 // broadcast sends a synthetic SSE event payload (just the JSON body) to
