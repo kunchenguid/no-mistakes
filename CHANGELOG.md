@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.9.2](https://github.com/kunchenguid/no-mistakes/compare/v1.9.1...v1.9.2) (2026-04-22)
+
+
+### Bug Fixes
+
+* **git:** move core.bare into worktree config ([#130](https://github.com/kunchenguid/no-mistakes/issues/130)) ([75f20a9](https://github.com/kunchenguid/no-mistakes/commit/75f20a9027732ad121244a174f44f1a312b9f9d7))
+
 ## [1.9.1](https://github.com/kunchenguid/no-mistakes/compare/v1.9.0...v1.9.1) (2026-04-21)
 
 
