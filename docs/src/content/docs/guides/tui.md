@@ -154,6 +154,8 @@ The footer shows detach/help actions and, when `no-mistakes attach` has a cached
 | `+` | Add a user-authored finding |
 | `D` | Delete the current user-authored finding |
 
+When the instruction editor is open, press `Ctrl+s` to save or `esc` to cancel. In the add-finding editor, use `tab` / `shift+tab` to move between fields, `Ctrl+s` to save, and `esc` to cancel.
+
 ### View
 
 | Key | Action |
@@ -173,7 +175,7 @@ The action bar appears below the pipeline box when a step is awaiting approval:
 ```
 Review awaiting action:
  a approve  f fix (3/5)  s skip  x abort  d diff
- [space] toggle  A all  N none  e edit note  + add  D delete user
+ [space] toggle  e edit  + add  A all  N none
 ```
 
 The `f fix (3/5)` label shows how many findings are selected out of the total.
