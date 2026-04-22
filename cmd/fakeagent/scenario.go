@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -101,20 +102,41 @@ func (s *Scenario) Match(prompt string) Action {
 // scenario with a stale path doesn't kill the whole run.
 
 func applyEdits(edits []Edit) error {
+	wd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("get working directory: %w", err)
+	}
+	wd, err = filepath.Abs(wd)
+	if err != nil {
+		return fmt.Errorf("resolve working directory: %w", err)
+	}
+
 	var errs []error
 	for _, e := range edits {
 		if e.Path == "" {
 			continue
 		}
+		path, err := scenarioEditPath(wd, e.Path)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "fakeagent: %v\n", err)
+			errs = append(errs, err)
+			continue
+		}
 		if e.Old == "" {
-			if err := os.WriteFile(e.Path, []byte(e.New), 0o644); err != nil {
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				err = fmt.Errorf("mkdir %s: %w", e.Path, err)
+				fmt.Fprintf(os.Stderr, "fakeagent: %v\n", err)
+				errs = append(errs, err)
+				continue
+			}
+			if err := os.WriteFile(path, []byte(e.New), 0o644); err != nil {
 				err = fmt.Errorf("write %s: %w", e.Path, err)
 				fmt.Fprintf(os.Stderr, "fakeagent: %v\n", err)
 				errs = append(errs, err)
 			}
 			continue
 		}
-		data, err := os.ReadFile(e.Path)
+		data, err := os.ReadFile(path)
 		if err != nil {
 			err = fmt.Errorf("read %s: %w", e.Path, err)
 			fmt.Fprintf(os.Stderr, "fakeagent: %v\n", err)
@@ -128,13 +150,29 @@ func applyEdits(edits []Edit) error {
 			continue
 		}
 		updated := strings.Replace(string(data), e.Old, e.New, 1)
-		if err := os.WriteFile(e.Path, []byte(updated), 0o644); err != nil {
+		if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
 			err = fmt.Errorf("write %s: %w", e.Path, err)
 			fmt.Fprintf(os.Stderr, "fakeagent: %v\n", err)
 			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func scenarioEditPath(wd, path string) (string, error) {
+	if filepath.IsAbs(path) {
+		return "", fmt.Errorf("path %q must stay under working directory", path)
+	}
+	clean := filepath.Clean(path)
+	full := filepath.Join(wd, clean)
+	rel, err := filepath.Rel(wd, full)
+	if err != nil {
+		return "", fmt.Errorf("resolve %q: %w", path, err)
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("path %q must stay under working directory", path)
+	}
+	return full, nil
 }
 
 // structuredJSON marshals an action's Structured map. Empty structured

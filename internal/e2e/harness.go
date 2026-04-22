@@ -112,9 +112,11 @@ func NewHarness(t *testing.T, opts SetupOpts) *Harness {
 	// the directory contains <agent>/structured.{jsonl,*}, the fake
 	// replays those bytes verbatim instead of generating synthetic
 	// output. This is what makes the e2e a real wire-format check.
-	if root := defaultFixtureRoot(); root != "" {
-		t.Setenv("FAKEAGENT_FIXTURE", root)
+	root, err := defaultFixtureRoot()
+	if err != nil {
+		t.Fatalf("fixture root: %v", err)
 	}
+	t.Setenv("FAKEAGENT_FIXTURE", root)
 	// Skip launchd/systemd/schtasks installation in the daemon. Without
 	// this the daemon would touch the developer's real launch agents.
 	t.Setenv("NM_TEST_START_DAEMON", "1")
@@ -488,20 +490,21 @@ func executableName(base string) string {
 	return base
 }
 
-// defaultFixtureRoot returns the absolute path to internal/e2e/fixtures
-// if the directory exists, or "" if recorded fixtures haven't been
-// committed yet. The harness silently falls back to synthetic-output
-// mode in that case so a fresh checkout without fixtures still runs.
-func defaultFixtureRoot() string {
+// defaultFixtureRoot returns the absolute path to internal/e2e/fixtures.
+func defaultFixtureRoot() (string, error) {
 	root, err := findRepoRoot()
 	if err != nil {
-		return ""
+		return "", err
 	}
+	return fixtureRootFromRepoRoot(root)
+}
+
+func fixtureRootFromRepoRoot(root string) (string, error) {
 	dir := filepath.Join(root, "internal", "e2e", "fixtures")
 	if info, err := os.Stat(dir); err == nil && info.IsDir() {
-		return dir
+		return dir, nil
 	}
-	return ""
+	return "", fmt.Errorf("fixtures directory not found: %s", dir)
 }
 
 // findRepoRoot walks up from this source file's directory looking for
