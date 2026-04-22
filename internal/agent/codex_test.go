@@ -27,6 +27,55 @@ func TestCodexAgent_BuildArgs(t *testing.T) {
 	}
 }
 
+func TestCodexAgent_BuildArgs_ExtraArgsAfterExec(t *testing.T) {
+	ca := &codexAgent{bin: "codex", extraArgs: []string{"-m", "gpt-5.4"}}
+	args := ca.buildArgs("fix it")
+
+	expected := []string{
+		"exec",
+		"-m", "gpt-5.4",
+		"fix it",
+		"--json",
+		"--dangerously-bypass-approvals-and-sandbox",
+		"--color", "never",
+	}
+	if len(args) != len(expected) {
+		t.Fatalf("expected %d args, got %d: %v", len(expected), len(args), args)
+	}
+	for i, want := range expected {
+		if args[i] != want {
+			t.Errorf("arg[%d]: expected %q, got %q", i, want, args[i])
+		}
+	}
+}
+
+func TestCodexAgent_BuildArgs_UserExecutionModeSuppressesBypass(t *testing.T) {
+	tests := [][]string{
+		{"--ask-for-approval", "untrusted"},
+		{"--sandbox", "read-only"},
+		{"--sandbox=workspace-write"},
+		{"--dangerously-bypass-approvals-and-sandbox"},
+	}
+	for _, extra := range tests {
+		ca := &codexAgent{bin: "codex", extraArgs: extra}
+		args := ca.buildArgs("p")
+
+		bypassCount := 0
+		for _, a := range args {
+			if a == "--dangerously-bypass-approvals-and-sandbox" {
+				bypassCount++
+			}
+		}
+		if len(extra) == 1 && extra[0] == "--dangerously-bypass-approvals-and-sandbox" {
+			if bypassCount != 1 {
+				t.Errorf("extra=%v expected single bypass, got %d: %v", extra, bypassCount, args)
+			}
+		} else if bypassCount != 0 {
+			t.Errorf("extra=%v expected no default bypass, got: %v", extra, args)
+		}
+	}
+}
+
 func TestParseCodexEvents_AgentMessage(t *testing.T) {
 	events := strings.Join([]string{
 		`{"type":"item.completed","item":{"type":"agent_message","text":"{\"success\":true,\"summary\":\"done\"}"}}`,

@@ -20,13 +20,23 @@ func (a *opencodeAgent) ensureServer(ctx context.Context, cwd string) (string, e
 	if err != nil {
 		return "", fmt.Errorf("opencode port: %w", err)
 	}
-	args := []string{"serve", "--hostname", "127.0.0.1", "--port", fmt.Sprintf("%d", port), "--print-logs"}
+	args := buildOpencodeServeArgs(a.extraArgs, port)
 	srv, err := startServerWithPort(ctx, "opencode", a.bin, args, cwd, "/global/health", port)
 	if err != nil {
 		return "", fmt.Errorf("opencode server: %w", err)
 	}
 	a.server = srv
 	return srv.baseURL(), nil
+}
+
+// buildOpencodeServeArgs builds `opencode serve`'s argv with user-supplied
+// extras inserted after the "serve" subcommand and before the managed flags.
+func buildOpencodeServeArgs(extraArgs []string, port int) []string {
+	args := make([]string, 0, len(extraArgs)+6)
+	args = append(args, "serve")
+	args = append(args, extraArgs...)
+	args = append(args, "--hostname", "127.0.0.1", "--port", fmt.Sprintf("%d", port), "--print-logs")
+	return args
 }
 
 func (a *opencodeAgent) createSession(ctx context.Context, baseURL, cwd string) (string, error) {

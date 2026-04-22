@@ -15,9 +15,10 @@ import (
 // rovodevAgent starts a persistent HTTP server via `acli rovodev serve`
 // and sends requests via REST with SSE streaming.
 type rovodevAgent struct {
-	bin    string
-	mu     sync.Mutex
-	server *managedServer
+	bin       string
+	extraArgs []string
+	mu        sync.Mutex
+	server    *managedServer
 }
 
 func (a *rovodevAgent) Name() string { return "rovodev" }
@@ -71,13 +72,23 @@ func (a *rovodevAgent) ensureServer(ctx context.Context, cwd string) (string, er
 	if err != nil {
 		return "", fmt.Errorf("rovodev port: %w", err)
 	}
-	args := []string{"rovodev", "serve", "--disable-session-token", fmt.Sprintf("%d", port)}
+	args := buildRovodevServeArgs(a.extraArgs, port)
 	srv, err := startServerWithPort(ctx, "rovodev", a.bin, args, cwd, "/healthcheck", port)
 	if err != nil {
 		return "", fmt.Errorf("rovodev server: %w", err)
 	}
 	a.server = srv
 	return srv.baseURL(), nil
+}
+
+// buildRovodevServeArgs builds `acli`'s serve argv with user-supplied extras
+// inserted after the "rovodev serve" subcommands and before the managed flags.
+func buildRovodevServeArgs(extraArgs []string, port int) []string {
+	args := make([]string, 0, len(extraArgs)+4)
+	args = append(args, "rovodev", "serve")
+	args = append(args, extraArgs...)
+	args = append(args, "--disable-session-token", fmt.Sprintf("%d", port))
+	return args
 }
 
 func (a *rovodevAgent) Close() error {

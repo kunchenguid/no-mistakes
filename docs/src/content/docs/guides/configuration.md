@@ -57,6 +57,14 @@ agent_path_override:
   rovodev: /usr/local/bin/acli
   opencode: /usr/local/bin/opencode
 
+# Optional extra CLI flags per agent.
+# This is global-only.
+agent_args_override:
+  codex:
+    - -m
+    - gpt-5.4
+    - --full-auto
+
 # How long the CI step waits for provider CI status, and GitHub/GitLab PR mergeability, before timing out.
 ci_timeout: "4h"  # any Go duration string
 
@@ -114,6 +122,7 @@ See [Repo Config Reference](/no-mistakes/reference/repo-config/) for the full fi
 
 - Repo `agent` overrides global `agent`.
 - Global `agent: auto` resolves by checking `claude`, `codex`, `opencode`, then `acli` for `rovodev` on `PATH`.
+- `agent_path_override` and `agent_args_override` are global-only fields.
 - `auto_fix` from the repo config overlays global auto_fix. Fields not set in the repo config fall through to the global default.
 - `commands` and `ignore_patterns` are repo-only fields.
 - `ci_timeout` and `auto_fix.ci` are the canonical keys; `babysit_timeout` and `auto_fix.babysit` are still accepted as legacy aliases.
