@@ -18,21 +18,23 @@ import (
 
 // GlobalConfig represents ~/.no-mistakes/config.yaml.
 type GlobalConfig struct {
-	Agent             types.AgentName   `yaml:"agent"`
-	AgentPathOverride map[string]string `yaml:"agent_path_override"`
-	CITimeout         time.Duration     `yaml:"-"`
-	LogLevel          string            `yaml:"log_level"`
+	Agent             types.AgentName     `yaml:"agent"`
+	AgentPathOverride map[string]string   `yaml:"agent_path_override"`
+	AgentArgsOverride map[string][]string `yaml:"agent_args_override"`
+	CITimeout         time.Duration       `yaml:"-"`
+	LogLevel          string              `yaml:"log_level"`
 	AutoFix           AutoFixRaw
 }
 
 // globalConfigRaw is the on-disk YAML representation with duration as string.
 type globalConfigRaw struct {
-	Agent             types.AgentName   `yaml:"agent"`
-	AgentPathOverride map[string]string `yaml:"agent_path_override"`
-	CITimeout         string            `yaml:"ci_timeout"`
-	BabysitTimeout    string            `yaml:"babysit_timeout"`
-	LogLevel          string            `yaml:"log_level"`
-	AutoFix           AutoFixRaw        `yaml:"auto_fix"`
+	Agent             types.AgentName     `yaml:"agent"`
+	AgentPathOverride map[string]string   `yaml:"agent_path_override"`
+	AgentArgsOverride map[string][]string `yaml:"agent_args_override"`
+	CITimeout         string              `yaml:"ci_timeout"`
+	BabysitTimeout    string              `yaml:"babysit_timeout"`
+	LogLevel          string              `yaml:"log_level"`
+	AutoFix           AutoFixRaw          `yaml:"auto_fix"`
 }
 
 // RepoConfig represents .no-mistakes.yaml in a repo root.
@@ -77,6 +79,7 @@ type AutoFix struct {
 type Config struct {
 	Agent             types.AgentName
 	AgentPathOverride map[string]string
+	AgentArgsOverride map[string][]string
 	CITimeout         time.Duration
 	LogLevel          string
 	Commands          Commands
@@ -212,6 +215,78 @@ func (c *Config) AgentPath() string {
 	return string(c.Agent)
 }
 
+// AgentArgs returns extra CLI args for the configured agent, as declared in
+// agent_args_override. Returns nil when no override is set for this agent.
+func (c *Config) AgentArgs() []string {
+	if c.AgentArgsOverride == nil {
+		return nil
+	}
+	return c.AgentArgsOverride[string(c.Agent)]
+}
+
+// agentArgsOverrideAgents lists agent names accepted as keys in
+// agent_args_override.
+var agentArgsOverrideAgents = map[string]bool{
+	string(types.AgentClaude):   true,
+	string(types.AgentCodex):    true,
+	string(types.AgentRovoDev):  true,
+	string(types.AgentOpenCode): true,
+}
+
+// reservedAgentArgs lists flags that no-mistakes manages internally and that
+// users cannot override through agent_args_override. A flag is matched by its
+// bare form (e.g. "--color") as well as the "--color=value" form.
+var reservedAgentArgs = map[string]map[string]bool{
+	string(types.AgentClaude): {
+		"-p":              true,
+		"--print":         true,
+		"--verbose":       true,
+		"--output-format": true,
+		"--json-schema":   true,
+	},
+	string(types.AgentCodex): {
+		"exec":    true,
+		"--json":  true,
+		"--color": true,
+	},
+	string(types.AgentRovoDev): {
+		"rovodev":                 true,
+		"serve":                   true,
+		"--disable-session-token": true,
+	},
+	string(types.AgentOpenCode): {
+		"serve":        true,
+		"--hostname":   true,
+		"--port":       true,
+		"--print-logs": true,
+	},
+}
+
+// validateAgentArgsOverride ensures each agent key is a known agent name and
+// that no reserved flag appears. Empty args are rejected to catch trivially
+// broken YAML.
+func validateAgentArgsOverride(override map[string][]string) error {
+	for name, args := range override {
+		if !agentArgsOverrideAgents[name] {
+			return fmt.Errorf("invalid agent name in agent_args_override: %q (valid: claude, codex, rovodev, opencode)", name)
+		}
+		reserved := reservedAgentArgs[name]
+		for i, arg := range args {
+			if strings.TrimSpace(arg) == "" {
+				return fmt.Errorf("invalid agent_args_override.%s[%d]: empty arg", name, i)
+			}
+			base := arg
+			if idx := strings.Index(arg, "="); idx > 0 {
+				base = arg[:idx]
+			}
+			if reserved[base] {
+				return fmt.Errorf("invalid agent_args_override.%s[%d]: %q is managed by no-mistakes and cannot be overridden", name, i, arg)
+			}
+		}
+	}
+	return nil
+}
+
 // EnsureDefaultGlobalConfig writes the default config file at path if it does
 // not already exist. Failures are logged at debug level and silently ignored.
 func EnsureDefaultGlobalConfig(path string) {
@@ -256,6 +331,12 @@ func LoadGlobal(path string) (*GlobalConfig, error) {
 	}
 	if raw.AgentPathOverride != nil {
 		cfg.AgentPathOverride = raw.AgentPathOverride
+	}
+	if raw.AgentArgsOverride != nil {
+		if err := validateAgentArgsOverride(raw.AgentArgsOverride); err != nil {
+			return nil, err
+		}
+		cfg.AgentArgsOverride = raw.AgentArgsOverride
 	}
 	timeoutValue := raw.CITimeout
 	if timeoutValue == "" {
@@ -385,6 +466,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 	cfg := &Config{
 		Agent:             global.Agent,
 		AgentPathOverride: global.AgentPathOverride,
+		AgentArgsOverride: global.AgentArgsOverride,
 		CITimeout:         global.CITimeout,
 		LogLevel:          global.LogLevel,
 		Commands:          repo.Commands,

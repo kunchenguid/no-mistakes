@@ -67,17 +67,19 @@ func (u *TokenUsage) Add(other TokenUsage) {
 	u.CacheCreationTokens += other.CacheCreationTokens
 }
 
-// New creates an agent by name with the given binary path.
-func New(name types.AgentName, bin string) (Agent, error) {
+// New creates an agent by name with the given binary path. extraArgs are user
+// CLI flags (from agent_args_override in the global config) that the agent
+// injects into the underlying tool's argv ahead of no-mistakes' managed flags.
+func New(name types.AgentName, bin string, extraArgs []string) (Agent, error) {
 	switch name {
 	case types.AgentClaude:
-		return &claudeAgent{bin: bin}, nil
+		return &claudeAgent{bin: bin, extraArgs: extraArgs}, nil
 	case types.AgentCodex:
-		return &codexAgent{bin: bin}, nil
+		return &codexAgent{bin: bin, extraArgs: extraArgs}, nil
 	case types.AgentRovoDev:
-		return &rovodevAgent{bin: bin}, nil
+		return &rovodevAgent{bin: bin, extraArgs: extraArgs}, nil
 	case types.AgentOpenCode:
-		return &opencodeAgent{bin: bin}, nil
+		return &opencodeAgent{bin: bin, extraArgs: extraArgs}, nil
 	default:
 		return nil, fmt.Errorf("unknown agent %q; valid options: auto, claude, codex, rovodev, opencode (set 'agent' in ~/.no-mistakes/config.yaml)", name)
 	}

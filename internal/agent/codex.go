@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"strings"
 	"sync"
 )
 
 // codexAgent spawns the codex CLI for each invocation.
 type codexAgent struct {
-	bin string
+	bin       string
+	extraArgs []string
 }
 
 func (a *codexAgent) Name() string { return "codex" }
@@ -63,14 +65,37 @@ func (a *codexAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 
 func (a *codexAgent) Close() error { return nil }
 
-// buildArgs constructs the codex CLI arguments.
+// buildArgs constructs the codex CLI arguments. User-supplied extraArgs are
+// inserted between "exec" and the prompt so user flags (e.g. -m, --sandbox)
+// take effect. If the user declared their own execution-mode flag, the
+// default --dangerously-bypass-approvals-and-sandbox is not added.
 func (a *codexAgent) buildArgs(prompt string) []string {
-	return []string{
-		"exec", prompt,
-		"--json",
-		"--dangerously-bypass-approvals-and-sandbox",
-		"--color", "never",
+	args := make([]string, 0, len(a.extraArgs)+6)
+	args = append(args, "exec")
+	args = append(args, a.extraArgs...)
+	args = append(args, prompt, "--json")
+	if !codexUserSetExecutionMode(a.extraArgs) {
+		args = append(args, "--dangerously-bypass-approvals-and-sandbox")
 	}
+	args = append(args, "--color", "never")
+	return args
+}
+
+// codexUserSetExecutionMode reports whether extraArgs already declare an
+// execution/sandbox flag that conflicts with the default bypass.
+func codexUserSetExecutionMode(extraArgs []string) bool {
+	for _, arg := range extraArgs {
+		switch {
+		case arg == "--dangerously-bypass-approvals-and-sandbox",
+			arg == "--ask-for-approval",
+			arg == "--sandbox":
+			return true
+		case strings.HasPrefix(arg, "--ask-for-approval="),
+			strings.HasPrefix(arg, "--sandbox="):
+			return true
+		}
+	}
+	return false
 }
 
 // codexEvent is the top-level JSONL event from codex CLI.

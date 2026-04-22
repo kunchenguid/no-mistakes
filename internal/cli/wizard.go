@@ -44,7 +44,7 @@ type wizardAgentSuggester struct {
 	cfg     *config.Config
 	workDir string
 	resolve func(context.Context, *config.Config) error
-	new     func(types.AgentName, string) (agent.Agent, error)
+	new     func(types.AgentName, string, []string) (agent.Agent, error)
 
 	once sync.Once
 	ag   agent.Agent
@@ -57,7 +57,7 @@ type wizardAgentSuggester struct {
 	cachedCommit string
 }
 
-func newWizardAgentSuggester(cfg *config.Config, workDir string, resolve func(context.Context, *config.Config) error, new func(types.AgentName, string) (agent.Agent, error)) *wizardAgentSuggester {
+func newWizardAgentSuggester(cfg *config.Config, workDir string, resolve func(context.Context, *config.Config) error, new func(types.AgentName, string, []string) (agent.Agent, error)) *wizardAgentSuggester {
 	if resolve == nil {
 		resolve = resolveWizardAgent
 	}
@@ -73,7 +73,7 @@ func (s *wizardAgentSuggester) ensure(ctx context.Context) error {
 			s.err = fmt.Errorf("resolve agent: %w", err)
 			return
 		}
-		ag, err := s.new(s.cfg.Agent, s.cfg.AgentPath())
+		ag, err := s.new(s.cfg.Agent, s.cfg.AgentPath(), s.cfg.AgentArgs())
 		if err != nil {
 			s.err = fmt.Errorf("create agent: %w", err)
 			return

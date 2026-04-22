@@ -179,7 +179,7 @@ func newFakeSuggester(t *testing.T, ag *fakeSuggesterAgent) *wizardAgentSuggeste
 		&config.Config{Agent: types.AgentClaude},
 		"/tmp/repo",
 		func(context.Context, *config.Config) error { return nil },
-		func(types.AgentName, string) (agent.Agent, error) { return ag, nil },
+		func(types.AgentName, string, []string) (agent.Agent, error) { return ag, nil },
 	)
 }
 
@@ -300,7 +300,7 @@ func TestWizardAgentSuggester_EmptyRetryClearsCachedCommit(t *testing.T) {
 		&config.Config{Agent: types.AgentClaude},
 		"/tmp/repo",
 		func(context.Context, *config.Config) error { return nil },
-		func(types.AgentName, string) (agent.Agent, error) { return ag, nil },
+		func(types.AgentName, string, []string) (agent.Agent, error) { return ag, nil },
 	)
 	defer s.Close()
 

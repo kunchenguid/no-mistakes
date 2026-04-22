@@ -23,7 +23,7 @@ func TestNew_KnownAgents(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			a, err := New(tt.agent, tt.bin)
+			a, err := New(tt.agent, tt.bin, nil)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -35,7 +35,7 @@ func TestNew_KnownAgents(t *testing.T) {
 }
 
 func TestNew_Unknown(t *testing.T) {
-	_, err := New("nonexistent", "foo")
+	_, err := New("nonexistent", "foo", nil)
 	if err == nil {
 		t.Fatal("expected error for unknown agent")
 	}

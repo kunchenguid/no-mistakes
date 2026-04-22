@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"strings"
 	"sync"
 )
 
@@ -20,7 +21,8 @@ const claudeScannerMaxTokenSize = 256 * 1024 * 1024
 
 // claudeAgent spawns the claude CLI for each invocation.
 type claudeAgent struct {
-	bin string
+	bin       string
+	extraArgs []string
 }
 
 func (a *claudeAgent) Name() string { return "claude" }
@@ -117,18 +119,39 @@ func finalizeClaudeResult(result *claudeResult, schema json.RawMessage, usage To
 	}, nil
 }
 
-// buildArgs constructs the claude CLI arguments.
+// buildArgs constructs the claude CLI arguments. User-supplied extraArgs
+// (from agent_args_override in the global config) are inserted ahead of the
+// managed flags, so user choices win over no-mistakes' defaults. If the user
+// supplied their own permission mode, the default --dangerously-skip-permissions
+// is not added.
 func (a *claudeAgent) buildArgs(prompt string, schema json.RawMessage) []string {
-	args := []string{
+	args := make([]string, 0, len(a.extraArgs)+8)
+	args = append(args, a.extraArgs...)
+	args = append(args,
 		"-p", prompt,
 		"--verbose",
 		"--output-format", "stream-json",
-	}
+	)
 	if len(schema) > 0 {
 		args = append(args, "--json-schema", string(schema))
 	}
-	args = append(args, "--dangerously-skip-permissions")
+	if !claudeUserSetPermissionMode(a.extraArgs) {
+		args = append(args, "--dangerously-skip-permissions")
+	}
 	return args
+}
+
+// claudeUserSetPermissionMode reports whether extraArgs already declare a
+// permission flag, in which case buildArgs skips its default.
+func claudeUserSetPermissionMode(extraArgs []string) bool {
+	for _, arg := range extraArgs {
+		if arg == "--dangerously-skip-permissions" ||
+			arg == "--permission-mode" ||
+			strings.HasPrefix(arg, "--permission-mode=") {
+			return true
+		}
+	}
+	return false
 }
 
 // claudeEvent is the top-level JSONL event from claude CLI.

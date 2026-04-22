@@ -16,6 +16,12 @@ agent_path_override:
   rovodev: /usr/local/bin/acli
   opencode: /usr/local/bin/opencode
 
+agent_args_override:
+  codex:
+    - -m
+    - gpt-5.4
+    - --full-auto
+
 ci_timeout: "4h"
 
 log_level: info
@@ -60,6 +66,51 @@ Default binary names when no override is set:
 | `codex` | `codex` |
 | `rovodev` | `acli` |
 | `opencode` | `opencode` |
+
+### agent_args_override
+
+Extra CLI flags to pass to each agent. Use this to set model selection, reasoning effort, permission mode, or any other flag the underlying agent supports.
+
+| | |
+|---|---|
+| Type | `map[string][]string` |
+| Keys | `claude`, `codex`, `rovodev`, `opencode` |
+| Default | Empty (no extra flags) |
+
+User-supplied flags are inserted ahead of no-mistakes' managed flags, so your choices take precedence. A few flags are reserved because no-mistakes depends on them to communicate with the agent - setting any of these returns a config error on load:
+
+| Agent | Reserved flags |
+|---|---|
+| `claude` | `-p`, `--print`, `--verbose`, `--output-format`, `--json-schema` |
+| `codex` | `exec`, `--json`, `--color` |
+| `rovodev` | `rovodev`, `serve`, `--disable-session-token` |
+| `opencode` | `serve`, `--hostname`, `--port`, `--print-logs` |
+
+Smart defaults:
+
+- For `claude`, supplying `--permission-mode` (or `--dangerously-skip-permissions`) suppresses the default `--dangerously-skip-permissions`.
+- For `codex`, supplying `--ask-for-approval`, `--sandbox`, or `--dangerously-bypass-approvals-and-sandbox` suppresses the default `--dangerously-bypass-approvals-and-sandbox`.
+
+Example:
+
+```yaml
+agent_args_override:
+  claude:
+    - --model
+    - sonnet
+    - --permission-mode
+    - acceptEdits
+  codex:
+    - -m
+    - gpt-5.4
+    - --full-auto
+  rovodev:
+    - --profile
+    - work
+  opencode:
+    - --model
+    - gpt-5
+```
 
 ### ci_timeout
 

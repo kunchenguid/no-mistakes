@@ -48,6 +48,53 @@ func TestClaudeAgent_BuildArgs_NoSchema(t *testing.T) {
 	}
 }
 
+func TestClaudeAgent_BuildArgs_ExtraArgsPrepended(t *testing.T) {
+	ca := &claudeAgent{bin: "claude", extraArgs: []string{"--model", "sonnet"}}
+	args := ca.buildArgs("do it", nil)
+
+	expected := []string{
+		"--model", "sonnet",
+		"-p", "do it",
+		"--verbose",
+		"--output-format", "stream-json",
+		"--dangerously-skip-permissions",
+	}
+	if len(args) != len(expected) {
+		t.Fatalf("expected %d args, got %d: %v", len(expected), len(args), args)
+	}
+	for i, want := range expected {
+		if args[i] != want {
+			t.Errorf("arg[%d]: expected %q, got %q", i, want, args[i])
+		}
+	}
+}
+
+func TestClaudeAgent_BuildArgs_UserPermissionModeSuppressesDefault(t *testing.T) {
+	tests := [][]string{
+		{"--permission-mode", "acceptEdits"},
+		{"--permission-mode=plan"},
+		{"--dangerously-skip-permissions"},
+	}
+	for _, extra := range tests {
+		ca := &claudeAgent{bin: "claude", extraArgs: extra}
+		args := ca.buildArgs("p", nil)
+
+		dangerCount := 0
+		for _, a := range args {
+			if a == "--dangerously-skip-permissions" {
+				dangerCount++
+			}
+		}
+		if len(extra) == 1 && extra[0] == "--dangerously-skip-permissions" {
+			if dangerCount != 1 {
+				t.Errorf("extra=%v expected single --dangerously-skip-permissions, got %d: %v", extra, dangerCount, args)
+			}
+		} else if dangerCount != 0 {
+			t.Errorf("extra=%v expected no default --dangerously-skip-permissions, got: %v", extra, args)
+		}
+	}
+}
+
 func TestParseClaudeEvents_AssistantMessage(t *testing.T) {
 	events := `{"type":"assistant","message":{"usage":{"input_tokens":100,"output_tokens":50},"content":[{"type":"text","text":"hello world"}]}}
 `
