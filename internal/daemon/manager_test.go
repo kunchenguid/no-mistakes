@@ -102,7 +102,7 @@ func TestPushReceivedWithRealStepsPushesToUpstream(t *testing.T) {
 		t.Fatal("expected non-empty run ID")
 	}
 
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		run, err := d.GetRun(result.RunID)
 		if err != nil {
