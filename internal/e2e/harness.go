@@ -310,6 +310,7 @@ func (h *Harness) WaitForRun(branch string, timeout time.Duration) *ipc.RunInfo 
 			case types.RunCompleted, types.RunFailed, types.RunCancelled:
 				return r
 			}
+			break
 		}
 		time.Sleep(300 * time.Millisecond)
 	}

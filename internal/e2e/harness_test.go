@@ -4,10 +4,17 @@ package e2e
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 func TestFixtureRootFromRepoRoot(t *testing.T) {
@@ -77,5 +84,66 @@ func TestCommitChangeCreatesMissingBranchFromMain(t *testing.T) {
 	show := mustGit("show", "feature/new:hello.txt")
 	if show != "hello" {
 		t.Fatalf("hello.txt contents = %q, want %q", show, "hello")
+	}
+}
+
+func TestWaitForRunPrefersNewestRunOnBranch(t *testing.T) {
+	nmHome, err := os.MkdirTemp("/tmp", "nm-e2e-")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(nmHome) })
+	workDir := t.TempDir()
+	p := paths.WithRoot(nmHome)
+	if err := os.MkdirAll(nmHome, 0o755); err != nil {
+		t.Fatalf("mkdir nm home: %v", err)
+	}
+
+	server := ipc.NewServer()
+	var calls atomic.Int32
+	server.Handle(ipc.MethodGetRuns, func(_ context.Context, _ json.RawMessage) (interface{}, error) {
+		if calls.Add(1) == 1 {
+			return ipc.GetRunsResult{Runs: []ipc.RunInfo{
+				{ID: "run-new", RepoID: "ignored", Branch: "feature/e2e", Status: types.RunRunning, CreatedAt: 20, UpdatedAt: 20},
+				{ID: "run-old", RepoID: "ignored", Branch: "feature/e2e", Status: types.RunCompleted, CreatedAt: 10, UpdatedAt: 10},
+			}}, nil
+		}
+		return ipc.GetRunsResult{Runs: []ipc.RunInfo{
+			{ID: "run-new", RepoID: "ignored", Branch: "feature/e2e", Status: types.RunCompleted, CreatedAt: 20, UpdatedAt: 30},
+			{ID: "run-old", RepoID: "ignored", Branch: "feature/e2e", Status: types.RunCompleted, CreatedAt: 10, UpdatedAt: 10},
+		}}, nil
+	})
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- server.Serve(p.Socket())
+	}()
+	t.Cleanup(func() {
+		server.Close()
+		if err := <-errCh; err != nil {
+			t.Errorf("ipc server: %v", err)
+		}
+	})
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		client, err := ipc.Dial(p.Socket())
+		if err == nil {
+			client.Close()
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	h := &Harness{t: t, NMHome: nmHome, WorkDir: workDir}
+	run := h.WaitForRun("feature/e2e", 2*time.Second)
+	if run.ID != "run-new" {
+		t.Fatalf("WaitForRun returned %q, want newest run", run.ID)
+	}
+	if run.Status != types.RunCompleted {
+		t.Fatalf("WaitForRun status = %s, want %s", run.Status, types.RunCompleted)
+	}
+	if calls.Load() < 2 {
+		t.Fatalf("GetRuns calls = %d, want at least 2 polls", calls.Load())
 	}
 }
