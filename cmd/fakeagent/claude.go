@@ -89,6 +89,7 @@ func patchClaudeFixture(raw []byte, action Action) ([]byte, error) {
 		return raw, nil
 	}
 	structuredJSON := action.structuredJSON()
+	text := action.textOrDefault()
 	var out bytes.Buffer
 	for _, line := range bytes.Split(raw, []byte("\n")) {
 		if len(line) == 0 {
@@ -98,7 +99,21 @@ func patchClaudeFixture(raw []byte, action Action) ([]byte, error) {
 		var probe struct {
 			Type string `json:"type"`
 		}
-		if err := json.Unmarshal(line, &probe); err != nil || probe.Type != "result" {
+		if err := json.Unmarshal(line, &probe); err != nil {
+			out.Write(line)
+			out.WriteByte('\n')
+			continue
+		}
+		if probe.Type == "assistant" {
+			patched, err := patchClaudeAssistantEvent(line, text)
+			if err != nil {
+				return nil, err
+			}
+			out.Write(patched)
+			out.WriteByte('\n')
+			continue
+		}
+		if probe.Type != "result" {
 			out.Write(line)
 			out.WriteByte('\n')
 			continue
@@ -108,9 +123,7 @@ func patchClaudeFixture(raw []byte, action Action) ([]byte, error) {
 			return nil, fmt.Errorf("parse result event: %w", err)
 		}
 		event["structured_output"] = json.RawMessage(structuredJSON)
-		// Update the human-readable "result" string too, so logs make
-		// sense; parser doesn't read it but observers do.
-		event["result"] = action.textOrDefault()
+		event["result"] = text
 		patched, err := json.Marshal(event)
 		if err != nil {
 			return nil, fmt.Errorf("marshal patched result: %w", err)
@@ -119,6 +132,23 @@ func patchClaudeFixture(raw []byte, action Action) ([]byte, error) {
 		out.WriteByte('\n')
 	}
 	return out.Bytes(), nil
+}
+
+func patchClaudeAssistantEvent(line []byte, text string) ([]byte, error) {
+	var event map[string]any
+	if err := json.Unmarshal(line, &event); err != nil {
+		return nil, fmt.Errorf("parse assistant event: %w", err)
+	}
+	message, _ := event["message"].(map[string]any)
+	if message != nil {
+		message["content"] = []any{map[string]any{"type": "text", "text": text}}
+		event["message"] = message
+	}
+	patched, err := json.Marshal(event)
+	if err != nil {
+		return nil, fmt.Errorf("marshal patched assistant: %w", err)
+	}
+	return patched, nil
 }
 
 func hasClaudeSchema(args []string) bool {

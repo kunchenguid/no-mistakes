@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -50,6 +51,43 @@ func TestApplyEditsRejectsPathsOutsideWorkingDirectory(t *testing.T) {
 	}
 	if _, statErr := os.Stat(outside); !os.IsNotExist(statErr) {
 		t.Fatalf("outside file exists or unexpected error: %v", statErr)
+	}
+}
+
+func TestApplyEditsRejectsSymlinkPathsOutsideWorkingDirectory(t *testing.T) {
+	dir := t.TempDir()
+	outsideDir := t.TempDir()
+	outside := filepath.Join(outsideDir, "outside.txt")
+
+	linkPath := filepath.Join(dir, "escape")
+	if err := os.Symlink(outsideDir, linkPath); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir temp dir: %v", err)
+	}
+	defer os.Chdir(wd)
+
+	err = applyEdits([]Edit{{Path: filepath.Join("escape", "outside.txt"), New: "hello\n"}})
+	if err == nil {
+		t.Fatal("applyEdits succeeded, want error")
+	}
+	if _, statErr := os.Stat(outside); !os.IsNotExist(statErr) {
+		t.Fatalf("outside file exists or unexpected error: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(linkPath, "outside.txt")); !os.IsNotExist(statErr) {
+		t.Fatalf("symlink target file exists or unexpected error: %v", statErr)
+	}
+	if !strings.Contains(err.Error(), "working directory") {
+		t.Fatalf("error = %q, want working directory violation", err)
+	}
+	if !strings.Contains(err.Error(), "escape/outside.txt") {
+		t.Fatalf("error = %q, want offending path", err)
 	}
 }
 

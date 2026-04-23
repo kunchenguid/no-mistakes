@@ -172,7 +172,45 @@ func scenarioEditPath(wd, path string) (string, error) {
 	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("path %q must stay under working directory", path)
 	}
+	base, err := scenarioExistingBasePath(full)
+	if err != nil {
+		return "", fmt.Errorf("resolve %q: %w", path, err)
+	}
+	if err := scenarioPathWithinWorkingDirectory(wd, base); err != nil {
+		return "", fmt.Errorf("path %q must stay under working directory", path)
+	}
 	return full, nil
+}
+
+func scenarioExistingBasePath(path string) (string, error) {
+	current := path
+	for {
+		if _, err := os.Lstat(current); err == nil {
+			return filepath.EvalSymlinks(current)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+		next := filepath.Dir(current)
+		if next == current {
+			return "", fmt.Errorf("no existing path for %q", path)
+		}
+		current = next
+	}
+}
+
+func scenarioPathWithinWorkingDirectory(wd, path string) error {
+	resolvedWD, err := filepath.EvalSymlinks(wd)
+	if err != nil {
+		resolvedWD = wd
+	}
+	rel, err := filepath.Rel(resolvedWD, path)
+	if err != nil {
+		return err
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("path escapes working directory")
+	}
+	return nil
 }
 
 // structuredJSON marshals an action's Structured map. Empty structured
