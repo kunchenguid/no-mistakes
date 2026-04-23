@@ -106,7 +106,11 @@ func applyEdits(edits []Edit) error {
 	if err != nil {
 		return fmt.Errorf("get working directory: %w", err)
 	}
-	wd, err = filepath.Abs(wd)
+	return applyEditsInDir(wd, edits)
+}
+
+func applyEditsInDir(wd string, edits []Edit) error {
+	wd, err := filepath.Abs(wd)
 	if err != nil {
 		return fmt.Errorf("resolve working directory: %w", err)
 	}

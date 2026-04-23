@@ -141,7 +141,7 @@ func patchClaudeAssistantEvent(line []byte, text string) ([]byte, error) {
 	}
 	message, _ := event["message"].(map[string]any)
 	if message != nil {
-		message["content"] = []any{map[string]any{"type": "text", "text": text}}
+		message["content"] = patchClaudeAssistantContent(message["content"], text)
 		event["message"] = message
 	}
 	patched, err := json.Marshal(event)
@@ -149,6 +149,40 @@ func patchClaudeAssistantEvent(line []byte, text string) ([]byte, error) {
 		return nil, fmt.Errorf("marshal patched assistant: %w", err)
 	}
 	return patched, nil
+}
+
+func patchClaudeAssistantContent(raw any, text string) []any {
+	items, _ := raw.([]any)
+	if len(items) == 0 {
+		return []any{map[string]any{"type": "text", "text": text}}
+	}
+	patched := make([]any, 0, len(items))
+	replaced := false
+	for _, item := range items {
+		content, ok := item.(map[string]any)
+		if !ok {
+			patched = append(patched, item)
+			continue
+		}
+		if content["type"] != "text" {
+			patched = append(patched, content)
+			continue
+		}
+		if replaced {
+			continue
+		}
+		copyItem := make(map[string]any, len(content))
+		for k, v := range content {
+			copyItem[k] = v
+		}
+		copyItem["text"] = text
+		patched = append(patched, copyItem)
+		replaced = true
+	}
+	if !replaced {
+		patched = append(patched, map[string]any{"type": "text", "text": text})
+	}
+	return patched
 }
 
 func hasClaudeSchema(args []string) bool {

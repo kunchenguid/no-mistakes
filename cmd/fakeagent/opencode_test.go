@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -106,9 +107,9 @@ func TestOpencodeFixtureRewritesSessionIDsPerRequest(t *testing.T) {
 
 	fixture := &opencodeFixture{
 		sessionID: "ses_recorded",
-		session: []byte(`{"id":"ses_recorded","slug":"recorded"}`),
-		sse:     []byte("data: {\"payload\":{\"type\":\"message.updated\",\"properties\":{\"sessionID\":\"ses_recorded\",\"info\":{\"sessionID\":\"ses_recorded\"}}}}\n\ndata: {\"payload\":{\"type\":\"session.idle\",\"properties\":{\"sessionID\":\"ses_recorded\"}}}\n\n"),
-		message: []byte(`{"info":{"id":"msg-123","role":"assistant","sessionID":"ses_recorded"},"parts":[{"type":"text","sessionID":"ses_recorded","messageID":"msg-123"}]}`),
+		session:   []byte(`{"id":"ses_recorded","slug":"recorded"}`),
+		sse:       []byte("data: {\"payload\":{\"type\":\"message.updated\",\"properties\":{\"sessionID\":\"ses_recorded\",\"info\":{\"sessionID\":\"ses_recorded\"}}}}\n\ndata: {\"payload\":{\"type\":\"session.idle\",\"properties\":{\"sessionID\":\"ses_recorded\"}}}\n\n"),
+		message:   []byte(`{"info":{"id":"msg-123","role":"assistant","sessionID":"ses_recorded"},"parts":[{"type":"text","sessionID":"ses_recorded","messageID":"msg-123"}]}`),
 	}
 
 	firstSession, err := rewriteOpencodeFixtureSession(fixture, "ses_first")
@@ -146,5 +147,54 @@ func TestOpencodeFixtureRewritesSessionIDsPerRequest(t *testing.T) {
 	}
 	if bytes.Contains(rewrittenMessage, []byte("ses_recorded")) {
 		t.Fatalf("rewritten message = %s, want recorded session ID removed", rewrittenMessage)
+	}
+}
+
+func TestFakeOpencodeServerAppliesEditsInSessionDirectory(t *testing.T) {
+	t.Helper()
+
+	wd := t.TempDir()
+	dir := filepath.Join(wd, "session-dir")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+	t.Chdir(wd)
+
+	srv := newFakeOpencodeServer(&Scenario{Actions: []Action{{
+		Match: "fix",
+		Edits: []Edit{{Path: filepath.Join("nested", "note.txt"), New: "hello\n"}},
+	}}})
+
+	createReq := httptest.NewRequest(http.MethodPost, "/session", strings.NewReader(fmt.Sprintf(`{"directory":%q}`, dir)))
+	createReq.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create session status = %d, want %d", createRec.Code, http.StatusOK)
+	}
+
+	var session struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(createRec.Body.Bytes(), &session); err != nil {
+		t.Fatalf("unmarshal session: %v", err)
+	}
+	if session.ID == "" {
+		t.Fatal("expected session id")
+	}
+
+	msgReq := httptest.NewRequest(http.MethodPost, "/session/"+session.ID+"/message", strings.NewReader(`{"parts":[{"type":"text","text":"please fix this"}]}`))
+	msgReq.Header.Set("Content-Type", "application/json")
+	msgRec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(msgRec, msgReq)
+	if msgRec.Code != http.StatusOK {
+		t.Fatalf("message status = %d, want %d", msgRec.Code, http.StatusOK)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, "nested", "note.txt")); err != nil {
+		t.Fatalf("expected edit in session directory: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(wd, "nested", "note.txt")); !os.IsNotExist(err) {
+		t.Fatalf("working directory edit err = %v, want not exist", err)
 	}
 }

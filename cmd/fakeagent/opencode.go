@@ -69,6 +69,7 @@ type fakeOpencodeServer struct {
 
 	mu          sync.Mutex
 	subscribers []chan []byte // active /global/event listeners (one per request)
+	sessionDirs map[string]string
 	sessionSeq  int
 	msgSeq      int
 }
@@ -85,7 +86,7 @@ type opencodeFixture struct {
 }
 
 func newFakeOpencodeServer(scenario *Scenario) *fakeOpencodeServer {
-	srv := &fakeOpencodeServer{scenario: scenario}
+	srv := &fakeOpencodeServer{scenario: scenario, sessionDirs: make(map[string]string)}
 	if dir := fixtureDir("opencode"); dir != "" {
 		if fx, err := loadOpencodeFixture(dir, "structured"); err == nil {
 			srv.fixture = fx
@@ -238,7 +239,25 @@ func (s *fakeOpencodeServer) handleSessionRoot(w http.ResponseWriter, r *http.Re
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	var body struct {
+		Directory string `json:"directory"`
+	}
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, context.Canceled) {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+	if body.Directory == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		body.Directory = wd
+	}
 	id := s.nextSessionID()
+	s.recordSessionDir(id, body.Directory)
 	if s.fixture != nil {
 		patched, err := rewriteOpencodeFixtureSession(s.fixture, id)
 		if err != nil {
@@ -272,6 +291,7 @@ func (s *fakeOpencodeServer) handleSessionPath(w http.ResponseWriter, r *http.Re
 	sessionID := parts[0]
 	switch {
 	case len(parts) == 1 && r.Method == http.MethodDelete:
+		s.forgetSessionDir(sessionID)
 		w.WriteHeader(http.StatusOK)
 	case len(parts) == 2 && parts[1] == "abort" && r.Method == http.MethodPost:
 		w.WriteHeader(http.StatusOK)
@@ -280,6 +300,24 @@ func (s *fakeOpencodeServer) handleSessionPath(w http.ResponseWriter, r *http.Re
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func (s *fakeOpencodeServer) recordSessionDir(sessionID, dir string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sessionDirs[sessionID] = dir
+}
+
+func (s *fakeOpencodeServer) sessionDir(sessionID string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sessionDirs[sessionID]
+}
+
+func (s *fakeOpencodeServer) forgetSessionDir(sessionID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.sessionDirs, sessionID)
 }
 
 // handleMessage is the heart of the fake. It pulls the prompt out of the
@@ -314,7 +352,7 @@ func (s *fakeOpencodeServer) handleMessage(w http.ResponseWriter, r *http.Reques
 		// substituted so happy-path tests don't depend on whatever
 		// the live model returned at recording time.
 		action := s.scenario.Match(prompt)
-		if err := applyEdits(action.Edits); err != nil {
+		if err := applyEditsInDir(s.sessionDir(sessionID), action.Edits); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -337,7 +375,7 @@ func (s *fakeOpencodeServer) handleMessage(w http.ResponseWriter, r *http.Reques
 	}
 
 	action := s.scenario.Match(prompt)
-	if err := applyEdits(action.Edits); err != nil {
+	if err := applyEditsInDir(s.sessionDir(sessionID), action.Edits); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

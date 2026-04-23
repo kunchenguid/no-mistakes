@@ -57,3 +57,42 @@ func TestPatchClaudeFixtureStructuredRunRewritesAssistantText(t *testing.T) {
 		t.Fatalf("structured_output = %s, want patched payload", result.StructuredOutput)
 	}
 }
+
+func TestPatchClaudeFixtureStructuredRunPreservesNonTextAssistantContent(t *testing.T) {
+	t.Helper()
+
+	raw := []byte("{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"thinking\",\"thinking\":\"recorded thinking\"},{\"type\":\"tool_use\",\"name\":\"Read\"},{\"type\":\"text\",\"text\":\"recorded assistant text\"}]}}\n{\"type\":\"result\",\"result\":\"recorded result\",\"structured_output\":{\"summary\":\"recorded summary\"}}\n")
+	patched, err := patchClaudeFixture(raw, Action{
+		Text:       "scenario text",
+		Structured: map[string]any{"summary": "patched summary"},
+	})
+	if err != nil {
+		t.Fatalf("patchClaudeFixture: %v", err)
+	}
+
+	lines := bytes.Split(bytes.TrimSpace(patched), []byte("\n"))
+	if len(lines) != 2 {
+		t.Fatalf("got %d jsonl lines, want 2", len(lines))
+	}
+
+	var assistant struct {
+		Message struct {
+			Content []map[string]any `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal(lines[0], &assistant); err != nil {
+		t.Fatalf("unmarshal assistant event: %v", err)
+	}
+	if len(assistant.Message.Content) != 3 {
+		t.Fatalf("assistant content len = %d, want 3", len(assistant.Message.Content))
+	}
+	if assistant.Message.Content[0]["type"] != "thinking" {
+		t.Fatalf("first content type = %v, want thinking", assistant.Message.Content[0]["type"])
+	}
+	if assistant.Message.Content[1]["type"] != "tool_use" {
+		t.Fatalf("second content type = %v, want tool_use", assistant.Message.Content[1]["type"])
+	}
+	if assistant.Message.Content[2]["type"] != "text" || assistant.Message.Content[2]["text"] != "scenario text" {
+		t.Fatalf("third content = %+v, want patched text item", assistant.Message.Content[2])
+	}
+}
