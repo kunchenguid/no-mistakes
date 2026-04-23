@@ -127,7 +127,7 @@ func TestOpencodeFixtureRewritesSessionIDsPerRequest(t *testing.T) {
 		t.Fatal("rewritten session payload should not keep recorded session ID")
 	}
 
-	rewrittenSSE, err := rewriteOpencodeFixtureSSE(fixture, "ses_first")
+	rewrittenSSE, err := rewriteOpencodeFixtureSSE(fixture, Action{Structured: map[string]any{"summary": "ok"}}, "ses_first")
 	if err != nil {
 		t.Fatalf("rewrite sse: %v", err)
 	}
@@ -147,6 +147,69 @@ func TestOpencodeFixtureRewritesSessionIDsPerRequest(t *testing.T) {
 	}
 	if bytes.Contains(rewrittenMessage, []byte("ses_recorded")) {
 		t.Fatalf("rewritten message = %s, want recorded session ID removed", rewrittenMessage)
+	}
+}
+
+func TestFakeOpencodeFixturePlainRunRewritesRecordedText(t *testing.T) {
+	t.Helper()
+
+	srv := newFakeOpencodeServer(&Scenario{Actions: []Action{{
+		Match: "plain",
+		Text:  "scenario text",
+	}}})
+	srv.fixture = &opencodeFixture{
+		sessionID: "ses_recorded",
+		session:   []byte(`{"id":"ses_recorded"}`),
+		sse: []byte(strings.Join([]string{
+			`data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"ses_recorded","part":{"id":"p1","messageID":"msg-123","sessionID":"ses_recorded","type":"text","text":"recorded text","metadata":{"openai":{"phase":"final_answer"}}}}}}`,
+			"",
+			`data: {"payload":{"type":"message.part.delta","properties":{"sessionID":"ses_recorded","partID":"p1","field":"text","delta":"recorded text"}}}`,
+			"",
+			`data: {"payload":{"type":"session.idle","properties":{"sessionID":"ses_recorded"}}}`,
+			"",
+		}, "\n")),
+		message: []byte(`{"info":{"id":"msg-123","role":"assistant","sessionID":"ses_recorded"},"parts":[{"type":"text","text":"recorded text","metadata":{"openai":{"phase":"final_answer"}}}]}`),
+	}
+
+	createReq := httptest.NewRequest(http.MethodPost, "/session", strings.NewReader(`{"directory":"`+t.TempDir()+`"}`))
+	createReq.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create session status = %d, want %d", createRec.Code, http.StatusOK)
+	}
+
+	var session struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(createRec.Body.Bytes(), &session); err != nil {
+		t.Fatalf("unmarshal session: %v", err)
+	}
+
+	ch := make(chan []byte, 1)
+	srv.subscribe(ch)
+	defer srv.unsubscribe(ch)
+
+	msgReq := httptest.NewRequest(http.MethodPost, "/session/"+session.ID+"/message", strings.NewReader(`{"parts":[{"type":"text","text":"plain prompt"}]}`))
+	msgReq.Header.Set("Content-Type", "application/json")
+	msgRec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(msgRec, msgReq)
+	if msgRec.Code != http.StatusOK {
+		t.Fatalf("message status = %d, want %d", msgRec.Code, http.StatusOK)
+	}
+
+	broadcast := <-ch
+	if !bytes.Contains(broadcast, []byte("scenario text")) {
+		t.Fatalf("broadcast = %s, want scenario text", broadcast)
+	}
+	if bytes.Contains(broadcast, []byte("recorded text")) {
+		t.Fatalf("broadcast = %s, want recorded text removed", broadcast)
+	}
+	if !bytes.Contains(msgRec.Body.Bytes(), []byte("scenario text")) {
+		t.Fatalf("message = %s, want scenario text", msgRec.Body.Bytes())
+	}
+	if bytes.Contains(msgRec.Body.Bytes(), []byte("recorded text")) {
+		t.Fatalf("message = %s, want recorded text removed", msgRec.Body.Bytes())
 	}
 }
 

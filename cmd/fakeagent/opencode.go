@@ -356,7 +356,7 @@ func (s *fakeOpencodeServer) handleMessage(w http.ResponseWriter, r *http.Reques
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		framed, err := rewriteOpencodeFixtureSSE(s.fixture, sessionID)
+		framed, err := rewriteOpencodeFixtureSSE(s.fixture, action, sessionID)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "fakeagent: opencode sse patch: %v\n", err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -492,9 +492,6 @@ func writeJSON(w http.ResponseWriter, v any) {
 // rest of the response (info.id, role, tokens, parts shape) stays
 // faithful to what real opencode emitted.
 func patchOpencodeMessage(raw []byte, action Action) ([]byte, error) {
-	if action.Structured == nil {
-		return raw, nil
-	}
 	var resp map[string]any
 	if err := json.Unmarshal(raw, &resp); err != nil {
 		return nil, fmt.Errorf("parse message: %w", err)
@@ -503,8 +500,11 @@ func patchOpencodeMessage(raw []byte, action Action) ([]byte, error) {
 	if info == nil {
 		return nil, fmt.Errorf("parse message: missing info object")
 	}
-	info["structured"] = json.RawMessage(action.structuredJSON())
+	if action.Structured != nil {
+		info["structured"] = json.RawMessage(action.structuredJSON())
+	}
 	resp["info"] = info
+	patchOpencodeMessageParts(resp, action.textOrDefault())
 	return json.Marshal(resp)
 }
 
@@ -515,9 +515,13 @@ func rewriteOpencodeFixtureSession(fixture *opencodeFixture, sessionID string) (
 	return rewriteOpencodeFixtureJSON(fixture.session, fixture.sessionID, sessionID)
 }
 
-func rewriteOpencodeFixtureSSE(fixture *opencodeFixture, sessionID string) ([]byte, error) {
+func rewriteOpencodeFixtureSSE(fixture *opencodeFixture, action Action, sessionID string) ([]byte, error) {
 	if fixture == nil {
 		return nil, fmt.Errorf("rewrite sse: missing fixture")
+	}
+	textPatcher, err := newOpencodeSSETextPatcher(fixture.sse)
+	if err != nil {
+		return nil, err
 	}
 	var out bytes.Buffer
 	for _, line := range bytes.Split(fixture.sse, []byte("\n")) {
@@ -527,7 +531,12 @@ func rewriteOpencodeFixtureSSE(fixture *opencodeFixture, sessionID string) ([]by
 			out.WriteByte('\n')
 			continue
 		}
-		patched, err := rewriteOpencodeFixtureJSON(bytes.TrimSpace(trimmed[len("data:"):]), fixture.sessionID, sessionID)
+		payload := bytes.TrimSpace(trimmed[len("data:"):])
+		patched, err := textPatcher.patch(payload, action.textOrDefault())
+		if err != nil {
+			return nil, fmt.Errorf("patch sse event: %w", err)
+		}
+		patched, err = rewriteOpencodeFixtureJSON(patched, fixture.sessionID, sessionID)
 		if err != nil {
 			return nil, fmt.Errorf("rewrite sse event: %w", err)
 		}
@@ -547,6 +556,174 @@ func rewriteOpencodeFixtureMessage(fixture *opencodeFixture, action Action, sess
 		return nil, err
 	}
 	return rewriteOpencodeFixtureJSON(patched, fixture.sessionID, sessionID)
+}
+
+type opencodeSSETextPatcher struct {
+	targetPartIDs map[string]bool
+	deltaCounts   map[string]int
+	updateTotals  map[string]int
+	updateSeen    map[string]int
+	deltaSeen     map[string]int
+}
+
+func newOpencodeSSETextPatcher(raw []byte) (*opencodeSSETextPatcher, error) {
+	assistantMsgIDs := make(map[string]bool)
+	assistantTextPartIDs := make(map[string]bool)
+	finalAnswerPartIDs := make(map[string]bool)
+	deltaCounts := make(map[string]int)
+	updateTotals := make(map[string]int)
+
+	for _, line := range bytes.Split(raw, []byte("\n")) {
+		trimmed := bytes.TrimSpace(line)
+		if !bytes.HasPrefix(trimmed, []byte("data:")) {
+			continue
+		}
+		var event map[string]any
+		if err := json.Unmarshal(bytes.TrimSpace(trimmed[len("data:"):]), &event); err != nil {
+			return nil, fmt.Errorf("parse sse event: %w", err)
+		}
+		payload, _ := event["payload"].(map[string]any)
+		if payload == nil {
+			continue
+		}
+		switch payload["type"] {
+		case "message.updated":
+			props, _ := payload["properties"].(map[string]any)
+			info, _ := props["info"].(map[string]any)
+			if info == nil || info["role"] != "assistant" {
+				continue
+			}
+			if id, _ := info["id"].(string); id != "" {
+				assistantMsgIDs[id] = true
+			}
+		case "message.part.updated":
+			props, _ := payload["properties"].(map[string]any)
+			part, _ := props["part"].(map[string]any)
+			if part == nil || part["type"] != "text" {
+				continue
+			}
+			messageID, _ := part["messageID"].(string)
+			partID, _ := part["id"].(string)
+			if partID == "" {
+				continue
+			}
+			metadata, _ := part["metadata"].(map[string]any)
+			openai, _ := metadata["openai"].(map[string]any)
+			phase, _ := openai["phase"].(string)
+			if assistantMsgIDs[messageID] || phase == "final_answer" {
+				assistantTextPartIDs[partID] = true
+				updateTotals[partID]++
+			}
+			if phase == "final_answer" {
+				finalAnswerPartIDs[partID] = true
+			}
+		case "message.part.delta":
+			props, _ := payload["properties"].(map[string]any)
+			partID, _ := props["partID"].(string)
+			if partID != "" {
+				deltaCounts[partID]++
+			}
+		}
+	}
+
+	targetPartIDs := make(map[string]bool)
+	if len(finalAnswerPartIDs) > 0 {
+		for partID := range finalAnswerPartIDs {
+			targetPartIDs[partID] = true
+		}
+	} else {
+		for partID := range assistantTextPartIDs {
+			targetPartIDs[partID] = true
+		}
+	}
+
+	return &opencodeSSETextPatcher{
+		targetPartIDs: targetPartIDs,
+		deltaCounts:   deltaCounts,
+		updateTotals:  updateTotals,
+		updateSeen:    make(map[string]int),
+		deltaSeen:     make(map[string]int),
+	}, nil
+}
+
+func (p *opencodeSSETextPatcher) patch(raw []byte, text string) ([]byte, error) {
+	var event map[string]any
+	if err := json.Unmarshal(raw, &event); err != nil {
+		return nil, fmt.Errorf("parse json: %w", err)
+	}
+	payload, _ := event["payload"].(map[string]any)
+	if payload == nil {
+		return raw, nil
+	}
+	props, _ := payload["properties"].(map[string]any)
+	switch payload["type"] {
+	case "message.part.updated":
+		part, _ := props["part"].(map[string]any)
+		partID, _ := part["id"].(string)
+		if !p.targetPartIDs[partID] || part["type"] != "text" {
+			return raw, nil
+		}
+		p.updateSeen[partID]++
+		if p.deltaCounts[partID] > 0 {
+			if p.updateTotals[partID] == 1 || p.updateSeen[partID] < p.updateTotals[partID] {
+				part["text"] = ""
+			} else {
+				part["text"] = text
+			}
+		} else {
+			part["text"] = text
+		}
+	case "message.part.delta":
+		partID, _ := props["partID"].(string)
+		field, _ := props["field"].(string)
+		if !p.targetPartIDs[partID] || field != "text" {
+			return raw, nil
+		}
+		p.deltaSeen[partID]++
+		if p.deltaSeen[partID] == 1 {
+			props["delta"] = text
+		} else {
+			props["delta"] = ""
+		}
+	}
+	return json.Marshal(event)
+}
+
+func patchOpencodeMessageParts(resp map[string]any, text string) {
+	parts, _ := resp["parts"].([]any)
+	if len(parts) == 0 {
+		return
+	}
+	targetIndexes := make([]int, 0)
+	finalAnswerIndexes := make([]int, 0)
+	for i, rawPart := range parts {
+		part, _ := rawPart.(map[string]any)
+		if part == nil || part["type"] != "text" {
+			continue
+		}
+		targetIndexes = append(targetIndexes, i)
+		metadata, _ := part["metadata"].(map[string]any)
+		openai, _ := metadata["openai"].(map[string]any)
+		if phase, _ := openai["phase"].(string); phase == "final_answer" {
+			finalAnswerIndexes = append(finalAnswerIndexes, i)
+		}
+	}
+	if len(finalAnswerIndexes) > 0 {
+		targetIndexes = finalAnswerIndexes
+	}
+	for i, idx := range targetIndexes {
+		part, _ := parts[idx].(map[string]any)
+		if part == nil {
+			continue
+		}
+		if i == len(targetIndexes)-1 {
+			part["text"] = text
+		} else {
+			part["text"] = ""
+		}
+		parts[idx] = part
+	}
+	resp["parts"] = parts
 }
 
 func rewriteOpencodeFixtureJSON(raw []byte, recordedSessionID, sessionID string) ([]byte, error) {
