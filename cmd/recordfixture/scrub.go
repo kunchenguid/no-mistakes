@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -30,8 +31,8 @@ func scrubFile(path string) error {
 
 func scrubBytes(data []byte) []byte {
 	out := data
-	out = scrubHomeDir(out)
 	out = scrubTempDir(out)
+	out = scrubHomeDir(out)
 	out = scrubClaudeHookEvents(out)
 	return out
 }
@@ -41,13 +42,12 @@ func scrubHomeDir(data []byte) []byte {
 	if err != nil || u.HomeDir == "" {
 		return data
 	}
-	home := u.HomeDir
 	const placeholder = "/private/tmp/fixture-cwd"
-	out := bytes.ReplaceAll(data, []byte(home), []byte(placeholder))
+	out := replacePathForms(data, u.HomeDir, placeholder)
 	// macOS reports /private/var/... while os.UserHomeDir reports
 	// /Users/...; both forms can co-occur in transcripts.
-	if resolved, err := filepath.EvalSymlinks(home); err == nil && resolved != home {
-		out = bytes.ReplaceAll(out, []byte(resolved), []byte(placeholder))
+	if resolved, err := filepath.EvalSymlinks(u.HomeDir); err == nil && resolved != u.HomeDir {
+		out = replacePathForms(out, resolved, placeholder)
 	}
 	return out
 }
@@ -58,7 +58,27 @@ func scrubHomeDir(data []byte) []byte {
 var macTempPattern = regexp.MustCompile(`/(?:private/)?var/folders/[^"\s/]+/[^"\s/]+/T`)
 
 func scrubTempDir(data []byte) []byte {
-	return macTempPattern.ReplaceAll(data, []byte("/tmp"))
+	out := macTempPattern.ReplaceAll(data, []byte("/tmp"))
+	return replacePathForms(out, os.TempDir(), "/tmp")
+}
+
+func replacePathForms(data []byte, path, placeholder string) []byte {
+	if path == "" {
+		return data
+	}
+	out := bytes.ReplaceAll(data, []byte(path), []byte(placeholder))
+	pathJSON, err := json.Marshal(path)
+	if err != nil {
+		return out
+	}
+	placeholderJSON, err := json.Marshal(placeholder)
+	if err != nil {
+		return out
+	}
+	if len(pathJSON) >= 2 && len(placeholderJSON) >= 2 {
+		out = bytes.ReplaceAll(out, pathJSON[1:len(pathJSON)-1], placeholderJSON[1:len(placeholderJSON)-1])
+	}
+	return out
 }
 
 // scrubClaudeHookEvents drops claude's SessionStart system events, which

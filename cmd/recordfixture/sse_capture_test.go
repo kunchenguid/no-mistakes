@@ -11,7 +11,7 @@ import (
 func TestOpencodeSSECaptureWaitsForIdle(t *testing.T) {
 	t.Helper()
 
-	cap := newOpencodeSSECapture()
+	cap := newOpencodeSSECapture("")
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
@@ -35,7 +35,7 @@ func TestOpencodeSSECaptureWaitsForIdle(t *testing.T) {
 func TestOpencodeSSECaptureIgnoresSessionIdleSubstringOutsideIdleEvent(t *testing.T) {
 	t.Helper()
 
-	cap := newOpencodeSSECapture()
+	cap := newOpencodeSSECapture("")
 	idleCtx, idleCancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer idleCancel()
 
@@ -59,7 +59,7 @@ func TestOpencodeSSECaptureIgnoresSessionIdleSubstringOutsideIdleEvent(t *testin
 func TestOpencodeSSECaptureRecognizesNestedSessionIdleEvent(t *testing.T) {
 	t.Helper()
 
-	cap := newOpencodeSSECapture()
+	cap := newOpencodeSSECapture("")
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
@@ -68,5 +68,29 @@ func TestOpencodeSSECaptureRecognizesNestedSessionIdleEvent(t *testing.T) {
 	}
 	if err := cap.WaitForIdle(ctx); err != nil {
 		t.Fatalf("wait for nested idle: %v", err)
+	}
+}
+
+func TestOpencodeSSECaptureIgnoresIdleForOtherSession(t *testing.T) {
+	t.Helper()
+
+	cap := newOpencodeSSECapture("target-session")
+	idleCtx, idleCancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer idleCancel()
+
+	if _, err := cap.Write([]byte("event: message\ndata: {\"payload\":{\"type\":\"session.idle\",\"properties\":{\"sessionID\":\"other-session\"}}}\n\n")); err != nil {
+		t.Fatalf("write non-target idle event: %v", err)
+	}
+	if err := cap.WaitForIdle(idleCtx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("wait for idle error = %v, want deadline exceeded", err)
+	}
+
+	realIdleCtx, realIdleCancel := context.WithTimeout(context.Background(), time.Second)
+	defer realIdleCancel()
+	if _, err := cap.Write([]byte("event: message\ndata: {\"payload\":{\"type\":\"session.idle\",\"properties\":{\"sessionID\":\"target-session\"}}}\n\n")); err != nil {
+		t.Fatalf("write target idle event: %v", err)
+	}
+	if err := cap.WaitForIdle(realIdleCtx); err != nil {
+		t.Fatalf("wait for target idle: %v", err)
 	}
 }

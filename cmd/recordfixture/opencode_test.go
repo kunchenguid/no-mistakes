@@ -119,7 +119,7 @@ func TestCaptureOpencodeFlavourWaitsForSSESubscription(t *testing.T) {
 			ready := subscribed
 			mu.Unlock()
 			if ready {
-				ch <- "event: message\ndata: {\"type\":\"session.idle\"}\n\n"
+				ch <- "event: message\ndata: {\"payload\":{\"type\":\"session.idle\",\"properties\":{\"sessionID\":\"sess-123\"}}}\n\n"
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"id":"msg-123"}`))

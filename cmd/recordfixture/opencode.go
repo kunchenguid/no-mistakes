@@ -135,7 +135,7 @@ func captureOpencodeFlavour(ctx context.Context, baseURL, dir, prompt, schema st
 	defer sseCancel()
 	sseDone := make(chan error, 1)
 	sseReady := make(chan struct{})
-	sseCapture := newOpencodeSSECapture()
+	sseCapture := newOpencodeSSECapture(sess.ID)
 	go func() {
 		sseDone <- streamSSE(sseCtx, baseURL+"/global/event", sseCapture, sseReady)
 	}()
@@ -203,15 +203,16 @@ func captureOpencodeFlavour(ctx context.Context, baseURL, dir, prompt, schema st
 }
 
 type opencodeSSECapture struct {
-	mu       sync.Mutex
-	buf      bytes.Buffer
-	pending  []byte
-	idleSeen bool
-	idleCh   chan struct{}
+	mu        sync.Mutex
+	buf       bytes.Buffer
+	pending   []byte
+	sessionID string
+	idleSeen  bool
+	idleCh    chan struct{}
 }
 
-func newOpencodeSSECapture() *opencodeSSECapture {
-	return &opencodeSSECapture{idleCh: make(chan struct{})}
+func newOpencodeSSECapture(sessionID string) *opencodeSSECapture {
+	return &opencodeSSECapture{sessionID: sessionID, idleCh: make(chan struct{})}
 }
 
 func (c *opencodeSSECapture) Write(p []byte) (int, error) {
@@ -226,7 +227,7 @@ func (c *opencodeSSECapture) Write(p []byte) (int, error) {
 		}
 		event := c.pending[:idx]
 		c.pending = c.pending[idx+2:]
-		if sseEventHasSessionIdle(event) {
+		if sseEventHasSessionIdle(event, c.sessionID) {
 			c.idleSeen = true
 			close(c.idleCh)
 		}
@@ -234,7 +235,7 @@ func (c *opencodeSSECapture) Write(p []byte) (int, error) {
 	return n, err
 }
 
-func sseEventHasSessionIdle(event []byte) bool {
+func sseEventHasSessionIdle(event []byte, sessionID string) bool {
 	for _, line := range bytes.Split(event, []byte("\n")) {
 		line = bytes.TrimSpace(line)
 		if !bytes.HasPrefix(line, []byte("data:")) {
@@ -243,10 +244,37 @@ func sseEventHasSessionIdle(event []byte) bool {
 		var payload struct {
 			Type    string `json:"type"`
 			Payload struct {
-				Type string `json:"type"`
+				Type       string `json:"type"`
+				Properties struct {
+					SessionID string `json:"sessionID"`
+				} `json:"properties"`
+				SyncEvent struct {
+					AggregateID string `json:"aggregateID"`
+					Data        struct {
+						SessionID string `json:"sessionID"`
+					} `json:"data"`
+				} `json:"syncEvent"`
 			} `json:"payload"`
 		}
-		if err := json.Unmarshal(bytes.TrimSpace(line[len("data:"):]), &payload); err == nil && (payload.Type == "session.idle" || payload.Payload.Type == "session.idle") {
+		if err := json.Unmarshal(bytes.TrimSpace(line[len("data:"):]), &payload); err != nil {
+			continue
+		}
+		if payload.Type == "session.idle" && sessionMatches(sessionID, "") {
+			return true
+		}
+		if payload.Payload.Type == "session.idle" && sessionMatches(sessionID, payload.Payload.Properties.SessionID, payload.Payload.SyncEvent.AggregateID, payload.Payload.SyncEvent.Data.SessionID) {
+			return true
+		}
+	}
+	return false
+}
+
+func sessionMatches(target string, candidates ...string) bool {
+	if target == "" {
+		return true
+	}
+	for _, candidate := range candidates {
+		if candidate == target {
 			return true
 		}
 	}
