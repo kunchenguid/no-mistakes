@@ -82,7 +82,7 @@ User-supplied flags are inserted ahead of no-mistakes' managed flags, so your ch
 | Agent | Reserved flags |
 |---|---|
 | `claude` | `-p`, `--print`, `--verbose`, `--output-format`, `--json-schema` |
-| `codex` | `exec`, `--json`, `--color` |
+| `codex` | `exec`, `--json`, `--output-schema`, `--color` |
 | `rovodev` | `rovodev`, `serve`, `--disable-session-token` |
 | `opencode` | `serve`, `--hostname`, `--port`, `--print-logs` |
 
