@@ -71,6 +71,21 @@ func TestOpencodeSSECaptureRecognizesNestedSessionIdleEvent(t *testing.T) {
 	}
 }
 
+func TestOpencodeSSECaptureRecognizesTopLevelSessionIdleEvent(t *testing.T) {
+	t.Helper()
+
+	cap := newOpencodeSSECapture("target-session")
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	if _, err := cap.Write([]byte("event: message\ndata: {\"type\":\"session.idle\"}\n\n")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := cap.WaitForIdle(ctx); err != nil {
+		t.Fatalf("wait for top-level idle: %v", err)
+	}
+}
+
 func TestOpencodeSSECaptureIgnoresIdleForOtherSession(t *testing.T) {
 	t.Helper()
 

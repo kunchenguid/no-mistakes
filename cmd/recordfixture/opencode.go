@@ -259,7 +259,7 @@ func sseEventHasSessionIdle(event []byte, sessionID string) bool {
 		if err := json.Unmarshal(bytes.TrimSpace(line[len("data:"):]), &payload); err != nil {
 			continue
 		}
-		if payload.Type == "session.idle" && sessionMatches(sessionID, "") {
+		if payload.Type == "session.idle" {
 			return true
 		}
 		if payload.Payload.Type == "session.idle" && sessionMatches(sessionID, payload.Payload.Properties.SessionID, payload.Payload.SyncEvent.AggregateID, payload.Payload.SyncEvent.Data.SessionID) {
