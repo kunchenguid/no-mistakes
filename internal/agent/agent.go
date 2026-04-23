@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -46,12 +47,70 @@ func finalizeTextResult(agentName, text string, schema json.RawMessage, usage To
 		return &Result{Text: text, Usage: usage}, nil
 	}
 
-	var output json.RawMessage
-	if err := json.Unmarshal([]byte(text), &output); err != nil {
+	output, err := parseStructuredTextOutput(text)
+	if err != nil {
 		return nil, fmt.Errorf("%s output parse: %w", agentName, err)
 	}
 
 	return &Result{Output: output, Text: text, Usage: usage}, nil
+}
+
+func parseStructuredTextOutput(text string) (json.RawMessage, error) {
+	var output json.RawMessage
+	if err := json.Unmarshal([]byte(text), &output); err == nil {
+		return output, nil
+	} else {
+		rawErr := err
+		candidates := fencedJSONCandidates(text)
+		var parsed []json.RawMessage
+		for _, candidate := range candidates {
+			var fenced json.RawMessage
+			if err := json.Unmarshal([]byte(candidate), &fenced); err == nil {
+				parsed = append(parsed, fenced)
+			}
+		}
+		switch len(parsed) {
+		case 0:
+			return nil, rawErr
+		case 1:
+			return parsed[0], nil
+		default:
+			return nil, fmt.Errorf("multiple JSON code fences found in output")
+		}
+	}
+}
+
+func fencedJSONCandidates(text string) []string {
+	var candidates []string
+	var b strings.Builder
+	inJSONFence := false
+
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !inJSONFence {
+			if !strings.HasPrefix(trimmed, "```") {
+				continue
+			}
+			info := strings.TrimSpace(strings.TrimPrefix(trimmed, "```"))
+			fields := strings.Fields(info)
+			if len(fields) == 0 || !strings.EqualFold(fields[0], "json") {
+				continue
+			}
+			inJSONFence = true
+			b.Reset()
+			continue
+		}
+
+		if strings.HasPrefix(trimmed, "```") {
+			candidates = append(candidates, b.String())
+			inJSONFence = false
+			continue
+		}
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+
+	return candidates
 }
 
 // Total returns input + output tokens (the billing-relevant total).

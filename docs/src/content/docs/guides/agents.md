@@ -115,7 +115,7 @@ Spawns a `claude` subprocess for each invocation with `--output-format stream-js
 
 ## Codex
 
-Spawns a `codex` subprocess for each invocation with `exec --json`. By default it also adds `--dangerously-bypass-approvals-and-sandbox`, unless you already set your own Codex approval or sandbox flag through `agent_args_override`. Reads JSONL events. Structured output is extracted by parsing JSON from the agent's text output.
+Spawns a `codex` subprocess for each invocation with `exec --json`. When structured output is requested, no-mistakes also writes a normalized schema file and passes it with `--output-schema`. By default it also adds `--dangerously-bypass-approvals-and-sandbox`, unless you already set your own Codex approval or sandbox flag through `agent_args_override`. Reads JSONL events. Structured output is returned from the final `agent_message` text, with fenced JSON accepted as a fallback.
 
 ## Rovo Dev
 
