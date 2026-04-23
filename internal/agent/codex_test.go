@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -100,10 +101,26 @@ func TestCodexAgent_BuildArgs_WithOutputSchema(t *testing.T) {
 	}
 }
 
+func writeFakeCodex(t *testing.T, dir, posixScript, windowsScript string) string {
+	t.Helper()
+
+	name := "codex"
+	script := posixScript
+	if runtime.GOOS == "windows" {
+		name = "codex.cmd"
+		script = windowsScript
+	}
+
+	bin := filepath.Join(dir, name)
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+	return bin
+}
+
 func TestCodexAgent_RunWritesOutputSchemaFile(t *testing.T) {
 	dir := t.TempDir()
-	bin := filepath.Join(dir, "codex")
-	script := `#!/bin/sh
+	bin := writeFakeCodex(t, dir, `#!/bin/sh
 dir=$(dirname "$0")
 : > "$dir/args.txt"
 schema=""
@@ -126,10 +143,32 @@ fi
 cp "$schema" "$dir/schema.json"
 printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"ok\":true}"}}'
 printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":2}}'
-`
-	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake codex: %v", err)
-	}
+`, strings.Join([]string{
+		"@echo off",
+		"setlocal",
+		"set \"dir=%~dp0\"",
+		"if exist \"%dir%args.txt\" del \"%dir%args.txt\"",
+		"set \"schema=\"",
+		":loop",
+		"if \"%~1\"==\"\" goto done",
+		">> \"%dir%args.txt\" echo(%~1",
+		"if \"%~1\"==\"--output-schema\" (",
+		"  shift",
+		"  if \"%~1\"==\"\" goto done",
+		"  set \"schema=%~1\"",
+		"  >> \"%dir%args.txt\" echo(%~1",
+		")",
+		"shift",
+		"goto loop",
+		":done",
+		"if \"%schema%\"==\"\" (",
+		"  echo missing --output-schema 1>&2",
+		"  exit /b 2",
+		")",
+		"copy /Y \"%schema%\" \"%dir%schema.json\" >nul",
+		"echo {\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"{\\\"ok\\\":true}\"}}",
+		"echo {\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":2}}",
+	}, "\r\n"))
 
 	schema := json.RawMessage(`{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}`)
 	ca := &codexAgent{bin: bin}
@@ -158,7 +197,7 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens
 	if err != nil {
 		t.Fatalf("read captured args: %v", err)
 	}
-	args := strings.Split(strings.TrimSpace(string(argsRaw)), "\n")
+	args := strings.Split(strings.TrimSpace(strings.ReplaceAll(string(argsRaw), "\r\n", "\n")), "\n")
 	var schemaPath string
 	for i, arg := range args {
 		if arg == "--output-schema" && i+1 < len(args) {
@@ -176,15 +215,16 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens
 
 func TestCodexAgent_RunIncludesJSONLErrorOnExitFailure(t *testing.T) {
 	dir := t.TempDir()
-	bin := filepath.Join(dir, "codex")
-	script := `#!/bin/sh
+	bin := writeFakeCodex(t, dir, `#!/bin/sh
 printf '%s\n' '{"type":"error","message":"schema rejected by codex"}'
 echo 'Reading additional input from stdin...' >&2
 exit 1
-`
-	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake codex: %v", err)
-	}
+`, strings.Join([]string{
+		"@echo off",
+		"echo {\"type\":\"error\",\"message\":\"schema rejected by codex\"}",
+		"echo Reading additional input from stdin... 1>&2",
+		"exit /b 1",
+	}, "\r\n"))
 
 	ca := &codexAgent{bin: bin}
 	_, err := ca.Run(context.Background(), RunOpts{
