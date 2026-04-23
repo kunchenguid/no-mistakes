@@ -39,12 +39,15 @@ func recordCodex(ctx context.Context, out string, args []string) int {
 
 func captureCodex(ctx context.Context, bin string, forward []string, prompt, outPath string) error {
 	cmdArgs := []string{
-		"exec", prompt,
+		"exec",
+	}
+	cmdArgs = append(cmdArgs, forward...)
+	cmdArgs = append(cmdArgs,
+		prompt,
 		"--json",
 		"--dangerously-bypass-approvals-and-sandbox",
 		"--color", "never",
-	}
-	cmdArgs = append(cmdArgs, forward...)
+	)
 	cmd := exec.CommandContext(ctx, bin, cmdArgs...)
 	tmp, err := os.MkdirTemp("", "recordcodex-*")
 	if err != nil {

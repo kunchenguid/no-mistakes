@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -28,5 +29,29 @@ func TestOpencodeSSECaptureWaitsForIdle(t *testing.T) {
 	}
 	if !bytes.Contains(cap.Bytes(), []byte("\"session.idle\"")) {
 		t.Fatalf("captured bytes = %q, want session.idle", cap.Bytes())
+	}
+}
+
+func TestOpencodeSSECaptureIgnoresSessionIdleSubstringOutsideIdleEvent(t *testing.T) {
+	t.Helper()
+
+	cap := newOpencodeSSECapture()
+	idleCtx, idleCancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer idleCancel()
+
+	if _, err := cap.Write([]byte("event: message\ndata: {\"type\":\"message.updated\",\"text\":\"contains \\\"session.idle\\\" in content\"}\n\n")); err != nil {
+		t.Fatalf("write non-idle event: %v", err)
+	}
+	if err := cap.WaitForIdle(idleCtx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("wait for idle error = %v, want deadline exceeded", err)
+	}
+
+	realIdleCtx, realIdleCancel := context.WithTimeout(context.Background(), time.Second)
+	defer realIdleCancel()
+	if _, err := cap.Write([]byte("event: message\ndata: {\"type\":\"session.idle\"}\n\n")); err != nil {
+		t.Fatalf("write idle event: %v", err)
+	}
+	if err := cap.WaitForIdle(realIdleCtx); err != nil {
+		t.Fatalf("wait for real idle: %v", err)
 	}
 }

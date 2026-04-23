@@ -2,7 +2,10 @@ package main
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -107,5 +110,41 @@ func TestTerminateWithFallbackReturnsKillError(t *testing.T) {
 	})
 	if !errors.Is(err, errKill) {
 		t.Fatalf("error = %v, want %v", err, errKill)
+	}
+}
+
+func TestCaptureCodexPlacesForwardedFlagsBeforePrompt(t *testing.T) {
+	t.Helper()
+
+	tmp := t.TempDir()
+	outPath := filepath.Join(tmp, "out.jsonl")
+	argsPath := filepath.Join(tmp, "args.txt")
+	binPath := filepath.Join(tmp, "codex")
+	script := strings.Join([]string{
+		"#!/bin/sh",
+		"printf '%s\n' \"$@\" > \"$ARGS_FILE\"",
+		"printf '{}\n'",
+	}, "\n")
+	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+
+	t.Setenv("ARGS_FILE", argsPath)
+	err := captureCodex(t.Context(), binPath, []string{"--model", "gpt-5.4", "--profile", "ci"}, "prompt text", outPath)
+	if err != nil {
+		t.Fatalf("captureCodex: %v", err)
+	}
+
+	argvRaw, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read argv: %v", err)
+	}
+	argv := strings.Fields(string(argvRaw))
+	want := []string{"exec", "--model", "gpt-5.4", "--profile", "ci", "prompt", "text", "--json", "--dangerously-bypass-approvals-and-sandbox", "--color", "never"}
+	if !reflect.DeepEqual(argv, want) {
+		t.Fatalf("argv = %#v, want %#v", argv, want)
+	}
+	if _, err := os.Stat(outPath); err != nil {
+		t.Fatalf("expected output file: %v", err)
 	}
 }

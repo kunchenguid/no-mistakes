@@ -205,6 +205,7 @@ func captureOpencodeFlavour(ctx context.Context, baseURL, dir, prompt, schema st
 type opencodeSSECapture struct {
 	mu       sync.Mutex
 	buf      bytes.Buffer
+	pending  []byte
 	idleSeen bool
 	idleCh   chan struct{}
 }
@@ -217,11 +218,36 @@ func (c *opencodeSSECapture) Write(p []byte) (int, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	n, err := c.buf.Write(p)
-	if !c.idleSeen && bytes.Contains(c.buf.Bytes(), []byte("\"session.idle\"")) {
-		c.idleSeen = true
-		close(c.idleCh)
+	c.pending = append(c.pending, p...)
+	for !c.idleSeen {
+		idx := bytes.Index(c.pending, []byte("\n\n"))
+		if idx < 0 {
+			break
+		}
+		event := c.pending[:idx]
+		c.pending = c.pending[idx+2:]
+		if sseEventHasSessionIdle(event) {
+			c.idleSeen = true
+			close(c.idleCh)
+		}
 	}
 	return n, err
+}
+
+func sseEventHasSessionIdle(event []byte) bool {
+	for _, line := range bytes.Split(event, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if !bytes.HasPrefix(line, []byte("data:")) {
+			continue
+		}
+		var payload struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(bytes.TrimSpace(line[len("data:"):]), &payload); err == nil && payload.Type == "session.idle" {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *opencodeSSECapture) WaitForIdle(ctx context.Context) error {
