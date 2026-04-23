@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -86,7 +87,7 @@ func TestApplyEditsRejectsSymlinkPathsOutsideWorkingDirectory(t *testing.T) {
 	if !strings.Contains(err.Error(), "working directory") {
 		t.Fatalf("error = %q, want working directory violation", err)
 	}
-	if !strings.Contains(filepath.ToSlash(err.Error()), filepath.ToSlash(filepath.Join("escape", "outside.txt"))) {
+	if !strings.Contains(err.Error(), strconv.Quote(filepath.Join("escape", "outside.txt"))) {
 		t.Fatalf("error = %q, want offending path", err)
 	}
 }
