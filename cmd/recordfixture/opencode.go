@@ -14,7 +14,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -57,15 +56,7 @@ func recordOpencode(ctx context.Context, out string, args []string) int {
 		return 1
 	}
 	defer func() {
-		// Best-effort SIGTERM, then kill if it lingers.
-		_ = srvCmd.Process.Signal(syscall.SIGTERM)
-		done := make(chan struct{})
-		go func() { _ = srvCmd.Wait(); close(done) }()
-		select {
-		case <-done:
-		case <-time.After(3 * time.Second):
-			_ = srvCmd.Process.Kill()
-		}
+		_ = terminateCmd(srvCmd, 3*time.Second)
 	}()
 
 	baseURL := fmt.Sprintf("http://127.0.0.1:%d", port)
@@ -315,6 +306,13 @@ func streamSSE(ctx context.Context, url string, w io.Writer, ready chan<- struct
 		return err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return fmt.Errorf("%s -> %d: read error body: %w", url, resp.StatusCode, readErr)
+		}
+		return fmt.Errorf("%s -> %d: %s", url, resp.StatusCode, strings.TrimSpace(string(body)))
+	}
 	close(ready)
 	_, err = io.Copy(w, resp.Body)
 	return err

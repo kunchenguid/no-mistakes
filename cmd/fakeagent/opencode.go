@@ -440,7 +440,7 @@ func patchOpencodeMessage(raw []byte, action Action) ([]byte, error) {
 	}
 	info, _ := resp["info"].(map[string]any)
 	if info == nil {
-		info = map[string]any{}
+		return nil, fmt.Errorf("parse message: missing info object")
 	}
 	info["structured"] = json.RawMessage(action.structuredJSON())
 	resp["info"] = info

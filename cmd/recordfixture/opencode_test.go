@@ -15,6 +15,29 @@ import (
 	"time"
 )
 
+func TestStreamSSEReturnsHTTPStatusError(t *testing.T) {
+	t.Helper()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "subscription failed", http.StatusBadGateway)
+	}))
+	defer server.Close()
+
+	ready := make(chan struct{})
+	err := streamSSE(context.Background(), server.URL, io.Discard, ready)
+	if err == nil {
+		t.Fatal("expected streamSSE to fail on non-200 response")
+	}
+	if !strings.Contains(err.Error(), "502") {
+		t.Fatalf("error = %q, want HTTP status", err)
+	}
+	select {
+	case <-ready:
+		t.Fatal("ready channel closed for failed SSE subscription")
+	default:
+	}
+}
+
 func TestCaptureOpencodeFlavourRequiresSessionIdle(t *testing.T) {
 	t.Helper()
 
