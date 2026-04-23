@@ -16,12 +16,10 @@ func runCodex(args []string, scenario *Scenario) int {
 		return 1
 	}
 
-	// Replay recorded codex output if a fixture is available. Codex
-	// doesn't take a schema flag — no-mistakes always nudges it toward
-	// JSON in the prompt — so we default to the structured fixture and
-	// only fall back to plain when the scenario explicitly has no
-	// structured payload (caller-driven escape hatch for tests that
-	// want to exercise the text-only codepath).
+	// Replay recorded codex output if a fixture is available. no-mistakes
+	// passes a schema file for structured calls, but Codex still surfaces
+	// the final answer as agent_message text, so the fixture patches that
+	// message body directly.
 	flavour := "structured"
 	if action.Structured == nil && action.Text != "" {
 		flavour = "plain"
@@ -39,10 +37,8 @@ func runCodex(args []string, scenario *Scenario) int {
 		return 0
 	}
 
-	// Codex doesn't have a structured-output flag — no-mistakes parses
-	// JSON out of the agent_message text body. So when a structured
-	// response is requested, emit the JSON as the message text. When only
-	// a plain text response is needed, emit the human text.
+	// Structured Codex output is still delivered as agent_message text.
+	// Emit JSON there when requested, otherwise emit the human text.
 	body := action.textOrDefault()
 	if action.Structured != nil {
 		body = string(action.structuredJSON())
@@ -124,6 +120,7 @@ func extractCodexPrompt(args []string) string {
 		"-m": true, "--model": true,
 		"--sandbox": true, "--ask-for-approval": true,
 		"--config": true, "--profile": true,
+		"--output-schema":    true,
 		"--reasoning-effort": true, "--reasoning-summary": true,
 		"-c": true, "--cd": true,
 	}

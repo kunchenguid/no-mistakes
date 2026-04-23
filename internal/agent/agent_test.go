@@ -106,3 +106,39 @@ func TestFinalizeTextResult_WithSchemaParsesJSON(t *testing.T) {
 		t.Errorf("expected done=true, got %v", output["done"])
 	}
 }
+
+func TestFinalizeTextResult_WithSchemaParsesFencedJSON(t *testing.T) {
+	text := "review complete\n\n```json\n{\"done\":true}\n```"
+	result, err := finalizeTextResult("codex", text, json.RawMessage(`{"type":"object"}`), TokenUsage{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var output map[string]any
+	if err := json.Unmarshal(result.Output, &output); err != nil {
+		t.Fatalf("failed to parse output: %v", err)
+	}
+	if output["done"] != true {
+		t.Errorf("expected done=true, got %v", output["done"])
+	}
+	if result.Text != text {
+		t.Errorf("expected original text to be preserved, got %q", result.Text)
+	}
+}
+
+func TestFinalizeTextResult_WithSchemaRejectsAmbiguousFencedJSON(t *testing.T) {
+	text := strings.Join([]string{
+		"```json",
+		`{"first":true}`,
+		"```",
+		"```json",
+		`{"second":true}`,
+		"```",
+	}, "\n")
+	_, err := finalizeTextResult("codex", text, json.RawMessage(`{"type":"object"}`), TokenUsage{})
+	if err == nil {
+		t.Fatal("expected ambiguous fenced JSON to fail")
+	}
+	if !strings.Contains(err.Error(), "multiple JSON code fences") {
+		t.Fatalf("expected multiple JSON code fences error, got %v", err)
+	}
+}
