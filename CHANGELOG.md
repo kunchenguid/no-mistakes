@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.1](https://github.com/kunchenguid/no-mistakes/compare/v1.10.0...v1.10.1) (2026-04-23)
+
+
+### Bug Fixes
+
+* **agent:** support Codex output schema parsing ([#141](https://github.com/kunchenguid/no-mistakes/issues/141)) ([f4f253e](https://github.com/kunchenguid/no-mistakes/commit/f4f253efdc3eeba34ad852d97f791ee7a034b060))
+
 ## [1.10.0](https://github.com/kunchenguid/no-mistakes/compare/v1.9.2...v1.10.0) (2026-04-22)
 
 
