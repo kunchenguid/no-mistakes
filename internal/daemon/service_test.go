@@ -109,7 +109,18 @@ func TestStartDetachedDaemonUsesProvidedRootViaNMHome(t *testing.T) {
 		t.Fatalf("startDetachedDaemon should succeed: %v", err)
 	}
 
-	data, err := os.ReadFile(capturePath)
+	var (
+		data []byte
+		err  error
+	)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		data, err = os.ReadFile(capturePath)
+		if err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	if err != nil {
 		t.Fatalf("read captured NM_HOME: %v", err)
 	}
