@@ -133,3 +133,27 @@ func TestOpencodeSSECaptureIgnoresIdleForOtherSession(t *testing.T) {
 		t.Fatalf("wait for target idle: %v", err)
 	}
 }
+
+func TestOpencodeSSECaptureExcludesEventsFromOtherSessions(t *testing.T) {
+	t.Helper()
+
+	cap := newOpencodeSSECapture("target-session")
+
+	if _, err := cap.Write([]byte("event: message\ndata: {\"payload\":{\"type\":\"message.updated\",\"properties\":{\"sessionID\":\"other-session\"}}}\n\n")); err != nil {
+		t.Fatalf("write non-target event: %v", err)
+	}
+	if _, err := cap.Write([]byte("event: message\ndata: {\"payload\":{\"type\":\"message.updated\",\"properties\":{\"sessionID\":\"target-session\"}}}\n\n")); err != nil {
+		t.Fatalf("write target event: %v", err)
+	}
+	if _, err := cap.Write([]byte("event: message\ndata: {\"payload\":{\"type\":\"session.idle\",\"properties\":{\"sessionID\":\"target-session\"}}}\n\n")); err != nil {
+		t.Fatalf("write target idle: %v", err)
+	}
+
+	got := string(cap.Bytes())
+	if bytes.Contains([]byte(got), []byte("other-session")) {
+		t.Fatalf("captured bytes = %q, want to exclude other-session events", got)
+	}
+	if !bytes.Contains([]byte(got), []byte("target-session")) {
+		t.Fatalf("captured bytes = %q, want target-session events", got)
+	}
+}

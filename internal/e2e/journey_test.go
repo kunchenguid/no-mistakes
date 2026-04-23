@@ -104,6 +104,12 @@ func runHappyPath(t *testing.T, agentName string) {
 	if !sawPromptContaining(invs, "Identify documentation gaps") {
 		t.Errorf("expected a document prompt in invocations, got %d:\n%s", len(invs), summarisePrompts(invs))
 	}
+	assertPromptsAbsent(t, invs,
+		"Draft a pull request title and summary for the full branch delta.",
+		"The following CI checks have failed on this PR. Diagnose and fix the issues.",
+		"The PR has merge conflicts with the base branch. Rebase onto the base branch and resolve the merge conflicts.",
+		"The following CI checks have failed and the PR has merge conflicts with the base branch. Diagnose and fix the CI issues, then rebase onto the base branch and resolve the merge conflicts.",
+	)
 
 	assertPushedHead(t, run.HeadSHA, h.UpstreamBranchSHA("feature/e2e"))
 
@@ -176,6 +182,13 @@ func assertPushedHead(t *testing.T, runHeadSHA, upstreamHeadSHA string) {
 	}
 }
 
+func assertPromptsAbsent(t *testing.T, invs []Invocation, unexpected ...string) {
+	t.Helper()
+	for _, msg := range validatePromptsAbsent(invs, unexpected...) {
+		t.Error(msg)
+	}
+}
+
 func validateSkippedSteps(steps []ipc.StepResultInfo, expected ...types.StepName) []string {
 	var errs []string
 	for _, name := range expected {
@@ -205,4 +218,14 @@ func validatePushedHead(runHeadSHA, upstreamHeadSHA string) []string {
 		return []string{"run HeadSHA = " + runHeadSHA + ", want upstream " + upstreamHeadSHA}
 	}
 	return nil
+}
+
+func validatePromptsAbsent(invs []Invocation, unexpected ...string) []string {
+	var errs []string
+	for _, needle := range unexpected {
+		if sawPromptContaining(invs, needle) {
+			errs = append(errs, "unexpected agent prompt: "+needle)
+		}
+	}
+	return errs
 }

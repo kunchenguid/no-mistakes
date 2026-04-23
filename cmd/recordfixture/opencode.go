@@ -218,7 +218,7 @@ func newOpencodeSSECapture(sessionID string) *opencodeSSECapture {
 func (c *opencodeSSECapture) Write(p []byte) (int, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	n, err := c.buf.Write(p)
+	n := len(p)
 	c.pending = append(c.pending, p...)
 	for !c.idleSeen {
 		idx := bytes.Index(c.pending, []byte("\n\n"))
@@ -227,55 +227,113 @@ func (c *opencodeSSECapture) Write(p []byte) (int, error) {
 		}
 		event := c.pending[:idx]
 		c.pending = c.pending[idx+2:]
+		if sseEventMatchesSession(event, c.sessionID) {
+			if _, err := c.buf.Write(event); err != nil {
+				return n, err
+			}
+			if _, err := c.buf.Write([]byte("\n\n")); err != nil {
+				return n, err
+			}
+		}
 		if sseEventHasSessionIdle(event, c.sessionID) {
 			c.idleSeen = true
 			close(c.idleCh)
 		}
 	}
-	return n, err
+	return n, nil
+}
+
+func sseEventMatchesSession(event []byte, sessionID string) bool {
+	if sessionID == "" {
+		return true
+	}
+	candidates, ok := sseEventSessionCandidates(event)
+	if !ok {
+		return true
+	}
+	return sessionMatches(sessionID, candidates...)
 }
 
 func sseEventHasSessionIdle(event []byte, sessionID string) bool {
+	candidates, _ := sseEventSessionCandidates(event)
 	for _, line := range bytes.Split(event, []byte("\n")) {
 		line = bytes.TrimSpace(line)
 		if !bytes.HasPrefix(line, []byte("data:")) {
 			continue
 		}
-		var payload struct {
-			Type       string `json:"type"`
-			Properties struct {
-				SessionID string `json:"sessionID"`
-			} `json:"properties"`
-			SyncEvent struct {
-				AggregateID string `json:"aggregateID"`
-				Data        struct {
-					SessionID string `json:"sessionID"`
-				} `json:"data"`
-			} `json:"syncEvent"`
-			Payload struct {
-				Type       string `json:"type"`
-				Properties struct {
-					SessionID string `json:"sessionID"`
-				} `json:"properties"`
-				SyncEvent struct {
-					AggregateID string `json:"aggregateID"`
-					Data        struct {
-						SessionID string `json:"sessionID"`
-					} `json:"data"`
-				} `json:"syncEvent"`
-			} `json:"payload"`
-		}
-		if err := json.Unmarshal(bytes.TrimSpace(line[len("data:"):]), &payload); err != nil {
+		payload, err := parseSSEPayload(line)
+		if err != nil {
 			continue
 		}
-		if payload.Type == "session.idle" && sessionMatches(sessionID, payload.Properties.SessionID, payload.SyncEvent.AggregateID, payload.SyncEvent.Data.SessionID) {
+		if payload.Type == "session.idle" && sessionMatches(sessionID, candidates...) {
 			return true
 		}
-		if payload.Payload.Type == "session.idle" && sessionMatches(sessionID, payload.Payload.Properties.SessionID, payload.Payload.SyncEvent.AggregateID, payload.Payload.SyncEvent.Data.SessionID) {
+		if payload.Payload.Type == "session.idle" && sessionMatches(sessionID, candidates...) {
 			return true
 		}
 	}
 	return false
+}
+
+type opencodeSSEPayload struct {
+	Type       string `json:"type"`
+	Properties struct {
+		SessionID string `json:"sessionID"`
+	} `json:"properties"`
+	SyncEvent struct {
+		AggregateID string `json:"aggregateID"`
+		Data        struct {
+			SessionID string `json:"sessionID"`
+		} `json:"data"`
+	} `json:"syncEvent"`
+	Payload struct {
+		Type       string `json:"type"`
+		Properties struct {
+			SessionID string `json:"sessionID"`
+		} `json:"properties"`
+		SyncEvent struct {
+			AggregateID string `json:"aggregateID"`
+			Data        struct {
+				SessionID string `json:"sessionID"`
+			} `json:"data"`
+		} `json:"syncEvent"`
+	} `json:"payload"`
+}
+
+func parseSSEPayload(line []byte) (opencodeSSEPayload, error) {
+	var payload opencodeSSEPayload
+	err := json.Unmarshal(bytes.TrimSpace(line[len("data:"):]), &payload)
+	return payload, err
+}
+
+func sseEventSessionCandidates(event []byte) ([]string, bool) {
+	var candidates []string
+	var sawSessionID bool
+	for _, line := range bytes.Split(event, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if !bytes.HasPrefix(line, []byte("data:")) {
+			continue
+		}
+		payload, err := parseSSEPayload(line)
+		if err != nil {
+			continue
+		}
+		for _, candidate := range []string{
+			payload.Properties.SessionID,
+			payload.SyncEvent.AggregateID,
+			payload.SyncEvent.Data.SessionID,
+			payload.Payload.Properties.SessionID,
+			payload.Payload.SyncEvent.AggregateID,
+			payload.Payload.SyncEvent.Data.SessionID,
+		} {
+			if candidate == "" {
+				continue
+			}
+			sawSessionID = true
+			candidates = append(candidates, candidate)
+		}
+	}
+	return candidates, sawSessionID
 }
 
 func sessionMatches(target string, candidates ...string) bool {
