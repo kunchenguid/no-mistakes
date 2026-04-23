@@ -77,7 +77,7 @@ Extra CLI flags to pass to each agent. Use this to set model selection, reasonin
 | Keys | `claude`, `codex`, `rovodev`, `opencode` |
 | Default | Empty (no extra flags) |
 
-User-supplied flags are inserted ahead of no-mistakes' managed flags, so your choices take precedence. A few flags are reserved because no-mistakes depends on them to communicate with the agent - setting any of these returns a config error on load:
+User-supplied flags are inserted ahead of no-mistakes' managed flags, so your choices usually take precedence. A few flags are reserved because no-mistakes depends on them to communicate with the agent - setting any of these returns a config error on load:
 
 | Agent | Reserved flags |
 |---|---|
@@ -85,6 +85,8 @@ User-supplied flags are inserted ahead of no-mistakes' managed flags, so your ch
 | `codex` | `exec`, `--json`, `--color` |
 | `rovodev` | `rovodev`, `serve`, `--disable-session-token` |
 | `opencode` | `serve`, `--hostname`, `--port`, `--print-logs` |
+
+For structured `codex` runs, no-mistakes also appends its own `--output-schema <tempfile>` after your overrides. Treat that flag as managed even though config validation does not currently reject it.
 
 Smart defaults:
 
