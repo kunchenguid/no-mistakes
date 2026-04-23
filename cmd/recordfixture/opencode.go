@@ -241,9 +241,12 @@ func sseEventHasSessionIdle(event []byte) bool {
 			continue
 		}
 		var payload struct {
-			Type string `json:"type"`
+			Type    string `json:"type"`
+			Payload struct {
+				Type string `json:"type"`
+			} `json:"payload"`
 		}
-		if err := json.Unmarshal(bytes.TrimSpace(line[len("data:"):]), &payload); err == nil && payload.Type == "session.idle" {
+		if err := json.Unmarshal(bytes.TrimSpace(line[len("data:"):]), &payload); err == nil && (payload.Type == "session.idle" || payload.Payload.Type == "session.idle") {
 			return true
 		}
 	}

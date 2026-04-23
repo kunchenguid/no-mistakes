@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -97,5 +98,53 @@ func TestPatchOpencodeMessagePreservesRecordedInfo(t *testing.T) {
 	}
 	if string(resp.Info.Structured) != `{"summary":"ok"}` {
 		t.Fatalf("structured = %s, want patched payload", resp.Info.Structured)
+	}
+}
+
+func TestOpencodeFixtureRewritesSessionIDsPerRequest(t *testing.T) {
+	t.Helper()
+
+	fixture := &opencodeFixture{
+		sessionID: "ses_recorded",
+		session: []byte(`{"id":"ses_recorded","slug":"recorded"}`),
+		sse:     []byte("data: {\"payload\":{\"type\":\"message.updated\",\"properties\":{\"sessionID\":\"ses_recorded\",\"info\":{\"sessionID\":\"ses_recorded\"}}}}\n\ndata: {\"payload\":{\"type\":\"session.idle\",\"properties\":{\"sessionID\":\"ses_recorded\"}}}\n\n"),
+		message: []byte(`{"info":{"id":"msg-123","role":"assistant","sessionID":"ses_recorded"},"parts":[{"type":"text","sessionID":"ses_recorded","messageID":"msg-123"}]}`),
+	}
+
+	firstSession, err := rewriteOpencodeFixtureSession(fixture, "ses_first")
+	if err != nil {
+		t.Fatalf("rewrite session: %v", err)
+	}
+	secondSession, err := rewriteOpencodeFixtureSession(fixture, "ses_second")
+	if err != nil {
+		t.Fatalf("rewrite session again: %v", err)
+	}
+	if bytes.Equal(firstSession, secondSession) {
+		t.Fatal("rewritten sessions should differ per request")
+	}
+	if bytes.Contains(firstSession, []byte("ses_recorded")) || bytes.Contains(secondSession, []byte("ses_recorded")) {
+		t.Fatal("rewritten session payload should not keep recorded session ID")
+	}
+
+	rewrittenSSE, err := rewriteOpencodeFixtureSSE(fixture, "ses_first")
+	if err != nil {
+		t.Fatalf("rewrite sse: %v", err)
+	}
+	if !bytes.Contains(rewrittenSSE, []byte("ses_first")) {
+		t.Fatalf("rewritten sse = %s, want new session ID", rewrittenSSE)
+	}
+	if bytes.Contains(rewrittenSSE, []byte("ses_recorded")) {
+		t.Fatalf("rewritten sse = %s, want recorded session ID removed", rewrittenSSE)
+	}
+
+	rewrittenMessage, err := rewriteOpencodeFixtureMessage(fixture, Action{Structured: map[string]any{"summary": "ok"}}, "ses_first")
+	if err != nil {
+		t.Fatalf("rewrite message: %v", err)
+	}
+	if !bytes.Contains(rewrittenMessage, []byte("ses_first")) {
+		t.Fatalf("rewritten message = %s, want new session ID", rewrittenMessage)
+	}
+	if bytes.Contains(rewrittenMessage, []byte("ses_recorded")) {
+		t.Fatalf("rewritten message = %s, want recorded session ID removed", rewrittenMessage)
 	}
 }

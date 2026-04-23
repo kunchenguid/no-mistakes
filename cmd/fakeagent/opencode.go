@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -76,10 +77,11 @@ type fakeOpencodeServer struct {
 // flavour. session/sse/message mirror the file layout under the
 // fixture directory.
 type opencodeFixture struct {
-	flavour string
-	session []byte
-	sse     []byte
-	message []byte
+	flavour   string
+	sessionID string
+	session   []byte
+	sse       []byte
+	message   []byte
 }
 
 func newFakeOpencodeServer(scenario *Scenario) *fakeOpencodeServer {
@@ -111,7 +113,16 @@ func loadOpencodeFixture(dir, flavour string) (*opencodeFixture, error) {
 	if err != nil {
 		return nil, fmt.Errorf("message.json: %w", err)
 	}
-	return &opencodeFixture{flavour: flavour, session: session, sse: sse, message: msg}, nil
+	var sessionDoc struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(session, &sessionDoc); err != nil {
+		return nil, fmt.Errorf("session.json: parse: %w", err)
+	}
+	if sessionDoc.ID == "" {
+		return nil, fmt.Errorf("session.json: missing id")
+	}
+	return &opencodeFixture{flavour: flavour, sessionID: sessionDoc.ID, session: session, sse: sse, message: msg}, nil
 }
 
 func (s *fakeOpencodeServer) routes() http.Handler {
@@ -227,20 +238,26 @@ func (s *fakeOpencodeServer) handleSessionRoot(w http.ResponseWriter, r *http.Re
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	id := s.nextSessionID()
 	if s.fixture != nil {
-		// Replay the recorded session-create response verbatim. The
-		// session ID embedded in the response is the same one
-		// referenced by the recorded SSE events, so the parser's
-		// session-ID filter matches.
+		patched, err := rewriteOpencodeFixtureSession(s.fixture, id)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "fakeagent: opencode session patch: %v\n", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(s.fixture.session)
+		w.Write(patched)
 		return
 	}
-	s.mu.Lock()
-	s.sessionSeq++
-	id := fmt.Sprintf("ses_%d", s.sessionSeq)
-	s.mu.Unlock()
 	writeJSON(w, map[string]string{"id": id})
+}
+
+func (s *fakeOpencodeServer) nextSessionID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sessionSeq++
+	return fmt.Sprintf("ses_%d", s.sessionSeq)
 }
 
 // handleSessionPath dispatches /session/{id}, /session/{id}/message, and
@@ -301,8 +318,14 @@ func (s *fakeOpencodeServer) handleMessage(w http.ResponseWriter, r *http.Reques
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		s.broadcastRaw(s.fixture.sse)
-		patched, err := patchOpencodeMessage(s.fixture.message, action)
+		framed, err := rewriteOpencodeFixtureSSE(s.fixture, sessionID)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "fakeagent: opencode sse patch: %v\n", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		s.broadcastRaw(framed)
+		patched, err := rewriteOpencodeFixtureMessage(s.fixture, action, sessionID)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "fakeagent: opencode patch: %v\n", err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -445,4 +468,78 @@ func patchOpencodeMessage(raw []byte, action Action) ([]byte, error) {
 	info["structured"] = json.RawMessage(action.structuredJSON())
 	resp["info"] = info
 	return json.Marshal(resp)
+}
+
+func rewriteOpencodeFixtureSession(fixture *opencodeFixture, sessionID string) ([]byte, error) {
+	if fixture == nil {
+		return nil, fmt.Errorf("rewrite session: missing fixture")
+	}
+	return rewriteOpencodeFixtureJSON(fixture.session, fixture.sessionID, sessionID)
+}
+
+func rewriteOpencodeFixtureSSE(fixture *opencodeFixture, sessionID string) ([]byte, error) {
+	if fixture == nil {
+		return nil, fmt.Errorf("rewrite sse: missing fixture")
+	}
+	var out bytes.Buffer
+	for _, line := range bytes.Split(fixture.sse, []byte("\n")) {
+		trimmed := bytes.TrimSpace(line)
+		if !bytes.HasPrefix(trimmed, []byte("data:")) {
+			out.Write(line)
+			out.WriteByte('\n')
+			continue
+		}
+		patched, err := rewriteOpencodeFixtureJSON(bytes.TrimSpace(trimmed[len("data:"):]), fixture.sessionID, sessionID)
+		if err != nil {
+			return nil, fmt.Errorf("rewrite sse event: %w", err)
+		}
+		out.WriteString("data: ")
+		out.Write(patched)
+		out.WriteByte('\n')
+	}
+	return out.Bytes(), nil
+}
+
+func rewriteOpencodeFixtureMessage(fixture *opencodeFixture, action Action, sessionID string) ([]byte, error) {
+	if fixture == nil {
+		return nil, fmt.Errorf("rewrite message: missing fixture")
+	}
+	patched, err := patchOpencodeMessage(fixture.message, action)
+	if err != nil {
+		return nil, err
+	}
+	return rewriteOpencodeFixtureJSON(patched, fixture.sessionID, sessionID)
+}
+
+func rewriteOpencodeFixtureJSON(raw []byte, recordedSessionID, sessionID string) ([]byte, error) {
+	if recordedSessionID == "" {
+		return nil, fmt.Errorf("missing recorded session id")
+	}
+	var doc any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return nil, fmt.Errorf("parse json: %w", err)
+	}
+	rewriteSessionStrings(doc, recordedSessionID, sessionID)
+	return json.Marshal(doc)
+}
+
+func rewriteSessionStrings(v any, recordedSessionID, sessionID string) {
+	switch x := v.(type) {
+	case map[string]any:
+		for k, value := range x {
+			if s, ok := value.(string); ok && s == recordedSessionID {
+				x[k] = sessionID
+				continue
+			}
+			rewriteSessionStrings(value, recordedSessionID, sessionID)
+		}
+	case []any:
+		for i, value := range x {
+			if s, ok := value.(string); ok && s == recordedSessionID {
+				x[i] = sessionID
+				continue
+			}
+			rewriteSessionStrings(value, recordedSessionID, sessionID)
+		}
+	}
 }

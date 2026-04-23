@@ -55,3 +55,18 @@ func TestOpencodeSSECaptureIgnoresSessionIdleSubstringOutsideIdleEvent(t *testin
 		t.Fatalf("wait for real idle: %v", err)
 	}
 }
+
+func TestOpencodeSSECaptureRecognizesNestedSessionIdleEvent(t *testing.T) {
+	t.Helper()
+
+	cap := newOpencodeSSECapture()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	if _, err := cap.Write([]byte("event: message\ndata: {\"payload\":{\"type\":\"session.idle\"}}\n\n")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := cap.WaitForIdle(ctx); err != nil {
+		t.Fatalf("wait for nested idle: %v", err)
+	}
+}
