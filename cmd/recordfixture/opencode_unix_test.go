@@ -4,6 +4,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -41,11 +42,47 @@ func TestTerminateCmdStopsProcessGroup(t *testing.T) {
 	if err := terminateCmd(cmd, 500*time.Millisecond); err != nil {
 		t.Fatalf("terminateCmd: %v", err)
 	}
-	if processExists(childPID) {
+	if waitForProcessExit(childPID, time.Second) {
 		t.Fatalf("child process %d still running after group termination", childPID)
 	}
 }
 
-func processExists(pid int) bool {
-	return syscall.Kill(pid, 0) == nil
+func waitForProcessExit(pid int, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		running, err := processRunning(pid)
+		if err != nil {
+			return true
+		}
+		if !running {
+			return false
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	running, err := processRunning(pid)
+	return err != nil || running
+}
+
+func processRunning(pid int) (bool, error) {
+	err := syscall.Kill(pid, 0)
+	if err != nil {
+		if errors.Is(err, syscall.ESRCH) {
+			return false, nil
+		}
+		return false, err
+	}
+	cmd := exec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(pid))
+	out, err := cmd.Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return false, nil
+		}
+		return false, err
+	}
+	state := strings.TrimSpace(string(out))
+	if state == "" || strings.HasPrefix(state, "Z") {
+		return false, nil
+	}
+	return true, nil
 }

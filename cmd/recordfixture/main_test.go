@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -119,12 +120,28 @@ func TestCaptureCodexPlacesForwardedFlagsBeforePrompt(t *testing.T) {
 	tmp := t.TempDir()
 	outPath := filepath.Join(tmp, "out.jsonl")
 	argsPath := filepath.Join(tmp, "args.txt")
-	binPath := filepath.Join(tmp, "codex")
+	binName := "codex"
 	script := strings.Join([]string{
 		"#!/bin/sh",
 		"printf '%s\n' \"$@\" > \"$ARGS_FILE\"",
 		"printf '{}\n'",
 	}, "\n")
+	if runtime.GOOS == "windows" {
+		binName = "codex.cmd"
+		script = strings.Join([]string{
+			"@echo off",
+			"setlocal",
+			"if exist \"%ARGS_FILE%\" del \"%ARGS_FILE%\"",
+			":loop",
+			"if \"%~1\"==\"\" goto done",
+			">> \"%ARGS_FILE%\" echo(%~1",
+			"shift",
+			"goto loop",
+			":done",
+			"echo {}",
+		}, "\r\n")
+	}
+	binPath := filepath.Join(tmp, binName)
 	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake codex: %v", err)
 	}

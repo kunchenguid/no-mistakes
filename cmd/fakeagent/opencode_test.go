@@ -171,7 +171,7 @@ func TestFakeOpencodeFixturePlainRunRewritesRecordedText(t *testing.T) {
 		message: []byte(`{"info":{"id":"msg-123","role":"assistant","sessionID":"ses_recorded"},"parts":[{"type":"text","text":"recorded text","metadata":{"openai":{"phase":"final_answer"}}}]}`),
 	}
 
-	createReq := httptest.NewRequest(http.MethodPost, "/session", strings.NewReader(`{"directory":"`+t.TempDir()+`"}`))
+	createReq := httptest.NewRequest(http.MethodPost, "/session", strings.NewReader(fmt.Sprintf(`{"directory":%q}`, t.TempDir())))
 	createReq.Header.Set("Content-Type", "application/json")
 	createRec := httptest.NewRecorder()
 	srv.routes().ServeHTTP(createRec, createReq)
