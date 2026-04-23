@@ -141,6 +141,33 @@ func TestCompleteStep(t *testing.T) {
 	}
 }
 
+func TestCompleteStepWithStatus(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
+	step, _ := d.InsertStepResult(run.ID, types.StepReview)
+
+	if err := d.CompleteStepWithStatus(step.ID, types.StepStatusSkipped, 0, 1500, "/logs/run-1/review.log"); err != nil {
+		t.Fatalf("complete step with status: %v", err)
+	}
+	got, _ := d.GetStepResult(step.ID)
+	if got.Status != types.StepStatusSkipped {
+		t.Errorf("status = %q, want %q", got.Status, types.StepStatusSkipped)
+	}
+	if got.ExitCode == nil || *got.ExitCode != 0 {
+		t.Errorf("exit code = %v, want 0", got.ExitCode)
+	}
+	if got.DurationMS == nil || *got.DurationMS != 1500 {
+		t.Errorf("duration = %v, want 1500", got.DurationMS)
+	}
+	if got.LogPath == nil || *got.LogPath != "/logs/run-1/review.log" {
+		t.Errorf("log path = %v, want /logs/run-1/review.log", got.LogPath)
+	}
+	if got.CompletedAt == nil {
+		t.Error("expected non-nil completed_at")
+	}
+}
+
 func TestFailStep(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")

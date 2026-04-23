@@ -36,6 +36,7 @@ type StepOutcome struct {
 	Findings      string // JSON findings for TUI display (optional)
 	ExitCode      int    // process exit code (0 = success)
 	PRURL         string // PR/MR URL if this step created or found one
+	Skipped       bool   // mark the step as skipped without failing the run
 	SkipRemaining bool   // skip all subsequent steps (e.g. empty diff after rebase)
 	// FixSummary, when non-empty, is the agent's one-line commit summary for
 	// the fix attempt performed during this round. Steps populate it in fix

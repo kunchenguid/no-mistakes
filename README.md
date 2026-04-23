@@ -79,7 +79,9 @@ See the [quick start](https://kunchenguid.github.io/no-mistakes/start-here/quick
 
 ```sh
 make build   # Build bin/no-mistakes with version info
-make test    # Run go test -race ./...
+make test    # Run go test -race ./... (excludes the e2e suite)
+make e2e     # Run the tagged end-to-end agent journey suite
+make e2e-record # Re-record e2e fixtures when agent wire formats change
 make lint    # Run go vet ./...
 make fmt     # Run gofmt -w .
 make demo    # Regenerate demo.gif and demo.mp4 (needs vhs and ffmpeg)
@@ -87,3 +89,5 @@ make docs    # Build the Astro docs site in docs/dist
 ```
 
 See `Makefile` for the full target list.
+
+`make e2e-record` overwrites `internal/e2e/fixtures/` from the real `claude`, `codex`, and `opencode` CLIs, spends real API quota, and should be reviewed before committing.

@@ -19,8 +19,10 @@ Most implementation code lives under `internal/`.
 - Plain build: `go build -o ./bin/no-mistakes ./cmd/no-mistakes`
 - Install locally: `make install`
 - Cross-compile archives: `make dist`
-- Run all tests: `make test`
-- Run all tests directly: `go test -race ./...`
+- Run unit/integration tests: `make test`
+- Run unit/integration tests directly: `go test -race ./...`
+- Run end-to-end tests: `make e2e`
+- Re-record end-to-end fixtures: `make e2e-record`
 - Run vet: `make lint`
 - Run vet directly: `go vet ./...`
 - Format all Go files: `make fmt`
@@ -41,6 +43,7 @@ Safest local verification sequence after non-trivial changes:
 - `gofmt -w .`
 - `go vet ./...`
 - `go test -race ./...`
+- `make e2e` when touching agent integrations, the e2e harness, or recorded fixtures
 - `go build -o ./bin/no-mistakes ./cmd/no-mistakes`
 
 **Project Layout**
@@ -86,8 +89,8 @@ Safest local verification sequence after non-trivial changes:
 - Use `t.Setenv()` for environment-dependent behavior.
 - Prefer creating real git repos in temp directories instead of relying on heavy mocking.
 - CLI tests often capture output and assert with `strings.Contains`.
-- Prefer targeted package tests while iterating, then finish with `go test -race ./...`.
-- Windows PR CI runs the full test suite (`go test ./...`); no special suffix is required to opt a test in.
+- Prefer targeted package tests while iterating, then finish with `go test -race ./...` and `make e2e` when your change affects agent journeys or fixtures.
+- The e2e suite lives behind the `e2e` build tag, so it is excluded from `go test ./...` and runs separately in CI via `make e2e`.
 
 **When Making Changes**
 
