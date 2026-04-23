@@ -228,7 +228,7 @@ func (h *Harness) CommitChange(branch, path, content, message string) string {
 	if bytes.TrimSpace(current) == nil || string(bytes.TrimSpace(current)) != branch {
 		// Try checkout, fall back to creating the branch.
 		if _, err := h.runGit(ctx, h.WorkDir, "checkout", branch); err != nil {
-			if _, err := h.runGit(ctx, h.WorkDir, "checkout", "-b", branch); err != nil {
+			if _, err := h.runGit(ctx, h.WorkDir, "checkout", "-b", branch, "main"); err != nil {
 				h.t.Fatalf("checkout %s: %v", branch, err)
 			}
 		}
