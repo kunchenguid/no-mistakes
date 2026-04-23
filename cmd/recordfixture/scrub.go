@@ -69,12 +69,16 @@ func scrubTempDir(data []byte) []byte {
 // available tools/skills that's also user-specific, so we drop it too.
 func scrubClaudeHookEvents(data []byte) []byte {
 	var out bytes.Buffer
-	for _, line := range bytes.Split(data, []byte("\n")) {
+	lines := bytes.Split(data, []byte("\n"))
+	for i, line := range lines {
+		if i == len(lines)-1 && len(line) == 0 {
+			continue
+		}
 		// Match `"type":"system",` (with optional spaces) at the
-		// start of the JSON object — substring match is good enough
+		// start of the JSON object - substring match is good enough
 		// because the field always appears early in real claude
 		// stream-json output.
-		if bytes.Contains(line, []byte(`"type":"system"`)) {
+		if bytes.Contains(line, []byte(`"type":"system"`)) || bytes.Contains(line, []byte(`"subtype":"init"`)) {
 			continue
 		}
 		out.Write(line)

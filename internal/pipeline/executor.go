@@ -137,11 +137,8 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 			// Mark all subsequent steps as skipped
 			for _, remaining := range e.steps[i+1:] {
 				rsr := stepRecords[remaining.Name()]
-				if dbErr := e.db.CompleteStep(rsr.ID, 0, 0, ""); dbErr != nil {
+				if dbErr := e.db.CompleteStepWithStatus(rsr.ID, types.StepStatusSkipped, 0, 0, ""); dbErr != nil {
 					slog.Warn("failed to finalize skipped step", "step", remaining.Name(), "error", dbErr)
-				}
-				if dbErr := e.db.UpdateStepStatus(rsr.ID, types.StepStatusSkipped); dbErr != nil {
-					slog.Warn("failed to mark step as skipped", "step", remaining.Name(), "error", dbErr)
 				}
 				e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, remaining.Name(), string(types.StepStatusSkipped), "", "", "", nil)
 			}
@@ -386,11 +383,8 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 
 		case types.ActionSkip:
 			// Skip - mark step skipped and return (not an error)
-			if err := e.db.CompleteStep(sr.ID, finalExitCode, executionMS, logPath); err != nil {
+			if err := e.db.CompleteStepWithStatus(sr.ID, types.StepStatusSkipped, finalExitCode, executionMS, logPath); err != nil {
 				return false, fmt.Errorf("complete step %s (skip): %w", stepName, err)
-			}
-			if dbErr := e.db.UpdateStepStatus(sr.ID, types.StepStatusSkipped); dbErr != nil {
-				slog.Warn("failed to update step status in db", "step", stepName, "status", "skipped", "error", dbErr)
 			}
 			e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusSkipped), "", "", "", &executionMS)
 			return false, nil
@@ -440,15 +434,12 @@ done:
 	if durationOverrideMS > 0 {
 		durationMS = durationOverrideMS
 	}
-	if err := e.db.CompleteStep(sr.ID, finalExitCode, durationMS, logPath); err != nil {
-		return false, fmt.Errorf("complete step %s: %w", stepName, err)
-	}
 	status := types.StepStatusCompleted
 	if stepSkipped {
 		status = types.StepStatusSkipped
-		if dbErr := e.db.UpdateStepStatus(sr.ID, status); dbErr != nil {
-			slog.Warn("failed to update step status in db", "step", stepName, "status", status, "error", dbErr)
-		}
+	}
+	if err := e.db.CompleteStepWithStatus(sr.ID, status, finalExitCode, durationMS, logPath); err != nil {
+		return false, fmt.Errorf("complete step %s: %w", stepName, err)
 	}
 	e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(status), "", "", "", &durationMS)
 	return skipRemaining, nil
