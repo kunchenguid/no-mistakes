@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -144,5 +145,22 @@ func TestCaptureOpencodeFlavourWaitsForSSESubscription(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "session.idle") {
 		t.Fatalf("sse.txt = %q, want session.idle", data)
+	}
+}
+
+func TestWaitHealthReturnsContextCancellation(t *testing.T) {
+	t.Helper()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := waitHealth(ctx, server.URL)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want %v", err, context.Canceled)
 	}
 }

@@ -277,6 +277,9 @@ func (c *opencodeSSECapture) idleDone() <-chan struct{} {
 func waitHealth(ctx context.Context, baseURL string) error {
 	deadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(deadline) {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/global/health", nil)
 		resp, err := http.DefaultClient.Do(req)
 		if err == nil {
@@ -284,8 +287,17 @@ func waitHealth(ctx context.Context, baseURL string) error {
 			if resp.StatusCode == http.StatusOK {
 				return nil
 			}
+		} else if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
 		}
-		time.Sleep(200 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	return fmt.Errorf("opencode never became healthy at %s", baseURL)
 }
