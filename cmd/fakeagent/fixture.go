@@ -8,7 +8,7 @@ import (
 )
 
 // fixtureDir returns the agent's fixture directory if FAKEAGENT_FIXTURE
-// is set and contains a subdirectory for this agent, e.g.
+// is set, e.g.
 // FAKEAGENT_FIXTURE=internal/e2e/fixtures + agent=claude →
 // internal/e2e/fixtures/claude. Returns "" if no fixture is configured.
 func fixtureDir(agent string) string {
@@ -16,12 +16,7 @@ func fixtureDir(agent string) string {
 	if root == "" {
 		return ""
 	}
-	dir := filepath.Join(root, agent)
-	info, err := os.Stat(dir)
-	if err != nil || !info.IsDir() {
-		return ""
-	}
-	return dir
+	return filepath.Join(root, agent)
 }
 
 // readFixtureFile reads a file from the fixture directory. The flavour
