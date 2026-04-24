@@ -64,6 +64,13 @@ var reviewFindingsSchema = json.RawMessage(`{
 				"required": ["severity", "description", "action"]
 			}
 		},
+		"tested": {
+			"type": "array",
+			"items": {"type": "string"}
+		},
+		"testing_summary": {
+			"type": "string"
+		},
 		"risk_level": {"type": "string", "enum": ["low", "medium", "high"]},
 		"risk_rationale": {"type": "string"}
 	},
