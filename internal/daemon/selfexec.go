@@ -120,18 +120,28 @@ func reinstallManagedServiceIfChanged(p *paths.Paths) (bool, error) {
 	case readErr != nil && !os.IsNotExist(readErr):
 		return false, fmt.Errorf("read managed service definition: %w", readErr)
 	}
+	restoreMode := os.FileMode(0o644)
+	if info, err := os.Stat(installPath); err == nil {
+		restoreMode = info.Mode().Perm()
+	}
+	restoreOnFailure := func(cause error) (bool, error) {
+		if err := os.WriteFile(installPath, existing, restoreMode); err != nil {
+			return false, fmt.Errorf("%w; restore managed service definition: %v", cause, err)
+		}
+		return false, cause
+	}
 
 	if _, err := installManagedService(p); err != nil {
-		return false, err
+		return restoreOnFailure(err)
 	}
 	if err := stopCurrentDaemonBeforeManagedRestart(p); err != nil {
-		return false, err
+		return restoreOnFailure(err)
 	}
 	if _, err := restartManagedService(p); err != nil {
-		return false, err
+		return restoreOnFailure(err)
 	}
 	if err := waitForDaemonStart(p, 0, time.Time{}); err != nil {
-		return false, err
+		return restoreOnFailure(err)
 	}
 	return true, nil
 }
