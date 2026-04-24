@@ -51,6 +51,14 @@ func startSystemdUserService(p *paths.Paths) error {
 	return nil
 }
 
+func restartSystemdUserService(p *paths.Paths) error {
+	_, err := serviceCommandRunner("systemctl", "--user", "restart", systemdServiceName(p))
+	if err != nil {
+		return fmt.Errorf("systemctl restart: %w", err)
+	}
+	return nil
+}
+
 func stopSystemdUserService(p *paths.Paths) error {
 	_, err := serviceCommandRunner("systemctl", "--user", "stop", systemdServiceName(p))
 	if err != nil {

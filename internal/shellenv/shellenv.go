@@ -120,6 +120,10 @@ func WellKnownBinDirs() []string {
 		"/opt/homebrew/sbin",
 		"/usr/local/bin",
 		"/usr/local/sbin",
+		"/usr/bin",
+		"/bin",
+		"/usr/sbin",
+		"/sbin",
 	}
 	if home := homeDir(); home != "" {
 		dirs = append(dirs,

@@ -153,6 +153,20 @@ func startManagedService(p *paths.Paths) (bool, error) {
 	}
 }
 
+func restartManagedService(p *paths.Paths) (bool, error) {
+	if serviceManagerBypassed() {
+		return false, nil
+	}
+	switch runtimeGOOS {
+	case "darwin":
+		return true, startLaunchAgent(p)
+	case "linux":
+		return true, restartSystemdUserService(p)
+	default:
+		return startManagedService(p)
+	}
+}
+
 func stopManagedService(p *paths.Paths) (bool, error) {
 	if serviceManagerBypassed() || !managedServiceInstalled(p) {
 		return false, nil

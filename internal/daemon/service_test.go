@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -118,6 +119,80 @@ func TestStart_DoesNotReinstallWhenPlistUnchanged(t *testing.T) {
 	}
 	if len(commands) != 0 {
 		t.Fatalf("expected no service commands when plist unchanged, got %v", commands)
+	}
+}
+
+func TestStartRestartsSystemdUnitWhenDefinitionChanged(t *testing.T) {
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+
+	cleanup := stubServiceRuntime(t)
+	defer cleanup()
+	runtimeGOOS = "linux"
+	serviceUserHomeDir = func() (string, error) { return home, nil }
+	serviceExecutablePath = func() (string, error) { return "/usr/local/bin/no-mistakes", nil }
+
+	unitPath := filepath.Join(home, ".config", "systemd", "user", systemdServiceName(p))
+	if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(unitPath, []byte("[Service]\nExecStart=/old/no-mistakes daemon run\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var commands []string
+	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
+		commands = append(commands, name+" "+strings.Join(args, " "))
+		return nil, nil
+	}
+	daemonHealthCheck = func(*paths.Paths) (bool, error) { return true, nil }
+
+	if err := Start(p); err != nil {
+		t.Fatalf("Start should restart stale systemd unit, got %v", err)
+	}
+
+	want := []string{
+		"systemctl --user daemon-reload",
+		"systemctl --user enable " + systemdServiceName(p),
+		"systemctl --user restart " + systemdServiceName(p),
+	}
+	if !reflect.DeepEqual(commands, want) {
+		t.Fatalf("commands = %v, want %v", commands, want)
+	}
+}
+
+func TestStartDoesNotInstallManagedServiceWhenDaemonAliveAndDefinitionMissing(t *testing.T) {
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+
+	cleanup := stubServiceRuntime(t)
+	defer cleanup()
+	runtimeGOOS = "linux"
+	serviceUserHomeDir = func() (string, error) { return home, nil }
+	serviceExecutablePath = func() (string, error) { return "/usr/local/bin/no-mistakes", nil }
+
+	var commands []string
+	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
+		commands = append(commands, name+" "+strings.Join(args, " "))
+		return nil, nil
+	}
+	daemonHealthCheck = func(*paths.Paths) (bool, error) { return true, nil }
+
+	err := Start(p)
+	if err == nil || !strings.Contains(err.Error(), "already running") {
+		t.Fatalf("expected already running error, got %v", err)
+	}
+	if len(commands) != 0 {
+		t.Fatalf("expected no service commands, got %v", commands)
+	}
+	if _, statErr := os.Stat(systemdUserServicePath(p)); !os.IsNotExist(statErr) {
+		t.Fatalf("expected no systemd unit to be installed, stat err = %v", statErr)
 	}
 }
 

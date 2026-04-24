@@ -115,6 +115,8 @@ func reinstallManagedServiceIfChanged(p *paths.Paths) (bool, error) {
 	switch {
 	case readErr == nil && string(existing) == wanted:
 		return false, nil
+	case os.IsNotExist(readErr):
+		return false, nil
 	case readErr != nil && !os.IsNotExist(readErr):
 		return false, fmt.Errorf("read managed service definition: %w", readErr)
 	}
@@ -122,7 +124,7 @@ func reinstallManagedServiceIfChanged(p *paths.Paths) (bool, error) {
 	if _, err := installManagedService(p); err != nil {
 		return false, err
 	}
-	if _, err := startManagedService(p); err != nil {
+	if _, err := restartManagedService(p); err != nil {
 		return false, err
 	}
 	if err := waitForDaemonStart(p, 0, time.Time{}); err != nil {

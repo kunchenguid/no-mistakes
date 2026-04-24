@@ -303,6 +303,11 @@ func TestResolve_SynthesizesPathWhenMissing(t *testing.T) {
 	if !strings.Contains(path, "/opt/homebrew/bin") {
 		t.Fatalf("expected /opt/homebrew/bin in synthesized PATH, got %q", path)
 	}
+	for _, want := range []string{"/usr/bin", "/bin", "/usr/sbin", "/sbin"} {
+		if !strings.Contains(path, want) {
+			t.Fatalf("expected synthesized PATH to contain %q, got %q", want, path)
+		}
+	}
 }
 
 // TestResolve_FallbackOnShellFailure covers the case where the login shell
