@@ -29,9 +29,14 @@ type RunOpts struct {
 
 // Result holds the output of an agent invocation.
 type Result struct {
-	Output json.RawMessage // structured output matching the normalized JSONSchema; optional fields may be nullable
-	Text   string          // raw text output
-	Usage  TokenUsage
+	// Output is structured JSON returned by the agent. Text-parsed fallback
+	// results are validated before return, and optional fields may be
+	// nullable there.
+	Output json.RawMessage
+	// Text is the raw text output.
+	Text string
+	// Usage tracks token consumption for the invocation.
+	Usage TokenUsage
 }
 
 // TokenUsage tracks token consumption for an agent invocation.

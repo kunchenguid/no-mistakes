@@ -105,7 +105,7 @@ All agents implement the same interface. Each invocation receives:
 
 Each invocation returns:
 
-- **Output** - structured JSON output validated against the normalized schema; optional fields may be `null`
+- **Output** - structured JSON output; native structured responses are returned as-is, while text-parsed fallbacks are validated before return and may use `null` for optional fields
 - **Text** - raw text output
 - **Usage** - token counts (input, output, cache read, cache creation)
 
@@ -119,11 +119,11 @@ Spawns a `codex` subprocess for each invocation with `exec --json`. When structu
 
 ## Rovo Dev
 
-Starts a persistent HTTP server (`acli rovodev serve`) on first use and reuses it across invocations. Any `agent_args_override.rovodev` flags are inserted before no-mistakes' managed serve flags. Communicates via REST API and SSE streaming. Each invocation creates a session, sends the prompt, streams results, then deletes the session. Structured output is handled by injecting schema instructions into a system prompt, then parsing the final text with fallback parsing that accepts JSON fences, inline fence markers, or a final bare JSON object after prose, and validates the result against the normalized schema.
+Starts a persistent HTTP server (`acli rovodev serve`) on first use and reuses it across invocations. Any `agent_args_override.rovodev` flags are inserted before no-mistakes' managed serve flags. Communicates via REST API and SSE streaming. Each invocation creates a session, sends the prompt, streams results, then deletes the session. Structured output is handled by injecting schema instructions into a system prompt, then parsing the final text with fallback parsing that accepts JSON fences, inline fence markers, or a final bare JSON object after prose, and validates the result against the requested schema while allowing `null` for optional fields.
 
 ## OpenCode
 
-Starts a persistent HTTP server (`opencode serve`) on first use. Any `agent_args_override.opencode` flags are inserted before no-mistakes' managed serve flags. Similar session lifecycle to Rovo Dev: create session, send message, stream SSE events until idle, delete session. Supports `json_schema` format in the message request for structured output, and falls back to parsing the final text with the same JSON fence and bare-object fallback when native structured output is absent, validating the result against the normalized schema.
+Starts a persistent HTTP server (`opencode serve`) on first use. Any `agent_args_override.opencode` flags are inserted before no-mistakes' managed serve flags. Similar session lifecycle to Rovo Dev: create session, send message, stream SSE events until idle, delete session. Supports `json_schema` format in the message request for structured output. When native structured output is absent, it falls back to parsing the final text with the same JSON fence and bare-object fallback, validating that fallback result against the requested schema while allowing `null` for optional fields.
 
 ## Checking agent availability
 
