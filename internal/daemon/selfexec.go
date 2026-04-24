@@ -121,6 +121,9 @@ func reinstallManagedServiceIfChanged(p *paths.Paths) (bool, error) {
 		return false, fmt.Errorf("read managed service definition: %w", readErr)
 	}
 
+	if err := stopCurrentDaemonBeforeManagedRestart(p); err != nil {
+		return false, err
+	}
 	if _, err := installManagedService(p); err != nil {
 		return false, err
 	}
@@ -131,6 +134,24 @@ func reinstallManagedServiceIfChanged(p *paths.Paths) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+func stopCurrentDaemonBeforeManagedRestart(p *paths.Paths) error {
+	if managed, err := stopManagedService(p); managed && err != nil {
+		if alive, _ := daemonHealthCheck(p); !alive {
+			return nil
+		}
+		if detachedErr := stopDetachedDaemon(p); detachedErr != nil {
+			return fmt.Errorf("stop managed daemon before restart: %w; detached shutdown: %v", err, detachedErr)
+		}
+		return nil
+	}
+	if alive, _ := daemonHealthCheck(p); alive {
+		if err := stopDetachedDaemon(p); err != nil {
+			return fmt.Errorf("stop existing daemon before managed restart: %w", err)
+		}
+	}
+	return nil
 }
 
 func stopManagedFallback(p *paths.Paths) error {

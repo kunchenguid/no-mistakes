@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -155,12 +156,66 @@ func TestStartRestartsSystemdUnitWhenDefinitionChanged(t *testing.T) {
 	}
 
 	want := []string{
+		"systemctl --user stop " + systemdServiceName(p),
 		"systemctl --user daemon-reload",
 		"systemctl --user enable " + systemdServiceName(p),
 		"systemctl --user restart " + systemdServiceName(p),
 	}
 	if !reflect.DeepEqual(commands, want) {
 		t.Fatalf("commands = %v, want %v", commands, want)
+	}
+}
+
+func TestStartStopsDetachedDaemonBeforeRestartingStaleManagedService(t *testing.T) {
+	p, _ := startTestDaemon(t)
+	home := t.TempDir()
+
+	cleanup := stubServiceRuntime(t)
+	defer cleanup()
+	runtimeGOOS = "linux"
+	serviceUserHomeDir = func() (string, error) { return home, nil }
+	serviceExecutablePath = func() (string, error) { return "/usr/local/bin/no-mistakes", nil }
+
+	unitPath := filepath.Join(home, ".config", "systemd", "user", systemdServiceName(p))
+	if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(unitPath, []byte("[Service]\nExecStart=/old/no-mistakes daemon run\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldHealthCheck := daemonHealthCheck
+	var serviceRestarted atomic.Bool
+	daemonHealthCheck = func(p *paths.Paths) (bool, error) {
+		if serviceRestarted.Load() {
+			return true, nil
+		}
+		return oldHealthCheck(p)
+	}
+
+	var restartedWhileOldDaemonAlive atomic.Bool
+	var commands []string
+	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
+		command := name + " " + strings.Join(args, " ")
+		commands = append(commands, command)
+		if command == "systemctl --user restart "+systemdServiceName(p) {
+			alive, err := oldHealthCheck(p)
+			if err != nil {
+				t.Fatalf("health check before restart: %v", err)
+			}
+			if alive {
+				restartedWhileOldDaemonAlive.Store(true)
+			}
+			serviceRestarted.Store(true)
+		}
+		return nil, nil
+	}
+
+	if err := Start(p); err != nil {
+		t.Fatalf("Start should replace stale managed service: %v", err)
+	}
+	if restartedWhileOldDaemonAlive.Load() {
+		t.Fatalf("managed service restarted while detached daemon was still alive; commands = %v", commands)
 	}
 }
 
