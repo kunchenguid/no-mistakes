@@ -47,7 +47,7 @@ func finalizeTextResult(agentName, text string, schema json.RawMessage, usage To
 		return &Result{Text: text, Usage: usage}, nil
 	}
 
-	output, err := parseStructuredTextOutput(text)
+	output, err := parseStructuredTextOutput(text, schema)
 	if err != nil {
 		return nil, fmt.Errorf("%s output parse: %w", agentName, err)
 	}
@@ -55,35 +55,43 @@ func finalizeTextResult(agentName, text string, schema json.RawMessage, usage To
 	return &Result{Output: output, Text: text, Usage: usage}, nil
 }
 
-func parseStructuredTextOutput(text string) (json.RawMessage, error) {
-	var output json.RawMessage
-	if err := json.Unmarshal([]byte(text), &output); err == nil {
+func parseStructuredTextOutput(text string, schema json.RawMessage) (json.RawMessage, error) {
+	output, rawErr := parseStructuredCandidate([]byte(text), schema)
+	if rawErr == nil {
 		return output, nil
-	} else {
-		rawErr := err
-
-		candidates := fencedJSONCandidates(text)
-		var parsed []json.RawMessage
-		for _, candidate := range candidates {
-			var fenced json.RawMessage
-			if err := json.Unmarshal([]byte(candidate), &fenced); err == nil {
-				parsed = append(parsed, fenced)
-			}
-		}
-		switch len(parsed) {
-		case 0:
-			// fall through to bare-object scan
-		case 1:
-			return parsed[0], nil
-		default:
-			return nil, fmt.Errorf("multiple JSON code fences found in output")
-		}
-
-		if bare := lastBareJSONObject(text); bare != nil {
-			return bare, nil
-		}
-		return nil, rawErr
 	}
+
+	candidates := fencedJSONCandidates(text)
+	var parsed []json.RawMessage
+	var candidateErr error
+	for _, candidate := range candidates {
+		fenced, err := parseStructuredCandidate([]byte(candidate), schema)
+		if err == nil {
+			parsed = append(parsed, fenced)
+			continue
+		}
+		if candidateErr == nil {
+			candidateErr = err
+		}
+	}
+	switch len(parsed) {
+	case 0:
+	case 1:
+		return parsed[0], nil
+	default:
+		return nil, fmt.Errorf("multiple JSON code fences found in output")
+	}
+
+	if bare, err := lastBareJSONObject(text, schema); err == nil {
+		return bare, nil
+	} else if candidateErr == nil && err != nil {
+		candidateErr = err
+	}
+
+	if candidateErr != nil {
+		return nil, candidateErr
+	}
+	return nil, rawErr
 }
 
 // fencedJSONCandidates extracts JSON bodies from ```json ... ``` fences.
@@ -99,7 +107,7 @@ func fencedJSONCandidates(text string) []string {
 			return candidates
 		}
 		body := rest[start:]
-		end := strings.Index(body, "```")
+		end := indexJSONFenceClose(body)
 		if end < 0 {
 			return candidates
 		}
@@ -138,11 +146,27 @@ func indexJSONFenceOpen(text string) int {
 	}
 }
 
+func indexJSONFenceClose(text string) int {
+	lineStart := true
+	for i := 0; i < len(text); i++ {
+		if lineStart && strings.HasPrefix(text[i:], "```") {
+			return i
+		}
+		lineStart = text[i] == '\n'
+	}
+	trimmed := strings.TrimRight(text, " \t\r\n")
+	if strings.HasSuffix(trimmed, "```") {
+		return len(trimmed) - 3
+	}
+	return -1
+}
+
 // lastBareJSONObject scans text for balanced {...} substrings that parse
 // as JSON and returns the last one found. This handles models that emit
 // reasoning prose followed by a raw JSON answer, with no code fence.
-func lastBareJSONObject(text string) json.RawMessage {
+func lastBareJSONObject(text string, schema json.RawMessage) (json.RawMessage, error) {
 	var last json.RawMessage
+	var lastErr error
 	for i := 0; i < len(text); i++ {
 		if text[i] != '{' {
 			continue
@@ -152,13 +176,19 @@ func lastBareJSONObject(text string) json.RawMessage {
 			continue
 		}
 		candidate := text[i:end]
-		var obj json.RawMessage
-		if err := json.Unmarshal([]byte(candidate), &obj); err == nil {
+		obj, err := parseStructuredCandidate([]byte(candidate), schema)
+		if err == nil {
 			last = obj
-			i = end - 1
+			lastErr = nil
+		} else if lastErr == nil {
+			lastErr = err
 		}
+		i = end - 1
 	}
-	return last
+	if last != nil {
+		return last, nil
+	}
+	return nil, lastErr
 }
 
 // scanBalancedObject returns the exclusive end index of a brace-balanced
@@ -197,6 +227,48 @@ func scanBalancedObject(text string, start int) (int, bool) {
 		}
 	}
 	return 0, false
+}
+
+func parseStructuredCandidate(candidate, schema []byte) (json.RawMessage, error) {
+	var output json.RawMessage
+	if err := json.Unmarshal(candidate, &output); err != nil {
+		return nil, err
+	}
+	if err := validateStructuredOutput(output, schema); err != nil {
+		return nil, err
+	}
+	return output, nil
+}
+
+func validateStructuredOutput(output, schema json.RawMessage) error {
+	required, err := schemaRequiredFields(schema)
+	if err != nil || len(required) == 0 {
+		return err
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(output, &object); err != nil {
+		return fmt.Errorf("JSON output must be an object")
+	}
+	var missing []string
+	for _, key := range required {
+		if _, ok := object[key]; !ok {
+			missing = append(missing, key)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("JSON output missing required fields: %s", strings.Join(missing, ", "))
+	}
+	return nil
+}
+
+func schemaRequiredFields(schema json.RawMessage) ([]string, error) {
+	var raw struct {
+		Required []string `json:"required"`
+	}
+	if err := json.Unmarshal(schema, &raw); err != nil {
+		return nil, err
+	}
+	return raw.Required, nil
 }
 
 // Total returns input + output tokens (the billing-relevant total).

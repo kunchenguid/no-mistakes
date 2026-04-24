@@ -192,6 +192,23 @@ func TestFinalizeTextResult_WithSchemaPrefersLastBareJSON(t *testing.T) {
 	}
 }
 
+func TestFinalizeTextResult_WithSchemaRejectsBareJSONMissingRequiredKeys(t *testing.T) {
+	text := `I inspected the diff and found no issues. {"foo":"bar"}`
+	schema := json.RawMessage(`{
+		"type":"object",
+		"properties":{
+			"findings":{"type":"array"},
+			"summary":{"type":"string"}
+		},
+		"required":["findings","summary"]
+	}`)
+
+	_, err := finalizeTextResult("codex", text, schema, TokenUsage{})
+	if err == nil {
+		t.Fatal("expected bare JSON missing required keys to fail")
+	}
+}
+
 func TestFinalizeTextResult_WithSchemaParsesCodexRealWorldOutput(t *testing.T) {
 	// Regression: real codex output from pipeline 01KPYD4SD644SR9JCNX6Y.
 	// Reasoning sentences were concatenated with no newlines, and the
@@ -238,5 +255,18 @@ func TestFinalizeTextResult_WithSchemaRejectsAmbiguousFencedJSON(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "multiple JSON code fences") {
 		t.Fatalf("expected multiple JSON code fences error, got %v", err)
+	}
+}
+
+func TestFencedJSONCandidates_IgnoreBackticksInsideJSONString(t *testing.T) {
+	text := "review complete\n```json\n{\"summary\":\"quoted ```snippet``` in markdown\",\"findings\":[]}\n```\npostlude"
+
+	got := fencedJSONCandidates(text)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 candidate, got %d", len(got))
+	}
+	want := "{\"summary\":\"quoted ```snippet``` in markdown\",\"findings\":[]}\n"
+	if got[0] != want {
+		t.Fatalf("candidate = %q, want %q", got[0], want)
 	}
 }
