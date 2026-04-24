@@ -462,6 +462,9 @@ func TestStartRestartsRestoredSystemdUnitWhenRefreshRestartFails(t *testing.T) {
 	if restartAttempts != 2 {
 		t.Fatalf("restart attempts = %d, want new restart plus restored restart; commands = %v", restartAttempts, commands)
 	}
+	if len(commands) < 2 || commands[len(commands)-2] != "systemctl --user daemon-reload" {
+		t.Fatalf("expected daemon-reload before restored restart; commands = %v", commands)
+	}
 }
 
 func TestStartDoesNotInstallManagedServiceWhenDaemonAliveAndDefinitionMissing(t *testing.T) {

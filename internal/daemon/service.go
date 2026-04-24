@@ -171,6 +171,20 @@ func restartManagedService(p *paths.Paths) (bool, error) {
 	}
 }
 
+func reloadManagedServiceDefinition(p *paths.Paths) error {
+	if serviceManagerBypassed() {
+		return nil
+	}
+	switch runtimeGOOS {
+	case "linux":
+		_, err := serviceCommandRunner("systemctl", "--user", "daemon-reload")
+		if err != nil {
+			return fmt.Errorf("systemctl daemon-reload: %w", err)
+		}
+	}
+	return nil
+}
+
 func stopManagedService(p *paths.Paths) (bool, error) {
 	if serviceManagerBypassed() || !managedServiceInstalled(p) {
 		return false, nil
