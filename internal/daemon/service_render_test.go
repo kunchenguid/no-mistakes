@@ -1,10 +1,14 @@
 package daemon
 
 import (
+	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
 
 func TestServiceDefinitionMatchesRootRejectsPrefixOnlyMatch(t *testing.T) {
@@ -35,4 +39,112 @@ func TestServiceDefinitionMatchesRootRejectsPrefixOnlyMatch(t *testing.T) {
 	if !serviceDefinitionMatchesRoot([]byte(`<Task><Exec><Command>C:\nm.exe</Command><Arguments>`+buildWindowsTaskCommand(`C:\nm.exe`, root)+`</Arguments></Exec></Task>`), p) {
 		t.Fatal("expected exact windows task root match")
 	}
+}
+
+// TestRenderLaunchAgentIncludesManagedPath locks in that the generated plist
+// ships a sensible PATH in EnvironmentVariables. Without this, launchd runs
+// the daemon with `/usr/bin:/bin:/usr/sbin:/sbin` and the agent binary (at
+// e.g. /opt/homebrew/bin/codex) is invisible to exec.LookPath. See #143.
+func TestRenderLaunchAgentIncludesManagedPath(t *testing.T) {
+	t.Parallel()
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm"))
+	home := "/Users/test"
+
+	plist := renderLaunchAgent("/opt/no-mistakes/bin/no-mistakes", p, home)
+
+	if !strings.Contains(plist, "<key>PATH</key>") {
+		t.Fatalf("expected PATH entry in launchd plist, got:\n%s", plist)
+	}
+	pathValue := extractPlistValue(t, plist, "PATH")
+	for _, want := range []string{
+		"/opt/homebrew/bin",
+		"/opt/homebrew/sbin",
+		"/usr/local/bin",
+		"/usr/local/sbin",
+		"/usr/bin",
+		"/bin",
+		filepath.Join(home, ".local", "bin"),
+		filepath.Join(home, "go", "bin"),
+		filepath.Join(home, ".cargo", "bin"),
+	} {
+		if !strings.Contains(pathValue, want) {
+			t.Fatalf("expected plist PATH to contain %q, got %q", want, pathValue)
+		}
+	}
+}
+
+// TestRenderSystemdUnitIncludesManagedPath mirrors the launchd coverage for
+// systemd user services so Linux installs don't regress into the same
+// "agent binary not in PATH" failure mode when launched at login.
+func TestRenderSystemdUnitIncludesManagedPath(t *testing.T) {
+	t.Parallel()
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm"))
+	home := "/home/test"
+
+	unit := renderSystemdUnit("/usr/local/bin/no-mistakes", p, home)
+	pathValue := extractSystemdEnvironmentValue(t, unit, "PATH")
+	for _, want := range []string{
+		"/opt/homebrew/bin",
+		"/usr/local/bin",
+		"/usr/bin",
+		"/bin",
+		filepath.Join(home, ".local", "bin"),
+		filepath.Join(home, "go", "bin"),
+		filepath.Join(home, ".cargo", "bin"),
+	} {
+		if !strings.Contains(pathValue, want) {
+			t.Fatalf("expected systemd PATH to contain %q, got %q", want, pathValue)
+		}
+	}
+	if pathValue == "" {
+		t.Fatalf("expected Environment=PATH=... in systemd unit, got:\n%s", unit)
+	}
+}
+
+func TestManagedServicePathUsesSharedWellKnownDirs(t *testing.T) {
+	t.Parallel()
+	home := "/Users/test"
+	want := strings.Join(shellenv.WellKnownBinDirsForHome(home), string(os.PathListSeparator))
+
+	if got := managedServicePath(home); got != want {
+		t.Fatalf("managedServicePath(%q) = %q, want %q", home, got, want)
+	}
+}
+
+// extractPlistValue pulls the <string> value that follows a given <key> in
+// an Apple plist. Keeps the rendering assertions readable and independent
+// of byte-for-byte formatting.
+func extractPlistValue(t *testing.T, plist, key string) string {
+	t.Helper()
+	keyTag := "<key>" + key + "</key>"
+	idx := strings.Index(plist, keyTag)
+	if idx < 0 {
+		t.Fatalf("key %q not found in plist", key)
+	}
+	rest := plist[idx+len(keyTag):]
+	start := strings.Index(rest, "<string>")
+	end := strings.Index(rest, "</string>")
+	if start < 0 || end < 0 || end < start {
+		t.Fatalf("malformed plist string for key %q: %q", key, rest)
+	}
+	return rest[start+len("<string>") : end]
+}
+
+func extractSystemdEnvironmentValue(t *testing.T, unit, key string) string {
+	t.Helper()
+	prefix := "Environment="
+	envPrefix := key + "="
+	for _, line := range strings.Split(unit, "\n") {
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		entry, err := strconv.Unquote(strings.TrimPrefix(line, prefix))
+		if err != nil {
+			t.Fatalf("malformed systemd Environment line %q: %v", line, err)
+		}
+		if strings.HasPrefix(entry, envPrefix) {
+			return strings.TrimPrefix(entry, envPrefix)
+		}
+	}
+	return ""
 }

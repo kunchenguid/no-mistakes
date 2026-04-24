@@ -51,6 +51,14 @@ func startSystemdUserService(p *paths.Paths) error {
 	return nil
 }
 
+func restartSystemdUserService(p *paths.Paths) error {
+	_, err := serviceCommandRunner("systemctl", "--user", "restart", systemdServiceName(p))
+	if err != nil {
+		return fmt.Errorf("systemctl restart: %w", err)
+	}
+	return nil
+}
+
 func stopSystemdUserService(p *paths.Paths) error {
 	_, err := serviceCommandRunner("systemctl", "--user", "stop", systemdServiceName(p))
 	if err != nil {
@@ -88,12 +96,13 @@ Type=simple
 ExecStart=%s
 WorkingDirectory=%s
 Environment=%s
+Environment=%s
 Restart=always
 RestartSec=2
 
 [Install]
 WantedBy=default.target
-`, command, systemdEscapeArg(p.Root()), strconv.Quote("HOME="+home))
+`, command, systemdEscapeArg(p.Root()), strconv.Quote("HOME="+home), strconv.Quote("PATH="+managedServicePath(home)))
 }
 
 func systemdEscapeArg(arg string) string {

@@ -77,7 +77,7 @@ The default binary names are:
 | `rovodev` | `acli` |
 | `opencode` | `opencode` |
 
-When the daemon is running through a managed service, that `PATH` comes from your login shell environment on macOS and Linux rather than the service manager's default environment. On Windows it reuses the current process environment instead of reloading a login shell. If agent discovery still does not resolve the binary you expect, use an explicit `agent_path_override`.
+When the daemon is running through a managed service, that `PATH` comes from your login shell environment on macOS and Linux plus common user, Homebrew, and system binary directories. On Windows it reuses the current process environment instead of reloading a login shell. If agent discovery still does not resolve the binary you expect, use an explicit `agent_path_override`.
 
 Override paths in global config:
 

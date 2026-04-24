@@ -141,5 +141,5 @@ no-mistakes doctor
 `doctor` currently checks `gh` availability. For GitLab, confirm `glab` is installed and authenticated. For Bitbucket Cloud, confirm the two env vars are set in the environment the daemon runs under.
 
 :::note
-When the daemon runs through a managed service (launchd, systemd, Task Scheduler), it reloads environment from your login shell on macOS and Linux so `PATH`, `gh` auth, and `NO_MISTAKES_BITBUCKET_*` vars are picked up. On Windows it reuses the current process environment.
+When the daemon runs through a managed service (launchd, systemd, Task Scheduler), it reloads environment from your login shell on macOS and Linux so `gh` auth and `NO_MISTAKES_BITBUCKET_*` vars are picked up, and it augments `PATH` with common binary directories. On Windows it reuses the current process environment.
 :::

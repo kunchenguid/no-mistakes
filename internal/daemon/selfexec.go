@@ -45,11 +45,24 @@ func durationFromEnv(name string, fallback time.Duration) time.Duration {
 // starts it, falling back to a detached re-exec with NM_DAEMON=1 when managed
 // startup is unavailable or fails. It waits up to 5 seconds for the daemon to
 // become responsive on the IPC socket.
+//
+// When the daemon is already running, Start refreshes the installed service
+// definition and reloads the service manager if the on-disk definition is
+// stale (e.g., after a binary upgrade that changed the plist/unit). This is
+// what lets users pick up env-var changes (see #143 for the PATH fix) with
+// a plain `daemon start` instead of a manual stop + start.
 func Start(p *paths.Paths) error {
 	if err := p.EnsureDirs(); err != nil {
 		return err
 	}
 	if alive, _ := daemonHealthCheck(p); alive {
+		reloaded, err := reinstallManagedServiceIfChanged(p)
+		if err != nil {
+			return err
+		}
+		if reloaded {
+			return nil
+		}
 		return fmt.Errorf("daemon already running")
 	}
 	if managed, err := installManagedService(p); err == nil {
@@ -64,6 +77,118 @@ func Start(p *paths.Paths) error {
 		return nil
 	}
 	return startDetachedDaemon(p)
+}
+
+// reinstallManagedServiceIfChanged refreshes the managed daemon service and
+// reloads it through launchctl/systemctl when the on-disk service definition
+// differs from what the current binary would generate. Returns true when a
+// reload actually happened. Called from Start() so that `daemon start` after
+// a binary upgrade re-applies the new service definition without forcing
+// users to run `daemon restart` explicitly. No-op on Windows and when the
+// service manager is bypassed (i.e., under `go test`).
+func reinstallManagedServiceIfChanged(p *paths.Paths) (bool, error) {
+	if serviceManagerBypassed() {
+		return false, nil
+	}
+	exe, err := serviceExecutablePath()
+	if err != nil {
+		return false, fmt.Errorf("resolve executable: %w", err)
+	}
+	home, err := serviceUserHomeDir()
+	if err != nil {
+		return false, fmt.Errorf("resolve user home: %w", err)
+	}
+
+	var installPath, wanted string
+	renderedExecutable := exe
+	switch runtimeGOOS {
+	case "darwin":
+		installPath = launchAgentPath(p)
+	case "linux":
+		installPath = systemdUserServicePath(p)
+	default:
+		return false, nil
+	}
+
+	existing, readErr := os.ReadFile(installPath)
+	if readErr == nil {
+		switch runtimeGOOS {
+		case "darwin":
+			if existingExe, ok := launchAgentExecutable(existing); ok {
+				renderedExecutable = existingExe
+			}
+		case "linux":
+			if existingExe, ok := systemdUnitExecutable(existing); ok {
+				renderedExecutable = existingExe
+			}
+		}
+	}
+	switch runtimeGOOS {
+	case "darwin":
+		wanted = renderLaunchAgent(renderedExecutable, p, home)
+	case "linux":
+		wanted = renderSystemdUnit(renderedExecutable, p, home)
+	}
+	switch {
+	case readErr == nil && string(existing) == wanted:
+		return false, nil
+	case os.IsNotExist(readErr):
+		return false, nil
+	case readErr != nil && !os.IsNotExist(readErr):
+		return false, fmt.Errorf("read managed service definition: %w", readErr)
+	}
+	restoreMode := os.FileMode(0o644)
+	if info, err := os.Stat(installPath); err == nil {
+		restoreMode = info.Mode().Perm()
+	}
+	stoppedForRefresh := false
+	restoreOnFailure := func(cause error) (bool, error) {
+		if err := os.WriteFile(installPath, existing, restoreMode); err != nil {
+			return false, fmt.Errorf("%w; restore managed service definition: %v", cause, err)
+		}
+		if err := reloadManagedServiceDefinition(p); err != nil {
+			return false, fmt.Errorf("%w; reload restored managed service definition: %v", cause, err)
+		}
+		if stoppedForRefresh {
+			if _, err := restartManagedService(p); err != nil {
+				return false, fmt.Errorf("%w; restart restored managed service: %v", cause, err)
+			}
+		}
+		return false, cause
+	}
+
+	if _, err := installManagedServiceWithExecutable(p, renderedExecutable); err != nil {
+		return restoreOnFailure(err)
+	}
+	if err := stopCurrentDaemonBeforeManagedRestart(p); err != nil {
+		return restoreOnFailure(err)
+	}
+	stoppedForRefresh = true
+	if _, err := restartManagedService(p); err != nil {
+		return restoreOnFailure(err)
+	}
+	if err := waitForDaemonStart(p, 0, time.Time{}); err != nil {
+		return restoreOnFailure(err)
+	}
+	return true, nil
+}
+
+func stopCurrentDaemonBeforeManagedRestart(p *paths.Paths) error {
+	if managed, err := stopManagedService(p); managed && err != nil {
+		if alive, _ := daemonHealthCheck(p); !alive {
+			return nil
+		}
+		if detachedErr := stopDetachedDaemon(p); detachedErr != nil {
+			return fmt.Errorf("stop managed daemon before restart: %w; detached shutdown: %v", err, detachedErr)
+		}
+		return nil
+	}
+	if alive, _ := daemonHealthCheck(p); alive {
+		if err := stopDetachedDaemon(p); err != nil {
+			return fmt.Errorf("stop existing daemon before managed restart: %w", err)
+		}
+	}
+	return nil
 }
 
 func stopManagedFallback(p *paths.Paths) error {

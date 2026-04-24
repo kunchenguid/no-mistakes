@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
 
 func installLaunchAgent(p *paths.Paths, exe string) error {
@@ -144,6 +145,8 @@ func renderLaunchAgent(exe string, p *paths.Paths, home string) string {
   <dict>
     <key>HOME</key>
     <string>%s</string>
+    <key>PATH</key>
+    <string>%s</string>
   </dict>
   <key>StandardOutPath</key>
   <string>%s</string>
@@ -155,5 +158,16 @@ func renderLaunchAgent(exe string, p *paths.Paths, home string) string {
   <true/>
 </dict>
 </plist>
-`, xmlEscaped(launchdServiceLabel(p)), args.String(), xmlEscaped(p.Root()), xmlEscaped(home), xmlEscaped(p.DaemonLog()), xmlEscaped(p.DaemonLog()))
+`, xmlEscaped(launchdServiceLabel(p)), args.String(), xmlEscaped(p.Root()), xmlEscaped(home), xmlEscaped(managedServicePath(home)), xmlEscaped(p.DaemonLog()), xmlEscaped(p.DaemonLog()))
+}
+
+// managedServicePath returns a default PATH for daemons started by a service
+// manager (launchd, systemd) that would otherwise inherit only the service
+// manager's minimal PATH. Home-directory entries are interpolated here
+// because neither plist nor systemd Environment= expands $HOME.
+//
+// Entry order: user-scoped dirs first so user-managed tools (go, cargo,
+// ~/.local/bin) win over system packages, then Homebrew and distro defaults.
+func managedServicePath(home string) string {
+	return strings.Join(shellenv.WellKnownBinDirsForHome(home), string(os.PathListSeparator))
 }

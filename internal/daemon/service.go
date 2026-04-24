@@ -125,6 +125,10 @@ func installManagedService(p *paths.Paths) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("resolve executable: %w", err)
 	}
+	return installManagedServiceWithExecutable(p, exe)
+}
+
+func installManagedServiceWithExecutable(p *paths.Paths, exe string) (bool, error) {
 	switch runtimeGOOS {
 	case "darwin":
 		return true, installLaunchAgent(p, exe)
@@ -151,6 +155,34 @@ func startManagedService(p *paths.Paths) (bool, error) {
 	default:
 		return false, nil
 	}
+}
+
+func restartManagedService(p *paths.Paths) (bool, error) {
+	if serviceManagerBypassed() {
+		return false, nil
+	}
+	switch runtimeGOOS {
+	case "darwin":
+		return true, startLaunchAgent(p)
+	case "linux":
+		return true, restartSystemdUserService(p)
+	default:
+		return startManagedService(p)
+	}
+}
+
+func reloadManagedServiceDefinition(p *paths.Paths) error {
+	if serviceManagerBypassed() {
+		return nil
+	}
+	switch runtimeGOOS {
+	case "linux":
+		_, err := serviceCommandRunner("systemctl", "--user", "daemon-reload")
+		if err != nil {
+			return fmt.Errorf("systemctl daemon-reload: %w", err)
+		}
+	}
+	return nil
 }
 
 func stopManagedService(p *paths.Paths) (bool, error) {

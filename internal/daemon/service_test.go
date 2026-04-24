@@ -5,13 +5,499 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 )
+
+// TestStart_ReinstallsManagedServiceWhenPlistChanged covers the post-upgrade
+// case for #143: the user installed a newer binary that renders a different
+// plist (e.g., now carrying a PATH env fix), the old daemon is still alive
+// under the stale plist, and `daemon start` must refresh the plist and boot
+// launchd under the new one so the fix actually takes effect. Prior behavior
+// was "daemon already running" with no refresh, stranding the user.
+func TestStart_ReinstallsManagedServiceWhenPlistChanged(t *testing.T) {
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+
+	cleanup := stubServiceRuntime(t)
+	defer cleanup()
+	runtimeGOOS = "darwin"
+	serviceUserHomeDir = func() (string, error) { return home, nil }
+	serviceCurrentUser = func() (*user.User, error) { return &user.User{Uid: "501"}, nil }
+	serviceExecutablePath = func() (string, error) { return "/opt/no-mistakes/bin/no-mistakes", nil }
+
+	plistPath := filepath.Join(home, "Library", "LaunchAgents", launchdServiceLabel(p)+".plist")
+	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(plistPath, []byte("<stale-plist-from-older-binary/>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var commands []string
+	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
+		commands = append(commands, name+" "+strings.Join(args, " "))
+		return nil, nil
+	}
+	daemonHealthCheck = func(*paths.Paths) (bool, error) { return true, nil }
+
+	if err := Start(p); err != nil {
+		t.Fatalf("Start should reload and succeed when plist changed, got %v", err)
+	}
+
+	data, err := os.ReadFile(plistPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "<key>PATH</key>") {
+		t.Fatalf("expected plist to be rewritten with PATH env, got:\n%s", data)
+	}
+	sawBootout := false
+	sawBootstrap := false
+	sawKickstart := false
+	for _, cmd := range commands {
+		if strings.Contains(cmd, "launchctl bootout ") {
+			sawBootout = true
+		}
+		if strings.Contains(cmd, "launchctl bootstrap ") {
+			sawBootstrap = true
+		}
+		if strings.Contains(cmd, "launchctl kickstart ") {
+			sawKickstart = true
+		}
+	}
+	if !sawBootout || !sawBootstrap || !sawKickstart {
+		t.Fatalf("expected launchctl bootout+bootstrap+kickstart during reload, got %v", commands)
+	}
+}
+
+// TestStart_DoesNotReinstallWhenPlistUnchanged preserves the existing
+// "daemon already running" contract when nothing has changed, so repeated
+// `daemon start` invocations from shells/hooks don't silently restart the
+// daemon and churn the current run.
+func TestStart_DoesNotReinstallWhenPlistUnchanged(t *testing.T) {
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+
+	cleanup := stubServiceRuntime(t)
+	defer cleanup()
+	runtimeGOOS = "darwin"
+	serviceUserHomeDir = func() (string, error) { return home, nil }
+	serviceCurrentUser = func() (*user.User, error) { return &user.User{Uid: "501"}, nil }
+	serviceExecutablePath = func() (string, error) { return "/opt/no-mistakes/bin/no-mistakes", nil }
+
+	plistPath := filepath.Join(home, "Library", "LaunchAgents", launchdServiceLabel(p)+".plist")
+	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	current := renderLaunchAgent("/opt/no-mistakes/bin/no-mistakes", p, home)
+	if err := os.WriteFile(plistPath, []byte(current), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var commands []string
+	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
+		commands = append(commands, name+" "+strings.Join(args, " "))
+		return nil, nil
+	}
+	daemonHealthCheck = func(*paths.Paths) (bool, error) { return true, nil }
+
+	err := Start(p)
+	if err == nil || !strings.Contains(err.Error(), "already running") {
+		t.Fatalf("expected 'already running' error when plist unchanged, got %v", err)
+	}
+	if len(commands) != 0 {
+		t.Fatalf("expected no service commands when plist unchanged, got %v", commands)
+	}
+}
+
+func TestStartDoesNotRestartLaunchAgentForExecutableOnlyChange(t *testing.T) {
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+
+	cleanup := stubServiceRuntime(t)
+	defer cleanup()
+	runtimeGOOS = "darwin"
+	serviceUserHomeDir = func() (string, error) { return home, nil }
+	serviceCurrentUser = func() (*user.User, error) { return &user.User{Uid: "501"}, nil }
+	serviceExecutablePath = func() (string, error) { return "/private/var/folders/go-build/no-mistakes", nil }
+
+	plistPath := filepath.Join(home, "Library", "LaunchAgents", launchdServiceLabel(p)+".plist")
+	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	installed := renderLaunchAgent("/opt/no-mistakes/bin/no-mistakes", p, home)
+	if err := os.WriteFile(plistPath, []byte(installed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var commands []string
+	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
+		commands = append(commands, name+" "+strings.Join(args, " "))
+		return nil, nil
+	}
+	daemonHealthCheck = func(*paths.Paths) (bool, error) { return true, nil }
+
+	err := Start(p)
+	if err == nil || !strings.Contains(err.Error(), "already running") {
+		t.Fatalf("expected already running error, got %v", err)
+	}
+	if len(commands) != 0 {
+		t.Fatalf("expected no service restart for executable-only change, got %v", commands)
+	}
+	data, err := os.ReadFile(plistPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != installed {
+		t.Fatalf("plist changed for executable-only diff:\n%s", data)
+	}
+}
+
+func TestStartPreservesInstalledExecutableWhenRefreshingLaunchAgent(t *testing.T) {
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+
+	cleanup := stubServiceRuntime(t)
+	defer cleanup()
+	runtimeGOOS = "darwin"
+	serviceUserHomeDir = func() (string, error) { return home, nil }
+	serviceCurrentUser = func() (*user.User, error) { return &user.User{Uid: "501"}, nil }
+	serviceExecutablePath = func() (string, error) { return "/private/var/folders/go-build/no-mistakes", nil }
+
+	plistPath := filepath.Join(home, "Library", "LaunchAgents", launchdServiceLabel(p)+".plist")
+	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stale := renderLaunchAgentWithoutEnvironment("/opt/no-mistakes/bin/no-mistakes", p)
+	if err := os.WriteFile(plistPath, []byte(stale), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
+		return nil, nil
+	}
+	daemonHealthCheck = func(*paths.Paths) (bool, error) { return true, nil }
+
+	if err := Start(p); err != nil {
+		t.Fatalf("Start should refresh stale plist: %v", err)
+	}
+
+	data, err := os.ReadFile(plistPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plist := string(data)
+	if !strings.Contains(plist, "<string>/opt/no-mistakes/bin/no-mistakes</string>") {
+		t.Fatalf("expected refreshed plist to preserve installed executable, got:\n%s", plist)
+	}
+	if strings.Contains(plist, "/private/var/folders/go-build/no-mistakes") {
+		t.Fatalf("refreshed plist should not use transient executable:\n%s", plist)
+	}
+	if !strings.Contains(plist, "<key>PATH</key>") {
+		t.Fatalf("expected refreshed plist to include PATH, got:\n%s", plist)
+	}
+}
+
+func TestStartRestartsSystemdUnitWhenDefinitionChanged(t *testing.T) {
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+
+	cleanup := stubServiceRuntime(t)
+	defer cleanup()
+	runtimeGOOS = "linux"
+	serviceUserHomeDir = func() (string, error) { return home, nil }
+	serviceExecutablePath = func() (string, error) { return "/usr/local/bin/no-mistakes", nil }
+
+	unitPath := filepath.Join(home, ".config", "systemd", "user", systemdServiceName(p))
+	if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(unitPath, []byte("[Service]\nExecStart=/old/no-mistakes daemon run\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var commands []string
+	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
+		commands = append(commands, name+" "+strings.Join(args, " "))
+		return nil, nil
+	}
+	daemonHealthCheck = func(*paths.Paths) (bool, error) { return true, nil }
+
+	if err := Start(p); err != nil {
+		t.Fatalf("Start should restart stale systemd unit, got %v", err)
+	}
+
+	want := []string{
+		"systemctl --user daemon-reload",
+		"systemctl --user enable " + systemdServiceName(p),
+		"systemctl --user stop " + systemdServiceName(p),
+		"systemctl --user restart " + systemdServiceName(p),
+	}
+	if !reflect.DeepEqual(commands, want) {
+		t.Fatalf("commands = %v, want %v", commands, want)
+	}
+}
+
+func TestStartStopsDetachedDaemonBeforeRestartingStaleManagedService(t *testing.T) {
+	p, _ := startTestDaemon(t)
+	home := t.TempDir()
+
+	cleanup := stubServiceRuntime(t)
+	defer cleanup()
+	runtimeGOOS = "linux"
+	serviceUserHomeDir = func() (string, error) { return home, nil }
+	serviceExecutablePath = func() (string, error) { return "/usr/local/bin/no-mistakes", nil }
+
+	unitPath := filepath.Join(home, ".config", "systemd", "user", systemdServiceName(p))
+	if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(unitPath, []byte("[Service]\nExecStart=/old/no-mistakes daemon run\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldHealthCheck := daemonHealthCheck
+	var serviceRestarted atomic.Bool
+	daemonHealthCheck = func(p *paths.Paths) (bool, error) {
+		if serviceRestarted.Load() {
+			return true, nil
+		}
+		return oldHealthCheck(p)
+	}
+
+	var restartedWhileOldDaemonAlive atomic.Bool
+	var commands []string
+	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
+		command := name + " " + strings.Join(args, " ")
+		commands = append(commands, command)
+		if command == "systemctl --user restart "+systemdServiceName(p) {
+			alive, err := oldHealthCheck(p)
+			if err != nil {
+				t.Fatalf("health check before restart: %v", err)
+			}
+			if alive {
+				restartedWhileOldDaemonAlive.Store(true)
+			}
+			serviceRestarted.Store(true)
+		}
+		return nil, nil
+	}
+
+	if err := Start(p); err != nil {
+		t.Fatalf("Start should replace stale managed service: %v", err)
+	}
+	if restartedWhileOldDaemonAlive.Load() {
+		t.Fatalf("managed service restarted while detached daemon was still alive; commands = %v", commands)
+	}
+}
+
+func TestStartDoesNotStopRunningDaemonWhenStaleManagedInstallFails(t *testing.T) {
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+
+	cleanup := stubServiceRuntime(t)
+	defer cleanup()
+	runtimeGOOS = "linux"
+	serviceUserHomeDir = func() (string, error) { return home, nil }
+	serviceExecutablePath = func() (string, error) { return "/usr/local/bin/no-mistakes", nil }
+
+	unitPath := filepath.Join(home, ".config", "systemd", "user", systemdServiceName(p))
+	if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(unitPath, []byte("[Service]\nExecStart=/old/no-mistakes daemon run\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var commands []string
+	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
+		command := name + " " + strings.Join(args, " ")
+		commands = append(commands, command)
+		if command == "systemctl --user daemon-reload" {
+			return nil, fmt.Errorf("daemon-reload failed")
+		}
+		return nil, nil
+	}
+	daemonHealthCheck = func(*paths.Paths) (bool, error) { return true, nil }
+
+	err := Start(p)
+	if err == nil {
+		t.Fatal("Start should return install failure")
+	}
+	if !strings.Contains(err.Error(), "daemon-reload failed") {
+		t.Fatalf("Start error = %v, want install failure", err)
+	}
+	for _, command := range commands {
+		if command == "systemctl --user stop "+systemdServiceName(p) {
+			t.Fatalf("should not stop running daemon before install succeeds; commands = %v", commands)
+		}
+	}
+}
+
+func TestStartRestoresStaleSystemdUnitWhenRefreshInstallFails(t *testing.T) {
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+
+	cleanup := stubServiceRuntime(t)
+	defer cleanup()
+	runtimeGOOS = "linux"
+	serviceUserHomeDir = func() (string, error) { return home, nil }
+	serviceExecutablePath = func() (string, error) { return "/usr/local/bin/no-mistakes", nil }
+
+	unitPath := filepath.Join(home, ".config", "systemd", "user", systemdServiceName(p))
+	if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stale := "[Service]\nExecStart=/old/no-mistakes daemon run\n"
+	if err := os.WriteFile(unitPath, []byte(stale), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
+		if name == "systemctl" && reflect.DeepEqual(args, []string{"--user", "daemon-reload"}) {
+			return nil, fmt.Errorf("daemon-reload failed")
+		}
+		return nil, nil
+	}
+	daemonHealthCheck = func(*paths.Paths) (bool, error) { return true, nil }
+
+	err := Start(p)
+	if err == nil {
+		t.Fatal("Start should return install failure")
+	}
+	data, readErr := os.ReadFile(unitPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(data) != stale {
+		t.Fatalf("unit file = %q, want stale definition restored", string(data))
+	}
+}
+
+func TestStartRestartsRestoredSystemdUnitWhenRefreshRestartFails(t *testing.T) {
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+
+	cleanup := stubServiceRuntime(t)
+	defer cleanup()
+	runtimeGOOS = "linux"
+	serviceUserHomeDir = func() (string, error) { return home, nil }
+	serviceExecutablePath = func() (string, error) { return "/usr/local/bin/no-mistakes", nil }
+
+	unitPath := filepath.Join(home, ".config", "systemd", "user", systemdServiceName(p))
+	if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stale := "[Service]\nExecStart=/old/no-mistakes daemon run\n"
+	if err := os.WriteFile(unitPath, []byte(stale), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var commands []string
+	var stopped bool
+	restartAttempts := 0
+	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
+		command := name + " " + strings.Join(args, " ")
+		commands = append(commands, command)
+		switch command {
+		case "systemctl --user stop " + systemdServiceName(p):
+			stopped = true
+		case "systemctl --user restart " + systemdServiceName(p):
+			restartAttempts++
+			if restartAttempts == 1 {
+				return nil, fmt.Errorf("restart failed")
+			}
+		}
+		return nil, nil
+	}
+	daemonHealthCheck = func(*paths.Paths) (bool, error) {
+		return !stopped || restartAttempts > 1, nil
+	}
+
+	err := Start(p)
+	if err == nil {
+		t.Fatal("Start should return restart failure")
+	}
+	if !strings.Contains(err.Error(), "restart failed") {
+		t.Fatalf("Start error = %v, want restart failure", err)
+	}
+	data, readErr := os.ReadFile(unitPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(data) != stale {
+		t.Fatalf("unit file = %q, want stale definition restored", string(data))
+	}
+	if restartAttempts != 2 {
+		t.Fatalf("restart attempts = %d, want new restart plus restored restart; commands = %v", restartAttempts, commands)
+	}
+	if len(commands) < 2 || commands[len(commands)-2] != "systemctl --user daemon-reload" {
+		t.Fatalf("expected daemon-reload before restored restart; commands = %v", commands)
+	}
+}
+
+func TestStartDoesNotInstallManagedServiceWhenDaemonAliveAndDefinitionMissing(t *testing.T) {
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+
+	cleanup := stubServiceRuntime(t)
+	defer cleanup()
+	runtimeGOOS = "linux"
+	serviceUserHomeDir = func() (string, error) { return home, nil }
+	serviceExecutablePath = func() (string, error) { return "/usr/local/bin/no-mistakes", nil }
+
+	var commands []string
+	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
+		commands = append(commands, name+" "+strings.Join(args, " "))
+		return nil, nil
+	}
+	daemonHealthCheck = func(*paths.Paths) (bool, error) { return true, nil }
+
+	err := Start(p)
+	if err == nil || !strings.Contains(err.Error(), "already running") {
+		t.Fatalf("expected already running error, got %v", err)
+	}
+	if len(commands) != 0 {
+		t.Fatalf("expected no service commands, got %v", commands)
+	}
+	if _, statErr := os.Stat(systemdUserServicePath(p)); !os.IsNotExist(statErr) {
+		t.Fatalf("expected no systemd unit to be installed, stat err = %v", statErr)
+	}
+}
 
 func TestStartFallsBackToDetachedDaemonWhenManagedStartFails(t *testing.T) {
 	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
@@ -990,6 +1476,38 @@ func TestWaitForDaemonStartDoesNotKillWhenPIDZero(t *testing.T) {
 	if killCalled {
 		t.Fatal("waitForDaemonStart should not kill when pid is 0 (managed daemon case)")
 	}
+}
+
+func renderLaunchAgentWithoutEnvironment(exe string, p *paths.Paths) string {
+	values := []string{exe, "daemon", "run", "--root", p.Root()}
+	var args strings.Builder
+	for _, value := range values {
+		args.WriteString("    <string>")
+		args.WriteString(xmlEscaped(value))
+		args.WriteString("</string>\n")
+	}
+	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>%s</string>
+  <key>ProgramArguments</key>
+  <array>
+%s  </array>
+  <key>WorkingDirectory</key>
+  <string>%s</string>
+  <key>StandardOutPath</key>
+  <string>%s</string>
+  <key>StandardErrorPath</key>
+  <string>%s</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+</dict>
+</plist>
+`, xmlEscaped(launchdServiceLabel(p)), args.String(), xmlEscaped(p.Root()), xmlEscaped(p.DaemonLog()), xmlEscaped(p.DaemonLog()))
 }
 
 func stubServiceRuntime(t *testing.T) func() {

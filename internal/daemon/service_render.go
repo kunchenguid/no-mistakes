@@ -5,6 +5,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/paths"
@@ -43,6 +44,99 @@ func xmlEscaped(value string) string {
 	var buf bytes.Buffer
 	_ = xml.EscapeText(&buf, []byte(value))
 	return buf.String()
+}
+
+func launchAgentExecutable(data []byte) (string, bool) {
+	decoder := xml.NewDecoder(bytes.NewReader(data))
+	var sawProgramArguments bool
+	var inProgramArguments bool
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			return "", false
+		}
+		switch t := token.(type) {
+		case xml.StartElement:
+			switch t.Name.Local {
+			case "key":
+				var key string
+				if err := decoder.DecodeElement(&key, &t); err != nil {
+					return "", false
+				}
+				sawProgramArguments = strings.TrimSpace(key) == "ProgramArguments"
+			case "array":
+				if sawProgramArguments {
+					inProgramArguments = true
+					sawProgramArguments = false
+				}
+			case "string":
+				if !inProgramArguments {
+					sawProgramArguments = false
+					continue
+				}
+				var value string
+				if err := decoder.DecodeElement(&value, &t); err != nil {
+					return "", false
+				}
+				if strings.TrimSpace(value) == "" {
+					return "", false
+				}
+				return value, true
+			default:
+				if !inProgramArguments {
+					sawProgramArguments = false
+				}
+			}
+		case xml.EndElement:
+			if inProgramArguments && t.Name.Local == "array" {
+				return "", false
+			}
+		}
+	}
+}
+
+func systemdUnitExecutable(data []byte) (string, bool) {
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "ExecStart=") {
+			continue
+		}
+		return firstCommandArg(strings.TrimSpace(strings.TrimPrefix(line, "ExecStart=")))
+	}
+	return "", false
+}
+
+func firstCommandArg(command string) (string, bool) {
+	if command == "" {
+		return "", false
+	}
+	if command[0] != '"' {
+		fields := strings.Fields(command)
+		if len(fields) == 0 || fields[0] == "" {
+			return "", false
+		}
+		return fields[0], true
+	}
+	escaped := false
+	for i := 1; i < len(command); i++ {
+		c := command[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if c == '\\' {
+			escaped = true
+			continue
+		}
+		if c == '"' {
+			value, err := strconv.Unquote(command[:i+1])
+			if err != nil || value == "" {
+				return "", false
+			}
+			return value, true
+		}
+	}
+	return "", false
 }
 
 func runServiceCommand(name string, args ...string) ([]byte, error) {

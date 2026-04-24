@@ -82,6 +82,6 @@ When telemetry is enabled, `no-mistakes` sends command, run, step, approval, fix
 
 ## Environment the daemon sees
 
-When the daemon runs through a managed service (launchd, systemd user service, Task Scheduler), it reloads environment from your login shell on macOS and Linux before each run so `PATH` and `NO_MISTAKES_*` vars match what you'd see in an interactive shell. On Windows it reuses the current process environment.
+When the daemon runs through a managed service (launchd, systemd user service, Task Scheduler), the macOS and Linux service definitions include a default `PATH` with common user and system binary directories. Before each run, the daemon reloads environment from your login shell on macOS and Linux, preserves your shell `PATH` order, and appends any missing well-known directories such as `~/.local/bin`, `~/go/bin`, `~/.cargo/bin`, `~/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`, and `/bin`. On Windows it reuses the current process environment.
 
 If your env vars aren't set in your login shell's rc files (`.zprofile`, `.zshrc`, `.profile`, `.bash_profile`, `.bashrc`, PowerShell profile), the daemon won't see them. Put them somewhere a login shell will load.
