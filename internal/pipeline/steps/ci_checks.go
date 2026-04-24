@@ -59,14 +59,8 @@ func failingCheckNames(checks []scm.Check) []string {
 	return names
 }
 
-// failingCheckCompletedAfter reports whether any failing check completed after
-// the given reference time. Zero reference or zero completion timestamps mean
-// the signal is unavailable and returns false (preserves legacy behavior when
-// completion times are not populated by the provider).
-func failingCheckCompletedAfter(checks []scm.Check, after time.Time) bool {
-	if after.IsZero() {
-		return false
-	}
+func failingCheckCompletionTimes(checks []scm.Check) map[string]time.Time {
+	completedAt := make(map[string]time.Time)
 	for _, c := range checks {
 		if !c.Failing() {
 			continue
@@ -74,7 +68,27 @@ func failingCheckCompletedAfter(checks []scm.Check, after time.Time) bool {
 		if c.CompletedAt.IsZero() {
 			continue
 		}
-		if c.CompletedAt.After(after) {
+		previous := completedAt[c.Name]
+		if previous.IsZero() || c.CompletedAt.After(previous) {
+			completedAt[c.Name] = c.CompletedAt
+		}
+	}
+	if len(completedAt) == 0 {
+		return nil
+	}
+	return completedAt
+}
+
+func failingCheckCompletedAfter(checks []scm.Check, after map[string]time.Time) bool {
+	if len(after) == 0 {
+		return false
+	}
+	for _, c := range checks {
+		if !c.Failing() || c.CompletedAt.IsZero() {
+			continue
+		}
+		previous, ok := after[c.Name]
+		if ok && c.CompletedAt.After(previous) {
 			return true
 		}
 	}
