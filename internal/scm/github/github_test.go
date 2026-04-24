@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
@@ -32,6 +33,32 @@ func TestGetChecksFallsBackToStateWhenBucketMissing(t *testing.T) {
 	}
 	if checks[1].Name != "tests" || checks[1].Bucket != scm.CheckBucketPending {
 		t.Fatalf("checks[1] = %+v, want pending tests check", checks[1])
+	}
+}
+
+func TestGetChecksParsesCompletedAt(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr checks 123 --json name,state,bucket,completedAt": {
+			stdout: `[{"name":"build","state":"FAILURE","bucket":"fail","completedAt":"2026-04-24T04:15:00Z"},{"name":"tests","state":"SUCCESS","bucket":"pass","completedAt":"not-a-time"}]` + "\n",
+		},
+	}), nil)
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 2 {
+		t.Fatalf("len(checks) = %d, want 2", len(checks))
+	}
+
+	wantCompletedAt := time.Date(2026, 4, 24, 4, 15, 0, 0, time.UTC)
+	if !checks[0].CompletedAt.Equal(wantCompletedAt) {
+		t.Fatalf("checks[0].CompletedAt = %v, want %v", checks[0].CompletedAt, wantCompletedAt)
+	}
+	if !checks[1].CompletedAt.IsZero() {
+		t.Fatalf("checks[1].CompletedAt = %v, want zero time for invalid timestamp", checks[1].CompletedAt)
 	}
 }
 
