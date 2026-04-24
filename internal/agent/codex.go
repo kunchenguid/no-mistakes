@@ -23,6 +23,7 @@ func (a *codexAgent) Name() string { return "codex" }
 
 func (a *codexAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 	schemaPath := ""
+	validationSchema := opts.JSONSchema
 	if len(opts.JSONSchema) > 0 {
 		f, err := os.CreateTemp("", "no-mistakes-codex-schema-*.json")
 		if err != nil {
@@ -35,6 +36,7 @@ func (a *codexAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 			_ = os.Remove(schemaPath)
 			return nil, fmt.Errorf("codex schema normalize: %w", err)
 		}
+		validationSchema = schema
 		if _, err := f.Write(schema); err != nil {
 			_ = f.Close()
 			_ = os.Remove(schemaPath)
@@ -95,7 +97,7 @@ func (a *codexAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 		return nil, fmt.Errorf("codex exited: %w: %s", err, detail)
 	}
 
-	return finalizeTextResult("codex", lastMessage, opts.JSONSchema, usage)
+	return finalizeTextResult("codex", lastMessage, validationSchema, usage)
 }
 
 func (a *codexAgent) Close() error { return nil }

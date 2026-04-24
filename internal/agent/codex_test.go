@@ -242,6 +242,53 @@ exit 1
 	}
 }
 
+func TestCodexAgent_RunAcceptsNormalizedNullableFields(t *testing.T) {
+	dir := t.TempDir()
+	bin := writeFakeCodex(t, dir, `#!/bin/sh
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"findings\":[{\"severity\":\"warning\",\"file\":null,\"line\":null,\"description\":\"x\",\"action\":\"auto-fix\"}],\"summary\":\"1 issue\"}"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":2}}'
+`, strings.Join([]string{
+		"@echo off",
+		"echo {\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"{\\\"findings\\\":[{\\\"severity\\\":\\\"warning\\\",\\\"file\\\":null,\\\"line\\\":null,\\\"description\\\":\\\"x\\\",\\\"action\\\":\\\"auto-fix\\\"}],\\\"summary\\\":\\\"1 issue\\\"}\"}}",
+		"echo {\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":2}}",
+	}, "\r\n"))
+
+	schema := json.RawMessage(`{
+		"type":"object",
+		"properties":{
+			"findings":{
+				"type":"array",
+				"items":{
+					"type":"object",
+					"properties":{
+						"severity":{"type":"string","enum":["error","warning","info"]},
+						"file":{"type":"string"},
+						"line":{"type":"integer"},
+						"description":{"type":"string"},
+						"action":{"type":"string","enum":["no-op","auto-fix","ask-user"]}
+					},
+					"required":["severity","description","action"]
+				}
+			},
+			"summary":{"type":"string"}
+		},
+		"required":["findings","summary"]
+	}`)
+
+	ca := &codexAgent{bin: bin}
+	result, err := ca.Run(context.Background(), RunOpts{
+		Prompt:     "review",
+		CWD:        t.TempDir(),
+		JSONSchema: schema,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(result.Output) != `{"findings":[{"severity":"warning","file":null,"line":null,"description":"x","action":"auto-fix"}],"summary":"1 issue"}` {
+		t.Fatalf("unexpected output: %s", string(result.Output))
+	}
+}
+
 func TestCodexOutputSchemaAddsAdditionalPropertiesFalse(t *testing.T) {
 	schema := json.RawMessage(`{
 		"type":"object",
