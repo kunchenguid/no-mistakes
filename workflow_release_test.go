@@ -22,81 +22,49 @@ func TestReleaseWorkflowUsesScopedConcurrencyGroup(t *testing.T) {
 	}
 }
 
-func TestReleaseWorkflowSkipsValidationJobsForReleaseCommits(t *testing.T) {
+func TestReleaseWorkflowDoesNotDefineValidationJobs(t *testing.T) {
 	data, err := os.ReadFile(".github/workflows/release.yml")
 	if err != nil {
 		t.Fatalf("read workflow: %v", err)
 	}
 
 	content := string(data)
-	guard := "if: \"!startsWith(github.event.head_commit.message, 'chore(main): release')\""
-	if strings.Count(content, guard) != 2 {
-		t.Fatalf("release workflow must skip both validation jobs for release commits")
-	}
-}
-
-func TestReleaseWorkflowAllowsReleasePleaseAfterSkippedValidation(t *testing.T) {
-	data, err := os.ReadFile(".github/workflows/release.yml")
-	if err != nil {
-		t.Fatalf("read workflow: %v", err)
-	}
-
-	content := string(data)
-	checks := []string{
-		"if: |",
-		"!cancelled() &&",
-		"(needs.check.result == 'success' || needs.check.result == 'skipped') &&",
-		"(needs.test.result == 'success' || needs.test.result == 'skipped')",
-	}
-	for _, check := range checks {
-		if !strings.Contains(content, check) {
-			t.Fatalf("release workflow must allow release-please to proceed when validation jobs are skipped: missing %q", check)
+	for _, job := range []string{"check", "test"} {
+		if strings.Contains(content, "\n  "+job+":\n") {
+			t.Fatalf("release workflow must not define %q; CI owns validation now", job)
 		}
 	}
 }
 
-// Regression for the v1.8.1 incident: when check/test are skipped for release
-// PR merge commits, GitHub Actions implicitly wraps downstream job `if:`
-// expressions with success(), which returns false because upstream jobs did
-// not succeed. build-and-upload and checksums must include !cancelled() (or
-// success()/always()) so the implicit wrap is skipped, and must gate on
-// release-please succeeding plus release_created=='true'.
-func TestReleaseWorkflowRunsBuildAndChecksumsAfterSkippedValidation(t *testing.T) {
+func TestReleaseWorkflowRunsReleasePleaseWithoutValidationGuards(t *testing.T) {
 	data, err := os.ReadFile(".github/workflows/release.yml")
 	if err != nil {
 		t.Fatalf("read workflow: %v", err)
 	}
-	content := string(data)
 
-	jobs := []struct {
-		name     string
-		required []string
-	}{
-		{
-			name: "build-and-upload",
-			required: []string{
-				"!cancelled()",
-				"needs.release-please.result == 'success'",
-				"needs.release-please.outputs.release_created == 'true'",
-			},
-		},
-		{
-			name: "checksums",
-			required: []string{
-				"!cancelled()",
-				"needs.release-please.result == 'success'",
-				"needs.build-and-upload.result == 'success'",
-				"needs.release-please.outputs.release_created == 'true'",
-			},
-		},
+	block := extractJobBlock(t, string(data), "release-please")
+	if strings.Contains(block, "needs:") {
+		t.Fatalf("release-please must not depend on in-workflow validation jobs")
+	}
+	guard := "!startsWith(github.event.head_commit.message, 'chore(main): release')"
+	if strings.Contains(block, guard) {
+		t.Fatalf("release-please must not carry the old release-commit skip guard")
+	}
+}
+
+func TestReleaseWorkflowBuildStartsOnlyWhenReleaseIsCreated(t *testing.T) {
+	data, err := os.ReadFile(".github/workflows/release.yml")
+	if err != nil {
+		t.Fatalf("read workflow: %v", err)
 	}
 
-	for _, j := range jobs {
-		block := extractJobBlock(t, content, j.name)
-		for _, req := range j.required {
-			if !strings.Contains(block, req) {
-				t.Fatalf("%s job must contain %q so it runs after skipped validation jobs", j.name, req)
-			}
+	block := extractJobBlock(t, string(data), "build-and-upload")
+	if !strings.Contains(block, "if: needs.release-please.outputs.release_created == 'true'") {
+		t.Fatalf("build-and-upload must run only when release-please created a release")
+	}
+	for _, unexpected := range []string{"!cancelled()", "needs.release-please.result == 'success'"} {
+		if strings.Contains(block, unexpected) {
+			t.Fatalf("build-and-upload must not keep the old skipped-validation guard %q", unexpected)
 		}
 	}
 }
