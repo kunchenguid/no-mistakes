@@ -17,6 +17,7 @@ const defaultChecksGracePeriod = 60 * time.Second
 // CIStep monitors CI checks after PR creation, auto-fixing failures.
 type CIStep struct {
 	lastFixedChecks      string        // sorted check names from last fix attempt, to avoid re-fixing
+	lastFixedAt          time.Time     // wall time when lastFixedChecks was set; used to detect CI re-runs via check completedAt
 	ciFixAttempts        int           // number of CI auto-fix attempts made
 	checksGracePeriod    time.Duration // minimum wait before trusting empty CI checks (0 = default 60s)
 	pollIntervalOverride time.Duration // if set, overrides computed poll interval (for testing)
@@ -158,9 +159,20 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			hasIssues := hasFailures || mergeConflict
 			timeoutFailingChecks = append(timeoutFailingChecks[:0], failing...)
 
+			// If a failing check completed after our last fix push, CI has
+			// already re-run since we pushed (possibly too fast to observe
+			// as pending between polls). Treat this as a new iteration so
+			// the retry path can fire rather than looping on "fix already
+			// attempted" until timeout.
+			if failingCheckCompletedAfter(checks, s.lastFixedAt) {
+				s.lastFixedChecks = ""
+				s.lastFixedAt = time.Time{}
+			}
+
 			if hasIssues && pending {
 				if pendingCheckMatchesLastFixed(checks, s.lastFixedChecks) {
 					s.lastFixedChecks = ""
+					s.lastFixedAt = time.Time{}
 				}
 				sctx.Log("issues detected but checks still pending, waiting for all checks to complete...")
 			} else if hasIssues {
@@ -183,6 +195,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 						sctx.Log(fmt.Sprintf("warning: CI manual fix failed: %v", err))
 					} else if pushed || sctx.Run.HeadSHA != previousHeadSHA {
 						s.lastFixedChecks = fixKey
+						s.lastFixedAt = now()
 					} else {
 						sctx.Log("CI fix produced no changes, returning for manual intervention...")
 						return ciFailureOutcome(failing, mergeConflict, "CI fix produced no changes - failures require manual intervention"), nil
@@ -206,6 +219,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 						sctx.Log(fmt.Sprintf("warning: CI auto-fix failed: %v", err))
 					} else if pushed || sctx.Run.HeadSHA != previousHeadSHA {
 						s.lastFixedChecks = fixKey
+						s.lastFixedAt = now()
 					} else {
 						// No changes produced - don't set lastFixedChecks so next
 						// poll treats this as a new failure and retries if attempts remain.
@@ -214,6 +228,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 				}
 			} else {
 				s.lastFixedChecks = ""
+				s.lastFixedAt = time.Time{}
 				if !pending && mergeabilityKnown {
 					if len(checks) == 0 && elapsed < s.gracePeriod() {
 						// CI checks may not be registered yet, keep polling

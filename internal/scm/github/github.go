@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
@@ -114,7 +115,7 @@ func (h *Host) GetPRState(ctx context.Context, pr *scm.PR) (scm.PRState, error) 
 }
 
 func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
-	cmd := h.cmd(ctx, "gh", "pr", "checks", pr.Number, "--json", "name,state,bucket")
+	cmd := h.cmd(ctx, "gh", "pr", "checks", pr.Number, "--json", "name,state,bucket,completedAt")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		if strings.Contains(string(out), "no checks reported") {
@@ -123,16 +124,23 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 		return nil, fmt.Errorf("gh pr checks: %w", err)
 	}
 	var raw []struct {
-		Name   string `json:"name"`
-		State  string `json:"state"`
-		Bucket string `json:"bucket"`
+		Name        string `json:"name"`
+		State       string `json:"state"`
+		Bucket      string `json:"bucket"`
+		CompletedAt string `json:"completedAt"`
 	}
 	if err := json.Unmarshal(out, &raw); err != nil {
 		return nil, fmt.Errorf("parse CI checks: %w", err)
 	}
 	checks := make([]scm.Check, 0, len(raw))
 	for _, r := range raw {
-		checks = append(checks, scm.Check{Name: r.Name, Bucket: normalizeCheckBucket(r.Bucket, r.State)})
+		var completedAt time.Time
+		if r.CompletedAt != "" {
+			if parsed, parseErr := time.Parse(time.RFC3339, r.CompletedAt); parseErr == nil {
+				completedAt = parsed
+			}
+		}
+		checks = append(checks, scm.Check{Name: r.Name, Bucket: normalizeCheckBucket(r.Bucket, r.State), CompletedAt: completedAt})
 	}
 	return checks, nil
 }

@@ -15,7 +15,7 @@ func TestGetChecksFallsBackToStateWhenBucketMissing(t *testing.T) {
 	t.Parallel()
 
 	host := New(githubTestCmdFactory(map[string]githubTestResponse{
-		"gh pr checks 123 --json name,state,bucket": {
+		"gh pr checks 123 --json name,state,bucket,completedAt": {
 			stdout: `[{"name":"build","state":"FAILURE","bucket":""},{"name":"tests","state":"PENDING","bucket":""}]` + "\n",
 		},
 	}), nil)
