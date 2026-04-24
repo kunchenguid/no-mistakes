@@ -105,7 +105,7 @@ All agents implement the same interface. Each invocation receives:
 
 Each invocation returns:
 
-- **Output** - structured JSON output (when schema was provided)
+- **Output** - structured JSON output validated against the normalized schema; optional fields may be `null`
 - **Text** - raw text output
 - **Usage** - token counts (input, output, cache read, cache creation)
 
@@ -115,15 +115,15 @@ Spawns a `claude` subprocess for each invocation with `--output-format stream-js
 
 ## Codex
 
-Spawns a `codex` subprocess for each invocation with `exec --json`. When structured output is requested, no-mistakes also writes a normalized schema file and passes it with `--output-schema`. By default it also adds `--dangerously-bypass-approvals-and-sandbox`, unless you already set your own Codex approval or sandbox flag through `agent_args_override`. Reads JSONL events. Structured output is returned from the final `agent_message` text, with fallback parsing that accepts JSON fences, inline fence markers, or a final bare JSON object after prose.
+Spawns a `codex` subprocess for each invocation with `exec --json`. When structured output is requested, no-mistakes also writes a normalized schema file and passes it with `--output-schema`. By default it also adds `--dangerously-bypass-approvals-and-sandbox`, unless you already set your own Codex approval or sandbox flag through `agent_args_override`. Reads JSONL events. Structured output is returned from the final `agent_message` text, with fallback parsing that accepts JSON fences, inline fence markers, or a final bare JSON object after prose, then validates the result against the normalized schema.
 
 ## Rovo Dev
 
-Starts a persistent HTTP server (`acli rovodev serve`) on first use and reuses it across invocations. Any `agent_args_override.rovodev` flags are inserted before no-mistakes' managed serve flags. Communicates via REST API and SSE streaming. Each invocation creates a session, sends the prompt, streams results, then deletes the session. Structured output is handled by injecting schema instructions into a system prompt, then parsing the final text with fallback parsing that accepts JSON fences, inline fence markers, or a final bare JSON object after prose.
+Starts a persistent HTTP server (`acli rovodev serve`) on first use and reuses it across invocations. Any `agent_args_override.rovodev` flags are inserted before no-mistakes' managed serve flags. Communicates via REST API and SSE streaming. Each invocation creates a session, sends the prompt, streams results, then deletes the session. Structured output is handled by injecting schema instructions into a system prompt, then parsing the final text with fallback parsing that accepts JSON fences, inline fence markers, or a final bare JSON object after prose, and validates the result against the normalized schema.
 
 ## OpenCode
 
-Starts a persistent HTTP server (`opencode serve`) on first use. Any `agent_args_override.opencode` flags are inserted before no-mistakes' managed serve flags. Similar session lifecycle to Rovo Dev: create session, send message, stream SSE events until idle, delete session. Supports `json_schema` format in the message request for structured output, and falls back to parsing the final text with the same JSON fence and bare-object fallback when native structured output is absent.
+Starts a persistent HTTP server (`opencode serve`) on first use. Any `agent_args_override.opencode` flags are inserted before no-mistakes' managed serve flags. Similar session lifecycle to Rovo Dev: create session, send message, stream SSE events until idle, delete session. Supports `json_schema` format in the message request for structured output, and falls back to parsing the final text with the same JSON fence and bare-object fallback when native structured output is absent, validating the result against the normalized schema.
 
 ## Checking agent availability
 
