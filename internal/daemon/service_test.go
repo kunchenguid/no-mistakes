@@ -402,6 +402,68 @@ func TestStartRestoresStaleSystemdUnitWhenRefreshInstallFails(t *testing.T) {
 	}
 }
 
+func TestStartRestartsRestoredSystemdUnitWhenRefreshRestartFails(t *testing.T) {
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+
+	cleanup := stubServiceRuntime(t)
+	defer cleanup()
+	runtimeGOOS = "linux"
+	serviceUserHomeDir = func() (string, error) { return home, nil }
+	serviceExecutablePath = func() (string, error) { return "/usr/local/bin/no-mistakes", nil }
+
+	unitPath := filepath.Join(home, ".config", "systemd", "user", systemdServiceName(p))
+	if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stale := "[Service]\nExecStart=/old/no-mistakes daemon run\n"
+	if err := os.WriteFile(unitPath, []byte(stale), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var commands []string
+	var stopped bool
+	restartAttempts := 0
+	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
+		command := name + " " + strings.Join(args, " ")
+		commands = append(commands, command)
+		switch command {
+		case "systemctl --user stop " + systemdServiceName(p):
+			stopped = true
+		case "systemctl --user restart " + systemdServiceName(p):
+			restartAttempts++
+			if restartAttempts == 1 {
+				return nil, fmt.Errorf("restart failed")
+			}
+		}
+		return nil, nil
+	}
+	daemonHealthCheck = func(*paths.Paths) (bool, error) {
+		return !stopped || restartAttempts > 1, nil
+	}
+
+	err := Start(p)
+	if err == nil {
+		t.Fatal("Start should return restart failure")
+	}
+	if !strings.Contains(err.Error(), "restart failed") {
+		t.Fatalf("Start error = %v, want restart failure", err)
+	}
+	data, readErr := os.ReadFile(unitPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(data) != stale {
+		t.Fatalf("unit file = %q, want stale definition restored", string(data))
+	}
+	if restartAttempts != 2 {
+		t.Fatalf("restart attempts = %d, want new restart plus restored restart; commands = %v", restartAttempts, commands)
+	}
+}
+
 func TestStartDoesNotInstallManagedServiceWhenDaemonAliveAndDefinitionMissing(t *testing.T) {
 	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
 	if err := p.EnsureDirs(); err != nil {

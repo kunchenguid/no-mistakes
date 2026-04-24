@@ -141,9 +141,15 @@ func reinstallManagedServiceIfChanged(p *paths.Paths) (bool, error) {
 	if info, err := os.Stat(installPath); err == nil {
 		restoreMode = info.Mode().Perm()
 	}
+	stoppedForRefresh := false
 	restoreOnFailure := func(cause error) (bool, error) {
 		if err := os.WriteFile(installPath, existing, restoreMode); err != nil {
 			return false, fmt.Errorf("%w; restore managed service definition: %v", cause, err)
+		}
+		if stoppedForRefresh {
+			if _, err := restartManagedService(p); err != nil {
+				return false, fmt.Errorf("%w; restart restored managed service: %v", cause, err)
+			}
 		}
 		return false, cause
 	}
@@ -154,6 +160,7 @@ func reinstallManagedServiceIfChanged(p *paths.Paths) (bool, error) {
 	if err := stopCurrentDaemonBeforeManagedRestart(p); err != nil {
 		return restoreOnFailure(err)
 	}
+	stoppedForRefresh = true
 	if _, err := restartManagedService(p); err != nil {
 		return restoreOnFailure(err)
 	}
