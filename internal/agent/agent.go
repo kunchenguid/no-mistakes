@@ -61,6 +61,7 @@ func parseStructuredTextOutput(text string) (json.RawMessage, error) {
 		return output, nil
 	} else {
 		rawErr := err
+
 		candidates := fencedJSONCandidates(text)
 		var parsed []json.RawMessage
 		for _, candidate := range candidates {
@@ -71,46 +72,131 @@ func parseStructuredTextOutput(text string) (json.RawMessage, error) {
 		}
 		switch len(parsed) {
 		case 0:
-			return nil, rawErr
+			// fall through to bare-object scan
 		case 1:
 			return parsed[0], nil
 		default:
 			return nil, fmt.Errorf("multiple JSON code fences found in output")
 		}
+
+		if bare := lastBareJSONObject(text); bare != nil {
+			return bare, nil
+		}
+		return nil, rawErr
 	}
 }
 
+// fencedJSONCandidates extracts JSON bodies from ```json ... ``` fences.
+// Fence markers may appear anywhere in the text, including glued to the end
+// of a preceding line (e.g. "...behavior.```json"), which is a shape real
+// codex/GPT-5 output regularly produces.
 func fencedJSONCandidates(text string) []string {
 	var candidates []string
-	var b strings.Builder
-	inJSONFence := false
-
-	for _, line := range strings.Split(text, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if !inJSONFence {
-			if !strings.HasPrefix(trimmed, "```") {
-				continue
-			}
-			info := strings.TrimSpace(strings.TrimPrefix(trimmed, "```"))
-			fields := strings.Fields(info)
-			if len(fields) == 0 || !strings.EqualFold(fields[0], "json") {
-				continue
-			}
-			inJSONFence = true
-			b.Reset()
-			continue
+	rest := text
+	for {
+		start := indexJSONFenceOpen(rest)
+		if start < 0 {
+			return candidates
 		}
-
-		if strings.HasPrefix(trimmed, "```") {
-			candidates = append(candidates, b.String())
-			inJSONFence = false
-			continue
+		body := rest[start:]
+		end := strings.Index(body, "```")
+		if end < 0 {
+			return candidates
 		}
-		b.WriteString(line)
-		b.WriteByte('\n')
+		candidates = append(candidates, body[:end])
+		rest = body[end+3:]
 	}
+}
 
-	return candidates
+// indexJSONFenceOpen returns the byte offset of the content immediately
+// following an opening ```json fence (the char after the info line's
+// newline), or -1 if no opener exists.
+func indexJSONFenceOpen(text string) int {
+	search := text
+	offset := 0
+	for {
+		i := strings.Index(search, "```")
+		if i < 0 {
+			return -1
+		}
+		after := search[i+3:]
+		lineEnd := strings.IndexByte(after, '\n')
+		var info string
+		if lineEnd < 0 {
+			info = after
+		} else {
+			info = after[:lineEnd]
+		}
+		if strings.EqualFold(strings.TrimSpace(info), "json") {
+			if lineEnd < 0 {
+				return offset + i + 3 + len(after)
+			}
+			return offset + i + 3 + lineEnd + 1
+		}
+		offset += i + 3
+		search = after
+	}
+}
+
+// lastBareJSONObject scans text for balanced {...} substrings that parse
+// as JSON and returns the last one found. This handles models that emit
+// reasoning prose followed by a raw JSON answer, with no code fence.
+func lastBareJSONObject(text string) json.RawMessage {
+	var last json.RawMessage
+	for i := 0; i < len(text); i++ {
+		if text[i] != '{' {
+			continue
+		}
+		end, ok := scanBalancedObject(text, i)
+		if !ok {
+			continue
+		}
+		candidate := text[i:end]
+		var obj json.RawMessage
+		if err := json.Unmarshal([]byte(candidate), &obj); err == nil {
+			last = obj
+			i = end - 1
+		}
+	}
+	return last
+}
+
+// scanBalancedObject returns the exclusive end index of a brace-balanced
+// substring starting at text[start] == '{', or (0, false) if no balanced
+// closing brace exists. It respects JSON string literals so braces inside
+// strings do not affect the depth count.
+func scanBalancedObject(text string, start int) (int, bool) {
+	depth := 0
+	inString := false
+	escape := false
+	for i := start; i < len(text); i++ {
+		c := text[i]
+		if inString {
+			if escape {
+				escape = false
+				continue
+			}
+			switch c {
+			case '\\':
+				escape = true
+			case '"':
+				inString = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inString = true
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return i + 1, true
+			}
+		}
+	}
+	return 0, false
 }
 
 // Total returns input + output tokens (the billing-relevant total).

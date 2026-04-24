@@ -125,6 +125,104 @@ func TestFinalizeTextResult_WithSchemaParsesFencedJSON(t *testing.T) {
 	}
 }
 
+func TestFinalizeTextResult_WithSchemaParsesInlineOpenFence(t *testing.T) {
+	// Codex/GPT-5 sometimes glues the opening ```json fence to the end of
+	// the prior reasoning line, with no newline between text and backticks.
+	text := "thinking about edge cases now.```json\n{\"done\":true}\n```"
+	result, err := finalizeTextResult("codex", text, json.RawMessage(`{"type":"object"}`), TokenUsage{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var output map[string]any
+	if err := json.Unmarshal(result.Output, &output); err != nil {
+		t.Fatalf("failed to parse output: %v", err)
+	}
+	if output["done"] != true {
+		t.Errorf("expected done=true, got %v", output["done"])
+	}
+}
+
+func TestFinalizeTextResult_WithSchemaParsesInlineCloseFence(t *testing.T) {
+	// Symmetric case: closing fence immediately follows the JSON with no
+	// newline before the backticks.
+	text := "prelude\n```json\n{\"done\":true}```"
+	result, err := finalizeTextResult("codex", text, json.RawMessage(`{"type":"object"}`), TokenUsage{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var output map[string]any
+	if err := json.Unmarshal(result.Output, &output); err != nil {
+		t.Fatalf("failed to parse output: %v", err)
+	}
+	if output["done"] != true {
+		t.Errorf("expected done=true, got %v", output["done"])
+	}
+}
+
+func TestFinalizeTextResult_WithSchemaParsesBareJSONAfterText(t *testing.T) {
+	// No fence at all: reasoning prose followed by a raw JSON object.
+	text := "Here's the review:\n{\"done\":true}"
+	result, err := finalizeTextResult("codex", text, json.RawMessage(`{"type":"object"}`), TokenUsage{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var output map[string]any
+	if err := json.Unmarshal(result.Output, &output); err != nil {
+		t.Fatalf("failed to parse output: %v", err)
+	}
+	if output["done"] != true {
+		t.Errorf("expected done=true, got %v", output["done"])
+	}
+}
+
+func TestFinalizeTextResult_WithSchemaPrefersLastBareJSON(t *testing.T) {
+	// If reasoning text embeds a decorative JSON object and the final
+	// answer is a separate object at the end, the final one should win.
+	text := `I considered {"foo":"bar"} as one option. Final: {"done":true}`
+	result, err := finalizeTextResult("codex", text, json.RawMessage(`{"type":"object"}`), TokenUsage{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var output map[string]any
+	if err := json.Unmarshal(result.Output, &output); err != nil {
+		t.Fatalf("failed to parse output: %v", err)
+	}
+	if output["done"] != true {
+		t.Errorf("expected done=true, got %v", output["done"])
+	}
+}
+
+func TestFinalizeTextResult_WithSchemaParsesCodexRealWorldOutput(t *testing.T) {
+	// Regression: real codex output from pipeline 01KPYD4SD644SR9JCNX6Y.
+	// Reasoning sentences were concatenated with no newlines, and the
+	// opening ```json fence was glued to the end of the last sentence.
+	text := "Reviewing the diff between `ba90e3c` and `6fdb361` first.I'm reading the patch now.I'm down to edge cases: timer semantics after multiple `result` events.```json\n" +
+		"{\n" +
+		"  \"findings\": [],\n" +
+		"  \"risk_assessment\": {\n" +
+		"    \"risk_level\": \"low\",\n" +
+		"    \"risk_rationale\": \"clean\"\n" +
+		"  }\n" +
+		"}\n" +
+		"```"
+	result, err := finalizeTextResult("codex", text, json.RawMessage(`{"type":"object"}`), TokenUsage{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var output struct {
+		Findings       []any `json:"findings"`
+		RiskAssessment struct {
+			RiskLevel string `json:"risk_level"`
+		} `json:"risk_assessment"`
+	}
+	if err := json.Unmarshal(result.Output, &output); err != nil {
+		t.Fatalf("failed to parse output: %v", err)
+	}
+	if output.RiskAssessment.RiskLevel != "low" {
+		t.Errorf("expected risk_level=low, got %q", output.RiskAssessment.RiskLevel)
+	}
+}
+
 func TestFinalizeTextResult_WithSchemaRejectsAmbiguousFencedJSON(t *testing.T) {
 	text := strings.Join([]string{
 		"```json",
