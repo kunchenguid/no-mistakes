@@ -166,6 +166,26 @@ func TestDefaultShellCommandOutput_TimesOut(t *testing.T) {
 	}
 }
 
+func TestDefaultShellCommandOutput_TimesOutWithPipeHoldingChild(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses POSIX shell job control")
+	}
+	oldTimeout := shellCommandTimeout
+	defer func() {
+		shellCommandTimeout = oldTimeout
+	}()
+
+	shellCommandTimeout = 20 * time.Millisecond
+	start := time.Now()
+	_, err := defaultShellCommandOutput("/bin/sh", "-c", "sleep 1 & wait")
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if elapsed := time.Since(start); elapsed >= 500*time.Millisecond {
+		t.Fatalf("command ran too long: %v", elapsed)
+	}
+}
+
 func containsEnvEntry(env []string, want string) bool {
 	for _, entry := range env {
 		if entry == want {

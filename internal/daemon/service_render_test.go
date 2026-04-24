@@ -3,6 +3,7 @@ package daemon
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -81,6 +82,7 @@ func TestRenderSystemdUnitIncludesManagedPath(t *testing.T) {
 	home := "/home/test"
 
 	unit := renderSystemdUnit("/usr/local/bin/no-mistakes", p, home)
+	pathValue := extractSystemdEnvironmentValue(t, unit, "PATH")
 	for _, want := range []string{
 		"/opt/homebrew/bin",
 		"/usr/local/bin",
@@ -90,11 +92,11 @@ func TestRenderSystemdUnitIncludesManagedPath(t *testing.T) {
 		filepath.Join(home, "go", "bin"),
 		filepath.Join(home, ".cargo", "bin"),
 	} {
-		if !strings.Contains(unit, want) {
-			t.Fatalf("expected systemd unit to contain PATH entry %q, got:\n%s", want, unit)
+		if !strings.Contains(pathValue, want) {
+			t.Fatalf("expected systemd PATH to contain %q, got %q", want, pathValue)
 		}
 	}
-	if !strings.Contains(unit, "PATH=") {
+	if pathValue == "" {
 		t.Fatalf("expected Environment=PATH=... in systemd unit, got:\n%s", unit)
 	}
 }
@@ -126,4 +128,23 @@ func extractPlistValue(t *testing.T, plist, key string) string {
 		t.Fatalf("malformed plist string for key %q: %q", key, rest)
 	}
 	return rest[start+len("<string>") : end]
+}
+
+func extractSystemdEnvironmentValue(t *testing.T, unit, key string) string {
+	t.Helper()
+	prefix := "Environment="
+	envPrefix := key + "="
+	for _, line := range strings.Split(unit, "\n") {
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		entry, err := strconv.Unquote(strings.TrimPrefix(line, prefix))
+		if err != nil {
+			t.Fatalf("malformed systemd Environment line %q: %v", line, err)
+		}
+		if strings.HasPrefix(entry, envPrefix) {
+			return strings.TrimPrefix(entry, envPrefix)
+		}
+	}
+	return ""
 }
