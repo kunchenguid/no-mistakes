@@ -237,6 +237,39 @@ func TestFinalizeTextResult_WithSchemaRejectsNestedEnumViolations(t *testing.T) 
 	}
 }
 
+func TestFinalizeTextResult_WithSchemaAllowsNullOptionalFieldsInTextFallback(t *testing.T) {
+	text := `{"findings":[{"severity":"warning","file":null,"line":null,"description":"x","action":"auto-fix"}],"summary":"1 issue"}`
+	schema := json.RawMessage(`{
+		"type":"object",
+		"properties":{
+			"findings":{
+				"type":"array",
+				"items":{
+					"type":"object",
+					"properties":{
+						"severity":{"type":"string","enum":["error","warning","info"]},
+						"file":{"type":"string"},
+						"line":{"type":"integer"},
+						"description":{"type":"string"},
+						"action":{"type":"string","enum":["no-op","auto-fix","ask-user"]}
+					},
+					"required":["severity","description","action"]
+				}
+			},
+			"summary":{"type":"string"}
+		},
+		"required":["findings","summary"]
+	}`)
+
+	result, err := finalizeTextResult("opencode", text, schema, TokenUsage{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(result.Output) != text {
+		t.Fatalf("unexpected output: %s", string(result.Output))
+	}
+}
+
 func TestFinalizeTextResult_WithSchemaParsesCodexRealWorldOutput(t *testing.T) {
 	// Regression: real codex output from pipeline 01KPYD4SD644SR9JCNX6Y.
 	// Reasoning sentences were concatenated with no newlines, and the

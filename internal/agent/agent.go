@@ -59,7 +59,12 @@ func finalizeTextResult(agentName, text string, schema json.RawMessage, usage To
 }
 
 func parseStructuredTextOutput(text string, schema json.RawMessage) (json.RawMessage, error) {
-	output, rawErr := parseStructuredCandidate([]byte(text), schema)
+	validationSchema, err := textValidationSchema(schema)
+	if err != nil {
+		return nil, err
+	}
+
+	output, rawErr := parseStructuredCandidate([]byte(text), validationSchema)
 	if rawErr == nil {
 		return output, nil
 	}
@@ -68,7 +73,7 @@ func parseStructuredTextOutput(text string, schema json.RawMessage) (json.RawMes
 	var parsed []json.RawMessage
 	var candidateErr error
 	for _, candidate := range candidates {
-		fenced, err := parseStructuredCandidate([]byte(candidate), schema)
+		fenced, err := parseStructuredCandidate([]byte(candidate), validationSchema)
 		if err == nil {
 			parsed = append(parsed, fenced)
 			continue
@@ -85,7 +90,7 @@ func parseStructuredTextOutput(text string, schema json.RawMessage) (json.RawMes
 		return nil, fmt.Errorf("multiple JSON code fences found in output")
 	}
 
-	if bare, err := lastBareJSONObject(text, schema); err == nil && bare != nil {
+	if bare, err := lastBareJSONObject(text, validationSchema); err == nil && bare != nil {
 		return bare, nil
 	} else if candidateErr == nil && err != nil {
 		candidateErr = err
@@ -95,6 +100,19 @@ func parseStructuredTextOutput(text string, schema json.RawMessage) (json.RawMes
 		return nil, candidateErr
 	}
 	return nil, rawErr
+}
+
+func textValidationSchema(schema json.RawMessage) (json.RawMessage, error) {
+	if len(schema) == 0 {
+		return nil, nil
+	}
+
+	var value any
+	if err := json.Unmarshal(schema, &value); err != nil {
+		return nil, err
+	}
+	allowOptionalSchemaNulls(value)
+	return json.Marshal(value)
 }
 
 // fencedJSONCandidates extracts JSON bodies from ```json ... ``` fences.
@@ -313,6 +331,26 @@ func validateStructuredOutput(output, schema json.RawMessage) error {
 		return fmt.Errorf("JSON output %w", err)
 	}
 	return nil
+}
+
+func allowOptionalSchemaNulls(value any) {
+	schema, ok := value.(map[string]any)
+	if !ok {
+		return
+	}
+
+	required := requiredSet(schema)
+	if properties, ok := schema["properties"].(map[string]any); ok {
+		for name, property := range properties {
+			allowOptionalSchemaNulls(property)
+			if !required[name] {
+				allowSchemaNull(property)
+			}
+		}
+	}
+	if items, ok := schema["items"]; ok {
+		allowOptionalSchemaNulls(items)
+	}
 }
 
 func decodeJSONValue(raw []byte) (any, error) {
