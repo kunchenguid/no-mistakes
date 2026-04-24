@@ -209,6 +209,34 @@ func TestFinalizeTextResult_WithSchemaRejectsBareJSONMissingRequiredKeys(t *test
 	}
 }
 
+func TestFinalizeTextResult_WithSchemaRejectsNestedEnumViolations(t *testing.T) {
+	text := `review complete {"findings":[{"severity":"fatal","description":"x","action":"fix-it"}],"summary":"1 issue"}`
+	schema := json.RawMessage(`{
+		"type":"object",
+		"properties":{
+			"findings":{
+				"type":"array",
+				"items":{
+					"type":"object",
+					"properties":{
+						"severity":{"type":"string","enum":["error","warning","info"]},
+						"description":{"type":"string"},
+						"action":{"type":"string","enum":["auto-fix","ask-user","no-op"]}
+					},
+					"required":["severity","description","action"]
+				}
+			},
+			"summary":{"type":"string"}
+		},
+		"required":["findings","summary"]
+	}`)
+
+	_, err := finalizeTextResult("codex", text, schema, TokenUsage{})
+	if err == nil {
+		t.Fatal("expected nested enum violation to fail")
+	}
+}
+
 func TestFinalizeTextResult_WithSchemaParsesCodexRealWorldOutput(t *testing.T) {
 	// Regression: real codex output from pipeline 01KPYD4SD644SR9JCNX6Y.
 	// Reasoning sentences were concatenated with no newlines, and the
@@ -266,6 +294,19 @@ func TestFencedJSONCandidates_IgnoreBackticksInsideJSONString(t *testing.T) {
 		t.Fatalf("expected 1 candidate, got %d", len(got))
 	}
 	want := "{\"summary\":\"quoted ```snippet``` in markdown\",\"findings\":[]}\n"
+	if got[0] != want {
+		t.Fatalf("candidate = %q, want %q", got[0], want)
+	}
+}
+
+func TestFencedJSONCandidates_AllowIndentedClosingFence(t *testing.T) {
+	text := "review complete\n```json\n{\"summary\":\"ok\",\"findings\":[]}\n   ```\nnext paragraph"
+
+	got := fencedJSONCandidates(text)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 candidate, got %d", len(got))
+	}
+	want := "{\"summary\":\"ok\",\"findings\":[]}\n"
 	if got[0] != want {
 		t.Fatalf("candidate = %q, want %q", got[0], want)
 	}

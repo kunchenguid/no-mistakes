@@ -1,9 +1,12 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -107,12 +110,12 @@ func fencedJSONCandidates(text string) []string {
 			return candidates
 		}
 		body := rest[start:]
-		end := indexJSONFenceClose(body)
+		end, next := indexJSONFenceClose(body)
 		if end < 0 {
 			return candidates
 		}
 		candidates = append(candidates, body[:end])
-		rest = body[end+3:]
+		rest = body[next:]
 	}
 }
 
@@ -146,19 +149,30 @@ func indexJSONFenceOpen(text string) int {
 	}
 }
 
-func indexJSONFenceClose(text string) int {
-	lineStart := true
-	for i := 0; i < len(text); i++ {
-		if lineStart && strings.HasPrefix(text[i:], "```") {
-			return i
+func indexJSONFenceClose(text string) (int, int) {
+	for lineStart := 0; lineStart < len(text); {
+		lineEnd := strings.IndexByte(text[lineStart:], '\n')
+		if lineEnd < 0 {
+			lineEnd = len(text)
+		} else {
+			lineEnd += lineStart
 		}
-		lineStart = text[i] == '\n'
+		line := text[lineStart:lineEnd]
+		trimmed := strings.TrimLeft(line, " \t")
+		if strings.HasPrefix(trimmed, "```") {
+			indent := len(line) - len(trimmed)
+			return lineStart, lineStart + indent + 3
+		}
+		if lineEnd == len(text) {
+			break
+		}
+		lineStart = lineEnd + 1
 	}
 	trimmed := strings.TrimRight(text, " \t\r\n")
 	if strings.HasSuffix(trimmed, "```") {
-		return len(trimmed) - 3
+		return len(trimmed) - 3, len(trimmed)
 	}
-	return -1
+	return -1, -1
 }
 
 // lastBareJSONObject scans text for balanced {...} substrings that parse
@@ -241,34 +255,209 @@ func parseStructuredCandidate(candidate, schema []byte) (json.RawMessage, error)
 }
 
 func validateStructuredOutput(output, schema json.RawMessage) error {
-	required, err := schemaRequiredFields(schema)
-	if err != nil || len(required) == 0 {
+	if len(schema) == 0 {
+		return nil
+	}
+
+	var parsedSchema any
+	if err := json.Unmarshal(schema, &parsedSchema); err != nil {
 		return err
 	}
-	var object map[string]json.RawMessage
-	if err := json.Unmarshal(output, &object); err != nil {
-		return fmt.Errorf("JSON output must be an object")
+
+	value, err := decodeJSONValue(output)
+	if err != nil {
+		return err
 	}
-	var missing []string
-	for _, key := range required {
-		if _, ok := object[key]; !ok {
-			missing = append(missing, key)
-		}
-	}
-	if len(missing) > 0 {
-		return fmt.Errorf("JSON output missing required fields: %s", strings.Join(missing, ", "))
+
+	if err := validateJSONValue(value, parsedSchema, ""); err != nil {
+		return fmt.Errorf("JSON output %w", err)
 	}
 	return nil
 }
 
-func schemaRequiredFields(schema json.RawMessage) ([]string, error) {
-	var raw struct {
-		Required []string `json:"required"`
-	}
-	if err := json.Unmarshal(schema, &raw); err != nil {
+func decodeJSONValue(raw []byte) (any, error) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var value any
+	if err := dec.Decode(&value); err != nil {
 		return nil, err
 	}
-	return raw.Required, nil
+	if err := dec.Decode(&struct{}{}); err != nil && !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+	return value, nil
+}
+
+func validateJSONValue(value, schema any, path string) error {
+	schemaMap, ok := schema.(map[string]any)
+	if !ok {
+		return nil
+	}
+
+	if enum, ok := schemaMap["enum"].([]any); ok && !matchesEnum(value, enum) {
+		return fmt.Errorf("%smust match one of the allowed values", formatJSONPath(path))
+	}
+
+	if types, ok := schemaTypes(schemaMap); ok && !matchesAnyType(value, types) {
+		return fmt.Errorf("%smust be %s", formatJSONPath(path), strings.Join(types, " or "))
+	}
+
+	if object, ok := value.(map[string]any); ok {
+		if err := validateJSONObject(object, schemaMap, path); err != nil {
+			return err
+		}
+	}
+	if array, ok := value.([]any); ok {
+		if err := validateJSONArray(array, schemaMap, path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateJSONObject(object map[string]any, schema map[string]any, path string) error {
+	required := stringSlice(schema["required"])
+	for _, key := range required {
+		if _, ok := object[key]; !ok {
+			return fmt.Errorf("%smissing required field %q", formatJSONPath(path), key)
+		}
+	}
+
+	properties, _ := schema["properties"].(map[string]any)
+	if additional, ok := schema["additionalProperties"].(bool); ok && !additional {
+		for key := range object {
+			if _, ok := properties[key]; !ok {
+				return fmt.Errorf("%scontains unknown field %q", formatJSONPath(path), key)
+			}
+		}
+	}
+
+	for key, propSchema := range properties {
+		child, ok := object[key]
+		if !ok {
+			continue
+		}
+		if err := validateJSONValue(child, propSchema, joinJSONPath(path, key)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateJSONArray(array []any, schema map[string]any, path string) error {
+	itemsSchema, ok := schema["items"]
+	if !ok {
+		return nil
+	}
+	for i, item := range array {
+		if err := validateJSONValue(item, itemsSchema, fmt.Sprintf("%s[%d]", path, i)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func schemaTypes(schema map[string]any) ([]string, bool) {
+	switch raw := schema["type"].(type) {
+	case string:
+		return []string{raw}, true
+	case []any:
+		types := stringSlice(raw)
+		return types, len(types) > 0
+	default:
+		return nil, false
+	}
+}
+
+func stringSlice(raw any) []string {
+	items, ok := raw.([]any)
+	if !ok {
+		if single, ok := raw.([]string); ok {
+			return single
+		}
+		return nil
+	}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		str, ok := item.(string)
+		if !ok {
+			continue
+		}
+		out = append(out, str)
+	}
+	return out
+}
+
+func matchesAnyType(value any, types []string) bool {
+	for _, typ := range types {
+		if matchesType(value, typ) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesType(value any, typ string) bool {
+	switch typ {
+	case "object":
+		_, ok := value.(map[string]any)
+		return ok
+	case "array":
+		_, ok := value.([]any)
+		return ok
+	case "string":
+		_, ok := value.(string)
+		return ok
+	case "integer":
+		number, ok := value.(json.Number)
+		return ok && isJSONInteger(number)
+	case "number":
+		_, ok := value.(json.Number)
+		return ok
+	case "boolean":
+		_, ok := value.(bool)
+		return ok
+	case "null":
+		return value == nil
+	default:
+		return true
+	}
+}
+
+func isJSONInteger(number json.Number) bool {
+	_, err := number.Int64()
+	return err == nil
+}
+
+func matchesEnum(value any, allowed []any) bool {
+	valueJSON, err := json.Marshal(value)
+	if err != nil {
+		return false
+	}
+	for _, candidate := range allowed {
+		candidateJSON, err := json.Marshal(candidate)
+		if err != nil {
+			continue
+		}
+		if bytes.Equal(valueJSON, candidateJSON) {
+			return true
+		}
+	}
+	return false
+}
+
+func joinJSONPath(path, key string) string {
+	if path == "" {
+		return key
+	}
+	return path + "." + key
+}
+
+func formatJSONPath(path string) string {
+	if path == "" {
+		return ""
+	}
+	return path + " "
 }
 
 // Total returns input + output tokens (the billing-relevant total).
