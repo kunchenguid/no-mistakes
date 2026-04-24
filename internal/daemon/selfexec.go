@@ -121,10 +121,10 @@ func reinstallManagedServiceIfChanged(p *paths.Paths) (bool, error) {
 		return false, fmt.Errorf("read managed service definition: %w", readErr)
 	}
 
-	if err := stopCurrentDaemonBeforeManagedRestart(p); err != nil {
+	if _, err := installManagedService(p); err != nil {
 		return false, err
 	}
-	if _, err := installManagedService(p); err != nil {
+	if err := stopCurrentDaemonBeforeManagedRestart(p); err != nil {
 		return false, err
 	}
 	if _, err := restartManagedService(p); err != nil {

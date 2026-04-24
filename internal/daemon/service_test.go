@@ -156,9 +156,9 @@ func TestStartRestartsSystemdUnitWhenDefinitionChanged(t *testing.T) {
 	}
 
 	want := []string{
-		"systemctl --user stop " + systemdServiceName(p),
 		"systemctl --user daemon-reload",
 		"systemctl --user enable " + systemdServiceName(p),
+		"systemctl --user stop " + systemdServiceName(p),
 		"systemctl --user restart " + systemdServiceName(p),
 	}
 	if !reflect.DeepEqual(commands, want) {
@@ -216,6 +216,52 @@ func TestStartStopsDetachedDaemonBeforeRestartingStaleManagedService(t *testing.
 	}
 	if restartedWhileOldDaemonAlive.Load() {
 		t.Fatalf("managed service restarted while detached daemon was still alive; commands = %v", commands)
+	}
+}
+
+func TestStartDoesNotStopRunningDaemonWhenStaleManagedInstallFails(t *testing.T) {
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+
+	cleanup := stubServiceRuntime(t)
+	defer cleanup()
+	runtimeGOOS = "linux"
+	serviceUserHomeDir = func() (string, error) { return home, nil }
+	serviceExecutablePath = func() (string, error) { return "/usr/local/bin/no-mistakes", nil }
+
+	unitPath := filepath.Join(home, ".config", "systemd", "user", systemdServiceName(p))
+	if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(unitPath, []byte("[Service]\nExecStart=/old/no-mistakes daemon run\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var commands []string
+	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
+		command := name + " " + strings.Join(args, " ")
+		commands = append(commands, command)
+		if command == "systemctl --user daemon-reload" {
+			return nil, fmt.Errorf("daemon-reload failed")
+		}
+		return nil, nil
+	}
+	daemonHealthCheck = func(*paths.Paths) (bool, error) { return true, nil }
+
+	err := Start(p)
+	if err == nil {
+		t.Fatal("Start should return install failure")
+	}
+	if !strings.Contains(err.Error(), "daemon-reload failed") {
+		t.Fatalf("Start error = %v, want install failure", err)
+	}
+	for _, command := range commands {
+		if command == "systemctl --user stop "+systemdServiceName(p) {
+			t.Fatalf("should not stop running daemon before install succeeds; commands = %v", commands)
+		}
 	}
 }
 
