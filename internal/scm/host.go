@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // ExtractPRNumber returns the trailing numeric segment from a PR/MR URL.
@@ -79,8 +80,9 @@ const (
 
 // Check is a single CI check result on a PR.
 type Check struct {
-	Name   string
-	Bucket CheckBucket
+	Name        string
+	Bucket      CheckBucket
+	CompletedAt time.Time // zero when unknown; used to detect CI re-runs between polls
 }
 
 // Failing reports whether the check is in a failed bucket.

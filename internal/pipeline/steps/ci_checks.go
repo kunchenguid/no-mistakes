@@ -59,6 +59,42 @@ func failingCheckNames(checks []scm.Check) []string {
 	return names
 }
 
+func failingCheckCompletionTimes(checks []scm.Check) map[string]time.Time {
+	completedAt := make(map[string]time.Time)
+	for _, c := range checks {
+		if !c.Failing() {
+			continue
+		}
+		if c.CompletedAt.IsZero() {
+			continue
+		}
+		previous := completedAt[c.Name]
+		if previous.IsZero() || c.CompletedAt.After(previous) {
+			completedAt[c.Name] = c.CompletedAt
+		}
+	}
+	if len(completedAt) == 0 {
+		return nil
+	}
+	return completedAt
+}
+
+func failingCheckCompletedAfter(checks []scm.Check, after map[string]time.Time) bool {
+	if len(after) == 0 {
+		return false
+	}
+	for _, c := range checks {
+		if !c.Failing() || c.CompletedAt.IsZero() {
+			continue
+		}
+		previous, ok := after[c.Name]
+		if ok && c.CompletedAt.After(previous) {
+			return true
+		}
+	}
+	return false
+}
+
 func pendingCheckMatchesLastFixed(checks []scm.Check, lastFixedChecks string) bool {
 	issues, ok := decodeLastFixedChecks(lastFixedChecks)
 	if !ok {

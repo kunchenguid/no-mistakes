@@ -364,6 +364,181 @@ func TestCIStep_CIAutoFixRetriesAfterChecksRerun(t *testing.T) {
 	}
 }
 
+func TestCIStep_CIAutoFixRetriesWhenGitHubClockLagsLocalClock(t *testing.T) {
+	t.Parallel()
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	start := time.Date(2026, 4, 24, 4, 14, 0, 0, time.UTC)
+	oldCompletedAt := start.Add(1 * time.Minute).Format(time.RFC3339)
+	newCompletedAt := start.Add(2 * time.Minute).Format(time.RFC3339)
+	checksSequence := []string{
+		fmt.Sprintf(`[{"name":"e2e","status":"COMPLETED","conclusion":"failure","bucket":"fail","completedAt":%q}]`, oldCompletedAt),
+		fmt.Sprintf(`[{"name":"e2e","status":"COMPLETED","conclusion":"failure","bucket":"fail","completedAt":%q}]`, newCompletedAt),
+		fmt.Sprintf(`[{"name":"e2e","status":"COMPLETED","conclusion":"failure","bucket":"fail","completedAt":%q}]`, newCompletedAt),
+	}
+	env := fakeCIGHSequence(t, "OPEN", checksSequence)
+
+	fixCount := 0
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			fixCount++
+			os.WriteFile(filepath.Join(opts.CWD, fmt.Sprintf("fix-%d.txt", fixCount)), []byte("fixed"), 0o644)
+			return &agent.Result{}, nil
+		},
+	}
+
+	prURL := "https://github.com/test/repo/pull/42"
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Config.CITimeout = 5 * time.Minute
+	sctx.Config.AutoFix = config.AutoFix{CI: 2}
+
+	localNow := start.Add(30 * time.Minute)
+	step := &CIStep{
+		now: func() time.Time { return localNow },
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			localNow = localNow.Add(3 * time.Minute)
+			return nil
+		},
+	}
+
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("expected approval outcome after retries, got error: %v", err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("expected approval after exhausting rerun-backed retries")
+	}
+	if fixCount != 2 {
+		t.Fatalf("expected 2 auto-fix attempts when GitHub timestamps advance but local clock is ahead, got %d", fixCount)
+	}
+}
+
+// TestCIStep_CIAutoFixRetriesWhenFastChecksSkipPendingObservation reproduces
+// the real-world scenario where a failing CI check completes so fast between
+// polls that the pipeline never observes it in a pending state, but the check's
+// completedAt timestamp moves past the last-fix time - proving CI re-ran. The
+// pipeline should treat the second failure as a new iteration and attempt
+// another fix rather than logging "fix already attempted" indefinitely.
+func TestCIStep_CIAutoFixRetriesWhenFastChecksSkipPendingObservation(t *testing.T) {
+	t.Parallel()
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	// Simulate a fake "now" that advances across polls. The failing check's
+	// completedAt on poll 2 is after the autofix push time, proving CI re-ran.
+	// But neither poll observes a pending state - the pipeline must detect
+	// the rerun from completedAt.
+	start := time.Date(2026, 4, 24, 4, 14, 0, 0, time.UTC)
+	oldCompletedAt := start.Add(1 * time.Minute).Format(time.RFC3339)  // pre-fix failure
+	newCompletedAt := start.Add(10 * time.Minute).Format(time.RFC3339) // post-fix failure (rerun)
+	checksSequence := []string{
+		fmt.Sprintf(`[{"name":"e2e","status":"COMPLETED","conclusion":"failure","bucket":"fail","completedAt":%q}]`, oldCompletedAt),
+		fmt.Sprintf(`[{"name":"e2e","status":"COMPLETED","conclusion":"failure","bucket":"fail","completedAt":%q}]`, newCompletedAt),
+		fmt.Sprintf(`[{"name":"e2e","status":"COMPLETED","conclusion":"failure","bucket":"fail","completedAt":%q}]`, newCompletedAt),
+	}
+	env := fakeCIGHSequence(t, "OPEN", checksSequence)
+
+	fixCount := 0
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			fixCount++
+			os.WriteFile(filepath.Join(opts.CWD, fmt.Sprintf("fix-%d.txt", fixCount)), []byte("fixed"), 0o644)
+			return &agent.Result{}, nil
+		},
+	}
+
+	prURL := "https://github.com/test/repo/pull/42"
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Config.CITimeout = 1 * time.Hour
+	sctx.Config.AutoFix = config.AutoFix{CI: 2}
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	pollCount := 0
+	fakeNow := start
+	step := &CIStep{
+		now: func() time.Time { return fakeNow },
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			pollCount++
+			// Advance fake clock past the autofix push so the second poll's
+			// check completedAt looks "after" lastFixedAt.
+			fakeNow = fakeNow.Add(3 * time.Minute)
+			return nil
+		},
+	}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("expected approval outcome after retries, got error: %v", err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("expected approval after exhausting rerun-backed retries")
+	}
+	if fixCount != 2 {
+		t.Fatalf("expected 2 auto-fix attempts when post-push rerun has newer completedAt, got %d (stuck in 'fix already attempted' loop?)", fixCount)
+	}
+
+	foundExhausted := false
+	for _, l := range logs {
+		if strings.Contains(l, "max auto-fix attempts (2) reached") {
+			foundExhausted = true
+			break
+		}
+	}
+	if !foundExhausted {
+		t.Fatalf("expected max-attempts log after completedAt-backed retries, got: %v", logs)
+	}
+}
+
 // TestCIStep_CIAutoFixRetriesWhenSomeChecksStayFailing reproduces the real-world
 // scenario where multiple checks fail, the fix push causes only some of them to
 // re-run (and thus transit through pending) while at least one check keeps
