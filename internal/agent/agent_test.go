@@ -311,3 +311,25 @@ func TestFencedJSONCandidates_AllowIndentedClosingFence(t *testing.T) {
 		t.Fatalf("candidate = %q, want %q", got[0], want)
 	}
 }
+
+func TestFinalizeTextResult_WithSchemaIgnoresJSONInsideNonJSONFence(t *testing.T) {
+	text := strings.Join([]string{
+		"Reasoning follows.",
+		"```markdown",
+		"Example output:",
+		"```json",
+		`{"done":true}`,
+		"```",
+		"```",
+		"Final answer: not valid JSON",
+	}, "\n")
+
+	if got := fencedJSONCandidates(text); len(got) != 0 {
+		t.Fatalf("expected no fenced JSON candidates, got %q", got)
+	}
+
+	_, err := finalizeTextResult("codex", text, json.RawMessage(`{"type":"object"}`), TokenUsage{})
+	if err == nil {
+		t.Fatal("expected parse failure")
+	}
+}

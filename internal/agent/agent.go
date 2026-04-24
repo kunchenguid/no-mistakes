@@ -85,7 +85,7 @@ func parseStructuredTextOutput(text string, schema json.RawMessage) (json.RawMes
 		return nil, fmt.Errorf("multiple JSON code fences found in output")
 	}
 
-	if bare, err := lastBareJSONObject(text, schema); err == nil {
+	if bare, err := lastBareJSONObject(text, schema); err == nil && bare != nil {
 		return bare, nil
 	} else if candidateErr == nil && err != nil {
 		candidateErr = err
@@ -123,30 +123,61 @@ func fencedJSONCandidates(text string) []string {
 // following an opening ```json fence (the char after the info line's
 // newline), or -1 if no opener exists.
 func indexJSONFenceOpen(text string) int {
-	search := text
-	offset := 0
-	for {
-		i := strings.Index(search, "```")
+	for searchStart := 0; searchStart < len(text); {
+		i := strings.Index(text[searchStart:], "```")
 		if i < 0 {
 			return -1
 		}
-		after := search[i+3:]
-		lineEnd := strings.IndexByte(after, '\n')
-		var info string
-		if lineEnd < 0 {
-			info = after
-		} else {
-			info = after[:lineEnd]
-		}
+		i += searchStart
+		contentStart, info := fenceContentStart(text, i)
 		if strings.EqualFold(strings.TrimSpace(info), "json") {
-			if lineEnd < 0 {
-				return offset + i + 3 + len(after)
-			}
-			return offset + i + 3 + lineEnd + 1
+			return contentStart
 		}
-		offset += i + 3
-		search = after
+		next := skipFenceBlock(text[contentStart:])
+		if next < 0 {
+			return -1
+		}
+		searchStart = contentStart + next
 	}
+	return -1
+}
+
+func fenceContentStart(text string, fenceStart int) (int, string) {
+	after := text[fenceStart+3:]
+	lineEnd := strings.IndexByte(after, '\n')
+	if lineEnd < 0 {
+		return fenceStart + 3 + len(after), after
+	}
+	return fenceStart + 3 + lineEnd + 1, after[:lineEnd]
+}
+
+func skipFenceBlock(text string) int {
+	depth := 1
+	for lineStart := 0; lineStart < len(text); {
+		lineEnd := strings.IndexByte(text[lineStart:], '\n')
+		if lineEnd < 0 {
+			lineEnd = len(text)
+		} else {
+			lineEnd += lineStart
+		}
+		line := text[lineStart:lineEnd]
+		trimmed := strings.TrimLeft(line, " \t")
+		if strings.HasPrefix(trimmed, "```") {
+			if strings.TrimSpace(trimmed[3:]) == "" {
+				depth--
+				if depth == 0 {
+					return lineStart + (len(line) - len(trimmed)) + 3
+				}
+			} else {
+				depth++
+			}
+		}
+		if lineEnd == len(text) {
+			break
+		}
+		lineStart = lineEnd + 1
+	}
+	return -1
 }
 
 func indexJSONFenceClose(text string) (int, int) {
@@ -182,6 +213,15 @@ func lastBareJSONObject(text string, schema json.RawMessage) (json.RawMessage, e
 	var last json.RawMessage
 	var lastErr error
 	for i := 0; i < len(text); i++ {
+		if strings.HasPrefix(text[i:], "```") {
+			contentStart, _ := fenceContentStart(text, i)
+			next := skipFenceBlock(text[contentStart:])
+			if next < 0 {
+				break
+			}
+			i = contentStart + next - 1
+			continue
+		}
 		if text[i] != '{' {
 			continue
 		}
