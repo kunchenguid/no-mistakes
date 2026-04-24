@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.10.2](https://github.com/kunchenguid/no-mistakes/compare/v1.10.1...v1.10.2) (2026-04-24)
+
+
+### Bug Fixes
+
+* **agent:** harden structured JSON fallback parsing ([#144](https://github.com/kunchenguid/no-mistakes/issues/144)) ([21449db](https://github.com/kunchenguid/no-mistakes/commit/21449dbdcffabe35bc6c34b4c39fdb6ba2a5fae4))
+* **pipeline:** make CI auto-fix retry after reruns reliably ([#145](https://github.com/kunchenguid/no-mistakes/issues/145)) ([e7320c7](https://github.com/kunchenguid/no-mistakes/commit/e7320c70135df494daeb0fe61a41001de46f3e92))
+
 ## [1.10.1](https://github.com/kunchenguid/no-mistakes/compare/v1.10.0...v1.10.1) (2026-04-23)
 
 
