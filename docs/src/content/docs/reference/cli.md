@@ -134,7 +134,7 @@ Start the daemon, installing or refreshing the managed service when possible.
 no-mistakes daemon start
 ```
 
-Prefers the managed service path and falls back to a detached daemon if service install or startup is unavailable or fails.
+Prefers the managed service path and falls back to a detached daemon if service install or startup is unavailable or fails. If the daemon is already running, the command refreshes a stale macOS `launchd` or Linux `systemd` service definition and restarts through the managed service; if the definition is unchanged, it reports that the daemon is already running.
 
 ## no-mistakes daemon stop
 
