@@ -88,12 +88,13 @@ Type=simple
 ExecStart=%s
 WorkingDirectory=%s
 Environment=%s
+Environment=%s
 Restart=always
 RestartSec=2
 
 [Install]
 WantedBy=default.target
-`, command, systemdEscapeArg(p.Root()), strconv.Quote("HOME="+home))
+`, command, systemdEscapeArg(p.Root()), strconv.Quote("HOME="+home), strconv.Quote("PATH="+managedServicePath(home)))
 }
 
 func systemdEscapeArg(arg string) string {

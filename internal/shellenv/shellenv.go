@@ -98,14 +98,87 @@ func resolveUncached() ([]string, error) {
 	out, err := shellCommandOutput(shell, args...)
 	if err != nil {
 		fallback := append([]string(nil), os.Environ()...)
-		return ensureShellEntry(fallback, shell), nil
+		return augmentPath(ensureShellEntry(fallback, shell)), nil
 	}
 	resolved := parseEnvOutput(out)
 	if len(resolved) == 0 {
 		fallback := append([]string(nil), os.Environ()...)
-		return ensureShellEntry(fallback, shell), nil
+		return augmentPath(ensureShellEntry(fallback, shell)), nil
 	}
-	return ensureShellEntry(resolved, shell), nil
+	return augmentPath(ensureShellEntry(resolved, shell)), nil
+}
+
+// WellKnownBinDirs returns common binary install locations that should be on
+// PATH for tools like Homebrew, user-local installs, and language package
+// managers (Go, Rust). Non-existent directories are included unchanged
+// because Go's exec.LookPath ignores missing PATH entries - filtering here
+// would require filesystem access in resolution, which complicates testing
+// without adding value for daemon launch.
+func WellKnownBinDirs() []string {
+	dirs := []string{
+		"/opt/homebrew/bin",
+		"/opt/homebrew/sbin",
+		"/usr/local/bin",
+		"/usr/local/sbin",
+	}
+	if home := homeDir(); home != "" {
+		dirs = append(dirs,
+			filepath.Join(home, ".local", "bin"),
+			filepath.Join(home, "go", "bin"),
+			filepath.Join(home, ".cargo", "bin"),
+			filepath.Join(home, "bin"),
+		)
+	}
+	return dirs
+}
+
+func homeDir() string {
+	if home, ok := lookupEnv("HOME"); ok && strings.TrimSpace(home) != "" {
+		return home
+	}
+	u, err := currentUser()
+	if err != nil || u == nil {
+		return ""
+	}
+	return strings.TrimSpace(u.HomeDir)
+}
+
+// augmentPath merges WellKnownBinDirs into the PATH entry of env, preserving
+// existing entries in order (so user-configured PATH continues to win) and
+// appending any well-known dirs that are not already present. If env lacks a
+// PATH entry entirely, one is synthesized from WellKnownBinDirs.
+func augmentPath(env []string) []string {
+	sep := string(os.PathListSeparator)
+	pathIdx := -1
+	var existing []string
+	for i, entry := range env {
+		if strings.HasPrefix(entry, "PATH=") {
+			pathIdx = i
+			raw := strings.TrimPrefix(entry, "PATH=")
+			if raw != "" {
+				existing = strings.Split(raw, sep)
+			}
+			break
+		}
+	}
+	seen := make(map[string]struct{}, len(existing))
+	for _, p := range existing {
+		seen[p] = struct{}{}
+	}
+	for _, d := range WellKnownBinDirs() {
+		if _, ok := seen[d]; ok {
+			continue
+		}
+		existing = append(existing, d)
+		seen[d] = struct{}{}
+	}
+	merged := "PATH=" + strings.Join(existing, sep)
+	if pathIdx >= 0 {
+		env[pathIdx] = merged
+	} else {
+		env = append(env, merged)
+	}
+	return env
 }
 
 func parseEnvOutput(out []byte) []string {

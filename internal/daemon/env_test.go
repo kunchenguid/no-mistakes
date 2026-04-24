@@ -1,7 +1,10 @@
 package daemon
 
 import (
+	"bytes"
+	"log/slog"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -70,5 +73,39 @@ func TestPrepareDaemonEnvironment_PreservesExistingNMHome(t *testing.T) {
 	}
 	if got := os.Getenv("PATH"); got != "/resolved/bin" {
 		t.Fatalf("PATH = %q, want %q", got, "/resolved/bin")
+	}
+}
+
+// TestPrepareDaemonEnvironment_LogsPathSummary locks in observability for
+// #143-style failures. Silent PATH regressions were the reason this bug
+// took a forensic dive to diagnose - future bugs should be readable from
+// the daemon log alone.
+func TestPrepareDaemonEnvironment_LogsPathSummary(t *testing.T) {
+	t.Setenv("PATH", os.Getenv("PATH"))
+
+	oldApply := applyShellEnvToProcess
+	defer func() { applyShellEnvToProcess = oldApply }()
+	applyShellEnvToProcess = func() error {
+		return os.Setenv("PATH", "/a/bin"+string(os.PathListSeparator)+"/b/bin"+string(os.PathListSeparator)+"/c/bin")
+	}
+
+	var buf bytes.Buffer
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	defer slog.SetDefault(oldLogger)
+
+	if err := prepareDaemonEnvironment(); err != nil {
+		t.Fatal(err)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "daemon environment ready") {
+		t.Fatalf("expected startup log line, got %q", out)
+	}
+	if !strings.Contains(out, "path_entries=3") {
+		t.Fatalf("expected path_entries=3 in log, got %q", out)
+	}
+	if !strings.Contains(out, "/a/bin") {
+		t.Fatalf("expected full PATH in log for debuggability, got %q", out)
 	}
 }

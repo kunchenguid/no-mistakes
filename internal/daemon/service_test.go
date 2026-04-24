@@ -13,6 +13,114 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 )
 
+// TestStart_ReinstallsManagedServiceWhenPlistChanged covers the post-upgrade
+// case for #143: the user installed a newer binary that renders a different
+// plist (e.g., now carrying a PATH env fix), the old daemon is still alive
+// under the stale plist, and `daemon start` must refresh the plist and boot
+// launchd under the new one so the fix actually takes effect. Prior behavior
+// was "daemon already running" with no refresh, stranding the user.
+func TestStart_ReinstallsManagedServiceWhenPlistChanged(t *testing.T) {
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+
+	cleanup := stubServiceRuntime(t)
+	defer cleanup()
+	runtimeGOOS = "darwin"
+	serviceUserHomeDir = func() (string, error) { return home, nil }
+	serviceCurrentUser = func() (*user.User, error) { return &user.User{Uid: "501"}, nil }
+	serviceExecutablePath = func() (string, error) { return "/opt/no-mistakes/bin/no-mistakes", nil }
+
+	plistPath := filepath.Join(home, "Library", "LaunchAgents", launchdServiceLabel(p)+".plist")
+	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(plistPath, []byte("<stale-plist-from-older-binary/>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var commands []string
+	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
+		commands = append(commands, name+" "+strings.Join(args, " "))
+		return nil, nil
+	}
+	daemonHealthCheck = func(*paths.Paths) (bool, error) { return true, nil }
+
+	if err := Start(p); err != nil {
+		t.Fatalf("Start should reload and succeed when plist changed, got %v", err)
+	}
+
+	data, err := os.ReadFile(plistPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "<key>PATH</key>") {
+		t.Fatalf("expected plist to be rewritten with PATH env, got:\n%s", data)
+	}
+	sawBootout := false
+	sawBootstrap := false
+	sawKickstart := false
+	for _, cmd := range commands {
+		if strings.Contains(cmd, "launchctl bootout ") {
+			sawBootout = true
+		}
+		if strings.Contains(cmd, "launchctl bootstrap ") {
+			sawBootstrap = true
+		}
+		if strings.Contains(cmd, "launchctl kickstart ") {
+			sawKickstart = true
+		}
+	}
+	if !sawBootout || !sawBootstrap || !sawKickstart {
+		t.Fatalf("expected launchctl bootout+bootstrap+kickstart during reload, got %v", commands)
+	}
+}
+
+// TestStart_DoesNotReinstallWhenPlistUnchanged preserves the existing
+// "daemon already running" contract when nothing has changed, so repeated
+// `daemon start` invocations from shells/hooks don't silently restart the
+// daemon and churn the current run.
+func TestStart_DoesNotReinstallWhenPlistUnchanged(t *testing.T) {
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+
+	cleanup := stubServiceRuntime(t)
+	defer cleanup()
+	runtimeGOOS = "darwin"
+	serviceUserHomeDir = func() (string, error) { return home, nil }
+	serviceCurrentUser = func() (*user.User, error) { return &user.User{Uid: "501"}, nil }
+	serviceExecutablePath = func() (string, error) { return "/opt/no-mistakes/bin/no-mistakes", nil }
+
+	plistPath := filepath.Join(home, "Library", "LaunchAgents", launchdServiceLabel(p)+".plist")
+	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	current := renderLaunchAgent("/opt/no-mistakes/bin/no-mistakes", p, home)
+	if err := os.WriteFile(plistPath, []byte(current), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var commands []string
+	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
+		commands = append(commands, name+" "+strings.Join(args, " "))
+		return nil, nil
+	}
+	daemonHealthCheck = func(*paths.Paths) (bool, error) { return true, nil }
+
+	err := Start(p)
+	if err == nil || !strings.Contains(err.Error(), "already running") {
+		t.Fatalf("expected 'already running' error when plist unchanged, got %v", err)
+	}
+	if len(commands) != 0 {
+		t.Fatalf("expected no service commands when plist unchanged, got %v", commands)
+	}
+}
+
 func TestStartFallsBackToDetachedDaemonWhenManagedStartFails(t *testing.T) {
 	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
 	if err := p.EnsureDirs(); err != nil {

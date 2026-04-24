@@ -45,11 +45,24 @@ func durationFromEnv(name string, fallback time.Duration) time.Duration {
 // starts it, falling back to a detached re-exec with NM_DAEMON=1 when managed
 // startup is unavailable or fails. It waits up to 5 seconds for the daemon to
 // become responsive on the IPC socket.
+//
+// When the daemon is already running, Start refreshes the installed service
+// definition and reloads the service manager if the on-disk definition is
+// stale (e.g., after a binary upgrade that changed the plist/unit). This is
+// what lets users pick up env-var changes (see #143 for the PATH fix) with
+// a plain `daemon start` instead of a manual stop + start.
 func Start(p *paths.Paths) error {
 	if err := p.EnsureDirs(); err != nil {
 		return err
 	}
 	if alive, _ := daemonHealthCheck(p); alive {
+		reloaded, err := reinstallManagedServiceIfChanged(p)
+		if err != nil {
+			return err
+		}
+		if reloaded {
+			return nil
+		}
 		return fmt.Errorf("daemon already running")
 	}
 	if managed, err := installManagedService(p); err == nil {
@@ -64,6 +77,58 @@ func Start(p *paths.Paths) error {
 		return nil
 	}
 	return startDetachedDaemon(p)
+}
+
+// reinstallManagedServiceIfChanged refreshes the managed daemon service and
+// reloads it through launchctl/systemctl when the on-disk service definition
+// differs from what the current binary would generate. Returns true when a
+// reload actually happened. Called from Start() so that `daemon start` after
+// a binary upgrade re-applies the new service definition without forcing
+// users to run `daemon restart` explicitly. No-op on Windows and when the
+// service manager is bypassed (i.e., under `go test`).
+func reinstallManagedServiceIfChanged(p *paths.Paths) (bool, error) {
+	if serviceManagerBypassed() {
+		return false, nil
+	}
+	exe, err := serviceExecutablePath()
+	if err != nil {
+		return false, fmt.Errorf("resolve executable: %w", err)
+	}
+	home, err := serviceUserHomeDir()
+	if err != nil {
+		return false, fmt.Errorf("resolve user home: %w", err)
+	}
+
+	var installPath, wanted string
+	switch runtimeGOOS {
+	case "darwin":
+		installPath = launchAgentPath(p)
+		wanted = renderLaunchAgent(exe, p, home)
+	case "linux":
+		installPath = systemdUserServicePath(p)
+		wanted = renderSystemdUnit(exe, p, home)
+	default:
+		return false, nil
+	}
+
+	existing, readErr := os.ReadFile(installPath)
+	switch {
+	case readErr == nil && string(existing) == wanted:
+		return false, nil
+	case readErr != nil && !os.IsNotExist(readErr):
+		return false, fmt.Errorf("read managed service definition: %w", readErr)
+	}
+
+	if _, err := installManagedService(p); err != nil {
+		return false, err
+	}
+	if _, err := startManagedService(p); err != nil {
+		return false, err
+	}
+	if err := waitForDaemonStart(p, 0, time.Time{}); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func stopManagedFallback(p *paths.Paths) error {
