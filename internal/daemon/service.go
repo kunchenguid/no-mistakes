@@ -125,6 +125,10 @@ func installManagedService(p *paths.Paths) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("resolve executable: %w", err)
 	}
+	return installManagedServiceWithExecutable(p, exe)
+}
+
+func installManagedServiceWithExecutable(p *paths.Paths, exe string) (bool, error) {
 	switch runtimeGOOS {
 	case "darwin":
 		return true, installLaunchAgent(p, exe)

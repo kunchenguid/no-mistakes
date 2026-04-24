@@ -1,11 +1,13 @@
 package daemon
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
 
 func TestServiceDefinitionMatchesRootRejectsPrefixOnlyMatch(t *testing.T) {
@@ -94,6 +96,16 @@ func TestRenderSystemdUnitIncludesManagedPath(t *testing.T) {
 	}
 	if !strings.Contains(unit, "PATH=") {
 		t.Fatalf("expected Environment=PATH=... in systemd unit, got:\n%s", unit)
+	}
+}
+
+func TestManagedServicePathUsesSharedWellKnownDirs(t *testing.T) {
+	t.Parallel()
+	home := "/Users/test"
+	want := strings.Join(shellenv.WellKnownBinDirsForHome(home), string(os.PathListSeparator))
+
+	if got := managedServicePath(home); got != want {
+		t.Fatalf("managedServicePath(%q) = %q, want %q", home, got, want)
 	}
 }
 

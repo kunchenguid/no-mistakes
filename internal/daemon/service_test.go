@@ -123,6 +123,100 @@ func TestStart_DoesNotReinstallWhenPlistUnchanged(t *testing.T) {
 	}
 }
 
+func TestStartDoesNotRestartLaunchAgentForExecutableOnlyChange(t *testing.T) {
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+
+	cleanup := stubServiceRuntime(t)
+	defer cleanup()
+	runtimeGOOS = "darwin"
+	serviceUserHomeDir = func() (string, error) { return home, nil }
+	serviceCurrentUser = func() (*user.User, error) { return &user.User{Uid: "501"}, nil }
+	serviceExecutablePath = func() (string, error) { return "/private/var/folders/go-build/no-mistakes", nil }
+
+	plistPath := filepath.Join(home, "Library", "LaunchAgents", launchdServiceLabel(p)+".plist")
+	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	installed := renderLaunchAgent("/opt/no-mistakes/bin/no-mistakes", p, home)
+	if err := os.WriteFile(plistPath, []byte(installed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var commands []string
+	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
+		commands = append(commands, name+" "+strings.Join(args, " "))
+		return nil, nil
+	}
+	daemonHealthCheck = func(*paths.Paths) (bool, error) { return true, nil }
+
+	err := Start(p)
+	if err == nil || !strings.Contains(err.Error(), "already running") {
+		t.Fatalf("expected already running error, got %v", err)
+	}
+	if len(commands) != 0 {
+		t.Fatalf("expected no service restart for executable-only change, got %v", commands)
+	}
+	data, err := os.ReadFile(plistPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != installed {
+		t.Fatalf("plist changed for executable-only diff:\n%s", data)
+	}
+}
+
+func TestStartPreservesInstalledExecutableWhenRefreshingLaunchAgent(t *testing.T) {
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+
+	cleanup := stubServiceRuntime(t)
+	defer cleanup()
+	runtimeGOOS = "darwin"
+	serviceUserHomeDir = func() (string, error) { return home, nil }
+	serviceCurrentUser = func() (*user.User, error) { return &user.User{Uid: "501"}, nil }
+	serviceExecutablePath = func() (string, error) { return "/private/var/folders/go-build/no-mistakes", nil }
+
+	plistPath := filepath.Join(home, "Library", "LaunchAgents", launchdServiceLabel(p)+".plist")
+	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stale := renderLaunchAgentWithoutEnvironment("/opt/no-mistakes/bin/no-mistakes", p)
+	if err := os.WriteFile(plistPath, []byte(stale), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
+		return nil, nil
+	}
+	daemonHealthCheck = func(*paths.Paths) (bool, error) { return true, nil }
+
+	if err := Start(p); err != nil {
+		t.Fatalf("Start should refresh stale plist: %v", err)
+	}
+
+	data, err := os.ReadFile(plistPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plist := string(data)
+	if !strings.Contains(plist, "<string>/opt/no-mistakes/bin/no-mistakes</string>") {
+		t.Fatalf("expected refreshed plist to preserve installed executable, got:\n%s", plist)
+	}
+	if strings.Contains(plist, "/private/var/folders/go-build/no-mistakes") {
+		t.Fatalf("refreshed plist should not use transient executable:\n%s", plist)
+	}
+	if !strings.Contains(plist, "<key>PATH</key>") {
+		t.Fatalf("expected refreshed plist to include PATH, got:\n%s", plist)
+	}
+}
+
 func TestStartRestartsSystemdUnitWhenDefinitionChanged(t *testing.T) {
 	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
 	if err := p.EnsureDirs(); err != nil {
@@ -1317,6 +1411,38 @@ func TestWaitForDaemonStartDoesNotKillWhenPIDZero(t *testing.T) {
 	if killCalled {
 		t.Fatal("waitForDaemonStart should not kill when pid is 0 (managed daemon case)")
 	}
+}
+
+func renderLaunchAgentWithoutEnvironment(exe string, p *paths.Paths) string {
+	values := []string{exe, "daemon", "run", "--root", p.Root()}
+	var args strings.Builder
+	for _, value := range values {
+		args.WriteString("    <string>")
+		args.WriteString(xmlEscaped(value))
+		args.WriteString("</string>\n")
+	}
+	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>%s</string>
+  <key>ProgramArguments</key>
+  <array>
+%s  </array>
+  <key>WorkingDirectory</key>
+  <string>%s</string>
+  <key>StandardOutPath</key>
+  <string>%s</string>
+  <key>StandardErrorPath</key>
+  <string>%s</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+</dict>
+</plist>
+`, xmlEscaped(launchdServiceLabel(p)), args.String(), xmlEscaped(p.Root()), xmlEscaped(p.DaemonLog()), xmlEscaped(p.DaemonLog()))
 }
 
 func stubServiceRuntime(t *testing.T) func() {

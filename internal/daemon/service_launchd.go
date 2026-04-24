@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
 
 func installLaunchAgent(p *paths.Paths, exe string) error {
@@ -168,25 +169,5 @@ func renderLaunchAgent(exe string, p *paths.Paths, home string) string {
 // Entry order: user-scoped dirs first so user-managed tools (go, cargo,
 // ~/.local/bin) win over system packages, then Homebrew and distro defaults.
 func managedServicePath(home string) string {
-	sep := string(os.PathListSeparator)
-	var entries []string
-	if home != "" {
-		entries = append(entries,
-			filepath.Join(home, ".local", "bin"),
-			filepath.Join(home, "go", "bin"),
-			filepath.Join(home, ".cargo", "bin"),
-			filepath.Join(home, "bin"),
-		)
-	}
-	entries = append(entries,
-		"/opt/homebrew/bin",
-		"/opt/homebrew/sbin",
-		"/usr/local/bin",
-		"/usr/local/sbin",
-		"/usr/bin",
-		"/bin",
-		"/usr/sbin",
-		"/sbin",
-	)
-	return strings.Join(entries, sep)
+	return strings.Join(shellenv.WellKnownBinDirsForHome(home), string(os.PathListSeparator))
 }

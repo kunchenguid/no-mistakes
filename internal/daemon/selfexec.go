@@ -100,18 +100,35 @@ func reinstallManagedServiceIfChanged(p *paths.Paths) (bool, error) {
 	}
 
 	var installPath, wanted string
+	renderedExecutable := exe
 	switch runtimeGOOS {
 	case "darwin":
 		installPath = launchAgentPath(p)
-		wanted = renderLaunchAgent(exe, p, home)
 	case "linux":
 		installPath = systemdUserServicePath(p)
-		wanted = renderSystemdUnit(exe, p, home)
 	default:
 		return false, nil
 	}
 
 	existing, readErr := os.ReadFile(installPath)
+	if readErr == nil {
+		switch runtimeGOOS {
+		case "darwin":
+			if existingExe, ok := launchAgentExecutable(existing); ok {
+				renderedExecutable = existingExe
+			}
+		case "linux":
+			if existingExe, ok := systemdUnitExecutable(existing); ok {
+				renderedExecutable = existingExe
+			}
+		}
+	}
+	switch runtimeGOOS {
+	case "darwin":
+		wanted = renderLaunchAgent(renderedExecutable, p, home)
+	case "linux":
+		wanted = renderSystemdUnit(renderedExecutable, p, home)
+	}
 	switch {
 	case readErr == nil && string(existing) == wanted:
 		return false, nil
@@ -131,7 +148,7 @@ func reinstallManagedServiceIfChanged(p *paths.Paths) (bool, error) {
 		return false, cause
 	}
 
-	if _, err := installManagedService(p); err != nil {
+	if _, err := installManagedServiceWithExecutable(p, renderedExecutable); err != nil {
 		return restoreOnFailure(err)
 	}
 	if err := stopCurrentDaemonBeforeManagedRestart(p); err != nil {

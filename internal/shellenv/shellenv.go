@@ -115,7 +115,20 @@ func resolveUncached() ([]string, error) {
 // would require filesystem access in resolution, which complicates testing
 // without adding value for daemon launch.
 func WellKnownBinDirs() []string {
-	dirs := []string{
+	return WellKnownBinDirsForHome(homeDir())
+}
+
+func WellKnownBinDirsForHome(home string) []string {
+	dirs := []string{}
+	if strings.TrimSpace(home) != "" {
+		dirs = append(dirs,
+			filepath.Join(home, ".local", "bin"),
+			filepath.Join(home, "go", "bin"),
+			filepath.Join(home, ".cargo", "bin"),
+			filepath.Join(home, "bin"),
+		)
+	}
+	dirs = append(dirs,
 		"/opt/homebrew/bin",
 		"/opt/homebrew/sbin",
 		"/usr/local/bin",
@@ -124,15 +137,7 @@ func WellKnownBinDirs() []string {
 		"/bin",
 		"/usr/sbin",
 		"/sbin",
-	}
-	if home := homeDir(); home != "" {
-		dirs = append(dirs,
-			filepath.Join(home, ".local", "bin"),
-			filepath.Join(home, "go", "bin"),
-			filepath.Join(home, ".cargo", "bin"),
-			filepath.Join(home, "bin"),
-		)
-	}
+	)
 	return dirs
 }
 
