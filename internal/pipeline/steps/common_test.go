@@ -871,6 +871,34 @@ func TestReviewFindingsSchema_ActionAtItemLevel(t *testing.T) {
 	}
 }
 
+func TestReviewFindingsSchema_AllowsTestingMetadata(t *testing.T) {
+	t.Parallel()
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(reviewFindingsSchema, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	props := parsed["properties"].(map[string]interface{})
+
+	tested, ok := props["tested"].(map[string]interface{})
+	if !ok {
+		t.Fatal("reviewFindingsSchema missing tested property")
+	}
+	if tested["type"] != "array" {
+		t.Fatalf("expected tested to be an array, got %#v", tested["type"])
+	}
+	if tested["items"].(map[string]interface{})["type"] != "string" {
+		t.Fatalf("expected tested items to be strings, got %#v", tested["items"])
+	}
+
+	testingSummary, ok := props["testing_summary"].(map[string]interface{})
+	if !ok {
+		t.Fatal("reviewFindingsSchema missing testing_summary property")
+	}
+	if testingSummary["type"] != "string" {
+		t.Fatalf("expected testing_summary to be a string, got %#v", testingSummary["type"])
+	}
+}
+
 func TestSanitizedPreviousFindingsForPrompt_PreservesMultilineDescriptions(t *testing.T) {
 	t.Parallel()
 	raw, err := types.MarshalFindingsJSON(types.Findings{

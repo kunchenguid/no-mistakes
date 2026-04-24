@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 )
 
 func runCodex(args []string, scenario *Scenario) int {
@@ -14,6 +15,20 @@ func runCodex(args []string, scenario *Scenario) int {
 	action := scenario.Match(prompt)
 	if err := applyEdits(action.Edits); err != nil {
 		return 1
+	}
+
+	// Real codex constrains output to --output-schema, so the fake
+	// mirrors that by trimming the scenario's catch-all structured map
+	// to only fields declared in the schema. Otherwise no-mistakes'
+	// schema validation rejects the extra fields the defaultScenario
+	// carries to satisfy other steps (e.g. pr's title/body).
+	if schemaPath := extractCodexOutputSchema(args); schemaPath != "" && action.Structured != nil {
+		filtered, err := filterStructuredToSchema(action.Structured, schemaPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "fakeagent: codex schema filter: %v\n", err)
+			return 1
+		}
+		action.Structured = filtered
 	}
 
 	// Replay recorded codex output if a fixture is available. no-mistakes
@@ -110,6 +125,51 @@ func patchCodexFixture(raw []byte, action Action) ([]byte, error) {
 		out.WriteByte('\n')
 	}
 	return out.Bytes(), nil
+}
+
+// extractCodexOutputSchema returns the --output-schema value from the
+// argv, supporting both `--output-schema path` and `--output-schema=path`.
+// Returns "" when the flag is absent.
+func extractCodexOutputSchema(args []string) string {
+	for i, a := range args {
+		switch {
+		case a == "--output-schema" && i+1 < len(args):
+			return args[i+1]
+		case strings.HasPrefix(a, "--output-schema="):
+			return strings.TrimPrefix(a, "--output-schema=")
+		}
+	}
+	return ""
+}
+
+// filterStructuredToSchema drops fields from structured that are not
+// declared as properties on the top-level object schema at schemaPath.
+// Real codex would not emit undeclared fields under --output-schema, so
+// mirroring that behaviour keeps the fake consistent with no-mistakes'
+// additionalProperties:false validation. schemaPath == "" is a no-op.
+func filterStructuredToSchema(structured map[string]any, schemaPath string) (map[string]any, error) {
+	if schemaPath == "" {
+		return structured, nil
+	}
+	data, err := os.ReadFile(schemaPath)
+	if err != nil {
+		return nil, fmt.Errorf("read schema %s: %w", schemaPath, err)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(data, &schema); err != nil {
+		return nil, fmt.Errorf("parse schema %s: %w", schemaPath, err)
+	}
+	properties, _ := schema["properties"].(map[string]any)
+	if properties == nil {
+		return structured, nil
+	}
+	filtered := make(map[string]any, len(properties))
+	for key, value := range structured {
+		if _, ok := properties[key]; ok {
+			filtered[key] = value
+		}
+	}
+	return filtered, nil
 }
 
 // extractCodexPrompt finds the prompt positional. Real codex argv is

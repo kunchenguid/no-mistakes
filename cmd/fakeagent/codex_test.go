@@ -3,6 +3,9 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -68,6 +71,88 @@ func TestPatchCodexFixturePlainRunRewritesAgentMessageText(t *testing.T) {
 	}
 	if item.Item.Text != "scenario text" {
 		t.Fatalf("agent_message text = %q, want scenario text", item.Item.Text)
+	}
+}
+
+func TestFilterStructuredToSchemaKeepsOnlyDeclaredProperties(t *testing.T) {
+	schemaPath := filepath.Join(t.TempDir(), "schema.json")
+	schema := []byte(`{
+		"type": "object",
+		"properties": {
+			"findings": {"type": "array"},
+			"risk_level": {"type": "string"},
+			"risk_rationale": {"type": "string"}
+		},
+		"required": ["findings", "risk_level", "risk_rationale"]
+	}`)
+	if err := os.WriteFile(schemaPath, schema, 0o644); err != nil {
+		t.Fatalf("write schema: %v", err)
+	}
+
+	structured := map[string]any{
+		"findings":        []any{},
+		"risk_level":      "low",
+		"risk_rationale":  "no risks",
+		"summary":         "no issues found",
+		"tested":          []any{"x"},
+		"testing_summary": "simulated tests passed",
+		"title":           "feat: extra",
+		"body":            "extra body",
+	}
+
+	got, err := filterStructuredToSchema(structured, schemaPath)
+	if err != nil {
+		t.Fatalf("filter: %v", err)
+	}
+	want := map[string]any{
+		"findings":       []any{},
+		"risk_level":     "low",
+		"risk_rationale": "no risks",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("filtered = %#v\nwant = %#v", got, want)
+	}
+}
+
+func TestFilterStructuredToSchemaNilWhenNoSchema(t *testing.T) {
+	structured := map[string]any{"summary": "ok"}
+	got, err := filterStructuredToSchema(structured, "")
+	if err != nil {
+		t.Fatalf("filter: %v", err)
+	}
+	if !reflect.DeepEqual(got, structured) {
+		t.Fatalf("got %#v, want passthrough %#v", got, structured)
+	}
+}
+
+func TestExtractCodexOutputSchemaPath(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "separate flag",
+			args: []string{"exec", "--output-schema", "/tmp/s.json", "prompt", "--json"},
+			want: "/tmp/s.json",
+		},
+		{
+			name: "equals form",
+			args: []string{"exec", "--output-schema=/tmp/s.json", "prompt", "--json"},
+			want: "/tmp/s.json",
+		},
+		{
+			name: "absent",
+			args: []string{"exec", "prompt", "--json"},
+			want: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := extractCodexOutputSchema(tc.args); got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

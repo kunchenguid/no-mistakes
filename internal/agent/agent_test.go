@@ -125,6 +125,182 @@ func TestFinalizeTextResult_WithSchemaParsesFencedJSON(t *testing.T) {
 	}
 }
 
+func TestFinalizeTextResult_WithSchemaParsesInlineOpenFence(t *testing.T) {
+	// Codex/GPT-5 sometimes glues the opening ```json fence to the end of
+	// the prior reasoning line, with no newline between text and backticks.
+	text := "thinking about edge cases now.```json\n{\"done\":true}\n```"
+	result, err := finalizeTextResult("codex", text, json.RawMessage(`{"type":"object"}`), TokenUsage{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var output map[string]any
+	if err := json.Unmarshal(result.Output, &output); err != nil {
+		t.Fatalf("failed to parse output: %v", err)
+	}
+	if output["done"] != true {
+		t.Errorf("expected done=true, got %v", output["done"])
+	}
+}
+
+func TestFinalizeTextResult_WithSchemaParsesInlineCloseFence(t *testing.T) {
+	// Symmetric case: closing fence immediately follows the JSON with no
+	// newline before the backticks.
+	text := "prelude\n```json\n{\"done\":true}```"
+	result, err := finalizeTextResult("codex", text, json.RawMessage(`{"type":"object"}`), TokenUsage{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var output map[string]any
+	if err := json.Unmarshal(result.Output, &output); err != nil {
+		t.Fatalf("failed to parse output: %v", err)
+	}
+	if output["done"] != true {
+		t.Errorf("expected done=true, got %v", output["done"])
+	}
+}
+
+func TestFinalizeTextResult_WithSchemaParsesBareJSONAfterText(t *testing.T) {
+	// No fence at all: reasoning prose followed by a raw JSON object.
+	text := "Here's the review:\n{\"done\":true}"
+	result, err := finalizeTextResult("codex", text, json.RawMessage(`{"type":"object"}`), TokenUsage{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var output map[string]any
+	if err := json.Unmarshal(result.Output, &output); err != nil {
+		t.Fatalf("failed to parse output: %v", err)
+	}
+	if output["done"] != true {
+		t.Errorf("expected done=true, got %v", output["done"])
+	}
+}
+
+func TestFinalizeTextResult_WithSchemaPrefersLastBareJSON(t *testing.T) {
+	// If reasoning text embeds a decorative JSON object and the final
+	// answer is a separate object at the end, the final one should win.
+	text := `I considered {"foo":"bar"} as one option. Final: {"done":true}`
+	result, err := finalizeTextResult("codex", text, json.RawMessage(`{"type":"object"}`), TokenUsage{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var output map[string]any
+	if err := json.Unmarshal(result.Output, &output); err != nil {
+		t.Fatalf("failed to parse output: %v", err)
+	}
+	if output["done"] != true {
+		t.Errorf("expected done=true, got %v", output["done"])
+	}
+}
+
+func TestFinalizeTextResult_WithSchemaRejectsBareJSONMissingRequiredKeys(t *testing.T) {
+	text := `I inspected the diff and found no issues. {"foo":"bar"}`
+	schema := json.RawMessage(`{
+		"type":"object",
+		"properties":{
+			"findings":{"type":"array"},
+			"summary":{"type":"string"}
+		},
+		"required":["findings","summary"]
+	}`)
+
+	_, err := finalizeTextResult("codex", text, schema, TokenUsage{})
+	if err == nil {
+		t.Fatal("expected bare JSON missing required keys to fail")
+	}
+}
+
+func TestFinalizeTextResult_WithSchemaRejectsNestedEnumViolations(t *testing.T) {
+	text := `review complete {"findings":[{"severity":"fatal","description":"x","action":"fix-it"}],"summary":"1 issue"}`
+	schema := json.RawMessage(`{
+		"type":"object",
+		"properties":{
+			"findings":{
+				"type":"array",
+				"items":{
+					"type":"object",
+					"properties":{
+						"severity":{"type":"string","enum":["error","warning","info"]},
+						"description":{"type":"string"},
+						"action":{"type":"string","enum":["auto-fix","ask-user","no-op"]}
+					},
+					"required":["severity","description","action"]
+				}
+			},
+			"summary":{"type":"string"}
+		},
+		"required":["findings","summary"]
+	}`)
+
+	_, err := finalizeTextResult("codex", text, schema, TokenUsage{})
+	if err == nil {
+		t.Fatal("expected nested enum violation to fail")
+	}
+}
+
+func TestFinalizeTextResult_WithSchemaAllowsNullOptionalFieldsInTextFallback(t *testing.T) {
+	text := `{"findings":[{"severity":"warning","file":null,"line":null,"description":"x","action":"auto-fix"}],"summary":"1 issue"}`
+	schema := json.RawMessage(`{
+		"type":"object",
+		"properties":{
+			"findings":{
+				"type":"array",
+				"items":{
+					"type":"object",
+					"properties":{
+						"severity":{"type":"string","enum":["error","warning","info"]},
+						"file":{"type":"string"},
+						"line":{"type":"integer"},
+						"description":{"type":"string"},
+						"action":{"type":"string","enum":["no-op","auto-fix","ask-user"]}
+					},
+					"required":["severity","description","action"]
+				}
+			},
+			"summary":{"type":"string"}
+		},
+		"required":["findings","summary"]
+	}`)
+
+	result, err := finalizeTextResult("opencode", text, schema, TokenUsage{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(result.Output) != text {
+		t.Fatalf("unexpected output: %s", string(result.Output))
+	}
+}
+
+func TestFinalizeTextResult_WithSchemaParsesCodexRealWorldOutput(t *testing.T) {
+	// Regression: real codex output from pipeline 01KPYD4SD644SR9JCNX6Y.
+	// Reasoning sentences were concatenated with no newlines, and the
+	// opening ```json fence was glued to the end of the last sentence.
+	text := "Reviewing the diff between `ba90e3c` and `6fdb361` first.I'm reading the patch now.I'm down to edge cases: timer semantics after multiple `result` events.```json\n" +
+		"{\n" +
+		"  \"findings\": [],\n" +
+		"  \"risk_assessment\": {\n" +
+		"    \"risk_level\": \"low\",\n" +
+		"    \"risk_rationale\": \"clean\"\n" +
+		"  }\n" +
+		"}\n" +
+		"```"
+	result, err := finalizeTextResult("codex", text, json.RawMessage(`{"type":"object"}`), TokenUsage{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var output struct {
+		Findings       []any `json:"findings"`
+		RiskAssessment struct {
+			RiskLevel string `json:"risk_level"`
+		} `json:"risk_assessment"`
+	}
+	if err := json.Unmarshal(result.Output, &output); err != nil {
+		t.Fatalf("failed to parse output: %v", err)
+	}
+	if output.RiskAssessment.RiskLevel != "low" {
+		t.Errorf("expected risk_level=low, got %q", output.RiskAssessment.RiskLevel)
+	}
+}
+
 func TestFinalizeTextResult_WithSchemaRejectsAmbiguousFencedJSON(t *testing.T) {
 	text := strings.Join([]string{
 		"```json",
@@ -140,5 +316,53 @@ func TestFinalizeTextResult_WithSchemaRejectsAmbiguousFencedJSON(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "multiple JSON code fences") {
 		t.Fatalf("expected multiple JSON code fences error, got %v", err)
+	}
+}
+
+func TestFencedJSONCandidates_IgnoreBackticksInsideJSONString(t *testing.T) {
+	text := "review complete\n```json\n{\"summary\":\"quoted ```snippet``` in markdown\",\"findings\":[]}\n```\npostlude"
+
+	got := fencedJSONCandidates(text)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 candidate, got %d", len(got))
+	}
+	want := "{\"summary\":\"quoted ```snippet``` in markdown\",\"findings\":[]}\n"
+	if got[0] != want {
+		t.Fatalf("candidate = %q, want %q", got[0], want)
+	}
+}
+
+func TestFencedJSONCandidates_AllowIndentedClosingFence(t *testing.T) {
+	text := "review complete\n```json\n{\"summary\":\"ok\",\"findings\":[]}\n   ```\nnext paragraph"
+
+	got := fencedJSONCandidates(text)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 candidate, got %d", len(got))
+	}
+	want := "{\"summary\":\"ok\",\"findings\":[]}\n"
+	if got[0] != want {
+		t.Fatalf("candidate = %q, want %q", got[0], want)
+	}
+}
+
+func TestFinalizeTextResult_WithSchemaIgnoresJSONInsideNonJSONFence(t *testing.T) {
+	text := strings.Join([]string{
+		"Reasoning follows.",
+		"```markdown",
+		"Example output:",
+		"```json",
+		`{"done":true}`,
+		"```",
+		"```",
+		"Final answer: not valid JSON",
+	}, "\n")
+
+	if got := fencedJSONCandidates(text); len(got) != 0 {
+		t.Fatalf("expected no fenced JSON candidates, got %q", got)
+	}
+
+	_, err := finalizeTextResult("codex", text, json.RawMessage(`{"type":"object"}`), TokenUsage{})
+	if err == nil {
+		t.Fatal("expected parse failure")
 	}
 }
