@@ -178,13 +178,15 @@ func (u *updater) fetchLatestReleaseIncludingPrereleases(ctx context.Context) (*
 
 	const maxAttempts = 5
 	var lastErr error
-	for i, c := range candidates {
-		if i >= maxAttempts {
-			break
-		}
+	attempts := 0
+	for _, c := range candidates {
 		if r, ok := byTag[c.name]; ok {
 			return r, nil
 		}
+		if attempts >= maxAttempts {
+			continue
+		}
+		attempts++
 		r, err := u.fetchReleaseByTag(ctx, c.name)
 		if err != nil {
 			lastErr = err
