@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.5](https://github.com/kunchenguid/no-mistakes/compare/v1.10.4...v1.10.5) (2026-04-25)
+
+
+### Bug Fixes
+
+* **update:** resolve beta releases from tags ([#152](https://github.com/kunchenguid/no-mistakes/issues/152)) ([e2558ba](https://github.com/kunchenguid/no-mistakes/commit/e2558baeb9761160a6966844689808587b7fbeeb))
+
 ## [1.10.4](https://github.com/kunchenguid/no-mistakes/compare/v1.10.3...v1.10.4) (2026-04-25)
 
 
