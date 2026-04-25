@@ -650,14 +650,18 @@ func TestUpdaterCheckLatestBetaUsesReleasesList(t *testing.T) {
 
 	archiveName := "no-mistakes-v1.3.0-beta.1-darwin-arm64.tar.gz"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/repos/kunchenguid/no-mistakes/releases" {
+		switch r.URL.Path {
+		case "/repos/kunchenguid/no-mistakes/releases":
+			fmt.Fprintf(w, `[
+				{"tag_name":"v1.3.0-beta.1","draft":false,"prerelease":true,"assets":[{"name":%q,"browser_download_url":"http://example.com/archive"},{"name":"checksums.txt","browser_download_url":"http://example.com/checksums"}]},
+				{"tag_name":"v1.2.3","draft":false,"prerelease":false,"assets":[]},
+				{"tag_name":"v1.4.0-draft","draft":true,"prerelease":true,"assets":[]}
+			]`, archiveName)
+		case "/repos/kunchenguid/no-mistakes/tags":
+			fmt.Fprint(w, `[{"name":"v1.3.0-beta.1"},{"name":"v1.2.3"}]`)
+		default:
 			t.Fatalf("unexpected path %q", r.URL.Path)
 		}
-		fmt.Fprintf(w, `[
-			{"tag_name":"v1.3.0-beta.1","draft":false,"prerelease":true,"assets":[{"name":%q,"browser_download_url":"http://example.com/archive"},{"name":"checksums.txt","browser_download_url":"http://example.com/checksums"}]},
-			{"tag_name":"v1.2.3","draft":false,"prerelease":false,"assets":[]},
-			{"tag_name":"v1.4.0-draft","draft":true,"prerelease":true,"assets":[]}
-		]`, archiveName)
 	}))
 	defer server.Close()
 
@@ -694,14 +698,18 @@ func TestUpdaterCheckLatestBetaPicksHighestSemver(t *testing.T) {
 
 	archiveName := "no-mistakes-v1.3.0-beta.2-darwin-arm64.tar.gz"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/repos/kunchenguid/no-mistakes/releases" {
+		switch r.URL.Path {
+		case "/repos/kunchenguid/no-mistakes/releases":
+			fmt.Fprintf(w, `[
+				{"tag_name":"v1.3.0-beta.1","draft":false,"prerelease":true,"assets":[]},
+				{"tag_name":"v1.3.0-beta.2","draft":false,"prerelease":true,"assets":[{"name":%q,"browser_download_url":"http://example.com/archive"},{"name":"checksums.txt","browser_download_url":"http://example.com/checksums"}]},
+				{"tag_name":"v1.2.3","draft":false,"prerelease":false,"assets":[]}
+			]`, archiveName)
+		case "/repos/kunchenguid/no-mistakes/tags":
+			fmt.Fprint(w, `[{"name":"v1.3.0-beta.2"},{"name":"v1.3.0-beta.1"},{"name":"v1.2.3"}]`)
+		default:
 			t.Fatalf("unexpected path %q", r.URL.Path)
 		}
-		fmt.Fprintf(w, `[
-			{"tag_name":"v1.3.0-beta.1","draft":false,"prerelease":true,"assets":[]},
-			{"tag_name":"v1.3.0-beta.2","draft":false,"prerelease":true,"assets":[{"name":%q,"browser_download_url":"http://example.com/archive"},{"name":"checksums.txt","browser_download_url":"http://example.com/checksums"}]},
-			{"tag_name":"v1.2.3","draft":false,"prerelease":false,"assets":[]}
-		]`, archiveName)
 	}))
 	defer server.Close()
 
@@ -723,6 +731,55 @@ func TestUpdaterCheckLatestBetaPicksHighestSemver(t *testing.T) {
 	}
 	if plan.LatestVersion != "v1.3.0-beta.2" {
 		t.Fatalf("LatestVersion = %q", plan.LatestVersion)
+	}
+}
+
+func TestUpdaterCheckLatestBetaFallsBackToTagsWhenListingStale(t *testing.T) {
+	allowInsecureDownloads = true
+	t.Cleanup(func() { allowInsecureDownloads = false })
+
+	archiveName := "no-mistakes-v1.3.0-beta.1-darwin-arm64.tar.gz"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/kunchenguid/no-mistakes/releases":
+			fmt.Fprint(w, `[
+				{"tag_name":"v1.2.3","draft":false,"prerelease":false,"assets":[]},
+				{"tag_name":"v1.2.2","draft":false,"prerelease":false,"assets":[]}
+			]`)
+		case "/repos/kunchenguid/no-mistakes/tags":
+			fmt.Fprint(w, `[{"name":"v1.3.0-beta.1"},{"name":"v1.2.3"},{"name":"v1.2.2"}]`)
+		case "/repos/kunchenguid/no-mistakes/releases/tags/v1.3.0-beta.1":
+			fmt.Fprintf(w, `{"tag_name":"v1.3.0-beta.1","draft":false,"prerelease":true,"assets":[{"name":%q,"browser_download_url":"http://example.com/archive"},{"name":"checksums.txt","browser_download_url":"http://example.com/checksums"}]}`, archiveName)
+		default:
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	u := &updater{
+		appName:            "no-mistakes",
+		repo:               "kunchenguid/no-mistakes",
+		currentVersion:     "v1.2.3",
+		platform:           platformSpec{GOOS: "darwin", GOARCH: "arm64"},
+		apiBaseURL:         server.URL,
+		httpClient:         server.Client(),
+		cachePath:          filepath.Join(t.TempDir(), "update-check.json"),
+		now:                func() time.Time { return time.Date(2026, 4, 22, 12, 0, 0, 0, time.UTC) },
+		includePrereleases: true,
+	}
+
+	plan, err := u.checkLatest(context.Background())
+	if err != nil {
+		t.Fatalf("checkLatest error = %v", err)
+	}
+	if !plan.UpdateAvailable {
+		t.Fatal("expected update to be available")
+	}
+	if plan.LatestVersion != "v1.3.0-beta.1" {
+		t.Fatalf("LatestVersion = %q", plan.LatestVersion)
+	}
+	if plan.ArchiveName != archiveName {
+		t.Fatalf("ArchiveName = %q", plan.ArchiveName)
 	}
 }
 

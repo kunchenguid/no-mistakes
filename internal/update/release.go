@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 )
@@ -118,10 +119,92 @@ func (u *updater) fetchLatestRelease(ctx context.Context) (*releaseResponse, err
 	return &release, nil
 }
 
+// fetchLatestReleaseIncludingPrereleases finds the highest-semver release including
+// prereleases. The unauthenticated /releases listing endpoint can lag minutes behind
+// reality at GitHub's edge, so we cross-reference it with /tags (fresher in practice)
+// and fall through to fetching the specific tag's release directly when the listing
+// hasn't caught up yet.
 func (u *updater) fetchLatestReleaseIncludingPrereleases(ctx context.Context) (*releaseResponse, error) {
+	listed, listErr := u.fetchAllReleases(ctx)
+	tags, tagsErr := u.fetchTagNames(ctx)
+	if listErr != nil && tagsErr != nil {
+		return nil, listErr
+	}
+
+	byTag := make(map[string]*releaseResponse, len(listed))
+	for i := range listed {
+		r := &listed[i]
+		if r.Draft || r.TagName == "" {
+			continue
+		}
+		byTag[r.TagName] = r
+	}
+
+	type candidate struct {
+		name string
+		ver  semVersion
+	}
+	seen := make(map[string]struct{})
+	var candidates []candidate
+	add := func(name string) {
+		if name == "" {
+			return
+		}
+		if _, ok := seen[name]; ok {
+			return
+		}
+		seen[name] = struct{}{}
+		v, err := parseVersion(name)
+		if err != nil {
+			return
+		}
+		candidates = append(candidates, candidate{name: name, ver: v})
+	}
+	for _, name := range tags {
+		add(name)
+	}
+	for i := range listed {
+		if listed[i].Draft {
+			continue
+		}
+		add(listed[i].TagName)
+	}
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("no releases found")
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].ver.compare(candidates[j].ver) > 0
+	})
+
+	const maxAttempts = 5
+	var lastErr error
+	for i, c := range candidates {
+		if i >= maxAttempts {
+			break
+		}
+		if r, ok := byTag[c.name]; ok {
+			return r, nil
+		}
+		r, err := u.fetchReleaseByTag(ctx, c.name)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if r.Draft {
+			continue
+		}
+		return r, nil
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, fmt.Errorf("no releases found")
+}
+
+func (u *updater) fetchAllReleases(ctx context.Context) ([]releaseResponse, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(u.apiBaseURL, "/")+"/repos/"+u.repo+"/releases", nil)
 	if err != nil {
-		return nil, fmt.Errorf("build release request: %w", err)
+		return nil, fmt.Errorf("build releases request: %w", err)
 	}
 	resp, err := u.httpClient.Do(req)
 	if err != nil {
@@ -142,26 +225,72 @@ func (u *updater) fetchLatestReleaseIncludingPrereleases(ctx context.Context) (*
 	if err := json.Unmarshal(body, &releases); err != nil {
 		return nil, fmt.Errorf("parse releases: %w", err)
 	}
-	var best *releaseResponse
-	var bestVer semVersion
-	for i := range releases {
-		r := &releases[i]
-		if r.Draft || r.TagName == "" {
-			continue
-		}
-		v, err := parseVersion(r.TagName)
-		if err != nil {
-			continue
-		}
-		if best == nil || v.compare(bestVer) > 0 {
-			best = r
-			bestVer = v
+	return releases, nil
+}
+
+func (u *updater) fetchTagNames(ctx context.Context) ([]string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(u.apiBaseURL, "/")+"/repos/"+u.repo+"/tags?per_page=100", nil)
+	if err != nil {
+		return nil, fmt.Errorf("build tags request: %w", err)
+	}
+	resp, err := u.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch tags: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetch tags: unexpected status %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxAPIResponseSize+1))
+	if err != nil {
+		return nil, fmt.Errorf("read tags: %w", err)
+	}
+	if len(body) > maxAPIResponseSize {
+		return nil, fmt.Errorf("tags response exceeds %d bytes", maxAPIResponseSize)
+	}
+	var tags []struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(body, &tags); err != nil {
+		return nil, fmt.Errorf("parse tags: %w", err)
+	}
+	names := make([]string, 0, len(tags))
+	for _, t := range tags {
+		if t.Name != "" {
+			names = append(names, t.Name)
 		}
 	}
-	if best == nil {
-		return nil, fmt.Errorf("no releases found")
+	return names, nil
+}
+
+func (u *updater) fetchReleaseByTag(ctx context.Context, tag string) (*releaseResponse, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(u.apiBaseURL, "/")+"/repos/"+u.repo+"/releases/tags/"+tag, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build release-by-tag request: %w", err)
 	}
-	return best, nil
+	resp, err := u.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch release for tag %s: %w", tag, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("no release for tag %s", tag)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetch release for tag %s: unexpected status %d", tag, resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxAPIResponseSize+1))
+	if err != nil {
+		return nil, fmt.Errorf("read release for tag %s: %w", tag, err)
+	}
+	if len(body) > maxAPIResponseSize {
+		return nil, fmt.Errorf("release response for tag %s exceeds %d bytes", tag, maxAPIResponseSize)
+	}
+	var release releaseResponse
+	if err := json.Unmarshal(body, &release); err != nil {
+		return nil, fmt.Errorf("parse release for tag %s: %w", tag, err)
+	}
+	return &release, nil
 }
 
 func (u *updater) downloadAsset(ctx context.Context, assetURL string, limit int64) ([]byte, error) {
