@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.4](https://github.com/kunchenguid/no-mistakes/compare/v1.10.3...v1.10.4) (2026-04-25)
+
+
+### Bug Fixes
+
+* **daemon:** retry busy launchctl bootstrap ([#150](https://github.com/kunchenguid/no-mistakes/issues/150)) ([40412a8](https://github.com/kunchenguid/no-mistakes/commit/40412a871bcff44802430b9d8406f1b67d945f1f))
+
 ## [1.10.3](https://github.com/kunchenguid/no-mistakes/compare/v1.10.2...v1.10.3) (2026-04-24)
 
 
