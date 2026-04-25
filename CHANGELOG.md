@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.3](https://github.com/kunchenguid/no-mistakes/compare/v1.10.2...v1.10.3) (2026-04-24)
+
+
+### Bug Fixes
+
+* **daemon:** refresh managed services with stable PATH ([#148](https://github.com/kunchenguid/no-mistakes/issues/148)) ([cac217f](https://github.com/kunchenguid/no-mistakes/commit/cac217f6a931bd0afcde6379cc310bf995285464))
+
 ## [1.10.2](https://github.com/kunchenguid/no-mistakes/compare/v1.10.1...v1.10.2) (2026-04-24)
 
 
