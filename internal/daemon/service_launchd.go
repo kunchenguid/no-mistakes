@@ -5,9 +5,23 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
+)
+
+// Retry parameters for `launchctl bootstrap` after a preceding bootout.
+// launchctl bootout is async: it SIGTERMs the existing service and gives
+// launchd up to ~5s to finalize cleanup. During that window, bootstrap
+// returns errno 37 EPROGRESS ("Operation already in progress") and there
+// is no synchronous API to wait for the previous instance to fully detach.
+// A stop+start sequence (which is exactly what `make install` does, and
+// what `daemon restart` does) collides with this window unless bootstrap
+// is retried. Exposed as package vars so tests can shrink the timings.
+var (
+	launchctlBootstrapRetryTimeout  = 10 * time.Second
+	launchctlBootstrapRetryInterval = 200 * time.Millisecond
 )
 
 func installLaunchAgent(p *paths.Paths, exe string) error {
@@ -52,7 +66,7 @@ func startLaunchAgent(p *paths.Paths) error {
 	serviceTarget := domain + "/" + launchdServiceLabel(p)
 	path := launchAgentPath(p)
 	_, _ = serviceCommandRunner("launchctl", "bootout", serviceTarget)
-	_, bootstrapErr := serviceCommandRunner("launchctl", "bootstrap", domain, path)
+	bootstrapErr := launchctlBootstrapWithRetry(domain, path)
 	_, kickstartErr := serviceCommandRunner("launchctl", "kickstart", "-k", serviceTarget)
 	if kickstartErr != nil {
 		if bootstrapErr != nil {
@@ -61,6 +75,43 @@ func startLaunchAgent(p *paths.Paths) error {
 		return fmt.Errorf("launchctl kickstart: %w", kickstartErr)
 	}
 	return nil
+}
+
+// launchctlBootstrapWithRetry runs `launchctl bootstrap` and retries on
+// errno 37 EPROGRESS until the bootout-cleanup window closes. Non-busy
+// failures (bad plist, bad permissions) return immediately so they can
+// surface through the normal managed-start fallback path.
+func launchctlBootstrapWithRetry(domain, path string) error {
+	deadline := time.Now().Add(launchctlBootstrapRetryTimeout)
+	var lastErr error
+	for {
+		_, err := serviceCommandRunner("launchctl", "bootstrap", domain, path)
+		if err == nil {
+			return nil
+		}
+		if !launchctlBootstrapBusy(err) {
+			return err
+		}
+		lastErr = err
+		if time.Now().After(deadline) {
+			return lastErr
+		}
+		time.Sleep(launchctlBootstrapRetryInterval)
+	}
+}
+
+// launchctlBootstrapBusy reports whether a bootstrap error is the
+// "previous instance still unloading" race. launchctl surfaces this as
+// exit 37 with stderr "Bootstrap failed: 37: Operation already in
+// progress". Match both exit status and message text so we remain robust
+// to launchctl output tweaks across macOS releases.
+func launchctlBootstrapBusy(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "operation already in progress") ||
+		strings.Contains(text, "exit status 37")
 }
 
 func stopLaunchAgent(p *paths.Paths) error {
