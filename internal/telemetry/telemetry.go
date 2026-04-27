@@ -28,6 +28,7 @@ const (
 
 	umamiHostEnv      = "NO_MISTAKES_UMAMI_HOST"
 	umamiWebsiteIDEnv = "NO_MISTAKES_UMAMI_WEBSITE_ID"
+	telemetryEnv      = "NO_MISTAKES_TELEMETRY"
 )
 
 type Fields map[string]any
@@ -124,6 +125,10 @@ func Default() Sink {
 	defer defaultMu.Unlock()
 
 	if defaultSink != nil {
+		return defaultSink
+	}
+	if telemetryDisabled() {
+		defaultSink = noopSink{}
 		return defaultSink
 	}
 
@@ -260,14 +265,10 @@ func (noopSink) Pageview(string, Fields) {}
 func (noopSink) Close(context.Context) error { return nil }
 
 func (c *Client) newRequest(name, url string, fields Fields) ([]byte, error) {
-	data := make(map[string]any, len(fields)+4)
+	data := make(map[string]any, len(fields))
 	for k, v := range fields {
 		data[k] = v
 	}
-	data["app_version"] = c.version
-	data["goos"] = c.goos
-	data["goarch"] = c.goarch
-	data["build_channel"] = buildChannel(c.version)
 
 	return json.Marshal(collectRequest{
 		Type: "event",
@@ -360,6 +361,15 @@ func defaultWebsiteID() string {
 	}
 
 	return websiteID
+}
+
+func telemetryDisabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(telemetryEnv))) {
+	case "0", "false", "off":
+		return true
+	default:
+		return false
+	}
 }
 
 func loadDotEnvValues() map[string]string {

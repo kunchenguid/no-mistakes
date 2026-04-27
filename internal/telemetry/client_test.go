@@ -97,14 +97,10 @@ func TestClientTrackSendsUmamiEventPayload(t *testing.T) {
 		if got.Payload.Data["status"] != "success" {
 			t.Fatalf("data.status = %v, want %q", got.Payload.Data["status"], "success")
 		}
-		if got.Payload.Data["app_version"] != "v1.2.3" {
-			t.Fatalf("data.app_version = %v, want %q", got.Payload.Data["app_version"], "v1.2.3")
-		}
-		if got.Payload.Data["goos"] != "darwin" {
-			t.Fatalf("data.goos = %v, want %q", got.Payload.Data["goos"], "darwin")
-		}
-		if got.Payload.Data["goarch"] != "arm64" {
-			t.Fatalf("data.goarch = %v, want %q", got.Payload.Data["goarch"], "arm64")
+		for _, key := range []string{"app_version", "goos", "goarch", "build_channel"} {
+			if _, ok := got.Payload.Data[key]; ok {
+				t.Fatalf("data.%s should be omitted to keep Umami event-data volume low", key)
+			}
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for telemetry request")

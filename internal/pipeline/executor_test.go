@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -59,6 +60,54 @@ func TestExecutor_AllStepsPass(t *testing.T) {
 		if e := events.find(ipc.EventStepCompleted, name); e == nil {
 			t.Errorf("missing step_completed event for %s", name)
 		}
+	}
+}
+
+func TestExecutor_SuccessfulStepsDoNotEmitTelemetry(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	recorder := &telemetryRecorder{}
+	restore := telemetry.SetDefaultForTesting(recorder)
+	defer restore()
+
+	exec := NewExecutor(database, p, nil, nil, []Step{
+		newPassStep(types.StepReview),
+		newPassStep(types.StepTest),
+	}, nil)
+
+	if err := exec.Execute(context.Background(), run, repo, workDir); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	if event := recorder.find("step", "", nil); event != nil {
+		t.Fatalf("successful steps should not emit step telemetry, got %v", event.fields)
+	}
+}
+
+func TestExecutor_SkippedStepsDoNotEmitTelemetry(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	recorder := &telemetryRecorder{}
+	restore := telemetry.SetDefaultForTesting(recorder)
+	defer restore()
+
+	skipStep := &mockStep{
+		name:    types.StepRebase,
+		outcome: &StepOutcome{ExitCode: 0, SkipRemaining: true},
+	}
+	exec := NewExecutor(database, p, nil, nil, []Step{
+		skipStep,
+		newPassStep(types.StepReview),
+	}, nil)
+
+	if err := exec.Execute(context.Background(), run, repo, workDir); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	if event := recorder.find("step", "status", string(types.StepStatusSkipped)); event != nil {
+		t.Fatalf("skipped steps should not emit step telemetry, got %v", event.fields)
 	}
 }
 

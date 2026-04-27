@@ -546,6 +546,9 @@ func (e *Executor) emitStepEventWithFindingsDiffAndError(eventType ipc.EventType
 		event.Diff = &diff
 	}
 	e.onEvent(event)
+	if !shouldTrackStepTelemetry(eventType, status) {
+		return
+	}
 
 	fields := telemetry.Fields{
 		"event":  string(eventType),
@@ -562,6 +565,18 @@ func (e *Executor) emitStepEventWithFindingsDiffAndError(eventType ipc.EventType
 		fields["findings_count"] = findingsCount(findings)
 	}
 	telemetry.Track("step", fields)
+}
+
+func shouldTrackStepTelemetry(eventType ipc.EventType, status string) bool {
+	if eventType != ipc.EventStepCompleted {
+		return false
+	}
+	switch types.StepStatus(status) {
+	case types.StepStatusAwaitingApproval, types.StepStatusFixReview, types.StepStatusFailed:
+		return true
+	default:
+		return false
+	}
 }
 
 func (e *Executor) emitLogChunk(run *db.Run, repo *db.Repo, stepName types.StepName, content string) {
