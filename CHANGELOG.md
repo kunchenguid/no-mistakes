@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.6](https://github.com/kunchenguid/no-mistakes/compare/v1.10.5...v1.10.6) (2026-04-27)
+
+
+### Bug Fixes
+
+* **telemetry:** reduce event data volume ([#155](https://github.com/kunchenguid/no-mistakes/issues/155)) ([0b8c6a0](https://github.com/kunchenguid/no-mistakes/commit/0b8c6a036ed09244ce04cad870c3cdaf296d022f))
+
 ## [1.10.5](https://github.com/kunchenguid/no-mistakes/compare/v1.10.4...v1.10.5) (2026-04-25)
 
 
