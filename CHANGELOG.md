@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.7](https://github.com/kunchenguid/no-mistakes/compare/v1.10.6...v1.10.7) (2026-04-27)
+
+
+### Bug Fixes
+
+* **telemetry:** use self-hosted Umami defaults ([#157](https://github.com/kunchenguid/no-mistakes/issues/157)) ([efef934](https://github.com/kunchenguid/no-mistakes/commit/efef934ba9ec451ac3389f2f069caa9e6bf43287))
+
 ## [1.10.6](https://github.com/kunchenguid/no-mistakes/compare/v1.10.5...v1.10.6) (2026-04-27)
 
 
