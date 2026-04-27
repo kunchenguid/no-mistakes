@@ -67,6 +67,17 @@ Disable background update checks.
 
 Update checks run on every CLI invocation except `update` itself, hit GitHub releases, cache the result in `$NM_HOME/update-check.json`, and print a one-line notification to stderr when a newer version is available. Dev builds (non-semver versions) suppress the check automatically.
 
+## `NO_MISTAKES_UMAMI_HOST`
+
+Override the telemetry collection host.
+
+| | |
+|---|---|
+| Type | `URL` |
+| Default | `https://a.kunchenguid.com` |
+
+When set, telemetry sends events to this host's `/api/send` endpoint. If it is unset in a dev build, `no-mistakes` also checks a repo-local `.env` file for `NO_MISTAKES_UMAMI_HOST`. If no runtime value is found, it falls back to any host embedded at build time and then the default self-hosted Umami instance.
+
 ## `NO_MISTAKES_UMAMI_WEBSITE_ID`
 
 Override or enable the telemetry website ID.
@@ -74,11 +85,11 @@ Override or enable the telemetry website ID.
 | | |
 |---|---|
 | Type | `string` |
-| Default | unset |
+| Default | embedded in release builds |
 
 When set, telemetry uses this website ID at runtime. If it is unset in a dev build, `no-mistakes` also checks a repo-local `.env` file for `NO_MISTAKES_UMAMI_WEBSITE_ID`. If no runtime value is found, it falls back to any website ID embedded at build time.
 
-When telemetry is enabled, `no-mistakes` sends command, run, approval, fix, and wizard events, completed step events with `awaiting_approval`, `fix_review`, or `failed` status, and pageviews for `/wizard` and `/tui` to Umami Cloud at `https://cloud.umami.is/api/send`.
+When telemetry is enabled, `no-mistakes` sends command, run, approval, fix, and wizard events, completed step events with `awaiting_approval`, `fix_review`, or `failed` status, and pageviews for `/wizard` and `/tui` to Umami.
 
 ## `NO_MISTAKES_TELEMETRY`
 

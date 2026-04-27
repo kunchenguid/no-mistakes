@@ -61,7 +61,8 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           TAG: ${{ needs.release-please.outputs.tag_name }}
-          UMAMI_WEBSITE_ID: ${{ vars.UMAMI_WEBSITE_ID }}
+          UMAMI_HOST: https://a.kunchenguid.com
+          UMAMI_WEBSITE_ID: f959e889-92f5-4121-8a1f-571b10861198
         run: |
           set -euo pipefail
           mkdir -p dist
@@ -74,7 +75,7 @@ jobs:
             OUT="dist/${BIN}"
           fi
           CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
-            go build -ldflags "-X github.com/kunchenguid/no-mistakes/internal/buildinfo.Version=${TAG} -X github.com/kunchenguid/no-mistakes/internal/buildinfo.Commit=${COMMIT} -X github.com/kunchenguid/no-mistakes/internal/buildinfo.Date=${DATE} -X github.com/kunchenguid/no-mistakes/internal/buildinfo.TelemetryWebsiteID=${UMAMI_WEBSITE_ID}" \
+            go build -ldflags "-X github.com/kunchenguid/no-mistakes/internal/buildinfo.Version=${TAG} -X github.com/kunchenguid/no-mistakes/internal/buildinfo.Commit=${COMMIT} -X github.com/kunchenguid/no-mistakes/internal/buildinfo.Date=${DATE} -X github.com/kunchenguid/no-mistakes/internal/buildinfo.TelemetryHost=${UMAMI_HOST} -X github.com/kunchenguid/no-mistakes/internal/buildinfo.TelemetryWebsiteID=${UMAMI_WEBSITE_ID}" \
             -o "$OUT" ./cmd/no-mistakes
           if [ "$GOOS" = "windows" ]; then
             ARCHIVE="dist/no-mistakes-${TAG}-${GOOS}-${GOARCH}.zip"

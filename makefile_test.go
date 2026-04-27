@@ -54,6 +54,50 @@ func TestMakeBuildUsesEnvUmamiWebsiteIDWhenDotEnvMissing(t *testing.T) {
 	}
 }
 
+func TestMakeBuildEmbedsDefaultSelfHostedTelemetryConfig(t *testing.T) {
+	skipMakeBuildTestsOnWindows(t)
+
+	makePath, err := exec.LookPath("make")
+	if err != nil {
+		t.Skip("make not available")
+	}
+
+	workDir := writeTestMakeWorkspace(t)
+	output := runMakeDryBuild(t, makePath, workDir, nil)
+
+	if !strings.Contains(output, "TelemetryHost=https://a.kunchenguid.com") {
+		t.Fatalf("make build output should embed default telemetry host, got:\n%s", output)
+	}
+	if !strings.Contains(output, "TelemetryWebsiteID=f959e889-92f5-4121-8a1f-571b10861198") {
+		t.Fatalf("make build output should embed default telemetry website id, got:\n%s", output)
+	}
+}
+
+func TestMakeBuildPrioritizesDotEnvUmamiHost(t *testing.T) {
+	skipMakeBuildTestsOnWindows(t)
+
+	makePath, err := exec.LookPath("make")
+	if err != nil {
+		t.Skip("make not available")
+	}
+
+	workDir := writeTestMakeWorkspace(t)
+	if err := os.WriteFile(filepath.Join(workDir, ".env"), []byte("NO_MISTAKES_UMAMI_HOST=https://dotenv.example\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	output := runMakeDryBuild(t, makePath, workDir, map[string]string{
+		"UMAMI_HOST": "https://env.example",
+	})
+
+	if !strings.Contains(output, "TelemetryHost=https://dotenv.example") {
+		t.Fatalf("make build output should embed .env telemetry host, got:\n%s", output)
+	}
+	if strings.Contains(output, "TelemetryHost=https://env.example") {
+		t.Fatalf("make build output should not prefer env telemetry host when .env exists, got:\n%s", output)
+	}
+}
+
 func TestMakeBuildIgnoresUnrelatedDotEnvEntries(t *testing.T) {
 	skipMakeBuildTestsOnWindows(t)
 
@@ -152,7 +196,7 @@ func runMakeDryBuild(t *testing.T, makePath, workDir string, extraEnv map[string
 
 	cmd := exec.CommandContext(ctx, makePath, "-n", "build")
 	cmd.Dir = workDir
-	cmd.Env = filteredEnv(os.Environ(), "UMAMI_WEBSITE_ID", "NO_MISTAKES_UMAMI_WEBSITE_ID")
+	cmd.Env = filteredEnv(os.Environ(), "UMAMI_HOST", "UMAMI_WEBSITE_ID", "NO_MISTAKES_UMAMI_HOST", "NO_MISTAKES_UMAMI_WEBSITE_ID")
 	for key, value := range extraEnv {
 		cmd.Env = append(cmd.Env, key+"="+value)
 	}

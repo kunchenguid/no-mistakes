@@ -24,7 +24,7 @@ const (
 	defaultHostname = "cli"
 	defaultTitle    = "no-mistakes CLI"
 	defaultPath     = "/api/send"
-	umamiCloudURL   = "https://cloud.umami.is"
+	defaultHost     = "https://a.kunchenguid.com"
 
 	umamiHostEnv      = "NO_MISTAKES_UMAMI_HOST"
 	umamiWebsiteIDEnv = "NO_MISTAKES_UMAMI_WEBSITE_ID"
@@ -138,8 +138,9 @@ func Default() Sink {
 		return defaultSink
 	}
 
+	host := defaultHostValue()
 	client, err := NewClient(Config{
-		Host:      umamiCloudURL,
+		Host:      host,
 		WebsiteID: websiteID,
 		App:       "no-mistakes",
 		Version:   buildinfo.CurrentVersion(),
@@ -361,6 +362,24 @@ func defaultWebsiteID() string {
 	}
 
 	return websiteID
+}
+
+func defaultHostValue() string {
+	host := strings.TrimSpace(os.Getenv(umamiHostEnv))
+
+	if buildChannel(buildinfo.CurrentVersion()) == "dev" && host == "" {
+		values := loadDotEnvValues()
+		host = strings.TrimSpace(values[umamiHostEnv])
+	}
+
+	if host == "" {
+		host = strings.TrimSpace(buildinfo.TelemetryHost)
+	}
+	if host == "" {
+		host = defaultHost
+	}
+
+	return host
 }
 
 func telemetryDisabled() bool {
