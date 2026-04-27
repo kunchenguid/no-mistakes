@@ -13,7 +13,7 @@ curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/i
 
 The installer drops the binary in `~/.no-mistakes/bin`, links it into `~/.local/bin` or `/usr/local/bin`, and restarts the background daemon. If the restart fails, the install command fails.
 
-Official release binaries installed this way may already have telemetry enabled if a telemetry website ID was embedded at build time.
+Official release binaries installed this way include the default self-hosted telemetry host and website ID. Disable telemetry with `NO_MISTAKES_TELEMETRY=0`, or override the host and website ID with `NO_MISTAKES_UMAMI_HOST` and `NO_MISTAKES_UMAMI_WEBSITE_ID`.
 
 ## 2. Check prerequisites
 
