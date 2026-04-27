@@ -93,6 +93,25 @@ func TestDefaultPrefersEnvVarWebsiteIDAndIgnoresHostOverride(t *testing.T) {
 	}
 }
 
+func TestDefaultDisablesTelemetryWhenEnvIsOff(t *testing.T) {
+	prevSink := defaultSink
+	defaultSink = nil
+	defer func() { defaultSink = prevSink }()
+
+	prevWebsiteID := buildinfo.TelemetryWebsiteID
+	defer func() {
+		buildinfo.TelemetryWebsiteID = prevWebsiteID
+	}()
+	buildinfo.TelemetryWebsiteID = "embedded-website"
+
+	t.Setenv("NO_MISTAKES_TELEMETRY", "off")
+	t.Setenv(umamiWebsiteIDEnv, "website-from-env")
+
+	if _, ok := Default().(*Client); ok {
+		t.Fatal("Default() should disable telemetry when NO_MISTAKES_TELEMETRY=off")
+	}
+}
+
 func TestDefaultIgnoresDotEnvOutsideRepo(t *testing.T) {
 	prevSink := defaultSink
 	defaultSink = nil

@@ -78,7 +78,18 @@ Override or enable the telemetry website ID.
 
 When set, telemetry uses this website ID at runtime. If it is unset in a dev build, `no-mistakes` also checks a repo-local `.env` file for `NO_MISTAKES_UMAMI_WEBSITE_ID`. If no runtime value is found, it falls back to any website ID embedded at build time.
 
-When telemetry is enabled, `no-mistakes` sends command, run, step, approval, fix, and wizard events plus pageviews for `/wizard` and `/tui`, along with app version, platform, and build-channel metadata, to Umami Cloud at `https://cloud.umami.is/api/send`.
+When telemetry is enabled, `no-mistakes` sends command, run, approval, fix, and wizard events, completed step events with `awaiting_approval`, `fix_review`, or `failed` status, and pageviews for `/wizard` and `/tui` to Umami Cloud at `https://cloud.umami.is/api/send`.
+
+## `NO_MISTAKES_TELEMETRY`
+
+Disable telemetry collection.
+
+| | |
+|---|---|
+| Type | `0`, `false`, or `off` to disable; anything else to leave enabled |
+| Default | unset |
+
+When set to a disabling value, telemetry stays off even if a runtime or embedded website ID is available.
 
 ## Environment the daemon sees
 
