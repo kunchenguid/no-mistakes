@@ -31,7 +31,7 @@ type claudeAgent struct {
 func (a *claudeAgent) Name() string { return "claude" }
 
 func (a *claudeAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
-	return runWithRetry(ctx, "claude", opts, claudeMaxRetries, claudeRetryClassifier, func() (*Result, error) {
+	return runWithRetry(ctx, "claude", opts, claudeMaxRetries, claudeRetryClassifier, nil, func() (*Result, error) {
 		return a.runOnce(ctx, opts)
 	})
 }

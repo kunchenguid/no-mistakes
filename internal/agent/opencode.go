@@ -19,9 +19,22 @@ type opencodeAgent struct {
 func (a *opencodeAgent) Name() string { return "opencode" }
 
 func (a *opencodeAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
-	return runWithRetry(ctx, "opencode", opts, claudeMaxRetries, classifyTransient, func() (*Result, error) {
+	return runWithRetry(ctx, "opencode", opts, claudeMaxRetries, classifyTransient, a.recoverTransientRetry, func() (*Result, error) {
 		return a.runOnce(ctx, opts)
 	})
+}
+
+func (a *opencodeAgent) recoverTransientRetry(label string) {
+	if label != "connection refused" {
+		return
+	}
+	a.mu.Lock()
+	srv := a.server
+	a.server = nil
+	a.mu.Unlock()
+	if srv != nil {
+		srv.shutdown()
+	}
 }
 
 func (a *opencodeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {

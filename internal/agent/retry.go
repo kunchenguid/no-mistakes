@@ -60,6 +60,7 @@ func runWithRetry(
 	opts RunOpts,
 	maxRetries int,
 	classify retryClassifier,
+	recoverRetry func(label string),
 	runOnce func() (*Result, error),
 ) (*Result, error) {
 	var lastErr error
@@ -83,6 +84,9 @@ func runWithRetry(
 		label, retry := classify(err)
 		if !retry {
 			return nil, err
+		}
+		if recoverRetry != nil {
+			recoverRetry(label)
 		}
 		lastErr = err
 		lastLabel = label

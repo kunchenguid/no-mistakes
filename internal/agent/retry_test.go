@@ -152,7 +152,7 @@ func TestRunWithRetry_RetriesTransientThenSucceeds(t *testing.T) {
 	var chunks []string
 	opts := RunOpts{OnChunk: func(s string) { chunks = append(chunks, s) }}
 
-	res, err := runWithRetry(context.Background(), "claude", opts, 3, classifyTransient, func() (*Result, error) {
+	res, err := runWithRetry(context.Background(), "claude", opts, 3, classifyTransient, nil, func() (*Result, error) {
 		calls++
 		if calls < 3 {
 			return nil, transientErr
@@ -178,13 +178,40 @@ func TestRunWithRetry_RetriesTransientThenSucceeds(t *testing.T) {
 	}
 }
 
+func TestRunWithRetry_CallsRetryRecoveryBeforeRetry(t *testing.T) {
+	defer withFastBackoff(t)()
+
+	calls := 0
+	recovered := false
+	_, err := runWithRetry(context.Background(), "opencode", RunOpts{}, 1, classifyTransient, func(label string) {
+		if label == "connection refused" {
+			recovered = true
+		}
+	}, func() (*Result, error) {
+		calls++
+		if !recovered {
+			return nil, errors.New("dial tcp 127.0.0.1:5555: connection refused")
+		}
+		return &Result{Text: "ok"}, nil
+	})
+	if err != nil {
+		t.Fatalf("expected success after retry recovery, got %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("expected one retry after recovery, got %d calls", calls)
+	}
+	if !recovered {
+		t.Fatal("expected retry recovery to run")
+	}
+}
+
 func TestRunWithRetry_PermanentErrorFailsImmediately(t *testing.T) {
 	defer withFastBackoff(t)()
 
 	calls := 0
 	permErr := errors.New("API Error: authentication_error: invalid x-api-key")
 
-	_, err := runWithRetry(context.Background(), "claude", RunOpts{}, 3, classifyTransient, func() (*Result, error) {
+	_, err := runWithRetry(context.Background(), "claude", RunOpts{}, 3, classifyTransient, nil, func() (*Result, error) {
 		calls++
 		return nil, permErr
 	})
@@ -202,7 +229,7 @@ func TestRunWithRetry_ExhaustsRetries(t *testing.T) {
 	calls := 0
 	transientErr := errors.New("503 service unavailable")
 
-	_, err := runWithRetry(context.Background(), "claude", RunOpts{}, 3, classifyTransient, func() (*Result, error) {
+	_, err := runWithRetry(context.Background(), "claude", RunOpts{}, 3, classifyTransient, nil, func() (*Result, error) {
 		calls++
 		return nil, transientErr
 	})
@@ -238,7 +265,7 @@ func TestRunWithRetry_RespectsContextCancellation(t *testing.T) {
 	}()
 
 	start := time.Now()
-	_, err := runWithRetry(ctx, "claude", RunOpts{}, 3, classifyTransient, func() (*Result, error) {
+	_, err := runWithRetry(ctx, "claude", RunOpts{}, 3, classifyTransient, nil, func() (*Result, error) {
 		calls++
 		return nil, transientErr
 	})
@@ -258,7 +285,7 @@ func TestRunWithRetry_CombinedClassifierForClaude(t *testing.T) {
 
 	// claudeRetryClassifier should retry both transient API errors AND errNoStructuredOutput.
 	calls := 0
-	_, err := runWithRetry(context.Background(), "claude", RunOpts{}, 3, claudeRetryClassifier, func() (*Result, error) {
+	_, err := runWithRetry(context.Background(), "claude", RunOpts{}, 3, claudeRetryClassifier, nil, func() (*Result, error) {
 		calls++
 		return nil, errNoStructuredOutput
 	})
