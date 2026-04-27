@@ -12,6 +12,9 @@ import (
 	"sync"
 )
 
+// claudeMaxRetries is the number of additional attempts past the initial
+// invocation. With 3 retries the agent makes up to 4 total attempts before
+// surfacing a transient API error to the pipeline.
 const claudeMaxRetries = 3
 
 // errNoStructuredOutput is returned when Claude succeeds but omits structured output.
@@ -28,24 +31,9 @@ type claudeAgent struct {
 func (a *claudeAgent) Name() string { return "claude" }
 
 func (a *claudeAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
-	var lastErr error
-	for attempt := 1; attempt <= claudeMaxRetries; attempt++ {
-		if attempt > 1 {
-			if opts.OnChunk != nil {
-				opts.OnChunk(fmt.Sprintf("retrying (attempt %d/%d) - previous attempt returned no structured output", attempt, claudeMaxRetries))
-			}
-		}
-
-		result, err := a.runOnce(ctx, opts)
-		if err == nil {
-			return result, nil
-		}
-		if !errors.Is(err, errNoStructuredOutput) {
-			return nil, err
-		}
-		lastErr = err
-	}
-	return nil, lastErr
+	return runWithRetry(ctx, "claude", opts, claudeMaxRetries, claudeRetryClassifier, func() (*Result, error) {
+		return a.runOnce(ctx, opts)
+	})
 }
 
 func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {

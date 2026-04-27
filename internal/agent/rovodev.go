@@ -24,6 +24,12 @@ type rovodevAgent struct {
 func (a *rovodevAgent) Name() string { return "rovodev" }
 
 func (a *rovodevAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
+	return runWithRetry(ctx, "rovodev", opts, claudeMaxRetries, classifyTransient, func() (*Result, error) {
+		return a.runOnce(ctx, opts)
+	})
+}
+
+func (a *rovodevAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 	// Start server on first invocation (synchronized)
 	baseURL, err := a.ensureServer(ctx, opts.CWD)
 	if err != nil {

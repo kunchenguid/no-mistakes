@@ -22,6 +22,12 @@ type codexAgent struct {
 func (a *codexAgent) Name() string { return "codex" }
 
 func (a *codexAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
+	return runWithRetry(ctx, "codex", opts, claudeMaxRetries, classifyTransient, func() (*Result, error) {
+		return a.runOnce(ctx, opts)
+	})
+}
+
+func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 	schemaPath := ""
 	validationSchema := opts.JSONSchema
 	if len(opts.JSONSchema) > 0 {

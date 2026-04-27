@@ -19,6 +19,12 @@ type opencodeAgent struct {
 func (a *opencodeAgent) Name() string { return "opencode" }
 
 func (a *opencodeAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
+	return runWithRetry(ctx, "opencode", opts, claudeMaxRetries, classifyTransient, func() (*Result, error) {
+		return a.runOnce(ctx, opts)
+	})
+}
+
+func (a *opencodeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 	// Start server on first invocation (synchronized)
 	baseURL, err := a.ensureServer(ctx, opts.CWD)
 	if err != nil {
