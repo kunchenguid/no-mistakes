@@ -209,6 +209,31 @@ func TestExecutor_StepError_FailsRun(t *testing.T) {
 	}
 }
 
+func TestExecutor_FailedStepEmitsTelemetry(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	recorder := &telemetryRecorder{}
+	restore := telemetry.SetDefaultForTesting(recorder)
+	defer restore()
+
+	exec := NewExecutor(database, p, nil, nil, []Step{
+		newFailStep(types.StepReview, fmt.Errorf("review crashed")),
+	}, nil)
+
+	if err := exec.Execute(context.Background(), run, repo, workDir); err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	event := recorder.find("step", "status", string(types.StepStatusFailed))
+	if event == nil {
+		t.Fatal("expected failed step telemetry event")
+	}
+	if got := event.fields["step"]; got != string(types.StepReview) {
+		t.Fatalf("step telemetry step = %v, want %q", got, types.StepReview)
+	}
+}
+
 func TestExecutor_FailedStepRecordsDuration(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir := t.TempDir()
