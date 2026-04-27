@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.8](https://github.com/kunchenguid/no-mistakes/compare/v1.10.7...v1.10.8) (2026-04-27)
+
+
+### Bug Fixes
+
+* **agent:** retry transient invocation failures ([#159](https://github.com/kunchenguid/no-mistakes/issues/159)) ([ebdaac7](https://github.com/kunchenguid/no-mistakes/commit/ebdaac7afaddf88f77deaf0d21dce3e3c35248ea))
+
 ## [1.10.7](https://github.com/kunchenguid/no-mistakes/compare/v1.10.6...v1.10.7) (2026-04-27)
 
 
