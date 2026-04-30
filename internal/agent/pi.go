@@ -126,6 +126,7 @@ type piParser struct {
 	completeText   map[int]string
 	finalAssistant map[string]any
 	usage          TokenUsage
+	seenUsage      map[string]struct{}
 	assistantError string
 }
 
@@ -135,6 +136,7 @@ func (p *piParser) parse(ctx context.Context, r io.Reader) error {
 
 	p.streamText = make(map[int]string)
 	p.completeText = make(map[int]string)
+	p.seenUsage = make(map[string]struct{})
 
 	for scanner.Scan() {
 		select {
@@ -166,22 +168,9 @@ func (p *piParser) handleEvent(event map[string]any) {
 		p.handleAssistantEvent(event["assistantMessageEvent"])
 	case "message_end", "turn_end":
 		p.rememberAssistant(event["message"])
+		p.recordAssistantUsage(event["message"])
 	case "agent_end":
-		// Fallback: pull the final assistant message from the conversation
-		// when no streaming message_end carried it.
-		if p.finalAssistant != nil {
-			return
-		}
-		messages, ok := event["messages"].([]any)
-		if !ok {
-			return
-		}
-		for i := len(messages) - 1; i >= 0; i-- {
-			if msg, ok := messages[i].(map[string]any); ok && msg["role"] == "assistant" {
-				p.rememberAssistant(msg)
-				return
-			}
-		}
+		p.rememberAgentEnd(event["messages"])
 	}
 }
 
@@ -200,11 +189,89 @@ func (p *piParser) rememberAssistant(raw any) {
 		if p.assistantError == "" {
 			p.assistantError = fmt.Sprintf("stopReason=%s", reason)
 		}
+	} else {
+		p.assistantError = ""
+	}
+}
+
+func (p *piParser) rememberAgentEnd(raw any) {
+	messages, ok := raw.([]any)
+	if !ok {
+		return
 	}
 
-	if usage, ok := msg["usage"].(map[string]any); ok {
-		p.usage = piUsageFrom(usage)
+	total := TokenUsage{}
+	seen := make(map[string]struct{})
+	hasUsage := false
+	for i, rawMsg := range messages {
+		msg, ok := rawMsg.(map[string]any)
+		if !ok || msg["role"] != "assistant" {
+			continue
+		}
+		usageMap, ok := msg["usage"].(map[string]any)
+		if !ok {
+			continue
+		}
+		usage := piUsageFrom(usageMap)
+		if piUsageIsZero(usage) {
+			continue
+		}
+		key := piUsageKey(msg)
+		if key == "" {
+			key = fmt.Sprintf("agent_end:%d", i)
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		total = piUsageAdd(total, usage)
+		hasUsage = true
 	}
+	if hasUsage {
+		p.usage = total
+		p.seenUsage = make(map[string]struct{}, len(seen))
+		for key := range seen {
+			p.seenUsage[key] = struct{}{}
+		}
+	}
+
+	for i := len(messages) - 1; i >= 0; i-- {
+		if msg, ok := messages[i].(map[string]any); ok && msg["role"] == "assistant" {
+			p.rememberAssistant(msg)
+			return
+		}
+	}
+}
+
+func (p *piParser) recordAssistantUsage(raw any) {
+	msg, ok := raw.(map[string]any)
+	if !ok || msg["role"] != "assistant" {
+		return
+	}
+	usageMap, ok := msg["usage"].(map[string]any)
+	if !ok {
+		return
+	}
+	usage := piUsageFrom(usageMap)
+	if piUsageIsZero(usage) {
+		return
+	}
+	key := piUsageKey(msg)
+	if key == "" {
+		encoded, err := json.Marshal([]any{msg["role"], msg["stopReason"], msg["content"], msg["usage"]})
+		if err != nil {
+			return
+		}
+		key = string(encoded)
+	}
+	if p.seenUsage == nil {
+		p.seenUsage = make(map[string]struct{})
+	}
+	if _, ok := p.seenUsage[key]; ok {
+		return
+	}
+	p.seenUsage[key] = struct{}{}
+	p.usage = piUsageAdd(p.usage, usage)
 }
 
 func (p *piParser) handleAssistantEvent(raw any) {
@@ -332,4 +399,27 @@ func piUsageFrom(usage map[string]any) TokenUsage {
 		CacheReadTokens:     piIntField(usage, "cacheRead"),
 		CacheCreationTokens: piIntField(usage, "cacheWrite"),
 	}
+}
+
+func piUsageAdd(a, b TokenUsage) TokenUsage {
+	return TokenUsage{
+		InputTokens:         a.InputTokens + b.InputTokens,
+		OutputTokens:        a.OutputTokens + b.OutputTokens,
+		CacheReadTokens:     a.CacheReadTokens + b.CacheReadTokens,
+		CacheCreationTokens: a.CacheCreationTokens + b.CacheCreationTokens,
+	}
+}
+
+func piUsageIsZero(usage TokenUsage) bool {
+	return usage.InputTokens == 0 && usage.OutputTokens == 0 &&
+		usage.CacheReadTokens == 0 && usage.CacheCreationTokens == 0
+}
+
+func piUsageKey(msg map[string]any) string {
+	for _, name := range []string{"responseId", "id"} {
+		if value, ok := msg[name].(string); ok && value != "" {
+			return name + ":" + value
+		}
+	}
+	return ""
 }

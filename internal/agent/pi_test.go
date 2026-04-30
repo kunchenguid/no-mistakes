@@ -163,6 +163,44 @@ printf '%s\n' '{"type":"agent_end","messages":[{"role":"user","content":"prompt"
 	}
 }
 
+func TestPiParser_ClearsPriorAssistantErrorAfterSuccessfulRetry(t *testing.T) {
+	stream := strings.Join([]string{
+		`{"type":"message_end","message":{"role":"assistant","responseId":"r1","stopReason":"error","errorMessage":"transient failure"}}`,
+		`{"type":"message_end","message":{"role":"assistant","responseId":"r2","stopReason":"stop","content":[{"type":"text","text":"success"}]}}`,
+		`{"type":"agent_end","messages":[{"role":"assistant","responseId":"r1","stopReason":"error","errorMessage":"transient failure"},{"role":"assistant","responseId":"r2","stopReason":"stop","content":[{"type":"text","text":"success"}]}]}`,
+	}, "\n")
+
+	pp := &piParser{}
+	if err := pp.parse(context.Background(), strings.NewReader(stream)); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if pp.assistantError != "" {
+		t.Fatalf("expected successful retry to clear assistant error, got %q", pp.assistantError)
+	}
+	if got := pp.finalText(); got != "success" {
+		t.Fatalf("expected final retry text, got %q", got)
+	}
+}
+
+func TestPiParser_SumsUniqueAssistantUsageAcrossTurns(t *testing.T) {
+	stream := strings.Join([]string{
+		`{"type":"message_end","message":{"role":"assistant","responseId":"r1","stopReason":"toolUse","content":[{"type":"toolCall","name":"bash"}],"usage":{"input":10,"output":2,"cacheRead":3,"cacheWrite":4}}}`,
+		`{"type":"turn_end","message":{"role":"assistant","responseId":"r1","stopReason":"toolUse","content":[{"type":"toolCall","name":"bash"}],"usage":{"input":10,"output":2,"cacheRead":3,"cacheWrite":4}}}`,
+		`{"type":"message_end","message":{"role":"assistant","responseId":"r2","stopReason":"stop","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":5,"cacheRead":6,"cacheWrite":7}}}`,
+		`{"type":"turn_end","message":{"role":"assistant","responseId":"r2","stopReason":"stop","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":5,"cacheRead":6,"cacheWrite":7}}}`,
+		`{"type":"agent_end","messages":[{"role":"assistant","responseId":"r1","stopReason":"toolUse","content":[{"type":"toolCall","name":"bash"}],"usage":{"input":10,"output":2,"cacheRead":3,"cacheWrite":4}},{"role":"toolResult","content":[{"type":"text","text":"ok"}]},{"role":"assistant","responseId":"r2","stopReason":"stop","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":5,"cacheRead":6,"cacheWrite":7}}]}`,
+	}, "\n")
+
+	pp := &piParser{}
+	if err := pp.parse(context.Background(), strings.NewReader(stream)); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	want := TokenUsage{InputTokens: 11, OutputTokens: 7, CacheReadTokens: 9, CacheCreationTokens: 11}
+	if pp.usage != want {
+		t.Fatalf("usage = %+v, want %+v", pp.usage, want)
+	}
+}
+
 func TestPiAgent_RunRejectsAssistantError(t *testing.T) {
 	dir := t.TempDir()
 	bin := writeFakePi(t, dir, `#!/bin/sh
