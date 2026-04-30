@@ -52,7 +52,7 @@ test:
 
 # End-to-end suite: drives the real no-mistakes binary against a fake
 # agent through the full push -> pipeline -> push journey for each
-# supported agent backend. Excluded from `make test` because it is
+# e2e-covered agent backend. Excluded from `make test` because it is
 # behind the `e2e` build tag and rebuilds binaries on each run.
 e2e:
 	go test -tags=e2e -count=1 -timeout 300s ./internal/e2e/...
