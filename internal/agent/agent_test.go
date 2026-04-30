@@ -19,6 +19,7 @@ func TestNew_KnownAgents(t *testing.T) {
 		{name: "codex", agent: types.AgentCodex, bin: "codex", wantName: "codex"},
 		{name: "rovodev", agent: types.AgentRovoDev, bin: "acli", wantName: "rovodev"},
 		{name: "opencode", agent: types.AgentOpenCode, bin: "opencode", wantName: "opencode"},
+		{name: "pi", agent: types.AgentPi, bin: "pi", wantName: "pi"},
 	}
 
 	for _, tt := range tests {

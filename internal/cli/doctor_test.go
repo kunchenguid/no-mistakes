@@ -85,7 +85,7 @@ func TestDoctorAgentsSectionReportsFoundAndMissingBinaries(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, label := range []string{"Agents", "claude", "codex", "rovodev", "opencode"} {
+	for _, label := range []string{"Agents", "claude", "codex", "rovodev", "opencode", "pi"} {
 		if !strings.Contains(out, label) {
 			t.Fatalf("doctor output should include %q in agents section, got: %s", label, out)
 		}
@@ -93,7 +93,7 @@ func TestDoctorAgentsSectionReportsFoundAndMissingBinaries(t *testing.T) {
 	if !strings.Contains(out, claudePath) {
 		t.Fatalf("doctor output should report discovered claude path %q, got: %s", claudePath, out)
 	}
-	if got := strings.Count(out, "not found"); got < 3 {
+	if got := strings.Count(out, "not found"); got < 4 {
 		t.Fatalf("doctor output should report missing agent binaries, got %d not found markers in: %s", got, out)
 	}
 }

@@ -15,6 +15,7 @@ agent_path_override:
   codex: /opt/homebrew/bin/codex
   rovodev: /usr/local/bin/acli
   opencode: /usr/local/bin/opencode
+  pi: /usr/local/bin/pi
 
 agent_args_override:
   codex:
@@ -44,10 +45,10 @@ Default agent for all repos and setup-wizard suggestions. Can be overridden per-
 | | |
 |---|---|
 | Type | `string` |
-| Values | `auto`, `claude`, `codex`, `rovodev`, `opencode` |
+| Values | `auto`, `claude`, `codex`, `rovodev`, `opencode`, `pi` |
 | Default | `auto` |
 
-`auto` resolves to the first supported agent found on `PATH` in this order: `claude`, `codex`, `opencode`, then `acli` with `rovodev` support.
+`auto` resolves to the first supported agent found on `PATH` in this order: `claude`, `codex`, `opencode`, `acli` with `rovodev` support, then `pi`.
 
 ### agent_path_override
 
@@ -66,6 +67,7 @@ Default binary names when no override is set:
 | `codex` | `codex` |
 | `rovodev` | `acli` |
 | `opencode` | `opencode` |
+| `pi` | `pi` |
 
 ### agent_args_override
 
@@ -74,7 +76,7 @@ Extra CLI flags to pass to each agent. Use this to set model selection, reasonin
 | | |
 |---|---|
 | Type | `map[string][]string` |
-| Keys | `claude`, `codex`, `rovodev`, `opencode` |
+| Keys | `claude`, `codex`, `rovodev`, `opencode`, `pi` |
 | Default | Empty (no extra flags) |
 
 User-supplied flags are inserted ahead of no-mistakes' managed flags, so your choices usually take precedence. A few flags are reserved because no-mistakes depends on them to communicate with the agent - setting any of these returns a config error on load:
@@ -85,6 +87,7 @@ User-supplied flags are inserted ahead of no-mistakes' managed flags, so your ch
 | `codex` | `exec`, `--json`, `--color` |
 | `rovodev` | `rovodev`, `serve`, `--disable-session-token` |
 | `opencode` | `serve`, `--hostname`, `--port`, `--print-logs` |
+| `pi` | `--mode`, `--no-session` |
 
 For structured `codex` runs, no-mistakes also appends its own `--output-schema <tempfile>` after your overrides. Treat that flag as managed even though config validation does not currently reject it.
 
@@ -112,6 +115,9 @@ agent_args_override:
   opencode:
     - --model
     - gpt-5
+  pi:
+    - --provider
+    - google
 ```
 
 ### ci_timeout

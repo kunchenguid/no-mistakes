@@ -105,7 +105,7 @@ Checks:
 - Data directory (`~/.no-mistakes/`)
 - SQLite database
 - Daemon status
-- Agent binaries: `claude`, `codex`, `acli`, `opencode`
+- Agent binaries: `claude`, `codex`, `acli`, `opencode`, `pi`
 
 Uses indicators: `✓` (available), `–` (not found, optional), `✗` (problem detected).
 

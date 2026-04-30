@@ -48,7 +48,7 @@ Everything else can usually wait.
 
 # Default agent for all repos and setup-wizard suggestions.
 # "auto" picks the first available agent on PATH.
-agent: auto  # auto | claude | codex | rovodev | opencode
+agent: auto  # auto | claude | codex | rovodev | opencode | pi
 
 # Optional binary path overrides.
 agent_path_override:
@@ -56,6 +56,7 @@ agent_path_override:
   codex: /opt/homebrew/bin/codex
   rovodev: /usr/local/bin/acli
   opencode: /usr/local/bin/opencode
+  pi: /usr/local/bin/pi
 
 # Optional extra CLI flags per agent.
 # This is global-only.
@@ -121,7 +122,7 @@ See [Repo Config Reference](/no-mistakes/reference/repo-config/) for the full fi
 ## Precedence
 
 - Repo `agent` overrides global `agent`.
-- Global `agent: auto` resolves by checking `claude`, `codex`, `opencode`, then `acli` for `rovodev` on `PATH`.
+- Global `agent: auto` resolves by checking `claude`, `codex`, `opencode`, `acli` for `rovodev`, then `pi` on `PATH`.
 - `agent_path_override` and `agent_args_override` are global-only fields.
 - `auto_fix` from the repo config overlays global auto_fix. Fields not set in the repo config fall through to the global default.
 - `commands` and `ignore_patterns` are repo-only fields.

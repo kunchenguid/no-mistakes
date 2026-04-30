@@ -29,6 +29,7 @@ commands are still the strongest way to make the gate predictable.
 | Codex | `codex` | Subprocess per invocation, JSONL events |
 | Rovo Dev | `acli` | Persistent HTTP server, SSE streaming |
 | OpenCode | `opencode` | Persistent HTTP server, SSE streaming |
+| Pi | `pi` | Subprocess per invocation, JSONL events |
 
 ## Setting the agent
 
@@ -67,6 +68,7 @@ By default, `no-mistakes` resolves `agent: auto` by checking for supported agent
 2. `codex`
 3. `opencode`
 4. `acli` with `rovodev` support
+5. `pi`
 
 The default binary names are:
 
@@ -76,6 +78,7 @@ The default binary names are:
 | `codex` | `codex` |
 | `rovodev` | `acli` |
 | `opencode` | `opencode` |
+| `pi` | `pi` |
 
 When the daemon is running through a managed service, that `PATH` comes from your login shell environment on macOS and Linux plus common user, Homebrew, and system binary directories. On Windows it reuses the current process environment instead of reloading a login shell. If agent discovery still does not resolve the binary you expect, use an explicit `agent_path_override`.
 
@@ -87,6 +90,7 @@ agent_path_override:
   codex: /opt/homebrew/bin/codex
   rovodev: /usr/local/bin/acli
   opencode: /usr/local/bin/opencode
+  pi: /usr/local/bin/pi
 ```
 
 You can also set extra agent-specific CLI flags in global config with
@@ -127,6 +131,13 @@ Starts a persistent HTTP server (`acli rovodev serve`) on first use and reuses i
 
 Starts a persistent HTTP server (`opencode serve`) on first use and reuses it across invocations. If a reused server refuses a connection, no-mistakes discards it and retries with a fresh server. Any `agent_args_override.opencode` flags are inserted before no-mistakes' managed serve flags. Similar session lifecycle to Rovo Dev: create session, send message, stream SSE events until idle, delete session. Supports `json_schema` format in the message request for structured output. When native structured output is absent, it falls back to parsing the final text with the same JSON fence and bare-object fallback, validating that fallback result against the requested schema while allowing `null` for optional fields.
 
+## Pi
+
+Spawns a `pi` subprocess for each invocation with `--mode json --no-session`.
+Any `agent_args_override.pi` flags are inserted before no-mistakes' managed flags.
+Reads JSONL events from stdout and streams incremental text deltas to the TUI.
+When structured output is requested, no-mistakes injects the JSON schema into the prompt and validates the final text response.
+
 ## Checking agent availability
 
 Run `no-mistakes doctor` to see which agent binaries are installed and available:
@@ -142,6 +153,7 @@ $ no-mistakes doctor
   – codex (not found)
   – acli (not found)
   – opencode (not found)
+  – pi (not found)
 ```
 
 `✓` = available, `–` = not found (optional), `✗` = problem detected.
