@@ -47,7 +47,7 @@ make install
 ## Prerequisites
 
 - **git** - required
-- **One supported agent binary** - `claude`, `codex`, `acli` (Rovo Dev), or `opencode`
+- **One supported agent binary** - `claude`, `codex`, `acli` (Rovo Dev), `opencode`, or `pi`
 - **Optional, for PRs and CI:**
   - `gh` CLI (GitHub)
   - `glab` CLI (GitLab)

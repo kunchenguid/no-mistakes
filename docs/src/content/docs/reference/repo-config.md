@@ -37,10 +37,10 @@ Override the default agent for this repo and its setup-wizard suggestions.
 | | |
 |---|---|
 | Type | `string` |
-| Values | `auto`, `claude`, `codex`, `rovodev`, `opencode` |
+| Values | `auto`, `claude`, `codex`, `rovodev`, `opencode`, `pi` |
 | Default | Inherits from global config |
 
-`auto` resolves to the first supported agent found on `PATH` in this order: `claude`, `codex`, `opencode`, then `acli` with `rovodev` support.
+`auto` resolves to the first supported agent found on `PATH` in this order: `claude`, `codex`, `opencode`, `acli` with `rovodev` support, then `pi`.
 
 ### commands.test
 
