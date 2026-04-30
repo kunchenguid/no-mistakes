@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.0](https://github.com/kunchenguid/no-mistakes/compare/v1.10.8...v1.11.0) (2026-04-30)
+
+
+### Features
+
+* **agent:** add Pi agent support ([#161](https://github.com/kunchenguid/no-mistakes/issues/161)) ([9048a93](https://github.com/kunchenguid/no-mistakes/commit/9048a934651ba784aff44d0727ae5142329bb143))
+
 ## [1.10.8](https://github.com/kunchenguid/no-mistakes/compare/v1.10.7...v1.10.8) (2026-04-27)
 
 
