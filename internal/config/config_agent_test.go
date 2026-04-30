@@ -34,6 +34,7 @@ func TestAgentPath_DefaultBinaries(t *testing.T) {
 		{types.AgentCodex, "codex"},
 		{types.AgentRovoDev, "acli"},
 		{types.AgentOpenCode, "opencode"},
+		{types.AgentPi, "pi"},
 	}
 	for _, tt := range tests {
 		cfg := &Config{Agent: tt.agent}
@@ -172,7 +173,7 @@ func TestResolveAgent_AutoSkipsRovoDevWithoutSubcommand(t *testing.T) {
 
 	err := cfg.ResolveAgent(context.Background(), func(bin string) (string, error) {
 		switch bin {
-		case "claude", "codex", "opencode":
+		case "claude", "codex", "opencode", "pi":
 			return "", &exec.Error{Name: bin, Err: exec.ErrNotFound}
 		case "acli":
 			return "/usr/bin/acli", nil
@@ -204,7 +205,7 @@ func TestResolveAgent_AutoReturnsRovoDevProbeExitError(t *testing.T) {
 
 	err := cfg.ResolveAgent(context.Background(), func(bin string) (string, error) {
 		switch bin {
-		case "claude", "codex", "opencode":
+		case "claude", "codex", "opencode", "pi":
 			return "", &exec.Error{Name: bin, Err: exec.ErrNotFound}
 		case "acli":
 			return script, nil
@@ -305,7 +306,7 @@ func TestResolveAgent_AutoPassesContextToRovoDevProbe(t *testing.T) {
 
 	err := cfg.ResolveAgent(ctx, func(bin string) (string, error) {
 		switch bin {
-		case "claude", "codex", "opencode":
+		case "claude", "codex", "opencode", "pi":
 			return "", &exec.Error{Name: bin, Err: exec.ErrNotFound}
 		case "acli":
 			return "/usr/bin/acli", nil

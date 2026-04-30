@@ -569,8 +569,10 @@ func New(name types.AgentName, bin string, extraArgs []string) (Agent, error) {
 		return &rovodevAgent{bin: bin, extraArgs: extraArgs}, nil
 	case types.AgentOpenCode:
 		return &opencodeAgent{bin: bin, extraArgs: extraArgs}, nil
+	case types.AgentPi:
+		return &piAgent{bin: bin, extraArgs: extraArgs}, nil
 	default:
-		return nil, fmt.Errorf("unknown agent %q; valid options: auto, claude, codex, rovodev, opencode (set 'agent' in ~/.no-mistakes/config.yaml)", name)
+		return nil, fmt.Errorf("unknown agent %q; valid options: auto, claude, codex, rovodev, opencode, pi (set 'agent' in ~/.no-mistakes/config.yaml)", name)
 	}
 }
 
