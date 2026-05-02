@@ -85,6 +85,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	assertGateRemotePresent(t, h)
 	assertDaemonStatusRunning(t, h)
 	assertAttachMissingRun(t, h)
+	assertDaemonNotifyPushUnknownRepo(t, h)
 	assertDaemonRestartWhileRunning(t, h)
 	assertInitAlreadyInitialized(t, h)
 	assertRunsEmpty(t, h)
@@ -476,6 +477,18 @@ func assertAttachMissingRun(t *testing.T, h *Harness) {
 	}
 	if !strings.Contains(out, "run not found") {
 		t.Errorf("attach missing run output should mention 'run not found', got:\n%s", out)
+	}
+}
+
+func assertDaemonNotifyPushUnknownRepo(t *testing.T, h *Harness) {
+	t.Helper()
+	missingGate := filepath.Join(h.NMHome, "repos", "missing-repo.git")
+	out, err := h.Run("daemon", "notify-push", "--gate", missingGate, "--ref", "refs/heads/main", "--old", "aaa", "--new", "bbb")
+	if err == nil {
+		t.Fatalf("daemon notify-push for unknown repo should fail, got output:\n%s", out)
+	}
+	if !strings.Contains(out, "unknown repo") {
+		t.Errorf("daemon notify-push unknown repo output should mention 'unknown repo', got:\n%s", out)
 	}
 }
 

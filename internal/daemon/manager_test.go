@@ -210,29 +210,6 @@ func TestPushReceivedDemoModeBypassesAgentResolution(t *testing.T) {
 	}
 }
 
-func TestPushReceivedUnknownRepo(t *testing.T) {
-	p, _ := startTestDaemonWithSteps(t, func() []pipeline.Step {
-		return []pipeline.Step{&mockPassStep{name: types.StepReview}}
-	})
-
-	client, err := ipc.Dial(p.Socket())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer client.Close()
-
-	var result ipc.PushReceivedResult
-	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
-		Gate: p.RepoDir("nonexistent"),
-		Ref:  "refs/heads/main",
-		Old:  "aaa",
-		New:  "bbb",
-	}, &result)
-	if err == nil {
-		t.Error("expected error for unknown repo")
-	}
-}
-
 func TestPushReceivedCancelsActiveRun(t *testing.T) {
 	started := make(chan struct{})
 	slowStep := &mockSlowStep{name: types.StepReview, started: started}
