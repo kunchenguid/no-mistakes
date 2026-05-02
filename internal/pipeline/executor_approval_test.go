@@ -190,44 +190,6 @@ func TestExecutor_ApprovalApprovePreservesExitCode(t *testing.T) {
 	}
 }
 
-func TestExecutor_ApprovalSkip(t *testing.T) {
-	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
-
-	steps := []Step{
-		newApprovalStep(types.StepReview, ""),
-		newPassStep(types.StepTest),
-	}
-
-	exec := NewExecutor(database, p, nil, nil, steps, nil)
-
-	done := make(chan error, 1)
-	go func() {
-		done <- exec.Execute(context.Background(), run, repo, workDir)
-	}()
-
-	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
-	exec.Respond(types.StepReview, types.ActionSkip, nil)
-
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("expected no error, got: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("executor timed out")
-	}
-
-	// Review should be skipped, test should be completed
-	dbSteps, _ := database.GetStepsByRun(run.ID)
-	if dbSteps[0].Status != types.StepStatusSkipped {
-		t.Errorf("review: expected %q, got %q", types.StepStatusSkipped, dbSteps[0].Status)
-	}
-	if dbSteps[1].Status != types.StepStatusCompleted {
-		t.Errorf("test: expected %q, got %q", types.StepStatusCompleted, dbSteps[1].Status)
-	}
-}
-
 func TestExecutor_ApprovalAbort(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir := t.TempDir()

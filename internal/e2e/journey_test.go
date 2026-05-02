@@ -1178,6 +1178,15 @@ func assertFailingTestCommandRun(t *testing.T, h *Harness) {
 	if completedTestStep.ExitCode == nil || *completedTestStep.ExitCode != 1 {
 		t.Fatalf("failing test command exit code = %v, want 1", completedTestStep.ExitCode)
 	}
+	for _, stepName := range []types.StepName{types.StepDocument, types.StepLint, types.StepPush} {
+		step, ok := findStep(completed.Steps, stepName)
+		if !ok {
+			t.Fatalf("expected %s step after skipping failing test command", stepName)
+		}
+		if step.Status != types.StepStatusCompleted {
+			t.Fatalf("expected %s to continue after skipped test step, got %s", stepName, step.Status)
+		}
+	}
 }
 
 func assertFailingLintCommandRun(t *testing.T, h *Harness) {
