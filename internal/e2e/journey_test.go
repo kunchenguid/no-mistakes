@@ -755,9 +755,22 @@ func assertEmptyDiffAfterRebaseRun(t *testing.T, h *Harness) {
 		if step.Status != types.StepStatusSkipped {
 			t.Fatalf("expected %s to be skipped after empty rebase diff, got %s", stepName, step.Status)
 		}
+		if step.CompletedAt == nil {
+			t.Fatalf("expected skipped %s step to record completed_at", stepName)
+		}
 	}
-	if sawPromptContainingAll(h.AgentInvocations(), "Review the code changes", "branch: empty-after-rebase") {
+	invs := h.AgentInvocations()
+	if sawPromptContainingAll(invs, "Review the code changes", "branch: empty-after-rebase") {
 		t.Fatal("empty-after-rebase run should skip review without calling the agent")
+	}
+	if sawPromptContainingAll(invs, "You are validating a code change by testing it", "branch: empty-after-rebase") {
+		t.Fatal("empty-after-rebase run should skip test without calling the agent")
+	}
+	if sawPromptContainingAll(invs, "Identify documentation gaps", "branch: empty-after-rebase") {
+		t.Fatal("empty-after-rebase run should skip document without calling the agent")
+	}
+	if sawPromptContainingAll(invs, "Detect the linting and formatting tools", "branch: empty-after-rebase") {
+		t.Fatal("empty-after-rebase run should skip lint without calling the agent")
 	}
 }
 
