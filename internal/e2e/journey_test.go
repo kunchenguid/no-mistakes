@@ -99,6 +99,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	if run.Status != types.RunCompleted {
 		t.Fatalf("run did not complete: status=%s error=%v", run.Status, deref(run.Error))
 	}
+	assertNewBranchRun(t, run)
 
 	// Sanity-check that every step has a terminal status with the
 	// expected timing fields recorded. Completed steps must have both
@@ -713,6 +714,14 @@ func assertPromptsAbsent(t *testing.T, invs []Invocation, unexpected ...string) 
 	t.Helper()
 	for _, msg := range validatePromptsAbsent(invs, unexpected...) {
 		t.Error(msg)
+	}
+}
+
+func assertNewBranchRun(t *testing.T, run *ipc.RunInfo) {
+	t.Helper()
+	const zeroSHA = "0000000000000000000000000000000000000000"
+	if run.BaseSHA != zeroSHA {
+		t.Fatalf("expected new branch push to record zero base SHA, got %s", run.BaseSHA)
 	}
 }
 

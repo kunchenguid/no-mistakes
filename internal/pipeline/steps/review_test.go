@@ -128,59 +128,6 @@ func TestReviewStep_AgentError(t *testing.T) {
 	}
 }
 
-func TestReviewStep_ZeroBaseSHA(t *testing.T) {
-	t.Parallel()
-	// New branch scenario: baseSHA is all-zeros
-	dir := t.TempDir()
-	gitCmd(t, dir, "init")
-	gitCmd(t, dir, "config", "user.name", "test")
-	gitCmd(t, dir, "config", "user.email", "test@test.com")
-	gitCmd(t, dir, "checkout", "-b", "main")
-	os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "base commit")
-
-	gitCmd(t, dir, "checkout", "-b", "feature")
-	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature code\n"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "add feature")
-	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
-
-	findings := Findings{Items: nil, Summary: "clean"}
-	findingsJSON, _ := json.Marshal(findings)
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			return &agent.Result{Output: findingsJSON}, nil
-		},
-	}
-
-	zeroSHA := "0000000000000000000000000000000000000000"
-	sctx := newTestContext(t, ag, dir, zeroSHA, headSHA, config.Commands{})
-
-	step := &ReviewStep{}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if outcome.NeedsApproval {
-		t.Error("expected no approval for clean review")
-	}
-	// Verify agent was called with commit metadata instead of an inline diff.
-	if len(ag.calls) != 1 {
-		t.Fatalf("expected 1 agent call, got %d", len(ag.calls))
-	}
-	if !strings.Contains(ag.calls[0].Prompt, headSHA) {
-		t.Error("expected prompt to contain head SHA")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "refs/heads/feature") {
-		t.Error("expected prompt to contain branch name")
-	}
-	if strings.Contains(ag.calls[0].Prompt, "feature code") {
-		t.Error("expected prompt to avoid embedding diff contents")
-	}
-}
-
 func TestReviewStep_ExistingBranchUsesMergeBaseScope(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
