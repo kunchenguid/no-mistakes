@@ -746,9 +746,9 @@ func assertReviewPrompt(t *testing.T, h *Harness, run *ipc.RunInfo, invs []Invoc
 			t.Errorf("expected review prompt to contain %q, got:\n%s", want, prompt)
 		}
 	}
-	for _, unexpected := range []string{"Diff:\n", "hello world"} {
+	for _, unexpected := range []string{"Diff:\n", "hello world", "add hello.txt", "author's primary intent"} {
 		if strings.Contains(prompt, unexpected) {
-			t.Errorf("expected review prompt to avoid inline diff content %q, got:\n%s", unexpected, prompt)
+			t.Errorf("expected review prompt to avoid inline diff or commit-message content %q, got:\n%s", unexpected, prompt)
 		}
 	}
 }

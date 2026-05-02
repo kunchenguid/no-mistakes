@@ -502,33 +502,3 @@ func mustLatestRoundID(t *testing.T, sctx *pipeline.StepContext) string {
 	}
 	return rounds[len(rounds)-1].ID
 }
-
-func TestReviewStep_PromptOmitsUserCommitMessages(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-
-	findingsJSON, _ := json.Marshal(Findings{Summary: "clean"})
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			return &agent.Result{Output: findingsJSON}, nil
-		},
-	}
-
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-
-	step := &ReviewStep{}
-	if _, err := step.Execute(sctx); err != nil {
-		t.Fatal(err)
-	}
-
-	if len(ag.calls) != 1 {
-		t.Fatalf("expected 1 agent call, got %d", len(ag.calls))
-	}
-	if strings.Contains(ag.calls[0].Prompt, "add feature") {
-		t.Error("expected review prompt to omit user commit messages")
-	}
-	if strings.Contains(ag.calls[0].Prompt, "author's primary intent") {
-		t.Error("expected review prompt to omit author intent commit-message guidance")
-	}
-}
