@@ -113,7 +113,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	if run.Status != types.RunCompleted {
 		t.Fatalf("run did not complete: status=%s error=%v", run.Status, deref(run.Error))
 	}
-	assertNewBranchRun(t, run)
+	assertNewBranchRun(t, h, run)
 
 	assertPipelineStepsInOrder(t, run.Steps)
 
@@ -911,9 +911,15 @@ func assertPromptsAbsent(t *testing.T, invs []Invocation, unexpected ...string) 
 	}
 }
 
-func assertNewBranchRun(t *testing.T, run *ipc.RunInfo) {
+func assertNewBranchRun(t *testing.T, h *Harness, run *ipc.RunInfo) {
 	t.Helper()
 	const zeroSHA = "0000000000000000000000000000000000000000"
+	if run.ID == "" {
+		t.Fatal("expected new branch push to create a run ID")
+	}
+	if run.RepoID != h.repoID() {
+		t.Fatalf("expected run repo ID %q, got %q", h.repoID(), run.RepoID)
+	}
 	if run.Branch != "feature/e2e" {
 		t.Fatalf("expected run branch to be stored without refs/heads prefix, got %s", run.Branch)
 	}
