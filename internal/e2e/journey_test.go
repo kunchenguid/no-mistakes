@@ -195,6 +195,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	h.Checkout("feature/e2e")
 	assertRootRecentRuns(t, h, rerun)
 	assertConfiguredCommandRun(t, h)
+	assertSupersededRunCancellation(t, h)
 	assertRespondNoWaitingStepRun(t, h)
 	assertFailingTestCommandRun(t, h)
 	assertFailingLintCommandRun(t, h)
@@ -1139,6 +1140,33 @@ func assertReviewWarningRun(t *testing.T, h *Harness) {
 	}
 }
 
+func waitForRunIDStatus(t *testing.T, h *Harness, runID string, status types.RunStatus, timeout time.Duration) *ipc.RunInfo {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var lastRun *ipc.RunInfo
+	for time.Now().Before(deadline) {
+		runs := h.Runs()
+		for i := range runs {
+			run := runs[i]
+			if run.ID != runID {
+				continue
+			}
+			lastRun = &run
+			if run.Status == status {
+				return &run
+			}
+			break
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	h.dumpDebugState()
+	if lastRun != nil {
+		t.Fatalf("run %s did not reach %s in %v (last status=%s)", runID, status, timeout, lastRun.Status)
+	}
+	t.Fatalf("run %s did not appear while waiting for %s in %v", runID, status, timeout)
+	return nil
+}
+
 func waitForStepStatus(t *testing.T, h *Harness, branch string, stepName types.StepName, status types.StepStatus, timeout time.Duration) *ipc.RunInfo {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -1168,6 +1196,34 @@ func waitForStepStatus(t *testing.T, h *Harness, branch string, stepName types.S
 	}
 	t.Fatalf("run for branch %s did not appear while waiting for %s in %v", branch, stepName, timeout)
 	return nil
+}
+
+func assertSupersededRunCancellation(t *testing.T, h *Harness) {
+	t.Helper()
+	slowCommand := filepath.Join(h.BinDir, "nm-superseded-test-e2e")
+	if err := os.WriteFile(slowCommand, []byte("#!/bin/sh\nsleep 10\n"), 0o755); err != nil {
+		t.Fatalf("write superseded slow test command: %v", err)
+	}
+	config := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  test: nm-superseded-test-e2e\n  lint: true\n"
+	h.CommitChange("superseded-run", ".no-mistakes.yaml", config, "configure superseded slow test")
+	h.PushToGate("superseded-run")
+	first := waitForStepStatus(t, h, "superseded-run", types.StepTest, types.StepStatusRunning, 60*time.Second)
+	if err := os.WriteFile(slowCommand, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("replace superseded test command with fast version: %v", err)
+	}
+	h.CommitChange("superseded-run", "superseded-run.txt", "second push\n", "supersede active run")
+	h.PushToGate("superseded-run")
+	cancelled := waitForRunIDStatus(t, h, first.ID, types.RunCancelled, 60*time.Second)
+	if cancelled.Error == nil || !strings.Contains(*cancelled.Error, "superseded by new push") {
+		t.Fatalf("expected superseded run error, got %v", deref(cancelled.Error))
+	}
+	second := h.WaitForRun("superseded-run", 60*time.Second)
+	if second.ID == first.ID {
+		t.Fatal("expected second superseded-run push to create a new run")
+	}
+	if second.Status != types.RunCompleted {
+		t.Fatalf("superseding run did not complete: status=%s error=%v", second.Status, deref(second.Error))
+	}
 }
 
 func assertRespondNoWaitingStepRun(t *testing.T, h *Harness) {
