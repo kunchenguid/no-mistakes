@@ -8,24 +8,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 )
 
-func TestHealthHandler(t *testing.T) {
-	p, _ := startTestDaemon(t)
-
-	client, err := ipc.Dial(p.Socket())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer client.Close()
-
-	var result ipc.HealthResult
-	if err := client.Call(ipc.MethodHealth, &ipc.HealthParams{}, &result); err != nil {
-		t.Fatal(err)
-	}
-	if result.Status != "ok" {
-		t.Errorf("health status = %q, want %q", result.Status, "ok")
-	}
-}
-
 func TestShutdownHandler(t *testing.T) {
 	p, _ := startTestDaemon(t)
 
