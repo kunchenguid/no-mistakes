@@ -119,7 +119,6 @@ func TestAttachNotGitRepoCommands(t *testing.T) {
 		args []string
 	}{
 		{name: "root", args: nil},
-		{name: "attach", args: []string{"attach"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			_, err = executeCmd(test.args...)
