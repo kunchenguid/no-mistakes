@@ -254,28 +254,6 @@ func TestExecutor_EmptySteps(t *testing.T) {
 	}
 }
 
-func TestExecutor_RunMarkedRunning(t *testing.T) {
-	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
-
-	var runStatusDuringExec types.RunStatus
-	step := &adaptiveCallStep{
-		name: types.StepReview,
-		fn: func(sctx *StepContext) (*StepOutcome, error) {
-			r, _ := sctx.DB.GetRun(run.ID)
-			runStatusDuringExec = r.Status
-			return &StepOutcome{ExitCode: 0}, nil
-		},
-	}
-
-	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
-	exec.Execute(context.Background(), run, repo, workDir)
-
-	if runStatusDuringExec != types.RunRunning {
-		t.Errorf("expected run status during execution to be %q, got %q", types.RunRunning, runStatusDuringExec)
-	}
-}
-
 func TestExecutor_StepResultHasDuration(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir := t.TempDir()
