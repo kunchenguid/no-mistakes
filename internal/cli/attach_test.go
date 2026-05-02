@@ -59,43 +59,6 @@ func TestAttachRunIDWithUnknownRunReturnsHelpfulError(t *testing.T) {
 	}
 }
 
-// TestAttachNotInitialized verifies that running bare `no-mistakes` in a git
-// repo that hasn't been initialized returns a clear error instead of panicking.
-// This is the exact scenario that caused the nil pointer dereference: db.GetRepoByPath
-// returns (nil, nil) for unknown repos, and the code dereferenced repo.ID without
-// a nil check.
-func TestAttachNotInitializedCommands(t *testing.T) {
-	setupTestRepo(t)
-	nmHome := os.Getenv("NM_HOME")
-	p := paths.WithRoot(nmHome)
-
-	d, err := db.Open(p.DB())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer d.Close()
-
-	// Start daemon so attachRun gets past EnsureDaemon + Dial.
-	startTestDaemon(t, p, d)
-
-	for _, test := range []struct {
-		name string
-		args []string
-	}{
-		{name: "root", args: nil},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			_, err = executeCmd(test.args...)
-			if err == nil {
-				t.Fatalf("%s command in uninitialized repo should return an error", test.name)
-			}
-			if !strings.Contains(err.Error(), "not initialized") {
-				t.Errorf("error should mention 'not initialized', got: %v", err)
-			}
-		})
-	}
-}
-
 // TestAttachNotGitRepo verifies that running bare `no-mistakes` outside any git
 // repo returns a clear error.
 func TestAttachNotGitRepoCommands(t *testing.T) {
