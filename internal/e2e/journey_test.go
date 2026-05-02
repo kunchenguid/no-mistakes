@@ -728,8 +728,12 @@ func assertEmptyDiffAfterRebaseRun(t *testing.T, h *Harness) {
 
 func assertAgentEditCommitRun(t *testing.T, h *Harness) {
 	t.Helper()
+	formatScript := filepath.Join(h.BinDir, "nm-format-e2e")
+	if err := os.WriteFile(formatScript, []byte("#!/bin/sh\nprintf formatted > formatted-by-push.txt\n"), 0o755); err != nil {
+		t.Fatalf("write e2e formatter: %v", err)
+	}
 	h.CommitChange("agent-edits", "agent-edits.txt", "feature before agent\n", "add agent-edits branch")
-	config := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  format: \"printf formatted > formatted-by-push.txt\"\n"
+	config := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  format: \"nm-format-e2e\"\n"
 	originalHead := h.CommitChange("agent-edits", ".no-mistakes.yaml", config, "configure formatter")
 	h.PushToGate("agent-edits")
 	run := h.WaitForRun("agent-edits", 60*time.Second)

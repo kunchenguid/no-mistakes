@@ -3,61 +3,10 @@ package steps
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
 )
-
-func TestPushStep_FormatCommandUsesStepEnv(t *testing.T) {
-	t.Parallel()
-	upstream := t.TempDir()
-	gitCmd(t, upstream, "init", "--bare")
-
-	dir := t.TempDir()
-	gitCmd(t, dir, "init")
-	gitCmd(t, dir, "config", "user.name", "test")
-	gitCmd(t, dir, "config", "user.email", "test@test.com")
-	gitCmd(t, dir, "checkout", "-b", "main")
-	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "initial")
-	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
-	gitCmd(t, dir, "remote", "add", "origin", upstream)
-	gitCmd(t, dir, "push", "origin", "main")
-
-	gitCmd(t, dir, "checkout", "-b", "feature")
-	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "feature")
-	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
-	os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("agent fix"), 0o644)
-
-	binDir := fakeCLIBinDir(t)
-	logFile := filepath.Join(t.TempDir(), "format-command.log")
-	linkTestBinary(t, binDir, "nm-formatcmd")
-
-	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{Format: "nm-formatcmd"})
-	sctx.Env = fakeCLIEnv(binDir, map[string]string{
-		"FAKE_CLI_MODE": "record-success",
-		"FAKE_CLI_LOG":  logFile,
-	})
-	sctx.Repo.UpstreamURL = upstream
-
-	step := &PushStep{}
-	_, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	logData, err := os.ReadFile(logFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(logData), "nm-formatcmd") {
-		t.Fatalf("expected env-resolved format command to run, got %q", string(logData))
-	}
-}
 
 func TestPushStep_ReconcilesStaleDatabaseHeadSHA(t *testing.T) {
 	t.Parallel()
