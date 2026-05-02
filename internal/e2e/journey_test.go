@@ -93,6 +93,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	assertRootNoActiveRun(t, h)
 	assertEmptyDiffAfterRebaseRun(t, h)
 	assertIgnoredOnlyRun(t, h)
+	assertAgentEditCommitRun(t, h)
 	assertNonEmptyDiffAfterRebaseRun(t, h)
 
 	// Make a feature branch with one trivial change. The fake agent
@@ -229,6 +230,21 @@ func cleanReviewScenario(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "scenario.yaml")
 	content := `actions:
+  - match: "branch: agent-edits"
+    text: "agent edited a file"
+    edits:
+      - path: "agent-edit.txt"
+        new: "agent edited\n"
+    structured:
+      findings: []
+      summary: "no issues found"
+      risk_level: low
+      risk_rationale: "agent edit is deterministic"
+      tested:
+        - "fakeagent: simulated test run"
+      testing_summary: "simulated tests passed"
+      title: "feat: fakeagent change"
+      body: "## Summary\nfakeagent canned PR body"
   - match: "Review the code changes and return structured findings"
     text: "looks good"
     structured:
@@ -706,6 +722,36 @@ func assertEmptyDiffAfterRebaseRun(t *testing.T, h *Harness) {
 	}
 	if sawPromptContainingAll(h.AgentInvocations(), "Review the code changes", "branch: empty-after-rebase") {
 		t.Fatal("empty-after-rebase run should skip review without calling the agent")
+	}
+}
+
+func assertAgentEditCommitRun(t *testing.T, h *Harness) {
+	t.Helper()
+	originalHead := h.CommitChange("agent-edits", "agent-edits.txt", "feature before agent\n", "add agent-edits branch")
+	h.PushToGate("agent-edits")
+	run := h.WaitForRun("agent-edits", 60*time.Second)
+	if run.Status != types.RunCompleted {
+		t.Fatalf("agent-edits run did not complete: status=%s error=%v", run.Status, deref(run.Error))
+	}
+	if run.HeadSHA == originalHead {
+		t.Fatalf("expected push step to commit agent changes, head remained %s", run.HeadSHA)
+	}
+	assertPushedHead(t, run.HeadSHA, h.UpstreamBranchSHA("agent-edits"))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	message, err := h.runGit(ctx, h.UpstreamDir, "log", "-1", "--format=%s", "refs/heads/agent-edits")
+	if err != nil {
+		t.Fatalf("read agent-edits upstream commit message: %v\n%s", err, message)
+	}
+	if strings.TrimSpace(string(message)) != "no-mistakes: apply agent fixes" {
+		t.Fatalf("agent-edits upstream commit message = %q", strings.TrimSpace(string(message)))
+	}
+	contents, err := h.runGit(ctx, h.UpstreamDir, "show", "refs/heads/agent-edits:agent-edit.txt")
+	if err != nil {
+		t.Fatalf("read committed agent edit from upstream: %v\n%s", err, contents)
+	}
+	if string(contents) != "agent edited\n" {
+		t.Fatalf("agent-edit.txt contents = %q", string(contents))
 	}
 }
 

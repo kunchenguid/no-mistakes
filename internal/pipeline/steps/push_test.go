@@ -11,56 +11,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/config"
 )
 
-func TestPushStep_CommitsUncommittedChanges(t *testing.T) {
-	t.Parallel()
-	// Set up upstream
-	upstream := t.TempDir()
-	gitCmd(t, upstream, "init", "--bare")
-
-	// Create repo with initial push
-	dir := t.TempDir()
-	gitCmd(t, dir, "init")
-	gitCmd(t, dir, "config", "user.name", "test")
-	gitCmd(t, dir, "config", "user.email", "test@test.com")
-	gitCmd(t, dir, "checkout", "-b", "main")
-	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "initial")
-	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
-	gitCmd(t, dir, "remote", "add", "origin", upstream)
-	gitCmd(t, dir, "push", "origin", "main")
-
-	// Feature branch
-	gitCmd(t, dir, "checkout", "-b", "feature")
-	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "feature")
-	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
-
-	// Add uncommitted changes (simulating agent fixes)
-	os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("agent fix"), 0o644)
-
-	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Repo.UpstreamURL = upstream
-
-	step := &PushStep{}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if outcome.NeedsApproval {
-		t.Error("push should never need approval")
-	}
-
-	// Verify fix.txt made it to upstream (committed and pushed)
-	// Check by looking at the upstream's feature ref
-	upstreamSHA := gitCmd(t, upstream, "rev-parse", "refs/heads/feature")
-	if upstreamSHA == headSHA {
-		t.Error("upstream should have a new commit with agent fixes, not the original headSHA")
-	}
-}
-
 func TestPushStep_RunsFormatCommandBeforeCommit(t *testing.T) {
 	t.Parallel()
 	// When a format command is configured, the push step should run it
