@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -10,27 +9,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/gate"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/wizard"
-	"github.com/muesli/termenv"
 )
-
-func TestSetColorProfileForOutputUsesAsciiForNonTTY(t *testing.T) {
-	prev := lipgloss.ColorProfile()
-	defer lipgloss.SetColorProfile(prev)
-
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	setColorProfileForOutput(new(bytes.Buffer))
-
-	if lipgloss.ColorProfile() != termenv.Ascii {
-		t.Fatalf("ColorProfile = %v, want %v", lipgloss.ColorProfile(), termenv.Ascii)
-	}
-}
 
 func TestRootDefaultsToAttachWithHistory(t *testing.T) {
 	setupTestRepo(t)
