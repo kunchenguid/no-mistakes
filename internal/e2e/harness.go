@@ -321,6 +321,46 @@ func (h *Harness) UpstreamBranchSHA(branch string) string {
 	return string(bytes.TrimSpace(sha))
 }
 
+func (h *Harness) AddWorktree(branch string) string {
+	h.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if out, err := h.runGit(ctx, h.WorkDir, "checkout", "main"); err != nil {
+		h.t.Fatalf("checkout main before adding worktree: %v\n%s", err, out)
+	}
+	dir := filepath.Join(h.t.TempDir(), "worktree")
+	if out, err := h.runGit(ctx, h.WorkDir, "worktree", "add", dir, branch); err != nil {
+		h.t.Fatalf("git worktree add %s %s: %v\n%s", dir, branch, err, out)
+	}
+	h.t.Cleanup(func() {
+		if _, err := os.Stat(dir); err == nil {
+			_, _ = h.runGit(context.Background(), h.WorkDir, "worktree", "remove", "--force", dir)
+		}
+	})
+	return dir
+}
+
+func (h *Harness) RemoveWorktree(dir string) {
+	h.t.Helper()
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if out, err := h.runGit(ctx, h.WorkDir, "worktree", "remove", "--force", dir); err != nil {
+		h.t.Fatalf("git worktree remove %s: %v\n%s", dir, err, out)
+	}
+}
+
+func (h *Harness) Checkout(branch string) {
+	h.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if out, err := h.runGit(ctx, h.WorkDir, "checkout", branch); err != nil {
+		h.t.Fatalf("checkout %s: %v\n%s", branch, err, out)
+	}
+}
+
 func (h *Harness) WorktreeRefSHA(ref string) string {
 	h.t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

@@ -86,6 +86,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	// returns "no issues found" for every prompt, so the pipeline
 	// should sail through without needing approval.
 	featureHead := h.CommitChange("feature/e2e", "hello.txt", "hello world\n", "add hello.txt")
+	featureWorktree := h.AddWorktree("feature/e2e")
 
 	// Push triggers the post-receive hook, which notifies the daemon.
 	h.PushToGate("feature/e2e")
@@ -94,6 +95,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	// agent calls + git operations take ~5-15s on a warm machine.
 	activeRun := h.WaitForRunRunning("feature/e2e", 30*time.Second)
 	assertStatusActiveRun(t, h, activeRun)
+	assertStatusActiveRunInDir(t, h, featureWorktree, activeRun)
 	assertRunsActive(t, h, activeRun)
 
 	run := h.WaitForRun("feature/e2e", 60*time.Second)
@@ -168,6 +170,8 @@ func runHappyPath(t *testing.T, agentName string) {
 
 	assertPushedHead(t, run.HeadSHA, h.UpstreamBranchSHA("feature/e2e"))
 	assertRunsCompleted(t, h, run)
+	h.RemoveWorktree(featureWorktree)
+	h.Checkout("feature/e2e")
 	rerun := assertRerunCompleted(t, h, run)
 	assertRootRecentRuns(t, h, rerun)
 
@@ -638,17 +642,26 @@ func assertDaemonRestartStartsWhenNotRunning(t *testing.T, h *Harness) {
 
 func assertStatusActiveRun(t *testing.T, h *Harness, run *ipc.RunInfo) {
 	t.Helper()
-	out, err := h.Run("status")
+	assertStatusActiveRunInDir(t, h, h.WorkDir, run)
+}
+
+func assertStatusActiveRunInDir(t *testing.T, h *Harness, dir string, run *ipc.RunInfo) {
+	t.Helper()
+	out, err := h.RunInDir(dir, "status")
 	if err != nil {
-		t.Fatalf("nm status while run active: %v\n%s", err, out)
+		t.Fatalf("nm status while run active in %s: %v\n%s", dir, err, out)
 	}
 	sha := run.HeadSHA
 	if len(sha) > 8 {
 		sha = sha[:8]
 	}
-	for _, want := range []string{"Active run", run.Branch, string(run.Status), sha} {
+	resolved := h.WorkDir
+	if path, err := filepath.EvalSymlinks(h.WorkDir); err == nil {
+		resolved = path
+	}
+	for _, want := range []string{"Active run", run.Branch, string(run.Status), sha, resolved} {
 		if !strings.Contains(out, want) {
-			t.Errorf("status output should contain %q while run is active, got:\n%s", want, out)
+			t.Errorf("status output should contain %q while run is active in %s, got:\n%s", want, dir, out)
 		}
 	}
 }
