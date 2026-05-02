@@ -3,7 +3,6 @@ package steps
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,28 +13,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
-
-func TestReviewStep_AgentError(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			return nil, errors.New("agent crashed")
-		},
-	}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-
-	step := &ReviewStep{}
-	_, err := step.Execute(sctx)
-	if err == nil {
-		t.Fatal("expected error from agent failure")
-	}
-	if !strings.Contains(err.Error(), "agent review") {
-		t.Errorf("error = %v, want to contain 'agent review'", err)
-	}
-}
 
 func TestReviewStep_ExistingBranchUsesMergeBaseScope(t *testing.T) {
 	t.Parallel()

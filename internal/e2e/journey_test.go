@@ -212,6 +212,7 @@ func runHappyPath(t *testing.T, agentName string) {
 		assertDocumentLegacyFindingRun(t, h)
 		assertDocumentMissingSummaryRun(t, h)
 		assertDocumentAgentErrorRun(t, h)
+		assertReviewAgentErrorRun(t, h)
 		assertDocumentWarningRun(t, h)
 		assertDocumentInfoRun(t, h)
 		assertReviewWarningRun(t, h)
@@ -261,6 +262,11 @@ func cleanReviewScenario(t *testing.T) string {
 	content := `actions:
   - match: "identify any documentation gaps.\n\nContext:\n- branch: document-agent-error"
     text: "document agent error"
+    edits:
+      - path: "/outside-workdir"
+        new: "should fail"
+  - match: "Review the code changes and return structured findings with a risk assessment.\n\nContext:\n- branch: review-agent-error"
+    text: "review agent error"
     edits:
       - path: "/outside-workdir"
         new: "should fail"
@@ -1375,6 +1381,26 @@ func assertDocumentAgentErrorRun(t *testing.T, h *Harness) {
 	}
 	if documentStep.Error == nil || !strings.Contains(*documentStep.Error, "agent document") {
 		t.Fatalf("expected document step error to mention agent document, got %q", deref(documentStep.Error))
+	}
+}
+
+func assertReviewAgentErrorRun(t *testing.T, h *Harness) {
+	t.Helper()
+	h.CommitChange("review-agent-error", "review-agent-error.txt", "review agent error\n", "add review agent error")
+	h.PushToGate("review-agent-error")
+	run := h.WaitForRun("review-agent-error", 60*time.Second)
+	if run.Status != types.RunFailed {
+		t.Fatalf("review-agent-error run status = %s, want failed", run.Status)
+	}
+	reviewStep, ok := findStep(run.Steps, types.StepReview)
+	if !ok {
+		t.Fatal("expected review step in review-agent-error run")
+	}
+	if reviewStep.Status != types.StepStatusFailed {
+		t.Fatalf("expected review step to fail after agent error, got %s", reviewStep.Status)
+	}
+	if reviewStep.Error == nil || !strings.Contains(*reviewStep.Error, "agent review") {
+		t.Fatalf("expected review step error to mention agent review, got %q", deref(reviewStep.Error))
 	}
 }
 
