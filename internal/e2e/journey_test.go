@@ -144,14 +144,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	// invocation whose prompt contains the review preamble; if missing
 	// the pipeline didn't reach review or routed it elsewhere.
 	assertReviewPrompt(t, h, run, invs)
-	if !sawPromptContainingAll(invs,
-		"Identify documentation gaps",
-		"branch: feature/e2e",
-		"Do a full documentation pass before returning.",
-		"Do not stop after the first documentation gap.",
-	) {
-		t.Errorf("expected a document prompt with branch metadata and full-pass guidance in invocations, got %d:\n%s", len(invs), summarisePrompts(invs))
-	}
+	assertDocumentPrompt(t, h, run, invs)
 	assertNoCommandTestStep(t, run.Steps, invs)
 	if !sawPromptContainingAll(invs, "Detect the linting and formatting tools", "branch: feature/e2e", "Set action to") {
 		t.Errorf("expected a lint prompt with branch metadata and action guidance in invocations, got %d:\n%s", len(invs), summarisePrompts(invs))
@@ -745,6 +738,26 @@ func assertReviewPrompt(t *testing.T, h *Harness, run *ipc.RunInfo, invs []Invoc
 	for _, unexpected := range []string{"Diff:\n", "hello world"} {
 		if strings.Contains(prompt, unexpected) {
 			t.Errorf("expected review prompt to avoid inline diff content %q, got:\n%s", unexpected, prompt)
+		}
+	}
+}
+
+func assertDocumentPrompt(t *testing.T, h *Harness, run *ipc.RunInfo, invs []Invocation) {
+	t.Helper()
+	prompt, ok := promptContaining(invs, "Identify documentation gaps")
+	if !ok {
+		t.Fatalf("expected a document prompt in invocations, got %d:\n%s", len(invs), summarisePrompts(invs))
+	}
+	baseSHA := h.WorktreeRefSHA("main")
+	for _, want := range []string{
+		"branch: feature/e2e",
+		baseSHA,
+		run.HeadSHA,
+		"Do a full documentation pass before returning.",
+		"Do not stop after the first documentation gap.",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("expected document prompt to contain %q, got:\n%s", want, prompt)
 		}
 	}
 }

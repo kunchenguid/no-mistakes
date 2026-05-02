@@ -102,15 +102,6 @@ func TestDocumentStep_Updated(t *testing.T) {
 	if len(ag.calls) != 1 {
 		t.Errorf("expected 1 agent call, got %d", len(ag.calls))
 	}
-	if !strings.Contains(ag.calls[0].Prompt, baseSHA) {
-		t.Error("expected prompt to contain base SHA")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, headSHA) {
-		t.Error("expected prompt to contain head SHA")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "refs/heads/feature") {
-		t.Error("expected prompt to contain branch name")
-	}
 	var findings Findings
 	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
 		t.Fatalf("unmarshal findings: %v", err)
