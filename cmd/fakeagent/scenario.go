@@ -33,6 +33,10 @@ type Action struct {
 	// emitted, so YAML authors can write it inline without escaping.
 	Structured map[string]any `yaml:"structured,omitempty"`
 
+	// StructuredRaw is emitted as the structured-output slot verbatim.
+	// It is useful for testing parser fallback paths with non-object JSON.
+	StructuredRaw string `yaml:"structured_raw,omitempty"`
+
 	// Text is the human-readable response shown alongside structured
 	// output. Defaults to a generic acknowledgement.
 	Text string `yaml:"text,omitempty"`
@@ -271,6 +275,9 @@ func scenarioPathWithinWorkingDirectory(wd, path string) error {
 // structuredJSON marshals an action's Structured map. Empty structured
 // becomes an empty object so the parser sees something parseable.
 func (a Action) structuredJSON() []byte {
+	if a.StructuredRaw != "" {
+		return []byte(a.StructuredRaw)
+	}
 	if a.Structured == nil {
 		return []byte("{}")
 	}

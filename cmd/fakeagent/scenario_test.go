@@ -34,6 +34,17 @@ func TestApplyEditsCreatesParentDirectoriesForNewFiles(t *testing.T) {
 	}
 }
 
+func TestActionStructuredJSONUsesRawPayload(t *testing.T) {
+	action := Action{
+		Structured:    map[string]any{"summary": "ignored"},
+		StructuredRaw: `"not an object"`,
+	}
+
+	if got := string(action.structuredJSON()); got != `"not an object"` {
+		t.Fatalf("structuredJSON() = %s, want raw payload", got)
+	}
+}
+
 func TestApplyActionStagesFiles(t *testing.T) {
 	dir := t.TempDir()
 	gitCmd := func(args ...string) string {

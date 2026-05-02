@@ -217,6 +217,7 @@ func runHappyPath(t *testing.T, agentName string) {
 		assertReviewAgentErrorRun(t, h)
 		assertReviewExistingBranchUsesMergeBaseScope(t, h)
 		assertExplicitAttachUsesRepoWideActiveRun(t, h)
+		assertTestMalformedStructuredOutputRun(t, h)
 		assertDocumentWarningRun(t, h)
 		assertDocumentInfoRun(t, h)
 		assertReviewWarningRun(t, h)
@@ -364,6 +365,9 @@ func cleanReviewScenario(t *testing.T) string {
       tested:
         - "fakeagent: simulated test run"
       testing_summary: "simulated tests passed"
+  - match: "You are validating a code change by testing it. Examine the repository and run the appropriate tests yourself.\n\nContext:\n- branch: test-malformed-structured-output"
+    text: "tests found some issues"
+    structured_raw: '{"summary":123}'
   - match: "You are validating a code change by testing it. Examine the repository and run the appropriate tests yourself.\n\nContext:\n- branch: test-agent-staged-new-test-file"
     text: "tests passed after staging a regression test"
     edits:
@@ -1525,6 +1529,30 @@ func assertExplicitAttachUsesRepoWideActiveRun(t *testing.T, h *Harness) {
 	cancelled := waitForRunIDStatus(t, h, run.ID, types.RunCancelled, 60*time.Second)
 	if cancelled.Error == nil || !strings.Contains(*cancelled.Error, "aborted by user") {
 		t.Fatalf("expected explicit attach run cancellation error to mention aborted by user, got %q", deref(cancelled.Error))
+	}
+}
+
+func assertTestMalformedStructuredOutputRun(t *testing.T, h *Harness) {
+	t.Helper()
+	h.CommitChange("test-malformed-structured-output", "test-malformed-structured-output.txt", "test malformed structured output\n", "add test malformed structured output")
+	h.PushToGate("test-malformed-structured-output")
+	run := h.WaitForRun("test-malformed-structured-output", 60*time.Second)
+	if run.Status != types.RunCompleted {
+		t.Fatalf("test-malformed-structured-output run status=%s error=%v", run.Status, deref(run.Error))
+	}
+	testStep, ok := findStep(run.Steps, types.StepTest)
+	if !ok {
+		t.Fatal("expected test step in test-malformed-structured-output run")
+	}
+	if testStep.FindingsJSON == nil {
+		t.Fatal("expected malformed test structured output fallback to record findings JSON")
+	}
+	findings, err := types.ParseFindingsJSON(*testStep.FindingsJSON)
+	if err != nil {
+		t.Fatalf("parse malformed test output fallback findings: %v", err)
+	}
+	if !strings.Contains(findings.Summary, "tests found some issues") {
+		t.Fatalf("malformed test output fallback summary = %q, want tests found some issues", findings.Summary)
 	}
 }
 

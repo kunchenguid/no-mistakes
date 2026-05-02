@@ -12,35 +12,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/config"
 )
 
-func TestTestStep_NoCommand_MalformedAgentOutput(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			return &agent.Result{
-				Output: json.RawMessage(`{not valid json`),
-				Text:   "tests found some issues",
-			}, nil
-		},
-	}
-	sctx := newTestContext(t, ag, dir, "abc", "def", config.Commands{})
-
-	step := &TestStep{}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Should fall back to text response when JSON is malformed
-	var findings Findings
-	json.Unmarshal([]byte(outcome.Findings), &findings)
-	if findings.Summary == "" {
-		t.Error("expected fallback summary from text response when agent output is malformed JSON")
-	}
-}
-
 func TestTestStep_FixMode(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
