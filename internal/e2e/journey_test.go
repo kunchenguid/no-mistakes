@@ -234,7 +234,9 @@ func assertDoctor(t *testing.T, h *Harness) {
 	}
 	for _, want := range []string{
 		"System",
-		"git",
+		"git version",
+		"gh",
+		"ok",
 		"data directory",
 		h.NMHome,
 		"database",
@@ -257,6 +259,9 @@ func assertDoctor(t *testing.T, h *Harness) {
 		if !strings.Contains(out, filepath.Join(h.BinDir, agentName)) {
 			t.Errorf("doctor output should report fake %s path, got:\n%s", agentName, out)
 		}
+	}
+	if strings.Contains(out, "some checks failed") {
+		t.Errorf("doctor output should not report failed checks for healthy system state, got:\n%s", out)
 	}
 }
 

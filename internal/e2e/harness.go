@@ -91,7 +91,7 @@ func NewHarness(t *testing.T, opts SetupOpts) *Harness {
 	// Symlink each agent name to the same fake binary. Codex and Claude
 	// dispatch by argv[0] basename; opencode the same. Symlinks (not
 	// copies) keep the build cheap on subsequent tests.
-	for _, name := range []string{"claude", "codex", "opencode"} {
+	for _, name := range []string{"claude", "codex", "opencode", "gh"} {
 		linkPath := filepath.Join(h.BinDir, name)
 		if err := os.Symlink(fakeBin, linkPath); err != nil {
 			t.Fatalf("symlink %s: %v", linkPath, err)

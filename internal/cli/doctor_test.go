@@ -6,41 +6,6 @@ import (
 	"testing"
 )
 
-func TestDoctorSystemSectionHealthyState(t *testing.T) {
-	nmHome := t.TempDir()
-	t.Setenv("NM_HOME", nmHome)
-
-	binDir := t.TempDir()
-	t.Setenv("NM_FAKE_BIN", "1")
-	linkTestBinary(t, binDir, "git")
-	linkTestBinary(t, binDir, "gh")
-	t.Setenv("PATH", binDir)
-
-	out, err := executeCmd("doctor")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	for _, want := range []string{
-		"System",
-		"git version 9.9.9",
-		"gh",
-		"ok",
-		nmHome,
-		"database",
-		"will be created on first use",
-		"daemon",
-		"stopped",
-	} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("doctor output should include %q, got: %s", want, out)
-		}
-	}
-	if strings.Contains(out, "some checks failed") {
-		t.Fatalf("doctor output should not report failed checks for healthy system state, got: %s", out)
-	}
-}
-
 func TestDoctorSystemSectionReportsMissingGitAndDataDirFailures(t *testing.T) {
 	nmHome := filepath.Join(t.TempDir(), "missing-nm-home")
 	t.Setenv("NM_HOME", nmHome)
