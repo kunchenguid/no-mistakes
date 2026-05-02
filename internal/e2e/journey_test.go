@@ -196,6 +196,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	assertRootRecentRuns(t, h, rerun)
 	assertConfiguredCommandRun(t, h)
 	assertSupersededRunCancellation(t, h)
+	assertCancelRunStopsActivePipeline(t, h)
 	assertRespondNoWaitingStepRun(t, h)
 	assertFailingTestCommandRun(t, h)
 	assertFailingLintCommandRun(t, h)
@@ -1223,6 +1224,23 @@ func assertSupersededRunCancellation(t *testing.T, h *Harness) {
 	}
 	if second.Status != types.RunCompleted {
 		t.Fatalf("superseding run did not complete: status=%s error=%v", second.Status, deref(second.Error))
+	}
+}
+
+func assertCancelRunStopsActivePipeline(t *testing.T, h *Harness) {
+	t.Helper()
+	slowCommand := filepath.Join(h.BinDir, "nm-cancel-test-e2e")
+	if err := os.WriteFile(slowCommand, []byte("#!/bin/sh\nsleep 10\n"), 0o755); err != nil {
+		t.Fatalf("write cancel slow test command: %v", err)
+	}
+	config := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  test: nm-cancel-test-e2e\n  lint: true\n"
+	h.CommitChange("cancel-run", ".no-mistakes.yaml", config, "configure cancel slow test")
+	h.PushToGate("cancel-run")
+	run := waitForStepStatus(t, h, "cancel-run", types.StepTest, types.StepStatusRunning, 60*time.Second)
+	h.CancelRun(run.ID)
+	cancelled := waitForRunIDStatus(t, h, run.ID, types.RunCancelled, 60*time.Second)
+	if cancelled.Error == nil || !strings.Contains(*cancelled.Error, "aborted by user") {
+		t.Fatalf("expected cancelled run error to mention aborted by user, got %q", deref(cancelled.Error))
 	}
 }
 

@@ -429,6 +429,23 @@ func (h *Harness) RespondError(runID string, step types.StepName, action types.A
 	return client.Call(ipc.MethodRespond, &ipc.RespondParams{RunID: runID, Step: step, Action: action}, &result)
 }
 
+func (h *Harness) CancelRun(runID string) {
+	h.t.Helper()
+	p := paths.WithRoot(h.NMHome)
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		h.t.Fatalf("dial daemon: %v", err)
+	}
+	defer client.Close()
+	var result ipc.CancelRunResult
+	if err := client.Call(ipc.MethodCancelRun, &ipc.CancelRunParams{RunID: runID}, &result); err != nil {
+		h.t.Fatalf("cancel run %s: %v", runID, err)
+	}
+	if !result.OK {
+		h.t.Fatalf("cancel run %s returned not OK", runID)
+	}
+}
+
 func (h *Harness) waitForRunStatus(branch string, timeout time.Duration, match func(types.RunStatus) bool, action string) *ipc.RunInfo {
 	h.t.Helper()
 	deadline := time.Now().Add(timeout)
