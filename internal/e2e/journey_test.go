@@ -72,6 +72,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	assertInitOutput(t, h, out)
 	assertGateRemotePresent(t, h)
 	assertDaemonStatusRunning(t, h)
+	assertAttachMissingRun(t, h)
 	assertDaemonRestartWhileRunning(t, h)
 	assertInitAlreadyInitialized(t, h)
 	assertRunsEmpty(t, h)
@@ -289,6 +290,17 @@ func assertAttachNotInitialized(t *testing.T, h *Harness) {
 	}
 	if !strings.Contains(out, "not initialized") {
 		t.Errorf("attach error output should mention 'not initialized' before init, got:\n%s", out)
+	}
+}
+
+func assertAttachMissingRun(t *testing.T, h *Harness) {
+	t.Helper()
+	out, err := h.Run("attach", "--run", "missing-run")
+	if err == nil {
+		t.Fatalf("nm attach --run missing-run should fail, got output:\n%s", out)
+	}
+	if !strings.Contains(out, "run not found") {
+		t.Errorf("attach missing run output should mention 'run not found', got:\n%s", out)
 	}
 }
 

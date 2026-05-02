@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"os"
 	"strings"
 	"testing"
 
@@ -30,32 +29,6 @@ func TestActiveRunBranchUsesRepoWideLookupForExplicitAttach(t *testing.T) {
 				t.Fatalf("activeRunBranch() = %q, want %q", got, tc.want)
 			}
 		})
-	}
-}
-
-func TestAttachRunIDWithUnknownRunReturnsHelpfulError(t *testing.T) {
-	nmHome, err := os.MkdirTemp("", "nmcli")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(nmHome) })
-	t.Setenv("NM_HOME", nmHome)
-	p := paths.WithRoot(nmHome)
-
-	d, err := db.Open(p.DB())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer d.Close()
-
-	startTestDaemon(t, p, d)
-
-	out, err := executeCmd("attach", "--run", "missing-run")
-	if err == nil {
-		t.Fatal("attach should fail for an unknown run ID")
-	}
-	if !strings.Contains(err.Error(), "run not found") {
-		t.Fatalf("attach error should mention missing run, got: %v\noutput: %s", err, out)
 	}
 }
 
