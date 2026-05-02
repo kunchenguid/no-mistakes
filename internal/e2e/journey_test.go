@@ -92,6 +92,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	// agent calls + git operations take ~5-15s on a warm machine.
 	activeRun := h.WaitForRunRunning("feature/e2e", 30*time.Second)
 	assertStatusActiveRun(t, h, activeRun)
+	assertRunsActive(t, h, activeRun)
 
 	run := h.WaitForRun("feature/e2e", 60*time.Second)
 
@@ -418,11 +419,21 @@ func assertRootNoActiveRun(t *testing.T, h *Harness) {
 	}
 }
 
+func assertRunsActive(t *testing.T, h *Harness, run *ipc.RunInfo) {
+	t.Helper()
+	assertRunsContainsRun(t, h, run, string(types.RunRunning), "while run is active")
+}
+
 func assertRunsCompleted(t *testing.T, h *Harness, run *ipc.RunInfo) {
+	t.Helper()
+	assertRunsContainsRun(t, h, run, string(types.RunCompleted), "after completed pipeline")
+}
+
+func assertRunsContainsRun(t *testing.T, h *Harness, run *ipc.RunInfo, status, phase string) {
 	t.Helper()
 	out, err := h.Run("runs")
 	if err != nil {
-		t.Fatalf("nm runs after completed pipeline: %v\n%s", err, out)
+		t.Fatalf("nm runs %s: %v\n%s", phase, err, out)
 	}
 	if regexp.MustCompile(`\x1b\[[0-9;]*m`).MatchString(out) {
 		t.Fatalf("runs output should not include ANSI escape sequences, got: %q", out)
@@ -431,9 +442,9 @@ func assertRunsCompleted(t *testing.T, h *Harness, run *ipc.RunInfo) {
 	if len(sha) > 8 {
 		sha = sha[:8]
 	}
-	for _, want := range []string{"feature/e2e", "completed", sha} {
+	for _, want := range []string{run.Branch, status, sha} {
 		if !strings.Contains(out, want) {
-			t.Errorf("runs output should contain %q after completed pipeline, got:\n%s", want, out)
+			t.Errorf("runs output should contain %q %s, got:\n%s", want, phase, out)
 		}
 	}
 }

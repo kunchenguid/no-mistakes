@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 
@@ -14,57 +13,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
-
-var ansiEscapeRE = regexp.MustCompile(`\x1b\[[0-9;]*m`)
-
-func TestRunsWithRunningData(t *testing.T) {
-	setupTestRepo(t)
-	nmHome := os.Getenv("NM_HOME")
-	p := paths.WithRoot(nmHome)
-
-	d, err := db.Open(p.DB())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer d.Close()
-
-	if _, err := gate.Init(context.Background(), d, p, "."); err != nil {
-		t.Fatalf("gate.Init failed: %v", err)
-	}
-
-	// Insert a running run directly into the DB to preserve active-state
-	// list coverage; completed-run output is covered by the e2e journey.
-	gitRoot, err := git.FindGitRoot(".")
-	if err != nil {
-		t.Fatal(err)
-	}
-	repo, err := d.GetRepoByPath(gitRoot)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	run, err := d.InsertRun(repo.ID, "another-branch", "111aaa", "222bbb")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := d.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
-		t.Fatal(err)
-	}
-
-	out, err := executeCmd("runs")
-	if err != nil {
-		t.Fatalf("runs failed: %v\noutput: %s", err, out)
-	}
-	if ansiEscapeRE.MatchString(out) {
-		t.Fatalf("runs output should not include ANSI escape sequences, got: %q", out)
-	}
-	if !strings.Contains(out, "another-branch") {
-		t.Errorf("runs output should contain 'another-branch', got: %s", out)
-	}
-	if !strings.Contains(out, "running") {
-		t.Errorf("runs output should contain 'running' status, got: %s", out)
-	}
-}
 
 func TestRunsLimit(t *testing.T) {
 	setupTestRepo(t)
