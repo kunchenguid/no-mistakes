@@ -120,31 +120,6 @@ func TestDocumentStep_Updated(t *testing.T) {
 	}
 }
 
-func TestDocumentStep_Skipped(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"internal refactoring only"}`)}, nil
-		},
-	}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-
-	step := &DocumentStep{}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if outcome.NeedsApproval {
-		t.Error("document step should not require approval when no gaps found")
-	}
-	if got := lastCommitMessage(t, dir); got != "add feature" {
-		t.Fatalf("expected no new commit, but last commit message = %q", got)
-	}
-}
-
 func TestDocumentStep_InfoFindingStillRequiresApproval(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

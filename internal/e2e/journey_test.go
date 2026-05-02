@@ -83,7 +83,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	// Make a feature branch with one trivial change. The fake agent
 	// returns "no issues found" for every prompt, so the pipeline
 	// should sail through without needing approval.
-	h.CommitChange("feature/e2e", "hello.txt", "hello world\n", "add hello.txt")
+	featureHead := h.CommitChange("feature/e2e", "hello.txt", "hello world\n", "add hello.txt")
 
 	// Push triggers the post-receive hook, which notifies the daemon.
 	h.PushToGate("feature/e2e")
@@ -144,8 +144,10 @@ func runHappyPath(t *testing.T, agentName string) {
 	// The review step always runs and always calls the agent. Find the
 	// invocation whose prompt contains the review preamble; if missing
 	// the pipeline didn't reach review or routed it elsewhere.
+	assertNoUnexpectedAutofixCommits(t, run, featureHead)
 	assertReviewPrompt(t, h, run, invs)
 	assertDocumentPrompt(t, h, run, invs)
+	assertDocumentStepNoGaps(t, run.Steps)
 	assertNoCommandTestStep(t, run.Steps, invs)
 	if !sawPromptContainingAll(invs, "Detect the linting and formatting tools", "branch: feature/e2e", "Set action to") {
 		t.Errorf("expected a lint prompt with branch metadata and action guidance in invocations, got %d:\n%s", len(invs), summarisePrompts(invs))
@@ -768,6 +770,31 @@ func assertDocumentPrompt(t *testing.T, h *Harness, run *ipc.RunInfo, invs []Inv
 		if !strings.Contains(prompt, want) {
 			t.Errorf("expected document prompt to contain %q, got:\n%s", want, prompt)
 		}
+	}
+}
+
+func assertDocumentStepNoGaps(t *testing.T, steps []ipc.StepResultInfo) {
+	t.Helper()
+	step, ok := findStep(steps, types.StepDocument)
+	if !ok {
+		t.Fatal("expected document step to be present")
+	}
+	if step.FindingsJSON == nil {
+		t.Fatal("expected document step to record findings JSON")
+	}
+	findings, err := types.ParseFindingsJSON(*step.FindingsJSON)
+	if err != nil {
+		t.Fatalf("parse document step findings: %v", err)
+	}
+	if len(findings.Items) != 0 {
+		t.Fatalf("expected no documentation gaps, got %+v", findings.Items)
+	}
+}
+
+func assertNoUnexpectedAutofixCommits(t *testing.T, run *ipc.RunInfo, featureHead string) {
+	t.Helper()
+	if run.HeadSHA != featureHead {
+		t.Fatalf("run head SHA = %s, want original feature head %s", run.HeadSHA, featureHead)
 	}
 }
 
