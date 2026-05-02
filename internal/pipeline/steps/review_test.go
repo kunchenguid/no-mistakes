@@ -44,40 +44,6 @@ func TestReviewStep_EmptyDiff(t *testing.T) {
 	}
 }
 
-func TestReviewStep_WithWarnings(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-
-	findings := Findings{
-		Items:   []Finding{{Severity: "warning", Description: "potential null pointer"}},
-		Summary: "found 1 issue",
-	}
-	findingsJSON, _ := json.Marshal(findings)
-
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			return &agent.Result{Output: findingsJSON}, nil
-		},
-	}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-
-	step := &ReviewStep{}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !outcome.NeedsApproval {
-		t.Error("expected approval needed for warning findings")
-	}
-	if outcome.Findings == "" {
-		t.Error("expected findings to be set")
-	}
-	if len(ag.calls) != 1 {
-		t.Errorf("expected 1 agent call, got %d", len(ag.calls))
-	}
-}
-
 func TestReviewStep_AgentError(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

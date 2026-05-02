@@ -195,6 +195,9 @@ func runHappyPath(t *testing.T, agentName string) {
 	assertConfiguredCommandRun(t, h)
 	assertFailingTestCommandRun(t, h)
 	assertFailingLintCommandRun(t, h)
+	if agentName == "claude" {
+		assertReviewWarningRun(t, h)
+	}
 	assertRunsDefaultLimit(t, h)
 	assertGateRefDeletionDoesNotCreateRun(t, h, "configured-commands")
 
@@ -234,6 +237,19 @@ func cleanReviewScenario(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "scenario.yaml")
 	content := `actions:
+  - match: "branch: review-warning"
+    text: "review found a warning"
+    structured:
+      findings:
+        - id: "review-warning"
+          severity: warning
+          file: "review-warning.txt"
+          line: 1
+          description: "potential null pointer"
+          action: ask-user
+      summary: "found 1 issue"
+      risk_level: medium
+      risk_rationale: "warning requires human review"
   - match: "branch: agent-edits"
     text: "agent edited a file"
     edits:
@@ -974,6 +990,38 @@ func assertConfiguredCommandRun(t *testing.T, h *Harness) {
 	}
 }
 
+func assertReviewWarningRun(t *testing.T, h *Harness) {
+	t.Helper()
+	h.CommitChange("review-warning", "review-warning.txt", "review warning\n", "add review warning")
+	h.PushToGate("review-warning")
+	run := waitForStepStatus(t, h, "review-warning", types.StepReview, types.StepStatusAwaitingApproval, 60*time.Second)
+	reviewStep, ok := findStep(run.Steps, types.StepReview)
+	if !ok {
+		t.Fatal("expected review step in review-warning run")
+	}
+	if reviewStep.FindingsJSON == nil {
+		t.Fatal("expected review warning to record findings JSON")
+	}
+	findings, err := types.ParseFindingsJSON(*reviewStep.FindingsJSON)
+	if err != nil {
+		t.Fatalf("parse review warning findings: %v", err)
+	}
+	if len(findings.Items) != 1 || findings.Items[0].Severity != "warning" {
+		t.Fatalf("expected one review warning finding, got %+v", findings.Items)
+	}
+	if findings.Summary != "found 1 issue" {
+		t.Fatalf("review warning summary = %q", findings.Summary)
+	}
+	if !sawPromptContainingAll(h.AgentInvocations(), "Review the code changes", "branch: review-warning") {
+		t.Fatal("review-warning run should call the agent for review")
+	}
+	h.Respond(run.ID, types.StepReview, types.ActionAbort)
+	completed := h.WaitForRun("review-warning", 60*time.Second)
+	if completed.Status != types.RunFailed {
+		t.Fatalf("review-warning run status after abort = %s, want failed", completed.Status)
+	}
+}
+
 func waitForStepStatus(t *testing.T, h *Harness, branch string, stepName types.StepName, status types.StepStatus, timeout time.Duration) *ipc.RunInfo {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -1126,7 +1174,8 @@ func assertRunsDefaultLimit(t *testing.T, h *Harness) {
 	if regexp.MustCompile(`(?m)^\s+\S+\s+empty-after-rebase\s+`).MatchString(out) {
 		t.Fatalf("default runs output should omit oldest run empty-after-rebase when over limit, got:\n%s", out)
 	}
-	for _, want := range []string{"runs-limit-extra", "(1 more runs, use --limit to see more)"} {
+	overflowHint := "(" + itoa(len(allRuns)-10) + " more runs, use --limit to see more)"
+	for _, want := range []string{"runs-limit-extra", overflowHint} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("default runs output should contain %q when over limit, got:\n%s", want, out)
 		}
