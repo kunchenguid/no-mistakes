@@ -149,6 +149,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	if !sawPromptContaining(invs, "Identify documentation gaps") {
 		t.Errorf("expected a document prompt in invocations, got %d:\n%s", len(invs), summarisePrompts(invs))
 	}
+	assertNoCommandTestStep(t, run.Steps, invs)
 	if !sawPromptContainingAll(invs, "Detect the linting and formatting tools", "branch: feature/e2e") {
 		t.Errorf("expected a lint prompt with branch metadata in invocations, got %d:\n%s", len(invs), summarisePrompts(invs))
 	}
@@ -703,6 +704,42 @@ func assertPromptsAbsent(t *testing.T, invs []Invocation, unexpected ...string) 
 	for _, msg := range validatePromptsAbsent(invs, unexpected...) {
 		t.Error(msg)
 	}
+}
+
+func assertNoCommandTestStep(t *testing.T, steps []ipc.StepResultInfo, invs []Invocation) {
+	t.Helper()
+	if !sawPromptContainingAll(invs, "You are validating a code change by testing it", "branch: feature/e2e") {
+		t.Errorf("expected a test prompt with branch metadata in invocations, got %d:\n%s", len(invs), summarisePrompts(invs))
+	}
+	step, ok := findStep(steps, types.StepTest)
+	if !ok {
+		t.Fatal("expected test step to be present")
+	}
+	if step.FindingsJSON == nil {
+		t.Fatal("expected test step to record findings JSON")
+	}
+	findings, err := types.ParseFindingsJSON(*step.FindingsJSON)
+	if err != nil {
+		t.Fatalf("parse test step findings: %v", err)
+	}
+	if len(findings.Tested) != 1 || findings.Tested[0] != "fakeagent: simulated test run" {
+		t.Fatalf("expected fakeagent test details to be preserved, got %+v", findings.Tested)
+	}
+	if findings.TestingSummary != "simulated tests passed" {
+		t.Fatalf("expected fakeagent testing summary to be preserved, got %q", findings.TestingSummary)
+	}
+	if len(findings.Items) != 0 {
+		t.Fatalf("expected no test findings, got %+v", findings.Items)
+	}
+}
+
+func findStep(steps []ipc.StepResultInfo, name types.StepName) (ipc.StepResultInfo, bool) {
+	for _, step := range steps {
+		if step.StepName == name {
+			return step, true
+		}
+	}
+	return ipc.StepResultInfo{}, false
 }
 
 func validateSkippedSteps(steps []ipc.StepResultInfo, expected ...types.StepName) []string {

@@ -101,47 +101,6 @@ func TestTestStep_FailingCommand(t *testing.T) {
 	}
 }
 
-func TestTestStep_NoCommand_AgentDetects(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-
-	findings := Findings{Items: nil, Summary: "all tests passed", TestingSummary: "Validated the CLI doctor path and config loading; both passed.", Tested: []string{"`go test ./internal/cli -run '^TestDoctorBasic$' -count=1`"}}
-	findingsJSON, _ := json.Marshal(findings)
-
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			return &agent.Result{Output: findingsJSON}, nil
-		},
-	}
-	sctx := newTestContext(t, ag, dir, "abc", "def", config.Commands{})
-
-	step := &TestStep{}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if outcome.NeedsApproval {
-		t.Error("expected no approval when agent reports passing tests")
-	}
-	if len(ag.calls) != 1 {
-		t.Errorf("expected 1 agent call, got %d", len(ag.calls))
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "branch: refs/heads/feature") {
-		t.Error("expected prompt to include branch metadata")
-	}
-	parsed, err := types.ParseFindingsJSON(outcome.Findings)
-	if err != nil {
-		t.Fatalf("ParseFindingsJSON() error = %v", err)
-	}
-	if len(parsed.Tested) != 1 || parsed.Tested[0] != findings.Tested[0] {
-		t.Fatalf("expected agent-reported test details to be preserved, got %+v", parsed.Tested)
-	}
-	if parsed.TestingSummary != findings.TestingSummary {
-		t.Fatalf("expected agent-reported testing summary to be preserved, got %q", parsed.TestingSummary)
-	}
-}
-
 func TestTestStep_NoCommand_MalformedAgentOutput(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
