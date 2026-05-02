@@ -94,6 +94,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	assertEmptyDiffAfterRebaseRun(t, h)
 	assertIgnoredOnlyRun(t, h)
 	assertAgentEditCommitRun(t, h)
+	assertFormatFailureWarningRun(t, h)
 	assertNonEmptyDiffAfterRebaseRun(t, h)
 
 	// Make a feature branch with one trivial change. The fake agent
@@ -761,6 +762,28 @@ func assertAgentEditCommitRun(t *testing.T, h *Harness) {
 	}
 	if string(formatted) != "formatted" {
 		t.Fatalf("formatted-by-push.txt contents = %q", string(formatted))
+	}
+}
+
+func assertFormatFailureWarningRun(t *testing.T, h *Harness) {
+	t.Helper()
+	h.CommitChange("format-fails", "format-fails.txt", "feature with failing formatter\n", "add format-fails branch")
+	config := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  format: \"exit 1\"\n"
+	h.CommitChange("format-fails", ".no-mistakes.yaml", config, "configure failing formatter")
+	h.PushToGate("format-fails")
+	run := h.WaitForRun("format-fails", 60*time.Second)
+	if run.Status != types.RunCompleted {
+		t.Fatalf("format-fails run did not complete: status=%s error=%v", run.Status, deref(run.Error))
+	}
+	assertPushedHead(t, run.HeadSHA, h.UpstreamBranchSHA("format-fails"))
+	logPath := filepath.Join(h.NMHome, "logs", run.ID, "push.log")
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read format-fails push log: %v", err)
+	}
+	logText := string(logData)
+	if !strings.Contains(logText, "warning") || !strings.Contains(logText, "format") {
+		t.Fatalf("expected failing formatter warning in push log, got: %s", logText)
 	}
 }
 

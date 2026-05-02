@@ -106,55 +106,6 @@ func TestPushStep_UpdatesLocalBranchRefAfterDetachedPush(t *testing.T) {
 	}
 }
 
-func TestPushStep_FormatCommandFailureIsWarning(t *testing.T) {
-	t.Parallel()
-	// If the format command fails, push should still proceed (log warning, don't fail).
-	upstream := t.TempDir()
-	gitCmd(t, upstream, "init", "--bare")
-
-	dir := t.TempDir()
-	gitCmd(t, dir, "init")
-	gitCmd(t, dir, "config", "user.name", "test")
-	gitCmd(t, dir, "config", "user.email", "test@test.com")
-	gitCmd(t, dir, "checkout", "-b", "main")
-	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "initial")
-	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
-	gitCmd(t, dir, "remote", "add", "origin", upstream)
-	gitCmd(t, dir, "push", "origin", "main")
-
-	gitCmd(t, dir, "checkout", "-b", "feature")
-	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("data"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "feature")
-	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
-
-	var logMessages []string
-	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{Format: "exit 1"})
-	sctx.Repo.UpstreamURL = upstream
-	sctx.Log = func(s string) { logMessages = append(logMessages, s) }
-
-	step := &PushStep{}
-	_, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal("push should succeed even if format command fails")
-	}
-
-	// Verify a warning was logged
-	found := false
-	for _, msg := range logMessages {
-		if strings.Contains(msg, "format") && strings.Contains(msg, "warning") {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Errorf("expected warning about format failure in logs, got: %v", logMessages)
-	}
-}
-
 func TestPushStep_ReconcilesStaleDatabaseHeadSHA(t *testing.T) {
 	t.Parallel()
 	// When push retries after a prior UpdateRunHeadSHA failure, there are no
