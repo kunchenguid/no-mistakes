@@ -722,6 +722,9 @@ func assertPromptsAbsent(t *testing.T, invs []Invocation, unexpected ...string) 
 func assertNewBranchRun(t *testing.T, run *ipc.RunInfo) {
 	t.Helper()
 	const zeroSHA = "0000000000000000000000000000000000000000"
+	if run.Branch != "feature/e2e" {
+		t.Fatalf("expected run branch to be stored without refs/heads prefix, got %s", run.Branch)
+	}
 	if run.BaseSHA != zeroSHA {
 		t.Fatalf("expected new branch push to record zero base SHA, got %s", run.BaseSHA)
 	}
