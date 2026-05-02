@@ -652,6 +652,15 @@ func assertDaemonNotifyPushUnknownRepo(t *testing.T, h *Harness) {
 	if !strings.Contains(out, "unknown repo") {
 		t.Errorf("daemon notify-push unknown repo output should mention 'unknown repo', got:\n%s", out)
 	}
+
+	invalidGate := filepath.Join(h.NMHome, "repos", "not-a-git-suffix")
+	out, err = h.Run("daemon", "notify-push", "--gate", invalidGate, "--ref", "refs/heads/main", "--old", "aaa", "--new", "bbb")
+	if err == nil {
+		t.Fatalf("daemon notify-push for invalid gate path should fail, got output:\n%s", out)
+	}
+	if !strings.Contains(out, "invalid gate path") {
+		t.Errorf("daemon notify-push invalid gate path output should mention 'invalid gate path', got:\n%s", out)
+	}
 }
 
 func assertRespondNoActiveExecutor(t *testing.T, h *Harness) {

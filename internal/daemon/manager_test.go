@@ -12,30 +12,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-// --- RunManager unit tests ---
-
-func TestRepoIDFromGatePath(t *testing.T) {
-	tests := []struct {
-		path    string
-		want    string
-		wantErr bool
-	}{
-		{"/home/user/.no-mistakes/repos/abc123.git", "abc123", false},
-		{"/tmp/repos/test-id.git", "test-id", false},
-		{"/tmp/repos/nope", "", true},
-	}
-	for _, tc := range tests {
-		got, err := repoIDFromGatePath(tc.path)
-		if (err != nil) != tc.wantErr {
-			t.Errorf("repoIDFromGatePath(%q): err=%v, wantErr=%v", tc.path, err, tc.wantErr)
-			continue
-		}
-		if got != tc.want {
-			t.Errorf("repoIDFromGatePath(%q) = %q, want %q", tc.path, got, tc.want)
-		}
-	}
-}
-
 // --- RunManager integration tests ---
 
 func TestPushReceivedTracksRunTelemetry(t *testing.T) {
