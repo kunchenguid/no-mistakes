@@ -205,6 +205,7 @@ func runHappyPath(t *testing.T, agentName string) {
 		assertDocumentMissingFindingsRun(t, h)
 		assertDocumentMalformedFindingRun(t, h)
 		assertDocumentLegacyFindingRun(t, h)
+		assertDocumentWarningRun(t, h)
 		assertDocumentInfoRun(t, h)
 		assertReviewWarningRun(t, h)
 	}
@@ -247,6 +248,14 @@ func cleanReviewScenario(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "scenario.yaml")
 	content := `actions:
+  - match: "identify any documentation gaps.\n\nContext:\n- branch: document-warning"
+    text: "documentation warning finding"
+    structured:
+      findings:
+        - severity: warning
+          description: "README missing new CLI flag"
+          action: auto-fix
+      summary: "README needs updating"
   - match: "identify any documentation gaps.\n\nContext:\n- branch: document-legacy-finding"
     text: "documentation legacy finding"
     structured:
@@ -1244,6 +1253,45 @@ func assertDocumentLegacyFindingRun(t *testing.T, h *Harness) {
 	completed := h.WaitForRun("document-legacy-finding", 60*time.Second)
 	if completed.Status != types.RunFailed {
 		t.Fatalf("document-legacy-finding run status after abort = %s, want failed", completed.Status)
+	}
+}
+
+func assertDocumentWarningRun(t *testing.T, h *Harness) {
+	t.Helper()
+	h.CommitChange("document-warning", "document-warning.txt", "document warning\n", "add document warning")
+	h.PushToGate("document-warning")
+	run := waitForStepStatus(t, h, "document-warning", types.StepDocument, types.StepStatusAwaitingApproval, 60*time.Second)
+	documentStep, ok := findStep(run.Steps, types.StepDocument)
+	if !ok {
+		t.Fatal("expected document step in document-warning run")
+	}
+	if documentStep.FindingsJSON == nil {
+		t.Fatal("expected document warning to record findings JSON")
+	}
+	findings, err := types.ParseFindingsJSON(*documentStep.FindingsJSON)
+	if err != nil {
+		t.Fatalf("parse document warning findings: %v", err)
+	}
+	if findings.Summary != "README needs updating" {
+		t.Fatalf("document warning summary = %q, want README needs updating", findings.Summary)
+	}
+	if len(findings.Items) != 1 {
+		t.Fatalf("expected one documentation warning finding, got %+v", findings.Items)
+	}
+	item := findings.Items[0]
+	if item.Severity != "warning" {
+		t.Fatalf("expected documentation finding severity warning, got %q", item.Severity)
+	}
+	if item.Description != "README missing new CLI flag" {
+		t.Fatalf("document warning description = %q, want README missing new CLI flag", item.Description)
+	}
+	if item.Action != types.ActionAutoFix {
+		t.Fatalf("expected document warning to stay auto-fixable, got action %q", item.Action)
+	}
+	h.Respond(run.ID, types.StepDocument, types.ActionAbort)
+	completed := h.WaitForRun("document-warning", 60*time.Second)
+	if completed.Status != types.RunFailed {
+		t.Fatalf("document-warning run status after abort = %s, want failed", completed.Status)
 	}
 }
 

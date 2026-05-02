@@ -48,50 +48,6 @@ func TestDocumentStep_FixMode_UsesFallbackSummaryWhenStructuredSummaryMalformed(
 	}
 }
 
-func TestDocumentStep_Updated(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			return &agent.Result{Output: json.RawMessage(`{"findings":[{"severity":"warning","description":"README missing new CLI flag","action":"auto-fix"}],"summary":"README needs updating"}`)}, nil
-		},
-	}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-
-	step := &DocumentStep{}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !outcome.NeedsApproval {
-		t.Fatal("document step should require approval before applying edits")
-	}
-	if !outcome.AutoFixable {
-		t.Fatal("document step should be auto-fixable when docs need updates")
-	}
-	if len(ag.calls) != 1 {
-		t.Errorf("expected 1 agent call, got %d", len(ag.calls))
-	}
-	var findings Findings
-	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
-		t.Fatalf("unmarshal findings: %v", err)
-	}
-	if len(findings.Items) != 1 || findings.Items[0].Severity != "warning" {
-		t.Fatalf("unexpected findings: %+v", findings.Items)
-	}
-	if findings.Items[0].Description != "README missing new CLI flag" {
-		t.Fatalf("finding description = %q, want %q", findings.Items[0].Description, "README missing new CLI flag")
-	}
-	if status := gitStatusPorcelain(t, dir); status != "" {
-		t.Fatalf("expected clean worktree while awaiting approval, got %q", status)
-	}
-	if got := lastCommitMessage(t, dir); got != "add feature" {
-		t.Fatalf("expected no new commit, but last commit message = %q", got)
-	}
-}
-
 func TestDocumentStep_AgentError(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
