@@ -8,75 +8,9 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
-	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
-
-func TestExecutor_ApprovalDurationExcludesWaitTime(t *testing.T) {
-	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
-
-	steps := []Step{
-		newApprovalStep(types.StepReview, `{"findings":[{"severity":"error","description":"bug","action":"auto-fix"}],"summary":"1 issue"}`),
-	}
-
-	exec := NewExecutor(database, p, nil, nil, steps, nil)
-	events := collectEvents(exec)
-
-	done := make(chan error, 1)
-	go func() {
-		done <- exec.Execute(context.Background(), run, repo, workDir)
-	}()
-
-	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
-
-	// Duration should be stored in DB while awaiting approval (execution-only time).
-	dbSteps, _ := database.GetStepsByRun(run.ID)
-	if dbSteps[0].DurationMS == nil {
-		t.Fatal("expected duration_ms to be set on awaiting_approval step")
-	}
-	execDuration := *dbSteps[0].DurationMS
-
-	// Simulate user taking time to review.
-	time.Sleep(200 * time.Millisecond)
-
-	exec.Respond(types.StepReview, types.ActionApprove, nil)
-
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("executor timed out")
-	}
-
-	// Final duration should not include the 200ms+ approval wait time.
-	dbSteps, _ = database.GetStepsByRun(run.ID)
-	finalDuration := *dbSteps[0].DurationMS
-	if finalDuration > execDuration+100 {
-		t.Errorf("final duration %dms should not significantly exceed pre-approval duration %dms (approval wait should be excluded)", finalDuration, execDuration)
-	}
-
-	// The EventStepCompleted event for awaiting_approval should carry duration.
-	awaitingEvent := events.findLast(ipc.EventStepCompleted, string(types.StepStatusAwaitingApproval))
-	if awaitingEvent == nil {
-		t.Fatal("expected awaiting_approval step_completed event")
-	}
-	if awaitingEvent.DurationMS == nil {
-		t.Error("expected awaiting_approval event to carry DurationMS")
-	}
-
-	// The final completed event should also carry duration.
-	completedEvent := events.findLast(ipc.EventStepCompleted, string(types.StepStatusCompleted))
-	if completedEvent == nil {
-		t.Fatal("expected completed step_completed event")
-	}
-	if completedEvent.DurationMS == nil {
-		t.Error("expected completed event to carry DurationMS")
-	}
-}
 
 func TestExecutor_ApprovalFix(t *testing.T) {
 	database, p, run, repo := setupTest(t)

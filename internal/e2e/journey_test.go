@@ -1180,6 +1180,11 @@ func assertFailingTestCommandRun(t *testing.T, h *Harness) {
 	if len(findings.Tested) != 1 || findings.Tested[0] != "nm-test-fails-e2e" {
 		t.Fatalf("expected failing test command to be recorded, got %+v", findings.Tested)
 	}
+	if testStep.DurationMS == nil {
+		t.Fatal("expected awaiting failing test step to expose execution duration")
+	}
+	awaitingDurationMS := *testStep.DurationMS
+	time.Sleep(300 * time.Millisecond)
 	h.Respond(run.ID, types.StepTest, types.ActionApprove)
 	completed := h.WaitForRun("failing-test-command", 60*time.Second)
 	if completed.Status != types.RunCompleted {
@@ -1194,6 +1199,12 @@ func assertFailingTestCommandRun(t *testing.T, h *Harness) {
 	}
 	if completedTestStep.ExitCode == nil || *completedTestStep.ExitCode != 1 {
 		t.Fatalf("failing test command exit code = %v, want 1", completedTestStep.ExitCode)
+	}
+	if completedTestStep.DurationMS == nil {
+		t.Fatal("expected completed failing test step to expose execution duration")
+	}
+	if *completedTestStep.DurationMS > awaitingDurationMS+200 {
+		t.Fatalf("test step duration should exclude approval wait: awaiting=%dms completed=%dms", awaitingDurationMS, *completedTestStep.DurationMS)
 	}
 	for _, stepName := range []types.StepName{types.StepDocument, types.StepLint, types.StepPush} {
 		step, ok := findStep(completed.Steps, stepName)
