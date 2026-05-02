@@ -96,6 +96,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	assertAgentEditCommitRun(t, h)
 	assertFormatFailureWarningRun(t, h)
 	assertNonEmptyDiffAfterRebaseRun(t, h)
+	assertRebaseConflictRun(t, h)
 
 	// Make a feature branch with one trivial change. The fake agent
 	// returns "no issues found" for every prompt, so the pipeline
@@ -872,6 +873,74 @@ func assertNonEmptyDiffAfterRebaseRun(t *testing.T, h *Harness) {
 	}
 	if !sawPromptContainingAll(h.AgentInvocations(), "Review the code changes", "branch: non-empty-after-rebase") {
 		t.Fatal("non-empty-after-rebase run should continue to review and call the agent")
+	}
+}
+
+func assertRebaseConflictRun(t *testing.T, h *Harness) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if out, err := h.runGit(ctx, h.WorkDir, "checkout", "main"); err != nil {
+		t.Fatalf("checkout main before rebase conflict setup: %v\n%s", err, out)
+	}
+	conflictPath := filepath.Join(h.WorkDir, "rebase-conflict.txt")
+	if err := os.WriteFile(conflictPath, []byte("base\n"), 0o644); err != nil {
+		t.Fatalf("write rebase conflict base: %v", err)
+	}
+	if out, err := h.runGit(ctx, h.WorkDir, "add", "rebase-conflict.txt"); err != nil {
+		t.Fatalf("add rebase conflict base: %v\n%s", err, out)
+	}
+	if out, err := h.runGit(ctx, h.WorkDir, "commit", "-m", "add rebase conflict base"); err != nil {
+		t.Fatalf("commit rebase conflict base: %v\n%s", err, out)
+	}
+	if out, err := h.runGit(ctx, h.WorkDir, "push", "origin", "main"); err != nil {
+		t.Fatalf("push rebase conflict base: %v\n%s", err, out)
+	}
+	h.CommitChange("rebase-conflict", "rebase-conflict.txt", "feature change\n", "add rebase conflict feature")
+	if out, err := h.runGit(ctx, h.WorkDir, "checkout", "main"); err != nil {
+		t.Fatalf("checkout main before rebase conflict advance: %v\n%s", err, out)
+	}
+	if err := os.WriteFile(conflictPath, []byte("main change\n"), 0o644); err != nil {
+		t.Fatalf("write rebase conflict main change: %v", err)
+	}
+	if out, err := h.runGit(ctx, h.WorkDir, "add", "rebase-conflict.txt"); err != nil {
+		t.Fatalf("add rebase conflict main change: %v\n%s", err, out)
+	}
+	if out, err := h.runGit(ctx, h.WorkDir, "commit", "-m", "advance main for rebase conflict"); err != nil {
+		t.Fatalf("commit rebase conflict main change: %v\n%s", err, out)
+	}
+	if out, err := h.runGit(ctx, h.WorkDir, "push", "origin", "main"); err != nil {
+		t.Fatalf("push rebase conflict main change: %v\n%s", err, out)
+	}
+	if out, err := h.runGit(ctx, h.WorkDir, "checkout", "rebase-conflict"); err != nil {
+		t.Fatalf("checkout rebase-conflict before gate push: %v\n%s", err, out)
+	}
+	h.PushToGate("rebase-conflict")
+	run := waitForStepStatus(t, h, "rebase-conflict", types.StepRebase, types.StepStatusAwaitingApproval, 60*time.Second)
+	rebaseStep, ok := findStep(run.Steps, types.StepRebase)
+	if !ok {
+		t.Fatal("expected rebase step in rebase-conflict run")
+	}
+	if rebaseStep.FindingsJSON == nil {
+		t.Fatal("expected rebase conflict to record findings JSON")
+	}
+	findings, err := types.ParseFindingsJSON(*rebaseStep.FindingsJSON)
+	if err != nil {
+		t.Fatalf("parse rebase conflict findings: %v", err)
+	}
+	if len(findings.Items) == 0 || findings.Items[0].Severity != "warning" {
+		t.Fatalf("expected warning finding for rebase conflict, got %+v", findings.Items)
+	}
+	if !strings.Contains(*rebaseStep.FindingsJSON, "origin/main") {
+		t.Fatalf("expected rebase conflict findings to mention origin/main, got %s", *rebaseStep.FindingsJSON)
+	}
+	if sawPromptContaining(h.AgentInvocations(), "branch: rebase-conflict") {
+		t.Fatal("rebase conflict detection should not call the agent")
+	}
+	h.Respond(run.ID, types.StepRebase, types.ActionAbort)
+	completed := h.WaitForRun("rebase-conflict", 60*time.Second)
+	if completed.Status != types.RunFailed {
+		t.Fatalf("rebase-conflict run status after abort = %s, want failed", completed.Status)
 	}
 }
 
