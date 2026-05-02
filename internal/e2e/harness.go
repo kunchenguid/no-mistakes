@@ -395,23 +395,40 @@ func (h *Harness) WaitForRunRunning(branch string, timeout time.Duration) *ipc.R
 	}, "start running")
 }
 
-func (h *Harness) waitForRunStatus(branch string, timeout time.Duration, match func(types.RunStatus) bool, action string) *ipc.RunInfo {
+func (h *Harness) Runs() []ipc.RunInfo {
 	h.t.Helper()
 	p := paths.WithRoot(h.NMHome)
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		h.t.Fatalf("dial daemon: %v", err)
+	}
+	defer client.Close()
+	var result ipc.GetRunsResult
+	if err := client.Call(ipc.MethodGetRuns, &ipc.GetRunsParams{RepoID: h.repoID()}, &result); err != nil {
+		h.t.Fatalf("get runs: %v", err)
+	}
+	return result.Runs
+}
+
+func (h *Harness) waitForRunStatus(branch string, timeout time.Duration, match func(types.RunStatus) bool, action string) *ipc.RunInfo {
+	h.t.Helper()
 	deadline := time.Now().Add(timeout)
-	repoID := h.repoID()
 
 	var lastRun *ipc.RunInfo
 	for time.Now().Before(deadline) {
-		client, err := ipc.Dial(p.Socket())
-		if err != nil {
-			time.Sleep(200 * time.Millisecond)
-			continue
-		}
 		var result ipc.GetRunsResult
-		err = client.Call(ipc.MethodGetRuns, &ipc.GetRunsParams{RepoID: repoID}, &result)
-		client.Close()
-		if err != nil {
+		func() {
+			p := paths.WithRoot(h.NMHome)
+			client, err := ipc.Dial(p.Socket())
+			if err != nil {
+				return
+			}
+			defer client.Close()
+			if err := client.Call(ipc.MethodGetRuns, &ipc.GetRunsParams{RepoID: h.repoID()}, &result); err != nil {
+				result.Runs = nil
+			}
+		}()
+		if result.Runs == nil {
 			time.Sleep(200 * time.Millisecond)
 			continue
 		}

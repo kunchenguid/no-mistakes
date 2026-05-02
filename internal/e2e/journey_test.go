@@ -187,6 +187,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	h.Checkout("feature/e2e")
 	assertRootRecentRuns(t, h, rerun)
 	assertConfiguredCommandRun(t, h)
+	assertGateRefDeletionDoesNotCreateRun(t, h, "configured-commands")
 
 	t.Logf("agent invocations: %d\n%s", len(invs), summarisePrompts(invs))
 	t.Logf("step outcomes:")
@@ -641,6 +642,26 @@ func assertRunsContainsRunInDir(t *testing.T, h *Harness, dir string, run *ipc.R
 		if !strings.Contains(out, want) {
 			t.Errorf("runs output should contain %q %s, got:\n%s", want, phase, out)
 		}
+	}
+}
+
+func assertGateRefDeletionDoesNotCreateRun(t *testing.T, h *Harness, branch string) {
+	t.Helper()
+	before := h.Runs()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	out, err := h.runGit(ctx, h.WorkDir, "push", "no-mistakes", ":"+branch)
+	if err != nil {
+		t.Fatalf("delete gate branch %s should not fail git push: %v\n%s", branch, err, out)
+	}
+	for _, want := range []string{"notify-push failed", "ref deletion"} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("delete gate branch output should contain %q, got:\n%s", want, out)
+		}
+	}
+	after := h.Runs()
+	if len(after) != len(before) {
+		t.Fatalf("ref deletion should not create a run: before=%d after=%d", len(before), len(after))
 	}
 }
 

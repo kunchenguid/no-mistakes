@@ -589,46 +589,6 @@ func TestPushReceivedCleansUpWorktreeOnConfigFailure(t *testing.T) {
 	}
 }
 
-func TestPushReceivedRefDeletion(t *testing.T) {
-	// When a branch is deleted (git push no-mistakes :branch), the post-receive
-	// hook sends newrev as all-zeros. HandlePushReceived should reject gracefully
-	// without creating a run or worktree.
-	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
-		return []pipeline.Step{&mockPassStep{name: types.StepReview}}
-	})
-
-	_, _ = setupTestGitRepo(t, p, d, "refdelete-repo")
-
-	client, err := ipc.Dial(p.Socket())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer client.Close()
-
-	var result ipc.PushReceivedResult
-	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
-		Gate: p.RepoDir("refdelete-repo"),
-		Ref:  "refs/heads/feature",
-		Old:  "abc123",
-		New:  "0000000000000000000000000000000000000000",
-	}, &result)
-	if err == nil {
-		t.Fatal("expected error for ref deletion push")
-	}
-	if !strings.Contains(err.Error(), "ref deletion") {
-		t.Errorf("error should mention ref deletion, got: %s", err.Error())
-	}
-
-	// Verify no run was created.
-	runs, err := d.GetRunsByRepo("refdelete-repo")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(runs) != 0 {
-		t.Errorf("expected 0 runs after ref deletion, got %d", len(runs))
-	}
-}
-
 func TestRespondNoActiveExecutor(t *testing.T) {
 	p, _ := startTestDaemonWithSteps(t, func() []pipeline.Step {
 		return []pipeline.Step{&mockPassStep{name: types.StepReview}}
