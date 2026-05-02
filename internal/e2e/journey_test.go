@@ -218,6 +218,7 @@ func runHappyPath(t *testing.T, agentName string) {
 		assertReviewExistingBranchUsesMergeBaseScope(t, h)
 		assertExplicitAttachUsesRepoWideActiveRun(t, h)
 		assertTestMalformedStructuredOutputRun(t, h)
+		assertLintMalformedStructuredOutputRun(t, h)
 		assertDocumentWarningRun(t, h)
 		assertDocumentInfoRun(t, h)
 		assertReviewWarningRun(t, h)
@@ -367,6 +368,9 @@ func cleanReviewScenario(t *testing.T) string {
       testing_summary: "simulated tests passed"
   - match: "You are validating a code change by testing it. Examine the repository and run the appropriate tests yourself.\n\nContext:\n- branch: test-malformed-structured-output"
     text: "tests found some issues"
+    structured_raw: '{"summary":123}'
+  - match: "Detect the linting and formatting tools for this project and run the relevant checks yourself.\n\nContext:\n- branch: lint-malformed-structured-output"
+    text: "lint found some issues"
     structured_raw: '{"summary":123}'
   - match: "You are validating a code change by testing it. Examine the repository and run the appropriate tests yourself.\n\nContext:\n- branch: test-agent-staged-new-test-file"
     text: "tests passed after staging a regression test"
@@ -1553,6 +1557,30 @@ func assertTestMalformedStructuredOutputRun(t *testing.T, h *Harness) {
 	}
 	if !strings.Contains(findings.Summary, "tests found some issues") {
 		t.Fatalf("malformed test output fallback summary = %q, want tests found some issues", findings.Summary)
+	}
+}
+
+func assertLintMalformedStructuredOutputRun(t *testing.T, h *Harness) {
+	t.Helper()
+	h.CommitChange("lint-malformed-structured-output", "lint-malformed-structured-output.txt", "lint malformed structured output\n", "add lint malformed structured output")
+	h.PushToGate("lint-malformed-structured-output")
+	run := h.WaitForRun("lint-malformed-structured-output", 60*time.Second)
+	if run.Status != types.RunCompleted {
+		t.Fatalf("lint-malformed-structured-output run status=%s error=%v", run.Status, deref(run.Error))
+	}
+	lintStep, ok := findStep(run.Steps, types.StepLint)
+	if !ok {
+		t.Fatal("expected lint step in lint-malformed-structured-output run")
+	}
+	if lintStep.FindingsJSON == nil {
+		t.Fatal("expected malformed lint structured output fallback to record findings JSON")
+	}
+	findings, err := types.ParseFindingsJSON(*lintStep.FindingsJSON)
+	if err != nil {
+		t.Fatalf("parse malformed lint output fallback findings: %v", err)
+	}
+	if !strings.Contains(findings.Summary, "lint found some issues") {
+		t.Fatalf("malformed lint output fallback summary = %q, want lint found some issues", findings.Summary)
 	}
 }
 
