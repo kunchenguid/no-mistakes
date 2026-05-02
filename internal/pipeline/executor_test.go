@@ -11,49 +11,30 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-func TestExecutor_AllStepsPass(t *testing.T) {
+// TestExecutor_StepLifecycleEvents verifies the executor emits step_started
+// and step_completed IPC events for every step in order. The broader
+// happy-path orchestration (DB persistence, run/step status transitions,
+// timestamp + duration recording across all 8 real steps) is exercised by
+// the e2e journey suite (internal/e2e), so this test focuses solely on
+// the IPC event contract that the TUI subscribes to.
+func TestExecutor_StepLifecycleEvents(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir := t.TempDir()
 
-	steps := []Step{
-		newPassStep(types.StepReview),
-		newPassStep(types.StepTest),
-		newPassStep(types.StepLint),
+	stepNames := []types.StepName{types.StepReview, types.StepTest, types.StepLint}
+	steps := make([]Step, len(stepNames))
+	for i, name := range stepNames {
+		steps[i] = newPassStep(name)
 	}
 
 	exec := NewExecutor(database, p, nil, nil, steps, nil)
 	events := collectEvents(exec)
 
-	err := exec.Execute(context.Background(), run, repo, workDir)
-	if err != nil {
+	if err := exec.Execute(context.Background(), run, repo, workDir); err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
 
-	// Run should be completed
-	updated, _ := database.GetRun(run.ID)
-	if updated.Status != types.RunCompleted {
-		t.Errorf("expected run status %q, got %q", types.RunCompleted, updated.Status)
-	}
-
-	// All steps should be completed
-	dbSteps, _ := database.GetStepsByRun(run.ID)
-	if len(dbSteps) != 3 {
-		t.Fatalf("expected 3 steps, got %d", len(dbSteps))
-	}
-	for _, s := range dbSteps {
-		if s.Status != types.StepStatusCompleted {
-			t.Errorf("step %s: expected status %q, got %q", s.StepName, types.StepStatusCompleted, s.Status)
-		}
-		if s.StartedAt == nil {
-			t.Errorf("step %s: started_at should be set", s.StepName)
-		}
-		if s.CompletedAt == nil {
-			t.Errorf("step %s: completed_at should be set", s.StepName)
-		}
-	}
-
-	// Should have step_started + step_completed events for each step
-	for _, name := range []types.StepName{types.StepReview, types.StepTest, types.StepLint} {
+	for _, name := range stepNames {
 		if e := events.find(ipc.EventStepStarted, name); e == nil {
 			t.Errorf("missing step_started event for %s", name)
 		}

@@ -68,11 +68,24 @@ func runHappyPath(t *testing.T, agentName string) {
 		t.Fatalf("run did not complete: status=%s error=%v", run.Status, deref(run.Error))
 	}
 
-	// Sanity-check that every step has a terminal status. A step stuck
-	// in pending or running indicates a harness bug.
+	// Sanity-check that every step has a terminal status with the
+	// expected timing fields recorded. Completed steps must have both
+	// started_at and completed_at; skipped steps record completed_at only
+	// when the executor actually ran them (status=skipped from a runtime
+	// SkipRemaining), so we don't assert timestamps on Skipped here.
 	for _, step := range run.Steps {
 		switch step.Status {
-		case types.StepStatusCompleted, types.StepStatusSkipped:
+		case types.StepStatusCompleted:
+			if step.StartedAt == nil {
+				t.Errorf("step %s completed without started_at", step.StepName)
+			}
+			if step.CompletedAt == nil {
+				t.Errorf("step %s completed without completed_at", step.StepName)
+			}
+			if step.DurationMS == nil {
+				t.Errorf("step %s completed without duration_ms", step.StepName)
+			}
+		case types.StepStatusSkipped:
 			// ok
 		default:
 			t.Errorf("step %s ended in non-terminal status %s (error=%v)", step.StepName, step.Status, deref(step.Error))
