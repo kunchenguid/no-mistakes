@@ -119,6 +119,8 @@ func runHappyPath(t *testing.T, agentName string) {
 			}
 			if step.DurationMS == nil {
 				t.Errorf("step %s completed without duration_ms", step.StepName)
+			} else if *step.DurationMS <= 0 {
+				t.Errorf("step %s completed with non-positive duration_ms %d", step.StepName, *step.DurationMS)
 			}
 		case types.StepStatusSkipped:
 			// ok

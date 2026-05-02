@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
@@ -251,33 +250,6 @@ func TestExecutor_EmptySteps(t *testing.T) {
 	updated, _ := database.GetRun(run.ID)
 	if updated.Status != types.RunCompleted {
 		t.Errorf("expected run status %q, got %q", types.RunCompleted, updated.Status)
-	}
-}
-
-func TestExecutor_StepResultHasDuration(t *testing.T) {
-	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
-
-	step := &adaptiveCallStep{
-		name: types.StepReview,
-		fn: func(sctx *StepContext) (*StepOutcome, error) {
-			time.Sleep(10 * time.Millisecond)
-			return &StepOutcome{ExitCode: 0}, nil
-		},
-	}
-
-	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
-	exec.Execute(context.Background(), run, repo, workDir)
-
-	dbSteps, _ := database.GetStepsByRun(run.ID)
-	if len(dbSteps) != 1 {
-		t.Fatalf("expected 1 step, got %d", len(dbSteps))
-	}
-	if dbSteps[0].DurationMS == nil {
-		t.Fatal("expected duration_ms to be set")
-	}
-	if *dbSteps[0].DurationMS < 10 {
-		t.Errorf("expected duration >= 10ms, got %dms", *dbSteps[0].DurationMS)
 	}
 }
 
