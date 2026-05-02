@@ -579,67 +579,6 @@ func TestPushReceivedDoesNotCancelActiveRunOnDifferentBranch(t *testing.T) {
 	}
 }
 
-func TestRerunHandler(t *testing.T) {
-	step := &mockPassStep{name: types.StepReview}
-	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
-		return []pipeline.Step{step}
-	})
-
-	repo, headSHA := setupTestGitRepo(t, p, d, "testrepo-rerun")
-
-	client, err := ipc.Dial(p.Socket())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer client.Close()
-
-	var first ipc.PushReceivedResult
-	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
-		Gate: p.RepoDir(repo.ID),
-		Ref:  "refs/heads/main",
-		Old:  "0000000000000000000000000000000000000000",
-		New:  headSHA,
-	}, &first)
-	if err != nil {
-		t.Fatal(err)
-	}
-	waitForRunTerminalState(t, d, first.RunID)
-
-	var rerun ipc.RerunResult
-	err = client.Call(ipc.MethodRerun, &ipc.RerunParams{RepoID: repo.ID, Branch: "main"}, &rerun)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if rerun.RunID == "" {
-		t.Fatal("expected non-empty rerun ID")
-	}
-	if rerun.RunID == first.RunID {
-		t.Fatal("expected rerun to create a new run")
-	}
-
-	waitForRunTerminalState(t, d, rerun.RunID)
-
-	run, err := d.GetRun(rerun.RunID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if run == nil {
-		t.Fatal("rerun not found")
-	}
-	if run.Branch != "main" {
-		t.Errorf("run branch = %q, want %q", run.Branch, "main")
-	}
-	if run.HeadSHA != headSHA {
-		t.Errorf("run head_sha = %q, want %q", run.HeadSHA, headSHA)
-	}
-	if run.BaseSHA != "0000000000000000000000000000000000000000" {
-		t.Errorf("run base_sha = %q, want zero sha", run.BaseSHA)
-	}
-	if step.execCnt.Load() < 2 {
-		t.Fatalf("expected step to execute twice, got %d", step.execCnt.Load())
-	}
-}
-
 func TestRerunHandlerNoPreviousRun(t *testing.T) {
 	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
 		return []pipeline.Step{&mockPassStep{name: types.StepReview}}

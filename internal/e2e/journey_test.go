@@ -649,6 +649,10 @@ func assertRerunCompletedInDir(t *testing.T, h *Harness, dir string, previous *i
 	if run.HeadSHA != previous.HeadSHA {
 		t.Errorf("rerun head = %q, want %q", run.HeadSHA, previous.HeadSHA)
 	}
+	if run.BaseSHA != previous.BaseSHA {
+		t.Errorf("rerun base = %q, want %q", run.BaseSHA, previous.BaseSHA)
+	}
+	assertPipelineStepsInOrder(t, run.Steps)
 	assertPushedHead(t, run.HeadSHA, h.UpstreamBranchSHA(run.Branch))
 	return run
 }
