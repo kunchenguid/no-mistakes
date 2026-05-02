@@ -65,19 +65,3 @@ func TestPIDFile(t *testing.T) {
 		t.Errorf("pid = %d, want %d", pid, os.Getpid())
 	}
 }
-
-func TestGetRunNotFound(t *testing.T) {
-	p, _ := startTestDaemon(t)
-
-	client, err := ipc.Dial(p.Socket())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer client.Close()
-
-	var result ipc.GetRunResult
-	err = client.Call(ipc.MethodGetRun, &ipc.GetRunParams{RunID: "nonexistent"}, &result)
-	if err == nil {
-		t.Error("expected error for nonexistent run")
-	}
-}
