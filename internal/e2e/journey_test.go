@@ -1420,6 +1420,12 @@ func assertReviewWarningRun(t *testing.T, h *Harness) {
 	if fetchedRun == nil {
 		t.Fatal("expected GetRun IPC to return review-warning run")
 	}
+	if fetchedRun.ID != run.ID {
+		t.Fatalf("GetRun IPC run ID = %q, want %q", fetchedRun.ID, run.ID)
+	}
+	if fetchedRun.Branch != "review-warning" {
+		t.Fatalf("GetRun IPC branch = %q, want review-warning", fetchedRun.Branch)
+	}
 	fetchedReviewStep, ok := findStep(fetchedRun.Steps, types.StepReview)
 	if !ok {
 		t.Fatal("expected GetRun IPC to include review step")

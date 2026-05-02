@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
-	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 func TestHealthHandler(t *testing.T) {
@@ -64,50 +63,6 @@ func TestPIDFile(t *testing.T) {
 	}
 	if pid != os.Getpid() {
 		t.Errorf("pid = %d, want %d", pid, os.Getpid())
-	}
-}
-
-func TestGetRunHandler(t *testing.T) {
-	p, d := startTestDaemon(t)
-
-	// Insert test data.
-	repo, err := d.InsertRepoWithID("test-repo-123", "/tmp/test-repo", "https://github.com/test/repo", "main")
-	if err != nil {
-		t.Fatal(err)
-	}
-	run, err := d.InsertRun(repo.ID, "feature", "abc123", "def456")
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = d.InsertStepResult(run.ID, types.StepReview)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	client, err := ipc.Dial(p.Socket())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer client.Close()
-
-	var result ipc.GetRunResult
-	if err := client.Call(ipc.MethodGetRun, &ipc.GetRunParams{RunID: run.ID}, &result); err != nil {
-		t.Fatal(err)
-	}
-	if result.Run == nil {
-		t.Fatal("expected run, got nil")
-	}
-	if result.Run.ID != run.ID {
-		t.Errorf("run id = %q, want %q", result.Run.ID, run.ID)
-	}
-	if result.Run.Branch != "feature" {
-		t.Errorf("branch = %q, want %q", result.Run.Branch, "feature")
-	}
-	if len(result.Run.Steps) != 1 {
-		t.Fatalf("steps count = %d, want 1", len(result.Run.Steps))
-	}
-	if result.Run.Steps[0].StepName != types.StepReview {
-		t.Errorf("step name = %q, want %q", result.Run.Steps[0].StepName, types.StepReview)
 	}
 }
 
