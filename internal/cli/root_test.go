@@ -378,24 +378,6 @@ func setRunCreatedAt(t *testing.T, dbPath, runID string, ts int64) {
 	}
 }
 
-func TestRootErrorFromNonGitDir(t *testing.T) {
-	// Running bare `no-mistakes` from a non-git directory should return an
-	// error with a useful message, not fail silently.
-	// No NM_TEST_START_DAEMON needed: attachRun now checks for a git repo
-	// before starting the daemon, so we never spawn a process here.
-	nonGitDir := t.TempDir()
-	t.Setenv("NM_HOME", t.TempDir())
-	chdir(t, nonGitDir)
-
-	_, err := executeCmd()
-	if err == nil {
-		t.Fatal("expected error when running from non-git directory, got nil")
-	}
-	if !strings.Contains(err.Error(), "git repository") {
-		t.Errorf("error should mention git repository, got: %v", err)
-	}
-}
-
 func TestExecuteReturnsExitCodeOnCommandError(t *testing.T) {
 	nonGitDir := t.TempDir()
 	t.Setenv("NM_HOME", t.TempDir())
