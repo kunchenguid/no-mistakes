@@ -64,6 +64,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	assertInitOutput(t, h, out)
 	assertGateRemotePresent(t, h)
 	assertDaemonStatusRunning(t, h)
+	assertDaemonRestartWhileRunning(t, h)
 	assertInitAlreadyInitialized(t, h)
 	assertRunsEmpty(t, h)
 
@@ -311,6 +312,18 @@ func assertDaemonStatusNotRunning(t *testing.T, h *Harness) {
 	if !strings.Contains(out, "daemon not running") {
 		t.Errorf("daemon status output should show not running after stop, got:\n%s", out)
 	}
+}
+
+func assertDaemonRestartWhileRunning(t *testing.T, h *Harness) {
+	t.Helper()
+	out, err := h.Run("daemon", "restart")
+	if err != nil {
+		t.Fatalf("nm daemon restart while running: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "daemon restarted") {
+		t.Errorf("daemon restart output should show restarted, got:\n%s", out)
+	}
+	assertDaemonStatusRunning(t, h)
 }
 
 func assertDaemonRestartStartsWhenNotRunning(t *testing.T, h *Harness) {
