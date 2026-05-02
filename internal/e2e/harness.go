@@ -91,7 +91,10 @@ func NewHarness(t *testing.T, opts SetupOpts) *Harness {
 
 	// Symlink each agent name to the same fake binary. Codex and Claude
 	// dispatch by argv[0] basename; opencode the same. Symlinks (not
-	// copies) keep the build cheap on subsequent tests.
+	// copies) keep the build cheap on subsequent tests. The `gh` symlink
+	// is a guard rail: BinDir is prepended to PATH, so any stray invocation
+	// of gh by the pipeline (e.g. PR/CI on a misconfigured origin) hits
+	// the fakeagent stub instead of a real, authenticated system gh.
 	for _, name := range []string{"claude", "codex", "opencode", "gh"} {
 		linkPath := filepath.Join(h.BinDir, name)
 		if err := os.Symlink(fakeBin, linkPath); err != nil {
@@ -492,6 +495,7 @@ func (h *Harness) waitForRunStatus(branch string, timeout time.Duration, match f
 	var lastRun *ipc.RunInfo
 	for time.Now().Before(deadline) {
 		var result ipc.GetRunsResult
+		var ok bool
 		func() {
 			p := paths.WithRoot(h.NMHome)
 			client, err := ipc.Dial(p.Socket())
@@ -500,10 +504,12 @@ func (h *Harness) waitForRunStatus(branch string, timeout time.Duration, match f
 			}
 			defer client.Close()
 			if err := client.Call(ipc.MethodGetRuns, &ipc.GetRunsParams{RepoID: h.repoID()}, &result); err != nil {
-				result.Runs = nil
+				return
 			}
+			ok = true
 		}()
-		if result.Runs == nil {
+		if !ok {
+			// Daemon not yet reachable or RPC failed; back off and retry.
 			time.Sleep(200 * time.Millisecond)
 			continue
 		}

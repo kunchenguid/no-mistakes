@@ -39,10 +39,25 @@ func run(argv []string) int {
 		return runCodex(args, scenario)
 	case "opencode":
 		return runOpencode(args, scenario)
+	case "gh":
+		return runGhStub(args)
 	default:
 		fmt.Fprintf(os.Stderr, "fakeagent: invoked under unknown name %q (argv[0]=%q)\n", name, argv[0])
 		return 2
 	}
+}
+
+// runGhStub shadows any system-installed gh during e2e so a stray PR/CI
+// step can never reach github.com. It fails closed: `gh auth status`
+// returns non-zero (so SCM detection treats GitHub as unauthenticated)
+// and any other subcommand prints a clear error.
+func runGhStub(args []string) int {
+	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
+		fmt.Fprintln(os.Stderr, "fakeagent gh: not authenticated (e2e stub)")
+		return 1
+	}
+	fmt.Fprintf(os.Stderr, "fakeagent gh: subcommand not implemented in e2e stub: %v\n", args)
+	return 1
 }
 
 func agentNameFromArgv0(arg0 string) string {

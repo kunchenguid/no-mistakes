@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -208,8 +210,10 @@ func stageFilesInDir(wd string, paths []string) error {
 	if len(relPaths) == 0 {
 		return nil
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	args := append([]string{"add", "--"}, relPaths...)
-	cmd := exec.Command("git", args...)
+	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = wd
 	out, err := cmd.CombinedOutput()
 	if err != nil {
