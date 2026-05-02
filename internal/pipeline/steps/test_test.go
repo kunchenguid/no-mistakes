@@ -123,46 +123,6 @@ func TestTestStep_FixMode_UsesFallbackSummaryWhenStructuredSummaryMalformed(t *t
 	}
 }
 
-func TestTestStep_AgentWritesNewTests_NeedsApproval(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-
-	findings := Findings{Items: nil, Summary: "all tests passed"}
-	findingsJSON, _ := json.Marshal(findings)
-
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			// Simulate agent creating a new test file in another supported language
-			os.WriteFile(filepath.Join(dir, "agent_test.py"), []byte("def test_agent():\n    pass\n"), 0o644)
-			return &agent.Result{Output: findingsJSON}, nil
-		},
-	}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-
-	step := &TestStep{}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !outcome.NeedsApproval {
-		t.Error("expected approval needed when agent writes new test files")
-	}
-
-	var f Findings
-	json.Unmarshal([]byte(outcome.Findings), &f)
-	foundTestFile := false
-	for _, item := range f.Items {
-		if strings.Contains(item.Description, "agent_test.py") {
-			foundTestFile = true
-			break
-		}
-	}
-	if !foundTestFile {
-		t.Errorf("expected finding mentioning agent_test.py, got findings: %+v", f.Items)
-	}
-}
-
 func TestTestStep_AgentStagesNewTests_NeedsApproval(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

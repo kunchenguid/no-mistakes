@@ -343,8 +343,10 @@ func cleanReviewScenario(t *testing.T) string {
   - match: "You are validating a code change by testing it. Examine the repository and run the appropriate tests yourself.\n\nContext:\n- branch: test-agent-new-test-file"
     text: "tests passed after adding a regression test"
     edits:
-      - path: "agent_new_test.go"
-        new: "package main\n"
+      - path: "agent_test.py"
+        new: "def test_agent():\n    pass\n"
+      - path: "readme.md"
+        new: "# readme\n"
     structured:
       findings: []
       summary: "all tests passed"
@@ -1453,10 +1455,10 @@ func assertTestAgentNewTestFileRun(t *testing.T, h *Harness) {
 	if item.Severity != "info" {
 		t.Fatalf("new test file finding severity = %q, want info", item.Severity)
 	}
-	if item.File != "agent_new_test.go" {
-		t.Fatalf("new test file finding file = %q, want agent_new_test.go", item.File)
+	if item.File != "agent_test.py" {
+		t.Fatalf("new test file finding file = %q, want agent_test.py", item.File)
 	}
-	if !strings.Contains(item.Description, "new test file written by agent: agent_new_test.go") {
+	if !strings.Contains(item.Description, "new test file written by agent: agent_test.py") {
 		t.Fatalf("new test file finding description = %q", item.Description)
 	}
 	h.Respond(run.ID, types.StepTest, types.ActionAbort)
