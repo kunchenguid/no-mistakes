@@ -97,6 +97,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	assertStatusActiveRun(t, h, activeRun)
 	assertStatusActiveRunInDir(t, h, featureWorktree, activeRun)
 	assertRunsActive(t, h, activeRun)
+	assertRunsActiveInDir(t, h, featureWorktree, activeRun)
 
 	run := h.WaitForRun("feature/e2e", 60*time.Second)
 
@@ -522,19 +523,24 @@ func assertRootRecentRuns(t *testing.T, h *Harness, run *ipc.RunInfo) {
 
 func assertRunsActive(t *testing.T, h *Harness, run *ipc.RunInfo) {
 	t.Helper()
-	assertRunsContainsRun(t, h, run, string(types.RunRunning), "while run is active")
+	assertRunsContainsRunInDir(t, h, h.WorkDir, run, string(types.RunRunning), "while run is active")
+}
+
+func assertRunsActiveInDir(t *testing.T, h *Harness, dir string, run *ipc.RunInfo) {
+	t.Helper()
+	assertRunsContainsRunInDir(t, h, dir, run, string(types.RunRunning), "while run is active from worktree")
 }
 
 func assertRunsCompleted(t *testing.T, h *Harness, run *ipc.RunInfo) {
 	t.Helper()
-	assertRunsContainsRun(t, h, run, string(types.RunCompleted), "after completed pipeline")
+	assertRunsContainsRunInDir(t, h, h.WorkDir, run, string(types.RunCompleted), "after completed pipeline")
 }
 
-func assertRunsContainsRun(t *testing.T, h *Harness, run *ipc.RunInfo, status, phase string) {
+func assertRunsContainsRunInDir(t *testing.T, h *Harness, dir string, run *ipc.RunInfo, status, phase string) {
 	t.Helper()
-	out, err := h.Run("runs")
+	out, err := h.RunInDir(dir, "runs")
 	if err != nil {
-		t.Fatalf("nm runs %s: %v\n%s", phase, err, out)
+		t.Fatalf("nm runs %s in %s: %v\n%s", phase, dir, err, out)
 	}
 	if regexp.MustCompile(`\x1b\[[0-9;]*m`).MatchString(out) {
 		t.Fatalf("runs output should not include ANSI escape sequences, got: %q", out)

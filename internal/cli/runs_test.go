@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -11,7 +10,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/gate"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
-	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 func TestRunsLimit(t *testing.T) {
@@ -62,67 +60,3 @@ func TestRunsLimit(t *testing.T) {
 		t.Errorf("default runs output should show at most 10 runs, got %d", dataLines)
 	}
 }
-
-func TestRunsFromWorktreeWithActiveRun(t *testing.T) {
-	repoDir := setupTestRepo(t)
-	nmHome := os.Getenv("NM_HOME")
-	p := paths.WithRoot(nmHome)
-
-	d, err := db.Open(p.DB())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer d.Close()
-
-	if _, err := gate.Init(context.Background(), d, p, repoDir); err != nil {
-		t.Fatalf("gate.Init failed: %v", err)
-	}
-
-	run(t, repoDir, "git", "checkout", "-b", "wt-runs-branch")
-	run(t, repoDir, "git", "checkout", "-")
-	wtDir := filepath.Join(t.TempDir(), "worktree")
-	ctx := context.Background()
-	if err := git.WorktreeAdd(ctx, repoDir, wtDir, "wt-runs-branch"); err != nil {
-		t.Fatalf("WorktreeAdd failed: %v", err)
-	}
-	cleanupWorktree(t, repoDir, wtDir)
-
-	gitRoot, err := git.FindGitRoot(repoDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	repo, err := d.GetRepoByPath(gitRoot)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	r, err := d.InsertRun(repo.ID, "wt-runs-branch", "abc123456789", "0000000000000000")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := d.UpdateRunStatus(r.ID, types.RunRunning); err != nil {
-		t.Fatal(err)
-	}
-
-	chdir(t, wtDir)
-
-	out, err := executeCmd("runs")
-	if err != nil {
-		t.Fatalf("runs from worktree failed: %v\noutput: %s", err, out)
-	}
-	if !strings.Contains(out, "wt-runs-branch") {
-		t.Errorf("expected worktree branch in runs output, got: %s", out)
-	}
-	if !strings.Contains(out, "running") {
-		t.Errorf("expected running status in runs output, got: %s", out)
-	}
-	if !strings.Contains(out, "abc12345") {
-		t.Errorf("expected truncated head SHA in runs output, got: %s", out)
-	}
-	if strings.Contains(out, "no runs") {
-		t.Errorf("runs output should show the active run instead of empty-state text, got: %s", out)
-	}
-}
-
-// Helper to add the db package import for test compilation.
-var _ = (*db.DB)(nil)
