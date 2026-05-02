@@ -10,34 +10,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
-	"github.com/kunchenguid/no-mistakes/internal/types"
 )
-
-func TestTestStep_PassingCommand(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, "abc", "def", config.Commands{Test: "true"})
-
-	step := &TestStep{}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if outcome.NeedsApproval {
-		t.Error("expected no approval for passing tests")
-	}
-	if len(ag.calls) != 0 {
-		t.Error("expected no agent calls when test command passes")
-	}
-	findings, err := types.ParseFindingsJSON(outcome.Findings)
-	if err != nil {
-		t.Fatalf("ParseFindingsJSON() error = %v", err)
-	}
-	if len(findings.Tested) != 1 || findings.Tested[0] != "true" {
-		t.Fatalf("expected passing command to record executed test command, got %+v", findings.Tested)
-	}
-}
 
 func TestTestStep_ConfiguredCommand_UsesStepEnv(t *testing.T) {
 	t.Parallel()

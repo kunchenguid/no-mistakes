@@ -186,6 +186,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	h.RemoveWorktree(featureWorktree)
 	h.Checkout("feature/e2e")
 	assertRootRecentRuns(t, h, rerun)
+	assertConfiguredCommandRun(t, h)
 
 	t.Logf("agent invocations: %d\n%s", len(invs), summarisePrompts(invs))
 	t.Logf("step outcomes:")
@@ -640,6 +641,36 @@ func assertRunsContainsRunInDir(t *testing.T, h *Harness, dir string, run *ipc.R
 		if !strings.Contains(out, want) {
 			t.Errorf("runs output should contain %q %s, got:\n%s", want, phase, out)
 		}
+	}
+}
+
+func assertConfiguredCommandRun(t *testing.T, h *Harness) {
+	t.Helper()
+	config := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  test: true\n  lint: true\n"
+	head := h.CommitChange("configured-commands", ".no-mistakes.yaml", config, "enable configured checks")
+	h.PushToGate("configured-commands")
+	run := h.WaitForRun("configured-commands", 60*time.Second)
+	if run.Status != types.RunCompleted {
+		t.Fatalf("configured command run did not complete: status=%s error=%v", run.Status, deref(run.Error))
+	}
+	assertNoUnexpectedAutofixCommits(t, run, head)
+	step, ok := findStep(run.Steps, types.StepTest)
+	if !ok {
+		t.Fatal("expected test step in configured command run")
+	}
+	if step.FindingsJSON == nil {
+		t.Fatal("expected configured test step to record findings JSON")
+	}
+	findings, err := types.ParseFindingsJSON(*step.FindingsJSON)
+	if err != nil {
+		t.Fatalf("parse configured test findings: %v", err)
+	}
+	if len(findings.Tested) != 1 || findings.Tested[0] != "true" {
+		t.Fatalf("expected configured test command to be recorded, got %+v", findings.Tested)
+	}
+	invs := h.AgentInvocations()
+	if sawPromptContainingAll(invs, "You are validating a code change by testing it", "branch: configured-commands") {
+		t.Fatalf("configured test command should not call the agent for test detection; invocations:\n%s", summarisePrompts(invs))
 	}
 }
 
