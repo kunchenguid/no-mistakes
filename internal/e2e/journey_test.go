@@ -11,7 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -213,6 +215,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	}
 	assertRunsDefaultLimit(t, h)
 	assertGateRefDeletionDoesNotCreateRun(t, h, "configured-commands")
+	assertStatusShortHeadSHA(t, h)
 
 	t.Logf("agent invocations: %d\n%s", len(invs), summarisePrompts(invs))
 	t.Logf("step outcomes:")
@@ -1877,6 +1880,37 @@ func assertStatusActiveRunInDir(t *testing.T, h *Harness, dir string, run *ipc.R
 		if !strings.Contains(out, want) {
 			t.Errorf("status output should contain %q while run is active in %s, got:\n%s", want, dir, out)
 		}
+	}
+}
+
+func assertStatusShortHeadSHA(t *testing.T, h *Harness) {
+	t.Helper()
+	database, err := db.Open(paths.WithRoot(h.NMHome).DB())
+	if err != nil {
+		t.Fatalf("open e2e db for short head status: %v", err)
+	}
+	defer database.Close()
+	run, err := database.InsertRun(h.repoID(), "feature/short-sha", "abc123", "0000000000000000")
+	if err != nil {
+		t.Fatalf("insert short head run: %v", err)
+	}
+	defer func() {
+		if err := database.UpdateRunStatus(run.ID, types.RunCompleted); err != nil {
+			t.Fatalf("complete short head run cleanup: %v", err)
+		}
+	}()
+	if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatalf("mark short head run running: %v", err)
+	}
+	out, err := h.Run("status")
+	if err != nil {
+		t.Fatalf("nm status with short active head SHA: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "abc123") {
+		t.Fatalf("expected full short head SHA abc123 in status output, got:\n%s", out)
+	}
+	if strings.Contains(out, "00000000") {
+		t.Fatalf("status output should show active run head SHA, got:\n%s", out)
 	}
 }
 
