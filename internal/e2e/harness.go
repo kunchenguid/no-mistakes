@@ -288,6 +288,26 @@ func (h *Harness) UpstreamBranchSHA(branch string) string {
 // RunInfo so the test can assert on per-step outcomes.
 func (h *Harness) WaitForRun(branch string, timeout time.Duration) *ipc.RunInfo {
 	h.t.Helper()
+	return h.waitForRunStatus(branch, timeout, func(status types.RunStatus) bool {
+		switch status {
+		case types.RunCompleted, types.RunFailed, types.RunCancelled:
+			return true
+		default:
+			return false
+		}
+	}, "finish")
+}
+
+// WaitForRunRunning polls until the newest run for branch reaches running.
+func (h *Harness) WaitForRunRunning(branch string, timeout time.Duration) *ipc.RunInfo {
+	h.t.Helper()
+	return h.waitForRunStatus(branch, timeout, func(status types.RunStatus) bool {
+		return status == types.RunRunning
+	}, "start running")
+}
+
+func (h *Harness) waitForRunStatus(branch string, timeout time.Duration, match func(types.RunStatus) bool, action string) *ipc.RunInfo {
+	h.t.Helper()
 	p := paths.WithRoot(h.NMHome)
 	deadline := time.Now().Add(timeout)
 	repoID := h.repoID()
@@ -312,8 +332,7 @@ func (h *Harness) WaitForRun(branch string, timeout time.Duration) *ipc.RunInfo 
 				continue
 			}
 			lastRun = r
-			switch r.Status {
-			case types.RunCompleted, types.RunFailed, types.RunCancelled:
+			if match(r.Status) {
 				return r
 			}
 			break
@@ -322,7 +341,7 @@ func (h *Harness) WaitForRun(branch string, timeout time.Duration) *ipc.RunInfo 
 	}
 	h.dumpDebugState()
 	if lastRun != nil {
-		h.t.Fatalf("run for branch %s did not finish in %v (last status=%s)", branch, timeout, lastRun.Status)
+		h.t.Fatalf("run for branch %s did not %s in %v (last status=%s)", branch, action, timeout, lastRun.Status)
 	}
 	h.t.Fatalf("no run found for branch %s within %v", branch, timeout)
 	return nil

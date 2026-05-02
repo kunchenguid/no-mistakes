@@ -90,6 +90,9 @@ func runHappyPath(t *testing.T, agentName string) {
 
 	// Wait up to 60s for the run to terminate. Pipelines that include
 	// agent calls + git operations take ~5-15s on a warm machine.
+	activeRun := h.WaitForRunRunning("feature/e2e", 30*time.Second)
+	assertStatusActiveRun(t, h, activeRun)
+
 	run := h.WaitForRun("feature/e2e", 60*time.Second)
 
 	if run.Status != types.RunCompleted {
@@ -522,6 +525,23 @@ func assertDaemonRestartStartsWhenNotRunning(t *testing.T, h *Harness) {
 		t.Errorf("daemon restart output should show restarted, got:\n%s", out)
 	}
 	assertDaemonStatusRunning(t, h)
+}
+
+func assertStatusActiveRun(t *testing.T, h *Harness, run *ipc.RunInfo) {
+	t.Helper()
+	out, err := h.Run("status")
+	if err != nil {
+		t.Fatalf("nm status while run active: %v\n%s", err, out)
+	}
+	sha := run.HeadSHA
+	if len(sha) > 8 {
+		sha = sha[:8]
+	}
+	for _, want := range []string{"Active run", run.Branch, string(run.Status), sha} {
+		if !strings.Contains(out, want) {
+			t.Errorf("status output should contain %q while run is active, got:\n%s", want, out)
+		}
+	}
 }
 
 func assertStatusInitializedStopped(t *testing.T, h *Harness) {
