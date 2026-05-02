@@ -15,66 +15,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-func TestRebaseStep_RebasesOntoDefaultBranch(t *testing.T) {
-	t.Parallel()
-	upstream := t.TempDir()
-	gitCmd(t, upstream, "init", "--bare")
-
-	dir := t.TempDir()
-	gitCmd(t, dir, "init")
-	gitCmd(t, dir, "config", "user.name", "test")
-	gitCmd(t, dir, "config", "user.email", "test@test.com")
-	gitCmd(t, dir, "checkout", "-b", "main")
-	gitCmd(t, dir, "remote", "add", "origin", upstream)
-	os.WriteFile(filepath.Join(dir, "app.txt"), []byte("base\n"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "base commit")
-	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
-	gitCmd(t, dir, "push", "origin", "main")
-
-	gitCmd(t, dir, "checkout", "-b", "feature")
-	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature\n"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "feature commit")
-	originalHeadSHA := gitCmd(t, dir, "rev-parse", "HEAD")
-
-	gitCmd(t, dir, "checkout", "main")
-	os.WriteFile(filepath.Join(dir, "app.txt"), []byte("base\nmain\n"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "main update")
-	gitCmd(t, dir, "push", "origin", "main")
-	gitCmd(t, dir, "checkout", "feature")
-
-	ag := &mockAgent{name: "test"}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, originalHeadSHA, config.Commands{})
-	sctx.Run.Branch = "refs/heads/feature"
-	sctx.Repo.UpstreamURL = upstream
-
-	step := &RebaseStep{}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if outcome.NeedsApproval {
-		t.Fatal("expected no approval for clean rebase")
-	}
-	if sctx.Run.HeadSHA == originalHeadSHA {
-		t.Fatal("expected head SHA to change after rebase")
-	}
-	mergeBase := gitCmd(t, dir, "merge-base", "HEAD", "origin/main")
-	originMain := gitCmd(t, dir, "rev-parse", "origin/main")
-	if mergeBase != originMain {
-		t.Fatalf("merge-base = %s, want origin/main %s", mergeBase, originMain)
-	}
-	stored, err := sctx.DB.GetRun(sctx.Run.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stored == nil || stored.HeadSHA != sctx.Run.HeadSHA {
-		t.Fatalf("stored head SHA = %v, want %s", stored, sctx.Run.HeadSHA)
-	}
-}
-
 func TestRebaseStep_ConflictReturnsFindings(t *testing.T) {
 	t.Parallel()
 	upstream := t.TempDir()

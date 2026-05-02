@@ -850,6 +850,17 @@ func assertNonEmptyDiffAfterRebaseRun(t *testing.T, h *Harness) {
 	if run.HeadSHA == branchHead {
 		t.Fatalf("expected rebase to rewrite head SHA, still %s", run.HeadSHA)
 	}
+	mergeBase, err := h.runGit(ctx, h.UpstreamDir, "merge-base", "refs/heads/non-empty-after-rebase", "refs/heads/main")
+	if err != nil {
+		t.Fatalf("resolve non-empty-after-rebase merge-base: %v\n%s", err, mergeBase)
+	}
+	mainSHA, err := h.runGit(ctx, h.UpstreamDir, "rev-parse", "refs/heads/main")
+	if err != nil {
+		t.Fatalf("resolve upstream main SHA: %v\n%s", err, mainSHA)
+	}
+	if strings.TrimSpace(string(mergeBase)) != strings.TrimSpace(string(mainSHA)) {
+		t.Fatalf("non-empty-after-rebase merge-base = %s, want upstream main %s", strings.TrimSpace(string(mergeBase)), strings.TrimSpace(string(mainSHA)))
+	}
 	for _, stepName := range []types.StepName{types.StepRebase, types.StepReview, types.StepTest, types.StepDocument, types.StepLint, types.StepPush} {
 		step, ok := findStep(run.Steps, stepName)
 		if !ok {
