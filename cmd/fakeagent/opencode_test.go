@@ -102,6 +102,72 @@ func TestPatchOpencodeMessagePreservesRecordedInfo(t *testing.T) {
 	}
 }
 
+func TestPatchOpencodeMessagePreservesStructuredRaw(t *testing.T) {
+	t.Helper()
+
+	raw := []byte(`{"info":{"id":"msg-123","role":"assistant"}}`)
+	patched, err := patchOpencodeMessage(raw, Action{StructuredRaw: `"not an object"`})
+	if err != nil {
+		t.Fatalf("patchOpencodeMessage: %v", err)
+	}
+	var resp struct {
+		Info struct {
+			Structured json.RawMessage `json:"structured"`
+		} `json:"info"`
+	}
+	if err := json.Unmarshal(patched, &resp); err != nil {
+		t.Fatalf("unmarshal patched response: %v", err)
+	}
+	if string(resp.Info.Structured) != `"not an object"` {
+		t.Fatalf("structured = %s, want raw payload", resp.Info.Structured)
+	}
+}
+
+func TestFakeOpencodeServerMessageIncludesStructuredRaw(t *testing.T) {
+	t.Helper()
+
+	srv := newFakeOpencodeServer(&Scenario{Actions: []Action{{
+		Match:         "raw",
+		Text:          "scenario text",
+		StructuredRaw: `"not an object"`,
+	}}})
+
+	createReq := httptest.NewRequest(http.MethodPost, "/session", strings.NewReader(fmt.Sprintf(`{"directory":%q}`, t.TempDir())))
+	createReq.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create session status = %d, want %d", createRec.Code, http.StatusOK)
+	}
+
+	var session struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(createRec.Body.Bytes(), &session); err != nil {
+		t.Fatalf("unmarshal session: %v", err)
+	}
+
+	msgReq := httptest.NewRequest(http.MethodPost, "/session/"+session.ID+"/message", strings.NewReader(`{"parts":[{"type":"text","text":"raw prompt"}]}`))
+	msgReq.Header.Set("Content-Type", "application/json")
+	msgRec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(msgRec, msgReq)
+	if msgRec.Code != http.StatusOK {
+		t.Fatalf("message status = %d, want %d", msgRec.Code, http.StatusOK)
+	}
+
+	var resp struct {
+		Info struct {
+			Structured json.RawMessage `json:"structured"`
+		} `json:"info"`
+	}
+	if err := json.Unmarshal(msgRec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal message: %v", err)
+	}
+	if string(resp.Info.Structured) != `"not an object"` {
+		t.Fatalf("structured = %s, want raw payload", resp.Info.Structured)
+	}
+}
+
 func TestOpencodeFixtureRewritesSessionIDsPerRequest(t *testing.T) {
 	t.Helper()
 

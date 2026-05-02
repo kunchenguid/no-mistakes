@@ -52,6 +52,31 @@ func TestPatchCodexFixtureStructuredRunRewritesAgentMessageText(t *testing.T) {
 	}
 }
 
+func TestPatchCodexFixtureStructuredRawRunRewritesAgentMessageText(t *testing.T) {
+	t.Helper()
+
+	raw := []byte("{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"recorded text\"}}\n")
+	patched, err := patchCodexFixture(raw, Action{
+		Text:          "scenario text",
+		StructuredRaw: `"not an object"`,
+	})
+	if err != nil {
+		t.Fatalf("patchCodexFixture: %v", err)
+	}
+
+	var item struct {
+		Item struct {
+			Text string `json:"text"`
+		} `json:"item"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(patched), &item); err != nil {
+		t.Fatalf("unmarshal patched item: %v", err)
+	}
+	if item.Item.Text != `"not an object"` {
+		t.Fatalf("agent_message text = %q, want raw structured JSON", item.Item.Text)
+	}
+}
+
 func TestPatchCodexFixturePlainRunRewritesAgentMessageText(t *testing.T) {
 	t.Helper()
 

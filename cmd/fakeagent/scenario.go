@@ -292,6 +292,10 @@ func (a Action) structuredJSON() []byte {
 	return data
 }
 
+func (a Action) hasStructuredOutput() bool {
+	return a.Structured != nil || a.StructuredRaw != ""
+}
+
 func (a Action) textOrDefault() string {
 	if a.Text != "" {
 		return a.Text

@@ -413,7 +413,7 @@ func (s *fakeOpencodeServer) handleMessage(w http.ResponseWriter, r *http.Reques
 			{"type": "text", "text": respText},
 		},
 	}
-	if action.Structured != nil {
+	if action.hasStructuredOutput() {
 		resp["info"].(map[string]any)["structured"] = json.RawMessage(action.structuredJSON())
 	}
 	writeJSON(w, resp)
@@ -500,7 +500,7 @@ func patchOpencodeMessage(raw []byte, action Action) ([]byte, error) {
 	if info == nil {
 		return nil, fmt.Errorf("parse message: missing info object")
 	}
-	if action.Structured != nil {
+	if action.hasStructuredOutput() {
 		info["structured"] = json.RawMessage(action.structuredJSON())
 	}
 	resp["info"] = info

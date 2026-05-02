@@ -36,7 +36,7 @@ func runCodex(args []string, scenario *Scenario) int {
 	// the final answer as agent_message text, so the fixture patches that
 	// message body directly.
 	flavour := "structured"
-	if action.Structured == nil && action.Text != "" {
+	if !action.hasStructuredOutput() && action.Text != "" {
 		flavour = "plain"
 	}
 	if data, err := readFixtureFile(fixtureDir("codex"), flavour, ".jsonl"); err != nil {
@@ -55,7 +55,7 @@ func runCodex(args []string, scenario *Scenario) int {
 	// Structured Codex output is still delivered as agent_message text.
 	// Emit JSON there when requested, otherwise emit the human text.
 	body := action.textOrDefault()
-	if action.Structured != nil {
+	if action.hasStructuredOutput() {
 		body = string(action.structuredJSON())
 	}
 
@@ -85,7 +85,7 @@ func runCodex(args []string, scenario *Scenario) int {
 // structured responses we substitute the scenario JSON.
 func patchCodexFixture(raw []byte, action Action) ([]byte, error) {
 	body := action.textOrDefault()
-	if action.Structured != nil {
+	if action.hasStructuredOutput() {
 		body = string(action.structuredJSON())
 	}
 	var out bytes.Buffer
