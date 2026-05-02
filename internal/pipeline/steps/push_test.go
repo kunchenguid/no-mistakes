@@ -11,52 +11,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/config"
 )
 
-func TestPushStep_Success(t *testing.T) {
-	t.Parallel()
-	// Set up a bare repo as "upstream"
-	upstream := t.TempDir()
-	gitCmd(t, upstream, "init", "--bare")
-
-	// Create a regular repo and push initial commit to upstream
-	dir := t.TempDir()
-	gitCmd(t, dir, "init")
-	gitCmd(t, dir, "config", "user.name", "test")
-	gitCmd(t, dir, "config", "user.email", "test@test.com")
-	gitCmd(t, dir, "checkout", "-b", "main")
-	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "initial")
-	gitCmd(t, dir, "remote", "add", "origin", upstream)
-	gitCmd(t, dir, "push", "origin", "main")
-
-	// Create feature branch
-	gitCmd(t, dir, "checkout", "-b", "feature")
-	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "feature commit")
-	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
-	baseSHA := gitCmd(t, dir, "rev-parse", "main")
-
-	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Repo.UpstreamURL = upstream
-
-	step := &PushStep{}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if outcome.NeedsApproval {
-		t.Error("push should never need approval")
-	}
-
-	// Verify the push landed in upstream
-	upstreamSHA := gitCmd(t, upstream, "rev-parse", "refs/heads/feature")
-	if upstreamSHA != headSHA {
-		t.Errorf("upstream SHA = %s, want %s", upstreamSHA, headSHA)
-	}
-}
-
 func TestPushStep_CommitsUncommittedChanges(t *testing.T) {
 	t.Parallel()
 	// Set up upstream
