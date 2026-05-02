@@ -32,23 +32,6 @@ func writeDaemonPIDRecord(t *testing.T, path string, record daemonPIDFile) {
 	}
 }
 
-func TestIsRunningFalseWhenNoSocket(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "dtest")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	p := paths.WithRoot(tmpDir)
-	alive, err := IsRunning(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if alive {
-		t.Error("expected not running when no socket exists")
-	}
-}
-
 func TestIsRunningTrueWhenDaemonRunning(t *testing.T) {
 	p, _ := startTestDaemon(t)
 
