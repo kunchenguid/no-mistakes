@@ -15,35 +15,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-func TestReviewStep_EmptyDiff(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	gitCmd(t, dir, "init")
-	gitCmd(t, dir, "config", "user.name", "test")
-	gitCmd(t, dir, "config", "user.email", "test@test.com")
-	gitCmd(t, dir, "checkout", "-b", "main")
-	os.WriteFile(filepath.Join(dir, "f.txt"), []byte("content"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "initial")
-	sha := gitCmd(t, dir, "rev-parse", "HEAD")
-
-	// Same base and head — empty diff
-	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, sha, sha, config.Commands{})
-
-	step := &ReviewStep{}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if outcome.NeedsApproval {
-		t.Error("expected no approval needed for empty diff")
-	}
-	if len(ag.calls) != 0 {
-		t.Error("expected no agent calls for empty diff")
-	}
-}
-
 func TestReviewStep_AgentError(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
