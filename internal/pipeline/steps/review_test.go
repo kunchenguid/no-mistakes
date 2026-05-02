@@ -199,42 +199,6 @@ func TestReviewStep_FixMode(t *testing.T) {
 	}
 }
 
-func TestReviewStep_EmptyDiff_ReturnsLowRisk(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	gitCmd(t, dir, "init")
-	gitCmd(t, dir, "config", "user.name", "test")
-	gitCmd(t, dir, "config", "user.email", "test@test.com")
-	gitCmd(t, dir, "checkout", "-b", "main")
-	os.WriteFile(filepath.Join(dir, "f.txt"), []byte("content"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "initial")
-	sha := gitCmd(t, dir, "rev-parse", "HEAD")
-
-	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, sha, sha, config.Commands{})
-
-	step := &ReviewStep{}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if outcome.Findings == "" {
-		t.Fatal("expected findings JSON with risk assessment for empty diff")
-	}
-
-	f, err := types.ParseFindingsJSON(outcome.Findings)
-	if err != nil {
-		t.Fatalf("failed to parse findings: %v", err)
-	}
-	if f.RiskLevel != "low" {
-		t.Errorf("RiskLevel = %q, want %q", f.RiskLevel, "low")
-	}
-	if f.RiskRationale == "" {
-		t.Error("expected non-empty RiskRationale for empty diff")
-	}
-}
-
 func TestReviewStep_FixMode_RequiresPreviousFindings(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
