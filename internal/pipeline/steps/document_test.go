@@ -405,42 +405,6 @@ func TestDocumentStep_MissingSummaryRequiresApproval(t *testing.T) {
 	}
 }
 
-func TestDocumentStep_IgnorePatternsFilterAllFiles(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-
-	gitCmd(t, dir, "init")
-	gitCmd(t, dir, "config", "user.name", "test")
-	gitCmd(t, dir, "config", "user.email", "test@test.com")
-	gitCmd(t, dir, "checkout", "-b", "main")
-	os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "base")
-	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
-
-	gitCmd(t, dir, "checkout", "-b", "feature")
-	os.WriteFile(filepath.Join(dir, "schema.generated.go"), []byte("package gen\n"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "add generated")
-	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
-
-	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Config.IgnorePatterns = []string{"*.generated.go"}
-
-	step := &DocumentStep{}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if outcome.NeedsApproval {
-		t.Error("expected no approval when all changes are ignored")
-	}
-	if len(ag.calls) != 0 {
-		t.Errorf("expected no agent calls when diff is empty after filtering, got %d", len(ag.calls))
-	}
-}
-
 func TestDocumentStep_FixMode_CommitsAndReassesses(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

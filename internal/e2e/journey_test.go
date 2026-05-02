@@ -92,7 +92,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	assertRerunNoPreviousRun(t, h)
 	assertRootNoActiveRun(t, h)
 	assertEmptyDiffAfterRebaseRun(t, h)
-	assertIgnoredOnlyReviewRun(t, h)
+	assertIgnoredOnlyRun(t, h)
 
 	// Make a feature branch with one trivial change. The fake agent
 	// returns "no issues found" for every prompt, so the pipeline
@@ -708,7 +708,7 @@ func assertEmptyDiffAfterRebaseRun(t *testing.T, h *Harness) {
 	}
 }
 
-func assertIgnoredOnlyReviewRun(t *testing.T, h *Harness) {
+func assertIgnoredOnlyRun(t *testing.T, h *Harness) {
 	t.Helper()
 	head := h.CommitChange("ignored-only", "schema.generated.go", "package gen\n", "add generated file")
 	h.PushToGate("ignored-only")
@@ -734,8 +734,19 @@ func assertIgnoredOnlyReviewRun(t *testing.T, h *Harness) {
 	if findings.RiskLevel != "low" {
 		t.Fatalf("expected low risk for ignored-only review, got %q", findings.RiskLevel)
 	}
-	if sawPromptContainingAll(h.AgentInvocations(), "Review the code changes", "branch: ignored-only") {
+	documentStep, ok := findStep(run.Steps, types.StepDocument)
+	if !ok {
+		t.Fatal("expected document step in ignored-only run")
+	}
+	if documentStep.FindingsJSON != nil {
+		t.Fatalf("expected no document findings JSON for ignored-only diff, got %s", *documentStep.FindingsJSON)
+	}
+	invs := h.AgentInvocations()
+	if sawPromptContainingAll(invs, "Review the code changes", "branch: ignored-only") {
 		t.Fatal("ignored-only review should not call the agent")
+	}
+	if sawPromptContainingAll(invs, "Identify documentation gaps", "branch: ignored-only") {
+		t.Fatal("ignored-only document step should not call the agent")
 	}
 }
 
