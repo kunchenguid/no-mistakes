@@ -12,7 +12,6 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
-	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 func TestRebaseStep_ConflictTriesAllTargets(t *testing.T) {
@@ -90,65 +89,6 @@ func TestRebaseStep_ConflictTriesAllTargets(t *testing.T) {
 	status := gitStatusPorcelain(t, dir)
 	if status != "" {
 		t.Fatalf("expected clean worktree, got: %s", status)
-	}
-}
-
-func TestRebaseStep_ConflictFindingsIncludeFiles(t *testing.T) {
-	t.Parallel()
-	upstream := t.TempDir()
-	gitCmd(t, upstream, "init", "--bare")
-
-	dir := t.TempDir()
-	gitCmd(t, dir, "init")
-	gitCmd(t, dir, "config", "user.name", "test")
-	gitCmd(t, dir, "config", "user.email", "test@test.com")
-	gitCmd(t, dir, "checkout", "-b", "main")
-	gitCmd(t, dir, "remote", "add", "origin", upstream)
-	os.WriteFile(filepath.Join(dir, "shared.txt"), []byte("base\n"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "base commit")
-	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
-	gitCmd(t, dir, "push", "origin", "main")
-
-	gitCmd(t, dir, "checkout", "-b", "feature")
-	os.WriteFile(filepath.Join(dir, "shared.txt"), []byte("feature change\n"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "feature change")
-	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
-
-	gitCmd(t, dir, "checkout", "main")
-	os.WriteFile(filepath.Join(dir, "shared.txt"), []byte("main change\n"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "main conflict")
-	gitCmd(t, dir, "push", "origin", "main")
-	gitCmd(t, dir, "checkout", "feature")
-
-	ag := &mockAgent{name: "test"}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Run.Branch = "refs/heads/feature"
-	sctx.Repo.UpstreamURL = upstream
-
-	step := &RebaseStep{}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	findings, err := types.ParseFindingsJSON(outcome.Findings)
-	if err != nil {
-		t.Fatalf("parse findings: %v", err)
-	}
-	if len(findings.Items) == 0 {
-		t.Fatal("expected conflicted files in findings")
-	}
-	if findings.Items[0].File != "shared.txt" {
-		t.Fatalf("first finding file = %q, want shared.txt", findings.Items[0].File)
-	}
-	if findings.Items[0].Severity != "warning" {
-		t.Fatalf("first finding severity = %q, want warning", findings.Items[0].Severity)
-	}
-	if !strings.Contains(findings.Items[0].Description, "origin/main") {
-		t.Fatalf("expected finding description to mention target, got %q", findings.Items[0].Description)
 	}
 }
 

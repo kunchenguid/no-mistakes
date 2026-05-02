@@ -931,8 +931,11 @@ func assertRebaseConflictRun(t *testing.T, h *Harness) {
 	if len(findings.Items) == 0 || findings.Items[0].Severity != "warning" {
 		t.Fatalf("expected warning finding for rebase conflict, got %+v", findings.Items)
 	}
-	if !strings.Contains(*rebaseStep.FindingsJSON, "origin/main") {
-		t.Fatalf("expected rebase conflict findings to mention origin/main, got %s", *rebaseStep.FindingsJSON)
+	if findings.Items[0].File != "rebase-conflict.txt" {
+		t.Fatalf("rebase conflict finding file = %q, want rebase-conflict.txt", findings.Items[0].File)
+	}
+	if !strings.Contains(findings.Items[0].Description, "origin/main") {
+		t.Fatalf("expected rebase conflict finding to mention origin/main, got %q", findings.Items[0].Description)
 	}
 	if sawPromptContaining(h.AgentInvocations(), "branch: rebase-conflict") {
 		t.Fatal("rebase conflict detection should not call the agent")
