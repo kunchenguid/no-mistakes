@@ -742,6 +742,14 @@ func assertAgentEditCommitRun(t *testing.T, h *Harness) {
 	assertPushedHead(t, run.HeadSHA, h.UpstreamBranchSHA("agent-edits"))
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	gateDir := filepath.Join(h.NMHome, "repos", h.repoID()+".git")
+	gateBranchSHA, err := h.runGit(ctx, gateDir, "rev-parse", "refs/heads/agent-edits")
+	if err != nil {
+		t.Fatalf("read agent-edits gate branch ref: %v\n%s", err, gateBranchSHA)
+	}
+	if strings.TrimSpace(string(gateBranchSHA)) != run.HeadSHA {
+		t.Fatalf("agent-edits gate branch SHA = %s, want run head %s", strings.TrimSpace(string(gateBranchSHA)), run.HeadSHA)
+	}
 	message, err := h.runGit(ctx, h.UpstreamDir, "log", "-1", "--format=%s", "refs/heads/agent-edits")
 	if err != nil {
 		t.Fatalf("read agent-edits upstream commit message: %v\n%s", err, message)

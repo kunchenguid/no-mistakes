@@ -59,53 +59,6 @@ func TestPushStep_FormatCommandUsesStepEnv(t *testing.T) {
 	}
 }
 
-func TestPushStep_UpdatesLocalBranchRefAfterDetachedPush(t *testing.T) {
-	t.Parallel()
-	upstream := t.TempDir()
-	gitCmd(t, upstream, "init", "--bare")
-
-	dir := t.TempDir()
-	gitCmd(t, dir, "init")
-	gitCmd(t, dir, "config", "user.name", "test")
-	gitCmd(t, dir, "config", "user.email", "test@test.com")
-	gitCmd(t, dir, "checkout", "-b", "main")
-	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "initial")
-	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
-	gitCmd(t, dir, "remote", "add", "origin", upstream)
-	gitCmd(t, dir, "push", "origin", "main")
-
-	gitCmd(t, dir, "checkout", "-b", "feature")
-	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "feature")
-	originalHeadSHA := gitCmd(t, dir, "rev-parse", "HEAD")
-	gitCmd(t, dir, "push", "origin", "feature")
-	gitCmd(t, dir, "checkout", "--detach", originalHeadSHA)
-
-	os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("agent fix"), 0o644)
-
-	ag := &mockAgent{name: "test"}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, originalHeadSHA, config.Commands{})
-	sctx.Repo.UpstreamURL = upstream
-
-	step := &PushStep{}
-	_, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	newHeadSHA := gitCmd(t, dir, "rev-parse", "HEAD")
-	branchSHA := gitCmd(t, dir, "rev-parse", "refs/heads/feature")
-	if branchSHA != newHeadSHA {
-		t.Fatalf("branch ref SHA = %s, want %s", branchSHA, newHeadSHA)
-	}
-	upstreamSHA := gitCmd(t, upstream, "rev-parse", "refs/heads/feature")
-	if upstreamSHA != newHeadSHA {
-		t.Fatalf("upstream SHA = %s, want %s", upstreamSHA, newHeadSHA)
-	}
-}
-
 func TestPushStep_ReconcilesStaleDatabaseHeadSHA(t *testing.T) {
 	t.Parallel()
 	// When push retries after a prior UpdateRunHeadSHA failure, there are no
