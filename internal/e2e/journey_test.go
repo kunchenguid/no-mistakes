@@ -150,8 +150,8 @@ func runHappyPath(t *testing.T, agentName string) {
 		t.Errorf("expected a document prompt in invocations, got %d:\n%s", len(invs), summarisePrompts(invs))
 	}
 	assertNoCommandTestStep(t, run.Steps, invs)
-	if !sawPromptContainingAll(invs, "Detect the linting and formatting tools", "branch: feature/e2e") {
-		t.Errorf("expected a lint prompt with branch metadata in invocations, got %d:\n%s", len(invs), summarisePrompts(invs))
+	if !sawPromptContainingAll(invs, "Detect the linting and formatting tools", "branch: feature/e2e", "Set action to") {
+		t.Errorf("expected a lint prompt with branch metadata and action guidance in invocations, got %d:\n%s", len(invs), summarisePrompts(invs))
 	}
 	assertPromptsAbsent(t, invs,
 		"Draft a pull request title and summary for the full branch delta.",

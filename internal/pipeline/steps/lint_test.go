@@ -197,27 +197,3 @@ func TestLintStep_FailingCommand(t *testing.T) {
 		t.Errorf("severity = %s, want warning", findings.Items[0].Severity)
 	}
 }
-
-func TestLintStep_PromptIncludesAction(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	findings := Findings{Items: nil, Summary: "all clean"}
-	findingsJSON, _ := json.Marshal(findings)
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			return &agent.Result{Output: findingsJSON}, nil
-		},
-	}
-	sctx := newTestContext(t, ag, dir, "abc", "def", config.Commands{})
-	step := &LintStep{}
-	if _, err := step.Execute(sctx); err != nil {
-		t.Fatal(err)
-	}
-	if len(ag.calls) != 1 {
-		t.Fatalf("expected 1 agent call, got %d", len(ag.calls))
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "action") {
-		t.Error("expected lint prompt to instruct agent about action")
-	}
-}
