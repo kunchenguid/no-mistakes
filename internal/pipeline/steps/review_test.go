@@ -261,40 +261,6 @@ func TestReviewStep_FixMode(t *testing.T) {
 	}
 }
 
-func TestReviewStep_IgnorePatterns(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-
-	// Add a generated file to the feature branch
-	os.WriteFile(filepath.Join(dir, "schema.generated.go"), []byte("package gen\n"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "add generated file")
-	headSHA = gitCmd(t, dir, "rev-parse", "HEAD")
-
-	var capturedPrompt string
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			capturedPrompt = opts.Prompt
-			findings := Findings{Summary: "looks good", Items: nil}
-			out, _ := json.Marshal(findings)
-			return &agent.Result{Output: out}, nil
-		},
-	}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Config.IgnorePatterns = []string{"*.generated.go"}
-
-	step := &ReviewStep{}
-	_, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if !strings.Contains(capturedPrompt, "*.generated.go") {
-		t.Error("expected prompt to include ignore patterns")
-	}
-}
-
 func TestReviewStep_IgnorePatternsFilterAllFiles(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

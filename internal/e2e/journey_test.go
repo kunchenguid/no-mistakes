@@ -776,6 +776,7 @@ func assertReviewPrompt(t *testing.T, h *Harness, run *ipc.RunInfo, invs []Invoc
 		"branch: feature/e2e",
 		baseSHA,
 		run.HeadSHA,
+		"ignore patterns: *.generated.go, vendor/**",
 		"Do a full review pass before returning.",
 		"Do not stop after the first valid finding.",
 		"Do NOT run tests during review.",
