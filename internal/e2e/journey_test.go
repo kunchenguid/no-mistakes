@@ -68,12 +68,19 @@ func runHappyPath(t *testing.T, agentName string) {
 	assertDaemonStatusNotRunning(t, h)
 	assertDaemonStopWhenNotRunning(t, h)
 
+	initWorktreeHead := h.CommitChange("init-worktree", "init-worktree.txt", "init worktree\n", "add init worktree")
+	initWorktree := h.AddWorktree("init-worktree")
+	if initWorktreeHead != h.WorktreeRefSHA("init-worktree") {
+		t.Fatalf("init worktree branch changed before init")
+	}
+
 	// `no-mistakes init` sets up the gate and starts the daemon.
-	out, err := h.Run("init")
+	out, err := h.RunInDir(initWorktree, "init")
 	if err != nil {
-		t.Fatalf("nm init: %v\n%s", err, out)
+		t.Fatalf("nm init from worktree: %v\n%s", err, out)
 	}
 	assertInitOutput(t, h, out)
+	assertOutputDoesNotContainPath(t, out, initWorktree, "init from worktree")
 	assertGateRemotePresent(t, h)
 	assertDaemonStatusRunning(t, h)
 	assertAttachMissingRun(t, h)
@@ -199,11 +206,12 @@ func runHappyPath(t *testing.T, agentName string) {
 	assertDaemonStopOutput(t, out)
 	assertDaemonStatusNotRunning(t, h)
 
-	out, err = h.Run("eject")
+	out, err = h.RunInDir(initWorktree, "eject")
 	if err != nil {
-		t.Fatalf("nm eject: %v\n%s", err, out)
+		t.Fatalf("nm eject from worktree: %v\n%s", err, out)
 	}
 	assertEjectOutput(t, h, out)
+	assertOutputDoesNotContainPath(t, out, initWorktree, "eject from worktree")
 	assertGateRemoteAbsent(t, h)
 }
 
@@ -472,6 +480,13 @@ func assertEjectOutput(t *testing.T, h *Harness, out string) {
 		if !strings.Contains(out, want) {
 			t.Errorf("eject output should contain %q, got:\n%s", want, out)
 		}
+	}
+}
+
+func assertOutputDoesNotContainPath(t *testing.T, out, path, phase string) {
+	t.Helper()
+	if strings.Contains(out, path) {
+		t.Errorf("%s output should not contain linked worktree path %q, got:\n%s", phase, path, out)
 	}
 }
 
