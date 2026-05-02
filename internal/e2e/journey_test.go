@@ -1854,11 +1854,24 @@ func assertDaemonStopOutput(t *testing.T, out string) {
 
 func assertDaemonStopWhenNotRunning(t *testing.T, h *Harness) {
 	t.Helper()
+	p := paths.WithRoot(h.NMHome)
+	if err := os.WriteFile(p.PIDFile(), []byte("424242"), 0o644); err != nil {
+		t.Fatalf("write stale daemon pid file: %v", err)
+	}
+	if err := os.WriteFile(p.Socket(), []byte("stale socket placeholder"), 0o644); err != nil {
+		t.Fatalf("write stale daemon socket placeholder: %v", err)
+	}
 	out, err := h.Run("daemon", "stop")
 	if err != nil {
 		t.Fatalf("nm daemon stop before init should succeed when not running: %v\n%s", err, out)
 	}
 	assertDaemonStopOutput(t, out)
+	if _, err := os.Stat(p.PIDFile()); !os.IsNotExist(err) {
+		t.Fatalf("expected stale daemon pid file to be removed, got err=%v", err)
+	}
+	if _, err := os.Stat(p.Socket()); !os.IsNotExist(err) {
+		t.Fatalf("expected stale daemon socket placeholder to be removed, got err=%v", err)
+	}
 }
 
 func assertDaemonStatusNotRunning(t *testing.T, h *Harness) {

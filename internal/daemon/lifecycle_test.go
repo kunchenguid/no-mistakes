@@ -32,57 +32,6 @@ func writeDaemonPIDRecord(t *testing.T, path string, record daemonPIDFile) {
 	}
 }
 
-func TestStopNotRunningRemovesStaleArtifacts(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "dtest")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	p := paths.WithRoot(tmpDir)
-	if err := p.EnsureDirs(); err != nil {
-		t.Fatal(err)
-	}
-	const pid = 424242
-	if err := os.WriteFile(p.PIDFile(), []byte(fmt.Sprintf("%d", pid)), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(p.Socket(), []byte("stale"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	originalUsesRegularFile := daemonEndpointUsesRegularFile
-	daemonEndpointUsesRegularFile = func() bool { return true }
-	defer func() {
-		daemonEndpointUsesRegularFile = originalUsesRegularFile
-	}()
-	originalProcessRunning := daemonProcessRunning
-	processRunningChecks := 0
-	daemonProcessRunning = func(checkPID int) (bool, error) {
-		if checkPID != pid {
-			t.Fatalf("processRunning pid = %d, want %d", checkPID, pid)
-		}
-		processRunningChecks++
-		return false, nil
-	}
-	defer func() {
-		daemonProcessRunning = originalProcessRunning
-	}()
-
-	if err := Stop(p); err != nil {
-		t.Fatalf("stop should succeed when daemon is not running: %v", err)
-	}
-	if processRunningChecks == 0 {
-		t.Fatal("expected stale-artifact detection to check process state")
-	}
-	if _, err := os.Stat(p.PIDFile()); !os.IsNotExist(err) {
-		t.Fatalf("expected stale pid file to be removed, got err=%v", err)
-	}
-	if _, err := os.Stat(p.Socket()); !os.IsNotExist(err) {
-		t.Fatalf("expected stale socket file to be removed, got err=%v", err)
-	}
-}
-
 func TestWaitForDaemonStopKeepsArtifactsWhenKillFails(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "dtest")
 	if err != nil {
