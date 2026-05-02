@@ -195,6 +195,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	assertConfiguredCommandRun(t, h)
 	assertFailingTestCommandRun(t, h)
 	assertFailingLintCommandRun(t, h)
+	assertRunsDefaultLimit(t, h)
 	assertGateRefDeletionDoesNotCreateRun(t, h, "configured-commands")
 
 	t.Logf("agent invocations: %d\n%s", len(invs), summarisePrompts(invs))
@@ -1089,6 +1090,46 @@ func assertFailingLintCommandRun(t *testing.T, h *Harness) {
 	}
 	if completedLintStep.ExitCode == nil || *completedLintStep.ExitCode != 1 {
 		t.Fatalf("failing lint command exit code = %v, want 1", completedLintStep.ExitCode)
+	}
+}
+
+func assertRunsDefaultLimit(t *testing.T, h *Harness) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	h.CommitChange("runs-limit-extra", "runs-limit-extra.txt", "extra run for runs limit\n", "add runs limit extra")
+	if out, err := h.runGit(ctx, h.WorkDir, "checkout", "main"); err != nil {
+		t.Fatalf("checkout main before runs-limit-extra merge: %v\n%s", err, out)
+	}
+	if out, err := h.runGit(ctx, h.WorkDir, "merge", "--ff-only", "runs-limit-extra"); err != nil {
+		t.Fatalf("merge runs-limit-extra into main: %v\n%s", err, out)
+	}
+	if out, err := h.runGit(ctx, h.WorkDir, "push", "origin", "main"); err != nil {
+		t.Fatalf("push main for runs-limit-extra: %v\n%s", err, out)
+	}
+	if out, err := h.runGit(ctx, h.WorkDir, "checkout", "runs-limit-extra"); err != nil {
+		t.Fatalf("checkout runs-limit-extra before gate push: %v\n%s", err, out)
+	}
+	h.PushToGate("runs-limit-extra")
+	run := h.WaitForRun("runs-limit-extra", 60*time.Second)
+	if run.Status != types.RunCompleted {
+		t.Fatalf("runs-limit-extra run did not complete: status=%s error=%v", run.Status, deref(run.Error))
+	}
+	allRuns := h.Runs()
+	if len(allRuns) <= 10 {
+		t.Fatalf("expected more than 10 runs before asserting default runs limit, got %d", len(allRuns))
+	}
+	out, err := h.Run("runs")
+	if err != nil {
+		t.Fatalf("nm runs with more than default limit: %v\n%s", err, out)
+	}
+	if regexp.MustCompile(`(?m)^\s+\S+\s+empty-after-rebase\s+`).MatchString(out) {
+		t.Fatalf("default runs output should omit oldest run empty-after-rebase when over limit, got:\n%s", out)
+	}
+	for _, want := range []string{"runs-limit-extra", "(1 more runs, use --limit to see more)"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("default runs output should contain %q when over limit, got:\n%s", want, out)
+		}
 	}
 }
 
