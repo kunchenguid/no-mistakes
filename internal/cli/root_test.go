@@ -58,7 +58,7 @@ func TestSetColorProfileForOutputUsesAsciiForNonTTY(t *testing.T) {
 	}
 }
 
-func TestRootDefaultsToAttachWithAndWithoutHistory(t *testing.T) {
+func TestRootDefaultsToAttachWithHistory(t *testing.T) {
 	setupTestRepo(t)
 	nmHome := makeSocketSafeTempDir(t)
 	t.Setenv("NM_HOME", nmHome)
@@ -77,21 +77,6 @@ func TestRootDefaultsToAttachWithAndWithoutHistory(t *testing.T) {
 
 	// Start an in-process daemon.
 	startTestDaemon(t, p, d)
-
-	// Run bare `no-mistakes` (no subcommand) - should default to attach behavior.
-	out, err := executeCmd()
-	if err != nil {
-		t.Fatalf("bare command failed: %v\noutput: %s", err, out)
-	}
-	if !strings.Contains(out, "No active run") {
-		t.Errorf("expected 'No active run' output, got: %s", out)
-	}
-	if !strings.Contains(out, "git push no-mistakes") {
-		t.Errorf("expected push instructions, got: %s", out)
-	}
-	if strings.Contains(out, "Recent runs") {
-		t.Errorf("did not expect recent runs before history exists, got: %s", out)
-	}
 
 	// Look up the repo to insert runs (use FindGitRoot for macOS symlink consistency).
 	gitRoot, err := git.FindGitRoot(".")
@@ -137,7 +122,7 @@ func TestRootDefaultsToAttachWithAndWithoutHistory(t *testing.T) {
 		setRunCreatedAt(t, p.DB(), run.ID, timestamps[i])
 	}
 
-	out, err = executeCmd()
+	out, err := executeCmd()
 	if err != nil {
 		t.Fatalf("bare command failed: %v\noutput: %s", err, out)
 	}

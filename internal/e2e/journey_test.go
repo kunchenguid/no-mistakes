@@ -73,6 +73,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	assertDaemonRestartWhileRunning(t, h)
 	assertInitAlreadyInitialized(t, h)
 	assertRunsEmpty(t, h)
+	assertRootNoActiveRun(t, h)
 
 	// Make a feature branch with one trivial change. The fake agent
 	// returns "no issues found" for every prompt, so the pipeline
@@ -325,6 +326,22 @@ func assertRunsEmpty(t *testing.T, h *Harness) {
 		if !strings.Contains(out, want) {
 			t.Errorf("runs output should contain %q before any push, got:\n%s", want, out)
 		}
+	}
+}
+
+func assertRootNoActiveRun(t *testing.T, h *Harness) {
+	t.Helper()
+	out, err := h.Run()
+	if err != nil {
+		t.Fatalf("bare nm before push: %v\n%s", err, out)
+	}
+	for _, want := range []string{"No active run", "git push no-mistakes"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("bare nm output should contain %q before any push, got:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "Recent runs") {
+		t.Errorf("bare nm output should not show recent runs before history exists, got:\n%s", out)
 	}
 }
 
