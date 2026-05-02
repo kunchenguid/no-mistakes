@@ -142,6 +142,12 @@ func runHappyPath(t *testing.T, agentName string) {
 		t.Logf("  %d %-9s %s", step.StepOrder, step.StepName, step.Status)
 	}
 
+	out, err = h.Run("daemon", "stop")
+	if err != nil {
+		t.Fatalf("nm daemon stop: %v\n%s", err, out)
+	}
+	assertStatusInitializedStopped(t, h)
+
 	out, err = h.Run("eject")
 	if err != nil {
 		t.Fatalf("nm eject: %v\n%s", err, out)
@@ -218,6 +224,30 @@ func assertRunsEmpty(t *testing.T, h *Harness) {
 	for _, want := range []string{"no runs", "git push no-mistakes <branch>"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("runs output should contain %q before any push, got:\n%s", want, out)
+		}
+	}
+}
+
+func assertStatusInitializedStopped(t *testing.T, h *Harness) {
+	t.Helper()
+	out, err := h.Run("status")
+	if err != nil {
+		t.Fatalf("nm status after daemon stop: %v\n%s", err, out)
+	}
+	resolved := h.WorkDir
+	if path, err := filepath.EvalSymlinks(h.WorkDir); err == nil {
+		resolved = path
+	}
+	for _, want := range []string{
+		resolved,
+		h.UpstreamDir,
+		filepath.Join(h.NMHome, "repos", h.repoID()+".git"),
+		"daemon:",
+		"stopped",
+		"no active run",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("status output should contain %q after daemon stop, got:\n%s", want, out)
 		}
 	}
 }
