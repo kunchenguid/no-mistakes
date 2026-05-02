@@ -52,6 +52,7 @@ func runHappyPath(t *testing.T, agentName string) {
 
 	assertRootVersion(t, h)
 	assertRootHelp(t, h)
+	assertDoctor(t, h)
 	assertStatusNotGitRepo(t, h)
 	assertRunsNotGitRepo(t, h)
 	assertInitNotGitRepo(t, h)
@@ -222,6 +223,40 @@ func assertRootHelp(t *testing.T, h *Harness) {
 	}
 	if strings.Contains(out, "No active run") {
 		t.Errorf("help output should not trigger attach fallback, got:\n%s", out)
+	}
+}
+
+func assertDoctor(t *testing.T, h *Harness) {
+	t.Helper()
+	out, err := h.Run("doctor")
+	if err != nil {
+		t.Fatalf("nm doctor: %v\n%s", err, out)
+	}
+	for _, want := range []string{
+		"System",
+		"git",
+		"data directory",
+		h.NMHome,
+		"database",
+		"will be created on first use",
+		"daemon",
+		"stopped",
+		"Agents",
+		"claude",
+		"codex",
+		"rovodev",
+		"opencode",
+		"pi",
+		"not found",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("doctor output should contain %q, got:\n%s", want, out)
+		}
+	}
+	for _, agentName := range []string{"claude", "codex", "opencode"} {
+		if !strings.Contains(out, filepath.Join(h.BinDir, agentName)) {
+			t.Errorf("doctor output should report fake %s path, got:\n%s", agentName, out)
+		}
 	}
 }
 

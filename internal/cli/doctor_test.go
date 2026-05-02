@@ -70,30 +70,3 @@ func TestDoctorSystemSectionReportsMissingGitAndDataDirFailures(t *testing.T) {
 		}
 	}
 }
-
-func TestDoctorAgentsSectionReportsFoundAndMissingBinaries(t *testing.T) {
-	nmHome := t.TempDir()
-	t.Setenv("NM_HOME", nmHome)
-
-	binDir := t.TempDir()
-	t.Setenv("NM_FAKE_BIN", "1")
-	claudePath := linkTestBinary(t, binDir, "claude")
-	t.Setenv("PATH", binDir)
-
-	out, err := executeCmd("doctor")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	for _, label := range []string{"Agents", "claude", "codex", "rovodev", "opencode", "pi"} {
-		if !strings.Contains(out, label) {
-			t.Fatalf("doctor output should include %q in agents section, got: %s", label, out)
-		}
-	}
-	if !strings.Contains(out, claudePath) {
-		t.Fatalf("doctor output should report discovered claude path %q, got: %s", claudePath, out)
-	}
-	if got := strings.Count(out, "not found"); got < 4 {
-		t.Fatalf("doctor output should report missing agent binaries, got %d not found markers in: %s", got, out)
-	}
-}
