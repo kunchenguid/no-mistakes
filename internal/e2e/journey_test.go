@@ -193,6 +193,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	h.Checkout("feature/e2e")
 	assertRootRecentRuns(t, h, rerun)
 	assertConfiguredCommandRun(t, h)
+	assertFailingTestCommandRun(t, h)
 	assertGateRefDeletionDoesNotCreateRun(t, h, "configured-commands")
 
 	t.Logf("agent invocations: %d\n%s", len(invs), summarisePrompts(invs))
@@ -968,6 +969,81 @@ func assertConfiguredCommandRun(t *testing.T, h *Harness) {
 	}
 	if sawPromptContainingAll(invs, "Detect the linting and formatting tools", "branch: configured-commands") {
 		t.Fatalf("configured lint command should not call the agent for lint detection; invocations:\n%s", summarisePrompts(invs))
+	}
+}
+
+func waitForStepStatus(t *testing.T, h *Harness, branch string, stepName types.StepName, status types.StepStatus, timeout time.Duration) *ipc.RunInfo {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var lastRun *ipc.RunInfo
+	for time.Now().Before(deadline) {
+		runs := h.Runs()
+		for i := range runs {
+			run := runs[i]
+			if run.Branch != branch {
+				continue
+			}
+			lastRun = &run
+			step, ok := findStep(run.Steps, stepName)
+			if ok && step.Status == status {
+				return &run
+			}
+			break
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	h.dumpDebugState()
+	if lastRun != nil {
+		if step, ok := findStep(lastRun.Steps, stepName); ok {
+			t.Fatalf("step %s for branch %s did not reach %s in %v (last status=%s)", stepName, branch, status, timeout, step.Status)
+		}
+		t.Fatalf("step %s for branch %s did not appear in %v (run status=%s)", stepName, branch, timeout, lastRun.Status)
+	}
+	t.Fatalf("run for branch %s did not appear while waiting for %s in %v", branch, stepName, timeout)
+	return nil
+}
+
+func assertFailingTestCommandRun(t *testing.T, h *Harness) {
+	t.Helper()
+	failingCommand := filepath.Join(h.BinDir, "nm-test-fails-e2e")
+	if err := os.WriteFile(failingCommand, []byte("#!/bin/sh\necho configured test failed\nexit 1\n"), 0o755); err != nil {
+		t.Fatalf("write failing e2e test command: %v", err)
+	}
+	config := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  test: nm-test-fails-e2e\n  lint: true\n"
+	h.CommitChange("failing-test-command", ".no-mistakes.yaml", config, "configure failing test command")
+	h.PushToGate("failing-test-command")
+	run := waitForStepStatus(t, h, "failing-test-command", types.StepTest, types.StepStatusAwaitingApproval, 60*time.Second)
+	testStep, ok := findStep(run.Steps, types.StepTest)
+	if !ok {
+		t.Fatal("expected test step in failing test command run")
+	}
+	if testStep.FindingsJSON == nil {
+		t.Fatal("expected failing test command to record findings JSON")
+	}
+	findings, err := types.ParseFindingsJSON(*testStep.FindingsJSON)
+	if err != nil {
+		t.Fatalf("parse failing test findings: %v", err)
+	}
+	if len(findings.Items) == 0 || findings.Items[0].Severity != "error" {
+		t.Fatalf("expected error finding for failing test command, got %+v", findings.Items)
+	}
+	if len(findings.Tested) != 1 || findings.Tested[0] != "nm-test-fails-e2e" {
+		t.Fatalf("expected failing test command to be recorded, got %+v", findings.Tested)
+	}
+	h.Respond(run.ID, types.StepTest, types.ActionSkip)
+	completed := h.WaitForRun("failing-test-command", 60*time.Second)
+	if completed.Status != types.RunCompleted {
+		t.Fatalf("failing test command run did not complete after skip: status=%s error=%v", completed.Status, deref(completed.Error))
+	}
+	completedTestStep, ok := findStep(completed.Steps, types.StepTest)
+	if !ok {
+		t.Fatal("expected completed test step in failing test command run")
+	}
+	if completedTestStep.Status != types.StepStatusSkipped {
+		t.Fatalf("expected skipped test step after response, got %s", completedTestStep.Status)
+	}
+	if completedTestStep.ExitCode == nil || *completedTestStep.ExitCode != 1 {
+		t.Fatalf("failing test command exit code = %v, want 1", completedTestStep.ExitCode)
 	}
 }
 

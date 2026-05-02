@@ -12,37 +12,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/config"
 )
 
-func TestTestStep_FailingCommand(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, "abc", "def", config.Commands{Test: "exit 1"})
-
-	step := &TestStep{}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !outcome.NeedsApproval {
-		t.Error("expected approval needed for failing tests")
-	}
-	if outcome.ExitCode != 1 {
-		t.Errorf("exit code = %d, want 1", outcome.ExitCode)
-	}
-
-	var findings Findings
-	json.Unmarshal([]byte(outcome.Findings), &findings)
-	if len(findings.Items) == 0 {
-		t.Error("expected findings for failing tests")
-	}
-	if findings.Items[0].Severity != "error" {
-		t.Errorf("severity = %s, want error", findings.Items[0].Severity)
-	}
-	if len(findings.Tested) != 1 || findings.Tested[0] != "exit 1" {
-		t.Fatalf("expected failing command to record raw executed test command, got %+v", findings.Tested)
-	}
-}
-
 func TestTestStep_NoCommand_MalformedAgentOutput(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
