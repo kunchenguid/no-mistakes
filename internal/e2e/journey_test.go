@@ -1174,6 +1174,9 @@ func assertFailingTestCommandRun(t *testing.T, h *Harness) {
 	if len(findings.Items) == 0 || findings.Items[0].Severity != "error" {
 		t.Fatalf("expected error finding for failing test command, got %+v", findings.Items)
 	}
+	if findings.Items[0].ID != "test-1" {
+		t.Fatalf("expected normalized failing test finding ID test-1, got %q", findings.Items[0].ID)
+	}
 	if len(findings.Tested) != 1 || findings.Tested[0] != "nm-test-fails-e2e" {
 		t.Fatalf("expected failing test command to be recorded, got %+v", findings.Tested)
 	}
@@ -1195,10 +1198,10 @@ func assertFailingTestCommandRun(t *testing.T, h *Harness) {
 	for _, stepName := range []types.StepName{types.StepDocument, types.StepLint, types.StepPush} {
 		step, ok := findStep(completed.Steps, stepName)
 		if !ok {
-			t.Fatalf("expected %s step after skipping failing test command", stepName)
+			t.Fatalf("expected %s step after approving failing test command", stepName)
 		}
 		if step.Status != types.StepStatusCompleted {
-			t.Fatalf("expected %s to continue after skipped test step, got %s", stepName, step.Status)
+			t.Fatalf("expected %s to continue after approved test step, got %s", stepName, step.Status)
 		}
 	}
 }
