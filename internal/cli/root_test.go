@@ -101,16 +101,7 @@ func TestRootDefaultsToAttachWithHistory(t *testing.T) {
 		t.Fatalf("bare command failed: %v\noutput: %s", err, out)
 	}
 
-	// Should show recent runs.
-	if !strings.Contains(out, "Recent runs") {
-		t.Errorf("expected 'Recent runs' header, got: %s", out)
-	}
-	if !strings.Contains(out, "feature/login") {
-		t.Errorf("expected branch 'feature/login' in output, got: %s", out)
-	}
-	if !strings.Contains(out, "fix/crash") {
-		t.Errorf("expected branch 'fix/crash' in output, got: %s", out)
-	}
+	// Synthetic history here preserves age formatting and recent-runs cap coverage.
 	for _, want := range []string{"just now", "1 min ago", "2 hours ago", "1 day ago", "4 days ago"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("expected age %q in output, got: %s", want, out)
@@ -121,10 +112,6 @@ func TestRootDefaultsToAttachWithHistory(t *testing.T) {
 	}
 	if !strings.Contains(out, "(1 more - run 'no-mistakes runs' to see all)") {
 		t.Errorf("expected recent-runs overflow hint, got: %s", out)
-	}
-	// Should still show push instructions.
-	if !strings.Contains(out, "git push no-mistakes") {
-		t.Errorf("expected push instructions, got: %s", out)
 	}
 }
 

@@ -159,6 +159,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	assertPushedHead(t, run.HeadSHA, h.UpstreamBranchSHA("feature/e2e"))
 	assertRunsCompleted(t, h, run)
 	rerun := assertRerunCompleted(t, h, run)
+	assertRootRecentRuns(t, h, rerun)
 
 	t.Logf("agent invocations: %d\n%s", len(invs), summarisePrompts(invs))
 	t.Logf("step outcomes:")
@@ -416,6 +417,23 @@ func assertRootNoActiveRun(t *testing.T, h *Harness) {
 	}
 	if strings.Contains(out, "Recent runs") {
 		t.Errorf("bare nm output should not show recent runs before history exists, got:\n%s", out)
+	}
+}
+
+func assertRootRecentRuns(t *testing.T, h *Harness, run *ipc.RunInfo) {
+	t.Helper()
+	out, err := h.Run()
+	if err != nil {
+		t.Fatalf("bare nm after completed pipeline: %v\n%s", err, out)
+	}
+	sha := run.HeadSHA
+	if len(sha) > 8 {
+		sha = sha[:8]
+	}
+	for _, want := range []string{"No active run", "Recent runs", run.Branch, string(run.Status), sha, "git push no-mistakes"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("bare nm output should contain %q after completed pipeline, got:\n%s", want, out)
+		}
 	}
 }
 
