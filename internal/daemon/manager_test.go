@@ -1,20 +1,15 @@
 package daemon
 
 import (
-	"context"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
-	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
-
-	"github.com/kunchenguid/no-mistakes/internal/db"
 )
 
 // --- RunManager unit tests ---
@@ -204,79 +199,5 @@ func TestPushReceivedDemoModeBypassesAgentResolution(t *testing.T) {
 	}
 	if step.execCnt.Load() == 0 {
 		t.Error("mock step was never executed")
-	}
-}
-
-func TestPushReceivedCleansUpWorktreeOnConfigFailure(t *testing.T) {
-	// Set up a standalone RunManager (no daemon) to test worktree cleanup
-	// when config loading fails after worktree creation.
-	tmpDir, err := os.MkdirTemp("", "dtest")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(tmpDir) })
-
-	p := paths.WithRoot(tmpDir)
-	if err := p.EnsureDirs(); err != nil {
-		t.Fatal(err)
-	}
-
-	d, err := db.Open(p.DB())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { d.Close() })
-
-	// Set up a real git repo and bare repo.
-	workDir := filepath.Join(tmpDir, "work")
-	if err := os.MkdirAll(workDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	gitCmd(t, workDir, "init")
-	gitCmd(t, workDir, "config", "user.email", "test@test.com")
-	gitCmd(t, workDir, "config", "user.name", "Test")
-	if err := os.WriteFile(filepath.Join(workDir, "test.txt"), []byte("hello"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	gitCmd(t, workDir, "add", ".")
-	gitCmd(t, workDir, "commit", "-m", "initial")
-	headSHA := gitOutput(t, workDir, "rev-parse", "HEAD")
-
-	repoID := "wt-cleanup-repo"
-	bareDir := p.RepoDir(repoID)
-	gitCmd(t, "", "init", "--bare", bareDir)
-	gitCmd(t, workDir, "remote", "add", "gate", bareDir)
-	gitCmd(t, workDir, "push", "gate", "HEAD:refs/heads/main")
-
-	_, err = d.InsertRepoWithID(repoID, workDir, "https://github.com/test/repo", "main")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Write an invalid config.yaml to cause LoadGlobal to fail.
-	if err := os.WriteFile(p.ConfigFile(), []byte("invalid: yaml: [[["), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	mgr := NewRunManager(d, p, func() []pipeline.Step {
-		return []pipeline.Step{&mockPassStep{name: types.StepReview}}
-	})
-
-	// HandlePushReceived should fail due to invalid config, but clean up the worktree.
-	_, err = mgr.HandlePushReceived(context.Background(), &ipc.PushReceivedParams{
-		Gate: p.RepoDir(repoID),
-		Ref:  "refs/heads/main",
-		Old:  "0000000000000000000000000000000000000000",
-		New:  headSHA,
-	})
-	if err == nil {
-		t.Fatal("expected error from invalid config")
-	}
-
-	// Verify worktree directory was cleaned up.
-	wtRoot := filepath.Join(p.WorktreesDir(), repoID)
-	entries, err := os.ReadDir(wtRoot)
-	if err == nil && len(entries) > 0 {
-		t.Errorf("worktree directory not cleaned up, found %d entries in %s", len(entries), wtRoot)
 	}
 }

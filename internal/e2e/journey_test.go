@@ -207,6 +207,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	assertFailingLintCommandRun(t, h)
 	if agentName == "claude" {
 		assertDifferentBranchDoesNotCancelActiveRun(t, h)
+		assertInvalidConfigPushCleansWorktree(t, h)
 		assertDocumentMissingFindingsRun(t, h)
 		assertDocumentMalformedFindingRun(t, h)
 		assertDocumentLegacyFindingRun(t, h)
@@ -1221,6 +1222,37 @@ func assertConfiguredCommandRun(t *testing.T, h *Harness) {
 	}
 	if sawPromptContainingAll(invs, "Detect the linting and formatting tools", "branch: configured-commands") {
 		t.Fatalf("configured lint command should not call the agent for lint detection; invocations:\n%s", summarisePrompts(invs))
+	}
+}
+
+func assertInvalidConfigPushCleansWorktree(t *testing.T, h *Harness) {
+	t.Helper()
+	configPath := filepath.Join(h.NMHome, "config.yaml")
+	originalConfig, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read original global config: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte("invalid: yaml: [[["), 0o644); err != nil {
+		t.Fatalf("write invalid global config: %v", err)
+	}
+	defer func() {
+		if err := os.WriteFile(configPath, originalConfig, 0o644); err != nil {
+			t.Fatalf("restore original global config: %v", err)
+		}
+	}()
+
+	h.CommitChange("invalid-config-cleanup", "invalid-config-cleanup.txt", "invalid config cleanup\n", "add invalid config cleanup")
+	h.PushToGate("invalid-config-cleanup")
+	run := h.WaitForRun("invalid-config-cleanup", 60*time.Second)
+	if run.Status != types.RunFailed {
+		t.Fatalf("invalid-config-cleanup run status = %s, want failed", run.Status)
+	}
+	if run.Error == nil || !strings.Contains(*run.Error, "parse global config") {
+		t.Fatalf("expected invalid-config-cleanup run error to mention parse global config, got %q", deref(run.Error))
+	}
+	worktreeDir := paths.WithRoot(h.NMHome).WorktreeDir(h.repoID(), run.ID)
+	if _, err := os.Stat(worktreeDir); !os.IsNotExist(err) {
+		t.Fatalf("expected setup-failure worktree %s to be removed, stat err=%v", worktreeDir, err)
 	}
 }
 
