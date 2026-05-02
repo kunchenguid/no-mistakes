@@ -143,8 +143,14 @@ func runHappyPath(t *testing.T, agentName string) {
 	// The review step always runs and always calls the agent. Find the
 	// invocation whose prompt contains the review preamble; if missing
 	// the pipeline didn't reach review or routed it elsewhere.
-	if !sawPromptContaining(invs, "Review the code changes") {
-		t.Errorf("expected a review prompt in invocations, got %d:\n%s", len(invs), summarisePrompts(invs))
+	if !sawPromptContainingAll(invs,
+		"Review the code changes",
+		"branch: feature/e2e",
+		"Do a full review pass before returning.",
+		"Do not stop after the first valid finding.",
+		"Do NOT run tests during review.",
+	) {
+		t.Errorf("expected a review prompt with branch metadata and full-pass guidance in invocations, got %d:\n%s", len(invs), summarisePrompts(invs))
 	}
 	if !sawPromptContainingAll(invs,
 		"Identify documentation gaps",
