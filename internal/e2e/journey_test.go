@@ -204,6 +204,7 @@ func runHappyPath(t *testing.T, agentName string) {
 		assertDifferentBranchDoesNotCancelActiveRun(t, h)
 		assertDocumentMissingFindingsRun(t, h)
 		assertDocumentMalformedFindingRun(t, h)
+		assertDocumentLegacyFindingRun(t, h)
 		assertDocumentInfoRun(t, h)
 		assertReviewWarningRun(t, h)
 	}
@@ -246,6 +247,14 @@ func cleanReviewScenario(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "scenario.yaml")
 	content := `actions:
+  - match: "identify any documentation gaps.\n\nContext:\n- branch: document-legacy-finding"
+    text: "documentation legacy finding"
+    structured:
+      items:
+        - severity: warning
+          description: "README missing new CLI flag"
+          requires_human_review: false
+      summary: "README needs updating"
   - match: "identify any documentation gaps.\n\nContext:\n- branch: document-malformed-finding"
     text: "documentation malformed finding"
     structured:
@@ -1203,6 +1212,38 @@ func assertDocumentMalformedFindingRun(t *testing.T, h *Harness) {
 	completed := h.WaitForRun("document-malformed-finding", 60*time.Second)
 	if completed.Status != types.RunFailed {
 		t.Fatalf("document-malformed-finding run status after abort = %s, want failed", completed.Status)
+	}
+}
+
+func assertDocumentLegacyFindingRun(t *testing.T, h *Harness) {
+	t.Helper()
+	h.CommitChange("document-legacy-finding", "document-legacy-finding.txt", "document legacy finding\n", "add document legacy finding")
+	h.PushToGate("document-legacy-finding")
+	run := waitForStepStatus(t, h, "document-legacy-finding", types.StepDocument, types.StepStatusAwaitingApproval, 60*time.Second)
+	documentStep, ok := findStep(run.Steps, types.StepDocument)
+	if !ok {
+		t.Fatal("expected document step in document-legacy-finding run")
+	}
+	if documentStep.FindingsJSON == nil {
+		t.Fatal("expected document legacy finding to record findings JSON")
+	}
+	findings, err := types.ParseFindingsJSON(*documentStep.FindingsJSON)
+	if err != nil {
+		t.Fatalf("parse document legacy finding: %v", err)
+	}
+	if findings.Summary != "README needs updating" {
+		t.Fatalf("document legacy finding summary = %q, want README needs updating", findings.Summary)
+	}
+	if len(findings.Items) != 1 {
+		t.Fatalf("expected one legacy documentation finding, got %+v", findings.Items)
+	}
+	if findings.Items[0].Action != types.ActionAutoFix {
+		t.Fatalf("expected legacy documentation finding to normalize to auto-fix, got action %q", findings.Items[0].Action)
+	}
+	h.Respond(run.ID, types.StepDocument, types.ActionAbort)
+	completed := h.WaitForRun("document-legacy-finding", 60*time.Second)
+	if completed.Status != types.RunFailed {
+		t.Fatalf("document-legacy-finding run status after abort = %s, want failed", completed.Status)
 	}
 }
 

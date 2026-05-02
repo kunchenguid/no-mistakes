@@ -187,44 +187,6 @@ func TestDocumentStep_NoStructuredOutputRequiresApproval(t *testing.T) {
 	}
 }
 
-func TestDocumentStep_LegacyFindingsStayAutoFixable(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			return &agent.Result{Output: json.RawMessage(`{"items":[{"severity":"warning","description":"README missing new CLI flag","requires_human_review":false}],"summary":"README needs updating"}`)}, nil
-		},
-	}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-
-	step := &DocumentStep{}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !outcome.NeedsApproval {
-		t.Fatal("expected finding to be reported")
-	}
-	if !outcome.AutoFixable {
-		t.Fatal("expected legacy finding to remain auto-fixable")
-	}
-	var findings Findings
-	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
-		t.Fatalf("unmarshal findings: %v", err)
-	}
-	if len(findings.Items) != 1 {
-		t.Fatalf("expected 1 finding, got %+v", findings.Items)
-	}
-	if findings.Items[0].Action != types.ActionAutoFix {
-		t.Fatalf("action = %q, want %q", findings.Items[0].Action, types.ActionAutoFix)
-	}
-	if findings.Summary != "README needs updating" {
-		t.Fatalf("summary = %q, want %q", findings.Summary, "README needs updating")
-	}
-}
-
 func TestDocumentStep_MissingSummaryRequiresApproval(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
