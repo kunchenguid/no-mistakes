@@ -149,6 +149,9 @@ func runHappyPath(t *testing.T, agentName string) {
 	if !sawPromptContaining(invs, "Identify documentation gaps") {
 		t.Errorf("expected a document prompt in invocations, got %d:\n%s", len(invs), summarisePrompts(invs))
 	}
+	if !sawPromptContainingAll(invs, "Detect the linting and formatting tools", "branch: feature/e2e") {
+		t.Errorf("expected a lint prompt with branch metadata in invocations, got %d:\n%s", len(invs), summarisePrompts(invs))
+	}
 	assertPromptsAbsent(t, invs,
 		"Draft a pull request title and summary for the full branch delta.",
 		"The following CI checks have failed on this PR. Diagnose and fix the issues.",
@@ -620,6 +623,22 @@ func assertGateRemoteAbsent(t *testing.T, h *Harness) {
 func sawPromptContaining(invs []Invocation, needle string) bool {
 	for _, inv := range invs {
 		if strings.Contains(inv.Prompt, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func sawPromptContainingAll(invs []Invocation, needles ...string) bool {
+	for _, inv := range invs {
+		matched := true
+		for _, needle := range needles {
+			if !strings.Contains(inv.Prompt, needle) {
+				matched = false
+				break
+			}
+		}
+		if matched {
 			return true
 		}
 	}

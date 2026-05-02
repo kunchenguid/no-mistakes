@@ -198,37 +198,6 @@ func TestLintStep_FailingCommand(t *testing.T) {
 	}
 }
 
-func TestLintStep_NoCommand(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-
-	findings := Findings{Items: nil, Summary: "no lint issues"}
-	findingsJSON, _ := json.Marshal(findings)
-
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			return &agent.Result{Output: findingsJSON}, nil
-		},
-	}
-	sctx := newTestContext(t, ag, dir, "abc", "def", config.Commands{})
-
-	step := &LintStep{}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if outcome.NeedsApproval {
-		t.Error("expected no approval when agent reports no lint issues")
-	}
-	if len(ag.calls) != 1 {
-		t.Fatalf("expected 1 agent call, got %d", len(ag.calls))
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "branch: refs/heads/feature") {
-		t.Error("expected lint prompt to include branch metadata")
-	}
-}
-
 func TestLintStep_PromptIncludesAction(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
