@@ -105,6 +105,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	assertStatusActiveRunInDir(t, h, featureWorktree, activeRun)
 	assertRunsActive(t, h, activeRun)
 	assertRunsActiveInDir(t, h, featureWorktree, activeRun)
+	assertRootNoActiveRunOnOtherBranch(t, h, activeRun)
 
 	run := h.WaitForRun("feature/e2e", 60*time.Second)
 
@@ -516,6 +517,19 @@ func assertRootNoActiveRun(t *testing.T, h *Harness) {
 	}
 	if strings.Contains(out, "Recent runs") {
 		t.Errorf("bare nm output should not show recent runs before history exists, got:\n%s", out)
+	}
+}
+
+func assertRootNoActiveRunOnOtherBranch(t *testing.T, h *Harness, activeRun *ipc.RunInfo) {
+	t.Helper()
+	out, err := h.Run()
+	if err != nil {
+		t.Fatalf("bare nm on main while %s is active: %v\n%s", activeRun.Branch, err, out)
+	}
+	for _, want := range []string{"No active run", "Recent runs", activeRun.Branch, string(activeRun.Status), "git push no-mistakes"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("bare nm output should contain %q while another branch is active, got:\n%s", want, out)
+		}
 	}
 }
 
