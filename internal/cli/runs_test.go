@@ -17,18 +17,6 @@ import (
 
 var ansiEscapeRE = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
-func TestRunsNotInitialized(t *testing.T) {
-	setupTestRepo(t)
-
-	_, err := executeCmd("runs")
-	if err == nil {
-		t.Fatal("runs should fail when not initialized")
-	}
-	if !strings.Contains(err.Error(), "not initialized") {
-		t.Errorf("error should mention 'not initialized', got: %v", err)
-	}
-}
-
 func TestRunsWithData(t *testing.T) {
 	setupTestRepo(t)
 	nmHome := os.Getenv("NM_HOME")
