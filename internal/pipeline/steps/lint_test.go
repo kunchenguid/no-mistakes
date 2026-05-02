@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -119,34 +118,5 @@ func TestLintStep_FixMode_UsesFallbackSummaryWhenStructuredSummaryMalformed(t *t
 
 	if got := lastCommitMessage(t, dir); got != "no-mistakes(lint): fix lint issues" {
 		t.Fatalf("last commit message = %q", got)
-	}
-}
-
-func TestLintStep_FailingCommand(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	ag := &mockAgent{name: "test"}
-	lintCmd := "echo 'lint error'; exit 1"
-	if runtime.GOOS == "windows" {
-		lintCmd = "echo lint error & exit /b 1"
-	}
-	sctx := newTestContext(t, ag, dir, "abc", "def", config.Commands{Lint: lintCmd})
-
-	step := &LintStep{}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !outcome.NeedsApproval {
-		t.Error("expected approval needed for lint errors")
-	}
-
-	var findings Findings
-	json.Unmarshal([]byte(outcome.Findings), &findings)
-	if len(findings.Items) == 0 {
-		t.Error("expected findings for lint errors")
-	}
-	if findings.Items[0].Severity != "warning" {
-		t.Errorf("severity = %s, want warning", findings.Items[0].Severity)
 	}
 }

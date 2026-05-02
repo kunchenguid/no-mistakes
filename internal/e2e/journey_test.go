@@ -194,6 +194,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	assertRootRecentRuns(t, h, rerun)
 	assertConfiguredCommandRun(t, h)
 	assertFailingTestCommandRun(t, h)
+	assertFailingLintCommandRun(t, h)
 	assertGateRefDeletionDoesNotCreateRun(t, h, "configured-commands")
 
 	t.Logf("agent invocations: %d\n%s", len(invs), summarisePrompts(invs))
@@ -1044,6 +1045,50 @@ func assertFailingTestCommandRun(t *testing.T, h *Harness) {
 	}
 	if completedTestStep.ExitCode == nil || *completedTestStep.ExitCode != 1 {
 		t.Fatalf("failing test command exit code = %v, want 1", completedTestStep.ExitCode)
+	}
+}
+
+func assertFailingLintCommandRun(t *testing.T, h *Harness) {
+	t.Helper()
+	failingCommand := filepath.Join(h.BinDir, "nm-lint-fails-e2e")
+	if err := os.WriteFile(failingCommand, []byte("#!/bin/sh\necho configured lint failed\nexit 1\n"), 0o755); err != nil {
+		t.Fatalf("write failing e2e lint command: %v", err)
+	}
+	config := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  test: true\n  lint: nm-lint-fails-e2e\n"
+	h.CommitChange("failing-lint-command", ".no-mistakes.yaml", config, "configure failing lint command")
+	h.PushToGate("failing-lint-command")
+	run := waitForStepStatus(t, h, "failing-lint-command", types.StepLint, types.StepStatusAwaitingApproval, 60*time.Second)
+	lintStep, ok := findStep(run.Steps, types.StepLint)
+	if !ok {
+		t.Fatal("expected lint step in failing lint command run")
+	}
+	if lintStep.FindingsJSON == nil {
+		t.Fatal("expected failing lint command to record findings JSON")
+	}
+	findings, err := types.ParseFindingsJSON(*lintStep.FindingsJSON)
+	if err != nil {
+		t.Fatalf("parse failing lint findings: %v", err)
+	}
+	if len(findings.Items) == 0 || findings.Items[0].Severity != "warning" {
+		t.Fatalf("expected warning finding for failing lint command, got %+v", findings.Items)
+	}
+	if !strings.Contains(findings.Summary, "configured lint failed") {
+		t.Fatalf("expected failing lint summary to contain command output, got %q", findings.Summary)
+	}
+	h.Respond(run.ID, types.StepLint, types.ActionSkip)
+	completed := h.WaitForRun("failing-lint-command", 60*time.Second)
+	if completed.Status != types.RunCompleted {
+		t.Fatalf("failing lint command run did not complete after skip: status=%s error=%v", completed.Status, deref(completed.Error))
+	}
+	completedLintStep, ok := findStep(completed.Steps, types.StepLint)
+	if !ok {
+		t.Fatal("expected completed lint step in failing lint command run")
+	}
+	if completedLintStep.Status != types.StepStatusSkipped {
+		t.Fatalf("expected skipped lint step after response, got %s", completedLintStep.Status)
+	}
+	if completedLintStep.ExitCode == nil || *completedLintStep.ExitCode != 1 {
+		t.Fatalf("failing lint command exit code = %v, want 1", completedLintStep.ExitCode)
 	}
 }
 
