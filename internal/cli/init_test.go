@@ -133,18 +133,3 @@ func TestInitRollsBackWhenDaemonStartFails(t *testing.T) {
 		t.Fatalf("expected no bare repos after failed init, found %d", len(entries))
 	}
 }
-
-func TestInitNoGitRepo(t *testing.T) {
-	tmpDir := t.TempDir()
-	nmHome := t.TempDir()
-	t.Setenv("NM_HOME", nmHome)
-
-	origDir, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	t.Cleanup(func() { os.Chdir(origDir) })
-
-	_, err := executeCmd("init")
-	if err == nil {
-		t.Fatal("init should fail outside a git repo")
-	}
-}

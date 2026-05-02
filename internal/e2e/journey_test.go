@@ -52,6 +52,7 @@ func runHappyPath(t *testing.T, agentName string) {
 
 	assertStatusNotGitRepo(t, h)
 	assertRunsNotGitRepo(t, h)
+	assertInitNotGitRepo(t, h)
 	assertStatusNotInitialized(t, h)
 	assertEjectNotInitialized(t, h)
 	assertRunsNotInitialized(t, h)
@@ -194,6 +195,17 @@ func assertRunsNotGitRepo(t *testing.T, h *Harness) {
 	}
 	if !strings.Contains(out, "not in a git repository") {
 		t.Errorf("runs error output should mention 'not in a git repository' outside git, got:\n%s", out)
+	}
+}
+
+func assertInitNotGitRepo(t *testing.T, h *Harness) {
+	t.Helper()
+	out, err := h.RunInDir(t.TempDir(), "init")
+	if err == nil {
+		t.Fatalf("nm init outside git repo should fail, got output:\n%s", out)
+	}
+	if !strings.Contains(out, "not a git repository") {
+		t.Errorf("init error output should mention 'not a git repository' outside git, got:\n%s", out)
 	}
 }
 
