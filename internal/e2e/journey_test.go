@@ -201,6 +201,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	assertFailingTestCommandRun(t, h)
 	assertFailingLintCommandRun(t, h)
 	if agentName == "claude" {
+		assertDifferentBranchDoesNotCancelActiveRun(t, h)
 		assertReviewWarningRun(t, h)
 	}
 	assertRunsDefaultLimit(t, h)
@@ -1240,6 +1241,37 @@ func assertSupersededRunCancellation(t *testing.T, h *Harness) {
 	}
 }
 
+func assertDifferentBranchDoesNotCancelActiveRun(t *testing.T, h *Harness) {
+	t.Helper()
+	slowCommand := filepath.Join(h.BinDir, "nm-different-branch-slow-e2e")
+	if err := os.WriteFile(slowCommand, []byte("#!/bin/sh\nsleep 10\n"), 0o755); err != nil {
+		t.Fatalf("write different-branch slow test command: %v", err)
+	}
+	slowConfig := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  test: nm-different-branch-slow-e2e\n  lint: true\n"
+	h.CommitChange("different-branch-slow", ".no-mistakes.yaml", slowConfig, "configure different-branch slow test")
+	h.PushToGate("different-branch-slow")
+	slowRun := waitForStepStatus(t, h, "different-branch-slow", types.StepTest, types.StepStatusRunning, 60*time.Second)
+	fastConfig := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  test: true\n  lint: true\n"
+	h.CommitChange("different-branch-fast", ".no-mistakes.yaml", fastConfig, "configure different-branch fast checks")
+	h.PushToGate("different-branch-fast")
+	fastRun := h.WaitForRun("different-branch-fast", 60*time.Second)
+	if fastRun.Status != types.RunCompleted {
+		t.Fatalf("different-branch-fast run did not complete: status=%s error=%v", fastRun.Status, deref(fastRun.Error))
+	}
+	slowCurrent := findRunByID(h.Runs(), slowRun.ID)
+	if slowCurrent == nil {
+		t.Fatalf("different-branch-slow run %s disappeared", slowRun.ID)
+	}
+	if slowCurrent.Status != types.RunRunning {
+		t.Fatalf("different-branch-slow run status after fast branch push = %s, want running", slowCurrent.Status)
+	}
+	h.CancelRun(slowRun.ID)
+	cancelled := waitForRunIDStatus(t, h, slowRun.ID, types.RunCancelled, 60*time.Second)
+	if cancelled.Error == nil || !strings.Contains(*cancelled.Error, "aborted by user") {
+		t.Fatalf("expected different-branch-slow cancellation error to mention aborted by user, got %q", deref(cancelled.Error))
+	}
+}
+
 func assertCancelRunStopsActivePipeline(t *testing.T, h *Harness) {
 	t.Helper()
 	slowCommand := filepath.Join(h.BinDir, "nm-cancel-test-e2e")
@@ -1873,6 +1905,15 @@ func findStep(steps []ipc.StepResultInfo, name types.StepName) (ipc.StepResultIn
 		}
 	}
 	return ipc.StepResultInfo{}, false
+}
+
+func findRunByID(runs []ipc.RunInfo, id string) *ipc.RunInfo {
+	for i := range runs {
+		if runs[i].ID == id {
+			return &runs[i]
+		}
+	}
+	return nil
 }
 
 func validateSkippedSteps(steps []ipc.StepResultInfo, expected ...types.StepName) []string {
