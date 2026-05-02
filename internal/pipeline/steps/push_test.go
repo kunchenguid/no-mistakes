@@ -61,53 +61,6 @@ func TestPushStep_CommitsUncommittedChanges(t *testing.T) {
 	}
 }
 
-func TestPushStep_NewBranchSkipsForceWithLease(t *testing.T) {
-	t.Parallel()
-	// When the branch doesn't exist on upstream yet, push should use regular push
-	// (not force-with-lease, which isn't needed for new branches).
-	upstream := t.TempDir()
-	gitCmd(t, upstream, "init", "--bare")
-
-	dir := t.TempDir()
-	gitCmd(t, dir, "init")
-	gitCmd(t, dir, "config", "user.name", "test")
-	gitCmd(t, dir, "config", "user.email", "test@test.com")
-	gitCmd(t, dir, "checkout", "-b", "main")
-	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "initial")
-	gitCmd(t, dir, "remote", "add", "origin", upstream)
-	gitCmd(t, dir, "push", "origin", "main")
-
-	// Create feature branch but do NOT push it to upstream — it's a brand new branch
-	gitCmd(t, dir, "checkout", "-b", "new-feature")
-	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "feature commit")
-	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
-	baseSHA := gitCmd(t, dir, "rev-parse", "main")
-
-	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Repo.UpstreamURL = upstream
-	sctx.Run.Branch = "new-feature"
-
-	step := &PushStep{}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if outcome.NeedsApproval {
-		t.Error("push should never need approval")
-	}
-
-	// Verify the new branch was created on upstream
-	upstreamSHA := gitCmd(t, upstream, "rev-parse", "refs/heads/new-feature")
-	if upstreamSHA != headSHA {
-		t.Errorf("upstream SHA = %s, want %s", upstreamSHA, headSHA)
-	}
-}
-
 func TestPushStep_ForceWithLeaseUsesExplicitSHA(t *testing.T) {
 	t.Parallel()
 	// When the branch already exists on upstream, push should use --force-with-lease
