@@ -436,29 +436,6 @@ func TestPushReceivedDoesNotCancelActiveRunOnDifferentBranch(t *testing.T) {
 	}
 }
 
-func TestRerunHandlerNoPreviousRun(t *testing.T) {
-	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
-		return []pipeline.Step{&mockPassStep{name: types.StepReview}}
-	})
-
-	repo, _ := setupTestGitRepo(t, p, d, "testrepo-rerun-missing")
-
-	client, err := ipc.Dial(p.Socket())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer client.Close()
-
-	var rerun ipc.RerunResult
-	err = client.Call(ipc.MethodRerun, &ipc.RerunParams{RepoID: repo.ID, Branch: "main"}, &rerun)
-	if err == nil {
-		t.Fatal("expected error when rerunning without a previous run")
-	}
-	if !strings.Contains(err.Error(), "no previous run") {
-		t.Fatalf("expected no previous run error, got %v", err)
-	}
-}
-
 func TestRespondToActiveRun(t *testing.T) {
 	approvalStep := &mockApprovalStep{name: types.StepReview}
 

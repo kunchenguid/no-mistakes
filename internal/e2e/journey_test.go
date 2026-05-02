@@ -88,6 +88,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	assertDaemonRestartWhileRunning(t, h)
 	assertInitAlreadyInitialized(t, h)
 	assertRunsEmpty(t, h)
+	assertRerunNoPreviousRun(t, h)
 	assertRootNoActiveRun(t, h)
 
 	// Make a feature branch with one trivial change. The fake agent
@@ -540,6 +541,23 @@ func assertRunsEmpty(t *testing.T, h *Harness) {
 	for _, want := range []string{"no runs", "git push no-mistakes <branch>"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("runs output should contain %q before any push, got:\n%s", want, out)
+		}
+	}
+}
+
+func assertRerunNoPreviousRun(t *testing.T, h *Harness) {
+	t.Helper()
+	gateDir := filepath.Join(h.NMHome, "repos", h.repoID()+".git")
+	if out, err := h.runGit(context.Background(), gateDir, "fetch", h.WorkDir, "main:refs/heads/main"); err != nil {
+		t.Fatalf("seed gate main ref before rerun: %v\n%s", err, out)
+	}
+	out, err := h.Run("rerun")
+	if err == nil {
+		t.Fatalf("nm rerun before any push should fail, got output:\n%s", out)
+	}
+	for _, want := range []string{"rerun pipeline", "no previous run"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("rerun error output should contain %q before any push, got:\n%s", want, out)
 		}
 	}
 }
