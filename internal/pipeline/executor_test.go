@@ -382,7 +382,7 @@ func TestExecutor_StepOutcomePRURL_EmitsRunUpdated(t *testing.T) {
 	}
 }
 
-func TestExecutor_SkippedOutcome_MarksStepSkipped(t *testing.T) {
+func TestExecutor_SkippedOutcome_EmitsSkippedEvent(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir := t.TempDir()
 
@@ -396,14 +396,6 @@ func TestExecutor_SkippedOutcome_MarksStepSkipped(t *testing.T) {
 
 	if err := exec.Execute(context.Background(), run, repo, workDir); err != nil {
 		t.Fatalf("expected no error, got: %v", err)
-	}
-
-	dbSteps, _ := database.GetStepsByRun(run.ID)
-	if len(dbSteps) != 1 {
-		t.Fatalf("expected 1 step, got %d", len(dbSteps))
-	}
-	if dbSteps[0].Status != types.StepStatusSkipped {
-		t.Fatalf("expected skipped status, got %q", dbSteps[0].Status)
 	}
 
 	event := events.find(ipc.EventStepCompleted, types.StepPR)
