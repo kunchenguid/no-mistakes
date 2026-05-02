@@ -187,51 +187,6 @@ func TestDocumentStep_NoStructuredOutputRequiresApproval(t *testing.T) {
 	}
 }
 
-func TestDocumentStep_MissingFindingsFieldRequiresApproval(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			// Agent returns structured output but without the findings array
-			return &agent.Result{Output: json.RawMessage(`{"summary":"docs status unavailable"}`)}, nil
-		},
-	}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-
-	step := &DocumentStep{}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !outcome.NeedsApproval {
-		t.Fatal("expected missing findings field to require approval")
-	}
-	if outcome.AutoFixable {
-		t.Fatal("expected missing findings field finding to require manual review")
-	}
-	var findings Findings
-	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
-		t.Fatalf("unmarshal findings: %v", err)
-	}
-	if len(findings.Items) != 1 {
-		t.Fatalf("expected 1 finding, got %+v", findings.Items)
-	}
-	if findings.Items[0].Action != types.ActionAskUser {
-		t.Fatal("expected missing findings field finding to require human review")
-	}
-	if findings.Summary != "docs status unavailable" {
-		t.Fatalf("summary = %q, want %q", findings.Summary, "docs status unavailable")
-	}
-	if findings.Items[0].Description != "docs status unavailable" {
-		t.Fatalf("description = %q, want %q", findings.Items[0].Description, "docs status unavailable")
-	}
-	if len(ag.calls) != 1 {
-		t.Fatalf("expected 1 agent call, got %d", len(ag.calls))
-	}
-}
-
 func TestDocumentStep_MalformedFindingRequiresApproval(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

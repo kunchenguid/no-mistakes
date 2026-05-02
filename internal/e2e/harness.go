@@ -128,6 +128,9 @@ func NewHarness(t *testing.T, opts SetupOpts) *Harness {
 	// Disable telemetry attempts (the package would no-op anyway, but
 	// avoid a network DNS lookup on each command).
 	t.Setenv("NO_MISTAKES_TELEMETRY", "off")
+	// Disable background update checks so helper processes do not write
+	// update-check.json while testing.T is removing the temp directory.
+	t.Setenv("NO_MISTAKES_NO_UPDATE_CHECK", "1")
 
 	h.writeGlobalConfig()
 	h.initGitRepos()

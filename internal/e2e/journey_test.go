@@ -202,6 +202,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	assertFailingLintCommandRun(t, h)
 	if agentName == "claude" {
 		assertDifferentBranchDoesNotCancelActiveRun(t, h)
+		assertDocumentMissingFindingsRun(t, h)
 		assertDocumentInfoRun(t, h)
 		assertReviewWarningRun(t, h)
 	}
@@ -244,6 +245,10 @@ func cleanReviewScenario(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "scenario.yaml")
 	content := `actions:
+  - match: "branch: document-missing-findings"
+    text: "documentation missing findings field"
+    structured:
+      summary: "docs status unavailable"
   - match: "branch: document-info"
     text: "documentation info finding"
     structured:
@@ -1118,6 +1123,42 @@ func assertConfiguredCommandRun(t *testing.T, h *Harness) {
 	}
 	if sawPromptContainingAll(invs, "Detect the linting and formatting tools", "branch: configured-commands") {
 		t.Fatalf("configured lint command should not call the agent for lint detection; invocations:\n%s", summarisePrompts(invs))
+	}
+}
+
+func assertDocumentMissingFindingsRun(t *testing.T, h *Harness) {
+	t.Helper()
+	h.CommitChange("document-missing-findings", "document-missing-findings.txt", "document missing findings\n", "add document missing findings")
+	h.PushToGate("document-missing-findings")
+	run := waitForStepStatus(t, h, "document-missing-findings", types.StepDocument, types.StepStatusAwaitingApproval, 60*time.Second)
+	documentStep, ok := findStep(run.Steps, types.StepDocument)
+	if !ok {
+		t.Fatal("expected document step in document-missing-findings run")
+	}
+	if documentStep.FindingsJSON == nil {
+		t.Fatal("expected document missing findings fallback to record findings JSON")
+	}
+	findings, err := types.ParseFindingsJSON(*documentStep.FindingsJSON)
+	if err != nil {
+		t.Fatalf("parse document missing findings fallback: %v", err)
+	}
+	if findings.Summary != "docs status unavailable" {
+		t.Fatalf("document missing findings summary = %q, want docs status unavailable", findings.Summary)
+	}
+	if len(findings.Items) != 1 {
+		t.Fatalf("expected one fallback documentation finding, got %+v", findings.Items)
+	}
+	item := findings.Items[0]
+	if item.Action != types.ActionAskUser {
+		t.Fatalf("expected fallback documentation finding to ask user, got action %q", item.Action)
+	}
+	if item.Description != "docs status unavailable" {
+		t.Fatalf("fallback documentation finding description = %q, want docs status unavailable", item.Description)
+	}
+	h.Respond(run.ID, types.StepDocument, types.ActionAbort)
+	completed := h.WaitForRun("document-missing-findings", 60*time.Second)
+	if completed.Status != types.RunFailed {
+		t.Fatalf("document-missing-findings run status after abort = %s, want failed", completed.Status)
 	}
 }
 
