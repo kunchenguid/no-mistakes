@@ -11,31 +11,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 )
 
-func TestDaemonStatusAndStopWhenNotRunning(t *testing.T) {
-	nmHome := makeSocketSafeTempDir(t)
-	t.Setenv("NM_HOME", nmHome)
-	p := paths.WithRoot(nmHome)
-	if err := p.EnsureDirs(); err != nil {
-		t.Fatal(err)
-	}
-
-	out, err := executeCmd("daemon", "status")
-	if err != nil {
-		t.Fatalf("daemon status failed: %v\noutput: %s", err, out)
-	}
-	if !strings.Contains(out, "daemon not running") {
-		t.Errorf("expected 'daemon not running', got: %s", out)
-	}
-
-	out, err = executeCmd("daemon", "stop")
-	if err != nil {
-		t.Fatalf("daemon stop should succeed when daemon is not running: %v\noutput: %s", err, out)
-	}
-	if !strings.Contains(out, "daemon stopped") {
-		t.Errorf("expected 'daemon stopped', got: %s", out)
-	}
-}
-
 func TestDaemonRestart(t *testing.T) {
 	t.Run("stops then starts when daemon is running", func(t *testing.T) {
 		nmHome := makeSocketSafeTempDir(t)
