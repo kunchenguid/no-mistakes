@@ -3,6 +3,8 @@
 package e2e
 
 import (
+	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -48,9 +50,12 @@ func runHappyPath(t *testing.T, agentName string) {
 	h := NewHarness(t, SetupOpts{Agent: agentName})
 
 	// `no-mistakes init` sets up the gate and starts the daemon.
-	if out, err := h.Run("init"); err != nil {
+	out, err := h.Run("init")
+	if err != nil {
 		t.Fatalf("nm init: %v\n%s", err, out)
 	}
+	assertInitOutput(t, h, out)
+	assertGateRemotePresent(t, h)
 
 	// Make a feature branch with one trivial change. The fake agent
 	// returns "no issues found" for every prompt, so the pipeline
@@ -130,6 +135,59 @@ func runHappyPath(t *testing.T, agentName string) {
 	t.Logf("step outcomes:")
 	for _, step := range run.Steps {
 		t.Logf("  %d %-9s %s", step.StepOrder, step.StepName, step.Status)
+	}
+
+	out, err = h.Run("eject")
+	if err != nil {
+		t.Fatalf("nm eject: %v\n%s", err, out)
+	}
+	assertEjectOutput(t, h, out)
+	assertGateRemoteAbsent(t, h)
+}
+
+func assertInitOutput(t *testing.T, h *Harness, out string) {
+	t.Helper()
+	resolved := h.WorkDir
+	if path, err := filepath.EvalSymlinks(h.WorkDir); err == nil {
+		resolved = path
+	}
+	for _, want := range []string{resolved, "git push no-mistakes", "|__| |_/", "Gate initialized"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("init output should contain %q, got:\n%s", want, out)
+		}
+	}
+}
+
+func assertEjectOutput(t *testing.T, h *Harness, out string) {
+	t.Helper()
+	resolved := h.WorkDir
+	if path, err := filepath.EvalSymlinks(h.WorkDir); err == nil {
+		resolved = path
+	}
+	for _, want := range []string{resolved, "Gate removed"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("eject output should contain %q, got:\n%s", want, out)
+		}
+	}
+}
+
+func assertGateRemotePresent(t *testing.T, h *Harness) {
+	t.Helper()
+	out, err := h.runGit(context.Background(), h.WorkDir, "remote", "get-url", "no-mistakes")
+	if err != nil {
+		t.Fatalf("no-mistakes remote not found: %v\n%s", err, out)
+	}
+	want := filepath.Join(h.NMHome, "repos", h.repoID()+".git")
+	if strings.TrimSpace(string(out)) != want {
+		t.Errorf("no-mistakes remote URL = %q, want %q", strings.TrimSpace(string(out)), want)
+	}
+}
+
+func assertGateRemoteAbsent(t *testing.T, h *Harness) {
+	t.Helper()
+	out, err := h.runGit(context.Background(), h.WorkDir, "remote", "get-url", "no-mistakes")
+	if err == nil {
+		t.Fatalf("no-mistakes remote should have been removed after eject, got %s", out)
 	}
 }
 

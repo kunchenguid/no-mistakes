@@ -14,64 +14,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 )
 
-func TestInitAndEject(t *testing.T) {
-	repoDir := setupTestRepo(t)
-
-	// Init should succeed.
-	out, err := executeCmd("init")
-	if err != nil {
-		t.Fatalf("init failed: %v\noutput: %s", err, out)
-	}
-
-	// Resolve symlinks for comparison (macOS /var → /private/var).
-	resolved, _ := filepath.EvalSymlinks(repoDir)
-	if !strings.Contains(out, resolved) {
-		t.Errorf("init output should contain repo path %q, got: %s", resolved, out)
-	}
-	if !strings.Contains(out, "git push no-mistakes") {
-		t.Errorf("init output should contain push instructions, got: %s", out)
-	}
-	if !strings.Contains(out, "|__| |_/") {
-		t.Errorf("init output should contain ASCII art banner, got: %s", out)
-	}
-	if !strings.Contains(out, "Gate initialized") {
-		t.Errorf("init output should contain success message, got: %s", out)
-	}
-
-	// Verify the no-mistakes remote was added.
-	cmd := exec.Command("git", "remote", "get-url", "no-mistakes")
-	cmd.Dir = repoDir
-	remoteOut, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("no-mistakes remote not found: %v", err)
-	}
-	if !strings.Contains(string(remoteOut), ".git") {
-		t.Errorf("remote URL should point to bare repo, got: %s", remoteOut)
-	}
-
-	p := paths.WithRoot(os.Getenv("NM_HOME"))
-	waitForDaemonRunning(t, p)
-
-	// Eject should succeed.
-	out, err = executeCmd("eject")
-	if err != nil {
-		t.Fatalf("eject failed: %v\noutput: %s", err, out)
-	}
-	if !strings.Contains(out, "Gate removed") {
-		t.Errorf("eject output should say 'Gate removed', got: %s", out)
-	}
-	if !strings.Contains(out, resolved) {
-		t.Errorf("eject output should contain repo path %q, got: %s", resolved, out)
-	}
-
-	// Remote should be gone.
-	cmd = exec.Command("git", "remote", "get-url", "no-mistakes")
-	cmd.Dir = repoDir
-	if err := cmd.Run(); err == nil {
-		t.Error("no-mistakes remote should have been removed after eject")
-	}
-}
-
 func TestInitAndEjectFromWorktreeUseMainRepo(t *testing.T) {
 	repoDir := setupTestRepo(t)
 	nmHome := makeSocketSafeTempDir(t)
