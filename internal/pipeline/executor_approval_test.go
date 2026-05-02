@@ -145,51 +145,6 @@ func TestExecutor_ApprovalDurationExcludesWaitTime(t *testing.T) {
 	}
 }
 
-func TestExecutor_ApprovalApprovePreservesExitCode(t *testing.T) {
-	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
-
-	steps := []Step{
-		&mockStep{
-			name: types.StepTest,
-			outcome: &StepOutcome{
-				NeedsApproval: true,
-				Findings:      `{"findings":[{"severity":"error","description":"tests failed","action":"auto-fix"}],"summary":"failing test output"}`,
-				ExitCode:      42,
-			},
-		},
-	}
-
-	exec := NewExecutor(database, p, nil, nil, steps, nil)
-
-	done := make(chan error, 1)
-	go func() {
-		done <- exec.Execute(context.Background(), run, repo, workDir)
-	}()
-
-	waitForStepStatus(t, database, run.ID, types.StepTest, types.StepStatusAwaitingApproval)
-	if err := exec.Respond(types.StepTest, types.ActionApprove, nil); err != nil {
-		t.Fatalf("respond error: %v", err)
-	}
-
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("expected no error, got: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("executor timed out")
-	}
-
-	dbSteps, err := database.GetStepsByRun(run.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if dbSteps[0].ExitCode == nil || *dbSteps[0].ExitCode != 42 {
-		t.Fatalf("exit code = %v, want 42", dbSteps[0].ExitCode)
-	}
-}
-
 func TestExecutor_ApprovalFix(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir := t.TempDir()

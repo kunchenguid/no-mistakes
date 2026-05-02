@@ -1177,17 +1177,17 @@ func assertFailingTestCommandRun(t *testing.T, h *Harness) {
 	if len(findings.Tested) != 1 || findings.Tested[0] != "nm-test-fails-e2e" {
 		t.Fatalf("expected failing test command to be recorded, got %+v", findings.Tested)
 	}
-	h.Respond(run.ID, types.StepTest, types.ActionSkip)
+	h.Respond(run.ID, types.StepTest, types.ActionApprove)
 	completed := h.WaitForRun("failing-test-command", 60*time.Second)
 	if completed.Status != types.RunCompleted {
-		t.Fatalf("failing test command run did not complete after skip: status=%s error=%v", completed.Status, deref(completed.Error))
+		t.Fatalf("failing test command run did not complete after approve: status=%s error=%v", completed.Status, deref(completed.Error))
 	}
 	completedTestStep, ok := findStep(completed.Steps, types.StepTest)
 	if !ok {
 		t.Fatal("expected completed test step in failing test command run")
 	}
-	if completedTestStep.Status != types.StepStatusSkipped {
-		t.Fatalf("expected skipped test step after response, got %s", completedTestStep.Status)
+	if completedTestStep.Status != types.StepStatusCompleted {
+		t.Fatalf("expected completed test step after approve, got %s", completedTestStep.Status)
 	}
 	if completedTestStep.ExitCode == nil || *completedTestStep.ExitCode != 1 {
 		t.Fatalf("failing test command exit code = %v, want 1", completedTestStep.ExitCode)
@@ -1244,6 +1244,13 @@ func assertFailingLintCommandRun(t *testing.T, h *Harness) {
 	}
 	if completedLintStep.ExitCode == nil || *completedLintStep.ExitCode != 1 {
 		t.Fatalf("failing lint command exit code = %v, want 1", completedLintStep.ExitCode)
+	}
+	pushStep, ok := findStep(completed.Steps, types.StepPush)
+	if !ok {
+		t.Fatal("expected push step after skipping failing lint command")
+	}
+	if pushStep.Status != types.StepStatusCompleted {
+		t.Fatalf("expected push to continue after skipped lint step, got %s", pushStep.Status)
 	}
 }
 
