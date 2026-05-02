@@ -215,6 +215,7 @@ func runHappyPath(t *testing.T, agentName string) {
 		assertDocumentMissingSummaryRun(t, h)
 		assertDocumentAgentErrorRun(t, h)
 		assertReviewAgentErrorRun(t, h)
+		assertReviewExistingBranchUsesMergeBaseScope(t, h)
 		assertDocumentWarningRun(t, h)
 		assertDocumentInfoRun(t, h)
 		assertReviewWarningRun(t, h)
@@ -1446,6 +1447,42 @@ func assertReviewAgentErrorRun(t *testing.T, h *Harness) {
 	}
 	if reviewStep.Error == nil || !strings.Contains(*reviewStep.Error, "agent review") {
 		t.Fatalf("expected review step error to mention agent review, got %q", deref(reviewStep.Error))
+	}
+}
+
+func assertReviewExistingBranchUsesMergeBaseScope(t *testing.T, h *Harness) {
+	t.Helper()
+	branch := "review-merge-base-scope"
+	firstHead := h.CommitChange(branch, "review-merge-base-first.txt", "first review merge-base change\n", "add first review merge-base change")
+	h.PushToGate(branch)
+	firstRun := h.WaitForRun(branch, 60*time.Second)
+	if firstRun.Status != types.RunCompleted {
+		t.Fatalf("first review merge-base run status=%s error=%v", firstRun.Status, deref(firstRun.Error))
+	}
+	if firstRun.HeadSHA != firstHead {
+		t.Fatalf("first review merge-base head = %s, want %s", firstRun.HeadSHA, firstHead)
+	}
+
+	secondHead := h.CommitChange(branch, "review-merge-base-second.txt", "second review merge-base change\n", "add second review merge-base change")
+	h.PushToGate(branch)
+	secondRun := h.WaitForRun(branch, 60*time.Second)
+	if secondRun.Status != types.RunCompleted {
+		t.Fatalf("second review merge-base run status=%s error=%v", secondRun.Status, deref(secondRun.Error))
+	}
+	if secondRun.HeadSHA != secondHead {
+		t.Fatalf("second review merge-base head = %s, want %s", secondRun.HeadSHA, secondHead)
+	}
+
+	prompt, ok := promptContainingAll(h.AgentInvocations(), "Review the code changes", "branch: "+branch, secondHead)
+	if !ok {
+		t.Fatalf("expected second review merge-base prompt for branch %s and head %s", branch, secondHead)
+	}
+	mergeBase := h.WorktreeRefSHA("main")
+	if !strings.Contains(prompt, mergeBase) {
+		t.Fatalf("expected existing-branch review prompt to contain merge-base SHA %s, got:\n%s", mergeBase, prompt)
+	}
+	if strings.Contains(prompt, firstHead) {
+		t.Fatalf("expected existing-branch review prompt to avoid old remote SHA %s, got:\n%s", firstHead, prompt)
 	}
 }
 

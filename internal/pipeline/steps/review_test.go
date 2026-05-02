@@ -14,53 +14,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-func TestReviewStep_ExistingBranchUsesMergeBaseScope(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	gitCmd(t, dir, "init")
-	gitCmd(t, dir, "config", "user.name", "test")
-	gitCmd(t, dir, "config", "user.email", "test@test.com")
-	gitCmd(t, dir, "checkout", "-b", "main")
-	os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base\n"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "base commit")
-	mergeBaseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
-
-	gitCmd(t, dir, "checkout", "-b", "feature")
-	os.WriteFile(filepath.Join(dir, "first.txt"), []byte("first\n"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "first feature commit")
-	oldRemoteSHA := gitCmd(t, dir, "rev-parse", "HEAD")
-
-	os.WriteFile(filepath.Join(dir, "second.txt"), []byte("second\n"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "second feature commit")
-	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
-
-	findingsJSON, _ := json.Marshal(Findings{Summary: "clean"})
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			return &agent.Result{Output: findingsJSON}, nil
-		},
-	}
-	sctx := newTestContext(t, ag, dir, oldRemoteSHA, headSHA, config.Commands{})
-
-	step := &ReviewStep{}
-	if _, err := step.Execute(sctx); err != nil {
-		t.Fatal(err)
-	}
-	if len(ag.calls) != 1 {
-		t.Fatalf("expected 1 agent call, got %d", len(ag.calls))
-	}
-	if !strings.Contains(ag.calls[0].Prompt, mergeBaseSHA) {
-		t.Errorf("expected prompt to contain merge-base SHA %s", mergeBaseSHA)
-	}
-	if strings.Contains(ag.calls[0].Prompt, oldRemoteSHA) {
-		t.Errorf("expected prompt to avoid push old SHA %s", oldRemoteSHA)
-	}
-}
-
 func TestReviewStep_FixMode(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
