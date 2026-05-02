@@ -146,8 +146,13 @@ func runHappyPath(t *testing.T, agentName string) {
 	if !sawPromptContaining(invs, "Review the code changes") {
 		t.Errorf("expected a review prompt in invocations, got %d:\n%s", len(invs), summarisePrompts(invs))
 	}
-	if !sawPromptContaining(invs, "Identify documentation gaps") {
-		t.Errorf("expected a document prompt in invocations, got %d:\n%s", len(invs), summarisePrompts(invs))
+	if !sawPromptContainingAll(invs,
+		"Identify documentation gaps",
+		"branch: feature/e2e",
+		"Do a full documentation pass before returning.",
+		"Do not stop after the first documentation gap.",
+	) {
+		t.Errorf("expected a document prompt with branch metadata and full-pass guidance in invocations, got %d:\n%s", len(invs), summarisePrompts(invs))
 	}
 	assertNoCommandTestStep(t, run.Steps, invs)
 	if !sawPromptContainingAll(invs, "Detect the linting and formatting tools", "branch: feature/e2e", "Set action to") {

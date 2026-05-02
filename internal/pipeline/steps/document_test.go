@@ -111,12 +111,6 @@ func TestDocumentStep_Updated(t *testing.T) {
 	if !strings.Contains(ag.calls[0].Prompt, "refs/heads/feature") {
 		t.Error("expected prompt to contain branch name")
 	}
-	if !strings.Contains(ag.calls[0].Prompt, "Do a full documentation pass before returning.") {
-		t.Error("expected document prompt to require a full pass before returning")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "Do not stop after the first documentation gap.") {
-		t.Error("expected document prompt to discourage stopping at the first gap")
-	}
 	var findings Findings
 	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
 		t.Fatalf("unmarshal findings: %v", err)
