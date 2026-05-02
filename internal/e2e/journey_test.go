@@ -61,6 +61,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	}
 	assertInitOutput(t, h, out)
 	assertGateRemotePresent(t, h)
+	assertDaemonStatusRunning(t, h)
 	assertInitAlreadyInitialized(t, h)
 	assertRunsEmpty(t, h)
 
@@ -149,6 +150,8 @@ func runHappyPath(t *testing.T, agentName string) {
 	if err != nil {
 		t.Fatalf("nm daemon stop: %v\n%s", err, out)
 	}
+	assertDaemonStopOutput(t, out)
+	assertDaemonStatusNotRunning(t, h)
 	assertStatusInitializedStopped(t, h)
 
 	out, err = h.Run("eject")
@@ -259,6 +262,35 @@ func assertRunsCompleted(t *testing.T, h *Harness, run *ipc.RunInfo) {
 		if !strings.Contains(out, want) {
 			t.Errorf("runs output should contain %q after completed pipeline, got:\n%s", want, out)
 		}
+	}
+}
+
+func assertDaemonStatusRunning(t *testing.T, h *Harness) {
+	t.Helper()
+	out, err := h.Run("daemon", "status")
+	if err != nil {
+		t.Fatalf("nm daemon status after init: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "daemon running") {
+		t.Errorf("daemon status output should show running after init, got:\n%s", out)
+	}
+}
+
+func assertDaemonStopOutput(t *testing.T, out string) {
+	t.Helper()
+	if !strings.Contains(out, "daemon stopped") {
+		t.Errorf("daemon stop output should show stopped, got:\n%s", out)
+	}
+}
+
+func assertDaemonStatusNotRunning(t *testing.T, h *Harness) {
+	t.Helper()
+	out, err := h.Run("daemon", "status")
+	if err != nil {
+		t.Fatalf("nm daemon status after stop: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "daemon not running") {
+		t.Errorf("daemon status output should show not running after stop, got:\n%s", out)
 	}
 }
 
