@@ -56,6 +56,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	}
 	assertInitOutput(t, h, out)
 	assertGateRemotePresent(t, h)
+	assertRunsEmpty(t, h)
 
 	// Make a feature branch with one trivial change. The fake agent
 	// returns "no issues found" for every prompt, so the pipeline
@@ -167,6 +168,19 @@ func assertEjectOutput(t *testing.T, h *Harness, out string) {
 	for _, want := range []string{resolved, "Gate removed"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("eject output should contain %q, got:\n%s", want, out)
+		}
+	}
+}
+
+func assertRunsEmpty(t *testing.T, h *Harness) {
+	t.Helper()
+	out, err := h.Run("runs")
+	if err != nil {
+		t.Fatalf("nm runs before push: %v\n%s", err, out)
+	}
+	for _, want := range []string{"no runs", "git push no-mistakes <branch>"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("runs output should contain %q before any push, got:\n%s", want, out)
 		}
 	}
 }

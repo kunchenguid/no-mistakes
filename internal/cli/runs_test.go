@@ -29,30 +29,6 @@ func TestRunsNotInitialized(t *testing.T) {
 	}
 }
 
-func TestRunsEmpty(t *testing.T) {
-	setupTestRepo(t)
-	nmHome := os.Getenv("NM_HOME")
-	p := paths.WithRoot(nmHome)
-
-	d, err := db.Open(p.DB())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer d.Close()
-
-	if _, err := gate.Init(context.Background(), d, p, "."); err != nil {
-		t.Fatalf("gate.Init failed: %v", err)
-	}
-
-	out, err := executeCmd("runs")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out, "no runs") {
-		t.Errorf("runs output should say 'no runs', got: %s", out)
-	}
-}
-
 func TestRunsWithData(t *testing.T) {
 	setupTestRepo(t)
 	nmHome := os.Getenv("NM_HOME")
