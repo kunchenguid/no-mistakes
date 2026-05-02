@@ -66,47 +66,6 @@ func TestPIDFile(t *testing.T) {
 	}
 }
 
-func TestGetActiveRunHandler(t *testing.T) {
-	p, d := startTestDaemon(t)
-
-	repo, err := d.InsertRepoWithID("test-repo-789", "/tmp/test-repo3", "https://github.com/test/repo3", "main")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	client, err := ipc.Dial(p.Socket())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer client.Close()
-
-	// No active run.
-	var result ipc.GetActiveRunResult
-	if err := client.Call(ipc.MethodGetActiveRun, &ipc.GetActiveRunParams{RepoID: repo.ID}, &result); err != nil {
-		t.Fatal(err)
-	}
-	if result.Run != nil {
-		t.Error("expected no active run")
-	}
-
-	// Create a pending run.
-	run, err := d.InsertRun(repo.ID, "feature", "abc", "def")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	var result2 ipc.GetActiveRunResult
-	if err := client.Call(ipc.MethodGetActiveRun, &ipc.GetActiveRunParams{RepoID: repo.ID}, &result2); err != nil {
-		t.Fatal(err)
-	}
-	if result2.Run == nil {
-		t.Fatal("expected active run")
-	}
-	if result2.Run.ID != run.ID {
-		t.Errorf("active run id = %q, want %q", result2.Run.ID, run.ID)
-	}
-}
-
 func TestGetRunNotFound(t *testing.T) {
 	p, _ := startTestDaemon(t)
 

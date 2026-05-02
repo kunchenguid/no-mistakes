@@ -699,6 +699,9 @@ func assertRerunNoPreviousRun(t *testing.T, h *Harness) {
 
 func assertRootNoActiveRun(t *testing.T, h *Harness) {
 	t.Helper()
+	if active := h.ActiveRun(""); active != nil {
+		t.Fatalf("expected no repo-wide active run before push, got %q on %q", active.ID, active.Branch)
+	}
 	out, err := h.Run()
 	if err != nil {
 		t.Fatalf("bare nm before push: %v\n%s", err, out)
@@ -715,6 +718,13 @@ func assertRootNoActiveRun(t *testing.T, h *Harness) {
 
 func assertRootNoActiveRunOnOtherBranch(t *testing.T, h *Harness, activeRun *ipc.RunInfo) {
 	t.Helper()
+	matchedRepoWide := h.ActiveRun("")
+	if matchedRepoWide == nil {
+		t.Fatal("expected repo-wide active run while feature branch is running")
+	}
+	if matchedRepoWide.ID != activeRun.ID {
+		t.Fatalf("repo-wide active run = %q, want %q", matchedRepoWide.ID, activeRun.ID)
+	}
 	matched := h.ActiveRun(activeRun.Branch)
 	if matched == nil {
 		t.Fatalf("expected active run for branch %q", activeRun.Branch)
