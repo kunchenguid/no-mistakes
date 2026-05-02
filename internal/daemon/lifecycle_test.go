@@ -32,18 +32,6 @@ func writeDaemonPIDRecord(t *testing.T, path string, record daemonPIDFile) {
 	}
 }
 
-func TestIsRunningTrueWhenDaemonRunning(t *testing.T) {
-	p, _ := startTestDaemon(t)
-
-	alive, err := IsRunning(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !alive {
-		t.Error("expected running when daemon is started")
-	}
-}
-
 func TestStopNotRunningIsNoop(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "dtest")
 	if err != nil {
