@@ -283,6 +283,17 @@ func (h *Harness) UpstreamBranchSHA(branch string) string {
 	return string(bytes.TrimSpace(sha))
 }
 
+func (h *Harness) WorktreeRefSHA(ref string) string {
+	h.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	sha, err := h.runGit(ctx, h.WorkDir, "rev-parse", ref)
+	if err != nil {
+		h.t.Fatalf("rev-parse worktree %s: %v\n%s", ref, err, sha)
+	}
+	return string(bytes.TrimSpace(sha))
+}
+
 // WaitForRun polls the daemon over IPC until a run for branch completes
 // (status != pending|running) or timeout expires. Returns the final
 // RunInfo so the test can assert on per-step outcomes.

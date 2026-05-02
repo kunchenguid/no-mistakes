@@ -143,15 +143,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	// The review step always runs and always calls the agent. Find the
 	// invocation whose prompt contains the review preamble; if missing
 	// the pipeline didn't reach review or routed it elsewhere.
-	if !sawPromptContainingAll(invs,
-		"Review the code changes",
-		"branch: feature/e2e",
-		"Do a full review pass before returning.",
-		"Do not stop after the first valid finding.",
-		"Do NOT run tests during review.",
-	) {
-		t.Errorf("expected a review prompt with branch metadata and full-pass guidance in invocations, got %d:\n%s", len(invs), summarisePrompts(invs))
-	}
+	assertReviewPrompt(t, h, run, invs)
 	if !sawPromptContainingAll(invs,
 		"Identify documentation gaps",
 		"branch: feature/e2e",
@@ -642,6 +634,20 @@ func sawPromptContaining(invs []Invocation, needle string) bool {
 }
 
 func sawPromptContainingAll(invs []Invocation, needles ...string) bool {
+	_, ok := promptContainingAll(invs, needles...)
+	return ok
+}
+
+func promptContaining(invs []Invocation, needle string) (string, bool) {
+	for _, inv := range invs {
+		if strings.Contains(inv.Prompt, needle) {
+			return inv.Prompt, true
+		}
+	}
+	return "", false
+}
+
+func promptContainingAll(invs []Invocation, needles ...string) (string, bool) {
 	for _, inv := range invs {
 		matched := true
 		for _, needle := range needles {
@@ -651,10 +657,10 @@ func sawPromptContainingAll(invs []Invocation, needles ...string) bool {
 			}
 		}
 		if matched {
-			return true
+			return inv.Prompt, true
 		}
 	}
-	return false
+	return "", false
 }
 
 func summarisePrompts(invs []Invocation) string {
@@ -714,6 +720,32 @@ func assertPromptsAbsent(t *testing.T, invs []Invocation, unexpected ...string) 
 	t.Helper()
 	for _, msg := range validatePromptsAbsent(invs, unexpected...) {
 		t.Error(msg)
+	}
+}
+
+func assertReviewPrompt(t *testing.T, h *Harness, run *ipc.RunInfo, invs []Invocation) {
+	t.Helper()
+	prompt, ok := promptContaining(invs, "Review the code changes")
+	if !ok {
+		t.Fatalf("expected a review prompt in invocations, got %d:\n%s", len(invs), summarisePrompts(invs))
+	}
+	baseSHA := h.WorktreeRefSHA("main")
+	for _, want := range []string{
+		"branch: feature/e2e",
+		baseSHA,
+		run.HeadSHA,
+		"Do a full review pass before returning.",
+		"Do not stop after the first valid finding.",
+		"Do NOT run tests during review.",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("expected review prompt to contain %q, got:\n%s", want, prompt)
+		}
+	}
+	for _, unexpected := range []string{"Diff:\n", "hello world"} {
+		if strings.Contains(prompt, unexpected) {
+			t.Errorf("expected review prompt to avoid inline diff content %q, got:\n%s", unexpected, prompt)
+		}
 	}
 }
 

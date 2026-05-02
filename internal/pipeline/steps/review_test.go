@@ -76,21 +76,6 @@ func TestReviewStep_WithWarnings(t *testing.T) {
 	if len(ag.calls) != 1 {
 		t.Errorf("expected 1 agent call, got %d", len(ag.calls))
 	}
-	if !strings.Contains(ag.calls[0].Prompt, baseSHA) {
-		t.Error("expected prompt to contain base SHA")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, headSHA) {
-		t.Error("expected prompt to contain head SHA")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "refs/heads/feature") {
-		t.Error("expected prompt to contain branch name")
-	}
-	if strings.Contains(ag.calls[0].Prompt, "Diff:\n") {
-		t.Error("expected prompt to avoid embedding the diff")
-	}
-	if strings.Contains(ag.calls[0].Prompt, "feature code") {
-		t.Error("expected prompt to avoid embedding diff contents")
-	}
 }
 
 func TestReviewStep_Clean(t *testing.T) {
