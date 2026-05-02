@@ -49,6 +49,8 @@ func TestUserJourney(t *testing.T) {
 func runHappyPath(t *testing.T, agentName string) {
 	h := NewHarness(t, SetupOpts{Agent: agentName})
 
+	assertStatusNotInitialized(t, h)
+
 	// `no-mistakes init` sets up the gate and starts the daemon.
 	out, err := h.Run("init")
 	if err != nil {
@@ -144,6 +146,17 @@ func runHappyPath(t *testing.T, agentName string) {
 	}
 	assertEjectOutput(t, h, out)
 	assertGateRemoteAbsent(t, h)
+}
+
+func assertStatusNotInitialized(t *testing.T, h *Harness) {
+	t.Helper()
+	out, err := h.Run("status")
+	if err != nil {
+		t.Fatalf("nm status before init: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "not initialized") {
+		t.Errorf("status output should say 'not initialized' before init, got:\n%s", out)
+	}
 }
 
 func assertInitOutput(t *testing.T, h *Harness, out string) {

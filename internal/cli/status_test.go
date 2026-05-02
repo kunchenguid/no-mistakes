@@ -14,18 +14,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 )
 
-func TestStatusNotInitialized(t *testing.T) {
-	setupTestRepo(t)
-
-	out, err := executeCmd("status")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out, "not initialized") {
-		t.Errorf("status output should say 'not initialized', got: %s", out)
-	}
-}
-
 func TestStatusInitialized(t *testing.T) {
 	repoDir := setupTestRepo(t)
 	nmHome := os.Getenv("NM_HOME")
