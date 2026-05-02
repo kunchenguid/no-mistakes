@@ -73,23 +73,6 @@ func TestInitAndEjectFromWorktreeUseMainRepo(t *testing.T) {
 	}
 }
 
-func TestInitAlreadyInitialized(t *testing.T) {
-	setupTestRepo(t)
-
-	_, err := executeCmd("init")
-	if err != nil {
-		t.Fatalf("first init failed: %v", err)
-	}
-
-	_, err = executeCmd("init")
-	if err == nil {
-		t.Fatal("second init should fail")
-	}
-	if !strings.Contains(err.Error(), "already initialized") {
-		t.Errorf("error should mention 'already initialized', got: %v", err)
-	}
-}
-
 func TestInitRollsBackWhenDaemonStartFails(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows IPC does not use Unix socket path limits")

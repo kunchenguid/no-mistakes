@@ -61,6 +61,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	}
 	assertInitOutput(t, h, out)
 	assertGateRemotePresent(t, h)
+	assertInitAlreadyInitialized(t, h)
 	assertRunsEmpty(t, h)
 
 	// Make a feature branch with one trivial change. The fake agent
@@ -201,6 +202,17 @@ func assertInitOutput(t *testing.T, h *Harness, out string) {
 		if !strings.Contains(out, want) {
 			t.Errorf("init output should contain %q, got:\n%s", want, out)
 		}
+	}
+}
+
+func assertInitAlreadyInitialized(t *testing.T, h *Harness) {
+	t.Helper()
+	out, err := h.Run("init")
+	if err == nil {
+		t.Fatalf("second nm init should fail, got output:\n%s", out)
+	}
+	if !strings.Contains(out, "already initialized") {
+		t.Errorf("second init error output should mention 'already initialized', got:\n%s", out)
 	}
 }
 
