@@ -91,6 +91,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	assertRunsEmpty(t, h)
 	assertRerunNoPreviousRun(t, h)
 	assertRootNoActiveRun(t, h)
+	assertEmptyDiffAfterRebaseRun(t, h)
 
 	// Make a feature branch with one trivial change. The fake agent
 	// returns "no issues found" for every prompt, so the pipeline
@@ -655,6 +656,54 @@ func assertRunsContainsRunInDir(t *testing.T, h *Harness, dir string, run *ipc.R
 		if !strings.Contains(out, want) {
 			t.Errorf("runs output should contain %q %s, got:\n%s", want, phase, out)
 		}
+	}
+}
+
+func assertEmptyDiffAfterRebaseRun(t *testing.T, h *Harness) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if out, err := h.runGit(ctx, h.WorkDir, "checkout", "-B", "empty-after-rebase", "main"); err != nil {
+		t.Fatalf("create empty-after-rebase branch: %v\n%s", err, out)
+	}
+	featurePath := filepath.Join(h.WorkDir, "empty-after-rebase.txt")
+	if err := os.WriteFile(featurePath, []byte("already upstream\n"), 0o644); err != nil {
+		t.Fatalf("write empty-after-rebase file: %v", err)
+	}
+	if out, err := h.runGit(ctx, h.WorkDir, "add", "empty-after-rebase.txt"); err != nil {
+		t.Fatalf("add empty-after-rebase file: %v\n%s", err, out)
+	}
+	if out, err := h.runGit(ctx, h.WorkDir, "commit", "-m", "add empty-after-rebase"); err != nil {
+		t.Fatalf("commit empty-after-rebase branch: %v\n%s", err, out)
+	}
+	if out, err := h.runGit(ctx, h.WorkDir, "checkout", "main"); err != nil {
+		t.Fatalf("checkout main for empty-after-rebase merge: %v\n%s", err, out)
+	}
+	if out, err := h.runGit(ctx, h.WorkDir, "merge", "--no-ff", "empty-after-rebase", "-m", "merge empty-after-rebase"); err != nil {
+		t.Fatalf("merge empty-after-rebase to main: %v\n%s", err, out)
+	}
+	if out, err := h.runGit(ctx, h.WorkDir, "push", "origin", "main"); err != nil {
+		t.Fatalf("push main with empty-after-rebase merge: %v\n%s", err, out)
+	}
+	if out, err := h.runGit(ctx, h.WorkDir, "checkout", "empty-after-rebase"); err != nil {
+		t.Fatalf("checkout empty-after-rebase before gate push: %v\n%s", err, out)
+	}
+	h.PushToGate("empty-after-rebase")
+	run := h.WaitForRun("empty-after-rebase", 60*time.Second)
+	if run.Status != types.RunCompleted {
+		t.Fatalf("empty-after-rebase run did not complete: status=%s error=%v", run.Status, deref(run.Error))
+	}
+	for _, stepName := range []types.StepName{types.StepReview, types.StepTest, types.StepDocument, types.StepLint, types.StepPush, types.StepPR, types.StepCI} {
+		step, ok := findStep(run.Steps, stepName)
+		if !ok {
+			t.Fatalf("expected %s step in empty-after-rebase run", stepName)
+		}
+		if step.Status != types.StepStatusSkipped {
+			t.Fatalf("expected %s to be skipped after empty rebase diff, got %s", stepName, step.Status)
+		}
+	}
+	if sawPromptContainingAll(h.AgentInvocations(), "Review the code changes", "branch: empty-after-rebase") {
+		t.Fatal("empty-after-rebase run should skip review without calling the agent")
 	}
 }
 
