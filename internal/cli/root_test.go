@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/kunchenguid/no-mistakes/internal/buildinfo"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/gate"
 	"github.com/kunchenguid/no-mistakes/internal/git"
@@ -20,16 +19,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/wizard"
 	"github.com/muesli/termenv"
 )
-
-func TestRootVersion(t *testing.T) {
-	out, err := executeCmd("--version")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out, buildinfo.String()) {
-		t.Errorf("version output %q should contain %q", out, buildinfo.String())
-	}
-}
 
 func TestSetColorProfileForOutputUsesAsciiForNonTTY(t *testing.T) {
 	prev := lipgloss.ColorProfile()

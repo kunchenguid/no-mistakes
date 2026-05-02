@@ -50,6 +50,7 @@ func TestUserJourney(t *testing.T) {
 func runHappyPath(t *testing.T, agentName string) {
 	h := NewHarness(t, SetupOpts{Agent: agentName})
 
+	assertRootVersion(t, h)
 	assertRootHelp(t, h)
 	assertStatusNotGitRepo(t, h)
 	assertRunsNotGitRepo(t, h)
@@ -182,6 +183,20 @@ func runHappyPath(t *testing.T, agentName string) {
 	}
 	assertEjectOutput(t, h, out)
 	assertGateRemoteAbsent(t, h)
+}
+
+func assertRootVersion(t *testing.T, h *Harness) {
+	t.Helper()
+	out, err := h.Run("--version")
+	if err != nil {
+		t.Fatalf("nm --version: %v\n%s", err, out)
+	}
+	if !strings.HasPrefix(out, "no-mistakes version ") {
+		t.Errorf("version output should include command name and version prefix, got %q", out)
+	}
+	if !strings.Contains(out, "(unknown) unknown") {
+		t.Errorf("version output should include commit and date metadata, got %q", out)
+	}
 }
 
 func assertRootHelp(t *testing.T, h *Harness) {
