@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
@@ -86,6 +87,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	assertOutputDoesNotContainPath(t, out, initWorktree, "init from worktree")
 	assertGateRemotePresent(t, h)
 	assertDaemonStatusRunning(t, h)
+	assertDaemonPIDFile(t, h)
 	assertAttachMissingRun(t, h)
 	assertDaemonNotifyPushUnknownRepo(t, h)
 	assertRespondNoActiveExecutor(t, h)
@@ -1880,6 +1882,20 @@ func assertDaemonRestartWhileRunning(t *testing.T, h *Harness) {
 		t.Errorf("daemon restart output should show restarted, got:\n%s", out)
 	}
 	assertDaemonStatusRunning(t, h)
+}
+
+func assertDaemonPIDFile(t *testing.T, h *Harness) {
+	t.Helper()
+	pid, err := daemon.ReadPID(paths.WithRoot(h.NMHome))
+	if err != nil {
+		t.Fatalf("read daemon pid file: %v", err)
+	}
+	if pid <= 0 {
+		t.Fatalf("daemon pid = %d, want positive pid", pid)
+	}
+	if pid == os.Getpid() {
+		t.Fatalf("daemon pid file points at test process pid %d, want daemon child pid", pid)
+	}
 }
 
 func assertDaemonRestartStartsWhenNotRunning(t *testing.T, h *Harness) {
