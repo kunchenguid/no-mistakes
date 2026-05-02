@@ -50,6 +50,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	h := NewHarness(t, SetupOpts{Agent: agentName})
 
 	assertStatusNotInitialized(t, h)
+	assertEjectNotInitialized(t, h)
 
 	// `no-mistakes init` sets up the gate and starts the daemon.
 	out, err := h.Run("init")
@@ -156,6 +157,17 @@ func assertStatusNotInitialized(t *testing.T, h *Harness) {
 	}
 	if !strings.Contains(out, "not initialized") {
 		t.Errorf("status output should say 'not initialized' before init, got:\n%s", out)
+	}
+}
+
+func assertEjectNotInitialized(t *testing.T, h *Harness) {
+	t.Helper()
+	out, err := h.Run("eject")
+	if err == nil {
+		t.Fatalf("nm eject before init should fail, got output:\n%s", out)
+	}
+	if !strings.Contains(out, "not initialized") {
+		t.Errorf("eject error output should mention 'not initialized' before init, got:\n%s", out)
 	}
 }
 
