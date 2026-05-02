@@ -107,51 +107,6 @@ func TestGetActiveRunHandler(t *testing.T) {
 	}
 }
 
-func TestGetActiveRunHandlerStrictBranchMatch(t *testing.T) {
-	p, d := startTestDaemon(t)
-
-	repo, err := d.InsertRepoWithID("test-repo-branch", "/tmp/test-repo-branch", "https://github.com/test/repo-branch", "main")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	runA, err := d.InsertRun(repo.ID, "feature-a", "aaa", "000")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := d.InsertRun(repo.ID, "feature-b", "bbb", "000"); err != nil {
-		t.Fatal(err)
-	}
-
-	client, err := ipc.Dial(p.Socket())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer client.Close()
-
-	// Specific branch returns only that branch's run.
-	var result ipc.GetActiveRunResult
-	if err := client.Call(ipc.MethodGetActiveRun, &ipc.GetActiveRunParams{RepoID: repo.ID, Branch: "feature-a"}, &result); err != nil {
-		t.Fatal(err)
-	}
-	if result.Run == nil {
-		t.Fatal("expected active run for requested branch")
-	}
-	if result.Run.ID != runA.ID {
-		t.Fatalf("active run id = %q, want %q", result.Run.ID, runA.ID)
-	}
-
-	// Unknown branch returns nil — no fallback. The setup wizard relies on
-	// this to detect that the current branch has no active run.
-	var missing ipc.GetActiveRunResult
-	if err := client.Call(ipc.MethodGetActiveRun, &ipc.GetActiveRunParams{RepoID: repo.ID, Branch: "missing-branch"}, &missing); err != nil {
-		t.Fatal(err)
-	}
-	if missing.Run != nil {
-		t.Fatalf("expected nil run for unmatched branch, got %q on %q", missing.Run.ID, missing.Run.Branch)
-	}
-}
-
 func TestGetRunNotFound(t *testing.T) {
 	p, _ := startTestDaemon(t)
 

@@ -428,6 +428,21 @@ func (h *Harness) RunInfo(runID string) *ipc.RunInfo {
 	return result.Run
 }
 
+func (h *Harness) ActiveRun(branch string) *ipc.RunInfo {
+	h.t.Helper()
+	p := paths.WithRoot(h.NMHome)
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		h.t.Fatalf("dial daemon: %v", err)
+	}
+	defer client.Close()
+	var result ipc.GetActiveRunResult
+	if err := client.Call(ipc.MethodGetActiveRun, &ipc.GetActiveRunParams{RepoID: h.repoID(), Branch: branch}, &result); err != nil {
+		h.t.Fatalf("get active run for branch %q: %v", branch, err)
+	}
+	return result.Run
+}
+
 func (h *Harness) Respond(runID string, step types.StepName, action types.ApprovalAction) {
 	h.t.Helper()
 	if err := h.RespondError(runID, step, action); err != nil {

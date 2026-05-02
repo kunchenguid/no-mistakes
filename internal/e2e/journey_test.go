@@ -715,6 +715,16 @@ func assertRootNoActiveRun(t *testing.T, h *Harness) {
 
 func assertRootNoActiveRunOnOtherBranch(t *testing.T, h *Harness, activeRun *ipc.RunInfo) {
 	t.Helper()
+	matched := h.ActiveRun(activeRun.Branch)
+	if matched == nil {
+		t.Fatalf("expected active run for branch %q", activeRun.Branch)
+	}
+	if matched.ID != activeRun.ID {
+		t.Fatalf("active run for branch %q = %q, want %q", activeRun.Branch, matched.ID, activeRun.ID)
+	}
+	if missing := h.ActiveRun("main"); missing != nil {
+		t.Fatalf("expected no active run for unmatched branch main, got %q on %q", missing.ID, missing.Branch)
+	}
 	out, err := h.Run()
 	if err != nil {
 		t.Fatalf("bare nm on main while %s is active: %v\n%s", activeRun.Branch, err, out)
