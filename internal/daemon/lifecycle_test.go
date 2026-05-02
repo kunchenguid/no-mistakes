@@ -32,23 +32,6 @@ func writeDaemonPIDRecord(t *testing.T, path string, record daemonPIDFile) {
 	}
 }
 
-func TestStopNotRunningIsNoop(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "dtest")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	p := paths.WithRoot(tmpDir)
-	if err := p.EnsureDirs(); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := Stop(p); err != nil {
-		t.Fatalf("stop should succeed when daemon is not running: %v", err)
-	}
-}
-
 func TestStopNotRunningRemovesStaleArtifacts(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "dtest")
 	if err != nil {
