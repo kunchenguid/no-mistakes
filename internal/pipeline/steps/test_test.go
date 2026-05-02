@@ -380,33 +380,3 @@ func TestTestStep_FixMode_AgentWritesNewTests_NeedsApproval(t *testing.T) {
 		t.Errorf("expected finding mentioning component.spec.tsx, got findings: %+v", f.Items)
 	}
 }
-
-func TestTestStep_PromptIncludesAction(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	findings := Findings{Items: nil, Summary: "all tests passed", Tested: []string{"`go test ./...`"}}
-	findingsJSON, _ := json.Marshal(findings)
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			return &agent.Result{Output: findingsJSON}, nil
-		},
-	}
-	sctx := newTestContext(t, ag, dir, "abc", "def", config.Commands{})
-	step := &TestStep{}
-	if _, err := step.Execute(sctx); err != nil {
-		t.Fatal(err)
-	}
-	if len(ag.calls) != 1 {
-		t.Fatalf("expected 1 agent call, got %d", len(ag.calls))
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "action") {
-		t.Error("expected test prompt to instruct agent about action")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "tested") {
-		t.Error("expected test prompt to request recorded test details")
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "testing_summary") {
-		t.Error("expected test prompt to request a natural-language testing summary")
-	}
-}

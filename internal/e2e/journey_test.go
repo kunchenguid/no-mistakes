@@ -708,8 +708,8 @@ func assertPromptsAbsent(t *testing.T, invs []Invocation, unexpected ...string) 
 
 func assertNoCommandTestStep(t *testing.T, steps []ipc.StepResultInfo, invs []Invocation) {
 	t.Helper()
-	if !sawPromptContainingAll(invs, "You are validating a code change by testing it", "branch: feature/e2e") {
-		t.Errorf("expected a test prompt with branch metadata in invocations, got %d:\n%s", len(invs), summarisePrompts(invs))
+	if !sawPromptContainingAll(invs, "You are validating a code change by testing it", "branch: feature/e2e", "action", "tested", "testing_summary") {
+		t.Errorf("expected a test prompt with branch metadata, action guidance, and test reporting fields in invocations, got %d:\n%s", len(invs), summarisePrompts(invs))
 	}
 	step, ok := findStep(steps, types.StepTest)
 	if !ok {
