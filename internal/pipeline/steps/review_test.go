@@ -233,46 +233,6 @@ func TestReviewStep_FixMode(t *testing.T) {
 	}
 }
 
-func TestReviewStep_IgnorePatternsFilterAllFiles(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-
-	// Create a repo where the only change is a generated file
-	gitCmd(t, dir, "init")
-	gitCmd(t, dir, "config", "user.name", "test")
-	gitCmd(t, dir, "config", "user.email", "test@test.com")
-	gitCmd(t, dir, "checkout", "-b", "main")
-	os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "base")
-	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
-
-	gitCmd(t, dir, "checkout", "-b", "feature")
-	os.WriteFile(filepath.Join(dir, "schema.generated.go"), []byte("package gen\n"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "add generated")
-	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
-
-	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Config.IgnorePatterns = []string{"*.generated.go"}
-
-	step := &ReviewStep{}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// When all files are filtered, should complete with no approval needed
-	if outcome.NeedsApproval {
-		t.Error("expected no approval when all changes are in ignored files")
-	}
-	// Agent should not have been called
-	if len(ag.calls) != 0 {
-		t.Errorf("expected no agent calls when diff is empty after filtering, got %d", len(ag.calls))
-	}
-}
-
 func TestReviewStep_EmptyDiff_ReturnsLowRisk(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -306,46 +266,6 @@ func TestReviewStep_EmptyDiff_ReturnsLowRisk(t *testing.T) {
 	}
 	if f.RiskRationale == "" {
 		t.Error("expected non-empty RiskRationale for empty diff")
-	}
-}
-
-func TestReviewStep_IgnorePatternsFilterAllFiles_ReturnsLowRisk(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	gitCmd(t, dir, "init")
-	gitCmd(t, dir, "config", "user.name", "test")
-	gitCmd(t, dir, "config", "user.email", "test@test.com")
-	gitCmd(t, dir, "checkout", "-b", "main")
-	os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "base")
-	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
-
-	gitCmd(t, dir, "checkout", "-b", "feature")
-	os.WriteFile(filepath.Join(dir, "schema.generated.go"), []byte("package gen\n"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "add generated")
-	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
-
-	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Config.IgnorePatterns = []string{"*.generated.go"}
-
-	step := &ReviewStep{}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if outcome.Findings == "" {
-		t.Fatal("expected findings JSON with risk assessment when all files ignored")
-	}
-
-	f, err := types.ParseFindingsJSON(outcome.Findings)
-	if err != nil {
-		t.Fatalf("failed to parse findings: %v", err)
-	}
-	if f.RiskLevel != "low" {
-		t.Errorf("RiskLevel = %q, want %q", f.RiskLevel, "low")
 	}
 }
 

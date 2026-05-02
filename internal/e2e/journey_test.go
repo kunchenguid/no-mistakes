@@ -92,6 +92,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	assertRerunNoPreviousRun(t, h)
 	assertRootNoActiveRun(t, h)
 	assertEmptyDiffAfterRebaseRun(t, h)
+	assertIgnoredOnlyReviewRun(t, h)
 
 	// Make a feature branch with one trivial change. The fake agent
 	// returns "no issues found" for every prompt, so the pipeline
@@ -704,6 +705,37 @@ func assertEmptyDiffAfterRebaseRun(t *testing.T, h *Harness) {
 	}
 	if sawPromptContainingAll(h.AgentInvocations(), "Review the code changes", "branch: empty-after-rebase") {
 		t.Fatal("empty-after-rebase run should skip review without calling the agent")
+	}
+}
+
+func assertIgnoredOnlyReviewRun(t *testing.T, h *Harness) {
+	t.Helper()
+	head := h.CommitChange("ignored-only", "schema.generated.go", "package gen\n", "add generated file")
+	h.PushToGate("ignored-only")
+	run := h.WaitForRun("ignored-only", 60*time.Second)
+	if run.Status != types.RunCompleted {
+		t.Fatalf("ignored-only run did not complete: status=%s error=%v", run.Status, deref(run.Error))
+	}
+	assertNoUnexpectedAutofixCommits(t, run, head)
+	step, ok := findStep(run.Steps, types.StepReview)
+	if !ok {
+		t.Fatal("expected review step in ignored-only run")
+	}
+	if step.FindingsJSON == nil {
+		t.Fatal("expected ignored-only review step to record findings JSON")
+	}
+	findings, err := types.ParseFindingsJSON(*step.FindingsJSON)
+	if err != nil {
+		t.Fatalf("parse ignored-only review findings: %v", err)
+	}
+	if len(findings.Items) != 0 {
+		t.Fatalf("expected no review findings for ignored-only diff, got %+v", findings.Items)
+	}
+	if findings.RiskLevel != "low" {
+		t.Fatalf("expected low risk for ignored-only review, got %q", findings.RiskLevel)
+	}
+	if sawPromptContainingAll(h.AgentInvocations(), "Review the code changes", "branch: ignored-only") {
+		t.Fatal("ignored-only review should not call the agent")
 	}
 }
 
