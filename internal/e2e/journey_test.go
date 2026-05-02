@@ -202,6 +202,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	assertFailingLintCommandRun(t, h)
 	if agentName == "claude" {
 		assertDifferentBranchDoesNotCancelActiveRun(t, h)
+		assertDocumentInfoRun(t, h)
 		assertReviewWarningRun(t, h)
 	}
 	assertRunsDefaultLimit(t, h)
@@ -243,6 +244,24 @@ func cleanReviewScenario(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "scenario.yaml")
 	content := `actions:
+  - match: "branch: document-info"
+    text: "documentation info finding"
+    structured:
+      findings:
+        - id: "document-info"
+          severity: info
+          file: "README.md"
+          line: 1
+          description: "README should mention the new flag"
+          action: auto-fix
+      summary: "README needs updating"
+      risk_level: low
+      risk_rationale: "documentation-only follow-up"
+      tested:
+        - "fakeagent: simulated test run"
+      testing_summary: "simulated tests passed"
+      title: "docs: update README"
+      body: "## Summary\ndocumentation update"
   - match: "branch: review-warning"
     text: "review found a warning"
     structured:
@@ -1099,6 +1118,35 @@ func assertConfiguredCommandRun(t *testing.T, h *Harness) {
 	}
 	if sawPromptContainingAll(invs, "Detect the linting and formatting tools", "branch: configured-commands") {
 		t.Fatalf("configured lint command should not call the agent for lint detection; invocations:\n%s", summarisePrompts(invs))
+	}
+}
+
+func assertDocumentInfoRun(t *testing.T, h *Harness) {
+	t.Helper()
+	h.CommitChange("document-info", "document-info.txt", "document info\n", "add document info")
+	h.PushToGate("document-info")
+	run := waitForStepStatus(t, h, "document-info", types.StepDocument, types.StepStatusAwaitingApproval, 60*time.Second)
+	documentStep, ok := findStep(run.Steps, types.StepDocument)
+	if !ok {
+		t.Fatal("expected document step in document-info run")
+	}
+	if documentStep.FindingsJSON == nil {
+		t.Fatal("expected document info finding to record findings JSON")
+	}
+	findings, err := types.ParseFindingsJSON(*documentStep.FindingsJSON)
+	if err != nil {
+		t.Fatalf("parse document info findings: %v", err)
+	}
+	if len(findings.Items) != 1 || findings.Items[0].Severity != "info" {
+		t.Fatalf("expected one info documentation finding, got %+v", findings.Items)
+	}
+	if findings.Items[0].Action != types.ActionAutoFix {
+		t.Fatalf("expected info documentation finding to stay auto-fixable, got action %q", findings.Items[0].Action)
+	}
+	h.Respond(run.ID, types.StepDocument, types.ActionAbort)
+	completed := h.WaitForRun("document-info", 60*time.Second)
+	if completed.Status != types.RunFailed {
+		t.Fatalf("document-info run status after abort = %s, want failed", completed.Status)
 	}
 }
 

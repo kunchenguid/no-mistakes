@@ -92,31 +92,6 @@ func TestDocumentStep_Updated(t *testing.T) {
 	}
 }
 
-func TestDocumentStep_InfoFindingStillRequiresApproval(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			return &agent.Result{Output: json.RawMessage(`{"findings":[{"severity":"info","description":"README should mention the new flag","action":"auto-fix"}],"summary":"README needs updating"}`)}, nil
-		},
-	}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-
-	step := &DocumentStep{}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !outcome.NeedsApproval {
-		t.Fatal("expected any documentation finding to require approval")
-	}
-	if !outcome.AutoFixable {
-		t.Fatal("expected info-level documentation finding to remain auto-fixable")
-	}
-}
-
 func TestDocumentStep_AgentError(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
