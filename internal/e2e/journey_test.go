@@ -86,6 +86,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	assertDaemonStatusRunning(t, h)
 	assertAttachMissingRun(t, h)
 	assertDaemonNotifyPushUnknownRepo(t, h)
+	assertRespondNoActiveExecutor(t, h)
 	assertDaemonRestartWhileRunning(t, h)
 	assertInitAlreadyInitialized(t, h)
 	assertRunsEmpty(t, h)
@@ -529,6 +530,17 @@ func assertDaemonNotifyPushUnknownRepo(t *testing.T, h *Harness) {
 	}
 	if !strings.Contains(out, "unknown repo") {
 		t.Errorf("daemon notify-push unknown repo output should mention 'unknown repo', got:\n%s", out)
+	}
+}
+
+func assertRespondNoActiveExecutor(t *testing.T, h *Harness) {
+	t.Helper()
+	err := h.RespondError("missing-run", types.StepReview, types.ActionApprove)
+	if err == nil {
+		t.Fatal("respond to missing run should fail")
+	}
+	if !strings.Contains(err.Error(), "no active executor") {
+		t.Fatalf("respond to missing run error = %v, want no active executor", err)
 	}
 }
 

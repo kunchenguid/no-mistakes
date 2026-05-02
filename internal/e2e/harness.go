@@ -412,16 +412,21 @@ func (h *Harness) Runs() []ipc.RunInfo {
 
 func (h *Harness) Respond(runID string, step types.StepName, action types.ApprovalAction) {
 	h.t.Helper()
+	if err := h.RespondError(runID, step, action); err != nil {
+		h.t.Fatalf("respond to run %s step %s with %s: %v", runID, step, action, err)
+	}
+}
+
+func (h *Harness) RespondError(runID string, step types.StepName, action types.ApprovalAction) error {
+	h.t.Helper()
 	p := paths.WithRoot(h.NMHome)
 	client, err := ipc.Dial(p.Socket())
 	if err != nil {
-		h.t.Fatalf("dial daemon: %v", err)
+		return fmt.Errorf("dial daemon: %w", err)
 	}
 	defer client.Close()
 	var result ipc.RespondResult
-	if err := client.Call(ipc.MethodRespond, &ipc.RespondParams{RunID: runID, Step: step, Action: action}, &result); err != nil {
-		h.t.Fatalf("respond to run %s step %s with %s: %v", runID, step, action, err)
-	}
+	return client.Call(ipc.MethodRespond, &ipc.RespondParams{RunID: runID, Step: step, Action: action}, &result)
 }
 
 func (h *Harness) waitForRunStatus(branch string, timeout time.Duration, match func(types.RunStatus) bool, action string) *ipc.RunInfo {

@@ -562,25 +562,3 @@ func TestPushReceivedCleansUpWorktreeOnConfigFailure(t *testing.T) {
 		t.Errorf("worktree directory not cleaned up, found %d entries in %s", len(entries), wtRoot)
 	}
 }
-
-func TestRespondNoActiveExecutor(t *testing.T) {
-	p, _ := startTestDaemonWithSteps(t, func() []pipeline.Step {
-		return []pipeline.Step{&mockPassStep{name: types.StepReview}}
-	})
-
-	client, err := ipc.Dial(p.Socket())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer client.Close()
-
-	var result ipc.RespondResult
-	err = client.Call(ipc.MethodRespond, &ipc.RespondParams{
-		RunID:  "nonexistent",
-		Step:   types.StepReview,
-		Action: types.ActionApprove,
-	}, &result)
-	if err == nil {
-		t.Error("expected error when no active executor for run")
-	}
-}
