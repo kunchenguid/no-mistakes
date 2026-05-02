@@ -176,18 +176,5 @@ func TestRunsFromWorktreeWithActiveRun(t *testing.T) {
 	}
 }
 
-func TestRunsNotGitRepo(t *testing.T) {
-	tmpDir := t.TempDir()
-	nmHome := t.TempDir()
-	t.Setenv("NM_HOME", nmHome)
-
-	chdir(t, tmpDir)
-
-	_, err := executeCmd("runs")
-	if err == nil {
-		t.Fatal("runs should fail outside a git repo")
-	}
-}
-
 // Helper to add the db package import for test compilation.
 var _ = (*db.DB)(nil)
