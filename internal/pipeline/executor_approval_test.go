@@ -3,7 +3,6 @@ package pipeline
 import (
 	"context"
 	"fmt"
-	"strings"
 	"testing"
 	"time"
 
@@ -194,48 +193,5 @@ func TestExecutor_Respond_NoWaitingStep(t *testing.T) {
 	err := exec.Respond(types.StepReview, types.ActionApprove, nil)
 	if err == nil {
 		t.Fatal("expected error when no step awaiting approval")
-	}
-}
-
-func TestExecutor_Respond_WrongStep(t *testing.T) {
-	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
-
-	steps := []Step{
-		newApprovalStep(types.StepReview, `{"issues":["bug"]}`),
-		newPassStep(types.StepTest),
-	}
-
-	exec := NewExecutor(database, p, nil, nil, steps, nil)
-
-	done := make(chan error, 1)
-	go func() {
-		done <- exec.Execute(context.Background(), run, repo, workDir)
-	}()
-
-	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
-
-	// Respond with wrong step name — should error
-	err := exec.Respond(types.StepTest, types.ActionApprove, nil)
-	if err == nil {
-		t.Fatal("expected error for step mismatch")
-	}
-	if !strings.Contains(err.Error(), "step mismatch") {
-		t.Errorf("expected step mismatch error, got: %v", err)
-	}
-
-	// Respond with correct step name — should succeed
-	err = exec.Respond(types.StepReview, types.ActionApprove, nil)
-	if err != nil {
-		t.Fatalf("respond with correct step should succeed: %v", err)
-	}
-
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("expected no error, got: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("executor timed out")
 	}
 }

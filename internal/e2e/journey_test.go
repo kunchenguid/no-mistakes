@@ -1110,6 +1110,13 @@ func assertReviewWarningRun(t *testing.T, h *Harness) {
 	if !sawPromptContainingAll(h.AgentInvocations(), "Review the code changes", "branch: review-warning") {
 		t.Fatal("review-warning run should call the agent for review")
 	}
+	wrongStepErr := h.RespondError(run.ID, types.StepTest, types.ActionApprove)
+	if wrongStepErr == nil {
+		t.Fatal("responding to the wrong awaiting step should fail")
+	}
+	if !strings.Contains(wrongStepErr.Error(), "step mismatch") {
+		t.Fatalf("wrong-step response error = %v, want step mismatch", wrongStepErr)
+	}
 	h.Respond(run.ID, types.StepReview, types.ActionAbort)
 	completed := h.WaitForRun("review-warning", 60*time.Second)
 	if completed.Status != types.RunFailed {
