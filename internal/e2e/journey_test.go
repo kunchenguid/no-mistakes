@@ -93,6 +93,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	assertRootNoActiveRun(t, h)
 	assertEmptyDiffAfterRebaseRun(t, h)
 	assertIgnoredOnlyRun(t, h)
+	assertNonEmptyDiffAfterRebaseRun(t, h)
 
 	// Make a feature branch with one trivial change. The fake agent
 	// returns "no issues found" for every prompt, so the pipeline
@@ -708,6 +709,52 @@ func assertEmptyDiffAfterRebaseRun(t *testing.T, h *Harness) {
 	}
 }
 
+func assertNonEmptyDiffAfterRebaseRun(t *testing.T, h *Harness) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	branchHead := h.CommitChange("non-empty-after-rebase", "non-empty-after-rebase.txt", "feature survives rebase\n", "add surviving feature")
+	if out, err := h.runGit(ctx, h.WorkDir, "checkout", "main"); err != nil {
+		t.Fatalf("checkout main before non-empty rebase advance: %v\n%s", err, out)
+	}
+	advancePath := filepath.Join(h.WorkDir, "main-advance-for-rebase.txt")
+	if err := os.WriteFile(advancePath, []byte("main advanced\n"), 0o644); err != nil {
+		t.Fatalf("write main advance: %v", err)
+	}
+	if out, err := h.runGit(ctx, h.WorkDir, "add", "main-advance-for-rebase.txt"); err != nil {
+		t.Fatalf("add main advance: %v\n%s", err, out)
+	}
+	if out, err := h.runGit(ctx, h.WorkDir, "commit", "-m", "advance main for non-empty rebase"); err != nil {
+		t.Fatalf("commit main advance: %v\n%s", err, out)
+	}
+	if out, err := h.runGit(ctx, h.WorkDir, "push", "origin", "main"); err != nil {
+		t.Fatalf("push main advance: %v\n%s", err, out)
+	}
+	if out, err := h.runGit(ctx, h.WorkDir, "checkout", "non-empty-after-rebase"); err != nil {
+		t.Fatalf("checkout non-empty-after-rebase before gate push: %v\n%s", err, out)
+	}
+	h.PushToGate("non-empty-after-rebase")
+	run := h.WaitForRun("non-empty-after-rebase", 60*time.Second)
+	if run.Status != types.RunCompleted {
+		t.Fatalf("non-empty-after-rebase run did not complete: status=%s error=%v", run.Status, deref(run.Error))
+	}
+	if run.HeadSHA == branchHead {
+		t.Fatalf("expected rebase to rewrite head SHA, still %s", run.HeadSHA)
+	}
+	for _, stepName := range []types.StepName{types.StepRebase, types.StepReview, types.StepTest, types.StepDocument, types.StepLint, types.StepPush} {
+		step, ok := findStep(run.Steps, stepName)
+		if !ok {
+			t.Fatalf("expected %s step in non-empty-after-rebase run", stepName)
+		}
+		if step.Status != types.StepStatusCompleted {
+			t.Fatalf("expected %s to complete for non-empty rebase diff, got %s", stepName, step.Status)
+		}
+	}
+	if !sawPromptContainingAll(h.AgentInvocations(), "Review the code changes", "branch: non-empty-after-rebase") {
+		t.Fatal("non-empty-after-rebase run should continue to review and call the agent")
+	}
+}
+
 func assertIgnoredOnlyRun(t *testing.T, h *Harness) {
 	t.Helper()
 	head := h.CommitChange("ignored-only", "schema.generated.go", "package gen\n", "add generated file")
@@ -1115,9 +1162,9 @@ func assertNewBranchRun(t *testing.T, h *Harness, run *ipc.RunInfo) {
 
 func assertReviewPrompt(t *testing.T, h *Harness, run *ipc.RunInfo, invs []Invocation) {
 	t.Helper()
-	prompt, ok := promptContaining(invs, "Review the code changes")
+	prompt, ok := promptContainingAll(invs, "Review the code changes", "branch: feature/e2e")
 	if !ok {
-		t.Fatalf("expected a review prompt in invocations, got %d:\n%s", len(invs), summarisePrompts(invs))
+		t.Fatalf("expected a feature/e2e review prompt in invocations, got %d:\n%s", len(invs), summarisePrompts(invs))
 	}
 	baseSHA := h.WorktreeRefSHA("main")
 	for _, want := range []string{
@@ -1166,9 +1213,9 @@ func assertReviewStepInfoOnly(t *testing.T, steps []ipc.StepResultInfo) {
 
 func assertDocumentPrompt(t *testing.T, h *Harness, run *ipc.RunInfo, invs []Invocation) {
 	t.Helper()
-	prompt, ok := promptContaining(invs, "Identify documentation gaps")
+	prompt, ok := promptContainingAll(invs, "Identify documentation gaps", "branch: feature/e2e")
 	if !ok {
-		t.Fatalf("expected a document prompt in invocations, got %d:\n%s", len(invs), summarisePrompts(invs))
+		t.Fatalf("expected a feature/e2e document prompt in invocations, got %d:\n%s", len(invs), summarisePrompts(invs))
 	}
 	baseSHA := h.WorktreeRefSHA("main")
 	for _, want := range []string{
