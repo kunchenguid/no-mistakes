@@ -78,34 +78,6 @@ func TestReviewStep_WithWarnings(t *testing.T) {
 	}
 }
 
-func TestReviewStep_Clean(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-
-	findings := Findings{
-		Items:   []Finding{{Severity: "info", Description: "looks good"}},
-		Summary: "no issues found",
-	}
-	findingsJSON, _ := json.Marshal(findings)
-
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			return &agent.Result{Output: findingsJSON}, nil
-		},
-	}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-
-	step := &ReviewStep{}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if outcome.NeedsApproval {
-		t.Error("expected no approval needed for info-only findings")
-	}
-}
-
 func TestReviewStep_AgentError(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -48,7 +49,7 @@ func TestUserJourney(t *testing.T) {
 }
 
 func runHappyPath(t *testing.T, agentName string) {
-	h := NewHarness(t, SetupOpts{Agent: agentName})
+	h := NewHarness(t, SetupOpts{Agent: agentName, Scenario: cleanReviewScenario(t)})
 
 	assertRootVersion(t, h)
 	assertRootHelp(t, h)
@@ -163,6 +164,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	// invocation whose prompt contains the review preamble; if missing
 	// the pipeline didn't reach review or routed it elsewhere.
 	assertNoUnexpectedAutofixCommits(t, run, featureHead)
+	assertReviewStepInfoOnly(t, run.Steps)
 	assertReviewPrompt(t, h, run, invs)
 	assertDocumentPrompt(t, h, run, invs)
 	assertDocumentStepNoGaps(t, run.Steps)
@@ -214,6 +216,44 @@ func runHappyPath(t *testing.T, agentName string) {
 	assertEjectOutput(t, h, out)
 	assertOutputDoesNotContainPath(t, out, initWorktree, "eject from worktree")
 	assertGateRemoteAbsent(t, h)
+}
+
+func cleanReviewScenario(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "scenario.yaml")
+	content := `actions:
+  - match: "Review the code changes and return structured findings"
+    text: "looks good"
+    structured:
+      findings:
+        - id: "review-info"
+          severity: info
+          file: "hello.txt"
+          line: 1
+          description: "looks good"
+          action: no-op
+      summary: "no blocking issues"
+      risk_level: low
+      risk_rationale: "informational finding only"
+      tested:
+        - "fakeagent: simulated review"
+      testing_summary: "not run during review"
+  - text: "no issues found"
+    structured:
+      findings: []
+      summary: "no issues found"
+      risk_level: low
+      risk_rationale: "no risks detected in the diff"
+      tested:
+        - "fakeagent: simulated test run"
+      testing_summary: "simulated tests passed"
+      title: "feat: fakeagent change"
+      body: "## Summary\nfakeagent canned PR body"
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write fake agent scenario: %v", err)
+	}
+	return path
 }
 
 func assertRootVersion(t *testing.T, h *Harness) {
@@ -902,6 +942,30 @@ func assertReviewPrompt(t *testing.T, h *Harness, run *ipc.RunInfo, invs []Invoc
 		if strings.Contains(prompt, unexpected) {
 			t.Errorf("expected review prompt to avoid inline diff or commit-message content %q, got:\n%s", unexpected, prompt)
 		}
+	}
+}
+
+func assertReviewStepInfoOnly(t *testing.T, steps []ipc.StepResultInfo) {
+	t.Helper()
+	step, ok := findStep(steps, types.StepReview)
+	if !ok {
+		t.Fatal("expected review step to be present")
+	}
+	if step.FindingsJSON == nil {
+		t.Fatal("expected review step to record findings JSON")
+	}
+	findings, err := types.ParseFindingsJSON(*step.FindingsJSON)
+	if err != nil {
+		t.Fatalf("parse review step findings: %v", err)
+	}
+	if len(findings.Items) != 1 {
+		t.Fatalf("expected one informational review finding, got %+v", findings.Items)
+	}
+	if findings.Items[0].Severity != "info" {
+		t.Fatalf("expected informational review finding to be non-blocking, got severity %q", findings.Items[0].Severity)
+	}
+	if findings.RiskLevel != "low" {
+		t.Fatalf("expected low review risk, got %q", findings.RiskLevel)
 	}
 }
 
