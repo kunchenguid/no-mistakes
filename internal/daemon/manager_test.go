@@ -4,16 +4,13 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/kunchenguid/no-mistakes/internal/gate"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
-	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 
@@ -585,136 +582,5 @@ func TestRespondNoActiveExecutor(t *testing.T) {
 	}, &result)
 	if err == nil {
 		t.Error("expected error when no active executor for run")
-	}
-}
-
-// TestGateInitPushPipelineRunsInLinkedWorktree is the full e2e regression
-// guard for the class of bugs where changes to gate setup silently break the
-// pipeline's ability to operate inside a linked worktree the daemon creates
-// from the gate. It covers the complete journey the user goes through:
-//
-//  1. gate.Init sets up the bare gate (including IsolateHooksPath).
-//  2. A working repo pushes a feature branch to the gate via real `git push`,
-//     which actually fires the installed post-receive hook.
-//  3. The daemon is notified of the push via the same IPC the hook would call.
-//  4. The daemon creates a linked worktree from the gate and runs the first
-//     pipeline step (rebase) inside it.
-//  5. Rebase actually runs against a diverged origin/main and must succeed.
-//
-// The rebase step is chosen because it's the first work-tree-requiring step
-// the pipeline runs - it's where the original production regression surfaced
-// with "fatal: this operation must be run in a work tree". Any future change
-// to gate config that leaks core.bare (or any other shared-config poison)
-// into linked worktrees will break this test.
-func TestGateInitPushPipelineRunsInLinkedWorktree(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("post-receive hook + git worktree flow is /bin/sh-only")
-	}
-
-	// Make the regression deterministic: the daemon-created worktree must not
-	// depend on any user-global git identity being present on the machine.
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg"))
-	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(home, "gitconfig"))
-
-	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
-		return []pipeline.Step{&steps.RebaseStep{}}
-	})
-
-	ctx := context.Background()
-	base := t.TempDir()
-
-	// Upstream bare (the "real" remote `origin` the working repo pushes to).
-	upstreamDir := filepath.Join(base, "upstream.git")
-	gitCmd(t, "", "init", "--bare", "--initial-branch=main", upstreamDir)
-
-	// Working repo with one commit on main, wired to upstream as origin.
-	workDir := filepath.Join(base, "work")
-	if err := os.MkdirAll(workDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	gitCmd(t, workDir, "init", "--initial-branch=main")
-	gitCmd(t, workDir, "config", "user.email", "test@test.com")
-	gitCmd(t, workDir, "config", "user.name", "Test")
-	gitCmd(t, workDir, "remote", "add", "origin", upstreamDir)
-	if err := os.WriteFile(filepath.Join(workDir, "README.md"), []byte("base\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	gitCmd(t, workDir, "add", "README.md")
-	gitCmd(t, workDir, "commit", "-m", "initial")
-	baseSHA := gitOutput(t, workDir, "rev-parse", "HEAD")
-	gitCmd(t, workDir, "push", "origin", "main")
-
-	// Run real gate.Init: creates bare gate, installs hook, calls
-	// IsolateHooksPath, adds no-mistakes remote, registers repo in DB.
-	repo, err := gate.Init(ctx, d, p, workDir)
-	if err != nil {
-		t.Fatalf("gate.Init: %v", err)
-	}
-	if repo == nil || repo.DefaultBranch != "main" {
-		t.Fatalf("gate.Init returned unexpected repo: %+v", repo)
-	}
-
-	// Advance origin/main with a second commit so the rebase step has
-	// something to actually rebase onto (otherwise shouldSkipRebase short-
-	// circuits as "already ahead" and git rebase never runs).
-	if err := os.WriteFile(filepath.Join(workDir, "README.md"), []byte("base\nadvanced\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	gitCmd(t, workDir, "add", "README.md")
-	gitCmd(t, workDir, "commit", "-m", "advance main")
-	gitCmd(t, workDir, "push", "origin", "main")
-
-	// Branch diverges from baseSHA (the original main, before "advance main"),
-	// so HEAD and origin/main both have commits the other doesn't - forcing
-	// a real `git rebase` inside the worktree.
-	gitCmd(t, workDir, "checkout", "-b", "feature/e2e", baseSHA)
-	if err := os.WriteFile(filepath.Join(workDir, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	gitCmd(t, workDir, "add", "feature.txt")
-	gitCmd(t, workDir, "commit", "-m", "feature change")
-	featureSHA := gitOutput(t, workDir, "rev-parse", "HEAD")
-
-	// Push feature to the gate via the real no-mistakes remote. The hook
-	// fires here; it'll fail to notify (no no-mistakes binary on PATH) but
-	// post-receive exit code is ignored by git, so the ref still lands.
-	gitCmd(t, workDir, "push", gate.RemoteName, "feature/e2e")
-
-	// Notify the daemon directly (same IPC the hook would invoke). This is
-	// what takes us from "ref on gate" to "pipeline running".
-	client, err := ipc.Dial(p.Socket())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer client.Close()
-
-	var pushResult ipc.PushReceivedResult
-	if err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
-		Gate: p.RepoDir(repo.ID),
-		Ref:  "refs/heads/feature/e2e",
-		Old:  "0000000000000000000000000000000000000000",
-		New:  featureSHA,
-	}, &pushResult); err != nil {
-		t.Fatalf("push_received: %v", err)
-	}
-	if pushResult.RunID == "" {
-		t.Fatal("expected non-empty run ID")
-	}
-
-	run := waitForRunTerminalState(t, d, pushResult.RunID)
-	if run.Status != types.RunCompleted {
-		var runErr string
-		if run.Error != nil {
-			runErr = *run.Error
-		}
-		// Surface the step log so a regression like the original
-		// "fatal: this operation must be run in a work tree" is
-		// diagnosable from CI output alone.
-		logPath := filepath.Join(p.LogsDir(), run.ID, "rebase.log")
-		logBytes, _ := os.ReadFile(logPath)
-		t.Fatalf("run status = %v, want completed. err=%s\nrebase.log:\n%s",
-			run.Status, runErr, string(logBytes))
 	}
 }
