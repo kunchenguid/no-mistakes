@@ -205,10 +205,16 @@ func (h *Harness) initGitRepos() {
 // (stdout+stderr, error). It propagates the harness env via os.Environ().
 func (h *Harness) Run(args ...string) (string, error) {
 	h.t.Helper()
+	return h.RunInDir(h.WorkDir, args...)
+}
+
+// RunInDir invokes the no-mistakes binary in dir and returns stdout+stderr.
+func (h *Harness) RunInDir(dir string, args ...string) (string, error) {
+	h.t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, h.NMBin, args...)
-	cmd.Dir = h.WorkDir
+	cmd.Dir = dir
 	cmd.Env = os.Environ()
 	out, err := cmd.CombinedOutput()
 	return string(out), err

@@ -13,22 +13,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 )
 
-func TestStatusNotGitRepo(t *testing.T) {
-	tmpDir := t.TempDir()
-	nmHome := t.TempDir()
-	t.Setenv("NM_HOME", nmHome)
-
-	chdir(t, tmpDir)
-
-	out, err := executeCmd("status")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out, "not in a git repository") {
-		t.Errorf("status output should say 'not in a git repository', got: %s", out)
-	}
-}
-
 func TestStatusWithActiveRun(t *testing.T) {
 	setupTestRepo(t)
 	nmHome := os.Getenv("NM_HOME")

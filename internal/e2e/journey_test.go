@@ -50,6 +50,7 @@ func TestUserJourney(t *testing.T) {
 func runHappyPath(t *testing.T, agentName string) {
 	h := NewHarness(t, SetupOpts{Agent: agentName})
 
+	assertStatusNotGitRepo(t, h)
 	assertStatusNotInitialized(t, h)
 	assertEjectNotInitialized(t, h)
 	assertRunsNotInitialized(t, h)
@@ -171,6 +172,17 @@ func runHappyPath(t *testing.T, agentName string) {
 	}
 	assertEjectOutput(t, h, out)
 	assertGateRemoteAbsent(t, h)
+}
+
+func assertStatusNotGitRepo(t *testing.T, h *Harness) {
+	t.Helper()
+	out, err := h.RunInDir(t.TempDir(), "status")
+	if err != nil {
+		t.Fatalf("nm status outside git repo: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "not in a git repository") {
+		t.Errorf("status output should say 'not in a git repository' outside git, got:\n%s", out)
+	}
 }
 
 func assertStatusNotInitialized(t *testing.T, h *Harness) {
