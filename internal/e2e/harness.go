@@ -413,6 +413,21 @@ func (h *Harness) Runs() []ipc.RunInfo {
 	return result.Runs
 }
 
+func (h *Harness) RunInfo(runID string) *ipc.RunInfo {
+	h.t.Helper()
+	p := paths.WithRoot(h.NMHome)
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		h.t.Fatalf("dial daemon: %v", err)
+	}
+	defer client.Close()
+	var result ipc.GetRunResult
+	if err := client.Call(ipc.MethodGetRun, &ipc.GetRunParams{RunID: runID}, &result); err != nil {
+		h.t.Fatalf("get run %s: %v", runID, err)
+	}
+	return result.Run
+}
+
 func (h *Harness) Respond(runID string, step types.StepName, action types.ApprovalAction) {
 	h.t.Helper()
 	if err := h.RespondError(runID, step, action); err != nil {

@@ -1416,6 +1416,17 @@ func assertReviewWarningRun(t *testing.T, h *Harness) {
 	if findings.Summary != "found 1 issue" {
 		t.Fatalf("review warning summary = %q", findings.Summary)
 	}
+	fetchedRun := h.RunInfo(run.ID)
+	if fetchedRun == nil {
+		t.Fatal("expected GetRun IPC to return review-warning run")
+	}
+	fetchedReviewStep, ok := findStep(fetchedRun.Steps, types.StepReview)
+	if !ok {
+		t.Fatal("expected GetRun IPC to include review step")
+	}
+	if fetchedReviewStep.FindingsJSON == nil || *fetchedReviewStep.FindingsJSON != *reviewStep.FindingsJSON {
+		t.Fatalf("GetRun IPC findings JSON = %v, want %q", fetchedReviewStep.FindingsJSON, *reviewStep.FindingsJSON)
+	}
 	if !sawPromptContainingAll(h.AgentInvocations(), "Review the code changes", "branch: review-warning") {
 		t.Fatal("review-warning run should call the agent for review")
 	}
