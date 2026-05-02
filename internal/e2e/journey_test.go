@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -557,8 +558,20 @@ func assertRootNotGitRepo(t *testing.T, h *Harness) {
 	if err == nil {
 		t.Fatalf("bare nm outside git repo should fail, got output:\n%s", out)
 	}
+	assertExitCode(t, err, 1)
 	if !strings.Contains(out, "not in a git repository") {
 		t.Errorf("bare nm error output should mention 'not in a git repository' outside git, got:\n%s", out)
+	}
+}
+
+func assertExitCode(t *testing.T, err error, want int) {
+	t.Helper()
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok {
+		t.Fatalf("error type = %T, want *exec.ExitError", err)
+	}
+	if got := exitErr.ExitCode(); got != want {
+		t.Fatalf("exit code = %d, want %d", got, want)
 	}
 }
 

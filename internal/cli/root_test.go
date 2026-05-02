@@ -250,13 +250,3 @@ func TestRootYesStopsWaitingForRunWhenContextCanceled(t *testing.T) {
 		t.Fatalf("executeCmdWithContext(-y) took %v after cancellation, want under %v", elapsed, time.Second)
 	}
 }
-
-func TestExecuteReturnsExitCodeOnCommandError(t *testing.T) {
-	nonGitDir := t.TempDir()
-	t.Setenv("NM_HOME", t.TempDir())
-	chdir(t, nonGitDir)
-
-	if code := Execute(); code != 1 {
-		t.Fatalf("Execute() = %d, want 1", code)
-	}
-}
