@@ -61,58 +61,6 @@ func TestPushStep_CommitsUncommittedChanges(t *testing.T) {
 	}
 }
 
-func TestPushStep_ForceWithLeaseUsesExplicitSHA(t *testing.T) {
-	t.Parallel()
-	// When the branch already exists on upstream, push should use --force-with-lease
-	// with the explicit upstream SHA (queried via ls-remote), not the bare form.
-	upstream := t.TempDir()
-	gitCmd(t, upstream, "init", "--bare")
-
-	dir := t.TempDir()
-	gitCmd(t, dir, "init")
-	gitCmd(t, dir, "config", "user.name", "test")
-	gitCmd(t, dir, "config", "user.email", "test@test.com")
-	gitCmd(t, dir, "checkout", "-b", "main")
-	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "initial")
-	gitCmd(t, dir, "remote", "add", "origin", upstream)
-	gitCmd(t, dir, "push", "origin", "main")
-
-	// Push feature branch to upstream first (so it exists)
-	gitCmd(t, dir, "checkout", "-b", "feature")
-	os.WriteFile(filepath.Join(dir, "v1.txt"), []byte("v1"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "v1")
-	gitCmd(t, dir, "push", "origin", "feature")
-
-	// Now amend the commit (simulating rebase/agent changes)
-	os.WriteFile(filepath.Join(dir, "v2.txt"), []byte("v2"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "v2")
-	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
-	baseSHA := gitCmd(t, dir, "rev-parse", "main")
-
-	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Repo.UpstreamURL = upstream
-
-	step := &PushStep{}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if outcome.NeedsApproval {
-		t.Error("push should never need approval")
-	}
-
-	// Verify force-push succeeded — upstream should have the new SHA
-	upstreamSHA := gitCmd(t, upstream, "rev-parse", "refs/heads/feature")
-	if upstreamSHA != headSHA {
-		t.Errorf("upstream SHA = %s, want %s", upstreamSHA, headSHA)
-	}
-}
-
 func TestPushStep_RunsFormatCommandBeforeCommit(t *testing.T) {
 	t.Parallel()
 	// When a format command is configured, the push step should run it

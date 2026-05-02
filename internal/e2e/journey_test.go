@@ -565,6 +565,7 @@ func assertRerunCompleted(t *testing.T, h *Harness, previous *ipc.RunInfo) *ipc.
 	if run.HeadSHA != previous.HeadSHA {
 		t.Errorf("rerun head = %q, want %q", run.HeadSHA, previous.HeadSHA)
 	}
+	assertPushedHead(t, run.HeadSHA, h.UpstreamBranchSHA(run.Branch))
 	return run
 }
 
