@@ -203,6 +203,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	if agentName == "claude" {
 		assertDifferentBranchDoesNotCancelActiveRun(t, h)
 		assertDocumentMissingFindingsRun(t, h)
+		assertDocumentMalformedFindingRun(t, h)
 		assertDocumentInfoRun(t, h)
 		assertReviewWarningRun(t, h)
 	}
@@ -245,6 +246,13 @@ func cleanReviewScenario(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "scenario.yaml")
 	content := `actions:
+  - match: "identify any documentation gaps.\n\nContext:\n- branch: document-malformed-finding"
+    text: "documentation malformed finding"
+    structured:
+      findings:
+        - severity: warning
+          description: "README missing new CLI flag"
+      summary: "README needs updating"
   - match: "branch: document-missing-findings"
     text: "documentation missing findings field"
     structured:
@@ -1159,6 +1167,42 @@ func assertDocumentMissingFindingsRun(t *testing.T, h *Harness) {
 	completed := h.WaitForRun("document-missing-findings", 60*time.Second)
 	if completed.Status != types.RunFailed {
 		t.Fatalf("document-missing-findings run status after abort = %s, want failed", completed.Status)
+	}
+}
+
+func assertDocumentMalformedFindingRun(t *testing.T, h *Harness) {
+	t.Helper()
+	h.CommitChange("document-malformed-finding", "document-malformed-finding.txt", "document malformed finding\n", "add document malformed finding")
+	h.PushToGate("document-malformed-finding")
+	run := waitForStepStatus(t, h, "document-malformed-finding", types.StepDocument, types.StepStatusAwaitingApproval, 60*time.Second)
+	documentStep, ok := findStep(run.Steps, types.StepDocument)
+	if !ok {
+		t.Fatal("expected document step in document-malformed-finding run")
+	}
+	if documentStep.FindingsJSON == nil {
+		t.Fatal("expected document malformed finding fallback to record findings JSON")
+	}
+	findings, err := types.ParseFindingsJSON(*documentStep.FindingsJSON)
+	if err != nil {
+		t.Fatalf("parse document malformed finding fallback: %v", err)
+	}
+	if findings.Summary != "README needs updating" {
+		t.Fatalf("document malformed finding summary = %q, want README needs updating", findings.Summary)
+	}
+	if len(findings.Items) != 1 {
+		t.Fatalf("expected one fallback documentation finding, got %+v", findings.Items)
+	}
+	item := findings.Items[0]
+	if item.Action != types.ActionAskUser {
+		t.Fatalf("expected fallback documentation finding to ask user, got action %q", item.Action)
+	}
+	if item.Description != "README needs updating" {
+		t.Fatalf("fallback documentation finding description = %q, want README needs updating", item.Description)
+	}
+	h.Respond(run.ID, types.StepDocument, types.ActionAbort)
+	completed := h.WaitForRun("document-malformed-finding", 60*time.Second)
+	if completed.Status != types.RunFailed {
+		t.Fatalf("document-malformed-finding run status after abort = %s, want failed", completed.Status)
 	}
 }
 
