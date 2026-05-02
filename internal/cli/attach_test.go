@@ -12,13 +12,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/wizard"
 )
 
-func TestActiveRunBranchUsesRepoWideLookupForExplicitAttach(t *testing.T) {
-	state := &repoState{currentBranch: "feature/current"}
-	if got := activeRunBranch(state, false); got != "" {
-		t.Fatalf("activeRunBranch() = %q, want repo-wide lookup", got)
-	}
-}
-
 // TestRootInteractiveWizardFailsLoudlyWhenRunRegistrationIsSlow covers
 // issue #122 defect 3. Prior behavior: if the daemon didn't register a
 // run after push (e.g. gate hook disabled by husky), the wizard's wait

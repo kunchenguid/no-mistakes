@@ -216,6 +216,7 @@ func runHappyPath(t *testing.T, agentName string) {
 		assertDocumentAgentErrorRun(t, h)
 		assertReviewAgentErrorRun(t, h)
 		assertReviewExistingBranchUsesMergeBaseScope(t, h)
+		assertExplicitAttachUsesRepoWideActiveRun(t, h)
 		assertDocumentWarningRun(t, h)
 		assertDocumentInfoRun(t, h)
 		assertReviewWarningRun(t, h)
@@ -1492,6 +1493,38 @@ func assertReviewExistingBranchUsesMergeBaseScope(t *testing.T, h *Harness) {
 	}
 	if strings.Contains(prompt, firstHead) {
 		t.Fatalf("expected existing-branch review prompt to avoid old remote SHA %s, got:\n%s", firstHead, prompt)
+	}
+}
+
+func assertExplicitAttachUsesRepoWideActiveRun(t *testing.T, h *Harness) {
+	t.Helper()
+	config := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  test: nm-explicit-attach-slow-e2e\n  lint: true\n"
+	slowCommand := filepath.Join(h.BinDir, "nm-explicit-attach-slow-e2e")
+	if err := os.WriteFile(slowCommand, []byte("#!/bin/sh\nsleep 10\n"), 0o755); err != nil {
+		t.Fatalf("write explicit attach slow test command: %v", err)
+	}
+	h.CommitChange("explicit-attach-active", ".no-mistakes.yaml", config, "configure explicit attach slow test")
+	h.PushToGate("explicit-attach-active")
+	run := waitForStepStatus(t, h, "explicit-attach-active", types.StepTest, types.StepStatusRunning, 60*time.Second)
+	if repoWide := h.ActiveRun(""); repoWide == nil || repoWide.ID != run.ID {
+		t.Fatalf("expected repo-wide active run %s, got %+v", run.ID, repoWide)
+	}
+	if currentBranchMatch := h.ActiveRun("main"); currentBranchMatch != nil {
+		t.Fatalf("expected no active run for current branch main, got %+v", currentBranchMatch)
+	}
+
+	out, err := h.Run("attach")
+	if err == nil {
+		t.Fatalf("non-TTY attach should exit after TUI setup failure, got nil error and output:\n%s", out)
+	}
+	if strings.Contains(out, "No active run") {
+		t.Fatalf("explicit attach should use repo-wide active run instead of current branch fallback, got:\n%s", out)
+	}
+
+	h.CancelRun(run.ID)
+	cancelled := waitForRunIDStatus(t, h, run.ID, types.RunCancelled, 60*time.Second)
+	if cancelled.Error == nil || !strings.Contains(*cancelled.Error, "aborted by user") {
+		t.Fatalf("expected explicit attach run cancellation error to mention aborted by user, got %q", deref(cancelled.Error))
 	}
 }
 
