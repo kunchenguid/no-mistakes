@@ -195,6 +195,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	h.Checkout("feature/e2e")
 	assertRootRecentRuns(t, h, rerun)
 	assertConfiguredCommandRun(t, h)
+	assertRespondNoWaitingStepRun(t, h)
 	assertFailingTestCommandRun(t, h)
 	assertFailingLintCommandRun(t, h)
 	if agentName == "claude" {
@@ -1167,6 +1168,29 @@ func waitForStepStatus(t *testing.T, h *Harness, branch string, stepName types.S
 	}
 	t.Fatalf("run for branch %s did not appear while waiting for %s in %v", branch, stepName, timeout)
 	return nil
+}
+
+func assertRespondNoWaitingStepRun(t *testing.T, h *Harness) {
+	t.Helper()
+	slowCommand := filepath.Join(h.BinDir, "nm-slow-test-e2e")
+	if err := os.WriteFile(slowCommand, []byte("#!/bin/sh\nsleep 2\n"), 0o755); err != nil {
+		t.Fatalf("write slow e2e test command: %v", err)
+	}
+	config := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  test: nm-slow-test-e2e\n  lint: true\n"
+	h.CommitChange("respond-no-waiting", ".no-mistakes.yaml", config, "configure slow test command")
+	h.PushToGate("respond-no-waiting")
+	run := waitForStepStatus(t, h, "respond-no-waiting", types.StepTest, types.StepStatusRunning, 60*time.Second)
+	err := h.RespondError(run.ID, types.StepTest, types.ActionApprove)
+	if err == nil {
+		t.Fatal("respond while no step is awaiting approval should fail")
+	}
+	if !strings.Contains(err.Error(), "no step awaiting approval") {
+		t.Fatalf("respond while no step awaiting approval error = %v", err)
+	}
+	completed := h.WaitForRun("respond-no-waiting", 60*time.Second)
+	if completed.Status != types.RunCompleted {
+		t.Fatalf("respond-no-waiting run did not complete: status=%s error=%v", completed.Status, deref(completed.Error))
+	}
 }
 
 func assertFailingTestCommandRun(t *testing.T, h *Harness) {

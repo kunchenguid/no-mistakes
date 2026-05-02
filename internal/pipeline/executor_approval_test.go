@@ -185,13 +185,3 @@ func TestExecutor_TracksAutoFixTelemetry(t *testing.T) {
 		t.Fatalf("fix attempt = %v, want 1", got)
 	}
 }
-
-func TestExecutor_Respond_NoWaitingStep(t *testing.T) {
-	database, p, _, _ := setupTest(t)
-
-	exec := NewExecutor(database, p, nil, nil, nil, nil)
-	err := exec.Respond(types.StepReview, types.ActionApprove, nil)
-	if err == nil {
-		t.Fatal("expected error when no step awaiting approval")
-	}
-}
