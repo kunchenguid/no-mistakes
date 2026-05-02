@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -38,6 +39,9 @@ type Action struct {
 
 	// Edits are file modifications applied in CWD before responding.
 	Edits []Edit `yaml:"edits,omitempty"`
+
+	// Stage lists paths to git-add after edits are applied.
+	Stage []string `yaml:"stage,omitempty"`
 }
 
 // Edit performs a Replace of Old with New in Path. If Old is empty the
@@ -109,6 +113,21 @@ func applyEdits(edits []Edit) error {
 	return applyEditsInDir(wd, edits)
 }
 
+func applyAction(action Action) error {
+	wd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("get working directory: %w", err)
+	}
+	return applyActionInDir(wd, action)
+}
+
+func applyActionInDir(wd string, action Action) error {
+	if err := applyEditsInDir(wd, action.Edits); err != nil {
+		return err
+	}
+	return stageFilesInDir(wd, action.Stage)
+}
+
 func applyEditsInDir(wd string, edits []Edit) error {
 	wd, err := filepath.Abs(wd)
 	if err != nil {
@@ -161,6 +180,38 @@ func applyEditsInDir(wd string, edits []Edit) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func stageFilesInDir(wd string, paths []string) error {
+	if len(paths) == 0 {
+		return nil
+	}
+	relPaths := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if path == "" {
+			continue
+		}
+		full, err := scenarioEditPath(wd, path)
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(wd, full)
+		if err != nil {
+			return fmt.Errorf("stage %q: %w", path, err)
+		}
+		relPaths = append(relPaths, rel)
+	}
+	if len(relPaths) == 0 {
+		return nil
+	}
+	args := append([]string{"add", "--"}, relPaths...)
+	cmd := exec.Command("git", args...)
+	cmd.Dir = wd
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git add staged files: %w: %s", err, out)
+	}
+	return nil
 }
 
 func scenarioEditPath(wd, path string) (string, error) {

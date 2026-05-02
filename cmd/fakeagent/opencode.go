@@ -352,7 +352,7 @@ func (s *fakeOpencodeServer) handleMessage(w http.ResponseWriter, r *http.Reques
 		// substituted so happy-path tests don't depend on whatever
 		// the live model returned at recording time.
 		action := s.scenario.Match(prompt)
-		if err := applyEditsInDir(s.sessionDir(sessionID), action.Edits); err != nil {
+		if err := applyActionInDir(s.sessionDir(sessionID), action); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -375,7 +375,7 @@ func (s *fakeOpencodeServer) handleMessage(w http.ResponseWriter, r *http.Reques
 	}
 
 	action := s.scenario.Match(prompt)
-	if err := applyEditsInDir(s.sessionDir(sessionID), action.Edits); err != nil {
+	if err := applyActionInDir(s.sessionDir(sessionID), action); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

@@ -13,7 +13,7 @@ func runCodex(args []string, scenario *Scenario) int {
 	logInvocation("codex", prompt, args)
 
 	action := scenario.Match(prompt)
-	if err := applyEdits(action.Edits); err != nil {
+	if err := applyAction(action); err != nil {
 		return 1
 	}
 
