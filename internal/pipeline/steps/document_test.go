@@ -405,32 +405,6 @@ func TestDocumentStep_MissingSummaryRequiresApproval(t *testing.T) {
 	}
 }
 
-func TestDocumentStep_PromptIncludesIgnorePatterns(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"nothing to update"}`)}, nil
-		},
-	}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Config.IgnorePatterns = []string{"*.generated.go", "vendor/**"}
-
-	step := &DocumentStep{}
-	_, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(ag.calls) != 1 {
-		t.Fatalf("expected 1 agent call, got %d", len(ag.calls))
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "*.generated.go, vendor/**") {
-		t.Error("expected prompt to include ignore patterns")
-	}
-}
-
 func TestDocumentStep_IgnorePatternsFilterAllFiles(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

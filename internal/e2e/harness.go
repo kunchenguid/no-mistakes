@@ -195,7 +195,11 @@ func (h *Harness) initGitRepos() {
 	if err := os.WriteFile(readme, []byte("# e2e\n"), 0o644); err != nil {
 		h.t.Fatalf("write readme: %v", err)
 	}
-	mustGit(h.WorkDir, "add", "README.md")
+	repoConfig := filepath.Join(h.WorkDir, ".no-mistakes.yaml")
+	if err := os.WriteFile(repoConfig, []byte("ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\n"), 0o644); err != nil {
+		h.t.Fatalf("write repo config: %v", err)
+	}
+	mustGit(h.WorkDir, "add", "README.md", ".no-mistakes.yaml")
 	mustGit(h.WorkDir, "commit", "-m", "initial commit")
 	mustGit(h.WorkDir, "remote", "add", "origin", h.UpstreamDir)
 	mustGit(h.WorkDir, "push", "-u", "origin", "main")

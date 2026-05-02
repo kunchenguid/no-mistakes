@@ -802,6 +802,7 @@ func assertDocumentPrompt(t *testing.T, h *Harness, run *ipc.RunInfo, invs []Inv
 		"branch: feature/e2e",
 		baseSHA,
 		run.HeadSHA,
+		"ignore patterns: *.generated.go, vendor/**",
 		"Do a full documentation pass before returning.",
 		"Do not stop after the first documentation gap.",
 	} {
