@@ -3,7 +3,6 @@ package steps
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -45,28 +44,6 @@ func TestDocumentStep_FixMode_UsesFallbackSummaryWhenStructuredSummaryMalformed(
 	}
 	if got := lastCommitMessage(t, dir); got != "no-mistakes(document): update documentation" {
 		t.Fatalf("last commit message = %q", got)
-	}
-}
-
-func TestDocumentStep_AgentError(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			return nil, errors.New("agent crashed")
-		},
-	}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-
-	step := &DocumentStep{}
-	_, err := step.Execute(sctx)
-	if err == nil {
-		t.Fatal("expected error from agent failure")
-	}
-	if !strings.Contains(err.Error(), "agent document") {
-		t.Errorf("error = %v, want to contain 'agent document'", err)
 	}
 }
 

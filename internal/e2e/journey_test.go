@@ -206,6 +206,7 @@ func runHappyPath(t *testing.T, agentName string) {
 		assertDocumentMalformedFindingRun(t, h)
 		assertDocumentLegacyFindingRun(t, h)
 		assertDocumentMissingSummaryRun(t, h)
+		assertDocumentAgentErrorRun(t, h)
 		assertDocumentWarningRun(t, h)
 		assertDocumentInfoRun(t, h)
 		assertReviewWarningRun(t, h)
@@ -249,6 +250,11 @@ func cleanReviewScenario(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "scenario.yaml")
 	content := `actions:
+  - match: "identify any documentation gaps.\n\nContext:\n- branch: document-agent-error"
+    text: "document agent error"
+    edits:
+      - path: "/outside-workdir"
+        new: "should fail"
   - match: "identify any documentation gaps.\n\nContext:\n- branch: document-missing-summary"
     text: " "
     structured:
@@ -1294,6 +1300,26 @@ func assertDocumentMissingSummaryRun(t *testing.T, h *Harness) {
 	completed := h.WaitForRun("document-missing-summary", 60*time.Second)
 	if completed.Status != types.RunFailed {
 		t.Fatalf("document-missing-summary run status after abort = %s, want failed", completed.Status)
+	}
+}
+
+func assertDocumentAgentErrorRun(t *testing.T, h *Harness) {
+	t.Helper()
+	h.CommitChange("document-agent-error", "document-agent-error.txt", "document agent error\n", "add document agent error")
+	h.PushToGate("document-agent-error")
+	run := h.WaitForRun("document-agent-error", 60*time.Second)
+	if run.Status != types.RunFailed {
+		t.Fatalf("document-agent-error run status = %s, want failed", run.Status)
+	}
+	documentStep, ok := findStep(run.Steps, types.StepDocument)
+	if !ok {
+		t.Fatal("expected document step in document-agent-error run")
+	}
+	if documentStep.Status != types.StepStatusFailed {
+		t.Fatalf("expected document step to fail after agent error, got %s", documentStep.Status)
+	}
+	if documentStep.Error == nil || !strings.Contains(*documentStep.Error, "agent document") {
+		t.Fatalf("expected document step error to mention agent document, got %q", deref(documentStep.Error))
 	}
 }
 
