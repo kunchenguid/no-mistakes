@@ -59,42 +59,6 @@ func TestAttachRunIDWithUnknownRunReturnsHelpfulError(t *testing.T) {
 	}
 }
 
-// TestAttachNotGitRepo verifies that running bare `no-mistakes` outside any git
-// repo returns a clear error.
-func TestAttachNotGitRepoCommands(t *testing.T) {
-	tmpDir := t.TempDir()
-	nmHome := makeSocketSafeTempDir(t)
-	t.Setenv("NM_HOME", nmHome)
-	p := paths.WithRoot(nmHome)
-
-	d, err := db.Open(p.DB())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer d.Close()
-
-	startTestDaemon(t, p, d)
-
-	chdir(t, tmpDir)
-
-	for _, test := range []struct {
-		name string
-		args []string
-	}{
-		{name: "root", args: nil},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			_, err = executeCmd(test.args...)
-			if err == nil {
-				t.Fatalf("%s command outside git repo should return an error", test.name)
-			}
-			if !strings.Contains(err.Error(), "not in a git repository") {
-				t.Errorf("error should mention 'not in a git repository', got: %v", err)
-			}
-		})
-	}
-}
-
 // TestRootInteractiveWizardFailsLoudlyWhenRunRegistrationIsSlow covers
 // issue #122 defect 3. Prior behavior: if the daemon didn't register a
 // run after push (e.g. gate hook disabled by husky), the wizard's wait
