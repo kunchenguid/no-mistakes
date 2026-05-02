@@ -123,51 +123,6 @@ func TestTestStep_FixMode_UsesFallbackSummaryWhenStructuredSummaryMalformed(t *t
 	}
 }
 
-func TestTestStep_AgentWritesNewGoTests_NeedsApproval(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-
-	findings := Findings{Items: nil, Summary: "all tests passed"}
-	findingsJSON, _ := json.Marshal(findings)
-
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			os.WriteFile(filepath.Join(dir, "new_test.go"), []byte("package main\n"), 0o644)
-			os.WriteFile(filepath.Join(dir, "readme.md"), []byte("# readme\n"), 0o644)
-			return &agent.Result{Output: findingsJSON}, nil
-		},
-	}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-
-	step := &TestStep{}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !outcome.NeedsApproval {
-		t.Error("expected approval needed when agent writes new Go test files")
-	}
-
-	var f Findings
-	json.Unmarshal([]byte(outcome.Findings), &f)
-	foundTestFile := false
-	for _, item := range f.Items {
-		if strings.Contains(item.Description, "new_test.go") {
-			foundTestFile = true
-			break
-		}
-	}
-	if !foundTestFile {
-		t.Errorf("expected finding mentioning new_test.go, got findings: %+v", f.Items)
-	}
-	for _, item := range f.Items {
-		if strings.Contains(item.Description, "readme.md") {
-			t.Errorf("did not expect non-test file to trigger finding, got findings: %+v", f.Items)
-		}
-	}
-}
-
 func TestTestStep_AgentWritesNewTests_NeedsApproval(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
