@@ -914,7 +914,12 @@ func assertConfiguredCommandRun(t *testing.T, h *Harness) {
 	if err := os.WriteFile(testCommand, []byte("#!/bin/sh\nprintf test-ran > \""+testCommandLog+"\"\n"), 0o755); err != nil {
 		t.Fatalf("write e2e test command: %v", err)
 	}
-	config := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  test: nm-test-e2e\n  lint: true\n"
+	lintCommandLog := filepath.Join(h.NMHome, "configured-lint-command.log")
+	lintCommand := filepath.Join(h.BinDir, "nm-lint-e2e")
+	if err := os.WriteFile(lintCommand, []byte("#!/bin/sh\nprintf lint-ran > \""+lintCommandLog+"\"\n"), 0o755); err != nil {
+		t.Fatalf("write e2e lint command: %v", err)
+	}
+	config := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  test: nm-test-e2e\n  lint: nm-lint-e2e\n"
 	head := h.CommitChange("configured-commands", ".no-mistakes.yaml", config, "enable configured checks")
 	h.PushToGate("configured-commands")
 	run := h.WaitForRun("configured-commands", 60*time.Second)
@@ -949,6 +954,13 @@ func assertConfiguredCommandRun(t *testing.T, h *Harness) {
 	}
 	if lintStep.FindingsJSON != nil {
 		t.Fatalf("expected configured passing lint command to record no findings, got %s", *lintStep.FindingsJSON)
+	}
+	lintLogData, err := os.ReadFile(lintCommandLog)
+	if err != nil {
+		t.Fatalf("read configured lint command log: %v", err)
+	}
+	if string(lintLogData) != "lint-ran" {
+		t.Fatalf("configured lint command log = %q", string(lintLogData))
 	}
 	invs := h.AgentInvocations()
 	if sawPromptContainingAll(invs, "You are validating a code change by testing it", "branch: configured-commands") {
