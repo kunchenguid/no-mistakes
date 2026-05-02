@@ -171,9 +171,9 @@ func runHappyPath(t *testing.T, agentName string) {
 
 	assertPushedHead(t, run.HeadSHA, h.UpstreamBranchSHA("feature/e2e"))
 	assertRunsCompleted(t, h, run)
+	rerun := assertRerunCompletedInDir(t, h, featureWorktree, run)
 	h.RemoveWorktree(featureWorktree)
 	h.Checkout("feature/e2e")
-	rerun := assertRerunCompleted(t, h, run)
 	assertRootRecentRuns(t, h, rerun)
 
 	t.Logf("agent invocations: %d\n%s", len(invs), summarisePrompts(invs))
@@ -556,11 +556,11 @@ func assertRunsContainsRunInDir(t *testing.T, h *Harness, dir string, run *ipc.R
 	}
 }
 
-func assertRerunCompleted(t *testing.T, h *Harness, previous *ipc.RunInfo) *ipc.RunInfo {
+func assertRerunCompletedInDir(t *testing.T, h *Harness, dir string, previous *ipc.RunInfo) *ipc.RunInfo {
 	t.Helper()
-	out, err := h.Run("rerun")
+	out, err := h.RunInDir(dir, "rerun")
 	if err != nil {
-		t.Fatalf("nm rerun after completed pipeline: %v\n%s", err, out)
+		t.Fatalf("nm rerun after completed pipeline in %s: %v\n%s", dir, err, out)
 	}
 	for _, want := range []string{"Rerun started", "feature/e2e"} {
 		if !strings.Contains(out, want) {
