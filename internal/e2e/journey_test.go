@@ -129,6 +129,7 @@ func runHappyPath(t *testing.T, agentName string) {
 
 	// PR and CI must skip: no SCM provider on a file:// origin.
 	assertStepsSkipped(t, run.Steps, types.StepPR, types.StepCI)
+	assertNoPRCreated(t, run)
 
 	// The agent must have been called at least for review and document.
 	// Test and lint also call the agent because no commands are
@@ -781,6 +782,13 @@ func assertPushedHead(t *testing.T, runHeadSHA, upstreamHeadSHA string) {
 	t.Helper()
 	for _, msg := range validatePushedHead(runHeadSHA, upstreamHeadSHA) {
 		t.Error(msg)
+	}
+}
+
+func assertNoPRCreated(t *testing.T, run *ipc.RunInfo) {
+	t.Helper()
+	if run.PRURL != nil {
+		t.Fatalf("expected PR step to skip without creating a PR URL, got %q", *run.PRURL)
 	}
 }
 

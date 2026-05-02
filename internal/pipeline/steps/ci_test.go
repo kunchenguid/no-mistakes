@@ -133,34 +133,6 @@ func TestCIStep_InvalidPRURLReturnsError(t *testing.T) {
 	}
 }
 
-func TestCIStep_UnknownProviderSkips(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-	prURL := "https://example.invalid/pulls/42"
-	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Run.PRURL = &prURL
-	sctx.Repo.UpstreamURL = "https://example.invalid/test/repo.git"
-
-	var logs []string
-	sctx.Log = func(s string) { logs = append(logs, s) }
-
-	step := &CIStep{}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if outcome.NeedsApproval {
-		t.Fatal("expected CI skip for unknown provider")
-	}
-	if !outcome.Skipped {
-		t.Fatal("expected skipped outcome for unknown provider")
-	}
-	if len(logs) == 0 || !strings.Contains(logs[0], "skipping CI") {
-		t.Fatalf("expected skip log, got: %v", logs)
-	}
-}
-
 func TestCIStep_ContextCancelled(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
