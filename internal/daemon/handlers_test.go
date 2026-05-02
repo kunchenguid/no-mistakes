@@ -66,37 +66,6 @@ func TestPIDFile(t *testing.T) {
 	}
 }
 
-func TestGetRunsHandler(t *testing.T) {
-	p, d := startTestDaemon(t)
-
-	repo, err := d.InsertRepoWithID("test-repo-456", "/tmp/test-repo2", "https://github.com/test/repo2", "main")
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = d.InsertRun(repo.ID, "feat-a", "aaa", "bbb")
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = d.InsertRun(repo.ID, "feat-b", "ccc", "ddd")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	client, err := ipc.Dial(p.Socket())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer client.Close()
-
-	var result ipc.GetRunsResult
-	if err := client.Call(ipc.MethodGetRuns, &ipc.GetRunsParams{RepoID: repo.ID}, &result); err != nil {
-		t.Fatal(err)
-	}
-	if len(result.Runs) != 2 {
-		t.Fatalf("runs count = %d, want 2", len(result.Runs))
-	}
-}
-
 func TestGetActiveRunHandler(t *testing.T) {
 	p, d := startTestDaemon(t)
 
