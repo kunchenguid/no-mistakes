@@ -154,12 +154,14 @@ func runHappyPath(t *testing.T, agentName string) {
 
 	assertPushedHead(t, run.HeadSHA, h.UpstreamBranchSHA("feature/e2e"))
 	assertRunsCompleted(t, h, run)
+	rerun := assertRerunCompleted(t, h, run)
 
 	t.Logf("agent invocations: %d\n%s", len(invs), summarisePrompts(invs))
 	t.Logf("step outcomes:")
 	for _, step := range run.Steps {
 		t.Logf("  %d %-9s %s", step.StepOrder, step.StepName, step.Status)
 	}
+	t.Logf("rerun outcome: %s %s", rerun.ID, rerun.Status)
 
 	out, err = h.Run("daemon", "stop")
 	if err != nil {
@@ -431,6 +433,33 @@ func assertRunsCompleted(t *testing.T, h *Harness, run *ipc.RunInfo) {
 			t.Errorf("runs output should contain %q after completed pipeline, got:\n%s", want, out)
 		}
 	}
+}
+
+func assertRerunCompleted(t *testing.T, h *Harness, previous *ipc.RunInfo) *ipc.RunInfo {
+	t.Helper()
+	out, err := h.Run("rerun")
+	if err != nil {
+		t.Fatalf("nm rerun after completed pipeline: %v\n%s", err, out)
+	}
+	for _, want := range []string{"Rerun started", "feature/e2e"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("rerun output should contain %q, got:\n%s", want, out)
+		}
+	}
+	run := h.WaitForRun("feature/e2e", 60*time.Second)
+	if run.ID == previous.ID {
+		t.Fatalf("rerun returned original run ID %s", run.ID)
+	}
+	if run.Status != types.RunCompleted {
+		t.Fatalf("rerun did not complete: status=%s error=%v", run.Status, deref(run.Error))
+	}
+	if run.Branch != previous.Branch {
+		t.Errorf("rerun branch = %q, want %q", run.Branch, previous.Branch)
+	}
+	if run.HeadSHA != previous.HeadSHA {
+		t.Errorf("rerun head = %q, want %q", run.HeadSHA, previous.HeadSHA)
+	}
+	return run
 }
 
 func assertDaemonStatusRunning(t *testing.T, h *Harness) {
