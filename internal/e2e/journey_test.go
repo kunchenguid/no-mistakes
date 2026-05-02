@@ -727,7 +727,9 @@ func assertEmptyDiffAfterRebaseRun(t *testing.T, h *Harness) {
 
 func assertAgentEditCommitRun(t *testing.T, h *Harness) {
 	t.Helper()
-	originalHead := h.CommitChange("agent-edits", "agent-edits.txt", "feature before agent\n", "add agent-edits branch")
+	h.CommitChange("agent-edits", "agent-edits.txt", "feature before agent\n", "add agent-edits branch")
+	config := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  format: \"printf formatted > formatted-by-push.txt\"\n"
+	originalHead := h.CommitChange("agent-edits", ".no-mistakes.yaml", config, "configure formatter")
 	h.PushToGate("agent-edits")
 	run := h.WaitForRun("agent-edits", 60*time.Second)
 	if run.Status != types.RunCompleted {
@@ -752,6 +754,13 @@ func assertAgentEditCommitRun(t *testing.T, h *Harness) {
 	}
 	if string(contents) != "agent edited\n" {
 		t.Fatalf("agent-edit.txt contents = %q", string(contents))
+	}
+	formatted, err := h.runGit(ctx, h.UpstreamDir, "show", "refs/heads/agent-edits:formatted-by-push.txt")
+	if err != nil {
+		t.Fatalf("read formatted file from upstream: %v\n%s", err, formatted)
+	}
+	if string(formatted) != "formatted" {
+		t.Fatalf("formatted-by-push.txt contents = %q", string(formatted))
 	}
 }
 

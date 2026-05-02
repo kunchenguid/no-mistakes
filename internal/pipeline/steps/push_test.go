@@ -1,73 +1,13 @@
 package steps
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
 )
-
-func TestPushStep_RunsFormatCommandBeforeCommit(t *testing.T) {
-	t.Parallel()
-	// When a format command is configured, the push step should run it
-	// before committing, so agent changes are formatted before push.
-	upstream := t.TempDir()
-	gitCmd(t, upstream, "init", "--bare")
-
-	dir := t.TempDir()
-	gitCmd(t, dir, "init")
-	gitCmd(t, dir, "config", "user.name", "test")
-	gitCmd(t, dir, "config", "user.email", "test@test.com")
-	gitCmd(t, dir, "checkout", "-b", "main")
-	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "initial")
-	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
-	gitCmd(t, dir, "remote", "add", "origin", upstream)
-	gitCmd(t, dir, "push", "origin", "main")
-
-	gitCmd(t, dir, "checkout", "-b", "feature")
-	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "feature")
-	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
-
-	// Add uncommitted changes that need formatting
-	os.WriteFile(filepath.Join(dir, "unformatted.txt"), []byte("  needs formatting  "), 0o644)
-
-	// Use a format command that writes a marker file to prove it ran
-	markerPath := filepath.Join(dir, ".format-ran")
-	var formatCmd string
-	if runtime.GOOS == "windows" {
-		bat := filepath.Join(dir, "fmt.bat")
-		os.WriteFile(bat, []byte(fmt.Sprintf("@copy nul \"%s\" >nul\r\n", markerPath)), 0o755)
-		formatCmd = bat
-	} else {
-		formatCmd = fmt.Sprintf("touch %s", markerPath)
-	}
-
-	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{Format: formatCmd})
-	sctx.Repo.UpstreamURL = upstream
-
-	step := &PushStep{}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if outcome.NeedsApproval {
-		t.Error("push should never need approval")
-	}
-
-	// Verify the format command ran (marker file exists)
-	if _, err := os.Stat(markerPath); os.IsNotExist(err) {
-		t.Error("format command was not executed before commit")
-	}
-}
 
 func TestPushStep_FormatCommandUsesStepEnv(t *testing.T) {
 	t.Parallel()
