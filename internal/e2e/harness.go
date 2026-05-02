@@ -426,7 +426,13 @@ func (h *Harness) RespondError(runID string, step types.StepName, action types.A
 	}
 	defer client.Close()
 	var result ipc.RespondResult
-	return client.Call(ipc.MethodRespond, &ipc.RespondParams{RunID: runID, Step: step, Action: action}, &result)
+	if err := client.Call(ipc.MethodRespond, &ipc.RespondParams{RunID: runID, Step: step, Action: action}, &result); err != nil {
+		return err
+	}
+	if !result.OK {
+		return fmt.Errorf("respond returned not OK")
+	}
+	return nil
 }
 
 func (h *Harness) CancelRun(runID string) {
