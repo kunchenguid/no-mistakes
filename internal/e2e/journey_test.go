@@ -205,6 +205,7 @@ func runHappyPath(t *testing.T, agentName string) {
 		assertDocumentMissingFindingsRun(t, h)
 		assertDocumentMalformedFindingRun(t, h)
 		assertDocumentLegacyFindingRun(t, h)
+		assertDocumentMissingSummaryRun(t, h)
 		assertDocumentWarningRun(t, h)
 		assertDocumentInfoRun(t, h)
 		assertReviewWarningRun(t, h)
@@ -248,6 +249,10 @@ func cleanReviewScenario(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "scenario.yaml")
 	content := `actions:
+  - match: "identify any documentation gaps.\n\nContext:\n- branch: document-missing-summary"
+    text: " "
+    structured:
+      findings: []
   - match: "identify any documentation gaps.\n\nContext:\n- branch: document-warning"
     text: "documentation warning finding"
     structured:
@@ -1253,6 +1258,42 @@ func assertDocumentLegacyFindingRun(t *testing.T, h *Harness) {
 	completed := h.WaitForRun("document-legacy-finding", 60*time.Second)
 	if completed.Status != types.RunFailed {
 		t.Fatalf("document-legacy-finding run status after abort = %s, want failed", completed.Status)
+	}
+}
+
+func assertDocumentMissingSummaryRun(t *testing.T, h *Harness) {
+	t.Helper()
+	h.CommitChange("document-missing-summary", "document-missing-summary.txt", "document missing summary\n", "add document missing summary")
+	h.PushToGate("document-missing-summary")
+	run := waitForStepStatus(t, h, "document-missing-summary", types.StepDocument, types.StepStatusAwaitingApproval, 60*time.Second)
+	documentStep, ok := findStep(run.Steps, types.StepDocument)
+	if !ok {
+		t.Fatal("expected document step in document-missing-summary run")
+	}
+	if documentStep.FindingsJSON == nil {
+		t.Fatal("expected document missing summary fallback to record findings JSON")
+	}
+	findings, err := types.ParseFindingsJSON(*documentStep.FindingsJSON)
+	if err != nil {
+		t.Fatalf("parse document missing summary fallback: %v", err)
+	}
+	if findings.Summary != "agent returned no structured output" {
+		t.Fatalf("document missing summary fallback summary = %q, want agent returned no structured output", findings.Summary)
+	}
+	if len(findings.Items) != 1 {
+		t.Fatalf("expected one fallback documentation finding, got %+v", findings.Items)
+	}
+	item := findings.Items[0]
+	if item.Action != types.ActionAskUser {
+		t.Fatalf("expected missing-summary fallback documentation finding to ask user, got action %q", item.Action)
+	}
+	if item.Description != "agent returned no structured output" {
+		t.Fatalf("missing-summary fallback description = %q, want agent returned no structured output", item.Description)
+	}
+	h.Respond(run.ID, types.StepDocument, types.ActionAbort)
+	completed := h.WaitForRun("document-missing-summary", 60*time.Second)
+	if completed.Status != types.RunFailed {
+		t.Fatalf("document-missing-summary run status after abort = %s, want failed", completed.Status)
 	}
 }
 
