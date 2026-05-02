@@ -654,23 +654,33 @@ func assertConfiguredCommandRun(t *testing.T, h *Harness) {
 		t.Fatalf("configured command run did not complete: status=%s error=%v", run.Status, deref(run.Error))
 	}
 	assertNoUnexpectedAutofixCommits(t, run, head)
-	step, ok := findStep(run.Steps, types.StepTest)
+	testStep, ok := findStep(run.Steps, types.StepTest)
 	if !ok {
 		t.Fatal("expected test step in configured command run")
 	}
-	if step.FindingsJSON == nil {
+	if testStep.FindingsJSON == nil {
 		t.Fatal("expected configured test step to record findings JSON")
 	}
-	findings, err := types.ParseFindingsJSON(*step.FindingsJSON)
+	findings, err := types.ParseFindingsJSON(*testStep.FindingsJSON)
 	if err != nil {
 		t.Fatalf("parse configured test findings: %v", err)
 	}
 	if len(findings.Tested) != 1 || findings.Tested[0] != "true" {
 		t.Fatalf("expected configured test command to be recorded, got %+v", findings.Tested)
 	}
+	lintStep, ok := findStep(run.Steps, types.StepLint)
+	if !ok {
+		t.Fatal("expected lint step in configured command run")
+	}
+	if lintStep.FindingsJSON != nil {
+		t.Fatalf("expected configured passing lint command to record no findings, got %s", *lintStep.FindingsJSON)
+	}
 	invs := h.AgentInvocations()
 	if sawPromptContainingAll(invs, "You are validating a code change by testing it", "branch: configured-commands") {
 		t.Fatalf("configured test command should not call the agent for test detection; invocations:\n%s", summarisePrompts(invs))
+	}
+	if sawPromptContainingAll(invs, "Detect the linting and formatting tools", "branch: configured-commands") {
+		t.Fatalf("configured lint command should not call the agent for lint detection; invocations:\n%s", summarisePrompts(invs))
 	}
 }
 

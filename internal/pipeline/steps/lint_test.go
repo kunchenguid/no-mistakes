@@ -153,22 +153,6 @@ func TestLintStep_FixMode_UsesFallbackSummaryWhenStructuredSummaryMalformed(t *t
 	}
 }
 
-func TestLintStep_PassingCommand(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, "abc", "def", config.Commands{Lint: "true"})
-
-	step := &LintStep{}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if outcome.NeedsApproval {
-		t.Error("expected no approval for clean lint")
-	}
-}
-
 func TestLintStep_FailingCommand(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
