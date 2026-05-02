@@ -17,7 +17,7 @@ import (
 
 var ansiEscapeRE = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
-func TestRunsWithData(t *testing.T) {
+func TestRunsWithRunningData(t *testing.T) {
 	setupTestRepo(t)
 	nmHome := os.Getenv("NM_HOME")
 	p := paths.WithRoot(nmHome)
@@ -32,7 +32,8 @@ func TestRunsWithData(t *testing.T) {
 		t.Fatalf("gate.Init failed: %v", err)
 	}
 
-	// Insert a run directly into the DB to simulate data.
+	// Insert a running run directly into the DB to preserve active-state
+	// list coverage; completed-run output is covered by the e2e journey.
 	gitRoot, err := git.FindGitRoot(".")
 	if err != nil {
 		t.Fatal(err)
@@ -42,20 +43,11 @@ func TestRunsWithData(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	run, err := d.InsertRun(repo.ID, "feature-branch", "abc1234", "def5678")
+	run, err := d.InsertRun(repo.ID, "another-branch", "111aaa", "222bbb")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := d.UpdateRunStatus(run.ID, types.RunCompleted); err != nil {
-		t.Fatal(err)
-	}
-
-	// Insert a second run that's running.
-	run2, err := d.InsertRun(repo.ID, "another-branch", "111aaa", "222bbb")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := d.UpdateRunStatus(run2.ID, types.RunRunning); err != nil {
+	if err := d.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
 		t.Fatal(err)
 	}
 
@@ -69,14 +61,8 @@ func TestRunsWithData(t *testing.T) {
 	if !strings.Contains(out, "another-branch") {
 		t.Errorf("runs output should contain 'another-branch', got: %s", out)
 	}
-	if !strings.Contains(out, "feature-branch") {
-		t.Errorf("runs output should contain 'feature-branch', got: %s", out)
-	}
 	if !strings.Contains(out, "running") {
 		t.Errorf("runs output should contain 'running' status, got: %s", out)
-	}
-	if !strings.Contains(out, "completed") {
-		t.Errorf("runs output should contain 'completed' status, got: %s", out)
 	}
 }
 

@@ -5,6 +5,7 @@ package e2e
 import (
 	"context"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -135,6 +136,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	)
 
 	assertPushedHead(t, run.HeadSHA, h.UpstreamBranchSHA("feature/e2e"))
+	assertRunsCompleted(t, h, run)
 
 	t.Logf("agent invocations: %d\n%s", len(invs), summarisePrompts(invs))
 	t.Logf("step outcomes:")
@@ -224,6 +226,26 @@ func assertRunsEmpty(t *testing.T, h *Harness) {
 	for _, want := range []string{"no runs", "git push no-mistakes <branch>"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("runs output should contain %q before any push, got:\n%s", want, out)
+		}
+	}
+}
+
+func assertRunsCompleted(t *testing.T, h *Harness, run *ipc.RunInfo) {
+	t.Helper()
+	out, err := h.Run("runs")
+	if err != nil {
+		t.Fatalf("nm runs after completed pipeline: %v\n%s", err, out)
+	}
+	if regexp.MustCompile(`\x1b\[[0-9;]*m`).MatchString(out) {
+		t.Fatalf("runs output should not include ANSI escape sequences, got: %q", out)
+	}
+	sha := run.HeadSHA
+	if len(sha) > 8 {
+		sha = sha[:8]
+	}
+	for _, want := range []string{"feature/e2e", "completed", sha} {
+		if !strings.Contains(out, want) {
+			t.Errorf("runs output should contain %q after completed pipeline, got:\n%s", want, out)
 		}
 	}
 }
