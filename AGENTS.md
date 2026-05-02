@@ -89,7 +89,9 @@ Safest local verification sequence after non-trivial changes:
 - Use `t.Setenv()` for environment-dependent behavior.
 - Prefer creating real git repos in temp directories instead of relying on heavy mocking.
 - CLI tests often capture output and assert with `strings.Contains`.
-- Prefer targeted package tests while iterating, then finish with `go test -race ./...` and `make e2e` when your change affects agent journeys or fixtures.
+- Prefer e2e tests, new or existing, for behavior that crosses a process or I/O boundary: CLI flags, config loading, git operations, agent spawning, daemon/process coordination, stdout/stderr, and recorded fixtures.
+- Unit-test pure helpers and tightly scoped package behavior where speed and failure localization are worth more than full-product realism.
+- Prefer targeted package tests while iterating, then finish with `go test -race ./...` and `make e2e` when your change affects those process or I/O boundaries.
 - The e2e suite lives behind the `e2e` build tag, so it is excluded from `go test ./...` and runs separately in CI via `make e2e`.
 
 **When Making Changes**
