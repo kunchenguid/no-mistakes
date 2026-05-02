@@ -1,8 +1,10 @@
-package cli
+//go:build e2e
+
+package e2e
 
 import (
+	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -19,42 +21,43 @@ func TestInitRollsBackWhenDaemonStartFails(t *testing.T) {
 		t.Skip("Windows IPC does not use Unix socket path limits")
 	}
 
-	repoDir := setupTestRepo(t)
-	nmHome := filepath.Join(t.TempDir(), strings.Repeat("a", 160))
-	t.Setenv("NM_HOME", nmHome)
-	t.Setenv("NM_TEST_DAEMON_START_TIMEOUT", "200ms")
-	t.Setenv("NM_TEST_DAEMON_START_POLL_INTERVAL", "10ms")
+	h := NewHarness(t, SetupOpts{Agent: "claude"})
+	badNMHome := filepath.Join(t.TempDir(), strings.Repeat("a", 160))
+	env := map[string]string{
+		"NM_HOME":                            badNMHome,
+		"NM_TEST_DAEMON_START_TIMEOUT":       "200ms",
+		"NM_TEST_DAEMON_START_POLL_INTERVAL": "10ms",
+	}
 
 	start := time.Now()
-	_, err := executeCmd("init")
+	out, err := h.RunInDirWithEnv(h.WorkDir, env, "init")
 	elapsed := time.Since(start)
 	if err == nil {
 		t.Fatal("init should fail when daemon startup fails")
 	}
-	if !strings.Contains(err.Error(), "start daemon") {
-		t.Fatalf("init error = %v, want daemon startup failure", err)
+	if !strings.Contains(out, "start daemon") {
+		t.Fatalf("init output = %q, want daemon startup failure", out)
 	}
-	if strings.Contains(err.Error(), "rollback init:") {
-		t.Fatalf("rollback should succeed cleanly, got wrapped error: %v", err)
+	if strings.Contains(out, "rollback init:") {
+		t.Fatalf("rollback should succeed cleanly, got wrapped error output: %q", out)
 	}
 	if elapsed >= time.Second {
 		t.Fatalf("init rollback should fail fast in tests, took %v", elapsed)
 	}
 
-	cmd := exec.Command("git", "remote", "get-url", "no-mistakes")
-	cmd.Dir = repoDir
-	if err := cmd.Run(); err == nil {
-		t.Fatal("no-mistakes remote should be removed after failed init")
+	ctx := context.Background()
+	if out, err := h.runGit(ctx, h.WorkDir, "remote", "get-url", "no-mistakes"); err == nil {
+		t.Fatalf("no-mistakes remote should be removed after failed init, got %q", out)
 	}
 
-	p := paths.WithRoot(nmHome)
+	p := paths.WithRoot(badNMHome)
 	d, err := db.Open(p.DB())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer d.Close()
 
-	gitRoot, err := git.FindGitRoot(".")
+	gitRoot, err := git.FindGitRoot(h.WorkDir)
 	if err != nil {
 		t.Fatal(err)
 	}
