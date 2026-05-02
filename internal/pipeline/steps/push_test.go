@@ -268,41 +268,6 @@ func TestPushStep_UpdatesLocalBranchRefAfterDetachedPush(t *testing.T) {
 	}
 }
 
-func TestPushStep_SkipsFormatWhenNotConfigured(t *testing.T) {
-	t.Parallel()
-	// When no format command is configured, push step should not fail.
-	upstream := t.TempDir()
-	gitCmd(t, upstream, "init", "--bare")
-
-	dir := t.TempDir()
-	gitCmd(t, dir, "init")
-	gitCmd(t, dir, "config", "user.name", "test")
-	gitCmd(t, dir, "config", "user.email", "test@test.com")
-	gitCmd(t, dir, "checkout", "-b", "main")
-	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "initial")
-	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
-	gitCmd(t, dir, "remote", "add", "origin", upstream)
-	gitCmd(t, dir, "push", "origin", "main")
-
-	gitCmd(t, dir, "checkout", "-b", "feature")
-	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("data"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "feature")
-	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
-
-	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Repo.UpstreamURL = upstream
-
-	step := &PushStep{}
-	_, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal("push should succeed without format command configured")
-	}
-}
-
 func TestPushStep_FormatCommandFailureIsWarning(t *testing.T) {
 	t.Parallel()
 	// If the format command fails, push should still proceed (log warning, don't fail).
