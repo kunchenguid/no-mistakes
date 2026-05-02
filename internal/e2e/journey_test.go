@@ -50,6 +50,7 @@ func TestUserJourney(t *testing.T) {
 func runHappyPath(t *testing.T, agentName string) {
 	h := NewHarness(t, SetupOpts{Agent: agentName})
 
+	assertRootHelp(t, h)
 	assertStatusNotGitRepo(t, h)
 	assertRunsNotGitRepo(t, h)
 	assertInitNotGitRepo(t, h)
@@ -181,6 +182,22 @@ func runHappyPath(t *testing.T, agentName string) {
 	}
 	assertEjectOutput(t, h, out)
 	assertGateRemoteAbsent(t, h)
+}
+
+func assertRootHelp(t *testing.T, h *Harness) {
+	t.Helper()
+	out, err := h.Run("--help")
+	if err != nil {
+		t.Fatalf("nm --help: %v\n%s", err, out)
+	}
+	for _, want := range []string{"init", "eject", "attach", "rerun", "status", "runs", "doctor", "daemon", "update"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("help output should list %q command, got:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "No active run") {
+		t.Errorf("help output should not trigger attach fallback, got:\n%s", out)
+	}
 }
 
 func assertStatusNotGitRepo(t *testing.T, h *Harness) {

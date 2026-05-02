@@ -31,21 +31,6 @@ func TestRootVersion(t *testing.T) {
 	}
 }
 
-func TestRootHelpListsSubcommandsWithoutTriggeringAttach(t *testing.T) {
-	out, err := executeCmd("--help")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, sub := range []string{"init", "eject", "attach", "rerun", "status", "runs", "doctor", "daemon", "update"} {
-		if !strings.Contains(out, sub) {
-			t.Errorf("help output should list %q command, got: %s", sub, out)
-		}
-	}
-	if strings.Contains(out, "No active run") {
-		t.Errorf("help output should not trigger attach fallback, got: %s", out)
-	}
-}
-
 func TestSetColorProfileForOutputUsesAsciiForNonTTY(t *testing.T) {
 	prev := lipgloss.ColorProfile()
 	defer lipgloss.SetColorProfile(prev)
