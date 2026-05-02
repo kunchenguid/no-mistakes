@@ -14,36 +14,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 )
 
-func TestRerunNotInitialized(t *testing.T) {
-	setupTestRepo(t)
-	nmHome, err := os.MkdirTemp("", "nmcli")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(nmHome) })
-	t.Setenv("NM_HOME", nmHome)
-	p := paths.WithRoot(nmHome)
-	if err := p.EnsureDirs(); err != nil {
-		t.Fatal(err)
-	}
-
-	d, err := db.Open(p.DB())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer d.Close()
-
-	startTestDaemon(t, p, d)
-
-	_, err = executeCmd("rerun")
-	if err == nil {
-		t.Fatal("rerun should fail when repo is not initialized")
-	}
-	if !strings.Contains(err.Error(), "not initialized") {
-		t.Errorf("error should mention 'not initialized', got: %v", err)
-	}
-}
-
 func TestRerunStartsPipelineForCurrentBranch(t *testing.T) {
 	setupTestRepo(t)
 	nmHome, err := os.MkdirTemp("", "nmcli")

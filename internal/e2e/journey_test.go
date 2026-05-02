@@ -56,6 +56,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	assertStatusNotInitialized(t, h)
 	assertEjectNotInitialized(t, h)
 	assertRunsNotInitialized(t, h)
+	assertRerunNotInitialized(t, h)
 	assertDaemonStatusNotRunning(t, h)
 	assertDaemonStopWhenNotRunning(t, h)
 
@@ -239,6 +240,17 @@ func assertRunsNotInitialized(t *testing.T, h *Harness) {
 	}
 	if !strings.Contains(out, "not initialized") {
 		t.Errorf("runs error output should mention 'not initialized' before init, got:\n%s", out)
+	}
+}
+
+func assertRerunNotInitialized(t *testing.T, h *Harness) {
+	t.Helper()
+	out, err := h.Run("rerun")
+	if err == nil {
+		t.Fatalf("nm rerun before init should fail, got output:\n%s", out)
+	}
+	if !strings.Contains(out, "not initialized") {
+		t.Errorf("rerun error output should mention 'not initialized' before init, got:\n%s", out)
 	}
 }
 
