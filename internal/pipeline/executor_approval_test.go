@@ -190,50 +190,6 @@ func TestExecutor_ApprovalApprovePreservesExitCode(t *testing.T) {
 	}
 }
 
-func TestExecutor_ApprovalAbort(t *testing.T) {
-	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
-
-	steps := []Step{
-		newApprovalStep(types.StepReview, ""),
-		newPassStep(types.StepTest),
-	}
-
-	exec := NewExecutor(database, p, nil, nil, steps, nil)
-
-	done := make(chan error, 1)
-	go func() {
-		done <- exec.Execute(context.Background(), run, repo, workDir)
-	}()
-
-	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
-	exec.Respond(types.StepReview, types.ActionAbort, nil)
-
-	select {
-	case err := <-done:
-		if err == nil {
-			t.Fatal("expected error from abort, got nil")
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("executor timed out")
-	}
-
-	// Run should be failed
-	updated, _ := database.GetRun(run.ID)
-	if updated.Status != types.RunFailed {
-		t.Errorf("expected run status %q, got %q", types.RunFailed, updated.Status)
-	}
-
-	// Review should be failed, test should be pending
-	dbSteps, _ := database.GetStepsByRun(run.ID)
-	if dbSteps[0].Status != types.StepStatusFailed {
-		t.Errorf("review: expected %q, got %q", types.StepStatusFailed, dbSteps[0].Status)
-	}
-	if dbSteps[1].Status != types.StepStatusPending {
-		t.Errorf("test: expected %q, got %q", types.StepStatusPending, dbSteps[1].Status)
-	}
-}
-
 func TestExecutor_ApprovalFix(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir := t.TempDir()

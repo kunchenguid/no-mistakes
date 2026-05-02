@@ -1103,6 +1103,20 @@ func assertReviewWarningRun(t *testing.T, h *Harness) {
 	if completed.Status != types.RunFailed {
 		t.Fatalf("review-warning run status after abort = %s, want failed", completed.Status)
 	}
+	completedReviewStep, ok := findStep(completed.Steps, types.StepReview)
+	if !ok {
+		t.Fatal("expected completed review step in review-warning run")
+	}
+	if completedReviewStep.Status != types.StepStatusFailed {
+		t.Fatalf("expected review step to fail after abort, got %s", completedReviewStep.Status)
+	}
+	testStep, ok := findStep(completed.Steps, types.StepTest)
+	if !ok {
+		t.Fatal("expected pending test step in review-warning run")
+	}
+	if testStep.Status != types.StepStatusPending {
+		t.Fatalf("expected test step to remain pending after review abort, got %s", testStep.Status)
+	}
 }
 
 func waitForStepStatus(t *testing.T, h *Harness, branch string, stepName types.StepName, status types.StepStatus, timeout time.Duration) *ipc.RunInfo {
