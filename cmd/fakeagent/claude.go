@@ -12,7 +12,7 @@ func runClaude(args []string, scenario *Scenario) int {
 	logInvocation("claude", prompt, args)
 
 	action := scenario.Match(prompt)
-	if err := applyEdits(action.Edits); err != nil {
+	if err := applyAction(action); err != nil {
 		return 1
 	}
 
@@ -85,12 +85,13 @@ func runClaude(args []string, scenario *Scenario) int {
 // (e.g. document.go's unmarshalRequiredFindings requires "summary").
 // Patching keeps the wire shape real but the content predictable.
 func patchClaudeFixture(raw []byte, action Action) ([]byte, error) {
-	if action.Structured == nil {
+	if action.Structured == nil && action.StructuredRaw == "" {
 		return raw, nil
 	}
 	structuredJSON := action.structuredJSON()
 	text := action.textOrDefault()
 	var out bytes.Buffer
+	seenAssistant := false
 	for _, line := range bytes.Split(raw, []byte("\n")) {
 		if len(line) == 0 {
 			out.WriteByte('\n')
@@ -105,6 +106,7 @@ func patchClaudeFixture(raw []byte, action Action) ([]byte, error) {
 			continue
 		}
 		if probe.Type == "assistant" {
+			seenAssistant = true
 			patched, err := patchClaudeAssistantEvent(line, text)
 			if err != nil {
 				return nil, err
@@ -117,6 +119,15 @@ func patchClaudeFixture(raw []byte, action Action) ([]byte, error) {
 			out.Write(line)
 			out.WriteByte('\n')
 			continue
+		}
+		if !seenAssistant {
+			assistant, err := patchClaudeAssistantEvent([]byte(`{"type":"assistant","message":{"content":[]}}`), text)
+			if err != nil {
+				return nil, err
+			}
+			out.Write(assistant)
+			out.WriteByte('\n')
+			seenAssistant = true
 		}
 		var event map[string]any
 		if err := json.Unmarshal(line, &event); err != nil {

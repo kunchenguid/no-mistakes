@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
-	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
@@ -141,19 +140,6 @@ type mockPanicStep struct {
 func (s *mockPanicStep) Name() types.StepName { return s.name }
 func (s *mockPanicStep) Execute(_ *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	panic("boom")
-}
-
-type mockVerifyDefaultBranchStep struct {
-	name types.StepName
-}
-
-func (s *mockVerifyDefaultBranchStep) Name() types.StepName { return s.name }
-
-func (s *mockVerifyDefaultBranchStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
-	if _, err := git.Run(sctx.Ctx, sctx.WorkDir, "merge-base", "HEAD", "origin/"+sctx.Repo.DefaultBranch); err != nil {
-		return nil, err
-	}
-	return &pipeline.StepOutcome{}, nil
 }
 
 // startTestDaemonWithSteps starts a daemon with a custom step factory.

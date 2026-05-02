@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -90,8 +91,11 @@ func NewHarness(t *testing.T, opts SetupOpts) *Harness {
 
 	// Symlink each agent name to the same fake binary. Codex and Claude
 	// dispatch by argv[0] basename; opencode the same. Symlinks (not
-	// copies) keep the build cheap on subsequent tests.
-	for _, name := range []string{"claude", "codex", "opencode"} {
+	// copies) keep the build cheap on subsequent tests. The `gh` symlink
+	// is a guard rail: BinDir is prepended to PATH, so any stray invocation
+	// of gh by the pipeline (e.g. PR/CI on a misconfigured origin) hits
+	// the fakeagent stub instead of a real, authenticated system gh.
+	for _, name := range []string{"claude", "codex", "opencode", "gh"} {
 		linkPath := filepath.Join(h.BinDir, name)
 		if err := os.Symlink(fakeBin, linkPath); err != nil {
 			t.Fatalf("symlink %s: %v", linkPath, err)
@@ -127,6 +131,9 @@ func NewHarness(t *testing.T, opts SetupOpts) *Harness {
 	// Disable telemetry attempts (the package would no-op anyway, but
 	// avoid a network DNS lookup on each command).
 	t.Setenv("NO_MISTAKES_TELEMETRY", "off")
+	// Disable background update checks so helper processes do not write
+	// update-check.json while testing.T is removing the temp directory.
+	t.Setenv("NO_MISTAKES_NO_UPDATE_CHECK", "1")
 
 	h.writeGlobalConfig()
 	h.initGitRepos()
@@ -195,7 +202,11 @@ func (h *Harness) initGitRepos() {
 	if err := os.WriteFile(readme, []byte("# e2e\n"), 0o644); err != nil {
 		h.t.Fatalf("write readme: %v", err)
 	}
-	mustGit(h.WorkDir, "add", "README.md")
+	repoConfig := filepath.Join(h.WorkDir, ".no-mistakes.yaml")
+	if err := os.WriteFile(repoConfig, []byte("ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\n"), 0o644); err != nil {
+		h.t.Fatalf("write repo config: %v", err)
+	}
+	mustGit(h.WorkDir, "add", "README.md", ".no-mistakes.yaml")
 	mustGit(h.WorkDir, "commit", "-m", "initial commit")
 	mustGit(h.WorkDir, "remote", "add", "origin", h.UpstreamDir)
 	mustGit(h.WorkDir, "push", "-u", "origin", "main")
@@ -205,13 +216,52 @@ func (h *Harness) initGitRepos() {
 // (stdout+stderr, error). It propagates the harness env via os.Environ().
 func (h *Harness) Run(args ...string) (string, error) {
 	h.t.Helper()
+	return h.RunInDir(h.WorkDir, args...)
+}
+
+// RunInDir invokes the no-mistakes binary in dir and returns stdout+stderr.
+func (h *Harness) RunInDir(dir string, args ...string) (string, error) {
+	h.t.Helper()
+	return h.RunInDirWithEnv(dir, nil, args...)
+}
+
+// RunInDirWithEnv invokes the no-mistakes binary in dir with env overrides.
+func (h *Harness) RunInDirWithEnv(dir string, env map[string]string, args ...string) (string, error) {
+	h.t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, h.NMBin, args...)
-	cmd.Dir = h.WorkDir
-	cmd.Env = os.Environ()
+	cmd.Dir = dir
+	cmd.Env = mergedEnv(os.Environ(), env)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
+}
+
+func mergedEnv(base []string, overrides map[string]string) []string {
+	if len(overrides) == 0 {
+		return base
+	}
+	out := make([]string, 0, len(base)+len(overrides))
+	seen := make(map[string]bool, len(overrides))
+	for _, entry := range base {
+		key, _, ok := strings.Cut(entry, "=")
+		if !ok {
+			out = append(out, entry)
+			continue
+		}
+		if value, exists := overrides[key]; exists {
+			out = append(out, key+"="+value)
+			seen[key] = true
+			continue
+		}
+		out = append(out, entry)
+	}
+	for key, value := range overrides {
+		if !seen[key] {
+			out = append(out, key+"="+value)
+		}
+	}
+	return out
 }
 
 // CommitChange writes content to path (relative to WorkDir), commits it
@@ -277,26 +327,189 @@ func (h *Harness) UpstreamBranchSHA(branch string) string {
 	return string(bytes.TrimSpace(sha))
 }
 
+func (h *Harness) AddWorktree(branch string) string {
+	h.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if out, err := h.runGit(ctx, h.WorkDir, "checkout", "main"); err != nil {
+		h.t.Fatalf("checkout main before adding worktree: %v\n%s", err, out)
+	}
+	dir := filepath.Join(h.t.TempDir(), "worktree")
+	if out, err := h.runGit(ctx, h.WorkDir, "worktree", "add", dir, branch); err != nil {
+		h.t.Fatalf("git worktree add %s %s: %v\n%s", dir, branch, err, out)
+	}
+	h.t.Cleanup(func() {
+		if _, err := os.Stat(dir); err == nil {
+			_, _ = h.runGit(context.Background(), h.WorkDir, "worktree", "remove", "--force", dir)
+		}
+	})
+	return dir
+}
+
+func (h *Harness) RemoveWorktree(dir string) {
+	h.t.Helper()
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if out, err := h.runGit(ctx, h.WorkDir, "worktree", "remove", "--force", dir); err != nil {
+		h.t.Fatalf("git worktree remove %s: %v\n%s", dir, err, out)
+	}
+}
+
+func (h *Harness) Checkout(branch string) {
+	h.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if out, err := h.runGit(ctx, h.WorkDir, "checkout", branch); err != nil {
+		h.t.Fatalf("checkout %s: %v\n%s", branch, err, out)
+	}
+}
+
+func (h *Harness) WorktreeRefSHA(ref string) string {
+	h.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	sha, err := h.runGit(ctx, h.WorkDir, "rev-parse", ref)
+	if err != nil {
+		h.t.Fatalf("rev-parse worktree %s: %v\n%s", ref, err, sha)
+	}
+	return string(bytes.TrimSpace(sha))
+}
+
 // WaitForRun polls the daemon over IPC until a run for branch completes
 // (status != pending|running) or timeout expires. Returns the final
 // RunInfo so the test can assert on per-step outcomes.
 func (h *Harness) WaitForRun(branch string, timeout time.Duration) *ipc.RunInfo {
 	h.t.Helper()
+	return h.waitForRunStatus(branch, timeout, func(status types.RunStatus) bool {
+		switch status {
+		case types.RunCompleted, types.RunFailed, types.RunCancelled:
+			return true
+		default:
+			return false
+		}
+	}, "finish")
+}
+
+// WaitForRunRunning polls until the newest run for branch reaches running.
+func (h *Harness) WaitForRunRunning(branch string, timeout time.Duration) *ipc.RunInfo {
+	h.t.Helper()
+	return h.waitForRunStatus(branch, timeout, func(status types.RunStatus) bool {
+		return status == types.RunRunning
+	}, "start running")
+}
+
+func (h *Harness) Runs() []ipc.RunInfo {
+	h.t.Helper()
 	p := paths.WithRoot(h.NMHome)
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		h.t.Fatalf("dial daemon: %v", err)
+	}
+	defer client.Close()
+	var result ipc.GetRunsResult
+	if err := client.Call(ipc.MethodGetRuns, &ipc.GetRunsParams{RepoID: h.repoID()}, &result); err != nil {
+		h.t.Fatalf("get runs: %v", err)
+	}
+	return result.Runs
+}
+
+func (h *Harness) RunInfo(runID string) *ipc.RunInfo {
+	h.t.Helper()
+	p := paths.WithRoot(h.NMHome)
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		h.t.Fatalf("dial daemon: %v", err)
+	}
+	defer client.Close()
+	var result ipc.GetRunResult
+	if err := client.Call(ipc.MethodGetRun, &ipc.GetRunParams{RunID: runID}, &result); err != nil {
+		h.t.Fatalf("get run %s: %v", runID, err)
+	}
+	return result.Run
+}
+
+func (h *Harness) ActiveRun(branch string) *ipc.RunInfo {
+	h.t.Helper()
+	p := paths.WithRoot(h.NMHome)
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		h.t.Fatalf("dial daemon: %v", err)
+	}
+	defer client.Close()
+	var result ipc.GetActiveRunResult
+	if err := client.Call(ipc.MethodGetActiveRun, &ipc.GetActiveRunParams{RepoID: h.repoID(), Branch: branch}, &result); err != nil {
+		h.t.Fatalf("get active run for branch %q: %v", branch, err)
+	}
+	return result.Run
+}
+
+func (h *Harness) Respond(runID string, step types.StepName, action types.ApprovalAction) {
+	h.t.Helper()
+	if err := h.RespondError(runID, step, action); err != nil {
+		h.t.Fatalf("respond to run %s step %s with %s: %v", runID, step, action, err)
+	}
+}
+
+func (h *Harness) RespondError(runID string, step types.StepName, action types.ApprovalAction) error {
+	h.t.Helper()
+	p := paths.WithRoot(h.NMHome)
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		return fmt.Errorf("dial daemon: %w", err)
+	}
+	defer client.Close()
+	var result ipc.RespondResult
+	if err := client.Call(ipc.MethodRespond, &ipc.RespondParams{RunID: runID, Step: step, Action: action}, &result); err != nil {
+		return err
+	}
+	if !result.OK {
+		return fmt.Errorf("respond returned not OK")
+	}
+	return nil
+}
+
+func (h *Harness) CancelRun(runID string) {
+	h.t.Helper()
+	p := paths.WithRoot(h.NMHome)
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		h.t.Fatalf("dial daemon: %v", err)
+	}
+	defer client.Close()
+	var result ipc.CancelRunResult
+	if err := client.Call(ipc.MethodCancelRun, &ipc.CancelRunParams{RunID: runID}, &result); err != nil {
+		h.t.Fatalf("cancel run %s: %v", runID, err)
+	}
+	if !result.OK {
+		h.t.Fatalf("cancel run %s returned not OK", runID)
+	}
+}
+
+func (h *Harness) waitForRunStatus(branch string, timeout time.Duration, match func(types.RunStatus) bool, action string) *ipc.RunInfo {
+	h.t.Helper()
 	deadline := time.Now().Add(timeout)
-	repoID := h.repoID()
 
 	var lastRun *ipc.RunInfo
 	for time.Now().Before(deadline) {
-		client, err := ipc.Dial(p.Socket())
-		if err != nil {
-			time.Sleep(200 * time.Millisecond)
-			continue
-		}
 		var result ipc.GetRunsResult
-		err = client.Call(ipc.MethodGetRuns, &ipc.GetRunsParams{RepoID: repoID}, &result)
-		client.Close()
-		if err != nil {
+		var ok bool
+		func() {
+			p := paths.WithRoot(h.NMHome)
+			client, err := ipc.Dial(p.Socket())
+			if err != nil {
+				return
+			}
+			defer client.Close()
+			if err := client.Call(ipc.MethodGetRuns, &ipc.GetRunsParams{RepoID: h.repoID()}, &result); err != nil {
+				return
+			}
+			ok = true
+		}()
+		if !ok {
+			// Daemon not yet reachable or RPC failed; back off and retry.
 			time.Sleep(200 * time.Millisecond)
 			continue
 		}
@@ -306,8 +519,7 @@ func (h *Harness) WaitForRun(branch string, timeout time.Duration) *ipc.RunInfo 
 				continue
 			}
 			lastRun = r
-			switch r.Status {
-			case types.RunCompleted, types.RunFailed, types.RunCancelled:
+			if match(r.Status) {
 				return r
 			}
 			break
@@ -316,7 +528,7 @@ func (h *Harness) WaitForRun(branch string, timeout time.Duration) *ipc.RunInfo 
 	}
 	h.dumpDebugState()
 	if lastRun != nil {
-		h.t.Fatalf("run for branch %s did not finish in %v (last status=%s)", branch, timeout, lastRun.Status)
+		h.t.Fatalf("run for branch %s did not %s in %v (last status=%s)", branch, action, timeout, lastRun.Status)
 	}
 	h.t.Fatalf("no run found for branch %s within %v", branch, timeout)
 	return nil

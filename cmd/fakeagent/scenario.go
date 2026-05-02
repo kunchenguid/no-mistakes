@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -32,12 +35,19 @@ type Action struct {
 	// emitted, so YAML authors can write it inline without escaping.
 	Structured map[string]any `yaml:"structured,omitempty"`
 
+	// StructuredRaw is emitted as the structured-output slot verbatim.
+	// It is useful for testing parser fallback paths with non-object JSON.
+	StructuredRaw string `yaml:"structured_raw,omitempty"`
+
 	// Text is the human-readable response shown alongside structured
 	// output. Defaults to a generic acknowledgement.
 	Text string `yaml:"text,omitempty"`
 
 	// Edits are file modifications applied in CWD before responding.
 	Edits []Edit `yaml:"edits,omitempty"`
+
+	// Stage lists paths to git-add after edits are applied.
+	Stage []string `yaml:"stage,omitempty"`
 }
 
 // Edit performs a Replace of Old with New in Path. If Old is empty the
@@ -109,6 +119,21 @@ func applyEdits(edits []Edit) error {
 	return applyEditsInDir(wd, edits)
 }
 
+func applyAction(action Action) error {
+	wd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("get working directory: %w", err)
+	}
+	return applyActionInDir(wd, action)
+}
+
+func applyActionInDir(wd string, action Action) error {
+	if err := applyEditsInDir(wd, action.Edits); err != nil {
+		return err
+	}
+	return stageFilesInDir(wd, action.Stage)
+}
+
 func applyEditsInDir(wd string, edits []Edit) error {
 	wd, err := filepath.Abs(wd)
 	if err != nil {
@@ -161,6 +186,40 @@ func applyEditsInDir(wd string, edits []Edit) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func stageFilesInDir(wd string, paths []string) error {
+	if len(paths) == 0 {
+		return nil
+	}
+	relPaths := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if path == "" {
+			continue
+		}
+		full, err := scenarioEditPath(wd, path)
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(wd, full)
+		if err != nil {
+			return fmt.Errorf("stage %q: %w", path, err)
+		}
+		relPaths = append(relPaths, rel)
+	}
+	if len(relPaths) == 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	args := append([]string{"add", "--"}, relPaths...)
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = wd
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git add staged files: %w: %s", err, out)
+	}
+	return nil
 }
 
 func scenarioEditPath(wd, path string) (string, error) {
@@ -220,6 +279,9 @@ func scenarioPathWithinWorkingDirectory(wd, path string) error {
 // structuredJSON marshals an action's Structured map. Empty structured
 // becomes an empty object so the parser sees something parseable.
 func (a Action) structuredJSON() []byte {
+	if a.StructuredRaw != "" {
+		return []byte(a.StructuredRaw)
+	}
 	if a.Structured == nil {
 		return []byte("{}")
 	}
@@ -228,6 +290,10 @@ func (a Action) structuredJSON() []byte {
 		return []byte("{}")
 	}
 	return data
+}
+
+func (a Action) hasStructuredOutput() bool {
+	return a.Structured != nil || a.StructuredRaw != ""
 }
 
 func (a Action) textOrDefault() string {

@@ -108,23 +108,6 @@ func TestCIStep_UsesStepEnvForCLIStartupChecks(t *testing.T) {
 	}
 }
 
-func TestCIStep_NoPRURL(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, "abc", "def", config.Commands{})
-	sctx.Run.PRURL = nil
-
-	step := &CIStep{}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if outcome.NeedsApproval {
-		t.Error("expected no approval for missing PR URL")
-	}
-}
-
 func TestCIStep_InvalidPRURLReturnsError(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
@@ -147,34 +130,6 @@ func TestCIStep_InvalidPRURLReturnsError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), `invalid PR number "files"`) {
 		t.Fatalf("expected invalid PR number detail, got %v", err)
-	}
-}
-
-func TestCIStep_UnknownProviderSkips(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-	prURL := "https://example.invalid/pulls/42"
-	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Run.PRURL = &prURL
-	sctx.Repo.UpstreamURL = "https://example.invalid/test/repo.git"
-
-	var logs []string
-	sctx.Log = func(s string) { logs = append(logs, s) }
-
-	step := &CIStep{}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if outcome.NeedsApproval {
-		t.Fatal("expected CI skip for unknown provider")
-	}
-	if !outcome.Skipped {
-		t.Fatal("expected skipped outcome for unknown provider")
-	}
-	if len(logs) == 0 || !strings.Contains(logs[0], "skipping CI") {
-		t.Fatalf("expected skip log, got: %v", logs)
 	}
 }
 

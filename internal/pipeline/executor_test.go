@@ -4,56 +4,36 @@ import (
 	"context"
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-func TestExecutor_AllStepsPass(t *testing.T) {
+// TestExecutor_StepLifecycleEvents verifies the executor emits step_started
+// and step_completed IPC events for every step in order. The broader
+// happy-path orchestration (DB persistence, run/step status transitions,
+// timestamp + duration recording across all 8 real steps) is exercised by
+// the e2e journey suite (internal/e2e), so this test focuses solely on
+// the IPC event contract that the TUI subscribes to.
+func TestExecutor_StepLifecycleEvents(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir := t.TempDir()
 
-	steps := []Step{
-		newPassStep(types.StepReview),
-		newPassStep(types.StepTest),
-		newPassStep(types.StepLint),
+	stepNames := []types.StepName{types.StepReview, types.StepTest, types.StepLint}
+	steps := make([]Step, len(stepNames))
+	for i, name := range stepNames {
+		steps[i] = newPassStep(name)
 	}
 
 	exec := NewExecutor(database, p, nil, nil, steps, nil)
 	events := collectEvents(exec)
 
-	err := exec.Execute(context.Background(), run, repo, workDir)
-	if err != nil {
+	if err := exec.Execute(context.Background(), run, repo, workDir); err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
 
-	// Run should be completed
-	updated, _ := database.GetRun(run.ID)
-	if updated.Status != types.RunCompleted {
-		t.Errorf("expected run status %q, got %q", types.RunCompleted, updated.Status)
-	}
-
-	// All steps should be completed
-	dbSteps, _ := database.GetStepsByRun(run.ID)
-	if len(dbSteps) != 3 {
-		t.Fatalf("expected 3 steps, got %d", len(dbSteps))
-	}
-	for _, s := range dbSteps {
-		if s.Status != types.StepStatusCompleted {
-			t.Errorf("step %s: expected status %q, got %q", s.StepName, types.StepStatusCompleted, s.Status)
-		}
-		if s.StartedAt == nil {
-			t.Errorf("step %s: started_at should be set", s.StepName)
-		}
-		if s.CompletedAt == nil {
-			t.Errorf("step %s: completed_at should be set", s.StepName)
-		}
-	}
-
-	// Should have step_started + step_completed events for each step
-	for _, name := range []types.StepName{types.StepReview, types.StepTest, types.StepLint} {
+	for _, name := range stepNames {
 		if e := events.find(ipc.EventStepStarted, name); e == nil {
 			t.Errorf("missing step_started event for %s", name)
 		}
@@ -273,55 +253,6 @@ func TestExecutor_EmptySteps(t *testing.T) {
 	}
 }
 
-func TestExecutor_RunMarkedRunning(t *testing.T) {
-	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
-
-	var runStatusDuringExec types.RunStatus
-	step := &adaptiveCallStep{
-		name: types.StepReview,
-		fn: func(sctx *StepContext) (*StepOutcome, error) {
-			r, _ := sctx.DB.GetRun(run.ID)
-			runStatusDuringExec = r.Status
-			return &StepOutcome{ExitCode: 0}, nil
-		},
-	}
-
-	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
-	exec.Execute(context.Background(), run, repo, workDir)
-
-	if runStatusDuringExec != types.RunRunning {
-		t.Errorf("expected run status during execution to be %q, got %q", types.RunRunning, runStatusDuringExec)
-	}
-}
-
-func TestExecutor_StepResultHasDuration(t *testing.T) {
-	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
-
-	step := &adaptiveCallStep{
-		name: types.StepReview,
-		fn: func(sctx *StepContext) (*StepOutcome, error) {
-			time.Sleep(10 * time.Millisecond)
-			return &StepOutcome{ExitCode: 0}, nil
-		},
-	}
-
-	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
-	exec.Execute(context.Background(), run, repo, workDir)
-
-	dbSteps, _ := database.GetStepsByRun(run.ID)
-	if len(dbSteps) != 1 {
-		t.Fatalf("expected 1 step, got %d", len(dbSteps))
-	}
-	if dbSteps[0].DurationMS == nil {
-		t.Fatal("expected duration_ms to be set")
-	}
-	if *dbSteps[0].DurationMS < 10 {
-		t.Errorf("expected duration >= 10ms, got %dms", *dbSteps[0].DurationMS)
-	}
-}
-
 func TestExecutor_StepResultUsesDurationOverride(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir := t.TempDir()
@@ -346,67 +277,6 @@ func TestExecutor_StepResultUsesDurationOverride(t *testing.T) {
 	}
 	if got := *dbSteps[0].DurationMS; got != 45000 {
 		t.Fatalf("duration_ms = %d, want %d", got, 45000)
-	}
-}
-
-func TestExecutor_SkipRemaining_SkipsSubsequentSteps(t *testing.T) {
-	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
-
-	skipStep := &mockStep{
-		name:    types.StepRebase,
-		outcome: &StepOutcome{ExitCode: 0, SkipRemaining: true},
-	}
-	reviewStep := newPassStep(types.StepReview)
-	testStep := newPassStep(types.StepTest)
-
-	steps := []Step{skipStep, reviewStep, testStep}
-	exec := NewExecutor(database, p, nil, nil, steps, nil)
-	events := collectEvents(exec)
-
-	err := exec.Execute(context.Background(), run, repo, workDir)
-	if err != nil {
-		t.Fatalf("expected no error, got: %v", err)
-	}
-
-	// Run should be completed
-	updated, _ := database.GetRun(run.ID)
-	if updated.Status != types.RunCompleted {
-		t.Errorf("expected run status %q, got %q", types.RunCompleted, updated.Status)
-	}
-
-	// The rebase step should be completed
-	dbSteps, _ := database.GetStepsByRun(run.ID)
-	if len(dbSteps) != 3 {
-		t.Fatalf("expected 3 steps, got %d", len(dbSteps))
-	}
-	if dbSteps[0].Status != types.StepStatusCompleted {
-		t.Errorf("rebase step: expected status %q, got %q", types.StepStatusCompleted, dbSteps[0].Status)
-	}
-
-	// Subsequent steps should be skipped
-	for _, s := range dbSteps[1:] {
-		if s.Status != types.StepStatusSkipped {
-			t.Errorf("step %s: expected status %q, got %q", s.StepName, types.StepStatusSkipped, s.Status)
-		}
-		if s.CompletedAt == nil {
-			t.Errorf("step %s: completed_at should be set for skipped steps", s.StepName)
-		}
-	}
-
-	// Subsequent steps should NOT have been executed
-	if reviewStep.callCount() != 0 {
-		t.Errorf("review step was called %d times, expected 0", reviewStep.callCount())
-	}
-	if testStep.callCount() != 0 {
-		t.Errorf("test step was called %d times, expected 0", testStep.callCount())
-	}
-
-	// Should have completed events for all steps
-	for _, name := range []types.StepName{types.StepRebase, types.StepReview, types.StepTest} {
-		if e := events.find(ipc.EventStepCompleted, name); e == nil {
-			t.Errorf("missing step_completed event for %s", name)
-		}
 	}
 }
 
@@ -451,7 +321,7 @@ func TestExecutor_StepOutcomePRURL_EmitsRunUpdated(t *testing.T) {
 	}
 }
 
-func TestExecutor_SkippedOutcome_MarksStepSkipped(t *testing.T) {
+func TestExecutor_SkippedOutcome_EmitsSkippedEvent(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir := t.TempDir()
 
@@ -465,14 +335,6 @@ func TestExecutor_SkippedOutcome_MarksStepSkipped(t *testing.T) {
 
 	if err := exec.Execute(context.Background(), run, repo, workDir); err != nil {
 		t.Fatalf("expected no error, got: %v", err)
-	}
-
-	dbSteps, _ := database.GetStepsByRun(run.ID)
-	if len(dbSteps) != 1 {
-		t.Fatalf("expected 1 step, got %d", len(dbSteps))
-	}
-	if dbSteps[0].Status != types.StepStatusSkipped {
-		t.Fatalf("expected skipped status, got %q", dbSteps[0].Status)
 	}
 
 	event := events.find(ipc.EventStepCompleted, types.StepPR)

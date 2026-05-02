@@ -321,20 +321,6 @@ func TestRunShellCommand(t *testing.T) {
 	})
 }
 
-func TestAllSteps(t *testing.T) {
-	t.Parallel()
-	steps := AllSteps()
-	if len(steps) != 8 {
-		t.Fatalf("AllSteps() returned %d steps, want 8", len(steps))
-	}
-	expected := []types.StepName{types.StepRebase, types.StepReview, types.StepTest, types.StepDocument, types.StepLint, types.StepPush, types.StepPR, types.StepCI}
-	for i, s := range steps {
-		if s.Name() != expected[i] {
-			t.Errorf("step %d name = %s, want %s", i, s.Name(), expected[i])
-		}
-	}
-}
-
 func TestStepCLIAvailable_ResolvesExecutableSuffixFromCustomPath(t *testing.T) {
 	t.Parallel()
 

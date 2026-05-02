@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -30,6 +31,44 @@ func TestApplyEditsCreatesParentDirectoriesForNewFiles(t *testing.T) {
 	}
 	if string(data) != "hello\n" {
 		t.Fatalf("file contents = %q, want %q", data, "hello\n")
+	}
+}
+
+func TestActionStructuredJSONUsesRawPayload(t *testing.T) {
+	action := Action{
+		Structured:    map[string]any{"summary": "ignored"},
+		StructuredRaw: `"not an object"`,
+	}
+
+	if got := string(action.structuredJSON()); got != `"not an object"` {
+		t.Fatalf("structuredJSON() = %s, want raw payload", got)
+	}
+}
+
+func TestApplyActionStagesFiles(t *testing.T) {
+	dir := t.TempDir()
+	gitCmd := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return string(out)
+	}
+	gitCmd("init")
+
+	if err := applyActionInDir(dir, Action{
+		Edits: []Edit{{Path: "agent_test.go", New: "package main\n"}},
+		Stage: []string{"agent_test.go"},
+	}); err != nil {
+		t.Fatalf("applyActionInDir: %v", err)
+	}
+
+	status := gitCmd("status", "--porcelain")
+	if !strings.Contains(status, "A  agent_test.go") {
+		t.Fatalf("git status = %q, want staged agent_test.go", status)
 	}
 }
 
