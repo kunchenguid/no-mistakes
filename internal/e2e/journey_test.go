@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -218,6 +219,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	assertRunsDefaultLimit(t, h)
 	assertGateRefDeletionDoesNotCreateRun(t, h, "configured-commands")
 	assertStatusShortHeadSHA(t, h)
+	assertRootDefaultsToHistory(t, h)
 
 	t.Logf("agent invocations: %d\n%s", len(invs), summarisePrompts(invs))
 	t.Logf("step outcomes:")
@@ -1946,6 +1948,74 @@ func assertStatusActiveRunInDir(t *testing.T, h *Harness, dir string, run *ipc.R
 		if !strings.Contains(out, want) {
 			t.Errorf("status output should contain %q while run is active in %s, got:\n%s", want, dir, out)
 		}
+	}
+}
+
+func assertRootDefaultsToHistory(t *testing.T, h *Harness) {
+	t.Helper()
+	p := paths.WithRoot(h.NMHome)
+	database, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatalf("open e2e db for root history: %v", err)
+	}
+	defer database.Close()
+	sqlDB, err := sql.Open("sqlite", p.DB())
+	if err != nil {
+		t.Fatalf("open sql db for root history: %v", err)
+	}
+	defer sqlDB.Close()
+	oldTS := time.Now().Add(-30 * 24 * time.Hour).Unix()
+	if _, err := sqlDB.Exec(`UPDATE runs SET created_at = ?, updated_at = ?`, oldTS, oldTS); err != nil {
+		t.Fatalf("age existing runs before root history assertion: %v", err)
+	}
+	timestamps := []int64{
+		time.Now().Add(-10 * 24 * time.Hour).Unix(),
+		time.Now().Add(-4 * 24 * time.Hour).Unix(),
+		time.Now().Add(-26 * time.Hour).Unix(),
+		time.Now().Add(-2 * time.Hour).Unix(),
+		time.Now().Add(-90 * time.Second).Unix(),
+		time.Now().Unix(),
+	}
+	branches := []string{
+		"oldest/skipped",
+		"feature/cache",
+		"feature/login",
+		"fix/crash",
+		"fix/lint",
+		"feature/recent",
+	}
+	for i, branch := range branches {
+		run, err := database.InsertRun(h.repoID(), branch, "hist"+itoa(i), "000000")
+		if err != nil {
+			t.Fatalf("insert root history run: %v", err)
+		}
+		if i%2 == 0 {
+			if err := database.UpdateRunStatus(run.ID, types.RunCompleted); err != nil {
+				t.Fatalf("mark root history run completed: %v", err)
+			}
+		} else {
+			if err := database.UpdateRunError(run.ID, "lint failed"); err != nil {
+				t.Fatalf("mark root history run failed: %v", err)
+			}
+		}
+		if _, err := sqlDB.Exec(`UPDATE runs SET created_at = ?, updated_at = ? WHERE id = ?`, timestamps[i], timestamps[i], run.ID); err != nil {
+			t.Fatalf("set root history timestamp: %v", err)
+		}
+	}
+	out, err := h.Run()
+	if err != nil {
+		t.Fatalf("bare nm with run history: %v\n%s", err, out)
+	}
+	for _, want := range []string{"just now", "1 min ago", "2 hours ago", "1 day ago", "4 days ago"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected root history age %q in output, got:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "oldest/skipped") {
+		t.Fatalf("oldest root history run should be omitted once recent-runs limit is hit, got:\n%s", out)
+	}
+	if !strings.Contains(out, "more - run 'no-mistakes runs' to see all") {
+		t.Fatalf("expected root history overflow hint, got:\n%s", out)
 	}
 }
 

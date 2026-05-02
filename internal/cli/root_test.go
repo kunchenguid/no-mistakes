@@ -2,9 +2,7 @@ package cli
 
 import (
 	"context"
-	"database/sql"
 	"errors"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -16,89 +14,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/wizard"
 )
-
-func TestRootDefaultsToAttachWithHistory(t *testing.T) {
-	setupTestRepo(t)
-	nmHome := makeSocketSafeTempDir(t)
-	t.Setenv("NM_HOME", nmHome)
-	p := paths.WithRoot(nmHome)
-
-	// Open DB and init gate directly (avoids EnsureDaemon timeout from CLI init).
-	d, err := db.Open(p.DB())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer d.Close()
-
-	if _, err := gate.Init(context.Background(), d, p, "."); err != nil {
-		t.Fatal(err)
-	}
-
-	// Start an in-process daemon.
-	startTestDaemon(t, p, d)
-
-	// Look up the repo to insert runs (use FindGitRoot for macOS symlink consistency).
-	gitRoot, err := git.FindGitRoot(".")
-	if err != nil {
-		t.Fatal(err)
-	}
-	repo, err := d.GetRepoByPath(gitRoot)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Insert enough runs to exercise age formatting and the recent-runs cap.
-	timestamps := []int64{
-		time.Now().Add(-10 * 24 * time.Hour).Unix(),
-		time.Now().Add(-4 * 24 * time.Hour).Unix(),
-		time.Now().Add(-26 * time.Hour).Unix(),
-		time.Now().Add(-2 * time.Hour).Unix(),
-		time.Now().Add(-90 * time.Second).Unix(),
-		time.Now().Unix(),
-	}
-	branches := []string{
-		"oldest/skipped",
-		"feature/cache",
-		"feature/login",
-		"fix/crash",
-		"fix/lint",
-		"feature/recent",
-	}
-	for i, branch := range branches {
-		run, err := d.InsertRun(repo.ID, branch, fmt.Sprintf("head%04d", i), "000000")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if i%2 == 0 {
-			if err := d.UpdateRunStatus(run.ID, "completed"); err != nil {
-				t.Fatal(err)
-			}
-		} else {
-			if err := d.UpdateRunError(run.ID, "lint failed"); err != nil {
-				t.Fatal(err)
-			}
-		}
-		setRunCreatedAt(t, p.DB(), run.ID, timestamps[i])
-	}
-
-	out, err := executeCmd()
-	if err != nil {
-		t.Fatalf("bare command failed: %v\noutput: %s", err, out)
-	}
-
-	// Synthetic history here preserves age formatting and recent-runs cap coverage.
-	for _, want := range []string{"just now", "1 min ago", "2 hours ago", "1 day ago", "4 days ago"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("expected age %q in output, got: %s", want, out)
-		}
-	}
-	if strings.Contains(out, "oldest/skipped") {
-		t.Errorf("oldest run should be omitted once recent-runs limit is hit, got: %s", out)
-	}
-	if !strings.Contains(out, "(1 more - run 'no-mistakes runs' to see all)") {
-		t.Errorf("expected recent-runs overflow hint, got: %s", out)
-	}
-}
 
 func TestRootYesRunsWizardNonInteractively(t *testing.T) {
 	setupTestRepo(t)
@@ -333,20 +248,6 @@ func TestRootYesStopsWaitingForRunWhenContextCanceled(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed >= time.Second {
 		t.Fatalf("executeCmdWithContext(-y) took %v after cancellation, want under %v", elapsed, time.Second)
-	}
-}
-
-func setRunCreatedAt(t *testing.T, dbPath, runID string, ts int64) {
-	t.Helper()
-
-	sqlDB, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer sqlDB.Close()
-
-	if _, err := sqlDB.Exec(`UPDATE runs SET created_at = ?, updated_at = ? WHERE id = ?`, ts, ts, runID); err != nil {
-		t.Fatal(err)
 	}
 }
 
