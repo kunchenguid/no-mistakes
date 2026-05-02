@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -215,13 +216,46 @@ func (h *Harness) Run(args ...string) (string, error) {
 // RunInDir invokes the no-mistakes binary in dir and returns stdout+stderr.
 func (h *Harness) RunInDir(dir string, args ...string) (string, error) {
 	h.t.Helper()
+	return h.RunInDirWithEnv(dir, nil, args...)
+}
+
+// RunInDirWithEnv invokes the no-mistakes binary in dir with env overrides.
+func (h *Harness) RunInDirWithEnv(dir string, env map[string]string, args ...string) (string, error) {
+	h.t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, h.NMBin, args...)
 	cmd.Dir = dir
-	cmd.Env = os.Environ()
+	cmd.Env = mergedEnv(os.Environ(), env)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
+}
+
+func mergedEnv(base []string, overrides map[string]string) []string {
+	if len(overrides) == 0 {
+		return base
+	}
+	out := make([]string, 0, len(base)+len(overrides))
+	seen := make(map[string]bool, len(overrides))
+	for _, entry := range base {
+		key, _, ok := strings.Cut(entry, "=")
+		if !ok {
+			out = append(out, entry)
+			continue
+		}
+		if value, exists := overrides[key]; exists {
+			out = append(out, key+"="+value)
+			seen[key] = true
+			continue
+		}
+		out = append(out, entry)
+	}
+	for key, value := range overrides {
+		if !seen[key] {
+			out = append(out, key+"="+value)
+		}
+	}
+	return out
 }
 
 // CommitChange writes content to path (relative to WorkDir), commits it

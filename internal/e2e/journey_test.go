@@ -53,6 +53,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	assertRootVersion(t, h)
 	assertRootHelp(t, h)
 	assertDoctor(t, h)
+	assertDoctorMissingSystemDeps(t, h)
 	assertStatusNotGitRepo(t, h)
 	assertRunsNotGitRepo(t, h)
 	assertInitNotGitRepo(t, h)
@@ -262,6 +263,36 @@ func assertDoctor(t *testing.T, h *Harness) {
 	}
 	if strings.Contains(out, "some checks failed") {
 		t.Errorf("doctor output should not report failed checks for healthy system state, got:\n%s", out)
+	}
+}
+
+func assertDoctorMissingSystemDeps(t *testing.T, h *Harness) {
+	t.Helper()
+	missingHome := filepath.Join(t.TempDir(), "missing-nm-home")
+	out, err := h.RunInDirWithEnv(h.WorkDir, map[string]string{
+		"NM_HOME": missingHome,
+		"PATH":    "/nonexistent",
+	}, "doctor")
+	if err != nil {
+		t.Fatalf("nm doctor with missing system deps should not exit non-zero: %v\n%s", err, out)
+	}
+	for _, want := range []string{
+		"System",
+		"git",
+		"not found",
+		"gh",
+		"optional, needed for PR/CI",
+		"data directory",
+		missingHome,
+		"database",
+		"will be created on first use",
+		"daemon",
+		"stopped",
+		"some checks failed",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("doctor missing-deps output should contain %q, got:\n%s", want, out)
+		}
 	}
 }
 
