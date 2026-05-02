@@ -103,6 +103,8 @@ func runHappyPath(t *testing.T, agentName string) {
 	}
 	assertNewBranchRun(t, run)
 
+	assertPipelineStepsInOrder(t, run.Steps)
+
 	// Sanity-check that every step has a terminal status with the
 	// expected timing fields recorded. Completed steps must have both
 	// started_at and completed_at; skipped steps record completed_at only
@@ -784,6 +786,22 @@ func assertPushedHead(t *testing.T, runHeadSHA, upstreamHeadSHA string) {
 	t.Helper()
 	for _, msg := range validatePushedHead(runHeadSHA, upstreamHeadSHA) {
 		t.Error(msg)
+	}
+}
+
+func assertPipelineStepsInOrder(t *testing.T, steps []ipc.StepResultInfo) {
+	t.Helper()
+	expected := []types.StepName{types.StepRebase, types.StepReview, types.StepTest, types.StepDocument, types.StepLint, types.StepPush, types.StepPR, types.StepCI}
+	if len(steps) != len(expected) {
+		t.Fatalf("pipeline recorded %d steps, want %d", len(steps), len(expected))
+	}
+	for i, step := range steps {
+		if step.StepOrder != i+1 {
+			t.Errorf("step %d order = %d, want %d", i, step.StepOrder, i+1)
+		}
+		if step.StepName != expected[i] {
+			t.Errorf("step %d name = %s, want %s", i, step.StepName, expected[i])
+		}
 	}
 }
 
