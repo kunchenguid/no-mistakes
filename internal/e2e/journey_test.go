@@ -909,7 +909,12 @@ func assertGateRefDeletionDoesNotCreateRun(t *testing.T, h *Harness, branch stri
 
 func assertConfiguredCommandRun(t *testing.T, h *Harness) {
 	t.Helper()
-	config := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  test: true\n  lint: true\n"
+	testCommandLog := filepath.Join(h.NMHome, "configured-test-command.log")
+	testCommand := filepath.Join(h.BinDir, "nm-test-e2e")
+	if err := os.WriteFile(testCommand, []byte("#!/bin/sh\nprintf test-ran > \""+testCommandLog+"\"\n"), 0o755); err != nil {
+		t.Fatalf("write e2e test command: %v", err)
+	}
+	config := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  test: nm-test-e2e\n  lint: true\n"
 	head := h.CommitChange("configured-commands", ".no-mistakes.yaml", config, "enable configured checks")
 	h.PushToGate("configured-commands")
 	run := h.WaitForRun("configured-commands", 60*time.Second)
@@ -928,8 +933,15 @@ func assertConfiguredCommandRun(t *testing.T, h *Harness) {
 	if err != nil {
 		t.Fatalf("parse configured test findings: %v", err)
 	}
-	if len(findings.Tested) != 1 || findings.Tested[0] != "true" {
+	if len(findings.Tested) != 1 || findings.Tested[0] != "nm-test-e2e" {
 		t.Fatalf("expected configured test command to be recorded, got %+v", findings.Tested)
+	}
+	logData, err := os.ReadFile(testCommandLog)
+	if err != nil {
+		t.Fatalf("read configured test command log: %v", err)
+	}
+	if string(logData) != "test-ran" {
+		t.Fatalf("configured test command log = %q", string(logData))
 	}
 	lintStep, ok := findStep(run.Steps, types.StepLint)
 	if !ok {

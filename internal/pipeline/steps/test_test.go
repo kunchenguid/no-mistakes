@@ -12,37 +12,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/config"
 )
 
-func TestTestStep_ConfiguredCommand_UsesStepEnv(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	binDir := fakeCLIBinDir(t)
-	logFile := filepath.Join(t.TempDir(), "test-command.log")
-	linkTestBinary(t, binDir, "nm-testcmd")
-
-	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, "abc", "def", config.Commands{Test: "nm-testcmd"})
-	sctx.Env = fakeCLIEnv(binDir, map[string]string{
-		"FAKE_CLI_MODE": "record-success",
-		"FAKE_CLI_LOG":  logFile,
-	})
-
-	step := &TestStep{}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if outcome.NeedsApproval {
-		t.Fatal("expected configured test command from StepContext env to pass")
-	}
-	logData, err := os.ReadFile(logFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(logData), "nm-testcmd") {
-		t.Fatalf("expected env-resolved test command to run, got %q", string(logData))
-	}
-}
-
 func TestTestStep_FailingCommand(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
