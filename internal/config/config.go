@@ -98,7 +98,7 @@ const defaultConfigYAML = `# no-mistakes global configuration
 
 # Agent to use for code generation
 # Options: auto, claude, codex, rovodev, opencode, pi, acp:<target>
-# "auto" detects the first available agent on your system
+# "auto" detects the first available native agent on your system
 # Use acp:<target> to run an optional user-installed acpx target, for example acp:gemini
 agent: auto
 
@@ -116,12 +116,12 @@ ci_timeout: "4h"
 # Options: debug, info, warn, error
 log_level: info
 
-# Override agent binary paths (optional)
+# Override native agent binary paths (optional)
 # agent_path_override:
 #   claude: /usr/local/bin/claude
 #   codex: /opt/codex
 
-# Extra agent CLI flags (optional, global only)
+# Extra native agent CLI flags (optional, global only)
 # agent_args_override:
 #   codex:
 #     - -m
