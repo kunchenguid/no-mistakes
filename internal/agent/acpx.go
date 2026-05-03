@@ -134,6 +134,29 @@ type acpxSessionUpdate struct {
 	Content       json.RawMessage `json:"content"`
 	Text          string          `json:"text"`
 	Used          int             `json:"used"`
+	acpxUsageFields
+	Meta struct {
+		Usage acpxUsageFields `json:"usage"`
+	} `json:"_meta"`
+}
+
+type acpxUsageFields struct {
+	InputTokens                   int `json:"input_tokens"`
+	OutputTokens                  int `json:"output_tokens"`
+	CacheReadInputTokens          int `json:"cache_read_input_tokens"`
+	CacheReadTokens               int `json:"cache_read_tokens"`
+	CacheCreationInputTokens      int `json:"cache_creation_input_tokens"`
+	CacheWriteInputTokens         int `json:"cache_write_input_tokens"`
+	CacheWriteTokens              int `json:"cache_write_tokens"`
+	CachedInputTokens             int `json:"cached_input_tokens"`
+	InputTokensCamel              int `json:"inputTokens"`
+	OutputTokensCamel             int `json:"outputTokens"`
+	CacheReadInputTokensCamel     int `json:"cacheReadInputTokens"`
+	CacheCreationInputTokensCamel int `json:"cacheCreationInputTokens"`
+	CachedInputTokensCamel        int `json:"cachedInputTokens"`
+	CacheReadTokensCamel          int `json:"cacheReadTokens"`
+	CacheCreationTokensCamel      int `json:"cacheCreationTokens"`
+	CacheWriteTokensCamel         int `json:"cacheWriteTokens"`
 }
 
 func parseAcpxJSONEvents(ctx context.Context, r io.Reader, onChunk func(string), usage *TokenUsage) (string, string, error) {
@@ -168,9 +191,7 @@ func parseAcpxJSONEvents(ctx context.Context, r io.Reader, onChunk func(string),
 		update := msg.Params.Update
 		switch update.SessionUpdate {
 		case "usage_update":
-			if update.Used > usage.InputTokens {
-				usage.InputTokens = update.Used
-			}
+			*usage = acpxMaxUsage(*usage, acpxUpdateUsage(update))
 		case "agent_message_chunk":
 			text := acpxUpdateText(update)
 			if text == "" {
@@ -186,6 +207,63 @@ func parseAcpxJSONEvents(ctx context.Context, r io.Reader, onChunk func(string),
 		return "", stdoutErr, err
 	}
 	return output.String(), stdoutErr, nil
+}
+
+func acpxUpdateUsage(update acpxSessionUpdate) TokenUsage {
+	usage := acpxUsageFieldsToTokenUsage(update.acpxUsageFields)
+	metaUsage := acpxUsageFieldsToTokenUsage(update.Meta.Usage)
+	usage = acpxMaxUsage(usage, metaUsage)
+	if update.Used > usage.InputTokens {
+		usage.InputTokens = update.Used
+	}
+	return usage
+}
+
+func acpxUsageFieldsToTokenUsage(fields acpxUsageFields) TokenUsage {
+	return TokenUsage{
+		InputTokens: acpxFirstPositive(
+			fields.InputTokens,
+			fields.InputTokensCamel,
+		),
+		OutputTokens: acpxFirstPositive(
+			fields.OutputTokens,
+			fields.OutputTokensCamel,
+		),
+		CacheReadTokens: acpxFirstPositive(
+			fields.CacheReadInputTokens,
+			fields.CacheReadTokens,
+			fields.CachedInputTokens,
+			fields.CacheReadInputTokensCamel,
+			fields.CachedInputTokensCamel,
+			fields.CacheReadTokensCamel,
+		),
+		CacheCreationTokens: acpxFirstPositive(
+			fields.CacheCreationInputTokens,
+			fields.CacheWriteInputTokens,
+			fields.CacheWriteTokens,
+			fields.CacheCreationInputTokensCamel,
+			fields.CacheCreationTokensCamel,
+			fields.CacheWriteTokensCamel,
+		),
+	}
+}
+
+func acpxMaxUsage(a, b TokenUsage) TokenUsage {
+	return TokenUsage{
+		InputTokens:         max(a.InputTokens, b.InputTokens),
+		OutputTokens:        max(a.OutputTokens, b.OutputTokens),
+		CacheReadTokens:     max(a.CacheReadTokens, b.CacheReadTokens),
+		CacheCreationTokens: max(a.CacheCreationTokens, b.CacheCreationTokens),
+	}
+}
+
+func acpxFirstPositive(values ...int) int {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
 }
 
 func acpxUpdateText(update acpxSessionUpdate) string {

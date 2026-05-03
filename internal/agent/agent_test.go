@@ -106,6 +106,43 @@ exit 1
 	}
 }
 
+func TestParseAcpxJSONEventsParsesUsageFields(t *testing.T) {
+	events := strings.Join([]string{
+		`{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"usage_update","input_tokens":100,"output_tokens":50,"cache_read_input_tokens":30,"cache_creation_input_tokens":10}}}`,
+		`{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"usage_update","_meta":{"usage":{"inputTokens":120,"outputTokens":60,"cacheReadInputTokens":40,"cacheCreationInputTokens":15}}}}}`,
+		`{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"done"}}}}`,
+	}, "\n") + "\n"
+	var usage TokenUsage
+
+	text, stdoutErr, err := parseAcpxJSONEvents(context.Background(), strings.NewReader(events), nil, &usage)
+	if err != nil {
+		t.Fatalf("parseAcpxJSONEvents() error = %v", err)
+	}
+	if stdoutErr != "" {
+		t.Fatalf("stdout error = %q, want empty", stdoutErr)
+	}
+	if text != "done" {
+		t.Fatalf("text = %q, want done", text)
+	}
+	want := TokenUsage{InputTokens: 120, OutputTokens: 60, CacheReadTokens: 40, CacheCreationTokens: 15}
+	if usage != want {
+		t.Fatalf("usage = %+v, want %+v", usage, want)
+	}
+}
+
+func TestParseAcpxJSONEventsParsesCacheWriteUsageFields(t *testing.T) {
+	events := `{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"usage_update","input_tokens":5,"output_tokens":3,"cache_write_tokens":7}}}` + "\n"
+	var usage TokenUsage
+
+	_, _, err := parseAcpxJSONEvents(context.Background(), strings.NewReader(events), nil, &usage)
+	if err != nil {
+		t.Fatalf("parseAcpxJSONEvents() error = %v", err)
+	}
+	if usage.CacheCreationTokens != 7 {
+		t.Fatalf("cache creation tokens = %d, want 7", usage.CacheCreationTokens)
+	}
+}
+
 func TestACPAgentRunParsesAcpxJSONOutput(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell fixture is Unix-only")
