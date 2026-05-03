@@ -75,7 +75,7 @@ It does **not** change the pipeline order or the meaning of a passed gate.
 
 ## Binary resolution
 
-By default, `no-mistakes` resolves `agent: auto` by checking for supported agents on your `PATH` in this order:
+By default, `no-mistakes` resolves `agent: auto` by checking for supported native agents on your `PATH` in this order:
 
 1. `claude`
 2. `codex`
@@ -94,7 +94,7 @@ The default binary names are:
 | `pi` | `pi` |
 | `acp:<target>` | `acpx` |
 
-When the daemon is running through a managed service, that `PATH` comes from your login shell environment on macOS and Linux plus common user, Homebrew, and system binary directories. On Windows it reuses the current process environment instead of reloading a login shell. If agent discovery still does not resolve the binary you expect, use an explicit `agent_path_override`.
+When the daemon is running through a managed service, that `PATH` comes from your login shell environment on macOS and Linux plus common user, Homebrew, and system binary directories. On Windows it reuses the current process environment instead of reloading a login shell. If native agent discovery still does not resolve the binary you expect, use an explicit `agent_path_override`.
 
 Override paths in global config:
 
