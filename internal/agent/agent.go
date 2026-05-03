@@ -47,6 +47,12 @@ type TokenUsage struct {
 	CacheCreationTokens int
 }
 
+// Options configures backend-specific agent construction behavior.
+// ACPRegistryOverrides maps acpx target names to raw ACP agent commands.
+type Options struct {
+	ACPRegistryOverrides map[string]string
+}
+
 func finalizeTextResult(agentName, text string, schema json.RawMessage, usage TokenUsage) (*Result, error) {
 	if text == "" {
 		return nil, fmt.Errorf("%s returned no text output", agentName)
@@ -556,10 +562,23 @@ func (u *TokenUsage) Add(other TokenUsage) {
 	u.CacheCreationTokens += other.CacheCreationTokens
 }
 
-// New creates an agent by name with the given binary path. extraArgs are user
-// CLI flags (from agent_args_override in the global config) that the agent
-// injects into the underlying tool's argv ahead of no-mistakes' managed flags.
+// New creates an agent by name with the given binary path.
+// For native agents, extraArgs are user CLI flags from agent_args_override that
+// are injected into the underlying tool's argv ahead of no-mistakes' managed flags.
+// ACP agents ignore extraArgs; use NewWithOptions to provide registry overrides.
 func New(name types.AgentName, bin string, extraArgs []string) (Agent, error) {
+	return NewWithOptions(name, bin, extraArgs, Options{})
+}
+
+// NewWithOptions creates an agent by name with additional backend-specific options.
+func NewWithOptions(name types.AgentName, bin string, extraArgs []string, opts Options) (Agent, error) {
+	if target, ok := acpTarget(name); ok {
+		rawCommand := ""
+		if opts.ACPRegistryOverrides != nil {
+			rawCommand = opts.ACPRegistryOverrides[target]
+		}
+		return &acpxAgent{bin: bin, target: target, rawCommand: rawCommand}, nil
+	}
 	switch name {
 	case types.AgentClaude:
 		return &claudeAgent{bin: bin, extraArgs: extraArgs}, nil
@@ -572,8 +591,20 @@ func New(name types.AgentName, bin string, extraArgs []string) (Agent, error) {
 	case types.AgentPi:
 		return &piAgent{bin: bin, extraArgs: extraArgs}, nil
 	default:
-		return nil, fmt.Errorf("unknown agent %q; valid options: auto, claude, codex, rovodev, opencode, pi (set 'agent' in ~/.no-mistakes/config.yaml)", name)
+		return nil, fmt.Errorf("unknown agent %q; valid options: auto, claude, codex, rovodev, opencode, pi, acp:<target> (set 'agent' in ~/.no-mistakes/config.yaml)", name)
 	}
+}
+
+func acpTarget(name types.AgentName) (string, bool) {
+	value := string(name)
+	if !strings.HasPrefix(value, "acp:") {
+		return "", false
+	}
+	target := strings.TrimPrefix(value, "acp:")
+	if target == "" || strings.ContainsAny(target, " \t\r\n") {
+		return "", false
+	}
+	return target, true
 }
 
 // NewNoop returns an agent that does nothing. Used for demo mode where

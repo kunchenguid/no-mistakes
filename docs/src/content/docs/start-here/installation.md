@@ -47,13 +47,14 @@ make install
 ## Prerequisites
 
 - **git** - required
-- **One supported agent binary** - `claude`, `codex`, `acli` (Rovo Dev), `opencode`, or `pi`
+- **One supported agent binary** - `claude`, `codex`, `acli` (Rovo Dev), `opencode`, or `pi`, or a separately installed `acpx` binary for `agent: acp:<target>`
 - **Optional, for PRs and CI:**
   - `gh` CLI (GitHub)
   - `glab` CLI (GitLab)
   - `NO_MISTAKES_BITBUCKET_EMAIL` and `NO_MISTAKES_BITBUCKET_API_TOKEN` (Bitbucket Cloud)
 
-Run `no-mistakes doctor` to check what's installed.
+Run `no-mistakes doctor` to check native agents and provider tools.
+For ACP agents, verify `acpx` or `acpx_path` separately because `doctor` does not validate ACP targets.
 
 See [Provider Integration](/no-mistakes/guides/provider-integration/) for PR and CI setup per host.
 

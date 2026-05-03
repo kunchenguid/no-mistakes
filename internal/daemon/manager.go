@@ -303,7 +303,9 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 			return "", err
 		}
 		var agErr error
-		ag, agErr = agent.New(cfg.Agent, cfg.AgentPath(), cfg.AgentArgs())
+		ag, agErr = agent.NewWithOptions(cfg.Agent, cfg.AgentPath(), cfg.AgentArgs(), agent.Options{
+			ACPRegistryOverrides: cfg.ACPRegistryOverrides,
+		})
 		if agErr != nil {
 			m.db.UpdateRunError(run.ID, fmt.Sprintf("create agent: %s", agErr))
 			trackStartFailure("create_agent")

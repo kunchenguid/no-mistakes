@@ -105,9 +105,11 @@ Checks:
 - Data directory (`~/.no-mistakes/`)
 - SQLite database
 - Daemon status
-- Agent binaries: `claude`, `codex`, `acli`, `opencode`, `pi`
+- Native agent binaries: `claude`, `codex`, `acli`, `opencode`, `pi`
 
 Uses indicators: `✓` (available), `–` (not found, optional), `✗` (problem detected).
+
+`doctor` does not validate `acpx` or ACP targets. For `agent: acp:<target>`, verify `acpx_path` yourself.
 
 `doctor` currently checks `gh` availability only. For GitLab PR and CI steps, install and authenticate `glab`. For Bitbucket Cloud PR and CI steps, set `NO_MISTAKES_BITBUCKET_EMAIL` and `NO_MISTAKES_BITBUCKET_API_TOKEN`.
 

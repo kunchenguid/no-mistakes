@@ -1,7 +1,11 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -32,6 +36,194 @@ func TestNew_KnownAgents(t *testing.T) {
 				t.Errorf("expected name %q, got %q", tt.wantName, a.Name())
 			}
 		})
+	}
+}
+
+func TestNew_ACPAgent(t *testing.T) {
+	a, err := New("acp:gemini", "acpx", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if a.Name() != "acp:gemini" {
+		t.Errorf("name = %q, want acp:gemini", a.Name())
+	}
+}
+
+func TestNewWithOptions_ACPRegistryOverride(t *testing.T) {
+	a, err := NewWithOptions("acp:local-gemini", "acpx", nil, Options{
+		ACPRegistryOverrides: map[string]string{"local-gemini": "node /tmp/mock-acp.mjs"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	acpx, ok := a.(*acpxAgent)
+	if !ok {
+		t.Fatalf("agent type = %T, want *acpxAgent", a)
+	}
+	args := acpx.buildArgs(RunOpts{Prompt: "do work", CWD: "/repo"})
+	joined := strings.Join(args, "\x00")
+	if !strings.Contains(joined, "--agent\x00node /tmp/mock-acp.mjs") {
+		t.Fatalf("args = %q, want raw --agent override", args)
+	}
+	if strings.Contains(joined, "\x00local-gemini\x00") {
+		t.Fatalf("args = %q, should not include target subcommand when override is used", args)
+	}
+}
+
+func TestACPAgentBuildArgsUsesExecMode(t *testing.T) {
+	a := &acpxAgent{target: "gemini"}
+	args := a.buildArgs(RunOpts{Prompt: "do work"})
+
+	if got, want := args[len(args)-3:], []string{"gemini", "exec", "do work"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("trailing args = %q, want %q", got, want)
+	}
+}
+
+func TestACPAgentRunReportsJSONRPCErrorMessage(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture is Unix-only")
+	}
+	dir := t.TempDir()
+	script := filepath.Join(dir, "acpx")
+	contents := `#!/bin/sh
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"not authenticated"}}'
+exit 1
+`
+	if err := os.WriteFile(script, []byte(contents), 0o755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	a, err := New("acp:gemini", script, nil)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	_, err = a.Run(context.Background(), RunOpts{Prompt: "do work", CWD: dir})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "not authenticated") {
+		t.Fatalf("error = %v, want JSON-RPC error message", err)
+	}
+}
+
+func TestParseAcpxJSONEventsParsesUsageFields(t *testing.T) {
+	events := strings.Join([]string{
+		`{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"usage_update","input_tokens":100,"output_tokens":50,"cache_read_input_tokens":30,"cache_creation_input_tokens":10}}}`,
+		`{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"usage_update","_meta":{"usage":{"inputTokens":120,"outputTokens":60,"cacheReadInputTokens":40,"cacheCreationInputTokens":15}}}}}`,
+		`{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"done"}}}}`,
+	}, "\n") + "\n"
+	var usage TokenUsage
+
+	text, stdoutErr, err := parseAcpxJSONEvents(context.Background(), strings.NewReader(events), nil, &usage)
+	if err != nil {
+		t.Fatalf("parseAcpxJSONEvents() error = %v", err)
+	}
+	if stdoutErr != "" {
+		t.Fatalf("stdout error = %q, want empty", stdoutErr)
+	}
+	if text != "done" {
+		t.Fatalf("text = %q, want done", text)
+	}
+	want := TokenUsage{InputTokens: 120, OutputTokens: 60, CacheReadTokens: 40, CacheCreationTokens: 15}
+	if usage != want {
+		t.Fatalf("usage = %+v, want %+v", usage, want)
+	}
+}
+
+func TestParseAcpxJSONEventsParsesCacheWriteUsageFields(t *testing.T) {
+	events := `{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"usage_update","input_tokens":5,"output_tokens":3,"cache_write_tokens":7}}}` + "\n"
+	var usage TokenUsage
+
+	_, _, err := parseAcpxJSONEvents(context.Background(), strings.NewReader(events), nil, &usage)
+	if err != nil {
+		t.Fatalf("parseAcpxJSONEvents() error = %v", err)
+	}
+	if usage.CacheCreationTokens != 7 {
+		t.Fatalf("cache creation tokens = %d, want 7", usage.CacheCreationTokens)
+	}
+}
+
+func TestParseAcpxJSONEventsParsesNormalizedCachedUsageFields(t *testing.T) {
+	events := `{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"usage_update","inputTokens":5,"outputTokens":3,"cachedReadTokens":11,"cachedWriteTokens":13}}}` + "\n"
+	var usage TokenUsage
+
+	_, _, err := parseAcpxJSONEvents(context.Background(), strings.NewReader(events), nil, &usage)
+	if err != nil {
+		t.Fatalf("parseAcpxJSONEvents() error = %v", err)
+	}
+	want := TokenUsage{InputTokens: 5, OutputTokens: 3, CacheReadTokens: 11, CacheCreationTokens: 13}
+	if usage != want {
+		t.Fatalf("usage = %+v, want %+v", usage, want)
+	}
+}
+
+func TestParseAcpxJSONEventsParsesResultUsage(t *testing.T) {
+	events := `{"jsonrpc":"2.0","id":1,"result":{"usage":{"input_tokens":21,"output_tokens":8,"cachedReadTokens":5,"cachedWriteTokens":2}}}` + "\n"
+	var usage TokenUsage
+
+	_, _, err := parseAcpxJSONEvents(context.Background(), strings.NewReader(events), nil, &usage)
+	if err != nil {
+		t.Fatalf("parseAcpxJSONEvents() error = %v", err)
+	}
+	want := TokenUsage{InputTokens: 21, OutputTokens: 8, CacheReadTokens: 5, CacheCreationTokens: 2}
+	if usage != want {
+		t.Fatalf("usage = %+v, want %+v", usage, want)
+	}
+}
+
+func TestACPAgentRunParsesAcpxJSONOutput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture is Unix-only")
+	}
+	dir := t.TempDir()
+	script := filepath.Join(dir, "acpx")
+	argLog := filepath.Join(dir, "args.txt")
+	t.Setenv("ARG_LOG", argLog)
+	contents := `#!/bin/sh
+printf '%s\n' "$@" > "$ARG_LOG"
+printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"usage_update","used":123,"size":1000}}}'
+printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"{\"done\":true}"}}}}'
+`
+	if err := os.WriteFile(script, []byte(contents), 0o755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	a, err := New("acp:gemini", script, nil)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	var chunks []string
+	result, err := a.Run(context.Background(), RunOpts{
+		Prompt:     "do work",
+		CWD:        dir,
+		JSONSchema: json.RawMessage(`{"type":"object"}`),
+		OnChunk:    func(text string) { chunks = append(chunks, text) },
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	var output map[string]bool
+	if err := json.Unmarshal(result.Output, &output); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+	if !output["done"] {
+		t.Fatalf("output = %s, want done true", string(result.Output))
+	}
+	if result.Usage.InputTokens != 123 {
+		t.Errorf("input tokens = %d, want 123", result.Usage.InputTokens)
+	}
+	if len(chunks) != 1 || chunks[0] != `{"done":true}` {
+		t.Errorf("chunks = %q", chunks)
+	}
+	argsData, err := os.ReadFile(argLog)
+	if err != nil {
+		t.Fatalf("read args: %v", err)
+	}
+	argsText := string(argsData)
+	for _, want := range []string{"--cwd\n" + dir, "--format\njson", "--json-strict", "gemini", "do work"} {
+		if !strings.Contains(argsText, want) {
+			t.Errorf("args missing %q in:\n%s", want, argsText)
+		}
 	}
 }
 

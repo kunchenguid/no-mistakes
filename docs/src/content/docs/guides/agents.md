@@ -5,7 +5,7 @@ description: Supported AI agents, how to pick one, and how they integrate.
 
 `no-mistakes` is agent-agnostic by design. The gate should mean the same thing
 regardless of which agent you prefer. The default `agent: auto` setting picks
-the first supported agent available on your system.
+the first supported native agent available on your system.
 
 The agent is responsible for the parts of the gate that benefit from judgment:
 code review, test or lint detection when you have not configured explicit
@@ -30,6 +30,7 @@ commands are still the strongest way to make the gate predictable.
 | Rovo Dev | `acli` | Persistent HTTP server, SSE streaming |
 | OpenCode | `opencode` | Persistent HTTP server, SSE streaming |
 | Pi | `pi` | Subprocess per invocation, JSONL events |
+| ACP target | `acpx` | Optional user-installed ACP bridge |
 
 ## Setting the agent
 
@@ -49,6 +50,18 @@ agent: codex
 
 Repo config takes precedence over global config.
 
+### Optional ACP target
+
+If you install `acpx` separately, you can opt into any ACP target with the `acp:` prefix.
+
+```yaml
+# ~/.no-mistakes/config.yaml or .no-mistakes.yaml
+agent: acp:gemini
+```
+
+`agent: auto` only probes native agents.
+It does not auto-select ACP targets.
+
 ## Where agent choice matters most
 
 Changing agents most directly affects:
@@ -62,7 +75,7 @@ It does **not** change the pipeline order or the meaning of a passed gate.
 
 ## Binary resolution
 
-By default, `no-mistakes` resolves `agent: auto` by checking for supported agents on your `PATH` in this order:
+By default, `no-mistakes` resolves `agent: auto` by checking for supported native agents on your `PATH` in this order:
 
 1. `claude`
 2. `codex`
@@ -79,8 +92,9 @@ The default binary names are:
 | `rovodev` | `acli` |
 | `opencode` | `opencode` |
 | `pi` | `pi` |
+| `acp:<target>` | `acpx` |
 
-When the daemon is running through a managed service, that `PATH` comes from your login shell environment on macOS and Linux plus common user, Homebrew, and system binary directories. On Windows it reuses the current process environment instead of reloading a login shell. If agent discovery still does not resolve the binary you expect, use an explicit `agent_path_override`.
+When the daemon is running through a managed service, that `PATH` comes from your login shell environment on macOS and Linux plus common user, Homebrew, and system binary directories. On Windows it reuses the current process environment instead of reloading a login shell. If native agent discovery still does not resolve the binary you expect, use an explicit `agent_path_override`.
 
 Override paths in global config:
 
@@ -93,7 +107,13 @@ agent_path_override:
   pi: /usr/local/bin/pi
 ```
 
-You can also set extra agent-specific CLI flags in global config with
+For ACP targets, set `acpx_path` instead of `agent_path_override`:
+
+```yaml
+acpx_path: /Users/you/bin/acpx
+```
+
+You can also set extra CLI flags for native agents in global config with
 `agent_args_override`. This is useful for things like model selection,
 reasoning level, or permission mode. Keep this in global config only, since it
 reflects your local agent setup rather than repo policy.
@@ -138,9 +158,25 @@ Any `agent_args_override.pi` flags are inserted before no-mistakes' managed flag
 Reads JSONL events from stdout and streams incremental text deltas to the TUI.
 When structured output is requested, no-mistakes injects the JSON schema into the prompt and validates the final text response.
 
+## ACP via acpx
+
+ACP support is optional and requires a separately installed `acpx` binary.
+Use `agent: acp:<target>` to run a target known to acpx, for example `agent: acp:gemini`.
+
+For custom ACP target commands, define a global override:
+
+```yaml
+agent: acp:local-gemini
+acp_registry_overrides:
+  local-gemini: node /opt/mock-acp-agent.mjs
+```
+
+no-mistakes invokes acpx with JSON output, approve-all permissions, denied non-interactive permission prompts, and the repo worktree as `--cwd`.
+Structured output is handled by appending the requested JSON schema to the prompt and validating the final assistant text.
+
 ## Checking agent availability
 
-Run `no-mistakes doctor` to see which agent binaries are installed and available:
+Run `no-mistakes doctor` to see which native agent binaries are installed and available:
 
 ```
 $ no-mistakes doctor
@@ -157,3 +193,6 @@ $ no-mistakes doctor
 ```
 
 `✓` = available, `–` = not found (optional), `✗` = problem detected.
+
+For `agent: acp:<target>`, make sure `acpx` is installed on `PATH` or set `acpx_path` in global config.
+`no-mistakes doctor` does not validate ACP targets.

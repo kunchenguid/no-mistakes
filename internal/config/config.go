@@ -18,23 +18,27 @@ import (
 
 // GlobalConfig represents ~/.no-mistakes/config.yaml.
 type GlobalConfig struct {
-	Agent             types.AgentName     `yaml:"agent"`
-	AgentPathOverride map[string]string   `yaml:"agent_path_override"`
-	AgentArgsOverride map[string][]string `yaml:"agent_args_override"`
-	CITimeout         time.Duration       `yaml:"-"`
-	LogLevel          string              `yaml:"log_level"`
-	AutoFix           AutoFixRaw
+	Agent                types.AgentName     `yaml:"agent"`
+	ACPXPath             string              `yaml:"acpx_path"`
+	ACPRegistryOverrides map[string]string   `yaml:"acp_registry_overrides"`
+	AgentPathOverride    map[string]string   `yaml:"agent_path_override"`
+	AgentArgsOverride    map[string][]string `yaml:"agent_args_override"`
+	CITimeout            time.Duration       `yaml:"-"`
+	LogLevel             string              `yaml:"log_level"`
+	AutoFix              AutoFixRaw
 }
 
 // globalConfigRaw is the on-disk YAML representation with duration as string.
 type globalConfigRaw struct {
-	Agent             types.AgentName     `yaml:"agent"`
-	AgentPathOverride map[string]string   `yaml:"agent_path_override"`
-	AgentArgsOverride map[string][]string `yaml:"agent_args_override"`
-	CITimeout         string              `yaml:"ci_timeout"`
-	BabysitTimeout    string              `yaml:"babysit_timeout"`
-	LogLevel          string              `yaml:"log_level"`
-	AutoFix           AutoFixRaw          `yaml:"auto_fix"`
+	Agent                types.AgentName     `yaml:"agent"`
+	ACPXPath             string              `yaml:"acpx_path"`
+	ACPRegistryOverrides map[string]string   `yaml:"acp_registry_overrides"`
+	AgentPathOverride    map[string]string   `yaml:"agent_path_override"`
+	AgentArgsOverride    map[string][]string `yaml:"agent_args_override"`
+	CITimeout            string              `yaml:"ci_timeout"`
+	BabysitTimeout       string              `yaml:"babysit_timeout"`
+	LogLevel             string              `yaml:"log_level"`
+	AutoFix              AutoFixRaw          `yaml:"auto_fix"`
 }
 
 // RepoConfig represents .no-mistakes.yaml in a repo root.
@@ -77,23 +81,33 @@ type AutoFix struct {
 
 // Config is the merged result of global + per-repo configuration.
 type Config struct {
-	Agent             types.AgentName
-	AgentPathOverride map[string]string
-	AgentArgsOverride map[string][]string
-	CITimeout         time.Duration
-	LogLevel          string
-	Commands          Commands
-	IgnorePatterns    []string
-	AutoFix           AutoFix
+	Agent                types.AgentName
+	ACPXPath             string
+	ACPRegistryOverrides map[string]string
+	AgentPathOverride    map[string]string
+	AgentArgsOverride    map[string][]string
+	CITimeout            time.Duration
+	LogLevel             string
+	Commands             Commands
+	IgnorePatterns       []string
+	AutoFix              AutoFix
 }
 
 // defaultConfigYAML is the template written when no global config file exists.
 const defaultConfigYAML = `# no-mistakes global configuration
 
 # Agent to use for code generation
-# Options: auto, claude, codex, rovodev, opencode, pi
-# "auto" detects the first available agent on your system
+# Options: auto, claude, codex, rovodev, opencode, pi, acp:<target>
+# "auto" detects the first available native agent on your system
+# Use acp:<target> to run an optional user-installed acpx target, for example acp:gemini
 agent: auto
+
+# Optional path to the user-installed acpx binary for acp:<target> agents
+# acpx_path: acpx
+
+# Optional ACP target command overrides for acp:<target> agents
+# acp_registry_overrides:
+#   local-gemini: node /opt/mock-acp-agent.mjs
 
 # Maximum time to monitor CI before timing out
 ci_timeout: "4h"
@@ -102,12 +116,12 @@ ci_timeout: "4h"
 # Options: debug, info, warn, error
 log_level: info
 
-# Override agent binary paths (optional)
+# Override native agent binary paths (optional)
 # agent_path_override:
 #   claude: /usr/local/bin/claude
 #   codex: /opt/codex
 
-# Extra agent CLI flags (optional, global only)
+# Extra native agent CLI flags (optional, global only)
 # agent_args_override:
 #   codex:
 #     - -m
@@ -139,6 +153,15 @@ var agentProbeOrder = []types.AgentName{
 	types.AgentOpenCode,
 	types.AgentRovoDev,
 	types.AgentPi,
+}
+
+func isACPAgent(name types.AgentName) bool {
+	value := string(name)
+	if !strings.HasPrefix(value, "acp:") {
+		return false
+	}
+	target := strings.TrimPrefix(value, "acp:")
+	return target != "" && !strings.ContainsAny(target, " \t\r\n")
 }
 
 var probeRovoDevSupport = func(ctx context.Context, bin string) (bool, error) {
@@ -209,9 +232,16 @@ func (c *Config) ResolveAgent(ctx context.Context, lookPath func(string) (string
 	return fmt.Errorf("no supported agent found in PATH (looked for: %s); install one or set 'agent' in ~/.no-mistakes/config.yaml", strings.Join(probed, ", "))
 }
 
-// AgentPath returns the binary path for the configured agent,
-// using agent_path_override if set, otherwise the default binary name.
+// AgentPath returns the binary path for the configured agent.
+// ACP agents use acpx_path if set, otherwise acpx.
+// Native agents use agent_path_override if set, otherwise the default binary name.
 func (c *Config) AgentPath() string {
+	if isACPAgent(c.Agent) {
+		if c.ACPXPath != "" {
+			return c.ACPXPath
+		}
+		return "acpx"
+	}
 	if c.AgentPathOverride != nil {
 		if p, ok := c.AgentPathOverride[string(c.Agent)]; ok {
 			return p
@@ -223,7 +253,7 @@ func (c *Config) AgentPath() string {
 	return string(c.Agent)
 }
 
-// AgentArgs returns extra CLI args for the configured agent, as declared in
+// AgentArgs returns extra CLI args for the configured native agent, as declared in
 // agent_args_override. Returns nil when no override is set for this agent.
 func (c *Config) AgentArgs() []string {
 	if c.AgentArgsOverride == nil {
@@ -232,7 +262,7 @@ func (c *Config) AgentArgs() []string {
 	return c.AgentArgsOverride[string(c.Agent)]
 }
 
-// agentArgsOverrideAgents lists agent names accepted as keys in
+// agentArgsOverrideAgents lists native agent names accepted as keys in
 // agent_args_override.
 var agentArgsOverrideAgents = map[string]bool{
 	string(types.AgentClaude):   true,
@@ -341,6 +371,12 @@ func LoadGlobal(path string) (*GlobalConfig, error) {
 
 	if raw.Agent != "" {
 		cfg.Agent = raw.Agent
+	}
+	if raw.ACPXPath != "" {
+		cfg.ACPXPath = raw.ACPXPath
+	}
+	if raw.ACPRegistryOverrides != nil {
+		cfg.ACPRegistryOverrides = raw.ACPRegistryOverrides
 	}
 	if raw.AgentPathOverride != nil {
 		cfg.AgentPathOverride = raw.AgentPathOverride
@@ -477,14 +513,16 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 	applyAutoFixOverrides(&af, &repo.AutoFix)
 
 	cfg := &Config{
-		Agent:             global.Agent,
-		AgentPathOverride: global.AgentPathOverride,
-		AgentArgsOverride: global.AgentArgsOverride,
-		CITimeout:         global.CITimeout,
-		LogLevel:          global.LogLevel,
-		Commands:          repo.Commands,
-		IgnorePatterns:    repo.IgnorePatterns,
-		AutoFix:           af,
+		Agent:                global.Agent,
+		ACPXPath:             global.ACPXPath,
+		ACPRegistryOverrides: global.ACPRegistryOverrides,
+		AgentPathOverride:    global.AgentPathOverride,
+		AgentArgsOverride:    global.AgentArgsOverride,
+		CITimeout:            global.CITimeout,
+		LogLevel:             global.LogLevel,
+		Commands:             repo.Commands,
+		IgnorePatterns:       repo.IgnorePatterns,
+		AutoFix:              af,
 	}
 
 	if repo.Agent != "" {
