@@ -120,6 +120,9 @@ func buildACPStructuredPrompt(prompt string, schema json.RawMessage) string {
 type acpxJSONMessage struct {
 	Method string         `json:"method"`
 	Error  *acpxJSONError `json:"error"`
+	Result struct {
+		Usage acpxUsageFields `json:"usage"`
+	} `json:"result"`
 	Params struct {
 		Update acpxSessionUpdate `json:"update"`
 	} `json:"params"`
@@ -186,6 +189,7 @@ func parseAcpxJSONEvents(ctx context.Context, r io.Reader, onChunk func(string),
 		if msg.Error != nil && msg.Error.Message != "" && stdoutErr == "" {
 			stdoutErr = msg.Error.Message
 		}
+		*usage = acpxMaxUsage(*usage, acpxUsageFieldsToTokenUsage(msg.Result.Usage))
 		if msg.Method != "session/update" {
 			continue
 		}

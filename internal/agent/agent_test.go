@@ -157,6 +157,20 @@ func TestParseAcpxJSONEventsParsesNormalizedCachedUsageFields(t *testing.T) {
 	}
 }
 
+func TestParseAcpxJSONEventsParsesResultUsage(t *testing.T) {
+	events := `{"jsonrpc":"2.0","id":1,"result":{"usage":{"input_tokens":21,"output_tokens":8,"cachedReadTokens":5,"cachedWriteTokens":2}}}` + "\n"
+	var usage TokenUsage
+
+	_, _, err := parseAcpxJSONEvents(context.Background(), strings.NewReader(events), nil, &usage)
+	if err != nil {
+		t.Fatalf("parseAcpxJSONEvents() error = %v", err)
+	}
+	want := TokenUsage{InputTokens: 21, OutputTokens: 8, CacheReadTokens: 5, CacheCreationTokens: 2}
+	if usage != want {
+		t.Fatalf("usage = %+v, want %+v", usage, want)
+	}
+}
+
 func TestACPAgentRunParsesAcpxJSONOutput(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell fixture is Unix-only")
