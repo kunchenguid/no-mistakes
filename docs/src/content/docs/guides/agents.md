@@ -5,7 +5,7 @@ description: Supported AI agents, how to pick one, and how they integrate.
 
 `no-mistakes` is agent-agnostic by design. The gate should mean the same thing
 regardless of which agent you prefer. The default `agent: auto` setting picks
-the first supported agent available on your system.
+the first supported native agent available on your system.
 
 The agent is responsible for the parts of the gate that benefit from judgment:
 code review, test or lint detection when you have not configured explicit
@@ -113,7 +113,7 @@ For ACP targets, set `acpx_path` instead of `agent_path_override`:
 acpx_path: /Users/you/bin/acpx
 ```
 
-You can also set extra agent-specific CLI flags in global config with
+You can also set extra CLI flags for native agents in global config with
 `agent_args_override`. This is useful for things like model selection,
 reasoning level, or permission mode. Keep this in global config only, since it
 reflects your local agent setup rather than repo policy.

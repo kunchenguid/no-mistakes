@@ -4,7 +4,7 @@ description: Global and per-repo configuration options.
 ---
 
 Configuration is optional. Without any config files, `no-mistakes` defaults to
-`agent: auto`, which picks the first supported agent available on your system,
+`agent: auto`, which picks the first supported native agent available on your system,
 with sensible defaults for everything else.
 
 The goal is not to make you configure a mini CI system. The default path should
@@ -47,7 +47,7 @@ Everything else can usually wait.
 # ~/.no-mistakes/config.yaml
 
 # Default agent for all repos and setup-wizard suggestions.
-# "auto" picks the first available agent on PATH.
+# "auto" picks the first available native agent on PATH.
 agent: auto  # auto | claude | codex | rovodev | opencode | pi | acp:<target>
 
 # Optional acpx path and target command overrides for agent: acp:<target>.

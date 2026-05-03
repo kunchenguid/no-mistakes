@@ -53,7 +53,7 @@ Default agent for all repos and setup-wizard suggestions. Can be overridden per-
 | Values | `auto`, `claude`, `codex`, `rovodev`, `opencode`, `pi`, `acp:<target>` |
 | Default | `auto` |
 
-`auto` resolves to the first supported agent found on `PATH` in this order: `claude`, `codex`, `opencode`, `acli` with `rovodev` support, then `pi`.
+`auto` resolves to the first supported native agent found on `PATH` in this order: `claude`, `codex`, `opencode`, `acli` with `rovodev` support, then `pi`.
 `acp:<target>` uses the user-installed `acpx` binary to run an ACP target, for example `acp:gemini`.
 ACP agents are opt-in and are not considered by `agent: auto`.
 

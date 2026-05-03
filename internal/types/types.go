@@ -126,6 +126,7 @@ const (
 )
 
 // AgentName identifies a supported agent backend.
+// ACP agent names use dynamic acp:<target> values instead of constants.
 type AgentName string
 
 const (

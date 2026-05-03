@@ -253,7 +253,7 @@ func (c *Config) AgentPath() string {
 	return string(c.Agent)
 }
 
-// AgentArgs returns extra CLI args for the configured agent, as declared in
+// AgentArgs returns extra CLI args for the configured native agent, as declared in
 // agent_args_override. Returns nil when no override is set for this agent.
 func (c *Config) AgentArgs() []string {
 	if c.AgentArgsOverride == nil {
@@ -262,7 +262,7 @@ func (c *Config) AgentArgs() []string {
 	return c.AgentArgsOverride[string(c.Agent)]
 }
 
-// agentArgsOverrideAgents lists agent names accepted as keys in
+// agentArgsOverrideAgents lists native agent names accepted as keys in
 // agent_args_override.
 var agentArgsOverrideAgents = map[string]bool{
 	string(types.AgentClaude):   true,
