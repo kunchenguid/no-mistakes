@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.12.0](https://github.com/kunchenguid/no-mistakes/compare/v1.11.0...v1.12.0) (2026-05-03)
+
+
+### Features
+
+* **agent:** add ACP target support via acpx ([#165](https://github.com/kunchenguid/no-mistakes/issues/165)) ([e6db093](https://github.com/kunchenguid/no-mistakes/commit/e6db09381ca1d64725427006ea960bc1ea827b15))
+
 ## [1.11.0](https://github.com/kunchenguid/no-mistakes/compare/v1.10.8...v1.11.0) (2026-04-30)
 
 
