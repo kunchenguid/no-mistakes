@@ -24,7 +24,7 @@ no-mistakes doctor
 You need:
 
 - `git`
-- One supported agent binary (`claude`, `codex`, `acli` for Rovo Dev, `opencode`, or `pi`)
+- One supported agent binary (`claude`, `codex`, `acli` for Rovo Dev, `opencode`, or `pi`), or a separately installed `acpx` binary for `agent: acp:<target>`
 - For PRs and CI: `gh` (GitHub), `glab` (GitLab), or Bitbucket Cloud credentials
 
 See [Provider Integration](/no-mistakes/guides/provider-integration/) for PR/CI setup.

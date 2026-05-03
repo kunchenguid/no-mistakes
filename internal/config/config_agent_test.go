@@ -44,6 +44,24 @@ func TestAgentPath_DefaultBinaries(t *testing.T) {
 	}
 }
 
+func TestAgentPath_ACPUsesAcpxPath(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  *Config
+		want string
+	}{
+		{name: "default", cfg: &Config{Agent: "acp:gemini"}, want: "acpx"},
+		{name: "override", cfg: &Config{Agent: "acp:gemini", ACPXPath: "/opt/bin/acpx"}, want: "/opt/bin/acpx"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.cfg.AgentPath(); got != tt.want {
+				t.Errorf("AgentPath() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestParseLogLevel(t *testing.T) {
 	tests := []struct {
 		input string
@@ -77,6 +95,46 @@ func TestResolveAgent_ExplicitAgent(t *testing.T) {
 	}
 	if cfg.Agent != types.AgentCodex {
 		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentCodex)
+	}
+}
+
+func TestResolveAgent_ExplicitACPAgent(t *testing.T) {
+	cfg := &Config{Agent: "acp:gemini"}
+	err := cfg.ResolveAgent(context.Background(), func(string) (string, error) {
+		t.Fatal("lookPath should not be called for explicit acp agent")
+		return "", nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Agent != "acp:gemini" {
+		t.Errorf("agent = %q, want %q", cfg.Agent, "acp:gemini")
+	}
+}
+
+func TestLoadGlobal_ACPConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	data := []byte(`agent: acp:gemini
+acpx_path: /opt/bin/acpx
+acp_registry_overrides:
+  local-gemini: node /tmp/mock-acp.mjs
+`)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadGlobal(path)
+	if err != nil {
+		t.Fatalf("LoadGlobal() error = %v", err)
+	}
+	if cfg.Agent != "acp:gemini" {
+		t.Errorf("agent = %q, want acp:gemini", cfg.Agent)
+	}
+	if cfg.ACPXPath != "/opt/bin/acpx" {
+		t.Errorf("ACPXPath = %q, want /opt/bin/acpx", cfg.ACPXPath)
+	}
+	if got := cfg.ACPRegistryOverrides["local-gemini"]; got != "node /tmp/mock-acp.mjs" {
+		t.Errorf("ACPRegistryOverrides[local-gemini] = %q", got)
 	}
 }
 

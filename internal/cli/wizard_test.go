@@ -116,6 +116,7 @@ func TestWizardAgentSuggester_ForwardsAgentArgsOverride(t *testing.T) {
 		gotName types.AgentName
 		gotBin  string
 		gotArgs []string
+		gotOpts agent.Options
 	)
 	suggester := newWizardAgentSuggester(
 		&config.Config{
@@ -126,10 +127,11 @@ func TestWizardAgentSuggester_ForwardsAgentArgsOverride(t *testing.T) {
 		},
 		"/tmp/repo",
 		func(context.Context, *config.Config) error { return nil },
-		func(name types.AgentName, bin string, args []string) (agent.Agent, error) {
+		func(name types.AgentName, bin string, args []string, opts agent.Options) (agent.Agent, error) {
 			gotName = name
 			gotBin = bin
 			gotArgs = append([]string(nil), args...)
+			gotOpts = opts
 			return &fakeSuggesterAgent{}, nil
 		},
 	)
@@ -146,6 +148,33 @@ func TestWizardAgentSuggester_ForwardsAgentArgsOverride(t *testing.T) {
 	}
 	if want := []string{"--permission-mode", "acceptEdits"}; !reflect.DeepEqual(gotArgs, want) {
 		t.Fatalf("new agent args = %v, want %v", gotArgs, want)
+	}
+	if gotOpts.ACPRegistryOverrides != nil {
+		t.Fatalf("new agent options = %+v, want zero options", gotOpts)
+	}
+}
+
+func TestWizardAgentSuggester_ForwardsACPRegistryOverrides(t *testing.T) {
+	var gotOpts agent.Options
+	suggester := newWizardAgentSuggester(
+		&config.Config{
+			Agent:                "acp:local-gemini",
+			ACPRegistryOverrides: map[string]string{"local-gemini": "node /tmp/mock-acp.mjs"},
+		},
+		"/tmp/repo",
+		func(context.Context, *config.Config) error { return nil },
+		func(_ types.AgentName, _ string, _ []string, opts agent.Options) (agent.Agent, error) {
+			gotOpts = opts
+			return &fakeSuggesterAgent{}, nil
+		},
+	)
+	defer suggester.Close()
+
+	if err := suggester.ensure(context.Background()); err != nil {
+		t.Fatalf("ensure failed: %v", err)
+	}
+	if got := gotOpts.ACPRegistryOverrides["local-gemini"]; got != "node /tmp/mock-acp.mjs" {
+		t.Fatalf("ACPRegistryOverrides[local-gemini] = %q", got)
 	}
 }
 
@@ -220,7 +249,7 @@ func newFakeSuggester(t *testing.T, ag *fakeSuggesterAgent) *wizardAgentSuggeste
 		&config.Config{Agent: types.AgentClaude},
 		"/tmp/repo",
 		func(context.Context, *config.Config) error { return nil },
-		func(types.AgentName, string, []string) (agent.Agent, error) { return ag, nil },
+		func(types.AgentName, string, []string, agent.Options) (agent.Agent, error) { return ag, nil },
 	)
 }
 
@@ -341,7 +370,7 @@ func TestWizardAgentSuggester_EmptyRetryClearsCachedCommit(t *testing.T) {
 		&config.Config{Agent: types.AgentClaude},
 		"/tmp/repo",
 		func(context.Context, *config.Config) error { return nil },
-		func(types.AgentName, string, []string) (agent.Agent, error) { return ag, nil },
+		func(types.AgentName, string, []string, agent.Options) (agent.Agent, error) { return ag, nil },
 	)
 	defer s.Close()
 

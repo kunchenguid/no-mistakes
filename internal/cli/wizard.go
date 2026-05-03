@@ -30,7 +30,7 @@ var resolveWizardAgent = func(ctx context.Context, cfg *config.Config) error {
 // alt screen and the handoff to the attach TUI is seamless.
 type waitForRunFunc func(ctx context.Context, branch string) error
 
-var newWizardAgent = agent.New
+var newWizardAgent = agent.NewWithOptions
 var wizardRun = wizard.Run
 var wizardRunAuto = wizard.RunAuto
 var runWizardAutoVisible = func(ctx context.Context, p *paths.Paths, state *repoState, wait waitForRunFunc) (wizard.Result, error) {
@@ -44,7 +44,7 @@ type wizardAgentSuggester struct {
 	cfg     *config.Config
 	workDir string
 	resolve func(context.Context, *config.Config) error
-	new     func(types.AgentName, string, []string) (agent.Agent, error)
+	new     func(types.AgentName, string, []string, agent.Options) (agent.Agent, error)
 
 	once sync.Once
 	ag   agent.Agent
@@ -57,7 +57,7 @@ type wizardAgentSuggester struct {
 	cachedCommit string
 }
 
-func newWizardAgentSuggester(cfg *config.Config, workDir string, resolve func(context.Context, *config.Config) error, new func(types.AgentName, string, []string) (agent.Agent, error)) *wizardAgentSuggester {
+func newWizardAgentSuggester(cfg *config.Config, workDir string, resolve func(context.Context, *config.Config) error, new func(types.AgentName, string, []string, agent.Options) (agent.Agent, error)) *wizardAgentSuggester {
 	if resolve == nil {
 		resolve = resolveWizardAgent
 	}
@@ -73,7 +73,9 @@ func (s *wizardAgentSuggester) ensure(ctx context.Context) error {
 			s.err = fmt.Errorf("resolve agent: %w", err)
 			return
 		}
-		ag, err := s.new(s.cfg.Agent, s.cfg.AgentPath(), s.cfg.AgentArgs())
+		ag, err := s.new(s.cfg.Agent, s.cfg.AgentPath(), s.cfg.AgentArgs(), agent.Options{
+			ACPRegistryOverrides: s.cfg.ACPRegistryOverrides,
+		})
 		if err != nil {
 			s.err = fmt.Errorf("create agent: %w", err)
 			return

@@ -30,6 +30,7 @@ commands are still the strongest way to make the gate predictable.
 | Rovo Dev | `acli` | Persistent HTTP server, SSE streaming |
 | OpenCode | `opencode` | Persistent HTTP server, SSE streaming |
 | Pi | `pi` | Subprocess per invocation, JSONL events |
+| ACP target | `acpx` | Optional user-installed ACP bridge |
 
 ## Setting the agent
 
@@ -48,6 +49,18 @@ agent: codex
 ```
 
 Repo config takes precedence over global config.
+
+### Optional ACP target
+
+If you install `acpx` separately, you can opt into any ACP target with the `acp:` prefix.
+
+```yaml
+# ~/.no-mistakes/config.yaml or .no-mistakes.yaml
+agent: acp:gemini
+```
+
+`agent: auto` only probes native agents.
+It does not auto-select ACP targets.
 
 ## Where agent choice matters most
 
@@ -79,6 +92,7 @@ The default binary names are:
 | `rovodev` | `acli` |
 | `opencode` | `opencode` |
 | `pi` | `pi` |
+| `acp:<target>` | `acpx` |
 
 When the daemon is running through a managed service, that `PATH` comes from your login shell environment on macOS and Linux plus common user, Homebrew, and system binary directories. On Windows it reuses the current process environment instead of reloading a login shell. If agent discovery still does not resolve the binary you expect, use an explicit `agent_path_override`.
 
@@ -91,6 +105,12 @@ agent_path_override:
   rovodev: /usr/local/bin/acli
   opencode: /usr/local/bin/opencode
   pi: /usr/local/bin/pi
+```
+
+For ACP targets, set `acpx_path` instead of `agent_path_override`:
+
+```yaml
+acpx_path: /Users/you/bin/acpx
 ```
 
 You can also set extra agent-specific CLI flags in global config with
@@ -137,6 +157,22 @@ Spawns a `pi` subprocess for each invocation with `--mode json --no-session`.
 Any `agent_args_override.pi` flags are inserted before no-mistakes' managed flags.
 Reads JSONL events from stdout and streams incremental text deltas to the TUI.
 When structured output is requested, no-mistakes injects the JSON schema into the prompt and validates the final text response.
+
+## ACP via acpx
+
+ACP support is optional and requires a separately installed `acpx` binary.
+Use `agent: acp:<target>` to run a target known to acpx, for example `agent: acp:gemini`.
+
+For custom ACP target commands, define a global override:
+
+```yaml
+agent: acp:local-gemini
+acp_registry_overrides:
+  local-gemini: node /opt/mock-acp-agent.mjs
+```
+
+no-mistakes invokes acpx with JSON output, approve-all permissions, denied non-interactive permission prompts, and the repo worktree as `--cwd`.
+Structured output is handled by appending the requested JSON schema to the prompt and validating the final assistant text.
 
 ## Checking agent availability
 

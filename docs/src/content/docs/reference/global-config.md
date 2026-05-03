@@ -10,6 +10,11 @@ Global configuration lives at `~/.no-mistakes/config.yaml`. Set `NM_HOME` to rel
 
 agent: auto
 
+acpx_path: acpx
+
+acp_registry_overrides:
+  local-gemini: node /opt/mock-acp-agent.mjs
+
 agent_path_override:
   claude: /Users/you/bin/claude
   codex: /opt/homebrew/bin/codex
@@ -45,10 +50,39 @@ Default agent for all repos and setup-wizard suggestions. Can be overridden per-
 | | |
 |---|---|
 | Type | `string` |
-| Values | `auto`, `claude`, `codex`, `rovodev`, `opencode`, `pi` |
+| Values | `auto`, `claude`, `codex`, `rovodev`, `opencode`, `pi`, `acp:<target>` |
 | Default | `auto` |
 
 `auto` resolves to the first supported agent found on `PATH` in this order: `claude`, `codex`, `opencode`, `acli` with `rovodev` support, then `pi`.
+`acp:<target>` uses the user-installed `acpx` binary to run an ACP target, for example `acp:gemini`.
+ACP agents are opt-in and are not considered by `agent: auto`.
+
+### acpx_path
+
+Path to the user-installed `acpx` binary used for `agent: acp:<target>`.
+
+| | |
+|---|---|
+| Type | `string` |
+| Default | `acpx` |
+
+### acp_registry_overrides
+
+Map an ACP target name to a raw ACP agent command.
+When `agent: acp:<target>` matches an override key, no-mistakes runs `acpx --agent <command>` instead of `acpx <target>`.
+
+| | |
+|---|---|
+| Type | `map[string]string` |
+| Default | Empty |
+
+Example:
+
+```yaml
+agent: acp:local-gemini
+acp_registry_overrides:
+  local-gemini: node /opt/mock-acp-agent.mjs
+```
 
 ### agent_path_override
 
