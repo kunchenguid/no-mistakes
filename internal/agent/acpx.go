@@ -155,8 +155,10 @@ type acpxUsageFields struct {
 	CacheCreationInputTokensCamel int `json:"cacheCreationInputTokens"`
 	CachedInputTokensCamel        int `json:"cachedInputTokens"`
 	CacheReadTokensCamel          int `json:"cacheReadTokens"`
+	CachedReadTokensCamel         int `json:"cachedReadTokens"`
 	CacheCreationTokensCamel      int `json:"cacheCreationTokens"`
 	CacheWriteTokensCamel         int `json:"cacheWriteTokens"`
+	CachedWriteTokensCamel        int `json:"cachedWriteTokens"`
 }
 
 func parseAcpxJSONEvents(ctx context.Context, r io.Reader, onChunk func(string), usage *TokenUsage) (string, string, error) {
@@ -236,6 +238,7 @@ func acpxUsageFieldsToTokenUsage(fields acpxUsageFields) TokenUsage {
 			fields.CacheReadInputTokensCamel,
 			fields.CachedInputTokensCamel,
 			fields.CacheReadTokensCamel,
+			fields.CachedReadTokensCamel,
 		),
 		CacheCreationTokens: acpxFirstPositive(
 			fields.CacheCreationInputTokens,
@@ -244,6 +247,7 @@ func acpxUsageFieldsToTokenUsage(fields acpxUsageFields) TokenUsage {
 			fields.CacheCreationInputTokensCamel,
 			fields.CacheCreationTokensCamel,
 			fields.CacheWriteTokensCamel,
+			fields.CachedWriteTokensCamel,
 		),
 	}
 }
