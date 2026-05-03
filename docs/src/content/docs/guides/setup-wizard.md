@@ -104,6 +104,9 @@ The wizard requires:
 
 - The gate to be initialized (`no-mistakes init` has run).
 - A clean enough state to commit and push.
-- A configured agent binary available on `PATH` (or via `agent_path_override`) only when the wizard needs to suggest a branch name or commit subject. If you already have a branch and clean working tree, or you enter those values yourself in the interactive flow, the wizard can continue without agent suggestions.
+- A configured native agent binary available on `PATH` (or via `agent_path_override`), or `acpx` available on `PATH` (or via `acpx_path`) for `agent: acp:<target>`, only when the wizard needs to suggest a branch name or commit subject.
+  If you already have a branch and clean working tree, or you enter those values yourself in the interactive flow, the wizard can continue without agent suggestions.
 
-If any of those are missing, the wizard reports the problem and exits. `no-mistakes doctor` is the fastest way to see what's available.
+If any of those are missing, the wizard reports the problem and exits.
+`no-mistakes doctor` is the fastest way to check native agent availability.
+For ACP targets, verify `acpx_path` yourself.

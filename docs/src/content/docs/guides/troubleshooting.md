@@ -81,17 +81,23 @@ If the daemon executable path can't be determined at all (stale PID, permissions
 
 ## Agent binary not detected
 
-Symptom: `doctor` shows `–` for your agent, or the pipeline errors with "agent binary not found."
+Symptom: `doctor` shows `–` for your native agent, or the pipeline errors with "agent binary not found."
 
 ### Check PATH
 
 The daemon uses the same binary-discovery order described in [Choosing an Agent](/no-mistakes/guides/agents/). When it's running through a managed service, it reloads `PATH` from your login shell on macOS and Linux and appends common install locations such as `~/.local/bin`, `~/go/bin`, `~/.cargo/bin`, `~/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`, and `/bin`.
 
-If the agent is installed in a version-manager shim directory or another nonstandard location, set an explicit override in `~/.no-mistakes/config.yaml`:
+If a native agent is installed in a version-manager shim directory or another nonstandard location, set an explicit override in `~/.no-mistakes/config.yaml`:
 
 ```yaml
 agent_path_override:
   claude: /Users/you/.local/bin/claude
+```
+
+For `agent: acp:<target>`, set `acpx_path` instead:
+
+```yaml
+acpx_path: /Users/you/.local/bin/acpx
 ```
 
 The daemon logs its effective `PATH` at startup in `~/.no-mistakes/logs/daemon.log` with the message `daemon environment ready`.

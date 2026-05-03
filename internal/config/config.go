@@ -232,8 +232,9 @@ func (c *Config) ResolveAgent(ctx context.Context, lookPath func(string) (string
 	return fmt.Errorf("no supported agent found in PATH (looked for: %s); install one or set 'agent' in ~/.no-mistakes/config.yaml", strings.Join(probed, ", "))
 }
 
-// AgentPath returns the binary path for the configured agent,
-// using agent_path_override if set, otherwise the default binary name.
+// AgentPath returns the binary path for the configured agent.
+// ACP agents use acpx_path if set, otherwise acpx.
+// Native agents use agent_path_override if set, otherwise the default binary name.
 func (c *Config) AgentPath() string {
 	if isACPAgent(c.Agent) {
 		if c.ACPXPath != "" {

@@ -86,14 +86,16 @@ acp_registry_overrides:
 
 ### agent_path_override
 
-Custom binary paths for each agent. When set, `no-mistakes` uses this path instead of looking up the binary on `PATH`.
+Custom binary paths for native agents.
+When set, `no-mistakes` uses this path instead of looking up the binary on `PATH`.
+ACP agents use `acpx_path` instead.
 
 | | |
 |---|---|
 | Type | `map[string]string` |
 | Default | Empty (uses default binary names) |
 
-Default binary names when no override is set:
+Default native binary names when no override is set:
 
 | Agent | Binary |
 |---|---|
@@ -105,7 +107,8 @@ Default binary names when no override is set:
 
 ### agent_args_override
 
-Extra CLI flags to pass to each agent. Use this to set model selection, reasoning effort, permission mode, or any other flag the underlying agent supports.
+Extra CLI flags to pass to each native agent.
+Use this to set model selection, reasoning effort, permission mode, or any other flag the underlying agent supports.
 
 | | |
 |---|---|

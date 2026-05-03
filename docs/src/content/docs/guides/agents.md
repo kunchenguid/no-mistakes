@@ -176,7 +176,7 @@ Structured output is handled by appending the requested JSON schema to the promp
 
 ## Checking agent availability
 
-Run `no-mistakes doctor` to see which agent binaries are installed and available:
+Run `no-mistakes doctor` to see which native agent binaries are installed and available:
 
 ```
 $ no-mistakes doctor
@@ -193,3 +193,6 @@ $ no-mistakes doctor
 ```
 
 `✓` = available, `–` = not found (optional), `✗` = problem detected.
+
+For `agent: acp:<target>`, make sure `acpx` is installed on `PATH` or set `acpx_path` in global config.
+`no-mistakes doctor` does not validate ACP targets.

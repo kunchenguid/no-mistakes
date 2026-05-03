@@ -68,7 +68,7 @@ When a branch passes the gate, it means:
 ## What you get
 
 - A fixed, opinionated pipeline: `rebase → review → test → document → lint → push → pr → ci`. Order is not configurable; what each step runs is.
-- Choice of agent: `claude`, `codex`, `rovodev`, `opencode`, or `pi`, with per-repo override.
+- Choice of agent: `claude`, `codex`, `rovodev`, `opencode`, `pi`, or `acp:<target>` via `acpx`, with per-repo override.
 - A TUI to watch, approve, fix, skip, or abort any step.
 - A setup wizard when you run bare `no-mistakes` with no active run on the current branch - it walks you through creating a branch, committing, and pushing through the gate, then attaches if the daemon registers the new run.
 
