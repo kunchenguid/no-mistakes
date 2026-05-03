@@ -55,14 +55,14 @@ func (a *acpxAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) 
 	}()
 
 	var usage TokenUsage
-	text, err := parseAcpxJSONEvents(ctx, stdout, opts.OnChunk, &usage)
+	text, stdoutErr, err := parseAcpxJSONEvents(ctx, stdout, opts.OnChunk, &usage)
 	stderrWG.Wait()
 	if err != nil {
 		_ = cmd.Wait()
 		return nil, fmt.Errorf("acpx parse events: %w", err)
 	}
 	if err := cmd.Wait(); err != nil {
-		return nil, fmt.Errorf("acpx exited: %w: %s", err, strings.TrimSpace(string(stderrBuf)))
+		return nil, fmt.Errorf("acpx exited: %w: %s", err, acpxProcessErrorOutput(stderrBuf, stdoutErr))
 	}
 	if usage.OutputTokens == 0 {
 		usage.OutputTokens = estimateAcpxTokens(len(text))
@@ -95,8 +95,19 @@ func (a *acpxAgent) buildArgs(opts RunOpts) []string {
 	if a.rawCommand == "" {
 		args = append(args, a.target)
 	}
-	args = append(args, prompt)
+	args = append(args, "exec", prompt)
 	return args
+}
+
+func acpxProcessErrorOutput(stderr []byte, stdoutErr string) string {
+	parts := make([]string, 0, 2)
+	if stderrText := strings.TrimSpace(string(stderr)); stderrText != "" {
+		parts = append(parts, stderrText)
+	}
+	if stdoutErr != "" {
+		parts = append(parts, stdoutErr)
+	}
+	return strings.Join(parts, "\n")
 }
 
 func buildACPStructuredPrompt(prompt string, schema json.RawMessage) string {
@@ -107,10 +118,15 @@ func buildACPStructuredPrompt(prompt string, schema json.RawMessage) string {
 }
 
 type acpxJSONMessage struct {
-	Method string `json:"method"`
+	Method string         `json:"method"`
+	Error  *acpxJSONError `json:"error"`
 	Params struct {
 		Update acpxSessionUpdate `json:"update"`
 	} `json:"params"`
+}
+
+type acpxJSONError struct {
+	Message string `json:"message"`
 }
 
 type acpxSessionUpdate struct {
@@ -120,15 +136,16 @@ type acpxSessionUpdate struct {
 	Used          int             `json:"used"`
 }
 
-func parseAcpxJSONEvents(ctx context.Context, r io.Reader, onChunk func(string), usage *TokenUsage) (string, error) {
+func parseAcpxJSONEvents(ctx context.Context, r io.Reader, onChunk func(string), usage *TokenUsage) (string, string, error) {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), acpxScannerMaxTokenSize)
 	var output strings.Builder
+	var stdoutErr string
 
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
-			return "", ctx.Err()
+			return "", stdoutErr, ctx.Err()
 		default:
 		}
 
@@ -140,6 +157,9 @@ func parseAcpxJSONEvents(ctx context.Context, r io.Reader, onChunk func(string),
 		var msg acpxJSONMessage
 		if err := json.Unmarshal(line, &msg); err != nil {
 			continue
+		}
+		if msg.Error != nil && msg.Error.Message != "" && stdoutErr == "" {
+			stdoutErr = msg.Error.Message
 		}
 		if msg.Method != "session/update" {
 			continue
@@ -163,9 +183,9 @@ func parseAcpxJSONEvents(ctx context.Context, r io.Reader, onChunk func(string),
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return "", err
+		return "", stdoutErr, err
 	}
-	return output.String(), nil
+	return output.String(), stdoutErr, nil
 }
 
 func acpxUpdateText(update acpxSessionUpdate) string {

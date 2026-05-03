@@ -70,6 +70,42 @@ func TestNewWithOptions_ACPRegistryOverride(t *testing.T) {
 	}
 }
 
+func TestACPAgentBuildArgsUsesExecMode(t *testing.T) {
+	a := &acpxAgent{target: "gemini"}
+	args := a.buildArgs(RunOpts{Prompt: "do work"})
+
+	if got, want := args[len(args)-3:], []string{"gemini", "exec", "do work"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("trailing args = %q, want %q", got, want)
+	}
+}
+
+func TestACPAgentRunReportsJSONRPCErrorMessage(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture is Unix-only")
+	}
+	dir := t.TempDir()
+	script := filepath.Join(dir, "acpx")
+	contents := `#!/bin/sh
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"not authenticated"}}'
+exit 1
+`
+	if err := os.WriteFile(script, []byte(contents), 0o755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	a, err := New("acp:gemini", script, nil)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	_, err = a.Run(context.Background(), RunOpts{Prompt: "do work", CWD: dir})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "not authenticated") {
+		t.Fatalf("error = %v, want JSON-RPC error message", err)
+	}
+}
+
 func TestACPAgentRunParsesAcpxJSONOutput(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell fixture is Unix-only")
