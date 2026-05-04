@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"os/exec"
+	"syscall"
 	"time"
 
 	"golang.org/x/sys/windows"
@@ -11,8 +12,17 @@ import (
 
 const windowsStillActive = 259
 
+// detachedDaemonCreationFlags detaches the spawned daemon from the parent's
+// console and process group so the parent CLI can exit cleanly even if the
+// caller (e.g. PowerShell `Start-Process -Wait`) is waiting on the whole
+// console-attached process tree. See issue #164.
+const detachedDaemonCreationFlags = windows.DETACHED_PROCESS | windows.CREATE_NEW_PROCESS_GROUP
+
 func setSysProcAttr(cmd *exec.Cmd) {
-	// No Setsid equivalent on Windows; daemon runs in same session.
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		CreationFlags: detachedDaemonCreationFlags,
+		HideWindow:    true,
+	}
 }
 
 func processRunning(pid int) (bool, error) {
