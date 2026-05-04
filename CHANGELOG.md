@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.12.1](https://github.com/kunchenguid/no-mistakes/compare/v1.12.0...v1.12.1) (2026-05-04)
+
+
+### Bug Fixes
+
+* kunchenguid/no-mistakes[#164](https://github.com/kunchenguid/no-mistakes/issues/164) ([#167](https://github.com/kunchenguid/no-mistakes/issues/167)) ([7c1e01c](https://github.com/kunchenguid/no-mistakes/commit/7c1e01c52b155b45a69d44ef7f05d23173f0bf26))
+
 ## [1.12.0](https://github.com/kunchenguid/no-mistakes/compare/v1.11.0...v1.12.0) (2026-05-03)
 
 
