@@ -22,7 +22,11 @@ var daemonKillPID = killPID
 var daemonEndpointUsesRegularFile = func() bool { return runtime.GOOS == "windows" }
 
 func daemonStartTimeout() time.Duration {
-	return durationFromEnv("NM_TEST_DAEMON_START_TIMEOUT", 5*time.Second)
+	fallback := 5 * time.Second
+	if runtimeGOOS == "windows" {
+		fallback = 15 * time.Second
+	}
+	return durationFromEnv("NM_TEST_DAEMON_START_TIMEOUT", fallback)
 }
 
 func daemonStartPollInterval() time.Duration {

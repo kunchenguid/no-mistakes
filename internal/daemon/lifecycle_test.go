@@ -74,6 +74,17 @@ func TestWaitForDaemonStopKeepsArtifactsWhenKillFails(t *testing.T) {
 	}
 }
 
+func TestDaemonStartTimeoutDefaultsToLongerWindowOnWindows(t *testing.T) {
+	t.Setenv("NM_TEST_DAEMON_START_TIMEOUT", "")
+	oldGOOS := runtimeGOOS
+	runtimeGOOS = "windows"
+	t.Cleanup(func() { runtimeGOOS = oldGOOS })
+
+	if got := daemonStartTimeout(); got != 15*time.Second {
+		t.Fatalf("daemonStartTimeout() = %v, want 15s", got)
+	}
+}
+
 func TestStopDetachedDaemonFallsBackToPIDWhenSocketIsBroken(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("unix socket setup is platform-specific")
