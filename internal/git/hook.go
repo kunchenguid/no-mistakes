@@ -45,7 +45,7 @@ while read oldrev newrev refname; do
 	    --new "$newrev"
 	  i=0
 	  while [ "$i" -lt "${GIT_PUSH_OPTION_COUNT:-0}" ]; do
-	    eval "opt=\${GIT_PUSH_OPTION_$i}"
+	    opt=$(printenv "GIT_PUSH_OPTION_$i" 2>/dev/null || :)
 	    set -- "$@" --push-option "$opt"
 	    i=$((i + 1))
 	  done

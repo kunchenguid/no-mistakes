@@ -42,6 +42,9 @@ func TestPostReceiveHookScript(t *testing.T) {
 	if strings.Contains(script, "nc -U") {
 		t.Fatal("hook should not depend on netcat")
 	}
+	if strings.Contains(script, "eval") {
+		t.Fatal("hook should not use eval to read push options")
+	}
 	if !strings.Contains(script, "\"$NM_BIN\" daemon notify-push") {
 		t.Fatal("hook should execute the embedded binary path")
 	}
@@ -107,6 +110,53 @@ func TestPostReceiveHookScriptWithQuotedPath(t *testing.T) {
 	script := postReceiveHookScript("/opt/it's here/no-mistakes")
 	if !strings.Contains(script, "NM_BIN='/opt/it'\"'\"'s here/no-mistakes'") {
 		t.Fatal("hook should correctly escape single quotes in the executable path")
+	}
+}
+
+func TestPostReceiveHookScriptDoesNotEvaluatePushOptions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("post-receive hook is /bin/sh-only")
+	}
+
+	base := t.TempDir()
+	bare := filepath.Join(base, "test.git")
+	if err := os.MkdirAll(bare, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	argsPath := filepath.Join(base, "args.txt")
+	fakeBin := filepath.Join(base, "fake-no-mistakes")
+	fakeScript := "#!/bin/sh\nprintf '%s\n' \"$@\" > " + shellSingleQuote(argsPath) + "\nexit 0\n"
+	if err := os.WriteFile(fakeBin, []byte(fakeScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	hookPath := filepath.Join(base, "post-receive")
+	if err := os.WriteFile(hookPath, []byte(postReceiveHookScript(fakeBin)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	markerPath := filepath.Join(base, "pwned")
+	cmd := exec.Command("/bin/sh", hookPath)
+	cmd.Dir = bare
+	cmd.Stdin = strings.NewReader("oldrev newrev refs/heads/main\n")
+	cmd.Env = append(os.Environ(),
+		"GIT_PUSH_OPTION_COUNT=1",
+		"GIT_PUSH_OPTION_0=ok; touch "+markerPath,
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("run hook: %v: %s", err, out)
+	}
+
+	if _, err := os.Stat(markerPath); !os.IsNotExist(err) {
+		t.Fatalf("hook should not evaluate push option shell syntax, stat err: %v", err)
+	}
+	args, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(args), "ok; touch "+markerPath) {
+		t.Fatalf("hook should forward push option literally, got:\n%s", args)
 	}
 }
 
