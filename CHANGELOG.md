@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.13.0](https://github.com/kunchenguid/no-mistakes/compare/v1.12.1...v1.13.0) (2026-05-05)
+
+
+### Features
+
+* **cli:** add per-run pipeline step skipping ([#169](https://github.com/kunchenguid/no-mistakes/issues/169)) ([5992808](https://github.com/kunchenguid/no-mistakes/commit/59928089f495d7c1731cd784202fa7131098337f))
+
 ## [1.12.1](https://github.com/kunchenguid/no-mistakes/compare/v1.12.0...v1.12.1) (2026-05-04)
 
 
