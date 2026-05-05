@@ -85,6 +85,7 @@ On startup, the daemon checks for runs that were left in `pending` or `running` 
 - Reaps orphaned managed agent servers left behind by a crashed daemon or setup wizard
 - Removes any orphaned worktree directories via `git worktree remove --force`
 - Reapplies per-worktree gate hook-path isolation to existing bare repos when Git supports `config --worktree`, so shared `core.hookspath` writes cannot disable `post-receive`
+- Enables Git push-option support on existing gate repos so per-push options like `no-mistakes.skip=...` keep working after upgrades
 
 ## Logging
 
