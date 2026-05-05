@@ -72,13 +72,14 @@ You can't reorder steps. You *can*:
 - Set explicit `commands.test`, `commands.lint`, `commands.format`.
 - Control auto-fix limits per step.
 - Ignore paths during review and documentation checks.
+- Skip steps for one run with `no-mistakes --skip <steps>`, `git push -o no-mistakes.skip=<steps>`, or from the TUI.
 
 See [Configuration](/no-mistakes/guides/configuration/).
 
 ## What you can't configure
 
 - The step order.
-- Skipping specific steps permanently - you can skip them per-run from the TUI, but the pipeline itself always has all eight.
+- Skipping specific steps permanently - per-run skips are allowed, but the pipeline itself always has all eight.
 - Adding new steps.
 
 This is intentional. The pipeline is opinionated so that "passed the gate" means the same thing across repos.

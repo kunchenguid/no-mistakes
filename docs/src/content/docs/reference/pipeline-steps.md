@@ -9,7 +9,7 @@ This is the per-step reference. For the overview and rationale, see [Pipeline](/
 rebase → review → test → document → lint → push → pr → ci
 ```
 
-Each step can produce findings, request approval, or trigger auto-fix. Steps that encounter fatal errors stop the pipeline. Steps can also be skipped by the user or automatically by the pipeline.
+Each step can produce findings, request approval, or trigger auto-fix. Steps that encounter fatal errors stop the pipeline. Steps can also be pre-skipped when starting a run, skipped by the user, or skipped automatically by the pipeline.
 
 ## Rebase
 
@@ -163,5 +163,5 @@ Each step progresses through these statuses:
 | `awaiting_approval` | Paused, waiting for user action |
 | `fix_review` | Paused after a fix cycle, showing results for review |
 | `completed` | Finished successfully |
-| `skipped` | User chose to skip, or the pipeline skipped it automatically |
+| `skipped` | Pre-skipped for the run, skipped by the user, or skipped automatically by the pipeline |
 | `failed` | Step failed |

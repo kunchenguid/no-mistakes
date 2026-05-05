@@ -23,6 +23,9 @@ In non-interactive contexts, bare `no-mistakes` without `-y` falls back to listi
 
 With `-y` / `--yes`, the wizard takes the default automated path for each step: use agent suggestions for branch and commit when needed, then push to the gate. In a TTY, that path stays visible and auto-advances through the wizard. Without a TTY, it falls back to the headless path.
 
+Pass `--skip` to skip comma-separated pipeline steps for the new run created by the wizard, for example `no-mistakes --skip test,lint`.
+It only applies when the wizard starts a new pipeline run; if bare `no-mistakes` attaches to an active run or lists recent runs, `--skip` exits with an error.
+
 If you want to attach to *any* active run in the repo (not just the current branch), use `no-mistakes attach` - that path skips the wizard entirely.
 
 ## Wizard flow
