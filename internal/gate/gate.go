@@ -59,6 +59,10 @@ func Init(ctx context.Context, d *db.DB, p *paths.Paths, workDir string) (*db.Re
 	if err := git.InitBare(ctx, bareDir); err != nil {
 		return nil, fmt.Errorf("create bare repo: %w", err)
 	}
+	if _, err := git.Run(ctx, bareDir, "config", "receive.advertisePushOptions", "true"); err != nil {
+		os.RemoveAll(bareDir)
+		return nil, fmt.Errorf("enable push options: %w", err)
+	}
 
 	// Install post-receive hook.
 	if err := git.InstallPostReceiveHook(bareDir); err != nil {

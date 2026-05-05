@@ -434,4 +434,11 @@ func TestRecoverIsolatesGateRepoHooksPath(t *testing.T) {
 	if got := strings.TrimSpace(string(out)); got != want {
 		t.Errorf("after migration, core.hookspath = %q, want %q", got, want)
 	}
+	out, err = exec.Command("git", "-C", bareDir, "config", "--get", "receive.advertisePushOptions").Output()
+	if err != nil {
+		t.Fatalf("get receive.advertisePushOptions: %v", err)
+	}
+	if got := strings.TrimSpace(string(out)); got != "true" {
+		t.Fatalf("receive.advertisePushOptions = %q, want true", got)
+	}
 }

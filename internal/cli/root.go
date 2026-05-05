@@ -24,6 +24,7 @@ func Execute() int {
 
 func newRootCmd() *cobra.Command {
 	var autoYes bool
+	var skipValue string
 
 	cmd := &cobra.Command{
 		Use:     "no-mistakes",
@@ -41,12 +42,17 @@ func newRootCmd() *cobra.Command {
 		// still fall back to headless mode when no TTY is available.
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return trackCommand("root", func() error {
-				return attachRun(cmd.Context(), cmd.OutOrStdout(), "", true, autoYes)
+				skipSteps, err := parseSkipSteps(skipValue)
+				if err != nil {
+					return err
+				}
+				return attachRun(cmd.Context(), cmd.OutOrStdout(), "", true, autoYes, skipSteps)
 			})
 		},
 	}
 
 	cmd.Flags().BoolVarP(&autoYes, "yes", "y", false, "run setup wizard and accept defaults automatically")
+	cmd.Flags().StringVar(&skipValue, "skip", "", "comma-separated pipeline steps to skip for a new run")
 
 	cmd.AddCommand(newInitCmd())
 	cmd.AddCommand(newEjectCmd())

@@ -37,6 +37,7 @@ type Executor struct {
 	config *config.Config
 	agent  agent.Agent
 	steps  []Step
+	skips  map[types.StepName]bool
 
 	onEvent EventFunc
 
@@ -44,6 +45,18 @@ type Executor struct {
 	approvalCh  chan approvalResponse // buffered channel for approval responses
 	waiting     bool                  // true when blocked on approval
 	waitingStep types.StepName        // which step is currently awaiting approval
+}
+
+// SetSkippedSteps configures steps that should be marked skipped without running.
+func (e *Executor) SetSkippedSteps(steps []types.StepName) {
+	if len(steps) == 0 {
+		e.skips = nil
+		return
+	}
+	e.skips = make(map[types.StepName]bool, len(steps))
+	for _, step := range steps {
+		e.skips[step] = true
+	}
 }
 
 // NewExecutor creates a pipeline executor.
@@ -129,6 +142,13 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 		}
 
 		sr := stepRecords[step.Name()]
+		if e.skips[step.Name()] {
+			if err := e.db.CompleteStepWithStatus(sr.ID, types.StepStatusSkipped, 0, 0, ""); err != nil {
+				return e.failRun(run, repo, fmt.Errorf("skip step %s: %w", step.Name(), err), ctx)
+			}
+			e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, step.Name(), string(types.StepStatusSkipped), "", "", "", nil)
+			continue
+		}
 		skipRemaining, err := e.executeStep(ctx, step, sr, run, repo, workDir, logDir)
 		if err != nil {
 			return e.failRun(run, repo, err, ctx)

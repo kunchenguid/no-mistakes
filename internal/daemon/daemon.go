@@ -315,6 +315,9 @@ func migrateGateConfigs(ctx context.Context, p *paths.Paths) {
 			continue
 		}
 		bareDir := filepath.Join(p.ReposDir(), entry.Name())
+		if _, err := git.Run(ctx, bareDir, "config", "receive.advertisePushOptions", "true"); err != nil {
+			slog.Warn("enable gate push options failed", "bare", bareDir, "error", err)
+		}
 		if err := git.IsolateHooksPath(ctx, bareDir); err != nil {
 			slog.Warn("isolate gate hooks path failed", "bare", bareDir, "error", err)
 		}

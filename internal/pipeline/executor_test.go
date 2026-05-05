@@ -349,3 +349,41 @@ func TestExecutor_SkippedOutcome_EmitsSkippedEvent(t *testing.T) {
 		t.Fatalf("expected skipped event status, got %q", got)
 	}
 }
+
+func TestExecutor_ConfiguredSkippedStepDoesNotExecuteAndContinues(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	review := newPassStep(types.StepReview)
+	testStep := newPassStep(types.StepTest)
+	exec := NewExecutor(database, p, nil, nil, []Step{review, testStep}, nil)
+	exec.SetSkippedSteps([]types.StepName{types.StepReview})
+	events := collectEvents(exec)
+
+	if err := exec.Execute(context.Background(), run, repo, workDir); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if got := review.callCount(); got != 0 {
+		t.Fatalf("skipped step executed %d times, want 0", got)
+	}
+	if got := testStep.callCount(); got != 1 {
+		t.Fatalf("next step executed %d times, want 1", got)
+	}
+	if event := events.find(ipc.EventStepStarted, types.StepReview); event != nil {
+		t.Fatal("configured skipped step should not emit step_started")
+	}
+	event := events.find(ipc.EventStepCompleted, types.StepReview)
+	if event == nil || event.Status == nil || *event.Status != string(types.StepStatusSkipped) {
+		t.Fatalf("expected skipped completion event, got %+v", event)
+	}
+
+	steps, err := database.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range steps {
+		if step.StepName == types.StepReview && step.Status != types.StepStatusSkipped {
+			t.Fatalf("review status = %s, want %s", step.Status, types.StepStatusSkipped)
+		}
+	}
+}

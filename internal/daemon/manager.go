@@ -163,7 +163,7 @@ func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushRec
 	}
 
 	branch := branchFromRef(params.Ref)
-	return m.startRun(ctx, repo, branch, params.New, params.Old, "push")
+	return m.startRun(ctx, repo, branch, params.New, params.Old, "push", params.SkipSteps)
 }
 
 // HandleRerun creates a new run for the latest gate head on a branch.
@@ -210,11 +210,11 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch string) (st
 		baseSHA = matchingHead.BaseSHA
 	}
 
-	return m.startRun(ctx, repo, branch, headSHA, baseSHA, "rerun")
+	return m.startRun(ctx, repo, branch, headSHA, baseSHA, "rerun", nil)
 }
 
 // startRun creates a run, sets up a worktree, and launches pipeline execution.
-func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string) (string, error) {
+func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName) (string, error) {
 	branchRole := telemetryBranchRole(branch, repo.DefaultBranch)
 	trackStartFailure := func(stage string) {
 		telemetry.Track("run", telemetry.Fields{
@@ -326,6 +326,7 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	// Create executor with event broadcast.
 	runCtx, cancel := context.WithCancelCause(context.Background())
 	executor := pipeline.NewExecutor(m.db, m.paths, cfg, ag, execSteps, m.broadcast)
+	executor.SetSkippedSteps(skipSteps)
 
 	// Track executor.
 	done := make(chan struct{})

@@ -3,10 +3,12 @@ package cli
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/spf13/cobra"
 )
 
@@ -38,6 +40,7 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 	var ref string
 	var oldSHA string
 	var newSHA string
+	var pushOptions []string
 
 	cmd := &cobra.Command{
 		Use:    "notify-push",
@@ -45,6 +48,11 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 		Hidden: true,
 		Args:   cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			skipSteps, err := parseSkipPushOptions(pushOptions)
+			if err != nil {
+				return err
+			}
+
 			p, err := paths.New()
 			if err != nil {
 				return err
@@ -58,10 +66,11 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 
 			var result ipc.PushReceivedResult
 			return client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
-				Gate: gate,
-				Ref:  ref,
-				Old:  oldSHA,
-				New:  newSHA,
+				Gate:      gate,
+				Ref:       ref,
+				Old:       oldSHA,
+				New:       newSHA,
+				SkipSteps: skipSteps,
 			}, &result)
 		},
 	}
@@ -70,12 +79,77 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 	cmd.Flags().StringVar(&ref, "ref", "", "git ref name")
 	cmd.Flags().StringVar(&oldSHA, "old", "", "previous commit SHA")
 	cmd.Flags().StringVar(&newSHA, "new", "", "new commit SHA")
+	cmd.Flags().StringArrayVar(&pushOptions, "push-option", nil, "git push option")
 	_ = cmd.MarkFlagRequired("gate")
 	_ = cmd.MarkFlagRequired("ref")
 	_ = cmd.MarkFlagRequired("old")
 	_ = cmd.MarkFlagRequired("new")
 
 	return cmd
+}
+
+func parseSkipPushOptions(options []string) ([]types.StepName, error) {
+	var steps []types.StepName
+	for _, option := range options {
+		value, ok := strings.CutPrefix(option, "no-mistakes.skip=")
+		if !ok {
+			continue
+		}
+		parsed, err := parseSkipSteps(value)
+		if err != nil {
+			return nil, err
+		}
+		steps = append(steps, parsed...)
+	}
+	return dedupeSteps(steps), nil
+}
+
+func parseSkipSteps(value string) ([]types.StepName, error) {
+	if strings.TrimSpace(value) == "" {
+		return nil, nil
+	}
+	var steps []types.StepName
+	for _, part := range strings.Split(value, ",") {
+		step := types.StepName(strings.TrimSpace(part))
+		if !validStep(step) {
+			return nil, fmt.Errorf("unknown step %q", step)
+		}
+		steps = append(steps, step)
+	}
+	return dedupeSteps(steps), nil
+}
+
+func formatSkipPushOptions(steps []types.StepName) []string {
+	if len(steps) == 0 {
+		return nil
+	}
+	parts := make([]string, 0, len(steps))
+	for _, step := range dedupeSteps(steps) {
+		parts = append(parts, string(step))
+	}
+	return []string{"no-mistakes.skip=" + strings.Join(parts, ",")}
+}
+
+func validStep(step types.StepName) bool {
+	for _, known := range types.AllSteps() {
+		if step == known {
+			return true
+		}
+	}
+	return false
+}
+
+func dedupeSteps(steps []types.StepName) []types.StepName {
+	seen := make(map[types.StepName]bool, len(steps))
+	out := make([]types.StepName, 0, len(steps))
+	for _, step := range steps {
+		if seen[step] {
+			continue
+		}
+		seen[step] = true
+		out = append(out, step)
+	}
+	return out
 }
 
 func newDaemonStartCmd() *cobra.Command {

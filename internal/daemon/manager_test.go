@@ -74,6 +74,54 @@ func TestPushReceivedTracksRunTelemetry(t *testing.T) {
 	}
 }
 
+func TestPushReceivedSkipStepsConfiguresExecutor(t *testing.T) {
+	review := &mockPassStep{name: types.StepReview}
+	testStep := &mockPassStep{name: types.StepTest}
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{review, testStep}
+	})
+
+	_, headSHA := setupTestGitRepo(t, p, d, "skip-run-repo")
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var result ipc.PushReceivedResult
+	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate:      p.RepoDir("skip-run-repo"),
+		Ref:       "refs/heads/main",
+		Old:       "0000000000000000000000000000000000000000",
+		New:       headSHA,
+		SkipSteps: []types.StepName{types.StepReview},
+	}, &result)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	run := waitForRunTerminalState(t, d, result.RunID)
+	if run.Status != types.RunCompleted {
+		t.Fatalf("run status = %q, want %q", run.Status, types.RunCompleted)
+	}
+	if got := review.execCnt.Load(); got != 0 {
+		t.Fatalf("review executed %d times, want 0", got)
+	}
+	if got := testStep.execCnt.Load(); got != 1 {
+		t.Fatalf("test executed %d times, want 1", got)
+	}
+	steps, err := d.GetStepsByRun(result.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range steps {
+		if step.StepName == types.StepReview && step.Status != types.StepStatusSkipped {
+			t.Fatalf("review status = %s, want %s", step.Status, types.StepStatusSkipped)
+		}
+	}
+}
+
 func TestPushReceivedTracksRunTelemetryAfterPanic(t *testing.T) {
 	recorder := &telemetryRecorder{}
 	restore := telemetry.SetDefaultForTesting(recorder)

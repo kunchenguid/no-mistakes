@@ -2,6 +2,7 @@ package ipc
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -124,10 +125,11 @@ func TestResponseError(t *testing.T) {
 
 func TestPushReceivedParams(t *testing.T) {
 	params := PushReceivedParams{
-		Gate: "/path/to/gate.git",
-		Ref:  "refs/heads/main",
-		Old:  "aaa",
-		New:  "bbb",
+		Gate:      "/path/to/gate.git",
+		Ref:       "refs/heads/main",
+		Old:       "aaa",
+		New:       "bbb",
+		SkipSteps: []types.StepName{types.StepTest, types.StepLint},
 	}
 	data, _ := json.Marshal(params)
 	var got PushReceivedParams
@@ -136,6 +138,9 @@ func TestPushReceivedParams(t *testing.T) {
 	}
 	if got.Gate != params.Gate || got.Ref != params.Ref || got.Old != params.Old || got.New != params.New {
 		t.Errorf("round-trip mismatch: got %+v, want %+v", got, params)
+	}
+	if !reflect.DeepEqual(got.SkipSteps, params.SkipSteps) {
+		t.Errorf("skip_steps = %+v, want %+v", got.SkipSteps, params.SkipSteps)
 	}
 }
 

@@ -39,11 +39,17 @@ LOG="$(pwd)/notify-push.log"
 nm_ts() { date '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || echo unknown; }
 notify_failed=0
 while read oldrev newrev refname; do
-  out=$(NM_HOOK_HELPER=1 "$NM_BIN" daemon notify-push \
-    --gate "$(pwd)" \
-    --ref "$refname" \
-    --old "$oldrev" \
-    --new "$newrev" 2>&1)
+	  set -- --gate "$(pwd)" \
+	    --ref "$refname" \
+	    --old "$oldrev" \
+	    --new "$newrev"
+	  i=0
+	  while [ "$i" -lt "${GIT_PUSH_OPTION_COUNT:-0}" ]; do
+	    eval "opt=\${GIT_PUSH_OPTION_$i}"
+	    set -- "$@" --push-option "$opt"
+	    i=$((i + 1))
+	  done
+	  out=$(NM_HOOK_HELPER=1 "$NM_BIN" daemon notify-push "$@" 2>&1)
   status=$?
   if [ $status -ne 0 ]; then
     notify_failed=1

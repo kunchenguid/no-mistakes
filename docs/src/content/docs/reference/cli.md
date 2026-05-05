@@ -9,13 +9,17 @@ Attach to the active pipeline run for the current branch when one exists. If non
 
 ```sh
 no-mistakes
+no-mistakes --skip test,lint
 ```
 
 | Flag | Type | Default | Description |
 |---|---|---|---|
 | `-y`, `--yes` | `bool` | `false` | Run setup wizard and accept defaults automatically |
+| `--skip` | `string` | (none) | Comma-separated pipeline steps to skip for a new run |
 
 Unlike `no-mistakes attach`, bare `no-mistakes` only auto-attaches to an active run on the current branch.
+`--skip` only applies when bare `no-mistakes` starts a new pipeline run through the wizard; it does not skip a step on an already-active run.
+Valid step names are `rebase`, `review`, `test`, `document`, `lint`, `push`, `pr`, and `ci`.
 
 ## no-mistakes init
 
@@ -26,6 +30,7 @@ no-mistakes init
 ```
 
 Creates a local bare repo, installs the post-receive hook, best-effort isolates the gate repo's hook path from shared git config changes when Git supports `config --worktree`, adds the `no-mistakes` git remote, detects the default branch, records the repo in SQLite, and ensures the daemon is running, installing the managed service when available and falling back to a detached daemon otherwise.
+The gate advertises Git push-option support, so you can skip steps for one push with `git push -o no-mistakes.skip=test,lint no-mistakes <branch>`.
 
 Rolls back all changes if any step fails.
 

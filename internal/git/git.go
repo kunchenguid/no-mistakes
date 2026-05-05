@@ -188,7 +188,16 @@ func FetchRemoteBranch(ctx context.Context, dir, remote, branch string) error {
 // Push pushes a ref to a remote. If forceWithLease is true, uses
 // --force-with-lease with the expectedSHA for safe force-push.
 func Push(ctx context.Context, dir, remote, ref, expectedSHA string, forceWithLease bool) error {
-	args := []string{"push", remote}
+	return PushWithOptions(ctx, dir, remote, ref, expectedSHA, forceWithLease, nil)
+}
+
+// PushWithOptions pushes a ref to a remote with per-push options.
+func PushWithOptions(ctx context.Context, dir, remote, ref, expectedSHA string, forceWithLease bool, pushOptions []string) error {
+	args := []string{"push"}
+	for _, option := range pushOptions {
+		args = append(args, "-o", option)
+	}
+	args = append(args, remote)
 	if forceWithLease {
 		if expectedSHA != "" {
 			args = append(args, fmt.Sprintf("--force-with-lease=%s:%s", ref, expectedSHA))

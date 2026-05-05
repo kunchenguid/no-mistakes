@@ -105,6 +105,11 @@ func TestInit(t *testing.T) {
 	if !fileExists(hookPath) {
 		t.Error("post-receive hook not installed")
 	}
+	if out, err := exec.Command("git", "-C", bareDir, "config", "--get", "receive.advertisePushOptions").Output(); err != nil {
+		t.Fatalf("get receive.advertisePushOptions: %v", err)
+	} else if got := string(out); got != "true\n" {
+		t.Fatalf("receive.advertisePushOptions = %q, want true", got)
+	}
 
 	// Verify no-mistakes remote was added to working repo.
 	url, err := gitpkg.GetRemoteURL(ctx, workDir, "no-mistakes")

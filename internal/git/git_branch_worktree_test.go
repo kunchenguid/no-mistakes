@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -122,6 +123,35 @@ func TestPush(t *testing.T) {
 	expected := run(t, src, "git", "rev-parse", "HEAD")
 	if out != expected {
 		t.Fatalf("expected %q, got %q", expected, out)
+	}
+}
+
+func TestPushWithOptionsForwardsPushOptions(t *testing.T) {
+	ctx := context.Background()
+	src := initTestRepo(t)
+	bare := filepath.Join(t.TempDir(), "dest.git")
+	if err := InitBare(ctx, bare); err != nil {
+		t.Fatal(err)
+	}
+	run(t, bare, "git", "config", "receive.advertisePushOptions", "true")
+	run(t, src, "git", "remote", "add", "dest", bare)
+
+	marker := filepath.Join(t.TempDir(), "push-options.txt")
+	hook := "#!/bin/sh\nprintf '%s:%s\n' \"$GIT_PUSH_OPTION_COUNT\" \"$GIT_PUSH_OPTION_0\" > " + shellSingleQuote(marker) + "\n"
+	if err := os.WriteFile(filepath.Join(bare, "hooks", "post-receive"), []byte(hook), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := PushWithOptions(ctx, src, "dest", "refs/heads/main", "", false, []string{"no-mistakes.skip=test,lint"}); err != nil {
+		t.Fatalf("PushWithOptions failed: %v", err)
+	}
+
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.TrimSpace(string(data)), "1:no-mistakes.skip=test,lint"; got != want {
+		t.Fatalf("push options marker = %q, want %q", got, want)
 	}
 }
 

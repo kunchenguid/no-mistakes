@@ -33,11 +33,11 @@ type waitForRunFunc func(ctx context.Context, branch string) error
 var newWizardAgent = agent.NewWithOptions
 var wizardRun = wizard.Run
 var wizardRunAuto = wizard.RunAuto
-var runWizardAutoVisible = func(ctx context.Context, p *paths.Paths, state *repoState, wait waitForRunFunc) (wizard.Result, error) {
-	return runWizardWithMode(ctx, p, state, true, true, wait)
+var runWizardAutoVisible = func(ctx context.Context, p *paths.Paths, state *repoState, skipSteps []types.StepName, wait waitForRunFunc) (wizard.Result, error) {
+	return runWizardWithMode(ctx, p, state, skipSteps, true, true, wait)
 }
-var runWizardAuto = func(ctx context.Context, p *paths.Paths, state *repoState, wait waitForRunFunc) (wizard.Result, error) {
-	return runWizardWithMode(ctx, p, state, true, false, wait)
+var runWizardAuto = func(ctx context.Context, p *paths.Paths, state *repoState, skipSteps []types.StepName, wait waitForRunFunc) (wizard.Result, error) {
+	return runWizardWithMode(ctx, p, state, skipSteps, true, false, wait)
 }
 
 type wizardAgentSuggester struct {
@@ -190,10 +190,14 @@ func detectRepoState(ctx context.Context, repo *db.Repo) (*repoState, error) {
 // runWizard prepares optional suggestion hooks and runs the interactive
 // onboarding wizard against the supplied repo state.
 func runWizard(ctx context.Context, p *paths.Paths, state *repoState, wait waitForRunFunc) (wizard.Result, error) {
-	return runWizardWithMode(ctx, p, state, false, true, wait)
+	return runWizardWithSkip(ctx, p, state, nil, wait)
 }
 
-func runWizardWithMode(ctx context.Context, p *paths.Paths, state *repoState, auto bool, visible bool, wait waitForRunFunc) (wizard.Result, error) {
+func runWizardWithSkip(ctx context.Context, p *paths.Paths, state *repoState, skipSteps []types.StepName, wait waitForRunFunc) (wizard.Result, error) {
+	return runWizardWithMode(ctx, p, state, skipSteps, false, true, wait)
+}
+
+func runWizardWithMode(ctx context.Context, p *paths.Paths, state *repoState, skipSteps []types.StepName, auto bool, visible bool, wait waitForRunFunc) (wizard.Result, error) {
 	workDir := state.workDir
 
 	globalCfg, err := config.LoadGlobal(p.ConfigFile())
@@ -235,7 +239,7 @@ func runWizardWithMode(ctx context.Context, p *paths.Paths, state *repoState, au
 			return git.CommitAll(ctx, workDir, msg)
 		},
 		Push: func(ctx context.Context, branch string) error {
-			return git.Push(ctx, workDir, gate.RemoteName, "refs/heads/"+branch, "", false)
+			return git.PushWithOptions(ctx, workDir, gate.RemoteName, "refs/heads/"+branch, "", false, formatSkipPushOptions(skipSteps))
 		},
 		SuggestBranch: func(ctx context.Context) (string, error) {
 			return suggester.suggestBranch(ctx)

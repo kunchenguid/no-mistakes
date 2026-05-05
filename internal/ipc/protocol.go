@@ -58,10 +58,11 @@ func (e *RPCError) Error() string { return e.Message }
 
 // PushReceivedParams are sent by the post-receive hook when a push arrives.
 type PushReceivedParams struct {
-	Gate string `json:"gate"`
-	Ref  string `json:"ref"`
-	Old  string `json:"old"`
-	New  string `json:"new"`
+	Gate      string           `json:"gate"`
+	Ref       string           `json:"ref"`
+	Old       string           `json:"old"`
+	New       string           `json:"new"`
+	SkipSteps []types.StepName `json:"skip_steps,omitempty"`
 }
 
 // GetRunParams requests a single run by ID.

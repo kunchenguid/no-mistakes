@@ -12,6 +12,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/tui"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/kunchenguid/no-mistakes/internal/update"
 	"github.com/kunchenguid/no-mistakes/internal/wizard"
 	"github.com/mattn/go-isatty"
@@ -23,7 +24,7 @@ var terminalInteractive = isInteractive
 
 // attachRun is the shared logic for attaching to a pipeline run. It's used by
 // both the root command (bare `no-mistakes`) and the `attach` subcommand.
-func attachRun(ctx context.Context, w io.Writer, runID string, rootDefault bool, autoYes bool) error {
+func attachRun(ctx context.Context, w io.Writer, runID string, rootDefault bool, autoYes bool, skipSteps []types.StepName) error {
 	p, d, err := openResources()
 	if err != nil {
 		return err
@@ -55,6 +56,7 @@ func attachRun(ctx context.Context, w io.Writer, runID string, rootDefault bool,
 	var run *ipc.RunInfo
 	var repoID string
 	var state *repoState
+	startedViaWizard := false
 
 	if runID != "" {
 		// Fetch specific run.
@@ -94,6 +96,7 @@ func attachRun(ctx context.Context, w io.Writer, runID string, rootDefault bool,
 		// existing headless path.
 		interactive := terminalInteractive()
 		if rootDefault && runID == "" && repo != nil && state != nil && (autoYes || interactive) {
+			startedViaWizard = true
 			// waitFn blocks inside the wizard's alt screen until the daemon
 			// has the run registered, so the handoff to runTUI below is
 			// seamless rather than flashing the pre-wizard terminal.
@@ -104,12 +107,12 @@ func attachRun(ctx context.Context, w io.Writer, runID string, rootDefault bool,
 			var wErr error
 			if autoYes {
 				if interactive {
-					res, wErr = runWizardAutoVisible(ctx, p, state, waitFn)
+					res, wErr = runWizardAutoVisible(ctx, p, state, skipSteps, waitFn)
 				} else {
-					res, wErr = runWizardAuto(ctx, p, state, waitFn)
+					res, wErr = runWizardAuto(ctx, p, state, skipSteps, waitFn)
 				}
 			} else {
-				res, wErr = runWizard(ctx, p, state, waitFn)
+				res, wErr = runWizardWithSkip(ctx, p, state, skipSteps, waitFn)
 			}
 			if wErr != nil {
 				return wErr
@@ -133,6 +136,9 @@ func attachRun(ctx context.Context, w io.Writer, runID string, rootDefault bool,
 			printNoActiveRun(w, d, repoID)
 			return nil
 		}
+	}
+	if len(skipSteps) > 0 && !startedViaWizard {
+		return fmt.Errorf("--skip only applies when starting a new pipeline run")
 	}
 
 	telemetry.Pageview("/tui", telemetry.Fields{
@@ -240,7 +246,7 @@ If no run ID is specified, attaches to the active run for the current repo.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return trackCommand("attach", func() error {
-				return attachRun(cmd.Context(), cmd.OutOrStdout(), runID, false, false)
+				return attachRun(cmd.Context(), cmd.OutOrStdout(), runID, false, false, nil)
 			})
 		},
 	}
