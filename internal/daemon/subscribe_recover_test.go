@@ -442,3 +442,51 @@ func TestRecoverIsolatesGateRepoHooksPath(t *testing.T) {
 		t.Fatalf("receive.advertisePushOptions = %q, want true", got)
 	}
 }
+
+func TestRecoverRefreshesLegacyManagedGateHook(t *testing.T) {
+	tmpDir := t.TempDir()
+	p := paths.WithRoot(tmpDir)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
+	bareDir := p.RepoDir("legacy-repo")
+	ctx := context.Background()
+	if err := gitpkg.InitBare(ctx, bareDir); err != nil {
+		t.Fatal(err)
+	}
+	hookPath := filepath.Join(bareDir, "hooks", "post-receive")
+	legacyHook := `#!/bin/sh
+# no-mistakes post-receive hook
+# Notify daemon of push. Non-blocking - push always succeeds.
+NM_BIN='/usr/local/bin/no-mistakes'
+while read oldrev newrev refname; do
+  NM_HOOK_HELPER=1 "$NM_BIN" daemon notify-push \
+    --gate "$(pwd)" \
+    --ref "$refname" \
+    --old "$oldrev" \
+    --new "$newrev" >/dev/null 2>&1 || true
+done
+exit 0
+`
+	if err := os.WriteFile(hookPath, []byte(legacyHook), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	migrateGateConfigs(ctx, p)
+
+	data, err := os.ReadFile(hookPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "GIT_PUSH_OPTION_COUNT") {
+		t.Fatalf("migrated hook should forward git push options, got:\n%s", content)
+	}
+	if !strings.Contains(content, "--push-option") {
+		t.Fatalf("migrated hook should pass push options to notify-push, got:\n%s", content)
+	}
+	if strings.Contains(content, ">/dev/null 2>&1 || true") {
+		t.Fatalf("migrated hook should not silently swallow notify-push errors, got:\n%s", content)
+	}
+}

@@ -198,6 +198,57 @@ func TestInstallPostReceiveHook(t *testing.T) {
 	}
 }
 
+func TestRefreshManagedPostReceiveHookPreservesCustomHook(t *testing.T) {
+	ctx := context.Background()
+	bare := filepath.Join(t.TempDir(), "test.git")
+	if err := InitBare(ctx, bare); err != nil {
+		t.Fatal(err)
+	}
+	hookPath := filepath.Join(bare, "hooks", "post-receive")
+	custom := "#!/bin/sh\necho custom hook\n"
+	if err := os.WriteFile(hookPath, []byte(custom), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err := RefreshManagedPostReceiveHook(bare)
+	if err != nil {
+		t.Fatalf("RefreshManagedPostReceiveHook: %v", err)
+	}
+	if changed {
+		t.Fatal("custom hook should not be overwritten")
+	}
+	data, err := os.ReadFile(hookPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != custom {
+		t.Fatalf("custom hook changed to:\n%s", data)
+	}
+}
+
+func TestRefreshManagedPostReceiveHookInstallsMissingHook(t *testing.T) {
+	ctx := context.Background()
+	bare := filepath.Join(t.TempDir(), "test.git")
+	if err := InitBare(ctx, bare); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err := RefreshManagedPostReceiveHook(bare)
+	if err != nil {
+		t.Fatalf("RefreshManagedPostReceiveHook: %v", err)
+	}
+	if !changed {
+		t.Fatal("missing managed hook should be installed")
+	}
+	info, err := os.Stat(filepath.Join(bare, "hooks", "post-receive"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && info.Mode()&0o111 == 0 {
+		t.Fatalf("hook should be executable, got mode %v", info.Mode())
+	}
+}
+
 // TestPostReceiveHook_SurfacesNotifyFailures covers issue #122 defect 2:
 // when notify-push fails (daemon down, missing-hook state, etc.), the user
 // must see the failure on stderr instead of getting a clean-looking push.

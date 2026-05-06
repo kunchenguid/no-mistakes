@@ -85,6 +85,11 @@ func shellSingleQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
+func isManagedPostReceiveHook(content []byte) bool {
+	text := string(content)
+	return strings.Contains(text, "# no-mistakes post-receive hook") && strings.Contains(text, "daemon notify-push")
+}
+
 // InstallPostReceiveHook writes the post-receive hook script into
 // the hooks directory of a bare repo at bareDir.
 func InstallPostReceiveHook(bareDir string) error {
@@ -93,7 +98,55 @@ func InstallPostReceiveHook(bareDir string) error {
 		return err
 	}
 	hookPath := filepath.Join(hooksDir, "post-receive")
-	return os.WriteFile(hookPath, []byte(PostReceiveHookScript()), 0o755)
+	return writeHookFileAtomic(hookPath, []byte(PostReceiveHookScript()))
+}
+
+// RefreshManagedPostReceiveHook updates an existing no-mistakes-owned hook.
+// Custom hooks are left untouched; missing hooks are installed for gate repos.
+func RefreshManagedPostReceiveHook(bareDir string) (bool, error) {
+	hooksDir := filepath.Join(bareDir, "hooks")
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		return false, err
+	}
+	hookPath := filepath.Join(hooksDir, "post-receive")
+	desired := []byte(PostReceiveHookScript())
+	existing, err := os.ReadFile(hookPath)
+	if err == nil {
+		if string(existing) == string(desired) {
+			return false, nil
+		}
+		if !isManagedPostReceiveHook(existing) {
+			return false, nil
+		}
+	} else if !os.IsNotExist(err) {
+		return false, err
+	}
+	if err := writeHookFileAtomic(hookPath, desired); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func writeHookFileAtomic(path string, content []byte) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".post-receive-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmp.Write(content); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0o755); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }
 
 // IsolateHooksPath protects the gate's post-receive hook from being

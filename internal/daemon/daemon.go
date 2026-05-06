@@ -315,6 +315,9 @@ func migrateGateConfigs(ctx context.Context, p *paths.Paths) {
 			continue
 		}
 		bareDir := filepath.Join(p.ReposDir(), entry.Name())
+		if _, err := git.RefreshManagedPostReceiveHook(bareDir); err != nil {
+			slog.Warn("refresh gate post-receive hook failed", "bare", bareDir, "error", err)
+		}
 		if _, err := git.Run(ctx, bareDir, "config", "receive.advertisePushOptions", "true"); err != nil {
 			slog.Warn("enable gate push options failed", "bare", bareDir, "error", err)
 		}
