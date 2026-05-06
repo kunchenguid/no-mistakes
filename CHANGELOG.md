@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.13.1](https://github.com/kunchenguid/no-mistakes/compare/v1.13.0...v1.13.1) (2026-05-06)
+
+
+### Bug Fixes
+
+* **daemon:** refresh managed hooks during recovery ([#171](https://github.com/kunchenguid/no-mistakes/issues/171)) ([13a91c2](https://github.com/kunchenguid/no-mistakes/commit/13a91c275d7549d82fc4ede2d4cc4a0d3336e67b))
+
 ## [1.13.0](https://github.com/kunchenguid/no-mistakes/compare/v1.12.1...v1.13.0) (2026-05-05)
 
 
