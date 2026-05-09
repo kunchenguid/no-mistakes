@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os/user"
 	"strings"
@@ -48,11 +49,16 @@ func (s *IntentStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.Step
 	}()
 
 	if sctx == nil || sctx.Config == nil || !sctx.Config.Intent.Enabled {
+		if sctx != nil && sctx.Log != nil {
+			sctx.Log("intent extraction disabled in config")
+		}
 		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
 	if sctx.DB == nil || sctx.Run == nil || sctx.Repo == nil {
 		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
+
+	sctx.Log("scanning recent agent transcripts...")
 
 	ctx, cancel := context.WithTimeout(sctx.Ctx, intentExtractTimeout)
 	defer cancel()
@@ -86,17 +92,21 @@ func (s *IntentStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.Step
 	if runErr != nil {
 		if errors.Is(runErr, intent.ErrNoMatch) {
 			outcomeLabel = "no_match"
+			sctx.Log("no matching agent transcript found")
 			return &pipeline.StepOutcome{Skipped: true}, nil
 		}
 		if errors.Is(runErr, errIntentEmptyDiff) {
 			outcomeLabel = "empty_diff"
+			sctx.Log("no diff between base and head, skipping intent extraction")
 			return &pipeline.StepOutcome{Skipped: true}, nil
 		}
 		slog.Debug("intent: extract failed", "run_id", sctx.Run.ID, "error", runErr)
 		outcomeLabel = "error"
+		sctx.Log(fmt.Sprintf("intent extraction failed: %v", runErr))
 		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
 	if result == nil {
+		sctx.Log("no intent attached")
 		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
 
@@ -111,6 +121,7 @@ func (s *IntentStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.Step
 		Score:     result.Score,
 	}); dbErr != nil {
 		slog.Warn("intent: persist failed", "run_id", sctx.Run.ID, "error", dbErr)
+		sctx.Log(fmt.Sprintf("intent matched but failed to persist: %v", dbErr))
 		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
 
@@ -122,6 +133,10 @@ func (s *IntentStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.Step
 	sctx.Run.IntentSessionID = &sessionCopy
 	scoreCopy := result.Score
 	sctx.Run.IntentScore = &scoreCopy
+
+	sctx.Log(fmt.Sprintf("matched %s session (score %.2f)", result.AgentName, result.Score))
+	sctx.Log("inferred intent:")
+	sctx.Log(result.Summary)
 
 	slog.Info("intent: attached", "run_id", sctx.Run.ID, "agent", matchedAgent, "score", score)
 	return &pipeline.StepOutcome{}, nil

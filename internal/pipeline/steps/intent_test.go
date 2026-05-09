@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
@@ -50,6 +51,8 @@ func newIntentStepContext(t *testing.T) *pipeline.StepContext {
 
 func TestIntentStep_SuccessPersistsAndAttaches(t *testing.T) {
 	sctx := newIntentStepContext(t)
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
 	step := &IntentStep{
 		runIntent: func(_ context.Context, _ *pipeline.StepContext) (*intent.Result, error) {
 			return &intent.Result{
@@ -86,6 +89,14 @@ func TestIntentStep_SuccessPersistsAndAttaches(t *testing.T) {
 	}
 	if persisted.IntentScore == nil || *persisted.IntentScore != 0.9 {
 		t.Errorf("db intent score = %v, want 0.9", persisted.IntentScore)
+	}
+
+	joined := strings.Join(logs, "\n")
+	if !strings.Contains(joined, "user added Bar()") {
+		t.Errorf("expected logs to include the inferred intent, got:\n%s", joined)
+	}
+	if !strings.Contains(joined, "claude") {
+		t.Errorf("expected logs to mention the matched agent, got:\n%s", joined)
 	}
 }
 
