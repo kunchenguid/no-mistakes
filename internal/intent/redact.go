@@ -33,11 +33,20 @@ func RedactSecrets(text string) string {
 // that pre-date the export. New callers should use RedactSecrets.
 func redactSecrets(text string) string { return RedactSecrets(text) }
 
-// clampMessages keeps the most recent messages such that the total Text
-// budget stays under maxBytes. Older messages are dropped first because
-// recent intent is more likely to reflect what the change actually does.
+// clampMessages drops messages from the *middle* of the conversation when
+// the total Text budget exceeds maxBytes, preserving turns at the start
+// and end. The first few messages usually carry the user's original ask
+// and setup; the last few carry the most recent state and closing
+// instructions. The middle tends to be exploratory back-and-forth that
+// is least useful for inferring overall intent.
+//
+// The algorithm alternates picking from the front and back, so a long
+// message at one end doesn't crowd out everything from the other. When
+// any messages are dropped, a synthetic marker is inserted between the
+// kept prefix and suffix so the LLM doesn't treat the result as a
+// contiguous conversation.
 func clampMessages(msgs []Message, maxBytes int) []Message {
-	if maxBytes <= 0 {
+	if maxBytes <= 0 || len(msgs) == 0 {
 		return msgs
 	}
 	total := 0
@@ -47,25 +56,61 @@ func clampMessages(msgs []Message, maxBytes int) []Message {
 	if total <= maxBytes {
 		return msgs
 	}
-	// Walk from the end backwards, keeping messages until the budget runs out.
-	keep := 0
+
+	const omittedMarker = "[... middle messages omitted to fit the context window; the conversation continues below with later messages from the same session ...]"
+	// Reserve space for the marker so we don't overshoot the budget after
+	// inserting it. The marker is short, so we ignore the case where the
+	// budget is too small to even hold the marker.
+	budget := maxBytes - len(omittedMarker)
+	if budget <= 0 {
+		budget = maxBytes
+	}
+
+	var frontKeep []Message
+	var backKeep []Message
 	used := 0
-	for i := len(msgs) - 1; i >= 0; i-- {
-		used += len(msgs[i].Text)
-		if used > maxBytes {
+	front, back := 0, len(msgs)-1
+	takeFront := true
+
+	for front <= back {
+		var size int
+		if takeFront {
+			size = len(msgs[front].Text)
+		} else {
+			size = len(msgs[back].Text)
+		}
+		if used+size > budget {
 			break
 		}
-		keep++
+		if takeFront {
+			frontKeep = append(frontKeep, msgs[front])
+			front++
+		} else {
+			backKeep = append([]Message{msgs[back]}, backKeep...)
+			back--
+		}
+		used += size
+		takeFront = !takeFront
 	}
-	if keep == 0 {
-		// At least keep the last message, truncated.
+
+	// Pathological case: every message individually exceeds the budget.
+	// Fall back to the last message, byte-truncated, since the most recent
+	// intent is usually the most relevant single signal.
+	if len(frontKeep) == 0 && len(backKeep) == 0 {
 		last := msgs[len(msgs)-1]
 		if len(last.Text) > maxBytes {
 			last.Text = last.Text[len(last.Text)-maxBytes:]
 		}
 		return []Message{last}
 	}
-	return msgs[len(msgs)-keep:]
+
+	// front > back means we kept everything (no gap created).
+	if front > back {
+		return append(frontKeep, backKeep...)
+	}
+
+	gap := Message{Synthetic: true, Text: omittedMarker}
+	return append(append(frontKeep, gap), backKeep...)
 }
 
 // StripAdversarial removes obvious prompt-injection markers that could try

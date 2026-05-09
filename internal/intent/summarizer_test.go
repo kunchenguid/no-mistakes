@@ -74,6 +74,32 @@ func TestAgentSummarizer_EmptyTranscript(t *testing.T) {
 	}
 }
 
+// Synthetic messages (gap markers from clampMessages) must NOT receive a
+// role prefix - the LLM should see them as author-controlled context, not
+// as another user/assistant turn.
+func TestBuildTranscriptBlock_SyntheticHasNoRolePrefix(t *testing.T) {
+	got := buildTranscriptBlock(&Session{
+		Messages: []Message{
+			{Role: RoleUser, Text: "hello"},
+			{Synthetic: true, Text: "[... middle messages omitted ...]"},
+			{Role: RoleAssistant, Text: "world"},
+		},
+	})
+	if !strings.Contains(got, "user: hello") {
+		t.Errorf("missing user prefix:\n%s", got)
+	}
+	if !strings.Contains(got, "assistant: world") {
+		t.Errorf("missing assistant prefix:\n%s", got)
+	}
+	// The marker line should appear without "user:" / "assistant:" framing.
+	if strings.Contains(got, "user: [... middle") || strings.Contains(got, "assistant: [... middle") {
+		t.Errorf("synthetic marker got a role prefix:\n%s", got)
+	}
+	if !strings.Contains(got, "[... middle messages omitted ...]") {
+		t.Errorf("marker text missing:\n%s", got)
+	}
+}
+
 func TestBuildTranscriptBlock_RedactsAndStrips(t *testing.T) {
 	got := buildTranscriptBlock(&Session{
 		Messages: []Message{

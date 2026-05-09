@@ -107,6 +107,14 @@ func buildTranscriptBlock(s *Session) string {
 		if text == "" {
 			continue
 		}
+		// Synthetic messages (e.g. the "middle messages omitted" marker
+		// inserted by clampMessages) bypass redaction and the role prefix
+		// because they are author-controlled, not user data.
+		if m.Synthetic {
+			sb.WriteString(text)
+			sb.WriteString("\n\n")
+			continue
+		}
 		text = redactSecrets(text)
 		text = stripAdversarial(text)
 		role := "user"

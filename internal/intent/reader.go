@@ -22,6 +22,11 @@ type Message struct {
 	Text      string
 	FilePaths []string
 	Timestamp time.Time
+	// Synthetic marks a message that was inserted by no-mistakes itself
+	// (e.g. a "middle messages omitted" notice from clampMessages). The
+	// transcript serializer renders these without a role prefix so the
+	// downstream LLM does not mistake them for user or assistant turns.
+	Synthetic bool
 }
 
 // Session is one transcript candidate from one agent.
