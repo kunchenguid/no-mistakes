@@ -10,12 +10,14 @@ import (
 
 type fakeAgent struct {
 	lastPrompt string
+	lastCWD    string
 	output     string
 }
 
 func (f *fakeAgent) Name() string { return "fake" }
 func (f *fakeAgent) Run(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
 	f.lastPrompt = opts.Prompt
+	f.lastCWD = opts.CWD
 	return &agent.Result{
 		Output: []byte(f.output),
 		Text:   f.output,
@@ -25,7 +27,7 @@ func (f *fakeAgent) Close() error { return nil }
 
 func TestAgentSummarizer_Happy(t *testing.T) {
 	fa := &fakeAgent{output: `{"summary": "user wanted to add foo"}`}
-	s := NewAgentSummarizer(fa)
+	s := NewAgentSummarizer(fa, "")
 	got, err := s.Summarize(context.Background(), &Session{
 		Messages: []Message{
 			{Role: RoleUser, Text: "please add a foo helper"},
@@ -46,8 +48,26 @@ func TestAgentSummarizer_Happy(t *testing.T) {
 	}
 }
 
+// CWD must reach the underlying agent. Backends like opencode spawn a
+// long-lived server on first Run() and lock its cwd; if the summarizer's
+// CWD is empty, the server starts in the daemon's cwd and every later
+// pipeline step inherits the wrong server-process root, even when those
+// steps pass the correct CWD themselves.
+func TestAgentSummarizer_PropagatesCWD(t *testing.T) {
+	fa := &fakeAgent{output: `{"summary": "x"}`}
+	s := NewAgentSummarizer(fa, "/work/dir")
+	if _, err := s.Summarize(context.Background(), &Session{
+		Messages: []Message{{Role: RoleUser, Text: "do something"}},
+	}); err != nil {
+		t.Fatalf("summarize: %v", err)
+	}
+	if fa.lastCWD != "/work/dir" {
+		t.Errorf("CWD passed to agent = %q, want %q", fa.lastCWD, "/work/dir")
+	}
+}
+
 func TestAgentSummarizer_EmptyTranscript(t *testing.T) {
-	s := NewAgentSummarizer(&fakeAgent{output: `{"summary": "x"}`})
+	s := NewAgentSummarizer(&fakeAgent{output: `{"summary": "x"}`}, "")
 	_, err := s.Summarize(context.Background(), &Session{})
 	if err == nil {
 		t.Error("expected error for empty transcript")

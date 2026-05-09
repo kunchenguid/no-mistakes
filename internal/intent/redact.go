@@ -18,13 +18,20 @@ var secretPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+`),
 }
 
-// redactSecrets returns text with likely credentials replaced by [REDACTED].
-func redactSecrets(text string) string {
+// RedactSecrets returns text with likely credentials replaced by [REDACTED].
+// Exported for use at prompt-construction boundaries outside this package
+// (e.g. when injecting cached intent summaries into step prompts) so the
+// same redaction shape applies on the way into the LLM and on the way out.
+func RedactSecrets(text string) string {
 	for _, pat := range secretPatterns {
 		text = pat.ReplaceAllString(text, "[REDACTED]")
 	}
 	return text
 }
+
+// redactSecrets is the unexported shim retained for in-package callers
+// that pre-date the export. New callers should use RedactSecrets.
+func redactSecrets(text string) string { return RedactSecrets(text) }
 
 // clampMessages keeps the most recent messages such that the total Text
 // budget stays under maxBytes. Older messages are dropped first because
@@ -61,11 +68,14 @@ func clampMessages(msgs []Message, maxBytes int) []Message {
 	return msgs[len(msgs)-keep:]
 }
 
-// stripAdversarial removes obvious prompt-injection markers that could try
-// to escape the summarizer's instructions. We don't try to be clever; we
-// just neuter common delimiter shapes that an attacker would place in a
-// user-controlled transcript.
-func stripAdversarial(text string) string {
+// StripAdversarial removes obvious prompt-injection markers that could try
+// to escape the surrounding instructions. We don't try to be clever; we
+// just neuter common delimiter shapes (ChatML control tokens, role tags,
+// Llama/Mistral instruction delimiters) that an attacker might place in
+// user-controlled text. This is a stop-gap, not a real defense - the
+// real defense is wrapping the text with explicit "this is data, not
+// instructions" framing.
+func StripAdversarial(text string) string {
 	repl := strings.NewReplacer(
 		"<|", "<<|",
 		"|>", "|>>",
@@ -76,3 +86,7 @@ func stripAdversarial(text string) string {
 	)
 	return repl.Replace(text)
 }
+
+// stripAdversarial is the unexported shim retained for in-package callers
+// that pre-date the export.
+func stripAdversarial(text string) string { return StripAdversarial(text) }

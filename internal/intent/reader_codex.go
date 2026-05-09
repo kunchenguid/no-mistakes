@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -300,7 +301,10 @@ func codexExtractToolPaths(toolName, argumentsJSON string) []string {
 
 // resolveCodexStateDB picks the highest-numbered state_<N>.sqlite under root.
 // Codex versions its state DB; we want the most recent one without hard-coding
-// the suffix.
+// the suffix. Sort numerically by the <N> suffix - lexicographic order would
+// rank state_9 above state_10 once Codex reaches two-digit versions.
+// Files whose suffix doesn't parse as an integer are placed at the end so
+// they never override a real numbered DB.
 func resolveCodexStateDB(root string) (string, error) {
 	entries, err := os.ReadDir(root)
 	if err != nil {
@@ -320,6 +324,33 @@ func resolveCodexStateDB(root string) (string, error) {
 	if len(candidates) == 0 {
 		return "", nil
 	}
-	sort.Sort(sort.Reverse(sort.StringSlice(candidates)))
+	sort.Slice(candidates, func(i, j int) bool {
+		ni, oki := codexStateVersion(candidates[i])
+		nj, okj := codexStateVersion(candidates[j])
+		switch {
+		case oki && okj:
+			return ni > nj
+		case oki:
+			return true
+		case okj:
+			return false
+		default:
+			return candidates[i] > candidates[j]
+		}
+	})
 	return filepath.Join(root, candidates[0]), nil
+}
+
+// codexStateVersion extracts the integer N from "state_N.sqlite". Returns
+// (0, false) when the suffix is missing or non-numeric.
+func codexStateVersion(name string) (int, bool) {
+	trimmed := strings.TrimSuffix(strings.TrimPrefix(name, "state_"), ".sqlite")
+	if trimmed == "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(trimmed)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }

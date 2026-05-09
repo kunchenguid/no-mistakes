@@ -329,7 +329,7 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	// Failures are intentionally swallowed - the pipeline must run even when
 	// intent extraction is unavailable. Skipped in demo mode (noop agent).
 	if !steps.IsDemoMode() {
-		m.extractIntent(ctx, cfg, ag, repo, run, baseSHA, headSHA)
+		m.extractIntent(ctx, cfg, ag, repo, run, wtDir, baseSHA, headSHA)
 	}
 
 	// Create executor with event broadcast.

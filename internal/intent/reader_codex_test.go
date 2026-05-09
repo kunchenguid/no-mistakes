@@ -190,3 +190,39 @@ func TestResolveCodexStateDB_PicksHighestVersion(t *testing.T) {
 		t.Errorf("picked %s, want state_6.sqlite", got)
 	}
 }
+
+// Lexicographic sort would rank state_9 ahead of state_10 (because '9' > '1');
+// numeric sort must pick state_10. Once Codex bumps past state_9 this is the
+// difference between reading the live DB and reading a stale one.
+func TestResolveCodexStateDB_NumericSortPastNine(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"state_9.sqlite", "state_10.sqlite", "state_11.sqlite", "state_5.sqlite"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte{}, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := resolveCodexStateDB(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Base(got) != "state_11.sqlite" {
+		t.Errorf("picked %s, want state_11.sqlite (numeric sort)", got)
+	}
+}
+
+// Non-numeric suffixes (e.g. backups) must not override a real numbered DB.
+func TestResolveCodexStateDB_IgnoresNonNumericSuffix(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"state_5.sqlite", "state_backup.sqlite"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte{}, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := resolveCodexStateDB(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Base(got) != "state_5.sqlite" {
+		t.Errorf("picked %s, want state_5.sqlite (numeric must outrank non-numeric)", got)
+	}
+}

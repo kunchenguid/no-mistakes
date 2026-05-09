@@ -96,6 +96,34 @@ func TestIntentJourney(t *testing.T) {
 	if !strings.Contains(reviewPrompt, "Bar()") {
 		t.Errorf("review prompt does not contain the canned intent body; review prompt was:\n%s", truncate(reviewPrompt, 2000))
 	}
+
+	// 4. Every agent invocation - including the summarizer - must have run
+	// with the worktree as its cwd. Backends like opencode spawn a
+	// long-lived server and lock its cwd from the first call; if the
+	// summarizer is invoked without setting CWD, the server roots itself
+	// in the daemon's launch directory and every subsequent step (review,
+	// test, etc.) operates from the wrong place even when those steps
+	// pass the right CWD. The fakeagent records os.Getwd() per call, so
+	// this assertion catches the regression generically across backends.
+	wantCWD := canonicalForCompare(t, paths.WithRoot(h.NMHome).WorktreeDir(h.repoID(), run.ID))
+	for i, inv := range invocations {
+		got := canonicalForCompare(t, inv.CWD)
+		if got != wantCWD {
+			t.Errorf("invocation %d ran in cwd %q, want worktree %q; prompt prefix:\n%s",
+				i, inv.CWD, wantCWD, truncate(inv.Prompt, 200))
+		}
+	}
+}
+
+func canonicalForCompare(t *testing.T, p string) string {
+	t.Helper()
+	if p == "" {
+		return ""
+	}
+	if resolved, err := filepath.EvalSymlinks(p); err == nil {
+		return resolved
+	}
+	return p
 }
 
 // runIntentColumns is a small bag for the four nullable intent fields read

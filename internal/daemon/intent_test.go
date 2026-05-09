@@ -104,7 +104,7 @@ func TestExtractIntent_AttachesSummaryToRun(t *testing.T) {
 		},
 	}
 
-	m.extractIntent(context.Background(), cfg, &fakeIntentAgent{}, repo, run, base, head)
+	m.extractIntent(context.Background(), cfg, &fakeIntentAgent{}, repo, run, repoDir, base, head)
 
 	got, err := d.GetRun(run.ID)
 	if err != nil {
@@ -132,7 +132,7 @@ func TestExtractIntent_DisabledIsNoOp(t *testing.T) {
 	m := &RunManager{db: d}
 	cfg := &config.Config{Intent: config.Intent{Enabled: false}}
 
-	m.extractIntent(context.Background(), cfg, &fakeIntentAgent{}, repo, run, base, head)
+	m.extractIntent(context.Background(), cfg, &fakeIntentAgent{}, repo, run, repoDir, base, head)
 
 	got, _ := d.GetRun(run.ID)
 	if got.Intent != nil {
@@ -153,7 +153,7 @@ func TestExtractIntent_NoTranscriptIsNoOp(t *testing.T) {
 	cfg := &config.Config{Intent: config.Intent{Enabled: true, Threshold: 0.5, SlackDays: 3}}
 
 	// Should not panic, should not attach.
-	m.extractIntent(context.Background(), cfg, &fakeIntentAgent{}, repo, run, base, head)
+	m.extractIntent(context.Background(), cfg, &fakeIntentAgent{}, repo, run, repoDir, base, head)
 
 	got, _ := d.GetRun(run.ID)
 	if got.Intent != nil {
@@ -186,7 +186,7 @@ func TestExtractIntent_ZeroBaseSHA_NewBranchPush(t *testing.T) {
 	m := &RunManager{db: d}
 	cfg := &config.Config{Intent: config.Intent{Enabled: true, Threshold: 0.1, SlackDays: 3}}
 
-	m.extractIntent(context.Background(), cfg, &fakeIntentAgent{}, repo, run, zeroSHA, branchHead)
+	m.extractIntent(context.Background(), cfg, &fakeIntentAgent{}, repo, run, repoDir, zeroSHA, branchHead)
 
 	got, _ := d.GetRun(run.ID)
 	if got.Intent == nil {
@@ -214,7 +214,7 @@ func TestExtractIntent_RespectsTimeout(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		m.extractIntent(ctx, cfg, &fakeIntentAgent{}, repo, run, base, head)
+		m.extractIntent(ctx, cfg, &fakeIntentAgent{}, repo, run, repoDir, base, head)
 		close(done)
 	}()
 	select {

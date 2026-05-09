@@ -25,7 +25,7 @@ func TestExtract_EndToEndWithClaudeFixture(t *testing.T) {
 		Threshold:  0.2,
 		Readers:    AllReaders(nil),
 		Cache:      NewMemCache(),
-		Summarizer: NewAgentSummarizer(fa),
+		Summarizer: NewAgentSummarizer(fa, ""),
 	})
 	if err != nil {
 		t.Fatalf("extract: %v", err)

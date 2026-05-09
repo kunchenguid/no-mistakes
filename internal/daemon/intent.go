@@ -33,7 +33,7 @@ func (m *RunManager) extractIntent(
 	ag agent.Agent,
 	repo *db.Repo,
 	run *db.Run,
-	baseSHA, headSHA string,
+	wtDir, baseSHA, headSHA string,
 ) {
 	if !cfg.Intent.Enabled {
 		return
@@ -116,7 +116,7 @@ func (m *RunManager) extractIntent(
 		Threshold:  cfg.Intent.Threshold,
 		Readers:    intent.AllReaders(cfg.Intent.DisabledReaders),
 		Cache:      intent.NewDBCache(m.db),
-		Summarizer: intent.NewAgentSummarizer(ag),
+		Summarizer: intent.NewAgentSummarizer(ag, wtDir),
 	})
 	if err != nil {
 		if errors.Is(err, intent.ErrNoMatch) {
