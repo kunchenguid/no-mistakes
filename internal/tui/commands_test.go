@@ -265,13 +265,22 @@ func TestModel_Update_RerunStartedBackfillsMissingPipelineSteps(t *testing.T) {
 		HeadSHA: run.HeadSHA,
 		BaseSHA: run.BaseSHA,
 		Status:  types.RunRunning,
-		Steps: []ipc.StepResultInfo{{
-			ID:        "s1",
-			RunID:     "run-002",
-			StepName:  types.StepRebase,
-			StepOrder: types.StepRebase.Order(),
-			Status:    types.StepStatusRunning,
-		}},
+		Steps: []ipc.StepResultInfo{
+			{
+				ID:        "s0",
+				RunID:     "run-002",
+				StepName:  types.StepIntent,
+				StepOrder: types.StepIntent.Order(),
+				Status:    types.StepStatusSkipped,
+			},
+			{
+				ID:        "s1",
+				RunID:     "run-002",
+				StepName:  types.StepRebase,
+				StepOrder: types.StepRebase.Order(),
+				Status:    types.StepStatusRunning,
+			},
+		},
 	}
 
 	updated, _ := m.Update(rerunStartedMsg{run: newRun})
@@ -285,15 +294,17 @@ func TestModel_Update_RerunStartedBackfillsMissingPipelineSteps(t *testing.T) {
 			t.Fatalf("step %d = %s, want %s", i, model.steps[i].StepName, stepName)
 		}
 	}
-	if model.steps[0].Status != types.StepStatusRunning {
-		t.Fatalf("rebase status = %s, want %s", model.steps[0].Status, types.StepStatusRunning)
+	rebaseIdx := types.StepRebase.Order() - 1
+	reviewIdx := types.StepReview.Order() - 1
+	if model.steps[rebaseIdx].Status != types.StepStatusRunning {
+		t.Fatalf("rebase status = %s, want %s", model.steps[rebaseIdx].Status, types.StepStatusRunning)
 	}
-	if model.steps[1].Status != types.StepStatusPending {
-		t.Fatalf("review status = %s, want %s", model.steps[1].Status, types.StepStatusPending)
+	if model.steps[reviewIdx].Status != types.StepStatusPending {
+		t.Fatalf("review status = %s, want %s", model.steps[reviewIdx].Status, types.StepStatusPending)
 	}
 
 	plain := stripANSI(renderPipelineView(model.run, model.steps, 80, 0, 40))
-	for _, label := range []string{"Rebase", "Review", "Test", "Document", "Lint", "Push", "PR", "CI"} {
+	for _, label := range []string{"Intent", "Rebase", "Review", "Test", "Document", "Lint", "Push", "PR", "CI"} {
 		if !strings.Contains(plain, label) {
 			t.Fatalf("expected pipeline view to contain %q, got:\n%s", label, plain)
 		}
@@ -301,8 +312,8 @@ func TestModel_Update_RerunStartedBackfillsMissingPipelineSteps(t *testing.T) {
 
 	review := types.StepReview
 	model.applyEvent(ipc.Event{Type: ipc.EventStepStarted, StepName: &review})
-	if model.steps[1].Status != types.StepStatusRunning {
-		t.Fatalf("review status after event = %s, want %s", model.steps[1].Status, types.StepStatusRunning)
+	if model.steps[reviewIdx].Status != types.StepStatusRunning {
+		t.Fatalf("review status after event = %s, want %s", model.steps[reviewIdx].Status, types.StepStatusRunning)
 	}
 }
 

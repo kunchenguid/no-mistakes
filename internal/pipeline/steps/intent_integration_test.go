@@ -1,4 +1,4 @@
-package daemon
+package steps
 
 import (
 	"context"
@@ -12,6 +12,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 )
 
 // fakeIntentAgent always returns a canned summary - bypasses any real LLM.
@@ -27,8 +28,8 @@ func (f *fakeIntentAgent) Run(_ context.Context, _ agent.RunOpts) (*agent.Result
 func (f *fakeIntentAgent) Close() error { return nil }
 
 // initIntentRepo creates a real git repo with two commits and writes a
-// matching Claude transcript fixture into a fake $HOME so extractIntent
-// has something to discover.
+// matching Claude transcript fixture into a fake $HOME so the default
+// intent extractor has something to discover.
 func initIntentRepo(t *testing.T) (repoDir, fakeHome, base, head string) {
 	t.Helper()
 	repoDir = t.TempDir()
@@ -40,15 +41,14 @@ func initIntentRepo(t *testing.T) (repoDir, fakeHome, base, head string) {
 	}
 	gitCmd(t, repoDir, "add", ".")
 	gitCmd(t, repoDir, "commit", "-m", "base")
-	base = gitOutput(t, repoDir, "rev-parse", "HEAD")
+	base = gitCmd(t, repoDir, "rev-parse", "HEAD")
 	if err := os.WriteFile(filepath.Join(repoDir, "internal_foo.go"), []byte("package foo\nfunc Bar() {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	gitCmd(t, repoDir, "add", ".")
 	gitCmd(t, repoDir, "commit", "-m", "head")
-	head = gitOutput(t, repoDir, "rev-parse", "HEAD")
+	head = gitCmd(t, repoDir, "rev-parse", "HEAD")
 
-	// Write a Claude fixture matching the repo's cwd.
 	fakeHome = t.TempDir()
 	encoded := testClaudeProjectDirName(repoDir)
 	claudeDir := filepath.Join(fakeHome, ".claude", "projects", encoded)
@@ -78,8 +78,6 @@ func testJSONString(t *testing.T, s string) string {
 	return string(b)
 }
 
-// withFakeHome temporarily redirects HOME so the Claude reader picks up
-// the fixture rather than the real machine's transcripts.
 func withFakeHome(t *testing.T, fakeHome string) {
 	t.Helper()
 	t.Setenv("HOME", fakeHome)
@@ -97,10 +95,8 @@ func openIntentTestDB(t *testing.T) *db.DB {
 	return d
 }
 
-func TestExtractIntent_AttachesSummaryToRun(t *testing.T) {
-	repoDir, fakeHome, base, head := initIntentRepo(t)
-	withFakeHome(t, fakeHome)
-
+func newIntentIntegrationContext(t *testing.T, repoDir, base, head string, cfg *config.Config) *pipeline.StepContext {
+	t.Helper()
 	d := openIntentTestDB(t)
 	repo, err := d.InsertRepo(repoDir, "https://example.com/r.git", "main")
 	if err != nil {
@@ -110,19 +106,38 @@ func TestExtractIntent_AttachesSummaryToRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	return &pipeline.StepContext{
+		Ctx:      context.Background(),
+		Run:      run,
+		Repo:     repo,
+		WorkDir:  repoDir,
+		Agent:    &fakeIntentAgent{},
+		Config:   cfg,
+		DB:       d,
+		Log:      func(string) {},
+		LogChunk: func(string) {},
+		LogFile:  func(string) {},
+	}
+}
 
-	m := &RunManager{db: d}
+func TestIntentStep_Integration_AttachesSummaryToRun(t *testing.T) {
+	repoDir, fakeHome, base, head := initIntentRepo(t)
+	withFakeHome(t, fakeHome)
+
 	cfg := &config.Config{
-		Intent: config.Intent{
-			Enabled:   true,
-			Threshold: 0.1,
-			SlackDays: 3,
-		},
+		Intent: config.Intent{Enabled: true, Threshold: 0.1, SlackDays: 3},
+	}
+	sctx := newIntentIntegrationContext(t, repoDir, base, head, cfg)
+
+	outcome, err := (&IntentStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if outcome == nil || outcome.Skipped {
+		t.Fatalf("expected non-skipped outcome, got %+v", outcome)
 	}
 
-	m.extractIntent(context.Background(), cfg, &fakeIntentAgent{}, repo, run, repoDir, base, head)
-
-	got, err := d.GetRun(run.ID)
+	got, err := sctx.DB.GetRun(sctx.Run.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,74 +152,72 @@ func TestExtractIntent_AttachesSummaryToRun(t *testing.T) {
 	}
 }
 
-func TestExtractIntent_DisabledIsNoOp(t *testing.T) {
+func TestIntentStep_Integration_DisabledIsNoOp(t *testing.T) {
 	repoDir, fakeHome, base, head := initIntentRepo(t)
 	withFakeHome(t, fakeHome)
 
-	d := openIntentTestDB(t)
-	repo, _ := d.InsertRepo(repoDir, "https://example.com/r.git", "main")
-	run, _ := d.InsertRun(repo.ID, "feature", head, base)
-
-	m := &RunManager{db: d}
 	cfg := &config.Config{Intent: config.Intent{Enabled: false}}
+	sctx := newIntentIntegrationContext(t, repoDir, base, head, cfg)
 
-	m.extractIntent(context.Background(), cfg, &fakeIntentAgent{}, repo, run, repoDir, base, head)
-
-	got, _ := d.GetRun(run.ID)
+	outcome, err := (&IntentStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if outcome == nil || !outcome.Skipped {
+		t.Errorf("expected Skipped when disabled, got %+v", outcome)
+	}
+	got, _ := sctx.DB.GetRun(sctx.Run.ID)
 	if got.Intent != nil {
 		t.Errorf("expected nil Intent when disabled, got %v", *got.Intent)
 	}
 }
 
-func TestExtractIntent_NoTranscriptIsNoOp(t *testing.T) {
+func TestIntentStep_Integration_NoTranscriptIsNoOp(t *testing.T) {
 	repoDir, _, base, head := initIntentRepo(t)
 	emptyHome := t.TempDir()
 	withFakeHome(t, emptyHome)
 
-	d := openIntentTestDB(t)
-	repo, _ := d.InsertRepo(repoDir, "https://example.com/r.git", "main")
-	run, _ := d.InsertRun(repo.ID, "feature", head, base)
-
-	m := &RunManager{db: d}
 	cfg := &config.Config{Intent: config.Intent{Enabled: true, Threshold: 0.5, SlackDays: 3}}
+	sctx := newIntentIntegrationContext(t, repoDir, base, head, cfg)
 
-	// Should not panic, should not attach.
-	m.extractIntent(context.Background(), cfg, &fakeIntentAgent{}, repo, run, repoDir, base, head)
-
-	got, _ := d.GetRun(run.ID)
+	outcome, err := (&IntentStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if outcome == nil || !outcome.Skipped {
+		t.Errorf("expected Skipped with no matching transcript, got %+v", outcome)
+	}
+	got, _ := sctx.DB.GetRun(sctx.Run.ID)
 	if got.Intent != nil {
-		t.Errorf("expected nil Intent with no matching transcript, got %v", *got.Intent)
+		t.Errorf("expected nil Intent, got %v", *got.Intent)
 	}
 }
 
-func TestExtractIntent_ZeroBaseSHA_NewBranchPush(t *testing.T) {
+func TestIntentStep_Integration_ZeroBaseSHA_NewBranchPush(t *testing.T) {
 	repoDir, fakeHome, base, _ := initIntentRepo(t)
 	withFakeHome(t, fakeHome)
 
-	// Branch off from base so HEAD is ahead of "main" and merge-base
-	// resolves to a strictly earlier commit. Without this, HEAD == main,
-	// merge-base returns HEAD, and the diff is empty.
 	gitCmd(t, repoDir, "checkout", "-b", "feature", base)
 	if err := os.WriteFile(filepath.Join(repoDir, "internal_foo.go"), []byte("package foo\nfunc Bar() {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	gitCmd(t, repoDir, "add", ".")
 	gitCmd(t, repoDir, "commit", "-m", "branch head")
-	branchHead := gitOutput(t, repoDir, "rev-parse", "HEAD")
+	branchHead := gitCmd(t, repoDir, "rev-parse", "HEAD")
 
-	d := openIntentTestDB(t)
-	repo, _ := d.InsertRepo(repoDir, "https://example.com/r.git", "main")
-	// Simulate a first-push to a new branch: base is the all-zeros SHA
-	// that git's pre-receive hook reports for a freshly-created ref.
 	const zeroSHA = "0000000000000000000000000000000000000000"
-	run, _ := d.InsertRun(repo.ID, "feature", branchHead, zeroSHA)
-
-	m := &RunManager{db: d}
 	cfg := &config.Config{Intent: config.Intent{Enabled: true, Threshold: 0.1, SlackDays: 3}}
+	sctx := newIntentIntegrationContext(t, repoDir, zeroSHA, branchHead, cfg)
 
-	m.extractIntent(context.Background(), cfg, &fakeIntentAgent{}, repo, run, repoDir, zeroSHA, branchHead)
+	outcome, err := (&IntentStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if outcome == nil || outcome.Skipped {
+		t.Fatalf("expected non-skipped outcome on zero-base path, got %+v", outcome)
+	}
 
-	got, _ := d.GetRun(run.ID)
+	got, _ := sctx.DB.GetRun(sctx.Run.ID)
 	if got.Intent == nil {
 		t.Fatal("zero-base diff path failed; intent not attached")
 	}
@@ -213,29 +226,26 @@ func TestExtractIntent_ZeroBaseSHA_NewBranchPush(t *testing.T) {
 	}
 }
 
-// Ensure the function honors a tight timeout by not hanging beyond it.
-func TestExtractIntent_RespectsTimeout(t *testing.T) {
+// Ensure the step honors its internal timeout by not hanging beyond it.
+func TestIntentStep_Integration_RespectsTimeout(t *testing.T) {
 	repoDir, fakeHome, base, head := initIntentRepo(t)
 	withFakeHome(t, fakeHome)
 
-	d := openIntentTestDB(t)
-	repo, _ := d.InsertRepo(repoDir, "https://example.com/r.git", "main")
-	run, _ := d.InsertRun(repo.ID, "feature", head, base)
-
-	m := &RunManager{db: d}
 	cfg := &config.Config{Intent: config.Intent{Enabled: true, Threshold: 0.1, SlackDays: 3}}
+	sctx := newIntentIntegrationContext(t, repoDir, base, head, cfg)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	sctx.Ctx = ctx
 
 	done := make(chan struct{})
 	go func() {
-		m.extractIntent(ctx, cfg, &fakeIntentAgent{}, repo, run, repoDir, base, head)
+		(&IntentStep{}).Execute(sctx)
 		close(done)
 	}()
 	select {
 	case <-done:
 	case <-time.After(intentExtractTimeout + 5*time.Second):
-		t.Fatal("extractIntent did not return within budget")
+		t.Fatal("IntentStep.Execute did not return within budget")
 	}
 }

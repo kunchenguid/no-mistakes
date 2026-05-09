@@ -26,6 +26,7 @@ const (
 type StepName string
 
 const (
+	StepIntent   StepName = "intent"
 	StepRebase   StepName = "rebase"
 	StepReview   StepName = "review"
 	StepTest     StepName = "test"
@@ -75,22 +76,24 @@ func (s StepName) Value() (driver.Value, error) {
 // StepOrder returns the fixed execution order for a step (1-indexed).
 func (s StepName) Order() int {
 	switch s {
-	case StepRebase:
+	case StepIntent:
 		return 1
-	case StepReview:
+	case StepRebase:
 		return 2
-	case StepTest:
+	case StepReview:
 		return 3
-	case StepDocument:
+	case StepTest:
 		return 4
-	case StepLint:
+	case StepDocument:
 		return 5
-	case StepPush:
+	case StepLint:
 		return 6
-	case StepPR:
+	case StepPush:
 		return 7
-	case StepCI:
+	case StepPR:
 		return 8
+	case StepCI:
+		return 9
 	default:
 		return 0
 	}
@@ -98,7 +101,7 @@ func (s StepName) Order() int {
 
 // AllSteps returns all pipeline steps in execution order.
 func AllSteps() []StepName {
-	return []StepName{StepRebase, StepReview, StepTest, StepDocument, StepLint, StepPush, StepPR, StepCI}
+	return []StepName{StepIntent, StepRebase, StepReview, StepTest, StepDocument, StepLint, StepPush, StepPR, StepCI}
 }
 
 // StepStatus represents the lifecycle state of a pipeline step.

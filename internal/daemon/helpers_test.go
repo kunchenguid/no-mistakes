@@ -2,10 +2,12 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -265,6 +267,24 @@ func gitOutput(t *testing.T, dir string, args ...string) string {
 		t.Fatalf("git %v failed: %v", args, err)
 	}
 	return string(out[:len(out)-1]) // trim trailing newline
+}
+
+// testJSONString quotes s as a JSON string for embedding into transcript
+// fixtures.
+func testJSONString(t *testing.T, s string) string {
+	t.Helper()
+	b, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// testClaudeProjectDirName mirrors the Claude transcript layout's path
+// encoding: every '/', '\\', and ':' becomes '-'.
+func testClaudeProjectDirName(cwd string) string {
+	replacer := strings.NewReplacer("/", "-", `\`, "-", ":", "-")
+	return replacer.Replace(cwd)
 }
 
 func writeMockClaude(t *testing.T, dir string) string {

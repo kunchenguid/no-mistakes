@@ -385,16 +385,6 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 			m.mu.Unlock()
 		}()
 
-		// Best-effort: read recent local agent transcripts to infer the user's
-		// original intent and attach it to the run so review, test, lint,
-		// documentation, and PR prompts can surface what the author was trying
-		// to accomplish, not just the diff.
-		// Failures are intentionally swallowed - the pipeline must run even when
-		// intent extraction is unavailable. Skipped in demo mode (noop agent).
-		if !steps.IsDemoMode() {
-			m.extractIntent(runCtx, cfg, ag, repo, run, wtDir, baseSHA, headSHA)
-		}
-
 		if err := executor.Execute(runCtx, run, repo, wtDir); err != nil {
 			fields := telemetry.Fields{
 				"action":      "finished",
