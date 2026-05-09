@@ -12,7 +12,7 @@ rebase → review → test → document → lint → push → pr → ci
 Each step can produce findings, request approval, or trigger auto-fix. Steps that encounter fatal errors stop the pipeline. Steps can also be pre-skipped when starting a run, skipped by the user, or skipped automatically by the pipeline.
 
 Before agent-backed steps run, no-mistakes may infer the author's intent from recent local Claude Code, Codex, OpenCode, or Rovo Dev transcripts.
-This is best-effort context, and when available it is included in review, test detection, lint detection, document, auto-fix, and PR prompts.
+This is best-effort context, and when available it is included in review checks and fixes, test detection and fixes, documentation checks and fixes, lint detection and fixes, and PR drafting.
 
 ## Rebase
 

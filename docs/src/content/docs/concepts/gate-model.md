@@ -53,7 +53,7 @@ That is a core design choice, not an implementation detail.
 
 - **Named remote** - `origin` is never hijacked. You push to `no-mistakes` on purpose, so regular `git push` still works normally.
 - **Disposable worktrees** - each run happens in its own detached worktree under `~/.no-mistakes/worktrees/`. The daemon can safely modify files, run tests, and commit fixes without touching your working directory.
-- **Fixed pipeline** - the step order is opinionated and not configurable: `rebase → review → test → document → lint → push → pr → ci`. What you _can_ configure is the commands each step runs and how many auto-fix attempts are allowed.
+- **Fixed pipeline** - the step order is opinionated and not configurable: `rebase → review → test → document → lint → push → pr → ci`. What you _can_ configure is the commands each step runs, how many auto-fix attempts are allowed, and whether transcript-based intent extraction is used.
 
 ## Why it is built this way
 
