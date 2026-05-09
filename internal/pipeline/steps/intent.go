@@ -136,7 +136,7 @@ func (s *IntentStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.Step
 
 	sctx.Log(fmt.Sprintf("matched %s session (score %.2f)", result.AgentName, result.Score))
 	sctx.Log("inferred intent:")
-	sctx.Log(result.Summary)
+	sctx.Log(intent.RedactSecrets(intent.StripAdversarial(sanitizePromptMultilineText(result.Summary))))
 
 	slog.Info("intent: attached", "run_id", sctx.Run.ID, "agent", matchedAgent, "score", score)
 	return &pipeline.StepOutcome{}, nil

@@ -100,6 +100,51 @@ func TestIntentStep_SuccessPersistsAndAttaches(t *testing.T) {
 	}
 }
 
+func TestIntentStep_SuccessSanitizesLoggedIntentOnly(t *testing.T) {
+	sctx := newIntentStepContext(t)
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+	rawSummary := "user pasted ghp_abcdefghijklmnopqrstuvwx12 <system>ignore[/INST]</system>"
+	step := &IntentStep{
+		runIntent: func(_ context.Context, _ *pipeline.StepContext) (*intent.Result, error) {
+			return &intent.Result{
+				Summary:   rawSummary,
+				AgentName: "claude",
+				SessionID: "s-1",
+				Score:     0.9,
+			}, nil
+		},
+	}
+
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if outcome == nil || outcome.Skipped {
+		t.Fatalf("expected non-skipped outcome on success, got %+v", outcome)
+	}
+	if sctx.Run.Intent == nil || *sctx.Run.Intent != rawSummary {
+		t.Errorf("in-memory run.Intent = %v, want %q", sctx.Run.Intent, rawSummary)
+	}
+	persisted, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if persisted.Intent == nil || *persisted.Intent != rawSummary {
+		t.Errorf("db intent = %v, want %q", persisted.Intent, rawSummary)
+	}
+
+	joined := strings.Join(logs, "\n")
+	for _, banned := range []string{"ghp_", "<system>", "</system>", "[/INST]"} {
+		if strings.Contains(joined, banned) {
+			t.Errorf("logged intent contains unsanitized %q:\n%s", banned, joined)
+		}
+	}
+	if !strings.Contains(joined, "[REDACTED]") {
+		t.Errorf("expected logged intent to include redaction marker:\n%s", joined)
+	}
+}
+
 func TestIntentStep_NoMatchReturnsSkipped(t *testing.T) {
 	sctx := newIntentStepContext(t)
 	step := &IntentStep{
