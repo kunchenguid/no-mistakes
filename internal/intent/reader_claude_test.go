@@ -92,7 +92,7 @@ func TestClaudeReader_DiscoversAndLoadsRealMessages(t *testing.T) {
 	// Tool use file path should land on FilePaths, NOT in the text.
 	foundPath := false
 	for _, p := range s.Messages[1].FilePaths {
-		if strings.HasSuffix(p, "internal/foo.go") {
+		if strings.HasSuffix(filepath.ToSlash(p), "internal/foo.go") {
 			foundPath = true
 		}
 	}

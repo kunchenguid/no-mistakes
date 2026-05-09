@@ -126,6 +126,7 @@ func TestPushReceivedSkipStepsConfiguresExecutor(t *testing.T) {
 func TestPushReceivedReturnsBeforeIntentSummarization(t *testing.T) {
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
+	t.Setenv("USERPROFILE", fakeHome)
 
 	step := &mockPassStep{name: types.StepReview}
 	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
@@ -159,8 +160,8 @@ func TestPushReceivedReturnsBeforeIntentSummarization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if elapsed := time.Since(started); elapsed > time.Second {
-		t.Fatalf("PushReceived took %s, want under 1s", elapsed)
+	if elapsed := time.Since(started); elapsed > 2500*time.Millisecond {
+		t.Fatalf("PushReceived took %s, want under 2.5s", elapsed)
 	}
 	if result.RunID == "" {
 		t.Fatal("expected non-empty run ID")

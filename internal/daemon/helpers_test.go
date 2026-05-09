@@ -291,7 +291,7 @@ func writeSlowMockClaude(t *testing.T, dir string) string {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		path := filepath.Join(dir, "claude.bat")
-		script := "@echo off\r\ntimeout /t 2 /nobreak >nul\r\necho {\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"structured_output\":{\"summary\":\"slow intent\"}}\r\n"
+		script := "@echo off\r\ntimeout /t 3 /nobreak >nul\r\necho {\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"structured_output\":{\"summary\":\"slow intent\"}}\r\n"
 		if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -299,7 +299,7 @@ func writeSlowMockClaude(t *testing.T, dir string) string {
 	}
 	path := filepath.Join(dir, "claude")
 	script := `#!/bin/sh
-sleep 2
+sleep 3
 printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"structured_output":{"summary":"slow intent"}}'
 `
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {

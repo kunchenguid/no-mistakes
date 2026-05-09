@@ -83,6 +83,7 @@ func testJSONString(t *testing.T, s string) string {
 func withFakeHome(t *testing.T, fakeHome string) {
 	t.Helper()
 	t.Setenv("HOME", fakeHome)
+	t.Setenv("USERPROFILE", fakeHome)
 }
 
 func openIntentTestDB(t *testing.T) *db.DB {
