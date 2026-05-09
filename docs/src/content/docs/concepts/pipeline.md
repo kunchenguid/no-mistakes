@@ -46,7 +46,7 @@ The pipeline is opinionated so that "passed the gate" has a stable meaning:
 
 ## Why these steps, in this order
 
-- **Intent first** so downstream agent prompts can include best-effort author intent when transcript matching succeeds.
+- **Intent first** so downstream agent prompts and generated PR descriptions can include best-effort author intent when transcript matching succeeds.
 - **Rebase next** so everything else runs against the latest upstream. If there's no diff left after the rebase, the pipeline skips the rest.
 - **Review before test** so the agent reads fresh code, not code it may have touched during fixes.
 - **Document after test** so docs are checked against code that's known to work.
