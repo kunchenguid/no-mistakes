@@ -225,6 +225,9 @@ When enabled, no-mistakes can read recent local agent transcripts, match the ses
 
 Valid `disabled_readers` values are `claude`, `codex`, `opencode`, and `rovodev`.
 
+The match score is the share of changed files mentioned in a transcript session.
+Mentioning extra files does not reduce the score, and ties go to the most recent matching session.
+
 ## Environment variables
 
 See [Environment Variables](/no-mistakes/reference/environment/) for `NM_HOME`, Bitbucket Cloud credentials, and update-check suppression.

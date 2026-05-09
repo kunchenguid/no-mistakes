@@ -19,6 +19,7 @@ import (
 const OpenCodeReaderName = "opencode"
 
 // opencodeReader reads OpenCode session/message/part rows from
+// $XDG_DATA_HOME/opencode/opencode.db, falling back to
 // ~/.local/share/opencode/opencode.db.
 type opencodeReader struct{}
 
