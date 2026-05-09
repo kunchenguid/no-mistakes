@@ -142,6 +142,8 @@ It matches sessions against the changed files, summarizes the likely author inte
 
 Transcript readers collect user and assistant text messages but exclude tool call output.
 Pi and ACP transcripts are not currently read for intent extraction.
+no-mistakes stores derived intent summaries and matching metadata in `~/.no-mistakes/state.sqlite`, including the source, session ID, and match score on each run plus cached summaries for matching transcript sessions.
+It does not store raw transcript text in its database.
 
 Use `intent.disabled_readers` to disable specific transcript sources, or set `intent.enabled: false` to opt out entirely.
 
