@@ -160,8 +160,8 @@ auto_fix:
 # User-intent extraction. When you push a branch, no-mistakes can read recent
 # transcripts from your local agent (Claude Code, Codex, OpenCode, Rovo Dev),
 # pick the session that produced the change, summarize the user intent, and
-# feed it to each pipeline step's agent so they understand what you were
-# trying to do - not just the diff.
+# feed it to review, test, document, lint, and PR agents so they understand
+# what you were trying to do - not just the diff.
 intent:
   enabled: true
   threshold: 0.2
