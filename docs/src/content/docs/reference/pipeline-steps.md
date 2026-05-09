@@ -11,6 +11,9 @@ rebase → review → test → document → lint → push → pr → ci
 
 Each step can produce findings, request approval, or trigger auto-fix. Steps that encounter fatal errors stop the pipeline. Steps can also be pre-skipped when starting a run, skipped by the user, or skipped automatically by the pipeline.
 
+Before agent-backed steps run, no-mistakes may infer the author's intent from recent local Claude Code, Codex, OpenCode, or Rovo Dev transcripts.
+This is best-effort context, and when available it is included in review, test detection, lint detection, document, auto-fix, and PR prompts.
+
 ## Rebase
 
 Fetches the latest upstream and rebases your branch onto it.
@@ -37,6 +40,7 @@ AI code review of your diff.
 - Diffs the base commit against head
 - Filters out files matching `ignore_patterns` from the repo config
 - Sends the filtered diff to the agent with structured review instructions and a structured output schema
+- Includes inferred user intent when transcript matching found a relevant local agent session
 - Agent returns findings with severity (`error`, `warning`, `info`), file location, description, and an `action` (`no-op`, `auto-fix`, `ask-user`)
 - Also returns a `risk_level` (`low`, `medium`, `high`) and `risk_rationale`
 
@@ -52,7 +56,7 @@ Runs your test suite.
 
 **Behavior:**
 - If `commands.test` is set in repo config: runs it via the platform shell (`sh -c` on POSIX, `cmd.exe /c` on Windows) and captures output. Non-zero exit produces `error` findings.
-- If `commands.test` is empty: the agent detects and runs relevant tests, returning structured findings with severity, description, and `action` (`no-op`, `auto-fix`, `ask-user`).
+- If `commands.test` is empty: the agent detects and runs relevant tests with inferred user intent when available, returning structured findings with severity, description, and `action` (`no-op`, `auto-fix`, `ask-user`).
 - The step also records the exact tests it exercised in a `tested` array and may include a short natural-language `testing_summary`; these are persisted even when tests pass so later steps can reuse them.
 - If the agent creates new test files (detected via `git status --porcelain`), approval is required even if tests pass.
 
@@ -69,6 +73,7 @@ Checks whether the code changes need matching documentation updates.
 **Behavior:**
 - Diffs the base commit against head and skips the step if there are no non-ignored changed files to document
 - Asks the agent to review the change and return documentation findings for any missing or stale docs, using the same `action` field as other agent-driven steps
+- Includes inferred user intent when available
 - Requires approval whenever any documentation finding is returned, including `info` findings
 
 **Auto-fix:** the agent updates only documentation files or doc comments, using the previous documentation findings plus any per-finding user notes, any selected user-authored findings from the TUI, and a sanitized history of prior rounds for that step, including earlier fix summaries and any findings the user left unselected in prior approval cycles. The step then re-runs and expects an empty findings list before continuing. Fix commits use `no-mistakes(document): <summary>`.
@@ -81,7 +86,7 @@ Runs linters and static analysis.
 
 **Behavior:**
 - If `commands.lint` is set: runs it via the platform shell (`sh -c` on POSIX, `cmd.exe /c` on Windows). Non-zero exit produces `warning` findings.
-- If `commands.lint` is empty: the agent detects and runs appropriate linters/formatters, returning structured findings with severity, description, and `action` (`no-op`, `auto-fix`, `ask-user`).
+- If `commands.lint` is empty: the agent detects and runs appropriate linters/formatters with inferred user intent when available, returning structured findings with severity, description, and `action` (`no-op`, `auto-fix`, `ask-user`).
 
 **Approval:** lint findings with `action: ask-user` always require human approval. `action: auto-fix` findings stay eligible for the fix loop. `action: no-op` findings are informational only.
 
@@ -118,7 +123,7 @@ Creates or updates a pull request.
 - Checks for an existing PR on the branch
 - If one exists, updates it. If not, creates a new one.
 - Uses the provider CLI for GitHub/GitLab and the Bitbucket API for Bitbucket Cloud
-- PR title: agent-generated in conventional commit format (`type(scope): description` or `type: description`); when a scope is used, it should be the primary affected real module/package from the changed paths and kept broad rather than file-level
+- PR title: agent-generated with inferred user intent when available, in conventional commit format (`type(scope): description` or `type: description`); when a scope is used, it should be the primary affected real module/package from the changed paths and kept broad rather than file-level
 - PR body includes: an agent-authored `## Summary` plus regenerated `## Risk Assessment`, `## Testing`, and `## Pipeline` sections from recorded step results and rounds
 - The regenerated `## Testing` section prefers the recorded `testing_summary`, lists deduplicated `tested` commands or selectors, and ends with the overall outcome including run count and total duration when available
 

@@ -39,6 +39,12 @@ auto_fix:
   document: 3
   lint: 3
   ci: 3
+
+intent:
+  enabled: true
+  threshold: 0.2
+  slack_days: 3
+  disabled_readers: []
 ```
 
 ## Fields
@@ -200,6 +206,24 @@ Maximum auto-fix attempts per step. Set a step to `0` to disable auto-fix (findi
 Legacy alias: `auto_fix.babysit`.
 
 These are global defaults. Per-repo config can override individual steps.
+
+### intent
+
+User-intent extraction settings.
+When enabled, no-mistakes can read recent local agent transcripts, match the session that produced the change, summarize the author's intent, and pass that summary to downstream agent-backed pipeline steps.
+
+| | |
+|---|---|
+| Type | `object` |
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `intent.enabled` | `bool` | `true` | Enable transcript-based intent extraction |
+| `intent.threshold` | `float` | `0.2` | Minimum match score for selecting a transcript session |
+| `intent.slack_days` | `int` | `3` | Extra days to look back before the change window |
+| `intent.disabled_readers` | `string[]` | Empty | Transcript readers to disable |
+
+Valid `disabled_readers` values are `claude`, `codex`, `opencode`, and `rovodev`.
 
 ## Environment variables
 

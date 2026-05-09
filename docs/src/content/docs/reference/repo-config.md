@@ -26,6 +26,12 @@ auto_fix:
   document: 3
   lint: 5
   ci: 3
+
+intent:
+  enabled: true
+  threshold: 0.2
+  slack_days: 3
+  disabled_readers: []
 ```
 
 ## Fields
@@ -114,3 +120,17 @@ Set to `0` to disable auto-fix for a step (always requires manual approval).
 `auto_fix.ci` covers the CI step's CI failure and merge-conflict auto-fix attempts.
 
 Legacy alias: `auto_fix.babysit`.
+
+### intent
+
+Override user-intent extraction settings for this repo.
+Fields not set here inherit from global config and then the built-in defaults.
+
+| Field | Type | Default |
+|---|---|---|
+| `intent.enabled` | `bool` | Inherits from global (default `true`) |
+| `intent.threshold` | `float` | Inherits from global (default `0.2`) |
+| `intent.slack_days` | `int` | Inherits from global (default `3`) |
+| `intent.disabled_readers` | `string[]` | Adds to globally disabled readers |
+
+Valid `disabled_readers` values are `claude`, `codex`, `opencode`, and `rovodev`.

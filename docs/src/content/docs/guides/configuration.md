@@ -13,6 +13,7 @@ work. Config exists for the parts that genuinely vary by machine or repo:
 - which agent you prefer
 - which test or lint commands are the canonical ones for this repo
 - how aggressive the auto-fix loop should be
+- whether no-mistakes should infer intent from recent local agent transcripts
 
 Config is split across two files:
 
@@ -85,6 +86,13 @@ auto_fix:
   test: 3
   review: 0
   ci: 3
+
+# Infer the author's intent from recent local agent transcripts.
+intent:
+  enabled: true
+  threshold: 0.2
+  slack_days: 3
+  disabled_readers: []
 ```
 
 See [Global Config Reference](/no-mistakes/reference/global-config/) for the full field listing.
@@ -120,6 +128,10 @@ ignore_patterns:
 auto_fix:
   document: 3
   lint: 5
+
+# Optional repo-level overrides for intent extraction.
+intent:
+  enabled: true
 ```
 
 See [Repo Config Reference](/no-mistakes/reference/repo-config/) for the full field listing.
@@ -131,6 +143,7 @@ See [Repo Config Reference](/no-mistakes/reference/repo-config/) for the full fi
 - ACP agents are opt-in with `agent: acp:<target>` and are not considered by `agent: auto`.
 - `agent_path_override`, `agent_args_override`, `acpx_path`, and `acp_registry_overrides` are global-only fields.
 - `auto_fix` from the repo config overlays global auto_fix. Fields not set in the repo config fall through to the global default.
+- `intent` from the repo config overlays global intent settings. Fields not set in the repo config fall through to the global default.
 - `commands` and `ignore_patterns` are repo-only fields.
 - `ci_timeout` and `auto_fix.ci` are the canonical keys; `babysit_timeout` and `auto_fix.babysit` are still accepted as legacy aliases.
 - If `commands.test` or `commands.lint` is empty, the agent detects and runs relevant commands itself.

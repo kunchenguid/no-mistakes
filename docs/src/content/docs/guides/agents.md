@@ -135,6 +135,16 @@ Each invocation returns:
 
 Transient API and network failures are retried up to three times with exponential backoff. Retry messages are streamed through the same `OnChunk` path shown in the TUI.
 
+## Intent extraction
+
+When `intent.enabled` is true, no-mistakes can read recent local transcripts from Claude Code, Codex, OpenCode, and Rovo Dev before a pipeline run.
+It matches sessions against the changed files, summarizes the likely author intent with the configured pipeline agent, and includes that summary as untrusted context in downstream review, test detection, lint detection, document, auto-fix, and PR prompts.
+
+Transcript readers collect user and assistant text messages but exclude tool call output.
+Pi and ACP transcripts are not currently read for intent extraction.
+
+Use `intent.disabled_readers` to disable specific transcript sources, or set `intent.enabled: false` to opt out entirely.
+
 ## Claude
 
 Spawns a `claude` subprocess for each invocation with `--output-format stream-json`. By default it also adds `--dangerously-skip-permissions`, unless you already set your own Claude permission flag through `agent_args_override`. Reads JSONL events from stdout. Supports native structured output via `--json-schema`.
