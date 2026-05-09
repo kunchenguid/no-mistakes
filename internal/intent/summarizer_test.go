@@ -48,6 +48,23 @@ func TestAgentSummarizer_Happy(t *testing.T) {
 	}
 }
 
+func TestAgentSummarizer_PromptRequiresPlainTextSummary(t *testing.T) {
+	fa := &fakeAgent{output: `{"summary": "user wanted to add foo"}`}
+	s := NewAgentSummarizer(fa, "")
+	_, err := s.Summarize(context.Background(), &Session{
+		Messages: []Message{{Role: RoleUser, Text: "please add a foo helper"}},
+	})
+	if err != nil {
+		t.Fatalf("summarize: %v", err)
+	}
+	if !strings.Contains(fa.lastPrompt, "plain text") {
+		t.Fatalf("prompt should require plain text summary, got:\n%s", fa.lastPrompt)
+	}
+	if !strings.Contains(fa.lastPrompt, "Do NOT use Markdown") {
+		t.Fatalf("prompt should forbid Markdown summary, got:\n%s", fa.lastPrompt)
+	}
+}
+
 // CWD must reach the underlying agent. Backends like opencode spawn a
 // long-lived server on first Run() and lock its cwd; if the summarizer's
 // CWD is empty, the server starts in the daemon's cwd and every later
