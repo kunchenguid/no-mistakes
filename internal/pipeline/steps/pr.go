@@ -35,7 +35,7 @@ var prContentSchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
 		"title": {"type": "string", "description": "Conventional commit PR title, e.g. fix(scope): short description"},
-		"body": {"type": "string", "description": "GitHub-flavored markdown body starting with ## Summary. Plain text, NOT JSON."}
+		"body": {"type": "string", "description": "GitHub-flavored markdown body starting with ## What Changed. Plain text, NOT JSON."}
 	},
 	"required": ["title", "body"]
 }`)
@@ -149,7 +149,7 @@ Rules:
 - Title must use conventional commit format: "type(scope): description" or "type: description". Valid types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert. Scope is optional. Do not capitalize the type. Do not use the raw branch name.
 - When including a scope, it MUST be a real package/module name that exists in the codebase (for example, a directory under internal/, cmd/, or the equivalent top-level grouping for this project), identified by inspecting the changed paths. Pick the primary module affected by the change, not a secondary or incidental one.
 - Keep the scope at a coarse level, not too granular: a codebase typically has fewer than 10 distinct scopes in use across its history. Prefer a broad module name (e.g. "daemon", "pipeline", "cli") over a narrow file or sub-feature name. If you cannot confidently identify a real primary module, omit the scope and use "type: description".
-- Body: a "## Summary" section in GitHub-flavored markdown. 1-3 concise bullet points describing what changed and why. Do not include Risk Assessment, Testing, or Pipeline sections - those are appended separately. The body value must be plain markdown text, never a JSON object or serialized JSON string.
+- Body: a "## What Changed" section in GitHub-flavored markdown. 1-3 concise bullet points describing the concrete changes in this branch (what code/behavior shifted), not the user's motivation. Do not include Intent, Risk Assessment, Testing, or Pipeline sections - those are prepended/appended separately. The body value must be plain markdown text, never a JSON object or serialized JSON string.
 - Do not invent tests or behavior.
 
 Commit history:
@@ -166,7 +166,7 @@ Diff stat:
 	})
 	if err != nil {
 		slog.Warn("agent failed for PR content, using fallback", "error", err)
-		return fallbackPRContent(branch, commitLog, riskLine, testingMD, pipelineMD), nil
+		return fallbackPRContent(sctx, branch, commitLog, riskLine, testingMD, pipelineMD), nil
 	}
 
 	var content prContent
@@ -182,12 +182,13 @@ Diff stat:
 					content.Title = "chore: " + content.Title
 				}
 				content.Body = appendGeneratedSections(content.Body, riskLine, testingMD, pipelineMD)
+				content.Body = prependIntentSection(content.Body, sctx)
 				return content, nil
 			}
 		}
 	}
 
-	return fallbackPRContent(branch, commitLog, riskLine, testingMD, pipelineMD), nil
+	return fallbackPRContent(sctx, branch, commitLog, riskLine, testingMD, pipelineMD), nil
 }
 
 // buildPipelineSection queries step results and rounds from the DB and
@@ -290,14 +291,31 @@ func isGeneratedSectionHeading(line string) bool {
 	heading = strings.ToLower(heading)
 
 	switch heading {
-	case "risk assessment", "testing", "tests", "pipeline":
+	case "intent", "risk assessment", "testing", "tests", "pipeline":
 		return true
 	default:
 		return false
 	}
 }
 
-func fallbackPRContent(branch, commitLog, riskLine, testingMD, pipelineMD string) prContent {
+// prependIntentSection prepends a "## Intent" section sourced from the
+// already-extracted user intent. The intent text is reused verbatim (after
+// the same secret/adversarial scrubbing the agent prompt path applies)
+// rather than being paraphrased by the agent. Returns body unchanged when
+// no intent is available.
+func prependIntentSection(body string, sctx *pipeline.StepContext) string {
+	cleaned := cleanedUserIntent(sctx)
+	if cleaned == "" {
+		return body
+	}
+	section := "## Intent\n\n" + cleaned
+	if strings.TrimSpace(body) == "" {
+		return section
+	}
+	return section + "\n\n" + body
+}
+
+func fallbackPRContent(sctx *pipeline.StepContext, branch, commitLog, riskLine, testingMD, pipelineMD string) prContent {
 	title := ""
 	for _, line := range strings.Split(commitLog, "\n") {
 		line = strings.TrimSpace(line)
@@ -317,11 +335,12 @@ func fallbackPRContent(branch, commitLog, riskLine, testingMD, pipelineMD string
 	} else if !isConventionalTitle(title) {
 		title = "chore: " + title
 	}
-	body := fmt.Sprintf("## Summary\n\n%s", strings.TrimSpace(commitLog))
-	if body == "## Summary\n\n" {
-		body = fmt.Sprintf("## Summary\n\n- %s", title)
+	body := fmt.Sprintf("## What Changed\n\n%s", strings.TrimSpace(commitLog))
+	if body == "## What Changed\n\n" {
+		body = fmt.Sprintf("## What Changed\n\n- %s", title)
 	}
 	body = appendGeneratedSections(body, riskLine, testingMD, pipelineMD)
+	body = prependIntentSection(body, sctx)
 	return prContent{
 		Title: title,
 		Body:  body,

@@ -694,6 +694,197 @@ func TestAppendGeneratedSections_StripsCommonHeadingVariants(t *testing.T) {
 	}
 }
 
+func TestPRStep_PrependsIntentSectionWhenIntentSet(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	env, logFile := fakeGH(t, "")
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			payload := json.RawMessage(`{"title":"feat: add bar","body":"## What Changed\n\n- add Bar()"}`)
+			return &agent.Result{Output: payload}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.UserIntent = "user wanted to add a Bar() helper for foo callers"
+
+	step := &PRStep{}
+	if _, err := step.Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+
+	logData, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ghLog := string(logData)
+
+	intentIdx := strings.Index(ghLog, "## Intent")
+	whatChangedIdx := strings.Index(ghLog, "## What Changed")
+	if intentIdx < 0 {
+		t.Fatalf("expected ## Intent section in PR body, got:\n%s", ghLog)
+	}
+	if whatChangedIdx < 0 {
+		t.Fatalf("expected ## What Changed section in PR body, got:\n%s", ghLog)
+	}
+	if intentIdx > whatChangedIdx {
+		t.Fatalf("expected ## Intent before ## What Changed, got:\n%s", ghLog)
+	}
+	if !strings.Contains(ghLog, "user wanted to add a Bar() helper for foo callers") {
+		t.Fatalf("expected intent text in PR body, got:\n%s", ghLog)
+	}
+}
+
+func TestPRStep_OmitsIntentSectionWhenIntentEmpty(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	env, logFile := fakeGH(t, "")
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			payload := json.RawMessage(`{"title":"feat: add bar","body":"## What Changed\n\n- add Bar()"}`)
+			return &agent.Result{Output: payload}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.UserIntent = ""
+
+	step := &PRStep{}
+	if _, err := step.Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+
+	logData, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ghLog := string(logData)
+
+	if strings.Contains(ghLog, "## Intent") {
+		t.Fatalf("expected no ## Intent section when intent is empty, got:\n%s", ghLog)
+	}
+}
+
+func TestPRStep_StripsAgentEmittedIntentBeforePrepend(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	env, logFile := fakeGH(t, "")
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			payload := json.RawMessage(`{"title":"feat: add bar","body":"## Intent\n\n- agent paraphrase\n\n## What Changed\n\n- add Bar()"}`)
+			return &agent.Result{Output: payload}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.UserIntent = "real user intent string"
+
+	step := &PRStep{}
+	if _, err := step.Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+
+	logData, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ghLog := string(logData)
+
+	if strings.Count(ghLog, "## Intent") != 1 {
+		t.Fatalf("expected exactly one ## Intent section, got:\n%s", ghLog)
+	}
+	if strings.Contains(ghLog, "agent paraphrase") {
+		t.Fatalf("expected agent-emitted Intent body to be stripped, got:\n%s", ghLog)
+	}
+	if !strings.Contains(ghLog, "real user intent string") {
+		t.Fatalf("expected deterministic intent text, got:\n%s", ghLog)
+	}
+}
+
+func TestPRStep_PromptUsesWhatChanged(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	env, _ := fakeGH(t, "")
+
+	var capturedPrompt string
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			capturedPrompt = opts.Prompt
+			payload := json.RawMessage(`{"title":"feat: add bar","body":"## What Changed\n\n- add Bar()"}`)
+			return &agent.Result{Output: payload}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+
+	step := &PRStep{}
+	if _, err := step.Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(capturedPrompt, "## What Changed") {
+		t.Errorf("expected prompt to instruct agent to write ## What Changed, got:\n%s", capturedPrompt)
+	}
+}
+
+func TestPRStep_FallbackUsesWhatChangedAndIntent(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	env, logFile := fakeGH(t, "")
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			return nil, fmt.Errorf("simulated agent failure")
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.UserIntent = "fallback intent text"
+
+	step := &PRStep{}
+	if _, err := step.Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+
+	logData, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ghLog := string(logData)
+
+	if !strings.Contains(ghLog, "## What Changed") {
+		t.Fatalf("expected fallback PR body to use ## What Changed heading, got:\n%s", ghLog)
+	}
+	if strings.Contains(ghLog, "## Summary") {
+		t.Fatalf("expected fallback PR body to no longer use ## Summary heading, got:\n%s", ghLog)
+	}
+	if !strings.Contains(ghLog, "## Intent") {
+		t.Fatalf("expected fallback PR body to include ## Intent section, got:\n%s", ghLog)
+	}
+	if !strings.Contains(ghLog, "fallback intent text") {
+		t.Fatalf("expected fallback PR body to include intent text, got:\n%s", ghLog)
+	}
+
+	intentIdx := strings.Index(ghLog, "## Intent")
+	whatChangedIdx := strings.Index(ghLog, "## What Changed")
+	if intentIdx > whatChangedIdx {
+		t.Fatalf("expected ## Intent before ## What Changed in fallback, got:\n%s", ghLog)
+	}
+}
+
 func TestPRStep_GitLabCreatesNewMR(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
