@@ -226,6 +226,49 @@ func TestIntentStep_Integration_ZeroBaseSHA_NewBranchPush(t *testing.T) {
 	}
 }
 
+// After a force push, Run.BaseSHA is the prior remote tip of the branch, which
+// may be unreachable in the worktree (rewritten away or never fetched). The
+// step must fall back to merge-base against the default branch instead of
+// trusting the orphaned SHA, otherwise `git diff <orphaned>..<head>` fails
+// with "Invalid revision range" and intent silently skips.
+func TestIntentStep_Integration_ForcePushedOrphanedBaseSHA(t *testing.T) {
+	repoDir, fakeHome, _, _ := initIntentRepo(t)
+	withFakeHome(t, fakeHome)
+
+	// Branch off main and add a feature commit that touches internal_foo.go.
+	// initIntentRepo's main HEAD already contains func Bar(), so vary the
+	// content here to produce a real diff between feature and main.
+	gitCmd(t, repoDir, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(repoDir, "internal_foo.go"), []byte("package foo\nfunc Bar() { /* feature */ }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repoDir, "add", ".")
+	gitCmd(t, repoDir, "commit", "-m", "feature head")
+	branchHead := gitCmd(t, repoDir, "rev-parse", "HEAD")
+
+	// Simulate a force-pushed branch: BaseSHA is a non-zero, non-existent
+	// commit (the previous remote tip that got rewritten away).
+	const orphanedBaseSHA = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+	cfg := &config.Config{Intent: config.Intent{Enabled: true, Threshold: 0.1, SlackDays: 3}}
+	sctx := newIntentIntegrationContext(t, repoDir, orphanedBaseSHA, branchHead, cfg)
+
+	outcome, err := (&IntentStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if outcome == nil || outcome.Skipped {
+		t.Fatalf("expected non-skipped outcome on force-pushed branch, got %+v", outcome)
+	}
+
+	got, _ := sctx.DB.GetRun(sctx.Run.ID)
+	if got.Intent == nil {
+		t.Fatal("force-pushed branch: intent not attached")
+	}
+	if !strings.Contains(*got.Intent, "Bar()") {
+		t.Errorf("Intent = %q", *got.Intent)
+	}
+}
+
 // Ensure the step honors its internal timeout by not hanging beyond it.
 func TestIntentStep_Integration_RespectsTimeout(t *testing.T) {
 	repoDir, fakeHome, base, head := initIntentRepo(t)

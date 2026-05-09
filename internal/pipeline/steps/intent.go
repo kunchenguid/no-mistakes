@@ -200,21 +200,26 @@ func defaultRunIntent(ctx context.Context, sctx *pipeline.StepContext) (*intent.
 	})
 }
 
-// resolveIntentBaseSHA returns a usable base SHA for diff'ing against the
-// head. New-branch pushes arrive with the all-zeros SHA from git's hook,
-// in which case we fall back to merge-base against the default branch
-// and then to git's empty-tree SHA, so the diff always succeeds.
+// resolveIntentBaseSHA returns a usable base SHA for diff'ing against head.
+// Prefers an explicit run.BaseSHA when reachable in the worktree, but falls
+// back to merge-base against the default branch when the SHA is the zero ref
+// (new branch push) or has been orphaned by a force push that rewrote the
+// prior remote tip away. Final fallback is git's empty-tree SHA so the diff
+// always succeeds.
 func resolveIntentBaseSHA(ctx context.Context, workDir, baseSHA, defaultBranch string) string {
-	if !git.IsZeroSHA(baseSHA) {
+	if !git.IsZeroSHA(baseSHA) && commitReachable(ctx, workDir, baseSHA) {
 		return baseSHA
 	}
-	if strings.TrimSpace(defaultBranch) != "" {
-		for _, ref := range []string{"origin/" + defaultBranch, defaultBranch} {
-			mb, err := git.Run(ctx, workDir, "merge-base", "HEAD", ref)
-			if err == nil && strings.TrimSpace(mb) != "" {
-				return strings.TrimSpace(mb)
-			}
-		}
+	if mb := mergeBaseWithDefaultBranch(ctx, workDir, defaultBranch); mb != "" {
+		return mb
 	}
 	return git.EmptyTreeSHA
+}
+
+func commitReachable(ctx context.Context, workDir, sha string) bool {
+	if strings.TrimSpace(sha) == "" {
+		return false
+	}
+	_, err := git.Run(ctx, workDir, "cat-file", "-e", sha+"^{commit}")
+	return err == nil
 }
