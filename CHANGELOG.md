@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.14.0](https://github.com/kunchenguid/no-mistakes/compare/v1.13.1...v1.14.0) (2026-05-09)
+
+
+### Features
+
+* **intent:** add transcript-based intent extraction ([#173](https://github.com/kunchenguid/no-mistakes/issues/173)) ([5f0301d](https://github.com/kunchenguid/no-mistakes/commit/5f0301d75b061978c16dd6938f5646339c9e57ef))
+
 ## [1.13.1](https://github.com/kunchenguid/no-mistakes/compare/v1.13.0...v1.13.1) (2026-05-06)
 
 
