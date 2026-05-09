@@ -67,6 +67,18 @@ Disable background update checks.
 
 Update checks run on every CLI invocation except `update` itself, hit GitHub releases, cache the result in `$NM_HOME/update-check.json`, and print a one-line notification to stderr when a newer version is available. Dev builds (non-semver versions) suppress the check automatically.
 
+## `XDG_DATA_HOME`
+
+Data directory used to discover OpenCode transcripts for intent extraction.
+
+| | |
+|---|---|
+| Type | `string` |
+| Default | `~/.local/share` |
+
+When set, no-mistakes looks for OpenCode's intent transcript database at `$XDG_DATA_HOME/opencode/opencode.db`.
+When unset, it falls back to `~/.local/share/opencode/opencode.db`.
+
 ## `NO_MISTAKES_UMAMI_HOST`
 
 Override the telemetry collection host.

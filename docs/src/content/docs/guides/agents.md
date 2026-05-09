@@ -141,6 +141,7 @@ When `intent.enabled` is true, no-mistakes can read recent local transcripts fro
 It matches sessions against the changed files, summarizes the likely author intent with the configured pipeline agent, and includes that summary as untrusted context in downstream review, test detection, lint detection, document, auto-fix, and PR prompts.
 
 Transcript readers collect user and assistant text messages but exclude tool call output.
+They read Claude Code transcripts from `~/.claude/projects`, Codex metadata from `~/.codex/state_*.sqlite` plus referenced rollout files, OpenCode messages from `$XDG_DATA_HOME/opencode/opencode.db` or `~/.local/share/opencode/opencode.db`, and Rovo Dev sessions from `~/.rovodev/sessions`.
 Pi and ACP transcripts are not currently read for intent extraction.
 no-mistakes stores derived intent summaries and matching metadata in `~/.no-mistakes/state.sqlite`, including the source, session ID, and match score on each run plus cached summaries for matching transcript sessions.
 It does not store raw transcript text in its database.

@@ -133,14 +133,17 @@ Communication between the CLI and daemon uses JSON-RPC 2.0 over the Unix socket.
 
 ### Database
 
-SQLite at `~/.no-mistakes/state.sqlite` tracks repos, runs, step results, and
-step rounds. Step rounds record each execution attempt (initial, auto-fix) with
-its own findings and duration, plus selected finding IDs, whether the
-selection came from the user or auto-fix filtering, the merged finding payload
-actually sent to the fix agent for that round, and the one-line fix summary
-for fix rounds. That merged payload can include per-finding user notes and
-user-authored findings from the TUI. Legacy `user_fix` rounds are still read
-as `auto-fix` for backward compatibility.
+SQLite at `~/.no-mistakes/state.sqlite` tracks repos, runs, step results, step
+rounds, and derived intent summaries. Step rounds record each execution attempt
+(initial, auto-fix) with its own findings and duration, plus selected finding
+IDs, whether the selection came from the user or auto-fix filtering, the merged
+finding payload actually sent to the fix agent for that round, and the one-line
+fix summary for fix rounds. That merged payload can include per-finding user
+notes and user-authored findings from the TUI. Intent extraction stores the
+summary, source, session ID, and match score on each run, plus cached summaries
+for matching transcript sessions. Raw transcript text is not stored in this
+database. Legacy `user_fix` rounds are still read as `auto-fix` for backward
+compatibility.
 
 ## Local state
 
