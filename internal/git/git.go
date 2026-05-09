@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // EmptyTreeSHA is the well-known SHA of an empty tree in git.
@@ -114,6 +116,40 @@ func FindMainRepoRoot(path string) (string, error) {
 // Diff returns the unified diff between two commits.
 func Diff(ctx context.Context, dir, base, head string) (string, error) {
 	return Run(ctx, dir, "diff", base+".."+head)
+}
+
+// DiffNameOnly returns the list of files changed between base and head.
+// Output is split on newlines with empty entries removed.
+func DiffNameOnly(ctx context.Context, dir, base, head string) ([]string, error) {
+	out, err := Run(ctx, dir, "diff", "--name-only", base+".."+head)
+	if err != nil {
+		return nil, err
+	}
+	var files []string
+	for _, line := range strings.Split(out, "\n") {
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			files = append(files, trimmed)
+		}
+	}
+	return files, nil
+}
+
+// CommitTime returns the committer timestamp for a SHA in UTC.
+func CommitTime(ctx context.Context, dir, sha string) (time.Time, error) {
+	out, err := Run(ctx, dir, "show", "-s", "--format=%ct", sha)
+	if err != nil {
+		return time.Time{}, err
+	}
+	secs, err := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("parse commit time %q: %w", out, err)
+	}
+	return time.Unix(secs, 0).UTC(), nil
+}
+
+// CommitAuthorEmail returns the author email for a SHA.
+func CommitAuthorEmail(ctx context.Context, dir, sha string) (string, error) {
+	return Run(ctx, dir, "show", "-s", "--format=%ae", sha)
 }
 
 // DiffHead returns the unified diff between HEAD and the working tree

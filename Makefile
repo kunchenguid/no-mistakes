@@ -43,6 +43,7 @@ dist:
 	done
 
 install: build
+	mkdir -p $(dir $(INSTALL_BIN))
 	install -m 755 bin/no-mistakes $(INSTALL_BIN)
 	$(INSTALL_BIN) daemon stop
 	$(INSTALL_BIN) daemon start

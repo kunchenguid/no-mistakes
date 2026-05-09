@@ -323,6 +323,15 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 		"demo_mode":   steps.IsDemoMode(),
 	})
 
+	// Best-effort: read recent local agent transcripts to infer the user's
+	// original intent and attach it to the run so each step's prompt can
+	// surface what the author was trying to accomplish, not just the diff.
+	// Failures are intentionally swallowed - the pipeline must run even when
+	// intent extraction is unavailable. Skipped in demo mode (noop agent).
+	if !steps.IsDemoMode() {
+		m.extractIntent(ctx, cfg, ag, repo, run, baseSHA, headSHA)
+	}
+
 	// Create executor with event broadcast.
 	runCtx, cancel := context.WithCancelCause(context.Background())
 	executor := pipeline.NewExecutor(m.db, m.paths, cfg, ag, execSteps, m.broadcast)

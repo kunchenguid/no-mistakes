@@ -27,6 +27,10 @@ type StepContext struct {
 	// Steps use it to query their own round history for multi-round prompts.
 	StepResultID string
 	Env          []string // extra environment variables for subprocesses (used in tests)
+	// UserIntent is a short, possibly-empty summary of what the change author
+	// was trying to accomplish, inferred from local agent transcripts. It's
+	// surfaced in step prompts so agents have context beyond the diff.
+	UserIntent string
 }
 
 // StepOutcome is the result of executing a pipeline step.

@@ -9,16 +9,33 @@ import (
 
 // Run represents a pipeline run.
 type Run struct {
-	ID        string
-	RepoID    string
-	Branch    string
-	HeadSHA   string
-	BaseSHA   string
-	Status    types.RunStatus
-	PRURL     *string
-	Error     *string
-	CreatedAt int64
-	UpdatedAt int64
+	ID              string
+	RepoID          string
+	Branch          string
+	HeadSHA         string
+	BaseSHA         string
+	Status          types.RunStatus
+	PRURL           *string
+	Error           *string
+	Intent          *string
+	IntentSource    *string
+	IntentSessionID *string
+	IntentScore     *float64
+	CreatedAt       int64
+	UpdatedAt       int64
+}
+
+const runColumns = `id, repo_id, branch, head_sha, base_sha, status, pr_url, error, intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
+
+func scanRun(row interface {
+	Scan(...any) error
+}, r *Run) error {
+	return row.Scan(
+		&r.ID, &r.RepoID, &r.Branch, &r.HeadSHA, &r.BaseSHA, &r.Status,
+		&r.PRURL, &r.Error,
+		&r.Intent, &r.IntentSource, &r.IntentSessionID, &r.IntentScore,
+		&r.CreatedAt, &r.UpdatedAt,
+	)
 }
 
 // InsertRun creates a new run record.
@@ -47,9 +64,7 @@ func (d *DB) InsertRun(repoID, branch, headSHA, baseSHA string) (*Run, error) {
 // GetRun returns a run by ID.
 func (d *DB) GetRun(id string) (*Run, error) {
 	r := &Run{}
-	err := d.sql.QueryRow(
-		`SELECT id, repo_id, branch, head_sha, base_sha, status, pr_url, error, created_at, updated_at FROM runs WHERE id = ?`, id,
-	).Scan(&r.ID, &r.RepoID, &r.Branch, &r.HeadSHA, &r.BaseSHA, &r.Status, &r.PRURL, &r.Error, &r.CreatedAt, &r.UpdatedAt)
+	err := scanRun(d.sql.QueryRow(`SELECT `+runColumns+` FROM runs WHERE id = ?`, id), r)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -61,9 +76,7 @@ func (d *DB) GetRun(id string) (*Run, error) {
 
 // GetRunsByRepo returns all runs for a repo, newest first.
 func (d *DB) GetRunsByRepo(repoID string) ([]*Run, error) {
-	rows, err := d.sql.Query(
-		`SELECT id, repo_id, branch, head_sha, base_sha, status, pr_url, error, created_at, updated_at FROM runs WHERE repo_id = ? ORDER BY created_at DESC, id DESC`, repoID,
-	)
+	rows, err := d.sql.Query(`SELECT `+runColumns+` FROM runs WHERE repo_id = ? ORDER BY created_at DESC, id DESC`, repoID)
 	if err != nil {
 		return nil, fmt.Errorf("get runs by repo: %w", err)
 	}
@@ -71,7 +84,7 @@ func (d *DB) GetRunsByRepo(repoID string) ([]*Run, error) {
 	var runs []*Run
 	for rows.Next() {
 		r := &Run{}
-		if err := rows.Scan(&r.ID, &r.RepoID, &r.Branch, &r.HeadSHA, &r.BaseSHA, &r.Status, &r.PRURL, &r.Error, &r.CreatedAt, &r.UpdatedAt); err != nil {
+		if err := scanRun(rows, r); err != nil {
 			return nil, fmt.Errorf("scan run: %w", err)
 		}
 		runs = append(runs, r)
@@ -81,20 +94,20 @@ func (d *DB) GetRunsByRepo(repoID string) ([]*Run, error) {
 
 // GetActiveRun returns the currently active run (pending or running) for a repo,
 // if any. When branch is non-empty, only a run on that exact branch is returned
-// — the setup wizard relies on this to decide whether a new run is needed for
+// - the setup wizard relies on this to decide whether a new run is needed for
 // the current branch. When branch is empty, returns the most recently created
 // active run across any branch.
 func (d *DB) GetActiveRun(repoID, branch string) (*Run, error) {
 	r := &Run{}
 	var err error
 	if branch == "" {
-		err = d.sql.QueryRow(
-			`SELECT id, repo_id, branch, head_sha, base_sha, status, pr_url, error, created_at, updated_at FROM runs WHERE repo_id = ? AND status IN ('pending', 'running') ORDER BY created_at DESC, id DESC LIMIT 1`, repoID,
-		).Scan(&r.ID, &r.RepoID, &r.Branch, &r.HeadSHA, &r.BaseSHA, &r.Status, &r.PRURL, &r.Error, &r.CreatedAt, &r.UpdatedAt)
+		err = scanRun(d.sql.QueryRow(
+			`SELECT `+runColumns+` FROM runs WHERE repo_id = ? AND status IN ('pending', 'running') ORDER BY created_at DESC, id DESC LIMIT 1`, repoID,
+		), r)
 	} else {
-		err = d.sql.QueryRow(
-			`SELECT id, repo_id, branch, head_sha, base_sha, status, pr_url, error, created_at, updated_at FROM runs WHERE repo_id = ? AND branch = ? AND status IN ('pending', 'running') ORDER BY created_at DESC, id DESC LIMIT 1`, repoID, branch,
-		).Scan(&r.ID, &r.RepoID, &r.Branch, &r.HeadSHA, &r.BaseSHA, &r.Status, &r.PRURL, &r.Error, &r.CreatedAt, &r.UpdatedAt)
+		err = scanRun(d.sql.QueryRow(
+			`SELECT `+runColumns+` FROM runs WHERE repo_id = ? AND branch = ? AND status IN ('pending', 'running') ORDER BY created_at DESC, id DESC LIMIT 1`, repoID, branch,
+		), r)
 	}
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -142,6 +155,26 @@ func (d *DB) UpdateRunErrorStatus(id, errMsg string, status types.RunStatus) err
 	_, err := d.sql.Exec(`UPDATE runs SET error = ?, status = ?, updated_at = ? WHERE id = ?`, errMsg, status, now(), id)
 	if err != nil {
 		return fmt.Errorf("update run error: %w", err)
+	}
+	return nil
+}
+
+// RunIntent carries the four intent-related columns persisted on a run.
+type RunIntent struct {
+	Summary   string
+	Source    string
+	SessionID string
+	Score     float64
+}
+
+// UpdateRunIntent persists the inferred user intent for a run.
+func (d *DB) UpdateRunIntent(id string, intent RunIntent) error {
+	_, err := d.sql.Exec(
+		`UPDATE runs SET intent = ?, intent_source = ?, intent_session_id = ?, intent_score = ?, updated_at = ? WHERE id = ?`,
+		intent.Summary, intent.Source, intent.SessionID, intent.Score, now(), id,
+	)
+	if err != nil {
+		return fmt.Errorf("update run intent: %w", err)
 	}
 	return nil
 }

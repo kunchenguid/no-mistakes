@@ -50,6 +50,14 @@ CREATE TABLE IF NOT EXISTS step_rounds (
     duration_ms          INTEGER NOT NULL,
     created_at           INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS intent_cache (
+    cache_key   TEXT PRIMARY KEY,
+    summary     TEXT NOT NULL,
+    agent_name  TEXT NOT NULL,
+    session_id  TEXT NOT NULL,
+    created_at  INTEGER NOT NULL
+);
 `
 
 // migrationStatements hold additive schema changes applied to databases that
@@ -60,4 +68,8 @@ var migrationStatements = []string{
 	`ALTER TABLE step_rounds ADD COLUMN selection_source TEXT`,
 	`ALTER TABLE step_rounds ADD COLUMN fix_summary TEXT`,
 	`ALTER TABLE step_rounds ADD COLUMN user_findings_json TEXT`,
+	`ALTER TABLE runs ADD COLUMN intent TEXT`,
+	`ALTER TABLE runs ADD COLUMN intent_source TEXT`,
+	`ALTER TABLE runs ADD COLUMN intent_session_id TEXT`,
+	`ALTER TABLE runs ADD COLUMN intent_score REAL`,
 }

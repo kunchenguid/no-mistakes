@@ -22,7 +22,7 @@ func (s *TestStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	var newTestsFromFix []string
 	var fixSummary string
 	if sctx.Fixing {
-		historySection := roundHistoryPromptSection(sctx)
+		historySection := roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx)
 		fixPrompt := fmt.Sprintf(
 			`Fix the failing tests in this repository. Run the tests, identify failures, and fix either the tests or the code to make them pass.
 
@@ -71,7 +71,7 @@ Previous test findings to address:
 	if testCmd == "" {
 		// No test command configured — ask agent to detect and run tests
 		sctx.Log("no test command configured, asking agent to run tests...")
-		reassessHistory := roundHistoryPromptSection(sctx)
+		reassessHistory := roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx)
 		result, err := sctx.Agent.Run(ctx, agent.RunOpts{
 			Prompt: fmt.Sprintf(
 				`You are validating a code change by testing it. Examine the repository and run the appropriate tests yourself.

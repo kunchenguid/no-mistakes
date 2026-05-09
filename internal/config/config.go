@@ -26,6 +26,7 @@ type GlobalConfig struct {
 	CITimeout            time.Duration       `yaml:"-"`
 	LogLevel             string              `yaml:"log_level"`
 	AutoFix              AutoFixRaw
+	Intent               IntentRaw
 }
 
 // globalConfigRaw is the on-disk YAML representation with duration as string.
@@ -39,6 +40,7 @@ type globalConfigRaw struct {
 	BabysitTimeout       string              `yaml:"babysit_timeout"`
 	LogLevel             string              `yaml:"log_level"`
 	AutoFix              AutoFixRaw          `yaml:"auto_fix"`
+	Intent               IntentRaw           `yaml:"intent"`
 }
 
 // RepoConfig represents .no-mistakes.yaml in a repo root.
@@ -47,6 +49,7 @@ type RepoConfig struct {
 	Commands       Commands        `yaml:"commands"`
 	IgnorePatterns []string        `yaml:"ignore_patterns"`
 	AutoFix        AutoFixRaw      `yaml:"auto_fix"`
+	Intent         IntentRaw       `yaml:"intent"`
 }
 
 // Commands holds optional per-repo command overrides.
@@ -91,6 +94,24 @@ type Config struct {
 	Commands             Commands
 	IgnorePatterns       []string
 	AutoFix              AutoFix
+	Intent               Intent
+}
+
+// IntentRaw is the YAML representation of user-intent extraction settings.
+// Pointer fields distinguish "not set" (nil) from explicit zero/false values.
+type IntentRaw struct {
+	Enabled         *bool    `yaml:"enabled"`
+	Threshold       *float64 `yaml:"threshold"`
+	SlackDays       *int     `yaml:"slack_days"`
+	DisabledReaders []string `yaml:"disabled_readers"`
+}
+
+// Intent is the resolved user-intent extraction config.
+type Intent struct {
+	Enabled         bool
+	Threshold       float64
+	SlackDays       int
+	DisabledReaders map[string]bool
 }
 
 // defaultConfigYAML is the template written when no global config file exists.
@@ -135,6 +156,17 @@ auto_fix:
   review: 0
   document: 3
   ci: 3
+
+# User-intent extraction. When you push a branch, no-mistakes can read recent
+# transcripts from your local agent (Claude Code, Codex, OpenCode, Rovo Dev),
+# pick the session that produced the change, summarize the user intent, and
+# feed it to each pipeline step's agent so they understand what you were
+# trying to do - not just the diff.
+intent:
+  enabled: true
+  threshold: 0.2
+  slack_days: 3
+  # disabled_readers: [codex]
 `
 
 // defaultBinary maps agent names to their default binary names.
@@ -405,6 +437,7 @@ func LoadGlobal(path string) (*GlobalConfig, error) {
 		raw.AutoFix.CI = raw.AutoFix.Babysit
 	}
 	cfg.AutoFix = raw.AutoFix
+	cfg.Intent = raw.Intent
 
 	return cfg, nil
 }
@@ -447,6 +480,39 @@ func ParseLogLevel(level string) slog.Level {
 		return slog.LevelError
 	default:
 		return slog.LevelInfo
+	}
+}
+
+// intentDefaults returns the default user-intent extraction settings.
+// Default-on with a moderate file-overlap threshold and a 3-day slack window
+// to handle "agent generated change Monday, user pushed Wednesday" cases.
+func intentDefaults() Intent {
+	return Intent{
+		Enabled:         true,
+		Threshold:       0.2,
+		SlackDays:       3,
+		DisabledReaders: map[string]bool{},
+	}
+}
+
+// applyIntentOverrides applies non-nil raw values onto resolved defaults.
+func applyIntentOverrides(dst *Intent, src *IntentRaw) {
+	if src.Enabled != nil {
+		dst.Enabled = *src.Enabled
+	}
+	if src.Threshold != nil {
+		dst.Threshold = *src.Threshold
+	}
+	if src.SlackDays != nil {
+		dst.SlackDays = *src.SlackDays
+	}
+	if len(src.DisabledReaders) > 0 {
+		if dst.DisabledReaders == nil {
+			dst.DisabledReaders = map[string]bool{}
+		}
+		for _, name := range src.DisabledReaders {
+			dst.DisabledReaders[strings.ToLower(strings.TrimSpace(name))] = true
+		}
 	}
 }
 
@@ -512,6 +578,10 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 	applyAutoFixOverrides(&af, &global.AutoFix)
 	applyAutoFixOverrides(&af, &repo.AutoFix)
 
+	intent := intentDefaults()
+	applyIntentOverrides(&intent, &global.Intent)
+	applyIntentOverrides(&intent, &repo.Intent)
+
 	cfg := &Config{
 		Agent:                global.Agent,
 		ACPXPath:             global.ACPXPath,
@@ -523,6 +593,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		Commands:             repo.Commands,
 		IgnorePatterns:       repo.IgnorePatterns,
 		AutoFix:              af,
+		Intent:               intent,
 	}
 
 	if repo.Agent != "" {

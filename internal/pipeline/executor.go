@@ -204,6 +204,10 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	// lastChunkNewline tracks whether the most recent chunk ended with \n,
 	// so Log knows whether it needs a leading \n to flush a streaming partial.
 	lastChunkNewline := true
+	userIntent := ""
+	if run != nil && run.Intent != nil {
+		userIntent = *run.Intent
+	}
 	sctx := &StepContext{
 		Ctx:          ctx,
 		Run:          run,
@@ -213,6 +217,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		Config:       e.config,
 		DB:           e.db,
 		StepResultID: sr.ID,
+		UserIntent:   userIntent,
 		Log: func(text string) {
 			if text != "" {
 				prefix := ""

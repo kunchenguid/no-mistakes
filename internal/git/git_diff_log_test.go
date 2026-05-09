@@ -32,6 +32,60 @@ func TestDiff(t *testing.T) {
 	}
 }
 
+func TestDiffNameOnly(t *testing.T) {
+	dir := initTestRepo(t)
+	ctx := context.Background()
+
+	base := run(t, dir, "git", "rev-parse", "HEAD")
+	writeFile(t, filepath.Join(dir, "a.txt"), "a\n")
+	writeFile(t, filepath.Join(dir, "b.txt"), "b\n")
+	run(t, dir, "git", "add", ".")
+	run(t, dir, "git", "commit", "-m", "add files")
+	head := run(t, dir, "git", "rev-parse", "HEAD")
+
+	files, err := DiffNameOnly(ctx, dir, base, head)
+	if err != nil {
+		t.Fatalf("DiffNameOnly: %v", err)
+	}
+	if len(files) != 2 {
+		t.Fatalf("got %d files, want 2: %v", len(files), files)
+	}
+	want := map[string]bool{"a.txt": true, "b.txt": true}
+	for _, f := range files {
+		if !want[f] {
+			t.Errorf("unexpected file %q", f)
+		}
+	}
+}
+
+func TestCommitTime(t *testing.T) {
+	dir := initTestRepo(t)
+	ctx := context.Background()
+	head := run(t, dir, "git", "rev-parse", "HEAD")
+
+	ts, err := CommitTime(ctx, dir, head)
+	if err != nil {
+		t.Fatalf("CommitTime: %v", err)
+	}
+	if ts.IsZero() {
+		t.Error("expected non-zero commit time")
+	}
+}
+
+func TestCommitAuthorEmail(t *testing.T) {
+	dir := initTestRepo(t)
+	ctx := context.Background()
+	head := run(t, dir, "git", "rev-parse", "HEAD")
+
+	email, err := CommitAuthorEmail(ctx, dir, head)
+	if err != nil {
+		t.Fatalf("CommitAuthorEmail: %v", err)
+	}
+	if email == "" {
+		t.Error("expected non-empty author email")
+	}
+}
+
 func TestDiffEmpty(t *testing.T) {
 	dir := initTestRepo(t)
 	ctx := context.Background()
