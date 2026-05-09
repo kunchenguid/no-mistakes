@@ -19,7 +19,7 @@ no-mistakes --skip test,lint
 
 Unlike `no-mistakes attach`, bare `no-mistakes` only auto-attaches to an active run on the current branch.
 `--skip` only applies when bare `no-mistakes` starts a new pipeline run through the wizard; it does not skip a step on an already-active run.
-Valid step names are `rebase`, `review`, `test`, `document`, `lint`, `push`, `pr`, and `ci`.
+Valid step names are `intent`, `rebase`, `review`, `test`, `document`, `lint`, `push`, `pr`, and `ci`.
 
 ## no-mistakes init
 

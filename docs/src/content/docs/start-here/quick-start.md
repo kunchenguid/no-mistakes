@@ -82,13 +82,14 @@ The TUI shows each step's progress, streams agent output, and pauses for your ap
 
 The pipeline runs these steps in order:
 
-1. **Rebase** - onto the latest upstream
-2. **Review** - AI code review of your diff
-3. **Test** - your tests (configured command or agent-detected)
-4. **Document** - checks for required doc updates
-5. **Lint** - your linters (configured command or agent-detected)
-6. **Push** - to the real upstream remote
-7. **PR** - create or update the pull request
-8. **CI** - poll CI, watch PR mergeability, auto-fix failures
+1. **Intent** - infer author intent from recent local agent transcripts
+2. **Rebase** - onto the latest upstream
+3. **Review** - AI code review of your diff
+4. **Test** - your tests (configured command or agent-detected)
+5. **Document** - checks for required doc updates
+6. **Lint** - your linters (configured command or agent-detected)
+7. **Push** - to the real upstream remote
+8. **PR** - create or update the pull request
+9. **CI** - poll CI, watch PR mergeability, auto-fix failures
 
 Steps that find issues pause for your approval. See the [Pipeline concept page](/no-mistakes/concepts/pipeline/) for the overview and [Pipeline Steps](/no-mistakes/reference/pipeline-steps/) for each step's exact behavior.

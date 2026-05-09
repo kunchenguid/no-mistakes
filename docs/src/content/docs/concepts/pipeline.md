@@ -1,17 +1,17 @@
 ---
 title: Pipeline
-description: The eight steps that run on every gated push.
+description: The nine steps that run on every gated push.
 ---
 
 The pipeline runs a fixed, opinionated sequence of steps. Order is not configurable. What each step runs *is*.
 
 ```
-rebase → review → test → document → lint → push → pr → ci
+intent → rebase → review → test → document → lint → push → pr → ci
 ```
 
 ```mermaid
 flowchart LR
-  rebase["Rebase"] --> review["Review"] --> test["Test"] --> document["Document"] --> lint["Lint"] --> push["Push"] --> pr["PR"] --> ci["CI"]
+  intent["Intent"] --> rebase["Rebase"] --> review["Review"] --> test["Test"] --> document["Document"] --> lint["Lint"] --> push["Push"] --> pr["PR"] --> ci["CI"]
   review -. findings .-> action["Approve / fix / skip / abort"]
   test -. findings .-> action
   document -. findings .-> action
@@ -30,22 +30,24 @@ The pipeline is opinionated so that "passed the gate" has a stable meaning:
 - the human stayed in control when a step needed judgment
 - push, PR creation, and CI monitoring only happened after the local gate was satisfied
 
-## The eight steps
+## The nine steps
 
 | # | Step | What it does | Default auto-fix limit |
 |---|---|---|---|
-| 1 | **Rebase** | Fetch upstream, rebase your branch onto it | `3` |
-| 2 | **Review** | AI code review of your diff | `0` (requires approval) |
-| 3 | **Test** | Run your tests, or let the agent detect them | `3` |
-| 4 | **Document** | Check for missing or stale doc updates | `3` |
-| 5 | **Lint** | Run lint/static analysis | `3` |
-| 6 | **Push** | Push the validated branch upstream | n/a |
-| 7 | **PR** | Create or update the pull request | n/a |
-| 8 | **CI** | Watch CI + mergeability, auto-fix failures | `3` |
+| 1 | **Intent** | Infer author intent from recent local agent transcripts | n/a |
+| 2 | **Rebase** | Fetch upstream, rebase your branch onto it | `3` |
+| 3 | **Review** | AI code review of your diff | `0` (requires approval) |
+| 4 | **Test** | Run your tests, or let the agent detect them | `3` |
+| 5 | **Document** | Check for missing or stale doc updates | `3` |
+| 6 | **Lint** | Run lint/static analysis | `3` |
+| 7 | **Push** | Push the validated branch upstream | n/a |
+| 8 | **PR** | Create or update the pull request | n/a |
+| 9 | **CI** | Watch CI + mergeability, auto-fix failures | `3` |
 
 ## Why these steps, in this order
 
-- **Rebase first** so everything else runs against the latest upstream. If there's no diff left after the rebase, the pipeline skips the rest.
+- **Intent first** so downstream agent prompts can include best-effort author intent when transcript matching succeeds.
+- **Rebase next** so everything else runs against the latest upstream. If there's no diff left after the rebase, the pipeline skips the rest.
 - **Review before test** so the agent reads fresh code, not code it may have touched during fixes.
 - **Document after test** so docs are checked against code that's known to work.
 - **Lint last among local checks** so it doesn't churn over code that may still change.
@@ -80,7 +82,7 @@ See [Configuration](/no-mistakes/guides/configuration/).
 ## What you can't configure
 
 - The step order.
-- Skipping specific steps permanently - per-run skips are allowed, but the pipeline itself always has all eight.
+- Skipping specific steps permanently - per-run skips are allowed, but the pipeline itself always has all nine.
 - Adding new steps.
 
 This is intentional. The pipeline is opinionated so that "passed the gate" means the same thing across repos.

@@ -46,6 +46,8 @@ Shows the branch name and run status in the header, followed by each step:
 ```
   feature/login-fix  running
   ────────────────────────────
+  – Intent
+  │
   ✓ Rebase            320ms
   │
   ⏸ Review     - awaiting approval

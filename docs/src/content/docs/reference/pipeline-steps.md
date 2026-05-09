@@ -6,13 +6,24 @@ description: Reference for each step in the validation pipeline.
 This is the per-step reference. For the overview and rationale, see [Pipeline](/no-mistakes/concepts/pipeline/). For the fix loop, see [Auto-Fix Loop](/no-mistakes/concepts/auto-fix/).
 
 ```
-rebase → review → test → document → lint → push → pr → ci
+intent → rebase → review → test → document → lint → push → pr → ci
 ```
 
 Each step can produce findings, request approval, or trigger auto-fix. Steps that encounter fatal errors stop the pipeline. Steps can also be pre-skipped when starting a run, skipped by the user, or skipped automatically by the pipeline.
 
-Before agent-backed steps run, no-mistakes may infer the author's intent from recent local Claude Code, Codex, OpenCode, or Rovo Dev transcripts.
+## Intent
+
+Infers the author's intent from recent local Claude Code, Codex, OpenCode, or Rovo Dev transcripts.
 This is best-effort context, and when available it is included in review checks and fixes, test detection and fixes, documentation checks and fixes, lint detection and fixes, and PR drafting.
+
+**Behavior:**
+- Runs only when `intent.enabled` is true
+- Matches local agent transcripts against the changed files and summarizes the likely author intent with the configured pipeline agent
+- Stores the derived summary, source, session ID, and match score on the run
+- Logs the matched source, score, and sanitized inferred intent
+- Skips instead of failing when disabled, no matching transcript is found, the diff is empty, extraction errors, or persistence fails
+
+This step never blocks the pipeline. Missing transcripts, slow summarization, or other extraction failures are reported as skipped outcomes.
 
 ## Rebase
 

@@ -17,7 +17,7 @@ flowchart TD
   gate --> hook["post-receive hook"]
   hook --> daemon["Daemon"]
   daemon --> worktree["Disposable worktree"]
-  worktree --> pipeline["rebase -> review -> test -> document -> lint -> push -> pr -> ci"]
+  worktree --> pipeline["intent -> rebase -> review -> test -> document -> lint -> push -> pr -> ci"]
   pipeline --> upstream["Upstream remote"]
   daemon --> db["SQLite state"]
   daemon --> ipc["IPC socket"]
@@ -44,7 +44,7 @@ That is a core design choice, not an implementation detail.
 2. Git writes the push into the local bare gate repo, so the push itself stays fast.
 3. The gate repo's `post-receive` hook notifies the daemon.
 4. The daemon creates a detached worktree for this run.
-5. The pipeline runs in order: `rebase -> review -> test -> document -> lint -> push -> pr -> ci`.
+5. The pipeline runs in order: `intent -> rebase -> review -> test -> document -> lint -> push -> pr -> ci`.
 6. If a step pauses, you can attach with the TUI and approve, fix, skip, or abort.
 7. After local checks pass, the push step forwards the branch upstream and the PR step creates or updates the pull request.
 8. The CI step keeps watching after the PR exists and can auto-fix failures or merge conflicts when supported.
@@ -53,7 +53,7 @@ That is a core design choice, not an implementation detail.
 
 - **Named remote** - `origin` is never hijacked. You push to `no-mistakes` on purpose, so regular `git push` still works normally.
 - **Disposable worktrees** - each run happens in its own detached worktree under `~/.no-mistakes/worktrees/`. The daemon can safely modify files, run tests, and commit fixes without touching your working directory.
-- **Fixed pipeline** - the step order is opinionated and not configurable: `rebase → review → test → document → lint → push → pr → ci`. What you _can_ configure is the commands each step runs, how many auto-fix attempts are allowed, and whether transcript-based intent extraction is used.
+- **Fixed pipeline** - the step order is opinionated and not configurable: `intent → rebase → review → test → document → lint → push → pr → ci`. What you _can_ configure is the commands each step runs, how many auto-fix attempts are allowed, and whether transcript-based intent extraction is used.
 
 ## Why it is built this way
 
