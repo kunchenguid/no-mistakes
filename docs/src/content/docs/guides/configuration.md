@@ -143,7 +143,7 @@ See [Repo Config Reference](/no-mistakes/reference/repo-config/) for the full fi
 - ACP agents are opt-in with `agent: acp:<target>` and are not considered by `agent: auto`.
 - `agent_path_override`, `agent_args_override`, `acpx_path`, and `acp_registry_overrides` are global-only fields.
 - `auto_fix` from the repo config overlays global auto_fix. Fields not set in the repo config fall through to the global default.
-- `intent` from the repo config overlays global intent settings. Fields not set in the repo config fall through to the global default.
+- `intent` from the repo config overlays global intent settings. Fields not set in the repo config fall through to the global default, except `intent.disabled_readers`, which adds to globally disabled readers.
 - `commands` and `ignore_patterns` are repo-only fields.
 - `ci_timeout` and `auto_fix.ci` are the canonical keys; `babysit_timeout` and `auto_fix.babysit` are still accepted as legacy aliases.
 - If `commands.test` or `commands.lint` is empty, the agent detects and runs relevant commands itself.
