@@ -34,7 +34,7 @@ func (s *ReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	var fixSummary string
 	if sctx.Fixing {
 		previousFindings := sanitizedPreviousFindingsForPrompt(sctx.PreviousFindings)
-		historySection := roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx)
+		historySection := executionContextPromptSection() + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx)
 		fixPrompt := fmt.Sprintf(
 			`Investigate previous review findings and address legitimate ones.
 
@@ -129,7 +129,7 @@ Previous review findings to address:
 	// Ask agent to review
 	sctx.Log("reviewing changes...")
 
-	historySection := roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx)
+	historySection := executionContextPromptSection() + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx)
 
 	prompt := fmt.Sprintf(
 		`Review the code changes and return structured findings with a risk assessment.

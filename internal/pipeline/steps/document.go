@@ -28,7 +28,7 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 	// In fix mode, ask the agent to apply documentation updates first
 	var fixSummary string
 	if sctx.Fixing {
-		historySection := roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx)
+		historySection := executionContextPromptSection() + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx)
 		fixPrompt := fmt.Sprintf(
 			`Update any project documentation that needs to reflect the code changes.
 
@@ -94,7 +94,7 @@ Previous documentation findings to address:
 	// Assess documentation state
 	sctx.Log("checking documentation...")
 
-	reassessHistory := roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx)
+	reassessHistory := executionContextPromptSection() + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx)
 	prompt := fmt.Sprintf(
 		`Review the code changes and identify any documentation gaps.
 

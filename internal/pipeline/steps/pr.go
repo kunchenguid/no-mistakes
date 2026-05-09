@@ -156,7 +156,7 @@ Commit history:
 %s
 
 Diff stat:
-%s%s%s`, branch, baseSHA, sctx.Run.HeadSHA, sctx.Repo.DefaultBranch, commitLog, diffStat, pipelineContext, userIntentPromptSection(sctx))
+%s%s%s%s`, branch, baseSHA, sctx.Run.HeadSHA, sctx.Repo.DefaultBranch, commitLog, diffStat, pipelineContext, userIntentPromptSection(sctx), executionContextPromptSection())
 
 	result, err := sctx.Agent.Run(ctx, agent.RunOpts{
 		Prompt:     prompt,
