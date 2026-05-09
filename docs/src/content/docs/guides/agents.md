@@ -138,7 +138,7 @@ Transient API and network failures are retried up to three times with exponentia
 ## Intent extraction
 
 When `intent.enabled` is true, no-mistakes can read recent local transcripts from Claude Code, Codex, OpenCode, and Rovo Dev before a pipeline run.
-It matches sessions against the changed files, summarizes the likely author intent with the configured pipeline agent, and includes that summary as untrusted context in downstream review, test detection, lint detection, document, auto-fix, and PR prompts.
+It matches sessions against the changed files, summarizes the likely author intent with the configured pipeline agent, and includes that summary as untrusted context in review checks and fixes, test detection and fixes, lint detection and fixes, documentation checks and fixes, and PR prompts.
 
 Transcript readers collect user and assistant text messages but exclude tool call output.
 They read Claude Code transcripts from `~/.claude/projects`, Codex metadata from `~/.codex/state_*.sqlite` plus referenced rollout files, OpenCode messages from `$XDG_DATA_HOME/opencode/opencode.db` or `~/.local/share/opencode/opencode.db`, and Rovo Dev sessions from `~/.rovodev/sessions`.
