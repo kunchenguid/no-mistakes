@@ -70,7 +70,7 @@ func Extract(ctx context.Context, p ExtractParams) (*Result, error) {
 		HomeDir:     p.HomeDir,
 		OriginCWD:   canonicalPath(p.OriginCWD),
 		WindowStart: p.BaseTime.Add(-slack),
-		WindowEnd:   p.HeadTime.Add(time.Hour),
+		WindowEnd:   p.HeadTime,
 	}
 
 	var sessions []*Session

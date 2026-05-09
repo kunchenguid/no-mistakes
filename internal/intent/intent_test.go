@@ -11,10 +11,12 @@ import (
 type staticReader struct {
 	name     string
 	sessions []*Session
+	opts     DiscoverOpts
 }
 
 func (s *staticReader) Name() string { return s.name }
-func (s *staticReader) Discover(_ context.Context, _ DiscoverOpts) ([]*Session, error) {
+func (s *staticReader) Discover(_ context.Context, opts DiscoverOpts) ([]*Session, error) {
+	s.opts = opts
 	return s.sessions, nil
 }
 func (s *staticReader) Load(_ context.Context, _ *Session) error { return nil }
@@ -85,6 +87,36 @@ func TestExtract_NoMatchBelowThreshold(t *testing.T) {
 	})
 	if !errors.Is(err, ErrNoMatch) {
 		t.Errorf("expected ErrNoMatch, got %v", err)
+	}
+}
+
+func TestExtract_PassesUnextendedHeadTimeToReaders(t *testing.T) {
+	baseTime := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	headTime := baseTime.Add(2 * time.Hour)
+	r := &staticReader{
+		name: "claude",
+		sessions: []*Session{{
+			SessionID:    "s1",
+			LastActivity: headTime,
+			Messages:     []Message{{Role: RoleUser, Text: "edit foo.go", FilePaths: []string{"foo.go"}}},
+		}},
+	}
+
+	_, err := Extract(context.Background(), ExtractParams{
+		OriginCWD:  "/tmp/repo",
+		DiffFiles:  []string{"foo.go"},
+		BaseTime:   baseTime,
+		HeadTime:   headTime,
+		SlackDays:  3,
+		Threshold:  0.1,
+		Readers:    []Reader{r},
+		Summarizer: &fixedSummarizer{summary: "edited foo"},
+	})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if !r.opts.WindowEnd.Equal(headTime) {
+		t.Fatalf("WindowEnd = %v, want %v", r.opts.WindowEnd, headTime)
 	}
 }
 
