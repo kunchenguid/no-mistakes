@@ -24,6 +24,11 @@ func NewClaudeReader() Reader { return &claudeReader{} }
 
 func (r *claudeReader) Name() string { return ClaudeReaderName }
 
+func claudeProjectDirName(cwd string) string {
+	replacer := strings.NewReplacer("/", "-", `\`, "-", ":", "-")
+	return replacer.Replace(cwd)
+}
+
 func (r *claudeReader) Discover(ctx context.Context, opts DiscoverOpts) ([]*Session, error) {
 	home, err := resolveHome(opts.HomeDir)
 	if err != nil {

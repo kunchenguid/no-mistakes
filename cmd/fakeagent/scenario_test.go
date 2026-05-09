@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestApplyEditsCreatesParentDirectoriesForNewFiles(t *testing.T) {
@@ -69,6 +70,16 @@ func TestApplyActionStagesFiles(t *testing.T) {
 	status := gitCmd("status", "--porcelain")
 	if !strings.Contains(status, "A  agent_test.go") {
 		t.Fatalf("git status = %q, want staged agent_test.go", status)
+	}
+}
+
+func TestApplyActionHonorsDelay(t *testing.T) {
+	start := time.Now()
+	if err := applyActionInDir(t.TempDir(), Action{DelayMS: 20}); err != nil {
+		t.Fatalf("applyActionInDir: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed < 20*time.Millisecond {
+		t.Fatalf("applyActionInDir returned after %s, want at least 20ms", elapsed)
 	}
 }
 

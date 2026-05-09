@@ -385,6 +385,23 @@ func cleanReviewScenario(t *testing.T) string {
       tested:
         - "fakeagent: simulated test run"
       testing_summary: "simulated tests passed"
+  - match: "Review the code changes and return structured findings with a risk assessment.\n\nContext:\n- branch: feature/e2e"
+    text: "looks good"
+    delay_ms: 1500
+    structured:
+      findings:
+        - id: "review-info"
+          severity: info
+          file: "hello.txt"
+          line: 1
+          description: "looks good"
+          action: no-op
+      summary: "no blocking issues"
+      risk_level: low
+      risk_rationale: "informational finding only"
+      tested:
+        - "fakeagent: simulated review"
+      testing_summary: "not run during review"
   - match: "Review the code changes and return structured findings"
     text: "looks good"
     structured:

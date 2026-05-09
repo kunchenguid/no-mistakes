@@ -139,7 +139,7 @@ func TestPushReceivedReturnsBeforeIntentSummarization(t *testing.T) {
 
 	repo, headSHA := setupTestGitRepo(t, p, d, "intent-start-run-repo")
 	writeManagerClaudeFixture(t, fakeHome, repo.WorkingPath, []string{
-		`{"type":"user","cwd":"` + repo.WorkingPath + `","timestamp":"2026-04-18T02:15:37.407Z","uuid":"u1","sessionId":"s1","message":{"role":"user","content":"please update test.txt"}}`,
+		`{"type":"user","cwd":` + testJSONString(t, repo.WorkingPath) + `,"timestamp":"2026-04-18T02:15:37.407Z","uuid":"u1","sessionId":"s1","message":{"role":"user","content":"please update test.txt"}}`,
 	})
 
 	client, err := ipc.Dial(p.Socket())
@@ -171,7 +171,7 @@ func TestPushReceivedReturnsBeforeIntentSummarization(t *testing.T) {
 
 func writeManagerClaudeFixture(t *testing.T, home, repoCWD string, lines []string) {
 	t.Helper()
-	encoded := strings.ReplaceAll(repoCWD, "/", "-")
+	encoded := testClaudeProjectDirName(repoCWD)
 	dir := filepath.Join(home, ".claude", "projects", encoded)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)

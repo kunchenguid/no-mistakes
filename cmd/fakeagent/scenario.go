@@ -48,6 +48,9 @@ type Action struct {
 
 	// Stage lists paths to git-add after edits are applied.
 	Stage []string `yaml:"stage,omitempty"`
+
+	// DelayMS pauses before responding, for e2e tests that need an observable active run.
+	DelayMS int `yaml:"delay_ms,omitempty"`
 }
 
 // Edit performs a Replace of Old with New in Path. If Old is empty the
@@ -128,6 +131,9 @@ func applyAction(action Action) error {
 }
 
 func applyActionInDir(wd string, action Action) error {
+	if action.DelayMS > 0 {
+		time.Sleep(time.Duration(action.DelayMS) * time.Millisecond)
+	}
 	if err := applyEditsInDir(wd, action.Edits); err != nil {
 		return err
 	}

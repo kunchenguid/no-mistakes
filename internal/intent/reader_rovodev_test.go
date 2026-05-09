@@ -2,6 +2,7 @@ package intent
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -15,18 +16,28 @@ func buildRovoDevSession(t *testing.T, repoCWD string) string {
 	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	meta := `{"workspace":"` + repoCWD + `","title":"add foo","created_at":"2026-04-18T02:00:00Z"}`
-	if err := os.WriteFile(filepath.Join(sessionDir, "metadata.json"), []byte(meta), 0o644); err != nil {
+	meta, err := json.Marshal(map[string]string{
+		"workspace":  repoCWD,
+		"title":      "add foo",
+		"created_at": "2026-04-18T02:00:00Z",
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
-	convo := `{
-		"workspace":"` + repoCWD + `",
-		"conversation":[
-			{"role":"user","content":"please add a foo function in internal/foo.go"},
-			{"role":"assistant","content":"done"}
-		]
-	}`
-	if err := os.WriteFile(filepath.Join(sessionDir, "session_context.json"), []byte(convo), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(sessionDir, "metadata.json"), meta, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	convo, err := json.Marshal(map[string]any{
+		"workspace": repoCWD,
+		"conversation": []map[string]string{
+			{"role": "user", "content": "please add a foo function in internal/foo.go"},
+			{"role": "assistant", "content": "done"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sessionDir, "session_context.json"), convo, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	return home

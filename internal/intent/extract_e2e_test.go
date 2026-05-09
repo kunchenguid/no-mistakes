@@ -2,6 +2,7 @@ package intent
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -9,8 +10,8 @@ import (
 func TestExtract_EndToEndWithClaudeFixture(t *testing.T) {
 	repoCWD := t.TempDir()
 	home := writeClaudeFixture(t, repoCWD, []string{
-		`{"type":"user","cwd":"` + repoCWD + `","timestamp":"2026-04-18T02:15:37.407Z","uuid":"u1","sessionId":"s1","message":{"role":"user","content":"please rewrite internal/foo.go to add a Bar() function"}}`,
-		`{"type":"assistant","cwd":"` + repoCWD + `","timestamp":"2026-04-18T02:15:38.000Z","uuid":"u2","sessionId":"s1","message":{"role":"assistant","content":[{"type":"tool_use","name":"Edit","input":{"file_path":"` + repoCWD + `/internal/foo.go"}}]}}`,
+		`{"type":"user","cwd":` + jsonString(t, repoCWD) + `,"timestamp":"2026-04-18T02:15:37.407Z","uuid":"u1","sessionId":"s1","message":{"role":"user","content":"please rewrite internal/foo.go to add a Bar() function"}}`,
+		`{"type":"assistant","cwd":` + jsonString(t, repoCWD) + `,"timestamp":"2026-04-18T02:15:38.000Z","uuid":"u2","sessionId":"s1","message":{"role":"assistant","content":[{"type":"tool_use","name":"Edit","input":{"file_path":` + jsonString(t, filepath.Join(repoCWD, "internal", "foo.go")) + `}}]}}`,
 	})
 
 	fa := &fakeAgent{output: `{"summary": "user wanted Bar() helper in internal/foo.go"}`}

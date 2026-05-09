@@ -2,6 +2,7 @@ package intent
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,7 +15,7 @@ import (
 func writeClaudeFixture(t *testing.T, repoCWD string, lines []string) string {
 	t.Helper()
 	home := t.TempDir()
-	encoded := strings.ReplaceAll(repoCWD, "/", "-")
+	encoded := claudeProjectDirName(repoCWD)
 	dir := filepath.Join(home, ".claude", "projects", encoded)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
@@ -26,15 +27,33 @@ func writeClaudeFixture(t *testing.T, repoCWD string, lines []string) string {
 	return home
 }
 
+func jsonString(t *testing.T, s string) string {
+	t.Helper()
+	b, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+func TestClaudeProjectDirNameIsPathSafe(t *testing.T) {
+	name := claudeProjectDirName(`C:\Users\runner\work\repo`)
+	for _, sep := range []string{`/`, `\`, `:`} {
+		if strings.Contains(name, sep) {
+			t.Fatalf("claudeProjectDirName() = %q, contains %q", name, sep)
+		}
+	}
+}
+
 func TestClaudeReader_DiscoversAndLoadsRealMessages(t *testing.T) {
 	repoCWD := t.TempDir()
 	home := writeClaudeFixture(t, repoCWD, []string{
-		`{"type":"user","cwd":"` + repoCWD + `","timestamp":"2026-04-18T02:15:37.407Z","uuid":"u1","sessionId":"s1","message":{"role":"user","content":"please add a foo helper to internal/foo.go"}}`,
-		`{"type":"assistant","cwd":"` + repoCWD + `","timestamp":"2026-04-18T02:15:38.000Z","uuid":"u2","sessionId":"s1","message":{"role":"assistant","content":[{"type":"text","text":"got it"},{"type":"tool_use","name":"Edit","input":{"file_path":"` + repoCWD + `/internal/foo.go","old_string":"x","new_string":"y"}}]}}`,
+		`{"type":"user","cwd":` + jsonString(t, repoCWD) + `,"timestamp":"2026-04-18T02:15:37.407Z","uuid":"u1","sessionId":"s1","message":{"role":"user","content":"please add a foo helper to internal/foo.go"}}`,
+		`{"type":"assistant","cwd":` + jsonString(t, repoCWD) + `,"timestamp":"2026-04-18T02:15:38.000Z","uuid":"u2","sessionId":"s1","message":{"role":"assistant","content":[{"type":"text","text":"got it"},{"type":"tool_use","name":"Edit","input":{"file_path":` + jsonString(t, filepath.Join(repoCWD, "internal", "foo.go")) + `,"old_string":"x","new_string":"y"}}]}}`,
 		// Synthetic user text should be skipped.
-		`{"type":"user","isMeta":true,"cwd":"` + repoCWD + `","timestamp":"2026-04-18T02:15:39.000Z","uuid":"u3","sessionId":"s1","message":{"role":"user","content":"<command-name>/clear</command-name>"}}`,
+		`{"type":"user","isMeta":true,"cwd":` + jsonString(t, repoCWD) + `,"timestamp":"2026-04-18T02:15:39.000Z","uuid":"u3","sessionId":"s1","message":{"role":"user","content":"<command-name>/clear</command-name>"}}`,
 		// Attachments should be skipped.
-		`{"type":"attachment","cwd":"` + repoCWD + `","timestamp":"2026-04-18T02:15:40.000Z","uuid":"u4","attachment":{"type":"hook"}}`,
+		`{"type":"attachment","cwd":` + jsonString(t, repoCWD) + `,"timestamp":"2026-04-18T02:15:40.000Z","uuid":"u4","attachment":{"type":"hook"}}`,
 	})
 
 	r := NewClaudeReader()
@@ -93,7 +112,7 @@ func TestClaudeReader_FiltersByCWD(t *testing.T) {
 	repoB := t.TempDir()
 
 	home := writeClaudeFixture(t, repoA, []string{
-		`{"type":"user","cwd":"` + repoA + `","timestamp":"2026-04-18T02:15:37.407Z","uuid":"u1","sessionId":"s1","message":{"role":"user","content":"hi"}}`,
+		`{"type":"user","cwd":` + jsonString(t, repoA) + `,"timestamp":"2026-04-18T02:15:37.407Z","uuid":"u1","sessionId":"s1","message":{"role":"user","content":"hi"}}`,
 	})
 
 	r := NewClaudeReader()
@@ -114,7 +133,7 @@ func TestClaudeReader_FiltersByCWD(t *testing.T) {
 func TestClaudeReader_TimeWindow(t *testing.T) {
 	repoCWD := t.TempDir()
 	home := writeClaudeFixture(t, repoCWD, []string{
-		`{"type":"user","cwd":"` + repoCWD + `","timestamp":"2026-04-18T02:15:37.407Z","uuid":"u1","sessionId":"s1","message":{"role":"user","content":"hi"}}`,
+		`{"type":"user","cwd":` + jsonString(t, repoCWD) + `,"timestamp":"2026-04-18T02:15:37.407Z","uuid":"u1","sessionId":"s1","message":{"role":"user","content":"hi"}}`,
 	})
 
 	r := NewClaudeReader()

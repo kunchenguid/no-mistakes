@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -164,20 +165,34 @@ func readRunIntent(t *testing.T, nmHome, runID string) runIntentColumns {
 // touchedFile so file-overlap scoring matches whatever change we push.
 func seedClaudeTranscript(t *testing.T, homeDir, repoCWD, touchedFile string) {
 	t.Helper()
-	encoded := strings.ReplaceAll(repoCWD, "/", "-")
+	encoded := testClaudeProjectDirName(repoCWD)
 	dir := filepath.Join(homeDir, ".claude", "projects", encoded)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir claude projects: %v", err)
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	lines := []string{
-		`{"type":"user","cwd":"` + repoCWD + `","timestamp":"` + now + `","uuid":"u1","sessionId":"e2e-session","message":{"role":"user","content":"please add a Bar() helper to ` + touchedFile + `"}}`,
-		`{"type":"assistant","cwd":"` + repoCWD + `","timestamp":"` + now + `","uuid":"u2","sessionId":"e2e-session","message":{"role":"assistant","content":[{"type":"text","text":"on it - editing ` + touchedFile + `"},{"type":"tool_use","name":"Edit","input":{"file_path":"` + filepath.Join(repoCWD, touchedFile) + `","old_string":"x","new_string":"Bar()"}}]}}`,
+		`{"type":"user","cwd":` + testJSONString(t, repoCWD) + `,"timestamp":"` + now + `","uuid":"u1","sessionId":"e2e-session","message":{"role":"user","content":"please add a Bar() helper to ` + touchedFile + `"}}`,
+		`{"type":"assistant","cwd":` + testJSONString(t, repoCWD) + `,"timestamp":"` + now + `","uuid":"u2","sessionId":"e2e-session","message":{"role":"assistant","content":[{"type":"text","text":"on it - editing ` + touchedFile + `"},{"type":"tool_use","name":"Edit","input":{"file_path":` + testJSONString(t, filepath.Join(repoCWD, touchedFile)) + `,"old_string":"x","new_string":"Bar()"}}]}}`,
 	}
 	path := filepath.Join(dir, "e2e-session.jsonl")
 	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 		t.Fatalf("write claude transcript: %v", err)
 	}
+}
+
+func testClaudeProjectDirName(cwd string) string {
+	replacer := strings.NewReplacer("/", "-", `\`, "-", ":", "-")
+	return replacer.Replace(cwd)
+}
+
+func testJSONString(t *testing.T, s string) string {
+	t.Helper()
+	b, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }
 
 // writeIntentScenario writes a fakeagent scenario YAML that returns:
