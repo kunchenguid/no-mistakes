@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.16.0](https://github.com/kunchenguid/no-mistakes/compare/v1.15.0...v1.16.0) (2026-05-10)
+
+
+### Features
+
+* **cli:** add usage stats command ([#179](https://github.com/kunchenguid/no-mistakes/issues/179)) ([990b26c](https://github.com/kunchenguid/no-mistakes/commit/990b26cb8e405d83f03d33e16be7a46fe4d3ea20))
+
 ## [1.15.0](https://github.com/kunchenguid/no-mistakes/compare/v1.14.0...v1.15.0) (2026-05-10)
 
 
