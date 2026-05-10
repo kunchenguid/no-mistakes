@@ -456,7 +456,7 @@ func assertRootHelp(t *testing.T, h *Harness) {
 	if err != nil {
 		t.Fatalf("nm --help: %v\n%s", err, out)
 	}
-	for _, want := range []string{"init", "eject", "attach", "rerun", "status", "runs", "doctor", "daemon", "update"} {
+	for _, want := range []string{"init", "eject", "attach", "rerun", "status", "runs", "stats", "doctor", "daemon", "update"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("help output should list %q command, got:\n%s", want, out)
 		}
