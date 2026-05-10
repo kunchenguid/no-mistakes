@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.15.0](https://github.com/kunchenguid/no-mistakes/compare/v1.14.0...v1.15.0) (2026-05-10)
+
+
+### Features
+
+* **pipeline:** add intent extraction as a pipeline step ([#175](https://github.com/kunchenguid/no-mistakes/issues/175)) ([78c9e7d](https://github.com/kunchenguid/no-mistakes/commit/78c9e7d7d4d5d5e836f3508e193dc9c86ac04e2e))
+* **pipeline:** add PR intent sections ([#177](https://github.com/kunchenguid/no-mistakes/issues/177)) ([d7eb261](https://github.com/kunchenguid/no-mistakes/commit/d7eb261b27b04425e70fd41e155ef817d7240152))
+
+
+### Bug Fixes
+
+* **pipeline:** handle orphaned intent base SHAs ([#178](https://github.com/kunchenguid/no-mistakes/issues/178)) ([e710e3c](https://github.com/kunchenguid/no-mistakes/commit/e710e3c2e582397c418ae905a44ff30809ca57a2))
+
 ## [1.14.0](https://github.com/kunchenguid/no-mistakes/compare/v1.13.1...v1.14.0) (2026-05-09)
 
 
