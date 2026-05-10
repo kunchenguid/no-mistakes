@@ -96,6 +96,16 @@ no-mistakes runs [--limit <n>]
 
 Shows runs newest-first with branch, status (styled), short SHA, timestamp, and PR URL if set.
 
+## no-mistakes stats
+
+Show historical usage stats across all repos.
+
+```sh
+no-mistakes stats
+```
+
+Displays total changes, rescued changes, rescue rate, reported and fixed mistakes, fixes by pipeline step, and the top repos by rescue activity.
+
 ## no-mistakes doctor
 
 Check system health and dependencies.
