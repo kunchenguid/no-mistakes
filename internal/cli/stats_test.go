@@ -180,6 +180,14 @@ func TestStatsDashboardFixedPercentMovesIntoValueColumnAndBarsReachRightEdge(t *
 	}
 }
 
+func TestStatsDashboardReportedBarIsEmptyWhenNoFindingsReported(t *testing.T) {
+	out := renderStatsDashboard(&db.Stats{})
+	line := findLineContaining(t, strings.Split(out, "\n"), "Reported")
+	if strings.Contains(line, "█") {
+		t.Fatalf("reported row should not show filled progress for zero findings:\n%s", out)
+	}
+}
+
 func insertRound(t *testing.T, database *db.DB, stepID string, round int, trigger string, findings *string) {
 	t.Helper()
 	if _, err := database.InsertStepRound(stepID, round, trigger, findings, nil, 100); err != nil {

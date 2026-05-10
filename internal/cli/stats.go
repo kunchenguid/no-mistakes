@@ -61,7 +61,7 @@ func renderStatsDashboard(stats *db.Stats) string {
 		metricStatsLine("Rescue rate", percent(rescueRate), progressBar(rescueRate, statsBarWidth)),
 		"",
 		"  Mistakes",
-		metricStatsLine("Reported", fmt.Sprintf("%d", stats.ReportedFindings), progressBar(1, statsBarWidth)),
+		metricStatsLine("Reported", fmt.Sprintf("%d", stats.ReportedFindings), progressBar(ratio(stats.ReportedFindings, stats.ReportedFindings), statsBarWidth)),
 		metricStatsLine("Fixed", percent(fixRate), progressBar(fixRate, statsBarWidth)),
 		"",
 		"  Fixes by step",
