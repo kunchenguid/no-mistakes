@@ -14,7 +14,7 @@ Each step can produce findings, request approval, or trigger auto-fix. Steps tha
 ## Intent
 
 Infers the author's intent from recent local Claude Code, Codex, OpenCode, or Rovo Dev transcripts.
-This is best-effort context, and when available it is included in review checks and fixes, test detection and fixes, documentation checks and fixes, lint detection and fixes, and PR drafting.
+This is best-effort context, and when available it is included in rebase fixes, review checks and fixes, test detection and fixes, documentation checks and fixes, lint detection and fixes, CI auto-fixes, and PR drafting.
 
 **Behavior:**
 - Runs only when `intent.enabled` is true
@@ -39,7 +39,7 @@ Fetches the latest upstream and rebases your branch onto it.
 - If the diff against the default branch is empty after rebase, completes rebase and skips all remaining pipeline steps
 - On conflict: records conflicting files, aborts the rebase, and reports findings
 
-**Auto-fix:** when enabled, the agent resolves conflict markers, stages files, and runs `git rebase --continue`. Manual fix rounds also include any per-conflict user notes, any selected user-authored findings from the TUI, and sanitized prior-round history in the prompt. Commits use the message format `no-mistakes(rebase): <summary>`.
+**Auto-fix:** when enabled, the agent resolves conflict markers, stages files, and runs `git rebase --continue`. The prompt includes inferred user intent when available. Manual fix rounds also include any per-conflict user notes, any selected user-authored findings from the TUI, and sanitized prior-round history in the prompt. Commits use the message format `no-mistakes(rebase): <summary>`.
 
 **Default auto-fix limit:** `3`.
 
@@ -155,8 +155,8 @@ Monitors PR health after creation and auto-fixes CI failures. Mergeability polli
 - On GitHub and GitLab, polls provider mergeability alongside CI checks and waits for that state to resolve before exiting
 - Waits a 60s grace period before trusting empty results (CI checks may not have registered yet)
 - If CI failures or, on GitHub or GitLab, a merge conflict are already known while other checks are still pending: waits for all checks to finish before attempting an auto-fix
-- On CI failure: fetches failed job logs (GitHub via `gh run view --log-failed`, GitLab via `glab ci trace`, Bitbucket Cloud via failed pipeline step logs), sends them to the agent for fixing, and commits and force-pushes only if the agent produces changes
-- On GitHub or GitLab merge conflict: asks the agent to rebase onto the latest default-branch tip and resolve the conflicts with minimal changes
+- On CI failure: fetches failed job logs (GitHub via `gh run view --log-failed`, GitLab via `glab ci trace`, Bitbucket Cloud via failed pipeline step logs), sends them to the agent with inferred user intent when available, and commits and force-pushes only if the agent produces changes
+- On GitHub or GitLab merge conflict: asks the agent to rebase onto the latest default-branch tip and make the smallest correct root-cause fix for the conflicts, using inferred user intent when available
 - If both CI failures and a GitHub or GitLab merge conflict are present: fixes both in the same attempt
 - If a fix attempt produces no changes: automatic mode leaves the failure undeduplicated so it can retry until the auto-fix limit, while manual fix mode returns immediately for manual intervention
 - Deduplicates fix attempts only after a fix is actually committed and pushed

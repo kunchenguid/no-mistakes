@@ -210,7 +210,7 @@ These are global defaults. Per-repo config can override individual steps.
 ### intent
 
 User-intent extraction settings.
-When enabled, no-mistakes can read recent local agent transcripts, match the session that produced the change, summarize the author's intent, pass that summary to review, test, document, lint, and PR prompts, and include it in generated PR descriptions.
+When enabled, no-mistakes can read recent local agent transcripts, match the session that produced the change, summarize the author's intent, pass that summary to rebase, review, test, document, lint, CI auto-fix, and PR prompts, and include it in generated PR descriptions.
 
 | | |
 |---|---|
