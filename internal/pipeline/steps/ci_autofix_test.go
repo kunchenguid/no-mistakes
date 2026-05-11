@@ -60,6 +60,7 @@ func TestCIStep_CIFailureAutoFix(t *testing.T) {
 	sctx.Run.PRURL = &prURL
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
+	sctx.UserIntent = "user wanted CI autofix to preserve the extracted intent"
 	sctx.Config.CITimeout = 30 * time.Second
 	sctx.Config.AutoFix = config.AutoFix{CI: 3}
 
@@ -1127,6 +1128,7 @@ func TestCIStep_AutoFixPromptIncludesMustFixInstruction(t *testing.T) {
 	sctx.Run.PRURL = &prURL
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
+	sctx.UserIntent = "user wanted CI autofix to preserve the extracted intent"
 	sctx.Config.CITimeout = 30 * time.Second
 	sctx.Config.AutoFix = config.AutoFix{CI: 3}
 
@@ -1154,5 +1156,8 @@ func TestCIStep_AutoFixPromptIncludesMustFixInstruction(t *testing.T) {
 	}
 	if strings.Contains(capturedPrompt, "Make the minimal change needed") {
 		t.Errorf("prompt should not prefer narrow minimal changes, got:\n%s", capturedPrompt)
+	}
+	if !strings.Contains(capturedPrompt, "user wanted CI autofix to preserve the extracted intent") {
+		t.Errorf("prompt should include extracted user intent, got:\n%s", capturedPrompt)
 	}
 }

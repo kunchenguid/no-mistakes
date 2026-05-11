@@ -92,6 +92,7 @@ Context:
 CI logs:
 %s`, logOutput)
 	}
+	prompt += userIntentPromptSection(sctx)
 
 	sctx.Log("running agent to fix CI issues...")
 	_, err := sctx.Agent.Run(ctx, agent.RunOpts{
