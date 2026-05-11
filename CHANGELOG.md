@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.17.0](https://github.com/kunchenguid/no-mistakes/compare/v1.16.0...v1.17.0) (2026-05-11)
+
+
+### Features
+
+* **pipeline:** prefer root-cause fix prompts ([#182](https://github.com/kunchenguid/no-mistakes/issues/182)) ([865e9ba](https://github.com/kunchenguid/no-mistakes/commit/865e9ba748219f90be0583be643f04984b622a9c))
+
+
+### Bug Fixes
+
+* **pipeline:** use workdir for intent git state ([#183](https://github.com/kunchenguid/no-mistakes/issues/183)) ([8b9238f](https://github.com/kunchenguid/no-mistakes/commit/8b9238f05212e8c5a47a12023b42c3f56a26772c))
+
 ## [1.16.0](https://github.com/kunchenguid/no-mistakes/compare/v1.15.0...v1.16.0) (2026-05-10)
 
 
