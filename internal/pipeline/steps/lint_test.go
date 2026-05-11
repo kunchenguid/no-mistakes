@@ -58,6 +58,12 @@ func TestLintStep_FixMode_CommitsChanges(t *testing.T) {
 	if strings.Contains(ag.calls[0].Prompt, "<<<<<<< HEAD") {
 		t.Error("expected lint fix prompt to exclude merge markers")
 	}
+	if !strings.Contains(ag.calls[0].Prompt, "smallest correct root-cause fix") {
+		t.Error("expected lint fix prompt to prefer root-cause fixes over bandaids")
+	}
+	if strings.Contains(ag.calls[0].Prompt, "Make the minimal change needed") {
+		t.Error("expected lint fix prompt not to prefer narrow minimal changes")
+	}
 	if status := gitStatusPorcelain(t, dir); status != "" {
 		t.Fatalf("expected clean worktree after fix commit, got %q", status)
 	}

@@ -32,8 +32,8 @@ Context:
 - target commit: %s
 
 Rules:
-- Make the minimal change needed.
-- Do not refactor beyond what is needed.
+- Make the smallest correct root-cause fix.
+- Do not refactor beyond what is needed for that root-cause fix.
 - If tests fail, determine whether the problem is a real product/code failure, a setup/environment problem you can fix, or a flaky/infrastructure issue.
 - Do NOT run linters, formatters, or static analysis tools.
 - Re-run the relevant tests before finishing.

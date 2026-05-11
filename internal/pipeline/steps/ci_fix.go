@@ -43,8 +43,8 @@ func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR
 		promptRules = `- You MUST produce file changes that fix the failing checks. Do not conclude that nothing needs to change.
 		- If a test fails only on a specific OS (e.g. Windows CRLF, path separators), fix the test to be cross-platform.
 		- If a test is flaky, make it deterministic.
-		- Make the minimal change needed.
-		- Do not refactor beyond what is needed.
+		- Make the smallest correct root-cause fix.
+		- Do not refactor beyond what is needed for that root-cause fix.
 		- Verify the fix by running the most relevant commands locally before finishing.`
 	case mergeConflict:
 		promptIntro = "The PR has merge conflicts with the base branch. Rebase onto the base branch and resolve the merge conflicts."
@@ -56,8 +56,8 @@ func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR
 		promptRules = `- You MUST produce file changes that fix the failing checks. Do not conclude that nothing needs to change.
 		- If a test fails only on a specific OS (e.g. Windows CRLF, path separators), fix the test to be cross-platform.
 		- If a test is flaky, make it deterministic.
-		- Make the minimal change needed.
-		- Do not refactor beyond what is needed.
+		- Make the smallest correct root-cause fix.
+		- Do not refactor beyond what is needed for that root-cause fix.
 		- Verify the fix by running the most relevant commands locally before finishing.`
 	}
 

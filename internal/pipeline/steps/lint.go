@@ -31,8 +31,8 @@ Context:
 - target commit: %s
 
 Rules:
-- Make the minimal change needed.
-- Do not refactor beyond what is needed.
+- Make the smallest correct root-cause fix.
+- Do not refactor beyond what is needed for that root-cause fix.
 - Do not run tests or broader behavioral validation.
 - Re-run the relevant lint or format commands before finishing.
 - Return JSON with a single "summary" field when you are done.

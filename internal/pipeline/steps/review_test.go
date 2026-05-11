@@ -74,6 +74,15 @@ func TestReviewStep_FixMode(t *testing.T) {
 	if !strings.Contains(ag.calls[0].Prompt, "do not restore or re-add the removed code unless the finding is a legitimate correctness, reliability, or security issue") {
 		t.Error("expected fix prompt to distinguish intentional deletions from legitimate bug fixes")
 	}
+	if !strings.Contains(ag.calls[0].Prompt, "smallest correct root-cause fix") {
+		t.Error("expected review fix prompt to prefer root-cause fixes over bandaids")
+	}
+	if !strings.Contains(ag.calls[0].Prompt, "deeper design, abstraction, validation, ownership, or test-coverage flaw") {
+		t.Error("expected review fix prompt to require root-cause diagnosis before editing")
+	}
+	if !strings.Contains(ag.calls[0].Prompt, "leave the same class of bug likely elsewhere") {
+		t.Error("expected review fix prompt to avoid narrow fixes that leave systemic bugs")
+	}
 	if len(ag.calls[0].JSONSchema) == 0 {
 		t.Error("expected fix call to request structured JSON output")
 	}
@@ -88,6 +97,9 @@ func TestReviewStep_FixMode(t *testing.T) {
 	}
 	if !strings.Contains(ag.calls[1].Prompt, `"ask-user"`) {
 		t.Error("expected review prompt to include ask-user action for ambiguous findings")
+	}
+	if !strings.Contains(ag.calls[1].Prompt, "inspect surrounding code, call sites, shared helpers, tests, and invariants") {
+		t.Error("expected review prompt to allow surrounding-code inspection for root cause")
 	}
 	if status := gitStatusPorcelain(t, dir); status != "" {
 		t.Fatalf("expected clean worktree after fix commit, got %q", status)
