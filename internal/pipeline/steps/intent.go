@@ -157,9 +157,13 @@ func defaultRunIntent(ctx context.Context, sctx *pipeline.StepContext) (*intent.
 	repo := sctx.Repo
 	run := sctx.Run
 	cfg := sctx.Config
+	gitWorkDir := strings.TrimSpace(sctx.WorkDir)
+	if gitWorkDir == "" {
+		gitWorkDir = repo.WorkingPath
+	}
 
-	resolvedBaseSHA := resolveIntentBaseSHA(ctx, repo.WorkingPath, run.BaseSHA, repo.DefaultBranch)
-	diffFiles, err := git.DiffNameOnly(ctx, repo.WorkingPath, resolvedBaseSHA, run.HeadSHA)
+	resolvedBaseSHA := resolveIntentBaseSHA(ctx, gitWorkDir, run.BaseSHA, repo.DefaultBranch)
+	diffFiles, err := git.DiffNameOnly(ctx, gitWorkDir, resolvedBaseSHA, run.HeadSHA)
 	if err != nil {
 		return nil, err
 	}
@@ -167,16 +171,16 @@ func defaultRunIntent(ctx context.Context, sctx *pipeline.StepContext) (*intent.
 		return nil, errIntentEmptyDiff
 	}
 
-	baseTime, err := git.CommitTime(ctx, repo.WorkingPath, resolvedBaseSHA)
+	baseTime, err := git.CommitTime(ctx, gitWorkDir, resolvedBaseSHA)
 	if err != nil || git.IsZeroSHA(run.BaseSHA) {
 		baseTime = time.Now().Add(-7 * 24 * time.Hour)
 	}
-	headTime, err := git.CommitTime(ctx, repo.WorkingPath, run.HeadSHA)
+	headTime, err := git.CommitTime(ctx, gitWorkDir, run.HeadSHA)
 	if err != nil {
 		headTime = time.Now()
 	}
 
-	if authorEmail, err := git.CommitAuthorEmail(ctx, repo.WorkingPath, run.HeadSHA); err == nil && authorEmail != "" {
+	if authorEmail, err := git.CommitAuthorEmail(ctx, gitWorkDir, run.HeadSHA); err == nil && authorEmail != "" {
 		if u, uerr := user.Current(); uerr == nil && u != nil {
 			localUser := strings.ToLower(u.Username)
 			emailUser := strings.ToLower(strings.SplitN(authorEmail, "@", 2)[0])

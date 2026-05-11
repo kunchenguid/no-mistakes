@@ -226,6 +226,64 @@ func TestIntentStep_Integration_ZeroBaseSHA_NewBranchPush(t *testing.T) {
 	}
 }
 
+func TestIntentStep_Integration_UsesPipelineWorkDirForGitState(t *testing.T) {
+	originRepo := t.TempDir()
+	gitCmd(t, originRepo, "init")
+	gitCmd(t, originRepo, "config", "user.email", "test@example.com")
+	gitCmd(t, originRepo, "config", "user.name", "Tester")
+	if err := os.WriteFile(filepath.Join(originRepo, "internal_foo.go"), []byte("package foo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, originRepo, "add", ".")
+	gitCmd(t, originRepo, "commit", "-m", "base")
+	base := gitCmd(t, originRepo, "rev-parse", "HEAD")
+
+	fakeHome := t.TempDir()
+	encoded := testClaudeProjectDirName(originRepo)
+	claudeDir := filepath.Join(fakeHome, ".claude", "projects", encoded)
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	transcript := `{"type":"user","cwd":` + testJSONString(t, originRepo) + `,"timestamp":"2026-04-18T02:15:37.407Z","uuid":"u1","sessionId":"s1","message":{"role":"user","content":"please add Bar() to internal_foo.go"}}
+{"type":"assistant","cwd":` + testJSONString(t, originRepo) + `,"timestamp":"2026-04-18T02:15:38.000Z","uuid":"u2","sessionId":"s1","message":{"role":"assistant","content":[{"type":"tool_use","name":"Edit","input":{"file_path":` + testJSONString(t, filepath.Join(originRepo, "internal_foo.go")) + `}}]}}
+`
+	if err := os.WriteFile(filepath.Join(claudeDir, "session.jsonl"), []byte(transcript), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	withFakeHome(t, fakeHome)
+
+	pipelineWorkDir := filepath.Join(t.TempDir(), "worktree")
+	gitCmd(t, t.TempDir(), "clone", originRepo, pipelineWorkDir)
+	gitCmd(t, pipelineWorkDir, "config", "user.email", "test@example.com")
+	gitCmd(t, pipelineWorkDir, "config", "user.name", "Tester")
+	if err := os.WriteFile(filepath.Join(pipelineWorkDir, "internal_foo.go"), []byte("package foo\nfunc Bar() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, pipelineWorkDir, "add", ".")
+	gitCmd(t, pipelineWorkDir, "commit", "-m", "head only in pipeline workdir")
+	head := gitCmd(t, pipelineWorkDir, "rev-parse", "HEAD")
+
+	cfg := &config.Config{Intent: config.Intent{Enabled: true, Threshold: 0.1, SlackDays: 3}}
+	sctx := newIntentIntegrationContext(t, originRepo, base, head, cfg)
+	sctx.WorkDir = pipelineWorkDir
+
+	outcome, err := (&IntentStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if outcome == nil || outcome.Skipped {
+		t.Fatalf("expected non-skipped outcome when head exists in pipeline workdir, got %+v", outcome)
+	}
+
+	got, _ := sctx.DB.GetRun(sctx.Run.ID)
+	if got.Intent == nil {
+		t.Fatal("intent not attached")
+	}
+	if !strings.Contains(*got.Intent, "Bar()") {
+		t.Errorf("Intent = %q", *got.Intent)
+	}
+}
+
 // After a force push, Run.BaseSHA is the prior remote tip of the branch, which
 // may be unreachable in the worktree (rewritten away or never fetched). The
 // step must fall back to merge-base against the default branch instead of
