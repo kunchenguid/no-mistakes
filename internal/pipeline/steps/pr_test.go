@@ -279,8 +279,8 @@ func TestPRStep_CreatesNewPR(t *testing.T) {
 	if strings.Contains(ghLog, "--title add feature --") {
 		t.Fatalf("expected fallback PR title to reject raw non-conventional commit summary, got:\n%s", ghLog)
 	}
-	if !strings.Contains(ghLog, "--title chore: add feature --body") {
-		t.Fatalf("expected fallback PR title to use conventional commit format, got:\n%s", ghLog)
+	if !strings.Contains(ghLog, "--title feat: add feature --body") {
+		t.Fatalf("expected fallback PR title to use release-triggering conventional commit format, got:\n%s", ghLog)
 	}
 	if !strings.Contains(ghLog, "add feature\n\n## Risk Assessment\n\n⚠️ Medium: touches critical error handling") {
 		t.Fatalf("expected fallback PR body to append risk note under Risk Assessment heading, got:\n%s", ghLog)
@@ -1042,12 +1042,12 @@ func TestPRStep_AgentNonConventionalTitleFallsBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	ghLog := string(logData)
-	// The title should be prefixed with "chore: ", not the raw agent output
+	// The title should be prefixed with a release-triggering type, not the raw agent output.
 	if strings.Contains(ghLog, "--title Improve pipeline header UX --") {
 		t.Fatal("non-conventional agent title should have been rejected")
 	}
-	if !strings.Contains(ghLog, "chore: Improve pipeline header UX") {
-		t.Fatal("expected agent title to be prefixed with chore:, got: " + ghLog)
+	if !strings.Contains(ghLog, "fix: Improve pipeline header UX") {
+		t.Fatal("expected user-facing agent title to be prefixed with fix:, got: " + ghLog)
 	}
 	// The agent's body should be preserved, not replaced with fallback
 	if !strings.Contains(ghLog, "## Summary") {
@@ -1087,6 +1087,66 @@ func TestPRStep_AgentScopedBreakingTitlePassesThrough(t *testing.T) {
 	}
 	if strings.Contains(ghLog, "--title chore: "+title+" --body") {
 		t.Fatalf("expected scoped conventional breaking-change title to avoid fallback prefix, got:\n%s", ghLog)
+	}
+}
+
+func TestPRStep_AgentConventionalNonReleaseTitlePassesThrough(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	env, logFile := fakeGH(t, "")
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			payload := json.RawMessage(`{"title":"refactor(cli): improve CLI output","body":"## Summary\n\n- improve user-visible command output"}`)
+			return &agent.Result{Output: payload}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+
+	step := &PRStep{}
+	if _, err := step.Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+
+	logData, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ghLog := string(logData)
+	if !strings.Contains(ghLog, "--title refactor(cli): improve CLI output --body") {
+		t.Fatalf("expected conventional agent PR title to pass through unchanged, got:\n%s", ghLog)
+	}
+}
+
+func TestPRStep_PromptRequiresReleaseTypesForProductImpact(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			payload := json.RawMessage(`{"title":"fix: improve CLI output","body":"## What Changed\n\n- improve output"}`)
+			return &agent.Result{Output: payload}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	step := &PRStep{}
+	if _, err := step.buildPRContent(sctx, "feature", baseSHA); err != nil {
+		t.Fatal(err)
+	}
+	if len(ag.calls) != 1 {
+		t.Fatalf("agent calls = %d, want 1", len(ag.calls))
+	}
+	prompt := ag.calls[0].Prompt
+	if !strings.Contains(prompt, "user-facing product impact") {
+		t.Fatalf("prompt should mention user-facing product impact rule, got:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "must use feat or fix") {
+		t.Fatalf("prompt should require feat or fix for product impact, got:\n%s", prompt)
 	}
 }
 

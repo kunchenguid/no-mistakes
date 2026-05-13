@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/kunchenguid/no-mistakes/internal/conventional"
 )
 
 // branchNameRules and commitSubjectRules are shared between the single-purpose
@@ -17,6 +19,7 @@ const branchNameRules = `- Use kebab-case.
 
 const commitSubjectRules = `- One line only, under 72 characters.
 - Use conventional commit format: "type(scope): description" or "type: description". Valid types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert. Scope is optional. Do not capitalize the type.
+` + conventional.ReleaseTypeRule + `
 - When including a scope, it MUST be a real package/module name that exists in the codebase (for example, a directory under internal/, cmd/, or the equivalent top-level grouping for this project), identified by inspecting the changed paths. Pick the primary module affected by the change, not a secondary or incidental one.
 - Keep the scope at a coarse level, not too granular: a codebase typically has fewer than 10 distinct scopes in use across its history. Prefer a broad module name (e.g. "daemon", "pipeline", "cli") over a narrow file or sub-feature name. If you cannot confidently identify a real primary module, omit the scope and use "type: description".
 - Do not invent behavior.`
@@ -245,5 +248,5 @@ func sanitizeCommitSubject(raw string) string {
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
 		s = strings.TrimSpace(s[:i])
 	}
-	return s
+	return conventional.TightenTitle(s)
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -167,6 +168,34 @@ func TestSuggestCommitMessageTrimsNewlines(t *testing.T) {
 	}
 	if got != "fix: thing" {
 		t.Fatalf("expected first line only, got %q", got)
+	}
+}
+
+func TestSuggestCommitMessageKeepsConventionalNonReleaseType(t *testing.T) {
+	ag := &stubAgent{result: &Result{
+		Output: json.RawMessage(`{"subject":"refactor: improve CLI output"}`),
+	}}
+	got, err := SuggestCommitMessage(context.Background(), ag, "/tmp")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "refactor: improve CLI output" {
+		t.Fatalf("subject = %q, want conventional agent subject unchanged", got)
+	}
+}
+
+func TestSuggestCommitMessagePromptRequiresReleaseTypesForProductImpact(t *testing.T) {
+	ag := &stubAgent{result: &Result{
+		Output: json.RawMessage(`{"subject":"fix: improve CLI output"}`),
+	}}
+	if _, err := SuggestCommitMessage(context.Background(), ag, "/tmp"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(ag.gotPrompt, "user-facing product impact") {
+		t.Fatalf("prompt should mention user-facing product impact rule, got:\n%s", ag.gotPrompt)
+	}
+	if !strings.Contains(ag.gotPrompt, "must use feat or fix") {
+		t.Fatalf("prompt should require feat or fix for product impact, got:\n%s", ag.gotPrompt)
 	}
 }
 

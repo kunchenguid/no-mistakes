@@ -4,24 +4,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"regexp"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/conventional"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
-
-var conventionalTitleRe = regexp.MustCompile(
-	`^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([^)]+\))?!?: .+`,
-)
-
-func isConventionalTitle(title string) bool {
-	return conventionalTitleRe.MatchString(title)
-}
 
 // PRStep creates or updates a pull request via the provider CLI or API.
 type PRStep struct{}
@@ -147,6 +139,7 @@ Context:
 Rules:
 - Cover the full branch delta, not just the latest commit.
 - Title must use conventional commit format: "type(scope): description" or "type: description". Valid types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert. Scope is optional. Do not capitalize the type. Do not use the raw branch name.
+%s
 - When including a scope, it MUST be a real package/module name that exists in the codebase (for example, a directory under internal/, cmd/, or the equivalent top-level grouping for this project), identified by inspecting the changed paths. Pick the primary module affected by the change, not a secondary or incidental one.
 - Keep the scope at a coarse level, not too granular: a codebase typically has fewer than 10 distinct scopes in use across its history. Prefer a broad module name (e.g. "daemon", "pipeline", "cli") over a narrow file or sub-feature name. If you cannot confidently identify a real primary module, omit the scope and use "type: description".
 - Body: a "## What Changed" section in GitHub-flavored markdown. 1-3 concise bullet points describing the concrete changes in this branch (what code/behavior shifted), not the user's motivation. Do not include Intent, Risk Assessment, Testing, or Pipeline sections - those are prepended/appended separately. The body value must be plain markdown text, never a JSON object or serialized JSON string.
@@ -156,7 +149,7 @@ Commit history:
 %s
 
 Diff stat:
-%s%s%s%s`, branch, baseSHA, sctx.Run.HeadSHA, sctx.Repo.DefaultBranch, commitLog, diffStat, pipelineContext, userIntentPromptSection(sctx), executionContextPromptSection())
+%s%s%s%s`, branch, baseSHA, sctx.Run.HeadSHA, sctx.Repo.DefaultBranch, conventional.ReleaseTypeRule, commitLog, diffStat, pipelineContext, userIntentPromptSection(sctx), executionContextPromptSection())
 
 	result, err := sctx.Agent.Run(ctx, agent.RunOpts{
 		Prompt:     prompt,
@@ -177,9 +170,10 @@ Diff stat:
 			content.Body = unwrapNestedPRBody(content.Body)
 			content.Body = stripGeneratedSections(content.Body)
 			if content.Title != "" && content.Body != "" {
-				if !isConventionalTitle(content.Title) {
-					slog.Warn("agent PR title is not conventional commit format, prepending chore:", "title", content.Title)
-					content.Title = "chore: " + content.Title
+				originalTitle := content.Title
+				content.Title = conventional.TightenTitle(content.Title)
+				if content.Title != originalTitle {
+					slog.Warn("tightened agent PR title type", "from", originalTitle, "to", content.Title)
 				}
 				content.Body = appendGeneratedSections(content.Body, riskLine, testingMD, pipelineMD)
 				content.Body = prependIntentSection(content.Body, sctx)
@@ -332,8 +326,8 @@ func fallbackPRContent(sctx *pipeline.StepContext, branch, commitLog, riskLine, 
 	}
 	if title == "" {
 		title = "chore: update pull request"
-	} else if !isConventionalTitle(title) {
-		title = "chore: " + title
+	} else {
+		title = conventional.TightenTitle(title)
 	}
 	body := fmt.Sprintf("## What Changed\n\n%s", strings.TrimSpace(commitLog))
 	if body == "## What Changed\n\n" {
