@@ -69,6 +69,8 @@ func TestTightenTitlePrefixesNonConventionalTitles(t *testing.T) {
 		want  string
 	}{
 		{name: "new feature", title: "add export command", want: "feat: add export command"},
+		{name: "direct fix verb", title: "fix login redirect", want: "fix: fix login redirect"},
+		{name: "direct correction verb", title: "correct cache invalidation", want: "fix: correct cache invalidation"},
 		{name: "user-facing fix", title: "Improve pipeline header UX", want: "fix: Improve pipeline header UX"},
 		{name: "documentation", title: "update README", want: "docs: update README"},
 		{name: "generic internal", title: "tidy retry helper", want: "chore: tidy retry helper"},

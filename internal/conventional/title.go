@@ -46,7 +46,7 @@ func inferType(text string) string {
 	switch {
 	case hasDocumentationLanguage(lower):
 		return "docs"
-	case hasProductImpactLanguage(lower) || isFeatureLanguage(lower):
+	case hasProductImpactLanguage(lower) || isFeatureLanguage(lower) || isFixLanguage(lower):
 		return inferReleaseType(lower)
 	default:
 		return "chore"
@@ -58,6 +58,20 @@ func inferReleaseType(text string) string {
 		return "feat"
 	}
 	return "fix"
+}
+
+func isFixLanguage(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	fixPrefixes := []string{
+		"fix ", "fixes ", "fixed ", "resolve ", "resolves ", "resolved ",
+		"correct ", "corrects ", "corrected ", "repair ", "repairs ", "repaired ",
+	}
+	for _, prefix := range fixPrefixes {
+		if strings.HasPrefix(lower, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func isFeatureLanguage(text string) bool {
