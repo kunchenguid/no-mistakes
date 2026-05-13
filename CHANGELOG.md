@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.17.1](https://github.com/kunchenguid/no-mistakes/compare/v1.17.0...v1.17.1) (2026-05-13)
+
+
+### Bug Fixes
+
+* **conventional:** infer release types for non-conventional titles ([#185](https://github.com/kunchenguid/no-mistakes/issues/185)) ([1b84147](https://github.com/kunchenguid/no-mistakes/commit/1b8414745658952d42cfc3af3a1b9a6f4f86960f))
+
 ## [1.17.0](https://github.com/kunchenguid/no-mistakes/compare/v1.16.0...v1.17.0) (2026-05-11)
 
 
