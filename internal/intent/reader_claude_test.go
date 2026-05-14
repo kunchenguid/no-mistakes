@@ -50,6 +50,7 @@ func TestClaudeReader_DiscoversAndLoadsRealMessages(t *testing.T) {
 	home := writeClaudeFixture(t, repoCWD, []string{
 		`{"type":"user","cwd":` + jsonString(t, repoCWD) + `,"timestamp":"2026-04-18T02:15:37.407Z","uuid":"u1","sessionId":"s1","message":{"role":"user","content":"please add a foo helper to internal/foo.go"}}`,
 		`{"type":"assistant","cwd":` + jsonString(t, repoCWD) + `,"timestamp":"2026-04-18T02:15:38.000Z","uuid":"u2","sessionId":"s1","message":{"role":"assistant","content":[{"type":"text","text":"got it"},{"type":"tool_use","name":"Edit","input":{"file_path":` + jsonString(t, filepath.Join(repoCWD, "internal", "foo.go")) + `,"old_string":"x","new_string":"y"}}]}}`,
+		`{"type":"assistant","cwd":` + jsonString(t, repoCWD) + `,"timestamp":"2026-04-18T02:15:38.500Z","uuid":"u2b","sessionId":"s1","message":{"role":"assistant","content":[{"type":"tool_use","name":"Read","input":{"filePath":` + jsonString(t, filepath.Join(repoCWD, "internal", "bar.go")) + `}}]}}`,
 		// Synthetic user text should be skipped.
 		`{"type":"user","isMeta":true,"cwd":` + jsonString(t, repoCWD) + `,"timestamp":"2026-04-18T02:15:39.000Z","uuid":"u3","sessionId":"s1","message":{"role":"user","content":"<command-name>/clear</command-name>"}}`,
 		// Attachments should be skipped.
@@ -80,8 +81,8 @@ func TestClaudeReader_DiscoversAndLoadsRealMessages(t *testing.T) {
 	if err := r.Load(context.Background(), s); err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if len(s.Messages) != 2 {
-		t.Fatalf("got %d messages, want 2 (synthetic + attachment skipped)", len(s.Messages))
+	if len(s.Messages) != 3 {
+		t.Fatalf("got %d messages, want 3 (synthetic + attachment skipped)", len(s.Messages))
 	}
 	if s.Messages[0].Role != RoleUser || !strings.Contains(s.Messages[0].Text, "foo helper") {
 		t.Errorf("first message wrong: %+v", s.Messages[0])
@@ -98,6 +99,15 @@ func TestClaudeReader_DiscoversAndLoadsRealMessages(t *testing.T) {
 	}
 	if !foundPath {
 		t.Errorf("expected tool_use file_path captured, got %v", s.Messages[1].FilePaths)
+	}
+	foundCamelPath := false
+	for _, p := range s.Messages[2].FilePaths {
+		if strings.HasSuffix(filepath.ToSlash(p), "internal/bar.go") {
+			foundCamelPath = true
+		}
+	}
+	if !foundCamelPath {
+		t.Errorf("expected tool_use filePath captured, got %v", s.Messages[2].FilePaths)
 	}
 	if strings.Contains(s.Messages[1].Text, "old_string") {
 		t.Error("tool_use input leaked into assistant text")
