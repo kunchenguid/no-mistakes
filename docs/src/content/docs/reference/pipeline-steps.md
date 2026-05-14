@@ -97,11 +97,15 @@ Runs linters and static analysis.
 
 **Behavior:**
 - If `commands.lint` is set: runs it via the platform shell (`sh -c` on POSIX, `cmd.exe /c` on Windows). Non-zero exit produces `warning` findings.
-- If `commands.lint` is empty: the agent detects and runs appropriate linters/formatters with inferred user intent when available, returning structured findings with severity, description, and `action` (`no-op`, `auto-fix`, `ask-user`).
+- If `commands.lint` is empty: the agent detects appropriate linters/formatters, applies safe fixes, reruns the relevant checks, commits any agent changes, and returns structured findings only for unresolved issues.
 
-**Approval:** lint findings with `action: ask-user` always require human approval. `action: auto-fix` findings stay eligible for the fix loop. `action: no-op` findings are informational only.
+**Approval:** lint findings with `action: ask-user` always require human approval.
+`action: auto-fix` findings stay eligible for the fix loop when `commands.lint` is configured.
+`action: no-op` findings are informational only.
 
-**Auto-fix:** same pattern as test - the agent fixes `action: auto-fix` issues using the previous findings plus any per-finding user notes, any selected user-authored findings from the TUI, and a sanitized history of prior rounds for that step, including earlier fix summaries and any findings the user left unselected in prior approval cycles, then lint re-runs. Fix commits use `no-mistakes(lint): <summary>`.
+**Auto-fix:** when `commands.lint` is configured, the lint step follows the same pattern as test - the agent fixes `action: auto-fix` issues using the previous findings plus any per-finding user notes, any selected user-authored findings from the TUI, and a sanitized history of prior rounds for that step, including earlier fix summaries and any findings the user left unselected in prior approval cycles, then lint re-runs.
+Fix commits use `no-mistakes(lint): <summary>`.
+When `commands.lint` is empty, unresolved findings pause for approval instead of starting another automatic lint/fix loop, because the agent already attempted a fix during the lint pass.
 
 **Default auto-fix limit:** `3`.
 
