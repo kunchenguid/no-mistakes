@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.18.0](https://github.com/kunchenguid/no-mistakes/compare/v1.17.1...v1.18.0) (2026-05-14)
+
+
+### Features
+
+* **tui:** show fixed finding progress in pipeline rows ([#189](https://github.com/kunchenguid/no-mistakes/issues/189)) ([45f6aba](https://github.com/kunchenguid/no-mistakes/commit/45f6aba6762df563bac631fc26e352a7caa1f00d))
+
+
+### Bug Fixes
+
+* **intent:** read camelCase tool file paths ([#187](https://github.com/kunchenguid/no-mistakes/issues/187)) ([3ddbb1e](https://github.com/kunchenguid/no-mistakes/commit/3ddbb1e3b136f6924a604eaa4802362b34600a92))
+
 ## [1.17.1](https://github.com/kunchenguid/no-mistakes/compare/v1.17.0...v1.17.1) (2026-05-13)
 
 
