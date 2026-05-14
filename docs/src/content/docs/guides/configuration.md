@@ -78,7 +78,7 @@ ci_timeout: "4h"  # any Go duration string
 # Daemon log verbosity.
 log_level: info  # debug | info | warn | error
 
-# Max auto-fix attempts per step. 0 = disabled (requires manual approval).
+# Max follow-up auto-fix attempts per step. 0 = disabled after the initial step pass.
 auto_fix:
   rebase: 3
   document: 3
