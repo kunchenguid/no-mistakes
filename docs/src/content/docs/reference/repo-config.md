@@ -80,7 +80,9 @@ Formatter command run before the push step commits agent fixes.
 | | |
 |---|---|
 | Type | `string` |
-| Default | Empty (no formatter) |
+| Default | Empty (no separate push-step formatter) |
+
+This does not prevent empty `commands.lint` from detecting and running formatters during the lint step.
 
 ### ignore_patterns
 

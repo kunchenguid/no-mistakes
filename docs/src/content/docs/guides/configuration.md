@@ -148,7 +148,7 @@ See [Repo Config Reference](/no-mistakes/reference/repo-config/) for the full fi
 - `ci_timeout` and `auto_fix.ci` are the canonical keys; `babysit_timeout` and `auto_fix.babysit` are still accepted as legacy aliases.
 - If `commands.test` is empty, the agent detects and runs relevant tests itself.
 - If `commands.lint` is empty, the agent detects relevant linters and formatters, applies safe fixes, verifies them, commits any agent changes, and reports only unresolved issues.
-- If `commands.format` is empty, no formatter is run automatically.
+- If `commands.format` is empty, no separate push-step formatter is run automatically.
 
 The practical implication is simple: explicit commands give you deterministic
 repo behavior, while leaving commands empty asks the agent to fill in the gap.
