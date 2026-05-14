@@ -319,7 +319,6 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 				if dbErr := e.db.UpdateStepStatus(sr.ID, types.StepStatusFixing); dbErr != nil {
 					slog.Warn("failed to update step status in db", "step", stepName, "status", "fixing", "error", dbErr)
 				}
-				e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFixing), "", "", "", nil)
 				if currentRoundID != "" {
 					if idsJSON := findingIDsJSON(fixableFindings); idsJSON != "" {
 						if dbErr := e.db.SetStepRoundSelection(currentRoundID, &idsJSON, db.RoundSelectionSourceAutoFix); dbErr != nil {
@@ -327,6 +326,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 						}
 					}
 				}
+				e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFixing), "", "", "", nil)
 				phaseStart = time.Now()
 				sctx.Fixing = true
 				sctx.PreviousFindings = fixableFindings
@@ -425,7 +425,6 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			if dbErr := e.db.UpdateStepStatus(sr.ID, types.StepStatusFixing); dbErr != nil {
 				slog.Warn("failed to update step status in db", "step", stepName, "status", "fixing", "error", dbErr)
 			}
-			e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFixing), "", "", "", nil)
 			sctx.Fixing = true
 			selectedFindings := filterFindingsJSON(outcome.Findings, response.findingIDs)
 			mergedFindings := mergeUserOverridesJSON(selectedFindings, response.instructions, response.addedFindings)
@@ -445,6 +444,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 					}
 				}
 			}
+			e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFixing), "", "", "", nil)
 			slog.Info("step fix requested, re-executing", "step", stepName)
 			continue // loop back to step.Execute
 		}
@@ -558,7 +558,11 @@ func (e *Executor) emitStepEventWithFindingsDiffAndError(eventType ipc.EventType
 		Status:     &status,
 		DurationMS: durationMS,
 	}
-	if fixed := e.fixedFindingsForStep(run.ID, stepName); fixed > 0 {
+	stats := e.findingStatsForStep(run.ID, stepName)
+	if stats.ReportedFindings > 0 || stats.FixedFindings > 0 {
+		reported := stats.ReportedFindings
+		fixed := stats.FixedFindings
+		event.ReportedFindings = &reported
 		event.FixedFindings = &fixed
 	}
 	if errMsg != "" {
@@ -592,22 +596,22 @@ func (e *Executor) emitStepEventWithFindingsDiffAndError(eventType ipc.EventType
 	telemetry.Track("step", fields)
 }
 
-func (e *Executor) fixedFindingsForStep(runID string, stepName types.StepName) int {
+func (e *Executor) findingStatsForStep(runID string, stepName types.StepName) db.StepStats {
 	steps, err := e.db.GetStepsByRun(runID)
 	if err != nil {
-		return 0
+		return db.StepStats{StepName: stepName}
 	}
 	for _, step := range steps {
 		if step.StepName != stepName {
 			continue
 		}
-		fixed, err := e.db.FixedFindingsByStep(step)
+		stats, err := e.db.StepFindingStats(step)
 		if err != nil {
-			return 0
+			return db.StepStats{StepName: stepName}
 		}
-		return fixed
+		return stats
 	}
-	return 0
+	return db.StepStats{StepName: stepName}
 }
 
 func shouldTrackStepTelemetry(eventType ipc.EventType, status string) bool {

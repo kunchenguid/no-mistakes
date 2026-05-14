@@ -143,6 +143,58 @@ func TestExecutor_FixEmitsFixingStatusImmediately(t *testing.T) {
 	}
 }
 
+func TestExecutor_FixingEventIncludesFindingStats(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+	releaseFix := make(chan struct{})
+	callCount := 0
+	findings := `{"findings":[{"id":"r1","severity":"warning","description":"one","action":"auto-fix"},{"id":"r2","severity":"warning","description":"two","action":"auto-fix"}],"summary":"two"}`
+	step := &adaptiveCallStep{
+		name: types.StepReview,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			callCount++
+			if callCount == 1 {
+				return &StepOutcome{NeedsApproval: true, Findings: findings}, nil
+			}
+			<-releaseFix
+			return &StepOutcome{}, nil
+		},
+	}
+
+	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
+	events := collectEvents(exec)
+	done := make(chan error, 1)
+	go func() {
+		done <- exec.Execute(context.Background(), run, repo, workDir)
+	}()
+
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
+	if err := exec.Respond(types.StepReview, types.ActionFix, []string{"r1"}); err != nil {
+		t.Fatal(err)
+	}
+	fixingEvent := waitForEvent(t, events, ipc.EventStepCompleted, string(types.StepStatusFixing))
+	if fixingEvent.FixedFindings == nil || *fixingEvent.FixedFindings != 1 {
+		close(releaseFix)
+		<-done
+		t.Fatalf("fixed findings = %v, want 1", fixingEvent.FixedFindings)
+	}
+	if fixingEvent.ReportedFindings == nil || *fixingEvent.ReportedFindings != 2 {
+		close(releaseFix)
+		<-done
+		t.Fatalf("reported findings = %v, want 2", fixingEvent.ReportedFindings)
+	}
+
+	close(releaseFix)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("expected no error, got: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("executor timed out")
+	}
+}
+
 func TestExecutor_FixReviewNoChanges(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 

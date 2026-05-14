@@ -504,8 +504,9 @@ func stepToInfo(d *db.DB, s *db.StepResult) ipc.StepResultInfo {
 		StartedAt:    s.StartedAt,
 		CompletedAt:  s.CompletedAt,
 	}
-	if fixed, err := d.FixedFindingsByStep(s); err == nil {
-		info.FixedFindings = fixed
+	if stats, err := d.StepFindingStats(s); err == nil {
+		info.ReportedFindings = stats.ReportedFindings
+		info.FixedFindings = stats.FixedFindings
 	}
 	return info
 }
