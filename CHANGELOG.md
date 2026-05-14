@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.18.1](https://github.com/kunchenguid/no-mistakes/compare/v1.18.0...v1.18.1) (2026-05-14)
+
+
+### Bug Fixes
+
+* **pipeline:** report live fix progress accurately ([#190](https://github.com/kunchenguid/no-mistakes/issues/190)) ([e85c2b6](https://github.com/kunchenguid/no-mistakes/commit/e85c2b6b25a83e2aa38bac56aea461ae854aec36))
+
 ## [1.18.0](https://github.com/kunchenguid/no-mistakes/compare/v1.17.1...v1.18.0) (2026-05-14)
 
 
