@@ -610,10 +610,7 @@ func inFlightFixedFindingCount(raw string, ids []string, addedFindings []types.F
 	if len(ids) > 0 {
 		return len(ids)
 	}
-	if len(addedFindings) > 0 {
-		return 0
-	}
-	return selectedFindingCount(raw, ids)
+	return 0
 }
 
 func (e *Executor) findingStatsForStep(runID string, stepName types.StepName) db.StepStats {

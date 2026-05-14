@@ -195,6 +195,14 @@ func TestExecutor_FixingEventIncludesFindingStats(t *testing.T) {
 	}
 }
 
+func TestInFlightFixedFindingCount_EmptySelectionCountsNoExistingFindings(t *testing.T) {
+	raw := `{"findings":[{"id":"r1","severity":"warning","description":"one","action":"auto-fix"},{"id":"r2","severity":"warning","description":"two","action":"auto-fix"}],"summary":"two"}`
+
+	if got := inFlightFixedFindingCount(raw, nil, nil); got != 0 {
+		t.Fatalf("in-flight fixed findings = %d, want 0", got)
+	}
+}
+
 func TestExecutor_FixReviewNoChanges(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 
