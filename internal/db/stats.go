@@ -1,7 +1,6 @@
 package db
 
 import (
-	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -159,9 +158,6 @@ func stepFindingStats(step *StepResult, rounds []*StepRound) StepStats {
 	if stats.FixedFindings < 0 {
 		stats.FixedFindings = 0
 	}
-	if selected := selectedCurrentFindingCount(rounds[len(rounds)-1].SelectedFindingIDs, current); selected > 0 {
-		stats.FixedFindings += selected
-	}
 	if stats.FixedFindings > stats.ReportedFindings {
 		stats.FixedFindings = stats.ReportedFindings
 	}
@@ -214,27 +210,6 @@ func findingStatsKey(item types.Finding) types.Finding {
 	item.Source = ""
 	item.UserInstructions = ""
 	return item
-}
-
-func selectedCurrentFindingCount(raw *string, current []types.Finding) int {
-	if raw == nil || *raw == "" || len(current) == 0 {
-		return 0
-	}
-	var ids []string
-	if err := json.Unmarshal([]byte(*raw), &ids); err != nil {
-		return 0
-	}
-	selected := make(map[string]bool, len(ids))
-	for _, id := range ids {
-		selected[id] = true
-	}
-	count := 0
-	for _, item := range current {
-		if selected[item.ID] {
-			count++
-		}
-	}
-	return count
 }
 
 func sortStepStats(stats []StepStats) {

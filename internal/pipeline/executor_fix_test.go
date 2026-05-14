@@ -173,10 +173,10 @@ func TestExecutor_FixingEventIncludesFindingStats(t *testing.T) {
 		t.Fatal(err)
 	}
 	fixingEvent := waitForEvent(t, events, ipc.EventStepCompleted, string(types.StepStatusFixing))
-	if fixingEvent.FixedFindings == nil || *fixingEvent.FixedFindings != 1 {
+	if fixingEvent.FixedFindings == nil || *fixingEvent.FixedFindings != 0 {
 		close(releaseFix)
 		<-done
-		t.Fatalf("fixed findings = %v, want 1", fixingEvent.FixedFindings)
+		t.Fatalf("fixed findings = %v, want 0", fixingEvent.FixedFindings)
 	}
 	if fixingEvent.ReportedFindings == nil || *fixingEvent.ReportedFindings != 2 {
 		close(releaseFix)

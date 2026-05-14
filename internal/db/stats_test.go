@@ -120,7 +120,7 @@ func TestFixedFindingsByStepCountsResolvedRoundFindings(t *testing.T) {
 	}
 }
 
-func TestStepFindingStatsCountsSelectedFindingsDuringFix(t *testing.T) {
+func TestStepFindingStatsDoesNotCountSelectedFindingsAsFixed(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/repo/fixing", "git@example.com:fixing.git", "main")
 	run, _ := d.InsertRun(repo.ID, "fixing", "head", "base")
@@ -139,8 +139,8 @@ func TestStepFindingStatsCountsSelectedFindingsDuringFix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("step finding stats: %v", err)
 	}
-	if stats.ReportedFindings != 3 || stats.FixedFindings != 2 {
-		t.Fatalf("stats = reported %d fixed %d, want reported 3 fixed 2", stats.ReportedFindings, stats.FixedFindings)
+	if stats.ReportedFindings != 3 || stats.FixedFindings != 0 {
+		t.Fatalf("stats = reported %d fixed %d, want reported 3 fixed 0", stats.ReportedFindings, stats.FixedFindings)
 	}
 }
 
