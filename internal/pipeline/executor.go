@@ -607,10 +607,27 @@ func (e *Executor) emitStepEventWithFindingsDiffErrorAndFixProgress(eventType ip
 }
 
 func inFlightFixedFindingCount(raw string, ids []string, addedFindings []types.Finding) int {
-	if len(ids) > 0 {
-		return len(ids)
+	if raw == "" || len(ids) == 0 {
+		return 0
 	}
-	return 0
+	findings, err := types.ParseFindingsJSON(raw)
+	if err != nil {
+		return 0
+	}
+	selected := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if id != "" {
+			selected[id] = true
+		}
+	}
+	count := 0
+	for _, item := range findings.Items {
+		if selected[item.ID] {
+			count++
+			delete(selected, item.ID)
+		}
+	}
+	return count
 }
 
 func (e *Executor) findingStatsForStep(runID string, stepName types.StepName) db.StepStats {
