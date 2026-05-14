@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.18.3](https://github.com/kunchenguid/no-mistakes/compare/v1.18.2...v1.18.3) (2026-05-14)
+
+
+### Bug Fixes
+
+* **tui:** show completed fix progress counts ([#194](https://github.com/kunchenguid/no-mistakes/issues/194)) ([fdc4dea](https://github.com/kunchenguid/no-mistakes/commit/fdc4dea9b2944460f54be6447570d580b868c325))
+
 ## [1.18.2](https://github.com/kunchenguid/no-mistakes/compare/v1.18.1...v1.18.2) (2026-05-14)
 
 
