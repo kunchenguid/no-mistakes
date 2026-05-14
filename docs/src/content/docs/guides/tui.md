@@ -76,7 +76,10 @@ Step status icons:
 | `–` | Skipped |
 | `✗` | Failed |
 
-Completed steps show their duration. Steps with fixed findings show a right-aligned count such as `2/3 fixed`. Connectors (`│`) between steps are hidden when the terminal height is under 30 lines.
+Completed steps show their duration.
+Steps with fixed findings, and steps currently fixing reported findings, show a right-aligned count such as `2/3 fixed` or `0/3 fixed`.
+The first number counts completed fixes, not findings selected for an in-progress fix.
+Connectors (`│`) between steps are hidden when the terminal height is under 30 lines.
 
 ### Findings panel
 
