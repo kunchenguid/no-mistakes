@@ -211,6 +211,15 @@ func TestInFlightFixedFindingCount_CountsOnlyUniqueMatchingSelection(t *testing.
 	}
 }
 
+func TestInFlightFixedFindingCount_CountsAddedFindings(t *testing.T) {
+	raw := `{"findings":[{"id":"r1","severity":"warning","description":"one","action":"auto-fix"},{"id":"r2","severity":"warning","description":"two","action":"auto-fix"}],"summary":"two"}`
+	added := []types.Finding{{ID: "u1", Severity: "warning", Description: "user one", Action: types.ActionAutoFix, Source: types.FindingSourceUser}}
+
+	if got := inFlightFixedFindingCount(raw, []string{"r1"}, added); got != 2 {
+		t.Fatalf("in-flight fixed findings = %d, want 2", got)
+	}
+}
+
 func TestExecutor_FixReviewNoChanges(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 

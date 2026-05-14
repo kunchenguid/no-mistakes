@@ -607,12 +607,13 @@ func (e *Executor) emitStepEventWithFindingsDiffErrorAndFixProgress(eventType ip
 }
 
 func inFlightFixedFindingCount(raw string, ids []string, addedFindings []types.Finding) int {
+	count := len(addedFindings)
 	if raw == "" || len(ids) == 0 {
-		return 0
+		return count
 	}
 	findings, err := types.ParseFindingsJSON(raw)
 	if err != nil {
-		return 0
+		return count
 	}
 	selected := make(map[string]bool, len(ids))
 	for _, id := range ids {
@@ -620,7 +621,6 @@ func inFlightFixedFindingCount(raw string, ids []string, addedFindings []types.F
 			selected[id] = true
 		}
 	}
-	count := 0
 	for _, item := range findings.Items {
 		if selected[item.ID] {
 			count++
