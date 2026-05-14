@@ -369,11 +369,8 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		e.mu.Unlock()
 
 		// Step needs approval - store execution-only duration and wait for user action.
-		if dbErr := e.db.UpdateStepStatus(sr.ID, approvalStatus); dbErr != nil {
-			slog.Warn("failed to update step status in db", "step", stepName, "status", approvalStatus, "error", dbErr)
-		}
-		if dbErr := e.db.SetStepDuration(sr.ID, executionMS); dbErr != nil {
-			slog.Warn("failed to set step duration in db", "step", stepName, "error", dbErr)
+		if dbErr := e.db.UpdateStepStatusWithDuration(sr.ID, approvalStatus, executionMS); dbErr != nil {
+			slog.Warn("failed to update step status and duration in db", "step", stepName, "status", approvalStatus, "error", dbErr)
 		}
 		e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(approvalStatus), outcome.Findings, diffText, "", &executionMS)
 

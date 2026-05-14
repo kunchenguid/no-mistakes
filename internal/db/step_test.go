@@ -168,6 +168,25 @@ func TestCompleteStepWithStatus(t *testing.T) {
 	}
 }
 
+func TestUpdateStepStatusWithDuration(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
+	step, _ := d.InsertStepResult(run.ID, types.StepTest)
+
+	if err := d.UpdateStepStatusWithDuration(step.ID, types.StepStatusAwaitingApproval, 1200); err != nil {
+		t.Fatalf("update step status with duration: %v", err)
+	}
+
+	got, _ := d.GetStepResult(step.ID)
+	if got.Status != types.StepStatusAwaitingApproval {
+		t.Errorf("status = %q, want %q", got.Status, types.StepStatusAwaitingApproval)
+	}
+	if got.DurationMS == nil || *got.DurationMS != 1200 {
+		t.Fatalf("duration_ms = %v, want 1200", got.DurationMS)
+	}
+}
+
 func TestFailStep(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")

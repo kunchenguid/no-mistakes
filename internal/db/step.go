@@ -86,6 +86,15 @@ func (d *DB) UpdateStepStatus(id string, status types.StepStatus) error {
 	return nil
 }
 
+// UpdateStepStatusWithDuration updates a step's status and execution duration together.
+func (d *DB) UpdateStepStatusWithDuration(id string, status types.StepStatus, durationMS int64) error {
+	_, err := d.sql.Exec(`UPDATE step_results SET status = ?, duration_ms = ? WHERE id = ?`, status, durationMS, id)
+	if err != nil {
+		return fmt.Errorf("update step status with duration: %w", err)
+	}
+	return nil
+}
+
 // StartStep marks a step as running with a started_at timestamp.
 func (d *DB) StartStep(id string) error {
 	_, err := d.sql.Exec(`UPDATE step_results SET status = ?, started_at = ? WHERE id = ?`, types.StepStatusRunning, now(), id)
