@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.18.2](https://github.com/kunchenguid/no-mistakes/compare/v1.18.1...v1.18.2) (2026-05-14)
+
+
+### Bug Fixes
+
+* **pipeline:** commit no-config lint agent fixes ([#192](https://github.com/kunchenguid/no-mistakes/issues/192)) ([c900d8d](https://github.com/kunchenguid/no-mistakes/commit/c900d8d9a80e63c6182a36b5860b42d91f7da9e9))
+
 ## [1.18.1](https://github.com/kunchenguid/no-mistakes/compare/v1.18.0...v1.18.1) (2026-05-14)
 
 
