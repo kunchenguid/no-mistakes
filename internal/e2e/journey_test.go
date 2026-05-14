@@ -184,7 +184,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	assertDocumentPrompt(t, h, run, invs)
 	assertDocumentStepNoGaps(t, run.Steps)
 	assertNoCommandTestStep(t, run.Steps, invs)
-	if !sawPromptContainingAll(invs, "Detect the linting and formatting tools", "branch: feature/e2e", "Set action to") {
+	if !sawPromptContainingAll(invs, "Detect the linting and formatting tools", "branch: feature/e2e", "only unresolved") {
 		t.Errorf("expected a lint prompt with branch metadata and action guidance in invocations, got %d:\n%s", len(invs), summarisePrompts(invs))
 	}
 	assertPromptsAbsent(t, invs,
@@ -369,7 +369,7 @@ func cleanReviewScenario(t *testing.T) string {
   - match: "You are validating a code change by testing it. Examine the repository and run the appropriate tests yourself.\n\nContext:\n- branch: test-malformed-structured-output"
     text: "tests found some issues"
     structured_raw: '{"summary":123}'
-  - match: "Detect the linting and formatting tools for this project and run the relevant checks yourself.\n\nContext:\n- branch: lint-malformed-structured-output"
+  - match: "Detect the linting and formatting tools for this project, run the relevant checks yourself, apply safe fixes, and verify the result.\n\nContext:\n- branch: lint-malformed-structured-output"
     text: "lint found some issues"
     structured_raw: '{"summary":123}'
   - match: "You are validating a code change by testing it. Examine the repository and run the appropriate tests yourself.\n\nContext:\n- branch: test-agent-staged-new-test-file"

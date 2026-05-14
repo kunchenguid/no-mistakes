@@ -188,7 +188,8 @@ Daemon log verbosity.
 
 ### auto_fix
 
-Maximum auto-fix attempts per step. Set a step to `0` to disable auto-fix (findings always require manual approval).
+Maximum follow-up auto-fix attempts per step. Set a step to `0` to disable the follow-up auto-fix loop, so findings require manual approval.
+For empty `commands.lint`, the agent still attempts safe fixes during the initial lint pass; unresolved lint findings then pause for approval instead of starting another automatic fix loop.
 
 | | |
 |---|---|

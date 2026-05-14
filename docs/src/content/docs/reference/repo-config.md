@@ -70,7 +70,8 @@ Explicit lint command. Run via the platform shell - `sh -c` on POSIX, `cmd.exe /
 | Type | `string` |
 | Default | Empty (agent auto-detects) |
 
-Same behavior as `commands.test` - explicit command uses exit code, empty means agent-detected.
+When set, the lint step runs this exact command and checks the exit code.
+When empty, the agent detects relevant linters and formatters, applies safe fixes, reruns the relevant checks, commits any agent changes, and reports only unresolved issues.
 
 ### commands.format
 
@@ -115,7 +116,8 @@ Override auto-fix attempt limits for specific steps. Fields not set here inherit
 | `auto_fix.lint` | `int` | Inherits from global (default `3`) |
 | `auto_fix.ci` | `int` | Inherits from global (default `3`) |
 
-Set to `0` to disable auto-fix for a step (always requires manual approval).
+Set to `0` to disable the follow-up auto-fix loop for a step (findings require manual approval).
+For empty `commands.lint`, the agent still attempts safe fixes during the initial lint pass; unresolved lint findings then pause for approval instead of starting another automatic fix loop.
 
 `auto_fix.ci` covers the CI step's CI failure and merge-conflict auto-fix attempts.
 
