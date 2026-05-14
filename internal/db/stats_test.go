@@ -97,6 +97,29 @@ func TestGetStatsFallsBackToStepFindingsWhenRoundsAreMissing(t *testing.T) {
 	}
 }
 
+func TestFixedFindingsByStepCountsResolvedRoundFindings(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/repo/fixes", "git@example.com:fixes.git", "main")
+	run, _ := d.InsertRun(repo.ID, "fixes", "head", "base")
+	step, _ := d.InsertStepResult(run.ID, types.StepReview)
+	initial := `{"findings":[{"id":"r1","severity":"warning","description":"one"},{"id":"r2","severity":"warning","description":"two"},{"id":"r3","severity":"warning","description":"three"}],"summary":"three"}`
+	final := `{"findings":[{"id":"r3","severity":"warning","description":"three"}],"summary":"one left"}`
+	if _, err := d.InsertStepRound(step.ID, 1, "initial", &initial, nil, 100); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.InsertStepRound(step.ID, 2, "auto_fix", &final, nil, 100); err != nil {
+		t.Fatal(err)
+	}
+
+	fixed, err := d.FixedFindingsByStep(step)
+	if err != nil {
+		t.Fatalf("fixed findings by step: %v", err)
+	}
+	if fixed != 2 {
+		t.Fatalf("fixed = %d, want 2", fixed)
+	}
+}
+
 func assertStepStat(t *testing.T, stats []StepStats, step types.StepName, reported int, fixes int) {
 	t.Helper()
 	for _, got := range stats {

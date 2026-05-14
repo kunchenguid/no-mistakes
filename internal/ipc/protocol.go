@@ -186,17 +186,18 @@ type RunInfo struct {
 
 // StepResultInfo is the IPC representation of a step result.
 type StepResultInfo struct {
-	ID           string           `json:"id"`
-	RunID        string           `json:"run_id"`
-	StepName     types.StepName   `json:"step_name"`
-	StepOrder    int              `json:"step_order"`
-	Status       types.StepStatus `json:"status"`
-	ExitCode     *int             `json:"exit_code,omitempty"`
-	DurationMS   *int64           `json:"duration_ms,omitempty"`
-	FindingsJSON *string          `json:"findings_json,omitempty"`
-	Error        *string          `json:"error,omitempty"`
-	StartedAt    *int64           `json:"started_at,omitempty"`
-	CompletedAt  *int64           `json:"completed_at,omitempty"`
+	ID            string           `json:"id"`
+	RunID         string           `json:"run_id"`
+	StepName      types.StepName   `json:"step_name"`
+	StepOrder     int              `json:"step_order"`
+	Status        types.StepStatus `json:"status"`
+	ExitCode      *int             `json:"exit_code,omitempty"`
+	DurationMS    *int64           `json:"duration_ms,omitempty"`
+	FindingsJSON  *string          `json:"findings_json,omitempty"`
+	FixedFindings int              `json:"fixed_findings,omitempty"`
+	Error         *string          `json:"error,omitempty"`
+	StartedAt     *int64           `json:"started_at,omitempty"`
+	CompletedAt   *int64           `json:"completed_at,omitempty"`
 }
 
 // --- Events (for subscribe stream) ---
@@ -215,19 +216,20 @@ const (
 
 // Event is a real-time update sent to subscribers.
 type Event struct {
-	Type       EventType       `json:"type"`
-	RunID      string          `json:"run_id"`
-	RepoID     string          `json:"repo_id"`
-	StepName   *types.StepName `json:"step_name,omitempty"`
-	Status     *string         `json:"status,omitempty"`
-	Error      *string         `json:"error,omitempty"`
-	Stream     *string         `json:"stream,omitempty"`
-	Content    *string         `json:"content,omitempty"`
-	Branch     *string         `json:"branch,omitempty"`
-	Findings   *string         `json:"findings,omitempty"`    // JSON-encoded findings for step_completed events
-	Diff       *string         `json:"diff,omitempty"`        // unified diff for fix_review events
-	DurationMS *int64          `json:"duration_ms,omitempty"` // execution-only duration for step events
-	PRURL      *string         `json:"pr_url,omitempty"`      // PR URL for run_updated/run_completed events
+	Type          EventType       `json:"type"`
+	RunID         string          `json:"run_id"`
+	RepoID        string          `json:"repo_id"`
+	StepName      *types.StepName `json:"step_name,omitempty"`
+	Status        *string         `json:"status,omitempty"`
+	Error         *string         `json:"error,omitempty"`
+	Stream        *string         `json:"stream,omitempty"`
+	Content       *string         `json:"content,omitempty"`
+	Branch        *string         `json:"branch,omitempty"`
+	Findings      *string         `json:"findings,omitempty"` // JSON-encoded findings for step_completed events
+	Diff          *string         `json:"diff,omitempty"`     // unified diff for fix_review events
+	FixedFindings *int            `json:"fixed_findings,omitempty"`
+	DurationMS    *int64          `json:"duration_ms,omitempty"` // execution-only duration for step events
+	PRURL         *string         `json:"pr_url,omitempty"`      // PR URL for run_updated/run_completed events
 }
 
 // --- Helpers ---

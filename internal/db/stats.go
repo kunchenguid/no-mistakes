@@ -140,6 +140,20 @@ func stepFindingCounts(step *StepResult, rounds []*StepRound) (reported int, fin
 	return findingsCount(rounds[0].FindingsJSON), findingsCount(rounds[len(rounds)-1].FindingsJSON)
 }
 
+// FixedFindingsByStep returns how many findings were resolved for a single step.
+func (d *DB) FixedFindingsByStep(step *StepResult) (int, error) {
+	rounds, err := d.GetRoundsByStep(step.ID)
+	if err != nil {
+		return 0, err
+	}
+	reported, final := stepFindingCounts(step, rounds)
+	fixed := reported - final
+	if fixed < 0 {
+		fixed = 0
+	}
+	return fixed, nil
+}
+
 func findingsCount(raw *string) int {
 	if raw == nil || *raw == "" {
 		return 0

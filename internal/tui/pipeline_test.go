@@ -188,6 +188,45 @@ func TestRenderPipelineView_StepError(t *testing.T) {
 	}
 }
 
+func TestRenderPipelineView_ShowsFixedFindingsAtRightEdge(t *testing.T) {
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusCompleted
+	run.Steps[0].FixedFindings = 2
+	run.Steps[1].Status = types.StepStatusCompleted
+
+	out := stripANSI(renderPipelineView(run, run.Steps, 80, 0, 40))
+	var reviewLine string
+	var testLine string
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "Review") {
+			reviewLine = line
+		}
+		if strings.Contains(line, "Test") {
+			testLine = line
+		}
+	}
+	if !strings.Contains(reviewLine, "2 fixed") {
+		t.Fatalf("expected Review row to include fixed count, got %q", reviewLine)
+	}
+	if !strings.HasSuffix(strings.TrimSpace(strings.TrimSuffix(reviewLine, "│")), "2 fixed") {
+		t.Fatalf("expected fixed count at right edge, got %q", reviewLine)
+	}
+	if strings.Contains(testLine, "fixed") {
+		t.Fatalf("expected no fixed count when none were fixed, got %q", testLine)
+	}
+}
+
+func TestRenderPipelineView_FixingStatusOmitsAgentFixingLabel(t *testing.T) {
+	run := testRun()
+	run.Steps[1].Status = types.StepStatusFixing
+	run.Steps[1].DurationMS = ptr(int64(146000))
+
+	out := stripANSI(renderPipelineView(run, run.Steps, 80, 0, 40))
+	if strings.Contains(out, "agent fixing") {
+		t.Fatalf("expected fixing status label to be hidden, got:\n%s", out)
+	}
+}
+
 func TestRenderApprovalActions_FormatWithSeparator(t *testing.T) {
 	out := stripANSI(renderApprovalActions(true, true, false, 5, 5, false, true))
 	// Keys should not be bracket-wrapped - design uses "a approve" not "[a] approve".
@@ -297,6 +336,23 @@ func TestModel_ApplyEvent_StepCompleted(t *testing.T) {
 
 	if m.steps[0].Status != types.StepStatusCompleted {
 		t.Errorf("expected completed, got %s", m.steps[0].Status)
+	}
+}
+
+func TestModel_ApplyEvent_StepCompleted_StoresFixedFindings(t *testing.T) {
+	run := testRun()
+	m := NewModel("/tmp/sock", nil, run)
+
+	m.applyEvent(ipc.Event{
+		Type:          ipc.EventStepCompleted,
+		RunID:         run.ID,
+		StepName:      ptr(types.StepReview),
+		Status:        ptr(string(types.StepStatusFixReview)),
+		FixedFindings: ptr(3),
+	})
+
+	if m.steps[0].FixedFindings != 3 {
+		t.Fatalf("expected fixed findings to be stored, got %d", m.steps[0].FixedFindings)
 	}
 }
 

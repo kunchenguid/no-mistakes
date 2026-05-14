@@ -354,7 +354,7 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err != nil {
 			return nil, fmt.Errorf("get steps: %w", err)
 		}
-		return &ipc.GetRunResult{Run: runToInfo(run, steps)}, nil
+		return &ipc.GetRunResult{Run: runToInfo(d, run, steps)}, nil
 	})
 
 	srv.Handle(ipc.MethodGetRuns, func(_ context.Context, params json.RawMessage) (interface{}, error) {
@@ -372,7 +372,7 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 			if err != nil {
 				return nil, fmt.Errorf("get steps for run %s: %w", r.ID, err)
 			}
-			infos = append(infos, *runToInfo(r, steps))
+			infos = append(infos, *runToInfo(d, r, steps))
 		}
 		return &ipc.GetRunsResult{Runs: infos}, nil
 	})
@@ -393,7 +393,7 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err != nil {
 			return nil, fmt.Errorf("get steps: %w", err)
 		}
-		return &ipc.GetActiveRunResult{Run: runToInfo(run, steps)}, nil
+		return &ipc.GetActiveRunResult{Run: runToInfo(d, run, steps)}, nil
 	})
 
 	srv.Handle(ipc.MethodRerun, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
@@ -468,7 +468,7 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 	})
 }
 
-func runToInfo(r *db.Run, steps []*db.StepResult) *ipc.RunInfo {
+func runToInfo(d *db.DB, r *db.Run, steps []*db.StepResult) *ipc.RunInfo {
 	info := &ipc.RunInfo{
 		ID:        r.ID,
 		RepoID:    r.RepoID,
@@ -484,14 +484,14 @@ func runToInfo(r *db.Run, steps []*db.StepResult) *ipc.RunInfo {
 	if len(steps) > 0 {
 		info.Steps = make([]ipc.StepResultInfo, 0, len(steps))
 		for _, s := range steps {
-			info.Steps = append(info.Steps, stepToInfo(s))
+			info.Steps = append(info.Steps, stepToInfo(d, s))
 		}
 	}
 	return info
 }
 
-func stepToInfo(s *db.StepResult) ipc.StepResultInfo {
-	return ipc.StepResultInfo{
+func stepToInfo(d *db.DB, s *db.StepResult) ipc.StepResultInfo {
+	info := ipc.StepResultInfo{
 		ID:           s.ID,
 		RunID:        s.RunID,
 		StepName:     s.StepName,
@@ -504,4 +504,8 @@ func stepToInfo(s *db.StepResult) ipc.StepResultInfo {
 		StartedAt:    s.StartedAt,
 		CompletedAt:  s.CompletedAt,
 	}
+	if fixed, err := d.FixedFindingsByStep(s); err == nil {
+		info.FixedFindings = fixed
+	}
+	return info
 }

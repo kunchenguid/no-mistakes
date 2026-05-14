@@ -55,6 +55,9 @@ func (m *Model) applyEvent(event ipc.Event) {
 		if event.StepName != nil && event.Error != nil {
 			m.setStepError(*event.StepName, event.Error)
 		}
+		if event.StepName != nil && event.FixedFindings != nil {
+			m.setStepFixedFindings(*event.StepName, *event.FixedFindings)
+		}
 		// Persist duration so the step continues to display its elapsed time.
 		// Prefer the event's execution-only duration; fall back to local timing.
 		// For "fixing" status, clear the persisted duration and back-date the
@@ -171,6 +174,15 @@ func (m *Model) setStepError(name types.StepName, errMsg *string) {
 	for i := range m.steps {
 		if m.steps[i].StepName == name {
 			m.steps[i].Error = errMsg
+			return
+		}
+	}
+}
+
+func (m *Model) setStepFixedFindings(name types.StepName, fixedFindings int) {
+	for i := range m.steps {
+		if m.steps[i].StepName == name {
+			m.steps[i].FixedFindings = fixedFindings
 			return
 		}
 	}

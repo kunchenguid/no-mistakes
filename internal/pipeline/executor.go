@@ -558,6 +558,9 @@ func (e *Executor) emitStepEventWithFindingsDiffAndError(eventType ipc.EventType
 		Status:     &status,
 		DurationMS: durationMS,
 	}
+	if fixed := e.fixedFindingsForStep(run.ID, stepName); fixed > 0 {
+		event.FixedFindings = &fixed
+	}
 	if errMsg != "" {
 		event.Error = &errMsg
 	}
@@ -587,6 +590,24 @@ func (e *Executor) emitStepEventWithFindingsDiffAndError(eventType ipc.EventType
 		fields["findings_count"] = findingsCount(findings)
 	}
 	telemetry.Track("step", fields)
+}
+
+func (e *Executor) fixedFindingsForStep(runID string, stepName types.StepName) int {
+	steps, err := e.db.GetStepsByRun(runID)
+	if err != nil {
+		return 0
+	}
+	for _, step := range steps {
+		if step.StepName != stepName {
+			continue
+		}
+		fixed, err := e.db.FixedFindingsByStep(step)
+		if err != nil {
+			return 0
+		}
+		return fixed
+	}
+	return 0
 }
 
 func shouldTrackStepTelemetry(eventType ipc.EventType, status string) bool {

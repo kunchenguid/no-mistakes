@@ -162,8 +162,6 @@ func renderPipelineView(run *ipc.RunInfo, steps []ipc.StepResultInfo, width int,
 		switch step.Status {
 		case types.StepStatusAwaitingApproval:
 			line += " " + dimStyle.Render("- awaiting approval")
-		case types.StepStatusFixing:
-			line += " " + dimStyle.Render("- agent fixing...")
 		case types.StepStatusFixReview:
 			line += " " + dimStyle.Render("- review fix")
 		case types.StepStatusFailed:
@@ -175,6 +173,10 @@ func renderPipelineView(run *ipc.RunInfo, steps []ipc.StepResultInfo, width int,
 				}
 				line += " " + dimStyle.Render(errText)
 			}
+		}
+		if step.FixedFindings > 0 {
+			fixedLabel := dimStyle.Render(fmt.Sprintf("%d fixed", step.FixedFindings))
+			line = appendRightLabel(line, fixedLabel, contentWidth)
 		}
 
 		b.WriteString(line)
@@ -194,6 +196,14 @@ func renderPipelineView(run *ipc.RunInfo, steps []ipc.StepResultInfo, width int,
 		b.WriteString("\n" + errStyle.Render(errText) + "\n")
 	}
 	return renderBox("Pipeline", b.String(), boxWidth)
+}
+
+func appendRightLabel(line, label string, width int) string {
+	gap := width - lipgloss.Width(line) - lipgloss.Width(label)
+	if gap < 1 {
+		gap = 1
+	}
+	return line + strings.Repeat(" ", gap) + label
 }
 
 // renderActionBar renders the approval prompt and action keys as a standalone element.
