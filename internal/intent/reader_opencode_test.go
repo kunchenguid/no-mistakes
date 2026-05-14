@@ -81,6 +81,10 @@ func buildOpenCodeDB(t *testing.T, sessionDir string) string {
 		"p4", "msg-2", "sess-1", now+3, `{"type":"tool","tool":"edit","state":{"input":{"file_path":"foo.go"}}}`); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := db.Exec(`INSERT INTO part VALUES (?, ?, ?, ?, ?)`,
+		"p5", "msg-2", "sess-1", now+4, `{"type":"tool","tool":"edit","state":{"input":{"filePath":"internal/tui/pipeline.go"}}}`); err != nil {
+		t.Fatal(err)
+	}
 	return home
 }
 
@@ -128,6 +132,15 @@ func TestOpenCodeReader_DiscoverAndLoad(t *testing.T) {
 	}
 	if !foundPath {
 		t.Errorf("expected foo.go in tool input paths, got %v", s.Messages[1].FilePaths)
+	}
+	foundCamelPath := false
+	for _, p := range s.Messages[1].FilePaths {
+		if p == "internal/tui/pipeline.go" {
+			foundCamelPath = true
+		}
+	}
+	if !foundCamelPath {
+		t.Errorf("expected camelCase filePath in tool input paths, got %v", s.Messages[1].FilePaths)
 	}
 }
 

@@ -324,7 +324,7 @@ func parseClaudeAssistantMessage(raw json.RawMessage) (string, []string) {
 // names; we cover all three.
 func extractToolPaths(input map[string]any) []string {
 	var out []string
-	for _, key := range []string{"file_path", "path", "notebook_path"} {
+	for _, key := range []string{"file_path", "filePath", "path", "notebook_path"} {
 		if s, ok := input[key].(string); ok && s != "" {
 			out = append(out, s)
 		}
