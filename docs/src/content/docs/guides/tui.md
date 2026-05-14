@@ -50,7 +50,7 @@ Shows the branch name and run status in the header, followed by each step:
   │
   ✓ Rebase            320ms
   │
-  ⏸ Review     - awaiting approval
+  ⏸ Review     - awaiting approval       2/3 fixed
   │
   ○ Test
   │
@@ -76,7 +76,7 @@ Step status icons:
 | `–` | Skipped |
 | `✗` | Failed |
 
-Completed steps show their duration. Connectors (`│`) between steps are hidden when the terminal height is under 30 lines.
+Completed steps show their duration. Steps with fixed findings show a right-aligned count such as `2/3 fixed`. Connectors (`│`) between steps are hidden when the terminal height is under 30 lines.
 
 ### Findings panel
 

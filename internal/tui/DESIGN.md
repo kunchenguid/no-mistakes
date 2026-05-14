@@ -43,7 +43,7 @@ Every distinct content region gets a rounded-border box:
 Steps connected by a vertical line to convey flow:
 
 ```
-  ✓ Review  1.2s
+  ✓ Review  1.2s                  2/3 fixed
   │
   ⏸ Test - awaiting approval
   │
@@ -52,7 +52,7 @@ Steps connected by a vertical line to convey flow:
   ○ Push
 ```
 
-Connector `│` in bright black. The active/awaiting step visually breaks the flow.
+Connector `│` in bright black. The active/awaiting step visually breaks the flow. Fixed-finding counts are right-aligned meta text on the step row.
 
 ## Action Bar
 
