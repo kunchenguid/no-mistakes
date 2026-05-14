@@ -173,10 +173,10 @@ func TestExecutor_FixingEventIncludesFindingStats(t *testing.T) {
 		t.Fatal(err)
 	}
 	fixingEvent := waitForEvent(t, events, ipc.EventStepCompleted, string(types.StepStatusFixing))
-	if fixingEvent.FixedFindings == nil || *fixingEvent.FixedFindings != 1 {
+	if fixingEvent.FixedFindings == nil || *fixingEvent.FixedFindings != 0 {
 		close(releaseFix)
 		<-done
-		t.Fatalf("fixed findings = %v, want 1", fixingEvent.FixedFindings)
+		t.Fatalf("fixed findings = %v, want 0", fixingEvent.FixedFindings)
 	}
 	if fixingEvent.ReportedFindings == nil || *fixingEvent.ReportedFindings != 2 {
 		close(releaseFix)
@@ -192,31 +192,6 @@ func TestExecutor_FixingEventIncludesFindingStats(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("executor timed out")
-	}
-}
-
-func TestInFlightFixedFindingCount_EmptySelectionCountsNoExistingFindings(t *testing.T) {
-	raw := `{"findings":[{"id":"r1","severity":"warning","description":"one","action":"auto-fix"},{"id":"r2","severity":"warning","description":"two","action":"auto-fix"}],"summary":"two"}`
-
-	if got := inFlightFixedFindingCount(raw, nil, nil); got != 0 {
-		t.Fatalf("in-flight fixed findings = %d, want 0", got)
-	}
-}
-
-func TestInFlightFixedFindingCount_CountsOnlyUniqueMatchingSelection(t *testing.T) {
-	raw := `{"findings":[{"id":"r1","severity":"warning","description":"one","action":"auto-fix"},{"id":"r2","severity":"warning","description":"two","action":"auto-fix"}],"summary":"two"}`
-
-	if got := inFlightFixedFindingCount(raw, []string{"r1", "missing", "r1"}, nil); got != 1 {
-		t.Fatalf("in-flight fixed findings = %d, want 1", got)
-	}
-}
-
-func TestInFlightFixedFindingCount_CountsAddedFindings(t *testing.T) {
-	raw := `{"findings":[{"id":"r1","severity":"warning","description":"one","action":"auto-fix"},{"id":"r2","severity":"warning","description":"two","action":"auto-fix"}],"summary":"two"}`
-	added := []types.Finding{{ID: "u1", Severity: "warning", Description: "user one", Action: types.ActionAutoFix, Source: types.FindingSourceUser}}
-
-	if got := inFlightFixedFindingCount(raw, []string{"r1"}, added); got != 2 {
-		t.Fatalf("in-flight fixed findings = %d, want 2", got)
 	}
 }
 

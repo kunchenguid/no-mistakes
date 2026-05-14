@@ -218,6 +218,24 @@ func TestRenderPipelineView_ShowsFixedFindingsAtRightEdge(t *testing.T) {
 	}
 }
 
+func TestRenderPipelineView_ShowsZeroFixedFindingsWhileFixing(t *testing.T) {
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusFixing
+	run.Steps[0].FixedFindings = 0
+	run.Steps[0].ReportedFindings = 3
+
+	out := stripANSI(renderPipelineView(run, run.Steps, 80, 0, 40))
+	var reviewLine string
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "Review") {
+			reviewLine = line
+		}
+	}
+	if !strings.Contains(reviewLine, "0/3 fixed") {
+		t.Fatalf("expected fixing Review row to show completed fixed count, got %q", reviewLine)
+	}
+}
+
 func TestRenderPipelineView_FixingStatusOmitsAgentFixingLabel(t *testing.T) {
 	run := testRun()
 	run.Steps[1].Status = types.StepStatusFixing

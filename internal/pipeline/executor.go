@@ -326,7 +326,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 						}
 					}
 				}
-				e.emitStepEventWithFindingsDiffErrorAndFixProgress(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFixing), "", "", "", nil, findingsCount(fixableFindings))
+				e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFixing), "", "", "", nil)
 				phaseStart = time.Now()
 				sctx.Fixing = true
 				sctx.PreviousFindings = fixableFindings
@@ -444,7 +444,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 					}
 				}
 			}
-			e.emitStepEventWithFindingsDiffErrorAndFixProgress(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFixing), "", "", "", nil, inFlightFixedFindingCount(outcome.Findings, response.findingIDs, response.addedFindings))
+			e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFixing), "", "", "", nil)
 			slog.Info("step fix requested, re-executing", "step", stepName)
 			continue // loop back to step.Execute
 		}
@@ -550,10 +550,6 @@ func (e *Executor) emitStepEventWithFindingsAndDiff(eventType ipc.EventType, run
 }
 
 func (e *Executor) emitStepEventWithFindingsDiffAndError(eventType ipc.EventType, run *db.Run, repo *db.Repo, stepName types.StepName, status string, findings string, diff string, errMsg string, durationMS *int64) {
-	e.emitStepEventWithFindingsDiffErrorAndFixProgress(eventType, run, repo, stepName, status, findings, diff, errMsg, durationMS, 0)
-}
-
-func (e *Executor) emitStepEventWithFindingsDiffErrorAndFixProgress(eventType ipc.EventType, run *db.Run, repo *db.Repo, stepName types.StepName, status string, findings string, diff string, errMsg string, durationMS *int64, inFlightFixedFindings int) {
 	event := ipc.Event{
 		Type:       eventType,
 		RunID:      run.ID,
@@ -563,12 +559,6 @@ func (e *Executor) emitStepEventWithFindingsDiffErrorAndFixProgress(eventType ip
 		DurationMS: durationMS,
 	}
 	stats := e.findingStatsForStep(run.ID, stepName)
-	if inFlightFixedFindings > 0 && stats.ReportedFindings > 0 {
-		stats.FixedFindings += inFlightFixedFindings
-		if stats.FixedFindings > stats.ReportedFindings {
-			stats.FixedFindings = stats.ReportedFindings
-		}
-	}
 	if stats.ReportedFindings > 0 || stats.FixedFindings > 0 {
 		reported := stats.ReportedFindings
 		fixed := stats.FixedFindings
@@ -604,30 +594,6 @@ func (e *Executor) emitStepEventWithFindingsDiffErrorAndFixProgress(eventType ip
 		fields["findings_count"] = findingsCount(findings)
 	}
 	telemetry.Track("step", fields)
-}
-
-func inFlightFixedFindingCount(raw string, ids []string, addedFindings []types.Finding) int {
-	count := len(addedFindings)
-	if raw == "" || len(ids) == 0 {
-		return count
-	}
-	findings, err := types.ParseFindingsJSON(raw)
-	if err != nil {
-		return count
-	}
-	selected := make(map[string]bool, len(ids))
-	for _, id := range ids {
-		if id != "" {
-			selected[id] = true
-		}
-	}
-	for _, item := range findings.Items {
-		if selected[item.ID] {
-			count++
-			delete(selected, item.ID)
-		}
-	}
-	return count
 }
 
 func (e *Executor) findingStatsForStep(runID string, stepName types.StepName) db.StepStats {
