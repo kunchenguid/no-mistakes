@@ -61,7 +61,8 @@ func BuildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRou
 
 		testingSummary := collectTestingSummary(sr, stepRounds)
 		tested := collectTestingDetails(sr, stepRounds)
-		if testingSummary == "" && len(tested) == 0 {
+		artifacts := collectTestingArtifacts(sr, stepRounds)
+		if testingSummary == "" && len(tested) == 0 && len(artifacts) == 0 {
 			return "## Testing\n\n- " + line
 		}
 
@@ -83,6 +84,16 @@ func BuildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRou
 			b.WriteString("- ")
 			b.WriteString(rendered)
 			b.WriteString("\n")
+		}
+		for _, artifact := range artifacts {
+			rendered := renderTestingArtifact(artifact)
+			if rendered == "" {
+				continue
+			}
+			b.WriteString(rendered)
+			if !strings.HasSuffix(rendered, "\n") {
+				b.WriteString("\n")
+			}
 		}
 		if outcome := buildTestingOutcomeLine(line, stepRounds); outcome != "" {
 			b.WriteString("- ")
@@ -126,6 +137,42 @@ func collectTestingDetails(sr *db.StepResult, rounds []*db.StepRound) []string {
 		details = appendTestingDetails(details, seen, r.FindingsJSON)
 	}
 	return details
+}
+
+func collectTestingArtifacts(sr *db.StepResult, rounds []*db.StepRound) []types.TestArtifact {
+	seen := map[string]bool{}
+	artifacts := appendTestingArtifacts(nil, seen, sr.FindingsJSON)
+	for _, r := range rounds {
+		artifacts = appendTestingArtifacts(artifacts, seen, r.FindingsJSON)
+	}
+	return artifacts
+}
+
+func appendTestingArtifacts(artifacts []types.TestArtifact, seen map[string]bool, raw *string) []types.TestArtifact {
+	if raw == nil || strings.TrimSpace(*raw) == "" {
+		return artifacts
+	}
+	findings, err := types.ParseFindingsJSON(*raw)
+	if err != nil {
+		return artifacts
+	}
+	for _, artifact := range findings.Artifacts {
+		artifact.Label = sanitizePromptText(artifact.Label)
+		artifact.Kind = strings.ToLower(sanitizePromptText(artifact.Kind))
+		artifact.Path = sanitizeArtifactTarget(artifact.Path)
+		artifact.URL = sanitizeArtifactTarget(artifact.URL)
+		artifact.Content = sanitizePromptMultilineText(artifact.Content)
+		key := artifact.Kind + "\x00" + artifact.Label + "\x00" + artifact.Path + "\x00" + artifact.URL + "\x00" + artifact.Content
+		if artifact.Label == "" || seen[key] {
+			continue
+		}
+		if artifact.Path == "" && artifact.URL == "" && artifact.Content == "" {
+			continue
+		}
+		seen[key] = true
+		artifacts = append(artifacts, artifact)
+	}
+	return artifacts
 }
 
 func appendTestingDetails(details []string, seen map[string]bool, raw *string) []string {
@@ -172,6 +219,83 @@ func renderTestingSummary(summary string) string {
 		return renderTestedDetail(clean)
 	}
 	return clean
+}
+
+func renderTestingArtifact(artifact types.TestArtifact) string {
+	label := sanitizePromptText(artifact.Label)
+	if label == "" {
+		return ""
+	}
+	target := artifact.URL
+	if target == "" {
+		target = artifact.Path
+	}
+
+	var b strings.Builder
+	if target != "" {
+		if isImageArtifact(artifact.Kind, target) {
+			b.WriteString(fmt.Sprintf("**%s**\n\n![%s](%s)\n", html.EscapeString(label), markdownAltText(label), target))
+		} else if isVideoArtifact(artifact.Kind, target) {
+			b.WriteString(fmt.Sprintf("**%s**\n\n<video src=\"%s\" controls></video>\n", html.EscapeString(label), html.EscapeString(target)))
+		} else {
+			b.WriteString(fmt.Sprintf("- Evidence: [%s](%s)\n", html.EscapeString(label), target))
+		}
+	}
+	if artifact.Content != "" {
+		if b.Len() > 0 && !strings.HasSuffix(b.String(), "\n\n") {
+			b.WriteString("\n")
+		}
+		b.WriteString(fmt.Sprintf("**%s**\n\n```text\n%s\n```\n", html.EscapeString(label), escapeMarkdownFence(artifact.Content)))
+	}
+	return strings.TrimRight(b.String(), "\n") + "\n"
+}
+
+func sanitizeArtifactTarget(target string) string {
+	clean := sanitizePromptText(target)
+	if clean == "" || strings.ContainsAny(clean, "\n\r<>") {
+		return ""
+	}
+	lower := strings.ToLower(strings.TrimSpace(clean))
+	if strings.HasPrefix(lower, "javascript:") || strings.HasPrefix(lower, "data:") {
+		return ""
+	}
+	return clean
+}
+
+func markdownAltText(label string) string {
+	label = strings.ReplaceAll(label, "[", "(")
+	label = strings.ReplaceAll(label, "]", ")")
+	return label
+}
+
+func isImageArtifact(kind, target string) bool {
+	if kind == "screenshot" || kind == "gif" || kind == "image" {
+		return true
+	}
+	lower := strings.ToLower(target)
+	for _, suffix := range []string{".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"} {
+		if strings.HasSuffix(lower, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+func isVideoArtifact(kind, target string) bool {
+	if kind == "video" || kind == "recording" {
+		return true
+	}
+	lower := strings.ToLower(target)
+	for _, suffix := range []string{".mp4", ".webm", ".mov"} {
+		if strings.HasSuffix(lower, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+func escapeMarkdownFence(content string) string {
+	return strings.ReplaceAll(content, "```", "`` `")
 }
 
 func buildTestingOutcomeLine(summaryLine string, rounds []*db.StepRound) string {

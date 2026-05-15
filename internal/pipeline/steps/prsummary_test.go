@@ -228,3 +228,26 @@ func TestBuildTestingSummary_EscapesMarkdownInTestingSummary(t *testing.T) {
 		t.Fatalf("expected escaped testing summary, got:\n%s", md)
 	}
 }
+
+func TestBuildTestingSummary_RendersEvidenceArtifacts(t *testing.T) {
+	t.Parallel()
+	findings := `{"findings":[],"summary":"","testing_summary":"Checkout success was verified visually.","tested":["manual checkout flow"],"artifacts":[{"kind":"screenshot","label":"Checkout success screenshot","path":"artifacts/checkout-success.png"},{"kind":"log","label":"Checkout server log","content":"POST /checkout 200\nreceipt=ok"}]}`
+	steps := []*db.StepResult{
+		{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings},
+	}
+	rounds := map[string][]*db.StepRound{
+		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 300}},
+	}
+
+	md := BuildTestingSummary(steps, rounds)
+
+	if !strings.Contains(md, "![Checkout success screenshot](artifacts/checkout-success.png)") {
+		t.Fatalf("expected screenshot artifact to render inline, got:\n%s", md)
+	}
+	if !strings.Contains(md, "**Checkout server log**") || !strings.Contains(md, "```text\nPOST /checkout 200\nreceipt=ok\n```") {
+		t.Fatalf("expected log artifact content to render inline, got:\n%s", md)
+	}
+	if strings.Index(md, "Summary:") > strings.Index(md, "![Checkout success screenshot]") {
+		t.Fatalf("expected summary before artifacts, got:\n%s", md)
+	}
+}

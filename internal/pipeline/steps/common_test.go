@@ -837,6 +837,29 @@ func TestFindingsSchema_IncludesTestingSummary(t *testing.T) {
 	}
 }
 
+func TestTestFindingsSchema_IncludesEvidenceArtifacts(t *testing.T) {
+	t.Parallel()
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(testFindingsSchema, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	props := parsed["properties"].(map[string]interface{})
+	artifacts, ok := props["artifacts"].(map[string]interface{})
+	if !ok {
+		t.Fatal("findingsSchema missing artifacts property")
+	}
+	if artifacts["type"] != "array" {
+		t.Fatalf("expected artifacts to be an array, got %#v", artifacts["type"])
+	}
+	items := artifacts["items"].(map[string]interface{})
+	itemProps := items["properties"].(map[string]interface{})
+	for _, name := range []string{"kind", "label", "path", "url", "content"} {
+		if _, ok := itemProps[name]; !ok {
+			t.Fatalf("artifacts item missing %s property", name)
+		}
+	}
+}
+
 func TestReviewFindingsSchema_ActionAtItemLevel(t *testing.T) {
 	t.Parallel()
 	var parsed map[string]interface{}

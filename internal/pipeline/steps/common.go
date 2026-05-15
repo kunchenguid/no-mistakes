@@ -44,6 +44,50 @@ var findingsSchema = json.RawMessage(`{
 	"required": ["findings", "summary"]
 }`)
 
+var testFindingsSchema = json.RawMessage(`{
+	"type": "object",
+	"properties": {
+		"findings": {
+			"type": "array",
+			"items": {
+				"type": "object",
+				"properties": {
+					"id": {"type": "string"},
+					"severity": {"type": "string", "enum": ["error", "warning", "info"]},
+					"file": {"type": "string"},
+					"line": {"type": "integer"},
+					"description": {"type": "string"},
+					"action": {"type": "string", "enum": ["no-op", "auto-fix", "ask-user"]}
+				},
+				"required": ["severity", "description", "action"]
+			}
+		},
+		"summary": {"type": "string"},
+		"tested": {
+			"type": "array",
+			"items": {"type": "string"}
+		},
+		"testing_summary": {
+			"type": "string"
+		},
+		"artifacts": {
+			"type": "array",
+			"items": {
+				"type": "object",
+				"properties": {
+					"kind": {"type": "string", "description": "artifact type such as screenshot, gif, image, video, log, command-output, or other"},
+					"label": {"type": "string"},
+					"path": {"type": "string", "description": "repository-relative artifact path when available"},
+					"url": {"type": "string", "description": "artifact URL when available"},
+					"content": {"type": "string", "description": "short log, command output, or textual artifact content to show inline"}
+				},
+				"required": ["label"]
+			}
+		}
+	},
+	"required": ["findings", "summary", "tested", "testing_summary", "artifacts"]
+}`)
+
 // reviewFindingsSchema is the JSON schema for structured review output with risk assessment.
 // Field order matters for chain-of-thought: findings first, then risk level, then rationale.
 var reviewFindingsSchema = json.RawMessage(`{

@@ -68,10 +68,49 @@ Previous test findings to address:
 	}
 
 	testCmd := sctx.Config.Commands.Test
-	if testCmd == "" {
-		// No test command configured — ask agent to detect and run tests
-		sctx.Log("no test command configured, asking agent to run tests...")
+	tested := []string{}
+	if testCmd != "" {
+		sctx.Log(fmt.Sprintf("running tests: %s", testCmd))
+		output, exitCode, err := runStepShellCommand(sctx, testCmd)
+		if err != nil {
+			return nil, fmt.Errorf("run test command: %w", err)
+		}
+		tested = append(tested, testCmd)
+
+		sctx.Log(output)
+
+		if exitCode != 0 {
+			findings := Findings{
+				Items: []Finding{{
+					Severity:    "error",
+					Description: fmt.Sprintf("tests failed with exit code %d", exitCode),
+				}},
+				Summary: output,
+				Tested:  tested,
+			}
+			findingsJSON, _ := json.Marshal(findings)
+			return &pipeline.StepOutcome{
+				NeedsApproval: true,
+				AutoFixable:   true,
+				Findings:      string(findingsJSON),
+				ExitCode:      exitCode,
+				FixSummary:    fixSummary,
+			}, nil
+		}
+	}
+
+	useEvidenceAgent := testCmd == "" || cleanedUserIntent(sctx) != ""
+	if useEvidenceAgent {
+		if testCmd == "" {
+			sctx.Log("no test command configured, asking agent to run tests...")
+		} else {
+			sctx.Log("user intent available, asking agent to gather test evidence...")
+		}
 		reassessHistory := executionContextPromptSection() + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx)
+		configuredTestCommand := ""
+		if testCmd != "" {
+			configuredTestCommand = fmt.Sprintf("\nConfigured test command already ran successfully as baseline: `%s`\n", testCmd)
+		}
 		result, err := sctx.Agent.Run(ctx, agent.RunOpts{
 			Prompt: fmt.Sprintf(
 				`You are validating a code change by testing it. Examine the repository and run the appropriate tests yourself.
@@ -80,13 +119,18 @@ Context:
 - branch: %s
 - base commit: %s
 - target commit: %s
+%s
 
 Task:
-- Understand the change before testing it.
-- Run existing tests that are relevant to the change.
-- Writing and running new tests if coverage is insufficient.
+- Understand the user intent before testing it. If extracted user intent is present, use it as the primary hint for what success means.
+- Decide what evidence or artifacts would clearly demonstrate the user intent is satisfied. Consider screenshot, GIF, logs, recordings, command output, database state, API responses, or other product-specific artifacts.
+- Look for existing tests that would generate sufficient evidence. If they exist, run the smallest relevant set.
+- If no existing test produces sufficient evidence, write or improve a test so that it does.
+- If automated testing cannot produce the needed evidence, execute manual verification steps and record the evidence-producing steps you performed.
+- If sufficient evidence is not possible, report a warning finding explaining what evidence is missing and why the user needs to decide what to do.
 - Include a concise "testing_summary" sentence describing what you exercised and the overall result.
-- Record the exact tests you ran in a "tested" array. Prefer concrete commands or test selectors wrapped in backticks.
+- Record the exact tests, manual checks, and evidence-producing steps you ran in a "tested" array. Prefer concrete commands or test selectors wrapped in backticks.
+- Always include an "artifacts" array. Leave it empty when you produced no reviewer-visible evidence artifacts. Use "path" for repository-relative files, "url" for externally visible artifacts, and "content" for short logs or command output that should be shown directly in the PR.
 - If tests fail, determine whether the problem is a real product/code failure, a setup/environment problem you can fix, or a flaky/infrastructure issue.
 - If the issue is setup-related and fixable, fix it and retry the tests.
 
@@ -95,17 +139,18 @@ Rules:
 - Focus on testing and test-related fixes only.
 - Keep "testing_summary" high-signal and natural language. Avoid raw logs and noisy counts.
 - Always return a non-empty "tested" array describing what you exercised, even when all tests pass.
-- Only report actionable findings: test failures, unfixable setup issues, or flaky tests you identified.
+- Only report actionable findings: test failures, unfixable setup issues, flaky tests you identified, or missing evidence that prevents you from demonstrating the user intent.
 - Do NOT report passing tests (whether existing or new), test counts, coverage summaries, or other non-actionable information.
 - If all tests pass and there are no issues, return an empty findings array.
-- Set action to "ask-user" only when a test failure seems desired and you question the author's intent of having the test in the first place. Set action to "auto-fix" for objective test failures that can be safely fixed. Set action to "no-op" for informational notes.%s`,
+- Set action to "ask-user" for missing-evidence warning findings and only otherwise when a test failure seems desired and you question the author's intent of having the test in the first place. Set action to "auto-fix" for objective test failures that can be safely fixed. Set action to "no-op" for informational notes.%s`,
 				sctx.Run.Branch,
 				baseSHA,
 				sctx.Run.HeadSHA,
+				configuredTestCommand,
 				reassessHistory,
 			),
 			CWD:        sctx.WorkDir,
-			JSONSchema: findingsSchema,
+			JSONSchema: testFindingsSchema,
 			OnChunk:    sctx.LogChunk,
 		})
 		if err != nil {
@@ -118,6 +163,9 @@ Rules:
 				sctx.Log("could not parse structured output, using text response")
 				findings = Findings{Summary: result.Text}
 			}
+		}
+		if len(tested) > 0 {
+			findings.Tested = append(append([]string{}, tested...), findings.Tested...)
 		}
 
 		needsApproval := hasBlockingFindings(findings.Items)
@@ -142,35 +190,6 @@ Rules:
 			NeedsApproval: needsApproval,
 			AutoFixable:   autoFixable,
 			Findings:      string(findingsJSON),
-			FixSummary:    fixSummary,
-		}, nil
-	}
-
-	// Run configured test command
-	sctx.Log(fmt.Sprintf("running tests: %s", testCmd))
-	output, exitCode, err := runStepShellCommand(sctx, testCmd)
-	if err != nil {
-		return nil, fmt.Errorf("run test command: %w", err)
-	}
-	tested := []string{testCmd}
-
-	sctx.Log(output)
-
-	if exitCode != 0 {
-		findings := Findings{
-			Items: []Finding{{
-				Severity:    "error",
-				Description: fmt.Sprintf("tests failed with exit code %d", exitCode),
-			}},
-			Summary: output,
-			Tested:  tested,
-		}
-		findingsJSON, _ := json.Marshal(findings)
-		return &pipeline.StepOutcome{
-			NeedsApproval: true,
-			AutoFixable:   true,
-			Findings:      string(findingsJSON),
-			ExitCode:      exitCode,
 			FixSummary:    fixSummary,
 		}, nil
 	}

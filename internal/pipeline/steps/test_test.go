@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -140,5 +141,66 @@ func TestTestStep_FixMode_AgentWritesNewTests_NeedsApproval(t *testing.T) {
 	}
 	if !foundTestFile {
 		t.Errorf("expected finding mentioning component.spec.tsx, got findings: %+v", f.Items)
+	}
+}
+
+func TestTestStep_UserIntentRunsConfiguredCommandThenEvidenceAgent(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	baselineLog := filepath.Join(t.TempDir(), "baseline.log")
+	testCmd := "printf baseline > " + strconv.Quote(baselineLog)
+
+	callCount := 0
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			callCount++
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"evidence demonstrates intent","tested":["manual screenshot review"],"testing_summary":"captured screenshot evidence"}`)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Test: testCmd})
+	sctx.UserIntent = "Show users a success screen after checkout"
+
+	step := &TestStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatal("expected no approval when evidence-oriented agent testing passes")
+	}
+	if callCount != 1 {
+		t.Fatalf("expected evidence agent to run after configured test command, got %d calls", callCount)
+	}
+	data, err := os.ReadFile(baselineLog)
+	if err != nil {
+		t.Fatalf("expected configured test command to run: %v", err)
+	}
+	if string(data) != "baseline" {
+		t.Fatalf("configured test command output = %q, want baseline", string(data))
+	}
+	prompt := ag.calls[0].Prompt
+	for _, want := range []string{
+		"Show users a success screen after checkout",
+		"Decide what evidence or artifacts would clearly demonstrate the user intent is satisfied",
+		"Configured test command already ran successfully as baseline",
+		testCmd,
+		"screenshot, GIF, logs, recordings, command output",
+		"If no existing test produces sufficient evidence, write or improve a test",
+		"If automated testing cannot produce the needed evidence, execute manual verification steps",
+		"Always include an \"artifacts\" array",
+		"If sufficient evidence is not possible, report a warning finding",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("expected prompt to contain %q, got:\n%s", want, prompt)
+		}
+	}
+
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatal(err)
+	}
+	if len(findings.Tested) != 2 || findings.Tested[0] != testCmd || findings.Tested[1] != "manual screenshot review" {
+		t.Fatalf("expected baseline command and agent-tested evidence to be recorded, got %+v", findings.Tested)
 	}
 }

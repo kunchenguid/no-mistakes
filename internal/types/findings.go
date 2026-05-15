@@ -31,6 +31,15 @@ type Finding struct {
 	UserInstructions string `json:"user_instructions,omitempty"`
 }
 
+// TestArtifact describes evidence produced by the test step for human review.
+type TestArtifact struct {
+	Kind    string `json:"kind,omitempty"`
+	Label   string `json:"label"`
+	Path    string `json:"path,omitempty"`
+	URL     string `json:"url,omitempty"`
+	Content string `json:"content,omitempty"`
+}
+
 type findingWire struct {
 	ID                  string `json:"id,omitempty"`
 	Severity            string `json:"severity"`
@@ -45,22 +54,24 @@ type findingWire struct {
 
 // Findings is the structured findings payload exchanged across pipeline, IPC, and TUI.
 type Findings struct {
-	Items          []Finding `json:"findings"`
-	Summary        string    `json:"summary"`
-	Tested         []string  `json:"tested,omitempty"`
-	TestingSummary string    `json:"testing_summary,omitempty"`
-	RiskLevel      string    `json:"risk_level"`
-	RiskRationale  string    `json:"risk_rationale"`
+	Items          []Finding      `json:"findings"`
+	Summary        string         `json:"summary"`
+	Tested         []string       `json:"tested,omitempty"`
+	TestingSummary string         `json:"testing_summary,omitempty"`
+	Artifacts      []TestArtifact `json:"artifacts,omitempty"`
+	RiskLevel      string         `json:"risk_level"`
+	RiskRationale  string         `json:"risk_rationale"`
 }
 
 type findingsWire struct {
-	Items          []Finding `json:"findings"`
-	Legacy         []Finding `json:"items"`
-	Summary        string    `json:"summary"`
-	Tested         []string  `json:"tested"`
-	TestingSummary string    `json:"testing_summary"`
-	RiskLevel      string    `json:"risk_level"`
-	RiskRationale  string    `json:"risk_rationale"`
+	Items          []Finding      `json:"findings"`
+	Legacy         []Finding      `json:"items"`
+	Summary        string         `json:"summary"`
+	Tested         []string       `json:"tested"`
+	TestingSummary string         `json:"testing_summary"`
+	Artifacts      []TestArtifact `json:"artifacts"`
+	RiskLevel      string         `json:"risk_level"`
+	RiskRationale  string         `json:"risk_rationale"`
 }
 
 // ParseFindingsJSON decodes findings JSON, accepting current and legacy item
@@ -74,7 +85,7 @@ func ParseFindingsJSON(raw string) (Findings, error) {
 	if len(items) == 0 && len(wire.Legacy) > 0 {
 		items = wire.Legacy
 	}
-	return Findings{Items: items, Summary: wire.Summary, Tested: wire.Tested, TestingSummary: wire.TestingSummary, RiskLevel: wire.RiskLevel, RiskRationale: wire.RiskRationale}, nil
+	return Findings{Items: items, Summary: wire.Summary, Tested: wire.Tested, TestingSummary: wire.TestingSummary, Artifacts: wire.Artifacts, RiskLevel: wire.RiskLevel, RiskRationale: wire.RiskRationale}, nil
 }
 
 // NormalizeFindings assigns deterministic IDs to findings that do not have one yet.
@@ -97,7 +108,7 @@ func FilterFindings(findings Findings, ids []string) Findings {
 	for _, id := range ids {
 		selected[id] = true
 	}
-	filtered := Findings{Summary: findings.Summary, Tested: findings.Tested, TestingSummary: findings.TestingSummary, RiskLevel: findings.RiskLevel, RiskRationale: findings.RiskRationale}
+	filtered := Findings{Summary: findings.Summary, Tested: findings.Tested, TestingSummary: findings.TestingSummary, Artifacts: findings.Artifacts, RiskLevel: findings.RiskLevel, RiskRationale: findings.RiskRationale}
 	for _, item := range findings.Items {
 		if selected[item.ID] {
 			filtered.Items = append(filtered.Items, item)
@@ -118,7 +129,7 @@ func ExcludeFindings(findings Findings, ids []string) Findings {
 	for _, id := range ids {
 		excluded[id] = true
 	}
-	result := Findings{Summary: findings.Summary, Tested: findings.Tested, TestingSummary: findings.TestingSummary, RiskLevel: findings.RiskLevel, RiskRationale: findings.RiskRationale}
+	result := Findings{Summary: findings.Summary, Tested: findings.Tested, TestingSummary: findings.TestingSummary, Artifacts: findings.Artifacts, RiskLevel: findings.RiskLevel, RiskRationale: findings.RiskRationale}
 	for _, item := range findings.Items {
 		if !excluded[item.ID] {
 			result.Items = append(result.Items, item)
@@ -131,7 +142,7 @@ func ExcludeFindings(findings Findings, ids []string) Findings {
 // Action is "auto-fix". These are safe for automatic fixing without
 // user involvement.
 func AutoFixableFindings(findings Findings) Findings {
-	result := Findings{Summary: findings.Summary, Tested: findings.Tested, TestingSummary: findings.TestingSummary, RiskLevel: findings.RiskLevel, RiskRationale: findings.RiskRationale}
+	result := Findings{Summary: findings.Summary, Tested: findings.Tested, TestingSummary: findings.TestingSummary, Artifacts: findings.Artifacts, RiskLevel: findings.RiskLevel, RiskRationale: findings.RiskRationale}
 	for _, item := range findings.Items {
 		if item.actionOrDefault() == ActionAutoFix {
 			result.Items = append(result.Items, item)
@@ -149,6 +160,7 @@ func MergeUserOverrides(findings Findings, instructions map[string]string, added
 		Summary:        findings.Summary,
 		Tested:         findings.Tested,
 		TestingSummary: findings.TestingSummary,
+		Artifacts:      findings.Artifacts,
 		RiskLevel:      findings.RiskLevel,
 		RiskRationale:  findings.RiskRationale,
 	}
