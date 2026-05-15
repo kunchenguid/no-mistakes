@@ -10,7 +10,7 @@ import (
 // Finding represents a single code review or lint finding.
 type Finding = types.Finding
 
-// Findings is the structured output from a review or lint agent call.
+// Findings is the structured output from a pipeline step agent call.
 type Findings = types.Findings
 
 // findingsSchema is the JSON schema for structured findings output.

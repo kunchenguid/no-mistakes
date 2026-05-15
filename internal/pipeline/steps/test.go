@@ -9,7 +9,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-// TestStep runs tests and optionally asks the agent to fix failures.
+// TestStep runs baseline tests, gathers evidence for user intent, and optionally asks the agent to fix failures.
 type TestStep struct{}
 
 func (s *TestStep) Name() types.StepName { return types.StepTest }
