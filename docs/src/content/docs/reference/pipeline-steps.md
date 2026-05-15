@@ -141,8 +141,8 @@ Creates or updates a pull request.
 - Uses the provider CLI for GitHub/GitLab and the Bitbucket API for Bitbucket Cloud
 - PR title: agent-generated with inferred user intent when available, in conventional commit format (`type(scope): description` or `type: description`); user-facing product impact should use `feat` or `fix` so release automation can pick it up; when a scope is used, it should be the primary affected real module/package from the changed paths and kept broad rather than file-level
 - PR body includes: a `## Intent` section from extracted user intent when available, an agent-authored `## What Changed`, and regenerated `## Risk Assessment`, `## Testing`, and `## Pipeline` sections from recorded step results and rounds
-- The regenerated `## Testing` section prefers the recorded `testing_summary`, lists deduplicated `tested` commands or selectors, includes produced evidence artifacts from `path`, `url`, or `content` fields when available, and ends with the overall outcome including run count and total duration when available
-- Evidence artifacts render in the PR body: image artifacts appear inline, video artifacts use an HTML video element, log/file artifacts become links or inline text blocks, and GitHub PRs convert repository-relative paths to blob or raw URLs
+- The regenerated `## Testing` section prefers the recorded `testing_summary`, uses a compact recorded-check count when no summary is available, includes produced evidence artifacts from `path`, `url`, or `content` fields when available, and ends with the overall outcome including run count and total duration when available
+- Evidence artifacts render compactly in GitHub PR bodies: `path` and `url` artifacts become `Evidence` links, repository-relative paths use blob URLs, and `content` artifacts appear in collapsible details blocks
 
 Stores the PR URL in the database and streams it to the TUI.
 
