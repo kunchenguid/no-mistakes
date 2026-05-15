@@ -22,7 +22,7 @@ ready.
 `no-mistakes` sits in that gap. It gives you a deliberate local gate before the
 branch reaches upstream:
 
-- **Before** the code is public, it rebases, runs a structured AI code review, runs your tests, checks that docs are in sync, runs lint, and only then pushes upstream and opens the PR.
+- **Before** the code is public, it rebases, runs a structured AI code review, runs baseline tests, gathers user-facing test evidence when intent is available, checks that docs are in sync, runs lint, and only then pushes upstream and opens the PR.
 - **After** the push, it watches CI and auto-fixes failures. On GitHub and GitLab it also watches PR mergeability and fixes merge conflicts on the branch.
 - **Throughout**, every step can pause for your approval. You see the findings, pick what to fix, and decide when to ship.
 
@@ -62,7 +62,7 @@ When a branch passes the gate, it means:
 
 - it was checked against fresh upstream
 - the fixed pipeline ran in order
-- review, tests, docs, and lint happened before the upstream push
+- review, tests, user-facing test evidence when available, docs, and lint happened before the upstream push
 - you had a chance to approve, fix, skip, or abort any blocking step
 
 ## What you get

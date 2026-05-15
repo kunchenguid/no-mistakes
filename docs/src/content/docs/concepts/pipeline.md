@@ -26,7 +26,7 @@ This page is the overview. For each step's exact behavior, defaults, skip rules,
 The pipeline is opinionated so that "passed the gate" has a stable meaning:
 
 - the branch was checked against fresh upstream first
-- review, tests, docs, and lint happened before any upstream push
+- review, tests, user-facing test evidence when available, docs, and lint happened before any upstream push
 - the human stayed in control when a step needed judgment
 - push, PR creation, and CI monitoring only happened after the local gate was satisfied
 
