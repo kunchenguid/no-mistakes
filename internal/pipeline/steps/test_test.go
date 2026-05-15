@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -148,8 +147,8 @@ func TestTestStep_FixMode_AgentWritesNewTests_NeedsApproval(t *testing.T) {
 func TestTestStep_UserIntentRunsConfiguredCommandThenEvidenceAgent(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
-	baselineLog := filepath.Join(t.TempDir(), "baseline.log")
-	testCmd := "go env GOOS > " + strconv.Quote(baselineLog)
+	baselineLog := filepath.Join(dir, "baseline.log")
+	testCmd := "go env GOOS > baseline.log"
 
 	callCount := 0
 	ag := &mockAgent{
