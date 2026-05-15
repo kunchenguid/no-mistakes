@@ -3,6 +3,8 @@ package steps
 import (
 	"fmt"
 	"html"
+	"net/url"
+	"path"
 	"strings"
 	"time"
 
@@ -132,20 +134,43 @@ func testingSummaryFromFindings(raw *string) string {
 
 func collectTestingDetails(sr *db.StepResult, rounds []*db.StepRound) []string {
 	seen := map[string]bool{}
-	details := appendTestingDetails(nil, seen, sr.FindingsJSON)
-	for _, r := range rounds {
-		details = appendTestingDetails(details, seen, r.FindingsJSON)
+	var details []string
+	for _, raw := range testingEvidenceFindingsJSON(sr, rounds) {
+		details = appendTestingDetails(details, seen, raw)
 	}
 	return details
 }
 
 func collectTestingArtifacts(sr *db.StepResult, rounds []*db.StepRound) []types.TestArtifact {
 	seen := map[string]bool{}
-	artifacts := appendTestingArtifacts(nil, seen, sr.FindingsJSON)
-	for _, r := range rounds {
-		artifacts = appendTestingArtifacts(artifacts, seen, r.FindingsJSON)
+	var artifacts []types.TestArtifact
+	for _, raw := range testingEvidenceFindingsJSON(sr, rounds) {
+		artifacts = appendTestingArtifacts(artifacts, seen, raw)
 	}
 	return artifacts
+}
+
+func testingEvidenceFindingsJSON(sr *db.StepResult, rounds []*db.StepRound) []*string {
+	if hasTestingEvidenceMetadata(sr.FindingsJSON) {
+		return []*string{sr.FindingsJSON}
+	}
+	for i := len(rounds) - 1; i >= 0; i-- {
+		if hasTestingEvidenceMetadata(rounds[i].FindingsJSON) {
+			return []*string{rounds[i].FindingsJSON}
+		}
+	}
+	return nil
+}
+
+func hasTestingEvidenceMetadata(raw *string) bool {
+	if raw == nil || strings.TrimSpace(*raw) == "" {
+		return false
+	}
+	findings, err := types.ParseFindingsJSON(*raw)
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(findings.TestingSummary) != "" || len(findings.Tested) > 0 || len(findings.Artifacts) > 0
 }
 
 func appendTestingArtifacts(artifacts []types.TestArtifact, seen map[string]bool, raw *string) []types.TestArtifact {
@@ -159,8 +184,8 @@ func appendTestingArtifacts(artifacts []types.TestArtifact, seen map[string]bool
 	for _, artifact := range findings.Artifacts {
 		artifact.Label = sanitizePromptText(artifact.Label)
 		artifact.Kind = strings.ToLower(sanitizePromptText(artifact.Kind))
-		artifact.Path = sanitizeArtifactTarget(artifact.Path)
-		artifact.URL = sanitizeArtifactTarget(artifact.URL)
+		artifact.Path = sanitizeArtifactPath(artifact.Path)
+		artifact.URL = sanitizeArtifactURL(artifact.URL)
 		artifact.Content = sanitizePromptMultilineText(artifact.Content)
 		key := artifact.Kind + "\x00" + artifact.Label + "\x00" + artifact.Path + "\x00" + artifact.URL + "\x00" + artifact.Content
 		if artifact.Label == "" || seen[key] {
@@ -250,16 +275,36 @@ func renderTestingArtifact(artifact types.TestArtifact) string {
 	return strings.TrimRight(b.String(), "\n") + "\n"
 }
 
-func sanitizeArtifactTarget(target string) string {
-	clean := sanitizePromptText(target)
-	if clean == "" || strings.ContainsAny(clean, "\n\r<>") {
+func sanitizeArtifactPath(target string) string {
+	clean := strings.TrimSpace(target)
+	if clean == "" || clean != sanitizePromptText(target) || strings.ContainsAny(clean, "\n\r<>[]()\\") {
 		return ""
 	}
-	lower := strings.ToLower(strings.TrimSpace(clean))
-	if strings.HasPrefix(lower, "javascript:") || strings.HasPrefix(lower, "data:") {
+	if strings.HasPrefix(clean, "/") || strings.HasPrefix(clean, "~") || strings.Contains(clean, ":") {
+		return ""
+	}
+	cleanedPath := path.Clean(clean)
+	if cleanedPath == "." || cleanedPath != clean || cleanedPath == ".." || strings.HasPrefix(cleanedPath, "../") {
 		return ""
 	}
 	return clean
+}
+
+func sanitizeArtifactURL(target string) string {
+	clean := strings.TrimSpace(target)
+	if clean == "" || clean != sanitizePromptText(target) || strings.ContainsAny(clean, "\n\r <>[]()\"'") {
+		return ""
+	}
+	parsed, err := url.ParseRequestURI(clean)
+	if err != nil || parsed.Host == "" {
+		return ""
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "http", "https":
+		return clean
+	default:
+		return ""
+	}
 }
 
 func markdownAltText(label string) string {

@@ -251,3 +251,51 @@ func TestBuildTestingSummary_RendersEvidenceArtifacts(t *testing.T) {
 		t.Fatalf("expected summary before artifacts, got:\n%s", md)
 	}
 }
+
+func TestBuildTestingSummary_UsesFinalSuccessfulRoundArtifacts(t *testing.T) {
+	t.Parallel()
+	failedRound := `{"findings":[{"id":"test-1","severity":"warning","description":"checkout failed","action":"auto-fix"}],"summary":"checkout failed","testing_summary":"Checkout failed before fix.","tested":["broken checkout flow"],"artifacts":[{"kind":"screenshot","label":"Broken checkout screenshot","path":"artifacts/broken-checkout.png"}]}`
+	passedRound := `{"findings":[],"summary":"","testing_summary":"Checkout passed after fix.","tested":["fixed checkout flow"],"artifacts":[{"kind":"screenshot","label":"Fixed checkout screenshot","path":"artifacts/fixed-checkout.png"}]}`
+	steps := []*db.StepResult{
+		{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted},
+	}
+	rounds := map[string][]*db.StepRound{
+		"s1": {
+			{Round: 1, Trigger: "initial", FindingsJSON: &failedRound, DurationMS: 300},
+			{Round: 2, Trigger: "auto_fix", FindingsJSON: &passedRound, DurationMS: 400},
+		},
+	}
+
+	md := BuildTestingSummary(steps, rounds)
+
+	if !strings.Contains(md, "Checkout passed after fix.") || !strings.Contains(md, "![Fixed checkout screenshot](artifacts/fixed-checkout.png)") {
+		t.Fatalf("expected final successful evidence, got:\n%s", md)
+	}
+	for _, stale := range []string{"Checkout failed before fix.", "broken checkout flow", "Broken checkout screenshot", "artifacts/broken-checkout.png"} {
+		if strings.Contains(md, stale) {
+			t.Fatalf("did not expect stale failed-round evidence %q, got:\n%s", stale, md)
+		}
+	}
+}
+
+func TestBuildTestingSummary_RejectsUnsafeArtifactTargets(t *testing.T) {
+	t.Parallel()
+	findings := `{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[{"kind":"screenshot","label":"Absolute path","path":"/Users/alice/project/artifacts/leak.png"},{"kind":"screenshot","label":"Parent path","path":"../secret.png"},{"kind":"screenshot","label":"Markdown injection","url":"https://example.com/evidence.png)\n![leak](file:///tmp/secret"},{"kind":"screenshot","label":"Safe path","path":"artifacts/safe.png"},{"kind":"log","label":"Safe URL","url":"https://example.com/log.txt"}]}`
+	steps := []*db.StepResult{
+		{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings},
+	}
+	rounds := map[string][]*db.StepRound{
+		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 300}},
+	}
+
+	md := BuildTestingSummary(steps, rounds)
+
+	for _, unsafe := range []string{"/Users/alice", "../secret.png", "Markdown injection", "file:///tmp/secret"} {
+		if strings.Contains(md, unsafe) {
+			t.Fatalf("did not expect unsafe target content %q, got:\n%s", unsafe, md)
+		}
+	}
+	if !strings.Contains(md, "![Safe path](artifacts/safe.png)") || !strings.Contains(md, "[Safe URL](https://example.com/log.txt)") {
+		t.Fatalf("expected safe artifact targets to render, got:\n%s", md)
+	}
+}
