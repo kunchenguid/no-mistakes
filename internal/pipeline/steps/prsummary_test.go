@@ -237,6 +237,29 @@ func TestBuildTestingSummaryForPR_OmitsRecordedTestDetails(t *testing.T) {
 	}
 }
 
+func TestBuildTestingSummaryForPR_SummarizesBaselineOnlyTests(t *testing.T) {
+	t.Parallel()
+	findings := "{\"findings\":[],\"summary\":\"\",\"tested\":[\"`go test ./...`\"]}"
+	steps := []*db.StepResult{
+		{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings},
+	}
+	rounds := map[string][]*db.StepRound{
+		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 300}},
+	}
+
+	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123")
+
+	if !strings.Contains(md, "- Summary: Completed 1 recorded test check.") {
+		t.Fatalf("expected compact baseline test summary, got:\n%s", md)
+	}
+	if strings.Contains(md, "go test ./...") {
+		t.Fatalf("did not expect raw recorded command in PR testing summary, got:\n%s", md)
+	}
+	if !strings.Contains(md, "- Outcome: ✅ passed across 1 run (300ms)") {
+		t.Fatalf("expected outcome line with run count and duration, got:\n%s", md)
+	}
+}
+
 func TestBuildTestingSummary_EscapesMarkdownInTestingSummary(t *testing.T) {
 	t.Parallel()
 	findings := "{\"findings\":[],\"summary\":\"\",\"testing_summary\":\"Validated `go test ./...`\\nand noted <details> output\",\"tested\":[]}"

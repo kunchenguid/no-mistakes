@@ -94,6 +94,10 @@ func buildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRou
 				b.WriteString(rendered)
 				b.WriteString("\n")
 			}
+		} else if !opts.includeTestedDetails && len(tested) > 0 {
+			b.WriteString("- Summary: ")
+			b.WriteString(compactTestedSummary(len(tested)))
+			b.WriteString("\n")
 		}
 		if opts.includeTestedDetails {
 			for _, detail := range tested {
@@ -126,6 +130,13 @@ func buildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRou
 	}
 
 	return ""
+}
+
+func compactTestedSummary(count int) string {
+	if count == 1 {
+		return "Completed 1 recorded test check."
+	}
+	return fmt.Sprintf("Completed %d recorded test checks.", count)
 }
 
 func testingSummaryOptionsForGitHub(upstreamURL, ref string) testingSummaryOptions {
