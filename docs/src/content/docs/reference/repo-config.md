@@ -57,9 +57,11 @@ Explicit test command. Run via the platform shell - `sh -c` on POSIX, `cmd.exe /
 | | |
 |---|---|
 | Type | `string` |
-| Default | Empty (agent auto-detects) |
+| Default | Empty (agent auto-detects tests and evidence checks) |
 
-When set, the test step runs this exact command and checks the exit code. When empty, the agent detects and runs relevant tests itself.
+When set, the test step runs this exact command first as the baseline and checks the exit code.
+When empty, the agent detects and runs relevant tests itself.
+When inferred user intent is available, the agent may still run after a successful baseline command to gather evidence-oriented validation.
 
 ### commands.lint
 

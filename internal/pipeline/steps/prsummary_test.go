@@ -240,6 +240,7 @@ func TestBuildTestingSummary_RendersEvidenceArtifacts(t *testing.T) {
 	}
 
 	md := BuildTestingSummary(steps, rounds)
+	t.Logf("rendered testing markdown:\n%s", md)
 
 	if !strings.Contains(md, "![Checkout success screenshot](artifacts/checkout-success.png)") {
 		t.Fatalf("expected screenshot artifact to render inline, got:\n%s", md)
@@ -311,6 +312,7 @@ func TestBuildTestingSummary_ConvertsArtifactPathsToGitHubURLs(t *testing.T) {
 	}
 
 	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123")
+	t.Logf("rendered PR testing markdown:\n%s", md)
 
 	if !strings.Contains(md, "![Checkout screenshot](https://raw.githubusercontent.com/example/widgets/abc123/artifacts/checkout.png)") {
 		t.Fatalf("expected screenshot path to render as raw GitHub URL, got:\n%s", md)

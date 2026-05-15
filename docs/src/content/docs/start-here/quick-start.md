@@ -85,7 +85,7 @@ The pipeline runs these steps in order:
 1. **Intent** - infer author intent from recent local agent transcripts
 2. **Rebase** - onto the latest upstream
 3. **Review** - AI code review of your diff
-4. **Test** - your tests (configured command or agent-detected)
+4. **Test** - baseline tests plus evidence checks when intent is known
 5. **Document** - checks for required doc updates
 6. **Lint** - your linters (configured command or agent-detected)
 7. **Push** - to the real upstream remote

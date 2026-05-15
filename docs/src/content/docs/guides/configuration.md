@@ -146,12 +146,14 @@ See [Repo Config Reference](/no-mistakes/reference/repo-config/) for the full fi
 - `intent` from the repo config overlays global intent settings. Fields not set in the repo config fall through to the global default, except `intent.disabled_readers`, which adds to globally disabled readers.
 - `commands` and `ignore_patterns` are repo-only fields.
 - `ci_timeout` and `auto_fix.ci` are the canonical keys; `babysit_timeout` and `auto_fix.babysit` are still accepted as legacy aliases.
+- If `commands.test` is set, the test step runs it first as the baseline; when inferred user intent is available, the agent may still run afterward to gather evidence-oriented validation.
 - If `commands.test` is empty, the agent detects and runs relevant tests itself.
 - If `commands.lint` is empty, the agent detects relevant linters and formatters, applies safe fixes, verifies them, commits any agent changes, and reports only unresolved issues.
 - If `commands.format` is empty, no separate push-step formatter is run automatically.
 
 The practical implication is simple: explicit commands give you deterministic
-repo behavior, while leaving commands empty asks the agent to fill in the gap.
+baseline behavior, while leaving commands empty asks the agent to fill in the gap.
+For tests, inferred user intent can also trigger an evidence-oriented agent follow-up after the baseline command succeeds.
 For lint, that gap includes safe formatter and linter fixes during the initial lint pass.
 
 ## Ignore pattern rules

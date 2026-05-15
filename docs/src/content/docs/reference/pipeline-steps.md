@@ -66,9 +66,10 @@ AI code review of your diff.
 Runs your test suite.
 
 **Behavior:**
-- If `commands.test` is set in repo config: runs it via the platform shell (`sh -c` on POSIX, `cmd.exe /c` on Windows) and captures output. Non-zero exit produces `error` findings.
-- If `commands.test` is empty: the agent detects and runs relevant tests with inferred user intent when available, returning structured findings with severity, description, and `action` (`no-op`, `auto-fix`, `ask-user`).
-- The step also records the exact tests it exercised in a `tested` array and may include a short natural-language `testing_summary`; these are persisted even when tests pass so later steps can reuse them.
+- If `commands.test` is set in repo config: runs it first as a baseline via the platform shell (`sh -c` on POSIX, `cmd.exe /c` on Windows) and captures output. Non-zero exit produces `error` findings.
+- If `commands.test` is empty, or inferred user intent is available after the baseline command passes: the agent validates the change with evidence-oriented tests or manual checks, returning structured findings with severity, description, and `action` (`no-op`, `auto-fix`, `ask-user`).
+- The step records the exact tests and checks it exercised in a `tested` array, may include a short natural-language `testing_summary`, and includes an `artifacts` array for reviewer-visible evidence such as screenshots, videos, logs, CLI transcripts, rendered output, or API responses.
+- Missing evidence for inferred user intent can be reported as a warning with `action: ask-user`.
 - If the agent creates new test files (detected via `git status --porcelain`), approval is required even if tests pass.
 
 **Approval:** failing test findings with `action: ask-user` always require human approval. `action: auto-fix` findings stay eligible for the fix loop. `action: no-op` findings are informational only.
@@ -140,7 +141,7 @@ Creates or updates a pull request.
 - Uses the provider CLI for GitHub/GitLab and the Bitbucket API for Bitbucket Cloud
 - PR title: agent-generated with inferred user intent when available, in conventional commit format (`type(scope): description` or `type: description`); user-facing product impact should use `feat` or `fix` so release automation can pick it up; when a scope is used, it should be the primary affected real module/package from the changed paths and kept broad rather than file-level
 - PR body includes: a `## Intent` section from extracted user intent when available, an agent-authored `## What Changed`, and regenerated `## Risk Assessment`, `## Testing`, and `## Pipeline` sections from recorded step results and rounds
-- The regenerated `## Testing` section prefers the recorded `testing_summary`, lists deduplicated `tested` commands or selectors, and ends with the overall outcome including run count and total duration when available
+- The regenerated `## Testing` section prefers the recorded `testing_summary`, lists deduplicated `tested` commands or selectors, includes produced evidence artifacts when available, and ends with the overall outcome including run count and total duration when available
 
 Stores the PR URL in the database and streams it to the TUI.
 
