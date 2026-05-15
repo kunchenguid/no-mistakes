@@ -123,7 +123,10 @@ Context:
 
 Task:
 - Understand the user intent before testing it. If extracted user intent is present, use it as the primary hint for what success means.
-- Decide what evidence or artifacts would clearly demonstrate the user intent is satisfied. Consider screenshot, GIF, logs, recordings, command output, database state, API responses, or other product-specific artifacts.
+- Decide what evidence or artifacts would clearly demonstrate the user intent is satisfied. Unit tests passing is not sufficient evidence by itself.
+- Demonstrate the user intent working end-to-end in a way consistent with how an end user would actually experience it.
+- Prefer product-level artifacts: screenshots, GIFs, videos, rendered UI, CLI transcripts, API responses, persisted database state, generated PR markdown, logs, or other outputs that directly show the intended behavior working.
+- Only use command output as an artifact when that output directly demonstrates the end-user experience or requested behavior. Generic pass/fail, coverage, or clean-worktree output is not sufficient evidence.
 - Look for existing tests that would generate sufficient evidence. If they exist, run the smallest relevant set.
 - If no existing test produces sufficient evidence, write or improve a test so that it does.
 - If automated testing cannot produce the needed evidence, execute manual verification steps and record the evidence-producing steps you performed.
