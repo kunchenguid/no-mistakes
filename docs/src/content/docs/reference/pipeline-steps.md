@@ -72,7 +72,7 @@ Runs baseline tests and gathers evidence for the intended behavior.
 - Missing evidence for inferred user intent can be reported as a warning with `action: ask-user`.
 - If the agent creates new test files (detected via `git status --porcelain`), approval is required even if tests pass.
 
-**Approval:** failing test findings with `action: ask-user` always require human approval. `action: auto-fix` findings stay eligible for the fix loop. `action: no-op` findings are informational only.
+**Approval:** test findings with `action: ask-user` always require human approval, including missing-evidence warnings for inferred intent. `action: auto-fix` findings stay eligible for the fix loop. `action: no-op` findings are informational only.
 
 **Auto-fix:** the agent receives the previous test findings plus any per-finding user notes, any selected user-authored findings from the TUI, and a sanitized history of prior rounds for that step, including earlier fix summaries and any findings the user left unselected in prior approval cycles, then tests run again. Fix commits use `no-mistakes(test): <summary>`.
 
