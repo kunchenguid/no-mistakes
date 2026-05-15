@@ -14,7 +14,7 @@ Each step can produce findings, request approval, or trigger auto-fix. Steps tha
 ## Intent
 
 Infers the author's intent from recent local Claude Code, Codex, OpenCode, or Rovo Dev transcripts.
-This is best-effort context, and when available it is included in rebase fixes, review checks and fixes, test detection and fixes, documentation checks and fixes, lint detection and fixes, CI auto-fixes, and PR drafting.
+This is best-effort context, and when available it is included in rebase fixes, review checks and fixes, test detection, evidence validation, and fixes, documentation checks and fixes, lint detection and fixes, CI auto-fixes, and PR drafting.
 
 **Behavior:**
 - Runs only when `intent.enabled` is true
