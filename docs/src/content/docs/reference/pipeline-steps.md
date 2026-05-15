@@ -68,7 +68,7 @@ Runs baseline tests and gathers evidence for the intended behavior.
 **Behavior:**
 - If `commands.test` is set in repo config: runs it first as a baseline via the platform shell (`sh -c` on POSIX, `cmd.exe /c` on Windows) and captures output. Non-zero exit produces `error` findings.
 - If `commands.test` is empty, or inferred user intent is available after the baseline command passes: the agent validates the change with evidence-oriented tests or manual checks, returning structured findings with severity, description, and `action` (`no-op`, `auto-fix`, `ask-user`).
-- The step records the exact tests and checks it exercised in a `tested` array, may include a short natural-language `testing_summary`, and includes an `artifacts` array for reviewer-visible evidence such as screenshots, videos, logs, CLI transcripts, rendered output, or API responses.
+- The step records the exact tests and checks it exercised in a `tested` array, may include a short natural-language `testing_summary`, and includes an `artifacts` array for reviewer-visible evidence; `path` artifacts must already exist in the repository and be available from the pushed commit, `url` artifacts must be externally visible, and `content` artifacts should be short logs or command output shown directly in the PR.
 - Missing evidence for inferred user intent can be reported as a warning with `action: ask-user`.
 - If the agent creates new test files (detected via `git status --porcelain`), approval is required even if tests pass.
 
@@ -142,7 +142,7 @@ Creates or updates a pull request.
 - PR title: agent-generated with inferred user intent when available, in conventional commit format (`type(scope): description` or `type: description`); user-facing product impact should use `feat` or `fix` so release automation can pick it up; when a scope is used, it should be the primary affected real module/package from the changed paths and kept broad rather than file-level
 - PR body includes: a `## Intent` section from extracted user intent when available, an agent-authored `## What Changed`, and regenerated `## Risk Assessment`, `## Testing`, and `## Pipeline` sections from recorded step results and rounds
 - The regenerated `## Testing` section prefers the recorded `testing_summary`, uses a compact recorded-check count when no summary is available, includes produced evidence artifacts from `path`, `url`, or `content` fields when available, and ends with the overall outcome including run count and total duration when available
-- Evidence artifacts render compactly in GitHub PR bodies: `path` and `url` artifacts become `Evidence` links, repository-relative paths use blob URLs, and `content` artifacts appear in collapsible details blocks
+- Evidence artifacts render compactly in PR bodies: `path` and `url` artifacts become `Evidence` links, `content` artifacts appear in collapsible details blocks, and GitHub PRs convert repository-relative paths to blob URLs
 
 Stores the PR URL in the database and streams it to the TUI.
 
