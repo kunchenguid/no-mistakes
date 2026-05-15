@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.19.1](https://github.com/kunchenguid/no-mistakes/compare/v1.19.0...v1.19.1) (2026-05-15)
+
+
+### Bug Fixes
+
+* **pipeline:** compact PR testing evidence ([#198](https://github.com/kunchenguid/no-mistakes/issues/198)) ([edc7dc3](https://github.com/kunchenguid/no-mistakes/commit/edc7dc315dcac735a7d269c7b4eaf96edbf6c8b9))
+
 ## [1.19.0](https://github.com/kunchenguid/no-mistakes/compare/v1.18.3...v1.19.0) (2026-05-15)
 
 
