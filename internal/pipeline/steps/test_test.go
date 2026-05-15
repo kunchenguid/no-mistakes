@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -148,7 +149,7 @@ func TestTestStep_UserIntentRunsConfiguredCommandThenEvidenceAgent(t *testing.T)
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	baselineLog := filepath.Join(t.TempDir(), "baseline.log")
-	testCmd := "printf baseline > " + strconv.Quote(baselineLog)
+	testCmd := "go env GOOS > " + strconv.Quote(baselineLog)
 
 	callCount := 0
 	ag := &mockAgent{
@@ -176,8 +177,8 @@ func TestTestStep_UserIntentRunsConfiguredCommandThenEvidenceAgent(t *testing.T)
 	if err != nil {
 		t.Fatalf("expected configured test command to run: %v", err)
 	}
-	if string(data) != "baseline" {
-		t.Fatalf("configured test command output = %q, want baseline", string(data))
+	if strings.TrimSpace(string(data)) != runtime.GOOS {
+		t.Fatalf("configured test command output = %q, want %s", string(data), runtime.GOOS)
 	}
 	prompt := ag.calls[0].Prompt
 	for _, want := range []string{
