@@ -299,3 +299,28 @@ func TestBuildTestingSummary_RejectsUnsafeArtifactTargets(t *testing.T) {
 		t.Fatalf("expected safe artifact targets to render, got:\n%s", md)
 	}
 }
+
+func TestBuildTestingSummary_ConvertsArtifactPathsToGitHubURLs(t *testing.T) {
+	t.Parallel()
+	findings := `{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[{"kind":"screenshot","label":"Checkout screenshot","path":"artifacts/checkout.png"},{"kind":"log","label":"Server log","path":"artifacts/server.log"}]}`
+	steps := []*db.StepResult{
+		{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings},
+	}
+	rounds := map[string][]*db.StepRound{
+		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 300}},
+	}
+
+	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123")
+
+	if !strings.Contains(md, "![Checkout screenshot](https://raw.githubusercontent.com/example/widgets/abc123/artifacts/checkout.png)") {
+		t.Fatalf("expected screenshot path to render as raw GitHub URL, got:\n%s", md)
+	}
+	if !strings.Contains(md, "[Server log](https://github.com/example/widgets/blob/abc123/artifacts/server.log)") {
+		t.Fatalf("expected log path to render as GitHub blob URL, got:\n%s", md)
+	}
+	for _, broken := range []string{"](artifacts/checkout.png)", "](artifacts/server.log)"} {
+		if strings.Contains(md, broken) {
+			t.Fatalf("did not expect raw repository-relative artifact path %q, got:\n%s", broken, md)
+		}
+	}
+}

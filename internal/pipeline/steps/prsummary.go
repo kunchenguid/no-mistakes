@@ -12,6 +12,11 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
+type testingSummaryOptions struct {
+	githubBlobBase string
+	githubRawBase  string
+}
+
 // BuildPipelineSummary produces a deterministic markdown section from step results and rounds.
 func BuildPipelineSummary(steps []*db.StepResult, rounds map[string][]*db.StepRound) (string, string) {
 	if len(steps) == 0 {
@@ -50,6 +55,14 @@ func BuildPipelineSummary(steps []*db.StepResult, rounds map[string][]*db.StepRo
 
 // BuildTestingSummary extracts a deterministic Testing section from the test step.
 func BuildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRound) string {
+	return buildTestingSummary(steps, rounds, testingSummaryOptions{})
+}
+
+func BuildTestingSummaryForPR(steps []*db.StepResult, rounds map[string][]*db.StepRound, upstreamURL, ref string) string {
+	return buildTestingSummary(steps, rounds, testingSummaryOptionsForGitHub(upstreamURL, ref))
+}
+
+func buildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRound, opts testingSummaryOptions) string {
 	for _, sr := range steps {
 		if sr.StepName != types.StepTest {
 			continue
@@ -88,7 +101,7 @@ func BuildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRou
 			b.WriteString("\n")
 		}
 		for _, artifact := range artifacts {
-			rendered := renderTestingArtifact(artifact)
+			rendered := renderTestingArtifact(artifact, opts)
 			if rendered == "" {
 				continue
 			}
@@ -107,6 +120,46 @@ func BuildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRou
 	}
 
 	return ""
+}
+
+func testingSummaryOptionsForGitHub(upstreamURL, ref string) testingSummaryOptions {
+	repoPath := githubRepoPath(upstreamURL)
+	ref = strings.TrimSpace(ref)
+	if repoPath == "" || ref == "" || strings.ContainsAny(ref, "\n\r <>[]()\\") {
+		return testingSummaryOptions{}
+	}
+	return testingSummaryOptions{
+		githubBlobBase: "https://github.com/" + repoPath + "/blob/" + url.PathEscape(ref) + "/",
+		githubRawBase:  "https://raw.githubusercontent.com/" + repoPath + "/" + url.PathEscape(ref) + "/",
+	}
+}
+
+func githubRepoPath(remote string) string {
+	remote = strings.TrimSpace(remote)
+	if remote == "" {
+		return ""
+	}
+	if strings.HasPrefix(remote, "git@github.com:") {
+		repo := strings.TrimPrefix(remote, "git@github.com:")
+		return cleanGitHubRepoPath(repo)
+	}
+	parsed, err := url.Parse(remote)
+	if err != nil || !strings.EqualFold(parsed.Host, "github.com") {
+		return ""
+	}
+	return cleanGitHubRepoPath(strings.TrimPrefix(parsed.Path, "/"))
+}
+
+func cleanGitHubRepoPath(repo string) string {
+	repo = strings.TrimSuffix(strings.TrimSpace(repo), ".git")
+	parts := strings.Split(repo, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return ""
+	}
+	if strings.ContainsAny(repo, "\n\r <>[]()\\") || strings.Contains(repo, "..") {
+		return ""
+	}
+	return url.PathEscape(parts[0]) + "/" + url.PathEscape(parts[1])
 }
 
 func collectTestingSummary(sr *db.StepResult, rounds []*db.StepRound) string {
@@ -246,14 +299,14 @@ func renderTestingSummary(summary string) string {
 	return clean
 }
 
-func renderTestingArtifact(artifact types.TestArtifact) string {
+func renderTestingArtifact(artifact types.TestArtifact, opts testingSummaryOptions) string {
 	label := sanitizePromptText(artifact.Label)
 	if label == "" {
 		return ""
 	}
 	target := artifact.URL
 	if target == "" {
-		target = artifact.Path
+		target = artifactTargetForPath(artifact, opts)
 	}
 
 	var b strings.Builder
@@ -273,6 +326,19 @@ func renderTestingArtifact(artifact types.TestArtifact) string {
 		b.WriteString(fmt.Sprintf("**%s**\n\n```text\n%s\n```\n", html.EscapeString(label), escapeMarkdownFence(artifact.Content)))
 	}
 	return strings.TrimRight(b.String(), "\n") + "\n"
+}
+
+func artifactTargetForPath(artifact types.TestArtifact, opts testingSummaryOptions) string {
+	if artifact.Path == "" {
+		return ""
+	}
+	if opts.githubBlobBase == "" || opts.githubRawBase == "" {
+		return artifact.Path
+	}
+	if isImageArtifact(artifact.Kind, artifact.Path) || isVideoArtifact(artifact.Kind, artifact.Path) {
+		return opts.githubRawBase + artifact.Path
+	}
+	return opts.githubBlobBase + artifact.Path
 }
 
 func sanitizeArtifactPath(target string) string {
