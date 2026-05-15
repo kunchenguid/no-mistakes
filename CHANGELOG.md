@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.19.0](https://github.com/kunchenguid/no-mistakes/compare/v1.18.3...v1.19.0) (2026-05-15)
+
+
+### Features
+
+* **pipeline:** surface intent-based test evidence ([#196](https://github.com/kunchenguid/no-mistakes/issues/196)) ([7d2880d](https://github.com/kunchenguid/no-mistakes/commit/7d2880deb49d6e47cb691d68f068e102801a711b))
+
 ## [1.18.3](https://github.com/kunchenguid/no-mistakes/compare/v1.18.2...v1.18.3) (2026-05-14)
 
 
