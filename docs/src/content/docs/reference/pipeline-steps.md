@@ -63,7 +63,7 @@ AI code review of your diff.
 
 ## Test
 
-Runs your test suite.
+Runs baseline tests and gathers evidence for the intended behavior.
 
 **Behavior:**
 - If `commands.test` is set in repo config: runs it first as a baseline via the platform shell (`sh -c` on POSIX, `cmd.exe /c` on Windows) and captures output. Non-zero exit produces `error` findings.
@@ -141,7 +141,8 @@ Creates or updates a pull request.
 - Uses the provider CLI for GitHub/GitLab and the Bitbucket API for Bitbucket Cloud
 - PR title: agent-generated with inferred user intent when available, in conventional commit format (`type(scope): description` or `type: description`); user-facing product impact should use `feat` or `fix` so release automation can pick it up; when a scope is used, it should be the primary affected real module/package from the changed paths and kept broad rather than file-level
 - PR body includes: a `## Intent` section from extracted user intent when available, an agent-authored `## What Changed`, and regenerated `## Risk Assessment`, `## Testing`, and `## Pipeline` sections from recorded step results and rounds
-- The regenerated `## Testing` section prefers the recorded `testing_summary`, lists deduplicated `tested` commands or selectors, includes produced evidence artifacts when available, and ends with the overall outcome including run count and total duration when available
+- The regenerated `## Testing` section prefers the recorded `testing_summary`, lists deduplicated `tested` commands or selectors, includes produced evidence artifacts from `path`, `url`, or `content` fields when available, and ends with the overall outcome including run count and total duration when available
+- Evidence artifacts render in the PR body: image artifacts appear inline, video artifacts use an HTML video element, log/file artifacts become links or inline text blocks, and GitHub PRs convert repository-relative paths to blob or raw URLs
 
 Stores the PR URL in the database and streams it to the TUI.
 
