@@ -189,10 +189,12 @@ func TestTestStep_UserIntentRunsConfiguredCommandThenEvidenceAgent(t *testing.T)
 		"Only use command output as an artifact when that output directly demonstrates the end-user experience or requested behavior",
 		"Configured test command already ran successfully as baseline",
 		testCmd,
+		"The \"testing_summary\" must account for the complete test step: baseline commands that already ran, automated tests, manual or evidence-producing checks, artifacts gathered, and the overall result",
 		"screenshots, GIFs, videos, rendered UI, CLI transcripts",
 		"If no existing test produces sufficient evidence, write or improve a test",
 		"If automated testing cannot produce the needed evidence, execute manual verification steps",
 		"Always include an \"artifacts\" array",
+		"Use artifact path only for files that already exist in the repository and will be available from the pushed commit",
 		"If sufficient evidence is not possible, report a warning finding",
 	} {
 		if !strings.Contains(prompt, want) {

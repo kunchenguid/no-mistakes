@@ -132,8 +132,9 @@ Task:
 - If automated testing cannot produce the needed evidence, execute manual verification steps and record the evidence-producing steps you performed.
 - If sufficient evidence is not possible, report a warning finding explaining what evidence is missing and why the user needs to decide what to do.
 - Include a concise "testing_summary" sentence describing what you exercised and the overall result.
+- The "testing_summary" must account for the complete test step: baseline commands that already ran, automated tests, manual or evidence-producing checks, artifacts gathered, and the overall result.
 - Record the exact tests, manual checks, and evidence-producing steps you ran in a "tested" array. Prefer concrete commands or test selectors wrapped in backticks.
-- Always include an "artifacts" array. Leave it empty when you produced no reviewer-visible evidence artifacts. Use "path" for repository-relative files, "url" for externally visible artifacts, and "content" for short logs or command output that should be shown directly in the PR.
+- Always include an "artifacts" array. Leave it empty when you produced no reviewer-visible evidence artifacts. Use artifact path only for files that already exist in the repository and will be available from the pushed commit, artifact url for externally visible artifacts, and artifact content for short logs or command output that should be shown directly in the PR.
 - If tests fail, determine whether the problem is a real product/code failure, a setup/environment problem you can fix, or a flaky/infrastructure issue.
 - If the issue is setup-related and fixable, fix it and retry the tests.
 

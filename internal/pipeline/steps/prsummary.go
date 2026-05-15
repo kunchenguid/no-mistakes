@@ -13,8 +13,10 @@ import (
 )
 
 type testingSummaryOptions struct {
-	githubBlobBase string
-	githubRawBase  string
+	githubBlobBase       string
+	githubRawBase        string
+	includeTestedDetails bool
+	compactArtifacts     bool
 }
 
 // BuildPipelineSummary produces a deterministic markdown section from step results and rounds.
@@ -55,11 +57,13 @@ func BuildPipelineSummary(steps []*db.StepResult, rounds map[string][]*db.StepRo
 
 // BuildTestingSummary extracts a deterministic Testing section from the test step.
 func BuildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRound) string {
-	return buildTestingSummary(steps, rounds, testingSummaryOptions{})
+	return buildTestingSummary(steps, rounds, testingSummaryOptions{includeTestedDetails: true})
 }
 
 func BuildTestingSummaryForPR(steps []*db.StepResult, rounds map[string][]*db.StepRound, upstreamURL, ref string) string {
-	return buildTestingSummary(steps, rounds, testingSummaryOptionsForGitHub(upstreamURL, ref))
+	opts := testingSummaryOptionsForGitHub(upstreamURL, ref)
+	opts.compactArtifacts = true
+	return buildTestingSummary(steps, rounds, opts)
 }
 
 func buildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRound, opts testingSummaryOptions) string {
@@ -91,14 +95,16 @@ func buildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRou
 				b.WriteString("\n")
 			}
 		}
-		for _, detail := range tested {
-			rendered := renderTestedDetail(detail)
-			if rendered == "" {
-				continue
+		if opts.includeTestedDetails {
+			for _, detail := range tested {
+				rendered := renderTestedDetail(detail)
+				if rendered == "" {
+					continue
+				}
+				b.WriteString("- ")
+				b.WriteString(rendered)
+				b.WriteString("\n")
 			}
-			b.WriteString("- ")
-			b.WriteString(rendered)
-			b.WriteString("\n")
 		}
 		for _, artifact := range artifacts {
 			rendered := renderTestingArtifact(artifact, opts)
@@ -129,8 +135,9 @@ func testingSummaryOptionsForGitHub(upstreamURL, ref string) testingSummaryOptio
 		return testingSummaryOptions{}
 	}
 	return testingSummaryOptions{
-		githubBlobBase: "https://github.com/" + repoPath + "/blob/" + url.PathEscape(ref) + "/",
-		githubRawBase:  "https://raw.githubusercontent.com/" + repoPath + "/" + url.PathEscape(ref) + "/",
+		githubBlobBase:       "https://github.com/" + repoPath + "/blob/" + url.PathEscape(ref) + "/",
+		githubRawBase:        "https://raw.githubusercontent.com/" + repoPath + "/" + url.PathEscape(ref) + "/",
+		includeTestedDetails: false,
 	}
 }
 
@@ -304,6 +311,9 @@ func renderTestingArtifact(artifact types.TestArtifact, opts testingSummaryOptio
 	if label == "" {
 		return ""
 	}
+	if opts.compactArtifacts {
+		return renderCompactTestingArtifact(artifact, opts, label)
+	}
 	target := artifact.URL
 	if target == "" {
 		target = artifactTargetForPath(artifact, opts)
@@ -328,6 +338,30 @@ func renderTestingArtifact(artifact types.TestArtifact, opts testingSummaryOptio
 	return strings.TrimRight(b.String(), "\n") + "\n"
 }
 
+func renderCompactTestingArtifact(artifact types.TestArtifact, opts testingSummaryOptions, label string) string {
+	target := artifact.URL
+	if target == "" {
+		target = artifactLinkTargetForPath(artifact, opts)
+	}
+	if target == "" && artifact.Content == "" {
+		return ""
+	}
+
+	if artifact.Content == "" {
+		return fmt.Sprintf("- Evidence: [%s](%s)\n", html.EscapeString(label), target)
+	}
+
+	var b strings.Builder
+	b.WriteString("<details>\n")
+	b.WriteString(fmt.Sprintf("<summary>Evidence: %s</summary>\n\n", html.EscapeString(label)))
+	if target != "" {
+		b.WriteString(fmt.Sprintf("Source: [%s](%s)\n\n", html.EscapeString(label), target))
+	}
+	b.WriteString(fmt.Sprintf("```text\n%s\n```\n", escapeMarkdownFence(artifact.Content)))
+	b.WriteString("</details>\n")
+	return b.String()
+}
+
 func artifactTargetForPath(artifact types.TestArtifact, opts testingSummaryOptions) string {
 	if artifact.Path == "" {
 		return ""
@@ -337,6 +371,16 @@ func artifactTargetForPath(artifact types.TestArtifact, opts testingSummaryOptio
 	}
 	if isImageArtifact(artifact.Kind, artifact.Path) || isVideoArtifact(artifact.Kind, artifact.Path) {
 		return opts.githubRawBase + artifact.Path
+	}
+	return opts.githubBlobBase + artifact.Path
+}
+
+func artifactLinkTargetForPath(artifact types.TestArtifact, opts testingSummaryOptions) string {
+	if artifact.Path == "" {
+		return ""
+	}
+	if opts.githubBlobBase == "" {
+		return artifact.Path
 	}
 	return opts.githubBlobBase + artifact.Path
 }
