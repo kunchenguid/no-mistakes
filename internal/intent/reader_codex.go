@@ -53,7 +53,7 @@ func (r *codexReader) Discover(ctx context.Context, opts DiscoverOpts) ([]*Sessi
 	}
 	defer db.Close()
 
-	wantCWD := canonicalPath(opts.OriginCWD)
+	matcher := newRepoMatcher(ctx, opts.OriginCWD)
 	winStart := opts.WindowStart.Unix()
 	winEnd := opts.WindowEnd.Add(time.Hour).Unix()
 
@@ -79,7 +79,7 @@ func (r *codexReader) Discover(ctx context.Context, opts DiscoverOpts) ([]*Sessi
 		if err := rows.Scan(&id, &cwd, &createdAt, &updatedAt, &rolloutPath); err != nil {
 			continue
 		}
-		if wantCWD != "" && canonicalPath(cwd) != wantCWD {
+		if !matcher.matches(ctx, cwd) {
 			continue
 		}
 		// Resolve relative rollout paths against ~/.codex.

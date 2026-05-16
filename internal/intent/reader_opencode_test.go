@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -144,6 +145,30 @@ func TestOpenCodeReader_DiscoverAndLoad(t *testing.T) {
 	}
 }
 
+func TestOpenCodeReader_DiscoverAcceptsSameRemoteDifferentCheckout(t *testing.T) {
+	originCWD := initGitRepoWithRemote(t, filepath.Join(t.TempDir(), "origin"), "git@github.com:kunchenguid/no-mistakes.git")
+	sessionCWD := initGitRepoWithRemote(t, filepath.Join(t.TempDir(), "treehouse"), "https://github.com/kunchenguid/no-mistakes.git")
+	home := buildOpenCodeDB(t, sessionCWD)
+	t.Setenv("XDG_DATA_HOME", "")
+
+	r := NewOpenCodeReader()
+	sessions, err := r.Discover(context.Background(), DiscoverOpts{
+		HomeDir:     home,
+		OriginCWD:   originCWD,
+		WindowStart: time.Now().Add(-time.Hour),
+		WindowEnd:   time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("got %d sessions, want 1", len(sessions))
+	}
+	if sessions[0].CWD != sessionCWD {
+		t.Fatalf("session cwd = %q, want %q", sessions[0].CWD, sessionCWD)
+	}
+}
+
 func TestOpenCodeReader_NoDB(t *testing.T) {
 	r := NewOpenCodeReader()
 	sessions, err := r.Discover(context.Background(), DiscoverOpts{HomeDir: t.TempDir()})
@@ -153,4 +178,21 @@ func TestOpenCodeReader_NoDB(t *testing.T) {
 	if len(sessions) != 0 {
 		t.Errorf("expected 0 sessions, got %d", len(sessions))
 	}
+}
+
+func initGitRepoWithRemote(t *testing.T, dir, remote string) string {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"init"},
+		{"remote", "add", "origin", remote},
+	} {
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	return dir
 }

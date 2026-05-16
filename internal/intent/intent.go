@@ -42,6 +42,8 @@ type ExtractParams struct {
 	Cache Cache
 	// Summarizer turns the chosen session's text into a short summary.
 	Summarizer Summarizer
+	// Logf receives best-effort candidate diagnostics. Nil disables logging.
+	Logf func(format string, args ...any)
 }
 
 // ErrNoMatch indicates no agent transcript matched the change. Callers
@@ -116,7 +118,11 @@ func Extract(ctx context.Context, p ExtractParams) (*Result, error) {
 		loaded = append(loaded, s)
 	}
 
-	match := pickMatch(loaded, p.DiffFiles, p.Threshold)
+	match := pickMatchWithOptions(loaded, p.DiffFiles, matchOptions{
+		Threshold: p.Threshold,
+		HeadTime:  p.HeadTime,
+		Logf:      p.Logf,
+	})
 	if match == nil {
 		return nil, ErrNoMatch
 	}

@@ -3,6 +3,8 @@ package intent
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -164,6 +166,40 @@ func TestExtract_NoReaders(t *testing.T) {
 	})
 	if !errors.Is(err, ErrNoMatch) {
 		t.Errorf("expected ErrNoMatch with no readers, got %v", err)
+	}
+}
+
+func TestExtract_LogsCandidateDecisions(t *testing.T) {
+	r := &staticReader{
+		name: "opencode",
+		sessions: []*Session{{
+			SessionID:    "weak",
+			CWD:          "/tmp/repo",
+			LastActivity: time.Now(),
+			Messages:     []Message{{FilePaths: []string{"a.go"}}},
+		}},
+	}
+	var logs []string
+	_, err := Extract(context.Background(), ExtractParams{
+		OriginCWD:  "/tmp/repo",
+		DiffFiles:  []string{"a.go", "b.go", "c.go"},
+		HeadTime:   time.Now(),
+		BaseTime:   time.Now().Add(-time.Hour),
+		Threshold:  0.2,
+		Readers:    []Reader{r},
+		Summarizer: &fixedSummarizer{summary: "x"},
+		Logf: func(format string, args ...any) {
+			logs = append(logs, fmt.Sprintf(format, args...))
+		},
+	})
+	if !errors.Is(err, ErrNoMatch) {
+		t.Fatalf("expected ErrNoMatch, got %v", err)
+	}
+	joined := strings.Join(logs, "\n")
+	for _, want := range []string{"candidate", "opencode", "weak", "score 0.33", "rejected"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("logs missing %q:\n%s", want, joined)
+		}
 	}
 }
 

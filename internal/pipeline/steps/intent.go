@@ -201,6 +201,9 @@ func defaultRunIntent(ctx context.Context, sctx *pipeline.StepContext) (*intent.
 		Readers:    intent.AllReaders(cfg.Intent.DisabledReaders),
 		Cache:      intent.NewDBCache(sctx.DB),
 		Summarizer: intent.NewAgentSummarizer(sctx.Agent, sctx.WorkDir),
+		Logf: func(format string, args ...any) {
+			sctx.Log(fmt.Sprintf("intent "+format, args...))
+		},
 	})
 }
 

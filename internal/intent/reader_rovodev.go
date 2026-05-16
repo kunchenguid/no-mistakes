@@ -24,7 +24,7 @@ func NewRovoDevReader() Reader { return &rovodevReader{} }
 
 func (r *rovodevReader) Name() string { return RovoDevReaderName }
 
-func (r *rovodevReader) Discover(_ context.Context, opts DiscoverOpts) ([]*Session, error) {
+func (r *rovodevReader) Discover(ctx context.Context, opts DiscoverOpts) ([]*Session, error) {
 	home, err := resolveHome(opts.HomeDir)
 	if err != nil {
 		return nil, err
@@ -38,7 +38,7 @@ func (r *rovodevReader) Discover(_ context.Context, opts DiscoverOpts) ([]*Sessi
 		return nil, fmt.Errorf("rovodev sessions: %w", err)
 	}
 
-	wantCWD := canonicalPath(opts.OriginCWD)
+	matcher := newRepoMatcher(ctx, opts.OriginCWD)
 	var out []*Session
 
 	for _, dir := range entries {
@@ -62,7 +62,7 @@ func (r *rovodevReader) Discover(_ context.Context, opts DiscoverOpts) ([]*Sessi
 		if err != nil || meta == nil {
 			continue
 		}
-		if wantCWD != "" && canonicalPath(meta.workspace) != wantCWD {
+		if !matcher.matches(ctx, meta.workspace) {
 			continue
 		}
 		out = append(out, &Session{

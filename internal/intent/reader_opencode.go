@@ -49,7 +49,7 @@ func (r *opencodeReader) Discover(ctx context.Context, opts DiscoverOpts) ([]*Se
 	}
 	defer db.Close()
 
-	wantCWD := canonicalPath(opts.OriginCWD)
+	matcher := newRepoMatcher(ctx, opts.OriginCWD)
 	// OpenCode timestamps are unix milliseconds.
 	winStart := opts.WindowStart.UnixMilli()
 	winEnd := opts.WindowEnd.Add(time.Hour).UnixMilli()
@@ -73,7 +73,7 @@ func (r *opencodeReader) Discover(ctx context.Context, opts DiscoverOpts) ([]*Se
 		if err := rows.Scan(&id, &directory, &timeCreated, &timeUpdated); err != nil {
 			continue
 		}
-		if wantCWD != "" && canonicalPath(directory) != wantCWD {
+		if !matcher.matches(ctx, directory) {
 			continue
 		}
 		out = append(out, &Session{

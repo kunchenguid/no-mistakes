@@ -3,15 +3,25 @@ package intent
 import (
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // Match is the chosen session along with its overlap score.
 type Match struct {
 	Session *Session
 	Score   float64
+	// Confidence is the score used to rank accepted candidates after applying
+	// recency. Score remains the raw file-overlap score surfaced to callers.
+	Confidence float64
 	// Overlap lists diff files that appeared in this session. Used purely
 	// for diagnostics/telemetry.
 	Overlap []string
+}
+
+type matchOptions struct {
+	Threshold float64
+	HeadTime  time.Time
+	Logf      func(format string, args ...any)
 }
 
 // score computes the share of diff files that appear anywhere in the
@@ -23,25 +33,19 @@ func score(s *Session, diffFiles []string) (float64, []string) {
 		return 0, nil
 	}
 
-	mentioned := make(map[string]bool)
+	var mentioned []string
 	for _, m := range s.Messages {
 		for _, p := range m.FilePaths {
-			for _, n := range normalizedPathVariants(p) {
-				mentioned[n] = true
-			}
+			mentioned = append(mentioned, p)
 		}
 		// Best-effort scan of assistant text for raw filenames.
-		for _, p := range scanFilePathsInText(m.Text) {
-			for _, n := range normalizedPathVariants(p) {
-				mentioned[n] = true
-			}
-		}
+		mentioned = append(mentioned, scanFilePathsInText(m.Text)...)
 	}
 
 	var overlap []string
 	for _, f := range diffFiles {
-		for _, n := range normalizedPathVariants(f) {
-			if mentioned[n] {
+		for _, p := range mentioned {
+			if pathMentionMatchesDiff(p, f) {
 				overlap = append(overlap, f)
 				break
 			}
@@ -50,21 +54,88 @@ func score(s *Session, diffFiles []string) (float64, []string) {
 	return float64(len(overlap)) / float64(len(diffFiles)), overlap
 }
 
+func pathMentionMatchesDiff(mention, diffFile string) bool {
+	mention = filepath.ToSlash(filepath.Clean(strings.TrimSpace(mention)))
+	mention = strings.TrimPrefix(mention, "./")
+	diffFile = filepath.ToSlash(filepath.Clean(strings.TrimSpace(diffFile)))
+	diffFile = strings.TrimPrefix(diffFile, "./")
+	if mention == "" || diffFile == "" || mention == "." || diffFile == "." {
+		return false
+	}
+	if mention == diffFile || strings.HasSuffix(mention, "/"+diffFile) {
+		return true
+	}
+	// Basename-only mentions are useful, but pathful mentions should not match
+	// unrelated files that happen to share names like update.go.
+	return !strings.Contains(mention, "/") && filepath.Base(diffFile) == mention
+}
+
 // pickMatch returns the highest-scoring session at or above the threshold.
 // Ties are broken by most recent LastActivity.
 func pickMatch(sessions []*Session, diffFiles []string, threshold float64) *Match {
+	return pickMatchWithOptions(sessions, diffFiles, matchOptions{Threshold: threshold})
+}
+
+func pickMatchWithOptions(sessions []*Session, diffFiles []string, opts matchOptions) *Match {
 	var best *Match
 	for _, s := range sessions {
 		sc, overlap := score(s, diffFiles)
-		if sc < threshold {
+		accepted, reason, confidence := acceptMatchCandidate(sc, len(overlap), len(diffFiles), s.LastActivity, opts)
+		if opts.Logf != nil {
+			decision := "accepted"
+			if !accepted {
+				decision = "rejected"
+			}
+			opts.Logf("candidate agent=%s session=%s cwd=%q score %.2f confidence %.2f overlap=%d/%d decision=%s reason=%s",
+				s.AgentName, s.SessionID, s.CWD, sc, confidence, len(overlap), len(diffFiles), decision, reason)
+		}
+		if !accepted {
 			continue
 		}
-		if best == nil || sc > best.Score ||
-			(sc == best.Score && s.LastActivity.After(best.Session.LastActivity)) {
-			best = &Match{Session: s, Score: sc, Overlap: overlap}
+		if best == nil || confidence > best.Confidence ||
+			(confidence == best.Confidence && s.LastActivity.After(best.Session.LastActivity)) {
+			best = &Match{Session: s, Score: sc, Confidence: confidence, Overlap: overlap}
 		}
 	}
 	return best
+}
+
+func acceptMatchCandidate(score float64, overlapCount, diffCount int, lastActivity time.Time, opts matchOptions) (bool, string, float64) {
+	if diffCount == 0 || overlapCount == 0 {
+		return false, "no_overlap", score
+	}
+	threshold := opts.Threshold
+	if diffCount > 1 && threshold < 0.5 {
+		threshold = 0.5
+	}
+	if diffCount > 1 && overlapCount < 2 {
+		return false, "single_overlap_multi_file_diff", score
+	}
+	if score < threshold {
+		return false, "below_threshold", score
+	}
+	confidence := score + recencyBoost(opts.HeadTime, lastActivity)
+	if !opts.HeadTime.IsZero() && lastActivity.Before(opts.HeadTime.Add(-24*time.Hour)) && score < 0.8 {
+		return false, "stale_partial", confidence
+	}
+	return true, "matched", confidence
+}
+
+func recencyBoost(headTime, lastActivity time.Time) float64 {
+	if headTime.IsZero() || lastActivity.IsZero() {
+		return 0
+	}
+	age := headTime.Sub(lastActivity)
+	if age < 0 {
+		age = -age
+	}
+	if age <= 2*time.Hour {
+		return 0.15
+	}
+	if age <= 24*time.Hour {
+		return 0.05
+	}
+	return 0
 }
 
 // normalizedPathVariants returns a small set of normalized forms for a

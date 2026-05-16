@@ -90,6 +90,61 @@ func TestPickMatch_HigherScoreWins(t *testing.T) {
 	}
 }
 
+func TestPickMatch_RejectsSingleOverlapInMultiFileDiff(t *testing.T) {
+	s := &Session{
+		LastActivity: time.Now(),
+		Messages:     []Message{{FilePaths: []string{"internal/cli/update_test.go"}}},
+	}
+	diff := []string{
+		"internal/cli/update.go",
+		"internal/cli/update_test.go",
+		"internal/update/daemon.go",
+		"internal/update/update.go",
+		"internal/update/update_test.go",
+	}
+
+	got := pickMatch([]*Session{s}, diff, 0.2)
+	if got != nil {
+		t.Fatalf("expected no match for 1/5 overlap, got %+v", got)
+	}
+}
+
+func TestPickMatch_AllowsSingleOverlapForSingleFileDiff(t *testing.T) {
+	s := &Session{
+		LastActivity: time.Now(),
+		Messages:     []Message{{FilePaths: []string{"internal/update/update.go"}}},
+	}
+
+	got := pickMatch([]*Session{s}, []string{"internal/update/update.go"}, 0.2)
+	if got == nil {
+		t.Fatal("expected single-file match")
+	}
+}
+
+func TestPickMatch_RejectsOldPartialMatch(t *testing.T) {
+	headTime := time.Date(2026, 5, 15, 18, 53, 52, 0, time.UTC)
+	old := &Session{
+		LastActivity: headTime.Add(-48 * time.Hour),
+		Messages: []Message{{FilePaths: []string{
+			"internal/cli/update.go",
+			"internal/cli/update_test.go",
+			"internal/update/daemon.go",
+		}}},
+	}
+	diff := []string{
+		"internal/cli/update.go",
+		"internal/cli/update_test.go",
+		"internal/update/daemon.go",
+		"internal/update/update.go",
+		"internal/update/update_test.go",
+	}
+
+	got := pickMatchWithOptions([]*Session{old}, diff, matchOptions{Threshold: 0.2, HeadTime: headTime})
+	if got != nil {
+		t.Fatalf("expected old partial match to be rejected, got %+v", got)
+	}
+}
+
 func TestNormalizedPathVariants(t *testing.T) {
 	got := normalizedPathVariants("./internal/foo.go")
 	want := map[string]bool{"internal/foo.go": true, "foo.go": true}

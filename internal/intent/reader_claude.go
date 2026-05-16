@@ -43,7 +43,7 @@ func (r *claudeReader) Discover(ctx context.Context, opts DiscoverOpts) ([]*Sess
 		return nil, fmt.Errorf("read claude projects: %w", err)
 	}
 
-	wantCWD := canonicalPath(opts.OriginCWD)
+	matcher := newRepoMatcher(ctx, opts.OriginCWD)
 	var out []*Session
 
 	for _, dir := range entries {
@@ -80,7 +80,7 @@ func (r *claudeReader) Discover(ctx context.Context, opts DiscoverOpts) ([]*Sess
 			if err != nil || meta == nil {
 				continue
 			}
-			if wantCWD != "" && canonicalPath(meta.CWD) != wantCWD {
+			if !matcher.matches(ctx, meta.CWD) {
 				continue
 			}
 			session := &Session{
