@@ -152,6 +152,12 @@ func disambiguatorWorktreeState(ctx context.Context, cwd string) (disambiguatorW
 }
 
 func restoreDisambiguatorWorktree(ctx context.Context, cwd string, snapshot disambiguatorWorktreeSnapshot) error {
+	if _, err := nmgit.Run(ctx, cwd, "reset", "--hard"); err != nil {
+		return err
+	}
+	if _, err := nmgit.Run(ctx, cwd, "clean", "-fd"); err != nil {
+		return err
+	}
 	if snapshot.ref == "HEAD" {
 		if _, err := nmgit.Run(ctx, cwd, "checkout", "--detach", snapshot.head); err != nil {
 			return err
