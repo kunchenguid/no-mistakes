@@ -230,7 +230,8 @@ The match score is the share of changed files mentioned in a transcript session.
 Mentioning extra files does not reduce the score.
 For multi-file diffs, no-mistakes still requires at least two overlapping files and an effective minimum score of `0.5`.
 Partial matches older than 24 hours are rejected unless their raw score is at least `0.8`.
-Accepted candidates are ranked by confidence, which combines the raw score with a small recency boost, with ties going to the most recent matching session.
+If exactly one accepted candidate has a raw score of at least `0.85`, that decisive candidate wins before recency ranking.
+Otherwise, accepted candidates are ranked by confidence, which combines the raw score with a small recency boost, with ties going to the most recent matching session, and ambiguous accepted candidates may be disambiguated by the configured pipeline agent.
 
 ## Environment variables
 

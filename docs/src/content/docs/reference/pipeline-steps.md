@@ -18,13 +18,14 @@ This is best-effort context, and when available it is included in rebase fixes, 
 
 **Behavior:**
 - Runs only when `intent.enabled` is true
-- Matches local agent transcripts against the changed files and summarizes the likely author intent with the configured pipeline agent
+- Matches local agent transcripts against the changed files, may use the configured pipeline agent to disambiguate plausible matches, and summarizes the likely author intent with that agent
 - Stores the derived summary, source, session ID, and match score on the run
 - Logs candidate diagnostics, including source, session, CWD, score, confidence, overlap, decision, and rejection reason
 - Logs the matched source, score, and sanitized inferred intent when a transcript matches
 - Skips instead of failing when disabled, no matching transcript is found, the diff is empty, extraction errors, or persistence fails
 
-This step never blocks the pipeline. Missing transcripts, slow summarization, or other extraction failures are reported as skipped outcomes.
+This step does not block the pipeline for missing transcripts, slow summarization, or other extraction failures, which are reported as skipped outcomes.
+It can fail the run only if cleanup fails after the disambiguation agent leaves worktree side effects.
 
 ## Rebase
 
