@@ -2,9 +2,12 @@ package intent
 
 import (
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
+
+const decisiveMatchScore = 0.85
 
 // Match is the chosen session along with its overlap score.
 type Match struct {
@@ -78,7 +81,15 @@ func pickMatch(sessions []*Session, diffFiles []string, threshold float64) *Matc
 }
 
 func pickMatchWithOptions(sessions []*Session, diffFiles []string, opts matchOptions) *Match {
-	var best *Match
+	candidates := acceptedMatches(sessions, diffFiles, opts)
+	if len(candidates) == 0 {
+		return nil
+	}
+	return deterministicMatch(candidates)
+}
+
+func acceptedMatches(sessions []*Session, diffFiles []string, opts matchOptions) []*Match {
+	var candidates []*Match
 	for _, s := range sessions {
 		sc, overlap := score(s, diffFiles)
 		accepted, reason, confidence := acceptMatchCandidate(sc, len(overlap), len(diffFiles), s.LastActivity, opts)
@@ -93,12 +104,45 @@ func pickMatchWithOptions(sessions []*Session, diffFiles []string, opts matchOpt
 		if !accepted {
 			continue
 		}
-		if best == nil || confidence > best.Confidence ||
-			(confidence == best.Confidence && s.LastActivity.After(best.Session.LastActivity)) {
-			best = &Match{Session: s, Score: sc, Confidence: confidence, Overlap: overlap}
+		candidates = append(candidates, &Match{Session: s, Score: sc, Confidence: confidence, Overlap: overlap})
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].Confidence == candidates[j].Confidence {
+			return candidates[i].Session.LastActivity.After(candidates[j].Session.LastActivity)
+		}
+		return candidates[i].Confidence > candidates[j].Confidence
+	})
+	return candidates
+}
+
+func shouldDisambiguate(candidates []*Match) bool {
+	if len(candidates) < 2 {
+		return false
+	}
+	decisive := 0
+	for _, candidate := range candidates {
+		if candidate.Score >= decisiveMatchScore {
+			decisive++
 		}
 	}
-	return best
+	return decisive != 1
+}
+
+func deterministicMatch(candidates []*Match) *Match {
+	var singleDecisive *Match
+	for _, candidate := range candidates {
+		if candidate.Score < decisiveMatchScore {
+			continue
+		}
+		if singleDecisive != nil {
+			return candidates[0]
+		}
+		singleDecisive = candidate
+	}
+	if singleDecisive != nil {
+		return singleDecisive
+	}
+	return candidates[0]
 }
 
 func acceptMatchCandidate(score float64, overlapCount, diffCount int, lastActivity time.Time, opts matchOptions) (bool, string, float64) {

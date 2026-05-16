@@ -43,6 +43,9 @@ type ExtractParams struct {
 	Cache Cache
 	// Summarizer turns the chosen session's text into a short summary.
 	Summarizer Summarizer
+	// Disambiguator optionally chooses among multiple plausible sessions when
+	// file-overlap scoring is not decisive enough to pick one safely.
+	Disambiguator Disambiguator
 	// Logf receives best-effort candidate diagnostics. Nil disables logging.
 	Logf func(format string, args ...any)
 }
@@ -127,6 +130,7 @@ func Extract(ctx context.Context, p ExtractParams) (*Result, error) {
 	if match == nil {
 		return nil, ErrNoMatch
 	}
+	match = disambiguateMatch(ctx, p, match, loaded)
 
 	key := cacheKeyFor(match.Session)
 	if cached, ok := p.Cache.Get(key); ok && cached != "" {
@@ -150,6 +154,35 @@ func Extract(ctx context.Context, p ExtractParams) (*Result, error) {
 		SessionID: match.Session.SessionID,
 		Score:     match.Score,
 	}, nil
+}
+
+func disambiguateMatch(ctx context.Context, p ExtractParams, fallback *Match, loaded []*Session) *Match {
+	if p.Disambiguator == nil {
+		return fallback
+	}
+	candidates := acceptedMatches(loaded, p.DiffFiles, matchOptions{
+		Threshold: p.Threshold,
+		HeadTime:  p.HeadTime,
+	})
+	if !shouldDisambiguate(candidates) {
+		return fallback
+	}
+	selectedID, err := p.Disambiguator.Disambiguate(ctx, p.DiffFiles, candidates)
+	if err != nil {
+		if p.Logf != nil {
+			p.Logf("disambiguator failed: %v", err)
+		}
+		return fallback
+	}
+	for _, candidate := range candidates {
+		if candidate.Session != nil && candidate.Session.SessionID == selectedID {
+			return candidate
+		}
+	}
+	if p.Logf != nil {
+		p.Logf("disambiguator returned unknown session %q", selectedID)
+	}
+	return fallback
 }
 
 func maxInt(a, b int) int {

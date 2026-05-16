@@ -192,15 +192,16 @@ func defaultRunIntent(ctx context.Context, sctx *pipeline.StepContext) (*intent.
 	}
 
 	return intent.Extract(ctx, intent.ExtractParams{
-		OriginCWD:  repo.WorkingPath,
-		DiffFiles:  diffFiles,
-		BaseTime:   baseTime,
-		HeadTime:   headTime,
-		SlackDays:  cfg.Intent.SlackDays,
-		Threshold:  cfg.Intent.Threshold,
-		Readers:    intent.AllReaders(cfg.Intent.DisabledReaders),
-		Cache:      intent.NewDBCache(sctx.DB),
-		Summarizer: intent.NewAgentSummarizer(sctx.Agent, sctx.WorkDir),
+		OriginCWD:     repo.WorkingPath,
+		DiffFiles:     diffFiles,
+		BaseTime:      baseTime,
+		HeadTime:      headTime,
+		SlackDays:     cfg.Intent.SlackDays,
+		Threshold:     cfg.Intent.Threshold,
+		Readers:       intent.AllReaders(cfg.Intent.DisabledReaders),
+		Cache:         intent.NewDBCache(sctx.DB),
+		Summarizer:    intent.NewAgentSummarizer(sctx.Agent, sctx.WorkDir),
+		Disambiguator: intent.NewAgentDisambiguator(sctx.Agent, sctx.WorkDir),
 		Logf: func(format string, args ...any) {
 			sctx.Log(fmt.Sprintf("intent "+format, args...))
 		},
