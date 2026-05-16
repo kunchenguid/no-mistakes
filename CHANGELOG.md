@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.20.0](https://github.com/kunchenguid/no-mistakes/compare/v1.19.3...v1.20.0) (2026-05-16)
+
+
+### Features
+
+* **intent:** disambiguate ambiguous session matches ([#204](https://github.com/kunchenguid/no-mistakes/issues/204)) ([f784c80](https://github.com/kunchenguid/no-mistakes/commit/f784c8052239b8f9c9e3fe08abe349c223cc6ab8))
+
 ## [1.19.3](https://github.com/kunchenguid/no-mistakes/compare/v1.19.2...v1.19.3) (2026-05-16)
 
 
