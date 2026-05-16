@@ -140,7 +140,7 @@ func disambiguatorWorktreeState(ctx context.Context, cwd string) (disambiguatorW
 	if err != nil {
 		return disambiguatorWorktreeSnapshot{}, false, err
 	}
-	status, err := nmgit.Run(ctx, cwd, "status", "--porcelain", "-uall")
+	status, err := nmgit.Run(ctx, cwd, "status", "--porcelain", "-uall", "--ignored")
 	if err != nil {
 		return disambiguatorWorktreeSnapshot{}, false, err
 	}
@@ -155,7 +155,7 @@ func restoreDisambiguatorWorktree(ctx context.Context, cwd string, snapshot disa
 	if _, err := nmgit.Run(ctx, cwd, "reset", "--hard"); err != nil {
 		return err
 	}
-	if _, err := nmgit.Run(ctx, cwd, "clean", "-fd"); err != nil {
+	if _, err := nmgit.Run(ctx, cwd, "clean", "-fdx"); err != nil {
 		return err
 	}
 	if snapshot.ref == "HEAD" {
@@ -170,7 +170,7 @@ func restoreDisambiguatorWorktree(ctx context.Context, cwd string, snapshot disa
 	if _, err := nmgit.Run(ctx, cwd, "reset", "--hard", snapshot.head); err != nil {
 		return err
 	}
-	if _, err := nmgit.Run(ctx, cwd, "clean", "-fd"); err != nil {
+	if _, err := nmgit.Run(ctx, cwd, "clean", "-fdx"); err != nil {
 		return err
 	}
 	return nil
