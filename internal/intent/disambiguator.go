@@ -85,18 +85,14 @@ func (d *agentDisambiguator) Disambiguate(ctx context.Context, diffFiles []strin
 			afterState, _, err := disambiguatorWorktreeState(cleanupCtx, d.cwd)
 			defer afterState.cleanup()
 			if err != nil {
-				if retErr == nil {
-					retErr = fmt.Errorf("%w: %w", ErrDisambiguatorCleanup, err)
-				}
+				retErr = errors.Join(retErr, fmt.Errorf("%w: %w", ErrDisambiguatorCleanup, err))
 				return
 			}
 			if afterState.equal(beforeState) {
 				return
 			}
 			if err := restoreDisambiguatorWorktree(cleanupCtx, d.cwd, beforeState); err != nil {
-				if retErr == nil {
-					retErr = fmt.Errorf("%w: %w", ErrDisambiguatorCleanup, err)
-				}
+				retErr = errors.Join(retErr, fmt.Errorf("%w: %w", ErrDisambiguatorCleanup, err))
 			}
 		}()
 	}

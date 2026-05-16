@@ -3,6 +3,8 @@ package intent
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -253,6 +255,31 @@ func TestAgentDisambiguatorPreservesPreexistingIgnoredSymlink(t *testing.T) {
 	}
 	if target != "missing" {
 		t.Fatalf("keep.log target = %q, want missing", target)
+	}
+}
+
+func TestAgentDisambiguatorReturnsCleanupErrorAfterAgentError(t *testing.T) {
+	ctx := context.Background()
+	repo := initDisambiguatorTestRepo(t)
+
+	d := NewAgentDisambiguator(mutatingAgent{run: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		if err := os.WriteFile(filepath.Join(opts.CWD, "conflict.txt"), []byte("mutated\n"), 0o644); err != nil {
+			t.Fatalf("write tracked mutation: %v", err)
+		}
+		if err := os.Rename(filepath.Join(opts.CWD, ".git"), filepath.Join(opts.CWD, ".git-disabled")); err != nil {
+			t.Fatalf("disable git dir: %v", err)
+		}
+		return nil, fmt.Errorf("agent failed")
+	}}, repo)
+
+	_, err := d.Disambiguate(ctx, []string{"conflict.txt"}, []*Match{{Session: &Session{
+		SessionID:    "s1",
+		AgentName:    "test",
+		LastActivity: time.Now(),
+		Messages:     []Message{{Role: RoleUser, Text: "edit conflict.txt"}},
+	}}})
+	if !errors.Is(err, ErrDisambiguatorCleanup) {
+		t.Fatalf("disambiguate error = %v, want ErrDisambiguatorCleanup", err)
 	}
 }
 
