@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.19.2](https://github.com/kunchenguid/no-mistakes/compare/v1.19.1...v1.19.2) (2026-05-16)
+
+
+### Bug Fixes
+
+* **intent:** improve transcript session matching ([#201](https://github.com/kunchenguid/no-mistakes/issues/201)) ([fac4966](https://github.com/kunchenguid/no-mistakes/commit/fac496655b8a374add73583e47a9b8d7133c0034))
+
 ## [1.19.1](https://github.com/kunchenguid/no-mistakes/compare/v1.19.0...v1.19.1) (2026-05-15)
 
 
