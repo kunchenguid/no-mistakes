@@ -79,7 +79,7 @@ func (d *agentDisambiguator) Disambiguate(ctx context.Context, diffFiles []strin
 				}
 				return
 			}
-			if afterState == beforeState {
+			if afterState.equal(beforeState) {
 				return
 			}
 			if err := restoreDisambiguatorWorktree(cleanupCtx, d.cwd, beforeState); err != nil {
@@ -119,9 +119,15 @@ func (d *agentDisambiguator) Disambiguate(ctx context.Context, diffFiles []strin
 }
 
 type disambiguatorWorktreeSnapshot struct {
-	status string
-	head   string
-	ref    string
+	status     string
+	head       string
+	ref        string
+	extraFiles map[string]disambiguatorExtraFile
+}
+
+type disambiguatorExtraFile struct {
+	mode os.FileMode
+	data []byte
 }
 
 func disambiguatorWorktreeState(ctx context.Context, cwd string) (disambiguatorWorktreeSnapshot, bool, error) {
@@ -140,15 +146,72 @@ func disambiguatorWorktreeState(ctx context.Context, cwd string) (disambiguatorW
 	if err != nil {
 		return disambiguatorWorktreeSnapshot{}, false, err
 	}
-	status, err := nmgit.Run(ctx, cwd, "status", "--porcelain", "-uall", "--ignored")
+	status, err := nmgit.Run(ctx, cwd, "status", "--porcelain", "-uall")
+	if err != nil {
+		return disambiguatorWorktreeSnapshot{}, false, err
+	}
+	extraFiles, err := disambiguatorExtraFiles(ctx, cwd)
 	if err != nil {
 		return disambiguatorWorktreeSnapshot{}, false, err
 	}
 	return disambiguatorWorktreeSnapshot{
-		status: status,
-		head:   strings.TrimSpace(head),
-		ref:    strings.TrimSpace(ref),
+		status:     status,
+		head:       strings.TrimSpace(head),
+		ref:        strings.TrimSpace(ref),
+		extraFiles: extraFiles,
 	}, true, nil
+}
+
+func (s disambiguatorWorktreeSnapshot) equal(other disambiguatorWorktreeSnapshot) bool {
+	if s.status != other.status || s.head != other.head || s.ref != other.ref || len(s.extraFiles) != len(other.extraFiles) {
+		return false
+	}
+	for path, file := range s.extraFiles {
+		otherFile, ok := other.extraFiles[path]
+		if !ok || file.mode != otherFile.mode || string(file.data) != string(otherFile.data) {
+			return false
+		}
+	}
+	return true
+}
+
+func disambiguatorExtraFiles(ctx context.Context, cwd string) (map[string]disambiguatorExtraFile, error) {
+	paths := map[string]struct{}{}
+	for _, args := range [][]string{
+		{"ls-files", "--others", "--exclude-standard", "-z"},
+		{"ls-files", "--others", "--ignored", "--exclude-standard", "-z"},
+	} {
+		out, err := nmgit.Run(ctx, cwd, args...)
+		if err != nil {
+			return nil, err
+		}
+		for _, path := range strings.Split(out, "\x00") {
+			if path != "" {
+				paths[path] = struct{}{}
+			}
+		}
+	}
+
+	files := make(map[string]disambiguatorExtraFile, len(paths))
+	for path := range paths {
+		fullPath := filepath.Join(cwd, filepath.FromSlash(path))
+		info, err := os.Lstat(fullPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, err
+		}
+		if !info.Mode().IsRegular() {
+			continue
+		}
+		data, err := os.ReadFile(fullPath)
+		if err != nil {
+			return nil, err
+		}
+		files[path] = disambiguatorExtraFile{mode: info.Mode().Perm(), data: data}
+	}
+	return files, nil
 }
 
 func restoreDisambiguatorWorktree(ctx context.Context, cwd string, snapshot disambiguatorWorktreeSnapshot) error {
@@ -172,6 +235,22 @@ func restoreDisambiguatorWorktree(ctx context.Context, cwd string, snapshot disa
 	}
 	if _, err := nmgit.Run(ctx, cwd, "clean", "-fdx"); err != nil {
 		return err
+	}
+	if err := restoreDisambiguatorExtraFiles(cwd, snapshot.extraFiles); err != nil {
+		return err
+	}
+	return nil
+}
+
+func restoreDisambiguatorExtraFiles(cwd string, files map[string]disambiguatorExtraFile) error {
+	for path, file := range files {
+		fullPath := filepath.Join(cwd, filepath.FromSlash(path))
+		if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(fullPath, file.data, file.mode); err != nil {
+			return err
+		}
 	}
 	return nil
 }

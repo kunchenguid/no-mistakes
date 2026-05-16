@@ -96,6 +96,89 @@ func TestAgentDisambiguatorRemovesIgnoredSideEffects(t *testing.T) {
 	}
 }
 
+func TestAgentDisambiguatorPreservesPreexistingIgnoredFiles(t *testing.T) {
+	ctx := context.Background()
+	repo := initDisambiguatorTestRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte("*.log\n"), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+	gitTestOutput(t, repo, "add", ".gitignore")
+	gitTestOutput(t, repo, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "ignore logs")
+	if err := os.WriteFile(filepath.Join(repo, "keep.log"), []byte("keep\n"), 0o644); err != nil {
+		t.Fatalf("write preexisting ignored file: %v", err)
+	}
+
+	d := NewAgentDisambiguator(mutatingAgent{run: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		if err := os.WriteFile(filepath.Join(opts.CWD, "new.log"), []byte("side effect\n"), 0o644); err != nil {
+			t.Fatalf("write ignored mutation: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(opts.CWD, "conflict.txt"), []byte("mutated\n"), 0o644); err != nil {
+			t.Fatalf("write tracked mutation: %v", err)
+		}
+		return &agent.Result{Output: json.RawMessage(`{"session_id":"s1","confidence":0.9,"reason":"matched"}`)}, nil
+	}}, repo)
+
+	_, err := d.Disambiguate(ctx, []string{"conflict.txt"}, []*Match{{Session: &Session{
+		SessionID:    "s1",
+		AgentName:    "test",
+		LastActivity: time.Now(),
+		Messages:     []Message{{Role: RoleUser, Text: "edit conflict.txt"}},
+	}}})
+	if err != nil {
+		t.Fatalf("disambiguate: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(repo, "keep.log"))
+	if err != nil {
+		t.Fatalf("read preexisting ignored file: %v", err)
+	}
+	if string(data) != "keep\n" {
+		t.Fatalf("keep.log = %q, want keep", data)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "new.log")); !os.IsNotExist(err) {
+		t.Fatalf("new.log exists after cleanup, err = %v", err)
+	}
+}
+
+func TestAgentDisambiguatorRestoresMutatedFileInsideIgnoredDirectory(t *testing.T) {
+	ctx := context.Background()
+	repo := initDisambiguatorTestRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte("cache/\n"), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+	gitTestOutput(t, repo, "add", ".gitignore")
+	gitTestOutput(t, repo, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "ignore cache")
+	if err := os.Mkdir(filepath.Join(repo, "cache"), 0o755); err != nil {
+		t.Fatalf("mkdir cache: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "cache", "state.txt"), []byte("before\n"), 0o644); err != nil {
+		t.Fatalf("write ignored file: %v", err)
+	}
+
+	d := NewAgentDisambiguator(mutatingAgent{run: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		if err := os.WriteFile(filepath.Join(opts.CWD, "cache", "state.txt"), []byte("after\n"), 0o644); err != nil {
+			t.Fatalf("mutate ignored file: %v", err)
+		}
+		return &agent.Result{Output: json.RawMessage(`{"session_id":"s1","confidence":0.9,"reason":"matched"}`)}, nil
+	}}, repo)
+
+	_, err := d.Disambiguate(ctx, []string{"conflict.txt"}, []*Match{{Session: &Session{
+		SessionID:    "s1",
+		AgentName:    "test",
+		LastActivity: time.Now(),
+		Messages:     []Message{{Role: RoleUser, Text: "edit conflict.txt"}},
+	}}})
+	if err != nil {
+		t.Fatalf("disambiguate: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(repo, "cache", "state.txt"))
+	if err != nil {
+		t.Fatalf("read ignored file: %v", err)
+	}
+	if string(data) != "before\n" {
+		t.Fatalf("cache/state.txt = %q, want before", data)
+	}
+}
+
 func initDisambiguatorTestRepo(t *testing.T) string {
 	t.Helper()
 	repo := t.TempDir()
