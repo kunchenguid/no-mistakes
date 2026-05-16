@@ -1,6 +1,7 @@
 package intent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -176,6 +177,73 @@ func TestAgentDisambiguatorRestoresMutatedFileInsideIgnoredDirectory(t *testing.
 	}
 	if string(data) != "before\n" {
 		t.Fatalf("cache/state.txt = %q, want before", data)
+	}
+}
+
+func TestAgentDisambiguatorRemovesNestedGitRepositorySideEffect(t *testing.T) {
+	ctx := context.Background()
+	repo := initDisambiguatorTestRepo(t)
+
+	d := NewAgentDisambiguator(mutatingAgent{run: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		nested := filepath.Join(opts.CWD, "nested")
+		if err := os.Mkdir(nested, 0o755); err != nil {
+			t.Fatalf("mkdir nested: %v", err)
+		}
+		gitTestOutput(t, nested, "init", "-b", "main")
+		if err := os.WriteFile(filepath.Join(nested, "file.txt"), []byte("nested\n"), 0o644); err != nil {
+			t.Fatalf("write nested file: %v", err)
+		}
+		return &agent.Result{Output: json.RawMessage(`{"session_id":"s1","confidence":0.9,"reason":"matched"}`)}, nil
+	}}, repo)
+
+	_, err := d.Disambiguate(ctx, []string{"conflict.txt"}, []*Match{{Session: &Session{
+		SessionID:    "s1",
+		AgentName:    "test",
+		LastActivity: time.Now(),
+		Messages:     []Message{{Role: RoleUser, Text: "edit conflict.txt"}},
+	}}})
+	if err != nil {
+		t.Fatalf("disambiguate: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "nested")); !os.IsNotExist(err) {
+		t.Fatalf("nested repo exists after cleanup, err = %v", err)
+	}
+}
+
+func TestDisambiguatorWorktreeStateBacksUpExtraFileContents(t *testing.T) {
+	ctx := context.Background()
+	repo := initDisambiguatorTestRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte("*.log\n"), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+	gitTestOutput(t, repo, "add", ".gitignore")
+	gitTestOutput(t, repo, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "ignore logs")
+	if err := os.WriteFile(filepath.Join(repo, "large.log"), bytes.Repeat([]byte("x"), 1024*1024), 0o644); err != nil {
+		t.Fatalf("write ignored file: %v", err)
+	}
+
+	snapshot, watch, err := disambiguatorWorktreeState(ctx, repo)
+	if err != nil {
+		t.Fatalf("worktree state: %v", err)
+	}
+	if !watch {
+		t.Fatalf("watch = false, want true")
+	}
+	file, ok := snapshot.extraFiles["large.log"]
+	if !ok {
+		t.Fatalf("large.log missing from snapshot")
+	}
+	if file.size != 1024*1024 {
+		t.Fatalf("snapshot size = %d, want %d", file.size, 1024*1024)
+	}
+	if file.hash == "" {
+		t.Fatalf("snapshot hash is empty")
+	}
+	if file.backupPath == "" {
+		t.Fatalf("snapshot backup path is empty")
+	}
+	if _, err := os.Stat(file.backupPath); err != nil {
+		t.Fatalf("stat backup path: %v", err)
 	}
 }
 

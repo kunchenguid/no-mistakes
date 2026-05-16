@@ -2,8 +2,10 @@ package intent
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -67,12 +69,14 @@ func (d *agentDisambiguator) Disambiguate(ctx context.Context, diffFiles []strin
 	if err != nil {
 		return "", err
 	}
+	defer beforeState.cleanup()
 	if watchWorktree {
 		defer func() {
 			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
 			afterState, _, err := disambiguatorWorktreeState(cleanupCtx, d.cwd)
+			defer afterState.cleanup()
 			if err != nil {
 				if retErr == nil {
 					retErr = err
@@ -122,12 +126,15 @@ type disambiguatorWorktreeSnapshot struct {
 	status     string
 	head       string
 	ref        string
+	backupDir  string
 	extraFiles map[string]disambiguatorExtraFile
 }
 
 type disambiguatorExtraFile struct {
-	mode os.FileMode
-	data []byte
+	mode       os.FileMode
+	size       int64
+	hash       string
+	backupPath string
 }
 
 func disambiguatorWorktreeState(ctx context.Context, cwd string) (disambiguatorWorktreeSnapshot, bool, error) {
@@ -150,7 +157,7 @@ func disambiguatorWorktreeState(ctx context.Context, cwd string) (disambiguatorW
 	if err != nil {
 		return disambiguatorWorktreeSnapshot{}, false, err
 	}
-	extraFiles, err := disambiguatorExtraFiles(ctx, cwd)
+	extraFiles, backupDir, err := disambiguatorExtraFiles(ctx, cwd)
 	if err != nil {
 		return disambiguatorWorktreeSnapshot{}, false, err
 	}
@@ -158,8 +165,15 @@ func disambiguatorWorktreeState(ctx context.Context, cwd string) (disambiguatorW
 		status:     status,
 		head:       strings.TrimSpace(head),
 		ref:        strings.TrimSpace(ref),
+		backupDir:  backupDir,
 		extraFiles: extraFiles,
 	}, true, nil
+}
+
+func (s disambiguatorWorktreeSnapshot) cleanup() {
+	if s.backupDir != "" {
+		_ = os.RemoveAll(s.backupDir)
+	}
 }
 
 func (s disambiguatorWorktreeSnapshot) equal(other disambiguatorWorktreeSnapshot) bool {
@@ -168,14 +182,14 @@ func (s disambiguatorWorktreeSnapshot) equal(other disambiguatorWorktreeSnapshot
 	}
 	for path, file := range s.extraFiles {
 		otherFile, ok := other.extraFiles[path]
-		if !ok || file.mode != otherFile.mode || string(file.data) != string(otherFile.data) {
+		if !ok || file.mode != otherFile.mode || file.size != otherFile.size || file.hash != otherFile.hash {
 			return false
 		}
 	}
 	return true
 }
 
-func disambiguatorExtraFiles(ctx context.Context, cwd string) (map[string]disambiguatorExtraFile, error) {
+func disambiguatorExtraFiles(ctx context.Context, cwd string) (map[string]disambiguatorExtraFile, string, error) {
 	paths := map[string]struct{}{}
 	for _, args := range [][]string{
 		{"ls-files", "--others", "--exclude-standard", "-z"},
@@ -183,7 +197,7 @@ func disambiguatorExtraFiles(ctx context.Context, cwd string) (map[string]disamb
 	} {
 		out, err := nmgit.Run(ctx, cwd, args...)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		for _, path := range strings.Split(out, "\x00") {
 			if path != "" {
@@ -193,6 +207,13 @@ func disambiguatorExtraFiles(ctx context.Context, cwd string) (map[string]disamb
 	}
 
 	files := make(map[string]disambiguatorExtraFile, len(paths))
+	backupDir := ""
+	success := false
+	defer func() {
+		if !success && backupDir != "" {
+			_ = os.RemoveAll(backupDir)
+		}
+	}()
 	for path := range paths {
 		fullPath := filepath.Join(cwd, filepath.FromSlash(path))
 		info, err := os.Lstat(fullPath)
@@ -200,25 +221,62 @@ func disambiguatorExtraFiles(ctx context.Context, cwd string) (map[string]disamb
 			if os.IsNotExist(err) {
 				continue
 			}
-			return nil, err
+			return nil, backupDir, err
 		}
 		if !info.Mode().IsRegular() {
 			continue
 		}
-		data, err := os.ReadFile(fullPath)
-		if err != nil {
-			return nil, err
+		if backupDir == "" {
+			backupDir, err = os.MkdirTemp("", "no-mistakes-intent-snapshot-*")
+			if err != nil {
+				return nil, "", err
+			}
 		}
-		files[path] = disambiguatorExtraFile{mode: info.Mode().Perm(), data: data}
+		backupPath := filepath.Join(backupDir, filepath.FromSlash(path))
+		if err := os.MkdirAll(filepath.Dir(backupPath), 0o755); err != nil {
+			return nil, backupDir, err
+		}
+		hash, err := copyDisambiguatorExtraFile(backupPath, fullPath, info.Mode().Perm())
+		if err != nil {
+			return nil, backupDir, err
+		}
+		files[path] = disambiguatorExtraFile{mode: info.Mode().Perm(), size: info.Size(), hash: hash, backupPath: backupPath}
 	}
-	return files, nil
+	success = true
+	return files, backupDir, nil
+}
+
+func copyDisambiguatorExtraFile(dst, src string, mode os.FileMode) (string, error) {
+	in, err := os.Open(src)
+	if err != nil {
+		return "", err
+	}
+	defer in.Close()
+
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+	if err != nil {
+		return "", err
+	}
+	h := sha256.New()
+	_, copyErr := io.Copy(io.MultiWriter(out, h), in)
+	closeErr := out.Close()
+	if copyErr != nil {
+		return "", copyErr
+	}
+	if closeErr != nil {
+		return "", closeErr
+	}
+	if err := os.Chmod(dst, mode); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", h.Sum(nil)), nil
 }
 
 func restoreDisambiguatorWorktree(ctx context.Context, cwd string, snapshot disambiguatorWorktreeSnapshot) error {
 	if _, err := nmgit.Run(ctx, cwd, "reset", "--hard"); err != nil {
 		return err
 	}
-	if _, err := nmgit.Run(ctx, cwd, "clean", "-fdx"); err != nil {
+	if _, err := nmgit.Run(ctx, cwd, "clean", "-ffdx"); err != nil {
 		return err
 	}
 	if snapshot.ref == "HEAD" {
@@ -233,7 +291,7 @@ func restoreDisambiguatorWorktree(ctx context.Context, cwd string, snapshot disa
 	if _, err := nmgit.Run(ctx, cwd, "reset", "--hard", snapshot.head); err != nil {
 		return err
 	}
-	if _, err := nmgit.Run(ctx, cwd, "clean", "-fdx"); err != nil {
+	if _, err := nmgit.Run(ctx, cwd, "clean", "-ffdx"); err != nil {
 		return err
 	}
 	if err := restoreDisambiguatorExtraFiles(cwd, snapshot.extraFiles); err != nil {
@@ -248,11 +306,33 @@ func restoreDisambiguatorExtraFiles(cwd string, files map[string]disambiguatorEx
 		if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
 			return err
 		}
-		if err := os.WriteFile(fullPath, file.data, file.mode); err != nil {
+		if err := copyDisambiguatorBackupFile(fullPath, file.backupPath, file.mode); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func copyDisambiguatorBackupFile(dst, src string, mode os.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(out, in)
+	closeErr := out.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	return os.Chmod(dst, mode)
 }
 
 type disambiguationPacket struct {
