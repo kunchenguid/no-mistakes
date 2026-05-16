@@ -184,6 +184,7 @@ func TestAgentDisambiguator_UsesSanitizedTranscriptPacketFiles(t *testing.T) {
 func TestAgentDisambiguator_CleansWorktreeSideEffects(t *testing.T) {
 	dir := t.TempDir()
 	gitTestCmd(t, dir, "init")
+	gitTestCmd(t, dir, "config", "core.autocrlf", "false")
 	gitTestCmd(t, dir, "config", "user.name", "test")
 	gitTestCmd(t, dir, "config", "user.email", "test@example.com")
 	if err := os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("before\n"), 0o644); err != nil {
@@ -230,6 +231,7 @@ func TestAgentDisambiguator_CleansWorktreeSideEffects(t *testing.T) {
 func TestAgentDisambiguator_CleansCommittedSideEffects(t *testing.T) {
 	dir := t.TempDir()
 	gitTestCmd(t, dir, "init")
+	gitTestCmd(t, dir, "config", "core.autocrlf", "false")
 	gitTestCmd(t, dir, "config", "user.name", "test")
 	gitTestCmd(t, dir, "config", "user.email", "test@example.com")
 	if err := os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("before\n"), 0o644); err != nil {
@@ -272,6 +274,7 @@ func TestAgentDisambiguator_CleansCommittedSideEffects(t *testing.T) {
 func TestAgentDisambiguator_CleansWithCanceledAgentContext(t *testing.T) {
 	dir := t.TempDir()
 	gitTestCmd(t, dir, "init")
+	gitTestCmd(t, dir, "config", "core.autocrlf", "false")
 	gitTestCmd(t, dir, "config", "user.name", "test")
 	gitTestCmd(t, dir, "config", "user.email", "test@example.com")
 	if err := os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("before\n"), 0o644); err != nil {

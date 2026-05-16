@@ -201,6 +201,7 @@ func TestAgentDisambiguatorRemovesNestedGitRepositorySideEffect(t *testing.T) {
 			t.Fatalf("mkdir nested: %v", err)
 		}
 		gitTestOutput(t, nested, "init", "-b", "main")
+		gitTestOutput(t, nested, "config", "core.autocrlf", "false")
 		if err := os.WriteFile(filepath.Join(nested, "file.txt"), []byte("nested\n"), 0o644); err != nil {
 			t.Fatalf("write nested file: %v", err)
 		}
@@ -287,6 +288,7 @@ func initDisambiguatorTestRepo(t *testing.T) string {
 	t.Helper()
 	repo := t.TempDir()
 	gitTestOutput(t, repo, "init", "-b", "main")
+	gitTestOutput(t, repo, "config", "core.autocrlf", "false")
 	if err := os.WriteFile(filepath.Join(repo, "conflict.txt"), []byte("main\n"), 0o644); err != nil {
 		t.Fatalf("write main file: %v", err)
 	}
