@@ -3,6 +3,8 @@ package intent
 import (
 	"context"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -177,4 +179,60 @@ func TestAgentDisambiguator_UsesSanitizedTranscriptPacketFiles(t *testing.T) {
 	if selected != "s2" {
 		t.Fatalf("selected = %q, want s2", selected)
 	}
+}
+
+func TestAgentDisambiguator_CleansWorktreeSideEffects(t *testing.T) {
+	dir := t.TempDir()
+	gitTestCmd(t, dir, "init")
+	gitTestCmd(t, dir, "config", "user.name", "test")
+	gitTestCmd(t, dir, "config", "user.email", "test@example.com")
+	if err := os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("before\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTestCmd(t, dir, "add", "tracked.txt")
+	gitTestCmd(t, dir, "commit", "-m", "initial")
+
+	fa := &fakeAgent{}
+	fa.run = func(opts agent.RunOpts) (*agent.Result, error) {
+		if err := os.WriteFile(filepath.Join(opts.CWD, "tracked.txt"), []byte("after\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(opts.CWD, "untracked.txt"), []byte("new\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		out := []byte(`{"session_id":"s1","confidence":0.95,"reason":"closest"}`)
+		return &agent.Result{Output: out, Text: string(out)}, nil
+	}
+
+	d := NewAgentDisambiguator(fa, dir)
+	selected, err := d.Disambiguate(context.Background(), []string{"tracked.txt"}, []*Match{
+		{Session: &Session{SessionID: "s1", AgentName: "claude", Messages: []Message{{Role: RoleUser, Text: "change tracked"}}}},
+		{Session: &Session{SessionID: "s2", AgentName: "claude", Messages: []Message{{Role: RoleUser, Text: "other"}}}},
+	})
+	if err != nil {
+		t.Fatalf("disambiguate: %v", err)
+	}
+	if selected != "s1" {
+		t.Fatalf("selected = %q, want s1", selected)
+	}
+	if got := gitTestCmd(t, dir, "status", "--porcelain"); got != "" {
+		t.Fatalf("expected clean worktree, got %q", got)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "tracked.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "before\n" {
+		t.Fatalf("tracked file = %q, want before", data)
+	}
+}
+
+func gitTestCmd(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
 }

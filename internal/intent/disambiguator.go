@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	nmgit "github.com/kunchenguid/no-mistakes/internal/git"
 )
 
 // Disambiguator chooses among multiple accepted transcript matches when the
@@ -39,7 +40,7 @@ func NewAgentDisambiguator(a agent.Agent, cwd string) Disambiguator {
 	return &agentDisambiguator{agent: a, cwd: cwd}
 }
 
-func (d *agentDisambiguator) Disambiguate(ctx context.Context, diffFiles []string, candidates []*Match) (string, error) {
+func (d *agentDisambiguator) Disambiguate(ctx context.Context, diffFiles []string, candidates []*Match) (selected string, retErr error) {
 	if d.agent == nil {
 		return "", fmt.Errorf("nil agent")
 	}
@@ -60,6 +61,33 @@ func (d *agentDisambiguator) Disambiguate(ctx context.Context, diffFiles []strin
 			return "", err
 		}
 		packetPaths = append(packetPaths, path)
+	}
+	beforeStatus, watchWorktree, err := disambiguatorWorktreeStatus(ctx, d.cwd)
+	if err != nil {
+		return "", err
+	}
+	if watchWorktree {
+		defer func() {
+			afterStatus, err := nmgit.Run(ctx, d.cwd, "status", "--porcelain", "-uall")
+			if err != nil {
+				if retErr == nil {
+					retErr = err
+				}
+				return
+			}
+			if afterStatus == beforeStatus {
+				return
+			}
+			if _, err := nmgit.Run(ctx, d.cwd, "reset", "--hard"); err != nil {
+				if retErr == nil {
+					retErr = err
+				}
+				return
+			}
+			if _, err := nmgit.Run(ctx, d.cwd, "clean", "-fd"); err != nil && retErr == nil {
+				retErr = err
+			}
+		}()
 	}
 
 	result, err := d.agent.Run(ctx, agent.RunOpts{
@@ -88,6 +116,21 @@ func (d *agentDisambiguator) Disambiguate(ctx context.Context, diffFiles []strin
 		return "", fmt.Errorf("agent returned empty session_id")
 	}
 	return strings.TrimSpace(parsed.SessionID), nil
+}
+
+func disambiguatorWorktreeStatus(ctx context.Context, cwd string) (string, bool, error) {
+	if strings.TrimSpace(cwd) == "" {
+		return "", false, nil
+	}
+	inside, err := nmgit.Run(ctx, cwd, "rev-parse", "--is-inside-work-tree")
+	if err != nil || strings.TrimSpace(inside) != "true" {
+		return "", false, nil
+	}
+	status, err := nmgit.Run(ctx, cwd, "status", "--porcelain", "-uall")
+	if err != nil {
+		return "", false, err
+	}
+	return status, true, nil
 }
 
 type disambiguationPacket struct {
