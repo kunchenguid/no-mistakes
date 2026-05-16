@@ -558,7 +558,7 @@ func TestUpdaterRunReplacesDaemonWhenDifferentExecutableConfirmed(t *testing.T) 
 			if !strings.Contains(stdout.String(), "updated no-mistakes from v1.2.2 to v1.2.3") {
 				t.Fatalf("stdout should report successful update, got %q", stdout.String())
 			}
-			for _, want := range []string{otherExecPath, execPath, tt.want} {
+			for _, want := range []string{resolveExecutablePath(otherExecPath), resolveExecutablePath(execPath), tt.want} {
 				if !strings.Contains(stderr.String(), want) {
 					t.Fatalf("stderr should contain %q, got %q", want, stderr.String())
 				}
