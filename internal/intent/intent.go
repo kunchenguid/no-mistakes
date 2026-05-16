@@ -56,9 +56,12 @@ type ExtractParams struct {
 // should treat this as a normal "no intent attached" outcome, not an error.
 var ErrNoMatch = errors.New("intent: no matching transcript")
 
-// Extract runs the discover -> match -> cache -> summarize pipeline and
-// returns the final intent. It returns ErrNoMatch when no session satisfies
-// the matcher's threshold, overlap, and freshness acceptance rules.
+// Extract runs the discover -> match -> optional disambiguate -> cache ->
+// summarize pipeline and returns the final intent. It returns ErrNoMatch when
+// no session satisfies the matcher's threshold, overlap, and freshness
+// acceptance rules. Disambiguation failures fall back to the deterministic
+// match, except cleanup failures are returned because worktree side effects
+// may remain.
 func Extract(ctx context.Context, p ExtractParams) (*Result, error) {
 	if p.OriginCWD == "" {
 		return nil, fmt.Errorf("intent: OriginCWD is required")
