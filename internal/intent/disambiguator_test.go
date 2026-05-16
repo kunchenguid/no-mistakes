@@ -1,7 +1,6 @@
 package intent
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -140,7 +139,7 @@ func TestAgentDisambiguatorPreservesPreexistingIgnoredFiles(t *testing.T) {
 	}
 }
 
-func TestAgentDisambiguatorRestoresMutatedFileInsideIgnoredDirectory(t *testing.T) {
+func TestAgentDisambiguatorPreservesPreexistingIgnoredDirectory(t *testing.T) {
 	ctx := context.Background()
 	repo := initDisambiguatorTestRepo(t)
 	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte("cache/\n"), 0o644); err != nil {
@@ -159,6 +158,9 @@ func TestAgentDisambiguatorRestoresMutatedFileInsideIgnoredDirectory(t *testing.
 		if err := os.WriteFile(filepath.Join(opts.CWD, "cache", "state.txt"), []byte("after\n"), 0o644); err != nil {
 			t.Fatalf("mutate ignored file: %v", err)
 		}
+		if err := os.WriteFile(filepath.Join(opts.CWD, "conflict.txt"), []byte("mutated\n"), 0o644); err != nil {
+			t.Fatalf("write tracked mutation: %v", err)
+		}
 		return &agent.Result{Output: json.RawMessage(`{"session_id":"s1","confidence":0.9,"reason":"matched"}`)}, nil
 	}}, repo)
 
@@ -175,8 +177,15 @@ func TestAgentDisambiguatorRestoresMutatedFileInsideIgnoredDirectory(t *testing.
 	if err != nil {
 		t.Fatalf("read ignored file: %v", err)
 	}
-	if string(data) != "before\n" {
-		t.Fatalf("cache/state.txt = %q, want before", data)
+	if string(data) != "after\n" {
+		t.Fatalf("cache/state.txt = %q, want after", data)
+	}
+	tracked, err := os.ReadFile(filepath.Join(repo, "conflict.txt"))
+	if err != nil {
+		t.Fatalf("read conflict.txt: %v", err)
+	}
+	if string(tracked) != "main\n" {
+		t.Fatalf("conflict.txt = %q, want main", tracked)
 	}
 }
 
@@ -210,7 +219,7 @@ func TestAgentDisambiguatorRemovesNestedGitRepositorySideEffect(t *testing.T) {
 	}
 }
 
-func TestDisambiguatorWorktreeStateBacksUpExtraFileContents(t *testing.T) {
+func TestAgentDisambiguatorPreservesPreexistingIgnoredSymlink(t *testing.T) {
 	ctx := context.Background()
 	repo := initDisambiguatorTestRepo(t)
 	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte("*.log\n"), 0o644); err != nil {
@@ -218,32 +227,32 @@ func TestDisambiguatorWorktreeStateBacksUpExtraFileContents(t *testing.T) {
 	}
 	gitTestOutput(t, repo, "add", ".gitignore")
 	gitTestOutput(t, repo, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "ignore logs")
-	if err := os.WriteFile(filepath.Join(repo, "large.log"), bytes.Repeat([]byte("x"), 1024*1024), 0o644); err != nil {
-		t.Fatalf("write ignored file: %v", err)
+	if err := os.Symlink("missing", filepath.Join(repo, "keep.log")); err != nil {
+		t.Fatalf("create ignored symlink: %v", err)
 	}
 
-	snapshot, watch, err := disambiguatorWorktreeState(ctx, repo)
+	d := NewAgentDisambiguator(mutatingAgent{run: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		if err := os.WriteFile(filepath.Join(opts.CWD, "conflict.txt"), []byte("mutated\n"), 0o644); err != nil {
+			t.Fatalf("write tracked mutation: %v", err)
+		}
+		return &agent.Result{Output: json.RawMessage(`{"session_id":"s1","confidence":0.9,"reason":"matched"}`)}, nil
+	}}, repo)
+
+	_, err := d.Disambiguate(ctx, []string{"conflict.txt"}, []*Match{{Session: &Session{
+		SessionID:    "s1",
+		AgentName:    "test",
+		LastActivity: time.Now(),
+		Messages:     []Message{{Role: RoleUser, Text: "edit conflict.txt"}},
+	}}})
 	if err != nil {
-		t.Fatalf("worktree state: %v", err)
+		t.Fatalf("disambiguate: %v", err)
 	}
-	if !watch {
-		t.Fatalf("watch = false, want true")
+	target, err := os.Readlink(filepath.Join(repo, "keep.log"))
+	if err != nil {
+		t.Fatalf("read ignored symlink: %v", err)
 	}
-	file, ok := snapshot.extraFiles["large.log"]
-	if !ok {
-		t.Fatalf("large.log missing from snapshot")
-	}
-	if file.size != 1024*1024 {
-		t.Fatalf("snapshot size = %d, want %d", file.size, 1024*1024)
-	}
-	if file.hash == "" {
-		t.Fatalf("snapshot hash is empty")
-	}
-	if file.backupPath == "" {
-		t.Fatalf("snapshot backup path is empty")
-	}
-	if _, err := os.Stat(file.backupPath); err != nil {
-		t.Fatalf("stat backup path: %v", err)
+	if target != "missing" {
+		t.Fatalf("keep.log target = %q, want missing", target)
 	}
 }
 
