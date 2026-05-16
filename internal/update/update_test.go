@@ -520,6 +520,7 @@ func TestUpdaterRunReplacesDaemonWhenDifferentExecutableConfirmed(t *testing.T) 
 			}
 
 			resetCalled := false
+			stdout := new(bytes.Buffer)
 			stderr := new(bytes.Buffer)
 			u := &updater{
 				appName:        "no-mistakes",
@@ -529,6 +530,7 @@ func TestUpdaterRunReplacesDaemonWhenDifferentExecutableConfirmed(t *testing.T) 
 				apiBaseURL:     server.URL,
 				httpClient:     server.Client(),
 				executablePath: execPath,
+				stdout:         stdout,
 				stderr:         stderr,
 				stdin:          strings.NewReader(tt.stdin),
 				now:            func() time.Time { return time.Date(2026, 4, 9, 12, 0, 0, 0, time.UTC) },
@@ -553,11 +555,16 @@ func TestUpdaterRunReplacesDaemonWhenDifferentExecutableConfirmed(t *testing.T) 
 			if string(content) != "new-binary" {
 				t.Fatalf("executable content = %q", string(content))
 			}
+			if !strings.Contains(stdout.String(), "updated no-mistakes from v1.2.2 to v1.2.3") {
+				t.Fatalf("stdout should report successful update, got %q", stdout.String())
+			}
 			for _, want := range []string{otherExecPath, execPath, tt.want} {
 				if !strings.Contains(stderr.String(), want) {
 					t.Fatalf("stderr should contain %q, got %q", want, stderr.String())
 				}
 			}
+			t.Logf("stderr transcript:\n%s", stderr.String())
+			t.Logf("stdout transcript:\n%s", stdout.String())
 		})
 	}
 }
