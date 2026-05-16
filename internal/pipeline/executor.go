@@ -326,8 +326,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 						}
 					}
 				}
-				optimisticFixed := findingsCount(fixableFindings)
-				e.emitStepEventWithFindingsDiffErrorAndOptimisticFixed(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFixing), "", "", "", nil, &optimisticFixed)
+				e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFixing), "", "", "", nil)
 				phaseStart = time.Now()
 				sctx.Fixing = true
 				sctx.PreviousFindings = fixableFindings
@@ -445,8 +444,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 					}
 				}
 			}
-			optimisticFixed := selectedFindingCount(selectedFindings, response.findingIDs)
-			e.emitStepEventWithFindingsDiffErrorAndOptimisticFixed(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFixing), "", "", "", nil, &optimisticFixed)
+			e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFixing), "", "", "", nil)
 			slog.Info("step fix requested, re-executing", "step", stepName)
 			continue // loop back to step.Execute
 		}
@@ -552,10 +550,6 @@ func (e *Executor) emitStepEventWithFindingsAndDiff(eventType ipc.EventType, run
 }
 
 func (e *Executor) emitStepEventWithFindingsDiffAndError(eventType ipc.EventType, run *db.Run, repo *db.Repo, stepName types.StepName, status string, findings string, diff string, errMsg string, durationMS *int64) {
-	e.emitStepEventWithFindingsDiffErrorAndOptimisticFixed(eventType, run, repo, stepName, status, findings, diff, errMsg, durationMS, nil)
-}
-
-func (e *Executor) emitStepEventWithFindingsDiffErrorAndOptimisticFixed(eventType ipc.EventType, run *db.Run, repo *db.Repo, stepName types.StepName, status string, findings string, diff string, errMsg string, durationMS *int64, optimisticFixed *int) {
 	event := ipc.Event{
 		Type:       eventType,
 		RunID:      run.ID,
@@ -568,12 +562,6 @@ func (e *Executor) emitStepEventWithFindingsDiffErrorAndOptimisticFixed(eventTyp
 	if stats.ReportedFindings > 0 || stats.FixedFindings > 0 {
 		reported := stats.ReportedFindings
 		fixed := stats.FixedFindings
-		if optimisticFixed != nil && *optimisticFixed > fixed {
-			fixed = *optimisticFixed
-			if reported > 0 && fixed > reported {
-				fixed = reported
-			}
-		}
 		event.ReportedFindings = &reported
 		event.FixedFindings = &fixed
 	}

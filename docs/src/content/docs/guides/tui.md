@@ -78,7 +78,7 @@ Step status icons:
 
 Completed steps show their duration.
 Steps with fixed findings, and steps currently fixing reported findings, show a right-aligned count such as `2/3 fixed` or `0/3 fixed`.
-While a step is fixing, the first number can include selected findings currently dispatched to the fix agent; later recheck results replace it with verified persisted counts.
+The first number counts completed fixes, not findings selected for an in-progress fix.
 Connectors (`│`) between steps are hidden when the terminal height is under 30 lines.
 
 ### Findings panel
