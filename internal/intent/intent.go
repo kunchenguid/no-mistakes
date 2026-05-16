@@ -37,7 +37,9 @@ type ExtractParams struct {
 	// stricter multi-file and stale-partial acceptance rules.
 	Threshold float64
 	// Readers are the per-agent transcript readers to consult. Order is
-	// insignificant; matching picks the best score across all of them.
+	// insignificant; matching accepts plausible candidates, prefers a single
+	// decisive raw-score match, and otherwise ranks by confidence or an optional
+	// Disambiguator.
 	Readers []Reader
 	// Cache is consulted before summarization. Pass NewMemCache() if no DB.
 	Cache Cache

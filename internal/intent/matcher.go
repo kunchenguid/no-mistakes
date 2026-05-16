@@ -73,9 +73,10 @@ func pathMentionMatchesDiff(mention, diffFile string) bool {
 	return !strings.Contains(mention, "/") && filepath.Base(diffFile) == mention
 }
 
-// pickMatch returns the accepted session with the highest confidence score.
-// Acceptance applies the raw threshold, multi-file overlap, and stale-partial
-// rules; confidence applies a recency boost, with ties broken by LastActivity.
+// pickMatch returns the deterministic winner among accepted sessions.
+// A single decisive raw-score candidate wins before confidence ranking.
+// Otherwise, accepted candidates are ranked by confidence, with ties broken by
+// LastActivity.
 func pickMatch(sessions []*Session, diffFiles []string, threshold float64) *Match {
 	return pickMatchWithOptions(sessions, diffFiles, matchOptions{Threshold: threshold})
 }

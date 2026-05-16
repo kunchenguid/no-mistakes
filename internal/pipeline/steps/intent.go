@@ -25,7 +25,8 @@ const intentExtractTimeout = 30 * time.Second
 // steps can surface it in their prompts. Failures are intentionally
 // swallowed and surface as a "skipped" outcome rather than a run failure:
 // missing transcripts, slow summarizers, or DB hiccups must not block
-// the pipeline.
+// the pipeline. Disambiguator cleanup failures are fatal because they may leave
+// worktree side effects that could affect later steps.
 type IntentStep struct {
 	// runIntent computes the intent for a step context. It is overridden
 	// in tests; the zero value falls back to defaultRunIntent which wires
