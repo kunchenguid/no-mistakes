@@ -143,12 +143,13 @@ It matches sessions against the changed files, summarizes the likely author inte
 
 Transcript readers collect user and assistant text messages but exclude tool call output.
 They read Claude Code transcripts from `~/.claude/projects`, Codex metadata from `~/.codex/state_*.sqlite` plus referenced rollout files, OpenCode messages from `$XDG_DATA_HOME/opencode/opencode.db` or `~/.local/share/opencode/opencode.db`, and Rovo Dev sessions from `~/.rovodev/sessions`.
+Sessions are eligible when they come from the same working directory or an equivalent Git checkout with the same common Git directory or normalized remote URL.
 Pi and ACP transcripts are not currently read for intent extraction.
 The selected transcript text is sent to the configured pipeline agent for summarization during the `intent` step, which may incur an additional agent or API invocation.
 Before summarization, no-mistakes excludes tool output, redacts likely secrets, strips common prompt-control markers, and clamps long transcripts while preserving the beginning and end.
 no-mistakes stores derived intent summaries and matching metadata in `~/.no-mistakes/state.sqlite`, including the source, session ID, and match score on each run plus cached summaries for matching transcript sessions.
 It does not store raw transcript text in its database.
-When a transcript matches, the step logs the matched source, score, and sanitized inferred intent.
+The step logs candidate match diagnostics, then logs the matched source, score, and sanitized inferred intent when a transcript matches.
 
 Use `intent.disabled_readers` to disable specific transcript sources, or set `intent.enabled: false` to opt out entirely.
 

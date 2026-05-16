@@ -220,14 +220,17 @@ When enabled, no-mistakes can read recent local agent transcripts, match the ses
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `intent.enabled` | `bool` | `true` | Enable transcript-based intent extraction |
-| `intent.threshold` | `float` | `0.2` | Minimum match score for selecting a transcript session |
+| `intent.threshold` | `float` | `0.2` | Minimum raw match score for selecting a transcript session |
 | `intent.slack_days` | `int` | `3` | Extra days to look back before the change window |
 | `intent.disabled_readers` | `string[]` | Empty | Transcript readers to disable |
 
 Valid `disabled_readers` values are `claude`, `codex`, `opencode`, and `rovodev`.
 
 The match score is the share of changed files mentioned in a transcript session.
-Mentioning extra files does not reduce the score, and ties go to the most recent matching session.
+Mentioning extra files does not reduce the score.
+For multi-file diffs, no-mistakes still requires at least two overlapping files and an effective minimum score of `0.5`.
+Partial matches older than 24 hours are rejected unless their raw score is at least `0.8`.
+Accepted candidates are ranked by confidence, which combines the raw score with a small recency boost, with ties going to the most recent matching session.
 
 ## Environment variables
 
