@@ -34,15 +34,20 @@ func (f *fixedSummarizer) Summarize(_ context.Context, _ *Session) (string, erro
 }
 
 type fixedDisambiguator struct {
+	selectedAgentName string
 	selectedSessionID string
 	calls             int
 	candidates        []*Match
+	err               error
 }
 
-func (f *fixedDisambiguator) Disambiguate(_ context.Context, _ []string, candidates []*Match) (string, error) {
+func (f *fixedDisambiguator) Disambiguate(_ context.Context, _ []string, candidates []*Match) (DisambiguationChoice, error) {
 	f.calls++
 	f.candidates = candidates
-	return f.selectedSessionID, nil
+	if f.err != nil {
+		return DisambiguationChoice{}, f.err
+	}
+	return DisambiguationChoice{AgentName: f.selectedAgentName, SessionID: f.selectedSessionID}, nil
 }
 
 func TestExtract_HappyPath(t *testing.T) {
@@ -184,7 +189,7 @@ func TestExtract_DisambiguatesWhenMultipleAcceptedCandidatesAreNotDecisive(t *te
 		Messages:     []Message{{Role: RoleUser, Text: "work on bar and baz", FilePaths: []string{"bar.go", "baz.go"}}},
 	}
 	r := &staticReader{name: "claude", sessions: []*Session{first, second}}
-	d := &fixedDisambiguator{selectedSessionID: "s2"}
+	d := &fixedDisambiguator{selectedAgentName: "claude", selectedSessionID: "s2"}
 
 	got, err := Extract(context.Background(), ExtractParams{
 		OriginCWD:     "/tmp/repo",
@@ -222,7 +227,7 @@ func TestExtract_DoesNotDisambiguateSingleDecisiveCandidate(t *testing.T) {
 		Messages:     []Message{{Role: RoleUser, FilePaths: []string{"foo.go", "bar.go"}}},
 	}
 	r := &staticReader{name: "claude", sessions: []*Session{partial, decisive}}
-	d := &fixedDisambiguator{selectedSessionID: "partial"}
+	d := &fixedDisambiguator{selectedAgentName: "claude", selectedSessionID: "partial"}
 
 	got, err := Extract(context.Background(), ExtractParams{
 		OriginCWD:     "/tmp/repo",
@@ -257,7 +262,7 @@ func TestExtract_DisambiguatesWhenMultipleCandidatesAreDecisive(t *testing.T) {
 		Messages:     []Message{{Role: RoleUser, FilePaths: []string{"foo.go", "bar.go", "baz.go", "qux.go"}}},
 	}
 	r := &staticReader{name: "claude", sessions: []*Session{first, second}}
-	d := &fixedDisambiguator{selectedSessionID: "s2"}
+	d := &fixedDisambiguator{selectedAgentName: "claude", selectedSessionID: "s2"}
 
 	got, err := Extract(context.Background(), ExtractParams{
 		OriginCWD:     "/tmp/repo",
@@ -280,6 +285,69 @@ func TestExtract_DisambiguatesWhenMultipleCandidatesAreDecisive(t *testing.T) {
 	}
 }
 
+func TestExtract_DisambiguatorSelectionUsesAgentNameAndSessionID(t *testing.T) {
+	headTime := time.Now()
+	claude := &staticReader{name: "claude", sessions: []*Session{{
+		SessionID:    "same",
+		LastActivity: headTime.Add(-time.Minute),
+		Messages:     []Message{{Role: RoleUser, FilePaths: []string{"foo.go", "bar.go"}}},
+	}}}
+	opencode := &staticReader{name: "opencode", sessions: []*Session{{
+		SessionID:    "same",
+		LastActivity: headTime,
+		Messages:     []Message{{Role: RoleUser, FilePaths: []string{"foo.go", "bar.go"}}},
+	}}}
+	d := &fixedDisambiguator{selectedAgentName: "opencode", selectedSessionID: "same"}
+
+	got, err := Extract(context.Background(), ExtractParams{
+		OriginCWD:     "/tmp/repo",
+		DiffFiles:     []string{"foo.go", "bar.go"},
+		HeadTime:      headTime,
+		BaseTime:      headTime.Add(-time.Hour),
+		Threshold:     0.2,
+		Readers:       []Reader{claude, opencode},
+		Summarizer:    &fixedSummarizer{summary: "selected opencode"},
+		Disambiguator: d,
+	})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if got.AgentName != "opencode" || got.SessionID != "same" {
+		t.Fatalf("selected = %s/%s, want opencode/same", got.AgentName, got.SessionID)
+	}
+}
+
+func TestExtract_ReturnsErrorWhenDisambiguatorCleanupFails(t *testing.T) {
+	headTime := time.Now()
+	r := &staticReader{name: "claude", sessions: []*Session{
+		{
+			SessionID:    "s1",
+			LastActivity: headTime,
+			Messages:     []Message{{Role: RoleUser, FilePaths: []string{"foo.go", "bar.go"}}},
+		},
+		{
+			SessionID:    "s2",
+			LastActivity: headTime.Add(-time.Minute),
+			Messages:     []Message{{Role: RoleUser, FilePaths: []string{"foo.go", "bar.go"}}},
+		},
+	}}
+	d := &fixedDisambiguator{err: ErrDisambiguatorCleanup}
+
+	_, err := Extract(context.Background(), ExtractParams{
+		OriginCWD:     "/tmp/repo",
+		DiffFiles:     []string{"foo.go", "bar.go"},
+		HeadTime:      headTime,
+		BaseTime:      headTime.Add(-time.Hour),
+		Threshold:     0.2,
+		Readers:       []Reader{r},
+		Summarizer:    &fixedSummarizer{summary: "fallback"},
+		Disambiguator: d,
+	})
+	if !errors.Is(err, ErrDisambiguatorCleanup) {
+		t.Fatalf("error = %v, want ErrDisambiguatorCleanup", err)
+	}
+}
+
 func TestExtract_SingleDecisiveCandidateBeatsRecentPartialMatch(t *testing.T) {
 	headTime := time.Now()
 	diffFiles := []string{
@@ -299,7 +367,7 @@ func TestExtract_SingleDecisiveCandidateBeatsRecentPartialMatch(t *testing.T) {
 		Messages:     []Message{{Role: RoleUser, FilePaths: diffFiles[:16]}},
 	}
 	r := &staticReader{name: "claude", sessions: []*Session{recentPartial, decisive}}
-	d := &fixedDisambiguator{selectedSessionID: "recent-partial"}
+	d := &fixedDisambiguator{selectedAgentName: "claude", selectedSessionID: "recent-partial"}
 
 	got, err := Extract(context.Background(), ExtractParams{
 		OriginCWD:     "/tmp/repo",

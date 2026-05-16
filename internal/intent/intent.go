@@ -130,7 +130,10 @@ func Extract(ctx context.Context, p ExtractParams) (*Result, error) {
 	if match == nil {
 		return nil, ErrNoMatch
 	}
-	match = disambiguateMatch(ctx, p, match, loaded)
+	match, err := disambiguateMatch(ctx, p, match, loaded)
+	if err != nil {
+		return nil, err
+	}
 
 	key := cacheKeyFor(match.Session)
 	if cached, ok := p.Cache.Get(key); ok && cached != "" {
@@ -156,33 +159,36 @@ func Extract(ctx context.Context, p ExtractParams) (*Result, error) {
 	}, nil
 }
 
-func disambiguateMatch(ctx context.Context, p ExtractParams, fallback *Match, loaded []*Session) *Match {
+func disambiguateMatch(ctx context.Context, p ExtractParams, fallback *Match, loaded []*Session) (*Match, error) {
 	if p.Disambiguator == nil {
-		return fallback
+		return fallback, nil
 	}
 	candidates := acceptedMatches(loaded, p.DiffFiles, matchOptions{
 		Threshold: p.Threshold,
 		HeadTime:  p.HeadTime,
 	})
 	if !shouldDisambiguate(candidates) {
-		return fallback
+		return fallback, nil
 	}
-	selectedID, err := p.Disambiguator.Disambiguate(ctx, p.DiffFiles, candidates)
+	choice, err := p.Disambiguator.Disambiguate(ctx, p.DiffFiles, candidates)
 	if err != nil {
+		if errors.Is(err, ErrDisambiguatorCleanup) {
+			return nil, fmt.Errorf("intent: disambiguator cleanup: %w", err)
+		}
 		if p.Logf != nil {
 			p.Logf("disambiguator failed: %v", err)
 		}
-		return fallback
+		return fallback, nil
 	}
 	for _, candidate := range candidates {
-		if candidate.Session != nil && candidate.Session.SessionID == selectedID {
-			return candidate
+		if candidate.Session != nil && candidate.Session.AgentName == choice.AgentName && candidate.Session.SessionID == choice.SessionID {
+			return candidate, nil
 		}
 	}
 	if p.Logf != nil {
-		p.Logf("disambiguator returned unknown session %q", selectedID)
+		p.Logf("disambiguator returned unknown session %q/%q", choice.AgentName, choice.SessionID)
 	}
-	return fallback
+	return fallback, nil
 }
 
 func maxInt(a, b int) int {

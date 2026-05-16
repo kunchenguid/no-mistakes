@@ -33,7 +33,7 @@ func TestAgentDisambiguatorRestoresAfterBranchSwitchWithDirtyConflict(t *testing
 		if err := os.WriteFile(filepath.Join(opts.CWD, "conflict.txt"), []byte("mutated\n"), 0o644); err != nil {
 			t.Fatalf("write mutation: %v", err)
 		}
-		return &agent.Result{Output: json.RawMessage(`{"session_id":"s1","confidence":0.9,"reason":"matched"}`)}, nil
+		return &agent.Result{Output: json.RawMessage(`{"agent_name":"test","session_id":"s1","confidence":0.9,"reason":"matched"}`)}, nil
 	}}, repo)
 
 	_, err := d.Disambiguate(ctx, []string{"conflict.txt"}, []*Match{{Session: &Session{
@@ -76,7 +76,7 @@ func TestAgentDisambiguatorRemovesIgnoredSideEffects(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(opts.CWD, "ignored.log"), []byte("mutated\n"), 0o644); err != nil {
 			t.Fatalf("write ignored mutation: %v", err)
 		}
-		return &agent.Result{Output: json.RawMessage(`{"session_id":"s1","confidence":0.9,"reason":"matched"}`)}, nil
+		return &agent.Result{Output: json.RawMessage(`{"agent_name":"test","session_id":"s1","confidence":0.9,"reason":"matched"}`)}, nil
 	}}, repo)
 
 	_, err := d.Disambiguate(ctx, []string{"conflict.txt"}, []*Match{{Session: &Session{
@@ -115,7 +115,7 @@ func TestAgentDisambiguatorPreservesPreexistingIgnoredFiles(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(opts.CWD, "conflict.txt"), []byte("mutated\n"), 0o644); err != nil {
 			t.Fatalf("write tracked mutation: %v", err)
 		}
-		return &agent.Result{Output: json.RawMessage(`{"session_id":"s1","confidence":0.9,"reason":"matched"}`)}, nil
+		return &agent.Result{Output: json.RawMessage(`{"agent_name":"test","session_id":"s1","confidence":0.9,"reason":"matched"}`)}, nil
 	}}, repo)
 
 	_, err := d.Disambiguate(ctx, []string{"conflict.txt"}, []*Match{{Session: &Session{
@@ -161,7 +161,7 @@ func TestAgentDisambiguatorPreservesPreexistingIgnoredDirectory(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(opts.CWD, "conflict.txt"), []byte("mutated\n"), 0o644); err != nil {
 			t.Fatalf("write tracked mutation: %v", err)
 		}
-		return &agent.Result{Output: json.RawMessage(`{"session_id":"s1","confidence":0.9,"reason":"matched"}`)}, nil
+		return &agent.Result{Output: json.RawMessage(`{"agent_name":"test","session_id":"s1","confidence":0.9,"reason":"matched"}`)}, nil
 	}}, repo)
 
 	_, err := d.Disambiguate(ctx, []string{"conflict.txt"}, []*Match{{Session: &Session{
@@ -202,7 +202,7 @@ func TestAgentDisambiguatorRemovesNestedGitRepositorySideEffect(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(nested, "file.txt"), []byte("nested\n"), 0o644); err != nil {
 			t.Fatalf("write nested file: %v", err)
 		}
-		return &agent.Result{Output: json.RawMessage(`{"session_id":"s1","confidence":0.9,"reason":"matched"}`)}, nil
+		return &agent.Result{Output: json.RawMessage(`{"agent_name":"test","session_id":"s1","confidence":0.9,"reason":"matched"}`)}, nil
 	}}, repo)
 
 	_, err := d.Disambiguate(ctx, []string{"conflict.txt"}, []*Match{{Session: &Session{
@@ -235,7 +235,7 @@ func TestAgentDisambiguatorPreservesPreexistingIgnoredSymlink(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(opts.CWD, "conflict.txt"), []byte("mutated\n"), 0o644); err != nil {
 			t.Fatalf("write tracked mutation: %v", err)
 		}
-		return &agent.Result{Output: json.RawMessage(`{"session_id":"s1","confidence":0.9,"reason":"matched"}`)}, nil
+		return &agent.Result{Output: json.RawMessage(`{"agent_name":"test","session_id":"s1","confidence":0.9,"reason":"matched"}`)}, nil
 	}}, repo)
 
 	_, err := d.Disambiguate(ctx, []string{"conflict.txt"}, []*Match{{Session: &Session{

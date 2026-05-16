@@ -3,6 +3,7 @@ package intent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -16,17 +17,25 @@ import (
 // Disambiguator chooses among multiple accepted transcript matches when the
 // deterministic file-overlap matcher cannot make a decisive selection.
 type Disambiguator interface {
-	Disambiguate(ctx context.Context, diffFiles []string, candidates []*Match) (sessionID string, err error)
+	Disambiguate(ctx context.Context, diffFiles []string, candidates []*Match) (DisambiguationChoice, error)
+}
+
+var ErrDisambiguatorCleanup = errors.New("intent disambiguator cleanup failed")
+
+type DisambiguationChoice struct {
+	AgentName string
+	SessionID string
 }
 
 var disambiguatorSchema = json.RawMessage(`{
   "type": "object",
   "properties": {
+    "agent_name": {"type": "string"},
     "session_id": {"type": "string"},
     "confidence": {"type": "number"},
     "reason": {"type": "string"}
   },
-  "required": ["session_id", "confidence", "reason"],
+  "required": ["agent_name", "session_id", "confidence", "reason"],
   "additionalProperties": false
 }`)
 
@@ -41,17 +50,17 @@ func NewAgentDisambiguator(a agent.Agent, cwd string) Disambiguator {
 	return &agentDisambiguator{agent: a, cwd: cwd}
 }
 
-func (d *agentDisambiguator) Disambiguate(ctx context.Context, diffFiles []string, candidates []*Match) (selected string, retErr error) {
+func (d *agentDisambiguator) Disambiguate(ctx context.Context, diffFiles []string, candidates []*Match) (choice DisambiguationChoice, retErr error) {
 	if d.agent == nil {
-		return "", fmt.Errorf("nil agent")
+		return DisambiguationChoice{}, fmt.Errorf("nil agent")
 	}
 	if len(candidates) == 0 {
-		return "", fmt.Errorf("no candidates")
+		return DisambiguationChoice{}, fmt.Errorf("no candidates")
 	}
 
 	dir, err := os.MkdirTemp("", "no-mistakes-intent-rerank-*")
 	if err != nil {
-		return "", err
+		return DisambiguationChoice{}, err
 	}
 	defer os.RemoveAll(dir)
 
@@ -59,13 +68,13 @@ func (d *agentDisambiguator) Disambiguate(ctx context.Context, diffFiles []strin
 	for i, candidate := range candidates {
 		path, err := writeDisambiguationPacket(dir, i, candidate)
 		if err != nil {
-			return "", err
+			return DisambiguationChoice{}, err
 		}
 		packetPaths = append(packetPaths, path)
 	}
 	beforeState, watchWorktree, err := disambiguatorWorktreeState(ctx, d.cwd)
 	if err != nil {
-		return "", err
+		return DisambiguationChoice{}, err
 	}
 	defer beforeState.cleanup()
 	if watchWorktree {
@@ -77,7 +86,7 @@ func (d *agentDisambiguator) Disambiguate(ctx context.Context, diffFiles []strin
 			defer afterState.cleanup()
 			if err != nil {
 				if retErr == nil {
-					retErr = err
+					retErr = fmt.Errorf("%w: %w", ErrDisambiguatorCleanup, err)
 				}
 				return
 			}
@@ -86,7 +95,7 @@ func (d *agentDisambiguator) Disambiguate(ctx context.Context, diffFiles []strin
 			}
 			if err := restoreDisambiguatorWorktree(cleanupCtx, d.cwd, beforeState); err != nil {
 				if retErr == nil {
-					retErr = err
+					retErr = fmt.Errorf("%w: %w", ErrDisambiguatorCleanup, err)
 				}
 			}
 		}()
@@ -98,26 +107,30 @@ func (d *agentDisambiguator) Disambiguate(ctx context.Context, diffFiles []strin
 		JSONSchema: disambiguatorSchema,
 	})
 	if err != nil {
-		return "", err
+		return DisambiguationChoice{}, err
 	}
 	var parsed struct {
+		AgentName  string  `json:"agent_name"`
 		SessionID  string  `json:"session_id"`
 		Confidence float64 `json:"confidence"`
 		Reason     string  `json:"reason"`
 	}
 	if len(result.Output) > 0 {
 		if err := json.Unmarshal(result.Output, &parsed); err != nil {
-			return "", err
+			return DisambiguationChoice{}, err
 		}
 	} else if strings.TrimSpace(result.Text) != "" {
 		if err := json.Unmarshal([]byte(strings.TrimSpace(result.Text)), &parsed); err != nil {
-			return "", err
+			return DisambiguationChoice{}, err
 		}
 	}
-	if strings.TrimSpace(parsed.SessionID) == "" {
-		return "", fmt.Errorf("agent returned empty session_id")
+	if strings.TrimSpace(parsed.AgentName) == "" {
+		return DisambiguationChoice{}, fmt.Errorf("agent returned empty agent_name")
 	}
-	return strings.TrimSpace(parsed.SessionID), nil
+	if strings.TrimSpace(parsed.SessionID) == "" {
+		return DisambiguationChoice{}, fmt.Errorf("agent returned empty session_id")
+	}
+	return DisambiguationChoice{AgentName: strings.TrimSpace(parsed.AgentName), SessionID: strings.TrimSpace(parsed.SessionID)}, nil
 }
 
 type disambiguatorWorktreeSnapshot struct {
@@ -306,7 +319,7 @@ func buildDisambiguationPrompt(diffFiles []string, candidates []*Match, packetPa
 		sb.WriteString(packetPaths[i])
 		sb.WriteString("\n")
 	}
-	sb.WriteString("\nReturn {\"session_id\":\"...\",\"confidence\":0.0," +
+	sb.WriteString("\nReturn {\"agent_name\":\"...\",\"session_id\":\"...\",\"confidence\":0.0," +
 		"\"reason\":\"short explanation\"}.\n")
 	return sb.String()
 }

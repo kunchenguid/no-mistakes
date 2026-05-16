@@ -164,7 +164,7 @@ func TestAgentDisambiguator_UsesSanitizedTranscriptPacketFiles(t *testing.T) {
 		if strings.Contains(packet, "ghp_") || strings.Contains(packet, "<system>") {
 			t.Fatalf("packet was not sanitized:\n%s", packet)
 		}
-		out := []byte(`{"session_id":"s2","confidence":0.82,"reason":"closer user request"}`)
+		out := []byte(`{"agent_name":"claude","session_id":"s2","confidence":0.82,"reason":"closer user request"}`)
 		return &agent.Result{Output: out, Text: string(out)}, nil
 	}
 
@@ -176,7 +176,7 @@ func TestAgentDisambiguator_UsesSanitizedTranscriptPacketFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("disambiguate: %v", err)
 	}
-	if selected != "s2" {
+	if selected.AgentName != "claude" || selected.SessionID != "s2" {
 		t.Fatalf("selected = %q, want s2", selected)
 	}
 }
@@ -200,7 +200,7 @@ func TestAgentDisambiguator_CleansWorktreeSideEffects(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(opts.CWD, "untracked.txt"), []byte("new\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		out := []byte(`{"session_id":"s1","confidence":0.95,"reason":"closest"}`)
+		out := []byte(`{"agent_name":"claude","session_id":"s1","confidence":0.95,"reason":"closest"}`)
 		return &agent.Result{Output: out, Text: string(out)}, nil
 	}
 
@@ -212,7 +212,7 @@ func TestAgentDisambiguator_CleansWorktreeSideEffects(t *testing.T) {
 	if err != nil {
 		t.Fatalf("disambiguate: %v", err)
 	}
-	if selected != "s1" {
+	if selected.AgentName != "claude" || selected.SessionID != "s1" {
 		t.Fatalf("selected = %q, want s1", selected)
 	}
 	if got := gitTestCmd(t, dir, "status", "--porcelain"); got != "" {
@@ -246,7 +246,7 @@ func TestAgentDisambiguator_CleansCommittedSideEffects(t *testing.T) {
 		}
 		gitTestCmd(t, opts.CWD, "add", "tracked.txt")
 		gitTestCmd(t, opts.CWD, "commit", "-m", "agent side effect")
-		out := []byte(`{"session_id":"s1","confidence":0.95,"reason":"closest"}`)
+		out := []byte(`{"agent_name":"claude","session_id":"s1","confidence":0.95,"reason":"closest"}`)
 		return &agent.Result{Output: out, Text: string(out)}, nil
 	}
 
@@ -258,7 +258,7 @@ func TestAgentDisambiguator_CleansCommittedSideEffects(t *testing.T) {
 	if err != nil {
 		t.Fatalf("disambiguate: %v", err)
 	}
-	if selected != "s1" {
+	if selected.AgentName != "claude" || selected.SessionID != "s1" {
 		t.Fatalf("selected = %q, want s1", selected)
 	}
 	if got := gitTestCmd(t, dir, "rev-parse", "HEAD"); got != beforeHead {
@@ -287,7 +287,7 @@ func TestAgentDisambiguator_CleansWithCanceledAgentContext(t *testing.T) {
 			t.Fatal(err)
 		}
 		cancel()
-		out := []byte(`{"session_id":"s1","confidence":0.95,"reason":"closest"}`)
+		out := []byte(`{"agent_name":"claude","session_id":"s1","confidence":0.95,"reason":"closest"}`)
 		return &agent.Result{Output: out, Text: string(out)}, nil
 	}
 
@@ -299,7 +299,7 @@ func TestAgentDisambiguator_CleansWithCanceledAgentContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("disambiguate: %v", err)
 	}
-	if selected != "s1" {
+	if selected.AgentName != "claude" || selected.SessionID != "s1" {
 		t.Fatalf("selected = %q, want s1", selected)
 	}
 	if got := gitTestCmd(t, dir, "status", "--porcelain"); got != "" {
