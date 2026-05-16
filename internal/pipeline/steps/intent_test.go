@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -182,6 +183,26 @@ func TestIntentStep_ExtractErrorReturnsSkippedNotError(t *testing.T) {
 	}
 	if sctx.Run.Intent != nil {
 		t.Errorf("run.Intent should remain nil on error, got %q", *sctx.Run.Intent)
+	}
+}
+
+func TestIntentStep_DisambiguatorCleanupErrorReturnsError(t *testing.T) {
+	sctx := newIntentStepContext(t)
+	step := &IntentStep{
+		runIntent: func(_ context.Context, _ *pipeline.StepContext) (*intent.Result, error) {
+			return nil, fmt.Errorf("restore worktree: %w", intent.ErrDisambiguatorCleanup)
+		},
+	}
+
+	outcome, err := step.Execute(sctx)
+	if !errors.Is(err, intent.ErrDisambiguatorCleanup) {
+		t.Fatalf("execute error = %v, want ErrDisambiguatorCleanup", err)
+	}
+	if outcome != nil {
+		t.Errorf("outcome = %+v, want nil", outcome)
+	}
+	if sctx.Run.Intent != nil {
+		t.Errorf("run.Intent should remain nil on cleanup error, got %q", *sctx.Run.Intent)
 	}
 }
 

@@ -100,6 +100,11 @@ func (s *IntentStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.Step
 			sctx.Log("no diff between base and head, skipping intent extraction")
 			return &pipeline.StepOutcome{Skipped: true}, nil
 		}
+		if errors.Is(runErr, intent.ErrDisambiguatorCleanup) {
+			outcomeLabel = "error"
+			sctx.Log(fmt.Sprintf("intent extraction failed: %v", runErr))
+			return nil, runErr
+		}
 		slog.Debug("intent: extract failed", "run_id", sctx.Run.ID, "error", runErr)
 		outcomeLabel = "error"
 		sctx.Log(fmt.Sprintf("intent extraction failed: %v", runErr))
