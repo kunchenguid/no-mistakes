@@ -64,11 +64,13 @@ If the PID file points at a process that's no longer running, remove both and ru
 
 If you have multiple installs with different `NM_HOME` roots, each gets its own scoped service name (with a short suffix derived from the path). Make sure you're looking at the right one - `no-mistakes daemon status` reports which.
 
-## `no-mistakes update` aborts
+## `no-mistakes update` prompts or aborts
 
-Symptom: `update` says "aborted: daemon running from different executable path."
+Symptom: `update` says the daemon is running from a different executable path, or aborts because the daemon executable path cannot be determined.
 
-The update requires the running daemon to already be using the same binary that's running the update. This is a safety check so you don't replace a binary that's been copied somewhere else.
+When the running daemon uses a different binary, `update` prompts before replacing it. Pass `no-mistakes update -y` to confirm non-interactively.
+
+If the daemon executable path can't be determined at all (stale PID, permissions), the update aborts before replacing anything.
 
 Fix:
 
@@ -76,8 +78,6 @@ Fix:
 no-mistakes daemon stop
 no-mistakes update
 ```
-
-If the daemon executable path can't be determined at all (stale PID, permissions), the update also aborts. Same fix.
 
 ## Agent binary not detected
 

@@ -51,7 +51,7 @@ no-mistakes rerun
 no-mistakes update
 ```
 
-`no-mistakes update` stops and starts the daemon when it is running, or when stale daemon artifacts exist, so the new executable is used. It prefers the managed service path and falls back to a detached daemon if service startup is unavailable or fails. If the daemon is already running, update only proceeds when the daemon is using the same executable path as the binary running the update command; if that path cannot be determined or points to a different binary, the update aborts before replacing anything.
+`no-mistakes update` stops and starts the daemon when it is running, or when stale daemon artifacts exist, so the new executable is used. It prefers the managed service path and falls back to a detached daemon if service startup is unavailable or fails. If the daemon is already running from a different executable path, update prompts before replacing it; pass `-y` or `--yes` to confirm without prompting. If the daemon executable path cannot be determined, the update aborts before replacing anything.
 
 The daemon writes an identity record to `~/.no-mistakes/daemon.pid` and listens on a Unix socket at `~/.no-mistakes/socket`. On Windows, it uses a localhost TCP listener and a protected endpoint file at the same path.
 

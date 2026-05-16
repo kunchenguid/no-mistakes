@@ -135,9 +135,10 @@ Update the installed binary and reset the daemon.
 ```sh
 no-mistakes update
 no-mistakes update --beta
+no-mistakes update -y
 ```
 
-Downloads the latest release, verifies the SHA-256 checksum, atomically replaces the running binary, and resets the daemon when it is running or stale daemon artifacts exist so the new executable is picked up, preferring the managed service path and falling back to a detached daemon if service startup is unavailable or fails. By default this installs the latest stable release. Pass `--beta` to include prereleases and install the latest beta when one is newer than the current stable release. If the daemon is running, update first requires it to already be using the same executable path as the binary running `no-mistakes update`; if that daemon executable path cannot be determined or it points to a different binary, the update aborts before replacement. If the daemon does not come back cleanly after a successful replacement, the command reports that failure. On macOS, removes the quarantine extended attribute.
+Downloads the latest release, verifies the SHA-256 checksum, atomically replaces the running binary, and resets the daemon when it is running or stale daemon artifacts exist so the new executable is picked up, preferring the managed service path and falling back to a detached daemon if service startup is unavailable or fails. By default this installs the latest stable release. Pass `--beta` to include prereleases and install the latest beta when one is newer than the current stable release. If the daemon is running from a different executable path, update prompts before replacing it; pass `-y` or `--yes` to replace that daemon without prompting. If the daemon executable path cannot be determined, the update aborts before replacement. If the daemon does not come back cleanly after a successful replacement, the command reports that failure. On macOS, removes the quarantine extended attribute.
 
 Because `update` installs the latest official release binary, the replacement binary includes the default self-hosted telemetry host and website ID. Disable telemetry with `NO_MISTAKES_TELEMETRY=0`, or override the host and website ID with `NO_MISTAKES_UMAMI_HOST` and `NO_MISTAKES_UMAMI_WEBSITE_ID`.
 

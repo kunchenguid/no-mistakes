@@ -63,15 +63,16 @@ See [Provider Integration](/no-mistakes/guides/provider-integration/) for PR and
 ```sh
 no-mistakes update
 no-mistakes update --beta
+no-mistakes update -y
 ```
 
 This downloads the latest release from GitHub, verifies the SHA-256 checksum, atomically replaces the binary, and resets the daemon so it picks up the new executable. It prefers the managed service path and falls back to a detached daemon if service startup is unavailable or fails.
 
-`no-mistakes update` installs the latest stable release. Use `no-mistakes update --beta` to opt into prereleases and install the latest beta when one is newer than the current stable release.
+`no-mistakes update` installs the latest stable release. Use `no-mistakes update --beta` to opt into prereleases and install the latest beta when one is newer than the current stable release. Use `no-mistakes update -y` to replace a daemon started from a different binary without prompting.
 
 Because `update` installs the latest official release binary, it installs a binary with the default self-hosted telemetry host and website ID. Disable telemetry with `NO_MISTAKES_TELEMETRY=0`, or override the host and website ID with `NO_MISTAKES_UMAMI_HOST` and `NO_MISTAKES_UMAMI_WEBSITE_ID`.
 
-It only proceeds if the running daemon is already using the same executable path. If the daemon executable path cannot be determined or it was started from a different binary, the update aborts before replacing the binary. If the daemon does not come back cleanly after a successful replacement, the new binary stays installed but the command reports the daemon reset failure.
+If the running daemon was started from a different binary, the update prompts before replacing it. If the daemon executable path cannot be determined, the update aborts before replacing the binary. If the daemon does not come back cleanly after a successful replacement, the new binary stays installed but the command reports the daemon reset failure.
 
 Background update checks run automatically on each CLI invocation (except `update` itself). Suppress with `NO_MISTAKES_NO_UPDATE_CHECK=1`.
 
