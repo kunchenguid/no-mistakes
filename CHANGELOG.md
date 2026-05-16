@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.19.3](https://github.com/kunchenguid/no-mistakes/compare/v1.19.2...v1.19.3) (2026-05-16)
+
+
+### Bug Fixes
+
+* **update:** confirm daemon takeover before replacing running daemon ([#200](https://github.com/kunchenguid/no-mistakes/issues/200)) ([5fd0cf2](https://github.com/kunchenguid/no-mistakes/commit/5fd0cf254e9f9dc31b5d478514c03cdf313e833c))
+
 ## [1.19.2](https://github.com/kunchenguid/no-mistakes/compare/v1.19.1...v1.19.2) (2026-05-16)
 
 
