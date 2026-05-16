@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	nmgit "github.com/kunchenguid/no-mistakes/internal/git"
@@ -62,30 +63,29 @@ func (d *agentDisambiguator) Disambiguate(ctx context.Context, diffFiles []strin
 		}
 		packetPaths = append(packetPaths, path)
 	}
-	beforeStatus, watchWorktree, err := disambiguatorWorktreeStatus(ctx, d.cwd)
+	beforeState, watchWorktree, err := disambiguatorWorktreeState(ctx, d.cwd)
 	if err != nil {
 		return "", err
 	}
 	if watchWorktree {
 		defer func() {
-			afterStatus, err := nmgit.Run(ctx, d.cwd, "status", "--porcelain", "-uall")
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			afterState, _, err := disambiguatorWorktreeState(cleanupCtx, d.cwd)
 			if err != nil {
 				if retErr == nil {
 					retErr = err
 				}
 				return
 			}
-			if afterStatus == beforeStatus {
+			if afterState == beforeState {
 				return
 			}
-			if _, err := nmgit.Run(ctx, d.cwd, "reset", "--hard"); err != nil {
+			if err := restoreDisambiguatorWorktree(cleanupCtx, d.cwd, beforeState); err != nil {
 				if retErr == nil {
 					retErr = err
 				}
-				return
-			}
-			if _, err := nmgit.Run(ctx, d.cwd, "clean", "-fd"); err != nil && retErr == nil {
-				retErr = err
 			}
 		}()
 	}
@@ -118,19 +118,56 @@ func (d *agentDisambiguator) Disambiguate(ctx context.Context, diffFiles []strin
 	return strings.TrimSpace(parsed.SessionID), nil
 }
 
-func disambiguatorWorktreeStatus(ctx context.Context, cwd string) (string, bool, error) {
+type disambiguatorWorktreeSnapshot struct {
+	status string
+	head   string
+	ref    string
+}
+
+func disambiguatorWorktreeState(ctx context.Context, cwd string) (disambiguatorWorktreeSnapshot, bool, error) {
 	if strings.TrimSpace(cwd) == "" {
-		return "", false, nil
+		return disambiguatorWorktreeSnapshot{}, false, nil
 	}
 	inside, err := nmgit.Run(ctx, cwd, "rev-parse", "--is-inside-work-tree")
 	if err != nil || strings.TrimSpace(inside) != "true" {
-		return "", false, nil
+		return disambiguatorWorktreeSnapshot{}, false, nil
+	}
+	head, err := nmgit.Run(ctx, cwd, "rev-parse", "HEAD")
+	if err != nil {
+		return disambiguatorWorktreeSnapshot{}, false, err
+	}
+	ref, err := nmgit.Run(ctx, cwd, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return disambiguatorWorktreeSnapshot{}, false, err
 	}
 	status, err := nmgit.Run(ctx, cwd, "status", "--porcelain", "-uall")
 	if err != nil {
-		return "", false, err
+		return disambiguatorWorktreeSnapshot{}, false, err
 	}
-	return status, true, nil
+	return disambiguatorWorktreeSnapshot{
+		status: status,
+		head:   strings.TrimSpace(head),
+		ref:    strings.TrimSpace(ref),
+	}, true, nil
+}
+
+func restoreDisambiguatorWorktree(ctx context.Context, cwd string, snapshot disambiguatorWorktreeSnapshot) error {
+	if snapshot.ref == "HEAD" {
+		if _, err := nmgit.Run(ctx, cwd, "checkout", "--detach", snapshot.head); err != nil {
+			return err
+		}
+	} else if snapshot.ref != "" {
+		if _, err := nmgit.Run(ctx, cwd, "checkout", snapshot.ref); err != nil {
+			return err
+		}
+	}
+	if _, err := nmgit.Run(ctx, cwd, "reset", "--hard", snapshot.head); err != nil {
+		return err
+	}
+	if _, err := nmgit.Run(ctx, cwd, "clean", "-fd"); err != nil {
+		return err
+	}
+	return nil
 }
 
 type disambiguationPacket struct {

@@ -16,15 +16,15 @@ type fakeAgent struct {
 	lastPrompt string
 	lastCWD    string
 	output     string
-	run        func(opts agent.RunOpts) (*agent.Result, error)
+	run        func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error)
 }
 
 func (f *fakeAgent) Name() string { return "fake" }
-func (f *fakeAgent) Run(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+func (f *fakeAgent) Run(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 	f.lastPrompt = opts.Prompt
 	f.lastCWD = opts.CWD
 	if f.run != nil {
-		return f.run(opts)
+		return f.run(ctx, opts)
 	}
 	return &agent.Result{
 		Output: []byte(f.output),
@@ -141,7 +141,7 @@ func TestBuildTranscriptBlock_RedactsAndStrips(t *testing.T) {
 
 func TestAgentDisambiguator_UsesSanitizedTranscriptPacketFiles(t *testing.T) {
 	fa := &fakeAgent{}
-	fa.run = func(opts agent.RunOpts) (*agent.Result, error) {
+	fa.run = func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
 		if opts.CWD != "/work/dir" {
 			t.Fatalf("CWD = %q, want /work/dir", opts.CWD)
 		}
@@ -193,7 +193,7 @@ func TestAgentDisambiguator_CleansWorktreeSideEffects(t *testing.T) {
 	gitTestCmd(t, dir, "commit", "-m", "initial")
 
 	fa := &fakeAgent{}
-	fa.run = func(opts agent.RunOpts) (*agent.Result, error) {
+	fa.run = func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
 		if err := os.WriteFile(filepath.Join(opts.CWD, "tracked.txt"), []byte("after\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -206,6 +206,93 @@ func TestAgentDisambiguator_CleansWorktreeSideEffects(t *testing.T) {
 
 	d := NewAgentDisambiguator(fa, dir)
 	selected, err := d.Disambiguate(context.Background(), []string{"tracked.txt"}, []*Match{
+		{Session: &Session{SessionID: "s1", AgentName: "claude", Messages: []Message{{Role: RoleUser, Text: "change tracked"}}}},
+		{Session: &Session{SessionID: "s2", AgentName: "claude", Messages: []Message{{Role: RoleUser, Text: "other"}}}},
+	})
+	if err != nil {
+		t.Fatalf("disambiguate: %v", err)
+	}
+	if selected != "s1" {
+		t.Fatalf("selected = %q, want s1", selected)
+	}
+	if got := gitTestCmd(t, dir, "status", "--porcelain"); got != "" {
+		t.Fatalf("expected clean worktree, got %q", got)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "tracked.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "before\n" {
+		t.Fatalf("tracked file = %q, want before", data)
+	}
+}
+
+func TestAgentDisambiguator_CleansCommittedSideEffects(t *testing.T) {
+	dir := t.TempDir()
+	gitTestCmd(t, dir, "init")
+	gitTestCmd(t, dir, "config", "user.name", "test")
+	gitTestCmd(t, dir, "config", "user.email", "test@example.com")
+	if err := os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("before\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTestCmd(t, dir, "add", "tracked.txt")
+	gitTestCmd(t, dir, "commit", "-m", "initial")
+	beforeHead := gitTestCmd(t, dir, "rev-parse", "HEAD")
+
+	fa := &fakeAgent{}
+	fa.run = func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		if err := os.WriteFile(filepath.Join(opts.CWD, "tracked.txt"), []byte("after\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitTestCmd(t, opts.CWD, "add", "tracked.txt")
+		gitTestCmd(t, opts.CWD, "commit", "-m", "agent side effect")
+		out := []byte(`{"session_id":"s1","confidence":0.95,"reason":"closest"}`)
+		return &agent.Result{Output: out, Text: string(out)}, nil
+	}
+
+	d := NewAgentDisambiguator(fa, dir)
+	selected, err := d.Disambiguate(context.Background(), []string{"tracked.txt"}, []*Match{
+		{Session: &Session{SessionID: "s1", AgentName: "claude", Messages: []Message{{Role: RoleUser, Text: "change tracked"}}}},
+		{Session: &Session{SessionID: "s2", AgentName: "claude", Messages: []Message{{Role: RoleUser, Text: "other"}}}},
+	})
+	if err != nil {
+		t.Fatalf("disambiguate: %v", err)
+	}
+	if selected != "s1" {
+		t.Fatalf("selected = %q, want s1", selected)
+	}
+	if got := gitTestCmd(t, dir, "rev-parse", "HEAD"); got != beforeHead {
+		t.Fatalf("HEAD = %q, want %q", got, beforeHead)
+	}
+	if got := gitTestCmd(t, dir, "status", "--porcelain"); got != "" {
+		t.Fatalf("expected clean worktree, got %q", got)
+	}
+}
+
+func TestAgentDisambiguator_CleansWithCanceledAgentContext(t *testing.T) {
+	dir := t.TempDir()
+	gitTestCmd(t, dir, "init")
+	gitTestCmd(t, dir, "config", "user.name", "test")
+	gitTestCmd(t, dir, "config", "user.email", "test@example.com")
+	if err := os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("before\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTestCmd(t, dir, "add", "tracked.txt")
+	gitTestCmd(t, dir, "commit", "-m", "initial")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	fa := &fakeAgent{}
+	fa.run = func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		if err := os.WriteFile(filepath.Join(opts.CWD, "tracked.txt"), []byte("after\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cancel()
+		out := []byte(`{"session_id":"s1","confidence":0.95,"reason":"closest"}`)
+		return &agent.Result{Output: out, Text: string(out)}, nil
+	}
+
+	d := NewAgentDisambiguator(fa, dir)
+	selected, err := d.Disambiguate(ctx, []string{"tracked.txt"}, []*Match{
 		{Session: &Session{SessionID: "s1", AgentName: "claude", Messages: []Message{{Role: RoleUser, Text: "change tracked"}}}},
 		{Session: &Session{SessionID: "s2", AgentName: "claude", Messages: []Message{{Role: RoleUser, Text: "other"}}}},
 	})
