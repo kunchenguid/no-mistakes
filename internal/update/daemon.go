@@ -1,6 +1,7 @@
 package update
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"os"
@@ -46,7 +47,30 @@ func (u *updater) ensureDaemonUsesCurrentExecutable() error {
 	if executablePathsMatch(currentPath, runningPath) {
 		return nil
 	}
+	if u.confirmDaemonTakeover(runningPath, currentPath) {
+		return nil
+	}
 	return fmt.Errorf("daemon is running from %s, but update is running from %s; run update using the same binary that started the daemon, or restart the daemon from this binary first", runningPath, currentPath)
+}
+
+func (u *updater) confirmDaemonTakeover(runningPath, currentPath string) bool {
+	if u.assumeYes {
+		fmt.Fprintf(u.stderrWriter(), "daemon is running from %s, but update is running from %s; replacing the running daemon because -y was provided\n", runningPath, currentPath)
+		return true
+	}
+
+	fmt.Fprintf(u.stderrWriter(), "daemon is running from %s, but update is running from %s\n", runningPath, currentPath)
+	fmt.Fprint(u.stderrWriter(), "Replace the running daemon with this binary? [y/N] ")
+	input := u.stdin
+	if input == nil {
+		input = os.Stdin
+	}
+	response, err := bufio.NewReader(input).ReadString('\n')
+	if err != nil && response == "" {
+		return false
+	}
+	answer := strings.ToLower(strings.TrimSpace(response))
+	return answer == "y" || answer == "yes"
 }
 
 func executablePathsMatch(a, b string) bool {

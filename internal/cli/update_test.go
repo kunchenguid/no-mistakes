@@ -24,3 +24,13 @@ func TestUpdateCommandBetaFlag(t *testing.T) {
 		t.Fatalf("unexpected update output: %s", out)
 	}
 }
+
+func TestUpdateCommandYesFlag(t *testing.T) {
+	out, err := executeCmd("update", "-y")
+	if err != nil {
+		t.Fatalf("update -y failed: %v\noutput: %s", err, out)
+	}
+	if !strings.Contains(out, "self-update unavailable for development builds") {
+		t.Fatalf("unexpected update output: %s", out)
+	}
+}

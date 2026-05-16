@@ -50,6 +50,7 @@ type updater struct {
 	httpClient         *http.Client
 	cachePath          string
 	executablePath     string
+	stdin              io.Reader
 	stdout             io.Writer
 	stderr             io.Writer
 	now                func() time.Time
@@ -59,10 +60,13 @@ type updater struct {
 	disableBackground  bool
 	noColor            bool
 	includePrereleases bool
+	assumeYes          bool
 }
 
 type RunOptions struct {
-	Beta bool
+	Beta  bool
+	Yes   bool
+	Stdin io.Reader
 }
 
 func Run(ctx context.Context, stdout, stderr io.Writer, opts RunOptions) error {
@@ -71,6 +75,10 @@ func Run(ctx context.Context, stdout, stderr io.Writer, opts RunOptions) error {
 		return err
 	}
 	u.includePrereleases = opts.Beta
+	u.assumeYes = opts.Yes
+	if opts.Stdin != nil {
+		u.stdin = opts.Stdin
+	}
 	return u.run(ctx)
 }
 
@@ -120,6 +128,7 @@ func defaultUpdater(stdout, stderr io.Writer) (*updater, error) {
 		httpClient:      &http.Client{Timeout: 30 * time.Second},
 		cachePath:       p.UpdateCheckFile(),
 		executablePath:  execPath,
+		stdin:           os.Stdin,
 		stdout:          stdout,
 		stderr:          stderr,
 		now:             time.Now,
