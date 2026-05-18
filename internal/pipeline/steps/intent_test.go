@@ -212,6 +212,41 @@ func TestIntentStep_UsesNinetySecondExtractionTimeout(t *testing.T) {
 	}
 }
 
+func TestIntentStep_SlowExtractionPastOldTimeoutStillAttachesIntent(t *testing.T) {
+	sctx := newIntentStepContext(t)
+	step := &IntentStep{
+		runIntent: func(ctx context.Context, _ *pipeline.StepContext) (*intent.Result, error) {
+			select {
+			case <-time.After(31 * time.Second):
+				return &intent.Result{
+					Summary:   "user wanted slow transcript summarization to finish",
+					AgentName: "claude",
+					SessionID: "slow-session",
+					Score:     0.92,
+				}, nil
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		},
+	}
+
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if outcome == nil || outcome.Skipped {
+		t.Fatalf("expected slow extraction to attach intent, got %+v", outcome)
+	}
+
+	persisted, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if persisted.Intent == nil || *persisted.Intent != "user wanted slow transcript summarization to finish" {
+		t.Fatalf("persisted intent = %v, want slow summarization intent", persisted.Intent)
+	}
+}
+
 func TestIntentStep_DisambiguatorCleanupErrorReturnsError(t *testing.T) {
 	sctx := newIntentStepContext(t)
 	step := &IntentStep{
