@@ -18,7 +18,7 @@ import (
 )
 
 // intentExtractTimeout caps total wall-clock time spent on intent extraction.
-const intentExtractTimeout = 30 * time.Second
+const intentExtractTimeout = 90 * time.Second
 
 // IntentStep is a best-effort pipeline step that infers the user's intent
 // from local agent transcripts and attaches it to the run so downstream
