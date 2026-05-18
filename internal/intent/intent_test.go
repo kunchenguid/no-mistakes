@@ -401,7 +401,7 @@ func TestExtract_NoReaders(t *testing.T) {
 	}
 }
 
-func TestExtract_LogsCandidateDecisions(t *testing.T) {
+func TestExtract_LogsAcceptedCandidatesOnly(t *testing.T) {
 	r := &staticReader{
 		name: "opencode",
 		sessions: []*Session{{
@@ -409,6 +409,11 @@ func TestExtract_LogsCandidateDecisions(t *testing.T) {
 			CWD:          "/tmp/repo",
 			LastActivity: time.Now(),
 			Messages:     []Message{{FilePaths: []string{"a.go"}}},
+		}, {
+			SessionID:    "strong",
+			CWD:          "/tmp/repo",
+			LastActivity: time.Now(),
+			Messages:     []Message{{FilePaths: []string{"b.go", "c.go"}}},
 		}},
 	}
 	var logs []string
@@ -424,13 +429,18 @@ func TestExtract_LogsCandidateDecisions(t *testing.T) {
 			logs = append(logs, fmt.Sprintf(format, args...))
 		},
 	})
-	if !errors.Is(err, ErrNoMatch) {
-		t.Fatalf("expected ErrNoMatch, got %v", err)
+	if err != nil {
+		t.Fatalf("extract: %v", err)
 	}
 	joined := strings.Join(logs, "\n")
-	for _, want := range []string{"candidate", "opencode", "weak", "score 0.33", "rejected"} {
+	for _, want := range []string{"candidate", "opencode", "strong", "accepted"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("logs missing %q:\n%s", want, joined)
+		}
+	}
+	for _, unwanted := range []string{"weak", "rejected", "no_overlap", "single_overlap_multi_file_diff"} {
+		if strings.Contains(joined, unwanted) {
+			t.Fatalf("logs contain rejected candidate detail %q:\n%s", unwanted, joined)
 		}
 	}
 }

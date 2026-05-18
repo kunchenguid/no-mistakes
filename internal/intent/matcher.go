@@ -94,16 +94,12 @@ func acceptedMatches(sessions []*Session, diffFiles []string, opts matchOptions)
 	for _, s := range sessions {
 		sc, overlap := score(s, diffFiles)
 		accepted, reason, confidence := acceptMatchCandidate(sc, len(overlap), len(diffFiles), s.LastActivity, opts)
-		if opts.Logf != nil {
-			decision := "accepted"
-			if !accepted {
-				decision = "rejected"
-			}
-			opts.Logf("candidate agent=%s session=%s cwd=%q score %.2f confidence %.2f overlap=%d/%d decision=%s reason=%s",
-				s.AgentName, s.SessionID, s.CWD, sc, confidence, len(overlap), len(diffFiles), decision, reason)
-		}
 		if !accepted {
 			continue
+		}
+		if opts.Logf != nil {
+			opts.Logf("candidate agent=%s session=%s cwd=%q score %.2f confidence %.2f overlap=%d/%d decision=accepted reason=%s",
+				s.AgentName, s.SessionID, s.CWD, sc, confidence, len(overlap), len(diffFiles), reason)
 		}
 		candidates = append(candidates, &Match{Session: s, Score: sc, Confidence: confidence, Overlap: overlap})
 	}
