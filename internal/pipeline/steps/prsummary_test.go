@@ -266,6 +266,26 @@ func TestBuildTestingSummaryForPR_SummarizesBaselineOnlyTests(t *testing.T) {
 	}
 }
 
+func TestBuildTestingSummaryForPR_KeepsOutcomeForArtifactOnlyEvidence(t *testing.T) {
+	t.Parallel()
+	findings := `{"findings":[],"summary":"","artifacts":[{"kind":"log","label":"Rendered PR markdown","content":"## Testing\n\n- Evidence captured"}]}`
+	steps := []*db.StepResult{
+		{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings},
+	}
+	rounds := map[string][]*db.StepRound{
+		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 300}},
+	}
+
+	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123")
+
+	if !strings.Contains(md, "Outcome:") {
+		t.Fatalf("expected artifact-only evidence to keep outcome fallback, got:\n%s", md)
+	}
+	if !strings.Contains(md, "Evidence: Rendered PR markdown") {
+		t.Fatalf("expected artifact evidence to render, got:\n%s", md)
+	}
+}
+
 func TestBuildTestingSummary_EscapesMarkdownInTestingSummary(t *testing.T) {
 	t.Parallel()
 	findings := "{\"findings\":[],\"summary\":\"\",\"testing_summary\":\"Validated `go test ./...`\\nand noted <details> output\",\"tested\":[]}"

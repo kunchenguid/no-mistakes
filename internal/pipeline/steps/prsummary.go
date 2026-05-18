@@ -91,13 +91,16 @@ func buildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRou
 
 		var b strings.Builder
 		b.WriteString("## Testing\n\n")
+		wroteSummary := false
 		if testingSummary != "" {
 			rendered := renderTestingSummary(testingSummary)
 			if rendered != "" {
 				writeTestingSummary(&b, rendered, opts)
+				wroteSummary = true
 			}
 		} else if !opts.includeTestedDetails && len(tested) > 0 {
 			writeTestingSummary(&b, compactTestedSummary(len(tested)), opts)
+			wroteSummary = true
 		}
 		if opts.includeTestedDetails {
 			for _, detail := range tested {
@@ -120,7 +123,7 @@ func buildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRou
 				b.WriteString("\n")
 			}
 		}
-		if outcome := buildTestingOutcomeLine(line, stepRounds); !opts.omitOutcome && outcome != "" {
+		if outcome := buildTestingOutcomeLine(line, stepRounds); (!opts.omitOutcome || !wroteSummary) && outcome != "" {
 			b.WriteString("- ")
 			b.WriteString(outcome)
 			b.WriteString("\n")
