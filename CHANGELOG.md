@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.20.1](https://github.com/kunchenguid/no-mistakes/compare/v1.20.0...v1.20.1) (2026-05-18)
+
+
+### Bug Fixes
+
+* **intent:** log accepted candidates only ([#209](https://github.com/kunchenguid/no-mistakes/issues/209)) ([c04a2a7](https://github.com/kunchenguid/no-mistakes/commit/c04a2a7ee806b192a99c1c8073358ff9938527ee))
+* **pipeline:** extend intent extraction timeout ([#206](https://github.com/kunchenguid/no-mistakes/issues/206)) ([90a1829](https://github.com/kunchenguid/no-mistakes/commit/90a1829a68a61adef7bf18af87e283140181e0cb))
+* **pipeline:** render PR testing summaries as prose ([#208](https://github.com/kunchenguid/no-mistakes/issues/208)) ([6e4d7e1](https://github.com/kunchenguid/no-mistakes/commit/6e4d7e1c5ead3b75cf2265b490afd06c8c05ef5d))
+
 ## [1.20.0](https://github.com/kunchenguid/no-mistakes/compare/v1.19.3...v1.20.0) (2026-05-16)
 
 
