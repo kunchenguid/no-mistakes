@@ -223,6 +223,7 @@ func TestBuildTestingSummaryForPR_OmitsRecordedTestDetails(t *testing.T) {
 	}
 
 	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123")
+	t.Logf("rendered PR testing markdown:\n%s", md)
 
 	if !strings.Contains(md, "## Testing\n\nValidated the CLI doctor path and config loading; both passed.") {
 		t.Fatalf("expected natural-language testing summary as a paragraph, got:\n%s", md)
@@ -251,6 +252,7 @@ func TestBuildTestingSummaryForPR_SummarizesBaselineOnlyTests(t *testing.T) {
 	}
 
 	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123")
+	t.Logf("rendered PR testing markdown:\n%s", md)
 
 	if !strings.Contains(md, "## Testing\n\nCompleted 1 recorded test check.") {
 		t.Fatalf("expected compact baseline test summary as a paragraph, got:\n%s", md)
@@ -277,6 +279,7 @@ func TestBuildTestingSummaryForPR_KeepsFailedOutcomeForCompactTestedSummary(t *t
 	}
 
 	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123")
+	t.Logf("rendered PR testing markdown:\n%s", md)
 
 	if !strings.Contains(md, "Completed 1 recorded test check.") {
 		t.Fatalf("expected compact baseline test summary as a paragraph, got:\n%s", md)
@@ -297,6 +300,7 @@ func TestBuildTestingSummaryForPR_KeepsOutcomeForArtifactOnlyEvidence(t *testing
 	}
 
 	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123")
+	t.Logf("rendered PR testing markdown:\n%s", md)
 
 	if !strings.Contains(md, "Outcome:") {
 		t.Fatalf("expected artifact-only evidence to keep outcome fallback, got:\n%s", md)
