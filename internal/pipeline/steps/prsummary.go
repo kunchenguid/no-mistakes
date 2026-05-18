@@ -123,7 +123,7 @@ func buildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRou
 				b.WriteString("\n")
 			}
 		}
-		if outcome := buildTestingOutcomeLine(line, stepRounds); (!opts.omitOutcome || !wroteSummary) && outcome != "" {
+		if outcome := buildTestingOutcomeLine(line, stepRounds); shouldRenderTestingOutcome(opts, wroteSummary, outcome) {
 			b.WriteString("- ")
 			b.WriteString(outcome)
 			b.WriteString("\n")
@@ -133,6 +133,13 @@ func buildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRou
 	}
 
 	return ""
+}
+
+func shouldRenderTestingOutcome(opts testingSummaryOptions, wroteSummary bool, outcome string) bool {
+	if outcome == "" {
+		return false
+	}
+	return !opts.omitOutcome || !wroteSummary || !strings.Contains(outcome, "✅ passed")
 }
 
 func compactTestedSummary(count int) string {

@@ -266,6 +266,26 @@ func TestBuildTestingSummaryForPR_SummarizesBaselineOnlyTests(t *testing.T) {
 	}
 }
 
+func TestBuildTestingSummaryForPR_KeepsFailedOutcomeForCompactTestedSummary(t *testing.T) {
+	t.Parallel()
+	findings := "{\"findings\":[],\"summary\":\"\",\"tested\":[\"`go test ./...`\"]}"
+	steps := []*db.StepResult{
+		{ID: "s1", StepName: types.StepTest, Status: types.StepStatusFailed, FindingsJSON: &findings},
+	}
+	rounds := map[string][]*db.StepRound{
+		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 300}},
+	}
+
+	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123")
+
+	if !strings.Contains(md, "Completed 1 recorded test check.") {
+		t.Fatalf("expected compact baseline test summary as a paragraph, got:\n%s", md)
+	}
+	if !strings.Contains(md, "Outcome: ❌ failed across 1 run (300ms)") {
+		t.Fatalf("expected failed outcome to remain visible, got:\n%s", md)
+	}
+}
+
 func TestBuildTestingSummaryForPR_KeepsOutcomeForArtifactOnlyEvidence(t *testing.T) {
 	t.Parallel()
 	findings := `{"findings":[],"summary":"","artifacts":[{"kind":"log","label":"Rendered PR markdown","content":"## Testing\n\n- Evidence captured"}]}`
