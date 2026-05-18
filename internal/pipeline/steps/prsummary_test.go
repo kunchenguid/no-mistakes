@@ -224,16 +224,19 @@ func TestBuildTestingSummaryForPR_OmitsRecordedTestDetails(t *testing.T) {
 
 	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123")
 
-	if !strings.Contains(md, "- Summary: Validated the CLI doctor path and config loading; both passed.") {
-		t.Fatalf("expected natural-language testing summary, got:\n%s", md)
+	if !strings.Contains(md, "## Testing\n\nValidated the CLI doctor path and config loading; both passed.") {
+		t.Fatalf("expected natural-language testing summary as a paragraph, got:\n%s", md)
+	}
+	if strings.Contains(md, "- Summary:") {
+		t.Fatalf("did not expect PR testing summary to render as a Summary bullet, got:\n%s", md)
 	}
 	for _, command := range []string{"go test ./internal/cli", "make e2e"} {
 		if strings.Contains(md, command) {
 			t.Fatalf("did not expect raw recorded command %q in PR testing summary, got:\n%s", command, md)
 		}
 	}
-	if !strings.Contains(md, "- Outcome: ✅ passed across 1 run (300ms)") {
-		t.Fatalf("expected outcome line with run count and duration, got:\n%s", md)
+	if strings.Contains(md, "Outcome:") {
+		t.Fatalf("did not expect outcome row in PR testing summary, got:\n%s", md)
 	}
 }
 
@@ -249,14 +252,17 @@ func TestBuildTestingSummaryForPR_SummarizesBaselineOnlyTests(t *testing.T) {
 
 	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123")
 
-	if !strings.Contains(md, "- Summary: Completed 1 recorded test check.") {
-		t.Fatalf("expected compact baseline test summary, got:\n%s", md)
+	if !strings.Contains(md, "## Testing\n\nCompleted 1 recorded test check.") {
+		t.Fatalf("expected compact baseline test summary as a paragraph, got:\n%s", md)
+	}
+	if strings.Contains(md, "- Summary:") {
+		t.Fatalf("did not expect compact baseline summary to render as a Summary bullet, got:\n%s", md)
 	}
 	if strings.Contains(md, "go test ./...") {
 		t.Fatalf("did not expect raw recorded command in PR testing summary, got:\n%s", md)
 	}
-	if !strings.Contains(md, "- Outcome: ✅ passed across 1 run (300ms)") {
-		t.Fatalf("expected outcome line with run count and duration, got:\n%s", md)
+	if strings.Contains(md, "Outcome:") {
+		t.Fatalf("did not expect outcome row in PR testing summary, got:\n%s", md)
 	}
 }
 

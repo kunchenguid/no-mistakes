@@ -17,6 +17,8 @@ type testingSummaryOptions struct {
 	githubRawBase        string
 	includeTestedDetails bool
 	compactArtifacts     bool
+	summaryParagraph     bool
+	omitOutcome          bool
 }
 
 // BuildPipelineSummary produces a deterministic markdown section from step results and rounds.
@@ -63,6 +65,8 @@ func BuildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRou
 func BuildTestingSummaryForPR(steps []*db.StepResult, rounds map[string][]*db.StepRound, upstreamURL, ref string) string {
 	opts := testingSummaryOptionsForGitHub(upstreamURL, ref)
 	opts.compactArtifacts = true
+	opts.summaryParagraph = true
+	opts.omitOutcome = true
 	return buildTestingSummary(steps, rounds, opts)
 }
 
@@ -90,14 +94,10 @@ func buildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRou
 		if testingSummary != "" {
 			rendered := renderTestingSummary(testingSummary)
 			if rendered != "" {
-				b.WriteString("- Summary: ")
-				b.WriteString(rendered)
-				b.WriteString("\n")
+				writeTestingSummary(&b, rendered, opts)
 			}
 		} else if !opts.includeTestedDetails && len(tested) > 0 {
-			b.WriteString("- Summary: ")
-			b.WriteString(compactTestedSummary(len(tested)))
-			b.WriteString("\n")
+			writeTestingSummary(&b, compactTestedSummary(len(tested)), opts)
 		}
 		if opts.includeTestedDetails {
 			for _, detail := range tested {
@@ -120,7 +120,7 @@ func buildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRou
 				b.WriteString("\n")
 			}
 		}
-		if outcome := buildTestingOutcomeLine(line, stepRounds); outcome != "" {
+		if outcome := buildTestingOutcomeLine(line, stepRounds); !opts.omitOutcome && outcome != "" {
 			b.WriteString("- ")
 			b.WriteString(outcome)
 			b.WriteString("\n")
@@ -137,6 +137,17 @@ func compactTestedSummary(count int) string {
 		return "Completed 1 recorded test check."
 	}
 	return fmt.Sprintf("Completed %d recorded test checks.", count)
+}
+
+func writeTestingSummary(b *strings.Builder, rendered string, opts testingSummaryOptions) {
+	if opts.summaryParagraph {
+		b.WriteString(rendered)
+		b.WriteString("\n\n")
+		return
+	}
+	b.WriteString("- Summary: ")
+	b.WriteString(rendered)
+	b.WriteString("\n")
 }
 
 func testingSummaryOptionsForGitHub(upstreamURL, ref string) testingSummaryOptions {
