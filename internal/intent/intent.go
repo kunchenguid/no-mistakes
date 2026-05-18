@@ -48,7 +48,7 @@ type ExtractParams struct {
 	// Disambiguator optionally chooses among multiple plausible sessions when
 	// file-overlap scoring is not decisive enough to pick one safely.
 	Disambiguator Disambiguator
-	// Logf receives best-effort candidate diagnostics. Nil disables logging.
+	// Logf receives best-effort accepted candidate diagnostics. Nil disables logging.
 	Logf func(format string, args ...any)
 }
 

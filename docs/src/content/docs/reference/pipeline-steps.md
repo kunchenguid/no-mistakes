@@ -20,7 +20,7 @@ This is best-effort context, and when available it is included in rebase fixes, 
 - Runs only when `intent.enabled` is true
 - Matches local agent transcripts against the changed files, may use the configured pipeline agent to disambiguate plausible matches, and summarizes the likely author intent with that agent
 - Stores the derived summary, source, session ID, and match score on the run
-- Logs candidate diagnostics, including source, session, CWD, score, confidence, overlap, decision, and rejection reason
+- Logs accepted candidate diagnostics, including source, session, CWD, score, confidence, overlap, decision, and acceptance reason
 - Logs the matched source, score, and sanitized inferred intent when a transcript matches
 - Skips instead of failing when disabled, no matching transcript is found, the diff is empty, extraction errors, or persistence fails
 

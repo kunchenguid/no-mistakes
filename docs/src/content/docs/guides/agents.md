@@ -150,7 +150,7 @@ The selected transcript text is then sent to the configured pipeline agent for s
 Before disambiguation or summarization, no-mistakes excludes tool output, redacts likely secrets, strips common prompt-control markers, and clamps long transcripts while preserving the beginning and end.
 no-mistakes stores derived intent summaries and matching metadata in `~/.no-mistakes/state.sqlite`, including the source, session ID, and match score on each run plus cached summaries for matching transcript sessions.
 It does not store raw transcript text in its database.
-The step logs candidate match diagnostics, then logs the matched source, score, and sanitized inferred intent when a transcript matches.
+The step logs accepted candidate match diagnostics, then logs the matched source, score, and sanitized inferred intent when a transcript matches.
 
 Use `intent.disabled_readers` to disable specific transcript sources, or set `intent.enabled: false` to opt out entirely.
 
