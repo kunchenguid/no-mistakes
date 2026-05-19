@@ -113,17 +113,14 @@ func (r *piReader) Load(_ context.Context, s *Session) error {
 		if len(line) == 0 {
 			continue
 		}
-		msg, id, ok := parsePiRecord(line)
+		msgs, id, ok := parsePiRecord(line)
 		if !ok {
 			continue
 		}
 		if id != "" {
 			lastID = id
 		}
-		if msg == nil {
-			continue
-		}
-		s.Messages = append(s.Messages, *msg)
+		s.Messages = append(s.Messages, msgs...)
 	}
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("pi scan: %w", err)
@@ -171,26 +168,60 @@ func piPeekMetadata(path string) (*piMetadata, error) {
 	return nil, nil
 }
 
-func parsePiRecord(line []byte) (*Message, string, bool) {
+func parsePiRecord(line []byte) ([]Message, string, bool) {
 	var raw struct {
 		Type      string          `json:"type"`
 		ID        string          `json:"id"`
 		Timestamp string          `json:"timestamp"`
 		Message   json.RawMessage `json:"message"`
+		Messages  json.RawMessage `json:"messages"`
 	}
 	if err := json.Unmarshal(line, &raw); err != nil {
 		return nil, "", false
 	}
-	if raw.Type != "message" || len(raw.Message) == 0 {
+	switch raw.Type {
+	case "message", "message_update", "message_end", "turn_end":
+		msg, ok := parsePiMessage(raw.Message, raw.Timestamp)
+		if !ok {
+			return nil, raw.ID, true
+		}
+		return []Message{msg}, raw.ID, true
+	case "agent_end":
+		return parsePiMessages(raw.Messages, raw.Timestamp), raw.ID, true
+	default:
 		return nil, raw.ID, true
+	}
+}
+
+func parsePiMessages(raw json.RawMessage, timestamp string) []Message {
+	if len(raw) == 0 {
+		return nil
+	}
+	var items []json.RawMessage
+	if err := json.Unmarshal(raw, &items); err != nil {
+		return nil
+	}
+	msgs := make([]Message, 0, len(items))
+	for _, item := range items {
+		msg, ok := parsePiMessage(item, timestamp)
+		if ok {
+			msgs = append(msgs, msg)
+		}
+	}
+	return msgs
+}
+
+func parsePiMessage(raw json.RawMessage, timestamp string) (Message, bool) {
+	if len(raw) == 0 {
+		return Message{}, false
 	}
 
 	var msg struct {
 		Role    string          `json:"role"`
 		Content json.RawMessage `json:"content"`
 	}
-	if err := json.Unmarshal(raw.Message, &msg); err != nil {
-		return nil, raw.ID, true
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		return Message{}, false
 	}
 
 	role := RoleAssistant
@@ -200,7 +231,7 @@ func parsePiRecord(line []byte) (*Message, string, bool) {
 	case strings.EqualFold(msg.Role, "assistant"):
 		role = RoleAssistant
 	default:
-		return nil, raw.ID, true
+		return Message{}, false
 	}
 
 	text, paths := parsePiContent(msg.Content)
@@ -209,15 +240,15 @@ func parsePiRecord(line []byte) (*Message, string, bool) {
 		paths = append(paths, scanFilePathsInText(text)...)
 	}
 	if text == "" && len(paths) == 0 {
-		return nil, raw.ID, true
+		return Message{}, false
 	}
-	ts, _ := parsePiTimestamp(raw.Timestamp)
-	return &Message{
+	ts, _ := parsePiTimestamp(timestamp)
+	return Message{
 		Role:      role,
 		Text:      text,
 		FilePaths: paths,
 		Timestamp: ts,
-	}, raw.ID, true
+	}, true
 }
 
 func parsePiContent(raw json.RawMessage) (string, []string) {
