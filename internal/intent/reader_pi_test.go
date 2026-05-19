@@ -184,6 +184,47 @@ func TestPiReader_DeduplicatesAgentEndMessages(t *testing.T) {
 	}
 }
 
+func TestPiReader_LoadsOversizedAgentEndRecord(t *testing.T) {
+	repoCWD := t.TempDir()
+	home := t.TempDir()
+	dir := filepath.Join(home, ".pi", "agent", "sessions", "repo")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "2026-04-18T02-15-37-407Z_session-large.jsonl")
+	lines := []string{
+		`{"type":"session","version":3,"id":"session-large","timestamp":"2026-04-18T02:15:37.407Z","cwd":` + jsonString(t, repoCWD) + `}`,
+		`{"type":"message_end","id":"u1","timestamp":"2026-04-18T02:15:39.000Z","message":{"role":"user","content":"fix internal/pi.go"}}`,
+		`{"type":"agent_end","id":"u2","timestamp":"2026-04-18T02:15:41.000Z","messages":[{"role":"toolResult","content":"` + strings.Repeat("x", 16*1024*1024) + `"}]}`,
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewPiReader()
+	sessions, err := r.Discover(context.Background(), DiscoverOpts{HomeDir: home, OriginCWD: repoCWD})
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("got %d sessions, want 1", len(sessions))
+	}
+	if err := r.Load(context.Background(), sessions[0]); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	msgs := sessions[0].Messages
+	if len(msgs) != 1 {
+		t.Fatalf("got %d messages, want 1: %+v", len(msgs), msgs)
+	}
+	if msgs[0].Role != RoleUser || msgs[0].Text != "fix internal/pi.go" {
+		t.Errorf("message wrong: %+v", msgs[0])
+	}
+	if sessions[0].LastMsgKey != "u2" {
+		t.Errorf("LastMsgKey = %q, want u2", sessions[0].LastMsgKey)
+	}
+}
+
 func readerByName(t *testing.T, readers []Reader, name string) Reader {
 	t.Helper()
 	for _, r := range readers {

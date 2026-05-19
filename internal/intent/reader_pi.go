@@ -16,6 +16,8 @@ import (
 // PiReaderName is the agent name used in cache keys and DB rows.
 const PiReaderName = "pi"
 
+const piScannerMaxTokenSize = 256 * 1024 * 1024
+
 // piReader reads Pi coding-agent transcripts from ~/.pi/agent/sessions/.
 type piReader struct{}
 
@@ -106,7 +108,7 @@ func (r *piReader) Load(_ context.Context, s *Session) error {
 	defer f.Close()
 
 	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
+	scanner.Buffer(make([]byte, 0, 64*1024), piScannerMaxTokenSize)
 	var lastID string
 	seen := make(map[string]struct{})
 	for scanner.Scan() {
@@ -157,7 +159,7 @@ func piPeekMetadata(path string) (*piMetadata, error) {
 	defer f.Close()
 
 	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
+	scanner.Buffer(make([]byte, 0, 64*1024), piScannerMaxTokenSize)
 	for scanner.Scan() {
 		var raw struct {
 			Type      string `json:"type"`
