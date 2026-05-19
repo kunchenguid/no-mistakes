@@ -224,7 +224,7 @@ When enabled, no-mistakes can read recent local agent transcripts, match the ses
 | `intent.slack_days` | `int` | `3` | Extra days to look back before the change window |
 | `intent.disabled_readers` | `string[]` | Empty | Transcript readers to disable |
 
-Valid `disabled_readers` values are `claude`, `codex`, `opencode`, and `rovodev`.
+Valid `disabled_readers` values are `claude`, `codex`, `opencode`, `rovodev`, and `pi`.
 
 The match score is the share of changed files mentioned in a transcript session.
 Mentioning extra files does not reduce the score.

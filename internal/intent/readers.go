@@ -9,6 +9,7 @@ func AllReaders(disabled map[string]bool) []Reader {
 		NewCodexReader(),
 		NewOpenCodeReader(),
 		NewRovoDevReader(),
+		NewPiReader(),
 	}
 	if len(disabled) == 0 {
 		return all

@@ -1,0 +1,123 @@
+package intent
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestPiReader_DiscoverAndLoad(t *testing.T) {
+	repoCWD := t.TempDir()
+	home := writePiFixture(t, repoCWD)
+
+	r := readerByName(t, AllReaders(nil), "pi")
+	sessions, err := r.Discover(context.Background(), DiscoverOpts{
+		HomeDir:     home,
+		OriginCWD:   repoCWD,
+		WindowStart: time.Now().Add(-time.Hour),
+		WindowEnd:   time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("got %d sessions, want 1", len(sessions))
+	}
+	s := sessions[0]
+	if s.AgentName != "pi" {
+		t.Errorf("AgentName = %q, want pi", s.AgentName)
+	}
+	if s.SessionID != "session-1" {
+		t.Errorf("SessionID = %q, want session-1", s.SessionID)
+	}
+	if canonicalPath(s.CWD) != canonicalPath(repoCWD) {
+		t.Errorf("CWD = %q, want %q", s.CWD, repoCWD)
+	}
+
+	if err := r.Load(context.Background(), s); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(s.Messages) != 4 {
+		t.Fatalf("got %d messages, want 4: %+v", len(s.Messages), s.Messages)
+	}
+	if s.Messages[0].Role != RoleUser || !strings.Contains(s.Messages[0].Text, "foo helper") {
+		t.Errorf("first message wrong: %+v", s.Messages[0])
+	}
+	if s.Messages[1].Role != RoleAssistant || !strings.Contains(s.Messages[1].Text, "I'll edit") {
+		t.Errorf("second message wrong: %+v", s.Messages[1])
+	}
+	if strings.Contains(s.Messages[1].Text, "private chain of thought") {
+		t.Errorf("assistant thinking leaked into text: %q", s.Messages[1].Text)
+	}
+	foundToolPath := false
+	for _, p := range s.Messages[1].FilePaths {
+		if p == "internal/foo.go" {
+			foundToolPath = true
+		}
+	}
+	if !foundToolPath {
+		t.Errorf("expected tool-call path in assistant FilePaths, got %v", s.Messages[1].FilePaths)
+	}
+	if s.Messages[2].Role != RoleAssistant || s.Messages[2].Text != "" {
+		t.Errorf("third message should be a path-only assistant tool call, got %+v", s.Messages[2])
+	}
+	foundCamelPath := false
+	for _, p := range s.Messages[2].FilePaths {
+		if p == "internal/bar.go" {
+			foundCamelPath = true
+		}
+	}
+	if !foundCamelPath {
+		t.Errorf("expected camelCase filePath in path-only tool call, got %v", s.Messages[2].FilePaths)
+	}
+	foundCommandPath := false
+	for _, p := range s.Messages[3].FilePaths {
+		if p == "internal/baz.go" {
+			foundCommandPath = true
+		}
+	}
+	if !foundCommandPath {
+		t.Errorf("expected shell command path in path-only tool call, got %v", s.Messages[3].FilePaths)
+	}
+	if s.LastMsgKey != "m6" {
+		t.Errorf("LastMsgKey = %q, want m6", s.LastMsgKey)
+	}
+}
+
+func readerByName(t *testing.T, readers []Reader, name string) Reader {
+	t.Helper()
+	for _, r := range readers {
+		if r.Name() == name {
+			return r
+		}
+	}
+	t.Fatalf("reader %q not found", name)
+	return nil
+}
+
+func writePiFixture(t *testing.T, repoCWD string) string {
+	t.Helper()
+	home := t.TempDir()
+	dir := filepath.Join(home, ".pi", "agent", "sessions", "repo")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "2026-04-18T02-15-37-407Z_session-1.jsonl")
+	lines := []string{
+		`{"type":"session","version":3,"id":"session-1","timestamp":"2026-04-18T02:15:37.407Z","cwd":` + jsonString(t, repoCWD) + `}`,
+		`{"type":"model_change","id":"meta-1","timestamp":"2026-04-18T02:15:37.500Z","modelId":"gpt-5.5"}`,
+		`{"type":"message","id":"m1","timestamp":"2026-04-18T02:15:38.000Z","message":{"role":"user","content":[{"type":"text","text":"please add a foo helper to internal/foo.go"}]}}`,
+		`{"type":"message","id":"m2","timestamp":"2026-04-18T02:15:39.000Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"private chain of thought"},{"type":"text","text":"I'll edit internal/foo.go"},{"type":"toolCall","name":"edit","arguments":{"file_path":"internal/foo.go"}}]}}`,
+		`{"type":"message","id":"m3","timestamp":"2026-04-18T02:15:40.000Z","message":{"role":"toolResult","toolName":"edit","content":[{"type":"text","text":"tool output should not become transcript text"}]}}`,
+		`{"type":"message","id":"m4","timestamp":"2026-04-18T02:15:41.000Z","message":{"role":"assistant","content":[{"type":"toolCall","name":"read","arguments":{"filePath":"internal/bar.go"}}]}}`,
+		`{"type":"message","id":"m5","timestamp":"2026-04-18T02:15:42.000Z","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","arguments":{"command":"gofmt -w internal/baz.go"}}]}}`,
+		`{"type":"message","id":"m6","timestamp":"2026-04-18T02:15:43.000Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"only thinking should be skipped"}]}}`,
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return home
+}

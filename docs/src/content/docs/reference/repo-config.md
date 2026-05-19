@@ -139,4 +139,4 @@ Fields not set here inherit from global config and then the built-in defaults.
 | `intent.slack_days` | `int` | Inherits from global (default `3`) |
 | `intent.disabled_readers` | `string[]` | Adds to globally disabled readers |
 
-Valid `disabled_readers` values are `claude`, `codex`, `opencode`, and `rovodev`.
+Valid `disabled_readers` values are `claude`, `codex`, `opencode`, `rovodev`, and `pi`.
