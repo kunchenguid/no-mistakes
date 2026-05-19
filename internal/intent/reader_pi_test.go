@@ -142,6 +142,48 @@ func TestPiReader_LoadsPiEventStreamRecords(t *testing.T) {
 	}
 }
 
+func TestPiReader_IgnoresStreamingMessageUpdates(t *testing.T) {
+	repoCWD := t.TempDir()
+	home := t.TempDir()
+	dir := filepath.Join(home, ".pi", "agent", "sessions", "repo")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "2026-04-18T02-15-37-407Z_session-updates.jsonl")
+	lines := []string{
+		`{"type":"session","version":3,"id":"session-updates","timestamp":"2026-04-18T02:15:37.407Z","cwd":` + jsonString(t, repoCWD) + `}`,
+		`{"type":"message_update","id":"u1","timestamp":"2026-04-18T02:15:38.000Z","message":{"role":"assistant","content":[{"type":"text","text":"updated"}]}}`,
+		`{"type":"message_update","id":"u2","timestamp":"2026-04-18T02:15:39.000Z","message":{"role":"assistant","content":[{"type":"text","text":"updated internal"}]}}`,
+		`{"type":"turn_end","id":"u3","timestamp":"2026-04-18T02:15:40.000Z","message":{"role":"assistant","content":[{"type":"text","text":"updated internal/pi.go"}]}}`,
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewPiReader()
+	sessions, err := r.Discover(context.Background(), DiscoverOpts{HomeDir: home, OriginCWD: repoCWD})
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("got %d sessions, want 1", len(sessions))
+	}
+	if err := r.Load(context.Background(), sessions[0]); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	msgs := sessions[0].Messages
+	if len(msgs) != 1 {
+		t.Fatalf("got %d messages, want 1: %+v", len(msgs), msgs)
+	}
+	if msgs[0].Role != RoleAssistant || msgs[0].Text != "updated internal/pi.go" {
+		t.Errorf("message wrong: %+v", msgs[0])
+	}
+	if sessions[0].LastMsgKey != "u3" {
+		t.Errorf("LastMsgKey = %q, want u3", sessions[0].LastMsgKey)
+	}
+}
+
 func TestPiReader_DeduplicatesAgentEndMessages(t *testing.T) {
 	repoCWD := t.TempDir()
 	home := t.TempDir()

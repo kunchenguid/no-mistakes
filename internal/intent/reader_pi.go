@@ -203,12 +203,14 @@ func parsePiRecord(line []byte) ([]Message, string, bool, bool) {
 		return nil, "", false, false
 	}
 	switch raw.Type {
-	case "message", "message_update", "message_end", "turn_end":
+	case "message", "message_end", "turn_end":
 		msg, ok := parsePiMessage(raw.Message, raw.Timestamp)
 		if !ok {
 			return nil, raw.ID, false, true
 		}
 		return []Message{msg}, raw.ID, false, true
+	case "message_update":
+		return nil, raw.ID, false, true
 	case "agent_end":
 		return parsePiMessages(raw.Messages, raw.Timestamp), raw.ID, true, true
 	default:
