@@ -108,6 +108,7 @@ func (r *piReader) Load(_ context.Context, s *Session) error {
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
 	var lastID string
+	seen := make(map[string]struct{})
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(line) == 0 {
@@ -120,7 +121,14 @@ func (r *piReader) Load(_ context.Context, s *Session) error {
 		if id != "" {
 			lastID = id
 		}
-		s.Messages = append(s.Messages, msgs...)
+		for _, msg := range msgs {
+			key := piMessageKey(msg)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			s.Messages = append(s.Messages, msg)
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("pi scan: %w", err)
@@ -129,6 +137,10 @@ func (r *piReader) Load(_ context.Context, s *Session) error {
 		s.LastMsgKey = lastID
 	}
 	return nil
+}
+
+func piMessageKey(msg Message) string {
+	return string(msg.Role) + "\x00" + msg.Text + "\x00" + strings.Join(msg.FilePaths, "\x00")
 }
 
 type piMetadata struct {
