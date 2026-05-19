@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.21.0](https://github.com/kunchenguid/no-mistakes/compare/v1.20.1...v1.21.0) (2026-05-19)
+
+
+### Features
+
+* **intent:** support Pi transcript reading ([#210](https://github.com/kunchenguid/no-mistakes/issues/210)) ([f21f1f6](https://github.com/kunchenguid/no-mistakes/commit/f21f1f6984070017030649094d6b57053ea8a177))
+
 ## [1.20.1](https://github.com/kunchenguid/no-mistakes/compare/v1.20.0...v1.20.1) (2026-05-18)
 
 
