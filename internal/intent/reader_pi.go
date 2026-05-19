@@ -116,17 +116,26 @@ func (r *piReader) Load(_ context.Context, s *Session) error {
 		if len(line) == 0 {
 			continue
 		}
-		msgs, id, ok := parsePiRecord(line)
+		msgs, id, aggregate, ok := parsePiRecord(line)
 		if !ok {
 			continue
 		}
 		if id != "" {
 			lastID = id
 		}
+		priorSeen := seen
+		if aggregate {
+			priorSeen = make(map[string]struct{}, len(seen))
+			for key := range seen {
+				priorSeen[key] = struct{}{}
+			}
+		}
 		for _, msg := range msgs {
 			key := piMessageKey(msg)
-			if _, ok := seen[key]; ok {
-				continue
+			if aggregate {
+				if _, ok := priorSeen[key]; ok {
+					continue
+				}
 			}
 			seen[key] = struct{}{}
 			s.Messages = append(s.Messages, msg)
@@ -182,7 +191,7 @@ func piPeekMetadata(path string) (*piMetadata, error) {
 	return nil, nil
 }
 
-func parsePiRecord(line []byte) ([]Message, string, bool) {
+func parsePiRecord(line []byte) ([]Message, string, bool, bool) {
 	var raw struct {
 		Type      string          `json:"type"`
 		ID        string          `json:"id"`
@@ -191,19 +200,19 @@ func parsePiRecord(line []byte) ([]Message, string, bool) {
 		Messages  json.RawMessage `json:"messages"`
 	}
 	if err := json.Unmarshal(line, &raw); err != nil {
-		return nil, "", false
+		return nil, "", false, false
 	}
 	switch raw.Type {
 	case "message", "message_update", "message_end", "turn_end":
 		msg, ok := parsePiMessage(raw.Message, raw.Timestamp)
 		if !ok {
-			return nil, raw.ID, true
+			return nil, raw.ID, false, true
 		}
-		return []Message{msg}, raw.ID, true
+		return []Message{msg}, raw.ID, false, true
 	case "agent_end":
-		return parsePiMessages(raw.Messages, raw.Timestamp), raw.ID, true
+		return parsePiMessages(raw.Messages, raw.Timestamp), raw.ID, true, true
 	default:
-		return nil, raw.ID, true
+		return nil, raw.ID, false, true
 	}
 }
 
