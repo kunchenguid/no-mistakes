@@ -260,6 +260,7 @@ func parsePiParsedMessage(raw json.RawMessage, timestamp string) (piParsedMessag
 
 	var msg struct {
 		Role       string          `json:"role"`
+		ID         string          `json:"id"`
 		ResponseID string          `json:"responseId"`
 		Content    json.RawMessage `json:"content"`
 	}
@@ -294,7 +295,9 @@ func parsePiParsedMessage(raw json.RawMessage, timestamp string) (piParsedMessag
 	}
 	identity := ""
 	if msg.ResponseID != "" {
-		identity = string(role) + "\x00" + msg.ResponseID
+		identity = string(role) + "\x00responseId:" + msg.ResponseID
+	} else if msg.ID != "" {
+		identity = string(role) + "\x00id:" + msg.ID
 	}
 	return piParsedMessage{Message: out, identity: identity}, true
 }

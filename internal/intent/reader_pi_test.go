@@ -230,6 +230,52 @@ func TestPiReader_DeduplicatesCompletedEventsByResponseID(t *testing.T) {
 	}
 }
 
+func TestPiReader_DeduplicatesCompletedEventsByMessageID(t *testing.T) {
+	repoCWD := t.TempDir()
+	home := t.TempDir()
+	dir := filepath.Join(home, ".pi", "agent", "sessions", "repo")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "2026-04-18T02-15-37-407Z_session-completed-message-id-dedupe.jsonl")
+	lines := []string{
+		`{"type":"session","version":3,"id":"session-completed-message-id-dedupe","timestamp":"2026-04-18T02:15:37.407Z","cwd":` + jsonString(t, repoCWD) + `}`,
+		`{"type":"message_end","id":"u1","timestamp":"2026-04-18T02:15:39.000Z","message":{"role":"assistant","id":"m1","content":[{"type":"toolCall","name":"edit","arguments":{"file_path":"internal/intent/reader_pi.go"}}]}}`,
+		`{"type":"turn_end","id":"u2","timestamp":"2026-04-18T02:15:40.000Z","message":{"role":"assistant","id":"m1","content":[{"type":"toolCall","name":"edit","arguments":{"file_path":"internal/intent/reader_pi.go"}}]}}`,
+		`{"type":"message_end","id":"u3","timestamp":"2026-04-18T02:15:41.000Z","message":{"role":"assistant","id":"m2","content":[{"type":"text","text":"done"}]}}`,
+		`{"type":"turn_end","id":"u4","timestamp":"2026-04-18T02:15:42.000Z","message":{"role":"assistant","id":"m2","content":[{"type":"text","text":"done"}]}}`,
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewPiReader()
+	sessions, err := r.Discover(context.Background(), DiscoverOpts{HomeDir: home, OriginCWD: repoCWD})
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("got %d sessions, want 1", len(sessions))
+	}
+	if err := r.Load(context.Background(), sessions[0]); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	msgs := sessions[0].Messages
+	if len(msgs) != 2 {
+		t.Fatalf("got %d messages, want 2: %+v", len(msgs), msgs)
+	}
+	if len(msgs[0].FilePaths) != 1 || msgs[0].FilePaths[0] != "internal/intent/reader_pi.go" {
+		t.Errorf("first message paths = %v, want [internal/intent/reader_pi.go]", msgs[0].FilePaths)
+	}
+	if msgs[1].Role != RoleAssistant || msgs[1].Text != "done" {
+		t.Errorf("second message wrong: %+v", msgs[1])
+	}
+	if sessions[0].LastMsgKey != "u4" {
+		t.Errorf("LastMsgKey = %q, want u4", sessions[0].LastMsgKey)
+	}
+}
+
 func TestPiReader_DeduplicatesAgentEndMessages(t *testing.T) {
 	repoCWD := t.TempDir()
 	home := t.TempDir()
