@@ -369,6 +369,10 @@ func TestPiReader_PreservesRepeatedLiveMessages(t *testing.T) {
 }
 
 func TestPiReader_LoadsOversizedAgentEndRecord(t *testing.T) {
+	// Keep this well above bufio.Scanner's default 64 KiB token limit without
+	// making Windows CI spend excessive time writing and parsing the fixture.
+	const oversizedPayloadSize = 1024 * 1024
+
 	repoCWD := t.TempDir()
 	home := t.TempDir()
 	dir := filepath.Join(home, ".pi", "agent", "sessions", "repo")
@@ -379,7 +383,7 @@ func TestPiReader_LoadsOversizedAgentEndRecord(t *testing.T) {
 	lines := []string{
 		`{"type":"session","version":3,"id":"session-large","timestamp":"2026-04-18T02:15:37.407Z","cwd":` + jsonString(t, repoCWD) + `}`,
 		`{"type":"message_end","id":"u1","timestamp":"2026-04-18T02:15:39.000Z","message":{"role":"user","content":"fix internal/pi.go"}}`,
-		`{"type":"agent_end","id":"u2","timestamp":"2026-04-18T02:15:41.000Z","messages":[{"role":"toolResult","content":"` + strings.Repeat("x", 16*1024*1024) + `"}]}`,
+		`{"type":"agent_end","id":"u2","timestamp":"2026-04-18T02:15:41.000Z","messages":[{"role":"toolResult","content":"` + strings.Repeat("x", oversizedPayloadSize) + `"}]}`,
 	}
 	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 		t.Fatal(err)

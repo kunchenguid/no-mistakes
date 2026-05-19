@@ -33,6 +33,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v6
 
@@ -46,7 +47,7 @@ jobs:
 
       - name: Test on Windows
         if: runner.os == 'Windows'
-        run: go test ./...
+        run: go test -v -timeout=15m ./...
 
       - name: Build
         run: go build ./cmd/no-mistakes
