@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.21.1](https://github.com/kunchenguid/no-mistakes/compare/v1.21.0...v1.21.1) (2026-05-21)
+
+
+### Bug Fixes
+
+* **pipeline:** ignore deleted files for intent matching ([#212](https://github.com/kunchenguid/no-mistakes/issues/212)) ([ca17d1e](https://github.com/kunchenguid/no-mistakes/commit/ca17d1ed2db2c58c066fb0c018ebcc9b7b253f2c))
+
 ## [1.21.0](https://github.com/kunchenguid/no-mistakes/compare/v1.20.1...v1.21.0) (2026-05-19)
 
 
