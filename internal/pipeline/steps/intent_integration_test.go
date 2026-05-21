@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -190,6 +191,67 @@ func TestIntentStep_Integration_NoTranscriptIsNoOp(t *testing.T) {
 	got, _ := sctx.DB.GetRun(sctx.Run.ID)
 	if got.Intent != nil {
 		t.Errorf("expected nil Intent, got %v", *got.Intent)
+	}
+}
+
+func TestIntentStep_Integration_DeletedFilesDoNotDiluteIntentMatch(t *testing.T) {
+	repoDir := t.TempDir()
+	gitCmd(t, repoDir, "init")
+	gitCmd(t, repoDir, "config", "user.email", "test@example.com")
+	gitCmd(t, repoDir, "config", "user.name", "Tester")
+	if err := os.WriteFile(filepath.Join(repoDir, "active.go"), []byte("package active\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 40; i++ {
+		name := filepath.Join(repoDir, fmt.Sprintf("obsolete_%02d.go", i))
+		if err := os.WriteFile(name, []byte("package obsolete\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitCmd(t, repoDir, "add", ".")
+	gitCmd(t, repoDir, "commit", "-m", "base")
+	base := gitCmd(t, repoDir, "rev-parse", "HEAD")
+
+	for i := 0; i < 40; i++ {
+		if err := os.Remove(filepath.Join(repoDir, fmt.Sprintf("obsolete_%02d.go", i))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "active.go"), []byte("package active\nfunc Run() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repoDir, "add", ".")
+	gitCmd(t, repoDir, "commit", "-m", "replace obsolete code")
+	head := gitCmd(t, repoDir, "rev-parse", "HEAD")
+
+	fakeHome := t.TempDir()
+	encoded := testClaudeProjectDirName(repoDir)
+	claudeDir := filepath.Join(fakeHome, ".claude", "projects", encoded)
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	transcript := `{"type":"user","cwd":` + testJSONString(t, repoDir) + `,"timestamp":"2026-04-18T02:15:37.407Z","uuid":"u1","sessionId":"s1","message":{"role":"user","content":"please add Run() to active.go"}}
+{"type":"assistant","cwd":` + testJSONString(t, repoDir) + `,"timestamp":"2026-04-18T02:15:38.000Z","uuid":"u2","sessionId":"s1","message":{"role":"assistant","content":[{"type":"tool_use","name":"Edit","input":{"file_path":` + testJSONString(t, filepath.Join(repoDir, "active.go")) + `}}]}}
+`
+	if err := os.WriteFile(filepath.Join(claudeDir, "session.jsonl"), []byte(transcript), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	withFakeHome(t, fakeHome)
+
+	cfg := &config.Config{Intent: config.Intent{Enabled: true, Threshold: 0.2, SlackDays: 3}}
+	sctx := newIntentIntegrationContext(t, repoDir, base, head, cfg)
+
+	outcome, err := (&IntentStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if outcome == nil || outcome.Skipped {
+		t.Fatalf("expected deleted files to be ignored for intent matching, got %+v", outcome)
+	}
+
+	got, _ := sctx.DB.GetRun(sctx.Run.ID)
+	if got.Intent == nil {
+		t.Fatal("intent not attached")
 	}
 }
 

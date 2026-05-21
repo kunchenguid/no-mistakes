@@ -187,7 +187,7 @@ func TestIntentStep_ExtractErrorReturnsSkippedNotError(t *testing.T) {
 	}
 }
 
-func TestIntentStep_UsesNinetySecondExtractionTimeout(t *testing.T) {
+func TestIntentStep_UsesFiveMinuteExtractionTimeout(t *testing.T) {
 	sctx := newIntentStepContext(t)
 	var remaining time.Duration
 	var hasDeadline bool
@@ -207,8 +207,8 @@ func TestIntentStep_UsesNinetySecondExtractionTimeout(t *testing.T) {
 	if !hasDeadline {
 		t.Fatalf("intent extraction context had no deadline")
 	}
-	if remaining < 85*time.Second || remaining > 95*time.Second {
-		t.Fatalf("intent extraction timeout = %s, want about 90s", remaining)
+	if remaining < 295*time.Second || remaining > 305*time.Second {
+		t.Fatalf("intent extraction timeout = %s, want about 300s", remaining)
 	}
 }
 

@@ -18,7 +18,7 @@ import (
 )
 
 // intentExtractTimeout caps total wall-clock time spent on intent extraction.
-const intentExtractTimeout = 90 * time.Second
+const intentExtractTimeout = 300 * time.Second
 
 // IntentStep is a best-effort pipeline step that infers the user's intent
 // from local agent transcripts and attaches it to the run so downstream
@@ -169,7 +169,7 @@ func defaultRunIntent(ctx context.Context, sctx *pipeline.StepContext) (*intent.
 	}
 
 	resolvedBaseSHA := resolveIntentBaseSHA(ctx, gitWorkDir, run.BaseSHA, repo.DefaultBranch)
-	diffFiles, err := git.DiffNameOnly(ctx, gitWorkDir, resolvedBaseSHA, run.HeadSHA)
+	diffFiles, err := diffFilesForIntentMatching(ctx, gitWorkDir, resolvedBaseSHA, run.HeadSHA)
 	if err != nil {
 		return nil, err
 	}
@@ -212,6 +212,33 @@ func defaultRunIntent(ctx context.Context, sctx *pipeline.StepContext) (*intent.
 			sctx.Log(fmt.Sprintf("intent "+format, args...))
 		},
 	})
+}
+
+func diffFilesForIntentMatching(ctx context.Context, dir, base, head string) ([]string, error) {
+	diffFiles, err := git.DiffNameOnly(ctx, dir, base, head)
+	if err != nil || len(diffFiles) == 0 {
+		return diffFiles, err
+	}
+
+	nonDeletedOut, err := git.Run(ctx, dir, "diff", "--name-only", "--diff-filter=d", base+".."+head)
+	if err != nil {
+		return nil, err
+	}
+	nonDeletedFiles := splitDiffNameOnly(nonDeletedOut)
+	if len(nonDeletedFiles) == 0 {
+		return diffFiles, nil
+	}
+	return nonDeletedFiles, nil
+}
+
+func splitDiffNameOnly(out string) []string {
+	var files []string
+	for _, line := range strings.Split(out, "\n") {
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			files = append(files, trimmed)
+		}
+	}
+	return files
 }
 
 // resolveIntentBaseSHA returns a usable base SHA for diff'ing against head.
