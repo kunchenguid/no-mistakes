@@ -253,6 +253,13 @@ func TestIntentStep_Integration_DeletedFilesDoNotDiluteIntentMatch(t *testing.T)
 	if got.Intent == nil {
 		t.Fatal("intent not attached")
 	}
+	if got.IntentSource == nil || *got.IntentSource != "claude" {
+		t.Fatalf("intent source = %v, want claude", got.IntentSource)
+	}
+	if got.IntentScore == nil || *got.IntentScore < 1 {
+		t.Fatalf("intent score = %v, want full active.go match", got.IntentScore)
+	}
+	t.Logf("deleted 40 files and changed active.go; attached intent from claude session with score %.2f: %s", *got.IntentScore, *got.Intent)
 }
 
 func TestIntentStep_Integration_ZeroBaseSHA_NewBranchPush(t *testing.T) {

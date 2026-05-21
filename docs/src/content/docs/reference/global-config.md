@@ -226,7 +226,8 @@ When enabled, no-mistakes can read recent local agent transcripts, match the ses
 
 Valid `disabled_readers` values are `claude`, `codex`, `opencode`, `rovodev`, and `pi`.
 
-The match score is the share of changed files mentioned in a transcript session.
+The match score is the share of matching files mentioned in a transcript session; deleted files are ignored when the diff also contains non-deleted changes.
+All-deletion diffs still match against the deleted changed files.
 Mentioning extra files does not reduce the score.
 For multi-file diffs, no-mistakes still requires at least two overlapping files and an effective minimum score of `0.5`.
 Partial matches older than 24 hours are rejected unless their raw score is at least `0.8`.
