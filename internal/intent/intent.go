@@ -25,7 +25,7 @@ type ExtractParams struct {
 	// OriginCWD is the user's actual repo directory. The caller is responsible
 	// for passing the original working path, NOT the no-mistakes worktree.
 	OriginCWD string
-	// DiffFiles is the set of files changed between base and head, repo-relative.
+	// DiffFiles is the repo-relative file set used for matching and scoring.
 	DiffFiles []string
 	// BaseTime is the committer time of the base SHA.
 	BaseTime time.Time

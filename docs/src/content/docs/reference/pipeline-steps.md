@@ -24,7 +24,7 @@ This is best-effort context, and when available it is included in rebase fixes, 
 - Logs the matched source, score, and sanitized inferred intent when a transcript matches
 - Skips instead of failing when disabled, no matching transcript is found, the diff is empty, extraction errors, or persistence fails
 
-This step does not block the pipeline for missing transcripts, slow summarization, or other extraction failures, which are reported as skipped outcomes.
+This step does not block the pipeline for missing transcripts, summarization that exceeds the five-minute extraction cap, or other extraction failures, which are reported as skipped outcomes.
 It can fail the run only if cleanup fails after the disambiguation agent leaves worktree side effects.
 
 ## Rebase
