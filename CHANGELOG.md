@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.21.3](https://github.com/kunchenguid/no-mistakes/compare/v1.21.2...v1.21.3) (2026-05-23)
+
+
+### Bug Fixes
+
+* **shellenv:** retry degraded daemon environment fallback ([#216](https://github.com/kunchenguid/no-mistakes/issues/216)) ([14cd1dd](https://github.com/kunchenguid/no-mistakes/commit/14cd1dd3f0d64d9cbdb3d86c6f5318b650549ff6))
+
 ## [1.21.2](https://github.com/kunchenguid/no-mistakes/compare/v1.21.1...v1.21.2) (2026-05-23)
 
 
