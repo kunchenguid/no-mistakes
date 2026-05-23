@@ -1,6 +1,10 @@
 package steps
 
 import (
+	"fmt"
+	"html"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -222,7 +226,7 @@ func TestBuildTestingSummaryForPR_OmitsRecordedTestDetails(t *testing.T) {
 		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 300}},
 	}
 
-	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123")
+	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123", t.TempDir())
 	t.Logf("rendered PR testing markdown:\n%s", md)
 
 	if !strings.Contains(md, "## Testing\n\nValidated the CLI doctor path and config loading; both passed.") {
@@ -251,7 +255,7 @@ func TestBuildTestingSummaryForPR_SummarizesBaselineOnlyTests(t *testing.T) {
 		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 300}},
 	}
 
-	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123")
+	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123", t.TempDir())
 	t.Logf("rendered PR testing markdown:\n%s", md)
 
 	if !strings.Contains(md, "## Testing\n\nCompleted 1 recorded test check.") {
@@ -278,7 +282,7 @@ func TestBuildTestingSummaryForPR_KeepsFailedOutcomeForCompactTestedSummary(t *t
 		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 300}},
 	}
 
-	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123")
+	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123", t.TempDir())
 	t.Logf("rendered PR testing markdown:\n%s", md)
 
 	if !strings.Contains(md, "Completed 1 recorded test check.") {
@@ -299,7 +303,7 @@ func TestBuildTestingSummaryForPR_KeepsOutcomeForArtifactOnlyEvidence(t *testing
 		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 300}},
 	}
 
-	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123")
+	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123", t.TempDir())
 	t.Logf("rendered PR testing markdown:\n%s", md)
 
 	if !strings.Contains(md, "Outcome:") {
@@ -409,7 +413,7 @@ func TestBuildTestingSummaryForPR_RendersEvidenceArtifactsCompactly(t *testing.T
 		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 300}},
 	}
 
-	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123")
+	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123", t.TempDir())
 	t.Logf("rendered PR testing markdown:\n%s", md)
 
 	if !strings.Contains(md, "- Evidence: [Checkout screenshot](https://github.com/example/widgets/blob/abc123/artifacts/checkout.png)") {
@@ -424,6 +428,32 @@ func TestBuildTestingSummaryForPR_RendersEvidenceArtifactsCompactly(t *testing.T
 	for _, broken := range []string{"![Checkout screenshot]", "raw.githubusercontent.com", "](artifacts/checkout.png)", "](artifacts/server.log)"} {
 		if strings.Contains(md, broken) {
 			t.Fatalf("did not expect broken or noisy artifact rendering %q, got:\n%s", broken, md)
+		}
+	}
+}
+
+func TestBuildTestingSummaryForPR_RendersLocalTempVisualArtifactPath(t *testing.T) {
+	t.Parallel()
+	repoRoot := t.TempDir()
+	localPath := filepath.Join(os.TempDir(), "no-mistakes-evidence", "run-123", "checkout.png")
+	findings := fmt.Sprintf(`{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[{"kind":"screenshot","label":"Checkout screenshot","path":%q}]}`, localPath)
+	steps := []*db.StepResult{
+		{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings},
+	}
+	rounds := map[string][]*db.StepRound{
+		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 300}},
+	}
+
+	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123", repoRoot)
+	t.Logf("rendered PR testing markdown:\n%s", md)
+
+	want := "- Evidence: Checkout screenshot (local file: <code>" + html.EscapeString(localPath) + "</code>)"
+	if !strings.Contains(md, want) {
+		t.Fatalf("expected local temp screenshot path to render as local evidence, got:\n%s", md)
+	}
+	for _, broken := range []string{"![Checkout screenshot]", "github.com/example/widgets/blob/abc123/"} {
+		if strings.Contains(md, broken) {
+			t.Fatalf("did not expect local temp artifact to be rendered as a visual or GitHub link %q, got:\n%s", broken, md)
 		}
 	}
 }

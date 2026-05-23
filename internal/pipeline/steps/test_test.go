@@ -191,15 +191,26 @@ func TestTestStep_UserIntentRunsConfiguredCommandThenEvidenceAgent(t *testing.T)
 		testCmd,
 		"The \"testing_summary\" must account for the complete test step: baseline commands that already ran, automated tests, manual or evidence-producing checks, artifacts gathered, and the overall result",
 		"screenshots, GIFs, videos, rendered UI, CLI transcripts",
+		"For UI, HTML, CSS, Electron renderer, browser, visual layout, or copy-placement changes, attempt to capture reviewer-visible visual evidence",
+		"DOM snapshots, selector assertions, and text-only render summaries are not substitutes for visual evidence when a rendered surface is available",
+		"If a UI-facing change has no screenshot, image, video, GIF, or rendered HTML artifact, state why in testing_summary",
+		"Write new evidence files into this temporary evidence directory:",
+		filepath.Join(os.TempDir(), "no-mistakes-evidence", sctx.Run.ID),
+		"Do not move, commit, or modify source files only to make evidence linkable",
 		"If no existing test produces sufficient evidence, write or improve a test",
 		"If automated testing cannot produce the needed evidence, execute manual verification steps",
 		"Always include an \"artifacts\" array",
-		"Use artifact path only for files that already exist in the repository and will be available from the pushed commit",
 		"If sufficient evidence is not possible, report a warning finding",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("expected prompt to contain %q, got:\n%s", want, prompt)
 		}
+	}
+	if strings.Contains(prompt, "will be available from the pushed commit") || strings.Contains(prompt, "files that already exist in the repository") {
+		t.Fatalf("expected prompt not to make the testing agent worry about committed evidence files, got:\n%s", prompt)
+	}
+	if _, err := os.Stat(filepath.Join(os.TempDir(), "no-mistakes-evidence", sctx.Run.ID)); err != nil {
+		t.Fatalf("expected temporary evidence directory to exist: %v", err)
 	}
 
 	var findings Findings

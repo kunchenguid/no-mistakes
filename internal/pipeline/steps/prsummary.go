@@ -5,6 +5,7 @@ import (
 	"html"
 	"net/url"
 	"path"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -19,6 +20,7 @@ type testingSummaryOptions struct {
 	compactArtifacts     bool
 	summaryParagraph     bool
 	omitOutcome          bool
+	repoRoot             string
 }
 
 // BuildPipelineSummary produces a deterministic markdown section from step results and rounds.
@@ -62,11 +64,12 @@ func BuildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRou
 	return buildTestingSummary(steps, rounds, testingSummaryOptions{includeTestedDetails: true})
 }
 
-func BuildTestingSummaryForPR(steps []*db.StepResult, rounds map[string][]*db.StepRound, upstreamURL, ref string) string {
+func BuildTestingSummaryForPR(steps []*db.StepResult, rounds map[string][]*db.StepRound, upstreamURL, ref, repoRoot string) string {
 	opts := testingSummaryOptionsForGitHub(upstreamURL, ref)
 	opts.compactArtifacts = true
 	opts.summaryParagraph = true
 	opts.omitOutcome = true
+	opts.repoRoot = repoRoot
 	return buildTestingSummary(steps, rounds, opts)
 }
 
@@ -84,7 +87,7 @@ func buildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRou
 
 		testingSummary := collectTestingSummary(sr, stepRounds)
 		tested := collectTestingDetails(sr, stepRounds)
-		artifacts := collectTestingArtifacts(sr, stepRounds)
+		artifacts := collectTestingArtifacts(sr, stepRounds, opts)
 		if testingSummary == "" && len(tested) == 0 && len(artifacts) == 0 {
 			return "## Testing\n\n- " + line
 		}
@@ -233,11 +236,11 @@ func collectTestingDetails(sr *db.StepResult, rounds []*db.StepRound) []string {
 	return details
 }
 
-func collectTestingArtifacts(sr *db.StepResult, rounds []*db.StepRound) []types.TestArtifact {
+func collectTestingArtifacts(sr *db.StepResult, rounds []*db.StepRound, opts testingSummaryOptions) []types.TestArtifact {
 	seen := map[string]bool{}
 	var artifacts []types.TestArtifact
 	for _, raw := range testingEvidenceFindingsJSON(sr, rounds) {
-		artifacts = appendTestingArtifacts(artifacts, seen, raw)
+		artifacts = appendTestingArtifacts(artifacts, seen, raw, opts)
 	}
 	return artifacts
 }
@@ -265,7 +268,7 @@ func hasTestingEvidenceMetadata(raw *string) bool {
 	return strings.TrimSpace(findings.TestingSummary) != "" || len(findings.Tested) > 0 || len(findings.Artifacts) > 0
 }
 
-func appendTestingArtifacts(artifacts []types.TestArtifact, seen map[string]bool, raw *string) []types.TestArtifact {
+func appendTestingArtifacts(artifacts []types.TestArtifact, seen map[string]bool, raw *string, opts testingSummaryOptions) []types.TestArtifact {
 	if raw == nil || strings.TrimSpace(*raw) == "" {
 		return artifacts
 	}
@@ -276,7 +279,7 @@ func appendTestingArtifacts(artifacts []types.TestArtifact, seen map[string]bool
 	for _, artifact := range findings.Artifacts {
 		artifact.Label = sanitizePromptText(artifact.Label)
 		artifact.Kind = strings.ToLower(sanitizePromptText(artifact.Kind))
-		artifact.Path = sanitizeArtifactPath(artifact.Path)
+		artifact.Path = sanitizeArtifactPath(artifact.Path, opts)
 		artifact.URL = sanitizeArtifactURL(artifact.URL)
 		artifact.Content = sanitizePromptMultilineText(artifact.Content)
 		key := artifact.Kind + "\x00" + artifact.Label + "\x00" + artifact.Path + "\x00" + artifact.URL + "\x00" + artifact.Content
@@ -350,6 +353,7 @@ func renderTestingArtifact(artifact types.TestArtifact, opts testingSummaryOptio
 	if target == "" {
 		target = artifactTargetForPath(artifact, opts)
 	}
+	localPath := localArtifactPath(artifact.Path, opts)
 
 	var b strings.Builder
 	if target != "" {
@@ -360,6 +364,8 @@ func renderTestingArtifact(artifact types.TestArtifact, opts testingSummaryOptio
 		} else {
 			b.WriteString(fmt.Sprintf("- Evidence: [%s](%s)\n", html.EscapeString(label), target))
 		}
+	} else if localPath != "" {
+		b.WriteString(renderLocalArtifactLine(label, localPath))
 	}
 	if artifact.Content != "" {
 		if b.Len() > 0 && !strings.HasSuffix(b.String(), "\n\n") {
@@ -375,11 +381,15 @@ func renderCompactTestingArtifact(artifact types.TestArtifact, opts testingSumma
 	if target == "" {
 		target = artifactLinkTargetForPath(artifact, opts)
 	}
-	if target == "" && artifact.Content == "" {
+	localPath := localArtifactPath(artifact.Path, opts)
+	if target == "" && localPath == "" && artifact.Content == "" {
 		return ""
 	}
 
 	if artifact.Content == "" {
+		if localPath != "" {
+			return renderLocalArtifactLine(label, localPath)
+		}
 		return fmt.Sprintf("- Evidence: [%s](%s)\n", html.EscapeString(label), target)
 	}
 
@@ -388,6 +398,8 @@ func renderCompactTestingArtifact(artifact types.TestArtifact, opts testingSumma
 	b.WriteString(fmt.Sprintf("<summary>Evidence: %s</summary>\n\n", html.EscapeString(label)))
 	if target != "" {
 		b.WriteString(fmt.Sprintf("Source: [%s](%s)\n\n", html.EscapeString(label), target))
+	} else if localPath != "" {
+		b.WriteString(fmt.Sprintf("Source: local file <code>%s</code>\n\n", html.EscapeString(localPath)))
 	}
 	b.WriteString(fmt.Sprintf("```text\n%s\n```\n", escapeMarkdownFence(artifact.Content)))
 	b.WriteString("</details>\n")
@@ -395,34 +407,39 @@ func renderCompactTestingArtifact(artifact types.TestArtifact, opts testingSumma
 }
 
 func artifactTargetForPath(artifact types.TestArtifact, opts testingSummaryOptions) string {
-	if artifact.Path == "" {
+	repoPath := repoRelativeArtifactPath(artifact.Path, opts)
+	if repoPath == "" {
 		return ""
 	}
 	if opts.githubBlobBase == "" || opts.githubRawBase == "" {
-		return artifact.Path
+		return repoPath
 	}
-	if isImageArtifact(artifact.Kind, artifact.Path) || isVideoArtifact(artifact.Kind, artifact.Path) {
-		return opts.githubRawBase + artifact.Path
+	if isImageArtifact(artifact.Kind, repoPath) || isVideoArtifact(artifact.Kind, repoPath) {
+		return opts.githubRawBase + repoPath
 	}
-	return opts.githubBlobBase + artifact.Path
+	return opts.githubBlobBase + repoPath
 }
 
 func artifactLinkTargetForPath(artifact types.TestArtifact, opts testingSummaryOptions) string {
-	if artifact.Path == "" {
+	repoPath := repoRelativeArtifactPath(artifact.Path, opts)
+	if repoPath == "" {
 		return ""
 	}
 	if opts.githubBlobBase == "" {
-		return artifact.Path
+		return repoPath
 	}
-	return opts.githubBlobBase + artifact.Path
+	return opts.githubBlobBase + repoPath
 }
 
-func sanitizeArtifactPath(target string) string {
+func sanitizeArtifactPath(target string, opts testingSummaryOptions) string {
 	clean := strings.TrimSpace(target)
-	if clean == "" || clean != sanitizePromptText(target) || strings.ContainsAny(clean, "\n\r<>[]()\\") {
+	if clean == "" || clean != sanitizePromptText(target) || strings.ContainsAny(clean, "\n\r<>[]()`") {
 		return ""
 	}
-	if strings.HasPrefix(clean, "/") || strings.HasPrefix(clean, "~") || strings.Contains(clean, ":") {
+	if filepath.IsAbs(clean) {
+		return sanitizeAbsoluteArtifactPath(clean, opts)
+	}
+	if strings.HasPrefix(clean, "~") || strings.Contains(clean, ":") || strings.Contains(clean, "\\") {
 		return ""
 	}
 	cleanedPath := path.Clean(clean)
@@ -430,6 +447,77 @@ func sanitizeArtifactPath(target string) string {
 		return ""
 	}
 	return clean
+}
+
+func sanitizeAbsoluteArtifactPath(clean string, opts testingSummaryOptions) string {
+	cleanedPath := filepath.Clean(clean)
+	if cleanedPath != clean {
+		return ""
+	}
+	if _, ok := artifactPathRelativeToRoot(cleanedPath, opts.repoRoot); ok {
+		return cleanedPath
+	}
+	if _, ok := artifactPathRelativeToRoot(cleanedPath, testEvidenceRoot()); ok {
+		return cleanedPath
+	}
+	return ""
+}
+
+func repoRelativeArtifactPath(target string, opts testingSummaryOptions) string {
+	if target == "" {
+		return ""
+	}
+	if !filepath.IsAbs(target) {
+		return target
+	}
+	rel, ok := artifactPathRelativeToRoot(target, opts.repoRoot)
+	if !ok {
+		return ""
+	}
+	return filepath.ToSlash(rel)
+}
+
+func localArtifactPath(target string, opts testingSummaryOptions) string {
+	if target == "" || !filepath.IsAbs(target) {
+		return ""
+	}
+	if _, ok := artifactPathRelativeToRoot(target, opts.repoRoot); ok {
+		return ""
+	}
+	return target
+}
+
+func artifactPathRelativeToRoot(target, root string) (string, bool) {
+	root = strings.TrimSpace(root)
+	if target == "" || root == "" {
+		return "", false
+	}
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return "", false
+	}
+	targetAbs, err := filepath.Abs(target)
+	if err != nil {
+		return "", false
+	}
+	rootAbs = filepath.Clean(rootAbs)
+	targetAbs = filepath.Clean(targetAbs)
+	if !sameVolume(rootAbs, targetAbs) {
+		return "", false
+	}
+	rel, err := filepath.Rel(rootAbs, targetAbs)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return rel, true
+}
+
+func sameVolume(a, b string) bool {
+	return strings.EqualFold(filepath.VolumeName(a), filepath.VolumeName(b)) || filepath.VolumeName(a) == "" || filepath.VolumeName(b) == ""
+}
+
+func renderLocalArtifactLine(label, localPath string) string {
+	return fmt.Sprintf("- Evidence: %s (local file: <code>%s</code>)\n", html.EscapeString(label), html.EscapeString(localPath))
 }
 
 func sanitizeArtifactURL(target string) string {
