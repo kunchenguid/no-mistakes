@@ -387,10 +387,10 @@ func renderCompactTestingArtifact(artifact types.TestArtifact, opts testingSumma
 	}
 
 	if artifact.Content == "" {
-		if localPath != "" {
-			return renderLocalArtifactLine(label, localPath)
+		if target != "" {
+			return fmt.Sprintf("- Evidence: [%s](%s)\n", html.EscapeString(label), target)
 		}
-		return fmt.Sprintf("- Evidence: [%s](%s)\n", html.EscapeString(label), target)
+		return renderLocalArtifactLine(label, localPath)
 	}
 
 	var b strings.Builder
@@ -502,6 +502,8 @@ func artifactPathRelativeToRoot(target, root string) (string, bool) {
 	}
 	rootAbs = filepath.Clean(rootAbs)
 	targetAbs = filepath.Clean(targetAbs)
+	rootAbs = resolveArtifactPathSymlinks(rootAbs)
+	targetAbs = resolveArtifactPathSymlinks(targetAbs)
 	if !sameVolume(rootAbs, targetAbs) {
 		return "", false
 	}
@@ -510,6 +512,26 @@ func artifactPathRelativeToRoot(target, root string) (string, bool) {
 		return "", false
 	}
 	return rel, true
+}
+
+func resolveArtifactPathSymlinks(target string) string {
+	if resolved, err := filepath.EvalSymlinks(target); err == nil {
+		return filepath.Clean(resolved)
+	}
+	for candidate := target; ; candidate = filepath.Dir(candidate) {
+		resolved, err := filepath.EvalSymlinks(candidate)
+		if err == nil {
+			rel, err := filepath.Rel(candidate, target)
+			if err != nil || rel == "." {
+				return filepath.Clean(resolved)
+			}
+			return filepath.Clean(filepath.Join(resolved, rel))
+		}
+		parent := filepath.Dir(candidate)
+		if parent == candidate {
+			return target
+		}
+	}
 }
 
 func sameVolume(a, b string) bool {

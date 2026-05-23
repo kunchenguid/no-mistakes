@@ -457,3 +457,54 @@ func TestBuildTestingSummaryForPR_RendersLocalTempVisualArtifactPath(t *testing.
 		}
 	}
 }
+
+func TestBuildTestingSummaryForPR_PrefersArtifactURLOverLocalPath(t *testing.T) {
+	t.Parallel()
+	repoRoot := t.TempDir()
+	localPath := filepath.Join(os.TempDir(), "no-mistakes-evidence", "run-123", "checkout.png")
+	findings := fmt.Sprintf(`{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[{"kind":"screenshot","label":"Checkout screenshot","url":"https://example.com/checkout.png","path":%q}]}`, localPath)
+	steps := []*db.StepResult{
+		{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings},
+	}
+	rounds := map[string][]*db.StepRound{
+		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 300}},
+	}
+
+	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123", repoRoot)
+
+	if !strings.Contains(md, "- Evidence: [Checkout screenshot](https://example.com/checkout.png)") {
+		t.Fatalf("expected artifact URL to take precedence, got:\n%s", md)
+	}
+	if strings.Contains(md, "local file:") || strings.Contains(md, localPath) {
+		t.Fatalf("did not expect local path to replace URL, got:\n%s", md)
+	}
+}
+
+func TestArtifactPathRelativeToRoot_AllowsSymlinkEquivalentPaths(t *testing.T) {
+	t.Parallel()
+	tempDir := t.TempDir()
+	root := filepath.Join(tempDir, "evidence")
+	if err := os.Mkdir(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linkedRoot := filepath.Join(tempDir, "linked-evidence")
+	if err := os.Symlink(root, linkedRoot); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	target := filepath.Join(linkedRoot, "run-123", "checkout.png")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("png"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rel, ok := artifactPathRelativeToRoot(target, root)
+
+	if !ok {
+		t.Fatalf("expected symlink-equivalent target to be within root")
+	}
+	if rel != filepath.Join("run-123", "checkout.png") {
+		t.Fatalf("expected normalized relative path, got %q", rel)
+	}
+}
