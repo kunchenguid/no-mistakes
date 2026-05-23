@@ -439,7 +439,7 @@ func sanitizeArtifactPath(target string, opts testingSummaryOptions) string {
 	if filepath.IsAbs(clean) {
 		return sanitizeAbsoluteArtifactPath(clean, opts)
 	}
-	if strings.HasPrefix(clean, "~") || strings.Contains(clean, ":") || strings.Contains(clean, "\\") {
+	if strings.HasPrefix(clean, "/") || strings.HasPrefix(clean, "~") || strings.Contains(clean, ":") || strings.Contains(clean, "\\") {
 		return ""
 	}
 	cleanedPath := path.Clean(clean)
