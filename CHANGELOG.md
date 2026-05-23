@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.21.2](https://github.com/kunchenguid/no-mistakes/compare/v1.21.1...v1.21.2) (2026-05-23)
+
+
+### Bug Fixes
+
+* **pipeline:** preserve local test evidence in PR summaries ([#214](https://github.com/kunchenguid/no-mistakes/issues/214)) ([09147b2](https://github.com/kunchenguid/no-mistakes/commit/09147b23f53f7a07cb910e5e50dede0aec8dbc3c))
+
 ## [1.21.1](https://github.com/kunchenguid/no-mistakes/compare/v1.21.0...v1.21.1) (2026-05-21)
 
 
