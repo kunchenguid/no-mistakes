@@ -3,6 +3,7 @@ package shellenv
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"os/user"
@@ -17,7 +18,13 @@ var runtimeGOOS = runtime.GOOS
 var lookupEnv = os.LookupEnv
 var currentUser = user.Current
 var shellCommandOutput = defaultShellCommandOutput
-var shellCommandTimeout = 2 * time.Second
+
+// shellCommandTimeout bounds the one-time login-shell probe at daemon startup.
+// It is deliberately forgiving: a 2s budget was too tight for an interactive
+// login shell under cold-start/system load, and exceeding it silently dropped
+// the daemon onto a degraded fallback PATH that omitted version-manager dirs
+// (nvm/fnm/volta), the intermittent trigger behind #143.
+var shellCommandTimeout = 30 * time.Second
 
 var cacheMu sync.Mutex
 var cachedEnv []string
@@ -52,17 +59,21 @@ func Resolve() ([]string, error) {
 	}
 	cacheMu.Unlock()
 
-	resolved, err := resolveUncached()
-	if err != nil {
-		return nil, err
-	}
+	resolved, resolvedFromShell := resolveUncached()
 
-	cacheMu.Lock()
-	if cachedEnv == nil {
-		cachedEnv = append([]string(nil), resolved...)
+	// Only cache a successful shell resolution. A degraded fallback (the shell
+	// probe failed or returned nothing) must never be cached: one bad daemon
+	// startup would otherwise poison every spawned agent for the daemon's whole
+	// lifetime - the failure mode behind #143. Leaving it uncached lets a later
+	// call retry and recover the real login-shell PATH.
+	if resolvedFromShell {
+		cacheMu.Lock()
+		if cachedEnv == nil {
+			cachedEnv = append([]string(nil), resolved...)
+		}
+		cacheMu.Unlock()
 	}
-	defer cacheMu.Unlock()
-	return append([]string(nil), cachedEnv...), nil
+	return append([]string(nil), resolved...), nil
 }
 
 func ApplyToProcess() error {
@@ -85,9 +96,13 @@ func ApplyToProcess() error {
 	return nil
 }
 
-func resolveUncached() ([]string, error) {
+// resolveUncached probes the login shell for its environment. The bool return
+// reports whether the result came from a successful shell probe (true) or a
+// degraded fallback (false); callers use it to decide whether the result is
+// safe to cache.
+func resolveUncached() ([]string, bool) {
 	if runtimeGOOS == "windows" {
-		return append([]string(nil), os.Environ()...), nil
+		return append([]string(nil), os.Environ()...), true
 	}
 
 	shell := LoginShell()
@@ -97,15 +112,19 @@ func resolveUncached() ([]string, error) {
 	}
 	out, err := shellCommandOutput(shell, args...)
 	if err != nil {
+		slog.Warn("login shell environment resolution failed; using a degraded fallback PATH that may omit version-manager dirs (nvm/fnm/volta), so agents may not find tools like pnpm (#143)",
+			"shell", shell, "err", err)
 		fallback := append([]string(nil), os.Environ()...)
-		return augmentPath(ensureShellEntry(fallback, shell)), nil
+		return augmentPath(ensureShellEntry(fallback, shell)), false
 	}
 	resolved := parseEnvOutput(out)
 	if len(resolved) == 0 {
+		slog.Warn("login shell environment resolution returned no entries; using a degraded fallback PATH that may omit version-manager dirs (nvm/fnm/volta), so agents may not find tools like pnpm (#143)",
+			"shell", shell)
 		fallback := append([]string(nil), os.Environ()...)
-		return augmentPath(ensureShellEntry(fallback, shell)), nil
+		return augmentPath(ensureShellEntry(fallback, shell)), false
 	}
-	return augmentPath(ensureShellEntry(resolved, shell)), nil
+	return augmentPath(ensureShellEntry(resolved, shell)), true
 }
 
 // WellKnownBinDirs returns common binary install locations that should be on

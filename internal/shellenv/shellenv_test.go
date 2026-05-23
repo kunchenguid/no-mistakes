@@ -1,6 +1,8 @@
 package shellenv
 
 import (
+	"bytes"
+	"log/slog"
 	"os"
 	"reflect"
 	"runtime"
@@ -365,3 +367,123 @@ func TestResolve_FallbackOnShellFailure(t *testing.T) {
 type noSuchFileError struct{}
 
 func (noSuchFileError) Error() string { return "no such file or directory" }
+
+// TestResolve_DoesNotCacheDegradedFallback covers the core #143 failure mode:
+// a single shell-resolution failure at daemon startup used to be cached for the
+// daemon's whole lifetime, so every spawned agent inherited a degraded PATH that
+// omitted version-manager dirs (nvm/fnm/volta) and could not find tools like
+// pnpm. A failed resolution must not be cached, so a later call can recover.
+func TestResolve_DoesNotCacheDegradedFallback(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Resolve short-circuits to os.Environ() on Windows")
+	}
+	resetForTests()
+	t.Setenv("SHELL", "/bin/bash")
+	t.Setenv("HOME", "/Users/test")
+
+	oldOutput := shellCommandOutput
+	defer func() {
+		shellCommandOutput = oldOutput
+		resetForTests()
+	}()
+
+	fail := true
+	shellCommandOutput = func(string, ...string) ([]byte, error) {
+		if fail {
+			return nil, &noSuchFileError{}
+		}
+		return []byte("PATH=/resolved/bin\x00HOME=/Users/test\x00"), nil
+	}
+
+	// First resolve fails and falls back to a degraded PATH.
+	if _, err := Resolve(); err != nil {
+		t.Fatal(err)
+	}
+	// A later successful resolve must win, proving the fallback wasn't cached.
+	fail = false
+	env, err := Resolve()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, _ := envValue(env, "PATH")
+	if !strings.HasPrefix(path, "/resolved/bin") {
+		t.Fatalf("expected second resolve to use shell-provided PATH, got %q", path)
+	}
+}
+
+// TestResolve_CachesSuccessfulResolution guards the cache fast-path: once a real
+// shell resolution succeeds it is cached, and later calls must not re-probe the
+// shell (which would add startup latency on every agent spawn).
+func TestResolve_CachesSuccessfulResolution(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Resolve short-circuits to os.Environ() on Windows")
+	}
+	resetForTests()
+	t.Setenv("SHELL", "/bin/bash")
+	t.Setenv("HOME", "/Users/test")
+
+	oldOutput := shellCommandOutput
+	defer func() {
+		shellCommandOutput = oldOutput
+		resetForTests()
+	}()
+	shellCommandOutput = func(string, ...string) ([]byte, error) {
+		return []byte("PATH=/resolved/bin\x00HOME=/Users/test\x00"), nil
+	}
+	if _, err := Resolve(); err != nil {
+		t.Fatal(err)
+	}
+
+	shellCommandOutput = func(string, ...string) ([]byte, error) {
+		t.Fatal("Resolve should not re-probe the shell after a successful cache")
+		return nil, nil
+	}
+	env, err := Resolve()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path, _ := envValue(env, "PATH"); !strings.HasPrefix(path, "/resolved/bin") {
+		t.Fatalf("expected cached PATH, got %q", path)
+	}
+}
+
+// TestResolve_LogsWarningOnFallback ensures the degraded fallback is no longer
+// silent. Before this, #143 was hard to diagnose because nothing recorded that
+// the login-shell probe had failed and a degraded PATH was in use.
+func TestResolve_LogsWarningOnFallback(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Resolve short-circuits to os.Environ() on Windows")
+	}
+	resetForTests()
+	t.Setenv("SHELL", "/bin/bash")
+	t.Setenv("HOME", "/Users/test")
+
+	oldOutput := shellCommandOutput
+	oldLogger := slog.Default()
+	var buf bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	defer func() {
+		shellCommandOutput = oldOutput
+		slog.SetDefault(oldLogger)
+		resetForTests()
+	}()
+	shellCommandOutput = func(string, ...string) ([]byte, error) {
+		return nil, &noSuchFileError{}
+	}
+
+	if _, err := Resolve(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "login shell environment resolution failed") {
+		t.Fatalf("expected a fallback warning in the log, got %q", buf.String())
+	}
+}
+
+// TestShellCommandTimeout_IsRelaxed locks in a forgiving default timeout. A 2s
+// budget is too tight for an interactive login shell under cold-start/system
+// load, which is the intermittent trigger for the degraded fallback in #143.
+func TestShellCommandTimeout_IsRelaxed(t *testing.T) {
+	if shellCommandTimeout < 8*time.Second {
+		t.Fatalf("shell resolution timeout %v is too aggressive; interactive shells under load need headroom (#143)", shellCommandTimeout)
+	}
+}
