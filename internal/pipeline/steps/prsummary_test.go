@@ -331,6 +331,27 @@ func TestBuildTestingSummary_EscapesMarkdownInTestingSummary(t *testing.T) {
 	}
 }
 
+func TestBuildTestingSummaryForPR_KeepsInlineCodeProseAsPlainText(t *testing.T) {
+	t.Parallel()
+	summary := "The shutdown-focused tests passed, including explicit `/shutdown`, idle timeout, and `stop` command logic."
+	findings := fmt.Sprintf("{\"findings\":[],\"summary\":\"\",\"testing_summary\":%q,\"tested\":[]}", summary)
+	steps := []*db.StepResult{
+		{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings},
+	}
+	rounds := map[string][]*db.StepRound{
+		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 300}},
+	}
+
+	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123", t.TempDir())
+
+	if strings.Contains(md, "<code>") {
+		t.Fatalf("prose summary with inline code spans should not be wrapped in <code>, got:\n%s", md)
+	}
+	if !strings.Contains(md, summary) {
+		t.Fatalf("expected prose summary rendered verbatim, got:\n%s", md)
+	}
+}
+
 func TestBuildTestingSummary_RendersEvidenceArtifacts(t *testing.T) {
 	t.Parallel()
 	findings := `{"findings":[],"summary":"","testing_summary":"Checkout success was verified visually.","tested":["manual checkout flow"],"artifacts":[{"kind":"screenshot","label":"Checkout success screenshot","path":"artifacts/checkout-success.png"},{"kind":"log","label":"Checkout server log","content":"POST /checkout 200\nreceipt=ok"}]}`

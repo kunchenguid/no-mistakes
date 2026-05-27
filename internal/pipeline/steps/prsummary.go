@@ -335,7 +335,9 @@ func renderTestingSummary(summary string) string {
 	if clean == "" {
 		return ""
 	}
-	if strings.ContainsAny(clean, "`\n<>") {
+	// Inline backtick code spans are valid markdown prose and render fine on
+	// their own; only newlines or angle brackets need the escaped <code> wrapper.
+	if strings.ContainsAny(clean, "\n<>") {
 		return renderTestedDetail(clean)
 	}
 	return clean
