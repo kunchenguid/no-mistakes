@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.21.5](https://github.com/kunchenguid/no-mistakes/compare/v1.21.4...v1.21.5) (2026-05-27)
+
+
+### Bug Fixes
+
+* **pipeline:** embed text evidence in PR summaries ([#222](https://github.com/kunchenguid/no-mistakes/issues/222)) ([4eb3dd9](https://github.com/kunchenguid/no-mistakes/commit/4eb3dd9b1cc3bf0704c7981fc665852f0bba6f2a))
+* **pipeline:** keep inline code prose in PR summaries ([#220](https://github.com/kunchenguid/no-mistakes/issues/220)) ([94a7361](https://github.com/kunchenguid/no-mistakes/commit/94a736185220f774fa2ea49921d54b11b3c0a89c))
+* **pipeline:** narrate PR auto-fix summaries ([#223](https://github.com/kunchenguid/no-mistakes/issues/223)) ([902c0c5](https://github.com/kunchenguid/no-mistakes/commit/902c0c581cfbd01cc4f244f751c676a2bb64cf7e))
+
 ## [1.21.4](https://github.com/kunchenguid/no-mistakes/compare/v1.21.3...v1.21.4) (2026-05-27)
 
 
