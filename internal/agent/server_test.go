@@ -13,7 +13,7 @@ import (
 // TestStartServerWithPort_DetectsEarlyExit verifies that when the spawned
 // server exits before becoming healthy (e.g. `acli` not installed, bad
 // flags, or port bind failure), startup fails fast instead of waiting the
-// full 30s health-check deadline.
+// full health-check deadline.
 func TestStartServerWithPort_DetectsEarlyExit(t *testing.T) {
 	bin, err := exec.LookPath("true")
 	if err != nil {
@@ -33,6 +33,56 @@ func TestStartServerWithPort_DetectsEarlyExit(t *testing.T) {
 	}
 	if elapsed > 5*time.Second {
 		t.Errorf("should fail fast on early exit, waited %v", elapsed)
+	}
+}
+
+// TestDefaultHealthTimeout pins the cold-start budget for a freshly spawned
+// managed server. Bumped to 60s to absorb opencode boots of 15s+ when the
+// host is under load.
+func TestDefaultHealthTimeout(t *testing.T) {
+	if defaultHealthTimeout != 60*time.Second {
+		t.Errorf("defaultHealthTimeout = %v, want 60s", defaultHealthTimeout)
+	}
+}
+
+// TestWaitForHealth_TimesOut verifies that when the process stays alive but
+// never answers its health endpoint, waitForHealth gives up after the
+// configured healthTimeout and reports the duration it waited.
+func TestWaitForHealth_TimesOut(t *testing.T) {
+	bin, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skip("sleep binary not available")
+	}
+
+	cmd := exec.Command(bin, "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start sleep: %v", err)
+	}
+	defer func() { _ = cmd.Process.Kill() }()
+
+	// Port 1 has nothing listening, so health probes fail with connection
+	// refused but the process never exits — exercising the deadline path.
+	srv := &managedServer{cmd: cmd, port: 1, exited: make(chan struct{}), healthTimeout: 100 * time.Millisecond}
+	go func() {
+		srv.waitErr = cmd.Wait()
+		close(srv.exited)
+	}()
+
+	start := time.Now()
+	err = srv.waitForHealth(context.Background(), "/healthcheck")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if !strings.Contains(err.Error(), "health check timed out") {
+		t.Errorf("error should mention health-check timeout, got: %v", err)
+	}
+	if elapsed < 100*time.Millisecond {
+		t.Errorf("returned before deadline, waited only %v", elapsed)
+	}
+	if elapsed > 5*time.Second {
+		t.Errorf("waited far past short deadline: %v", elapsed)
 	}
 }
 

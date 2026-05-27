@@ -40,13 +40,20 @@ func currentManagedServerOutput() io.Writer {
 	return managedServerOutput
 }
 
+// defaultHealthTimeout bounds how long startServerWithPort waits for a freshly
+// spawned server to answer its health endpoint before giving up. It is generous
+// enough to absorb cold starts under host load: opencode has been observed
+// taking 15s+ just to emit its first log line when the machine is busy.
+const defaultHealthTimeout = 60 * time.Second
+
 // managedServer manages a persistent HTTP server process (used by rovodev and opencode agents).
 type managedServer struct {
-	cmd     *exec.Cmd
-	port    int
-	pidFile string        // path to the on-disk PID record; empty if tracking disabled
-	exited  chan struct{} // closed exactly once when cmd.Wait returns
-	waitErr error         // result of cmd.Wait; only read after exited is closed
+	cmd           *exec.Cmd
+	port          int
+	pidFile       string        // path to the on-disk PID record; empty if tracking disabled
+	exited        chan struct{} // closed exactly once when cmd.Wait returns
+	waitErr       error         // result of cmd.Wait; only read after exited is closed
+	healthTimeout time.Duration // health-check deadline; defaults to defaultHealthTimeout when zero
 }
 
 // getAvailablePort finds an ephemeral port by binding to :0 and releasing.
@@ -88,7 +95,7 @@ func startServerWithPort(ctx context.Context, agentName, bin string, args []stri
 		StartedAt:      time.Now().UTC(),
 	})
 
-	srv := &managedServer{cmd: cmd, port: port, pidFile: pidFile, exited: make(chan struct{})}
+	srv := &managedServer{cmd: cmd, port: port, pidFile: pidFile, exited: make(chan struct{}), healthTimeout: defaultHealthTimeout}
 	go func() {
 		srv.waitErr = cmd.Wait()
 		close(srv.exited)
@@ -108,13 +115,26 @@ func (s *managedServer) baseURL() string {
 	return fmt.Sprintf("http://127.0.0.1:%d", s.port)
 }
 
+// formatHealthTimeout renders a health-check deadline for error messages,
+// preferring a plain seconds form (e.g. "60s") over Duration's "1m0s".
+func formatHealthTimeout(d time.Duration) string {
+	if d%time.Second == 0 {
+		return fmt.Sprintf("%ds", int(d/time.Second))
+	}
+	return d.String()
+}
+
 // waitForHealth polls the health endpoint until it returns 200 or timeout.
 // If the server process exits before becoming healthy, it returns immediately
 // with an exit error instead of waiting out the 30s deadline.
 func (s *managedServer) waitForHealth(ctx context.Context, path string) error {
 	url := s.baseURL() + path
 	client := &http.Client{Timeout: 2 * time.Second}
-	deadline := time.After(30 * time.Second)
+	timeout := s.healthTimeout
+	if timeout <= 0 {
+		timeout = defaultHealthTimeout
+	}
+	deadline := time.After(timeout)
 
 	for {
 		select {
@@ -123,7 +143,7 @@ func (s *managedServer) waitForHealth(ctx context.Context, path string) error {
 		case <-s.exited:
 			return fmt.Errorf("server exited before becoming healthy: %w", s.waitErr)
 		case <-deadline:
-			return fmt.Errorf("server health check timed out after 30s")
+			return fmt.Errorf("server health check timed out after %s", formatHealthTimeout(timeout))
 		default:
 		}
 
