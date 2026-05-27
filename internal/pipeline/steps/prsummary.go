@@ -385,7 +385,7 @@ func renderTestingArtifact(artifact types.TestArtifact, opts testingSummaryOptio
 		if b.Len() > 0 && !strings.HasSuffix(b.String(), "\n\n") {
 			b.WriteString("\n")
 		}
-		b.WriteString(descriptionLine)
+		b.WriteString(renderTestedDetail(descriptionLine))
 		b.WriteString("\n")
 	}
 	if fenceBody != "" {
@@ -431,7 +431,7 @@ func renderCompactTestingArtifact(artifact types.TestArtifact, opts testingSumma
 		b.WriteString(fmt.Sprintf("Source: [%s](%s)\n\n", html.EscapeString(label), target))
 	}
 	if descriptionLine != "" {
-		b.WriteString(descriptionLine)
+		b.WriteString(renderTestedDetail(descriptionLine))
 		b.WriteString("\n\n")
 	}
 	b.WriteString(fmt.Sprintf("```text\n%s\n```\n", escapeMarkdownFence(fenceBody)))
@@ -454,33 +454,66 @@ func embeddedArtifactText(artifact types.TestArtifact, opts testingSummaryOption
 	if fsPath == "" {
 		return "", false
 	}
-	data, err := os.ReadFile(fsPath)
-	if err != nil || !looksLikeTextArtifact(data) {
+	text, err := readEmbeddedArtifactText(fsPath)
+	if err != nil {
 		return "", false
 	}
-	text := strings.TrimRight(string(data), "\n")
+	text = strings.TrimRight(text, "\n")
 	if text == "" {
 		return "", false
 	}
-	return truncateMiddleBytes(text, maxEmbeddedArtifactBytes), true
+	return text, true
 }
 
-// artifactFilesystemPath resolves a sanitized artifact path to an absolute path
-// for reading. Relative paths are joined onto the repo root; absolute paths
-// (already constrained to the repo or evidence root by sanitizeArtifactPath)
-// are used as-is.
 func artifactFilesystemPath(p string, opts testingSummaryOptions) string {
 	if p == "" {
 		return ""
 	}
-	if filepath.IsAbs(p) {
-		return p
-	}
-	root := strings.TrimSpace(opts.repoRoot)
-	if root == "" {
+	if !filepath.IsAbs(p) {
 		return ""
 	}
-	return filepath.Join(root, filepath.FromSlash(p))
+	if _, ok := artifactPathRelativeToRoot(p, testEvidenceRoot()); !ok {
+		return ""
+	}
+	return p
+}
+
+func readEmbeddedArtifactText(fsPath string) (string, error) {
+	info, err := os.Stat(fsPath)
+	if err != nil || info.IsDir() {
+		return "", err
+	}
+	if info.Size() <= int64(maxEmbeddedArtifactBytes) {
+		data, err := os.ReadFile(fsPath)
+		if err != nil || !looksLikeTextArtifact(data) {
+			return "", err
+		}
+		return string(data), nil
+	}
+
+	file, err := os.Open(fsPath)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+
+	headSize := maxEmbeddedArtifactBytes / 2
+	tailSize := maxEmbeddedArtifactBytes - headSize
+	head := make([]byte, headSize)
+	if _, err := file.ReadAt(head, 0); err != nil {
+		return "", err
+	}
+	tail := make([]byte, tailSize)
+	if _, err := file.ReadAt(tail, info.Size()-int64(tailSize)); err != nil {
+		return "", err
+	}
+	head = trimUTF8End(head)
+	tail = trimUTF8Start(tail)
+	if !looksLikeTextArtifact(head) || !looksLikeTextArtifact(tail) {
+		return "", nil
+	}
+	omitted := info.Size() - int64(len(head)+len(tail))
+	return string(head) + fmt.Sprintf("\n\n... [%d bytes truncated] ...\n\n", omitted) + string(tail), nil
 }
 
 func looksLikeTextArtifact(data []byte) bool {
@@ -493,25 +526,22 @@ func looksLikeTextArtifact(data []byte) bool {
 	return utf8.Valid(data)
 }
 
-// truncateMiddleBytes keeps the head and tail of s when it exceeds maxBytes,
-// replacing the omitted middle with a marker. Cuts land on UTF-8 boundaries.
-func truncateMiddleBytes(s string, maxBytes int) string {
-	if maxBytes <= 0 || len(s) <= maxBytes {
-		return s
+func trimUTF8End(data []byte) []byte {
+	for len(data) > 0 && !utf8.Valid(data) {
+		data = data[:len(data)-1]
 	}
-	head := maxBytes / 2
-	for head > 0 && !utf8.RuneStart(s[head]) {
-		head--
+	return data
+}
+
+func trimUTF8Start(data []byte) []byte {
+	for len(data) > 0 && !utf8.Valid(data) {
+		_, size := utf8.DecodeRune(data)
+		if size <= 0 {
+			return nil
+		}
+		data = data[size:]
 	}
-	tailStart := len(s) - (maxBytes - head)
-	if tailStart < head {
-		tailStart = head
-	}
-	for tailStart < len(s) && !utf8.RuneStart(s[tailStart]) {
-		tailStart++
-	}
-	omitted := tailStart - head
-	return s[:head] + fmt.Sprintf("\n\n... [%d bytes truncated] ...\n\n", omitted) + s[tailStart:]
+	return data
 }
 
 func artifactTargetForPath(artifact types.TestArtifact, opts testingSummaryOptions) string {
