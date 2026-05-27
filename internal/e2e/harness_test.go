@@ -38,6 +38,16 @@ func TestFixtureRootFromRepoRoot(t *testing.T) {
 	}
 }
 
+func TestDaemonStartTimeoutLeavesRoomForLoginShellProbe(t *testing.T) {
+	timeout, err := time.ParseDuration(e2eDaemonStartTimeout)
+	if err != nil {
+		t.Fatalf("parse e2eDaemonStartTimeout: %v", err)
+	}
+	if timeout <= 30*time.Second {
+		t.Fatalf("e2eDaemonStartTimeout = %v, want more than the 30s login-shell probe budget", timeout)
+	}
+}
+
 func TestCommitChangeCreatesMissingBranchFromMain(t *testing.T) {
 	workDir := t.TempDir()
 	h := &Harness{t: t, WorkDir: workDir}

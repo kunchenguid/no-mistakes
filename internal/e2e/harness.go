@@ -56,6 +56,8 @@ type SetupOpts struct {
 	Scenario string
 }
 
+const e2eDaemonStartTimeout = "45s"
+
 // NewHarness builds the no-mistakes + fakeagent binaries (once per test
 // process), creates a temp git repo with origin, writes the no-mistakes
 // global config to point at the chosen fake agent, and registers cleanup
@@ -124,9 +126,9 @@ func NewHarness(t *testing.T, opts SetupOpts) *Harness {
 	// Skip launchd/systemd/schtasks installation in the daemon. Without
 	// this the daemon would touch the developer's real launch agents.
 	t.Setenv("NM_TEST_START_DAEMON", "1")
-	// Give the daemon room to come up; the default 5s is plenty for local
-	// runs but CI runners with a cold Go cache occasionally exceed it.
-	t.Setenv("NM_TEST_DAEMON_START_TIMEOUT", "30s")
+	// Give the daemon room to come up. Startup may spend up to 30s resolving
+	// the login-shell environment before the IPC socket is opened.
+	t.Setenv("NM_TEST_DAEMON_START_TIMEOUT", e2eDaemonStartTimeout)
 
 	// Disable telemetry attempts (the package would no-op anyway, but
 	// avoid a network DNS lookup on each command).
