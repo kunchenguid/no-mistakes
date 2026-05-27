@@ -100,7 +100,7 @@ The push step commits any remaining uncommitted changes with `no-mistakes: apply
 
 ## Step rounds
 
-Each execution of a step (initial run or follow-up auto-fix run) is recorded as a "round" in the database. A round stores its findings, duration, any selected finding IDs and whether that selection came from the user or auto-fix filtering, the merged finding payload actually sent to the fix agent for that round, and the one-line fix summary for fix rounds. That merged payload can include per-finding user notes and user-authored findings added from the TUI. The PR body's deterministic risk assessment, testing, and pipeline sections are built from these rounds, giving reviewers visibility into test results, review risk, what was fixed, and how many attempts it took.
+Each execution of a step (initial run or follow-up auto-fix run) is recorded as a "round" in the database. A round stores its findings, duration, any selected finding IDs and whether that selection came from the user or auto-fix filtering, the merged finding payload actually sent to the fix agent for that round, and the one-line fix summary for fix rounds. That merged payload can include per-finding user notes and user-authored findings added from the TUI. The PR body's deterministic risk assessment, testing, and pipeline sections are built from these rounds, giving reviewers visibility into test results, review risk, what was fixed, and how many attempts it took. In PR pipeline details, auto-fix rounds are rendered as an issue -> fix -> verification narrative instead of a round-numbered log: each fix summary is followed by either a successful re-check or the findings still open after that fix.
 
 Round trigger types:
 - `initial` - first execution
