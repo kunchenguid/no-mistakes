@@ -16,10 +16,14 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-// maxEmbeddedArtifactBytes caps how much of a text evidence file is embedded
-// directly into the rendered summary. Larger files are truncated from the
-// middle so reviewers keep both the start and end without bloating the PR body.
-const maxEmbeddedArtifactBytes = 16 * 1024
+const (
+	maxEmbeddedArtifactBytes       = 16 * 1024
+	maxEmbeddedArtifactsTotalBytes = 32 * 1024
+)
+
+type testingArtifactRenderState struct {
+	remainingEmbeddedBytes int
+}
 
 type testingSummaryOptions struct {
 	githubBlobBase       string
@@ -124,8 +128,9 @@ func buildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRou
 				b.WriteString("\n")
 			}
 		}
+		renderState := testingArtifactRenderState{remainingEmbeddedBytes: maxEmbeddedArtifactsTotalBytes}
 		for _, artifact := range artifacts {
-			rendered := renderTestingArtifact(artifact, opts)
+			rendered := renderTestingArtifact(artifact, opts, &renderState)
 			if rendered == "" {
 				continue
 			}
@@ -349,20 +354,20 @@ func renderTestingSummary(summary string) string {
 	return clean
 }
 
-func renderTestingArtifact(artifact types.TestArtifact, opts testingSummaryOptions) string {
+func renderTestingArtifact(artifact types.TestArtifact, opts testingSummaryOptions, state *testingArtifactRenderState) string {
 	label := sanitizePromptText(artifact.Label)
 	if label == "" {
 		return ""
 	}
 	if opts.compactArtifacts {
-		return renderCompactTestingArtifact(artifact, opts, label)
+		return renderCompactTestingArtifact(artifact, opts, label, state)
 	}
 	target := artifact.URL
 	if target == "" {
 		target = artifactTargetForPath(artifact, opts)
 	}
 	localPath := localArtifactPath(artifact.Path, opts)
-	fileText, hasFile := embeddedArtifactText(artifact, opts)
+	fileText, hasFile := embeddedArtifactText(artifact, opts, state)
 	caption := artifact.Content
 	fenceBody, descriptionLine := caption, ""
 	if hasFile {
@@ -397,13 +402,13 @@ func renderTestingArtifact(artifact types.TestArtifact, opts testingSummaryOptio
 	return strings.TrimRight(b.String(), "\n") + "\n"
 }
 
-func renderCompactTestingArtifact(artifact types.TestArtifact, opts testingSummaryOptions, label string) string {
+func renderCompactTestingArtifact(artifact types.TestArtifact, opts testingSummaryOptions, label string, state *testingArtifactRenderState) string {
 	target := artifact.URL
 	if target == "" {
 		target = artifactLinkTargetForPath(artifact, opts)
 	}
 	localPath := localArtifactPath(artifact.Path, opts)
-	fileText, hasFile := embeddedArtifactText(artifact, opts)
+	fileText, hasFile := embeddedArtifactText(artifact, opts, state)
 	caption := artifact.Content
 
 	if target == "" && localPath == "" && caption == "" && !hasFile {
@@ -446,8 +451,11 @@ func renderCompactTestingArtifact(artifact types.TestArtifact, opts testingSumma
 // truncated from the middle when it exceeds maxEmbeddedArtifactBytes. ok is
 // false when the artifact has no path, points at an image/video, resolves
 // outside the allowed roots, is missing, empty, or is not UTF-8 text.
-func embeddedArtifactText(artifact types.TestArtifact, opts testingSummaryOptions) (string, bool) {
+func embeddedArtifactText(artifact types.TestArtifact, opts testingSummaryOptions, state *testingArtifactRenderState) (string, bool) {
 	if artifact.Path == "" {
+		return "", false
+	}
+	if state == nil || state.remainingEmbeddedBytes <= 0 {
 		return "", false
 	}
 	if isImageArtifact(artifact.Kind, artifact.Path) || isVideoArtifact(artifact.Kind, artifact.Path) {
@@ -465,6 +473,10 @@ func embeddedArtifactText(artifact types.TestArtifact, opts testingSummaryOption
 	if text == "" {
 		return "", false
 	}
+	if len(text) > state.remainingEmbeddedBytes {
+		return "", false
+	}
+	state.remainingEmbeddedBytes -= len(text)
 	return text, true
 }
 

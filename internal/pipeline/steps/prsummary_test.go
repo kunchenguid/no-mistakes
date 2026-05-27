@@ -688,6 +688,34 @@ func TestBuildTestingSummaryForPR_TruncatesLargeTextEvidenceFromMiddle(t *testin
 	}
 }
 
+func TestBuildTestingSummaryForPR_LimitsTotalEmbeddedTextEvidence(t *testing.T) {
+	firstBody := strings.Repeat("first evidence line\n", 700)
+	secondBody := strings.Repeat("second evidence line\n", 700)
+	thirdBody := strings.Repeat("third evidence line\n", 700)
+	firstPath := writeTempEvidenceFile(t, "first.txt", []byte(firstBody))
+	secondPath := writeTempEvidenceFile(t, "second.txt", []byte(secondBody))
+	thirdPath := writeTempEvidenceFile(t, "third.txt", []byte(thirdBody))
+	findings := fmt.Sprintf(`{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[{"label":"First log","path":%q},{"label":"Second log","path":%q},{"label":"Third log","path":%q}]}`, firstPath, secondPath, thirdPath)
+	steps := []*db.StepResult{
+		{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings},
+	}
+	rounds := map[string][]*db.StepRound{
+		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 300}},
+	}
+
+	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123", t.TempDir())
+
+	if !strings.Contains(md, firstBody) || !strings.Contains(md, secondBody) {
+		t.Fatalf("expected earlier evidence to embed before budget is exhausted, got:\n%s", md[:min(len(md), 600)])
+	}
+	if strings.Contains(md, thirdBody) {
+		t.Fatalf("did not expect evidence beyond the total budget to be embedded")
+	}
+	if !strings.Contains(md, "- Evidence: Third log (local file: <code>"+html.EscapeString(thirdPath)+"</code>)") {
+		t.Fatalf("expected evidence beyond the total budget to fall back to a local source, got:\n%s", md)
+	}
+}
+
 func TestBuildTestingSummaryForPR_FallsBackForBinaryEvidence(t *testing.T) {
 	localPath := writeTempEvidenceFile(t, "capture.dat", []byte{0x00, 0x01, 0x02, 0xff, 0x00})
 	findings := fmt.Sprintf(`{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[{"label":"Binary capture","path":%q}]}`, localPath)
