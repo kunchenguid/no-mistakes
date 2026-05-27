@@ -508,3 +508,128 @@ func TestArtifactPathRelativeToRoot_AllowsSymlinkEquivalentPaths(t *testing.T) {
 		t.Fatalf("expected normalized relative path, got %q", rel)
 	}
 }
+
+// writeTempEvidenceFile creates a uniquely-named file under the temp evidence
+// root (the only absolute location outside the repo that artifact paths may
+// reference) and registers cleanup of its run directory.
+func writeTempEvidenceFile(t *testing.T, name string, content []byte) string {
+	t.Helper()
+	runDir := filepath.Join(testEvidenceRoot(), "run-"+strings.ReplaceAll(t.Name(), "/", "_"))
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(runDir) })
+	path := filepath.Join(runDir, name)
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestBuildTestingSummaryForPR_EmbedsLocalTextEvidenceContent(t *testing.T) {
+	fileBody := "RENDERED WIZARD SCREEN\n  > Claude\n  > Codex\nGitHub source selected"
+	localPath := writeTempEvidenceFile(t, "init-wizard-rendered-screens.txt", []byte(fileBody))
+	findings := fmt.Sprintf(`{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[{"label":"Rendered setup wizard screens","path":%q,"content":"Shows agent auto-detect with Claude and Codex listed individually."}]}`, localPath)
+	steps := []*db.StepResult{
+		{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings},
+	}
+	rounds := map[string][]*db.StepRound{
+		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 300}},
+	}
+
+	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123", t.TempDir())
+	t.Logf("rendered PR testing markdown:\n%s", md)
+
+	if !strings.Contains(md, "<summary>Evidence: Rendered setup wizard screens</summary>") {
+		t.Fatalf("expected evidence summary, got:\n%s", md)
+	}
+	if !strings.Contains(md, "Shows agent auto-detect with Claude and Codex listed individually.") {
+		t.Fatalf("expected caption to render as description text, got:\n%s", md)
+	}
+	if !strings.Contains(md, "```text\n"+fileBody+"\n```") {
+		t.Fatalf("expected file content to be embedded in a fence, got:\n%s", md)
+	}
+	for _, broken := range []string{"Source: local file", localPath} {
+		if strings.Contains(md, broken) {
+			t.Fatalf("did not expect local file reference %q, got:\n%s", broken, md)
+		}
+	}
+}
+
+func TestBuildTestingSummaryForPR_EmbedsRepoTextEvidenceContent(t *testing.T) {
+	t.Parallel()
+	repoRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repoRoot, "artifacts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fileBody := "POST /checkout 200\nreceipt=ok"
+	if err := os.WriteFile(filepath.Join(repoRoot, "artifacts", "server.log"), []byte(fileBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	findings := `{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[{"kind":"log","label":"Server log","path":"artifacts/server.log"}]}`
+	steps := []*db.StepResult{
+		{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings},
+	}
+	rounds := map[string][]*db.StepRound{
+		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 300}},
+	}
+
+	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123", repoRoot)
+	t.Logf("rendered PR testing markdown:\n%s", md)
+
+	if !strings.Contains(md, "```text\n"+fileBody+"\n```") {
+		t.Fatalf("expected committed log content to be embedded, got:\n%s", md)
+	}
+	if strings.Contains(md, "https://github.com/example/widgets/blob/abc123/artifacts/server.log") {
+		t.Fatalf("did not expect blob link when content is inlined, got:\n%s", md)
+	}
+}
+
+func TestBuildTestingSummaryForPR_TruncatesLargeTextEvidenceFromMiddle(t *testing.T) {
+	head := strings.Repeat("HEAD-LINE\n", 50)
+	tail := strings.Repeat("TAIL-LINE\n", 50)
+	fileBody := head + strings.Repeat("X", 40*1024) + tail
+	localPath := writeTempEvidenceFile(t, "big.txt", []byte(fileBody))
+	findings := fmt.Sprintf(`{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[{"label":"Large log","path":%q}]}`, localPath)
+	steps := []*db.StepResult{
+		{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings},
+	}
+	rounds := map[string][]*db.StepRound{
+		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 300}},
+	}
+
+	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123", t.TempDir())
+
+	if !strings.Contains(md, "HEAD-LINE") {
+		t.Fatalf("expected truncated content to keep the head, got:\n%s", md[:min(len(md), 600)])
+	}
+	if !strings.Contains(md, "TAIL-LINE") {
+		t.Fatalf("expected truncated content to keep the tail")
+	}
+	if !strings.Contains(md, "bytes truncated") {
+		t.Fatalf("expected a middle-truncation marker")
+	}
+	if len(md) >= len(fileBody) {
+		t.Fatalf("expected rendered output to be shorter than the full file (%d bytes), got %d", len(fileBody), len(md))
+	}
+}
+
+func TestBuildTestingSummaryForPR_FallsBackForBinaryEvidence(t *testing.T) {
+	localPath := writeTempEvidenceFile(t, "capture.dat", []byte{0x00, 0x01, 0x02, 0xff, 0x00})
+	findings := fmt.Sprintf(`{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[{"label":"Binary capture","path":%q}]}`, localPath)
+	steps := []*db.StepResult{
+		{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings},
+	}
+	rounds := map[string][]*db.StepRound{
+		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 300}},
+	}
+
+	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123", t.TempDir())
+
+	if !strings.Contains(md, "- Evidence: Binary capture (local file: <code>"+html.EscapeString(localPath)+"</code>)") {
+		t.Fatalf("expected binary evidence to fall back to a local file reference, got:\n%s", md)
+	}
+	if strings.Contains(md, "```text") {
+		t.Fatalf("did not expect binary content to be embedded as text, got:\n%s", md)
+	}
+}

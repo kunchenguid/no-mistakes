@@ -1,17 +1,25 @@
 package steps
 
 import (
+	"bytes"
 	"fmt"
 	"html"
 	"net/url"
+	"os"
 	"path"
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+// maxEmbeddedArtifactBytes caps how much of a text evidence file is embedded
+// directly into the rendered summary. Larger files are truncated from the
+// middle so reviewers keep both the start and end without bloating the PR body.
+const maxEmbeddedArtifactBytes = 16 * 1024
 
 type testingSummaryOptions struct {
 	githubBlobBase       string
@@ -354,24 +362,37 @@ func renderTestingArtifact(artifact types.TestArtifact, opts testingSummaryOptio
 		target = artifactTargetForPath(artifact, opts)
 	}
 	localPath := localArtifactPath(artifact.Path, opts)
+	fileText, hasFile := embeddedArtifactText(artifact, opts)
+	caption := artifact.Content
+	fenceBody, descriptionLine := caption, ""
+	if hasFile {
+		fenceBody, descriptionLine = fileText, caption
+	}
 
 	var b strings.Builder
-	if target != "" {
-		if isImageArtifact(artifact.Kind, target) {
-			b.WriteString(fmt.Sprintf("**%s**\n\n![%s](%s)\n", html.EscapeString(label), markdownAltText(label), target))
-		} else if isVideoArtifact(artifact.Kind, target) {
-			b.WriteString(fmt.Sprintf("**%s**\n\n<video src=\"%s\" controls></video>\n", html.EscapeString(label), html.EscapeString(target)))
-		} else {
+	if target != "" && isImageArtifact(artifact.Kind, target) {
+		b.WriteString(fmt.Sprintf("**%s**\n\n![%s](%s)\n", html.EscapeString(label), markdownAltText(label), target))
+	} else if target != "" && isVideoArtifact(artifact.Kind, target) {
+		b.WriteString(fmt.Sprintf("**%s**\n\n<video src=\"%s\" controls></video>\n", html.EscapeString(label), html.EscapeString(target)))
+	} else if !hasFile {
+		if target != "" {
 			b.WriteString(fmt.Sprintf("- Evidence: [%s](%s)\n", html.EscapeString(label), target))
+		} else if localPath != "" {
+			b.WriteString(renderLocalArtifactLine(label, localPath))
 		}
-	} else if localPath != "" {
-		b.WriteString(renderLocalArtifactLine(label, localPath))
 	}
-	if artifact.Content != "" {
+	if descriptionLine != "" {
 		if b.Len() > 0 && !strings.HasSuffix(b.String(), "\n\n") {
 			b.WriteString("\n")
 		}
-		b.WriteString(fmt.Sprintf("**%s**\n\n```text\n%s\n```\n", html.EscapeString(label), escapeMarkdownFence(artifact.Content)))
+		b.WriteString(descriptionLine)
+		b.WriteString("\n")
+	}
+	if fenceBody != "" {
+		if b.Len() > 0 && !strings.HasSuffix(b.String(), "\n\n") {
+			b.WriteString("\n")
+		}
+		b.WriteString(fmt.Sprintf("**%s**\n\n```text\n%s\n```\n", html.EscapeString(label), escapeMarkdownFence(fenceBody)))
 	}
 	return strings.TrimRight(b.String(), "\n") + "\n"
 }
@@ -382,28 +403,115 @@ func renderCompactTestingArtifact(artifact types.TestArtifact, opts testingSumma
 		target = artifactLinkTargetForPath(artifact, opts)
 	}
 	localPath := localArtifactPath(artifact.Path, opts)
-	if target == "" && localPath == "" && artifact.Content == "" {
+	fileText, hasFile := embeddedArtifactText(artifact, opts)
+	caption := artifact.Content
+
+	if target == "" && localPath == "" && caption == "" && !hasFile {
 		return ""
 	}
 
-	if artifact.Content == "" {
+	// No embeddable text: render a link or local-file reference (images, videos, binaries).
+	if caption == "" && !hasFile {
 		if target != "" {
 			return fmt.Sprintf("- Evidence: [%s](%s)\n", html.EscapeString(label), target)
 		}
 		return renderLocalArtifactLine(label, localPath)
 	}
 
+	fenceBody, descriptionLine := caption, ""
+	if hasFile {
+		fenceBody, descriptionLine = fileText, caption
+	}
+
 	var b strings.Builder
 	b.WriteString("<details>\n")
 	b.WriteString(fmt.Sprintf("<summary>Evidence: %s</summary>\n\n", html.EscapeString(label)))
-	if target != "" {
+	// Keep a provenance link only when the content is not the inlined file itself.
+	if !hasFile && target != "" {
 		b.WriteString(fmt.Sprintf("Source: [%s](%s)\n\n", html.EscapeString(label), target))
-	} else if localPath != "" {
-		b.WriteString(fmt.Sprintf("Source: local file <code>%s</code>\n\n", html.EscapeString(localPath)))
 	}
-	b.WriteString(fmt.Sprintf("```text\n%s\n```\n", escapeMarkdownFence(artifact.Content)))
+	if descriptionLine != "" {
+		b.WriteString(descriptionLine)
+		b.WriteString("\n\n")
+	}
+	b.WriteString(fmt.Sprintf("```text\n%s\n```\n", escapeMarkdownFence(fenceBody)))
 	b.WriteString("</details>\n")
 	return b.String()
+}
+
+// embeddedArtifactText reads a file artifact and returns its text content,
+// truncated from the middle when it exceeds maxEmbeddedArtifactBytes. ok is
+// false when the artifact has no path, points at an image/video, resolves
+// outside the allowed roots, is missing, empty, or is not UTF-8 text.
+func embeddedArtifactText(artifact types.TestArtifact, opts testingSummaryOptions) (string, bool) {
+	if artifact.Path == "" {
+		return "", false
+	}
+	if isImageArtifact(artifact.Kind, artifact.Path) || isVideoArtifact(artifact.Kind, artifact.Path) {
+		return "", false
+	}
+	fsPath := artifactFilesystemPath(artifact.Path, opts)
+	if fsPath == "" {
+		return "", false
+	}
+	data, err := os.ReadFile(fsPath)
+	if err != nil || !looksLikeTextArtifact(data) {
+		return "", false
+	}
+	text := strings.TrimRight(string(data), "\n")
+	if text == "" {
+		return "", false
+	}
+	return truncateMiddleBytes(text, maxEmbeddedArtifactBytes), true
+}
+
+// artifactFilesystemPath resolves a sanitized artifact path to an absolute path
+// for reading. Relative paths are joined onto the repo root; absolute paths
+// (already constrained to the repo or evidence root by sanitizeArtifactPath)
+// are used as-is.
+func artifactFilesystemPath(p string, opts testingSummaryOptions) string {
+	if p == "" {
+		return ""
+	}
+	if filepath.IsAbs(p) {
+		return p
+	}
+	root := strings.TrimSpace(opts.repoRoot)
+	if root == "" {
+		return ""
+	}
+	return filepath.Join(root, filepath.FromSlash(p))
+}
+
+func looksLikeTextArtifact(data []byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+	if bytes.IndexByte(data, 0) != -1 {
+		return false
+	}
+	return utf8.Valid(data)
+}
+
+// truncateMiddleBytes keeps the head and tail of s when it exceeds maxBytes,
+// replacing the omitted middle with a marker. Cuts land on UTF-8 boundaries.
+func truncateMiddleBytes(s string, maxBytes int) string {
+	if maxBytes <= 0 || len(s) <= maxBytes {
+		return s
+	}
+	head := maxBytes / 2
+	for head > 0 && !utf8.RuneStart(s[head]) {
+		head--
+	}
+	tailStart := len(s) - (maxBytes - head)
+	if tailStart < head {
+		tailStart = head
+	}
+	for tailStart < len(s) && !utf8.RuneStart(s[tailStart]) {
+		tailStart++
+	}
+	omitted := tailStart - head
+	return s[:head] + fmt.Sprintf("\n\n... [%d bytes truncated] ...\n\n", omitted) + s[tailStart:]
 }
 
 func artifactTargetForPath(artifact types.TestArtifact, opts testingSummaryOptions) string {
