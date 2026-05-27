@@ -126,7 +126,7 @@ func formatHealthTimeout(d time.Duration) string {
 
 // waitForHealth polls the health endpoint until it returns 200 or timeout.
 // If the server process exits before becoming healthy, it returns immediately
-// with an exit error instead of waiting out the 30s deadline.
+// with an exit error instead of waiting out the health-check deadline.
 func (s *managedServer) waitForHealth(ctx context.Context, path string) error {
 	url := s.baseURL() + path
 	client := &http.Client{Timeout: 2 * time.Second}
