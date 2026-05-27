@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.21.4](https://github.com/kunchenguid/no-mistakes/compare/v1.21.3...v1.21.4) (2026-05-27)
+
+
+### Bug Fixes
+
+* **agent:** extend managed server health timeout ([#218](https://github.com/kunchenguid/no-mistakes/issues/218)) ([403b142](https://github.com/kunchenguid/no-mistakes/commit/403b142362d4dbeb71dbac2c788febb1f4cb7233))
+
 ## [1.21.3](https://github.com/kunchenguid/no-mistakes/compare/v1.21.2...v1.21.3) (2026-05-23)
 
 
