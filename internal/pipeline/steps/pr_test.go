@@ -579,7 +579,7 @@ func TestPRStep_AppendsTestingSectionFromTestStep(t *testing.T) {
 	}
 	ghLog := string(logData)
 
-	wantOrder := "## Risk Assessment\n\n⚠️ Medium: touches critical error handling\n\n## Testing\n\n- 🔧 **Test** - 1 issue found → auto-fixed\n\n## Pipeline"
+	wantOrder := "## Risk Assessment\n\n⚠️ Medium: touches critical error handling\n\n## Testing\n\n- 🔧 **Test** - 1 issue found → auto-fixed ✅\n\n## Pipeline"
 	if !strings.Contains(ghLog, wantOrder) {
 		t.Fatalf("expected testing section between risk assessment and pipeline, got:\n%s", ghLog)
 	}

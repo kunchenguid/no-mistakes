@@ -39,7 +39,7 @@ func TestBuildPipelineSummary_AllClean(t *testing.T) {
 		"<summary>✅ **Review** - passed</summary>",
 		"<summary>✅ **Test** - passed</summary>",
 		"<summary>✅ **Lint** - passed</summary>",
-		"**Round 1** - passed ✅",
+		"✅ No issues found.",
 	} {
 		if !strings.Contains(md, want) {
 			t.Errorf("expected %q in pipeline summary, got:\n%s", want, md)

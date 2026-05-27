@@ -90,8 +90,8 @@ func TestBuildPipelineSummary_ReviewUsesFinalCleanState(t *testing.T) {
 	if !strings.Contains(risk, "✅") {
 		t.Errorf("expected checkmark for low risk, got: %q", risk)
 	}
-	if !strings.Contains(md, "Round 2") {
-		t.Errorf("expected review details to remain visible for multi-round review, got:\n%s", md)
+	if !strings.Contains(md, "🔧 Fix applied.") || !strings.Contains(md, "✅ Re-checked - no issues remain.") {
+		t.Errorf("expected the fix and verification to remain visible for multi-round review, got:\n%s", md)
 	}
 }
 

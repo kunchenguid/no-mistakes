@@ -884,7 +884,7 @@ func buildStepEntry(sr *db.StepResult, rounds []*db.StepRound) (statusLine, deta
 
 	if wasFixed {
 		result := buildFixResultText(rounds)
-		line := fmt.Sprintf("🔧 **%s** - %s", name, result)
+		line := fmt.Sprintf("🔧 **%s** - %s ✅", name, result)
 		return buildDetail(line)
 	}
 
@@ -1028,6 +1028,12 @@ func buildFixResultText(rounds []*db.StepRound) string {
 	return strings.Join(parts, " → ")
 }
 
+// buildStepDetails renders the collapsible body for a step as an
+// issue -> fix -> outcome narrative rather than a round-by-round log. Each
+// round is shown as the review state observed at its end; a fix round is
+// prefixed with the fix the agent applied (its commit summary) so a reader can
+// see what was wrong and what was done about it without mentally replaying
+// "rounds".
 func buildStepDetails(summaryLine string, sr *db.StepResult, rounds []*db.StepRound) string {
 	var b strings.Builder
 	b.WriteString("<details>\n")
@@ -1039,77 +1045,103 @@ func buildStepDetails(summaryLine string, sr *db.StepResult, rounds []*db.StepRo
 		return b.String()
 	}
 
+	// True only when the step recorded final findings but no round captured
+	// them - a data gap we must not paper over as "no issues found".
 	missingRoundFindingsData := sr.FindingsJSON != nil && !roundsHaveFindings(rounds) && !roundsHaveParseFailure(rounds)
 
 	for _, r := range rounds {
-		triggerLabel := ""
-		switch r.Trigger {
-		case "initial":
-			triggerLabel = ""
-		case "auto_fix":
-			triggerLabel = " (auto-fix)"
-		case "user_fix":
-			triggerLabel = " (auto-fix)"
+		isFixRound := r.Trigger == "auto_fix" || r.Trigger == "user_fix"
+		if isFixRound {
+			b.WriteString(fixRoundLine(r))
+			b.WriteString("\n")
 		}
 
 		if r.FindingsJSON == nil {
-			if missingRoundFindingsData {
-				b.WriteString(fmt.Sprintf("**Round %d**%s - findings not recorded\n\n", r.Round, triggerLabel))
-				continue
+			switch {
+			case missingRoundFindingsData:
+				b.WriteString("findings not recorded\n\n")
+			case isFixRound:
+				b.WriteString("✅ Re-checked - no issues remain.\n\n")
+			default:
+				b.WriteString("✅ No issues found.\n\n")
 			}
-			b.WriteString(fmt.Sprintf("**Round %d**%s - passed ✅\n\n", r.Round, triggerLabel))
 			continue
 		}
 
 		findings, err := types.ParseFindingsJSON(*r.FindingsJSON)
 		if err != nil {
-			b.WriteString(fmt.Sprintf("**Round %d**%s - failed to parse findings\n\n", r.Round, triggerLabel))
+			b.WriteString("failed to parse findings\n\n")
 			continue
 		}
+
 		if len(findings.Items) == 0 {
-			b.WriteString(fmt.Sprintf("**Round %d**%s - passed ✅\n", r.Round, triggerLabel))
-			if sr.StepName == types.StepTest {
-				for _, detail := range findings.Tested {
-					rendered := renderTestedDetail(detail)
-					if rendered == "" {
-						continue
-					}
-					b.WriteString(fmt.Sprintf("- %s\n", rendered))
-				}
+			if isFixRound {
+				b.WriteString("✅ Re-checked - no issues remain.\n")
+			} else {
+				b.WriteString("✅ No issues found.\n")
 			}
+			writeTestedDetails(&b, sr, &findings)
 			b.WriteString("\n")
 			continue
 		}
 
-		count := countFindingsBySeverity(&findings)
-		b.WriteString(fmt.Sprintf("**Round %d**%s - found %s\n", r.Round, triggerLabel, count))
-
-		for _, f := range findings.Items {
-			emoji := severityEmoji(f.Severity)
-			loc := ""
-			if f.File != "" {
-				loc = fmt.Sprintf("`%s", html.EscapeString(f.File))
-				if f.Line > 0 {
-					loc += fmt.Sprintf(":%d", f.Line)
-				}
-				loc += "` - "
-			}
-			b.WriteString(fmt.Sprintf("- %s %s%s\n", emoji, loc, html.EscapeString(f.Description)))
+		// A fix round that still has findings means the fix did not fully
+		// land; label what remained so the chain reads as fix -> still open.
+		if isFixRound {
+			b.WriteString(fmt.Sprintf("%s still open:\n", countFindingsBySeverity(&findings)))
 		}
-		if sr.StepName == types.StepTest {
-			for _, detail := range findings.Tested {
-				rendered := renderTestedDetail(detail)
-				if rendered == "" {
-					continue
-				}
-				b.WriteString(fmt.Sprintf("- %s\n", rendered))
-			}
-		}
+		writeFindingItems(&b, sr, &findings)
 		b.WriteString("\n")
 	}
 
 	b.WriteString("</details>\n")
 	return b.String()
+}
+
+// fixRoundLine renders the one-line summary of the fix the agent applied in a
+// fix round, falling back to a generic note when no summary was captured.
+func fixRoundLine(r *db.StepRound) string {
+	summary := ""
+	if r.FixSummary != nil {
+		summary = strings.TrimSpace(*r.FixSummary)
+	}
+	if summary == "" {
+		return "🔧 Fix applied."
+	}
+	return fmt.Sprintf("🔧 Fix: %s", html.EscapeString(summary))
+}
+
+// writeFindingItems renders each finding as a `file:line - description` bullet,
+// followed by any test command details for the test step.
+func writeFindingItems(b *strings.Builder, sr *db.StepResult, findings *types.Findings) {
+	for _, f := range findings.Items {
+		emoji := severityEmoji(f.Severity)
+		loc := ""
+		if f.File != "" {
+			loc = fmt.Sprintf("`%s", html.EscapeString(f.File))
+			if f.Line > 0 {
+				loc += fmt.Sprintf(":%d", f.Line)
+			}
+			loc += "` - "
+		}
+		b.WriteString(fmt.Sprintf("- %s %s%s\n", emoji, loc, html.EscapeString(f.Description)))
+	}
+	writeTestedDetails(b, sr, findings)
+}
+
+// writeTestedDetails lists the commands the test step exercised. It is a no-op
+// for non-test steps.
+func writeTestedDetails(b *strings.Builder, sr *db.StepResult, findings *types.Findings) {
+	if sr.StepName != types.StepTest {
+		return
+	}
+	for _, detail := range findings.Tested {
+		rendered := renderTestedDetail(detail)
+		if rendered == "" {
+			continue
+		}
+		b.WriteString(fmt.Sprintf("- %s\n", rendered))
+	}
 }
 
 func writeStepStatusDetail(b *strings.Builder, sr *db.StepResult) {
