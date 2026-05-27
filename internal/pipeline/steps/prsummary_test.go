@@ -583,6 +583,30 @@ func TestBuildTestingSummaryForPR_EmbedsLocalTextEvidenceContent(t *testing.T) {
 	}
 }
 
+func TestBuildTestingSummaryForPR_PreservesPublicURLForEmbeddedTextEvidence(t *testing.T) {
+	fileBody := "rendered wizard evidence"
+	localPath := writeTempEvidenceFile(t, "wizard.txt", []byte(fileBody))
+	findings := fmt.Sprintf(`{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[{"label":"Wizard log","url":"https://example.com/artifacts/wizard.txt","path":%q}]}`, localPath)
+	steps := []*db.StepResult{
+		{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings},
+	}
+	rounds := map[string][]*db.StepRound{
+		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 300}},
+	}
+
+	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123", t.TempDir())
+
+	if !strings.Contains(md, "Source: [Wizard log](https://example.com/artifacts/wizard.txt)") {
+		t.Fatalf("expected public URL source to be preserved, got:\n%s", md)
+	}
+	if !strings.Contains(md, "```text\n"+fileBody+"\n```") {
+		t.Fatalf("expected local text evidence to remain embedded, got:\n%s", md)
+	}
+	if strings.Contains(md, localPath) {
+		t.Fatalf("did not expect local path to be exposed, got:\n%s", md)
+	}
+}
+
 func TestBuildTestingSummaryForPR_EmbedsRepoTextEvidenceContent(t *testing.T) {
 	t.Parallel()
 	repoRoot := t.TempDir()

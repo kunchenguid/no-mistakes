@@ -431,8 +431,7 @@ func renderCompactTestingArtifact(artifact types.TestArtifact, opts testingSumma
 	var b strings.Builder
 	b.WriteString("<details>\n")
 	b.WriteString(fmt.Sprintf("<summary>Evidence: %s</summary>\n\n", html.EscapeString(label)))
-	// Keep a provenance link only when the content is not the inlined file itself.
-	if !hasFile && target != "" {
+	if target != "" {
 		b.WriteString(fmt.Sprintf("Source: [%s](%s)\n\n", html.EscapeString(label), target))
 	} else if !hasFile && localPath != "" {
 		b.WriteString(renderLocalArtifactReference("Source", label, localPath))
