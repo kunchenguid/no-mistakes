@@ -429,6 +429,9 @@ func renderCompactTestingArtifact(artifact types.TestArtifact, opts testingSumma
 	// Keep a provenance link only when the content is not the inlined file itself.
 	if !hasFile && target != "" {
 		b.WriteString(fmt.Sprintf("Source: [%s](%s)\n\n", html.EscapeString(label), target))
+	} else if !hasFile && localPath != "" {
+		b.WriteString(renderLocalArtifactReference("Source", label, localPath))
+		b.WriteString("\n")
 	}
 	if descriptionLine != "" {
 		b.WriteString(renderTestedDetail(descriptionLine))
@@ -677,7 +680,11 @@ func sameVolume(a, b string) bool {
 }
 
 func renderLocalArtifactLine(label, localPath string) string {
-	return fmt.Sprintf("- Evidence: %s (local file: <code>%s</code>)\n", html.EscapeString(label), html.EscapeString(localPath))
+	return renderLocalArtifactReference("- Evidence", label, localPath)
+}
+
+func renderLocalArtifactReference(prefix, label, localPath string) string {
+	return fmt.Sprintf("%s: %s (local file: <code>%s</code>)\n", prefix, html.EscapeString(label), html.EscapeString(localPath))
 }
 
 func sanitizeArtifactURL(target string) string {

@@ -458,6 +458,33 @@ func TestBuildTestingSummaryForPR_RendersLocalTempVisualArtifactPath(t *testing.
 	}
 }
 
+func TestBuildTestingSummaryForPR_PreservesCaptionedLocalVisualArtifactPath(t *testing.T) {
+	t.Parallel()
+	repoRoot := t.TempDir()
+	localPath := filepath.Join(os.TempDir(), "no-mistakes-evidence", "run-123", "checkout.png")
+	findings := fmt.Sprintf(`{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[{"kind":"screenshot","label":"Checkout screenshot","path":%q,"content":"Checkout completed visually."}]}`, localPath)
+	steps := []*db.StepResult{
+		{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings},
+	}
+	rounds := map[string][]*db.StepRound{
+		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 300}},
+	}
+
+	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123", repoRoot)
+	t.Logf("rendered PR testing markdown:\n%s", md)
+
+	wantSource := "Source: Checkout screenshot (local file: <code>" + html.EscapeString(localPath) + "</code>)"
+	if !strings.Contains(md, wantSource) {
+		t.Fatalf("expected captioned local temp screenshot path to be preserved, got:\n%s", md)
+	}
+	if !strings.Contains(md, "```text\nCheckout completed visually.\n```") {
+		t.Fatalf("expected caption to render safely in text fence, got:\n%s", md)
+	}
+	if strings.Contains(md, "github.com/example/widgets/blob/abc123/") {
+		t.Fatalf("did not expect local temp artifact to be rendered as a GitHub link, got:\n%s", md)
+	}
+}
+
 func TestBuildTestingSummaryForPR_PrefersArtifactURLOverLocalPath(t *testing.T) {
 	t.Parallel()
 	repoRoot := t.TempDir()
