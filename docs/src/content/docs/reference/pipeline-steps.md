@@ -9,7 +9,7 @@ This is the per-step reference. For the overview and rationale, see [Pipeline](/
 intent → rebase → review → test → document → lint → push → pr → ci
 ```
 
-Each step can produce findings, request approval, or trigger auto-fix. Steps that encounter fatal errors stop the pipeline. Steps can also be pre-skipped when starting a run, skipped by the user, or skipped automatically by the pipeline.
+Each step can produce findings, request approval, trigger auto-fix, or apply safe fixes during its own pass. Steps that encounter fatal errors stop the pipeline. Steps can also be pre-skipped when starting a run, skipped by the user, or skipped automatically by the pipeline.
 
 ## Intent
 
@@ -86,13 +86,14 @@ Checks whether the code changes need matching documentation updates.
 
 **Behavior:**
 - Diffs the base commit against head and skips the step if there are no non-ignored changed files to document
-- Asks the agent to review the change and return documentation findings for any missing or stale docs, using the same `action` field as other agent-driven steps
+- Asks the agent to find every documentation gap, update docs or doc comments for all gaps it can resolve, verify its edits, and commit any documentation changes
 - Includes inferred user intent when available
-- Requires approval whenever any documentation finding is returned, including `info` findings
+- Returns findings only for unresolved documentation gaps or human judgment calls
+- Requires approval whenever any unresolved documentation finding is returned, including `info` findings
 
-**Auto-fix:** the agent updates only documentation files or doc comments, using the previous documentation findings plus any per-finding user notes, any selected user-authored findings from the TUI, and a sanitized history of prior rounds for that step, including earlier fix summaries and any findings the user left unselected in prior approval cycles. The step then re-runs and expects an empty findings list before continuing. Fix commits use `no-mistakes(document): <summary>`.
+**Auto-fix:** documentation fixes happen during the initial document pass. Unresolved findings pause for approval instead of starting another automatic document/fix loop. If you manually trigger a fix from the TUI, the agent receives the selected previous findings plus any per-finding user notes, any selected user-authored findings, and sanitized prior-round history. Fix commits use `no-mistakes(document): <summary>`.
 
-**Default auto-fix limit:** `3`.
+**Default auto-fix limit:** not used for automatic document follow-up loops.
 
 ## Lint
 

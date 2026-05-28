@@ -38,7 +38,7 @@ The pipeline is opinionated so that "passed the gate" has a stable meaning:
 | 2 | **Rebase** | Fetch upstream, rebase your branch onto it | `3` |
 | 3 | **Review** | AI code review of your diff | `0` (requires approval) |
 | 4 | **Test** | Run baseline tests and gather evidence for inferred intent | `3` |
-| 5 | **Document** | Check for missing or stale doc updates | `3` |
+| 5 | **Document** | Update docs when needed and report unresolved gaps | initial pass |
 | 6 | **Lint** | Run lint/static analysis | `3` |
 | 7 | **Push** | Push the validated branch upstream | n/a |
 | 8 | **PR** | Create or update the pull request | n/a |
@@ -59,7 +59,7 @@ Every step can:
 
 - **Complete** cleanly and advance the pipeline.
 - **Return findings** with severity (`error`, `warning`, `info`) and an action (`auto-fix`, `ask-user`, `no-op`).
-- **Trigger auto-fix** if the step's `auto_fix` limit is above 0, the step result is auto-fixable, and any finding is `auto-fix`-eligible.
+- **Trigger auto-fix** if the step's `auto_fix` limit is above 0, the step result is auto-fixable, and any finding is `auto-fix`-eligible. Document and empty-command lint can instead apply safe fixes during their initial pass and report only unresolved findings.
 - **Pause for approval** if blocking findings remain after auto-fix, or if any finding is `ask-user`.
 - **Skip** when there's nothing to do (e.g., no diff, unsupported host).
 - **Fail** on fatal errors and stop the pipeline.

@@ -121,6 +121,7 @@ Override auto-fix attempt limits for specific steps. Fields not set here inherit
 | `auto_fix.ci` | `int` | Inherits from global (default `3`) |
 
 Set to `0` to disable the follow-up auto-fix loop for a step (findings require manual approval).
+The document step attempts documentation fixes during its initial pass, so unresolved documentation findings pause for approval instead of using an automatic follow-up loop.
 For empty `commands.lint`, the agent still attempts safe fixes during the initial lint pass; unresolved lint findings then pause for approval instead of starting another automatic fix loop.
 
 `auto_fix.ci` covers the CI step's CI failure and merge-conflict auto-fix attempts.
