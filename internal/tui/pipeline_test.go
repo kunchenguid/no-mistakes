@@ -541,7 +541,7 @@ func TestRenderFooter_WithPRURL_ShowsOpenAction(t *testing.T) {
 	run := testRun()
 	run.Status = types.RunCompleted
 	run.PRURL = &prURL
-	footer := renderFooter(true, false, false, run, "", 80)
+	footer := renderFooter(true, false, false, false, run, "", 80)
 	stripped := stripANSI(footer)
 
 	if !strings.Contains(stripped, "o") || !strings.Contains(stripped, "open PR") {
@@ -554,7 +554,7 @@ func TestRenderFooter_WithPRURL_ShowsOpenAction(t *testing.T) {
 
 func TestRenderFooter_WithoutPRURL(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
-	footer := renderFooter(false, false, false, nil, "", 80)
+	footer := renderFooter(false, false, false, false, nil, "", 80)
 	stripped := stripANSI(footer)
 
 	if strings.Contains(stripped, "open PR") {
@@ -566,7 +566,7 @@ func TestRenderFooter_FailedRun_ShowsRerun(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
 	run := testRun()
 	run.Status = types.RunFailed
-	footer := renderFooter(true, false, false, run, "", 80)
+	footer := renderFooter(true, false, false, false, run, "", 80)
 	stripped := stripANSI(footer)
 
 	if !strings.Contains(stripped, "rerun") {
@@ -581,7 +581,7 @@ func TestRenderFooter_PRURL_ActionShownAtNarrowWidth(t *testing.T) {
 	run := testRun()
 	run.Status = types.RunCompleted
 	run.PRURL = &prURL
-	footer := renderFooter(true, false, false, run, "", 40)
+	footer := renderFooter(true, false, false, false, run, "", 40)
 	stripped := stripANSI(footer)
 
 	if !strings.Contains(stripped, "open PR") {
@@ -591,7 +591,7 @@ func TestRenderFooter_PRURL_ActionShownAtNarrowWidth(t *testing.T) {
 
 func TestRenderFooter_WithAvailableUpdate_ShowsIndicator(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
-	footer := renderFooter(false, false, false, nil, "v1.2.3", 80)
+	footer := renderFooter(false, false, false, false, nil, "v1.2.3", 80)
 	stripped := stripANSI(footer)
 
 	if !strings.Contains(stripped, "v1.2.3 available") {

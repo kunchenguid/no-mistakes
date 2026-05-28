@@ -324,7 +324,7 @@ type helpEntry struct {
 }
 
 // renderHelpOverlay renders a help box showing keybindings relevant to the current state.
-func renderHelpOverlay(width int, run *ipc.RunInfo, hasAwaitingStep bool, showDiff bool, hasDiff bool, done bool) string {
+func renderHelpOverlay(width int, run *ipc.RunInfo, hasAwaitingStep bool, showDiff bool, hasDiff bool, done bool, yolo bool) string {
 	boldKey := lipgloss.NewStyle().Bold(true)
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
 	contentWidth := width - 4
@@ -418,6 +418,11 @@ func renderHelpOverlay(width int, run *ipc.RunInfo, hasAwaitingStep bool, showDi
 		footerEntries = append(footerEntries, helpEntry{"x x", "abort pipeline"})
 	}
 	footerEntries = append(footerEntries, helpEntry{"?", "close help"})
+	yoloDesc := "auto-accept every step"
+	if yolo {
+		yoloDesc = "end yolo (auto-accept)"
+	}
+	footerEntries = append(footerEntries, helpEntry{"y", yoloDesc})
 	if canRerun(run) {
 		footerEntries = append(footerEntries, helpEntry{"r", "rerun pipeline"})
 	}

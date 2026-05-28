@@ -48,7 +48,7 @@ func (m Model) View() string {
 	}
 	actionBar := renderActionBar(m.steps, showSelectionActions, allowFix, m.showDiff, selectedCount, totalCount, m.confirmAbort, hasDiff)
 
-	footer := renderFooter(m.done, m.showHelp, m.confirmAbort, m.run, m.latestVersion, m.width)
+	footer := renderFooter(m.done, m.showHelp, m.confirmAbort, m.yoloMode, m.run, m.latestVersion, m.width)
 	contentBudget := -1
 	if m.height > 0 {
 		baseSections := []string{}
@@ -218,7 +218,18 @@ func (m Model) View() string {
 		if boxWidth < 20 {
 			boxWidth = 80
 		}
-		appendExtraSection(renderHelpOverlay(boxWidth, m.run, awaitingStep(m.steps) != nil, m.showDiff, hasDiff, m.done))
+		// The help overlay is user-invoked, so render it even when the content
+		// budget is exhausted rather than silently dropping it.
+		overlay := renderHelpOverlay(boxWidth, m.run, awaitingStep(m.steps) != nil, m.showDiff, hasDiff, m.done, m.yoloMode)
+		if overlay != "" {
+			extraSections = append(extraSections, overlay)
+			if contentBudget > 0 {
+				contentBudget -= lipgloss.Height(overlay)
+				if contentBudget < 0 {
+					contentBudget = 0
+				}
+			}
+		}
 	}
 
 	if useResponsiveLayout {
@@ -347,7 +358,7 @@ func renderErrorBox(err error, width int) string {
 	return renderBox("Error", errContent.String(), boxWidth)
 }
 
-func renderFooter(done bool, showHelp bool, confirmAbort bool, run *ipc.RunInfo, latestVersion string, width int) string {
+func renderFooter(done bool, showHelp bool, confirmAbort bool, yolo bool, run *ipc.RunInfo, latestVersion string, width int) string {
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
 	warnStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiYellow))
 	boldKey := lipgloss.NewStyle().Bold(true)
@@ -368,6 +379,11 @@ func renderFooter(done bool, showHelp bool, confirmAbort bool, run *ipc.RunInfo,
 		left += "  " + boldKey.Render("x") + " " + dimStyle.Render(xLabel)
 	}
 	left += "  " + boldKey.Render("?") + " " + dimStyle.Render(helpLabel)
+	if yolo {
+		left += "  " + boldKey.Render("y") + " " + warnStyle.Render("end yolo")
+	} else {
+		left += "  " + boldKey.Render("y") + " " + dimStyle.Render("yolo")
+	}
 	if canRerun(run) {
 		left += "  " + boldKey.Render("r") + " " + dimStyle.Render("rerun")
 	}

@@ -206,6 +206,13 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case "y":
+		m.yoloMode = !m.yoloMode
+		if m.yoloMode {
+			return m, m.maybeAutoApproveCmd()
+		}
+		return m, nil
+
 	case "a":
 		return m, m.respondCmd(types.ActionApprove)
 	case "f":

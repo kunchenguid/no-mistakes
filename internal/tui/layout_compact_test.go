@@ -161,7 +161,7 @@ func TestModel_View_StackedLogBoxFillsRemainingHeight(t *testing.T) {
 	}
 
 	pipelineView := renderPipelineView(run, m.stepsWithRunningElapsed(), m.width, 0, m.height)
-	footer := renderFooter(false, false, false, run, "", m.width)
+	footer := renderFooter(false, false, false, false, run, "", m.width)
 	expectedLogLines := m.height - sectionsHeight([]string{pipelineView}, 2) - 2 - lipgloss.Height(footer) - 2
 	if expectedLogLines <= 5 {
 		t.Fatalf("expected stacked layout to leave room for more than 5 log lines, got %d", expectedLogLines)

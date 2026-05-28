@@ -73,6 +73,21 @@ func (m Model) rerunCmd(requestID uint64) tea.Cmd {
 	}
 }
 
+// maybeAutoApproveCmd auto-approves the current awaiting step when yolo mode is
+// on, returning nil otherwise. Each step is approved at most once so duplicate
+// events while waiting for the approval round-trip don't resend the action.
+func (m Model) maybeAutoApproveCmd() tea.Cmd {
+	if !m.yoloMode {
+		return nil
+	}
+	step := awaitingStep(m.steps)
+	if step == nil || m.yoloApproved[step.StepName] {
+		return nil
+	}
+	m.yoloApproved[step.StepName] = true
+	return m.respondCmd(types.ActionApprove)
+}
+
 func (m Model) respondCmd(action types.ApprovalAction) tea.Cmd {
 	step := awaitingStep(m.steps)
 	if step == nil {
