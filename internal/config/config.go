@@ -148,7 +148,8 @@ log_level: info
 #     - -m
 #     - gpt-5.4
 #
-# Maximum auto-fix attempts per step (0 = disabled, requires manual approval)
+# Maximum follow-up auto-fix attempts per step (0 = disabled after the initial pass)
+# Document fixes are attempted during the initial document pass.
 auto_fix:
   rebase: 3
   lint: 3

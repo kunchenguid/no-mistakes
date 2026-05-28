@@ -125,7 +125,8 @@ ignore_patterns:
   - "*.generated.go"
   - "vendor/**"
 
-# Override auto-fix limits for this repo.
+# Override follow-up auto-fix limits for this repo.
+# Document fixes are attempted during the initial document pass.
 auto_fix:
   document: 3
   lint: 5
