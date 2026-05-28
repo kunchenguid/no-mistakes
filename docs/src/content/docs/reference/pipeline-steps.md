@@ -82,7 +82,7 @@ Runs baseline tests and gathers evidence for the intended behavior.
 
 ## Document
 
-Checks whether the code changes need matching documentation updates.
+Updates matching documentation for code changes and reports only unresolved gaps.
 
 **Behavior:**
 - Diffs the base commit against head and skips the step if there are no non-ignored changed files to document
