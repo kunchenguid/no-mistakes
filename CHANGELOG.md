@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.22.0](https://github.com/kunchenguid/no-mistakes/compare/v1.21.6...v1.22.0) (2026-05-28)
+
+
+### Features
+
+* **tui:** add yolo auto-approval mode ([#227](https://github.com/kunchenguid/no-mistakes/issues/227)) ([570c9f9](https://github.com/kunchenguid/no-mistakes/commit/570c9f9d8694c04c5a19219f5ac5f14f9301be34))
+
 ## [1.21.6](https://github.com/kunchenguid/no-mistakes/compare/v1.21.5...v1.21.6) (2026-05-28)
 
 
