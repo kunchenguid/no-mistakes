@@ -54,6 +54,37 @@ func TestDocumentStep_AgentManaged_FixesAndCommitsWithoutApproval(t *testing.T) 
 	}
 }
 
+func TestDocumentStep_AgentManaged_RejectsNonDocumentEdits(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Updated\n"), 0o644)
+			os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o644)
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"update README"}`)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	step := &DocumentStep{}
+	_, err := step.Execute(sctx)
+	if err == nil {
+		t.Fatal("expected non-document agent edits to fail")
+	}
+	if !strings.Contains(err.Error(), "non-document") {
+		t.Fatalf("expected non-document edit error, got %v", err)
+	}
+	if got := lastCommitMessage(t, dir); got != "add feature" {
+		t.Fatalf("expected no document commit, last commit = %q", got)
+	}
+	if !strings.Contains(gitStatusPorcelain(t, dir), "main.go") {
+		t.Fatal("expected rejected non-document edit to remain uncommitted")
+	}
+}
+
 func TestDocumentStep_AgentManaged_UnresolvedFindingsNeedApprovalWithoutAutoFixLoop(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

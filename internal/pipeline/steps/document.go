@@ -3,6 +3,7 @@ package steps
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
@@ -74,7 +75,7 @@ Task:
    - If you fixed everything and no documentation work remains, return an empty findings array.
 
 Rules:
-- Only edit documentation files or doc comments. Do not change executable code or tests.
+- Only edit documentation files. Do not change executable code or tests.
 - The summary must be one concise sentence fragment suitable for a git commit subject.
 - Keep the summary under 10 words.%s`,
 		sctx.Run.Branch,
@@ -99,6 +100,10 @@ Previous documentation findings to address:
 	})
 	if err != nil {
 		return nil, fmt.Errorf("agent document: %w", err)
+	}
+
+	if err := ensureDocumentAgentChanges(sctx); err != nil {
+		return nil, err
 	}
 
 	// Commit whatever documentation the agent edited, regardless of how
@@ -173,6 +178,51 @@ func hasNonIgnoredDocumentChanges(changedFiles string, ignorePatterns []string) 
 		}
 	}
 	return false
+}
+
+func ensureDocumentAgentChanges(sctx *pipeline.StepContext) error {
+	status, err := git.Run(sctx.Ctx, sctx.WorkDir, "status", "--porcelain")
+	if err != nil {
+		return fmt.Errorf("inspect document changes: %w", err)
+	}
+	var nonDocumentPaths []string
+	for _, line := range strings.Split(status, "\n") {
+		if len(line) < 4 {
+			continue
+		}
+		path := strings.TrimSpace(line[3:])
+		if i := strings.LastIndex(path, " -> "); i >= 0 {
+			path = strings.TrimSpace(path[i+4:])
+		}
+		if path != "" && !isDocumentPath(path) {
+			nonDocumentPaths = append(nonDocumentPaths, path)
+		}
+	}
+	if len(nonDocumentPaths) > 0 {
+		return fmt.Errorf("document agent changed non-document files: %s", strings.Join(nonDocumentPaths, ", "))
+	}
+	return nil
+}
+
+func isDocumentPath(path string) bool {
+	path = filepath.ToSlash(strings.TrimSpace(path))
+	if path == "" {
+		return false
+	}
+	lowerPath := strings.ToLower(path)
+	base := strings.ToLower(filepath.Base(lowerPath))
+	if strings.HasPrefix(lowerPath, "docs/") || strings.HasPrefix(lowerPath, "doc/") || strings.HasPrefix(lowerPath, "documentation/") {
+		return true
+	}
+	if base == "readme" || strings.HasPrefix(base, "readme.") || base == "license" || strings.HasPrefix(base, "license.") || base == "contributing" || strings.HasPrefix(base, "contributing.") || base == "security" || strings.HasPrefix(base, "security.") || base == "code_of_conduct" || strings.HasPrefix(base, "code_of_conduct.") {
+		return true
+	}
+	switch filepath.Ext(lowerPath) {
+	case ".md", ".mdx", ".rst", ".adoc", ".txt":
+		return true
+	default:
+		return false
+	}
 }
 
 func fallbackDocumentSummary(text string) string {
