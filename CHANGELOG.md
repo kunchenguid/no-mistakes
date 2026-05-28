@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.21.6](https://github.com/kunchenguid/no-mistakes/compare/v1.21.5...v1.21.6) (2026-05-28)
+
+
+### Bug Fixes
+
+* **pipeline:** let document step fix documentation gaps directly ([#226](https://github.com/kunchenguid/no-mistakes/issues/226)) ([82974e9](https://github.com/kunchenguid/no-mistakes/commit/82974e9dd84fdb48a2864eaa994c12f176ce7382))
+* **tui:** keep fix review row within width ([#224](https://github.com/kunchenguid/no-mistakes/issues/224)) ([abb1d9a](https://github.com/kunchenguid/no-mistakes/commit/abb1d9a285f998e3c4761d832688b112795ddbbc))
+
 ## [1.21.5](https://github.com/kunchenguid/no-mistakes/compare/v1.21.4...v1.21.5) (2026-05-27)
 
 
