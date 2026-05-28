@@ -86,7 +86,7 @@ The pipeline runs these steps in order:
 2. **Rebase** - onto the latest upstream
 3. **Review** - AI code review of your diff
 4. **Test** - baseline tests plus evidence checks when intent is known
-5. **Document** - checks for required doc updates
+5. **Document** - updates docs and reports unresolved gaps
 6. **Lint** - your linters (configured command or agent-detected)
 7. **Push** - to the real upstream remote
 8. **PR** - create or update the pull request

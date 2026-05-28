@@ -49,7 +49,7 @@ The pipeline is opinionated so that "passed the gate" has a stable meaning:
 - **Intent first** so downstream agent prompts and generated PR descriptions can include best-effort author intent when transcript matching succeeds.
 - **Rebase next** so everything else runs against the latest upstream. If there's no diff left after the rebase, the pipeline skips the rest.
 - **Review before test** so the agent reads fresh code, not code it may have touched during fixes.
-- **Document after test** so docs are checked against code that's known to work.
+- **Document after test** so docs are updated against code that's known to work.
 - **Lint last among local checks** so it doesn't churn over code that may still change.
 - **Push → PR → CI** happens after all local checks pass. CI is the only step that talks to the outside world for validation.
 
