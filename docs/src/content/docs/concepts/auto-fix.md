@@ -64,10 +64,11 @@ Repo config overlays global config - you can set `auto_fix.lint: 5` in a repo's 
 Agent-driven findings now use an `action` field instead of `requires_human_review`:
 
 - `auto-fix` - objective issues that can be fixed automatically
-- `ask-user` - intent-sensitive or ambiguous issues that always require manual approval and are never auto-fixed
+- `ask-user` - intent-sensitive or ambiguous issues that pause for approval and are never auto-fixed
 - `no-op` - informational notes that do not need a fix
 
 `ask-user` is meant for findings that need human judgment - for example, questioning an intentional product or design choice, arguing that an intentional addition, removal, or guard should be undone, or reporting that the test step could not produce enough evidence for the inferred intent. Routine correctness, reliability, or security fixes still stay `auto-fix` even if the smallest fix reintroduces a small amount of previously deleted logic.
+In the TUI, yolo mode is an explicit override that auto-approves paused steps, including steps paused for `ask-user` findings.
 
 The `review`, `test`, and configured-command `lint` steps use this shared model directly. The `document` step also uses the same `action` field, but unresolved documentation findings pause for approval because the initial document pass already attempted the documentation updates it could make safely.
 When `commands.lint` is empty, lint findings describe issues left after the agent already attempted safe fixes, so they pause for approval instead of remaining eligible for another automatic fix loop.

@@ -125,7 +125,8 @@ On narrow terminals, the log panel expands to fill the remaining vertical space 
 
 ### Footer
 
-The footer shows detach/help actions and, when `no-mistakes attach` has a cached newer release available, a right-aligned `<version> available` indicator. That update indicator stays visible after reruns in the same TUI session.
+The footer shows detach/help/yolo actions and, when `no-mistakes attach` has a cached newer release available, a right-aligned `<version> available` indicator. That update indicator stays visible after reruns in the same TUI session.
+When yolo mode is on, the footer changes from `y yolo` to `y end yolo`.
 
 ## Keybindings
 
@@ -168,6 +169,7 @@ When the instruction editor is open, press `Ctrl+s` or `Ctrl+enter` to save, or 
 | `d` | Toggle diff view (after fix cycle) |
 | `esc` | Exit diff view back to findings |
 | `?` | Toggle help overlay |
+| `y` | Toggle yolo mode, which auto-approves paused steps |
 | `r` | Start a rerun after a failed or cancelled run |
 | `q` | Detach from TUI (or quit if run is done) |
 
@@ -186,6 +188,8 @@ Review awaiting action:
 The `f fix (3/5)` label shows how many findings are selected out of the total.
 
 Press `e` to add or edit extra guidance for the current finding. Press `+` to add your own finding to the list. User-authored findings start selected by default and can be removed with `D`.
+
+Press `y` to toggle yolo mode when you want paused approval and fix-review steps to approve automatically.
 
 ## Outcome banner
 

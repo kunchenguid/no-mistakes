@@ -114,10 +114,11 @@ Dim content inside a subtle frame:
 Minimal dim hint at the very bottom, outside all boxes:
 
 ```
-  q quit  ? help
+  q quit  ? help  y yolo
 ```
 
 While the pipeline is still running, the footer shows `q detach` instead of `q quit`.
+When yolo mode is active, `y yolo` changes to warning-styled `y end yolo`.
 
 After a failed or cancelled run, it also shows `r rerun`.
 
