@@ -25,78 +25,21 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 		ignorePatterns = strings.Join(sctx.Config.IgnorePatterns, ", ")
 	}
 
-	// In fix mode, ask the agent to apply documentation updates first
-	var fixSummary string
-	if sctx.Fixing {
-		historySection := executionContextPromptSection() + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx)
-		fixPrompt := fmt.Sprintf(
-			`Update any project documentation that needs to reflect the code changes.
-
-Context:
-- branch: %s
-- base commit: %s
-- target commit: %s
-- default branch: %s
-- ignore patterns: %s
-
-Task:
-- Read the relevant diff and changed files yourself before editing.
-- Update only the documentation directly affected by the change.
-- Keep updates minimal and match the existing documentation style.
-
-Rules:
-- Only edit documentation files or doc comments.
-- Do not change executable code or tests.
-- Return JSON with a single "summary" field when you are done.
-- The summary must be one concise sentence fragment suitable for a git commit subject.
-- Keep the summary under 10 words.%s
-
-Previous documentation findings to address:
-%s`,
-			sctx.Run.Branch,
-			baseSHA,
-			sctx.Run.HeadSHA,
-			sctx.Repo.DefaultBranch,
-			ignorePatterns,
-			historySection,
-			sctx.PreviousFindings,
-		)
-		summary, err := executeFixMode(sctx, s.Name(), fixExecutionOptions{
-			RequirePreviousFindings: true,
-			MissingFindingsError:    "document fix requires previous findings",
-			LogMessage:              "asking agent to update documentation...",
-			Prompt:                  fixPrompt,
-			ErrorPrefix:             "agent document fix",
-			FallbackSummary:         "update documentation",
-		})
-		if err != nil {
-			return nil, err
-		}
-		fixSummary = summary
-	}
-
-	// Check whether there are any changed files.
-	var diffArgs []string
-	if sctx.Fixing {
-		diffArgs = []string{"diff", "--name-only", baseSHA}
-	} else {
-		diffArgs = []string{"diff", "--name-only", baseSHA + ".." + sctx.Run.HeadSHA}
-	}
-	changedFiles, err := git.Run(ctx, sctx.WorkDir, diffArgs...)
+	// Skip entirely when nothing the agent would document has changed.
+	changedFiles, err := git.Run(ctx, sctx.WorkDir, "diff", "--name-only", baseSHA+".."+sctx.Run.HeadSHA)
 	if err != nil {
 		return nil, fmt.Errorf("get changed files: %w", err)
 	}
 	if !hasNonIgnoredDocumentChanges(changedFiles, sctx.Config.IgnorePatterns) {
 		sctx.Log("no changes to document")
-		return &pipeline.StepOutcome{FixSummary: fixSummary}, nil
+		return &pipeline.StepOutcome{}, nil
 	}
 
-	// Assess documentation state
-	sctx.Log("checking documentation...")
+	sctx.Log("updating documentation...")
 
-	reassessHistory := executionContextPromptSection() + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx)
+	historySection := executionContextPromptSection() + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx)
 	prompt := fmt.Sprintf(
-		`Review the code changes and identify any documentation gaps.
+		`Bring the project documentation fully in sync with the code changes. Discover every documentation gap, fix all of them yourself, verify your edits, and report only what you could not resolve.
 
 Context:
 - branch: %s
@@ -111,30 +54,42 @@ Task:
    - Read the diff and changed files to understand what was added, modified, or removed.
    - Identify the intent and scope of the change (new feature, API change, config change, behavioral change, etc.).
 
-2. Identify documentation gaps
-   - Look for existing documentation files in the project: README.md, docs/, doc comments, config examples, etc.
-   - Determine which docs are affected by the change. Common cases:
+2. Find every documentation gap
+   - Look for existing documentation across the project: README.md, docs/, doc comments, config examples, etc.
+   - Be exhaustive. Enumerate all docs affected by the change before you start editing. Common cases:
      - New or changed public APIs - update API docs, doc comments, or usage examples
      - New features or behaviors - update README or relevant guide
      - Changed configuration - update config docs or examples
      - Removed functionality - remove or update stale references
+   - Do not stop after the first documentation gap. Keep scanning the rest of the affected docs until you have found every gap you can substantiate.
 
-3. Return findings
-    - Return a finding for each specific documentation gap (file, description of what needs updating).
-    - If no documentation updates are needed (e.g., internal refactoring, test-only changes, or documentation is already up to date), return an empty findings array.
-    - Do a full documentation pass before returning. Do not stop after the first documentation gap. Continue checking the rest of the affected docs until you have enumerated all specific gaps you can substantiate.
+3. Fix all of them yourself
+   - Update each affected documentation file directly. Keep edits minimal and match the existing documentation style.
+   - After editing, re-read the docs you changed to verify they now reflect the code.
+   - This is a single pass with no follow-up round. Do not defer a known gap; resolve every gap you can in this run.
+
+4. Report only what remains
+   - Return a finding only for documentation gaps you could not resolve yourself, or that need a human judgment call (e.g. ambiguous intent or conflicting docs).
+   - Do not report gaps you already fixed.
+   - If you fixed everything and no documentation work remains, return an empty findings array.
 
 Rules:
-- Do NOT make any file changes in this mode.
-- Only report gaps where documentation is missing or stale relative to the code change.
-- Set action to "auto-fix" for all findings. Documentation gaps are objective.%s`,
+- Only edit documentation files or doc comments. Do not change executable code or tests.
+- The summary must be one concise sentence fragment suitable for a git commit subject.
+- Keep the summary under 10 words.%s`,
 		sctx.Run.Branch,
 		baseSHA,
 		sctx.Run.HeadSHA,
 		sctx.Repo.DefaultBranch,
 		ignorePatterns,
-		reassessHistory,
+		historySection,
 	)
+	if sctx.PreviousFindings != "" {
+		prompt += `
+
+Previous documentation findings to address:
+` + sanitizedPreviousFindingsForPrompt(sctx.PreviousFindings)
+	}
 
 	result, err := sctx.Agent.Run(ctx, agent.RunOpts{
 		Prompt:     prompt,
@@ -146,43 +101,58 @@ Rules:
 		return nil, fmt.Errorf("agent document: %w", err)
 	}
 
+	// Commit whatever documentation the agent edited, regardless of how
+	// trustworthy its structured output turns out to be.
+	commitSummary := extractDocumentSummary(result.Output, "")
+	if err := commitAgentFixes(sctx, s.Name(), commitSummary, "update documentation"); err != nil {
+		return nil, err
+	}
+
+	// Without trustworthy structured output we cannot confirm the agent
+	// resolved every gap, so surface it for human review.
 	var findings Findings
 	if result.Output == nil {
 		summary := fallbackDocumentSummary(result.Text)
 		sctx.Log("missing structured output, requiring approval")
-		findings = Findings{
-			Items: []Finding{{
-				Severity:    "warning",
-				Description: summary,
-				Action:      types.ActionAskUser,
-			}},
-			Summary: summary,
-		}
+		return documentApprovalOutcome(summary), nil
 	} else if err := unmarshalRequiredFindings(result.Output, &findings); err != nil {
 		summary := fallbackDocumentSummary(extractDocumentSummary(result.Output, result.Text))
 		sctx.Log("could not parse structured output, requiring approval")
-		findings = Findings{
-			Items: []Finding{{
-				Severity:    "warning",
-				Description: summary,
-				Action:      types.ActionAskUser,
-			}},
-			Summary: summary,
-		}
+		return documentApprovalOutcome(summary), nil
 	}
 
 	needsApproval := len(findings.Items) > 0
 	findingsJSON, _ := json.Marshal(findings)
-	autoFixable := len(types.AutoFixableFindings(findings).Items) > 0
 
-	sctx.Log(fmt.Sprintf("document findings: %d items", len(findings.Items)))
+	sctx.Log(fmt.Sprintf("document findings: %d unresolved items", len(findings.Items)))
 
 	return &pipeline.StepOutcome{
 		NeedsApproval: needsApproval,
-		AutoFixable:   autoFixable,
+		AutoFixable:   false,
 		Findings:      string(findingsJSON),
-		FixSummary:    fixSummary,
+		FixSummary:    findings.Summary,
 	}, nil
+}
+
+// documentApprovalOutcome builds a single ask-user finding for cases where the
+// agent's structured output is missing or unparseable, so a human can confirm
+// the documentation state instead of silently trusting an opaque response.
+func documentApprovalOutcome(summary string) *pipeline.StepOutcome {
+	findings := Findings{
+		Items: []Finding{{
+			Severity:    "warning",
+			Description: summary,
+			Action:      types.ActionAskUser,
+		}},
+		Summary: summary,
+	}
+	findingsJSON, _ := json.Marshal(findings)
+	return &pipeline.StepOutcome{
+		NeedsApproval: true,
+		AutoFixable:   false,
+		Findings:      string(findingsJSON),
+		FixSummary:    summary,
+	}
 }
 
 func hasNonIgnoredDocumentChanges(changedFiles string, ignorePatterns []string) bool {

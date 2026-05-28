@@ -266,7 +266,7 @@ func cleanReviewScenario(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "scenario.yaml")
 	content := `actions:
-  - match: "identify any documentation gaps.\n\nContext:\n- branch: document-agent-error"
+  - match: "report only what you could not resolve.\n\nContext:\n- branch: document-agent-error"
     text: "document agent error"
     edits:
       - path: "/outside-workdir"
@@ -276,11 +276,11 @@ func cleanReviewScenario(t *testing.T) string {
     edits:
       - path: "/outside-workdir"
         new: "should fail"
-  - match: "identify any documentation gaps.\n\nContext:\n- branch: document-missing-summary"
+  - match: "report only what you could not resolve.\n\nContext:\n- branch: document-missing-summary"
     text: " "
     structured:
       findings: []
-  - match: "identify any documentation gaps.\n\nContext:\n- branch: document-warning"
+  - match: "report only what you could not resolve.\n\nContext:\n- branch: document-warning"
     text: "documentation warning finding"
     structured:
       findings:
@@ -288,7 +288,7 @@ func cleanReviewScenario(t *testing.T) string {
           description: "README missing new CLI flag"
           action: auto-fix
       summary: "README needs updating"
-  - match: "identify any documentation gaps.\n\nContext:\n- branch: document-legacy-finding"
+  - match: "report only what you could not resolve.\n\nContext:\n- branch: document-legacy-finding"
     text: "documentation legacy finding"
     structured:
       items:
@@ -296,7 +296,7 @@ func cleanReviewScenario(t *testing.T) string {
           description: "README missing new CLI flag"
           requires_human_review: false
       summary: "README needs updating"
-  - match: "identify any documentation gaps.\n\nContext:\n- branch: document-malformed-finding"
+  - match: "report only what you could not resolve.\n\nContext:\n- branch: document-malformed-finding"
     text: "documentation malformed finding"
     structured:
       findings:
@@ -950,7 +950,7 @@ func assertEmptyDiffAfterRebaseRun(t *testing.T, h *Harness) {
 	if sawPromptContainingAll(invs, "You are validating a code change by testing it", "branch: empty-after-rebase") {
 		t.Fatal("empty-after-rebase run should skip test without calling the agent")
 	}
-	if sawPromptContainingAll(invs, "Identify documentation gaps", "branch: empty-after-rebase") {
+	if sawPromptContainingAll(invs, "Find every documentation gap", "branch: empty-after-rebase") {
 		t.Fatal("empty-after-rebase run should skip document without calling the agent")
 	}
 	if sawPromptContainingAll(invs, "Detect the linting and formatting tools", "branch: empty-after-rebase") {
@@ -1196,7 +1196,7 @@ func assertIgnoredOnlyRun(t *testing.T, h *Harness) {
 	if sawPromptContainingAll(invs, "Review the code changes", "branch: ignored-only") {
 		t.Fatal("ignored-only review should not call the agent")
 	}
-	if sawPromptContainingAll(invs, "Identify documentation gaps", "branch: ignored-only") {
+	if sawPromptContainingAll(invs, "Find every documentation gap", "branch: ignored-only") {
 		t.Fatal("ignored-only document step should not call the agent")
 	}
 }
@@ -2620,7 +2620,7 @@ func assertReviewStepInfoOnly(t *testing.T, steps []ipc.StepResultInfo) {
 
 func assertDocumentPrompt(t *testing.T, h *Harness, run *ipc.RunInfo, invs []Invocation) {
 	t.Helper()
-	prompt, ok := promptContainingAll(invs, "Identify documentation gaps", "branch: feature/e2e")
+	prompt, ok := promptContainingAll(invs, "Find every documentation gap", "branch: feature/e2e")
 	if !ok {
 		t.Fatalf("expected a feature/e2e document prompt in invocations, got %d:\n%s", len(invs), summarisePrompts(invs))
 	}
@@ -2630,7 +2630,8 @@ func assertDocumentPrompt(t *testing.T, h *Harness, run *ipc.RunInfo, invs []Inv
 		baseSHA,
 		run.HeadSHA,
 		"ignore patterns: *.generated.go, vendor/**",
-		"Do a full documentation pass before returning.",
+		"Be exhaustive.",
+		"fix all of them yourself",
 		"Do not stop after the first documentation gap.",
 	} {
 		if !strings.Contains(prompt, want) {
