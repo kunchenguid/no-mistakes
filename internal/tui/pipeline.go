@@ -162,8 +162,6 @@ func renderPipelineView(run *ipc.RunInfo, steps []ipc.StepResultInfo, width int,
 		switch step.Status {
 		case types.StepStatusAwaitingApproval:
 			line += " " + dimStyle.Render("- awaiting approval")
-		case types.StepStatusFixReview:
-			line += " " + dimStyle.Render("- review fix")
 		case types.StepStatusFailed:
 			if step.Error != nil {
 				errText := "- " + *step.Error

@@ -236,6 +236,32 @@ func TestRenderPipelineView_ShowsZeroFixedFindingsWhileFixing(t *testing.T) {
 	}
 }
 
+func TestRenderPipelineView_FixReviewRowFitsWithFixedCount(t *testing.T) {
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusFixReview
+	run.Steps[0].DurationMS = ptr(int64(6604700))
+	run.Steps[0].FixedFindings = 65
+	run.Steps[0].ReportedFindings = 66
+
+	boxWidth := 40
+	out := stripANSI(renderPipelineView(run, run.Steps, boxWidth, 0, 40))
+	var reviewLine string
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "Review") {
+			reviewLine = line
+		}
+	}
+	if !strings.Contains(reviewLine, "65/66 fixed") {
+		t.Fatalf("expected fixed count on FixReview row, got %q", reviewLine)
+	}
+	if strings.Contains(reviewLine, "review fix") {
+		t.Fatalf("expected no 'review fix' suffix on FixReview row so it fits, got %q", reviewLine)
+	}
+	if w := lipgloss.Width(reviewLine); w > boxWidth {
+		t.Fatalf("expected FixReview row to fit within box width %d, got %d: %q", boxWidth, w, reviewLine)
+	}
+}
+
 func TestRenderPipelineView_FixingStatusOmitsAgentFixingLabel(t *testing.T) {
 	run := testRun()
 	run.Steps[1].Status = types.StepStatusFixing
