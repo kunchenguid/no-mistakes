@@ -1,0 +1,41 @@
+package agent
+
+import "context"
+
+// WorktreeSteering is prepended to every pipeline agent prompt. It keeps the
+// agent's writes inside the git worktree and steers it away from mutating
+// system state outside the workspace (installing/upgrading system packages,
+// modifying apps in /Applications, changing global config). Those out-of-tree
+// writes are what trigger macOS "App Management" / Privacy notifications and
+// risk surprising side effects on the user's machine.
+const WorktreeSteering = `Workspace boundary (important):
+- Confine all file changes to the current working directory, which is a git worktree. Do not create, modify, move, or delete files anywhere outside it.
+- Do not modify system state outside the worktree. In particular, do not install or upgrade system packages (for example brew install/upgrade, or other system package managers), do not modify applications under /Applications, and do not change global or user-level tool configuration.
+- You may read files outside the worktree and run read-only commands, but every write must stay inside the worktree.
+
+`
+
+// steeredAgent wraps an Agent and prepends WorktreeSteering to each prompt.
+type steeredAgent struct {
+	Agent
+}
+
+// Run prepends the worktree steering preamble before delegating to the
+// wrapped agent. All other RunOpts fields pass through unchanged.
+func (s steeredAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
+	opts.Prompt = WorktreeSteering + opts.Prompt
+	return s.Agent.Run(ctx, opts)
+}
+
+// WithSteering wraps an agent so every invocation is steered to keep writes
+// inside the worktree. Wrapping is idempotent: an already-steered agent is
+// returned unchanged so the preamble is never added twice.
+func WithSteering(a Agent) Agent {
+	if a == nil {
+		return nil
+	}
+	if _, ok := a.(steeredAgent); ok {
+		return a
+	}
+	return steeredAgent{a}
+}

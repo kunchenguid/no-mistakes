@@ -311,6 +311,10 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 			trackStartFailure("create_agent")
 			return "", fmt.Errorf("create agent: %w", agErr)
 		}
+		// Steer every pipeline agent to keep writes inside the worktree and
+		// avoid mutating system state (e.g. brew/Homebrew touching
+		// /Applications), which triggers macOS App Management prompts.
+		ag = agent.WithSteering(ag)
 	}
 
 	execSteps := m.steps()
