@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.22.1](https://github.com/kunchenguid/no-mistakes/compare/v1.22.0...v1.22.1) (2026-05-29)
+
+
+### Bug Fixes
+
+* **agent:** steer pipeline agents away from system writes ([#229](https://github.com/kunchenguid/no-mistakes/issues/229)) ([9f88c13](https://github.com/kunchenguid/no-mistakes/commit/9f88c1339af4cd7647d3de0eb5ce30fd7a656f71))
+
 ## [1.22.0](https://github.com/kunchenguid/no-mistakes/compare/v1.21.6...v1.22.0) (2026-05-28)
 
 
