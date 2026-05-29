@@ -1,6 +1,11 @@
 package agent
 
-import "context"
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+)
 
 // WorktreeSteering is prepended to every pipeline agent prompt. It keeps the
 // agent's writes inside the git worktree and steers it away from mutating
@@ -8,12 +13,13 @@ import "context"
 // modifying apps in /Applications, changing global config). Those out-of-tree
 // writes are what trigger macOS "App Management" / Privacy notifications and
 // risk surprising side effects on the user's machine.
-const WorktreeSteering = `Workspace boundary (important):
+var WorktreeSteering = fmt.Sprintf(`Workspace boundary (important):
 - Confine all file changes to the current working directory, which is a git worktree. Do not create, modify, move, or delete files anywhere outside it.
 - Do not modify system state outside the worktree. In particular, do not install or upgrade system packages (for example brew install/upgrade, or other system package managers), do not modify applications under /Applications, and do not change global or user-level tool configuration.
-- You may read files outside the worktree and run read-only commands, but every write must stay inside the worktree.
+- The only allowed out-of-worktree writes are test evidence files under %s when a testing prompt explicitly asks for them.
+- You may read files outside the worktree and run read-only commands, but every other write must stay inside the worktree.
 
-`
+`, filepath.Join(os.TempDir(), "no-mistakes-evidence"))
 
 // steeredAgent wraps an Agent and prepends WorktreeSteering to each prompt.
 type steeredAgent struct {

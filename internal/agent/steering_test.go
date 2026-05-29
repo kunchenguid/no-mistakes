@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -75,5 +77,13 @@ func TestWithSteering_DoesNotDoubleWrap(t *testing.T) {
 
 	if got := strings.Count(inner.gotOpts.Prompt, WorktreeSteering); got != 1 {
 		t.Errorf("steering preamble appeared %d times, want 1:\n%q", got, inner.gotOpts.Prompt)
+	}
+}
+
+func TestWorktreeSteering_AllowsManagedTestEvidenceDirectory(t *testing.T) {
+	want := filepath.Join(os.TempDir(), "no-mistakes-evidence")
+
+	if !strings.Contains(WorktreeSteering, want) {
+		t.Fatalf("steering preamble does not allow managed evidence directory %q:\n%s", want, WorktreeSteering)
 	}
 }
