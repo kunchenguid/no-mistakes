@@ -87,3 +87,12 @@ func TestWorktreeSteering_AllowsManagedTestEvidenceDirectory(t *testing.T) {
 		t.Fatalf("steering preamble does not allow managed evidence directory %q:\n%s", want, WorktreeSteering)
 	}
 }
+
+func TestWorktreeSteering_AllowsEphemeralToolchainWrites(t *testing.T) {
+	prompt := strings.ToLower(WorktreeSteering)
+	for _, want := range []string{"ephemeral", "toolchain", "temp", "cache"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("steering preamble does not mention %q writes:\n%s", want, WorktreeSteering)
+		}
+	}
+}
