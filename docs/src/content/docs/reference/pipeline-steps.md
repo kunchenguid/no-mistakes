@@ -11,6 +11,9 @@ intent → rebase → review → test → document → lint → push → pr → 
 
 Each step can produce findings, request approval, trigger auto-fix, or apply safe fixes during its own pass. Steps that encounter fatal errors stop the pipeline. Steps can also be pre-skipped when starting a run, skipped by the user, or skipped automatically by the pipeline.
 In the TUI, yolo mode is an explicit override that auto-approves steps paused for approval or fix review.
+Every pipeline agent invocation is prompt-steered to keep intentional writes inside the run worktree and avoid mutating system state outside it.
+This is a soft boundary, not OS-level sandbox enforcement.
+The steering still allows requested test evidence under the managed temporary `no-mistakes-evidence` directory and incidental temp or cache writes from normal development tools.
 
 ## Intent
 

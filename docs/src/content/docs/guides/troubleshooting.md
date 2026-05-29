@@ -109,6 +109,14 @@ no-mistakes daemon stop
 no-mistakes daemon start
 ```
 
+## macOS App Management prompts during agent runs
+
+Pipeline prompts steer agents to keep intentional writes inside the disposable worktree and avoid mutating system locations such as `/Applications`, Homebrew-managed packages, or global tool configuration.
+This reduces macOS App Management prompts from agent-invoked commands, but it is not an OS sandbox.
+
+If you still see prompts, check the step log for commands that intentionally write outside the worktree and move that setup into your normal development environment or an explicit repo-local command.
+Requested test evidence may still be written under the managed temporary `no-mistakes-evidence` directory, and normal tool temp or cache writes can still happen outside the worktree.
+
 ## `git push no-mistakes` doesn't start a pipeline
 
 Symptom: push succeeds but `no-mistakes` shows no active run.

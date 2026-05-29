@@ -12,6 +12,10 @@ code review, evidence-oriented test validation, test or lint detection when you
 have not configured explicit commands, auto-fixing, and setup-wizard suggestions
 when you leave prompts blank.
 
+Pipeline agent prompts also include a workspace-boundary preamble.
+It tells agents to keep intentional source, project, user-data, and system file writes inside the disposable worktree, avoid mutating system state such as Homebrew packages, `/Applications`, or global tool config, and treat that boundary as prompt steering rather than true enforcement.
+The only intentional out-of-worktree write it allows is test evidence under the managed temporary `no-mistakes-evidence` directory when a testing prompt asks for it; incidental temp or cache writes from normal development tools are still allowed.
+
 ## How to choose quickly
 
 - Leave `agent: auto` if one good agent is already installed and you do not need repo-specific behavior.
@@ -123,7 +127,7 @@ reflects your local agent setup rather than repo policy.
 
 All agents implement the same interface. Each invocation receives:
 
-- **Prompt** - the task description (review this diff, fix these findings, etc.)
+- **Prompt** - the task description (review this diff, fix these findings, etc.), prefixed during pipeline runs with the workspace-boundary steering described above
 - **CWD** - the worktree directory
 - **JSONSchema** - optional structured output schema for typed responses
 - **OnChunk** - callback for streaming text output to the TUI
