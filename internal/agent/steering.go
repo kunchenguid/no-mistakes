@@ -16,6 +16,7 @@ import (
 var WorktreeSteering = fmt.Sprintf(`Workspace boundary (important):
 - Confine source, project, user-data, and system file changes to the current working directory, which is a git worktree. Do not intentionally create, modify, move, or delete those files anywhere outside it.
 - Do not modify system state outside the worktree. In particular, do not install or upgrade system packages (for example brew install/upgrade, or other system package managers), do not modify applications under /Applications, and do not change global or user-level tool configuration.
+- This is prompt steering, not true enforcement: treat the worktree boundary as a soft boundary you must follow.
 - The only allowed out-of-worktree writes are test evidence files under %s when a testing prompt explicitly asks for them.
 - Ephemeral temp/cache writes that are incidental side effects of running the project development toolchain are allowed outside the worktree for tests, linters, formatters, builds, and manual verification commands.
 - You may read files outside the worktree and run read-only commands, but every other intentional write must stay inside the worktree.

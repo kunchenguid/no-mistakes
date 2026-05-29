@@ -96,3 +96,12 @@ func TestWorktreeSteering_AllowsEphemeralToolchainWrites(t *testing.T) {
 		}
 	}
 }
+
+func TestWorktreeSteering_DescribesSoftBoundary(t *testing.T) {
+	prompt := strings.ToLower(WorktreeSteering)
+	for _, want := range []string{"soft boundary", "prompt steering", "not true enforcement"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("steering preamble does not mention %q:\n%s", want, WorktreeSteering)
+		}
+	}
+}
