@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -40,6 +41,13 @@ func TestGitSafeEnv_CouplesPWDToWorkdir(t *testing.T) {
 	t.Setenv("PWD", "/somewhere/else")
 
 	resolved := resolveAgentEnv(gitSafeEnv("/work/dir"))
+
+	if runtime.GOOS == "windows" || runtime.GOOS == "plan9" {
+		if resolved["PWD"] != "/somewhere/else" {
+			t.Errorf("PWD = %q, want ambient PWD on %s", resolved["PWD"], runtime.GOOS)
+		}
+		return
+	}
 
 	if resolved["PWD"] != "/work/dir" {
 		t.Errorf("PWD = %q, want \"/work/dir\"", resolved["PWD"])
