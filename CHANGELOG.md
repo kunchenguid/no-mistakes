@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.22.2](https://github.com/kunchenguid/no-mistakes/compare/v1.22.1...v1.22.2) (2026-06-04)
+
+
+### Bug Fixes
+
+* **agent:** disable interactive git prompts ([#231](https://github.com/kunchenguid/no-mistakes/issues/231)) ([348390d](https://github.com/kunchenguid/no-mistakes/commit/348390d4316b51799ecdd618a7326265e417cee0))
+
 ## [1.22.1](https://github.com/kunchenguid/no-mistakes/compare/v1.22.0...v1.22.1) (2026-05-29)
 
 
