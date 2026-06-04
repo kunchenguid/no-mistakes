@@ -1,6 +1,7 @@
 package git
 
 import (
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -70,6 +71,13 @@ func TestNonInteractiveEnv_SetsPWDToDir(t *testing.T) {
 	t.Setenv("PWD", "/somewhere/else")
 
 	got := resolveEnv(NonInteractiveEnv("/work/dir"))
+
+	if runtime.GOOS == "windows" || runtime.GOOS == "plan9" {
+		if got["PWD"] != "/somewhere/else" {
+			t.Errorf("PWD = %q, want ambient PWD on %s", got["PWD"], runtime.GOOS)
+		}
+		return
+	}
 
 	if got["PWD"] != "/work/dir" {
 		t.Errorf("PWD = %q, want \"/work/dir\"", got["PWD"])
