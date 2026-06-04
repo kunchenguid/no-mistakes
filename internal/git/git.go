@@ -25,6 +25,7 @@ func IsZeroSHA(sha string) bool {
 func Run(ctx context.Context, dir string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
+	cmd.Env = NonInteractiveEnv(dir)
 	out, err := cmd.Output()
 	if err != nil {
 		stderr := ""

@@ -75,6 +75,7 @@ func startServerWithPort(ctx context.Context, agentName, bin string, args []stri
 	cmd := exec.Command(bin, args...)
 	cmd.Dir = cwd
 	cmd.Stdin = nil
+	cmd.Env = gitSafeEnv(cwd)
 	out := currentManagedServerOutput()
 	cmd.Stdout = out // server stdout goes to the configured sink for debugging
 	cmd.Stderr = out
