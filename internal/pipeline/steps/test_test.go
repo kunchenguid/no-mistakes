@@ -61,6 +61,9 @@ func TestTestStep_FixMode(t *testing.T) {
 	if !strings.Contains(ag.calls[0].Prompt, "smallest correct root-cause fix") {
 		t.Error("expected test fix prompt to prefer root-cause fixes over bandaids")
 	}
+	if !strings.Contains(ag.calls[0].Prompt, "remove any transient artifacts your testing created in the working tree") {
+		t.Error("expected test fix prompt to ask the agent to clean up transient testing artifacts before finishing")
+	}
 	if strings.Contains(ag.calls[0].Prompt, "Make the minimal change needed") {
 		t.Error("expected test fix prompt not to prefer narrow minimal changes")
 	}
@@ -201,6 +204,7 @@ func TestTestStep_UserIntentRunsConfiguredCommandThenEvidenceAgent(t *testing.T)
 		"If automated testing cannot produce the needed evidence, execute manual verification steps",
 		"Always include an \"artifacts\" array",
 		"If sufficient evidence is not possible, report a warning finding",
+		"remove any transient artifacts your testing created in the working tree",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("expected prompt to contain %q, got:\n%s", want, prompt)

@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -158,6 +159,30 @@ func TestExecutor_LogFileWritten(t *testing.T) {
 	}
 	if !strings.Contains(content, "second log line") {
 		t.Errorf("expected log file to contain 'second log line', got: %s", content)
+	}
+}
+
+func TestExecutor_LogFileWritten_OnStepError(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	// The error a step returns (e.g. the underlying git stderr from a rejected
+	// push) must be persisted to the step's own log file, not only surfaced via
+	// the db/event. Otherwise the step log looks opaque: it shows the work
+	// starting but never why it failed.
+	stepErr := fmt.Errorf("push to upstream: git push: exit status 1: remote rejected: file exceeds 100.00 MB")
+	exec := NewExecutor(database, p, nil, nil, []Step{newFailStep(types.StepPush, stepErr)}, nil)
+	if err := exec.Execute(context.Background(), run, repo, workDir); err == nil {
+		t.Fatal("expected error from failing step")
+	}
+
+	logPath := filepath.Join(p.RunLogDir(run.ID), "push.log")
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("expected log file at %s: %v", logPath, err)
+	}
+	if !strings.Contains(string(data), stepErr.Error()) {
+		t.Errorf("expected push log to contain the step error %q, got: %s", stepErr.Error(), data)
 	}
 }
 

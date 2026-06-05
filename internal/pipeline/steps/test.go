@@ -38,6 +38,7 @@ Rules:
 - If tests fail, determine whether the problem is a real product/code failure, a setup/environment problem you can fix, or a flaky/infrastructure issue.
 - Do NOT run linters, formatters, or static analysis tools.
 - Re-run the relevant tests before finishing.
+- Before finishing, remove any transient artifacts your testing created in the working tree (downloaded models, caches, build outputs, large binaries, or generated data directories) so they are not committed and pushed. Do not remove intentional source or test-file changes.
 - Return JSON with a single "summary" field when you are done.
 - The summary must be one concise sentence fragment suitable for a git commit subject.
 - Keep the summary under 10 words.%s`,
@@ -152,6 +153,7 @@ Task:
 Rules:
 - Do NOT run linters, formatters, or static analysis tools.
 - Focus on testing and test-related fixes only.
+- Before finishing, remove any transient artifacts your testing created in the working tree (downloaded models, caches, build outputs, large binaries, or generated data directories) so they are not committed and pushed. Do not remove intentional source or test-file changes, and leave evidence files in the dedicated evidence directory untouched.
 - Keep "testing_summary" high-signal and natural language. Avoid raw logs and noisy counts.
 - Always return a non-empty "tested" array describing what you exercised, even when all tests pass.
 - Only report actionable findings: test failures, unfixable setup issues, flaky tests you identified, or missing evidence that prevents you from demonstrating the user intent.
