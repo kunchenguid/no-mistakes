@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.22.3](https://github.com/kunchenguid/no-mistakes/compare/v1.22.2...v1.22.3) (2026-06-05)
+
+
+### Bug Fixes
+
+* **pipeline:** include step error output in diagnostics ([#233](https://github.com/kunchenguid/no-mistakes/issues/233)) ([bc8bd5a](https://github.com/kunchenguid/no-mistakes/commit/bc8bd5ac62cc5934bbf1ef276c20b0b1725dc38f))
+
 ## [1.22.2](https://github.com/kunchenguid/no-mistakes/compare/v1.22.1...v1.22.2) (2026-06-04)
 
 
