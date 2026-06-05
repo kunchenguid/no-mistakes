@@ -116,6 +116,14 @@ This reduces macOS App Management prompts from agent-invoked commands, but it is
 
 If you still see prompts, check the step log for commands that intentionally write outside the worktree and move that setup into your normal development environment or an explicit repo-local command.
 Requested test evidence may still be written under the managed temporary `no-mistakes-evidence` directory, and normal tool temp or cache writes can still happen outside the worktree.
+Testing prompts ask agents to remove transient working-tree artifacts they created, such as downloaded models, caches, build outputs, large binaries, or generated data directories, before completion.
+
+## A pipeline step failed
+
+Symptom: a run stops with a failed step.
+
+Check the per-step log at `~/.no-mistakes/logs/<runID>/<step>.log`.
+Fatal step errors are appended to that log, so failures such as rejected pushes include the returned error output there instead of only appearing in `daemon.log`.
 
 ## `git push no-mistakes` doesn't start a pipeline
 
