@@ -1,11 +1,15 @@
 package steps
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -14,6 +18,15 @@ import (
 type TestStep struct{}
 
 func (s *TestStep) Name() types.StepName { return types.StepTest }
+
+func gitIgnoresPath(ctx context.Context, workDir, target string) bool {
+	rel, err := filepath.Rel(workDir, target)
+	if err != nil || rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return false
+	}
+	_, err = git.Run(ctx, workDir, "check-ignore", "--quiet", "--", filepath.ToSlash(rel))
+	return err == nil
+}
 
 func (s *TestStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	ctx := sctx.Ctx
@@ -103,7 +116,12 @@ Previous test findings to address:
 
 	useEvidenceAgent := testCmd == "" || cleanedUserIntent(sctx) != ""
 	if useEvidenceAgent {
-		evidenceDir := resolveTestEvidenceDir(sctx.WorkDir, sctx.Run.Branch, sctx.Run.ID, sctx.Config.Test.Evidence)
+		evidenceLocation := resolveTestEvidenceLocation(sctx.WorkDir, sctx.Run.Branch, sctx.Run.ID, sctx.Config.Test.Evidence)
+		evidenceDir := evidenceLocation.Dir
+		if evidenceLocation.StoreInRepo && gitIgnoresPath(ctx, sctx.WorkDir, evidenceDir) {
+			evidenceLocation = testEvidenceLocation{Dir: testEvidenceDir(sctx.Run.ID)}
+			evidenceDir = evidenceLocation.Dir
+		}
 		if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
 			return nil, fmt.Errorf("create test evidence dir: %w", err)
 		}
@@ -114,7 +132,7 @@ Previous test findings to address:
 		}
 		reassessHistory := executionContextPromptSection() + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx)
 		evidenceGuidance := fmt.Sprintf("- Write new evidence files into this temporary evidence directory: %s", evidenceDir)
-		if sctx.Config.Test.Evidence.StoreInRepo {
+		if evidenceLocation.StoreInRepo {
 			evidenceGuidance = fmt.Sprintf("- Write new evidence files into this in-repo evidence directory; it is committed and pushed automatically, so artifacts render directly on the PR: %s", evidenceDir)
 		}
 		configuredTestCommand := ""

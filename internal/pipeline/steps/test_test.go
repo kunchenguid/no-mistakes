@@ -226,3 +226,64 @@ func TestTestStep_UserIntentRunsConfiguredCommandThenEvidenceAgent(t *testing.T)
 		t.Fatalf("expected baseline command and agent-tested evidence to be recorded, got %+v", findings.Tested)
 	}
 }
+
+func TestTestStep_InRepoEvidenceFallsBackWhenConfiguredDirEscapesWorktree(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"","tested":["manual evidence check"],"testing_summary":"checked evidence"}`)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.UserIntent = "Show users a success screen after checkout"
+	sctx.Config.Test.Evidence = config.Evidence{StoreInRepo: true, Dir: "../outside"}
+
+	step := &TestStep{}
+	if _, err := step.Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+
+	prompt := ag.calls[0].Prompt
+	wantDir := filepath.Join(os.TempDir(), "no-mistakes-evidence", sctx.Run.ID)
+	if !strings.Contains(prompt, "Write new evidence files into this temporary evidence directory: "+wantDir) {
+		t.Fatalf("expected temporary evidence guidance for unsafe in-repo dir, got:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "in-repo evidence directory") || strings.Contains(prompt, "committed and pushed automatically") {
+		t.Fatalf("did not expect in-repo publishing promise for unsafe evidence dir, got:\n%s", prompt)
+	}
+}
+
+func TestTestStep_InRepoEvidenceFallsBackWhenEvidenceDirIsIgnored(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("evidence/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"","tested":["manual evidence check"],"testing_summary":"checked evidence"}`)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.UserIntent = "Show users a success screen after checkout"
+	sctx.Config.Test.Evidence = config.Evidence{StoreInRepo: true, Dir: "evidence"}
+
+	step := &TestStep{}
+	if _, err := step.Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+
+	prompt := ag.calls[0].Prompt
+	wantDir := filepath.Join(os.TempDir(), "no-mistakes-evidence", sctx.Run.ID)
+	if !strings.Contains(prompt, "Write new evidence files into this temporary evidence directory: "+wantDir) {
+		t.Fatalf("expected temporary evidence guidance for ignored in-repo dir, got:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "in-repo evidence directory") || strings.Contains(prompt, "committed and pushed automatically") {
+		t.Fatalf("did not expect in-repo publishing promise for ignored evidence dir, got:\n%s", prompt)
+	}
+}

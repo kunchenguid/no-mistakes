@@ -26,19 +26,29 @@ func testEvidenceDir(runID string) string {
 // and falls back to the temporary location so evidence can never be written
 // outside the worktree.
 func resolveTestEvidenceDir(workDir, branch, runID string, ev config.Evidence) string {
+	location := resolveTestEvidenceLocation(workDir, branch, runID, ev)
+	return location.Dir
+}
+
+type testEvidenceLocation struct {
+	Dir         string
+	StoreInRepo bool
+}
+
+func resolveTestEvidenceLocation(workDir, branch, runID string, ev config.Evidence) testEvidenceLocation {
 	if !ev.StoreInRepo {
-		return testEvidenceDir(runID)
+		return testEvidenceLocation{Dir: testEvidenceDir(runID)}
 	}
 	sub, ok := safeRepoSubdir(ev.Dir)
 	if !ok {
-		return testEvidenceDir(runID)
+		return testEvidenceLocation{Dir: testEvidenceDir(runID)}
 	}
 	segments := evidenceBranchSlug(branch)
 	if len(segments) == 0 {
 		segments = []string{runID}
 	}
 	parts := append([]string{workDir, sub}, segments...)
-	return filepath.Join(parts...)
+	return testEvidenceLocation{Dir: filepath.Join(parts...), StoreInRepo: true}
 }
 
 // safeRepoSubdir validates a configured evidence directory as a relative path
