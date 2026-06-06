@@ -83,7 +83,7 @@ func repoPathHasSymlink(workDir, rel string) bool {
 // and false when the directory is empty, absolute, or escapes the worktree.
 func safeRepoSubdir(dir string) (string, bool) {
 	dir = strings.TrimSpace(dir)
-	if dir == "" || filepath.IsAbs(dir) {
+	if dir == "" || filepath.IsAbs(dir) || hasPathRootPrefix(dir) || hasWindowsDrivePrefix(dir) {
 		return "", false
 	}
 	clean := filepath.Clean(filepath.FromSlash(dir))
@@ -95,6 +95,18 @@ func safeRepoSubdir(dir string) (string, bool) {
 		return "", false
 	}
 	return clean, true
+}
+
+func hasPathRootPrefix(path string) bool {
+	return strings.HasPrefix(path, "/") || strings.HasPrefix(path, `\`)
+}
+
+func hasWindowsDrivePrefix(path string) bool {
+	if len(path) < 2 || path[1] != ':' {
+		return false
+	}
+	c := path[0]
+	return c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z'
 }
 
 // evidenceBranchSlug turns a branch name into readable, filesystem-safe path

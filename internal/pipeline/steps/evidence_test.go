@@ -54,6 +54,18 @@ func TestResolveTestEvidenceDir_UnsafeConfigDirFallsBackToTemp(t *testing.T) {
 	}
 }
 
+func TestSafeRepoSubdirRejectsWindowsDriveAbsolutePath(t *testing.T) {
+	if got, ok := safeRepoSubdir("C:/abs/evidence"); ok {
+		t.Fatalf("safeRepoSubdir accepted Windows absolute path as %q", got)
+	}
+}
+
+func TestSafeRepoSubdirRejectsWindowsRootedPath(t *testing.T) {
+	if got, ok := safeRepoSubdir(`\abs\evidence`); ok {
+		t.Fatalf("safeRepoSubdir accepted Windows rooted path as %q", got)
+	}
+}
+
 func TestResolveTestEvidenceDir_SymlinkConfigDirFallsBackToTemp(t *testing.T) {
 	workDir := t.TempDir()
 	externalDir := t.TempDir()
