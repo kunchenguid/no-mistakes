@@ -72,6 +72,7 @@ You can't reorder steps. You *can*:
 
 - Swap the agent (global or per-repo).
 - Set explicit `commands.test`, `commands.lint`, `commands.format`.
+- Store test evidence locally by default or opt into committed in-repo evidence with `test.evidence.store_in_repo`.
 - Control auto-fix limits per step.
 - Ignore paths during review and documentation checks.
 - Disable or tune transcript-based intent extraction.

@@ -45,6 +45,11 @@ intent:
   threshold: 0.2
   slack_days: 3
   disabled_readers: []
+
+test:
+  evidence:
+    store_in_repo: false
+    dir: .no-mistakes/evidence
 ```
 
 ## Fields
@@ -237,6 +242,26 @@ For multi-file diffs, no-mistakes still requires at least two overlapping files 
 Partial matches older than 24 hours are rejected unless their raw score is at least `0.8`.
 If exactly one accepted candidate has a raw score of at least `0.85`, that decisive candidate wins before recency ranking.
 Otherwise, accepted candidates are ranked by confidence, which combines the raw score with a small recency boost, with ties going to the most recent matching session, and ambiguous accepted candidates may be disambiguated by the configured pipeline agent.
+
+### test.evidence
+
+Test-step evidence storage settings.
+By default, evidence artifacts stay in a temporary directory keyed by run ID and are referenced by local path.
+
+| | |
+|---|---|
+| Type | `object` |
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `test.evidence.store_in_repo` | `bool` | `false` | Commit and push test evidence artifacts from inside the repo worktree |
+| `test.evidence.dir` | `string` | `.no-mistakes/evidence` | Repo-relative parent directory used when `store_in_repo` is true |
+
+When `store_in_repo` is true, the test step writes evidence under `<dir>/<branch-slug>` and the push step stages files from that directory before committing agent changes.
+Branch slashes become nested directories, unsafe branch characters are replaced, and an empty branch slug falls back to the run ID.
+If `dir` is absolute, escapes the worktree, points into `.git`, crosses a symlink, or is ignored by Git, no-mistakes falls back to temporary evidence storage for that run.
+
+These are global defaults. Per-repo config can override either field.
 
 ## Environment variables
 

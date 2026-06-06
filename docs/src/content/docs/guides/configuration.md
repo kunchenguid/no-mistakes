@@ -12,6 +12,7 @@ work. Config exists for the parts that genuinely vary by machine or repo:
 
 - which agent you prefer
 - which test or lint commands are the canonical ones for this repo
+- where test evidence artifacts should be stored
 - how aggressive the auto-fix loop should be
 - whether no-mistakes should infer intent from recent local agent transcripts
 
@@ -94,6 +95,12 @@ intent:
   threshold: 0.2
   slack_days: 3
   disabled_readers: []
+
+# Test evidence defaults to temporary local storage.
+test:
+  evidence:
+    store_in_repo: false
+    dir: .no-mistakes/evidence
 ```
 
 See [Global Config Reference](/no-mistakes/reference/global-config/) for the full field listing.
@@ -134,6 +141,12 @@ auto_fix:
 # Optional repo-level overrides for intent extraction.
 intent:
   enabled: true
+
+# Opt in when evidence artifacts should be committed and linked from the PR.
+test:
+  evidence:
+    store_in_repo: true
+    dir: .no-mistakes/evidence
 ```
 
 See [Repo Config Reference](/no-mistakes/reference/repo-config/) for the full field listing.
@@ -146,6 +159,7 @@ See [Repo Config Reference](/no-mistakes/reference/repo-config/) for the full fi
 - `agent_path_override`, `agent_args_override`, `acpx_path`, and `acp_registry_overrides` are global-only fields.
 - `auto_fix` from the repo config overlays global auto_fix. Fields not set in the repo config fall through to the global default.
 - `intent` from the repo config overlays global intent settings. Fields not set in the repo config fall through to the global default, except `intent.disabled_readers`, which adds to globally disabled readers.
+- `test.evidence` from the repo config overlays global test evidence settings. Fields not set in the repo config fall through to the global default.
 - `commands` and `ignore_patterns` are repo-only fields.
 - `ci_timeout` and `auto_fix.ci` are the canonical keys; `babysit_timeout` and `auto_fix.babysit` are still accepted as legacy aliases.
 - If `commands.test` is set, the test step runs it first as the baseline; when inferred user intent is available, the agent may still run afterward to gather evidence-oriented validation.
@@ -156,6 +170,7 @@ See [Repo Config Reference](/no-mistakes/reference/repo-config/) for the full fi
 The practical implication is simple: explicit commands give you deterministic
 baseline behavior, while leaving commands empty asks the agent to fill in the gap.
 For tests, inferred user intent can also trigger an evidence-oriented agent follow-up after the baseline command succeeds.
+By default, evidence stays in a temporary local directory; opt into `test.evidence.store_in_repo` when your team wants evidence artifacts committed, pushed, and linked directly from PRs.
 For lint, that gap includes safe formatter and linter fixes during the initial lint pass.
 
 ## Ignore pattern rules
