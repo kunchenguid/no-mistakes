@@ -63,6 +63,10 @@ func safeRepoSubdir(dir string) (string, bool) {
 	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 		return "", false
 	}
+	first, _, _ := strings.Cut(clean, string(filepath.Separator))
+	if strings.EqualFold(first, ".git") {
+		return "", false
+	}
 	return clean, true
 }
 

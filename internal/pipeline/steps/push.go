@@ -2,6 +2,8 @@ package steps
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/git"
@@ -30,6 +32,9 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	}
 
 	// Commit any uncommitted changes from agent fixes
+	if err := s.stageInRepoEvidence(sctx); err != nil {
+		return nil, err
+	}
 	status, _ := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
 	if strings.TrimSpace(status) != "" {
 		sctx.Log("committing agent changes...")
@@ -90,4 +95,37 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 
 	sctx.Log("pushed successfully")
 	return &pipeline.StepOutcome{}, nil
+}
+
+func (s *PushStep) stageInRepoEvidence(sctx *pipeline.StepContext) error {
+	ctx := sctx.Ctx
+	location := resolveTestEvidenceLocation(sctx.WorkDir, sctx.Run.Branch, sctx.Run.ID, sctx.Config.Test.Evidence)
+	if !location.StoreInRepo {
+		return nil
+	}
+	if !dirHasFiles(location.Dir) {
+		return nil
+	}
+	rel, err := filepath.Rel(sctx.WorkDir, location.Dir)
+	if err != nil || rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return nil
+	}
+	if _, err := git.Run(ctx, sctx.WorkDir, "add", "-f", "--", filepath.ToSlash(rel)); err != nil {
+		return fmt.Errorf("stage test evidence: %w", err)
+	}
+	return nil
+}
+
+func dirHasFiles(dir string) bool {
+	found := false
+	_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || found {
+			return nil
+		}
+		if !d.IsDir() {
+			found = true
+		}
+		return nil
+	})
+	return found
 }

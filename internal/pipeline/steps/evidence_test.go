@@ -45,7 +45,7 @@ func TestResolveTestEvidenceDir_EmptyBranchFallsBack(t *testing.T) {
 func TestResolveTestEvidenceDir_UnsafeConfigDirFallsBackToTemp(t *testing.T) {
 	// An absolute or escaping configured dir must not let evidence land outside
 	// the worktree; fall back to the temp directory instead.
-	for _, dir := range []string{"/abs/evidence", "../escape", "a/../../b"} {
+	for _, dir := range []string{"/abs/evidence", "../escape", "a/../../b", ".git", ".git/hooks"} {
 		got := resolveTestEvidenceDir("/work/tree", "feature/foo", "run-123", config.Evidence{StoreInRepo: true, Dir: dir})
 		want := filepath.Join(os.TempDir(), "no-mistakes-evidence", "run-123")
 		if got != want {
