@@ -103,6 +103,9 @@ func (s *PushStep) stageInRepoEvidence(sctx *pipeline.StepContext) error {
 	if !location.StoreInRepo {
 		return nil
 	}
+	if gitIgnoresPath(ctx, sctx.WorkDir, location.Dir) {
+		return nil
+	}
 	if !dirHasFiles(location.Dir) {
 		return nil
 	}

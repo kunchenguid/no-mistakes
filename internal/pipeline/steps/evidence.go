@@ -47,8 +47,35 @@ func resolveTestEvidenceLocation(workDir, branch, runID string, ev config.Eviden
 	if len(segments) == 0 {
 		segments = []string{runID}
 	}
-	parts := append([]string{workDir, sub}, segments...)
+	relParts := append([]string{sub}, segments...)
+	rel := filepath.Join(relParts...)
+	if repoPathHasSymlink(workDir, rel) {
+		return testEvidenceLocation{Dir: testEvidenceDir(runID)}
+	}
+	parts := append([]string{workDir}, relParts...)
 	return testEvidenceLocation{Dir: filepath.Join(parts...), StoreInRepo: true}
+}
+
+func repoPathHasSymlink(workDir, rel string) bool {
+	clean := filepath.Clean(rel)
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) || filepath.IsAbs(clean) {
+		return true
+	}
+	current := workDir
+	for _, part := range strings.Split(clean, string(filepath.Separator)) {
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if os.IsNotExist(err) {
+			return false
+		}
+		if err != nil {
+			return true
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // safeRepoSubdir validates a configured evidence directory as a relative path

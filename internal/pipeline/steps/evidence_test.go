@@ -53,3 +53,18 @@ func TestResolveTestEvidenceDir_UnsafeConfigDirFallsBackToTemp(t *testing.T) {
 		}
 	}
 }
+
+func TestResolveTestEvidenceDir_SymlinkConfigDirFallsBackToTemp(t *testing.T) {
+	workDir := t.TempDir()
+	externalDir := t.TempDir()
+	symlinkDir := filepath.Join(workDir, "evidence")
+	if err := os.Symlink(externalDir, symlinkDir); err != nil {
+		t.Skipf("create symlink: %v", err)
+	}
+
+	got := resolveTestEvidenceDir(workDir, "feature/foo", "run-123", config.Evidence{StoreInRepo: true, Dir: "evidence"})
+	want := filepath.Join(os.TempDir(), "no-mistakes-evidence", "run-123")
+	if got != want {
+		t.Errorf("symlink evidence dir = %q, want temp fallback %q", got, want)
+	}
+}
