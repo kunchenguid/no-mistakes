@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.23.0](https://github.com/kunchenguid/no-mistakes/compare/v1.22.3...v1.23.0) (2026-06-06)
+
+
+### Features
+
+* **pipeline:** store test evidence in repos ([#235](https://github.com/kunchenguid/no-mistakes/issues/235)) ([ec6d7dc](https://github.com/kunchenguid/no-mistakes/commit/ec6d7dc34d7ae09279d483f185c9d47bbf10c66a))
+
 ## [1.22.3](https://github.com/kunchenguid/no-mistakes/compare/v1.22.2...v1.22.3) (2026-06-05)
 
 
