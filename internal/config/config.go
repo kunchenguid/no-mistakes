@@ -27,6 +27,7 @@ type GlobalConfig struct {
 	LogLevel             string              `yaml:"log_level"`
 	AutoFix              AutoFixRaw
 	Intent               IntentRaw
+	Test                 TestRaw
 }
 
 // globalConfigRaw is the on-disk YAML representation with duration as string.
@@ -41,6 +42,7 @@ type globalConfigRaw struct {
 	LogLevel             string              `yaml:"log_level"`
 	AutoFix              AutoFixRaw          `yaml:"auto_fix"`
 	Intent               IntentRaw           `yaml:"intent"`
+	Test                 TestRaw             `yaml:"test"`
 }
 
 // RepoConfig represents .no-mistakes.yaml in a repo root.
@@ -50,6 +52,7 @@ type RepoConfig struct {
 	IgnorePatterns []string        `yaml:"ignore_patterns"`
 	AutoFix        AutoFixRaw      `yaml:"auto_fix"`
 	Intent         IntentRaw       `yaml:"intent"`
+	Test           TestRaw         `yaml:"test"`
 }
 
 // Commands holds optional per-repo command overrides.
@@ -95,6 +98,33 @@ type Config struct {
 	IgnorePatterns       []string
 	AutoFix              AutoFix
 	Intent               Intent
+	Test                 Test
+}
+
+// TestRaw is the YAML representation of test-step settings.
+type TestRaw struct {
+	Evidence EvidenceRaw `yaml:"evidence"`
+}
+
+// EvidenceRaw is the YAML representation of test-evidence settings.
+// Pointer fields distinguish "not set" (nil) from explicit zero/false values.
+type EvidenceRaw struct {
+	StoreInRepo *bool   `yaml:"store_in_repo"`
+	Dir         *string `yaml:"dir"`
+}
+
+// Test is the resolved test-step config.
+type Test struct {
+	Evidence Evidence
+}
+
+// Evidence is the resolved test-evidence config. When StoreInRepo is true, the
+// test step writes evidence artifacts into Dir (relative to the repo worktree)
+// so they are committed, pushed, and viewable directly on the PR. Otherwise
+// evidence stays in a temporary directory referenced only by local path.
+type Evidence struct {
+	StoreInRepo bool
+	Dir         string
 }
 
 // IntentRaw is the YAML representation of user-intent extraction settings.
@@ -168,6 +198,16 @@ intent:
   threshold: 0.2
   slack_days: 3
   # disabled_readers: [codex]
+
+# Test-step evidence artifacts (screenshots, recordings, logs the test step
+# gathers to demonstrate the change works). By default they are kept in a
+# temporary directory and referenced by local path. Opt in to store_in_repo to
+# commit them into the repo under a readable, branch-named directory so they are
+# pushed and render directly on the PR.
+# test:
+#   evidence:
+#     store_in_repo: true
+#     dir: .no-mistakes/evidence
 `
 
 // defaultBinary maps agent names to their default binary names.
@@ -439,6 +479,7 @@ func LoadGlobal(path string) (*GlobalConfig, error) {
 	}
 	cfg.AutoFix = raw.AutoFix
 	cfg.Intent = raw.Intent
+	cfg.Test = raw.Test
 
 	return cfg, nil
 }
@@ -517,6 +558,27 @@ func applyIntentOverrides(dst *Intent, src *IntentRaw) {
 	}
 }
 
+// testDefaults returns the default test-step settings. Evidence storage is
+// opt-in (off by default); when enabled it lands under .no-mistakes/evidence.
+func testDefaults() Test {
+	return Test{
+		Evidence: Evidence{
+			StoreInRepo: false,
+			Dir:         ".no-mistakes/evidence",
+		},
+	}
+}
+
+// applyTestOverrides applies non-nil raw values onto resolved defaults.
+func applyTestOverrides(dst *Test, src *TestRaw) {
+	if src.Evidence.StoreInRepo != nil {
+		dst.Evidence.StoreInRepo = *src.Evidence.StoreInRepo
+	}
+	if src.Evidence.Dir != nil && strings.TrimSpace(*src.Evidence.Dir) != "" {
+		dst.Evidence.Dir = strings.TrimSpace(*src.Evidence.Dir)
+	}
+}
+
 // autoFixDefaults returns the default auto-fix configuration.
 func autoFixDefaults() AutoFix {
 	return AutoFix{
@@ -583,6 +645,10 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 	applyIntentOverrides(&intent, &global.Intent)
 	applyIntentOverrides(&intent, &repo.Intent)
 
+	test := testDefaults()
+	applyTestOverrides(&test, &global.Test)
+	applyTestOverrides(&test, &repo.Test)
+
 	cfg := &Config{
 		Agent:                global.Agent,
 		ACPXPath:             global.ACPXPath,
@@ -595,6 +661,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		IgnorePatterns:       repo.IgnorePatterns,
 		AutoFix:              af,
 		Intent:               intent,
+		Test:                 test,
 	}
 
 	if repo.Agent != "" {

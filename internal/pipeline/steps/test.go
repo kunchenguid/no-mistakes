@@ -103,7 +103,7 @@ Previous test findings to address:
 
 	useEvidenceAgent := testCmd == "" || cleanedUserIntent(sctx) != ""
 	if useEvidenceAgent {
-		evidenceDir := testEvidenceDir(sctx.Run.ID)
+		evidenceDir := resolveTestEvidenceDir(sctx.WorkDir, sctx.Run.Branch, sctx.Run.ID, sctx.Config.Test.Evidence)
 		if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
 			return nil, fmt.Errorf("create test evidence dir: %w", err)
 		}
@@ -113,6 +113,10 @@ Previous test findings to address:
 			sctx.Log("user intent available, asking agent to gather test evidence...")
 		}
 		reassessHistory := executionContextPromptSection() + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx)
+		evidenceGuidance := fmt.Sprintf("- Write new evidence files into this temporary evidence directory: %s", evidenceDir)
+		if sctx.Config.Test.Evidence.StoreInRepo {
+			evidenceGuidance = fmt.Sprintf("- Write new evidence files into this in-repo evidence directory; it is committed and pushed automatically, so artifacts render directly on the PR: %s", evidenceDir)
+		}
 		configuredTestCommand := ""
 		if testCmd != "" {
 			configuredTestCommand = fmt.Sprintf("\nConfigured test command already ran successfully as baseline: `%s`\n", testCmd)
@@ -136,7 +140,7 @@ Task:
 - Prefer screenshots, images, videos, GIFs, or rendered HTML artifacts that show the actual end-user surface.
 - DOM snapshots, selector assertions, and text-only render summaries are not substitutes for visual evidence when a rendered surface is available.
 - If a UI-facing change has no screenshot, image, video, GIF, or rendered HTML artifact, state why in testing_summary.
-- Write new evidence files into this temporary evidence directory: %s
+%s
 - Do not move, commit, or modify source files only to make evidence linkable. Record local evidence file paths exactly where you created them.
 - Only use command output as an artifact when that output directly demonstrates the end-user experience or requested behavior. Generic pass/fail, coverage, or clean-worktree output is not sufficient evidence.
 - Look for existing tests that would generate sufficient evidence. If they exist, run the smallest relevant set.
@@ -164,7 +168,7 @@ Rules:
 				baseSHA,
 				sctx.Run.HeadSHA,
 				configuredTestCommand,
-				evidenceDir,
+				evidenceGuidance,
 				reassessHistory,
 			),
 			CWD:        sctx.WorkDir,
