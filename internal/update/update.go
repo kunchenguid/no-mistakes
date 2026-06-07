@@ -201,6 +201,9 @@ func (u *updater) run(ctx context.Context) error {
 		fmt.Fprintf(u.stdoutWriter(), "%s is already up to date (%s)\n", u.appName, u.currentVersion)
 		return nil
 	}
+	if err := u.confirmActiveRunsBeforeUpdate(); err != nil {
+		return err
+	}
 	if err := u.ensureDaemonUsesCurrentExecutable(); err != nil {
 		return err
 	}

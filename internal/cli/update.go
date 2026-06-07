@@ -19,6 +19,6 @@ func newUpdateCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&beta, "beta", false, "install the latest release including prereleases")
-	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "replace a daemon started by another no-mistakes binary without prompting")
+	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "answer yes to update safety prompts")
 	return cmd
 }

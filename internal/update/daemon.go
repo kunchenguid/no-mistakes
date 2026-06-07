@@ -1,7 +1,6 @@
 package update
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"os"
@@ -61,16 +60,7 @@ func (u *updater) confirmDaemonTakeover(runningPath, currentPath string) bool {
 
 	fmt.Fprintf(u.stderrWriter(), "daemon is running from %s, but update is running from %s\n", runningPath, currentPath)
 	fmt.Fprint(u.stderrWriter(), "Replace the running daemon with this binary? [y/N] ")
-	input := u.stdin
-	if input == nil {
-		input = os.Stdin
-	}
-	response, err := bufio.NewReader(input).ReadString('\n')
-	if err != nil && response == "" {
-		return false
-	}
-	answer := strings.ToLower(strings.TrimSpace(response))
-	return answer == "y" || answer == "yes"
+	return readYes(u.stdin)
 }
 
 func executablePathsMatch(a, b string) bool {

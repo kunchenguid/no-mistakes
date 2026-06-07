@@ -137,6 +137,58 @@ func TestActiveRunStrictBranchMatch(t *testing.T) {
 	}
 }
 
+func TestActiveRunsAcrossRepos(t *testing.T) {
+	d := openTestDB(t)
+	repoA, _ := d.InsertRepo("/home/user/project-a", "git@github.com:user/project-a.git", "main")
+	repoB, _ := d.InsertRepo("/home/user/project-b", "git@github.com:user/project-b.git", "main")
+
+	pendingRun, _ := d.InsertRun(repoA.ID, "feature-a", "aaa", "000")
+	runningRun, _ := d.InsertRun(repoB.ID, "feature-b", "bbb", "000")
+	if err := d.UpdateRunStatus(runningRun.ID, types.RunRunning); err != nil {
+		t.Fatalf("mark running: %v", err)
+	}
+	completedRun, _ := d.InsertRun(repoA.ID, "done", "ccc", "000")
+	if err := d.UpdateRunStatus(completedRun.ID, types.RunCompleted); err != nil {
+		t.Fatalf("mark completed: %v", err)
+	}
+	failedRun, _ := d.InsertRun(repoB.ID, "failed", "ddd", "000")
+	if err := d.UpdateRunStatus(failedRun.ID, types.RunFailed); err != nil {
+		t.Fatalf("mark failed: %v", err)
+	}
+	cancelledRun, _ := d.InsertRun(repoB.ID, "cancelled", "eee", "000")
+	if err := d.UpdateRunStatus(cancelledRun.ID, types.RunCancelled); err != nil {
+		t.Fatalf("mark cancelled: %v", err)
+	}
+
+	runs, err := d.GetActiveRuns()
+	if err != nil {
+		t.Fatalf("get active runs: %v", err)
+	}
+	if len(runs) != 2 {
+		t.Fatalf("got %d active runs, want 2", len(runs))
+	}
+
+	got := map[string]types.RunStatus{}
+	for _, run := range runs {
+		got[run.ID] = run.Status
+	}
+	if got[pendingRun.ID] != types.RunPending {
+		t.Fatalf("pending run missing from active runs: %#v", got)
+	}
+	if got[runningRun.ID] != types.RunRunning {
+		t.Fatalf("running run missing from active runs: %#v", got)
+	}
+	if _, ok := got[completedRun.ID]; ok {
+		t.Fatal("completed run should not be active")
+	}
+	if _, ok := got[failedRun.ID]; ok {
+		t.Fatal("failed run should not be active")
+	}
+	if _, ok := got[cancelledRun.ID]; ok {
+		t.Fatal("cancelled run should not be active")
+	}
+}
+
 func TestUpdateRunStatus(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")

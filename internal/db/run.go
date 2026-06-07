@@ -118,6 +118,28 @@ func (d *DB) GetActiveRun(repoID, branch string) (*Run, error) {
 	return r, nil
 }
 
+// GetActiveRuns returns all pending or running runs across all repos, newest first.
+func (d *DB) GetActiveRuns() ([]*Run, error) {
+	rows, err := d.sql.Query(
+		`SELECT `+runColumns+` FROM runs WHERE status IN (?, ?) ORDER BY created_at DESC, id DESC`,
+		types.RunPending, types.RunRunning,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get active runs: %w", err)
+	}
+	defer rows.Close()
+
+	var runs []*Run
+	for rows.Next() {
+		r := &Run{}
+		if err := scanRun(rows, r); err != nil {
+			return nil, fmt.Errorf("scan run: %w", err)
+		}
+		runs = append(runs, r)
+	}
+	return runs, rows.Err()
+}
+
 // UpdateRunStatus updates a run's status and updated_at timestamp.
 func (d *DB) UpdateRunStatus(id string, status types.RunStatus) error {
 	_, err := d.sql.Exec(`UPDATE runs SET status = ?, updated_at = ? WHERE id = ?`, status, now(), id)

@@ -15,7 +15,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 func TestUpdaterCheckLatestAndRefreshCache(t *testing.T) {
@@ -210,6 +212,125 @@ func TestUpdaterRunResetsDaemonAfterUpdate(t *testing.T) {
 	}
 	if !resetCalled {
 		t.Fatal("expected daemon reset after successful update")
+	}
+}
+
+func TestUpdaterRunWarnsAndRequiresConfirmationForActiveRuns(t *testing.T) {
+	allowInsecureDownloads = true
+	t.Cleanup(func() { allowInsecureDownloads = false })
+
+	archiveName := "no-mistakes-v1.2.3-darwin-arm64.tar.gz"
+	archive := makeTarGz(t, map[string][]byte{
+		"bin/no-mistakes": []byte("new-binary"),
+	})
+	sum := sha256.Sum256(archive)
+	checksums := fmt.Sprintf("%s  %s\n", hex.EncodeToString(sum[:]), archiveName)
+
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/kunchenguid/no-mistakes/releases/latest":
+			fmt.Fprintf(w, `{"tag_name":"v1.2.3","assets":[{"name":%q,"browser_download_url":%q},{"name":"checksums.txt","browser_download_url":%q}]}`,
+				archiveName,
+				server.URL+"/archive",
+				server.URL+"/checksums",
+			)
+		case "/archive":
+			w.Write(archive)
+		case "/checksums":
+			fmt.Fprint(w, checksums)
+		default:
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatalf("ensure paths: %v", err)
+	}
+	database, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	repo, err := database.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	if err != nil {
+		t.Fatalf("insert repo: %v", err)
+	}
+	pendingRun, err := database.InsertRun(repo.ID, "feature-a", "aaa111", "000")
+	if err != nil {
+		t.Fatalf("insert pending run: %v", err)
+	}
+	runningRun, err := database.InsertRun(repo.ID, "feature-b", "bbb222", "000")
+	if err != nil {
+		t.Fatalf("insert running run: %v", err)
+	}
+	if err := database.UpdateRunStatus(runningRun.ID, types.RunRunning); err != nil {
+		t.Fatalf("mark running: %v", err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+
+	execPath := filepath.Join(t.TempDir(), "no-mistakes")
+	if err := os.WriteFile(execPath, []byte("old-binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout := new(bytes.Buffer)
+	stderr := new(bytes.Buffer)
+	resetCalled := false
+	u := &updater{
+		appName:        "no-mistakes",
+		repo:           "kunchenguid/no-mistakes",
+		currentVersion: "v1.2.2",
+		platform:       platformSpec{GOOS: "darwin", GOARCH: "arm64"},
+		apiBaseURL:     server.URL,
+		httpClient:     server.Client(),
+		executablePath: execPath,
+		stdout:         stdout,
+		stderr:         stderr,
+		stdin:          strings.NewReader("n\n"),
+		now:            func() time.Time { return time.Date(2026, 4, 9, 12, 0, 0, 0, time.UTC) },
+		resetDaemon: func() error {
+			resetCalled = true
+			return nil
+		},
+		paths: p,
+	}
+
+	err = u.run(context.Background())
+	if err == nil {
+		t.Fatal("run should fail when active run warning is rejected")
+	}
+	if !strings.Contains(err.Error(), "active pipeline runs") {
+		t.Fatalf("run error = %v", err)
+	}
+	transcript := stderr.String()
+	for _, want := range []string{
+		"2 active pipeline runs",
+		pendingRun.ID,
+		"feature-a",
+		runningRun.ID,
+		"feature-b",
+		"Continue with update and restart the daemon? [y/N]",
+	} {
+		if !strings.Contains(transcript, want) {
+			t.Fatalf("stderr should contain %q, got %q", want, transcript)
+		}
+	}
+	content, readErr := os.ReadFile(execPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(content) != "old-binary" {
+		t.Fatalf("executable content = %q", string(content))
+	}
+	if resetCalled {
+		t.Fatal("reset daemon should not run after rejecting active run warning")
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q", stdout.String())
 	}
 }
 
