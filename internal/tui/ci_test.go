@@ -223,6 +223,25 @@ func TestParseCIActivity(t *testing.T) {
 		}
 	})
 
+	t.Run("ready cleared when polling warning appears", func(t *testing.T) {
+		tests := []string{
+			"warning: could not check CI: rate limited",
+			"warning: could not check mergeable state: rate limited",
+			"warning: could not check PR state: rate limited",
+		}
+		for _, warning := range tests {
+			t.Run(warning, func(t *testing.T) {
+				a := parseCIActivity([]string{
+					"all CI checks passed - PR is ready to merge (still monitoring until merged or closed)",
+					warning,
+				})
+				if a.Ready {
+					t.Error("expected Ready to be cleared when polling state is unknown")
+				}
+			})
+		}
+	})
+
 	t.Run("not ready while monitoring", func(t *testing.T) {
 		a := parseCIActivity([]string{"monitoring CI for PR #42 (timeout: 4h)..."})
 		if a.Ready {
