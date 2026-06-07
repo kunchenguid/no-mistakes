@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/cimonitor"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -15,11 +16,13 @@ import (
 const defaultChecksGracePeriod = 60 * time.Second
 
 // CI monitoring status messages. These are surfaced to the user and parsed by
-// the TUI to distinguish passed checks from checks that are still running.
+// the TUI and the agent-facing axi commands to distinguish passed checks from
+// checks that are still running. The canonical strings live in cimonitor so all
+// producers and consumers agree on them.
 const (
-	ciChecksPassedMsg   = "all CI checks passed - still monitoring until merged or closed"
-	ciNoChecksPassedMsg = "no CI checks reported - still monitoring until merged or closed"
-	ciChecksRunningMsg  = "CI checks running, waiting for results..."
+	ciChecksPassedMsg   = cimonitor.ChecksPassedMsg
+	ciNoChecksPassedMsg = cimonitor.NoChecksPassedMsg
+	ciChecksRunningMsg  = cimonitor.ChecksRunningMsg
 )
 
 // CIStep monitors an open PR until it is merged or closed, auto-fixing CI failures.

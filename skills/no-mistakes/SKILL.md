@@ -57,9 +57,19 @@ Run the pipeline and decide on its findings as they come up:
    no-mistakes axi respond --action skip
    ```
    Each `respond` blocks until the next `gate:` or the final outcome.
-3. Repeat step 2 until the output has an `outcome:` instead of a `gate:`. An
-   `outcome:` of `passed` means the changes cleared the gate; `failed` or
-   `cancelled` means they did not - read the output and address it.
+3. Repeat step 2 until the output has an `outcome:` instead of a `gate:`. The
+   outcomes are:
+   - `checks-passed` - the change is validated and CI is green, but the PR is
+     not merged yet. **You are done driving the pipeline.** Do not wait for the
+     merge: tell the user the PR is ready and ask them to review and merge it
+     (the PR link is in the `help` line). no-mistakes keeps monitoring the PR
+     in the background, so a human can watch it in the TUI.
+   - `passed` - the changes cleared the gate and the PR was merged or closed.
+   - `failed` or `cancelled` - they did not; read the output and address it.
+
+The CI step deliberately watches the PR until it is merged or closed, so
+`axi run` returns `checks-passed` the moment checks are green rather than
+blocking on the human merge. Never poll or re-run waiting for the merge yourself.
 
 If you have clear consent to drive the run automatically, pass `--yes` to `axi run`
 or `axi respond`. It treats actionable findings as consent to fix them,

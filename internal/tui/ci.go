@@ -5,13 +5,9 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/kunchenguid/no-mistakes/internal/cimonitor"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/types"
-)
-
-const (
-	ciChecksPassedLog   = "all CI checks passed - still monitoring until merged or closed"
-	ciNoChecksPassedLog = "no CI checks reported - still monitoring until merged or closed"
 )
 
 // isCIActive returns true if the CI step is currently running.
@@ -56,65 +52,15 @@ func extractPRFromLogs(logs []string) string {
 	return ""
 }
 
-// ciActivity summarizes what the CI step has been doing based on logs.
-type ciActivity struct {
-	CIFixes    int
-	AutoFixing bool
-	Ready      bool
-	LastEvent  string
-}
+// ciActivity summarizes what the CI step has been doing based on logs. It is an
+// alias of cimonitor.Activity so the TUI and the agent-facing axi commands read
+// CI state through the exact same parser.
+type ciActivity = cimonitor.Activity
 
-// parseCIActivity extracts structured activity from CI log messages.
-//
-// Ready reflects the most recent monitoring state: it is true only when the
-// latest relevant log line announced passed checks, and any newer event clears it.
+// parseCIActivity extracts structured activity from CI log messages. It defers
+// to cimonitor so the TUI never drifts from how axi interprets the same logs.
 func parseCIActivity(logs []string) ciActivity {
-	var a ciActivity
-	for _, line := range logs {
-		switch {
-		case strings.Contains(line, "running agent to fix CI"):
-			// Emitted once per fix attempt by autoFixCI in real runs (and by
-			// demo mode), so it is the reliable signal for counting fixes.
-			a.CIFixes++
-			a.AutoFixing = true
-			a.Ready = false
-			a.LastEvent = line
-		case strings.Contains(line, "committed and pushed fixes"):
-			a.AutoFixing = false
-			a.Ready = false
-			a.LastEvent = line
-		case strings.Contains(line, "CI failures detected"):
-			a.AutoFixing = true
-			a.Ready = false
-			a.LastEvent = line
-		case line == ciChecksPassedLog || line == ciNoChecksPassedLog:
-			a.AutoFixing = false
-			a.Ready = true
-			a.LastEvent = line
-		case strings.Contains(line, "issues detected"),
-			strings.Contains(line, "CI checks running"),
-			strings.Contains(line, "mergeable state still pending"),
-			strings.Contains(line, "warning: could not check CI"),
-			strings.Contains(line, "warning: could not check mergeable state"),
-			strings.Contains(line, "warning: could not check PR state"):
-			a.AutoFixing = false
-			a.Ready = false
-			a.LastEvent = line
-		case strings.Contains(line, "monitoring CI for PR"):
-			a.Ready = false
-			a.LastEvent = line
-		case strings.Contains(line, "PR has been merged"):
-			a.Ready = false
-			a.LastEvent = line
-		case strings.Contains(line, "PR has been closed"):
-			a.Ready = false
-			a.LastEvent = line
-		case strings.Contains(line, "CI timeout"):
-			a.Ready = false
-			a.LastEvent = line
-		}
-	}
-	return a
+	return cimonitor.ParseActivity(logs)
 }
 
 // renderCIView renders the CI-specific monitoring view.
