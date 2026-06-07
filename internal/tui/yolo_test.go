@@ -243,6 +243,33 @@ func TestModel_Yolo_ApprovesFixReviewAfterFixingOnce(t *testing.T) {
 	}
 }
 
+func TestModel_Yolo_ApprovesExistingFixReviewWithoutPriorFix(t *testing.T) {
+	sock, client, snapshot := captureRespond(t)
+
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusFixReview
+	fj := `{"findings":[{"id":"review-1","severity":"warning","description":"still here","action":"ask-user"}],"summary":"1 issue"}`
+	run.Steps[0].FindingsJSON = &fj
+	m := NewModel(sock, client, run)
+	m.yoloMode = true
+
+	cmd := m.maybeAutoApproveCmd()
+	if cmd == nil {
+		t.Fatal("expected yolo to approve an existing fix_review gate")
+	}
+	if msg := cmd(); msg != nil {
+		t.Fatalf("expected nil msg, got %#v", msg)
+	}
+
+	calls := snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 respond call, got %d", len(calls))
+	}
+	if calls[0].Action != types.ActionApprove {
+		t.Fatalf("action = %s, want %s", calls[0].Action, types.ActionApprove)
+	}
+}
+
 func TestModel_Yolo_DoesNotAutoApproveTwiceForSameStep(t *testing.T) {
 	run := testRun()
 	run.Steps[0].Status = types.StepStatusAwaitingApproval

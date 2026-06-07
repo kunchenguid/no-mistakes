@@ -53,6 +53,15 @@ func TestGateResolution(t *testing.T) {
 			wantAction:   types.ActionApprove,
 		},
 		{
+			name: "reattached fix review is approved without in-memory fix state",
+			gate: stepView{
+				Name:         "review",
+				Status:       string(types.StepStatusFixReview),
+				FindingsJSON: `{"findings":[{"id":"review-1","severity":"warning","description":"still here","action":"ask-user"}],"summary":"1"}`,
+			},
+			wantAction: types.ActionApprove,
+		},
+		{
 			name: "actionable findings without ids are approved rather than fixing nothing",
 			gate: stepView{
 				Name:         "review",

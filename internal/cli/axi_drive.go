@@ -317,7 +317,7 @@ func driveRun(ctx context.Context, progress io.Writer, client *ipc.Client, runID
 // findings, or actionable findings that carry no IDs (which a fix would resolve
 // to zero selections) are approved.
 func gateResolution(gate stepView, alreadyFixed bool) (types.ApprovalAction, []string) {
-	if alreadyFixed {
+	if alreadyFixed || gate.Status == string(types.StepStatusFixReview) {
 		return types.ActionApprove, nil
 	}
 	parsed, err := types.ParseFindingsJSON(gate.FindingsJSON)
