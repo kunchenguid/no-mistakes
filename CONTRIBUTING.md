@@ -11,7 +11,7 @@ A GitHub Actions check (`Require no-mistakes`) runs on every PR and fails if the
 
 1. Fork the repo and clone your fork.
 2. Create a branch and make your changes.
-3. Initialize the gate in the repo once: `no-mistakes init`.
+3. Initialize or refresh the gate in the repo: `no-mistakes init`.
 4. Commit your changes.
 5. Push through the gate instead of pushing to `origin`:
 

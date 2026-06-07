@@ -39,7 +39,7 @@ Navigate to any git repo with an `origin` remote:
 no-mistakes init
 ```
 
-This creates a local bare repo at `~/.no-mistakes/repos/<id>.git`, installs a post-receive hook, best-effort isolates the gate's hooks path from shared local Git config writes when Git supports `config --worktree`, adds a `no-mistakes` git remote to your working repo, installs the `/no-mistakes` agent skill, and ensures the daemon is running.
+This creates or refreshes a local bare repo at `~/.no-mistakes/repos/<id>.git`, installs a post-receive hook, best-effort isolates the gate's hooks path from shared local Git config writes when Git supports `config --worktree`, adds or repairs a `no-mistakes` git remote in your working repo, installs the `/no-mistakes` agent skill, and ensures the daemon is running.
 
 ```
 $ no-mistakes init
@@ -56,6 +56,8 @@ $ no-mistakes init
 
 `origin` is unchanged. If you need to bypass the gate for a specific push, use
 `git push origin <branch>`.
+
+You can safely re-run `no-mistakes init` later to refresh gate wiring or reinstall the agent skill.
 
 ## 4. Push through the gate
 

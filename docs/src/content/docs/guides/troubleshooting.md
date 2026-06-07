@@ -139,6 +139,7 @@ git remote -v | grep no-mistakes
 ```
 
 If it's missing, run `no-mistakes init` again.
+Re-running init refreshes an existing gate and repairs the `no-mistakes` remote when it is missing.
 
 ### Check the hook
 
@@ -151,7 +152,7 @@ no-mistakes status
 ls -la <gate-path>/hooks/post-receive
 ```
 
-The hook should be executable. If it's missing or non-executable, `no-mistakes init` will reinstall it.
+The hook should be executable. If it's missing or non-executable, `no-mistakes init` will reinstall it for an existing no-mistakes-managed gate.
 For existing gate repos, `no-mistakes daemon restart` also installs missing no-mistakes-managed hooks and refreshes legacy managed hooks without overwriting custom hooks.
 
 Also check `<gate-path>/notify-push.log`. The hook now appends daemon notification failures there and prints the same error back to the pushing client.
@@ -160,7 +161,7 @@ Also check `<gate-path>/notify-push.log`. The hook now appends daemon notificati
 
 The hook talks to the daemon over `~/.no-mistakes/socket`. If the daemon isn't running, the push still succeeds (the hook never blocks), but no pipeline starts. Start the daemon and push again.
 
-If the gate is older, restarting the daemon also reapplies hook-path isolation for existing bare repos when Git supports `config --worktree`.
+If the gate is older, re-running `no-mistakes init` or restarting the daemon also reapplies hook-path isolation for existing bare repos when Git supports `config --worktree`.
 That protects the gate hook if a tool such as Husky wrote `core.hookspath` into shared git config from inside a linked worktree.
 
 ## PR step is skipped

@@ -37,6 +37,10 @@ When you run `no-mistakes init` in a repo:
 6. It installs the `/no-mistakes` agent skill into `.claude/skills/no-mistakes/SKILL.md` and `.agents/skills/no-mistakes/SKILL.md` on a best-effort basis.
 7. It makes sure the daemon is running so incoming pushes can start runs.
 
+`init` is idempotent.
+If the repo is already initialized, it refreshes the existing gate instead of failing: managed hook installation, push-option support, hook-path isolation, gate and working remotes, origin/default-branch metadata, and the `/no-mistakes` agent skill are repaired or updated where needed.
+If daemon startup fails during a refresh, `init` reports the error but does not eject the pre-existing gate.
+
 After init, your original `origin` still points at the real upstream remote.
 That is a core design choice, not an implementation detail.
 

@@ -23,16 +23,18 @@ Valid step names are `intent`, `rebase`, `review`, `test`, `document`, `lint`, `
 
 ## no-mistakes init
 
-Initialize the gate for the current repository.
+Initialize or refresh the gate for the current repository.
 
 ```sh
 no-mistakes init
 ```
 
-Creates a local bare repo, installs the post-receive hook, best-effort isolates the gate repo's hook path from shared git config changes when Git supports `config --worktree`, adds the `no-mistakes` git remote, detects the default branch, records the repo in SQLite, installs the `/no-mistakes` agent skill into `.claude/skills/no-mistakes/SKILL.md` and `.agents/skills/no-mistakes/SKILL.md`, and ensures the daemon is running, installing the managed service when available and falling back to a detached daemon otherwise.
+Creates or refreshes a local bare repo, installs the post-receive hook, best-effort isolates the gate repo's hook path from shared git config changes when Git supports `config --worktree`, adds or repairs the `no-mistakes` git remote, detects the default branch, records or updates the repo in SQLite, installs the `/no-mistakes` agent skill into `.claude/skills/no-mistakes/SKILL.md` and `.agents/skills/no-mistakes/SKILL.md`, and ensures the daemon is running, installing the managed service when available and falling back to a detached daemon otherwise.
 The gate advertises Git push-option support, so you can skip steps for one push with `git push -o no-mistakes.skip=test,lint no-mistakes <branch>`.
 
-Rolls back gate setup when a required gate or daemon step fails.
+Re-running `init` on an already-initialized repo succeeds and reports `Gate already initialized (refreshed)`.
+It refreshes managed gate wiring, origin/default-branch metadata, hook-path isolation, and the installed agent skill.
+Fresh init rolls back gate setup when a required gate or daemon step fails; refresh does not eject a pre-existing gate if daemon startup fails.
 Skill installation is best-effort: if the skill write fails, init reports it and leaves the working gate in place.
 
 ## no-mistakes axi

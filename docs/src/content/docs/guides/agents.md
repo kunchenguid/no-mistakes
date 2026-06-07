@@ -85,6 +85,7 @@ It does **not** change the pipeline order or the meaning of a passed gate.
 ## Driving no-mistakes as an agent
 
 `no-mistakes init` installs a `/no-mistakes` skill into `.claude/skills/no-mistakes/SKILL.md` and `.agents/skills/no-mistakes/SKILL.md`.
+Re-run `no-mistakes init` in an already-initialized repo to refresh or reinstall that skill after an upgrade.
 The skill tells agents to use `no-mistakes axi`, a non-interactive command surface that prints TOON to stdout and progress to stderr.
 
 Agents can also call `no-mistakes axi` directly:
