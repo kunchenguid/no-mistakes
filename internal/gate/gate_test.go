@@ -326,6 +326,71 @@ func TestInitRepairsBrokenGate(t *testing.T) {
 	}
 }
 
+func TestInitDoesNotOverwriteExistingNoMistakesRemoteOnFreshInit(t *testing.T) {
+	workDir := setupTestRepo(t)
+	nmRoot := t.TempDir()
+	p := paths.WithRoot(nmRoot)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+	d := openTestDB(t, p)
+	ctx := context.Background()
+
+	customRemote := filepath.Join(resolveSymlinks(t, t.TempDir()), "custom.git")
+	if out, err := exec.Command("git", "init", "--bare", customRemote).CombinedOutput(); err != nil {
+		t.Fatalf("init custom remote: %v: %s", err, out)
+	}
+	if err := gitpkg.AddRemote(ctx, workDir, RemoteName, customRemote); err != nil {
+		t.Fatalf("add custom remote: %v", err)
+	}
+
+	_, _, err := Init(ctx, d, p, workDir)
+	if err == nil {
+		t.Fatal("expected init to fail when no-mistakes remote already exists")
+	}
+
+	url, err := gitpkg.GetRemoteURL(ctx, workDir, RemoteName)
+	if err != nil {
+		t.Fatalf("get custom remote: %v", err)
+	}
+	if url != customRemote {
+		t.Errorf("no-mistakes remote = %q, want %q", url, customRemote)
+	}
+}
+
+func TestInitRefreshPreservesCustomPostReceiveHook(t *testing.T) {
+	workDir := setupTestRepo(t)
+	nmRoot := t.TempDir()
+	p := paths.WithRoot(nmRoot)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+	d := openTestDB(t, p)
+	ctx := context.Background()
+
+	repo, _, err := Init(ctx, d, p, workDir)
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	hookPath := filepath.Join(p.RepoDir(repo.ID), "hooks", "post-receive")
+	customHook := []byte("#!/bin/sh\necho custom hook\n")
+	if err := os.WriteFile(hookPath, customHook, 0o755); err != nil {
+		t.Fatalf("write custom hook: %v", err)
+	}
+
+	if _, _, err := Init(ctx, d, p, workDir); err != nil {
+		t.Fatalf("re-init: %v", err)
+	}
+
+	got, err := os.ReadFile(hookPath)
+	if err != nil {
+		t.Fatalf("read hook: %v", err)
+	}
+	if string(got) != string(customHook) {
+		t.Errorf("custom hook was overwritten")
+	}
+}
+
 func TestInitNoOrigin(t *testing.T) {
 	// Create a repo without origin.
 	work := filepath.Join(resolveSymlinks(t, t.TempDir()), "work")

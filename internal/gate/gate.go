@@ -60,11 +60,13 @@ func Init(ctx context.Context, d *db.DB, p *paths.Paths, workDir string) (*db.Re
 	bareDir := p.RepoDir(id)
 
 	// Provision (or repair) the on-disk gate. This is idempotent.
-	if err := provisionGate(ctx, bareDir, absRoot, upstreamURL); err != nil {
+	if err := provisionGate(ctx, bareDir, absRoot, upstreamURL, existing != nil); err != nil {
 		// Only tear down a gate we created in this call; never destroy an
 		// already-initialized gate when a repair pass fails.
 		if existing == nil {
-			git.RemoveRemote(ctx, absRoot, RemoteName)
+			if remoteURL, remoteErr := git.GetRemoteURL(ctx, absRoot, RemoteName); remoteErr == nil && remoteURL == bareDir {
+				git.RemoveRemote(ctx, absRoot, RemoteName)
+			}
 			os.RemoveAll(bareDir)
 		}
 		return nil, false, err
@@ -99,7 +101,7 @@ func Init(ctx context.Context, d *db.DB, p *paths.Paths, workDir string) (*db.Re
 // its push/hook configuration, hook-path isolation, and the git remotes wiring
 // the working repo to the gate and the gate to its upstream. Every step is
 // idempotent so this doubles as the repair path for re-running init.
-func provisionGate(ctx context.Context, bareDir, absRoot, upstreamURL string) error {
+func provisionGate(ctx context.Context, bareDir, absRoot, upstreamURL string, refresh bool) error {
 	// Create the bare repo. git init --bare is a no-op on an existing one.
 	if err := git.InitBare(ctx, bareDir); err != nil {
 		return fmt.Errorf("create bare repo: %w", err)
@@ -108,8 +110,7 @@ func provisionGate(ctx context.Context, bareDir, absRoot, upstreamURL string) er
 		return fmt.Errorf("enable push options: %w", err)
 	}
 
-	// Install post-receive hook.
-	if err := git.InstallPostReceiveHook(bareDir); err != nil {
+	if _, err := git.RefreshManagedPostReceiveHook(bareDir); err != nil {
 		return fmt.Errorf("install hook: %w", err)
 	}
 
@@ -126,12 +127,25 @@ func provisionGate(ctx context.Context, bareDir, absRoot, upstreamURL string) er
 		return fmt.Errorf("add gate origin remote: %w", err)
 	}
 
-	// Add remote to working repo.
-	if err := git.EnsureRemote(ctx, absRoot, RemoteName, bareDir); err != nil {
+	if err := ensureWorkingRemote(ctx, absRoot, bareDir, refresh); err != nil {
 		return fmt.Errorf("add remote: %w", err)
 	}
 
 	return nil
+}
+
+func ensureWorkingRemote(ctx context.Context, absRoot, bareDir string, refresh bool) error {
+	if refresh {
+		return git.EnsureRemote(ctx, absRoot, RemoteName, bareDir)
+	}
+	existingURL, err := git.GetRemoteURL(ctx, absRoot, RemoteName)
+	if err != nil {
+		return git.AddRemote(ctx, absRoot, RemoteName, bareDir)
+	}
+	if existingURL == bareDir {
+		return nil
+	}
+	return fmt.Errorf("remote %q already exists with url %q", RemoteName, existingURL)
 }
 
 // Eject removes the no-mistakes gate from the repo at workDir.
