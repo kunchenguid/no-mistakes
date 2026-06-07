@@ -1,10 +1,14 @@
 package cli
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
+	toon "github.com/toon-format/toon-go"
+
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/skill"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -160,5 +164,44 @@ func TestOutcomeFor(t *testing.T) {
 		if got := outcomeFor(in); got != want {
 			t.Errorf("outcomeFor(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestTriggerRunDoesNotRerunAfterFailedPush(t *testing.T) {
+	if shouldRerunAfterNoActiveRun(errors.New("push failed")) {
+		t.Fatal("failed pushes must not fall back to rerun")
+	}
+	if !shouldRerunAfterNoActiveRun(nil) {
+		t.Fatal("successful no-op pushes should fall back to rerun")
+	}
+}
+
+func TestActiveRunLookupParamsIncludeBranch(t *testing.T) {
+	params := activeRunLookupParams("repo-1", "feature/x")
+	if params.RepoID != "repo-1" {
+		t.Fatalf("RepoID = %q, want repo-1", params.RepoID)
+	}
+	if params.Branch != "feature/x" {
+		t.Fatalf("Branch = %q, want feature/x", params.Branch)
+	}
+}
+
+func TestStatusEmptyHelpIncludesRequiredIntent(t *testing.T) {
+	out := axiDoc(
+		toon.Field{Key: "runs", Value: "0 runs yet in this repository"},
+		toon.Field{Key: "help", Value: []string{startRunHelp()}},
+	)
+	if !strings.Contains(out, "--intent") {
+		t.Fatalf("empty status help must include required --intent, got:\n%s", out)
+	}
+}
+
+func TestSkillExitCodeGuidanceDistinguishesDecisionGates(t *testing.T) {
+	md := skill.Markdown()
+	if strings.Contains(md, "the run blocked or failed") {
+		t.Fatal("skill must not describe decision gates as exit code 1 failures")
+	}
+	if !strings.Contains(md, "decision gates") {
+		t.Fatal("skill should explicitly identify decision gates as normal exit 0 stops")
 	}
 }

@@ -106,5 +106,5 @@ no-mistakes axi abort         # cancel the active run
 - Output is TOON: ` + "`key: value`" + ` pairs, ` + "`name[N]{cols}:`" + ` tables, and ` + "`help[N]:`" + ` hints.
 - The ` + "`help`" + ` list at the bottom of most responses tells you the next commands to run.
 - Errors are printed as ` + "`error: ...`" + ` on stdout with a ` + "`help`" + ` list; act on the suggestion.
-- Exit codes: ` + "`0`" + ` success or no-op, ` + "`1`" + ` the run blocked or failed, ` + "`2`" + ` bad usage.
+- Exit codes: ` + "`0`" + ` success, no-op, or normal decision gates, ` + "`1`" + ` failed or cancelled final outcomes, ` + "`2`" + ` bad usage.
 `

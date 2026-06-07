@@ -55,7 +55,7 @@ func runAxiStatus(cmd *cobra.Command, runID string) error {
 		}
 		emitDoc(cmd,
 			toon.Field{Key: "runs", Value: "0 runs yet in this repository"},
-			toon.Field{Key: "help", Value: []string{"Run `no-mistakes axi run --yes` to validate the current branch"}},
+			toon.Field{Key: "help", Value: []string{startRunHelp()}},
 		)
 		return nil
 	}
@@ -76,6 +76,10 @@ func runAxiStatus(cmd *cobra.Command, runID string) error {
 	}
 	emitDoc(cmd, fields...)
 	return nil
+}
+
+func startRunHelp() string {
+	return `Run no-mistakes axi run --intent "the user's goal" --yes to validate the current branch`
 }
 
 func newAxiLogsCmd() *cobra.Command {

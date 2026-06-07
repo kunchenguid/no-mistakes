@@ -137,7 +137,7 @@ func runAxiRun(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, int
 // activeRunID returns the ID of a non-terminal run for branch, or "" if none.
 func activeRunID(env *axiEnv, branch string) string {
 	var active ipc.GetActiveRunResult
-	if err := env.client.Call(ipc.MethodGetActiveRun, &ipc.GetActiveRunParams{RepoID: env.repo.ID, Branch: branch}, &active); err != nil {
+	if err := env.client.Call(ipc.MethodGetActiveRun, activeRunLookupParams(env.repo.ID, branch), &active); err != nil {
 		return ""
 	}
 	if active.Run != nil && !terminalStatus(string(active.Run.Status)) {
@@ -182,17 +182,25 @@ func triggerRun(ctx context.Context, env *axiEnv, branch string, skipSteps []typ
 	if run, _ := waitForActiveRun(ctx, env.client, env.repo.ID, branch, triggerWaitTimeout); run != nil {
 		return run.ID, nil
 	}
+	if !shouldRerunAfterNoActiveRun(pushErr) {
+		return "", fmt.Errorf("push %q to gate: %v", branch, pushErr)
+	}
 
 	// No run appeared: the push was likely up-to-date. Rerun the latest gate
 	// head so `axi run` is still useful when there are no new commits.
 	var rr ipc.RerunResult
 	if err := env.client.Call(ipc.MethodRerun, &ipc.RerunParams{RepoID: env.repo.ID, Branch: branch, Intent: intent}, &rr); err != nil {
-		if pushErr != nil {
-			return "", fmt.Errorf("push %q to gate: %v", branch, pushErr)
-		}
 		return "", fmt.Errorf("no run started for %q: %v", branch, err)
 	}
 	return rr.RunID, nil
+}
+
+func shouldRerunAfterNoActiveRun(pushErr error) bool {
+	return pushErr == nil
+}
+
+func activeRunLookupParams(repoID, branch string) *ipc.GetActiveRunParams {
+	return &ipc.GetActiveRunParams{RepoID: repoID, Branch: branch}
 }
 
 // driveRun polls a run until it reaches an approval gate or a terminal state,
@@ -395,9 +403,13 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 		return emitError(cmd, 1, err.Error(), repoInitHelp(err)...)
 	}
 	defer env.close()
+	branch, err := git.CurrentBranch(ctx, ".")
+	if err != nil {
+		return emitError(cmd, 1, fmt.Sprintf("get current branch: %v", err))
+	}
 
 	var active ipc.GetActiveRunResult
-	if err := env.client.Call(ipc.MethodGetActiveRun, &ipc.GetActiveRunParams{RepoID: env.repo.ID}, &active); err != nil {
+	if err := env.client.Call(ipc.MethodGetActiveRun, activeRunLookupParams(env.repo.ID, branch), &active); err != nil {
 		return emitError(cmd, 1, fmt.Sprintf("get active run: %v", err))
 	}
 	if active.Run == nil {
@@ -493,14 +505,19 @@ func newAxiAbortCmd() *cobra.Command {
 }
 
 func runAxiAbort(cmd *cobra.Command) error {
+	ctx := cmd.Context()
 	env, err := openAxiEnv(true)
 	if err != nil {
 		return emitError(cmd, 1, err.Error(), repoInitHelp(err)...)
 	}
 	defer env.close()
+	branch, err := git.CurrentBranch(ctx, ".")
+	if err != nil {
+		return emitError(cmd, 1, fmt.Sprintf("get current branch: %v", err))
+	}
 
 	var active ipc.GetActiveRunResult
-	if err := env.client.Call(ipc.MethodGetActiveRun, &ipc.GetActiveRunParams{RepoID: env.repo.ID}, &active); err != nil {
+	if err := env.client.Call(ipc.MethodGetActiveRun, activeRunLookupParams(env.repo.ID, branch), &active); err != nil {
 		return emitError(cmd, 1, fmt.Sprintf("get active run: %v", err))
 	}
 
