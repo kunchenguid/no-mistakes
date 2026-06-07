@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.24.0](https://github.com/kunchenguid/no-mistakes/compare/v1.23.1...v1.24.0) (2026-06-07)
+
+
+### Features
+
+* **cli:** add AXI agent command surface ([#241](https://github.com/kunchenguid/no-mistakes/issues/241)) ([d3a54e0](https://github.com/kunchenguid/no-mistakes/commit/d3a54e0050ee279b1aba9315be0fc4698ee020ee))
+
 ## [1.23.1](https://github.com/kunchenguid/no-mistakes/compare/v1.23.0...v1.23.1) (2026-06-07)
 
 
