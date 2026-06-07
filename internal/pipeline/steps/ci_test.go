@@ -37,6 +37,10 @@ func TestCIStep_PendingChecksUseAdaptivePollIntervals(t *testing.T) {
 	current := started
 	var waits []time.Duration
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
 	step := &CIStep{
 		now: func() time.Time { return current },
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
@@ -47,7 +51,8 @@ func TestCIStep_PendingChecksUseAdaptivePollIntervals(t *testing.T) {
 			case 2:
 				current = started.Add(15 * time.Minute)
 			case 3:
-				current = current.Add(interval)
+				cancel()
+				return ctx.Err()
 			default:
 				t.Fatalf("unexpected extra poll wait: %v", interval)
 			}
@@ -55,12 +60,9 @@ func TestCIStep_PendingChecksUseAdaptivePollIntervals(t *testing.T) {
 		},
 	}
 
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if outcome.NeedsApproval {
-		t.Fatal("expected pending checks to exit cleanly once checks pass")
+	_, err := step.Execute(sctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected cancellation after observing adaptive waits, got %v", err)
 	}
 
 	want := []time.Duration{30 * time.Second, 60 * time.Second, 120 * time.Second}
@@ -327,7 +329,7 @@ func TestCIStep_GetCIChecksNoChecksReported(t *testing.T) {
 	}
 }
 
-func TestCIStep_AllChecksPassingExitsCleanly(t *testing.T) {
+func TestCIStep_AllChecksPassingKeepsMonitoringOpenPR(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
@@ -347,33 +349,73 @@ func TestCIStep_AllChecksPassingExitsCleanly(t *testing.T) {
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
 	pollCount := 0
 	step := &CIStep{
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
-			return nil
+			if pollCount == 1 {
+				return nil
+			}
+			cancel()
+			return ctx.Err()
 		},
 	}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
+	_, err := step.Execute(sctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected open PR monitoring to continue after passing checks, got %v", err)
 	}
-	if outcome.NeedsApproval {
-		t.Error("expected no approval when CI checks are already passing")
-	}
-	if pollCount != 1 {
-		t.Fatalf("expected one poll wait while CI checks were pending, got %d", pollCount)
+	if pollCount != 2 {
+		t.Fatalf("expected one pending wait plus one healthy monitoring wait, got %d", pollCount)
 	}
 
 	found := false
 	for _, l := range logs {
-		if strings.Contains(l, "all CI checks passed") {
+		if strings.Contains(l, "all CI checks passed, continuing to monitor") {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatalf("expected clean-exit CI log, got: %v", logs)
+		t.Fatalf("expected continued-monitoring CI log, got: %v", logs)
+	}
+}
+
+func TestCIStep_OpenPRKeepsMonitoringAfterChecksPass(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	checksJSON := `[{"name":"build","state":"SUCCESS","bucket":"pass"}]`
+	env := fakeCIGH(t, "OPEN", checksJSON)
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 10 * time.Second
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	pollCount := 0
+	step := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			pollCount++
+			cancel()
+			return ctx.Err()
+		},
+	}
+	_, err := step.Execute(sctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected open PR monitoring to continue after passing checks, got %v", err)
+	}
+	if pollCount != 1 {
+		t.Fatalf("poll count = %d, want 1", pollCount)
 	}
 }
 
@@ -398,49 +440,53 @@ func TestCIStep_EmptyChecksWaitsDuringGracePeriod(t *testing.T) {
 	current := started
 	var waits []time.Duration
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
 	step := &CIStep{
 		checksGracePeriod:    200 * time.Millisecond,
 		pollIntervalOverride: 75 * time.Millisecond,
 		now:                  func() time.Time { return current },
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			waits = append(waits, interval)
+			if current.Sub(started) >= 200*time.Millisecond {
+				cancel()
+				return ctx.Err()
+			}
 			current = current.Add(interval)
 			return nil
 		},
 	}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if outcome.NeedsApproval {
-		t.Error("expected no approval needed")
+	_, err := step.Execute(sctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected cancellation after grace-period monitoring continued, got %v", err)
 	}
 	if elapsed := current.Sub(started); elapsed < 200*time.Millisecond {
 		t.Errorf("CI exited in %v, expected to wait at least 200ms grace period", elapsed)
 	}
-	if len(waits) != 3 {
-		t.Fatalf("expected 3 grace-period waits, got %v", waits)
+	if len(waits) != 4 {
+		t.Fatalf("expected 3 grace-period waits plus one continued-monitoring wait, got %v", waits)
 	}
-	for _, interval := range waits {
+	for _, interval := range waits[:3] {
 		if interval != 75*time.Millisecond {
 			t.Fatalf("expected 75ms waits during grace period, got %v", waits)
 		}
 	}
-	// Should exit via grace period expiry, not CI timeout
 	for _, l := range logs {
 		if strings.Contains(l, "CI timeout reached") {
-			t.Fatal("expected exit via grace period expiry, not CI timeout")
+			t.Fatal("expected cancellation before CI timeout")
 		}
 	}
 	found := false
 	for _, l := range logs {
-		if strings.Contains(l, "CI monitoring complete") {
+		if strings.Contains(l, "no CI checks reported, continuing to monitor") {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatalf("expected 'CI monitoring complete' log, got: %v", logs)
+		t.Fatalf("expected continued-monitoring log after grace period, got: %v", logs)
 	}
 }
 
@@ -460,18 +506,22 @@ func TestCIStep_LogsWaitingForChecksDuringGracePeriod(t *testing.T) {
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
 	current := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
 	step := &CIStep{
 		checksGracePeriod:    50 * time.Millisecond,
 		pollIntervalOverride: 10 * time.Millisecond,
 		now:                  func() time.Time { return current },
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
-			current = current.Add(interval)
-			return nil
+			cancel()
+			return ctx.Err()
 		},
 	}
-	if _, err := step.Execute(sctx); err != nil {
-		t.Fatal(err)
+	if _, err := step.Execute(sctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected cancellation after first grace-period wait, got %v", err)
 	}
 
 	found := false
@@ -486,7 +536,7 @@ func TestCIStep_LogsWaitingForChecksDuringGracePeriod(t *testing.T) {
 	}
 }
 
-func TestCIStep_NonEmptyPassingChecksExitImmediately(t *testing.T) {
+func TestCIStep_NonEmptyPassingChecksSkipGracePeriodAndContinueMonitoring(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
@@ -503,28 +553,34 @@ func TestCIStep_NonEmptyPassingChecksExitImmediately(t *testing.T) {
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
-	// Even with a long grace period, non-empty passing checks should exit immediately
-	step := &CIStep{checksGracePeriod: 10 * time.Second}
-	started := time.Now()
-	outcome, err := step.Execute(sctx)
-	elapsed := time.Since(started)
-	if err != nil {
-		t.Fatal(err)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	pollCount := 0
+	step := &CIStep{
+		checksGracePeriod: 10 * time.Second,
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			pollCount++
+			cancel()
+			return ctx.Err()
+		},
 	}
-	if outcome.NeedsApproval {
-		t.Error("expected no approval needed")
+	_, err := step.Execute(sctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected open PR monitoring to continue after passing checks, got %v", err)
 	}
-	if elapsed > 10*time.Second {
-		t.Errorf("non-empty passing checks should exit quickly, took %v", elapsed)
+	if pollCount != 1 {
+		t.Fatalf("expected one healthy monitoring wait, got %d", pollCount)
 	}
 	found := false
 	for _, l := range logs {
-		if strings.Contains(l, "all CI checks passed") {
+		if strings.Contains(l, "all CI checks passed, continuing to monitor") {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatalf("expected 'all CI checks passed' log, got: %v", logs)
+		t.Fatalf("expected continued-monitoring pass log, got: %v", logs)
 	}
 }

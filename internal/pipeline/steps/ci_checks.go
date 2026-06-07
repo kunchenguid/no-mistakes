@@ -185,3 +185,19 @@ func ciMergeabilityOutcome(summary, description string) *pipeline.StepOutcome {
 		Findings:      string(findingsJSON),
 	}
 }
+
+func ciMonitoringTimeoutOutcome() *pipeline.StepOutcome {
+	findings := Findings{
+		Summary: "CI monitoring timed out before PR was merged or closed",
+		Items: []Finding{{
+			Severity:    "warning",
+			Description: "PR was still open when CI monitoring timed out",
+			Action:      types.ActionAskUser,
+		}},
+	}
+	findingsJSON, _ := json.Marshal(findings)
+	return &pipeline.StepOutcome{
+		NeedsApproval: true,
+		Findings:      string(findingsJSON),
+	}
+}

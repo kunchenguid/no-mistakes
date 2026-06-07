@@ -32,13 +32,19 @@ func TestCIStep_BitbucketPassesWhenStatusesPass(t *testing.T) {
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
-	step := &CIStep{}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	step := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			cancel()
+			return ctx.Err()
+		},
 	}
-	if outcome.NeedsApproval {
-		t.Fatal("expected Bitbucket CI pass to complete without approval")
+	_, err := step.Execute(sctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected Bitbucket CI pass to keep monitoring while PR is open, got %v", err)
 	}
 	if api.prStateCalls == 0 {
 		t.Fatal("expected Bitbucket PR state endpoint to be called")
@@ -48,7 +54,7 @@ func TestCIStep_BitbucketPassesWhenStatusesPass(t *testing.T) {
 	}
 	foundPassed := false
 	for _, line := range logs {
-		if strings.Contains(line, "all CI checks passed") {
+		if strings.Contains(line, "all CI checks passed, continuing to monitor") {
 			foundPassed = true
 			break
 		}
@@ -72,13 +78,19 @@ func TestCIStep_BitbucketUsesProcessEnvWhenStepEnvIsNil(t *testing.T) {
 	sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
 	sctx.Config.CITimeout = 30 * time.Second
 
-	step := &CIStep{}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	step := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			cancel()
+			return ctx.Err()
+		},
 	}
-	if outcome.NeedsApproval {
-		t.Fatal("expected Bitbucket CI pass to complete without approval")
+	_, err := step.Execute(sctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected Bitbucket CI pass to keep monitoring while PR is open, got %v", err)
 	}
 	if api.prStateCalls == 0 || api.statusesCalls == 0 {
 		t.Fatalf("expected Bitbucket CI endpoints to be called, got state=%d statuses=%d", api.prStateCalls, api.statusesCalls)
@@ -133,13 +145,19 @@ func TestCIStep_BitbucketStoppedDoesNotNeedApproval(t *testing.T) {
 	sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
 	sctx.Config.CITimeout = 30 * time.Second
 
-	step := &CIStep{}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	step := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			cancel()
+			return ctx.Err()
+		},
 	}
-	if outcome.NeedsApproval {
-		t.Fatal("expected stopped Bitbucket CI to avoid failure handling")
+	_, err := step.Execute(sctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected stopped Bitbucket CI to keep monitoring without failure handling, got %v", err)
 	}
 }
 

@@ -32,17 +32,23 @@ func TestCIStep_GitLabPassesWhenJobsPass(t *testing.T) {
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
-	step := &CIStep{}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	step := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			cancel()
+			return ctx.Err()
+		},
 	}
-	if outcome.NeedsApproval {
-		t.Fatal("expected passing GitLab CI to complete without approval")
+	_, err := step.Execute(sctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected passing GitLab CI to keep monitoring while MR is open, got %v", err)
 	}
 	found := false
 	for _, line := range logs {
-		if strings.Contains(line, "all CI checks passed") {
+		if strings.Contains(line, "all CI checks passed, continuing to monitor") {
 			found = true
 			break
 		}
@@ -232,7 +238,7 @@ func TestCIStep_GitLabAutoFixIncludesJobTrace(t *testing.T) {
 	}
 }
 
-func TestCIStep_GitLabPendingChecksExitCleanlyWhenDone(t *testing.T) {
+func TestCIStep_GitLabPendingChecksKeepMonitoringWhenDone(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
@@ -253,31 +259,36 @@ func TestCIStep_GitLabPendingChecksExitCleanlyWhenDone(t *testing.T) {
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
 	pollCount := 0
 	step := &CIStep{
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
-			return nil
+			if pollCount == 1 {
+				return nil
+			}
+			cancel()
+			return ctx.Err()
 		},
 	}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
+	_, err := step.Execute(sctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected passing GitLab CI to keep monitoring while MR is open, got %v", err)
 	}
-	if outcome.NeedsApproval {
-		t.Fatal("expected passing GitLab CI to exit cleanly")
-	}
-	if pollCount != 1 {
-		t.Fatalf("expected one poll wait while jobs were pending, got %d", pollCount)
+	if pollCount != 2 {
+		t.Fatalf("expected one pending wait plus one healthy monitoring wait, got %d", pollCount)
 	}
 	found := false
 	for _, line := range logs {
-		if strings.Contains(line, "all CI checks passed") {
+		if strings.Contains(line, "all CI checks passed, continuing to monitor") {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatalf("expected 'all CI checks passed' log, got: %v", logs)
+		t.Fatalf("expected continued-monitoring pass log, got: %v", logs)
 	}
 }

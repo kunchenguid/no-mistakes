@@ -14,7 +14,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/config"
 )
 
-func TestCIStep_TimeoutDoesNotSleepPastDeadline(t *testing.T) {
+func TestCIStep_TimeoutWithOpenPRNeedsApprovalAndDoesNotSleepPastDeadline(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
@@ -45,8 +45,15 @@ func TestCIStep_TimeoutDoesNotSleepPastDeadline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if outcome.NeedsApproval {
-		t.Error("expected no approval when timeout expires")
+	if !outcome.NeedsApproval {
+		t.Fatal("expected approval when CI monitoring times out before PR is merged or closed")
+	}
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatalf("unmarshal findings: %v", err)
+	}
+	if !strings.Contains(findings.Summary, "timed out") {
+		t.Fatalf("expected timeout finding summary, got %+v", findings)
 	}
 	if len(intervals) != 1 {
 		t.Fatalf("expected exactly one poll wait before timeout, got %d", len(intervals))
@@ -96,7 +103,7 @@ func TestCIStep_UnknownMergeableStateDoesNotExitCleanly(t *testing.T) {
 	}
 }
 
-func TestCIStep_MergeableLookupErrorStillExitsCleanlyWhenChecksPass(t *testing.T) {
+func TestCIStep_MergeableLookupErrorStillKeepsMonitoringWhenChecksPass(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
@@ -113,14 +120,20 @@ func TestCIStep_MergeableLookupErrorStillExitsCleanlyWhenChecksPass(t *testing.T
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
-	step := &CIStep{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
 
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatalf("expected clean exit, got %v", err)
+	step := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			cancel()
+			return ctx.Err()
+		},
 	}
-	if outcome.NeedsApproval {
-		t.Fatalf("expected clean outcome, got approval request: %+v", outcome)
+
+	_, err := step.Execute(sctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected polling to continue after passing checks, got %v", err)
 	}
 
 	foundWarning := false
@@ -129,7 +142,7 @@ func TestCIStep_MergeableLookupErrorStillExitsCleanlyWhenChecksPass(t *testing.T
 		if strings.Contains(l, "could not check mergeable state") {
 			foundWarning = true
 		}
-		if strings.Contains(l, "all CI checks passed") {
+		if strings.Contains(l, "all CI checks passed, continuing to monitor") {
 			foundPassed = true
 		}
 	}
