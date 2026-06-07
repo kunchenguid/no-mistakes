@@ -142,7 +142,7 @@ func TestCIStep_MergeableLookupErrorStillKeepsMonitoringWhenChecksPass(t *testin
 		if strings.Contains(l, "could not check mergeable state") {
 			foundWarning = true
 		}
-		if strings.Contains(l, "all CI checks passed, continuing to monitor") {
+		if strings.Contains(l, "all CI checks passed - PR is ready to merge") {
 			foundPassed = true
 		}
 	}

@@ -54,7 +54,7 @@ func TestCIStep_BitbucketPassesWhenStatusesPass(t *testing.T) {
 	}
 	foundPassed := false
 	for _, line := range logs {
-		if strings.Contains(line, "all CI checks passed, continuing to monitor") {
+		if strings.Contains(line, "all CI checks passed - PR is ready to merge") {
 			foundPassed = true
 			break
 		}

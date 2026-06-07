@@ -187,6 +187,8 @@ ci_timeout: "8h"
 ```
 
 The CI step keeps monitoring while the PR remains open, even after checks are currently healthy, because a later default-branch update can make the PR conflict or rerun CI.
+Once checks are green and the PR is mergeable, the CI panel shows `✓ Ready to merge` and the terminal title switches to `Ready to merge`, so you can tell when to go merge the PR.
+The signal clears automatically if checks start re-running or a new failure appears.
 If the PR is still open at the timeout, the step pauses for approval with findings for the open monitoring state or any known unresolved failures.
 You can approve (accept the risk), fix (run another auto-fix cycle), skip, or abort from the TUI or `no-mistakes axi respond`.
 

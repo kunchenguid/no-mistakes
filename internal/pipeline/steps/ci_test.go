@@ -374,7 +374,7 @@ func TestCIStep_AllChecksPassingKeepsMonitoringOpenPR(t *testing.T) {
 
 	found := false
 	for _, l := range logs {
-		if strings.Contains(l, "all CI checks passed, continuing to monitor") {
+		if strings.Contains(l, "all CI checks passed - PR is ready to merge") {
 			found = true
 			break
 		}
@@ -480,7 +480,7 @@ func TestCIStep_EmptyChecksWaitsDuringGracePeriod(t *testing.T) {
 	}
 	found := false
 	for _, l := range logs {
-		if strings.Contains(l, "no CI checks reported, continuing to monitor") {
+		if strings.Contains(l, "no CI checks reported - PR is ready to merge") {
 			found = true
 			break
 		}
@@ -575,7 +575,7 @@ func TestCIStep_NonEmptyPassingChecksSkipGracePeriodAndContinueMonitoring(t *tes
 	}
 	found := false
 	for _, l := range logs {
-		if strings.Contains(l, "all CI checks passed, continuing to monitor") {
+		if strings.Contains(l, "all CI checks passed - PR is ready to merge") {
 			found = true
 			break
 		}

@@ -269,6 +269,9 @@ func (m Model) terminalTitle() string {
 		icon := stepStatusIndicator(s.Status, m.spinnerFrame)
 		switch s.Status {
 		case types.StepStatusRunning, types.StepStatusFixing:
+			if s.StepName == types.StepCI && parseCIActivity(m.logs).Ready {
+				return "✓ Ready to merge" + suffix
+			}
 			return icon + " " + stepLabel(s.StepName) + suffix
 		case types.StepStatusAwaitingApproval, types.StepStatusFixReview:
 			return icon + " " + stepLabel(s.StepName) + suffix

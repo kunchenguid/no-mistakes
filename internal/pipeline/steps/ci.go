@@ -14,6 +14,15 @@ import (
 
 const defaultChecksGracePeriod = 60 * time.Second
 
+// CI monitoring status messages. These are surfaced to the user (and parsed by
+// the TUI) to distinguish a green, ready-to-merge PR from one whose checks are
+// still running. The "ready to merge" phrase is the signal the TUI keys on.
+const (
+	ciReadyChecksPassedMsg = "all CI checks passed - PR is ready to merge (still monitoring until merged or closed)"
+	ciReadyNoChecksMsg     = "no CI checks reported - PR is ready to merge (still monitoring until merged or closed)"
+	ciChecksRunningMsg     = "CI checks running, waiting for results..."
+)
+
 // CIStep monitors an open PR until it is merged or closed, auto-fixing CI failures.
 type CIStep struct {
 	lastFixedChecks      string               // sorted check names from last fix attempt, to avoid re-fixing
@@ -92,7 +101,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	mergeabilityBlockedReason := ""
 	timeoutFailingChecks := []string{}
 	timeoutMergeConflict := false
-	lastHealthyLog := ""
+	lastMonitorLog := ""
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -168,14 +177,14 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			}
 
 			if hasIssues && pending {
-				lastHealthyLog = ""
+				lastMonitorLog = ""
 				if pendingCheckMatchesLastFixed(checks, s.lastFixedChecks) {
 					s.lastFixedChecks = ""
 					s.lastFixedCompletedAt = nil
 				}
 				sctx.Log("issues detected but checks still pending, waiting for all checks to complete...")
 			} else if hasIssues {
-				lastHealthyLog = ""
+				lastMonitorLog = ""
 				// All checks done, issues present - fix or report
 				fixKey := encodeLastFixedChecks(failing, mergeConflict)
 				fixCompletedAt := failingCheckCompletionTimes(checks)
@@ -230,20 +239,24 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			} else {
 				s.lastFixedChecks = ""
 				s.lastFixedCompletedAt = nil
-				if !pending && mergeabilityKnown {
-					if len(checks) == 0 && elapsed < s.gracePeriod() {
-						// CI checks may not be registered yet, keep polling
-						lastHealthyLog = ""
-						sctx.Log("no CI checks reported yet, waiting for checks to register...")
-					} else {
-						if len(checks) == 0 {
-							lastHealthyLog = logCIHealthyOpenPR(sctx, "no CI checks reported, continuing to monitor until PR is merged or closed", lastHealthyLog)
-						} else {
-							lastHealthyLog = logCIHealthyOpenPR(sctx, "all CI checks passed, continuing to monitor until PR is merged or closed", lastHealthyLog)
-						}
-					}
-				} else {
-					lastHealthyLog = ""
+				switch {
+				case !mergeabilityKnown:
+					// Mergeability not yet resolved; the mergeable-state check
+					// above already logged the pending reason. Not ready to merge.
+					lastMonitorLog = ""
+				case pending:
+					// Checks are (re-)running with no failures yet. Surface this
+					// so a PR that was green and starts re-running clears the
+					// ready-to-merge signal instead of looking stale.
+					lastMonitorLog = logCIMonitorStatus(sctx, ciChecksRunningMsg, lastMonitorLog)
+				case len(checks) == 0 && elapsed < s.gracePeriod():
+					// CI checks may not be registered yet, keep polling.
+					lastMonitorLog = ""
+					sctx.Log("no CI checks reported yet, waiting for checks to register...")
+				case len(checks) == 0:
+					lastMonitorLog = logCIMonitorStatus(sctx, ciReadyNoChecksMsg, lastMonitorLog)
+				default:
+					lastMonitorLog = logCIMonitorStatus(sctx, ciReadyChecksPassedMsg, lastMonitorLog)
 				}
 			}
 		}
@@ -274,7 +287,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	}
 }
 
-func logCIHealthyOpenPR(sctx *pipeline.StepContext, message, previous string) string {
+func logCIMonitorStatus(sctx *pipeline.StepContext, message, previous string) string {
 	if message != previous {
 		sctx.Log(message)
 	}
