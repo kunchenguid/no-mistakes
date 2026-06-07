@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -143,6 +144,37 @@ func TestModel_Yolo_FixesActionableFindings(t *testing.T) {
 	}
 	if len(calls[0].FindingIDs) != 1 || calls[0].FindingIDs[0] != "review-1" {
 		t.Fatalf("FindingIDs = %v, want [review-1]", calls[0].FindingIDs)
+	}
+}
+
+func TestModel_Yolo_FixesAllActionableFindingsDespiteManualDeselection(t *testing.T) {
+	sock, client, snapshot := captureRespond(t)
+
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	fj := `{"findings":[{"id":"review-1","severity":"warning","description":"first","action":"ask-user"},{"id":"review-2","severity":"warning","description":"second","action":"ask-user"}],"summary":"2 issues"}`
+	run.Steps[0].FindingsJSON = &fj
+	m := NewModel(sock, client, run)
+	m.yoloMode = true
+	m.findingSelections[types.StepReview] = map[string]bool{"review-1": true}
+
+	cmd := m.maybeAutoApproveCmd()
+	if cmd == nil {
+		t.Fatal("expected a yolo command for an awaiting step with actionable findings")
+	}
+	if msg := cmd(); msg != nil {
+		t.Fatalf("expected nil msg, got %#v", msg)
+	}
+
+	calls := snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 respond call, got %d", len(calls))
+	}
+	if calls[0].Action != types.ActionFix {
+		t.Fatalf("action = %s, want %s", calls[0].Action, types.ActionFix)
+	}
+	if got, want := calls[0].FindingIDs, []string{"review-1", "review-2"}; !slices.Equal(got, want) {
+		t.Fatalf("FindingIDs = %v, want %v", got, want)
 	}
 }
 

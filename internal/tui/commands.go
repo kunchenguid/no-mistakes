@@ -91,6 +91,7 @@ func (m Model) maybeAutoApproveCmd() tea.Cmd {
 	}
 	if !m.yoloFixed[step.StepName] && m.stepHasActionableFindings(step.StepName) {
 		m.yoloFixed[step.StepName] = true
+		m.resetFindingSelection(step.StepName)
 		return m.respondCmd(types.ActionFix)
 	}
 	m.yoloApproved[step.StepName] = true
