@@ -121,9 +121,11 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		}
 
 		// Check PR state (merged/closed -> exit)
+		prStateKnown := true
 		state, err := host.GetPRState(ctx, pr)
 		if err != nil {
 			sctx.Log(fmt.Sprintf("warning: could not check PR state: %v", err))
+			prStateKnown = false
 		} else if state == scm.PRStateMerged {
 			sctx.Log("PR has been merged!")
 			return &pipeline.StepOutcome{}, nil
@@ -140,6 +142,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			if mergeErr != nil {
 				sctx.Log(fmt.Sprintf("warning: could not check mergeable state: %v", mergeErr))
 				mergeabilityBlockedReason = ""
+				mergeabilityKnown = false
 			} else {
 				mergeConflict = mergeState.Conflict()
 				mergeabilityKnown = mergeState.Resolved()
@@ -240,9 +243,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 				s.lastFixedChecks = ""
 				s.lastFixedCompletedAt = nil
 				switch {
-				case !mergeabilityKnown:
-					// Mergeability not yet resolved; the mergeable-state check
-					// above already logged the pending reason. Not ready to merge.
+				case !prStateKnown || !mergeabilityKnown:
 					lastMonitorLog = ""
 				case pending:
 					// Checks are (re-)running with no failures yet. Surface this

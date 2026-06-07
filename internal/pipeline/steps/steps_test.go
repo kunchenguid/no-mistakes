@@ -186,6 +186,7 @@ func extractTrailingNumber(rawURL string) int {
 
 func fakeCIGHHandler(args []string) {
 	state := os.Getenv("FAKE_CLI_STATE")
+	stateErr := os.Getenv("FAKE_CLI_STATE_ERR")
 	checksJSON := os.Getenv("FAKE_CLI_CHECKS")
 	checksErr := os.Getenv("FAKE_CLI_CHECKS_ERR")
 	mergeable := os.Getenv("FAKE_CLI_MERGEABLE")
@@ -207,6 +208,10 @@ func fakeCIGHHandler(args []string) {
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json state") {
+		if stateErr != "" {
+			fmt.Fprintln(os.Stderr, stateErr)
+			os.Exit(1)
+		}
 		fmt.Println(state)
 		os.Exit(0)
 	}

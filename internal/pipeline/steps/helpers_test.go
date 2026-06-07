@@ -448,6 +448,17 @@ func fakeCIGHMergeableError(t *testing.T, state, checksJSON, mergeableErr string
 	})
 }
 
+func fakeCIGHStateError(t *testing.T, stateErr, checksJSON string) []string {
+	t.Helper()
+	binDir := fakeCLIBinDir(t)
+	linkTestBinary(t, binDir, "gh")
+	return fakeCLIEnv(binDir, map[string]string{
+		"FAKE_CLI_MODE":      "ci-gh",
+		"FAKE_CLI_STATE_ERR": stateErr,
+		"FAKE_CLI_CHECKS":    checksJSON,
+	})
+}
+
 func fakeCIGHChecksError(t *testing.T, state, mergeable, checksErr string) []string {
 	t.Helper()
 	binDir := fakeCLIBinDir(t)

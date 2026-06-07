@@ -103,7 +103,7 @@ func TestCIStep_UnknownMergeableStateDoesNotExitCleanly(t *testing.T) {
 	}
 }
 
-func TestCIStep_MergeableLookupErrorStillKeepsMonitoringWhenChecksPass(t *testing.T) {
+func TestCIStep_MergeableLookupErrorDoesNotReportReadyWhenChecksPass(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
@@ -137,20 +137,63 @@ func TestCIStep_MergeableLookupErrorStillKeepsMonitoringWhenChecksPass(t *testin
 	}
 
 	foundWarning := false
-	foundPassed := false
 	for _, l := range logs {
 		if strings.Contains(l, "could not check mergeable state") {
 			foundWarning = true
 		}
 		if strings.Contains(l, "all CI checks passed - PR is ready to merge") {
-			foundPassed = true
+			t.Fatalf("expected mergeable lookup error to block ready log, got logs: %v", logs)
 		}
 	}
 	if !foundWarning {
 		t.Fatalf("expected mergeable lookup warning, got logs: %v", logs)
 	}
-	if !foundPassed {
-		t.Fatalf("expected clean-pass log after mergeable lookup warning, got logs: %v", logs)
+}
+
+func TestCIStep_PRStateLookupErrorDoesNotReportReadyWhenChecksPass(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	checksJSON := `[{"name":"build","state":"SUCCESS","bucket":"pass"}]`
+	env := fakeCIGHStateError(t, "gh state failed", checksJSON)
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 10 * time.Second
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	step := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			cancel()
+			return ctx.Err()
+		},
+	}
+
+	_, err := step.Execute(sctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected polling to continue after passing checks, got %v", err)
+	}
+
+	foundWarning := false
+	for _, l := range logs {
+		if strings.Contains(l, "could not check PR state") {
+			foundWarning = true
+		}
+		if strings.Contains(l, "all CI checks passed - PR is ready to merge") {
+			t.Fatalf("expected PR state lookup error to block ready log, got logs: %v", logs)
+		}
+	}
+	if !foundWarning {
+		t.Fatalf("expected PR state lookup warning, got logs: %v", logs)
 	}
 }
 
