@@ -59,7 +59,8 @@ func newAxiRunCmd() *cobra.Command {
 		Short: "Validate your code changes, blocking until a decision point or the outcome",
 		Long: "Triggers a pipeline run for the current branch and drives it. Without\n" +
 			"--yes it blocks until the first approval gate (or the final outcome) and\n" +
-			"prints it. With --yes it auto-approves every gate and runs to completion.\n\n" +
+			"prints it. With --yes it auto-resolves every gate (fixing actionable\n" +
+			"findings, then accepting the result) and runs to completion.\n\n" +
 			"--intent is required when starting a new run: pass what the user set out\n" +
 			"to accomplish (the goal behind the change, not a description of the diff)\n" +
 			"so no-mistakes uses it directly instead of inferring it from transcripts.",
@@ -77,7 +78,7 @@ func newAxiRunCmd() *cobra.Command {
 			})
 		},
 	}
-	cmd.Flags().BoolVarP(&autoYes, "yes", "y", false, "auto-approve every gate and run to completion")
+	cmd.Flags().BoolVarP(&autoYes, "yes", "y", false, "auto-resolve every gate (fix findings, then accept) and run to completion")
 	cmd.Flags().StringVar(&skipValue, "skip", "", "comma-separated pipeline steps to skip")
 	cmd.Flags().StringVar(&intent, "intent", "", "what the user set out to accomplish (not a description of the diff); used instead of inferring from transcripts (required to start a run)")
 	return cmd
@@ -258,10 +259,17 @@ func rerunParams(repoID, branch string, skipSteps []types.StepName, intent strin
 
 // driveRun polls a run until it reaches an approval gate or a terminal state,
 // streaming step transitions to progress (stderr). When autoApprove is set it
-// approves each gate and continues; otherwise it returns at the first gate so
+// resolves each gate and continues; otherwise it returns at the first gate so
 // the caller can surface it for a human/agent decision.
+//
+// Auto-resolution means "agree to fix every finding": a gate with actionable
+// findings is fixed (every finding selected), and the resulting fix_review is
+// accepted; gates with only non-actionable findings are approved. Each step is
+// fixed at most once so a finding the fix cannot clear converges to an approval
+// instead of looping forever.
 func driveRun(ctx context.Context, progress io.Writer, client *ipc.Client, runID string, autoApprove bool) (*ipc.RunInfo, error) {
 	pp := &progressPrinter{w: progress, seen: map[string]string{}}
+	fixedSteps := map[string]bool{}
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -283,8 +291,12 @@ func driveRun(ctx context.Context, progress io.Writer, client *ipc.Client, runID
 			if !autoApprove {
 				return run, nil
 			}
-			if err := sendRespond(client, runID, types.StepName(gate.Name), types.ActionApprove, nil, nil, nil); err != nil {
-				return nil, fmt.Errorf("auto-approve %s: %w", gate.Name, err)
+			action, findingIDs := gateResolution(gate, fixedSteps[gate.Name])
+			if action == types.ActionFix {
+				fixedSteps[gate.Name] = true
+			}
+			if err := sendRespond(client, runID, types.StepName(gate.Name), action, findingIDs, nil, nil); err != nil {
+				return nil, fmt.Errorf("auto-resolve %s: %w", gate.Name, err)
 			}
 			if err := waitStepLeavesGate(ctx, client, runID, gate.Name, gate.Status); err != nil {
 				return nil, err
@@ -295,6 +307,33 @@ func driveRun(ctx context.Context, progress io.Writer, client *ipc.Client, runID
 			return nil, err
 		}
 	}
+}
+
+// gateResolution decides how --yes answers an approval gate. A gate with
+// actionable findings (anything other than purely informational "no-op") is
+// fixed with every finding selected, unless this step was already fixed once -
+// in which case the gate is approved so the run converges instead of looping on
+// a finding the fix cannot clear. Gates with only non-actionable findings, no
+// findings, or actionable findings that carry no IDs (which a fix would resolve
+// to zero selections) are approved.
+func gateResolution(gate stepView, alreadyFixed bool) (types.ApprovalAction, []string) {
+	if alreadyFixed {
+		return types.ActionApprove, nil
+	}
+	parsed, err := types.ParseFindingsJSON(gate.FindingsJSON)
+	if err != nil || !types.HasActionableFindings(parsed) {
+		return types.ActionApprove, nil
+	}
+	ids := make([]string, 0, len(parsed.Items))
+	for _, f := range parsed.Items {
+		if f.ID != "" {
+			ids = append(ids, f.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return types.ActionApprove, nil
+	}
+	return types.ActionFix, ids
 }
 
 // waitStepLeavesGate blocks until the named step's status changes away from the

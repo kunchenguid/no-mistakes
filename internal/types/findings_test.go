@@ -274,6 +274,30 @@ func TestHasAskUserFindings(t *testing.T) {
 	}
 }
 
+func TestHasActionableFindings(t *testing.T) {
+	tests := []struct {
+		name   string
+		items  []Finding
+		expect bool
+	}{
+		{"has ask-user", []Finding{{Action: ActionAskUser}}, true},
+		{"has auto-fix", []Finding{{Action: ActionAutoFix}}, true},
+		{"empty action defaults to auto-fix", []Finding{{Action: ""}}, true},
+		{"only no-op", []Finding{{Action: ActionNoOp}}, false},
+		{"all no-op", []Finding{{Action: ActionNoOp}, {Action: ActionNoOp}}, false},
+		{"mixed no-op and ask-user", []Finding{{Action: ActionNoOp}, {Action: ActionAskUser}}, true},
+		{"empty", nil, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := Findings{Items: tt.items}
+			if got := HasActionableFindings(f); got != tt.expect {
+				t.Errorf("HasActionableFindings() = %v, want %v", got, tt.expect)
+			}
+		})
+	}
+}
+
 func TestMarshalFindingsJSON_AlwaysIncludesRiskFields(t *testing.T) {
 	f := Findings{
 		Items:   []Finding{{Severity: "info", Description: "note"}},

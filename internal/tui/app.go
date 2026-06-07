@@ -50,8 +50,9 @@ type Model struct {
 	spinnerFrame     int
 	spinnerScheduled bool
 	syntheticSteps   bool
-	yoloMode         bool                    // auto-approve every step awaiting human action
-	yoloApproved     map[types.StepName]bool // steps already auto-approved this run
+	yoloMode         bool                    // auto-resolve every step awaiting human action
+	yoloApproved     map[types.StepName]bool // steps already finalized (approved) this run
+	yoloFixed        map[types.StepName]bool // steps yolo has already requested a fix for
 }
 
 // NewModel creates a TUI model for the given run.
@@ -77,6 +78,7 @@ func NewModel(socketPath string, client *ipc.Client, run *ipc.RunInfo) Model {
 		stepStartTimes:      make(map[types.StepName]time.Time),
 		syntheticSteps:      syntheticSteps,
 		yoloApproved:        make(map[types.StepName]bool),
+		yoloFixed:           make(map[types.StepName]bool),
 	}
 	// Populate findings and start times from initial step data (for re-attach scenarios).
 	for _, s := range steps {

@@ -4,6 +4,14 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
+// stepHasActionableFindings reports whether the step's findings (agent-produced
+// plus any user-added) include at least one finding a fix agent could act on,
+// i.e. anything other than a purely informational "no-op". Yolo uses this to
+// decide between fixing a gate's findings and approving it as-is.
+func (m Model) stepHasActionableFindings(step types.StepName) bool {
+	return types.HasActionableFindings(types.Findings{Items: m.findingItems(step)})
+}
+
 func (m Model) awaitingActionState() (showSelectionActions bool, allowFix bool, selectedCount int, totalCount int) {
 	step := awaitingStep(m.steps)
 	if step == nil {

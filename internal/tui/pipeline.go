@@ -418,9 +418,9 @@ func renderHelpOverlay(width int, run *ipc.RunInfo, hasAwaitingStep bool, showDi
 		footerEntries = append(footerEntries, helpEntry{"x x", "abort pipeline"})
 	}
 	footerEntries = append(footerEntries, helpEntry{"?", "close help"})
-	yoloDesc := "auto-accept every step"
+	yoloDesc := "auto-resolve every finding"
 	if yolo {
-		yoloDesc = "end yolo (auto-accept)"
+		yoloDesc = "end yolo (auto-resolve)"
 	}
 	footerEntries = append(footerEntries, helpEntry{"y", yoloDesc})
 	if canRerun(run) {

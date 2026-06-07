@@ -210,6 +210,21 @@ func HasAskUserFindings(findings Findings) bool {
 	return false
 }
 
+// HasActionableFindings reports whether any finding warrants a fix - that is,
+// any finding whose effective action is not "no-op". Findings that are purely
+// informational ("no-op") are not actionable and need no fix, so a step whose
+// findings are all no-op (or that has no findings) returns false. This is what
+// yolo / auto-approve uses to decide whether to fix a gate's findings or just
+// accept the step as-is.
+func HasActionableFindings(findings Findings) bool {
+	for _, item := range findings.Items {
+		if item.actionOrDefault() != ActionNoOp {
+			return true
+		}
+	}
+	return false
+}
+
 func summarizeSelectedFindings(count int) string {
 	switch count {
 	case 0:
