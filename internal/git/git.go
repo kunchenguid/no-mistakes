@@ -53,6 +53,17 @@ func AddRemote(ctx context.Context, dir, name, url string) error {
 	return err
 }
 
+// EnsureRemote sets the named remote to url, adding it when absent and
+// updating its URL when it already exists. Idempotent, so it is safe to call
+// when repairing or re-running an init.
+func EnsureRemote(ctx context.Context, dir, name, url string) error {
+	if _, err := GetRemoteURL(ctx, dir, name); err == nil {
+		_, err := Run(ctx, dir, "remote", "set-url", name, url)
+		return err
+	}
+	return AddRemote(ctx, dir, name, url)
+}
+
 // RemoveRemote removes a named remote from the repo at dir.
 func RemoveRemote(ctx context.Context, dir, name string) error {
 	_, err := Run(ctx, dir, "remote", "remove", name)

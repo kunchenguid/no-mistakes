@@ -30,13 +30,17 @@ func newInitCmd() *cobra.Command {
 				}
 				defer d.Close()
 
-				repo, err := gate.Init(cmd.Context(), d, p, ".")
+				repo, created, err := gate.Init(cmd.Context(), d, p, ".")
 				if err != nil {
 					return fmt.Errorf("init: %w", err)
 				}
 				if err := daemon.EnsureDaemon(p); err != nil {
-					if _, ejectErr := gate.Eject(cmd.Context(), d, p, "."); ejectErr != nil {
-						return fmt.Errorf("start daemon: %w, rollback init: %v", err, ejectErr)
+					// Only roll back a gate we created in this run; a re-init
+					// must never eject a user's pre-existing gate.
+					if created {
+						if _, ejectErr := gate.Eject(cmd.Context(), d, p, "."); ejectErr != nil {
+							return fmt.Errorf("start daemon: %w, rollback init: %v", err, ejectErr)
+						}
 					}
 					return fmt.Errorf("start daemon: %w", err)
 				}
@@ -49,7 +53,11 @@ func newInitCmd() *cobra.Command {
 				w := cmd.OutOrStdout()
 				fmt.Fprintln(w, sCyan.Render(banner))
 				fmt.Fprintln(w)
-				fmt.Fprintf(w, "  %s Gate initialized\n", sGreen.Render("✓"))
+				headline := "Gate initialized"
+				if !created {
+					headline = "Gate already initialized (refreshed)"
+				}
+				fmt.Fprintf(w, "  %s %s\n", sGreen.Render("✓"), headline)
 				fmt.Fprintln(w)
 				fmt.Fprintf(w, "  %s  %s\n", sDim.Render("  repo"), repo.WorkingPath)
 				fmt.Fprintf(w, "  %s  no-mistakes → %s\n", sDim.Render("  gate"), p.RepoDir(repo.ID))

@@ -737,12 +737,14 @@ func assertInitOutput(t *testing.T, h *Harness, out string) {
 
 func assertInitAlreadyInitialized(t *testing.T, h *Harness) {
 	t.Helper()
+	// init is idempotent: re-running on an already-initialized repo must
+	// succeed and report a refresh rather than failing.
 	out, err := h.Run("init")
-	if err == nil {
-		t.Fatalf("second nm init should fail, got output:\n%s", out)
+	if err != nil {
+		t.Fatalf("second nm init should succeed (idempotent), got error: %v\n%s", err, out)
 	}
 	if !strings.Contains(out, "already initialized") {
-		t.Errorf("second init error output should mention 'already initialized', got:\n%s", out)
+		t.Errorf("second init should report 'already initialized', got:\n%s", out)
 	}
 }
 

@@ -76,7 +76,7 @@ func TestInit(t *testing.T) {
 	d := openTestDB(t, p)
 	ctx := context.Background()
 
-	repo, err := Init(ctx, d, p, workDir)
+	repo, _, err := Init(ctx, d, p, workDir)
 	if err != nil {
 		t.Fatalf("init: %v", err)
 	}
@@ -160,7 +160,11 @@ func TestInitRepoID(t *testing.T) {
 	}
 }
 
-func TestInitAlreadyInitialized(t *testing.T) {
+// TestInitIsIdempotent verifies that re-running Init on an already-initialized
+// repo succeeds, reports that it was not newly created, and leaves a single
+// repo record and an intact gate. This is what lets existing users re-run init
+// to adopt new capabilities (e.g. the agent skill) without hitting an error.
+func TestInitIsIdempotent(t *testing.T) {
 	workDir := setupTestRepo(t)
 	nmRoot := t.TempDir()
 	p := paths.WithRoot(nmRoot)
@@ -170,14 +174,83 @@ func TestInitAlreadyInitialized(t *testing.T) {
 	d := openTestDB(t, p)
 	ctx := context.Background()
 
-	if _, err := Init(ctx, d, p, workDir); err != nil {
+	first, created, err := Init(ctx, d, p, workDir)
+	if err != nil {
 		t.Fatalf("first init: %v", err)
 	}
+	if !created {
+		t.Error("first init should report created=true")
+	}
 
-	// Second init should fail.
-	_, err := Init(ctx, d, p, workDir)
-	if err == nil {
-		t.Fatal("expected error on re-init")
+	second, created, err := Init(ctx, d, p, workDir)
+	if err != nil {
+		t.Fatalf("re-init should succeed, got: %v", err)
+	}
+	if created {
+		t.Error("re-init should report created=false")
+	}
+	if second.ID != first.ID {
+		t.Errorf("re-init repo ID = %q, want %q", second.ID, first.ID)
+	}
+
+	// The gate must remain healthy and the DB must not gain a duplicate record.
+	bareDir := p.RepoDir(first.ID)
+	if !fileExists(filepath.Join(bareDir, "hooks", "post-receive")) {
+		t.Error("post-receive hook missing after re-init")
+	}
+	if url, err := gitpkg.GetRemoteURL(ctx, workDir, RemoteName); err != nil {
+		t.Errorf("no-mistakes remote missing after re-init: %v", err)
+	} else if url != bareDir {
+		t.Errorf("remote url = %q, want %q", url, bareDir)
+	}
+	dbRepo, err := d.GetRepoByPath(workDir)
+	if err != nil {
+		t.Fatalf("get repo by path: %v", err)
+	}
+	if dbRepo == nil || dbRepo.ID != first.ID {
+		t.Errorf("expected single repo record %q, got %+v", first.ID, dbRepo)
+	}
+}
+
+// TestInitRepairsBrokenGate verifies that re-running Init restores gate wiring
+// that was torn down out from under it (e.g. a deleted hook or remote), so init
+// doubles as a repair command.
+func TestInitRepairsBrokenGate(t *testing.T) {
+	workDir := setupTestRepo(t)
+	nmRoot := t.TempDir()
+	p := paths.WithRoot(nmRoot)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+	d := openTestDB(t, p)
+	ctx := context.Background()
+
+	repo, _, err := Init(ctx, d, p, workDir)
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	bareDir := p.RepoDir(repo.ID)
+
+	// Break the gate: drop the working repo's remote and delete the hook.
+	if err := gitpkg.RemoveRemote(ctx, workDir, RemoteName); err != nil {
+		t.Fatalf("remove remote: %v", err)
+	}
+	hookPath := filepath.Join(bareDir, "hooks", "post-receive")
+	if err := os.Remove(hookPath); err != nil {
+		t.Fatalf("remove hook: %v", err)
+	}
+
+	if _, _, err := Init(ctx, d, p, workDir); err != nil {
+		t.Fatalf("re-init (repair) should succeed: %v", err)
+	}
+
+	if !fileExists(hookPath) {
+		t.Error("post-receive hook not restored after repair re-init")
+	}
+	if url, err := gitpkg.GetRemoteURL(ctx, workDir, RemoteName); err != nil {
+		t.Errorf("no-mistakes remote not restored after repair re-init: %v", err)
+	} else if url != bareDir {
+		t.Errorf("restored remote url = %q, want %q", url, bareDir)
 	}
 }
 
@@ -195,7 +268,7 @@ func TestInitNoOrigin(t *testing.T) {
 	}
 	d := openTestDB(t, p)
 
-	_, err := Init(context.Background(), d, p, work)
+	_, _, err := Init(context.Background(), d, p, work)
 	if err == nil {
 		t.Fatal("expected error when no origin remote")
 	}
@@ -210,7 +283,7 @@ func TestInitNotGitRepo(t *testing.T) {
 	}
 	d := openTestDB(t, p)
 
-	_, err := Init(context.Background(), d, p, notGit)
+	_, _, err := Init(context.Background(), d, p, notGit)
 	if err == nil {
 		t.Fatal("expected error for non-git directory")
 	}
@@ -258,7 +331,7 @@ func TestInitDetectsDefaultBranchFromRemote(t *testing.T) {
 	}
 	d := openTestDB(t, p)
 
-	repo, err := Init(context.Background(), d, p, work)
+	repo, _, err := Init(context.Background(), d, p, work)
 	if err != nil {
 		t.Fatalf("init: %v", err)
 	}
@@ -279,7 +352,7 @@ func TestEject(t *testing.T) {
 	d := openTestDB(t, p)
 	ctx := context.Background()
 
-	repo, err := Init(ctx, d, p, workDir)
+	repo, _, err := Init(ctx, d, p, workDir)
 	if err != nil {
 		t.Fatalf("init: %v", err)
 	}
@@ -320,7 +393,7 @@ func TestEjectCleansUpWorktrees(t *testing.T) {
 	d := openTestDB(t, p)
 	ctx := context.Background()
 
-	repo, err := Init(ctx, d, p, workDir)
+	repo, _, err := Init(ctx, d, p, workDir)
 	if err != nil {
 		t.Fatalf("init: %v", err)
 	}
@@ -384,7 +457,7 @@ func TestInit_PostReceiveSurvivesHooksPathPoisoning(t *testing.T) {
 	d := openTestDB(t, p)
 	ctx := context.Background()
 
-	repo, err := Init(ctx, d, p, workDir)
+	repo, _, err := Init(ctx, d, p, workDir)
 	if err != nil {
 		t.Fatalf("init: %v", err)
 	}
