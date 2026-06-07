@@ -55,8 +55,10 @@ func Init(ctx context.Context, d *db.DB, p *paths.Paths, workDir string) (*db.Re
 		return nil, false, fmt.Errorf("get origin url: %w", err)
 	}
 
-	// Generate deterministic repo ID.
 	id := repoID(absRoot)
+	if existing != nil {
+		id = existing.ID
+	}
 	bareDir := p.RepoDir(id)
 
 	// Provision (or repair) the on-disk gate. This is idempotent.

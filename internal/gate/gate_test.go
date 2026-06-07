@@ -284,6 +284,55 @@ func TestInitRefreshUpdatesRepoMetadata(t *testing.T) {
 	}
 }
 
+func TestInitRefreshUsesPersistedRepoID(t *testing.T) {
+	workDir := setupTestRepo(t)
+	nmRoot := t.TempDir()
+	p := paths.WithRoot(nmRoot)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+	d := openTestDB(t, p)
+	ctx := context.Background()
+
+	legacyID := "legacy-repo"
+	originURL, err := gitpkg.GetRemoteURL(ctx, workDir, "origin")
+	if err != nil {
+		t.Fatalf("get origin url: %v", err)
+	}
+	if _, err := d.InsertRepoWithID(legacyID, workDir, originURL, "main"); err != nil {
+		t.Fatalf("insert repo: %v", err)
+	}
+
+	repo, created, err := Init(ctx, d, p, workDir)
+	if err != nil {
+		t.Fatalf("refresh init: %v", err)
+	}
+	if created {
+		t.Fatal("refresh init should report created=false")
+	}
+	if repo.ID != legacyID {
+		t.Fatalf("repo ID = %q, want %q", repo.ID, legacyID)
+	}
+
+	legacyBareDir := p.RepoDir(legacyID)
+	url, err := gitpkg.GetRemoteURL(ctx, workDir, RemoteName)
+	if err != nil {
+		t.Fatalf("get no-mistakes remote: %v", err)
+	}
+	if url != legacyBareDir {
+		t.Errorf("no-mistakes remote = %q, want %q", url, legacyBareDir)
+	}
+	if out, err := exec.Command("git", "-C", legacyBareDir, "rev-parse", "--is-bare-repository").Output(); err != nil {
+		t.Errorf("legacy bare repo check failed: %v", err)
+	} else if got := string(out); got != "true\n" {
+		t.Errorf("legacy is-bare = %q, want true", got)
+	}
+	computedBareDir := p.RepoDir(repoID(workDir))
+	if computedBareDir != legacyBareDir && fileExists(computedBareDir) {
+		t.Errorf("unexpected computed bare repo exists at %q", computedBareDir)
+	}
+}
+
 // TestInitRepairsBrokenGate verifies that re-running Init restores gate wiring
 // that was torn down out from under it (e.g. a deleted hook or remote), so init
 // doubles as a repair command.
