@@ -1,10 +1,13 @@
 package cli
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
 	toon "github.com/toon-format/toon-go"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
@@ -183,6 +186,25 @@ func TestActiveRunLookupParamsIncludeBranch(t *testing.T) {
 	}
 	if params.Branch != "feature/x" {
 		t.Fatalf("Branch = %q, want feature/x", params.Branch)
+	}
+}
+
+func TestPreflightGuardReportsWorkingTreeCheckError(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	guard := preflightGuard(context.Background(), &axiEnv{repo: &db.Repo{DefaultBranch: "main"}}, "feature/x")
+	if guard == nil {
+		t.Fatal("expected guard for failed working tree check")
+	}
+
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+	if err := guard(cmd); err == nil {
+		t.Fatal("expected structured preflight error")
+	}
+	if !strings.Contains(out.String(), "inspect working tree") {
+		t.Fatalf("expected working tree check error, got:\n%s", out.String())
 	}
 }
 

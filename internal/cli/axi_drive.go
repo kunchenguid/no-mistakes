@@ -158,7 +158,14 @@ func preflightGuard(ctx context.Context, env *axiEnv, branch string) func(*cobra
 				"Put your changes on a feature branch: `git switch -c <branch>`, then re-run")
 		}
 	}
-	if dirty, err := git.HasUncommittedChanges(ctx, "."); err == nil && dirty {
+	dirty, err := git.HasUncommittedChanges(ctx, ".")
+	if err != nil {
+		return func(cmd *cobra.Command) error {
+			return emitError(cmd, 1, fmt.Sprintf("inspect working tree: %v", err),
+				"Run `git status` to check the repository state, then re-run")
+		}
+	}
+	if dirty {
 		return func(cmd *cobra.Command) error {
 			return emitError(cmd, 1, "uncommitted changes in the working tree",
 				"Commit your work before validating: `git add -A && git commit -m \"...\"`, then re-run",
