@@ -70,13 +70,17 @@ func Init(ctx context.Context, d *db.DB, p *paths.Paths, workDir string) (*db.Re
 		return nil, false, err
 	}
 
-	if existing != nil {
-		slog.Info("gate refreshed", "repo_id", existing.ID, "path", absRoot)
-		return existing, false, nil
-	}
-
 	// Detect default branch from upstream remote.
 	branch := git.DefaultBranch(ctx, absRoot, "origin")
+
+	if existing != nil {
+		repo, err := d.UpdateRepoMetadata(existing.ID, upstreamURL, branch)
+		if err != nil {
+			return nil, false, fmt.Errorf("update repo metadata: %w", err)
+		}
+		slog.Info("gate refreshed", "repo_id", repo.ID, "path", absRoot)
+		return repo, false, nil
+	}
 
 	// Insert repo record with deterministic ID.
 	repo, err := d.InsertRepoWithID(id, absRoot, upstreamURL, branch)

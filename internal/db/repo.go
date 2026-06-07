@@ -82,6 +82,17 @@ func (d *DB) GetRepoByPath(workingPath string) (*Repo, error) {
 	return r, nil
 }
 
+func (d *DB) UpdateRepoMetadata(id, upstreamURL, defaultBranch string) (*Repo, error) {
+	_, err := d.sql.Exec(
+		`UPDATE repos SET upstream_url = ?, default_branch = ? WHERE id = ?`,
+		upstreamURL, defaultBranch, id,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("update repo metadata: %w", err)
+	}
+	return d.GetRepo(id)
+}
+
 // DeleteRepo deletes a repo by ID (cascade deletes runs and steps).
 func (d *DB) DeleteRepo(id string) error {
 	_, err := d.sql.Exec(`DELETE FROM repos WHERE id = ?`, id)

@@ -212,6 +212,78 @@ func TestInitIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestInitRefreshUpdatesRepoMetadata(t *testing.T) {
+	workDir := setupTestRepo(t)
+	nmRoot := t.TempDir()
+	p := paths.WithRoot(nmRoot)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+	d := openTestDB(t, p)
+	ctx := context.Background()
+
+	first, created, err := Init(ctx, d, p, workDir)
+	if err != nil {
+		t.Fatalf("first init: %v", err)
+	}
+	if !created {
+		t.Fatal("first init should report created=true")
+	}
+
+	newUpstream := filepath.Join(resolveSymlinks(t, t.TempDir()), "new-upstream.git")
+	if out, err := exec.Command("git", "init", "--bare", newUpstream).CombinedOutput(); err != nil {
+		t.Fatalf("init new upstream: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", workDir, "push", newUpstream, "HEAD:refs/heads/trunk").CombinedOutput(); err != nil {
+		t.Fatalf("push trunk: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", newUpstream, "symbolic-ref", "HEAD", "refs/heads/trunk").CombinedOutput(); err != nil {
+		t.Fatalf("set new upstream HEAD: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", workDir, "remote", "set-url", "origin", newUpstream).CombinedOutput(); err != nil {
+		t.Fatalf("set origin url: %v: %s", err, out)
+	}
+
+	refreshed, created, err := Init(ctx, d, p, workDir)
+	if err != nil {
+		t.Fatalf("refresh init: %v", err)
+	}
+	if created {
+		t.Fatal("refresh init should report created=false")
+	}
+	if refreshed.ID != first.ID {
+		t.Fatalf("refreshed repo ID = %q, want %q", refreshed.ID, first.ID)
+	}
+	if refreshed.UpstreamURL != newUpstream {
+		t.Errorf("refreshed upstream URL = %q, want %q", refreshed.UpstreamURL, newUpstream)
+	}
+	if refreshed.DefaultBranch != "trunk" {
+		t.Errorf("refreshed default branch = %q, want trunk", refreshed.DefaultBranch)
+	}
+
+	dbRepo, err := d.GetRepoByPath(workDir)
+	if err != nil {
+		t.Fatalf("get repo by path: %v", err)
+	}
+	if dbRepo == nil {
+		t.Fatal("expected repo in DB")
+	}
+	if dbRepo.UpstreamURL != newUpstream {
+		t.Errorf("db upstream URL = %q, want %q", dbRepo.UpstreamURL, newUpstream)
+	}
+	if dbRepo.DefaultBranch != "trunk" {
+		t.Errorf("db default branch = %q, want trunk", dbRepo.DefaultBranch)
+	}
+
+	gateOrigin, err := gitpkg.GetRemoteURL(ctx, p.RepoDir(first.ID), "origin")
+	if err != nil {
+		t.Fatalf("get gate origin: %v", err)
+	}
+	if gateOrigin != newUpstream {
+		t.Errorf("gate origin = %q, want %q", gateOrigin, newUpstream)
+	}
+}
+
 // TestInitRepairsBrokenGate verifies that re-running Init restores gate wiring
 // that was torn down out from under it (e.g. a deleted hook or remote), so init
 // doubles as a repair command.
