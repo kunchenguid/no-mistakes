@@ -87,6 +87,8 @@ It does **not** change the pipeline order or the meaning of a passed gate.
 `no-mistakes init` installs a `/no-mistakes` skill into `.claude/skills/no-mistakes/SKILL.md` and `.agents/skills/no-mistakes/SKILL.md`.
 Re-run `no-mistakes init` in an already-initialized repo to refresh or reinstall that skill after an upgrade.
 The skill tells agents to use `no-mistakes axi`, a non-interactive command surface that prints TOON to stdout and progress to stderr.
+When CI is green but the PR is still open, `axi run` and `axi respond` return `outcome: checks-passed` with a help line pointing at the PR instead of waiting for a human merge.
+That is a successful agent stopping point: report that the PR is ready and ask the user to review and merge it.
 
 Agents can also call `no-mistakes axi` directly:
 
@@ -101,6 +103,7 @@ no-mistakes axi abort
 When an agent starts a new run, `--intent` is required and should describe what the user wanted to accomplish, not what files changed.
 If the repo is on the default branch or has uncommitted changes, `axi run` returns a structured error with the command the agent should run instead of silently creating a branch or commit.
 Approval gates are exposed as `gate:` objects with finding IDs, severities, files, actions, descriptions, and help commands for `no-mistakes axi respond`.
+Successful outputs can be `outcome: passed` for a completed run or `outcome: checks-passed` when CI has passed and the daemon is still monitoring the unmerged PR for humans.
 
 ## Binary resolution
 

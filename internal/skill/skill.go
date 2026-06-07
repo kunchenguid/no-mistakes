@@ -87,7 +87,7 @@ Run the pipeline and decide on its findings as they come up:
    # skip this step
    no-mistakes axi respond --action skip
    ` + "```" + `
-   Each ` + "`respond`" + ` blocks until the next ` + "`gate:`" + ` or the final outcome.
+    Each ` + "`respond`" + ` blocks until the next ` + "`gate:`" + `, ` + "`checks-passed`" + ` decision point, or final outcome.
 3. Repeat step 2 until the output has an ` + "`outcome:`" + ` instead of a ` + "`gate:`" + `. The
    outcomes are:
    - ` + "`checks-passed`" + ` - the change is validated and CI is green, but the PR is

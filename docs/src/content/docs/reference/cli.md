@@ -50,7 +50,7 @@ With no subcommand, shows the executable path, description, repo, daemon state, 
 
 ## no-mistakes axi run
 
-Start or reattach to validation for the current branch, blocking until the first approval gate or the final outcome.
+Start or reattach to validation for the current branch, blocking until the first approval gate, CI-ready decision point, or final outcome.
 
 ```sh
 no-mistakes axi run --intent "the user's goal"
@@ -61,7 +61,7 @@ no-mistakes axi run --intent "the user's goal" --yes
 | Flag | Type | Default | Description |
 |---|---|---|---|
 | `--intent` | `string` | (none) | What the user set out to accomplish; required to start a new run |
-| `-y`, `--yes` | `bool` | `false` | Auto-resolve every gate and run to completion |
+| `-y`, `--yes` | `bool` | `false` | Auto-resolve every gate until a decision point or outcome |
 | `--skip` | `string` | (none) | Comma-separated pipeline steps to skip |
 
 `--intent` is not a description of the diff.
@@ -70,10 +70,12 @@ When starting a new run, `axi run` refuses the default branch and uncommitted wo
 Reattaching to an in-flight run does not require `--intent`.
 With `--yes`, `axi run` fixes gates that have actionable findings by selecting every finding, then accepts the resulting fix review.
 Gates with no findings or only `action: no-op` findings are approved as-is, and each step is fixed at most once so unresolved findings do not loop forever.
+When the CI step is still monitoring an open PR and checks are green, `axi run` exits successfully with `outcome: checks-passed` instead of waiting for a human merge.
+Treat that as the agent stopping point: ask the user to review and merge the PR from the `help` line.
 
 ## no-mistakes axi respond
 
-Answer the current approval gate and continue until the next gate or final outcome.
+Answer the current approval gate and continue until the next gate, CI-ready decision point, or final outcome.
 
 ```sh
 no-mistakes axi respond --action approve
@@ -89,9 +91,9 @@ no-mistakes axi respond --action skip
 | `--findings` | `string` | (none) | Comma-separated finding IDs for `--action fix` |
 | `--instructions` | `string` | (none) | Guidance applied to selected findings |
 | `--add-finding` | `string` | (none) | JSON finding object to add and fix |
-| `-y`, `--yes` | `bool` | `false` | Auto-resolve every subsequent gate to completion |
+| `-y`, `--yes` | `bool` | `false` | Auto-resolve every subsequent gate until a decision point or outcome |
 
-After the explicit response, `--yes` uses the same auto-resolution behavior as `axi run --yes`: fix actionable findings once, approve the fix review, and approve gates that only contain non-actionable `no-op` findings.
+After the explicit response, `--yes` uses the same auto-resolution behavior as `axi run --yes`: fix actionable findings once, approve the fix review, approve gates that only contain non-actionable `no-op` findings, and stop at `outcome: checks-passed` when CI is green but the PR still needs a human merge.
 
 ## no-mistakes axi status
 

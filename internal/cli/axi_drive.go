@@ -62,9 +62,9 @@ func newAxiRunCmd() *cobra.Command {
 		Use:   "run",
 		Short: "Validate your code changes, blocking until a decision point or the outcome",
 		Long: "Triggers a pipeline run for the current branch and drives it. Without\n" +
-			"--yes it blocks until the first approval gate (or the final outcome) and\n" +
+			"--yes it blocks until the first approval gate, CI-ready point, or final outcome and\n" +
 			"prints it. With --yes it auto-resolves every gate (fixing actionable\n" +
-			"findings, then accepting the result) and runs to completion.\n\n" +
+			"findings, then accepting the result) until a decision point or outcome.\n\n" +
 			"--intent is required when starting a new run: pass what the user set out\n" +
 			"to accomplish (the goal behind the change, not a description of the diff)\n" +
 			"so no-mistakes uses it directly instead of inferring it from transcripts.",
@@ -82,7 +82,7 @@ func newAxiRunCmd() *cobra.Command {
 			})
 		},
 	}
-	cmd.Flags().BoolVarP(&autoYes, "yes", "y", false, "auto-resolve every gate (fix findings, then accept) and run to completion")
+	cmd.Flags().BoolVarP(&autoYes, "yes", "y", false, "auto-resolve every gate (fix findings, then accept) until a decision point or outcome")
 	cmd.Flags().StringVar(&skipValue, "skip", "", "comma-separated pipeline steps to skip")
 	cmd.Flags().StringVar(&intent, "intent", "", "what the user set out to accomplish (not a description of the diff); used instead of inferring from transcripts (required to start a run)")
 	return cmd
@@ -499,7 +499,7 @@ func newAxiRespondCmd() *cobra.Command {
 		Use:   "respond",
 		Short: "Answer the current approval gate and continue the run",
 		Long: "Sends approve/fix/skip for the step currently awaiting approval, then\n" +
-			"blocks until the next gate or the final outcome.",
+			"blocks until the next gate, CI-ready decision point, or final outcome.",
 		Args:          cobra.NoArgs,
 		SilenceErrors: true,
 		SilenceUsage:  true,
@@ -521,7 +521,7 @@ func newAxiRespondCmd() *cobra.Command {
 	cmd.Flags().StringVar(&findings, "findings", "", "comma-separated finding IDs to fix (with --action fix)")
 	cmd.Flags().StringVar(&instructions, "instructions", "", "guidance applied to the selected findings (with --action fix)")
 	cmd.Flags().StringVar(&addFinding, "add-finding", "", "JSON finding object to add and fix (with --action fix)")
-	cmd.Flags().BoolVarP(&autoYes, "yes", "y", false, "auto-resolve every subsequent gate to completion")
+	cmd.Flags().BoolVarP(&autoYes, "yes", "y", false, "auto-resolve every subsequent gate until a decision point or outcome")
 	return cmd
 }
 
