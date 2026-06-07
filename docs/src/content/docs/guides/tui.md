@@ -123,6 +123,14 @@ During running steps, shows streaming agent output. Lines starting with `PASS` a
 
 On narrow terminals, the log panel expands to fill the remaining vertical space below the pipeline box instead of staying at the compact fixed height used in shorter layouts.
 
+### CI panel
+
+While the CI step is active, the TUI shows a dedicated CI panel instead of the generic findings view.
+It shows the PR label, the latest CI activity, and a log tail.
+When a real CI auto-fix attempt starts, the panel increments `CI auto-fixes: N`.
+Once checks are green and known mergeability is clear, the panel shows `✓ Checks passed` with `still monitoring until merged or closed`, and the terminal title switches to `Checks passed`.
+That ready signal clears if checks start running again, new failures appear, provider state becomes uncertain, or the PR is merged or closed.
+
 ### Footer
 
 The footer shows detach/help/yolo actions and, when `no-mistakes attach` has a cached newer release available, a right-aligned `<version> available` indicator. That update indicator stays visible after reruns in the same TUI session.
