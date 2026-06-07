@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.25.0](https://github.com/kunchenguid/no-mistakes/compare/v1.24.0...v1.25.0) (2026-06-07)
+
+
+### Features
+
+* auto-resolve actionable findings in yolo mode ([#246](https://github.com/kunchenguid/no-mistakes/issues/246)) ([1c99c4c](https://github.com/kunchenguid/no-mistakes/commit/1c99c4ce97d591fc4e7300c699389973b78b1c4b))
+* **tui:** show checks-passed CI monitoring state ([#245](https://github.com/kunchenguid/no-mistakes/issues/245)) ([4d741be](https://github.com/kunchenguid/no-mistakes/commit/4d741bedf07a9ea6171089150d699e7e83174e8b))
+
+
+### Bug Fixes
+
+* **cli:** stop axi drive after CI checks pass ([#247](https://github.com/kunchenguid/no-mistakes/issues/247)) ([badf49f](https://github.com/kunchenguid/no-mistakes/commit/badf49f690f896e41a2d71fe59218f049260167f))
+* **gate:** make init idempotent ([#243](https://github.com/kunchenguid/no-mistakes/issues/243)) ([0e1a08b](https://github.com/kunchenguid/no-mistakes/commit/0e1a08be7077117864faa854f9cdf08a1590c3e6))
+
 ## [1.24.0](https://github.com/kunchenguid/no-mistakes/compare/v1.23.1...v1.24.0) (2026-06-07)
 
 
