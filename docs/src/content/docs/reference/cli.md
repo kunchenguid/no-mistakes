@@ -29,10 +29,104 @@ Initialize the gate for the current repository.
 no-mistakes init
 ```
 
-Creates a local bare repo, installs the post-receive hook, best-effort isolates the gate repo's hook path from shared git config changes when Git supports `config --worktree`, adds the `no-mistakes` git remote, detects the default branch, records the repo in SQLite, and ensures the daemon is running, installing the managed service when available and falling back to a detached daemon otherwise.
+Creates a local bare repo, installs the post-receive hook, best-effort isolates the gate repo's hook path from shared git config changes when Git supports `config --worktree`, adds the `no-mistakes` git remote, detects the default branch, records the repo in SQLite, installs the `/no-mistakes` agent skill into `.claude/skills/no-mistakes/SKILL.md` and `.agents/skills/no-mistakes/SKILL.md`, and ensures the daemon is running, installing the managed service when available and falling back to a detached daemon otherwise.
 The gate advertises Git push-option support, so you can skip steps for one push with `git push -o no-mistakes.skip=test,lint no-mistakes <branch>`.
 
-Rolls back all changes if any step fails.
+Rolls back gate setup when a required gate or daemon step fails.
+Skill installation is best-effort: if the skill write fails, init reports it and leaves the working gate in place.
+
+## no-mistakes axi
+
+Agent eXperience Interface for non-interactive agents.
+It prints TOON to stdout, prints progress to stderr, and uses structured stdout errors with exit code `1` for operational failures and `2` for bad usage.
+
+```sh
+no-mistakes axi
+```
+
+With no subcommand, shows the executable path, description, repo, daemon state, the active run when present, recent runs, and next-step help.
+
+## no-mistakes axi run
+
+Start or reattach to validation for the current branch, blocking until the first approval gate or the final outcome.
+
+```sh
+no-mistakes axi run --intent "the user's goal"
+no-mistakes axi run --intent "the user's goal" --skip test,lint
+no-mistakes axi run --intent "the user's goal" --yes
+```
+
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `--intent` | `string` | (none) | What the user set out to accomplish; required to start a new run |
+| `-y`, `--yes` | `bool` | `false` | Auto-approve every gate and run to completion |
+| `--skip` | `string` | (none) | Comma-separated pipeline steps to skip |
+
+`--intent` is not a description of the diff.
+It is the user's goal or request, and no-mistakes uses it verbatim instead of transcript inference.
+When starting a new run, `axi run` refuses the default branch and uncommitted working trees with actionable errors instead of auto-branching or auto-committing.
+Reattaching to an in-flight run does not require `--intent`.
+
+## no-mistakes axi respond
+
+Answer the current approval gate and continue until the next gate or final outcome.
+
+```sh
+no-mistakes axi respond --action approve
+no-mistakes axi respond --action fix --findings F1,F2 --instructions "optional guidance"
+no-mistakes axi respond --action fix --add-finding '{"description":"...","action":"auto-fix"}'
+no-mistakes axi respond --action skip
+```
+
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `--action` | `string` | (none) | `approve`, `fix`, or `skip`; required |
+| `--step` | `string` | awaiting step | Step to respond to |
+| `--findings` | `string` | (none) | Comma-separated finding IDs for `--action fix` |
+| `--instructions` | `string` | (none) | Guidance applied to selected findings |
+| `--add-finding` | `string` | (none) | JSON finding object to add and fix |
+| `-y`, `--yes` | `bool` | `false` | Auto-approve every subsequent gate to completion |
+
+## no-mistakes axi status
+
+Show the active run, or the most recent run when none is active.
+
+```sh
+no-mistakes axi status
+no-mistakes axi status --run <id>
+```
+
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `--run` | `string` | active or most recent | Inspect a specific run ID |
+
+## no-mistakes axi logs
+
+Show the log output of one pipeline step.
+
+```sh
+no-mistakes axi logs --step review
+no-mistakes axi logs --step review --full
+no-mistakes axi logs --step review --run <id>
+```
+
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `--step` | `string` | (none) | Step name; required |
+| `--run` | `string` | active or most recent | Run ID to inspect |
+| `--full` | `bool` | `false` | Show the entire log instead of the tail |
+
+Without `--full`, long logs show the last 40 lines and a help hint for the full log.
+
+## no-mistakes axi abort
+
+Cancel the active run for the current branch.
+
+```sh
+no-mistakes axi abort
+```
+
+If there is no active run, this succeeds as a no-op.
 
 ## no-mistakes eject
 
@@ -43,6 +137,7 @@ no-mistakes eject
 ```
 
 Removes the `no-mistakes` remote, deletes the bare repo directory, cleans up worktrees, and deletes the database record (cascades to runs and steps).
+It does not remove repo-local agent skill files created by `init`.
 
 ## no-mistakes attach
 

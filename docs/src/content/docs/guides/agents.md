@@ -82,6 +82,25 @@ Changing agents most directly affects:
 
 It does **not** change the pipeline order or the meaning of a passed gate.
 
+## Driving no-mistakes as an agent
+
+`no-mistakes init` installs a `/no-mistakes` skill into `.claude/skills/no-mistakes/SKILL.md` and `.agents/skills/no-mistakes/SKILL.md`.
+The skill tells agents to use `no-mistakes axi`, a non-interactive command surface that prints TOON to stdout and progress to stderr.
+
+Agents can also call `no-mistakes axi` directly:
+
+```sh
+no-mistakes axi run --intent "the user's goal"
+no-mistakes axi status
+no-mistakes axi respond --action approve
+no-mistakes axi logs --step review --full
+no-mistakes axi abort
+```
+
+When an agent starts a new run, `--intent` is required and should describe what the user wanted to accomplish, not what files changed.
+If the repo is on the default branch or has uncommitted changes, `axi run` returns a structured error with the command the agent should run instead of silently creating a branch or commit.
+Approval gates are exposed as `gate:` objects with finding IDs, severities, files, actions, descriptions, and help commands for `no-mistakes axi respond`.
+
 ## Binary resolution
 
 By default, `no-mistakes` resolves `agent: auto` by checking for supported native agents on your `PATH` in this order:
@@ -147,7 +166,8 @@ Transient API and network failures are retried up to three times with exponentia
 
 ## Intent extraction
 
-When `intent.enabled` is true, no-mistakes reads recent local transcripts from Claude Code, Codex, OpenCode, Rovo Dev, and Pi during the `intent` pipeline step.
+When an agent starts a run through `no-mistakes axi run --intent`, no-mistakes uses that supplied intent verbatim and skips transcript-based inference, even if `intent.enabled` is false.
+Otherwise, when `intent.enabled` is true, no-mistakes reads recent local transcripts from Claude Code, Codex, OpenCode, Rovo Dev, and Pi during the `intent` pipeline step.
 It matches sessions against non-deleted changed files when present, falls back to all changed files for all-deletion diffs, summarizes the likely author intent with the configured pipeline agent, includes that summary as untrusted context in rebase fixes, review checks and fixes, test detection, evidence validation, and fixes, lint detection and fixes, documentation checks and fixes, CI auto-fixes, and PR prompts, and renders it in generated PR descriptions.
 
 Transcript readers collect user and assistant text messages but exclude tool call output.

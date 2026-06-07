@@ -22,6 +22,7 @@ flowchart TD
   daemon --> db["SQLite state"]
   daemon --> ipc["IPC socket"]
   ipc --> tui["TUI clients"]
+  ipc --> axi["AXI clients"]
 ```
 
 ## What `no-mistakes init` does
@@ -33,7 +34,8 @@ When you run `no-mistakes init` in a repo:
 3. It enables Git push options for the gate repo.
 4. It best-effort isolates the gate repo's hooks path from shared local Git config writes when Git supports `config --worktree`.
 5. It adds a `no-mistakes` remote to your working repo that points at the gate.
-6. It makes sure the daemon is running so incoming pushes can start runs.
+6. It installs the `/no-mistakes` agent skill into `.claude/skills/no-mistakes/SKILL.md` and `.agents/skills/no-mistakes/SKILL.md` on a best-effort basis.
+7. It makes sure the daemon is running so incoming pushes can start runs.
 
 After init, your original `origin` still points at the real upstream remote.
 That is a core design choice, not an implementation detail.
@@ -45,7 +47,7 @@ That is a core design choice, not an implementation detail.
 3. The gate repo's `post-receive` hook notifies the daemon.
 4. The daemon creates a detached worktree for this run.
 5. The pipeline runs in order: `intent -> rebase -> review -> test -> document -> lint -> push -> pr -> ci`.
-6. If a step pauses, you can attach with the TUI and approve, fix, skip, or abort.
+6. If a step pauses, you can attach with the TUI or use `no-mistakes axi respond` to approve, fix, skip, or abort.
 7. After local checks pass, the push step forwards the branch upstream and the PR step creates or updates the pull request.
 8. The CI step keeps watching the open PR until it is merged or closed, and can auto-fix failures or merge conflicts when supported.
 
@@ -53,7 +55,7 @@ That is a core design choice, not an implementation detail.
 
 - **Named remote** - `origin` is never hijacked. You push to `no-mistakes` on purpose, so regular `git push` still works normally.
 - **Disposable worktrees** - each run happens in its own detached worktree under `~/.no-mistakes/worktrees/`. The daemon can safely modify files, run tests, and commit fixes without touching your working directory.
-- **Fixed pipeline** - the step order is opinionated and not configurable: `intent → rebase → review → test → document → lint → push → pr → ci`. What you _can_ configure is the commands each step runs, how many auto-fix attempts are allowed, and whether transcript-based intent extraction is used.
+- **Fixed pipeline** - the step order is opinionated and not configurable: `intent → rebase → review → test → document → lint → push → pr → ci`. What you _can_ configure is the commands each step runs, how many auto-fix attempts are allowed, and whether transcript-based intent extraction is used when intent is not supplied directly.
 
 ## Why it is built this way
 
@@ -127,7 +129,7 @@ branch, marking the remaining steps as skipped.
 
 ### IPC
 
-Communication between the CLI and daemon uses JSON-RPC 2.0 over the Unix socket. The `subscribe` method streams real-time events (step progress, log chunks, findings) to the TUI.
+Communication between the CLI and daemon uses JSON-RPC 2.0 over the Unix socket. The `subscribe` method streams real-time events (step progress, log chunks, findings) to the TUI, while the `axi` commands use request/response IPC for non-interactive agent control.
 
 ### Database
 
@@ -137,10 +139,12 @@ rounds, and derived intent summaries. Step rounds record each execution attempt
 IDs, whether the selection came from the user or auto-fix filtering, the merged
 finding payload actually sent to the fix agent for that round, and the one-line
 fix summary for fix rounds. That merged payload can include per-finding user
-notes and user-authored findings from the TUI. Intent extraction stores the
-summary, source, session ID, and match score on each run, plus cached summaries
-for matching transcript sessions. Raw transcript text is not stored in this
-database. Legacy `user_fix` rounds are still read as `auto-fix` for backward
+notes and user-authored findings from the TUI or AXI interface. Intent stores
+the summary, source, session ID, and match score on each run when transcript
+matching is used, plus cached summaries for matching transcript sessions. An
+agent-supplied AXI intent is stored directly on the run. Raw transcript text is
+not stored in this database. Legacy `user_fix` rounds are still read as
+`auto-fix` for backward
 compatibility.
 
 ## Local state

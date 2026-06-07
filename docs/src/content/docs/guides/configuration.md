@@ -89,7 +89,7 @@ auto_fix:
   review: 0
   ci: 3
 
-# Infer the author's intent from recent local agent transcripts.
+# Infer the author's intent from recent local agent transcripts when not supplied directly.
 intent:
   enabled: true
   threshold: 0.2
@@ -138,7 +138,7 @@ auto_fix:
   document: 3
   lint: 5
 
-# Optional repo-level overrides for intent extraction.
+# Optional repo-level overrides for transcript-based intent extraction.
 intent:
   enabled: true
 
@@ -162,14 +162,14 @@ See [Repo Config Reference](/no-mistakes/reference/repo-config/) for the full fi
 - `test.evidence` from the repo config overlays global test evidence settings. Fields not set in the repo config fall through to the global default.
 - `commands` and `ignore_patterns` are repo-only fields.
 - `ci_timeout` and `auto_fix.ci` are the canonical keys; `babysit_timeout` and `auto_fix.babysit` are still accepted as legacy aliases.
-- If `commands.test` is set, the test step runs it first as the baseline; when inferred user intent is available, the agent may still run afterward to gather evidence-oriented validation.
+- If `commands.test` is set, the test step runs it first as the baseline; when user intent is available, the agent may still run afterward to gather evidence-oriented validation.
 - If `commands.test` is empty, the agent detects and runs relevant tests itself.
 - If `commands.lint` is empty, the agent detects relevant linters and formatters, applies safe fixes, verifies them, commits any agent changes, and reports only unresolved issues.
 - If `commands.format` is empty, no separate push-step formatter is run automatically.
 
 The practical implication is simple: explicit commands give you deterministic
 baseline behavior, while leaving commands empty asks the agent to fill in the gap.
-For tests, inferred user intent can also trigger an evidence-oriented agent follow-up after the baseline command succeeds.
+For tests, available user intent can also trigger an evidence-oriented agent follow-up after the baseline command succeeds.
 By default, evidence stays in a temporary local directory; opt into `test.evidence.store_in_repo` when your team wants evidence artifacts committed, pushed, and linked directly from PRs.
 For lint, that gap includes safe formatter and linter fixes during the initial lint pass.
 

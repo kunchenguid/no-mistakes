@@ -39,7 +39,7 @@ Navigate to any git repo with an `origin` remote:
 no-mistakes init
 ```
 
-This creates a local bare repo at `~/.no-mistakes/repos/<id>.git`, installs a post-receive hook, best-effort isolates the gate's hooks path from shared local Git config writes when Git supports `config --worktree`, adds a `no-mistakes` git remote to your working repo, and ensures the daemon is running.
+This creates a local bare repo at `~/.no-mistakes/repos/<id>.git`, installs a post-receive hook, best-effort isolates the gate's hooks path from shared local Git config writes when Git supports `config --worktree`, adds a `no-mistakes` git remote to your working repo, installs the `/no-mistakes` agent skill, and ensures the daemon is running.
 
 ```
 $ no-mistakes init
@@ -48,6 +48,7 @@ $ no-mistakes init
     repo  /Users/you/src/my-repo
     gate  no-mistakes → /Users/you/.no-mistakes/repos/abc123def456.git
   remote  git@github.com:you/my-repo.git
+   skill  /no-mistakes installed for agents
 
   Push through the gate with:
   git push no-mistakes <branch>
@@ -78,11 +79,14 @@ If the current branch has an active run, this attaches directly. If not, the set
 
 The TUI shows each step's progress, streams agent output, and pauses for your approval when findings need attention. See [Using the TUI](/no-mistakes/guides/tui/) for keybindings and layout.
 
+Agents can instead load `/no-mistakes` or call `no-mistakes axi` directly.
+That interface uses flags only, prints TOON on stdout, and exposes the same approval gates through `no-mistakes axi respond`.
+
 ## What happens next
 
 The pipeline runs these steps in order:
 
-1. **Intent** - infer author intent from recent local agent transcripts
+1. **Intent** - use agent-supplied intent when present, otherwise infer author intent from recent local agent transcripts
 2. **Rebase** - onto the latest upstream
 3. **Review** - AI code review of your diff
 4. **Test** - baseline tests plus evidence checks when intent is known

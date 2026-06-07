@@ -187,7 +187,7 @@ ci_timeout: "8h"
 
 The CI step keeps monitoring while the PR remains open, even after checks are currently healthy, because a later default-branch update can make the PR conflict or rerun CI.
 If the PR is still open at the timeout, the step pauses for approval with findings for the open monitoring state or any known unresolved failures.
-You can approve (accept the risk), fix (run another auto-fix cycle), skip, or abort from the TUI.
+You can approve (accept the risk), fix (run another auto-fix cycle), skip, or abort from the TUI or `no-mistakes axi respond`.
 
 ## Worktree won't clean up
 

@@ -66,7 +66,7 @@ Explicit test command. Run via the platform shell - `sh -c` on POSIX, `cmd.exe /
 
 When set, the test step runs this exact command first as the baseline and checks the exit code.
 When empty, the agent detects and runs relevant tests itself.
-When inferred user intent is available, the agent may still run after a successful baseline command to gather evidence-oriented validation.
+When user intent is available, the agent may still run after a successful baseline command to gather evidence-oriented validation.
 
 ### commands.lint
 
@@ -135,7 +135,7 @@ Legacy alias: `auto_fix.babysit`.
 
 ### intent
 
-Override user-intent extraction settings for this repo.
+Override transcript-based user-intent extraction settings for this repo.
 Fields not set here inherit from global config and then the built-in defaults.
 
 | Field | Type | Default |

@@ -46,6 +46,8 @@ no-mistakes
 no-mistakes init
 no-mistakes attach
 no-mistakes rerun
+no-mistakes axi run
+no-mistakes axi respond
 
 # Resets the daemon after replacing the binary
 no-mistakes update
@@ -66,7 +68,7 @@ When a push arrives via the post-receive hook:
 
 1. Creates a detached worktree at `~/.no-mistakes/worktrees/<repoID>/<runID>/`
 2. Starts the pipeline executor in that worktree
-3. Streams events to any connected TUI clients
+3. Streams events to any connected TUI clients and serves request/response state to AXI clients
 4. Cleans up the worktree when the run finishes (success or failure)
 
 Pipeline agents are prompted to keep intentional writes inside that detached worktree and avoid changing system state outside it, such as Homebrew packages, apps under `/Applications`, or global tool configuration.

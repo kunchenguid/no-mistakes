@@ -23,7 +23,8 @@ Most implementation code lives under `internal/`.
 - Run unit/integration tests directly: `go test -race ./...`
 - Run end-to-end tests: `make e2e`
 - Re-record end-to-end fixtures: `make e2e-record`
-- Run vet: `make lint`
+- Regenerate the committed agent skill: `make skill`
+- Run skill drift check and vet: `make lint`
 - Run vet directly: `go vet ./...`
 - Format all Go files: `make fmt`
 - Format directly: `gofmt -w .`
@@ -41,7 +42,7 @@ Most implementation code lives under `internal/`.
 Safest local verification sequence after non-trivial changes:
 
 - `gofmt -w .`
-- `go vet ./...`
+- `make lint`
 - `go test -race ./...`
 - `make e2e` when touching agent integrations, the e2e harness, or recorded fixtures
 - `go build -o ./bin/no-mistakes ./cmd/no-mistakes`

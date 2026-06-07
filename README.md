@@ -54,6 +54,7 @@ $ no-mistakes init
     repo  /Users/you/src/my-repo
     gate  no-mistakes → /Users/you/.no-mistakes/repos/abc123def456.git
   remote  git@github.com:you/my-repo.git
+   skill  /no-mistakes installed for agents
 
   Push through the gate with:
   git push no-mistakes <branch>
@@ -75,6 +76,8 @@ You can also skip `git push` and run `no-mistakes` directly after making changes
 
 Run `no-mistakes -y` to let no-mistakes automatically create branch, commit changes and push through the gate for you.
 
+Agents can use the installed `/no-mistakes` skill or call `no-mistakes axi` directly for a non-interactive TOON interface to the same approval flow.
+
 See the [quick start](https://kunchenguid.github.io/no-mistakes/start-here/quick-start/) for the full first-run walkthrough.
 
 ## Development
@@ -84,7 +87,8 @@ make build   # Build bin/no-mistakes with version info
 make test    # Run go test -race ./... (excludes the e2e suite)
 make e2e     # Run the tagged end-to-end agent journey suite
 make e2e-record # Re-record e2e fixtures when agent wire formats change
-make lint    # Run go vet ./...
+make lint    # Check generated skill drift and run go vet ./...
+make skill   # Regenerate skills/no-mistakes/SKILL.md
 make fmt     # Run gofmt -w .
 make demo    # Regenerate demo.gif and demo.mp4 (needs vhs and ffmpeg)
 make docs    # Build the Astro docs site in docs/dist
