@@ -66,9 +66,11 @@ If you have multiple installs with different `NM_HOME` roots, each gets its own 
 
 ## `no-mistakes update` prompts or aborts
 
-Symptom: `update` says the daemon is running from a different executable path, or aborts because the daemon executable path cannot be determined.
+Symptom: `update` warns about active pipeline runs, says the daemon is running from a different executable path, or aborts because the daemon executable path cannot be determined.
 
-When the running daemon uses a different binary, `update` prompts before replacing it. Pass `no-mistakes update -y` to confirm non-interactively.
+When pending or running pipeline runs exist, `update` warns that restarting the daemon can cause those runs to fail and prompts before continuing.
+When the running daemon uses a different binary, `update` prompts before replacing it.
+Pass `no-mistakes update -y` to confirm non-interactively while still printing warnings.
 
 If the daemon executable path can't be determined at all (stale PID, permissions), the update aborts before replacing anything.
 

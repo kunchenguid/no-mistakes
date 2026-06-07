@@ -102,18 +102,15 @@ A long-running background process that manages pipeline runs. It:
 - Persists state to SQLite
 - Streams events to connected TUI clients via IPC
 
-The installer prefers setting up the daemon as a managed background service, and
-`no-mistakes`, `init`, `attach`, `rerun`, and `update` make sure the daemon is
-running when needed. Bare `no-mistakes` then attaches to the active run on the
-current branch when one exists, or routes to the setup wizard when it needs to
-create a new branch/run. If managed service install or startup is unavailable
-or fails, startup falls back to a detached daemon process. `update` resets the
-daemon after replacing the binary when the daemon is running or stale daemon
-artifacts exist. If the daemon is already running from a different executable
-path, `update` prompts before replacing it, and `-y` / `--yes` confirms without
-prompting. If the daemon executable path cannot be determined, `update` aborts
-before replacing anything. You can also manage it explicitly with `no-mistakes
-daemon start|stop|restart|status`.
+The installer prefers setting up the daemon as a managed background service, and `no-mistakes`, `init`, `attach`, `rerun`, and `update` make sure the daemon is running when needed.
+Bare `no-mistakes` then attaches to the active run on the current branch when one exists, or routes to the setup wizard when it needs to create a new branch/run.
+If managed service install or startup is unavailable or fails, startup falls back to a detached daemon process.
+`update` resets the daemon after replacing the binary when the daemon is running or stale daemon artifacts exist.
+If pending or running pipeline runs exist, `update` warns that restarting the daemon can cause those runs to fail and prompts before continuing.
+If the daemon is already running from a different executable path, `update` prompts before replacing it.
+The `-y` / `--yes` flag continues through update safety prompts while still printing warnings.
+If the daemon executable path cannot be determined, `update` aborts before replacing anything.
+You can also manage it explicitly with `no-mistakes daemon start|stop|restart|status`.
 
 On startup, the daemon recovers from crashes by marking any stuck runs as failed, reaping orphaned managed agent servers, cleaning up orphaned worktrees, refreshing legacy no-mistakes-managed `post-receive` hooks, enabling push options for older gate repos, and reapplying gate hook-path isolation when Git supports `config --worktree`.
 
