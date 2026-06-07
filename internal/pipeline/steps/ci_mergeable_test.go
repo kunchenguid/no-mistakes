@@ -141,7 +141,7 @@ func TestCIStep_MergeableLookupErrorDoesNotReportReadyWhenChecksPass(t *testing.
 		if strings.Contains(l, "could not check mergeable state") {
 			foundWarning = true
 		}
-		if strings.Contains(l, "all CI checks passed - PR is ready to merge") {
+		if strings.Contains(l, "all CI checks passed - still monitoring until merged or closed") {
 			t.Fatalf("expected mergeable lookup error to block ready log, got logs: %v", logs)
 		}
 	}
@@ -188,7 +188,7 @@ func TestCIStep_PRStateLookupErrorDoesNotReportReadyWhenChecksPass(t *testing.T)
 		if strings.Contains(l, "could not check PR state") {
 			foundWarning = true
 		}
-		if strings.Contains(l, "all CI checks passed - PR is ready to merge") {
+		if strings.Contains(l, "all CI checks passed - still monitoring until merged or closed") {
 			t.Fatalf("expected PR state lookup error to block ready log, got logs: %v", logs)
 		}
 	}

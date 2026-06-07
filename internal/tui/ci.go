@@ -10,8 +10,8 @@ import (
 )
 
 const (
-	ciReadyChecksPassedLog = "all CI checks passed - PR is ready to merge (still monitoring until merged or closed)"
-	ciReadyNoChecksLog     = "no CI checks reported - PR is ready to merge (still monitoring until merged or closed)"
+	ciChecksPassedLog   = "all CI checks passed - still monitoring until merged or closed"
+	ciNoChecksPassedLog = "no CI checks reported - still monitoring until merged or closed"
 )
 
 // isCIActive returns true if the CI step is currently running.
@@ -60,15 +60,14 @@ func extractPRFromLogs(logs []string) string {
 type ciActivity struct {
 	CIFixes    int
 	AutoFixing bool
-	Ready      bool // CI is green and the PR is ready to merge
+	Ready      bool
 	LastEvent  string
 }
 
 // parseCIActivity extracts structured activity from CI log messages.
 //
 // Ready reflects the most recent monitoring state: it is true only when the
-// latest relevant log line announced a ready-to-merge PR, and any newer event
-// (re-running checks, new failures, auto-fixing, merge/close) clears it.
+// latest relevant log line announced passed checks, and any newer event clears it.
 func parseCIActivity(logs []string) ciActivity {
 	var a ciActivity
 	for _, line := range logs {
@@ -88,7 +87,7 @@ func parseCIActivity(logs []string) ciActivity {
 			a.AutoFixing = true
 			a.Ready = false
 			a.LastEvent = line
-		case line == ciReadyChecksPassedLog || line == ciReadyNoChecksLog:
+		case line == ciChecksPassedLog || line == ciNoChecksPassedLog:
 			a.AutoFixing = false
 			a.Ready = true
 			a.LastEvent = line
@@ -155,9 +154,9 @@ func renderCIViewWithSelection(run *ipc.RunInfo, steps []ipc.StepResultInfo, fin
 			b.WriteString(style.Render("\u2699 Auto-fixing CI failures...") + "\n")
 		} else if activity.Ready {
 			style := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiGreen))
-			b.WriteString(style.Render("✓ Ready to merge") + "\n")
+			b.WriteString(style.Render("✓ Checks passed") + "\n")
 			dim := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))
-			b.WriteString(dim.Render("checks passed - merge when ready (still monitoring)") + "\n")
+			b.WriteString(dim.Render("still monitoring until merged or closed") + "\n")
 		} else {
 			style := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiGreen))
 			b.WriteString(style.Render("◉ Monitoring CI checks...") + "\n")

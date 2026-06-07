@@ -269,7 +269,7 @@ func (s *demoCIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 		return canceled()
 	}
 	sctx.Log("")
-	sctx.Log(ciReadyChecksPassedMsg)
+	sctx.Log(ciChecksPassedMsg)
 
 	return &pipeline.StepOutcome{
 		DurationOverrideMS: s.displayDur.Milliseconds(),

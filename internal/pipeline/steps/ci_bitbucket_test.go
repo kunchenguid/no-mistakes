@@ -54,9 +54,11 @@ func TestCIStep_BitbucketPassesWhenStatusesPass(t *testing.T) {
 	}
 	foundPassed := false
 	for _, line := range logs {
-		if strings.Contains(line, "all CI checks passed - PR is ready to merge") {
+		if strings.Contains(line, "ready to merge") {
+			t.Fatalf("expected Bitbucket CI logs not to imply mergeability, got %v", logs)
+		}
+		if strings.Contains(line, "all CI checks passed - still monitoring until merged or closed") {
 			foundPassed = true
-			break
 		}
 	}
 	if !foundPassed {

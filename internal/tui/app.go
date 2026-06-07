@@ -270,7 +270,7 @@ func (m Model) terminalTitle() string {
 		switch s.Status {
 		case types.StepStatusRunning, types.StepStatusFixing:
 			if s.StepName == types.StepCI && parseCIActivity(m.logs).Ready {
-				return "✓ Ready to merge" + suffix
+				return "✓ Checks passed" + suffix
 			}
 			return icon + " " + stepLabel(s.StepName) + suffix
 		case types.StepStatusAwaitingApproval, types.StepStatusFixReview:

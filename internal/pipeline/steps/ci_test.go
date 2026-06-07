@@ -374,13 +374,65 @@ func TestCIStep_AllChecksPassingKeepsMonitoringOpenPR(t *testing.T) {
 
 	found := false
 	for _, l := range logs {
-		if strings.Contains(l, "all CI checks passed - PR is ready to merge") {
+		if strings.Contains(l, "all CI checks passed - still monitoring until merged or closed") {
 			found = true
 			break
 		}
 	}
 	if !found {
 		t.Fatalf("expected continued-monitoring CI log, got: %v", logs)
+	}
+}
+
+func TestCIStep_CIWarningAllowsChecksPassedToBeReannounced(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	checksSequence := []string{
+		`[{"name":"build","state":"SUCCESS","bucket":"pass"}]`,
+		`not-json`,
+		`[{"name":"build","state":"SUCCESS","bucket":"pass"}]`,
+	}
+	env := fakeCIGHSequence(t, "OPEN", checksSequence)
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 10 * time.Second
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	waits := 0
+	step := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			waits++
+			if waits == 3 {
+				cancel()
+				return ctx.Err()
+			}
+			return nil
+		},
+	}
+	_, err := step.Execute(sctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected open PR monitoring to continue, got %v", err)
+	}
+
+	passedLogs := 0
+	for _, l := range logs {
+		if strings.Contains(l, "all CI checks passed - still monitoring until merged or closed") {
+			passedLogs++
+		}
+	}
+	if passedLogs != 2 {
+		t.Fatalf("expected checks-passed status before and after CI warning, got %d logs: %v", passedLogs, logs)
 	}
 }
 
@@ -480,7 +532,7 @@ func TestCIStep_EmptyChecksWaitsDuringGracePeriod(t *testing.T) {
 	}
 	found := false
 	for _, l := range logs {
-		if strings.Contains(l, "no CI checks reported - PR is ready to merge") {
+		if strings.Contains(l, "no CI checks reported - still monitoring until merged or closed") {
 			found = true
 			break
 		}
@@ -575,7 +627,7 @@ func TestCIStep_NonEmptyPassingChecksSkipGracePeriodAndContinueMonitoring(t *tes
 	}
 	found := false
 	for _, l := range logs {
-		if strings.Contains(l, "all CI checks passed - PR is ready to merge") {
+		if strings.Contains(l, "all CI checks passed - still monitoring until merged or closed") {
 			found = true
 			break
 		}

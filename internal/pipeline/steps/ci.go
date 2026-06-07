@@ -14,13 +14,12 @@ import (
 
 const defaultChecksGracePeriod = 60 * time.Second
 
-// CI monitoring status messages. These are surfaced to the user (and parsed by
-// the TUI) to distinguish a green, ready-to-merge PR from one whose checks are
-// still running. The "ready to merge" phrase is the signal the TUI keys on.
+// CI monitoring status messages. These are surfaced to the user and parsed by
+// the TUI to distinguish passed checks from checks that are still running.
 const (
-	ciReadyChecksPassedMsg = "all CI checks passed - PR is ready to merge (still monitoring until merged or closed)"
-	ciReadyNoChecksMsg     = "no CI checks reported - PR is ready to merge (still monitoring until merged or closed)"
-	ciChecksRunningMsg     = "CI checks running, waiting for results..."
+	ciChecksPassedMsg   = "all CI checks passed - still monitoring until merged or closed"
+	ciNoChecksPassedMsg = "no CI checks reported - still monitoring until merged or closed"
+	ciChecksRunningMsg  = "CI checks running, waiting for results..."
 )
 
 // CIStep monitors an open PR until it is merged or closed, auto-fixing CI failures.
@@ -160,6 +159,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		ciFixLimit := sctx.Config.AutoFix.CI
 		checks, err := host.GetChecks(ctx, pr)
 		if err != nil {
+			lastMonitorLog = ""
 			sctx.Log(fmt.Sprintf("warning: could not check CI: %v", err))
 		} else {
 			pending := hasPendingChecks(checks)
@@ -247,17 +247,17 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 					lastMonitorLog = ""
 				case pending:
 					// Checks are (re-)running with no failures yet. Surface this
-					// so a PR that was green and starts re-running clears the
-					// ready-to-merge signal instead of looking stale.
+					// so a PR that passed checks and starts re-running clears the
+					// previous passed-checks signal instead of looking stale.
 					lastMonitorLog = logCIMonitorStatus(sctx, ciChecksRunningMsg, lastMonitorLog)
 				case len(checks) == 0 && elapsed < s.gracePeriod():
 					// CI checks may not be registered yet, keep polling.
 					lastMonitorLog = ""
 					sctx.Log("no CI checks reported yet, waiting for checks to register...")
 				case len(checks) == 0:
-					lastMonitorLog = logCIMonitorStatus(sctx, ciReadyNoChecksMsg, lastMonitorLog)
+					lastMonitorLog = logCIMonitorStatus(sctx, ciNoChecksPassedMsg, lastMonitorLog)
 				default:
-					lastMonitorLog = logCIMonitorStatus(sctx, ciReadyChecksPassedMsg, lastMonitorLog)
+					lastMonitorLog = logCIMonitorStatus(sctx, ciChecksPassedMsg, lastMonitorLog)
 				}
 			}
 		}

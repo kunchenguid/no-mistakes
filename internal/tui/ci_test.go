@@ -174,19 +174,19 @@ func TestParseCIActivity(t *testing.T) {
 		}
 	})
 
-	t.Run("ready to merge when checks pass", func(t *testing.T) {
+	t.Run("checks passed when checks pass", func(t *testing.T) {
 		a := parseCIActivity([]string{
 			"monitoring CI for PR #42 (timeout: 4h)...",
-			"all CI checks passed - PR is ready to merge (still monitoring until merged or closed)",
+			"all CI checks passed - still monitoring until merged or closed",
 		})
 		if !a.Ready {
 			t.Error("expected Ready to be true after checks pass")
 		}
 	})
 
-	t.Run("ready to merge when no checks configured", func(t *testing.T) {
+	t.Run("checks passed when no checks configured", func(t *testing.T) {
 		a := parseCIActivity([]string{
-			"no CI checks reported - PR is ready to merge (still monitoring until merged or closed)",
+			"no CI checks reported - still monitoring until merged or closed",
 		})
 		if !a.Ready {
 			t.Error("expected Ready to be true when no checks are configured")
@@ -205,7 +205,7 @@ func TestParseCIActivity(t *testing.T) {
 
 	t.Run("ready cleared when checks re-run", func(t *testing.T) {
 		a := parseCIActivity([]string{
-			"all CI checks passed - PR is ready to merge (still monitoring until merged or closed)",
+			"all CI checks passed - still monitoring until merged or closed",
 			"CI checks running, waiting for results...",
 		})
 		if a.Ready {
@@ -215,7 +215,7 @@ func TestParseCIActivity(t *testing.T) {
 
 	t.Run("ready cleared when new failure detected", func(t *testing.T) {
 		a := parseCIActivity([]string{
-			"all CI checks passed - PR is ready to merge (still monitoring until merged or closed)",
+			"all CI checks passed - still monitoring until merged or closed",
 			"issues detected: test - auto-fixing (attempt 1/3)...",
 		})
 		if a.Ready {
@@ -225,7 +225,7 @@ func TestParseCIActivity(t *testing.T) {
 
 	t.Run("ready cleared when mergeability becomes pending", func(t *testing.T) {
 		a := parseCIActivity([]string{
-			"all CI checks passed - PR is ready to merge (still monitoring until merged or closed)",
+			"all CI checks passed - still monitoring until merged or closed",
 			"mergeable state still pending: unknown",
 		})
 		if a.Ready {
@@ -242,7 +242,7 @@ func TestParseCIActivity(t *testing.T) {
 		for _, warning := range tests {
 			t.Run(warning, func(t *testing.T) {
 				a := parseCIActivity([]string{
-					"all CI checks passed - PR is ready to merge (still monitoring until merged or closed)",
+					"all CI checks passed - still monitoring until merged or closed",
 					warning,
 				})
 				if a.Ready {
@@ -318,18 +318,18 @@ func TestRenderCIView_AutoFixing(t *testing.T) {
 	}
 }
 
-func TestRenderCIView_ReadyToMerge(t *testing.T) {
+func TestRenderCIView_ChecksPassed(t *testing.T) {
 	run := testRunWithCI()
 	run.Steps[5].Status = types.StepStatusRunning
 	logs := []string{
 		"monitoring CI for PR #42 (timeout: 4h)...",
-		"all CI checks passed - PR is ready to merge (still monitoring until merged or closed)",
+		"all CI checks passed - still monitoring until merged or closed",
 	}
 
 	out := stripANSI(renderCIView(run, run.Steps, "", logs, 80))
 
-	if !strings.Contains(out, "Ready to merge") {
-		t.Errorf("expected ready-to-merge indicator, got: %s", out)
+	if !strings.Contains(out, "Checks passed") {
+		t.Errorf("expected checks-passed indicator, got: %s", out)
 	}
 	if strings.Contains(out, "Monitoring CI checks...") {
 		t.Errorf("expected ready state to replace the monitoring indicator, got: %s", out)
@@ -340,7 +340,7 @@ func TestRenderCIView_ReadyClearedWhenChecksRerun(t *testing.T) {
 	run := testRunWithCI()
 	run.Steps[5].Status = types.StepStatusRunning
 	logs := []string{
-		"all CI checks passed - PR is ready to merge (still monitoring until merged or closed)",
+		"all CI checks passed - still monitoring until merged or closed",
 		"CI checks running, waiting for results...",
 	}
 
@@ -349,8 +349,8 @@ func TestRenderCIView_ReadyClearedWhenChecksRerun(t *testing.T) {
 	if !strings.Contains(out, "Monitoring CI checks...") {
 		t.Errorf("expected monitoring indicator once checks re-run, got: %s", out)
 	}
-	if strings.Contains(out, "Ready to merge") {
-		t.Errorf("expected ready indicator cleared once checks re-run, got: %s", out)
+	if strings.Contains(out, "Checks passed") {
+		t.Errorf("expected checks-passed indicator cleared once checks re-run, got: %s", out)
 	}
 }
 
