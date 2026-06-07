@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.23.1](https://github.com/kunchenguid/no-mistakes/compare/v1.23.0...v1.23.1) (2026-06-07)
+
+
+### Bug Fixes
+
+* **pipeline:** keep monitoring open PRs after CI passes ([#240](https://github.com/kunchenguid/no-mistakes/issues/240)) ([41a03e2](https://github.com/kunchenguid/no-mistakes/commit/41a03e2a635c8a10d3d4b1de546fad4670464501))
+* **update:** warn before updating with active runs ([#238](https://github.com/kunchenguid/no-mistakes/issues/238)) ([15951e1](https://github.com/kunchenguid/no-mistakes/commit/15951e122babd12afe6c3dcaf96816eae162cac0))
+
 ## [1.23.0](https://github.com/kunchenguid/no-mistakes/compare/v1.22.3...v1.23.0) (2026-06-06)
 
 
