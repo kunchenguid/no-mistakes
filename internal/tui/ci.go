@@ -88,7 +88,8 @@ func parseCIActivity(logs []string) ciActivity {
 			a.Ready = true
 			a.LastEvent = line
 		case strings.Contains(line, "issues detected"),
-			strings.Contains(line, "CI checks running"):
+			strings.Contains(line, "CI checks running"),
+			strings.Contains(line, "mergeable state still pending"):
 			a.AutoFixing = false
 			a.Ready = false
 			a.LastEvent = line

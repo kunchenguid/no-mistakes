@@ -213,6 +213,16 @@ func TestParseCIActivity(t *testing.T) {
 		}
 	})
 
+	t.Run("ready cleared when mergeability becomes pending", func(t *testing.T) {
+		a := parseCIActivity([]string{
+			"all CI checks passed - PR is ready to merge (still monitoring until merged or closed)",
+			"mergeable state still pending: unknown",
+		})
+		if a.Ready {
+			t.Error("expected Ready to be cleared when mergeability is unresolved")
+		}
+	})
+
 	t.Run("not ready while monitoring", func(t *testing.T) {
 		a := parseCIActivity([]string{"monitoring CI for PR #42 (timeout: 4h)..."})
 		if a.Ready {
