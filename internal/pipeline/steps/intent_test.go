@@ -307,3 +307,42 @@ func TestIntentStep_PanicReturnsSkipped(t *testing.T) {
 		t.Errorf("expected Skipped on panic, got %+v", outcome)
 	}
 }
+
+func TestIntentStep_UsesSuppliedIntent(t *testing.T) {
+	sctx := newIntentStepContext(t)
+	supplied := "agent-supplied: add retry to the uploader"
+	sctx.Run.Intent = &supplied
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	called := false
+	step := &IntentStep{
+		runIntent: func(_ context.Context, _ *pipeline.StepContext) (*intent.Result, error) {
+			called = true
+			return nil, errors.New("runIntent must not be called when intent is supplied")
+		},
+	}
+
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if outcome == nil || outcome.Skipped {
+		t.Fatalf("supplied intent should be a non-skipped success, got %+v", outcome)
+	}
+	if called {
+		t.Error("runIntent was called despite a supplied intent")
+	}
+	if sctx.Run.Intent == nil || *sctx.Run.Intent != supplied {
+		t.Errorf("supplied intent was mutated: %v", sctx.Run.Intent)
+	}
+	found := false
+	for _, l := range logs {
+		if strings.Contains(l, "using intent supplied by the agent") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("missing supplied-intent log line; logs: %v", logs)
+	}
+}

@@ -49,6 +49,16 @@ func (s *IntentStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.Step
 		}
 	}()
 
+	// An agent-supplied intent is authoritative: the run already carries it,
+	// so use it verbatim and skip transcript-based inference (which is slower
+	// and flakier). This applies even when extraction is disabled in config.
+	if sctx != nil && sctx.Run != nil && sctx.Run.Intent != nil && strings.TrimSpace(*sctx.Run.Intent) != "" {
+		if sctx.Log != nil {
+			sctx.Log("using intent supplied by the agent")
+		}
+		return &pipeline.StepOutcome{}, nil
+	}
+
 	if sctx == nil || sctx.Config == nil || !sctx.Config.Intent.Enabled {
 		if sctx != nil && sctx.Log != nil {
 			sctx.Log("intent extraction disabled in config")

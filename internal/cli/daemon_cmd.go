@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/base64"
 	"fmt"
 	"os"
 	"strings"
@@ -52,6 +53,10 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			intent, err := parseIntentPushOptions(pushOptions)
+			if err != nil {
+				return err
+			}
 
 			p, err := paths.New()
 			if err != nil {
@@ -71,6 +76,7 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 				Old:       oldSHA,
 				New:       newSHA,
 				SkipSteps: skipSteps,
+				Intent:    intent,
 			}, &result)
 		},
 	}
@@ -117,6 +123,38 @@ func parseSkipSteps(value string) ([]types.StepName, error) {
 		steps = append(steps, step)
 	}
 	return dedupeSteps(steps), nil
+}
+
+// intentPushOptionPrefix carries an agent-supplied intent through a git push.
+// The value is base64-encoded so multi-line or special-character intents
+// survive the push-option transport (which is line-oriented).
+const intentPushOptionPrefix = "no-mistakes.intent="
+
+// formatIntentPushOption encodes intent as a single push option, or returns ""
+// when there is no intent to carry.
+func formatIntentPushOption(intent string) string {
+	if strings.TrimSpace(intent) == "" {
+		return ""
+	}
+	return intentPushOptionPrefix + base64.StdEncoding.EncodeToString([]byte(intent))
+}
+
+// parseIntentPushOptions extracts and decodes the intent push option, if any.
+// The last occurrence wins.
+func parseIntentPushOptions(options []string) (string, error) {
+	intent := ""
+	for _, option := range options {
+		encoded, ok := strings.CutPrefix(option, intentPushOptionPrefix)
+		if !ok {
+			continue
+		}
+		decoded, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			return "", fmt.Errorf("decode intent push option: %w", err)
+		}
+		intent = string(decoded)
+	}
+	return intent, nil
 }
 
 func formatSkipPushOptions(steps []types.StepName) []string {

@@ -13,7 +13,7 @@ LDFLAGS := -X github.com/kunchenguid/no-mistakes/internal/buildinfo.Version=$(VE
            -X github.com/kunchenguid/no-mistakes/internal/buildinfo.TelemetryHost=$(UMAMI_HOST) \
            -X github.com/kunchenguid/no-mistakes/internal/buildinfo.TelemetryWebsiteID=$(UMAMI_WEBSITE_ID)
 
-.PHONY: build dist install test e2e e2e-record lint fmt clean docs docs-build docs-preview demo
+.PHONY: build dist install test e2e e2e-record lint fmt clean docs docs-build docs-preview demo skill skill-check
 
 DIST_DIR ?= dist
 INSTALL_BIN := $(shell go env GOPATH)/bin/no-mistakes
@@ -67,7 +67,17 @@ e2e-record:
 	go run ./cmd/recordfixture codex    --out internal/e2e/fixtures/codex
 	go run ./cmd/recordfixture opencode --out internal/e2e/fixtures/opencode
 
-lint:
+# Regenerate the committed agent skill (skills/no-mistakes/SKILL.md) from the
+# internal/skill source of truth.
+skill:
+	go run ./cmd/genskill
+
+# Fail if the committed skill has drifted from the generator. Wired into lint
+# so CI catches a forgotten `make skill`.
+skill-check:
+	go run ./cmd/genskill --check
+
+lint: skill-check
 	go vet ./...
 
 fmt:

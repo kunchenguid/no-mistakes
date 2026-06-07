@@ -163,11 +163,12 @@ func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushRec
 	}
 
 	branch := branchFromRef(params.Ref)
-	return m.startRun(ctx, repo, branch, params.New, params.Old, "push", params.SkipSteps)
+	return m.startRun(ctx, repo, branch, params.New, params.Old, "push", params.SkipSteps, params.Intent)
 }
 
-// HandleRerun creates a new run for the latest gate head on a branch.
-func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch string) (string, error) {
+// HandleRerun creates a new run for the latest gate head on a branch. An
+// optional intent is stamped onto the new run.
+func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, intent string) (string, error) {
 	repo, err := m.db.GetRepo(repoID)
 	if err != nil {
 		return "", fmt.Errorf("get repo: %w", err)
@@ -210,11 +211,13 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch string) (st
 		baseSHA = matchingHead.BaseSHA
 	}
 
-	return m.startRun(ctx, repo, branch, headSHA, baseSHA, "rerun", nil)
+	return m.startRun(ctx, repo, branch, headSHA, baseSHA, "rerun", nil, intent)
 }
 
 // startRun creates a run, sets up a worktree, and launches pipeline execution.
-func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName) (string, error) {
+// A non-empty intent is stamped onto the run as agent-supplied, so the intent
+// step uses it instead of inferring from transcripts.
+func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent string) (string, error) {
 	branchRole := telemetryBranchRole(branch, repo.DefaultBranch)
 	trackStartFailure := func(stage string) {
 		telemetry.Track("run", telemetry.Fields{
@@ -246,6 +249,22 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	if err != nil {
 		trackStartFailure("create_run")
 		return "", fmt.Errorf("create run: %w", err)
+	}
+
+	// Stamp an agent-supplied intent onto the run before the pipeline starts,
+	// so the intent step finds it already present and skips transcript-based
+	// inference. A persist failure is non-fatal: the intent step would simply
+	// fall back to inference.
+	if trimmed := strings.TrimSpace(intent); trimmed != "" {
+		if err := m.db.UpdateRunIntent(run.ID, db.RunIntent{Summary: trimmed, Source: "agent", Score: 1}); err != nil {
+			slog.Warn("failed to persist agent-supplied intent", "run_id", run.ID, "error", err)
+		} else {
+			run.Intent = &trimmed
+			source := "agent"
+			run.IntentSource = &source
+			score := 1.0
+			run.IntentScore = &score
+		}
 	}
 
 	// Create worktree from the gate bare repo.

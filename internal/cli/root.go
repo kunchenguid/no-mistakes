@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"io"
 
@@ -13,10 +14,37 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// exitError carries an explicit process exit code. Commands that render their
+// own structured output (the axi surface) return one of these so they can map
+// outcomes onto AXI exit-code conventions (0 success/no-op, 1 error, 2 usage)
+// without cobra printing the Go error to the user. A nil inner err prints
+// nothing to stderr; a non-nil err is surfaced as a diagnostic.
+type exitError struct {
+	code int
+	err  error
+}
+
+func (e *exitError) Error() string {
+	if e.err != nil {
+		return e.err.Error()
+	}
+	return ""
+}
+
+func (e *exitError) Unwrap() error { return e.err }
+
 // Execute runs the root CLI command.
 func Execute() int {
-	if err := newRootCmd().Execute(); err != nil {
-		fmt.Fprintln(newRootCmd().ErrOrStderr(), err)
+	root := newRootCmd()
+	if err := root.Execute(); err != nil {
+		var ee *exitError
+		if errors.As(err, &ee) {
+			if ee.err != nil {
+				fmt.Fprintln(root.ErrOrStderr(), ee.err)
+			}
+			return ee.code
+		}
+		fmt.Fprintln(root.ErrOrStderr(), err)
 		return 1
 	}
 	return 0
@@ -64,6 +92,7 @@ func newRootCmd() *cobra.Command {
 	cmd.AddCommand(newRunsCmd())
 	cmd.AddCommand(newStatsCmd())
 	cmd.AddCommand(newDoctorCmd())
+	cmd.AddCommand(newAxiCmd())
 
 	return cmd
 }

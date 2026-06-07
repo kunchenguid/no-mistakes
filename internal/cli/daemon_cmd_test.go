@@ -35,3 +35,36 @@ func TestFormatSkipPushOptions(t *testing.T) {
 		t.Fatalf("formatSkipPushOptions() = %v, want %v", got, want)
 	}
 }
+
+func TestIntentPushOptionRoundTrip(t *testing.T) {
+	// Multi-line, comma- and colon-bearing intent must survive the
+	// line-oriented push-option transport intact.
+	intent := "add retry to the uploader\n\nwhy: flaky network, commas, colons: ok"
+	opt := formatIntentPushOption(intent)
+	if opt == "" {
+		t.Fatal("formatIntentPushOption returned empty for a non-empty intent")
+	}
+	got, err := parseIntentPushOptions([]string{"no-mistakes.skip=test", opt})
+	if err != nil {
+		t.Fatalf("parseIntentPushOptions() error = %v", err)
+	}
+	if got != intent {
+		t.Fatalf("round-trip mismatch:\n got %q\nwant %q", got, intent)
+	}
+}
+
+func TestFormatIntentPushOptionEmpty(t *testing.T) {
+	if got := formatIntentPushOption("   "); got != "" {
+		t.Fatalf("formatIntentPushOption(blank) = %q, want empty", got)
+	}
+}
+
+func TestParseIntentPushOptionsNone(t *testing.T) {
+	got, err := parseIntentPushOptions([]string{"no-mistakes.skip=test", "ci.skip"})
+	if err != nil {
+		t.Fatalf("parseIntentPushOptions() error = %v", err)
+	}
+	if got != "" {
+		t.Fatalf("parseIntentPushOptions(no intent) = %q, want empty", got)
+	}
+}

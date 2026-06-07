@@ -1,0 +1,110 @@
+// Package skill holds the canonical content of the no-mistakes agent skill.
+//
+// It is the single source of truth for the skill's identity (name and
+// trigger description) and its SKILL.md body. The genskill tool renders
+// Markdown() to skills/no-mistakes/SKILL.md (verified fresh in CI), and the
+// init command embeds that generated file to install it into a user's repo.
+// The CLI's axi home view reuses Description so the two never drift.
+package skill
+
+import "strings"
+
+// Name is the skill directory name and frontmatter name. It must match the
+// installed directory so the agent exposes it as the /no-mistakes command.
+const Name = "no-mistakes"
+
+// Description is the trigger-shaped frontmatter description: what the skill
+// does and when to use it. It is the single most important field for the
+// agent's decision to load the skill, so it leads with outcomes and keywords.
+const Description = "Validate your code changes through the no-mistakes pipeline - automated code review, tests, lint, docs, push, PR, and CI - before they reach upstream. Use when the user asks to run no-mistakes, gate or ship or validate their changes, push safely, or invokes /no-mistakes."
+
+// Markdown returns the complete SKILL.md document (YAML frontmatter plus body).
+// The output is deterministic so it can be regenerated and diff-checked.
+func Markdown() string {
+	var b strings.Builder
+	b.WriteString("---\n")
+	b.WriteString("name: " + Name + "\n")
+	b.WriteString("description: " + Description + "\n")
+	b.WriteString("user-invocable: true\n")
+	b.WriteString("---\n")
+	b.WriteString(body)
+	return b.String()
+}
+
+// body is the Markdown instructions an agent reads when the skill activates.
+// Keep it focused: the operating loop, the command vocabulary, and how to read
+// the TOON output. Do not embed live state here - the skill is static.
+const body = `
+# no-mistakes
+
+` + "`no-mistakes`" + ` is a local gate that validates your code changes through a pipeline
+(intent, rebase, review, test, document, lint, push, PR, CI) before they reach
+upstream. You drive it through the ` + "`no-mistakes axi`" + ` command family, which prints
+machine-readable [TOON](https://toonformat.dev) to stdout and progress to stderr.
+
+When the user invokes ` + "`/no-mistakes`" + `, validate the changes and report the outcome.
+If the user asks for something specific, translate that request into the matching
+` + "`axi run`" + ` flags yourself - for example, "skip the lint step" becomes ` + "`--skip=lint`" + `.
+Run ` + "`no-mistakes axi run --help`" + ` to see the available flags.
+
+## Before you start
+
+- The work you want validated must be **committed** on a branch. The gate
+  validates committed history, not your uncommitted working tree.
+- You must be on a **feature branch**, not the repository's default branch.
+- The repository must already be initialized with ` + "`no-mistakes init`" + `.
+
+If any of these is not met, ` + "`axi run`" + ` returns an ` + "`error:`" + ` with the exact command
+to fix it - read it and act on it (commit your work, or create a branch).
+
+## Intent is required
+
+When you start a run you must pass ` + "`--intent`" + `: **what the user set out to
+accomplish** - the goal or request behind this work, in their terms. This is not
+a description of the diff or the files you changed; it is the objective the
+change is meant to achieve. You know it from the conversation, so pass it
+directly - no-mistakes uses it verbatim instead of inferring it from local agent
+transcripts (slower and flakier). One or two sentences.
+
+## Validate and decide
+
+Run the pipeline and decide on its findings as they come up:
+
+1. Start the run. It blocks until the first decision point or the end:
+   ` + "```sh" + `
+   no-mistakes axi run --intent "<what the user set out to accomplish>"
+   ` + "```" + `
+2. If the output contains a ` + "`gate:`" + ` object, the pipeline is waiting on you.
+   Read its ` + "`findings`" + ` table (each has an ` + "`id`" + `, ` + "`severity`" + `, ` + "`file`" + `, ` + "`action`" + `,
+   and ` + "`description`" + `) and choose one response:
+   ` + "```sh" + `
+   # accept the step as-is and continue
+   no-mistakes axi respond --action approve
+
+   # have the agent fix specific findings, then continue
+   no-mistakes axi respond --action fix --findings <id1,id2> --instructions "<optional guidance>"
+
+   # skip this step
+   no-mistakes axi respond --action skip
+   ` + "```" + `
+   Each ` + "`respond`" + ` blocks until the next ` + "`gate:`" + ` or the final outcome.
+3. Repeat step 2 until the output has an ` + "`outcome:`" + ` instead of a ` + "`gate:`" + `. An
+   ` + "`outcome:`" + ` of ` + "`passed`" + ` means the changes cleared the gate; ` + "`failed`" + ` or
+   ` + "`cancelled`" + ` means they did not - read the output and address it.
+
+## Inspecting state
+
+` + "```sh" + `
+no-mistakes axi               # home view: active run, recent runs, next steps
+no-mistakes axi status        # full detail of the active (or most recent) run
+no-mistakes axi logs --step <name> --full   # full log output of one step
+no-mistakes axi abort         # cancel the active run
+` + "```" + `
+
+## Reading the output
+
+- Output is TOON: ` + "`key: value`" + ` pairs, ` + "`name[N]{cols}:`" + ` tables, and ` + "`help[N]:`" + ` hints.
+- The ` + "`help`" + ` list at the bottom of most responses tells you the next commands to run.
+- Errors are printed as ` + "`error: ...`" + ` on stdout with a ` + "`help`" + ` list; act on the suggestion.
+- Exit codes: ` + "`0`" + ` success or no-op, ` + "`1`" + ` the run blocked or failed, ` + "`2`" + ` bad usage.
+`

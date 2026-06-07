@@ -5,6 +5,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/gate"
+	"github.com/kunchenguid/no-mistakes/internal/skill"
 	"github.com/spf13/cobra"
 )
 
@@ -40,6 +41,11 @@ func newInitCmd() *cobra.Command {
 					return fmt.Errorf("start daemon: %w", err)
 				}
 
+				// Install the agent skill so agents can drive no-mistakes via
+				// `/no-mistakes`. Best-effort: a skill write failure must not
+				// undo a successful gate setup.
+				_, skillErr := skill.Install(repo.WorkingPath)
+
 				w := cmd.OutOrStdout()
 				fmt.Fprintln(w, sCyan.Render(banner))
 				fmt.Fprintln(w)
@@ -48,6 +54,11 @@ func newInitCmd() *cobra.Command {
 				fmt.Fprintf(w, "  %s  %s\n", sDim.Render("  repo"), repo.WorkingPath)
 				fmt.Fprintf(w, "  %s  no-mistakes → %s\n", sDim.Render("  gate"), p.RepoDir(repo.ID))
 				fmt.Fprintf(w, "  %s  %s\n", sDim.Render("remote"), repo.UpstreamURL)
+				if skillErr != nil {
+					fmt.Fprintf(w, "  %s  %s\n", sDim.Render(" skill"), sYellow.Render("skipped: "+skillErr.Error()))
+				} else {
+					fmt.Fprintf(w, "  %s  %s %s\n", sDim.Render(" skill"), sGreen.Render("/no-mistakes"), sDim.Render("installed for agents"))
+				}
 				fmt.Fprintln(w)
 				fmt.Fprintf(w, "  %s\n", sDim.Render("Push through the gate with:"))
 				fmt.Fprintf(w, "  %s\n", sBold.Render("git push no-mistakes <branch>"))

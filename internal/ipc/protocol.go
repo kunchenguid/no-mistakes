@@ -57,12 +57,17 @@ func (e *RPCError) Error() string { return e.Message }
 // --- Method parameters ---
 
 // PushReceivedParams are sent by the post-receive hook when a push arrives.
+//
+// Intent, when set, is an agent-supplied description of the change. It is
+// stamped onto the run so the intent step uses it verbatim instead of inferring
+// intent from local transcripts.
 type PushReceivedParams struct {
 	Gate      string           `json:"gate"`
 	Ref       string           `json:"ref"`
 	Old       string           `json:"old"`
 	New       string           `json:"new"`
 	SkipSteps []types.StepName `json:"skip_steps,omitempty"`
+	Intent    string           `json:"intent,omitempty"`
 }
 
 // GetRunParams requests a single run by ID.
@@ -83,9 +88,11 @@ type GetActiveRunParams struct {
 }
 
 // RerunParams requests a new run for the latest gate head on a branch.
+// Intent, when set, is stamped onto the new run like PushReceivedParams.Intent.
 type RerunParams struct {
 	RepoID string `json:"repo_id"`
 	Branch string `json:"branch"`
+	Intent string `json:"intent,omitempty"`
 }
 
 // SubscribeParams starts an event stream for a run.
