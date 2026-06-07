@@ -139,6 +139,7 @@ func TestModel_Yolo_FixesActionableFindings(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 respond call, got %d", len(calls))
 	}
+	t.Logf("yolo response action=%s finding_ids=%v", calls[0].Action, calls[0].FindingIDs)
 	if calls[0].Action != types.ActionFix {
 		t.Fatalf("action = %s, want %s", calls[0].Action, types.ActionFix)
 	}
@@ -170,6 +171,7 @@ func TestModel_Yolo_FixesAllActionableFindingsDespiteManualDeselection(t *testin
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 respond call, got %d", len(calls))
 	}
+	t.Logf("yolo response action=%s finding_ids=%v", calls[0].Action, calls[0].FindingIDs)
 	if calls[0].Action != types.ActionFix {
 		t.Fatalf("action = %s, want %s", calls[0].Action, types.ActionFix)
 	}
@@ -200,6 +202,7 @@ func TestModel_Yolo_ApprovesNonActionableFindings(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 respond call, got %d", len(calls))
 	}
+	t.Logf("yolo response action=%s finding_ids=%v", calls[0].Action, calls[0].FindingIDs)
 	if calls[0].Action != types.ActionApprove {
 		t.Fatalf("action = %s, want %s (non-actionable findings should be approved)", calls[0].Action, types.ActionApprove)
 	}
@@ -235,6 +238,7 @@ func TestModel_Yolo_ApprovesFixReviewAfterFixingOnce(t *testing.T) {
 	if len(calls) != 2 {
 		t.Fatalf("expected 2 respond calls, got %d", len(calls))
 	}
+	t.Logf("yolo responses first_action=%s first_finding_ids=%v second_action=%s second_finding_ids=%v", calls[0].Action, calls[0].FindingIDs, calls[1].Action, calls[1].FindingIDs)
 	if calls[0].Action != types.ActionFix {
 		t.Fatalf("first action = %s, want %s", calls[0].Action, types.ActionFix)
 	}
@@ -265,6 +269,7 @@ func TestModel_Yolo_ApprovesExistingFixReviewWithoutPriorFix(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 respond call, got %d", len(calls))
 	}
+	t.Logf("yolo response action=%s finding_ids=%v", calls[0].Action, calls[0].FindingIDs)
 	if calls[0].Action != types.ActionApprove {
 		t.Fatalf("action = %s, want %s", calls[0].Action, types.ActionApprove)
 	}

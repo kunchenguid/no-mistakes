@@ -177,7 +177,7 @@ When the instruction editor is open, press `Ctrl+s` or `Ctrl+enter` to save, or 
 | `d` | Toggle diff view (after fix cycle) |
 | `esc` | Exit diff view back to findings |
 | `?` | Toggle help overlay |
-| `y` | Toggle yolo mode, which auto-approves paused steps |
+| `y` | Toggle yolo mode, which auto-resolves paused steps |
 | `r` | Start a rerun after a failed or cancelled run |
 | `q` | Detach from TUI (or quit if run is done) |
 
@@ -197,7 +197,9 @@ The `f fix (3/5)` label shows how many findings are selected out of the total.
 
 Press `e` to add or edit extra guidance for the current finding. Press `+` to add your own finding to the list. User-authored findings start selected by default and can be removed with `D`.
 
-Press `y` to toggle yolo mode when you want paused approval and fix-review steps to approve automatically.
+Press `y` to toggle yolo mode when you want paused approval gates to resolve automatically.
+Yolo fixes gates with actionable findings by selecting every finding, then approves the resulting fix-review gate.
+It approves gates with no findings or only `action: no-op` findings as-is, and fixes each step at most once so unresolved findings do not loop forever.
 
 ## Outcome banner
 

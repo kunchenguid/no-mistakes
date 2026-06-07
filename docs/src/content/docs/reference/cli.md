@@ -61,13 +61,15 @@ no-mistakes axi run --intent "the user's goal" --yes
 | Flag | Type | Default | Description |
 |---|---|---|---|
 | `--intent` | `string` | (none) | What the user set out to accomplish; required to start a new run |
-| `-y`, `--yes` | `bool` | `false` | Auto-approve every gate and run to completion |
+| `-y`, `--yes` | `bool` | `false` | Auto-resolve every gate and run to completion |
 | `--skip` | `string` | (none) | Comma-separated pipeline steps to skip |
 
 `--intent` is not a description of the diff.
 It is the user's goal or request, and no-mistakes uses it verbatim instead of transcript inference.
 When starting a new run, `axi run` refuses the default branch and uncommitted working trees with actionable errors instead of auto-branching or auto-committing.
 Reattaching to an in-flight run does not require `--intent`.
+With `--yes`, `axi run` fixes gates that have actionable findings by selecting every finding, then accepts the resulting fix review.
+Gates with no findings or only `action: no-op` findings are approved as-is, and each step is fixed at most once so unresolved findings do not loop forever.
 
 ## no-mistakes axi respond
 
@@ -87,7 +89,9 @@ no-mistakes axi respond --action skip
 | `--findings` | `string` | (none) | Comma-separated finding IDs for `--action fix` |
 | `--instructions` | `string` | (none) | Guidance applied to selected findings |
 | `--add-finding` | `string` | (none) | JSON finding object to add and fix |
-| `-y`, `--yes` | `bool` | `false` | Auto-approve every subsequent gate to completion |
+| `-y`, `--yes` | `bool` | `false` | Auto-resolve every subsequent gate to completion |
+
+After the explicit response, `--yes` uses the same auto-resolution behavior as `axi run --yes`: fix actionable findings once, approve the fix review, and approve gates that only contain non-actionable `no-op` findings.
 
 ## no-mistakes axi status
 

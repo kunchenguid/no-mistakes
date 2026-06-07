@@ -92,6 +92,11 @@ Run the pipeline and decide on its findings as they come up:
    ` + "`outcome:`" + ` of ` + "`passed`" + ` means the changes cleared the gate; ` + "`failed`" + ` or
    ` + "`cancelled`" + ` means they did not - read the output and address it.
 
+If you have clear consent to drive the run automatically, pass ` + "`--yes`" + ` to ` + "`axi run`" + `
+or ` + "`axi respond`" + `. It treats actionable findings as consent to fix them,
+selects every current finding for one fix round, accepts the resulting fix review,
+and approves gates with only ` + "`no-op`" + ` findings.
+
 ## Inspecting state
 
 ` + "```sh" + `

@@ -463,7 +463,7 @@ func newAxiRespondCmd() *cobra.Command {
 	cmd.Flags().StringVar(&findings, "findings", "", "comma-separated finding IDs to fix (with --action fix)")
 	cmd.Flags().StringVar(&instructions, "instructions", "", "guidance applied to the selected findings (with --action fix)")
 	cmd.Flags().StringVar(&addFinding, "add-finding", "", "JSON finding object to add and fix (with --action fix)")
-	cmd.Flags().BoolVarP(&autoYes, "yes", "y", false, "auto-approve every subsequent gate to completion")
+	cmd.Flags().BoolVarP(&autoYes, "yes", "y", false, "auto-resolve every subsequent gate to completion")
 	return cmd
 }
 

@@ -72,12 +72,13 @@ func TestGateResolution(t *testing.T) {
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			action, ids := gateResolution(tt.gate, tt.alreadyFixed)
-			if action != tt.wantAction {
-				t.Fatalf("action = %s, want %s", action, tt.wantAction)
-			}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				action, ids := gateResolution(tt.gate, tt.alreadyFixed)
+				t.Logf("auto-resolution action=%s finding_ids=%v", action, ids)
+				if action != tt.wantAction {
+					t.Fatalf("action = %s, want %s", action, tt.wantAction)
+				}
 			if len(ids) != len(tt.wantIDs) {
 				t.Fatalf("ids = %v, want %v", ids, tt.wantIDs)
 			}

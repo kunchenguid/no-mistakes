@@ -68,7 +68,8 @@ Agent-driven findings now use an `action` field instead of `requires_human_revie
 - `no-op` - informational notes that do not need a fix
 
 `ask-user` is meant for findings that need human judgment - for example, questioning an intentional product or design choice, arguing that an intentional addition, removal, or guard should be undone, or reporting that the test step could not produce enough evidence for the available intent. Routine correctness, reliability, or security fixes still stay `auto-fix` even if the smallest fix reintroduces a small amount of previously deleted logic.
-In the TUI, yolo mode is an explicit override that auto-approves paused steps, including steps paused for `ask-user` findings.
+In the TUI, yolo mode is an explicit override that auto-resolves paused steps by treating actionable findings, including `ask-user` findings, as consent to run one fix round.
+Steps with only `no-op` findings are approved as-is.
 
 The `review`, `test`, and configured-command `lint` steps use this shared model directly. The `document` step also uses the same `action` field, but unresolved documentation findings pause for approval because the initial document pass already attempted the documentation updates it could make safely.
 When `commands.lint` is empty, lint findings describe issues left after the agent already attempted safe fixes, so they pause for approval instead of remaining eligible for another automatic fix loop.
@@ -89,6 +90,7 @@ That history includes which finding IDs were selected for a prior fix attempt, w
 On follow-up review passes, that history tells the agent not to re-report user-ignored findings unless the code now presents a materially different issue.
 
 After a user-triggered fix, the step re-runs and pauses again to show you the results (`fix_review` status). You can then approve, fix again, skip, or abort.
+Yolo and AXI `--yes` approve that fix review automatically after their one fix round, so a finding that remains after the fix does not trigger an unbounded fix loop.
 
 ## Fix commits
 
