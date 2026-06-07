@@ -168,7 +168,7 @@ func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushRec
 
 // HandleRerun creates a new run for the latest gate head on a branch. An
 // optional intent is stamped onto the new run.
-func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, intent string) (string, error) {
+func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch string, skipSteps []types.StepName, intent string) (string, error) {
 	repo, err := m.db.GetRepo(repoID)
 	if err != nil {
 		return "", fmt.Errorf("get repo: %w", err)
@@ -211,7 +211,7 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, intent str
 		baseSHA = matchingHead.BaseSHA
 	}
 
-	return m.startRun(ctx, repo, branch, headSHA, baseSHA, "rerun", nil, intent)
+	return m.startRun(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent)
 }
 
 // startRun creates a run, sets up a worktree, and launches pipeline execution.

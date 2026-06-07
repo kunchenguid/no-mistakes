@@ -181,7 +181,7 @@ func TestGetActiveRunParams(t *testing.T) {
 }
 
 func TestRerunParams(t *testing.T) {
-	params := RerunParams{RepoID: "repo456", Branch: "feature"}
+	params := RerunParams{RepoID: "repo456", Branch: "feature", SkipSteps: []types.StepName{types.StepReview}}
 	data, _ := json.Marshal(params)
 	var got RerunParams
 	if err := json.Unmarshal(data, &got); err != nil {
@@ -192,6 +192,9 @@ func TestRerunParams(t *testing.T) {
 	}
 	if got.Branch != "feature" {
 		t.Errorf("branch = %q, want %q", got.Branch, "feature")
+	}
+	if len(got.SkipSteps) != 1 || got.SkipSteps[0] != types.StepReview {
+		t.Errorf("skip_steps = %#v, want review", got.SkipSteps)
 	}
 }
 

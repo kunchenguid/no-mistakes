@@ -90,9 +90,10 @@ type GetActiveRunParams struct {
 // RerunParams requests a new run for the latest gate head on a branch.
 // Intent, when set, is stamped onto the new run like PushReceivedParams.Intent.
 type RerunParams struct {
-	RepoID string `json:"repo_id"`
-	Branch string `json:"branch"`
-	Intent string `json:"intent,omitempty"`
+	RepoID    string           `json:"repo_id"`
+	Branch    string           `json:"branch"`
+	SkipSteps []types.StepName `json:"skip_steps,omitempty"`
+	Intent    string           `json:"intent,omitempty"`
 }
 
 // SubscribeParams starts an event stream for a run.

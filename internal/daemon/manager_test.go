@@ -123,6 +123,61 @@ func TestPushReceivedSkipStepsConfiguresExecutor(t *testing.T) {
 	}
 }
 
+func TestRerunSkipStepsConfiguresExecutor(t *testing.T) {
+	review := &mockPassStep{name: types.StepReview}
+	testStep := &mockPassStep{name: types.StepTest}
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{review, testStep}
+	})
+
+	_, headSHA := setupTestGitRepo(t, p, d, "skip-rerun-repo")
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var first ipc.PushReceivedResult
+	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: p.RepoDir("skip-rerun-repo"),
+		Ref:  "refs/heads/main",
+		Old:  "0000000000000000000000000000000000000000",
+		New:  headSHA,
+	}, &first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForRunTerminalState(t, d, first.RunID)
+
+	var second ipc.RerunResult
+	err = client.Call(ipc.MethodRerun, &ipc.RerunParams{
+		RepoID:    "skip-rerun-repo",
+		Branch:    "main",
+		SkipSteps: []types.StepName{types.StepReview},
+	}, &second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForRunTerminalState(t, d, second.RunID)
+
+	if got := review.execCnt.Load(); got != 1 {
+		t.Fatalf("review executed %d times, want 1", got)
+	}
+	if got := testStep.execCnt.Load(); got != 2 {
+		t.Fatalf("test executed %d times, want 2", got)
+	}
+	steps, err := d.GetStepsByRun(second.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range steps {
+		if step.StepName == types.StepReview && step.Status != types.StepStatusSkipped {
+			t.Fatalf("review status = %s, want %s", step.Status, types.StepStatusSkipped)
+		}
+	}
+}
+
 func TestPushReceivedReturnsBeforeIntentSummarization(t *testing.T) {
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)

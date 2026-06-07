@@ -11,6 +11,7 @@ import (
 	toon "github.com/toon-format/toon-go"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/skill"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -186,6 +187,32 @@ func TestActiveRunLookupParamsIncludeBranch(t *testing.T) {
 	}
 	if params.Branch != "feature/x" {
 		t.Fatalf("Branch = %q, want feature/x", params.Branch)
+	}
+}
+
+func TestActiveRunIDForHeadRequiresMatchingHead(t *testing.T) {
+	active := &ipc.GetActiveRunResult{Run: &ipc.RunInfo{ID: "run-old", Status: types.RunRunning, HeadSHA: "old-head"}}
+
+	if got := activeRunIDForHead(active, "new-head"); got != "" {
+		t.Fatalf("mismatched active run ID = %q, want empty", got)
+	}
+	if got := activeRunIDForHead(active, "old-head"); got != "run-old" {
+		t.Fatalf("matching active run ID = %q, want run-old", got)
+	}
+
+	active.Run.Status = types.RunCompleted
+	if got := activeRunIDForHead(active, "old-head"); got != "" {
+		t.Fatalf("terminal active run ID = %q, want empty", got)
+	}
+}
+
+func TestRerunParamsIncludeSkipSteps(t *testing.T) {
+	params := rerunParams("repo-1", "feature/x", []types.StepName{types.StepReview}, "user goal")
+	if params.RepoID != "repo-1" || params.Branch != "feature/x" || params.Intent != "user goal" {
+		t.Fatalf("unexpected rerun params: %#v", params)
+	}
+	if len(params.SkipSteps) != 1 || params.SkipSteps[0] != types.StepReview {
+		t.Fatalf("SkipSteps = %#v, want review", params.SkipSteps)
 	}
 }
 

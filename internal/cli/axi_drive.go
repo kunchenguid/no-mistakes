@@ -100,10 +100,12 @@ func runAxiRun(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, int
 			"Run `git switch -c <branch>` to put your commits on a branch")
 	}
 
-	// Reattach to an in-flight run for this branch without re-running the
-	// pre-flight guards: once a run exists the push already happened, so the
-	// current working-tree state is irrelevant.
-	runID := activeRunID(env, branch)
+	headSHA, err := git.Run(ctx, ".", "rev-parse", "HEAD")
+	if err != nil {
+		return emitError(cmd, 1, fmt.Sprintf("get current HEAD: %v", err))
+	}
+
+	runID := activeRunID(env, branch, headSHA)
 	if runID == "" {
 		// Intent is mandatory when starting a run: the agent driving this knows
 		// the change's intent, so we take it directly instead of inferring it
@@ -134,16 +136,20 @@ func runAxiRun(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, int
 	return renderDriveResult(cmd, run)
 }
 
-// activeRunID returns the ID of a non-terminal run for branch, or "" if none.
-func activeRunID(env *axiEnv, branch string) string {
+// activeRunID returns the ID of a non-terminal run for branch and head, or "" if none.
+func activeRunID(env *axiEnv, branch, headSHA string) string {
 	var active ipc.GetActiveRunResult
 	if err := env.client.Call(ipc.MethodGetActiveRun, activeRunLookupParams(env.repo.ID, branch), &active); err != nil {
 		return ""
 	}
-	if active.Run != nil && !terminalStatus(string(active.Run.Status)) {
-		return active.Run.ID
+	return activeRunIDForHead(&active, headSHA)
+}
+
+func activeRunIDForHead(active *ipc.GetActiveRunResult, headSHA string) string {
+	if active.Run == nil || terminalStatus(string(active.Run.Status)) || active.Run.HeadSHA != headSHA {
+		return ""
 	}
-	return ""
+	return active.Run.ID
 }
 
 // preflightGuard returns an emitter for the first unmet pre-flight condition
@@ -196,7 +202,7 @@ func triggerRun(ctx context.Context, env *axiEnv, branch string, skipSteps []typ
 	// No run appeared: the push was likely up-to-date. Rerun the latest gate
 	// head so `axi run` is still useful when there are no new commits.
 	var rr ipc.RerunResult
-	if err := env.client.Call(ipc.MethodRerun, &ipc.RerunParams{RepoID: env.repo.ID, Branch: branch, Intent: intent}, &rr); err != nil {
+	if err := env.client.Call(ipc.MethodRerun, rerunParams(env.repo.ID, branch, skipSteps, intent), &rr); err != nil {
 		return "", fmt.Errorf("no run started for %q: %v", branch, err)
 	}
 	return rr.RunID, nil
@@ -208,6 +214,10 @@ func shouldRerunAfterNoActiveRun(pushErr error) bool {
 
 func activeRunLookupParams(repoID, branch string) *ipc.GetActiveRunParams {
 	return &ipc.GetActiveRunParams{RepoID: repoID, Branch: branch}
+}
+
+func rerunParams(repoID, branch string, skipSteps []types.StepName, intent string) *ipc.RerunParams {
+	return &ipc.RerunParams{RepoID: repoID, Branch: branch, SkipSteps: skipSteps, Intent: intent}
 }
 
 // driveRun polls a run until it reaches an approval gate or a terminal state,
