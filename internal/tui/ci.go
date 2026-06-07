@@ -9,6 +9,11 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
+const (
+	ciReadyChecksPassedLog = "all CI checks passed - PR is ready to merge (still monitoring until merged or closed)"
+	ciReadyNoChecksLog     = "no CI checks reported - PR is ready to merge (still monitoring until merged or closed)"
+)
+
 // isCIActive returns true if the CI step is currently running.
 func isCIActive(steps []ipc.StepResultInfo) bool {
 	for _, s := range steps {
@@ -83,7 +88,7 @@ func parseCIActivity(logs []string) ciActivity {
 			a.AutoFixing = true
 			a.Ready = false
 			a.LastEvent = line
-		case strings.Contains(line, "ready to merge"):
+		case line == ciReadyChecksPassedLog || line == ciReadyNoChecksLog:
 			a.AutoFixing = false
 			a.Ready = true
 			a.LastEvent = line

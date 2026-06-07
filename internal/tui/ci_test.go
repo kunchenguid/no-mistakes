@@ -193,6 +193,16 @@ func TestParseCIActivity(t *testing.T) {
 		}
 	})
 
+	t.Run("not ready from agent output", func(t *testing.T) {
+		a := parseCIActivity([]string{
+			"CI failures detected: test failed",
+			"agent says this is not ready to merge yet",
+		})
+		if a.Ready {
+			t.Error("expected Ready to ignore non-monitor agent output")
+		}
+	})
+
 	t.Run("ready cleared when checks re-run", func(t *testing.T) {
 		a := parseCIActivity([]string{
 			"all CI checks passed - PR is ready to merge (still monitoring until merged or closed)",
