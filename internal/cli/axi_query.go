@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	toon "github.com/toon-format/toon-go"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/spf13/cobra"
@@ -44,7 +46,7 @@ func runAxiStatus(cmd *cobra.Command, runID string) error {
 	}
 	defer env.close()
 
-	run, err := resolveRun(env, runID)
+	run, err := resolveRun(env, runID, currentBranchForRunResolve(cmd.Context()))
 	if err != nil {
 		return emitError(cmd, 1, err.Error())
 	}
@@ -80,6 +82,10 @@ func runAxiStatus(cmd *cobra.Command, runID string) error {
 
 func startRunHelp() string {
 	return `Run no-mistakes axi run --intent "the user's goal" --yes to validate the current branch`
+}
+
+func noRunLogsHelp() string {
+	return startRunHelp()
 }
 
 func newAxiLogsCmd() *cobra.Command {
@@ -120,13 +126,13 @@ func runAxiLogs(cmd *cobra.Command, step, runID string, full bool) error {
 	}
 	defer env.close()
 
-	run, err := resolveRun(env, runID)
+	run, err := resolveRun(env, runID, currentBranchForRunResolve(cmd.Context()))
 	if err != nil {
 		return emitError(cmd, 1, err.Error())
 	}
 	if run == nil {
 		return emitError(cmd, 1, "no run found to read logs from",
-			"Run `no-mistakes axi run` to start one")
+			noRunLogsHelp())
 	}
 
 	path := filepath.Join(env.p.RunLogDir(run.ID), step+".log")
@@ -176,13 +182,31 @@ func logRows(lines []string) []logRow {
 
 // resolveRun picks the run to inspect: an explicit ID, else the active run,
 // else the most recent run for the repo. Returns (nil, nil) when none exist.
-func resolveRun(env *axiEnv, runID string) (*db.Run, error) {
+func resolveRun(env *axiEnv, runID, branch string) (*db.Run, error) {
 	if runID != "" {
 		run, err := env.d.GetRun(runID)
 		if err != nil {
 			return nil, fmt.Errorf("get run: %w", err)
 		}
 		return run, nil
+	}
+	if branch != "" {
+		active, err := env.d.GetActiveRun(env.repo.ID, branch)
+		if err != nil {
+			return nil, fmt.Errorf("get active run: %w", err)
+		}
+		if active != nil {
+			return active, nil
+		}
+		runs, err := env.d.GetRunsByRepo(env.repo.ID)
+		if err != nil {
+			return nil, fmt.Errorf("list runs: %w", err)
+		}
+		for _, run := range runs {
+			if run.Branch == branch {
+				return run, nil
+			}
+		}
 	}
 	active, err := env.d.GetActiveRun(env.repo.ID, "")
 	if err != nil {
@@ -199,6 +223,14 @@ func resolveRun(env *axiEnv, runID string) (*db.Run, error) {
 		return nil, nil
 	}
 	return runs[0], nil
+}
+
+func currentBranchForRunResolve(ctx context.Context) string {
+	branch, err := git.CurrentBranch(ctx, ".")
+	if err != nil || branch == "HEAD" {
+		return ""
+	}
+	return branch
 }
 
 func splitLogLines(s string) []string {

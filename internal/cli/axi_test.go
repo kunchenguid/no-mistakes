@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -206,6 +207,22 @@ func TestActiveRunIDForHeadRequiresMatchingHead(t *testing.T) {
 	}
 }
 
+func TestActiveRunInfoForHeadRequiresMatchingHead(t *testing.T) {
+	run := &ipc.RunInfo{ID: "run-old", Status: types.RunRunning, HeadSHA: "old-head"}
+
+	if got := activeRunInfoForHead(run, "new-head"); got != nil {
+		t.Fatalf("mismatched active run = %#v, want nil", got)
+	}
+	if got := activeRunInfoForHead(run, "old-head"); got == nil || got.ID != "run-old" {
+		t.Fatalf("matching active run = %#v, want run-old", got)
+	}
+
+	run.Status = types.RunCompleted
+	if got := activeRunInfoForHead(run, "old-head"); got != nil {
+		t.Fatalf("terminal active run = %#v, want nil", got)
+	}
+}
+
 func TestRerunParamsIncludeSkipSteps(t *testing.T) {
 	params := rerunParams("repo-1", "feature/x", []types.StepName{types.StepReview}, "user goal")
 	if params.RepoID != "repo-1" || params.Branch != "feature/x" || params.Intent != "user goal" {
@@ -243,6 +260,52 @@ func TestStatusEmptyHelpIncludesRequiredIntent(t *testing.T) {
 	if !strings.Contains(out, "--intent") {
 		t.Fatalf("empty status help must include required --intent, got:\n%s", out)
 	}
+}
+
+func TestLogsNoRunHelpIncludesRequiredIntent(t *testing.T) {
+	if !strings.Contains(noRunLogsHelp(), "--intent") {
+		t.Fatalf("no-run logs help must include required --intent, got %q", noRunLogsHelp())
+	}
+}
+
+func TestResolveRunPrefersCurrentBranchLatestRun(t *testing.T) {
+	database := openTestDB(t)
+	repo, err := database.InsertRepo(t.TempDir(), "origin", "main")
+	if err != nil {
+		t.Fatalf("insert repo: %v", err)
+	}
+	current, err := database.InsertRun(repo.ID, "feature/current", "head-current", "base")
+	if err != nil {
+		t.Fatalf("insert current run: %v", err)
+	}
+	if err := database.UpdateRunStatus(current.ID, types.RunCompleted); err != nil {
+		t.Fatalf("complete current run: %v", err)
+	}
+	other, err := database.InsertRun(repo.ID, "feature/other", "head-other", "base")
+	if err != nil {
+		t.Fatalf("insert other run: %v", err)
+	}
+	if err := database.UpdateRunStatus(other.ID, types.RunRunning); err != nil {
+		t.Fatalf("run other run: %v", err)
+	}
+
+	got, err := resolveRun(&axiEnv{d: database, repo: repo}, "", "feature/current")
+	if err != nil {
+		t.Fatalf("resolve run: %v", err)
+	}
+	if got == nil || got.ID != current.ID {
+		t.Fatalf("resolved run = %#v, want current branch run %s", got, current.ID)
+	}
+}
+
+func openTestDB(t *testing.T) *db.DB {
+	t.Helper()
+	database, err := db.Open(filepath.Join(t.TempDir(), "no-mistakes.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	return database
 }
 
 func TestSkillExitCodeGuidanceDistinguishesDecisionGates(t *testing.T) {

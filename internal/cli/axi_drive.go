@@ -123,7 +123,7 @@ func runAxiRun(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, int
 			return guard(cmd)
 		}
 		var err error
-		runID, err = triggerRun(ctx, env, branch, skipSteps, intent)
+		runID, err = triggerRun(ctx, env, branch, headSHA, skipSteps, intent)
 		if err != nil {
 			return emitError(cmd, 1, err.Error())
 		}
@@ -146,10 +146,18 @@ func activeRunID(env *axiEnv, branch, headSHA string) string {
 }
 
 func activeRunIDForHead(active *ipc.GetActiveRunResult, headSHA string) string {
-	if active.Run == nil || terminalStatus(string(active.Run.Status)) || active.Run.HeadSHA != headSHA {
+	run := activeRunInfoForHead(active.Run, headSHA)
+	if run == nil {
 		return ""
 	}
-	return active.Run.ID
+	return run.ID
+}
+
+func activeRunInfoForHead(run *ipc.RunInfo, headSHA string) *ipc.RunInfo {
+	if run == nil || terminalStatus(string(run.Status)) || run.HeadSHA != headSHA {
+		return nil
+	}
+	return run
 }
 
 // preflightGuard returns an emitter for the first unmet pre-flight condition
@@ -185,14 +193,14 @@ func preflightGuard(ctx context.Context, env *axiEnv, branch string) func(*cobra
 // the gate to trigger a pipeline, and falls back to a rerun when the push was a
 // no-op (the gate already had this commit). Callers must check for an existing
 // active run first (see activeRunID) and apply pre-flight guards.
-func triggerRun(ctx context.Context, env *axiEnv, branch string, skipSteps []types.StepName, intent string) (string, error) {
+func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSteps []types.StepName, intent string) (string, error) {
 	pushOptions := formatSkipPushOptions(skipSteps)
 	if opt := formatIntentPushOption(intent); opt != "" {
 		pushOptions = append(pushOptions, opt)
 	}
 	pushErr := git.PushWithOptions(ctx, ".", gate.RemoteName, "refs/heads/"+branch, "", false, pushOptions)
 
-	if run, _ := waitForActiveRun(ctx, env.client, env.repo.ID, branch, triggerWaitTimeout); run != nil {
+	if run, _ := waitForActiveRunForHead(ctx, env.client, env.repo.ID, branch, headSHA, triggerWaitTimeout); run != nil {
 		return run.ID, nil
 	}
 	if !shouldRerunAfterNoActiveRun(pushErr) {
@@ -206,6 +214,34 @@ func triggerRun(ctx context.Context, env *axiEnv, branch string, skipSteps []typ
 		return "", fmt.Errorf("no run started for %q: %v", branch, err)
 	}
 	return rr.RunID, nil
+}
+
+func waitForActiveRunForHead(ctx context.Context, client *ipc.Client, repoID, branch, headSHA string, timeout time.Duration) (*ipc.RunInfo, error) {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+
+	poll := time.NewTicker(150 * time.Millisecond)
+	defer poll.Stop()
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		var result ipc.GetActiveRunResult
+		if err := client.Call(ipc.MethodGetActiveRun, &ipc.GetActiveRunParams{RepoID: repoID, Branch: branch}, &result); err != nil {
+			return nil, err
+		}
+		if run := activeRunInfoForHead(result.Run, headSHA); run != nil {
+			return run, nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-deadline.C:
+			return nil, nil
+		case <-poll.C:
+		}
+	}
 }
 
 func shouldRerunAfterNoActiveRun(pushErr error) bool {
