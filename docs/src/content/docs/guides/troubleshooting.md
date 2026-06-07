@@ -183,7 +183,9 @@ Symptom: CI step runs for 4 hours and pauses for approval.
 ci_timeout: "8h"
 ```
 
-If CI is genuinely hanging on the provider side, the step times out and pauses with findings for the unresolved state. You can approve (accept the risk), fix (run another auto-fix cycle), skip, or abort from the TUI.
+The CI step keeps monitoring while the PR remains open, even after checks are currently healthy, because a later default-branch update can make the PR conflict or rerun CI.
+If the PR is still open at the timeout, the step pauses for approval with findings for the open monitoring state or any known unresolved failures.
+You can approve (accept the risk), fix (run another auto-fix cycle), skip, or abort from the TUI.
 
 ## Worktree won't clean up
 

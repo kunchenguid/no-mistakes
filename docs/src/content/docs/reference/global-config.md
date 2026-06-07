@@ -173,7 +173,7 @@ agent_args_override:
 
 ### ci_timeout
 
-How long the CI step waits for provider CI status, and on GitHub or GitLab for PR mergeability, before timing out.
+How long the CI step monitors an open PR, including provider CI status and on GitHub or GitLab PR mergeability, before timing out.
 
 | | |
 |---|---|

@@ -14,7 +14,7 @@ import (
 
 const defaultChecksGracePeriod = 60 * time.Second
 
-// CIStep monitors CI checks after PR creation, auto-fixing failures.
+// CIStep monitors an open PR until it is merged or closed, auto-fixing CI failures.
 type CIStep struct {
 	lastFixedChecks      string               // sorted check names from last fix attempt, to avoid re-fixing
 	lastFixedCompletedAt map[string]time.Time // failing check completion times seen before the last fix attempt

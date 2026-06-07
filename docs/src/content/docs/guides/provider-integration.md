@@ -20,7 +20,7 @@ Without any provider setup, `no-mistakes` still gives you the local gate:
 - lint
 - push through normal Git transport
 
-What you do not get is PR automation and CI babysitting.
+What you do not get is PR automation and CI monitoring.
 
 ## What each step needs
 
@@ -37,7 +37,7 @@ Once the host is wired up, `no-mistakes` can keep owning the branch after the
 upstream push:
 
 - create or update the PR automatically
-- poll hosted CI without you refreshing a browser tab
+- keep polling hosted CI until the PR is merged, closed, declined, or times out
 - fetch failing job logs for the CI auto-fix loop
 - on GitHub and GitLab, watch mergeability and fix merge conflicts when possible
 
@@ -66,7 +66,7 @@ gh auth status
 **What you get:**
 
 - PR creation and update on pushes
-- CI check polling with exponential backoff (30s → 60s → 120s)
+- CI check polling with exponential backoff (30s → 60s → 120s) until the PR is merged, closed, or times out
 - Failed job log fetching (`gh run view --log-failed`) for the CI auto-fix step
 - PR mergeability polling, and agent-driven merge-conflict resolution when the branch falls behind
 
@@ -87,7 +87,7 @@ glab auth login
 **What you get:**
 
 - PR (merge request) creation and update
-- CI pipeline status polling
+- CI pipeline status polling until the merge request is merged, closed, or times out
 - Failed job trace fetching (`glab ci trace`) for the CI auto-fix step
 - Merge-conflict polling and auto-fix, same as GitHub
 
@@ -108,7 +108,7 @@ Get an API token from [Bitbucket account settings](https://bitbucket.org/account
 **What you get:**
 
 - PR creation and update
-- CI pipeline status polling
+- CI pipeline status polling until the PR is merged, declined, or times out
 - Failed pipeline step log fetching for the CI auto-fix step
 
 **What you don't get (yet):**

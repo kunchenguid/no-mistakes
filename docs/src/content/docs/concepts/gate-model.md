@@ -47,7 +47,7 @@ That is a core design choice, not an implementation detail.
 5. The pipeline runs in order: `intent -> rebase -> review -> test -> document -> lint -> push -> pr -> ci`.
 6. If a step pauses, you can attach with the TUI and approve, fix, skip, or abort.
 7. After local checks pass, the push step forwards the branch upstream and the PR step creates or updates the pull request.
-8. The CI step keeps watching after the PR exists and can auto-fix failures or merge conflicts when supported.
+8. The CI step keeps watching the open PR until it is merged or closed, and can auto-fix failures or merge conflicts when supported.
 
 **Key design decisions:**
 
