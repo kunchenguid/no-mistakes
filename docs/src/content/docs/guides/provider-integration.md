@@ -62,6 +62,7 @@ gh auth status
 ```
 
 `no-mistakes doctor` also checks for `gh` availability.
+For PR and workflow-run commands, no-mistakes passes the repository slug from the recorded upstream remote or PR URL to `gh`, so daemon-run commands do not depend on the daemon's current working directory.
 
 **What you get:**
 
