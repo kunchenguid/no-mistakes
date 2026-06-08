@@ -85,7 +85,10 @@ It does **not** change the pipeline order or the meaning of a passed gate.
 ## Driving no-mistakes as an agent
 
 The primary way to put a change through the gate from inside a coding agent is the `/no-mistakes` skill.
-When the agent that wrote the change is a skill-aware tool like Claude Code, you invoke `/no-mistakes` and it runs the whole pipeline for you: it starts the run with the intent it already has from the conversation, resolves the low-risk findings on its own, and stops to relay anything that needs your decision.
+A skill-aware tool like Claude Code supports two invocation modes.
+Use bare `/no-mistakes` to validate existing committed work.
+Use `/no-mistakes <task>` to have the agent first do the task, commit only that task's changes on a feature branch, then run the pipeline with the task text as `--intent`.
+In both modes, it resolves low-risk findings on its own and stops to relay anything that needs your decision.
 
 `no-mistakes init` installs that skill into `.claude/skills/no-mistakes/SKILL.md` and `.agents/skills/no-mistakes/SKILL.md`, so it is available to every supported agent in the repo.
 Repos that symlink `.claude` to `.agents`, `.claude/skills` to `.agents/skills`, or the reverse, keep that layout; `init` follows the symlink and makes the skill reachable from both logical paths.
@@ -93,6 +96,9 @@ Re-run `no-mistakes init` in an already-initialized repo to refresh or reinstall
 The skill drives `no-mistakes axi`, a non-interactive command surface that prints TOON to stdout and progress to stderr.
 When CI is green but the PR is still open, `axi run` and `axi respond` return `outcome: checks-passed` with a help line pointing at the PR instead of waiting for a human merge.
 That is a successful agent stopping point: report that the PR is ready and ask the user to review and merge it.
+
+In task-first mode, if the repo is on the default branch, the skill tells the agent to create a feature branch before committing because the gate validates committed history on a non-default branch.
+The agent should inspect `git status` before changing or committing anything, preserve unrelated pre-existing uncommitted changes, and commit only the changes that belong to the user's task.
 
 Agents can also call `no-mistakes axi` directly:
 
@@ -106,7 +112,7 @@ no-mistakes axi abort
 
 When an agent starts a new run, `--intent` is required and should describe what the user wanted to accomplish, not what files changed.
 Agents should prefer a few complete sentences over a terse summary, capturing user decisions, tradeoffs, constraints, ruled-out approaches, and explicit requests that would not be obvious from the diff alone.
-If the repo is on the default branch or has uncommitted changes, `axi run` returns a structured error with the command the agent should run instead of silently creating a branch or commit.
+If the repo is on the default branch or has uncommitted changes, direct `axi run` returns a structured error with the command the agent should run instead of silently creating a branch or commit.
 Approval gates are exposed as `gate:` objects with finding IDs, severities, files, actions, descriptions, and help commands for `no-mistakes axi respond`.
 An agent should resolve `action: auto-fix` findings on its own judgment, ignore `action: no-op` findings when approving, and stop on `action: ask-user` findings unless it is running with explicit `--yes` consent.
 When it stops for `ask-user`, it should relay each finding's ID, file, and full description to the user before choosing `approve`, `fix`, or `skip`.

@@ -83,13 +83,23 @@ The TUI shows each step's progress, streams agent output, and pauses for your ap
 
 ## Or let your agent run the gate
 
-If a coding agent like Claude Code made the change, you don't have to switch to the terminal at all. `no-mistakes init` installed a `/no-mistakes` skill into the repo, so you can just tell the agent:
+If you are already working inside a coding agent like Claude Code, you don't have to switch to the terminal at all.
+`no-mistakes init` installed a `/no-mistakes` skill into the repo, so you can ask the agent to do a task and gate it:
+
+```
+/no-mistakes add a --json flag to the status command
+```
+
+Or, if the work is already committed on a feature branch, use bare `/no-mistakes` to validate it:
 
 ```
 /no-mistakes
 ```
 
-The agent commits if needed, starts the pipeline with the intent it already has from your conversation, applies the low-risk fixes itself, and stops to relay any finding that needs your judgment. It drives the same gate as the TUI through `no-mistakes axi`, a non-interactive command surface that uses flags only, prints TOON on stdout, and exposes the same approval gates through `no-mistakes axi respond`.
+In task-first mode, the agent inspects scope, preserves unrelated work, commits only the task changes on a feature branch, and passes your task text as `--intent`.
+In validate-only mode, it validates the existing committed work.
+Either way, it applies low-risk fixes itself and stops to relay any finding that needs your judgment.
+It drives the same gate as the TUI through `no-mistakes axi`, a non-interactive command surface that uses flags only, prints TOON on stdout, and exposes the same approval gates through `no-mistakes axi respond`.
 
 See [Driving no-mistakes as an agent](/no-mistakes/guides/agents/#driving-no-mistakes-as-an-agent) for the full agent workflow.
 
