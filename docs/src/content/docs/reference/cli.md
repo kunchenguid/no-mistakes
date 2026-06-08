@@ -41,6 +41,7 @@ Skill installation is best-effort: if the skill write fails, init reports it and
 ## no-mistakes axi
 
 Agent eXperience Interface for non-interactive agents.
+Most agent workflows use the installed `/no-mistakes` skill, which drives this command surface underneath.
 It prints TOON to stdout, prints progress to stderr, and uses structured stdout errors with exit code `1` for operational failures and `2` for bad usage.
 
 ```sh
