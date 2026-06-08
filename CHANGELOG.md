@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.26.1](https://github.com/kunchenguid/no-mistakes/compare/v1.26.0...v1.26.1) (2026-06-08)
+
+
+### Bug Fixes
+
+* **scm:** make GitHub operations repo-aware ([#256](https://github.com/kunchenguid/no-mistakes/issues/256)) ([5964ad9](https://github.com/kunchenguid/no-mistakes/commit/5964ad9d521860f314fb1c992b8fa7870db59fc3))
+
 ## [1.26.0](https://github.com/kunchenguid/no-mistakes/compare/v1.25.1...v1.26.0) (2026-06-08)
 
 
