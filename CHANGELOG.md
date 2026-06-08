@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.27.0](https://github.com/kunchenguid/no-mistakes/compare/v1.26.1...v1.27.0) (2026-06-08)
+
+
+### Features
+
+* **skill:** support task-first no-mistakes invocation ([#259](https://github.com/kunchenguid/no-mistakes/issues/259)) ([831c2c1](https://github.com/kunchenguid/no-mistakes/commit/831c2c159e9578b0425183fc472134b3fe4770b8))
+
 ## [1.26.1](https://github.com/kunchenguid/no-mistakes/compare/v1.26.0...v1.26.1) (2026-06-08)
 
 
