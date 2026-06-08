@@ -12,6 +12,72 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
 
+func TestRepoSlug(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"https", "https://github.com/test/repo", "test/repo"},
+		{"https with .git suffix", "https://github.com/test/repo.git", "test/repo"},
+		{"pr url", "https://github.com/test/repo/pull/42", "test/repo"},
+		{"ssh scp form", "git@github.com:test/repo.git", "test/repo"},
+		{"ssh scp form no suffix", "git@github.com:test/repo", "test/repo"},
+		{"ssh url form", "ssh://git@github.com/test/repo.git", "test/repo"},
+		{"https with port", "https://github.com:8443/test/repo", "test/repo"},
+		{"already a slug", "test/repo", "test/repo"},
+		{"trailing slash", "https://github.com/test/repo/", "test/repo"},
+		{"empty", "", ""},
+		{"host only", "https://github.com/", ""},
+		{"owner only", "https://github.com/onlyowner", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := RepoSlug(tc.in); got != tc.want {
+				t.Fatalf("RepoSlug(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestGetChecksPassesRepoFlag(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr checks 123 --repo test/repo --json name,state,bucket,completedAt": {
+			stdout: `[{"name":"build","state":"SUCCESS","bucket":"pass"}]` + "\n",
+		},
+	}), nil, "test/repo")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 1 || checks[0].Name != "build" {
+		t.Fatalf("checks = %+v, want single build check", checks)
+	}
+}
+
+func TestGetPRStatePassesRepoFlag(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr view 123 --repo test/repo --json state --jq .state": {
+			stdout: "MERGED\n",
+		},
+	}), nil, "test/repo")
+
+	state, err := host.GetPRState(context.Background(), &scm.PR{Number: "123"})
+	if err != nil {
+		t.Fatalf("GetPRState() error = %v", err)
+	}
+	if state != scm.PRStateMerged {
+		t.Fatalf("GetPRState() = %q, want %q", state, scm.PRStateMerged)
+	}
+}
+
 func TestGetChecksFallsBackToStateWhenBucketMissing(t *testing.T) {
 	t.Parallel()
 
@@ -19,7 +85,7 @@ func TestGetChecksFallsBackToStateWhenBucketMissing(t *testing.T) {
 		"gh pr checks 123 --json name,state,bucket,completedAt": {
 			stdout: `[{"name":"build","state":"FAILURE","bucket":""},{"name":"tests","state":"PENDING","bucket":""}]` + "\n",
 		},
-	}), nil)
+	}), nil, "")
 
 	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
 	if err != nil {
@@ -43,7 +109,7 @@ func TestGetChecksParsesCompletedAt(t *testing.T) {
 		"gh pr checks 123 --json name,state,bucket,completedAt": {
 			stdout: `[{"name":"build","state":"FAILURE","bucket":"fail","completedAt":"2026-04-24T04:15:00Z"},{"name":"tests","state":"SUCCESS","bucket":"pass","completedAt":"not-a-time"}]` + "\n",
 		},
-	}), nil)
+	}), nil, "")
 
 	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
 	if err != nil {
@@ -78,7 +144,7 @@ func TestFetchFailedCheckLogsSelectsMatchingRunForHeadSHA(t *testing.T) {
 		"gh run view 102 --log-failed": {
 			stdout: "lint failed\n",
 		},
-	}), nil)
+	}), nil, "")
 
 	logs, err := host.FetchFailedCheckLogs(context.Background(), &scm.PR{Number: "123"}, "feature", "abc123", []string{"lint"})
 	if err != nil {
@@ -96,7 +162,7 @@ func TestFindPRFiltersByBaseBranch(t *testing.T) {
 		"gh pr list --head feature/refactor --base release/1.0 --state open --json number,url": {
 			stdout: `[{"number":42,"url":"https://github.example.com/org/repo/pull/42"}]` + "\n",
 		},
-	}), nil)
+	}), nil, "")
 
 	pr, err := host.FindPR(context.Background(), "feature/refactor", "release/1.0")
 	if err != nil {
@@ -121,7 +187,7 @@ func TestFindPRReturnsCLIError(t *testing.T) {
 			stderr: "api unavailable\n",
 			code:   1,
 		},
-	}), nil)
+	}), nil, "")
 
 	pr, err := host.FindPR(context.Background(), "feature/refactor", "main")
 	if err == nil {

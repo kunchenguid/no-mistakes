@@ -20,12 +20,62 @@ type CmdFactory func(ctx context.Context, name string, args ...string) *exec.Cmd
 type Host struct {
 	cmd          CmdFactory
 	cliAvailable func() bool
+	repo         string // "owner/name" slug for --repo; empty when unknown
 }
 
 // New builds a Host. cliAvailable reports whether the gh binary is
-// resolvable on the caller's PATH (possibly overridden by env).
-func New(cmd CmdFactory, cliAvailable func() bool) *Host {
-	return &Host{cmd: cmd, cliAvailable: cliAvailable}
+// resolvable on the caller's PATH (possibly overridden by env). repo is the
+// "owner/name" slug; when set it is passed via --repo to every PR/run command
+// so they resolve the right repository regardless of the process working
+// directory. The daemon runs from a fixed, non-repo working dir, so without
+// this gh cannot infer the repo (or branch) and fails on every poll.
+func New(cmd CmdFactory, cliAvailable func() bool, repo string) *Host {
+	return &Host{cmd: cmd, cliAvailable: cliAvailable, repo: strings.TrimSpace(repo)}
+}
+
+// RepoSlug extracts the "owner/name" identifier from a GitHub remote or PR URL.
+// It supports https URLs, scp-style ssh URLs (git@github.com:owner/name.git),
+// ssh:// URLs, and longer paths such as PR links (the leading two path segments
+// are used). It returns "" when the input has no owner/name pair.
+func RepoSlug(remoteURL string) string {
+	raw := strings.TrimSpace(remoteURL)
+	if raw == "" {
+		return ""
+	}
+	raw = strings.TrimSuffix(raw, ".git")
+
+	// Reduce raw to the path portion after the host.
+	switch {
+	case strings.Contains(raw, "://"):
+		rest := raw[strings.Index(raw, "://")+len("://"):]
+		slash := strings.IndexByte(rest, '/')
+		if slash < 0 {
+			return ""
+		}
+		raw = rest[slash+1:]
+	case strings.Contains(raw, ":"):
+		// scp-style ssh: [user@]host:owner/name
+		raw = raw[strings.IndexByte(raw, ':')+1:]
+	}
+
+	parts := strings.Split(strings.Trim(raw, "/"), "/")
+	if len(parts) < 2 {
+		return ""
+	}
+	owner, name := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+	if owner == "" || name == "" {
+		return ""
+	}
+	return owner + "/" + name
+}
+
+// repoArgs returns the --repo flag pair when the slug is known, so gh commands
+// resolve the right repository regardless of the process working directory.
+func (h *Host) repoArgs() []string {
+	if h.repo == "" {
+		return nil
+	}
+	return []string{"--repo", h.repo}
 }
 
 func (h *Host) Provider() scm.Provider { return scm.ProviderGitHub }
@@ -49,6 +99,7 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 	if strings.TrimSpace(base) != "" {
 		args = append(args, "--base", base)
 	}
+	args = append(args, h.repoArgs()...)
 	args = append(args, "--state", "open", "--json", "number,url")
 	cmd := h.cmd(ctx, "gh", args...)
 	out, err := cmd.CombinedOutput()
@@ -75,12 +126,12 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 }
 
 func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PRContent) (*scm.PR, error) {
-	cmd := h.cmd(ctx, "gh", "pr", "create",
+	args := append([]string{"pr", "create",
 		"--head", branch,
 		"--base", base,
-		"--title", content.Title,
-		"--body", content.Body,
-	)
+	}, h.repoArgs()...)
+	args = append(args, "--title", content.Title, "--body", content.Body)
+	cmd := h.cmd(ctx, "gh", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("gh pr create: %s: %w", strings.TrimSpace(string(out)), err)
@@ -98,7 +149,9 @@ func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) 
 	if id == "" {
 		id = pr.URL
 	}
-	cmd := h.cmd(ctx, "gh", "pr", "edit", id, "--title", content.Title, "--body", content.Body)
+	args := append([]string{"pr", "edit", id}, h.repoArgs()...)
+	args = append(args, "--title", content.Title, "--body", content.Body)
+	cmd := h.cmd(ctx, "gh", args...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("gh pr edit: %s: %w", strings.TrimSpace(string(out)), err)
 	}
@@ -106,7 +159,9 @@ func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) 
 }
 
 func (h *Host) GetPRState(ctx context.Context, pr *scm.PR) (scm.PRState, error) {
-	cmd := h.cmd(ctx, "gh", "pr", "view", pr.Number, "--json", "state", "--jq", ".state")
+	args := append([]string{"pr", "view", pr.Number}, h.repoArgs()...)
+	args = append(args, "--json", "state", "--jq", ".state")
+	cmd := h.cmd(ctx, "gh", args...)
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("gh pr view: %w", err)
@@ -115,7 +170,9 @@ func (h *Host) GetPRState(ctx context.Context, pr *scm.PR) (scm.PRState, error) 
 }
 
 func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
-	cmd := h.cmd(ctx, "gh", "pr", "checks", pr.Number, "--json", "name,state,bucket,completedAt")
+	args := append([]string{"pr", "checks", pr.Number}, h.repoArgs()...)
+	args = append(args, "--json", "name,state,bucket,completedAt")
+	cmd := h.cmd(ctx, "gh", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		if strings.Contains(string(out), "no checks reported") {
@@ -146,7 +203,9 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 }
 
 func (h *Host) GetMergeableState(ctx context.Context, pr *scm.PR) (scm.MergeableState, error) {
-	cmd := h.cmd(ctx, "gh", "pr", "view", pr.Number, "--json", "mergeable", "--jq", ".mergeable")
+	args := append([]string{"pr", "view", pr.Number}, h.repoArgs()...)
+	args = append(args, "--json", "mergeable", "--jq", ".mergeable")
+	cmd := h.cmd(ctx, "gh", args...)
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("gh pr view mergeable: %w", err)
@@ -172,6 +231,7 @@ func (h *Host) FetchFailedCheckLogs(ctx context.Context, _ *scm.PR, branch, head
 	if strings.TrimSpace(headSHA) != "" {
 		args = append(args, "--commit", strings.TrimSpace(headSHA))
 	}
+	args = append(args, h.repoArgs()...)
 	args = append(args,
 		"--status", "failure",
 		"--limit", "20",
@@ -190,7 +250,9 @@ func (h *Host) FetchFailedCheckLogs(ctx context.Context, _ *scm.PR, branch, head
 		if !runMatchesTargets(ctx, h, run, targets) {
 			continue
 		}
-		viewCmd := h.cmd(ctx, "gh", "run", "view", fmt.Sprintf("%d", run.DatabaseID), "--log-failed")
+		viewArgs := append([]string{"run", "view", fmt.Sprintf("%d", run.DatabaseID)}, h.repoArgs()...)
+		viewArgs = append(viewArgs, "--log-failed")
+		viewCmd := h.cmd(ctx, "gh", viewArgs...)
 		out, err := viewCmd.Output()
 		if err != nil {
 			continue
@@ -230,7 +292,9 @@ func runMatchesTargets(ctx context.Context, h *Host, run githubRun, targets map[
 	if run.DatabaseID == 0 {
 		return false
 	}
-	viewCmd := h.cmd(ctx, "gh", "run", "view", fmt.Sprintf("%d", run.DatabaseID), "--json", "jobs")
+	viewArgs := append([]string{"run", "view", fmt.Sprintf("%d", run.DatabaseID)}, h.repoArgs()...)
+	viewArgs = append(viewArgs, "--json", "jobs")
+	viewCmd := h.cmd(ctx, "gh", viewArgs...)
 	out, err := viewCmd.Output()
 	if err != nil {
 		return false

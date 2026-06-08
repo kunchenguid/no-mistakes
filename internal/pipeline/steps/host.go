@@ -22,7 +22,14 @@ func buildHost(sctx *pipeline.StepContext, provider scm.Provider) (scm.Host, str
 	}
 	switch provider {
 	case scm.ProviderGitHub:
-		return github.New(cmdFactory, func() bool { return stepCLIAvailable(sctx, provider) }), ""
+		// Resolve the owner/name slug so gh commands carry --repo and work from
+		// the daemon's fixed (non-repo) working directory. Fall back to the PR
+		// URL when the upstream remote URL is unavailable.
+		repo := github.RepoSlug(sctx.Repo.UpstreamURL)
+		if repo == "" && sctx.Run.PRURL != nil {
+			repo = github.RepoSlug(*sctx.Run.PRURL)
+		}
+		return github.New(cmdFactory, func() bool { return stepCLIAvailable(sctx, provider) }, repo), ""
 	case scm.ProviderGitLab:
 		return gitlab.New(cmdFactory, func() bool { return stepCLIAvailable(sctx, provider) }), ""
 	case scm.ProviderBitbucket:
