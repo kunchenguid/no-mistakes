@@ -34,7 +34,7 @@ When you run `no-mistakes init` in a repo:
 3. It enables Git push options for the gate repo.
 4. It best-effort isolates the gate repo's hooks path from shared local Git config writes when Git supports `config --worktree`.
 5. It adds a `no-mistakes` remote to your working repo that points at the gate.
-6. It installs the `/no-mistakes` agent skill into `.claude/skills/no-mistakes/SKILL.md` and `.agents/skills/no-mistakes/SKILL.md` on a best-effort basis.
+6. It installs or refreshes the `/no-mistakes` agent skill into `.claude/skills/no-mistakes/SKILL.md` and `.agents/skills/no-mistakes/SKILL.md` on a best-effort basis, following existing symlinks between the `.claude` and `.agents` skill directories.
 7. It makes sure the daemon is running so incoming pushes can start runs.
 
 `init` is idempotent.

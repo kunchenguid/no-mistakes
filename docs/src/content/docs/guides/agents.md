@@ -85,7 +85,8 @@ It does **not** change the pipeline order or the meaning of a passed gate.
 ## Driving no-mistakes as an agent
 
 `no-mistakes init` installs a `/no-mistakes` skill into `.claude/skills/no-mistakes/SKILL.md` and `.agents/skills/no-mistakes/SKILL.md`.
-Re-run `no-mistakes init` in an already-initialized repo to refresh or reinstall that skill after an upgrade.
+Repos that symlink `.claude` to `.agents`, `.claude/skills` to `.agents/skills`, or the reverse, keep that layout; `init` follows the symlink and makes the skill reachable from both logical paths.
+Re-run `no-mistakes init` in an already-initialized repo to refresh or reinstall that skill after an upgrade, including overwriting stale `SKILL.md` content from an older binary.
 The skill tells agents to use `no-mistakes axi`, a non-interactive command surface that prints TOON to stdout and progress to stderr.
 When CI is green but the PR is still open, `axi run` and `axi respond` return `outcome: checks-passed` with a help line pointing at the PR instead of waiting for a human merge.
 That is a successful agent stopping point: report that the PR is ready and ask the user to review and merge it.

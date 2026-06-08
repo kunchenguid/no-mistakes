@@ -30,10 +30,11 @@ no-mistakes init
 ```
 
 Creates or refreshes a local bare repo, installs the post-receive hook, best-effort isolates the gate repo's hook path from shared git config changes when Git supports `config --worktree`, adds or repairs the `no-mistakes` git remote, detects the default branch, records or updates the repo in SQLite, installs the `/no-mistakes` agent skill into `.claude/skills/no-mistakes/SKILL.md` and `.agents/skills/no-mistakes/SKILL.md`, and ensures the daemon is running, installing the managed service when available and falling back to a detached daemon otherwise.
+If `.claude` links to `.agents`, `.claude/skills` links to `.agents/skills`, or the reverse, `init` follows that layout and still makes the skill readable from both logical paths.
 The gate advertises Git push-option support, so you can skip steps for one push with `git push -o no-mistakes.skip=test,lint no-mistakes <branch>`.
 
 Re-running `init` on an already-initialized repo succeeds and reports `Gate already initialized (refreshed)`.
-It refreshes managed gate wiring, origin/default-branch metadata, hook-path isolation, and the installed agent skill.
+It refreshes managed gate wiring, origin/default-branch metadata, hook-path isolation, and the installed agent skill, overwriting any stale `SKILL.md` content from an older binary.
 Fresh init rolls back gate setup when a required gate or daemon step fails; refresh does not eject a pre-existing gate if daemon startup fails.
 Skill installation is best-effort: if the skill write fails, init reports it and leaves the working gate in place.
 

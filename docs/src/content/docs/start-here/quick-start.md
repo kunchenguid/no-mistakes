@@ -57,7 +57,7 @@ $ no-mistakes init
 `origin` is unchanged. If you need to bypass the gate for a specific push, use
 `git push origin <branch>`.
 
-You can safely re-run `no-mistakes init` later to refresh gate wiring or reinstall the agent skill.
+You can safely re-run `no-mistakes init` later to refresh gate wiring or update the installed agent skill after an upgrade.
 
 ## 4. Push through the gate
 
