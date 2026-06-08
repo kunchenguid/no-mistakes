@@ -44,8 +44,16 @@ Run the pipeline and decide on its findings as they come up:
    no-mistakes axi run --intent "<what the user set out to accomplish>"
    ```
 2. If the output contains a `gate:` object, the pipeline is waiting on you.
-   Read its `findings` table (each has an `id`, `severity`, `file`, `action`,
-   and `description`) and choose one response:
+   Read its `findings` table. Each finding has an `id`, `severity`,
+   `file`, `description`, and an `action` that tells you how the
+   pipeline classified it:
+   - `auto-fix` - a mechanical, low-risk fix you can safely make yourself.
+   - `no-op` - informational only; nothing to do.
+   - `ask-user` - the finding challenges the user's deliberate intent or
+     touches product behavior. This is a call only the user can make - see
+     [Escalate `ask-user` findings](#escalate-ask-user-findings) below.
+
+   Choose one response:
    ```sh
    # accept the step as-is and continue
    no-mistakes axi respond --action approve
@@ -71,10 +79,32 @@ The CI step deliberately watches the PR until it is merged or closed, so
 `axi run` returns `checks-passed` the moment checks are green rather than
 blocking on the human merge. Never poll or re-run waiting for the merge yourself.
 
+## Escalate `ask-user` findings
+
+A gate whose findings are all `auto-fix` or `no-op` is safe to drive on your
+own judgment: fix or approve as appropriate. But a finding marked
+`ask-user` is a decision that belongs to the user, not you - the pipeline
+flagged it because it challenges their deliberate intent or changes product
+behavior. Do not approve, fix, or skip it on your own. Instead, stop and bring
+it to the user before you respond:
+
+- Relay each `ask-user` finding to them as the pipeline wrote it - its
+  `id`, `file`, and full `description` verbatim. Do not paraphrase,
+  summarize away the detail, or pre-judge the answer.
+- Ask how they want to proceed, then translate their decision into the matching
+  `respond` call: `--action fix` (pass their guidance through
+  `--instructions`), `--action approve`, or `--action skip`.
+
+The one exception is `--yes` (below): it is the user's standing consent to
+drive every gate unattended, so under `--yes` you resolve `ask-user`
+findings automatically instead of stopping to ask.
+
 If you have clear consent to drive the run automatically, pass `--yes` to `axi run`
-or `axi respond`. It treats actionable findings as consent to fix them,
-selects every current finding for one fix round, accepts the resulting fix review,
-and approves gates with only `no-op` findings.
+or `axi respond`. It treats every actionable finding - `auto-fix` and
+`ask-user` alike - as consent to fix it, selects every current finding for one
+fix round, accepts the resulting fix review, and approves gates with only
+`no-op` findings. Only use it when the user has asked you to drive the whole
+run without checking back.
 
 ## Inspecting state
 
