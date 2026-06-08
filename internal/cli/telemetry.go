@@ -1,9 +1,11 @@
 package cli
 
 import (
+	"strings"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 // trackAxiSurface records an agent-driven axi command both as a pageview and as
@@ -16,6 +18,24 @@ import (
 func trackAxiSurface(command, path string, fields telemetry.Fields, fn func() error) error {
 	telemetry.Pageview(path, fields)
 	return trackCommand(command, fn)
+}
+
+func sanitizeAxiTelemetryStep(step string) string {
+	step = strings.TrimSpace(step)
+	if validStep(types.StepName(step)) {
+		return step
+	}
+	return "invalid"
+}
+
+func sanitizeAxiTelemetryAction(action string) string {
+	action = strings.TrimSpace(action)
+	switch types.ApprovalAction(action) {
+	case types.ActionApprove, types.ActionFix, types.ActionSkip:
+		return action
+	default:
+		return "invalid"
+	}
 }
 
 func trackCommand(name string, fn func() error) (err error) {

@@ -104,3 +104,43 @@ func TestAxiLogsPageviewCarriesStep(t *testing.T) {
 		t.Fatalf("explicit_run_id = %v, want true", got)
 	}
 }
+
+func TestAxiLogsPageviewSanitizesInvalidStep(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("NM_HOME", t.TempDir())
+	chdir(t, tmpDir)
+
+	recorder := &telemetryRecorder{}
+	restore := telemetry.SetDefaultForTesting(recorder)
+	defer restore()
+
+	_, _ = executeCmd("axi", "logs", "--step", "secret user text")
+
+	event := recorder.find("pageview", "path", "/axi/logs")
+	if event == nil {
+		t.Fatal("expected /axi/logs pageview")
+	}
+	if got := event.fields["step"]; got != "invalid" {
+		t.Fatalf("step = %v, want invalid", got)
+	}
+}
+
+func TestAxiRespondPageviewSanitizesInvalidAction(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("NM_HOME", t.TempDir())
+	chdir(t, tmpDir)
+
+	recorder := &telemetryRecorder{}
+	restore := telemetry.SetDefaultForTesting(recorder)
+	defer restore()
+
+	_, _ = executeCmd("axi", "respond", "--action", "secret user text")
+
+	event := recorder.find("pageview", "path", "/axi/respond")
+	if event == nil {
+		t.Fatal("expected /axi/respond pageview")
+	}
+	if got := event.fields["action"]; got != "invalid" {
+		t.Fatalf("action = %v, want invalid", got)
+	}
+}

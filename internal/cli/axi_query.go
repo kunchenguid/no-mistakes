@@ -102,7 +102,7 @@ func newAxiLogsCmd() *cobra.Command {
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return trackAxiSurface("axi-logs", "/axi/logs", telemetry.Fields{
-				"step":            strings.TrimSpace(step),
+				"step":            sanitizeAxiTelemetryStep(step),
 				"full":            full,
 				"explicit_run_id": strings.TrimSpace(runID) != "",
 			}, func() error {

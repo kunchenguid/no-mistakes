@@ -510,7 +510,7 @@ func newAxiRespondCmd() *cobra.Command {
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return trackAxiSurface("axi-respond", "/axi/respond", telemetry.Fields{
-				"action":   strings.TrimSpace(action),
+				"action":   sanitizeAxiTelemetryAction(action),
 				"auto_yes": autoYes,
 			}, func() error {
 				return runAxiRespond(cmd, respondArgs{
