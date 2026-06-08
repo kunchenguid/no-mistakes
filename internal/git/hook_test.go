@@ -598,9 +598,6 @@ func TestIsolateHooksPath_SkipsIsolationWhenWorktreeConfigUnsupported(t *testing
 // poll and the CI step hangs until ci_timeout. No real gh or network is
 // needed; the failure is purely in git's repo resolution, which gh depends on.
 func TestIsolateHooksPath_LinkedWorktreeResolvesRepoForCLI(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("worktree + gate config is /bin/sh-only")
-	}
 	ctx := context.Background()
 	base := t.TempDir()
 	bare := filepath.Join(base, "gate.git")
@@ -662,9 +659,6 @@ func TestIsolateHooksPath_LinkedWorktreeResolvesRepoForCLI(t *testing.T) {
 // worktree is the CI step's cwd. The old-git path is simulated deterministically
 // via the runGit stub so this reproduces the reporter's config state on any git.
 func TestLinkedWorktreeLeaksCoreBareWithoutRelocation(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("worktree + gate config is /bin/sh-only")
-	}
 	ctx := context.Background()
 	base := t.TempDir()
 	bare := filepath.Join(base, "gate.git")
