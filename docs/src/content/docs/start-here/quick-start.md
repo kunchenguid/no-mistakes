@@ -81,8 +81,17 @@ If the current branch has an active run, this attaches directly. If not, the set
 
 The TUI shows each step's progress, streams agent output, and pauses for your approval when findings need attention. See [Using the TUI](/no-mistakes/guides/tui/) for keybindings and layout.
 
-Agents can instead load `/no-mistakes` or call `no-mistakes axi` directly.
-That interface uses flags only, prints TOON on stdout, and exposes the same approval gates through `no-mistakes axi respond`.
+## Or let your agent run the gate
+
+If a coding agent like Claude Code made the change, you don't have to switch to the terminal at all. `no-mistakes init` installed a `/no-mistakes` skill into the repo, so you can just tell the agent:
+
+```
+/no-mistakes
+```
+
+The agent commits if needed, starts the pipeline with the intent it already has from your conversation, applies the low-risk fixes itself, and stops to relay any finding that needs your judgment. It drives the same gate as the TUI through `no-mistakes axi`, a non-interactive command surface that uses flags only, prints TOON on stdout, and exposes the same approval gates through `no-mistakes axi respond`.
+
+See [Driving no-mistakes as an agent](/no-mistakes/guides/agents/#driving-no-mistakes-as-an-agent) for the full agent workflow.
 
 ## What happens next
 

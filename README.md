@@ -32,6 +32,7 @@
 
 - **Non-blocking** - the pipeline runs in an isolated worktree without disrupting your work.
 - **Agent-agnostic** - `claude`, `codex`, `rovodev`, `opencode`, `pi`, or `acp:<target>` via `acpx`.
+- **Agent-native** - `/no-mistakes` lets the coding agent that wrote the change also gate it: it runs the pipeline, applies the safe fixes, and escalates the rest to you.
 - **Human stays in charge** - auto-fix or review findings, your call.
 - **Clean PRs by default** - push, open PR, watch CI, and auto-fix failures in one shot.
 
@@ -72,11 +73,15 @@ $ no-mistakes
 # opens the TUI for the active run
 ```
 
-You can also skip `git push` and run `no-mistakes` directly after making changes (don't even need to commit it). You will then see a wizard TUI that walks you through creating a branch, committing, and pushing through the gate, then attaches if the daemon registers the new run.
+## Three ways to trigger the gate
 
-Run `no-mistakes -y` to let no-mistakes automatically create branch, commit changes and push through the gate for you.
+Every change runs through the same pipeline. Pick the entry point that fits how you're working when the change is ready:
 
-Agents can use the installed `/no-mistakes` skill or call `no-mistakes axi` directly for a non-interactive TOON interface to the same approval flow.
+- **`git push no-mistakes`** - the explicit Git path. Push a committed branch to the gate remote instead of `origin`.
+- **`no-mistakes`** - the TUI. Run it after making changes (no commit needed) and a wizard walks you through creating a branch, committing, and pushing through the gate, then attaches to the run. `no-mistakes -y` does all of that automatically.
+- **`/no-mistakes`** - the agent skill. Tell the coding agent that wrote the change to gate it. It runs the pipeline, applies the safe fixes itself, and stops to ask you about anything that needs a human call.
+
+`no-mistakes init` installs the `/no-mistakes` skill for Claude Code and other agents. Under the hood the skill drives `no-mistakes axi`, a non-interactive TOON interface to the same approval flow.
 
 See the [quick start](https://kunchenguid.github.io/no-mistakes/start-here/quick-start/) for the full first-run walkthrough.
 

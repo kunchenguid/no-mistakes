@@ -70,8 +70,18 @@ When a branch passes the gate, it means:
 - A fixed, opinionated pipeline: `intent → rebase → review → test → document → lint → push → pr → ci`. Order is not configurable; what each step runs is.
 - Choice of agent: `claude`, `codex`, `rovodev`, `opencode`, `pi`, or `acp:<target>` via `acpx`, with per-repo override.
 - A TUI to watch, approve, fix, skip, or abort any step.
-- An agent-facing `no-mistakes axi` interface and installed `/no-mistakes` skill for non-interactive validation and approvals.
+- A `/no-mistakes` agent skill so the coding agent that wrote the change can also gate it, backed by a non-interactive `no-mistakes axi` interface.
 - A setup wizard when you run bare `no-mistakes` with no active run on the current branch - it walks you through creating a branch, committing, and pushing through the gate, then attaches if the daemon registers the new run.
+
+## Three ways to trigger the gate
+
+The pipeline is the same no matter how you start it. There are three first-class entry points, one for each way you tend to be working when a change is ready:
+
+- **`git push no-mistakes`** - the explicit Git path. You push a committed branch to the gate remote instead of `origin`, and the daemon takes it from there. See [Quick Start](/no-mistakes/start-here/quick-start/).
+- **`no-mistakes`** - the terminal UI. Run it after making changes and a [setup wizard](/no-mistakes/guides/setup-wizard/) walks you through branch, commit, and push, then attaches to the live run so you can watch, approve, fix, skip, or abort each step.
+- **`/no-mistakes`** - the agent skill. When a coding agent like Claude Code wrote the change, you tell it `/no-mistakes` and it runs the gate for you: it starts the pipeline with the intent it already knows from your conversation, resolves the safe findings on its own, and stops to relay anything that needs your decision. See [Driving no-mistakes as an agent](/no-mistakes/guides/agents/#driving-no-mistakes-as-an-agent).
+
+`no-mistakes init` installs the `/no-mistakes` skill into your repo for every supported agent. The skill drives `no-mistakes axi`, a non-interactive command surface that prints [TOON](https://toonformat.dev) to stdout, so an agent reaches the same gate and the same approval points you get in the TUI.
 
 ## Next
 

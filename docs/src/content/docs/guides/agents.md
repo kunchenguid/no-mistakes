@@ -84,10 +84,13 @@ It does **not** change the pipeline order or the meaning of a passed gate.
 
 ## Driving no-mistakes as an agent
 
-`no-mistakes init` installs a `/no-mistakes` skill into `.claude/skills/no-mistakes/SKILL.md` and `.agents/skills/no-mistakes/SKILL.md`.
+The primary way to put a change through the gate from inside a coding agent is the `/no-mistakes` skill.
+When the agent that wrote the change is a skill-aware tool like Claude Code, you invoke `/no-mistakes` and it runs the whole pipeline for you: it starts the run with the intent it already has from the conversation, resolves the low-risk findings on its own, and stops to relay anything that needs your decision.
+
+`no-mistakes init` installs that skill into `.claude/skills/no-mistakes/SKILL.md` and `.agents/skills/no-mistakes/SKILL.md`, so it is available to every supported agent in the repo.
 Repos that symlink `.claude` to `.agents`, `.claude/skills` to `.agents/skills`, or the reverse, keep that layout; `init` follows the symlink and makes the skill reachable from both logical paths.
 Re-run `no-mistakes init` in an already-initialized repo to refresh or reinstall that skill after an upgrade, including overwriting stale `SKILL.md` content from an older binary.
-The skill tells agents to use `no-mistakes axi`, a non-interactive command surface that prints TOON to stdout and progress to stderr.
+The skill drives `no-mistakes axi`, a non-interactive command surface that prints TOON to stdout and progress to stderr.
 When CI is green but the PR is still open, `axi run` and `axi respond` return `outcome: checks-passed` with a help line pointing at the PR instead of waiting for a human merge.
 That is a successful agent stopping point: report that the PR is ready and ask the user to review and merge it.
 
