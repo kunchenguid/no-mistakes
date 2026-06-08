@@ -101,6 +101,7 @@ no-mistakes axi abort
 ```
 
 When an agent starts a new run, `--intent` is required and should describe what the user wanted to accomplish, not what files changed.
+Agents should prefer a few complete sentences over a terse summary, capturing user decisions, tradeoffs, constraints, ruled-out approaches, and explicit requests that would not be obvious from the diff alone.
 If the repo is on the default branch or has uncommitted changes, `axi run` returns a structured error with the command the agent should run instead of silently creating a branch or commit.
 Approval gates are exposed as `gate:` objects with finding IDs, severities, files, actions, descriptions, and help commands for `no-mistakes axi respond`.
 An agent should resolve `action: auto-fix` findings on its own judgment, ignore `action: no-op` findings when approving, and stop on `action: ask-user` findings unless it is running with explicit `--yes` consent.
