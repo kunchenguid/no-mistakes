@@ -198,7 +198,7 @@ The `f fix (3/5)` label shows how many findings are selected out of the total.
 Press `e` to add or edit extra guidance for the current finding. Press `+` to add your own finding to the list. User-authored findings start selected by default and can be removed with `D`.
 
 Press `y` to toggle yolo mode when you want paused approval gates to resolve automatically.
-Yolo fixes gates with actionable findings by selecting every finding, then approves the resulting fix-review gate.
+Yolo fixes gates with `auto-fix` and `ask-user` findings by selecting every finding, then approves the resulting fix-review gate.
 It approves gates with no findings or only `action: no-op` findings as-is, and fixes each step at most once so unresolved findings do not loop forever.
 
 ## Outcome banner
