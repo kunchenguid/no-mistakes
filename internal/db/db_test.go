@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func openTestDB(t *testing.T) *DB {
@@ -105,5 +106,47 @@ func TestOpenMigratesExistingStepRoundsColumns(t *testing.T) {
 		if !columns[name] {
 			t.Fatalf("expected migrated column %q to exist", name)
 		}
+	}
+}
+
+func TestOpenWaitsForTransientMigrationLock(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.sqlite")
+	locker, err := sql.Open("sqlite", dbPath+"?_pragma=journal_mode(wal)&_pragma=foreign_keys(on)")
+	if err != nil {
+		t.Fatalf("open locker db: %v", err)
+	}
+	defer locker.Close()
+	if _, err := locker.Exec("BEGIN EXCLUSIVE"); err != nil {
+		t.Fatalf("begin exclusive lock: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		d, err := Open(dbPath)
+		if err == nil {
+			err = d.Close()
+		}
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Open returned before the migration lock was released")
+		}
+		t.Fatalf("Open should wait for a transient migration lock, got: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	if _, err := locker.Exec("COMMIT"); err != nil {
+		t.Fatalf("commit exclusive lock: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Open after lock release: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Open did not finish after the migration lock was released")
 	}
 }
