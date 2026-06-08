@@ -35,7 +35,7 @@ func newAxiCmd() *cobra.Command {
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return trackCommand("axi-home", func() error {
+			return trackAxiSurface("axi-home", "/axi", nil, func() error {
 				return runAxiHome(cmd)
 			})
 		},

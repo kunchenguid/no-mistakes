@@ -14,6 +14,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/spf13/cobra"
 )
@@ -30,7 +31,9 @@ func newAxiStatusCmd() *cobra.Command {
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return trackCommand("axi-status", func() error {
+			return trackAxiSurface("axi-status", "/axi/status", telemetry.Fields{
+				"explicit_run_id": strings.TrimSpace(runID) != "",
+			}, func() error {
 				return runAxiStatus(cmd, runID)
 			})
 		},
@@ -98,7 +101,11 @@ func newAxiLogsCmd() *cobra.Command {
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return trackCommand("axi-logs", func() error {
+			return trackAxiSurface("axi-logs", "/axi/logs", telemetry.Fields{
+				"step":            strings.TrimSpace(step),
+				"full":            full,
+				"explicit_run_id": strings.TrimSpace(runID) != "",
+			}, func() error {
 				return runAxiLogs(cmd, step, runID, full)
 			})
 		},

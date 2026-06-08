@@ -16,6 +16,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/spf13/cobra"
 )
@@ -72,7 +73,11 @@ func newAxiRunCmd() *cobra.Command {
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return trackCommand("axi-run", func() error {
+			return trackAxiSurface("axi-run", "/axi/run", telemetry.Fields{
+				"auto_yes":   autoYes,
+				"has_intent": strings.TrimSpace(intent) != "",
+				"has_skip":   strings.TrimSpace(skipValue) != "",
+			}, func() error {
 				skipSteps, err := parseSkipSteps(skipValue)
 				if err != nil {
 					return emitError(cmd, 2, err.Error(),
@@ -504,7 +509,10 @@ func newAxiRespondCmd() *cobra.Command {
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return trackCommand("axi-respond", func() error {
+			return trackAxiSurface("axi-respond", "/axi/respond", telemetry.Fields{
+				"action":   strings.TrimSpace(action),
+				"auto_yes": autoYes,
+			}, func() error {
 				return runAxiRespond(cmd, respondArgs{
 					action:       action,
 					step:         step,
@@ -646,7 +654,7 @@ func newAxiAbortCmd() *cobra.Command {
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return trackCommand("axi-abort", func() error {
+			return trackAxiSurface("axi-abort", "/axi/abort", nil, func() error {
 				return runAxiAbort(cmd)
 			})
 		},
