@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.26.0](https://github.com/kunchenguid/no-mistakes/compare/v1.25.1...v1.26.0) (2026-06-08)
+
+
+### Features
+
+* **cli:** emit AXI pageview telemetry ([#252](https://github.com/kunchenguid/no-mistakes/issues/252)) ([ba97def](https://github.com/kunchenguid/no-mistakes/commit/ba97def4daaa4389b864685400759b91bdd96d14))
+
 ## [1.25.1](https://github.com/kunchenguid/no-mistakes/compare/v1.25.0...v1.25.1) (2026-06-08)
 
 
