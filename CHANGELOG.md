@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.25.1](https://github.com/kunchenguid/no-mistakes/compare/v1.25.0...v1.25.1) (2026-06-08)
+
+
+### Bug Fixes
+
+* **skill:** escalate ask-user findings to users ([#248](https://github.com/kunchenguid/no-mistakes/issues/248)) ([c015392](https://github.com/kunchenguid/no-mistakes/commit/c015392d7d0e4c59ca6f887c9547186105684da3))
+* **skill:** improve intent guidance completeness ([#250](https://github.com/kunchenguid/no-mistakes/issues/250)) ([4cebf97](https://github.com/kunchenguid/no-mistakes/commit/4cebf97fdb570d023b2b536ad8c8832e1e557575))
+* **skill:** install skills through symlinked bases ([#251](https://github.com/kunchenguid/no-mistakes/issues/251)) ([3d285e7](https://github.com/kunchenguid/no-mistakes/commit/3d285e792dbe8a9d639f8600766a897ecb3ad541))
+
 ## [1.25.0](https://github.com/kunchenguid/no-mistakes/compare/v1.24.0...v1.25.0) (2026-06-07)
 
 
