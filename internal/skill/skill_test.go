@@ -181,6 +181,16 @@ func TestInstallOverwritesStaleContent(t *testing.T) {
 	}
 }
 
+func TestInstallRejectsSymlinkCycle(t *testing.T) {
+	root := t.TempDir()
+	symlink(t, ".agents", filepath.Join(root, ".claude"))
+	symlink(t, ".claude", filepath.Join(root, ".agents"))
+
+	if _, err := Install(root); err == nil {
+		t.Fatalf("Install succeeded with cyclic skill directory symlinks")
+	}
+}
+
 func mkdirAll(t *testing.T, dir string) {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o755); err != nil {

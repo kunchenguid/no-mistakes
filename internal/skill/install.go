@@ -1,6 +1,7 @@
 package skill
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -52,6 +53,10 @@ func Install(repoRoot string) ([]string, error) {
 // exist yet. The result contains no symlink components, so os.MkdirAll on it
 // will not trip over a dangling symlink. dir must be absolute.
 func resolveThroughSymlinks(dir string) (string, error) {
+	return resolveThroughSymlinksSeen(dir, make(map[string]struct{}))
+}
+
+func resolveThroughSymlinksSeen(dir string, seen map[string]struct{}) (string, error) {
 	cur := string(filepath.Separator)
 	for _, part := range strings.Split(filepath.Clean(dir), string(filepath.Separator)) {
 		if part == "" {
@@ -67,6 +72,11 @@ func resolveThroughSymlinks(dir string) (string, error) {
 		if info.Mode()&os.ModeSymlink == 0 {
 			continue
 		}
+		key := filepath.Clean(cur)
+		if _, ok := seen[key]; ok {
+			return "", fmt.Errorf("symlink cycle resolving %s", dir)
+		}
+		seen[key] = struct{}{}
 		target, err := os.Readlink(cur)
 		if err != nil {
 			return "", err
@@ -75,7 +85,7 @@ func resolveThroughSymlinks(dir string) (string, error) {
 			target = filepath.Join(filepath.Dir(cur), target)
 		}
 		// The target may itself be or contain symlinks; resolve recursively.
-		if cur, err = resolveThroughSymlinks(target); err != nil {
+		if cur, err = resolveThroughSymlinksSeen(target, seen); err != nil {
 			return "", err
 		}
 	}
