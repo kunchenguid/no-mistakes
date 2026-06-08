@@ -588,6 +588,133 @@ func TestIsolateHooksPath_SkipsIsolationWhenWorktreeConfigUnsupported(t *testing
 	}
 }
 
+// TestIsolateHooksPath_LinkedWorktreeResolvesRepoForCLI reproduces the CI
+// step's working directory: a detached linked worktree of the gate bare repo,
+// which records origin = the GitHub upstream. The CI watch shells out to `gh`
+// from this directory, and gh resolves the repository by running git there.
+// This guards the invariant that such a worktree is a real work tree with no
+// leaked core.bare and a resolvable origin - i.e. gh can determine the repo
+// from cwd alone. See issue #255: when this breaks, `gh pr checks` fails every
+// poll and the CI step hangs until ci_timeout. No real gh or network is
+// needed; the failure is purely in git's repo resolution, which gh depends on.
+func TestIsolateHooksPath_LinkedWorktreeResolvesRepoForCLI(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("worktree + gate config is /bin/sh-only")
+	}
+	ctx := context.Background()
+	base := t.TempDir()
+	bare := filepath.Join(base, "gate.git")
+	if err := InitBare(ctx, bare); err != nil {
+		t.Fatal(err)
+	}
+	seedGate(t, base, bare)
+
+	// The gate records origin = upstream so worktrees can resolve the repo
+	// (gate.provisionGate does this for exactly this reason).
+	const upstream = "https://github.com/test/repo.git"
+	if err := EnsureRemote(ctx, bare, "origin", upstream); err != nil {
+		t.Fatalf("EnsureRemote: %v", err)
+	}
+	if err := IsolateHooksPath(ctx, bare); err != nil {
+		t.Fatalf("IsolateHooksPath: %v", err)
+	}
+
+	// IsolateHooksPath is best-effort: on a git too old for `config --worktree`
+	// it cannot relocate core.bare, and the invariant below genuinely cannot
+	// hold. Skip there - that limitation is the subject of
+	// TestLinkedWorktreeLeaksCoreBareWithoutRelocation.
+	if !worktreeConfigIsolatesCoreBare(t, bare) {
+		t.Skip("git lacks `config --worktree`; core.bare cannot be isolated on this host")
+	}
+
+	wt := filepath.Join(base, "wt")
+	if err := WorktreeAdd(ctx, bare, wt, "refs/heads/main"); err != nil {
+		t.Fatalf("WorktreeAdd: %v", err)
+	}
+
+	if got := strings.TrimSpace(runGitOrFatal(t, wt, "rev-parse", "--is-inside-work-tree")); got != "true" {
+		t.Fatalf("CI-step worktree is-inside-work-tree = %q, want true", got)
+	}
+	// core.bare must not leak into the worktree. If it resolves true here,
+	// stricter git refuses work-tree operations and gh fails to resolve the
+	// repo from cwd - the #255 hang.
+	if out, err := exec.Command("git", "-C", wt, "config", "--get", "core.bare").CombinedOutput(); err == nil {
+		if got := strings.TrimSpace(string(out)); got == "true" {
+			t.Fatalf("core.bare leaked into linked worktree (=%q); gh repo resolution breaks on stricter git", got)
+		}
+	}
+	// gh resolves the repo from the remotes of cwd; origin must be reachable.
+	if got := strings.TrimSpace(runGitOrFatal(t, wt, "remote", "get-url", "origin")); got != upstream {
+		t.Fatalf("origin url in worktree = %q, want %q", got, upstream)
+	}
+	// gh also runs `git rev-parse --absolute-git-dir`; it must succeed.
+	if _, err := exec.Command("git", "-C", wt, "rev-parse", "--absolute-git-dir").Output(); err != nil {
+		t.Fatalf("rev-parse --absolute-git-dir in worktree failed: %v", err)
+	}
+}
+
+// TestLinkedWorktreeLeaksCoreBareWithoutRelocation pins the failure mechanism
+// behind issue #255 for a git too old for per-worktree config. When
+// IsolateHooksPath cannot relocate core.bare (no `config --worktree`), the bare
+// repo's core.bare=true stays in shared config and leaks into every linked
+// worktree. A worktree that reports core.bare=true is treated as bare by
+// stricter git, so git - and therefore gh - fail to operate from it, and that
+// worktree is the CI step's cwd. The old-git path is simulated deterministically
+// via the runGit stub so this reproduces the reporter's config state on any git.
+func TestLinkedWorktreeLeaksCoreBareWithoutRelocation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("worktree + gate config is /bin/sh-only")
+	}
+	ctx := context.Background()
+	base := t.TempDir()
+	bare := filepath.Join(base, "gate.git")
+	if err := InitBare(ctx, bare); err != nil {
+		t.Fatal(err)
+	}
+	seedGate(t, base, bare)
+
+	// Make `config --worktree` look unsupported so IsolateHooksPath takes its
+	// best-effort no-op path, leaving core.bare=true in shared config - exactly
+	// the state an old git leaves on the reporter's host.
+	originalRunGit := runGit
+	runGit = func(_ context.Context, dir string, args ...string) (string, error) {
+		if len(args) >= 2 && args[0] == "config" && args[1] == "--worktree" {
+			return "", exec.ErrNotFound
+		}
+		return originalRunGit(ctx, dir, args...)
+	}
+	defer func() { runGit = originalRunGit }()
+
+	if err := IsolateHooksPath(ctx, bare); err != nil {
+		t.Fatalf("IsolateHooksPath should no-op without worktree support: %v", err)
+	}
+
+	wt := filepath.Join(base, "wt")
+	if err := WorktreeAdd(ctx, bare, wt, "refs/heads/main"); err != nil {
+		t.Fatalf("WorktreeAdd: %v", err)
+	}
+
+	// The leak: core.bare=true resolves inside the linked worktree, which is
+	// what makes gh (and git) treat the CI step's cwd as bare on stricter git.
+	got := strings.TrimSpace(runGitOrFatal(t, wt, "config", "--get", "core.bare"))
+	if got != "true" {
+		t.Fatalf("expected core.bare to leak into linked worktree (=true) without relocation, got %q", got)
+	}
+}
+
+// worktreeConfigIsolatesCoreBare reports whether the host git supports
+// per-worktree config, i.e. whether IsolateHooksPath was able to relocate
+// core.bare into per-worktree scope. When false, the host cannot isolate
+// core.bare at all (best-effort path).
+func worktreeConfigIsolatesCoreBare(t *testing.T, bare string) bool {
+	t.Helper()
+	out, err := exec.Command("git", "-C", bare, "config", "--worktree", "--get", "core.bare").CombinedOutput()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(out)) == "true"
+}
+
 func TestInstallPostReceiveHookCreatesDir(t *testing.T) {
 	// hooks dir might not exist in some bare repos; installer should create it
 	dir := t.TempDir()
