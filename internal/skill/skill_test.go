@@ -35,6 +35,8 @@ func TestBodyDocumentsTaskFirstFlow(t *testing.T) {
 	for _, want := range []string{
 		"## Two ways to invoke",
 		"feature branch",
+		"Inspect `git status` before you change or commit anything",
+		"commit only the changes that belong to the user's task",
 		"passing the user's task as your `--intent`",
 	} {
 		if !strings.Contains(md, want) {
