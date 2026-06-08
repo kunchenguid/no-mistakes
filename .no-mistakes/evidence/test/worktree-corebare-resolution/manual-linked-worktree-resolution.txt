@@ -1,0 +1,8 @@
+Manual linked-worktree repository resolution check
+git version: git version 2.53.0
+worktree cwd: /var/folders/5x/4nqprlbx0518k3ybcb1sz6gr0000gn/T/tmp.OwcSwtsHMp/wt
+is-inside-work-tree: true
+core.bare resolves in worktree: <unset>
+origin url: https://github.com/test/repo.git
+absolute git dir: /private/var/folders/5x/4nqprlbx0518k3ybcb1sz6gr0000gn/T/tmp.OwcSwtsHMp/gate.git/worktrees/wt
+result: git commands used by gh can resolve this detached linked worktree

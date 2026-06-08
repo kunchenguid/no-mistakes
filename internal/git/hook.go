@@ -167,7 +167,8 @@ func writeHookFileAtomic(path string, content []byte) error {
 // core.worktree to live in per-worktree scope only. If we leave
 // core.bare=true in shared config, it leaks into linked worktrees and
 // causes commands like `git rebase` to fail with "this operation must
-// be run in a work tree".
+// be run in a work tree". It also prevents provider CLIs such as gh from
+// resolving the repo from a CI step worktree cwd.
 //
 // Best-effort only: if the installed Git does not support
 // `git config --worktree`, this returns nil without changing config.
@@ -199,7 +200,8 @@ func IsolateHooksPath(ctx context.Context, bareDir string) error {
 // relocateCoreBareToWorktreeScope moves core.bare out of shared local config
 // into the bare's per-worktree config. Required after enabling
 // extensions.worktreeConfig: Git otherwise leaks core.bare=true from shared
-// scope into linked worktrees, breaking rebase/merge/etc.
+// scope into linked worktrees, breaking rebase/merge/etc. and provider CLI
+// repo resolution from worktree cwd.
 func relocateCoreBareToWorktreeScope(ctx context.Context, bareDir string) error {
 	if _, err := runGit(ctx, bareDir, "config", "--worktree", "core.bare", "true"); err != nil {
 		if isWorktreeConfigUnsupported(err) {

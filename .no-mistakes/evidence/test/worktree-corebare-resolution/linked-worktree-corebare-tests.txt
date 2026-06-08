@@ -1,0 +1,6 @@
+=== RUN   TestIsolateHooksPath_LinkedWorktreeResolvesRepoForCLI
+--- PASS: TestIsolateHooksPath_LinkedWorktreeResolvesRepoForCLI (0.73s)
+=== RUN   TestLinkedWorktreeLeaksCoreBareWithoutRelocation
+--- PASS: TestLinkedWorktreeLeaksCoreBareWithoutRelocation (0.46s)
+PASS
+ok  	github.com/kunchenguid/no-mistakes/internal/git	1.402s
