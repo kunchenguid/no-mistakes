@@ -57,8 +57,10 @@ func resolveThroughSymlinks(dir string) (string, error) {
 }
 
 func resolveThroughSymlinksSeen(dir string, seen map[string]struct{}) (string, error) {
-	cur := string(filepath.Separator)
-	for _, part := range strings.Split(filepath.Clean(dir), string(filepath.Separator)) {
+	clean := filepath.Clean(dir)
+	volume := filepath.VolumeName(clean)
+	cur := volume + string(filepath.Separator)
+	for _, part := range strings.Split(strings.TrimPrefix(clean, volume), string(filepath.Separator)) {
 		if part == "" {
 			continue
 		}
