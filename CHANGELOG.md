@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.27.1](https://github.com/kunchenguid/no-mistakes/compare/v1.27.0...v1.27.1) (2026-06-09)
+
+
+### Bug Fixes
+
+* **document,review:** correct spelling errors (unparseable -&gt; unparsable, funcitonal -&gt; functional) ([#262](https://github.com/kunchenguid/no-mistakes/issues/262)) ([de69d5e](https://github.com/kunchenguid/no-mistakes/commit/de69d5e9881865c5da878044b58804ae10c2db83))
+
 ## [1.27.0](https://github.com/kunchenguid/no-mistakes/compare/v1.26.1...v1.27.0) (2026-06-08)
 
 
