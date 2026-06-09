@@ -112,9 +112,18 @@ func buildPiPrompt(prompt string, schema json.RawMessage) string {
 		pretty = []byte(schema)
 	}
 	return prompt + "\n\n## no-mistakes final output contract\n\n" +
-		"When the iteration is complete, your final assistant response must be only valid JSON matching this JSON Schema. " +
-		"Do not wrap it in Markdown fences. Do not include prose before or after the JSON object.\n\n" +
-		string(pretty)
+		"Your final assistant response MUST be ONLY valid JSON matching the JSON Schema below. " +
+		"This is critical — your response will be programmatically parsed and validated against the schema. " +
+		"If the JSON does not match the schema (missing required fields, wrong types, or extra fields not in the schema), " +
+		"the entire pipeline step will fail and be retried, wasting time and tokens.\n\n" +
+		"Rules:\n" +
+		"- Output ONLY the JSON object. No prose before or after.\n" +
+		"- Do NOT wrap the JSON in Markdown fences (no ```json or ```).\n" +
+		"- Every finding in the \"findings\" array MUST include ALL required fields listed in the schema.\n" +
+		"- The \"action\" field in each finding MUST be one of the enum values specified in the schema.\n" +
+		"- Do not include fields that are not listed in the schema properties.\n" +
+		"- Double-check your output against the schema before finalizing.\n\n" +
+		"JSON Schema:\n" + string(pretty) + "\n"
 }
 
 // piParser tracks the streaming state of one Pi run. It accumulates text
