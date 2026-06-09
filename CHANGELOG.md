@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.27.2](https://github.com/kunchenguid/no-mistakes/compare/v1.27.1...v1.27.2) (2026-06-09)
+
+
+### Bug Fixes
+
+* **gate:** reattach init after repo directory rename ([#270](https://github.com/kunchenguid/no-mistakes/issues/270)) ([a2f4fc2](https://github.com/kunchenguid/no-mistakes/commit/a2f4fc2afaa6fdff03d0854024703da10b14b498))
+
 ## [1.27.1](https://github.com/kunchenguid/no-mistakes/compare/v1.27.0...v1.27.1) (2026-06-09)
 
 
