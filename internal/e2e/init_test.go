@@ -55,6 +55,50 @@ func TestInitIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestInitRepoRename proves that a user who renames or moves their repo
+// directory can re-run `init` from the new location and get their existing
+// gate back, instead of the historical failure:
+//
+//	init: add remote: remote "no-mistakes" already exists with url "..."
+//
+// The test name is deliberately short: it becomes part of t.TempDir(), which
+// hosts NM_HOME, and the daemon's Unix socket path under it must stay within
+// the OS socket path limit (104 bytes on macOS).
+func TestInitRepoRename(t *testing.T) {
+	h := NewHarness(t, SetupOpts{Agent: "claude"})
+	ctx := context.Background()
+
+	first, err := h.RunInDir(h.WorkDir, "init")
+	if err != nil {
+		t.Fatalf("first init: %v\n%s", err, first)
+	}
+	gateURLOut, err := h.runGit(ctx, h.WorkDir, "remote", "get-url", "no-mistakes")
+	if err != nil {
+		t.Fatalf("get gate url: %v\n%s", err, gateURLOut)
+	}
+	gateURL := strings.TrimSpace(string(gateURLOut))
+
+	renamed := filepath.Join(filepath.Dir(h.WorkDir), "work-renamed")
+	if err := os.Rename(h.WorkDir, renamed); err != nil {
+		t.Fatalf("rename work dir: %v", err)
+	}
+
+	second, err := h.RunInDir(renamed, "init")
+	if err != nil {
+		t.Fatalf("init after rename should succeed: %v\n%s", err, second)
+	}
+	if !strings.Contains(second, "already initialized") {
+		t.Errorf("init after rename should report an existing gate, got:\n%s", second)
+	}
+
+	// The repo must be reattached to the same gate, not a new one.
+	if out, err := h.runGit(ctx, renamed, "remote", "get-url", "no-mistakes"); err != nil {
+		t.Fatalf("no-mistakes remote missing after rename re-init: %v\n%s", err, out)
+	} else if url := strings.TrimSpace(string(out)); url != gateURL {
+		t.Errorf("gate url after rename = %q, want %q", url, gateURL)
+	}
+}
+
 func TestInitRollsBackWhenDaemonStartFails(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows IPC does not use Unix socket path limits")

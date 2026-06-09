@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
@@ -30,9 +31,11 @@ func repoID(absPath string) string {
 //
 // Init is idempotent: re-running it on an already-initialized repo repairs and
 // refreshes the gate (for example installing a newer hook, picking up hook-path
-// isolation, or restoring a missing remote) instead of failing. The returned
-// bool reports whether a new gate was created (true) or an existing one was
-// refreshed (false).
+// isolation, or restoring a missing remote) instead of failing. This includes
+// a working directory that was renamed or moved since the gate was created:
+// the gate identified by the leftover no-mistakes remote is reattached at the
+// new path, preserving its run history. The returned bool reports whether a
+// new gate was created (true) or an existing one was refreshed (false).
 func Init(ctx context.Context, d *db.DB, p *paths.Paths, workDir string) (*db.Repo, bool, error) {
 	// Normalize worktrees back to the main repo root so one repo record works
 	// from either the main checkout or any attached worktree.
@@ -48,6 +51,15 @@ func Init(ctx context.Context, d *db.DB, p *paths.Paths, workDir string) (*db.Re
 	if err != nil {
 		return nil, false, fmt.Errorf("check existing: %w", err)
 	}
+	if existing == nil {
+		// No record at this path, but the repo may have been moved or renamed
+		// after init; if so, reattach its existing gate instead of failing on
+		// the leftover remote.
+		existing, err = reattachRelocatedRepo(ctx, d, p, absRoot)
+		if err != nil {
+			return nil, false, err
+		}
+	}
 
 	// Read origin URL.
 	upstreamURL, err := git.GetRemoteURL(ctx, absRoot, "origin")
@@ -62,7 +74,7 @@ func Init(ctx context.Context, d *db.DB, p *paths.Paths, workDir string) (*db.Re
 	bareDir := p.RepoDir(id)
 
 	// Provision (or repair) the on-disk gate. This is idempotent.
-	if err := provisionGate(ctx, bareDir, absRoot, upstreamURL, existing != nil); err != nil {
+	if err := provisionGate(ctx, bareDir, absRoot, upstreamURL, p.ReposDir(), existing != nil); err != nil {
 		// Only tear down a gate we created in this call; never destroy an
 		// already-initialized gate when a repair pass fails.
 		if existing == nil {
@@ -103,7 +115,7 @@ func Init(ctx context.Context, d *db.DB, p *paths.Paths, workDir string) (*db.Re
 // its push/hook configuration, hook-path isolation, and the git remotes wiring
 // the working repo to the gate and the gate to its upstream. Every step is
 // idempotent so this doubles as the repair path for re-running init.
-func provisionGate(ctx context.Context, bareDir, absRoot, upstreamURL string, refresh bool) error {
+func provisionGate(ctx context.Context, bareDir, absRoot, upstreamURL, reposDir string, refresh bool) error {
 	// Create the bare repo. git init --bare is a no-op on an existing one.
 	if err := git.InitBare(ctx, bareDir); err != nil {
 		return fmt.Errorf("create bare repo: %w", err)
@@ -129,14 +141,14 @@ func provisionGate(ctx context.Context, bareDir, absRoot, upstreamURL string, re
 		return fmt.Errorf("add gate origin remote: %w", err)
 	}
 
-	if err := ensureWorkingRemote(ctx, absRoot, bareDir, refresh); err != nil {
+	if err := ensureWorkingRemote(ctx, absRoot, bareDir, reposDir, refresh); err != nil {
 		return fmt.Errorf("add remote: %w", err)
 	}
 
 	return nil
 }
 
-func ensureWorkingRemote(ctx context.Context, absRoot, bareDir string, refresh bool) error {
+func ensureWorkingRemote(ctx context.Context, absRoot, bareDir, reposDir string, refresh bool) error {
 	if refresh {
 		return git.EnsureRemote(ctx, absRoot, RemoteName, bareDir)
 	}
@@ -147,7 +159,50 @@ func ensureWorkingRemote(ctx context.Context, absRoot, bareDir string, refresh b
 	if existingURL == bareDir {
 		return nil
 	}
+	// A leftover remote pointing into our own repos dir is stale gate wiring
+	// (e.g. the working directory was copied, or its gate was half-ejected);
+	// repoint it. Anything else is a user-managed remote we must not touch.
+	if filepath.Dir(existingURL) == reposDir {
+		return git.EnsureRemote(ctx, absRoot, RemoteName, bareDir)
+	}
 	return fmt.Errorf("remote %q already exists with url %q", RemoteName, existingURL)
+}
+
+// reattachRelocatedRepo detects a working directory that was renamed or moved
+// after init: it carries a no-mistakes remote pointing at a gate in our repos
+// dir, but its repo record references the old path. When the old path no
+// longer exists, the record is migrated to the new path so the existing gate
+// and its run history are reattached. It returns nil when the repo should be
+// treated as a fresh init instead: no gate remote, an orphan gate with no
+// record, or a copy whose original still exists on disk.
+func reattachRelocatedRepo(ctx context.Context, d *db.DB, p *paths.Paths, absRoot string) (*db.Repo, error) {
+	remoteURL, err := git.GetRemoteURL(ctx, absRoot, RemoteName)
+	if err != nil {
+		return nil, nil
+	}
+	id := strings.TrimSuffix(filepath.Base(remoteURL), ".git")
+	if p.RepoDir(id) != remoteURL {
+		// Not one of our gate paths; fresh init decides what to do with it.
+		return nil, nil
+	}
+	repo, err := d.GetRepo(id)
+	if err != nil {
+		return nil, fmt.Errorf("look up relocated repo: %w", err)
+	}
+	if repo == nil {
+		return nil, nil
+	}
+	if _, err := os.Stat(repo.WorkingPath); err == nil {
+		// The recorded checkout still exists, so absRoot is a copy of it, not
+		// a move; the copy gets its own gate.
+		return nil, nil
+	}
+	migrated, err := d.UpdateRepoWorkingPath(id, absRoot)
+	if err != nil {
+		return nil, fmt.Errorf("migrate repo working path: %w", err)
+	}
+	slog.Info("gate reattached after working dir move", "repo_id", id, "old_path", repo.WorkingPath, "new_path", absRoot)
+	return migrated, nil
 }
 
 // Eject removes the no-mistakes gate from the repo at workDir.

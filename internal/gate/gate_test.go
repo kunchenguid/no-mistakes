@@ -375,6 +375,174 @@ func TestInitRepairsBrokenGate(t *testing.T) {
 	}
 }
 
+// TestInitReattachesGateAfterWorkingDirRename verifies that renaming or moving
+// a working directory does not break init idempotency: the leftover no-mistakes
+// remote identifies the existing gate, and re-running init from the new
+// location reattaches it (same repo ID, same bare repo, run history intact)
+// instead of failing with "remote already exists".
+func TestInitReattachesGateAfterWorkingDirRename(t *testing.T) {
+	workDir := setupTestRepo(t)
+	nmRoot := t.TempDir()
+	p := paths.WithRoot(nmRoot)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+	d := openTestDB(t, p)
+	ctx := context.Background()
+
+	first, _, err := Init(ctx, d, p, workDir)
+	if err != nil {
+		t.Fatalf("first init: %v", err)
+	}
+	if _, err := d.InsertRun(first.ID, "feature", "headsha", "basesha"); err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+
+	renamed := filepath.Join(filepath.Dir(workDir), "renamed")
+	if err := os.Rename(workDir, renamed); err != nil {
+		t.Fatalf("rename working dir: %v", err)
+	}
+
+	second, created, err := Init(ctx, d, p, renamed)
+	if err != nil {
+		t.Fatalf("init after rename should reattach the gate, got: %v", err)
+	}
+	if created {
+		t.Error("init after rename should report created=false")
+	}
+	if second.ID != first.ID {
+		t.Errorf("repo ID after rename = %q, want %q", second.ID, first.ID)
+	}
+	if second.WorkingPath != renamed {
+		t.Errorf("working path = %q, want %q", second.WorkingPath, renamed)
+	}
+
+	// The remote must still point at the original gate.
+	bareDir := p.RepoDir(first.ID)
+	if url, err := gitpkg.GetRemoteURL(ctx, renamed, RemoteName); err != nil {
+		t.Errorf("no-mistakes remote missing after reattach: %v", err)
+	} else if url != bareDir {
+		t.Errorf("remote url = %q, want %q", url, bareDir)
+	}
+
+	// The DB record must have migrated to the new path without duplicates.
+	dbRepo, err := d.GetRepoByPath(renamed)
+	if err != nil {
+		t.Fatalf("get repo by new path: %v", err)
+	}
+	if dbRepo == nil || dbRepo.ID != first.ID {
+		t.Fatalf("expected repo %q at new path, got %+v", first.ID, dbRepo)
+	}
+	if stale, err := d.GetRepoByPath(workDir); err != nil {
+		t.Fatalf("get repo by old path: %v", err)
+	} else if stale != nil {
+		t.Errorf("stale repo record remains at old path: %+v", stale)
+	}
+
+	// Run history must survive the reattach.
+	runs, err := d.GetRunsByRepo(first.ID)
+	if err != nil {
+		t.Fatalf("get runs: %v", err)
+	}
+	if len(runs) != 1 {
+		t.Errorf("runs after reattach = %d, want 1", len(runs))
+	}
+}
+
+// TestInitCreatesFreshGateForCopiedWorkingDir verifies that when a working
+// directory is copied (the original still exists), init treats the copy as a
+// new repo: it gets its own gate and the copied no-mistakes remote is
+// repointed, while the original repo's gate is left untouched.
+func TestInitCreatesFreshGateForCopiedWorkingDir(t *testing.T) {
+	workDir := setupTestRepo(t)
+	nmRoot := t.TempDir()
+	p := paths.WithRoot(nmRoot)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+	d := openTestDB(t, p)
+	ctx := context.Background()
+
+	first, _, err := Init(ctx, d, p, workDir)
+	if err != nil {
+		t.Fatalf("first init: %v", err)
+	}
+
+	copyDir := filepath.Join(filepath.Dir(workDir), "copy")
+	if out, err := exec.Command("cp", "-R", workDir, copyDir).CombinedOutput(); err != nil {
+		t.Fatalf("copy working dir: %v: %s", err, out)
+	}
+
+	second, created, err := Init(ctx, d, p, copyDir)
+	if err != nil {
+		t.Fatalf("init on copy should succeed, got: %v", err)
+	}
+	if !created {
+		t.Error("init on copy should report created=true")
+	}
+	if second.ID == first.ID {
+		t.Error("copy should get its own gate, not reuse the original's")
+	}
+
+	// The copy's remote must point at its own gate.
+	if url, err := gitpkg.GetRemoteURL(ctx, copyDir, RemoteName); err != nil {
+		t.Errorf("no-mistakes remote missing on copy: %v", err)
+	} else if url != p.RepoDir(second.ID) {
+		t.Errorf("copy remote url = %q, want %q", url, p.RepoDir(second.ID))
+	}
+
+	// The original must be untouched.
+	if url, err := gitpkg.GetRemoteURL(ctx, workDir, RemoteName); err != nil {
+		t.Errorf("original no-mistakes remote missing: %v", err)
+	} else if url != p.RepoDir(first.ID) {
+		t.Errorf("original remote url = %q, want %q", url, p.RepoDir(first.ID))
+	}
+	if dbRepo, err := d.GetRepoByPath(workDir); err != nil || dbRepo == nil || dbRepo.ID != first.ID {
+		t.Errorf("original repo record damaged: %+v, %v", dbRepo, err)
+	}
+}
+
+// TestInitRepointsOrphanGateRemoteOnFreshInit verifies that a leftover
+// no-mistakes remote pointing into our repos dir with no matching DB record
+// (a half-ejected gate) is repointed to the fresh gate instead of failing.
+func TestInitRepointsOrphanGateRemoteOnFreshInit(t *testing.T) {
+	workDir := setupTestRepo(t)
+	nmRoot := t.TempDir()
+	p := paths.WithRoot(nmRoot)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+	d := openTestDB(t, p)
+	ctx := context.Background()
+
+	first, _, err := Init(ctx, d, p, workDir)
+	if err != nil {
+		t.Fatalf("first init: %v", err)
+	}
+	// Orphan the gate: drop the DB record, then move the working dir so the
+	// computed gate path no longer matches the leftover remote.
+	if err := d.DeleteRepo(first.ID); err != nil {
+		t.Fatalf("delete repo record: %v", err)
+	}
+	renamed := filepath.Join(filepath.Dir(workDir), "renamed")
+	if err := os.Rename(workDir, renamed); err != nil {
+		t.Fatalf("rename working dir: %v", err)
+	}
+
+	repo, created, err := Init(ctx, d, p, renamed)
+	if err != nil {
+		t.Fatalf("init with orphan remote should succeed, got: %v", err)
+	}
+	if !created {
+		t.Error("init with orphan remote should report created=true")
+	}
+	if url, err := gitpkg.GetRemoteURL(ctx, renamed, RemoteName); err != nil {
+		t.Errorf("no-mistakes remote missing: %v", err)
+	} else if url != p.RepoDir(repo.ID) {
+		t.Errorf("remote url = %q, want %q", url, p.RepoDir(repo.ID))
+	}
+}
+
 func TestInitDoesNotOverwriteExistingNoMistakesRemoteOnFreshInit(t *testing.T) {
 	workDir := setupTestRepo(t)
 	nmRoot := t.TempDir()

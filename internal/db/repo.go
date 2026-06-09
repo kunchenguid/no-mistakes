@@ -95,6 +95,20 @@ func (d *DB) UpdateRepoMetadata(id, upstreamURL, defaultBranch string) (*Repo, e
 	return d.GetRepo(id)
 }
 
+// UpdateRepoWorkingPath moves a repo record to a new working path, preserving
+// the repo ID (and with it the gate and run history) when the working
+// directory is renamed or moved on disk.
+func (d *DB) UpdateRepoWorkingPath(id, workingPath string) (*Repo, error) {
+	_, err := d.sql.Exec(
+		`UPDATE repos SET working_path = ? WHERE id = ?`,
+		workingPath, id,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("update repo working path: %w", err)
+	}
+	return d.GetRepo(id)
+}
+
 // DeleteRepo deletes a repo by ID (cascade deletes runs and steps).
 func (d *DB) DeleteRepo(id string) error {
 	_, err := d.sql.Exec(`DELETE FROM repos WHERE id = ?`, id)
