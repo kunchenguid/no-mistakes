@@ -39,6 +39,8 @@ When you run `no-mistakes init` in a repo:
 
 `init` is idempotent.
 If the repo is already initialized, it refreshes the existing gate instead of failing: managed hook installation, push-option support, hook-path isolation, gate and working remotes, origin/default-branch metadata, and the `/no-mistakes` agent skill are repaired or updated where needed.
+If the working repo was renamed or moved and the old path no longer exists, `init` reattaches the existing gate from the leftover `no-mistakes` remote, updates the stored working path, and preserves the repo ID plus run history.
+If the working repo was copied and the original path still exists, `init` treats the copy as a new repo and repoints the copied `no-mistakes` remote to a fresh gate.
 If daemon startup fails during a refresh, `init` reports the error but does not eject the pre-existing gate.
 
 After init, your original `origin` still points at the real upstream remote.
@@ -171,4 +173,5 @@ Everything lives under `~/.no-mistakes/` by default. Set `NM_HOME` to relocate i
 | `logs/daemon.log` | Daemon log |
 | `logs/wizard-agent.log` | Managed agent-server output captured during setup wizard runs |
 
-The repo ID is the first 6 bytes (12 hex chars) of `sha256(absolute_working_path)`.
+New repo IDs are the first 6 bytes (12 hex chars) of `sha256(absolute_working_path)`.
+When an initialized working repo is renamed or moved, `init` preserves the existing repo ID instead of deriving a new one from the new path.

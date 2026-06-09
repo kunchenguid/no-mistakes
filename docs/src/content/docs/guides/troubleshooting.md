@@ -140,6 +140,7 @@ git remote -v | grep no-mistakes
 
 If it's missing, run `no-mistakes init` again.
 Re-running init refreshes an existing gate and repairs the `no-mistakes` remote when it is missing.
+It also reattaches an existing gate after you rename or move the repo directory, as long as the old path no longer exists.
 
 ### Check the hook
 

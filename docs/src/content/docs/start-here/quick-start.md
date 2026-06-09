@@ -58,6 +58,8 @@ $ no-mistakes init
 `git push origin <branch>`.
 
 You can safely re-run `no-mistakes init` later to refresh gate wiring or update the installed agent skill after an upgrade.
+If you rename or move the repo directory, re-run `no-mistakes init` from the new path to reattach the existing gate and keep its run history.
+Copied repos get their own fresh gate while the original path still exists.
 
 ## 4. Push through the gate
 
