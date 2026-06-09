@@ -135,7 +135,7 @@ Previous documentation findings to address:
 }
 
 // documentApprovalOutcome builds a single ask-user finding for cases where the
-// agent's structured output is missing or unparseable, so a human can confirm
+// agent's structured output is missing or unparsable, so a human can confirm
 // the documentation state instead of silently trusting an opaque response.
 func documentApprovalOutcome(summary string) *pipeline.StepOutcome {
 	findings := Findings{
