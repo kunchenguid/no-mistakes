@@ -51,7 +51,12 @@ the same way once the work is committed on a feature branch.
 - The repository must already be initialized with `no-mistakes init`.
 
 If any of these is not met, `axi run` returns an `error:` with the exact command
-to fix it - read it and act on it (commit your work, or create a branch).
+to fix it - read it and act on it (commit your work, or create a branch). If the
+repository is not initialized, run `no-mistakes init` first; if the `no-mistakes`
+command itself is missing or misbehaving, `no-mistakes doctor` reports what is
+wrong. Before starting, a quick `no-mistakes axi` (home view) shows whether a
+run is already active - resume or `axi abort` it rather than starting a second
+run on top of it.
 
 ## Intent is required
 
@@ -79,6 +84,11 @@ Run the pipeline and decide on its findings as they come up:
    ```sh
    no-mistakes axi run --intent "<what the user set out to accomplish>"
    ```
+   `axi run` and every `axi respond` block synchronously - the review, test,
+   and CI steps can each take **several minutes**, so a single call may not
+   return for a while. That is normal; allow a long timeout and do not cancel
+   or re-issue the command because it seems slow. To check progress without
+   disturbing the run, use `no-mistakes axi status` from a separate call.
 2. If the output contains a `gate:` object, the pipeline is waiting on you.
    Read its `findings` table. Each finding has an `id`, `severity`,
    `file`, `description`, and an `action` that tells you how the
@@ -101,6 +111,14 @@ Run the pipeline and decide on its findings as they come up:
    no-mistakes axi respond --action skip
    ```
     Each `respond` blocks until the next `gate:`, `checks-passed` decision point, or final outcome.
+
+    Two extra flags are available on `respond` when you need them:
+    - `--add-finding '<json>'` (with `--action fix`) folds a finding you
+      spotted yourself - one the pipeline did not surface - into the fix round,
+      as a JSON finding object. Use it for a problem you noticed that is not in
+      the gate's own `findings` table.
+    - `--step <name>` responds to a specific step instead of the one currently
+      awaiting approval. You rarely need this; omit it to answer the active gate.
 3. Repeat step 2 until the output has an `outcome:` instead of a `gate:`. The
    outcomes are:
    - `checks-passed` - the change is validated and CI is green, but the PR is
@@ -110,6 +128,12 @@ Run the pipeline and decide on its findings as they come up:
      in the background, so a human can watch it in the TUI.
    - `passed` - the changes cleared the gate and the PR was merged or closed.
    - `failed` or `cancelled` - they did not; read the output and address it.
+     Fix whatever the output points at (a failing test, a lint error, a finding
+     you skipped), commit the fix on the same feature branch, then drive the
+     pipeline again - `no-mistakes axi run --intent "..."` starts a fresh run,
+     or `no-mistakes rerun` re-runs the pipeline for the current branch. Do not
+     leave the user at a `failed` outcome without either retrying or explaining
+     what blocks it.
 
 The CI step deliberately watches the PR until it is merged or closed, so
 `axi run` returns `checks-passed` the moment checks are green rather than
@@ -157,3 +181,23 @@ no-mistakes axi abort         # cancel the active run
 - The `help` list at the bottom of most responses tells you the next commands to run.
 - Errors are printed as `error: ...` on stdout with a `help` list; act on the suggestion.
 - Exit codes: `0` success, no-op, or normal decision gates, `1` failed or cancelled final outcomes, `2` bad usage.
+
+A `gate:` waiting on you looks roughly like this - a `gate:` line naming the
+step, a `findings[N]{...}:` table with one row per finding, and a `help[N]:`
+list of next commands:
+
+```
+gate: review
+findings[2]{id,severity,file,description,action}:
+  r1,medium,internal/pipeline/executor.go,Error from os.Remove is ignored,auto-fix
+  r2,high,cmd/no-mistakes/main.go,New --force flag bypasses the confirm prompt,ask-user
+help[2]:
+  no-mistakes axi respond --action fix --findings r1
+  no-mistakes axi respond --action approve
+```
+
+Read the `action` column per row: drive `r1` (auto-fix) yourself, but stop
+and escalate `r2` (ask-user) to the user before responding. A final state
+instead shows `outcome: <checks-passed|passed|failed|cancelled>` with no
+`findings` table. Field names and exact columns can vary by step and version,
+so read the actual `findings` header rather than assuming this layout.
