@@ -24,6 +24,8 @@
 
 <h3 align="center">Kill all the slop. Raise clean PR.</h3>
 
+<p align="center"><strong>English</strong> · <a href="README.zh-CN.md">简体中文</a></p>
+
 <p align="center">
   <img src="https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/demo.gif" alt="no-mistakes demo" width="800" />
 </p>
@@ -37,6 +39,23 @@
 - **Clean PRs by default** - push, open PR, watch CI, and auto-fix failures in one shot.
 
 Full documentation: <https://kunchenguid.github.io/no-mistakes/>
+
+## How it works
+
+```
+        your branch
+            │  git push no-mistakes
+            ▼
+   ┌──────────────────────────────────────────────┐
+   │  disposable worktree — your work stays put     │
+   │  review → test → lint → docs → push → PR → CI  │
+   └──────────────────────────────────────────────┘
+            │  every check green
+            ▼
+        clean PR, opened for you
+```
+
+Each step either passes on its own or stops with a **finding** for you to act on. Safe, mechanical fixes are applied automatically; anything that touches your intent is escalated for you to **approve**, **fix**, or **skip**. Nothing reaches your real remote until every check is green.
 
 ## Install
 
@@ -72,6 +91,8 @@ $ git push no-mistakes
 $ no-mistakes
 # opens the TUI for the active run
 ```
+
+From the TUI you act on each **finding**: **auto-fix** ones are applied for you (or approve to let them), **ask-user** ones are a judgement call you approve, fix, or skip. Once every check is green, the gate forwards your branch upstream and opens the PR for you — no manual `git push origin`, no hand-written PR body. Prefer to let your coding agent drive the same flow headlessly? Use `/no-mistakes` (see below).
 
 ## Three ways to trigger the gate
 
