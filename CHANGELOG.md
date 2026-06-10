@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.28.0](https://github.com/kunchenguid/no-mistakes/compare/v1.27.3...v1.28.0) (2026-06-10)
+
+
+### Features
+
+* **cli:** report applied fixes in successful AXI output ([#274](https://github.com/kunchenguid/no-mistakes/issues/274)) ([8271fef](https://github.com/kunchenguid/no-mistakes/commit/8271fef7b9852acbb4f2a8b8cedcfb4a061b3892))
+
 ## [1.27.3](https://github.com/kunchenguid/no-mistakes/compare/v1.27.2...v1.27.3) (2026-06-10)
 
 
