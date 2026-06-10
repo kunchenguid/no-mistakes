@@ -39,6 +39,8 @@ func run(argv []string) int {
 		return runCodex(args, scenario)
 	case "opencode":
 		return runOpencode(args, scenario)
+	case "grok":
+		return runGrok(args, scenario)
 	case "gh":
 		return runGhStub(args)
 	default:
