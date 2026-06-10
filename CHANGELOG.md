@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.27.3](https://github.com/kunchenguid/no-mistakes/compare/v1.27.2...v1.27.3) (2026-06-10)
+
+
+### Bug Fixes
+
+* **cli:** clarify pipeline-owned finding fixes ([#272](https://github.com/kunchenguid/no-mistakes/issues/272)) ([e6d46fd](https://github.com/kunchenguid/no-mistakes/commit/e6d46fd6cb120afe1da946822be8186f9d13d51b))
+
 ## [1.27.2](https://github.com/kunchenguid/no-mistakes/compare/v1.27.1...v1.27.2) (2026-06-09)
 
 
