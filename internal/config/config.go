@@ -225,6 +225,7 @@ var defaultBinary = map[types.AgentName]string{
 	types.AgentRovoDev:  "acli",
 	types.AgentOpenCode: "opencode",
 	types.AgentPi:       "pi",
+	types.AgentGrok:     "grok",
 }
 
 // agentProbeOrder is the priority order for auto-detecting agents.
@@ -351,6 +352,7 @@ var agentArgsOverrideAgents = map[string]bool{
 	string(types.AgentRovoDev):  true,
 	string(types.AgentOpenCode): true,
 	string(types.AgentPi):       true,
+	string(types.AgentGrok):     true,
 }
 
 // reservedAgentArgs lists flags that no-mistakes manages internally and that
@@ -384,6 +386,15 @@ var reservedAgentArgs = map[string]map[string]bool{
 		"--mode":       true,
 		"--no-session": true,
 	},
+	string(types.AgentGrok): {
+		"-p":                true,
+		"--prompt":          true,
+		"--prompt-file":     true,
+		"--cwd":             true,
+		"--permission-mode": true,
+		"--output-format":   true,
+		"--effort":          true,
+	},
 }
 
 // validateAgentArgsOverride ensures each agent key is a known agent name and
@@ -392,7 +403,7 @@ var reservedAgentArgs = map[string]map[string]bool{
 func validateAgentArgsOverride(override map[string][]string) error {
 	for name, args := range override {
 		if !agentArgsOverrideAgents[name] {
-			return fmt.Errorf("invalid agent name in agent_args_override: %q (valid: claude, codex, rovodev, opencode, pi)", name)
+			return fmt.Errorf("invalid agent name in agent_args_override: %q (valid: claude, codex, rovodev, opencode, pi, grok)", name)
 		}
 		reserved := reservedAgentArgs[name]
 		for i, arg := range args {
