@@ -125,6 +125,7 @@ func TestWriteGateShape(t *testing.T) {
 		"  findings[1]{id,severity,file,action,description}:\n",
 		`    review-1,warning,main.go,ask-user,"calls os.Exit, leaks fd"`,
 		"no-mistakes axi respond --action approve",
+		"to have the pipeline fix the selected findings (do not edit files yourself)",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("gate missing %q in:\n%s", want, out)

@@ -93,7 +93,8 @@ Run the pipeline and decide on its findings as they come up:
    Read its `findings` table. Each finding has an `id`, `severity`,
    `file`, `description`, and an `action` that tells you how the
    pipeline classified it:
-   - `auto-fix` - a mechanical, low-risk fix you can safely make yourself.
+   - `auto-fix` - mechanical and low-risk; you can authorize the fix on
+     your own judgment by responding with `--action fix`.
    - `no-op` - informational only; nothing to do.
    - `ask-user` - the finding challenges the user's deliberate intent or
      touches product behavior. This is a call only the user can make - see
@@ -110,6 +111,11 @@ Run the pipeline and decide on its findings as they come up:
    # skip this step
    no-mistakes axi respond --action skip
    ```
+   While a run is active, never fix findings by editing the code yourself -
+   the pipeline owns both the findings and the fixes. Your job at a gate is to
+   decide and respond; `--action fix` has the pipeline apply the fix and
+   re-review the result.
+
     Each `respond` blocks until the next `gate:`, `checks-passed` decision point, or final outcome.
 
     Two extra flags are available on `respond` when you need them:
@@ -142,7 +148,8 @@ blocking on the human merge. Never poll or re-run waiting for the merge yourself
 ## Escalate `ask-user` findings
 
 A gate whose findings are all `auto-fix` or `no-op` is safe to drive on your
-own judgment: fix or approve as appropriate. But a finding marked
+own judgment: respond with `--action fix` or `--action approve` as
+appropriate. But a finding marked
 `ask-user` is a decision that belongs to the user, not you - the pipeline
 flagged it because it challenges their deliberate intent or changes product
 behavior. Do not approve, fix, or skip it on your own. Instead, stop and bring
@@ -196,8 +203,10 @@ help[2]:
   no-mistakes axi respond --action approve
 ```
 
-Read the `action` column per row: drive `r1` (auto-fix) yourself, but stop
-and escalate `r2` (ask-user) to the user before responding. A final state
+Read the `action` column per row: decide `r1` (auto-fix) on your own
+judgment - `respond --action fix --findings r1` hands it to the pipeline to
+fix - but stop and escalate `r2` (ask-user) to the user before responding. A
+final state
 instead shows `outcome: <checks-passed|passed|failed|cancelled>` with no
 `findings` table. Field names and exact columns can vary by step and version,
 so read the actual `findings` header rather than assuming this layout.

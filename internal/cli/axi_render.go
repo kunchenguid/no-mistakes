@@ -244,7 +244,7 @@ func gateFields(gate stepView) []toon.Field {
 		{Key: "gate", Value: toon.NewObject(gfields...)},
 		{Key: "help", Value: []string{
 			"Run `no-mistakes axi respond --action approve` to accept this step and continue",
-			"Run `no-mistakes axi respond --action fix --findings <ids>` to fix selected findings",
+			"Run `no-mistakes axi respond --action fix --findings <ids>` to have the pipeline fix the selected findings (do not edit files yourself)",
 			"Run `no-mistakes axi respond --action skip` to skip this step",
 			fmt.Sprintf("Run `no-mistakes axi logs --step %s --full` to read the full step log", gate.Name),
 		}},
