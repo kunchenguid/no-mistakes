@@ -34,7 +34,7 @@
 
 - **不阻塞** —— 流水线在隔离的 worktree 里跑，不打断你手头的工作。
 - **不挑 agent** —— 支持 `claude`、`codex`、`rovodev`、`opencode`、`pi`，或通过 `acpx` 用 `acp:<target>`。
-- **agent 原生** —— `/no-mistakes` 既能让编码 agent 完成一个任务再过网关，也能直接为已提交的工作过网关：它跑完流水线、应用安全的修复，剩下的升级给你。
+- **agent 原生** —— `/no-mistakes` 既能让编码 agent 完成一个任务再过网关，也能直接为已提交的工作过网关：它跑完流水线、让流水线应用安全的修复，剩下的升级给你。
 - **人始终说了算** —— 自动修复，还是逐条审查 findings，你决定。
 - **默认就是干净 PR** —— 推送、开 PR、盯 CI、自动修复失败，一气呵成。
 
@@ -100,7 +100,7 @@ $ no-mistakes
 
 - **`git push no-mistakes`** —— 显式的 Git 路径。把已提交的分支推给网关 remote，而不是 `origin`。
 - **`no-mistakes`** —— TUI。改完之后运行它（无需先提交），向导会带你建分支、提交、推过网关，然后挂到这次运行上。`no-mistakes -y` 会把这一切自动做完。
-- **`/no-mistakes`** —— agent skill。用 `/no-mistakes <task>` 让编码 agent 完成一个任务再过网关，或用裸 `/no-mistakes` 为已提交的工作过网关。它跑完流水线、自己应用安全的修复，并在任何需要人来拍板的地方停下来问你。
+- **`/no-mistakes`** —— agent skill。用 `/no-mistakes <task>` 让编码 agent 完成一个任务再过网关，或用裸 `/no-mistakes` 为已提交的工作过网关。它跑完流水线、让流水线应用安全的修复，并在任何需要人来拍板的地方停下来问你。
 
 `no-mistakes init` 会为 Claude Code 及其他 agent 安装 `/no-mistakes` skill。底层上这个 skill 驱动的是 `no-mistakes axi` —— 同一套审批流程的非交互式 TOON 接口。
 
