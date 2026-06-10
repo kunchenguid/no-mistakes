@@ -204,9 +204,13 @@ type StepResultInfo struct {
 	FindingsJSON     *string          `json:"findings_json,omitempty"`
 	ReportedFindings int              `json:"reported_findings,omitempty"`
 	FixedFindings    int              `json:"fixed_findings,omitempty"`
-	Error            *string          `json:"error,omitempty"`
-	StartedAt        *int64           `json:"started_at,omitempty"`
-	CompletedAt      *int64           `json:"completed_at,omitempty"`
+	// FixSummaries holds one entry per fix round the pipeline ran for this
+	// step, in round order: the agent's one-line fix summary, or "" when the
+	// round recorded none. Agent surfaces use it to report applied fixes.
+	FixSummaries []string `json:"fix_summaries,omitempty"`
+	Error        *string  `json:"error,omitempty"`
+	StartedAt    *int64   `json:"started_at,omitempty"`
+	CompletedAt  *int64   `json:"completed_at,omitempty"`
 }
 
 // --- Events (for subscribe stream) ---

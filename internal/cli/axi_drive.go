@@ -456,7 +456,9 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 // renderDriveResult prints the run snapshot plus one of: the active gate (exit
 // 0, a normal decision point), a checks-passed outcome (exit 0, CI is green and
 // the PR is ready for a human to merge), or the terminal outcome (exit 0 when
-// passed, exit 1 when blocked, failed, or cancelled).
+// passed, exit 1 when blocked, failed, or cancelled). Successful outcomes also
+// carry the fixes the pipeline applied and reporting instructions, so the agent
+// closes the loop with the user instead of stopping at "it passed".
 func renderDriveResult(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool) error {
 	rv := runViewFromIPC(run)
 	fields := []toon.Field{runObjectField(rv)}
@@ -470,7 +472,9 @@ func renderDriveResult(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool) error
 		if rv.PRURL != "" {
 			merge = fmt.Sprintf("CI checks passed - the PR is ready. Ask the user to review and merge it: %s", rv.PRURL)
 		}
-		fields = append(fields, toon.Field{Key: "help", Value: []string{merge}})
+		fixes := rv.fixRows()
+		fields = appendFixesField(fields, fixes)
+		fields = append(fields, toon.Field{Key: "help", Value: append([]string{merge}, successReportHelp(fixes)...)})
 		emitDoc(cmd, fields...)
 		return nil
 	}
@@ -485,15 +489,44 @@ func renderDriveResult(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool) error
 	if run.Error != nil && *run.Error != "" {
 		fields = append(fields, toon.Field{Key: "error", Value: *run.Error})
 	}
+
+	if rv.Status == string(types.RunCompleted) {
+		fixes := rv.fixRows()
+		fields = appendFixesField(fields, fixes)
+		var help []string
+		if rv.PRURL != "" {
+			help = append(help, fmt.Sprintf("Open the PR: %s", rv.PRURL))
+		}
+		help = append(help, successReportHelp(fixes)...)
+		fields = append(fields, toon.Field{Key: "help", Value: help})
+		emitDoc(cmd, fields...)
+		return nil
+	}
+
 	if rv.PRURL != "" {
 		fields = append(fields, toon.Field{Key: "help", Value: []string{fmt.Sprintf("Open the PR: %s", rv.PRURL)}})
 	}
 	emitDoc(cmd, fields...)
-
-	if rv.Status == string(types.RunCompleted) {
-		return nil
-	}
 	return &exitError{code: 1}
+}
+
+// appendFixesField adds a fixes table when the pipeline applied any fixes.
+func appendFixesField(fields []toon.Field, fixes []fixRow) []toon.Field {
+	if len(fixes) == 0 {
+		return fields
+	}
+	return append(fields, toon.Field{Key: "fixes", Value: fixes})
+}
+
+// successReportHelp returns the reporting instructions for a successful
+// outcome: always summarize the run for the user, and when the pipeline
+// applied fixes, own the misses and list every fix for the user's review.
+func successReportHelp(fixes []fixRow) []string {
+	help := []string{"Summarize this pipeline run for the user in a concise, easily readable format: what was validated and what was found."}
+	if len(fixes) > 0 {
+		help = append(help, "The pipeline fixed findings the original change missed (see `fixes`) - acknowledge the misses and list each fix so the user can review them.")
+	}
+	return help
 }
 
 func newAxiRespondCmd() *cobra.Command {

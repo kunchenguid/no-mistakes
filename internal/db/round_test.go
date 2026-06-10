@@ -123,6 +123,52 @@ func TestGetRoundsByStepEmpty(t *testing.T) {
 	}
 }
 
+func TestStepFixSummaries(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
+	step, _ := d.InsertStepResult(run.ID, types.StepReview)
+
+	findings := `{"findings":[{"id":"review-1","severity":"warning","description":"x"}],"summary":"1"}`
+	d.InsertStepRound(step.ID, 1, "initial", &findings, nil, 100)
+	s1 := "handle nil pointer in executor"
+	d.InsertStepRound(step.ID, 2, "auto_fix", nil, &s1, 100)
+	// Legacy fix round without a recorded summary still counts as a fix.
+	d.InsertStepRound(step.ID, 3, "user_fix", nil, nil, 100)
+	s2 := "tighten log path validation"
+	d.InsertStepRound(step.ID, 4, "auto_fix", nil, &s2, 100)
+
+	got, err := d.StepFixSummaries(step.ID)
+	if err != nil {
+		t.Fatalf("step fix summaries: %v", err)
+	}
+	want := []string{s1, "", s2}
+	if len(got) != len(want) {
+		t.Fatalf("got %d summaries %v, want %d %v", len(got), got, len(want), want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("summary[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestStepFixSummariesNoFixRounds(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
+	step, _ := d.InsertStepResult(run.ID, types.StepLint)
+	d.InsertStepRound(step.ID, 1, "initial", nil, nil, 100)
+
+	got, err := d.StepFixSummaries(step.ID)
+	if err != nil {
+		t.Fatalf("step fix summaries: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("got %v, want no summaries", got)
+	}
+}
+
 func TestStepRoundCascadeDelete(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")

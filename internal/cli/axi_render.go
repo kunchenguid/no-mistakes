@@ -47,6 +47,13 @@ type logRow struct {
 	Line string `toon:"line"`
 }
 
+// fixRow is one fix the pipeline applied: the step it ran under and the
+// agent's one-line summary of the change.
+type fixRow struct {
+	Step    string `toon:"step"`
+	Summary string `toon:"summary"`
+}
+
 // stepView is a render-ready view of a single pipeline step, decoupled from
 // whether it came from the daemon (ipc) or the local database.
 type stepView struct {
@@ -54,6 +61,7 @@ type stepView struct {
 	Status       string
 	DurationMS   int64
 	FindingsJSON string
+	FixSummaries []string
 }
 
 // runView is a render-ready view of a pipeline run.
@@ -77,7 +85,7 @@ func runViewFromIPC(r *ipc.RunInfo) runView {
 		rv.PRURL = *r.PRURL
 	}
 	for _, s := range r.Steps {
-		sv := stepView{Name: string(s.StepName), Status: string(s.Status)}
+		sv := stepView{Name: string(s.StepName), Status: string(s.Status), FixSummaries: s.FixSummaries}
 		if s.DurationMS != nil {
 			sv.DurationMS = *s.DurationMS
 		}
@@ -180,6 +188,23 @@ func (rv runView) findingsTally() string {
 		return "none"
 	}
 	return joinComma(parts)
+}
+
+// fixRows flattens the fixes the pipeline applied across all steps into
+// renderable rows, in step then round order. A fix round that recorded no
+// summary still produced a fix commit, so it gets an explicit placeholder
+// rather than being dropped.
+func (rv runView) fixRows() []fixRow {
+	var rows []fixRow
+	for _, s := range rv.Steps {
+		for _, summary := range s.FixSummaries {
+			if summary == "" {
+				summary = "fix applied (no summary recorded)"
+			}
+			rows = append(rows, fixRow{Step: s.Name, Summary: summary})
+		}
+	}
+	return rows
 }
 
 func joinComma(parts []string) string {

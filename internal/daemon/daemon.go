@@ -508,5 +508,8 @@ func stepToInfo(d *db.DB, s *db.StepResult) ipc.StepResultInfo {
 		info.ReportedFindings = stats.ReportedFindings
 		info.FixedFindings = stats.FixedFindings
 	}
+	if summaries, err := d.StepFixSummaries(s.ID); err == nil {
+		info.FixSummaries = summaries
+	}
 	return info
 }

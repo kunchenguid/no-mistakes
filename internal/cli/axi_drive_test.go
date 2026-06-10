@@ -181,6 +181,7 @@ func TestRenderDriveResult_ChecksPassed(t *testing.T) {
 		"outcome: checks-passed",
 		"https://github.com/user/repo/pull/42",
 		"merge",
+		"Summarize this pipeline run for the user",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("checks-passed output missing %q in:\n%s", want, got)
@@ -188,6 +189,50 @@ func TestRenderDriveResult_ChecksPassed(t *testing.T) {
 	}
 	if strings.Contains(got, "outcome: passed\n") {
 		t.Errorf("checks-passed must not report a terminal passed outcome:\n%s", got)
+	}
+	// No fixes were applied, so neither the fixes table nor the
+	// acknowledge-your-misses instruction should appear.
+	for _, reject := range []string{"fixes[", "acknowledge"} {
+		if strings.Contains(got, reject) {
+			t.Errorf("checks-passed output without fixes must not contain %q:\n%s", reject, got)
+		}
+	}
+}
+
+func TestRenderDriveResult_ChecksPassedWithFixes(t *testing.T) {
+	run := &ipc.RunInfo{
+		ID:      "run-1",
+		Branch:  "feature/x",
+		Status:  types.RunRunning,
+		HeadSHA: "abcdef1234567890",
+		PRURL:   strptr("https://github.com/user/repo/pull/42"),
+		Steps: []ipc.StepResultInfo{
+			{StepName: types.StepReview, Status: types.StepStatusCompleted, FixSummaries: []string{"handle nil pointer in executor"}},
+			{StepName: types.StepTest, Status: types.StepStatusCompleted, FixSummaries: []string{""}},
+			{StepName: types.StepCI, Status: types.StepStatusRunning},
+		},
+	}
+
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+
+	if err := renderDriveResult(cmd, run, true); err != nil {
+		t.Fatalf("checks-passed must exit 0, got error: %v", err)
+	}
+
+	got := out.String()
+	for _, want := range []string{
+		"outcome: checks-passed",
+		"fixes[2]{step,summary}:",
+		"review,handle nil pointer in executor",
+		"test,fix applied (no summary recorded)",
+		"Summarize this pipeline run for the user",
+		"acknowledge the misses and list each fix so the user can review them",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("checks-passed output missing %q in:\n%s", want, got)
+		}
 	}
 }
 
@@ -205,7 +250,64 @@ func TestRenderDriveResult_TerminalPassedUnaffected(t *testing.T) {
 	if err := renderDriveResult(cmd, run, false); err != nil {
 		t.Fatalf("terminal passed must exit 0, got error: %v", err)
 	}
-	if got := out.String(); !strings.Contains(got, "outcome: passed") {
+	got := out.String()
+	if !strings.Contains(got, "outcome: passed") {
 		t.Errorf("expected terminal passed outcome, got:\n%s", got)
+	}
+	if !strings.Contains(got, "Summarize this pipeline run for the user") {
+		t.Errorf("terminal passed output missing the summarize instruction:\n%s", got)
+	}
+}
+
+func TestRenderDriveResult_TerminalPassedWithFixes(t *testing.T) {
+	run := &ipc.RunInfo{
+		ID:     "run-1",
+		Branch: "feature/x",
+		Status: types.RunCompleted,
+		Steps: []ipc.StepResultInfo{
+			{StepName: types.StepLint, Status: types.StepStatusCompleted, FixSummaries: []string{"remove unused import"}},
+			{StepName: types.StepCI, Status: types.StepStatusCompleted},
+		},
+	}
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+
+	if err := renderDriveResult(cmd, run, false); err != nil {
+		t.Fatalf("terminal passed must exit 0, got error: %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{
+		"outcome: passed",
+		"fixes[1]{step,summary}:",
+		"lint,remove unused import",
+		"acknowledge the misses and list each fix so the user can review them",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("terminal passed output missing %q in:\n%s", want, got)
+		}
+	}
+}
+
+func TestRenderDriveResult_FailedHasNoSummarizeInstruction(t *testing.T) {
+	run := &ipc.RunInfo{
+		ID:     "run-1",
+		Branch: "feature/x",
+		Status: types.RunFailed,
+		Steps: []ipc.StepResultInfo{
+			{StepName: types.StepTest, Status: types.StepStatusFailed, FixSummaries: []string{"partial fix"}},
+		},
+	}
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+
+	err := renderDriveResult(cmd, run, false)
+	if err == nil {
+		t.Fatal("failed outcome must exit non-zero")
+	}
+	got := out.String()
+	if strings.Contains(got, "Summarize this pipeline run for the user") {
+		t.Errorf("failed outcome must not carry the success summary instruction:\n%s", got)
 	}
 }

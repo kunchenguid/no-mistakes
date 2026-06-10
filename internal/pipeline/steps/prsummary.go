@@ -1004,10 +1004,7 @@ func buildFixResultText(rounds []*db.StepRound) string {
 	// Categorize fix rounds. Legacy "user_fix" rounds are rendered as auto-fix.
 	autoFixRounds := 0
 	for _, r := range rounds[1:] {
-		switch r.Trigger {
-		case "auto_fix":
-			autoFixRounds++
-		case "user_fix":
+		if r.IsFixRound() {
 			autoFixRounds++
 		}
 	}
@@ -1050,7 +1047,7 @@ func buildStepDetails(summaryLine string, sr *db.StepResult, rounds []*db.StepRo
 	missingRoundFindingsData := sr.FindingsJSON != nil && !roundsHaveFindings(rounds) && !roundsHaveParseFailure(rounds)
 
 	for _, r := range rounds {
-		isFixRound := r.Trigger == "auto_fix" || r.Trigger == "user_fix"
+		isFixRound := r.IsFixRound()
 		if isFixRound {
 			b.WriteString(fixRoundLine(r))
 			b.WriteString("\n")

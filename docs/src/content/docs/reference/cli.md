@@ -78,6 +78,7 @@ Gates with no findings or only `action: no-op` findings are approved as-is, and 
 Without `--yes`, an agent driving `axi run` should stop when a gate contains `action: ask-user` findings and relay each finding's ID, file, and full description to the user before responding.
 When the CI step is still monitoring an open PR and checks are green, `axi run` exits successfully with `outcome: checks-passed` instead of waiting for a human merge.
 Treat that as the agent stopping point: ask the user to review and merge the PR from the `help` line.
+Successful outcomes (`checks-passed` and `passed`) also carry a `fixes` table listing each fix the pipeline applied, plus `help` instructions telling the agent to summarize the run and list those fixes for the user's review.
 
 ## no-mistakes axi respond
 

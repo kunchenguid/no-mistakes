@@ -96,6 +96,7 @@ Re-run `no-mistakes init` in an already-initialized repo to refresh or reinstall
 The skill drives `no-mistakes axi`, a non-interactive command surface that prints TOON to stdout and progress to stderr.
 When CI is green but the PR is still open, `axi run` and `axi respond` return `outcome: checks-passed` with a help line pointing at the PR instead of waiting for a human merge.
 That is a successful agent stopping point: report that the PR is ready and ask the user to review and merge it.
+Successful outcomes also instruct the agent to summarize the run for the user, and include a `fixes` table listing every fix the pipeline applied, so the agent can acknowledge what it missed and the user can review each fix.
 
 In task-first mode, if the repo is on the default branch, the skill tells the agent to create a feature branch before committing because the gate validates committed history on a non-default branch.
 The agent should inspect `git status` before changing or committing anything, preserve unrelated pre-existing uncommitted changes, and commit only the changes that belong to the user's task.

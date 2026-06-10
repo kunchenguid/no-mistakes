@@ -176,6 +176,13 @@ The CI step deliberately watches the PR until it is merged or closed, so
 ` + "`axi run`" + ` returns ` + "`checks-passed`" + ` the moment checks are green rather than
 blocking on the human merge. Never poll or re-run waiting for the merge yourself.
 
+On a successful outcome (` + "`checks-passed`" + ` or ` + "`passed`" + `), close the loop with the
+user: summarize what happened during the pipeline in a concise, easily readable
+format - what was validated and what was found. If the output includes a
+` + "`fixes`" + ` table, the pipeline fixed findings your original change missed:
+acknowledge those misses and explicitly list each fix so the user can easily
+review them.
+
 ## Escalate ` + "`ask-user`" + ` findings
 
 A gate whose findings are all ` + "`auto-fix`" + ` or ` + "`no-op`" + ` is safe to drive on your

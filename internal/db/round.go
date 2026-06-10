@@ -35,6 +35,33 @@ type StepRound struct {
 	CreatedAt  int64
 }
 
+// IsFixRound reports whether this round was a fix attempt. Legacy "user_fix"
+// rounds count: they were fix rounds dispatched by an explicit user selection.
+func (r *StepRound) IsFixRound() bool {
+	return r.Trigger == "auto_fix" || r.Trigger == "user_fix"
+}
+
+// StepFixSummaries returns one entry per fix round for a step, in round order:
+// the agent's one-line fix summary, or "" when the round recorded none.
+func (d *DB) StepFixSummaries(stepResultID string) ([]string, error) {
+	rounds, err := d.GetRoundsByStep(stepResultID)
+	if err != nil {
+		return nil, err
+	}
+	var summaries []string
+	for _, r := range rounds {
+		if !r.IsFixRound() {
+			continue
+		}
+		summary := ""
+		if r.FixSummary != nil {
+			summary = *r.FixSummary
+		}
+		summaries = append(summaries, summary)
+	}
+	return summaries, nil
+}
+
 // InsertStepRound creates a new round record for a step result. fixSummary may
 // be nil for non-fix rounds or when the agent produced no summary.
 func (d *DB) InsertStepRound(stepResultID string, round int, trigger string, findingsJSON *string, fixSummary *string, durationMS int64) (*StepRound, error) {
