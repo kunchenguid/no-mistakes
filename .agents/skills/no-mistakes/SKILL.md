@@ -105,7 +105,7 @@ Run the pipeline and decide on its findings as they come up:
    # accept the step as-is and continue
    no-mistakes axi respond --action approve
 
-   # have the agent fix specific findings, then continue
+   # have the pipeline fix specific findings, then continue
    no-mistakes axi respond --action fix --findings <id1,id2> --instructions "<optional guidance>"
 
    # skip this step
