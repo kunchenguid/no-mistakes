@@ -94,6 +94,7 @@ func newDoctorCmd() *cobra.Command {
 				}{
 					{"claude", "claude"},
 					{"codex", "codex"},
+					{"grok", "grok"},
 					{"rovodev", "acli"},
 					{"opencode", "opencode"},
 					{"pi", "pi"},
