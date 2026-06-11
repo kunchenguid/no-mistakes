@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.28.1](https://github.com/kunchenguid/no-mistakes/compare/v1.28.0...v1.28.1) (2026-06-11)
+
+
+### Bug Fixes
+
+* **skill:** mark installed skills internal ([#279](https://github.com/kunchenguid/no-mistakes/issues/279)) ([d7878f7](https://github.com/kunchenguid/no-mistakes/commit/d7878f7184d476cb3ac2cfbbb06e7abb019694a3))
+
 ## [1.28.0](https://github.com/kunchenguid/no-mistakes/compare/v1.27.3...v1.28.0) (2026-06-10)
 
 
