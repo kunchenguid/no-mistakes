@@ -18,7 +18,9 @@ var InstallBases = []string{
 // Install writes SKILL.md into each agent skills directory under repoRoot,
 // creating directories as needed. It returns the repo-relative paths written so
 // the caller can report them. Writing is idempotent: re-running overwrites with
-// identical content (refreshing a stale SKILL.md from an older version).
+// identical content (refreshing a stale SKILL.md from an older version). The
+// vendored copies use InstalledMarkdown, whose internal marker keeps them out
+// of end-user skill discovery.
 //
 // Repos commonly consolidate the two bases with a symlink - `.claude/skills` ->
 // `.agents/skills`, the whole `.claude` dir -> `.agents`, or the reverse. Install
@@ -26,7 +28,7 @@ var InstallBases = []string{
 // not exist yet (a plain os.MkdirAll would fail with "file exists" on a dangling
 // symlink). Both logical bases stay readable afterward via the link.
 func Install(repoRoot string) ([]string, error) {
-	content := []byte(Markdown())
+	content := []byte(InstalledMarkdown())
 	written := make([]string, 0, len(InstallBases))
 	for _, base := range InstallBases {
 		rel := filepath.Join(base, Name, "SKILL.md")

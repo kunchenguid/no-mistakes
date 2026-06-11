@@ -260,6 +260,9 @@ func assertSkillInstalled(t *testing.T, h *Harness) {
 		for _, want := range []string{
 			"name: no-mistakes",
 			"user-invocable: true",
+			// Vendored copies are marked internal so skill discovery tools
+			// (e.g. `npx skills add`) skip them in target repos.
+			"metadata:\n  internal: true\n",
 			"no-mistakes axi run",
 		} {
 			if !strings.Contains(content, want) {

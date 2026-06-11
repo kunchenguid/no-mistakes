@@ -30,6 +30,29 @@ func TestMarkdownFrontmatter(t *testing.T) {
 	}
 }
 
+// TestInstalledMarkdownMarksInternal guards the split between the two skill
+// renderings: the copy init vendors into a repo must carry
+// `metadata.internal: true` so skill discovery tools skip it, while the
+// canonical public skill must stay discoverable.
+func TestInstalledMarkdownMarksInternal(t *testing.T) {
+	installed := InstalledMarkdown()
+	end := strings.Index(installed[4:], "---\n")
+	if end < 0 {
+		t.Fatalf("InstalledMarkdown frontmatter not closed:\n%s", installed[:min(120, len(installed))])
+	}
+	frontmatter := installed[:4+end]
+	if !strings.Contains(frontmatter, "metadata:\n  internal: true\n") {
+		t.Errorf("installed frontmatter must mark the skill internal, got:\n%s", frontmatter)
+	}
+	if strings.Contains(Markdown(), "internal: true") {
+		t.Errorf("public Markdown() must not be marked internal")
+	}
+	// The two renderings must agree on everything but the internal marker.
+	if strings.Replace(installed, "metadata:\n  internal: true\n", "", 1) != Markdown() {
+		t.Errorf("InstalledMarkdown should differ from Markdown only by the internal marker")
+	}
+}
+
 func TestBodyDocumentsTaskFirstFlow(t *testing.T) {
 	md := Markdown()
 	for _, want := range []string{
@@ -66,8 +89,8 @@ func TestInstallWritesBothPaths(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", rel, err)
 		}
-		if string(data) != Markdown() {
-			t.Errorf("%s content does not match Markdown()", rel)
+		if string(data) != InstalledMarkdown() {
+			t.Errorf("%s content does not match InstalledMarkdown()", rel)
 		}
 	}
 }
@@ -84,7 +107,7 @@ func TestInstallIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(data) != Markdown() {
+	if string(data) != InstalledMarkdown() {
 		t.Errorf("content drifted after re-install")
 	}
 }
@@ -153,8 +176,8 @@ func TestInstallSymlinkLayouts(t *testing.T) {
 				if err != nil {
 					t.Fatalf("read reported %s: %v", rel, err)
 				}
-				if string(data) != Markdown() {
-					t.Errorf("%s content does not match Markdown()", rel)
+				if string(data) != InstalledMarkdown() {
+					t.Errorf("%s content does not match InstalledMarkdown()", rel)
 				}
 			}
 
@@ -166,8 +189,8 @@ func TestInstallSymlinkLayouts(t *testing.T) {
 				if err != nil {
 					t.Fatalf("skill not reachable via %s: %v", base, err)
 				}
-				if string(data) != Markdown() {
-					t.Errorf("%s content does not match Markdown()", base)
+				if string(data) != InstalledMarkdown() {
+					t.Errorf("%s content does not match InstalledMarkdown()", base)
 				}
 			}
 		})
@@ -191,7 +214,7 @@ func TestInstallOverwritesStaleContent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(data) != Markdown() {
+	if string(data) != InstalledMarkdown() {
 		t.Errorf("stale SKILL.md was not refreshed to current content")
 	}
 }
