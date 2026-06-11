@@ -114,7 +114,7 @@ make test    # 运行 go test -race ./...（不含 e2e 套件）
 make e2e     # 运行打了标签的端到端 agent 旅程套件
 make e2e-record # agent 线格式变化时，重新录制 e2e fixtures
 make lint    # 检查生成的 skill 是否漂移，并跑 go vet ./...
-make skill   # 重新生成 skills/no-mistakes/SKILL.md
+make skill   # 重新生成已提交的 no-mistakes skill 文件
 make fmt     # 运行 gofmt -w .
 make demo    # 重新生成 demo.gif 和 demo.mp4（需要 vhs 和 ffmpeg）
 make docs    # 在 docs/dist 构建 Astro 文档站

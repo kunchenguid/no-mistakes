@@ -2,8 +2,9 @@
 //
 // It is the single source of truth for the skill's identity (name and
 // trigger description) and its SKILL.md body. The genskill tool renders
-// Markdown() to skills/no-mistakes/SKILL.md (verified fresh in CI), and the
-// init command embeds that generated file to install it into a user's repo.
+// Markdown() to the public skills/no-mistakes/SKILL.md and InstalledMarkdown()
+// to this repo's vendored .agents copy (verified fresh in CI). The init command
+// vendors InstalledMarkdown() into a user's repo.
 // The CLI's axi home view reuses Description so the two never drift.
 package skill
 

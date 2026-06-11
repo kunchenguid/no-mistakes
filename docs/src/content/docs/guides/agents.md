@@ -91,6 +91,7 @@ Use `/no-mistakes <task>` to have the agent first do the task, commit only that 
 In both modes, it resolves low-risk findings on its own and stops to relay anything that needs your decision.
 
 `no-mistakes init` installs that skill into `.claude/skills/no-mistakes/SKILL.md` and `.agents/skills/no-mistakes/SKILL.md`, so it is available to every supported agent in the repo.
+Those installed copies are marked internal so skill discovery tools skip the vendored copy when listing a repo's public skills.
 Repos that symlink `.claude` to `.agents`, `.claude/skills` to `.agents/skills`, or the reverse, keep that layout; `init` follows the symlink and makes the skill reachable from both logical paths.
 Re-run `no-mistakes init` in an already-initialized repo to refresh or reinstall that skill after an upgrade, including overwriting stale `SKILL.md` content from an older binary.
 The skill drives `no-mistakes axi`, a non-interactive command surface that prints TOON to stdout and progress to stderr.
