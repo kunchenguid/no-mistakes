@@ -318,3 +318,111 @@ func TestSkillExitCodeGuidanceDistinguishesDecisionGates(t *testing.T) {
 		t.Fatal("skill should explicitly identify decision gates as normal exit 0 stops")
 	}
 }
+
+func TestResolveActiveRunPrefersBranchMatch(t *testing.T) {
+	database := openTestDB(t)
+	repo, err := database.InsertRepo(t.TempDir(), "origin", "main")
+	if err != nil {
+		t.Fatalf("insert repo: %v", err)
+	}
+	matching, err := database.InsertRun(repo.ID, "feature/match", "head-a", "base")
+	if err != nil {
+		t.Fatalf("insert matching run: %v", err)
+	}
+	if _, err := database.InsertRun(repo.ID, "feature/other", "head-b", "base"); err != nil {
+		t.Fatalf("insert other run: %v", err)
+	}
+
+	got, err := resolveActiveRun(&axiEnv{d: database, repo: repo}, "", "feature/match")
+	if err != nil {
+		t.Fatalf("resolve active run: %v", err)
+	}
+	if got == nil || got.ID != matching.ID {
+		t.Fatalf("resolved run = %#v, want branch-matching run %s", got, matching.ID)
+	}
+}
+
+func TestResolveActiveRunFallsBackAcrossBranches(t *testing.T) {
+	database := openTestDB(t)
+	repo, err := database.InsertRepo(t.TempDir(), "origin", "main")
+	if err != nil {
+		t.Fatalf("insert repo: %v", err)
+	}
+	run, err := database.InsertRun(repo.ID, "feature/pipeline", "head", "base")
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+	env := &axiEnv{d: database, repo: repo}
+
+	// The pipeline keeps running after the user switches branches; the only
+	// active run must stay answerable from any branch.
+	got, err := resolveActiveRun(env, "", "develop")
+	if err != nil {
+		t.Fatalf("resolve from other branch: %v", err)
+	}
+	if got == nil || got.ID != run.ID {
+		t.Fatalf("resolved run = %#v, want %s", got, run.ID)
+	}
+
+	// Detached HEAD yields no branch; the run must still resolve.
+	got, err = resolveActiveRun(env, "", "")
+	if err != nil {
+		t.Fatalf("resolve with no branch: %v", err)
+	}
+	if got == nil || got.ID != run.ID {
+		t.Fatalf("resolved run = %#v, want %s", got, run.ID)
+	}
+}
+
+func TestResolveActiveRunAmbiguityRequiresRunID(t *testing.T) {
+	database := openTestDB(t)
+	repo, err := database.InsertRepo(t.TempDir(), "origin", "main")
+	if err != nil {
+		t.Fatalf("insert repo: %v", err)
+	}
+	first, err := database.InsertRun(repo.ID, "feature/a", "head-a", "base")
+	if err != nil {
+		t.Fatalf("insert first run: %v", err)
+	}
+	if _, err := database.InsertRun(repo.ID, "feature/b", "head-b", "base"); err != nil {
+		t.Fatalf("insert second run: %v", err)
+	}
+	env := &axiEnv{d: database, repo: repo}
+
+	if _, err := resolveActiveRun(env, "", "feature/none"); err == nil {
+		t.Fatal("expected ambiguity error when several runs are active and none matches the branch")
+	} else if !strings.Contains(err.Error(), "--run") {
+		t.Fatalf("ambiguity error should point at --run, got %v", err)
+	}
+
+	got, err := resolveActiveRun(env, first.ID, "feature/none")
+	if err != nil {
+		t.Fatalf("resolve explicit run: %v", err)
+	}
+	if got == nil || got.ID != first.ID {
+		t.Fatalf("resolved run = %#v, want explicit %s", got, first.ID)
+	}
+}
+
+func TestResolveActiveRunIgnoresOtherRepos(t *testing.T) {
+	database := openTestDB(t)
+	repo, err := database.InsertRepo(t.TempDir(), "origin", "main")
+	if err != nil {
+		t.Fatalf("insert repo: %v", err)
+	}
+	other, err := database.InsertRepo(t.TempDir(), "origin", "main")
+	if err != nil {
+		t.Fatalf("insert other repo: %v", err)
+	}
+	if _, err := database.InsertRun(other.ID, "feature/elsewhere", "head", "base"); err != nil {
+		t.Fatalf("insert other-repo run: %v", err)
+	}
+
+	got, err := resolveActiveRun(&axiEnv{d: database, repo: repo}, "", "")
+	if err != nil {
+		t.Fatalf("resolve active run: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("resolved run = %#v, want nil (other repo's run must not leak)", got)
+	}
+}

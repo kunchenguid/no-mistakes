@@ -12,6 +12,7 @@ import (
 	toon "github.com/toon-format/toon-go"
 
 	"github.com/kunchenguid/no-mistakes/internal/cimonitor"
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/gate"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
@@ -530,7 +531,7 @@ func successReportHelp(fixes []fixRow) []string {
 }
 
 func newAxiRespondCmd() *cobra.Command {
-	var action, step, findings, instructions, addFinding string
+	var action, step, findings, instructions, addFinding, runID string
 	var autoYes bool
 
 	cmd := &cobra.Command{
@@ -543,8 +544,9 @@ func newAxiRespondCmd() *cobra.Command {
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return trackAxiSurface("axi-respond", "/axi/respond", telemetry.Fields{
-				"action":   sanitizeAxiTelemetryAction(action),
-				"auto_yes": autoYes,
+				"action":          sanitizeAxiTelemetryAction(action),
+				"auto_yes":        autoYes,
+				"explicit_run_id": strings.TrimSpace(runID) != "",
 			}, func() error {
 				return runAxiRespond(cmd, respondArgs{
 					action:       action,
@@ -552,6 +554,7 @@ func newAxiRespondCmd() *cobra.Command {
 					findings:     findings,
 					instructions: instructions,
 					addFinding:   addFinding,
+					run:          runID,
 					autoYes:      autoYes,
 				})
 			})
@@ -562,6 +565,7 @@ func newAxiRespondCmd() *cobra.Command {
 	cmd.Flags().StringVar(&findings, "findings", "", "comma-separated finding IDs to fix (with --action fix)")
 	cmd.Flags().StringVar(&instructions, "instructions", "", "guidance applied to the selected findings (with --action fix)")
 	cmd.Flags().StringVar(&addFinding, "add-finding", "", "JSON finding object to add and fix (with --action fix)")
+	cmd.Flags().StringVar(&runID, "run", "", "respond to a specific run ID (default: the current branch's active run, else the repo's only active run)")
 	cmd.Flags().BoolVarP(&autoYes, "yes", "y", false, "auto-resolve every subsequent gate until a decision point or outcome")
 	return cmd
 }
@@ -572,7 +576,59 @@ type respondArgs struct {
 	findings     string
 	instructions string
 	addFinding   string
+	run          string
 	autoYes      bool
+}
+
+// resolveActiveRun picks the run a respond targets: an explicit run ID, else
+// the active run on the current branch, else the repo's only active run.
+// The pipeline is non-blocking by design — by the time a gate needs an
+// answer the user has often switched branches (or detached HEAD), and a
+// branch miss must not strand an answerable gate. When several runs are
+// active and none matches the branch, the caller must disambiguate with
+// --run.
+func resolveActiveRun(env *axiEnv, runID, branch string) (*db.Run, error) {
+	if runID != "" {
+		run, err := env.d.GetRun(runID)
+		if err != nil {
+			return nil, fmt.Errorf("get run: %w", err)
+		}
+		if run == nil {
+			return nil, fmt.Errorf("run %q not found", runID)
+		}
+		return run, nil
+	}
+	if branch != "" {
+		run, err := env.d.GetActiveRun(env.repo.ID, branch)
+		if err != nil {
+			return nil, fmt.Errorf("get active run: %w", err)
+		}
+		if run != nil {
+			return run, nil
+		}
+	}
+	actives, err := env.d.GetActiveRuns()
+	if err != nil {
+		return nil, fmt.Errorf("list active runs: %w", err)
+	}
+	var candidates []*db.Run
+	for _, run := range actives {
+		if run.RepoID == env.repo.ID {
+			candidates = append(candidates, run)
+		}
+	}
+	switch len(candidates) {
+	case 0:
+		return nil, nil
+	case 1:
+		return candidates[0], nil
+	default:
+		labels := make([]string, len(candidates))
+		for i, run := range candidates {
+			labels[i] = fmt.Sprintf("%s (%s)", run.ID, run.Branch)
+		}
+		return nil, fmt.Errorf("multiple active runs: %s — pass --run <id>", strings.Join(labels, ", "))
+	}
 }
 
 func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
@@ -594,20 +650,16 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 		return emitError(cmd, 1, err.Error(), repoInitHelp(err)...)
 	}
 	defer env.close()
-	branch, err := git.CurrentBranch(ctx, ".")
-	if err != nil {
-		return emitError(cmd, 1, fmt.Sprintf("get current branch: %v", err))
-	}
 
-	var active ipc.GetActiveRunResult
-	if err := env.client.Call(ipc.MethodGetActiveRun, activeRunLookupParams(env.repo.ID, branch), &active); err != nil {
-		return emitError(cmd, 1, fmt.Sprintf("get active run: %v", err))
+	target, err := resolveActiveRun(env, strings.TrimSpace(ra.run), currentBranchForRunResolve(ctx))
+	if err != nil {
+		return emitError(cmd, 1, err.Error())
 	}
-	if active.Run == nil {
+	if target == nil {
 		return emitError(cmd, 1, "no active run to respond to",
 			"Run `no-mistakes axi run` to start one")
 	}
-	runID := active.Run.ID
+	runID := target.ID
 
 	run, err := getRunInfo(env.client, runID)
 	if err != nil || run == nil {
