@@ -28,28 +28,11 @@ func TestMarkdownFrontmatter(t *testing.T) {
 	if !strings.Contains(md, "no-mistakes axi run") {
 		t.Errorf("body should document the axi run command")
 	}
-}
-
-// TestInstalledMarkdownMarksInternal guards the split between the two skill
-// renderings: the copy init vendors into a repo must carry
-// `metadata.internal: true` so skill discovery tools skip it, while the
-// canonical public skill must stay discoverable.
-func TestInstalledMarkdownMarksInternal(t *testing.T) {
-	installed := InstalledMarkdown()
-	end := strings.Index(installed[4:], "---\n")
-	if end < 0 {
-		t.Fatalf("InstalledMarkdown frontmatter not closed:\n%s", installed[:min(120, len(installed))])
-	}
-	frontmatter := installed[:4+end]
-	if !strings.Contains(frontmatter, "metadata:\n  internal: true\n") {
-		t.Errorf("installed frontmatter must mark the skill internal, got:\n%s", frontmatter)
-	}
-	if strings.Contains(Markdown(), "internal: true") {
-		t.Errorf("public Markdown() must not be marked internal")
-	}
-	// The two renderings must agree on everything but the internal marker.
-	if strings.Replace(installed, "metadata:\n  internal: true\n", "", 1) != Markdown() {
-		t.Errorf("InstalledMarkdown should differ from Markdown only by the internal marker")
+	// The user-level install is a genuine user installation, so it must stay
+	// discoverable: the internal marker that hid the old vendored repo copies
+	// must not come back.
+	if strings.Contains(md, "internal: true") {
+		t.Errorf("Markdown() must not be marked internal")
 	}
 }
 
@@ -89,8 +72,35 @@ func TestInstallWritesBothPaths(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", rel, err)
 		}
-		if string(data) != InstalledMarkdown() {
-			t.Errorf("%s content does not match InstalledMarkdown()", rel)
+		if string(data) != Markdown() {
+			t.Errorf("%s content does not match Markdown()", rel)
+		}
+	}
+}
+
+// TestInstallUserWritesUnderHome proves the init entry point resolves the
+// user's home directory and installs there, never into the working directory.
+func TestInstallUserWritesUnderHome(t *testing.T) {
+	home := t.TempDir()
+	// os.UserHomeDir reads HOME on Unix and USERPROFILE on Windows; set both
+	// so the test isolates the real home directory on every platform.
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	written, err := InstallUser()
+	if err != nil {
+		t.Fatalf("InstallUser: %v", err)
+	}
+	if len(written) != len(InstallBases) {
+		t.Fatalf("written = %v, want one path per base", written)
+	}
+	for _, base := range InstallBases {
+		data, err := os.ReadFile(filepath.Join(home, base, Name, "SKILL.md"))
+		if err != nil {
+			t.Fatalf("skill not installed under home at %s: %v", base, err)
+		}
+		if string(data) != Markdown() {
+			t.Errorf("%s content does not match Markdown()", base)
 		}
 	}
 }
@@ -107,16 +117,17 @@ func TestInstallIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(data) != InstalledMarkdown() {
+	if string(data) != Markdown() {
 		t.Errorf("content drifted after re-install")
 	}
 }
 
-// TestInstallSymlinkLayouts covers repos that consolidate the two skill bases
-// with a symlink. `.claude/skills` may link to `.agents/skills`, the whole
-// `.claude` dir may link to `.agents`, or the link may point the other way. In
-// every case Install must succeed and the skill must be reachable via both
-// logical bases - including when the symlink target dir does not exist yet.
+// TestInstallSymlinkLayouts covers home directories that consolidate the two
+// skill bases with a symlink. `.claude/skills` may link to `.agents/skills`,
+// the whole `.claude` dir may link to `.agents`, or the link may point the
+// other way. In every case Install must succeed and the skill must be
+// reachable via both logical bases - including when the symlink target dir
+// does not exist yet.
 func TestInstallSymlinkLayouts(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -176,8 +187,8 @@ func TestInstallSymlinkLayouts(t *testing.T) {
 				if err != nil {
 					t.Fatalf("read reported %s: %v", rel, err)
 				}
-				if string(data) != InstalledMarkdown() {
-					t.Errorf("%s content does not match InstalledMarkdown()", rel)
+				if string(data) != Markdown() {
+					t.Errorf("%s content does not match Markdown()", rel)
 				}
 			}
 
@@ -189,8 +200,8 @@ func TestInstallSymlinkLayouts(t *testing.T) {
 				if err != nil {
 					t.Fatalf("skill not reachable via %s: %v", base, err)
 				}
-				if string(data) != InstalledMarkdown() {
-					t.Errorf("%s content does not match InstalledMarkdown()", base)
+				if string(data) != Markdown() {
+					t.Errorf("%s content does not match Markdown()", base)
 				}
 			}
 		})
@@ -214,7 +225,7 @@ func TestInstallOverwritesStaleContent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(data) != InstalledMarkdown() {
+	if string(data) != Markdown() {
 		t.Errorf("stale SKILL.md was not refreshed to current content")
 	}
 }
@@ -227,6 +238,65 @@ func TestInstallRejectsSymlinkCycle(t *testing.T) {
 	if _, err := Install(root); err == nil {
 		t.Fatalf("Install succeeded with cyclic skill directory symlinks")
 	}
+}
+
+// TestVendored covers the legacy-detection helper init uses to tell users a
+// repo still carries a vendored skill copy from an older no-mistakes version.
+func TestVendored(t *testing.T) {
+	t.Run("clean_repo", func(t *testing.T) {
+		if got := Vendored(t.TempDir()); len(got) != 0 {
+			t.Errorf("Vendored on a clean repo = %v, want none", got)
+		}
+	})
+
+	t.Run("both_copies", func(t *testing.T) {
+		root := t.TempDir()
+		for _, base := range InstallBases {
+			dir := filepath.Join(root, base, Name)
+			mkdirAll(t, dir)
+			if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("legacy"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		want := []string{
+			filepath.Join(".claude", "skills", Name, "SKILL.md"),
+			filepath.Join(".agents", "skills", Name, "SKILL.md"),
+		}
+		got := Vendored(root)
+		if len(got) != len(want) {
+			t.Fatalf("Vendored = %v, want %v", got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Errorf("Vendored[%d] = %q, want %q", i, got[i], want[i])
+			}
+		}
+	})
+
+	t.Run("single_copy", func(t *testing.T) {
+		root := t.TempDir()
+		dir := filepath.Join(root, ".agents", "skills", Name)
+		mkdirAll(t, dir)
+		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("legacy"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		got := Vendored(root)
+		if len(got) != 1 || got[0] != filepath.Join(".agents", "skills", Name, "SKILL.md") {
+			t.Errorf("Vendored = %v, want only the .agents copy", got)
+		}
+	})
+
+	t.Run("unrelated_skill_ignored", func(t *testing.T) {
+		root := t.TempDir()
+		dir := filepath.Join(root, ".claude", "skills", "other-skill")
+		mkdirAll(t, dir)
+		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("other"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if got := Vendored(root); len(got) != 0 {
+			t.Errorf("Vendored must ignore unrelated skills, got %v", got)
+		}
+	})
 }
 
 func mkdirAll(t *testing.T, dir string) {

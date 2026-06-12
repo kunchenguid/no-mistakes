@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/gate"
@@ -45,10 +46,10 @@ func newInitCmd() *cobra.Command {
 					return fmt.Errorf("start daemon: %w", err)
 				}
 
-				// Install the agent skill so agents can drive no-mistakes via
-				// `/no-mistakes`. Best-effort: a skill write failure must not
-				// undo a successful gate setup.
-				_, skillErr := skill.Install(repo.WorkingPath)
+				// Install the agent skill at user level so agents can drive
+				// no-mistakes via `/no-mistakes` in any repo. Best-effort: a
+				// skill write failure must not undo a successful gate setup.
+				_, skillErr := skill.InstallUser()
 
 				w := cmd.OutOrStdout()
 				fmt.Fprintln(w, sCyan.Render(banner))
@@ -65,7 +66,10 @@ func newInitCmd() *cobra.Command {
 				if skillErr != nil {
 					fmt.Fprintf(w, "  %s  %s\n", sDim.Render(" skill"), sYellow.Render("skipped: "+skillErr.Error()))
 				} else {
-					fmt.Fprintf(w, "  %s  %s %s\n", sDim.Render(" skill"), sGreen.Render("/no-mistakes"), sDim.Render("installed for agents"))
+					fmt.Fprintf(w, "  %s  %s %s\n", sDim.Render(" skill"), sGreen.Render("/no-mistakes"), sDim.Render("installed for agents at user level"))
+				}
+				if legacy := skill.Vendored(repo.WorkingPath); len(legacy) > 0 {
+					fmt.Fprintf(w, "  %s  %s\n", sDim.Render("  note"), sDim.Render("vendored skill copy ("+strings.Join(legacy, ", ")+") is no longer needed and can be removed"))
 				}
 				fmt.Fprintln(w)
 				fmt.Fprintf(w, "  %s\n", sDim.Render("Push through the gate with:"))

@@ -90,10 +90,11 @@ Use bare `/no-mistakes` to validate existing committed work.
 Use `/no-mistakes <task>` to have the agent first do the task, commit only that task's changes on a feature branch, then run the pipeline with the task text as `--intent`.
 In both modes, it resolves low-risk findings on its own and stops to relay anything that needs your decision.
 
-`no-mistakes init` installs that skill into `.claude/skills/no-mistakes/SKILL.md` and `.agents/skills/no-mistakes/SKILL.md`, so it is available to every supported agent in the repo.
-Those installed copies are marked internal so skill discovery tools skip the vendored copy when listing a repo's public skills.
-Repos that symlink `.claude` to `.agents`, `.claude/skills` to `.agents/skills`, or the reverse, keep that layout; `init` follows the symlink and makes the skill reachable from both logical paths.
-Re-run `no-mistakes init` in an already-initialized repo to refresh or reinstall that skill after an upgrade, including overwriting stale `SKILL.md` content from an older binary.
+`no-mistakes init` installs that skill at user level: `~/.claude/skills/no-mistakes/SKILL.md` for Claude Code and `~/.agents/skills/no-mistakes/SKILL.md` for Codex, OpenCode, Rovo Dev, and Pi.
+One install makes the skill available to every supported agent in every repo, without committing tool-generated files to any repo.
+If your home directory consolidates `.claude` and `.agents` with symlinks, `init` follows the links and keeps the skill reachable from both logical paths.
+Re-run `no-mistakes init` after an upgrade to refresh that skill, including overwriting stale `SKILL.md` content from an older binary.
+Older versions vendored the skill into each initialized repo's `.claude/skills` and `.agents/skills`; those copies are no longer needed, and `init` prints a notice when it finds one so you can remove it.
 The skill drives `no-mistakes axi`, a non-interactive command surface that prints TOON to stdout and progress to stderr.
 When CI is green but the PR is still open, `axi run` and `axi respond` return `outcome: checks-passed` with a help line pointing at the PR instead of waiting for a human merge.
 That is a successful agent stopping point: report that the PR is ready and ask the user to review and merge it.

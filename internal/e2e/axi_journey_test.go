@@ -243,31 +243,42 @@ func anyPromptContains(h *Harness, sub string) bool {
 	return false
 }
 
-// assertSkillInstalled verifies init wrote the no-mistakes skill into both the
-// Claude Code and vendor-neutral agent skill directories with valid frontmatter.
+// assertSkillInstalled verifies init wrote the no-mistakes skill into both
+// user-level agent skill directories (the Claude Code and vendor-neutral
+// conventions under the user's home) with valid frontmatter, and left the
+// repo's working tree untouched by skill files.
 func assertSkillInstalled(t *testing.T, h *Harness) {
 	t.Helper()
 	for _, rel := range []string{
 		filepath.Join(".claude", "skills", "no-mistakes", "SKILL.md"),
 		filepath.Join(".agents", "skills", "no-mistakes", "SKILL.md"),
 	} {
-		path := filepath.Join(h.WorkDir, rel)
+		path := filepath.Join(h.HomeDir, rel)
 		data, err := os.ReadFile(path)
 		if err != nil {
-			t.Fatalf("expected skill at %s: %v", rel, err)
+			t.Fatalf("expected user-level skill at %s: %v", rel, err)
 		}
 		content := string(data)
 		for _, want := range []string{
 			"name: no-mistakes",
 			"user-invocable: true",
-			// Vendored copies are marked internal so skill discovery tools
-			// (e.g. `npx skills add`) skip them in target repos.
-			"metadata:\n  internal: true\n",
 			"no-mistakes axi run",
 		} {
 			if !strings.Contains(content, want) {
 				t.Errorf("%s missing %q", rel, want)
 			}
+		}
+		// The user-level copy is a genuine user installation: it must stay
+		// discoverable, unlike the old vendored repo copies that were marked
+		// internal to hide them from repo skill listings.
+		if strings.Contains(content, "internal: true") {
+			t.Errorf("%s must not carry the internal marker", rel)
+		}
+
+		// init must no longer vendor skill files into the target repo.
+		repoPath := filepath.Join(h.WorkDir, rel)
+		if _, err := os.Stat(repoPath); !os.IsNotExist(err) {
+			t.Errorf("init must not write %s into the repo (stat err = %v)", rel, err)
 		}
 	}
 }

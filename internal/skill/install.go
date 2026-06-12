@@ -7,32 +7,43 @@ import (
 	"strings"
 )
 
-// InstallBases are the per-agent skill parent directories, relative to a repo
-// root, that init populates. `.claude/skills` is Claude Code's native location;
-// `.agents/skills` is the vendor-neutral convention other agents read.
+// InstallBases are the user-level agent skill parent directories, relative to
+// the user's home directory, that init populates. `~/.claude/skills` is Claude
+// Code's personal-skill location (OpenCode reads it too); `~/.agents/skills`
+// is the vendor-neutral user-level convention Codex, OpenCode, Rovo Dev, and
+// Pi all read.
 var InstallBases = []string{
 	filepath.Join(".claude", "skills"),
 	filepath.Join(".agents", "skills"),
 }
 
-// Install writes SKILL.md into each agent skills directory under repoRoot,
-// creating directories as needed. It returns the repo-relative paths written so
-// the caller can report them. Writing is idempotent: re-running overwrites with
-// identical content (refreshing a stale SKILL.md from an older version). The
-// vendored copies use InstalledMarkdown, whose internal marker keeps them out
-// of end-user skill discovery.
+// InstallUser installs the skill into the agent skill directories under the
+// current user's home directory. It returns the home-relative paths written.
+func InstallUser() ([]string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("resolve home directory: %w", err)
+	}
+	return Install(home)
+}
+
+// Install writes SKILL.md into each agent skills directory under root
+// (normally the user's home directory), creating directories as needed. It
+// returns the root-relative paths written so the caller can report them.
+// Writing is idempotent: re-running overwrites with identical content
+// (refreshing a stale SKILL.md from an older version).
 //
-// Repos commonly consolidate the two bases with a symlink - `.claude/skills` ->
+// Users may consolidate the two bases with a symlink - `.claude/skills` ->
 // `.agents/skills`, the whole `.claude` dir -> `.agents`, or the reverse. Install
 // follows such links transparently, including when the symlinked target dir does
 // not exist yet (a plain os.MkdirAll would fail with "file exists" on a dangling
 // symlink). Both logical bases stay readable afterward via the link.
-func Install(repoRoot string) ([]string, error) {
-	content := []byte(InstalledMarkdown())
+func Install(root string) ([]string, error) {
+	content := []byte(Markdown())
 	written := make([]string, 0, len(InstallBases))
 	for _, base := range InstallBases {
 		rel := filepath.Join(base, Name, "SKILL.md")
-		path := filepath.Join(repoRoot, rel)
+		path := filepath.Join(root, rel)
 		// Resolve any symlink components to a real directory before creating
 		// it, so a dangling symlink in the path does not collide with MkdirAll.
 		realDir, err := resolveThroughSymlinks(filepath.Dir(path))
@@ -48,6 +59,21 @@ func Install(repoRoot string) ([]string, error) {
 		written = append(written, rel)
 	}
 	return written, nil
+}
+
+// Vendored reports the repo-relative paths of legacy vendored skill copies
+// under repoRoot. Older no-mistakes versions wrote SKILL.md into each
+// initialized repo; init uses this to tell users those copies are no longer
+// needed. It never modifies the repo.
+func Vendored(repoRoot string) []string {
+	var found []string
+	for _, base := range InstallBases {
+		rel := filepath.Join(base, Name, "SKILL.md")
+		if _, err := os.Stat(filepath.Join(repoRoot, rel)); err == nil {
+			found = append(found, rel)
+		}
+	}
+	return found
 }
 
 // resolveThroughSymlinks walks dir component by component and rewrites the path

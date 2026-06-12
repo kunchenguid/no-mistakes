@@ -48,7 +48,7 @@ $ no-mistakes init
     repo  /Users/you/src/my-repo
     gate  no-mistakes → /Users/you/.no-mistakes/repos/abc123def456.git
   remote  git@github.com:you/my-repo.git
-   skill  /no-mistakes installed for agents
+   skill  /no-mistakes installed for agents at user level
 
   Push through the gate with:
   git push no-mistakes <branch>

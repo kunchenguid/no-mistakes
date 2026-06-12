@@ -81,7 +81,7 @@ The pipeline is the same no matter how you start it. There are three first-class
 - **`no-mistakes`** - the terminal UI. Run it after making changes and a [setup wizard](/no-mistakes/guides/setup-wizard/) walks you through branch, commit, and push, then attaches to the live run so you can watch, approve, fix, skip, or abort each step.
 - **`/no-mistakes`** - the agent skill. Tell a coding agent `/no-mistakes <task>` to have it do the task, commit it on a feature branch, and then gate it with that task as intent; use bare `/no-mistakes` to gate existing committed work. It resolves safe findings on its own and stops to relay anything that needs your decision. See [Driving no-mistakes as an agent](/no-mistakes/guides/agents/#driving-no-mistakes-as-an-agent).
 
-`no-mistakes init` installs the `/no-mistakes` skill into your repo for every supported agent. The skill drives `no-mistakes axi`, a non-interactive command surface that prints [TOON](https://toonformat.dev) to stdout, so an agent reaches the same gate and the same approval points you get in the TUI.
+`no-mistakes init` installs the `/no-mistakes` skill at user level for every supported agent, so it works in all your repos. The skill drives `no-mistakes axi`, a non-interactive command surface that prints [TOON](https://toonformat.dev) to stdout, so an agent reaches the same gate and the same approval points you get in the TUI.
 
 ## Next
 

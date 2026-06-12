@@ -18,7 +18,8 @@ import (
 
 // TestInitIsIdempotent proves an existing user can re-run `init` to adopt new
 // capabilities (the agent skill) without hitting an "already initialized"
-// error, and that the second run reports the refresh and re-installs the skill.
+// error, and that the second run reports the refresh and refreshes a stale
+// user-level skill copy left by an older binary.
 func TestInitIsIdempotent(t *testing.T) {
 	h := NewHarness(t, SetupOpts{Agent: "claude"})
 
@@ -29,12 +30,16 @@ func TestInitIsIdempotent(t *testing.T) {
 	if !strings.Contains(first, "Gate initialized") {
 		t.Errorf("first init should report a fresh gate, got:\n%s", first)
 	}
+	if strings.Contains(first, "no longer needed") {
+		t.Errorf("init in a repo without a vendored skill copy must not print the legacy notice, got:\n%s", first)
+	}
 	assertSkillInstalled(t, h)
 
-	// Remove the installed skill to prove the re-run reinstalls it.
-	skillPath := filepath.Join(h.WorkDir, ".claude", "skills", "no-mistakes", "SKILL.md")
-	if err := os.Remove(skillPath); err != nil {
-		t.Fatalf("remove skill: %v", err)
+	// Overwrite the installed skill with stale content to prove the re-run
+	// refreshes the user-level copy.
+	skillPath := filepath.Join(h.HomeDir, ".claude", "skills", "no-mistakes", "SKILL.md")
+	if err := os.WriteFile(skillPath, []byte("---\nname: no-mistakes\n---\nstale body\n"), 0o644); err != nil {
+		t.Fatalf("write stale skill: %v", err)
 	}
 
 	second, err := h.RunInDir(h.WorkDir, "init")
@@ -48,10 +53,54 @@ func TestInitIsIdempotent(t *testing.T) {
 		t.Errorf("re-init must not fail with the old error, got:\n%s", second)
 	}
 	assertSkillInstalled(t, h)
+	if data, err := os.ReadFile(skillPath); err != nil {
+		t.Fatalf("read skill after re-init: %v", err)
+	} else if strings.Contains(string(data), "stale body") {
+		t.Errorf("re-init must refresh a stale user-level skill copy")
+	}
 
 	// The no-mistakes remote must still be wired after the refresh.
 	if out, err := h.runGit(context.Background(), h.WorkDir, "remote", "get-url", "no-mistakes"); err != nil {
 		t.Fatalf("no-mistakes remote missing after re-init: %v\n%s", err, out)
+	}
+}
+
+// TestInitLegacyNotice proves init in a repo that still carries a vendored
+// skill copy from an older no-mistakes version points it out without touching
+// it: the copy is the user's to remove, possibly via their VCS.
+//
+// The test name is deliberately short for the same socket path length reason
+// as TestInitRepoRename.
+func TestInitLegacyNotice(t *testing.T) {
+	h := NewHarness(t, SetupOpts{Agent: "claude"})
+
+	legacy := filepath.Join(h.WorkDir, ".agents", "skills", "no-mistakes", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(legacy), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	legacyContent := "---\nname: no-mistakes\nmetadata:\n  internal: true\n---\nlegacy vendored body\n"
+	if err := os.WriteFile(legacy, []byte(legacyContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := h.RunInDir(h.WorkDir, "init")
+	if err != nil {
+		t.Fatalf("init: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "no longer needed") {
+		t.Errorf("init should notice the vendored legacy copy, got:\n%s", out)
+	}
+	if !strings.Contains(out, filepath.Join(".agents", "skills", "no-mistakes", "SKILL.md")) {
+		t.Errorf("the notice should name the vendored path, got:\n%s", out)
+	}
+
+	// The vendored copy must be left exactly as it was.
+	data, err := os.ReadFile(legacy)
+	if err != nil {
+		t.Fatalf("legacy copy must survive init: %v", err)
+	}
+	if string(data) != legacyContent {
+		t.Errorf("init must not modify the vendored copy")
 	}
 }
 
