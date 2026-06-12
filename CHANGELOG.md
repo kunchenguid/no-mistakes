@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.29.0](https://github.com/kunchenguid/no-mistakes/compare/v1.28.1...v1.29.0) (2026-06-12)
+
+
+### Features
+
+* **cli:** install agent skill at user level ([#284](https://github.com/kunchenguid/no-mistakes/issues/284)) ([f6760aa](https://github.com/kunchenguid/no-mistakes/commit/f6760aa115aaa3ea3efdb4402383af429ad5aaba))
+
 ## [1.28.1](https://github.com/kunchenguid/no-mistakes/compare/v1.28.0...v1.28.1) (2026-06-11)
 
 
