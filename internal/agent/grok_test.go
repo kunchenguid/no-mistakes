@@ -22,7 +22,7 @@ func TestNew_GrokAgent(t *testing.T) {
 }
 
 func TestNewWithOptions_GrokAgent(t *testing.T) {
-	a, err := NewWithOptions(types.AgentGrok, "/home/falk/.grok/bin/grok", []string{"--model", "grok-3"}, Options{})
+	a, err := NewWithOptions(types.AgentGrok, "/path/to/grok", []string{"--model", "grok-3"}, Options{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -30,7 +30,7 @@ func TestNewWithOptions_GrokAgent(t *testing.T) {
 	if !ok {
 		t.Fatalf("agent type = %T, want *grokAgent", a)
 	}
-	if ga.bin != "/home/falk/.grok/bin/grok" {
+	if ga.bin != "/path/to/grok" {
 		t.Errorf("bin = %q, want override path", ga.bin)
 	}
 	if len(ga.extraArgs) != 2 || ga.extraArgs[0] != "--model" || ga.extraArgs[1] != "grok-3" {
