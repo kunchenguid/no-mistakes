@@ -52,11 +52,14 @@ It prints TOON to stdout, prints progress to stderr, and uses structured stdout 
 no-mistakes axi
 ```
 
-With no subcommand, shows the executable path, description, repo, daemon state, the active run when present, recent runs, and next-step help.
+With no subcommand, shows the executable path, description, repo, current branch, daemon state, recent runs, and next-step help.
+When the current branch has an active run, that run appears as `active_run` with any approval gate and help for `axi respond` or `axi abort`.
+When only another branch has an active run, that run appears as `other_branch_active_run`; the help tells agents to leave it alone and start validation for the current branch.
 
 ## no-mistakes axi run
 
 Start or reattach to validation for the current branch, blocking until the first approval gate, CI-ready decision point, or final outcome.
+An active run on another branch does not block starting validation for the current branch.
 
 ```sh
 no-mistakes axi run --intent "the user's goal"
@@ -108,7 +111,7 @@ The same successful-output reporting instructions apply to `axi respond` results
 
 ## no-mistakes axi status
 
-Show the active run, or the most recent run when none is active.
+Show a run, preferring the current branch's active or most recent run before falling back to repo-wide active or recent runs.
 
 ```sh
 no-mistakes axi status
@@ -117,7 +120,7 @@ no-mistakes axi status --run <id>
 
 | Flag | Type | Default | Description |
 |---|---|---|---|
-| `--run` | `string` | active or most recent | Inspect a specific run ID |
+| `--run` | `string` | resolved run | Inspect a specific run ID |
 
 ## no-mistakes axi logs
 
@@ -132,7 +135,7 @@ no-mistakes axi logs --step review --run <id>
 | Flag | Type | Default | Description |
 |---|---|---|---|
 | `--step` | `string` | (none) | Step name; required |
-| `--run` | `string` | active or most recent | Run ID to inspect |
+| `--run` | `string` | resolved run | Run ID to inspect |
 | `--full` | `bool` | `false` | Show the entire log instead of the tail |
 
 Without `--full`, long logs show the last 40 lines and a help hint for the full log.
@@ -140,6 +143,7 @@ Without `--full`, long logs show the last 40 lines and a help hint for the full 
 ## no-mistakes axi abort
 
 Cancel the active run for the current branch.
+Active runs on other branches are left alone.
 
 ```sh
 no-mistakes axi abort

@@ -223,10 +223,10 @@ run without checking back.
 ## Inspecting state
 
 ` + "```sh" + `
-no-mistakes axi               # home view: active run, recent runs, next steps
-no-mistakes axi status        # full detail of the active (or most recent) run
+no-mistakes axi               # home view: current branch, active runs, next steps
+no-mistakes axi status        # full detail of the resolved run
 no-mistakes axi logs --step <name> --full   # full log output of one step
-no-mistakes axi abort         # cancel the active run
+no-mistakes axi abort         # cancel the current-branch active run
 ` + "```" + `
 
 ## Reading the output

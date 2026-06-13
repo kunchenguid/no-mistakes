@@ -114,6 +114,10 @@ no-mistakes axi logs --step review --full
 no-mistakes axi abort
 ```
 
+Before starting validation, agents should run the `no-mistakes axi` home view.
+If it shows `active_run`, they should resume or abort that current-branch run instead of starting over.
+If it shows `other_branch_active_run`, they should leave that run alone and start validation for the current branch with `no-mistakes axi run --intent "..."`.
+
 When an agent starts a new run, `--intent` is required and should describe what the user wanted to accomplish, not what files changed.
 Agents should prefer a few complete sentences over a terse summary, capturing user decisions, tradeoffs, constraints, ruled-out approaches, and explicit requests that would not be obvious from the diff alone.
 If the repo is on the default branch or has uncommitted changes, direct `axi run` returns a structured error with the command the agent should run instead of silently creating a branch or commit.
