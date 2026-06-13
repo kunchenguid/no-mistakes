@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/kunchenguid/no-mistakes/internal/buildinfo"
@@ -110,26 +111,64 @@ func findRepo(d *db.DB) (*db.Repo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("not in a git repository")
 	}
-	repo, err := d.GetRepoByPath(gitRoot)
+	candidates := []string{gitRoot}
+	// Try the main worktree root too (handles git worktrees).
+	if mainRoot, err := git.FindMainRepoRoot("."); err == nil && mainRoot != gitRoot {
+		candidates = append(candidates, mainRoot)
+	}
+	for _, path := range candidates {
+		repo, err := d.GetRepoByPath(path)
+		if err != nil {
+			return nil, fmt.Errorf("get repo: %w", err)
+		}
+		if repo != nil {
+			return repo, nil
+		}
+	}
+	// Exact string lookup missed, but the stored working path can spell the
+	// same directory differently: a case variant on case-insensitive
+	// filesystems (macOS/Windows — e.g. `git rev-parse --git-common-dir`
+	// preserves whatever casing the worktree was created with), or an
+	// unresolved symlink alias. Fall back to filesystem identity.
+	repo, err := repoByPathIdentity(d, candidates)
 	if err != nil {
-		return nil, fmt.Errorf("get repo: %w", err)
-	}
-	if repo != nil {
-		return repo, nil
-	}
-	// Try the main worktree root (handles git worktrees).
-	mainRoot, err := git.FindMainRepoRoot(".")
-	if err != nil || mainRoot == gitRoot {
-		return nil, fmt.Errorf("repo not initialized (run 'no-mistakes init' first)")
-	}
-	repo, err = d.GetRepoByPath(mainRoot)
-	if err != nil {
-		return nil, fmt.Errorf("get repo: %w", err)
+		return nil, err
 	}
 	if repo == nil {
 		return nil, fmt.Errorf("repo not initialized (run 'no-mistakes init' first)")
 	}
 	return repo, nil
+}
+
+// repoByPathIdentity scans registered repos for one whose working path
+// refers to the same directory as any candidate path, using os.SameFile so
+// casing differences and symlink aliases resolve without string assumptions.
+func repoByPathIdentity(d *db.DB, candidates []string) (*db.Repo, error) {
+	repos, err := d.ListRepos()
+	if err != nil {
+		return nil, fmt.Errorf("list repos: %w", err)
+	}
+	if len(repos) == 0 {
+		return nil, nil
+	}
+	stats := make([]os.FileInfo, 0, len(candidates))
+	for _, path := range candidates {
+		if fi, err := os.Stat(path); err == nil {
+			stats = append(stats, fi)
+		}
+	}
+	for _, repo := range repos {
+		fi, err := os.Stat(repo.WorkingPath)
+		if err != nil {
+			continue
+		}
+		for _, candidate := range stats {
+			if os.SameFile(fi, candidate) {
+				return repo, nil
+			}
+		}
+	}
+	return nil, nil
 }
 
 // openResources initializes paths, ensures directories exist, and opens the DB.

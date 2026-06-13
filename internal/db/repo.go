@@ -117,3 +117,23 @@ func (d *DB) DeleteRepo(id string) error {
 	}
 	return nil
 }
+
+// ListRepos returns all registered repos.
+func (d *DB) ListRepos() ([]*Repo, error) {
+	rows, err := d.sql.Query(
+		`SELECT id, working_path, upstream_url, default_branch, created_at FROM repos`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list repos: %w", err)
+	}
+	defer rows.Close()
+	var repos []*Repo
+	for rows.Next() {
+		r := &Repo{}
+		if err := rows.Scan(&r.ID, &r.WorkingPath, &r.UpstreamURL, &r.DefaultBranch, &r.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan repo: %w", err)
+		}
+		repos = append(repos, r)
+	}
+	return repos, rows.Err()
+}

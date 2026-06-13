@@ -175,3 +175,4 @@ Everything lives under `~/.no-mistakes/` by default. Set `NM_HOME` to relocate i
 
 New repo IDs are the first 6 bytes (12 hex chars) of `sha256(absolute_working_path)`.
 When an initialized working repo is renamed or moved, `init` preserves the existing repo ID instead of deriving a new one from the new path.
+Commands resolve the current directory to its registered repo by its git root, and when that path spells the stored working path differently — a case-only variant on case-insensitive filesystems (macOS/Windows) or a symlink alias — they still match it by filesystem identity instead of reporting `repo not initialized`.

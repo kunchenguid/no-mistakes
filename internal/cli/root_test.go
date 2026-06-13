@@ -3,6 +3,9 @@ package cli
 import (
 	"context"
 	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -302,4 +305,59 @@ func TestRootYesStopsWaitingForRunWhenContextCanceled(t *testing.T) {
 	if elapsed := time.Since(start); elapsed >= time.Second {
 		t.Fatalf("executeCmdWithContext(-y) took %v after cancellation, want under %v", elapsed, time.Second)
 	}
+}
+
+func TestFindRepoResolvesAliasedWorkingPath(t *testing.T) {
+	base := t.TempDir()
+	repoDir := filepath.Join(base, "repo")
+	if err := os.Mkdir(repoDir, 0o755); err != nil {
+		t.Fatalf("mkdir repo: %v", err)
+	}
+	if out, err := exec.Command("git", "init", repoDir).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, out)
+	}
+	t.Chdir(repoDir)
+
+	t.Run("symlink alias", func(t *testing.T) {
+		database := openTestDB(t)
+		alias := filepath.Join(base, "alias")
+		if err := os.Symlink(repoDir, alias); err != nil {
+			t.Fatalf("symlink: %v", err)
+		}
+		want, err := database.InsertRepo(alias, "origin", "main")
+		if err != nil {
+			t.Fatalf("insert repo: %v", err)
+		}
+		got, err := findRepo(database)
+		if err != nil {
+			t.Fatalf("findRepo: %v", err)
+		}
+		if got.ID != want.ID {
+			t.Fatalf("findRepo = %q, want %q", got.ID, want.ID)
+		}
+	})
+
+	t.Run("case variant", func(t *testing.T) {
+		database := openTestDB(t)
+		variant := filepath.Join(filepath.Dir(repoDir), "REPO")
+		fi, err := os.Stat(variant)
+		if err != nil {
+			t.Skipf("filesystem is case-sensitive: %v", err)
+		}
+		real, err := os.Stat(repoDir)
+		if err != nil || !os.SameFile(fi, real) {
+			t.Skip("filesystem is case-sensitive")
+		}
+		want, err := database.InsertRepo(variant, "origin", "main")
+		if err != nil {
+			t.Fatalf("insert repo: %v", err)
+		}
+		got, err := findRepo(database)
+		if err != nil {
+			t.Fatalf("findRepo: %v", err)
+		}
+		if got.ID != want.ID {
+			t.Fatalf("findRepo = %q, want %q", got.ID, want.ID)
+		}
+	})
 }
