@@ -220,6 +220,10 @@ func joinComma(parts []string) string {
 
 // runObjectField renders a run as a TOON "run:" object with a steps table.
 func runObjectField(rv runView) toon.Field {
+	return runObjectFieldWithKey("run", rv)
+}
+
+func runObjectFieldWithKey(key string, rv runView) toon.Field {
 	fields := []toon.Field{
 		{Key: "id", Value: rv.ID},
 		{Key: "branch", Value: rv.Branch},
@@ -236,7 +240,7 @@ func runObjectField(rv runView) toon.Field {
 		rows = append(rows, stepRow{Step: s.Name, Status: s.Status, Findings: s.findingCount(), DurationMS: s.DurationMS})
 	}
 	fields = append(fields, toon.Field{Key: "steps", Value: rows})
-	return toon.Field{Key: "run", Value: toon.NewObject(fields...)}
+	return toon.Field{Key: key, Value: toon.NewObject(fields...)}
 }
 
 // gateFields renders the active approval gate: the awaiting step, its findings

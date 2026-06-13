@@ -93,9 +93,10 @@ If any of these is not met, ` + "`axi run`" + ` returns an ` + "`error:`" + ` wi
 to fix it - read it and act on it (commit your work, or create a branch). If the
 repository is not initialized, run ` + "`no-mistakes init`" + ` first; if the ` + "`no-mistakes`" + `
 command itself is missing or misbehaving, ` + "`no-mistakes doctor`" + ` reports what is
-wrong. Before starting, a quick ` + "`no-mistakes axi`" + ` (home view) shows whether a
-run is already active - resume or ` + "`axi abort`" + ` it rather than starting a second
-run on top of it.
+wrong.
+Before starting, run ` + "`no-mistakes axi`" + ` (home view).
+If it shows an active run on your current branch, resume it or use ` + "`axi abort`" + ` before starting over.
+If it shows an active run on another branch, leave that run alone and start validation for your current branch with ` + "`no-mistakes axi run --intent \"...\"`" + `.
 
 ## Intent is required
 

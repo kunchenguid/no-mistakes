@@ -13,6 +13,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/skill"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -266,6 +267,82 @@ func TestStatusEmptyHelpIncludesRequiredIntent(t *testing.T) {
 func TestLogsNoRunHelpIncludesRequiredIntent(t *testing.T) {
 	if !strings.Contains(noRunLogsHelp(), "--intent") {
 		t.Fatalf("no-run logs help must include required --intent, got %q", noRunLogsHelp())
+	}
+}
+
+func TestAxiHomeStartsCurrentBranchWhenOtherBranchIsActive(t *testing.T) {
+	repoDir := t.TempDir()
+	nmHome := t.TempDir()
+	t.Setenv("NM_HOME", nmHome)
+	run(t, repoDir, "git", "init")
+	run(t, repoDir, "git", "config", "user.email", "test@test.com")
+	run(t, repoDir, "git", "config", "user.name", "Test")
+	run(t, repoDir, "git", "commit", "--allow-empty", "-m", "initial")
+	run(t, repoDir, "git", "checkout", "-b", "feature/current")
+	rawRoot, err := filepath.EvalSymlinks(repoDir)
+	if err != nil {
+		rawRoot = repoDir
+	}
+	chdir(t, rawRoot)
+
+	p := paths.WithRoot(nmHome)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+	database, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer database.Close()
+	repo, err := database.InsertRepoWithID("repo-1", rawRoot, "origin", "main")
+	if err != nil {
+		t.Fatalf("insert repo: %v", err)
+	}
+	other, err := database.InsertRun(repo.ID, "feature/other", "head-other", "base")
+	if err != nil {
+		t.Fatalf("insert other run: %v", err)
+	}
+	if err := database.UpdateRunStatus(other.ID, types.RunRunning); err != nil {
+		t.Fatalf("mark other run running: %v", err)
+	}
+	step, err := database.InsertStepResult(other.ID, types.StepReview)
+	if err != nil {
+		t.Fatalf("insert other step: %v", err)
+	}
+	if err := database.UpdateStepStatus(step.ID, types.StepStatusAwaitingApproval); err != nil {
+		t.Fatalf("mark other step awaiting: %v", err)
+	}
+	if err := database.SetStepFindings(step.ID, findingsJSON(t, nil, "other branch gate")); err != nil {
+		t.Fatalf("set other step findings: %v", err)
+	}
+
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	cmd.SetOut(&out)
+	if err := runAxiHome(cmd); err != nil {
+		t.Fatalf("axi home: %v\n%s", err, out.String())
+	}
+	got := out.String()
+	for _, want := range []string{
+		"current_branch: feature/current",
+		"other_branch_active_run:",
+		"branch: feature/other",
+		"no-mistakes axi run --intent",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("axi home missing %q in:\n%s", want, got)
+		}
+	}
+	for _, forbidden := range []string{
+		"\nactive_run:",
+		"gate:",
+		"no-mistakes axi respond --action approve",
+		"no-mistakes axi abort",
+	} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("axi home should not tell the agent to act on another branch via %q, got:\n%s", forbidden, got)
+		}
 	}
 }
 

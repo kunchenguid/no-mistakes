@@ -123,6 +123,96 @@ func TestPushReceivedSkipStepsConfiguresExecutor(t *testing.T) {
 	}
 }
 
+func TestPushReceivedAllowsDifferentBranchRunsConcurrently(t *testing.T) {
+	started := make(chan string, 2)
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{&notifyBlockStep{name: types.StepReview, started: started}}
+	})
+
+	_, headSHA := setupTestGitRepo(t, p, d, "concurrent-branch-repo")
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var first ipc.PushReceivedResult
+	if err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: p.RepoDir("concurrent-branch-repo"),
+		Ref:  "refs/heads/feature/one",
+		Old:  "0000000000000000000000000000000000000000",
+		New:  headSHA,
+	}, &first); err != nil {
+		t.Fatal(err)
+	}
+	waitForStartedBranch(t, started, "feature/one")
+
+	var second ipc.PushReceivedResult
+	if err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: p.RepoDir("concurrent-branch-repo"),
+		Ref:  "refs/heads/feature/two",
+		Old:  "0000000000000000000000000000000000000000",
+		New:  headSHA,
+	}, &second); err != nil {
+		t.Fatal(err)
+	}
+	waitForStartedBranch(t, started, "feature/two")
+
+	for _, tc := range []struct {
+		branch string
+		runID  string
+	}{
+		{branch: "feature/one", runID: first.RunID},
+		{branch: "feature/two", runID: second.RunID},
+	} {
+		active, err := d.GetActiveRun("concurrent-branch-repo", tc.branch)
+		if err != nil {
+			t.Fatalf("get active run for %s: %v", tc.branch, err)
+		}
+		if active == nil {
+			t.Fatalf("expected active run for %s", tc.branch)
+		}
+		if active.ID != tc.runID {
+			t.Fatalf("active run for %s = %s, want %s", tc.branch, active.ID, tc.runID)
+		}
+		if active.Status != types.RunRunning {
+			t.Fatalf("active run for %s status = %s, want running", tc.branch, active.Status)
+		}
+	}
+}
+
+type notifyBlockStep struct {
+	name    types.StepName
+	started chan<- string
+}
+
+func (s *notifyBlockStep) Name() types.StepName { return s.name }
+
+func (s *notifyBlockStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	select {
+	case s.started <- sctx.Run.Branch:
+	default:
+	}
+	<-sctx.Ctx.Done()
+	return nil, sctx.Ctx.Err()
+}
+
+func waitForStartedBranch(t *testing.T, started <-chan string, branch string) {
+	t.Helper()
+	timeout := time.After(3 * time.Second)
+	for {
+		select {
+		case got := <-started:
+			if got == branch {
+				return
+			}
+		case <-timeout:
+			t.Fatalf("run for branch %s did not start", branch)
+		}
+	}
+}
+
 func TestRerunSkipStepsConfiguresExecutor(t *testing.T) {
 	review := &mockPassStep{name: types.StepReview}
 	testStep := &mockPassStep{name: types.StepTest}

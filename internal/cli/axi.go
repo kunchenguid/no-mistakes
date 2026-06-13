@@ -112,26 +112,52 @@ func runAxiHome(cmd *cobra.Command) error {
 	if alive, _ := daemon.IsRunning(env.p); alive {
 		daemonState = "running"
 	}
+	branch := currentBranchForRunResolve(cmd.Context())
+	branchDisplay := branch
+	if branchDisplay == "" {
+		branchDisplay = "unknown"
+	}
+
 	fields := []toon.Field{
 		{Key: "bin", Value: collapseHome(executablePath())},
 		{Key: "description", Value: skill.Description},
 		{Key: "repo", Value: env.repo.WorkingPath},
+		{Key: "current_branch", Value: branchDisplay},
 		{Key: "daemon", Value: daemonState},
 	}
 
-	active, err := env.d.GetActiveRun(env.repo.ID, "")
-	if err != nil {
-		return emitError(cmd, 1, fmt.Sprintf("check active run: %v", err))
+	var currentActive *db.Run
+	if branch != "" {
+		currentActive, err = env.d.GetActiveRun(env.repo.ID, branch)
+		if err != nil {
+			return emitError(cmd, 1, fmt.Sprintf("check current-branch active run: %v", err))
+		}
 	}
+
+	var otherActive *db.Run
+	if currentActive == nil {
+		otherActive, err = env.d.GetActiveRun(env.repo.ID, "")
+		if err != nil {
+			return emitError(cmd, 1, fmt.Sprintf("check repo active run: %v", err))
+		}
+		if otherActive != nil && otherActive.Branch == branch {
+			otherActive = nil
+		}
+	}
+
 	gated := false
-	if active != nil {
-		steps, _ := env.d.GetStepsByRun(active.ID)
-		rv := runViewFromDB(active, steps)
-		fields = append(fields, runObjectField(rv))
+	if currentActive != nil {
+		steps, _ := env.d.GetStepsByRun(currentActive.ID)
+		rv := runViewFromDB(currentActive, steps)
+		fields = append(fields, runObjectFieldWithKey("active_run", rv))
 		if gate, ok := rv.awaitingStep(); ok {
 			gated = true
 			fields = append(fields, gateFields(gate)...)
 		}
+	} else if otherActive != nil {
+		steps, _ := env.d.GetStepsByRun(otherActive.ID)
+		rv := runViewFromDB(otherActive, steps)
+		fields = append(fields, runObjectFieldWithKey("other_branch_active_run", rv))
 	}
 
 	runs, err := env.d.GetRunsByRepo(env.repo.ID)
@@ -142,8 +168,11 @@ func runAxiHome(cmd *cobra.Command) error {
 
 	help := []string{}
 	switch {
-	case active == nil:
+	case currentActive == nil:
 		help = append(help, `Run `+"`"+`no-mistakes axi run --intent "<what the user set out to accomplish>"`+"`"+` to validate your changes`)
+		if otherActive != nil {
+			help = append(help, fmt.Sprintf("Another active run is on %s; leave it alone unless you are working on that branch", otherActive.Branch))
+		}
 	case gated:
 		help = append(help, "Run `no-mistakes axi respond --action approve` to clear the current gate")
 	default:
