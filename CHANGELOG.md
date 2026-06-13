@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.29.1](https://github.com/kunchenguid/no-mistakes/compare/v1.29.0...v1.29.1) (2026-06-13)
+
+
+### Bug Fixes
+
+* **cli:** keep AXI runs branch-aware ([#288](https://github.com/kunchenguid/no-mistakes/issues/288)) ([94afd17](https://github.com/kunchenguid/no-mistakes/commit/94afd170f44855aa55a782a9e3cbf6a64195ab35))
+
 ## [1.29.0](https://github.com/kunchenguid/no-mistakes/compare/v1.28.1...v1.29.0) (2026-06-12)
 
 
