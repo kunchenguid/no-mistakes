@@ -67,6 +67,16 @@ Safest local verification sequence after non-trivial changes:
 
 - Thread `context.Context` through long-running, subprocess, and networked work.
 - Prefer `exec.CommandContext` for subprocesses.
+- Route every long-lived subprocess spawned on behalf of a cancellable step/agent
+  invocation through `shellenv.ConfigureShellCommand(cmd)` after building the
+  `*exec.Cmd`. It puts the child in its own process group (Unix `Setpgid` /
+  Windows `CREATE_NEW_PROCESS_GROUP`) and installs `cmd.Cancel` to kill the whole
+  tree on context cancellation. Without it, `exec.CommandContext` only kills the
+  direct child and grandchildren survive (e.g. `npm` -> `node` test workers,
+  agent-spawned git/build/editor), keep running, and hold the worktree locked so
+  the next run on the same branch cannot proceed. Applied to the step shell
+  runner (`runShellCommandWithEnv`) and the native agent `runOnce` builders
+  (claude, codex, pi, acpx); apply it to any new subprocess in those paths.
 - Use derived contexts and timeouts for cleanup and HTTP calls.
 - Use `context.Background()` mainly at top-level boundaries, background tasks, or in tests.
 - Protect shared mutable state with `sync.Mutex`, `sync.RWMutex`, `sync.Map`, or `atomic` where appropriate.

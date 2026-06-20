@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+
+	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
 
 // claudeMaxRetries is the number of additional attempts past the initial
@@ -42,6 +44,10 @@ func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 	cmd.Dir = opts.CWD
 	cmd.Stdin = nil
 	cmd.Env = gitSafeEnv(opts.CWD)
+	// Run in a dedicated process group so cancelling ctx kills the claude CLI
+	// and any subprocesses it spawns (git, build tools, editors), not just the
+	// direct child. Otherwise they survive and hold the worktree locked.
+	shellenv.ConfigureShellCommand(cmd)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

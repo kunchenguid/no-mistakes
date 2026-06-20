@@ -11,6 +11,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
+	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
 
 func envValue(env []string, key string) (string, bool) {
@@ -260,6 +261,10 @@ func runShellCommandWithEnv(ctx context.Context, dir string, env []string, cmdSt
 	} else {
 		cmd = exec.CommandContext(ctx, "sh", "-c", cmdStr)
 	}
+	// Isolate the command in its own process group so that cancelling ctx kills
+	// the whole tree (e.g. npm -> node test workers), not just the shell parent.
+	// Otherwise grandchildren survive, keep running, and hold the worktree locked.
+	shellenv.ConfigureShellCommand(cmd)
 	cmd.Dir = dir
 	if len(env) > 0 {
 		cmd.Env = mergeEnv(env)

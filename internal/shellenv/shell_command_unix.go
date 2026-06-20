@@ -9,7 +9,15 @@ import (
 	"syscall"
 )
 
-func configureShellCommand(cmd *exec.Cmd) {
+// ConfigureShellCommand isolates cmd in its own process group (Setpgid) and
+// installs a cmd.Cancel that SIGKILLs the whole group when cmd's context is
+// cancelled. exec.CommandContext otherwise only kills the direct child PID,
+// leaving grandchildren (a test runner's worker processes, an agent-spawned
+// git/build/editor) running and holding the worktree locked.
+//
+// Apply this to every long-lived subprocess no-mistakes spawns on behalf of a
+// cancellable step/agent invocation.
+func ConfigureShellCommand(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
 		if cmd.Process == nil {

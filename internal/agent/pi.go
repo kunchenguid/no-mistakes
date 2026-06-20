@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+
+	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
 
 // piAgent spawns the pi CLI for each invocation. Pi reads its prompt from
@@ -34,6 +36,9 @@ func (a *piAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 	cmd := exec.CommandContext(ctx, a.bin, args...)
 	cmd.Dir = opts.CWD
 	cmd.Env = gitSafeEnv(opts.CWD)
+	// Run in a dedicated process group so cancelling ctx reaps the pi CLI and
+	// any subprocesses it spawns, not just the direct child.
+	shellenv.ConfigureShellCommand(cmd)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

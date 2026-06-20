@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
 
 // codexAgent spawns the codex CLI for each invocation.
@@ -60,6 +62,9 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 	cmd.Dir = opts.CWD
 	cmd.Stdin = nil
 	cmd.Env = gitSafeEnv(opts.CWD)
+	// Run in a dedicated process group so cancelling ctx reaps the codex CLI
+	// and any subprocesses it spawns, not just the direct child.
+	shellenv.ConfigureShellCommand(cmd)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
