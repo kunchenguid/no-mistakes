@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/git"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 )
 
 // resolveBaseSHA returns a usable base SHA for diff/log operations.
@@ -69,6 +70,22 @@ func resolveUpstreamRemoteName(ctx context.Context, workDir, upstreamURL string)
 		}
 	}
 	return "origin"
+}
+
+// resolveUpstreamURL returns the credentialled upstream URL to push or query.
+// It prefers the worktree's configured "origin" remote, which inherits the
+// full upstream URL (including any embedded credentials) from the gate's bare
+// repo via the shared common config. It falls back to the repo record's
+// upstream URL when origin cannot be resolved (e.g. an older gate whose DB
+// still carries the full URL, or a test worktree without origin).
+//
+// This separation lets the database and logs store a redacted URL while the
+// credential still reaches the git push/ls-remote argv that needs it.
+func resolveUpstreamURL(sctx *pipeline.StepContext) string {
+	if url, err := git.GetRemoteURL(sctx.Ctx, sctx.WorkDir, "origin"); err == nil && strings.TrimSpace(url) != "" {
+		return url
+	}
+	return sctx.Repo.UpstreamURL
 }
 
 func mergeBaseWithDefaultBranch(ctx context.Context, workDir, defaultBranch string) string {

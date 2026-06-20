@@ -162,6 +162,36 @@ func TestExecutor_LogFileWritten(t *testing.T) {
 	}
 }
 
+// TestExecutor_StepLogFileModeIsRestrictive verifies step log files are
+// created 0o600 so secrets that leak into a step's output (e.g. a
+// credentialled upstream URL echoed by git, or an agent dumping env/netrc)
+// are not world-readable. 0o600 has no group/other bits, so the result is
+// independent of the process umask.
+func TestExecutor_StepLogFileModeIsRestrictive(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	step := &adaptiveCallStep{
+		name: types.StepReview,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			sctx.Log("line that forces the log file to be created")
+			return &StepOutcome{}, nil
+		},
+	}
+
+	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
+	exec.Execute(context.Background(), run, repo, workDir)
+
+	logPath := filepath.Join(p.RunLogDir(run.ID), "review.log")
+	info, err := os.Stat(logPath)
+	if err != nil {
+		t.Fatalf("expected log file at %s: %v", logPath, err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Errorf("step log file mode = %o, want 0o600 (no group/other access)", got)
+	}
+}
+
 func TestExecutor_LogFileWritten_OnStepError(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir := t.TempDir()

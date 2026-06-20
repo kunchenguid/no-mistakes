@@ -66,6 +66,12 @@ func Init(ctx context.Context, d *db.DB, p *paths.Paths, workDir string) (*db.Re
 	if err != nil {
 		return nil, false, fmt.Errorf("get origin url: %w", err)
 	}
+	// Redact embedded credentials for everything that is persisted, logged,
+	// or surfaced to the user. The bare gate keeps the full URL on its
+	// "origin" remote (via provisionGate below) so worktrees carved from it
+	// can still authenticate pushes; the push step resolves that credential
+	// at run time instead of trusting the DB copy.
+	redactedUpstreamURL := git.RedactURL(upstreamURL)
 
 	id := repoID(absRoot)
 	if existing != nil {
@@ -90,7 +96,7 @@ func Init(ctx context.Context, d *db.DB, p *paths.Paths, workDir string) (*db.Re
 	branch := git.DefaultBranch(ctx, absRoot, "origin")
 
 	if existing != nil {
-		repo, err := d.UpdateRepoMetadata(existing.ID, upstreamURL, branch)
+		repo, err := d.UpdateRepoMetadata(existing.ID, redactedUpstreamURL, branch)
 		if err != nil {
 			return nil, false, fmt.Errorf("update repo metadata: %w", err)
 		}
@@ -99,7 +105,7 @@ func Init(ctx context.Context, d *db.DB, p *paths.Paths, workDir string) (*db.Re
 	}
 
 	// Insert repo record with deterministic ID.
-	repo, err := d.InsertRepoWithID(id, absRoot, upstreamURL, branch)
+	repo, err := d.InsertRepoWithID(id, absRoot, redactedUpstreamURL, branch)
 	if err != nil {
 		// Rollback: remove remote and bare repo.
 		git.RemoveRemote(ctx, absRoot, RemoteName)
@@ -107,7 +113,7 @@ func Init(ctx context.Context, d *db.DB, p *paths.Paths, workDir string) (*db.Re
 		return nil, false, fmt.Errorf("insert repo: %w", err)
 	}
 
-	slog.Info("gate initialized", "repo_id", id, "path", absRoot, "upstream", upstreamURL)
+	slog.Info("gate initialized", "repo_id", id, "path", absRoot, "upstream", redactedUpstreamURL)
 	return repo, true, nil
 }
 

@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
@@ -174,7 +175,9 @@ func stepGitRun(sctx *pipeline.StepContext, args ...string) (string, error) {
 		if ee, ok := err.(*exec.ExitError); ok {
 			stderr = strings.TrimSpace(string(ee.Stderr))
 		}
-		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, stderr)
+		// Redact embedded credentials so a credentialled remote URL passed
+		// as an arg (e.g. the push target) can never leak via this error.
+		return "", fmt.Errorf("git %s: %w: %s", git.RedactURL(strings.Join(args, " ")), err, git.RedactURL(stderr))
 	}
 	return strings.TrimSpace(string(out)), nil
 }

@@ -193,8 +193,12 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	var executionMS int64
 	var durationOverrideMS int64 // sum of step-reported overrides (demo mode)
 
-	// Open log file for persistent step logging
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	// Open log file for persistent step logging. Mode 0o600 keeps secrets that
+	// leak through a step's own output (e.g. an agent dumping env / netrc, or a
+	// credentialled upstream URL echoed by git) from being world-readable. Step
+	// logs are append-mode, so the tight mode is what stops a leaked token from
+	// accumulating in a world-readable file across runs.
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return false, fmt.Errorf("create step log file %s: %w", stepName, err)
 	}
@@ -264,8 +268,10 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			// Persist the failure reason to the step's own log file. The error
 			// often carries the only detail of why the step failed (e.g. git
 			// stderr from a rejected push); without this the step log shows the
-			// work starting but never why it stopped.
-			fmt.Fprintf(logFile, "\nerror: %s\n", err.Error())
+			// work starting but never why it stopped. Redact defensively so a
+			// credentialled upstream URL that slipped into a wrapped error can
+			// never land in the log file.
+			fmt.Fprintf(logFile, "\nerror: %s\n", git.RedactURL(err.Error()))
 			if dbErr := e.db.FailStep(sr.ID, err.Error(), durationMS); dbErr != nil {
 				slog.Warn("failed to mark step as failed in db", "step", stepName, "error", dbErr)
 			}
