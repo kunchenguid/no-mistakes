@@ -3,8 +3,6 @@ package steps
 import (
 	"fmt"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -19,8 +17,10 @@ import (
 const uncoveredChangedFileIDPrefix = "uncovered-changed-file:"
 
 // Coverage finding emitted when at least one added (new-side) diff line in a
-// changed file has no test coverage. The ID is namespaced with the file path so
-// multiple files keep distinct, filterable identities in the TUI. This
+// changed file has no test coverage. The ID is namespaced per language and file
+// path — `uncovered-changed-lines:<lang>:<path>` — so multi-language repos keep
+// distinct, filterable identities in the TUI. The bare `uncovered-changed-lines:`
+// prefix is preserved so downstream prefix matching keeps working. This
 // subsumes the file-level check: a brand-new untested file has all lines added
 // and uncovered, so it still fires.
 const uncoveredChangedLinesIDPrefix = "uncovered-changed-lines:"
@@ -32,9 +32,9 @@ type addedLineRange struct {
 	start, end int
 }
 
-// coverBlock is one parsed coverprofile block: a covered code region with its
-// inclusive 1-indexed line span (from the coverprofile .col fields, which are
-// aligned with HEAD) and its execution count.
+// coverBlock is one parsed coverage block: a covered code region with its
+// inclusive 1-indexed line span and its execution count. Language-neutral —
+// each provider's ParseBlocks produces these keyed by repo-relative POSIX path.
 type coverBlock struct {
 	startLine, endLine int
 	count              float64
@@ -66,133 +66,21 @@ func fileExists(path string) bool {
 // coverageCheckEnabled decides whether the coverage-aware sub-step runs.
 //
 // NO_MISTAKES_COVERAGE_CHECK explicitly enables (1/true/yes/on) or disables
-// (0/false/no/off) the check. When unset, the check defaults to ON for Go
-// projects (a go.mod is present at the worktree root) and OFF otherwise, since
-// only Go coverage is wired up today.
+// (0/false/no/off) the check, and that override always wins. When unset, the
+// check defaults to ON when ANY registered coverage provider is active for the
+// worktree (e.g. a go.mod, package.json, or Package.swift is present) and OFF
+// otherwise. This keeps the gate language-agnostic: each provider owns its own
+// detection in Active(), so adding a language never requires touching this gate.
 func coverageCheckEnabled(workDir string, env []string) bool {
 	if v, ok := lookupStepEnv(env, "NO_MISTAKES_COVERAGE_CHECK"); ok {
 		return isAffirmativeFlag(v)
 	}
-	return fileExists(filepath.Join(workDir, "go.mod"))
-}
-
-// goModulePath reads the module path from go.mod at the worktree root.
-// Returns "" if go.mod is missing or has no module directive.
-func goModulePath(workDir string) string {
-	data, err := os.ReadFile(filepath.Join(workDir, "go.mod"))
-	if err != nil {
-		return ""
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) >= 2 && fields[0] == "module" {
-			return fields[1]
+	for _, p := range coverageProviders {
+		if p.Active(workDir, env) {
+			return true
 		}
 	}
-	return ""
-}
-
-// parseGoCoverProfile parses the contents of a `go test -coverprofile` file and
-// returns the set of repo-relative Go source files that have at least one
-// covered code block (block count > 0).
-//
-// This is the file-level view. The orchestrator's changed-line check uses the
-// richer parseGoCoverProfileBlocks plus the diff intersection; this helper is
-// retained as a tested primitive for the simpler "is the file covered at all"
-// question. A file whose blocks are all zero-count is intentionally absent from
-// the map, so it correctly reads as uncovered.
-func parseGoCoverProfile(raw, modulePath string) map[string]bool {
-	blocks := parseGoCoverProfileBlocks(raw, modulePath)
-	covered := make(map[string]bool, len(blocks))
-	for file, bs := range blocks {
-		for _, b := range bs {
-			if b.count > 0 {
-				covered[file] = true
-				break
-			}
-		}
-	}
-	return covered
-}
-
-// parseGoCoverProfileBlocks parses a `go test -coverprofile` file into covered
-// code blocks keyed by repo-relative source file. Each block carries its
-// inclusive 1-indexed start/end line numbers (from the coverprofile .col fields,
-// which line up with HEAD since the instrumented build includes the change) and
-// its execution count.
-//
-// Each profile line is: <pkgpath>/<file>:<startLine>.<startCol>,<endLine>.<endCol> <stmts> <count>
-// modulePath is stripped from the package-qualified path so keys match the
-// repo-relative paths returned by `git diff`. Entries outside the module (e.g.
-// vendored dependencies) are ignored.
-func parseGoCoverProfileBlocks(raw, modulePath string) map[string][]coverBlock {
-	blocks := make(map[string][]coverBlock)
-	if strings.TrimSpace(raw) == "" {
-		return blocks
-	}
-	prefix := ""
-	if strings.TrimSpace(modulePath) != "" {
-		prefix = modulePath + "/"
-	}
-	for _, line := range strings.Split(raw, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "mode:") {
-			continue
-		}
-		colon := strings.IndexByte(line, ':')
-		if colon < 0 {
-			continue
-		}
-		pkgPath := line[:colon]
-		parts := strings.Fields(line[colon+1:])
-		if len(parts) < 3 {
-			continue
-		}
-		startLine, endLine, ok := parseCoverLoc(parts[0])
-		if !ok {
-			continue
-		}
-		count, err := strconv.ParseFloat(parts[len(parts)-1], 64)
-		if err != nil {
-			continue
-		}
-		rel := pkgPath
-		if prefix != "" {
-			if !strings.HasPrefix(pkgPath, prefix) {
-				continue
-			}
-			rel = strings.TrimPrefix(pkgPath, prefix)
-		}
-		blocks[rel] = append(blocks[rel], coverBlock{startLine: startLine, endLine: endLine, count: count})
-	}
-	return blocks
-}
-
-// parseCoverLoc parses a coverprofile location "startLine.startCol,endLine.endCol"
-// and returns the inclusive start/end line numbers.
-func parseCoverLoc(loc string) (int, int, bool) {
-	comma := strings.IndexByte(loc, ',')
-	if comma < 0 {
-		return 0, 0, false
-	}
-	startLine, ok1 := atoiBeforeDot(loc[:comma])
-	endLine, ok2 := atoiBeforeDot(loc[comma+1:])
-	if !ok1 || !ok2 {
-		return 0, 0, false
-	}
-	return startLine, endLine, true
-}
-
-// atoiBeforeDot parses the leading integer of s up to the first '.' (if any).
-func atoiBeforeDot(s string) (int, bool) {
-	if dot := strings.IndexByte(s, '.'); dot >= 0 {
-		s = s[:dot]
-	}
-	n, err := strconv.Atoi(s)
-	if err != nil {
-		return 0, false
-	}
-	return n, true
+	return false
 }
 
 // parseAddedLineRanges parses `git diff --unified=0` output into per-file
@@ -264,38 +152,6 @@ func parseHunkAddedRange(line string) (addedLineRange, bool) {
 	return addedLineRange{start: start, end: start + count - 1}, true
 }
 
-// coverableChangedGoFiles filters the changed-file list down to Go source files
-// the coverage check should hold accountable: .go files that are not test
-// files, do not match any ignore pattern, and still exist on disk (so pure
-// deletions are not flagged).
-func coverableChangedGoFiles(changedFiles []string, workDir string, ignorePatterns []string) []string {
-	var out []string
-	for _, path := range changedFiles {
-		path = strings.TrimSpace(path)
-		if path == "" || !strings.HasSuffix(path, ".go") {
-			continue
-		}
-		if isTestFile(path) {
-			continue
-		}
-		ignored := false
-		for _, pattern := range ignorePatterns {
-			if matchIgnorePattern(path, pattern) {
-				ignored = true
-				break
-			}
-		}
-		if ignored {
-			continue
-		}
-		if !fileExists(filepath.Join(workDir, path)) {
-			continue
-		}
-		out = append(out, path)
-	}
-	return out
-}
-
 // uncoveredFileFindings builds a warning finding for each coverable changed
 // file that has zero coverage (absent from the covered map or explicitly false).
 // This is the file-level view, retained as a tested primitive; the orchestrator
@@ -319,7 +175,11 @@ func uncoveredFileFindings(coverable []string, covered map[string]bool) []Findin
 
 // uncoveredChangedLineFindings emits one warning finding per coverable changed
 // file where at least one added (new-side) diff line is executable but not
-// exercised by any count>0 coverprofile block.
+// exercised by any count>0 coverage block. This is the shared, language-neutral
+// core: it operates purely on the three data inputs every provider produces
+// (coverable paths, added-line ranges, coverage blocks) and never references a
+// specific language. The dispatcher namespaces each finding's ID per language
+// via namespaceFindings after this returns.
 //
 // Counting rule per added line L in the file:
 //   - If a count>0 block spans L → covered, skip.
@@ -388,66 +248,63 @@ func addedLineExecutable(line int, blocks []coverBlock) bool {
 	return false
 }
 
-// runGoCoverageProfile runs `go test -cover -coverprofile=<tmp> ./...` in the
-// worktree and returns the coverprofile contents plus the human-readable
-// command for the "tested" log. The temp profile is removed afterwards.
-func runGoCoverageProfile(sctx *pipeline.StepContext) (string, string, error) {
-	tmp, err := os.CreateTemp("", "nm-coverage-*.out")
-	if err != nil {
-		return "", "", err
-	}
-	tmpPath := tmp.Name()
-	tmp.Close()
-	defer os.Remove(tmpPath)
-
-	args := []string{"test", "-cover", "-coverprofile=" + tmpPath, "./..."}
-	testedCmd := "go " + strings.Join(args, " ")
-	sctx.Log("running coverage: " + testedCmd)
-
-	cmd := exec.CommandContext(sctx.Ctx, "go", args...)
-	cmd.Dir = sctx.WorkDir
-	cmd.Env = mergeEnv(sctx.Env)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", testedCmd, fmt.Errorf("go test -cover: %w: %s", err, strings.TrimSpace(string(out)))
-	}
-	data, err := os.ReadFile(tmpPath)
-	if err != nil {
-		return "", testedCmd, fmt.Errorf("read coverprofile: %w", err)
-	}
-	return string(data), testedCmd, nil
-}
-
 // runCoverageCheck is the coverage-aware sub-step invoked after the test suite
-// passes. It returns one warning finding per changed Go source file that adds
-// code no test exercises — computed at the changed-line (diff) level so a new
-// function dropped into an already-tested file is still caught. It is a no-op
-// when disabled, when there are no coverable changed files, or when coverage
-// collection fails (errors are surfaced to the caller so the step can log and
-// continue without blocking the pipeline).
+// passes. It is a pluggable dispatcher: it performs the language-neutral diff
+// plumbing once, then loops over every registered coverageProvider, asking each
+// active one to filter coverable files, run its native coverage tool, and parse
+// the result into blocks. Each provider's blocks feed into the unchanged,
+// language-neutral uncoveredChangedLineFindings core, and the resulting
+// findings are namespaced per language.
+//
+// It returns one warning finding per changed source file (in any language) that
+// adds code no test exercises — computed at the changed-line (diff) level so a
+// new function dropped into an already-tested file is still caught. It is a
+// no-op when disabled, when no provider has coverable changed files, or when a
+// provider's coverage collection fails (provider errors are logged and the
+// check degrades to a no-op for that language — never blocking the pipeline).
 func runCoverageCheck(sctx *pipeline.StepContext, baseSHA string) ([]Finding, string, error) {
 	if !coverageCheckEnabled(sctx.WorkDir, sctx.Env) {
 		return nil, "", nil
 	}
+	// --- neutral diff plumbing (shared across all providers) ---
 	changedRaw, err := git.Run(sctx.Ctx, sctx.WorkDir, "diff", "--name-only", baseSHA+".."+sctx.Run.HeadSHA)
 	if err != nil {
 		return nil, "", fmt.Errorf("coverage: get changed files: %w", err)
 	}
-	coverable := coverableChangedGoFiles(strings.Split(changedRaw, "\n"), sctx.WorkDir, sctx.Config.IgnorePatterns)
-	if len(coverable) == 0 {
-		return nil, "", nil
-	}
+	changed := strings.Split(changedRaw, "\n")
 	// Added-line ranges per file from a tight (unified=0) diff. Line numbers on
-	// the + side line up with HEAD and therefore with the coverprofile blocks.
+	// the + side line up with HEAD and therefore with each provider's blocks.
 	diffRaw, err := git.Run(sctx.Ctx, sctx.WorkDir, "diff", "--unified=0", baseSHA+".."+sctx.Run.HeadSHA)
 	if err != nil {
 		return nil, "", fmt.Errorf("coverage: get changed-line diff: %w", err)
 	}
 	added := parseAddedLineRanges(diffRaw)
-	raw, testedCmd, err := runGoCoverageProfile(sctx)
-	if err != nil {
-		return nil, testedCmd, err
+	ignores := sctx.Config.IgnorePatterns
+
+	// --- one pass per active language provider ---
+	var findings []Finding
+	var tested []string
+	for _, p := range coverageProviders {
+		if !p.Active(sctx.WorkDir, sctx.Env) {
+			continue
+		}
+		coverable := p.CoverableChangedFiles(changed, sctx.WorkDir, ignores)
+		if len(coverable) == 0 {
+			continue
+		}
+		raw, testedCmd, err := p.RunCoverage(sctx)
+		if err != nil {
+			// Errors degrade to a logged no-op for this language — never block
+			// the pipeline (matches the test.go call-site contract).
+			sctx.Log(fmt.Sprintf("coverage[%s] skipped: %v", p.Name(), err))
+			continue
+		}
+		if testedCmd != "" {
+			tested = append(tested, testedCmd)
+		}
+		blocks := p.ParseBlocks(raw, sctx.WorkDir)
+		perLang := uncoveredChangedLineFindings(coverable, added, blocks)
+		findings = append(findings, namespaceFindings(p.Name(), perLang)...)
 	}
-	blocks := parseGoCoverProfileBlocks(raw, goModulePath(sctx.WorkDir))
-	return uncoveredChangedLineFindings(coverable, added, blocks), testedCmd, nil
+	return findings, strings.Join(tested, "\n"), nil
 }
