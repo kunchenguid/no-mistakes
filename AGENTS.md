@@ -152,6 +152,13 @@ Safest local verification sequence after non-trivial changes:
 - Mechanics live in `.github/workflows/release.yml`; the contract is pinned by the root `TestReleaseWorkflow*` static tests in `workflow_release_signing_test.go`, and secret values are never recorded here or in any test fixture.
 - Notarization, stapling, a PKG, Homebrew, and universal binaries are intentionally out of scope for this phase.
 
+**Test Step (coverage-aware)**
+
+- After the test suite passes, `internal/pipeline/steps/test.go` runs a mechanical coverage sub-step (`internal/pipeline/steps/coverage.go`): it computes the added-line ranges from `git diff --unified=0 <base>..<head>`, runs `go test -cover ./...`, and flags any changed Go source file where at least one added line is executable but not exercised by any covered block (`warning`/`ask-user` finding, `id: uncovered-changed-lines:<path>`; description reports the uncovered added-line count).
+- This is changed-line (diff) level, which subsumes file-level: a brand-new untested file (all lines added, all uncovered) still fires, and so does a new function dropped into an already-tested file — the cmux #2302 blind spot that motivated the check. Blank/comment added lines in no coverage block are ignored; added lines in a zero-count block are the signal.
+- Gated by `NO_MISTAKES_COVERAGE_CHECK` (`1`/`0`); default ON for Go projects (a `go.mod` is present), OFF otherwise. Only Go `*.go` source is wired up; `.go.tmpl` / config / docs and non-Go languages are out of scope (extensible via `coverage.go`). Coverprofile line numbers are against HEAD, so they align with the diff's `+` side with no offset math.
+- It re-runs the suite instrumented, so it only fires when tests already pass and only when coverable changed files exist. Errors degrade to a logged no-op (never block the pipeline).
+
 **When Making Changes**
 
 - Whenever you must bring in new dependencies, check latest documentation for knowledge, and discuss with the user.
