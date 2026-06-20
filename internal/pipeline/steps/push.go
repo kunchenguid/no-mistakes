@@ -54,8 +54,11 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 
 	ref := normalizedBranchRef(sctx.Run.Branch)
 
-	upstream := sctx.Repo.UpstreamURL
-	sctx.Log(fmt.Sprintf("pushing to %s (%s)...", upstream, ref))
+	// Resolve the credentialled upstream URL from the worktree's "origin"
+	// remote; the DB copy is redacted. The full URL is needed for the actual
+	// git push/ls-remote argv, while only the redacted form is logged.
+	upstream := resolveUpstreamURL(sctx)
+	sctx.Log(fmt.Sprintf("pushing to %s (%s)...", git.RedactURL(upstream), ref))
 
 	// Query upstream for current ref SHA to enable safe --force-with-lease.
 	// Without an explicit SHA, --force-with-lease offers no protection when

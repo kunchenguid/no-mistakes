@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -20,8 +21,33 @@ func IsZeroSHA(sha string) bool {
 	return sha == "0000000000000000000000000000000000000000"
 }
 
+// embeddedCredentialRe matches the "scheme://userinfo@" prefix of a URL,
+// where userinfo is "user", "user:password", or a bare token. It requires a
+// valid scheme so scp-like SSH URLs (git@host:path), local paths, refs, and
+// flags are left untouched. The password character class excludes '@' and
+// whitespace since literal '@' in a password must be percent-encoded.
+var embeddedCredentialRe = regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9+.\-]*://)([^\s/@:]+(:[^\s/@]+)?@)`)
+
+// RedactURL strips embedded credentials (the userinfo before the first '@')
+// from URL-looking strings, replacing them with "***". It operates on any
+// text, so it is safe to apply to argv joined into an error string or to git
+// stderr that echoes a remote URL. Strings without a "scheme://userinfo@"
+// sequence (local paths, scp-like SSH URLs, refs, flags) are returned unchanged.
+//
+// Use RedactURL whenever an upstream URL may be logged, persisted to the
+// database, echoed to the user, or wrapped into an error. The full URL must
+// only ever reach the actual git push/ls-remote argv, which needs the
+// credential to authenticate.
+func RedactURL(s string) string {
+	return embeddedCredentialRe.ReplaceAllString(s, "${1}***@")
+}
+
 // Run executes a git command in the given directory and returns trimmed stdout.
 // Returns an error that includes the command and stderr on failure.
+//
+// Both the interpolated argv and stderr are passed through RedactURL so an
+// embedded-credential remote URL (e.g. a fine-grained PAT in an https origin)
+// can never leak via the error string into step logs or the daemon log.
 func Run(ctx context.Context, dir string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
@@ -32,7 +58,7 @@ func Run(ctx context.Context, dir string, args ...string) (string, error) {
 		if ee, ok := err.(*exec.ExitError); ok {
 			stderr = strings.TrimSpace(string(ee.Stderr))
 		}
-		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, stderr)
+		return "", fmt.Errorf("git %s: %w: %s", RedactURL(strings.Join(args, " ")), err, RedactURL(stderr))
 	}
 	return strings.TrimSpace(string(out)), nil
 }
