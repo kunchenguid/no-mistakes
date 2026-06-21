@@ -179,6 +179,38 @@ func TestFindPRFiltersByBaseBranch(t *testing.T) {
 	}
 }
 
+func TestFindPRForkUsesBareHeadAndFiltersOwner(t *testing.T) {
+	t.Parallel()
+
+	branch := "feature/refactor"
+	host := NewWithFork(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr list --head fork-owner:" + branch + " --base main --repo parent/repo --state open --json number,url,headRefName,headRepositoryOwner": {
+			stderr: `invalid argument: "--head" does not support "<owner>:<branch>"` + "\n",
+			code:   1,
+		},
+		"gh pr list --head " + branch + " --base main --repo parent/repo --state open --json number,url,headRefName,headRepositoryOwner": {
+			stdout: `[` +
+				`{"number":40,"url":"https://github.com/parent/repo/pull/40","headRefName":"feature/refactor","headRepositoryOwner":{"login":"other-owner"}},` +
+				`{"number":42,"url":"https://github.com/parent/repo/pull/42","headRefName":"feature/refactor","headRepositoryOwner":{"login":"fork-owner"}}` +
+				`]` + "\n",
+		},
+	}), nil, "parent/repo", "fork-owner/repo")
+
+	pr, err := host.FindPR(context.Background(), branch, "main")
+	if err != nil {
+		t.Fatalf("FindPR() error = %v", err)
+	}
+	if pr == nil {
+		t.Fatal("FindPR() = nil, want fork PR")
+	}
+	if pr.Number != "42" {
+		t.Fatalf("FindPR() number = %q, want 42", pr.Number)
+	}
+	if pr.URL != "https://github.com/parent/repo/pull/42" {
+		t.Fatalf("FindPR() URL = %q, want fork-owned parent PR", pr.URL)
+	}
+}
+
 func TestFindPRReturnsCLIError(t *testing.T) {
 	t.Parallel()
 

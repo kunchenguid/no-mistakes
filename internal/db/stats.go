@@ -246,7 +246,7 @@ func sortRepoStats(stats []RepoStats) {
 }
 
 func (d *DB) getRepos() ([]*Repo, error) {
-	rows, err := d.sql.Query(`SELECT id, working_path, upstream_url, default_branch, created_at FROM repos ORDER BY working_path`)
+	rows, err := d.sql.Query(`SELECT id, working_path, upstream_url, COALESCE(fork_url, ''), default_branch, created_at FROM repos ORDER BY working_path`)
 	if err != nil {
 		return nil, fmt.Errorf("get repos: %w", err)
 	}
@@ -255,7 +255,7 @@ func (d *DB) getRepos() ([]*Repo, error) {
 	var repos []*Repo
 	for rows.Next() {
 		repo := &Repo{}
-		if err := rows.Scan(&repo.ID, &repo.WorkingPath, &repo.UpstreamURL, &repo.DefaultBranch, &repo.CreatedAt); err != nil {
+		if err := rows.Scan(&repo.ID, &repo.WorkingPath, &repo.UpstreamURL, &repo.ForkURL, &repo.DefaultBranch, &repo.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan repo: %w", err)
 		}
 		repos = append(repos, repo)

@@ -2,6 +2,8 @@ package gate
 
 import (
 	"context"
+	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -212,6 +214,63 @@ func TestInitIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestInitWithForkPreservesForkOnPlainReinit(t *testing.T) {
+	workDir := setupTestRepo(t)
+	nmRoot := t.TempDir()
+	p := paths.WithRoot(nmRoot)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+	d := openTestDB(t, p)
+	ctx := context.Background()
+
+	parentURL := "https://github.com/parent/project.git"
+	forkURL := "https://github.com/fork/project.git"
+	localParent, err := gitpkg.GetRemoteURL(ctx, workDir, "origin")
+	if err != nil {
+		t.Fatalf("get local origin: %v", err)
+	}
+	localFork := filepath.Join(resolveSymlinks(t, t.TempDir()), "fork.git")
+	if out, err := exec.Command("git", "init", "--bare", localFork).CombinedOutput(); err != nil {
+		t.Fatalf("init local fork: %v: %s", err, out)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(t.TempDir(), "gitconfig"))
+	configureGitInsteadOf(t, workDir, parentURL, localParent)
+	configureGitInsteadOf(t, workDir, forkURL, localFork)
+	if out, err := exec.Command("git", "-C", workDir, "remote", "set-url", "origin", parentURL).CombinedOutput(); err != nil {
+		t.Fatalf("set origin url: %v: %s", err, out)
+	}
+
+	first, created, err := InitWithFork(ctx, d, p, workDir, forkURL)
+	if err != nil {
+		t.Fatalf("first init with fork: %v", err)
+	}
+	if !created {
+		t.Fatal("first init should report created=true")
+	}
+	if first.ForkURL != forkURL {
+		t.Fatalf("fork URL after first init = %q, want %q", first.ForkURL, forkURL)
+	}
+
+	second, created, err := Init(ctx, d, p, workDir)
+	if err != nil {
+		t.Fatalf("plain re-init: %v", err)
+	}
+	if created {
+		t.Fatal("plain re-init should report created=false")
+	}
+	if second.ForkURL != forkURL {
+		t.Fatalf("fork URL after plain re-init = %q, want preserved %q", second.ForkURL, forkURL)
+	}
+	dbRepo, err := d.GetRepoByPath(workDir)
+	if err != nil {
+		t.Fatalf("get repo by path: %v", err)
+	}
+	if dbRepo == nil || dbRepo.ForkURL != forkURL {
+		t.Fatalf("db fork URL after plain re-init = %+v, want %q", dbRepo, forkURL)
+	}
+}
+
 func TestInitRefreshUpdatesRepoMetadata(t *testing.T) {
 	workDir := setupTestRepo(t)
 	nmRoot := t.TempDir()
@@ -282,6 +341,23 @@ func TestInitRefreshUpdatesRepoMetadata(t *testing.T) {
 	if gateOrigin != newUpstream {
 		t.Errorf("gate origin = %q, want %q", gateOrigin, newUpstream)
 	}
+}
+
+func configureGitInsteadOf(t *testing.T, workDir, rawURL, target string) {
+	t.Helper()
+	key := fmt.Sprintf("url.%s.insteadOf", gateFileURL(t, target))
+	if out, err := exec.Command("git", "-C", workDir, "config", "--global", key, rawURL).CombinedOutput(); err != nil {
+		t.Fatalf("configure git insteadOf %s: %v: %s", rawURL, err, out)
+	}
+}
+
+func gateFileURL(t *testing.T, path string) string {
+	t.Helper()
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		t.Fatalf("abs %s: %v", path, err)
+	}
+	return (&url.URL{Scheme: "file", Path: filepath.ToSlash(abs)}).String()
 }
 
 func TestInitRefreshUsesPersistedRepoID(t *testing.T) {

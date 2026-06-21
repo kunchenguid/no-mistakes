@@ -38,6 +38,9 @@ func TestOpenCreatesSchema(t *testing.T) {
 	if err := d.sql.QueryRow("SELECT count(*) FROM step_results").Scan(&count); err != nil {
 		t.Fatalf("step_results table missing: %v", err)
 	}
+	if !hasColumn(t, d, "repos", "fork_url") {
+		t.Fatal("repos.fork_url column missing from fresh schema")
+	}
 }
 
 func TestOpenCreatesStepRoundsTable(t *testing.T) {
@@ -107,6 +110,86 @@ func TestOpenMigratesExistingStepRoundsColumns(t *testing.T) {
 			t.Fatalf("expected migrated column %q to exist", name)
 		}
 	}
+}
+
+func TestOpenMigratesReposForkURLColumn(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.sqlite")
+
+	legacyDB, err := sql.Open("sqlite", dbPath+"?_pragma=journal_mode(wal)&_pragma=foreign_keys(on)")
+	if err != nil {
+		t.Fatalf("open legacy db: %v", err)
+	}
+	if _, err := legacyDB.Exec(`
+		CREATE TABLE repos (
+			id TEXT PRIMARY KEY,
+			working_path TEXT NOT NULL UNIQUE,
+			upstream_url TEXT NOT NULL,
+			default_branch TEXT NOT NULL DEFAULT 'main',
+			created_at INTEGER NOT NULL
+		);
+		INSERT INTO repos (id, working_path, upstream_url, default_branch, created_at)
+		VALUES ('repo-1', '/work/repo', 'git@github.com:parent/repo.git', 'main', 123);
+	`); err != nil {
+		legacyDB.Close()
+		t.Fatalf("create legacy repos table: %v", err)
+	}
+	if err := legacyDB.Close(); err != nil {
+		t.Fatalf("close legacy db: %v", err)
+	}
+
+	d, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open migrated db: %v", err)
+	}
+	t.Cleanup(func() { d.Close() })
+
+	if !hasColumn(t, d, "repos", "fork_url") {
+		t.Fatal("expected migrated fork_url column")
+	}
+	repo, err := d.GetRepo("repo-1")
+	if err != nil {
+		t.Fatalf("get migrated repo: %v", err)
+	}
+	if repo == nil {
+		t.Fatal("expected migrated repo")
+	}
+	if repo.ForkURL != "" {
+		t.Fatalf("fork url = %q, want empty", repo.ForkURL)
+	}
+	updated, err := d.UpdateRepoForkURL(repo.ID, "git@github.com:fork/repo.git")
+	if err != nil {
+		t.Fatalf("update migrated fork URL: %v", err)
+	}
+	if updated.ForkURL != "git@github.com:fork/repo.git" {
+		t.Fatalf("fork url after update = %q, want fork URL", updated.ForkURL)
+	}
+}
+
+func hasColumn(t *testing.T, d *DB, table, column string) bool {
+	t.Helper()
+	rows, err := d.sql.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		t.Fatalf("pragma table_info(%s): %v", table, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name string
+		var colType string
+		var notNull int
+		var dfltValue any
+		var pk int
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &dfltValue, &pk); err != nil {
+			t.Fatalf("scan table_info: %v", err)
+		}
+		if name == column {
+			return true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate table_info: %v", err)
+	}
+	return false
 }
 
 func TestOpenWaitsForTransientMigrationLock(t *testing.T) {

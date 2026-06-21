@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/kunchenguid/no-mistakes/internal/gate"
+	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 	"github.com/spf13/cobra"
 )
 
@@ -31,7 +32,14 @@ and removes the repo record from the database.`,
 				fmt.Fprintf(w, "  %s Gate removed\n", sGreen.Render("✓"))
 				fmt.Fprintln(w)
 				fmt.Fprintf(w, "  %s  %s\n", sDim.Render("  repo"), repo.WorkingPath)
-				fmt.Fprintf(w, "  %s  %s\n", sDim.Render("remote"), repo.UpstreamURL)
+				remoteURL := repo.UpstreamURL
+				if repo.ForkURL != "" {
+					remoteURL = safeurl.Redact(remoteURL)
+				}
+				fmt.Fprintf(w, "  %s  %s\n", sDim.Render("remote"), remoteURL)
+				if repo.ForkURL != "" {
+					fmt.Fprintf(w, "  %s  %s\n", sDim.Render("  fork"), safeurl.Redact(repo.ForkURL))
+				}
 				return nil
 			})
 		},

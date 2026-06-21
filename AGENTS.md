@@ -57,6 +57,16 @@ Safest local verification sequence after non-trivial changes:
 - `internal/git`, `internal/ipc`, `internal/config`, `internal/db`, `internal/paths`, `internal/types`: shared infrastructure
 - `internal/tui`: terminal UI
 
+**Fork Routing**
+
+- `repos.upstream_url` is the parent repository used for PR base routing.
+- `repos.fork_url` is an optional GitHub fork push target.
+- Push code must use `Repo.PushURL()` so configured forks receive branch updates.
+- GitHub PR code must keep `--repo` pointed at the parent and use `--head <fork_owner>:<branch>` when `fork_url` is set.
+- GitHub existing-PR lookup must not pass `<owner>:<branch>` to `gh pr list --head`; list by the bare branch and filter the returned head owner fields.
+- GitLab and Bitbucket fork MR/PR routing is intentionally out of scope until implemented end to end.
+- If a legacy or manually edited row has `fork_url` for GitLab or Bitbucket, PR creation must skip instead of opening a self PR.
+
 **Documentation**
 
 - Keep `README.md` concise and high-level. The bar needs to be extremely high for what has to show up there.

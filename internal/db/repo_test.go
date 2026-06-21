@@ -19,6 +19,12 @@ func TestRepoInsertAndGet(t *testing.T) {
 	if repo.UpstreamURL != "git@github.com:user/project.git" {
 		t.Errorf("upstream url = %q, want %q", repo.UpstreamURL, "git@github.com:user/project.git")
 	}
+	if repo.ForkURL != "" {
+		t.Errorf("fork url = %q, want empty", repo.ForkURL)
+	}
+	if repo.PushURL() != repo.UpstreamURL {
+		t.Errorf("push url = %q, want upstream %q", repo.PushURL(), repo.UpstreamURL)
+	}
 	if repo.DefaultBranch != "main" {
 		t.Errorf("default branch = %q, want %q", repo.DefaultBranch, "main")
 	}
@@ -35,6 +41,51 @@ func TestRepoInsertAndGet(t *testing.T) {
 	}
 	if got.ID != repo.ID {
 		t.Errorf("id = %q, want %q", got.ID, repo.ID)
+	}
+	if got.ForkURL != "" {
+		t.Errorf("fork url after get = %q, want empty", got.ForkURL)
+	}
+}
+
+func TestRepoForkURLRoundTrip(t *testing.T) {
+	d := openTestDB(t)
+	repo, err := d.InsertRepoWithFork("/home/user/project", "git@github.com:parent/project.git", "git@github.com:fork/project.git", "main")
+	if err != nil {
+		t.Fatalf("insert repo with fork: %v", err)
+	}
+	if repo.ForkURL != "git@github.com:fork/project.git" {
+		t.Fatalf("fork url = %q, want fork URL", repo.ForkURL)
+	}
+	if repo.PushURL() != repo.ForkURL {
+		t.Fatalf("push url = %q, want fork URL %q", repo.PushURL(), repo.ForkURL)
+	}
+
+	got, err := d.GetRepo(repo.ID)
+	if err != nil {
+		t.Fatalf("get repo: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected repo")
+	}
+	if got.UpstreamURL != "git@github.com:parent/project.git" {
+		t.Fatalf("upstream url = %q, want parent URL", got.UpstreamURL)
+	}
+	if got.ForkURL != "git@github.com:fork/project.git" {
+		t.Fatalf("fork url after get = %q, want fork URL", got.ForkURL)
+	}
+	if got.PushURL() != "git@github.com:fork/project.git" {
+		t.Fatalf("push url after get = %q, want fork URL", got.PushURL())
+	}
+
+	cleared, err := d.UpdateRepoForkURL(repo.ID, "")
+	if err != nil {
+		t.Fatalf("clear fork URL: %v", err)
+	}
+	if cleared.ForkURL != "" {
+		t.Fatalf("fork url after clear = %q, want empty", cleared.ForkURL)
+	}
+	if cleared.PushURL() != cleared.UpstreamURL {
+		t.Fatalf("push url after clear = %q, want upstream %q", cleared.PushURL(), cleared.UpstreamURL)
 	}
 }
 

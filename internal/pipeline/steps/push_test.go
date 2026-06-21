@@ -2,7 +2,9 @@ package steps
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
@@ -108,6 +110,56 @@ func TestPushStep_ForceAddsInRepoEvidenceArtifacts(t *testing.T) {
 	gitCmd(t, clone, "clone", "--branch", "feature", upstream, ".")
 	if _, err := os.Stat(filepath.Join(clone, "evidence", "feature", "checkout.png")); err != nil {
 		t.Fatalf("expected ignored evidence artifact to be pushed: %v", err)
+	}
+}
+
+func TestPushStep_TargetsForkWhenConfigured(t *testing.T) {
+	t.Parallel()
+	parent := t.TempDir()
+	fork := t.TempDir()
+	gitCmd(t, parent, "init", "--bare")
+	gitCmd(t, fork, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	if err := os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "remote", "add", "origin", parent)
+	gitCmd(t, dir, "push", "origin", "main")
+	gitCmd(t, dir, "push", fork, "main")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = parent
+	sctx.Repo.ForkURL = fork
+	sctx.Run.Branch = "feature"
+
+	step := &PushStep{}
+	if _, err := step.Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+
+	forkSHA := gitCmd(t, fork, "rev-parse", "refs/heads/feature")
+	if forkSHA != headSHA {
+		t.Fatalf("fork branch SHA = %s, want %s", forkSHA, headSHA)
+	}
+	if out, err := exec.Command("git", "-C", parent, "rev-parse", "--verify", "refs/heads/feature").CombinedOutput(); err == nil {
+		t.Fatalf("parent unexpectedly received feature branch at %s", strings.TrimSpace(string(out)))
 	}
 }
 

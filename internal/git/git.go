@@ -75,6 +75,12 @@ func GetRemoteURL(ctx context.Context, dir, name string) (string, error) {
 	return Run(ctx, dir, "remote", "get-url", name)
 }
 
+// GetConfiguredRemoteURL returns the literal remote URL from git config,
+// without applying url.*.insteadOf rewrites.
+func GetConfiguredRemoteURL(ctx context.Context, dir, name string) (string, error) {
+	return Run(ctx, dir, "config", "--get", "remote."+name+".url")
+}
+
 // FindGitRoot walks up from path to find the git repository root.
 // Resolves symlinks for consistency on macOS (e.g. /tmp -> /private/tmp).
 func FindGitRoot(path string) (string, error) {

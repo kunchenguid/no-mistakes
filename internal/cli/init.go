@@ -6,6 +6,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/gate"
+	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 	"github.com/kunchenguid/no-mistakes/internal/skill"
 	"github.com/spf13/cobra"
 )
@@ -15,7 +16,8 @@ const banner = `_  _ ____    _  _ _ ____ ___ ____ _  _ ____ ____
 | \| |__|    |  | | ___]  |  |  | | \_ |___ ___]`
 
 func newInitCmd() *cobra.Command {
-	return &cobra.Command{
+	var forkURL string
+	cmd := &cobra.Command{
 		Use:   "init",
 		Short: "Initialize no-mistakes gate for the current repository",
 		Long: "Sets up or refreshes a local bare repo as a gate, installs a post-receive hook,\n" +
@@ -31,7 +33,10 @@ func newInitCmd() *cobra.Command {
 				}
 				defer d.Close()
 
-				repo, created, err := gate.Init(cmd.Context(), d, p, ".")
+				if cmd.Flags().Changed("fork-url") && strings.TrimSpace(forkURL) == "" {
+					return fmt.Errorf("init: --fork-url must not be empty")
+				}
+				repo, created, err := gate.InitWithFork(cmd.Context(), d, p, ".", forkURL)
 				if err != nil {
 					return fmt.Errorf("init: %w", err)
 				}
@@ -62,7 +67,14 @@ func newInitCmd() *cobra.Command {
 				fmt.Fprintln(w)
 				fmt.Fprintf(w, "  %s  %s\n", sDim.Render("  repo"), repo.WorkingPath)
 				fmt.Fprintf(w, "  %s  no-mistakes → %s\n", sDim.Render("  gate"), p.RepoDir(repo.ID))
-				fmt.Fprintf(w, "  %s  %s\n", sDim.Render("remote"), repo.UpstreamURL)
+				remoteURL := repo.UpstreamURL
+				if repo.ForkURL != "" {
+					remoteURL = safeurl.Redact(remoteURL)
+				}
+				fmt.Fprintf(w, "  %s  %s\n", sDim.Render("remote"), remoteURL)
+				if repo.ForkURL != "" {
+					fmt.Fprintf(w, "  %s  %s\n", sDim.Render("  fork"), safeurl.Redact(repo.ForkURL))
+				}
 				if skillErr != nil {
 					fmt.Fprintf(w, "  %s  %s\n", sDim.Render(" skill"), sYellow.Render("skipped: "+skillErr.Error()))
 				} else {
@@ -78,4 +90,6 @@ func newInitCmd() *cobra.Command {
 			})
 		},
 	}
+	cmd.Flags().StringVar(&forkURL, "fork-url", "", "GitHub fork remote URL to push branches to while opening PRs against origin")
+	return cmd
 }

@@ -21,6 +21,7 @@ type Host struct {
 	cmd          CmdFactory
 	cliAvailable func() bool
 	repo         string // "owner/name" slug for --repo; empty when unknown
+	forkOwner    string // fork owner for cross-repository PR heads
 }
 
 // New builds a Host. cliAvailable reports whether the gh binary is
@@ -31,6 +32,15 @@ type Host struct {
 // this gh cannot infer the repo (or branch) and fails on every poll.
 func New(cmd CmdFactory, cliAvailable func() bool, repo string) *Host {
 	return &Host{cmd: cmd, cliAvailable: cliAvailable, repo: strings.TrimSpace(repo)}
+}
+
+// NewWithFork builds a Host that opens PRs on repo using forkRepo as the head
+// repository owner. forkRepo is an "owner/name" slug; only the owner is needed
+// because gh pr create expects --head <owner>:<branch>.
+func NewWithFork(cmd CmdFactory, cliAvailable func() bool, repo, forkRepo string) *Host {
+	h := New(cmd, cliAvailable, repo)
+	h.forkOwner = repoOwner(forkRepo)
+	return h
 }
 
 // RepoSlug extracts the "owner/name" identifier from a GitHub remote or PR URL.
@@ -78,6 +88,21 @@ func (h *Host) repoArgs() []string {
 	return []string{"--repo", h.repo}
 }
 
+func (h *Host) headRef(branch string) string {
+	if h.forkOwner == "" {
+		return branch
+	}
+	return h.forkOwner + ":" + branch
+}
+
+func repoOwner(slug string) string {
+	owner, _, ok := strings.Cut(strings.TrimSpace(slug), "/")
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(owner)
+}
+
 func (h *Host) Provider() scm.Provider { return scm.ProviderGitHub }
 
 func (h *Host) Capabilities() scm.Capabilities {
@@ -100,34 +125,63 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 		args = append(args, "--base", base)
 	}
 	args = append(args, h.repoArgs()...)
-	args = append(args, "--state", "open", "--json", "number,url")
+	jsonFields := "number,url"
+	if h.forkOwner != "" {
+		jsonFields = "number,url,headRefName,headRepositoryOwner"
+	}
+	args = append(args, "--state", "open", "--json", jsonFields)
 	cmd := h.cmd(ctx, "gh", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("gh pr list: %s: %w", strings.TrimSpace(string(out)), err)
 	}
 	var prs []struct {
-		Number int    `json:"number"`
-		URL    string `json:"url"`
+		Number              int    `json:"number"`
+		URL                 string `json:"url"`
+		HeadRefName         string `json:"headRefName"`
+		HeadRepositoryOwner *struct {
+			Login string `json:"login"`
+		} `json:"headRepositoryOwner"`
 	}
 	if err := json.Unmarshal(out, &prs); err != nil || len(prs) == 0 {
 		return nil, nil
 	}
-	pr := &scm.PR{URL: strings.TrimSpace(prs[0].URL)}
-	if prs[0].Number > 0 {
-		pr.Number = fmt.Sprintf("%d", prs[0].Number)
-	} else if num, nerr := scm.ExtractPRNumber(pr.URL); nerr == nil {
-		pr.Number = num
+	for _, candidate := range prs {
+		if !h.matchesHead(candidate.HeadRefName, candidate.HeadRepositoryOwner, branch) {
+			continue
+		}
+		pr := &scm.PR{URL: strings.TrimSpace(candidate.URL)}
+		if candidate.Number > 0 {
+			pr.Number = fmt.Sprintf("%d", candidate.Number)
+		} else if num, nerr := scm.ExtractPRNumber(pr.URL); nerr == nil {
+			pr.Number = num
+		}
+		if pr.URL == "" {
+			return nil, nil
+		}
+		return pr, nil
 	}
-	if pr.URL == "" {
-		return nil, nil
+	return nil, nil
+}
+
+func (h *Host) matchesHead(headRefName string, owner *struct {
+	Login string `json:"login"`
+}, branch string) bool {
+	if h.forkOwner == "" {
+		return true
 	}
-	return pr, nil
+	if strings.TrimSpace(headRefName) != "" && headRefName != branch {
+		return false
+	}
+	if owner == nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(owner.Login), h.forkOwner)
 }
 
 func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PRContent) (*scm.PR, error) {
 	args := append([]string{"pr", "create",
-		"--head", branch,
+		"--head", h.headRef(branch),
 		"--base", base,
 	}, h.repoArgs()...)
 	args = append(args, "--title", content.Title, "--body", content.Body)

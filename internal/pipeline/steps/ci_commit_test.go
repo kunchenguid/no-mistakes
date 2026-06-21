@@ -60,6 +60,63 @@ func TestCIStep_CommitAndPush(t *testing.T) {
 	}
 }
 
+func TestCIStep_CommitAndPushTargetsForkWhenConfigured(t *testing.T) {
+	t.Parallel()
+	parent := t.TempDir()
+	fork := t.TempDir()
+	gitCmd(t, parent, "init", "--bare")
+	gitCmd(t, fork, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	if err := os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "remote", "add", "origin", parent)
+	gitCmd(t, dir, "push", "origin", "main")
+	gitCmd(t, dir, "push", fork, "main")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	if err := os.WriteFile(filepath.Join(dir, "ci-fix.txt"), []byte("fixed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = parent
+	sctx.Repo.ForkURL = fork
+	sctx.Run.Branch = "refs/heads/feature"
+
+	step := &CIStep{}
+	pushed, err := step.commitAndPush(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pushed {
+		t.Fatal("expected commitAndPush to report changes were pushed")
+	}
+
+	forkSHA := gitCmd(t, fork, "rev-parse", "refs/heads/feature")
+	if forkSHA == headSHA {
+		t.Fatal("fork branch should have advanced to the CI fix commit")
+	}
+	if out, err := exec.Command("git", "-C", parent, "rev-parse", "--verify", "refs/heads/feature").CombinedOutput(); err == nil {
+		t.Fatalf("parent unexpectedly received feature branch at %s", strings.TrimSpace(string(out)))
+	}
+}
+
 func TestCIStep_CommitAndPush_NoChanges(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

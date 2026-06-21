@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS repos (
     id             TEXT PRIMARY KEY,
     working_path   TEXT NOT NULL UNIQUE,
     upstream_url   TEXT NOT NULL,
+    fork_url       TEXT,
     default_branch TEXT NOT NULL DEFAULT 'main',
     created_at     INTEGER NOT NULL
 );
@@ -64,6 +65,7 @@ CREATE TABLE IF NOT EXISTS intent_cache (
 // were created before the referenced columns existed. Each statement must be
 // idempotent via its error being tolerated when the column already exists.
 var migrationStatements = []string{
+	`ALTER TABLE repos ADD COLUMN fork_url TEXT`,
 	`ALTER TABLE step_rounds ADD COLUMN selected_finding_ids TEXT`,
 	`ALTER TABLE step_rounds ADD COLUMN selection_source TEXT`,
 	`ALTER TABLE step_rounds ADD COLUMN fix_summary TEXT`,

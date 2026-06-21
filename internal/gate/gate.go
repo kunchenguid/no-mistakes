@@ -12,6 +12,8 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/scm"
+	"github.com/kunchenguid/no-mistakes/internal/scm/github"
 )
 
 // RemoteName is the name of the git remote that points to the local gate.
@@ -37,6 +39,14 @@ func repoID(absPath string) string {
 // new path, preserving its run history. The returned bool reports whether a
 // new gate was created (true) or an existing one was refreshed (false).
 func Init(ctx context.Context, d *db.DB, p *paths.Paths, workDir string) (*db.Repo, bool, error) {
+	return InitWithFork(ctx, d, p, workDir, "")
+}
+
+// InitWithFork is Init plus an optional GitHub fork push URL. When forkURL is
+// empty, an existing fork setting is preserved across idempotent refreshes.
+func InitWithFork(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkURL string) (*db.Repo, bool, error) {
+	forkURL = strings.TrimSpace(forkURL)
+
 	// Normalize worktrees back to the main repo root so one repo record works
 	// from either the main checkout or any attached worktree.
 	gitRoot, err := git.FindMainRepoRoot(workDir)
@@ -61,10 +71,20 @@ func Init(ctx context.Context, d *db.DB, p *paths.Paths, workDir string) (*db.Re
 		}
 	}
 
-	// Read origin URL.
-	upstreamURL, err := git.GetRemoteURL(ctx, absRoot, "origin")
+	// Read origin URL. Keep the historical rewritten value for non-fork repos,
+	// but preserve the literal parent URL when fork routing is configured.
+	getOriginURL := git.GetRemoteURL
+	if forkURL != "" || (existing != nil && strings.TrimSpace(existing.ForkURL) != "") {
+		getOriginURL = git.GetConfiguredRemoteURL
+	}
+	upstreamURL, err := getOriginURL(ctx, absRoot, "origin")
 	if err != nil {
 		return nil, false, fmt.Errorf("get origin url: %w", err)
+	}
+	if forkURL != "" {
+		if err := validateForkRouting(upstreamURL, forkURL); err != nil {
+			return nil, false, err
+		}
 	}
 
 	id := repoID(absRoot)
@@ -90,7 +110,12 @@ func Init(ctx context.Context, d *db.DB, p *paths.Paths, workDir string) (*db.Re
 	branch := git.DefaultBranch(ctx, absRoot, "origin")
 
 	if existing != nil {
-		repo, err := d.UpdateRepoMetadata(existing.ID, upstreamURL, branch)
+		var repo *db.Repo
+		if forkURL != "" {
+			repo, err = d.UpdateRepoMetadataWithFork(existing.ID, upstreamURL, forkURL, branch)
+		} else {
+			repo, err = d.UpdateRepoMetadata(existing.ID, upstreamURL, branch)
+		}
 		if err != nil {
 			return nil, false, fmt.Errorf("update repo metadata: %w", err)
 		}
@@ -99,7 +124,7 @@ func Init(ctx context.Context, d *db.DB, p *paths.Paths, workDir string) (*db.Re
 	}
 
 	// Insert repo record with deterministic ID.
-	repo, err := d.InsertRepoWithID(id, absRoot, upstreamURL, branch)
+	repo, err := d.InsertRepoWithIDAndFork(id, absRoot, upstreamURL, forkURL, branch)
 	if err != nil {
 		// Rollback: remove remote and bare repo.
 		git.RemoveRemote(ctx, absRoot, RemoteName)
@@ -109,6 +134,18 @@ func Init(ctx context.Context, d *db.DB, p *paths.Paths, workDir string) (*db.Re
 
 	slog.Info("gate initialized", "repo_id", id, "path", absRoot, "upstream", upstreamURL)
 	return repo, true, nil
+}
+
+func validateForkRouting(upstreamURL, forkURL string) error {
+	parentProvider := scm.DetectProvider(upstreamURL)
+	forkProvider := scm.DetectProvider(forkURL)
+	if parentProvider == scm.ProviderGitHub && forkProvider == scm.ProviderGitHub {
+		if github.RepoSlug(upstreamURL) == "" || github.RepoSlug(forkURL) == "" {
+			return fmt.Errorf("fork URL routing requires GitHub parent and fork remotes with owner/repo paths")
+		}
+		return nil
+	}
+	return fmt.Errorf("fork URL routing is currently supported only for GitHub parent and fork remotes (parent provider: %s, fork provider: %s)", parentProvider, forkProvider)
 }
 
 // provisionGate creates or repairs the on-disk gate for a repo: the bare repo,

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
+	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 	"github.com/spf13/cobra"
 )
 
@@ -31,7 +32,14 @@ func newStatusCmd() *cobra.Command {
 				}
 
 				fmt.Fprintf(w, "  %s  %s\n", sDim.Render("  repo:"), repo.WorkingPath)
-				fmt.Fprintf(w, "  %s  %s\n", sDim.Render("remote:"), repo.UpstreamURL)
+				remoteURL := repo.UpstreamURL
+				if repo.ForkURL != "" {
+					remoteURL = safeurl.Redact(remoteURL)
+				}
+				fmt.Fprintf(w, "  %s  %s\n", sDim.Render("remote:"), remoteURL)
+				if repo.ForkURL != "" {
+					fmt.Fprintf(w, "  %s  %s\n", sDim.Render("  fork:"), safeurl.Redact(repo.ForkURL))
+				}
 				fmt.Fprintf(w, "  %s  %s\n", sDim.Render("  gate:"), p.RepoDir(repo.ID))
 
 				// Check daemon status.

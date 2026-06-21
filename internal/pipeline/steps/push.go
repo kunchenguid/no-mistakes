@@ -8,6 +8,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -54,25 +55,31 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 
 	ref := normalizedBranchRef(sctx.Run.Branch)
 
-	upstream := sctx.Repo.UpstreamURL
-	sctx.Log(fmt.Sprintf("pushing to %s (%s)...", upstream, ref))
+	pushURL := sctx.Repo.PushURL()
+	pushTarget := "upstream"
+	if strings.TrimSpace(sctx.Repo.ForkURL) != "" {
+		pushTarget = "fork"
+		sctx.Log(fmt.Sprintf("pushing to fork %s (%s)...", safeurl.Redact(pushURL), ref))
+	} else {
+		sctx.Log(fmt.Sprintf("pushing to %s (%s)...", pushURL, ref))
+	}
 
 	// Query upstream for current ref SHA to enable safe --force-with-lease.
 	// Without an explicit SHA, --force-with-lease offers no protection when
 	// pushing to a URL (no remote tracking refs), silently degrading to --force.
-	upstreamSHA, lsErr := git.LsRemote(ctx, sctx.WorkDir, upstream, ref)
+	upstreamSHA, lsErr := git.LsRemote(ctx, sctx.WorkDir, pushURL, ref)
 	if lsErr != nil {
-		return nil, fmt.Errorf("ls-remote upstream: %w", lsErr)
+		return nil, fmt.Errorf("ls-remote %s: %w", pushTarget, lsErr)
 	}
 	if upstreamSHA != "" {
 		// Existing branch: force-with-lease with explicit expected SHA
-		if err := git.Push(ctx, sctx.WorkDir, upstream, ref, upstreamSHA, true); err != nil {
-			return nil, fmt.Errorf("push to upstream: %w", err)
+		if err := git.Push(ctx, sctx.WorkDir, pushURL, ref, upstreamSHA, true); err != nil {
+			return nil, fmt.Errorf("push to %s: %w", pushTarget, err)
 		}
 	} else {
 		// New branch: regular push (no force needed)
-		if err := git.Push(ctx, sctx.WorkDir, upstream, ref, "", false); err != nil {
-			return nil, fmt.Errorf("push to upstream: %w", err)
+		if err := git.Push(ctx, sctx.WorkDir, pushURL, ref, "", false); err != nil {
+			return nil, fmt.Errorf("push to %s: %w", pushTarget, err)
 		}
 	}
 
