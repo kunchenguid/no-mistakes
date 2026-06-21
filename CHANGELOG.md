@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.30.1](https://github.com/kunchenguid/no-mistakes/compare/v1.30.0...v1.30.1) (2026-06-21)
+
+
+### Bug Fixes
+
+* **agent:** kill child process group on cancel (no orphan subprocesses) ([#300](https://github.com/kunchenguid/no-mistakes/issues/300)) ([19045f6](https://github.com/kunchenguid/no-mistakes/commit/19045f6e04251f9b746467dcc6ad372cb4658f42))
+
 ## [1.30.0](https://github.com/kunchenguid/no-mistakes/compare/v1.29.1...v1.30.0) (2026-06-21)
 
 
