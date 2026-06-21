@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.30.2](https://github.com/kunchenguid/no-mistakes/compare/v1.30.1...v1.30.2) (2026-06-21)
+
+
+### Bug Fixes
+
+* **security:** load repo config from default branch, not pushed SHA (supply-chain RCE) ([#297](https://github.com/kunchenguid/no-mistakes/issues/297)) ([21ff425](https://github.com/kunchenguid/no-mistakes/commit/21ff425c7e8c2dd3dda6149cbd47d32b8c7b5da7))
+
 ## [1.30.1](https://github.com/kunchenguid/no-mistakes/compare/v1.30.0...v1.30.1) (2026-06-21)
 
 
