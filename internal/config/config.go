@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -237,6 +238,59 @@ func isACPAgent(name types.AgentName) bool {
 	return target != "" && !strings.ContainsAny(target, " \t\r\n")
 }
 
+// knownAgentNames lists the non-ACP agent names accepted by ValidateAgentName.
+// "auto" resolves at runtime; the rest map to native agent binaries.
+var knownAgentNames = map[types.AgentName]bool{
+	types.AgentAuto:     true,
+	types.AgentClaude:   true,
+	types.AgentCodex:    true,
+	types.AgentRovoDev:  true,
+	types.AgentOpenCode: true,
+	types.AgentPi:       true,
+}
+
+// validAgentValues is the human-readable list of accepted agent values,
+// used in error messages.
+var validAgentValues = "auto, claude, codex, rovodev, opencode, pi, or acp:<target>"
+
+// validateAgentName returns an error if name is not a recognized agent value.
+// Empty is allowed (means "use default"/"inherit"); explicit-empty detection
+// is the caller's responsibility.
+func validateAgentName(name types.AgentName) error {
+	if name == "" {
+		return nil
+	}
+	if knownAgentNames[name] {
+		return nil
+	}
+	if isACPAgent(name) {
+		return nil
+	}
+	return fmt.Errorf("agent %q is not recognized (valid: %s)", name, validAgentValues)
+}
+
+// detectExplicitAgentEmpty reports whether the YAML document contained an
+// `agent:` key whose value decodes to an empty string. This distinguishes
+// "key absent" (use default) from "key present but empty" (user error).
+// Errors are swallowed; malformed YAML is already caught by the strict decoder.
+func detectExplicitAgentEmpty(data []byte) bool {
+	var probe map[string]any
+	if err := yaml.Unmarshal(data, &probe); err != nil {
+		return false
+	}
+	v, ok := probe["agent"]
+	if !ok {
+		return false
+	}
+	if v == nil {
+		return true
+	}
+	if s, ok := v.(string); ok {
+		return s == ""
+	}
+	return false
+}
+
 var probeRovoDevSupport = func(ctx context.Context, bin string) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
@@ -438,8 +492,14 @@ func LoadGlobal(path string) (*GlobalConfig, error) {
 	}
 
 	var raw globalConfigRaw
-	if err := yaml.Unmarshal(data, &raw); err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&raw); err != nil {
 		return nil, fmt.Errorf("parse global config: %w", err)
+	}
+
+	if err := validateGlobalAgent(data, raw.Agent, path); err != nil {
+		return nil, err
 	}
 
 	if raw.Agent != "" {
@@ -484,6 +544,19 @@ func LoadGlobal(path string) (*GlobalConfig, error) {
 	return cfg, nil
 }
 
+// validateGlobalAgent rejects unknown/typo agent values and explicit-empty
+// `agent:` entries in the global config. Empty values produced by an absent
+// key are allowed (default to AgentAuto).
+func validateGlobalAgent(data []byte, rawAgent types.AgentName, path string) error {
+	if err := validateAgentName(rawAgent); err != nil {
+		return fmt.Errorf("global config %s: %w", path, err)
+	}
+	if rawAgent == "" && detectExplicitAgentEmpty(data) {
+		return fmt.Errorf("global config %s: agent must not be empty (valid: %s)", path, validAgentValues)
+	}
+	return nil
+}
+
 // LoadRepo reads per-repo config from dir/.no-mistakes.yaml.
 // Returns zero-value config if file doesn't exist.
 func LoadRepo(dir string) (*RepoConfig, error) {
@@ -498,14 +571,31 @@ func LoadRepo(dir string) (*RepoConfig, error) {
 		return nil, fmt.Errorf("read repo config: %w", err)
 	}
 
-	if err := yaml.Unmarshal(data, cfg); err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(cfg); err != nil {
 		return nil, fmt.Errorf("parse repo config: %w", err)
 	}
+
+	if err := validateRepoAgent(cfg.Agent, path); err != nil {
+		return nil, err
+	}
+
 	if cfg.AutoFix.CI == nil {
 		cfg.AutoFix.CI = cfg.AutoFix.Babysit
 	}
 
 	return cfg, nil
+}
+
+// validateRepoAgent rejects unknown/typo agent values in repo config.
+// Unlike the global config, an empty value means "inherit from global", so
+// explicit-empty `agent:` is tolerated here (and resolves to inherit).
+func validateRepoAgent(rawAgent types.AgentName, path string) error {
+	if err := validateAgentName(rawAgent); err != nil {
+		return fmt.Errorf("repo config %s: %w", path, err)
+	}
+	return nil
 }
 
 // ParseLogLevel converts a log level string to slog.Level.

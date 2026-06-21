@@ -99,3 +99,4 @@ Safest local verification sequence after non-trivial changes:
 
 - Whenever you must bring in new dependencies, check latest documentation for knowledge, and discuss with the user.
 - Always use test driven development for bug fixes and feature development.
+- Both config loaders (`config.LoadGlobal` and `config.LoadRepo`) decode with `yaml.NewDecoder(...).KnownFields(true)` and validate the `agent` field. When adding a new YAML field, declare it on `globalConfigRaw`/`RepoConfig` (or it will be rejected as unknown), and add an accepted-value test alongside it.
