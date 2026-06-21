@@ -35,11 +35,18 @@ NM_BIN=` + shellSingleQuote(command) + `
 if [ ! -f "$NM_BIN" ]; then
   NM_BIN="$(command -v no-mistakes 2>/dev/null || echo no-mistakes)"
 fi
-LOG="$(pwd)/notify-push.log"
+# Resolve the bare repo dir explicitly. Git can invoke this hook from a cwd
+# whose pwd collapses to "." (issue #269), which would pass "--gate ." and be
+# rejected by the daemon ("invalid gate path: ."), so the pipeline never
+# starts. git rev-parse --absolute-git-dir queries git directly and always
+# yields the true path regardless of cwd/PWD state (Git 2.13+, May 2017); fall
+# back to pwd only if git itself is somehow unavailable.
+GATE_DIR=$(git rev-parse --absolute-git-dir 2>/dev/null || pwd)
+LOG="$GATE_DIR/notify-push.log"
 nm_ts() { date '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || echo unknown; }
 notify_failed=0
 while read oldrev newrev refname; do
-	  set -- --gate "$(pwd)" \
+	  set -- --gate "$GATE_DIR" \
 	    --ref "$refname" \
 	    --old "$oldrev" \
 	    --new "$newrev"

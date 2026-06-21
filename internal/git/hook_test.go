@@ -27,8 +27,14 @@ func TestPostReceiveHookScript(t *testing.T) {
 		t.Fatal("hook should read ref update args")
 	}
 
-	if !strings.Contains(script, "--gate \"$(pwd)\"") {
-		t.Fatal("hook should pass the gate path as a flag")
+	if strings.Contains(script, "--gate \"$(pwd)\"") {
+		t.Fatal("hook must not pass the gate path via bare $(pwd) (issue #269: pwd can collapse to .)")
+	}
+	if !strings.Contains(script, "--gate \"$GATE_DIR\"") {
+		t.Fatal("hook should pass the resolved gate path as a flag")
+	}
+	if !strings.Contains(script, "git rev-parse --absolute-git-dir") {
+		t.Fatal("hook should resolve the bare repo dir absolutely (issue #269)")
 	}
 	if !strings.Contains(script, "daemon notify-push") {
 		t.Fatal("hook should invoke the CLI notify subcommand")
@@ -247,6 +253,96 @@ func TestRefreshManagedPostReceiveHookInstallsMissingHook(t *testing.T) {
 	if runtime.GOOS != "windows" && info.Mode()&0o111 == 0 {
 		t.Fatalf("hook should be executable, got mode %v", info.Mode())
 	}
+}
+
+// TestPostReceiveHook_ResolvesAbsoluteGateDir covers issue #269: when git
+// invokes the hook from a cwd whose `pwd` collapses to "." (observed in real
+// pushes though not reliably reproducible by hand), the hook used to pass
+// `--gate .`, which the daemon rejects with "invalid gate path: ." so the
+// pipeline never started. The hook must resolve the bare repo dir explicitly
+// via `git rev-parse --absolute-git-dir` so the gate path is absolute in every
+// cwd state.
+//
+// We force the failure condition deterministically by poisoning PWD="." in
+// the hook's environment: the POSIX `pwd` builtin then returns "." exactly as
+// the reporter saw, while `git rev-parse --absolute-git-dir` still returns the
+// true absolute path.
+func TestPostReceiveHook_ResolvesAbsoluteGateDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("post-receive hook is /bin/sh-only")
+	}
+	ctx := context.Background()
+
+	base := t.TempDir()
+	bare := filepath.Join(base, "test.git")
+	if err := InitBare(ctx, bare); err != nil {
+		t.Fatal(err)
+	}
+
+	// Fake no-mistakes binary: record the notify-push argv so we can inspect
+	// the --gate value the hook actually computed.
+	argsPath := filepath.Join(base, "args.txt")
+	fakeBin := filepath.Join(base, "fake-no-mistakes")
+	fakeScript := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + shellSingleQuote(argsPath) + "\nexit 0\n"
+	if err := os.WriteFile(fakeBin, []byte(fakeScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	hookPath := filepath.Join(bare, "hooks", "post-receive")
+	if err := os.MkdirAll(filepath.Dir(hookPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(hookPath, []byte(postReceiveHookScript(fakeBin)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Poison PWD so the shell `pwd` builtin returns "." (the reported failure
+	// state). git resolves the repo via the real cwd, not $PWD, so the fix's
+	// `git rev-parse --absolute-git-dir` still returns the bare dir.
+	cmd := exec.Command("/bin/sh", hookPath)
+	cmd.Dir = bare
+	cmd.Stdin = strings.NewReader("oldrev newrev refs/heads/main\n")
+	cmd.Env = append(os.Environ(), "PWD=.")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("run hook: %v: %s", err, out)
+	}
+
+	args, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("fake binary should have recorded argv: %v", err)
+	}
+	gate := gateArgFromArgv(string(args))
+	if gate == "" {
+		t.Fatalf("hook did not pass --gate; recorded argv:\n%s", args)
+	}
+	if gate == "." || !filepath.IsAbs(gate) {
+		t.Fatalf("--gate must be an absolute path, got %q (issue #269); argv:\n%s", gate, args)
+	}
+	// The resolved gate dir must be the bare repo (compare physical paths to
+	// tolerate macOS /tmp -> /private/tmp symlink resolution).
+	wantAbs, err := filepath.EvalSymlinks(bare)
+	if err != nil {
+		wantAbs = bare
+	}
+	gotAbs, err := filepath.EvalSymlinks(gate)
+	if err != nil {
+		gotAbs = gate
+	}
+	if gotAbs != wantAbs {
+		t.Fatalf("--gate = %q (resolved %q), want bare dir %q", gate, gotAbs, wantAbs)
+	}
+}
+
+// gateArgFromArgv returns the value following the first "--gate" token in a
+// newline-separated argv dump, or "" if absent.
+func gateArgFromArgv(argv string) string {
+	fields := strings.Split(strings.TrimSpace(argv), "\n")
+	for i, f := range fields {
+		if f == "--gate" && i+1 < len(fields) {
+			return fields[i+1]
+		}
+	}
+	return ""
 }
 
 // TestPostReceiveHook_SurfacesNotifyFailures covers issue #122 defect 2:
