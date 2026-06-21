@@ -38,7 +38,7 @@ flowchart LR
     direction TB
     E["Local branch"] -->|"git push no-mistakes"| F["Local gate"]
     F --> G["Rebase, review, test, docs, lint"]
-    G --> H["Push upstream + open PR"]
+    G --> H["Push branch + open PR"]
     H --> I["Watch CI + auto-fix"]
   end
 
@@ -51,7 +51,7 @@ A gated push turns a rough branch into a clean PR:
 
 | Before the gate | After the gate |
 |---|---|
-| Raw branch diff | Rebases onto fresh upstream |
+| Raw branch diff | Rebases onto fresh upstream and pushed branch |
 | Bugs and tech debt | AI review catches problems early |
 | Uneven test coverage | Regression + new tests executed |
 | Missing docs | Documentation kept up to date |

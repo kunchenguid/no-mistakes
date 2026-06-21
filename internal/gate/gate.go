@@ -42,8 +42,9 @@ func Init(ctx context.Context, d *db.DB, p *paths.Paths, workDir string) (*db.Re
 	return InitWithFork(ctx, d, p, workDir, "")
 }
 
-// InitWithFork is Init plus an optional GitHub fork push URL. When forkURL is
-// empty, an existing fork setting is preserved across idempotent refreshes.
+// InitWithFork is Init plus an optional GitHub fork push URL. The origin remote
+// remains the parent repository used for PRs. When forkURL is empty, an
+// existing fork setting is preserved across idempotent refreshes.
 func InitWithFork(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkURL string) (*db.Repo, bool, error) {
 	forkURL = strings.TrimSpace(forkURL)
 

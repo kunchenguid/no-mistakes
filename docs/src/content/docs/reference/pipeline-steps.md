@@ -34,12 +34,14 @@ It can fail the run only if cleanup fails after the disambiguation agent leaves 
 
 ## Rebase
 
-Fetches the latest upstream and rebases your branch onto it.
+Fetches the latest upstream state, fetches the configured pushed-branch target, and rebases your branch onto those refs.
 
 **Behavior:**
-- Fetches `origin/<default_branch>` into the worktree, and also fetches `origin/<branch>` for non-default branches unless the push rewrote branch history
-- If the branch is not the default branch, tries rebasing onto `origin/<branch>` first, then `origin/<default_branch>`
-- If the push rewrote branch history, skips the `origin/<branch>` rebase target so prior remote autofix commits do not get reintroduced
+- Fetches `origin/<default_branch>` into the worktree, and also fetches the pushed branch for non-default branches unless the push rewrote branch history
+- Without fork routing, the pushed-branch target is `origin/<branch>`
+- With GitHub fork routing, the pushed-branch target is the fork branch fetched into `refs/remotes/no-mistakes-push/<branch>`
+- If the branch is not the default branch, tries rebasing onto the pushed-branch target first, then `origin/<default_branch>`
+- If the push rewrote branch history, skips the pushed-branch rebase target so prior remote autofix commits do not get reintroduced
 - If the push rewrote the default branch and `origin/<default_branch>` advanced after that rewrite, pauses for manual approval before updating the branch
 - Skips targets that don't exist or are already ancestors
 - If a fast-forward is possible, does a hard-reset instead of a rebase
@@ -122,18 +124,20 @@ When `commands.lint` is empty, unresolved findings pause for approval instead of
 
 ## Push
 
-Pushes the validated branch to the real upstream remote.
+Pushes the validated branch to the configured push target.
 
 **Behavior:**
 - If `commands.format` is set, runs it first
 - Stages in-repo test evidence artifacts when `test.evidence.store_in_repo` is enabled and the evidence directory is not ignored by Git
 - Commits any uncommitted agent changes with message `no-mistakes: apply agent fixes`
-- Queries upstream via `git ls-remote` to get the current SHA for the branch
+- Without fork routing, the push target is `repos.upstream_url`, which comes from `origin`
+- With GitHub fork routing, the push target is `repos.fork_url`
+- Queries the push target via `git ls-remote` to get the current SHA for the branch
 - Uses `--force-with-lease` when updating an existing branch (safe force-push that fails if the remote has diverged)
 - Uses regular push for new branches
 - Updates the run's head SHA in the database after push
 
-This step never requires approval - it runs automatically after review, test, and lint pass.
+This step never requires approval - it runs automatically after review, test, document, and lint pass.
 
 ## PR
 
@@ -145,11 +149,13 @@ Creates or updates a pull request.
 - The provider CLI (`gh` or `glab`) is not installed for GitHub or GitLab
 - The provider CLI is not authenticated for GitHub or GitLab
 - Bitbucket Cloud credentials are missing (`NO_MISTAKES_BITBUCKET_EMAIL` or `NO_MISTAKES_BITBUCKET_API_TOKEN`)
+- A legacy or manually edited GitLab or Bitbucket repo record has `fork_url` set, because fork MR/PR routing is currently GitHub-only
 
 **Behavior:**
 - Checks for an existing PR on the branch
 - If one exists, updates it. If not, creates a new one.
 - Uses the provider CLI for GitHub/GitLab and the Bitbucket API for Bitbucket Cloud
+- For GitHub fork routing, keeps `gh --repo` pointed at the parent repository from `origin`, checks existing PRs with the bare branch name, filters matching PRs by head owner, and creates PRs with `--head <fork-owner>:<branch>`
 - PR title: agent-generated with user intent when available, in conventional commit format (`type(scope): description` or `type: description`); user-facing product impact should use `feat` or `fix` so release automation can pick it up; when a scope is used, it should be the primary affected real module/package from the changed paths and kept broad rather than file-level
 - PR body includes a `## Intent` section when user intent is available, an agent-authored `## What Changed`, and regenerated `## Risk Assessment`, `## Testing`, and `## Pipeline` sections from recorded step results and rounds; auto-fix results in `## Pipeline` render as an issue -> fix -> verification narrative using captured fix summaries, re-check success text, and any still-open findings
 - The regenerated `## Testing` section prefers the recorded `testing_summary` as prose, uses a compact recorded-check count when no summary is available, includes produced evidence artifacts from `path`, `url`, or `content` fields when available, and only adds an outcome with run count and total duration when it is failed or needed as a fallback
@@ -175,7 +181,7 @@ Monitors PR health after creation and auto-fixes CI failures. Mergeability polli
 - The ready signal clears if checks start running again, new failures appear, provider state becomes uncertain, or the PR is merged, closed, or declined
 - Waits a 60s grace period before trusting empty results (CI checks may not have registered yet)
 - If CI failures or, on GitHub or GitLab, a merge conflict are already known while other checks are still pending: waits for all checks to finish before attempting an auto-fix
-- On CI failure: fetches failed job logs (GitHub via `gh run view --log-failed`, GitLab via `glab ci trace`, Bitbucket Cloud via failed pipeline step logs), sends them to the agent with user intent when available, and commits and force-pushes only if the agent produces changes
+- On CI failure: fetches failed job logs (GitHub via `gh run view --log-failed`, GitLab via `glab ci trace`, Bitbucket Cloud via failed pipeline step logs), sends them to the agent with user intent when available, and commits and force-pushes to the configured push target only if the agent produces changes
 - On GitHub or GitLab merge conflict: asks the agent to rebase onto the latest default-branch tip and make the smallest correct root-cause fix for the conflicts, using user intent when available
 - If both CI failures and a GitHub or GitLab merge conflict are present: fixes both in the same attempt
 - If a fix attempt produces no changes: automatic mode leaves the failure undeduplicated so it can retry until the auto-fix limit, while manual fix mode returns immediately for manual intervention

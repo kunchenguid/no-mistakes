@@ -4,7 +4,7 @@ description: Architecture and data flow of no-mistakes.
 ---
 
 `no-mistakes` intercepts pushes by placing a local bare git repo between your
-working repo and the real upstream remote. That bare repo is the gate.
+working repo and the configured push target. That bare repo is the gate.
 
 The point is not to hide Git. The point is to create one deliberate place where
 validation can happen before a branch is shared.
@@ -18,7 +18,7 @@ flowchart TD
   hook --> daemon["Daemon"]
   daemon --> worktree["Disposable worktree"]
   worktree --> pipeline["intent -> rebase -> review -> test -> document -> lint -> push -> pr -> ci"]
-  pipeline --> upstream["Upstream remote"]
+  pipeline --> target["Push target"]
   daemon --> db["SQLite state"]
   daemon --> ipc["IPC socket"]
   ipc --> tui["TUI clients"]
@@ -34,8 +34,9 @@ When you run `no-mistakes init` in a repo:
 3. It enables Git push options for the gate repo.
 4. It best-effort isolates the gate repo's hooks path from shared local Git config writes when Git supports `config --worktree`.
 5. It adds a `no-mistakes` remote to your working repo that points at the gate.
-6. It installs or refreshes the `/no-mistakes` agent skill at user level, into `~/.claude/skills/no-mistakes/SKILL.md` and `~/.agents/skills/no-mistakes/SKILL.md`, on a best-effort basis, following existing symlinks between the home `.claude` and `.agents` skill directories. It writes no skill files into the repo; if the repo still carries a vendored copy from an older version, `init` prints a notice that the copy can be removed.
-7. It makes sure the daemon is running so incoming pushes can start runs.
+6. When `--fork-url` is supplied, it records that GitHub fork as the branch push target while keeping `origin` as the parent repository used for PR bases.
+7. It installs or refreshes the `/no-mistakes` agent skill at user level, into `~/.claude/skills/no-mistakes/SKILL.md` and `~/.agents/skills/no-mistakes/SKILL.md`, on a best-effort basis, following existing symlinks between the home `.claude` and `.agents` skill directories. It writes no skill files into the repo; if the repo still carries a vendored copy from an older version, `init` prints a notice that the copy can be removed.
+8. It makes sure the daemon is running so incoming pushes can start runs.
 
 `init` is idempotent.
 If the repo is already initialized, it refreshes the existing gate instead of failing: managed hook installation, push-option support, hook-path isolation, gate and working remotes, origin/default-branch metadata, and the `/no-mistakes` agent skill are repaired or updated where needed.
@@ -44,6 +45,7 @@ If the working repo was copied and the original path still exists, `init` treats
 If daemon startup fails during a refresh, `init` reports the error but does not eject the pre-existing gate.
 
 After init, your original `origin` still points at the real upstream remote.
+With `--fork-url`, that `origin` should be the parent repository, and the fork URL is stored separately for branch pushes.
 That is a core design choice, not an implementation detail.
 
 ## How a push flows
@@ -54,7 +56,8 @@ That is a core design choice, not an implementation detail.
 4. The daemon creates a detached worktree for this run.
 5. The pipeline runs in order: `intent -> rebase -> review -> test -> document -> lint -> push -> pr -> ci`.
 6. If a step pauses, you can attach with the TUI or use `no-mistakes axi respond` to approve, fix, skip, or abort.
-7. After local checks pass, the push step forwards the branch upstream and the PR step creates or updates the pull request.
+7. After local checks pass, the push step forwards the branch to the configured push target and the PR step creates or updates the pull request.
+   For GitHub fork routing, the push target is the fork and the PR base repository is the parent from `origin`.
 8. The CI step keeps watching the open PR until it is merged or closed, and can auto-fix failures or merge conflicts when supported.
    While it watches, the TUI and terminal title surface a `Checks passed` signal once checks are green and the PR is mergeable, and `no-mistakes axi` returns `outcome: checks-passed` with instructions to summarize the run and list any pipeline fixes, so agents stop and ask you to review and merge it.
 
@@ -153,6 +156,7 @@ agent-supplied AXI intent is stored directly on the run. Raw transcript text is
 not stored in this database. Legacy `user_fix` rounds are still read as
 `auto-fix` for backward
 compatibility.
+Repo records store the parent `upstream_url` and an optional `fork_url`; branch pushes use `fork_url` when present, while PR and CI provider context stays anchored to the parent.
 
 ## Local state
 

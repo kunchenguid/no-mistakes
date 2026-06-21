@@ -12,7 +12,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-// PushStep force-pushes the worktree state to the upstream remote.
+// PushStep force-pushes the worktree state to the configured push remote.
 type PushStep struct{}
 
 func (s *PushStep) Name() types.StepName { return types.StepPush }
@@ -64,7 +64,7 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 		sctx.Log(fmt.Sprintf("pushing to %s (%s)...", safeurl.Redact(pushURL), ref))
 	}
 
-	// Query upstream for current ref SHA to enable safe --force-with-lease.
+	// Query the push target for current ref SHA to enable safe --force-with-lease.
 	// Without an explicit SHA, --force-with-lease offers no protection when
 	// pushing to a URL (no remote tracking refs), silently degrading to --force.
 	upstreamSHA, lsErr := git.LsRemote(ctx, sctx.WorkDir, pushURL, ref)

@@ -16,7 +16,8 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-// RebaseStep syncs the pushed branch with upstream branch state and the latest default branch.
+// RebaseStep syncs the pushed branch with the configured push target and the
+// latest default branch from upstream.
 type RebaseStep struct{}
 
 func (s *RebaseStep) Name() types.StepName { return types.StepRebase }

@@ -56,7 +56,7 @@ func newRootCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:     "no-mistakes",
-		Short:   "Local Git proxy that validates code before pushing upstream",
+		Short:   "Local Git proxy that validates code before pushing to the configured target",
 		Version: buildinfo.String(),
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
 			setColorProfileForOutput(cmd.OutOrStdout())

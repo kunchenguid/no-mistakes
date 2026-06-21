@@ -30,7 +30,8 @@
   <img src="https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/demo.gif" alt="no-mistakes demo" width="800" />
 </p>
 
-`no-mistakes` 在你真实的远端前面放了一个本地 git 代理。把分支推给 `no-mistakes` 而不是 `origin`，它会拉起一个用完即弃的 worktree，跑一条 AI 驱动的校验流水线，**只有每一项检查都通过后**才转发到上游，并自动开出一个干净的 PR。
+`no-mistakes` 在你真实的远端前面放了一个本地 git 代理。
+把分支推给 `no-mistakes` 而不是 `origin`，它会拉起一个用完即弃的 worktree，跑一条 AI 驱动的校验流水线，**只有每一项检查都通过后**才把分支转发到配置的推送目标，并自动开出一个干净的 PR。
 
 - **不阻塞** —— 流水线在隔离的 worktree 里跑，不打断你手头的工作。
 - **不挑 agent** —— 支持 `claude`、`codex`、`rovodev`、`opencode`、`pi`，或通过 `acpx` 用 `acp:<target>`。
@@ -55,7 +56,9 @@
         干净的 PR，已替你开好
 ```
 
-每一步要么自己通过，要么停下来给你一条 **finding** 让你处理。安全、机械性的修复会自动应用；任何牵涉到你**意图**的，都会升级给你来 **approve（批准）**、**fix（修复）** 或 **skip（跳过）**。在每项检查都变绿之前，没有任何东西会到达你真实的远端。
+每一步要么自己通过，要么停下来给你一条 **finding** 让你处理。
+安全、机械性的修复会自动应用；任何牵涉到你**意图**的，都会升级给你来 **approve（批准）**、**fix（修复）** 或 **skip（跳过）**。
+在每项检查都变绿之前，没有任何东西会到达配置的推送目标。
 
 ## 安装
 
@@ -92,7 +95,12 @@ $ no-mistakes
 # 打开当前运行的 TUI
 ```
 
-在 TUI 里你逐条处理 **finding**：**auto-fix** 类自动替你应用（或由你 approve 放行），**ask-user** 类需要你判断，由你 approve、fix 或 skip。每项检查变绿后，网关会把你的分支转发到上游并替你开好 PR —— 不用手动 `git push origin`，也不用手写 PR 正文。想让编码 agent 无人值守地走完同一套流程？用 `/no-mistakes`（见下文）。
+如果是 GitHub fork 贡献，让 `origin` 指向父仓库，并用 `no-mistakes init --fork-url <your-fork-url>` 初始化。
+
+在 TUI 里你逐条处理 **finding**：**auto-fix** 类自动替你应用（或由你 approve 放行），**ask-user** 类需要你判断，由你 approve、fix 或 skip。
+每项检查变绿后，网关会把你的分支转发到配置的推送目标并替你开好 PR，不用手动 `git push origin`，也不用手写 PR 正文。
+想让编码 agent 无人值守地走完同一套流程？
+用 `/no-mistakes`（见下文）。
 
 ## 触发网关的三种方式
 

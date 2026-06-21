@@ -33,8 +33,8 @@ What you do not get is PR automation and CI monitoring.
 
 ## What changes when provider wiring is present
 
-Once the host is wired up, `no-mistakes` can keep owning the branch after the
-upstream push:
+Once the host is wired up, `no-mistakes` can keep owning the branch after it
+pushes to the configured target:
 
 - create or update the PR automatically
 - keep polling hosted CI until the PR is merged, closed, declined, or times out
@@ -70,6 +70,23 @@ For PR and workflow-run commands, no-mistakes passes the repository slug from th
 - CI check polling with exponential backoff (30s → 60s → 120s) until the PR is merged, closed, or times out
 - Failed job log fetching (`gh run view --log-failed`) for the CI auto-fix step
 - PR mergeability polling, and agent-driven merge-conflict resolution when the branch falls behind
+
+### GitHub fork contributions
+
+Fork routing is available for GitHub when you need to push branches to your fork but open PRs against the parent repository.
+Keep `origin` pointed at the parent repository, then initialize with your fork URL:
+
+```sh
+git remote set-url origin git@github.com:parent-owner/repo.git
+no-mistakes init --fork-url git@github.com:your-user/repo.git
+```
+
+With this setup, the push and CI auto-fix push steps update the fork, while the PR and CI steps stay scoped to the parent repository.
+The GitHub PR step opens PRs with a fork-qualified head such as `your-user:feature-branch`.
+Re-running `no-mistakes init` later preserves the stored fork URL unless you pass a new `--fork-url`.
+
+Fork routing currently requires both `origin` and `--fork-url` to be GitHub remotes with owner/repo paths.
+GitLab and Bitbucket fork MR/PR routing are not implemented yet; if a legacy or manually edited repo record has `fork_url` set for those providers, PR creation skips instead of opening an unsafe self PR.
 
 ## GitLab
 
@@ -127,7 +144,7 @@ Self-hosted GitHub Enterprise and self-hosted GitLab instances work through the 
 
 If your upstream isn't GitHub, GitLab, or Bitbucket Cloud:
 
-- The **push** step still runs - `no-mistakes` pushes through git like any other remote.
+- The **push** step still runs - `no-mistakes` pushes through git to the configured target like any other remote.
 - The **PR** step marks itself as `skipped`.
 - The **CI** step marks itself as `skipped`.
 

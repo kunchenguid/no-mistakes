@@ -1,6 +1,6 @@
 ---
 name: no-mistakes
-description: Validate your code changes through the no-mistakes pipeline - automated code review, tests, lint, docs, push, PR, and CI - before they reach upstream. Use when the user asks to run no-mistakes, gate or ship or validate their changes, push safely, asks you to do a task and then validate it, or invokes /no-mistakes.
+description: Validate your code changes through the no-mistakes pipeline - automated code review, tests, lint, docs, push, PR, and CI - before they reach the configured push target. Use when the user asks to run no-mistakes, gate or ship or validate their changes, push safely, asks you to do a task and then validate it, or invokes /no-mistakes.
 user-invocable: true
 ---
 
@@ -8,7 +8,7 @@ user-invocable: true
 
 `no-mistakes` is a local gate that validates your code changes through a pipeline
 (intent, rebase, review, test, document, lint, push, PR, CI) before they reach
-upstream. You drive it through the `no-mistakes axi` command family, which prints
+the configured push target. You drive it through the `no-mistakes axi` command family, which prints
 machine-readable [TOON](https://toonformat.dev) to stdout and progress to stderr.
 
 When the user invokes `/no-mistakes`, report the outcome at the end. If the user

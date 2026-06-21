@@ -41,6 +41,14 @@ no-mistakes init
 
 This creates or refreshes a local bare repo at `~/.no-mistakes/repos/<id>.git`, installs a post-receive hook, best-effort isolates the gate's hooks path from shared local Git config writes when Git supports `config --worktree`, adds or repairs a `no-mistakes` git remote in your working repo, installs the `/no-mistakes` agent skill, and ensures the daemon is running.
 
+For GitHub fork contributions, keep `origin` pointed at the parent repository and pass your fork as the push target:
+
+```sh
+no-mistakes init --fork-url git@github.com:you/my-repo.git
+```
+
+The gate will push validated branches to the fork while opening PRs against the parent.
+
 ```
 $ no-mistakes init
   ✓ Gate initialized
@@ -54,8 +62,9 @@ $ no-mistakes init
   git push no-mistakes <branch>
 ```
 
-`origin` is unchanged. If you need to bypass the gate for a specific push, use
-`git push origin <branch>`.
+`origin` is unchanged.
+Without fork routing, you can bypass the gate for a specific push with `git push origin <branch>`.
+With `--fork-url`, bypassing the gate means pushing to your fork URL yourself.
 
 You can safely re-run `no-mistakes init` later to refresh gate wiring or update the installed agent skill after an upgrade.
 If you rename or move the repo directory, re-run `no-mistakes init` from the new path to reattach the existing gate and keep its run history.
@@ -110,12 +119,12 @@ See [Driving no-mistakes as an agent](/no-mistakes/guides/agents/#driving-no-mis
 The pipeline runs these steps in order:
 
 1. **Intent** - use agent-supplied intent when present, otherwise infer author intent from recent local agent transcripts
-2. **Rebase** - onto the latest upstream
+2. **Rebase** - onto the latest upstream and pushed-branch target
 3. **Review** - AI code review of your diff
 4. **Test** - baseline tests plus evidence checks when intent is known
 5. **Document** - updates docs and reports unresolved gaps
 6. **Lint** - your linters (configured command or agent-detected)
-7. **Push** - to the real upstream remote
+7. **Push** - to the configured push target
 8. **PR** - create or update the pull request
 9. **CI** - poll CI, watch PR mergeability, auto-fix failures
 

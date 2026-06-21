@@ -27,7 +27,12 @@ Initialize or refresh the gate for the current repository.
 
 ```sh
 no-mistakes init
+no-mistakes init --fork-url git@github.com:you/my-repo.git
 ```
+
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `--fork-url` | `string` | (none) | GitHub fork remote URL to push branches to while opening PRs against `origin` |
 
 Creates or refreshes a local bare repo, installs the post-receive hook, best-effort isolates the gate repo's hook path from shared git config changes when Git supports `config --worktree`, adds or repairs the `no-mistakes` git remote, detects the default branch, records or updates the repo in SQLite, installs the `/no-mistakes` agent skill at user level into `~/.claude/skills/no-mistakes/SKILL.md` and `~/.agents/skills/no-mistakes/SKILL.md`, and ensures the daemon is running, installing the managed service when available and falling back to a detached daemon otherwise.
 `init` writes no skill files into the repo; the user-level copies cover every supported agent (`~/.claude/skills` for Claude Code, `~/.agents/skills` for Codex, OpenCode, Rovo Dev, and Pi) across all repos.
@@ -35,8 +40,14 @@ If the home `.claude` links to `.agents`, `.claude/skills` links to `.agents/ski
 If the repo still contains a vendored skill copy written by an older no-mistakes version, `init` leaves it untouched and prints a notice that it is no longer needed and can be removed.
 The gate advertises Git push-option support, so you can skip steps for one push with `git push -o no-mistakes.skip=test,lint no-mistakes <branch>`.
 
+For GitHub fork contributions, keep `origin` pointed at the parent repository and pass `--fork-url` with your fork remote URL.
+The push, rebase branch-sync, and CI auto-fix pushes use the fork, while GitHub PR and CI commands stay scoped to the parent repository and create PRs with `--head <fork-owner>:<branch>`.
+Fork routing currently requires both `origin` and `--fork-url` to be GitHub remotes with owner/repo paths.
+
 Re-running `init` on an already-initialized repo succeeds and reports `Gate already initialized (refreshed)`.
 It refreshes managed gate wiring, origin/default-branch metadata, hook-path isolation, and the installed agent skill, overwriting any stale `SKILL.md` content from an older binary.
+When a fork URL is already recorded, re-running `init` without `--fork-url` preserves it.
+Passing `--fork-url` again replaces the stored fork URL after validation.
 If you rename or move an initialized working directory and the old path no longer exists, re-running `init` from the new path reattaches the existing gate, preserves the repo ID and run history, and updates the stored working path.
 If you copy an initialized working directory while the original still exists, the copy is treated as a separate repo and gets a fresh gate.
 Fresh init rolls back gate setup when a required gate or daemon step fails; refresh does not eject a pre-existing gate if daemon startup fails.
@@ -195,7 +206,7 @@ no-mistakes status
 ```
 
 Displays:
-- Repo path and upstream URL
+- Repo path, upstream URL, and fork URL when configured
 - Gate path
 - Daemon status (running/stopped, PID)
 - Active run details: ID, branch, status, head SHA, start time

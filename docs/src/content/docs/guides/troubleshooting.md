@@ -175,6 +175,7 @@ Check the [Provider Integration](/no-mistakes/guides/provider-integration/) requ
 - `gh auth status` shows not authenticated
 - Bitbucket env vars not set in the daemon's environment
 - Upstream is on a host that isn't supported (GitHub, GitLab, or `bitbucket.org`)
+- A GitLab or Bitbucket repo record has a fork URL set; fork MR/PR routing is currently GitHub-only
 - You pushed the default branch (PR step always skips on the default branch)
 
 ## CI step stuck or timed out

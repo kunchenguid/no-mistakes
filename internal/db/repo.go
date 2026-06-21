@@ -108,7 +108,7 @@ func (d *DB) GetRepoByPath(workingPath string) (*Repo, error) {
 }
 
 // UpdateRepoMetadata refreshes mutable repository metadata while preserving the
-// stable repo ID and created_at timestamp.
+// stable repo ID, created_at timestamp, and any existing fork push URL.
 func (d *DB) UpdateRepoMetadata(id, upstreamURL, defaultBranch string) (*Repo, error) {
 	_, err := d.sql.Exec(
 		`UPDATE repos SET upstream_url = ?, default_branch = ? WHERE id = ?`,

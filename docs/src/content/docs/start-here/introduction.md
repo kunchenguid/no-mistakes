@@ -5,8 +5,8 @@ description: What no-mistakes is and why it exists.
 
 `no-mistakes` puts a local git proxy in front of your real remote. Push to
 `no-mistakes` instead of `origin`, and it spins up a disposable worktree, runs
-an AI-driven validation pipeline, forwards upstream only after every check
-passes, and opens a clean PR automatically.
+an AI-driven validation pipeline, forwards the branch to the configured push
+target only after every check passes, and opens a clean PR automatically.
 
 ## The Bottleneck Moved
 
@@ -20,9 +20,9 @@ Branch protection can reject bad outcomes, but it does not help get a branch
 ready.
 
 `no-mistakes` sits in that gap. It gives you a deliberate local gate before the
-branch reaches upstream:
+branch reaches the configured push target:
 
-- **Before** the code is public, it rebases, runs a structured AI code review, runs baseline tests, gathers user-facing test evidence when intent is available, checks that docs are in sync, runs lint, and only then pushes upstream and opens the PR.
+- **Before** the code is public, it rebases, runs a structured AI code review, runs baseline tests, gathers user-facing test evidence when intent is available, checks that docs are in sync, runs lint, and only then pushes to the configured target and opens the PR.
 - **After** the push, it watches CI and auto-fixes failures. On GitHub and GitLab it also watches PR mergeability and fixes merge conflicts on the branch.
 - **Throughout**, every step can pause for your approval. You see the findings, pick what to fix, and decide when to ship.
 
@@ -37,6 +37,8 @@ touched, so you can keep coding while the pipeline runs.
 - `git push origin` still behaves exactly like normal Git.
 - `git push no-mistakes` is an explicit signal that this branch should go
   through the full gate.
+- For GitHub fork contributions, the configured push target can be your fork
+  while `origin` stays pointed at the parent repository used for the PR base.
 
 That design matters for trust. The tool is not trying to hide Git from you. It
 is trying to make one deliberate path mean something consistent.
@@ -50,7 +52,7 @@ flowchart LR
   hook --> daemon["Daemon"]
   daemon --> worktree["Disposable worktree"]
   worktree --> pipeline["intent -> rebase -> review -> test -> document -> lint -> push -> pr -> ci"]
-  pipeline --> upstream["Upstream remote"]
+  pipeline --> target["Push target"]
 ```
 
 `origin` is never hijacked. Regular `git push` still works normally. You opt
@@ -60,9 +62,9 @@ into the gate by pushing to the `no-mistakes` remote.
 
 When a branch passes the gate, it means:
 
-- it was checked against fresh upstream
+- it was checked against fresh upstream and the pushed-branch target
 - the fixed pipeline ran in order
-- review, tests, user-facing test evidence when available, docs, and lint happened before the upstream push
+- review, tests, user-facing test evidence when available, docs, and lint happened before the branch reached the configured push target
 - you had a chance to approve, fix, skip, or abort any blocking step
 
 ## What you get

@@ -61,6 +61,8 @@ Safest local verification sequence after non-trivial changes:
 
 - `repos.upstream_url` is the parent repository used for PR base routing.
 - `repos.fork_url` is an optional GitHub fork push target.
+- `no-mistakes init --fork-url <url>` expects `origin` to point at the GitHub parent repository and `<url>` to point at the contributor fork.
+- Plain `no-mistakes init` preserves an existing fork URL on idempotent refresh.
 - Push code must use `Repo.PushURL()` so configured forks receive branch updates.
 - GitHub PR code must keep `--repo` pointed at the parent and use `--head <fork_owner>:<branch>` when `fork_url` is set.
 - GitHub existing-PR lookup must not pass `<owner>:<branch>` to `gh pr list --head`; list by the bare branch and filter the returned head owner fields.
