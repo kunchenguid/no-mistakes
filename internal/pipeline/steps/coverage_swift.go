@@ -190,6 +190,12 @@ func (p swiftCoverageProvider) RunCoverage(sctx *pipeline.StepContext) (string, 
 	if err != nil {
 		return "", testedCmd, err
 	}
+	// Bridge Mac-relative paths in the coverage JSON to the local workDir so
+	// ParseBlocks' toRepoRelPOSIX can strip the prefix and key blocks by the
+	// same repo-relative path `git diff --name-only` emits. Without this, the
+	// block keys stay absolute Mac paths, miss the coverable/added lookup, and
+	// the empty-blocks fallback fires a false positive on every changed file.
+	raw = strings.ReplaceAll(raw, remotePath, sctx.WorkDir)
 	return raw, testedCmd, nil
 }
 
@@ -208,7 +214,7 @@ func (p swiftCoverageProvider) buildSwiftScript(remotePath, headSHA, mode string
 	fmt.Fprintf(&b, "HEAD_SHA=%q\n", headSHA)
 	// Cleanup the per-run temp dirs (named with the SHA so concurrent runs do
 	// not collide). EXIT trap ensures cleanup runs on both success and failure.
-	fmt.Fprintf(&b, "cleanup() { rm -rf \"/tmp/nm-dd-$HEAD_SHA\" \"/tmp/nm-r-$HEAD_SHA.xcresult\" 2>/dev/null || true; }\n")
+	fmt.Fprintf(&b, "cleanup() { rm -rf \"/tmp/nm-dd-$HEAD_SHA\" \"/tmp/nm-r-$HEAD_SHA.xcresult\" 2>/dev/null; }\n")
 	fmt.Fprintf(&b, "trap cleanup EXIT\n")
 	fmt.Fprintf(&b, "cd \"$REMOTE_PATH\" || { echo 'ERROR: remote path not found' >&2; exit 1; }\n")
 	// Dirty-tree guard: refuse to checkout over local modifications — never
@@ -216,7 +222,7 @@ func (p swiftCoverageProvider) buildSwiftScript(remotePath, headSHA, mode string
 	fmt.Fprintf(&b, "if ! git diff --quiet || ! git diff --cached --quiet; then\n")
 	fmt.Fprintf(&b, "  echo 'ERROR: remote worktree is dirty; refusing to checkout (commit or stash on the Mac)' >&2\n")
 	fmt.Fprintf(&b, "  exit 1\n")
-	fmt.Fprintf(&b, "}\n")
+	fmt.Fprintf(&b, "fi\n")
 	fmt.Fprintf(&b, "git fetch origin >/dev/null 2>&1 || true\n")
 	// `git checkout` is the common path; the `-f` fallback only triggers if
 	// the SHA is in a different state than HEAD expects (rare). Neither path
@@ -230,10 +236,10 @@ func (p swiftCoverageProvider) buildSwiftScript(remotePath, headSHA, mode string
 		// until Xcode is installed (vs. a cryptic xcodebuild failure). This
 		// is the gate the spec calls out — Xcode is still installing on the
 		// Mac, so this branch errors today and only becomes live later.
-		fmt.Fprintf(&b, "if [ ! -d /Applications/Xcode.app ]; then\n")
-		fmt.Fprintf(&b, "  echo 'ERROR: Xcode.app not installed / still installing; use swiftpm mode' >&2\n")
+		fmt.Fprintf(&b, "if ! xcodebuild -version >/dev/null 2>&1; then\n")
+		fmt.Fprintf(&b, "  echo 'ERROR: Xcode not installed / still installing; use swiftpm mode' >&2\n")
 		fmt.Fprintf(&b, "  exit 1\n")
-		fmt.Fprintf(&b, "}\n")
+		fmt.Fprintf(&b, "fi\n")
 		fmt.Fprintf(&b, "DD=\"/tmp/nm-dd-$HEAD_SHA\"\n")
 		fmt.Fprintf(&b, "RB=\"/tmp/nm-r-$HEAD_SHA.xcresult\"\n")
 		fmt.Fprintf(&b, "rm -rf \"$DD\" \"$RB\"\n")
@@ -308,7 +314,13 @@ func (p swiftCoverageProvider) buildSwiftScript(remotePath, headSHA, mode string
 		fmt.Fprintf(&b, "    [ -f \"$inner\" ] && TESTBIN=\"$inner\" && break\n")
 		fmt.Fprintf(&b, "  done\n")
 		fmt.Fprintf(&b, "fi\n")
-		fmt.Fprintf(&b, "xcrun llvm-cov export \"$TESTBIN\" -instr-profile=\"$PROF\" --format=json\n")
+		// On modern SwiftPM (5.8+), `swift test --show-code-coverage-path`
+		// already returns the final llvm-cov JSON export path, so cat-ing it
+		// yields parse-ready input directly. The previous `xcrun llvm-cov
+		// export` call was doubly wrong: --format=json is invalid on recent
+		// Xcode toolchains (only text/html; JSON is the default) and
+		// -instr-profile expects a .profdata, not the JSON export path.
+		fmt.Fprintf(&b, "cat \"$PROF\"\n")
 	}
 	return b.String()
 }

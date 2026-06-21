@@ -6,6 +6,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 )
 
 // TestSwiftProvider_Active verifies the dual gate: a Swift manifest alone is
@@ -371,7 +375,9 @@ func TestBuildSwiftScript_SwiftPM(t *testing.T) {
 		"git checkout \"$HEAD_SHA\"",
 		"swift test --enable-code-coverage",
 		"swift test --show-code-coverage-path",
-		"xcrun llvm-cov export \"$TESTBIN\" -instr-profile=\"$PROF\" --format=json",
+		// Bug #2 fix: cat the JSON export that --show-code-coverage-path names
+		// (the old `xcrun llvm-cov export --format=json` was doubly wrong).
+		"cat \"$PROF\"",
 		"/tmp/nm-dd-",
 		"/tmp/nm-r-",
 	}
@@ -394,7 +400,9 @@ func TestBuildSwiftScript_Xcode(t *testing.T) {
 	}
 	script := p.buildSwiftScript("/Users/mick/src/cmux", "deadbeef", "xcode", env)
 	mustContain := []string{
-		"/Applications/Xcode.app",
+		// Bug #5 fix: gate via xcodebuild -version (respects xcode-select,
+		// works for versioned installs like /Applications/Xcode-26.5.0.app).
+		"xcodebuild -version",
 		"xcodebuild test -enableCodeCoverage",
 		"-scheme \"cmux\"",
 		"-project \"cmux.xcodeproj\"",
@@ -469,5 +477,183 @@ func TestSwiftProvider_ParseBlocks_FeedsCore(t *testing.T) {
 	}
 	if !strings.Contains(findings[0].Description, "2 changed line(s)") {
 		t.Errorf("description %q should report 2 uncovered lines", findings[0].Description)
+	}
+}
+
+// TestBuildSwiftScript_DirtyTreeGuardClosesWithFi is a regression guard for
+// bug #1: the dirty-tree `if` block must close with `fi`, not `}`. A `}` closer
+// is a fatal bash syntax error — the remote script aborts at parse time before
+// any line executes, and the EXIT trap masks the non-zero status (bug #3), so
+// SSH exits 0 with empty stdout and the dispatcher sees a silent no-op.
+func TestBuildSwiftScript_DirtyTreeGuardClosesWithFi(t *testing.T) {
+	t.Parallel()
+	p := swiftCoverageProvider{}
+	script := p.buildSwiftScript("/Users/mick/src/app", "abc123", "swiftpm", nil)
+	dirty := "refusing to checkout (commit or stash on the Mac)' >&2\n  exit 1\n"
+	idx := strings.Index(script, dirty)
+	if idx < 0 {
+		t.Fatalf("dirty-tree guard not found in script:\n%s", script)
+	}
+	closer := script[idx+len(dirty):]
+	if !strings.HasPrefix(closer, "fi\n") {
+		t.Errorf("dirty-tree guard must close with \"fi\" not \"}\" (bug #1):\n%s", script)
+	}
+}
+
+// TestSwiftRunCoverage_PathBridgeRewritesMacPaths is the highest-value
+// regression test (bug #4). The Swift provider delegates coverage collection to
+// a remote Mac, so the JSON it gets back carries Mac-relative source paths. But
+// ParseBlocks receives the LOCAL VPS workDir, so toRepoRelPOSIX cannot strip
+// the prefix — block keys become absolute Mac paths that miss the
+// repo-relative coverable/added lookup, and the empty-blocks fallback fires a
+// false positive ("all changed lines uncovered"). The RunCoverage fix bridges
+// the two by rewriting remotePath → sctx.WorkDir in the raw JSON before
+// returning. This test simulates that bridge and asserts ParseBlocks then keys
+// by the LOCAL repo-relative path, not the absolute Mac path.
+func TestSwiftRunCoverage_PathBridgeRewritesMacPaths(t *testing.T) {
+	t.Parallel()
+	localWorkDir := t.TempDir()
+	rel := filepath.Join("Sources", "swift-cov-fixture", "Calculator.swift")
+	mustWrite(t, filepath.Join(localWorkDir, rel), "struct Calculator {}\n")
+	remotePath := "/Users/mick/src/swift-cov-fixture"
+
+	// Raw JSON as the Mac emits it: source paths anchored at remotePath.
+	macAbs := remotePath + "/" + filepath.ToSlash(rel)
+	macRaw := `{"data":[{"files":[{"filename":"` + macAbs + `","segments":[
+		[4,0,1,true,0],
+		[8,0,0,true,0],
+		[9,0,0,false,0]
+	]}]}]}`
+
+	// WITHOUT the bridge: ParseBlocks cannot relativize Mac paths to the local
+	// workDir, so the block key is the raw absolute Mac path (the false positive).
+	unbridged := (swiftCoverageProvider{}).ParseBlocks(macRaw, localWorkDir)
+	if _, ok := unbridged[filepath.ToSlash(rel)]; ok {
+		t.Fatalf("unbridged parse should NOT key by local rel (expected absolute Mac path); got %v", unbridged)
+	}
+
+	// Bug #4 fix: RunCoverage rewrites remotePath → local workDir in raw.
+	bridged := strings.ReplaceAll(macRaw, remotePath, localWorkDir)
+
+	// ParseBlocks with the LOCAL workDir must now key by repo-relative path.
+	blocks := (swiftCoverageProvider{}).ParseBlocks(bridged, localWorkDir)
+
+	wantKey := filepath.ToSlash(rel)
+	bs, ok := blocks[wantKey]
+	if !ok {
+		var keys []string
+		for k := range blocks {
+			keys = append(keys, k)
+		}
+		t.Fatalf("path bridge failed: want key %q, got keys %v", wantKey, keys)
+	}
+	// `unused` func (line 8) should land in a count=0 block (uncovered).
+	var line8Count float64 = -1
+	for _, b := range bs {
+		if b.startLine <= 8 && b.endLine >= 8 {
+			line8Count = b.count
+		}
+	}
+	if line8Count != 0 {
+		t.Errorf("line 8 (unused func) should be count=0 (uncovered), got %v in %+v", line8Count, bs)
+	}
+}
+
+// stubSwiftCoverageProvider wraps swiftCoverageProvider to stub out the SSH
+// transport (Active + RunCoverage) while inheriting Name, CoverableChangedFiles,
+// and ParseBlocks from the real provider. Used by the dispatcher e2e test to
+// feed a recorded coverage JSON through the real parse→core→namespace path
+// without a live Mac.
+type stubSwiftCoverageProvider struct {
+	swiftCoverageProvider
+	raw string
+}
+
+func (stubSwiftCoverageProvider) Active(string, []string) bool { return true }
+func (s stubSwiftCoverageProvider) RunCoverage(*pipeline.StepContext) (string, string, error) {
+	return s.raw, "stub swift coverage (recorded JSON)", nil
+}
+
+// TestRunCoverageCheck_SwiftDispatcherEndToEnd drives the full
+// runCoverageCheck dispatcher against a real on-disk git repo with a stub
+// coverage provider returning a recorded JSON. It asserts BOTH the finding ID
+// (namespaced per language) and the N changed-line count match ground truth:
+// the count must be the actually-uncovered executable lines (2), not all added
+// lines (6) — the latter is the false positive that bugs #1–#4 produced before
+// the fix.
+func TestRunCoverageCheck_SwiftDispatcherEndToEnd(t *testing.T) {
+	// NOT parallel: swaps the package-level coverageProviders registry.
+	workDir := t.TempDir()
+	run := func(args ...string) string { return gitCmd(t, workDir, args...) }
+
+	run("init", "--initial-branch=main")
+	mustWrite(t, filepath.Join(workDir, "README"), "base\n")
+	run("add", "-A")
+	run("commit", "-m", "base")
+	baseSHA := run("rev-parse", "HEAD")
+
+	// Head: a new Swift source file. All 6 lines are added (brand-new file).
+	run("checkout", "-b", "feature")
+	rel := filepath.Join("Sources", "App", "calc.swift")
+	mustWrite(t, filepath.Join(workDir, rel),
+		"struct Calc {\n"+
+			"    func a() { return 1 }\n"+
+			"    func b() { return 2 }\n"+
+			"    func unc1() { return 3 }\n"+
+			"    func unc2() { return 4 }\n"+
+			"}\n")
+	run("add", "-A")
+	run("commit", "-m", "head: add calc.swift")
+	headSHA := run("rev-parse", "HEAD")
+
+	// Recorded coverage JSON (post-bridge, local paths). Segments:
+	//   [2,*,1,true] → [2,2] count=1   (func a, covered)
+	//   [3,*,1,true] → [3,3] count=1   (func b, covered)
+	//   [4,*,0,true] → [4,5] count=0   (unc1+unc2, uncovered)
+	//   [6,*,0,false] → skipped
+	// Added lines 1–6: lines 4,5 are the only uncovered executable ones → count 2.
+	calcAbs := filepath.Join(workDir, rel)
+	canned := `{"data":[{"files":[{"filename":"` + calcAbs + `","segments":[
+		[2,0,1,true,0],
+		[3,0,1,true,0],
+		[4,0,0,true,0],
+		[6,0,0,false,0]
+	]}]}]}`
+
+	sctx := &pipeline.StepContext{
+		Ctx:     context.Background(),
+		Run:     &db.Run{HeadSHA: headSHA},
+		WorkDir: workDir,
+		Env:     []string{"NO_MISTAKES_COVERAGE_CHECK=1"},
+		Config:  &config.Config{},
+		Log:     func(string) {},
+	}
+
+	stub := stubSwiftCoverageProvider{raw: canned}
+	saved := coverageProviders
+	coverageProviders = []coverageProvider{stub}
+	defer func() { coverageProviders = saved }()
+
+	findings, _, err := runCoverageCheck(sctx, baseSHA)
+	if err != nil {
+		t.Fatalf("runCoverageCheck: %v", err)
+	}
+
+	wantID := "uncovered-changed-lines:swift:" + filepath.ToSlash(rel)
+	var got *Finding
+	for i := range findings {
+		if findings[i].ID == wantID {
+			got = &findings[i]
+			break
+		}
+	}
+	if got == nil {
+		t.Fatalf("expected finding %q, got %+v", wantID, findings)
+	}
+	if !strings.Contains(got.Description, "2 changed line(s)") {
+		t.Errorf("description = %q; want \"2 changed line(s)\" (actually-uncovered executable lines, not all 6 added)", got.Description)
+	}
+	if strings.Contains(got.Description, "6 changed line(s)") {
+		t.Errorf("description = %q; the false-positive \"6\" (all added lines) means the path bridge or parse is broken", got.Description)
 	}
 }
