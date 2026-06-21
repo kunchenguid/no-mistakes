@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.30.0](https://github.com/kunchenguid/no-mistakes/compare/v1.29.1...v1.30.0) (2026-06-21)
+
+
+### Features
+
+* **git:** support GitHub fork routing ([#306](https://github.com/kunchenguid/no-mistakes/issues/306)) ([7974313](https://github.com/kunchenguid/no-mistakes/commit/79743139e5930ea1f61cee5e2733b0341a2081eb))
+
 ## [1.29.1](https://github.com/kunchenguid/no-mistakes/compare/v1.29.0...v1.29.1) (2026-06-13)
 
 
