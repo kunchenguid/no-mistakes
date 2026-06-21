@@ -213,11 +213,14 @@ func (d *DB) RecoverStaleRuns(errMsg string) (int, error) {
 	}
 	defer tx.Rollback()
 
-	// Fail stale steps first (running, awaiting_approval, fixing, fix_review).
+	// Fail stale steps first. Pending is included so that a mid-pipeline
+	// failure (which leaves unstarted subsequent steps pending) does not
+	// orphan rows that render as "pending" in the PR body. The other four
+	// statuses are the in-flight step states a crash can interrupt.
 	_, err = tx.Exec(
-		`UPDATE step_results SET status = ?, error = ?, completed_at = ? WHERE status IN (?, ?, ?, ?)`,
+		`UPDATE step_results SET status = ?, error = ?, completed_at = ? WHERE status IN (?, ?, ?, ?, ?)`,
 		types.StepStatusFailed, errMsg, ts,
-		types.StepStatusRunning, types.StepStatusAwaitingApproval, types.StepStatusFixing, types.StepStatusFixReview,
+		types.StepStatusPending, types.StepStatusRunning, types.StepStatusAwaitingApproval, types.StepStatusFixing, types.StepStatusFixReview,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("recover stale steps: %w", err)

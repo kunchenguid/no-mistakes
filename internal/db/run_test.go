@@ -330,6 +330,8 @@ func TestRecoverStaleRunsMarksStepsFailed(t *testing.T) {
 	}
 
 	// Running, awaiting_approval, fixing should be failed.
+	// Pending steps are now also recovered (previously orphaned, rendering as
+	// "⏳ pending" in the PR body after a mid-pipeline crash).
 	for _, tc := range []struct {
 		id   string
 		name string
@@ -339,7 +341,7 @@ func TestRecoverStaleRunsMarksStepsFailed(t *testing.T) {
 		{awaitingStep.ID, "awaiting", types.StepStatusFailed},
 		{fixingStep.ID, "fixing", types.StepStatusFailed},
 		{completedStep.ID, "completed", types.StepStatusCompleted},
-		{pendingStep.ID, "pending", types.StepStatusPending},
+		{pendingStep.ID, "pending", types.StepStatusFailed},
 	} {
 		got, _ := d.GetStepResult(tc.id)
 		if got.Status != tc.want {
