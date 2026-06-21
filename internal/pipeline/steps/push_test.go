@@ -163,6 +163,38 @@ func TestPushStep_TargetsForkWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestPushStep_RedactsForkURLInGitErrors(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	binDir := fakeCLIBinDir(t)
+	linkTestBinary(t, binDir, "git")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_CLI_MODE", "git-remote-error")
+	t.Setenv("FAKE_CLI_REAL_GIT", realGit)
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = "https://github.com/parent/project.git"
+	sctx.Repo.ForkURL = "https://user:secret@example.com/fork/project.git"
+	sctx.Run.Branch = "refs/heads/feature"
+
+	step := &PushStep{}
+	_, err = step.Execute(sctx)
+	if err == nil {
+		t.Fatal("expected push error")
+	}
+	if strings.Contains(err.Error(), "secret") {
+		t.Fatalf("expected error to redact fork credentials, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "https://redacted@example.com/fork/project.git") {
+		t.Fatalf("expected redacted fork URL in error, got %v", err)
+	}
+}
+
 func TestPushStep_DoesNotForceAddIgnoredEvidenceDirectory(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

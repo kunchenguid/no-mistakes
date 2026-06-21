@@ -117,6 +117,46 @@ func TestCIStep_CommitAndPushTargetsForkWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestCIStep_CommitAndPushRedactsForkURLInGitErrors(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	if err := os.WriteFile(filepath.Join(dir, "ci-fix.txt"), []byte("fixed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	binDir := fakeCLIBinDir(t)
+	linkTestBinary(t, binDir, "git")
+	env := fakeCLIEnv(binDir, map[string]string{
+		"FAKE_CLI_MODE":     "git-remote-error",
+		"FAKE_CLI_REAL_GIT": realGit,
+	})
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Repo.UpstreamURL = "https://github.com/parent/project.git"
+	sctx.Repo.ForkURL = "https://user:secret@example.com/fork/project.git"
+	sctx.Run.Branch = "refs/heads/feature"
+
+	step := &CIStep{}
+	pushed, err := step.commitAndPush(sctx)
+	if err == nil {
+		t.Fatal("expected push error")
+	}
+	if pushed {
+		t.Fatal("expected commitAndPush to report no pushed changes")
+	}
+	if strings.Contains(err.Error(), "secret") {
+		t.Fatalf("expected error to redact fork credentials, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "https://redacted@example.com/fork/project.git") {
+		t.Fatalf("expected redacted fork URL in error, got %v", err)
+	}
+}
+
 func TestCIStep_CommitAndPush_NoChanges(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

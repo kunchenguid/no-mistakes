@@ -21,6 +21,8 @@ type RebaseStep struct{}
 
 func (s *RebaseStep) Name() types.StepName { return types.StepRebase }
 
+const forkBranchRefPrefix = "refs/remotes/no-mistakes-push/"
+
 func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	ctx := sctx.Ctx
 	branch := strings.TrimPrefix(sctx.Run.Branch, "refs/heads/")
@@ -28,20 +30,33 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	if defaultBranch == "" {
 		defaultBranch = "main"
 	}
+	branchTarget := ""
+	pushRemote := "origin"
+	if branch != "" {
+		branchTarget = "origin/" + branch
+		if strings.TrimSpace(sctx.Repo.ForkURL) != "" {
+			pushRemote = sctx.Repo.PushURL()
+			branchTarget = forkBranchTrackingRef(branch)
+		}
+	}
 
-	// Detect force push before fetching so we can skip origin/<branch> sync.
+	// Detect force push before fetching so we can skip pushed-branch sync.
 	// A force push means the user explicitly rewrote the branch - the pushed
 	// commit is authoritative and must not be overwritten by prior pipeline
 	// state on the remote.
-	forcePush := isForcePush(ctx, sctx.WorkDir, branch, sctx.Run.BaseSHA)
+	forcePush := isForcePushAgainstRemote(ctx, sctx.WorkDir, pushRemote, branch, branchTarget, sctx.Run.BaseSHA)
 
 	sctx.Log("fetching latest upstream state...")
 	if err := git.FetchRemoteBranch(ctx, sctx.WorkDir, "origin", defaultBranch); err != nil {
 		sctx.LogFile(fmt.Sprintf("warning: could not fetch origin/%s: %v", defaultBranch, err))
 	}
 	if !forcePush && branch != "" && branch != defaultBranch {
-		if err := git.FetchRemoteBranch(ctx, sctx.WorkDir, "origin", branch); err != nil {
-			sctx.LogFile(fmt.Sprintf("warning: could not fetch origin/%s: %v", branch, err))
+		if pushRemote == "origin" {
+			if err := git.FetchRemoteBranch(ctx, sctx.WorkDir, "origin", branch); err != nil {
+				sctx.LogFile(fmt.Sprintf("warning: could not fetch origin/%s: %v", branch, err))
+			}
+		} else if err := git.FetchRemoteBranchToRef(ctx, sctx.WorkDir, pushRemote, branch, branchTarget); err != nil {
+			sctx.LogFile(fmt.Sprintf("warning: could not fetch %s: %v", branchTarget, err))
 		}
 	}
 	if forcePush && branch == defaultBranch && remoteDefaultBranchAdvanced(ctx, sctx.WorkDir, defaultBranch, sctx.Run.BaseSHA) {
@@ -59,9 +74,9 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 		}, nil
 	}
 
-	targets := rebaseTargets(branch, defaultBranch)
+	targets := rebaseTargetsForBranch(branch, defaultBranch, branchTarget)
 	if forcePush {
-		sctx.Log("force push detected, skipping origin/" + branch + " sync")
+		sctx.Log("force push detected, skipping " + branchTarget + " sync")
 		targets = forcePushRebaseTargets(branch, defaultBranch)
 	}
 
@@ -109,9 +124,13 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 
 // rebaseTargets returns the ordered list of refs to rebase onto.
 func rebaseTargets(branch, defaultBranch string) []string {
+	return rebaseTargetsForBranch(branch, defaultBranch, "origin/"+branch)
+}
+
+func rebaseTargetsForBranch(branch, defaultBranch, branchTarget string) []string {
 	var targets []string
 	if branch != "" && branch != defaultBranch {
-		targets = append(targets, "origin/"+branch)
+		targets = append(targets, branchTarget)
 	}
 	if branch != defaultBranch {
 		targets = append(targets, "origin/"+defaultBranch)
@@ -119,9 +138,9 @@ func rebaseTargets(branch, defaultBranch string) []string {
 	return targets
 }
 
-// forcePushRebaseTargets returns rebase targets for a force push. The
-// origin/<branch> target is skipped because it may contain autofix commits
-// from prior pipeline runs that the force push intended to discard.
+// forcePushRebaseTargets returns rebase targets for a force push. The pushed
+// branch target is skipped because it may contain autofix commits from prior
+// pipeline runs that the force push intended to discard.
 func forcePushRebaseTargets(branch, defaultBranch string) []string {
 	if branch == defaultBranch {
 		return nil
@@ -144,6 +163,14 @@ func remoteDefaultBranchAdvanced(ctx context.Context, workDir, defaultBranch, ba
 // to the previous push (baseSHA). This indicates the user explicitly rewrote
 // history and the pipeline should treat the new HEAD as authoritative.
 func isForcePush(ctx context.Context, workDir, branch, baseSHA string) bool {
+	localRef := ""
+	if branch != "" {
+		localRef = "origin/" + branch
+	}
+	return isForcePushAgainstRemote(ctx, workDir, "origin", branch, localRef, baseSHA)
+}
+
+func isForcePushAgainstRemote(ctx context.Context, workDir, remote, branch, localRef, baseSHA string) bool {
 	if git.IsZeroSHA(baseSHA) || baseSHA == "" {
 		return false
 	}
@@ -156,7 +183,7 @@ func isForcePush(ctx context.Context, workDir, branch, baseSHA string) bool {
 		return false
 	}
 	if branch != "" {
-		remoteSHA, err := git.LsRemote(ctx, workDir, "origin", "refs/heads/"+branch)
+		remoteSHA, err := git.LsRemote(ctx, workDir, remote, "refs/heads/"+branch)
 		if err == nil && remoteSHA != "" {
 			_, err := git.Run(ctx, workDir, "merge-base", "--is-ancestor", remoteSHA, "HEAD")
 			if err == nil {
@@ -167,12 +194,17 @@ func isForcePush(ctx context.Context, workDir, branch, baseSHA string) bool {
 				return true
 			}
 		}
-		remoteRef := "origin/" + branch
-		if _, err := git.Run(ctx, workDir, "rev-parse", "--verify", remoteRef); err == nil {
-			return isRemoteBranchRewritten(ctx, workDir, remoteRef)
+		if localRef != "" {
+			if _, err := git.Run(ctx, workDir, "rev-parse", "--verify", localRef); err == nil {
+				return isRemoteBranchRewritten(ctx, workDir, localRef)
+			}
 		}
 	}
 	return false
+}
+
+func forkBranchTrackingRef(branch string) string {
+	return forkBranchRefPrefix + branch
 }
 
 func isRemoteBranchRewritten(ctx context.Context, workDir, remoteRef string) bool {

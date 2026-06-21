@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 )
 
 // EmptyTreeSHA is the well-known SHA of an empty tree in git.
@@ -32,7 +34,7 @@ func Run(ctx context.Context, dir string, args ...string) (string, error) {
 		if ee, ok := err.(*exec.ExitError); ok {
 			stderr = strings.TrimSpace(string(ee.Stderr))
 		}
-		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, stderr)
+		return "", fmt.Errorf("git %s: %w: %s", safeurl.RedactText(strings.Join(args, " ")), err, safeurl.RedactText(stderr))
 	}
 	return strings.TrimSpace(string(out)), nil
 }
@@ -235,6 +237,12 @@ func DefaultBranch(ctx context.Context, dir, remote string) string {
 // a force push on the remote) are accepted instead of silently rejected.
 func FetchRemoteBranch(ctx context.Context, dir, remote, branch string) error {
 	refspec := fmt.Sprintf("+refs/heads/%s:refs/remotes/%s/%s", branch, remote, branch)
+	_, err := Run(ctx, dir, "fetch", "--no-tags", remote, refspec)
+	return err
+}
+
+func FetchRemoteBranchToRef(ctx context.Context, dir, remote, branch, localRef string) error {
+	refspec := fmt.Sprintf("+refs/heads/%s:%s", branch, localRef)
 	_, err := Run(ctx, dir, "fetch", "--no-tags", remote, refspec)
 	return err
 }

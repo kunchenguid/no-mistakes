@@ -188,6 +188,73 @@ func TestRebaseStep_FixModeCallsAgent(t *testing.T) {
 	}
 }
 
+func TestRebaseStep_ForkSyncsPushBranchBeforeDefaultBranch(t *testing.T) {
+	t.Parallel()
+	parent := t.TempDir()
+	fork := t.TempDir()
+	gitCmd(t, parent, "init", "--bare")
+	gitCmd(t, fork, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	gitCmd(t, dir, "remote", "add", "origin", parent)
+	if err := os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "base")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "main")
+	gitCmd(t, dir, "push", fork, "main")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	gitCmd(t, dir, "push", "origin", "feature")
+	gitCmd(t, dir, "push", fork, "feature")
+
+	if err := os.WriteFile(filepath.Join(dir, "fork.txt"), []byte("fork\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "fork update")
+	forkOnlySHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", fork, "feature")
+
+	gitCmd(t, dir, "reset", "--hard", baseSHA)
+	if err := os.WriteFile(filepath.Join(dir, "local.txt"), []byte("local\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "local update")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Repo.UpstreamURL = parent
+	sctx.Repo.ForkURL = fork
+
+	step := &RebaseStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatalf("unexpected approval after clean fork rebase: %s", outcome.Findings)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "fork.txt")); err != nil {
+		t.Fatalf("expected fork-only commit to be included after rebase: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "local.txt")); err != nil {
+		t.Fatalf("expected local commit to remain after rebase: %v", err)
+	}
+	if mergeBase := gitCmd(t, dir, "merge-base", "HEAD", forkOnlySHA); mergeBase != forkOnlySHA {
+		t.Fatalf("merge-base = %s, want fork tip %s", mergeBase, forkOnlySHA)
+	}
+}
+
 func TestRebaseStep_FixModeNonConflictFailureReturnsError(t *testing.T) {
 	t.Parallel()
 	upstream := t.TempDir()

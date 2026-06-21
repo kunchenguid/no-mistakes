@@ -44,6 +44,8 @@ func handleFakeCLI(mode string) {
 		fakeGitPassthroughHandler(args)
 	case "git-status-error":
 		fakeGitStatusErrorHandler(args)
+	case "git-remote-error":
+		fakeGitRemoteErrorHandler(args)
 	case "ci-gh":
 		fakeCIGHHandler(args)
 	case "ci-gh-seq":
@@ -113,6 +115,15 @@ func fakeGitStatusErrorHandler(args []string) {
 
 func fakeGitPassthroughHandler(args []string) {
 	realGit := os.Getenv("FAKE_CLI_REAL_GIT")
+	fakeGitForward(args, realGit)
+}
+
+func fakeGitRemoteErrorHandler(args []string) {
+	realGit := os.Getenv("FAKE_CLI_REAL_GIT")
+	if len(args) > 0 && (args[0] == "ls-remote" || args[0] == "push") {
+		fmt.Fprintf(os.Stderr, "remote failed: %s\n", strings.Join(args, " "))
+		os.Exit(1)
+	}
 	fakeGitForward(args, realGit)
 }
 

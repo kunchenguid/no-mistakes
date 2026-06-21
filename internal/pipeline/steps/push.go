@@ -61,7 +61,7 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 		pushTarget = "fork"
 		sctx.Log(fmt.Sprintf("pushing to fork %s (%s)...", safeurl.Redact(pushURL), ref))
 	} else {
-		sctx.Log(fmt.Sprintf("pushing to %s (%s)...", pushURL, ref))
+		sctx.Log(fmt.Sprintf("pushing to %s (%s)...", safeurl.Redact(pushURL), ref))
 	}
 
 	// Query upstream for current ref SHA to enable safe --force-with-lease.
