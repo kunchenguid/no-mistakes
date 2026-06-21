@@ -136,6 +136,33 @@ func TestCopyLocalUserIdentity(t *testing.T) {
 	}
 }
 
+func TestCommitSigningEnabled(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("unset returns false", func(t *testing.T) {
+		dir := initTestRepo(t)
+		if CommitSigningEnabled(ctx, dir) {
+			t.Fatal("expected CommitSigningEnabled=false when commit.gpgsign is unset")
+		}
+	})
+
+	t.Run("local true returns true", func(t *testing.T) {
+		dir := initTestRepo(t)
+		run(t, dir, "git", "config", "commit.gpgsign", "true")
+		if !CommitSigningEnabled(ctx, dir) {
+			t.Fatal("expected CommitSigningEnabled=true after local commit.gpgsign=true")
+		}
+	})
+
+	t.Run("explicit false returns false", func(t *testing.T) {
+		dir := initTestRepo(t)
+		run(t, dir, "git", "config", "commit.gpgsign", "false")
+		if CommitSigningEnabled(ctx, dir) {
+			t.Fatal("expected CommitSigningEnabled=false after local commit.gpgsign=false")
+		}
+	})
+}
+
 func TestGetRemoteURLNotFound(t *testing.T) {
 	dir := initTestRepo(t)
 	ctx := context.Background()

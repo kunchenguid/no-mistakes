@@ -27,6 +27,7 @@ func TestNonInteractiveEnv_SetsGitOverrides(t *testing.T) {
 		"GIT_EDITOR":          "true",
 		"GIT_SEQUENCE_EDITOR": "true",
 		"GIT_TERMINAL_PROMPT": "0",
+		"SSH_ASKPASS_REQUIRE": "never",
 	}
 	for k, v := range want {
 		if got[k] != v {
@@ -39,6 +40,7 @@ func TestNonInteractiveEnv_OverridesAmbientEditor(t *testing.T) {
 	t.Setenv("GIT_EDITOR", "vim")
 	t.Setenv("GIT_SEQUENCE_EDITOR", "nano")
 	t.Setenv("GIT_TERMINAL_PROMPT", "1")
+	t.Setenv("SSH_ASKPASS_REQUIRE", "prefer")
 
 	got := resolveEnv(NonInteractiveEnv(""))
 
@@ -50,6 +52,9 @@ func TestNonInteractiveEnv_OverridesAmbientEditor(t *testing.T) {
 	}
 	if got["GIT_TERMINAL_PROMPT"] != "0" {
 		t.Errorf("GIT_TERMINAL_PROMPT = %q, want \"0\"", got["GIT_TERMINAL_PROMPT"])
+	}
+	if got["SSH_ASKPASS_REQUIRE"] != "never" {
+		t.Errorf("SSH_ASKPASS_REQUIRE = %q, want \"never\" (ambient must be overridden)", got["SSH_ASKPASS_REQUIRE"])
 	}
 }
 

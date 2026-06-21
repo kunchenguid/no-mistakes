@@ -41,9 +41,8 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 		if _, err := git.Run(ctx, sctx.WorkDir, "add", "-A"); err != nil {
 			return nil, fmt.Errorf("stage agent changes: %w", err)
 		}
-		_, err := git.Run(ctx, sctx.WorkDir, "commit", "-m", "no-mistakes: apply agent fixes")
-		if err != nil {
-			return nil, fmt.Errorf("commit agent changes: %w", err)
+		if err := autofixCommit(sctx, "no-mistakes: apply agent fixes"); err != nil {
+			return nil, err
 		}
 		headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
 		if err != nil {
@@ -66,12 +65,12 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	}
 	if upstreamSHA != "" {
 		// Existing branch: force-with-lease with explicit expected SHA
-		if err := git.Push(ctx, sctx.WorkDir, upstream, ref, upstreamSHA, true); err != nil {
+		if err := autofixPush(sctx, upstream, ref, upstreamSHA, true); err != nil {
 			return nil, fmt.Errorf("push to upstream: %w", err)
 		}
 	} else {
 		// New branch: regular push (no force needed)
-		if err := git.Push(ctx, sctx.WorkDir, upstream, ref, "", false); err != nil {
+		if err := autofixPush(sctx, upstream, ref, "", false); err != nil {
 			return nil, fmt.Errorf("push to upstream: %w", err)
 		}
 	}

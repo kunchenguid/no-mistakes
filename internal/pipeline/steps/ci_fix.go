@@ -127,8 +127,8 @@ func (s *CIStep) commitAndPush(sctx *pipeline.StepContext) (bool, error) {
 	if _, err := stepGitRun(sctx, "add", "-A"); err != nil {
 		return false, fmt.Errorf("stage CI changes: %w", err)
 	}
-	if _, err := stepGitRun(sctx, "commit", "-m", "no-mistakes: apply CI fixes"); err != nil {
-		return false, fmt.Errorf("commit: %w", err)
+	if err := autofixCommit(sctx, "no-mistakes: apply CI fixes"); err != nil {
+		return false, err
 	}
 	headSHA, err := stepGitHeadSHA(sctx)
 	if err != nil {
@@ -154,7 +154,7 @@ func (s *CIStep) pushUpdatedHeadSHA(sctx *pipeline.StepContext, newHeadSHA strin
 		}
 		return false, nil
 	}
-	if err := stepGitPush(sctx, sctx.Repo.UpstreamURL, ref, upstreamSHA, upstreamSHA != ""); err != nil {
+	if err := autofixPush(sctx, sctx.Repo.UpstreamURL, ref, upstreamSHA, upstreamSHA != ""); err != nil {
 		if lsErr != nil {
 			return false, fmt.Errorf("push (ls-remote failed: %v): %w", lsErr, err)
 		}

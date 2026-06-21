@@ -143,6 +143,13 @@ func missingFromCustomPath(env []string, name string) string {
 // When sctx.Env overrides PATH, the binary is resolved from the overridden PATH
 // so that tests can inject fake binaries without modifying the process environment.
 func stepCmd(sctx *pipeline.StepContext, name string, args ...string) *exec.Cmd {
+	return stepCmdCtx(sctx.Ctx, sctx, name, args...)
+}
+
+// stepCmdCtx is like stepCmd but with an explicit context, so callers can scope
+// a command to a shorter deadline than the run's context (e.g. an autofix
+// commit that must fail fast on a hung hook).
+func stepCmdCtx(ctx context.Context, sctx *pipeline.StepContext, name string, args ...string) *exec.Cmd {
 	resolved := name
 	missingFromPath := false
 	if len(sctx.Env) > 0 && !strings.Contains(name, string(filepath.Separator)) {
@@ -153,7 +160,7 @@ func stepCmd(sctx *pipeline.StepContext, name string, args ...string) *exec.Cmd 
 			missingFromPath = true
 		}
 	}
-	cmd := exec.CommandContext(sctx.Ctx, resolved, args...)
+	cmd := exec.CommandContext(ctx, resolved, args...)
 	cmd.Dir = sctx.WorkDir
 	if len(sctx.Env) > 0 {
 		cmd.Env = mergeEnv(sctx.Env)
@@ -167,7 +174,12 @@ func stepCmd(sctx *pipeline.StepContext, name string, args ...string) *exec.Cmd 
 // stepGitRun runs a git command using the StepContext's environment.
 // It is like git.Run but respects sctx.Env so that tests can inject a fake git binary.
 func stepGitRun(sctx *pipeline.StepContext, args ...string) (string, error) {
-	cmd := stepCmd(sctx, "git", args...)
+	return stepGitRunCtx(sctx.Ctx, sctx, args...)
+}
+
+// stepGitRunCtx is like stepGitRun but with an explicit context.
+func stepGitRunCtx(ctx context.Context, sctx *pipeline.StepContext, args ...string) (string, error) {
+	cmd := stepCmdCtx(ctx, sctx, "git", args...)
 	out, err := cmd.Output()
 	if err != nil {
 		stderr := ""
@@ -196,20 +208,6 @@ func stepGitLsRemote(sctx *pipeline.StepContext, remote, ref string) (string, er
 		return "", nil
 	}
 	return parts[0], nil
-}
-
-func stepGitPush(sctx *pipeline.StepContext, remote, ref, expectedSHA string, forceWithLease bool) error {
-	args := []string{"push", remote}
-	if forceWithLease {
-		if expectedSHA != "" {
-			args = append(args, fmt.Sprintf("--force-with-lease=%s:%s", ref, expectedSHA))
-		} else {
-			args = append(args, "--force-with-lease")
-		}
-	}
-	args = append(args, "HEAD:"+ref)
-	_, err := stepGitRun(sctx, args...)
-	return err
 }
 
 // stepCLIAvailable checks whether the provider CLI binary is available,

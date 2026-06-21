@@ -58,8 +58,8 @@ func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summa
 		summary = fallbackSummary
 	}
 	commitMessage := deterministicFixCommitMessage(stepName, summary)
-	if _, err := git.Run(ctx, sctx.WorkDir, "commit", "-m", commitMessage); err != nil {
-		return fmt.Errorf("commit %s changes: %w", stepName, err)
+	if err := autofixCommit(sctx, commitMessage); err != nil {
+		return err
 	}
 	headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
 	if err != nil {

@@ -328,6 +328,19 @@ func CopyLocalUserIdentity(ctx context.Context, srcDir, dstDir string) error {
 	return nil
 }
 
+// CommitSigningEnabled reports whether commit.gpgsign resolves to true in dir,
+// taking local, global, system, and include config into account. no-mistakes
+// uses it to detect orgs that mandate signing (which cannot complete
+// headlessly) and route autofix commits through commit.gpgsign=false instead.
+// Returns false on any error (including the key being unset).
+func CommitSigningEnabled(ctx context.Context, dir string) bool {
+	out, err := Run(ctx, dir, "config", "--get", "--type=bool", "commit.gpgsign")
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(out), "true")
+}
+
 // WorktreeAdd creates a detached worktree at wtPath checked out to the given SHA.
 func WorktreeAdd(ctx context.Context, repoDir, wtPath, sha string) error {
 	_, err := Run(ctx, repoDir, "worktree", "add", "--detach", wtPath, sha)

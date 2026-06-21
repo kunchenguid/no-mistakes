@@ -71,6 +71,7 @@ Safest local verification sequence after non-trivial changes:
 - Use `context.Background()` mainly at top-level boundaries, background tasks, or in tests.
 - Protect shared mutable state with `sync.Mutex`, `sync.RWMutex`, `sync.Map`, or `atomic` where appropriate.
 - Be explicit about ownership and cleanup of goroutines, worktrees, temp dirs, and channels.
+- Autofix `git commit`/`git push` must stay headless-safe: route them through `steps.autofixCommit`/`autofixPush`, which disable `commit.gpgsign`, apply `git.NonInteractiveEnv` (incl. `SSH_ASKPASS_REQUIRE=never`), and run under a short scoped timeout so a hung hook or SSH passphrase prompt fails fast. Do not regress these to bare `git.Run`/`git.Push`.
 
 **Filesystem and Paths**
 

@@ -19,6 +19,12 @@ import (
 // overrides are appended last so they win over any ambient values (exec
 // resolves duplicate keys using the last occurrence).
 //
+// SSH_ASKPASS_REQUIRE=never makes ssh refuse to delegate passphrase prompts to
+// an askpass program; in a headless run with no controlling TTY this causes
+// ssh to fail fast instead of opening /dev/tty and blocking on a passphrase
+// (e.g. a passphrased key with no agent). It does not affect the happy path
+// where an agent holds the key.
+//
 // Pass the same directory assigned to cmd.Dir (or "" when it is unset). When
 // cmd.Env is left nil, os/exec injects PWD=cmd.Dir automatically; assigning
 // cmd.Env disables that, so callers must thread the working directory through
@@ -29,6 +35,7 @@ func NonInteractiveEnv(dir string) []string {
 		"GIT_EDITOR=true",
 		"GIT_SEQUENCE_EDITOR=true",
 		"GIT_TERMINAL_PROMPT=0",
+		"SSH_ASKPASS_REQUIRE=never",
 	)
 	// Mirror os/exec, which only injects PWD when Cmd.Env is nil and skips it
 	// on these platforms.

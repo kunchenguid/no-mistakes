@@ -44,6 +44,8 @@ func handleFakeCLI(mode string) {
 		fakeGitPassthroughHandler(args)
 	case "git-status-error":
 		fakeGitStatusErrorHandler(args)
+	case "git-commit-hang":
+		fakeGitCommitHangHandler(args)
 	case "ci-gh":
 		fakeCIGHHandler(args)
 	case "ci-gh-seq":
@@ -113,6 +115,25 @@ func fakeGitStatusErrorHandler(args []string) {
 
 func fakeGitPassthroughHandler(args []string) {
 	realGit := os.Getenv("FAKE_CLI_REAL_GIT")
+	fakeGitForward(args, realGit)
+}
+
+// fakeGitCommitHangHandler forwards every git subcommand to real git except
+// `commit`, which it blocks on indefinitely. It models a hung pre-commit hook
+// or an interactive hook reading stdin, so tests can assert that an autofix
+// commit fails fast under its scoped timeout instead of wedging the pipeline.
+func fakeGitCommitHangHandler(args []string) {
+	realGit := os.Getenv("FAKE_CLI_REAL_GIT")
+	// Locate the git subcommand token, skipping leading `-c <value>` option
+	// pairs (e.g. `-c commit.gpgsign=false`), so we only hang on an actual
+	// commit subcommand and forward add/status/config/etc. to real git.
+	i := 0
+	for i+1 < len(args) && args[i] == "-c" {
+		i += 2
+	}
+	if i < len(args) && args[i] == "commit" {
+		select {}
+	}
 	fakeGitForward(args, realGit)
 }
 
