@@ -35,7 +35,7 @@ no-mistakes init --fork-url git@github.com:you/my-repo.git
 | `--fork-url` | `string` | (none) | GitHub fork remote URL to push branches to while opening PRs against `origin` |
 
 Creates or refreshes a local bare repo, installs the post-receive hook, best-effort isolates the gate repo's hook path from shared git config changes when Git supports `config --worktree`, adds or repairs the `no-mistakes` git remote, detects the default branch, records or updates the repo in SQLite, installs the `/no-mistakes` agent skill at user level into `~/.claude/skills/no-mistakes/SKILL.md` and `~/.agents/skills/no-mistakes/SKILL.md`, and ensures the daemon is running, installing the managed service when available and falling back to a detached daemon otherwise.
-`init` writes no skill files into the repo; the user-level copies cover every supported agent (`~/.claude/skills` for Claude Code, `~/.agents/skills` for Codex, OpenCode, Rovo Dev, and Pi) across all repos.
+`init` writes no skill files into the repo; the user-level copies cover every supported agent (`~/.claude/skills` for Claude Code, `~/.agents/skills` for Codex, OpenCode, Rovo Dev, Pi, and Grok) across all repos.
 If the home `.claude` links to `.agents`, `.claude/skills` links to `.agents/skills`, or the reverse, `init` follows that layout and still makes the skill readable from both logical paths.
 If the repo still contains a vendored skill copy written by an older no-mistakes version, `init` leaves it untouched and prints a notice that it is no longer needed and can be removed.
 The gate advertises Git push-option support, so you can skip steps for one push with `git push -o no-mistakes.skip=test,lint no-mistakes <branch>`.
@@ -249,7 +249,7 @@ Checks:
 - Data directory (`~/.no-mistakes/`)
 - SQLite database
 - Daemon status
-- Native agent binaries: `claude`, `codex`, `acli`, `opencode`, `pi`
+- Native agent binaries: `claude`, `codex`, `grok`, `acli`, `opencode`, `pi`
 
 Uses indicators: `✓` (available), `–` (not found, optional), `✗` (problem detected).
 

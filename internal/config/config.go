@@ -156,7 +156,7 @@ type Intent struct {
 const defaultConfigYAML = `# no-mistakes global configuration
 
 # Agent to use for code generation
-# Options: auto, claude, codex, rovodev, opencode, pi, acp:<target>
+# Options: auto, claude, codex, rovodev, opencode, pi, grok, acp:<target>
 # "auto" detects the first available native agent on your system
 # Use acp:<target> to run an optional user-installed acpx target, for example acp:gemini
 agent: auto

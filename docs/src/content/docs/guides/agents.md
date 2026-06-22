@@ -39,6 +39,7 @@ By default that directory is temporary and local to the machine; repos can opt i
 | Rovo Dev | `acli` | Persistent HTTP server, SSE streaming |
 | OpenCode | `opencode` | Persistent HTTP server, SSE streaming |
 | Pi | `pi` | Subprocess per invocation, JSONL events |
+| Grok | `grok` | Subprocess per invocation, plain text |
 | ACP target | `acpx` | Optional user-installed ACP bridge |
 
 ## Setting the agent
@@ -90,7 +91,7 @@ Use bare `/no-mistakes` to validate existing committed work.
 Use `/no-mistakes <task>` to have the agent first do the task, commit only that task's changes on a feature branch, then run the pipeline with the task text as `--intent`.
 In both modes, it resolves low-risk findings on its own and stops to relay anything that needs your decision.
 
-`no-mistakes init` installs that skill at user level: `~/.claude/skills/no-mistakes/SKILL.md` for Claude Code and `~/.agents/skills/no-mistakes/SKILL.md` for Codex, OpenCode, Rovo Dev, and Pi.
+`no-mistakes init` installs that skill at user level: `~/.claude/skills/no-mistakes/SKILL.md` for Claude Code and `~/.agents/skills/no-mistakes/SKILL.md` for Codex, OpenCode, Rovo Dev, Pi, and Grok.
 One install makes the skill available to every supported agent in every repo, without committing tool-generated files to any repo.
 If your home directory consolidates `.claude` and `.agents` with symlinks, `init` follows the links and keeps the skill reachable from both logical paths.
 Re-run `no-mistakes init` after an upgrade to refresh that skill, including overwriting stale `SKILL.md` content from an older binary.
@@ -137,6 +138,8 @@ By default, `no-mistakes` resolves `agent: auto` by checking for supported nativ
 4. `acli` with `rovodev` support
 5. `pi`
 
+`agent: auto` does not probe `grok`; set `agent: grok` explicitly when that is your preferred tool.
+
 The default binary names are:
 
 | Agent | Default binary name |
@@ -146,6 +149,7 @@ The default binary names are:
 | `rovodev` | `acli` |
 | `opencode` | `opencode` |
 | `pi` | `pi` |
+| `grok` | `grok` |
 | `acp:<target>` | `acpx` |
 
 When the daemon is running through a managed service, that `PATH` comes from your login shell environment on macOS and Linux plus common user, Homebrew, and system binary directories. If login-shell resolution fails, the daemon logs a warning and uses a degraded fallback `PATH` that may omit version-manager shim directories. On Windows it reuses the current process environment instead of reloading a login shell. If native agent discovery still does not resolve the binary you expect, check `~/.no-mistakes/logs/daemon.log` and use an explicit `agent_path_override`.
@@ -159,6 +163,7 @@ agent_path_override:
   rovodev: /usr/local/bin/acli
   opencode: /usr/local/bin/opencode
   pi: /usr/local/bin/pi
+  grok: /usr/local/bin/grok
 ```
 
 For ACP targets, set `acpx_path` instead of `agent_path_override`:
@@ -199,7 +204,7 @@ It matches sessions against non-deleted changed files when present, falls back t
 Transcript readers collect user and assistant text messages but exclude tool call output.
 They read Claude Code transcripts from `~/.claude/projects`, Codex metadata from `~/.codex/state_*.sqlite` plus referenced rollout files, OpenCode messages from `$XDG_DATA_HOME/opencode/opencode.db` or `~/.local/share/opencode/opencode.db`, Rovo Dev sessions from `~/.rovodev/sessions`, and Pi transcripts from `~/.pi/agent/sessions`.
 Sessions are eligible when they come from the same working directory or an equivalent Git checkout with the same common Git directory or normalized remote URL.
-ACP transcripts are not currently read for intent extraction.
+Grok and ACP transcripts are not currently read for intent extraction.
 When deterministic matching leaves multiple plausible sessions, no-mistakes may ask the configured pipeline agent to choose among them using the matching file paths and sanitized transcript packet files.
 The selected transcript text is then sent to the configured pipeline agent for summarization during the `intent` step, so intent extraction may incur additional agent or API invocations.
 Before disambiguation or summarization, no-mistakes excludes tool output, redacts likely secrets, strips common prompt-control markers, and clamps long transcripts while preserving the beginning and end.
@@ -232,6 +237,15 @@ Any `agent_args_override.pi` flags are inserted before no-mistakes' managed flag
 Reads JSONL events from stdout and streams incremental text deltas to the TUI.
 When structured output is requested, no-mistakes injects the JSON schema into the prompt and validates the final text response.
 
+## Grok
+
+Spawns a `grok` subprocess for each invocation.
+Any `agent_args_override.grok` flags are inserted before no-mistakes' managed flags.
+no-mistakes writes the prompt to a temporary file and passes `--prompt-file`, `--cwd`, `--permission-mode bypassPermissions`, and `--output-format plain`.
+Reads plain text from stdout and streams it to the TUI.
+When structured output is requested, no-mistakes injects the JSON schema into the prompt and validates the final text response.
+Set `agent: grok` explicitly; `agent: auto` does not probe for the `grok` binary.
+
 ## ACP via acpx
 
 ACP support is optional and requires a separately installed `acpx` binary.
@@ -261,7 +275,8 @@ $ no-mistakes doctor
   ✓ daemon running
   ✓ claude
   – codex (not found)
-  – acli (not found)
+  – grok (not found)
+  – rovodev (not found)
   – opencode (not found)
   – pi (not found)
 ```
