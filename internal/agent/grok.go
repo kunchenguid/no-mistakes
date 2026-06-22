@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+
+	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
 
 // grokMaxRetries is the number of additional attempts past the initial
@@ -56,6 +58,9 @@ func (a *grokAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) 
 	cmd.Dir = opts.CWD
 	cmd.Stdin = nil
 	cmd.Env = gitSafeEnv(opts.CWD)
+	// Run in a dedicated process group so cancelling ctx reaps the grok CLI and
+	// any subprocesses it spawns, not just the direct child.
+	shellenv.ConfigureShellCommand(cmd)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
