@@ -85,12 +85,9 @@ func (a *grokAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) 
 	}()
 
 	var textBuf strings.Builder
-	// Stream stdout line-by-line with a bufio.Reader instead of bufio.Scanner:
-	// the scanner requires a fixed max-token buffer, and a single very long line
-	// (e.g. minified JSON) would force a large up-front allocation. ReadString
-	// grows incrementally with no fixed cap.
-	reader := bufio.NewReader(stdout)
-	for {
+	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 0, 64*1024), 256*1024*1024)
+	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
 			stderrWG.Wait()
@@ -98,28 +95,22 @@ func (a *grokAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) 
 			return nil, ctx.Err()
 		default:
 		}
-		line, readErr := reader.ReadString('\n')
-		if len(line) > 0 {
-			line = strings.TrimRight(line, "\r\n")
-			if textBuf.Len() > 0 {
-				textBuf.WriteByte('\n')
-				if opts.OnChunk != nil {
-					opts.OnChunk("\n")
-				}
-			}
-			textBuf.WriteString(line)
+		line := strings.TrimRight(scanner.Text(), "\r\n")
+		if textBuf.Len() > 0 {
+			textBuf.WriteByte('\n')
 			if opts.OnChunk != nil {
-				opts.OnChunk(line)
+				opts.OnChunk("\n")
 			}
 		}
-		if readErr != nil {
-			if readErr == io.EOF {
-				break
-			}
-			stderrWG.Wait()
-			_ = cmd.Wait()
-			return nil, fmt.Errorf("grok read stdout: %w", readErr)
+		textBuf.WriteString(line)
+		if opts.OnChunk != nil {
+			opts.OnChunk(line)
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		stderrWG.Wait()
+		_ = cmd.Wait()
+		return nil, fmt.Errorf("grok read stdout: %w", err)
 	}
 
 	stderrWG.Wait()
@@ -135,10 +126,9 @@ func (a *grokAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) 
 }
 
 // buildGrokArgs constructs the grok CLI arguments. extraArgs are placed first,
-// followed by the managed flags; grok treats the last occurrence of a flag as
-// authoritative, so the managed flags take precedence. These flags are reserved
-// in config (users cannot supply them), keeping the gate's invocation contract
-// intact.
+// followed by the managed flags. Those managed flags are reserved in config
+// (validateAgentArgsOverride rejects them in agent_args_override), so extraArgs
+// cannot collide with them and the managed values are authoritative.
 func buildGrokArgs(promptPath string, extraArgs []string, cwd string) []string {
 	args := make([]string, 0, len(extraArgs)+8)
 	args = append(args, extraArgs...)
