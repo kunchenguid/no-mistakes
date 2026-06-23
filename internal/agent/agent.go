@@ -63,10 +63,23 @@ func finalizeTextResult(agentName, text string, schema json.RawMessage, usage To
 
 	output, err := parseStructuredTextOutput(text, schema)
 	if err != nil {
-		return nil, fmt.Errorf("%s output parse: %w", agentName, err)
+		return nil, fmt.Errorf("%s output parse: %w (output snippet: %q)", agentName, err, outputSnippet(text))
 	}
 
 	return &Result{Output: output, Text: text, Usage: usage}, nil
+}
+
+// outputSnippet returns a trimmed, length-capped excerpt of agent output for
+// inclusion in parse-failure errors. Without it, errors like "invalid
+// character 'N'" are undiagnosable without separately capturing agent stdout.
+func outputSnippet(text string) string {
+	const max = 200
+	trimmed := strings.TrimSpace(text)
+	runes := []rune(trimmed)
+	if len(runes) > max {
+		return string(runes[:max]) + "…"
+	}
+	return trimmed
 }
 
 func parseStructuredTextOutput(text string, schema json.RawMessage) (json.RawMessage, error) {

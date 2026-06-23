@@ -560,3 +560,28 @@ func TestFinalizeTextResult_WithSchemaIgnoresJSONInsideNonJSONFence(t *testing.T
 		t.Fatal("expected parse failure")
 	}
 }
+
+func TestFinalizeTextResult_ParseErrorIncludesOutputSnippet(t *testing.T) {
+	text := "Now I've applied all four fixes and verified the build passes."
+	_, err := finalizeTextResult("copilot", text, json.RawMessage(`{"type":"object"}`), TokenUsage{})
+	if err == nil {
+		t.Fatal("expected parse failure on prose output")
+	}
+	if !strings.Contains(err.Error(), "output snippet:") {
+		t.Errorf("error should include an output snippet, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "Now I've applied") {
+		t.Errorf("error should embed the offending text, got %v", err)
+	}
+}
+
+func TestOutputSnippet_TruncatesLongText(t *testing.T) {
+	long := strings.Repeat("x", 500)
+	got := outputSnippet(long)
+	if !strings.HasSuffix(got, "…") {
+		t.Errorf("expected ellipsis suffix on truncated snippet, got %q", got)
+	}
+	if runes := []rune(got); len(runes) != 201 {
+		t.Errorf("expected 200 runes plus ellipsis, got %d runes", len(runes))
+	}
+}

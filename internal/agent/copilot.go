@@ -67,10 +67,10 @@ func (a *copilotAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, erro
 	}()
 
 	var usage TokenUsage
-	var lastMessage string
+	var messages []string
 	var copilotErr string
 	exitCode := 0
-	if err := parseCopilotEvents(ctx, stdout, opts.OnChunk, &usage, &lastMessage, &copilotErr, &exitCode); err != nil {
+	if err := parseCopilotEvents(ctx, stdout, opts.OnChunk, &usage, &messages, &copilotErr, &exitCode); err != nil {
 		stderrWG.Wait()
 		_ = cmd.Wait()
 		return nil, fmt.Errorf("copilot parse events: %w", err)
@@ -93,7 +93,31 @@ func (a *copilotAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, erro
 		return nil, fmt.Errorf("copilot reported exit code %d", exitCode)
 	}
 
-	return finalizeTextResult("copilot", lastMessage, opts.JSONSchema, usage)
+	return finalizeCopilotResult(messages, opts.JSONSchema, usage)
+}
+
+// finalizeCopilotResult converts the assistant messages emitted during a run
+// into a structured Result. With no schema it uses the final message verbatim.
+// With a schema it tries each assistant message newest-first and returns the
+// first that parses against it: Copilot is non-deterministic about honoring the
+// JSON-only output contract and frequently emits the schema JSON in an earlier
+// message, then closes with a prose summary (e.g. "Now I've applied all four
+// fixes…") that no extraction strategy can recover. If none parse it falls back
+// to the final message so the returned error reflects the actual final output.
+func finalizeCopilotResult(messages []string, schema json.RawMessage, usage TokenUsage) (*Result, error) {
+	lastMessage := ""
+	if len(messages) > 0 {
+		lastMessage = messages[len(messages)-1]
+	}
+	if len(schema) == 0 {
+		return finalizeTextResult("copilot", lastMessage, schema, usage)
+	}
+	for i := len(messages) - 1; i >= 0; i-- {
+		if result, err := finalizeTextResult("copilot", messages[i], schema, usage); err == nil {
+			return result, nil
+		}
+	}
+	return finalizeTextResult("copilot", lastMessage, schema, usage)
 }
 
 func copilotErrorDetail(copilotErr, stderr string) string {
@@ -201,15 +225,15 @@ type copilotEventData struct {
 }
 
 // parseCopilotEvents reads JSONL from the reader and dispatches events. It
-// streams assistant.message_delta content to onChunk, captures the last
-// assistant.message text as the final answer, accumulates output tokens, and
-// records the terminal result event's exit code.
+// streams assistant.message_delta content to onChunk, appends each non-empty
+// assistant.message text to messages (oldest first), accumulates output tokens,
+// and records the terminal result event's exit code.
 func parseCopilotEvents(
 	ctx context.Context,
 	r io.Reader,
 	onChunk func(string),
 	usage *TokenUsage,
-	lastMessage *string,
+	messages *[]string,
 	copilotErr *string,
 	exitCode *int,
 ) error {
@@ -244,8 +268,8 @@ func parseCopilotEvents(
 				continue
 			}
 			usage.Add(TokenUsage{OutputTokens: event.Data.OutputTokens})
-			if event.Data.Content != "" && lastMessage != nil {
-				*lastMessage = event.Data.Content
+			if event.Data.Content != "" && messages != nil {
+				*messages = append(*messages, event.Data.Content)
 			}
 
 		case "error", "assistant.abort":

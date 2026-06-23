@@ -145,7 +145,8 @@ func TestParseCopilotEvents_FinalMessageAndUsage(t *testing.T) {
 
 	var chunks []string
 	var usage TokenUsage
-	var lastMessage, copilotErr string
+	var messages []string
+	var copilotErr string
 	exitCode := -1
 
 	err := parseCopilotEvents(
@@ -153,15 +154,15 @@ func TestParseCopilotEvents_FinalMessageAndUsage(t *testing.T) {
 		strings.NewReader(events),
 		func(text string) { chunks = append(chunks, text) },
 		&usage,
-		&lastMessage,
+		&messages,
 		&copilotErr,
 		&exitCode,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if lastMessage != `{"ok":true}` {
-		t.Errorf("last message = %q, want final assistant content", lastMessage)
+	if got := lastOf(messages); got != `{"ok":true}` {
+		t.Errorf("last message = %q, want final assistant content", got)
 	}
 	if strings.Join(chunks, "") != "pong" {
 		t.Errorf("chunks = %v, want streamed deltas po+ng", chunks)
@@ -185,9 +186,10 @@ func TestParseCopilotEvents_CapturesErrorEvent(t *testing.T) {
 	}, "\n")
 
 	var usage TokenUsage
-	var lastMessage, copilotErr string
+	var messages []string
+	var copilotErr string
 	exitCode := 0
-	err := parseCopilotEvents(context.Background(), strings.NewReader(events), nil, &usage, &lastMessage, &copilotErr, &exitCode)
+	err := parseCopilotEvents(context.Background(), strings.NewReader(events), nil, &usage, &messages, &copilotErr, &exitCode)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -208,14 +210,15 @@ func TestParseCopilotEvents_SkipsMalformedAndSessionLines(t *testing.T) {
 	}, "\n")
 
 	var usage TokenUsage
-	var lastMessage, copilotErr string
+	var messages []string
+	var copilotErr string
 	exitCode := 0
-	err := parseCopilotEvents(context.Background(), strings.NewReader(events), nil, &usage, &lastMessage, &copilotErr, &exitCode)
+	err := parseCopilotEvents(context.Background(), strings.NewReader(events), nil, &usage, &messages, &copilotErr, &exitCode)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if lastMessage != "done" {
-		t.Errorf("last message = %q, want 'done'", lastMessage)
+	if got := lastOf(messages); got != "done" {
+		t.Errorf("last message = %q, want 'done'", got)
 	}
 	if usage.OutputTokens != 2 {
 		t.Errorf("output tokens = %d, want 2", usage.OutputTokens)
@@ -332,5 +335,147 @@ func TestCopilotAgent_RunReportsErrorOnNonZeroExit(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "not authenticated") {
 		t.Fatalf("error = %v, want copilot error detail", err)
+	}
+}
+
+func lastOf(messages []string) string {
+	if len(messages) == 0 {
+		return ""
+	}
+	return messages[len(messages)-1]
+}
+
+func TestParseCopilotEvents_CollectsAllAssistantMessages(t *testing.T) {
+	events := strings.Join([]string{
+		`{"type":"assistant.message","data":{"content":"{\"ok\":true}","outputTokens":4}}`,
+		`{"type":"assistant.message","data":{"content":"","outputTokens":1}}`,
+		`{"type":"assistant.message","data":{"content":"Now I've applied the fix.","outputTokens":2}}`,
+		`{"type":"result","exitCode":0}`,
+		"",
+	}, "\n")
+
+	var usage TokenUsage
+	var messages []string
+	var copilotErr string
+	exitCode := 0
+	if err := parseCopilotEvents(context.Background(), strings.NewReader(events), nil, &usage, &messages, &copilotErr, &exitCode); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{`{"ok":true}`, "Now I've applied the fix."}
+	if len(messages) != len(want) {
+		t.Fatalf("messages = %v, want %v (empty content should be skipped)", messages, want)
+	}
+	for i := range want {
+		if messages[i] != want[i] {
+			t.Errorf("messages[%d] = %q, want %q", i, messages[i], want[i])
+		}
+	}
+}
+
+// TestFinalizeCopilotResult_RecoversJSONBeforeProseSummary is the core
+// regression for the fix-step parse bug: Copilot emitted the schema JSON in an
+// earlier assistant message, then closed with a prose summary beginning with
+// 'N'. The final message alone cannot be parsed, so scanning newest-first must
+// recover the earlier JSON object.
+func TestFinalizeCopilotResult_RecoversJSONBeforeProseSummary(t *testing.T) {
+	schema := json.RawMessage(`{
+		"type":"object",
+		"properties":{
+			"findings":{"type":"array"},
+			"summary":{"type":"string"}
+		},
+		"required":["findings","summary"]
+	}`)
+	messages := []string{
+		`{"findings":[],"summary":"applied four fixes"}`,
+		"Now I've applied all four fixes and verified the build passes.",
+	}
+
+	result, err := finalizeCopilotResult(messages, schema, TokenUsage{})
+	if err != nil {
+		t.Fatalf("expected recovery of earlier JSON message, got error: %v", err)
+	}
+	var output struct {
+		Summary string `json:"summary"`
+	}
+	if err := json.Unmarshal(result.Output, &output); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+	if output.Summary != "applied four fixes" {
+		t.Errorf("summary = %q, want recovered JSON summary", output.Summary)
+	}
+}
+
+func TestFinalizeCopilotResult_PrefersNewestParsingMessage(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","properties":{"n":{"type":"integer"}},"required":["n"]}`)
+	messages := []string{
+		`{"n":1}`,
+		`{"n":2}`,
+		"All done.",
+	}
+
+	result, err := finalizeCopilotResult(messages, schema, TokenUsage{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(result.Output) != `{"n":2}` {
+		t.Errorf("output = %s, want newest parsing message {\"n\":2}", string(result.Output))
+	}
+}
+
+func TestFinalizeCopilotResult_NoSchemaUsesLastMessage(t *testing.T) {
+	messages := []string{"first", "second"}
+	result, err := finalizeCopilotResult(messages, nil, TokenUsage{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Text != "second" {
+		t.Errorf("text = %q, want last message", result.Text)
+	}
+}
+
+func TestFinalizeCopilotResult_NoneParseReturnsDebuggableError(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","properties":{"n":{"type":"integer"}},"required":["n"]}`)
+	messages := []string{
+		"Now I've applied all four fixes and verified the build passes.",
+	}
+
+	_, err := finalizeCopilotResult(messages, schema, TokenUsage{})
+	if err == nil {
+		t.Fatal("expected parse error when no message satisfies the schema")
+	}
+	if !strings.Contains(err.Error(), "output snippet:") {
+		t.Errorf("error should include an output snippet for debuggability, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "Now I've applied") {
+		t.Errorf("error snippet should reflect the final prose message, got %v", err)
+	}
+}
+
+func TestCopilotAgent_RunRecoversJSONWhenFinalMessageIsProse(t *testing.T) {
+	dir := t.TempDir()
+	bin := writeFakeCopilot(t, dir, []string{
+		`{"type":"assistant.message","data":{"content":"{\"findings\":[],\"summary\":\"done\"}","outputTokens":5}}`,
+		`{"type":"assistant.message","data":{"content":"Now I have applied the fixes.","outputTokens":3}}`,
+		`{"type":"result","exitCode":0}`,
+	}, 0)
+
+	ca := &copilotAgent{bin: bin}
+	result, err := ca.Run(context.Background(), RunOpts{
+		Prompt:     "fix it",
+		CWD:        t.TempDir(),
+		JSONSchema: json.RawMessage(`{"type":"object","properties":{"findings":{"type":"array"},"summary":{"type":"string"}},"required":["findings","summary"]}`),
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	var output struct {
+		Summary string `json:"summary"`
+	}
+	if err := json.Unmarshal(result.Output, &output); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+	if output.Summary != "done" {
+		t.Fatalf("output = %s, want recovered summary 'done'", string(result.Output))
 	}
 }
