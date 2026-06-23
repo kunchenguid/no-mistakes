@@ -76,8 +76,9 @@ agent_args_override:
 # How long the CI step monitors an open PR (provider CI status plus GitHub/GitLab
 # mergeability) with no base-branch movement before giving up. Each base-branch
 # advance re-arms the timer, so an actively-updated green PR keeps its monitor.
-# Use "unlimited" (or 0) to monitor until the PR is merged, closed, or aborted.
-ci_timeout: "168h"  # any Go duration string, or "unlimited"
+# Use "unlimited" (or aliases "none", "off", "never", or any non-positive
+# duration) to monitor until the PR is merged, closed, or aborted.
+ci_timeout: "168h"  # any Go duration string, or an unlimited keyword
 
 # Daemon log verbosity.
 log_level: info  # debug | info | warn | error

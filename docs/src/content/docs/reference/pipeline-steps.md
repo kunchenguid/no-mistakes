@@ -175,7 +175,8 @@ Monitors PR health after creation and auto-fixes CI failures. Mergeability polli
 
 **Behavior:**
 - Polls provider CI status at increasing intervals: every 30s for the first 5 minutes, every 60s for 5-15 minutes, every 120s after that
-- Continues monitoring an open PR until it is merged, closed, declined, or times out, even after CI checks are currently healthy
+- Continues monitoring an open PR until it is merged, closed, declined, or the configured `ci_timeout` idle window elapses, even after CI checks are currently healthy
+- Treats `ci_timeout` as an idle timeout: each upstream default-branch advance re-arms the timer, and `ci_timeout: "unlimited"` disables self-termination
 - On GitHub and GitLab, polls provider mergeability alongside CI checks while the PR remains open
 - While the PR stays open, the TUI and terminal title show `Checks passed` once checks are green and known mergeability is clear, and `no-mistakes axi` returns `outcome: checks-passed` with successful-output reporting instructions so agents can summarize the run, ask the user to review and merge, and list any pipeline fixes instead of waiting
 - The ready signal clears if checks start running again, new failures appear, provider state becomes uncertain, or the PR is merged, closed, or declined
@@ -187,9 +188,9 @@ Monitors PR health after creation and auto-fixes CI failures. Mergeability polli
 - If a fix attempt produces no changes: automatic mode leaves the failure undeduplicated so it can retry until the auto-fix limit, while manual fix mode returns immediately for manual intervention
 - Deduplicates fix attempts only after a fix is actually committed and pushed
 - Exits cleanly when the PR is merged, closed, or declined
-- If the timeout is reached while the PR is still open: pauses for user approval, even when CI checks are currently healthy
-- If the timeout is reached while CI failures or, on GitHub or GitLab, a merge conflict are still known: pauses for user approval with findings for the remaining issues
-- If the timeout is reached while GitHub or GitLab PR mergeability is still unresolved: pauses for user approval with a finding describing the unresolved mergeability state
+- If the idle timeout is reached while the PR is still open: pauses for user approval, even when CI checks are currently healthy
+- If the idle timeout is reached while CI failures or, on GitHub or GitLab, a merge conflict are still known: pauses for user approval with findings for the remaining issues
+- If the idle timeout is reached while GitHub or GitLab PR mergeability is still unresolved: pauses for user approval with a finding describing the unresolved mergeability state
 - If CI failures or a GitHub or GitLab merge conflict persist after the auto-fix limit: pauses for user approval with findings listing each failing check and/or the merge conflict
 
 **Default auto-fix limit:** `3` total CI auto-fix attempts.

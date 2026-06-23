@@ -29,7 +29,8 @@ const (
 	ciChecksRunningMsg  = cimonitor.ChecksRunningMsg
 )
 
-// CIStep monitors an open PR until it is merged or closed, auto-fixing CI failures.
+// CIStep monitors an open PR until it is merged, closed, or its configured idle
+// timeout elapses, auto-fixing CI failures.
 type CIStep struct {
 	lastFixedChecks      string               // sorted check names from last fix attempt, to avoid re-fixing
 	lastFixedCompletedAt map[string]time.Time // failing check completion times seen before the last fix attempt

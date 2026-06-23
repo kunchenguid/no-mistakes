@@ -15,10 +15,12 @@ import "strings"
 // consumers must reference these constants rather than spelling out literals.
 const (
 	// ChecksPassedMsg is logged when every CI check has passed but the PR is
-	// not yet merged or closed, so the monitor keeps watching.
+	// not yet merged or closed, so the monitor keeps watching subject to its
+	// configured timeout.
 	ChecksPassedMsg = "all CI checks passed - still monitoring until merged or closed"
 	// NoChecksPassedMsg is logged when the PR reports no CI checks at all and
-	// the monitor keeps watching for a merge or close.
+	// the monitor keeps watching for a merge or close, subject to its
+	// configured timeout.
 	NoChecksPassedMsg = "no CI checks reported - still monitoring until merged or closed"
 	// ChecksRunningMsg is logged when checks are (re-)running with no failures
 	// yet, which clears any previous passed-checks state.

@@ -132,7 +132,8 @@ Run the pipeline and decide on its findings as they come up:
      not merged yet. **You are done driving the pipeline.** Do not wait for the
      merge: tell the user the PR is ready and ask them to review and merge it
      (the PR link is in the `help` line). no-mistakes keeps monitoring the PR
-     in the background, so a human can watch it in the TUI.
+     in the background until it is merged, closed, or its configured idle
+     timeout elapses, so a human can watch it in the TUI.
    - `passed` - the changes cleared the gate and the PR was merged or closed.
    - `failed` or `cancelled` - they did not; read the output and address it.
      Fix whatever the output points at (a failing test, a lint error, a finding
@@ -142,7 +143,7 @@ Run the pipeline and decide on its findings as they come up:
      leave the user at a `failed` outcome without either retrying or explaining
      what blocks it.
 
-The CI step deliberately watches the PR until it is merged or closed, so
+The CI step deliberately keeps watching the PR after checks pass, so
 `axi run` returns `checks-passed` the moment checks are green rather than
 blocking on the human merge. Never poll or re-run waiting for the merge yourself.
 

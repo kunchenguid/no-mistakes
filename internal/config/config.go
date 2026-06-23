@@ -31,8 +31,9 @@ const (
 	// DefaultCITimeout is the monitor's idle timeout when ci_timeout is unset.
 	DefaultCITimeout = 7 * 24 * time.Hour
 	// CITimeoutUnlimited is the sentinel meaning "monitor until the PR is
-	// merged, closed, or the run is aborted - never self-terminate". Any
-	// non-positive ci_timeout, or the keyword "unlimited", resolves to this.
+	// merged, closed, or the run is aborted - never self-terminate".
+	// Any non-positive ci_timeout, or the keywords "unlimited", "none",
+	// "off", and "never", resolves to this.
 	CITimeoutUnlimited = time.Duration(-1)
 )
 
@@ -190,8 +191,9 @@ agent: auto
 # Maximum time the CI monitor babysits an open PR with no base-branch movement
 # before giving up. The monitor watches CI and auto-rebases when the base branch
 # advances; each base advance re-arms this timer, so an actively-updated green PR
-# keeps its monitor. Set to "unlimited" (or 0) to monitor until the PR is merged,
-# closed, or the run is aborted with: no-mistakes axi abort --run <id>
+# keeps its monitor. Set to "unlimited", "none", "off", "never", or any
+# non-positive duration to monitor until the PR is merged, closed, or the run is
+# aborted with: no-mistakes axi abort --run <id>
 ci_timeout: "168h"
 
 # Log level for daemon output

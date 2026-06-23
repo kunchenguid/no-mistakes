@@ -196,6 +196,8 @@ Set it to `unlimited` to monitor until the PR is merged, closed, or aborted:
 ci_timeout: "unlimited"
 ```
 
+`none`, `off`, `never`, `0`, and other non-positive durations are accepted too.
+
 Older config files may still contain an explicit `ci_timeout: "4h"` value.
 Update that value if you want the newer default behavior.
 
