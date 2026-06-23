@@ -131,24 +131,22 @@ func (a *copilotAgent) buildArgs(prompt string) []string {
 	return args
 }
 
-// copilotUserSetPermissionMode reports whether extraArgs already declare a
-// permission flag, in which case buildArgs skips its default --allow-all-tools.
+// copilotUserSetPermissionMode reports whether extraArgs already grant tool
+// auto-approval, in which case buildArgs skips its default --allow-all-tools.
+// Only a blanket approval flag (--allow-all-tools, --allow-all, --yolo) or an
+// explicit allowlist (--allow-tool) counts. Flags that merely restrict the tool
+// set or filesystem paths (--available-tools, --excluded-tools, --deny-tool,
+// --allow-all-paths) do not grant approval, so the non-interactive -p run still
+// needs the default --allow-all-tools to avoid blocking on approval prompts.
 func copilotUserSetPermissionMode(extraArgs []string) bool {
 	for _, arg := range extraArgs {
 		switch {
 		case arg == "--allow-all-tools",
 			arg == "--allow-all",
 			arg == "--yolo",
-			arg == "--allow-tool",
-			arg == "--deny-tool",
-			arg == "--allow-all-paths",
-			arg == "--available-tools",
-			arg == "--excluded-tools":
+			arg == "--allow-tool":
 			return true
-		case strings.HasPrefix(arg, "--allow-tool="),
-			strings.HasPrefix(arg, "--deny-tool="),
-			strings.HasPrefix(arg, "--available-tools="),
-			strings.HasPrefix(arg, "--excluded-tools="):
+		case strings.HasPrefix(arg, "--allow-tool="):
 			return true
 		}
 	}

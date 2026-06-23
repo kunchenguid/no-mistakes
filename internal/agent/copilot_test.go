@@ -54,31 +54,46 @@ func TestCopilotAgent_BuildArgs_ExtraArgsFirst(t *testing.T) {
 }
 
 func TestCopilotAgent_BuildArgs_UserPermissionSuppressesDefault(t *testing.T) {
-	tests := [][]string{
-		{"--allow-all"},
-		{"--yolo"},
-		{"--allow-tool", "write"},
-		{"--allow-tool=shell(git:*)"},
-		{"--deny-tool", "shell(rm)"},
-		{"--allow-all-tools"},
+	tests := []struct {
+		name     string
+		extra    []string
+		suppress bool
+	}{
+		{"allow-all-tools", []string{"--allow-all-tools"}, true},
+		{"allow-all", []string{"--allow-all"}, true},
+		{"yolo", []string{"--yolo"}, true},
+		{"allow-tool", []string{"--allow-tool", "write"}, true},
+		{"allow-tool-eq", []string{"--allow-tool=shell(git:*)"}, true},
+		{"excluded-tools", []string{"--excluded-tools", "shell"}, false},
+		{"available-tools", []string{"--available-tools", "write"}, false},
+		{"deny-tool", []string{"--deny-tool", "shell(rm)"}, false},
+		{"allow-all-paths", []string{"--allow-all-paths"}, false},
 	}
-	for _, extra := range tests {
-		ca := &copilotAgent{bin: "copilot", extraArgs: extra}
-		args := ca.buildArgs("p")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ca := &copilotAgent{bin: "copilot", extraArgs: tt.extra}
+			args := ca.buildArgs("p")
 
-		count := 0
-		for _, a := range args {
-			if a == "--allow-all-tools" {
-				count++
+			count := 0
+			for _, a := range args {
+				if a == "--allow-all-tools" {
+					count++
+				}
 			}
-		}
-		if len(extra) == 1 && extra[0] == "--allow-all-tools" {
-			if count != 1 {
-				t.Errorf("extra=%v expected single --allow-all-tools, got %d: %v", extra, count, args)
+			if tt.suppress {
+				want := 0
+				for _, e := range tt.extra {
+					if e == "--allow-all-tools" {
+						want = 1
+					}
+				}
+				if count != want {
+					t.Errorf("extra=%v expected %d --allow-all-tools, got %d: %v", tt.extra, want, count, args)
+				}
+			} else if count != 1 {
+				t.Errorf("extra=%v expected default --allow-all-tools to be added, got %d: %v", tt.extra, count, args)
 			}
-		} else if count != 0 {
-			t.Errorf("extra=%v expected no default --allow-all-tools, got: %v", extra, args)
-		}
+		})
 	}
 }
 
