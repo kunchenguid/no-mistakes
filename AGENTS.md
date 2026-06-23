@@ -53,7 +53,7 @@ Safest local verification sequence after non-trivial changes:
 - `internal/cli`: cobra commands and CLI wiring
 - `internal/daemon`: background daemon and run management
 - `internal/pipeline` and `internal/pipeline/steps`: orchestration plus review/test/lint/push/PR/CI steps
-- `internal/agent`: Claude, Codex, Rovo Dev, OpenCode, Pi, and ACP/acpx integrations
+- `internal/agent`: Claude, Codex, Rovo Dev, OpenCode, Pi, Copilot, and ACP/acpx integrations
 - `internal/git`, `internal/ipc`, `internal/config`, `internal/db`, `internal/paths`, `internal/types`: shared infrastructure
 - `internal/tui`: terminal UI
 
@@ -88,7 +88,7 @@ Safest local verification sequence after non-trivial changes:
   agent-spawned git/build/editor), keep running, and hold the worktree locked so
   the next run on the same branch cannot proceed. Applied to the step shell
   runner (`runShellCommandWithEnv`) and the native agent `runOnce` builders
-  (claude, codex, pi, acpx); apply it to any new subprocess in those paths.
+  (claude, codex, pi, copilot, acpx); apply it to any new subprocess in those paths.
 - Use derived contexts and timeouts for cleanup and HTTP calls.
 - Use `context.Background()` mainly at top-level boundaries, background tasks, or in tests.
 - Protect shared mutable state with `sync.Mutex`, `sync.RWMutex`, `sync.Map`, or `atomic` where appropriate.
