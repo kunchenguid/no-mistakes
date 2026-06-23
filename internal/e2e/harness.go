@@ -81,7 +81,11 @@ func NewHarness(t *testing.T, opts SetupOpts) *Harness {
 
 	nmBin, fakeBin := buildBinaries(t)
 
-	root := t.TempDir()
+	root, err := os.MkdirTemp("", "nm-e2e-*")
+	if err != nil {
+		t.Fatalf("mkdir e2e root: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
 	h := &Harness{
 		t:                 t,
 		NMBin:             nmBin,
@@ -130,11 +134,11 @@ func NewHarness(t *testing.T, opts SetupOpts) *Harness {
 	// the directory contains <agent>/structured.{jsonl,*}, the fake
 	// replays those bytes verbatim instead of generating synthetic
 	// output. This is what makes the e2e a real wire-format check.
-	root, err := defaultFixtureRoot()
+	fixtureRoot, err := defaultFixtureRoot()
 	if err != nil {
 		t.Fatalf("fixture root: %v", err)
 	}
-	t.Setenv("FAKEAGENT_FIXTURE", root)
+	t.Setenv("FAKEAGENT_FIXTURE", fixtureRoot)
 	// Skip launchd/systemd/schtasks installation in the daemon. Without
 	// this the daemon would touch the developer's real launch agents.
 	t.Setenv("NM_TEST_START_DAEMON", "1")

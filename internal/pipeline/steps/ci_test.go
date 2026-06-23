@@ -764,6 +764,102 @@ func TestCIStep_StableBaseStillTimesOut(t *testing.T) {
 	}
 }
 
+func TestCIStep_ExpiredTimeoutSkipsBaseTipResolver(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	env := fakeCIGH(t, "OPEN", `[{"name":"build","state":"SUCCESS","bucket":"pass"}]`)
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 10 * time.Second
+
+	started := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
+	current := started
+
+	tipCalls := 0
+	step := &CIStep{
+		now: func() time.Time { return current },
+		baseBranchTip: func(context.Context) string {
+			tipCalls++
+			if tipCalls > 1 {
+				t.Fatal("base tip resolver should not run after timeout expiry")
+			}
+			return "sha-stable"
+		},
+		waitForNextPoll: func(context.Context, time.Duration) error {
+			current = started.Add(11 * time.Second)
+			return nil
+		},
+	}
+
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("expected timeout outcome, got error %v", err)
+	}
+	if outcome == nil || !outcome.NeedsApproval {
+		t.Fatalf("expected timeout to surface a needs-approval outcome, got %+v", outcome)
+	}
+	if tipCalls != 1 {
+		t.Fatalf("base tip resolver calls = %d, want 1", tipCalls)
+	}
+}
+
+func TestCIStep_BaseTipResolverDeadlineIsBoundedByRemainingTimeout(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	env := fakeCIGH(t, "OPEN", `[{"name":"build","state":"SUCCESS","bucket":"pass"}]`)
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 10 * time.Second
+
+	started := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
+	current := started
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	tipCalls := 0
+	step := &CIStep{
+		now: func() time.Time { return current },
+		baseBranchTip: func(ctx context.Context) string {
+			tipCalls++
+			if tipCalls == 1 {
+				return "sha-stable"
+			}
+			deadline, ok := ctx.Deadline()
+			if !ok {
+				t.Fatal("expected base tip resolver context to have a deadline")
+			}
+			if remaining := time.Until(deadline); remaining > 2*time.Second {
+				t.Fatalf("base tip resolver deadline = %v from now, want no more than 2s", remaining)
+			}
+			return "sha-stable"
+		},
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			if tipCalls == 1 {
+				current = started.Add(8 * time.Second)
+				return nil
+			}
+			cancel()
+			return ctx.Err()
+		},
+	}
+
+	if _, err := step.Execute(sctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected cancellation after deadline inspection, got %v", err)
+	}
+}
+
 // TestCIStep_UnlimitedTimeoutNeverExpires verifies that an unlimited timeout
 // (ci_timeout: "unlimited" / non-positive) makes the monitor watch until the
 // PR merges or closes, never self-terminating, and skips base-tip polling.

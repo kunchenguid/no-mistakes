@@ -180,13 +180,24 @@ Check the [Provider Integration](/no-mistakes/guides/provider-integration/) requ
 
 ## CI step stuck or timed out
 
-Symptom: CI step runs for 4 hours and pauses for approval.
+Symptom: CI step keeps monitoring an open PR longer than expected, or pauses after the idle timeout.
 
-`ci_timeout` defaults to `4h`. Raise it in `~/.no-mistakes/config.yaml`:
+`ci_timeout` defaults to `168h` (7 days) and is an idle timeout.
+It re-arms whenever the upstream default branch advances, so an active long-lived PR keeps being watched and rebased.
+Set it in `~/.no-mistakes/config.yaml` to choose a different idle window:
 
 ```yaml
-ci_timeout: "8h"
+ci_timeout: "24h"
 ```
+
+Set it to `unlimited` to monitor until the PR is merged, closed, or aborted:
+
+```yaml
+ci_timeout: "unlimited"
+```
+
+Older config files may still contain an explicit `ci_timeout: "4h"` value.
+Update that value if you want the newer default behavior.
 
 The CI step keeps monitoring while the PR remains open, even after checks are currently healthy, because a later default-branch update can make the PR conflict or rerun CI.
 Once checks are green and the PR is mergeable, the CI panel shows `✓ Checks passed` and the terminal title switches to `Checks passed`, so you can tell when to go merge the PR.

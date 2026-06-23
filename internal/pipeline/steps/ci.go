@@ -14,7 +14,10 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-const defaultChecksGracePeriod = 60 * time.Second
+const (
+	defaultChecksGracePeriod          = 60 * time.Second
+	defaultBaseBranchTipResolveWindow = 30 * time.Second
+)
 
 // CI monitoring status messages. These are surfaced to the user and parsed by
 // the TUI and the agent-facing axi commands to distinguish passed checks from
@@ -129,10 +132,24 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	timeoutFailingChecks := []string{}
 	timeoutMergeConflict := false
 	lastMonitorLog := ""
+	timeoutOutcome := func() (*pipeline.StepOutcome, error) {
+		sctx.Log("CI timeout reached")
+		if len(timeoutFailingChecks) > 0 || timeoutMergeConflict {
+			return ciFailureOutcome(timeoutFailingChecks, timeoutMergeConflict, "CI timed out with known failures still present"), nil
+		}
+		if mergeabilityBlockedReason != "" {
+			return ciMergeabilityOutcome("mergeability check timed out", mergeabilityBlockedReason), nil
+		}
+		return ciMonitoringTimeoutOutcome(), nil
+	}
 
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, err
+		}
+
+		if !unlimited && now().Sub(timeoutAnchor) >= timeout {
+			return timeoutOutcome()
 		}
 
 		// Re-arm the timeout whenever the base branch advances. A green PR can
@@ -143,7 +160,16 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		// returns a fallback SHA is harmless. Skipped when unlimited, since
 		// there is no deadline to re-arm.
 		if !unlimited {
-			if tip := baseBranchTip(ctx); tip != "" {
+			resolveWindow := defaultBaseBranchTipResolveWindow
+			if remaining := timeout - now().Sub(timeoutAnchor); remaining <= 0 {
+				return timeoutOutcome()
+			} else if remaining < resolveWindow {
+				resolveWindow = remaining
+			}
+			tipCtx, cancel := context.WithTimeout(ctx, resolveWindow)
+			tip := baseBranchTip(tipCtx)
+			cancel()
+			if tip != "" {
 				if lastBaseTip == "" {
 					lastBaseTip = tip
 				} else if tip != lastBaseTip {
@@ -156,14 +182,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 
 		elapsed := now().Sub(started)
 		if !unlimited && now().Sub(timeoutAnchor) >= timeout {
-			sctx.Log("CI timeout reached")
-			if len(timeoutFailingChecks) > 0 || timeoutMergeConflict {
-				return ciFailureOutcome(timeoutFailingChecks, timeoutMergeConflict, "CI timed out with known failures still present"), nil
-			}
-			if mergeabilityBlockedReason != "" {
-				return ciMergeabilityOutcome("mergeability check timed out", mergeabilityBlockedReason), nil
-			}
-			return ciMonitoringTimeoutOutcome(), nil
+			return timeoutOutcome()
 		}
 
 		// Check PR state (merged/closed -> exit)
