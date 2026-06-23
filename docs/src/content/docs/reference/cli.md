@@ -162,6 +162,16 @@ no-mistakes axi abort
 
 If there is no active run, this succeeds as a no-op.
 
+Pass `--run <id>` to cancel a specific run by its id instead of resolving the current branch:
+
+```sh
+no-mistakes axi abort --run <id>
+```
+
+`--run` does not need a repo, branch, or worktree, so it works from anywhere.
+Use it to reap an orphaned CI monitor whose worktree was torn down before the PR merged - the run id is shown in `axi run` output and in the `axi` home view.
+Aborting an id that is not an active run is a successful no-op.
+
 ## no-mistakes eject
 
 Remove the gate from the current repository.

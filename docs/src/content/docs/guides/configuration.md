@@ -73,8 +73,11 @@ agent_args_override:
     - gpt-5.4
     - --full-auto
 
-# How long the CI step monitors an open PR, including provider CI status and GitHub/GitLab PR mergeability, before timing out.
-ci_timeout: "4h"  # any Go duration string
+# How long the CI step monitors an open PR (provider CI status plus GitHub/GitLab
+# mergeability) with no base-branch movement before giving up. Each base-branch
+# advance re-arms the timer, so an actively-updated green PR keeps its monitor.
+# Use "unlimited" (or 0) to monitor until the PR is merged, closed, or aborted.
+ci_timeout: "168h"  # any Go duration string, or "unlimited"
 
 # Daemon log verbosity.
 log_level: info  # debug | info | warn | error

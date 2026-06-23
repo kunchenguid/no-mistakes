@@ -227,6 +227,7 @@ no-mistakes axi               # home view: current branch, active runs, next ste
 no-mistakes axi status        # full detail of the resolved run
 no-mistakes axi logs --step <name> --full   # full log output of one step
 no-mistakes axi abort         # cancel the current-branch active run
+no-mistakes axi abort --run <id>   # cancel a specific run by id (works outside its worktree)
 ` + "```" + `
 
 ## Reading the output

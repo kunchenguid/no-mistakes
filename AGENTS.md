@@ -125,6 +125,13 @@ Safest local verification sequence after non-trivial changes:
 - `allow_repo_commands` is **per-repo, read from the trusted default-branch copy of `.no-mistakes.yaml`** (declared on `RepoConfig`), never the global config and never the pushed SHA. It defaults `false`; when `true` the maintainer has opted in to honoring the pushed branch's `commands` and `agent` wholesale. A contributor cannot self-enable it from a pushed branch. When changing this logic, keep `commands`/`agent` locked to the default branch and update the e2e test `TestRepoConfigCommandsFromDefaultBranch` (incl. the `pushed_branch_cannot_self_enable` subtest).
 - The e2e harness models a trusted single-developer environment, so it commits `allow_repo_commands: true` to the default-branch `.no-mistakes.yaml` via `SetupOpts.AllowRepoCommands`; security tests pass `false` to exercise the secure default.
 
+**CI Monitor Lifecycle**
+
+- The CI step (`internal/pipeline/steps/ci.go`) babysits an open PR until it is merged, closed, the run is cancelled, or `ci_timeout` elapses. It auto-fixes failing checks and rebases on merge conflicts via `autoFixCI`.
+- `ci_timeout` is an **idle timeout, not an absolute deadline**: it re-arms (`timeoutAnchor = now()`) every time the upstream default-branch tip advances, so an actively-rebased green PR keeps its monitor no matter how long it stays open. `started` stays fixed for poll-interval/grace-period pacing; only `timeoutAnchor` moves. Re-arm only ever extends the deadline, so a transient base-tip resolution failure is fail-safe. `baseBranchTip` is injectable for tests.
+- `config.CITimeout` semantics: `>0` finite, `0` = unset (step falls back to `config.DefaultCITimeout`, 7 days), `<0` = `config.CITimeoutUnlimited` (never self-terminate). Config keyword `ci_timeout: "unlimited"` (also `none`/`off`/`never`) or any non-positive duration resolves to the unlimited sentinel via `parseCITimeout`. Keep `config.DefaultCITimeout` and the `defaultConfigYAML` `ci_timeout` value in sync (`TestDefaultConfigYAML_MatchesGoDefaults`).
+- Reap a run by id from outside its worktree with `no-mistakes axi abort --run <id>` (`runAxiAbortByRunID`). It needs only `NM_HOME` + the daemon, not a repo/branch/worktree, because `ipc.MethodCancelRun` → `RunManager.HandleCancel` only cancels runs live in daemon memory. An unknown/inactive id, or a stopped daemon, is an idempotent no-op (`aborted: false`), not an error. This is how an orphaned monitor (worktree torn down before merge) gets reaped deterministically. Bare `axi abort` (no `--run`) stays worktree/branch-scoped.
+
 **When Making Changes**
 
 - Whenever you must bring in new dependencies, check latest documentation for knowledge, and discuss with the user.

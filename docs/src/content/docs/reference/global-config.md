@@ -28,7 +28,7 @@ agent_args_override:
     - gpt-5.4
     - --full-auto
 
-ci_timeout: "4h"
+ci_timeout: "168h"
 
 log_level: info
 
@@ -173,14 +173,19 @@ agent_args_override:
 
 ### ci_timeout
 
-How long the CI step monitors an open PR, including provider CI status and on GitHub or GitLab PR mergeability, before timing out.
+How long the CI step monitors an open PR, including provider CI status and on GitHub or GitLab PR mergeability, before giving up.
 
 | | |
 |---|---|
-| Type | `string` (Go duration) |
-| Default | `4h` |
+| Type | `string` (Go duration, or `unlimited`) |
+| Default | `168h` (7 days) |
 
 Accepts any Go `time.ParseDuration` string: `30m`, `2h`, `4h30m`, etc.
+
+This is an idle timeout, not an absolute deadline: every time the base branch advances, the monitor re-arms it.
+So an actively-updated green PR keeps its monitor (and keeps getting rebased) no matter how long it stays open, while a genuinely idle/abandoned PR is still reaped after the timeout elapses.
+
+Set it to `unlimited` (or `0`, or any non-positive duration) to monitor until the PR is merged, closed, or the run is aborted with `no-mistakes axi abort --run <id>`.
 
 Legacy alias: `babysit_timeout`.
 

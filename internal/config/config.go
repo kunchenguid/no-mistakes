@@ -17,6 +17,25 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// CI monitor timeout constants.
+//
+// CITimeout is interpreted by the CI step as the maximum time to babysit an
+// open PR with no base-branch movement before giving up. The monitor re-arms
+// this timer every time the base branch advances (see internal/pipeline/steps
+// ci.go), so an actively-rebased PR keeps its monitor. The value is
+// deliberately long because a green PR can legitimately wait days on a
+// dependency PR or on review; a torn-down or abandoned run is reaped
+// explicitly via `no-mistakes axi abort --run <id>` rather than by a short
+// timeout.
+const (
+	// DefaultCITimeout is the monitor's idle timeout when ci_timeout is unset.
+	DefaultCITimeout = 7 * 24 * time.Hour
+	// CITimeoutUnlimited is the sentinel meaning "monitor until the PR is
+	// merged, closed, or the run is aborted - never self-terminate". Any
+	// non-positive ci_timeout, or the keyword "unlimited", resolves to this.
+	CITimeoutUnlimited = time.Duration(-1)
+)
+
 // GlobalConfig represents ~/.no-mistakes/config.yaml.
 type GlobalConfig struct {
 	Agent                types.AgentName     `yaml:"agent"`
@@ -168,8 +187,12 @@ agent: auto
 # acp_registry_overrides:
 #   local-gemini: node /opt/mock-acp-agent.mjs
 
-# Maximum time to monitor CI before timing out
-ci_timeout: "4h"
+# Maximum time the CI monitor babysits an open PR with no base-branch movement
+# before giving up. The monitor watches CI and auto-rebases when the base branch
+# advances; each base advance re-arms this timer, so an actively-updated green PR
+# keeps its monitor. Set to "unlimited" (or 0) to monitor until the PR is merged,
+# closed, or the run is aborted with: no-mistakes axi abort --run <id>
+ci_timeout: "168h"
 
 # Log level for daemon output
 # Options: debug, info, warn, error
@@ -433,7 +456,7 @@ func EnsureDefaultGlobalConfig(path string) {
 func LoadGlobal(path string) (*GlobalConfig, error) {
 	cfg := &GlobalConfig{
 		Agent:     types.AgentAuto,
-		CITimeout: 4 * time.Hour,
+		CITimeout: DefaultCITimeout,
 		LogLevel:  "info",
 	}
 
@@ -475,9 +498,9 @@ func LoadGlobal(path string) (*GlobalConfig, error) {
 		timeoutValue = raw.BabysitTimeout
 	}
 	if timeoutValue != "" {
-		d, err := time.ParseDuration(timeoutValue)
+		d, err := parseCITimeout(timeoutValue)
 		if err != nil {
-			return nil, fmt.Errorf("parse ci_timeout %q: %w", timeoutValue, err)
+			return nil, err
 		}
 		cfg.CITimeout = d
 	}
@@ -492,6 +515,25 @@ func LoadGlobal(path string) (*GlobalConfig, error) {
 	cfg.Test = raw.Test
 
 	return cfg, nil
+}
+
+// parseCITimeout interprets the ci_timeout config value. The keyword
+// "unlimited" (also "none"/"off"/"never"), or any non-positive duration,
+// resolves to CITimeoutUnlimited so the monitor never self-terminates;
+// otherwise the value is parsed as a Go duration.
+func parseCITimeout(value string) (time.Duration, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "unlimited", "none", "off", "never":
+		return CITimeoutUnlimited, nil
+	}
+	d, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("parse ci_timeout %q: %w", value, err)
+	}
+	if d <= 0 {
+		return CITimeoutUnlimited, nil
+	}
+	return d, nil
 }
 
 // LoadRepo reads per-repo config from dir/.no-mistakes.yaml.

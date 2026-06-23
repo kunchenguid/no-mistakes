@@ -636,3 +636,196 @@ func TestCIStep_NonEmptyPassingChecksSkipGracePeriodAndContinueMonitoring(t *tes
 		t.Fatalf("expected continued-monitoring pass log, got: %v", logs)
 	}
 }
+
+// TestCIStep_BaseBranchAdvanceRearmsTimeout verifies the monitor survives past
+// its original idle timeout when the base branch advances mid-monitoring: each
+// advance re-arms the deadline so a long-held green PR keeps getting watched
+// and rebased instead of being silently dropped.
+func TestCIStep_BaseBranchAdvanceRearmsTimeout(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	env := fakeCIGH(t, "OPEN", `[{"name":"build","state":"SUCCESS","bucket":"pass"}]`)
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 10 * time.Second
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	started := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
+	current := started
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	tipCalls := 0
+	pollCount := 0
+	step := &CIStep{
+		now: func() time.Time { return current },
+		baseBranchTip: func(context.Context) string {
+			tipCalls++
+			if tipCalls == 1 {
+				return "sha-old"
+			}
+			return "sha-new"
+		},
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			pollCount++
+			switch pollCount {
+			case 1:
+				current = started.Add(8 * time.Second)
+			case 2:
+				// 16s since start is past the 10s timeout, but the base advanced
+				// at 8s and re-armed the deadline, so monitoring must continue.
+				current = started.Add(16 * time.Second)
+			default:
+				cancel()
+				return ctx.Err()
+			}
+			return nil
+		},
+	}
+
+	if _, err := step.Execute(sctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected monitoring to continue past the original timeout after re-arm, got %v", err)
+	}
+
+	rearmed := false
+	for _, l := range logs {
+		if strings.Contains(l, "re-arming CI monitor timeout") {
+			rearmed = true
+		}
+		if strings.Contains(l, "CI timeout reached") {
+			t.Fatalf("monitor timed out despite a base-branch advance re-arm; logs: %v", logs)
+		}
+	}
+	if !rearmed {
+		t.Fatalf("expected a re-arm log after the base branch advanced; logs: %v", logs)
+	}
+}
+
+// TestCIStep_StableBaseStillTimesOut verifies the timeout still fires normally
+// for a PR whose base branch never moves, preserving the bounded-monitoring
+// behavior for genuinely idle/abandoned PRs.
+func TestCIStep_StableBaseStillTimesOut(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	env := fakeCIGH(t, "OPEN", `[{"name":"build","state":"SUCCESS","bucket":"pass"}]`)
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 10 * time.Second
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	started := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
+	current := started
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	step := &CIStep{
+		now:           func() time.Time { return current },
+		baseBranchTip: func(context.Context) string { return "sha-stable" },
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			current = started.Add(12 * time.Second)
+			return nil
+		},
+	}
+
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("expected timeout outcome, got error %v", err)
+	}
+	if outcome == nil || !outcome.NeedsApproval {
+		t.Fatalf("expected timeout to surface a needs-approval outcome, got %+v", outcome)
+	}
+	found := false
+	for _, l := range logs {
+		if strings.Contains(l, "CI timeout reached") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected 'CI timeout reached' log for a stable base, got: %v", logs)
+	}
+}
+
+// TestCIStep_UnlimitedTimeoutNeverExpires verifies that an unlimited timeout
+// (ci_timeout: "unlimited" / non-positive) makes the monitor watch until the
+// PR merges or closes, never self-terminating, and skips base-tip polling.
+func TestCIStep_UnlimitedTimeoutNeverExpires(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	env := fakeCIGH(t, "OPEN", `[{"name":"build","state":"SUCCESS","bucket":"pass"}]`)
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = config.CITimeoutUnlimited
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	started := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
+	current := started
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	tipCalls := 0
+	pollCount := 0
+	step := &CIStep{
+		now:           func() time.Time { return current },
+		baseBranchTip: func(context.Context) string { tipCalls++; return "sha" },
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			pollCount++
+			if pollCount >= 2 {
+				cancel()
+				return ctx.Err()
+			}
+			// Jump far past any finite default timeout to prove it never fires.
+			current = started.Add(30 * 24 * time.Hour)
+			return nil
+		},
+	}
+
+	if _, err := step.Execute(sctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected unlimited monitoring to continue indefinitely, got %v", err)
+	}
+	if tipCalls != 0 {
+		t.Fatalf("expected no base-tip polling under an unlimited timeout, got %d calls", tipCalls)
+	}
+	timeoutLog, noTimeoutLog := false, false
+	for _, l := range logs {
+		if strings.Contains(l, "CI timeout reached") {
+			timeoutLog = true
+		}
+		if strings.Contains(l, "no timeout, until merged or closed") {
+			noTimeoutLog = true
+		}
+	}
+	if timeoutLog {
+		t.Fatalf("unlimited monitor must not time out; logs: %v", logs)
+	}
+	if !noTimeoutLog {
+		t.Fatalf("expected the no-timeout monitoring log, got: %v", logs)
+	}
+}

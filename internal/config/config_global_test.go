@@ -20,8 +20,8 @@ func TestLoadGlobal_Defaults(t *testing.T) {
 	if cfg.Agent != types.AgentAuto {
 		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentAuto)
 	}
-	if cfg.CITimeout != 4*time.Hour {
-		t.Errorf("ci_timeout = %v, want %v", cfg.CITimeout, 4*time.Hour)
+	if cfg.CITimeout != DefaultCITimeout {
+		t.Errorf("ci_timeout = %v, want %v", cfg.CITimeout, DefaultCITimeout)
 	}
 	if cfg.LogLevel != "info" {
 		t.Errorf("log_level = %q, want %q", cfg.LogLevel, "info")
@@ -67,8 +67,8 @@ func TestEnsureDefaultGlobalConfig_CreatedConfigIsLoadable(t *testing.T) {
 	if cfg.Agent != types.AgentAuto {
 		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentAuto)
 	}
-	if cfg.CITimeout != 4*time.Hour {
-		t.Errorf("ci_timeout = %v, want %v", cfg.CITimeout, 4*time.Hour)
+	if cfg.CITimeout != DefaultCITimeout {
+		t.Errorf("ci_timeout = %v, want %v", cfg.CITimeout, DefaultCITimeout)
 	}
 	if cfg.LogLevel != "info" {
 		t.Errorf("log_level = %q, want %q", cfg.LogLevel, "info")
@@ -194,8 +194,8 @@ func TestLoadGlobal_PartialOverride(t *testing.T) {
 	if cfg.Agent != types.AgentOpenCode {
 		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentOpenCode)
 	}
-	if cfg.CITimeout != 4*time.Hour {
-		t.Errorf("ci_timeout = %v, want %v (should be default)", cfg.CITimeout, 4*time.Hour)
+	if cfg.CITimeout != DefaultCITimeout {
+		t.Errorf("ci_timeout = %v, want %v (should be default)", cfg.CITimeout, DefaultCITimeout)
 	}
 	if cfg.LogLevel != "info" {
 		t.Errorf("log_level = %q, want %q (should be default)", cfg.LogLevel, "info")
@@ -225,6 +225,36 @@ func TestLoadGlobal_InvalidDuration(t *testing.T) {
 	_, err := LoadGlobal(path)
 	if err == nil {
 		t.Fatal("expected error for invalid duration")
+	}
+}
+
+func TestLoadGlobal_CITimeoutUnlimited(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+	}{
+		{"keyword", `ci_timeout: "unlimited"`},
+		{"keyword_none", `ci_timeout: "none"`},
+		{"keyword_mixed_case", `ci_timeout: "Unlimited"`},
+		{"zero", `ci_timeout: "0"`},
+		{"zero_seconds", `ci_timeout: "0s"`},
+		{"negative", `ci_timeout: "-5m"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "config.yaml")
+			if err := os.WriteFile(path, []byte(tc.value), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := LoadGlobal(path)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if cfg.CITimeout != CITimeoutUnlimited {
+				t.Fatalf("ci_timeout = %v, want CITimeoutUnlimited (%v)", cfg.CITimeout, CITimeoutUnlimited)
+			}
+		})
 	}
 }
 
@@ -276,8 +306,8 @@ func TestDefaultConfigYAML_MatchesGoDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("YAML ci_timeout %q is not a valid duration: %v", raw.CITimeout, err)
 	}
-	if d != 4*time.Hour {
-		t.Errorf("YAML ci_timeout = %v, Go default = %v", d, 4*time.Hour)
+	if d != DefaultCITimeout {
+		t.Errorf("YAML ci_timeout = %v, Go default = %v", d, DefaultCITimeout)
 	}
 	if raw.LogLevel != "info" {
 		t.Errorf("YAML log_level = %q, Go default = %q", raw.LogLevel, "info")

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/cimonitor"
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -34,6 +35,11 @@ type CIStep struct {
 	pollIntervalOverride time.Duration        // if set, overrides computed poll interval (for testing)
 	waitForNextPoll      func(context.Context, time.Duration) error
 	now                  func() time.Time
+	// baseBranchTip resolves the current tip SHA of the upstream default
+	// branch. When it advances, the monitor re-arms its timeout so a
+	// long-held green PR keeps getting rebased. Overridable for testing;
+	// defaults to fetching the upstream default branch.
+	baseBranchTip func(context.Context) string
 }
 
 func (s *CIStep) Name() types.StepName { return types.StepCI }
@@ -88,17 +94,36 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	}
 	pr := &scm.PR{Number: prNumber, URL: prURL}
 
+	// CITimeout semantics: <0 (or "unlimited" in config) means never
+	// self-terminate; 0 means the value was never configured, so fall back
+	// to the default; >0 is an explicit finite idle timeout.
 	timeout := sctx.Config.CITimeout
+	unlimited := timeout < 0
 	if timeout == 0 {
-		timeout = 4 * time.Hour
+		timeout = config.DefaultCITimeout
 	}
 
-	sctx.Log(fmt.Sprintf("monitoring CI for PR #%s (timeout: %s)...", prNumber, timeout))
+	if unlimited {
+		sctx.Log(fmt.Sprintf("monitoring CI for PR #%s (no timeout, until merged or closed)...", prNumber))
+	} else {
+		sctx.Log(fmt.Sprintf("monitoring CI for PR #%s (timeout: %s)...", prNumber, timeout))
+	}
 	now := s.now
 	if now == nil {
 		now = time.Now
 	}
+	baseBranchTip := s.baseBranchTip
+	if baseBranchTip == nil {
+		baseBranchTip = func(ctx context.Context) string {
+			return resolveDefaultBranchTipSHA(ctx, sctx.WorkDir, sctx.Repo.UpstreamURL, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
+		}
+	}
 	started := now()
+	// timeoutAnchor is the point the idle timeout is measured from. It re-arms
+	// to now() whenever the base branch advances, while started stays fixed so
+	// poll-interval and grace-period pacing are unaffected by re-arming.
+	timeoutAnchor := started
+	lastBaseTip := ""
 	manualFixAttempted := false
 	mergeabilityBlockedReason := ""
 	timeoutFailingChecks := []string{}
@@ -110,8 +135,27 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			return nil, err
 		}
 
+		// Re-arm the timeout whenever the base branch advances. A green PR can
+		// outlive any finite timeout while waiting on a dependency PR or review;
+		// as long as its base keeps moving (the only thing that makes it go
+		// stale), the monitor stays alive to keep rebasing it. Re-arming only
+		// ever extends the deadline, so a transient resolution failure that
+		// returns a fallback SHA is harmless. Skipped when unlimited, since
+		// there is no deadline to re-arm.
+		if !unlimited {
+			if tip := baseBranchTip(ctx); tip != "" {
+				if lastBaseTip == "" {
+					lastBaseTip = tip
+				} else if tip != lastBaseTip {
+					sctx.Log(fmt.Sprintf("base branch advanced (%s..%s), re-arming CI monitor timeout", shortSHA(lastBaseTip), shortSHA(tip)))
+					timeoutAnchor = now()
+					lastBaseTip = tip
+				}
+			}
+		}
+
 		elapsed := now().Sub(started)
-		if elapsed >= timeout {
+		if !unlimited && now().Sub(timeoutAnchor) >= timeout {
 			sctx.Log("CI timeout reached")
 			if len(timeoutFailingChecks) > 0 || timeoutMergeConflict {
 				return ciFailureOutcome(timeoutFailingChecks, timeoutMergeConflict, "CI timed out with known failures still present"), nil
@@ -270,9 +314,11 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		if interval == 0 {
 			interval = pollInterval(now().Sub(started))
 		}
-		remaining := timeout - now().Sub(started)
-		if remaining < interval {
-			interval = remaining
+		if !unlimited {
+			remaining := timeout - now().Sub(timeoutAnchor)
+			if remaining < interval {
+				interval = remaining
+			}
 		}
 		waitForNextPoll := s.waitForNextPoll
 		if waitForNextPoll == nil {

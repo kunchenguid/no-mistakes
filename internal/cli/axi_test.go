@@ -346,6 +346,29 @@ func TestAxiHomeStartsCurrentBranchWhenOtherBranchIsActive(t *testing.T) {
 	}
 }
 
+// TestAxiAbortByRunIDNoOpWhenDaemonStopped covers the abort-by-id path when no
+// daemon is running: a run only exists in a live daemon's memory, so there is
+// nothing to cancel and the command reports a successful no-op without needing
+// a repo or worktree.
+func TestAxiAbortByRunIDNoOpWhenDaemonStopped(t *testing.T) {
+	nmHome := t.TempDir()
+	t.Setenv("NM_HOME", nmHome)
+
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	cmd.SetOut(&out)
+	if err := runAxiAbortByRunID(cmd, "some-run-id"); err != nil {
+		t.Fatalf("abort by id: %v\n%s", err, out.String())
+	}
+	got := out.String()
+	for _, want := range []string{"aborted: false", "run: some-run-id", "daemon not running"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected %q in abort output, got:\n%s", want, got)
+		}
+	}
+}
+
 func TestResolveRunPrefersCurrentBranchLatestRun(t *testing.T) {
 	database := openTestDB(t)
 	repo, err := database.InsertRepo(t.TempDir(), "origin", "main")

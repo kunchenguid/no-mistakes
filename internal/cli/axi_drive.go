@@ -12,6 +12,7 @@ import (
 	toon "github.com/toon-format/toon-go"
 
 	"github.com/kunchenguid/no-mistakes/internal/cimonitor"
+	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/gate"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
@@ -680,22 +681,32 @@ func gateStatusFor(rv runView, step string) string {
 }
 
 func newAxiAbortCmd() *cobra.Command {
+	var runID string
 	cmd := &cobra.Command{
-		Use:           "abort",
-		Short:         "Cancel the active pipeline run",
+		Use:   "abort",
+		Short: "Cancel the active pipeline run",
+		Long: "Cancel a pipeline run. With no flags, cancels the active run on the\n" +
+			"current branch. Pass --run <id> to cancel a specific run by its id from\n" +
+			"anywhere - including outside its worktree - so an orphaned CI monitor\n" +
+			"(e.g. after a worktree was torn down) can be reaped deterministically.",
 		Args:          cobra.NoArgs,
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return trackAxiSurface("axi-abort", "/axi/abort", nil, func() error {
-				return runAxiAbort(cmd)
+				return runAxiAbort(cmd, strings.TrimSpace(runID))
 			})
 		},
 	}
+	cmd.Flags().StringVar(&runID, "run", "", "cancel this run id directly, without resolving the current branch or worktree")
 	return cmd
 }
 
-func runAxiAbort(cmd *cobra.Command) error {
+func runAxiAbort(cmd *cobra.Command, runID string) error {
+	if runID != "" {
+		return runAxiAbortByRunID(cmd, runID)
+	}
+
 	ctx := cmd.Context()
 	env, err := openAxiEnv(true)
 	if err != nil {
@@ -729,6 +740,57 @@ func runAxiAbort(cmd *cobra.Command) error {
 		toon.Field{Key: "aborted", Value: true},
 		toon.Field{Key: "run", Value: active.Run.ID},
 		toon.Field{Key: "branch", Value: active.Run.Branch},
+	)
+	return nil
+}
+
+// runAxiAbortByRunID cancels a run by its id directly via the daemon, without
+// resolving a repo, branch, or worktree. This is how an orphaned monitor run -
+// one whose worktree was torn down before the PR merged - gets reaped from
+// outside. A run lives only in the running daemon's memory, so if the daemon is
+// not running, or the id is not an active run, there is nothing to cancel and
+// we report a successful no-op (the desired end state is already reached).
+func runAxiAbortByRunID(cmd *cobra.Command, runID string) error {
+	p, err := paths.New()
+	if err != nil {
+		return emitError(cmd, 1, fmt.Sprintf("resolve paths: %v", err))
+	}
+	if err := p.EnsureDirs(); err != nil {
+		return emitError(cmd, 1, fmt.Sprintf("create directories: %v", err))
+	}
+
+	if alive, _ := daemon.IsRunning(p); !alive {
+		emitDoc(cmd,
+			toon.Field{Key: "aborted", Value: false},
+			toon.Field{Key: "run", Value: runID},
+			toon.Field{Key: "detail", Value: "daemon not running, so no active run to cancel (no-op)"},
+		)
+		return nil
+	}
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		return emitError(cmd, 1, fmt.Sprintf("connect to daemon: %v", err))
+	}
+	defer client.Close()
+
+	var result ipc.CancelRunResult
+	if err := client.Call(ipc.MethodCancelRun, &ipc.CancelRunParams{RunID: runID}, &result); err != nil {
+		// The daemon reports an unknown/inactive run id as "no active run
+		// <id>". Treat that as an idempotent no-op: the run is already gone.
+		if strings.Contains(err.Error(), "no active run") {
+			emitDoc(cmd,
+				toon.Field{Key: "aborted", Value: false},
+				toon.Field{Key: "run", Value: runID},
+				toon.Field{Key: "detail", Value: "no active run with that id (no-op)"},
+			)
+			return nil
+		}
+		return emitError(cmd, 1, fmt.Sprintf("abort run: %v", err))
+	}
+	emitDoc(cmd,
+		toon.Field{Key: "aborted", Value: true},
+		toon.Field{Key: "run", Value: runID},
 	)
 	return nil
 }

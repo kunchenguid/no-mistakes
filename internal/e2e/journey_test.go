@@ -203,6 +203,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	assertConfiguredCommandRun(t, h)
 	assertSupersededRunCancellation(t, h)
 	assertCancelRunStopsActivePipeline(t, h)
+	assertAbortByRunIDReapsRunFromOutsideWorktree(t, h)
 	assertRespondNoWaitingStepRun(t, h)
 	assertFailingTestCommandRun(t, h)
 	assertFailingLintCommandRun(t, h)
@@ -1955,6 +1956,46 @@ func assertCancelRunStopsActivePipeline(t *testing.T, h *Harness) {
 	cancelled := waitForRunIDStatus(t, h, run.ID, types.RunCancelled, 60*time.Second)
 	if cancelled.Error == nil || !strings.Contains(*cancelled.Error, "aborted by user") {
 		t.Fatalf("expected cancelled run error to mention aborted by user, got %q", deref(cancelled.Error))
+	}
+}
+
+// assertAbortByRunIDReapsRunFromOutsideWorktree verifies `axi abort --run <id>`
+// cancels a specific run from outside its worktree (the orphaned-monitor reap
+// path), and that aborting an unknown id is an idempotent no-op rather than an
+// error.
+func assertAbortByRunIDReapsRunFromOutsideWorktree(t *testing.T, h *Harness) {
+	t.Helper()
+	slowCommand := filepath.Join(h.BinDir, "nm-abort-byid-test-e2e")
+	if err := os.WriteFile(slowCommand, []byte("#!/bin/sh\nsleep 10\n"), 0o755); err != nil {
+		t.Fatalf("write abort-by-id slow test command: %v", err)
+	}
+	config := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  test: nm-abort-byid-test-e2e\n  lint: true\n"
+	h.CommitChange("abort-by-id", ".no-mistakes.yaml", config, "configure abort-by-id slow test")
+	h.PushToGate("abort-by-id")
+	run := waitForStepStatus(t, h, "abort-by-id", types.StepTest, types.StepStatusRunning, 60*time.Second)
+
+	// Reap the run by id from a directory that is not the repo worktree, with no
+	// branch context - the way an external supervisor cancels an orphaned run.
+	out, err := h.RunInDir(h.HomeDir, "axi", "abort", "--run", run.ID)
+	if err != nil {
+		t.Fatalf("axi abort --run %s from outside worktree failed: %v\n%s", run.ID, err, out)
+	}
+	if !strings.Contains(out, "aborted: true") || !strings.Contains(out, run.ID) {
+		t.Fatalf("expected abort-by-id to confirm cancellation of %s, got:\n%s", run.ID, out)
+	}
+
+	cancelled := waitForRunIDStatus(t, h, run.ID, types.RunCancelled, 60*time.Second)
+	if cancelled.Error == nil || !strings.Contains(*cancelled.Error, "aborted by user") {
+		t.Fatalf("expected abort-by-id cancellation error to mention aborted by user, got %q", deref(cancelled.Error))
+	}
+
+	// Aborting an unknown id is a successful no-op, not an error.
+	out, err = h.RunInDir(h.HomeDir, "axi", "abort", "--run", "nonexistent-run-id")
+	if err != nil {
+		t.Fatalf("axi abort --run of an unknown id should be a no-op, got error: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "aborted: false") {
+		t.Fatalf("expected unknown-id abort to report a no-op, got:\n%s", out)
 	}
 }
 
