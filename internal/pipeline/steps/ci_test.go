@@ -668,12 +668,12 @@ func TestCIStep_BaseBranchAdvanceRearmsTimeout(t *testing.T) {
 	pollCount := 0
 	step := &CIStep{
 		now: func() time.Time { return current },
-		baseBranchTip: func(context.Context) string {
+		baseBranchTip: func(context.Context) (string, bool) {
 			tipCalls++
 			if tipCalls == 1 {
-				return "sha-old"
+				return "sha-old", true
 			}
-			return "sha-new"
+			return "sha-new", true
 		},
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
@@ -738,7 +738,7 @@ func TestCIStep_StableBaseStillTimesOut(t *testing.T) {
 
 	step := &CIStep{
 		now:           func() time.Time { return current },
-		baseBranchTip: func(context.Context) string { return "sha-stable" },
+		baseBranchTip: func(context.Context) (string, bool) { return "sha-stable", true },
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			current = started.Add(12 * time.Second)
 			return nil
@@ -764,6 +764,73 @@ func TestCIStep_StableBaseStillTimesOut(t *testing.T) {
 	}
 }
 
+func TestCIStep_UnresolvedFallbackBaseTipDoesNotRearmTimeout(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	env := fakeCIGH(t, "OPEN", `[{"name":"build","state":"SUCCESS","bucket":"pass"}]`)
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 10 * time.Second
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	started := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
+	current := started
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	tipCalls := 0
+	pollCount := 0
+	step := &CIStep{
+		now: func() time.Time { return current },
+		baseBranchTip: func(context.Context) (string, bool) {
+			tipCalls++
+			switch tipCalls {
+			case 1:
+				return "sha-remote", true
+			case 2:
+				return baseSHA, false
+			default:
+				return "sha-remote", true
+			}
+		},
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			pollCount++
+			switch pollCount {
+			case 1:
+				current = started.Add(8 * time.Second)
+			case 2:
+				current = started.Add(16 * time.Second)
+			default:
+				cancel()
+				return ctx.Err()
+			}
+			return nil
+		},
+	}
+
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("expected timeout outcome, got error %v", err)
+	}
+	if outcome == nil || !outcome.NeedsApproval {
+		t.Fatalf("expected timeout to surface a needs-approval outcome, got %+v", outcome)
+	}
+	for _, l := range logs {
+		if strings.Contains(l, "re-arming CI monitor timeout") {
+			t.Fatalf("fallback base SHA must not re-arm timeout; logs: %v", logs)
+		}
+	}
+}
+
 func TestCIStep_ExpiredTimeoutSkipsBaseTipResolver(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
@@ -783,12 +850,12 @@ func TestCIStep_ExpiredTimeoutSkipsBaseTipResolver(t *testing.T) {
 	tipCalls := 0
 	step := &CIStep{
 		now: func() time.Time { return current },
-		baseBranchTip: func(context.Context) string {
+		baseBranchTip: func(context.Context) (string, bool) {
 			tipCalls++
 			if tipCalls > 1 {
 				t.Fatal("base tip resolver should not run after timeout expiry")
 			}
-			return "sha-stable"
+			return "sha-stable", true
 		},
 		waitForNextPoll: func(context.Context, time.Duration) error {
 			current = started.Add(11 * time.Second)
@@ -831,10 +898,10 @@ func TestCIStep_BaseTipResolverDeadlineIsBoundedByRemainingTimeout(t *testing.T)
 	tipCalls := 0
 	step := &CIStep{
 		now: func() time.Time { return current },
-		baseBranchTip: func(ctx context.Context) string {
+		baseBranchTip: func(ctx context.Context) (string, bool) {
 			tipCalls++
 			if tipCalls == 1 {
-				return "sha-stable"
+				return "sha-stable", true
 			}
 			deadline, ok := ctx.Deadline()
 			if !ok {
@@ -843,7 +910,7 @@ func TestCIStep_BaseTipResolverDeadlineIsBoundedByRemainingTimeout(t *testing.T)
 			if remaining := time.Until(deadline); remaining > 2*time.Second {
 				t.Fatalf("base tip resolver deadline = %v from now, want no more than 2s", remaining)
 			}
-			return "sha-stable"
+			return "sha-stable", true
 		},
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			if tipCalls == 1 {
@@ -890,7 +957,7 @@ func TestCIStep_UnlimitedTimeoutNeverExpires(t *testing.T) {
 	pollCount := 0
 	step := &CIStep{
 		now:           func() time.Time { return current },
-		baseBranchTip: func(context.Context) string { tipCalls++; return "sha" },
+		baseBranchTip: func(context.Context) (string, bool) { tipCalls++; return "sha", true },
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
 			if pollCount >= 2 {

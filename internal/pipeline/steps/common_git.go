@@ -32,26 +32,35 @@ func resolveBranchBaseSHA(ctx context.Context, workDir, fallbackBaseSHA, default
 }
 
 func resolveDefaultBranchTipSHA(ctx context.Context, workDir, upstreamURL, fallbackBaseSHA, defaultBranch string) string {
+	sha, _ := resolveDefaultBranchTip(ctx, workDir, upstreamURL, fallbackBaseSHA, defaultBranch)
+	return sha
+}
+
+func resolveDefaultBranchTip(ctx context.Context, workDir, upstreamURL, fallbackBaseSHA, defaultBranch string) (string, bool) {
 	if strings.TrimSpace(defaultBranch) != "" {
 		remoteName := resolveUpstreamRemoteName(ctx, workDir, upstreamURL)
 		if err := git.FetchRemoteBranch(ctx, workDir, remoteName, defaultBranch); err != nil {
-			if !git.IsZeroSHA(fallbackBaseSHA) {
-				return fallbackBaseSHA
-			}
-			sha, localErr := git.Run(ctx, workDir, "rev-parse", "--verify", defaultBranch)
-			if localErr == nil && strings.TrimSpace(sha) != "" {
-				return strings.TrimSpace(sha)
-			}
-			return git.EmptyTreeSHA
+			return unresolvedDefaultBranchTip(ctx, workDir, fallbackBaseSHA, defaultBranch), false
 		}
 		for _, ref := range []string{remoteName + "/" + defaultBranch, defaultBranch} {
 			sha, err := git.Run(ctx, workDir, "rev-parse", "--verify", ref)
 			if err == nil && strings.TrimSpace(sha) != "" {
-				return strings.TrimSpace(sha)
+				return strings.TrimSpace(sha), true
 			}
 		}
 	}
-	return resolveBaseSHA(ctx, workDir, fallbackBaseSHA, defaultBranch)
+	return resolveBaseSHA(ctx, workDir, fallbackBaseSHA, defaultBranch), false
+}
+
+func unresolvedDefaultBranchTip(ctx context.Context, workDir, fallbackBaseSHA, defaultBranch string) string {
+	if !git.IsZeroSHA(fallbackBaseSHA) {
+		return fallbackBaseSHA
+	}
+	sha, localErr := git.Run(ctx, workDir, "rev-parse", "--verify", defaultBranch)
+	if localErr == nil && strings.TrimSpace(sha) != "" {
+		return strings.TrimSpace(sha)
+	}
+	return git.EmptyTreeSHA
 }
 
 func resolveUpstreamRemoteName(ctx context.Context, workDir, upstreamURL string) string {

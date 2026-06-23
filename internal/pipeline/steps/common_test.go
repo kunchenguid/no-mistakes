@@ -138,6 +138,13 @@ func TestResolveDefaultBranchTipSHA_FetchesRemoteTip(t *testing.T) {
 		t.Fatal("expected origin/main to be stale before resolveDefaultBranchTipSHA")
 	}
 
+	tip, resolved := resolveDefaultBranchTip(context.Background(), workDir, upstream, staleOriginTip, "main")
+	if !resolved {
+		t.Fatal("resolveDefaultBranchTip reported unresolved after fetching remote tip")
+	}
+	if tip != remoteTip {
+		t.Fatalf("resolveDefaultBranchTip = %q, want remote tip %q", tip, remoteTip)
+	}
 	got := resolveDefaultBranchTipSHA(context.Background(), workDir, upstream, staleOriginTip, "main")
 	if got != remoteTip {
 		t.Fatalf("resolveDefaultBranchTipSHA = %q, want remote tip %q", got, remoteTip)
@@ -232,6 +239,13 @@ func TestResolveDefaultBranchTipSHA_FetchFailureAvoidsStaleOriginRef(t *testing.
 	gitCmd(t, workDir, "remote", "set-url", "origin", filepath.Join(upstream, "missing"))
 
 	fallbackBaseSHA := "abc123"
+	tip, resolved := resolveDefaultBranchTip(context.Background(), workDir, upstream, fallbackBaseSHA, "main")
+	if resolved {
+		t.Fatal("resolveDefaultBranchTip reported resolved after fetch failure")
+	}
+	if tip != fallbackBaseSHA {
+		t.Fatalf("resolveDefaultBranchTip = %q, want fallback base %q when fetch fails", tip, fallbackBaseSHA)
+	}
 	got := resolveDefaultBranchTipSHA(context.Background(), workDir, upstream, fallbackBaseSHA, "main")
 	if got != fallbackBaseSHA {
 		t.Fatalf("resolveDefaultBranchTipSHA = %q, want fallback base %q when fetch fails", got, fallbackBaseSHA)
@@ -284,6 +298,13 @@ func TestResolveDefaultBranchTipSHA_FetchFailureAvoidsStaleLocalBranch(t *testin
 	gitCmd(t, workDir, "remote", "set-url", "origin", filepath.Join(upstream, "missing"))
 
 	fallbackBaseSHA := "abc123"
+	tip, resolved := resolveDefaultBranchTip(context.Background(), workDir, upstream, fallbackBaseSHA, "main")
+	if resolved {
+		t.Fatal("resolveDefaultBranchTip reported resolved after fetch failure")
+	}
+	if tip != fallbackBaseSHA {
+		t.Fatalf("resolveDefaultBranchTip = %q, want fallback base %q when fetch fails", tip, fallbackBaseSHA)
+	}
 	got := resolveDefaultBranchTipSHA(context.Background(), workDir, upstream, fallbackBaseSHA, "main")
 	if got != fallbackBaseSHA {
 		t.Fatalf("resolveDefaultBranchTipSHA = %q, want fallback base %q when fetch fails", got, fallbackBaseSHA)

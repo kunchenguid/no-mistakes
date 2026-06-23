@@ -39,10 +39,10 @@ type CIStep struct {
 	waitForNextPoll      func(context.Context, time.Duration) error
 	now                  func() time.Time
 	// baseBranchTip resolves the current tip SHA of the upstream default
-	// branch. When it advances, the monitor re-arms its timeout so a
-	// long-held green PR keeps getting rebased. Overridable for testing;
-	// defaults to fetching the upstream default branch.
-	baseBranchTip func(context.Context) string
+	// branch. The bool is false when the SHA is a fallback/unknown value and
+	// must not re-arm the timeout. Overridable for testing; defaults to
+	// fetching the upstream default branch.
+	baseBranchTip func(context.Context) (string, bool)
 }
 
 func (s *CIStep) Name() types.StepName { return types.StepCI }
@@ -117,8 +117,8 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	}
 	baseBranchTip := s.baseBranchTip
 	if baseBranchTip == nil {
-		baseBranchTip = func(ctx context.Context) string {
-			return resolveDefaultBranchTipSHA(ctx, sctx.WorkDir, sctx.Repo.UpstreamURL, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
+		baseBranchTip = func(ctx context.Context) (string, bool) {
+			return resolveDefaultBranchTip(ctx, sctx.WorkDir, sctx.Repo.UpstreamURL, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
 		}
 	}
 	started := now()
@@ -152,13 +152,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			return timeoutOutcome()
 		}
 
-		// Re-arm the timeout whenever the base branch advances. A green PR can
-		// outlive any finite timeout while waiting on a dependency PR or review;
-		// as long as its base keeps moving (the only thing that makes it go
-		// stale), the monitor stays alive to keep rebasing it. Re-arming only
-		// ever extends the deadline, so a transient resolution failure that
-		// returns a fallback SHA is harmless. Skipped when unlimited, since
-		// there is no deadline to re-arm.
+		// Re-arm the timeout whenever the base branch advances.
 		if !unlimited {
 			resolveWindow := defaultBaseBranchTipResolveWindow
 			if remaining := timeout - now().Sub(timeoutAnchor); remaining <= 0 {
@@ -167,9 +161,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 				resolveWindow = remaining
 			}
 			tipCtx, cancel := context.WithTimeout(ctx, resolveWindow)
-			tip := baseBranchTip(tipCtx)
+			tip, resolved := baseBranchTip(tipCtx)
 			cancel()
-			if tip != "" {
+			if resolved && tip != "" {
 				if lastBaseTip == "" {
 					lastBaseTip = tip
 				} else if tip != lastBaseTip {
