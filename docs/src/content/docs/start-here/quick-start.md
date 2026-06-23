@@ -24,7 +24,7 @@ no-mistakes doctor
 You need:
 
 - `git`
-- One supported agent binary (`claude`, `codex`, `acli` for Rovo Dev, `opencode`, or `pi`), or a separately installed `acpx` binary for `agent: acp:<target>`
+- One supported agent binary (`claude`, `codex`, `acli` for Rovo Dev, `opencode`, `pi`, or `copilot`), or a separately installed `acpx` binary for `agent: acp:<target>`
 - For PRs and CI: `gh` (GitHub), `glab` (GitLab), or Bitbucket Cloud credentials
 
 For ACP agents, verify `acpx` or `acpx_path` separately because `no-mistakes doctor` does not validate ACP targets.

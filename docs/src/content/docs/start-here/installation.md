@@ -47,7 +47,7 @@ make install
 ## Prerequisites
 
 - **git** - required
-- **One supported agent binary** - `claude`, `codex`, `acli` (Rovo Dev), `opencode`, or `pi`, or a separately installed `acpx` binary for `agent: acp:<target>`
+- **One supported agent binary** - `claude`, `codex`, `acli` (Rovo Dev), `opencode`, `pi`, or `copilot`, or a separately installed `acpx` binary for `agent: acp:<target>`
 - **Optional, for PRs and CI:**
   - `gh` CLI (GitHub)
   - `glab` CLI (GitLab)

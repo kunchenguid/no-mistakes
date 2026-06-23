@@ -97,6 +97,7 @@ func newDoctorCmd() *cobra.Command {
 					{"rovodev", "acli"},
 					{"opencode", "opencode"},
 					{"pi", "pi"},
+					{"copilot", "copilot"},
 				}
 				fmt.Fprintln(w)
 				fmt.Fprintf(w, "  %s\n", sCyan.Render("Agents"))
