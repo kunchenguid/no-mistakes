@@ -111,6 +111,12 @@ no-mistakes daemon stop
 no-mistakes daemon start
 ```
 
+## Agents fail with "403 Request not allowed" behind a proxy
+
+Symptom: runs fail and the step log shows agents (for example `claude --print`) unable to reach the network, often with `403 Request not allowed`.
+
+A managed daemon started by launchd or systemd inherits only a minimal environment, so it does not see the `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` / `ALL_PROXY` variables from your shell. `no-mistakes` bakes any proxy variables that are set when you install or refresh the service into the generated service definition. If you set up the proxy after installing, re-run the installer or `no-mistakes daemon restart` (with the proxy variables exported) so they get baked in, then confirm them in `~/.config/systemd/user/no-mistakes-daemon-*.service` on Linux or `~/Library/LaunchAgents/com.kunchenguid.no-mistakes.daemon.*.plist` on macOS. Windows Task Scheduler inherits your logon environment and needs no forwarding.
+
 ## macOS App Management prompts during agent runs
 
 Pipeline prompts steer agents to keep intentional writes inside the disposable worktree and avoid mutating system locations such as `/Applications`, Homebrew-managed packages, or global tool configuration.
