@@ -67,6 +67,25 @@ func serviceProxyEnv() [][2]string {
 	return out
 }
 
+// writeServiceFile writes a generated service definition (systemd unit or
+// launchd plist) with a permission mode that depends on whether proxy values
+// were forwarded into it. When proxy variables are present the file may carry
+// sensitive data (a proxy URL can embed credentials, e.g. http://user:pass@host),
+// so it is restricted to owner-only 0600; otherwise the conventional 0644 is
+// kept so non-proxy installs are byte-for-byte and mode-for-mode unchanged.
+// os.WriteFile only applies the mode when creating the file, so an explicit
+// Chmod enforces it on re-install when the file already exists.
+func writeServiceFile(path, content string) error {
+	mode := os.FileMode(0o644)
+	if len(serviceProxyEnv()) > 0 {
+		mode = 0o600
+	}
+	if err := os.WriteFile(path, []byte(content), mode); err != nil {
+		return err
+	}
+	return os.Chmod(path, mode)
+}
+
 // defaultServiceManagerBypassed reports whether managed-service plumbing
 // (launchctl/systemctl/schtasks) should be skipped.
 //

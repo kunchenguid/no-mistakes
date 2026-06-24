@@ -187,3 +187,33 @@ func TestRenderSystemdUnitForwardsProxyEnv(t *testing.T) {
 		}
 	}
 }
+
+func TestWriteServiceFileTightensModeWhenProxyPresent(t *testing.T) {
+	for _, key := range proxyEnvKeys {
+		t.Setenv(key, "")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "unit")
+
+	// No proxy: the conventional 0644 is kept.
+	if err := writeServiceFile(path, "no-proxy"); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(path); err != nil {
+		t.Fatal(err)
+	} else if got := info.Mode().Perm(); got != 0o644 {
+		t.Fatalf("without proxy, mode = %o, want 0644", got)
+	}
+
+	// Proxy present: re-installing over the existing 0644 file must tighten it
+	// to owner-only 0600 so forwarded credentials are not world-readable.
+	t.Setenv("HTTPS_PROXY", "http://user:pass@127.0.0.1:7897")
+	if err := writeServiceFile(path, "with-proxy"); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(path); err != nil {
+		t.Fatal(err)
+	} else if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("with proxy, mode = %o, want 0600", got)
+	}
+}

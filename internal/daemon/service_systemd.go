@@ -19,7 +19,7 @@ func installSystemdUserService(p *paths.Paths, exe string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create systemd user directory: %w", err)
 	}
-	if err := os.WriteFile(path, []byte(renderSystemdUnit(exe, p, home)), 0o644); err != nil {
+	if err := writeServiceFile(path, renderSystemdUnit(exe, p, home)); err != nil {
 		return fmt.Errorf("write systemd unit: %w", err)
 	}
 	if _, err := serviceCommandRunner("systemctl", "--user", "daemon-reload"); err != nil {

@@ -33,7 +33,7 @@ func installLaunchAgent(p *paths.Paths, exe string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create launch agents directory: %w", err)
 	}
-	if err := os.WriteFile(path, []byte(renderLaunchAgent(exe, p, home)), 0o644); err != nil {
+	if err := writeServiceFile(path, renderLaunchAgent(exe, p, home)); err != nil {
 		return fmt.Errorf("write launch agent: %w", err)
 	}
 	cleanupLegacyLaunchAgent(p)
