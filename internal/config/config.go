@@ -40,6 +40,7 @@ const (
 // GlobalConfig represents ~/.no-mistakes/config.yaml.
 type GlobalConfig struct {
 	Agent                types.AgentName     `yaml:"agent"`
+	ReviewBackend        string              `yaml:"review_backend"`
 	ACPXPath             string              `yaml:"acpx_path"`
 	ACPRegistryOverrides map[string]string   `yaml:"acp_registry_overrides"`
 	AgentPathOverride    map[string]string   `yaml:"agent_path_override"`
@@ -54,6 +55,7 @@ type GlobalConfig struct {
 // globalConfigRaw is the on-disk YAML representation with duration as string.
 type globalConfigRaw struct {
 	Agent                types.AgentName     `yaml:"agent"`
+	ReviewBackend        string              `yaml:"review_backend"`
 	ACPXPath             string              `yaml:"acpx_path"`
 	ACPRegistryOverrides map[string]string   `yaml:"acp_registry_overrides"`
 	AgentPathOverride    map[string]string   `yaml:"agent_path_override"`
@@ -69,6 +71,7 @@ type globalConfigRaw struct {
 // RepoConfig represents .no-mistakes.yaml in a repo root.
 type RepoConfig struct {
 	Agent          types.AgentName `yaml:"agent"`
+	ReviewBackend  string          `yaml:"review_backend"`
 	Commands       Commands        `yaml:"commands"`
 	IgnorePatterns []string        `yaml:"ignore_patterns"`
 	// AllowRepoCommands opts in to honoring the code-executing selection
@@ -116,6 +119,7 @@ type AutoFix struct {
 // Config is the merged result of global + per-repo configuration.
 type Config struct {
 	Agent                types.AgentName
+	ReviewBackend        string
 	ACPXPath             string
 	ACPRegistryOverrides map[string]string
 	AgentPathOverride    map[string]string
@@ -180,6 +184,10 @@ const defaultConfigYAML = `# no-mistakes global configuration
 # "auto" detects the first available native agent on your system
 # Use acp:<target> to run an optional user-installed acpx target, for example acp:gemini
 agent: auto
+
+# Review backend to use for the review step
+# Options: agent, autoreview
+review_backend: agent
 
 # Optional path to the user-installed acpx binary for acp:<target> agents
 # acpx_path: acpx
@@ -466,9 +474,10 @@ func EnsureDefaultGlobalConfig(path string) {
 // LoadGlobal reads global config from path. Returns defaults if file doesn't exist.
 func LoadGlobal(path string) (*GlobalConfig, error) {
 	cfg := &GlobalConfig{
-		Agent:     types.AgentAuto,
-		CITimeout: DefaultCITimeout,
-		LogLevel:  "info",
+		Agent:         types.AgentAuto,
+		ReviewBackend: "agent",
+		CITimeout:     DefaultCITimeout,
+		LogLevel:      "info",
 	}
 
 	data, err := os.ReadFile(path)
@@ -488,6 +497,12 @@ func LoadGlobal(path string) (*GlobalConfig, error) {
 
 	if raw.Agent != "" {
 		cfg.Agent = raw.Agent
+	}
+	if raw.ReviewBackend != "" {
+		if err := validateReviewBackend(raw.ReviewBackend); err != nil {
+			return nil, err
+		}
+		cfg.ReviewBackend = raw.ReviewBackend
 	}
 	if raw.ACPXPath != "" {
 		cfg.ACPXPath = raw.ACPXPath
@@ -577,6 +592,11 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("parse repo config: %w", err)
 	}
+	if cfg.ReviewBackend != "" {
+		if err := validateReviewBackend(cfg.ReviewBackend); err != nil {
+			return nil, err
+		}
+	}
 	if cfg.AutoFix.CI == nil {
 		cfg.AutoFix.CI = cfg.AutoFix.Babysit
 	}
@@ -614,11 +634,22 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 	if trusted != nil {
 		effective.Commands = trusted.Commands
 		effective.Agent = trusted.Agent
+		effective.ReviewBackend = trusted.ReviewBackend
 	} else {
 		effective.Commands = Commands{}
 		effective.Agent = ""
+		effective.ReviewBackend = ""
 	}
 	return &effective
+}
+
+func validateReviewBackend(value string) error {
+	switch strings.TrimSpace(value) {
+	case "", "agent", "autoreview":
+		return nil
+	default:
+		return fmt.Errorf("invalid review_backend %q (valid: agent, autoreview)", value)
+	}
 }
 
 // ParseLogLevel converts a log level string to slog.Level.
@@ -764,6 +795,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 
 	cfg := &Config{
 		Agent:                global.Agent,
+		ReviewBackend:        global.ReviewBackend,
 		ACPXPath:             global.ACPXPath,
 		ACPRegistryOverrides: global.ACPRegistryOverrides,
 		AgentPathOverride:    global.AgentPathOverride,
@@ -779,6 +811,9 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 
 	if repo.Agent != "" {
 		cfg.Agent = repo.Agent
+	}
+	if repo.ReviewBackend != "" {
+		cfg.ReviewBackend = repo.ReviewBackend
 	}
 
 	return cfg

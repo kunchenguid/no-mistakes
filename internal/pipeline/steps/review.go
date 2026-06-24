@@ -3,11 +3,14 @@ package steps
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -128,12 +131,53 @@ Previous review findings to address:
 		}, nil
 	}
 
-	// Ask agent to review
 	sctx.Log("reviewing changes...")
 
 	historySection := executionContextPromptSection() + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx)
+	var findings Findings
+	if sctx.Config.ReviewBackend == "autoreview" {
+		reviewContext := fmt.Sprintf(`no-mistakes review context:
+- branch: %s
+- base commit: %s
+- target commit: %s
+- review scope: %s
+- default branch: %s
+- ignore patterns: %s%s`,
+			branch,
+			baseSHA,
+			sctx.Run.HeadSHA,
+			reviewScope,
+			sctx.Repo.DefaultBranch,
+			ignorePatterns,
+			historySection,
+		)
 
-	prompt := fmt.Sprintf(
+		var err error
+		findings, err = runAutoreview(sctx, baseSHA, reviewContext)
+		if err != nil {
+			return nil, fmt.Errorf("autoreview: %w", err)
+		}
+	} else {
+		var err error
+		findings, err = runAgentReview(sctx, agentReviewPrompt(branch, baseSHA, sctx.Run.HeadSHA, reviewScope, sctx.Repo.DefaultBranch, ignorePatterns, historySection))
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	needsApproval := hasBlockingFindings(findings.Items)
+	findingsJSON, _ := json.Marshal(findings)
+
+	return &pipeline.StepOutcome{
+		NeedsApproval: needsApproval,
+		AutoFixable:   len(findings.Items) > 0,
+		Findings:      string(findingsJSON),
+		FixSummary:    fixSummary,
+	}, nil
+}
+
+func agentReviewPrompt(branch, baseSHA, headSHA, reviewScope, defaultBranch, ignorePatterns, historySection string) string {
+	return fmt.Sprintf(
 		`Review the code changes and return structured findings with a risk assessment.
 
 Context:
@@ -172,24 +216,24 @@ Risk assessment (after listing all findings):
 - Provide a one-sentence risk_rationale explaining why you chose that risk level.%s`,
 		branch,
 		baseSHA,
-		sctx.Run.HeadSHA,
+		headSHA,
 		reviewScope,
-		sctx.Repo.DefaultBranch,
+		defaultBranch,
 		ignorePatterns,
 		historySection,
 	)
+}
 
-	result, err := sctx.Agent.Run(ctx, agent.RunOpts{
+func runAgentReview(sctx *pipeline.StepContext, prompt string) (Findings, error) {
+	result, err := sctx.Agent.Run(sctx.Ctx, agent.RunOpts{
 		Prompt:     prompt,
 		CWD:        sctx.WorkDir,
 		JSONSchema: reviewFindingsSchema,
 		OnChunk:    sctx.LogChunk,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("agent review: %w", err)
+		return Findings{}, fmt.Errorf("agent review: %w", err)
 	}
-
-	// Parse structured findings
 	var findings Findings
 	if result.Output != nil {
 		if err := json.Unmarshal(result.Output, &findings); err != nil {
@@ -197,16 +241,173 @@ Risk assessment (after listing all findings):
 			findings = Findings{Summary: result.Text}
 		}
 	}
+	return findings, nil
+}
 
-	needsApproval := hasBlockingFindings(findings.Items)
-	findingsJSON, _ := json.Marshal(findings)
+type autoreviewReport struct {
+	Findings           []autoreviewFinding `json:"findings"`
+	OverallCorrectness string              `json:"overall_correctness"`
+	OverallExplanation string              `json:"overall_explanation"`
+	OverallConfidence  float64             `json:"overall_confidence"`
+}
 
-	return &pipeline.StepOutcome{
-		NeedsApproval: needsApproval,
-		AutoFixable:   len(findings.Items) > 0,
-		Findings:      string(findingsJSON),
-		FixSummary:    fixSummary,
-	}, nil
+type autoreviewFinding struct {
+	Title        string                 `json:"title"`
+	Body         string                 `json:"body"`
+	Priority     string                 `json:"priority"`
+	Confidence   float64                `json:"confidence"`
+	Category     string                 `json:"category"`
+	CodeLocation autoreviewCodeLocation `json:"code_location"`
+}
+
+type autoreviewCodeLocation struct {
+	FilePath string `json:"file_path"`
+	Line     int    `json:"line"`
+}
+
+func runAutoreview(sctx *pipeline.StepContext, baseSHA, reviewContext string) (Findings, error) {
+	outputFile, err := os.CreateTemp("", "no-mistakes-autoreview-*.json")
+	if err != nil {
+		return Findings{}, fmt.Errorf("create output file: %w", err)
+	}
+	outputPath := outputFile.Name()
+	if err := outputFile.Close(); err != nil {
+		return Findings{}, fmt.Errorf("close output file: %w", err)
+	}
+	defer os.Remove(outputPath)
+
+	args := []string{
+		"--mode", "branch",
+		"--base", baseSHA,
+		"--engine", "codex",
+		"--model", "gpt-5.5",
+		"--thinking", "medium",
+		"--json-output", outputPath,
+	}
+	if strings.TrimSpace(reviewContext) != "" {
+		args = append(args, "--prompt", reviewContext)
+	}
+
+	cmd := stepCmd(sctx, autoreviewBinary(sctx), args...)
+	shellenv.ConfigureShellCommand(cmd)
+	out, runErr := cmd.CombinedOutput()
+	if len(out) > 0 && sctx.LogChunk != nil {
+		sctx.LogChunk(string(out))
+	}
+
+	raw, readErr := os.ReadFile(outputPath)
+	if readErr != nil {
+		if runErr != nil {
+			return Findings{}, fmt.Errorf("%w: %s", runErr, strings.TrimSpace(string(out)))
+		}
+		return Findings{}, fmt.Errorf("read output file: %w", readErr)
+	}
+	if strings.TrimSpace(string(raw)) == "" {
+		if runErr != nil {
+			return Findings{}, fmt.Errorf("%w: %s", runErr, strings.TrimSpace(string(out)))
+		}
+		return Findings{}, fmt.Errorf("empty output file")
+	}
+
+	var report autoreviewReport
+	if err := json.Unmarshal(raw, &report); err != nil {
+		return Findings{}, fmt.Errorf("parse output JSON: %w", err)
+	}
+	return convertAutoreviewReport(report), nil
+}
+
+func autoreviewBinary(sctx *pipeline.StepContext) string {
+	if value, ok := envValue(sctx.Env, "NM_AUTOREVIEW_BIN"); ok && strings.TrimSpace(value) != "" {
+		return strings.TrimSpace(value)
+	}
+	if value := strings.TrimSpace(os.Getenv("NM_AUTOREVIEW_BIN")); value != "" {
+		return value
+	}
+	if _, err := exec.LookPath("autoreview"); err == nil {
+		return "autoreview"
+	}
+	return "autoreview"
+}
+
+func convertAutoreviewReport(report autoreviewReport) Findings {
+	findings := Findings{
+		Summary:       summarizeAutoreviewReport(report),
+		RiskLevel:     riskLevelForAutoreviewReport(report),
+		RiskRationale: strings.TrimSpace(report.OverallExplanation),
+	}
+	if findings.RiskRationale == "" {
+		findings.RiskRationale = "autoreview did not provide a rationale"
+	}
+	for i, item := range report.Findings {
+		findings.Items = append(findings.Items, Finding{
+			ID:          fmt.Sprintf("autoreview-%d", i+1),
+			Severity:    autoreviewSeverity(item.Priority),
+			File:        item.CodeLocation.FilePath,
+			Line:        item.CodeLocation.Line,
+			Description: autoreviewDescription(item),
+			Action:      autoreviewAction(item.Priority),
+		})
+	}
+	return findings
+}
+
+func summarizeAutoreviewReport(report autoreviewReport) string {
+	if len(report.Findings) == 0 {
+		return "autoreview found no actionable issues"
+	}
+	return fmt.Sprintf("autoreview found %d actionable issue(s)", len(report.Findings))
+}
+
+func riskLevelForAutoreviewReport(report autoreviewReport) string {
+	high := report.OverallCorrectness == "patch is incorrect"
+	medium := false
+	for _, item := range report.Findings {
+		switch item.Priority {
+		case "P0", "P1":
+			high = true
+		case "P2":
+			medium = true
+		}
+	}
+	if high {
+		return "high"
+	}
+	if medium {
+		return "medium"
+	}
+	return "low"
+}
+
+func autoreviewSeverity(priority string) string {
+	switch priority {
+	case "P0", "P1":
+		return "error"
+	case "P2":
+		return "warning"
+	default:
+		return "info"
+	}
+}
+
+func autoreviewAction(priority string) string {
+	if priority == "P3" {
+		return types.ActionNoOp
+	}
+	return types.ActionAutoFix
+}
+
+func autoreviewDescription(item autoreviewFinding) string {
+	parts := []string{}
+	if title := strings.TrimSpace(item.Title); title != "" {
+		parts = append(parts, title)
+	}
+	if body := strings.TrimSpace(item.Body); body != "" {
+		parts = append(parts, body)
+	}
+	if item.Category != "" {
+		parts = append(parts, "category: "+item.Category)
+	}
+	return strings.Join(parts, "\n\n")
 }
 
 func sanitizedPreviousFindingsForPrompt(raw string) string {

@@ -3,8 +3,10 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -28,7 +30,6 @@ func TestReviewStep_FixMode(t *testing.T) {
 				os.WriteFile(filepath.Join(dir, "review-fix.txt"), []byte("fixed"), 0o644)
 				return &agent.Result{Output: json.RawMessage(`{"summary":"  'address review findings.'  "}`)}, nil
 			}
-			// Review call — return clean findings
 			findings := Findings{Items: nil, Summary: "all clear"}
 			j, _ := json.Marshal(findings)
 			return &agent.Result{Output: j}, nil
@@ -158,9 +159,6 @@ func TestReviewStep_RoundHistorySanitizesAgentInput(t *testing.T) {
 			if !strings.Contains(opts.Prompt, "Do NOT re-report findings listed under user_chose_to_ignore") {
 				t.Fatal("expected prompt to include the ignore-list instruction")
 			}
-			// Sanitized fields should appear inside the JSON-encoded finding line:
-			// the raw newline in the id is collapsed to a space, then JSON-encoded
-			// so the embedded quote becomes \".
 			if !strings.Contains(opts.Prompt, `"id":"review-1\" injected instruction"`) {
 				t.Fatalf("expected JSON-escaped finding id in prompt, got %q", opts.Prompt)
 			}
@@ -190,6 +188,117 @@ func TestReviewStep_RoundHistorySanitizesAgentInput(t *testing.T) {
 	if len(ag.calls) != 1 {
 		t.Fatalf("expected 1 agent call, got %d", len(ag.calls))
 	}
+}
+
+func TestReviewStep_AutoreviewBackend(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	autoreviewEnv, autoreviewLog := fakeAutoreview(t, `{"findings":[{"title":"Broken cache key","body":"The new key omits the tenant.","priority":"P1","confidence":0.92,"category":"bug","code_location":{"file_path":"cache.go","line":42}}],"overall_correctness":"patch is incorrect","overall_explanation":"The cache bug is blocking.","overall_confidence":0.91}`, 1)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			t.Fatal("autoreview backend should not call the configured agent")
+			return nil, nil
+		},
+	}
+
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.ReviewBackend = "autoreview"
+	sctx.Env = autoreviewEnv
+
+	step := &ReviewStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("expected blocking autoreview finding to need approval")
+	}
+	findings, err := types.ParseFindingsJSON(outcome.Findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings.Items) != 1 {
+		t.Fatalf("expected one finding, got %+v", findings.Items)
+	}
+	if got := findings.Items[0]; got.ID != "autoreview-1" || got.Severity != "error" || got.Action != types.ActionAutoFix || got.File != "cache.go" || got.Line != 42 {
+		t.Fatalf("finding = %+v", got)
+	}
+	logBytes, err := os.ReadFile(autoreviewLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := string(logBytes)
+	for _, want := range []string{"--engine codex", "--model gpt-5.5", "--thinking medium", "--base " + baseSHA, "no-mistakes review context"} {
+		if !strings.Contains(log, want) {
+			t.Fatalf("autoreview args missing %q in %q", want, log)
+		}
+	}
+}
+
+func TestConvertAutoreviewReport(t *testing.T) {
+	report := autoreviewReport{
+		Findings: []autoreviewFinding{
+			{
+				Title:      "Broken cache key",
+				Body:       "The new key omits the tenant.",
+				Priority:   "P1",
+				Category:   "bug",
+				Confidence: 0.92,
+				CodeLocation: autoreviewCodeLocation{
+					FilePath: "cache.go",
+					Line:     42,
+				},
+			},
+			{
+				Title:    "Consider narrowing helper",
+				Priority: "P3",
+				CodeLocation: autoreviewCodeLocation{
+					FilePath: "helper.go",
+					Line:     7,
+				},
+			},
+		},
+		OverallCorrectness: "patch is incorrect",
+		OverallExplanation: "The cache bug is blocking.",
+		OverallConfidence:  0.91,
+	}
+
+	findings := convertAutoreviewReport(report)
+	if findings.RiskLevel != "high" {
+		t.Fatalf("RiskLevel = %q, want high", findings.RiskLevel)
+	}
+	if findings.RiskRationale != "The cache bug is blocking." {
+		t.Fatalf("RiskRationale = %q", findings.RiskRationale)
+	}
+	if len(findings.Items) != 2 {
+		t.Fatalf("Items count = %d, want 2", len(findings.Items))
+	}
+	if got := findings.Items[0]; got.ID != "autoreview-1" || got.Severity != "error" || got.Action != types.ActionAutoFix || got.File != "cache.go" || got.Line != 42 {
+		t.Fatalf("first finding = %+v", got)
+	}
+	if got := findings.Items[1]; got.Severity != "info" || got.Action != types.ActionNoOp {
+		t.Fatalf("second finding = %+v", got)
+	}
+}
+
+func fakeAutoreview(t *testing.T, report string, exitCode int) (env []string, logFile string) {
+	t.Helper()
+	binDir := fakeCLIBinDir(t)
+	logFile = filepath.Join(t.TempDir(), "autoreview.log")
+	linkTestBinary(t, binDir, "autoreview")
+	binPath := filepath.Join(binDir, "autoreview")
+	if runtime.GOOS == "windows" {
+		binPath += ".exe"
+	}
+	return fakeCLIEnv(binDir, map[string]string{
+		"FAKE_CLI_MODE":             "autoreview",
+		"FAKE_CLI_LOG":              logFile,
+		"FAKE_AUTOREVIEW_REPORT":    report,
+		"FAKE_AUTOREVIEW_EXIT_CODE": fmt.Sprintf("%d", exitCode),
+		"NM_AUTOREVIEW_BIN":         binPath,
+	}), logFile
 }
 
 func mustLatestRoundID(t *testing.T, sctx *pipeline.StepContext) string {

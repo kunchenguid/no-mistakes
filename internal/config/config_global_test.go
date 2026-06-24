@@ -20,6 +20,9 @@ func TestLoadGlobal_Defaults(t *testing.T) {
 	if cfg.Agent != types.AgentAuto {
 		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentAuto)
 	}
+	if cfg.ReviewBackend != "agent" {
+		t.Errorf("review_backend = %q, want agent", cfg.ReviewBackend)
+	}
 	if cfg.CITimeout != DefaultCITimeout {
 		t.Errorf("ci_timeout = %v, want %v", cfg.CITimeout, DefaultCITimeout)
 	}
@@ -44,6 +47,7 @@ func TestEnsureDefaultGlobalConfig_CreatesFile(t *testing.T) {
 	content := string(data)
 	for _, want := range []string{
 		"agent: auto",
+		"review_backend: agent",
 		"ci_timeout:",
 		"log_level: info",
 		"# agent_path_override:",
@@ -66,6 +70,9 @@ func TestEnsureDefaultGlobalConfig_CreatedConfigIsLoadable(t *testing.T) {
 	}
 	if cfg.Agent != types.AgentAuto {
 		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentAuto)
+	}
+	if cfg.ReviewBackend != "agent" {
+		t.Errorf("review_backend = %q, want agent", cfg.ReviewBackend)
 	}
 	if cfg.CITimeout != DefaultCITimeout {
 		t.Errorf("ci_timeout = %v, want %v", cfg.CITimeout, DefaultCITimeout)

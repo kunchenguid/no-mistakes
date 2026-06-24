@@ -26,13 +26,17 @@ func TestMerge_GlobalOnly(t *testing.T) {
 
 func TestMerge_RepoOverridesAgent(t *testing.T) {
 	global := &GlobalConfig{
-		Agent:             types.AgentClaude,
-		AgentPathOverride: map[string]string{"claude": "/usr/bin/claude"},
-		CITimeout:         4 * time.Hour,
-		LogLevel:          "info",
+		Agent:         types.AgentClaude,
+		ReviewBackend: "agent",
+		AgentPathOverride: map[string]string{
+			"claude": "/usr/bin/claude",
+		},
+		CITimeout: 4 * time.Hour,
+		LogLevel:  "info",
 	}
 	repo := &RepoConfig{
-		Agent: types.AgentCodex,
+		Agent:         types.AgentCodex,
+		ReviewBackend: "autoreview",
 		Commands: Commands{
 			Test: "make test",
 		},
@@ -41,6 +45,9 @@ func TestMerge_RepoOverridesAgent(t *testing.T) {
 	cfg := Merge(global, repo)
 	if cfg.Agent != types.AgentCodex {
 		t.Errorf("agent = %q, want %q (repo override)", cfg.Agent, types.AgentCodex)
+	}
+	if cfg.ReviewBackend != "autoreview" {
+		t.Errorf("review_backend = %q, want autoreview", cfg.ReviewBackend)
 	}
 	if cfg.AgentPathOverride["claude"] != "/usr/bin/claude" {
 		t.Errorf("agent path override lost during merge")
