@@ -181,6 +181,16 @@ func renderLaunchAgent(exe string, p *paths.Paths, home string) string {
 		args.WriteString(xmlEscaped(value))
 		args.WriteString("</string>\n")
 	}
+	// Forward proxy variables so the daemon (and the agents it spawns) can
+	// reach the network through the user's proxy. See serviceProxyEnv.
+	var proxyVars strings.Builder
+	for _, kv := range serviceProxyEnv() {
+		proxyVars.WriteString("    <key>")
+		proxyVars.WriteString(xmlEscaped(kv[0]))
+		proxyVars.WriteString("</key>\n    <string>")
+		proxyVars.WriteString(xmlEscaped(kv[1]))
+		proxyVars.WriteString("</string>\n")
+	}
 	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -198,7 +208,7 @@ func renderLaunchAgent(exe string, p *paths.Paths, home string) string {
     <string>%s</string>
     <key>PATH</key>
     <string>%s</string>
-  </dict>
+%s  </dict>
   <key>StandardOutPath</key>
   <string>%s</string>
   <key>StandardErrorPath</key>
@@ -209,7 +219,7 @@ func renderLaunchAgent(exe string, p *paths.Paths, home string) string {
   <true/>
 </dict>
 </plist>
-`, xmlEscaped(launchdServiceLabel(p)), args.String(), xmlEscaped(p.Root()), xmlEscaped(home), xmlEscaped(managedServicePath(home)), xmlEscaped(p.DaemonLog()), xmlEscaped(p.DaemonLog()))
+`, xmlEscaped(launchdServiceLabel(p)), args.String(), xmlEscaped(p.Root()), xmlEscaped(home), xmlEscaped(managedServicePath(home)), proxyVars.String(), xmlEscaped(p.DaemonLog()), xmlEscaped(p.DaemonLog()))
 }
 
 // managedServicePath returns a default PATH for daemons started by a service

@@ -157,3 +157,33 @@ func TestInstallSystemdUserServiceKeepsLegacyUnitOnEnableFailure(t *testing.T) {
 		}
 	}
 }
+
+func TestServiceProxyEnvSkipsUnsetAndEmpty(t *testing.T) {
+	for _, key := range proxyEnvKeys {
+		t.Setenv(key, "")
+	}
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
+
+	got := serviceProxyEnv()
+	if len(got) != 1 || got[0][0] != "HTTPS_PROXY" || got[0][1] != "http://127.0.0.1:7897" {
+		t.Fatalf("serviceProxyEnv() = %v, want a single HTTPS_PROXY entry", got)
+	}
+}
+
+func TestRenderSystemdUnitForwardsProxyEnv(t *testing.T) {
+	for _, key := range proxyEnvKeys {
+		t.Setenv(key, "")
+	}
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
+	t.Setenv("NO_PROXY", "localhost,127.0.0.1")
+
+	unit := renderSystemdUnit("/usr/local/bin/no-mistakes", paths.WithRoot(t.TempDir()), "/home/u")
+	for _, want := range []string{
+		`Environment="HTTPS_PROXY=http://127.0.0.1:7897"`,
+		`Environment="NO_PROXY=localhost,127.0.0.1"`,
+	} {
+		if !strings.Contains(unit, want) {
+			t.Fatalf("systemd unit should forward proxy env %q, got:\n%s", want, unit)
+		}
+	}
+}

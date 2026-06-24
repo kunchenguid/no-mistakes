@@ -270,3 +270,20 @@ func TestInstallLaunchAgentDoesNotRemoveLegacyPlistForDifferentRoot(t *testing.T
 		t.Fatalf("install should not boot out unrelated legacy daemon, got commands %v", commands)
 	}
 }
+
+func TestRenderLaunchAgentForwardsProxyEnv(t *testing.T) {
+	for _, key := range proxyEnvKeys {
+		t.Setenv(key, "")
+	}
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
+
+	plist := renderLaunchAgent("/opt/no-mistakes/bin/no-mistakes", paths.WithRoot(t.TempDir()), "/home/u")
+	for _, want := range []string{
+		"<key>HTTPS_PROXY</key>",
+		"<string>http://127.0.0.1:7897</string>",
+	} {
+		if !strings.Contains(plist, want) {
+			t.Fatalf("launch agent should forward proxy env %q, got:\n%s", want, plist)
+		}
+	}
+}

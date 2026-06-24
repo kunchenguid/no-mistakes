@@ -88,6 +88,15 @@ func renderSystemdUnit(exe string, p *paths.Paths, home string) string {
 		systemdEscapeArg("--root"),
 		systemdEscapeArg(p.Root()),
 	}, " ")
+	envLines := []string{
+		"Environment=" + strconv.Quote("HOME="+home),
+		"Environment=" + strconv.Quote("PATH="+managedServicePath(home)),
+	}
+	// Forward proxy variables so the daemon (and the agents it spawns) can
+	// reach the network through the user's proxy. See serviceProxyEnv.
+	for _, kv := range serviceProxyEnv() {
+		envLines = append(envLines, "Environment="+strconv.Quote(kv[0]+"="+kv[1]))
+	}
 	return fmt.Sprintf(`[Unit]
 Description=no-mistakes background daemon
 
@@ -95,14 +104,13 @@ Description=no-mistakes background daemon
 Type=simple
 ExecStart=%s
 WorkingDirectory=%s
-Environment=%s
-Environment=%s
+%s
 Restart=always
 RestartSec=2
 
 [Install]
 WantedBy=default.target
-`, command, systemdEscapeArg(p.Root()), strconv.Quote("HOME="+home), strconv.Quote("PATH="+managedServicePath(home)))
+`, command, systemdEscapeArg(p.Root()), strings.Join(envLines, "\n"))
 }
 
 func systemdEscapeArg(arg string) string {

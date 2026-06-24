@@ -40,6 +40,33 @@ var serviceExecutablePath = os.Executable
 var serviceCommandRunner = runServiceCommand
 var serviceManagerBypassed = defaultServiceManagerBypassed
 
+// proxyEnvKeys are the proxy-related variables forwarded into the managed
+// daemon's environment. A daemon started by systemd/launchd inherits only a
+// minimal environment (HOME and a curated PATH), so without forwarding these
+// the daemon - and the agents it spawns, e.g. `claude --print` - cannot reach
+// the network through a corporate or local HTTP(S) proxy and fail with errors
+// like "403 Request not allowed". Both upper- and lower-case spellings are
+// honoured because tooling is inconsistent about which it reads.
+var proxyEnvKeys = []string{
+	"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
+	"http_proxy", "https_proxy", "no_proxy", "all_proxy",
+}
+
+// serviceProxyEnv returns the proxy-related environment entries present in the
+// current (install-time) environment as ordered key/value pairs, skipping any
+// that are unset or empty. Baking these into the generated service definition
+// lets the managed daemon reach the network through the same proxy the user
+// installed with, even when the login-shell environment probe is unavailable.
+func serviceProxyEnv() [][2]string {
+	var out [][2]string
+	for _, key := range proxyEnvKeys {
+		if value, ok := os.LookupEnv(key); ok && strings.TrimSpace(value) != "" {
+			out = append(out, [2]string{key, value})
+		}
+	}
+	return out
+}
+
 // defaultServiceManagerBypassed reports whether managed-service plumbing
 // (launchctl/systemctl/schtasks) should be skipped.
 //
