@@ -56,6 +56,8 @@ func handleFakeCLI(mode string) {
 		fakeCIGlabHandler(args)
 	case "ci-glab-seq":
 		fakeCIGlabSequenceHandler(args)
+	case "autoreview":
+		fakeAutoreviewHandler(args)
 	default:
 		os.Exit(1)
 	}
@@ -69,6 +71,27 @@ func fakeRecordSuccessHandler() {
 			fmt.Fprintln(f, filepath.Base(os.Args[0]))
 			f.Close()
 		}
+	}
+	os.Exit(0)
+}
+
+func fakeAutoreviewHandler(args []string) {
+	report := os.Getenv("FAKE_AUTOREVIEW_REPORT")
+	if report == "" {
+		report = `{"findings":[],"overall_correctness":"patch is correct","overall_explanation":"clean","overall_confidence":0.99}`
+	}
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == "--json-output" {
+			if err := os.WriteFile(args[i+1], []byte(report), 0o644); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			break
+		}
+	}
+	fmt.Println("fake autoreview ok")
+	if code, err := strconv.Atoi(os.Getenv("FAKE_AUTOREVIEW_EXIT_CODE")); err == nil {
+		os.Exit(code)
 	}
 	os.Exit(0)
 }

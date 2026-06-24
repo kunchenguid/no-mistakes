@@ -35,6 +35,7 @@ func TestLoadRepo_FromFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".no-mistakes.yaml")
 	data := `agent: codex
+review_backend: autoreview
 commands:
   lint: "golangci-lint run ./..."
   test: "go test -race ./..."
@@ -53,6 +54,9 @@ ignore_patterns:
 	}
 	if cfg.Agent != types.AgentCodex {
 		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentCodex)
+	}
+	if cfg.ReviewBackend != "autoreview" {
+		t.Errorf("review_backend = %q, want autoreview", cfg.ReviewBackend)
 	}
 	if cfg.Commands.Lint != "golangci-lint run ./..." {
 		t.Errorf("lint = %q", cfg.Commands.Lint)
