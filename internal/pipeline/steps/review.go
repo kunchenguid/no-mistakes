@@ -50,6 +50,7 @@ Context:
 
 Rules:
 - Always start with double checking whether the findings are legitimate.
+- The findings may come from multiple independent reviewers (see each finding's source); reconcile their agreements and contradictions yourself and apply only the legitimate fixes.
 - Before changing code, identify whether each finding is a local defect or a symptom of a deeper design, abstraction, validation, ownership, or test-coverage flaw. Prefer the smallest correct root-cause fix within the changed area over patching only the reported line.
 - If a narrow fix would leave the same class of bug likely elsewhere, fix the deepest practical cause instead.
 - Avoid resolving a finding by removing or reverting the author's intentional code in their original 1st commit. If the original change introduced something on purpose, fix it forward (e.g. add validation, handle edge cases, tighten logic) rather than deleting it. Similarly, if the original change intentionally deleted or simplified code, do not restore or re-add the removed code unless the finding is a legitimate correctness, reliability, or security issue and the smallest reasonable fix happens to reintroduce a small amount of previously deleted logic. When in doubt about whether code is intentional, leave it and report the finding as unresolved.
@@ -179,23 +180,40 @@ Risk assessment (after listing all findings):
 		historySection,
 	)
 
-	result, err := sctx.Agent.Run(ctx, agent.RunOpts{
+	// The review panel reviews the same diff independently. An empty Reviewers
+	// slice (the single-agent default) collapses to the configured agent, so
+	// this call site runs in both the initial review and every post-fix
+	// re-review - the fix agent's own re-reviewed code gets the full panel too.
+	reviewers := sctx.Reviewers
+	if len(reviewers) == 0 {
+		reviewers = []agent.Agent{sctx.Agent}
+	}
+	configuredReviewPanel := sctx.Config != nil && len(sctx.Config.Review.Reviewers) > 0
+
+	opts := agent.RunOpts{
 		Prompt:     prompt,
 		CWD:        sctx.WorkDir,
 		JSONSchema: reviewFindingsSchema,
-		OnChunk:    sctx.LogChunk,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("agent review: %w", err)
 	}
 
-	// Parse structured findings
 	var findings Findings
-	if result.Output != nil {
-		if err := json.Unmarshal(result.Output, &findings); err != nil {
-			sctx.Log("could not parse structured output, using text response")
-			findings = Findings{Summary: result.Text}
+	if len(reviewers) <= 1 && !configuredReviewPanel {
+		// Implicit single reviewer: keep the exact streaming single-call path so
+		// behavior is byte-identical to the pre-panel pipeline. An explicitly
+		// configured one-reviewer panel still takes runReviewPanel so findings
+		// get reviewer Source attribution and review-<name>-N IDs.
+		opts.OnChunk = sctx.LogChunk
+		result, err := reviewers[0].Run(ctx, opts)
+		if err != nil {
+			return nil, fmt.Errorf("agent review: %w", err)
 		}
+		findings = parseReviewFindings(result, sctx.Log)
+	} else {
+		merged, err := runReviewPanel(sctx, reviewers, opts)
+		if err != nil {
+			return nil, err
+		}
+		findings = merged
 	}
 
 	needsApproval := hasBlockingFindings(findings.Items)
@@ -207,6 +225,21 @@ Risk assessment (after listing all findings):
 		Findings:      string(findingsJSON),
 		FixSummary:    fixSummary,
 	}, nil
+}
+
+// parseReviewFindings decodes a reviewer's structured output into Findings,
+// falling back to the raw text as a summary when the JSON cannot be parsed.
+// log receives a note on the fallback. This is the single parse used by both
+// the single-reviewer path and every reviewer in the panel.
+func parseReviewFindings(result *agent.Result, log func(string)) Findings {
+	var findings Findings
+	if result.Output != nil {
+		if err := json.Unmarshal(result.Output, &findings); err != nil {
+			log("could not parse structured output, using text response")
+			findings = Findings{Summary: result.Text}
+		}
+	}
+	return findings
 }
 
 func sanitizedPreviousFindingsForPrompt(raw string) string {

@@ -13,7 +13,12 @@ const (
 	ActionAskUser = "ask-user"
 )
 
-// Finding source constants. An empty Source is treated as agent-produced.
+// Finding source constants. Source attributes who produced a finding. The two
+// sentinels below are special-cased by the UI (agent-authored and user-authored
+// findings). Any other non-empty value is a free-form provenance label - in
+// particular a reviewer's model/family name (e.g. "codex", "claude") stamped by
+// the multi-reviewer panel so each finding's origin is visible at the gate. An
+// empty Source is treated as agent-produced.
 const (
 	FindingSourceAgent = "agent"
 	FindingSourceUser  = "user"
@@ -318,4 +323,35 @@ func (f Finding) actionOrDefault() string {
 		return ActionAutoFix
 	}
 	return f.Action
+}
+
+// RiskRank maps a risk level to a comparable rank where higher means riskier
+// (low < medium < high). Unknown or empty levels rank lowest. The multi-reviewer
+// panel uses it to reconcile each reviewer's risk_level into the maximum.
+func RiskRank(level string) int {
+	switch strings.ToLower(strings.TrimSpace(level)) {
+	case "high":
+		return 3
+	case "medium":
+		return 2
+	case "low":
+		return 1
+	default:
+		return 0
+	}
+}
+
+// SeverityRank maps a finding severity to a comparable rank where higher means
+// more severe (info < warning < error). Unknown or empty severities rank lowest.
+func SeverityRank(severity string) int {
+	switch strings.ToLower(strings.TrimSpace(severity)) {
+	case "error":
+		return 3
+	case "warning":
+		return 2
+	case "info":
+		return 1
+	default:
+		return 0
+	}
 }

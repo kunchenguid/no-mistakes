@@ -180,7 +180,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					if byStep := m.findingInstructions[step.StepName]; byStep != nil {
 						existing = byStep[item.ID]
 					}
-					if item.Source == types.FindingSourceUser {
+					if isUserSource(item.Source) {
 						existing = item.UserInstructions
 					}
 					m.editor = newInstructionEditor(step.StepName, item.ID, existing)
@@ -198,7 +198,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "D":
 		if !m.showDiff {
 			if step := awaitingStep(m.steps); step != nil {
-				if item, ok := m.findingAtCursor(step.StepName); ok && item.Source == types.FindingSourceUser {
+				if item, ok := m.findingAtCursor(step.StepName); ok && isUserSource(item.Source) {
 					m.removeUserFinding(step.StepName, item.ID)
 					m.moveFindingCursor(step.StepName, 0)
 				}

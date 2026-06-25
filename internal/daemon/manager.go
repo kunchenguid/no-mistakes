@@ -140,6 +140,15 @@ func branchFromRef(ref string) string {
 	return strings.TrimPrefix(ref, "refs/heads/")
 }
 
+func stepIsSkipped(skipSteps []types.StepName, step types.StepName) bool {
+	for _, skipped := range skipSteps {
+		if skipped == step {
+			return true
+		}
+	}
+	return false
+}
+
 // loadTrustedRepoConfig reads .no-mistakes.yaml from the trusted
 // default-branch commit (trustedSHA — the exact SHA startRun just fetched and
 // resolved) in the worktree and parses it. Reading at a pinned SHA, rather
@@ -355,19 +364,13 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 		trackStartFailure("load_global_config")
 		return "", fmt.Errorf("load global config: %w", err)
 	}
-	repoCfg, err := config.LoadRepo(wtDir)
-	if err != nil {
-		m.db.UpdateRunError(run.ID, fmt.Sprintf("load config: %s", err))
-		trackStartFailure("load_repo_config")
-		return "", fmt.Errorf("load repo config: %w", err)
-	}
 	// SECURITY: load the code-executing selection fields (commands.* and
 	// agent) from the trusted default-branch copy of .no-mistakes.yaml rather
 	// than the pushed SHA. The worktree is checked out at headSHA (the
-	// contributor's branch), so reading repoCfg above would honor a
-	// contributor's commands/agent and let any pushed SHA run arbitrary shell
-	// (sh -c) or pick the launched agent (incl. acp: targets) on the daemon
-	// host with the maintainer's env (GH_TOKEN, SSH agent, ...).
+	// contributor's branch), so honoring its code-executing fields would let
+	// any pushed SHA run arbitrary shell (sh -c), pick the launched agent
+	// (incl. acp: targets), or choose reviewer binaries on the daemon host with
+	// the maintainer's env (GH_TOKEN, SSH agent, ...).
 	// EffectiveRepoConfig replaces commands + agent with the trusted
 	// default-branch values unless the maintainer has explicitly opted in.
 	//
@@ -377,7 +380,23 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	// opt-in is false and commands/agent are forced empty — fail closed.
 	trustedRepoCfg := loadTrustedRepoConfig(ctx, wtDir, trustedSHA, run.ID)
 	allowRepoCommands := trustedRepoCfg != nil && trustedRepoCfg.AllowRepoCommands
+	var repoCfg *config.RepoConfig
+	if allowRepoCommands {
+		repoCfg, err = config.LoadRepo(wtDir)
+	} else {
+		repoCfg, err = config.LoadPushedRepo(wtDir)
+	}
+	if err != nil {
+		m.db.UpdateRunError(run.ID, fmt.Sprintf("load config: %s", err))
+		trackStartFailure("load_repo_config")
+		return "", fmt.Errorf("load repo config: %w", err)
+	}
 	effectiveRepoCfg := config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands)
+	if err := config.ValidateReview(effectiveRepoCfg.Review); err != nil {
+		m.db.UpdateRunError(run.ID, fmt.Sprintf("load config: %s", err))
+		trackStartFailure("load_repo_config")
+		return "", fmt.Errorf("load config: %w", err)
+	}
 	if allowRepoCommands {
 		slog.Warn("allow_repo_commands is enabled on the default branch: honoring commands/agent from pushed branch", "run_id", run.ID, "branch", branch)
 	} else if repoCfg.Commands != effectiveRepoCfg.Commands || repoCfg.Agent != effectiveRepoCfg.Agent {
@@ -390,6 +409,7 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 
 	// Create agent. In demo mode, skip resolution and use a no-op agent.
 	var ag agent.Agent
+	var reviewerAgents []agent.Agent
 	if steps.IsDemoMode() {
 		ag = agent.NewNoop()
 	} else {
@@ -411,21 +431,53 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 		// avoid mutating system state (e.g. brew/Homebrew touching
 		// /Applications), which triggers macOS App Management prompts.
 		ag = agent.WithSteering(ag)
+
+		if !stepIsSkipped(skipSteps, types.StepReview) {
+			// Build the cross-family review panel (empty when review.reviewers is
+			// unset, leaving behavior unchanged). Reviewers use the SAME factory and
+			// steering as the impl agent. Any failure here must close what has been
+			// built so far before returning, since the cleanup defer below only runs
+			// once the background goroutine owns the run.
+			reviewerSpecs, revErr := cfg.ResolveReviewers(ctx, exec.LookPath)
+			if revErr != nil {
+				ag.Close()
+				m.db.UpdateRunError(run.ID, revErr.Error())
+				trackStartFailure("resolve_reviewers")
+				return "", revErr
+			}
+			for _, spec := range reviewerSpecs {
+				rev, rErr := agent.NewWithOptions(spec.Agent, cfg.ReviewerPath(spec), cfg.ReviewerArgs(spec), agent.Options{
+					ACPRegistryOverrides: cfg.ACPRegistryOverrides,
+				})
+				if rErr != nil {
+					for _, built := range reviewerAgents {
+						built.Close()
+					}
+					ag.Close()
+					m.db.UpdateRunError(run.ID, fmt.Sprintf("create reviewer agent: %s", rErr))
+					trackStartFailure("create_reviewer_agent")
+					return "", fmt.Errorf("create reviewer agent: %w", rErr)
+				}
+				reviewerAgents = append(reviewerAgents, agent.WithSteering(rev))
+			}
+		}
 	}
 
 	execSteps := m.steps()
 	telemetry.Track("run", telemetry.Fields{
-		"action":      "started",
-		"trigger":     trigger,
-		"agent":       string(cfg.Agent),
-		"branch_role": branchRole,
-		"step_count":  len(execSteps),
-		"demo_mode":   steps.IsDemoMode(),
+		"action":         "started",
+		"trigger":        trigger,
+		"agent":          string(cfg.Agent),
+		"branch_role":    branchRole,
+		"step_count":     len(execSteps),
+		"demo_mode":      steps.IsDemoMode(),
+		"reviewer_count": len(reviewerAgents),
 	})
 
 	// Create executor with event broadcast.
 	runCtx, cancel := context.WithCancelCause(context.Background())
 	executor := pipeline.NewExecutor(m.db, m.paths, cfg, ag, execSteps, m.broadcast)
+	executor.SetReviewers(reviewerAgents)
 	executor.SetSkippedSteps(skipSteps)
 
 	// Track executor.
@@ -471,6 +523,10 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 			}
 			cancel(nil)
 			ag.Close()
+			// Close every reviewer panel agent (no-op when none configured).
+			for _, rev := range reviewerAgents {
+				rev.Close()
+			}
 			// Close subscriber channels for this run.
 			m.closeSubscribers(run.ID)
 			// Clean up worktree.

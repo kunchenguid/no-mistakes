@@ -3,6 +3,7 @@ package daemon
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -120,6 +121,62 @@ func TestPushReceivedSkipStepsConfiguresExecutor(t *testing.T) {
 		if step.StepName == types.StepReview && step.Status != types.StepStatusSkipped {
 			t.Fatalf("review status = %s, want %s", step.Status, types.StepStatusSkipped)
 		}
+	}
+}
+
+func TestPushReceivedSkipReviewDoesNotResolveReviewers(t *testing.T) {
+	review := &mockPassStep{name: types.StepReview}
+	testStep := &mockPassStep{name: types.StepTest}
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{review, testStep}
+	})
+
+	repo, _ := setupTestGitRepo(t, p, d, "skip-review-reviewer-resolution-repo")
+	missingRovo := filepath.Join(t.TempDir(), "missing-rovodev")
+	configYAML := `auto_fix:
+  lint: 0
+  test: 0
+  review: 0
+review:
+  reviewers:
+    - agent: rovodev
+      path: ` + strconv.Quote(missingRovo) + `
+`
+	if err := os.WriteFile(filepath.Join(repo.WorkingPath, ".no-mistakes.yaml"), []byte(configYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repo.WorkingPath, "add", ".no-mistakes.yaml")
+	gitCmd(t, repo.WorkingPath, "commit", "-m", "configure review panel")
+	gitCmd(t, repo.WorkingPath, "push", "gate", "HEAD:refs/heads/main")
+	headSHA := gitOutput(t, repo.WorkingPath, "rev-parse", "HEAD")
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var result ipc.PushReceivedResult
+	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate:      p.RepoDir("skip-review-reviewer-resolution-repo"),
+		Ref:       "refs/heads/main",
+		Old:       "0000000000000000000000000000000000000000",
+		New:       headSHA,
+		SkipSteps: []types.StepName{types.StepReview},
+	}, &result)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	run := waitForRunTerminalState(t, d, result.RunID)
+	if run.Status != types.RunCompleted {
+		t.Fatalf("run status = %q, want %q", run.Status, types.RunCompleted)
+	}
+	if got := review.execCnt.Load(); got != 0 {
+		t.Fatalf("review executed %d times, want 0", got)
+	}
+	if got := testStep.execCnt.Load(); got != 1 {
+		t.Fatalf("test executed %d times, want 1", got)
 	}
 }
 

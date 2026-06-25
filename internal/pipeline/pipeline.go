@@ -11,11 +11,17 @@ import (
 
 // StepContext provides shared resources to pipeline steps during execution.
 type StepContext struct {
-	Ctx              context.Context
-	Run              *db.Run
-	Repo             *db.Repo
-	WorkDir          string
-	Agent            agent.Agent
+	Ctx     context.Context
+	Run     *db.Run
+	Repo    *db.Repo
+	WorkDir string
+	Agent   agent.Agent
+	// Reviewers is the cross-family review panel for this run, a sibling of
+	// Agent: every entry reviews the same diff independently. An empty slice
+	// means the single-agent default - treat it as {Agent}. The executor
+	// always populates it (defaulting to {Agent}) so steps never special-case
+	// the empty case.
+	Reviewers        []agent.Agent
 	Config           *config.Config
 	DB               *db.DB
 	Log              func(string) // discrete log line (newline-terminated, user-visible + file)
