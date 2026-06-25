@@ -132,6 +132,16 @@ See `Makefile` for the full target list.
 
 `make e2e-record` overwrites `internal/e2e/fixtures/` from the real `claude`, `codex`, and `opencode` CLIs, spends real API quota, and should be reviewed before committing.
 
+### Local install
+
+```sh
+./scripts/install-local.sh
+```
+
+Builds from the current checkout and installs the binary to `~/.no-mistakes/bin/no-mistakes`
+(the target that `/usr/local/bin/no-mistakes` symlinks to). Existing binary is backed up
+as `no-mistakes.bak` in the same directory.
+
 ## Star History
 
 <a href="https://www.star-history.com/?repos=kunchenguid%2Fno-mistakes&type=date&legend=top-left">

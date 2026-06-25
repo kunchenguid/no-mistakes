@@ -47,6 +47,18 @@ Safest local verification sequence after non-trivial changes:
 - `make e2e` when touching agent integrations, the e2e harness, or recorded fixtures
 - `go build -o ./bin/no-mistakes ./cmd/no-mistakes`
 
+**Local install**
+
+Install the current checkout system-wide:
+
+```sh
+./scripts/install-local.sh
+```
+
+This builds with version info and replaces `~/.no-mistakes/bin/no-mistakes`
+(the real path behind the `/usr/local/bin/no-mistakes` symlink), backing up
+the old binary as `no-mistakes.bak` in the same directory.
+
 **Project Layout**
 
 - `cmd/no-mistakes`: process entrypoint
