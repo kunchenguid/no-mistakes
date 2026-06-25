@@ -19,7 +19,13 @@ func installSystemdUserService(p *paths.Paths, exe string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create systemd user directory: %w", err)
 	}
-	if err := writeServiceFile(path, renderSystemdUnit(exe, p, home)); err != nil {
+	// writeServiceFile resolves the proxy environment once and feeds it to the
+	// renderer, so the unit content and its permission mode stay in sync
+	// (see serviceProxyEnv / writeServiceFile).
+	render := func(proxyEnv [][2]string) string {
+		return renderSystemdUnitWithProxyEnv(exe, p, home, proxyEnv)
+	}
+	if err := writeServiceFile(path, render); err != nil {
 		return fmt.Errorf("write systemd unit: %w", err)
 	}
 	if _, err := serviceCommandRunner("systemctl", "--user", "daemon-reload"); err != nil {
@@ -80,7 +86,17 @@ func legacySystemdUserServicePath() string {
 	return filepath.Join(home, ".config", "systemd", "user", legacySystemdServiceName)
 }
 
+// renderSystemdUnit renders the systemd unit, resolving the proxy environment
+// itself. It is the entry point for standalone callers (drift detection in
+// selfexec.go, tests); the install path uses renderSystemdUnitWithProxyEnv so
+// the proxy environment is resolved only once per install.
 func renderSystemdUnit(exe string, p *paths.Paths, home string) string {
+	return renderSystemdUnitWithProxyEnv(exe, p, home, serviceProxyEnv())
+}
+
+// renderSystemdUnitWithProxyEnv renders the systemd unit using a proxy
+// environment supplied by the caller (see serviceProxyEnv).
+func renderSystemdUnitWithProxyEnv(exe string, p *paths.Paths, home string, proxyEnv [][2]string) string {
 	command := strings.Join([]string{
 		systemdEscapeArg(exe),
 		systemdEscapeArg("daemon"),
@@ -94,7 +110,7 @@ func renderSystemdUnit(exe string, p *paths.Paths, home string) string {
 	}
 	// Forward proxy variables so the daemon (and the agents it spawns) can
 	// reach the network through the user's proxy. See serviceProxyEnv.
-	for _, kv := range serviceProxyEnv() {
+	for _, kv := range proxyEnv {
 		envLines = append(envLines, "Environment="+strconv.Quote(kv[0]+"="+kv[1]))
 	}
 	return fmt.Sprintf(`[Unit]

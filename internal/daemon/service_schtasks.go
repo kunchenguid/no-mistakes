@@ -8,6 +8,16 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 )
 
+// installWindowsTask registers the daemon as a per-user scheduled task.
+//
+// Unlike the launchd and systemd paths, it deliberately does not forward proxy
+// environment variables (see serviceProxyEnv). A schtasks /SC ONLOGON task runs
+// in the user's interactive logon session and inherits that session's
+// environment, so the user's HTTP(S)_PROXY/NO_PROXY/etc. are already present
+// without baking them into the task definition. That also means no proxy URL -
+// which can embed credentials - is ever written to disk here, so the 0600
+// tightening that writeServiceFile applies to the launchd/systemd files has no
+// Windows equivalent to worry about.
 func installWindowsTask(p *paths.Paths, exe string) error {
 	args := []string{
 		"/Create",

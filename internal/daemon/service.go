@@ -67,17 +67,27 @@ func serviceProxyEnv() [][2]string {
 	return out
 }
 
-// writeServiceFile writes a generated service definition (systemd unit or
-// launchd plist) with a permission mode that depends on whether proxy values
-// were forwarded into it. When proxy variables are present the file may carry
-// sensitive data (a proxy URL can embed credentials, e.g. http://user:pass@host),
-// so it is restricted to owner-only 0600; otherwise the conventional 0644 is
-// kept so non-proxy installs are byte-for-byte and mode-for-mode unchanged.
-// os.WriteFile only applies the mode when creating the file, so an explicit
-// Chmod enforces it on re-install when the file already exists.
-func writeServiceFile(path, content string) error {
+// writeServiceFile renders a generated service definition (systemd unit or
+// launchd plist) via render and writes it with a permission mode that depends
+// on whether proxy values were forwarded into it. When proxy variables are
+// present the file may carry sensitive data (a proxy URL can embed credentials,
+// e.g. http://user:pass@host), so it is restricted to owner-only 0600;
+// otherwise the conventional 0644 is kept so non-proxy installs are
+// byte-for-byte and mode-for-mode unchanged. os.WriteFile only applies the mode
+// when creating the file, so an explicit Chmod enforces it on re-install when
+// the file already exists.
+//
+// The proxy environment is resolved here, exactly once, and handed to render so
+// that the rendered content and the permission mode are derived from the same
+// value and cannot disagree. Taking a render callback rather than a finished
+// (content, proxyEnv) pair makes it structurally impossible for a caller to
+// bake proxy credentials into the content yet have it written under the
+// world-readable 0644 mode.
+func writeServiceFile(path string, render func(proxyEnv [][2]string) string) error {
+	proxyEnv := serviceProxyEnv()
+	content := render(proxyEnv)
 	mode := os.FileMode(0o644)
-	if len(serviceProxyEnv()) > 0 {
+	if len(proxyEnv) > 0 {
 		mode = 0o600
 	}
 	if err := os.WriteFile(path, []byte(content), mode); err != nil {

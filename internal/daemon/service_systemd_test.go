@@ -188,15 +188,34 @@ func TestRenderSystemdUnitForwardsProxyEnv(t *testing.T) {
 	}
 }
 
+// TestRenderSystemdUnitForwardsEveryProxyEnvKey exercises the full proxyEnvKeys
+// set in the systemd scenario - including ALL_PROXY and the lower-case
+// spellings - and guards that the renderer and proxyEnvKeys cannot drift apart:
+// every declared key must reach the unit as its own Environment= line.
+func TestRenderSystemdUnitForwardsEveryProxyEnvKey(t *testing.T) {
+	for _, key := range proxyEnvKeys {
+		t.Setenv(key, "val-"+key)
+	}
+
+	unit := renderSystemdUnit("/usr/local/bin/no-mistakes", paths.WithRoot(t.TempDir()), "/home/u")
+	for _, key := range proxyEnvKeys {
+		want := `Environment="` + key + "=val-" + key + `"`
+		if !strings.Contains(unit, want) {
+			t.Fatalf("systemd unit should forward %s, want %q, got:\n%s", key, want, unit)
+		}
+	}
+}
+
 func TestWriteServiceFileTightensModeWhenProxyPresent(t *testing.T) {
 	for _, key := range proxyEnvKeys {
 		t.Setenv(key, "")
 	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "unit")
+	render := func(proxyEnv [][2]string) string { return "content" }
 
 	// No proxy: the conventional 0644 is kept.
-	if err := writeServiceFile(path, "no-proxy"); err != nil {
+	if err := writeServiceFile(path, render); err != nil {
 		t.Fatal(err)
 	}
 	if info, err := os.Stat(path); err != nil {
@@ -208,7 +227,7 @@ func TestWriteServiceFileTightensModeWhenProxyPresent(t *testing.T) {
 	// Proxy present: re-installing over the existing 0644 file must tighten it
 	// to owner-only 0600 so forwarded credentials are not world-readable.
 	t.Setenv("HTTPS_PROXY", "http://user:pass@127.0.0.1:7897")
-	if err := writeServiceFile(path, "with-proxy"); err != nil {
+	if err := writeServiceFile(path, render); err != nil {
 		t.Fatal(err)
 	}
 	if info, err := os.Stat(path); err != nil {

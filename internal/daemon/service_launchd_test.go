@@ -287,3 +287,25 @@ func TestRenderLaunchAgentForwardsProxyEnv(t *testing.T) {
 		}
 	}
 }
+
+// TestRenderLaunchAgentForwardsEveryProxyEnvKey exercises the full proxyEnvKeys
+// set in the launchd scenario - including ALL_PROXY, the lower-case spellings
+// (http_proxy/https_proxy/...) and NO_PROXY - and guards that the renderer and
+// proxyEnvKeys cannot drift apart: every declared key must reach the plist with
+// its exact value, paired correctly.
+func TestRenderLaunchAgentForwardsEveryProxyEnvKey(t *testing.T) {
+	want := make(map[string]string, len(proxyEnvKeys))
+	for _, key := range proxyEnvKeys {
+		value := "val-" + key
+		want[key] = value
+		t.Setenv(key, value)
+	}
+
+	plist := renderLaunchAgent("/opt/no-mistakes/bin/no-mistakes", paths.WithRoot(t.TempDir()), "/home/u")
+	for _, key := range proxyEnvKeys {
+		fragment := "<key>" + key + "</key>\n    <string>" + want[key] + "</string>"
+		if !strings.Contains(plist, fragment) {
+			t.Fatalf("launch agent should forward %s as %q, got:\n%s", key, want[key], plist)
+		}
+	}
+}
