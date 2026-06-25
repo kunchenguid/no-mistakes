@@ -451,12 +451,14 @@ func decodeGitlabJobs(out []byte) ([]gitlabJob, error) {
 
 func parseGitlabJobs(out []byte) ([]scm.Check, error) {
 	jobs, err := decodeGitlabJobs(out)
-	// Best effort: when at least one job parsed, return it even if a later page
-	// was corrupt. Only surface the decode error when nothing usable came back.
 	if len(jobs) == 0 {
 		return nil, err
 	}
-	return jobsToChecks(jobs), nil
+	// Surface any decode error even when some jobs parsed. A corrupt later page
+	// of paginated `glab api` output must not let a partial slice look
+	// authoritative: a failed job on the dropped page would otherwise be hidden
+	// and the CI verdict would read green.
+	return jobsToChecks(jobs), err
 }
 
 func jobsToChecks(jobs []gitlabJob) []scm.Check {

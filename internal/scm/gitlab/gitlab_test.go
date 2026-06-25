@@ -133,7 +133,7 @@ func TestGetChecksReturnsFallbackErrors(t *testing.T) {
 				"glab mr view 123 --output json": {
 					stdout: `{"head_pipeline":{"id":77}}` + "\n",
 				},
-				"glab ci get --pipeline-id 77 --output json": {
+				"glab ci get --pipeline-id 77 --output json --with-job-details": {
 					stderr: "gitlab unavailable\n",
 					code:   1,
 				},
@@ -553,15 +553,40 @@ func TestParseGitlabJobsSurfacesCorruptPayload(t *testing.T) {
 		t.Fatal("parseGitlabJobs() error = nil, want decode error for corrupt payload")
 	}
 
-	// Best effort: when a good page parses before a corrupt one, the parsed jobs
-	// are still returned and the trailing corruption does not fail the call.
+	// When a good page parses before a corrupt one, the parsed jobs are still
+	// returned, but the decode error must surface too: a failed job on the
+	// dropped page would otherwise be silently hidden and read as green.
 	out := []byte(`[{"id":1,"name":"build","status":"success"}]` + "\n" + `[{"id":2`)
 	checks, err := parseGitlabJobs(out)
-	if err != nil {
-		t.Fatalf("parseGitlabJobs() error = %v, want nil (good page should win)", err)
+	if err == nil {
+		t.Fatal("parseGitlabJobs() error = nil, want decode error from the corrupt later page")
 	}
 	if len(checks) != 1 || checks[0].Name != "build" {
-		t.Fatalf("parseGitlabJobs() = %+v, want the single parsed build job", checks)
+		t.Fatalf("parseGitlabJobs() = %+v, want the single parsed build job alongside the error", checks)
+	}
+}
+
+func TestGetChecksSurfacesErrorWhenPaginatedPageIsCorrupt(t *testing.T) {
+	t.Parallel()
+
+	// End-to-end through GetChecks: a corrupt later page of paginated `glab api`
+	// output must fail the call rather than return a partial (potentially
+	// all-green) slice that hides a failed job on the dropped page.
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab ci status --mr 123 --output json": {
+			stderr: "unknown flag: --mr\n",
+			code:   1,
+		},
+		"glab mr view 123 --output json": {
+			stdout: `{"head_pipeline":{"id":77}}` + "\n",
+		},
+		"glab api --paginate projects/group%2Fproject/pipelines/77/jobs": {
+			stdout: `[{"id":1,"name":"build","status":"success"}]` + "\n" + `[{"id":2`,
+		},
+	}), nil, "", "group/project")
+
+	if _, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"}); err == nil {
+		t.Fatal("GetChecks() error = nil, want decode error surfaced from the corrupt page")
 	}
 }
 

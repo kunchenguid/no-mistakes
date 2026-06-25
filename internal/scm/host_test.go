@@ -9,29 +9,32 @@ import (
 func TestExtractHost(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
+		name   string
 		remote string
 		want   string
 	}{
-		{"https://github.com/user/repo.git", "github.com"},
-		{"git@github.com:user/repo.git", "github.com"},
-		{"https://gitlab.example.com/group/repo.git", "gitlab.example.com"},
-		{"git@gitlab.example.com:group/sub/repo.git", "gitlab.example.com"},
-		{"ssh://git@code.example.com:2222/group/repo.git", "code.example.com"},
-		{"https://user:token@code.example.com:8443/group/repo.git", "code.example.com"},
-		{"git://code.example.com/group/repo.git", "code.example.com"},
-		{"https://CODE.Example.COM/group/repo", "code.example.com"},
-		{"ssh://git@[::1]:22/group/repo.git", "[::1]"},
+		{"https with .git", "https://github.com/user/repo.git", "github.com"},
+		{"scp ssh", "git@github.com:user/repo.git", "github.com"},
+		{"https self-hosted", "https://gitlab.example.com/group/repo.git", "gitlab.example.com"},
+		{"scp ssh nested path", "git@gitlab.example.com:group/sub/repo.git", "gitlab.example.com"},
+		{"ssh url with port", "ssh://git@code.example.com:2222/group/repo.git", "code.example.com"},
+		{"https userinfo and port", "https://user:token@code.example.com:8443/group/repo.git", "code.example.com"},
+		{"git protocol", "git://code.example.com/group/repo.git", "code.example.com"},
+		{"mixed case lowercased", "https://CODE.Example.COM/group/repo", "code.example.com"},
+		{"ipv6 literal with port", "ssh://git@[::1]:22/group/repo.git", "[::1]"},
 		// A '@' inside the path must not be mistaken for a "user@" userinfo
 		// prefix: host extraction has to split off the path first.
-		{"https://code.example.com/group@prod/repo.git", "code.example.com"},
-		{"git@code.example.com:group@prod/repo.git", "code.example.com"},
-		{"https://user:token@code.example.com/group@prod/repo.git", "code.example.com"},
-		{"", ""},
+		{"at-sign in path https", "https://code.example.com/group@prod/repo.git", "code.example.com"},
+		{"at-sign in path scp", "git@code.example.com:group@prod/repo.git", "code.example.com"},
+		{"at-sign in path with userinfo", "https://user:token@code.example.com/group@prod/repo.git", "code.example.com"},
+		{"empty", "", ""},
 	}
 	for _, tt := range tests {
-		if got := ExtractHost(tt.remote); got != tt.want {
-			t.Errorf("ExtractHost(%q) = %q, want %q", tt.remote, got, tt.want)
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ExtractHost(tt.remote); got != tt.want {
+				t.Errorf("ExtractHost(%q) = %q, want %q", tt.remote, got, tt.want)
+			}
+		})
 	}
 }
 
