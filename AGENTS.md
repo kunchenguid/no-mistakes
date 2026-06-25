@@ -59,6 +59,28 @@ This builds with version info and replaces `~/.no-mistakes/bin/no-mistakes`
 (the real path behind the `/usr/local/bin/no-mistakes` symlink), backing up
 the old binary as `no-mistakes.bak` in the same directory.
 
+**Per-step model overrides**
+
+`agent_model` lets you pin a specific model for individual pipeline steps.
+The YAML key is a two-level map: `agent_name -> step_name -> model_string`.
+
+```yaml
+agent_model:
+  opencode:
+    review:   "github-copilot/claude-sonnet-4.6"
+    document: "github-copilot/claude-sonnet-4.6"
+    test:     "opencode/gpt-5.1"
+```
+
+When the step runs, the model string is sent as `info.model` in the agent
+request body. Supported step names: `review`, `document`, `test`.
+The config can be set globally (`~/.no-mistakes/config.yaml`) or per-repo
+(`.no-mistakes.yaml`); repo values override global at the per-agent-per-step
+granularity (see `config.mergeAgentModel` in `internal/config/config.go`).
+The agent name key must match the agent configured for the repo
+(e.g. `opencode` when `agent: opencode`). Steps that don't have an entry
+in the map send no model override.
+
 **Project Layout**
 
 - `cmd/no-mistakes`: process entrypoint
