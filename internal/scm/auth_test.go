@@ -41,7 +41,9 @@ func TestCLIAvailable(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	// Set PATH to JUST the temp dir so a real glab installed on the host does
+	// not leak in and make the ProviderGitLab assertion below flaky.
+	t.Setenv("PATH", binDir)
 
 	if !CLIAvailable(ProviderGitHub) {
 		t.Fatal("expected gh to be available")

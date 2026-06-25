@@ -69,6 +69,12 @@ Safest local verification sequence after non-trivial changes:
 - GitLab and Bitbucket fork MR/PR routing is intentionally out of scope until implemented end to end.
 - If a legacy or manually edited row has `fork_url` for GitLab or Bitbucket, PR creation must skip instead of opening a self PR.
 
+**GitLab Backend (`internal/scm/gitlab`)**
+
+- The GitLab `Host` is constructed via `gitlab.New(cmd, cliAvailable, host, projectPath)`, mirroring the GitHub backend's positional constructor. `host` is the repo's GitLab hostname (from `scm.ExtractHost(UpstreamURL)`); `projectPath` is the `group/project` path (subgroups allowed, from `gitlab.ProjectPath` - which lives in the gitlab package next to the `Host` that consumes it, mirroring `github.RepoSlug`). Both are optional; passing `"", ""` reproduces the legacy unscoped behavior used by unit tests.
+- glab's flag surface drifts between versions; the backend is pinned against `glab v1.5x`. Two flags bit us: `glab auth status` must be **host-scoped** with `--hostname <host>` (unscoped, it checks every configured instance and fails if ANY has a stale token, falsely reporting an authenticated repo as unauthenticated); and `glab mr list` no longer accepts `--state opened` (open is the default; v1.5x exposes `-c/--closed`, `-M/--merged`, `-A/--all`) - passing the removed flag fails the whole command. When the host is unknown, fall back to the unscoped auth check (fail-safe).
+- The daemon operates in a **detached-HEAD worktree** (it checks out the commit, not a branch). `glab ci get` refuses to run there ("you're not on any Git branch (a 'detached HEAD' state)") even with an explicit `--pipeline-id`. Read pipeline jobs via the branch-independent REST endpoint instead: `glab api projects/<url-encoded group%2Fproject>/pipelines/<id>/jobs` (`Host.pipelineJobsArgs`). The legacy `glab ci get` path is kept only as the fallback when no project path is supplied. The `glab api .../jobs` payload carries `finished_at`, mapped into `Check.CompletedAt` (needed for CI re-run detection).
+
 **Documentation**
 
 - Keep `README.md` concise and high-level. The bar needs to be extremely high for what has to show up there.
