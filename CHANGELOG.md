@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.31.1](https://github.com/kunchenguid/no-mistakes/compare/v1.31.0...v1.31.1) (2026-06-26)
+
+
+### Bug Fixes
+
+* **pipeline:** guard rebase and force-push safety ([#341](https://github.com/kunchenguid/no-mistakes/issues/341)) ([5efd0b2](https://github.com/kunchenguid/no-mistakes/commit/5efd0b2005dcf6cea17edaf4fe10d0e65b51fc0c))
+
 ## [1.31.0](https://github.com/kunchenguid/no-mistakes/compare/v1.30.2...v1.31.0) (2026-06-26)
 
 
