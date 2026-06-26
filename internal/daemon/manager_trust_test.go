@@ -82,7 +82,10 @@ func TestLoadTrustedRepoConfig_FailClosedOnFetchFailure(t *testing.T) {
 	// And the effective config drops the pushed-branch command too — the
 	// secure default, not a fallback to a stale or hostile copy.
 	pushed := &config.RepoConfig{Commands: config.Commands{Lint: "echo pushed-branch-command"}}
-	eff := config.EffectiveRepoConfig(pushed, got, false)
+	eff, err := config.EffectiveRepoConfig(pushed, got, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if eff.Commands.Lint != "" {
 		t.Fatalf("SECURITY REGRESSION: command would run after fetch failure: %q", eff.Commands.Lint)
 	}

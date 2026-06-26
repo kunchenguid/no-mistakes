@@ -355,36 +355,43 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 		trackStartFailure("load_global_config")
 		return "", fmt.Errorf("load global config: %w", err)
 	}
-	repoCfg, err := config.LoadRepo(wtDir)
+	repoCfg, err := config.LoadUntrustedRepo(wtDir)
 	if err != nil {
 		m.db.UpdateRunError(run.ID, fmt.Sprintf("load config: %s", err))
 		trackStartFailure("load_repo_config")
 		return "", fmt.Errorf("load repo config: %w", err)
 	}
-	// SECURITY: load the code-executing selection fields (commands.* and
-	// agent) from the trusted default-branch copy of .no-mistakes.yaml rather
-	// than the pushed SHA. The worktree is checked out at headSHA (the
-	// contributor's branch), so reading repoCfg above would honor a
-	// contributor's commands/agent and let any pushed SHA run arbitrary shell
-	// (sh -c) or pick the launched agent (incl. acp: targets) on the daemon
-	// host with the maintainer's env (GH_TOKEN, SSH agent, ...).
-	// EffectiveRepoConfig replaces commands + agent with the trusted
+	// SECURITY: load the code-executing selection fields (commands.*, agent,
+	// and review_backend) from the trusted default-branch copy of
+	// .no-mistakes.yaml rather than the pushed SHA. The worktree is checked
+	// out at headSHA (the contributor's branch), so reading repoCfg above
+	// would honor a contributor's commands/agent/review_backend and let any
+	// pushed SHA run arbitrary shell (sh -c) or pick the launched agent/review
+	// backend on the daemon host with the maintainer's env (GH_TOKEN, SSH
+	// agent, ...). EffectiveRepoConfig replaces these fields with the trusted
 	// default-branch values unless the maintainer has explicitly opted in.
 	//
 	// allow_repo_commands is itself read ONLY from the trusted copy: a
 	// contributor cannot self-enable it from the pushed branch. With no
 	// trusted copy (fetch failed, no default branch, or no file on it) the
-	// opt-in is false and commands/agent are forced empty — fail closed.
+	// opt-in is false and code-executing fields are forced empty — fail
+	// closed.
 	trustedRepoCfg := loadTrustedRepoConfig(ctx, wtDir, trustedSHA, run.ID)
 	allowRepoCommands := trustedRepoCfg != nil && trustedRepoCfg.AllowRepoCommands
-	effectiveRepoCfg := config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands)
+	effectiveRepoCfg, err := config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands)
+	if err != nil {
+		m.db.UpdateRunError(run.ID, fmt.Sprintf("load config: %s", err))
+		trackStartFailure("load_repo_config")
+		return "", fmt.Errorf("load repo config: %w", err)
+	}
 	if allowRepoCommands {
-		slog.Warn("allow_repo_commands is enabled on the default branch: honoring commands/agent from pushed branch", "run_id", run.ID, "branch", branch)
-	} else if repoCfg.Commands != effectiveRepoCfg.Commands || repoCfg.Agent != effectiveRepoCfg.Agent {
+		slog.Warn("allow_repo_commands is enabled on the default branch: honoring commands/agent/review_backend from pushed branch", "run_id", run.ID, "branch", branch)
+	} else if repoCfg.Commands != effectiveRepoCfg.Commands || repoCfg.Agent != effectiveRepoCfg.Agent || repoCfg.ReviewBackend != effectiveRepoCfg.ReviewBackend {
 		// Surface the silent override so a maintainer who shipped a commands.*
-		// or agent change on a feature branch understands why it did not run.
-		// This is not an error: it is the secure default in action.
-		slog.Info("repo commands/agent loaded from default branch, not pushed branch", "run_id", run.ID, "branch", branch, "default_branch", repo.DefaultBranch)
+		// agent, or review_backend change on a feature branch understands why
+		// it did not run. This is not an error: it is the secure default in
+		// action.
+		slog.Info("repo commands/agent/review_backend loaded from default branch, not pushed branch", "run_id", run.ID, "branch", branch, "default_branch", repo.DefaultBranch)
 	}
 	cfg := config.Merge(globalCfg, effectiveRepoCfg)
 

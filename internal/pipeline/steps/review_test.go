@@ -345,6 +345,41 @@ func TestConvertAutoreviewReport_IncorrectWithoutFindingsBlocks(t *testing.T) {
 	}
 }
 
+func TestConvertAutoreviewReport_IncorrectWithOnlyNonblockingFindingsBlocks(t *testing.T) {
+	report := autoreviewReport{
+		Findings: []autoreviewFinding{
+			{
+				Title:    "Consider renaming helper",
+				Priority: "P3",
+				CodeLocation: autoreviewCodeLocation{
+					FilePath: "helper.go",
+					Line:     7,
+				},
+			},
+		},
+		OverallCorrectness: "patch is incorrect",
+		OverallExplanation: "The patch is incorrect despite only advisory line findings.",
+		OverallConfidence:  0.91,
+	}
+
+	findings := convertAutoreviewReport(report)
+	if findings.RiskLevel != "high" {
+		t.Fatalf("RiskLevel = %q, want high", findings.RiskLevel)
+	}
+	if len(findings.Items) != 2 {
+		t.Fatalf("Items count = %d, want line finding plus overall blocker", len(findings.Items))
+	}
+	if got := findings.Items[0]; got.ID != "autoreview-1" || got.Severity != "info" || got.Action != types.ActionNoOp {
+		t.Fatalf("line finding = %+v", got)
+	}
+	if got := findings.Items[1]; got.ID != "autoreview-overall" || got.Severity != "error" || got.Action != types.ActionAutoFix {
+		t.Fatalf("overall finding = %+v", got)
+	}
+	if !hasBlockingFindings(findings.Items) {
+		t.Fatal("expected incorrect verdict to block review approval")
+	}
+}
+
 func fakeAutoreview(t *testing.T, report string, exitCode int) (env []string, logFile string) {
 	t.Helper()
 	binDir := fakeCLIBinDir(t)

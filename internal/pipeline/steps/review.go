@@ -348,7 +348,7 @@ func convertAutoreviewReport(report autoreviewReport) Findings {
 			Action:      autoreviewAction(item.Priority),
 		})
 	}
-	if len(findings.Items) == 0 && isAutoreviewPatchIncorrect(report) {
+	if isAutoreviewPatchIncorrect(report) && !hasBlockingFindings(findings.Items) {
 		findings.Items = append(findings.Items, Finding{
 			ID:          "autoreview-overall",
 			Severity:    "error",

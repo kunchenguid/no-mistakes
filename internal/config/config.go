@@ -580,7 +580,7 @@ func LoadRepo(dir string) (*RepoConfig, error) {
 		return nil, fmt.Errorf("read repo config: %w", err)
 	}
 
-	return parseRepoConfig(data)
+	return parseRepoConfig(data, true)
 }
 
 // LoadRepoFromBytes parses per-repo config from raw YAML bytes. It is the
@@ -588,20 +588,39 @@ func LoadRepo(dir string) (*RepoConfig, error) {
 // specific git ref (e.g. the default branch) use this to avoid honoring a
 // contributor's checked-out copy.
 func LoadRepoFromBytes(data []byte) (*RepoConfig, error) {
-	return parseRepoConfig(data)
+	return parseRepoConfig(data, true)
 }
 
-func parseRepoConfig(data []byte) (*RepoConfig, error) {
+func LoadUntrustedRepo(dir string) (*RepoConfig, error) {
+	cfg := &RepoConfig{}
+
+	path := filepath.Join(dir, ".no-mistakes.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return cfg, nil
+		}
+		return nil, fmt.Errorf("read repo config: %w", err)
+	}
+
+	return parseRepoConfig(data, false)
+}
+
+func parseRepoConfig(data []byte, validateReviewBackend bool) (*RepoConfig, error) {
 	cfg := &RepoConfig{}
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("parse repo config: %w", err)
 	}
 	if cfg.ReviewBackend != "" {
-		reviewBackend, err := parseReviewBackend(cfg.ReviewBackend)
-		if err != nil {
-			return nil, err
+		if validateReviewBackend {
+			reviewBackend, err := parseReviewBackend(cfg.ReviewBackend)
+			if err != nil {
+				return nil, err
+			}
+			cfg.ReviewBackend = reviewBackend
+		} else {
+			cfg.ReviewBackend = strings.TrimSpace(cfg.ReviewBackend)
 		}
-		cfg.ReviewBackend = reviewBackend
 	}
 	if cfg.AutoFix.CI == nil {
 		cfg.AutoFix.CI = cfg.AutoFix.Babysit
@@ -630,13 +649,16 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 // Non-executing fields (ignore patterns, auto-fix, intent, test) are always
 // taken from the pushed copy, matching prior behavior, since they cannot run
 // arbitrary shell or select a process.
-func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *RepoConfig {
+func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) (*RepoConfig, error) {
 	if pushed == nil {
 		pushed = &RepoConfig{}
 	}
 	effective := *pushed
 	if allowRepoCommands {
-		return &effective
+		if err := normalizeEffectiveReviewBackend(&effective); err != nil {
+			return nil, err
+		}
+		return &effective, nil
 	}
 	if trusted != nil {
 		effective.Commands = trusted.Commands
@@ -647,7 +669,22 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		effective.Agent = ""
 		effective.ReviewBackend = ""
 	}
-	return &effective
+	if err := normalizeEffectiveReviewBackend(&effective); err != nil {
+		return nil, err
+	}
+	return &effective, nil
+}
+
+func normalizeEffectiveReviewBackend(cfg *RepoConfig) error {
+	if cfg.ReviewBackend == "" {
+		return nil
+	}
+	reviewBackend, err := parseReviewBackend(cfg.ReviewBackend)
+	if err != nil {
+		return err
+	}
+	cfg.ReviewBackend = reviewBackend
+	return nil
 }
 
 func parseReviewBackend(value string) (string, error) {

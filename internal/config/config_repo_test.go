@@ -78,6 +78,29 @@ ignore_patterns:
 	}
 }
 
+func TestLoadUntrustedRepo_DefersReviewBackendValidation(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".no-mistakes.yaml")
+	data := `review_backend: "bogus "
+commands:
+  test: "go test ./..."
+`
+	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadUntrustedRepo(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.ReviewBackend != "bogus" {
+		t.Errorf("review_backend = %q, want trimmed untrusted value", cfg.ReviewBackend)
+	}
+	if cfg.Commands.Test != "go test ./..." {
+		t.Errorf("test = %q", cfg.Commands.Test)
+	}
+}
+
 func TestLoadRepo_PartialCommands(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".no-mistakes.yaml")
