@@ -176,11 +176,17 @@ func writeHookFileAtomic(path string, content []byte) error {
 // Idempotent: safe to call on an already-configured bare repo to
 // migrate older installs when per-worktree config is available.
 func IsolateHooksPath(ctx context.Context, bareDir string) error {
-	if _, err := runGit(ctx, bareDir, "config", "--worktree", "--get", "core.hookspath"); err != nil {
-		if isWorktreeConfigUnsupported(err) {
-			return nil
-		}
+	// Probe worktree config support and early-exit for two cases:
+	//   • worktreeUnsupported: git is too old for --worktree; nothing to do.
+	//   • both per-worktree keys already set: migration is complete.
+	// The second case avoids spawning ~5 extra git processes per gate on every
+	// daemon start. With many gates this is the difference between sub-second
+	// startup and blocking the IPC socket for seconds (issue #291).
+	done, unsupported := isolationState(ctx, bareDir)
+	if unsupported || done {
+		return nil
 	}
+
 	if _, err := runGit(ctx, bareDir, "config", "extensions.worktreeConfig", "true"); err != nil {
 		return fmt.Errorf("enable worktree config: %w", err)
 	}
@@ -195,6 +201,47 @@ func IsolateHooksPath(ctx context.Context, bareDir string) error {
 		return fmt.Errorf("pin core.hookspath per-worktree: %w", err)
 	}
 	return relocateCoreBareToWorktreeScope(ctx, bareDir)
+}
+
+// isolationState probes whether IsolateHooksPath has already been applied to
+// bareDir or whether the installed git doesn't support --worktree at all.
+// Returns (done, unsupported):
+//   - done=true:        migration is complete; skip it.
+//   - unsupported=true: git lacks worktree config support; skip it.
+//   - both false:       migration must run.
+//
+// We use `git config --worktree --get core.hookspath` as the first call for
+// two reasons:
+//  1. It doubles as a support probe: if --worktree is unsupported the error
+//     tells us to skip migration entirely.
+//  2. When it succeeds we additionally verify that extensions.worktreeConfig
+//     is enabled in local scope — otherwise git may return the shared-config
+//     value as a fallback, which is a false positive (issue: poisoned shared
+//     config set core.hookspath but worktree migration never ran).
+//
+// Checking both per-worktree keys prevents a false "done" when a previous run
+// set core.hookspath but was interrupted before relocating core.bare.
+func isolationState(ctx context.Context, bareDir string) (done, unsupported bool) {
+	// Probe --worktree support and check core.hookspath in worktree scope.
+	_, errHooks := runGit(ctx, bareDir, "config", "--worktree", "--get", "core.hookspath")
+	if errHooks != nil {
+		if isWorktreeConfigUnsupported(errHooks) {
+			return false, true
+		}
+		// Key absent in worktree scope; migration needed.
+		return false, false
+	}
+	// --worktree --get succeeded.  Verify extensions.worktreeConfig is actually
+	// enabled: without it, git falls back to the shared config for --get, so a
+	// value in shared scope would be a false positive.
+	extConf, err := runGit(ctx, bareDir, "config", "--local", "--get", "extensions.worktreeConfig")
+	if err != nil || !strings.EqualFold(strings.TrimSpace(extConf), "true") {
+		return false, false
+	}
+	// extensions.worktreeConfig is on and core.hookspath is in worktree scope.
+	// Check that core.bare was also relocated to worktree scope.
+	_, errBare := runGit(ctx, bareDir, "config", "--worktree", "--get", "core.bare")
+	return errBare == nil, false
 }
 
 // relocateCoreBareToWorktreeScope moves core.bare out of shared local config
