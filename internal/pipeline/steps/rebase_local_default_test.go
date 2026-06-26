@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 // Issue #283: a gated branch built on top of a local default branch that is
@@ -77,5 +78,15 @@ func TestRebaseStep_DetectsUnpushedLocalDefaultBranchCommits(t *testing.T) {
 	if !strings.Contains(outcome.Findings, "unrelated backend work") &&
 		!strings.Contains(strings.ToLower(outcome.Findings), "local") {
 		t.Fatalf("expected findings to flag the unpushed local-default-branch commits, got: %s", outcome.Findings)
+	}
+	findings, err := types.ParseFindingsJSON(outcome.Findings)
+	if err != nil {
+		t.Fatalf("parse findings: %v", err)
+	}
+	if len(findings.Items) != 1 {
+		t.Fatalf("expected one finding, got %d", len(findings.Items))
+	}
+	if findings.Items[0].Action != types.ActionAskUser {
+		t.Fatalf("finding action = %q, want %q", findings.Items[0].Action, types.ActionAskUser)
 	}
 }
