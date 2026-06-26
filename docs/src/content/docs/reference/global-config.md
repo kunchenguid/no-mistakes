@@ -21,6 +21,7 @@ agent_path_override:
   rovodev: /usr/local/bin/acli
   opencode: /usr/local/bin/opencode
   pi: /usr/local/bin/pi
+  grok: /usr/local/bin/grok
 
 agent_args_override:
   codex:
@@ -61,10 +62,11 @@ Default agent for all repos and setup-wizard suggestions. Can be overridden per-
 | | |
 |---|---|
 | Type | `string` |
-| Values | `auto`, `claude`, `codex`, `rovodev`, `opencode`, `pi`, `acp:<target>` |
+| Values | `auto`, `claude`, `codex`, `rovodev`, `opencode`, `pi`, `grok`, `acp:<target>` |
 | Default | `auto` |
 
 `auto` resolves to the first supported native agent found on `PATH` in this order: `claude`, `codex`, `opencode`, `acli` with `rovodev` support, then `pi`.
+`grok` is opt-in and is not considered by `agent: auto`; set `agent: grok` explicitly.
 `acp:<target>` uses the user-installed `acpx` binary to run an ACP target, for example `acp:gemini`.
 ACP agents are opt-in and are not considered by `agent: auto`.
 
@@ -115,6 +117,7 @@ Default native binary names when no override is set:
 | `rovodev` | `acli` |
 | `opencode` | `opencode` |
 | `pi` | `pi` |
+| `grok` | `grok` |
 
 ### agent_args_override
 
@@ -124,7 +127,7 @@ Use this to set model selection, reasoning effort, permission mode, or any other
 | | |
 |---|---|
 | Type | `map[string][]string` |
-| Keys | `claude`, `codex`, `rovodev`, `opencode`, `pi` |
+| Keys | `claude`, `codex`, `rovodev`, `opencode`, `pi`, `grok` |
 | Default | Empty (no extra flags) |
 
 User-supplied flags are inserted ahead of no-mistakes' managed flags, so your choices usually take precedence. A few flags are reserved because no-mistakes depends on them to communicate with the agent - setting any of these returns a config error on load:
@@ -136,6 +139,7 @@ User-supplied flags are inserted ahead of no-mistakes' managed flags, so your ch
 | `rovodev` | `rovodev`, `serve`, `--disable-session-token` |
 | `opencode` | `serve`, `--hostname`, `--port`, `--print-logs` |
 | `pi` | `--mode`, `--no-session` |
+| `grok` | `-p`, `--single`, `--prompt-file`, `--prompt-json`, `--cwd`, `--permission-mode`, `--output-format`, `--effort` |
 
 For structured `codex` runs, no-mistakes also appends its own `--output-schema <tempfile>` after your overrides. Treat that flag as managed even though config validation does not currently reject it.
 
@@ -169,6 +173,9 @@ agent_args_override:
   pi:
     - --provider
     - google
+  grok:
+    - --model
+    - grok-3
 ```
 
 ### ci_timeout

@@ -176,7 +176,7 @@ type Intent struct {
 const defaultConfigYAML = `# no-mistakes global configuration
 
 # Agent to use for code generation
-# Options: auto, claude, codex, rovodev, opencode, pi, acp:<target>
+# Options: auto, claude, codex, rovodev, opencode, pi, grok, acp:<target>
 # "auto" detects the first available native agent on your system
 # Use acp:<target> to run an optional user-installed acpx target, for example acp:gemini
 agent: auto
@@ -250,6 +250,7 @@ var defaultBinary = map[types.AgentName]string{
 	types.AgentRovoDev:  "acli",
 	types.AgentOpenCode: "opencode",
 	types.AgentPi:       "pi",
+	types.AgentGrok:     "grok",
 }
 
 // agentProbeOrder is the priority order for auto-detecting agents.
@@ -376,6 +377,7 @@ var agentArgsOverrideAgents = map[string]bool{
 	string(types.AgentRovoDev):  true,
 	string(types.AgentOpenCode): true,
 	string(types.AgentPi):       true,
+	string(types.AgentGrok):     true,
 }
 
 // reservedAgentArgs lists flags that no-mistakes manages internally and that
@@ -409,6 +411,16 @@ var reservedAgentArgs = map[string]map[string]bool{
 		"--mode":       true,
 		"--no-session": true,
 	},
+	string(types.AgentGrok): {
+		"-p":                true,
+		"--single":          true,
+		"--prompt-file":     true,
+		"--prompt-json":     true,
+		"--cwd":             true,
+		"--permission-mode": true,
+		"--output-format":   true,
+		"--effort":          true,
+	},
 }
 
 // validateAgentArgsOverride ensures each agent key is a known agent name and
@@ -417,7 +429,7 @@ var reservedAgentArgs = map[string]map[string]bool{
 func validateAgentArgsOverride(override map[string][]string) error {
 	for name, args := range override {
 		if !agentArgsOverrideAgents[name] {
-			return fmt.Errorf("invalid agent name in agent_args_override: %q (valid: claude, codex, rovodev, opencode, pi)", name)
+			return fmt.Errorf("invalid agent name in agent_args_override: %q (valid: claude, codex, rovodev, opencode, pi, grok)", name)
 		}
 		reserved := reservedAgentArgs[name]
 		for i, arg := range args {

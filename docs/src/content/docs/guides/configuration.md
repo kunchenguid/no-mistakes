@@ -50,7 +50,7 @@ Everything else can usually wait.
 
 # Default agent for all repos and setup-wizard suggestions.
 # "auto" picks the first available native agent on PATH.
-agent: auto  # auto | claude | codex | rovodev | opencode | pi | acp:<target>
+agent: auto  # auto | claude | codex | rovodev | opencode | pi | grok | acp:<target>
 
 # Optional acpx path and target command overrides for agent: acp:<target>.
 acpx_path: acpx
@@ -64,6 +64,7 @@ agent_path_override:
   rovodev: /usr/local/bin/acli
   opencode: /usr/local/bin/opencode
   pi: /usr/local/bin/pi
+  grok: /usr/local/bin/grok
 
 # Optional extra CLI flags per native agent.
 # This is global-only.
@@ -159,6 +160,7 @@ See [Repo Config Reference](/no-mistakes/reference/repo-config/) for the full fi
 
 - Repo `agent` overrides global `agent`.
 - Global `agent: auto` resolves by checking `claude`, `codex`, `opencode`, `acli` for `rovodev`, then `pi` on `PATH`.
+- `grok` is opt-in with `agent: grok` and is not considered by `agent: auto`.
 - ACP agents are opt-in with `agent: acp:<target>` and are not considered by `agent: auto`.
 - `agent_path_override`, `agent_args_override`, `acpx_path`, and `acp_registry_overrides` are global-only fields.
 - `auto_fix` from the repo config overlays global auto_fix. Fields not set in the repo config fall through to the global default.
