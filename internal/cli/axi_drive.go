@@ -66,7 +66,8 @@ func newAxiRunCmd() *cobra.Command {
 		Long: "Triggers a pipeline run for the current branch and drives it. Without\n" +
 			"--yes it blocks until the first approval gate, CI-ready point, or final outcome and\n" +
 			"prints it. With --yes it auto-resolves every gate (fixing actionable\n" +
-			"findings, then accepting the result) until a decision point or outcome.\n\n" +
+			"findings - including ask-user findings, with no escalation - then\n" +
+			"accepting the result) until a decision point or outcome.\n\n" +
 			"--intent is required when starting a new run: pass what the user set out\n" +
 			"to accomplish (the goal behind the change, not a description of the diff)\n" +
 			"so no-mistakes uses it directly instead of inferring it from transcripts.",
@@ -688,7 +689,11 @@ func newAxiAbortCmd() *cobra.Command {
 		Long: "Cancel a pipeline run. With no flags, cancels the active run on the\n" +
 			"current branch. Pass --run <id> to cancel a specific run by its id from\n" +
 			"anywhere - including outside its worktree - so an orphaned CI monitor\n" +
-			"(e.g. after a worktree was torn down) can be reaped deterministically.",
+			"(e.g. after a worktree was torn down) can be reaped deterministically.\n\n" +
+			"While a run is active, do NOT abort (or rerun) to go fix a finding\n" +
+			"yourself - that discards the pipeline's in-flight work and forces a full\n" +
+			"re-validation. abort and rerun are for between runs (after a failed or\n" +
+			"cancelled outcome), never to circumvent a gate.",
 		Args:          cobra.NoArgs,
 		SilenceErrors: true,
 		SilenceUsage:  true,

@@ -192,10 +192,43 @@ func TestWriteGateShape(t *testing.T) {
 		`    review-1,warning,main.go,ask-user,"calls os.Exit, leaks fd"`,
 		"no-mistakes axi respond --action approve",
 		"to have the pipeline fix the selected findings (do not edit files yourself)",
+		// Review gate carries the auto-fix-disabled note and the keep-driving
+		// reminder so an agent reads them at the point of use.
+		"Review auto-fix is disabled",
+		"the run never advances past a gate on its own",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("gate missing %q in:\n%s", want, out)
 		}
+	}
+}
+
+// TestGateNote_ReviewOnly verifies the review-auto-fix-disabled note appears
+// only at the review gate, while the keep-driving reminder appears at every
+// gate.
+func TestGateNote_ReviewOnly(t *testing.T) {
+	mk := func(step string) string {
+		gate := stepView{
+			Name:   step,
+			Status: "awaiting_approval",
+			FindingsJSON: findingsJSON(t, []types.Finding{
+				{ID: step + "-1", Severity: "warning", File: "main.go", Action: types.ActionAutoFix, Description: "x"},
+			}, "summary"),
+		}
+		return axiDoc(gateFields(gate)...)
+	}
+
+	review := mk("review")
+	if !strings.Contains(review, "Review auto-fix is disabled") {
+		t.Errorf("review gate missing the auto-fix-disabled note in:\n%s", review)
+	}
+
+	lint := mk("lint")
+	if strings.Contains(lint, "Review auto-fix is disabled") {
+		t.Errorf("non-review gate should not carry the review note in:\n%s", lint)
+	}
+	if !strings.Contains(lint, "the run never advances past a gate on its own") {
+		t.Errorf("every gate should carry the keep-driving reminder in:\n%s", lint)
 	}
 }
 

@@ -298,6 +298,12 @@ func gateFields(gate stepView) []toon.Field {
 	if parsed.RiskLevel != "" {
 		gfields = append(gfields, toon.Field{Key: "risk", Value: parsed.RiskLevel})
 	}
+	// Point-of-use reminder at the review gate: review auto-fix is disabled, so
+	// the agent must not expect the pipeline to silently self-fix review
+	// findings - every actionable one parks here for a decision.
+	if gate.Name == string(types.StepReview) {
+		gfields = append(gfields, toon.Field{Key: "note", Value: "Review auto-fix is disabled - every actionable review finding parks for your decision; there is no silent self-fix of review findings."})
+	}
 	rows := make([]findingRow, 0, len(parsed.Items))
 	for _, f := range parsed.Items {
 		rows = append(rows, findingRow{
@@ -317,6 +323,7 @@ func gateFields(gate stepView) []toon.Field {
 			"Run `no-mistakes axi respond --action fix --findings <ids>` to have the pipeline fix the selected findings (do not edit files yourself)",
 			"Run `no-mistakes axi respond --action skip` to skip this step",
 			fmt.Sprintf("Run `no-mistakes axi logs --step %s --full` to read the full step log", gate.Name),
+			"A long-running call is working, not stalled - background it if your harness needs to, but the run never advances past a gate on its own. Read every return; on a `gate:`, respond; loop until an `outcome:`.",
 		}},
 	}
 }

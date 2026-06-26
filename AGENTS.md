@@ -75,6 +75,12 @@ Safest local verification sequence after non-trivial changes:
 - Do not put technical details or deep reference material in `README.md`.
 - Most documentation should live in `docs/` which is the published docs site.
 
+**Agent-Guidance Surfaces**
+
+- `skills/no-mistakes/SKILL.md` is **generated**, not hand-written: the source of truth is the `body` constant in `internal/skill/skill.go`. Edit the body, then `make skill` to regenerate; `make lint` runs `skill-check` (`genskill --check`) and fails CI on drift. Never edit `SKILL.md` directly. `no-mistakes init` installs/refreshes this same rendering at user level, so the strings in the Go source are what ships to agents.
+- The "how an agent drives the pipeline" guidance lives in **three surfaces that must stay in sync**: (1) the skill body above (loaded when an agent invokes `/no-mistakes`); (2) the live `axi` output strings in `internal/cli/axi*.go` - the home `help` (`axi.go`), the gate `note`/`help` and run/respond return help (`axi_render.go` `gateFields`), and the `--help` Long strings (`axi_drive.go`); and (3) the published `docs/src/content/docs/guides/agents.md`. When you change driving guidance in one, mirror it in the others. The point-of-use `axi` strings are the layer an agent reads while driving without reopening the skill.
+- Review auto-fix is disabled (`config.go` `autoFixDefaults` `Review: 0`; gate at `executor.go`), so the **review step always gates** - every actionable review finding parks for an agent decision, never silently self-fixed. This is self-documented in all three surfaces above (the review gate carries a `note`); keep it true if you touch review auto-fix.
+
 **Context, Concurrency, and Processes**
 
 - Thread `context.Context` through long-running, subprocess, and networked work.
