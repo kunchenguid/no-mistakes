@@ -34,15 +34,17 @@ It can fail the run only if cleanup fails after the disambiguation agent leaves 
 
 ## Rebase
 
-Fetches the latest upstream state, fetches the configured pushed-branch target, and rebases your branch onto those refs.
+Fetches the latest authoritative remote state, fetches the configured pushed-branch target, and rebases your branch onto those refs.
 
 **Behavior:**
-- Fetches `origin/<default_branch>` into the worktree, and also fetches the pushed branch for non-default branches unless the push rewrote branch history
+- Fetches `origin/<default_branch>` from the remote into the worktree, and also fetches the pushed branch for non-default branches unless the push rewrote branch history
 - Without fork routing, the pushed-branch target is `origin/<branch>`
 - With GitHub fork routing, the pushed-branch target is the fork branch fetched into `refs/remotes/no-mistakes-push/<branch>`
 - If the branch is not the default branch, tries rebasing onto the pushed-branch target first, then `origin/<default_branch>`
 - If the push rewrote branch history, skips the pushed-branch rebase target so prior remote autofix commits do not get reintroduced
 - If the push rewrote the default branch and `origin/<default_branch>` advanced after that rewrite, pauses for manual approval before updating the branch
+- If the branch carries commits from the contributor's local default branch that are not on `origin/<default_branch>`, pauses with an `ask-user` finding instead of silently bundling that local work into the PR
+- The local-default check is best-effort and only fires when the local default tip is ahead of `origin/<default_branch>` and is an ancestor of the branch `HEAD`
 - Skips targets that don't exist or are already ancestors
 - If a fast-forward is possible, does a hard-reset instead of a rebase
 - If the diff against the default branch is empty after rebase, completes rebase and skips all remaining pipeline steps
@@ -132,10 +134,16 @@ Pushes the validated branch to the configured push target.
 - Commits any uncommitted agent changes with message `no-mistakes: apply agent fixes`
 - Without fork routing, the push target is `repos.upstream_url`, which comes from `origin`
 - With GitHub fork routing, the push target is `repos.fork_url`
-- Queries the push target via `git ls-remote` to get the current SHA for the branch
-- Uses `--force-with-lease` when updating an existing branch (safe force-push that fails if the remote has diverged)
+- Re-reads the push target via `git ls-remote` before pushing
+- For existing branches, refuses to force-push when the live remote carries commits the pipeline has not incorporated by patch-id
+- Fails closed when the remote safety check cannot verify whether the push would discard existing remote work
+- Uses `--force-with-lease=<ref>:<sha>` with an explicit SHA anchor for allowed existing-branch rewrites
+- Treats the branch as already pushed when the remote already points at the validated head
 - Uses regular push for new branches
 - Updates the run's head SHA in the database after push
+
+A remote branch can move without being rejected when all remote commits are already represented in the validated head, or when a run is intentionally rewriting history it already knew about.
+Any other out-of-band commit stops the push instead of being overwritten.
 
 This step never requires approval - it runs automatically after review, test, document, and lint pass.
 
@@ -182,7 +190,7 @@ Monitors PR health after creation and auto-fixes CI failures. Mergeability polli
 - The ready signal clears if checks start running again, new failures appear, provider state becomes uncertain, or the PR is merged, closed, or declined
 - Waits a 60s grace period before trusting empty results (CI checks may not have registered yet)
 - If CI failures or, on GitHub or GitLab, a merge conflict are already known while other checks are still pending: waits for all checks to finish before attempting an auto-fix
-- On CI failure: fetches failed job logs (GitHub via `gh run view --log-failed`, GitLab via `glab ci trace`, Bitbucket Cloud via failed pipeline step logs), sends them to the agent with user intent when available, and commits and force-pushes to the configured push target only if the agent produces changes
+- On CI failure: fetches failed job logs (GitHub via `gh run view --log-failed`, GitLab via `glab ci trace`, Bitbucket Cloud via failed pipeline step logs), sends them to the agent with user intent when available, and, if the agent produces changes, commits them and uses the same force-push safety guard as the push step
 - On GitHub or GitLab merge conflict: asks the agent to rebase onto the latest default-branch tip and make the smallest correct root-cause fix for the conflicts, using user intent when available
 - If both CI failures and a GitHub or GitLab merge conflict are present: fixes both in the same attempt
 - If a fix attempt produces no changes: automatic mode leaves the failure undeduplicated so it can retry until the auto-fix limit, while manual fix mode returns immediately for manual intervention

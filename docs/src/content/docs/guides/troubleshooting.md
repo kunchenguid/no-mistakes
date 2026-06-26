@@ -128,6 +128,22 @@ Symptom: a run stops with a failed step.
 Check the per-step log at `~/.no-mistakes/logs/<runID>/<step>.log`.
 Fatal step errors are appended to that log, so failures such as rejected pushes include the returned error output there instead of only appearing in `daemon.log`.
 
+### Push fails with `refusing to force-push`
+
+This means the live remote branch changed after the pipeline's last observed head and contains commit(s) the validated worktree did not incorporate.
+`no-mistakes` refuses the push instead of overwriting that remote work.
+
+Fetch and inspect the configured push target, then rebase or merge the remote work into your branch before pushing through `no-mistakes` again.
+If the overwrite is intentional, push manually to the actual remote after reviewing the commits that would be discarded.
+
+### Rebase pauses because the branch carries unpushed default-branch commits
+
+This means the branch was created from a local default branch that is ahead of `origin/<default_branch>`, so its history includes commits that exist only on your local default branch.
+`no-mistakes` pauses with an `ask-user` finding instead of silently bundling that unrelated local work into the PR.
+
+Push the default branch to `origin` if those commits belong in the shared base, or rebase your feature branch onto `origin/<default_branch>` to remove the unrelated work before running the gate again.
+Approve the finding only when you intentionally want that local default-branch work to stay in the branch.
+
 ## `git push no-mistakes` doesn't start a pipeline
 
 Symptom: push succeeds but `no-mistakes` shows no active run.
