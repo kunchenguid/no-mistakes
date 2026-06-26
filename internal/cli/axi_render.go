@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"time"
 
 	toon "github.com/toon-format/toon-go"
 
@@ -10,6 +11,10 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/spf13/cobra"
 )
+
+// nowUnix returns the current time in unix seconds. It is a package var so tests
+// can pin the clock when asserting how long a run has been parked.
+var nowUnix = func() int64 { return time.Now().Unix() }
 
 // maxFindingDesc caps a finding description rendered inline. Findings are the
 // decision content at a gate, so the limit is generous; only pathological
@@ -71,15 +76,20 @@ type runView struct {
 	Status  string
 	HeadSHA string
 	PRURL   string
-	Steps   []stepView
+	// AwaitingAgentSince is the unix-seconds time the run parked at a gate
+	// awaiting the driving agent, or nil when the run is not parked. It powers
+	// the top-level parked signal in the run object.
+	AwaitingAgentSince *int64
+	Steps              []stepView
 }
 
 func runViewFromIPC(r *ipc.RunInfo) runView {
 	rv := runView{
-		ID:      r.ID,
-		Branch:  r.Branch,
-		Status:  string(r.Status),
-		HeadSHA: r.HeadSHA,
+		ID:                 r.ID,
+		Branch:             r.Branch,
+		Status:             string(r.Status),
+		HeadSHA:            r.HeadSHA,
+		AwaitingAgentSince: r.AwaitingAgentSince,
 	}
 	if r.PRURL != nil {
 		rv.PRURL = *r.PRURL
@@ -99,10 +109,11 @@ func runViewFromIPC(r *ipc.RunInfo) runView {
 
 func runViewFromDB(r *db.Run, steps []*db.StepResult) runView {
 	rv := runView{
-		ID:      r.ID,
-		Branch:  r.Branch,
-		Status:  string(r.Status),
-		HeadSHA: r.HeadSHA,
+		ID:                 r.ID,
+		Branch:             r.Branch,
+		Status:             string(r.Status),
+		HeadSHA:            r.HeadSHA,
+		AwaitingAgentSince: r.AwaitingAgentSince,
 	}
 	if r.PRURL != nil {
 		rv.PRURL = *r.PRURL
@@ -129,6 +140,28 @@ func (rv runView) awaitingStep() (stepView, bool) {
 		}
 	}
 	return stepView{}, false
+}
+
+// formatParkedFor renders how long a run has been parked awaiting the agent,
+// given the unix-seconds time it parked. The phrasing reports the elapsed
+// duration so a supervisor can tell a fresh park ("parked 4s") from a stalled
+// one ("parked 18m20s") in a single `axi status` read.
+func formatParkedFor(sinceUnix int64) string {
+	secs := nowUnix() - sinceUnix
+	if secs < 0 {
+		secs = 0
+	}
+	d := time.Duration(secs) * time.Second
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("parked %ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("parked %dm%ds", int(d.Minutes()), int(d.Seconds())%60)
+	case d < 24*time.Hour:
+		return fmt.Sprintf("parked %dh%dm", int(d.Hours()), int(d.Minutes())%60)
+	default:
+		return fmt.Sprintf("parked %dd%dh", int(d.Hours())/24, int(d.Hours())%24)
+	}
 }
 
 // shortSHA trims a commit SHA for display.
@@ -228,8 +261,16 @@ func runObjectFieldWithKey(key string, rv runView) toon.Field {
 		{Key: "id", Value: rv.ID},
 		{Key: "branch", Value: rv.Branch},
 		{Key: "status", Value: rv.Status},
-		{Key: "head", Value: shortSHA(rv.HeadSHA)},
 	}
+	// Surface the parked-awaiting-agent signal right after status so one read
+	// distinguishes a run waiting for the agent to drive a gate from one that
+	// is actively running/fixing/ci. The value reports how long it has been
+	// parked, which separates a fresh park from a stalled one. Present only
+	// while genuinely parked (non-nil marker on a non-terminal run).
+	if rv.AwaitingAgentSince != nil && !terminalStatus(rv.Status) {
+		fields = append(fields, toon.Field{Key: "awaiting_agent", Value: formatParkedFor(*rv.AwaitingAgentSince)})
+	}
+	fields = append(fields, toon.Field{Key: "head", Value: shortSHA(rv.HeadSHA)})
 	if rv.PRURL != "" {
 		fields = append(fields, toon.Field{Key: "pr", Value: rv.PRURL})
 	}

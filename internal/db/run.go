@@ -9,30 +9,37 @@ import (
 
 // Run represents a pipeline run.
 type Run struct {
-	ID              string
-	RepoID          string
-	Branch          string
-	HeadSHA         string
-	BaseSHA         string
-	Status          types.RunStatus
-	PRURL           *string
-	Error           *string
-	Intent          *string
-	IntentSource    *string
-	IntentSessionID *string
-	IntentScore     *float64
-	CreatedAt       int64
-	UpdatedAt       int64
+	ID      string
+	RepoID  string
+	Branch  string
+	HeadSHA string
+	BaseSHA string
+	Status  types.RunStatus
+	PRURL   *string
+	Error   *string
+	// AwaitingAgentSince is the unix-seconds timestamp at which the run parked
+	// at a gate awaiting the driving agent's response (an awaiting_approval or
+	// fix_review step). It is nil whenever the run is not parked: the executor
+	// sets it on gate entry and clears it the moment the agent responds (or the
+	// wait is cancelled). It is observability only and does not affect gate
+	// resolution.
+	AwaitingAgentSince *int64
+	Intent             *string
+	IntentSource       *string
+	IntentSessionID    *string
+	IntentScore        *float64
+	CreatedAt          int64
+	UpdatedAt          int64
 }
 
-const runColumns = `id, repo_id, branch, head_sha, base_sha, status, pr_url, error, intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
+const runColumns = `id, repo_id, branch, head_sha, base_sha, status, pr_url, error, awaiting_agent_since, intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
 
 func scanRun(row interface {
 	Scan(...any) error
 }, r *Run) error {
 	return row.Scan(
 		&r.ID, &r.RepoID, &r.Branch, &r.HeadSHA, &r.BaseSHA, &r.Status,
-		&r.PRURL, &r.Error,
+		&r.PRURL, &r.Error, &r.AwaitingAgentSince,
 		&r.Intent, &r.IntentSource, &r.IntentSessionID, &r.IntentScore,
 		&r.CreatedAt, &r.UpdatedAt,
 	)
@@ -201,6 +208,31 @@ func (d *DB) UpdateRunIntent(id string, intent RunIntent) error {
 	return nil
 }
 
+// SetRunAwaitingAgent marks a run as parked awaiting the driving agent,
+// stamping awaiting_agent_since with the current time. Called by the executor
+// when a step enters a gate (awaiting_approval / fix_review). This is a pollable
+// observability signal only; it does not change gate resolution.
+func (d *DB) SetRunAwaitingAgent(id string) error {
+	ts := now()
+	_, err := d.sql.Exec(`UPDATE runs SET awaiting_agent_since = ?, updated_at = ? WHERE id = ?`, ts, ts, id)
+	if err != nil {
+		return fmt.Errorf("set run awaiting agent: %w", err)
+	}
+	return nil
+}
+
+// ClearRunAwaitingAgent clears the awaiting-agent marker on a run. Called by the
+// executor the moment the agent responds (or the approval wait is cancelled) and
+// the run resumes, so awaiting_agent_since is non-nil exactly while a gate is
+// actually parked.
+func (d *DB) ClearRunAwaitingAgent(id string) error {
+	_, err := d.sql.Exec(`UPDATE runs SET awaiting_agent_since = NULL, updated_at = ? WHERE id = ?`, now(), id)
+	if err != nil {
+		return fmt.Errorf("clear run awaiting agent: %w", err)
+	}
+	return nil
+}
+
 // RecoverStaleRuns marks any runs stuck in pending/running status as failed
 // and fails any in-progress steps. This is called at daemon startup to clean
 // up after a previous crash. Returns the number of recovered runs.
@@ -223,9 +255,10 @@ func (d *DB) RecoverStaleRuns(errMsg string) (int, error) {
 		return 0, fmt.Errorf("recover stale steps: %w", err)
 	}
 
-	// Fail stale runs.
+	// Fail stale runs. Clear any awaiting-agent marker so a recovered (now
+	// failed) run is never reported as still parked awaiting the agent.
 	result, err := tx.Exec(
-		`UPDATE runs SET status = ?, error = ?, updated_at = ? WHERE status IN (?, ?)`,
+		`UPDATE runs SET status = ?, error = ?, awaiting_agent_since = NULL, updated_at = ? WHERE status IN (?, ?)`,
 		types.RunFailed, errMsg, ts,
 		types.RunPending, types.RunRunning,
 	)

@@ -373,6 +373,14 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		e.waitingStep = stepName
 		e.mu.Unlock()
 
+		// Surface the park as a pollable, run-level signal so a supervisor can
+		// tell in one `axi status` read that the run is waiting for the agent
+		// to drive this gate (versus actively running/fixing/ci). Observability
+		// only: it does not change the wait below. Cleared once the wait ends.
+		if dbErr := e.db.SetRunAwaitingAgent(run.ID); dbErr != nil {
+			slog.Warn("failed to set awaiting-agent marker in db", "step", stepName, "run", run.ID, "error", dbErr)
+		}
+
 		// Step needs approval - store execution-only duration and wait for user action.
 		if dbErr := e.db.UpdateStepStatusWithDuration(sr.ID, approvalStatus, executionMS); dbErr != nil {
 			slog.Warn("failed to update step status and duration in db", "step", stepName, "status", approvalStatus, "error", dbErr)
@@ -380,6 +388,12 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(approvalStatus), outcome.Findings, diffText, "", &executionMS)
 
 		response, err := e.waitForApproval(ctx, stepName)
+		// The wait has ended (the agent responded, or it was cancelled): the run
+		// is no longer parked awaiting the agent. Clear the pollable marker
+		// before resuming so awaiting_agent_since is non-nil only while parked.
+		if dbErr := e.db.ClearRunAwaitingAgent(run.ID); dbErr != nil {
+			slog.Warn("failed to clear awaiting-agent marker in db", "step", stepName, "run", run.ID, "error", dbErr)
+		}
 		if err != nil {
 			if dbErr := e.db.FailStep(sr.ID, err.Error(), executionMS); dbErr != nil {
 				slog.Warn("failed to mark step as failed in db", "step", stepName, "error", dbErr)

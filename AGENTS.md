@@ -132,6 +132,14 @@ Safest local verification sequence after non-trivial changes:
 - `config.CITimeout` semantics: `>0` finite, `0` = unset (step falls back to `config.DefaultCITimeout`, 7 days), `<0` = `config.CITimeoutUnlimited` (never self-terminate). Config keyword `ci_timeout: "unlimited"` (also `none`/`off`/`never`) or any non-positive duration resolves to the unlimited sentinel via `parseCITimeout`. Keep `config.DefaultCITimeout` and the `defaultConfigYAML` `ci_timeout` value in sync (`TestDefaultConfigYAML_MatchesGoDefaults`).
 - Reap a run by id from outside its worktree with `no-mistakes axi abort --run <id>` (`runAxiAbortByRunID`). It needs only `NM_HOME` + the daemon, not a repo/branch/worktree, because `ipc.MethodCancelRun` → `RunManager.HandleCancel` only cancels runs live in daemon memory. An unknown/inactive id, or a stopped daemon, is an idempotent no-op (`aborted: false`), not an error. This is how an orphaned monitor (worktree torn down before merge) gets reaped deterministically. Bare `axi abort` (no `--run`) stays worktree/branch-scoped.
 
+**Parked / Awaiting-Agent Signal**
+
+- A run carries a pollable "parked, awaiting the driving agent" marker so a supervisor can tell in one `axi status` read whether a run is waiting for the agent to drive a gate versus actively running/fixing/ci. It is **observability only**: it does not change gate resolution, auto-resume, or the `--yes` default.
+- Storage: `runs.awaiting_agent_since` (unix seconds, nullable) on `db.Run.AwaitingAgentSince`. `ipc.RunInfo` exposes both `AwaitingAgent bool` (= since != nil) and `AwaitingAgentSince *int64`; `runToInfo` derives them.
+- Invariant: `awaiting_agent_since` is non-nil **iff a step is actually parked** at an `awaiting_approval`/`fix_review` gate. The executor (`internal/pipeline/executor.go`) sets it via `db.SetRunAwaitingAgent` on gate entry (right before the step status flips to the gate state, so it is already set once pollers observe the gate) and clears it via `db.ClearRunAwaitingAgent` the moment `waitForApproval` returns - covering both the agent's `axi respond` and a cancel. `RecoverStaleRuns` also clears it so a crash-recovered (failed) run is never reported as parked.
+- Surface: the `run:` TOON object adds `awaiting_agent: parked <duration>` right after `status`, rendered only while `AwaitingAgentSince != nil` and the run is non-terminal (`internal/cli/axi_render.go` `runObjectFieldWithKey` + `formatParkedFor`). The render clock is the injectable `nowUnix` package var so parked-duration tests are deterministic.
+- Tests: db set/clear + recovery (`internal/db/run_test.go`), executor flips-on-gate/clears-on-respond (`internal/pipeline/executor_approval_test.go`), formatter + render shape (`internal/cli/axi_test.go`), and e2e `TestAxiParkedAwaitingAgentSignal`.
+
 **When Making Changes**
 
 - Whenever you must bring in new dependencies, check latest documentation for knowledge, and discuss with the user.

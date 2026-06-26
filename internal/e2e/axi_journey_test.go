@@ -176,6 +176,74 @@ func TestAxiAgentJourney(t *testing.T) {
 	}
 }
 
+// TestAxiParkedAwaitingAgentSignal proves the parked / awaiting-agent signal is
+// observable end to end: when a run stops at a gate it reports awaiting_agent
+// (with how long it has been parked) in a single `axi status` read and over IPC,
+// and the moment the agent responds the signal clears. This is observability
+// only - the drive/resolve behavior is unchanged.
+func TestAxiParkedAwaitingAgentSignal(t *testing.T) {
+	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: axiScenario(t)})
+
+	h.CommitChange("init-park", "seed.txt", "seed\n", "seed for park signal")
+	initWorktree := h.AddWorktree("init-park")
+	if out, err := h.RunInDir(initWorktree, "init"); err != nil {
+		t.Fatalf("nm init: %v\n%s", err, out)
+	}
+
+	h.CommitChange("feature/park", "feature.txt", "change\n", "add feature change")
+	fw := h.AddWorktree("feature/park")
+
+	if out, err := h.RunInDir(fw, "axi", "run", "--intent", axiIntent); err != nil {
+		t.Fatalf("axi run (expected to stop at gate, exit 0): %v\n%s", err, out)
+	}
+
+	// The run parks at the review gate. The pollable signal is set on gate entry.
+	gated := waitForStepStatus(t, h, "feature/park", types.StepReview, types.StepStatusAwaitingApproval, 60*time.Second)
+	if gated == nil {
+		t.Fatal("expected feature/park run to be awaiting approval")
+	}
+	if !gated.AwaitingAgent {
+		t.Error("RunInfo.AwaitingAgent = false while parked at gate, want true")
+	}
+	if gated.AwaitingAgentSince == nil {
+		t.Error("RunInfo.AwaitingAgentSince = nil while parked at gate, want a timestamp")
+	}
+
+	// One `axi status` read shows the run is parked awaiting the agent and for
+	// how long, distinguishing it from an actively running/fixing/ci run.
+	statusOut, err := h.RunInDir(fw, "axi", "status")
+	if err != nil {
+		t.Fatalf("axi status (parked): %v\n%s", err, statusOut)
+	}
+	if !strings.Contains(statusOut, "awaiting_agent: parked ") {
+		t.Errorf("axi status did not surface the parked signal while parked:\n%s", statusOut)
+	}
+
+	// Responding clears the signal as the run resumes and completes.
+	if out, err := h.RunInDir(fw, "axi", "respond", "--action", "approve"); err != nil {
+		t.Fatalf("axi respond approve: %v\n%s", err, out)
+	}
+	completed := h.WaitForRun("feature/park", 60*time.Second)
+	if completed.Status != types.RunCompleted {
+		t.Fatalf("feature/park run status = %s, want completed", completed.Status)
+	}
+	if completed.AwaitingAgent {
+		t.Error("RunInfo.AwaitingAgent = true after respond, want false")
+	}
+	if completed.AwaitingAgentSince != nil {
+		t.Errorf("RunInfo.AwaitingAgentSince = %d after respond, want nil", *completed.AwaitingAgentSince)
+	}
+
+	// And the cleared signal is absent from a fresh `axi status` read.
+	doneStatus, err := h.RunInDir(fw, "axi", "status")
+	if err != nil {
+		t.Fatalf("axi status (done): %v\n%s", err, doneStatus)
+	}
+	if strings.Contains(doneStatus, "awaiting_agent") {
+		t.Errorf("axi status still shows the parked signal after completion:\n%s", doneStatus)
+	}
+}
+
 // TestAxiRunPreflightGuards proves `axi run` refuses to start a run with
 // structured, actionable errors instead of silently doing the wrong thing:
 // missing intent, the default branch, and an uncommitted working tree.

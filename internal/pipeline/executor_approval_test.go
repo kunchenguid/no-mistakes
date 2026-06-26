@@ -68,6 +68,60 @@ func TestExecutor_ApprovalFix(t *testing.T) {
 	}
 }
 
+func TestExecutor_AwaitingAgentMarkerSetOnGateClearedOnRespond(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	step := &adaptiveCallStep{
+		name: types.StepReview,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			return &StepOutcome{
+				NeedsApproval: true,
+				Findings:      `{"findings":[{"severity":"warning","description":"needs a human","action":"ask-user"}],"summary":"1 issue"}`,
+			}, nil
+		},
+	}
+
+	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- exec.Execute(context.Background(), run, repo, workDir)
+	}()
+
+	// Entering the gate flips the pollable parked marker on.
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
+	parked, err := database.GetRun(run.ID)
+	if err != nil {
+		t.Fatalf("get run while parked: %v", err)
+	}
+	if parked.AwaitingAgentSince == nil {
+		t.Fatal("AwaitingAgentSince = nil while parked at gate, want a timestamp")
+	}
+
+	// Responding clears it as the run resumes, so the marker is non-nil only
+	// while the run is actually parked awaiting the agent.
+	if err := exec.Respond(types.StepReview, types.ActionApprove, nil); err != nil {
+		t.Fatalf("respond: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("executor error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("executor timed out")
+	}
+
+	resumed, err := database.GetRun(run.ID)
+	if err != nil {
+		t.Fatalf("get run after respond: %v", err)
+	}
+	if resumed.AwaitingAgentSince != nil {
+		t.Errorf("AwaitingAgentSince = %d after respond, want nil", *resumed.AwaitingAgentSince)
+	}
+}
+
 func TestExecutor_TracksApprovalAndUserFixTelemetry(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir := t.TempDir()

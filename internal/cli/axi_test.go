@@ -108,6 +108,71 @@ func TestWriteRunObjectShape(t *testing.T) {
 	}
 }
 
+func TestRunObjectRendersAwaitingAgent(t *testing.T) {
+	// Pin the clock so the parked duration is deterministic.
+	restore := nowUnix
+	nowUnix = func() int64 { return 1_000_000 }
+	defer func() { nowUnix = restore }()
+
+	parkedSince := int64(1_000_000 - 150) // 2m30s ago
+	rv := runView{
+		ID:                 "run-1",
+		Branch:             "feature/x",
+		Status:             string(types.RunRunning),
+		HeadSHA:            "abcdef1234567890",
+		AwaitingAgentSince: &parkedSince,
+		Steps: []stepView{
+			{Name: "review", Status: "awaiting_approval"},
+		},
+	}
+	out := axiDoc(runObjectField(rv))
+	if !strings.Contains(out, "awaiting_agent: parked 2m30s\n") {
+		t.Errorf("run object missing parked signal in:\n%s", out)
+	}
+	// The signal sits right after status so one read distinguishes parked.
+	if !strings.Contains(out, "status: running\n  awaiting_agent: parked 2m30s\n") {
+		t.Errorf("awaiting_agent should follow status in:\n%s", out)
+	}
+
+	// A run that is not parked omits the signal entirely.
+	rv.AwaitingAgentSince = nil
+	if out := axiDoc(runObjectField(rv)); strings.Contains(out, "awaiting_agent") {
+		t.Errorf("non-parked run should not render awaiting_agent in:\n%s", out)
+	}
+
+	// A terminal run never renders as parked even if a stale marker survives.
+	rv.AwaitingAgentSince = &parkedSince
+	rv.Status = string(types.RunCompleted)
+	if out := axiDoc(runObjectField(rv)); strings.Contains(out, "awaiting_agent") {
+		t.Errorf("terminal run should not render awaiting_agent in:\n%s", out)
+	}
+}
+
+func TestFormatParkedFor(t *testing.T) {
+	restore := nowUnix
+	nowUnix = func() int64 { return 1_000_000 }
+	defer func() { nowUnix = restore }()
+
+	tests := []struct {
+		name    string
+		agoSecs int64
+		want    string
+	}{
+		{"fresh seconds", 4, "parked 4s"},
+		{"minutes and seconds", 150, "parked 2m30s"},
+		{"hours and minutes", 3*3600 + 12*60, "parked 3h12m"},
+		{"days and hours", 2*86400 + 5*3600, "parked 2d5h"},
+		{"clock skew clamps to zero", -10, "parked 0s"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := formatParkedFor(1_000_000 - tt.agoSecs); got != tt.want {
+				t.Errorf("formatParkedFor = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestWriteGateShape(t *testing.T) {
 	gate := stepView{
 		Name:   "review",

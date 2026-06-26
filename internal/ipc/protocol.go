@@ -179,17 +179,23 @@ type ShutdownResult struct {
 
 // RunInfo is the IPC representation of a pipeline run.
 type RunInfo struct {
-	ID        string           `json:"id"`
-	RepoID    string           `json:"repo_id"`
-	Branch    string           `json:"branch"`
-	HeadSHA   string           `json:"head_sha"`
-	BaseSHA   string           `json:"base_sha"`
-	Status    types.RunStatus  `json:"status"`
-	PRURL     *string          `json:"pr_url,omitempty"`
-	Error     *string          `json:"error,omitempty"`
-	Steps     []StepResultInfo `json:"steps,omitempty"`
-	CreatedAt int64            `json:"created_at"`
-	UpdatedAt int64            `json:"updated_at"`
+	ID      string          `json:"id"`
+	RepoID  string          `json:"repo_id"`
+	Branch  string          `json:"branch"`
+	HeadSHA string          `json:"head_sha"`
+	BaseSHA string          `json:"base_sha"`
+	Status  types.RunStatus `json:"status"`
+	PRURL   *string         `json:"pr_url,omitempty"`
+	Error   *string         `json:"error,omitempty"`
+	// AwaitingAgent is true while the run is parked at a gate awaiting the
+	// driving agent's response. AwaitingAgentSince is the unix-seconds time it
+	// parked, so a supervisor can read "parked for N seconds" in one call. Both
+	// are observability only and clear the moment the agent responds.
+	AwaitingAgent      bool             `json:"awaiting_agent,omitempty"`
+	AwaitingAgentSince *int64           `json:"awaiting_agent_since,omitempty"`
+	Steps              []StepResultInfo `json:"steps,omitempty"`
+	CreatedAt          int64            `json:"created_at"`
+	UpdatedAt          int64            `json:"updated_at"`
 }
 
 // StepResultInfo is the IPC representation of a step result.

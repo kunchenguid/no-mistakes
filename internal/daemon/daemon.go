@@ -470,16 +470,18 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 
 func runToInfo(d *db.DB, r *db.Run, steps []*db.StepResult) *ipc.RunInfo {
 	info := &ipc.RunInfo{
-		ID:        r.ID,
-		RepoID:    r.RepoID,
-		Branch:    r.Branch,
-		HeadSHA:   r.HeadSHA,
-		BaseSHA:   r.BaseSHA,
-		Status:    r.Status,
-		PRURL:     r.PRURL,
-		Error:     r.Error,
-		CreatedAt: r.CreatedAt,
-		UpdatedAt: r.UpdatedAt,
+		ID:                 r.ID,
+		RepoID:             r.RepoID,
+		Branch:             r.Branch,
+		HeadSHA:            r.HeadSHA,
+		BaseSHA:            r.BaseSHA,
+		Status:             r.Status,
+		PRURL:              r.PRURL,
+		Error:              r.Error,
+		AwaitingAgent:      r.AwaitingAgentSince != nil,
+		AwaitingAgentSince: r.AwaitingAgentSince,
+		CreatedAt:          r.CreatedAt,
+		UpdatedAt:          r.UpdatedAt,
 	}
 	if len(steps) > 0 {
 		info.Steps = make([]ipc.StepResultInfo, 0, len(steps))
