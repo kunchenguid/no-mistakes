@@ -54,9 +54,12 @@ func TestBodyDocumentsTaskFirstFlow(t *testing.T) {
 func TestBodyDocumentsAxiGateGuidance(t *testing.T) {
 	md := Markdown()
 	for _, want := range []string{
-		"resume it by reattaching with `no-mistakes axi run`",
-		"`axi respond` applies only once the run is parked at a gate",
+		"inspect it with `no-mistakes axi status`",
+		"drive it with `no-mistakes axi respond`",
+		"when it still matches your current `HEAD`",
 		"**Review auto-fix is disabled by default**",
+		"blocking and",
+		"ask-user review findings park for your decision",
 		"`auto_fix.review > 0`",
 	} {
 		if !strings.Contains(md, want) {
