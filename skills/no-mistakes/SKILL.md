@@ -224,18 +224,18 @@ no-mistakes axi abort --run <id>   # cancel a specific run by id (works outside 
 - Errors are printed as `error: ...` on stdout with a `help` list; act on the suggestion.
 - Exit codes: `0` success, no-op, or normal decision gates, `1` failed or cancelled final outcomes, `2` bad usage.
 
-A `gate:` waiting on you looks roughly like this - a `gate:` line naming the
-step, a `findings[N]{...}:` table with one row per finding, and a `help[N]:`
-list of next commands:
+A `gate:` waiting on you looks roughly like this - a `gate:` line naming the step, optional step-specific fields such as `note`, a `findings[N]{...}:` table with one row per finding, and a `help[N]:` list of next commands:
 
 ```
 gate: review
-findings[2]{id,severity,file,description,action}:
-  r1,medium,internal/pipeline/executor.go,Error from os.Remove is ignored,auto-fix
-  r2,high,cmd/no-mistakes/main.go,New --force flag bypasses the confirm prompt,ask-user
-help[2]:
+note: Review auto-fix is disabled by default (auto_fix.review: 0; a repo or global auto_fix.review > 0 override re-enables it), so blocking and ask-user review findings park for your decision rather than being silently self-fixed.
+findings[2]{id,severity,file,line,action,description}:
+  r1,warning,internal/pipeline/executor.go,,auto-fix,Error from os.Remove is ignored
+  r2,error,cmd/no-mistakes/main.go,,ask-user,New --force flag bypasses the confirm prompt
+help[3]:
   no-mistakes axi respond --action fix --findings r1
   no-mistakes axi respond --action approve
+  A long-running call is working, not stalled - background it if your harness needs to, but the run never advances past a gate on its own. Read every return; on a gate, respond; loop until an outcome.
 ```
 
 Read the `action` column per row: decide `r1` (auto-fix) on your own

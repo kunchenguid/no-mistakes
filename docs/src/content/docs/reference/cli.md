@@ -63,8 +63,8 @@ It prints TOON to stdout, prints progress to stderr, and uses structured stdout 
 no-mistakes axi
 ```
 
-With no subcommand, shows the executable path, description, repo, current branch, daemon state, recent runs, and next-step help.
-When the current branch has an active run, that run appears as `active_run` with any approval gate and help for `axi respond` or `axi abort`.
+With no subcommand, shows the executable path, description, repo, current branch, daemon state, recent runs, and next-step help, including a pointer to `no-mistakes axi run --help` and the installed `/no-mistakes` skill for full driving guidance.
+When the current branch has an active run, that run appears as `active_run` with any approval gate and help for `axi respond` when it is parked or `axi status` when it is still running.
 If an active run object is parked at a decision gate, it includes `awaiting_agent: parked <duration>` immediately after `status`.
 That field is observability only; the `gate:` object still tells the agent which response to send.
 When only another branch has an active run, that run appears as `other_branch_active_run`; the help tells agents to leave it alone and start validation for the current branch.
@@ -94,6 +94,9 @@ Reattaching to an in-flight run does not require `--intent`.
 With `--yes`, `axi run` treats both `action: auto-fix` and `action: ask-user` findings as standing consent for the pipeline to fix them by selecting every finding, then accepts the resulting fix review.
 Gates with no findings or only `action: no-op` findings are approved as-is, and each step is fixed at most once so unresolved findings do not loop forever.
 Without `--yes`, an agent driving `axi run` should stop when a gate contains `action: ask-user` findings and relay each finding's ID, file, and full description to the user before responding.
+Review gates include a `note` field reminding agents that `auto_fix.review` defaults to `0`, so blocking and ask-user review findings park for a decision unless configuration explicitly opts back into review auto-fix.
+Long-running `axi run` calls are working, not stalled; if one returns a `gate:`, read that output and answer it with `axi respond`.
+Backgrounding a call is fine for an agent harness, but the run never advances past a gate on its own.
 When the CI step is still monitoring an open PR and checks are green, `axi run` exits successfully with `outcome: checks-passed` instead of waiting for a human merge.
 Treat that as the agent stopping point: ask the user to review and merge the PR from the `help` line.
 Successful outcomes (`checks-passed` and `passed`) also carry `help` instructions telling the agent to summarize the run.
@@ -120,6 +123,8 @@ no-mistakes axi respond --action skip
 | `-y`, `--yes` | `bool` | `false` | Auto-resolve every subsequent gate until a decision point or outcome |
 
 After the explicit response, `--yes` uses the same auto-resolution behavior as `axi run --yes`: have the pipeline fix `auto-fix` and `ask-user` findings once, approve the fix review, approve gates that only contain non-actionable `no-op` findings, and stop at `outcome: checks-passed` when CI is green but the PR still needs a human merge.
+Each `axi respond` blocks until the next gate, CI-ready decision point, or final outcome.
+If it returns another `gate:`, answer that gate; do not idle-wait for the run to move forward by itself.
 The same successful-output reporting instructions apply to `axi respond` results.
 
 ## no-mistakes axi status
@@ -176,6 +181,8 @@ no-mistakes axi abort --run <id>
 `--run` does not need a repo, branch, or worktree, so it works from anywhere.
 Use it to reap an orphaned CI monitor whose worktree was torn down before the PR merged - the run id is shown in `axi run` output and in the `axi` home view.
 Aborting an id that is not an active run is a successful no-op.
+While a run is active, do not use `axi abort` or `no-mistakes rerun` to go fix a finding yourself.
+That cancels the pipeline's in-flight work and forces a full re-validation; use `axi respond --action fix` at the gate so the pipeline applies and re-checks the fix.
 
 ## no-mistakes eject
 
@@ -186,7 +193,7 @@ no-mistakes eject
 ```
 
 Removes the `no-mistakes` remote, deletes the bare repo directory, cleans up worktrees, and deletes the database record (cascades to runs and steps).
-It does not remove repo-local agent skill files created by `init`.
+It does not remove any legacy repo-local agent skill files left by older versions; current `init` installs the skill at user level instead.
 
 ## no-mistakes attach
 
@@ -210,7 +217,9 @@ Rerun the pipeline for the current branch.
 no-mistakes rerun
 ```
 
-Starts a new pipeline run using the last-known head SHA on the current branch. Useful for retrying after a fix or configuration change.
+Starts a new pipeline run using the last-known head SHA on the current branch.
+If another run is active on that branch, rerun cancels it before starting over.
+Treat rerun as a between-runs action after a failed or cancelled outcome, or after you have committed a separate fix outside an active run; do not use it to bypass a gate.
 
 ## no-mistakes status
 
