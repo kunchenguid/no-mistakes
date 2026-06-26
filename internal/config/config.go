@@ -176,8 +176,9 @@ type Intent struct {
 const defaultConfigYAML = `# no-mistakes global configuration
 
 # Agent to use for code generation
-# Options: auto, claude, codex, rovodev, opencode, pi, acp:<target>
+# Options: auto, claude, codex, rovodev, opencode, pi, cursor, acp:<target>
 # "auto" detects the first available native agent on your system
+# "cursor" uses the Cursor AI editor's headless agent (cursor-agent) via acpx
 # Use acp:<target> to run an optional user-installed acpx target, for example acp:gemini
 agent: auto
 
@@ -250,6 +251,7 @@ var defaultBinary = map[types.AgentName]string{
 	types.AgentRovoDev:  "acli",
 	types.AgentOpenCode: "opencode",
 	types.AgentPi:       "pi",
+	types.AgentCursor:   "cursor-agent",
 }
 
 // agentProbeOrder is the priority order for auto-detecting agents.
@@ -259,6 +261,7 @@ var agentProbeOrder = []types.AgentName{
 	types.AgentOpenCode,
 	types.AgentRovoDev,
 	types.AgentPi,
+	types.AgentCursor,
 }
 
 func isACPAgent(name types.AgentName) bool {
@@ -339,10 +342,10 @@ func (c *Config) ResolveAgent(ctx context.Context, lookPath func(string) (string
 }
 
 // AgentPath returns the binary path for the configured agent.
-// ACP agents use acpx_path if set, otherwise acpx.
+// ACP agents and the cursor agent use acpx_path if set, otherwise acpx.
 // Native agents use agent_path_override if set, otherwise the default binary name.
 func (c *Config) AgentPath() string {
-	if isACPAgent(c.Agent) {
+	if isACPAgent(c.Agent) || c.Agent == types.AgentCursor {
 		if c.ACPXPath != "" {
 			return c.ACPXPath
 		}

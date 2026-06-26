@@ -24,6 +24,7 @@ func TestNew_KnownAgents(t *testing.T) {
 		{name: "rovodev", agent: types.AgentRovoDev, bin: "acli", wantName: "rovodev"},
 		{name: "opencode", agent: types.AgentOpenCode, bin: "opencode", wantName: "opencode"},
 		{name: "pi", agent: types.AgentPi, bin: "pi", wantName: "pi"},
+		{name: "cursor", agent: types.AgentCursor, bin: "acpx", wantName: "acp:cursor"},
 	}
 
 	for _, tt := range tests {
@@ -67,6 +68,44 @@ func TestNewWithOptions_ACPRegistryOverride(t *testing.T) {
 	}
 	if strings.Contains(joined, "\x00local-gemini\x00") {
 		t.Fatalf("args = %q, should not include target subcommand when override is used", args)
+	}
+}
+
+func TestCursorAgentUsesDefaultCursorAgentCommand(t *testing.T) {
+	a, err := New(types.AgentCursor, "acpx", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	acpx, ok := a.(*acpxAgent)
+	if !ok {
+		t.Fatalf("agent type = %T, want *acpxAgent", a)
+	}
+	if acpx.target != "cursor" {
+		t.Errorf("target = %q, want %q", acpx.target, "cursor")
+	}
+	if acpx.rawCommand != "cursor-agent acp" {
+		t.Errorf("rawCommand = %q, want %q", acpx.rawCommand, "cursor-agent acp")
+	}
+	args := acpx.buildArgs(RunOpts{Prompt: "do work"})
+	joined := strings.Join(args, "\x00")
+	if !strings.Contains(joined, "--agent\x00cursor-agent acp") {
+		t.Fatalf("args = %q, want --agent cursor-agent acp", args)
+	}
+}
+
+func TestCursorAgentRegistryOverrideRespected(t *testing.T) {
+	a, err := NewWithOptions(types.AgentCursor, "acpx", nil, Options{
+		ACPRegistryOverrides: map[string]string{"cursor": "/opt/cursor/cursor-agent acp --profile work"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	acpx, ok := a.(*acpxAgent)
+	if !ok {
+		t.Fatalf("agent type = %T, want *acpxAgent", a)
+	}
+	if acpx.rawCommand != "/opt/cursor/cursor-agent acp --profile work" {
+		t.Errorf("rawCommand = %q, want override value", acpx.rawCommand)
 	}
 }
 
