@@ -313,7 +313,18 @@ func runAutoreview(sctx *pipeline.StepContext, baseSHA, reviewContext string) (F
 	if err := json.Unmarshal(raw, &report); err != nil {
 		return Findings{}, fmt.Errorf("parse output JSON: %w", err)
 	}
+	if runErr != nil && !isAutoreviewPatchIncorrect(report) {
+		return Findings{}, autoreviewRunError(runErr, out)
+	}
 	return convertAutoreviewReport(report), nil
+}
+
+func autoreviewRunError(runErr error, out []byte) error {
+	detail := strings.TrimSpace(string(out))
+	if detail == "" {
+		return fmt.Errorf("autoreview exited non-zero: %w", runErr)
+	}
+	return fmt.Errorf("autoreview exited non-zero: %w: %s", runErr, detail)
 }
 
 func autoreviewBinary(sctx *pipeline.StepContext) string {

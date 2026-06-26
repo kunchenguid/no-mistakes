@@ -274,6 +274,33 @@ func TestReviewStep_AutoreviewBackend_IncorrectWithoutFindingsBlocks(t *testing.
 	}
 }
 
+func TestReviewStep_AutoreviewBackend_NonzeroErrorEnvelopeFailsClosed(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	autoreviewEnv, _ := fakeAutoreview(t, `{"error":"quota exceeded"}`, 1)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			t.Fatal("autoreview backend should not call the configured agent")
+			return nil, nil
+		},
+	}
+
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.ReviewBackend = "autoreview"
+	sctx.Env = autoreviewEnv
+
+	step := &ReviewStep{}
+	_, err := step.Execute(sctx)
+	if err == nil {
+		t.Fatal("expected autoreview error")
+	}
+	if !strings.Contains(err.Error(), "autoreview exited non-zero") {
+		t.Fatalf("error = %q, want non-zero autoreview failure", err)
+	}
+}
+
 func TestConvertAutoreviewReport(t *testing.T) {
 	report := autoreviewReport{
 		Findings: []autoreviewFinding{
