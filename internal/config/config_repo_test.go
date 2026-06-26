@@ -35,7 +35,7 @@ func TestLoadRepo_FromFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".no-mistakes.yaml")
 	data := `agent: codex
-review_backend: autoreview
+review_backend: "autoreview "
 commands:
   lint: "golangci-lint run ./..."
   test: "go test -race ./..."

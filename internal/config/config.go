@@ -75,11 +75,12 @@ type RepoConfig struct {
 	Commands       Commands        `yaml:"commands"`
 	IgnorePatterns []string        `yaml:"ignore_patterns"`
 	// AllowRepoCommands opts in to honoring the code-executing selection
-	// fields (commands.{test,lint,format} and agent) from a contributor's
-	// pushed branch instead of the trusted default-branch copy. It is read
-	// ONLY from the trusted default-branch copy of .no-mistakes.yaml (never
-	// the pushed SHA), so a contributor cannot self-enable. Default false:
-	// the pushed branch controls nothing that executes.
+	// fields (commands.{test,lint,format}, agent, and review_backend) from a
+	// contributor's pushed branch instead of the trusted default-branch copy.
+	// It is read ONLY from the trusted default-branch copy of
+	// .no-mistakes.yaml (never the pushed SHA), so a contributor cannot
+	// self-enable. Default false: the pushed branch controls nothing that
+	// executes.
 	AllowRepoCommands bool       `yaml:"allow_repo_commands"`
 	AutoFix           AutoFixRaw `yaml:"auto_fix"`
 	Intent            IntentRaw  `yaml:"intent"`
@@ -499,10 +500,13 @@ func LoadGlobal(path string) (*GlobalConfig, error) {
 		cfg.Agent = raw.Agent
 	}
 	if raw.ReviewBackend != "" {
-		if err := validateReviewBackend(raw.ReviewBackend); err != nil {
+		reviewBackend, err := parseReviewBackend(raw.ReviewBackend)
+		if err != nil {
 			return nil, err
 		}
-		cfg.ReviewBackend = raw.ReviewBackend
+		if reviewBackend != "" {
+			cfg.ReviewBackend = reviewBackend
+		}
 	}
 	if raw.ACPXPath != "" {
 		cfg.ACPXPath = raw.ACPXPath
@@ -593,9 +597,11 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 		return nil, fmt.Errorf("parse repo config: %w", err)
 	}
 	if cfg.ReviewBackend != "" {
-		if err := validateReviewBackend(cfg.ReviewBackend); err != nil {
+		reviewBackend, err := parseReviewBackend(cfg.ReviewBackend)
+		if err != nil {
 			return nil, err
 		}
+		cfg.ReviewBackend = reviewBackend
 	}
 	if cfg.AutoFix.CI == nil {
 		cfg.AutoFix.CI = cfg.AutoFix.Babysit
@@ -608,21 +614,22 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 // given a pushed-branch copy and the trusted default-branch copy.
 //
 // The code-executing selection fields — Commands (run verbatim via sh -c on
-// the daemon host) and Agent (selects which process launches with the
-// maintainer's credentials, including acp: targets) — are taken only from
-// the trusted copy when it is present, so a contributor's pushed branch
-// cannot inject shell or pick an agent. When allowRepoCommands is true the
-// maintainer has explicitly opted in (via allow_repo_commands on the
-// TRUSTED default-branch copy) to honoring the pushed-branch copy wholesale.
-// When there is no trusted copy and the maintainer has not opted in, both
-// fields are forced empty (Agent "" inherits the global agent; Commands{}
-// yields built-in defaults) rather than falling back to the pushed branch —
-// this blocks the supply-chain vector for repos that ship .no-mistakes.yaml
-// only on feature branches.
+// the daemon host), Agent (selects which process launches with the
+// maintainer's credentials, including acp: targets), and ReviewBackend
+// (selects the review process) — are taken only from the trusted copy when it
+// is present, so a contributor's pushed branch cannot inject shell or pick an
+// execution backend. When allowRepoCommands is true the maintainer has
+// explicitly opted in (via allow_repo_commands on the TRUSTED default-branch
+// copy) to honoring the pushed-branch copy wholesale. When there is no
+// trusted copy and the maintainer has not opted in, those fields are forced
+// empty (Agent "" inherits the global agent; ReviewBackend "" inherits the
+// global review backend; Commands{} yields built-in defaults) rather than
+// falling back to the pushed branch — this blocks the supply-chain vector for
+// repos that ship .no-mistakes.yaml only on feature branches.
 //
 // Non-executing fields (ignore patterns, auto-fix, intent, test) are always
-// taken from the pushed copy, matching prior behavior, since they cannot
-// run arbitrary shell or select a process.
+// taken from the pushed copy, matching prior behavior, since they cannot run
+// arbitrary shell or select a process.
 func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *RepoConfig {
 	if pushed == nil {
 		pushed = &RepoConfig{}
@@ -643,12 +650,13 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 	return &effective
 }
 
-func validateReviewBackend(value string) error {
-	switch strings.TrimSpace(value) {
+func parseReviewBackend(value string) (string, error) {
+	backend := strings.TrimSpace(value)
+	switch backend {
 	case "", "agent", "autoreview":
-		return nil
+		return backend, nil
 	default:
-		return fmt.Errorf("invalid review_backend %q (valid: agent, autoreview)", value)
+		return "", fmt.Errorf("invalid review_backend %q (valid: agent, autoreview)", value)
 	}
 }
 

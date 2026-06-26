@@ -153,6 +153,7 @@ func TestLoadGlobal_FromFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	data := `agent: codex
+review_backend: "autoreview "
 agent_path_override:
   claude: /usr/local/bin/claude
   codex: /opt/codex
@@ -169,6 +170,9 @@ log_level: "debug"
 	}
 	if cfg.Agent != types.AgentCodex {
 		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentCodex)
+	}
+	if cfg.ReviewBackend != "autoreview" {
+		t.Errorf("review_backend = %q, want autoreview", cfg.ReviewBackend)
 	}
 	if cfg.CITimeout != 2*time.Hour+30*time.Minute {
 		t.Errorf("ci_timeout = %v, want %v", cfg.CITimeout, 2*time.Hour+30*time.Minute)
@@ -206,6 +210,22 @@ func TestLoadGlobal_PartialOverride(t *testing.T) {
 	}
 	if cfg.LogLevel != "info" {
 		t.Errorf("log_level = %q, want %q (should be default)", cfg.LogLevel, "info")
+	}
+}
+
+func TestLoadGlobal_BlankReviewBackendUsesDefault(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(`review_backend: " "`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadGlobal(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.ReviewBackend != "agent" {
+		t.Errorf("review_backend = %q, want agent", cfg.ReviewBackend)
 	}
 }
 

@@ -10,6 +10,8 @@ Global configuration lives at `~/.no-mistakes/config.yaml`. Set `NM_HOME` to rel
 
 agent: auto
 
+review_backend: agent
+
 acpx_path: acpx
 
 acp_registry_overrides:
@@ -68,6 +70,19 @@ Default agent for all repos and setup-wizard suggestions. Can be overridden per-
 `auto` resolves to the first supported native agent found on `PATH` in this order: `claude`, `codex`, `opencode`, `acli` with `rovodev` support, `pi`, then `copilot`.
 `acp:<target>` uses the user-installed `acpx` binary to run an ACP target, for example `acp:gemini`.
 ACP agents are opt-in and are not considered by `agent: auto`.
+
+### review_backend
+
+Review backend for the review step. Can be overridden per-repo.
+
+| | |
+|---|---|
+| Type | `string` |
+| Values | `agent`, `autoreview` |
+| Default | `agent` |
+
+`agent` sends the filtered diff to the configured pipeline agent.
+`autoreview` runs the local `autoreview` CLI and converts its JSON report into no-mistakes findings.
 
 ### acpx_path
 

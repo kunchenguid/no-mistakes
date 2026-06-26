@@ -9,7 +9,7 @@ import (
 )
 
 func TestLoadRepoFromBytes(t *testing.T) {
-	data := []byte("commands:\n  lint: \"golangci-lint run\"\nagent: codex\n")
+	data := []byte("commands:\n  lint: \"golangci-lint run\"\nagent: codex\nreview_backend: \"autoreview \"\n")
 	cfg, err := LoadRepoFromBytes(data)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -19,6 +19,9 @@ func TestLoadRepoFromBytes(t *testing.T) {
 	}
 	if cfg.Agent != types.AgentCodex {
 		t.Errorf("agent = %q", cfg.Agent)
+	}
+	if cfg.ReviewBackend != "autoreview" {
+		t.Errorf("review_backend = %q, want autoreview", cfg.ReviewBackend)
 	}
 }
 
