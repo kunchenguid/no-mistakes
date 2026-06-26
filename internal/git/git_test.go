@@ -85,6 +85,8 @@ func TestInitBare(t *testing.T) {
 }
 
 func TestAddRemoteAndGetURL(t *testing.T) {
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+
 	dir := initTestRepo(t)
 	ctx := context.Background()
 

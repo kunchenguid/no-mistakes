@@ -598,6 +598,8 @@ func TestIsolateHooksPath_SkipsIsolationWhenWorktreeConfigUnsupported(t *testing
 // poll and the CI step hangs until ci_timeout. No real gh or network is
 // needed; the failure is purely in git's repo resolution, which gh depends on.
 func TestIsolateHooksPath_LinkedWorktreeResolvesRepoForCLI(t *testing.T) {
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+
 	ctx := context.Background()
 	base := t.TempDir()
 	bare := filepath.Join(base, "gate.git")
