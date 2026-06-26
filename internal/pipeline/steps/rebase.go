@@ -76,10 +76,8 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	// origin/<default>. Rebasing onto the fresh remote default keeps those
 	// commits in the branch's history, so the PR would silently bundle another
 	// workstream's unpushed work. Surface it for a human decision instead.
-	if !forcePush {
-		if outcome := detectBundledLocalDefaultCommits(ctx, sctx, branch, defaultBranch); outcome != nil {
-			return outcome, nil
-		}
+	if outcome := detectBundledLocalDefaultCommits(ctx, sctx, branch, defaultBranch); outcome != nil {
+		return outcome, nil
 	}
 	if forcePush && branch == defaultBranch && remoteDefaultBranchAdvanced(ctx, sctx.WorkDir, defaultBranch, sctx.Run.BaseSHA) {
 		findingsJSON, _ := json.Marshal(Findings{
