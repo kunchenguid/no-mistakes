@@ -348,10 +348,21 @@ func convertAutoreviewReport(report autoreviewReport) Findings {
 			Action:      autoreviewAction(item.Priority),
 		})
 	}
+	if len(findings.Items) == 0 && isAutoreviewPatchIncorrect(report) {
+		findings.Items = append(findings.Items, Finding{
+			ID:          "autoreview-overall",
+			Severity:    "error",
+			Description: autoreviewOverallDescription(report),
+			Action:      types.ActionAutoFix,
+		})
+	}
 	return findings
 }
 
 func summarizeAutoreviewReport(report autoreviewReport) string {
+	if len(report.Findings) == 0 && isAutoreviewPatchIncorrect(report) {
+		return "autoreview reported patch is incorrect"
+	}
 	if len(report.Findings) == 0 {
 		return "autoreview found no actionable issues"
 	}
@@ -359,7 +370,7 @@ func summarizeAutoreviewReport(report autoreviewReport) string {
 }
 
 func riskLevelForAutoreviewReport(report autoreviewReport) string {
-	high := report.OverallCorrectness == "patch is incorrect"
+	high := isAutoreviewPatchIncorrect(report)
 	medium := false
 	for _, item := range report.Findings {
 		switch item.Priority {
@@ -376,6 +387,18 @@ func riskLevelForAutoreviewReport(report autoreviewReport) string {
 		return "medium"
 	}
 	return "low"
+}
+
+func isAutoreviewPatchIncorrect(report autoreviewReport) bool {
+	return strings.EqualFold(strings.TrimSpace(report.OverallCorrectness), "patch is incorrect")
+}
+
+func autoreviewOverallDescription(report autoreviewReport) string {
+	parts := []string{"patch is incorrect"}
+	if explanation := strings.TrimSpace(report.OverallExplanation); explanation != "" {
+		parts = append(parts, explanation)
+	}
+	return strings.Join(parts, "\n\n")
 }
 
 func autoreviewSeverity(priority string) string {

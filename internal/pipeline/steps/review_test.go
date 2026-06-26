@@ -237,6 +237,43 @@ func TestReviewStep_AutoreviewBackend(t *testing.T) {
 	}
 }
 
+func TestReviewStep_AutoreviewBackend_IncorrectWithoutFindingsBlocks(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	autoreviewEnv, _ := fakeAutoreview(t, `{"findings":[],"overall_correctness":"patch is incorrect","overall_explanation":"The patch is incorrect even though no line finding was emitted.","overall_confidence":0.91}`, 1)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			t.Fatal("autoreview backend should not call the configured agent")
+			return nil, nil
+		},
+	}
+
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.ReviewBackend = "autoreview"
+	sctx.Env = autoreviewEnv
+
+	step := &ReviewStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("expected incorrect autoreview verdict to need approval")
+	}
+	findings, err := types.ParseFindingsJSON(outcome.Findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings.Items) != 1 {
+		t.Fatalf("expected one fallback finding, got %+v", findings.Items)
+	}
+	if got := findings.Items[0]; got.ID != "autoreview-overall" || got.Severity != "error" || got.Action != types.ActionAutoFix {
+		t.Fatalf("fallback finding = %+v", got)
+	}
+}
+
 func TestConvertAutoreviewReport(t *testing.T) {
 	report := autoreviewReport{
 		Findings: []autoreviewFinding{
@@ -280,6 +317,31 @@ func TestConvertAutoreviewReport(t *testing.T) {
 	}
 	if got := findings.Items[1]; got.Severity != "info" || got.Action != types.ActionNoOp {
 		t.Fatalf("second finding = %+v", got)
+	}
+}
+
+func TestConvertAutoreviewReport_IncorrectWithoutFindingsBlocks(t *testing.T) {
+	report := autoreviewReport{
+		OverallCorrectness: "patch is incorrect",
+		OverallExplanation: "The patch is incorrect even though no line finding was emitted.",
+		OverallConfidence:  0.91,
+	}
+
+	findings := convertAutoreviewReport(report)
+	if findings.RiskLevel != "high" {
+		t.Fatalf("RiskLevel = %q, want high", findings.RiskLevel)
+	}
+	if len(findings.Items) != 1 {
+		t.Fatalf("Items count = %d, want 1", len(findings.Items))
+	}
+	if got := findings.Items[0]; got.ID != "autoreview-overall" || got.Severity != "error" || got.Action != types.ActionAutoFix {
+		t.Fatalf("fallback finding = %+v", got)
+	}
+	if !strings.Contains(findings.Items[0].Description, "patch is incorrect") {
+		t.Fatalf("fallback description = %q", findings.Items[0].Description)
+	}
+	if !hasBlockingFindings(findings.Items) {
+		t.Fatal("expected fallback finding to block review approval")
 	}
 }
 
