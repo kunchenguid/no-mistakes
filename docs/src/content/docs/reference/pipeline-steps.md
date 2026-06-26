@@ -209,3 +209,6 @@ Each step progresses through these statuses:
 | `completed` | Finished successfully |
 | `skipped` | Pre-skipped for the run, skipped by the user, or skipped automatically by the pipeline |
 | `failed` | Step failed; the step log includes the returned error message so command stderr and provider errors are visible in the per-step log, not only in the daemon log |
+
+When a non-terminal run has a step in `awaiting_approval` or `fix_review`, AXI run objects also expose `awaiting_agent: parked <duration>` as a run-level observability signal.
+The signal clears as soon as the approval wait ends, including `axi respond` and cancellation, and does not change how gates resolve.

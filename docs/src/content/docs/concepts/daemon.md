@@ -97,6 +97,7 @@ On startup, the daemon checks for runs that were left in `pending` or `running` 
 - Refreshes legacy no-mistakes-managed `post-receive` hooks, installs missing managed hooks, and leaves custom hooks untouched
 - Reapplies per-worktree gate hook-path isolation to existing bare repos when Git supports `config --worktree`, so shared `core.hookspath` writes cannot disable `post-receive`
 - Enables Git push-option support on existing gate repos so per-push options like `no-mistakes.skip=...` keep working after upgrades
+- Clears any parked-awaiting-agent marker so a recovered failed run is not shown as still waiting for `axi respond`
 
 ## Logging
 

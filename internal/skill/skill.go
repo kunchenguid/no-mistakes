@@ -129,6 +129,10 @@ Run the pipeline and decide on its findings as they come up:
    return for a while. That is normal; allow a long timeout and do not cancel
    or re-issue the command because it seems slow. To check progress without
    disturbing the run, use ` + "`no-mistakes axi status`" + ` from a separate call.
+   When that status output includes ` + "`awaiting_agent: parked <duration>`" + ` under the run,
+   the run is parked at an approval or fix-review gate and waiting for you to
+   send ` + "`axi respond`" + `. The field is observability only: it does not change
+   gate resolution, auto-resume the run, or make ` + "`--yes`" + ` the default.
 2. If the output contains a ` + "`gate:`" + ` object, the pipeline is waiting on you.
    Read its ` + "`findings`" + ` table. Each finding has an ` + "`id`" + `, ` + "`severity`" + `,
    ` + "`file`" + `, ` + "`description`" + `, and an ` + "`action`" + ` that tells you how the
@@ -234,6 +238,7 @@ no-mistakes axi abort --run <id>   # cancel a specific run by id (works outside 
 ## Reading the output
 
 - Output is TOON: ` + "`key: value`" + ` pairs, ` + "`name[N]{cols}:`" + ` tables, and ` + "`help[N]:`" + ` hints.
+- A non-terminal run object may include ` + "`awaiting_agent: parked <duration>`" + ` immediately after ` + "`status`" + `; that means the run is parked at a gate awaiting your ` + "`axi respond`" + `.
 - The ` + "`help`" + ` list at the bottom of most responses tells you the next commands to run.
 - Errors are printed as ` + "`error: ...`" + ` on stdout with a ` + "`help`" + ` list; act on the suggestion.
 - Exit codes: ` + "`0`" + ` success, no-op, or normal decision gates, ` + "`1`" + ` failed or cancelled final outcomes, ` + "`2`" + ` bad usage.

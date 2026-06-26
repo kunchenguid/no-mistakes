@@ -65,6 +65,8 @@ no-mistakes axi
 
 With no subcommand, shows the executable path, description, repo, current branch, daemon state, recent runs, and next-step help.
 When the current branch has an active run, that run appears as `active_run` with any approval gate and help for `axi respond` or `axi abort`.
+If an active run object is parked at a decision gate, it includes `awaiting_agent: parked <duration>` immediately after `status`.
+That field is observability only; the `gate:` object still tells the agent which response to send.
 When only another branch has an active run, that run appears as `other_branch_active_run`; the help tells agents to leave it alone and start validation for the current branch.
 
 ## no-mistakes axi run
@@ -132,6 +134,9 @@ no-mistakes axi status --run <id>
 | Flag | Type | Default | Description |
 |---|---|---|---|
 | `--run` | `string` | resolved run | Inspect a specific run ID |
+
+When the resolved run is parked at an `awaiting_approval` or `fix_review` gate, its top-level `run:` object includes `awaiting_agent: parked <duration>` immediately after `status`.
+The field disappears after `axi respond`, on cancel, and on terminal outcomes; use it to distinguish a run waiting for the driving agent from one actively running, fixing, or watching CI.
 
 ## no-mistakes axi logs
 

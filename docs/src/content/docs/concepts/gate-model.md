@@ -56,6 +56,7 @@ That is a core design choice, not an implementation detail.
 4. The daemon creates a detached worktree for this run.
 5. The pipeline runs in order: `intent -> rebase -> review -> test -> document -> lint -> push -> pr -> ci`.
 6. If a step pauses, you can attach with the TUI or use `no-mistakes axi respond` to approve, fix, skip, or abort.
+   AXI run objects show `awaiting_agent: parked <duration>` while a non-terminal run is parked at that gate, so a supervising agent can distinguish a waiting run from active work in one status read.
 7. After local checks pass, the push step forwards the branch to the configured push target and the PR step creates or updates the pull request.
    For GitHub fork routing, the push target is the fork and the PR base repository is the parent from `origin`.
 8. The CI step keeps watching the open PR until it is merged, closed, or its configured idle timeout elapses with no base-branch movement, and can auto-fix failures or merge conflicts when supported.
@@ -137,6 +138,9 @@ branch, marking the remaining steps as skipped.
 3. If blocking findings remain, or any finding has `action: ask-user`, pause and wait for user action
 4. `action: no-op` findings are informational only; the user can approve, fix selected findings, skip, or abort when the step pauses
 
+While the executor is paused at an approval or fix-review gate, it persists a run-level awaiting-agent timestamp that AXI renders as `awaiting_agent: parked <duration>`.
+That timestamp is observability only and does not alter approval behavior.
+
 ### IPC
 
 Communication between the CLI and daemon uses JSON-RPC 2.0 over the Unix socket. The `subscribe` method streams real-time events (step progress, log chunks, findings) to the TUI, while the `axi` commands use request/response IPC for non-interactive agent control.
@@ -156,6 +160,7 @@ agent-supplied AXI intent is stored directly on the run. Raw transcript text is
 not stored in this database. Legacy `user_fix` rounds are still read as
 `auto-fix` for backward
 compatibility.
+Run records also store the nullable `awaiting_agent_since` timestamp used only to render the AXI parked signal while a gate is waiting for the driving agent.
 Repo records store the parent `upstream_url` and an optional `fork_url`; branch pushes use `fork_url` when present, while PR and CI provider context stays anchored to the parent.
 
 ## Local state
