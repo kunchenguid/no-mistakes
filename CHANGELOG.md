@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.31.0](https://github.com/kunchenguid/no-mistakes/compare/v1.30.2...v1.31.0) (2026-06-26)
+
+
+### Features
+
+* **agent:** add GitHub Copilot CLI agent backend ([#318](https://github.com/kunchenguid/no-mistakes/issues/318)) ([aedb3a1](https://github.com/kunchenguid/no-mistakes/commit/aedb3a1406e734a696ee1182af28e804e8314f07))
+* **cli:** expose parked awaiting-agent status ([#329](https://github.com/kunchenguid/no-mistakes/issues/329)) ([57a62da](https://github.com/kunchenguid/no-mistakes/commit/57a62da91d7089f80d92fc6f4373a49f1fe73319))
+
+
+### Bug Fixes
+
+* keep CI monitors active and abortable by run id ([#316](https://github.com/kunchenguid/no-mistakes/issues/316)) ([0e07573](https://github.com/kunchenguid/no-mistakes/commit/0e075737b0d55c3e8479b07991a7fd221c1264d1))
+
 ## [1.30.2](https://github.com/kunchenguid/no-mistakes/compare/v1.30.1...v1.30.2) (2026-06-21)
 
 
