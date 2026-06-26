@@ -268,6 +268,33 @@ func TestRerunSkipStepsConfiguresExecutor(t *testing.T) {
 	}
 }
 
+func TestRerunRecoveryWhenNoPreviousRunExists(t *testing.T) {
+	// Regression test for issue #294: if the gate ref exists but no pipeline
+	// run was ever recorded for that branch, HandleRerun should recover by
+	// computing baseSHA from the default branch rather than returning an error.
+	p, d := startTestDaemon(t)
+	_, _ = setupTestGitRepo(t, p, d, "recovery-repo")
+
+	// Do NOT call MethodPushReceived — simulate the stuck state where the gate
+	// ref was created out-of-band (e.g. a prior no-op push) so no run exists.
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var result ipc.RerunResult
+	if err := client.Call(ipc.MethodRerun, &ipc.RerunParams{
+		RepoID: "recovery-repo",
+		Branch: "main",
+	}, &result); err != nil {
+		t.Fatalf("HandleRerun should recover from missing run, got error: %v", err)
+	}
+	if result.RunID == "" {
+		t.Fatal("expected non-empty RunID from recovery rerun")
+	}
+}
+
 func TestPushReceivedReturnsBeforeIntentSummarization(t *testing.T) {
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
