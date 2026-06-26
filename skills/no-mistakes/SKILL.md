@@ -56,7 +56,9 @@ repository is not initialized, run `no-mistakes init` first; if the `no-mistakes
 command itself is missing or misbehaving, `no-mistakes doctor` reports what is
 wrong.
 Before starting, run `no-mistakes axi` (home view).
-If it shows an active run on your current branch, resume it - drive it to an outcome with `axi respond`. Only `axi abort` it when you mean to discard that run and start over *before* a new run is in flight; aborting is a between-runs action, never a way to take over a gate while a run is still going (see [Validate and decide](#validate-and-decide)).
+If it shows an active run on your current branch, resume it by reattaching with `no-mistakes axi run` (no `--intent` needed; it picks up the running run and blocks until the next gate or outcome), or inspect it with `no-mistakes axi status`.
+`axi respond` applies only once the run is parked at a gate.
+Only `axi abort` it when you mean to discard that run before starting over; aborting is a between-runs action, never a way to take over or bypass a gate while a run is still going (see [Validate and decide](#validate-and-decide)).
 If it shows an active run on another branch, leave that run alone and start validation for your current branch with `no-mistakes axi run --intent "..."`.
 
 ## Intent is required
@@ -109,10 +111,13 @@ Run the pipeline and decide on its findings as they come up:
      touches product behavior. This is a call only the user can make - see
      [Escalate `ask-user` findings](#escalate-ask-user-findings) below.
 
-   **Review auto-fix is disabled**, so the review step never self-fixes:
+   **Review auto-fix is disabled by default**, so with the shipped default
+   `auto_fix.review: 0` the review step never self-fixes:
    every actionable review finding parks for your decision; there is no silent
-   self-fix of review findings. (Other steps such as test and lint may auto-fix
-   within the pipeline and re-run before they ever gate.)
+   self-fix of review findings. A repo or global `auto_fix.review > 0`
+   override re-enables review auto-fix, and then auto-fixable review findings
+   may be fixed before the review gate. (Other steps such as test and lint may
+   auto-fix within the pipeline and re-run before they ever gate.)
 
    Choose one response:
    ```sh

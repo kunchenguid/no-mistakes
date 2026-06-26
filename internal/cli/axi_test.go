@@ -194,7 +194,8 @@ func TestWriteGateShape(t *testing.T) {
 		"to have the pipeline fix the selected findings (do not edit files yourself)",
 		// Review gate carries the auto-fix-disabled note and the keep-driving
 		// reminder so an agent reads them at the point of use.
-		"Review auto-fix is disabled",
+		"Review auto-fix is disabled by default",
+		"auto_fix.review > 0",
 		"the run never advances past a gate on its own",
 	} {
 		if !strings.Contains(out, want) {
@@ -219,8 +220,11 @@ func TestGateNote_ReviewOnly(t *testing.T) {
 	}
 
 	review := mk("review")
-	if !strings.Contains(review, "Review auto-fix is disabled") {
+	if !strings.Contains(review, "Review auto-fix is disabled by default") {
 		t.Errorf("review gate missing the auto-fix-disabled note in:\n%s", review)
+	}
+	if !strings.Contains(review, "auto_fix.review > 0") {
+		t.Errorf("review gate missing the auto-fix override note in:\n%s", review)
 	}
 
 	lint := mk("lint")
