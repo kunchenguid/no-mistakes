@@ -188,7 +188,11 @@ func filterIgnoredReviewFindings(findings Findings, ignorePatterns []string) Fin
 		}
 		filtered = append(filtered, item)
 	}
+	if len(filtered) == len(findings.Items) {
+		return findings
+	}
 	findings.Items = filtered
+	findings = summarizeFilteredReviewFindings(findings)
 	return findings
 }
 
@@ -199,6 +203,32 @@ func matchesAnyIgnorePattern(path string, ignorePatterns []string) bool {
 		}
 	}
 	return false
+}
+
+func summarizeFilteredReviewFindings(findings Findings) Findings {
+	if len(findings.Items) == 0 {
+		findings.Summary = "review found no findings after applying ignore patterns"
+		findings.RiskLevel = "low"
+		findings.RiskRationale = "all review findings matched ignore patterns"
+		return findings
+	}
+	findings.Summary = fmt.Sprintf("review kept %d finding(s) after applying ignore patterns", len(findings.Items))
+	findings.RiskLevel = riskLevelForFindings(findings.Items)
+	findings.RiskRationale = "risk reflects findings that remain after applying ignore patterns"
+	return findings
+}
+
+func riskLevelForFindings(items []Finding) string {
+	riskLevel := "low"
+	for _, item := range items {
+		switch item.Severity {
+		case "error":
+			return "high"
+		case "warning":
+			riskLevel = "medium"
+		}
+	}
+	return riskLevel
 }
 
 func agentReviewPrompt(branch, baseSHA, headSHA, reviewScope, defaultBranch, ignorePatterns, historySection string) string {
@@ -334,14 +364,47 @@ func runAutoreview(sctx *pipeline.StepContext, baseSHA, reviewContext string) (F
 		return Findings{}, fmt.Errorf("empty output file")
 	}
 
-	var report autoreviewReport
-	if err := json.Unmarshal(raw, &report); err != nil {
-		return Findings{}, fmt.Errorf("parse output JSON: %w", err)
+	report, err := parseAutoreviewReport(raw)
+	if err != nil {
+		if runErr != nil {
+			return Findings{}, autoreviewRunError(runErr, out)
+		}
+		return Findings{}, err
 	}
 	if runErr != nil && !isAutoreviewPatchIncorrect(report) {
 		return Findings{}, autoreviewRunError(runErr, out)
 	}
 	return convertAutoreviewReport(report), nil
+}
+
+func parseAutoreviewReport(raw []byte) (autoreviewReport, error) {
+	var report autoreviewReport
+	if err := json.Unmarshal(raw, &report); err != nil {
+		return autoreviewReport{}, fmt.Errorf("parse output JSON: %w", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return autoreviewReport{}, fmt.Errorf("parse output JSON: %w", err)
+	}
+	if err := validateAutoreviewReportEnvelope(report, fields); err != nil {
+		return autoreviewReport{}, fmt.Errorf("invalid output JSON: %w", err)
+	}
+	return report, nil
+}
+
+func validateAutoreviewReportEnvelope(report autoreviewReport, fields map[string]json.RawMessage) error {
+	for _, field := range []string{"findings", "overall_correctness", "overall_explanation", "overall_confidence"} {
+		raw, ok := fields[field]
+		if !ok || strings.TrimSpace(string(raw)) == "null" {
+			return fmt.Errorf("missing %s", field)
+		}
+	}
+	switch strings.ToLower(strings.TrimSpace(report.OverallCorrectness)) {
+	case "patch is correct", "patch is incorrect":
+		return nil
+	default:
+		return fmt.Errorf("unsupported overall_correctness %q", report.OverallCorrectness)
+	}
 }
 
 func autoreviewRunError(runErr error, out []byte) error {

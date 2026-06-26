@@ -344,6 +344,49 @@ func TestReviewStep_AutoreviewBackend_FiltersIgnoredFindings(t *testing.T) {
 	if len(findings.Items) != 0 {
 		t.Fatalf("expected ignored finding to be filtered, got %+v", findings.Items)
 	}
+	if findings.RiskLevel != "low" {
+		t.Fatalf("RiskLevel = %q, want low after filtering ignored findings", findings.RiskLevel)
+	}
+	if strings.Contains(findings.RiskRationale, "generated cache is stale") {
+		t.Fatalf("RiskRationale kept ignored-file rationale: %q", findings.RiskRationale)
+	}
+}
+
+func TestReviewStep_AutoreviewBackend_SuccessfulErrorEnvelopeFailsClosed(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	autoreviewEnv, _ := fakeAutoreview(t, `{"error":"quota exceeded"}`, 0)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			t.Fatal("autoreview backend should not call the configured agent")
+			return nil, nil
+		},
+	}
+
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.ReviewBackend = "autoreview"
+	sctx.Env = autoreviewEnv
+
+	step := &ReviewStep{}
+	_, err := step.Execute(sctx)
+	if err == nil {
+		t.Fatal("expected autoreview schema error")
+	}
+	if !strings.Contains(err.Error(), "invalid output JSON") {
+		t.Fatalf("error = %q, want invalid output JSON", err)
+	}
+}
+
+func TestParseAutoreviewReport_UnsupportedCorrectnessFailsClosed(t *testing.T) {
+	_, err := parseAutoreviewReport([]byte(`{"findings":[],"overall_correctness":"mostly correct","overall_explanation":"clean","overall_confidence":0.99}`))
+	if err == nil {
+		t.Fatal("expected unsupported correctness error")
+	}
+	if !strings.Contains(err.Error(), "unsupported overall_correctness") {
+		t.Fatalf("error = %q, want unsupported overall_correctness", err)
+	}
 }
 
 func TestConvertAutoreviewReport(t *testing.T) {
