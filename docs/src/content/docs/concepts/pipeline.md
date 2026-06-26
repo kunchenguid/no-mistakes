@@ -76,6 +76,7 @@ See [Auto-Fix Loop](/no-mistakes/concepts/auto-fix/) for how the fix cycle works
 You can't reorder steps. You *can*:
 
 - Swap the agent (global or per-repo).
+- Swap the review backend between the configured agent and the local `autoreview` CLI.
 - Set explicit `commands.test`, `commands.lint`, `commands.format`.
 - Store test evidence locally by default or opt into committed in-repo evidence with `test.evidence.store_in_repo`.
 - Control auto-fix limits per step.

@@ -7,10 +7,10 @@ description: Supported AI agents, how to pick one, and how they integrate.
 regardless of which agent you prefer. The default `agent: auto` setting picks
 the first supported native agent available on your system.
 
-The agent is responsible for the parts of the gate that benefit from judgment:
-code review, evidence-oriented test validation, test or lint detection when you
+The configured pipeline agent is responsible for the parts of the gate that benefit from judgment:
+review when `review_backend: agent` is selected, evidence-oriented test validation, test or lint detection when you
 have not configured explicit commands, auto-fixing, and setup-wizard suggestions
-when you leave prompts blank.
+when you leave prompts blank. If `review_backend: autoreview` is selected, the review step uses the local `autoreview` CLI instead of the pipeline agent.
 
 Pipeline agent prompts also include a workspace-boundary preamble.
 It tells agents to keep intentional source, project, user-data, and system file writes inside the disposable worktree, avoid mutating system state such as Homebrew packages, `/Applications`, or global tool config, and treat that boundary as prompt steering rather than true enforcement.
@@ -22,6 +22,7 @@ Testing prompts also ask agents to remove transient working-tree artifacts they 
 
 - Leave `agent: auto` if one good agent is already installed and you do not need repo-specific behavior.
 - Set a repo-level `agent` override when one codebase clearly works better with a different tool.
+- Set `review_backend: autoreview` when you want the review step to use the local `autoreview` CLI instead of the configured pipeline agent.
 - Set explicit `commands.test` and `commands.lint` if you want deterministic baseline command execution regardless of agent choice.
 
 That last point matters: the agent helps fill in gaps, but explicit repo
@@ -76,7 +77,7 @@ It does not auto-select ACP targets.
 
 Changing agents most directly affects:
 
-- review quality and tone
+- review quality and tone when `review_backend: agent` is selected
 - test evidence collection, plus test and lint detection when commands are not configured
 - how good auto-fix attempts are for your stack
 - branch name and commit subject suggestions in the setup wizard

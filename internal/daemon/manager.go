@@ -150,15 +150,15 @@ func branchFromRef(ref string) string {
 // trustedSHA is empty when the default branch is unknown, the fetch failed,
 // or the ref did not resolve — every one of those failure modes returns nil
 // here so the caller (EffectiveRepoConfig) fails closed: the pushed branch's
-// commands and agent are dropped and the run proceeds on built-in defaults.
-// None of these are fatal, since the pushed-branch copy is still read for
-// non-executing fields.
+// commands, agent, and review backend are dropped and the run proceeds on
+// built-in/global defaults. None of these are fatal, since the pushed-branch
+// copy is still read for non-executing fields.
 func loadTrustedRepoConfig(ctx context.Context, wtDir, trustedSHA, runID string) *config.RepoConfig {
 	if trustedSHA == "" {
 		// No trusted SHA means no freshly-fetched default-branch commit to
 		// read from. Return nil so EffectiveRepoConfig forces empty
-		// commands/agent — the secure default — instead of falling back to a
-		// potentially stale origin/<defaultBranch> ref.
+		// commands/agent/review_backend — the secure default — instead of
+		// falling back to a potentially stale origin/<defaultBranch> ref.
 		return nil
 	}
 	content, err := git.ShowFile(ctx, wtDir, trustedSHA, ".no-mistakes.yaml")
@@ -323,10 +323,11 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	// than the origin/<defaultBranch> remote-tracking ref) is what makes a
 	// fetch failure fail closed: if the fetch errors or the ref does not
 	// resolve, trustedSHA stays empty, loadTrustedRepoConfig returns nil, and
-	// EffectiveRepoConfig drops the pushed branch's commands/agent. Without
-	// the resolve, a stale origin/<defaultBranch> left in the shared bare
+	// EffectiveRepoConfig drops the pushed branch's commands/agent/review_backend.
+	// Without the resolve, a stale origin/<defaultBranch> left in the shared bare
 	// repo by a previous run could serve a trusted copy that the live default
-	// branch has already removed — silently running stale shell.
+	// branch has already removed — silently running stale shell or selecting a
+	// stale review backend.
 	var trustedSHA string
 	if repo.DefaultBranch != "" {
 		if err := git.FetchRemoteBranch(ctx, wtDir, "origin", repo.DefaultBranch); err != nil {

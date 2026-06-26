@@ -67,6 +67,18 @@ Disable background update checks.
 
 Update checks run on every CLI invocation except `update` itself, hit GitHub releases, cache the result in `$NM_HOME/update-check.json`, and print a one-line notification to stderr when a newer version is available. Dev builds (non-semver versions) suppress the check automatically.
 
+## `NM_AUTOREVIEW_BIN`
+
+Override the `autoreview` binary used when `review_backend: autoreview` is configured.
+
+| | |
+|---|---|
+| Type | `string` |
+| Default | `autoreview` found on `PATH` |
+
+Set this when the daemon should run a specific `autoreview` executable instead of resolving `autoreview` from its runtime `PATH`.
+The review step passes branch mode arguments, the base commit, Codex engine/model settings, a JSON output path, and no-mistakes review context to that binary, then imports the JSON report as review findings.
+
 ## `XDG_DATA_HOME`
 
 Data directory used to discover OpenCode transcripts for intent extraction.

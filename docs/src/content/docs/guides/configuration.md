@@ -11,6 +11,7 @@ The goal is not to make you configure a mini CI system. The default path should
 work. Config exists for the parts that genuinely vary by machine or repo:
 
 - which agent you prefer
+- which review backend should inspect review-step diffs
 - which test or lint commands are the canonical ones for this repo
 - where test evidence artifacts should be stored
 - how aggressive the auto-fix loop should be
@@ -38,7 +39,7 @@ local.
 If you are not sure where to start, configure these in this order:
 
 1. Set `commands.test` and `commands.lint` in repo config so the gate runs the exact commands your repo expects.
-2. Override `agent` per repo only when one codebase clearly works better with a different tool.
+2. Override `agent` or `review_backend` per repo only when one codebase clearly works better with a different tool.
 3. Tune `auto_fix` after you have seen how much automation you actually want.
 
 Everything else can usually wait.
@@ -51,6 +52,9 @@ Everything else can usually wait.
 # Default agent for all repos and setup-wizard suggestions.
 # "auto" picks the first available native agent on PATH.
 agent: auto  # auto | claude | codex | rovodev | opencode | pi | copilot | acp:<target>
+
+# Review backend for the review step.
+review_backend: agent  # agent | autoreview
 
 # Optional acpx path and target command overrides for agent: acp:<target>.
 acpx_path: acpx
@@ -126,6 +130,9 @@ Bitbucket Cloud PR creation and CI monitoring use environment variables instead 
 # Override the agent for this repo and its setup-wizard suggestions.
 agent: codex
 
+# Override the review backend for this repo.
+review_backend: agent
+
 # Explicit commands for test/lint/format steps.
 commands:
   lint: "golangci-lint run ./..."
@@ -159,6 +166,7 @@ See [Repo Config Reference](/no-mistakes/reference/repo-config/) for the full fi
 ## Precedence
 
 - Repo `agent` overrides global `agent`.
+- Repo `review_backend` overrides global `review_backend`.
 - Global `agent: auto` resolves by checking `claude`, `codex`, `opencode`, `acli` for `rovodev`, `pi`, then `copilot` on `PATH`.
 - ACP agents are opt-in with `agent: acp:<target>` and are not considered by `agent: auto`.
 - `agent_path_override`, `agent_args_override`, `acpx_path`, and `acp_registry_overrides` are global-only fields.
@@ -167,6 +175,7 @@ See [Repo Config Reference](/no-mistakes/reference/repo-config/) for the full fi
 - `test.evidence` from the repo config overlays global test evidence settings. Fields not set in the repo config fall through to the global default.
 - `commands` and `ignore_patterns` are repo-only fields.
 - `ci_timeout` and `auto_fix.ci` are the canonical keys; `babysit_timeout` and `auto_fix.babysit` are still accepted as legacy aliases.
+- `review_backend: agent` sends review prompts to the configured pipeline agent; `review_backend: autoreview` runs the local `autoreview` CLI and imports its JSON report.
 - If `commands.test` is set, the test step runs it first as the baseline; when user intent is available, the agent may still run afterward to gather evidence-oriented validation.
 - If `commands.test` is empty, the agent detects and runs relevant tests itself.
 - If `commands.lint` is empty, the agent detects relevant linters and formatters, applies safe fixes, verifies them, commits any agent changes, and reports only unresolved issues.
@@ -177,6 +186,7 @@ baseline behavior, while leaving commands empty asks the agent to fill in the ga
 For tests, available user intent can also trigger an evidence-oriented agent follow-up after the baseline command succeeds.
 By default, evidence stays in a temporary local directory; opt into `test.evidence.store_in_repo` when your team wants evidence artifacts committed, pushed, and linked directly from PRs.
 For lint, that gap includes safe formatter and linter fixes during the initial lint pass.
+For review, the default `agent` backend follows the configured pipeline agent, while `autoreview` uses its own local CLI and then maps the report back into no-mistakes findings.
 
 ## Ignore pattern rules
 
