@@ -301,6 +301,51 @@ func TestReviewStep_AutoreviewBackend_NonzeroErrorEnvelopeFailsClosed(t *testing
 	}
 }
 
+func TestReviewStep_AutoreviewBackend_FiltersIgnoredFindings(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, _ := setupGitRepo(t)
+	if err := os.WriteFile(filepath.Join(dir, "cache.generated.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "cache.generated.go")
+	gitCmd(t, dir, "commit", "-m", "add generated file")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	autoreviewEnv, _ := fakeAutoreview(t, `{"findings":[{"title":"Generated cache is stale","body":"The generated cache omits a field.","priority":"P1","confidence":0.92,"category":"bug","code_location":{"file_path":"cache.generated.go","line":2}}],"overall_correctness":"patch is incorrect","overall_explanation":"The generated cache is stale.","overall_confidence":0.91}`, 1)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			t.Fatal("autoreview backend should not call the configured agent")
+			return nil, nil
+		},
+	}
+
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.ReviewBackend = "autoreview"
+	sctx.Config.IgnorePatterns = []string{"*.generated.go"}
+	sctx.Env = autoreviewEnv
+
+	step := &ReviewStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatal("ignored autoreview finding should not need approval")
+	}
+	if outcome.AutoFixable {
+		t.Fatal("ignored autoreview finding should not enter the fix loop")
+	}
+	findings, err := types.ParseFindingsJSON(outcome.Findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings.Items) != 0 {
+		t.Fatalf("expected ignored finding to be filtered, got %+v", findings.Items)
+	}
+}
+
 func TestConvertAutoreviewReport(t *testing.T) {
 	report := autoreviewReport{
 		Findings: []autoreviewFinding{

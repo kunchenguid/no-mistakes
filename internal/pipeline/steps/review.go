@@ -164,6 +164,7 @@ Previous review findings to address:
 			return nil, err
 		}
 	}
+	findings = filterIgnoredReviewFindings(findings, sctx.Config.IgnorePatterns)
 
 	needsApproval := hasBlockingFindings(findings.Items)
 	findingsJSON, _ := json.Marshal(findings)
@@ -174,6 +175,30 @@ Previous review findings to address:
 		Findings:      string(findingsJSON),
 		FixSummary:    fixSummary,
 	}, nil
+}
+
+func filterIgnoredReviewFindings(findings Findings, ignorePatterns []string) Findings {
+	if len(ignorePatterns) == 0 || len(findings.Items) == 0 {
+		return findings
+	}
+	filtered := make([]Finding, 0, len(findings.Items))
+	for _, item := range findings.Items {
+		if item.File != "" && matchesAnyIgnorePattern(item.File, ignorePatterns) {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	findings.Items = filtered
+	return findings
+}
+
+func matchesAnyIgnorePattern(path string, ignorePatterns []string) bool {
+	for _, pattern := range ignorePatterns {
+		if matchIgnorePattern(path, pattern) {
+			return true
+		}
+	}
+	return false
 }
 
 func agentReviewPrompt(branch, baseSHA, headSHA, reviewScope, defaultBranch, ignorePatterns, historySection string) string {
