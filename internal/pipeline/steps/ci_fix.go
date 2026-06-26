@@ -144,10 +144,18 @@ func (s *CIStep) pushUpdatedHeadSHA(sctx *pipeline.StepContext, newHeadSHA strin
 	ref := normalizedBranchRef(sctx.Run.Branch)
 	pushURL := sctx.Repo.PushURL()
 
-	upstreamSHA, lsErr := stepGitLsRemote(sctx, pushURL, ref)
-	if lsErr != nil {
-		slog.Warn("ls-remote failed, pushing without force-with-lease", "ref", ref, "error", lsErr)
-	} else if upstreamSHA == newHeadSHA {
+	// Anchor the force-with-lease to the head the run last recorded for this
+	// branch (what the pipeline last pushed/observed), NOT to a SHA freshly read
+	// from the remote a moment before pushing - that self-defeating anchor always
+	// passes and lets an auto-fix rebased from stale local state overwrite a
+	// commit that reached origin out of band. resolveForcePushDecision refuses
+	// the push when the remote carries commits this run never incorporated.
+	gitRun := func(args ...string) (string, error) { return stepGitRun(sctx, args...) }
+	decision, err := resolveForcePushDecision(gitRun, pushURL, ref, newHeadSHA, sctx.Run.HeadSHA)
+	if err != nil {
+		return false, err
+	}
+	if decision.upToDate {
 		if _, err := stepGitRun(sctx, "update-ref", ref, newHeadSHA); err != nil {
 			return false, fmt.Errorf("update local branch ref: %w", err)
 		}
@@ -157,10 +165,7 @@ func (s *CIStep) pushUpdatedHeadSHA(sctx *pipeline.StepContext, newHeadSHA strin
 		}
 		return false, nil
 	}
-	if err := stepGitPush(sctx, pushURL, ref, upstreamSHA, upstreamSHA != ""); err != nil {
-		if lsErr != nil {
-			return false, fmt.Errorf("push (ls-remote failed: %v): %w", lsErr, err)
-		}
+	if err := stepGitPush(sctx, pushURL, ref, decision.remoteSHA, !decision.newBranch); err != nil {
 		return false, fmt.Errorf("push: %w", err)
 	}
 

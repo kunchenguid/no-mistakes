@@ -93,6 +93,25 @@ func mergeBaseWithDefaultBranch(ctx context.Context, workDir, defaultBranch stri
 	return ""
 }
 
+// lastFetchedBranchTip returns the commit the push branch's remote-tracking ref
+// resolves to in the worktree - the exact remote head the rebase step last
+// fetched and rebased against. It is the safe anchor for a force-with-lease: if
+// the live remote has moved past it, the push must be treated as potentially
+// discarding unseen work. Returns "" when no tracking ref exists (e.g. a brand
+// new branch or a failed fetch), which makes the caller fall back to the
+// content-incorporation check rather than trusting a stale value.
+func lastFetchedBranchTip(ctx context.Context, workDir, branch string, fork bool) string {
+	trackingRef := "refs/remotes/origin/" + branch
+	if fork {
+		trackingRef = forkBranchTrackingRef(branch)
+	}
+	sha, err := git.Run(ctx, workDir, "rev-parse", "--verify", "--quiet", trackingRef+"^{commit}")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(sha)
+}
+
 func normalizedBranchRef(ref string) string {
 	if !strings.HasPrefix(ref, "refs/") {
 		return "refs/heads/" + ref
