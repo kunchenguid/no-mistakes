@@ -64,6 +64,10 @@ func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("claude start: %w", err)
 	}
+	// Reap the whole process group on every return path, not just ctx
+	// cancellation. A cleanly-exited claude can leave grandchildren (a test
+	// runner's worker pool, a build watcher) reparented to init and running.
+	defer shellenv.TerminateShellCommandGroup(cmd)
 
 	stderrWG.Add(1)
 	go func() {

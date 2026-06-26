@@ -109,6 +109,25 @@ func ConfigureShellCommand(cmd *exec.Cmd) {
 	}
 }
 
+// TerminateShellCommandGroup is the Windows counterpart to the unix helper. It
+// best-effort `taskkill /T /F`s the tree rooted at cmd's pid to sweep up any
+// descendant that outlived a normally-exited leader, mirroring the unix
+// success-path group reap.
+//
+// Unlike a unix process group, a Windows process tree is tracked by live
+// parent-child links, so once the leader has exited taskkill /T may no longer
+// reach descendants that already reparented. This is therefore best-effort
+// cleanup for the window in which the leader is still being reaped; the
+// CreateNewProcessGroup + cmd.Cancel path in ConfigureShellCommand remains the
+// primary teardown for the cancellation case.
+func TerminateShellCommandGroup(cmd *exec.Cmd) {
+	if cmd == nil || cmd.Process == nil {
+		return
+	}
+	pid := strconv.Itoa(cmd.Process.Pid)
+	_ = exec.Command("taskkill", "/T", "/F", "/PID", pid).Run()
+}
+
 // isTaskkillAlreadyGone reports whether a taskkill error means the target PID
 // no longer exists (the child had already exited). taskkill emits exit code
 // taskkillExitNoSuchProcess for that case; matching on the numeric exit code

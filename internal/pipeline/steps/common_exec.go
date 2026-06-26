@@ -266,6 +266,10 @@ func runShellCommandWithEnv(ctx context.Context, dir string, env []string, cmdSt
 	// the whole tree (e.g. npm -> node test workers), not just the shell parent.
 	// Otherwise grandchildren survive, keep running, and hold the worktree locked.
 	shellenv.ConfigureShellCommand(cmd)
+	// Reap the whole process group on return, not just ctx cancellation: a
+	// configured test/lint command that exits cleanly can still leave worker
+	// grandchildren (e.g. a vitest tinypool) reparented to init and running.
+	defer shellenv.TerminateShellCommandGroup(cmd)
 	cmd.Dir = dir
 	if len(env) > 0 {
 		cmd.Env = mergeEnv(env)

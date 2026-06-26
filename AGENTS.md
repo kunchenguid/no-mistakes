@@ -89,6 +89,14 @@ Safest local verification sequence after non-trivial changes:
   the next run on the same branch cannot proceed. Applied to the step shell
   runner (`runShellCommandWithEnv`) and the native agent `runOnce` builders
   (claude, codex, pi, acpx); apply it to any new subprocess in those paths.
+- `cmd.Cancel` only fires on context cancellation, never on normal exit, so a
+  cleanly-exited agent/command still leaks any grandchild that outlived it (a
+  vitest tinypool worker pool reparenting to init, a build watcher, a dev
+  server). After `cmd.Start()` (or alongside a `CombinedOutput`/`Output` call),
+  `defer shellenv.TerminateShellCommandGroup(cmd)` to SIGKILL the whole process
+  group on every return path, success included. It is a no-op once the group is
+  already empty (ESRCH) or the cancel path already swept it. Pair it with
+  `ConfigureShellCommand` on any new subprocess in these paths.
 - Use derived contexts and timeouts for cleanup and HTTP calls.
 - Use `context.Background()` mainly at top-level boundaries, background tasks, or in tests.
 - Protect shared mutable state with `sync.Mutex`, `sync.RWMutex`, `sync.Map`, or `atomic` where appropriate.

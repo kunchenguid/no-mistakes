@@ -51,6 +51,9 @@ func (a *acpxAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) 
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("acpx start: %w", err)
 	}
+	// Reap the whole process group on every return path, not just ctx
+	// cancellation, so a cleanly-exited acpx can't leak grandchildren.
+	defer shellenv.TerminateShellCommandGroup(cmd)
 
 	var stderrBuf []byte
 	var stderrWG sync.WaitGroup

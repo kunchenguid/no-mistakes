@@ -81,6 +81,9 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("codex start: %w", err)
 	}
+	// Reap the whole process group on every return path, not just ctx
+	// cancellation, so a cleanly-exited codex can't leak grandchildren.
+	defer shellenv.TerminateShellCommandGroup(cmd)
 
 	stderrWG.Add(1)
 	go func() {

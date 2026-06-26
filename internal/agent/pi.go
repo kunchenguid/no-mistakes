@@ -56,6 +56,9 @@ func (a *piAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("pi start: %w", err)
 	}
+	// Reap the whole process group on every return path, not just ctx
+	// cancellation, so a cleanly-exited pi can't leak grandchildren.
+	defer shellenv.TerminateShellCommandGroup(cmd)
 
 	prompt := buildPiPrompt(opts.Prompt, opts.JSONSchema)
 	go func() {
