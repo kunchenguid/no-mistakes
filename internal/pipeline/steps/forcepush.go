@@ -3,6 +3,8 @@ package steps
 import (
 	"fmt"
 	"strings"
+
+	"github.com/kunchenguid/no-mistakes/internal/git"
 )
 
 // gitRunner runs a git subcommand and returns trimmed stdout. Callers bind it
@@ -48,15 +50,20 @@ func (e *forcePushWouldDiscardError) Error() string {
 // unseen upstream commits).
 //
 // lastSeenSHA is the remote head the pipeline last observed for this branch:
-//   - push step: the rebase step's freshly-fetched remote-tracking ref, i.e.
-//     the exact commit the branch was rebased against;
+//   - push step: the remote-tracking ref synced by the rebase step. On a normal
+//     push that is the exact commit the branch was rebased against; on a force
+//     push the rebase step deliberately leaves it stale, so it stays the head we
+//     last observed rather than the live tip - which is what keeps the fast path
+//     below honest (see the rebase step comment) and forces the content check.
 //   - CI step: the run's last-recorded head, i.e. what the pipeline last pushed.
 //
 // When the remote still points there the push is safe (it only fast-forwards or
 // replays our own prior state). Otherwise the remote moved out of band and the
 // push is allowed only when every commit now on the remote is already
-// incorporated, by content (patch-id), into newHeadSHA - so nothing is dropped.
-func resolveForcePushDecision(gitRun gitRunner, pushURL, ref, newHeadSHA, lastSeenSHA string) (forcePushDecision, error) {
+// incorporated, by content (patch-id), into newHeadSHA, or is part of the
+// history the run already knew (reachable from baseSHA) and is thus a deliberate
+// rewrite rather than a clobber. Anything else is refused rather than discarded.
+func resolveForcePushDecision(gitRun gitRunner, pushURL, ref, newHeadSHA, lastSeenSHA, baseSHA string) (forcePushDecision, error) {
 	current, err := lsRemoteSHA(gitRun, pushURL, ref)
 	if err != nil {
 		return forcePushDecision{}, fmt.Errorf("resolve remote head for %s: %w", ref, err)
@@ -74,8 +81,9 @@ func resolveForcePushDecision(gitRun gitRunner, pushURL, ref, newHeadSHA, lastSe
 	}
 	// The remote moved to a commit we did not produce. Allow the push only if
 	// everything now on the remote is already represented in what we are about
-	// to push; otherwise refuse rather than discard it.
-	dropped, err := remoteCommitsNotIncorporated(gitRun, pushURL, ref, newHeadSHA, current)
+	// to push (or in the history the run is knowingly rewriting); otherwise
+	// refuse rather than discard it.
+	dropped, err := remoteCommitsNotIncorporated(gitRun, pushURL, ref, newHeadSHA, current, baseSHA)
 	if err != nil {
 		return forcePushDecision{}, fmt.Errorf("verify force-push safety for %s: %w", ref, err)
 	}
@@ -100,7 +108,8 @@ func lsRemoteSHA(gitRun gitRunner, remote, ref string) (string, error) {
 }
 
 // remoteCommitsNotIncorporated returns the commits reachable from remoteSHA
-// whose changes are not already present (by patch-id) in newHeadSHA. It first
+// whose changes are not already present (by patch-id) in newHeadSHA and are not
+// part of the history the run already knew (reachable from baseSHA). It first
 // fetches the remote branch tip into FETCH_HEAD so the commits are available
 // locally for the comparison, without disturbing remote-tracking refs.
 //
@@ -109,12 +118,26 @@ func lsRemoteSHA(gitRun gitRunner, remote, ref string) (string, error) {
 // SHAs but preserves patch-ids, so commits the pipeline genuinely replayed are
 // recognized as incorporated, while a commit that only ever existed on the
 // remote is reported as about-to-be-discarded.
-func remoteCommitsNotIncorporated(gitRun gitRunner, pushURL, ref, newHeadSHA, remoteSHA string) ([]string, error) {
+//
+// Excluding baseSHA's ancestors (^baseSHA) is what lets a force push legitimately
+// rewrite history the gate already knew - the common amend, or reverting the
+// pipeline's own prior autofix commit - without flagging it as data loss, while
+// still catching a commit that reached the branch out of band (which, having
+// arrived after the run's base, is never an ancestor of baseSHA). baseSHA is
+// omitted when empty/zero or not resolvable locally, which only makes the check
+// stricter (more likely to refuse), never laxer.
+func remoteCommitsNotIncorporated(gitRun gitRunner, pushURL, ref, newHeadSHA, remoteSHA, baseSHA string) ([]string, error) {
 	branch := strings.TrimPrefix(ref, "refs/heads/")
 	if _, err := gitRun("fetch", "--no-tags", pushURL, "refs/heads/"+branch); err != nil {
 		return nil, fmt.Errorf("fetch remote branch: %w", err)
 	}
-	out, err := gitRun("rev-list", "--cherry-pick", "--right-only", newHeadSHA+"..."+remoteSHA)
+	args := []string{"rev-list", "--cherry-pick", "--right-only", newHeadSHA + "..." + remoteSHA}
+	if baseSHA != "" && !git.IsZeroSHA(baseSHA) {
+		if _, err := gitRun("rev-parse", "--verify", "--quiet", baseSHA+"^{commit}"); err == nil {
+			args = append(args, "^"+baseSHA)
+		}
+	}
+	out, err := gitRun(args...)
 	if err != nil {
 		return nil, err
 	}

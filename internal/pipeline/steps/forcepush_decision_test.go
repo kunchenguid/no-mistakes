@@ -43,7 +43,7 @@ func newForcePushFixture(t *testing.T) (dir string, gitRun gitRunner, remote, fe
 func TestResolveForcePushDecision_NewBranch(t *testing.T) {
 	t.Parallel()
 	_, gitRun, remote, _ := newForcePushFixture(t)
-	d, err := resolveForcePushDecision(gitRun, remote, "refs/heads/does-not-exist", "deadbeef", "")
+	d, err := resolveForcePushDecision(gitRun, remote, "refs/heads/does-not-exist", "deadbeef", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestResolveForcePushDecision_NewBranch(t *testing.T) {
 func TestResolveForcePushDecision_UpToDate(t *testing.T) {
 	t.Parallel()
 	_, gitRun, remote, featureSHA := newForcePushFixture(t)
-	d, err := resolveForcePushDecision(gitRun, remote, "refs/heads/feature", featureSHA, featureSHA)
+	d, err := resolveForcePushDecision(gitRun, remote, "refs/heads/feature", featureSHA, featureSHA, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func TestResolveForcePushDecision_RemoteUnchangedSinceLastSeen(t *testing.T) {
 	gitCmd(t, dir, "commit", "-m", "more")
 	newHead := gitCmd(t, dir, "rev-parse", "HEAD")
 
-	d, err := resolveForcePushDecision(gitRun, remote, "refs/heads/feature", newHead, featureSHA)
+	d, err := resolveForcePushDecision(gitRun, remote, "refs/heads/feature", newHead, featureSHA, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ func TestResolveForcePushDecision_RefusesUnincorporatedRemoteCommit(t *testing.T
 	newHead := gitCmd(t, dir, "rev-parse", "HEAD")
 
 	// lastSeen is the OLD tip (stale): the remote moved past it out of band.
-	_, err := resolveForcePushDecision(gitRun, remote, "refs/heads/feature", newHead, featureSHA)
+	_, err := resolveForcePushDecision(gitRun, remote, "refs/heads/feature", newHead, featureSHA, "")
 	if err == nil {
 		t.Fatal("expected refusal when the remote carries an unincorporated commit")
 	}
@@ -142,11 +142,75 @@ func TestResolveForcePushDecision_AllowsWhenRemoteContentIncorporated(t *testing
 	newHead := gitCmd(t, dir, "rev-parse", "HEAD")
 
 	// lastSeen is stale (the old tip), forcing the content-incorporation check.
-	d, err := resolveForcePushDecision(gitRun, remote, "refs/heads/feature", newHead, featureSHA)
+	d, err := resolveForcePushDecision(gitRun, remote, "refs/heads/feature", newHead, featureSHA, "")
 	if err != nil {
 		t.Fatalf("expected push allowed when remote content is incorporated, got %v", err)
 	}
 	if d.newBranch || d.upToDate || d.remoteSHA != remoteTip {
 		t.Fatalf("expected guarded force-push anchored to %s, got %#v", remoteTip, d)
+	}
+}
+
+// A force push that rewrites history the run already knew (reachable from
+// baseSHA) - e.g. dropping a commit by amend/revert - must be allowed: the
+// dropped commit is not data loss, it is the deliberate rewrite.
+func TestResolveForcePushDecision_AllowsRewriteOfKnownBaseHistory(t *testing.T) {
+	t.Parallel()
+	dir, gitRun, remote, featureSHA := newForcePushFixture(t)
+	base := gitCmd(t, dir, "rev-parse", "main")
+
+	// Rewrite feature: drop the original commit, add a different one. The remote
+	// still holds the original (featureSHA), which the rewrite intentionally drops.
+	gitCmd(t, dir, "reset", "--hard", base)
+	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("rewritten"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "rewritten feature")
+	newHead := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	// lastSeen empty to force the content check; baseSHA is the prior branch tip
+	// the user is knowingly rewriting.
+	d, err := resolveForcePushDecision(gitRun, remote, "refs/heads/feature", newHead, "", featureSHA)
+	if err != nil {
+		t.Fatalf("expected rewrite of known base history to be allowed, got %v", err)
+	}
+	if d.newBranch || d.upToDate || d.remoteSHA != featureSHA {
+		t.Fatalf("expected guarded force-push anchored to %s, got %#v", featureSHA, d)
+	}
+}
+
+// Even with baseSHA set, a commit that reached the branch out of band (after the
+// run base, so not reachable from baseSHA) must still be refused.
+func TestResolveForcePushDecision_RefusesOutOfBandEvenWithBase(t *testing.T) {
+	t.Parallel()
+	dir, gitRun, remote, featureSHA := newForcePushFixture(t)
+	base := gitCmd(t, dir, "rev-parse", "main")
+
+	// Out-of-band commit lands on origin/feature on top of featureSHA.
+	other := t.TempDir()
+	gitCmd(t, other, "clone", remote, ".")
+	gitCmd(t, other, "config", "user.name", "o")
+	gitCmd(t, other, "config", "user.email", "o@test.com")
+	gitCmd(t, other, "checkout", "feature")
+	os.WriteFile(filepath.Join(other, "out_of_band.txt"), []byte("unseen"), 0o644)
+	gitCmd(t, other, "add", "-A")
+	gitCmd(t, other, "commit", "-m", "out of band")
+	gitCmd(t, other, "push", "origin", "feature")
+
+	// User rewrites feature off the base; the rewrite contains neither the
+	// original commit nor the out-of-band one.
+	gitCmd(t, dir, "reset", "--hard", base)
+	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("rewritten"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "rewritten feature")
+	newHead := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	// baseSHA = the prior tip (covers the original commit); the out-of-band
+	// commit is a descendant of it, not an ancestor, so it stays flagged.
+	_, err := resolveForcePushDecision(gitRun, remote, "refs/heads/feature", newHead, featureSHA, featureSHA)
+	if err == nil {
+		t.Fatal("expected refusal: an out-of-band commit is not reachable from baseSHA")
+	}
+	if _, ok := err.(*forcePushWouldDiscardError); !ok {
+		t.Fatalf("expected forcePushWouldDiscardError, got %T: %v", err, err)
 	}
 }

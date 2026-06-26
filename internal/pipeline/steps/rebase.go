@@ -51,14 +51,17 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	if err := git.FetchRemoteBranch(ctx, sctx.WorkDir, "origin", defaultBranch); err != nil {
 		sctx.LogFile(fmt.Sprintf("warning: could not fetch origin/%s: %v", defaultBranch, err))
 	}
-	// Always refresh the push branch's remote-tracking ref, even on a force push.
-	// A force push skips *rebasing onto* origin/<branch> (the pushed commit is
-	// authoritative), but the push step still needs an accurate record of the
-	// remote head to anchor its --force-with-lease. Without a fresh fetch the
-	// shared tracking ref can be stale and a legitimate force push would be
-	// wrongly refused. The fetch only updates a tracking ref; it never changes
-	// the worktree HEAD or the rebase target.
-	if branch != "" && branch != defaultBranch {
+	// Sync the push branch's remote-tracking ref only when we are about to rebase
+	// onto it (a normal push). On a force push we deliberately skip both the fetch
+	// and the rebase: the pushed commit is authoritative, and the remote-tracking
+	// ref must keep pointing at the head we last *observed* rather than the live
+	// tip. The push step uses that tracking ref as its force-with-lease anchor;
+	// if we refreshed it here, the anchor would equal the live remote head and the
+	// lease's "remote unchanged since we last saw it" fast path would pass even
+	// when the remote carries an out-of-band commit - silently clobbering it
+	// (the original #281/#305 hazard, in the force-push path). Leaving it stale is
+	// what lets the push step's content check catch that case.
+	if !forcePush && branch != "" && branch != defaultBranch {
 		if pushRemote == "origin" {
 			if err := git.FetchRemoteBranch(ctx, sctx.WorkDir, "origin", branch); err != nil {
 				sctx.LogFile(fmt.Sprintf("warning: could not fetch origin/%s: %v", branch, err))
