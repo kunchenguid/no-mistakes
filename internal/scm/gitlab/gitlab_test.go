@@ -185,7 +185,7 @@ func TestFindPRWithoutIIDKeepsNumberEmptyAndUpdatesByNumberFromURL(t *testing.T)
 	branch := "feature/refactor"
 	url := "https://gitlab.example.com/group/project/-/merge_requests/42"
 	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
-		"glab mr list --source-branch " + branch + " --target-branch main --state opened --output json": {
+		"glab mr list --source-branch " + branch + " --target-branch main --output json": {
 			stdout: fmt.Sprintf(`[{"web_url":%q}]`+"\n", url),
 		},
 		"glab mr update 42 --title updated --description body --yes": {
@@ -220,7 +220,7 @@ func TestFindPRFiltersByBaseBranch(t *testing.T) {
 	t.Parallel()
 
 	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
-		"glab mr list --source-branch feature/refactor --target-branch release/1.0 --state opened --output json": {
+		"glab mr list --source-branch feature/refactor --target-branch release/1.0 --output json": {
 			stdout: `[{"iid":42,"web_url":"https://gitlab.example.com/group/project/-/merge_requests/42"}]` + "\n",
 		},
 	}), nil)
@@ -244,7 +244,7 @@ func TestFindPRReturnsCLIError(t *testing.T) {
 	t.Parallel()
 
 	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
-		"glab mr list --source-branch feature/refactor --target-branch main --state opened --output json": {
+		"glab mr list --source-branch feature/refactor --target-branch main --output json": {
 			stderr: "gitlab unavailable\n",
 			code:   1,
 		},

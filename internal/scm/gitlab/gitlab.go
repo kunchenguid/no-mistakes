@@ -70,7 +70,7 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 	if strings.TrimSpace(base) != "" {
 		args = append(args, "--target-branch", base)
 	}
-	args = append(args, "--state", "opened", "--output", "json")
+	args = append(args, "--output", "json")
 	cmd := h.cmd(ctx, "glab", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
