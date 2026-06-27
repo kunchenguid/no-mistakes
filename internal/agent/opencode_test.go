@@ -407,6 +407,53 @@ func TestOpencodeAgent_NoSchema(t *testing.T) {
 	}
 }
 
+// TestSendMessage_SchemaNestedInInfo verifies that a non-empty schema is sent
+// inside body["info"]["format"], not at body["format"] (OpenCode >= 1.17).
+func TestSendMessage_SchemaNestedInInfo(t *testing.T) {
+	var capturedBody map[string]any
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/session" && r.Method == http.MethodPost:
+			fmt.Fprint(w, `{"id":"s1"}`)
+		case strings.HasSuffix(r.URL.Path, "/message") && r.Method == http.MethodPost:
+			if err := json.NewDecoder(r.Body).Decode(&capturedBody); err != nil {
+				t.Errorf("decode body: %v", err)
+			}
+			fmt.Fprint(w, `{"info":{"id":"m1","role":"assistant"},"parts":[{"type":"text","text":"ok"}]}`)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	a := &opencodeAgent{
+		bin:    "opencode",
+		server: &managedServer{port: mustParsePort(server.URL)},
+	}
+
+	schema := json.RawMessage(`{"type":"object","properties":{"x":{"type":"string"}}}`)
+	if _, err := a.sendMessage(context.Background(), server.URL, "s1", "prompt", schema); err != nil {
+		t.Fatalf("sendMessage: %v", err)
+	}
+
+	if _, rootFormat := capturedBody["format"]; rootFormat {
+		t.Error("body must not have a root-level 'format' key (OpenCode >= 1.17 rejects it)")
+	}
+
+	info, ok := capturedBody["info"].(map[string]any)
+	if !ok {
+		t.Fatalf("body['info'] missing or wrong type: %T", capturedBody["info"])
+	}
+	infoFormat, ok := info["format"].(map[string]any)
+	if !ok {
+		t.Fatalf("body['info']['format'] missing or wrong type: %T", info["format"])
+	}
+	if infoFormat["type"] != "json_schema" {
+		t.Errorf("info.format.type = %q, want \"json_schema\"", infoFormat["type"])
+	}
+}
+
 // TestOpencodeAgent_FinalAnswerPreferred tests that final_answer phase text is preferred.
 func TestOpencodeAgent_FinalAnswerPreferred(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

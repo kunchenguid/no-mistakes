@@ -87,10 +87,12 @@ func (a *opencodeAgent) sendMessage(ctx context.Context, baseURL, sessionID, pro
 		"parts": []map[string]string{{"type": "text", "text": prompt}},
 	}
 	if len(schema) > 0 {
-		body["format"] = map[string]any{
-			"type":       "json_schema",
-			"schema":     json.RawMessage(schema),
-			"retryCount": 1,
+		body["info"] = map[string]any{
+			"format": map[string]any{
+				"type":       "json_schema",
+				"schema":     json.RawMessage(schema),
+				"retryCount": 1,
+			},
 		}
 	}
 
