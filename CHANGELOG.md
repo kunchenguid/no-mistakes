@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.32.0](https://github.com/kunchenguid/no-mistakes/compare/v1.31.2...v1.32.0) (2026-06-27)
+
+
+### Features
+
+* **scm:** detect self-hosted GitLab out of the box with glab v1.5x ([#346](https://github.com/kunchenguid/no-mistakes/issues/346)) ([42ae9c2](https://github.com/kunchenguid/no-mistakes/commit/42ae9c280e78299b7e161e2e83dfbe10bc1478a2))
+
 ## [1.31.2](https://github.com/kunchenguid/no-mistakes/compare/v1.31.1...v1.31.2) (2026-06-27)
 
 
