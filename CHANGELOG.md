@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.31.2](https://github.com/kunchenguid/no-mistakes/compare/v1.31.1...v1.31.2) (2026-06-27)
+
+
+### Bug Fixes
+
+* **cli:** clarify AXI gate guidance ([#344](https://github.com/kunchenguid/no-mistakes/issues/344)) ([8ebc9eb](https://github.com/kunchenguid/no-mistakes/commit/8ebc9ebfa2f592da09d5c54f89b634e8a1ec8bf8))
+
 ## [1.31.1](https://github.com/kunchenguid/no-mistakes/compare/v1.31.0...v1.31.1) (2026-06-26)
 
 
