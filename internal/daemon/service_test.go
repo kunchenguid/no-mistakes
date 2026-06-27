@@ -413,6 +413,9 @@ func TestStartRestoresStaleSystemdUnitWhenRefreshInstallFails(t *testing.T) {
 // the credentials world-readable at 0644. The restore must re-apply the
 // captured 0600 mode.
 func TestStartRestoresStaleSystemdUnitAtOriginalModeWhenRefreshInstallFails(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX file modes (0600) are not enforced on Windows; the proxy-bearing service file is only generated on macOS/Linux")
+	}
 	for _, key := range proxyEnvKeys {
 		t.Setenv(key, "")
 	}

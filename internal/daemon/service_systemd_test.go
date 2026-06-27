@@ -308,6 +308,9 @@ func TestRenderSystemdUnitEscapesPercentInProxyEnv(t *testing.T) {
 }
 
 func TestWriteServiceFileTightensModeWhenProxyPresent(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX file modes (0644/0600) are not enforced on Windows; the proxy-bearing service file is only generated on macOS/Linux")
+	}
 	for _, key := range proxyEnvKeys {
 		t.Setenv(key, "")
 	}
@@ -348,6 +351,9 @@ func TestWriteServiceFileTightensModeWhenProxyPresent(t *testing.T) {
 // (os.SameFile == false) that carries the new content at 0600, with no leftover
 // temp files in the directory.
 func TestWriteServiceFileReplacesAtomicallyWhenProxyPresent(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX file modes (0644/0600) are not enforced on Windows; the proxy-bearing service file is only generated on macOS/Linux")
+	}
 	for _, key := range proxyEnvKeys {
 		t.Setenv(key, "")
 	}
