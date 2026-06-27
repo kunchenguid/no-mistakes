@@ -102,9 +102,7 @@ func serviceProxyEnv() [][2]string {
 // present the file may carry sensitive data (a proxy URL can embed credentials,
 // e.g. http://user:pass@host), so it is restricted to owner-only 0600;
 // otherwise the conventional 0644 is kept so non-proxy installs are
-// byte-for-byte and mode-for-mode unchanged. os.WriteFile only applies the mode
-// when creating the file, so an explicit Chmod enforces it on re-install when
-// the file already exists.
+// byte-for-byte and mode-for-mode unchanged.
 //
 // The proxy environment is resolved here, exactly once, and handed to render so
 // that the rendered content and the permission mode are derived from the same
@@ -112,17 +110,59 @@ func serviceProxyEnv() [][2]string {
 // (content, proxyEnv) pair makes it structurally impossible for a caller to
 // bake proxy credentials into the content yet have it written under the
 // world-readable 0644 mode.
+//
+// When proxy values are present the content is written to a sibling temp file
+// created at 0600 and atomically renamed over the target, so credential-bearing
+// content is owner-only from the instant it first exists on disk. A plain
+// os.WriteFile only applies its mode on create, so re-installing over a
+// pre-existing 0644 file (the no-proxy -> proxy transition) would leave the
+// credentials world-readable until a follow-up Chmod tightened the mode.
 func writeServiceFile(path string, render func(proxyEnv [][2]string) string) error {
 	proxyEnv := serviceProxyEnv()
-	content := render(proxyEnv)
-	mode := os.FileMode(0o644)
-	if len(proxyEnv) > 0 {
-		mode = 0o600
+	content := []byte(render(proxyEnv))
+	if len(proxyEnv) == 0 {
+		mode := os.FileMode(0o644)
+		if err := os.WriteFile(path, content, mode); err != nil {
+			return err
+		}
+		return os.Chmod(path, mode)
 	}
-	if err := os.WriteFile(path, []byte(content), mode); err != nil {
+	return writeFileAtomic(path, content, 0o600)
+}
+
+// writeFileAtomic writes content to a temp file created at mode in the target's
+// directory and atomically renames it over path. The content therefore never
+// exists on disk under a mode looser than requested - even when path already
+// exists with a different mode, where a plain os.WriteFile would preserve the
+// existing file's mode and only a follow-up Chmod would tighten it.
+func writeFileAtomic(path string, content []byte, mode os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
+	if err != nil {
 		return err
 	}
-	return os.Chmod(path, mode)
+	tmpPath := tmp.Name()
+	renamed := false
+	defer func() {
+		if !renamed {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if err := tmp.Chmod(mode); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(content); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	renamed = true
+	return nil
 }
 
 // defaultServiceManagerBypassed reports whether managed-service plumbing

@@ -313,3 +313,58 @@ func TestWriteServiceFileTightensModeWhenProxyPresent(t *testing.T) {
 		t.Fatalf("with proxy, mode = %o, want 0600", got)
 	}
 }
+
+// TestWriteServiceFileReplacesAtomicallyWhenProxyPresent guards that
+// credential-bearing content (a forwarded proxy URL can embed user:pass) is
+// never written into a pre-existing world-readable 0644 file and only tightened
+// afterwards. Writing in place with os.WriteFile would reuse the existing 0644
+// file - leaving the credentials world-readable until a follow-up Chmod - so
+// the proxy path must write a fresh 0600 file and atomically rename it over the
+// target. The replacement is observable as a different underlying file
+// (os.SameFile == false) that carries the new content at 0600, with no leftover
+// temp files in the directory.
+func TestWriteServiceFileReplacesAtomicallyWhenProxyPresent(t *testing.T) {
+	for _, key := range proxyEnvKeys {
+		t.Setenv(key, "")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "unit")
+
+	if err := writeServiceFile(path, func([][2]string) string { return "no-proxy" }); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := before.Mode().Perm(); got != 0o644 {
+		t.Fatalf("without proxy, mode = %o, want 0644", got)
+	}
+
+	t.Setenv("HTTPS_PROXY", "http://user:pass@127.0.0.1:7897")
+	if err := writeServiceFile(path, func([][2]string) string { return "secret-proxy-content" }); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := after.Mode().Perm(); got != 0o600 {
+		t.Fatalf("with proxy, mode = %o, want 0600", got)
+	}
+	if os.SameFile(before, after) {
+		t.Fatal("proxy re-install rewrote credentials into the existing 0644 file in place; it must atomically replace it with a fresh 0600 file so credentials are never world-readable")
+	}
+	if data, err := os.ReadFile(path); err != nil {
+		t.Fatal(err)
+	} else if string(data) != "secret-proxy-content" {
+		t.Fatalf("content = %q, want %q", data, "secret-proxy-content")
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected only the unit file to remain, got %d entries: %v", len(entries), entries)
+	}
+}
