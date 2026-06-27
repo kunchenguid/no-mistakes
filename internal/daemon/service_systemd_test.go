@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -170,6 +171,77 @@ func TestServiceProxyEnvSkipsUnsetAndEmpty(t *testing.T) {
 	}
 }
 
+// TestServiceProxyEnvDedupesOnCaseInsensitivePlatforms reproduces the Windows
+// CI failure: with case-insensitive env-var names, HTTPS_PROXY and https_proxy
+// resolve to one variable with one value, and forwarding both spellings would
+// bake a duplicate entry into the rendered service definition. serviceProxyEnv
+// must collapse them into a single entry. runtimeGOOS is forced to "windows" so
+// the dedup branch is exercised deterministically on any host; both spellings
+// are set to the same value, mirroring how a case-insensitive environment
+// resolves them.
+func TestServiceProxyEnvDedupesOnCaseInsensitivePlatforms(t *testing.T) {
+	oldGOOS := runtimeGOOS
+	runtimeGOOS = "windows"
+	t.Cleanup(func() { runtimeGOOS = oldGOOS })
+
+	for _, key := range proxyEnvKeys {
+		t.Setenv(key, "")
+	}
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
+	t.Setenv("https_proxy", "http://127.0.0.1:7897")
+
+	got := serviceProxyEnv()
+	if len(got) != 1 || got[0][0] != "HTTPS_PROXY" || got[0][1] != "http://127.0.0.1:7897" {
+		t.Fatalf("serviceProxyEnv() = %v, want a single de-duplicated HTTPS_PROXY entry", got)
+	}
+}
+
+// TestServiceProxyEnvForwardsBothSpellingsOnCaseSensitivePlatforms guards that
+// macOS/Linux behaviour is unchanged: when both spellings are set to different
+// values they are distinct variables and BOTH are forwarded verbatim, in
+// declaration order. Skipped on Windows, where the two spellings cannot hold
+// different values.
+func TestServiceProxyEnvForwardsBothSpellingsOnCaseSensitivePlatforms(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("env-var names are case-insensitive on Windows; the two spellings are one variable")
+	}
+	for _, key := range proxyEnvKeys {
+		t.Setenv(key, "")
+	}
+	t.Setenv("HTTP_PROXY", "http://upper:1/")
+	t.Setenv("http_proxy", "http://lower:2/")
+
+	got := serviceProxyEnv()
+	want := [][2]string{
+		{"HTTP_PROXY", "http://upper:1/"},
+		{"http_proxy", "http://lower:2/"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("serviceProxyEnv() = %v, want both spellings forwarded verbatim %v", got, want)
+	}
+}
+
+// TestServiceProxyEnvForwardsLowerOnlySpelling is the regression guard for the
+// curl case: a proxy exported only as the lower-case http_proxy must reach the
+// daemon as http_proxy, not normalised to HTTP_PROXY, because curl honours only
+// the lower-case spelling for plain-HTTP requests. Skipped on Windows, where
+// the spelling is not preserved (and need not be, as lookups are
+// case-insensitive there).
+func TestServiceProxyEnvForwardsLowerOnlySpelling(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("env-var names are case-insensitive on Windows; spelling is not preserved")
+	}
+	for _, key := range proxyEnvKeys {
+		t.Setenv(key, "")
+	}
+	t.Setenv("http_proxy", "http://127.0.0.1:7897")
+
+	got := serviceProxyEnv()
+	if len(got) != 1 || got[0][0] != "http_proxy" || got[0][1] != "http://127.0.0.1:7897" {
+		t.Fatalf("serviceProxyEnv() = %v, want the lower-case http_proxy spelling preserved", got)
+	}
+}
+
 func TestRenderSystemdUnitForwardsProxyEnv(t *testing.T) {
 	for _, key := range proxyEnvKeys {
 		t.Setenv(key, "")
@@ -188,16 +260,21 @@ func TestRenderSystemdUnitForwardsProxyEnv(t *testing.T) {
 	}
 }
 
-// TestRenderSystemdUnitForwardsEveryProxyEnvKey exercises the full proxyEnvKeys
-// set in the systemd scenario - including ALL_PROXY and the lower-case
-// spellings - and guards that the renderer and proxyEnvKeys cannot drift apart:
-// every declared key must reach the unit as its own Environment= line.
+// TestRenderSystemdUnitForwardsEveryProxyEnvKey guards that the renderer and
+// proxyEnvKeys cannot drift apart: every declared key handed to the renderer -
+// both the upper- and lower-case spellings - must reach the unit as its own
+// Environment= line. The proxy environment is injected directly rather than
+// read from the process environment so the assertion is independent of the
+// host's env-var case sensitivity (it ran on Windows CI, where setting both
+// spellings to distinct values is impossible); serviceProxyEnv's own
+// platform-specific behaviour is covered by the TestServiceProxyEnv* tests.
 func TestRenderSystemdUnitForwardsEveryProxyEnvKey(t *testing.T) {
+	var proxyEnv [][2]string
 	for _, key := range proxyEnvKeys {
-		t.Setenv(key, "val-"+key)
+		proxyEnv = append(proxyEnv, [2]string{key, "val-" + key})
 	}
 
-	unit := renderSystemdUnit("/usr/local/bin/no-mistakes", paths.WithRoot(t.TempDir()), "/home/u")
+	unit := renderSystemdUnitWithProxyEnv("/usr/local/bin/no-mistakes", paths.WithRoot(t.TempDir()), "/home/u", proxyEnv)
 	for _, key := range proxyEnvKeys {
 		want := `Environment="` + key + "=val-" + key + `"`
 		if !strings.Contains(unit, want) {

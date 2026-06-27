@@ -288,24 +288,25 @@ func TestRenderLaunchAgentForwardsProxyEnv(t *testing.T) {
 	}
 }
 
-// TestRenderLaunchAgentForwardsEveryProxyEnvKey exercises the full proxyEnvKeys
-// set in the launchd scenario - including ALL_PROXY, the lower-case spellings
-// (http_proxy/https_proxy/...) and NO_PROXY - and guards that the renderer and
-// proxyEnvKeys cannot drift apart: every declared key must reach the plist with
-// its exact value, paired correctly.
+// TestRenderLaunchAgentForwardsEveryProxyEnvKey guards that the renderer and
+// proxyEnvKeys cannot drift apart: every declared key handed to the renderer -
+// both the upper- and lower-case spellings - must reach the plist with its
+// exact value, paired correctly. The proxy environment is injected directly
+// rather than read from the process environment so the assertion is independent
+// of the host's env-var case sensitivity (it ran on Windows CI, where setting
+// both spellings to distinct values is impossible); serviceProxyEnv's own
+// platform-specific behaviour is covered by the TestServiceProxyEnv* tests.
 func TestRenderLaunchAgentForwardsEveryProxyEnvKey(t *testing.T) {
-	want := make(map[string]string, len(proxyEnvKeys))
+	var proxyEnv [][2]string
 	for _, key := range proxyEnvKeys {
-		value := "val-" + key
-		want[key] = value
-		t.Setenv(key, value)
+		proxyEnv = append(proxyEnv, [2]string{key, "val-" + key})
 	}
 
-	plist := renderLaunchAgent("/opt/no-mistakes/bin/no-mistakes", paths.WithRoot(t.TempDir()), "/home/u")
+	plist := renderLaunchAgentWithProxyEnv("/opt/no-mistakes/bin/no-mistakes", paths.WithRoot(t.TempDir()), "/home/u", proxyEnv)
 	for _, key := range proxyEnvKeys {
-		fragment := "<key>" + key + "</key>\n    <string>" + want[key] + "</string>"
+		fragment := "<key>" + key + "</key>\n    <string>val-" + key + "</string>"
 		if !strings.Contains(plist, fragment) {
-			t.Fatalf("launch agent should forward %s as %q, got:\n%s", key, want[key], plist)
+			t.Fatalf("launch agent should forward %s as %q, got:\n%s", key, "val-"+key, plist)
 		}
 	}
 }

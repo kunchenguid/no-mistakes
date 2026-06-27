@@ -46,7 +46,11 @@ var serviceManagerBypassed = defaultServiceManagerBypassed
 // the daemon - and the agents it spawns, e.g. `claude --print` - cannot reach
 // the network through a corporate or local HTTP(S) proxy and fail with errors
 // like "403 Request not allowed". Both upper- and lower-case spellings are
-// honoured because tooling is inconsistent about which it reads.
+// forwarded because tooling is inconsistent about which it reads: curl, for
+// instance, honours only the lower-case http_proxy for plain-HTTP requests (it
+// deliberately ignores HTTP_PROXY to avoid the CGI "httpoxy" issue), while many
+// other tools read the upper-case names. serviceProxyEnv only collapses the two
+// spellings on Windows, where they are the same variable.
 var proxyEnvKeys = []string{
 	"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
 	"http_proxy", "https_proxy", "no_proxy", "all_proxy",
@@ -57,11 +61,36 @@ var proxyEnvKeys = []string{
 // that are unset or empty. Baking these into the generated service definition
 // lets the managed daemon reach the network through the same proxy the user
 // installed with, even when the login-shell environment probe is unavailable.
+//
+// On case-sensitive platforms (macOS, Linux) every spelling that is set is
+// forwarded verbatim under its own name. That preserves the contract a
+// lower-case-only consumer such as curl relies on: a value exported only as
+// http_proxy must reach the daemon as http_proxy, not normalised to HTTP_PROXY.
+//
+// Windows is the one supported platform whose environment-variable names are
+// case-insensitive: os.LookupEnv("HTTP_PROXY") and os.LookupEnv("http_proxy")
+// resolve to the same variable, so iterating both spellings would otherwise
+// bake a duplicate entry (HTTP_PROXY and http_proxy with identical values) into
+// the rendered service definition. There the spellings are de-duplicated
+// case-insensitively, keeping the first (upper-case) occurrence; this is
+// harmless because Windows consumers read the variable case-insensitively too.
 func serviceProxyEnv() [][2]string {
+	// Only Windows treats environment-variable names case-insensitively; macOS
+	// and Linux keep HTTP_PROXY and http_proxy as distinct variables.
+	caseInsensitiveEnv := runtimeGOOS == "windows"
 	var out [][2]string
+	seen := make(map[string]bool, len(proxyEnvKeys))
 	for _, key := range proxyEnvKeys {
-		if value, ok := os.LookupEnv(key); ok && strings.TrimSpace(value) != "" {
-			out = append(out, [2]string{key, value})
+		if caseInsensitiveEnv && seen[strings.ToUpper(key)] {
+			continue
+		}
+		value, ok := os.LookupEnv(key)
+		if !ok || strings.TrimSpace(value) == "" {
+			continue
+		}
+		out = append(out, [2]string{key, value})
+		if caseInsensitiveEnv {
+			seen[strings.ToUpper(key)] = true
 		}
 	}
 	return out
