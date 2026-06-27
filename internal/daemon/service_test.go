@@ -402,6 +402,69 @@ func TestStartRestoresStaleSystemdUnitWhenRefreshInstallFails(t *testing.T) {
 	}
 }
 
+// TestStartRestoresStaleSystemdUnitAtOriginalModeWhenRefreshInstallFails guards
+// the drift-reinstall restore path against re-opening the 0644 credential leak
+// that writeFileAtomic closed for the install path. A prior proxy install
+// leaves the unit at 0600 with credential-bearing content (a forwarded proxy
+// URL can embed user:pass). A drift reinstall from a shell without the proxy
+// vars rewrites the unit at the conventional 0644; if that reinstall then
+// fails, the restore writes the original 0600 credential content back - but an
+// in-place os.WriteFile only re-applies its mode on create, so it would leave
+// the credentials world-readable at 0644. The restore must re-apply the
+// captured 0600 mode.
+func TestStartRestoresStaleSystemdUnitAtOriginalModeWhenRefreshInstallFails(t *testing.T) {
+	for _, key := range proxyEnvKeys {
+		t.Setenv(key, "")
+	}
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+
+	cleanup := stubServiceRuntime(t)
+	defer cleanup()
+	runtimeGOOS = "linux"
+	serviceUserHomeDir = func() (string, error) { return home, nil }
+	serviceExecutablePath = func() (string, error) { return "/usr/local/bin/no-mistakes", nil }
+
+	unitPath := filepath.Join(home, ".config", "systemd", "user", systemdServiceName(p))
+	if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stale := "[Service]\nEnvironment=\"HTTPS_PROXY=http://user:pass@127.0.0.1:7897\"\nExecStart=/old/no-mistakes daemon run\n"
+	if err := os.WriteFile(unitPath, []byte(stale), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
+		if name == "systemctl" && reflect.DeepEqual(args, []string{"--user", "daemon-reload"}) {
+			return nil, fmt.Errorf("daemon-reload failed")
+		}
+		return nil, nil
+	}
+	daemonHealthCheck = func(*paths.Paths) (bool, error) { return true, nil }
+
+	err := Start(p)
+	if err == nil {
+		t.Fatal("Start should return install failure")
+	}
+	data, readErr := os.ReadFile(unitPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(data) != stale {
+		t.Fatalf("unit file = %q, want stale credential definition restored", string(data))
+	}
+	info, statErr := os.Stat(unitPath)
+	if statErr != nil {
+		t.Fatal(statErr)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("restored unit mode = %o, want 0600 so forwarded proxy credentials are not world-readable", got)
+	}
+}
+
 func TestStartRestartsRestoredSystemdUnitWhenRefreshRestartFails(t *testing.T) {
 	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
 	if err := p.EnsureDirs(); err != nil {

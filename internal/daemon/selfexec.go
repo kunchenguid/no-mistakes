@@ -147,7 +147,7 @@ func reinstallManagedServiceIfChanged(p *paths.Paths) (bool, error) {
 	}
 	stoppedForRefresh := false
 	restoreOnFailure := func(cause error) (bool, error) {
-		if err := os.WriteFile(installPath, existing, restoreMode); err != nil {
+		if err := writeFileAtomic(installPath, existing, restoreMode); err != nil {
 			return false, fmt.Errorf("%w; restore managed service definition: %v", cause, err)
 		}
 		if err := reloadManagedServiceDefinition(p); err != nil {
