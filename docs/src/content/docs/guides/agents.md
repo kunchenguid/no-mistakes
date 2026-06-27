@@ -102,6 +102,12 @@ That is a successful agent stopping point: report that the PR is ready and ask t
 Successful outcomes also instruct the agent to summarize the run for the user.
 When the pipeline applied fixes, successful outcomes include a `fixes` table listing each fix so the agent can acknowledge what it missed and the user can review them.
 
+If that PR later falls behind the default branch or hits a merge conflict - commonly because another PR merged first - the agent runs no command and must never hand-rebase.
+The CI monitor stays live in the background after checks pass, and when it sees an actual conflict it rebases onto the base, resolves it, and re-pushes the branch itself, so no agent or user action is needed.
+A PR that is merely behind but still clean needs nothing either, since the platform merges it.
+The one exception is when that monitor is no longer running - the PR was closed, the run was aborted or superseded, it idle-timed-out, or its auto-fix attempts were exhausted - in which case the agent recovers with `no-mistakes rerun`, which cancels the stale monitor and re-runs the full pipeline including a deterministic rebase step.
+The agent must not use `no-mistakes axi run` to refresh a still-active PR: after `checks-passed` it reattaches to the running monitor with HEAD unchanged and returns the monitor output without rebasing.
+
 In task-first mode, if the repo is on the default branch, the skill tells the agent to create a feature branch before committing because the gate validates committed history on a non-default branch.
 The agent should inspect `git status` before changing or committing anything, preserve unrelated pre-existing uncommitted changes, and commit only the changes that belong to the user's task.
 

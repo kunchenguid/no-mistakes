@@ -476,7 +476,9 @@ func renderDriveResult(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool) error
 		}
 		fixes := rv.fixRows()
 		fields = appendFixesField(fields, fixes)
-		fields = append(fields, toon.Field{Key: "help", Value: append([]string{merge}, successReportHelp(fixes)...)})
+		help := append([]string{merge}, successReportHelp(fixes)...)
+		help = append(help, staleMonitorGuidance)
+		fields = append(fields, toon.Field{Key: "help", Value: help})
 		emitDoc(cmd, fields...)
 		return nil
 	}

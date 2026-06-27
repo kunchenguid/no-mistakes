@@ -171,6 +171,20 @@ The CI step deliberately keeps watching the PR after checks pass, so
 `axi run` returns `checks-passed` the moment checks are green rather than
 blocking on the human merge. Never poll or re-run waiting for the merge yourself.
 
+Because that monitor stays live, a PR that falls behind the default branch or
+hits a merge conflict after checks pass - commonly because another PR merged
+first - needs **no command from you**: never hand-rebase. When the CI monitor
+sees an actual conflict it **rebases onto the base, resolves it, and re-pushes
+the branch itself**; a PR that is merely behind but still clean needs nothing
+either, since the platform merges it. The one exception is when that monitor is
+no longer running - the PR was closed, the run was aborted or superseded, it
+idle-timed-out, or its auto-fix attempts were exhausted - in which case recover
+with `no-mistakes rerun`, which cancels the stale monitor and re-runs the full
+pipeline including a deterministic rebase step. Do **not** reach for
+`no-mistakes axi run` to refresh a still-active PR: after `checks-passed` it
+reattaches to the running monitor (HEAD unchanged) and returns its output
+without rebasing.
+
 On a successful outcome (`checks-passed` or `passed`), close the loop with the
 user: summarize what happened during the pipeline in a concise, easily readable
 format - what was validated and what was found. If the output includes a
