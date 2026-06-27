@@ -105,13 +105,13 @@ func renderSystemdUnitWithProxyEnv(exe string, p *paths.Paths, home string, prox
 		systemdEscapeArg(p.Root()),
 	}, " ")
 	envLines := []string{
-		"Environment=" + strconv.Quote("HOME="+home),
-		"Environment=" + strconv.Quote("PATH="+managedServicePath(home)),
+		systemdEnvironmentLine("HOME", home),
+		systemdEnvironmentLine("PATH", managedServicePath(home)),
 	}
 	// Forward proxy variables so the daemon (and the agents it spawns) can
 	// reach the network through the user's proxy. See serviceProxyEnv.
 	for _, kv := range proxyEnv {
-		envLines = append(envLines, "Environment="+strconv.Quote(kv[0]+"="+kv[1]))
+		envLines = append(envLines, systemdEnvironmentLine(kv[0], kv[1]))
 	}
 	return fmt.Sprintf(`[Unit]
 Description=no-mistakes background daemon
@@ -127,6 +127,17 @@ RestartSec=2
 [Install]
 WantedBy=default.target
 `, command, systemdEscapeArg(p.Root()), strings.Join(envLines, "\n"))
+}
+
+// systemdEnvironmentLine renders one `Environment=` directive. systemd runs
+// specifier expansion on directive values, so a literal `%` (e.g. a
+// percent-encoded character in a forwarded proxy credential like
+// http://user:p%40ss@proxy:8080) must be doubled to `%%` to survive it -
+// otherwise a known specifier letter corrupts the value and an unknown one
+// rejects the assignment on systemd >= v249. strconv.Quote never emits `%`, so
+// doubling first leaves the quoting unaffected.
+func systemdEnvironmentLine(key, value string) string {
+	return "Environment=" + strconv.Quote(strings.ReplaceAll(key+"="+value, "%", "%%"))
 }
 
 func systemdEscapeArg(arg string) string {

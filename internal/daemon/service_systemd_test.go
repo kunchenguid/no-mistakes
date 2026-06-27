@@ -283,6 +283,30 @@ func TestRenderSystemdUnitForwardsEveryProxyEnvKey(t *testing.T) {
 	}
 }
 
+// TestRenderSystemdUnitEscapesPercentInProxyEnv guards that percent signs in a
+// forwarded proxy value are doubled (% -> %%) so systemd's specifier expansion
+// (which runs on Environment= directive values) does not corrupt or reject
+// percent-encoded credentials. A proxy URL such as
+// http://user:p%40ss%3Aw0rd@proxy:8080 - the normal encoding for reserved
+// characters in a user/pass - would otherwise have %40/%3A treated as unit
+// specifiers (%4 is unknown and rejects the assignment on systemd >= v249,
+// silently corrupting the value on older releases). The launchd plist path is
+// XML and not subject to specifier expansion, so it is intentionally untouched.
+func TestRenderSystemdUnitEscapesPercentInProxyEnv(t *testing.T) {
+	proxyEnv := [][2]string{
+		{"HTTPS_PROXY", "http://user:p%40ss%3Aw0rd@proxy:8080"},
+	}
+
+	unit := renderSystemdUnitWithProxyEnv("/usr/local/bin/no-mistakes", paths.WithRoot(t.TempDir()), "/home/u", proxyEnv)
+	want := `Environment="HTTPS_PROXY=http://user:p%%40ss%%3Aw0rd@proxy:8080"`
+	if !strings.Contains(unit, want) {
+		t.Fatalf("systemd unit should double %% in proxy env so it survives specifier expansion, want %q, got:\n%s", want, unit)
+	}
+	if strings.Contains(unit, `Environment="HTTPS_PROXY=http://user:p%40ss%3Aw0rd@proxy:8080"`) {
+		t.Fatalf("systemd unit forwarded a single-%% proxy value that specifier expansion would corrupt, got:\n%s", unit)
+	}
+}
+
 func TestWriteServiceFileTightensModeWhenProxyPresent(t *testing.T) {
 	for _, key := range proxyEnvKeys {
 		t.Setenv(key, "")
