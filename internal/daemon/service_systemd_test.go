@@ -319,7 +319,7 @@ func TestWriteServiceFileTightensModeWhenProxyPresent(t *testing.T) {
 	render := func(proxyEnv [][2]string) string { return "content" }
 
 	// No proxy: the conventional 0644 is kept.
-	if err := writeServiceFile(path, render); err != nil {
+	if err := writeServiceFile(path, nil, render); err != nil {
 		t.Fatal(err)
 	}
 	if info, err := os.Stat(path); err != nil {
@@ -331,7 +331,7 @@ func TestWriteServiceFileTightensModeWhenProxyPresent(t *testing.T) {
 	// Proxy present: re-installing over the existing 0644 file must tighten it
 	// to owner-only 0600 so forwarded credentials are not world-readable.
 	t.Setenv("HTTPS_PROXY", "http://user:pass@127.0.0.1:7897")
-	if err := writeServiceFile(path, render); err != nil {
+	if err := writeServiceFile(path, nil, render); err != nil {
 		t.Fatal(err)
 	}
 	if info, err := os.Stat(path); err != nil {
@@ -360,7 +360,7 @@ func TestWriteServiceFileReplacesAtomicallyWhenProxyPresent(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "unit")
 
-	if err := writeServiceFile(path, func([][2]string) string { return "no-proxy" }); err != nil {
+	if err := writeServiceFile(path, nil, func([][2]string) string { return "no-proxy" }); err != nil {
 		t.Fatal(err)
 	}
 	before, err := os.Stat(path)
@@ -372,7 +372,7 @@ func TestWriteServiceFileReplacesAtomicallyWhenProxyPresent(t *testing.T) {
 	}
 
 	t.Setenv("HTTPS_PROXY", "http://user:pass@127.0.0.1:7897")
-	if err := writeServiceFile(path, func([][2]string) string { return "secret-proxy-content" }); err != nil {
+	if err := writeServiceFile(path, nil, func([][2]string) string { return "secret-proxy-content" }); err != nil {
 		t.Fatal(err)
 	}
 	after, err := os.Stat(path)

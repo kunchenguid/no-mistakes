@@ -106,6 +106,109 @@ func systemdUnitExecutable(data []byte) (string, bool) {
 	return "", false
 }
 
+// isProxyEnvKey reports whether key is one of the forwarded proxy variables in
+// proxyEnvKeys. The match is exact on case-sensitive platforms (macOS, Linux)
+// so HTTP_PROXY and http_proxy stay distinct; on Windows, where env-var names
+// are case-insensitive, it matches case-insensitively to mirror serviceProxyEnv.
+func isProxyEnvKey(key string) bool {
+	for _, k := range proxyEnvKeys {
+		if k == key || (runtimeGOOS == "windows" && strings.EqualFold(k, key)) {
+			return true
+		}
+	}
+	return false
+}
+
+// systemdUnitProxyEnv extracts the forwarded proxy `Environment=` entries from a
+// rendered systemd unit, mirroring systemdUnitExecutable. Entries are returned
+// in file order with systemd's `%` -> `%%` doubling undone, so feeding the
+// result back through renderSystemdUnitWithProxyEnv reproduces the unit
+// byte-for-byte. The fixed HOME/PATH Environment= lines are skipped. This lets
+// drift detection (and a reinstall) inherit a proxy already baked into the
+// on-disk unit when the current shell has no proxy variables exported, instead
+// of silently stripping it. See serviceProxyEnv.
+func systemdUnitProxyEnv(data []byte) [][2]string {
+	var out [][2]string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "Environment=") {
+			continue
+		}
+		assignment, err := strconv.Unquote(strings.TrimPrefix(line, "Environment="))
+		if err != nil {
+			continue
+		}
+		// Undo the %% -> % doubling systemdEnvironmentLine applied; keys never
+		// contain %, so undoing before the split is safe.
+		assignment = strings.ReplaceAll(assignment, "%%", "%")
+		key, value, ok := strings.Cut(assignment, "=")
+		if !ok || !isProxyEnvKey(key) {
+			continue
+		}
+		out = append(out, [2]string{key, value})
+	}
+	return out
+}
+
+// launchAgentProxyEnv extracts the forwarded proxy entries from the
+// EnvironmentVariables <dict> of a rendered launchd plist, mirroring
+// launchAgentExecutable. Pairs are returned in file order with XML escaping
+// undone by the decoder; the fixed HOME/PATH keys are skipped. Feeding the
+// result back through renderLaunchAgentWithProxyEnv reproduces the plist. See
+// serviceProxyEnv.
+func launchAgentProxyEnv(data []byte) [][2]string {
+	decoder := xml.NewDecoder(bytes.NewReader(data))
+	var out [][2]string
+	var sawEnvVarsKey bool // the most recent <key> was "EnvironmentVariables"
+	var inEnvDict bool     // currently inside the EnvironmentVariables <dict>
+	var pendingKey string
+	var havePendingKey bool
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			return out
+		}
+		switch t := token.(type) {
+		case xml.StartElement:
+			switch t.Name.Local {
+			case "key":
+				var key string
+				if err := decoder.DecodeElement(&key, &t); err != nil {
+					return out
+				}
+				key = strings.TrimSpace(key)
+				if inEnvDict {
+					pendingKey = key
+					havePendingKey = true
+				} else {
+					sawEnvVarsKey = key == "EnvironmentVariables"
+				}
+			case "dict":
+				if sawEnvVarsKey {
+					inEnvDict = true
+					sawEnvVarsKey = false
+				}
+			case "string":
+				if !inEnvDict || !havePendingKey {
+					continue
+				}
+				var value string
+				if err := decoder.DecodeElement(&value, &t); err != nil {
+					return out
+				}
+				if isProxyEnvKey(pendingKey) {
+					out = append(out, [2]string{pendingKey, value})
+				}
+				havePendingKey = false
+			}
+		case xml.EndElement:
+			if inEnvDict && t.Name.Local == "dict" {
+				return out
+			}
+		}
+	}
+}
+
 func firstCommandArg(command string) (string, bool) {
 	if command == "" {
 		return "", false

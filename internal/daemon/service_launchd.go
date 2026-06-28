@@ -39,7 +39,7 @@ func installLaunchAgent(p *paths.Paths, exe string) error {
 	render := func(proxyEnv [][2]string) string {
 		return renderLaunchAgentWithProxyEnv(exe, p, home, proxyEnv)
 	}
-	if err := writeServiceFile(path, render); err != nil {
+	if err := writeServiceFile(path, launchAgentProxyEnv, render); err != nil {
 		return fmt.Errorf("write launch agent: %w", err)
 	}
 	cleanupLegacyLaunchAgent(p)

@@ -111,14 +111,27 @@ func serviceProxyEnv() [][2]string {
 // bake proxy credentials into the content yet have it written under the
 // world-readable 0644 mode.
 //
+// When the current environment has no proxy variables set but a proxy was
+// already baked into the existing on-disk definition, the proxy is inherited
+// from that file via parseExistingProxyEnv rather than stripped. This mirrors
+// how reinstallManagedServiceIfChanged inherits the existing executable, and
+// keeps an env-less reinstall (e.g. a binary upgrade) from dropping the proxy
+// the daemon relies on. parseExistingProxyEnv may be nil for callers that never
+// forward a proxy.
+//
 // When proxy values are present the content is written to a sibling temp file
 // created at 0600 and atomically renamed over the target, so credential-bearing
 // content is owner-only from the instant it first exists on disk. A plain
 // os.WriteFile only applies its mode on create, so re-installing over a
 // pre-existing 0644 file (the no-proxy -> proxy transition) would leave the
 // credentials world-readable until a follow-up Chmod tightened the mode.
-func writeServiceFile(path string, render func(proxyEnv [][2]string) string) error {
+func writeServiceFile(path string, parseExistingProxyEnv func([]byte) [][2]string, render func(proxyEnv [][2]string) string) error {
 	proxyEnv := serviceProxyEnv()
+	if len(proxyEnv) == 0 && parseExistingProxyEnv != nil {
+		if existing, err := os.ReadFile(path); err == nil {
+			proxyEnv = parseExistingProxyEnv(existing)
+		}
+	}
 	content := []byte(render(proxyEnv))
 	if len(proxyEnv) == 0 {
 		mode := os.FileMode(0o644)

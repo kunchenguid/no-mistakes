@@ -25,7 +25,7 @@ func installSystemdUserService(p *paths.Paths, exe string) error {
 	render := func(proxyEnv [][2]string) string {
 		return renderSystemdUnitWithProxyEnv(exe, p, home, proxyEnv)
 	}
-	if err := writeServiceFile(path, render); err != nil {
+	if err := writeServiceFile(path, systemdUnitProxyEnv, render); err != nil {
 		return fmt.Errorf("write systemd unit: %w", err)
 	}
 	if _, err := serviceCommandRunner("systemctl", "--user", "daemon-reload"); err != nil {
