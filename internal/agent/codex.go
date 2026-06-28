@@ -82,8 +82,7 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 	var lastMessage string
 	var codexErr string
 	if err := parseCodexEvents(ctx, started.stdout, opts.OnChunk, &usage, &lastMessage, &codexErr); err != nil {
-		started.terminate()
-		_ = started.wait()
+		err = started.waitAfterParseError(err)
 		stderrWG.Wait()
 		return nil, fmt.Errorf("codex parse events: %w", err)
 	}

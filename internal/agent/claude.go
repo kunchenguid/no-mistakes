@@ -63,8 +63,7 @@ func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 	var usage TokenUsage
 	var result *claudeResult
 	if err := parseClaudeEvents(ctx, started.stdout, opts.OnChunk, &usage, &result); err != nil {
-		started.terminate()
-		_ = started.wait()
+		err = started.waitAfterParseError(err)
 		stderrWG.Wait()
 		return nil, fmt.Errorf("claude parse events: %w", err)
 	}

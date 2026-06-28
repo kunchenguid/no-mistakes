@@ -65,8 +65,7 @@ func (a *piAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 
 	pp := &piParser{onChunk: opts.OnChunk}
 	if err := pp.parse(ctx, started.stdout); err != nil {
-		started.terminate()
-		_ = started.wait()
+		err = started.waitAfterParseError(err)
 		stderrWG.Wait()
 		return nil, fmt.Errorf("pi parse events: %w", err)
 	}

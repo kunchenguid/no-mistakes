@@ -4,14 +4,104 @@ package agent
 
 import (
 	"context"
+	"errors"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
+
+const nativeAgentEscapedPipeHelperEnv = "NM_AGENT_NATIVE_PIPE_HELPER"
+
+func TestNativeAgentCommand_WaitDelayClosesEscapedPipeHolder(t *testing.T) {
+	dir := t.TempDir()
+	readyFile := filepath.Join(dir, "ready")
+	pidFile := filepath.Join(dir, "escaped.pid")
+	cmd := exec.CommandContext(context.Background(), os.Args[0], "-test.run=^TestNativeAgentEscapedPipeHelper$")
+	cmd.Env = append(os.Environ(),
+		nativeAgentEscapedPipeHelperEnv+"=leader",
+		"NM_AGENT_NATIVE_PIPE_READY="+readyFile,
+		"NM_AGENT_NATIVE_PIPE_PID="+pidFile,
+	)
+	shellenv.ConfigureShellCommand(cmd)
+	cmd.WaitDelay = 100 * time.Millisecond
+
+	started, err := startNativeAgentCommand(cmd)
+	if err != nil {
+		t.Fatalf("startNativeAgentCommand: %v", err)
+	}
+	defer started.closePipes()
+
+	type readResult struct {
+		output string
+		err    error
+	}
+	readCh := make(chan readResult, 1)
+	go func() {
+		out, err := io.ReadAll(started.stdout)
+		readCh <- readResult{output: string(out), err: err}
+	}()
+
+	var rr readResult
+	select {
+	case rr = <-readCh:
+	case <-time.After(2 * time.Second):
+		started.closePipes()
+		started.terminate()
+		if b, err := os.ReadFile(pidFile); err == nil {
+			if pid, convErr := strconv.Atoi(strings.TrimSpace(string(b))); convErr == nil {
+				_ = syscall.Kill(pid, syscall.SIGKILL)
+			}
+		}
+		t.Fatal("stdout reader stayed blocked after the leader exited with an escaped pipe holder")
+	}
+
+	escapedPID := waitForPidFile(t, pidFile, 5*time.Second)
+	t.Cleanup(func() {
+		_ = syscall.Kill(escapedPID, syscall.SIGKILL)
+	})
+	if !strings.Contains(rr.output, "leader done\n") {
+		t.Fatalf("stdout output = %q, want leader output", rr.output)
+	}
+	if rr.err == nil {
+		t.Fatalf("stdout read error = nil, want closed-pipe error")
+	}
+	if err := started.wait(); !errors.Is(err, exec.ErrWaitDelay) {
+		t.Fatalf("wait error = %v, want %v", err, exec.ErrWaitDelay)
+	}
+}
+
+func TestNativeAgentEscapedPipeHelper(t *testing.T) {
+	switch os.Getenv(nativeAgentEscapedPipeHelperEnv) {
+	case "leader":
+		child := exec.Command(os.Args[0], "-test.run=^TestNativeAgentEscapedPipeHelper$")
+		child.Env = append(os.Environ(), nativeAgentEscapedPipeHelperEnv+"=escaped",
+			"NM_AGENT_NATIVE_PIPE_READY="+os.Getenv("NM_AGENT_NATIVE_PIPE_READY"))
+		child.Stdout = os.Stdout
+		child.Stderr = os.Stderr
+		if err := child.Start(); err != nil {
+			os.Exit(2)
+		}
+		_ = os.WriteFile(os.Getenv("NM_AGENT_NATIVE_PIPE_PID"), []byte(strconv.Itoa(child.Process.Pid)), 0o644)
+		if !waitForNativeAgentPipeHelperReady(os.Getenv("NM_AGENT_NATIVE_PIPE_READY"), 5*time.Second) {
+			os.Exit(3)
+		}
+		_, _ = os.Stdout.WriteString("leader done\nescaped pid " + strconv.Itoa(child.Process.Pid) + "\n")
+		os.Exit(0)
+	case "escaped":
+		_, _ = syscall.Setsid()
+		_ = os.WriteFile(os.Getenv("NM_AGENT_NATIVE_PIPE_READY"), []byte("ready"), 0o644)
+		time.Sleep(30 * time.Second)
+		os.Exit(0)
+	}
+}
 
 // TestCodexAgent_Run_ReapsLeakedGrandchildOnCleanExit is the regression test for
 // the daemon-crash bug behind the agent-spawning test step.
@@ -147,4 +237,15 @@ func pidGoneWithin(pid int, window time.Duration) bool {
 		time.Sleep(50 * time.Millisecond)
 	}
 	return syscall.Kill(pid, 0) == syscall.ESRCH
+}
+
+func waitForNativeAgentPipeHelperReady(path string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
 }

@@ -60,8 +60,7 @@ func (a *copilotAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, erro
 	var copilotErr string
 	exitCode := 0
 	if err := parseCopilotEvents(ctx, started.stdout, opts.OnChunk, &usage, &messages, &copilotErr, &exitCode); err != nil {
-		started.terminate()
-		_ = started.wait()
+		err = started.waitAfterParseError(err)
 		stderrWG.Wait()
 		return nil, fmt.Errorf("copilot parse events: %w", err)
 	}

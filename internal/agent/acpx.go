@@ -54,8 +54,7 @@ func (a *acpxAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) 
 	var usage TokenUsage
 	text, stdoutErr, err := parseAcpxJSONEvents(ctx, started.stdout, opts.OnChunk, &usage)
 	if err != nil {
-		started.terminate()
-		_ = started.wait()
+		err = started.waitAfterParseError(err)
 		stderrWG.Wait()
 		return nil, fmt.Errorf("acpx parse events: %w", err)
 	}
