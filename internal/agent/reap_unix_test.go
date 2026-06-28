@@ -64,6 +64,61 @@ exit 0
 	}
 }
 
+func TestCodexAgent_Run_ReapsGrandchildHoldingStdoutPipeOnLeaderExit(t *testing.T) {
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "grandchild.pid")
+	bin := writeFakeCodex(t, dir, `#!/bin/sh
+	( sleep 120 ) &
+	echo $! > "`+pidFile+`"
+	printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"ok\":true}"}}'
+	exit 0
+	`, "")
+
+	ca := &codexAgent{bin: bin}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	type runResult struct {
+		result *Result
+		err    error
+	}
+	done := make(chan runResult, 1)
+	go func() {
+		result, err := ca.Run(ctx, RunOpts{Prompt: "run the tests", CWD: t.TempDir()})
+		done <- runResult{result: result, err: err}
+	}()
+
+	var rr runResult
+	select {
+	case rr = <-done:
+	case <-time.After(1500 * time.Millisecond):
+		cancel()
+		if b, err := os.ReadFile(pidFile); err == nil {
+			if pid, convErr := strconv.Atoi(strings.TrimSpace(string(b))); convErr == nil {
+				_ = syscall.Kill(pid, syscall.SIGKILL)
+			}
+		}
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+		}
+		t.Fatal("agent run did not return after its leader exited while a grandchild held stdout open")
+	}
+
+	if rr.err != nil {
+		t.Fatalf("Run returned error: %v", rr.err)
+	}
+	if rr.result.Text != `{"ok":true}` {
+		t.Fatalf("unexpected agent text: %q", rr.result.Text)
+	}
+
+	grandchild := waitForPidFile(t, pidFile, 5*time.Second)
+	if !pidGoneWithin(grandchild, 5*time.Second) {
+		_ = syscall.Kill(grandchild, syscall.SIGKILL)
+		t.Fatalf("grandchild pid %d still alive after leader exit with inherited stdout", grandchild)
+	}
+}
+
 func waitForPidFile(t *testing.T, path string, timeout time.Duration) int {
 	t.Helper()
 	deadline := time.Now().Add(timeout)

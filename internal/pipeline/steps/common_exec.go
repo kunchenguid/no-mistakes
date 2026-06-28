@@ -247,22 +247,12 @@ func runShellCommandWithEnv(ctx context.Context, dir string, env []string, cmdSt
 	} else {
 		cmd = exec.CommandContext(ctx, "sh", "-c", cmdStr)
 	}
-	// Isolate the command in its own process group so that cancelling ctx kills
-	// the whole tree (e.g. npm -> node test workers), not just the shell parent.
-	// Otherwise grandchildren survive, keep running, and hold the worktree locked.
 	shellenv.ConfigureShellCommand(cmd)
-	// Reap the group once CombinedOutput's internal Wait has returned, covering
-	// the success and failure paths cmd.Cancel never reaches. A configured test
-	// command (e.g. "npm test") whose worker pool outlives the shell would
-	// otherwise leak it every run; those orphans pile up until the host OOMs and
-	// the OS SIGKILLs the daemon. The kill is a no-op when nothing survived, so
-	// a well-behaved command is unaffected.
-	defer shellenv.TerminateShellCommandGroup(cmd)
 	cmd.Dir = dir
 	if len(env) > 0 {
 		cmd.Env = mergeEnv(env)
 	}
-	out, err := cmd.CombinedOutput()
+	out, err := shellenv.CombinedOutputShellCommand(cmd)
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
 			return string(out), ee.ExitCode(), nil

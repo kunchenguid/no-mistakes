@@ -52,6 +52,10 @@ func ConfigureShellCommand(cmd *exec.Cmd) {
 	}
 }
 
+func StartShellCommand(cmd *exec.Cmd) error {
+	return cmd.Start()
+}
+
 // TerminateShellCommandGroup SIGKILLs the whole process group led by a command
 // configured with ConfigureShellCommand. It is the success/failure-path
 // counterpart to cmd.Cancel: callers defer it right after a successful Start so

@@ -323,7 +323,7 @@ func defaultShellCommandOutput(name string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	ConfigureShellCommand(cmd)
 	cmd.WaitDelay = 100 * time.Millisecond
-	return cmd.Output()
+	return OutputShellCommand(cmd)
 }
 
 func resetForTests() {

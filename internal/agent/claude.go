@@ -44,50 +44,35 @@ func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 	cmd.Dir = opts.CWD
 	cmd.Stdin = nil
 	cmd.Env = gitSafeEnv(opts.CWD)
-	// Run in a dedicated process group so cancelling ctx kills the claude CLI
-	// and any subprocesses it spawns (git, build tools, editors), not just the
-	// direct child. Otherwise they survive and hold the worktree locked.
 	shellenv.ConfigureShellCommand(cmd)
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, fmt.Errorf("claude stdout pipe: %w", err)
-	}
 
 	var stderrBuf []byte
 	var stderrWG sync.WaitGroup
-	stderrR, err := cmd.StderrPipe()
+	started, err := startNativeAgentCommand(cmd)
 	if err != nil {
-		return nil, fmt.Errorf("claude stderr pipe: %w", err)
-	}
-
-	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("claude start: %w", err)
 	}
-	// Reap the whole process group however this returns - clean exit, parse
-	// error, or wait error - not just on cancellation (cmd.Cancel). A test
-	// runner's worker pool claude spawned can outlive it; left unreaped those
-	// orphans accumulate across runs until the host OOMs and the OS SIGKILLs
-	// the daemon ("daemon crashed during execution").
-	defer shellenv.TerminateShellCommandGroup(cmd)
+	defer started.closePipes()
 
 	stderrWG.Add(1)
 	go func() {
 		defer stderrWG.Done()
-		stderrBuf, _ = io.ReadAll(stderrR)
+		stderrBuf, _ = io.ReadAll(started.stderr)
 	}()
 
 	var usage TokenUsage
 	var result *claudeResult
-	if err := parseClaudeEvents(ctx, stdout, opts.OnChunk, &usage, &result); err != nil {
+	if err := parseClaudeEvents(ctx, started.stdout, opts.OnChunk, &usage, &result); err != nil {
+		started.terminate()
+		_ = started.wait()
 		stderrWG.Wait()
-		_ = cmd.Wait()
 		return nil, fmt.Errorf("claude parse events: %w", err)
 	}
 
+	waitErr := started.wait()
 	stderrWG.Wait()
-	if err := cmd.Wait(); err != nil {
-		return nil, fmt.Errorf("claude exited: %w: %s", err, string(stderrBuf))
+	if waitErr != nil {
+		return nil, fmt.Errorf("claude exited: %w: %s", waitErr, string(stderrBuf))
 	}
 
 	if result == nil {

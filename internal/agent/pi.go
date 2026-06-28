@@ -36,32 +36,18 @@ func (a *piAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 	cmd := exec.CommandContext(ctx, a.bin, args...)
 	cmd.Dir = opts.CWD
 	cmd.Env = gitSafeEnv(opts.CWD)
-	// Run in a dedicated process group so cancelling ctx reaps the pi CLI and
-	// any subprocesses it spawns, not just the direct child.
 	shellenv.ConfigureShellCommand(cmd)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, fmt.Errorf("pi stdin pipe: %w", err)
 	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, fmt.Errorf("pi stdout pipe: %w", err)
-	}
-	stderrR, err := cmd.StderrPipe()
-	if err != nil {
-		return nil, fmt.Errorf("pi stderr pipe: %w", err)
-	}
 
-	if err := cmd.Start(); err != nil {
+	started, err := startNativeAgentCommand(cmd)
+	if err != nil {
 		return nil, fmt.Errorf("pi start: %w", err)
 	}
-	// Reap the whole process group however this returns - clean exit, parse
-	// error, or wait error - not just on cancellation (cmd.Cancel). A test
-	// runner's worker pool pi spawned can outlive it; left unreaped those
-	// orphans accumulate across runs until the host OOMs and the OS SIGKILLs
-	// the daemon ("daemon crashed during execution").
-	defer shellenv.TerminateShellCommandGroup(cmd)
+	defer started.closePipes()
 
 	prompt := buildPiPrompt(opts.Prompt, opts.JSONSchema)
 	go func() {
@@ -74,23 +60,25 @@ func (a *piAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 	stderrWG.Add(1)
 	go func() {
 		defer stderrWG.Done()
-		stderrBuf, _ = io.ReadAll(stderrR)
+		stderrBuf, _ = io.ReadAll(started.stderr)
 	}()
 
 	pp := &piParser{onChunk: opts.OnChunk}
-	if err := pp.parse(ctx, stdout); err != nil {
+	if err := pp.parse(ctx, started.stdout); err != nil {
+		started.terminate()
+		_ = started.wait()
 		stderrWG.Wait()
-		_ = cmd.Wait()
 		return nil, fmt.Errorf("pi parse events: %w", err)
 	}
 
+	waitErr := started.wait()
 	stderrWG.Wait()
-	if err := cmd.Wait(); err != nil {
+	if waitErr != nil {
 		stderr := strings.TrimSpace(string(stderrBuf))
 		if stderr != "" {
-			return nil, fmt.Errorf("pi exited: %w: %s", err, stderr)
+			return nil, fmt.Errorf("pi exited: %w: %s", waitErr, stderr)
 		}
-		return nil, fmt.Errorf("pi exited: %w", err)
+		return nil, fmt.Errorf("pi exited: %w", waitErr)
 	}
 
 	if pp.assistantError != "" {
