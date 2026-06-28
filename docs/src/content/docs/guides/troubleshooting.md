@@ -200,7 +200,8 @@ Check the [Provider Integration](/no-mistakes/guides/provider-integration/) requ
 Symptom: CI step keeps monitoring an open PR longer than expected, or pauses after the idle timeout.
 
 `ci_timeout` defaults to `168h` (7 days) and is an idle timeout.
-It re-arms whenever the upstream default branch advances, so an active long-lived PR keeps being watched and rebased.
+It re-arms whenever the upstream default branch advances, so an active long-lived PR keeps being watched.
+If the provider later reports an actual GitHub or GitLab merge conflict, the CI auto-fix path rebases and re-pushes the branch; a clean behind PR needs no command.
 Set it in `~/.no-mistakes/config.yaml` to choose a different idle window:
 
 ```yaml

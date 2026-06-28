@@ -69,7 +69,7 @@ For PR and workflow-run commands, no-mistakes passes the repository slug from th
 - PR creation and update on pushes
 - CI check polling with exponential backoff (30s → 60s → 120s) until the PR is merged, closed, or the configured `ci_timeout` idle window elapses
 - Failed job log fetching (`gh run view --log-failed`) for the CI auto-fix step
-- PR mergeability polling, and agent-driven merge-conflict resolution when the branch falls behind
+- PR mergeability polling, and agent-driven resolution when the provider reports an actual merge conflict
 
 ### GitHub fork contributions
 

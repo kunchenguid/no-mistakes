@@ -1,0 +1,55 @@
+internal/cli/axi_guidance.go-1-package cli
+internal/cli/axi_guidance.go-2-
+internal/cli/axi_guidance.go-3-// staleMonitorGuidance is the canonical, point-of-use guidance an agent reads
+internal/cli/axi_guidance.go-4-// when `axi run` returns `checks-passed`: what to do if that PR later falls
+internal/cli/axi_guidance.go-5-// behind the default branch or hits a merge conflict (commonly because another
+internal/cli/axi_guidance.go-6-// PR merged first). The live CI monitor keeps running after checks pass and
+internal/cli/axi_guidance.go:7:// auto-rebases onto the base, resolves the conflict, and re-pushes the branch
+internal/cli/axi_guidance.go:8:// itself, so the agent runs no command and never hand-rebases. `no-mistakes
+internal/cli/axi_guidance.go-9-// rerun` is only the recovery for a monitor that is no longer running.
+internal/cli/axi_guidance.go-10-//
+internal/cli/axi_guidance.go-11-// This same guidance is mirrored in the skill body (internal/skill/skill.go)
+internal/cli/axi_guidance.go-12-// and the published agents guide (docs/.../guides/agents.md); the repo treats
+internal/cli/axi_guidance.go-13-// agent-driving guidance as a multi-surface contract, and
+internal/cli/axi_guidance.go-14-// TestStaleMonitorGuidance_SyncedAcrossSurfaces keeps the three in sync.
+internal/cli/axi_guidance.go:15:const staleMonitorGuidance = "If this PR later falls behind the default branch or hits a merge conflict, the CI monitor rebases onto the base, resolves it, and re-pushes the branch automatically - run no command and never hand-rebase. Only when that monitor is no longer running (PR closed, run aborted, idle-timeout, or auto-fix exhausted) recover with `no-mistakes rerun`."
+--
+docs/src/content/docs/guides/agents.md-99-The skill drives `no-mistakes axi`, a non-interactive command surface that prints TOON to stdout and progress to stderr.
+docs/src/content/docs/guides/agents.md-100-When CI is green but the PR is still open, `axi run` and `axi respond` return `outcome: checks-passed` with a help line pointing at the PR instead of waiting for a human merge.
+docs/src/content/docs/guides/agents.md-101-That is a successful agent stopping point: report that the PR is ready and ask the user to review and merge it.
+docs/src/content/docs/guides/agents.md-102-Successful outcomes also instruct the agent to summarize the run for the user.
+docs/src/content/docs/guides/agents.md-103-When the pipeline applied fixes, successful outcomes include a `fixes` table listing each fix so the agent can acknowledge what it missed and the user can review them.
+docs/src/content/docs/guides/agents.md-104-
+docs/src/content/docs/guides/agents.md:105:If that PR later falls behind the default branch or hits a merge conflict - commonly because another PR merged first - the agent runs no command and must never hand-rebase.
+docs/src/content/docs/guides/agents.md:106:The CI monitor stays live in the background after checks pass, and when it sees an actual conflict it rebases onto the base, resolves it, and re-pushes the branch itself, so no agent or user action is needed.
+docs/src/content/docs/guides/agents.md-107-A PR that is merely behind but still clean needs nothing either, since the platform merges it.
+docs/src/content/docs/guides/agents.md-108-The one exception is when that monitor is no longer running - the PR was closed, the run was aborted or superseded, it idle-timed-out, or its auto-fix attempts were exhausted - in which case the agent recovers with `no-mistakes rerun`, which cancels the stale monitor and re-runs the full pipeline including a deterministic rebase step.
+docs/src/content/docs/guides/agents.md:109:The agent must not use `no-mistakes axi run` to refresh a still-active PR: after `checks-passed` it reattaches to the running monitor with HEAD unchanged and returns the monitor output without rebasing.
+docs/src/content/docs/guides/agents.md-110-
+docs/src/content/docs/guides/agents.md-111-In task-first mode, if the repo is on the default branch, the skill tells the agent to create a feature branch before committing because the gate validates committed history on a non-default branch.
+docs/src/content/docs/guides/agents.md-112-The agent should inspect `git status` before changing or committing anything, preserve unrelated pre-existing uncommitted changes, and commit only the changes that belong to the user's task.
+docs/src/content/docs/guides/agents.md-113-
+docs/src/content/docs/guides/agents.md-114-Agents can also call `no-mistakes axi` directly:
+docs/src/content/docs/guides/agents.md-115-
+--
+skills/no-mistakes/SKILL.md-170-The CI step deliberately keeps watching the PR after checks pass, so
+skills/no-mistakes/SKILL.md-171-`axi run` returns `checks-passed` the moment checks are green rather than
+skills/no-mistakes/SKILL.md-172-blocking on the human merge. Never poll or re-run waiting for the merge yourself.
+skills/no-mistakes/SKILL.md-173-
+skills/no-mistakes/SKILL.md-174-Because that monitor stays live, a PR that falls behind the default branch or
+skills/no-mistakes/SKILL.md-175-hits a merge conflict after checks pass - commonly because another PR merged
+skills/no-mistakes/SKILL.md:176:first - needs **no command from you**: never hand-rebase. When the CI monitor
+skills/no-mistakes/SKILL.md:177:sees an actual conflict it **rebases onto the base, resolves it, and re-pushes
+skills/no-mistakes/SKILL.md-178-the branch itself**; a PR that is merely behind but still clean needs nothing
+skills/no-mistakes/SKILL.md-179-either, since the platform merges it. The one exception is when that monitor is
+skills/no-mistakes/SKILL.md-180-no longer running - the PR was closed, the run was aborted or superseded, it
+skills/no-mistakes/SKILL.md-181-idle-timed-out, or its auto-fix attempts were exhausted - in which case recover
+skills/no-mistakes/SKILL.md-182-with `no-mistakes rerun`, which cancels the stale monitor and re-runs the full
+skills/no-mistakes/SKILL.md-183-pipeline including a deterministic rebase step. Do **not** reach for
+skills/no-mistakes/SKILL.md:184:`no-mistakes axi run` to refresh a still-active PR: after `checks-passed` it
+skills/no-mistakes/SKILL.md-185-reattaches to the running monitor (HEAD unchanged) and returns its output
+skills/no-mistakes/SKILL.md-186-without rebasing.
+skills/no-mistakes/SKILL.md-187-
+skills/no-mistakes/SKILL.md-188-On a successful outcome (`checks-passed` or `passed`), close the loop with the
+skills/no-mistakes/SKILL.md-189-user: summarize what happened during the pipeline in a concise, easily readable
+skills/no-mistakes/SKILL.md-190-format - what was validated and what was found. If the output includes a

@@ -1,0 +1,16 @@
+=== RUN   TestEvidenceChecksPassedGuidanceOutput
+    axi_guidance_evidence_test.go:32: rendered checks-passed AXI output:
+        run:
+          id: run-1
+          branch: feature/x
+          status: running
+          head: abcdef12
+          pr: "https://github.com/user/repo/pull/42"
+          findings: none
+          steps[1]{step,status,findings,duration_ms}:
+            ci,running,0,0
+        outcome: checks-passed
+        help[3]: "CI checks passed - the PR is ready. Ask the user to review and merge it: https://github.com/user/repo/pull/42","Summarize this pipeline run for the user in a concise, easily readable format: what was validated and what was found.","If this PR later falls behind the default branch or hits a merge conflict, the CI monitor rebases onto the base, resolves it, and re-pushes the branch automatically - run no command and never hand-rebase. Only when that monitor is no longer running (PR closed, run aborted, idle-timeout, or auto-fix exhausted) recover with `no-mistakes rerun`."
+--- PASS: TestEvidenceChecksPassedGuidanceOutput (0.00s)
+PASS
+ok  	github.com/kunchenguid/no-mistakes/internal/cli	0.291s
