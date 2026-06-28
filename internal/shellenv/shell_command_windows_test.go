@@ -3,6 +3,7 @@
 package shellenv
 
 import (
+	"context"
 	"errors"
 	"os/exec"
 	"strconv"
@@ -48,7 +49,7 @@ func TestStartShellCommandFailsWhenJobSetupFails(t *testing.T) {
 		newShellCommandJobFunc = oldNewJob
 	})
 
-	cmd := exec.Command("cmd", "/c", "exit", "0")
+	cmd := exec.CommandContext(context.Background(), "cmd", "/c", "exit", "0")
 	ConfigureShellCommand(cmd)
 	if _, ok := shellCommandJob(cmd); ok {
 		t.Fatal("expected no job state when job setup fails")
@@ -72,7 +73,7 @@ func TestStartShellCommandFailsWhenJobAssignmentFails(t *testing.T) {
 		assignShellCommandJobFunc = oldAssign
 	})
 
-	cmd := exec.Command("cmd", "/c", "exit", "0")
+	cmd := exec.CommandContext(context.Background(), "cmd", "/c", "exit", "0")
 	ConfigureShellCommand(cmd)
 	if _, ok := shellCommandJob(cmd); !ok {
 		t.Skip("job object setup unavailable")
