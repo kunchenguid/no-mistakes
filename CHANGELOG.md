@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.32.1](https://github.com/kunchenguid/no-mistakes/compare/v1.32.0...v1.32.1) (2026-06-28)
+
+
+### Bug Fixes
+
+* **cli:** clarify stale CI monitor guidance ([#352](https://github.com/kunchenguid/no-mistakes/issues/352)) ([87b2abf](https://github.com/kunchenguid/no-mistakes/commit/87b2abf78888d8af738903415f5f4b58e61e2396))
+
 ## [1.32.0](https://github.com/kunchenguid/no-mistakes/compare/v1.31.2...v1.32.0) (2026-06-27)
 
 
