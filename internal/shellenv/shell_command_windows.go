@@ -17,8 +17,8 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// createNewProcessGroup gives taskkill a fallback tree root when job setup is
-// unavailable.
+// createNewProcessGroup keeps cancellation fallback paths isolated from the
+// parent console process group.
 const createNewProcessGroup = 0x00000200
 
 // taskkillExitNoSuchProcess is the nonzero exit code taskkill returns when no
@@ -37,13 +37,15 @@ type shellCommandJobState struct {
 }
 
 var shellCommandJobs sync.Map
+var shellCommandJobSetupErrors sync.Map
 
+var newShellCommandJobFunc = newShellCommandJob
 var assignShellCommandJobFunc = assignShellCommandJob
 var resumeProcessThreadsFunc = resumeProcessThreads
 
 // ConfigureShellCommand prepares a Windows command for whole-tree cleanup on
 // cancellation and normal exit. StartShellCommand assigns a kill-on-close job
-// when available; taskkill remains the fallback.
+// and fails if that guarantee is unavailable.
 //
 // Use RunShellCommand, OutputShellCommand, or CombinedOutputShellCommand for
 // one-shot commands, or use StartShellCommand and defer
@@ -56,9 +58,11 @@ func ConfigureShellCommand(cmd *exec.Cmd) {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}
 	cmd.SysProcAttr.CreationFlags |= createNewProcessGroup
-	if job, err := newShellCommandJob(); err == nil {
+	if job, err := newShellCommandJobFunc(); err == nil {
 		shellCommandJobs.Store(cmd, &shellCommandJobState{handle: job})
 		cmd.SysProcAttr.CreationFlags |= windows.CREATE_SUSPENDED
+	} else {
+		shellCommandJobSetupErrors.Store(cmd, err)
 	}
 
 	// Install a WaitDelay backstop unless the caller has chosen one
@@ -100,9 +104,12 @@ func ConfigureShellCommand(cmd *exec.Cmd) {
 }
 
 // StartShellCommand starts cmd and assigns it to the job object created by
-// ConfigureShellCommand when job setup is available. If job assignment fails,
-// the process is resumed and taskkill remains the cleanup fallback.
+// ConfigureShellCommand. If the job cannot be created or assigned, the command
+// fails instead of running without clean-exit descendant cleanup.
 func StartShellCommand(cmd *exec.Cmd) error {
+	if err, ok := takeShellCommandJobSetupError(cmd); ok {
+		return fmt.Errorf("windows job object setup: %w", err)
+	}
 	if err := cmd.Start(); err != nil {
 		closeShellCommandJob(cmd)
 		return err
@@ -112,11 +119,7 @@ func StartShellCommand(cmd *exec.Cmd) error {
 		return nil
 	}
 	if err := assignShellCommandJobFunc(job.handle, uint32(cmd.Process.Pid)); err != nil {
-		closeShellCommandJob(cmd)
-		if resumeErr := resumeProcessThreadsFunc(uint32(cmd.Process.Pid)); resumeErr != nil {
-			return failStartedShellCommand(cmd, fmt.Errorf("%w; resume process after job assignment failure: %v", err, resumeErr))
-		}
-		return nil
+		return failStartedShellCommand(cmd, fmt.Errorf("assign process to job object: %w", err))
 	}
 	job.assigned.Store(true)
 	if err := resumeProcessThreadsFunc(uint32(cmd.Process.Pid)); err != nil {
@@ -125,10 +128,10 @@ func StartShellCommand(cmd *exec.Cmd) error {
 	return nil
 }
 
-// TerminateShellCommandGroup terminates the Windows job object for cmd or falls
-// back to taskkill. Callers defer it after a successful StartShellCommand so
-// clean exits and ordinary errors get the same process-tree cleanup as context
-// cancellation. A nil or never-started command is a no-op.
+// TerminateShellCommandGroup terminates the Windows job object for cmd. Callers
+// defer it after a successful StartShellCommand so clean exits and ordinary
+// errors get the same process-tree cleanup as context cancellation. A nil or
+// never-started command is a no-op.
 func TerminateShellCommandGroup(cmd *exec.Cmd) {
 	if cmd == nil || cmd.Process == nil {
 		return
@@ -170,6 +173,18 @@ func shellCommandJob(cmd *exec.Cmd) (*shellCommandJobState, bool) {
 	}
 	job, ok := value.(*shellCommandJobState)
 	return job, ok
+}
+
+func takeShellCommandJobSetupError(cmd *exec.Cmd) (error, bool) {
+	if cmd == nil {
+		return nil, false
+	}
+	value, ok := shellCommandJobSetupErrors.LoadAndDelete(cmd)
+	if !ok {
+		return nil, false
+	}
+	err, ok := value.(error)
+	return err, ok
 }
 
 func closeShellCommandJob(cmd *exec.Cmd) bool {

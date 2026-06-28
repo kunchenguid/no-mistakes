@@ -38,21 +38,38 @@ func TestIsTaskkillAlreadyGone(t *testing.T) {
 	}
 }
 
-func TestStartShellCommandFallsBackWhenJobAssignmentFails(t *testing.T) {
+func TestStartShellCommandFailsWhenJobSetupFails(t *testing.T) {
+	setupErr := errors.New("job setup denied")
+	oldNewJob := newShellCommandJobFunc
+	newShellCommandJobFunc = func() (windows.Handle, error) {
+		return 0, setupErr
+	}
+	t.Cleanup(func() {
+		newShellCommandJobFunc = oldNewJob
+	})
+
+	cmd := exec.Command("cmd", "/c", "exit", "0")
+	ConfigureShellCommand(cmd)
+	if _, ok := shellCommandJob(cmd); ok {
+		t.Fatal("expected no job state when job setup fails")
+	}
+	err := StartShellCommand(cmd)
+	if !errors.Is(err, setupErr) {
+		t.Fatalf("StartShellCommand() error = %v, want setup error", err)
+	}
+	if cmd.Process != nil {
+		t.Fatal("expected command not to start after job setup failure")
+	}
+}
+
+func TestStartShellCommandFailsWhenJobAssignmentFails(t *testing.T) {
 	assignmentErr := errors.New("assignment denied")
 	oldAssign := assignShellCommandJobFunc
-	oldResume := resumeProcessThreadsFunc
-	resumed := false
 	assignShellCommandJobFunc = func(windows.Handle, uint32) error {
 		return assignmentErr
 	}
-	resumeProcessThreadsFunc = func(pid uint32) error {
-		resumed = true
-		return oldResume(pid)
-	}
 	t.Cleanup(func() {
 		assignShellCommandJobFunc = oldAssign
-		resumeProcessThreadsFunc = oldResume
 	})
 
 	cmd := exec.Command("cmd", "/c", "exit", "0")
@@ -60,18 +77,18 @@ func TestStartShellCommandFallsBackWhenJobAssignmentFails(t *testing.T) {
 	if _, ok := shellCommandJob(cmd); !ok {
 		t.Skip("job object setup unavailable")
 	}
-	if err := StartShellCommand(cmd); err != nil {
-		t.Fatalf("StartShellCommand() error = %v, want nil", err)
-	}
-	defer TerminateShellCommandGroup(cmd)
-	if !resumed {
-		t.Fatal("expected suspended process to be resumed")
+	err := StartShellCommand(cmd)
+	if !errors.Is(err, assignmentErr) {
+		t.Fatalf("StartShellCommand() error = %v, want assignment error", err)
 	}
 	if _, ok := shellCommandJob(cmd); ok {
 		t.Fatal("expected failed job state to be closed")
 	}
-	if err := cmd.Wait(); err != nil {
-		t.Fatalf("Wait() error = %v, want nil", err)
+	if cmd.Process == nil {
+		t.Fatal("expected command to have started before assignment failure")
+	}
+	if cmd.ProcessState == nil || !cmd.ProcessState.Exited() {
+		t.Fatal("expected failed start to kill and wait for the suspended process")
 	}
 }
 
