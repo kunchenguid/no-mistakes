@@ -9,6 +9,8 @@ import "os/exec"
 // exec.CommandContext default of terminating the direct child only.
 func ConfigureShellCommand(cmd *exec.Cmd) {}
 
+// StartShellCommand starts cmd on platforms without extra process-tree setup.
+// It exists so call sites can use the same lifecycle helpers on every platform.
 func StartShellCommand(cmd *exec.Cmd) error {
 	return cmd.Start()
 }

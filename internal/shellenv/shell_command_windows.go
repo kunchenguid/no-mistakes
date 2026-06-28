@@ -41,9 +41,16 @@ var shellCommandJobs sync.Map
 var assignShellCommandJobFunc = assignShellCommandJob
 var resumeProcessThreadsFunc = resumeProcessThreads
 
-// ConfigureShellCommand prepares a Windows command for whole-tree cleanup.
-// StartShellCommand assigns a kill-on-close job when available; taskkill remains
-// the fallback.
+// ConfigureShellCommand prepares a Windows command for whole-tree cleanup on
+// cancellation and normal exit. StartShellCommand assigns a kill-on-close job
+// when available; taskkill remains the fallback.
+//
+// Use RunShellCommand, OutputShellCommand, or CombinedOutputShellCommand for
+// one-shot commands, or use StartShellCommand and defer
+// TerminateShellCommandGroup immediately after a successful start when the
+// caller needs manual pipe handling. If a parser reads stdout/stderr until EOF,
+// the goroutine that owns Wait should terminate the group when the leader exits
+// so inherited pipe holders cannot wedge the parser.
 func ConfigureShellCommand(cmd *exec.Cmd) {
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
@@ -92,6 +99,9 @@ func ConfigureShellCommand(cmd *exec.Cmd) {
 	}
 }
 
+// StartShellCommand starts cmd and assigns it to the job object created by
+// ConfigureShellCommand when job setup is available. If job assignment fails,
+// the process is resumed and taskkill remains the cleanup fallback.
 func StartShellCommand(cmd *exec.Cmd) error {
 	if err := cmd.Start(); err != nil {
 		closeShellCommandJob(cmd)
@@ -115,8 +125,10 @@ func StartShellCommand(cmd *exec.Cmd) error {
 	return nil
 }
 
-// TerminateShellCommandGroup releases the Windows job object or falls back to
-// taskkill. A nil or never-started command is a no-op.
+// TerminateShellCommandGroup terminates the Windows job object for cmd or falls
+// back to taskkill. Callers defer it after a successful StartShellCommand so
+// clean exits and ordinary errors get the same process-tree cleanup as context
+// cancellation. A nil or never-started command is a no-op.
 func TerminateShellCommandGroup(cmd *exec.Cmd) {
 	if cmd == nil || cmd.Process == nil {
 		return

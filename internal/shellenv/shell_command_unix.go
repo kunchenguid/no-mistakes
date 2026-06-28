@@ -26,10 +26,13 @@ const defaultWaitDelay = 5 * time.Second
 // git/build/editor) running and holding the worktree locked.
 //
 // Cancellation is only half the lifecycle: cmd.Cancel never fires when the
-// command exits on its own (success or failure). Reaping the group on those
-// paths is the caller's job via a deferred TerminateShellCommandGroup; see its
-// docs for why the leak it prevents (orphan worker pools accumulating across
-// runs until the host is out of memory) is what takes the daemon down.
+// command exits on its own (success or failure). Use RunShellCommand,
+// OutputShellCommand, or CombinedOutputShellCommand for one-shot commands, or
+// use StartShellCommand and defer TerminateShellCommandGroup immediately after
+// a successful start when the caller needs manual pipe handling. If a parser
+// reads stdout/stderr until EOF, the goroutine that owns Wait should terminate
+// the group when the leader exits so inherited pipe holders cannot wedge the
+// parser.
 //
 // Apply this to every long-lived subprocess no-mistakes spawns on behalf of a
 // cancellable step/agent invocation.
@@ -52,6 +55,9 @@ func ConfigureShellCommand(cmd *exec.Cmd) {
 	}
 }
 
+// StartShellCommand starts cmd after ConfigureShellCommand has prepared its
+// process-group lifecycle. Unix needs no extra setup beyond cmd.Start, but the
+// wrapper keeps call sites aligned with Windows job-object setup.
 func StartShellCommand(cmd *exec.Cmd) error {
 	return cmd.Start()
 }

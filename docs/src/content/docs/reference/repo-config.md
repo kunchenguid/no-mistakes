@@ -108,6 +108,12 @@ Formatter command run before the push step commits agent fixes.
 
 This does not prevent empty `commands.lint` from detecting and running formatters during the lint step.
 
+### Command process lifetime
+
+All configured `commands.*` entries are scoped to their step.
+After no-mistakes starts one of these commands, it terminates any remaining child processes from that command when the command exits, fails, or the step is cancelled.
+Do not rely on a configured command to leave a background server or watcher running after it returns; keep that service inside the command lifetime or start it outside no-mistakes.
+
 ### ignore_patterns
 
 Paths to exclude from review and documentation checks.

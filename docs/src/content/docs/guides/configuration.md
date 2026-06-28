@@ -171,6 +171,7 @@ See [Repo Config Reference](/no-mistakes/reference/repo-config/) for the full fi
 - If `commands.test` is empty, the agent detects and runs relevant tests itself.
 - If `commands.lint` is empty, the agent detects relevant linters and formatters, applies safe fixes, verifies them, commits any agent changes, and reports only unresolved issues.
 - If `commands.format` is empty, no separate push-step formatter is run automatically.
+- Configured commands are step-scoped; no-mistakes terminates child processes they leave behind when the command exits, fails, or is cancelled.
 
 The practical implication is simple: explicit commands give you deterministic
 baseline behavior, while leaving commands empty asks the agent to fill in the gap.

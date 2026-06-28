@@ -92,32 +92,20 @@ Safest local verification sequence after non-trivial changes:
 
 - Thread `context.Context` through long-running, subprocess, and networked work.
 - Prefer `exec.CommandContext` for subprocesses.
-- Route every long-lived subprocess spawned on behalf of a cancellable step/agent
-  invocation through `shellenv.ConfigureShellCommand(cmd)` after building the
-  `*exec.Cmd`. It puts the child in its own process group (Unix `Setpgid` /
-  Windows `CREATE_NEW_PROCESS_GROUP`) and installs `cmd.Cancel` to kill the whole
-  tree on context cancellation. Without it, `exec.CommandContext` only kills the
-  direct child and grandchildren survive (e.g. `npm` -> `node` test workers,
-  agent-spawned git/build/editor), keep running, and hold the worktree locked so
-  the next run on the same branch cannot proceed. Applied to the step shell
-  runner (`runShellCommandWithEnv`) and the native agent `runOnce` builders
-  (claude, codex, pi, copilot, acpx); apply it to any new subprocess in those paths.
-- `cmd.Cancel` only covers the **cancellation** half of the lifecycle. On a clean
-  exit (exit 0) or an error return it never fires, so a grandchild that outlived
-  the leader - a test runner's worker pool, a build watcher, a dev server - is
-  **not** reaped. This is the agent-spawning test step's failure mode: a repo with
-  no `commands.test` asks the agent to run the tests, the agent's worker pool
-  leaks on every clean run, and the orphans accumulate (each a multi-hundred-MB
-  pool) until the host is out of memory and the OS OOM-killer SIGKILLs the daemon -
-  surfacing on the next start as `daemon crashed during execution` (no Go stack
-  trace, because SIGKILL is uncatchable). So pair `ConfigureShellCommand` with a
-  `defer shellenv.TerminateShellCommandGroup(cmd)` right after a successful
-  `cmd.Start()` (or after `CombinedOutput`): it SIGKILLs the whole group on the
-  success/error paths too, a harmless no-op (ESRCH) when nothing survived.
-  `ConfigureShellCommand` also installs a `cmd.WaitDelay` pipe backstop (5s, now on
-  unix as well as Windows) so a grandchild holding an inherited stdout/stderr pipe
-  open after exit can't wedge `cmd.Wait`/`CombinedOutput` forever; it bounds the
-  hang into a graceful step failure instead of taking the daemon down. Regressions:
+- Route every long-lived subprocess spawned on behalf of a cancellable step/agent invocation through `shellenv.ConfigureShellCommand(cmd)` after building the `*exec.Cmd`.
+  It puts the child in its own process tree boundary (Unix `Setpgid`, Windows job object with `taskkill` fallback) and installs `cmd.Cancel` to kill the whole tree on context cancellation.
+  Without it, `exec.CommandContext` only kills the direct child and grandchildren survive (e.g. `npm` -> `node` test workers, agent-spawned git/build/editor), keep running, and hold the worktree locked so the next run on the same branch cannot proceed.
+  Applied to the step shell runner (`runShellCommandWithEnv`) and the native agent `runOnce` builders (claude, codex, pi, copilot, acpx); apply it to any new subprocess in those paths.
+- `cmd.Cancel` only covers the **cancellation** half of the lifecycle.
+  On a clean exit (exit 0) or an error return it never fires, so a grandchild that outlived the leader - a test runner's worker pool, a build watcher, a dev server - is **not** reaped.
+  This is the agent-spawning test step's failure mode: a repo with no `commands.test` asks the agent to run the tests, the agent's worker pool leaks on every clean run, and the orphans accumulate (each a multi-hundred-MB pool) until the host is out of memory and the OS OOM-killer SIGKILLs the daemon - surfacing on the next start as `daemon crashed during execution` (no Go stack trace, because SIGKILL is uncatchable).
+  Use `shellenv.RunShellCommand`, `shellenv.OutputShellCommand`, or `shellenv.CombinedOutputShellCommand` for one-shot commands; they start the command and reap the group on success/error paths too.
+  When manual pipe handling is needed, use `shellenv.StartShellCommand(cmd)` and ensure `shellenv.TerminateShellCommandGroup(cmd)` runs as soon as the command is done or the parse loop fails.
+  For stdout/stderr parsers that read until EOF, make the Wait owner terminate the group when the leader exits so a descendant holding inherited pipes cannot wedge the parser.
+  `startNativeAgentCommand` owns that lifecycle for the native agent runners.
+  Group termination is a harmless no-op (ESRCH) when nothing survived.
+  `ConfigureShellCommand` also installs a `cmd.WaitDelay` pipe backstop (5s, now on unix as well as Windows) so a grandchild holding an inherited stdout/stderr pipe open after exit can't wedge `cmd.Wait`/`CombinedOutput` forever; it bounds the hang into a graceful step failure instead of taking the daemon down.
+  Regressions:
   `TestCodexAgent_Run_ReapsLeakedGrandchildOnCleanExit` (agent path),
   `TestRunShellCommandWithEnv_ReapsGrandchildOnCleanExit` (configured-command path),
   `TestTerminateShellCommandGroup_*` (the primitive).
