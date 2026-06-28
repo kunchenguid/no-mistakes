@@ -6,9 +6,9 @@ description: All fields for .no-mistakes.yaml.
 Per-repo configuration lives in `.no-mistakes.yaml` at the root of your repository.
 
 :::caution[Security: code-executing fields are read from the default branch]
-`commands.*` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, and `agent` selects which process launches there (including `acp:` targets) with the maintainer's credentials. To prevent a supply-chain attack where a contributor lands a hostile value on a gated branch, the daemon always reads **`commands` and `agent` from your default branch** (e.g. `origin/main`), never from the pushed SHA, and reads them at the exact commit a fresh fetch resolved (so a stale `origin/<default>` ref cannot serve a value the live default branch removed). If the fetch fails, both fields are forced empty — the run proceeds on built-in defaults rather than falling back to a potentially stale or hostile copy. Commit the `commands` and `agent` you want the gate to run to your default branch. Non-executing fields (`ignore_patterns`, `auto_fix`, `intent`, `test`) are still read from the pushed branch.
+`commands.*` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, `agent` selects which process launches there (including `acp:` targets), and `review.reviewers` selects extra reviewer processes, all with the maintainer's credentials. To prevent a supply-chain attack where a contributor lands a hostile value on a gated branch, the daemon always reads **`commands`, `agent`, and `review` from your default branch** (e.g. `origin/main`), never from the pushed SHA, and reads them at the exact commit a fresh fetch resolved (so a stale `origin/<default>` ref cannot serve a value the live default branch removed). If the fetch fails, those repo-level code-executing fields are forced empty or absent - the run proceeds on built-in/global defaults rather than falling back to a potentially stale or hostile copy. Commit the `commands`, `agent`, and `review` panel you want the gate to run to your default branch. Non-executing fields (`ignore_patterns`, `auto_fix`, `intent`, `test`) are still read from the pushed branch.
 
-If you genuinely want per-branch `commands` and `agent` (for example, a single-developer repo where you trust your own feature branches), opt in with [`allow_repo_commands: true`](#allow_repo_commands) in this same file on your default branch. This re-enables the previous behavior with eyes open. The switch is read only from the trusted default-branch copy, so a contributor cannot self-enable it from a pushed branch.
+If you genuinely want per-branch `commands`, `agent`, and `review` (for example, a single-developer repo where you trust your own feature branches), opt in with [`allow_repo_commands: true`](#allow_repo_commands) in this same file on your default branch. This re-enables the previous behavior with eyes open. The switch is read only from the trusted default-branch copy, so a contributor cannot self-enable it from a pushed branch.
 :::
 
 ```yaml
@@ -32,6 +32,13 @@ auto_fix:
   document: 3
   lint: 5
   ci: 3
+
+review:
+  reviewers:
+    - agent: codex
+    - agent: claude
+  max_parallel: 2
+  fail_open: false
 
 intent:
   enabled: true
@@ -63,14 +70,14 @@ ACP agents are opt-in and are not considered by `agent: auto`.
 
 ### allow_repo_commands
 
-Opt in to honoring the code-executing selection fields (`commands.{test,lint,format}` and `agent`) from a contributor's pushed branch instead of the trusted default-branch copy.
+Opt in to honoring the code-executing selection fields (`commands.{test,lint,format}`, `agent`, and `review`) from a contributor's pushed branch instead of the trusted default-branch copy.
 
 | | |
 |---|---|
 | Type | `bool` |
 | Default | `false` |
 
-This field is itself read **only from the trusted default-branch copy** of `.no-mistakes.yaml`, never from the pushed SHA, so a contributor cannot self-enable it by setting it on a feature branch. By default the daemon reads `commands` and `agent` from your default branch (e.g. `origin/main`) so a pushed SHA cannot inject shell or pick the launched agent on the daemon host. Leave this `false` for any repo that accepts contributions. Set it to `true` only for a single-developer environment where you trust every branch you push (for example, a personal repo gated by your own daemon).
+This field is itself read **only from the trusted default-branch copy** of `.no-mistakes.yaml`, never from the pushed SHA, so a contributor cannot self-enable it by setting it on a feature branch. By default the daemon reads `commands`, `agent`, and `review` from your default branch (e.g. `origin/main`) so a pushed SHA cannot inject shell or pick launched agents on the daemon host. Leave this `false` for any repo that accepts contributions. Set it to `true` only for a single-developer environment where you trust every branch you push (for example, a personal repo gated by your own daemon).
 
 ### commands.test
 
@@ -149,6 +156,32 @@ For empty `commands.lint`, the agent still attempts safe fixes during the initia
 `auto_fix.ci` covers the CI step's CI failure and merge-conflict auto-fix attempts.
 
 Legacy alias: `auto_fix.babysit`.
+
+### review
+
+Optional repo-level cross-family review panel.
+The schema matches global `review` config: `reviewers`, optional per-reviewer `agent` / `args` / `path`, `max_parallel`, and `fail_open`.
+
+```yaml
+review:
+  reviewers:
+    - agent: codex
+    - agent: claude
+  max_parallel: 2
+  fail_open: false
+```
+
+When present, the repo `review` block overrides the global review panel wholesale.
+When absent, the repo inherits the global panel.
+An explicit empty panel disables an inherited global panel and returns to the single-agent default:
+
+```yaml
+review:
+  reviewers: []
+```
+
+Because reviewers select extra agent processes to launch with maintainer credentials, repo-level `review` is treated like `commands` and `agent`: by default it is read only from the trusted default-branch copy of `.no-mistakes.yaml`.
+A review panel pushed only on a feature branch is ignored unless `allow_repo_commands: true` is already set on the trusted default branch.
 
 ### intent
 

@@ -41,6 +41,17 @@ auto_fix:
   lint: 3
   ci: 3
 
+review:
+  reviewers:
+    - agent: codex
+    - agent: claude
+      args:
+        - --model
+        - sonnet
+      path: /Users/you/bin/claude-review
+  max_parallel: 2
+  fail_open: false
+
 intent:
   enabled: true
   threshold: 0.2
@@ -147,6 +158,8 @@ Smart defaults:
 - For `claude`, supplying `--permission-mode` (or `--dangerously-skip-permissions`) suppresses the default `--dangerously-skip-permissions`.
 - For `codex`, supplying `--ask-for-approval`, `--sandbox`, or `--dangerously-bypass-approvals-and-sandbox` suppresses the default `--dangerously-bypass-approvals-and-sandbox`.
 
+Reviewers declared in `review.reviewers` inherit `agent_args_override` by agent name unless the reviewer sets its own `args`.
+
 Permission and sandbox flags affect the underlying agent, but they do not disable no-mistakes' pipeline prompt steering.
 Pipeline agents are still told to keep intentional writes inside the worktree and avoid mutating system state outside it.
 
@@ -226,6 +239,39 @@ For empty `commands.lint`, the agent still attempts safe fixes during the initia
 Legacy alias: `auto_fix.babysit`.
 
 These are global defaults. Per-repo config can override individual steps.
+
+### review
+
+Optional cross-family review panel for the review step.
+When no reviewers are configured, review runs once with the resolved `agent`, preserving the default single-agent behavior.
+When reviewers are configured, no-mistakes sends the same review prompt to each reviewer independently, then merges the reports into one findings payload for the fix agent and approval UI.
+
+| | |
+|---|---|
+| Type | `object` |
+| Default | Empty (single configured agent) |
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `review.reviewers` | `Reviewer[]` | Empty | Reviewers to run for the panel |
+| `review.reviewers[].agent` | `string` | Required | `auto`, `claude`, `codex`, `rovodev`, `opencode`, `pi`, `copilot`, or `acp:<target>` |
+| `review.reviewers[].args` | `string[]` | Inherits `agent_args_override.<agent>` | Extra native-agent CLI flags for this reviewer |
+| `review.reviewers[].path` | `string` | Inherits `agent_path_override.<agent>` or default binary | Binary path for this reviewer |
+| `review.max_parallel` | `int` | `0` | Maximum reviewers to run at once; `0` means all reviewers at once |
+| `review.fail_open` | `bool` | `false` | When `false`, any reviewer error fails the review step; when `true`, failed reviewers are dropped if at least one reviewer succeeds |
+
+Each reviewer returns its own findings. In the merged gate, finding IDs are namespaced by reviewer and each finding's `source` is set to the reviewer name, so the TUI, AXI output, and fix prompt can show who reported it.
+The merged `risk_level` is the highest risk any reviewer reported; summaries and rationales are labeled by reviewer.
+The configured pipeline `agent` still applies fixes.
+
+For reviewer specs, `agent: auto` expands to the already resolved pipeline `agent`.
+Use an explicit reviewer agent name when you want a different family.
+Reviewer `args` use the same reserved-flag checks as `agent_args_override`.
+For `acp:<target>` reviewers, use `acpx_path` and `acp_registry_overrides`; native `args` are ignored by ACP agents.
+Identical resolved reviewers are de-duplicated.
+
+Per-repo config can override the global review block wholesale.
+An absent repo `review` block inherits the global panel; an explicit repo block with `reviewers: []` disables the inherited panel and reverts to the single-agent default.
 
 ### intent
 

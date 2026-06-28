@@ -37,7 +37,7 @@ The pipeline is opinionated so that "passed the gate" has a stable meaning:
 |---|---|---|---|
 | 1 | **Intent** | Use supplied intent or infer it from recent local agent transcripts | n/a |
 | 2 | **Rebase** | Fetch fresh remote upstream and the configured branch target, then rebase your branch onto them | `3` |
-| 3 | **Review** | AI code review of your diff | `0` (requires approval) |
+| 3 | **Review** | AI code review of your diff, optionally by a reviewer panel | `0` (requires approval) |
 | 4 | **Test** | Run baseline tests and gather evidence for available intent | `3` |
 | 5 | **Document** | Update docs when needed and report unresolved gaps | initial pass |
 | 6 | **Lint** | Run lint/static analysis | `3` |
@@ -76,6 +76,7 @@ See [Auto-Fix Loop](/no-mistakes/concepts/auto-fix/) for how the fix cycle works
 You can't reorder steps. You *can*:
 
 - Swap the agent (global or per-repo).
+- Configure a cross-family `review.reviewers` panel for independent review reports.
 - Set explicit `commands.test`, `commands.lint`, `commands.format`.
 - Store test evidence locally by default or opt into committed in-repo evidence with `test.evidence.store_in_repo`.
 - Control auto-fix limits per step.
