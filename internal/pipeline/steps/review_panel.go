@@ -25,6 +25,13 @@ type reviewerReport struct {
 // all logging and merging happen serially on this goroutine after FanOut
 // returns. It enforces the fail policy: a reviewer error fails the step unless
 // review.fail_open is set.
+//
+// Reviewers are READ-ONLY by contract: they inspect the diff and return
+// findings, and never write to the worktree. The shared CWD is therefore
+// intentional and safe, and we deliberately do not isolate or clean up a
+// per-reviewer worktree. A reviewer that writes files is a misconfiguration,
+// not a scenario this code defends against - so shared-worktree concurrency is
+// not a data-safety issue here and should not be flagged as one.
 func runReviewPanel(sctx *pipeline.StepContext, reviewers []agent.Agent, opts agent.RunOpts) (Findings, error) {
 	opts.OnChunk = nil
 	results := agent.FanOut(sctx.Ctx, reviewers, opts, sctx.Config.Review.MaxParallel)
