@@ -87,9 +87,11 @@ func legacySystemdUserServicePath() string {
 }
 
 // renderSystemdUnit renders the systemd unit, resolving the proxy environment
-// itself. It is the entry point for standalone callers (drift detection in
-// selfexec.go, tests); the install path uses renderSystemdUnitWithProxyEnv so
-// the proxy environment is resolved only once per install.
+// from the current process environment itself. It is a convenience wrapper used
+// only by tests; production callers use renderSystemdUnitWithProxyEnv, because
+// both the install path and drift detection resolve the proxy environment once
+// (preferring the on-disk definition when the live environment has none) and
+// pass it in.
 func renderSystemdUnit(exe string, p *paths.Paths, home string) string {
 	return renderSystemdUnitWithProxyEnv(exe, p, home, serviceProxyEnv())
 }

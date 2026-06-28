@@ -180,9 +180,11 @@ func launchdDomainTarget() (string, error) {
 }
 
 // renderLaunchAgent renders the launchd plist, resolving the proxy environment
-// itself. It is the entry point for standalone callers (drift detection in
-// selfexec.go, tests); the install path uses renderLaunchAgentWithProxyEnv so
-// the proxy environment is resolved only once per install.
+// from the current process environment itself. It is a convenience wrapper used
+// only by tests; production callers use renderLaunchAgentWithProxyEnv, because
+// both the install path and drift detection resolve the proxy environment once
+// (preferring the on-disk definition when the live environment has none) and
+// pass it in.
 func renderLaunchAgent(exe string, p *paths.Paths, home string) string {
 	return renderLaunchAgentWithProxyEnv(exe, p, home, serviceProxyEnv())
 }
