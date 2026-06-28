@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.32.2](https://github.com/kunchenguid/no-mistakes/compare/v1.32.1...v1.32.2) (2026-06-28)
+
+
+### Bug Fixes
+
+* **agent:** reap agent process group on clean exit to prevent daemon OOM crash ([#357](https://github.com/kunchenguid/no-mistakes/issues/357)) ([bdd2e39](https://github.com/kunchenguid/no-mistakes/commit/bdd2e3932e6b49830c622ed00cf7b99635688fca))
+
 ## [1.32.1](https://github.com/kunchenguid/no-mistakes/compare/v1.32.0...v1.32.1) (2026-06-28)
 
 
