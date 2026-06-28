@@ -9,6 +9,22 @@ import (
 	"testing"
 )
 
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "no-mistakes-git-tests-")
+	if err != nil {
+		panic(err)
+	}
+	if err := os.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(dir, "gitconfig")); err != nil {
+		panic(err)
+	}
+	if err := os.Setenv("GIT_CONFIG_NOSYSTEM", "1"); err != nil {
+		panic(err)
+	}
+	code := m.Run()
+	_ = os.RemoveAll(dir)
+	os.Exit(code)
+}
+
 // helper: create a non-bare git repo with an initial commit
 func initTestRepo(t *testing.T) string {
 	t.Helper()

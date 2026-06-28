@@ -4,6 +4,7 @@ package shellenv
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -56,6 +57,69 @@ func TestTerminateShellCommandGroup_NoopOnNilOrUnstarted(t *testing.T) {
 	TerminateShellCommandGroup(cmd)
 }
 
+func TestCombinedOutputShellCommand_ReturnsCleanExitWithInheritedPipeGrandchild(t *testing.T) {
+	cmd := exec.CommandContext(context.Background(), "/bin/sh", "-c", "printf 'leader done\\n'; sleep 30 & exit 0")
+	ConfigureShellCommand(cmd)
+	cmd.WaitDelay = 100 * time.Millisecond
+
+	out, err := CombinedOutputShellCommand(cmd)
+	if err != nil {
+		t.Fatalf("CombinedOutputShellCommand() error = %v; output %q", err, out)
+	}
+	if got, want := string(out), "leader done\n"; got != want {
+		t.Fatalf("CombinedOutputShellCommand() output = %q, want %q", got, want)
+	}
+}
+
+func TestCombinedOutputShellCommand_WaitDelayBoundsEscapedPipeHolder(t *testing.T) {
+	readyFile := filepath.Join(t.TempDir(), "ready")
+	cmd := exec.CommandContext(context.Background(), os.Args[0], "-test.run=^TestShellOutputPipeHelper$")
+	cmd.Env = append(os.Environ(),
+		"NM_SHELLENV_PIPE_HELPER=leader",
+		"NM_SHELLENV_PIPE_READY="+readyFile,
+	)
+	ConfigureShellCommand(cmd)
+	cmd.WaitDelay = 100 * time.Millisecond
+
+	out, err := CombinedOutputShellCommand(cmd)
+	escapedPID := parseEscapedPID(t, string(out))
+	t.Cleanup(func() {
+		_ = syscall.Kill(escapedPID, syscall.SIGKILL)
+	})
+	if !errors.Is(err, exec.ErrWaitDelay) {
+		t.Fatalf("CombinedOutputShellCommand() error = %v, want %v; output %q", err, exec.ErrWaitDelay, out)
+	}
+	if !strings.Contains(string(out), "leader done\n") {
+		t.Fatalf("CombinedOutputShellCommand() output = %q, want leader output", out)
+	}
+}
+
+func TestShellOutputPipeHelper(t *testing.T) {
+	switch os.Getenv("NM_SHELLENV_PIPE_HELPER") {
+	case "leader":
+		child := exec.Command(os.Args[0], "-test.run=^TestShellOutputPipeHelper$")
+		child.Env = append(os.Environ(),
+			"NM_SHELLENV_PIPE_HELPER=escaped",
+			"NM_SHELLENV_PIPE_READY="+os.Getenv("NM_SHELLENV_PIPE_READY"),
+		)
+		child.Stdout = os.Stdout
+		child.Stderr = os.Stderr
+		if err := child.Start(); err != nil {
+			os.Exit(2)
+		}
+		if !waitForHelperReady(os.Getenv("NM_SHELLENV_PIPE_READY"), 5*time.Second) {
+			os.Exit(3)
+		}
+		_, _ = os.Stdout.WriteString("leader done\nescaped pid " + strconv.Itoa(child.Process.Pid) + "\n")
+		os.Exit(0)
+	case "escaped":
+		_, _ = syscall.Setsid()
+		_ = os.WriteFile(os.Getenv("NM_SHELLENV_PIPE_READY"), []byte("ready"), 0o644)
+		time.Sleep(30 * time.Second)
+		os.Exit(0)
+	}
+}
+
 func readPID(t *testing.T, path string, timeout time.Duration) int {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -69,6 +133,31 @@ func readPID(t *testing.T, path string, timeout time.Duration) int {
 	}
 	t.Fatalf("timed out waiting for a pid in %s", path)
 	return 0
+}
+
+func parseEscapedPID(t *testing.T, output string) int {
+	t.Helper()
+	for _, line := range strings.Split(output, "\n") {
+		if strings.HasPrefix(line, "escaped pid ") {
+			pid, err := strconv.Atoi(strings.TrimPrefix(line, "escaped pid "))
+			if err == nil && pid > 0 {
+				return pid
+			}
+		}
+	}
+	t.Fatalf("output %q did not contain escaped pid", output)
+	return 0
+}
+
+func waitForHelperReady(path string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
 }
 
 func pidGoneWithin(pid int, window time.Duration) bool {
