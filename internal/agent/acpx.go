@@ -51,6 +51,12 @@ func (a *acpxAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) 
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("acpx start: %w", err)
 	}
+	// Reap the whole process group however this returns - clean exit, parse
+	// error, or wait error - not just on cancellation (cmd.Cancel). A test
+	// runner's worker pool the ACP agent spawned can outlive it; left unreaped
+	// those orphans accumulate across runs until the host OOMs and the OS
+	// SIGKILLs the daemon ("daemon crashed during execution").
+	defer shellenv.TerminateShellCommandGroup(cmd)
 
 	var stderrBuf []byte
 	var stderrWG sync.WaitGroup

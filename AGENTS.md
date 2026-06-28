@@ -102,6 +102,25 @@ Safest local verification sequence after non-trivial changes:
   the next run on the same branch cannot proceed. Applied to the step shell
   runner (`runShellCommandWithEnv`) and the native agent `runOnce` builders
   (claude, codex, pi, copilot, acpx); apply it to any new subprocess in those paths.
+- `cmd.Cancel` only covers the **cancellation** half of the lifecycle. On a clean
+  exit (exit 0) or an error return it never fires, so a grandchild that outlived
+  the leader - a test runner's worker pool, a build watcher, a dev server - is
+  **not** reaped. This is the agent-spawning test step's failure mode: a repo with
+  no `commands.test` asks the agent to run the tests, the agent's worker pool
+  leaks on every clean run, and the orphans accumulate (each a multi-hundred-MB
+  pool) until the host is out of memory and the OS OOM-killer SIGKILLs the daemon -
+  surfacing on the next start as `daemon crashed during execution` (no Go stack
+  trace, because SIGKILL is uncatchable). So pair `ConfigureShellCommand` with a
+  `defer shellenv.TerminateShellCommandGroup(cmd)` right after a successful
+  `cmd.Start()` (or after `CombinedOutput`): it SIGKILLs the whole group on the
+  success/error paths too, a harmless no-op (ESRCH) when nothing survived.
+  `ConfigureShellCommand` also installs a `cmd.WaitDelay` pipe backstop (5s, now on
+  unix as well as Windows) so a grandchild holding an inherited stdout/stderr pipe
+  open after exit can't wedge `cmd.Wait`/`CombinedOutput` forever; it bounds the
+  hang into a graceful step failure instead of taking the daemon down. Regressions:
+  `TestCodexAgent_Run_ReapsLeakedGrandchildOnCleanExit` (agent path),
+  `TestRunShellCommandWithEnv_ReapsGrandchildOnCleanExit` (configured-command path),
+  `TestTerminateShellCommandGroup_*` (the primitive).
 - Use derived contexts and timeouts for cleanup and HTTP calls.
 - Use `context.Background()` mainly at top-level boundaries, background tasks, or in tests.
 - Protect shared mutable state with `sync.Mutex`, `sync.RWMutex`, `sync.Map`, or `atomic` where appropriate.

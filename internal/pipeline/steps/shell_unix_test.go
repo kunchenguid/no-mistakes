@@ -70,6 +70,46 @@ func TestRunShellCommandWithEnv_KillsGrandchildOnCancel(t *testing.T) {
 	}
 }
 
+// TestRunShellCommandWithEnv_ReapsGrandchildOnCleanExit is the clean-exit
+// counterpart to the cancellation test above, and the configured-test-command
+// face of the daemon-crash bug. A `commands.test` like "npm test" shells out and
+// can leave a worker pool alive after the shell exits 0. cmd.Cancel only reaps
+// the group on cancellation, so on a normal exit those workers leaked; across
+// runs they accumulate until the host is out of memory and the OS SIGKILLs the
+// daemon. runShellCommandWithEnv now defers shellenv.TerminateShellCommandGroup,
+// so the group is reaped on the success path too.
+//
+// This test fails if that defer is removed: the heartbeat keeps advancing and
+// the grandchild is never reaped after the command returns.
+func TestRunShellCommandWithEnv_ReapsGrandchildOnCleanExit(t *testing.T) {
+	dir := t.TempDir()
+	heartbeat := filepath.Join(dir, "tick")
+	pidFile := filepath.Join(dir, "grandchild.pid")
+	// Background a long-running grandchild that writes a monotonic heartbeat,
+	// detach its stdio so it does not hold the command's pipes open, record its
+	// pid, then exit 0 immediately WITHOUT waiting - the shell parent returns
+	// cleanly while the grandchild keeps running, exactly the leak path.
+	script := "( i=0; while [ $i -lt 10000 ]; do printf '%s\\n' \"$i\" > " + heartbeat +
+		"; sleep 0.1; i=$((i+1)); done ) >/dev/null 2>&1 & echo $! > " + pidFile + "; exit 0"
+
+	ctx := context.Background()
+	if _, _, err := runShellCommandWithEnv(ctx, dir, nil, script); err != nil {
+		t.Fatalf("runShellCommandWithEnv: %v", err)
+	}
+
+	grandchild := waitForIntFile(t, pidFile, 5*time.Second)
+	// After the command returns cleanly, the deferred reap must have killed the
+	// whole group: the heartbeat stops advancing AND the pid is gone.
+	if !heartbeatHoldsWithin(t, heartbeat, 5*time.Second) {
+		_ = syscall.Kill(grandchild, syscall.SIGKILL)
+		t.Fatalf("grandchild pid %d still running after clean exit: heartbeat kept advancing", grandchild)
+	}
+	if err := syscall.Kill(grandchild, 0); err != syscall.ESRCH {
+		_ = syscall.Kill(grandchild, syscall.SIGKILL)
+		t.Fatalf("grandchild pid %d not reaped after clean exit (kill -0: %v); want ESRCH", grandchild, err)
+	}
+}
+
 func waitForIntFile(t *testing.T, path string, timeout time.Duration) int {
 	t.Helper()
 	deadline := time.Now().Add(timeout)

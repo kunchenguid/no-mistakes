@@ -109,6 +109,22 @@ func ConfigureShellCommand(cmd *exec.Cmd) {
 	}
 }
 
+// TerminateShellCommandGroup is the Windows counterpart of the unix helper: it
+// best-effort tree-kills the process and everything it spawned via
+// `taskkill /T /F /PID`, reaping grandchildren (a test runner's worker pool, a
+// build watcher) that outlived a normally-exited leader. cmd.Cancel already
+// covers cancellation; callers defer this so the success/failure paths are
+// covered too. Errors (including an already-gone PID) are intentionally
+// ignored - this is a post-Wait cleanup, not a control-flow operation. A nil or
+// never-started command is a no-op.
+func TerminateShellCommandGroup(cmd *exec.Cmd) {
+	if cmd == nil || cmd.Process == nil {
+		return
+	}
+	pid := strconv.Itoa(cmd.Process.Pid)
+	_ = exec.Command("taskkill", "/T", "/F", "/PID", pid).Run()
+}
+
 // isTaskkillAlreadyGone reports whether a taskkill error means the target PID
 // no longer exists (the child had already exited). taskkill emits exit code
 // taskkillExitNoSuchProcess for that case; matching on the numeric exit code
