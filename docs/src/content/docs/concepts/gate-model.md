@@ -114,6 +114,7 @@ A long-running background process that manages pipeline runs. It:
 - Writes its identity record to `~/.no-mistakes/daemon.pid`
 - Serializes concurrent pushes to the same branch (new push cancels the in-progress run)
 - Creates and cleans up worktrees
+- Scopes configured commands and one-shot agent subprocesses to the step lifetime by terminating remaining child processes on completion, failure, or cancellation
 - Persists state to SQLite
 - Streams events to connected TUI clients via IPC
 
