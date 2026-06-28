@@ -38,6 +38,9 @@ type shellCommandJobState struct {
 
 var shellCommandJobs sync.Map
 
+var assignShellCommandJobFunc = assignShellCommandJob
+var resumeProcessThreadsFunc = resumeProcessThreads
+
 // ConfigureShellCommand prepares a Windows command for whole-tree cleanup.
 // StartShellCommand assigns a kill-on-close job when available; taskkill remains
 // the fallback.
@@ -98,11 +101,15 @@ func StartShellCommand(cmd *exec.Cmd) error {
 	if !ok {
 		return nil
 	}
-	if err := assignShellCommandJob(job.handle, uint32(cmd.Process.Pid)); err != nil {
-		return failStartedShellCommand(cmd, err)
+	if err := assignShellCommandJobFunc(job.handle, uint32(cmd.Process.Pid)); err != nil {
+		closeShellCommandJob(cmd)
+		if resumeErr := resumeProcessThreadsFunc(uint32(cmd.Process.Pid)); resumeErr != nil {
+			return failStartedShellCommand(cmd, fmt.Errorf("%w; resume process after job assignment failure: %v", err, resumeErr))
+		}
+		return nil
 	}
 	job.assigned.Store(true)
-	if err := resumeProcessThreads(uint32(cmd.Process.Pid)); err != nil {
+	if err := resumeProcessThreadsFunc(uint32(cmd.Process.Pid)); err != nil {
 		return failStartedShellCommand(cmd, err)
 	}
 	return nil

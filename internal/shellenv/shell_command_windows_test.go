@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"strconv"
 	"testing"
+
+	"golang.org/x/sys/windows"
 )
 
 // TestIsTaskkillAlreadyGone pins down the locale-independent contract the
@@ -33,6 +35,43 @@ func TestIsTaskkillAlreadyGone(t *testing.T) {
 				t.Fatalf("isTaskkillAlreadyGone(%v) = %v, want %v", tt.err, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestStartShellCommandFallsBackWhenJobAssignmentFails(t *testing.T) {
+	assignmentErr := errors.New("assignment denied")
+	oldAssign := assignShellCommandJobFunc
+	oldResume := resumeProcessThreadsFunc
+	resumed := false
+	assignShellCommandJobFunc = func(windows.Handle, uint32) error {
+		return assignmentErr
+	}
+	resumeProcessThreadsFunc = func(pid uint32) error {
+		resumed = true
+		return oldResume(pid)
+	}
+	t.Cleanup(func() {
+		assignShellCommandJobFunc = oldAssign
+		resumeProcessThreadsFunc = oldResume
+	})
+
+	cmd := exec.Command("cmd", "/c", "exit", "0")
+	ConfigureShellCommand(cmd)
+	if _, ok := shellCommandJob(cmd); !ok {
+		t.Skip("job object setup unavailable")
+	}
+	if err := StartShellCommand(cmd); err != nil {
+		t.Fatalf("StartShellCommand() error = %v, want nil", err)
+	}
+	defer TerminateShellCommandGroup(cmd)
+	if !resumed {
+		t.Fatal("expected suspended process to be resumed")
+	}
+	if _, ok := shellCommandJob(cmd); ok {
+		t.Fatal("expected failed job state to be closed")
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("Wait() error = %v, want nil", err)
 	}
 }
 
