@@ -69,6 +69,14 @@ func Start(p *paths.Paths) error {
 		}
 		return fmt.Errorf("daemon already running")
 	}
+	// Canonical socket is dead. A daemon for the same logical root may still be
+	// alive under a different path spelling (symlinked or relative NM_HOME),
+	// which the socket-keyed health check above cannot see. Detect via the OS
+	// process list: refuse if a healthy stray is serving this root, or reap a
+	// stale stray (including a crash-looping managed unit) before starting.
+	if err := reconcileCollidingDaemons(p); err != nil {
+		return err
+	}
 	if managed, err := installManagedService(p); err == nil {
 		if managed {
 			if err := startManagedDaemon(p); err == nil {

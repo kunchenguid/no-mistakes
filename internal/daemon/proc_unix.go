@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -14,6 +15,39 @@ import (
 
 func setSysProcAttr(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+}
+
+// listDaemonProcesses enumerates running processes via ps and returns the ones
+// that look like `no-mistakes daemon run --root <root>`. It powers the
+// pgrep-style collision detection in reconcileCollidingDaemons. `ps` is used
+// (rather than /proc) so the same approach works on Linux and macOS.
+func listDaemonProcesses() ([]daemonProcessInfo, error) {
+	cmd := exec.Command(psExecutable(), "-ww", "-eo", "pid=,command=")
+	env := upsertEnv(os.Environ(), "LC_ALL", "C")
+	cmd.Env = upsertEnv(env, "LANG", "C")
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("enumerate processes: %w", err)
+	}
+	return parseDaemonProcessOutput(string(out), splitUnixProcessLine), nil
+}
+
+// splitUnixProcessLine parses one line of `ps -eo pid=,command=` output into a
+// pid and the trailing command line.
+func splitUnixProcessLine(line string) (int, string, bool) {
+	trimmed := strings.TrimLeft(line, " \t")
+	if trimmed == "" {
+		return 0, "", false
+	}
+	sep := strings.IndexAny(trimmed, " \t")
+	if sep < 0 {
+		return 0, "", false
+	}
+	pid, err := strconv.Atoi(trimmed[:sep])
+	if err != nil || pid <= 0 {
+		return 0, "", false
+	}
+	return pid, strings.TrimLeft(trimmed[sep:], " \t"), true
 }
 
 func processRunning(pid int) (bool, error) {

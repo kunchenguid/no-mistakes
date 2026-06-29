@@ -87,22 +87,34 @@ func serviceInstanceSuffix(p *paths.Paths) string {
 	if p != nil {
 		root = p.Root()
 	}
-	if root != "" {
-		if !filepath.IsAbs(root) {
-			if absRoot, err := filepath.Abs(root); err == nil {
-				root = absRoot
-			}
+	sum := sha256.Sum256([]byte(canonicalRoot(root)))
+	return hex.EncodeToString(sum[:4])
+}
+
+// canonicalRoot collapses a root path to its stable physical form so two
+// spellings of the same directory (absolute vs relative, symlinked vs real,
+// trailing-slash variants, and case on Windows) compare equal. It mirrors the
+// normalization serviceInstanceSuffix hashes, so the managed-service identifier
+// and the daemon-collision key (reconcileCollidingDaemons) agree on what
+// "same root" means. Resolution is best-effort: if symlinks cannot be evaluated
+// the cleaned input is returned unchanged.
+func canonicalRoot(root string) string {
+	if root == "" {
+		return ""
+	}
+	if !filepath.IsAbs(root) {
+		if abs, err := filepath.Abs(root); err == nil {
+			root = abs
 		}
-		if resolved, err := filepath.EvalSymlinks(root); err == nil {
-			root = resolved
-		}
+	}
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
 	}
 	root = filepath.Clean(root)
 	if runtimeGOOS == "windows" {
 		root = strings.ToLower(root)
 	}
-	sum := sha256.Sum256([]byte(root))
-	return hex.EncodeToString(sum[:4])
+	return root
 }
 
 func launchdServiceLabel(p *paths.Paths) string {
@@ -198,6 +210,22 @@ func stopManagedService(p *paths.Paths) (bool, error) {
 		return true, stopWindowsTask(p)
 	default:
 		return false, nil
+	}
+}
+
+// resetFailedManagedService clears failed-unit bookkeeping for the daemon's
+// managed service. A crash-looping systemd unit (Restart=always on a dead
+// binary) is held by the manager in a failed/backoff state that keeps emitting
+// journal entries even after the process is gone. Clearing it lets the fresh
+// install in Start() begin from a clean slate. No-op on platforms without an
+// equivalent and when the service manager is bypassed.
+func resetFailedManagedService(p *paths.Paths) {
+	if serviceManagerBypassed() {
+		return
+	}
+	switch runtimeGOOS {
+	case "linux":
+		_, _ = serviceCommandRunner("systemctl", "--user", "reset-failed", systemdServiceName(p))
 	}
 }
 
