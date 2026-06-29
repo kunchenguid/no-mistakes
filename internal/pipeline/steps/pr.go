@@ -171,7 +171,7 @@ Diff stat:
 			content.Body = stripGeneratedSections(content.Body)
 			if content.Title != "" && content.Body != "" {
 				originalTitle := content.Title
-				if ticket := conventional.ExtractTicket(branch, sctx.Config.TicketPrefixPattern); ticket != "" {
+				if ticket := prTicket(sctx, branch); ticket != "" {
 					content.Title = conventional.ApplyTicketPrefix(content.Title, ticket)
 				} else {
 					content.Title = conventional.TightenTitle(content.Title)
@@ -313,6 +313,13 @@ func prependIntentSection(body string, sctx *pipeline.StepContext) string {
 	return section + "\n\n" + body
 }
 
+func prTicket(sctx *pipeline.StepContext, branch string) string {
+	if sctx == nil || sctx.Config == nil {
+		return ""
+	}
+	return conventional.ExtractTicket(branch, sctx.Config.TicketPrefixPattern)
+}
+
 func fallbackPRContent(sctx *pipeline.StepContext, branch, commitLog, riskLine, testingMD, pipelineMD string) prContent {
 	title := ""
 	for _, line := range strings.Split(commitLog, "\n") {
@@ -330,7 +337,7 @@ func fallbackPRContent(sctx *pipeline.StepContext, branch, commitLog, riskLine, 
 	}
 	if title == "" {
 		title = "chore: update pull request"
-	} else if ticket := conventional.ExtractTicket(branch, sctx.Config.TicketPrefixPattern); ticket != "" {
+	} else if ticket := prTicket(sctx, branch); ticket != "" {
 		title = conventional.ApplyTicketPrefix(title, ticket)
 	} else {
 		title = conventional.TightenTitle(title)

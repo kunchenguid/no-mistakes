@@ -148,6 +148,7 @@ func TestApplyTicketPrefix(t *testing.T) {
 		{"strips type with scope", "feat(cli): add wizard", "WEB-9", "WEB-9: add wizard"},
 		{"plain title gets prefix", "refresh README setup", "WEB-1", "WEB-1: refresh README setup"},
 		{"already prefixed is unchanged", "WEB-1: refresh README", "WEB-1", "WEB-1: refresh README"},
+		{"ticket prefix of longer ticket is not treated as prefixed", "WEB-12: refresh README", "WEB-1", "WEB-1: WEB-12: refresh README"},
 		{"empty ticket leaves title", "docs: refresh README", "", "docs: refresh README"},
 	}
 

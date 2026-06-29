@@ -177,6 +177,23 @@ log_level: "debug"
 	}
 }
 
+func TestLoadGlobal_TicketPrefixPattern(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	data := "ticket_prefix_pattern: \"WEB-\\\\d+\"\n"
+	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadGlobal(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.TicketPrefixPattern != `WEB-\d+` {
+		t.Errorf("ticket_prefix_pattern = %q, want %q", cfg.TicketPrefixPattern, `WEB-\d+`)
+	}
+}
+
 func TestLoadGlobal_PartialOverride(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")

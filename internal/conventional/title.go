@@ -54,7 +54,7 @@ func ApplyTicketPrefix(title, ticket string) string {
 	if ticket == "" {
 		return title
 	}
-	if strings.HasPrefix(title, ticket) {
+	if title == ticket || strings.HasPrefix(title, ticket+":") {
 		return title
 	}
 	desc := title
