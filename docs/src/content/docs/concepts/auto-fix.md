@@ -106,7 +106,9 @@ Each auto-fix cycle commits its changes with a descriptive message. Agent-manage
 
 The push step commits any remaining uncommitted changes with `no-mistakes: apply agent fixes`, and the CI step commits its CI fixes with `no-mistakes: apply CI fixes`.
 
-When `ticket_prefix_pattern` is configured and the branch name matches it, these subjects instead lead with the matched work-item id: step commits become `<ticket>: <summary> [no-mistakes/<step>]`, and the push and CI commits become `<ticket>: apply agent fixes [no-mistakes]` and `<ticket>: apply CI fixes [no-mistakes]`. A branch with no match keeps the `no-mistakes(<step>): ...` form above.
+When `ticket_prefix_pattern` is configured, the gate resolves a work-item id by matching the pattern against, in order: the branch name, the PR title (when a PR exists), and the first non-gate author commit subject on the branch (oldest first).
+When an id is resolved from any source, it is prepended to the commit subject the gate would otherwise have written: step commits become `<ticket>: no-mistakes(<step>): <summary>`, the push commit becomes `<ticket>: no-mistakes: apply agent fixes`, and the CI fix commit becomes `<ticket>: no-mistakes: apply CI fixes`.
+When no source carries a match the gate keeps the `no-mistakes(<step>): ...` form above, so ticket-less changes are unaffected.
 
 ## Step rounds
 

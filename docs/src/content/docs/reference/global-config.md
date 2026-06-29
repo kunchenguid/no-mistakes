@@ -208,15 +208,17 @@ Daemon log verbosity.
 
 ### ticket_prefix_pattern
 
-Opt in to a work-item title/commit convention instead of conventional commits. When set to a regexp, no-mistakes matches it against the branch name and prepends the first match (e.g. `WEB-12345: `) to the PR title and to the commit subjects it authors during fixes.
+Opt in to a work-item title/commit convention instead of conventional commits.
+When set to a regexp, no-mistakes resolves the work-item id by matching the pattern against the branch name first, then the PR title (when a PR exists), then the first non-gate author commit subject on the branch (oldest first).
+The first source that produces a match supplies the id (e.g. `WEB-12345`), which is then prepended to the PR title and to the commit subjects the gate authors during fixes.
 
 | | |
 |---|---|
 | Type | `string` (regexp) |
 | Default | Empty (off - conventional-commit formatting) |
 
-When set, the matched id leads the PR title (with any conventional `type(scope): ` prefix stripped so the result is not double-prefixed), and authored fix commits use `<ticket>: <summary> [no-mistakes/<step>]` instead of `no-mistakes(<step>): <summary>`.
-A branch with no match falls back to conventional commits, so small changes without a ticket still work.
+When an id is resolved, it leads the PR title (with any conventional `type(scope): ` prefix stripped so the result is not double-prefixed), and authored fix commits use `<ticket>: no-mistakes(<step>): <summary>` instead of `no-mistakes(<step>): <summary>`.
+When no source carries a match, the gate falls back to conventional commits, so ticket-less changes still work.
 A blank or invalid pattern is treated as off.
 A per-repo `.no-mistakes.yaml` `ticket_prefix_pattern` overrides this when non-empty.
 
