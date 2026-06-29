@@ -68,6 +68,7 @@ type globalConfigRaw struct {
 	AutoFix              AutoFixRaw          `yaml:"auto_fix"`
 	Intent               IntentRaw           `yaml:"intent"`
 	Test                 TestRaw             `yaml:"test"`
+	TicketPrefixPattern  string              `yaml:"ticket_prefix_pattern"`
 }
 
 // RepoConfig represents .no-mistakes.yaml in a repo root.
@@ -543,6 +544,7 @@ func LoadGlobal(path string) (*GlobalConfig, error) {
 	cfg.AutoFix = raw.AutoFix
 	cfg.Intent = raw.Intent
 	cfg.Test = raw.Test
+	cfg.TicketPrefixPattern = raw.TicketPrefixPattern
 
 	return cfg, nil
 }
