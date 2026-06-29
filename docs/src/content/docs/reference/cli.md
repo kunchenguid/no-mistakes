@@ -238,6 +238,42 @@ Displays:
 - Daemon status (running/stopped, PID)
 - Active run details: ID, branch, status, head SHA, start time
 
+## no-mistakes st
+
+Top-level shortcut for `no-mistakes axi status`.
+It prints the same dense TOON run view, accepts the same `--run <id>` flag, and uses the same exit codes.
+
+```sh
+no-mistakes st
+no-mistakes st --run <id>
+```
+
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `--run` | `string` | resolved run | Inspect a specific run ID |
+
+This is a human convenience for reading the run view quickly.
+It is distinct from `no-mistakes status`, which prints the styled repository summary above.
+
+## no-mistakes lg
+
+Top-level shortcut for `no-mistakes axi logs`, with `logs` as an alias.
+It prints the same step-log output and accepts the same flags.
+
+```sh
+no-mistakes lg --step review
+no-mistakes lg --step review --full
+no-mistakes logs --step ci --run <id>
+```
+
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `--step` | `string` | (none) | Step name; required |
+| `--run` | `string` | resolved run | Run ID to inspect |
+| `--full` | `bool` | `false` | Show the entire log instead of the tail |
+
+Without `--full`, long logs show the last 40 lines and a help hint for the full log.
+
 ## no-mistakes runs
 
 List recorded pipeline runs for the current repo.

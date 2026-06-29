@@ -22,16 +22,20 @@ import (
 // logTailLines is how many trailing log lines `axi logs` shows without --full.
 const logTailLines = 40
 
-func newAxiStatusCmd() *cobra.Command {
+// newRunStatusCommand builds the run-status command shared by the agent-facing
+// `axi status` and the top-level `st` shortcut. The render body and flags are
+// identical; only the command name, help text, and telemetry surface differ so
+// the two surfaces cannot drift.
+func newRunStatusCommand(use, short, surface, path string) *cobra.Command {
 	var runID string
 	cmd := &cobra.Command{
-		Use:           "status",
-		Short:         "Show the active (or most recent) run in detail",
+		Use:           use,
+		Short:         short,
 		Args:          cobra.NoArgs,
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return trackAxiSurface("axi-status", "/axi/status", telemetry.Fields{
+			return trackAxiSurface(surface, path, telemetry.Fields{
 				"explicit_run_id": strings.TrimSpace(runID) != "",
 			}, func() error {
 				return runAxiStatus(cmd, runID)
@@ -40,6 +44,10 @@ func newAxiStatusCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&runID, "run", "", "inspect a specific run ID (default: active or most recent)")
 	return cmd
+}
+
+func newAxiStatusCmd() *cobra.Command {
+	return newRunStatusCommand("status", "Show the active (or most recent) run in detail", "axi-status", "/axi/status")
 }
 
 func runAxiStatus(cmd *cobra.Command, runID string) error {
@@ -91,17 +99,21 @@ func noRunLogsHelp() string {
 	return startRunHelp()
 }
 
-func newAxiLogsCmd() *cobra.Command {
+// newRunLogsCommand builds the step-log command shared by the agent-facing
+// `axi logs` and the top-level `lg` shortcut, parameterized by name, help text,
+// telemetry surface, and aliases so both surfaces stay byte-for-byte identical.
+func newRunLogsCommand(use, short, surface, path string, aliases []string) *cobra.Command {
 	var step, runID string
 	var full bool
 	cmd := &cobra.Command{
-		Use:           "logs",
-		Short:         "Show the log output of one pipeline step",
+		Use:           use,
+		Aliases:       aliases,
+		Short:         short,
 		Args:          cobra.NoArgs,
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return trackAxiSurface("axi-logs", "/axi/logs", telemetry.Fields{
+			return trackAxiSurface(surface, path, telemetry.Fields{
 				"step":            sanitizeAxiTelemetryStep(step),
 				"full":            full,
 				"explicit_run_id": strings.TrimSpace(runID) != "",
@@ -114,6 +126,10 @@ func newAxiLogsCmd() *cobra.Command {
 	cmd.Flags().StringVar(&runID, "run", "", "run ID (default: active or most recent)")
 	cmd.Flags().BoolVar(&full, "full", false, "show the entire log instead of the tail")
 	return cmd
+}
+
+func newAxiLogsCmd() *cobra.Command {
+	return newRunLogsCommand("logs", "Show the log output of one pipeline step", "axi-logs", "/axi/logs", nil)
 }
 
 func runAxiLogs(cmd *cobra.Command, step, runID string, full bool) error {
