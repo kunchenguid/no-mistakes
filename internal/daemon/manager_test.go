@@ -1,12 +1,15 @@
 package daemon
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
@@ -209,6 +212,93 @@ func waitForStartedBranch(t *testing.T, started <-chan string, branch string) {
 			}
 		case <-timeout:
 			t.Fatalf("run for branch %s did not start", branch)
+		}
+	}
+}
+
+// TestPushReceivedConcurrentDifferentBranchRunsAvoidSharedConfigLock fires two
+// branch pushes for the same repo at the same time so both runs hit worktree
+// creation and git-identity setup concurrently. All runs share one gate bare
+// repo, so writing identity with `git config --local` (which targets the bare's
+// shared config) made the two startups race on <bare>/config.lock and fail one
+// run with "could not lock config file ...: File exists". CopyLocalUserIdentity
+// now writes per-worktree, so the startups no longer contend. The race window
+// is during synchronous startRun, so a failure surfaces directly as the
+// push_received call's error. macOS-only in practice (Linux file locking and
+// timing hide it), but the assertion is platform-independent.
+func TestPushReceivedConcurrentDifferentBranchRunsAvoidSharedConfigLock(t *testing.T) {
+	started := make(chan string, 2)
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{&notifyBlockStep{name: types.StepReview, started: started}}
+	})
+
+	const repoID = "concurrent-config-lock-repo"
+	_, headSHA := setupTestGitRepo(t, p, d, repoID)
+
+	// Mirror a real gate: enable the per-worktree config isolation that
+	// `no-mistakes init` installs, which is what lets identity writes avoid the
+	// shared config.lock.
+	if err := git.IsolateHooksPath(context.Background(), p.RepoDir(repoID)); err != nil {
+		t.Fatalf("isolate hooks path: %v", err)
+	}
+
+	branches := []string{"feature/one", "feature/two"}
+	errs := make([]error, len(branches))
+	var wg sync.WaitGroup
+	for i, br := range branches {
+		wg.Add(1)
+		go func(i int, br string) {
+			defer wg.Done()
+			// A dedicated client per goroutine: a single client serializes
+			// calls, which would defeat the concurrency we are testing.
+			client, err := ipc.Dial(p.Socket())
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			defer client.Close()
+			var res ipc.PushReceivedResult
+			errs[i] = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+				Gate: p.RepoDir(repoID),
+				Ref:  "refs/heads/" + br,
+				Old:  "0000000000000000000000000000000000000000",
+				New:  headSHA,
+			}, &res)
+		}(i, br)
+	}
+	wg.Wait()
+
+	for i, br := range branches {
+		if errs[i] != nil {
+			t.Fatalf("concurrent push for %s failed: %v", br, errs[i])
+		}
+	}
+
+	// Drain both start signals regardless of which run won the race to begin,
+	// then confirm both branches have a live, error-free run.
+	gotStarted := make(map[string]bool, len(branches))
+	for range branches {
+		select {
+		case b := <-started:
+			gotStarted[b] = true
+		case <-time.After(3 * time.Second):
+			t.Fatalf("a concurrent run did not start (started so far: %v)", gotStarted)
+		}
+	}
+
+	for _, br := range branches {
+		if !gotStarted[br] {
+			t.Fatalf("run for branch %s did not start", br)
+		}
+		active, err := d.GetActiveRun(repoID, br)
+		if err != nil {
+			t.Fatalf("get active run for %s: %v", br, err)
+		}
+		if active == nil {
+			t.Fatalf("expected active run for %s", br)
+		}
+		if active.Status != types.RunRunning {
+			t.Fatalf("active run for %s status = %s, want running (error: %v)", br, active.Status, active.Error)
 		}
 	}
 }
