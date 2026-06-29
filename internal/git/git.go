@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
+	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
 
 // EmptyTreeSHA is the well-known SHA of an empty tree in git.
@@ -29,6 +30,7 @@ func Run(ctx context.Context, dir string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	cmd.Env = NonInteractiveEnv(dir)
+	shellenv.HideWindow(cmd)
 	out, err := cmd.Output()
 	if err != nil {
 		stderr := ""
@@ -43,6 +45,7 @@ func Run(ctx context.Context, dir string, args ...string) (string, error) {
 // InitBare creates a new bare git repository at the given path.
 func InitBare(ctx context.Context, path string) error {
 	cmd := exec.CommandContext(ctx, "git", "init", "--bare", path)
+	shellenv.HideWindow(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("git init --bare: %w: %s", err, strings.TrimSpace(string(out)))
@@ -93,6 +96,7 @@ func FindGitRoot(path string) (string, error) {
 	}
 	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
 	cmd.Dir = abs
+	shellenv.HideWindow(cmd)
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("not a git repository: %s", abs)
@@ -116,6 +120,7 @@ func FindMainRepoRoot(path string) (string, error) {
 	}
 	cmd := exec.Command("git", "rev-parse", "--git-common-dir")
 	cmd.Dir = abs
+	shellenv.HideWindow(cmd)
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("not a git repository: %s", abs)
@@ -200,6 +205,7 @@ func CurrentBranch(ctx context.Context, dir string) (string, error) {
 func IsDetachedHEAD(ctx context.Context, dir string) (bool, error) {
 	cmd := exec.CommandContext(ctx, "git", "symbolic-ref", "-q", "HEAD")
 	cmd.Dir = dir
+	shellenv.HideWindow(cmd)
 	if err := cmd.Run(); err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
 			// Exit 1 means HEAD is not a symbolic ref — detached.
@@ -374,6 +380,7 @@ func ResolveRef(ctx context.Context, dir, ref string) (string, error) {
 func RefExists(ctx context.Context, dir, ref string) (bool, error) {
 	cmd := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
 	cmd.Env = NonInteractiveEnv(dir)
+	shellenv.HideWindow(cmd)
 	if err := cmd.Run(); err != nil {
 		var ee *exec.ExitError
 		if errors.As(err, &ee) && ee.ExitCode() == 1 {

@@ -58,6 +58,11 @@ func ConfigureShellCommand(cmd *exec.Cmd) {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}
 	cmd.SysProcAttr.CreationFlags |= createNewProcessGroup
+	// CREATE_NO_WINDOW keeps spawned console programs (the agent CLIs, git,
+	// taskkill) from flashing their own console window. Their stdio is always
+	// redirected to pipes here, so no visible console is ever needed; without
+	// this flag every subprocess pops a terminal window on Windows.
+	cmd.SysProcAttr.CreationFlags |= windows.CREATE_NO_WINDOW
 	if job, err := newShellCommandJobFunc(); err == nil {
 		shellCommandJobs.Store(cmd, &shellCommandJobState{handle: job})
 		cmd.SysProcAttr.CreationFlags |= windows.CREATE_SUSPENDED
@@ -81,6 +86,7 @@ func ConfigureShellCommand(cmd *exec.Cmd) {
 		}
 		pid := strconv.Itoa(cmd.Process.Pid)
 		kill := exec.Command("taskkill", "/T", "/F", "/PID", pid)
+		HideWindow(kill)
 		err := kill.Run()
 		switch {
 		case err == nil:
@@ -140,7 +146,9 @@ func TerminateShellCommandGroup(cmd *exec.Cmd) {
 		return
 	}
 	pid := strconv.Itoa(cmd.Process.Pid)
-	_ = exec.Command("taskkill", "/T", "/F", "/PID", pid).Run()
+	kill := exec.Command("taskkill", "/T", "/F", "/PID", pid)
+	HideWindow(kill)
+	_ = kill.Run()
 }
 
 func newShellCommandJob() (windows.Handle, error) {
