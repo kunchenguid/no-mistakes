@@ -337,7 +337,8 @@ func fallbackPRContent(sctx *pipeline.StepContext, branch, commitLog, riskLine, 
 	}
 	if title == "" {
 		title = "chore: update pull request"
-	} else if ticket := prTicket(sctx, branch); ticket != "" {
+	}
+	if ticket := prTicket(sctx, branch); ticket != "" {
 		title = conventional.ApplyTicketPrefix(title, ticket)
 	} else {
 		title = conventional.TightenTitle(title)

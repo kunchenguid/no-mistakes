@@ -930,6 +930,39 @@ func TestPRStep_FallbackUsesWhatChangedAndIntent(t *testing.T) {
 	}
 }
 
+func TestPRStep_FallbackAppliesTicketPrefix(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	env, logFile := fakeGH(t, "")
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			return nil, fmt.Errorf("simulated agent failure")
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.Branch = "refs/heads/WEB-1234-fallback"
+	sctx.Config.TicketPrefixPattern = `WEB-\d+`
+
+	step := &PRStep{}
+	if _, err := step.Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+
+	logData, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ghLog := string(logData)
+
+	if !strings.Contains(ghLog, "WEB-1234:") {
+		t.Fatalf("expected fallback PR title to carry the WEB-1234 ticket prefix, got:\n%s", ghLog)
+	}
+}
+
 func TestPRStep_GitLabCreatesNewMR(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
