@@ -15,6 +15,7 @@ work. Config exists for the parts that genuinely vary by machine or repo:
 - where test evidence artifacts should be stored
 - how aggressive the auto-fix loop should be
 - whether no-mistakes should infer intent from recent local agent transcripts
+- whether PR titles and authored commits follow a work-item id convention instead of conventional commits
 
 Config is split across two files:
 
@@ -84,6 +85,11 @@ ci_timeout: "168h"  # any Go duration string, or an unlimited keyword
 # Daemon log verbosity.
 log_level: info  # debug | info | warn | error
 
+# Opt in to a work-item title/commit convention instead of conventional commits.
+# When set, the first branch-name match (e.g. "WEB-12345") is prepended to the PR
+# title and to authored fix commit subjects. No match = conventional commits.
+ticket_prefix_pattern: 'WEB-\d+'  # empty (default) = off
+
 # Max follow-up auto-fix attempts per step. 0 = disabled after the initial step pass.
 # Document fixes are attempted during the initial document pass.
 auto_fix:
@@ -137,6 +143,9 @@ ignore_patterns:
   - "*.generated.go"
   - "vendor/**"
 
+# Opt in to a work-item title/commit convention for this repo.
+ticket_prefix_pattern: 'WEB-\d+'  # empty (default) = conventional commits
+
 # Override follow-up auto-fix limits for this repo.
 # Document fixes are attempted during the initial document pass.
 auto_fix:
@@ -165,6 +174,7 @@ See [Repo Config Reference](/no-mistakes/reference/repo-config/) for the full fi
 - `auto_fix` from the repo config overlays global auto_fix. Fields not set in the repo config fall through to the global default.
 - `intent` from the repo config overlays global intent settings. Fields not set in the repo config fall through to the global default, except `intent.disabled_readers`, which adds to globally disabled readers.
 - `test.evidence` from the repo config overlays global test evidence settings. Fields not set in the repo config fall through to the global default.
+- A non-empty repo `ticket_prefix_pattern` overrides the global value; when both are empty, PR titles and authored commits use conventional-commit formatting.
 - `commands` and `ignore_patterns` are repo-only fields.
 - `ci_timeout` and `auto_fix.ci` are the canonical keys; `babysit_timeout` and `auto_fix.babysit` are still accepted as legacy aliases.
 - If `commands.test` is set, the test step runs it first as the baseline; when user intent is available, the agent may still run afterward to gather evidence-oriented validation.

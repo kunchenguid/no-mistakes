@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/conventional"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -57,7 +58,7 @@ func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summa
 	if summary == "" {
 		summary = fallbackSummary
 	}
-	commitMessage := deterministicFixCommitMessage(stepName, summary)
+	commitMessage := deterministicFixCommitMessage(sctx, stepName, summary)
 	if _, err := git.Run(ctx, sctx.WorkDir, "commit", "-m", commitMessage); err != nil {
 		return fmt.Errorf("commit %s changes: %w", stepName, err)
 	}
@@ -90,11 +91,33 @@ func extractCommitSummary(result *agent.Result) (string, error) {
 	return cleaned, nil
 }
 
-func deterministicFixCommitMessage(stepName types.StepName, summary string) string {
+func deterministicFixCommitMessage(sctx *pipeline.StepContext, stepName types.StepName, summary string) string {
 	if summary == "" {
 		summary = "apply fixes"
 	}
+	if ticket := fixCommitTicket(sctx); ticket != "" {
+		return fmt.Sprintf("%s: %s [no-mistakes/%s]", ticket, summary, stepName)
+	}
 	return fmt.Sprintf("no-mistakes(%s): %s", stepName, summary)
+}
+
+// fixedFixCommitMessage builds the subject for the non-step "apply fixes"
+// commits (push, CI) so they also lead with the work-item id when configured.
+func fixedFixCommitMessage(sctx *pipeline.StepContext, text string) string {
+	if ticket := fixCommitTicket(sctx); ticket != "" {
+		return fmt.Sprintf("%s: %s [no-mistakes]", ticket, text)
+	}
+	return fmt.Sprintf("no-mistakes: %s", text)
+}
+
+// fixCommitTicket returns the work-item id extracted from the branch when a
+// ticket_prefix_pattern is configured, or "" to keep the default
+// conventional-style "no-mistakes(<step>): ..." subject.
+func fixCommitTicket(sctx *pipeline.StepContext) string {
+	if sctx == nil || sctx.Config == nil {
+		return ""
+	}
+	return conventional.ExtractTicket(sctx.Run.Branch, sctx.Config.TicketPrefixPattern)
 }
 
 // executeFixMode runs the fix agent and commits any resulting changes. It

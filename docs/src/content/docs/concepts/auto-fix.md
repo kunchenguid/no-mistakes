@@ -104,7 +104,9 @@ Each auto-fix cycle commits its changes with a descriptive message. Agent-manage
 | Document | `no-mistakes(document): <summary>` |
 | Lint | `no-mistakes(lint): <summary>` |
 
-The push step commits any remaining uncommitted changes with `no-mistakes: apply agent fixes`.
+The push step commits any remaining uncommitted changes with `no-mistakes: apply agent fixes`, and the CI step commits its CI fixes with `no-mistakes: apply CI fixes`.
+
+When `ticket_prefix_pattern` is configured and the branch name matches it, these subjects instead lead with the matched work-item id: step commits become `<ticket>: <summary> [no-mistakes/<step>]`, and the push and CI commits become `<ticket>: apply agent fixes [no-mistakes]` and `<ticket>: apply CI fixes [no-mistakes]`. A branch with no match keeps the `no-mistakes(<step>): ...` form above.
 
 ## Step rounds
 

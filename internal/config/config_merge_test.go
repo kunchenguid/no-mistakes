@@ -176,3 +176,32 @@ func TestAutoFixLimit(t *testing.T) {
 		}
 	}
 }
+
+func TestMerge_TicketPrefixPattern(t *testing.T) {
+	t.Run("global applies when repo empty", func(t *testing.T) {
+		cfg := Merge(
+			&GlobalConfig{TicketPrefixPattern: `WEB-\d+`},
+			&RepoConfig{},
+		)
+		if cfg.TicketPrefixPattern != `WEB-\d+` {
+			t.Errorf("TicketPrefixPattern = %q, want global default", cfg.TicketPrefixPattern)
+		}
+	})
+
+	t.Run("repo overrides global when set", func(t *testing.T) {
+		cfg := Merge(
+			&GlobalConfig{TicketPrefixPattern: `WEB-\d+`},
+			&RepoConfig{TicketPrefixPattern: `JIRA-\d+`},
+		)
+		if cfg.TicketPrefixPattern != `JIRA-\d+` {
+			t.Errorf("TicketPrefixPattern = %q, want repo override", cfg.TicketPrefixPattern)
+		}
+	})
+
+	t.Run("empty by default", func(t *testing.T) {
+		cfg := Merge(&GlobalConfig{}, &RepoConfig{})
+		if cfg.TicketPrefixPattern != "" {
+			t.Errorf("TicketPrefixPattern = %q, want empty default", cfg.TicketPrefixPattern)
+		}
+	})
+}

@@ -25,6 +25,8 @@ ignore_patterns:
   - "*.generated.go"
   - "vendor/**"
 
+ticket_prefix_pattern: 'WEB-\d+'
+
 auto_fix:
   rebase: 3
   review: 3
@@ -130,6 +132,20 @@ Pattern matching rules:
 | `*.generated.go` | No slash - matches by basename |
 | `vendor/**` | Ends with `/**` - matches entire subtree |
 | `some/path/file.go` | Contains a slash - full path glob |
+
+### ticket_prefix_pattern
+
+Opt in to a work-item title/commit convention for this repo instead of conventional commits. When set to a regexp, no-mistakes matches it against the branch name and prepends the first match (e.g. `WEB-12345: `) to the PR title and to the commit subjects it authors during fixes.
+
+| | |
+|---|---|
+| Type | `string` (regexp) |
+| Default | Inherits from global (default off - conventional-commit formatting) |
+
+When set, the matched id leads the PR title (with any conventional `type(scope): ` prefix stripped so the result is not double-prefixed), and authored fix commits use `<ticket>: <summary> [no-mistakes/<step>]` instead of `no-mistakes(<step>): <summary>`.
+A branch with no match falls back to conventional commits, so small changes without a ticket still work.
+A non-empty value here overrides the global `ticket_prefix_pattern`.
+This is a non-executing field, so it is read from the pushed branch (unlike `commands` and `agent`).
 
 ### auto_fix
 

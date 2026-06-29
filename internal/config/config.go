@@ -49,6 +49,10 @@ type GlobalConfig struct {
 	AutoFix              AutoFixRaw
 	Intent               IntentRaw
 	Test                 TestRaw
+	// TicketPrefixPattern applies the work-item title/commit convention to
+	// every gated repo. A per-repo .no-mistakes.yaml value overrides it when
+	// non-empty. Empty (the default) keeps conventional-commit formatting.
+	TicketPrefixPattern string `yaml:"ticket_prefix_pattern"`
 }
 
 // globalConfigRaw is the on-disk YAML representation with duration as string.
@@ -64,6 +68,7 @@ type globalConfigRaw struct {
 	AutoFix              AutoFixRaw          `yaml:"auto_fix"`
 	Intent               IntentRaw           `yaml:"intent"`
 	Test                 TestRaw             `yaml:"test"`
+	TicketPrefixPattern  string              `yaml:"ticket_prefix_pattern"`
 }
 
 // RepoConfig represents .no-mistakes.yaml in a repo root.
@@ -81,6 +86,12 @@ type RepoConfig struct {
 	AutoFix           AutoFixRaw `yaml:"auto_fix"`
 	Intent            IntentRaw  `yaml:"intent"`
 	Test              TestRaw    `yaml:"test"`
+	// TicketPrefixPattern, when set, is a regexp matched against the branch
+	// name; the first match is prepended as "<match>: " to the PR title and to
+	// the commit subjects no-mistakes authors, and conventional-commit title
+	// tightening is skipped. Empty (the default) keeps conventional-commit
+	// formatting. Non-executing, so it is honored from the pushed branch.
+	TicketPrefixPattern string `yaml:"ticket_prefix_pattern"`
 }
 
 // Commands holds optional per-repo command overrides.
@@ -127,6 +138,7 @@ type Config struct {
 	AutoFix              AutoFix
 	Intent               Intent
 	Test                 Test
+	TicketPrefixPattern  string
 }
 
 // TestRaw is the YAML representation of test-step settings.
@@ -199,6 +211,14 @@ ci_timeout: "168h"
 # Log level for daemon output
 # Options: debug, info, warn, error
 log_level: info
+
+# Work-item title/commit convention. When set to a regexp, no-mistakes matches
+# it against the branch name and prepends the first match (e.g. "WEB-12345: ")
+# to the PR title and to the commit subjects it authors, instead of
+# conventional-commit formatting. A branch with no match falls back to
+# conventional commits, so small changes without a ticket still work. A per-repo
+# .no-mistakes.yaml ticket_prefix_pattern overrides this. Empty = off.
+# ticket_prefix_pattern: 'WEB-\d+'
 
 # Override native agent binary paths (optional)
 # agent_path_override:
@@ -524,6 +544,7 @@ func LoadGlobal(path string) (*GlobalConfig, error) {
 	cfg.AutoFix = raw.AutoFix
 	cfg.Intent = raw.Intent
 	cfg.Test = raw.Test
+	cfg.TicketPrefixPattern = raw.TicketPrefixPattern
 
 	return cfg, nil
 }
@@ -775,10 +796,14 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		AutoFix:              af,
 		Intent:               intent,
 		Test:                 test,
+		TicketPrefixPattern:  global.TicketPrefixPattern,
 	}
 
 	if repo.Agent != "" {
 		cfg.Agent = repo.Agent
+	}
+	if repo.TicketPrefixPattern != "" {
+		cfg.TicketPrefixPattern = repo.TicketPrefixPattern
 	}
 
 	return cfg

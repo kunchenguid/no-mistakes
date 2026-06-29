@@ -33,6 +33,8 @@ ci_timeout: "168h"
 
 log_level: info
 
+ticket_prefix_pattern: 'WEB-\d+'
+
 auto_fix:
   rebase: 3
   review: 0
@@ -203,6 +205,20 @@ Daemon log verbosity.
 | Type | `string` |
 | Values | `debug`, `info`, `warn`, `error` |
 | Default | `info` |
+
+### ticket_prefix_pattern
+
+Opt in to a work-item title/commit convention instead of conventional commits. When set to a regexp, no-mistakes matches it against the branch name and prepends the first match (e.g. `WEB-12345: `) to the PR title and to the commit subjects it authors during fixes.
+
+| | |
+|---|---|
+| Type | `string` (regexp) |
+| Default | Empty (off - conventional-commit formatting) |
+
+When set, the matched id leads the PR title (with any conventional `type(scope): ` prefix stripped so the result is not double-prefixed), and authored fix commits use `<ticket>: <summary> [no-mistakes/<step>]` instead of `no-mistakes(<step>): <summary>`.
+A branch with no match falls back to conventional commits, so small changes without a ticket still work.
+A blank or invalid pattern is treated as off.
+A per-repo `.no-mistakes.yaml` `ticket_prefix_pattern` overrides this when non-empty.
 
 ### auto_fix
 

@@ -28,6 +28,45 @@ func IsTitle(title string) bool {
 	return len(m) > 0 && validTypes[m[1]]
 }
 
+// ExtractTicket returns the first substring of branch matching pattern, used to
+// pull a work-item id (e.g. "WEB-12345") out of a branch name. A blank or
+// invalid pattern, or no match, yields "".
+func ExtractTicket(branch, pattern string) string {
+	pattern = strings.TrimSpace(pattern)
+	if pattern == "" {
+		return ""
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return ""
+	}
+	return re.FindString(strings.TrimSpace(branch))
+}
+
+// ApplyTicketPrefix returns "ticket: description", where description is title
+// with any leading conventional "type(scope)!: " prefix stripped so the result
+// is not double-prefixed (e.g. "docs: refresh readme" -> "WEB-1: refresh
+// readme"). A blank ticket returns title unchanged; a title that already starts
+// with the ticket is returned as-is.
+func ApplyTicketPrefix(title, ticket string) string {
+	title = strings.TrimSpace(title)
+	ticket = strings.TrimSpace(ticket)
+	if ticket == "" {
+		return title
+	}
+	if title == ticket || strings.HasPrefix(title, ticket+":") {
+		return title
+	}
+	desc := title
+	if m := titleRe.FindStringSubmatch(title); len(m) > 0 && validTypes[m[1]] {
+		desc = strings.TrimSpace(m[4])
+	}
+	if desc == "" {
+		return ticket
+	}
+	return ticket + ": " + desc
+}
+
 func TightenTitle(title string) string {
 	title = strings.TrimSpace(title)
 	if title == "" {
