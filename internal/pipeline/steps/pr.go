@@ -171,9 +171,13 @@ Diff stat:
 			content.Body = stripGeneratedSections(content.Body)
 			if content.Title != "" && content.Body != "" {
 				originalTitle := content.Title
-				content.Title = conventional.TightenTitle(content.Title)
+				if ticket := conventional.ExtractTicket(branch, sctx.Config.TicketPrefixPattern); ticket != "" {
+					content.Title = conventional.ApplyTicketPrefix(content.Title, ticket)
+				} else {
+					content.Title = conventional.TightenTitle(content.Title)
+				}
 				if content.Title != originalTitle {
-					slog.Warn("tightened agent PR title type", "from", originalTitle, "to", content.Title)
+					slog.Warn("normalized agent PR title", "from", originalTitle, "to", content.Title)
 				}
 				content.Body = appendGeneratedSections(content.Body, riskLine, testingMD, pipelineMD)
 				content.Body = prependIntentSection(content.Body, sctx)
@@ -326,6 +330,8 @@ func fallbackPRContent(sctx *pipeline.StepContext, branch, commitLog, riskLine, 
 	}
 	if title == "" {
 		title = "chore: update pull request"
+	} else if ticket := conventional.ExtractTicket(branch, sctx.Config.TicketPrefixPattern); ticket != "" {
+		title = conventional.ApplyTicketPrefix(title, ticket)
 	} else {
 		title = conventional.TightenTitle(title)
 	}

@@ -81,6 +81,12 @@ type RepoConfig struct {
 	AutoFix           AutoFixRaw `yaml:"auto_fix"`
 	Intent            IntentRaw  `yaml:"intent"`
 	Test              TestRaw    `yaml:"test"`
+	// TicketPrefixPattern, when set, is a regexp matched against the branch
+	// name; the first match is prepended as "<match>: " to the PR title and to
+	// the commit subjects no-mistakes authors, and conventional-commit title
+	// tightening is skipped. Empty (the default) keeps conventional-commit
+	// formatting. Non-executing, so it is honored from the pushed branch.
+	TicketPrefixPattern string `yaml:"ticket_prefix_pattern"`
 }
 
 // Commands holds optional per-repo command overrides.
@@ -127,6 +133,7 @@ type Config struct {
 	AutoFix              AutoFix
 	Intent               Intent
 	Test                 Test
+	TicketPrefixPattern  string
 }
 
 // TestRaw is the YAML representation of test-step settings.
@@ -775,6 +782,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		AutoFix:              af,
 		Intent:               intent,
 		Test:                 test,
+		TicketPrefixPattern:  repo.TicketPrefixPattern,
 	}
 
 	if repo.Agent != "" {

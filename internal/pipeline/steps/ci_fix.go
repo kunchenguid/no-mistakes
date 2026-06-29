@@ -129,7 +129,7 @@ func (s *CIStep) commitAndPush(sctx *pipeline.StepContext) (bool, error) {
 	if _, err := stepGitRun(sctx, "add", "-A"); err != nil {
 		return false, fmt.Errorf("stage CI changes: %w", err)
 	}
-	if _, err := stepGitRun(sctx, "commit", "-m", "no-mistakes: apply CI fixes"); err != nil {
+	if _, err := stepGitRun(sctx, "commit", "-m", fixedFixCommitMessage(sctx, "apply CI fixes")); err != nil {
 		return false, fmt.Errorf("commit: %w", err)
 	}
 	headSHA, err := stepGitHeadSHA(sctx)

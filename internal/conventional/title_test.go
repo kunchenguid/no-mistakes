@@ -108,3 +108,55 @@ func TestIsTitle(t *testing.T) {
 		})
 	}
 }
+
+func TestExtractTicket(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		branch  string
+		pattern string
+		want    string
+	}{
+		{"web ticket", "WEB-12345-refresh-readme", `WEB-\d+`, "WEB-12345"},
+		{"refs prefix", "refs/heads/WEB-7", `WEB-\d+`, "WEB-7"},
+		{"no match falls through", "docs/readme-refresh", `WEB-\d+`, ""},
+		{"empty pattern disables", "WEB-1", "", ""},
+		{"invalid pattern is safe", "WEB-1", `WEB-(`, ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := ExtractTicket(tc.branch, tc.pattern); got != tc.want {
+				t.Fatalf("ExtractTicket(%q, %q) = %q, want %q", tc.branch, tc.pattern, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestApplyTicketPrefix(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		title  string
+		ticket string
+		want   string
+	}{
+		{"strips conventional type", "docs: refresh README setup", "WEB-12345", "WEB-12345: refresh README setup"},
+		{"strips type with scope", "feat(cli): add wizard", "WEB-9", "WEB-9: add wizard"},
+		{"plain title gets prefix", "refresh README setup", "WEB-1", "WEB-1: refresh README setup"},
+		{"already prefixed is unchanged", "WEB-1: refresh README", "WEB-1", "WEB-1: refresh README"},
+		{"empty ticket leaves title", "docs: refresh README", "", "docs: refresh README"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := ApplyTicketPrefix(tc.title, tc.ticket); got != tc.want {
+				t.Fatalf("ApplyTicketPrefix(%q, %q) = %q, want %q", tc.title, tc.ticket, got, tc.want)
+			}
+		})
+	}
+}
