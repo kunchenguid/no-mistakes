@@ -16,6 +16,14 @@ This is a soft boundary, not OS-level sandbox enforcement.
 The steering still allows requested test evidence under the managed temporary `no-mistakes-evidence` directory or the configured in-repo evidence directory, plus incidental temp or cache writes from normal development tools.
 Configured shell commands and one-shot agent subprocesses are scoped to their step: when the invocation exits, fails, or is cancelled, no-mistakes terminates remaining child processes it spawned so background workers do not outlive the run.
 
+## Integration branch
+
+Rebase, review, test, document, lint, and PR all target an *integration branch*: the branch the pipeline rebases onto, diffs against, and opens the PR into.
+By default this is the repository's auto-detected default branch.
+`no-mistakes init --base-branch <branch>` points it at another branch persistently, and `no-mistakes axi run --base <branch>` overrides it for a single run - useful for a GitFlow layout where the host default is `main` but the team integrates on `develop`.
+The override moves only this diff/rebase/PR target; the trusted-config root (`commands`, `agent`) stays pinned to the auto-detected default branch, so a contributor cannot relocate the trust source by changing the base.
+Where a per-step description below names the default branch as a rebase, diff, or PR base, it means the integration branch, which is the default branch unless an override is set.
+
 ## Intent
 
 Uses agent-supplied intent when a run provides it, otherwise infers the author's intent from recent local Claude Code, Codex, OpenCode, Rovo Dev, Pi, or GitHub Copilot CLI transcripts.
@@ -153,7 +161,7 @@ This step never requires approval - it runs automatically after review, test, do
 Creates or updates a pull request.
 
 **Skipped when:**
-- The branch is the default branch
+- The branch is the integration branch (the configured base branch, or the default branch when no base override is set)
 - The upstream host is not GitHub, GitLab, or Bitbucket Cloud (`bitbucket.org`)
 - The provider CLI (`gh` or `glab`) is not installed for GitHub or GitLab
 - The provider CLI is not authenticated for GitHub or GitLab
@@ -186,15 +194,15 @@ Monitors PR health after creation and auto-fixes CI failures. Mergeability polli
 **Behavior:**
 - Polls provider CI status at increasing intervals: every 30s for the first 5 minutes, every 60s for 5-15 minutes, every 120s after that
 - Continues monitoring an open PR until it is merged, closed, declined, or the configured `ci_timeout` idle window elapses, even after CI checks are currently healthy
-- Treats `ci_timeout` as an idle timeout: each upstream default-branch advance re-arms the timer, and `ci_timeout: "unlimited"` disables self-termination
+- Treats `ci_timeout` as an idle timeout: each upstream integration-branch advance re-arms the timer, and `ci_timeout: "unlimited"` disables self-termination
 - On GitHub and GitLab, polls provider mergeability alongside CI checks while the PR remains open
 - While the PR stays open, the TUI and terminal title show `Checks passed` once checks are green and known mergeability is clear, and `no-mistakes axi` returns `outcome: checks-passed` with successful-output reporting instructions so agents can summarize the run, ask the user to review and merge, and list any pipeline fixes instead of waiting
-- If the default branch moves after `checks-passed`, keeps watching the same PR; a clean behind PR needs no action, while an actual GitHub or GitLab merge conflict is auto-fixed by rebasing onto the base and re-pushing through the force-push safety guard
+- If the integration branch moves after `checks-passed`, keeps watching the same PR; a clean behind PR needs no action, while an actual GitHub or GitLab merge conflict is auto-fixed by rebasing onto the base and re-pushing through the force-push safety guard
 - The ready signal clears if checks start running again, new failures appear, provider state becomes uncertain, or the PR is merged, closed, or declined
 - Waits a 60s grace period before trusting empty results (CI checks may not have registered yet)
 - If CI failures or, on GitHub or GitLab, a merge conflict are already known while other checks are still pending: waits for all checks to finish before attempting an auto-fix
 - On CI failure: fetches failed job logs (GitHub via `gh run view --log-failed`, GitLab via `glab ci trace`, Bitbucket Cloud via failed pipeline step logs), sends them to the agent with user intent when available, and, if the agent produces changes, commits them and uses the same force-push safety guard as the push step
-- On GitHub or GitLab merge conflict: asks the agent to rebase onto the latest default-branch tip and make the smallest correct root-cause fix for the conflicts, using user intent when available
+- On GitHub or GitLab merge conflict: asks the agent to rebase onto the latest integration-branch tip and make the smallest correct root-cause fix for the conflicts, using user intent when available
 - If both CI failures and a GitHub or GitLab merge conflict are present: fixes both in the same attempt
 - If a fix attempt produces no changes: automatic mode leaves the failure undeduplicated so it can retry until the auto-fix limit, while manual fix mode returns immediately for manual intervention
 - Deduplicates fix attempts only after a fix is actually committed and pushed

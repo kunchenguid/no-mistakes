@@ -88,6 +88,21 @@ Re-running `no-mistakes init` later preserves the stored fork URL unless you pas
 Fork routing currently requires both `origin` and `--fork-url` to be GitHub remotes with owner/repo paths.
 GitLab and Bitbucket fork MR/PR routing are not implemented yet; if a legacy or manually edited repo record has `fork_url` set for those providers, PR creation skips instead of opening an unsafe self PR.
 
+## Non-default PR base branch
+
+By default the PR step opens PRs against your auto-detected default branch.
+For a GitFlow layout where the host default is `main` but the team integrates on `develop`, set a base branch so the pipeline rebases onto, diffs against, and opens PRs into it instead:
+
+```sh
+no-mistakes init --base-branch develop
+```
+
+This applies to all three hosts.
+The branch must already exist on origin; `init` rejects a base branch origin does not have so a typo fails upfront.
+Re-running `no-mistakes init` preserves the stored base branch unless you pass a new `--base-branch`.
+For a one-off run against a different base without changing the stored value, use `no-mistakes axi run --base <branch>`.
+The override moves only the rebase/diff/PR target; the trusted-config root (`commands`, `agent`) stays on the default branch.
+
 ## GitLab
 
 Install the GitLab CLI and authenticate:

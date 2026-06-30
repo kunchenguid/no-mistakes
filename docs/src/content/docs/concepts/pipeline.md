@@ -81,6 +81,7 @@ You can't reorder steps. You *can*:
 - Control auto-fix limits per step.
 - Ignore paths during review and documentation checks.
 - Disable or tune transcript-based intent extraction when intent is not supplied directly.
+- Point the pipeline at a non-default integration branch (the rebase/diff/PR target) with `no-mistakes init --base-branch <branch>` or for one run with `no-mistakes axi run --base <branch>`; the trusted-config root (`commands`, `agent`) stays on the default branch.
 - Skip steps for one run with `no-mistakes --skip <steps>`, `git push -o no-mistakes.skip=<steps>`, `no-mistakes axi run --skip <steps>`, or from the TUI.
 
 See [Configuration](/no-mistakes/guides/configuration/).
