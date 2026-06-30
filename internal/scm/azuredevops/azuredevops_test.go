@@ -163,6 +163,33 @@ func TestCreatePRConstructsURL(t *testing.T) {
 	}
 }
 
+func TestCreatePRTruncatesOverlongDescription(t *testing.T) {
+	t.Parallel()
+
+	// A body well over Azure DevOps' 4000-character description cap. Before the
+	// clamp, CreatePR passed this verbatim and az rejected it with
+	// "Invalid argument value. ... must not be longer than 4000 characters".
+	body := strings.Repeat("x", 5000)
+	clamped := scm.ClampPRBody(body, scm.MaxPRBodyChars(scm.ProviderAzureDevOps))
+	if scm.PRBodyLen(clamped) > 4000 {
+		t.Fatalf("clamped description left %d units, want <= 4000", scm.PRBodyLen(clamped))
+	}
+
+	key := "az repos pr create --source-branch feature --target-branch main --title T --description " + clamped +
+		" --organization " + testOrg + " --project " + testProject + " --repository " + testRepo + " --output json"
+	h := newTestHost(map[string]azdoTestResponse{
+		key: {stdout: `{"pullRequestId":7}` + "\n"},
+	})
+
+	pr, err := h.CreatePR(context.Background(), "feature", "main", scm.PRContent{Title: "T", Body: body})
+	if err != nil {
+		t.Fatalf("CreatePR() error = %v", err)
+	}
+	if pr.Number != "7" {
+		t.Fatalf("CreatePR() number = %q, want 7", pr.Number)
+	}
+}
+
 func TestGetPRState(t *testing.T) {
 	t.Parallel()
 

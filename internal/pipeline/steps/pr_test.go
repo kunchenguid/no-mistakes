@@ -15,6 +15,8 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -716,6 +718,85 @@ func TestAppendGeneratedSections_StripsAgentGeneratedSections(t *testing.T) {
 	}
 }
 
+func TestAssemblePRBody_NoLimitKeepsEverything(t *testing.T) {
+	t.Parallel()
+	sctx := &pipeline.StepContext{UserIntent: "wanted a Bar() helper"}
+	testing := "## Testing\n\n```text\n" + strings.Repeat("log ", 2000) + "\n```"
+
+	got := assemblePRBody(sctx, "## What Changed\n\n- add Bar()", "low risk", testing, "## Pipeline\n\n- ok", 0)
+
+	for _, want := range []string{"## Intent", "## What Changed", "## Risk Assessment", "## Testing", "## Pipeline"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("unlimited body missing %q section:\n%s", want, got)
+		}
+	}
+}
+
+func TestAssemblePRBody_DropsTestingEmbedsToFitAzureCap(t *testing.T) {
+	t.Parallel()
+	sctx := &pipeline.StepContext{UserIntent: "wanted a Bar() helper for foo callers"}
+	limit := scm.MaxPRBodyChars(scm.ProviderAzureDevOps) // 4000
+
+	// A Testing section whose embedded logs alone blow well past the cap.
+	testing := "## Testing\n\n```text\n" + strings.Repeat("verbose test log line\n", 600) + "```"
+
+	got := assemblePRBody(sctx,
+		"## What Changed\n\n- add Bar() helper",
+		"behavior preserved; low risk",
+		testing,
+		"## Pipeline\n\n- review: pass\n- tests: pass",
+		limit,
+	)
+
+	if scm.PRBodyLen(got) > limit {
+		t.Fatalf("assembled body = %d units, want <= %d", scm.PRBodyLen(got), limit)
+	}
+	// The Intent / What Changed / Risk / Pipeline narrative survives...
+	for _, want := range []string{"## Intent", "wanted a Bar() helper", "## What Changed", "## Risk Assessment", "## Pipeline"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("budgeted body dropped required content %q:\n%s", want, got)
+		}
+	}
+	// ...and the unbounded Testing log dump is what got shed, not hard-truncated mid-section.
+	if strings.Contains(got, "verbose test log line") {
+		t.Fatalf("expected embedded test logs to be shed under the cap, got:\n%s", got)
+	}
+	if strings.HasSuffix(got, prTruncationTail()) {
+		t.Fatalf("did not expect a hard clamp when dropping Testing was enough:\n%s", got)
+	}
+}
+
+func TestAssemblePRBody_ClampsWhenCoreAloneExceedsCap(t *testing.T) {
+	t.Parallel()
+	// An Intent so long that even Intent + What Changed overruns the cap, with no
+	// Testing section to drop. The clamp backstop must keep it within budget.
+	sctx := &pipeline.StepContext{UserIntent: strings.Repeat("x", 6000)}
+	limit := scm.MaxPRBodyChars(scm.ProviderAzureDevOps)
+
+	got := assemblePRBody(sctx, "## What Changed\n\n- add Bar()", "low risk", "", "## Pipeline\n\n- ok", limit)
+
+	if scm.PRBodyLen(got) > limit {
+		t.Fatalf("clamped body = %d units, want <= %d", scm.PRBodyLen(got), limit)
+	}
+}
+
+func prTruncationTail() string {
+	// Mirror of scm's truncation marker for assertions; kept here so the test
+	// reads naturally without exporting the constant.
+	return "(description truncated)"
+}
+
+func TestPRBodyBudgetPromptSection(t *testing.T) {
+	t.Parallel()
+	if got := prBodyBudgetPromptSection(0); got != "" {
+		t.Fatalf("prBodyBudgetPromptSection(0) = %q, want empty", got)
+	}
+	got := prBodyBudgetPromptSection(4000)
+	if !strings.Contains(got, "4000 characters") || !strings.Contains(got, "What Changed") {
+		t.Fatalf("prBodyBudgetPromptSection(4000) missing budget guidance: %q", got)
+	}
+}
+
 func TestAppendGeneratedSections_StripsCommonHeadingVariants(t *testing.T) {
 	body := "## Summary\n\n- improve PR descriptions\n\n## tests:\n\n- model-added testing\n\n## risk assessment\n\nold risk\n\n## Pipeline:\n\nold pipeline"
 
@@ -1157,7 +1238,7 @@ func TestPRStep_BuildPRContentTruncatesGeneratedPipelineUpdates(t *testing.T) {
 		}
 	}
 
-	content, err := (&PRStep{}).buildPRContent(sctx, "feature", baseSHA)
+	content, err := (&PRStep{}).buildPRContent(sctx, "feature", baseSHA, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1258,6 +1339,7 @@ func TestFallbackPRContentCapsBodyAfterPrependedIntent(t *testing.T) {
 		"✅ Low: generated PR body length guard only",
 		"## Testing\n\n- go test ./internal/pipeline/steps",
 		pipelineMarkdownForTest(rounds...),
+		0,
 	)
 
 	assertGitHubBodyLimitForTest(t, content.Body)
@@ -1775,7 +1857,7 @@ func TestPRStep_PromptRequiresReleaseTypesForProductImpact(t *testing.T) {
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 
 	step := &PRStep{}
-	if _, err := step.buildPRContent(sctx, "feature", baseSHA); err != nil {
+	if _, err := step.buildPRContent(sctx, "feature", baseSHA, 0); err != nil {
 		t.Fatal(err)
 	}
 	if len(ag.calls) != 1 {

@@ -31,6 +31,14 @@ func outputJSON(cmd *exec.Cmd) ([]byte, error) {
 	return out, nil
 }
 
+// clampDescription truncates body to Azure DevOps' PR-description cap. The
+// pipeline already budgets the body to fit (shedding whole sections), so this
+// is the connector-level backstop that guarantees `az repos pr create`/`update`
+// never sees an over-length description, no matter how the body was produced.
+func clampDescription(body string) string {
+	return scm.ClampPRBody(body, scm.MaxPRBodyChars(scm.ProviderAzureDevOps))
+}
+
 // CmdFactory builds an exec.Cmd in the caller's workdir with the caller's env.
 type CmdFactory func(ctx context.Context, name string, args ...string) *exec.Cmd
 
@@ -140,7 +148,7 @@ func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PR
 		"--source-branch", branch,
 		"--target-branch", base,
 		"--title", content.Title,
-		"--description", content.Body,
+		"--description", clampDescription(content.Body),
 	}
 	args = append(args, h.scopeArgs()...)
 	args = append(args, "--output", "json")
@@ -162,7 +170,7 @@ func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) 
 	}
 	args := []string{"repos", "pr", "update", "--id", id,
 		"--title", content.Title,
-		"--description", content.Body,
+		"--description", clampDescription(content.Body),
 	}
 	args = append(args, h.orgArgs()...)
 	args = append(args, "--output", "json")

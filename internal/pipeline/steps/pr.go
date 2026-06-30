@@ -74,7 +74,7 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 
 	// Resolve the branch base so PR summaries cover the full branch delta.
 	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
-	content, err := s.buildPRContent(sctx, branch, baseSHA)
+	content, err := s.buildPRContent(sctx, branch, baseSHA, scm.MaxPRBodyChars(provider))
 	if err != nil {
 		return nil, err
 	}
@@ -128,7 +128,7 @@ func describePR(pr *scm.PR) string {
 	return ""
 }
 
-func (s *PRStep) buildPRContent(sctx *pipeline.StepContext, branch, baseSHA string) (prContent, error) {
+func (s *PRStep) buildPRContent(sctx *pipeline.StepContext, branch, baseSHA string, bodyLimit int) (prContent, error) {
 	ctx := sctx.Ctx
 	commitLog, _ := git.Log(ctx, sctx.WorkDir, baseSHA, sctx.Run.HeadSHA)
 	diffStat, _ := git.Run(ctx, sctx.WorkDir, "diff", "--stat", baseSHA+".."+sctx.Run.HeadSHA)
@@ -167,6 +167,8 @@ Commit history:
 Diff stat:
 %s%s%s%s`, branch, baseSHA, sctx.Run.HeadSHA, sctx.Repo.DefaultBranch, conventional.ReleaseTypeRule, commitLog, diffStat, pipelineContext, userIntentPromptSection(sctx), executionContextPromptSection())
 
+	prompt += prBodyBudgetPromptSection(bodyLimit)
+
 	result, err := sctx.Agent.Run(ctx, agent.RunOpts{
 		Prompt:     prompt,
 		CWD:        sctx.WorkDir,
@@ -175,7 +177,7 @@ Diff stat:
 	})
 	if err != nil {
 		slog.Warn("agent failed for PR content, using fallback", "error", err)
-		return fallbackPRContent(sctx, branch, commitLog, riskLine, testingMD, pipelineMD), nil
+		return fallbackPRContent(sctx, branch, commitLog, riskLine, testingMD, pipelineMD, bodyLimit), nil
 	}
 
 	var content prContent
@@ -191,13 +193,17 @@ Diff stat:
 				if content.Title != originalTitle {
 					slog.Warn("tightened agent PR title type", "from", originalTitle, "to", content.Title)
 				}
-				content.Body = buildPRBody(content.Body, riskLine, testingMD, pipelineMD, sctx)
+				if bodyLimit > 0 {
+					content.Body = assemblePRBody(sctx, content.Body, riskLine, testingMD, pipelineMD, bodyLimit)
+				} else {
+					content.Body = buildPRBody(content.Body, riskLine, testingMD, pipelineMD, sctx)
+				}
 				return content, nil
 			}
 		}
 	}
 
-	return fallbackPRContent(sctx, branch, commitLog, riskLine, testingMD, pipelineMD), nil
+	return fallbackPRContent(sctx, branch, commitLog, riskLine, testingMD, pipelineMD, bodyLimit), nil
 }
 
 // buildPipelineSection queries step results and rounds from the DB and
@@ -243,6 +249,40 @@ func unwrapNestedPRBody(body string) string {
 
 // appendGeneratedSections appends deterministic sections after the agent's body
 // and applies the PR body length guard.
+// prBodyBudgetPromptSection tells the drafting agent about a host's PR-body
+// character cap so it keeps its "## What Changed" section short. The Intent,
+// Risk, Testing, and Pipeline sections are appended deterministically, so the
+// agent only controls a slice of the budget; this nudge keeps that slice small.
+// Returns "" when the provider has no practical limit (bodyLimit <= 0).
+func prBodyBudgetPromptSection(bodyLimit int) string {
+	if bodyLimit <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("\n\n- This repository's host caps the entire PR description at %d characters. The Intent, Risk Assessment, Testing, and Pipeline sections are appended automatically, so keep the \"## What Changed\" section to a few short bullet points.", bodyLimit)
+}
+
+// assemblePRBody composes the final PR body from its sections and keeps it
+// within bodyLimit (0 = unlimited). When the full body overruns the cap it
+// first drops the Testing section - the only one that embeds artifact and log
+// file contents and is therefore effectively unbounded - so an Azure DevOps PR
+// sheds log dumps while keeping its Intent, What Changed, Risk, and Pipeline
+// narrative intact. ClampPRBody is the final backstop when even that core
+// overruns (e.g. an unusually long Intent).
+func assemblePRBody(sctx *pipeline.StepContext, whatChanged, riskLine, testingMD, pipelineMD string, bodyLimit int) string {
+	full := prependIntentSection(appendGeneratedSections(whatChanged, riskLine, testingMD, pipelineMD), sctx)
+	if bodyLimit <= 0 || scm.PRBodyLen(full) <= bodyLimit {
+		return full
+	}
+	if testingMD != "" {
+		core := prependIntentSection(appendGeneratedSections(whatChanged, riskLine, "", pipelineMD), sctx)
+		if scm.PRBodyLen(core) <= bodyLimit {
+			return core
+		}
+		return scm.ClampPRBody(core, bodyLimit)
+	}
+	return scm.ClampPRBody(full, bodyLimit)
+}
+
 func appendGeneratedSections(body, riskLine, testingMD, pipelineMD string) string {
 	body = stripGeneratedSections(body)
 	return appendGeneratedSectionsToCleanBody(body, riskLine, testingMD, pipelineMD)
@@ -907,7 +947,7 @@ func prependIntentSection(body string, sctx *pipeline.StepContext) string {
 	return section + "\n\n" + body
 }
 
-func fallbackPRContent(sctx *pipeline.StepContext, branch, commitLog, riskLine, testingMD, pipelineMD string) prContent {
+func fallbackPRContent(sctx *pipeline.StepContext, branch, commitLog, riskLine, testingMD, pipelineMD string, bodyLimit int) prContent {
 	title := ""
 	for _, line := range strings.Split(commitLog, "\n") {
 		line = strings.TrimSpace(line)
@@ -931,7 +971,11 @@ func fallbackPRContent(sctx *pipeline.StepContext, branch, commitLog, riskLine, 
 	if body == "## What Changed\n\n" {
 		body = fmt.Sprintf("## What Changed\n\n- %s", title)
 	}
-	body = buildPRBody(body, riskLine, testingMD, pipelineMD, sctx)
+	if bodyLimit > 0 {
+		body = assemblePRBody(sctx, body, riskLine, testingMD, pipelineMD, bodyLimit)
+	} else {
+		body = buildPRBody(body, riskLine, testingMD, pipelineMD, sctx)
+	}
 	return prContent{
 		Title: title,
 		Body:  body,
