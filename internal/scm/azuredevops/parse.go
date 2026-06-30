@@ -78,10 +78,14 @@ func normalizeMergeableState(raw string) scm.MergeableState {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "succeeded":
 		return scm.MergeableOK
-	case "conflicts", "rejectedbypolicy", "failure":
+	case "conflicts":
 		return scm.MergeableConflict
 	default:
-		// notSet, queued, and unknown statuses are still resolving.
+		// notSet, queued, rejectedByPolicy, failure, and unknown statuses are
+		// not git merge conflicts: rejectedByPolicy means branch policies are
+		// unsatisfied (surfaced separately as checks), and failure is a generic
+		// often-transient async merge computation result. Treating them as
+		// pending avoids driving the CI auto-fix loop into pointless rebases.
 		return scm.MergeablePending
 	}
 }

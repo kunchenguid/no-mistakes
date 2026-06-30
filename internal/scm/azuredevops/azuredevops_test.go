@@ -164,7 +164,8 @@ func TestGetMergeableState(t *testing.T) {
 	}{
 		{"succeeded", scm.MergeableOK},
 		{"conflicts", scm.MergeableConflict},
-		{"rejectedByPolicy", scm.MergeableConflict},
+		{"rejectedByPolicy", scm.MergeablePending},
+		{"failure", scm.MergeablePending},
 		{"queued", scm.MergeablePending},
 		{"notSet", scm.MergeablePending},
 	}
