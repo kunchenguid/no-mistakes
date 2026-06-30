@@ -104,6 +104,43 @@ func TestFindPRNoMatch(t *testing.T) {
 	}
 }
 
+func TestFindPRIgnoresStderrChatter(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHost(map[string]azdoTestResponse{
+		"az repos pr list --source-branch feature --status active --target-branch main --organization " + testOrg + " --project " + testProject + " --repository " + testRepo + " --output json": {
+			stdout: `[{"pullRequestId":42,"status":"active","repository":{"webUrl":"https://dev.azure.com/myorg/myproject/_git/myrepo"}}]` + "\n",
+			stderr: "Command group 'repos pr' is in preview and under development.\n",
+		},
+	})
+
+	pr, err := h.FindPR(context.Background(), "feature", "main")
+	if err != nil {
+		t.Fatalf("FindPR() error = %v", err)
+	}
+	if pr == nil || pr.Number != "42" {
+		t.Fatalf("FindPR() = %+v, want PR 42 (stderr chatter must not corrupt JSON)", pr)
+	}
+}
+
+func TestFindPRReportsParseError(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHost(map[string]azdoTestResponse{
+		"az repos pr list --source-branch feature --status active --target-branch main --organization " + testOrg + " --project " + testProject + " --repository " + testRepo + " --output json": {
+			stdout: "not json at all\n",
+		},
+	})
+
+	pr, err := h.FindPR(context.Background(), "feature", "main")
+	if err == nil {
+		t.Fatalf("FindPR() error = nil, want parse error (must not be silently treated as no-PR)")
+	}
+	if pr != nil {
+		t.Fatalf("FindPR() = %+v, want nil on parse failure", pr)
+	}
+}
+
 func TestCreatePRConstructsURL(t *testing.T) {
 	t.Parallel()
 

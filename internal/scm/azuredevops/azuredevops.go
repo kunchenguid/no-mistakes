@@ -3,6 +3,7 @@
 package azuredevops
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,22 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
+
+// outputJSON runs cmd and returns its stdout alone, leaving stderr out of the
+// payload so non-JSON az chatter (preview-command notices, token-refresh
+// messages) cannot corrupt the bytes a caller json.Unmarshal's. On failure it
+// surfaces the separately-captured stderr in the error.
+func outputJSON(cmd *exec.Cmd) ([]byte, error) {
+	out, err := cmd.Output()
+	if err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) && len(bytes.TrimSpace(ee.Stderr)) > 0 {
+			return nil, fmt.Errorf("%s: %w", strings.TrimSpace(string(ee.Stderr)), err)
+		}
+		return nil, err
+	}
+	return out, nil
+}
 
 // CmdFactory builds an exec.Cmd in the caller's workdir with the caller's env.
 type CmdFactory func(ctx context.Context, name string, args ...string) *exec.Cmd
@@ -101,12 +118,18 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 	}
 	args = append(args, h.scopeArgs()...)
 	args = append(args, "--output", "json")
-	out, err := h.cmd(ctx, "az", args...).CombinedOutput()
+	out, err := outputJSON(h.cmd(ctx, "az", args...))
 	if err != nil {
-		return nil, fmt.Errorf("az repos pr list: %s: %w", strings.TrimSpace(string(out)), err)
+		return nil, fmt.Errorf("az repos pr list: %w", err)
+	}
+	if len(bytes.TrimSpace(out)) == 0 {
+		return nil, nil
 	}
 	var prs []azPR
-	if err := json.Unmarshal(out, &prs); err != nil || len(prs) == 0 {
+	if err := json.Unmarshal(out, &prs); err != nil {
+		return nil, fmt.Errorf("az repos pr list: parse response: %w", err)
+	}
+	if len(prs) == 0 {
 		return nil, nil
 	}
 	return h.toPR(&prs[0]), nil
@@ -121,9 +144,9 @@ func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PR
 	}
 	args = append(args, h.scopeArgs()...)
 	args = append(args, "--output", "json")
-	out, err := h.cmd(ctx, "az", args...).CombinedOutput()
+	out, err := outputJSON(h.cmd(ctx, "az", args...))
 	if err != nil {
-		return nil, fmt.Errorf("az repos pr create: %s: %w", strings.TrimSpace(string(out)), err)
+		return nil, fmt.Errorf("az repos pr create: %w", err)
 	}
 	var pr azPR
 	if err := json.Unmarshal(out, &pr); err != nil {
@@ -164,9 +187,9 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 	}
 	args := append([]string{"repos", "pr", "policy", "list", "--id", id}, h.orgArgs()...)
 	args = append(args, "--output", "json")
-	out, err := h.cmd(ctx, "az", args...).CombinedOutput()
+	out, err := outputJSON(h.cmd(ctx, "az", args...))
 	if err != nil {
-		return nil, fmt.Errorf("az repos pr policy list: %s: %w", strings.TrimSpace(string(out)), err)
+		return nil, fmt.Errorf("az repos pr policy list: %w", err)
 	}
 	var evals []policyEval
 	if err := json.Unmarshal(out, &evals); err != nil {
@@ -211,9 +234,9 @@ func (h *Host) showPR(ctx context.Context, pr *scm.PR) (*azPR, error) {
 	}
 	args := append([]string{"repos", "pr", "show", "--id", id}, h.orgArgs()...)
 	args = append(args, "--output", "json")
-	out, err := h.cmd(ctx, "az", args...).CombinedOutput()
+	out, err := outputJSON(h.cmd(ctx, "az", args...))
 	if err != nil {
-		return nil, fmt.Errorf("az repos pr show: %s: %w", strings.TrimSpace(string(out)), err)
+		return nil, fmt.Errorf("az repos pr show: %w", err)
 	}
 	var got azPR
 	if err := json.Unmarshal(out, &got); err != nil {
