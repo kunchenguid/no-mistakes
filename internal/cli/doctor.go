@@ -53,6 +53,12 @@ func newDoctorCmd() *cobra.Command {
 					ok("gh            ", "ok")
 				}
 
+				if _, err := exec.LookPath("az"); err != nil {
+					warn("az            ", "not found "+sDim.Render("(optional, needed for Azure DevOps PR/CI)"))
+				} else {
+					ok("az            ", "ok")
+				}
+
 				p, err := paths.New()
 				if err != nil {
 					fail("data directory", fmt.Sprintf("error resolving paths (%v)", err))

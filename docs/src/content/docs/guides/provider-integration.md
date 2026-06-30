@@ -1,10 +1,11 @@
 ---
 title: Provider Integration
-description: Set up GitHub, GitLab, or Bitbucket Cloud for PR creation and CI monitoring.
+description: Set up GitHub, GitLab, Bitbucket Cloud, or Azure DevOps for PR creation and CI monitoring.
 ---
 
-The PR and CI steps need to talk to your git host. Three hosts are supported:
-GitHub, GitLab, and Bitbucket Cloud (`bitbucket.org`). Everything else
+The PR and CI steps need to talk to your git host. Four hosts are supported:
+GitHub, GitLab, Bitbucket Cloud (`bitbucket.org`), and Azure DevOps
+(`dev.azure.com` and legacy `*.visualstudio.com`). Everything else
 short-circuits the PR and CI steps with `skipped`.
 
 Provider integration is optional for the local gate. You only need it for the
@@ -24,12 +25,13 @@ What you do not get is PR automation and CI monitoring.
 
 ## What each step needs
 
-| Step | GitHub | GitLab | Bitbucket Cloud |
-|---|---|---|---|
-| **PR** (create/update) | `gh` CLI, authenticated | `glab` CLI, authenticated | `NO_MISTAKES_BITBUCKET_EMAIL` + `NO_MISTAKES_BITBUCKET_API_TOKEN` |
-| **CI** (polling, auto-fix) | `gh` CLI | `glab` CLI | same env vars |
-| **Merge conflict auto-fix** | `gh` CLI | `glab` CLI | not supported |
-| **Mergeability polling** | `gh` CLI | `glab` CLI | not supported |
+| Step | GitHub | GitLab | Bitbucket Cloud | Azure DevOps |
+|---|---|---|---|---|
+| **PR** (create/update) | `gh` CLI, authenticated | `glab` CLI, authenticated | `NO_MISTAKES_BITBUCKET_EMAIL` + `NO_MISTAKES_BITBUCKET_API_TOKEN` | `az` CLI + `azure-devops` extension, authenticated |
+| **CI** (polling, auto-fix) | `gh` CLI | `glab` CLI | same env vars | `az` CLI |
+| **Merge conflict auto-fix** | `gh` CLI | `glab` CLI | not supported | `az` CLI |
+| **Mergeability polling** | `gh` CLI | `glab` CLI | not supported | `az` CLI |
+| **Failed check log fetching** | `gh` CLI | `glab` CLI | supported | not yet |
 
 ## What changes when provider wiring is present
 
@@ -136,6 +138,48 @@ Get an API token from [Bitbucket account settings](https://bitbucket.org/account
 
 These are GitHub and GitLab only right now.
 
+## Azure DevOps
+
+Azure DevOps uses the Azure CLI with the `azure-devops` extension. Install both
+and authenticate:
+
+```sh
+# macOS
+brew install azure-cli
+
+# Linux / Windows
+# see https://learn.microsoft.com/en-us/cli/azure/install-azure-cli
+
+az extension add --name azure-devops
+
+# Authenticate with a Personal Access Token (Code: Read & Write, Pull Request
+# Threads, Build: Read). Either run `az devops login` and paste the PAT, or
+# export it for non-interactive use:
+export AZURE_DEVOPS_EXT_PAT=your-pat
+```
+
+Create a PAT from **User settings → Personal access tokens** in your Azure
+DevOps organization. The daemon inherits `AZURE_DEVOPS_EXT_PAT` from the
+environment it runs under, the same way the GitHub backend inherits `gh` auth.
+
+Both `https://dev.azure.com/{org}/{project}/_git/{repo}` and the legacy
+`https://{org}.visualstudio.com/{project}/_git/{repo}` remotes are detected, as
+well as their SSH forms (`git@ssh.dev.azure.com:v3/...`).
+
+**What you get:**
+
+- PR creation and update (`az repos pr create` / `update`)
+- CI status polling - Azure branch policy evaluations (build validation and
+  status checks) are read via `az repos pr policy list` until the PR is
+  completed, abandoned, or the configured `ci_timeout` idle window elapses
+- Merge-conflict polling and auto-fix from the PR's `mergeStatus`
+
+**What you don't get (yet):**
+
+- Failed check log fetching for the CI auto-fix step (the `az` CLI has no
+  first-class build-log command)
+- Fork PR routing (same as GitLab and Bitbucket)
+
 ## Self-hosted GitHub/GitLab
 
 Self-hosted GitHub Enterprise and self-hosted GitLab instances work through the same `gh` and `glab` CLIs. Authenticate the CLI against your instance (`gh auth login --hostname your-ghe.example.com`, `glab auth login --hostname gitlab.example.com`) and `no-mistakes` will route through the CLI as usual.
@@ -148,7 +192,7 @@ The GitLab backend is pinned against `glab v1.5x`. Self-hosted detection and the
 
 ## Unsupported hosts
 
-If your upstream isn't GitHub, GitLab, or Bitbucket Cloud:
+If your upstream isn't GitHub, GitLab, Bitbucket Cloud, or Azure DevOps:
 
 - The **push** step still runs - `no-mistakes` pushes through git to the configured target like any other remote.
 - The **PR** step marks itself as `skipped`.
@@ -162,7 +206,7 @@ Everything before push (rebase, review, test, document, lint) still works regard
 no-mistakes doctor
 ```
 
-`doctor` currently checks `gh` availability. For GitLab, confirm `glab` is installed and authenticated. For Bitbucket Cloud, confirm the two env vars are set in the environment the daemon runs under.
+`doctor` checks `gh` and `az` availability. For GitLab, confirm `glab` is installed and authenticated. For Bitbucket Cloud, confirm the two env vars are set in the environment the daemon runs under. For Azure DevOps, confirm the `azure-devops` extension is installed (`az extension show --name azure-devops`) and a PAT is available.
 
 :::note
 When the daemon runs through a managed service (launchd, systemd, Task Scheduler), it reloads environment from your login shell on macOS and Linux so `gh` auth and `NO_MISTAKES_BITBUCKET_*` vars are picked up, and it augments `PATH` with common binary directories. If credentials or PATH-derived tools are missing, check `~/.no-mistakes/logs/daemon.log` for a login-shell environment resolution warning. On Windows it reuses the current process environment.

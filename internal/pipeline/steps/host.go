@@ -8,6 +8,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/bitbucket"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
+	"github.com/kunchenguid/no-mistakes/internal/scm/azuredevops"
 	"github.com/kunchenguid/no-mistakes/internal/scm/github"
 	"github.com/kunchenguid/no-mistakes/internal/scm/gitlab"
 )
@@ -63,6 +64,22 @@ func buildHost(sctx *pipeline.StepContext, provider scm.Provider) (scm.Host, str
 			return nil, err.Error()
 		}
 		return bitbucket.NewHost(client, repo), ""
+	case scm.ProviderAzureDevOps:
+		if sctx.Repo.ForkURL != "" {
+			// Fork PR routing for Azure DevOps is intentionally not half-wired,
+			// mirroring GitLab and Bitbucket: the push step may use fork_url, but
+			// PR creation must skip until cross-repository routing is implemented
+			// end to end.
+			return nil, "fork PR routing for Azure DevOps is not implemented"
+		}
+		org, project, repo, ok := azuredevops.ParseRemote(sctx.Repo.UpstreamURL)
+		if !ok && sctx.Run.PRURL != nil {
+			org, project, repo, ok = azuredevops.ParseRemote(*sctx.Run.PRURL)
+		}
+		if !ok {
+			return nil, "could not resolve Azure DevOps organization, project, and repository from the remote URL"
+		}
+		return azuredevops.New(cmdFactory, func() bool { return stepCLIAvailable(sctx, provider) }, org, project, repo), ""
 	default:
 		return nil, fmt.Sprintf("provider %s is not supported yet", provider)
 	}
