@@ -739,6 +739,161 @@ func TestAppendGeneratedSections_StripsCommonHeadingVariants(t *testing.T) {
 	}
 }
 
+func TestAppendGeneratedSections_LeavesUnderLimitBodyByteIdentical(t *testing.T) {
+	body := "## What Changed\n\n- improve PR descriptions"
+	riskLine := "✅ Low: deterministic PR body assembly only"
+	testingMD := "## Testing\n\n- go test ./internal/pipeline/steps"
+	pipelineMD := pipelineMarkdownForTest("review round 001 stayed small", "review round 002 stayed small")
+
+	got := appendGeneratedSections(body, riskLine, testingMD, pipelineMD)
+	want := body + "\n\n## Risk Assessment\n\n" + riskLine + "\n\n" + testingMD + "\n\n" + pipelineMD
+
+	if got != want {
+		t.Fatalf("expected under-limit body to be byte-identical\nwant:\n%s\n\ngot:\n%s", want, got)
+	}
+}
+
+func TestAppendGeneratedSections_TruncatesPipelineUpdatesBeforeGitHubLimit(t *testing.T) {
+	body := "## What Changed\n\n- essential summary survives\n\n" + strings.Repeat("essential details stay intact\n", 350)
+	riskLine := "✅ Low: generated PR body length guard only"
+	testingMD := "## Testing\n\n- go test ./internal/pipeline/steps"
+	rounds := make([]string, 0, 160)
+	for i := 1; i <= 160; i++ {
+		rounds = append(rounds, fmt.Sprintf("review round %03d - %s", i, strings.Repeat("x", 700)))
+	}
+	pipelineMD := pipelineMarkdownForTest(rounds...)
+
+	got := appendGeneratedSections(body, riskLine, testingMD, pipelineMD)
+
+	assertGitHubBodyLimitForTest(t, got)
+	if !strings.Contains(got, "essential summary survives") || !strings.Contains(got, riskLine) || !strings.Contains(got, testingMD) {
+		t.Fatalf("expected essential sections to survive intact, got:\n%s", got)
+	}
+	if !strings.Contains(got, "earlier update rounds omitted to keep the PR body within GitHub's 65536-char limit") {
+		t.Fatalf("expected pipeline omission marker, got:\n%s", got)
+	}
+	if strings.Contains(got, "review round 001") {
+		t.Fatalf("expected oldest pipeline update to be omitted, got:\n%s", got)
+	}
+	if !strings.Contains(got, "review round 160") {
+		t.Fatalf("expected newest pipeline update to be retained, got:\n%s", got)
+	}
+	assertNoPartialRoundLinesForTest(t, got, rounds)
+	if strings.Count(got, "<details>") != strings.Count(got, "</details>") {
+		t.Fatalf("expected details tags to remain balanced, got:\n%s", got)
+	}
+}
+
+func TestAppendGeneratedSections_ExtremePipelineOverflowStillFitsLimit(t *testing.T) {
+	body := "## What Changed\n\n- essential summary survives"
+	rounds := make([]string, 0, 1000)
+	for i := 1; i <= 1000; i++ {
+		rounds = append(rounds, fmt.Sprintf("review round %04d - %s", i, strings.Repeat("x", 2000)))
+	}
+
+	got := appendGeneratedSections(body, "", "", pipelineMarkdownForTest(rounds...))
+
+	assertGitHubBodyLimitForTest(t, got)
+	if !strings.Contains(got, "essential summary survives") {
+		t.Fatalf("expected essential summary to survive, got:\n%s", got)
+	}
+	if !strings.Contains(got, "earlier update rounds omitted") {
+		t.Fatalf("expected omission marker in extreme overflow case, got:\n%s", got)
+	}
+	assertNoPartialRoundLinesForTest(t, got, rounds)
+}
+
+func TestPRStep_BuildPRContentTruncatesGeneratedPipelineUpdates(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			payload := json.RawMessage(`{"title":"fix: keep generated pr bodies postable","body":"## What Changed\n\n- essential summary survives"}`)
+			return &agent.Result{Output: payload}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.UserIntent = "Keep PR creation postable when long validation runs accumulate many pipeline update rounds."
+
+	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.UpdateStepStatus(reviewStep.ID, types.StepStatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 140; i++ {
+		findings := fmt.Sprintf(`{"findings":[{"id":"review-%03d","severity":"warning","file":"internal/pipeline/steps/pr.go","line":%d,"description":"review round %03d %s"}],"summary":"1 warning"}`, i, i, i, strings.Repeat("x", 600))
+		trigger := "auto_fix"
+		if i == 1 {
+			trigger = "initial"
+		}
+		if _, err := sctx.DB.InsertStepRound(reviewStep.ID, i, trigger, &findings, nil, 100); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	content, err := (&PRStep{}).buildPRContent(sctx, "feature", baseSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	assertGitHubBodyLimitForTest(t, content.Body)
+	if !strings.Contains(content.Body, "Keep PR creation postable") || !strings.Contains(content.Body, "essential summary survives") {
+		t.Fatalf("expected intent and summary to survive, got:\n%s", content.Body)
+	}
+	if !strings.Contains(content.Body, "earlier update rounds omitted") {
+		t.Fatalf("expected omission marker, got:\n%s", content.Body)
+	}
+	if strings.Contains(content.Body, "review round 001") {
+		t.Fatalf("expected old pipeline update to be omitted, got:\n%s", content.Body)
+	}
+	if !strings.Contains(content.Body, "review round 140") {
+		t.Fatalf("expected latest pipeline update to be retained, got:\n%s", content.Body)
+	}
+}
+
+func pipelineMarkdownForTest(rounds ...string) string {
+	var b strings.Builder
+	b.WriteString("## Pipeline\n\nUpdates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)\n\n")
+	b.WriteString("<details>\n")
+	b.WriteString("<summary>🔧 **Review** - update rounds</summary>\n\n")
+	for _, round := range rounds {
+		b.WriteString(round)
+		b.WriteString("\n\n")
+	}
+	b.WriteString("</details>\n")
+	return b.String()
+}
+
+func assertGitHubBodyLimitForTest(t *testing.T, body string) {
+	t.Helper()
+	if got := len(body); got >= githubPullRequestBodyHardLimitChars {
+		t.Fatalf("body length = %d, want below GitHub hard limit %d", got, githubPullRequestBodyHardLimitChars)
+	}
+	if got := len(body); got > maxPullRequestBodyBytes {
+		t.Fatalf("body length = %d, want safety buffer below %d", got, maxPullRequestBodyBytes)
+	}
+}
+
+func assertNoPartialRoundLinesForTest(t *testing.T, body string, rounds []string) {
+	t.Helper()
+	full := make(map[string]struct{}, len(rounds))
+	for _, round := range rounds {
+		full[round] = struct{}{}
+	}
+	for _, line := range strings.Split(body, "\n") {
+		if !strings.Contains(line, "review round ") {
+			continue
+		}
+		if _, ok := full[line]; !ok {
+			t.Fatalf("pipeline update was truncated mid-line: %q", line)
+		}
+	}
+}
+
 func TestPRStep_PrependsIntentSectionWhenIntentSet(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
