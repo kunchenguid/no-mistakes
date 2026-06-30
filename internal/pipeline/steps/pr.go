@@ -252,17 +252,51 @@ func buildPRBody(body, riskLine, testingMD, pipelineMD string, sctx *pipeline.St
 }
 
 func appendGeneratedSectionsToCleanBody(body, riskLine, testingMD, pipelineMD string) string {
+	generatedSections := generatedEssentialSections(riskLine, testingMD)
+	prefix := body + generatedSections
+	if pipelineMD == "" {
+		return essentialPRBodyWithinLimit(body, generatedSections)
+	}
+
+	separator := ""
+	if prefix != "" {
+		separator = "\n\n"
+	}
+	if len(prefix+separator+pipelineMD) <= maxPullRequestBodyBytes {
+		return prefix + separator + pipelineMD
+	}
+
+	prefix = essentialPRBodyWithinLimit(body, generatedSections)
+	return appendPipelineSectionWithinLimit(prefix, pipelineMD)
+}
+
+func generatedEssentialSections(riskLine, testingMD string) string {
+	var b strings.Builder
 	if riskLine != "" {
-		body += "\n\n## Risk Assessment\n\n" + riskLine
+		b.WriteString("\n\n## Risk Assessment\n\n")
+		b.WriteString(riskLine)
 	}
 	if testingMD != "" {
-		body += "\n\n" + testingMD
+		b.WriteString("\n\n")
+		b.WriteString(testingMD)
 	}
-	if pipelineMD != "" {
-		body = appendPipelineSectionWithinLimit(body, pipelineMD)
+	return b.String()
+}
+
+func essentialPRBodyWithinLimit(body, generatedSections string) string {
+	full := body + generatedSections
+	if len(full) <= maxPullRequestBodyBytes {
+		return full
 	}
-	body = truncateEssentialPRBodyIfNeeded(body)
-	return body
+	if generatedSections == "" {
+		return truncateEssentialPRBodyIfNeeded(body)
+	}
+
+	bodyBudget := maxPullRequestBodyBytes - len(generatedSections)
+	if bodyBudget <= 0 {
+		return truncateTextAtLineBoundary(generatedSections, maxPullRequestBodyBytes, essentialPRBodyTruncationMarker())
+	}
+	return truncatePRBodySections(body, bodyBudget, essentialPRBodyTruncationMarker()) + generatedSections
 }
 
 func appendPipelineSectionWithinLimit(prefix, pipelineMD string) string {
@@ -482,8 +516,114 @@ func truncateEssentialPRBodyIfNeeded(body string) string {
 	if len(body) <= maxPullRequestBodyBytes {
 		return body
 	}
-	marker := fmt.Sprintf("_... (body truncated to keep the PR body within GitHub's %d-char limit.)_", githubPullRequestBodyHardLimitChars)
-	return truncateTextAtLineBoundary(body, maxPullRequestBodyBytes, marker)
+	return truncateTextAtLineBoundary(body, maxPullRequestBodyBytes, essentialPRBodyTruncationMarker())
+}
+
+func essentialPRBodyTruncationMarker() string {
+	return fmt.Sprintf("_... (body truncated to keep the PR body within GitHub's %d-char limit.)_", githubPullRequestBodyHardLimitChars)
+}
+
+func truncatePRBodySections(body string, maxBytes int, marker string) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	if len(body) <= maxBytes {
+		return body
+	}
+
+	sections := splitPRBodySections(body)
+	if len(sections) <= 1 {
+		return truncateTextAtLineBoundary(body, maxBytes, marker)
+	}
+
+	for {
+		joined := joinPRBodySections(sections)
+		if len(joined) <= maxBytes {
+			return joined
+		}
+
+		changed := false
+		for i, section := range sections {
+			otherSections := append([]string{}, sections[:i]...)
+			otherSections = append(otherSections, sections[i+1:]...)
+			otherBytes := len(joinPRBodySections(otherSections))
+			sectionBudget := maxBytes - otherBytes
+			if sectionBudget >= len(section) {
+				continue
+			}
+			truncated := truncateTextAtLineBoundary(section, sectionBudget, marker)
+			if len(truncated) >= len(section) {
+				continue
+			}
+			sections[i] = truncated
+			changed = true
+			break
+		}
+		if !changed {
+			return truncateTextAtLineBoundary(joined, maxBytes, marker)
+		}
+	}
+}
+
+func splitPRBodySections(body string) []string {
+	if body == "" {
+		return nil
+	}
+
+	var starts []int
+	for start := 0; start < len(body); {
+		end := strings.IndexByte(body[start:], '\n')
+		lineEnd := len(body)
+		next := len(body)
+		if end >= 0 {
+			lineEnd = start + end
+			next = lineEnd + 1
+		}
+		if isPRBodySectionHeading(body[start:lineEnd]) {
+			starts = append(starts, start)
+		}
+		start = next
+	}
+	if len(starts) == 0 || starts[0] != 0 {
+		starts = append([]int{0}, starts...)
+	}
+
+	sections := make([]string, 0, len(starts))
+	for i, start := range starts {
+		end := len(body)
+		if i+1 < len(starts) {
+			end = starts[i+1]
+		}
+		sections = append(sections, body[start:end])
+	}
+	return sections
+}
+
+func isPRBodySectionHeading(line string) bool {
+	line = strings.TrimSpace(line)
+	return strings.HasPrefix(line, "## ") && !strings.HasPrefix(line, "### ")
+}
+
+func joinPRBodySections(sections []string) string {
+	var b strings.Builder
+	for _, section := range sections {
+		if section == "" {
+			continue
+		}
+		if b.Len() > 0 {
+			current := b.String()
+			if !strings.HasSuffix(current, "\n") {
+				b.WriteString("\n")
+			}
+			current = b.String()
+			if !strings.HasSuffix(current, "\n\n") {
+				b.WriteString("\n")
+			}
+			section = strings.TrimLeft(section, "\n")
+		}
+		b.WriteString(section)
+	}
+	return b.String()
 }
 
 func truncateTextAtLineBoundary(text string, maxBytes int, marker string) string {

@@ -803,6 +803,99 @@ func TestAppendGeneratedSections_ExtremePipelineOverflowStillFitsLimit(t *testin
 	assertNoPartialRoundLinesForTest(t, got, rounds)
 }
 
+func TestBuildPRBody_TruncatesOversizedIntentBeforeGeneratedSections(t *testing.T) {
+	sctx := newTestContext(t, &mockAgent{name: "test"}, t.TempDir(), "", "", config.Commands{})
+	sctx.UserIntent = "Keep generated sections visible.\n" + strings.Repeat("oversized intent context line\n", 2500)
+	body := "## What Changed\n\n- essential summary survives"
+	riskLine := "✅ Low: generated PR body length guard only"
+	testingMD := "## Testing\n\n- go test ./internal/pipeline/steps"
+
+	got := buildPRBody(body, riskLine, testingMD, pipelineMarkdownForTest("review round 001"), sctx)
+
+	assertGitHubBodyLimitForTest(t, got)
+	for _, want := range []string{
+		"## Intent",
+		"Keep generated sections visible.",
+		"body truncated to keep the PR body within GitHub's 65536-char limit",
+		"## What Changed",
+		"essential summary survives",
+		"## Risk Assessment",
+		riskLine,
+		"## Testing",
+		"go test ./internal/pipeline/steps",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected oversized PR body to contain %q, got:\n%s", want, got)
+		}
+	}
+}
+
+func TestPRStep_CreateKeepsGeneratedSectionsAfterOversizedIntent(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	env, logFile := fakeGH(t, "")
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			payload := json.RawMessage(`{"title":"fix: keep generated pr bodies postable","body":"## What Changed\n\n- essential summary survives"}`)
+			return &agent.Result{Output: payload}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.UserIntent = "Keep generated sections visible.\n" + strings.Repeat("oversized intent context line\n", 2500)
+
+	reviewFindings := `{"findings":[],"summary":"clean","risk_level":"medium","risk_rationale":"validates generated PR body length handling"}`
+	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.UpdateStepStatus(reviewStep.ID, types.StepStatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.SetStepFindings(reviewStep.ID, reviewFindings); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sctx.DB.InsertStepRound(reviewStep.ID, 1, "initial", &reviewFindings, nil, 100); err != nil {
+		t.Fatal(err)
+	}
+
+	testFindings := `{"findings":[],"summary":"","testing_summary":"Validated generated PR body length handling.","tested":["go test ./internal/pipeline/steps"]}`
+	testStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepTest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.UpdateStepStatus(testStep.ID, types.StepStatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sctx.DB.InsertStepRound(testStep.ID, 1, "initial", &testFindings, nil, 100); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := (&PRStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+
+	body := readFakeGHBodyArg(t, logFile)
+	assertGitHubBodyLimitForTest(t, body)
+	for _, want := range []string{
+		"## Intent",
+		"Keep generated sections visible.",
+		"body truncated to keep the PR body within GitHub's 65536-char limit",
+		"## What Changed",
+		"essential summary survives",
+		"## Risk Assessment",
+		"validates generated PR body length handling",
+		"## Testing",
+		"Validated generated PR body length handling.",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("expected created PR body to contain %q, got:\n%s", want, body)
+		}
+	}
+}
+
 func TestPRStep_BuildPRContentTruncatesGeneratedPipelineUpdates(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
