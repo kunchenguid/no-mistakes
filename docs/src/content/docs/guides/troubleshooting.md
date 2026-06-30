@@ -196,9 +196,9 @@ Check the [Provider Integration](/no-mistakes/guides/provider-integration/) requ
 - `gh` or `glab` not installed
 - `gh auth status` shows not authenticated
 - Bitbucket env vars not set in the daemon's environment
-- Upstream is on a host that isn't supported (GitHub, GitLab, or `bitbucket.org`)
+- Upstream is on a host that isn't supported (GitHub, GitLab, `bitbucket.org`, or Azure DevOps)
 - Self-hosted GitLab on a hostname with no `gitlab` marker isn't detected because `glab` isn't configured for the host; run `glab auth login --hostname your-gitlab.example.com` so detection finds it
-- A GitLab or Bitbucket repo record has a fork URL set; fork MR/PR routing is currently GitHub-only
+- A GitLab, Bitbucket, or Azure DevOps repo record has a fork URL set; fork MR/PR routing is currently GitHub-only
 - You pushed the default branch (PR step always skips on the default branch)
 
 ## CI step stuck or timed out
@@ -207,7 +207,7 @@ Symptom: CI step keeps monitoring an open PR longer than expected, or pauses aft
 
 `ci_timeout` defaults to `168h` (7 days) and is an idle timeout.
 It re-arms whenever the upstream default branch advances, so an active long-lived PR keeps being watched.
-If the provider later reports an actual GitHub or GitLab merge conflict, the CI auto-fix path rebases and re-pushes the branch; a clean behind PR needs no command.
+If the provider later reports an actual GitHub, GitLab, or Azure DevOps merge conflict, the CI auto-fix path rebases and re-pushes the branch; a clean behind PR needs no command.
 Set it in `~/.no-mistakes/config.yaml` to choose a different idle window:
 
 ```yaml

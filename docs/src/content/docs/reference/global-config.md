@@ -176,7 +176,7 @@ agent_args_override:
 
 ### ci_timeout
 
-How long the CI step monitors an open PR, including provider CI status and on GitHub or GitLab PR mergeability, before giving up.
+How long the CI step monitors an open PR, including provider CI status and on GitHub, GitLab, or Azure DevOps PR mergeability, before giving up.
 
 | | |
 |---|---|
@@ -187,7 +187,7 @@ Accepts any Go `time.ParseDuration` string: `30m`, `2h`, `4h30m`, etc.
 
 This is an idle timeout, not an absolute deadline: every time the base branch advances, the monitor re-arms it.
 So an actively-updated green PR keeps its monitor no matter how long it stays open.
-If it later develops an actual GitHub or GitLab merge conflict, the CI auto-fix path rebases and re-pushes it, while a clean behind PR needs no command.
+If it later develops an actual GitHub, GitLab, or Azure DevOps merge conflict, the CI auto-fix path rebases and re-pushes it, while a clean behind PR needs no command.
 A genuinely idle/abandoned PR is still reaped after the timeout elapses.
 
 Set it to `unlimited` (`none`, `off`, and `never` are accepted aliases), `0`, or any non-positive duration to monitor until the PR is merged, closed, or the run is aborted with `no-mistakes axi abort --run <id>`.
@@ -221,7 +221,7 @@ For empty `commands.lint`, the agent still attempts safe fixes during the initia
 | `auto_fix.test` | `int` | `3` | Test failure auto-fix attempts |
 | `auto_fix.document` | `int` | `3` | Not used by the automatic document pass |
 | `auto_fix.lint` | `int` | `3` | Lint issue auto-fix attempts |
-| `auto_fix.ci` | `int` | `3` | CI auto-fix attempts for CI failures, plus GitHub and GitLab merge conflicts |
+| `auto_fix.ci` | `int` | `3` | CI auto-fix attempts for CI failures, plus GitHub, GitLab, and Azure DevOps merge conflicts |
 
 Legacy alias: `auto_fix.babysit`.
 

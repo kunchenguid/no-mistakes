@@ -41,7 +41,7 @@ pushes to the configured target:
 - create or update the PR automatically
 - keep polling hosted CI until the PR is merged, closed, declined, or the configured `ci_timeout` idle window elapses
 - fetch failing job logs for the CI auto-fix loop
-- on GitHub and GitLab, watch mergeability and fix merge conflicts when possible
+- on GitHub, GitLab, and Azure DevOps, watch mergeability and fix merge conflicts when possible
 
 ## GitHub
 
@@ -136,7 +136,7 @@ Get an API token from [Bitbucket account settings](https://bitbucket.org/account
 - PR mergeability polling
 - Merge-conflict auto-fix
 
-These are GitHub and GitLab only right now.
+These are GitHub, GitLab, and Azure DevOps only right now.
 
 ## Azure DevOps
 

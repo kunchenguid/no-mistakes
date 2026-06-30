@@ -23,7 +23,7 @@ ready.
 branch reaches the configured push target:
 
 - **Before** the code is public, it rebases, runs a structured AI code review, runs baseline tests, gathers user-facing test evidence when intent is available, checks that docs are in sync, runs lint, and only then pushes to the configured target and opens the PR.
-- **After** the push, it watches CI and auto-fixes failures. On GitHub and GitLab it also watches PR mergeability and fixes merge conflicts on the branch.
+- **After** the push, it watches CI and auto-fixes failures. On GitHub, GitLab, and Azure DevOps it also watches PR mergeability and fixes merge conflicts on the branch.
 - **Throughout**, every step can pause for your approval. You see the findings, pick what to fix, and decide when to ship.
 
 The whole thing runs in a disposable worktree. Your working directory is never

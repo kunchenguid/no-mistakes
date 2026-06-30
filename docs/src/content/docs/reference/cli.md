@@ -273,6 +273,7 @@ no-mistakes doctor
 Checks:
 - `git` binary
 - `gh` CLI (optional, needed for GitHub PR and CI steps)
+- `az` CLI (optional, needed for Azure DevOps PR and CI steps)
 - Data directory (`~/.no-mistakes/`)
 - SQLite database
 - Daemon status
@@ -282,7 +283,7 @@ Uses indicators: `✓` (available), `–` (not found, optional), `✗` (problem 
 
 `doctor` does not validate `acpx` or ACP targets. For `agent: acp:<target>`, verify `acpx_path` yourself.
 
-`doctor` currently checks `gh` availability only. For GitLab PR and CI steps, install and authenticate `glab`. For Bitbucket Cloud PR and CI steps, set `NO_MISTAKES_BITBUCKET_EMAIL` and `NO_MISTAKES_BITBUCKET_API_TOKEN`.
+`doctor` checks `gh` and `az` availability. For GitLab PR and CI steps, install and authenticate `glab`. For Bitbucket Cloud PR and CI steps, set `NO_MISTAKES_BITBUCKET_EMAIL` and `NO_MISTAKES_BITBUCKET_API_TOKEN`. For Azure DevOps PR and CI steps, install the `azure-devops` extension and provide a PAT.
 
 ## no-mistakes update
 

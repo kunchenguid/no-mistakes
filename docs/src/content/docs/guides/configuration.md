@@ -118,6 +118,8 @@ Bitbucket Cloud PR creation and CI monitoring use environment variables instead 
 - `NO_MISTAKES_BITBUCKET_API_TOKEN`
 - `NO_MISTAKES_BITBUCKET_API_BASE_URL` - optional API base URL override
 
+Azure DevOps uses the `az` CLI with the `azure-devops` extension; for non-interactive auth the daemon inherits a Personal Access Token from `AZURE_DEVOPS_EXT_PAT`.
+
 ## Repo config
 
 ```yaml
