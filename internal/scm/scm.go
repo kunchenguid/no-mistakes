@@ -122,7 +122,7 @@ func (p Provider) AuthCheckCommand() []string {
 	case ProviderBitbucket:
 		return []string{"bb", "profile", "which"}
 	case ProviderAzureDevOps:
-		return []string{"az", "devops", "project", "list"}
+		return []string{"az", "account", "show"}
 	default:
 		return nil
 	}

@@ -66,8 +66,9 @@ func stripPort(host string) string {
 }
 
 // ExtractPRNumber returns the trailing numeric segment from a PR/MR URL.
-// Supports GitHub (/pull/N), GitLab (/-/merge_requests/N), and Bitbucket
-// (/pull-requests/N) URLs; all of them end in a digit path segment.
+// Supports GitHub (/pull/N), GitLab (/-/merge_requests/N), Bitbucket
+// (/pull-requests/N), and Azure DevOps (/pullrequest/N) URLs; all of them
+// end in a digit path segment.
 func ExtractPRNumber(prURL string) (string, error) {
 	trimmed := strings.TrimRight(prURL, "/")
 	parts := strings.Split(trimmed, "/")

@@ -174,8 +174,8 @@ func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) 
 	}
 	args = append(args, h.orgArgs()...)
 	args = append(args, "--output", "json")
-	if out, err := h.cmd(ctx, "az", args...).CombinedOutput(); err != nil {
-		return nil, fmt.Errorf("az repos pr update: %s: %w", strings.TrimSpace(string(out)), err)
+	if _, err := outputJSON(h.cmd(ctx, "az", args...)); err != nil {
+		return nil, fmt.Errorf("az repos pr update: %w", err)
 	}
 	return pr, nil
 }
