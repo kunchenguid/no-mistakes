@@ -855,6 +855,109 @@ func TestPRStep_BuildPRContentTruncatesGeneratedPipelineUpdates(t *testing.T) {
 	}
 }
 
+func TestPRStep_CreateCapsBodyAfterPrependedIntent(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	env, logFile := fakeGH(t, "")
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			payload, err := json.Marshal(prContent{
+				Title: "fix: keep generated pr bodies postable",
+				Body:  "## What Changed\n\n- essential summary survives",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return &agent.Result{Output: payload}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.UserIntent = "Keep PR creation postable.\n" + strings.Repeat("intent context line stays visible\n", 900)
+
+	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.UpdateStepStatus(reviewStep.ID, types.StepStatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 140; i++ {
+		findings := fmt.Sprintf(`{"findings":[{"id":"review-%03d","severity":"warning","file":"internal/pipeline/steps/pr.go","line":%d,"description":"review round %03d %s"}],"summary":"1 warning"}`, i, i, i, strings.Repeat("x", 600))
+		trigger := "auto_fix"
+		if i == 1 {
+			trigger = "initial"
+		}
+		if _, err := sctx.DB.InsertStepRound(reviewStep.ID, i, trigger, &findings, nil, 100); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := (&PRStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+
+	body := readFakeGHBodyArg(t, logFile)
+	assertGitHubBodyLimitForTest(t, body)
+	for _, want := range []string{
+		"## Intent",
+		"Keep PR creation postable.",
+		"intent context line stays visible",
+		"essential summary survives",
+		"earlier update rounds omitted",
+		"review round 140",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("expected final PR body to contain %q", want)
+		}
+	}
+	if strings.Contains(body, "review round 001") {
+		t.Fatal("expected oldest pipeline update to be omitted")
+	}
+}
+
+func TestFallbackPRContentCapsBodyAfterPrependedIntent(t *testing.T) {
+	t.Parallel()
+	sctx := newTestContext(t, &mockAgent{name: "test"}, t.TempDir(), "", "", config.Commands{})
+	sctx.UserIntent = "Fallback intent survives.\n" + strings.Repeat("fallback intent context line\n", 900)
+
+	rounds := make([]string, 0, 140)
+	for i := 1; i <= 140; i++ {
+		rounds = append(rounds, fmt.Sprintf("review round %03d - %s", i, strings.Repeat("x", 700)))
+	}
+
+	content := fallbackPRContent(
+		sctx,
+		"feature",
+		"abc123 add feature",
+		"✅ Low: generated PR body length guard only",
+		"## Testing\n\n- go test ./internal/pipeline/steps",
+		pipelineMarkdownForTest(rounds...),
+	)
+
+	assertGitHubBodyLimitForTest(t, content.Body)
+	for _, want := range []string{
+		"## Intent",
+		"Fallback intent survives.",
+		"## What Changed",
+		"add feature",
+		"## Risk Assessment",
+		"## Testing",
+		"earlier update rounds omitted",
+		"review round 140",
+	} {
+		if !strings.Contains(content.Body, want) {
+			t.Fatalf("expected fallback PR body to contain %q", want)
+		}
+	}
+	if strings.Contains(content.Body, "review round 001") {
+		t.Fatal("expected oldest pipeline update to be omitted")
+	}
+}
+
 func pipelineMarkdownForTest(rounds ...string) string {
 	var b strings.Builder
 	b.WriteString("## Pipeline\n\nUpdates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)\n\n")
@@ -866,6 +969,21 @@ func pipelineMarkdownForTest(rounds ...string) string {
 	}
 	b.WriteString("</details>\n")
 	return b.String()
+}
+
+func readFakeGHBodyArg(t *testing.T, logFile string) string {
+	t.Helper()
+	logData, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const marker = " --body "
+	log := string(logData)
+	idx := strings.LastIndex(log, marker)
+	if idx < 0 {
+		t.Fatalf("expected fake gh log to include --body, got:\n%s", log)
+	}
+	return strings.TrimSuffix(log[idx+len(marker):], "\n")
 }
 
 func assertGitHubBodyLimitForTest(t *testing.T, body string) {

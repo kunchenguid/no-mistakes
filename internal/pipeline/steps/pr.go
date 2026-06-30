@@ -189,8 +189,7 @@ Diff stat:
 				if content.Title != originalTitle {
 					slog.Warn("tightened agent PR title type", "from", originalTitle, "to", content.Title)
 				}
-				content.Body = appendGeneratedSections(content.Body, riskLine, testingMD, pipelineMD)
-				content.Body = prependIntentSection(content.Body, sctx)
+				content.Body = buildPRBody(content.Body, riskLine, testingMD, pipelineMD, sctx)
 				return content, nil
 			}
 		}
@@ -243,6 +242,16 @@ func unwrapNestedPRBody(body string) string {
 // appendGeneratedSections appends deterministic sections after the agent's body.
 func appendGeneratedSections(body, riskLine, testingMD, pipelineMD string) string {
 	body = stripGeneratedSections(body)
+	return appendGeneratedSectionsToCleanBody(body, riskLine, testingMD, pipelineMD)
+}
+
+func buildPRBody(body, riskLine, testingMD, pipelineMD string, sctx *pipeline.StepContext) string {
+	body = stripGeneratedSections(body)
+	body = prependIntentSection(body, sctx)
+	return appendGeneratedSectionsToCleanBody(body, riskLine, testingMD, pipelineMD)
+}
+
+func appendGeneratedSectionsToCleanBody(body, riskLine, testingMD, pipelineMD string) string {
 	if riskLine != "" {
 		body += "\n\n## Risk Assessment\n\n" + riskLine
 	}
@@ -594,8 +603,7 @@ func fallbackPRContent(sctx *pipeline.StepContext, branch, commitLog, riskLine, 
 	if body == "## What Changed\n\n" {
 		body = fmt.Sprintf("## What Changed\n\n- %s", title)
 	}
-	body = appendGeneratedSections(body, riskLine, testingMD, pipelineMD)
-	body = prependIntentSection(body, sctx)
+	body = buildPRBody(body, riskLine, testingMD, pipelineMD, sctx)
 	return prContent{
 		Title: title,
 		Body:  body,
