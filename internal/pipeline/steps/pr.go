@@ -266,7 +266,7 @@ func appendGeneratedSectionsToCleanBody(body, riskLine, testingMD, pipelineMD st
 		return prefix + separator + pipelineMD
 	}
 
-	prefix = essentialPRBodyWithinLimit(body, generatedSections)
+	prefix = essentialPRBodyWithinPipelineBudget(body, generatedSections, pipelineMD)
 	return appendPipelineSectionWithinLimit(prefix, pipelineMD)
 }
 
@@ -284,17 +284,37 @@ func generatedEssentialSections(riskLine, testingMD string) string {
 }
 
 func essentialPRBodyWithinLimit(body, generatedSections string) string {
+	return essentialPRBodyWithinBudget(body, generatedSections, maxPullRequestBodyBytes)
+}
+
+func essentialPRBodyWithinPipelineBudget(body, generatedSections, pipelineMD string) string {
+	minPipeline := minimumPipelineOmissionSection(pipelineMD)
+	if minPipeline == "" {
+		return essentialPRBodyWithinLimit(body, generatedSections)
+	}
+
+	prefixBudget := maxPullRequestBodyBytes - len(minPipeline)
+	if body != "" || generatedSections != "" {
+		prefixBudget -= len("\n\n")
+	}
+	if prefixBudget <= 0 || len(generatedSections) > prefixBudget {
+		return essentialPRBodyWithinLimit(body, generatedSections)
+	}
+	return essentialPRBodyWithinBudget(body, generatedSections, prefixBudget)
+}
+
+func essentialPRBodyWithinBudget(body, generatedSections string, maxBytes int) string {
 	full := body + generatedSections
-	if len(full) <= maxPullRequestBodyBytes {
+	if len(full) <= maxBytes {
 		return full
 	}
 	if generatedSections == "" {
-		return truncateEssentialPRBodyIfNeeded(body)
+		return truncateTextAtLineBoundary(body, maxBytes, essentialPRBodyTruncationMarker())
 	}
 
-	bodyBudget := maxPullRequestBodyBytes - len(generatedSections)
+	bodyBudget := maxBytes - len(generatedSections)
 	if bodyBudget <= 0 {
-		return truncateTextAtLineBoundary(generatedSections, maxPullRequestBodyBytes, essentialPRBodyTruncationMarker())
+		return truncateTextAtLineBoundary(generatedSections, maxBytes, essentialPRBodyTruncationMarker())
 	}
 	return truncatePRBodySections(body, bodyBudget, essentialPRBodyTruncationMarker()) + generatedSections
 }
@@ -315,6 +335,9 @@ func appendPipelineSectionWithinLimit(prefix, pipelineMD string) string {
 	}
 
 	truncatedPipeline := truncatePipelineSection(pipelineMD, pipelineBudget)
+	if truncatedPipeline == "" {
+		return prefix
+	}
 	candidate := prefix + separator + truncatedPipeline
 	if len(candidate) <= maxPullRequestBodyBytes {
 		return candidate
@@ -337,7 +360,7 @@ func truncatePipelineSection(pipelineMD string, maxBytes int) string {
 	groups := parsePipelineUpdateGroups(updates)
 	totalUnits := countPipelineUpdateUnits(groups)
 	if totalUnits == 0 {
-		return truncateTextAtLineBoundary(pipelineMD, maxBytes, pipelineUpdatesOmissionMarker(0))
+		return pipelineOmissionSectionWithinLimit(header, 0, maxBytes)
 	}
 
 	for omitted := 1; omitted <= totalUnits; omitted++ {
@@ -347,11 +370,21 @@ func truncatePipelineSection(pipelineMD string, maxBytes int) string {
 		}
 	}
 
-	markerOnly := header + pipelineUpdatesOmissionMarker(totalUnits) + "\n"
+	return pipelineOmissionSectionWithinLimit(header, totalUnits, maxBytes)
+}
+
+func minimumPipelineOmissionSection(pipelineMD string) string {
+	header, updates := splitPipelineSectionHeader(pipelineMD)
+	totalUnits := countPipelineUpdateUnits(parsePipelineUpdateGroups(updates))
+	return header + pipelineUpdatesOmissionMarker(totalUnits) + "\n"
+}
+
+func pipelineOmissionSectionWithinLimit(header string, omitted, maxBytes int) string {
+	markerOnly := header + pipelineUpdatesOmissionMarker(omitted) + "\n"
 	if len(markerOnly) <= maxBytes {
 		return markerOnly
 	}
-	return truncateTextAtLineBoundary(markerOnly, maxBytes, "")
+	return ""
 }
 
 func splitPipelineSectionHeader(pipelineMD string) (string, string) {

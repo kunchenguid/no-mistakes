@@ -803,6 +803,41 @@ func TestAppendGeneratedSections_ExtremePipelineOverflowStillFitsLimit(t *testin
 	assertNoPartialRoundLinesForTest(t, got, rounds)
 }
 
+func TestAppendGeneratedSections_TrimsBodyToKeepPipelineOmissionMarker(t *testing.T) {
+	baseBody := "## What Changed\n\n- essential summary survives\n\n"
+	riskLine := "✅ Low: generated PR body length guard only"
+	testingMD := "## Testing\n\n- go test ./internal/pipeline/steps"
+	generatedSections := generatedEssentialSections(riskLine, testingMD)
+	targetPrefixLen := maxPullRequestBodyBytes - len("\n\n") - 10
+	fillerLen := targetPrefixLen - len(baseBody) - len(generatedSections)
+	if fillerLen <= 0 {
+		t.Fatalf("test setup produced invalid filler length %d", fillerLen)
+	}
+	body := baseBody + strings.Repeat("x", fillerLen)
+	rounds := make([]string, 0, 200)
+	for i := 1; i <= 200; i++ {
+		rounds = append(rounds, fmt.Sprintf("review round %03d - %s", i, strings.Repeat("x", 700)))
+	}
+
+	got := appendGeneratedSections(body, riskLine, testingMD, pipelineMarkdownForTest(rounds...))
+
+	assertGitHubBodyLimitForTest(t, got)
+	for _, want := range []string{
+		"essential summary survives",
+		"body truncated to keep the PR body within GitHub's 65536-char limit",
+		"## Risk Assessment",
+		riskLine,
+		"## Testing",
+		"go test ./internal/pipeline/steps",
+		"## Pipeline",
+		"earlier update rounds omitted",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected truncated PR body to contain %q, got:\n%s", want, got)
+		}
+	}
+}
+
 func TestBuildPRBody_TruncatesOversizedIntentBeforeGeneratedSections(t *testing.T) {
 	sctx := newTestContext(t, &mockAgent{name: "test"}, t.TempDir(), "", "", config.Commands{})
 	sctx.UserIntent = "Keep generated sections visible.\n" + strings.Repeat("oversized intent context line\n", 2500)
