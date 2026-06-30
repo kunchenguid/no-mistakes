@@ -2,12 +2,33 @@ package pipeline
 
 import (
 	"context"
+	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+// ResolveIntegrationBranch returns the branch the pipeline rebases, reviews,
+// and opens PRs against. Precedence: the per-run override, then the repo's
+// persisted base branch, then the auto-detected default branch, then "main".
+// The first non-empty value wins. This is intentionally independent of the
+// trusted-config root, which always stays on the default branch.
+func ResolveIntegrationBranch(runOverride string, repo *db.Repo) string {
+	if b := strings.TrimSpace(runOverride); b != "" {
+		return b
+	}
+	if repo != nil {
+		if b := strings.TrimSpace(repo.BaseBranch); b != "" {
+			return b
+		}
+		if b := strings.TrimSpace(repo.DefaultBranch); b != "" {
+			return b
+		}
+	}
+	return "main"
+}
 
 // StepContext provides shared resources to pipeline steps during execution.
 type StepContext struct {
@@ -31,6 +52,17 @@ type StepContext struct {
 	// was trying to accomplish, inferred from local agent transcripts. It's
 	// surfaced in step prompts so agents have context beyond the diff.
 	UserIntent string
+}
+
+// IntegrationBranch returns the effective base branch for this run, applying
+// the per-run override, the repo's persisted base branch, the default branch,
+// and finally "main" in that order.
+func (s *StepContext) IntegrationBranch() string {
+	var runOverride string
+	if s.Run != nil {
+		runOverride = s.Run.BaseBranch
+	}
+	return ResolveIntegrationBranch(runOverride, s.Repo)
 }
 
 // StepOutcome is the result of executing a pipeline step.

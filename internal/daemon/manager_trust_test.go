@@ -7,7 +7,9 @@ import (
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 )
 
 // TestLoadTrustedRepoConfig_FailClosedOnFetchFailure is the regression test for
@@ -155,5 +157,80 @@ func TestLoadTrustedRepoConfig_PinnedSHAReadsFreshDefaultBranch(t *testing.T) {
 	}
 	if trusted.Commands.Lint != "echo fresh-B" {
 		t.Fatalf("trusted lint = %q, want fresh-B (read at pinned SHA, not stale ref)", trusted.Commands.Lint)
+	}
+}
+
+// TestTrustRootIgnoresBaseBranchOverride proves the base branch override moves
+// only the diff/rebase/PR target, never the trusted-config source. The default
+// branch (main) carries the trusted command; the override base branch (develop)
+// carries a different, hostile command. startRun resolves its trustedSHA from
+// repo.DefaultBranch (main), so even with the override active the trusted config
+// is read from main and the develop command never becomes trusted.
+func TestTrustRootIgnoresBaseBranchOverride(t *testing.T) {
+	ctx := context.Background()
+
+	src := filepath.Join(t.TempDir(), "src")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, src, "init", "--initial-branch=main")
+	gitCmd(t, src, "config", "user.email", "test@test.com")
+	gitCmd(t, src, "config", "user.name", "Test")
+	gitCmd(t, src, "config", "commit.gpgsign", "false")
+	if err := os.WriteFile(filepath.Join(src, "README.md"), []byte("# test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, ".no-mistakes.yaml"),
+		[]byte("commands:\n  lint: \"echo trusted-main\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, src, "add", ".")
+	gitCmd(t, src, "commit", "-m", "trusted command on main")
+
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	gitCmd(t, "", "init", "--bare", bare)
+	if err := git.AddRemote(ctx, bare, "origin", bare); err != nil {
+		t.Fatalf("add origin to bare: %v", err)
+	}
+	gitCmd(t, src, "remote", "add", "origin", bare)
+	gitCmd(t, src, "push", "origin", "HEAD:refs/heads/main")
+
+	// develop diverges with a hostile command a contributor would love to run.
+	gitCmd(t, src, "checkout", "-b", "develop")
+	if err := os.WriteFile(filepath.Join(src, ".no-mistakes.yaml"),
+		[]byte("commands:\n  lint: \"echo hostile-develop\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, src, "add", ".")
+	gitCmd(t, src, "commit", "-m", "hostile command on develop")
+	gitCmd(t, src, "push", "origin", "HEAD:refs/heads/develop")
+
+	repo := &db.Repo{DefaultBranch: "main", BaseBranch: "develop"}
+	if got := pipeline.ResolveIntegrationBranch("", repo); got != "develop" {
+		t.Fatalf("precondition: integration branch = %q, want develop (override active)", got)
+	}
+
+	wt := filepath.Join(t.TempDir(), "wt")
+	headSHA := gitOutput(t, src, "rev-parse", "HEAD")
+	if err := git.WorktreeAdd(ctx, bare, wt, headSHA); err != nil {
+		t.Fatalf("WorktreeAdd: %v", err)
+	}
+
+	// startRun resolves the trusted SHA from repo.DefaultBranch, NOT the
+	// integration branch. Mirror that resolution exactly.
+	if err := git.FetchRemoteBranch(ctx, wt, "origin", repo.DefaultBranch); err != nil {
+		t.Fatalf("fetch default branch: %v", err)
+	}
+	trustedSHA, err := git.ResolveRef(ctx, wt, "refs/remotes/origin/"+repo.DefaultBranch)
+	if err != nil {
+		t.Fatalf("resolve default branch ref: %v", err)
+	}
+
+	trusted := loadTrustedRepoConfig(ctx, wt, trustedSHA, "test-run")
+	if trusted == nil {
+		t.Fatal("expected trusted config from the default branch")
+	}
+	if trusted.Commands.Lint != "echo trusted-main" {
+		t.Fatalf("SECURITY REGRESSION: trusted lint = %q, want trusted-main (override must not move the trust root)", trusted.Commands.Lint)
 	}
 }

@@ -30,11 +30,13 @@ Initialize or refresh the gate for the current repository.
 ```sh
 no-mistakes init
 no-mistakes init --fork-url git@github.com:you/my-repo.git
+no-mistakes init --base-branch develop
 ```
 
 | Flag | Type | Default | Description |
 |---|---|---|---|
 | `--fork-url` | `string` | (none) | GitHub fork remote URL to push branches to while opening PRs against `origin` |
+| `--base-branch` | `string` | (none) | Integration branch to rebase, review, and open PRs against instead of the auto-detected default branch |
 
 Creates or refreshes a local bare repo, installs the post-receive hook, best-effort isolates the gate repo's hook path from shared git config changes when Git supports `config --worktree`, adds or repairs the `no-mistakes` git remote, detects the default branch, records or updates the repo in SQLite, installs the `/no-mistakes` agent skill at user level into `~/.claude/skills/no-mistakes/SKILL.md` and `~/.agents/skills/no-mistakes/SKILL.md`, and ensures the daemon is running, installing the managed service when available and falling back to a detached daemon otherwise.
 `init` writes no skill files into the repo; the user-level copies cover every supported agent (`~/.claude/skills` for Claude Code, `~/.agents/skills` for Codex, OpenCode, Rovo Dev, and Pi) across all repos.
@@ -50,6 +52,12 @@ Re-running `init` on an already-initialized repo succeeds and reports `Gate alre
 It refreshes managed gate wiring, origin/default-branch metadata, hook-path isolation, and the installed agent skill, overwriting any stale `SKILL.md` content from an older binary.
 When a fork URL is already recorded, re-running `init` without `--fork-url` preserves it.
 Passing `--fork-url` again replaces the stored fork URL after validation.
+
+For a GitFlow layout where the GitHub default branch is `main` but the team integrates on `develop`, pass `--base-branch develop`.
+no-mistakes then rebases onto, diffs against, and opens PRs targeting `develop`, while `main` stays the trust root for repo config (`commands`, `agent`) - the override moves only the diff/rebase/PR target.
+A recorded base branch is preserved when re-running `init` without `--base-branch`, and replaced when you pass a new one.
+The branch must already exist on origin; `init` rejects a `--base-branch` that origin does not have, so a typo fails upfront instead of silently breaking every later run.
+For a one-off run against a different base without changing the stored value, use `no-mistakes axi run --base <branch>`.
 If you rename or move an initialized working directory and the old path no longer exists, re-running `init` from the new path reattaches the existing gate, preserves the repo ID and run history, and updates the stored working path.
 If you copy an initialized working directory while the original still exists, the copy is treated as a separate repo and gets a fresh gate.
 Fresh init rolls back gate setup when a required gate or daemon step fails; refresh does not eject a pre-existing gate if daemon startup fails.
@@ -79,6 +87,7 @@ An active run on another branch does not block starting validation for the curre
 ```sh
 no-mistakes axi run --intent "the user's goal"
 no-mistakes axi run --intent "the user's goal" --skip test,lint
+no-mistakes axi run --intent "the user's goal" --base develop
 no-mistakes axi run --intent "the user's goal" --yes
 ```
 
@@ -87,12 +96,15 @@ no-mistakes axi run --intent "the user's goal" --yes
 | `--intent` | `string` | (none) | What the user set out to accomplish; required to start a new run |
 | `-y`, `--yes` | `bool` | `false` | Auto-resolve every gate until a decision point or outcome |
 | `--skip` | `string` | (none) | Comma-separated pipeline steps to skip |
+| `--base` | `string` | (none) | Integration branch to rebase, review, and open the PR against for this run only |
 
 `--intent` is not a description of the diff.
 It is the user's goal or request, and no-mistakes uses it verbatim instead of transcript inference.
 Err on the side of completeness: include the goal, important decisions and tradeoffs, constraints or approaches ruled in or out, and explicit requests that might otherwise look surprising in the diff.
 When starting a new run, `axi run` refuses the default branch and uncommitted working trees with actionable errors instead of auto-branching or auto-committing.
 Reattaching to an in-flight run does not require `--intent`.
+`--base` retargets the rebase, review/lint/document diff, and PR for this run only; it overrides the repo's stored base branch (`init --base-branch`) and the auto-detected default, but never moves the trust root for `commands`/`agent`.
+The override is reused on an automatic rerun of the same branch, just like the resolved base commit.
 With `--yes`, `axi run` treats both `action: auto-fix` and `action: ask-user` findings as standing consent for the pipeline to fix them by selecting every finding, then accepts the resulting fix review.
 Gates with no findings or only `action: no-op` findings are approved as-is, and each step is fixed at most once so unresolved findings do not loop forever.
 Without `--yes`, an agent driving `axi run` should stop when a gate contains `action: ask-user` findings and relay each finding's ID, file, and full description to the user before responding.

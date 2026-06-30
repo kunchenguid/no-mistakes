@@ -163,7 +163,7 @@ func firstAuthorCommitTicket(sctx *pipeline.StepContext, pattern string) string 
 	if sctx.Ctx == nil || sctx.Repo == nil || strings.TrimSpace(sctx.WorkDir) == "" {
 		return ""
 	}
-	base := resolveBranchBaseSHA(sctx.Ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
+	base := resolveBranchBaseSHA(sctx.Ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.IntegrationBranch())
 	out, err := git.Run(sctx.Ctx, sctx.WorkDir, "log", "--format=%s", "--reverse", base+".."+sctx.Run.HeadSHA)
 	if err != nil {
 		return ""

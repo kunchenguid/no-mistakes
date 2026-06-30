@@ -49,7 +49,7 @@ func TestRepoInsertAndGet(t *testing.T) {
 
 func TestRepoForkURLRoundTrip(t *testing.T) {
 	d := openTestDB(t)
-	repo, err := d.InsertRepoWithFork("/home/user/project", "git@github.com:parent/project.git", "git@github.com:fork/project.git", "main")
+	repo, err := d.InsertRepoWithFork("/home/user/project", "git@github.com:parent/project.git", "git@github.com:fork/project.git", "main", "")
 	if err != nil {
 		t.Fatalf("insert repo with fork: %v", err)
 	}
@@ -86,6 +86,63 @@ func TestRepoForkURLRoundTrip(t *testing.T) {
 	}
 	if cleared.PushURL() != cleared.UpstreamURL {
 		t.Fatalf("push url after clear = %q, want upstream %q", cleared.PushURL(), cleared.UpstreamURL)
+	}
+}
+
+func TestRepoBaseBranchRoundTrip(t *testing.T) {
+	d := openTestDB(t)
+
+	repo, err := d.InsertRepoWithFork("/home/user/gitflow", "git@github.com:parent/gitflow.git", "", "main", "develop")
+	if err != nil {
+		t.Fatalf("insert repo with base branch: %v", err)
+	}
+	if repo.BaseBranch != "develop" {
+		t.Fatalf("base branch = %q, want develop", repo.BaseBranch)
+	}
+
+	got, err := d.GetRepo(repo.ID)
+	if err != nil {
+		t.Fatalf("get repo: %v", err)
+	}
+	if got.BaseBranch != "develop" {
+		t.Fatalf("base branch after get = %q, want develop", got.BaseBranch)
+	}
+
+	changed, err := d.UpdateRepoBaseBranch(repo.ID, "release/1.4")
+	if err != nil {
+		t.Fatalf("update base branch: %v", err)
+	}
+	if changed.BaseBranch != "release/1.4" {
+		t.Fatalf("base branch after update = %q, want release/1.4", changed.BaseBranch)
+	}
+}
+
+func TestRepoBaseBranchPreservedByMetadataUpdate(t *testing.T) {
+	d := openTestDB(t)
+
+	repo, err := d.InsertRepoWithFork("/home/user/preserve", "git@github.com:parent/preserve.git", "", "main", "develop")
+	if err != nil {
+		t.Fatalf("insert repo: %v", err)
+	}
+
+	refreshed, err := d.UpdateRepoMetadata(repo.ID, "git@github.com:parent/preserve.git", "main")
+	if err != nil {
+		t.Fatalf("update repo metadata: %v", err)
+	}
+	if refreshed.BaseBranch != "develop" {
+		t.Fatalf("base branch after metadata refresh = %q, want preserved develop", refreshed.BaseBranch)
+	}
+}
+
+func TestRepoDefaultBaseBranchEmpty(t *testing.T) {
+	d := openTestDB(t)
+
+	repo, err := d.InsertRepo("/home/user/nooverride", "git@github.com:user/nooverride.git", "main")
+	if err != nil {
+		t.Fatalf("insert repo: %v", err)
+	}
+	if repo.BaseBranch != "" {
+		t.Fatalf("base branch = %q, want empty", repo.BaseBranch)
 	}
 }
 

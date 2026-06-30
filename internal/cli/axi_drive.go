@@ -59,6 +59,7 @@ func newAxiRunCmd() *cobra.Command {
 	var autoYes bool
 	var skipValue string
 	var intent string
+	var baseBranch string
 
 	cmd := &cobra.Command{
 		Use:   "run",
@@ -85,17 +86,18 @@ func newAxiRunCmd() *cobra.Command {
 					return emitError(cmd, 2, err.Error(),
 						"Valid steps: intent, rebase, review, test, document, lint, push, pr, ci")
 				}
-				return runAxiRun(cmd, autoYes, skipSteps, intent)
+				return runAxiRun(cmd, autoYes, skipSteps, intent, baseBranch)
 			})
 		},
 	}
 	cmd.Flags().BoolVarP(&autoYes, "yes", "y", false, "auto-resolve every gate (fix findings, then accept) until a decision point or outcome")
 	cmd.Flags().StringVar(&skipValue, "skip", "", "comma-separated pipeline steps to skip")
 	cmd.Flags().StringVar(&intent, "intent", "", "what the user set out to accomplish (not a description of the diff); used instead of inferring from transcripts (required to start a run)")
+	cmd.Flags().StringVar(&baseBranch, "base", "", "integration branch to rebase, review, and open the PR against for this run only (overrides the repo default and any configured base branch)")
 	return cmd
 }
 
-func runAxiRun(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, intent string) error {
+func runAxiRun(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, intent, baseBranch string) error {
 	ctx := cmd.Context()
 	env, err := openAxiEnv(true)
 	if err != nil {
@@ -135,7 +137,7 @@ func runAxiRun(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, int
 			return guard(cmd)
 		}
 		var err error
-		runID, err = triggerRun(ctx, env, branch, headSHA, skipSteps, intent)
+		runID, err = triggerRun(ctx, env, branch, headSHA, skipSteps, intent, baseBranch)
 		if err != nil {
 			return emitError(cmd, 1, err.Error())
 		}
@@ -205,9 +207,12 @@ func preflightGuard(ctx context.Context, env *axiEnv, branch string) func(*cobra
 // the gate to trigger a pipeline, and falls back to a rerun when the push was a
 // no-op (the gate already had this commit). Callers must check for an existing
 // active run first (see activeRunID) and apply pre-flight guards.
-func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSteps []types.StepName, intent string) (string, error) {
+func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSteps []types.StepName, intent, baseBranch string) (string, error) {
 	pushOptions := formatSkipPushOptions(skipSteps)
 	if opt := formatIntentPushOption(intent); opt != "" {
+		pushOptions = append(pushOptions, opt)
+	}
+	if opt := formatBasePushOption(baseBranch); opt != "" {
 		pushOptions = append(pushOptions, opt)
 	}
 	pushErr := git.PushWithOptions(ctx, ".", gate.RemoteName, "refs/heads/"+branch, "", false, pushOptions)
@@ -222,7 +227,7 @@ func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSt
 	// No run appeared: the push was likely up-to-date. Rerun the latest gate
 	// head so `axi run` is still useful when there are no new commits.
 	var rr ipc.RerunResult
-	if err := env.client.Call(ipc.MethodRerun, rerunParams(env.repo.ID, branch, skipSteps, intent), &rr); err != nil {
+	if err := env.client.Call(ipc.MethodRerun, rerunParams(env.repo.ID, branch, skipSteps, intent, baseBranch), &rr); err != nil {
 		return "", fmt.Errorf("no run started for %q: %v", branch, err)
 	}
 	return rr.RunID, nil
@@ -264,8 +269,8 @@ func activeRunLookupParams(repoID, branch string) *ipc.GetActiveRunParams {
 	return &ipc.GetActiveRunParams{RepoID: repoID, Branch: branch}
 }
 
-func rerunParams(repoID, branch string, skipSteps []types.StepName, intent string) *ipc.RerunParams {
-	return &ipc.RerunParams{RepoID: repoID, Branch: branch, SkipSteps: skipSteps, Intent: intent}
+func rerunParams(repoID, branch string, skipSteps []types.StepName, intent, baseBranch string) *ipc.RerunParams {
+	return &ipc.RerunParams{RepoID: repoID, Branch: branch, SkipSteps: skipSteps, Intent: intent, BaseBranch: baseBranch}
 }
 
 // driveRun polls a run until it reaches an approval gate, a terminal state, or

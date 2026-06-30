@@ -41,6 +41,9 @@ func TestOpenCreatesSchema(t *testing.T) {
 	if !hasColumn(t, d, "repos", "fork_url") {
 		t.Fatal("repos.fork_url column missing from fresh schema")
 	}
+	if !hasColumn(t, d, "repos", "base_branch") {
+		t.Fatal("repos.base_branch column missing from fresh schema")
+	}
 }
 
 func TestOpenCreatesStepRoundsTable(t *testing.T) {
@@ -162,6 +165,60 @@ func TestOpenMigratesReposForkURLColumn(t *testing.T) {
 	}
 	if updated.ForkURL != "git@github.com:fork/repo.git" {
 		t.Fatalf("fork url after update = %q, want fork URL", updated.ForkURL)
+	}
+}
+
+func TestOpenMigratesReposBaseBranchColumn(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.sqlite")
+
+	legacyDB, err := sql.Open("sqlite", dbPath+"?_pragma=journal_mode(wal)&_pragma=foreign_keys(on)")
+	if err != nil {
+		t.Fatalf("open legacy db: %v", err)
+	}
+	if _, err := legacyDB.Exec(`
+		CREATE TABLE repos (
+			id TEXT PRIMARY KEY,
+			working_path TEXT NOT NULL UNIQUE,
+			upstream_url TEXT NOT NULL,
+			fork_url TEXT,
+			default_branch TEXT NOT NULL DEFAULT 'main',
+			created_at INTEGER NOT NULL
+		);
+		INSERT INTO repos (id, working_path, upstream_url, default_branch, created_at)
+		VALUES ('repo-1', '/work/repo', 'git@github.com:parent/repo.git', 'main', 123);
+	`); err != nil {
+		legacyDB.Close()
+		t.Fatalf("create legacy repos table: %v", err)
+	}
+	if err := legacyDB.Close(); err != nil {
+		t.Fatalf("close legacy db: %v", err)
+	}
+
+	d, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open migrated db: %v", err)
+	}
+	t.Cleanup(func() { d.Close() })
+
+	if !hasColumn(t, d, "repos", "base_branch") {
+		t.Fatal("expected migrated base_branch column")
+	}
+	repo, err := d.GetRepo("repo-1")
+	if err != nil {
+		t.Fatalf("get migrated repo: %v", err)
+	}
+	if repo == nil {
+		t.Fatal("expected migrated repo")
+	}
+	if repo.BaseBranch != "" {
+		t.Fatalf("base branch = %q, want empty", repo.BaseBranch)
+	}
+	updated, err := d.UpdateRepoBaseBranch(repo.ID, "develop")
+	if err != nil {
+		t.Fatalf("update migrated base branch: %v", err)
+	}
+	if updated.BaseBranch != "develop" {
+		t.Fatalf("base branch after update = %q, want develop", updated.BaseBranch)
 	}
 }
 

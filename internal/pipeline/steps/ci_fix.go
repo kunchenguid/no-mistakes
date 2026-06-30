@@ -16,8 +16,9 @@ import (
 // when the agent produced no changes, or (false, err) on failure.
 func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, failingNames []string, mergeConflict bool) (bool, error) {
 	ctx := sctx.Ctx
-	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
-	rebaseBaseSHA := resolveDefaultBranchTipSHA(ctx, sctx.WorkDir, sctx.Repo.UpstreamURL, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
+	baseBranch := sctx.IntegrationBranch()
+	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, baseBranch)
+	rebaseBaseSHA := resolveDefaultBranchTipSHA(ctx, sctx.WorkDir, sctx.Repo.UpstreamURL, sctx.Run.BaseSHA, baseBranch)
 	promptBaseSHA := baseSHA
 	if mergeConflict {
 		promptBaseSHA = rebaseBaseSHA

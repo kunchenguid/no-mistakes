@@ -91,6 +91,68 @@ func TestRebaseStep_DetectsUnpushedLocalDefaultBranchCommits(t *testing.T) {
 	}
 }
 
+// Same protection as TestRebaseStep_DetectsUnpushedLocalDefaultBranchCommits,
+// but the integration branch is a non-default override (develop). The bundled
+// detection must key off the resolved integration branch, not the GitHub
+// default, so a GitFlow repo gating against develop is protected too.
+func TestRebaseStep_DetectsUnpushedLocalBaseBranchCommitsForOverride(t *testing.T) {
+	t.Parallel()
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	working := t.TempDir()
+	gitCmd(t, working, "init")
+	gitCmd(t, working, "config", "user.name", "test")
+	gitCmd(t, working, "config", "user.email", "test@test.com")
+	gitCmd(t, working, "checkout", "-b", "develop")
+	os.WriteFile(filepath.Join(working, "base.txt"), []byte("base"), 0o644)
+	gitCmd(t, working, "add", "-A")
+	gitCmd(t, working, "commit", "-m", "base")
+	d0 := gitCmd(t, working, "rev-parse", "HEAD")
+	gitCmd(t, working, "remote", "add", "origin", upstream)
+	gitCmd(t, working, "push", "origin", "develop") // origin/develop == D0
+
+	// Unrelated workstream commits to local develop but does NOT push.
+	os.WriteFile(filepath.Join(working, "unrelated_a.txt"), []byte("backend a"), 0o644)
+	gitCmd(t, working, "add", "-A")
+	gitCmd(t, working, "commit", "-m", "unrelated backend work")
+	localDevelopTip := gitCmd(t, working, "rev-parse", "HEAD") // D0 + U, unpushed
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "clone", upstream, ".")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "fetch", working, "develop")
+	gitCmd(t, dir, "checkout", "--detach", localDevelopTip)
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(dir, "my_fix.txt"), []byte("my 2-line fix"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "my fix")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD") // D0 + U + M
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, d0, headSHA, config.Commands{})
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Repo.WorkingPath = working
+	sctx.Repo.BaseBranch = "develop"
+
+	step := &RebaseStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome == nil || !outcome.NeedsApproval {
+		t.Fatalf("expected the rebase step to stop for review against the develop override, got outcome=%#v", outcome)
+	}
+	if outcome.AutoFixable {
+		t.Fatalf("bundling unpushed local-base commits is not safely auto-fixable")
+	}
+	if !strings.Contains(strings.ToLower(outcome.Findings), "develop") {
+		t.Fatalf("expected findings to reference the develop base branch, got: %s", outcome.Findings)
+	}
+}
+
 func TestRebaseStep_DetectsUnpushedLocalDefaultBranchCommitsOnForcePush(t *testing.T) {
 	t.Parallel()
 	upstream := t.TempDir()

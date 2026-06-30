@@ -33,6 +33,35 @@ func TestRunInsertAndGet(t *testing.T) {
 	}
 }
 
+func TestRunBaseBranchPersisted(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+
+	run, err := d.InsertRunWithBase(repo.ID, "feature", "abc123", "def456", "develop")
+	if err != nil {
+		t.Fatalf("insert run with base: %v", err)
+	}
+	if run.BaseBranch != "develop" {
+		t.Fatalf("base branch = %q, want develop", run.BaseBranch)
+	}
+
+	got, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if got.BaseBranch != "develop" {
+		t.Fatalf("base branch after get = %q, want develop", got.BaseBranch)
+	}
+
+	plain, err := d.InsertRun(repo.ID, "feature2", "aaa", "bbb")
+	if err != nil {
+		t.Fatalf("insert plain run: %v", err)
+	}
+	if plain.BaseBranch != "" {
+		t.Fatalf("plain run base branch = %q, want empty", plain.BaseBranch)
+	}
+}
+
 func TestRunAwaitingAgentSetAndClear(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")

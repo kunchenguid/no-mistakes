@@ -25,6 +25,15 @@ func repoID(absPath string) string {
 	return fmt.Sprintf("%x", h[:6])
 }
 
+// InitOptions carries the optional routing overrides accepted by init: a
+// GitHub fork push URL and a base branch override that retargets the
+// rebase/review/PR base away from the auto-detected default branch. Empty
+// fields are preserved across idempotent refreshes.
+type InitOptions struct {
+	ForkURL    string
+	BaseBranch string
+}
+
 // Init sets up a no-mistakes gate for the git repo at workDir.
 // It creates a bare repo, installs the post-receive hook, best-effort
 // isolates the bare repo's hooks path from shared local config writes when
@@ -39,14 +48,23 @@ func repoID(absPath string) string {
 // new path, preserving its run history. The returned bool reports whether a
 // new gate was created (true) or an existing one was refreshed (false).
 func Init(ctx context.Context, d *db.DB, p *paths.Paths, workDir string) (*db.Repo, bool, error) {
-	return InitWithFork(ctx, d, p, workDir, "")
+	return InitWithOptions(ctx, d, p, workDir, InitOptions{})
 }
 
 // InitWithFork is Init plus an optional GitHub fork push URL. The origin remote
 // remains the parent repository used for PRs. When forkURL is empty, an
 // existing fork setting is preserved across idempotent refreshes.
 func InitWithFork(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkURL string) (*db.Repo, bool, error) {
-	forkURL = strings.TrimSpace(forkURL)
+	return InitWithOptions(ctx, d, p, workDir, InitOptions{ForkURL: forkURL})
+}
+
+// InitWithOptions is Init plus the optional fork push URL and base branch
+// override. The origin remote remains the parent repository used for PRs. When
+// an option is empty, the existing persisted value is preserved across
+// idempotent refreshes.
+func InitWithOptions(ctx context.Context, d *db.DB, p *paths.Paths, workDir string, opts InitOptions) (*db.Repo, bool, error) {
+	forkURL := strings.TrimSpace(opts.ForkURL)
+	baseBranch := strings.TrimSpace(opts.BaseBranch)
 
 	// Normalize worktrees back to the main repo root so one repo record works
 	// from either the main checkout or any attached worktree.
@@ -87,6 +105,11 @@ func InitWithFork(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkUR
 			return nil, false, err
 		}
 	}
+	if baseBranch != "" {
+		if err := validateBaseBranch(ctx, absRoot, baseBranch); err != nil {
+			return nil, false, err
+		}
+	}
 
 	id := repoID(absRoot)
 	if existing != nil {
@@ -120,12 +143,18 @@ func InitWithFork(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkUR
 		if err != nil {
 			return nil, false, fmt.Errorf("update repo metadata: %w", err)
 		}
+		if baseBranch != "" {
+			repo, err = d.UpdateRepoBaseBranch(existing.ID, baseBranch)
+			if err != nil {
+				return nil, false, fmt.Errorf("update repo base branch: %w", err)
+			}
+		}
 		slog.Info("gate refreshed", "repo_id", repo.ID, "path", absRoot)
 		return repo, false, nil
 	}
 
 	// Insert repo record with deterministic ID.
-	repo, err := d.InsertRepoWithIDAndFork(id, absRoot, upstreamURL, forkURL, branch)
+	repo, err := d.InsertRepoWithIDAndFork(id, absRoot, upstreamURL, forkURL, branch, baseBranch)
 	if err != nil {
 		// Rollback: remove remote and bare repo.
 		git.RemoveRemote(ctx, absRoot, RemoteName)
@@ -135,6 +164,22 @@ func InitWithFork(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkUR
 
 	slog.Info("gate initialized", "repo_id", id, "path", absRoot, "upstream", upstreamURL)
 	return repo, true, nil
+}
+
+// validateBaseBranch refuses a base branch override that does not resolve to a
+// branch on origin. A persisted base_branch retargets the rebase, review, and
+// PR base for every subsequent run, so a typo would silently break all of them
+// with a confusing rebase-onto-missing-ref failure; catching it at init turns
+// that into an upfront error.
+func validateBaseBranch(ctx context.Context, dir, baseBranch string) error {
+	sha, err := git.LsRemote(ctx, dir, "origin", "refs/heads/"+baseBranch)
+	if err != nil {
+		return fmt.Errorf("verify base branch %q on origin: %w", baseBranch, err)
+	}
+	if sha == "" {
+		return fmt.Errorf("base branch %q not found on origin; check the branch name (no-mistakes rebases, reviews, and opens PRs against it)", baseBranch)
+	}
+	return nil
 }
 
 func validateForkRouting(upstreamURL, forkURL string) error {

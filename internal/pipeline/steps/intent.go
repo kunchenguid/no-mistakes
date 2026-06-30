@@ -178,7 +178,7 @@ func defaultRunIntent(ctx context.Context, sctx *pipeline.StepContext) (*intent.
 		gitWorkDir = repo.WorkingPath
 	}
 
-	resolvedBaseSHA := resolveIntentBaseSHA(ctx, gitWorkDir, run.BaseSHA, repo.DefaultBranch)
+	resolvedBaseSHA := resolveIntentBaseSHA(ctx, gitWorkDir, run.BaseSHA, sctx.IntegrationBranch())
 	diffFiles, err := diffFilesForIntentMatching(ctx, gitWorkDir, resolvedBaseSHA, run.HeadSHA)
 	if err != nil {
 		return nil, err

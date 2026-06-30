@@ -18,7 +18,8 @@ func (s *DocumentStep) Name() types.StepName { return types.StepDocument }
 
 func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	ctx := sctx.Ctx
-	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
+	baseBranch := sctx.IntegrationBranch()
+	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, baseBranch)
 
 	ignorePatterns := "none"
 	if len(sctx.Config.IgnorePatterns) > 0 {
@@ -80,7 +81,7 @@ Rules:
 		sctx.Run.Branch,
 		baseSHA,
 		sctx.Run.HeadSHA,
-		sctx.Repo.DefaultBranch,
+		baseBranch,
 		ignorePatterns,
 		historySection,
 	)

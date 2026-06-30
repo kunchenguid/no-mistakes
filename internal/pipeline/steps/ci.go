@@ -119,7 +119,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	baseBranchTip := s.baseBranchTip
 	if baseBranchTip == nil {
 		baseBranchTip = func(ctx context.Context) (string, bool) {
-			return resolveDefaultBranchTip(ctx, sctx.WorkDir, sctx.Repo.UpstreamURL, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
+			return resolveDefaultBranchTip(ctx, sctx.WorkDir, sctx.Repo.UpstreamURL, sctx.Run.BaseSHA, sctx.IntegrationBranch())
 		}
 	}
 	started := now()

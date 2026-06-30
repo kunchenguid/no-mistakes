@@ -58,6 +58,20 @@ func setupTestRepo(t *testing.T) string {
 	return work
 }
 
+// setupTestRepoWithOriginBranches is setupTestRepo plus the named branches
+// published on origin, so init paths that validate a base branch against the
+// remote have refs to find.
+func setupTestRepoWithOriginBranches(t *testing.T, branches ...string) string {
+	t.Helper()
+	work := setupTestRepo(t)
+	for _, b := range branches {
+		if out, err := exec.Command("git", "-C", work, "push", "origin", "HEAD:refs/heads/"+b).CombinedOutput(); err != nil {
+			t.Fatalf("push origin %s: %v: %s", b, err, out)
+		}
+	}
+	return work
+}
+
 func openTestDB(t *testing.T, p *paths.Paths) *db.DB {
 	t.Helper()
 	d, err := db.Open(p.DB())
@@ -268,6 +282,88 @@ func TestInitWithForkPreservesForkOnPlainReinit(t *testing.T) {
 	}
 	if dbRepo == nil || dbRepo.ForkURL != forkURL {
 		t.Fatalf("db fork URL after plain re-init = %+v, want %q", dbRepo, forkURL)
+	}
+}
+
+func TestInitBaseBranchSetPreservedAndChanged(t *testing.T) {
+	workDir := setupTestRepoWithOriginBranches(t, "develop", "main")
+	nmRoot := t.TempDir()
+	p := paths.WithRoot(nmRoot)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+	d := openTestDB(t, p)
+	ctx := context.Background()
+
+	first, created, err := InitWithOptions(ctx, d, p, workDir, InitOptions{BaseBranch: "develop"})
+	if err != nil {
+		t.Fatalf("init with base branch: %v", err)
+	}
+	if !created {
+		t.Fatal("first init should report created=true")
+	}
+	if first.BaseBranch != "develop" {
+		t.Fatalf("base branch after init = %q, want develop", first.BaseBranch)
+	}
+
+	second, created, err := Init(ctx, d, p, workDir)
+	if err != nil {
+		t.Fatalf("plain re-init: %v", err)
+	}
+	if created {
+		t.Fatal("plain re-init should report created=false")
+	}
+	if second.BaseBranch != "develop" {
+		t.Fatalf("base branch after plain re-init = %q, want preserved develop", second.BaseBranch)
+	}
+
+	third, _, err := InitWithOptions(ctx, d, p, workDir, InitOptions{BaseBranch: "main"})
+	if err != nil {
+		t.Fatalf("explicit re-init: %v", err)
+	}
+	if third.BaseBranch != "main" {
+		t.Fatalf("base branch after explicit re-init = %q, want main", third.BaseBranch)
+	}
+}
+
+func TestInitBaseBranchValidatedAgainstOrigin(t *testing.T) {
+	workDir := setupTestRepoWithOriginBranches(t, "develop")
+	nmRoot := t.TempDir()
+	p := paths.WithRoot(nmRoot)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+	d := openTestDB(t, p)
+	ctx := context.Background()
+
+	if _, _, err := InitWithOptions(ctx, d, p, workDir, InitOptions{BaseBranch: "deveolp"}); err == nil {
+		t.Fatal("init with a base branch absent from origin should fail")
+	}
+	missing, err := d.GetRepoByPath(workDir)
+	if err != nil {
+		t.Fatalf("get repo after rejected init: %v", err)
+	}
+	if missing != nil {
+		t.Fatalf("a rejected base branch must not persist a repo record, got %+v", missing)
+	}
+
+	repo, created, err := InitWithOptions(ctx, d, p, workDir, InitOptions{BaseBranch: "develop"})
+	if err != nil {
+		t.Fatalf("init with a base branch present on origin should succeed: %v", err)
+	}
+	if !created || repo.BaseBranch != "develop" {
+		t.Fatalf("init created=%v base=%q, want created=true base=develop", created, repo.BaseBranch)
+	}
+
+	if _, _, err := InitWithOptions(ctx, d, p, workDir, InitOptions{BaseBranch: "no-such-branch"}); err == nil {
+		t.Fatal("re-init with a base branch absent from origin should fail")
+	}
+	after, err := d.GetRepoByPath(workDir)
+	if err != nil {
+		t.Fatalf("get repo after rejected re-init: %v", err)
+	}
+	if after.BaseBranch != "develop" {
+		t.Fatalf("rejected re-init must not change persisted base, got %q", after.BaseBranch)
 	}
 }
 

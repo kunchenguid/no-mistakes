@@ -68,3 +68,33 @@ func TestParseIntentPushOptionsNone(t *testing.T) {
 		t.Fatalf("parseIntentPushOptions(no intent) = %q, want empty", got)
 	}
 }
+
+func TestBasePushOptionRoundTrip(t *testing.T) {
+	opt := formatBasePushOption("release/1.4")
+	if opt != basePushOptionPrefix+"release/1.4" {
+		t.Fatalf("formatBasePushOption() = %q", opt)
+	}
+	got := parseBasePushOptions([]string{"no-mistakes.skip=test", opt})
+	if got != "release/1.4" {
+		t.Fatalf("parseBasePushOptions() = %q, want release/1.4", got)
+	}
+}
+
+func TestFormatBasePushOptionEmpty(t *testing.T) {
+	if got := formatBasePushOption("   "); got != "" {
+		t.Fatalf("formatBasePushOption(blank) = %q, want empty", got)
+	}
+}
+
+func TestParseBasePushOptionsLastWins(t *testing.T) {
+	got := parseBasePushOptions([]string{
+		basePushOptionPrefix + "develop",
+		basePushOptionPrefix + "main",
+	})
+	if got != "main" {
+		t.Fatalf("parseBasePushOptions() = %q, want main (last wins)", got)
+	}
+	if got := parseBasePushOptions([]string{"ci.skip"}); got != "" {
+		t.Fatalf("parseBasePushOptions(none) = %q, want empty", got)
+	}
+}

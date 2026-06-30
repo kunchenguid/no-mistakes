@@ -165,6 +165,9 @@ not stored in this database. Legacy `user_fix` rounds are still read as
 compatibility.
 Run records also store the nullable `awaiting_agent_since` timestamp used only to render the AXI parked signal while a gate is waiting for the driving agent.
 Repo records store the parent `upstream_url` and an optional `fork_url`; branch pushes use `fork_url` when present, while PR and CI provider context stays anchored to the parent.
+Repo records also store an optional `base_branch` (set with `init --base-branch`, or per run with `axi run --base`).
+When present it becomes the integration branch the pipeline rebases onto, diffs against, and opens PRs into, instead of the auto-detected default branch - the GitFlow case where the GitHub default is `main` but the team integrates on `develop`.
+The override moves only that diff/rebase/PR target; the trusted-config root (`commands`, `agent`) stays pinned to the auto-detected default branch, so a contributor cannot relocate the trust source by changing the base.
 
 ## Local state
 

@@ -13,6 +13,7 @@ type Repo struct {
 	UpstreamURL   string
 	ForkURL       string
 	DefaultBranch string
+	BaseBranch    string
 	CreatedAt     int64
 }
 
@@ -29,22 +30,25 @@ func (r *Repo) PushURL() string {
 
 // InsertRepoWithID creates a new repo record with a caller-provided ID.
 func (d *DB) InsertRepoWithID(id, workingPath, upstreamURL, defaultBranch string) (*Repo, error) {
-	return d.InsertRepoWithIDAndFork(id, workingPath, upstreamURL, "", defaultBranch)
+	return d.InsertRepoWithIDAndFork(id, workingPath, upstreamURL, "", defaultBranch, "")
 }
 
-// InsertRepoWithIDAndFork creates a repo record with an optional fork push URL.
-func (d *DB) InsertRepoWithIDAndFork(id, workingPath, upstreamURL, forkURL, defaultBranch string) (*Repo, error) {
+// InsertRepoWithIDAndFork creates a repo record with an optional fork push URL
+// and an optional base branch override. An empty baseBranch means the run base
+// falls back to the auto-detected default branch.
+func (d *DB) InsertRepoWithIDAndFork(id, workingPath, upstreamURL, forkURL, defaultBranch, baseBranch string) (*Repo, error) {
 	r := &Repo{
 		ID:            id,
 		WorkingPath:   workingPath,
 		UpstreamURL:   upstreamURL,
 		ForkURL:       strings.TrimSpace(forkURL),
 		DefaultBranch: defaultBranch,
+		BaseBranch:    strings.TrimSpace(baseBranch),
 		CreatedAt:     now(),
 	}
 	_, err := d.sql.Exec(
-		`INSERT INTO repos (id, working_path, upstream_url, fork_url, default_branch, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-		r.ID, r.WorkingPath, r.UpstreamURL, nullableString(r.ForkURL), r.DefaultBranch, r.CreatedAt,
+		`INSERT INTO repos (id, working_path, upstream_url, fork_url, default_branch, base_branch, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.WorkingPath, r.UpstreamURL, nullableString(r.ForkURL), r.DefaultBranch, r.BaseBranch, r.CreatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert repo: %w", err)
@@ -54,22 +58,24 @@ func (d *DB) InsertRepoWithIDAndFork(id, workingPath, upstreamURL, forkURL, defa
 
 // InsertRepo creates a new repo record and returns it with a generated ID.
 func (d *DB) InsertRepo(workingPath, upstreamURL, defaultBranch string) (*Repo, error) {
-	return d.InsertRepoWithFork(workingPath, upstreamURL, "", defaultBranch)
+	return d.InsertRepoWithFork(workingPath, upstreamURL, "", defaultBranch, "")
 }
 
-// InsertRepoWithFork creates a new repo record with an optional fork push URL.
-func (d *DB) InsertRepoWithFork(workingPath, upstreamURL, forkURL, defaultBranch string) (*Repo, error) {
+// InsertRepoWithFork creates a new repo record with an optional fork push URL
+// and an optional base branch override.
+func (d *DB) InsertRepoWithFork(workingPath, upstreamURL, forkURL, defaultBranch, baseBranch string) (*Repo, error) {
 	r := &Repo{
 		ID:            newID(),
 		WorkingPath:   workingPath,
 		UpstreamURL:   upstreamURL,
 		ForkURL:       strings.TrimSpace(forkURL),
 		DefaultBranch: defaultBranch,
+		BaseBranch:    strings.TrimSpace(baseBranch),
 		CreatedAt:     now(),
 	}
 	_, err := d.sql.Exec(
-		`INSERT INTO repos (id, working_path, upstream_url, fork_url, default_branch, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-		r.ID, r.WorkingPath, r.UpstreamURL, nullableString(r.ForkURL), r.DefaultBranch, r.CreatedAt,
+		`INSERT INTO repos (id, working_path, upstream_url, fork_url, default_branch, base_branch, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.WorkingPath, r.UpstreamURL, nullableString(r.ForkURL), r.DefaultBranch, r.BaseBranch, r.CreatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert repo: %w", err)
@@ -81,8 +87,8 @@ func (d *DB) InsertRepoWithFork(workingPath, upstreamURL, forkURL, defaultBranch
 func (d *DB) GetRepo(id string) (*Repo, error) {
 	r := &Repo{}
 	err := d.sql.QueryRow(
-		`SELECT id, working_path, upstream_url, COALESCE(fork_url, ''), default_branch, created_at FROM repos WHERE id = ?`, id,
-	).Scan(&r.ID, &r.WorkingPath, &r.UpstreamURL, &r.ForkURL, &r.DefaultBranch, &r.CreatedAt)
+		`SELECT id, working_path, upstream_url, COALESCE(fork_url, ''), default_branch, COALESCE(base_branch, ''), created_at FROM repos WHERE id = ?`, id,
+	).Scan(&r.ID, &r.WorkingPath, &r.UpstreamURL, &r.ForkURL, &r.DefaultBranch, &r.BaseBranch, &r.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -96,8 +102,8 @@ func (d *DB) GetRepo(id string) (*Repo, error) {
 func (d *DB) GetRepoByPath(workingPath string) (*Repo, error) {
 	r := &Repo{}
 	err := d.sql.QueryRow(
-		`SELECT id, working_path, upstream_url, COALESCE(fork_url, ''), default_branch, created_at FROM repos WHERE working_path = ?`, workingPath,
-	).Scan(&r.ID, &r.WorkingPath, &r.UpstreamURL, &r.ForkURL, &r.DefaultBranch, &r.CreatedAt)
+		`SELECT id, working_path, upstream_url, COALESCE(fork_url, ''), default_branch, COALESCE(base_branch, ''), created_at FROM repos WHERE working_path = ?`, workingPath,
+	).Scan(&r.ID, &r.WorkingPath, &r.UpstreamURL, &r.ForkURL, &r.DefaultBranch, &r.BaseBranch, &r.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -141,6 +147,19 @@ func (d *DB) UpdateRepoForkURL(id, forkURL string) (*Repo, error) {
 	)
 	if err != nil {
 		return nil, fmt.Errorf("update repo fork URL: %w", err)
+	}
+	return d.GetRepo(id)
+}
+
+// UpdateRepoBaseBranch sets the base branch override that retargets the
+// rebase/review/PR base away from the auto-detected default branch.
+func (d *DB) UpdateRepoBaseBranch(id, baseBranch string) (*Repo, error) {
+	_, err := d.sql.Exec(
+		`UPDATE repos SET base_branch = ? WHERE id = ?`,
+		strings.TrimSpace(baseBranch), id,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("update repo base branch: %w", err)
 	}
 	return d.GetRepo(id)
 }

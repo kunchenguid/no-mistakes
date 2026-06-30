@@ -27,10 +27,7 @@ const forkBranchRefPrefix = "refs/remotes/no-mistakes-push/"
 func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	ctx := sctx.Ctx
 	branch := strings.TrimPrefix(sctx.Run.Branch, "refs/heads/")
-	defaultBranch := strings.TrimSpace(sctx.Repo.DefaultBranch)
-	if defaultBranch == "" {
-		defaultBranch = "main"
-	}
+	baseBranch := sctx.IntegrationBranch()
 	branchTarget := ""
 	pushRemote := "origin"
 	if branch != "" {
@@ -48,8 +45,8 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	forcePush := isForcePushAgainstRemote(ctx, sctx.WorkDir, pushRemote, branch, branchTarget, sctx.Run.BaseSHA)
 
 	sctx.Log("fetching latest upstream state...")
-	if err := git.FetchRemoteBranch(ctx, sctx.WorkDir, "origin", defaultBranch); err != nil {
-		sctx.LogFile(fmt.Sprintf("warning: could not fetch origin/%s: %v", defaultBranch, err))
+	if err := git.FetchRemoteBranch(ctx, sctx.WorkDir, "origin", baseBranch); err != nil {
+		sctx.LogFile(fmt.Sprintf("warning: could not fetch origin/%s: %v", baseBranch, err))
 	}
 	// Sync the push branch's remote-tracking ref only when we are about to rebase
 	// onto it (a normal push). On a force push we deliberately skip both the fetch
@@ -61,7 +58,7 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	// when the remote carries an out-of-band commit - silently clobbering it
 	// (the original #281/#305 hazard, in the force-push path). Leaving it stale is
 	// what lets the push step's content check catch that case.
-	if !forcePush && branch != "" && branch != defaultBranch {
+	if !forcePush && branch != "" && branch != baseBranch {
 		if pushRemote == "origin" {
 			if err := git.FetchRemoteBranch(ctx, sctx.WorkDir, "origin", branch); err != nil {
 				sctx.LogFile(fmt.Sprintf("warning: could not fetch origin/%s: %v", branch, err))
@@ -76,17 +73,17 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	// origin/<default>. Rebasing onto the fresh remote default keeps those
 	// commits in the branch's history, so the PR would silently bundle another
 	// workstream's unpushed work. Surface it for a human decision instead.
-	if outcome := detectBundledLocalDefaultCommits(ctx, sctx, branch, defaultBranch); outcome != nil {
+	if outcome := detectBundledLocalDefaultCommits(ctx, sctx, branch, baseBranch); outcome != nil {
 		return outcome, nil
 	}
-	if forcePush && branch == defaultBranch && remoteDefaultBranchAdvanced(ctx, sctx.WorkDir, defaultBranch, sctx.Run.BaseSHA) {
+	if forcePush && branch == baseBranch && remoteDefaultBranchAdvanced(ctx, sctx.WorkDir, baseBranch, sctx.Run.BaseSHA) {
 		findingsJSON, _ := json.Marshal(Findings{
 			Items: []Finding{{
 				Severity:    "warning",
 				File:        filepath.Join("internal", "pipeline", "steps", "rebase.go"),
-				Description: fmt.Sprintf("origin/%s advanced after the force push; manual review required before updating the default branch", defaultBranch),
+				Description: fmt.Sprintf("origin/%s advanced after the force push; manual review required before updating the base branch", baseBranch),
 			}},
-			Summary: fmt.Sprintf("remote %s advanced during force push", defaultBranch),
+			Summary: fmt.Sprintf("remote %s advanced during force push", baseBranch),
 		})
 		return &pipeline.StepOutcome{
 			NeedsApproval: true,
@@ -94,10 +91,10 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 		}, nil
 	}
 
-	targets := rebaseTargetsForBranch(branch, defaultBranch, branchTarget)
+	targets := rebaseTargetsForBranch(branch, baseBranch, branchTarget)
 	if forcePush {
 		sctx.Log("force push detected, skipping " + branchTarget + " sync")
-		targets = forcePushRebaseTargets(branch, defaultBranch)
+		targets = forcePushRebaseTargets(branch, baseBranch)
 	}
 
 	if sctx.Fixing {
@@ -510,13 +507,9 @@ func updateHeadSHA(ctx context.Context, sctx *pipeline.StepContext) (*pipeline.S
 		sctx.Log(fmt.Sprintf("updated head SHA to %s", shortSHA(headSHA)))
 	}
 
-	// Check if the branch has any diff against the default branch.
+	// Check if the branch has any diff against the integration branch.
 	// If the diff is empty (e.g. branch was already merged), skip remaining steps.
-	defaultBranch := strings.TrimSpace(sctx.Repo.DefaultBranch)
-	if defaultBranch == "" {
-		defaultBranch = "main"
-	}
-	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, defaultBranch)
+	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.IntegrationBranch())
 	diff, err := git.Diff(ctx, sctx.WorkDir, baseSHA, "HEAD")
 	if err == nil && strings.TrimSpace(diff) == "" {
 		sctx.Log("empty diff after rebase, skipping remaining steps")

@@ -62,12 +62,13 @@ func (e *RPCError) Error() string { return e.Message }
 // stamped onto the run so the intent step uses it verbatim instead of inferring
 // intent from local transcripts.
 type PushReceivedParams struct {
-	Gate      string           `json:"gate"`
-	Ref       string           `json:"ref"`
-	Old       string           `json:"old"`
-	New       string           `json:"new"`
-	SkipSteps []types.StepName `json:"skip_steps,omitempty"`
-	Intent    string           `json:"intent,omitempty"`
+	Gate       string           `json:"gate"`
+	Ref        string           `json:"ref"`
+	Old        string           `json:"old"`
+	New        string           `json:"new"`
+	SkipSteps  []types.StepName `json:"skip_steps,omitempty"`
+	Intent     string           `json:"intent,omitempty"`
+	BaseBranch string           `json:"base_branch,omitempty"`
 }
 
 // GetRunParams requests a single run by ID.
@@ -90,10 +91,11 @@ type GetActiveRunParams struct {
 // RerunParams requests a new run for the latest gate head on a branch.
 // Intent, when set, is stamped onto the new run like PushReceivedParams.Intent.
 type RerunParams struct {
-	RepoID    string           `json:"repo_id"`
-	Branch    string           `json:"branch"`
-	SkipSteps []types.StepName `json:"skip_steps,omitempty"`
-	Intent    string           `json:"intent,omitempty"`
+	RepoID     string           `json:"repo_id"`
+	Branch     string           `json:"branch"`
+	SkipSteps  []types.StepName `json:"skip_steps,omitempty"`
+	Intent     string           `json:"intent,omitempty"`
+	BaseBranch string           `json:"base_branch,omitempty"`
 }
 
 // SubscribeParams starts an event stream for a run.

@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS repos (
     upstream_url   TEXT NOT NULL,
     fork_url       TEXT,
     default_branch TEXT NOT NULL DEFAULT 'main',
+    base_branch    TEXT NOT NULL DEFAULT '',
     created_at     INTEGER NOT NULL
 );
 
@@ -16,6 +17,7 @@ CREATE TABLE IF NOT EXISTS runs (
     branch               TEXT NOT NULL,
     head_sha             TEXT NOT NULL,
     base_sha             TEXT NOT NULL,
+    base_branch          TEXT NOT NULL DEFAULT '',
     status               TEXT NOT NULL DEFAULT 'pending',
     pr_url               TEXT,
     error                TEXT,
@@ -67,6 +69,7 @@ CREATE TABLE IF NOT EXISTS intent_cache (
 // idempotent via its error being tolerated when the column already exists.
 var migrationStatements = []string{
 	`ALTER TABLE repos ADD COLUMN fork_url TEXT`,
+	`ALTER TABLE repos ADD COLUMN base_branch TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE step_rounds ADD COLUMN selected_finding_ids TEXT`,
 	`ALTER TABLE step_rounds ADD COLUMN selection_source TEXT`,
 	`ALTER TABLE step_rounds ADD COLUMN fix_summary TEXT`,
@@ -76,4 +79,5 @@ var migrationStatements = []string{
 	`ALTER TABLE runs ADD COLUMN intent_session_id TEXT`,
 	`ALTER TABLE runs ADD COLUMN intent_score REAL`,
 	`ALTER TABLE runs ADD COLUMN awaiting_agent_since INTEGER`,
+	`ALTER TABLE runs ADD COLUMN base_branch TEXT NOT NULL DEFAULT ''`,
 }

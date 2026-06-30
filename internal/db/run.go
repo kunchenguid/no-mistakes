@@ -14,9 +14,14 @@ type Run struct {
 	Branch  string
 	HeadSHA string
 	BaseSHA string
-	Status  types.RunStatus
-	PRURL   *string
-	Error   *string
+	// BaseBranch is the per-run integration branch override. Empty means the
+	// run falls back to the repo's persisted base_branch or the auto-detected
+	// default branch. It retargets only the diff/rebase/PR base, never the
+	// trust root used for trusted config.
+	BaseBranch string
+	Status     types.RunStatus
+	PRURL      *string
+	Error      *string
 	// AwaitingAgentSince is the unix-seconds timestamp at which the run parked
 	// at a gate awaiting the driving agent's response (an awaiting_approval or
 	// fix_review step). It is nil whenever the run is not parked: the executor
@@ -32,13 +37,13 @@ type Run struct {
 	UpdatedAt          int64
 }
 
-const runColumns = `id, repo_id, branch, head_sha, base_sha, status, pr_url, error, awaiting_agent_since, intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
+const runColumns = `id, repo_id, branch, head_sha, base_sha, base_branch, status, pr_url, error, awaiting_agent_since, intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
 
 func scanRun(row interface {
 	Scan(...any) error
 }, r *Run) error {
 	return row.Scan(
-		&r.ID, &r.RepoID, &r.Branch, &r.HeadSHA, &r.BaseSHA, &r.Status,
+		&r.ID, &r.RepoID, &r.Branch, &r.HeadSHA, &r.BaseSHA, &r.BaseBranch, &r.Status,
 		&r.PRURL, &r.Error, &r.AwaitingAgentSince,
 		&r.Intent, &r.IntentSource, &r.IntentSessionID, &r.IntentScore,
 		&r.CreatedAt, &r.UpdatedAt,
@@ -47,20 +52,27 @@ func scanRun(row interface {
 
 // InsertRun creates a new run record.
 func (d *DB) InsertRun(repoID, branch, headSHA, baseSHA string) (*Run, error) {
+	return d.InsertRunWithBase(repoID, branch, headSHA, baseSHA, "")
+}
+
+// InsertRunWithBase creates a new run record carrying a per-run base branch
+// override. An empty baseBranch leaves the run on the repo/default base.
+func (d *DB) InsertRunWithBase(repoID, branch, headSHA, baseSHA, baseBranch string) (*Run, error) {
 	ts := now()
 	r := &Run{
-		ID:        newID(),
-		RepoID:    repoID,
-		Branch:    branch,
-		HeadSHA:   headSHA,
-		BaseSHA:   baseSHA,
-		Status:    types.RunPending,
-		CreatedAt: ts,
-		UpdatedAt: ts,
+		ID:         newID(),
+		RepoID:     repoID,
+		Branch:     branch,
+		HeadSHA:    headSHA,
+		BaseSHA:    baseSHA,
+		BaseBranch: baseBranch,
+		Status:     types.RunPending,
+		CreatedAt:  ts,
+		UpdatedAt:  ts,
 	}
 	_, err := d.sql.Exec(
-		`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, r.RepoID, r.Branch, r.HeadSHA, r.BaseSHA, r.Status, r.CreatedAt, r.UpdatedAt,
+		`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, base_branch, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.RepoID, r.Branch, r.HeadSHA, r.BaseSHA, r.BaseBranch, r.Status, r.CreatedAt, r.UpdatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert run: %w", err)

@@ -201,12 +201,12 @@ func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushRec
 	}
 
 	branch := branchFromRef(params.Ref)
-	return m.startRun(ctx, repo, branch, params.New, params.Old, "push", params.SkipSteps, params.Intent)
+	return m.startRun(ctx, repo, branch, params.New, params.Old, "push", params.SkipSteps, params.Intent, params.BaseBranch)
 }
 
 // HandleRerun creates a new run for the latest gate head on a branch. An
 // optional intent is stamped onto the new run.
-func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch string, skipSteps []types.StepName, intent string) (string, error) {
+func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch string, skipSteps []types.StepName, intent, baseBranch string) (string, error) {
 	repo, err := m.db.GetRepo(repoID)
 	if err != nil {
 		return "", fmt.Errorf("get repo: %w", err)
@@ -249,13 +249,23 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch string, ski
 		baseSHA = matchingHead.BaseSHA
 	}
 
-	return m.startRun(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent)
+	// Carry the per-run base override forward when the rerun does not set one
+	// explicitly, mirroring how BaseSHA is reused, so a rerun stays on the same
+	// integration branch the original run targeted.
+	if strings.TrimSpace(baseBranch) == "" {
+		baseBranch = latestForBranch.BaseBranch
+		if matchingHead != nil {
+			baseBranch = matchingHead.BaseBranch
+		}
+	}
+
+	return m.startRun(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, baseBranch)
 }
 
 // startRun creates a run, sets up a worktree, and launches pipeline execution.
 // A non-empty intent is stamped onto the run as agent-supplied, so the intent
 // step uses it instead of inferring from transcripts.
-func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent string) (string, error) {
+func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, baseBranch string) (string, error) {
 	branchRole := telemetryBranchRole(branch, repo.DefaultBranch)
 	trackStartFailure := func(stage string) {
 		telemetry.Track("run", telemetry.Fields{
@@ -283,7 +293,7 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	m.cancelActiveRuns(repo.ID, branch)
 
 	// Create run record.
-	run, err := m.db.InsertRun(repo.ID, branch, headSHA, baseSHA)
+	run, err := m.db.InsertRunWithBase(repo.ID, branch, headSHA, baseSHA, strings.TrimSpace(baseBranch))
 	if err != nil {
 		trackStartFailure("create_run")
 		return "", fmt.Errorf("create run: %w", err)

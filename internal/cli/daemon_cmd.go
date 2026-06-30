@@ -57,6 +57,7 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			baseBranch := parseBasePushOptions(pushOptions)
 
 			p, err := paths.New()
 			if err != nil {
@@ -71,12 +72,13 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 
 			var result ipc.PushReceivedResult
 			return client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
-				Gate:      gate,
-				Ref:       ref,
-				Old:       oldSHA,
-				New:       newSHA,
-				SkipSteps: skipSteps,
-				Intent:    intent,
+				Gate:       gate,
+				Ref:        ref,
+				Old:        oldSHA,
+				New:        newSHA,
+				SkipSteps:  skipSteps,
+				Intent:     intent,
+				BaseBranch: baseBranch,
 			}, &result)
 		},
 	}
@@ -155,6 +157,31 @@ func parseIntentPushOptions(options []string) (string, error) {
 		intent = string(decoded)
 	}
 	return intent, nil
+}
+
+// basePushOptionPrefix carries a per-run base branch override through a git
+// push so the daemon targets it for rebase/review/PR.
+const basePushOptionPrefix = "no-mistakes.base="
+
+// formatBasePushOption encodes a base branch override as a single push option,
+// or returns "" when there is no override to carry.
+func formatBasePushOption(baseBranch string) string {
+	if strings.TrimSpace(baseBranch) == "" {
+		return ""
+	}
+	return basePushOptionPrefix + strings.TrimSpace(baseBranch)
+}
+
+// parseBasePushOptions extracts the base branch override push option, if any.
+// The last occurrence wins.
+func parseBasePushOptions(options []string) string {
+	base := ""
+	for _, option := range options {
+		if value, ok := strings.CutPrefix(option, basePushOptionPrefix); ok {
+			base = strings.TrimSpace(value)
+		}
+	}
+	return base
 }
 
 func formatSkipPushOptions(steps []types.StepName) []string {
