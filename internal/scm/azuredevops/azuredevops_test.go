@@ -193,10 +193,13 @@ func TestGetChecksMapsPolicyEvaluations(t *testing.T) {
 	h := newTestHost(map[string]azdoTestResponse{
 		"az repos pr policy list --id 42 --organization " + testOrg + " --output json": {
 			stdout: `[` +
-				`{"status":"approved","completedDate":"2026-04-24T04:15:00Z","configuration":{"settings":{"displayName":"Build validation"}}},` +
+				`{"status":"approved","completedDate":"2026-04-24T04:15:00Z","configuration":{"type":{"displayName":"Build"},"settings":{"displayName":"Build validation"}}},` +
 				`{"status":"rejected","configuration":{"type":{"displayName":"Build"},"settings":{}},"context":{"buildDefinitionName":"ci-build"}},` +
 				`{"status":"running","configuration":{"type":{"displayName":"Status"}}},` +
-				`{"status":"notApplicable","configuration":{"type":{"displayName":"Required reviewers"}}}` +
+				`{"status":"notApplicable","configuration":{"type":{"displayName":"Required reviewers"}}},` +
+				`{"status":"rejected","configuration":{"type":{"displayName":"Minimum number of reviewers"}}},` +
+				`{"status":"rejected","configuration":{"type":{"displayName":"Comment requirements"}}},` +
+				`{"status":"rejected","configuration":{"type":{"displayName":"Require a merge strategy"}}}` +
 				`]` + "\n",
 		},
 	})
@@ -206,7 +209,7 @@ func TestGetChecksMapsPolicyEvaluations(t *testing.T) {
 		t.Fatalf("GetChecks() error = %v", err)
 	}
 	if len(checks) != 3 {
-		t.Fatalf("len(checks) = %d, want 3 (notApplicable omitted): %+v", len(checks), checks)
+		t.Fatalf("len(checks) = %d, want 3 (notApplicable + approval/merge gates omitted): %+v", len(checks), checks)
 	}
 	if checks[0].Name != "Build validation" || checks[0].Bucket != scm.CheckBucketPass {
 		t.Fatalf("checks[0] = %+v, want passing 'Build validation'", checks[0])
@@ -220,6 +223,33 @@ func TestGetChecksMapsPolicyEvaluations(t *testing.T) {
 	}
 	if checks[2].Name != "Status" || checks[2].Bucket != scm.CheckBucketPending {
 		t.Fatalf("checks[2] = %+v, want pending 'Status'", checks[2])
+	}
+}
+
+func TestGetChecksExcludesApprovalGatesOnHealthyPR(t *testing.T) {
+	t.Parallel()
+
+	// A normal open PR awaiting human review: every approval/merge gate reports a
+	// blocking "rejected" status, but none is a CI failure. GetChecks must return
+	// no checks so the CI monitor does not launch pointless auto-fix attempts.
+	h := newTestHost(map[string]azdoTestResponse{
+		"az repos pr policy list --id 42 --organization " + testOrg + " --output json": {
+			stdout: `[` +
+				`{"status":"rejected","configuration":{"type":{"displayName":"Minimum number of reviewers"}}},` +
+				`{"status":"rejected","configuration":{"type":{"displayName":"Required reviewers"}}},` +
+				`{"status":"rejected","configuration":{"type":{"displayName":"Comment requirements"}}},` +
+				`{"status":"rejected","configuration":{"type":{"displayName":"Work item linking"}}},` +
+				`{"status":"rejected","configuration":{"type":{"displayName":"Require a merge strategy"}}}` +
+				`]` + "\n",
+		},
+	})
+
+	checks, err := h.GetChecks(context.Background(), &scm.PR{Number: "42"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 0 {
+		t.Fatalf("GetChecks() = %+v, want empty (approval/merge gates are not CI checks)", checks)
 	}
 }
 

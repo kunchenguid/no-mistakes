@@ -41,6 +41,24 @@ type policyEval struct {
 	Context map[string]any `json:"context"`
 }
 
+// isCICheck reports whether a policy evaluation represents an automated check
+// the CI monitor can meaningfully gate on and auto-fix, as opposed to a
+// human/merge gate. Azure DevOps's automated policy types are "Build" (build
+// validation) and "Status" (external status checks). Approval-gating policies
+// (Minimum number of reviewers, Required reviewers, Comment requirements, Work
+// item linking) and merge-config policies (Require a merge strategy) report a
+// blocking/rejected status on a normal open PR that is simply awaiting human
+// review; surfacing them as failing checks would drive the CI auto-fix loop
+// into pointless attempts it can never satisfy. They are excluded here.
+func (e policyEval) isCICheck() bool {
+	switch strings.ToLower(strings.TrimSpace(e.Configuration.Type.DisplayName)) {
+	case "build", "status":
+		return true
+	default:
+		return false
+	}
+}
+
 // checkName derives a human-readable check name, preferring the policy's
 // configured display name, then the triggered build definition name, then the
 // policy type.

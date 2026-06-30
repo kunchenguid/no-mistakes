@@ -174,6 +174,9 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 	}
 	checks := make([]scm.Check, 0, len(evals))
 	for _, e := range evals {
+		if !e.isCICheck() {
+			continue
+		}
 		bucket := azStatusBucket(e.Status)
 		if bucket == "" {
 			continue
