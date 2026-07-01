@@ -962,6 +962,42 @@ func TestAppendGeneratedSections_TrimsBodyToKeepLatestPipelineUpdate(t *testing.
 	}
 }
 
+func TestBuildPRBody_TrimsOversizedLaterSectionWithoutDroppingSmallEssentials(t *testing.T) {
+	sctx := newTestContext(t, &mockAgent{name: "test"}, t.TempDir(), "", "", config.Commands{})
+	sctx.UserIntent = "Keep the release notes readable."
+	body := strings.Join([]string{
+		"## What Changed",
+		"",
+		"- essential summary survives",
+		"",
+		"## Validation Notes",
+		"",
+		strings.Repeat("validation output stays truncatable\n", 3000),
+	}, "\n")
+	riskLine := "✅ Low: generated PR body length guard only"
+	testingMD := "## Testing\n\n- go test ./internal/pipeline/steps"
+
+	got := buildPRBody(body, riskLine, testingMD, "", sctx)
+
+	assertGitHubBodyLimitForTest(t, got)
+	for _, want := range []string{
+		"## Intent",
+		"Keep the release notes readable.",
+		"## What Changed",
+		"essential summary survives",
+		"## Validation Notes",
+		"body truncated to keep the PR body within GitHub's 65536-char limit",
+		"## Risk Assessment",
+		riskLine,
+		"## Testing",
+		"go test ./internal/pipeline/steps",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected oversized PR body to contain %q, got:\n%s", want, got)
+		}
+	}
+}
+
 func TestAppendGeneratedSections_TruncatesUTF8OnValidBoundary(t *testing.T) {
 	marker := essentialPRBodyTruncationMarker()
 	got := truncateTextAtLineBoundary(strings.Repeat("界", 10), len("\n\n")+len(marker)+1, marker)

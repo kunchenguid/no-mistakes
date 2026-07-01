@@ -682,27 +682,30 @@ func truncatePRBodySections(body string, maxBytes int, marker string) string {
 			return joined
 		}
 
-		changed := false
-		for i, section := range sections {
-			otherSections := append([]string{}, sections[:i]...)
-			otherSections = append(otherSections, sections[i+1:]...)
-			otherBytes := len(joinPRBodySections(otherSections))
-			sectionBudget := maxBytes - otherBytes
-			if sectionBudget >= len(section) {
-				continue
-			}
-			truncated := truncateTextAtLineBoundary(section, sectionBudget, marker)
-			if len(truncated) >= len(section) {
-				continue
-			}
-			sections[i] = truncated
-			changed = true
-			break
-		}
-		if !changed {
+		i := largestPRBodySectionIndex(sections)
+		if i < 0 {
 			return truncateTextAtLineBoundary(joined, maxBytes, marker)
 		}
+		sectionBudget := len(sections[i]) - (len(joined) - maxBytes)
+		truncated := truncateTextAtLineBoundary(sections[i], sectionBudget, marker)
+		if len(truncated) >= len(sections[i]) {
+			return truncateTextAtLineBoundary(joined, maxBytes, marker)
+		}
+		sections[i] = truncated
 	}
+}
+
+func largestPRBodySectionIndex(sections []string) int {
+	index := -1
+	length := 0
+	for i, section := range sections {
+		if len(section) <= length {
+			continue
+		}
+		index = i
+		length = len(section)
+	}
+	return index
 }
 
 func splitPRBodySections(body string) []string {
