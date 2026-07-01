@@ -363,11 +363,15 @@ func truncatePipelineSection(pipelineMD string, maxBytes int) string {
 		return pipelineOmissionSectionWithinLimit(header, 0, maxBytes)
 	}
 
-	for omitted := 1; omitted <= totalUnits; omitted++ {
+	for omitted := 1; omitted < totalUnits; omitted++ {
 		candidate := renderPipelineWithOmittedUpdates(header, groups, omitted)
 		if len(candidate) <= maxBytes {
 			return candidate
 		}
+	}
+
+	if candidate := renderPipelineWithTruncatedLatestUpdate(header, groups, maxBytes); candidate != "" {
+		return candidate
 	}
 
 	return pipelineOmissionSectionWithinLimit(header, totalUnits, maxBytes)
@@ -537,12 +541,77 @@ func renderPipelineWithOmittedUpdates(header string, groups []pipelineUpdateGrou
 	return b.String()
 }
 
+func renderPipelineWithTruncatedLatestUpdate(header string, groups []pipelineUpdateGroup, maxBytes int) string {
+	group, unit, ok := latestPipelineUpdateUnit(groups)
+	if !ok {
+		return ""
+	}
+
+	totalUnits := countPipelineUpdateUnits(groups)
+	omitted := totalUnits - 1
+	var b strings.Builder
+	b.WriteString(header)
+	if omitted > 0 {
+		b.WriteString(pipelineUpdatesOmissionMarker(omitted))
+		b.WriteString("\n\n")
+	}
+	b.WriteString(group.header)
+	prefix := b.String()
+
+	footerSeparatorBytes := 0
+	if group.footer != "" {
+		footerSeparatorBytes = len("\n\n")
+	}
+	unitBudget := maxBytes - len(prefix) - len(group.footer) - footerSeparatorBytes
+	if unitBudget <= 0 {
+		return ""
+	}
+
+	marker := pipelineLatestUpdateTruncationMarker()
+	truncatedUnit := truncatePipelineUpdateAtLineBoundary(unit, unitBudget, marker)
+	if strings.TrimSpace(strings.Replace(truncatedUnit, marker, "", 1)) == "" {
+		return ""
+	}
+
+	candidate := prefix + truncatedUnit
+	if group.footer != "" {
+		if !strings.HasSuffix(truncatedUnit, "\n\n") {
+			if !strings.HasSuffix(truncatedUnit, "\n") {
+				candidate += "\n"
+			}
+			candidate += "\n"
+		}
+		candidate += group.footer
+	}
+	if len(candidate) <= maxBytes {
+		return candidate
+	}
+	return ""
+}
+
+func latestPipelineUpdateUnit(groups []pipelineUpdateGroup) (pipelineUpdateGroup, string, bool) {
+	for i := len(groups) - 1; i >= 0; i-- {
+		group := groups[i]
+		for j := len(group.units) - 1; j >= 0; j-- {
+			if strings.TrimSpace(group.units[j]) == "" {
+				continue
+			}
+			return group, group.units[j], true
+		}
+	}
+	return pipelineUpdateGroup{}, "", false
+}
+
 func pipelineUpdatesOmissionMarker(omitted int) string {
 	rounds := "rounds"
 	if omitted == 1 {
 		rounds = "round"
 	}
 	return fmt.Sprintf("_... (%d earlier update %s omitted to keep the PR body within GitHub's %d-char limit; full history is in the run log.)_", omitted, rounds, githubPullRequestBodyHardLimitChars)
+}
+
+func pipelineLatestUpdateTruncationMarker() string {
+	return fmt.Sprintf("_... (latest pipeline update truncated to keep the PR body within GitHub's %d-char limit; full history is in the run log.)_", githubPullRequestBodyHardLimitChars)
 }
 
 func truncateEssentialPRBodyIfNeeded(body string) string {
@@ -680,6 +749,38 @@ func truncateTextAtLineBoundary(text string, maxBytes int, marker string) string
 	cut := strings.LastIndex(text[:available], "\n")
 	if cut <= 0 {
 		cut = available
+	}
+	return strings.TrimRight(text[:cut], "\n") + marker
+}
+
+func truncatePipelineUpdateAtLineBoundary(text string, maxBytes int, marker string) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	if len(text) <= maxBytes {
+		return text
+	}
+	if marker != "" {
+		marker = "\n\n" + marker
+	}
+	available := maxBytes - len(marker)
+	if available <= 0 {
+		if len(marker) <= maxBytes {
+			return strings.TrimLeft(marker, "\n")
+		}
+		return ""
+	}
+
+	searchEnd := available
+	if searchEnd < len(text) && text[searchEnd] == '\n' {
+		searchEnd++
+	}
+	cut := strings.LastIndex(text[:searchEnd], "\n")
+	if cut <= 0 {
+		if len(marker) <= maxBytes {
+			return strings.TrimLeft(marker, "\n")
+		}
+		return ""
 	}
 	return strings.TrimRight(text[:cut], "\n") + marker
 }

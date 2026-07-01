@@ -803,6 +803,59 @@ func TestAppendGeneratedSections_ExtremePipelineOverflowStillFitsLimit(t *testin
 	assertNoPartialRoundLinesForTest(t, got, rounds)
 }
 
+func TestAppendGeneratedSections_TruncatesOversizedLatestPipelineUpdate(t *testing.T) {
+	body := "## What Changed\n\n- essential summary survives"
+	latest := "review round 003 - newest oversized update\n" + strings.Repeat("latest detail line stays whole\n", 3000)
+
+	got := appendGeneratedSections(
+		body,
+		"✅ Low: generated PR body length guard only",
+		"## Testing\n\n- go test ./internal/pipeline/steps",
+		pipelineMarkdownForTest(
+			"review round 001 - older update",
+			"review round 002 - older update",
+			latest,
+		),
+	)
+
+	assertGitHubBodyLimitForTest(t, got)
+	if !strings.Contains(got, "2 earlier update rounds omitted") {
+		t.Fatalf("expected only earlier pipeline updates to be omitted, got:\n%s", got)
+	}
+	if strings.Contains(got, "3 earlier update rounds omitted") {
+		t.Fatalf("expected latest pipeline update to be retained, got:\n%s", got)
+	}
+	if strings.Contains(got, "review round 001") || strings.Contains(got, "review round 002") {
+		t.Fatalf("expected older pipeline updates to be omitted, got:\n%s", got)
+	}
+	if !strings.Contains(got, "review round 003 - newest oversized update") {
+		t.Fatalf("expected newest pipeline update heading to survive, got:\n%s", got)
+	}
+	if !strings.Contains(got, "latest pipeline update truncated") {
+		t.Fatalf("expected latest pipeline update truncation marker, got:\n%s", got)
+	}
+	if strings.Count(got, "<details>") != strings.Count(got, "</details>") {
+		t.Fatalf("expected details tags to remain balanced, got:\n%s", got)
+	}
+	for _, line := range strings.Split(got, "\n") {
+		if strings.Contains(line, "latest detail") && line != "latest detail line stays whole" {
+			t.Fatalf("latest update was truncated mid-line: %q", line)
+		}
+	}
+
+	single := appendGeneratedSections(body, "", "", pipelineMarkdownForTest(latest))
+	assertGitHubBodyLimitForTest(t, single)
+	if strings.Contains(single, "earlier update") {
+		t.Fatalf("expected single latest update not to be labeled as omitted earlier history, got:\n%s", single)
+	}
+	if !strings.Contains(single, "review round 003 - newest oversized update") {
+		t.Fatalf("expected single latest pipeline update heading to survive, got:\n%s", single)
+	}
+	if !strings.Contains(single, "latest pipeline update truncated") {
+		t.Fatalf("expected single latest pipeline update truncation marker, got:\n%s", single)
+	}
+}
+
 func TestAppendGeneratedSections_TrimsBodyToKeepPipelineOmissionMarker(t *testing.T) {
 	baseBody := "## What Changed\n\n- essential summary survives\n\n"
 	riskLine := "✅ Low: generated PR body length guard only"
