@@ -7,9 +7,10 @@ import (
 )
 
 func TestDetectProvider(t *testing.T) {
-	// Point glab config at an empty temp dir so a real glab install on the host
-	// cannot influence the substring-based assertions below.
+	// Point glab and gh configs at empty temp dirs so a real CLI install on the
+	// host cannot influence the substring-based assertions below.
 	t.Setenv("GLAB_CONFIG_DIR", t.TempDir())
+	t.Setenv("GH_CONFIG_DIR", t.TempDir())
 
 	tests := []struct {
 		url  string
@@ -45,6 +46,7 @@ func writeGlabConfig(t *testing.T, body string) {
 }
 
 func TestDetectProvider_SelfHostedGitLabViaGlabConfig(t *testing.T) {
+	t.Setenv("GH_CONFIG_DIR", t.TempDir())
 	writeGlabConfig(t, `hosts:
     gitlab.example.com:
         token: xxx
@@ -70,6 +72,7 @@ func TestDetectProvider_SelfHostedGitLabViaGlabConfig(t *testing.T) {
 }
 
 func TestDetectProvider_SelfHostedGitLabViaAPIHost(t *testing.T) {
+	t.Setenv("GH_CONFIG_DIR", t.TempDir())
 	// The remote host differs from the config key but matches api_host.
 	writeGlabConfig(t, `hosts:
     git.example.com:
@@ -86,16 +89,70 @@ func TestDetectProvider_SelfHostedGitLabViaAPIHost(t *testing.T) {
 }
 
 func TestDetectProvider_GlabConfigMissingFailsClosed(t *testing.T) {
-	// GLAB_CONFIG_DIR points at an empty dir: no config file present.
+	// Both CLI configs point at empty dirs: no config files present.
 	t.Setenv("GLAB_CONFIG_DIR", t.TempDir())
+	t.Setenv("GH_CONFIG_DIR", t.TempDir())
 	if got := DetectProvider("https://selfhosted.example.com/group/repo.git"); got != ProviderUnknown {
 		t.Errorf("DetectProvider(no glab config) = %q, want %q", got, ProviderUnknown)
 	}
 }
 
 func TestDetectProvider_GlabConfigMalformedFailsClosed(t *testing.T) {
+	t.Setenv("GH_CONFIG_DIR", t.TempDir())
 	writeGlabConfig(t, "this: is: not: valid: yaml: ::::\n\t- broken")
 	if got := DetectProvider("https://selfhosted.example.com/group/repo.git"); got != ProviderUnknown {
 		t.Errorf("DetectProvider(malformed glab config) = %q, want %q", got, ProviderUnknown)
+	}
+}
+
+// writeGhConfig writes a synthetic gh hosts.yml into a temp dir and points
+// GH_CONFIG_DIR at it. The host names are placeholders only.
+func writeGhConfig(t *testing.T, body string) {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "hosts.yml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GH_CONFIG_DIR", dir)
+}
+
+func TestDetectProvider_GHEViaGhConfig(t *testing.T) {
+	t.Setenv("GLAB_CONFIG_DIR", t.TempDir())
+	writeGhConfig(t, `bbgithub.dev.bloomberg.com:
+    user: someuser
+    oauth_token: xxx
+    git_protocol: ssh
+`)
+
+	cases := []string{
+		"git@bbgithub.dev.bloomberg.com:org/repo.git",
+		"https://bbgithub.dev.bloomberg.com/org/repo.git",
+		"ssh://git@bbgithub.dev.bloomberg.com/org/repo.git",
+	}
+	for _, url := range cases {
+		if got := DetectProvider(url); got != ProviderGitHub {
+			t.Errorf("DetectProvider(%q) = %q, want %q", url, got, ProviderGitHub)
+		}
+	}
+
+	// A host not in the config still resolves to unknown.
+	if got := DetectProvider("https://other.example.org/org/repo.git"); got != ProviderUnknown {
+		t.Errorf("DetectProvider(unconfigured GHE host) = %q, want %q", got, ProviderUnknown)
+	}
+}
+
+func TestDetectProvider_GhConfigMissingFailsClosed(t *testing.T) {
+	t.Setenv("GLAB_CONFIG_DIR", t.TempDir())
+	t.Setenv("GH_CONFIG_DIR", t.TempDir())
+	if got := DetectProvider("https://ghe.example.com/org/repo.git"); got != ProviderUnknown {
+		t.Errorf("DetectProvider(no gh config) = %q, want %q", got, ProviderUnknown)
+	}
+}
+
+func TestDetectProvider_GhConfigMalformedFailsClosed(t *testing.T) {
+	t.Setenv("GLAB_CONFIG_DIR", t.TempDir())
+	writeGhConfig(t, "this: is: not: valid: yaml: ::::\n\t- broken")
+	if got := DetectProvider("https://ghe.example.com/org/repo.git"); got != ProviderUnknown {
+		t.Errorf("DetectProvider(malformed gh config) = %q, want %q", got, ProviderUnknown)
 	}
 }

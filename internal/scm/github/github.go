@@ -79,6 +79,21 @@ func RepoSlug(remoteURL string) string {
 	return owner + "/" + name
 }
 
+// HostPrefixedSlug returns "host/owner/name" for GitHub Enterprise Server
+// instances and plain "owner/name" for github.com. This is the format that
+// the gh CLI's --repo flag requires for GHE.
+func HostPrefixedSlug(remoteURL string) string {
+	slug := RepoSlug(remoteURL)
+	if slug == "" {
+		return ""
+	}
+	host := scm.ExtractHost(remoteURL)
+	if host == "" || strings.EqualFold(host, "github.com") {
+		return slug
+	}
+	return host + "/" + slug
+}
+
 // repoArgs returns the --repo flag pair when the slug is known, so gh commands
 // resolve the right repository regardless of the process working directory.
 func (h *Host) repoArgs() []string {
