@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
@@ -906,6 +907,92 @@ func TestAppendGeneratedSections_TrimsBodyToKeepPipelineOmissionMarker(t *testin
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected truncated PR body to contain %q, got:\n%s", want, got)
 		}
+	}
+}
+
+func TestAppendGeneratedSections_TrimsBodyToKeepLatestPipelineUpdate(t *testing.T) {
+	baseBody := "## What Changed\n\n- essential summary survives\n\n"
+	riskLine := "✅ Low: generated PR body length guard only"
+	testingMD := "## Testing\n\n- go test ./internal/pipeline/steps"
+	generatedSections := generatedEssentialSections(riskLine, testingMD)
+	minPipeline := minimumPipelineOmissionSection(pipelineMarkdownForTest(
+		"review round 001 - older update",
+		"review round 002 - newest update "+strings.Repeat("x", 2000),
+	))
+	targetPrefixLen := maxPullRequestBodyBytes - len("\n\n") - len(minPipeline)
+	fillerLen := targetPrefixLen + 500 - len(baseBody) - len(generatedSections)
+	if fillerLen <= 0 {
+		t.Fatalf("test setup produced invalid filler length %d", fillerLen)
+	}
+	body := baseBody + strings.Repeat("filler line keeps body truncatable\n", fillerLen/len("filler line keeps body truncatable\n")+1)
+
+	got := appendGeneratedSections(
+		body,
+		riskLine,
+		testingMD,
+		pipelineMarkdownForTest(
+			"review round 001 - older update",
+			"review round 002 - newest update "+strings.Repeat("x", 2000),
+		),
+	)
+
+	assertGitHubBodyLimitForTest(t, got)
+	if strings.Contains(got, "2 earlier update rounds omitted") {
+		t.Fatalf("expected latest pipeline update not to be counted as omitted, got:\n%s", got)
+	}
+	if !strings.Contains(got, "1 earlier update round omitted") {
+		t.Fatalf("expected only earlier pipeline update to be omitted, got:\n%s", got)
+	}
+	if !strings.Contains(got, "review round 002 - newest update") {
+		t.Fatalf("expected newest pipeline update excerpt to survive, got:\n%s", got)
+	}
+	if !strings.Contains(got, "latest pipeline update truncated") {
+		t.Fatalf("expected latest pipeline update truncation marker, got:\n%s", got)
+	}
+	for _, want := range []string{
+		"essential summary survives",
+		"## Risk Assessment",
+		riskLine,
+		"## Testing",
+		"go test ./internal/pipeline/steps",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected truncated PR body to contain %q, got:\n%s", want, got)
+		}
+	}
+}
+
+func TestAppendGeneratedSections_TruncatesUTF8OnValidBoundary(t *testing.T) {
+	marker := essentialPRBodyTruncationMarker()
+	got := truncateTextAtLineBoundary(strings.Repeat("界", 10), len("\n\n")+len(marker)+1, marker)
+	if !utf8.ValidString(got) {
+		t.Fatalf("expected direct body truncation to remain valid UTF-8")
+	}
+
+	marker = pipelineLatestUpdateTruncationMarker()
+	got = truncatePipelineUpdateAtLineBoundary(strings.Repeat("界", 10), len("\n\n")+len(marker)+1, marker)
+	if !utf8.ValidString(got) {
+		t.Fatalf("expected direct pipeline update truncation to remain valid UTF-8")
+	}
+
+	body := "## What Changed\n\n- essential summary survives\n\n" + strings.Repeat("界", maxPullRequestBodyBytes)
+
+	got = appendGeneratedSections(body, "", "", "")
+
+	assertGitHubBodyLimitForTest(t, got)
+	if !utf8.ValidString(got) {
+		t.Fatalf("expected truncated PR body to remain valid UTF-8")
+	}
+
+	latest := "review round 001 - newest update " + strings.Repeat("界", maxPullRequestBodyBytes)
+	got = appendGeneratedSections("## What Changed\n\n- essential summary survives", "", "", pipelineMarkdownForTest(latest))
+
+	assertGitHubBodyLimitForTest(t, got)
+	if !utf8.ValidString(got) {
+		t.Fatalf("expected truncated pipeline update to remain valid UTF-8")
+	}
+	if !strings.Contains(got, "review round 001 - newest update") {
+		t.Fatalf("expected newest pipeline update excerpt to survive, got:\n%s", got)
 	}
 }
 

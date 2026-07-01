@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/conventional"
@@ -38,6 +39,7 @@ const (
 	// GitHub's character limit with room for provider-side formatting drift.
 	pullRequestBodySafetyBufferBytes = 2048
 	maxPullRequestBodyBytes          = githubPullRequestBodyHardLimitChars - pullRequestBodySafetyBufferBytes
+	minLatestPipelineUpdateBytes     = 256
 )
 
 type pipelineUpdateGroup struct {
@@ -288,9 +290,12 @@ func essentialPRBodyWithinLimit(body, generatedSections string) string {
 }
 
 func essentialPRBodyWithinPipelineBudget(body, generatedSections, pipelineMD string) string {
-	minPipeline := minimumPipelineOmissionSection(pipelineMD)
+	minPipeline := minimumPipelineRetainingLatestUpdate(pipelineMD)
 	if minPipeline == "" {
-		return essentialPRBodyWithinLimit(body, generatedSections)
+		minPipeline = minimumPipelineOmissionSection(pipelineMD)
+		if minPipeline == "" {
+			return essentialPRBodyWithinLimit(body, generatedSections)
+		}
 	}
 
 	prefixBudget := maxPullRequestBodyBytes - len(minPipeline)
@@ -381,6 +386,39 @@ func minimumPipelineOmissionSection(pipelineMD string) string {
 	header, updates := splitPipelineSectionHeader(pipelineMD)
 	totalUnits := countPipelineUpdateUnits(parsePipelineUpdateGroups(updates))
 	return header + pipelineUpdatesOmissionMarker(totalUnits) + "\n"
+}
+
+func minimumPipelineRetainingLatestUpdate(pipelineMD string) string {
+	header, updates := splitPipelineSectionHeader(pipelineMD)
+	groups := parsePipelineUpdateGroups(updates)
+	totalUnits := countPipelineUpdateUnits(groups)
+	if totalUnits == 0 {
+		return ""
+	}
+
+	group, unit, ok := latestPipelineUpdateUnit(groups)
+	if !ok {
+		return ""
+	}
+
+	omitted := totalUnits - 1
+	var b strings.Builder
+	b.WriteString(header)
+	if omitted > 0 {
+		b.WriteString(pipelineUpdatesOmissionMarker(omitted))
+		b.WriteString("\n\n")
+	}
+	b.WriteString(group.header)
+
+	unitBudget := len(unit)
+	if unitBudget > minLatestPipelineUpdateBytes {
+		unitBudget = minLatestPipelineUpdateBytes + len("\n\n") + len(pipelineLatestUpdateTruncationMarker())
+	}
+	if group.footer != "" {
+		unitBudget += len("\n\n") + len(group.footer)
+	}
+
+	return renderPipelineWithTruncatedLatestUpdate(header, groups, b.Len()+unitBudget)
 }
 
 func pipelineOmissionSectionWithinLimit(header string, omitted, maxBytes int) string {
@@ -746,6 +784,7 @@ func truncateTextAtLineBoundary(text string, maxBytes int, marker string) string
 		return ""
 	}
 
+	available = utf8BoundaryBefore(text, available)
 	cut := strings.LastIndex(text[:available], "\n")
 	if cut <= 0 {
 		cut = available
@@ -771,6 +810,7 @@ func truncatePipelineUpdateAtLineBoundary(text string, maxBytes int, marker stri
 		return ""
 	}
 
+	available = utf8BoundaryBefore(text, available)
 	searchEnd := available
 	if searchEnd < len(text) && text[searchEnd] == '\n' {
 		searchEnd++
@@ -780,6 +820,19 @@ func truncatePipelineUpdateAtLineBoundary(text string, maxBytes int, marker stri
 		return strings.TrimRight(text[:available], "\n") + marker
 	}
 	return strings.TrimRight(text[:cut], "\n") + marker
+}
+
+func utf8BoundaryBefore(text string, n int) int {
+	if n >= len(text) {
+		return len(text)
+	}
+	if n <= 0 {
+		return 0
+	}
+	for n > 0 && !utf8.RuneStart(text[n]) {
+		n--
+	}
+	return n
 }
 
 func stripGeneratedSections(body string) string {
