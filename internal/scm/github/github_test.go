@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -75,6 +76,52 @@ func TestGetPRStatePassesRepoFlag(t *testing.T) {
 	}
 	if state != scm.PRStateMerged {
 		t.Fatalf("GetPRState() = %q, want %q", state, scm.PRStateMerged)
+	}
+}
+
+func TestCreatePRStreamsBodyThroughStdin(t *testing.T) {
+	t.Parallel()
+
+	const body = "## What Changed\n\n- keep generated pull request bodies postable"
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr create --head feature/body-cap --base main --repo test/repo --title fix: cap body --body-file -": {
+			stdout:    "https://github.com/test/repo/pull/42\n",
+			wantStdin: body,
+		},
+	}), nil, "test/repo")
+
+	pr, err := host.CreatePR(context.Background(), "feature/body-cap", "main", scm.PRContent{
+		Title: "fix: cap body",
+		Body:  body,
+	})
+	if err != nil {
+		t.Fatalf("CreatePR() error = %v", err)
+	}
+	if pr == nil || pr.Number != "42" {
+		t.Fatalf("CreatePR() PR = %+v, want #42", pr)
+	}
+}
+
+func TestUpdatePRStreamsBodyThroughStdin(t *testing.T) {
+	t.Parallel()
+
+	const body = "## What Changed\n\n- update existing pull request bodies without long argv"
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr edit 42 --repo test/repo --title fix: cap body --body-file -": {
+			wantStdin: body,
+		},
+	}), nil, "test/repo")
+
+	pr := &scm.PR{Number: "42", URL: "https://github.com/test/repo/pull/42"}
+	updated, err := host.UpdatePR(context.Background(), pr, scm.PRContent{
+		Title: "fix: cap body",
+		Body:  body,
+	})
+	if err != nil {
+		t.Fatalf("UpdatePR() error = %v", err)
+	}
+	if updated != pr {
+		t.Fatalf("UpdatePR() = %+v, want original PR", updated)
 	}
 }
 
@@ -234,9 +281,10 @@ func TestFindPRReturnsCLIError(t *testing.T) {
 }
 
 type githubTestResponse struct {
-	stdout string
-	stderr string
-	code   int
+	stdout    string
+	stderr    string
+	wantStdin string
+	code      int
 }
 
 func githubTestCmdFactory(responses map[string]githubTestResponse) CmdFactory {
@@ -251,6 +299,7 @@ func githubTestCmdFactory(responses map[string]githubTestResponse) CmdFactory {
 			"GITHUB_TEST_HELPER=1",
 			"GITHUB_TEST_STDOUT="+response.stdout,
 			"GITHUB_TEST_STDERR="+response.stderr,
+			"GITHUB_TEST_WANT_STDIN="+response.wantStdin,
 			fmt.Sprintf("GITHUB_TEST_EXIT_CODE=%d", response.code),
 		)
 		return cmd
@@ -262,6 +311,17 @@ func TestGitHubHelperProcess(t *testing.T) {
 		return
 	}
 
+	if want := os.Getenv("GITHUB_TEST_WANT_STDIN"); want != "" {
+		got, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "read stdin: %v", err)
+			os.Exit(1)
+		}
+		if string(got) != want {
+			fmt.Fprintf(os.Stderr, "stdin = %q, want %q", string(got), want)
+			os.Exit(1)
+		}
+	}
 	if _, err := fmt.Fprint(os.Stdout, os.Getenv("GITHUB_TEST_STDOUT")); err != nil {
 		os.Exit(1)
 	}

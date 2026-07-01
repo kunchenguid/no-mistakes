@@ -184,8 +184,9 @@ func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PR
 		"--head", h.headRef(branch),
 		"--base", base,
 	}, h.repoArgs()...)
-	args = append(args, "--title", content.Title, "--body", content.Body)
+	args = append(args, "--title", content.Title, "--body-file", "-")
 	cmd := h.cmd(ctx, "gh", args...)
+	cmd.Stdin = strings.NewReader(content.Body)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("gh pr create: %s: %w", strings.TrimSpace(string(out)), err)
@@ -204,8 +205,9 @@ func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) 
 		id = pr.URL
 	}
 	args := append([]string{"pr", "edit", id}, h.repoArgs()...)
-	args = append(args, "--title", content.Title, "--body", content.Body)
+	args = append(args, "--title", content.Title, "--body-file", "-")
 	cmd := h.cmd(ctx, "gh", args...)
+	cmd.Stdin = strings.NewReader(content.Body)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("gh pr edit: %s: %w", strings.TrimSpace(string(out)), err)
 	}
