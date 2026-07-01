@@ -569,7 +569,7 @@ func renderPipelineWithTruncatedLatestUpdate(header string, groups []pipelineUpd
 
 	marker := pipelineLatestUpdateTruncationMarker()
 	truncatedUnit := truncatePipelineUpdateAtLineBoundary(unit, unitBudget, marker)
-	if strings.TrimSpace(strings.Replace(truncatedUnit, marker, "", 1)) == "" {
+	if truncatedUnit == "" {
 		return ""
 	}
 
@@ -777,10 +777,7 @@ func truncatePipelineUpdateAtLineBoundary(text string, maxBytes int, marker stri
 	}
 	cut := strings.LastIndex(text[:searchEnd], "\n")
 	if cut <= 0 {
-		if len(marker) <= maxBytes {
-			return strings.TrimLeft(marker, "\n")
-		}
-		return ""
+		return strings.TrimRight(text[:available], "\n") + marker
 	}
 	return strings.TrimRight(text[:cut], "\n") + marker
 }

@@ -856,6 +856,24 @@ func TestAppendGeneratedSections_TruncatesOversizedLatestPipelineUpdate(t *testi
 	}
 }
 
+func TestAppendGeneratedSections_TruncatesSingleLineLatestPipelineUpdate(t *testing.T) {
+	body := "## What Changed\n\n- essential summary survives"
+	latest := "review round 001 - newest single-line oversized update " + strings.Repeat("x", maxPullRequestBodyBytes)
+
+	got := appendGeneratedSections(body, "", "", pipelineMarkdownForTest(latest))
+
+	assertGitHubBodyLimitForTest(t, got)
+	if strings.Contains(got, "earlier update") {
+		t.Fatalf("expected single latest update not to be labeled as omitted earlier history, got:\n%s", got)
+	}
+	if !strings.Contains(got, "review round 001 - newest single-line oversized update") {
+		t.Fatalf("expected bounded latest pipeline update excerpt to survive, got:\n%s", got)
+	}
+	if !strings.Contains(got, "latest pipeline update truncated") {
+		t.Fatalf("expected latest pipeline update truncation marker, got:\n%s", got)
+	}
+}
+
 func TestAppendGeneratedSections_TrimsBodyToKeepPipelineOmissionMarker(t *testing.T) {
 	baseBody := "## What Changed\n\n- essential summary survives\n\n"
 	riskLine := "✅ Low: generated PR body length guard only"
