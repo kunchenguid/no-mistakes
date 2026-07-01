@@ -152,6 +152,7 @@ func (c Check) Pending() bool { return c.Bucket == CheckBucketPending }
 type Capabilities struct {
 	MergeableState  bool
 	FailedCheckLogs bool
+	ReviewComments  bool
 }
 
 // ErrUnsupported is returned by optional Host methods that the provider
@@ -184,4 +185,30 @@ type Host interface {
 	// FetchFailedCheckLogs is optional; returns "" when no logs can be retrieved
 	// and ErrUnsupported when the provider has no log-fetching support at all.
 	FetchFailedCheckLogs(ctx context.Context, pr *PR, branch, headSHA string, failingNames []string) (string, error)
+
+	// GetReviewPass is optional; gate on Capabilities().ReviewComments.
+	// Returns the AI-review pass status keyed to the current PR head SHA.
+	GetReviewPass(ctx context.Context, pr *PR, reviewerIdentity string) (*ReviewPass, error)
+
+	// GetReviewThreads is optional; gate on Capabilities().ReviewComments.
+	// Returns all review comment threads on the PR.
+	GetReviewThreads(ctx context.Context, pr *PR) ([]ReviewThread, error)
+}
+
+// ReviewThread is a normalized PR comment thread from an AI reviewer.
+type ReviewThread struct {
+	ID       string
+	Author   string
+	File     string
+	Line     int
+	Body     string
+	Resolved bool
+	IsBot    bool
+}
+
+// ReviewPass is the status of an AI-review pass on a PR.
+type ReviewPass struct {
+	Ran      bool   // a review pass exists for this PR
+	Complete bool   // terminal status (approved/rejected/notApplicable)
+	ForSHA   string // source commit the pass evaluated
 }

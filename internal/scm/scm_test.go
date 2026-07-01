@@ -20,6 +20,9 @@ func TestDetectProvider(t *testing.T) {
 		{"https://gitlab.com/user/repo.git", ProviderGitLab},
 		{"https://gitlab.mycorp.com/group/repo.git", ProviderGitLab},
 		{"https://bitbucket.org/user/repo.git", ProviderBitbucket},
+		{"https://dev.azure.com/talroo/Product/_git/ai-knowledge-base", ProviderAzureDevOps},
+		{"git@ssh.dev.azure.com:v3/talroo/Product/ai-knowledge-base", ProviderAzureDevOps},
+		{"https://talroo.visualstudio.com/Product/_git/ai-knowledge-base", ProviderAzureDevOps},
 		{"https://example.com/user/repo.git", ProviderUnknown},
 	}
 

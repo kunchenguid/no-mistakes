@@ -49,6 +49,7 @@ type GlobalConfig struct {
 	AutoFix              AutoFixRaw
 	Intent               IntentRaw
 	Test                 TestRaw
+	AIReview             AIReviewRaw
 }
 
 // globalConfigRaw is the on-disk YAML representation with duration as string.
@@ -64,6 +65,7 @@ type globalConfigRaw struct {
 	AutoFix              AutoFixRaw          `yaml:"auto_fix"`
 	Intent               IntentRaw           `yaml:"intent"`
 	Test                 TestRaw             `yaml:"test"`
+	AIReview             AIReviewRaw         `yaml:"ai_review"`
 }
 
 // RepoConfig represents .no-mistakes.yaml in a repo root.
@@ -77,10 +79,11 @@ type RepoConfig struct {
 	// ONLY from the trusted default-branch copy of .no-mistakes.yaml (never
 	// the pushed SHA), so a contributor cannot self-enable. Default false:
 	// the pushed branch controls nothing that executes.
-	AllowRepoCommands bool       `yaml:"allow_repo_commands"`
-	AutoFix           AutoFixRaw `yaml:"auto_fix"`
-	Intent            IntentRaw  `yaml:"intent"`
-	Test              TestRaw    `yaml:"test"`
+	AllowRepoCommands bool        `yaml:"allow_repo_commands"`
+	AutoFix           AutoFixRaw  `yaml:"auto_fix"`
+	Intent            IntentRaw   `yaml:"intent"`
+	Test              TestRaw     `yaml:"test"`
+	AIReview          AIReviewRaw `yaml:"ai_review"`
 }
 
 // Commands holds optional per-repo command overrides.
@@ -127,6 +130,7 @@ type Config struct {
 	AutoFix              AutoFix
 	Intent               Intent
 	Test                 Test
+	AIReview             AIReview
 }
 
 // TestRaw is the YAML representation of test-step settings.
@@ -170,6 +174,29 @@ type Intent struct {
 	Threshold       float64
 	SlackDays       int
 	DisabledReaders map[string]bool
+}
+
+// AIReviewRaw is the YAML representation of AI-review monitor settings.
+// Pointer fields distinguish "not set" (nil) from explicit zero/false values.
+type AIReviewRaw struct {
+	Enabled        *bool  `yaml:"enabled"`
+	Identity       string `yaml:"identity"`
+	PolicyName     string `yaml:"policy_name"`
+	GitHubCheck    string `yaml:"github_check"`
+	MaxIterations  *int   `yaml:"max_iterations"`
+	PassTimeout    string `yaml:"pass_timeout"`
+	ResolveThreads *bool  `yaml:"resolve_threads"`
+}
+
+// AIReview is the resolved AI-review monitor config.
+type AIReview struct {
+	Enabled        bool
+	Identity       string
+	PolicyName     string
+	GitHubCheck    string
+	MaxIterations  int
+	PassTimeout    time.Duration
+	ResolveThreads bool
 }
 
 // defaultConfigYAML is the template written when no global config file exists.
@@ -704,6 +731,43 @@ func autoFixDefaults() AutoFix {
 	}
 }
 
+func aiReviewDefaults() AIReview {
+	return AIReview{
+		Enabled:       true,
+		Identity:      "Product Build Service (talroo)",
+		PolicyName:    "Ai Review",
+		GitHubCheck:   "AI Review",
+		MaxIterations: 3,
+		PassTimeout:   30 * time.Minute,
+	}
+}
+
+func applyAIReviewOverrides(dst *AIReview, src *AIReviewRaw) {
+	if src.Enabled != nil {
+		dst.Enabled = *src.Enabled
+	}
+	if strings.TrimSpace(src.Identity) != "" {
+		dst.Identity = strings.TrimSpace(src.Identity)
+	}
+	if strings.TrimSpace(src.PolicyName) != "" {
+		dst.PolicyName = strings.TrimSpace(src.PolicyName)
+	}
+	if strings.TrimSpace(src.GitHubCheck) != "" {
+		dst.GitHubCheck = strings.TrimSpace(src.GitHubCheck)
+	}
+	if src.MaxIterations != nil {
+		dst.MaxIterations = *src.MaxIterations
+	}
+	if strings.TrimSpace(src.PassTimeout) != "" {
+		if d, err := parseCITimeout(strings.TrimSpace(src.PassTimeout)); err == nil {
+			dst.PassTimeout = d
+		}
+	}
+	if src.ResolveThreads != nil {
+		dst.ResolveThreads = *src.ResolveThreads
+	}
+}
+
 // applyAutoFixOverrides applies non-nil raw values onto resolved defaults.
 func applyAutoFixOverrides(dst *AutoFix, src *AutoFixRaw) {
 	if src.Lint != nil {
@@ -762,6 +826,10 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 	applyTestOverrides(&test, &global.Test)
 	applyTestOverrides(&test, &repo.Test)
 
+	aiReview := aiReviewDefaults()
+	applyAIReviewOverrides(&aiReview, &global.AIReview)
+	applyAIReviewOverrides(&aiReview, &repo.AIReview)
+
 	cfg := &Config{
 		Agent:                global.Agent,
 		ACPXPath:             global.ACPXPath,
@@ -775,6 +843,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		AutoFix:              af,
 		Intent:               intent,
 		Test:                 test,
+		AIReview:             aiReview,
 	}
 
 	if repo.Agent != "" {

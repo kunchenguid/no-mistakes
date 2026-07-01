@@ -567,3 +567,11 @@ func extractMRURL(raw []byte) string {
 	}
 	return ""
 }
+
+func (h *Host) GetReviewPass(ctx context.Context, pr *scm.PR, reviewerIdentity string) (*scm.ReviewPass, error) {
+	return nil, scm.ErrUnsupported
+}
+
+func (h *Host) GetReviewThreads(ctx context.Context, pr *scm.PR) ([]scm.ReviewThread, error) {
+	return nil, scm.ErrUnsupported
+}

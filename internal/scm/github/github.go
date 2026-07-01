@@ -433,3 +433,11 @@ func normalizeCheckBucket(bucket, state string) scm.CheckBucket {
 		return ""
 	}
 }
+
+func (h *Host) GetReviewPass(ctx context.Context, pr *scm.PR, reviewerIdentity string) (*scm.ReviewPass, error) {
+	return nil, scm.ErrUnsupported
+}
+
+func (h *Host) GetReviewThreads(ctx context.Context, pr *scm.PR) ([]scm.ReviewThread, error) {
+	return nil, scm.ErrUnsupported
+}

@@ -13,10 +13,11 @@ import (
 type Provider string
 
 const (
-	ProviderGitHub    Provider = "github"
-	ProviderGitLab    Provider = "gitlab"
-	ProviderBitbucket Provider = "bitbucket"
-	ProviderUnknown   Provider = "unknown"
+	ProviderGitHub      Provider = "github"
+	ProviderGitLab      Provider = "gitlab"
+	ProviderBitbucket   Provider = "bitbucket"
+	ProviderAzureDevOps Provider = "azuredevops"
+	ProviderUnknown     Provider = "unknown"
 )
 
 func DetectProvider(url string) Provider {
@@ -28,6 +29,10 @@ func DetectProvider(url string) Provider {
 		return ProviderGitLab
 	case strings.Contains(lower, "bitbucket.org"):
 		return ProviderBitbucket
+	case strings.Contains(lower, "dev.azure.com"),
+		strings.Contains(lower, "ssh.dev.azure.com"),
+		strings.Contains(lower, ".visualstudio.com"):
+		return ProviderAzureDevOps
 	}
 
 	// Fallback for self-hosted GitLab instances whose hostname carries no
@@ -101,6 +106,8 @@ func (p Provider) CLIName() string {
 		return "glab"
 	case ProviderBitbucket:
 		return "bb"
+	case ProviderAzureDevOps:
+		return "az"
 	default:
 		return ""
 	}
@@ -114,6 +121,8 @@ func (p Provider) AuthCheckCommand() []string {
 		return []string{"glab", "auth", "status"}
 	case ProviderBitbucket:
 		return []string{"bb", "profile", "which"}
+	case ProviderAzureDevOps:
+		return []string{"az", "account", "show"}
 	default:
 		return nil
 	}

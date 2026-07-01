@@ -44,6 +44,10 @@ type CIStep struct {
 	// must not re-arm the timeout. Overridable for testing; defaults to
 	// fetching the upstream default branch.
 	baseBranchTip func(context.Context) (string, bool)
+	// AI-review monitor state
+	reviewFixAttempts int    // number of AI-review fix rounds
+	lastReviewedSHA   string // head SHA the last observed review pass covered
+	lastPushedSHA     string // head SHA of the most recent push (for pass-timeout measurement)
 }
 
 func (s *CIStep) Name() types.StepName { return types.StepCI }
@@ -318,7 +322,14 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 				case len(checks) == 0:
 					lastMonitorLog = logCIMonitorStatus(sctx, ciNoChecksPassedMsg, lastMonitorLog)
 				default:
-					lastMonitorLog = logCIMonitorStatus(sctx, ciChecksPassedMsg, lastMonitorLog)
+					// CI checks are green. Before declaring "checks passed",
+					// gate on the AI-review monitor if the host supports it.
+					if s.aiReviewGate(sctx, host, pr, now(), started, &lastMonitorLog) {
+						// The gate emitted a message (or escalated); skip the
+						// default ChecksPassedMsg emission.
+					} else {
+						lastMonitorLog = logCIMonitorStatus(sctx, ciChecksPassedMsg, lastMonitorLog)
+					}
 				}
 			}
 		}
