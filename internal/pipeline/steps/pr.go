@@ -241,7 +241,8 @@ func unwrapNestedPRBody(body string) string {
 	return body
 }
 
-// appendGeneratedSections appends deterministic sections after the agent's body.
+// appendGeneratedSections appends deterministic sections after the agent's body
+// and applies the PR body length guard.
 func appendGeneratedSections(body, riskLine, testingMD, pipelineMD string) string {
 	body = stripGeneratedSections(body)
 	return appendGeneratedSectionsToCleanBody(body, riskLine, testingMD, pipelineMD)

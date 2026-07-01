@@ -113,7 +113,9 @@ A round stores its findings, duration, any selected finding IDs and whether that
 That merged payload can include per-finding user notes and user-authored findings added from the TUI or AXI interface.
 The PR body's deterministic risk assessment, testing, and pipeline sections are built from these rounds, giving reviewers visibility into test results, review risk, what was fixed, and how many attempts it took.
 In PR pipeline details, auto-fix rounds are rendered as an issue -> fix -> verification narrative instead of a round-numbered log: each fix summary is followed by either a successful re-check or the findings still open after that fix.
-On very long runs, the PR body keeps the most recent pipeline update rounds and replaces older rounds with an omission marker before it reaches GitHub's 65536-character body limit.
+On very long runs, the PR body uses a 63,488-byte safety cap, which leaves a 2 KB buffer below GitHub's 65,536-character body limit.
+It first keeps the newest pipeline update rounds and replaces older rounds with an omission marker at whole-update boundaries.
+If the newest update or essential body content is still too large, the PR step truncates at line or section boundaries and adds an explicit marker.
 The full round history remains available in the run log.
 
 Round trigger types:
