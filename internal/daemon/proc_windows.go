@@ -27,6 +27,7 @@ const psListDaemonProcessesScript = "$ErrorActionPreference='SilentlyContinue'; 
 // Failures (e.g. PowerShell absent) fail open in the caller.
 func listDaemonProcesses() ([]daemonProcessInfo, error) {
 	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psListDaemonProcessesScript)
+	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NO_WINDOW}
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("enumerate processes: %w", err)
