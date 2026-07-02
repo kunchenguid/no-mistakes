@@ -25,6 +25,8 @@ func runStatusStyle(status types.RunStatus) string {
 		return sRed.Render(s)
 	case types.RunRunning:
 		return sBlue.Render(s)
+	case types.RunCIMonitorInterrupted:
+		return sYellow.Render(s)
 	default:
 		return sDim.Render(s)
 	}

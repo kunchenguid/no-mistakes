@@ -34,7 +34,7 @@ const triggerWaitTimeout = 5 * time.Second
 // terminalStatus reports whether a run has reached a final state.
 func terminalStatus(status string) bool {
 	switch types.RunStatus(status) {
-	case types.RunCompleted, types.RunFailed, types.RunCancelled:
+	case types.RunCompleted, types.RunFailed, types.RunCancelled, types.RunCIMonitorInterrupted:
 		return true
 	default:
 		return false
@@ -50,6 +50,8 @@ func outcomeFor(status string) string {
 		return "failed"
 	case types.RunCancelled:
 		return "cancelled"
+	case types.RunCIMonitorInterrupted:
+		return "ci-monitor-interrupted"
 	default:
 		return status
 	}
@@ -502,6 +504,16 @@ func renderDriveResult(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool) error
 			help = append(help, fmt.Sprintf("Open the PR: %s", rv.PRURL))
 		}
 		help = append(help, successReportHelp(fixes)...)
+		fields = append(fields, toon.Field{Key: "help", Value: help})
+		emitDoc(cmd, fields...)
+		return nil
+	}
+
+	if rv.Status == string(types.RunCIMonitorInterrupted) {
+		help := []string{"The daemon restarted while monitoring CI; the PR remains open and was not marked failed."}
+		if rv.PRURL != "" {
+			help = append(help, fmt.Sprintf("Open the PR: %s", rv.PRURL))
+		}
 		fields = append(fields, toon.Field{Key: "help", Value: help})
 		emitDoc(cmd, fields...)
 		return nil

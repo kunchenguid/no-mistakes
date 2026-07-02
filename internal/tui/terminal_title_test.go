@@ -213,6 +213,16 @@ func TestTerminalTitle_Cancelled(t *testing.T) {
 	}
 }
 
+func TestTerminalTitle_CIMonitorInterrupted(t *testing.T) {
+	run := testRun()
+	run.Status = types.RunCIMonitorInterrupted
+	m := NewModel("/tmp/sock", nil, run)
+	title := m.terminalTitle()
+	if title != "CI monitor interrupted - feature/foo" {
+		t.Errorf("expected 'CI monitor interrupted - feature/foo', got %q", title)
+	}
+}
+
 func TestTerminalTitle_FixingStep(t *testing.T) {
 	run := testRun()
 	run.Steps[0].Status = types.StepStatusCompleted
