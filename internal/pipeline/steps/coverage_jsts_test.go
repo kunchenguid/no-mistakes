@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
@@ -132,8 +133,9 @@ func TestParseIstanbulBlocks_EmptyAndMalformed(t *testing.T) {
 }
 
 // TestJSCoverableChangedFiles exercises the filter: keeps JS/TS source across
-// all supported extensions, drops test files by every test-file rule, applies
-// ignore patterns, and drops deletions.
+// all supported extensions and directory layouts (src/, lib/, app/, root-level,
+// monorepo packages/*/src/...), drops test files by every test-file rule,
+// applies ignore patterns, and drops deletions.
 func TestJSCoverableChangedFiles(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -151,6 +153,14 @@ func TestJSCoverableChangedFiles(t *testing.T) {
 		"src/lib.test.js",
 		"src/foo.spec.ts",
 		"src/nested/x.js",
+		// Non-src/ layouts: these are the locations the old --include=src/** bug
+		// broke — CoverableChangedFiles flagged them accountable but c8 never
+		// instrumented them, so they must appear in the coverable set here to
+		// keep the filter↔include parity honest.
+		"lib/util.ts",
+		"app/index.tsx",
+		"root.mjs",
+		"packages/app/src/index.js",
 	}
 	for _, rel := range files {
 		full := filepath.Join(dir, filepath.FromSlash(rel))
@@ -178,6 +188,11 @@ func TestJSCoverableChangedFiles(t *testing.T) {
 		"src/types.ts",
 		"src/utils.mjs",
 		"src/app.tsx",
+		// Non-src/ coverable files (see files list above).
+		"lib/util.ts",
+		"app/index.tsx",
+		"root.mjs",
+		"packages/app/src/index.js",
 	}
 	sort.Strings(got)
 	sort.Strings(want)
@@ -317,4 +332,81 @@ func mapKeys(m map[string][]coverBlock) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// TestJSIncludeGlob_MatchesCoverableScope locks the #1 parity invariant: the
+// c8 --include glob must instrument every JS/TS source file that
+// CoverableChangedFiles can flag as accountable. The old code hardcoded
+// --include=src/**, which left files outside a top-level src/ (lib/, app/,
+// root-level, monorepo packages/*/src/...) uninstrumented. With no coverage
+// blocks, addedLineExecutable's len==0 fallback then counted every added line
+// in those files as uncovered — a false positive. The glob is now derived from
+// the same extension set as isJSSourceFile and must be directory-agnostic.
+func TestJSIncludeGlob_MatchesCoverableScope(t *testing.T) {
+	t.Parallel()
+	glob := jsIncludeGlob()
+
+	// Directory-agnostic: no top-level src/ restriction (the old bug).
+	if strings.Contains(glob, "src/") {
+		t.Errorf("include glob %q restricts to src/; must cover JS/TS anywhere", glob)
+	}
+	if !strings.HasPrefix(glob, "**/*.{") || !strings.HasSuffix(glob, "}") {
+		t.Fatalf("include glob %q must be directory-agnostic of the form **/*.{exts}", glob)
+	}
+
+	// Every accountable extension must be present, or CoverableChangedFiles will
+	// flag files the coverage tool never reports on.
+	for _, ext := range jsSourceExts {
+		if !strings.Contains(glob, strings.TrimPrefix(ext, ".")) {
+			t.Errorf("include glob %q missing accountable extension %s", glob, ext)
+		}
+	}
+
+	// Parity across the directory layouts the old src/** restriction broke: if
+	// isJSSourceFile flags it accountable, the include glob must cover it.
+	for _, p := range []string{
+		"src/lib.js",
+		"lib/util.ts",
+		"app/index.tsx",
+		"root.mjs",
+		"packages/app/src/index.js",
+		"deep/nested/path/server.cjs",
+		"component.jsx",
+	} {
+		if !isJSSourceFile(p) {
+			t.Errorf("expected %q to be a coverable JS/TS source file", p)
+		}
+		if !jsIncludeGlobMatches(p) {
+			t.Errorf("include glob %q does not cover coverable file %q", glob, p)
+		}
+	}
+	// Non-JS/TS files must be excluded by both surfaces alike.
+	for _, p := range []string{"README.md", "go.mod", "style.css", "data.json"} {
+		if isJSSourceFile(p) {
+			t.Errorf("expected %q to be non-coverable", p)
+		}
+		if jsIncludeGlobMatches(p) {
+			t.Errorf("include glob %q should not cover non-JS/TS file %q", glob, p)
+		}
+	}
+}
+
+// jsIncludeGlobMatches is a test-only matcher for the c8 --include glob emitted
+// by jsIncludeGlob. It independently parses the brace set out of "**/*.{a,b}"
+// and checks the suffix, so the parity test does not just re-call
+// isJSSourceFile. It emulates the directory-agnostic micromatch semantics for
+// the simple "**/*.{exts}" patterns this provider emits.
+func jsIncludeGlobMatches(path string) bool {
+	glob := jsIncludeGlob()
+	open := strings.Index(glob, "{")
+	closeIdx := strings.Index(glob, "}")
+	if open < 0 || closeIdx <= open {
+		return false
+	}
+	for _, e := range strings.Split(glob[open+1:closeIdx], ",") {
+		if strings.HasSuffix(path, "."+e) {
+			return true
+		}
+	}
+	return false
 }

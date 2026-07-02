@@ -91,7 +91,13 @@ func (jsCoverageProvider) RunCoverage(sctx *pipeline.StepContext) (string, strin
 		"--yes", "c8@latest",
 		"--reporter=json",
 		"--reports-dir=" + reportsDir,
-		"--include=src/**",
+		// The include scope must match what CoverableChangedFiles flags as
+		// accountable — any JS/TS source anywhere in the repo. Hardcoding
+		// src/** left files outside a top-level src/ (lib/, app/, root-level,
+		// monorepo packages/*/src/...) uninstrumented: c8 emitted no blocks for
+		// them, so addedLineExecutable's len==0 fallback then counted every
+		// added line as executable-uncovered → false-positive findings.
+		"--include=" + jsIncludeGlob(),
 		"sh", "-c", runner,
 	}
 	testedCmd := "npx " + strings.Join(args, " ")
@@ -108,8 +114,9 @@ func (jsCoverageProvider) RunCoverage(sctx *pipeline.StepContext) (string, strin
 
 	data, err := os.ReadFile(filepath.Join(reportsDir, "coverage-final.json"))
 	if err != nil {
-		// Empty coverage (e.g. no source under src/** matched) is a soft skip:
-		// return empty so ParseBlocks yields no blocks, rather than blocking.
+		// Empty coverage (e.g. no JS/TS source matched the include scope) is a
+		// soft skip: return empty so ParseBlocks yields no blocks, rather than
+		// blocking.
 		if os.IsNotExist(err) {
 			return "", testedCmd, nil
 		}
@@ -216,10 +223,33 @@ func pkgHasTestScript(workDir string) bool {
 	return strings.TrimSpace(pkg.Scripts.Test) != ""
 }
 
+// jsSourceExts is the JS/TS-family source extension set. It is the single
+// source of truth shared between CoverableChangedFiles (which flags accountable
+// files via isJSSourceFile) and the c8 --include glob (built by jsIncludeGlob),
+// so the two surfaces can never drift. A drift here means a file flagged
+// accountable never gets instrumented → no coverage blocks → the
+// addedLineExecutable len==0 fallback → false-positive uncovered-changed-lines
+// findings on every added line in that file.
+var jsSourceExts = []string{".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}
+
+// jsIncludeGlob builds the c8 --include glob that matches every JS/TS source
+// file anywhere in the repo, mirroring the isJSSourceFile check used by
+// CoverableChangedFiles. c8/nyc uses micromatch, so the directory-agnostic
+// "**/*.{exts}" brace form matches files at any path depth (lib/, app/,
+// root-level, monorepo packages/*/src/...). Keeping this derived from the same
+// extension set as isJSSourceFile guarantees the include scope is always a
+// superset of the accountable-file set.
+func jsIncludeGlob() string {
+	exts := make([]string, len(jsSourceExts))
+	for i, e := range jsSourceExts {
+		exts[i] = strings.TrimPrefix(e, ".")
+	}
+	return "**/*.{" + strings.Join(exts, ",") + "}"
+}
+
 // isJSSourceFile reports whether path has a JS/TS-family source extension.
 func isJSSourceFile(path string) bool {
-	exts := []string{".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}
-	for _, ext := range exts {
+	for _, ext := range jsSourceExts {
 		if strings.HasSuffix(path, ext) {
 			return true
 		}
