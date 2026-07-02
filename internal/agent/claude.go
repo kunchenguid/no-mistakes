@@ -39,10 +39,17 @@ func (a *claudeAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 }
 
 func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
-	args := a.buildArgs(opts.Prompt, opts.JSONSchema)
+	args := a.buildArgs(opts.JSONSchema)
 	cmd := exec.CommandContext(ctx, a.bin, args...)
 	cmd.Dir = opts.CWD
-	cmd.Stdin = nil
+	// The prompt travels on stdin, never as an argv element. A failing test
+	// step embeds its full captured output in the fix prompt, which routinely
+	// runs to hundreds of KB; passed as `-p <prompt>` it overflows the OS
+	// ARG_MAX and the exec fails with "argument list too long" (E2BIG), taking
+	// the pipeline step - and, historically, the daemon - down. `claude -p`
+	// (print mode) reads the prompt from stdin when no positional prompt is
+	// given, so stdin has no such length ceiling.
+	cmd.Stdin = strings.NewReader(opts.Prompt)
 	cmd.Env = gitSafeEnv(opts.CWD)
 	shellenv.ConfigureShellCommand(cmd)
 
@@ -109,11 +116,16 @@ func finalizeClaudeResult(result *claudeResult, schema json.RawMessage, usage To
 // managed flags, so user choices win over no-mistakes' defaults. If the user
 // supplied their own permission mode, the default --dangerously-skip-permissions
 // is not added.
-func (a *claudeAgent) buildArgs(prompt string, schema json.RawMessage) []string {
+//
+// The prompt is deliberately NOT among these arguments: it is delivered on
+// stdin by runOnce (see the ARG_MAX note there). `-p`/`--print` is a boolean
+// flag; with no positional prompt following it, claude reads the prompt from
+// stdin.
+func (a *claudeAgent) buildArgs(schema json.RawMessage) []string {
 	args := make([]string, 0, len(a.extraArgs)+8)
 	args = append(args, a.extraArgs...)
 	args = append(args,
-		"-p", prompt,
+		"-p",
 		"--verbose",
 		"--output-format", "stream-json",
 	)
