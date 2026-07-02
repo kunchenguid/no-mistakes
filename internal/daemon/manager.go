@@ -390,6 +390,7 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 
 	// Create agent. In demo mode, skip resolution and use a no-op agent.
 	var ag agent.Agent
+	var reviewerAgents []agent.Agent
 	if steps.IsDemoMode() {
 		ag = agent.NewNoop()
 	} else {
@@ -411,21 +412,51 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 		// avoid mutating system state (e.g. brew/Homebrew touching
 		// /Applications), which triggers macOS App Management prompts.
 		ag = agent.WithSteering(ag)
+
+		// Build the cross-family review panel (empty when review.reviewers is
+		// unset, leaving behavior unchanged). Reviewers use the SAME factory and
+		// steering as the impl agent. Any failure here must close what has been
+		// built so far before returning, since the cleanup defer below only runs
+		// once the background goroutine owns the run.
+		reviewerSpecs, revErr := cfg.ResolveReviewers(ctx, exec.LookPath)
+		if revErr != nil {
+			ag.Close()
+			m.db.UpdateRunError(run.ID, revErr.Error())
+			trackStartFailure("resolve_reviewers")
+			return "", revErr
+		}
+		for _, spec := range reviewerSpecs {
+			rev, rErr := agent.NewWithOptions(spec.Agent, cfg.ReviewerPath(spec), cfg.ReviewerArgs(spec), agent.Options{
+				ACPRegistryOverrides: cfg.ACPRegistryOverrides,
+			})
+			if rErr != nil {
+				for _, built := range reviewerAgents {
+					built.Close()
+				}
+				ag.Close()
+				m.db.UpdateRunError(run.ID, fmt.Sprintf("create reviewer agent: %s", rErr))
+				trackStartFailure("create_reviewer_agent")
+				return "", fmt.Errorf("create reviewer agent: %w", rErr)
+			}
+			reviewerAgents = append(reviewerAgents, agent.WithSteering(rev))
+		}
 	}
 
 	execSteps := m.steps()
 	telemetry.Track("run", telemetry.Fields{
-		"action":      "started",
-		"trigger":     trigger,
-		"agent":       string(cfg.Agent),
-		"branch_role": branchRole,
-		"step_count":  len(execSteps),
-		"demo_mode":   steps.IsDemoMode(),
+		"action":         "started",
+		"trigger":        trigger,
+		"agent":          string(cfg.Agent),
+		"branch_role":    branchRole,
+		"step_count":     len(execSteps),
+		"demo_mode":      steps.IsDemoMode(),
+		"reviewer_count": len(reviewerAgents),
 	})
 
 	// Create executor with event broadcast.
 	runCtx, cancel := context.WithCancelCause(context.Background())
 	executor := pipeline.NewExecutor(m.db, m.paths, cfg, ag, execSteps, m.broadcast)
+	executor.SetReviewers(reviewerAgents)
 	executor.SetSkippedSteps(skipSteps)
 
 	// Track executor.
@@ -471,6 +502,10 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 			}
 			cancel(nil)
 			ag.Close()
+			// Close every reviewer panel agent (no-op when none configured).
+			for _, rev := range reviewerAgents {
+				rev.Close()
+			}
 			// Close subscriber channels for this run.
 			m.closeSubscribers(run.ID)
 			// Clean up worktree.

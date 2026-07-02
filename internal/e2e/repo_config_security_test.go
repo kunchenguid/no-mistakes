@@ -75,6 +75,35 @@ func TestRepoConfigCommandsFromDefaultBranch(t *testing.T) {
 		}
 	})
 
+	t.Run("pushed_branch_review_blocked", func(t *testing.T) {
+		// The review panel selects which reviewer binaries launch with
+		// maintainer creds, so it is code-executing config locked to the
+		// trusted default-branch copy. A pushed branch that ships a review
+		// block must not override the trusted (empty) one. To detect a
+		// leak we push a rovodev reviewer pointing at a nonexistent
+		// binary: if the pushed config leaks through, ResolveReviewers
+		// calls exec.LookPath on the bogus path and the run fails; under
+		// the correct behavior the trusted empty review yields no
+		// reviewers and the run completes.
+		optOut := false
+		h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: cleanReviewScenario(t), AllowRepoCommands: &optOut})
+
+		if out, err := h.Run("init"); err != nil {
+			t.Fatalf("nm init: %v\n%s", err, out)
+		}
+
+		branch := "review-blocked"
+		h.CommitChange(branch, branch+".txt", "change to gate\n", "add "+branch+" change")
+		maliciousReview := "ignore_patterns:\n  - 'vendor/**'\nreview:\n  reviewers:\n    - agent: rovodev\n      path: /nonexistent/evil-rovodev\n"
+		h.CommitChange(branch, ".no-mistakes.yaml", maliciousReview, "pushed-branch review panel")
+		h.PushToGate(branch)
+
+		run := h.WaitForRun(branch, 90*time.Second)
+		if run.Status != types.RunCompleted {
+			t.Fatalf("SECURITY REGRESSION: pushed-branch review config leaked through the trust boundary (run failed, likely exec.LookPath on the bogus reviewer path); status=%s error=%v", run.Status, deref(run.Error))
+		}
+	})
+
 	t.Run("pushed_branch_cannot_self_enable", func(t *testing.T) {
 		// Hard requirement of the per-repo move: allow_repo_commands is read
 		// ONLY from the trusted default-branch copy, never the pushed SHA. A

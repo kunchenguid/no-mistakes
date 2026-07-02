@@ -62,14 +62,16 @@ AI code review of your diff.
 **Behavior:**
 - Diffs the base commit against head
 - Filters out files matching `ignore_patterns` from the repo config
-- Sends the filtered diff to the agent with structured review instructions and a structured output schema
+- Sends the filtered diff to the configured agent, or to every reviewer in `review.reviewers`, with structured review instructions and a structured output schema
 - Includes user intent when the run has supplied intent or transcript matching found a relevant local agent session
-- Agent returns findings with severity (`error`, `warning`, `info`), file location, description, and an `action` (`no-op`, `auto-fix`, `ask-user`)
+- Each reviewer returns findings with severity (`error`, `warning`, `info`), file location, description, and an `action` (`no-op`, `auto-fix`, `ask-user`)
+- In review-panel mode, merged findings keep a reviewer `source`, get reviewer-namespaced IDs, concatenate reviewer summaries/rationales, and use the highest reported `risk_level`
+- `review.max_parallel` bounds concurrent reviewers; `review.fail_open: false` (the default) fails the review step on any reviewer error, while `true` drops failed reviewers if at least one reviewer succeeds
 - Also returns a `risk_level` (`low`, `medium`, `high`) and `risk_rationale`
 
 **Approval:** required if any finding has severity `error` or `warning`. Findings with `action: ask-user` pause for approval instead of entering the normal auto-fix loop. This is for findings that challenge the author's intent, not routine correctness, reliability, or security fixes that may need to re-add a small amount of deleted logic. With the default `auto_fix.review: 0`, blocking review findings park for approval even when their action is `auto-fix`; setting repo or global `auto_fix.review` above `0` re-enables the automatic review fix loop for eligible `auto-fix` findings. Findings with `action: no-op` are informational only.
 
-**Auto-fix:** the agent receives the selected previous findings plus any per-finding user notes, any selected user-authored findings from the TUI or AXI interface, and a sanitized history of prior rounds for that step, including earlier fix summaries and which findings the user left unselected. Follow-up review passes use that history to avoid re-reporting user-ignored findings unless the code now has a materially different problem. Fix commits use `no-mistakes(review): <summary>`.
+**Auto-fix:** the configured pipeline agent receives the selected previous findings, including reviewer `source` labels when a panel produced them, plus any per-finding user notes, any selected user-authored findings from the TUI or AXI interface, and a sanitized history of prior rounds for that step, including earlier fix summaries and which findings the user left unselected. Follow-up review passes use the same single reviewer or review panel and use that history to avoid re-reporting user-ignored findings unless the code now has a materially different problem. Fix commits use `no-mistakes(review): <summary>`.
 
 **Default auto-fix limit:** `0`.
 

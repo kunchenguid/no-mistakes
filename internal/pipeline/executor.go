@@ -32,12 +32,13 @@ type approvalResponse struct {
 
 // Executor runs pipeline steps sequentially and coordinates approval interactions.
 type Executor struct {
-	db     *db.DB
-	paths  *paths.Paths
-	config *config.Config
-	agent  agent.Agent
-	steps  []Step
-	skips  map[types.StepName]bool
+	db        *db.DB
+	paths     *paths.Paths
+	config    *config.Config
+	agent     agent.Agent
+	reviewers []agent.Agent
+	steps     []Step
+	skips     map[types.StepName]bool
 
 	onEvent EventFunc
 
@@ -45,6 +46,14 @@ type Executor struct {
 	approvalCh  chan approvalResponse // buffered channel for approval responses
 	waiting     bool                  // true when blocked on approval
 	waitingStep types.StepName        // which step is currently awaiting approval
+}
+
+// SetReviewers configures the cross-family review panel agents. It is set after
+// NewExecutor (rather than as a constructor argument) to avoid churning the many
+// NewExecutor call sites. When empty (the default), the pipeline reviews with
+// the single impl agent, so behavior is unchanged.
+func (e *Executor) SetReviewers(reviewers []agent.Agent) {
+	e.reviewers = reviewers
 }
 
 // SetSkippedSteps configures steps that should be marked skipped without running.
@@ -208,12 +217,20 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	if run != nil && run.Intent != nil {
 		userIntent = *run.Intent
 	}
+	// Default the review panel to the single impl agent when none is
+	// configured, so every step (including review) is byte-identical to the
+	// pre-panel behavior.
+	reviewers := e.reviewers
+	if len(reviewers) == 0 {
+		reviewers = []agent.Agent{e.agent}
+	}
 	sctx := &StepContext{
 		Ctx:          ctx,
 		Run:          run,
 		Repo:         repo,
 		WorkDir:      workDir,
 		Agent:        e.agent,
+		Reviewers:    reviewers,
 		Config:       e.config,
 		DB:           e.db,
 		StepResultID: sr.ID,

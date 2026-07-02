@@ -40,8 +40,10 @@ type Harness struct {
 	AgentLog    string // every fake-agent invocation appended here, one JSON per line
 	Scenario    string // optional path to a scenario yaml; empty = built-in default
 
-	agentName         string // claude / codex / opencode
-	allowRepoCommands *bool  // mirrors SetupOpts.AllowRepoCommands
+	agentName         string   // claude / codex / opencode
+	allowRepoCommands *bool    // mirrors SetupOpts.AllowRepoCommands
+	reviewers         []string // mirrors SetupOpts.Reviewers (global config panel)
+	repoReviewers     []string // mirrors SetupOpts.RepoReviewers (trusted repo panel)
 }
 
 // SetupOpts controls per-test setup.
@@ -65,6 +67,18 @@ type SetupOpts struct {
 	// (commands must come from the trusted default branch) pass a pointer
 	// to false to exercise the secure default.
 	AllowRepoCommands *bool
+
+	// Reviewers, when non-empty, injects a cross-family review panel into the
+	// GLOBAL config (review.reviewers) via writeGlobalConfig. The global config
+	// is not security-gated, so this is the simplest way to make every run fan
+	// the review step out across the named agent families (e.g. claude, codex).
+	Reviewers []string
+
+	// RepoReviewers, when non-empty, injects a review panel into the TRUSTED
+	// default-branch .no-mistakes.yaml (via initGitRepos). Unlike a panel pushed
+	// on a feature branch, this trusted copy survives EffectiveRepoConfig, so it
+	// exercises the positive side of the review-panel security gate.
+	RepoReviewers []string
 }
 
 const e2eDaemonStartTimeout = "45s"
@@ -99,6 +113,8 @@ func NewHarness(t *testing.T, opts SetupOpts) *Harness {
 		Scenario:          opts.Scenario,
 		agentName:         opts.Agent,
 		allowRepoCommands: opts.AllowRepoCommands,
+		reviewers:         opts.Reviewers,
+		repoReviewers:     opts.RepoReviewers,
 	}
 
 	for _, dir := range []string{h.BinDir, h.NMHome, h.HomeDir, h.WorkDir} {
@@ -170,22 +186,68 @@ func (h *Harness) writeGlobalConfig() {
 	if err := os.MkdirAll(h.NMHome, 0o755); err != nil {
 		h.t.Fatalf("mkdir nm home: %v", err)
 	}
-	binLink := filepath.Join(h.BinDir, h.agentName)
+	// Pin an absolute fake-agent path for every family the run can launch: the
+	// impl agent AND every configured reviewer family. The daemon resolves a
+	// login-shell PATH at startup that does NOT contain BinDir, so a bare
+	// reviewer name (e.g. "codex") would otherwise resolve to a real system
+	// binary and hit the live API. Absolute overrides keep every family on the
+	// fake regardless of the daemon's PATH.
+	var overrides strings.Builder
+	for _, family := range h.pathOverrideFamilies() {
+		fmt.Fprintf(&overrides, "  %s: %s\n", family, filepath.Join(h.BinDir, family))
+	}
 	cfg := fmt.Sprintf(`agent: %s
 log_level: debug
 agent_path_override:
-  %s: %s
-auto_fix:
+%sauto_fix:
   rebase: 0
   lint: 0
   test: 0
   review: 0
   document: 0
   ci: 0
-`, h.agentName, h.agentName, binLink)
+`, h.agentName, overrides.String())
+	cfg += reviewPanelYAML(h.reviewers, 0)
 	if err := os.WriteFile(configPath, []byte(cfg), 0o644); err != nil {
 		h.t.Fatalf("write config: %v", err)
 	}
+}
+
+// pathOverrideFamilies returns the deduped set of agent families that need an
+// absolute fake-agent path override: the impl agent plus every reviewer family
+// configured on either the global panel or the trusted repo panel. Order is
+// deterministic (impl agent first) so the rendered config is stable.
+func (h *Harness) pathOverrideFamilies() []string {
+	var families []string
+	seen := map[string]bool{}
+	for _, name := range append([]string{h.agentName}, append(append([]string{}, h.reviewers...), h.repoReviewers...)...) {
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		families = append(families, name)
+	}
+	return families
+}
+
+// reviewPanelYAML renders a review-panel config block (review.reviewers +
+// max_parallel + fail_open) at the given indentation, or "" when no reviewers
+// are configured. The same shape is valid in both the global config and a
+// repo .no-mistakes.yaml, so both harness injection points reuse it.
+func reviewPanelYAML(reviewers []string, indent int) string {
+	if len(reviewers) == 0 {
+		return ""
+	}
+	pad := strings.Repeat(" ", indent)
+	var b strings.Builder
+	fmt.Fprintf(&b, "%sreview:\n", pad)
+	fmt.Fprintf(&b, "%s  reviewers:\n", pad)
+	for _, name := range reviewers {
+		fmt.Fprintf(&b, "%s    - agent: %s\n", pad, name)
+	}
+	fmt.Fprintf(&b, "%s  max_parallel: 2\n", pad)
+	fmt.Fprintf(&b, "%s  fail_open: false\n", pad)
+	return b.String()
 }
 
 // initGitRepos creates a bare upstream repo and a working clone with one
@@ -231,6 +293,10 @@ func (h *Harness) initGitRepos() {
 	}
 	repoConfig := filepath.Join(h.WorkDir, ".no-mistakes.yaml")
 	repoCfg := fmt.Sprintf("ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\nallow_repo_commands: %t\n", allowRepoCommands)
+	// A panel committed to the trusted default branch survives
+	// EffectiveRepoConfig and drives the pipeline, unlike one pushed only on a
+	// feature branch (which is stripped). This is the positive security case.
+	repoCfg += reviewPanelYAML(h.repoReviewers, 0)
 	if err := os.WriteFile(repoConfig, []byte(repoCfg), 0o644); err != nil {
 		h.t.Fatalf("write repo config: %v", err)
 	}

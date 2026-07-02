@@ -22,6 +22,7 @@ Testing prompts also ask agents to remove transient working-tree artifacts they 
 
 - Leave `agent: auto` if one good agent is already installed and you do not need repo-specific behavior.
 - Set a repo-level `agent` override when one codebase clearly works better with a different tool.
+- Configure `review.reviewers` when you want multiple agent families to independently review the same diff.
 - Set explicit `commands.test` and `commands.lint` if you want deterministic baseline command execution regardless of agent choice.
 
 That last point matters: the agent helps fill in gaps, but explicit repo
@@ -83,6 +84,29 @@ Changing agents most directly affects:
 
 It does **not** change the pipeline order or the meaning of a passed gate.
 
+## Review panels
+
+By default, the review step runs once with the resolved `agent`.
+Set `review.reviewers` in global or repo config to fan the same review prompt out to multiple reviewers, for example Codex plus Claude.
+The configured pipeline `agent` still applies review fixes; reviewers only produce reports.
+
+```yaml
+review:
+  reviewers:
+    - agent: codex
+    - agent: claude
+  max_parallel: 2
+  fail_open: false
+```
+
+Merged review findings keep a `source` showing which reviewer reported them, and their IDs are namespaced by reviewer so the AXI and TUI approval flows can address them normally.
+In a reviewer spec, `agent: auto` expands to the already resolved pipeline `agent`; name a reviewer family explicitly when you want a different model family.
+`review.max_parallel` limits concurrent reviewers; `0` means all reviewers run at once.
+`review.fail_open` defaults to `false`, so any reviewer error fails the review step instead of silently reducing coverage.
+
+Repo-level `review` is code-executing config because it selects extra agent processes.
+Like repo `commands` and `agent`, it is read from the trusted default-branch `.no-mistakes.yaml` unless `allow_repo_commands: true` is already set there.
+
 ## Driving no-mistakes as an agent
 
 The primary way to put a change through the gate from inside a coding agent is the `/no-mistakes` skill.
@@ -132,7 +156,7 @@ Use `no-mistakes axi abort --run <id>` only when you need to cancel a specific a
 When an agent starts a new run, `--intent` is required and should describe what the user wanted to accomplish, not what files changed.
 Agents should prefer a few complete sentences over a terse summary, capturing user decisions, tradeoffs, constraints, ruled-out approaches, and explicit requests that would not be obvious from the diff alone.
 If the repo is on the default branch or has uncommitted changes, direct `axi run` returns a structured error with the command the agent should run instead of silently creating a branch or commit.
-Approval gates are exposed as `gate:` objects with finding IDs, severities, files, actions, descriptions, and help commands for `no-mistakes axi respond`.
+Approval gates are exposed as `gate:` objects with finding IDs, severities, sources, files, actions, descriptions, and help commands for `no-mistakes axi respond`.
 While a non-terminal run is parked at an `awaiting_approval` or `fix_review` gate, the run object also includes `awaiting_agent: parked <duration>`.
 Use that field in `axi status` output to tell in one read that the run is waiting for the driving agent to send `axi respond`, not actively running, fixing, or watching CI.
 It is observability only: it does not auto-resume the run, change gate resolution, or make `--yes` the default.
@@ -140,7 +164,7 @@ A long-running `axi run` or `axi respond` call is working, not stalled, and an a
 An agent should resolve `action: auto-fix` findings on its own judgment, ignore `action: no-op` findings when approving, and stop on `action: ask-user` findings unless it is running with explicit `--yes` consent.
 Review auto-fix is disabled by default (`auto_fix.review: 0`; a repo or global `auto_fix.review > 0` override re-enables it), so blocking and ask-user review findings park for your decision rather than being silently self-fixed.
 The review gate output flags this with a `note`.
-When it stops for `ask-user`, it should relay each finding's ID, file, and full description to the user before choosing `approve`, `fix`, or `skip`.
+When it stops for `ask-user`, it should relay each finding's ID, source when present, file, and full description to the user before choosing `approve`, `fix`, or `skip`.
 Resolving a finding always means responding with `no-mistakes axi respond --action fix`, which has the pipeline apply the fix and re-review it - the agent must not edit the code itself while a run is active.
 For the same reason, while a run is active the agent must not `abort` or `rerun` to go fix a finding itself - even a real bug in its own code - because that discards the pipeline's in-flight work and forces a full re-validation; `abort` and `rerun` are between-runs actions, correct only after a `failed` or `cancelled` outcome, never a way to circumvent a gate.
 Successful outputs can be `outcome: passed` for a completed run or `outcome: checks-passed` when CI has passed and the daemon is still monitoring the unmerged PR for humans, and may include a `fixes` table when the pipeline applied fixes.

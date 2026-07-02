@@ -178,7 +178,7 @@ func TestWriteGateShape(t *testing.T) {
 		Name:   "review",
 		Status: "awaiting_approval",
 		FindingsJSON: findingsJSON(t, []types.Finding{
-			{ID: "review-1", Severity: "warning", File: "main.go", Line: 4, Action: types.ActionAskUser, Description: "calls os.Exit, leaks fd"},
+			{ID: "review-1", Severity: "warning", Source: "codex", File: "main.go", Line: 4, Action: types.ActionAskUser, Description: "calls os.Exit, leaks fd"},
 		}, "1 blocking issue"),
 	}
 	out := axiDoc(gateFields(gate)...)
@@ -188,8 +188,8 @@ func TestWriteGateShape(t *testing.T) {
 		"  step: review\n",
 		"  status: awaiting_approval\n",
 		"  summary: 1 blocking issue\n",
-		"  findings[1]{id,severity,file,action,description}:\n",
-		`    review-1,warning,main.go,ask-user,"calls os.Exit, leaks fd"`,
+		"  findings[1]{id,severity,source,file,action,description}:\n",
+		`    review-1,warning,codex,main.go,ask-user,"calls os.Exit, leaks fd"`,
 		"no-mistakes axi respond --action approve",
 		"to have the pipeline fix the selected findings (do not edit files yourself)",
 		// Review gate carries the auto-fix-disabled note and the keep-driving

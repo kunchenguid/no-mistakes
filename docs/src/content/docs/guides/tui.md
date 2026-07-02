@@ -95,7 +95,9 @@ When a step pauses for approval, the findings panel shows structured results:
     [x] I  [user]
           Also update the CLI help text for this new flag
          > mention the env var in the docs too
-    [x] W  src/handler.go:78
+    [x] W  [codex] src/handler.go:78
+          Error path skips response cleanup
+    [x] W  src/handler.go:88
           Error string should not be capitalized
     [ ] I  src/handler.go:95
           Consider extracting this into a helper function
@@ -105,6 +107,7 @@ When a step pauses for approval, the findings panel shows structured results:
 - Checkboxes: `[x]` (selected, green), `[ ]` (deselected, dim)
 - Blue `>` marks the focused finding
 - User-added findings are marked with `[user]`
+- Review-panel findings are marked with their reviewer source, such as `[codex]` or `[claude]`
 - Per-finding notes render inline as `> ...` and are sent with the next fix request
 - Bottom hint shows `↑ N above / ↓ N more below (j/k)` when scrolling, or `(j/k)` whenever there are multiple findings
 
@@ -197,6 +200,7 @@ Review awaiting action:
 The `f fix (3/5)` label shows how many findings are selected out of the total.
 
 Press `e` to add or edit extra guidance for the current finding. Press `+` to add your own finding to the list. User-authored findings start selected by default and can be removed with `D`.
+Reviewer-sourced findings can be selected and annotated like any other pipeline finding, but they are not user-authored and cannot be deleted with `D`.
 
 Press `y` to toggle yolo mode when you want paused approval gates to resolve automatically.
 Yolo fixes gates with `auto-fix` and `ask-user` findings by selecting every finding, then approves the resulting fix-review gate.

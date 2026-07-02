@@ -103,7 +103,7 @@ Run the pipeline and decide on its findings as they come up:
    gate resolution, auto-resume the run, or make `--yes` the default.
 2. If the output contains a `gate:` object, the pipeline is waiting on you.
    Read its `findings` table. Each finding has an `id`, `severity`,
-   `file`, `description`, and an `action` that tells you how the
+   `source`, `file`, `description`, and an `action` that tells you how the
    pipeline classified it:
    - `auto-fix` - mechanical and low-risk; you can authorize the fix on
      your own judgment by responding with `--action fix`.
@@ -117,6 +117,9 @@ Run the pipeline and decide on its findings as they come up:
    ask-user review findings park for your decision rather than being silently
    self-fixed. (Other steps such as test and lint may auto-fix within the
    pipeline and re-run before they ever gate.)
+   If a review panel is configured, findings may come from multiple reviewers;
+   use the `source` column to attribute each one, but respond by finding ID
+   the same way.
 
    Choose one response:
    ```sh
@@ -203,7 +206,7 @@ behavior. Do not approve, fix, or skip it on your own. Instead, stop and bring
 it to the user before you respond:
 
 - Relay each `ask-user` finding to them as the pipeline wrote it - its
-  `id`, `file`, and full `description` verbatim. Do not paraphrase,
+  `id`, `source` when present, `file`, and full `description` verbatim. Do not paraphrase,
   summarize away the detail, or pre-judge the answer.
 - Ask how they want to proceed, then translate their decision into the matching
   `respond` call: `--action fix` (pass their guidance through
@@ -243,9 +246,9 @@ A `gate:` waiting on you looks roughly like this - a `gate:` line naming the ste
 ```
 gate: review
 note: Review auto-fix is disabled by default (auto_fix.review: 0; a repo or global auto_fix.review > 0 override re-enables it), so blocking and ask-user review findings park for your decision rather than being silently self-fixed.
-findings[2]{id,severity,file,line,action,description}:
-  r1,warning,internal/pipeline/executor.go,,auto-fix,Error from os.Remove is ignored
-  r2,error,cmd/no-mistakes/main.go,,ask-user,New --force flag bypasses the confirm prompt
+findings[2]{id,severity,source,file,action,description}:
+  r1,warning,codex,internal/pipeline/executor.go,auto-fix,Error from os.Remove is ignored
+  r2,error,claude,cmd/no-mistakes/main.go,ask-user,New --force flag bypasses the confirm prompt
 help[3]:
   no-mistakes axi respond --action fix --findings r1
   no-mistakes axi respond --action approve

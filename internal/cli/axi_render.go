@@ -33,6 +33,7 @@ type stepRow struct {
 type findingRow struct {
 	ID          string `toon:"id"`
 	Severity    string `toon:"severity"`
+	Source      string `toon:"source"`
 	File        string `toon:"file"`
 	Action      string `toon:"action"`
 	Description string `toon:"description"`
@@ -309,6 +310,7 @@ func gateFields(gate stepView) []toon.Field {
 		rows = append(rows, findingRow{
 			ID:          f.ID,
 			Severity:    f.Severity,
+			Source:      f.Source,
 			File:        f.File,
 			Action:      f.Action,
 			Description: truncate(f.Description, maxFindingDesc),
