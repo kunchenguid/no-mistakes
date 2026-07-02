@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -30,7 +31,28 @@ func (a *acpxAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 }
 
 func (a *acpxAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
-	args := a.buildArgs(opts)
+	// Write the prompt to a temp file so that large prompts don't exceed the
+	// OS command-line length limit (notably 8191 chars on Windows). acpx
+	// accepts "exec -f <file>" as an alternative to passing the text inline.
+	prompt := opts.Prompt
+	if len(opts.JSONSchema) > 0 {
+		prompt = buildACPStructuredPrompt(prompt, opts.JSONSchema)
+	}
+	promptFile, err := os.CreateTemp("", "nm-acpx-prompt-*.txt")
+	if err != nil {
+		return nil, fmt.Errorf("acpx prompt file: %w", err)
+	}
+	promptPath := promptFile.Name()
+	defer os.Remove(promptPath)
+	if _, err := promptFile.WriteString(prompt); err != nil {
+		promptFile.Close()
+		return nil, fmt.Errorf("acpx prompt file write: %w", err)
+	}
+	if err := promptFile.Close(); err != nil {
+		return nil, fmt.Errorf("acpx prompt file close: %w", err)
+	}
+
+	args := a.buildArgs(opts, promptPath)
 	cmd := exec.CommandContext(ctx, a.bin, args...)
 	cmd.Dir = opts.CWD
 	cmd.Stdin = nil
@@ -71,13 +93,8 @@ func (a *acpxAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) 
 
 func (a *acpxAgent) Close() error { return nil }
 
-func (a *acpxAgent) buildArgs(opts RunOpts) []string {
-	prompt := opts.Prompt
-	if len(opts.JSONSchema) > 0 {
-		prompt = buildACPStructuredPrompt(prompt, opts.JSONSchema)
-	}
-
-	args := make([]string, 0, 12)
+func (a *acpxAgent) buildArgs(opts RunOpts, promptFile string) []string {
+	args := make([]string, 0, 14)
 	if a.rawCommand != "" {
 		args = append(args, "--agent", a.rawCommand)
 	}
@@ -94,7 +111,7 @@ func (a *acpxAgent) buildArgs(opts RunOpts) []string {
 	if a.rawCommand == "" {
 		args = append(args, a.target)
 	}
-	args = append(args, "exec", prompt)
+	args = append(args, "exec", "-f", promptFile)
 	return args
 }
 
