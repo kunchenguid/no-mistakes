@@ -57,10 +57,15 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 		defer os.Remove(schemaPath)
 	}
 
-	args := a.buildArgs(opts.Prompt, schemaPath)
+	args := a.buildArgs(schemaPath)
 	cmd := exec.CommandContext(ctx, a.bin, args...)
 	cmd.Dir = opts.CWD
-	cmd.Stdin = nil
+	// Deliver the prompt on stdin (the "-" arg in buildArgs) rather than as a
+	// command-line argument. Review/test prompts embed the full diff, which on
+	// Windows can push the command line past the ~32 KB CreateProcess limit and
+	// fail with "The command line is too long" (or make codex emit no output at
+	// all). stdin has no such limit, so this is the robust cross-platform path.
+	cmd.Stdin = strings.NewReader(opts.Prompt)
 	cmd.Env = gitSafeEnv(opts.CWD)
 	shellenv.ConfigureShellCommand(cmd)
 
@@ -100,20 +105,32 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 		return nil, fmt.Errorf("codex exited: %w: %s", waitErr, detail)
 	}
 
+	// codex can exit 0 yet produce no agent message - e.g. a usage-limit or
+	// turn.failed event. Surface that reason instead of the opaque
+	// "codex returned no text output", so a failing pipeline step says *why*.
+	if lastMessage == "" {
+		if detail := strings.TrimSpace(codexErr); detail != "" {
+			return nil, fmt.Errorf("codex: %s", detail)
+		}
+	}
+
 	return finalizeTextResult("codex", lastMessage, validationSchema, usage)
 }
 
 func (a *codexAgent) Close() error { return nil }
 
 // buildArgs constructs the codex CLI arguments. User-supplied extraArgs are
-// inserted between "exec" and the prompt so user flags (e.g. -m, --sandbox)
-// take effect. If the user declared their own execution-mode flag, the
+// inserted between "exec" and the prompt-source flag so user flags (e.g. -m,
+// --sandbox) take effect. The prompt itself is delivered on stdin: the "-"
+// argument tells codex to read its instructions from stdin, which sidesteps the
+// Windows command-line length limit that a large diff embedded in the prompt
+// would otherwise hit. If the user declared their own execution-mode flag, the
 // default --dangerously-bypass-approvals-and-sandbox is not added.
-func (a *codexAgent) buildArgs(prompt, schemaPath string) []string {
+func (a *codexAgent) buildArgs(schemaPath string) []string {
 	args := make([]string, 0, len(a.extraArgs)+8)
 	args = append(args, "exec")
 	args = append(args, a.extraArgs...)
-	args = append(args, prompt, "--json")
+	args = append(args, "-", "--json")
 	if schemaPath != "" {
 		args = append(args, "--output-schema", schemaPath)
 	}
@@ -147,6 +164,13 @@ type codexEvent struct {
 	Item    *codexItem  `json:"item,omitempty"`
 	Usage   *codexUsage `json:"usage,omitempty"`
 	Message string      `json:"message,omitempty"`
+	Error   *codexError `json:"error,omitempty"`
+}
+
+// codexError carries the message from a turn.failed event, where the reason is
+// nested under "error" rather than at the top level like an "error" event.
+type codexError struct {
+	Message string `json:"message"`
 }
 
 type codexItem struct {
@@ -187,6 +211,11 @@ func parseCodexEvents(ctx context.Context, r io.Reader, onChunk func(string), us
 		case "error":
 			if event.Message != "" && codexErr != nil {
 				*codexErr = event.Message
+			}
+
+		case "turn.failed":
+			if event.Error != nil && event.Error.Message != "" && codexErr != nil {
+				*codexErr = event.Error.Message
 			}
 
 		case "item.completed":

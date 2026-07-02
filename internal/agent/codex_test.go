@@ -12,10 +12,10 @@ import (
 
 func TestCodexAgent_BuildArgs(t *testing.T) {
 	ca := &codexAgent{bin: "codex"}
-	args := ca.buildArgs("fix the bug", "")
+	args := ca.buildArgs("")
 
 	expected := []string{
-		"exec", "fix the bug",
+		"exec", "-",
 		"--json",
 		"--dangerously-bypass-approvals-and-sandbox",
 		"--color", "never",
@@ -33,12 +33,12 @@ func TestCodexAgent_BuildArgs(t *testing.T) {
 
 func TestCodexAgent_BuildArgs_ExtraArgsAfterExec(t *testing.T) {
 	ca := &codexAgent{bin: "codex", extraArgs: []string{"-m", "gpt-5.4"}}
-	args := ca.buildArgs("fix it", "")
+	args := ca.buildArgs("")
 
 	expected := []string{
 		"exec",
 		"-m", "gpt-5.4",
-		"fix it",
+		"-",
 		"--json",
 		"--dangerously-bypass-approvals-and-sandbox",
 		"--color", "never",
@@ -62,7 +62,7 @@ func TestCodexAgent_BuildArgs_UserExecutionModeSuppressesBypass(t *testing.T) {
 	}
 	for _, extra := range tests {
 		ca := &codexAgent{bin: "codex", extraArgs: extra}
-		args := ca.buildArgs("p", "")
+		args := ca.buildArgs("")
 
 		bypassCount := 0
 		for _, a := range args {
@@ -82,10 +82,10 @@ func TestCodexAgent_BuildArgs_UserExecutionModeSuppressesBypass(t *testing.T) {
 
 func TestCodexAgent_BuildArgs_WithOutputSchema(t *testing.T) {
 	ca := &codexAgent{bin: "codex"}
-	args := ca.buildArgs("review", "/tmp/schema.json")
+	args := ca.buildArgs("/tmp/schema.json")
 
 	want := []string{
-		"exec", "review",
+		"exec", "-",
 		"--json",
 		"--output-schema", "/tmp/schema.json",
 		"--dangerously-bypass-approvals-and-sandbox",
@@ -116,6 +116,41 @@ func writeFakeCodex(t *testing.T, dir, posixScript, windowsScript string) string
 		t.Fatalf("write fake codex: %v", err)
 	}
 	return bin
+}
+
+// TestCodexAgent_RunSendsPromptOnStdin locks in the Windows-safety fix: the
+// prompt (which embeds the full diff) must reach codex on stdin, not as a
+// command-line argument that could blow the OS command-line length limit.
+func TestCodexAgent_RunSendsPromptOnStdin(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("stdin-capture fake uses a POSIX shell script")
+	}
+	dir := t.TempDir()
+	stdinFile := filepath.Join(dir, "stdin.txt")
+	bin := filepath.Join(dir, "codex")
+	script := "#!/bin/sh\ncat > \"" + stdinFile + "\"\n" +
+		`printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}'` + "\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+
+	ca := &codexAgent{bin: bin}
+	const prompt = "review this very large diff that would overflow argv"
+	result, err := ca.Run(context.Background(), RunOpts{Prompt: prompt, CWD: t.TempDir()})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Text != "ok" {
+		t.Fatalf("unexpected text: %q", result.Text)
+	}
+
+	got, err := os.ReadFile(stdinFile)
+	if err != nil {
+		t.Fatalf("read stdin capture: %v", err)
+	}
+	if strings.TrimSpace(string(got)) != prompt {
+		t.Fatalf("prompt not delivered on stdin: got %q", string(got))
+	}
 }
 
 func TestCodexAgent_RunWritesOutputSchemaFile(t *testing.T) {
@@ -239,6 +274,55 @@ exit 1
 	}
 	if !strings.Contains(err.Error(), "schema rejected by codex") {
 		t.Fatalf("expected JSONL error in message, got %v", err)
+	}
+}
+
+// TestCodexAgent_RunSurfacesErrorWhenNoMessage verifies that when codex exits 0
+// but emits no agent message (e.g. a usage-limit / turn.failed), the failure
+// reason is surfaced instead of the opaque "codex returned no text output".
+func TestCodexAgent_RunSurfacesErrorWhenNoMessage(t *testing.T) {
+	dir := t.TempDir()
+	bin := writeFakeCodex(t, dir, `#!/bin/sh
+printf '%s\n' '{"type":"turn.failed","error":{"message":"You'"'"'ve hit your usage limit."}}'
+exit 0
+`, strings.Join([]string{
+		"@echo off",
+		"echo {\"type\":\"turn.failed\",\"error\":{\"message\":\"You've hit your usage limit.\"}}",
+		"exit /b 0",
+	}, "\r\n"))
+
+	ca := &codexAgent{bin: bin}
+	_, err := ca.Run(context.Background(), RunOpts{Prompt: "review", CWD: t.TempDir()})
+	if err == nil {
+		t.Fatal("expected error when codex produced no message")
+	}
+	if !strings.Contains(err.Error(), "usage limit") {
+		t.Fatalf("expected usage-limit reason in error, got %v", err)
+	}
+	if strings.Contains(err.Error(), "no text output") {
+		t.Fatalf("expected the specific reason, not the opaque message, got %v", err)
+	}
+}
+
+func TestParseCodexEvents_TurnFailedCapturesError(t *testing.T) {
+	events := strings.Join([]string{
+		`{"type":"turn.started"}`,
+		`{"type":"turn.failed","error":{"message":"rate limited"}}`,
+		"",
+	}, "\n")
+
+	var usage TokenUsage
+	var lastMessage string
+	var codexErr string
+	err := parseCodexEvents(context.Background(), strings.NewReader(events), nil, &usage, &lastMessage, &codexErr)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if lastMessage != "" {
+		t.Fatalf("expected no message, got %q", lastMessage)
+	}
+	if codexErr != "rate limited" {
+		t.Fatalf("expected captured turn.failed reason, got %q", codexErr)
 	}
 }
 
