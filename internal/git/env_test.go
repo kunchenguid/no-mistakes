@@ -1,6 +1,7 @@
 package git
 
 import (
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -91,5 +92,32 @@ func TestNonInteractiveEnv_EmptyDirLeavesAmbientPWD(t *testing.T) {
 
 	if got["PWD"] != "/ambient/pwd" {
 		t.Errorf("PWD = %q, want ambient \"/ambient/pwd\" when dir is empty", got["PWD"])
+	}
+}
+
+// TestNonInteractiveEnv_ResolvesRelativeDirToAbsolutePWD locks in the fix for a
+// macOS-only gate failure: a relative dir (callers pass "." for the current
+// working repo) must be resolved to an absolute PWD. A relative PWD leaks into
+// git's local-transport post-receive hook, and macOS /bin/sh (bash) trusts it
+// verbatim, so the hook's `pwd` reports "." and corrupts the `--gate "$(pwd)"`
+// argument it sends to the daemon. An absolute PWD is recomputed by the shell
+// when it does not match the real cwd, so it is always safe.
+func TestNonInteractiveEnv_ResolvesRelativeDirToAbsolutePWD(t *testing.T) {
+	if runtime.GOOS == "windows" || runtime.GOOS == "plan9" {
+		t.Skipf("PWD is not injected on %s", runtime.GOOS)
+	}
+
+	got := resolveEnv(NonInteractiveEnv("."))
+
+	pwd := got["PWD"]
+	if !filepath.IsAbs(pwd) {
+		t.Fatalf("PWD = %q, want an absolute path for relative dir %q", pwd, ".")
+	}
+	want, err := filepath.Abs(".")
+	if err != nil {
+		t.Fatalf("filepath.Abs(%q): %v", ".", err)
+	}
+	if pwd != want {
+		t.Errorf("PWD = %q, want %q", pwd, want)
 	}
 }

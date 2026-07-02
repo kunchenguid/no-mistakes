@@ -2,6 +2,7 @@ package git
 
 import (
 	"os"
+	"path/filepath"
 	"runtime"
 )
 
@@ -33,7 +34,18 @@ func NonInteractiveEnv(dir string) []string {
 	// Mirror os/exec, which only injects PWD when Cmd.Env is nil and skips it
 	// on these platforms.
 	if dir != "" && runtime.GOOS != "windows" && runtime.GOOS != "plan9" {
-		env = append(env, "PWD="+dir)
+		// PWD must be absolute. A relative dir (e.g. ".") leaks into git's
+		// local-transport hooks (post-receive runs `pwd` via /bin/sh); macOS
+		// /bin/sh (bash) trusts a relative PWD verbatim and reports "." as the
+		// cwd, corrupting `--gate "$(pwd)"`. An absolute PWD is recomputed by
+		// the shell when it does not match the real cwd, so it is always safe.
+		abs := dir
+		if !filepath.IsAbs(abs) {
+			if resolved, err := filepath.Abs(abs); err == nil {
+				abs = resolved
+			}
+		}
+		env = append(env, "PWD="+abs)
 	}
 	return env
 }
