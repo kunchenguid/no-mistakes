@@ -43,6 +43,47 @@ func TestRepoSlug(t *testing.T) {
 	}
 }
 
+func TestHostPrefixedSlug(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		// github.com inputs keep the plain owner/name format.
+		{"github.com https", "https://github.com/test/repo", "test/repo"},
+		{"github.com https with .git suffix", "https://github.com/test/repo.git", "test/repo"},
+		{"github.com pr url", "https://github.com/test/repo/pull/42", "test/repo"},
+		{"github.com ssh scp form", "git@github.com:test/repo.git", "test/repo"},
+		{"github.com ssh url form", "ssh://git@github.com/test/repo.git", "test/repo"},
+		{"github.com https with port", "https://github.com:8443/test/repo", "test/repo"},
+		{"github.com mixed case host", "https://GitHub.com/test/repo.git", "test/repo"},
+		{"github.com trailing slash", "https://github.com/test/repo/", "test/repo"},
+
+		// GitHub Enterprise Server inputs get the host prefix gh requires.
+		{"ghe https", "https://bbgithub.dev.bloomberg.com/org/repo", "bbgithub.dev.bloomberg.com/org/repo"},
+		{"ghe https with .git suffix", "https://bbgithub.dev.bloomberg.com/org/repo.git", "bbgithub.dev.bloomberg.com/org/repo"},
+		{"ghe ssh scp form", "git@bbgithub.dev.bloomberg.com:org/repo.git", "bbgithub.dev.bloomberg.com/org/repo"},
+		{"ghe ssh url form", "ssh://git@bbgithub.dev.bloomberg.com/org/repo.git", "bbgithub.dev.bloomberg.com/org/repo"},
+		{"ghe pr url", "https://bbgithub.dev.bloomberg.com/org/repo/pull/42", "bbgithub.dev.bloomberg.com/org/repo"},
+		{"ghe https with port", "https://bbgithub.dev.bloomberg.com:8443/org/repo.git", "bbgithub.dev.bloomberg.com/org/repo"},
+		{"ghe trailing slash", "https://bbgithub.dev.bloomberg.com/org/repo/", "bbgithub.dev.bloomberg.com/org/repo"},
+
+		// Empty/malformed inputs return "" so the --repo flag is omitted.
+		{"empty", "", ""},
+		{"host only ghe", "https://bbgithub.dev.bloomberg.com/", ""},
+		{"owner only ghe", "https://bbgithub.dev.bloomberg.com/onlyowner", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := HostPrefixedSlug(tc.in); got != tc.want {
+				t.Fatalf("HostPrefixedSlug(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestGetChecksPassesRepoFlag(t *testing.T) {
 	t.Parallel()
 
@@ -50,7 +91,7 @@ func TestGetChecksPassesRepoFlag(t *testing.T) {
 		"gh pr checks 123 --repo test/repo --json name,state,bucket,completedAt": {
 			stdout: `[{"name":"build","state":"SUCCESS","bucket":"pass"}]` + "\n",
 		},
-	}), nil, "test/repo")
+	}), nil, "", "test/repo")
 
 	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
 	if err != nil {
@@ -68,7 +109,7 @@ func TestGetPRStatePassesRepoFlag(t *testing.T) {
 		"gh pr view 123 --repo test/repo --json state --jq .state": {
 			stdout: "MERGED\n",
 		},
-	}), nil, "test/repo")
+	}), nil, "", "test/repo")
 
 	state, err := host.GetPRState(context.Background(), &scm.PR{Number: "123"})
 	if err != nil {
@@ -88,7 +129,7 @@ func TestCreatePRStreamsBodyThroughStdin(t *testing.T) {
 			stdout:    "https://github.com/test/repo/pull/42\n",
 			wantStdin: body,
 		},
-	}), nil, "test/repo")
+	}), nil, "", "test/repo")
 
 	pr, err := host.CreatePR(context.Background(), "feature/body-cap", "main", scm.PRContent{
 		Title: "fix: cap body",
@@ -110,7 +151,7 @@ func TestUpdatePRStreamsBodyThroughStdin(t *testing.T) {
 		"gh pr edit 42 --repo test/repo --title fix: cap body --body-file -": {
 			wantStdin: body,
 		},
-	}), nil, "test/repo")
+	}), nil, "", "test/repo")
 
 	pr := &scm.PR{Number: "42", URL: "https://github.com/test/repo/pull/42"}
 	updated, err := host.UpdatePR(context.Background(), pr, scm.PRContent{
@@ -132,7 +173,7 @@ func TestGetChecksFallsBackToStateWhenBucketMissing(t *testing.T) {
 		"gh pr checks 123 --json name,state,bucket,completedAt": {
 			stdout: `[{"name":"build","state":"FAILURE","bucket":""},{"name":"tests","state":"PENDING","bucket":""}]` + "\n",
 		},
-	}), nil, "")
+	}), nil, "", "")
 
 	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
 	if err != nil {
@@ -156,7 +197,7 @@ func TestGetChecksParsesCompletedAt(t *testing.T) {
 		"gh pr checks 123 --json name,state,bucket,completedAt": {
 			stdout: `[{"name":"build","state":"FAILURE","bucket":"fail","completedAt":"2026-04-24T04:15:00Z"},{"name":"tests","state":"SUCCESS","bucket":"pass","completedAt":"not-a-time"}]` + "\n",
 		},
-	}), nil, "")
+	}), nil, "", "")
 
 	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
 	if err != nil {
@@ -191,7 +232,7 @@ func TestFetchFailedCheckLogsSelectsMatchingRunForHeadSHA(t *testing.T) {
 		"gh run view 102 --log-failed": {
 			stdout: "lint failed\n",
 		},
-	}), nil, "")
+	}), nil, "", "")
 
 	logs, err := host.FetchFailedCheckLogs(context.Background(), &scm.PR{Number: "123"}, "feature", "abc123", []string{"lint"})
 	if err != nil {
@@ -209,7 +250,7 @@ func TestFindPRFiltersByBaseBranch(t *testing.T) {
 		"gh pr list --head feature/refactor --base release/1.0 --state open --json number,url": {
 			stdout: `[{"number":42,"url":"https://github.example.com/org/repo/pull/42"}]` + "\n",
 		},
-	}), nil, "")
+	}), nil, "", "")
 
 	pr, err := host.FindPR(context.Background(), "feature/refactor", "release/1.0")
 	if err != nil {
@@ -241,7 +282,7 @@ func TestFindPRForkUsesBareHeadAndFiltersOwner(t *testing.T) {
 				`{"number":42,"url":"https://github.com/parent/repo/pull/42","headRefName":"feature/refactor","headRepositoryOwner":{"login":"fork-owner"}}` +
 				`]` + "\n",
 		},
-	}), nil, "parent/repo", "fork-owner/repo")
+	}), nil, "", "parent/repo", "fork-owner/repo")
 
 	pr, err := host.FindPR(context.Background(), branch, "main")
 	if err != nil {
@@ -266,7 +307,7 @@ func TestFindPRReturnsCLIError(t *testing.T) {
 			stderr: "api unavailable\n",
 			code:   1,
 		},
-	}), nil, "")
+	}), nil, "", "")
 
 	pr, err := host.FindPR(context.Background(), "feature/refactor", "main")
 	if err == nil {
@@ -277,6 +318,37 @@ func TestFindPRReturnsCLIError(t *testing.T) {
 	}
 	if pr != nil {
 		t.Fatalf("FindPR() PR = %+v, want nil", pr)
+	}
+}
+
+func TestAvailableScopesAuthToConfiguredHost(t *testing.T) {
+	t.Parallel()
+
+	// With a known host, the auth check must be scoped via --hostname so a
+	// stale credential on some other configured gh host (e.g. github.com vs
+	// a GHE instance) cannot make this repo look unauthenticated. The
+	// unscoped form is treated as a failure here to prove the scoped form
+	// is the one actually invoked.
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh auth status --hostname ghe.example.com": {},
+		"gh auth status": {stderr: "github.com: token invalid\n", code: 1},
+	}), func() bool { return true }, "ghe.example.com", "")
+
+	if err := host.Available(context.Background()); err != nil {
+		t.Fatalf("Available() error = %v, want nil (scoped auth should pass)", err)
+	}
+}
+
+func TestAvailableFallsBackToUnscopedAuthWhenHostUnknown(t *testing.T) {
+	t.Parallel()
+
+	// No host -> behave as before: a bare `gh auth status`.
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh auth status": {},
+	}), func() bool { return true }, "", "")
+
+	if err := host.Available(context.Background()); err != nil {
+		t.Fatalf("Available() error = %v, want nil", err)
 	}
 }
 

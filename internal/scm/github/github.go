@@ -20,25 +20,36 @@ type CmdFactory func(ctx context.Context, name string, args ...string) *exec.Cmd
 type Host struct {
 	cmd          CmdFactory
 	cliAvailable func() bool
+	host         string // repo's GitHub hostname; scopes the auth check
 	repo         string // "owner/name" slug for --repo; empty when unknown
 	forkOwner    string // fork owner for cross-repository PR heads
 }
 
 // New builds a Host. cliAvailable reports whether the gh binary is
-// resolvable on the caller's PATH (possibly overridden by env). repo is the
-// "owner/name" slug; when set it is passed via --repo to every PR/run command
-// so they resolve the right repository regardless of the process working
-// directory. The daemon runs from a fixed, non-repo working dir, so without
-// this gh cannot infer the repo (or branch) and fails on every poll.
-func New(cmd CmdFactory, cliAvailable func() bool, repo string) *Host {
-	return &Host{cmd: cmd, cliAvailable: cliAvailable, repo: strings.TrimSpace(repo)}
+// resolvable on the caller's PATH (possibly overridden by env). host is the
+// repo's GitHub hostname; when set the availability check is scoped to it via
+// --hostname so a stale credential for an unrelated configured gh host cannot
+// make this repo look unauthenticated. repo is the "owner/name" slug; when set
+// it is passed via --repo to every PR/run command so they resolve the right
+// repository regardless of the process working directory. The daemon runs from
+// a fixed, non-repo working dir, so without this gh cannot infer the repo (or
+// branch) and fails on every poll. host is optional; empty reproduces the
+// legacy unscoped auth-check behavior.
+func New(cmd CmdFactory, cliAvailable func() bool, host, repo string) *Host {
+	return &Host{
+		cmd:          cmd,
+		cliAvailable: cliAvailable,
+		host:         strings.TrimSpace(host),
+		repo:         strings.TrimSpace(repo),
+	}
 }
 
 // NewWithFork builds a Host that opens PRs on repo using forkRepo as the head
 // repository owner. forkRepo is an "owner/name" slug; only the owner is needed
-// because gh pr create expects --head <owner>:<branch>.
-func NewWithFork(cmd CmdFactory, cliAvailable func() bool, repo, forkRepo string) *Host {
-	h := New(cmd, cliAvailable, repo)
+// because gh pr create expects --head <owner>:<branch>. host is optional; see
+// New for its role in scoping the auth check.
+func NewWithFork(cmd CmdFactory, cliAvailable func() bool, host, repo, forkRepo string) *Host {
+	h := New(cmd, cliAvailable, host, repo)
 	h.forkOwner = repoOwner(forkRepo)
 	return h
 }
@@ -79,6 +90,21 @@ func RepoSlug(remoteURL string) string {
 	return owner + "/" + name
 }
 
+// HostPrefixedSlug returns "host/owner/name" for GitHub Enterprise Server
+// instances and plain "owner/name" for github.com. This is the format that
+// the gh CLI's --repo flag requires for GHE.
+func HostPrefixedSlug(remoteURL string) string {
+	slug := RepoSlug(remoteURL)
+	if slug == "" {
+		return ""
+	}
+	host := scm.ExtractHost(remoteURL)
+	if host == "" || strings.EqualFold(host, "github.com") {
+		return slug
+	}
+	return host + "/" + slug
+}
+
 // repoArgs returns the --repo flag pair when the slug is known, so gh commands
 // resolve the right repository regardless of the process working directory.
 func (h *Host) repoArgs() []string {
@@ -113,7 +139,17 @@ func (h *Host) Available(ctx context.Context) error {
 	if h.cliAvailable != nil && !h.cliAvailable() {
 		return errors.New("gh CLI is not installed")
 	}
-	if err := h.cmd(ctx, "gh", "auth", "status").Run(); err != nil {
+	// Scope the auth check to this repo's host. Unscoped `gh auth status`
+	// checks every authenticated account and exits non-zero if ANY of them has
+	// a stale/expired token, even when this repo's own host is fully
+	// authenticated. Passing --hostname keeps an unrelated bad credential from
+	// poisoning availability for this repo. When the host is unknown we fall
+	// back to the unscoped check (fail-safe: same behavior as before).
+	authArgs := []string{"auth", "status"}
+	if h.host != "" {
+		authArgs = append(authArgs, "--hostname", h.host)
+	}
+	if err := h.cmd(ctx, "gh", authArgs...).Run(); err != nil {
 		return errors.New("gh CLI is not authenticated")
 	}
 	return nil

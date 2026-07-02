@@ -90,9 +90,20 @@ Directory holding glab's `config.yml`, consulted when detecting self-hosted GitL
 
 When the upstream hostname carries no `gitlab` marker, no-mistakes reads glab's configured hosts from `$GLAB_CONFIG_DIR/config.yml` to decide whether the host is a GitLab instance. It takes precedence over `XDG_CONFIG_HOME`. See [Provider Integration](/no-mistakes/guides/provider-integration/#self-hosted-githubgitlab).
 
+## `GH_CONFIG_DIR`
+
+Directory holding gh's `hosts.yml`, consulted when detecting self-hosted GitHub Enterprise.
+
+| | |
+|---|---|
+| Type | `string` |
+| Default | (none) |
+
+When the upstream hostname is not `github.com`, no-mistakes reads gh's configured hosts from `$GH_CONFIG_DIR/hosts.yml` to decide whether the host is a GitHub Enterprise instance. It takes precedence over `XDG_CONFIG_HOME`. See [Provider Integration](/no-mistakes/guides/provider-integration/#self-hosted-githubgitlab).
+
 ## `XDG_CONFIG_HOME`
 
-Config directory used to locate glab's `config.yml` for self-hosted GitLab detection.
+Config directory used to locate glab's `config.yml` for self-hosted GitLab detection and gh's `hosts.yml` for self-hosted GitHub Enterprise detection.
 
 | | |
 |---|---|
@@ -100,6 +111,7 @@ Config directory used to locate glab's `config.yml` for self-hosted GitLab detec
 | Default | `~/.config` |
 
 When `GLAB_CONFIG_DIR` is unset, no-mistakes looks for glab's configured hosts at `$XDG_CONFIG_HOME/glab-cli/config.yml`, falling back to `~/.config/glab-cli/config.yml` when `XDG_CONFIG_HOME` is unset.
+When `GH_CONFIG_DIR` is unset, no-mistakes looks for gh's configured hosts at `$XDG_CONFIG_HOME/gh/hosts.yml`, falling back to `~/.config/gh/hosts.yml` when `XDG_CONFIG_HOME` is unset.
 
 ## `NO_MISTAKES_UMAMI_HOST`
 

@@ -23,18 +23,28 @@ func buildHost(sctx *pipeline.StepContext, provider scm.Provider) (scm.Host, str
 	}
 	switch provider {
 	case scm.ProviderGitHub:
-		// Resolve the owner/name slug so gh commands carry --repo and work from
-		// the daemon's fixed (non-repo) working directory. Fall back to the PR
-		// URL when the upstream remote URL is unavailable.
-		repo := github.RepoSlug(sctx.Repo.UpstreamURL)
+		// Resolve the slug so gh commands carry --repo and work from the
+		// daemon's fixed (non-repo) working directory. For GitHub Enterprise
+		// Server, HostPrefixedSlug returns "host/owner/name" which is the
+		// format gh requires for --repo on GHE. Fall back to the PR URL when
+		// the upstream remote URL is unavailable. The hostname also scopes
+		// the auth-status check so a stale token on any other configured gh
+		// host cannot make this repo look unauthenticated.
+		host := scm.ExtractHost(sctx.Repo.UpstreamURL)
+		repo := github.HostPrefixedSlug(sctx.Repo.UpstreamURL)
 		if repo == "" && sctx.Run.PRURL != nil {
-			repo = github.RepoSlug(*sctx.Run.PRURL)
+			repo = github.HostPrefixedSlug(*sctx.Run.PRURL)
+			if host == "" {
+				host = scm.ExtractHost(*sctx.Run.PRURL)
+			}
 		}
 		forkRepo := ""
 		if sctx.Repo.ForkURL != "" {
+			// forkRepo is only used to extract the fork owner for --head owner:branch;
+			// the plain slug (without host prefix) is correct here.
 			forkRepo = github.RepoSlug(sctx.Repo.ForkURL)
 		}
-		return github.NewWithFork(cmdFactory, func() bool { return stepCLIAvailable(sctx, provider) }, repo, forkRepo), ""
+		return github.NewWithFork(cmdFactory, func() bool { return stepCLIAvailable(sctx, provider) }, host, repo, forkRepo), ""
 	case scm.ProviderGitLab:
 		if sctx.Repo.ForkURL != "" {
 			// Fork MR routing for GitLab is intentionally not half-wired.
