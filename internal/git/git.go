@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -25,7 +26,16 @@ func IsZeroSHA(sha string) bool {
 
 // Run executes a git command in the given directory and returns trimmed stdout.
 // Returns an error that includes the command and stderr on failure.
+//
+// When dir is itself a bare repository (a gate repo), the repo is named
+// explicitly via --git-dir instead of relying on cwd-based discovery, which
+// safe.bareRepository=explicit forbids. Agent harnesses (e.g. Claude Code)
+// and hardened CI inject that setting, so gate operations must never depend
+// on discovering a bare repo from the working directory (issue #362).
 func Run(ctx context.Context, dir string, args ...string) (string, error) {
+	if isBareGitDir(dir) {
+		args = append([]string{"--git-dir=" + dir}, args...)
+	}
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	cmd.Env = NonInteractiveEnv(dir)
@@ -38,6 +48,24 @@ func Run(ctx context.Context, dir string, args ...string) (string, error) {
 		return "", fmt.Errorf("git %s: %w: %s", safeurl.RedactText(strings.Join(args, " ")), err, safeurl.RedactText(stderr))
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// isBareGitDir reports whether dir is itself a git directory (a bare repo),
+// as opposed to a working tree or linked worktree, which carry a .git entry
+// and keep using normal discovery. The check mirrors git's own git-dir
+// heuristic: a HEAD file plus an objects directory.
+func isBareGitDir(dir string) bool {
+	if dir == "" {
+		return false
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+		return false
+	}
+	if fi, err := os.Stat(filepath.Join(dir, "HEAD")); err != nil || fi.IsDir() {
+		return false
+	}
+	fi, err := os.Stat(filepath.Join(dir, "objects"))
+	return err == nil && fi.IsDir()
 }
 
 // InitBare creates a new bare git repository at the given path.
