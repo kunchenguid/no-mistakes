@@ -187,6 +187,18 @@ well as their SSH forms (`git@ssh.dev.azure.com:v3/...`).
 
 Self-hosted GitHub Enterprise and self-hosted GitLab instances work through the same `gh` and `glab` CLIs. Authenticate the CLI against your instance (`gh auth login --hostname your-ghe.example.com`, `glab auth login --hostname gitlab.example.com`) and `no-mistakes` will route through the CLI as usual.
 
+### Self-hosted GitHub Enterprise
+
+GitHub Enterprise Server is detected the same way `github.com` is, as long as the host is one `gh` is authenticated against.
+When the upstream hostname is not `github.com`, `no-mistakes` consults gh's configured hosts (`hosts.yml`, honoring `GH_CONFIG_DIR` then `XDG_CONFIG_HOME/gh`, then `~/.config/gh`) and treats the upstream as GitHub if its host appears there.
+Running `gh auth login --hostname your-ghe.example.com` is enough to make detection succeed; if `gh` is not configured for the host, detection fails closed and the upstream is treated as unsupported.
+
+On GHE, `gh --repo` expects a host-prefixed slug in the form `host/owner/name`.
+`no-mistakes` builds that automatically from the recorded upstream remote or PR URL, so daemon-run `gh` commands resolve the right repository regardless of the daemon's working directory.
+The fork owner extracted from the fork URL keeps the plain `owner/name` form because that side only feeds `--head owner:branch`.
+
+### Self-hosted GitLab
+
 Self-hosted GitLab is detected out of the box even when the hostname carries no `gitlab` marker (for example `git.example.com`).
 When the hostname is not obviously GitLab, `no-mistakes` consults glab's configured hosts (`config.yml`, honoring `GLAB_CONFIG_DIR` then `XDG_CONFIG_HOME/glab-cli`, then `~/.config/glab-cli`) and treats the upstream as GitLab if its host appears there as a configured host or `api_host`.
 Running `glab auth login --hostname your-gitlab.example.com` is enough to make detection succeed; if glab is not configured for the host, detection fails closed and the upstream is treated as unsupported.
