@@ -177,6 +177,54 @@ log_level: "debug"
 	}
 }
 
+func TestLoadGlobal_AgentAcceptsList(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	data := `agent: [codex, claude]
+`
+	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadGlobal(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Agent != types.AgentCodex {
+		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentCodex)
+	}
+	want := []types.AgentName{types.AgentCodex, types.AgentClaude}
+	if len(cfg.Agents) != len(want) {
+		t.Fatalf("agents = %v, want %v", cfg.Agents, want)
+	}
+	for i := range want {
+		if cfg.Agents[i] != want[i] {
+			t.Fatalf("agents = %v, want %v", cfg.Agents, want)
+		}
+	}
+}
+
+func TestLoadGlobal_AgentStringPreservesSingleAgent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	data := `agent: codex
+`
+	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadGlobal(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Agent != types.AgentCodex {
+		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentCodex)
+	}
+	if len(cfg.Agents) != 1 || cfg.Agents[0] != types.AgentCodex {
+		t.Fatalf("agents = %v, want [codex]", cfg.Agents)
+	}
+}
+
 func TestLoadGlobal_PartialOverride(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
@@ -299,7 +347,7 @@ func TestDefaultConfigYAML_MatchesGoDefaults(t *testing.T) {
 		t.Fatalf("defaultConfigYAML is not valid YAML: %v", err)
 	}
 
-	if raw.Agent != types.AgentAuto {
+	if len(raw.Agent) != 1 || raw.Agent[0] != types.AgentAuto {
 		t.Errorf("YAML agent = %q, Go default = %q", raw.Agent, types.AgentAuto)
 	}
 	d, err := time.ParseDuration(raw.CITimeout)

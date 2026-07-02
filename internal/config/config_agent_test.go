@@ -156,6 +156,54 @@ func TestResolveAgent_AutoPicksFirstAvailable(t *testing.T) {
 	}
 }
 
+func TestResolveAgent_ListPicksFirstAvailableAndKeepsFallbacks(t *testing.T) {
+	cfg := &Config{Agents: []types.AgentName{types.AgentClaude, types.AgentCodex, types.AgentPi}}
+
+	err := cfg.ResolveAgent(context.Background(), func(bin string) (string, error) {
+		switch bin {
+		case "codex", "pi":
+			return "/usr/bin/" + bin, nil
+		default:
+			return "", &exec.Error{Name: bin, Err: exec.ErrNotFound}
+		}
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Agent != types.AgentCodex {
+		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentCodex)
+	}
+	want := []types.AgentName{types.AgentCodex, types.AgentPi}
+	if len(cfg.Agents) != len(want) {
+		t.Fatalf("agents = %v, want %v", cfg.Agents, want)
+	}
+	for i := range want {
+		if cfg.Agents[i] != want[i] {
+			t.Fatalf("agents = %v, want %v", cfg.Agents, want)
+		}
+	}
+}
+
+func TestResolveAgent_ListSkipsUnavailableAuto(t *testing.T) {
+	cfg := &Config{Agents: []types.AgentName{types.AgentAuto, "acp:gemini"}}
+
+	err := cfg.ResolveAgent(context.Background(), func(bin string) (string, error) {
+		if bin == "acpx" {
+			return "/usr/bin/acpx", nil
+		}
+		return "", &exec.Error{Name: bin, Err: exec.ErrNotFound}
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Agent != "acp:gemini" {
+		t.Errorf("agent = %q, want acp:gemini", cfg.Agent)
+	}
+	if len(cfg.Agents) != 1 || cfg.Agents[0] != "acp:gemini" {
+		t.Fatalf("agents = %v, want [acp:gemini]", cfg.Agents)
+	}
+}
+
 func TestResolveAgent_AutoPicksClaude(t *testing.T) {
 	cfg := &Config{Agent: types.AgentAuto}
 	err := cfg.ResolveAgent(context.Background(), func(bin string) (string, error) {

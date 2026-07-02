@@ -63,6 +63,18 @@ func NewRunManager(database *db.DB, p *paths.Paths, stepFactory StepFactory) *Ru
 	}
 }
 
+func agentListsEqual(a, b []types.AgentName) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // Subscribe registers a channel to receive events for a run.
 // Returns the channel and an unsubscribe function.
 // If the run has already completed, the returned channel is immediately closed.
@@ -380,7 +392,7 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	effectiveRepoCfg := config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands)
 	if allowRepoCommands {
 		slog.Warn("allow_repo_commands is enabled on the default branch: honoring commands/agent from pushed branch", "run_id", run.ID, "branch", branch)
-	} else if repoCfg.Commands != effectiveRepoCfg.Commands || repoCfg.Agent != effectiveRepoCfg.Agent {
+	} else if repoCfg.Commands != effectiveRepoCfg.Commands || repoCfg.Agent != effectiveRepoCfg.Agent || !agentListsEqual(repoCfg.Agents, effectiveRepoCfg.Agents) {
 		// Surface the silent override so a maintainer who shipped a commands.*
 		// or agent change on a feature branch understands why it did not run.
 		// This is not an error: it is the secure default in action.
@@ -398,19 +410,26 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 			trackStartFailure("resolve_agent")
 			return "", err
 		}
-		var agErr error
-		ag, agErr = agent.NewWithOptions(cfg.Agent, cfg.AgentPath(), cfg.AgentArgs(), agent.Options{
-			ACPRegistryOverrides: cfg.ACPRegistryOverrides,
-		})
-		if agErr != nil {
-			m.db.UpdateRunError(run.ID, fmt.Sprintf("create agent: %s", agErr))
-			trackStartFailure("create_agent")
-			return "", fmt.Errorf("create agent: %w", agErr)
+		agents := cfg.Agents
+		if len(agents) == 0 {
+			agents = []types.AgentName{cfg.Agent}
 		}
-		// Steer every pipeline agent to keep writes inside the worktree and
-		// avoid mutating system state (e.g. brew/Homebrew touching
-		// /Applications), which triggers macOS App Management prompts.
-		ag = agent.WithSteering(ag)
+		created := make([]agent.Agent, 0, len(agents))
+		for _, name := range agents {
+			next, agErr := agent.NewWithOptions(name, cfg.AgentPathFor(name), cfg.AgentArgsFor(name), agent.Options{
+				ACPRegistryOverrides: cfg.ACPRegistryOverrides,
+			})
+			if agErr != nil {
+				m.db.UpdateRunError(run.ID, fmt.Sprintf("create agent %s: %s", name, agErr))
+				trackStartFailure("create_agent")
+				return "", fmt.Errorf("create agent %s: %w", name, agErr)
+			}
+			// Steer every pipeline agent to keep writes inside the worktree and
+			// avoid mutating system state (e.g. brew/Homebrew touching
+			// /Applications), which triggers macOS App Management prompts.
+			created = append(created, agent.WithSteering(next))
+		}
+		ag = agent.NewFallback(created)
 	}
 
 	execSteps := m.steps()
