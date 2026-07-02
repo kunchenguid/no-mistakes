@@ -171,6 +171,21 @@ func (a *opencodeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, err
 		}, nil
 	}
 
+	// Surface opencode's StructuredOutputError directly. When the model
+	// fails to call the StructuredOutput tool after the configured retries,
+	// opencode sets info.error.name = "StructuredOutputError" and the
+	// streamed text is just reasoning prose - feeding it to
+	// finalizeTextResult produces the misleading "invalid character 'N'
+	// looking for beginning of value" error.
+	if mr.resp != nil && mr.resp.Info != nil && mr.resp.Info.Error.IsStructuredOutput() {
+		retries := 0
+		if mr.resp.Info.Error.Retries != nil {
+			retries = *mr.resp.Info.Error.Retries
+		}
+		return nil, fmt.Errorf("opencode structured output failed after %d internal retries: %s",
+			retries, mr.resp.Info.Error.Message)
+	}
+
 	// Fall back to parsing JSON from text
 	outputText := state.lastFinalText
 	if outputText == "" {

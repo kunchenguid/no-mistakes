@@ -90,7 +90,7 @@ func (a *opencodeAgent) sendMessage(ctx context.Context, baseURL, sessionID, pro
 		body["format"] = map[string]any{
 			"type":       "json_schema",
 			"schema":     json.RawMessage(schema),
-			"retryCount": 1,
+			"retryCount": 2,
 		}
 	}
 

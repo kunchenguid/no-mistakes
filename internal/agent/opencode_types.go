@@ -64,10 +64,31 @@ type opencodeMessageResponse struct {
 }
 
 type opencodeMessageInfo struct {
-	ID         string          `json:"id,omitempty"`
-	Role       string          `json:"role,omitempty"`
-	Structured json.RawMessage `json:"structured,omitempty"`
-	Tokens     *opencodeTokens `json:"tokens,omitempty"`
+	ID         string                `json:"id,omitempty"`
+	Role       string                `json:"role,omitempty"`
+	Structured json.RawMessage       `json:"structured,omitempty"`
+	Error      *opencodeMessageError `json:"error,omitempty"`
+	Tokens     *opencodeTokens       `json:"tokens,omitempty"`
+}
+
+// opencodeMessageError mirrors the discriminated AssistantError union in
+// opencode's session-v1 schema. We only need to recognise the
+// StructuredOutputError variant for a clean user-facing message; the raw
+// fields stay on the struct so future logging can use them. Other variants
+// (ProviderAuthError, MessageOutputLengthError, MessageAbortedError,
+// APIError, ContentFilterError, ContextOverflowError, UnknownError) are
+// decoded loosely into Message and any provider-specific extras are dropped.
+type opencodeMessageError struct {
+	Name    string `json:"name"`
+	Message string `json:"message,omitempty"`
+	Retries *int   `json:"retries,omitempty"`
+}
+
+// IsStructuredOutput reports whether the error is opencode's
+// StructuredOutputError, set when a `format: {type: "json_schema"}` prompt
+// fails to elicit a StructuredOutput tool call after the configured retries.
+func (e *opencodeMessageError) IsStructuredOutput() bool {
+	return e != nil && e.Name == "StructuredOutputError"
 }
 
 type opencodeMessagePart struct {
