@@ -452,3 +452,71 @@ func TestOpencodeAgent_FinalAnswerPreferred(t *testing.T) {
 		t.Fatalf("expected nil structured output, got %s", string(result.Output))
 	}
 }
+
+// TestOpencodeAgent_StructuredOutputError asserts that when opencode returns
+// an info.error with name=StructuredOutputError, the agent surfaces a
+// precise error and does NOT fall through to text-parsing the streamed
+// reasoning prose. Regression: run 01KWDTFPNXTC94YEYCN23XFFG1 surfaced
+// "invalid character 'N' looking for beginning of value" instead of the
+// real cause.
+func TestOpencodeAgent_StructuredOutputError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/session" && r.Method == http.MethodPost:
+			fmt.Fprint(w, `{"id":"s1"}`)
+
+		case r.URL.Path == "/global/event" && r.Method == http.MethodGet:
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			// Stream reasoning prose (no JSON) - this is exactly the
+			// shape real opencode emits when the model never calls the
+			// StructuredOutput tool.
+			fmt.Fprint(w, "data: {\"payload\":{\"type\":\"message.part.updated\",\"properties\":{\"sessionID\":\"s1\",\"part\":{\"id\":\"p1\",\"messageID\":\"msg1\",\"type\":\"text\",\"text\":\"Now I need to find the failing test. The only failing test is foo.\"}}}}\n\n")
+			fmt.Fprint(w, "data: {\"payload\":{\"type\":\"message.updated\",\"properties\":{\"sessionID\":\"s1\",\"info\":{\"id\":\"msg1\",\"role\":\"assistant\"}}}}\n\n")
+			fmt.Fprint(w, "data: {\"payload\":{\"type\":\"session.idle\"}}\n\n")
+
+		case r.URL.Path == "/session/s1/message" && r.Method == http.MethodPost:
+			// opencode signals structured-output failure via
+			// info.error.name = "StructuredOutputError". The body
+			// intentionally omits info.structured.
+			fmt.Fprint(w, `{"info":{"id":"msg1","role":"assistant","error":{"name":"StructuredOutputError","message":"Model did not produce structured output","retries":2}},"parts":[{"type":"text","text":"Now I need to find the failing test. The only failing test is foo."}]}`)
+
+		case r.URL.Path == "/session/s1" && r.Method == http.MethodDelete:
+			w.WriteHeader(http.StatusOK)
+
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	a := &opencodeAgent{
+		bin:    "opencode",
+		server: &managedServer{port: mustParsePort(server.URL)},
+	}
+
+	result, err := a.Run(context.Background(), RunOpts{
+		Prompt:     "fix the failing tests",
+		CWD:        t.TempDir(),
+		JSONSchema: json.RawMessage(`{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"]}`),
+	})
+	if err == nil {
+		t.Fatalf("expected error, got result %+v", result)
+	}
+	if result != nil {
+		t.Fatalf("expected nil result on error, got %+v", result)
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "structured output failed") {
+		t.Errorf("expected error to mention structured output failure, got %q", msg)
+	}
+	if !strings.Contains(msg, "2 internal retries") {
+		t.Errorf("expected error to surface retry count, got %q", msg)
+	}
+	if strings.Contains(msg, "invalid character") {
+		t.Errorf("error must not be the JSON-parse-on-prose symptom, got %q", msg)
+	}
+	if strings.Contains(msg, "Now I need to find the failing test") {
+		t.Errorf("error must not embed the reasoning prose snippet, got %q", msg)
+	}
+}
