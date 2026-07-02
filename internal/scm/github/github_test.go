@@ -43,6 +43,47 @@ func TestRepoSlug(t *testing.T) {
 	}
 }
 
+func TestHostPrefixedSlug(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		// github.com inputs keep the plain owner/name format.
+		{"github.com https", "https://github.com/test/repo", "test/repo"},
+		{"github.com https with .git suffix", "https://github.com/test/repo.git", "test/repo"},
+		{"github.com pr url", "https://github.com/test/repo/pull/42", "test/repo"},
+		{"github.com ssh scp form", "git@github.com:test/repo.git", "test/repo"},
+		{"github.com ssh url form", "ssh://git@github.com/test/repo.git", "test/repo"},
+		{"github.com https with port", "https://github.com:8443/test/repo", "test/repo"},
+		{"github.com mixed case host", "https://GitHub.com/test/repo.git", "test/repo"},
+		{"github.com trailing slash", "https://github.com/test/repo/", "test/repo"},
+
+		// GitHub Enterprise Server inputs get the host prefix gh requires.
+		{"ghe https", "https://bbgithub.dev.bloomberg.com/org/repo", "bbgithub.dev.bloomberg.com/org/repo"},
+		{"ghe https with .git suffix", "https://bbgithub.dev.bloomberg.com/org/repo.git", "bbgithub.dev.bloomberg.com/org/repo"},
+		{"ghe ssh scp form", "git@bbgithub.dev.bloomberg.com:org/repo.git", "bbgithub.dev.bloomberg.com/org/repo"},
+		{"ghe ssh url form", "ssh://git@bbgithub.dev.bloomberg.com/org/repo.git", "bbgithub.dev.bloomberg.com/org/repo"},
+		{"ghe pr url", "https://bbgithub.dev.bloomberg.com/org/repo/pull/42", "bbgithub.dev.bloomberg.com/org/repo"},
+		{"ghe https with port", "https://bbgithub.dev.bloomberg.com:8443/org/repo.git", "bbgithub.dev.bloomberg.com/org/repo"},
+		{"ghe trailing slash", "https://bbgithub.dev.bloomberg.com/org/repo/", "bbgithub.dev.bloomberg.com/org/repo"},
+
+		// Empty/malformed inputs return "" so the --repo flag is omitted.
+		{"empty", "", ""},
+		{"host only ghe", "https://bbgithub.dev.bloomberg.com/", ""},
+		{"owner only ghe", "https://bbgithub.dev.bloomberg.com/onlyowner", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := HostPrefixedSlug(tc.in); got != tc.want {
+				t.Fatalf("HostPrefixedSlug(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestGetChecksPassesRepoFlag(t *testing.T) {
 	t.Parallel()
 
