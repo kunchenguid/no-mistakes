@@ -419,6 +419,11 @@ func cleanupOrphanWorktrees(d *db.DB, p *paths.Paths) {
 // run row before creating the worktree directory, so on a single daemon a
 // "no matching run" directory is never one whose insert simply hasn't landed
 // yet - it is safe to remove immediately.
+//
+// A run marked RunCIMonitorInterrupted is also preserved: the daemon
+// restarted while monitoring CI for an already-open PR (issue #361), so its
+// checkout must survive recovery rather than be treated as a terminal-run
+// leftover.
 func skipWorktreeCleanup(d *db.DB, runID string) (bool, string) {
 	run, err := d.GetRun(runID)
 	if err != nil {
@@ -426,6 +431,9 @@ func skipWorktreeCleanup(d *db.DB, runID string) (bool, string) {
 	}
 	if run != nil && (run.Status == types.RunPending || run.Status == types.RunRunning) {
 		return true, fmt.Sprintf("run %s is %s", runID, run.Status)
+	}
+	if run != nil && run.Status == types.RunCIMonitorInterrupted {
+		return true, fmt.Sprintf("run %s ci monitor interrupted; preserving worktree", runID)
 	}
 	return false, ""
 }

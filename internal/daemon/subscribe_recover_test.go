@@ -620,6 +620,93 @@ func TestRecoverCleansUpOrphanedWorktrees(t *testing.T) {
 	}
 }
 
+func TestRecoverPreservesInterruptedCIMonitorWorktree(t *testing.T) {
+	tmpDir := t.TempDir()
+	p := paths.WithRoot(tmpDir)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
+	d, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := d.InsertRepoWithID("ci-repo", "/tmp/ci-repo", "https://github.com/test/ci-repo", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := d.InsertRun(repo.ID, "feature", "abc123", "def456")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunPRURL(run.ID, "https://github.com/test/ci-repo/pull/42"); err != nil {
+		t.Fatal(err)
+	}
+	ciStep, err := d.InsertStepResult(run.ID, types.StepCI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.StartStep(ciStep.ID); err != nil {
+		t.Fatal(err)
+	}
+	wtDir := p.WorktreeDir(repo.ID, run.ID)
+	if err := os.MkdirAll(wtDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wtDir, "test.txt"), []byte("ci monitor"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d.Close()
+
+	d, err = db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { d.Close() })
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- RunWithOptions(p, d, func() []pipeline.Step {
+			return []pipeline.Step{&mockPassStep{name: types.StepReview}}
+		})
+	}()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(p.Socket()); err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	t.Cleanup(func() {
+		client, err := ipc.Dial(p.Socket())
+		if err == nil {
+			client.Call(ipc.MethodShutdown, &ipc.ShutdownParams{}, nil)
+			client.Close()
+		}
+		select {
+		case <-errCh:
+		case <-time.After(3 * time.Second):
+			t.Error("daemon did not stop within 3s")
+		}
+	})
+
+	recovered, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered.Status != types.RunCIMonitorInterrupted {
+		t.Fatalf("run status = %q, want %q", recovered.Status, types.RunCIMonitorInterrupted)
+	}
+	if _, err := os.Stat(wtDir); err != nil {
+		t.Fatalf("ci monitor worktree should be preserved: %v", err)
+	}
+}
+
 // TestRecoverIsolatesGateRepoHooksPath covers issue #122 for existing
 // installs: bare repos created before the fix have no per-worktree
 // core.hookspath, so a husky pollution still disables their hook.
