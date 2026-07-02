@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,8 +24,11 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-// StepFactory creates pipeline steps for a run. Defaults to steps.AllSteps.
-type StepFactory func() []pipeline.Step
+// StepFactory creates pipeline steps for a run from its merged config.
+// Defaults to steps.BuildPipeline over cfg.Steps (the repo's optional
+// `steps:` selection; empty means the full default pipeline). An error fails
+// the run at start — a bad steps config must never silently fall back.
+type StepFactory func(cfg *config.Config) ([]pipeline.Step, error)
 
 // RunManager tracks active pipeline executors and manages run lifecycle.
 type RunManager struct {
@@ -49,7 +53,13 @@ type RunManager struct {
 // NewRunManager creates a RunManager. Pass nil for stepFactory to use default steps.
 func NewRunManager(database *db.DB, p *paths.Paths, stepFactory StepFactory) *RunManager {
 	if stepFactory == nil {
-		stepFactory = func() []pipeline.Step { return steps.AllSteps() }
+		stepFactory = func(cfg *config.Config) ([]pipeline.Step, error) {
+			var stepSpecs []config.StepSpec
+			if cfg != nil {
+				stepSpecs = cfg.Steps
+			}
+			return steps.BuildPipeline(stepSpecs)
+		}
 	}
 	return &RunManager{
 		executors:     make(map[string]*pipeline.Executor),
@@ -361,15 +371,16 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 		trackStartFailure("load_repo_config")
 		return "", fmt.Errorf("load repo config: %w", err)
 	}
-	// SECURITY: load the code-executing selection fields (commands.* and
-	// agent) from the trusted default-branch copy of .no-mistakes.yaml rather
-	// than the pushed SHA. The worktree is checked out at headSHA (the
+	// SECURITY: load the code-executing selection fields (commands.*, agent,
+	// and steps) from the trusted default-branch copy of .no-mistakes.yaml
+	// rather than the pushed SHA. The worktree is checked out at headSHA (the
 	// contributor's branch), so reading repoCfg above would honor a
-	// contributor's commands/agent and let any pushed SHA run arbitrary shell
-	// (sh -c) or pick the launched agent (incl. acp: targets) on the daemon
-	// host with the maintainer's env (GH_TOKEN, SSH agent, ...).
-	// EffectiveRepoConfig replaces commands + agent with the trusted
-	// default-branch values unless the maintainer has explicitly opted in.
+	// contributor's commands/agent/steps and let any pushed SHA run arbitrary
+	// shell (sh -c), pick the launched agent (incl. acp: targets), or drop
+	// validation steps on the daemon host with the maintainer's env
+	// (GH_TOKEN, SSH agent, ...). EffectiveRepoConfig replaces commands +
+	// agent + steps with the trusted default-branch values unless the
+	// maintainer has explicitly opted in.
 	//
 	// allow_repo_commands is itself read ONLY from the trusted copy: a
 	// contributor cannot self-enable it from the pushed branch. With no
@@ -379,12 +390,12 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	allowRepoCommands := trustedRepoCfg != nil && trustedRepoCfg.AllowRepoCommands
 	effectiveRepoCfg := config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands)
 	if allowRepoCommands {
-		slog.Warn("allow_repo_commands is enabled on the default branch: honoring commands/agent from pushed branch", "run_id", run.ID, "branch", branch)
-	} else if repoCfg.Commands != effectiveRepoCfg.Commands || repoCfg.Agent != effectiveRepoCfg.Agent {
-		// Surface the silent override so a maintainer who shipped a commands.*
-		// or agent change on a feature branch understands why it did not run.
-		// This is not an error: it is the secure default in action.
-		slog.Info("repo commands/agent loaded from default branch, not pushed branch", "run_id", run.ID, "branch", branch, "default_branch", repo.DefaultBranch)
+		slog.Warn("allow_repo_commands is enabled on the default branch: honoring commands/agent/steps from pushed branch", "run_id", run.ID, "branch", branch)
+	} else if repoCfg.Commands != effectiveRepoCfg.Commands || repoCfg.Agent != effectiveRepoCfg.Agent || !slices.Equal(repoCfg.Steps, effectiveRepoCfg.Steps) {
+		// Surface the silent override so a maintainer who shipped a commands.*,
+		// agent, or steps change on a feature branch understands why it did not
+		// run. This is not an error: it is the secure default in action.
+		slog.Info("repo commands/agent/steps loaded from default branch, not pushed branch", "run_id", run.ID, "branch", branch, "default_branch", repo.DefaultBranch)
 	}
 	cfg := config.Merge(globalCfg, effectiveRepoCfg)
 
@@ -413,7 +424,12 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 		ag = agent.WithSteering(ag)
 	}
 
-	execSteps := m.steps()
+	execSteps, err := m.steps(cfg)
+	if err != nil {
+		m.db.UpdateRunError(run.ID, fmt.Sprintf("build pipeline steps: %s", err))
+		trackStartFailure("build_steps")
+		return "", fmt.Errorf("build pipeline steps: %w", err)
+	}
 	telemetry.Track("run", telemetry.Fields{
 		"action":      "started",
 		"trigger":     trigger,

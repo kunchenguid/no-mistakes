@@ -125,10 +125,12 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 		return e.failRun(run, repo, fmt.Errorf("create log dir: %w", err))
 	}
 
-	// Create step result records in DB
+	// Create step result records in DB. step_order is the step's position in
+	// this run's pipeline (1-indexed), which for the default pipeline is
+	// identical to the legacy fixed ordinal.
 	stepRecords := make(map[types.StepName]*db.StepResult)
-	for _, step := range e.steps {
-		sr, err := e.db.InsertStepResult(run.ID, step.Name())
+	for i, step := range e.steps {
+		sr, err := e.db.InsertStepResult(run.ID, step.Name(), i+1)
 		if err != nil {
 			return e.failRun(run, repo, fmt.Errorf("insert step result: %w", err))
 		}

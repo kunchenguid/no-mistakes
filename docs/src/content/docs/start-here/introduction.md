@@ -69,7 +69,7 @@ When a branch passes the gate, it means:
 
 ## What you get
 
-- A fixed, opinionated pipeline: `intent → rebase → review → test → document → lint → push → pr → ci`. Order is not configurable; what each step runs is.
+- An opinionated pipeline: `intent → rebase → review → test → document → lint → push → pr → ci`. Every repo gets the full sequence by default; a repo can trim or reorder it with a `steps:` list in `.no-mistakes.yaml`, and what each step runs is configurable too.
 - Choice of agent: `claude`, `codex`, `rovodev`, `opencode`, `pi`, `copilot`, or `acp:<target>` via `acpx`, with per-repo override.
 - A TUI to watch, approve, fix, skip, or abort any step.
 - A `/no-mistakes` agent skill so a coding agent can do a task and gate it, or gate existing committed work, backed by a non-interactive `no-mistakes axi` interface.

@@ -72,8 +72,8 @@ type RepoConfig struct {
 	Commands       Commands        `yaml:"commands"`
 	IgnorePatterns []string        `yaml:"ignore_patterns"`
 	// AllowRepoCommands opts in to honoring the code-executing selection
-	// fields (commands.{test,lint,format} and agent) from a contributor's
-	// pushed branch instead of the trusted default-branch copy. It is read
+	// fields (commands.{test,lint,format}, agent, and steps) from a
+	// contributor's pushed branch instead of the trusted default-branch copy. It is read
 	// ONLY from the trusted default-branch copy of .no-mistakes.yaml (never
 	// the pushed SHA), so a contributor cannot self-enable. Default false:
 	// the pushed branch controls nothing that executes.
@@ -81,6 +81,34 @@ type RepoConfig struct {
 	AutoFix           AutoFixRaw `yaml:"auto_fix"`
 	Intent            IntentRaw  `yaml:"intent"`
 	Test              TestRaw    `yaml:"test"`
+	// Steps optionally enables/disables/reorders the built-in pipeline steps.
+	// Empty means the full default pipeline. Like Commands and Agent, it
+	// selects which code executes, so it is read from the trusted
+	// default-branch copy unless allow_repo_commands is set.
+	Steps []StepSpec `yaml:"steps"`
+}
+
+// StepSpec selects one pipeline step in a repo's `steps:` list. Today only
+// scalar built-in step names are accepted (e.g. `steps: [rebase, test]`);
+// the struct form leaves room to grow per-step options later without
+// changing the config surface.
+type StepSpec struct {
+	Name string
+}
+
+// UnmarshalYAML accepts a plain scalar step name. Mapping-form entries are
+// rejected with a clear error so a future per-step-options syntax is never
+// silently misparsed by an older binary.
+func (s *StepSpec) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind != yaml.ScalarNode {
+		return fmt.Errorf("parse repo config: steps entries must be plain step names (line %d)", value.Line)
+	}
+	var name string
+	if err := value.Decode(&name); err != nil {
+		return fmt.Errorf("parse repo config: steps entry: %w", err)
+	}
+	s.Name = strings.TrimSpace(name)
+	return nil
 }
 
 // Commands holds optional per-repo command overrides.
@@ -127,6 +155,9 @@ type Config struct {
 	AutoFix              AutoFix
 	Intent               Intent
 	Test                 Test
+	// Steps is the repo's pipeline step selection (repo-only, like Commands).
+	// Empty means the full default pipeline.
+	Steps []StepSpec
 }
 
 // TestRaw is the YAML representation of test-step settings.
@@ -588,10 +619,11 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 // given a pushed-branch copy and the trusted default-branch copy.
 //
 // The code-executing selection fields — Commands (run verbatim via sh -c on
-// the daemon host) and Agent (selects which process launches with the
-// maintainer's credentials, including acp: targets) — are taken only from
-// the trusted copy when it is present, so a contributor's pushed branch
-// cannot inject shell or pick an agent. When allowRepoCommands is true the
+// the daemon host), Agent (selects which process launches with the
+// maintainer's credentials, including acp: targets), and Steps (selects
+// which pipeline steps execute) — are taken only from the trusted copy when
+// it is present, so a contributor's pushed branch cannot inject shell, pick
+// an agent, or drop validation steps. When allowRepoCommands is true the
 // maintainer has explicitly opted in (via allow_repo_commands on the
 // TRUSTED default-branch copy) to honoring the pushed-branch copy wholesale.
 // When there is no trusted copy and the maintainer has not opted in, both
@@ -614,9 +646,11 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 	if trusted != nil {
 		effective.Commands = trusted.Commands
 		effective.Agent = trusted.Agent
+		effective.Steps = trusted.Steps
 	} else {
 		effective.Commands = Commands{}
 		effective.Agent = ""
+		effective.Steps = nil
 	}
 	return &effective
 }
@@ -775,6 +809,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		AutoFix:              af,
 		Intent:               intent,
 		Test:                 test,
+		Steps:                repo.Steps,
 	}
 
 	if repo.Agent != "" {

@@ -23,13 +23,19 @@ type StepResult struct {
 	CompletedAt  *int64
 }
 
-// InsertStepResult creates a new step result record.
-func (d *DB) InsertStepResult(runID string, stepName types.StepName) (*StepResult, error) {
+// InsertStepResult creates a new step result record. stepOrder is the step's
+// 1-indexed position in the run's pipeline; a non-positive value falls back
+// to the step's canonical default-pipeline ordinal (types.StepName.Order),
+// which is identical for the default pipeline and keeps legacy callers exact.
+func (d *DB) InsertStepResult(runID string, stepName types.StepName, stepOrder int) (*StepResult, error) {
+	if stepOrder <= 0 {
+		stepOrder = stepName.Order()
+	}
 	s := &StepResult{
 		ID:        newID(),
 		RunID:     runID,
 		StepName:  stepName,
-		StepOrder: stepName.Order(),
+		StepOrder: stepOrder,
 		Status:    types.StepStatusPending,
 	}
 	_, err := d.sql.Exec(

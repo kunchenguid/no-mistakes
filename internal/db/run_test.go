@@ -323,7 +323,7 @@ func TestCascadeDeleteRepo(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
 	run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
-	step, _ := d.InsertStepResult(run.ID, types.StepReview)
+	step, _ := d.InsertStepResult(run.ID, types.StepReview, 0)
 
 	if err := d.DeleteRepo(repo.ID); err != nil {
 		t.Fatalf("delete repo: %v", err)
@@ -384,15 +384,15 @@ func TestRecoverStaleRunsMarksStepsFailed(t *testing.T) {
 	run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
 
 	// Create steps in various statuses.
-	runningStep, _ := d.InsertStepResult(run.ID, types.StepReview)
+	runningStep, _ := d.InsertStepResult(run.ID, types.StepReview, 0)
 	d.StartStep(runningStep.ID)
-	awaitingStep, _ := d.InsertStepResult(run.ID, types.StepTest)
+	awaitingStep, _ := d.InsertStepResult(run.ID, types.StepTest, 0)
 	d.UpdateStepStatus(awaitingStep.ID, types.StepStatusAwaitingApproval)
-	fixingStep, _ := d.InsertStepResult(run.ID, types.StepLint)
+	fixingStep, _ := d.InsertStepResult(run.ID, types.StepLint, 0)
 	d.UpdateStepStatus(fixingStep.ID, types.StepStatusFixing)
-	completedStep, _ := d.InsertStepResult(run.ID, types.StepPush)
+	completedStep, _ := d.InsertStepResult(run.ID, types.StepPush, 0)
 	d.CompleteStep(completedStep.ID, 0, 100, "/tmp/log")
-	pendingStep, _ := d.InsertStepResult(run.ID, types.StepPR)
+	pendingStep, _ := d.InsertStepResult(run.ID, types.StepPR, 0)
 
 	_, err := d.RecoverStaleRuns("daemon crashed")
 	if err != nil {

@@ -3,7 +3,7 @@ title: Pipeline
 description: The nine steps that run on every gated push.
 ---
 
-The pipeline runs a fixed, opinionated sequence of steps. Order is not configurable. What each step runs *is*.
+The pipeline runs an opinionated sequence of steps. By default every repo gets the full nine-step sequence; a repo can opt out of or reorder steps with a [`steps:` list](/no-mistakes/reference/repo-config/#steps) in `.no-mistakes.yaml`. What each step runs is configurable too.
 
 ```
 intent → rebase → review → test → document → lint → push → pr → ci
@@ -73,8 +73,9 @@ See [Auto-Fix Loop](/no-mistakes/concepts/auto-fix/) for how the fix cycle works
 
 ## What you can configure
 
-You can't reorder steps. You *can*:
+You *can*:
 
+- Choose which steps run, and in what order, with a per-repo [`steps:` list](/no-mistakes/reference/repo-config/#steps) (e.g. `steps: [rebase, test, push, pr, ci]`). Omitting it keeps the full default pipeline.
 - Swap the agent (global or per-repo).
 - Set explicit `commands.test`, `commands.lint`, `commands.format`.
 - Store test evidence locally by default or opt into committed in-repo evidence with `test.evidence.store_in_repo`.
@@ -87,8 +88,8 @@ See [Configuration](/no-mistakes/guides/configuration/).
 
 ## What you can't configure
 
-- The step order.
-- Skipping specific steps permanently - per-run skips are allowed, but the pipeline itself always has all nine.
-- Adding new steps.
+- Adding new (custom) steps - the `steps:` list selects among the nine built-ins only.
+- Breaking the push chain's ordering guarantees: `ci` needs `pr` before it, `pr` needs `push`, and `push` needs `rebase`. A `steps:` list that violates these fails the run at start.
+- Honoring `steps:`, `commands`, or `agent` from a pushed branch - they are read from the trusted default-branch copy of `.no-mistakes.yaml` unless the maintainer opts in with `allow_repo_commands`.
 
-This is intentional. The pipeline is opinionated so that "passed the gate" means the same thing across repos.
+The default pipeline is intentionally opinionated so that "passed the gate" means the same thing across repos; a repo that trims it is making that choice visibly, on its default branch.

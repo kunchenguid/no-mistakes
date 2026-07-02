@@ -42,6 +42,7 @@ type Harness struct {
 
 	agentName         string // claude / codex / opencode
 	allowRepoCommands *bool  // mirrors SetupOpts.AllowRepoCommands
+	repoConfigExtra   string // mirrors SetupOpts.RepoConfigExtra
 }
 
 // SetupOpts controls per-test setup.
@@ -65,6 +66,11 @@ type SetupOpts struct {
 	// (commands must come from the trusted default branch) pass a pointer
 	// to false to exercise the secure default.
 	AllowRepoCommands *bool
+
+	// RepoConfigExtra is appended verbatim to the default-branch
+	// .no-mistakes.yaml the harness commits, so tests can exercise trusted
+	// per-repo fields (e.g. a `steps:` selection) beyond the harness default.
+	RepoConfigExtra string
 }
 
 const e2eDaemonStartTimeout = "45s"
@@ -99,6 +105,7 @@ func NewHarness(t *testing.T, opts SetupOpts) *Harness {
 		Scenario:          opts.Scenario,
 		agentName:         opts.Agent,
 		allowRepoCommands: opts.AllowRepoCommands,
+		repoConfigExtra:   opts.RepoConfigExtra,
 	}
 
 	for _, dir := range []string{h.BinDir, h.NMHome, h.HomeDir, h.WorkDir} {
@@ -231,6 +238,9 @@ func (h *Harness) initGitRepos() {
 	}
 	repoConfig := filepath.Join(h.WorkDir, ".no-mistakes.yaml")
 	repoCfg := fmt.Sprintf("ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\nallow_repo_commands: %t\n", allowRepoCommands)
+	if h.repoConfigExtra != "" {
+		repoCfg += strings.TrimRight(h.repoConfigExtra, "\n") + "\n"
+	}
 	if err := os.WriteFile(repoConfig, []byte(repoCfg), 0o644); err != nil {
 		h.t.Fatalf("write repo config: %v", err)
 	}

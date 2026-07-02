@@ -1,12 +1,14 @@
 package daemon
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
@@ -21,8 +23,8 @@ func TestPushReceivedTracksRunTelemetry(t *testing.T) {
 	defer restore()
 
 	step := &mockPassStep{name: types.StepReview}
-	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
-		return []pipeline.Step{step}
+	p, d := startTestDaemonWithSteps(t, func(_ *config.Config) ([]pipeline.Step, error) {
+		return []pipeline.Step{step}, nil
 	})
 
 	_, headSHA := setupTestGitRepo(t, p, d, "telemetry-run-repo")
@@ -75,11 +77,57 @@ func TestPushReceivedTracksRunTelemetry(t *testing.T) {
 	}
 }
 
+// TestPushReceivedStepFactoryErrorFailsRun proves a step-build failure (e.g.
+// an invalid repo `steps:` config) is a clear per-run error at start, never a
+// silent fallback to the default pipeline.
+func TestPushReceivedStepFactoryErrorFailsRun(t *testing.T) {
+	p, d := startTestDaemonWithSteps(t, func(_ *config.Config) ([]pipeline.Step, error) {
+		return nil, fmt.Errorf("invalid steps config: unknown step \"fuzz\"")
+	})
+
+	repo, headSHA := setupTestGitRepo(t, p, d, "bad-steps-repo")
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var result ipc.PushReceivedResult
+	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: p.RepoDir("bad-steps-repo"),
+		Ref:  "refs/heads/main",
+		Old:  "0000000000000000000000000000000000000000",
+		New:  headSHA,
+	}, &result)
+	if err == nil {
+		t.Fatal("expected push to fail when the step factory errors")
+	}
+	if !strings.Contains(err.Error(), "invalid steps config") {
+		t.Fatalf("error = %v, want it to carry the steps config problem", err)
+	}
+
+	runs, err := d.GetRunsByRepo(repo.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) == 0 {
+		t.Fatal("expected a run record for the failed start")
+	}
+	run := runs[0]
+	if run.Status != types.RunFailed {
+		t.Fatalf("run status = %q, want %q", run.Status, types.RunFailed)
+	}
+	if run.Error == nil || !strings.Contains(*run.Error, "invalid steps config") {
+		t.Fatalf("run error = %v, want the steps config problem", run.Error)
+	}
+}
+
 func TestPushReceivedSkipStepsConfiguresExecutor(t *testing.T) {
 	review := &mockPassStep{name: types.StepReview}
 	testStep := &mockPassStep{name: types.StepTest}
-	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
-		return []pipeline.Step{review, testStep}
+	p, d := startTestDaemonWithSteps(t, func(_ *config.Config) ([]pipeline.Step, error) {
+		return []pipeline.Step{review, testStep}, nil
 	})
 
 	_, headSHA := setupTestGitRepo(t, p, d, "skip-run-repo")
@@ -125,8 +173,8 @@ func TestPushReceivedSkipStepsConfiguresExecutor(t *testing.T) {
 
 func TestPushReceivedAllowsDifferentBranchRunsConcurrently(t *testing.T) {
 	started := make(chan string, 2)
-	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
-		return []pipeline.Step{&notifyBlockStep{name: types.StepReview, started: started}}
+	p, d := startTestDaemonWithSteps(t, func(_ *config.Config) ([]pipeline.Step, error) {
+		return []pipeline.Step{&notifyBlockStep{name: types.StepReview, started: started}}, nil
 	})
 
 	_, headSHA := setupTestGitRepo(t, p, d, "concurrent-branch-repo")
@@ -216,8 +264,8 @@ func waitForStartedBranch(t *testing.T, started <-chan string, branch string) {
 func TestRerunSkipStepsConfiguresExecutor(t *testing.T) {
 	review := &mockPassStep{name: types.StepReview}
 	testStep := &mockPassStep{name: types.StepTest}
-	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
-		return []pipeline.Step{review, testStep}
+	p, d := startTestDaemonWithSteps(t, func(_ *config.Config) ([]pipeline.Step, error) {
+		return []pipeline.Step{review, testStep}, nil
 	})
 
 	_, headSHA := setupTestGitRepo(t, p, d, "skip-rerun-repo")
@@ -274,8 +322,8 @@ func TestPushReceivedReturnsBeforeIntentSummarization(t *testing.T) {
 	t.Setenv("USERPROFILE", fakeHome)
 
 	step := &mockPassStep{name: types.StepReview}
-	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
-		return []pipeline.Step{step}
+	p, d := startTestDaemonWithSteps(t, func(_ *config.Config) ([]pipeline.Step, error) {
+		return []pipeline.Step{step}, nil
 	})
 
 	slowClaude := writeSlowMockClaude(t, t.TempDir())
@@ -334,8 +382,8 @@ func TestPushReceivedTracksRunTelemetryAfterPanic(t *testing.T) {
 	defer restore()
 
 	step := &mockPanicStep{name: types.StepReview}
-	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
-		return []pipeline.Step{step}
+	p, d := startTestDaemonWithSteps(t, func(_ *config.Config) ([]pipeline.Step, error) {
+		return []pipeline.Step{step}, nil
 	})
 
 	_, headSHA := setupTestGitRepo(t, p, d, "telemetry-panic-repo")
@@ -385,8 +433,8 @@ func TestPushReceivedDemoModeBypassesAgentResolution(t *testing.T) {
 	t.Setenv("NM_DEMO", "1")
 
 	step := &mockPassStep{name: types.StepReview}
-	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
-		return []pipeline.Step{step}
+	p, d := startTestDaemonWithSteps(t, func(_ *config.Config) ([]pipeline.Step, error) {
+		return []pipeline.Step{step}, nil
 	})
 
 	if err := os.WriteFile(p.ConfigFile(), []byte("agent: claude\nagent_path_override:\n  claude: /path/that/does/not/exist\n"), 0o644); err != nil {

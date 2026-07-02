@@ -27,7 +27,7 @@ func newRoundHistoryContext(t *testing.T) (*pipeline.StepContext, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sr, err := database.InsertStepResult(run.ID, types.StepReview)
+	sr, err := database.InsertStepResult(run.ID, types.StepReview, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

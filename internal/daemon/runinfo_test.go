@@ -23,7 +23,7 @@ func TestStepToInfoIncludesFixSummaries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("insert run: %v", err)
 	}
-	step, err := d.InsertStepResult(run.ID, types.StepReview)
+	step, err := d.InsertStepResult(run.ID, types.StepReview, 0)
 	if err != nil {
 		t.Fatalf("insert step: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestStepToInfoNoFixSummariesWithoutFixRounds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("insert run: %v", err)
 	}
-	step, err := d.InsertStepResult(run.ID, types.StepLint)
+	step, err := d.InsertStepResult(run.ID, types.StepLint, 0)
 	if err != nil {
 		t.Fatalf("insert step: %v", err)
 	}

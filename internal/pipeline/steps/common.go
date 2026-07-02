@@ -2,7 +2,11 @@ package steps
 
 import (
 	"encoding/json"
+	"fmt"
+	"log/slog"
+	"strings"
 
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -121,21 +125,128 @@ var reviewFindingsSchema = json.RawMessage(`{
 	"required": ["findings", "risk_level", "risk_rationale"]
 }`)
 
-// AllSteps returns the fixed pipeline step sequence.
+// builtinStepConstructors maps each built-in step name to its constructor.
+// types.AllSteps() is the canonical default sequence over these names.
+var builtinStepConstructors = map[types.StepName]func() pipeline.Step{
+	types.StepIntent:   func() pipeline.Step { return &IntentStep{} },
+	types.StepRebase:   func() pipeline.Step { return &RebaseStep{} },
+	types.StepReview:   func() pipeline.Step { return &ReviewStep{} },
+	types.StepTest:     func() pipeline.Step { return &TestStep{} },
+	types.StepDocument: func() pipeline.Step { return &DocumentStep{} },
+	types.StepLint:     func() pipeline.Step { return &LintStep{} },
+	types.StepPush:     func() pipeline.Step { return &PushStep{} },
+	types.StepPR:       func() pipeline.Step { return &PRStep{} },
+	types.StepCI:       func() pipeline.Step { return &CIStep{} },
+}
+
+// validStepNames is the user-facing list of accepted `steps:` names, matching
+// the wording of the `axi run --skip` help.
+const validStepNames = "intent, rebase, review, test, document, lint, push, pr, ci"
+
+// AllSteps returns the fixed default pipeline step sequence.
 // When NM_DEMO=1, it returns mock steps for demo recordings.
 func AllSteps() []pipeline.Step {
+	built, err := BuildPipeline(nil)
+	if err != nil {
+		// Unreachable: an empty spec list always builds the default pipeline.
+		panic(fmt.Sprintf("build default pipeline: %v", err))
+	}
+	return built
+}
+
+// BuildPipeline builds the pipeline step slice a run executes, in list order.
+// An empty spec list yields the full default pipeline (identical to AllSteps),
+// which is the backward-compatible path for repos with no `steps:` config.
+// Invalid specs return an error listing every problem; ordering hazards that
+// are legal but probably unintended are logged as warnings.
+// When NM_DEMO=1, mock demo steps are returned regardless of specs.
+func BuildPipeline(stepSpecs []config.StepSpec) ([]pipeline.Step, error) {
 	if IsDemoMode() {
-		return DemoSteps()
+		return DemoSteps(), nil
 	}
-	return []pipeline.Step{
-		&IntentStep{},
-		&RebaseStep{},
-		&ReviewStep{},
-		&TestStep{},
-		&DocumentStep{},
-		&LintStep{},
-		&PushStep{},
-		&PRStep{},
-		&CIStep{},
+	names := make([]types.StepName, 0, len(stepSpecs))
+	for _, spec := range stepSpecs {
+		names = append(names, types.StepName(spec.Name))
 	}
+	if len(names) == 0 {
+		names = types.AllSteps()
+	}
+
+	errs, warns := validateStepNames(names)
+	for _, warn := range warns {
+		slog.Warn("steps config: " + warn)
+	}
+	if len(errs) > 0 {
+		return nil, fmt.Errorf("invalid steps config: %s", strings.Join(errs, "; "))
+	}
+
+	built := make([]pipeline.Step, 0, len(names))
+	for _, name := range names {
+		built = append(built, builtinStepConstructors[name]())
+	}
+	return built, nil
+}
+
+// validateStepNames checks a `steps:` selection. Errors block the run: names
+// must be known built-ins, non-empty, and unique, and the push chain must
+// keep its documented data-loss invariants — the CI monitor needs the PR that
+// the pr step opened, pr needs the branch push published, and push's
+// force-push lease is anchored by rebase's fetch of the remote tips.
+// Warnings flag legal-but-suspicious orderings: intent placed after the steps
+// that consume it, or a worktree-mutating step after push (its changes would
+// never reach the remote).
+func validateStepNames(names []types.StepName) (errs, warns []string) {
+	pos := make(map[types.StepName]int, len(names))
+	for i, name := range names {
+		if name == "" {
+			errs = append(errs, fmt.Sprintf("steps[%d]: empty step name (valid steps: %s)", i, validStepNames))
+			continue
+		}
+		if _, ok := builtinStepConstructors[name]; !ok {
+			errs = append(errs, fmt.Sprintf("steps[%d]: unknown step %q (valid steps: %s)", i, name, validStepNames))
+			continue
+		}
+		if first, dup := pos[name]; dup {
+			errs = append(errs, fmt.Sprintf("steps[%d]: duplicate step %q (first at steps[%d])", i, name, first))
+			continue
+		}
+		pos[name] = i
+	}
+
+	requiredBefore := []struct {
+		step, dep types.StepName
+		why       string
+	}{
+		{types.StepCI, types.StepPR, "the CI monitor babysits the PR the pr step opened"},
+		{types.StepPR, types.StepPush, "the pr step needs the branch the push step published"},
+		{types.StepPush, types.StepRebase, "the push step's force-push lease is anchored by the rebase step's fetch of the remote tips"},
+	}
+	for _, r := range requiredBefore {
+		i, ok := pos[r.step]
+		if !ok {
+			continue
+		}
+		if j, ok := pos[r.dep]; !ok {
+			errs = append(errs, fmt.Sprintf("step %q requires %q earlier in the list: %s", r.step, r.dep, r.why))
+		} else if j > i {
+			errs = append(errs, fmt.Sprintf("step %q must come after %q: %s", r.step, r.dep, r.why))
+		}
+	}
+
+	if intentPos, ok := pos[types.StepIntent]; ok {
+		for _, consumer := range []types.StepName{types.StepReview, types.StepTest, types.StepDocument, types.StepPR} {
+			if i, ok := pos[consumer]; ok && i < intentPos {
+				warns = append(warns, fmt.Sprintf("step %q runs after %q, so earlier steps see no user intent", types.StepIntent, consumer))
+				break
+			}
+		}
+	}
+	if pushPos, ok := pos[types.StepPush]; ok {
+		for _, mutating := range []types.StepName{types.StepReview, types.StepTest, types.StepDocument, types.StepLint} {
+			if i, ok := pos[mutating]; ok && i > pushPos {
+				warns = append(warns, fmt.Sprintf("step %q runs after %q, so changes it makes are never pushed", mutating, types.StepPush))
+			}
+		}
+	}
+	return errs, warns
 }

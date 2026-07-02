@@ -407,7 +407,7 @@ func TestAxiHomeStartsCurrentBranchWhenOtherBranchIsActive(t *testing.T) {
 	if err := database.UpdateRunStatus(other.ID, types.RunRunning); err != nil {
 		t.Fatalf("mark other run running: %v", err)
 	}
-	step, err := database.InsertStepResult(other.ID, types.StepReview)
+	step, err := database.InsertStepResult(other.ID, types.StepReview, 0)
 	if err != nil {
 		t.Fatalf("insert other step: %v", err)
 	}

@@ -36,12 +36,44 @@ func TestGetStepResult_LegacyBabysitStepName(t *testing.T) {
 	}
 }
 
+// TestInsertStepResult_ExplicitOrder verifies a positive stepOrder is stored
+// as-is (positional pipeline order), while a non-positive value falls back to
+// the step's legacy default-pipeline ordinal.
+func TestInsertStepResult_ExplicitOrder(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
+
+	step, err := d.InsertStepResult(run.ID, types.StepPush, 2)
+	if err != nil {
+		t.Fatalf("insert step: %v", err)
+	}
+	if step.StepOrder != 2 {
+		t.Errorf("step order = %d, want explicit 2", step.StepOrder)
+	}
+	got, err := d.GetStepResult(step.ID)
+	if err != nil {
+		t.Fatalf("get step: %v", err)
+	}
+	if got.StepOrder != 2 {
+		t.Errorf("stored step order = %d, want 2", got.StepOrder)
+	}
+
+	fallback, err := d.InsertStepResult(run.ID, types.StepReview, 0)
+	if err != nil {
+		t.Fatalf("insert fallback step: %v", err)
+	}
+	if fallback.StepOrder != types.StepReview.Order() {
+		t.Errorf("fallback step order = %d, want legacy ordinal %d", fallback.StepOrder, types.StepReview.Order())
+	}
+}
+
 func TestStepInsertAndGet(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
 	run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
 
-	step, err := d.InsertStepResult(run.ID, types.StepReview)
+	step, err := d.InsertStepResult(run.ID, types.StepReview, 0)
 	if err != nil {
 		t.Fatalf("insert step: %v", err)
 	}
@@ -73,9 +105,9 @@ func TestStepsByRun(t *testing.T) {
 	run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
 
 	// insert in reverse order to verify ordering
-	d.InsertStepResult(run.ID, types.StepLint)
-	d.InsertStepResult(run.ID, types.StepReview)
-	d.InsertStepResult(run.ID, types.StepTest)
+	d.InsertStepResult(run.ID, types.StepLint, 0)
+	d.InsertStepResult(run.ID, types.StepReview, 0)
+	d.InsertStepResult(run.ID, types.StepTest, 0)
 
 	steps, err := d.GetStepsByRun(run.ID)
 	if err != nil {
@@ -100,7 +132,7 @@ func TestStartStep(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
 	run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
-	step, _ := d.InsertStepResult(run.ID, types.StepReview)
+	step, _ := d.InsertStepResult(run.ID, types.StepReview, 0)
 
 	if err := d.StartStep(step.ID); err != nil {
 		t.Fatalf("start step: %v", err)
@@ -118,7 +150,7 @@ func TestCompleteStep(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
 	run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
-	step, _ := d.InsertStepResult(run.ID, types.StepReview)
+	step, _ := d.InsertStepResult(run.ID, types.StepReview, 0)
 
 	if err := d.CompleteStep(step.ID, 0, 1500, "/logs/run-1/review.log"); err != nil {
 		t.Fatalf("complete step: %v", err)
@@ -145,7 +177,7 @@ func TestCompleteStepWithStatus(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
 	run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
-	step, _ := d.InsertStepResult(run.ID, types.StepReview)
+	step, _ := d.InsertStepResult(run.ID, types.StepReview, 0)
 
 	if err := d.CompleteStepWithStatus(step.ID, types.StepStatusSkipped, 0, 1500, "/logs/run-1/review.log"); err != nil {
 		t.Fatalf("complete step with status: %v", err)
@@ -172,7 +204,7 @@ func TestUpdateStepStatusWithDuration(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
 	run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
-	step, _ := d.InsertStepResult(run.ID, types.StepTest)
+	step, _ := d.InsertStepResult(run.ID, types.StepTest, 0)
 
 	if err := d.UpdateStepStatusWithDuration(step.ID, types.StepStatusAwaitingApproval, 1200); err != nil {
 		t.Fatalf("update step status with duration: %v", err)
@@ -191,7 +223,7 @@ func TestFailStep(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
 	run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
-	step, _ := d.InsertStepResult(run.ID, types.StepReview)
+	step, _ := d.InsertStepResult(run.ID, types.StepReview, 0)
 
 	if err := d.FailStep(step.ID, "agent crashed", 1500); err != nil {
 		t.Fatalf("fail step: %v", err)
@@ -212,7 +244,7 @@ func TestSetStepFindings(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
 	run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
-	step, _ := d.InsertStepResult(run.ID, types.StepReview)
+	step, _ := d.InsertStepResult(run.ID, types.StepReview, 0)
 
 	findings := `[{"severity":"warning","message":"unused variable"}]`
 	if err := d.SetStepFindings(step.ID, findings); err != nil {
@@ -228,7 +260,7 @@ func TestClearStepFindings(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
 	run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
-	step, _ := d.InsertStepResult(run.ID, types.StepReview)
+	step, _ := d.InsertStepResult(run.ID, types.StepReview, 0)
 
 	findings := `[{"severity":"warning","message":"unused variable"}]`
 	if err := d.SetStepFindings(step.ID, findings); err != nil {
@@ -248,7 +280,7 @@ func TestUpdateStepStatus(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
 	run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
-	step, _ := d.InsertStepResult(run.ID, types.StepReview)
+	step, _ := d.InsertStepResult(run.ID, types.StepReview, 0)
 
 	if err := d.UpdateStepStatus(step.ID, types.StepStatusAwaitingApproval); err != nil {
 		t.Fatalf("update status: %v", err)

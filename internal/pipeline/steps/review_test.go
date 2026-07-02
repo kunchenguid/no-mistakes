@@ -169,7 +169,7 @@ func TestReviewStep_RoundHistorySanitizesAgentInput(t *testing.T) {
 	}
 
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sr, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
+	sr, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

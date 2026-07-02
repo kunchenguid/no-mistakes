@@ -28,19 +28,19 @@ func TestStatsCommandRendersAllRepoDashboard(t *testing.T) {
 	repoB, _ := database.InsertRepo("/work/beta", "git@example.com:beta.git", "main")
 
 	runA, _ := database.InsertRun(repoA.ID, "feature-a", "head-a", "base-a")
-	reviewA, _ := database.InsertStepResult(runA.ID, types.StepReview)
+	reviewA, _ := database.InsertStepResult(runA.ID, types.StepReview, 0)
 	reviewAInitial := `{"findings":[{"id":"r1","severity":"warning","description":"one","action":"auto-fix"},{"id":"r2","severity":"warning","description":"two","action":"auto-fix"},{"id":"r3","severity":"warning","description":"three","action":"auto-fix"}],"summary":"three","risk_level":"medium","risk_rationale":"test"}`
 	reviewAFinal := `{"findings":[{"id":"r3","severity":"warning","description":"three","action":"ask-user"}],"summary":"one left","risk_level":"medium","risk_rationale":"test"}`
 	insertRound(t, database, reviewA.ID, 1, "initial", &reviewAInitial)
 	insertRound(t, database, reviewA.ID, 2, "auto_fix", &reviewAFinal)
 
-	lintA, _ := database.InsertStepResult(runA.ID, types.StepLint)
+	lintA, _ := database.InsertStepResult(runA.ID, types.StepLint, 0)
 	lintAInitial := `{"findings":[{"id":"l1","severity":"error","description":"lint","action":"auto-fix"}],"summary":"one","risk_level":"low","risk_rationale":"test"}`
 	insertRound(t, database, lintA.ID, 1, "initial", &lintAInitial)
 	insertRound(t, database, lintA.ID, 2, "auto_fix", nil)
 
 	runB, _ := database.InsertRun(repoB.ID, "feature-b", "head-b", "base-b")
-	testB, _ := database.InsertStepResult(runB.ID, types.StepTest)
+	testB, _ := database.InsertStepResult(runB.ID, types.StepTest, 0)
 	testBInitial := `{"findings":[{"id":"t1","severity":"error","description":"test","action":"ask-user"}],"summary":"one","risk_level":"low","risk_rationale":"test"}`
 	insertRound(t, database, testB.ID, 1, "initial", &testBInitial)
 
