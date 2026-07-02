@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.33.0](https://github.com/kunchenguid/no-mistakes/compare/v1.32.2...v1.33.0) (2026-07-02)
+
+
+### Features
+
+* **scm:** add Azure DevOps provider ([#369](https://github.com/kunchenguid/no-mistakes/issues/369)) ([78c7e60](https://github.com/kunchenguid/no-mistakes/commit/78c7e606ce598491d50e72bf532045f4684ca8b7))
+
+
+### Bug Fixes
+
+* **daemon:** detect stray daemons by resolved root before start ([#360](https://github.com/kunchenguid/no-mistakes/issues/360)) ([6c59484](https://github.com/kunchenguid/no-mistakes/commit/6c594845054c896a316bfc124489725624323d8b))
+* **daemon:** forward proxy env vars into managed daemon service definitions ([#322](https://github.com/kunchenguid/no-mistakes/issues/322)) ([03f5157](https://github.com/kunchenguid/no-mistakes/commit/03f515777c16db8fab0a58ee9000da86d409e6f4))
+* **gate:** resolve absolute bare repo dir in post-receive hook ([#269](https://github.com/kunchenguid/no-mistakes/issues/269)) ([#358](https://github.com/kunchenguid/no-mistakes/issues/358)) ([087fd27](https://github.com/kunchenguid/no-mistakes/commit/087fd279bb227e2d9f6112afb4c2d2a100f4fa8a))
+* **pipeline:** cap generated PR bodies safely ([#370](https://github.com/kunchenguid/no-mistakes/issues/370)) ([9059685](https://github.com/kunchenguid/no-mistakes/commit/9059685ad88e30554e5228fbb45ffd70f61caf00))
+
 ## [1.32.2](https://github.com/kunchenguid/no-mistakes/compare/v1.32.1...v1.32.2) (2026-06-28)
 
 
