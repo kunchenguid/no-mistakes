@@ -240,13 +240,28 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch string, ski
 			break
 		}
 	}
+	var baseSHA string
 	if latestForBranch == nil {
-		return "", fmt.Errorf("no previous run for branch %s", branch)
-	}
-
-	baseSHA := latestForBranch.BaseSHA
-	if matchingHead != nil {
-		baseSHA = matchingHead.BaseSHA
+		// Gate has a ref for this branch but no recorded pipeline run. This
+		// happens when the user's earlier push was a no-op (same SHA) so the
+		// post-receive hook never fired. Recover by computing the base from the
+		// gate's default branch instead of refusing outright.
+		defaultRef := "refs/heads/" + repo.DefaultBranch
+		baseSHA, err = git.Run(ctx, gateDir, "merge-base", headSHA, defaultRef)
+		if err != nil {
+			// Default branch ref may not exist in the gate yet; fall back to its head.
+			baseSHA, err = git.Run(ctx, gateDir, "rev-parse", defaultRef+"^{commit}")
+		}
+		if err != nil {
+			return "", fmt.Errorf("no previous run for branch %s: gate ref exists but no pipeline was ever triggered"+
+				" and base branch %q is also missing; repair with: git push no-mistakes :%s && git push no-mistakes HEAD:%s",
+				branch, repo.DefaultBranch, branch, branch)
+		}
+	} else {
+		baseSHA = latestForBranch.BaseSHA
+		if matchingHead != nil {
+			baseSHA = matchingHead.BaseSHA
+		}
 	}
 
 	return m.startRun(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent)
