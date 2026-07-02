@@ -112,9 +112,11 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 // If the context is cancelled with a cause (via context.WithCancelCause),
 // the cause message is preserved as the run's error in the DB.
 func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, workDir string) error {
-	// Mark run as running
+	// Mark run as running. A failure here must route through failRun so the run
+	// never lingers in RunPending (a zombie that only RecoverStaleRuns would
+	// relabel later as "daemon crashed during execution").
 	if err := e.db.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
-		return fmt.Errorf("update run status: %w", err)
+		return e.failRun(run, repo, fmt.Errorf("update run status: %w", err))
 	}
 	run.Status = types.RunRunning
 	e.emitRunEvent(ipc.EventRunUpdated, run, repo)
@@ -151,24 +153,34 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 		}
 		skipRemaining, err := e.executeStep(ctx, step, sr, run, repo, workDir, logDir)
 		if err != nil {
+			// Mark unstarted subsequent steps as skipped so they are not left
+			// pending in the DB (pending rows render as "pending" in the PR
+			// body). Best-effort: the run is already failing.
+			if skipErr := e.markRemainingSkipped(run, repo, stepRecords, i+1); skipErr != nil {
+				slog.Warn("failed to mark subsequent steps skipped after failure", "error", skipErr)
+			}
 			return e.failRun(run, repo, err, ctx)
 		}
 		if skipRemaining {
-			// Mark all subsequent steps as skipped
-			for _, remaining := range e.steps[i+1:] {
-				rsr := stepRecords[remaining.Name()]
-				if dbErr := e.db.CompleteStepWithStatus(rsr.ID, types.StepStatusSkipped, 0, 0, ""); dbErr != nil {
-					slog.Warn("failed to finalize skipped step", "step", remaining.Name(), "error", dbErr)
-				}
-				e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, remaining.Name(), string(types.StepStatusSkipped), "", "", "", nil)
+			// Mark all subsequent steps as skipped. A DB write failure here is
+			// fatal (mirrors the configured-skip write above): otherwise the
+			// remaining step rows stay pending and surface as "pending" in the
+			// PR body.
+			if skipErr := e.markRemainingSkipped(run, repo, stepRecords, i+1); skipErr != nil {
+				return e.failRun(run, repo, skipErr, ctx)
 			}
 			break
 		}
 	}
 
-	// Mark run as completed
+	// Mark run as completed. This is the only terminal-state write that used to
+	// return a raw error: every step already completed, but if this single
+	// SQLite write failed the run stayed RunRunning forever and
+	// EventRunCompleted never fired. Route through failRun so a transient DB
+	// error marks the run terminal and emits the completion event instead of
+	// leaving a zombie.
 	if err := e.db.UpdateRunStatus(run.ID, types.RunCompleted); err != nil {
-		return fmt.Errorf("update run status: %w", err)
+		return e.failRun(run, repo, fmt.Errorf("update run status: %w", err))
 	}
 	run.Status = types.RunCompleted
 	e.emitRunEvent(ipc.EventRunCompleted, run, repo)
@@ -382,8 +394,18 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		}
 
 		// Step needs approval - store execution-only duration and wait for user action.
+		// This status write is load-bearing: DB-polling clients (status cmd,
+		// gh-axi, integrations) rely on it to know approval is being waited on.
+		// If it fails, do NOT emit the event or block on waitForApproval — that
+		// would desync the DB (prior status) from the event stream (awaiting).
+		// Fail the step instead so the divergence never opens.
 		if dbErr := e.db.UpdateStepStatusWithDuration(sr.ID, approvalStatus, executionMS); dbErr != nil {
-			slog.Warn("failed to update step status and duration in db", "step", stepName, "status", approvalStatus, "error", dbErr)
+			failMsg := fmt.Sprintf("persist %s status: %s", approvalStatus, dbErr)
+			if failErr := e.db.FailStep(sr.ID, failMsg, executionMS); failErr != nil {
+				slog.Warn("failed to mark step as failed in db", "step", stepName, "error", failErr)
+			}
+			e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFailed), "", "", failMsg, &executionMS)
+			return false, fmt.Errorf("step %s: %s", stepName, failMsg)
 		}
 		e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(approvalStatus), outcome.Findings, diffText, "", &executionMS)
 
@@ -538,6 +560,26 @@ func (e *Executor) failRun(run *db.Run, repo *db.Repo, err error, ctxs ...contex
 	run.Error = &errMsg
 	e.emitRunEvent(ipc.EventRunCompleted, run, repo)
 	return err
+}
+
+// markRemainingSkipped marks every step from e.steps[startIndex] onward as
+// skipped in the DB and emits a skipped event for each. It is used on the
+// step-failure and skip-remaining paths so unstarted steps are never left
+// pending — pending rows render as "⏳ pending" in the PR body. Returns an
+// error if any status write fails (caller decides whether that is fatal).
+func (e *Executor) markRemainingSkipped(run *db.Run, repo *db.Repo, stepRecords map[types.StepName]*db.StepResult, startIndex int) error {
+	for j := startIndex; j < len(e.steps); j++ {
+		remaining := e.steps[j]
+		rsr := stepRecords[remaining.Name()]
+		if rsr == nil {
+			continue
+		}
+		if dbErr := e.db.CompleteStepWithStatus(rsr.ID, types.StepStatusSkipped, 0, 0, ""); dbErr != nil {
+			return fmt.Errorf("skip step %s: %w", remaining.Name(), dbErr)
+		}
+		e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, remaining.Name(), string(types.StepStatusSkipped), "", "", "", nil)
+	}
+	return nil
 }
 
 // --- event helpers ---

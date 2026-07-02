@@ -36,7 +36,15 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	if err := s.stageInRepoEvidence(sctx); err != nil {
 		return nil, err
 	}
-	status, _ := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
+	status, err := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
+	if err != nil {
+		// Propagate instead of discarding: on error status is "", the
+		// "commit agent changes" block is skipped, and uncommitted agent
+		// edits are never committed/pushed — then destroyed when the
+		// worktree is removed. The PR would ship from stale state while the
+		// user believes the agent's fixes landed.
+		return nil, fmt.Errorf("check worktree status: %w", err)
+	}
 	if strings.TrimSpace(status) != "" {
 		sctx.Log("committing agent changes...")
 		if _, err := git.Run(ctx, sctx.WorkDir, "add", "-A"); err != nil {
