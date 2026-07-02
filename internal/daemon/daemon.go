@@ -19,6 +19,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 var applyShellEnvToProcess = shellenv.ApplyToProcess
@@ -283,6 +284,14 @@ func recoverOnStartup(d *db.DB, p *paths.Paths) {
 				continue
 			}
 			wtPath := filepath.Join(repoPath, runEntry.Name())
+			run, err := d.GetRun(runEntry.Name())
+			if err != nil {
+				slog.Warn("lookup worktree run during recovery failed", "run", runEntry.Name(), "error", err)
+			}
+			if run != nil && run.Status == types.RunCIMonitorInterrupted {
+				slog.Info("preserved interrupted ci monitor worktree", "path", wtPath, "run", run.ID)
+				continue
+			}
 			if err := git.WorktreeRemove(ctx, gateDir, wtPath); err != nil {
 				slog.Warn("git worktree remove failed, falling back to os.RemoveAll", "path", wtPath, "error", err)
 				if err := os.RemoveAll(wtPath); err != nil {

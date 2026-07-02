@@ -233,9 +233,10 @@ func (d *DB) ClearRunAwaitingAgent(id string) error {
 	return nil
 }
 
-// RecoverStaleRuns marks any runs stuck in pending/running status as failed
-// and fails any in-progress steps. This is called at daemon startup to clean
-// up after a previous crash. Returns the number of recovered runs.
+// RecoverStaleRuns recovers any runs stuck in pending/running status after a
+// previous daemon crash. Runs interrupted while monitoring CI for an already
+// created PR are preserved as a non-failure outcome; all other stale runs are
+// failed. Returns the number of recovered runs.
 func (d *DB) RecoverStaleRuns(errMsg string) (int, error) {
 	ts := now()
 
@@ -245,11 +246,78 @@ func (d *DB) RecoverStaleRuns(errMsg string) (int, error) {
 	}
 	defer tx.Rollback()
 
-	// Fail stale steps first (running, awaiting_approval, fixing, fix_review).
+	// A daemon restart during the long-lived CI monitor should not turn an
+	// already-pushed PR into a failed run. Recover those runs before the broad
+	// failure update below so the hard-fail path keeps handling mid-pipeline
+	// crashes unchanged.
+	ciResult, err := tx.Exec(
+		`UPDATE runs
+		 SET status = ?, error = ?, awaiting_agent_since = NULL, updated_at = ?
+		 WHERE status IN (?, ?)
+		   AND pr_url IS NOT NULL
+		   AND pr_url <> ''
+		   AND EXISTS (
+		       SELECT 1 FROM step_results ci
+		       WHERE ci.run_id = runs.id
+		         AND ci.step_name = ?
+		         AND ci.status IN (?, ?, ?, ?)
+		   )
+		   AND NOT EXISTS (
+		       SELECT 1 FROM step_results active
+		       WHERE active.run_id = runs.id
+		         AND active.step_name <> ?
+		         AND active.status IN (?, ?, ?, ?)
+		   )`,
+		types.RunCIMonitorInterrupted, types.RunCIMonitorInterruptedReason, ts,
+		types.RunPending, types.RunRunning,
+		types.StepCI,
+		types.StepStatusRunning, types.StepStatusAwaitingApproval, types.StepStatusFixing, types.StepStatusFixReview,
+		types.StepCI,
+		types.StepStatusRunning, types.StepStatusAwaitingApproval, types.StepStatusFixing, types.StepStatusFixReview,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("recover interrupted ci monitor runs: %w", err)
+	}
+	ciCount, err := ciResult.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("ci rows affected: %w", err)
+	}
+
 	_, err = tx.Exec(
-		`UPDATE step_results SET status = ?, error = ?, completed_at = ? WHERE status IN (?, ?, ?, ?)`,
+		`UPDATE step_results
+		 SET status = ?, error = ?, completed_at = ?
+		 WHERE step_name = ?
+		   AND status IN (?, ?, ?, ?)
+		   AND run_id IN (
+		       SELECT id FROM runs
+		       WHERE status = ?
+		         AND error = ?
+		         AND updated_at = ?
+		   )`,
+		types.StepStatusSkipped, types.RunCIMonitorInterruptedReason, ts,
+		types.StepCI,
+		types.StepStatusRunning, types.StepStatusAwaitingApproval, types.StepStatusFixing, types.StepStatusFixReview,
+		types.RunCIMonitorInterrupted, types.RunCIMonitorInterruptedReason, ts,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("recover interrupted ci monitor steps: %w", err)
+	}
+
+	// Fail stale steps (running, awaiting_approval, fixing, fix_review) except
+	// the CI monitor steps just recovered above.
+	_, err = tx.Exec(
+		`UPDATE step_results
+		 SET status = ?, error = ?, completed_at = ?
+		 WHERE status IN (?, ?, ?, ?)
+		   AND run_id NOT IN (
+		       SELECT id FROM runs
+		       WHERE status = ?
+		         AND error = ?
+		         AND updated_at = ?
+		   )`,
 		types.StepStatusFailed, errMsg, ts,
 		types.StepStatusRunning, types.StepStatusAwaitingApproval, types.StepStatusFixing, types.StepStatusFixReview,
+		types.RunCIMonitorInterrupted, types.RunCIMonitorInterruptedReason, ts,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("recover stale steps: %w", err)
@@ -274,5 +342,5 @@ func (d *DB) RecoverStaleRuns(errMsg string) (int, error) {
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("commit transaction: %w", err)
 	}
-	return int(count), nil
+	return int(ciCount + count), nil
 }

@@ -103,6 +103,140 @@ func TestRecoverStaleRunsClearsAwaitingAgent(t *testing.T) {
 	}
 }
 
+func TestRecoverStaleRunsMarksCIMonitorInterrupted(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
+	if err := d.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatalf("mark running: %v", err)
+	}
+	prURL := "https://github.com/user/project/pull/42"
+	if err := d.UpdateRunPRURL(run.ID, prURL); err != nil {
+		t.Fatalf("set pr url: %v", err)
+	}
+	ciStep, _ := d.InsertStepResult(run.ID, types.StepCI)
+	if err := d.StartStep(ciStep.ID); err != nil {
+		t.Fatalf("start ci step: %v", err)
+	}
+
+	count, err := d.RecoverStaleRuns("daemon crashed")
+	if err != nil {
+		t.Fatalf("recover stale runs: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("recovered count = %d, want 1", count)
+	}
+
+	got, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if got.Status != types.RunCIMonitorInterrupted {
+		t.Fatalf("run status = %q, want %q", got.Status, types.RunCIMonitorInterrupted)
+	}
+	if got.Error == nil || *got.Error != types.RunCIMonitorInterruptedReason {
+		t.Fatalf("run error = %v, want ci monitor interrupted message", got.Error)
+	}
+	if got.PRURL == nil || *got.PRURL != prURL {
+		t.Fatalf("PR URL = %v, want %q", got.PRURL, prURL)
+	}
+
+	step, err := d.GetStepResult(ciStep.ID)
+	if err != nil {
+		t.Fatalf("get ci step: %v", err)
+	}
+	if step.Status != types.StepStatusSkipped {
+		t.Fatalf("ci step status = %q, want %q", step.Status, types.StepStatusSkipped)
+	}
+}
+
+func TestRecoverStaleRunsCIWithoutPRURLFallsBackToFailed(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
+	if err := d.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatalf("mark running: %v", err)
+	}
+	ciStep, _ := d.InsertStepResult(run.ID, types.StepCI)
+	if err := d.StartStep(ciStep.ID); err != nil {
+		t.Fatalf("start ci step: %v", err)
+	}
+
+	count, err := d.RecoverStaleRuns("daemon crashed")
+	if err != nil {
+		t.Fatalf("recover stale runs: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("recovered count = %d, want 1", count)
+	}
+
+	got, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if got.Status != types.RunFailed {
+		t.Fatalf("run status = %q, want %q", got.Status, types.RunFailed)
+	}
+	if got.Error == nil || *got.Error != "daemon crashed" {
+		t.Fatalf("run error = %v, want daemon crashed", got.Error)
+	}
+
+	step, err := d.GetStepResult(ciStep.ID)
+	if err != nil {
+		t.Fatalf("get ci step: %v", err)
+	}
+	if step.Status != types.StepStatusFailed {
+		t.Fatalf("ci step status = %q, want %q", step.Status, types.StepStatusFailed)
+	}
+}
+
+func TestRecoverStaleRunsMixedCIAndNonCI(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+
+	ciRun, _ := d.InsertRun(repo.ID, "ci-feature", "abc", "def")
+	if err := d.UpdateRunStatus(ciRun.ID, types.RunRunning); err != nil {
+		t.Fatalf("mark ci run running: %v", err)
+	}
+	if err := d.UpdateRunPRURL(ciRun.ID, "https://github.com/user/project/pull/42"); err != nil {
+		t.Fatalf("set pr url: %v", err)
+	}
+	ciStep, _ := d.InsertStepResult(ciRun.ID, types.StepCI)
+	if err := d.StartStep(ciStep.ID); err != nil {
+		t.Fatalf("start ci step: %v", err)
+	}
+
+	testRun, _ := d.InsertRun(repo.ID, "test-feature", "123", "456")
+	if err := d.UpdateRunStatus(testRun.ID, types.RunRunning); err != nil {
+		t.Fatalf("mark test run running: %v", err)
+	}
+	testStep, _ := d.InsertStepResult(testRun.ID, types.StepTest)
+	if err := d.StartStep(testStep.ID); err != nil {
+		t.Fatalf("start test step: %v", err)
+	}
+
+	count, err := d.RecoverStaleRuns("daemon crashed")
+	if err != nil {
+		t.Fatalf("recover stale runs: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("recovered count = %d, want 2", count)
+	}
+
+	gotCI, _ := d.GetRun(ciRun.ID)
+	if gotCI.Status != types.RunCIMonitorInterrupted {
+		t.Fatalf("ci run status = %q, want %q", gotCI.Status, types.RunCIMonitorInterrupted)
+	}
+	gotTest, _ := d.GetRun(testRun.ID)
+	if gotTest.Status != types.RunFailed {
+		t.Fatalf("test run status = %q, want %q", gotTest.Status, types.RunFailed)
+	}
+	gotStep, _ := d.GetStepResult(testStep.ID)
+	if gotStep.Status != types.StepStatusFailed {
+		t.Fatalf("test step status = %q, want %q", gotStep.Status, types.StepStatusFailed)
+	}
+}
+
 func TestRunGetNotFound(t *testing.T) {
 	d := openTestDB(t)
 	got, err := d.GetRun("nonexistent")
