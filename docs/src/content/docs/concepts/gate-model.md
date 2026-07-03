@@ -83,6 +83,11 @@ The local bare repo gives Git a normal place to receive pushes. That keeps the
 push path simple and lets a standard `post-receive` hook hand work off to the
 daemon.
 
+Git operations on the gate name the bare repo explicitly with `--git-dir`
+instead of relying on working-directory discovery, so hardened environments
+that set `safe.bareRepository=explicit` (common in agent harnesses and CI)
+work unchanged.
+
 ### Daemon
 
 The daemon owns long-running work: creating worktrees, running the pipeline,

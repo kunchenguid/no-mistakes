@@ -122,6 +122,10 @@ Safest local verification sequence after non-trivial changes:
 - Existing code typically uses `0o755` for directories and `0o644` for files such as logs.
 - On macOS, remember that path comparisons may need symlink resolution like `/var` vs `/private/var`.
 
+**Git on Bare Gate Repos (`safe.bareRepository`)**
+
+- Agent harnesses (e.g. Claude Code) and hardened CI inject `safe.bareRepository=explicit` via `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n`, which forbids cwd-based discovery of bare repositories. Every git operation on a gate repo must therefore name it explicitly: `git.Run` detects a bare git dir (`isBareGitDir`: `HEAD` file + `objects/` dir, no `.git` entry) and prepends `--git-dir=<dir>`; working trees and linked worktrees keep normal discovery. Route gate git calls through `git.Run` - never shell out to git in a bare gate repo relying only on `cmd.Dir` or `-C` discovery (issue #362). Regressions: `TestRunOnBareRepoUnderSafeBareRepositoryExplicit`, `TestWorktreeAddRemoveOnBareRepoUnderSafeBareRepositoryExplicit`, `TestInitUnderSafeBareRepositoryExplicit`.
+
 **Testing Conventions**
 
 - Tests live next to the code in `*_test.go` files.
@@ -131,6 +135,7 @@ Safest local verification sequence after non-trivial changes:
 - Use `t.TempDir()` for isolated filesystem state.
 - Use `t.Setenv()` for environment-dependent behavior.
 - Prefer creating real git repos in temp directories instead of relying on heavy mocking.
+- Packages whose tests shell out to git unset `GIT_CONFIG_COUNT` in `TestMain` so ambient `GIT_CONFIG_*` injection from agent harnesses cannot leak into tests; a test that exercises the injected config re-sets it with `t.Setenv` (see `internal/git`, `internal/gate`, `internal/daemon`, `internal/pipeline/steps`). Follow the same pattern in new git-spawning test packages.
 - CLI tests often capture output and assert with `strings.Contains`.
 - Prefer e2e tests, new or existing, for behavior that crosses a process or I/O boundary: CLI flags, config loading, git operations, agent spawning, daemon/process coordination, stdout/stderr, and recorded fixtures.
 - Unit-test pure helpers and tightly scoped package behavior where speed and failure localization are worth more than full-product realism.
