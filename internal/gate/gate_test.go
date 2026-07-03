@@ -14,6 +14,14 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 )
 
+func TestMain(m *testing.M) {
+	// Agent harnesses inject git config (e.g. safe.bareRepository=explicit)
+	// via GIT_CONFIG_COUNT/KEY_n/VALUE_n; tests that need it re-set it with
+	// t.Setenv (issue #362).
+	os.Unsetenv("GIT_CONFIG_COUNT")
+	os.Exit(m.Run())
+}
+
 // resolveSymlinks resolves symlinks in a path (needed on macOS where
 // /var → /private/var but git returns resolved paths).
 func resolveSymlinks(t *testing.T, p string) string {

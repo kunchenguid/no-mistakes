@@ -20,6 +20,12 @@ func TestMain(m *testing.M) {
 	if err := os.Setenv("GIT_CONFIG_NOSYSTEM", "1"); err != nil {
 		panic(err)
 	}
+	// Agent harnesses inject git config (e.g. safe.bareRepository=explicit)
+	// via GIT_CONFIG_COUNT/KEY_n/VALUE_n; tests that need it re-set it with
+	// t.Setenv (issue #362).
+	if err := os.Unsetenv("GIT_CONFIG_COUNT"); err != nil {
+		panic(err)
+	}
 	code := m.Run()
 	_ = os.RemoveAll(dir)
 	os.Exit(code)

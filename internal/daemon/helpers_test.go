@@ -39,6 +39,10 @@ func TestMain(m *testing.M) {
 	if os.Getenv("NM_HOOK_HELPER") == "1" {
 		os.Exit(0)
 	}
+	// Agent harnesses inject git config (e.g. safe.bareRepository=explicit)
+	// via GIT_CONFIG_COUNT/KEY_n/VALUE_n; tests that need it re-set it with
+	// t.Setenv (issue #362).
+	os.Unsetenv("GIT_CONFIG_COUNT")
 	os.Exit(m.Run())
 }
 
