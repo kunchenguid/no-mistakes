@@ -91,6 +91,10 @@ test:
     attach_media: true
     dir: .no-mistakes/evidence
     branch: no-mistakes/evidence
+
+providers:
+  github:
+    draft_pull_requests: false
 ```
 
 ## Fields
@@ -519,3 +523,15 @@ On GitHub.com/GHEC, supported image and video artifacts are uploaded to GitHub u
 For GitHub repositories, set `store_in_repo: true` to also publish it to an orphan evidence branch in the code branch's push-target repository and link the artifacts from the PR body; evidence is never committed to the pushed branch, so it never reaches the default branch.
 `test.evidence.branch` is read ONLY from the trusted default-branch copy of this file, because it names a git ref the daemon pushes to; a pushed branch cannot redirect evidence commits.
 See [global config](/no-mistakes/reference/global-config/#testevidence) for provider support, limits, validation, and fail-closed behavior.
+
+### providers.github.draft_pull_requests
+
+Open pull requests created on GitHub as drafts (`gh pr create --draft`).
+Inherits from global config when not set here.
+
+| | |
+|---|---|
+| Type | `bool` |
+| Default | Inherits from global (default `false`) |
+
+Only affects PR creation; existing PRs are not toggled between draft and ready. GitHub only — ignored for other providers.

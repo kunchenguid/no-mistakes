@@ -181,7 +181,8 @@ type GlobalConfig struct {
 	// this machine's local eval corpus (disk, retention, whether review rounds
 	// record replay provenance), never a repository policy. Keeping it out of
 	// RepoConfig means no pushed branch can enable, disable, or resize it.
-	Eval Eval
+	Eval      Eval
+	Providers ProvidersRaw
 }
 
 // globalConfigRaw is the on-disk YAML representation with duration as string.
@@ -213,6 +214,7 @@ type globalConfigRaw struct {
 	Test                    TestRaw                    `yaml:"test"`
 	Eval                    EvalRaw                    `yaml:"eval"`
 	ForgeProfiles           ForgeProfiles              `yaml:"forge_profiles"`
+	Providers               ProvidersRaw               `yaml:"providers"`
 }
 
 // ForgeProfile selects one isolated provider CLI configuration directory.
@@ -250,6 +252,9 @@ type RepoConfig struct {
 	Intent  IntentRaw  `yaml:"intent"`
 	Test    TestRaw    `yaml:"test"`
 	PR      PRRaw      `yaml:"pr"`
+	// Providers carries provider-specific settings. Repo values overlay the
+	// global ones; every field is opt-in and defaults to main's behavior.
+	Providers ProvidersRaw `yaml:"providers"`
 	// Document carries the repository's documentation placement policy. It
 	// steers the document step's gate prompt, so it is honored ONLY from the
 	// trusted default-branch copy of .no-mistakes.yaml (see
@@ -581,6 +586,33 @@ type Config struct {
 	// intentionally has no CI (see the RepoConfig field). When true and the
 	// forge reports zero checks, the CI monitor treats that as all-checks-passed.
 	NoCI bool
+	// Providers holds the resolved provider-specific settings.
+	Providers Providers
+}
+
+// ProvidersRaw is the YAML representation of provider-specific settings,
+// keyed by provider name so new providers can be added without reshaping
+// existing config.
+type ProvidersRaw struct {
+	GitHub GitHubProviderRaw `yaml:"github"`
+}
+
+// GitHubProviderRaw is the YAML representation of GitHub provider settings.
+// Pointer fields distinguish "not set" (nil) from an explicit false.
+type GitHubProviderRaw struct {
+	DraftPullRequests *bool `yaml:"draft_pull_requests"`
+}
+
+// Providers holds resolved provider-specific settings.
+type Providers struct {
+	GitHub GitHubProvider
+}
+
+// GitHubProvider holds resolved GitHub provider settings.
+type GitHubProvider struct {
+	// DraftPullRequests opens created GitHub PRs as drafts
+	// (gh pr create --draft). Default false.
+	DraftPullRequests bool
 }
 
 // PR is the resolved pull-request configuration.
@@ -1017,6 +1049,11 @@ eval:
   auto_capture: true
   max_cases: 200
   diversified_size: 32
+
+# Provider-specific settings. Opt in to opening created GitHub PRs as drafts.
+# providers:
+#   github:
+#     draft_pull_requests: true
 `
 
 // defaultBinary maps agent names to their default binary names.
@@ -1961,6 +1998,7 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 	cfg.Commit = raw.Commit
 	cfg.Intent = raw.Intent
 	cfg.Test = raw.Test
+	cfg.Providers = raw.Providers
 	applyEvalOverrides(&cfg.Eval, &raw.Eval)
 
 	return cfg, nil
@@ -2491,6 +2529,13 @@ func validateTestRaw(test TestRaw) error {
 	return nil
 }
 
+// applyProvidersOverrides applies non-nil raw values onto resolved defaults.
+func applyProvidersOverrides(dst *Providers, src *ProvidersRaw) {
+	if src.GitHub.DraftPullRequests != nil {
+		dst.GitHub.DraftPullRequests = *src.GitHub.DraftPullRequests
+	}
+}
+
 // autoFixDefaults returns the default auto-fix configuration.
 func autoFixDefaults() AutoFix {
 	return AutoFix{
@@ -2614,6 +2659,10 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		commit.FixMessage = *repo.Commit.FixMessage
 	}
 
+	providers := Providers{}
+	applyProvidersOverrides(&providers, &global.Providers)
+	applyProvidersOverrides(&providers, &repo.Providers)
+
 	cfg := &Config{
 		Agent:                 global.Agent,
 		Agents:                copyAgents(global.Agents),
@@ -2646,6 +2695,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		Review:         Review{PathInstructions: resolvePathInstructions(repo.Review.PathInstructions)},
 		PR:             PR{BaseBranch: strings.TrimSpace(repo.PR.BaseBranch)},
 		ForgeProfiles:  global.ForgeProfiles,
+		Providers:      providers,
 		// repo is the EffectiveRepoConfig result, so this value is already
 		// trusted-only (EffectiveRepoConfig sourced it from the trusted copy).
 		DisableProjectSettings: repo.DisableProjectSettings,
