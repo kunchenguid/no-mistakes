@@ -43,6 +43,10 @@ test:
   evidence:
     store_in_repo: true
     dir: .no-mistakes/evidence
+
+providers:
+  github:
+    draft_pull_requests: false
 ```
 
 ## Fields
@@ -192,3 +196,15 @@ By default, test evidence stays in a temporary directory keyed by run ID and is 
 Set `store_in_repo: true` to write evidence under `<dir>/<branch-slug>` inside the worktree so push can commit and publish it with the branch.
 Branch slashes become nested directories, unsafe branch characters are replaced, and an empty branch slug falls back to the run ID.
 If `dir` is absolute, escapes the worktree, points into `.git`, crosses a symlink, or is ignored by Git, no-mistakes falls back to temporary evidence storage for that run.
+
+### providers.github.draft_pull_requests
+
+Open pull requests created on GitHub as drafts (`gh pr create --draft`).
+Inherits from global config when not set here.
+
+| | |
+|---|---|
+| Type | `bool` |
+| Default | Inherits from global (default `false`) |
+
+Only affects PR creation; existing PRs are not toggled between draft and ready. GitHub only — ignored for other providers.

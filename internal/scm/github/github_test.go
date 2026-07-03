@@ -143,6 +143,29 @@ func TestCreatePRStreamsBodyThroughStdin(t *testing.T) {
 	}
 }
 
+func TestCreatePRAddsDraftFlagWhenConfigured(t *testing.T) {
+	t.Parallel()
+
+	const body = "## What Changed\n\n- open as draft"
+	host := NewWithFork(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr create --head feature/draft --base main --repo test/repo --draft --title fix: draft --body-file -": {
+			stdout:    "https://github.com/test/repo/pull/7\n",
+			wantStdin: body,
+		},
+	}), nil, "", "test/repo", "", true)
+
+	pr, err := host.CreatePR(context.Background(), "feature/draft", "main", scm.PRContent{
+		Title: "fix: draft",
+		Body:  body,
+	})
+	if err != nil {
+		t.Fatalf("CreatePR() error = %v", err)
+	}
+	if pr == nil || pr.Number != "7" {
+		t.Fatalf("CreatePR() PR = %+v, want #7", pr)
+	}
+}
+
 func TestUpdatePRStreamsBodyThroughStdin(t *testing.T) {
 	t.Parallel()
 
@@ -282,7 +305,7 @@ func TestFindPRForkUsesBareHeadAndFiltersOwner(t *testing.T) {
 				`{"number":42,"url":"https://github.com/parent/repo/pull/42","headRefName":"feature/refactor","headRepositoryOwner":{"login":"fork-owner"}}` +
 				`]` + "\n",
 		},
-	}), nil, "", "parent/repo", "fork-owner/repo")
+	}), nil, "", "parent/repo", "fork-owner/repo", false)
 
 	pr, err := host.FindPR(context.Background(), branch, "main")
 	if err != nil {

@@ -51,6 +51,10 @@ test:
   evidence:
     store_in_repo: false
     dir: .no-mistakes/evidence
+
+providers:
+  github:
+    draft_pull_requests: false
 ```
 
 ## Fields
@@ -280,6 +284,18 @@ Branch slashes become nested directories, unsafe branch characters are replaced,
 If `dir` is absolute, escapes the worktree, points into `.git`, crosses a symlink, or is ignored by Git, no-mistakes falls back to temporary evidence storage for that run.
 
 These are global defaults. Per-repo config can override either field.
+
+### providers.github.draft_pull_requests
+
+Open pull requests created on GitHub as drafts (`gh pr create --draft`).
+
+| | |
+|---|---|
+| Type | `bool` |
+| Default | `false` |
+
+Only affects PR creation; existing PRs are not toggled between draft and ready. GitHub only — ignored for other providers.
+This is a global default. Per-repo config can override it via `providers.github.draft_pull_requests`.
 
 ## Environment variables
 

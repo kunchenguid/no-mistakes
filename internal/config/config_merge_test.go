@@ -152,6 +152,38 @@ func TestMerge_AutoFixRepoOverridesGlobal(t *testing.T) {
 	}
 }
 
+func TestLoadRepoFromBytes_ParsesProvidersDraft(t *testing.T) {
+	repo, err := LoadRepoFromBytes([]byte("providers:\n  github:\n    draft_pull_requests: true\n"))
+	if err != nil {
+		t.Fatalf("LoadRepoFromBytes() error = %v", err)
+	}
+	if repo.Providers.GitHub.DraftPullRequests == nil || !*repo.Providers.GitHub.DraftPullRequests {
+		t.Errorf("draft_pull_requests = %v, want true", repo.Providers.GitHub.DraftPullRequests)
+	}
+}
+
+func TestMerge_ProvidersDraftDefaultsFalse(t *testing.T) {
+	cfg := Merge(&GlobalConfig{}, &RepoConfig{})
+	if cfg.Providers.GitHub.DraftPullRequests {
+		t.Error("draft_pull_requests = true, want false (default)")
+	}
+}
+
+func TestMerge_ProvidersRepoOverridesGlobalDraft(t *testing.T) {
+	truthy := true
+	falsy := false
+	global := &GlobalConfig{Providers: ProvidersRaw{GitHub: GitHubProviderRaw{DraftPullRequests: &truthy}}}
+
+	if cfg := Merge(global, &RepoConfig{}); !cfg.Providers.GitHub.DraftPullRequests {
+		t.Error("draft_pull_requests = false, want true (global)")
+	}
+
+	repo := &RepoConfig{Providers: ProvidersRaw{GitHub: GitHubProviderRaw{DraftPullRequests: &falsy}}}
+	if cfg := Merge(global, repo); cfg.Providers.GitHub.DraftPullRequests {
+		t.Error("draft_pull_requests = true, want false (repo override)")
+	}
+}
+
 func TestAutoFixLimit(t *testing.T) {
 	cfg := &Config{
 		AutoFix: AutoFix{Lint: 5, Test: 2, Review: 0, Document: 1, CI: 3, Rebase: 4},
