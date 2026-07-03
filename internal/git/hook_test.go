@@ -333,6 +333,77 @@ func TestPostReceiveHook_ResolvesAbsoluteGateDir(t *testing.T) {
 	}
 }
 
+func TestPostReceiveHook_FallsBackToHookLocationForGateDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("post-receive hook is /bin/sh-only")
+	}
+	ctx := context.Background()
+
+	base := t.TempDir()
+	bare := filepath.Join(base, "test.git")
+	if err := InitBare(ctx, bare); err != nil {
+		t.Fatal(err)
+	}
+
+	argsPath := filepath.Join(base, "args.txt")
+	fakeBin := filepath.Join(base, "fake-no-mistakes")
+	fakeScript := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + shellSingleQuote(argsPath) + "\nexit 0\n"
+	if err := os.WriteFile(fakeBin, []byte(fakeScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	fakePath := filepath.Join(base, "bin")
+	if err := os.MkdirAll(fakePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fakeGit := filepath.Join(fakePath, "git")
+	if err := os.WriteFile(fakeGit, []byte("#!/bin/sh\nexit 127\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	hookPath := filepath.Join(bare, "hooks", "post-receive")
+	if err := os.MkdirAll(filepath.Dir(hookPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(hookPath, []byte(postReceiveHookScript(fakeBin)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command("/bin/sh", hookPath)
+	cmd.Dir = bare
+	cmd.Stdin = strings.NewReader("oldrev newrev refs/heads/main\n")
+	cmd.Env = []string{
+		"PATH=" + fakePath,
+		"PWD=.",
+	}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("run hook: %v: %s", err, out)
+	}
+
+	args, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("fake binary should have recorded argv: %v", err)
+	}
+	gate := gateArgFromArgv(string(args))
+	if gate == "" {
+		t.Fatalf("hook did not pass --gate; recorded argv:\n%s", args)
+	}
+	if gate == "." || !filepath.IsAbs(gate) {
+		t.Fatalf("--gate must fall back to an absolute hook-derived path, got %q; argv:\n%s", gate, args)
+	}
+	wantAbs, err := filepath.EvalSymlinks(bare)
+	if err != nil {
+		wantAbs = bare
+	}
+	gotAbs, err := filepath.EvalSymlinks(gate)
+	if err != nil {
+		gotAbs = gate
+	}
+	if gotAbs != wantAbs {
+		t.Fatalf("--gate = %q (resolved %q), want bare dir %q", gate, gotAbs, wantAbs)
+	}
+}
+
 // gateArgFromArgv returns the value following the first "--gate" token in a
 // newline-separated argv dump, or "" if absent.
 func gateArgFromArgv(argv string) string {

@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -25,6 +27,45 @@ func TestParseSkipPushOptionsRejectsUnknownStep(t *testing.T) {
 	_, err := parseSkipPushOptions([]string{"no-mistakes.skip=test,deploy"})
 	if err == nil {
 		t.Fatal("expected unknown step to fail")
+	}
+}
+
+func TestNormalizeNotifyGatePathResolvesLegacyDotGate(t *testing.T) {
+	bare := filepath.Join(t.TempDir(), "repo123.git")
+	if err := os.MkdirAll(bare, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(bare); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := os.Chdir(oldDir); err != nil {
+			t.Fatalf("restore cwd: %v", err)
+		}
+	}()
+	t.Setenv("PWD", ".")
+
+	got, err := normalizeNotifyGatePath(".")
+	if err != nil {
+		t.Fatalf("normalizeNotifyGatePath: %v", err)
+	}
+	if got == "." || !filepath.IsAbs(got) {
+		t.Fatalf("normalizeNotifyGatePath(.) = %q, want absolute path", got)
+	}
+	want, err := filepath.EvalSymlinks(bare)
+	if err != nil {
+		want = bare
+	}
+	gotResolved, err := filepath.EvalSymlinks(got)
+	if err != nil {
+		gotResolved = got
+	}
+	if gotResolved != want {
+		t.Fatalf("normalizeNotifyGatePath(.) = %q (resolved %q), want %q", got, gotResolved, want)
 	}
 }
 
