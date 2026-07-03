@@ -105,8 +105,12 @@ agent edit files, and commit fixes. Your day-to-day working tree stays clean.
 ### Post-receive hook
 
 When `git push no-mistakes <branch>` lands, the bare repo's `post-receive` hook
-fires. It calls `no-mistakes daemon notify-push` with the gate path, ref name,
-old/new SHAs, and any Git push options such as `no-mistakes.skip=test,lint`.
+fires. It resolves the gate to an absolute bare-repo path using Git's own view
+of the repository, falling back to the hook location if needed, then calls
+`no-mistakes daemon notify-push` with that gate path, ref name, old/new SHAs,
+and any Git push options such as `no-mistakes.skip=test,lint`.
+For compatibility with older managed hooks, `notify-push` also normalizes
+relative gate paths before handing them to the daemon.
 The hook never blocks the push - Git ignores `post-receive` exit status, so
 pushes still succeed - but notification failures are surfaced to the pushing
 client on stderr and appended to `notify-push.log` in the bare repo for later

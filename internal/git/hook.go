@@ -14,6 +14,7 @@ var runGit = Run
 
 // PostReceiveHookScript returns the shell script for the post-receive hook.
 // The hook notifies the daemon via the CLI so it works across platforms.
+// It resolves the gate to an absolute bare-repo path before notifying.
 // It never blocks the push - notification failures are surfaced to stderr and
 // appended to notify-push.log inside the bare repo.
 func PostReceiveHookScript() string {

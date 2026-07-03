@@ -63,6 +63,7 @@ func (e *RPCError) Error() string { return e.Message }
 // stamped onto the run so the intent step uses it verbatim instead of inferring
 // intent from local transcripts.
 type PushReceivedParams struct {
+	// Gate is the absolute path to the gate bare repo.
 	Gate      string           `json:"gate"`
 	Ref       string           `json:"ref"`
 	Old       string           `json:"old"`
