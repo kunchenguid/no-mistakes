@@ -1,6 +1,7 @@
 package git
 
 import (
+	"os"
 	"runtime"
 	"strings"
 	"testing"
@@ -81,6 +82,32 @@ func TestNonInteractiveEnv_SetsPWDToDir(t *testing.T) {
 
 	if got["PWD"] != "/work/dir" {
 		t.Errorf("PWD = %q, want \"/work/dir\"", got["PWD"])
+	}
+}
+
+// TestNonInteractiveEnv_AbsolutizesRelativeDir locks in that a relative dir is
+// absolutized before injection, matching os/exec (go.dev/issue/50599). POSIX
+// defines PWD as an absolute pathname; a relative value like "." propagates
+// through git receive-pack into hooks, where macOS /bin/sh (bash 3.2) trusts
+// it and `pwd` collapses to "." (issue #269).
+func TestNonInteractiveEnv_AbsolutizesRelativeDir(t *testing.T) {
+	t.Setenv("PWD", "/somewhere/else")
+
+	got := resolveEnv(NonInteractiveEnv("."))
+
+	if runtime.GOOS == "windows" || runtime.GOOS == "plan9" {
+		if got["PWD"] != "/somewhere/else" {
+			t.Errorf("PWD = %q, want ambient PWD on %s", got["PWD"], runtime.GOOS)
+		}
+		return
+	}
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	if got["PWD"] != wd {
+		t.Errorf("PWD = %q, want absolute %q for relative dir \".\"", got["PWD"], wd)
 	}
 }
 

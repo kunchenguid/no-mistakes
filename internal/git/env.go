@@ -2,6 +2,7 @@ package git
 
 import (
 	"os"
+	"path/filepath"
 	"runtime"
 )
 
@@ -30,10 +31,18 @@ func NonInteractiveEnv(dir string) []string {
 		"GIT_SEQUENCE_EDITOR=true",
 		"GIT_TERMINAL_PROMPT=0",
 	)
-	// Mirror os/exec, which only injects PWD when Cmd.Env is nil and skips it
-	// on these platforms.
+	// Mirror os/exec, which only injects PWD when Cmd.Env is nil, skips it on
+	// these platforms, and absolutizes Cmd.Dir first (go.dev/issue/50599):
+	// POSIX defines PWD as "an absolute pathname of the current working
+	// directory". Injecting a relative dir verbatim (for example ".") poisons
+	// every descendant that trusts PWD — macOS /bin/sh is bash 3.2, whose pwd
+	// builtin reports "." when PWD="." leaks through git receive-pack into a
+	// hook, which is how the post-receive hook of issue #269 ended up passing
+	// `--gate .`.
 	if dir != "" && runtime.GOOS != "windows" && runtime.GOOS != "plan9" {
-		env = append(env, "PWD="+dir)
+		if abs, err := filepath.Abs(dir); err == nil {
+			env = append(env, "PWD="+abs)
+		}
 	}
 	return env
 }
