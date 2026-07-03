@@ -136,12 +136,14 @@ Show a run, preferring the current branch's active or most recent run before fal
 
 ```sh
 no-mistakes axi status
-no-mistakes axi status --run <id>
+no-mistakes axi status --run <id-or-branch>
 ```
 
 | Flag | Type | Default | Description |
 |---|---|---|---|
-| `--run` | `string` | resolved run | Inspect a specific run ID |
+| `--run` | `string` | resolved run | Inspect a specific run by ID or branch name |
+
+When the `--run` value is not a known run ID, it is treated as a branch name and resolves to that branch's active run, else its most recent run, so a parallel run on another branch can be targeted without copying its ID.
 
 When the resolved run is parked at an `awaiting_approval` or `fix_review` gate, its top-level `run:` object includes `awaiting_agent: parked <duration>` immediately after `status`.
 The field disappears after `axi respond`, on cancel, and on terminal outcomes; use it to distinguish a run waiting for the driving agent from one actively running, fixing, or watching CI.
@@ -153,15 +155,16 @@ Show the log output of one pipeline step.
 ```sh
 no-mistakes axi logs --step review
 no-mistakes axi logs --step review --full
-no-mistakes axi logs --step review --run <id>
+no-mistakes axi logs --step review --run <id-or-branch>
 ```
 
 | Flag | Type | Default | Description |
 |---|---|---|---|
 | `--step` | `string` | (none) | Step name; required |
-| `--run` | `string` | resolved run | Run ID to inspect |
+| `--run` | `string` | resolved run | Run ID or branch name to inspect |
 | `--full` | `bool` | `false` | Show the entire log instead of the tail |
 
+`--run` resolves the same way as `axi status --run`: a value that is not a known run ID is treated as a branch name.
 Without `--full`, long logs show the last 40 lines and a help hint for the full log.
 
 ## no-mistakes axi abort
@@ -250,7 +253,8 @@ no-mistakes runs [--limit <n>]
 |---|---|---|---|
 | `--limit` | `int` | `10` | Maximum number of runs to display |
 
-Shows runs newest-first with branch, status (styled), short SHA, timestamp, and PR URL if set.
+Shows runs newest-first with status (styled), branch, run ID, short SHA, timestamp, and PR URL if set.
+The run ID is what `axi status --run`, `axi logs --run`, `axi abort --run`, and `attach --run` accept.
 
 ## no-mistakes stats
 

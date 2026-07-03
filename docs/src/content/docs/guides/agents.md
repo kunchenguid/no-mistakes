@@ -116,6 +116,7 @@ Agents can also call `no-mistakes axi` directly:
 ```sh
 no-mistakes axi run --intent "the user's goal"
 no-mistakes axi status
+no-mistakes axi status --run <id-or-branch>
 no-mistakes axi respond --action approve
 no-mistakes axi logs --step review --full
 no-mistakes axi abort
@@ -127,6 +128,7 @@ If it shows `active_run`, inspect that current-branch run with `no-mistakes axi 
 If it is parked at a gate, drive it with `no-mistakes axi respond`.
 Reattach an in-flight run by re-running `no-mistakes axi run` when it still matches your current `HEAD`.
 If it shows `other_branch_active_run`, they should leave that run alone and start validation for the current branch with `no-mistakes axi run --intent "..."`.
+To inspect a run other than the resolved one - for example a parked run on another branch - pass `--run` to `axi status` or `axi logs` with the run's ID or its branch name; `no-mistakes runs` lists recent runs with their IDs.
 Use `no-mistakes axi abort --run <id>` only when you need to cancel a specific active run by id from outside its worktree.
 
 When an agent starts a new run, `--intent` is required and should describe what the user wanted to accomplish, not what files changed.
