@@ -197,7 +197,14 @@ func (p swiftCoverageProvider) RunCoverage(sctx *pipeline.StepContext) (string, 
 	// same repo-relative path `git diff --name-only` emits. Without this, the
 	// block keys stay absolute Mac paths, miss the coverable/added lookup, and
 	// the empty-blocks fallback fires a false positive on every changed file.
-	raw = strings.ReplaceAll(raw, remotePath, sctx.WorkDir)
+	//
+	// The workDir is slash-ified before substitution because remotePath sits
+	// inside a JSON string literal: a native Windows workDir (C:\Users\...)
+	// would inject backslashes that are invalid JSON escape sequences (\U, \S),
+	// corrupting the document so ParseBlocks sees an empty map. ToSlash is a
+	// no-op on POSIX (the only place this provider actually runs) and yields a
+	// valid slash-spelled path on Windows.
+	raw = strings.ReplaceAll(raw, remotePath, filepath.ToSlash(sctx.WorkDir))
 	return raw, testedCmd, nil
 }
 

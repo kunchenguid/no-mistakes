@@ -532,8 +532,11 @@ func TestSwiftRunCoverage_PathBridgeRewritesMacPaths(t *testing.T) {
 		t.Fatalf("unbridged parse should NOT key by local rel (expected absolute Mac path); got %v", unbridged)
 	}
 
-	// Bug #4 fix: RunCoverage rewrites remotePath → local workDir in raw.
-	bridged := strings.ReplaceAll(macRaw, remotePath, localWorkDir)
+	// Bug #4 fix: RunCoverage rewrites remotePath → local workDir in raw. The
+	// workDir is slash-ified because remotePath sits inside a JSON string
+	// literal; a native Windows workDir (C:\Users\...) would inject backslashes
+	// that are invalid JSON escapes, corrupting the document.
+	bridged := strings.ReplaceAll(macRaw, remotePath, filepath.ToSlash(localWorkDir))
 
 	// ParseBlocks with the LOCAL workDir must now key by repo-relative path.
 	blocks := (swiftCoverageProvider{}).ParseBlocks(bridged, localWorkDir)
