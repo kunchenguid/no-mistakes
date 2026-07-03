@@ -22,6 +22,7 @@ Testing prompts also ask agents to remove transient working-tree artifacts they 
 
 - Leave `agent: auto` if one good agent is already installed and you do not need repo-specific behavior.
 - Set a repo-level `agent` override when one codebase clearly works better with a different tool.
+- Use an ordered fallback list when you prefer one agent but want no-mistakes to try another if the first process is unavailable.
 - Set explicit `commands.test` and `commands.lint` if you want deterministic baseline command execution regardless of agent choice.
 
 That last point matters: the agent helps fill in gaps, but explicit repo
@@ -59,6 +60,15 @@ agent: codex
 ```
 
 Repo config takes precedence over global config.
+
+### Ordered fallback list
+
+```yaml
+# ~/.no-mistakes/config.yaml or .no-mistakes.yaml
+agent: [codex, claude]
+```
+
+no-mistakes filters the list to agents available on the daemon's `PATH`, uses the first available entry as the primary agent, and keeps later available entries as fallbacks. If an invocation fails because the current agent process cannot start or exits with an unavailable/error condition, that invocation is retried with the next fallback. Structured findings and schema/output validation failures do not trigger fallback.
 
 ### Optional ACP target
 
@@ -169,6 +179,8 @@ The default binary names are:
 | `acp:<target>` | `acpx` |
 
 When the daemon is running through a managed service, that `PATH` comes from your login shell environment on macOS and Linux plus common user, Homebrew, and system binary directories. If login-shell resolution fails, the daemon logs a warning and uses a degraded fallback `PATH` that may omit version-manager shim directories. On Windows it reuses the current process environment instead of reloading a login shell. If native agent discovery still does not resolve the binary you expect, check `~/.no-mistakes/logs/daemon.log` and use an explicit `agent_path_override`.
+
+For an ordered fallback list, no-mistakes checks each configured entry at run startup and drops unavailable entries. If none are available, the run fails before the pipeline starts.
 
 Override paths in global config:
 

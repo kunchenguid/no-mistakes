@@ -10,7 +10,7 @@ with sensible defaults for everything else.
 The goal is not to make you configure a mini CI system. The default path should
 work. Config exists for the parts that genuinely vary by machine or repo:
 
-- which agent you prefer
+- which agent or ordered fallback list you prefer
 - which test or lint commands are the canonical ones for this repo
 - where test evidence artifacts should be stored
 - how aggressive the auto-fix loop should be
@@ -38,7 +38,7 @@ local.
 If you are not sure where to start, configure these in this order:
 
 1. Set `commands.test` and `commands.lint` in repo config so the gate runs the exact commands your repo expects.
-2. Override `agent` per repo only when one codebase clearly works better with a different tool.
+2. Override `agent` per repo only when one codebase clearly works better with a different tool or fallback order.
 3. Tune `auto_fix` after you have seen how much automation you actually want.
 
 Everything else can usually wait.
@@ -50,6 +50,7 @@ Everything else can usually wait.
 
 # Default agent for all repos and setup-wizard suggestions.
 # "auto" picks the first available native agent on PATH.
+# You can also use an ordered fallback list, for example: [codex, claude].
 agent: auto  # auto | claude | codex | rovodev | opencode | pi | copilot | acp:<target>
 
 # Optional acpx path and target command overrides for agent: acp:<target>.
@@ -125,7 +126,7 @@ Azure DevOps uses the `az` CLI with the `azure-devops` extension; for non-intera
 ```yaml
 # .no-mistakes.yaml (in repo root)
 
-# Override the agent for this repo and its setup-wizard suggestions.
+# Override the agent, or ordered fallback list, for this repo and its setup-wizard suggestions.
 agent: codex
 
 # Explicit commands for test/lint/format steps.
@@ -160,7 +161,7 @@ See [Repo Config Reference](/no-mistakes/reference/repo-config/) for the full fi
 
 ## Precedence
 
-- Repo `agent` overrides global `agent`.
+- Repo `agent` overrides global `agent`, including the full ordered fallback list when one is configured.
 - Global `agent: auto` resolves by checking `claude`, `codex`, `opencode`, `acli` for `rovodev`, `pi`, then `copilot` on `PATH`.
 - ACP agents are opt-in with `agent: acp:<target>` and are not considered by `agent: auto`.
 - `agent_path_override`, `agent_args_override`, `acpx_path`, and `acp_registry_overrides` are global-only fields.

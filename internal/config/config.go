@@ -250,7 +250,8 @@ func copyAgents(names []types.AgentName) []types.AgentName {
 // defaultConfigYAML is the template written when no global config file exists.
 const defaultConfigYAML = `# no-mistakes global configuration
 
-# Agent to use for code generation
+# Agent to use for code generation. This may also be an ordered fallback list,
+# for example: agent: [codex, claude]
 # Options: auto, claude, codex, rovodev, opencode, pi, copilot, acp:<target>
 # "auto" detects the first available native agent on your system
 # Use acp:<target> to run an optional user-installed acpx target, for example acp:gemini
@@ -376,9 +377,10 @@ var probeRovoDevSupport = func(ctx context.Context, bin string) (bool, error) {
 	return false, fmt.Errorf("probe rovodev support via %q: %w", bin, err)
 }
 
-// ResolveAgent resolves AgentAuto to a concrete agent by probing which binaries
-// are available on the system. If agent is already set to a specific value, this
-// is a no-op. The lookPath function should behave like exec.LookPath.
+// ResolveAgent resolves configured agent names to available agents. A single
+// explicit agent is preserved; auto is probed into the first available native
+// agent; an ordered list is filtered to available agents and kept as fallbacks.
+// The lookPath function should behave like exec.LookPath.
 func (c *Config) ResolveAgent(ctx context.Context, lookPath func(string) (string, error)) error {
 	candidates := c.configuredAgents()
 	if len(candidates) <= 1 {
@@ -760,17 +762,17 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 // given a pushed-branch copy and the trusted default-branch copy.
 //
 // The code-executing selection fields — Commands (run verbatim via sh -c on
-// the daemon host) and Agent (selects which process launches with the
-// maintainer's credentials, including acp: targets) — are taken only from
-// the trusted copy when it is present, so a contributor's pushed branch
-// cannot inject shell or pick an agent. When allowRepoCommands is true the
-// maintainer has explicitly opted in (via allow_repo_commands on the
+// the daemon host) and Agent/Agents (select which processes launch with the
+// maintainer's credentials, including fallback lists and acp: targets) — are
+// taken only from the trusted copy when it is present, so a contributor's
+// pushed branch cannot inject shell or pick an agent. When allowRepoCommands is
+// true the maintainer has explicitly opted in (via allow_repo_commands on the
 // TRUSTED default-branch copy) to honoring the pushed-branch copy wholesale.
 // When there is no trusted copy and the maintainer has not opted in, both
-// fields are forced empty (Agent "" inherits the global agent; Commands{}
-// yields built-in defaults) rather than falling back to the pushed branch —
-// this blocks the supply-chain vector for repos that ship .no-mistakes.yaml
-// only on feature branches.
+// fields are forced empty (Agent "" and nil Agents inherit the global agent;
+// Commands{} yields built-in defaults) rather than falling back to the pushed
+// branch — this blocks the supply-chain vector for repos that ship
+// .no-mistakes.yaml only on feature branches.
 //
 // Non-executing fields (ignore patterns, auto-fix, intent, test) are always
 // taken from the pushed copy, matching prior behavior, since they cannot
@@ -921,8 +923,9 @@ func (c *Config) AutoFixLimit(step types.StepName) int {
 	}
 }
 
-// Merge combines global and per-repo config. Per-repo agent overrides global
-// when non-empty. Commands and ignore patterns come from repo config only.
+// Merge combines global and per-repo config. Per-repo agent values, including
+// ordered fallback lists, override global agent values when non-empty. Commands
+// and ignore patterns come from repo config only.
 func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 	af := autoFixDefaults()
 	applyAutoFixOverrides(&af, &global.AutoFix)

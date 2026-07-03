@@ -75,7 +75,7 @@ You can also set an ordered fallback list:
 agent: [codex, claude]
 ```
 
-The first available entry is used as the primary agent. If a pipeline invocation fails because that agent process cannot start or exits with an error, no-mistakes retries that invocation with the next available fallback. Structured findings and schema/output validation problems do not trigger fallback.
+The list is filtered to entries available to the daemon at run startup, and the first available entry becomes the primary agent. If a pipeline invocation fails because that agent process cannot start or exits with an error, no-mistakes retries that invocation with the next available fallback. Structured findings and schema/output validation problems do not trigger fallback.
 
 ### acpx_path
 
