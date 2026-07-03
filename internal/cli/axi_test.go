@@ -555,6 +555,59 @@ func TestResolveRunAcceptsBranchName(t *testing.T) {
 	}
 }
 
+// TestAxiStatusAndLogsUnknownExplicitRun: an explicit --run value that matches
+// neither a run ID nor a branch must name the bad value instead of suggesting
+// the user start a new run, on both the status and logs surfaces.
+func TestAxiStatusAndLogsUnknownExplicitRun(t *testing.T) {
+	repoDir := t.TempDir()
+	nmHome := t.TempDir()
+	t.Setenv("NM_HOME", nmHome)
+	run(t, repoDir, "git", "init")
+	run(t, repoDir, "git", "config", "user.email", "test@test.com")
+	run(t, repoDir, "git", "config", "user.name", "Test")
+	run(t, repoDir, "git", "commit", "--allow-empty", "-m", "initial")
+	rawRoot, err := filepath.EvalSymlinks(repoDir)
+	if err != nil {
+		rawRoot = repoDir
+	}
+	chdir(t, rawRoot)
+
+	p := paths.WithRoot(nmHome)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+	database, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer database.Close()
+	if _, err := database.InsertRepoWithID("repo-1", rawRoot, "origin", "main"); err != nil {
+		t.Fatalf("insert repo: %v", err)
+	}
+
+	for name, invoke := range map[string]func(cmd *cobra.Command) error{
+		"status": func(cmd *cobra.Command) error { return runAxiStatus(cmd, "no-such-run") },
+		"logs":   func(cmd *cobra.Command) error { return runAxiLogs(cmd, "review", "no-such-run", false) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			var out bytes.Buffer
+			cmd := &cobra.Command{}
+			cmd.SetContext(context.Background())
+			cmd.SetOut(&out)
+			if err := invoke(cmd); err == nil {
+				t.Fatalf("expected error for unknown --run, got output:\n%s", out.String())
+			}
+			got := out.String()
+			if !strings.Contains(got, "no run found for id or branch") || !strings.Contains(got, "no-such-run") {
+				t.Fatalf("expected id-or-branch error in output, got:\n%s", got)
+			}
+			if strings.Contains(got, "axi run --intent") {
+				t.Fatalf("unknown --run must not suggest starting a new run, got:\n%s", got)
+			}
+		})
+	}
+}
+
 // TestResolveRunBranchNamePicksLatestWhenInactive: with no active run on the
 // named branch, the fallback returns that branch's most recent run instead of
 // leaking another branch's run.

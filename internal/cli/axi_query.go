@@ -138,6 +138,9 @@ func runAxiLogs(cmd *cobra.Command, step, runID string, full bool) error {
 		return emitError(cmd, 1, err.Error())
 	}
 	if run == nil {
+		if runID != "" {
+			return emitError(cmd, 1, fmt.Sprintf("no run found for id or branch %q", runID))
+		}
 		return emitError(cmd, 1, "no run found to read logs from",
 			noRunLogsHelp())
 	}
