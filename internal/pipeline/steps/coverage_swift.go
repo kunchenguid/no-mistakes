@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
 
 // Swift coverage provider environment knobs. All optional except
@@ -330,22 +332,30 @@ func (p swiftCoverageProvider) buildSwiftScript(remotePath, headSHA, mode string
 // `bash -lc "..."`) avoids nested-quote escaping and still gives a login
 // shell, so the Mac's Homebrew/CLT tools are on PATH. exec.CommandContext
 // threads the step's context so cancellation kills the remote build.
+//
+// shellenv.ConfigureShellCommand + OutputShellCommand reap the whole process
+// group on every exit path (clean exit, parse error, wait error, and context
+// cancellation), not just the direct ssh child on cancellation. Without it, a
+// helper the ssh client spawned (or a ControlMaster it left behind) would
+// outlive the leader and accumulate across runs.
 func runSwiftCoverageSSH(ctx context.Context, host string, opts []string, script string) (string, error) {
 	args := make([]string, 0, len(opts)+2)
 	args = append(args, opts...)
 	args = append(args, host, "bash", "-l")
 	cmd := exec.CommandContext(ctx, "ssh", args...)
+	shellenv.ConfigureShellCommand(cmd)
 	cmd.Stdin = strings.NewReader(script)
 	// Separate stderr so remote error messages (the script's `>&2` lines)
 	// surface in our error wrapper instead of polluting the JSON stream.
-	out, err := cmd.Output()
+	// OutputShellCommand reaps via RunShellCommand, which (unlike cmd.Output)
+	// does not populate (*exec.ExitError).Stderr, so we capture stderr into our
+	// own buffer and read it back on failure.
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := shellenv.OutputShellCommand(cmd)
 	if err != nil {
-		stderr := ""
-		if ee, ok := err.(*exec.ExitError); ok {
-			stderr = strings.TrimSpace(string(ee.Stderr))
-		}
-		if stderr != "" {
-			return "", fmt.Errorf("swift coverage SSH: %w: %s", err, stderr)
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return "", fmt.Errorf("swift coverage SSH: %w: %s", err, msg)
 		}
 		return "", fmt.Errorf("swift coverage SSH: %w", err)
 	}

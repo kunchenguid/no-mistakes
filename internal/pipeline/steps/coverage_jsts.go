@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
 
 // jsCoverageProvider is the coverageProvider for JavaScript/TypeScript projects.
@@ -97,9 +98,10 @@ func (jsCoverageProvider) RunCoverage(sctx *pipeline.StepContext) (string, strin
 	sctx.Log("running coverage: " + testedCmd)
 
 	cmd := exec.CommandContext(sctx.Ctx, "npx", args...)
+	shellenv.ConfigureShellCommand(cmd)
 	cmd.Dir = sctx.WorkDir
 	cmd.Env = mergeEnv(sctx.Env)
-	out, err := cmd.CombinedOutput()
+	out, err := shellenv.CombinedOutputShellCommand(cmd)
 	if err != nil {
 		return "", testedCmd, fmt.Errorf("c8 run: %w: %s", err, strings.TrimSpace(string(out)))
 	}

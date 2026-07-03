@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
 
 // goCoverageProvider is the coverageProvider for Go modules. It is active when
@@ -215,9 +216,10 @@ func runGoCoverageProfile(sctx *pipeline.StepContext) (string, string, error) {
 	sctx.Log("running coverage: " + testedCmd)
 
 	cmd := exec.CommandContext(sctx.Ctx, "go", args...)
+	shellenv.ConfigureShellCommand(cmd)
 	cmd.Dir = sctx.WorkDir
 	cmd.Env = mergeEnv(sctx.Env)
-	out, err := cmd.CombinedOutput()
+	out, err := shellenv.CombinedOutputShellCommand(cmd)
 	if err != nil {
 		return "", testedCmd, fmt.Errorf("go test -cover: %w: %s", err, strings.TrimSpace(string(out)))
 	}
