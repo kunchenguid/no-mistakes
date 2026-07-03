@@ -115,11 +115,13 @@ Previous test findings to address:
 	}
 
 	// Coverage-aware sub-step: after tests pass, mechanically verify that every
-	// changed Go source file has non-zero coverage. This is model-agnostic — it
-	// catches "changed X but didn't test X" without relying on AI review. The
-	// check is gated by NO_MISTAKES_COVERAGE_CHECK (default on for Go projects)
-	// and only runs when there are coverable changed files. Errors never block
-	// the pipeline; they are logged and the check degrades to a no-op.
+	// changed source file has non-zero coverage on its added lines. This is
+	// model-agnostic — it catches "changed X but didn't test X" without relying
+	// on AI review. runCoverageCheck dispatches to every registered per-language
+	// provider (Go, JS/TS, Swift). The check is gated by
+	// NO_MISTAKES_COVERAGE_CHECK (default on when any provider is active for the
+	// worktree) and only runs when there are coverable changed files. Errors
+	// never block the pipeline; they are logged and the check degrades to a no-op.
 	coverageFindings, coverageTested, coverageErr := runCoverageCheck(sctx, baseSHA)
 	if coverageErr != nil {
 		sctx.Log(fmt.Sprintf("coverage check skipped: %v", coverageErr))

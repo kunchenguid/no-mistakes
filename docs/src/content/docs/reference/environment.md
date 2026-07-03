@@ -196,6 +196,94 @@ Disable telemetry collection.
 
 When set to a disabling value, telemetry stays off even if a runtime or embedded website ID is available.
 
+## `NO_MISTAKES_COVERAGE_CHECK`
+
+Enable or disable the coverage-aware test sub-step.
+
+| | |
+|---|---|
+| Type | `1`/`true`/`yes`/`on` to enable; anything else to disable |
+| Default | unset (on when any coverage provider is active) |
+
+When set, the explicit override always wins. When unset, the coverage check runs by default when at least one registered provider is active for the worktree — a `go.mod`, `package.json`, or Swift manifest (`Package.swift` or an `.xcodeproj`/`.xcworkspace`) is present — and is off otherwise. See [Pipeline Steps → Test](/no-mistakes/reference/pipeline-steps/#test).
+
+## `NM_JS_TEST_RUNNER`
+
+Override the command the JS/TS coverage provider runs under c8.
+
+| | |
+|---|---|
+| Type | `string` |
+| Default | unset |
+
+When set, this always wins and the configured command runs under `npx c8`. When unset, the provider resolves the runner in priority order: `commands.test` from repo config, then `npm test` when `package.json` declares a test script, then `node --test` as the manifest-free fallback.
+
+## `NM_SWIFT_SSH_HOST`
+
+SSH target for the Mac build executor that collects Swift coverage.
+
+| | |
+|---|---|
+| Type | `string` (e.g. `user@host`) |
+| Default | unset (Swift coverage provider inactive) |
+
+The Swift provider is off unless this is set, because no-mistakes runs on Linux with no native Swift toolchain. It is active only when this is set and a Swift manifest is present at the worktree root. Must be paired with `NM_SWIFT_REMOTE_PATH`.
+
+## `NM_SWIFT_REMOTE_PATH`
+
+Absolute project root of the repo on the Mac build executor.
+
+| | |
+|---|---|
+| Type | `string` (absolute path) |
+| Default | unset |
+
+The provider syncs the run head SHA into this checkout (refusing a dirty tree — it never hard-resets the Mac's working state) and runs the Swift coverage build there. The Mac emits Mac-relative source paths in its coverage JSON, which the provider rewrites to the local worktree path before parsing.
+
+## `NM_SWIFT_BUILD_MODE`
+
+Selects the Swift build mode on the Mac.
+
+| | |
+|---|---|
+| Type | `swiftpm` or `xcode` |
+| Default | `swiftpm` |
+
+`swiftpm` runs `swift test --enable-code-coverage` and reads the JSON export path from `swift test --show-code-coverage-path`. `xcode` runs `xcodebuild test -enableCodeCoverage` plus `xcrun xccov view --file --json` per source file, and errors clearly until full Xcode.app is installed. Note that both modes effectively require Xcode.app for end-to-end coverage, because the XCTest/Swift Testing modules used to run the test suite ship with Xcode.app, not the Command Line Tools.
+
+## `NM_SWIFT_SCHEME`
+
+Xcode scheme, consulted only in `xcode` build mode.
+
+| | |
+|---|---|
+| Type | `string` |
+| Default | unset |
+
+Passed to `xcodebuild test -scheme` when set.
+
+## `NM_SWIFT_PROJECT`
+
+Optional `.xcodeproj` or `.xcworkspace` path, consulted only in `xcode` build mode.
+
+| | |
+|---|---|
+| Type | `string` |
+| Default | unset |
+
+Passed to `xcodebuild test -project` when set.
+
+## `NM_SWIFT_SSH_OPTS`
+
+Extra flags passed to the SSH command for Swift coverage.
+
+| | |
+|---|---|
+| Type | `string` |
+| Default | unset |
+
+Whitespace-separated flags, with simple double-quote grouping so values such as `-o "StrictHostKeyChecking=accept-new"` survive intact.
+
 ## Environment the daemon sees
 
 When the daemon runs through a managed service (launchd, systemd user service, Task Scheduler), the macOS and Linux service definitions include a default `PATH` with common user and system binary directories. They also bake in any proxy variables (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, `ALL_PROXY`) that were set when you installed or refreshed the service, so the daemon and the agents it spawns can reach the network through your proxy even when the login-shell probe is unavailable. Once baked in, the values are preserved across later service refreshes and restarts even when the proxy variables are not exported in that shell, so a routine `daemon restart` or a binary upgrade will not strip them; export the variables again only when you need to change or remove them. Both the upper- and lower-case spellings are forwarded exactly as you set them, because tooling is inconsistent about which it reads (curl, for example, honors only the lower-case `http_proxy` for plain-HTTP requests). Because a proxy URL can embed credentials (for example `http://user:pass@host`), the generated service file is restricted to owner-only `0600` permissions whenever proxy values are forwarded into it. When no proxy variables are set, the generated definition is unchanged and keeps the conventional `0644` mode. Windows Task Scheduler inherits your logon environment and needs no forwarding. At daemon startup, the daemon resolves environment from your login shell on macOS and Linux, preserves your shell `PATH` order, and appends any missing well-known directories such as `~/.local/bin`, `~/go/bin`, `~/.cargo/bin`, `~/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`, and `/bin`. If login-shell resolution fails or returns no entries, the daemon logs a warning and uses an augmented process-environment fallback that may omit version-manager directories such as nvm, fnm, or volta. On Windows it reuses the current process environment.
