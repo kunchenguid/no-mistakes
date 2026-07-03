@@ -190,7 +190,7 @@ func TestParseLLVMCovBlocks(t *testing.T) {
     {
       "files": [
         {
-          "filename": "` + fooAbs + `",
+          "filename": "` + jsonPath(fooAbs) + `",
           "segments": [
             [1, 0, 1, true, 0],
             [5, 0, 0, true, 0],
@@ -199,7 +199,7 @@ func TestParseLLVMCovBlocks(t *testing.T) {
           ]
         },
         {
-          "filename": "` + barAbs + `",
+          "filename": "` + jsonPath(barAbs) + `",
           "segments": [
             [1, 0, 3, true, 0],
             [4, 0, 0, false, 0]
@@ -344,7 +344,7 @@ func TestParseBlocks_Dispatch(t *testing.T) {
 		t.Errorf("ParseBlocks('') = %v, want empty", got)
 	}
 
-	llvmRaw := `{"data":[{"files":[{"filename":"` + filepath.Join(work, "f.swift") + `","segments":[[1,0,1,true,0]]}]}]}`
+	llvmRaw := `{"data":[{"files":[{"filename":"` + jsonPath(filepath.Join(work, "f.swift")) + `","segments":[[1,0,1,true,0]]}]}]}`
 	got := p.ParseBlocks(llvmRaw, work)
 	if _, ok := got["f.swift"]; !ok {
 		t.Errorf("llvm-cov dispatch missed f.swift, got %v", got)
@@ -459,7 +459,7 @@ func TestSwiftProvider_ParseBlocks_FeedsCore(t *testing.T) {
 	// Added lines [4,6]: line 4 is covered (in [1,4] count=1); lines 5 and 6
 	// are uncovered executable (in [5,8] count=0). Expect a finding reporting
 	// 2 uncovered changed lines.
-	raw := `{"data":[{"files":[{"filename":"` + filepath.Join(work, rel) + `","segments":[
+	raw := `{"data":[{"files":[{"filename":"` + jsonPath(filepath.Join(work, rel)) + `","segments":[
 		[1,0,1,true,0],
 		[5,0,0,true,0],
 		[9,0,0,false,0]
@@ -613,7 +613,7 @@ func TestRunCoverageCheck_SwiftDispatcherEndToEnd(t *testing.T) {
 	//   [6,*,0,false] → skipped
 	// Added lines 1–6: lines 4,5 are the only uncovered executable ones → count 2.
 	calcAbs := filepath.Join(workDir, rel)
-	canned := `{"data":[{"files":[{"filename":"` + calcAbs + `","segments":[
+	canned := `{"data":[{"files":[{"filename":"` + jsonPath(calcAbs) + `","segments":[
 		[2,0,1,true,0],
 		[3,0,1,true,0],
 		[4,0,0,true,0],

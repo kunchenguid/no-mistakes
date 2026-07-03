@@ -664,3 +664,13 @@ func contains(slice []string, want string) bool {
 	}
 	return false
 }
+
+// jsonPath converts an OS-native path to a forward-slash spelling safe for
+// embedding in a JSON string literal. On Windows, filepath.Join produces
+// backslash-separated paths whose raw \ would form invalid JSON escape
+// sequences (\U, \S, etc.); converting to / avoids that. toRepoRelPOSIX
+// handles both separators via filepath.Clean, so the same code path is
+// exercised.
+func jsonPath(p string) string {
+	return filepath.ToSlash(p)
+}

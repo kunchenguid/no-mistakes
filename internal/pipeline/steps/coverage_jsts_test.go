@@ -86,7 +86,7 @@ func TestParseIstanbulBlocks_PathRelativization(t *testing.T) {
 
 	// The coverage tool keys by absolute path; git diff emits the repo-relative
 	// spelling "packages/app/src/index.js". toRepoRelPOSIX must bridge the two.
-	raw := `{"` + nested + `": {
+	raw := `{"` + jsonPath(nested) + `": {
 		"statementMap": {"0": {"start": {"line": 1, "column": 0}, "end": {"line": 1, "column": 10}}},
 		"s": {"0": 1}
 	}}`
@@ -103,13 +103,16 @@ func TestParseIstanbulBlocks_PathRelativization(t *testing.T) {
 // repo-relative key space and confuse the diff intersection.
 func TestParseIstanbulBlocks_DropsOutOfWorkTree(t *testing.T) {
 	t.Parallel()
-	const raw = `{
-	  "/usr/lib/node_modules/dep/index.js": {
+	// Use real temp dirs so the out-of-worktree path is genuinely absolute on
+	// every OS — Windows filepath.IsAbs does not recognize Unix-style /paths.
+	workDir := t.TempDir()
+	outside := jsonPath(filepath.Join(t.TempDir(), "dep", "index.js"))
+	raw := `{"` + outside + `": {
 	    "statementMap": {"0": {"start": {"line": 1, "column": 0}, "end": {"line": 1, "column": 5}}},
 	    "s": {"0": 1}
 	  }
 	}`
-	blocks := jsCoverageProvider{}.ParseBlocks(raw, "/repo")
+	blocks := jsCoverageProvider{}.ParseBlocks(raw, workDir)
 	if len(blocks) != 0 {
 		t.Errorf("out-of-worktree path should be dropped, got %v", blocks)
 	}
