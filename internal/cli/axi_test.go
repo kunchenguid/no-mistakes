@@ -501,6 +501,93 @@ func TestResolveRunPrefersCurrentBranchLatestRun(t *testing.T) {
 	}
 }
 
+// TestResolveRunAcceptsBranchName covers targeting a parallel run by branch
+// name: --run values that are not a known run ID fall back to the branch's
+// active (else most recent) run, so an agent can reach a parked run on another
+// branch without copying its ULID.
+func TestResolveRunAcceptsBranchName(t *testing.T) {
+	database := openTestDB(t)
+	repo, err := database.InsertRepo(t.TempDir(), "origin", "main")
+	if err != nil {
+		t.Fatalf("insert repo: %v", err)
+	}
+	parked, err := database.InsertRun(repo.ID, "feature/parked", "head-parked", "base")
+	if err != nil {
+		t.Fatalf("insert parked run: %v", err)
+	}
+	if err := database.UpdateRunStatus(parked.ID, types.RunRunning); err != nil {
+		t.Fatalf("mark parked run running: %v", err)
+	}
+	newer, err := database.InsertRun(repo.ID, "feature/newer", "head-newer", "base")
+	if err != nil {
+		t.Fatalf("insert newer run: %v", err)
+	}
+	if err := database.UpdateRunStatus(newer.ID, types.RunRunning); err != nil {
+		t.Fatalf("mark newer run running: %v", err)
+	}
+
+	env := &axiEnv{d: database, repo: repo}
+
+	got, err := resolveRun(env, "feature/parked", "")
+	if err != nil {
+		t.Fatalf("resolve by branch name: %v", err)
+	}
+	if got == nil || got.ID != parked.ID {
+		t.Fatalf("resolved run = %#v, want parked branch run %s", got, parked.ID)
+	}
+
+	// A real run ID must keep winning over the branch fallback.
+	got, err = resolveRun(env, parked.ID, "")
+	if err != nil {
+		t.Fatalf("resolve by id: %v", err)
+	}
+	if got == nil || got.ID != parked.ID {
+		t.Fatalf("resolved run = %#v, want run %s by id", got, parked.ID)
+	}
+
+	// A value that is neither an ID nor a branch resolves to nothing.
+	got, err = resolveRun(env, "no-such-run-or-branch", "")
+	if err != nil {
+		t.Fatalf("resolve unknown: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("resolved run = %#v, want nil for unknown id/branch", got)
+	}
+}
+
+// TestResolveRunBranchNamePicksLatestWhenInactive: with no active run on the
+// named branch, the fallback returns that branch's most recent run instead of
+// leaking another branch's run.
+func TestResolveRunBranchNamePicksLatestWhenInactive(t *testing.T) {
+	database := openTestDB(t)
+	repo, err := database.InsertRepo(t.TempDir(), "origin", "main")
+	if err != nil {
+		t.Fatalf("insert repo: %v", err)
+	}
+	done, err := database.InsertRun(repo.ID, "feature/done", "head-done", "base")
+	if err != nil {
+		t.Fatalf("insert done run: %v", err)
+	}
+	if err := database.UpdateRunStatus(done.ID, types.RunCompleted); err != nil {
+		t.Fatalf("complete done run: %v", err)
+	}
+	active, err := database.InsertRun(repo.ID, "feature/active", "head-active", "base")
+	if err != nil {
+		t.Fatalf("insert active run: %v", err)
+	}
+	if err := database.UpdateRunStatus(active.ID, types.RunRunning); err != nil {
+		t.Fatalf("mark active run running: %v", err)
+	}
+
+	got, err := resolveRun(&axiEnv{d: database, repo: repo}, "feature/done", "")
+	if err != nil {
+		t.Fatalf("resolve by branch name: %v", err)
+	}
+	if got == nil || got.ID != done.ID {
+		t.Fatalf("resolved run = %#v, want completed run %s for its branch", got, done.ID)
+	}
+}
+
 func openTestDB(t *testing.T) *db.DB {
 	t.Helper()
 	database, err := db.Open(filepath.Join(t.TempDir(), "no-mistakes.db"))

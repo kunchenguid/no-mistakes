@@ -38,7 +38,7 @@ func newAxiStatusCmd() *cobra.Command {
 			})
 		},
 	}
-	cmd.Flags().StringVar(&runID, "run", "", "inspect a specific run ID (default: active or most recent)")
+	cmd.Flags().StringVar(&runID, "run", "", "inspect a specific run by ID or branch name (default: active or most recent)")
 	return cmd
 }
 
@@ -56,7 +56,7 @@ func runAxiStatus(cmd *cobra.Command, runID string) error {
 
 	if run == nil {
 		if runID != "" {
-			return emitError(cmd, 1, fmt.Sprintf("run %q not found", runID))
+			return emitError(cmd, 1, fmt.Sprintf("no run found for id or branch %q", runID))
 		}
 		emitDoc(cmd,
 			toon.Field{Key: "runs", Value: "0 runs yet in this repository"},
@@ -111,7 +111,7 @@ func newAxiLogsCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&step, "step", "", "step name: intent, rebase, review, test, document, lint, push, pr, ci (required)")
-	cmd.Flags().StringVar(&runID, "run", "", "run ID (default: active or most recent)")
+	cmd.Flags().StringVar(&runID, "run", "", "run ID or branch name (default: active or most recent)")
 	cmd.Flags().BoolVar(&full, "full", false, "show the entire log instead of the tail")
 	return cmd
 }
@@ -187,32 +187,29 @@ func logRows(lines []string) []logRow {
 	return rows
 }
 
-// resolveRun picks the run to inspect: an explicit ID, else the active run,
-// else the most recent run for the repo. Returns (nil, nil) when none exist.
+// resolveRun picks the run to inspect: an explicit ID (or branch name), else
+// the active run, else the most recent run for the repo. Returns (nil, nil)
+// when none exist.
 func resolveRun(env *axiEnv, runID, branch string) (*db.Run, error) {
 	if runID != "" {
 		run, err := env.d.GetRun(runID)
 		if err != nil {
 			return nil, fmt.Errorf("get run: %w", err)
 		}
-		return run, nil
+		if run != nil {
+			return run, nil
+		}
+		// Not a known run ID: treat the value as a branch name so a parallel
+		// run on another branch can be targeted without copying its ULID.
+		return runForBranch(env, runID)
 	}
 	if branch != "" {
-		active, err := env.d.GetActiveRun(env.repo.ID, branch)
+		run, err := runForBranch(env, branch)
 		if err != nil {
-			return nil, fmt.Errorf("get active run: %w", err)
+			return nil, err
 		}
-		if active != nil {
-			return active, nil
-		}
-		runs, err := env.d.GetRunsByRepo(env.repo.ID)
-		if err != nil {
-			return nil, fmt.Errorf("list runs: %w", err)
-		}
-		for _, run := range runs {
-			if run.Branch == branch {
-				return run, nil
-			}
+		if run != nil {
+			return run, nil
 		}
 	}
 	active, err := env.d.GetActiveRun(env.repo.ID, "")
@@ -230,6 +227,28 @@ func resolveRun(env *axiEnv, runID, branch string) (*db.Run, error) {
 		return nil, nil
 	}
 	return runs[0], nil
+}
+
+// runForBranch returns the branch's active run, else its most recent run,
+// else (nil, nil).
+func runForBranch(env *axiEnv, branch string) (*db.Run, error) {
+	active, err := env.d.GetActiveRun(env.repo.ID, branch)
+	if err != nil {
+		return nil, fmt.Errorf("get active run: %w", err)
+	}
+	if active != nil {
+		return active, nil
+	}
+	runs, err := env.d.GetRunsByRepo(env.repo.ID)
+	if err != nil {
+		return nil, fmt.Errorf("list runs: %w", err)
+	}
+	for _, run := range runs {
+		if run.Branch == branch {
+			return run, nil
+		}
+	}
+	return nil, nil
 }
 
 func currentBranchForRunResolve(ctx context.Context) string {
