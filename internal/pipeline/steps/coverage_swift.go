@@ -136,7 +136,7 @@ func (swiftCoverageProvider) CoverableChangedFiles(changed []string, workDir str
 // Tests.swift (Xcode: FooTests.swift), or a basename mentioning XCTest. These
 // are the standard XCTest layouts; non-test Swift sources are kept.
 func isSwiftTestFile(path string) bool {
-	for _, seg := range strings.Split(path, string(filepath.Separator)) {
+	for _, seg := range strings.Split(filepath.ToSlash(path), "/") {
 		if seg == "Tests" {
 			return true
 		}
