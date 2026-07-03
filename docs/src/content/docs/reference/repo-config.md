@@ -155,6 +155,41 @@ Like `commands` and `agent`, `steps` selects which code executes, so it is read 
 
 Per-run skips (`--skip`, `git push -o no-mistakes.skip=<steps>`) still apply on top of the configured list.
 
+#### Custom command steps
+
+A `steps` entry may be a mapping instead of a plain name. A mapping carrying a `command` defines a **custom command step** that runs an arbitrary shell command (e.g. `swiftlint`, `xcodebuild test`) as part of the pipeline, reporting pass/fail through the normal gate:
+
+```yaml
+steps:
+  - rebase
+  - name: swiftlint
+    command: swiftlint lint --quiet
+    findings_json: build/swiftlint.json   # optional: structured findings the step ingests
+    timeout: 5m                            # optional: bounds a long/hung command
+    auto_fix: true                         # optional: mark findings auto-fixable
+    instructions:                          # optional: guidance injected into agent steps
+      - .no-mistakes/swift-review.md
+  - review
+  - push
+  - pr
+  - ci
+```
+
+| Field | Type | Meaning |
+|---|---|---|
+| `name` | `string` | Step identity (lowercase letters, digits, `-`, `_`). Must be unique and must not collide with a built-in step name. |
+| `command` | `string` | Shell command to run. Its presence marks the entry as a custom step. Executes on the daemon host, so — like `commands` — it is honored only from the trusted default-branch copy. |
+| `findings_json` | `string` | Optional worktree-relative path the command writes findings JSON to. When present, the step parses it into real per-file/per-line findings instead of mapping a bare exit code to one finding. Accepts the full findings object (`{"findings": [...], "summary": ...}`) or a bare array of finding objects. If the file is absent, the step falls back to exit-code mapping. |
+| `timeout` | `duration` | Optional per-step timeout (Go duration, e.g. `5m`, `90s`). Defaults to 30m. A step that exceeds it is killed and gates with a clear timeout finding. |
+| `auto_fix` | `bool` | Optional. When `true` the step's findings are marked auto-fixable (the executor may drive an agent to resolve them, up to the built-in default of 3 attempts). Default `false`: findings park for an agent/human decision, consistent with the built-in review step. |
+| `instructions` | `string[]` | Optional instruction-file paths whose contents are injected into the built-in agent steps (review, test, lint, document). See below. |
+
+A mapping with only a `name` (no `command`) is a built-in step; it may still carry `instructions`.
+
+#### Per-step instructions
+
+`instructions` lets a repo inject maintainer-authored guidance into the built-in agent steps (for example, review conventions specific to your codebase). The file **contents** are read at the trusted default-branch SHA — never the pushed worktree — and sanitized before injection, so a pushed branch cannot rewrite the guidance the gate injects into its own agent steps. Instruction files absent on the trusted default branch simply contribute nothing. This trusted-SHA read is enforced regardless of `allow_repo_commands`.
+
 ### auto_fix
 
 Override auto-fix attempt limits for specific steps. Fields not set here inherit from global config.

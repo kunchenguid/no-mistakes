@@ -151,6 +151,63 @@ func TestBuildPipeline_ReportsAllProblems(t *testing.T) {
 	}
 }
 
+// A custom command step builds into a CommandStep carrying its command +
+// options, and slots into the pipeline at its list position alongside built-ins.
+func TestBuildPipeline_CustomCommandStep(t *testing.T) {
+	in := []config.StepSpec{
+		{Name: "rebase"},
+		{Name: "swiftlint", Command: "swiftlint lint", FindingsJSON: "sl.json", AutoFix: true},
+		{Name: "push"},
+	}
+	built, err := BuildPipeline(in)
+	if err != nil {
+		t.Fatalf("BuildPipeline: %v", err)
+	}
+	if len(built) != 3 {
+		t.Fatalf("got %d steps, want 3", len(built))
+	}
+	cs, ok := built[1].(*CommandStep)
+	if !ok {
+		t.Fatalf("step[1] is %T, want *CommandStep", built[1])
+	}
+	if cs.Name() != types.StepName("swiftlint") || cs.Command != "swiftlint lint" || cs.FindingsPath != "sl.json" || !cs.AutoFix {
+		t.Errorf("CommandStep = %+v, want swiftlint config wired through", cs)
+	}
+}
+
+func TestBuildPipeline_CustomStepNameCollidesWithBuiltin(t *testing.T) {
+	_, err := BuildPipeline([]config.StepSpec{{Name: "test", Command: "echo hi"}})
+	if err == nil {
+		t.Fatal("expected error for custom step colliding with a built-in name")
+	}
+	if !strings.Contains(err.Error(), "collides with a built-in") {
+		t.Errorf("error = %v, want collision message", err)
+	}
+}
+
+func TestBuildPipeline_CustomStepInvalidName(t *testing.T) {
+	_, err := BuildPipeline([]config.StepSpec{{Name: "Swift Lint!", Command: "swiftlint"}})
+	if err == nil {
+		t.Fatal("expected error for invalid custom step name")
+	}
+	if !strings.Contains(err.Error(), "invalid custom step name") {
+		t.Errorf("error = %v, want invalid-name message", err)
+	}
+}
+
+func TestBuildPipeline_DuplicateCustomAndBuiltinName(t *testing.T) {
+	_, err := BuildPipeline([]config.StepSpec{
+		{Name: "swiftlint", Command: "swiftlint lint"},
+		{Name: "swiftlint", Command: "swiftlint lint --strict"},
+	})
+	if err == nil {
+		t.Fatal("expected error for duplicate custom step name")
+	}
+	if !strings.Contains(err.Error(), `duplicate step "swiftlint"`) {
+		t.Errorf("error = %v, want duplicate message", err)
+	}
+}
+
 func TestValidateStepNames_Warnings(t *testing.T) {
 	tests := []struct {
 		name     string

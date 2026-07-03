@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -88,27 +89,119 @@ type RepoConfig struct {
 	Steps []StepSpec `yaml:"steps"`
 }
 
-// StepSpec selects one pipeline step in a repo's `steps:` list. Today only
-// scalar built-in step names are accepted (e.g. `steps: [rebase, test]`);
-// the struct form leaves room to grow per-step options later without
-// changing the config surface.
+// StepSpec selects one pipeline step in a repo's `steps:` list. It is either a
+// built-in step (a plain scalar name, e.g. `test`) or a repo-defined custom
+// command step (a mapping carrying a `command`, e.g. a SwiftLint invocation).
+// Both forms may appear in the same list, in any order.
 type StepSpec struct {
 	Name string
+	// Command, when non-empty, marks this as a custom command step that runs the
+	// given shell command instead of a built-in. Like Commands and Agent it
+	// executes on the daemon host, so it is a trusted-default-branch-only field.
+	Command string
+	// FindingsJSON is an optional path (relative to the worktree) the command
+	// writes structured findings JSON to. When present the step parses it into
+	// real types.Finding entries (per-file/per-line), rather than mapping an
+	// opaque exit code to a single finding.
+	FindingsJSON string
+	// Timeout bounds a custom command step. Zero means the step's built-in
+	// default, so an unbounded command (e.g. a hung xcodebuild) cannot wedge the
+	// gate forever.
+	Timeout time.Duration
+	// AutoFix expresses fixability the same way built-ins do: when true the
+	// step's findings are marked auto-fixable so the executor's auto-fix loop
+	// may drive an agent to resolve them; when false (default) they park for an
+	// agent/human decision.
+	AutoFix bool
+	// Instructions are instruction-file paths whose contents are injected into
+	// the built-in agent steps. They are read at the trusted default-branch SHA
+	// (never the pushed worktree) and sanitized before injection, so a pushed
+	// branch cannot rewrite the guidance the gate injects.
+	Instructions []string
 }
 
-// UnmarshalYAML accepts a plain scalar step name. Mapping-form entries are
-// rejected with a clear error so a future per-step-options syntax is never
-// silently misparsed by an older binary.
+// IsCommand reports whether this spec defines a custom command step.
+func (s StepSpec) IsCommand() bool { return strings.TrimSpace(s.Command) != "" }
+
+// stepSpecYAML is the mapping form of a steps entry. Timeout is a string so it
+// accepts Go duration syntax (e.g. "5m", "90s").
+type stepSpecYAML struct {
+	Name         string   `yaml:"name"`
+	Command      string   `yaml:"command"`
+	FindingsJSON string   `yaml:"findings_json"`
+	Timeout      string   `yaml:"timeout"`
+	AutoFix      bool     `yaml:"auto_fix"`
+	Instructions []string `yaml:"instructions"`
+}
+
+// UnmarshalYAML accepts either a plain scalar built-in step name or a mapping
+// (per-step options / custom command step). Any other node kind is rejected
+// with a clear error rather than silently misparsed.
 func (s *StepSpec) UnmarshalYAML(value *yaml.Node) error {
-	if value.Kind != yaml.ScalarNode {
-		return fmt.Errorf("parse repo config: steps entries must be plain step names (line %d)", value.Line)
+	switch value.Kind {
+	case yaml.ScalarNode:
+		var name string
+		if err := value.Decode(&name); err != nil {
+			return fmt.Errorf("parse repo config: steps entry: %w", err)
+		}
+		s.Name = strings.TrimSpace(name)
+		return nil
+	case yaml.MappingNode:
+		var raw stepSpecYAML
+		if err := value.Decode(&raw); err != nil {
+			return fmt.Errorf("parse repo config: steps entry (line %d): %w", value.Line, err)
+		}
+		s.Name = strings.TrimSpace(raw.Name)
+		s.Command = strings.TrimSpace(raw.Command)
+		s.FindingsJSON = strings.TrimSpace(raw.FindingsJSON)
+		s.AutoFix = raw.AutoFix
+		s.Instructions = trimNonEmpty(raw.Instructions)
+		if t := strings.TrimSpace(raw.Timeout); t != "" {
+			d, err := time.ParseDuration(t)
+			if err != nil {
+				return fmt.Errorf("parse repo config: steps entry %q: invalid timeout %q: %w", s.Name, raw.Timeout, err)
+			}
+			if d < 0 {
+				return fmt.Errorf("parse repo config: steps entry %q: timeout must not be negative", s.Name)
+			}
+			s.Timeout = d
+		}
+		return nil
+	default:
+		return fmt.Errorf("parse repo config: steps entries must be a step name or a mapping (line %d)", value.Line)
 	}
-	var name string
-	if err := value.Decode(&name); err != nil {
-		return fmt.Errorf("parse repo config: steps entry: %w", err)
+}
+
+// trimNonEmpty trims each element and drops the empties, returning nil when
+// nothing survives so an absent/blank instructions list stays nil.
+func trimNonEmpty(in []string) []string {
+	var out []string
+	for _, v := range in {
+		if v = strings.TrimSpace(v); v != "" {
+			out = append(out, v)
+		}
 	}
-	s.Name = strings.TrimSpace(name)
-	return nil
+	return out
+}
+
+// StepSpecsEqual reports whether two step selections are field-for-field equal.
+// StepSpec carries a slice field, so it is not comparable with ==; this is used
+// where a plain equality check would otherwise be written.
+func StepSpecsEqual(a, b []StepSpec) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Name != b[i].Name ||
+			a[i].Command != b[i].Command ||
+			a[i].FindingsJSON != b[i].FindingsJSON ||
+			a[i].Timeout != b[i].Timeout ||
+			a[i].AutoFix != b[i].AutoFix ||
+			!slices.Equal(a[i].Instructions, b[i].Instructions) {
+			return false
+		}
+	}
+	return true
 }
 
 // Commands holds optional per-repo command overrides.
@@ -158,7 +251,17 @@ type Config struct {
 	// Steps is the repo's pipeline step selection (repo-only, like Commands).
 	// Empty means the full default pipeline.
 	Steps []StepSpec
+	// StepInstructions is the concatenated, resolved content of every
+	// instruction file declared on Steps, read at the trusted default-branch
+	// SHA by the daemon. It is injected (sanitized) into the built-in agent
+	// steps' prompts. Empty when no instructions are configured.
+	StepInstructions string
 }
+
+// DefaultCommandAutoFixLimit is the auto-fix attempt limit a custom command
+// step gets when its auto_fix option is enabled, matching the built-in
+// fixable steps' default of 3.
+const DefaultCommandAutoFixLimit = 3
 
 // TestRaw is the YAML representation of test-step settings.
 type TestRaw struct {
@@ -776,9 +879,17 @@ func (c *Config) AutoFixLimit(step types.StepName) int {
 		return c.AutoFix.CI
 	case types.StepRebase:
 		return c.AutoFix.Rebase
-	default:
-		return 0
 	}
+	// Custom command steps express fixability via their own auto_fix flag.
+	for _, spec := range c.Steps {
+		if spec.IsCommand() && types.StepName(spec.Name) == step {
+			if spec.AutoFix {
+				return DefaultCommandAutoFixLimit
+			}
+			return 0
+		}
+	}
+	return 0
 }
 
 // Merge combines global and per-repo config. Per-repo agent overrides global

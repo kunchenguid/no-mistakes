@@ -37,7 +37,7 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 
 	sctx.Log("updating documentation...")
 
-	historySection := executionContextPromptSection() + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx)
+	historySection := executionContextPromptSection() + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx) + stepInstructionsPromptSection(sctx)
 	prompt := fmt.Sprintf(
 		`Bring the project documentation fully in sync with the code changes. Discover every documentation gap, fix all of them yourself, verify your edits, and report only what you could not resolve.
 

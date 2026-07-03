@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
@@ -156,23 +157,24 @@ func AllSteps() []pipeline.Step {
 
 // BuildPipeline builds the pipeline step slice a run executes, in list order.
 // An empty spec list yields the full default pipeline (identical to AllSteps),
-// which is the backward-compatible path for repos with no `steps:` config.
-// Invalid specs return an error listing every problem; ordering hazards that
-// are legal but probably unintended are logged as warnings.
+// which is the backward-compatible path for repos with no `steps:` config. A
+// spec carrying a `command` becomes a custom CommandStep; a plain-name spec is
+// a built-in. Invalid specs return an error listing every problem; ordering
+// hazards that are legal but probably unintended are logged as warnings.
 // When NM_DEMO=1, mock demo steps are returned regardless of specs.
 func BuildPipeline(stepSpecs []config.StepSpec) ([]pipeline.Step, error) {
 	if IsDemoMode() {
 		return DemoSteps(), nil
 	}
-	names := make([]types.StepName, 0, len(stepSpecs))
-	for _, spec := range stepSpecs {
-		names = append(names, types.StepName(spec.Name))
-	}
-	if len(names) == 0 {
-		names = types.AllSteps()
+	if len(stepSpecs) == 0 {
+		built := make([]pipeline.Step, 0, len(types.AllSteps()))
+		for _, name := range types.AllSteps() {
+			built = append(built, builtinStepConstructors[name]())
+		}
+		return built, nil
 	}
 
-	errs, warns := validateStepNames(names)
+	errs, warns := validateStepSpecs(stepSpecs)
 	for _, warn := range warns {
 		slog.Warn("steps config: " + warn)
 	}
@@ -180,11 +182,62 @@ func BuildPipeline(stepSpecs []config.StepSpec) ([]pipeline.Step, error) {
 		return nil, fmt.Errorf("invalid steps config: %s", strings.Join(errs, "; "))
 	}
 
-	built := make([]pipeline.Step, 0, len(names))
-	for _, name := range names {
-		built = append(built, builtinStepConstructors[name]())
+	built := make([]pipeline.Step, 0, len(stepSpecs))
+	for _, spec := range stepSpecs {
+		if spec.IsCommand() {
+			built = append(built, &CommandStep{
+				StepName:     types.StepName(spec.Name),
+				Command:      spec.Command,
+				FindingsPath: spec.FindingsJSON,
+				Timeout:      spec.Timeout,
+				AutoFix:      spec.AutoFix,
+			})
+			continue
+		}
+		built = append(built, builtinStepConstructors[types.StepName(spec.Name)]())
 	}
 	return built, nil
+}
+
+// customStepNamePattern constrains a custom step name to a filesystem- and
+// identifier-safe shape: the name becomes a StepName, a DB key, and a
+// "<name>.log" filename, so it must not contain path separators or collide
+// with a built-in.
+var customStepNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
+
+// validateStepSpecs checks a full `steps:` selection (built-ins and custom
+// command steps). It applies the same per-name and ordering rules as
+// validateStepNames, plus custom-step-specific rules: a valid, non-colliding,
+// filesystem-safe name. Names must be unique across built-in and custom steps
+// alike, since the executor keys step records and log files by name.
+func validateStepSpecs(specs []config.StepSpec) (errs, warns []string) {
+	pos := make(map[types.StepName]int, len(specs))
+	for i, spec := range specs {
+		name := types.StepName(spec.Name)
+		if spec.Name == "" {
+			errs = append(errs, fmt.Sprintf("steps[%d]: empty step name (valid steps: %s; add a command: to define a custom step)", i, validStepNames))
+			continue
+		}
+		if spec.IsCommand() {
+			if !customStepNamePattern.MatchString(spec.Name) {
+				errs = append(errs, fmt.Sprintf("steps[%d]: invalid custom step name %q (use lowercase letters, digits, '-' and '_', starting with a letter or digit)", i, spec.Name))
+			}
+			if _, isBuiltin := builtinStepConstructors[name]; isBuiltin {
+				errs = append(errs, fmt.Sprintf("steps[%d]: custom step name %q collides with a built-in step; choose another name", i, spec.Name))
+			}
+		} else if _, ok := builtinStepConstructors[name]; !ok {
+			errs = append(errs, fmt.Sprintf("steps[%d]: unknown step %q (valid steps: %s; add a command: to define a custom step)", i, spec.Name, validStepNames))
+			continue
+		}
+		if first, dup := pos[name]; dup {
+			errs = append(errs, fmt.Sprintf("steps[%d]: duplicate step %q (first at steps[%d])", i, spec.Name, first))
+			continue
+		}
+		pos[name] = i
+	}
+
+	chainErrs, chainWarns := stepChainProblems(pos)
+	return append(errs, chainErrs...), append(warns, chainWarns...)
 }
 
 // validateStepNames checks a `steps:` selection. Errors block the run: names
@@ -213,6 +266,15 @@ func validateStepNames(names []types.StepName) (errs, warns []string) {
 		pos[name] = i
 	}
 
+	chainErrs, chainWarns := stepChainProblems(pos)
+	return append(errs, chainErrs...), append(warns, chainWarns...)
+}
+
+// stepChainProblems enforces the push-chain data-loss invariants and flags
+// legal-but-suspicious orderings, given the position of each built-in step in
+// the pipeline. Custom step names never match the built-in constants it checks,
+// so they are transparent to these rules.
+func stepChainProblems(pos map[types.StepName]int) (errs, warns []string) {
 	requiredBefore := []struct {
 		step, dep types.StepName
 		why       string

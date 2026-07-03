@@ -2,6 +2,7 @@ package config
 
 import (
 	"testing"
+	"time"
 )
 
 func stepNames(specs []StepSpec) []string {
@@ -58,12 +59,69 @@ func TestLoadRepoFromBytes_StepsAbsentIsNil(t *testing.T) {
 	}
 }
 
-// Mapping-form entries (per-step options, custom steps) are a later PR; today
-// they must be rejected with a clear error rather than silently misparsed.
-func TestLoadRepoFromBytes_StepsMappingFormRejected(t *testing.T) {
+// Mapping-form entries carry per-step options. A mapping with only a name is a
+// built-in step with options (none here), parsed as that built-in.
+func TestLoadRepoFromBytes_StepsMappingFormBuiltin(t *testing.T) {
 	data := []byte("steps:\n  - name: rebase\n")
+	cfg, err := LoadRepoFromBytes(data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !equalNames(cfg.Steps, []string{"rebase"}) {
+		t.Errorf("steps = %v, want [rebase]", stepNames(cfg.Steps))
+	}
+	if cfg.Steps[0].IsCommand() {
+		t.Error("mapping without a command must not be a custom command step")
+	}
+}
+
+// A mapping carrying a command is a custom command step, with its options
+// parsed off the same entry.
+func TestLoadRepoFromBytes_StepsCustomCommand(t *testing.T) {
+	data := []byte("steps:\n" +
+		"  - rebase\n" +
+		"  - name: swiftlint\n" +
+		"    command: swiftlint lint --quiet\n" +
+		"    findings_json: build/swiftlint.json\n" +
+		"    timeout: 5m\n" +
+		"    auto_fix: true\n" +
+		"    instructions:\n" +
+		"      - .no-mistakes/swift.md\n" +
+		"  - push\n")
+	cfg, err := LoadRepoFromBytes(data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !equalNames(cfg.Steps, []string{"rebase", "swiftlint", "push"}) {
+		t.Fatalf("steps = %v", stepNames(cfg.Steps))
+	}
+	sl := cfg.Steps[1]
+	if !sl.IsCommand() {
+		t.Fatal("swiftlint entry should be a custom command step")
+	}
+	if sl.Command != "swiftlint lint --quiet" {
+		t.Errorf("command = %q", sl.Command)
+	}
+	if sl.FindingsJSON != "build/swiftlint.json" {
+		t.Errorf("findings_json = %q", sl.FindingsJSON)
+	}
+	if sl.Timeout != 5*time.Minute {
+		t.Errorf("timeout = %v, want 5m", sl.Timeout)
+	}
+	if !sl.AutoFix {
+		t.Error("auto_fix = false, want true")
+	}
+	if len(sl.Instructions) != 1 || sl.Instructions[0] != ".no-mistakes/swift.md" {
+		t.Errorf("instructions = %v", sl.Instructions)
+	}
+}
+
+// A malformed per-step timeout must be a clear parse error, not silently
+// dropped.
+func TestLoadRepoFromBytes_StepsInvalidTimeout(t *testing.T) {
+	data := []byte("steps:\n  - name: swiftlint\n    command: swiftlint\n    timeout: not-a-duration\n")
 	if _, err := LoadRepoFromBytes(data); err == nil {
-		t.Fatal("expected error for mapping-form steps entry")
+		t.Fatal("expected error for invalid timeout")
 	}
 }
 
@@ -105,6 +163,28 @@ func TestEffectiveRepoConfig_StepsOptInHonorsPushed(t *testing.T) {
 	want := []string{"rebase", "push"}
 	if !equalNames(got.Steps, want) {
 		t.Errorf("steps = %v, want pushed value %v under opt-in", stepNames(got.Steps), want)
+	}
+}
+
+// A custom command step's auto_fix flag drives its executor auto-fix limit,
+// consistent with how built-in steps express fixability.
+func TestAutoFixLimit_CustomCommandStep(t *testing.T) {
+	cfg := &Config{
+		AutoFix: autoFixDefaults(),
+		Steps: []StepSpec{
+			{Name: "swiftlint", Command: "swiftlint lint", AutoFix: true},
+			{Name: "xctest", Command: "xcodebuild test"}, // auto_fix defaults false
+		},
+	}
+	if got := cfg.AutoFixLimit("swiftlint"); got != DefaultCommandAutoFixLimit {
+		t.Errorf("swiftlint auto-fix limit = %d, want %d", got, DefaultCommandAutoFixLimit)
+	}
+	if got := cfg.AutoFixLimit("xctest"); got != 0 {
+		t.Errorf("xctest auto-fix limit = %d, want 0 (auto_fix off ⇒ parks)", got)
+	}
+	// A built-in step name is unaffected by the custom-step lookup.
+	if got := cfg.AutoFixLimit("lint"); got != cfg.AutoFix.Lint {
+		t.Errorf("built-in lint limit = %d, want %d", got, cfg.AutoFix.Lint)
 	}
 }
 

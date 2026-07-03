@@ -36,7 +36,7 @@ func (s *TestStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	var newTestsFromFix []string
 	var fixSummary string
 	if sctx.Fixing {
-		historySection := executionContextPromptSection() + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx)
+		historySection := executionContextPromptSection() + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx) + stepInstructionsPromptSection(sctx)
 		fixPrompt := fmt.Sprintf(
 			`Fix the failing tests in this repository. Run the tests, identify failures, and fix either the tests or the code to make them pass.
 
@@ -130,7 +130,7 @@ Previous test findings to address:
 		} else {
 			sctx.Log("user intent available, asking agent to gather test evidence...")
 		}
-		reassessHistory := executionContextPromptSection() + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx)
+		reassessHistory := executionContextPromptSection() + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx) + stepInstructionsPromptSection(sctx)
 		evidenceGuidance := fmt.Sprintf("- Write new evidence files into this temporary evidence directory: %s", evidenceDir)
 		if evidenceLocation.StoreInRepo {
 			evidenceGuidance = fmt.Sprintf("- Write new evidence files into this in-repo evidence directory; it is committed and pushed automatically, so artifacts render directly on the PR: %s", evidenceDir)
