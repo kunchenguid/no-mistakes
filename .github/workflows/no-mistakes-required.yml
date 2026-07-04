@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   group: no-mistakes-required-${{ github.event.pull_request.number }}
@@ -31,6 +32,8 @@ jobs:
           PR_BODY: ${{ github.event.pull_request.body }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
           marker='Updates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)'
@@ -38,6 +41,21 @@ jobs:
             echo "Found no-mistakes signature in PR #${PR_NUMBER} body."
             exit 0
           fi
+          # The event payload carries a body snapshot taken when the event
+          # fired. The no-mistakes pipeline pushes the branch (synchronize)
+          # before its PR step rewrites the PR description, so the snapshot
+          # can be momentarily stale, and the follow-up edited event is not
+          # guaranteed to be delivered. Poll the live body before declaring
+          # a violation.
+          echo "Signature not in the event snapshot; polling the live PR body..."
+          for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            sleep 20
+            live_body="$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.body // ""' 2>/dev/null || true)"
+            if printf '%s' "$live_body" | grep -qF -- "$marker"; then
+              echo "Found no-mistakes signature in PR #${PR_NUMBER} body (live body, attempt ${attempt})."
+              exit 0
+            fi
+          done
           {
             echo "::error::This PR was not raised through no-mistakes."
             echo
