@@ -190,6 +190,51 @@ func TestGetChecksFallsBackToStateWhenBucketMissing(t *testing.T) {
 	}
 }
 
+func TestGetChecksSurfacesStderrInError(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr checks 123 --json name,state,bucket,completedAt": {
+			stderr: "authentication required, run `gh auth login`\n",
+			code:   1,
+		},
+	}), nil, "", "")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+	if err == nil {
+		t.Fatal("GetChecks() error = nil, want CLI error")
+	}
+	if !strings.Contains(err.Error(), "authentication required") {
+		t.Fatalf("GetChecks() error = %v, want it to surface gh's stderr", err)
+	}
+	if checks != nil {
+		t.Fatalf("GetChecks() checks = %+v, want nil", checks)
+	}
+}
+
+func TestGetChecksNoChecksReportedStillNil(t *testing.T) {
+	t.Parallel()
+
+	// gh v2.45.0 emits "no checks reported" as an *error* (checks.go:274),
+	// which cobra prints to stderr, not stdout. Detection must scan both
+	// streams; a stdout-only scan would miss this and turn every CI-less
+	// repo into an until-timeout warning-poller.
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr checks 123 --json name,state,bucket,completedAt": {
+			stderr: "no checks reported on the 'main' branch\n",
+			code:   1,
+		},
+	}), nil, "", "")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v, want nil", err)
+	}
+	if checks != nil {
+		t.Fatalf("GetChecks() checks = %+v, want nil", checks)
+	}
+}
+
 func TestGetChecksParsesCompletedAt(t *testing.T) {
 	t.Parallel()
 

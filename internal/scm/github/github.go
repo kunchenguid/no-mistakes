@@ -256,7 +256,7 @@ func (h *Host) GetPRState(ctx context.Context, pr *scm.PR) (scm.PRState, error) 
 	cmd := h.cmd(ctx, "gh", args...)
 	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("gh pr view: %w", err)
+		return "", fmt.Errorf("gh pr view: %w: %s", err, compactCLIError(exitStderr(err)))
 	}
 	return normalizePRState(strings.TrimSpace(string(out))), nil
 }
@@ -265,13 +265,31 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 	args := append([]string{"pr", "checks", pr.Number}, h.repoArgs()...)
 	args = append(args, "--json", "name,state,bucket,completedAt")
 	cmd := h.cmd(ctx, "gh", args...)
-	out, err := cmd.CombinedOutput()
+	out, err := cmd.Output()
 	if err != nil {
-		if strings.Contains(string(out), "no checks reported") {
+		stderr := exitStderr(err)
+		if strings.Contains(string(out)+string(stderr), "no checks reported") {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("gh pr checks: %w", err)
+		return nil, fmt.Errorf("gh pr checks: %w: %s", err, compactCLIError(stderr))
 	}
+	return parseChecksJSON(out)
+}
+
+func (h *Host) GetMergeableState(ctx context.Context, pr *scm.PR) (scm.MergeableState, error) {
+	args := append([]string{"pr", "view", pr.Number}, h.repoArgs()...)
+	args = append(args, "--json", "mergeable", "--jq", ".mergeable")
+	cmd := h.cmd(ctx, "gh", args...)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("gh pr view mergeable: %w: %s", err, compactCLIError(exitStderr(err)))
+	}
+	return normalizeMergeableState(strings.TrimSpace(string(out))), nil
+}
+
+// parseChecksJSON decodes the `gh pr checks --json name,state,bucket,completedAt`
+// payload into normalized checks.
+func parseChecksJSON(out []byte) ([]scm.Check, error) {
 	var raw []struct {
 		Name        string `json:"name"`
 		State       string `json:"state"`
@@ -294,15 +312,32 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 	return checks, nil
 }
 
-func (h *Host) GetMergeableState(ctx context.Context, pr *scm.PR) (scm.MergeableState, error) {
-	args := append([]string{"pr", "view", pr.Number}, h.repoArgs()...)
-	args = append(args, "--json", "mergeable", "--jq", ".mergeable")
-	cmd := h.cmd(ctx, "gh", args...)
-	out, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("gh pr view mergeable: %w", err)
+// exitStderr returns the child process's captured stderr when err is an
+// *exec.ExitError, or nil otherwise. Output() only populates ExitError.Stderr
+// when cmd.Stderr was nil at Start time (true for every gh invocation here).
+func exitStderr(err error) []byte {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.Stderr
 	}
-	return normalizeMergeableState(strings.TrimSpace(string(out))), nil
+	return nil
+}
+
+// compactCLIError collapses a gh CLI stderr capture to its first non-empty
+// line, capped to keep ci.log one line per poll.
+func compactCLIError(stderr []byte) string {
+	const maxLen = 200
+	for _, line := range strings.Split(string(stderr), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if len(line) > maxLen {
+			line = line[:maxLen]
+		}
+		return line
+	}
+	return ""
 }
 
 func (h *Host) FetchFailedCheckLogs(ctx context.Context, _ *scm.PR, branch, headSHA string, failingNames []string) (string, error) {
