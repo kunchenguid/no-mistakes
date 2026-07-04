@@ -196,6 +196,9 @@ Monitors PR health after creation and auto-fixes CI failures. Mergeability polli
 
 **Behavior:**
 - Polls provider CI status at increasing intervals: every 30s for the first 5 minutes, every 60s for 5-15 minutes, every 120s after that
+- On GitHub, reads check results with `gh pr checks --json` on `gh` 2.50.0 or newer, and falls back to `gh pr view --json statusCheckRollup` on older `gh` (detected once per run, then remembered); `no-mistakes doctor` warns when the installed `gh` will use the fallback
+- On GitHub, a check state `gh` reports but no-mistakes does not recognize counts as pending, so an unknown state keeps the step polling instead of counting as passed
+- GitHub poll errors written to the step log include the first line of `gh`'s stderr, so authentication and API failures are diagnosable from the CI step log
 - Continues monitoring an open PR until it is merged, closed, declined, or the configured `ci_timeout` idle window elapses, even after CI checks are currently healthy
 - Treats `ci_timeout` as an idle timeout: each upstream default-branch advance re-arms the timer, and `ci_timeout: "unlimited"` disables self-termination
 - On GitHub, GitLab, and Azure DevOps, polls provider mergeability alongside CI checks while the PR remains open

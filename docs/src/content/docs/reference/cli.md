@@ -310,6 +310,8 @@ Checks:
 
 Uses indicators: `✓` (available), `–` (not found, optional), `✗` (problem detected).
 
+When `gh` is present but older than 2.50.0, `doctor` warns that the [CI step](/no-mistakes/reference/pipeline-steps/#ci) will use its `statusCheckRollup` fallback; this is informational, not a failure.
+
 For `agent: acp:<target>`, `doctor` verifies that `acpx` resolves but does not invoke the target or test its credentials.
 Each validation run performs the authoritative agent resolution again after applying any trusted repository-level override.
 

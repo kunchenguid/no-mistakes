@@ -227,6 +227,7 @@ Symptom: CI step keeps monitoring an open PR longer than expected, or pauses aft
 
 Monitoring while the PR remains open - even after checks are currently healthy - is intended behavior, because a later default-branch update can make the PR conflict or rerun CI.
 Once checks are green and the PR is mergeable, the CI panel shows `✓ Checks passed` and the terminal title switches to `Checks passed`, so you can tell when to go merge the PR; the signal clears automatically if checks start re-running or a new failure appears.
+If checks never read green, look at the step log at `~/.no-mistakes/logs/<runID>/ci.log` for `warning: could not check CI` lines; see the [CI step reference](/no-mistakes/reference/pipeline-steps/#ci) for the `gh` version fallback and poll-error detail it documents.
 
 How long the monitor runs is controlled by `ci_timeout` in `~/.no-mistakes/config.yaml`, an idle timeout that re-arms whenever the upstream default branch advances; the [`ci_timeout` field reference](/no-mistakes/reference/global-config/#ci_timeout) owns the default, the `unlimited` keyword and its aliases, and the exact re-arm semantics.
 Older config files may still contain an explicit `ci_timeout: "4h"` value; update it if you want the newer default behavior.
