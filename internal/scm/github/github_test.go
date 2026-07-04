@@ -2,10 +2,12 @@ package github
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -210,6 +212,25 @@ func TestGetChecksReturnsChecksOnNonZeroExitWithFailures(t *testing.T) {
 	}
 }
 
+func TestGetChecksReturnsPendingChecksOnExitEight(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr checks 123 --json name,state,bucket,completedAt": {
+			stdout: `[{"name":"build","state":"PENDING","bucket":"pending"}]` + "\n",
+			code:   8,
+		},
+	}), nil, "", "")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v, want nil", err)
+	}
+	if len(checks) != 1 || checks[0].Name != "build" || checks[0].Bucket != scm.CheckBucketPending {
+		t.Fatalf("checks = %+v, want single pending build check", checks)
+	}
+}
+
 func TestGetChecksIgnoresBracketedStderrOnNonZeroExit(t *testing.T) {
 	t.Parallel()
 
@@ -227,6 +248,44 @@ func TestGetChecksIgnoresBracketedStderrOnNonZeroExit(t *testing.T) {
 	}
 	if len(checks) != 1 || checks[0].Name != "build" || checks[0].Bucket != scm.CheckBucketFail {
 		t.Fatalf("checks = %+v, want single failing build check", checks)
+	}
+}
+
+func TestGetChecksRejectsNonResultExitCodes(t *testing.T) {
+	t.Parallel()
+
+	for _, code := range []int{2, 4} {
+		code := code
+		t.Run(strconv.Itoa(code), func(t *testing.T) {
+			t.Parallel()
+
+			host := New(githubTestCmdFactory(map[string]githubTestResponse{
+				"gh pr checks 123 --json name,state,bucket,completedAt": {
+					stdout: `[{"name":"build","state":"PENDING","bucket":"pending"}]` + "\n",
+					code:   code,
+				},
+			}), nil, "", "")
+
+			if _, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"}); err == nil {
+				t.Fatal("GetChecks() error = nil, want command failure")
+			}
+		})
+	}
+}
+
+func TestGetChecksReturnsContextError(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr checks 123 --json name,state,bucket,completedAt": {
+			stdout: `[{"name":"build","state":"PENDING","bucket":"pending"}]` + "\n",
+		},
+	}), nil, "", "")
+
+	if _, err := host.GetChecks(ctx, &scm.PR{Number: "123"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("GetChecks() error = %v, want context.Canceled", err)
 	}
 }
 
@@ -465,7 +524,11 @@ func TestGitHubHelperProcess(t *testing.T) {
 		os.Exit(1)
 	}
 	if code := os.Getenv("GITHUB_TEST_EXIT_CODE"); code != "" && code != "0" {
-		os.Exit(1)
+		exitCode, err := strconv.Atoi(code)
+		if err != nil {
+			os.Exit(1)
+		}
+		os.Exit(exitCode)
 	}
 	os.Exit(0)
 }

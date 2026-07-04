@@ -273,11 +273,14 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 	cmd := h.cmd(ctx, "gh", args...)
 	out, err := cmd.Output()
 	if err != nil {
-		diagnostic := string(out)
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			diagnostic += string(exitErr.Stderr)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
 		}
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) || (exitErr.ExitCode() != 1 && exitErr.ExitCode() != 8) {
+			return nil, fmt.Errorf("gh pr checks: %w", err)
+		}
+		diagnostic := string(out) + string(exitErr.Stderr)
 		if strings.Contains(diagnostic, "no checks reported") {
 			return nil, nil
 		}
