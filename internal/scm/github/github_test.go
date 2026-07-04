@@ -390,6 +390,49 @@ func TestGetChecksPrimaryPathUnknownStatePends(t *testing.T) {
 	}
 }
 
+func TestGetChecksPrimaryPathUnknownBucketPends(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr checks 123 --json name,state,bucket,completedAt": {
+			stdout: `[{"name":"future-check","state":"SOME_FUTURE_STATE","bucket":"exotic"}]` + "\n",
+		},
+	}), nil, "", "")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 1 {
+		t.Fatalf("len(checks) = %d, want 1", len(checks))
+	}
+	// A non-empty bucket outside the five gh emits today must not pass
+	// through verbatim: downstream aggregation treats anything that is
+	// neither "fail" nor "pending" as PASSED, so an unrecognized future
+	// bucket value must coerce to pending and keep polling.
+	if checks[0].Bucket != scm.CheckBucketPending {
+		t.Fatalf("checks[0].Bucket = %q, want %q", checks[0].Bucket, scm.CheckBucketPending)
+	}
+}
+
+func TestGetChecksErrorWithoutStderrHasNoTrailingColon(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr checks 123 --json name,state,bucket,completedAt": {
+			code: 1,
+		},
+	}), nil, "", "")
+
+	_, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+	if err == nil {
+		t.Fatal("GetChecks() error = nil, want CLI error")
+	}
+	if strings.HasSuffix(err.Error(), ": ") || strings.HasSuffix(err.Error(), ":") {
+		t.Fatalf("GetChecks() error = %q, want no dangling colon when gh emitted no stderr", err.Error())
+	}
+}
+
 func TestGetChecksParsesCompletedAt(t *testing.T) {
 	t.Parallel()
 

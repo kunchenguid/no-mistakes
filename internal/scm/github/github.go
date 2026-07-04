@@ -264,7 +264,7 @@ func (h *Host) GetPRState(ctx context.Context, pr *scm.PR) (scm.PRState, error) 
 	cmd := h.cmd(ctx, "gh", args...)
 	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("gh pr view: %w: %s", err, compactCLIError(exitStderr(err)))
+		return "", ghCLIError("gh pr view", err)
 	}
 	return normalizePRState(strings.TrimSpace(string(out))), nil
 }
@@ -303,7 +303,7 @@ func (h *Host) getChecksViaFlag(ctx context.Context, pr *scm.PR) (checks []scm.C
 		if strings.Contains(string(stderr), "unknown flag: --json") {
 			return nil, nil, true
 		}
-		return nil, fmt.Errorf("gh pr checks: %w: %s", cmdErr, compactCLIError(stderr)), false
+		return nil, ghCLIError("gh pr checks", cmdErr), false
 	}
 	checks, err = parseChecksJSON(out)
 	return checks, err, false
@@ -320,7 +320,7 @@ func (h *Host) getChecksViaStatusRollup(ctx context.Context, pr *scm.PR) ([]scm.
 	cmd := h.cmd(ctx, "gh", args...)
 	out, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("gh pr view statusCheckRollup: %w: %s", err, compactCLIError(exitStderr(err)))
+		return nil, ghCLIError("gh pr view statusCheckRollup", err)
 	}
 	var payload struct {
 		StatusCheckRollup []struct {
@@ -370,7 +370,7 @@ func (h *Host) GetMergeableState(ctx context.Context, pr *scm.PR) (scm.Mergeable
 	cmd := h.cmd(ctx, "gh", args...)
 	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("gh pr view mergeable: %w: %s", err, compactCLIError(exitStderr(err)))
+		return "", ghCLIError("gh pr view mergeable", err)
 	}
 	return normalizeMergeableState(strings.TrimSpace(string(out))), nil
 }
@@ -407,6 +407,16 @@ func parseChecksJSON(out []byte) ([]scm.Check, error) {
 		checks = append(checks, scm.Check{Name: r.Name, Bucket: bucket, CompletedAt: completedAt})
 	}
 	return checks, nil
+}
+
+// ghCLIError wraps a failed gh invocation, appending the compacted stderr
+// capture only when there is one, so errors without stderr (context canceled,
+// binary not found, silent nonzero exit) don't carry a dangling colon.
+func ghCLIError(op string, err error) error {
+	if detail := compactCLIError(exitStderr(err)); detail != "" {
+		return fmt.Errorf("%s: %w: %s", op, err, detail)
+	}
+	return fmt.Errorf("%s: %w", op, err)
 }
 
 // exitStderr returns the child process's captured stderr when err is an
@@ -582,7 +592,9 @@ func normalizeMergeableState(raw string) scm.MergeableState {
 }
 
 func normalizeCheckBucket(bucket, state string) scm.CheckBucket {
-	if normalized := scm.CheckBucket(strings.TrimSpace(bucket)); normalized != "" {
+	switch normalized := scm.CheckBucket(strings.TrimSpace(bucket)); normalized {
+	case scm.CheckBucketPass, scm.CheckBucketFail, scm.CheckBucketPending,
+		scm.CheckBucketCancel, scm.CheckBucketSkip:
 		return normalized
 	}
 
