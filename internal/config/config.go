@@ -118,10 +118,34 @@ type StepSpec struct {
 	// (never the pushed worktree) and sanitized before injection, so a pushed
 	// branch cannot rewrite the guidance the gate injects.
 	Instructions []string
+	// Type is the optional explicit step kind ("command" or "skill"). It is
+	// advisory: a spec carrying Command is a command step and a spec carrying
+	// Skill is a skill step regardless of Type. Type is validated for
+	// consistency so a mislabeled entry is a clear error rather than a silent
+	// built-in.
+	Type string
+	// Skill, when non-empty, marks this as a skill-driven step: a read-only
+	// (mode: review) agent validation pass whose prompt body comes from the
+	// named repo skill file. Like Command it selects what the maintainer's
+	// agent is steered to do, so its path is a trusted-default-branch-only
+	// field and its content is resolved at the trusted SHA (see SkillBody).
+	Skill string
+	// Mode is the skill step's execution mode. PR3 ships only "review" (a
+	// read-only findings pass); "" defaults to "review". "revise" (mutating
+	// skills) is a later addition.
+	Mode string
+	// SkillBody is the resolved content of the Skill file, read by the daemon
+	// at the trusted default-branch SHA (never the pushed worktree). It is not
+	// parsed from YAML — it is populated after load so a skill body can never
+	// come from the pushed branch, mirroring StepInstructions.
+	SkillBody string
 }
 
 // IsCommand reports whether this spec defines a custom command step.
 func (s StepSpec) IsCommand() bool { return strings.TrimSpace(s.Command) != "" }
+
+// IsSkill reports whether this spec defines a skill-driven step.
+func (s StepSpec) IsSkill() bool { return strings.TrimSpace(s.Skill) != "" }
 
 // stepSpecYAML is the mapping form of a steps entry. Timeout is a string so it
 // accepts Go duration syntax (e.g. "5m", "90s").
@@ -132,6 +156,9 @@ type stepSpecYAML struct {
 	Timeout      string   `yaml:"timeout"`
 	AutoFix      bool     `yaml:"auto_fix"`
 	Instructions []string `yaml:"instructions"`
+	Type         string   `yaml:"type"`
+	Skill        string   `yaml:"skill"`
+	Mode         string   `yaml:"mode"`
 }
 
 // UnmarshalYAML accepts either a plain scalar built-in step name or a mapping
@@ -156,6 +183,9 @@ func (s *StepSpec) UnmarshalYAML(value *yaml.Node) error {
 		s.FindingsJSON = strings.TrimSpace(raw.FindingsJSON)
 		s.AutoFix = raw.AutoFix
 		s.Instructions = trimNonEmpty(raw.Instructions)
+		s.Type = strings.TrimSpace(raw.Type)
+		s.Skill = strings.TrimSpace(raw.Skill)
+		s.Mode = strings.TrimSpace(raw.Mode)
 		if t := strings.TrimSpace(raw.Timeout); t != "" {
 			d, err := time.ParseDuration(t)
 			if err != nil {
@@ -197,6 +227,10 @@ func StepSpecsEqual(a, b []StepSpec) bool {
 			a[i].FindingsJSON != b[i].FindingsJSON ||
 			a[i].Timeout != b[i].Timeout ||
 			a[i].AutoFix != b[i].AutoFix ||
+			a[i].Type != b[i].Type ||
+			a[i].Skill != b[i].Skill ||
+			a[i].Mode != b[i].Mode ||
+			a[i].SkillBody != b[i].SkillBody ||
 			!slices.Equal(a[i].Instructions, b[i].Instructions) {
 			return false
 		}
@@ -880,9 +914,11 @@ func (c *Config) AutoFixLimit(step types.StepName) int {
 	case types.StepRebase:
 		return c.AutoFix.Rebase
 	}
-	// Custom command steps express fixability via their own auto_fix flag.
+	// Custom command and skill steps express fixability via their own auto_fix
+	// flag. Skill review steps default to 0 (park like built-in review) unless
+	// the maintainer opts in.
 	for _, spec := range c.Steps {
-		if spec.IsCommand() && types.StepName(spec.Name) == step {
+		if (spec.IsCommand() || spec.IsSkill()) && types.StepName(spec.Name) == step {
 			if spec.AutoFix {
 				return DefaultCommandAutoFixLimit
 			}

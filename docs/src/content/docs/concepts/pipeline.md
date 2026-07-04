@@ -76,6 +76,7 @@ See [Auto-Fix Loop](/no-mistakes/concepts/auto-fix/) for how the fix cycle works
 You *can*:
 
 - Choose which steps run, and in what order, with a per-repo [`steps:` list](/no-mistakes/reference/repo-config/#steps) (e.g. `steps: [rebase, test, push, pr, ci]`). Omitting it keeps the full default pipeline.
+- Add [custom command steps](/no-mistakes/reference/repo-config/#custom-command-steps) (run an arbitrary shell command as a step) and [skill-driven steps](/no-mistakes/reference/repo-config/#skill-driven-steps) (a read-only agent review whose prompt body comes from a repo-owned skill file).
 - Swap the agent (global or per-repo).
 - Set explicit `commands.test`, `commands.lint`, `commands.format`.
 - Store test evidence locally by default or opt into committed in-repo evidence with `test.evidence.store_in_repo`.
@@ -88,7 +89,6 @@ See [Configuration](/no-mistakes/guides/configuration/).
 
 ## What you can't configure
 
-- Adding new (custom) steps - the `steps:` list selects among the nine built-ins only.
 - Breaking the push chain's ordering guarantees: `ci` needs `pr` before it, `pr` needs `push`, and `push` needs `rebase`. A `steps:` list that violates these fails the run at start.
 - Honoring `steps:`, `commands`, or `agent` from a pushed branch - they are read from the trusted default-branch copy of `.no-mistakes.yaml` unless the maintainer opts in with `allow_repo_commands`.
 

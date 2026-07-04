@@ -192,6 +192,43 @@ For a worked example — running `xcodebuild test` either as `commands.test` or 
 
 `instructions` lets a repo inject maintainer-authored guidance into the built-in agent steps (for example, review conventions specific to your codebase). The file **contents** are read at the trusted default-branch SHA — never the pushed worktree — and sanitized before injection, so a pushed branch cannot rewrite the guidance the gate injects into its own agent steps. Instruction files absent on the trusted default branch simply contribute nothing. This trusted-SHA read is enforced regardless of `allow_repo_commands`.
 
+#### Skill-driven steps
+
+A `steps` entry carrying a `skill` path defines a **skill-driven step**: the same machinery the built-in `review` step uses (a prompt template + a findings JSON schema handed to the agent), except the prompt body comes from a repo-owned skill file. This is how you add a domain-specific review — security, API-compatibility, design-system/UX-copy conformance, architecture rules — whose "check" is prose rather than a deterministic command. It is agent-agnostic: the skill body is inlined into the prompt, so it works with any agent (there is no skill-invocation channel and none is needed).
+
+```yaml
+steps:
+  - intent
+  - rebase
+  - review
+  - name: security-review
+    type: skill
+    skill: .no-mistakes/skills/review.md
+    mode: review          # read-only findings pass (the only mode today)
+    auto_fix: false        # optional; default false (findings park, like built-in review)
+  - test
+  - lint
+  - push
+  - pr
+  - ci
+```
+
+| Field | Type | Meaning |
+|---|---|---|
+| `name` | `string` | Step identity (lowercase letters, digits, `-`, `_`). Must be unique and must not collide with a built-in step name. |
+| `skill` | `string` | Repo-relative path to the skill markdown file. Its presence marks the entry as a skill step. Must not be absolute or escape the repo. |
+| `mode` | `string` | Skill execution mode. Only `review` (a read-only findings pass) is supported today; omitting it defaults to `review`. |
+| `type` | `string` | Optional explicit kind (`skill` or `command`). Advisory — the entry is a skill step whenever it carries a `skill`. A `type` that disagrees with the payload is an error. |
+| `auto_fix` | `bool` | Optional. When `true` the step's findings are marked auto-fixable. Default `false`: findings park for an agent/human decision, matching the built-in review step. |
+
+The step composes the agent prompt from three fixed layers: (1) an engine-owned context header (branch, base/target commit, review scope, default branch, ignore patterns, plus execution/round-history/user-intent context) identical to the built-in review step; (2) the repo-owned **skill body** (your domain instructions, with the file's YAML frontmatter stripped); (3) an engine-owned output contract that enforces the structured-findings schema and the `ask-user` / `auto-fix` / `no-op` action vocabulary. Findings gate exactly like the built-in review, so the `axi respond` surface (approve / fix / skip) works unchanged — `axi respond --action fix --instructions "..."` feeds your guidance into a fix round.
+
+**Security — trusted skill loading:** like `commands`, `agent`, and per-step `instructions`, the skill **body** is read at the trusted default-branch SHA (`git show <trustedSHA>:<path>`), never from the pushed worktree, so a contributor's branch can never rewrite the prompt that drives the maintainer's agent. The `steps:` list itself (including the skill path) is a trusted-default-branch-only field under the secure default. If the skill body cannot be resolved from the trusted default branch (fetch failed, no default branch, or the file is absent there), the step fails closed — it parks with a misconfiguration finding rather than running an empty or pushed-branch prompt.
+
+**Read-only guard (`mode: review`):** a review-mode skill must not change the worktree. After the review pass the step checks `git status --porcelain`; if the skill agent dirtied the tree, the changes are discarded (`git reset --hard` + `git clean -fd`) and a warning finding is recorded ("skill modified the worktree during a review-mode step; changes were discarded"). The read-only contract is enforced, not hoped. When a user chooses `fix` on a skill finding, the follow-up fix round is *allowed* to edit and commits its changes through the normal fix loop — the guard only applies to the read-only review pass.
+
+A starter skill template ships at [`.no-mistakes/skills/review.md`](https://github.com/kunchenguid/no-mistakes/blob/main/.no-mistakes/skills/review.md); copy it and replace the body with your repo's conventions.
+
 ### auto_fix
 
 Override auto-fix attempt limits for specific steps. Fields not set here inherit from global config.

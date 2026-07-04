@@ -225,6 +225,53 @@ func loadTrustedStepInstructions(ctx context.Context, wtDir, trustedSHA string, 
 	return strings.Join(sections, "\n\n")
 }
 
+// loadTrustedSkillBodies resolves the body of every skill-driven step at the
+// trusted default-branch SHA and returns a copy of specs with StepSpec.SkillBody
+// populated. Non-skill specs pass through unchanged.
+//
+// SECURITY: like commands, agent, and step instructions, a skill body steers
+// the maintainer's agent, so its content is read at trustedSHA via `git show`,
+// never from the pushed worktree. A contributor's branch can therefore never
+// rewrite the prompt that drives the review — even when allow_repo_commands
+// lets the skill *path* come from the pushed branch, the *content* is always
+// the trusted default-branch copy (the `steps:` list itself is already a
+// trusted-only field under the secure default, so the path is trusted too).
+// With no trusted SHA (fetch failed, no default branch) it fails closed: the
+// body stays empty and the skill step parks with a misconfiguration finding
+// rather than running an empty or pushed-branch prompt. A skill file absent at
+// trustedSHA (or unreadable) likewise yields an empty body.
+func loadTrustedSkillBodies(ctx context.Context, wtDir, trustedSHA string, specs []config.StepSpec, runID string) []config.StepSpec {
+	hasSkill := false
+	for _, spec := range specs {
+		if spec.IsSkill() {
+			hasSkill = true
+			break
+		}
+	}
+	if !hasSkill {
+		return specs
+	}
+	resolved := make([]config.StepSpec, len(specs))
+	copy(resolved, specs)
+	for i := range resolved {
+		if !resolved[i].IsSkill() {
+			continue
+		}
+		if trustedSHA == "" {
+			resolved[i].SkillBody = ""
+			continue
+		}
+		content, err := git.ShowFile(ctx, wtDir, trustedSHA, resolved[i].Skill)
+		if err != nil {
+			slog.Warn("skill step: file not present on trusted default branch; step will park", "run_id", runID, "sha", trustedSHA, "path", resolved[i].Skill, "error", err)
+			resolved[i].SkillBody = ""
+			continue
+		}
+		resolved[i].SkillBody = content
+	}
+	return resolved
+}
+
 // HandlePushReceived processes a push notification from the post-receive hook.
 // It creates a run, sets up a worktree, and launches pipeline execution in the background.
 func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushReceivedParams) (string, error) {
@@ -439,6 +486,11 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	// the pushed worktree) so a contributor's branch cannot rewrite the guidance
 	// the gate injects into its agent steps.
 	cfg.StepInstructions = loadTrustedStepInstructions(ctx, wtDir, trustedSHA, cfg.Steps, run.ID)
+	// Resolve skill-driven step bodies at the trusted default-branch SHA (not
+	// the pushed worktree) so a contributor's branch cannot rewrite the prompt
+	// that drives the maintainer's agent. The resolved bodies ride on cfg.Steps
+	// into BuildPipeline.
+	cfg.Steps = loadTrustedSkillBodies(ctx, wtDir, trustedSHA, cfg.Steps, run.ID)
 
 	// Create agent. In demo mode, skip resolution and use a no-op agent.
 	var ag agent.Agent

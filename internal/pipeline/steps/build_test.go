@@ -208,6 +208,69 @@ func TestBuildPipeline_DuplicateCustomAndBuiltinName(t *testing.T) {
 	}
 }
 
+// A skill-driven step builds into a SkillStep carrying its resolved body and
+// slots into the pipeline at its list position alongside built-ins.
+func TestBuildPipeline_SkillStep(t *testing.T) {
+	in := []config.StepSpec{
+		{Name: "rebase"},
+		{Name: "security-review", Type: "skill", Skill: ".no-mistakes/skills/security-review.md", Mode: "review", SkillBody: "# guidance", AutoFix: true},
+		{Name: "push"},
+	}
+	built, err := BuildPipeline(in)
+	if err != nil {
+		t.Fatalf("BuildPipeline: %v", err)
+	}
+	if len(built) != 3 {
+		t.Fatalf("got %d steps, want 3", len(built))
+	}
+	ss, ok := built[1].(*SkillStep)
+	if !ok {
+		t.Fatalf("step[1] is %T, want *SkillStep", built[1])
+	}
+	if ss.Name() != types.StepName("security-review") || ss.SkillBody != "# guidance" || ss.Mode != "review" || !ss.AutoFix {
+		t.Errorf("SkillStep = %+v, want security-review config wired through", ss)
+	}
+}
+
+func TestBuildPipeline_SkillStepValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		steps   []config.StepSpec
+		wantErr string
+	}{
+		{"collides_with_builtin", []config.StepSpec{{Name: "review", Skill: "s.md"}}, "collides with a built-in"},
+		{"invalid_name", []config.StepSpec{{Name: "Sec Review", Skill: "s.md"}}, "invalid custom step name"},
+		{"type_skill_without_path", []config.StepSpec{{Name: "sec", Type: "skill"}}, "is type skill but has no skill path"},
+		{"type_command_without_command", []config.StepSpec{{Name: "sec", Type: "command"}}, "is type command but has no command"},
+		{"both_command_and_skill", []config.StepSpec{{Name: "sec", Command: "echo hi", Skill: "s.md"}}, "sets both command and skill"},
+		{"unknown_type", []config.StepSpec{{Name: "sec", Type: "bogus", Skill: "s.md"}}, "unknown type"},
+		{"escaping_path", []config.StepSpec{{Name: "sec", Skill: "../../etc/passwd"}}, "must not escape the repo"},
+		{"absolute_path", []config.StepSpec{{Name: "sec", Skill: "/etc/passwd"}}, "must be repo-relative"},
+		{"unsupported_mode", []config.StepSpec{{Name: "sec", Skill: "s.md", Mode: "revise"}}, "unsupported mode"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := BuildPipeline(tt.steps)
+			if err == nil {
+				t.Fatalf("expected error for %v", tt.steps)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("error = %v, want it to contain %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// A review-mode skill step and mode omitted (defaults to review) are both valid.
+func TestBuildPipeline_SkillStepModeReviewValid(t *testing.T) {
+	for _, mode := range []string{"", "review"} {
+		in := []config.StepSpec{{Name: "sec", Skill: ".no-mistakes/skills/sec.md", Mode: mode, SkillBody: "x"}}
+		if _, err := BuildPipeline(in); err != nil {
+			t.Errorf("BuildPipeline with mode %q: unexpected error %v", mode, err)
+		}
+	}
+}
+
 func TestValidateStepNames_Warnings(t *testing.T) {
 	tests := []struct {
 		name     string

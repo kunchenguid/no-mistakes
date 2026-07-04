@@ -40,9 +40,10 @@ type Harness struct {
 	AgentLog    string // every fake-agent invocation appended here, one JSON per line
 	Scenario    string // optional path to a scenario yaml; empty = built-in default
 
-	agentName         string // claude / codex / opencode
-	allowRepoCommands *bool  // mirrors SetupOpts.AllowRepoCommands
-	repoConfigExtra   string // mirrors SetupOpts.RepoConfigExtra
+	agentName         string            // claude / codex / opencode
+	allowRepoCommands *bool             // mirrors SetupOpts.AllowRepoCommands
+	repoConfigExtra   string            // mirrors SetupOpts.RepoConfigExtra
+	repoExtraFiles    map[string]string // mirrors SetupOpts.RepoExtraFiles
 }
 
 // SetupOpts controls per-test setup.
@@ -71,6 +72,12 @@ type SetupOpts struct {
 	// .no-mistakes.yaml the harness commits, so tests can exercise trusted
 	// per-repo fields (e.g. a `steps:` selection) beyond the harness default.
 	RepoConfigExtra string
+
+	// RepoExtraFiles are additional files committed to the default branch in
+	// the initial commit, keyed by repo-relative path. Tests use this to ship
+	// trusted-default-branch assets (e.g. a `.no-mistakes/skills/*.md` skill
+	// body) that a skill step then resolves at the trusted SHA.
+	RepoExtraFiles map[string]string
 }
 
 const e2eDaemonStartTimeout = "45s"
@@ -106,6 +113,7 @@ func NewHarness(t *testing.T, opts SetupOpts) *Harness {
 		agentName:         opts.Agent,
 		allowRepoCommands: opts.AllowRepoCommands,
 		repoConfigExtra:   opts.RepoConfigExtra,
+		repoExtraFiles:    opts.RepoExtraFiles,
 	}
 
 	for _, dir := range []string{h.BinDir, h.NMHome, h.HomeDir, h.WorkDir} {
@@ -245,6 +253,18 @@ func (h *Harness) initGitRepos() {
 		h.t.Fatalf("write repo config: %v", err)
 	}
 	mustGit(h.WorkDir, "add", "README.md", ".no-mistakes.yaml")
+	// Extra default-branch assets (e.g. a trusted skill body a skill step
+	// resolves at the trusted SHA).
+	for path, content := range h.repoExtraFiles {
+		full := filepath.Join(h.WorkDir, path)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			h.t.Fatalf("mkdir for extra file %s: %v", path, err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			h.t.Fatalf("write extra file %s: %v", path, err)
+		}
+		mustGit(h.WorkDir, "add", path)
+	}
 	mustGit(h.WorkDir, "commit", "-m", "initial commit")
 	mustGit(h.WorkDir, "remote", "add", "origin", h.UpstreamDir)
 	mustGit(h.WorkDir, "push", "-u", "origin", "main")

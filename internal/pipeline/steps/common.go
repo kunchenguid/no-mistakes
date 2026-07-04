@@ -184,7 +184,8 @@ func BuildPipeline(stepSpecs []config.StepSpec) ([]pipeline.Step, error) {
 
 	built := make([]pipeline.Step, 0, len(stepSpecs))
 	for _, spec := range stepSpecs {
-		if spec.IsCommand() {
+		switch {
+		case spec.IsCommand():
 			built = append(built, &CommandStep{
 				StepName:     types.StepName(spec.Name),
 				Command:      spec.Command,
@@ -192,9 +193,16 @@ func BuildPipeline(stepSpecs []config.StepSpec) ([]pipeline.Step, error) {
 				Timeout:      spec.Timeout,
 				AutoFix:      spec.AutoFix,
 			})
-			continue
+		case spec.IsSkill():
+			built = append(built, &SkillStep{
+				StepName:  types.StepName(spec.Name),
+				SkillBody: spec.SkillBody,
+				Mode:      spec.Mode,
+				AutoFix:   spec.AutoFix,
+			})
+		default:
+			built = append(built, builtinStepConstructors[types.StepName(spec.Name)]())
 		}
-		built = append(built, builtinStepConstructors[types.StepName(spec.Name)]())
 	}
 	return built, nil
 }
@@ -205,28 +213,25 @@ func BuildPipeline(stepSpecs []config.StepSpec) ([]pipeline.Step, error) {
 // with a built-in.
 var customStepNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 
-// validateStepSpecs checks a full `steps:` selection (built-ins and custom
-// command steps). It applies the same per-name and ordering rules as
-// validateStepNames, plus custom-step-specific rules: a valid, non-colliding,
-// filesystem-safe name. Names must be unique across built-in and custom steps
-// alike, since the executor keys step records and log files by name.
+// validateStepSpecs checks a full `steps:` selection (built-ins, custom
+// command steps, and skill-driven steps). It applies the same per-name and
+// ordering rules as validateStepNames, plus custom-step-specific rules: a
+// valid, non-colliding, filesystem-safe name; a command step needs a command;
+// a skill step needs a skill path and (in PR3) a read-only mode. Names must be
+// unique across built-in and custom steps alike, since the executor keys step
+// records and log files by name.
 func validateStepSpecs(specs []config.StepSpec) (errs, warns []string) {
 	pos := make(map[types.StepName]int, len(specs))
 	for i, spec := range specs {
 		name := types.StepName(spec.Name)
 		if spec.Name == "" {
-			errs = append(errs, fmt.Sprintf("steps[%d]: empty step name (valid steps: %s; add a command: to define a custom step)", i, validStepNames))
+			errs = append(errs, fmt.Sprintf("steps[%d]: empty step name (valid steps: %s; add a command: or skill: to define a custom step)", i, validStepNames))
 			continue
 		}
-		if spec.IsCommand() {
-			if !customStepNamePattern.MatchString(spec.Name) {
-				errs = append(errs, fmt.Sprintf("steps[%d]: invalid custom step name %q (use lowercase letters, digits, '-' and '_', starting with a letter or digit)", i, spec.Name))
-			}
-			if _, isBuiltin := builtinStepConstructors[name]; isBuiltin {
-				errs = append(errs, fmt.Sprintf("steps[%d]: custom step name %q collides with a built-in step; choose another name", i, spec.Name))
-			}
+		if isCustomStepSpec(spec) {
+			errs = append(errs, validateCustomStepSpec(i, spec, name)...)
 		} else if _, ok := builtinStepConstructors[name]; !ok {
-			errs = append(errs, fmt.Sprintf("steps[%d]: unknown step %q (valid steps: %s; add a command: to define a custom step)", i, spec.Name, validStepNames))
+			errs = append(errs, fmt.Sprintf("steps[%d]: unknown step %q (valid steps: %s; add a command: or skill: to define a custom step)", i, spec.Name, validStepNames))
 			continue
 		}
 		if first, dup := pos[name]; dup {
@@ -238,6 +243,61 @@ func validateStepSpecs(specs []config.StepSpec) (errs, warns []string) {
 
 	chainErrs, chainWarns := stepChainProblems(pos)
 	return append(errs, chainErrs...), append(warns, chainWarns...)
+}
+
+// isCustomStepSpec reports whether a spec is a custom (non-built-in) step: it
+// carries a command, a skill, or an explicit custom type. Routing a spec that
+// declares type: command/skill but omits its payload here (rather than as a
+// built-in) lets validation surface the real "type X but has no Y" error
+// instead of a confusing "unknown step".
+func isCustomStepSpec(spec config.StepSpec) bool {
+	return spec.IsCommand() || spec.IsSkill() || spec.Type == "command" || spec.Type == "skill"
+}
+
+// validateCustomStepSpec applies the rules specific to a command or skill step:
+// a filesystem- and identifier-safe name that does not collide with a
+// built-in, exactly one of command/skill, a matching `type:` when given, a safe
+// skill path, and a supported skill mode.
+func validateCustomStepSpec(i int, spec config.StepSpec, name types.StepName) (errs []string) {
+	if !customStepNamePattern.MatchString(spec.Name) {
+		errs = append(errs, fmt.Sprintf("steps[%d]: invalid custom step name %q (use lowercase letters, digits, '-' and '_', starting with a letter or digit)", i, spec.Name))
+	}
+	if _, isBuiltin := builtinStepConstructors[name]; isBuiltin {
+		errs = append(errs, fmt.Sprintf("steps[%d]: custom step name %q collides with a built-in step; choose another name", i, spec.Name))
+	}
+	if spec.IsCommand() && spec.IsSkill() {
+		errs = append(errs, fmt.Sprintf("steps[%d]: step %q sets both command and skill; a custom step is one or the other", i, spec.Name))
+	}
+	switch spec.Type {
+	case "", "command", "skill":
+	default:
+		errs = append(errs, fmt.Sprintf("steps[%d]: step %q has unknown type %q (use \"command\" or \"skill\")", i, spec.Name, spec.Type))
+	}
+	if spec.Type == "command" && !spec.IsCommand() {
+		errs = append(errs, fmt.Sprintf("steps[%d]: step %q is type command but has no command", i, spec.Name))
+	}
+	if spec.Type == "skill" && !spec.IsSkill() {
+		errs = append(errs, fmt.Sprintf("steps[%d]: step %q is type skill but has no skill path", i, spec.Name))
+	}
+	if spec.IsSkill() {
+		errs = append(errs, validateSkillStepSpec(i, spec)...)
+	}
+	return errs
+}
+
+// validateSkillStepSpec checks skill-only fields: a repo-relative path that
+// does not escape the repo, and a supported mode (PR3 ships read-only review
+// only; revise is a later addition).
+func validateSkillStepSpec(i int, spec config.StepSpec) (errs []string) {
+	if strings.HasPrefix(spec.Skill, "/") || strings.Contains(spec.Skill, "..") {
+		errs = append(errs, fmt.Sprintf("steps[%d]: skill path %q must be repo-relative and must not escape the repo", i, spec.Skill))
+	}
+	switch spec.Mode {
+	case "", SkillModeReview:
+	default:
+		errs = append(errs, fmt.Sprintf("steps[%d]: skill step %q has unsupported mode %q (only %q is supported)", i, spec.Name, spec.Mode, SkillModeReview))
+	}
+	return errs
 }
 
 // validateStepNames checks a `steps:` selection. Errors block the run: names

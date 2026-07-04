@@ -116,6 +116,57 @@ func TestLoadRepoFromBytes_StepsCustomCommand(t *testing.T) {
 	}
 }
 
+// A mapping carrying a skill path is a skill-driven step, with its mode parsed
+// off the same entry. SkillBody is never parsed from YAML — it is resolved by
+// the daemon at the trusted default-branch SHA.
+func TestLoadRepoFromBytes_StepsSkillStep(t *testing.T) {
+	data := []byte("steps:\n" +
+		"  - rebase\n" +
+		"  - name: security-review\n" +
+		"    type: skill\n" +
+		"    skill: .no-mistakes/skills/security-review.md\n" +
+		"    mode: review\n" +
+		"  - push\n")
+	cfg, err := LoadRepoFromBytes(data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !equalNames(cfg.Steps, []string{"rebase", "security-review", "push"}) {
+		t.Fatalf("steps = %v", stepNames(cfg.Steps))
+	}
+	sr := cfg.Steps[1]
+	if !sr.IsSkill() {
+		t.Fatal("security-review entry should be a skill step")
+	}
+	if sr.IsCommand() {
+		t.Error("skill step must not report as a command step")
+	}
+	if sr.Type != "skill" || sr.Skill != ".no-mistakes/skills/security-review.md" || sr.Mode != "review" {
+		t.Errorf("skill step = %+v, want type/skill/mode wired through", sr)
+	}
+	if sr.SkillBody != "" {
+		t.Errorf("SkillBody = %q, want empty (never parsed from YAML)", sr.SkillBody)
+	}
+}
+
+// A skill review step's auto_fix flag drives its executor auto-fix limit, and
+// defaults to 0 (park like built-in review) when omitted.
+func TestAutoFixLimit_SkillStep(t *testing.T) {
+	cfg := &Config{
+		AutoFix: autoFixDefaults(),
+		Steps: []StepSpec{
+			{Name: "security-review", Skill: "s.md"},                 // defaults false ⇒ parks
+			{Name: "style-review", Skill: "style.md", AutoFix: true}, // opted in
+		},
+	}
+	if got := cfg.AutoFixLimit("security-review"); got != 0 {
+		t.Errorf("security-review auto-fix limit = %d, want 0 (default parks)", got)
+	}
+	if got := cfg.AutoFixLimit("style-review"); got != DefaultCommandAutoFixLimit {
+		t.Errorf("style-review auto-fix limit = %d, want %d", got, DefaultCommandAutoFixLimit)
+	}
+}
+
 // A malformed per-step timeout must be a clear parse error, not silently
 // dropped.
 func TestLoadRepoFromBytes_StepsInvalidTimeout(t *testing.T) {
