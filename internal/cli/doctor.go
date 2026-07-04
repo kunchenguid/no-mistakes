@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
@@ -13,6 +15,31 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/winproc"
 	"github.com/spf13/cobra"
 )
+
+// ghVersionRE extracts the dotted version from `gh --version`'s first line,
+// e.g. "gh version 2.45.0 (2025-07-18 ...)" -> "2" "45" "0".
+var ghVersionRE = regexp.MustCompile(`gh version (\d+)\.(\d+)\.(\d+)`)
+
+// ghVersionPredatesChecksJSON reports whether raw (the output of
+// `gh --version`) is older than gh v2.50.0, the release that added
+// `gh pr checks --json` (cli/cli#9079). no-mistakes' CI monitoring falls back
+// to the statusCheckRollup path on older gh either way, so this is purely an
+// informational doctor notice, never a failure. An unparseable version
+// string is treated as current (predates=false) so doctor never warns on a
+// gh variant it doesn't understand.
+func ghVersionPredatesChecksJSON(raw string) (version string, predates bool) {
+	m := ghVersionRE.FindStringSubmatch(raw)
+	if m == nil {
+		return "", false
+	}
+	version = fmt.Sprintf("%s.%s.%s", m[1], m[2], m[3])
+	major, _ := strconv.Atoi(m[1])
+	minor, _ := strconv.Atoi(m[2])
+	if major > 2 || (major == 2 && minor >= 50) {
+		return version, false
+	}
+	return version, true
+}
 
 func newDoctorCmd() *cobra.Command {
 	return &cobra.Command{
@@ -55,6 +82,15 @@ func newDoctorCmd() *cobra.Command {
 					warn("gh            ", "not found "+sDim.Render("(optional, needed for PR/CI)"))
 				} else {
 					ok("gh            ", "ok")
+					ghCmd := exec.Command("gh", "--version")
+					winproc.Harden(ghCmd)
+					if out, verr := ghCmd.Output(); verr == nil {
+						if version, predates := ghVersionPredatesChecksJSON(string(out)); predates {
+							warn("gh version    ", fmt.Sprintf(
+								"%s: 'pr checks --json' unavailable (added in 2.50.0); CI monitoring will use the statusCheckRollup fallback",
+								version))
+						}
+					}
 				}
 
 				if _, err := exec.LookPath("az"); err != nil {
