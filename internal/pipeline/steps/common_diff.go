@@ -38,6 +38,20 @@ func isTestFile(path string) bool {
 	if strings.HasSuffix(base, "Test.java") || strings.HasSuffix(base, "Tests.java") {
 		return true
 	}
+	// Swift/XCTest: *Test.swift or *Tests.swift, or any .swift file under a
+	// Tests/ directory (the Swift Package Manager layout, e.g.
+	// Tests/AppTests/FooTests.swift). isTestFile is path-based, so the XCTest
+	// convention is matched by these naming/location patterns rather than by
+	// inspecting file contents for XCTestCase.
+	if strings.HasSuffix(base, ".swift") {
+		if strings.HasSuffix(base, "Test.swift") || strings.HasSuffix(base, "Tests.swift") {
+			return true
+		}
+		slashed := filepath.ToSlash(path)
+		if strings.HasPrefix(slashed, "Tests/") || strings.Contains(slashed, "/Tests/") {
+			return true
+		}
+	}
 	// JS/TS: *.test.{js,ts,jsx,tsx} or *.spec.{js,ts,jsx,tsx}
 	for _, ext := range []string{".js", ".ts", ".jsx", ".tsx"} {
 		if strings.HasSuffix(base, ".test"+ext) || strings.HasSuffix(base, ".spec"+ext) {

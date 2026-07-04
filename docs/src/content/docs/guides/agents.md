@@ -215,6 +215,20 @@ Persistent server agents (Rovo Dev and OpenCode) use their managed server lifecy
 
 Transient API and network failures are retried up to three times with exponential backoff. Retry messages are streamed through the same `OnChunk` path shown in the TUI.
 
+## Repo agent instructions (CLAUDE.md / AGENTS.md)
+
+Because every agent step runs with the **worktree directory as CWD**, native agents that auto-load project instruction files pick up your repo's conventions during gating with no extra configuration. Claude Code reads `CLAUDE.md`, Codex and several others read `AGENTS.md`, from the checked-out worktree. So the same coding standards, review conventions, and "how to run the tests" notes your agents already follow while writing code also steer no-mistakes' review, test, lint, and document steps.
+
+There are three distinct ways repo content reaches an agent step, and they differ in **where they are read from** — which matters for trust:
+
+| Mechanism | Read from | Trust |
+|---|---|---|
+| `CLAUDE.md` / `AGENTS.md` (agent auto-load) | the **pushed worktree** (the gated SHA) | Contributor-controlled on a feature branch. |
+| [`instructions:`](/no-mistakes/reference/repo-config/#per-step-instructions) on a step | the **trusted default-branch SHA**, sanitized | Maintainer-controlled; a pushed branch cannot rewrite it. |
+| [`commands` / `agent` / `steps`](/no-mistakes/reference/repo-config/#allow_repo_commands) | the **trusted default branch** (unless `allow_repo_commands: true`) | Maintainer-controlled by default. |
+
+For a personal or single-developer repo this is all upside: your `CLAUDE.md` conventions apply everywhere for free. For a repo that accepts outside contributions, treat an auto-loaded `CLAUDE.md`/`AGENTS.md` on a **pushed branch** as untrusted context the contributor can influence — the daemon's workspace-boundary steering and the [gate model](/no-mistakes/concepts/gate-model/) still bound what an agent step can do, but if you want guidance the gate injects that a pushed branch cannot alter, put it in a step's `instructions:` file (read at the trusted default-branch SHA and sanitized) rather than relying on `CLAUDE.md`. Likewise, keep code-executing selections (`commands`, `agent`, `steps`) on your default branch and leave `allow_repo_commands` at its `false` default unless you trust every branch you push.
+
 ## Intent extraction
 
 When an agent starts a run through `no-mistakes axi run --intent`, no-mistakes uses that supplied intent verbatim and skips transcript-based inference, even if `intent.enabled` is false.

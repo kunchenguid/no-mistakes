@@ -156,6 +156,7 @@ Task:
 - Prefer product-level artifacts: screenshots, GIFs, videos, rendered UI, CLI transcripts, API responses, persisted database state, generated PR markdown, logs, or other outputs that directly show the intended behavior working.
 - For UI, HTML, CSS, Electron renderer, browser, visual layout, or copy-placement changes, attempt to capture reviewer-visible visual evidence.
 - Prefer screenshots, images, videos, GIFs, or rendered HTML artifacts that show the actual end-user surface.
+- If the test target is a simulator or emulator build (e.g. an iOS Simulator via xcodebuild/xcrun simctl, or an Android emulator), capture simulator screenshots or recordings of the running app as evidence (for iOS, xcrun simctl io booted screenshot), since the simulated end-user surface is the reviewer-visible artifact.
 - DOM snapshots, selector assertions, and text-only render summaries are not substitutes for visual evidence when a rendered surface is available.
 - If a UI-facing change has no screenshot, image, video, GIF, or rendered HTML artifact, state why in testing_summary.
 %s

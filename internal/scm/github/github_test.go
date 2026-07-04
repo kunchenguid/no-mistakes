@@ -125,6 +125,81 @@ func TestUpdatePRStreamsBodyThroughStdin(t *testing.T) {
 	}
 }
 
+// TestGetChecksExitConditions pins how GetChecks interprets each `gh pr checks`
+// exit condition. gh only applies its special exit codes (SilentError for
+// failing, exit 8 for pending) in table-render mode; with `--json` it
+// early-returns via the exporter and exits 0 for passing, failing, AND pending
+// checks (verified against gh 2.95.0). The only non-zero exits GetChecks sees
+// with `--json` are the "no checks reported" case (treated as an empty result)
+// and genuine CLI errors (surfaced as an error).
+func TestGetChecksExitConditions(t *testing.T) {
+	t.Parallel()
+
+	const cmdKey = "gh pr checks 123 --json name,state,bucket,completedAt"
+
+	cases := []struct {
+		name       string
+		resp       githubTestResponse
+		wantErr    bool
+		wantChecks int
+		wantBucket scm.CheckBucket // bucket of first check, when wantChecks > 0
+	}{
+		{
+			name:       "all passing exits 0 with json",
+			resp:       githubTestResponse{stdout: `[{"name":"build","state":"SUCCESS","bucket":"pass"}]` + "\n"},
+			wantChecks: 1,
+			wantBucket: scm.CheckBucketPass,
+		},
+		{
+			name:       "failing checks exit 0 with json (exporter early-returns)",
+			resp:       githubTestResponse{stdout: `[{"name":"build","state":"FAILURE","bucket":"fail"}]` + "\n"},
+			wantChecks: 1,
+			wantBucket: scm.CheckBucketFail,
+		},
+		{
+			name:       "pending checks exit 0 with json (not the exit-8 render path)",
+			resp:       githubTestResponse{stdout: `[{"name":"build","state":"PENDING","bucket":"pending"}]` + "\n"},
+			wantChecks: 1,
+			wantBucket: scm.CheckBucketPending,
+		},
+		{
+			name:       "no checks reported is an empty result, not an error",
+			resp:       githubTestResponse{stderr: "no checks reported on the 'feature' branch\n", code: 1},
+			wantChecks: 0,
+		},
+		{
+			name:    "genuine CLI error surfaces as error",
+			resp:    githubTestResponse{stderr: "could not resolve to a PullRequest\n", code: 1},
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			host := New(githubTestCmdFactory(map[string]githubTestResponse{
+				cmdKey: tc.resp,
+			}), nil, "")
+
+			checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("GetChecks() error = nil, want error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("GetChecks() error = %v", err)
+			}
+			if len(checks) != tc.wantChecks {
+				t.Fatalf("len(checks) = %d, want %d", len(checks), tc.wantChecks)
+			}
+			if tc.wantChecks > 0 && checks[0].Bucket != tc.wantBucket {
+				t.Fatalf("checks[0].Bucket = %q, want %q", checks[0].Bucket, tc.wantBucket)
+			}
+		})
+	}
+}
+
 func TestGetChecksFallsBackToStateWhenBucketMissing(t *testing.T) {
 	t.Parallel()
 

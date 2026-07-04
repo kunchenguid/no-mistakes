@@ -388,7 +388,11 @@ Instructions:
 		strings.Join(conflictFiles, "\n- "),
 	)
 	if sctx.PreviousFindings != "" {
-		prompt += "\n\nPrevious findings:\n" + sctx.PreviousFindings
+		// Previous findings are untrusted text (finding descriptions can carry
+		// contributor-controlled content). Neutralize prompt-control markers
+		// before injecting, matching how review/test/lint/document steps handle
+		// PreviousFindings.
+		prompt += "\n\nPrevious findings:\n" + sanitizedPreviousFindingsForPrompt(sctx.PreviousFindings)
 	}
 	prompt += userIntentPromptSection(sctx)
 
