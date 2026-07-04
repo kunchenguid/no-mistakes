@@ -235,6 +235,136 @@ func TestGetChecksNoChecksReportedStillNil(t *testing.T) {
 	}
 }
 
+func TestGetChecksFallsBackWhenJSONFlagUnsupported(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr checks 123 --json name,state,bucket,completedAt": {
+			stderr: "unknown flag: --json\n",
+			code:   1,
+		},
+		"gh pr view 123 --json statusCheckRollup": {
+			stdout: `{"statusCheckRollup":[` +
+				`{"__typename":"CheckRun","name":"build","conclusion":"SUCCESS","completedAt":"2026-04-24T04:15:00Z"},` +
+				`{"__typename":"CheckRun","name":"deploy","conclusion":"","status":"IN_PROGRESS"},` +
+				`{"__typename":"StatusContext","context":"ci/circleci","state":"FAILURE","completedAt":"2026-04-24T04:16:00Z"},` +
+				`{"__typename":"StatusContext","context":"ci/legacy","state":"PENDING"}` +
+				`]}` + "\n",
+		},
+	}), nil, "", "")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 4 {
+		t.Fatalf("len(checks) = %d, want 4: %+v", len(checks), checks)
+	}
+
+	wantBuildCompletedAt := time.Date(2026, 4, 24, 4, 15, 0, 0, time.UTC)
+	if checks[0].Name != "build" || checks[0].Bucket != scm.CheckBucketPass {
+		t.Fatalf("checks[0] = %+v, want passing build check", checks[0])
+	}
+	if !checks[0].CompletedAt.Equal(wantBuildCompletedAt) {
+		t.Fatalf("checks[0].CompletedAt = %v, want %v", checks[0].CompletedAt, wantBuildCompletedAt)
+	}
+	if checks[1].Name != "deploy" || checks[1].Bucket != scm.CheckBucketPending {
+		t.Fatalf("checks[1] = %+v, want pending deploy check (empty conclusion, in-progress status)", checks[1])
+	}
+	wantCIRCompletedAt := time.Date(2026, 4, 24, 4, 16, 0, 0, time.UTC)
+	if checks[2].Name != "ci/circleci" || checks[2].Bucket != scm.CheckBucketFail {
+		t.Fatalf("checks[2] = %+v, want failing ci/circleci check", checks[2])
+	}
+	if !checks[2].CompletedAt.Equal(wantCIRCompletedAt) {
+		t.Fatalf("checks[2].CompletedAt = %v, want %v", checks[2].CompletedAt, wantCIRCompletedAt)
+	}
+	if checks[3].Name != "ci/legacy" || checks[3].Bucket != scm.CheckBucketPending {
+		t.Fatalf("checks[3] = %+v, want pending ci/legacy check", checks[3])
+	}
+}
+
+func TestGetChecksMemoizesJSONUnsupported(t *testing.T) {
+	t.Parallel()
+
+	counts := map[string]*int{}
+	host := New(githubTestCmdFactoryWithCounts(map[string]githubTestResponse{
+		"gh pr checks 123 --json name,state,bucket,completedAt": {
+			stderr: "unknown flag: --json\n",
+			code:   1,
+		},
+		"gh pr view 123 --json statusCheckRollup": {
+			stdout: `{"statusCheckRollup":[]}` + "\n",
+		},
+	}, counts), nil, "", "")
+
+	if _, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"}); err != nil {
+		t.Fatalf("GetChecks() #1 error = %v", err)
+	}
+	if _, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"}); err != nil {
+		t.Fatalf("GetChecks() #2 error = %v", err)
+	}
+
+	prChecksKey := "gh pr checks 123 --json name,state,bucket,completedAt"
+	if got := countOf(counts, prChecksKey); got != 1 {
+		t.Fatalf("gh pr checks attempted %d times, want exactly 1 (memoized)", got)
+	}
+	rollupKey := "gh pr view 123 --json statusCheckRollup"
+	if got := countOf(counts, rollupKey); got != 2 {
+		t.Fatalf("gh pr view statusCheckRollup attempted %d times, want 2", got)
+	}
+}
+
+func TestGetChecksFallbackEmptyRollup(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr checks 123 --json name,state,bucket,completedAt": {
+			stderr: "unknown flag: --json\n",
+			code:   1,
+		},
+		"gh pr view 123 --json statusCheckRollup": {
+			stdout: `{"statusCheckRollup":[]}` + "\n",
+		},
+	}), nil, "", "")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 0 {
+		t.Fatalf("checks = %+v, want empty slice", checks)
+	}
+}
+
+func TestGetChecksFallbackUnknownStatePends(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr checks 123 --json name,state,bucket,completedAt": {
+			stderr: "unknown flag: --json\n",
+			code:   1,
+		},
+		"gh pr view 123 --json statusCheckRollup": {
+			stdout: `{"statusCheckRollup":[{"__typename":"CheckRun","name":"future-check","conclusion":"SOME_FUTURE_STATE"}]}` + "\n",
+		},
+	}), nil, "", "")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 1 {
+		t.Fatalf("len(checks) = %d, want 1", len(checks))
+	}
+	// An unmapped bucket must never surface as "" (which downstream
+	// aggregation treats as PASSED); it must coerce to pending so an
+	// unrecognized future gh enum value keeps polling instead of
+	// green-lighting the merge gate.
+	if checks[0].Bucket != scm.CheckBucketPending {
+		t.Fatalf("checks[0].Bucket = %q, want %q", checks[0].Bucket, scm.CheckBucketPending)
+	}
+}
+
 func TestGetChecksParsesCompletedAt(t *testing.T) {
 	t.Parallel()
 
@@ -421,6 +551,31 @@ func githubTestCmdFactory(responses map[string]githubTestResponse) CmdFactory {
 		)
 		return cmd
 	}
+}
+
+// githubTestCmdFactoryWithCounts wraps githubTestCmdFactory, additionally
+// recording how many times each exact "name args..." command line was
+// invoked, keyed the same way as the responses map. Used to assert
+// memoization (a command attempted at most once) rather than just its
+// eventual output.
+func githubTestCmdFactoryWithCounts(responses map[string]githubTestResponse, counts map[string]*int) CmdFactory {
+	inner := githubTestCmdFactory(responses)
+	return func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		key := strings.TrimSpace(name + " " + strings.Join(args, " "))
+		if counts[key] == nil {
+			n := 0
+			counts[key] = &n
+		}
+		*counts[key]++
+		return inner(ctx, name, args...)
+	}
+}
+
+func countOf(counts map[string]*int, key string) int {
+	if n := counts[key]; n != nil {
+		return *n
+	}
+	return 0
 }
 
 func TestGitHubHelperProcess(t *testing.T) {
