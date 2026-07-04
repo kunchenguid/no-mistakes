@@ -28,7 +28,8 @@ type Host struct {
 	// checksJSONUnsupported memoizes that `gh pr checks --json` isn't
 	// supported by the resolved gh binary (added in gh v2.50.0, cli/cli#9079),
 	// so GetChecks stops retrying it and goes straight to the
-	// statusCheckRollup fallback. Attempted at most once per process.
+	// statusCheckRollup fallback. Attempted at most once per Host; a fresh
+	// Host is built per CI-step run, so the memo lasts for that run.
 	checksJSONUnsupported atomic.Bool
 }
 
@@ -273,7 +274,8 @@ func (h *Host) GetPRState(ctx context.Context, pr *scm.PR) (scm.PRState, error) 
 // (cli/cli#9079 added it in 2.50.0); the first time that's detected via its
 // stderr ("unknown flag: --json"), it's memoized on h so every later call on
 // this Host goes straight to the statusCheckRollup fallback instead of
-// re-attempting a flag that will never work until the daemon restarts.
+// re-attempting a flag that will never work; the memo is per-Host, and a
+// fresh Host is built for each CI-step run.
 func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 	if !h.checksJSONUnsupported.Load() {
 		checks, err, unsupported := h.getChecksViaFlag(ctx, pr)
@@ -393,7 +395,16 @@ func parseChecksJSON(out []byte) ([]scm.Check, error) {
 				completedAt = parsed
 			}
 		}
-		checks = append(checks, scm.Check{Name: r.Name, Bucket: normalizeCheckBucket(r.Bucket, r.State), CompletedAt: completedAt})
+		// Same hardening as getChecksViaStatusRollup: the EMPTY bucket is
+		// counted as neither Failing() nor Pending() downstream and so is
+		// treated as PASSED (ci.go's aggregation default branch). An
+		// unrecognized future state must keep polling, never silently
+		// green-light the merge gate.
+		bucket := normalizeCheckBucket(r.Bucket, r.State)
+		if bucket == "" {
+			bucket = scm.CheckBucketPending
+		}
+		checks = append(checks, scm.Check{Name: r.Name, Bucket: bucket, CompletedAt: completedAt})
 	}
 	return checks, nil
 }

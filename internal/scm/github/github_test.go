@@ -365,6 +365,31 @@ func TestGetChecksFallbackUnknownStatePends(t *testing.T) {
 	}
 }
 
+func TestGetChecksPrimaryPathUnknownStatePends(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr checks 123 --json name,state,bucket,completedAt": {
+			stdout: `[{"name":"future-check","state":"SOME_FUTURE_STATE","bucket":""}]` + "\n",
+		},
+	}), nil, "", "")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 1 {
+		t.Fatalf("len(checks) = %d, want 1", len(checks))
+	}
+	// Same invariant as the statusCheckRollup fallback: an unmapped bucket
+	// must never surface as "" (downstream aggregation treats it as PASSED);
+	// it must coerce to pending so an unrecognized future gh enum value
+	// keeps polling instead of green-lighting the merge gate.
+	if checks[0].Bucket != scm.CheckBucketPending {
+		t.Fatalf("checks[0].Bucket = %q, want %q", checks[0].Bucket, scm.CheckBucketPending)
+	}
+}
+
 func TestGetChecksParsesCompletedAt(t *testing.T) {
 	t.Parallel()
 
