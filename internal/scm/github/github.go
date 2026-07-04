@@ -271,27 +271,19 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 	args := append([]string{"pr", "checks", pr.Number}, h.repoArgs()...)
 	args = append(args, "--json", "name,state,bucket,completedAt")
 	cmd := h.cmd(ctx, "gh", args...)
-	out, err := cmd.CombinedOutput()
+	out, err := cmd.Output()
 	if err != nil {
-		outStr := string(out)
-		if strings.Contains(outStr, "no checks reported") {
+		diagnostic := string(out)
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			diagnostic += string(exitErr.Stderr)
+		}
+		if strings.Contains(diagnostic, "no checks reported") {
 			return nil, nil
 		}
-		// gh pr checks --json exits non-zero both when checks are failing and
-		// when no checks are registered on the PR. In both cases stdout is a
-		// valid JSON array; the non-zero exit signals check state, not a
-		// command error. Extract the JSON array from the combined output (which
-		// may also contain stderr text) and fall through to parse it.
-		start := strings.IndexByte(outStr, '[')
-		end := strings.LastIndexByte(outStr, ']')
-		if start < 0 || end < start {
+		if !isJSONArray(out) {
 			return nil, fmt.Errorf("gh pr checks: %w", err)
 		}
-		candidate := []byte(outStr[start : end+1])
-		if !isJSONArray(candidate) {
-			return nil, fmt.Errorf("gh pr checks: %w", err)
-		}
-		out = candidate
 	}
 	var raw []struct {
 		Name        string `json:"name"`

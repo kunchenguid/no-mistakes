@@ -210,6 +210,26 @@ func TestGetChecksReturnsChecksOnNonZeroExitWithFailures(t *testing.T) {
 	}
 }
 
+func TestGetChecksIgnoresBracketedStderrOnNonZeroExit(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr checks 123 --json name,state,bucket,completedAt": {
+			stdout: `[{"name":"build","state":"FAILURE","bucket":"fail"}]` + "\n",
+			stderr: "warning: check failed [exit status 1]\n",
+			code:   1,
+		},
+	}), nil, "", "")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v, want nil", err)
+	}
+	if len(checks) != 1 || checks[0].Name != "build" || checks[0].Bucket != scm.CheckBucketFail {
+		t.Fatalf("checks = %+v, want single failing build check", checks)
+	}
+}
+
 func TestGetChecksFallsBackToStateWhenBucketMissing(t *testing.T) {
 	t.Parallel()
 
