@@ -121,6 +121,12 @@ func (h *Host) headRef(branch string) string {
 	return h.forkOwner + ":" + branch
 }
 
+// isJSONArray reports whether b is a valid JSON array (possibly empty).
+func isJSONArray(b []byte) bool {
+	var probe []json.RawMessage
+	return json.Unmarshal(b, &probe) == nil
+}
+
 func repoOwner(slug string) string {
 	owner, _, ok := strings.Cut(strings.TrimSpace(slug), "/")
 	if !ok {
@@ -267,10 +273,25 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 	cmd := h.cmd(ctx, "gh", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		if strings.Contains(string(out), "no checks reported") {
+		outStr := string(out)
+		if strings.Contains(outStr, "no checks reported") {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("gh pr checks: %w", err)
+		// gh pr checks --json exits non-zero both when checks are failing and
+		// when no checks are registered on the PR. In both cases stdout is a
+		// valid JSON array; the non-zero exit signals check state, not a
+		// command error. Extract the JSON array from the combined output (which
+		// may also contain stderr text) and fall through to parse it.
+		start := strings.IndexByte(outStr, '[')
+		end := strings.LastIndexByte(outStr, ']')
+		if start < 0 || end < start {
+			return nil, fmt.Errorf("gh pr checks: %w", err)
+		}
+		candidate := []byte(outStr[start : end+1])
+		if !isJSONArray(candidate) {
+			return nil, fmt.Errorf("gh pr checks: %w", err)
+		}
+		out = candidate
 	}
 	var raw []struct {
 		Name        string `json:"name"`

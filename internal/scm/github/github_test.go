@@ -166,6 +166,50 @@ func TestUpdatePRStreamsBodyThroughStdin(t *testing.T) {
 	}
 }
 
+func TestGetChecksReturnsEmptyWhenNoChecksRegistered(t *testing.T) {
+	t.Parallel()
+
+	// gh pr checks --json exits 1 with an empty JSON array on stdout when no
+	// CI checks are registered on the PR. This must not be treated as an error
+	// so the CI step can detect "no checks" and exit rather than stalling.
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr checks 123 --json name,state,bucket,completedAt": {
+			stdout: "[]\n",
+			code:   1,
+		},
+	}), nil, "", "")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v, want nil for empty checks list", err)
+	}
+	if len(checks) != 0 {
+		t.Fatalf("len(checks) = %d, want 0", len(checks))
+	}
+}
+
+func TestGetChecksReturnsChecksOnNonZeroExitWithFailures(t *testing.T) {
+	t.Parallel()
+
+	// gh pr checks --json exits 1 when checks are present but some have failed.
+	// The JSON array on stdout should still be parsed and returned.
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr checks 123 --json name,state,bucket,completedAt": {
+			stdout: `[{"name":"build","state":"FAILURE","bucket":"fail"}]` + "\n",
+			stderr: "some checks did not pass\n",
+			code:   1,
+		},
+	}), nil, "", "")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v, want nil", err)
+	}
+	if len(checks) != 1 || checks[0].Name != "build" || checks[0].Bucket != scm.CheckBucketFail {
+		t.Fatalf("checks = %+v, want single failing build check", checks)
+	}
+}
+
 func TestGetChecksFallsBackToStateWhenBucketMissing(t *testing.T) {
 	t.Parallel()
 
