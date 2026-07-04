@@ -43,6 +43,20 @@ func (p *Paths) RepoDir(repoID string) string {
 	return filepath.Join(p.root, "repos", repoID+".git")
 }
 
+// ProfilesDir holds shared gate profiles, one directory per named profile.
+// A repo's trusted `profile: <name>` field selects <ProfilesDir>/<name>/.
+func (p *Paths) ProfilesDir() string { return filepath.Join(p.root, "profiles") }
+
+// ProfileDir is the directory of a single named profile.
+func (p *Paths) ProfileDir(name string) string {
+	return filepath.Join(p.root, "profiles", name)
+}
+
+// ProfileFile is the profile.yaml of a single named profile.
+func (p *Paths) ProfileFile(name string) string {
+	return filepath.Join(p.root, "profiles", name, "profile.yaml")
+}
+
 func (p *Paths) WorktreesDir() string { return filepath.Join(p.root, "worktrees") }
 func (p *Paths) WorktreeDir(repoID, runID string) string {
 	return filepath.Join(p.root, "worktrees", repoID, runID)

@@ -191,11 +191,15 @@ type RunInfo struct {
 	// driving agent's response. AwaitingAgentSince is the unix-seconds time it
 	// parked, so a supervisor can read "parked for N seconds" in one call. Both
 	// are observability only and clear the moment the agent responds.
-	AwaitingAgent      bool             `json:"awaiting_agent,omitempty"`
-	AwaitingAgentSince *int64           `json:"awaiting_agent_since,omitempty"`
-	Steps              []StepResultInfo `json:"steps,omitempty"`
-	CreatedAt          int64            `json:"created_at"`
-	UpdatedAt          int64            `json:"updated_at"`
+	AwaitingAgent      bool   `json:"awaiting_agent,omitempty"`
+	AwaitingAgentSince *int64 `json:"awaiting_agent_since,omitempty"`
+	// Profile is the shared gate profile stamp ("<name>@<ref>") that gated this
+	// run, or nil when no profile was used. A consumer can read it to confirm
+	// which profile enforced the gate.
+	Profile   *string          `json:"profile,omitempty"`
+	Steps     []StepResultInfo `json:"steps,omitempty"`
+	CreatedAt int64            `json:"created_at"`
+	UpdatedAt int64            `json:"updated_at"`
 }
 
 // StepResultInfo is the IPC representation of a step result.

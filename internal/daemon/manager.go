@@ -2,8 +2,11 @@ package daemon
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -272,6 +275,153 @@ func loadTrustedSkillBodies(ctx context.Context, wtDir, trustedSHA string, specs
 	return resolved
 }
 
+// loadProfile resolves the shared gate profile named by a repo's trusted
+// `profile:` field to its parsed profile.yaml plus the on-disk profile
+// directory. Both are host-local under <NM_HOME>/profiles/<name>/, a path no
+// pushed commit can address, so nothing here is read from the worktree.
+//
+// It fails closed (returns an error) when the name is unsafe, the directory or
+// profile.yaml is missing/unreadable, or profile.yaml does not parse — a
+// missing/broken profile is a run-start error, never a silent fall back to the
+// default pipeline (mirrors a bad steps: config).
+func (m *RunManager) loadProfile(name string) (*config.ProfileConfig, string, error) {
+	if !steps.ValidCustomName(name) {
+		return nil, "", fmt.Errorf("invalid profile name %q (use lowercase letters, digits, '-' and '_', starting with a letter or digit)", name)
+	}
+	profileDir := m.paths.ProfileDir(name)
+	profilePath := m.paths.ProfileFile(name)
+	data, err := os.ReadFile(profilePath)
+	if err != nil {
+		return nil, "", fmt.Errorf("read profile.yaml at %s: %w", profilePath, err)
+	}
+	profile, err := config.LoadProfileFromBytes(data)
+	if err != nil {
+		return nil, "", fmt.Errorf("parse profile %q: %w", name, err)
+	}
+	return profile, profileDir, nil
+}
+
+// profilePathWithinDir joins a profile-relative file path onto the profile
+// directory and confirms the result does not escape it (defense in depth: the
+// merged step list is also validated by validateStepSpecs, which rejects
+// absolute paths and ".."). It returns the cleaned absolute path and whether it
+// is safe to read.
+func profilePathWithinDir(profileDir, rel string) (string, bool) {
+	if strings.TrimSpace(rel) == "" || filepath.IsAbs(rel) {
+		return "", false
+	}
+	full := filepath.Join(profileDir, rel)
+	relCheck, err := filepath.Rel(profileDir, full)
+	if err != nil || relCheck == ".." || strings.HasPrefix(relCheck, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return full, true
+}
+
+// loadProfileSkillBodies resolves each skill-driven profile step's body from a
+// file under the profile directory (host-local disk), returning a copy of specs
+// with StepSpec.SkillBody populated. Non-skill specs pass through unchanged.
+//
+// Unlike loadTrustedSkillBodies (which reads repo skills at the trusted
+// default-branch SHA via git show), profile skills live under <NM_HOME>/
+// profiles and are read straight from disk. A path that escapes the profile
+// directory, or a missing/unreadable file, yields an empty body → the skill
+// step parks with a misconfiguration finding rather than running an empty
+// prompt.
+func loadProfileSkillBodies(profileDir string, specs []config.StepSpec, runID string) []config.StepSpec {
+	resolved := make([]config.StepSpec, len(specs))
+	copy(resolved, specs)
+	for i := range resolved {
+		if !resolved[i].IsSkill() {
+			continue
+		}
+		full, ok := profilePathWithinDir(profileDir, resolved[i].Skill)
+		if !ok {
+			slog.Warn("profile skill step: path escapes profile dir; step will park", "run_id", runID, "profile_dir", profileDir, "path", resolved[i].Skill)
+			resolved[i].SkillBody = ""
+			continue
+		}
+		content, err := os.ReadFile(full)
+		if err != nil {
+			slog.Warn("profile skill step: file not present in profile dir; step will park", "run_id", runID, "profile_dir", profileDir, "path", resolved[i].Skill, "error", err)
+			resolved[i].SkillBody = ""
+			continue
+		}
+		resolved[i].SkillBody = string(content)
+	}
+	return resolved
+}
+
+// loadProfileStepInstructions reads every instruction file declared on a
+// profile's steps from the profile directory (host-local disk) and returns
+// their concatenated contents, mirroring loadTrustedStepInstructions but
+// resolving paths against the profile dir rather than the trusted worktree SHA.
+// A path that escapes the profile dir, or a missing/unreadable file,
+// contributes nothing.
+func loadProfileStepInstructions(profileDir string, specs []config.StepSpec, runID string) string {
+	seen := make(map[string]bool)
+	var sections []string
+	for _, spec := range specs {
+		for _, path := range spec.Instructions {
+			path = strings.TrimSpace(path)
+			if path == "" || seen[path] {
+				continue
+			}
+			seen[path] = true
+			full, ok := profilePathWithinDir(profileDir, path)
+			if !ok {
+				slog.Warn("profile step instructions: path escapes profile dir; skipping", "run_id", runID, "profile_dir", profileDir, "path", path)
+				continue
+			}
+			content, err := os.ReadFile(full)
+			if err != nil {
+				slog.Warn("profile step instructions: file not present in profile dir; skipping", "run_id", runID, "profile_dir", profileDir, "path", path, "error", err)
+				continue
+			}
+			if trimmed := strings.TrimSpace(string(content)); trimmed != "" {
+				sections = append(sections, "# "+path+"\n"+trimmed)
+			}
+		}
+	}
+	return strings.Join(sections, "\n\n")
+}
+
+// joinInstructionSections concatenates non-empty instruction blocks (profile
+// first, then repo) with the same blank-line separator loadTrustedStepInstructions
+// uses between sections.
+func joinInstructionSections(sections ...string) string {
+	var nonEmpty []string
+	for _, s := range sections {
+		if strings.TrimSpace(s) != "" {
+			nonEmpty = append(nonEmpty, s)
+		}
+	}
+	return strings.Join(nonEmpty, "\n\n")
+}
+
+// profileStamp returns the run-record stamp identifying which profile revision
+// gated a run: "<name>@<ref>" where ref is the profile checkout's HEAD SHA when
+// the profile dir is a git repo, else a content hash of profile.yaml. The stamp
+// lets a consumer (e.g. a fleet checker) confirm which profile enforced a gate.
+func profileStamp(ctx context.Context, name, profileDir string, profileFile string) string {
+	if sha, err := git.ResolveRef(ctx, profileDir, "HEAD"); err == nil && strings.TrimSpace(sha) != "" {
+		return name + "@" + shortHash(strings.TrimSpace(sha))
+	}
+	if data, err := os.ReadFile(profileFile); err == nil {
+		sum := sha256.Sum256(data)
+		return name + "@sha256:" + shortHash(hex.EncodeToString(sum[:]))
+	}
+	return name
+}
+
+// shortHash trims a hex hash/SHA to a stable 12-char prefix for compact stamps.
+func shortHash(h string) string {
+	if len(h) > 12 {
+		return h[:12]
+	}
+	return h
+}
+
 // HandlePushReceived processes a push notification from the post-receive hook.
 // It creates a run, sets up a worktree, and launches pipeline execution in the background.
 func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushReceivedParams) (string, error) {
@@ -482,15 +632,55 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 		slog.Info("repo commands/agent/steps loaded from default branch, not pushed branch", "run_id", run.ID, "branch", branch, "default_branch", repo.DefaultBranch)
 	}
 	cfg := config.Merge(globalCfg, effectiveRepoCfg)
-	// Resolve per-step instruction files at the trusted default-branch SHA (not
-	// the pushed worktree) so a contributor's branch cannot rewrite the guidance
-	// the gate injects into its agent steps.
-	cfg.StepInstructions = loadTrustedStepInstructions(ctx, wtDir, trustedSHA, cfg.Steps, run.ID)
-	// Resolve skill-driven step bodies at the trusted default-branch SHA (not
-	// the pushed worktree) so a contributor's branch cannot rewrite the prompt
-	// that drives the maintainer's agent. The resolved bodies ride on cfg.Steps
-	// into BuildPipeline.
-	cfg.Steps = loadTrustedSkillBodies(ctx, wtDir, trustedSHA, cfg.Steps, run.ID)
+	// Resolve the repo's own step instructions + skill bodies at the trusted
+	// default-branch SHA (not the pushed worktree) so a contributor's branch
+	// cannot rewrite the guidance/prompt that drives the maintainer's agent.
+	repoInstructions := loadTrustedStepInstructions(ctx, wtDir, trustedSHA, cfg.Steps, run.ID)
+	repoSteps := loadTrustedSkillBodies(ctx, wtDir, trustedSHA, cfg.Steps, run.ID)
+
+	// Shared gate profile (trusted-only field). When selected, its steps —
+	// resolved profile-relative from <NM_HOME>/profiles/<name>/ (host-local
+	// disk, never the worktree) — compose with the repo's steps and become the
+	// pipeline. A missing/unparsable profile, or a bad composition, fails the
+	// run at start: a team gate must never silently drop to the default
+	// pipeline.
+	if profileName := strings.TrimSpace(effectiveRepoCfg.Profile); profileName != "" {
+		profile, profileDir, err := m.loadProfile(profileName)
+		if err != nil {
+			m.db.UpdateRunError(run.ID, fmt.Sprintf("load profile: %s", err))
+			trackStartFailure("load_profile")
+			return "", fmt.Errorf("load profile %q: %w", profileName, err)
+		}
+		profileSteps := loadProfileSkillBodies(profileDir, profile.Steps, run.ID)
+		profileInstructions := loadProfileStepInstructions(profileDir, profile.Steps, run.ID)
+		mergedSteps, err := config.ComposeProfileSteps(repoSteps, profileSteps)
+		if err != nil {
+			m.db.UpdateRunError(run.ID, fmt.Sprintf("compose profile steps: %s", err))
+			trackStartFailure("compose_profile")
+			return "", fmt.Errorf("compose profile %q: %w", profileName, err)
+		}
+		cfg.Steps = mergedSteps
+		cfg.StepInstructions = joinInstructionSections(profileInstructions, repoInstructions)
+		stamp := profileStamp(ctx, profileName, profileDir, m.paths.ProfileFile(profileName))
+		if err := m.db.SetRunProfile(run.ID, stamp); err != nil {
+			slog.Warn("failed to stamp run profile", "run_id", run.ID, "error", err)
+		} else {
+			profileCopy := stamp
+			run.Profile = &profileCopy
+		}
+		slog.Info("run gated by shared profile", "run_id", run.ID, "profile", stamp, "profile_dir", profileDir, "profile_version", profile.Version, "branch", branch)
+	} else {
+		// No profile selected: a `- use: profile` splice sentinel is meaningless
+		// and must not silently pass through as a nameless step.
+		if config.HasProfileSplice(repoSteps) {
+			err := fmt.Errorf("repo steps: use `- use: profile` but no profile is selected on the trusted default branch")
+			m.db.UpdateRunError(run.ID, err.Error())
+			trackStartFailure("compose_profile")
+			return "", err
+		}
+		cfg.Steps = repoSteps
+		cfg.StepInstructions = repoInstructions
+	}
 
 	// Create agent. In demo mode, skip resolution and use a no-op agent.
 	var ag agent.Agent

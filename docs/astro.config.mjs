@@ -37,6 +37,7 @@ export default defineConfig({
           label: "Guides",
           items: [
             { label: "Configuration", slug: "guides/configuration" },
+            { label: "Shared Gate Profiles", slug: "guides/shared-profiles" },
             { label: "iOS / Xcode Testing", slug: "guides/ios-testing" },
             { label: "Choosing an Agent", slug: "guides/agents" },
             { label: "Provider Integration", slug: "guides/provider-integration" },

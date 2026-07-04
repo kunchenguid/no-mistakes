@@ -40,10 +40,11 @@ type Harness struct {
 	AgentLog    string // every fake-agent invocation appended here, one JSON per line
 	Scenario    string // optional path to a scenario yaml; empty = built-in default
 
-	agentName         string            // claude / codex / opencode
-	allowRepoCommands *bool             // mirrors SetupOpts.AllowRepoCommands
-	repoConfigExtra   string            // mirrors SetupOpts.RepoConfigExtra
-	repoExtraFiles    map[string]string // mirrors SetupOpts.RepoExtraFiles
+	agentName         string                       // claude / codex / opencode
+	allowRepoCommands *bool                        // mirrors SetupOpts.AllowRepoCommands
+	repoConfigExtra   string                       // mirrors SetupOpts.RepoConfigExtra
+	repoExtraFiles    map[string]string            // mirrors SetupOpts.RepoExtraFiles
+	profiles          map[string]map[string]string // mirrors SetupOpts.Profiles
 }
 
 // SetupOpts controls per-test setup.
@@ -78,6 +79,13 @@ type SetupOpts struct {
 	// trusted-default-branch assets (e.g. a `.no-mistakes/skills/*.md` skill
 	// body) that a skill step then resolves at the trusted SHA.
 	RepoExtraFiles map[string]string
+
+	// Profiles seeds shared gate profiles under <NM_HOME>/profiles/<name>/,
+	// keyed by profile name then profile-relative path. Use it to ship a
+	// profile.yaml plus its skills/instructions to the daemon host. The same
+	// seeded profile can be selected by more than one repo, and can be edited
+	// mid-test via WriteProfileFile.
+	Profiles map[string]map[string]string
 }
 
 const e2eDaemonStartTimeout = "45s"
@@ -114,6 +122,7 @@ func NewHarness(t *testing.T, opts SetupOpts) *Harness {
 		allowRepoCommands: opts.AllowRepoCommands,
 		repoConfigExtra:   opts.RepoConfigExtra,
 		repoExtraFiles:    opts.RepoExtraFiles,
+		profiles:          opts.Profiles,
 	}
 
 	for _, dir := range []string{h.BinDir, h.NMHome, h.HomeDir, h.WorkDir} {
@@ -169,10 +178,35 @@ func NewHarness(t *testing.T, opts SetupOpts) *Harness {
 	t.Setenv("NO_MISTAKES_NO_UPDATE_CHECK", "1")
 
 	h.writeGlobalConfig()
+	h.writeProfiles()
 	h.initGitRepos()
 
 	t.Cleanup(h.shutdown)
 	return h
+}
+
+// writeProfiles seeds any configured shared gate profiles under
+// <NM_HOME>/profiles/<name>/ before the daemon reads them.
+func (h *Harness) writeProfiles() {
+	for name, files := range h.profiles {
+		for rel, content := range files {
+			h.WriteProfileFile(name, rel, content)
+		}
+	}
+}
+
+// WriteProfileFile writes (or overwrites) a file under
+// <NM_HOME>/profiles/<name>/<rel>. Tests use it both to seed a profile and to
+// edit it mid-run so a rerun picks up the change.
+func (h *Harness) WriteProfileFile(name, rel, content string) {
+	h.t.Helper()
+	full := filepath.Join(h.NMHome, "profiles", name, rel)
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		h.t.Fatalf("mkdir profile dir for %s/%s: %v", name, rel, err)
+	}
+	if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+		h.t.Fatalf("write profile file %s/%s: %v", name, rel, err)
+	}
 }
 
 // writeGlobalConfig writes a no-mistakes global config that pins the

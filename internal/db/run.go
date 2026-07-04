@@ -28,11 +28,16 @@ type Run struct {
 	IntentSource       *string
 	IntentSessionID    *string
 	IntentScore        *float64
-	CreatedAt          int64
-	UpdatedAt          int64
+	// Profile is the shared gate profile stamp that gated this run, in the form
+	// "<name>@<ref>" (ref = the profile checkout's HEAD SHA when the profile dir
+	// is a git repo, else a content hash of profile.yaml). Nil when the run used
+	// no profile. It lets a consumer confirm which profile enforced the gate.
+	Profile   *string
+	CreatedAt int64
+	UpdatedAt int64
 }
 
-const runColumns = `id, repo_id, branch, head_sha, base_sha, status, pr_url, error, awaiting_agent_since, intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
+const runColumns = `id, repo_id, branch, head_sha, base_sha, status, pr_url, error, awaiting_agent_since, intent, intent_source, intent_session_id, intent_score, profile, created_at, updated_at`
 
 func scanRun(row interface {
 	Scan(...any) error
@@ -41,7 +46,7 @@ func scanRun(row interface {
 		&r.ID, &r.RepoID, &r.Branch, &r.HeadSHA, &r.BaseSHA, &r.Status,
 		&r.PRURL, &r.Error, &r.AwaitingAgentSince,
 		&r.Intent, &r.IntentSource, &r.IntentSessionID, &r.IntentScore,
-		&r.CreatedAt, &r.UpdatedAt,
+		&r.Profile, &r.CreatedAt, &r.UpdatedAt,
 	)
 }
 
@@ -204,6 +209,16 @@ func (d *DB) UpdateRunIntent(id string, intent RunIntent) error {
 	)
 	if err != nil {
 		return fmt.Errorf("update run intent: %w", err)
+	}
+	return nil
+}
+
+// SetRunProfile stamps the shared gate profile that gated a run (see
+// Run.Profile). Called at run start, once, when a profile is resolved.
+func (d *DB) SetRunProfile(id, profile string) error {
+	_, err := d.sql.Exec(`UPDATE runs SET profile = ?, updated_at = ? WHERE id = ?`, profile, now(), id)
+	if err != nil {
+		return fmt.Errorf("set run profile: %w", err)
 	}
 	return nil
 }

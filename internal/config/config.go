@@ -87,6 +87,15 @@ type RepoConfig struct {
 	// selects which code executes, so it is read from the trusted
 	// default-branch copy unless allow_repo_commands is set.
 	Steps []StepSpec `yaml:"steps"`
+	// Profile names a shared gate profile under <NM_HOME>/profiles/<name>/
+	// whose profile.yaml supplies the pipeline steps (skills/instructions/
+	// commands) applied to this repo. It selects which shell commands and
+	// which agent prompts run, so it is a code-executing selection field:
+	// read ONLY from the trusted default-branch copy (never the pushed SHA),
+	// and — unlike Commands/Agent/Steps — trusted-only even under
+	// allow_repo_commands (v1). A contributor's pushed branch therefore cannot
+	// set, switch, or drop the profile. Empty means no profile.
+	Profile string `yaml:"profile"`
 }
 
 // StepSpec selects one pipeline step in a repo's `steps:` list. It is either a
@@ -139,6 +148,12 @@ type StepSpec struct {
 	// parsed from YAML — it is populated after load so a skill body can never
 	// come from the pushed branch, mirroring StepInstructions.
 	SkillBody string
+	// Use is a composition sentinel rather than a step. The only recognized
+	// value is "profile": an entry `- use: profile` in a repo's steps: list
+	// splices the selected profile's steps in at that position. It is never a
+	// runnable step; ComposeProfileSteps expands and removes it before the
+	// pipeline is built.
+	Use string
 }
 
 // IsCommand reports whether this spec defines a custom command step.
@@ -146,6 +161,15 @@ func (s StepSpec) IsCommand() bool { return strings.TrimSpace(s.Command) != "" }
 
 // IsSkill reports whether this spec defines a skill-driven step.
 func (s StepSpec) IsSkill() bool { return strings.TrimSpace(s.Skill) != "" }
+
+// IsProfileSplice reports whether this entry is the `- use: profile` splice
+// sentinel rather than a runnable step.
+func (s StepSpec) IsProfileSplice() bool { return strings.TrimSpace(s.Use) == ProfileSpliceSentinel }
+
+// ProfileSpliceSentinel is the only recognized value of a steps entry's `use:`
+// field: it marks where the selected profile's steps splice into a repo's
+// steps: list.
+const ProfileSpliceSentinel = "profile"
 
 // stepSpecYAML is the mapping form of a steps entry. Timeout is a string so it
 // accepts Go duration syntax (e.g. "5m", "90s").
@@ -159,6 +183,7 @@ type stepSpecYAML struct {
 	Type         string   `yaml:"type"`
 	Skill        string   `yaml:"skill"`
 	Mode         string   `yaml:"mode"`
+	Use          string   `yaml:"use"`
 }
 
 // UnmarshalYAML accepts either a plain scalar built-in step name or a mapping
@@ -186,6 +211,7 @@ func (s *StepSpec) UnmarshalYAML(value *yaml.Node) error {
 		s.Type = strings.TrimSpace(raw.Type)
 		s.Skill = strings.TrimSpace(raw.Skill)
 		s.Mode = strings.TrimSpace(raw.Mode)
+		s.Use = strings.TrimSpace(raw.Use)
 		if t := strings.TrimSpace(raw.Timeout); t != "" {
 			d, err := time.ParseDuration(t)
 			if err != nil {
@@ -231,6 +257,7 @@ func StepSpecsEqual(a, b []StepSpec) bool {
 			a[i].Skill != b[i].Skill ||
 			a[i].Mode != b[i].Mode ||
 			a[i].SkillBody != b[i].SkillBody ||
+			a[i].Use != b[i].Use ||
 			!slices.Equal(a[i].Instructions, b[i].Instructions) {
 			return false
 		}
@@ -752,6 +779,93 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 	return cfg, nil
 }
 
+// ProfileConfig is a shared gate profile's profile.yaml: a version marker plus
+// a steps: list in the exact StepSpec schema repos use. It lives on the daemon
+// host under <NM_HOME>/profiles/<name>/ and is selected by a repo's trusted
+// `profile:` field. In v1 it carries only these two fields.
+type ProfileConfig struct {
+	// Version is informational; it is stamped into run logs so a consumer can
+	// tell which profile revision gated a run.
+	Version int `yaml:"version"`
+	// Steps is the profile's pipeline step selection, parsed with the same
+	// StepSpec machinery (and validated by the same validateStepSpecs) as a
+	// repo's own steps: list.
+	Steps []StepSpec `yaml:"steps"`
+}
+
+// LoadProfileFromBytes parses a profile.yaml. It is the trusted-config entry
+// point for a host-local profile: the bytes come from <NM_HOME>/profiles, a
+// path no pushed commit can address, so there is no default-branch SHA to pin.
+func LoadProfileFromBytes(data []byte) (*ProfileConfig, error) {
+	cfg := &ProfileConfig{}
+	if err := yaml.Unmarshal(data, cfg); err != nil {
+		return nil, fmt.Errorf("parse profile config: %w", err)
+	}
+	return cfg, nil
+}
+
+// HasProfileSplice reports whether any entry in steps is the `- use: profile`
+// splice sentinel.
+func HasProfileSplice(steps []StepSpec) bool {
+	for _, s := range steps {
+		if s.IsProfileSplice() {
+			return true
+		}
+	}
+	return false
+}
+
+// ComposeProfileSteps merges a repo's steps: selection with a selected
+// profile's steps, using v1's two rules (no cleverness):
+//
+//  1. Repo has no steps: → the profile's list IS the pipeline.
+//  2. Repo has steps: → the list must contain exactly one `- use: profile`
+//     splice sentinel, which expands in place to the profile's full list.
+//
+// A repo steps: list without the sentinel (while a profile is selected) is an
+// error: dropping the shared gate is too consequential to infer. Any `use:`
+// value other than "profile" is also an error. The merged list carries no
+// sentinels and is validated by the caller through the usual validateStepSpecs.
+func ComposeProfileSteps(repoSteps, profileSteps []StepSpec) ([]StepSpec, error) {
+	if err := checkUseSentinels(repoSteps); err != nil {
+		return nil, err
+	}
+	if len(repoSteps) == 0 {
+		out := make([]StepSpec, len(profileSteps))
+		copy(out, profileSteps)
+		return out, nil
+	}
+	spliceCount := 0
+	merged := make([]StepSpec, 0, len(repoSteps)+len(profileSteps))
+	for _, spec := range repoSteps {
+		if spec.IsProfileSplice() {
+			spliceCount++
+			merged = append(merged, profileSteps...)
+			continue
+		}
+		merged = append(merged, spec)
+	}
+	if spliceCount == 0 {
+		return nil, fmt.Errorf("a profile is selected but the repo steps: list has no `- use: profile` splice sentinel; add it to position the profile's steps, or remove the repo steps: list to run the profile as-is")
+	}
+	if spliceCount > 1 {
+		return nil, fmt.Errorf("the repo steps: list has %d `- use: profile` splice sentinels; at most one is allowed", spliceCount)
+	}
+	return merged, nil
+}
+
+// checkUseSentinels rejects any `use:` value other than the profile sentinel so
+// a typo (e.g. `use: profiles`) fails loudly instead of being treated as a
+// nameless step.
+func checkUseSentinels(steps []StepSpec) error {
+	for i, s := range steps {
+		if u := strings.TrimSpace(s.Use); u != "" && u != ProfileSpliceSentinel {
+			return fmt.Errorf("steps[%d]: unknown use %q (only %q is supported)", i, u, ProfileSpliceSentinel)
+		}
+	}
+	return nil
+}
+
 // EffectiveRepoConfig returns the repo config that should drive the pipeline
 // given a pushed-branch copy and the trusted default-branch copy.
 //
@@ -777,6 +891,17 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		pushed = &RepoConfig{}
 	}
 	effective := *pushed
+	// Profile selects which shared shell commands and agent prompts run, so it
+	// is a code-executing selection field — and, unlike Commands/Agent/Steps,
+	// it is trusted-only even under allow_repo_commands (v1, the safer
+	// default): a pushed branch must never set, switch, or drop the shared gate
+	// profile. Take it only from the trusted default-branch copy; with no
+	// trusted copy, force it empty (fail closed).
+	if trusted != nil {
+		effective.Profile = trusted.Profile
+	} else {
+		effective.Profile = ""
+	}
 	if allowRepoCommands {
 		return &effective
 	}

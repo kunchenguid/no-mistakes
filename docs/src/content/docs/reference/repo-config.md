@@ -135,6 +135,23 @@ Pattern matching rules:
 | `vendor/**` | Ends with `/**` - matches entire subtree |
 | `some/path/file.go` | Contains a slash - full path glob |
 
+### profile
+
+Select a [shared gate profile](/no-mistakes/guides/shared-profiles/) — a pipeline defined once under `<NM_HOME>/profiles/<name>/` and applied across many repos — instead of (or spliced into) this repo's own `steps:`.
+
+| | |
+|---|---|
+| Type | `string` |
+| Default | Empty (no profile) |
+
+```yaml
+profile: team-ios
+```
+
+With no repo `steps:`, the profile's step list is the pipeline. To keep repo-local steps too, add a `- use: profile` splice sentinel to `steps:` (see [Shared Gate Profiles](/no-mistakes/guides/shared-profiles/#composing-profile--repo-steps)).
+
+`profile` is a **trusted-only** selection: it is read only from the trusted default-branch copy of `.no-mistakes.yaml`, so a pushed branch can never set, switch, or drop a profile. Unlike `commands`/`agent`/`steps`, it stays trusted-only **even when** [`allow_repo_commands`](#allow_repo_commands) is enabled. A `profile:` naming a directory the daemon host has not provisioned (missing or unparsable `profile.yaml`) fails the run at start — there is no silent fallback to the default pipeline.
+
 ### steps
 
 Enable, disable, or reorder the built-in pipeline steps for this repo. Each entry is a step name; the pipeline runs exactly the listed steps, in list order.

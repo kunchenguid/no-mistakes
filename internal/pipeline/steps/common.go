@@ -213,6 +213,13 @@ func BuildPipeline(stepSpecs []config.StepSpec) ([]pipeline.Step, error) {
 // with a built-in.
 var customStepNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 
+// ValidCustomName reports whether name is a filesystem- and identifier-safe
+// custom name: the shape shared by custom step names and shared gate profile
+// names (lowercase letters, digits, '-' and '_', starting with a letter or
+// digit). Exported so the daemon can validate a `profile:` name against the
+// same rule without duplicating the pattern.
+func ValidCustomName(name string) bool { return customStepNamePattern.MatchString(name) }
+
 // validateStepSpecs checks a full `steps:` selection (built-ins, custom
 // command steps, and skill-driven steps). It applies the same per-name and
 // ordering rules as validateStepNames, plus custom-step-specific rules: a
