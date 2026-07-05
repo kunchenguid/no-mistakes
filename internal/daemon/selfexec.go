@@ -16,6 +16,7 @@ import (
 
 var daemonHealthCheck = daemonIsRunningViaIPC
 var daemonDial = ipc.Dial
+var daemonStart = Start
 var daemonProcessRunning = processRunning
 var daemonProcessStartTime = processStartTime
 var daemonKillPID = killPID
@@ -377,6 +378,9 @@ func IsRunning(p *paths.Paths) (bool, error) {
 func daemonIsRunningViaIPC(p *paths.Paths) (bool, error) {
 	client, err := ipc.Dial(p.Socket())
 	if err != nil {
+		if ipc.IsConnectTimeout(err) {
+			return false, err
+		}
 		return false, nil
 	}
 	defer client.Close()
@@ -605,10 +609,14 @@ func upsertEnv(env []string, key, value string) []string {
 
 // EnsureDaemon starts the daemon if it's not already running.
 func EnsureDaemon(p *paths.Paths) error {
-	if alive, _ := daemonHealthCheck(p); alive {
+	alive, err := daemonHealthCheck(p)
+	if err != nil {
+		return err
+	}
+	if alive {
 		return nil
 	}
-	return Start(p)
+	return daemonStart(p)
 }
 
 // ReadPID reads the daemon PID from the PID file.

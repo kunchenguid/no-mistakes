@@ -85,6 +85,55 @@ func TestDaemonStartTimeoutDefaultsToLongerWindowOnWindows(t *testing.T) {
 	}
 }
 
+func TestEnsureDaemonDoesNotStartWhenHealthCheckTimesOut(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "dtest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	p := paths.WithRoot(tmpDir)
+	timeoutErr := fmt.Errorf("dial ipc: %w", &ipc.ConnectTimeoutError{
+		SocketPath:      p.Socket(),
+		TimeoutDuration: 25 * time.Millisecond,
+		Err:             errors.New("dial timeout"),
+	})
+
+	originalHealthCheck := daemonHealthCheck
+	daemonHealthCheck = func(*paths.Paths) (bool, error) {
+		return false, timeoutErr
+	}
+	defer func() {
+		daemonHealthCheck = originalHealthCheck
+	}()
+
+	originalStart := daemonStart
+	started := false
+	daemonStart = func(*paths.Paths) error {
+		started = true
+		return nil
+	}
+	defer func() {
+		daemonStart = originalStart
+	}()
+
+	startedAt := time.Now()
+	err = EnsureDaemon(p)
+	elapsed := time.Since(startedAt)
+	if err == nil {
+		t.Fatal("EnsureDaemon returned nil for timed-out daemon socket")
+	}
+	if elapsed > 250*time.Millisecond {
+		t.Fatalf("EnsureDaemon took %v, want fast failure", elapsed)
+	}
+	if started {
+		t.Fatal("EnsureDaemon started a daemon after a connect timeout")
+	}
+	if !strings.Contains(err.Error(), p.Socket()) {
+		t.Fatalf("EnsureDaemon error = %q, want socket path %q", err.Error(), p.Socket())
+	}
+}
+
 func TestStopDetachedDaemonFallsBackToPIDWhenSocketIsBroken(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("unix socket setup is platform-specific")

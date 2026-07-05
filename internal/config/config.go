@@ -33,6 +33,9 @@ const (
 	// DefaultStepQuietWarning is how long a running/fixing step can go without
 	// a new log or lifecycle activity before AXI status marks it quiet.
 	DefaultStepQuietWarning = 10 * time.Minute
+	// DefaultDaemonConnectTimeout bounds client IPC connection attempts to a
+	// daemon socket that exists but is not accepting connections.
+	DefaultDaemonConnectTimeout = 3 * time.Second
 	// CITimeoutUnlimited is the sentinel meaning "monitor until the PR is
 	// merged, closed, or the run is aborted - never self-terminate".
 	// Any non-positive ci_timeout, or the keywords "unlimited", "none",
@@ -50,6 +53,7 @@ type GlobalConfig struct {
 	AgentArgsOverride    map[string][]string `yaml:"agent_args_override"`
 	CITimeout            time.Duration       `yaml:"-"`
 	StepQuietWarning     time.Duration       `yaml:"-"`
+	DaemonConnectTimeout time.Duration       `yaml:"-"`
 	LogLevel             string              `yaml:"log_level"`
 	AutoFix              AutoFixRaw
 	Intent               IntentRaw
@@ -64,6 +68,7 @@ type globalConfigRaw struct {
 	AgentPathOverride    map[string]string   `yaml:"agent_path_override"`
 	AgentArgsOverride    map[string][]string `yaml:"agent_args_override"`
 	CITimeout            string              `yaml:"ci_timeout"`
+	DaemonConnectTimeout string              `yaml:"daemon_connect_timeout"`
 	BabysitTimeout       string              `yaml:"babysit_timeout"`
 	StepQuietWarning     string              `yaml:"step_quiet_warning"`
 	LogLevel             string              `yaml:"log_level"`
@@ -282,6 +287,10 @@ ci_timeout: "168h"
 # agent lifecycle activity has appeared for this long. This is observability
 # only; it never cancels work.
 step_quiet_warning: "10m"
+
+# Maximum time a CLI client waits for an existing daemon socket to accept a
+# connection before failing instead of hanging.
+daemon_connect_timeout: "3s"
 
 # Log level for daemon output
 # Options: debug, info, warn, error
@@ -649,11 +658,12 @@ func EnsureDefaultGlobalConfig(path string) {
 // DefaultGlobalConfig returns the built-in global defaults.
 func DefaultGlobalConfig() *GlobalConfig {
 	return &GlobalConfig{
-		Agent:            types.AgentAuto,
-		Agents:           []types.AgentName{types.AgentAuto},
-		CITimeout:        DefaultCITimeout,
-		StepQuietWarning: DefaultStepQuietWarning,
-		LogLevel:         "info",
+		Agent:                types.AgentAuto,
+		Agents:               []types.AgentName{types.AgentAuto},
+		CITimeout:            DefaultCITimeout,
+		StepQuietWarning:     DefaultStepQuietWarning,
+		DaemonConnectTimeout: DefaultDaemonConnectTimeout,
+		LogLevel:             "info",
 	}
 }
 
@@ -715,6 +725,13 @@ func LoadGlobal(path string) (*GlobalConfig, error) {
 			cfg.StepQuietWarning = d
 		}
 	}
+	if raw.DaemonConnectTimeout != "" {
+		d, err := parsePositiveDuration("daemon_connect_timeout", raw.DaemonConnectTimeout)
+		if err != nil {
+			return nil, err
+		}
+		cfg.DaemonConnectTimeout = d
+	}
 	if raw.LogLevel != "" {
 		cfg.LogLevel = raw.LogLevel
 	}
@@ -743,6 +760,17 @@ func parseCITimeout(value string) (time.Duration, error) {
 	}
 	if d <= 0 {
 		return CITimeoutUnlimited, nil
+	}
+	return d, nil
+}
+
+func parsePositiveDuration(name, value string) (time.Duration, error) {
+	d, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("parse %s %q: %w", name, value, err)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("parse %s %q: duration must be positive", name, value)
 	}
 	return d, nil
 }
