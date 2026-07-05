@@ -1,7 +1,11 @@
 package ipc
 
 import (
+	"fmt"
 	"net"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -29,7 +33,13 @@ func TestDialConnectTimeoutFailsFastAndNamesSocket(t *testing.T) {
 		dialNetworkWithTimeout = originalDial
 	})
 
-	socketPath := "/tmp/no-mistakes-dead.sock"
+	socketPath := filepath.Join(t.TempDir(), "no-mistakes-dead.sock")
+	if runtime.GOOS == "windows" {
+		endpoint := fmt.Sprintf("127.0.0.1:1\ntoken\n%d", os.Getpid())
+		if err := os.WriteFile(socketPath, []byte(endpoint), 0o600); err != nil {
+			t.Fatalf("write endpoint file: %v", err)
+		}
+	}
 	started := time.Now()
 	client, err := Dial(socketPath)
 	elapsed := time.Since(started)
