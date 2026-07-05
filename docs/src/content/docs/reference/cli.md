@@ -12,10 +12,10 @@ no-mistakes
 no-mistakes --skip test,lint
 ```
 
-| Flag | Type | Default | Description |
-|---|---|---|---|
-| `-y`, `--yes` | `bool` | `false` | Run setup wizard and accept defaults automatically |
-| `--skip` | `string` | (none) | Comma-separated pipeline steps to skip for a new run |
+| Flag          | Type     | Default | Description                                          |
+| ------------- | -------- | ------- | ---------------------------------------------------- |
+| `-y`, `--yes` | `bool`   | `false` | Run setup wizard and accept defaults automatically   |
+| `--skip`      | `string` | (none)  | Comma-separated pipeline steps to skip for a new run |
 
 Unlike `no-mistakes attach`, bare `no-mistakes` only auto-attaches to an active run on the current branch.
 `--skip` only applies when bare `no-mistakes` starts a new pipeline run through the wizard; it does not skip a step on an already-active run.
@@ -30,9 +30,9 @@ no-mistakes init
 no-mistakes init --fork-url git@github.com:you/my-repo.git
 ```
 
-| Flag | Type | Default | Description |
-|---|---|---|---|
-| `--fork-url` | `string` | (none) | GitHub fork remote URL to push branches to while opening PRs against `origin` |
+| Flag         | Type     | Default | Description                                                                   |
+| ------------ | -------- | ------- | ----------------------------------------------------------------------------- |
+| `--fork-url` | `string` | (none)  | GitHub fork remote URL to push branches to while opening PRs against `origin` |
 
 Creates or refreshes a local bare repo, installs the post-receive hook, best-effort isolates the gate repo's hook path from shared git config changes when Git supports `config --worktree`, adds or repairs the `no-mistakes` git remote, detects the default branch, records or updates the repo in SQLite, installs the `/no-mistakes` agent skill at user level into `~/.claude/skills/no-mistakes/SKILL.md` and `~/.agents/skills/no-mistakes/SKILL.md`, and ensures the daemon is running, installing the managed service when available and falling back to a detached daemon otherwise.
 `init` writes no skill files into the repo; the user-level copies cover every supported agent (`~/.claude/skills` for Claude Code, `~/.agents/skills` for Codex, OpenCode, Rovo Dev, and Pi) across all repos.
@@ -84,11 +84,11 @@ no-mistakes axi run --intent "the user's goal" --skip test,lint
 no-mistakes axi run --intent "the user's goal" --yes
 ```
 
-| Flag | Type | Default | Description |
-|---|---|---|---|
-| `--intent` | `string` | (none) | What the user set out to accomplish; required to start a new run |
-| `-y`, `--yes` | `bool` | `false` | Auto-resolve every gate until a decision point or outcome |
-| `--skip` | `string` | (none) | Comma-separated pipeline steps to skip |
+| Flag          | Type     | Default | Description                                                      |
+| ------------- | -------- | ------- | ---------------------------------------------------------------- |
+| `--intent`    | `string` | (none)  | What the user set out to accomplish; required to start a new run |
+| `-y`, `--yes` | `bool`   | `false` | Auto-resolve every gate until a decision point or outcome        |
+| `--skip`      | `string` | (none)  | Comma-separated pipeline steps to skip                           |
 
 `--intent` is not a description of the diff.
 It is the user's goal or request, and no-mistakes uses it verbatim instead of transcript inference.
@@ -121,14 +121,14 @@ no-mistakes axi respond --action fix --add-finding '{"description":"...","action
 no-mistakes axi respond --action skip
 ```
 
-| Flag | Type | Default | Description |
-|---|---|---|---|
-| `--action` | `string` | (none) | `approve`, `fix`, or `skip`; required |
-| `--step` | `string` | awaiting step | Step to respond to |
-| `--findings` | `string` | (none) | Comma-separated finding IDs for `--action fix` |
-| `--instructions` | `string` | (none) | Guidance applied to selected findings |
-| `--add-finding` | `string` | (none) | JSON finding object to add and fix |
-| `-y`, `--yes` | `bool` | `false` | Auto-resolve every subsequent gate until a decision point or outcome |
+| Flag             | Type     | Default       | Description                                                          |
+| ---------------- | -------- | ------------- | -------------------------------------------------------------------- |
+| `--action`       | `string` | (none)        | `approve`, `fix`, or `skip`; required                                |
+| `--step`         | `string` | awaiting step | Step to respond to                                                   |
+| `--findings`     | `string` | (none)        | Comma-separated finding IDs for `--action fix`                       |
+| `--instructions` | `string` | (none)        | Guidance applied to selected findings                                |
+| `--add-finding`  | `string` | (none)        | JSON finding object to add and fix                                   |
+| `-y`, `--yes`    | `bool`   | `false`       | Auto-resolve every subsequent gate until a decision point or outcome |
 
 After the explicit response, `--yes` uses the same auto-resolution behavior as `axi run --yes`: have the pipeline fix `auto-fix` and `ask-user` findings once, approve the fix review, approve gates that only contain non-actionable `no-op` findings, and stop at `outcome: checks-passed` when CI is green but the PR still needs a human merge.
 Each `axi respond` blocks until the next gate, CI-ready decision point, or final outcome.
@@ -145,8 +145,8 @@ no-mistakes axi status
 no-mistakes axi status --run <id>
 ```
 
-| Flag | Type | Default | Description |
-|---|---|---|---|
+| Flag    | Type     | Default      | Description               |
+| ------- | -------- | ------------ | ------------------------- |
 | `--run` | `string` | resolved run | Inspect a specific run ID |
 
 When the resolved run is parked at an `awaiting_approval` or `fix_review` gate, its top-level `run:` object includes `awaiting_agent: parked <duration>` immediately after `status`.
@@ -166,11 +166,11 @@ no-mistakes axi logs --step review --full
 no-mistakes axi logs --step review --run <id>
 ```
 
-| Flag | Type | Default | Description |
-|---|---|---|---|
-| `--step` | `string` | (none) | Step name; required |
-| `--run` | `string` | resolved run | Run ID to inspect |
-| `--full` | `bool` | `false` | Show the entire log instead of the tail |
+| Flag     | Type     | Default      | Description                             |
+| -------- | -------- | ------------ | --------------------------------------- |
+| `--step` | `string` | (none)       | Step name; required                     |
+| `--run`  | `string` | resolved run | Run ID to inspect                       |
+| `--full` | `bool`   | `false`      | Show the entire log instead of the tail |
 
 Without `--full`, long logs show the last 40 lines and a help hint for the full log.
 Step logs include native subprocess agent lifecycle lines such as `codex started pid=4242`, `codex exited pid=4242 status=success`, and transient retry messages when the selected agent supports lifecycle events.
@@ -219,9 +219,9 @@ Attach to the active pipeline run.
 no-mistakes attach [--run <id>]
 ```
 
-| Flag | Type | Default | Description |
-|---|---|---|---|
-| `--run` | `string` | (none) | Attach to a specific run ID instead of the active run |
+| Flag    | Type     | Default | Description                                           |
+| ------- | -------- | ------- | ----------------------------------------------------- |
+| `--run` | `string` | (none)  | Attach to a specific run ID instead of the active run |
 
 Opens the TUI for the active run anywhere in the current repo. If `--run` is specified, attaches to that specific run regardless of branch. Unlike bare `no-mistakes`, this does not stay branch-scoped before falling back.
 
@@ -246,6 +246,7 @@ no-mistakes status
 ```
 
 Displays:
+
 - Repo path, upstream URL, and fork URL when configured
 - Gate path
 - Daemon status (running/stopped, PID)
@@ -259,9 +260,9 @@ List recorded pipeline runs for the current repo.
 no-mistakes runs [--limit <n>]
 ```
 
-| Flag | Type | Default | Description |
-|---|---|---|---|
-| `--limit` | `int` | `10` | Maximum number of runs to display |
+| Flag      | Type  | Default | Description                       |
+| --------- | ----- | ------- | --------------------------------- |
+| `--limit` | `int` | `10`    | Maximum number of runs to display |
 
 Shows runs newest-first with branch, status (styled), short SHA, timestamp, and PR URL if set.
 
@@ -284,6 +285,7 @@ no-mistakes doctor
 ```
 
 Checks:
+
 - `git` binary
 - `gh` CLI (optional, needed for GitHub PR and CI steps)
 - `az` CLI (optional, needed for Azure DevOps PR and CI steps)

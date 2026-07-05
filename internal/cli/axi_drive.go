@@ -769,9 +769,13 @@ func runAxiAbort(cmd *cobra.Command, runID string) error {
 // runAxiAbortByRunID cancels a run by its id directly via the daemon, without
 // resolving a repo, branch, or worktree. This is how an orphaned monitor run -
 // one whose worktree was torn down before the PR merged - gets reaped from
-// outside. A run lives only in the running daemon's memory, so if the daemon is
-// not running, or the id is not an active run, there is nothing to cancel and
-// we report a successful no-op (the desired end state is already reached).
+// outside. A run lives only in the running daemon's memory, so if the daemon
+// is confirmed not running, or the id is not an active run, there is nothing
+// to cancel and we report a successful no-op (the desired end state is
+// already reached). If the daemon's liveness itself can't be confirmed (e.g.
+// a connect timeout against a stuck socket), that ambiguous state is
+// surfaced as an error instead of a false-negative no-op, since a still-
+// executing run would otherwise never get reaped.
 func runAxiAbortByRunID(cmd *cobra.Command, runID string) error {
 	p, err := paths.New()
 	if err != nil {
