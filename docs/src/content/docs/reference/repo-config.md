@@ -49,6 +49,8 @@ providers:
     draft_pull_requests: false
   gitlab:
     draft_pull_requests: false
+  bitbucket:
+    draft_pull_requests: false
 ```
 
 ## Fields
@@ -222,3 +224,15 @@ Inherits from global config when not set here.
 | Default | Inherits from global (default `false`) |
 
 Only affects MR creation; existing MRs are not toggled between draft and ready. GitLab only — ignored for other providers.
+
+### providers.bitbucket.draft_pull_requests
+
+Open pull requests created on Bitbucket Cloud as drafts (`"draft": true` in the create-PR API request).
+Inherits from global config when not set here.
+
+| | |
+|---|---|
+| Type | `bool` |
+| Default | Inherits from global (default `false`) |
+
+Only affects PR creation; existing PRs are not toggled between draft and ready. Bitbucket only — ignored for other providers.

@@ -137,7 +137,7 @@ func (c *Client) FindOpenPRBySourceBranch(ctx context.Context, repo RepoRef, bra
 	return response.Values[0].toPullRequest(), nil
 }
 
-func (c *Client) CreatePR(ctx context.Context, repo RepoRef, sourceBranch, destBranch, title, body string) (*PullRequest, error) {
+func (c *Client) CreatePR(ctx context.Context, repo RepoRef, sourceBranch, destBranch, title, body string, draft bool) (*PullRequest, error) {
 	requestBody := map[string]any{
 		"title":       title,
 		"description": body,
@@ -147,6 +147,9 @@ func (c *Client) CreatePR(ctx context.Context, repo RepoRef, sourceBranch, destB
 		"destination": map[string]any{
 			"branch": map[string]string{"name": destBranch},
 		},
+	}
+	if draft {
+		requestBody["draft"] = true
 	}
 	var response bitbucketPullRequest
 	if err := c.doJSON(ctx, http.MethodPost, repoPRPath(repo), nil, requestBody, &response); err != nil {

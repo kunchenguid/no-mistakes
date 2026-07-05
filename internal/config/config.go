@@ -165,8 +165,9 @@ type Config struct {
 // keyed by provider name so new providers can be added without reshaping
 // existing config.
 type ProvidersRaw struct {
-	GitHub GitHubProviderRaw `yaml:"github"`
-	GitLab GitLabProviderRaw `yaml:"gitlab"`
+	GitHub    GitHubProviderRaw    `yaml:"github"`
+	GitLab    GitLabProviderRaw    `yaml:"gitlab"`
+	Bitbucket BitbucketProviderRaw `yaml:"bitbucket"`
 }
 
 // GitHubProviderRaw is the YAML representation of GitHub provider settings.
@@ -181,10 +182,17 @@ type GitLabProviderRaw struct {
 	DraftPullRequests *bool `yaml:"draft_pull_requests"`
 }
 
+// BitbucketProviderRaw is the YAML representation of Bitbucket provider settings.
+// Pointer fields distinguish "not set" (nil) from an explicit false.
+type BitbucketProviderRaw struct {
+	DraftPullRequests *bool `yaml:"draft_pull_requests"`
+}
+
 // Providers holds resolved provider-specific settings.
 type Providers struct {
-	GitHub GitHubProvider
-	GitLab GitLabProvider
+	GitHub    GitHubProvider
+	GitLab    GitLabProvider
+	Bitbucket BitbucketProvider
 }
 
 // GitHubProvider holds resolved GitHub provider settings.
@@ -198,6 +206,13 @@ type GitHubProvider struct {
 type GitLabProvider struct {
 	// DraftPullRequests opens created GitLab MRs as drafts
 	// (glab mr create --draft). Default false.
+	DraftPullRequests bool
+}
+
+// BitbucketProvider holds resolved Bitbucket provider settings.
+type BitbucketProvider struct {
+	// DraftPullRequests opens created Bitbucket PRs as drafts
+	// ("draft": true in the create-PR request body). Default false.
 	DraftPullRequests bool
 }
 
@@ -367,6 +382,8 @@ intent:
 #   github:
 #     draft_pull_requests: true
 #   gitlab:
+#     draft_pull_requests: true
+#   bitbucket:
 #     draft_pull_requests: true
 `
 
@@ -927,6 +944,9 @@ func applyProvidersOverrides(dst *Providers, src *ProvidersRaw) {
 	}
 	if src.GitLab.DraftPullRequests != nil {
 		dst.GitLab.DraftPullRequests = *src.GitLab.DraftPullRequests
+	}
+	if src.Bitbucket.DraftPullRequests != nil {
+		dst.Bitbucket.DraftPullRequests = *src.Bitbucket.DraftPullRequests
 	}
 }
 

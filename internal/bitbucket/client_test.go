@@ -2,6 +2,7 @@ package bitbucket
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -162,6 +163,58 @@ func TestFindOpenPRBySourceAndDestinationBranchFiltersSourceRepo(t *testing.T) {
 	}
 	if gotQ != `source.branch.name="feature" AND source.repository.full_name="test/repo" AND destination.branch.name="main" AND state="OPEN"` {
 		t.Fatalf("q = %q, want source repo and destination branch filters", gotQ)
+	}
+}
+
+func TestCreatePRSetsDraftFieldWhenRequested(t *testing.T) {
+	repo := RepoRef{Workspace: "test", RepoSlug: "repo"}
+
+	tests := []struct {
+		name      string
+		draft     bool
+		wantField bool
+	}{
+		{name: "draft", draft: true, wantField: true},
+		{name: "not draft", draft: false, wantField: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotBody map[string]any
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/2.0/repositories/test/repo/pullrequests" {
+					t.Fatalf("request = %s %q, want POST pullrequests", r.Method, r.URL.Path)
+				}
+				if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+					t.Fatalf("decode body: %v", err)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"id":7,"links":{"html":{"href":"https://bitbucket.org/test/repo/pull-requests/7"}}}`))
+			}))
+			defer server.Close()
+
+			client := &Client{
+				baseURL:    server.URL,
+				email:      "test@example.com",
+				token:      "token",
+				httpClient: &http.Client{Timeout: time.Second},
+			}
+
+			pr, err := client.CreatePR(context.Background(), repo, "feature", "main", "title", "body", tt.draft)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if pr == nil || pr.ID != 7 {
+				t.Fatalf("pr = %#v, want id 7", pr)
+			}
+			_, gotField := gotBody["draft"]
+			if gotField != tt.wantField {
+				t.Fatalf("body draft field present = %v, want %v (body=%v)", gotField, tt.wantField, gotBody)
+			}
+			if tt.wantField && gotBody["draft"] != true {
+				t.Fatalf("body draft = %v, want true", gotBody["draft"])
+			}
+		})
 	}
 }
 

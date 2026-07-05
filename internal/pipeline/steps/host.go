@@ -76,7 +76,8 @@ func buildHost(sctx *pipeline.StepContext, provider scm.Provider) (scm.Host, str
 		if err != nil {
 			return nil, err.Error()
 		}
-		return bitbucket.NewHost(client, repo), ""
+		draft := sctx.Config != nil && sctx.Config.Providers.Bitbucket.DraftPullRequests
+		return bitbucket.NewHost(client, repo, draft), ""
 	case scm.ProviderAzureDevOps:
 		if sctx.Repo.ForkURL != "" {
 			// Fork PR routing for Azure DevOps is intentionally not half-wired,
