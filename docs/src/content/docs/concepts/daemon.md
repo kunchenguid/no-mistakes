@@ -60,7 +60,7 @@ If the daemon is already running from a different executable path, update prompt
 Pass `-y` or `--yes` to continue through update safety prompts while still printing warnings.
 If the daemon executable path cannot be determined, the update aborts before replacing anything.
 
-The daemon writes an identity record to `~/.no-mistakes/daemon.pid` and listens on a Unix socket at `~/.no-mistakes/socket`. On Windows, it uses a localhost TCP listener and a protected endpoint file at the same path.
+The daemon writes an identity record to `~/.no-mistakes/daemon.pid` and listens on a Unix socket at `~/.no-mistakes/socket`. On Windows, it uses a localhost TCP listener and a protected endpoint file at the same path. CLI clients bound how long they wait for that socket to accept a connection with `daemon_connect_timeout` (default `3s`, override with `NM_DAEMON_CONNECT_TIMEOUT`), so a daemon process that is alive but stuck fails the connection instead of hanging the caller; see [Troubleshooting](/no-mistakes/guides/troubleshooting/#check-for-stale-artifacts).
 
 Only one live daemon can own an `NM_HOME` at a time.
 At startup - before crash recovery runs and before the socket is bound - the daemon takes an exclusive OS file lock on `~/.no-mistakes/daemon.lock` and holds it for the life of the process.
@@ -114,7 +114,7 @@ Daemon logs go to `~/.no-mistakes/logs/daemon.log`. The setup wizard captures ma
 Set the log level in global config:
 
 ```yaml
-log_level: debug  # debug | info | warn | error
+log_level: debug # debug | info | warn | error
 ```
 
 ## Shutdown
