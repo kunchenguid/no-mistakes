@@ -163,6 +163,24 @@ func TestCreatePRConstructsURL(t *testing.T) {
 	}
 }
 
+func TestCreatePRAddsDraftFlagWhenConfigured(t *testing.T) {
+	t.Parallel()
+
+	h := NewWithDraft(azdoTestCmdFactory(map[string]azdoTestResponse{
+		"az repos pr create --source-branch feature --target-branch main --title T --description B --draft true --organization " + testOrg + " --project " + testProject + " --repository " + testRepo + " --output json": {
+			stdout: `{"pullRequestId":7}` + "\n",
+		},
+	}), func() bool { return true }, testOrg, testProject, testRepo, true)
+
+	pr, err := h.CreatePR(context.Background(), "feature", "main", scm.PRContent{Title: "T", Body: "B"})
+	if err != nil {
+		t.Fatalf("CreatePR() error = %v", err)
+	}
+	if pr.Number != "7" {
+		t.Fatalf("CreatePR() number = %q, want 7", pr.Number)
+	}
+}
+
 func TestCreatePRTruncatesOverlongDescription(t *testing.T) {
 	t.Parallel()
 

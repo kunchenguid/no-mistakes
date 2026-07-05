@@ -214,6 +214,21 @@ func TestMerge_ProvidersRepoOverridesGlobalBitbucketDraft(t *testing.T) {
 	}
 }
 
+func TestMerge_ProvidersRepoOverridesGlobalAzureDevOpsDraft(t *testing.T) {
+	truthy := true
+	falsy := false
+	global := &GlobalConfig{Providers: ProvidersRaw{AzureDevOps: AzureDevOpsProviderRaw{DraftPullRequests: &truthy}}}
+
+	if cfg := Merge(global, &RepoConfig{}); !cfg.Providers.AzureDevOps.DraftPullRequests {
+		t.Error("azuredevops draft_pull_requests = false, want true (global)")
+	}
+
+	repo := &RepoConfig{Providers: ProvidersRaw{AzureDevOps: AzureDevOpsProviderRaw{DraftPullRequests: &falsy}}}
+	if cfg := Merge(global, repo); cfg.Providers.AzureDevOps.DraftPullRequests {
+		t.Error("azuredevops draft_pull_requests = true, want false (repo override)")
+	}
+}
+
 func TestAutoFixLimit(t *testing.T) {
 	cfg := &Config{
 		AutoFix: AutoFix{Lint: 5, Test: 2, Review: 0, Document: 1, CI: 3, Rebase: 4},

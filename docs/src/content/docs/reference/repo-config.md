@@ -51,6 +51,8 @@ providers:
     draft_pull_requests: false
   bitbucket:
     draft_pull_requests: false
+  azuredevops:
+    draft_pull_requests: false
 ```
 
 ## Fields
@@ -236,3 +238,15 @@ Inherits from global config when not set here.
 | Default | Inherits from global (default `false`) |
 
 Only affects PR creation; existing PRs are not toggled between draft and ready. Bitbucket only — ignored for other providers.
+
+### providers.azuredevops.draft_pull_requests
+
+Open pull requests created on Azure DevOps as drafts (`az repos pr create --draft true`).
+Inherits from global config when not set here.
+
+| | |
+|---|---|
+| Type | `bool` |
+| Default | Inherits from global (default `false`) |
+
+Only affects PR creation; existing PRs are not toggled between draft and ready. Azure DevOps only — ignored for other providers.

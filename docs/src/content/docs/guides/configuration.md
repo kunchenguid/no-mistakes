@@ -168,7 +168,7 @@ See [Repo Config Reference](/no-mistakes/reference/repo-config/) for the full fi
 - `auto_fix` from the repo config overlays global auto_fix. Fields not set in the repo config fall through to the global default.
 - `intent` from the repo config overlays global intent settings. Fields not set in the repo config fall through to the global default, except `intent.disabled_readers`, which adds to globally disabled readers.
 - `test.evidence` from the repo config overlays global test evidence settings. Fields not set in the repo config fall through to the global default.
-- `providers` from the repo config overlays global provider settings. `providers.github.draft_pull_requests` opens created GitHub PRs as drafts, `providers.gitlab.draft_pull_requests` opens created GitLab MRs as drafts, and `providers.bitbucket.draft_pull_requests` opens created Bitbucket PRs as drafts; all default to `false`.
+- `providers` from the repo config overlays global provider settings. `providers.github.draft_pull_requests` opens created GitHub PRs as drafts, `providers.gitlab.draft_pull_requests` opens created GitLab MRs as drafts, `providers.bitbucket.draft_pull_requests` opens created Bitbucket PRs as drafts, and `providers.azuredevops.draft_pull_requests` opens created Azure DevOps PRs as drafts; all default to `false`.
 - `commands` and `ignore_patterns` are repo-only fields.
 - `ci_timeout` and `auto_fix.ci` are the canonical keys; `babysit_timeout` and `auto_fix.babysit` are still accepted as legacy aliases.
 - If `commands.test` is set, the test step runs it first as the baseline; when user intent is available, the agent may still run afterward to gather evidence-oriented validation.
