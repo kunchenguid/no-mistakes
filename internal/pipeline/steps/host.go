@@ -80,11 +80,13 @@ func buildHost(sctx *pipeline.StepContext, provider scm.Provider) (scm.Host, str
 			// GitLab source-project routing is implemented end to end.
 			return nil, "fork PR routing for GitLab is not implemented"
 		}
-		return gitlab.New(
+		draft := sctx.Config != nil && sctx.Config.Providers.GitLab.DraftPullRequests
+		return gitlab.NewWithDraft(
 			cmdFactory,
 			func() bool { return stepCLIAvailable(sctx, provider) },
 			resolvedHost(sctx, sctx.Repo.UpstreamURL),
 			gitlab.ProjectPath(sctx.Repo.UpstreamURL),
+			draft,
 		), ""
 	case scm.ProviderBitbucket:
 		if sctx.Repo.ForkURL != "" {
