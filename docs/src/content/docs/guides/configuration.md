@@ -19,10 +19,10 @@ work. Config exists for the parts that genuinely vary by machine or repo:
 
 Config is split across two files:
 
-| File | Scope |
-|---|---|
+| File                         | Scope                         |
+| ---------------------------- | ----------------------------- |
 | `~/.no-mistakes/config.yaml` | Global defaults for all repos |
-| `<repo>/.no-mistakes.yaml` | Per-repo overrides |
+| `<repo>/.no-mistakes.yaml`   | Per-repo overrides            |
 
 Set `NM_HOME` to relocate the global config directory (the global file becomes `$NM_HOME/config.yaml`).
 
@@ -52,7 +52,7 @@ Everything else can usually wait.
 # Default agent for all repos and setup-wizard suggestions.
 # "auto" picks the first available native agent on PATH.
 # You can also use an ordered fallback list, for example: [codex, claude].
-agent: auto  # auto | claude | codex | rovodev | opencode | pi | copilot | acp:<target>
+agent: auto # auto | claude | codex | rovodev | opencode | pi | copilot | acp:<target>
 
 # Optional acpx path and target command overrides for agent: acp:<target>.
 acpx_path: acpx
@@ -81,14 +81,19 @@ agent_args_override:
 # advance re-arms the timer, so an actively-updated green PR keeps its monitor.
 # Use "unlimited" (or aliases "none", "off", "never", or any non-positive
 # duration) to monitor until the PR is merged, closed, or aborted.
-ci_timeout: "168h"  # any Go duration string, or an unlimited keyword
+ci_timeout: "168h" # any Go duration string, or an unlimited keyword
+
+# Maximum time a CLI client waits for an existing daemon socket to accept a
+# connection before failing instead of hanging. Override per-invocation with
+# NM_DAEMON_CONNECT_TIMEOUT.
+daemon_connect_timeout: "3s"
 
 # How long AXI status waits without step-log or native-agent lifecycle activity
 # before marking a running/fixing step as quiet. This is observability only.
 step_quiet_warning: "10m"
 
 # Daemon log verbosity.
-log_level: info  # debug | info | warn | error
+log_level: info # debug | info | warn | error
 
 # Max follow-up auto-fix attempts per step. 0 = disabled after the initial step pass.
 # Document fixes are attempted during the initial document pass.
@@ -192,8 +197,8 @@ For lint, that gap includes safe formatter and linter fixes during the initial l
 
 Patterns in `ignore_patterns` control which files are excluded from review and documentation checks:
 
-| Pattern | Match rule |
-|---|---|
-| `*.generated.go` | No slash - matches by basename |
-| `vendor/**` | Ends with `/**` - matches entire directory subtree |
-| `some/path/file.go` | Contains a slash - full path glob matching |
+| Pattern             | Match rule                                         |
+| ------------------- | -------------------------------------------------- |
+| `*.generated.go`    | No slash - matches by basename                     |
+| `vendor/**`         | Ends with `/**` - matches entire directory subtree |
+| `some/path/file.go` | Contains a slash - full path glob matching         |

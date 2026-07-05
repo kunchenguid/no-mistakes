@@ -61,6 +61,13 @@ The daemon holds an exclusive OS lock on `~/.no-mistakes/daemon.lock` for its wh
 The OS releases the lock automatically when the holder exits or crashes, even on SIGKILL, so it cannot go stale: this error always means a genuinely live daemon, and the message includes the holder's PID and start time when available.
 Manage that daemon with `no-mistakes daemon status` and `no-mistakes daemon stop` instead of deleting the lock file - deleting the file does not release the lock and only weakens the guard.
 
+If the socket exists and the process is running but stuck or unresponsive, `no-mistakes` no longer hangs on the connection attempt: it bounds the wait with `daemon_connect_timeout` (default `3s`, override with `NM_DAEMON_CONNECT_TIMEOUT` or the config field) and fails fast with an error naming the socket path instead of silently starting a second daemon. Restart the stuck daemon:
+
+```sh
+no-mistakes daemon stop
+no-mistakes daemon start
+```
+
 ### Managed service logs
 
 - **macOS (launchd):** `launchctl list | grep no-mistakes` and check `~/Library/LaunchAgents/com.kunchenguid.no-mistakes.daemon.*.plist`

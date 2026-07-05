@@ -7,9 +7,9 @@ description: All environment variables recognized by no-mistakes.
 
 Override the data directory.
 
-| | |
-|---|---|
-| Type | `string` |
+|         |                  |
+| ------- | ---------------- |
+| Type    | `string`         |
 | Default | `~/.no-mistakes` |
 
 When set, everything else moves under this root:
@@ -23,13 +23,24 @@ When set, everything else moves under this root:
 - Managed agent server PID records: `$NM_HOME/servers/`
 - Managed service names get a short stable suffix derived from `$NM_HOME` so multiple installs don't collide.
 
+## `NM_DAEMON_CONNECT_TIMEOUT`
+
+Override how long a CLI client waits for an existing daemon socket to accept a connection before failing instead of hanging.
+
+|         |                                                                                                   |
+| ------- | ------------------------------------------------------------------------------------------------- |
+| Type    | `string` (Go duration)                                                                            |
+| Default | unset (falls back to the `daemon_connect_timeout` global config value, itself defaulting to `3s`) |
+
+Takes precedence over `daemon_connect_timeout` in `config.yaml`. An empty, unparsable, or non-positive value is ignored and the config value (or its default) is used instead.
+
 ## `NO_MISTAKES_BITBUCKET_EMAIL`
 
 Bitbucket Cloud account email used for PR creation and CI monitoring.
 
-| | |
-|---|---|
-| Type | `string` |
+|         |                                               |
+| ------- | --------------------------------------------- |
+| Type    | `string`                                      |
 | Default | (none; Bitbucket PR/CI steps skip when unset) |
 
 Used alongside `NO_MISTAKES_BITBUCKET_API_TOKEN`. See [Provider Integration](/no-mistakes/guides/provider-integration/#bitbucket-cloud).
@@ -38,10 +49,10 @@ Used alongside `NO_MISTAKES_BITBUCKET_API_TOKEN`. See [Provider Integration](/no
 
 Bitbucket Cloud API token.
 
-| | |
-|---|---|
-| Type | `string` |
-| Default | (none) |
+|         |          |
+| ------- | -------- |
+| Type    | `string` |
+| Default | (none)   |
 
 Get one from [Bitbucket account settings](https://bitbucket.org/account/settings/app-passwords/).
 
@@ -49,9 +60,9 @@ Get one from [Bitbucket account settings](https://bitbucket.org/account/settings
 
 Override the Bitbucket Cloud API base URL.
 
-| | |
-|---|---|
-| Type | `string` |
+|         |                                 |
+| ------- | ------------------------------- |
+| Type    | `string`                        |
 | Default | `https://api.bitbucket.org/2.0` |
 
 Useful for mocking in tests or pointing at a proxy.
@@ -60,10 +71,10 @@ Useful for mocking in tests or pointing at a proxy.
 
 Disable background update checks.
 
-| | |
-|---|---|
-| Type | `1` to disable, anything else to leave enabled |
-| Default | unset (checks enabled) |
+|         |                                                |
+| ------- | ---------------------------------------------- |
+| Type    | `1` to disable, anything else to leave enabled |
+| Default | unset (checks enabled)                         |
 
 Update checks run on every CLI invocation except `update` itself, hit GitHub releases, cache the result in `$NM_HOME/update-check.json`, and print a one-line notification to stderr when a newer version is available. Dev builds (non-semver versions) suppress the check automatically.
 
@@ -71,9 +82,9 @@ Update checks run on every CLI invocation except `update` itself, hit GitHub rel
 
 Data directory used to discover OpenCode transcripts for intent extraction.
 
-| | |
-|---|---|
-| Type | `string` |
+|         |                  |
+| ------- | ---------------- |
+| Type    | `string`         |
 | Default | `~/.local/share` |
 
 When set, no-mistakes looks for OpenCode's intent transcript database at `$XDG_DATA_HOME/opencode/opencode.db`.
@@ -83,10 +94,10 @@ When unset, it falls back to `~/.local/share/opencode/opencode.db`.
 
 Directory holding glab's `config.yml`, consulted when detecting self-hosted GitLab.
 
-| | |
-|---|---|
-| Type | `string` |
-| Default | (none) |
+|         |          |
+| ------- | -------- |
+| Type    | `string` |
+| Default | (none)   |
 
 When the upstream hostname carries no `gitlab` marker, no-mistakes reads glab's configured hosts from `$GLAB_CONFIG_DIR/config.yml` to decide whether the host is a GitLab instance. It takes precedence over `XDG_CONFIG_HOME`. See [Provider Integration](/no-mistakes/guides/provider-integration/#self-hosted-githubgitlab).
 
@@ -94,10 +105,10 @@ When the upstream hostname carries no `gitlab` marker, no-mistakes reads glab's 
 
 Directory holding gh's `hosts.yml`, consulted when detecting self-hosted GitHub Enterprise.
 
-| | |
-|---|---|
-| Type | `string` |
-| Default | (none) |
+|         |          |
+| ------- | -------- |
+| Type    | `string` |
+| Default | (none)   |
 
 When the upstream hostname is not `github.com`, no-mistakes reads gh's configured hosts from `$GH_CONFIG_DIR/hosts.yml` to decide whether the host is a GitHub Enterprise instance. It takes precedence over `XDG_CONFIG_HOME`. See [Provider Integration](/no-mistakes/guides/provider-integration/#self-hosted-githubgitlab).
 
@@ -105,9 +116,9 @@ When the upstream hostname is not `github.com`, no-mistakes reads gh's configure
 
 Config directory used to locate glab's `config.yml` for self-hosted GitLab detection and gh's `hosts.yml` for self-hosted GitHub Enterprise detection.
 
-| | |
-|---|---|
-| Type | `string` |
+|         |             |
+| ------- | ----------- |
+| Type    | `string`    |
 | Default | `~/.config` |
 
 When `GLAB_CONFIG_DIR` is unset, no-mistakes looks for glab's configured hosts at `$XDG_CONFIG_HOME/glab-cli/config.yml`, falling back to `~/.config/glab-cli/config.yml` when `XDG_CONFIG_HOME` is unset.
@@ -117,9 +128,9 @@ When `GH_CONFIG_DIR` is unset, no-mistakes looks for gh's configured hosts at `$
 
 Override the telemetry collection host.
 
-| | |
-|---|---|
-| Type | `URL` |
+|         |                             |
+| ------- | --------------------------- |
+| Type    | `URL`                       |
 | Default | `https://a.kunchenguid.com` |
 
 When set, telemetry sends events to this host's `/api/send` endpoint. If it is unset in a dev build, `no-mistakes` also checks a repo-local `.env` file for `NO_MISTAKES_UMAMI_HOST`. If no runtime value is found, it falls back to any host embedded at build time and then the default self-hosted Umami instance.
@@ -128,9 +139,9 @@ When set, telemetry sends events to this host's `/api/send` endpoint. If it is u
 
 Override or enable the telemetry website ID.
 
-| | |
-|---|---|
-| Type | `string` |
+|         |                                                                         |
+| ------- | ----------------------------------------------------------------------- |
+| Type    | `string`                                                                |
 | Default | embedded in Makefile and release builds; unset in unembedded dev builds |
 
 When set, telemetry uses this website ID at runtime. If it is unset in a dev build, `no-mistakes` also checks a repo-local `.env` file for `NO_MISTAKES_UMAMI_WEBSITE_ID`. If no runtime value is found, it falls back to any website ID embedded at build time.
@@ -143,10 +154,10 @@ They include only flag-derived context: `/axi/run` records whether `--yes`, `--i
 
 Disable telemetry collection.
 
-| | |
-|---|---|
-| Type | `0`, `false`, or `off` to disable; anything else to leave enabled |
-| Default | unset |
+|         |                                                                   |
+| ------- | ----------------------------------------------------------------- |
+| Type    | `0`, `false`, or `off` to disable; anything else to leave enabled |
+| Default | unset                                                             |
 
 When set to a disabling value, telemetry stays off even if a runtime or embedded website ID is available.
 
