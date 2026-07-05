@@ -90,11 +90,11 @@ type RepoConfig struct {
 
 func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 	type repoConfigRaw struct {
-		Agent             agentList  `yaml:"agent"`
-		Commands          Commands   `yaml:"commands"`
-		IgnorePatterns    []string   `yaml:"ignore_patterns"`
-		AllowRepoCommands bool       `yaml:"allow_repo_commands"`
-		AutoFix           AutoFixRaw `yaml:"auto_fix"`
+		Agent             agentList    `yaml:"agent"`
+		Commands          Commands     `yaml:"commands"`
+		IgnorePatterns    []string     `yaml:"ignore_patterns"`
+		AllowRepoCommands bool         `yaml:"allow_repo_commands"`
+		AutoFix           AutoFixRaw   `yaml:"auto_fix"`
 		Intent            IntentRaw    `yaml:"intent"`
 		Test              TestRaw      `yaml:"test"`
 		Providers         ProvidersRaw `yaml:"providers"`
