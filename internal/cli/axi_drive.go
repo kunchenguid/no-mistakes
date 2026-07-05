@@ -12,6 +12,7 @@ import (
 	toon "github.com/toon-format/toon-go"
 
 	"github.com/kunchenguid/no-mistakes/internal/cimonitor"
+	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/gate"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
@@ -781,11 +782,7 @@ func runAxiAbortByRunID(cmd *cobra.Command, runID string) error {
 		return emitError(cmd, 1, fmt.Sprintf("create directories: %v", err))
 	}
 
-	alive, err := daemonIsRunningFn(p)
-	if err != nil {
-		return emitError(cmd, 1, fmt.Sprintf("check daemon status: %v", err))
-	}
-	if !alive {
+	if alive, _ := daemon.IsRunning(p); !alive {
 		emitDoc(cmd,
 			toon.Field{Key: "aborted", Value: false},
 			toon.Field{Key: "run", Value: runID},

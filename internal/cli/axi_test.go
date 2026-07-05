@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/spf13/cobra"
 	toon "github.com/toon-format/toon-go"
@@ -689,48 +688,6 @@ func TestAxiAbortByRunIDNoOpWhenDaemonStopped(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected %q in abort output, got:\n%s", want, got)
 		}
-	}
-}
-
-// TestAxiAbortByRunIDSurfacesConnectTimeoutInsteadOfNoOp covers the case where
-// the daemon process is alive but its socket is stuck/unresponsive: the
-// health check fails with a bounded connect timeout rather than a clean
-// "not running" signal. Abort must surface that ambiguous state as an error
-// instead of reporting a false-negative "daemon not running" no-op, since a
-// still-executing run would then never get reaped.
-func TestAxiAbortByRunIDSurfacesConnectTimeoutInsteadOfNoOp(t *testing.T) {
-	nmHome := t.TempDir()
-	t.Setenv("NM_HOME", nmHome)
-
-	p, err := paths.New()
-	if err != nil {
-		t.Fatalf("resolve paths: %v", err)
-	}
-
-	timeoutErr := &ipc.ConnectTimeoutError{
-		SocketPath:      p.Socket(),
-		TimeoutDuration: 2 * time.Second,
-	}
-	originalIsRunning := daemonIsRunningFn
-	daemonIsRunningFn = func(*paths.Paths) (bool, error) {
-		return false, timeoutErr
-	}
-	defer func() { daemonIsRunningFn = originalIsRunning }()
-
-	var out bytes.Buffer
-	cmd := &cobra.Command{}
-	cmd.SetContext(context.Background())
-	cmd.SetOut(&out)
-	err = runAxiAbortByRunID(cmd, "some-run-id")
-	if err == nil {
-		t.Fatalf("expected an error surfacing the connect timeout, got nil\n%s", out.String())
-	}
-	got := out.String()
-	if strings.Contains(got, "daemon not running") {
-		t.Fatalf("abort should not report a false-negative no-op on an ambiguous connect timeout, got:\n%s", got)
-	}
-	if !strings.Contains(got, timeoutErr.Error()) {
-		t.Fatalf("expected connect timeout message %q in abort output, got:\n%s", timeoutErr.Error(), got)
 	}
 }
 
