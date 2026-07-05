@@ -184,6 +184,21 @@ func TestMerge_ProvidersRepoOverridesGlobalDraft(t *testing.T) {
 	}
 }
 
+func TestMerge_ProvidersRepoOverridesGlobalGitLabDraft(t *testing.T) {
+	truthy := true
+	falsy := false
+	global := &GlobalConfig{Providers: ProvidersRaw{GitLab: GitLabProviderRaw{DraftPullRequests: &truthy}}}
+
+	if cfg := Merge(global, &RepoConfig{}); !cfg.Providers.GitLab.DraftPullRequests {
+		t.Error("gitlab draft_pull_requests = false, want true (global)")
+	}
+
+	repo := &RepoConfig{Providers: ProvidersRaw{GitLab: GitLabProviderRaw{DraftPullRequests: &falsy}}}
+	if cfg := Merge(global, repo); cfg.Providers.GitLab.DraftPullRequests {
+		t.Error("gitlab draft_pull_requests = true, want false (repo override)")
+	}
+}
+
 func TestAutoFixLimit(t *testing.T) {
 	cfg := &Config{
 		AutoFix: AutoFix{Lint: 5, Test: 2, Review: 0, Document: 1, CI: 3, Rebase: 4},

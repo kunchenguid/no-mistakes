@@ -166,6 +166,7 @@ type Config struct {
 // existing config.
 type ProvidersRaw struct {
 	GitHub GitHubProviderRaw `yaml:"github"`
+	GitLab GitLabProviderRaw `yaml:"gitlab"`
 }
 
 // GitHubProviderRaw is the YAML representation of GitHub provider settings.
@@ -174,15 +175,29 @@ type GitHubProviderRaw struct {
 	DraftPullRequests *bool `yaml:"draft_pull_requests"`
 }
 
+// GitLabProviderRaw is the YAML representation of GitLab provider settings.
+// Pointer fields distinguish "not set" (nil) from an explicit false.
+type GitLabProviderRaw struct {
+	DraftPullRequests *bool `yaml:"draft_pull_requests"`
+}
+
 // Providers holds resolved provider-specific settings.
 type Providers struct {
 	GitHub GitHubProvider
+	GitLab GitLabProvider
 }
 
 // GitHubProvider holds resolved GitHub provider settings.
 type GitHubProvider struct {
 	// DraftPullRequests opens created GitHub PRs as drafts
 	// (gh pr create --draft). Default false.
+	DraftPullRequests bool
+}
+
+// GitLabProvider holds resolved GitLab provider settings.
+type GitLabProvider struct {
+	// DraftPullRequests opens created GitLab MRs as drafts
+	// (glab mr create --draft). Default false.
 	DraftPullRequests bool
 }
 
@@ -347,9 +362,11 @@ intent:
 #     store_in_repo: true
 #     dir: .no-mistakes/evidence
 
-# Provider-specific settings. Opt in to opening created GitHub PRs as drafts.
+# Provider-specific settings. Opt in to opening created PRs/MRs as drafts.
 # providers:
 #   github:
+#     draft_pull_requests: true
+#   gitlab:
 #     draft_pull_requests: true
 `
 
@@ -907,6 +924,9 @@ func applyTestOverrides(dst *Test, src *TestRaw) {
 func applyProvidersOverrides(dst *Providers, src *ProvidersRaw) {
 	if src.GitHub.DraftPullRequests != nil {
 		dst.GitHub.DraftPullRequests = *src.GitHub.DraftPullRequests
+	}
+	if src.GitLab.DraftPullRequests != nil {
+		dst.GitLab.DraftPullRequests = *src.GitLab.DraftPullRequests
 	}
 }
 

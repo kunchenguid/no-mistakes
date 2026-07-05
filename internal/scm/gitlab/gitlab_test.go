@@ -431,6 +431,48 @@ func TestFindPRDoesNotPassRemovedStateFlag(t *testing.T) {
 	}
 }
 
+func TestCreatePRAddsDraftFlagWhenConfigured(t *testing.T) {
+	t.Parallel()
+
+	host := NewWithDraft(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab mr create --source-branch feature/draft --target-branch main --title fix: draft --description body --yes --draft": {
+			stdout: "https://gitlab.example.com/group/project/-/merge_requests/9\n",
+		},
+	}), nil, "", "", true)
+
+	pr, err := host.CreatePR(context.Background(), "feature/draft", "main", scm.PRContent{
+		Title: "fix: draft",
+		Body:  "body",
+	})
+	if err != nil {
+		t.Fatalf("CreatePR() error = %v", err)
+	}
+	if pr == nil || pr.Number != "9" {
+		t.Fatalf("CreatePR() PR = %+v, want !9", pr)
+	}
+}
+
+func TestCreatePROmitsDraftFlagByDefault(t *testing.T) {
+	t.Parallel()
+
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab mr create --source-branch feature/x --target-branch main --title fix: x --description body --yes": {
+			stdout: "https://gitlab.example.com/group/project/-/merge_requests/3\n",
+		},
+	}), nil, "", "")
+
+	pr, err := host.CreatePR(context.Background(), "feature/x", "main", scm.PRContent{
+		Title: "fix: x",
+		Body:  "body",
+	})
+	if err != nil {
+		t.Fatalf("CreatePR() error = %v", err)
+	}
+	if pr == nil || pr.Number != "3" {
+		t.Fatalf("CreatePR() PR = %+v, want !3", pr)
+	}
+}
+
 func TestGetChecksReadsJobsViaAPIWhenProjectPathKnown(t *testing.T) {
 	t.Parallel()
 

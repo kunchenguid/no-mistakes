@@ -55,6 +55,8 @@ test:
 providers:
   github:
     draft_pull_requests: false
+  gitlab:
+    draft_pull_requests: false
 ```
 
 ## Fields
@@ -296,6 +298,18 @@ Open pull requests created on GitHub as drafts (`gh pr create --draft`).
 
 Only affects PR creation; existing PRs are not toggled between draft and ready. GitHub only — ignored for other providers.
 This is a global default. Per-repo config can override it via `providers.github.draft_pull_requests`.
+
+### providers.gitlab.draft_pull_requests
+
+Open merge requests created on GitLab as drafts (`glab mr create --draft`).
+
+| | |
+|---|---|
+| Type | `bool` |
+| Default | `false` |
+
+Only affects MR creation; existing MRs are not toggled between draft and ready. GitLab only — ignored for other providers.
+This is a global default. Per-repo config can override it via `providers.gitlab.draft_pull_requests`.
 
 ## Environment variables
 

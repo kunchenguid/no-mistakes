@@ -25,6 +25,7 @@ type Host struct {
 	cliAvailable func() bool
 	host         string // repo's GitLab hostname; scopes the auth check
 	projectPath  string // repo's "group/project" path; enables REST job reads
+	draft        bool   // open created MRs as drafts (glab mr create --draft)
 }
 
 // New builds a Host. cliAvailable reports whether the glab binary is
@@ -43,6 +44,14 @@ func New(cmd CmdFactory, cliAvailable func() bool, host, projectPath string) *Ho
 		host:         strings.TrimSpace(host),
 		projectPath:  strings.TrimSpace(projectPath),
 	}
+}
+
+// NewWithDraft builds a Host that opens created MRs as drafts when draft is
+// true (glab mr create --draft). See New for the other parameters.
+func NewWithDraft(cmd CmdFactory, cliAvailable func() bool, host, projectPath string, draft bool) *Host {
+	h := New(cmd, cliAvailable, host, projectPath)
+	h.draft = draft
+	return h
 }
 
 // ProjectPath extracts the "group/project" path (no host, no trailing .git)
@@ -191,13 +200,17 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 }
 
 func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PRContent) (*scm.PR, error) {
-	cmd := h.cmd(ctx, "glab", "mr", "create",
+	args := []string{"mr", "create",
 		"--source-branch", branch,
 		"--target-branch", base,
 		"--title", content.Title,
 		"--description", content.Body,
 		"--yes",
-	)
+	}
+	if h.draft {
+		args = append(args, "--draft")
+	}
+	cmd := h.cmd(ctx, "glab", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("glab mr create: %s: %w", strings.TrimSpace(string(out)), err)
