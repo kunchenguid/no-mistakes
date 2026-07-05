@@ -95,8 +95,9 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 		IgnorePatterns    []string   `yaml:"ignore_patterns"`
 		AllowRepoCommands bool       `yaml:"allow_repo_commands"`
 		AutoFix           AutoFixRaw `yaml:"auto_fix"`
-		Intent            IntentRaw  `yaml:"intent"`
-		Test              TestRaw    `yaml:"test"`
+		Intent            IntentRaw    `yaml:"intent"`
+		Test              TestRaw      `yaml:"test"`
+		Providers         ProvidersRaw `yaml:"providers"`
 	}
 	var raw repoConfigRaw
 	if err := value.Decode(&raw); err != nil {
@@ -110,6 +111,7 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 	c.AutoFix = raw.AutoFix
 	c.Intent = raw.Intent
 	c.Test = raw.Test
+	c.Providers = raw.Providers
 	return nil
 }
 
