@@ -594,9 +594,10 @@ type Config struct {
 // keyed by provider name so new providers can be added without reshaping
 // existing config.
 type ProvidersRaw struct {
-	GitHub    GitHubProviderRaw    `yaml:"github"`
-	GitLab    GitLabProviderRaw    `yaml:"gitlab"`
-	Bitbucket BitbucketProviderRaw `yaml:"bitbucket"`
+	GitHub      GitHubProviderRaw      `yaml:"github"`
+	GitLab      GitLabProviderRaw      `yaml:"gitlab"`
+	Bitbucket   BitbucketProviderRaw   `yaml:"bitbucket"`
+	AzureDevOps AzureDevOpsProviderRaw `yaml:"azuredevops"`
 }
 
 // GitHubProviderRaw is the YAML representation of GitHub provider settings.
@@ -617,11 +618,18 @@ type BitbucketProviderRaw struct {
 	DraftPullRequests *bool `yaml:"draft_pull_requests"`
 }
 
+// AzureDevOpsProviderRaw is the YAML representation of Azure DevOps provider
+// settings. Pointer fields distinguish "not set" (nil) from an explicit false.
+type AzureDevOpsProviderRaw struct {
+	DraftPullRequests *bool `yaml:"draft_pull_requests"`
+}
+
 // Providers holds resolved provider-specific settings.
 type Providers struct {
-	GitHub    GitHubProvider
-	GitLab    GitLabProvider
-	Bitbucket BitbucketProvider
+	GitHub      GitHubProvider
+	GitLab      GitLabProvider
+	Bitbucket   BitbucketProvider
+	AzureDevOps AzureDevOpsProvider
 }
 
 // GitHubProvider holds resolved GitHub provider settings.
@@ -642,6 +650,13 @@ type GitLabProvider struct {
 type BitbucketProvider struct {
 	// DraftPullRequests opens created Bitbucket PRs as drafts
 	// ("draft": true in the create-PR request body). Default false.
+	DraftPullRequests bool
+}
+
+// AzureDevOpsProvider holds resolved Azure DevOps provider settings.
+type AzureDevOpsProvider struct {
+	// DraftPullRequests opens created Azure DevOps PRs as drafts
+	// (az repos pr create --draft true). Default false.
 	DraftPullRequests bool
 }
 
@@ -1087,6 +1102,8 @@ eval:
 #   gitlab:
 #     draft_pull_requests: true
 #   bitbucket:
+#     draft_pull_requests: true
+#   azuredevops:
 #     draft_pull_requests: true
 `
 
@@ -2573,6 +2590,9 @@ func applyProvidersOverrides(dst *Providers, src *ProvidersRaw) {
 	}
 	if src.Bitbucket.DraftPullRequests != nil {
 		dst.Bitbucket.DraftPullRequests = *src.Bitbucket.DraftPullRequests
+	}
+	if src.AzureDevOps.DraftPullRequests != nil {
+		dst.AzureDevOps.DraftPullRequests = *src.AzureDevOps.DraftPullRequests
 	}
 }
 
