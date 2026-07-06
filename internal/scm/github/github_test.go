@@ -273,6 +273,94 @@ func TestGetChecksRejectsNonResultExitCodes(t *testing.T) {
 	}
 }
 
+func TestGetChecksFallsBackToLegacyOutputWhenJSONFlagUnsupported(t *testing.T) {
+	t.Parallel()
+
+	// gh CLIs older than v2.46 do not support `pr checks --json` and exit 1
+	// with an unknown-flag error. GetChecks must fall back to the plain
+	// invocation and parse its tab-separated output.
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr checks 123 --json name,state,bucket,completedAt": {
+			stderr: "unknown flag: --json\n\nUsage:  gh pr checks [<number> | <url> | <branch>] [flags]\n",
+			code:   1,
+		},
+		"gh pr checks 123": {
+			stdout: "build\tpass\t29s\thttps://example.test/1\t\n" +
+				"deploy\tskipping\t0\thttps://example.test/2\t\n" +
+				"test\tfail\t2m1s\thttps://example.test/3\t\n" +
+				"lint\tpending\t0\thttps://example.test/4\t\n" +
+				"old\tcancel\t3s\thttps://example.test/5\t\n",
+			code: 1,
+		},
+	}), nil, "", "")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v, want nil", err)
+	}
+	want := []scm.Check{
+		{Name: "build", Bucket: scm.CheckBucketPass},
+		{Name: "deploy", Bucket: scm.CheckBucketSkip},
+		{Name: "test", Bucket: scm.CheckBucketFail},
+		{Name: "lint", Bucket: scm.CheckBucketPending},
+		{Name: "old", Bucket: scm.CheckBucketCancel},
+	}
+	if len(checks) != len(want) {
+		t.Fatalf("checks = %+v, want %+v", checks, want)
+	}
+	for i := range want {
+		if checks[i].Name != want[i].Name || checks[i].Bucket != want[i].Bucket {
+			t.Fatalf("checks[%d] = %+v, want %+v", i, checks[i], want[i])
+		}
+	}
+}
+
+func TestGetChecksLegacyFallbackReturnsEmptyWhenNoChecksReported(t *testing.T) {
+	t.Parallel()
+
+	// A repo with no CI at all on an old gh: the --json probe fails with
+	// unknown flag, and the plain fallback exits 1 with "no checks reported".
+	// This must be a clean empty result, not an error, or the CI monitor
+	// stalls forever (the original bug).
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr checks 123 --json name,state,bucket,completedAt": {
+			stderr: "unknown flag: --json\n",
+			code:   1,
+		},
+		"gh pr checks 123": {
+			stderr: "no checks reported on the 'feature' branch\n",
+			code:   1,
+		},
+	}), nil, "", "")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v, want nil for no checks", err)
+	}
+	if len(checks) != 0 {
+		t.Fatalf("len(checks) = %d, want 0", len(checks))
+	}
+}
+
+func TestGetChecksLegacyFallbackRejectsUnparseableOutput(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr checks 123 --json name,state,bucket,completedAt": {
+			stderr: "unknown flag: --json\n",
+			code:   1,
+		},
+		"gh pr checks 123": {
+			stderr: "GraphQL: something went wrong\n",
+			code:   1,
+		},
+	}), nil, "", "")
+
+	if _, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"}); err == nil {
+		t.Fatal("GetChecks() error = nil, want failure for unparseable fallback output")
+	}
+}
+
 func TestGetChecksReturnsContextError(t *testing.T) {
 	t.Parallel()
 

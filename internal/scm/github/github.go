@@ -280,6 +280,9 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 		if !errors.As(err, &exitErr) || (exitErr.ExitCode() != 1 && exitErr.ExitCode() != 8) {
 			return nil, fmt.Errorf("gh pr checks: %w", err)
 		}
+		if isUnsupportedJSONFlagError(exitErr.Stderr) {
+			return h.getChecksLegacy(ctx, pr)
+		}
 		diagnostic := string(out) + string(exitErr.Stderr)
 		if strings.Contains(diagnostic, "no checks reported") {
 			return nil, nil
@@ -306,6 +309,72 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 			}
 		}
 		checks = append(checks, scm.Check{Name: r.Name, Bucket: normalizeCheckBucket(r.Bucket, r.State), CompletedAt: completedAt})
+	}
+	return checks, nil
+}
+
+// isUnsupportedJSONFlagError reports whether stderr indicates the installed gh
+// CLI predates v2.46, where `pr checks` gained the --json flag.
+func isUnsupportedJSONFlagError(stderr []byte) bool {
+	msg := strings.ToLower(string(stderr))
+	return strings.Contains(msg, "unknown flag") && strings.Contains(msg, "--json")
+}
+
+// getChecksLegacy re-runs `gh pr checks` without --json for gh CLIs older
+// than v2.46 and parses the tab-separated output (name, bucket, elapsed,
+// url, description). CompletedAt is not available in this format, so CI
+// re-run detection degrades gracefully on old gh versions.
+func (h *Host) getChecksLegacy(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
+	args := append([]string{"pr", "checks", pr.Number}, h.repoArgs()...)
+	cmd := h.cmd(ctx, "gh", args...)
+	out, err := cmd.Output()
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) || (exitErr.ExitCode() != 1 && exitErr.ExitCode() != 8) {
+			return nil, fmt.Errorf("gh pr checks: %w", err)
+		}
+		if strings.Contains(string(out)+string(exitErr.Stderr), "no checks reported") {
+			return nil, nil
+		}
+		// Exits 1 (failures) and 8 (pending) still print the check table on
+		// stdout; fall through and parse it. Anything unparseable fails below.
+	}
+	checks, parseErr := parseChecksTSV(out)
+	if parseErr != nil || (err != nil && len(checks) == 0) {
+		// Fail closed: a nonzero exit without a recognized diagnostic or a
+		// parseable check table is a command failure, not an empty result.
+		if err != nil {
+			return nil, fmt.Errorf("gh pr checks: %w", err)
+		}
+		return nil, parseErr
+	}
+	return checks, nil
+}
+
+// parseChecksTSV parses the plain `gh pr checks` table: one check per line,
+// tab-separated, with the name in column 1 and the bucket word (pass, fail,
+// pending, skipping, cancel) in column 2.
+func parseChecksTSV(out []byte) ([]scm.Check, error) {
+	checks := []scm.Check{}
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimRight(line, "\r")
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		fields := strings.Split(line, "\t")
+		if len(fields) < 2 {
+			return nil, fmt.Errorf("gh pr checks: unexpected output line %q", line)
+		}
+		bucket := scm.CheckBucket(strings.TrimSpace(fields[1]))
+		switch bucket {
+		case scm.CheckBucketPass, scm.CheckBucketFail, scm.CheckBucketPending, scm.CheckBucketCancel, scm.CheckBucketSkip:
+		default:
+			return nil, fmt.Errorf("gh pr checks: unexpected check state %q in line %q", fields[1], line)
+		}
+		checks = append(checks, scm.Check{Name: strings.TrimSpace(fields[0]), Bucket: bucket})
 	}
 	return checks, nil
 }
