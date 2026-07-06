@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/kunchenguid/no-mistakes/internal/winproc"
 	"gopkg.in/yaml.v3"
 )
 
@@ -193,5 +194,6 @@ func AuthConfigured(ctx context.Context, provider Provider, workDir string) bool
 	}
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	cmd.Dir = workDir
+	winproc.Harden(cmd)
 	return cmd.Run() == nil
 }

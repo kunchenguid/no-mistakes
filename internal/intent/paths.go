@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/kunchenguid/no-mistakes/internal/winproc"
 )
 
 // resolveHome returns the home directory to use, preferring an explicit
@@ -109,6 +111,7 @@ func gitRepoIdentity(ctx context.Context, dir string) repoIdentity {
 
 func gitOutput(ctx context.Context, dir string, args ...string) string {
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+	winproc.Harden(cmd)
 	out, err := cmd.Output()
 	if err != nil {
 		return ""
