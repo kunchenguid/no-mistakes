@@ -43,7 +43,12 @@ type improveCodebaseReadOnlySnapshot struct {
 	Head    string
 	HeadRef string
 	Status  string
-	Refs    map[string]string
+	Refs    map[string]improveCodebaseRefSnapshot
+}
+
+type improveCodebaseRefSnapshot struct {
+	Object string
+	Symref string
 }
 
 func (s *ImproveCodebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
@@ -235,9 +240,9 @@ func snapshotImproveCodebaseReadOnly(sctx *pipeline.StepContext) (improveCodebas
 	return improveCodebaseReadOnlySnapshot{Head: head, HeadRef: headRef, Status: status, Refs: refs}, nil
 }
 
-func snapshotImproveCodebaseRefs(sctx *pipeline.StepContext) (map[string]string, error) {
-	refs := map[string]string{}
-	output, err := git.Run(sctx.Ctx, sctx.WorkDir, "for-each-ref", "--format=%(refname)%00%(objectname)", "refs")
+func snapshotImproveCodebaseRefs(sctx *pipeline.StepContext) (map[string]improveCodebaseRefSnapshot, error) {
+	refs := map[string]improveCodebaseRefSnapshot{}
+	output, err := git.Run(sctx.Ctx, sctx.WorkDir, "for-each-ref", "--format=%(refname)%00%(objectname)%00%(symref)", "refs")
 	if err != nil {
 		return nil, fmt.Errorf("snapshot improve-codebase refs: %w", err)
 	}
@@ -245,11 +250,11 @@ func snapshotImproveCodebaseRefs(sctx *pipeline.StepContext) (map[string]string,
 		if line == "" {
 			continue
 		}
-		parts := strings.SplitN(line, "\x00", 2)
-		if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
+		parts := strings.SplitN(line, "\x00", 3)
+		if len(parts) != 3 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
 			return nil, fmt.Errorf("snapshot improve-codebase refs: malformed ref line %q", line)
 		}
-		refs[parts[0]] = parts[1]
+		refs[parts[0]] = improveCodebaseRefSnapshot{Object: parts[1], Symref: parts[2]}
 	}
 	return refs, nil
 }
@@ -267,29 +272,23 @@ func enforceImproveCodebaseReadOnly(sctx *pipeline.StepContext, before improveCo
 	if improveCodebaseReadOnlySnapshotEqual(before, after) {
 		return nil
 	}
-	if _, checkoutErr := git.Run(cleanupCtx, sctx.WorkDir, "checkout", "--detach", before.Head); checkoutErr != nil {
+	if _, checkoutErr := git.Run(cleanupCtx, sctx.WorkDir, "checkout", "--force", "--detach", before.Head); checkoutErr != nil {
 		return fmt.Errorf("improve-codebase gate modified the worktree or git refs and cleanup failed: %w", checkoutErr)
 	}
-	for ref, sha := range before.Refs {
-		afterSHA, exists := after.Refs[ref]
-		if exists && afterSHA == sha {
+	for ref, beforeRef := range before.Refs {
+		afterRef, exists := after.Refs[ref]
+		if exists && improveCodebaseRefSnapshotEqual(afterRef, beforeRef) {
 			continue
 		}
-		if !exists {
-			if _, refErr := git.Run(cleanupCtx, sctx.WorkDir, "update-ref", ref, sha, gitZeroSHA); refErr != nil {
-				return fmt.Errorf("improve-codebase gate modified the worktree or git refs and cleanup failed: %w", refErr)
-			}
-			continue
-		}
-		if _, refErr := git.Run(cleanupCtx, sctx.WorkDir, "update-ref", ref, sha, afterSHA); refErr != nil {
+		if refErr := restoreImproveCodebaseRef(cleanupCtx, sctx.WorkDir, ref, beforeRef, afterRef, exists); refErr != nil {
 			return fmt.Errorf("improve-codebase gate modified the worktree or git refs and cleanup failed: %w", refErr)
 		}
 	}
-	for ref, afterSHA := range after.Refs {
+	for ref, afterRef := range after.Refs {
 		if _, ok := before.Refs[ref]; ok {
 			continue
 		}
-		if _, refErr := git.Run(cleanupCtx, sctx.WorkDir, "update-ref", "-d", ref, afterSHA); refErr != nil {
+		if refErr := removeImproveCodebaseRef(cleanupCtx, sctx.WorkDir, ref, afterRef); refErr != nil {
 			return fmt.Errorf("improve-codebase gate modified the worktree or git refs and cleanup failed: %w", refErr)
 		}
 	}
@@ -311,12 +310,85 @@ func improveCodebaseReadOnlySnapshotEqual(a, b improveCodebaseReadOnlySnapshot) 
 	if a.Head != b.Head || a.HeadRef != b.HeadRef || a.Status != b.Status || len(a.Refs) != len(b.Refs) {
 		return false
 	}
-	for ref, sha := range a.Refs {
-		if b.Refs[ref] != sha {
+	for ref, aRef := range a.Refs {
+		if !improveCodebaseRefSnapshotEqual(aRef, b.Refs[ref]) {
 			return false
 		}
 	}
 	return true
+}
+
+func improveCodebaseRefSnapshotEqual(a, b improveCodebaseRefSnapshot) bool {
+	return a.Object == b.Object && a.Symref == b.Symref
+}
+
+func restoreImproveCodebaseRef(ctx context.Context, workDir, ref string, before, after improveCodebaseRefSnapshot, afterExists bool) error {
+	if before.Symref != "" {
+		if afterExists {
+			if err := ensureImproveCodebaseRefUnchanged(ctx, workDir, ref, after); err != nil {
+				return err
+			}
+		}
+		_, err := git.Run(ctx, workDir, "symbolic-ref", ref, before.Symref)
+		return err
+	}
+	if !afterExists {
+		_, err := git.Run(ctx, workDir, "update-ref", ref, before.Object, gitZeroSHA)
+		return err
+	}
+	if after.Symref != "" {
+		if err := ensureImproveCodebaseRefUnchanged(ctx, workDir, ref, after); err != nil {
+			return err
+		}
+		if _, err := git.Run(ctx, workDir, "update-ref", "--no-deref", "-d", ref); err != nil {
+			return err
+		}
+		_, err := git.Run(ctx, workDir, "update-ref", ref, before.Object, gitZeroSHA)
+		return err
+	}
+	_, err := git.Run(ctx, workDir, "update-ref", ref, before.Object, after.Object)
+	return err
+}
+
+func removeImproveCodebaseRef(ctx context.Context, workDir, ref string, after improveCodebaseRefSnapshot) error {
+	if after.Symref != "" {
+		if err := ensureImproveCodebaseRefUnchanged(ctx, workDir, ref, after); err != nil {
+			return err
+		}
+		_, err := git.Run(ctx, workDir, "symbolic-ref", "--delete", ref)
+		return err
+	}
+	_, err := git.Run(ctx, workDir, "update-ref", "-d", ref, after.Object)
+	return err
+}
+
+func ensureImproveCodebaseRefUnchanged(ctx context.Context, workDir, ref string, want improveCodebaseRefSnapshot) error {
+	current, exists, err := currentImproveCodebaseRefSnapshot(ctx, workDir, ref)
+	if err != nil {
+		return err
+	}
+	if !exists || !improveCodebaseRefSnapshotEqual(current, want) {
+		return fmt.Errorf("ref %s changed during cleanup", ref)
+	}
+	return nil
+}
+
+func currentImproveCodebaseRefSnapshot(ctx context.Context, workDir, ref string) (improveCodebaseRefSnapshot, bool, error) {
+	output, err := git.Run(ctx, workDir, "for-each-ref", "--format=%(refname)%00%(objectname)%00%(symref)", ref)
+	if err != nil {
+		return improveCodebaseRefSnapshot{}, false, err
+	}
+	for _, line := range strings.Split(strings.TrimSuffix(output, "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\x00", 3)
+		if len(parts) != 3 || parts[0] != ref || strings.TrimSpace(parts[1]) == "" {
+			return improveCodebaseRefSnapshot{}, false, fmt.Errorf("snapshot improve-codebase ref %s: malformed ref line %q", ref, line)
+		}
+		return improveCodebaseRefSnapshot{Object: parts[1], Symref: parts[2]}, true, nil
+	}
+	return improveCodebaseRefSnapshot{}, false, nil
 }
 
 func formatImproveCodebaseIgnorePatterns(cfg *config.Config) string {

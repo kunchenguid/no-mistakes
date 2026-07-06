@@ -368,6 +368,86 @@ func TestImproveCodebaseStep_RestoresChangedSharedRefs(t *testing.T) {
 	}
 }
 
+func TestImproveCodebaseStep_RestoresRefsDespiteUnmergedIndex(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	beforeTag := baseSHA
+	gitCmd(t, dir, "update-ref", "refs/tags/release", beforeTag)
+
+	ag := &mockAgent{runFn: func(_ context.Context, _ agent.RunOpts) (*agent.Result, error) {
+		gitCmd(t, dir, "update-ref", "refs/tags/release", headSHA)
+		gitCmd(t, dir, "checkout", "-b", "agent-side", headSHA)
+		mustWriteFile(t, filepath.Join(dir, "base.txt"), "side\n")
+		gitCmd(t, dir, "add", "base.txt")
+		gitCmd(t, dir, "commit", "-m", "side edit")
+		gitCmd(t, dir, "checkout", "feature")
+		mustWriteFile(t, filepath.Join(dir, "base.txt"), "feature\n")
+		gitCmd(t, dir, "add", "base.txt")
+		gitCmd(t, dir, "commit", "-m", "feature edit")
+		if _, err := git.Run(context.Background(), dir, "merge", "agent-side"); err == nil {
+			t.Fatal("expected merge conflict")
+		}
+		return &agent.Result{Output: []byte(`{"findings":[],"summary":"clear"}`)}, nil
+	}}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.ImproveCodebase.Mode = config.ImproveCodebaseModeAlways
+
+	_, err := (&ImproveCodebaseStep{}).Execute(sctx)
+	if err == nil {
+		t.Fatal("expected read-only violation")
+	}
+	if got := gitCmd(t, dir, "rev-parse", "refs/tags/release"); got != beforeTag {
+		t.Fatalf("tag = %s, want %s", got, beforeTag)
+	}
+	if status := gitStatusPorcelain(t, dir); status != "" {
+		t.Fatalf("worktree status = %q, want clean after cleanup", status)
+	}
+}
+
+func TestImproveCodebaseStep_RestoresRetargetedSymbolicRef(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "update-ref", "refs/remotes/origin/main", headSHA)
+	gitCmd(t, dir, "update-ref", "refs/remotes/origin/dev", headSHA)
+	gitCmd(t, dir, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+
+	ag := &mockAgent{runFn: func(_ context.Context, _ agent.RunOpts) (*agent.Result, error) {
+		gitCmd(t, dir, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/dev")
+		return &agent.Result{Output: []byte(`{"findings":[],"summary":"clear"}`)}, nil
+	}}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.ImproveCodebase.Mode = config.ImproveCodebaseModeAlways
+
+	_, err := (&ImproveCodebaseStep{}).Execute(sctx)
+	if err == nil {
+		t.Fatal("expected read-only violation")
+	}
+	if got := gitCmd(t, dir, "symbolic-ref", "refs/remotes/origin/HEAD"); got != "refs/remotes/origin/main" {
+		t.Fatalf("origin/HEAD = %s, want refs/remotes/origin/main", got)
+	}
+}
+
+func TestImproveCodebaseStep_RemovesCreatedSymbolicRef(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "update-ref", "refs/remotes/origin/main", headSHA)
+
+	ag := &mockAgent{runFn: func(_ context.Context, _ agent.RunOpts) (*agent.Result, error) {
+		gitCmd(t, dir, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+		return &agent.Result{Output: []byte(`{"findings":[],"summary":"clear"}`)}, nil
+	}}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.ImproveCodebase.Mode = config.ImproveCodebaseModeAlways
+
+	_, err := (&ImproveCodebaseStep{}).Execute(sctx)
+	if err == nil {
+		t.Fatal("expected read-only violation")
+	}
+	if _, err := git.Run(context.Background(), dir, "symbolic-ref", "-q", "refs/remotes/origin/HEAD"); err == nil {
+		t.Fatal("origin/HEAD still exists, want removed")
+	}
+}
+
 func TestImproveCodebaseStep_DetachesBeforeRefRestore(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
