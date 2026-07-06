@@ -260,7 +260,7 @@ func TestImproveCodebaseStep_RemovesCreatedProtectedRef(t *testing.T) {
 	}
 }
 
-func TestImproveCodebaseStep_IgnoresUnownedSharedRefs(t *testing.T) {
+func TestImproveCodebaseStep_FailsWithoutDeletingCreatedUnownedRefs(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
@@ -271,12 +271,12 @@ func TestImproveCodebaseStep_IgnoresUnownedSharedRefs(t *testing.T) {
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Config.ImproveCodebase.Mode = config.ImproveCodebaseModeAlways
 
-	outcome, err := (&ImproveCodebaseStep{}).Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
+	_, err := (&ImproveCodebaseStep{}).Execute(sctx)
+	if err == nil {
+		t.Fatal("expected read-only violation")
 	}
-	if outcome.NeedsApproval {
-		t.Fatal("unowned shared ref changes should not block this worktree-local gate")
+	if !strings.Contains(err.Error(), "modified the worktree") {
+		t.Fatalf("error = %v, want read-only violation", err)
 	}
 	if got := gitCmd(t, dir, "rev-parse", "refs/tags/agent-tag"); got != headSHA {
 		t.Fatalf("created tag = %s, want %s", got, headSHA)

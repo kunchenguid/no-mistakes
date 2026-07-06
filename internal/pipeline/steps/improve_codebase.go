@@ -228,9 +228,20 @@ func snapshotImproveCodebaseReadOnly(sctx *pipeline.StepContext) (improveCodebas
 
 func snapshotImproveCodebaseRefs(sctx *pipeline.StepContext) (map[string]string, error) {
 	refs := map[string]string{}
-	for _, ref := range improveCodebaseOwnedRefs(sctx) {
-		sha, _ := git.Run(sctx.Ctx, sctx.WorkDir, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
-		refs[ref] = strings.TrimSpace(sha)
+	out, err := git.Run(sctx.Ctx, sctx.WorkDir, "for-each-ref", "--format=%(refname)%09%(objectname)")
+	if err != nil {
+		return nil, fmt.Errorf("snapshot improve-codebase refs: %w", err)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		ref, sha, ok := strings.Cut(line, "\t")
+		if !ok {
+			return nil, fmt.Errorf("snapshot improve-codebase refs: malformed ref line %q", line)
+		}
+		refs[ref] = sha
 	}
 	return refs, nil
 }
@@ -246,7 +257,11 @@ func enforceImproveCodebaseReadOnly(sctx *pipeline.StepContext, before improveCo
 	if _, checkoutErr := git.Run(sctx.Ctx, sctx.WorkDir, "checkout", "--detach", before.Head); checkoutErr != nil {
 		return fmt.Errorf("improve-codebase gate modified the worktree or protected git refs and cleanup failed: %w", checkoutErr)
 	}
+	protectedRefs := improveCodebaseProtectedRefs(sctx)
 	for ref, sha := range before.Refs {
+		if !protectedRefs[ref] {
+			continue
+		}
 		afterSHA, exists := after.Refs[ref]
 		if exists && afterSHA == sha {
 			continue
@@ -269,6 +284,9 @@ func enforceImproveCodebaseReadOnly(sctx *pipeline.StepContext, before improveCo
 	}
 	for ref, afterSHA := range after.Refs {
 		if _, ok := before.Refs[ref]; ok {
+			continue
+		}
+		if !protectedRefs[ref] {
 			continue
 		}
 		if _, refErr := git.Run(sctx.Ctx, sctx.WorkDir, "update-ref", "-d", ref, afterSHA); refErr != nil {
@@ -296,19 +314,13 @@ func improveCodebaseReadOnlySnapshotEqual(a, b improveCodebaseReadOnlySnapshot) 
 	return true
 }
 
-func improveCodebaseOwnedRefs(sctx *pipeline.StepContext) []string {
-	var refs []string
+func improveCodebaseProtectedRefs(sctx *pipeline.StepContext) map[string]bool {
+	refs := map[string]bool{}
 	add := func(ref string) {
 		ref = strings.TrimSpace(ref)
-		if ref == "" {
-			return
+		if ref != "" {
+			refs[ref] = true
 		}
-		for _, existing := range refs {
-			if existing == ref {
-				return
-			}
-		}
-		refs = append(refs, ref)
 	}
 	branch := strings.TrimPrefix(normalizedBranchRef(sctx.Run.Branch), "refs/heads/")
 	if branch != "" {
