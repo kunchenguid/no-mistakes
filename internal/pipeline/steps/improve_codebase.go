@@ -40,9 +40,10 @@ type improveCodebaseDecision struct {
 }
 
 type improveCodebaseReadOnlySnapshot struct {
-	Head   string
-	Status string
-	Refs   map[string]string
+	Head    string
+	HeadRef string
+	Status  string
+	Refs    map[string]string
 }
 
 func (s *ImproveCodebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
@@ -219,6 +220,10 @@ func snapshotImproveCodebaseReadOnly(sctx *pipeline.StepContext) (improveCodebas
 	if err != nil {
 		return improveCodebaseReadOnlySnapshot{}, fmt.Errorf("snapshot improve-codebase HEAD: %w", err)
 	}
+	headRef, err := git.Run(sctx.Ctx, sctx.WorkDir, "rev-parse", "--symbolic-full-name", "HEAD")
+	if err != nil {
+		return improveCodebaseReadOnlySnapshot{}, fmt.Errorf("snapshot improve-codebase HEAD ref: %w", err)
+	}
 	status, err := git.Run(sctx.Ctx, sctx.WorkDir, "status", "--porcelain", "--ignored")
 	if err != nil {
 		return improveCodebaseReadOnlySnapshot{}, fmt.Errorf("snapshot improve-codebase worktree status: %w", err)
@@ -227,7 +232,7 @@ func snapshotImproveCodebaseReadOnly(sctx *pipeline.StepContext) (improveCodebas
 	if err != nil {
 		return improveCodebaseReadOnlySnapshot{}, err
 	}
-	return improveCodebaseReadOnlySnapshot{Head: head, Status: status, Refs: refs}, nil
+	return improveCodebaseReadOnlySnapshot{Head: head, HeadRef: headRef, Status: status, Refs: refs}, nil
 }
 
 func snapshotImproveCodebaseRefs(sctx *pipeline.StepContext) (map[string]string, error) {
@@ -294,11 +299,16 @@ func enforceImproveCodebaseReadOnly(sctx *pipeline.StepContext, before improveCo
 	if _, cleanErr := git.Run(cleanupCtx, sctx.WorkDir, "clean", "-ffdx"); cleanErr != nil {
 		return fmt.Errorf("improve-codebase gate modified the worktree or git refs and cleanup failed: %w", cleanErr)
 	}
+	if before.HeadRef != "HEAD" {
+		if _, headErr := git.Run(cleanupCtx, sctx.WorkDir, "symbolic-ref", "HEAD", before.HeadRef); headErr != nil {
+			return fmt.Errorf("improve-codebase gate modified the worktree or git refs and cleanup failed: %w", headErr)
+		}
+	}
 	return fmt.Errorf("improve-codebase gate modified the worktree or git refs despite read-only mode")
 }
 
 func improveCodebaseReadOnlySnapshotEqual(a, b improveCodebaseReadOnlySnapshot) bool {
-	if a.Head != b.Head || a.Status != b.Status || len(a.Refs) != len(b.Refs) {
+	if a.Head != b.Head || a.HeadRef != b.HeadRef || a.Status != b.Status || len(a.Refs) != len(b.Refs) {
 		return false
 	}
 	for ref, sha := range a.Refs {

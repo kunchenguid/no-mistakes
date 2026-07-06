@@ -176,6 +176,36 @@ func TestImproveCodebaseStep_RestoresAgentHeadChanges(t *testing.T) {
 	}
 }
 
+func TestImproveCodebaseStep_RestoresDetachedHeadWhenAgentChecksOutSameCommitBranch(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	ag := &mockAgent{runFn: func(_ context.Context, _ agent.RunOpts) (*agent.Result, error) {
+		gitCmd(t, dir, "checkout", "feature")
+		return &agent.Result{Output: []byte(`{"findings":[],"summary":"clear"}`)}, nil
+	}}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.ImproveCodebase.Mode = config.ImproveCodebaseModeAlways
+
+	_, err := (&ImproveCodebaseStep{}).Execute(sctx)
+	if err == nil {
+		t.Fatal("expected read-only violation")
+	}
+	if !strings.Contains(err.Error(), "modified the worktree") {
+		t.Fatalf("error = %v, want read-only violation", err)
+	}
+	if got := gitCmd(t, dir, "rev-parse", "--abbrev-ref", "HEAD"); got != "HEAD" {
+		t.Fatalf("HEAD ref = %s, want detached", got)
+	}
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != headSHA {
+		t.Fatalf("HEAD = %s, want %s", got, headSHA)
+	}
+	if status := gitStatusPorcelain(t, dir); status != "" {
+		t.Fatalf("worktree status = %q, want clean after cleanup", status)
+	}
+}
+
 func TestImproveCodebaseStep_CleansAgentIgnoredFiles(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
