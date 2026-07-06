@@ -133,6 +133,38 @@ func TestGetChecksFallsBackWhenJSONFlagUnsupported(t *testing.T) {
 	}
 }
 
+func TestGetChecksPlainFallbackParsesOutputOnNonZeroExit(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr checks 123 --repo test/repo --json name,state,bucket,completedAt": {
+			stderr: "unknown flag: --json\n",
+			code:   1,
+		},
+		"gh pr checks 123 --repo test/repo": {
+			stdout: "build\tpass\t1m0s\thttps://example.test/build\nunit\tfail\t2m0s\thttps://example.test/unit\nqueue\tpending\t\thttps://example.test/queue\n",
+			code:   8,
+		},
+	}), nil, "", "test/repo")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 3 {
+		t.Fatalf("len(checks) = %d, want 3", len(checks))
+	}
+	if checks[0].Name != "build" || checks[0].Bucket != scm.CheckBucketPass {
+		t.Fatalf("checks[0] = %+v, want passing build", checks[0])
+	}
+	if checks[1].Name != "unit" || checks[1].Bucket != scm.CheckBucketFail {
+		t.Fatalf("checks[1] = %+v, want failing unit", checks[1])
+	}
+	if checks[2].Name != "queue" || checks[2].Bucket != scm.CheckBucketPending {
+		t.Fatalf("checks[2] = %+v, want pending queue", checks[2])
+	}
+}
+
 func TestGetPRStatePassesRepoFlag(t *testing.T) {
 	t.Parallel()
 
@@ -218,6 +250,28 @@ func TestGetChecksFallsBackToStateWhenBucketMissing(t *testing.T) {
 	}
 	if checks[1].Name != "tests" || checks[1].Bucket != scm.CheckBucketPending {
 		t.Fatalf("checks[1] = %+v, want pending tests check", checks[1])
+	}
+}
+
+func TestGetChecksParsesJSONOutputOnNonZeroExit(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr checks 123 --json name,state,bucket,completedAt": {
+			stdout: `[{"name":"queue","state":"PENDING","bucket":"pending"}]` + "\n",
+			code:   8,
+		},
+	}), nil, "", "")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 1 {
+		t.Fatalf("len(checks) = %d, want 1", len(checks))
+	}
+	if checks[0].Name != "queue" || checks[0].Bucket != scm.CheckBucketPending {
+		t.Fatalf("checks[0] = %+v, want pending queue", checks[0])
 	}
 }
 

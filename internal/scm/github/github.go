@@ -273,6 +273,9 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 		if strings.Contains(string(out), "unknown flag: --json") {
 			return h.getChecksPlain(ctx, pr)
 		}
+		if checks, parseErr := parseChecksJSON(out); parseErr == nil {
+			return checks, nil
+		}
 		return nil, fmt.Errorf("gh pr checks: %w", err)
 	}
 	return parseChecksJSON(out)
@@ -282,13 +285,17 @@ func (h *Host) getChecksPlain(ctx context.Context, pr *scm.PR) ([]scm.Check, err
 	args := append([]string{"pr", "checks", pr.Number}, h.repoArgs()...)
 	cmd := h.cmd(ctx, "gh", args...)
 	out, err := cmd.CombinedOutput()
+	checks := parseChecksPlain(out)
 	if err != nil {
 		if githubNoChecksReported(out) {
 			return nil, nil
 		}
+		if len(checks) > 0 {
+			return checks, nil
+		}
 		return nil, fmt.Errorf("gh pr checks: %w", err)
 	}
-	return parseChecksPlain(out), nil
+	return checks, nil
 }
 
 func githubNoChecksReported(out []byte) bool {
