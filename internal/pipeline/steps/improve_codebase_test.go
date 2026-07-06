@@ -39,6 +39,9 @@ func TestImproveCodebaseStep_ModeAlwaysRunsAgent(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	findingsJSON, _ := json.Marshal(Findings{Summary: "clear"})
 	ag := &mockAgent{runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		if !opts.ReadOnly {
+			t.Fatal("expected improve-codebase agent invocation to request read-only mode")
+		}
 		if !strings.Contains(opts.Prompt, "Run the local improve-codebase skill") {
 			t.Fatalf("prompt did not invoke improve-codebase skill: %s", opts.Prompt)
 		}

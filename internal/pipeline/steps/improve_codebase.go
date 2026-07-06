@@ -129,6 +129,7 @@ Rules:
 		CWD:        sctx.WorkDir,
 		JSONSchema: auditOnlyFindingsSchema,
 		OnChunk:    sctx.LogChunk,
+		ReadOnly:   true,
 	})
 	if err := enforceImproveCodebaseReadOnly(sctx, beforeSnapshot); err != nil {
 		return nil, err

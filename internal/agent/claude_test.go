@@ -12,7 +12,7 @@ import (
 func TestClaudeAgent_BuildArgs(t *testing.T) {
 	ca := &claudeAgent{bin: "/usr/bin/claude"}
 	schema := json.RawMessage(`{"type":"object"}`)
-	args := ca.buildArgs("do something", schema)
+	args := ca.buildArgs(RunOpts{Prompt: "do something"}, schema)
 
 	expected := []string{
 		"-p", "do something",
@@ -34,7 +34,7 @@ func TestClaudeAgent_BuildArgs(t *testing.T) {
 
 func TestClaudeAgent_BuildArgs_NoSchema(t *testing.T) {
 	ca := &claudeAgent{bin: "claude"}
-	args := ca.buildArgs("prompt", nil)
+	args := ca.buildArgs(RunOpts{Prompt: "prompt"}, nil)
 
 	// Without schema, should not include --json-schema flag
 	for _, arg := range args {
@@ -50,7 +50,7 @@ func TestClaudeAgent_BuildArgs_NoSchema(t *testing.T) {
 
 func TestClaudeAgent_BuildArgs_ExtraArgsPrepended(t *testing.T) {
 	ca := &claudeAgent{bin: "claude", extraArgs: []string{"--model", "sonnet"}}
-	args := ca.buildArgs("do it", nil)
+	args := ca.buildArgs(RunOpts{Prompt: "do it"}, nil)
 
 	expected := []string{
 		"--model", "sonnet",
@@ -77,7 +77,7 @@ func TestClaudeAgent_BuildArgs_UserPermissionModeSuppressesDefault(t *testing.T)
 	}
 	for _, extra := range tests {
 		ca := &claudeAgent{bin: "claude", extraArgs: extra}
-		args := ca.buildArgs("p", nil)
+		args := ca.buildArgs(RunOpts{Prompt: "p"}, nil)
 
 		dangerCount := 0
 		for _, a := range args {
@@ -92,6 +92,30 @@ func TestClaudeAgent_BuildArgs_UserPermissionModeSuppressesDefault(t *testing.T)
 		} else if dangerCount != 0 {
 			t.Errorf("extra=%v expected no default --dangerously-skip-permissions, got: %v", extra, args)
 		}
+	}
+}
+
+func TestClaudeAgent_BuildArgs_ReadOnlyForcesPlanMode(t *testing.T) {
+	ca := &claudeAgent{bin: "claude", extraArgs: []string{
+		"--model", "sonnet",
+		"--permission-mode", "acceptEdits",
+		"--dangerously-skip-permissions",
+	}}
+	args := ca.buildArgs(RunOpts{Prompt: "audit", ReadOnly: true}, nil)
+
+	for _, arg := range args {
+		if arg == "--dangerously-skip-permissions" || arg == "acceptEdits" {
+			t.Fatalf("read-only args retained write/bypass arg %q in %v", arg, args)
+		}
+	}
+	found := false
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "--permission-mode" && args[i+1] == "plan" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("read-only plan mode not found in %v", args)
 	}
 }
 

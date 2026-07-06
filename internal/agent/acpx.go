@@ -24,6 +24,9 @@ type acpxAgent struct {
 func (a *acpxAgent) Name() string { return "acp:" + a.target }
 
 func (a *acpxAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
+	if err := rejectReadOnlyUnsupported(a.Name(), opts); err != nil {
+		return nil, err
+	}
 	return runWithRetry(ctx, a.Name(), opts, claudeMaxRetries, classifyTransient, nil, func() (*Result, error) {
 		return a.runOnce(ctx, opts)
 	})

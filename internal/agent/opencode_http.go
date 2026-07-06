@@ -39,12 +39,10 @@ func buildOpencodeServeArgs(extraArgs []string, port int) []string {
 	return args
 }
 
-func (a *opencodeAgent) createSession(ctx context.Context, baseURL, cwd string) (string, error) {
+func (a *opencodeAgent) createSession(ctx context.Context, baseURL, cwd string, readOnly bool) (string, error) {
 	body := map[string]any{
-		"directory": cwd,
-		"permission": []map[string]string{
-			{"permission": "*", "pattern": "*", "action": "allow"},
-		},
+		"directory":  cwd,
+		"permission": opencodeSessionPermissions(readOnly),
 	}
 	resp, err := doJSON(ctx, http.MethodPost, baseURL+"/session", nil, body)
 	if err != nil {
@@ -58,6 +56,20 @@ func (a *opencodeAgent) createSession(ctx context.Context, baseURL, cwd string) 
 		return "", fmt.Errorf("opencode create session parse: %w", err)
 	}
 	return result.ID, nil
+}
+
+func opencodeSessionPermissions(readOnly bool) []map[string]string {
+	if !readOnly {
+		return []map[string]string{
+			{"permission": "*", "pattern": "*", "action": "allow"},
+		}
+	}
+	return []map[string]string{
+		{"permission": "read", "pattern": "*", "action": "allow"},
+		{"permission": "skill", "pattern": "*", "action": "allow"},
+		{"permission": "edit", "pattern": "*", "action": "deny"},
+		{"permission": "bash", "pattern": "*", "action": "deny"},
+	}
 }
 
 func (a *opencodeAgent) connectEventStream(ctx context.Context, baseURL string) (io.ReadCloser, error) {

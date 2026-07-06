@@ -25,6 +25,9 @@ type copilotAgent struct {
 func (a *copilotAgent) Name() string { return "copilot" }
 
 func (a *copilotAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
+	if err := rejectReadOnlyUnsupported(a.Name(), opts); err != nil {
+		return nil, err
+	}
 	return runWithRetry(ctx, "copilot", opts, claudeMaxRetries, classifyTransient, nil, func() (*Result, error) {
 		return a.runOnce(ctx, opts)
 	})

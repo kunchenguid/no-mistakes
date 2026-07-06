@@ -24,6 +24,9 @@ type piAgent struct {
 func (a *piAgent) Name() string { return "pi" }
 
 func (a *piAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
+	if err := rejectReadOnlyUnsupported(a.Name(), opts); err != nil {
+		return nil, err
+	}
 	return runWithRetry(ctx, "pi", opts, claudeMaxRetries, classifyTransient, nil, func() (*Result, error) {
 		return a.runOnce(ctx, opts)
 	})

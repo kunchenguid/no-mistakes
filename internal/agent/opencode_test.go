@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -14,6 +15,44 @@ func TestOpencodeAgent_CloseWithoutServer(t *testing.T) {
 	a := &opencodeAgent{bin: "opencode"}
 	if err := a.Close(); err != nil {
 		t.Errorf("Close without server should not error: %v", err)
+	}
+}
+
+func TestOpencodeAgent_CreateSessionReadOnlyPermissions(t *testing.T) {
+	var body struct {
+		Directory  string              `json:"directory"`
+		Permission []map[string]string `json:"permission"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/session" || r.Method != http.MethodPost {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode body: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		fmt.Fprint(w, `{"id":"test-session"}`)
+	}))
+	defer server.Close()
+
+	a := &opencodeAgent{bin: "opencode"}
+	if _, err := a.createSession(context.Background(), server.URL, "/repo", true); err != nil {
+		t.Fatalf("createSession() error = %v", err)
+	}
+	if body.Directory != "/repo" {
+		t.Fatalf("directory = %q, want /repo", body.Directory)
+	}
+	want := []map[string]string{
+		{"permission": "read", "pattern": "*", "action": "allow"},
+		{"permission": "skill", "pattern": "*", "action": "allow"},
+		{"permission": "edit", "pattern": "*", "action": "deny"},
+		{"permission": "bash", "pattern": "*", "action": "deny"},
+	}
+	if !reflect.DeepEqual(body.Permission, want) {
+		t.Fatalf("permission = %#v, want %#v", body.Permission, want)
 	}
 }
 

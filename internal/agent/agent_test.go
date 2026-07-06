@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -47,6 +48,27 @@ func TestNew_ACPAgent(t *testing.T) {
 	}
 	if a.Name() != "acp:gemini" {
 		t.Errorf("name = %q, want acp:gemini", a.Name())
+	}
+}
+
+func TestAgentsRejectUnsupportedReadOnlyMode(t *testing.T) {
+	tests := []struct {
+		name  string
+		agent Agent
+	}{
+		{name: "acpx", agent: &acpxAgent{bin: "missing-acpx", target: "gemini"}},
+		{name: "copilot", agent: &copilotAgent{bin: "missing-copilot"}},
+		{name: "pi", agent: &piAgent{bin: "missing-pi"}},
+		{name: "rovodev", agent: &rovodevAgent{bin: "missing-rovodev"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := tt.agent.Run(context.Background(), RunOpts{Prompt: "audit", CWD: t.TempDir(), ReadOnly: true})
+			if !errors.Is(err, ErrReadOnlyUnsupported) {
+				t.Fatalf("Run() error = %v, want ErrReadOnlyUnsupported", err)
+			}
+		})
 	}
 }
 

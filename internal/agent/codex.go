@@ -57,7 +57,7 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 		defer os.Remove(schemaPath)
 	}
 
-	args := a.buildArgs(opts.Prompt, schemaPath)
+	args := a.buildArgs(opts, schemaPath)
 	cmd := exec.CommandContext(ctx, a.bin, args...)
 	cmd.Dir = opts.CWD
 	cmd.Stdin = nil
@@ -117,19 +117,47 @@ func (a *codexAgent) Close() error { return nil }
 // inserted between "exec" and the prompt so user flags (e.g. -m, --sandbox)
 // take effect. If the user declared their own execution-mode flag, the
 // default --dangerously-bypass-approvals-and-sandbox is not added.
-func (a *codexAgent) buildArgs(prompt, schemaPath string) []string {
+func (a *codexAgent) buildArgs(opts RunOpts, schemaPath string) []string {
 	args := make([]string, 0, len(a.extraArgs)+8)
 	args = append(args, "exec")
-	args = append(args, a.extraArgs...)
-	args = append(args, prompt, "--json")
+	extraArgs := a.extraArgs
+	if opts.ReadOnly {
+		extraArgs = codexReadOnlyArgs(extraArgs)
+	}
+	args = append(args, extraArgs...)
+	if opts.ReadOnly {
+		args = append(args, "--sandbox", "read-only")
+	}
+	args = append(args, opts.Prompt, "--json")
 	if schemaPath != "" {
 		args = append(args, "--output-schema", schemaPath)
 	}
-	if !codexUserSetExecutionMode(a.extraArgs) {
+	if !opts.ReadOnly && !codexUserSetExecutionMode(extraArgs) {
 		args = append(args, "--dangerously-bypass-approvals-and-sandbox")
 	}
 	args = append(args, "--color", "never")
 	return args
+}
+
+func codexReadOnlyArgs(extraArgs []string) []string {
+	filtered := make([]string, 0, len(extraArgs))
+	for i := 0; i < len(extraArgs); i++ {
+		arg := extraArgs[i]
+		switch {
+		case arg == "--dangerously-bypass-approvals-and-sandbox":
+			continue
+		case arg == "--sandbox":
+			if i+1 < len(extraArgs) {
+				i++
+			}
+			continue
+		case strings.HasPrefix(arg, "--sandbox="):
+			continue
+		default:
+			filtered = append(filtered, arg)
+		}
+	}
+	return filtered
 }
 
 // codexUserSetExecutionMode reports whether extraArgs already declare an

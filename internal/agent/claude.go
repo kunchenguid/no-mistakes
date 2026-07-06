@@ -39,7 +39,7 @@ func (a *claudeAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 }
 
 func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
-	args := a.buildArgs(opts.Prompt, opts.JSONSchema)
+	args := a.buildArgs(opts, opts.JSONSchema)
 	cmd := exec.CommandContext(ctx, a.bin, args...)
 	cmd.Dir = opts.CWD
 	cmd.Stdin = nil
@@ -118,21 +118,49 @@ func finalizeClaudeResult(result *claudeResult, schema json.RawMessage, usage To
 // managed flags, so user choices win over no-mistakes' defaults. If the user
 // supplied their own permission mode, the default --dangerously-skip-permissions
 // is not added.
-func (a *claudeAgent) buildArgs(prompt string, schema json.RawMessage) []string {
+func (a *claudeAgent) buildArgs(opts RunOpts, schema json.RawMessage) []string {
 	args := make([]string, 0, len(a.extraArgs)+8)
-	args = append(args, a.extraArgs...)
+	extraArgs := a.extraArgs
+	if opts.ReadOnly {
+		extraArgs = claudeReadOnlyArgs(extraArgs)
+	}
+	args = append(args, extraArgs...)
+	if opts.ReadOnly {
+		args = append(args, "--permission-mode", "plan")
+	}
 	args = append(args,
-		"-p", prompt,
+		"-p", opts.Prompt,
 		"--verbose",
 		"--output-format", "stream-json",
 	)
 	if len(schema) > 0 {
 		args = append(args, "--json-schema", string(schema))
 	}
-	if !claudeUserSetPermissionMode(a.extraArgs) {
+	if !opts.ReadOnly && !claudeUserSetPermissionMode(extraArgs) {
 		args = append(args, "--dangerously-skip-permissions")
 	}
 	return args
+}
+
+func claudeReadOnlyArgs(extraArgs []string) []string {
+	filtered := make([]string, 0, len(extraArgs))
+	for i := 0; i < len(extraArgs); i++ {
+		arg := extraArgs[i]
+		switch {
+		case arg == "--dangerously-skip-permissions":
+			continue
+		case arg == "--permission-mode":
+			if i+1 < len(extraArgs) {
+				i++
+			}
+			continue
+		case strings.HasPrefix(arg, "--permission-mode="):
+			continue
+		default:
+			filtered = append(filtered, arg)
+		}
+	}
+	return filtered
 }
 
 // claudeUserSetPermissionMode reports whether extraArgs already declare a

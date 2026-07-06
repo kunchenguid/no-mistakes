@@ -24,6 +24,9 @@ type rovodevAgent struct {
 func (a *rovodevAgent) Name() string { return "rovodev" }
 
 func (a *rovodevAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
+	if err := rejectReadOnlyUnsupported(a.Name(), opts); err != nil {
+		return nil, err
+	}
 	return runWithRetry(ctx, "rovodev", opts, claudeMaxRetries, classifyTransient, a.recoverTransientRetry, func() (*Result, error) {
 		return a.runOnce(ctx, opts)
 	})

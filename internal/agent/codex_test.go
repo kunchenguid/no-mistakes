@@ -12,7 +12,7 @@ import (
 
 func TestCodexAgent_BuildArgs(t *testing.T) {
 	ca := &codexAgent{bin: "codex"}
-	args := ca.buildArgs("fix the bug", "")
+	args := ca.buildArgs(RunOpts{Prompt: "fix the bug"}, "")
 
 	expected := []string{
 		"exec", "fix the bug",
@@ -33,7 +33,7 @@ func TestCodexAgent_BuildArgs(t *testing.T) {
 
 func TestCodexAgent_BuildArgs_ExtraArgsAfterExec(t *testing.T) {
 	ca := &codexAgent{bin: "codex", extraArgs: []string{"-m", "gpt-5.4"}}
-	args := ca.buildArgs("fix it", "")
+	args := ca.buildArgs(RunOpts{Prompt: "fix it"}, "")
 
 	expected := []string{
 		"exec",
@@ -62,7 +62,7 @@ func TestCodexAgent_BuildArgs_UserExecutionModeSuppressesBypass(t *testing.T) {
 	}
 	for _, extra := range tests {
 		ca := &codexAgent{bin: "codex", extraArgs: extra}
-		args := ca.buildArgs("p", "")
+		args := ca.buildArgs(RunOpts{Prompt: "p"}, "")
 
 		bypassCount := 0
 		for _, a := range args {
@@ -80,9 +80,33 @@ func TestCodexAgent_BuildArgs_UserExecutionModeSuppressesBypass(t *testing.T) {
 	}
 }
 
+func TestCodexAgent_BuildArgs_ReadOnlyForcesReadOnlySandbox(t *testing.T) {
+	ca := &codexAgent{bin: "codex", extraArgs: []string{
+		"--config", `approval_policy="never"`,
+		"--sandbox", "workspace-write",
+		"--dangerously-bypass-approvals-and-sandbox",
+	}}
+	args := ca.buildArgs(RunOpts{Prompt: "audit", ReadOnly: true}, "")
+
+	for _, arg := range args {
+		if arg == "--dangerously-bypass-approvals-and-sandbox" || arg == "workspace-write" {
+			t.Fatalf("read-only args retained write/bypass arg %q in %v", arg, args)
+		}
+	}
+	found := false
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "--sandbox" && args[i+1] == "read-only" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("read-only sandbox not found in %v", args)
+	}
+}
+
 func TestCodexAgent_BuildArgs_WithOutputSchema(t *testing.T) {
 	ca := &codexAgent{bin: "codex"}
-	args := ca.buildArgs("review", "/tmp/schema.json")
+	args := ca.buildArgs(RunOpts{Prompt: "review"}, "/tmp/schema.json")
 
 	want := []string{
 		"exec", "review",

@@ -26,6 +26,7 @@ type RunOpts struct {
 	JSONSchema  json.RawMessage      // structured output schema (optional)
 	OnChunk     func(text string)    // streaming text callback (optional)
 	OnLifecycle func(LifecycleEvent) // native agent lifecycle callback (optional)
+	ReadOnly    bool                 // require an agent-enforced read-only sandbox
 }
 
 // LifecycleEvent describes process-level activity for an agent invocation.
@@ -35,6 +36,15 @@ type LifecycleEvent struct {
 	Phase   string
 	PID     int
 	Message string
+}
+
+var ErrReadOnlyUnsupported = errors.New("agent read-only mode unsupported")
+
+func rejectReadOnlyUnsupported(agentName string, opts RunOpts) error {
+	if !opts.ReadOnly {
+		return nil
+	}
+	return fmt.Errorf("%s: %w", agentName, ErrReadOnlyUnsupported)
 }
 
 // Result holds the output of an agent invocation.

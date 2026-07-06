@@ -44,8 +44,7 @@ func (a *opencodeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, err
 		return nil, err
 	}
 
-	// Create session with blanket permissions
-	sessionID, err := a.createSession(ctx, baseURL, opts.CWD)
+	sessionID, err := a.createSession(ctx, baseURL, opts.CWD, opts.ReadOnly)
 	if err != nil {
 		return nil, err
 	}
