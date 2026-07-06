@@ -267,11 +267,35 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 	cmd := h.cmd(ctx, "gh", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		if strings.Contains(string(out), "no checks reported") {
+		if githubNoChecksReported(out) {
+			return nil, nil
+		}
+		if strings.Contains(string(out), "unknown flag: --json") {
+			return h.getChecksPlain(ctx, pr)
+		}
+		return nil, fmt.Errorf("gh pr checks: %w", err)
+	}
+	return parseChecksJSON(out)
+}
+
+func (h *Host) getChecksPlain(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
+	args := append([]string{"pr", "checks", pr.Number}, h.repoArgs()...)
+	cmd := h.cmd(ctx, "gh", args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if githubNoChecksReported(out) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("gh pr checks: %w", err)
 	}
+	return parseChecksPlain(out), nil
+}
+
+func githubNoChecksReported(out []byte) bool {
+	return strings.Contains(strings.ToLower(string(out)), "no checks reported")
+}
+
+func parseChecksJSON(out []byte) ([]scm.Check, error) {
 	var raw []struct {
 		Name        string `json:"name"`
 		State       string `json:"state"`
@@ -292,6 +316,28 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 		checks = append(checks, scm.Check{Name: r.Name, Bucket: normalizeCheckBucket(r.Bucket, r.State), CompletedAt: completedAt})
 	}
 	return checks, nil
+}
+
+func parseChecksPlain(out []byte) []scm.Check {
+	var checks []scm.Check
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		fields := strings.Split(line, "\t")
+		if len(fields) < 2 {
+			fields = strings.Fields(line)
+		}
+		if len(fields) < 2 {
+			continue
+		}
+		checks = append(checks, scm.Check{
+			Name:   strings.TrimSpace(fields[0]),
+			Bucket: normalizeCheckBucket("", fields[1]),
+		})
+	}
+	return checks
 }
 
 func (h *Host) GetMergeableState(ctx context.Context, pr *scm.PR) (scm.MergeableState, error) {
@@ -455,15 +501,15 @@ func normalizeCheckBucket(bucket, state string) scm.CheckBucket {
 	}
 
 	switch strings.ToUpper(strings.TrimSpace(state)) {
-	case "SUCCESS":
+	case "SUCCESS", "PASS", "PASSED":
 		return scm.CheckBucketPass
-	case "FAILURE", "ERROR", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE":
+	case "FAILURE", "FAIL", "FAILED", "ERROR", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE":
 		return scm.CheckBucketFail
 	case "PENDING", "QUEUED", "IN_PROGRESS", "WAITING", "REQUESTED", "EXPECTED":
 		return scm.CheckBucketPending
-	case "CANCELLED":
+	case "CANCELLED", "CANCEL":
 		return scm.CheckBucketCancel
-	case "SKIPPED", "NEUTRAL", "STALE":
+	case "SKIPPED", "SKIP", "NEUTRAL", "STALE":
 		return scm.CheckBucketSkip
 	default:
 		return ""
