@@ -199,7 +199,7 @@ func improveCodebaseChangedFiles(sctx *pipeline.StepContext, baseSHA string) ([]
 	if err != nil {
 		return nil, fmt.Errorf("get improve-codebase changed files: %w", err)
 	}
-	numstat, err := git.Run(sctx.Ctx, sctx.WorkDir, "diff", "--numstat", diffRange)
+	numstat, err := git.Run(sctx.Ctx, sctx.WorkDir, "diff", "--numstat", "-M", "-z", diffRange)
 	if err != nil {
 		return nil, fmt.Errorf("get improve-codebase diff stats: %w", err)
 	}
@@ -243,17 +243,68 @@ func formatImproveCodebaseIgnorePatterns(cfg *config.Config) string {
 
 func parseImproveCodebaseNumstat(text string) map[string]struct{ Additions, Deletions int } {
 	out := map[string]struct{ Additions, Deletions int }{}
+	if strings.Contains(text, "\x00") {
+		parseImproveCodebaseNumstatZ(text, out)
+		return out
+	}
 	for _, line := range strings.Split(text, "\n") {
-		fields := strings.Split(line, "\t")
-		if len(fields) < 3 {
+		additionsText, rest, ok := strings.Cut(line, "\t")
+		if !ok {
 			continue
 		}
-		additions := parseNumstatValue(fields[0])
-		deletions := parseNumstatValue(fields[1])
-		path := fields[len(fields)-1]
+		deletionsText, path, ok := strings.Cut(rest, "\t")
+		if !ok {
+			continue
+		}
+		additions := parseNumstatValue(additionsText)
+		deletions := parseNumstatValue(deletionsText)
+		path = normalizeImproveCodebaseNumstatPath(path)
 		out[path] = struct{ Additions, Deletions int }{Additions: additions, Deletions: deletions}
 	}
 	return out
+}
+
+func parseImproveCodebaseNumstatZ(text string, out map[string]struct{ Additions, Deletions int }) {
+	fields := strings.Split(text, "\x00")
+	for i := 0; i < len(fields); {
+		record := fields[i]
+		i++
+		if record == "" {
+			continue
+		}
+		additionsText, rest, ok := strings.Cut(record, "\t")
+		if !ok {
+			continue
+		}
+		deletionsText, path, ok := strings.Cut(rest, "\t")
+		if !ok {
+			continue
+		}
+		if path == "" {
+			if i+1 >= len(fields) {
+				continue
+			}
+			i++
+			path = fields[i]
+			i++
+		}
+		additions := parseNumstatValue(additionsText)
+		deletions := parseNumstatValue(deletionsText)
+		out[path] = struct{ Additions, Deletions int }{Additions: additions, Deletions: deletions}
+	}
+}
+
+func normalizeImproveCodebaseNumstatPath(path string) string {
+	if !strings.Contains(path, " => ") {
+		return path
+	}
+	open := strings.Index(path, "{")
+	close := strings.Index(path, "}")
+	arrow := strings.Index(path, " => ")
+	if open >= 0 && close > arrow && arrow > open {
+		return path[:open] + strings.TrimSpace(path[arrow+4:close]) + path[close+1:]
+	}
+	return strings.TrimSpace(path[arrow+4:])
 }
 
 func parseNumstatValue(value string) int {

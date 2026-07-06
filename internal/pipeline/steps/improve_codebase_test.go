@@ -216,6 +216,68 @@ func TestImproveCodebaseStep_AutoRunsForCrossDirectoryMove(t *testing.T) {
 	}
 }
 
+func TestImproveCodebaseStep_AutoRunsForSameDirectoryRenameLargeEdit(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	lines := make([]string, 0, 2001)
+	lines = append(lines, "package bulk")
+	for i := 0; i < 2000; i++ {
+		lines = append(lines, fmt.Sprintf("// stable line %04d", i))
+	}
+	mustWriteFile(t, filepath.Join(dir, "pkg", "bulk", "old.go"), strings.Join(lines, "\n")+"\n")
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "add bulk file")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	gitCmd(t, dir, "mv", "pkg/bulk/old.go", "pkg/bulk/new.go")
+	for i := 0; i < 401; i++ {
+		lines[i+1] = fmt.Sprintf("// changed line %04d", i)
+	}
+	mustWriteFile(t, filepath.Join(dir, "pkg", "bulk", "new.go"), strings.Join(lines, "\n")+"\n")
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "rename and edit bulk file")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	findingsJSON, _ := json.Marshal(Findings{Summary: "clear"})
+	ag := &mockAgent{runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		if !strings.Contains(opts.Prompt, "802 changed lines") {
+			t.Fatalf("prompt missing changed-line trigger reason: %s", opts.Prompt)
+		}
+		return &agent.Result{Output: findingsJSON}, nil
+	}}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	outcome, err := (&ImproveCodebaseStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.Skipped {
+		t.Fatal("expected large same-directory rename edit to run")
+	}
+	if len(ag.calls) != 1 {
+		t.Fatalf("agent calls = %d, want 1", len(ag.calls))
+	}
+}
+
+func TestParseImproveCodebaseNumstatMapsRenameToNewPath(t *testing.T) {
+	t.Parallel()
+	stats := parseImproveCodebaseNumstat("401\t401\tpkg/bulk/{old.go => new.go}\n")
+	if _, ok := stats["pkg/bulk/{old.go => new.go}"]; ok {
+		t.Fatal("rename notation should not be kept as the stat path")
+	}
+	got, ok := stats["pkg/bulk/new.go"]
+	if !ok {
+		t.Fatalf("missing stat for renamed path: %#v", stats)
+	}
+	if got.Additions != 401 || got.Deletions != 401 {
+		t.Fatalf("renamed stat = %+v, want 401 additions and deletions", got)
+	}
+}
+
 func TestImproveCodebaseStep_AutoRunsForManySourceFiles(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, _ := setupGitRepo(t)
