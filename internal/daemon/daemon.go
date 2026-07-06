@@ -564,6 +564,9 @@ func stepToInfo(d *db.DB, s *db.StepResult) ipc.StepResultInfo {
 		LastActivity:   s.LastActivity,
 		AgentPID:       s.AgentPID,
 	}
+	if s.AutoFixLimit != nil {
+		info.AutoFixLimit = *s.AutoFixLimit
+	}
 	if stats, err := d.StepFindingStats(s); err == nil {
 		info.ReportedFindings = stats.ReportedFindings
 		info.FixedFindings = stats.FixedFindings
@@ -574,6 +577,7 @@ func stepToInfo(d *db.DB, s *db.StepResult) ipc.StepResultInfo {
 	if rounds, err := d.StepRoundStats(s.ID); err == nil {
 		info.RoundCount = rounds.TotalRounds
 		info.FixRoundCount = rounds.FixRounds
+		info.PendingFixSource = rounds.PendingFixSource
 	}
 	return info
 }

@@ -80,8 +80,7 @@ func openAxiEnv(ensureDaemonConn bool) (*axiEnv, error) {
 	}
 	globalCfg, err := config.LoadGlobal(p.ConfigFile())
 	if err != nil {
-		d.Close()
-		return nil, fmt.Errorf("load global config: %w", err)
+		globalCfg = config.DefaultGlobalConfig()
 	}
 	env := &axiEnv{p: p, d: d, cfg: globalCfg}
 	repo, err := findRepo(d)

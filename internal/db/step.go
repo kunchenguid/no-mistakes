@@ -24,9 +24,10 @@ type StepResult struct {
 	LastActivityAt *int64
 	LastActivity   *string
 	AgentPID       *int
+	AutoFixLimit   *int
 }
 
-const stepResultColumns = `id, run_id, step_name, step_order, status, exit_code, duration_ms, log_path, findings_json, error, started_at, completed_at, last_activity_at, last_activity, agent_pid`
+const stepResultColumns = `id, run_id, step_name, step_order, status, exit_code, duration_ms, log_path, findings_json, error, started_at, completed_at, last_activity_at, last_activity, agent_pid, auto_fix_limit`
 
 // InsertStepResult creates a new step result record.
 func (d *DB) InsertStepResult(runID string, stepName types.StepName) (*StepResult, error) {
@@ -52,7 +53,7 @@ func (d *DB) GetStepResult(id string) (*StepResult, error) {
 	s := &StepResult{}
 	err := d.sql.QueryRow(
 		`SELECT `+stepResultColumns+` FROM step_results WHERE id = ?`, id,
-	).Scan(&s.ID, &s.RunID, &s.StepName, &s.StepOrder, &s.Status, &s.ExitCode, &s.DurationMS, &s.LogPath, &s.FindingsJSON, &s.Error, &s.StartedAt, &s.CompletedAt, &s.LastActivityAt, &s.LastActivity, &s.AgentPID)
+	).Scan(&s.ID, &s.RunID, &s.StepName, &s.StepOrder, &s.Status, &s.ExitCode, &s.DurationMS, &s.LogPath, &s.FindingsJSON, &s.Error, &s.StartedAt, &s.CompletedAt, &s.LastActivityAt, &s.LastActivity, &s.AgentPID, &s.AutoFixLimit)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -74,7 +75,7 @@ func (d *DB) GetStepsByRun(runID string) ([]*StepResult, error) {
 	var steps []*StepResult
 	for rows.Next() {
 		s := &StepResult{}
-		if err := rows.Scan(&s.ID, &s.RunID, &s.StepName, &s.StepOrder, &s.Status, &s.ExitCode, &s.DurationMS, &s.LogPath, &s.FindingsJSON, &s.Error, &s.StartedAt, &s.CompletedAt, &s.LastActivityAt, &s.LastActivity, &s.AgentPID); err != nil {
+		if err := rows.Scan(&s.ID, &s.RunID, &s.StepName, &s.StepOrder, &s.Status, &s.ExitCode, &s.DurationMS, &s.LogPath, &s.FindingsJSON, &s.Error, &s.StartedAt, &s.CompletedAt, &s.LastActivityAt, &s.LastActivity, &s.AgentPID, &s.AutoFixLimit); err != nil {
 			return nil, fmt.Errorf("scan step result: %w", err)
 		}
 		steps = append(steps, s)
@@ -102,12 +103,30 @@ func (d *DB) UpdateStepStatusWithDuration(id string, status types.StepStatus, du
 
 // StartStep marks a step as running with a started_at timestamp.
 func (d *DB) StartStep(id string) error {
+	return d.StartStepWithAutoFixLimit(id, 0)
+}
+
+func (d *DB) StartStepWithAutoFixLimit(id string, autoFixLimit int) error {
 	ts := now()
-	_, err := d.sql.Exec(`UPDATE step_results SET status = ?, started_at = ?, last_activity_at = ?, last_activity = ?, agent_pid = NULL WHERE id = ?`, types.StepStatusRunning, ts, ts, "step started", id)
+	_, err := d.sql.Exec(`UPDATE step_results SET status = ?, started_at = ?, last_activity_at = ?, last_activity = ?, agent_pid = NULL, auto_fix_limit = ? WHERE id = ?`, types.StepStatusRunning, ts, ts, "step started", autoFixLimitDBValue(autoFixLimit), id)
 	if err != nil {
 		return fmt.Errorf("start step: %w", err)
 	}
 	return nil
+}
+
+func (d *DB) SetStepAutoFixLimit(id string, autoFixLimit int) error {
+	if _, err := d.sql.Exec(`UPDATE step_results SET auto_fix_limit = ? WHERE id = ?`, autoFixLimitDBValue(autoFixLimit), id); err != nil {
+		return fmt.Errorf("set step auto-fix limit: %w", err)
+	}
+	return nil
+}
+
+func autoFixLimitDBValue(autoFixLimit int) any {
+	if autoFixLimit <= 0 {
+		return nil
+	}
+	return autoFixLimit
 }
 
 // CompleteStep marks a step as completed with timing and result info.

@@ -57,6 +57,35 @@ func TestExecutor_AutoFixTriggersWithoutApproval(t *testing.T) {
 	}
 }
 
+func TestExecutor_PersistsEffectiveAutoFixLimit(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+	cfg := &config.Config{AutoFix: config.AutoFix{Review: 2}}
+
+	step := &adaptiveCallStep{
+		name: types.StepReview,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			return &StepOutcome{ExitCode: 0}, nil
+		},
+	}
+
+	exec := NewExecutor(database, p, cfg, nil, []Step{step}, nil)
+	if err := exec.Execute(context.Background(), run, repo, workDir); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	steps, err := database.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatalf("get steps: %v", err)
+	}
+	if len(steps) != 1 {
+		t.Fatalf("steps = %d, want 1", len(steps))
+	}
+	if steps[0].AutoFixLimit == nil || *steps[0].AutoFixLimit != 2 {
+		t.Fatalf("auto-fix limit = %v, want 2", steps[0].AutoFixLimit)
+	}
+}
+
 func TestExecutor_AutoFixRespectsMaxAttempts(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir := t.TempDir()

@@ -181,9 +181,13 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	stepName := step.Name()
 	logPath := filepath.Join(logDir, string(stepName)+".log")
 	finalExitCode := 0
+	autoFixLimit := 0
+	if e.config != nil {
+		autoFixLimit = e.config.AutoFixLimit(stepName)
+	}
 
 	// Mark step as running
-	if err := e.db.StartStep(sr.ID); err != nil {
+	if err := e.db.StartStepWithAutoFixLimit(sr.ID, autoFixLimit); err != nil {
 		return false, fmt.Errorf("start step %s: %w", stepName, err)
 	}
 	e.emitStepEvent(ipc.EventStepStarted, run, repo, stepName, string(types.StepStatusRunning))
@@ -280,11 +284,6 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		},
 	}
 
-	// Determine auto-fix limit for this step
-	autoFixLimit := 0
-	if e.config != nil {
-		autoFixLimit = e.config.AutoFixLimit(stepName)
-	}
 	autoFixAttempts := 0
 	roundNum := 0
 	nextTrigger := "initial"

@@ -213,15 +213,17 @@ type StepResultInfo struct {
 	// FixSummaries holds one entry per fix round the pipeline ran for this
 	// step, in round order: the agent's one-line fix summary, or "" when the
 	// round recorded none. Agent surfaces use it to report applied fixes.
-	FixSummaries   []string `json:"fix_summaries,omitempty"`
-	RoundCount     int      `json:"round_count,omitempty"`
-	FixRoundCount  int      `json:"fix_round_count,omitempty"`
-	Error          *string  `json:"error,omitempty"`
-	StartedAt      *int64   `json:"started_at,omitempty"`
-	CompletedAt    *int64   `json:"completed_at,omitempty"`
-	LastActivityAt *int64   `json:"last_activity_at,omitempty"`
-	LastActivity   *string  `json:"last_activity,omitempty"`
-	AgentPID       *int     `json:"agent_pid,omitempty"`
+	FixSummaries     []string `json:"fix_summaries,omitempty"`
+	RoundCount       int      `json:"round_count,omitempty"`
+	FixRoundCount    int      `json:"fix_round_count,omitempty"`
+	AutoFixLimit     int      `json:"auto_fix_limit,omitempty"`
+	PendingFixSource string   `json:"pending_fix_source,omitempty"`
+	Error            *string  `json:"error,omitempty"`
+	StartedAt        *int64   `json:"started_at,omitempty"`
+	CompletedAt      *int64   `json:"completed_at,omitempty"`
+	LastActivityAt   *int64   `json:"last_activity_at,omitempty"`
+	LastActivity     *string  `json:"last_activity,omitempty"`
+	AgentPID         *int     `json:"agent_pid,omitempty"`
 }
 
 // --- Events (for subscribe stream) ---

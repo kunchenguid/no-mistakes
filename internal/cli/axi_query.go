@@ -12,7 +12,6 @@ import (
 
 	toon "github.com/toon-format/toon-go"
 
-	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
@@ -94,11 +93,11 @@ func annotateRunView(env *axiEnv, rv *runView) {
 	for i := range rv.Steps {
 		step := &rv.Steps[i]
 		step.QuietWarning = quietWarning
-		step.AutoFixLimit = autoFixLimitForStatus(env, types.StepName(step.Name))
 		if step.ID != "" {
 			if stats, err := env.d.StepRoundStats(step.ID); err == nil {
 				step.RoundCount = stats.TotalRounds
 				step.FixRoundCount = stats.FixRounds
+				step.PendingFixSource = stats.PendingFixSource
 			}
 		}
 		if step.LastActivityAt == nil {
@@ -117,17 +116,6 @@ func configQuietWarning(env *axiEnv) time.Duration {
 		return 0
 	}
 	return env.cfg.StepQuietWarning
-}
-
-func autoFixLimitForStatus(env *axiEnv, step types.StepName) int {
-	if env == nil || env.cfg == nil {
-		return 0
-	}
-	cfg := config.Merge(env.cfg, &config.RepoConfig{})
-	if cfg == nil {
-		return 0
-	}
-	return cfg.AutoFixLimit(step)
 }
 
 func startRunHelp() string {

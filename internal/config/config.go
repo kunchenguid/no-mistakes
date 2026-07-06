@@ -646,15 +646,20 @@ func EnsureDefaultGlobalConfig(path string) {
 	}
 }
 
-// LoadGlobal reads global config from path. Returns defaults if file doesn't exist.
-func LoadGlobal(path string) (*GlobalConfig, error) {
-	cfg := &GlobalConfig{
+// DefaultGlobalConfig returns the built-in global defaults.
+func DefaultGlobalConfig() *GlobalConfig {
+	return &GlobalConfig{
 		Agent:            types.AgentAuto,
 		Agents:           []types.AgentName{types.AgentAuto},
 		CITimeout:        DefaultCITimeout,
 		StepQuietWarning: DefaultStepQuietWarning,
 		LogLevel:         "info",
 	}
+}
+
+// LoadGlobal reads global config from path. Returns defaults if file doesn't exist.
+func LoadGlobal(path string) (*GlobalConfig, error) {
+	cfg := DefaultGlobalConfig()
 
 	data, err := os.ReadFile(path)
 	if err != nil {

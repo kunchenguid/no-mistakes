@@ -71,20 +71,21 @@ type fixRow struct {
 // stepView is a render-ready view of a single pipeline step, decoupled from
 // whether it came from the daemon (ipc) or the local database.
 type stepView struct {
-	ID             string
-	Name           string
-	Status         string
-	DurationMS     int64
-	FindingsJSON   string
-	FixSummaries   []string
-	StartedAt      *int64
-	LastActivityAt *int64
-	LastActivity   string
-	AgentPID       *int
-	RoundCount     int
-	FixRoundCount  int
-	AutoFixLimit   int
-	QuietWarning   time.Duration
+	ID               string
+	Name             string
+	Status           string
+	DurationMS       int64
+	FindingsJSON     string
+	FixSummaries     []string
+	StartedAt        *int64
+	LastActivityAt   *int64
+	LastActivity     string
+	AgentPID         *int
+	RoundCount       int
+	FixRoundCount    int
+	AutoFixLimit     int
+	PendingFixSource string
+	QuietWarning     time.Duration
 }
 
 // runView is a render-ready view of a pipeline run.
@@ -114,15 +115,17 @@ func runViewFromIPC(r *ipc.RunInfo) runView {
 	}
 	for _, s := range r.Steps {
 		sv := stepView{
-			ID:             s.ID,
-			Name:           string(s.StepName),
-			Status:         string(s.Status),
-			FixSummaries:   s.FixSummaries,
-			StartedAt:      s.StartedAt,
-			LastActivityAt: s.LastActivityAt,
-			AgentPID:       s.AgentPID,
-			RoundCount:     s.RoundCount,
-			FixRoundCount:  s.FixRoundCount,
+			ID:               s.ID,
+			Name:             string(s.StepName),
+			Status:           string(s.Status),
+			FixSummaries:     s.FixSummaries,
+			StartedAt:        s.StartedAt,
+			LastActivityAt:   s.LastActivityAt,
+			AgentPID:         s.AgentPID,
+			RoundCount:       s.RoundCount,
+			FixRoundCount:    s.FixRoundCount,
+			AutoFixLimit:     s.AutoFixLimit,
+			PendingFixSource: s.PendingFixSource,
 		}
 		if s.LastActivity != nil {
 			sv.LastActivity = *s.LastActivity
@@ -157,6 +160,9 @@ func runViewFromDB(r *db.Run, steps []*db.StepResult) runView {
 			StartedAt:      s.StartedAt,
 			LastActivityAt: s.LastActivityAt,
 			AgentPID:       s.AgentPID,
+		}
+		if s.AutoFixLimit != nil {
+			sv.AutoFixLimit = *s.AutoFixLimit
 		}
 		if s.LastActivity != nil {
 			sv.LastActivity = *s.LastActivity
@@ -333,11 +339,18 @@ func (s stepView) agentPIDString() string {
 
 func (s stepView) roundSummary() string {
 	if s.Status == string(types.StepStatusFixing) {
-		if s.AutoFixLimit > 0 && s.FixRoundCount > 0 {
-			return fmt.Sprintf("auto-fix %d/%d", s.FixRoundCount, s.AutoFixLimit)
+		attempt := s.FixRoundCount
+		if s.PendingFixSource != "" {
+			attempt++
 		}
-		if s.FixRoundCount > 0 {
-			return fmt.Sprintf("fix %d", s.FixRoundCount)
+		if s.PendingFixSource == db.RoundSelectionSourceAutoFix {
+			if s.AutoFixLimit > 0 {
+				return fmt.Sprintf("auto-fix %d/%d", attempt, s.AutoFixLimit)
+			}
+			return fmt.Sprintf("auto-fix %d", attempt)
+		}
+		if attempt > 0 {
+			return fmt.Sprintf("fix %d", attempt)
 		}
 		return "fixing"
 	}

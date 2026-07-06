@@ -49,6 +49,7 @@ type StepRoundStats struct {
 	LatestFixRoundAt   int64
 	SelectedForFix     bool
 	AutoSelectedForFix bool
+	PendingFixSource   string
 }
 
 // IsFixRound reports whether this round was a fix attempt. Legacy "user_fix"
@@ -85,6 +86,8 @@ func (d *DB) StepRoundStats(stepResultID string) (StepRoundStats, error) {
 		return StepRoundStats{}, err
 	}
 	var stats StepRoundStats
+	latestSelectedRound := 0
+	latestSelectedSource := ""
 	for _, r := range rounds {
 		stats.TotalRounds++
 		stats.LatestRound = r.Round
@@ -96,12 +99,17 @@ func (d *DB) StepRoundStats(stepResultID string) (StepRoundStats, error) {
 		if r.SelectedFindingIDs != nil && *r.SelectedFindingIDs != "" {
 			stats.SelectedForFix = true
 			stats.AutoSelectedForFix = r.SelectionSource != nil && *r.SelectionSource == RoundSelectionSourceAutoFix
+			latestSelectedRound = r.Round
+			latestSelectedSource = stats.LatestSelection
 		}
 		if r.IsFixRound() {
 			stats.FixRounds++
 			stats.LatestFixRound = stats.FixRounds
 			stats.LatestFixRoundAt = r.CreatedAt
 		}
+	}
+	if latestSelectedRound == stats.LatestRound {
+		stats.PendingFixSource = latestSelectedSource
 	}
 	return stats, nil
 }

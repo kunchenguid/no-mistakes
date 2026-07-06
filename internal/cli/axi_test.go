@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 	toon "github.com/toon-format/toon-go"
 
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
@@ -164,15 +166,16 @@ func TestRunObjectRendersActiveStepDiagnostics(t *testing.T) {
 		HeadSHA: "abcdef1234567890",
 		Steps: []stepView{
 			{
-				Name:           "review",
-				Status:         string(types.StepStatusFixing),
-				StartedAt:      &started,
-				LastActivityAt: &last,
-				LastActivity:   "codex started pid=4242",
-				AgentPID:       &pid,
-				FixRoundCount:  1,
-				AutoFixLimit:   3,
-				QuietWarning:   10 * time.Minute,
+				Name:             "review",
+				Status:           string(types.StepStatusFixing),
+				StartedAt:        &started,
+				LastActivityAt:   &last,
+				LastActivity:     "codex started pid=4242",
+				AgentPID:         &pid,
+				FixRoundCount:    0,
+				AutoFixLimit:     3,
+				PendingFixSource: db.RoundSelectionSourceAutoFix,
+				QuietWarning:     10 * time.Minute,
 			},
 		},
 	}
@@ -187,6 +190,61 @@ func TestRunObjectRendersActiveStepDiagnostics(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("active diagnostics missing %q in:\n%s", want, out)
 		}
+	}
+}
+
+func TestStatusRendersCurrentAutoFixAttemptWithPersistedLimit(t *testing.T) {
+	database := openTestDB(t)
+	repo, err := database.InsertRepo(t.TempDir(), "origin", "main")
+	if err != nil {
+		t.Fatalf("insert repo: %v", err)
+	}
+	run, err := database.InsertRun(repo.ID, "feature/current", "abcdef1234567890", "base")
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+	if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatalf("mark run running: %v", err)
+	}
+	step, err := database.InsertStepResult(run.ID, types.StepReview)
+	if err != nil {
+		t.Fatalf("insert step: %v", err)
+	}
+	if err := database.UpdateStepStatus(step.ID, types.StepStatusFixing); err != nil {
+		t.Fatalf("mark step fixing: %v", err)
+	}
+	if err := database.SetStepAutoFixLimit(step.ID, 2); err != nil {
+		t.Fatalf("set auto-fix limit: %v", err)
+	}
+	findings := findingsJSON(t, []types.Finding{{ID: "review-1", Action: types.ActionAutoFix, Description: "x"}}, "one")
+	round, err := database.InsertStepRound(step.ID, 1, "initial", &findings, nil, 10)
+	if err != nil {
+		t.Fatalf("insert round: %v", err)
+	}
+	selected := `["review-1"]`
+	if err := database.SetStepRoundSelection(round.ID, &selected, db.RoundSelectionSourceAutoFix); err != nil {
+		t.Fatalf("set selected findings: %v", err)
+	}
+
+	steps, err := database.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatalf("load steps: %v", err)
+	}
+	rv := runViewFromDB(run, steps)
+	reviewLimit := 9
+	annotateRunView(&axiEnv{
+		d: database,
+		p: paths.WithRoot(t.TempDir()),
+		cfg: &config.GlobalConfig{
+			AutoFix: config.AutoFixRaw{Review: &reviewLimit},
+		},
+	}, &rv)
+	out := axiDoc(runObjectField(rv))
+	if !strings.Contains(out, `review,fixing`) || !strings.Contains(out, `auto-fix 1/2`) {
+		t.Fatalf("status should render the in-flight first auto-fix attempt with persisted limit, got:\n%s", out)
+	}
+	if strings.Contains(out, `auto-fix 1/9`) {
+		t.Fatalf("status should not use the current global config limit, got:\n%s", out)
 	}
 }
 
@@ -486,6 +544,66 @@ func TestAxiHomeStartsCurrentBranchWhenOtherBranchIsActive(t *testing.T) {
 	} {
 		if strings.Contains(got, forbidden) {
 			t.Fatalf("axi home should not tell the agent to act on another branch via %q, got:\n%s", forbidden, got)
+		}
+	}
+}
+
+func TestAxiStatusIgnoresInvalidGlobalConfig(t *testing.T) {
+	repoDir := t.TempDir()
+	nmHome := t.TempDir()
+	t.Setenv("NM_HOME", nmHome)
+	run(t, repoDir, "git", "init")
+	run(t, repoDir, "git", "config", "user.email", "test@test.com")
+	run(t, repoDir, "git", "config", "user.name", "Test")
+	run(t, repoDir, "git", "commit", "--allow-empty", "-m", "initial")
+	rawRoot, err := filepath.EvalSymlinks(repoDir)
+	if err != nil {
+		rawRoot = repoDir
+	}
+	chdir(t, rawRoot)
+
+	p := paths.WithRoot(nmHome)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+	if err := os.WriteFile(p.ConfigFile(), []byte("agent: [\n"), 0o644); err != nil {
+		t.Fatalf("write invalid config: %v", err)
+	}
+	database, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer database.Close()
+	repo, err := database.InsertRepoWithID("repo-1", rawRoot, "origin", "main")
+	if err != nil {
+		t.Fatalf("insert repo: %v", err)
+	}
+	dbRun, err := database.InsertRun(repo.ID, "main", "head", "base")
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+	if err := database.UpdateRunStatus(dbRun.ID, types.RunCompleted); err != nil {
+		t.Fatalf("mark run completed: %v", err)
+	}
+	step, err := database.InsertStepResult(dbRun.ID, types.StepReview)
+	if err != nil {
+		t.Fatalf("insert step: %v", err)
+	}
+	if err := database.CompleteStep(step.ID, 0, 10, ""); err != nil {
+		t.Fatalf("complete step: %v", err)
+	}
+
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	cmd.SetOut(&out)
+	if err := runAxiStatus(cmd, dbRun.ID); err != nil {
+		t.Fatalf("axi status should not fail on invalid global config: %v\n%s", err, out.String())
+	}
+	got := out.String()
+	for _, want := range []string{"run:", `id: "` + dbRun.ID + `"`, "status: completed"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("axi status missing %q in:\n%s", want, got)
 		}
 	}
 }
