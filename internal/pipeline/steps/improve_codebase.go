@@ -18,6 +18,7 @@ import (
 const (
 	improveCodebaseSourceFileThreshold = 8
 	improveCodebaseLineThreshold       = 800
+	gitZeroSHA                         = "0000000000000000000000000000000000000000"
 )
 
 // ImproveCodebaseStep runs a conditional structural codebase-health gate.
@@ -231,9 +232,19 @@ func snapshotImproveCodebaseReadOnly(sctx *pipeline.StepContext) (improveCodebas
 
 func snapshotImproveCodebaseRefs(sctx *pipeline.StepContext) (map[string]string, error) {
 	refs := map[string]string{}
-	for ref := range improveCodebaseProtectedRefs(sctx) {
-		sha, _ := git.Run(sctx.Ctx, sctx.WorkDir, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
-		refs[ref] = strings.TrimSpace(sha)
+	output, err := git.Run(sctx.Ctx, sctx.WorkDir, "for-each-ref", "--format=%(refname)%00%(objectname)", "refs")
+	if err != nil {
+		return nil, fmt.Errorf("snapshot improve-codebase refs: %w", err)
+	}
+	for _, line := range strings.Split(strings.TrimSuffix(output, "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\x00", 2)
+		if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
+			return nil, fmt.Errorf("snapshot improve-codebase refs: malformed ref line %q", line)
+		}
+		refs[parts[0]] = parts[1]
 	}
 	return refs, nil
 }
@@ -252,51 +263,38 @@ func enforceImproveCodebaseReadOnly(sctx *pipeline.StepContext, before improveCo
 		return nil
 	}
 	if _, checkoutErr := git.Run(cleanupCtx, sctx.WorkDir, "checkout", "--detach", before.Head); checkoutErr != nil {
-		return fmt.Errorf("improve-codebase gate modified the worktree or protected git refs and cleanup failed: %w", checkoutErr)
+		return fmt.Errorf("improve-codebase gate modified the worktree or git refs and cleanup failed: %w", checkoutErr)
 	}
-	protectedRefs := improveCodebaseProtectedRefs(sctx)
 	for ref, sha := range before.Refs {
-		if !protectedRefs[ref] {
-			continue
-		}
 		afterSHA, exists := after.Refs[ref]
 		if exists && afterSHA == sha {
 			continue
 		}
 		if !exists {
-			if _, refErr := git.Run(cleanupCtx, sctx.WorkDir, "update-ref", ref, sha); refErr != nil {
-				return fmt.Errorf("improve-codebase gate modified the worktree or protected git refs and cleanup failed: %w", refErr)
-			}
-			continue
-		}
-		if sha == "" {
-			if _, refErr := git.Run(cleanupCtx, sctx.WorkDir, "update-ref", "-d", ref, afterSHA); refErr != nil {
-				return fmt.Errorf("improve-codebase gate modified the worktree or protected git refs and cleanup failed: %w", refErr)
+			if _, refErr := git.Run(cleanupCtx, sctx.WorkDir, "update-ref", ref, sha, gitZeroSHA); refErr != nil {
+				return fmt.Errorf("improve-codebase gate modified the worktree or git refs and cleanup failed: %w", refErr)
 			}
 			continue
 		}
 		if _, refErr := git.Run(cleanupCtx, sctx.WorkDir, "update-ref", ref, sha, afterSHA); refErr != nil {
-			return fmt.Errorf("improve-codebase gate modified the worktree or protected git refs and cleanup failed: %w", refErr)
+			return fmt.Errorf("improve-codebase gate modified the worktree or git refs and cleanup failed: %w", refErr)
 		}
 	}
 	for ref, afterSHA := range after.Refs {
 		if _, ok := before.Refs[ref]; ok {
 			continue
 		}
-		if !protectedRefs[ref] {
-			continue
-		}
 		if _, refErr := git.Run(cleanupCtx, sctx.WorkDir, "update-ref", "-d", ref, afterSHA); refErr != nil {
-			return fmt.Errorf("improve-codebase gate modified the worktree or protected git refs and cleanup failed: %w", refErr)
+			return fmt.Errorf("improve-codebase gate modified the worktree or git refs and cleanup failed: %w", refErr)
 		}
 	}
 	if _, resetErr := git.Run(cleanupCtx, sctx.WorkDir, "reset", "--hard", before.Head); resetErr != nil {
-		return fmt.Errorf("improve-codebase gate modified the worktree or protected git refs and cleanup failed: %w", resetErr)
+		return fmt.Errorf("improve-codebase gate modified the worktree or git refs and cleanup failed: %w", resetErr)
 	}
 	if _, cleanErr := git.Run(cleanupCtx, sctx.WorkDir, "clean", "-ffdx"); cleanErr != nil {
-		return fmt.Errorf("improve-codebase gate modified the worktree or protected git refs and cleanup failed: %w", cleanErr)
+		return fmt.Errorf("improve-codebase gate modified the worktree or git refs and cleanup failed: %w", cleanErr)
 	}
-	return fmt.Errorf("improve-codebase gate modified the worktree or protected git refs despite read-only mode")
+	return fmt.Errorf("improve-codebase gate modified the worktree or git refs despite read-only mode")
 }
 
 func improveCodebaseReadOnlySnapshotEqual(a, b improveCodebaseReadOnlySnapshot) bool {
@@ -309,25 +307,6 @@ func improveCodebaseReadOnlySnapshotEqual(a, b improveCodebaseReadOnlySnapshot) 
 		}
 	}
 	return true
-}
-
-func improveCodebaseProtectedRefs(sctx *pipeline.StepContext) map[string]bool {
-	refs := map[string]bool{}
-	add := func(ref string) {
-		ref = strings.TrimSpace(ref)
-		if ref != "" {
-			refs[ref] = true
-		}
-	}
-	branch := strings.TrimPrefix(normalizedBranchRef(sctx.Run.Branch), "refs/heads/")
-	if branch != "" {
-		add("refs/heads/" + branch)
-		add("refs/remotes/origin/" + branch)
-		if strings.TrimSpace(sctx.Repo.ForkURL) != "" {
-			add(forkBranchTrackingRef(branch))
-		}
-	}
-	return refs
 }
 
 func formatImproveCodebaseIgnorePatterns(cfg *config.Config) string {

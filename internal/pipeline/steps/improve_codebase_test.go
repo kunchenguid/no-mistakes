@@ -292,26 +292,49 @@ func TestImproveCodebaseStep_RemovesCreatedProtectedRef(t *testing.T) {
 	}
 }
 
-func TestImproveCodebaseStep_IgnoresUnownedSharedRefs(t *testing.T) {
+func TestImproveCodebaseStep_RemovesCreatedSharedRefs(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	ag := &mockAgent{runFn: func(_ context.Context, _ agent.RunOpts) (*agent.Result, error) {
 		gitCmd(t, dir, "update-ref", "refs/tags/agent-tag", headSHA)
+		gitCmd(t, dir, "update-ref", "refs/replace/"+headSHA, baseSHA)
 		return &agent.Result{Output: []byte(`{"findings":[],"summary":"clear"}`)}, nil
 	}}
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Config.ImproveCodebase.Mode = config.ImproveCodebaseModeAlways
 
-	outcome, err := (&ImproveCodebaseStep{}).Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
+	_, err := (&ImproveCodebaseStep{}).Execute(sctx)
+	if err == nil {
+		t.Fatal("expected read-only violation")
 	}
-	if outcome.NeedsApproval {
-		t.Fatal("unowned shared ref changes should not block this worktree-local gate")
+	if _, err := os.Stat(filepath.Join(dir, ".git", "refs", "tags", "agent-tag")); !os.IsNotExist(err) {
+		t.Fatalf("created tag stat err = %v, want not exist", err)
 	}
-	if got := gitCmd(t, dir, "rev-parse", "refs/tags/agent-tag"); got != headSHA {
-		t.Fatalf("created tag = %s, want %s", got, headSHA)
+	if _, err := os.Stat(filepath.Join(dir, ".git", "refs", "replace", headSHA)); !os.IsNotExist(err) {
+		t.Fatalf("created replace ref stat err = %v, want not exist", err)
+	}
+}
+
+func TestImproveCodebaseStep_RestoresChangedSharedRefs(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	beforeTag := baseSHA
+	gitCmd(t, dir, "update-ref", "refs/tags/release", beforeTag)
+
+	ag := &mockAgent{runFn: func(_ context.Context, _ agent.RunOpts) (*agent.Result, error) {
+		gitCmd(t, dir, "update-ref", "refs/tags/release", headSHA)
+		return &agent.Result{Output: []byte(`{"findings":[],"summary":"clear"}`)}, nil
+	}}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.ImproveCodebase.Mode = config.ImproveCodebaseModeAlways
+
+	_, err := (&ImproveCodebaseStep{}).Execute(sctx)
+	if err == nil {
+		t.Fatal("expected read-only violation")
+	}
+	if got := gitCmd(t, dir, "rev-parse", "refs/tags/release"); got != beforeTag {
+		t.Fatalf("tag = %s, want %s", got, beforeTag)
 	}
 }
 

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -52,6 +53,55 @@ func TestFallbackAgentFallsBackOnLaunchFailure(t *testing.T) {
 	joined := strings.Join(chunks, "\n")
 	if !strings.Contains(joined, "agent codex failed") || !strings.Contains(joined, "falling back to claude") {
 		t.Fatalf("fallback log missing, got %q", joined)
+	}
+}
+
+func TestFallbackAgentFallsBackOnReadOnlyUnsupported(t *testing.T) {
+	first := &fallbackTestAgent{
+		name: "copilot",
+		run: func() (*Result, error) {
+			return nil, fmt.Errorf("copilot: %w", ErrReadOnlyUnsupported)
+		},
+	}
+	second := &fallbackTestAgent{
+		name: "codex",
+		run: func() (*Result, error) {
+			return &Result{Text: "ok"}, nil
+		},
+	}
+
+	result, err := NewFallback([]Agent{first, second}).Run(context.Background(), RunOpts{ReadOnly: true})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result == nil || result.Text != "ok" {
+		t.Fatalf("Run() result = %+v, want text ok", result)
+	}
+	if first.calls != 1 || second.calls != 1 {
+		t.Fatalf("calls = first %d second %d, want 1/1", first.calls, second.calls)
+	}
+}
+
+func TestFallbackAgentReturnsReadOnlyUnsupportedWhenNoCapableAgent(t *testing.T) {
+	first := &fallbackTestAgent{
+		name: "copilot",
+		run: func() (*Result, error) {
+			return nil, fmt.Errorf("copilot: %w", ErrReadOnlyUnsupported)
+		},
+	}
+	second := &fallbackTestAgent{
+		name: "pi",
+		run: func() (*Result, error) {
+			return nil, fmt.Errorf("pi: %w", ErrReadOnlyUnsupported)
+		},
+	}
+
+	_, err := NewFallback([]Agent{first, second}).Run(context.Background(), RunOpts{ReadOnly: true})
+	if !errors.Is(err, ErrReadOnlyUnsupported) {
+		t.Fatalf("Run() error = %v, want ErrReadOnlyUnsupported", err)
+	}
+	if first.calls != 1 || second.calls != 1 {
+		t.Fatalf("calls = first %d second %d, want 1/1", first.calls, second.calls)
 	}
 }
 
