@@ -60,6 +60,11 @@ type axiEnv struct {
 	client *ipc.Client
 }
 
+type axiEnvOptions struct {
+	ensureDaemonConn    bool
+	requireGlobalConfig bool
+}
+
 func (e *axiEnv) close() {
 	if e.client != nil {
 		e.client.Close()
@@ -74,12 +79,24 @@ func (e *axiEnv) close() {
 // the daemon, populating client. Errors are returned for the caller to render
 // as structured TOON.
 func openAxiEnv(ensureDaemonConn bool) (*axiEnv, error) {
+	return openAxiEnvWithOptions(axiEnvOptions{ensureDaemonConn: ensureDaemonConn})
+}
+
+func openAxiRunEnv() (*axiEnv, error) {
+	return openAxiEnvWithOptions(axiEnvOptions{ensureDaemonConn: true, requireGlobalConfig: true})
+}
+
+func openAxiEnvWithOptions(opts axiEnvOptions) (*axiEnv, error) {
 	p, d, err := openResources()
 	if err != nil {
 		return nil, err
 	}
 	globalCfg, err := config.LoadGlobal(p.ConfigFile())
 	if err != nil {
+		if opts.requireGlobalConfig {
+			d.Close()
+			return nil, err
+		}
 		globalCfg = config.DefaultGlobalConfig()
 	}
 	env := &axiEnv{p: p, d: d, cfg: globalCfg}
@@ -89,7 +106,7 @@ func openAxiEnv(ensureDaemonConn bool) (*axiEnv, error) {
 		return nil, err
 	}
 	env.repo = repo
-	if ensureDaemonConn {
+	if opts.ensureDaemonConn {
 		if err := daemon.EnsureDaemon(p); err != nil {
 			env.close()
 			return nil, fmt.Errorf("start daemon: %w", err)

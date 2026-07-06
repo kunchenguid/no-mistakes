@@ -608,6 +608,55 @@ func TestAxiStatusIgnoresInvalidGlobalConfig(t *testing.T) {
 	}
 }
 
+func TestAxiRunReportsInvalidGlobalConfig(t *testing.T) {
+	repoDir := t.TempDir()
+	nmHome := makeSocketSafeTempDir(t)
+	t.Setenv("NM_HOME", nmHome)
+	t.Setenv("NM_TEST_DAEMON_START_TIMEOUT", "100ms")
+	t.Setenv("NM_TEST_DAEMON_START_POLL_INTERVAL", "10ms")
+	run(t, repoDir, "git", "init")
+	run(t, repoDir, "git", "config", "user.email", "test@test.com")
+	run(t, repoDir, "git", "config", "user.name", "Test")
+	run(t, repoDir, "git", "commit", "--allow-empty", "-m", "initial")
+	run(t, repoDir, "git", "checkout", "-b", "feature/config")
+	rawRoot, err := filepath.EvalSymlinks(repoDir)
+	if err != nil {
+		rawRoot = repoDir
+	}
+	chdir(t, rawRoot)
+
+	p := paths.WithRoot(nmHome)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+	if err := os.WriteFile(p.ConfigFile(), []byte("agent: [\n"), 0o644); err != nil {
+		t.Fatalf("write invalid config: %v", err)
+	}
+	database, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer database.Close()
+	if _, err := database.InsertRepoWithID("repo-1", rawRoot, "origin", "main"); err != nil {
+		t.Fatalf("insert repo: %v", err)
+	}
+
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	cmd.SetOut(&out)
+	if err := runAxiRun(cmd, false, nil, "user goal"); err == nil {
+		t.Fatalf("axi run should fail on invalid global config:\n%s", out.String())
+	}
+	got := out.String()
+	if !strings.Contains(got, "parse global config") {
+		t.Fatalf("axi run should report the config parse error, got:\n%s", got)
+	}
+	if strings.Contains(got, "start daemon") {
+		t.Fatalf("axi run should fail before daemon startup, got:\n%s", got)
+	}
+}
+
 // TestAxiAbortByRunIDNoOpWhenDaemonStopped covers the abort-by-id path when no
 // daemon is running: a run only exists in a live daemon's memory, so there is
 // nothing to cancel and the command reports a successful no-op without needing

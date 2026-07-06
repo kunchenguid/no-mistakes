@@ -97,7 +97,7 @@ func newAxiRunCmd() *cobra.Command {
 
 func runAxiRun(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, intent string) error {
 	ctx := cmd.Context()
-	env, err := openAxiEnv(true)
+	env, err := openAxiRunEnv()
 	if err != nil {
 		return emitError(cmd, 1, err.Error(), repoInitHelp(err)...)
 	}
