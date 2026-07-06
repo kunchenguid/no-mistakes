@@ -165,6 +165,29 @@ func TestGetChecksPlainFallbackParsesOutputOnNonZeroExit(t *testing.T) {
 	}
 }
 
+func TestGetChecksPlainFallbackRejectsUnrecognizedErrorOutput(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr checks 123 --repo test/repo --json name,state,bucket,completedAt": {
+			stderr: "unknown flag: --json\n",
+			code:   1,
+		},
+		"gh pr checks 123 --repo test/repo": {
+			stderr: "HTTP 401\tbad credentials\n",
+			code:   1,
+		},
+	}), nil, "", "test/repo")
+
+	_, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+	if err == nil {
+		t.Fatal("expected unrecognized non-zero plain output to remain an error")
+	}
+	if !strings.Contains(err.Error(), "gh pr checks") {
+		t.Fatalf("error = %v, want gh pr checks context", err)
+	}
+}
+
 func TestGetPRStatePassesRepoFlag(t *testing.T) {
 	t.Parallel()
 

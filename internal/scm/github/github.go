@@ -339,9 +339,13 @@ func parseChecksPlain(out []byte) []scm.Check {
 		if len(fields) < 2 {
 			continue
 		}
+		bucket := normalizeCheckBucket("", fields[1])
+		if bucket == "" {
+			continue
+		}
 		checks = append(checks, scm.Check{
 			Name:   strings.TrimSpace(fields[0]),
-			Bucket: normalizeCheckBucket("", fields[1]),
+			Bucket: bucket,
 		})
 	}
 	return checks
