@@ -39,10 +39,16 @@ func (a *claudeAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 }
 
 func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
-	args := a.buildArgs(opts.Prompt, opts.JSONSchema)
+	args := a.buildArgs(opts.JSONSchema)
 	cmd := exec.CommandContext(ctx, a.bin, args...)
 	cmd.Dir = opts.CWD
-	cmd.Stdin = nil
+	// Pass the prompt on stdin, not as a CLI argument. On Windows a large
+	// prompt (test output + diff + prior findings) pushes the command line
+	// past CreateProcess's ~32767-character limit, which fails to launch with
+	// error 206 ("The filename or extension is too long"). stdin has no such
+	// limit; claude reads the prompt from stdin in print mode (`claude -p`
+	// with no positional argument).
+	cmd.Stdin = strings.NewReader(opts.Prompt)
 	cmd.Env = gitSafeEnv(opts.CWD)
 	shellenv.ConfigureShellCommand(cmd)
 
@@ -108,12 +114,13 @@ func finalizeClaudeResult(result *claudeResult, schema json.RawMessage, usage To
 // (from agent_args_override in the global config) are inserted ahead of the
 // managed flags, so user choices win over no-mistakes' defaults. If the user
 // supplied their own permission mode, the default --dangerously-skip-permissions
-// is not added.
-func (a *claudeAgent) buildArgs(prompt string, schema json.RawMessage) []string {
+// is not added. The prompt is not included here: it is delivered on stdin (see
+// runOnce) to avoid the Windows command-line length limit.
+func (a *claudeAgent) buildArgs(schema json.RawMessage) []string {
 	args := make([]string, 0, len(a.extraArgs)+8)
 	args = append(args, a.extraArgs...)
 	args = append(args,
-		"-p", prompt,
+		"-p",
 		"--verbose",
 		"--output-format", "stream-json",
 	)

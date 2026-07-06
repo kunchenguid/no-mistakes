@@ -31,3 +31,6 @@ demo_raw.gif
 # Environment
 .env
 .env.local
+
+# Lavish review artifacts (local, per-user)
+.lavish/
