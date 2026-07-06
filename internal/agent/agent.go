@@ -23,6 +23,7 @@ type Agent interface {
 type RunOpts struct {
 	Prompt      string
 	CWD         string
+	ServerCWD   string               // optional stable cwd for persistent agent servers
 	JSONSchema  json.RawMessage      // structured output schema (optional)
 	OnChunk     func(text string)    // streaming text callback (optional)
 	OnLifecycle func(LifecycleEvent) // native agent lifecycle callback (optional)
@@ -45,6 +46,13 @@ func rejectReadOnlyUnsupported(agentName string, opts RunOpts) error {
 		return nil
 	}
 	return fmt.Errorf("%s: %w", agentName, ErrReadOnlyUnsupported)
+}
+
+func (o RunOpts) serverCWD() string {
+	if o.ServerCWD != "" {
+		return o.ServerCWD
+	}
+	return o.CWD
 }
 
 // Result holds the output of an agent invocation.

@@ -72,6 +72,15 @@ func TestAgentsRejectUnsupportedReadOnlyMode(t *testing.T) {
 	}
 }
 
+func TestRunOptsServerCWDFallsBackToCWD(t *testing.T) {
+	if got := (RunOpts{CWD: "/session"}).serverCWD(); got != "/session" {
+		t.Fatalf("serverCWD() = %q, want /session", got)
+	}
+	if got := (RunOpts{CWD: "/session", ServerCWD: "/server"}).serverCWD(); got != "/server" {
+		t.Fatalf("serverCWD() = %q, want /server", got)
+	}
+}
+
 func TestNewWithOptions_ACPRegistryOverride(t *testing.T) {
 	a, err := NewWithOptions("acp:local-gemini", "acpx", nil, Options{
 		ACPRegistryOverrides: map[string]string{"local-gemini": "node /tmp/mock-acp.mjs"},

@@ -110,6 +110,9 @@ func TestImproveCodebaseStep_RunsAgentInDisposableCheckout(t *testing.T) {
 		if opts.CWD == dir {
 			t.Fatal("agent CWD = original worktree, want disposable checkout")
 		}
+		if opts.ServerCWD != dir {
+			t.Fatalf("agent ServerCWD = %q, want original worktree %q", opts.ServerCWD, dir)
+		}
 		auditDir = opts.CWD
 		if got := gitCmd(t, opts.CWD, "rev-parse", "HEAD"); got != headSHA {
 			t.Fatalf("disposable HEAD = %s, want %s", got, headSHA)

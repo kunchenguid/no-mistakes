@@ -121,6 +121,7 @@ Rules:
 	result, agentErr := sctx.Agent.Run(sctx.Ctx, agent.RunOpts{
 		Prompt:     prompt,
 		CWD:        auditDir,
+		ServerCWD:  sctx.WorkDir,
 		JSONSchema: auditOnlyFindingsSchema,
 		OnChunk:    sctx.LogChunk,
 		ReadOnly:   true,
