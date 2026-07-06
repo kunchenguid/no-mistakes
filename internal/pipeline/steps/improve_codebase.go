@@ -1,10 +1,13 @@
 package steps
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -44,11 +47,18 @@ type improveCodebaseReadOnlySnapshot struct {
 	HeadRef string
 	Status  string
 	Refs    map[string]improveCodebaseRefSnapshot
+	GitMeta map[string]improveCodebaseGitMetadataSnapshot
 }
 
 type improveCodebaseRefSnapshot struct {
 	Object string
 	Symref string
+}
+
+type improveCodebaseGitMetadataSnapshot struct {
+	Data   []byte
+	Mode   os.FileMode
+	Exists bool
 }
 
 func (s *ImproveCodebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
@@ -221,6 +231,19 @@ func improveCodebaseChangedFiles(sctx *pipeline.StepContext, baseSHA string) ([]
 }
 
 func snapshotImproveCodebaseReadOnly(sctx *pipeline.StepContext) (improveCodebaseReadOnlySnapshot, error) {
+	snapshot, err := snapshotImproveCodebaseGitState(sctx)
+	if err != nil {
+		return improveCodebaseReadOnlySnapshot{}, err
+	}
+	gitMeta, err := snapshotImproveCodebaseGitMetadata(sctx)
+	if err != nil {
+		return improveCodebaseReadOnlySnapshot{}, err
+	}
+	snapshot.GitMeta = gitMeta
+	return snapshot, nil
+}
+
+func snapshotImproveCodebaseGitState(sctx *pipeline.StepContext) (improveCodebaseReadOnlySnapshot, error) {
 	head, err := git.Run(sctx.Ctx, sctx.WorkDir, "rev-parse", "HEAD")
 	if err != nil {
 		return improveCodebaseReadOnlySnapshot{}, fmt.Errorf("snapshot improve-codebase HEAD: %w", err)
@@ -238,6 +261,66 @@ func snapshotImproveCodebaseReadOnly(sctx *pipeline.StepContext) (improveCodebas
 		return improveCodebaseReadOnlySnapshot{}, err
 	}
 	return improveCodebaseReadOnlySnapshot{Head: head, HeadRef: headRef, Status: status, Refs: refs}, nil
+}
+
+func snapshotImproveCodebaseGitMetadata(sctx *pipeline.StepContext) (map[string]improveCodebaseGitMetadataSnapshot, error) {
+	paths, err := improveCodebaseGitMetadataPaths(sctx.Ctx, sctx.WorkDir)
+	if err != nil {
+		return nil, err
+	}
+	return snapshotImproveCodebaseGitMetadataPaths(paths)
+}
+
+func improveCodebaseGitMetadataPaths(ctx context.Context, workDir string) ([]string, error) {
+	names := []string{"config", "config.worktree", "info/exclude", "index"}
+	seen := map[string]bool{}
+	var paths []string
+	for _, name := range names {
+		out, err := git.Run(ctx, workDir, "rev-parse", "--git-path", name)
+		if err != nil {
+			return nil, fmt.Errorf("snapshot improve-codebase git metadata path %s: %w", name, err)
+		}
+		path := strings.TrimSpace(out)
+		if path == "" {
+			return nil, fmt.Errorf("snapshot improve-codebase git metadata path %s: empty path", name)
+		}
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(workDir, path)
+		}
+		path = filepath.Clean(path)
+		if !seen[path] {
+			seen[path] = true
+			paths = append(paths, path)
+		}
+	}
+	return paths, nil
+}
+
+func snapshotImproveCodebaseGitMetadataPaths(paths []string) (map[string]improveCodebaseGitMetadataSnapshot, error) {
+	snapshots := map[string]improveCodebaseGitMetadataSnapshot{}
+	for _, path := range paths {
+		info, err := os.Lstat(path)
+		if os.IsNotExist(err) {
+			snapshots[path] = improveCodebaseGitMetadataSnapshot{}
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("snapshot improve-codebase git metadata %s: %w", path, err)
+		}
+		if info.IsDir() {
+			return nil, fmt.Errorf("snapshot improve-codebase git metadata %s: is a directory", path)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("snapshot improve-codebase git metadata %s: %w", path, err)
+		}
+		snapshots[path] = improveCodebaseGitMetadataSnapshot{
+			Data:   data,
+			Mode:   info.Mode().Perm(),
+			Exists: true,
+		}
+	}
+	return snapshots, nil
 }
 
 func snapshotImproveCodebaseRefs(sctx *pipeline.StepContext) (map[string]improveCodebaseRefSnapshot, error) {
@@ -265,15 +348,25 @@ func enforceImproveCodebaseReadOnly(sctx *pipeline.StepContext, before improveCo
 	cleanupSctx := *sctx
 	cleanupSctx.Ctx = cleanupCtx
 
-	after, err := snapshotImproveCodebaseReadOnly(&cleanupSctx)
+	afterGitMeta, err := snapshotImproveCodebaseGitMetadataPaths(improveCodebaseGitMetadataSnapshotPaths(before.GitMeta))
 	if err != nil {
 		return err
 	}
-	if improveCodebaseReadOnlySnapshotEqual(before, after) {
+	gitMetaChanged := !improveCodebaseGitMetadataSnapshotsEqual(before.GitMeta, afterGitMeta)
+	if gitMetaChanged {
+		if metaErr := restoreImproveCodebaseGitMetadata(before.GitMeta); metaErr != nil {
+			return fmt.Errorf("improve-codebase gate modified the worktree, git metadata, or git refs and cleanup failed: %w", metaErr)
+		}
+	}
+	after, err := snapshotImproveCodebaseGitState(&cleanupSctx)
+	if err != nil {
+		return err
+	}
+	if !gitMetaChanged && improveCodebaseReadOnlyGitStateEqual(before, after) {
 		return nil
 	}
 	if _, checkoutErr := git.Run(cleanupCtx, sctx.WorkDir, "checkout", "--force", "--detach", before.Head); checkoutErr != nil {
-		return fmt.Errorf("improve-codebase gate modified the worktree or git refs and cleanup failed: %w", checkoutErr)
+		return fmt.Errorf("improve-codebase gate modified the worktree, git metadata, or git refs and cleanup failed: %w", checkoutErr)
 	}
 	for ref, beforeRef := range before.Refs {
 		afterRef, exists := after.Refs[ref]
@@ -281,7 +374,7 @@ func enforceImproveCodebaseReadOnly(sctx *pipeline.StepContext, before improveCo
 			continue
 		}
 		if refErr := restoreImproveCodebaseRef(cleanupCtx, sctx.WorkDir, ref, beforeRef, afterRef, exists); refErr != nil {
-			return fmt.Errorf("improve-codebase gate modified the worktree or git refs and cleanup failed: %w", refErr)
+			return fmt.Errorf("improve-codebase gate modified the worktree, git metadata, or git refs and cleanup failed: %w", refErr)
 		}
 	}
 	for ref, afterRef := range after.Refs {
@@ -289,24 +382,27 @@ func enforceImproveCodebaseReadOnly(sctx *pipeline.StepContext, before improveCo
 			continue
 		}
 		if refErr := removeImproveCodebaseRef(cleanupCtx, sctx.WorkDir, ref, afterRef); refErr != nil {
-			return fmt.Errorf("improve-codebase gate modified the worktree or git refs and cleanup failed: %w", refErr)
+			return fmt.Errorf("improve-codebase gate modified the worktree, git metadata, or git refs and cleanup failed: %w", refErr)
 		}
 	}
 	if _, resetErr := git.Run(cleanupCtx, sctx.WorkDir, "reset", "--hard", before.Head); resetErr != nil {
-		return fmt.Errorf("improve-codebase gate modified the worktree or git refs and cleanup failed: %w", resetErr)
+		return fmt.Errorf("improve-codebase gate modified the worktree, git metadata, or git refs and cleanup failed: %w", resetErr)
 	}
 	if _, cleanErr := git.Run(cleanupCtx, sctx.WorkDir, "clean", "-ffdx"); cleanErr != nil {
-		return fmt.Errorf("improve-codebase gate modified the worktree or git refs and cleanup failed: %w", cleanErr)
+		return fmt.Errorf("improve-codebase gate modified the worktree, git metadata, or git refs and cleanup failed: %w", cleanErr)
 	}
 	if before.HeadRef != "HEAD" {
 		if _, headErr := git.Run(cleanupCtx, sctx.WorkDir, "symbolic-ref", "HEAD", before.HeadRef); headErr != nil {
-			return fmt.Errorf("improve-codebase gate modified the worktree or git refs and cleanup failed: %w", headErr)
+			return fmt.Errorf("improve-codebase gate modified the worktree, git metadata, or git refs and cleanup failed: %w", headErr)
 		}
 	}
-	return fmt.Errorf("improve-codebase gate modified the worktree or git refs despite read-only mode")
+	if metaErr := restoreImproveCodebaseGitMetadata(before.GitMeta); metaErr != nil {
+		return fmt.Errorf("improve-codebase gate modified the worktree, git metadata, or git refs and cleanup failed: %w", metaErr)
+	}
+	return fmt.Errorf("improve-codebase gate modified the worktree, git metadata, or git refs despite read-only mode")
 }
 
-func improveCodebaseReadOnlySnapshotEqual(a, b improveCodebaseReadOnlySnapshot) bool {
+func improveCodebaseReadOnlyGitStateEqual(a, b improveCodebaseReadOnlySnapshot) bool {
 	if a.Head != b.Head || a.HeadRef != b.HeadRef || a.Status != b.Status || len(a.Refs) != len(b.Refs) {
 		return false
 	}
@@ -316,6 +412,57 @@ func improveCodebaseReadOnlySnapshotEqual(a, b improveCodebaseReadOnlySnapshot) 
 		}
 	}
 	return true
+}
+
+func improveCodebaseGitMetadataSnapshotPaths(snapshots map[string]improveCodebaseGitMetadataSnapshot) []string {
+	paths := make([]string, 0, len(snapshots))
+	for path := range snapshots {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	return paths
+}
+
+func improveCodebaseGitMetadataSnapshotsEqual(a, b map[string]improveCodebaseGitMetadataSnapshot) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for path, aSnapshot := range a {
+		bSnapshot, ok := b[path]
+		if !ok {
+			return false
+		}
+		if aSnapshot.Exists != bSnapshot.Exists || aSnapshot.Mode != bSnapshot.Mode || !bytes.Equal(aSnapshot.Data, bSnapshot.Data) {
+			return false
+		}
+	}
+	return true
+}
+
+func restoreImproveCodebaseGitMetadata(snapshots map[string]improveCodebaseGitMetadataSnapshot) error {
+	for _, path := range improveCodebaseGitMetadataSnapshotPaths(snapshots) {
+		snapshot := snapshots[path]
+		if !snapshot.Exists {
+			if err := os.RemoveAll(path); err != nil {
+				return fmt.Errorf("restore git metadata %s: %w", path, err)
+			}
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return fmt.Errorf("restore git metadata %s: %w", path, err)
+		}
+		if err := os.RemoveAll(path); err != nil {
+			return fmt.Errorf("restore git metadata %s: %w", path, err)
+		}
+		mode := snapshot.Mode
+		if mode == 0 {
+			mode = 0o644
+		}
+		if err := os.WriteFile(path, snapshot.Data, mode); err != nil {
+			return fmt.Errorf("restore git metadata %s: %w", path, err)
+		}
+	}
+	return nil
 }
 
 func improveCodebaseRefSnapshotEqual(a, b improveCodebaseRefSnapshot) bool {

@@ -206,6 +206,52 @@ func TestImproveCodebaseStep_RestoresDetachedHeadWhenAgentChecksOutSameCommitBra
 	}
 }
 
+func TestImproveCodebaseStep_RestoresAgentLocalGitConfigChanges(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	ag := &mockAgent{runFn: func(_ context.Context, _ agent.RunOpts) (*agent.Result, error) {
+		gitCmd(t, dir, "config", "--local", "core.fsmonitor", "agent-hook")
+		return &agent.Result{Output: []byte(`{"findings":[],"summary":"clear"}`)}, nil
+	}}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.ImproveCodebase.Mode = config.ImproveCodebaseModeAlways
+
+	_, err := (&ImproveCodebaseStep{}).Execute(sctx)
+	if err == nil {
+		t.Fatal("expected read-only violation")
+	}
+	if !strings.Contains(err.Error(), "modified the worktree") {
+		t.Fatalf("error = %v, want read-only violation", err)
+	}
+	if got, err := git.Run(context.Background(), dir, "config", "--local", "--get", "core.fsmonitor"); err == nil {
+		t.Fatalf("core.fsmonitor = %q, want unset", got)
+	}
+}
+
+func TestImproveCodebaseStep_RestoresAgentIndexFlags(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	ag := &mockAgent{runFn: func(_ context.Context, _ agent.RunOpts) (*agent.Result, error) {
+		gitCmd(t, dir, "update-index", "--skip-worktree", "feature.txt")
+		return &agent.Result{Output: []byte(`{"findings":[],"summary":"clear"}`)}, nil
+	}}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.ImproveCodebase.Mode = config.ImproveCodebaseModeAlways
+
+	_, err := (&ImproveCodebaseStep{}).Execute(sctx)
+	if err == nil {
+		t.Fatal("expected read-only violation")
+	}
+	if !strings.Contains(err.Error(), "modified the worktree") {
+		t.Fatalf("error = %v, want read-only violation", err)
+	}
+	if got := gitCmd(t, dir, "ls-files", "-v", "--", "feature.txt"); strings.HasPrefix(got, "S ") {
+		t.Fatalf("index flag = %q, want skip-worktree cleared", got)
+	}
+}
+
 func TestImproveCodebaseStep_CleansAgentIgnoredFiles(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
