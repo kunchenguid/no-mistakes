@@ -366,6 +366,12 @@ type legacyCheckRun struct {
 	CompletedAt string `json:"completed_at"`
 }
 
+type legacyCommitStatus struct {
+	Context   string `json:"context"`
+	State     string `json:"state"`
+	UpdatedAt string `json:"updated_at"`
+}
+
 func (h *Host) getChecksLegacyStructured(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 	headArgs := append([]string{"pr", "view", pr.Number}, h.repoArgs()...)
 	headArgs = append(headArgs, "--json", "headRefOid")
@@ -401,24 +407,19 @@ func (h *Host) getChecksLegacyStructured(ctx context.Context, pr *scm.PR) ([]scm
 	}
 
 	endpoint = fmt.Sprintf("repos/%s/commits/%s/status", h.apiRepoSlug(), head.OID)
-	statusOut, err := h.cmd(ctx, "gh", h.apiArgs(endpoint)...).Output()
+	statusOut, err := h.cmd(ctx, "gh", h.apiArgs(endpoint, "--paginate")...).Output()
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, ctxErr
 		}
 		return nil, fmt.Errorf("gh api commit status: %w", err)
 	}
-	var statusPayload struct {
-		Statuses []struct {
-			Context string `json:"context"`
-			State   string `json:"state"`
-		} `json:"statuses"`
-	}
-	if err := json.Unmarshal(statusOut, &statusPayload); err != nil {
-		return nil, fmt.Errorf("parse commit statuses: %w", err)
+	statuses, err := decodeLegacyCommitStatuses(statusOut)
+	if err != nil {
+		return nil, err
 	}
 
-	checks := make([]scm.Check, 0, len(runs)+len(statusPayload.Statuses))
+	checks := make([]scm.Check, 0, len(runs)+len(statuses))
 	for _, run := range runs {
 		checks = append(checks, scm.Check{
 			Name:        run.Name,
@@ -426,10 +427,11 @@ func (h *Host) getChecksLegacyStructured(ctx context.Context, pr *scm.PR) ([]scm
 			CompletedAt: parseGitHubTime(run.CompletedAt),
 		})
 	}
-	for _, status := range statusPayload.Statuses {
+	for _, status := range statuses {
 		checks = append(checks, scm.Check{
-			Name:   status.Context,
-			Bucket: normalizeCheckBucket("", status.State),
+			Name:        status.Context,
+			Bucket:      normalizeCheckBucket("", status.State),
+			CompletedAt: parseGitHubTime(status.UpdatedAt),
 		})
 	}
 	return checks, nil
@@ -472,6 +474,29 @@ func decodeLegacyCheckRuns(out []byte) ([]legacyCheckRun, error) {
 		}
 		seenPayload = true
 		runs = append(runs, payload.CheckRuns...)
+	}
+}
+
+func decodeLegacyCommitStatuses(out []byte) ([]legacyCommitStatus, error) {
+	decoder := json.NewDecoder(bytes.NewReader(out))
+	var statuses []legacyCommitStatus
+	seenPayload := false
+	for {
+		var payload struct {
+			Statuses []legacyCommitStatus `json:"statuses"`
+		}
+		err := decoder.Decode(&payload)
+		if errors.Is(err, io.EOF) {
+			if !seenPayload {
+				return nil, errors.New("parse commit statuses: empty response")
+			}
+			return statuses, nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf("parse commit statuses: %w", err)
+		}
+		seenPayload = true
+		statuses = append(statuses, payload.Statuses...)
 	}
 }
 

@@ -363,8 +363,9 @@ func TestGetChecksLegacyUsesStructuredAPIsWhenRepoKnown(t *testing.T) {
 		"gh api repos/test/repo/commits/abc123/check-runs --paginate": {
 			stdout: page1 + "\n" + page2 + "\n",
 		},
-		"gh api repos/test/repo/commits/abc123/status": {
-			stdout: `{"statuses":[{"context":"coverage","state":"success"},{"context":"external","state":"error"},{"context":"release","state":"pending"}]}` + "\n",
+		"gh api repos/test/repo/commits/abc123/status --paginate": {
+			stdout: `{"statuses":[{"context":"coverage","state":"success","updated_at":"2026-04-24T04:17:00Z"},{"context":"external","state":"error","updated_at":"2026-04-24T04:18:00Z"}]}` + "\n" +
+				`{"statuses":[{"context":"release","state":"pending","updated_at":"2026-04-24T04:19:00Z"}]}` + "\n",
 		},
 	}), nil, "", "test/repo")
 
@@ -376,9 +377,9 @@ func TestGetChecksLegacyUsesStructuredAPIsWhenRepoKnown(t *testing.T) {
 		{Name: "build", Bucket: scm.CheckBucketPass, CompletedAt: time.Date(2026, 4, 24, 4, 15, 0, 0, time.UTC)},
 		{Name: "deploy", Bucket: scm.CheckBucketCancel, CompletedAt: time.Date(2026, 4, 24, 4, 16, 0, 0, time.UTC)},
 		{Name: "test", Bucket: scm.CheckBucketPending},
-		{Name: "coverage", Bucket: scm.CheckBucketPass},
-		{Name: "external", Bucket: scm.CheckBucketFail},
-		{Name: "release", Bucket: scm.CheckBucketPending},
+		{Name: "coverage", Bucket: scm.CheckBucketPass, CompletedAt: time.Date(2026, 4, 24, 4, 17, 0, 0, time.UTC)},
+		{Name: "external", Bucket: scm.CheckBucketFail, CompletedAt: time.Date(2026, 4, 24, 4, 18, 0, 0, time.UTC)},
+		{Name: "release", Bucket: scm.CheckBucketPending, CompletedAt: time.Date(2026, 4, 24, 4, 19, 0, 0, time.UTC)},
 	}
 	if len(checks) != len(want) {
 		t.Fatalf("checks = %+v, want %+v", checks, want)
@@ -397,7 +398,7 @@ func TestGetChecksLegacyStructuredReturnsEmptyWhenNoChecksExist(t *testing.T) {
 		"gh pr checks 123 --repo test/repo --json name,state,bucket,completedAt": {stderr: "unknown flag: --json\n", code: 1},
 		"gh pr view 123 --repo test/repo --json headRefOid":                      {stdout: `{"headRefOid":"abc123"}` + "\n"},
 		"gh api repos/test/repo/commits/abc123/check-runs --paginate":            {stdout: `{"check_runs":[]}` + "\n"},
-		"gh api repos/test/repo/commits/abc123/status":                           {stdout: `{"statuses":[]}` + "\n"},
+		"gh api repos/test/repo/commits/abc123/status --paginate":                {stdout: `{"statuses":[]}` + "\n"},
 	}), nil, "", "test/repo")
 
 	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
