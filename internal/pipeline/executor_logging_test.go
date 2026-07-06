@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -78,6 +79,50 @@ func TestExecutor_LogCallbackTouchesStepActivity(t *testing.T) {
 	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
 	if err := exec.Execute(context.Background(), run, repo, workDir); err != nil {
 		t.Fatalf("execute: %v", err)
+	}
+}
+
+func TestExecutor_LogChunkThrottlesStepActivityWrites(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	counterDB, err := sql.Open("sqlite", p.DB()+"?_pragma=journal_mode(wal)&_pragma=foreign_keys(on)&_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatalf("open counter db: %v", err)
+	}
+	defer counterDB.Close()
+	if _, err := counterDB.Exec(`
+		CREATE TABLE step_activity_update_count (n INTEGER NOT NULL);
+		INSERT INTO step_activity_update_count (n) VALUES (0);
+		CREATE TRIGGER count_step_activity_update AFTER UPDATE OF last_activity_at, last_activity ON step_results
+		BEGIN
+			UPDATE step_activity_update_count SET n = n + 1;
+		END;
+	`); err != nil {
+		t.Fatalf("install activity counter: %v", err)
+	}
+
+	step := &adaptiveCallStep{
+		name: types.StepReview,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			for i := 0; i < 100; i++ {
+				sctx.LogChunk(fmt.Sprintf("delta-%03d ", i))
+			}
+			return &StepOutcome{ExitCode: 0}, nil
+		},
+	}
+
+	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
+	if err := exec.Execute(context.Background(), run, repo, workDir); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	var updates int
+	if err := counterDB.QueryRow(`SELECT n FROM step_activity_update_count`).Scan(&updates); err != nil {
+		t.Fatalf("read activity update count: %v", err)
+	}
+	if updates > 5 {
+		t.Fatalf("step activity updates = %d, want throttled count <= 5", updates)
 	}
 }
 

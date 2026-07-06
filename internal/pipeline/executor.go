@@ -212,8 +212,14 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	if run != nil && run.Intent != nil {
 		userIntent = *run.Intent
 	}
-	touchLogActivity := func(text string) {
+	lastLogActivityAt := time.Time{}
+	touchLogActivity := func(text string, force bool) {
 		if activity := stepActivityFromLog(text); activity != "" {
+			now := time.Now()
+			if !force && !lastLogActivityAt.IsZero() && now.Sub(lastLogActivityAt) < stepActivityThrottleInterval {
+				return
+			}
+			lastLogActivityAt = now
 			if dbErr := e.db.TouchStepActivity(sr.ID, activity); dbErr != nil {
 				slog.Warn("failed to touch step activity in db", "step", stepName, "error", dbErr)
 			}
@@ -230,7 +236,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		}
 		e.emitLogChunk(run, repo, stepName, text)
 		fmt.Fprint(logFile, text)
-		touchLogActivity(text)
+		touchLogActivity(text, true)
 	}
 	writeLogChunk := func(text string) {
 		if text != "" {
@@ -238,7 +244,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		}
 		e.emitLogChunk(run, repo, stepName, text)
 		fmt.Fprint(logFile, text)
-		touchLogActivity(text)
+		touchLogActivity(text, strings.Contains(text, "\n"))
 	}
 	onAgentLifecycle := func(event agent.LifecycleEvent) {
 		text := event.Message
@@ -280,7 +286,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		LogChunk:     writeLogChunk,
 		LogFile: func(text string) {
 			fmt.Fprintln(logFile, text)
-			touchLogActivity(text)
+			touchLogActivity(text, true)
 		},
 	}
 
@@ -303,7 +309,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			// stderr from a rejected push); without this the step log shows the
 			// work starting but never why it stopped.
 			fmt.Fprintf(logFile, "\nerror: %s\n", err.Error())
-			touchLogActivity("error: " + err.Error())
+			touchLogActivity("error: "+err.Error(), true)
 			if dbErr := e.db.FailStep(sr.ID, err.Error(), durationMS); dbErr != nil {
 				slog.Warn("failed to mark step as failed in db", "step", stepName, "error", dbErr)
 			}
@@ -561,7 +567,10 @@ func (a *lifecycleAgent) Close() error {
 	return a.inner.Close()
 }
 
-const maxStepActivityText = 240
+const (
+	maxStepActivityText          = 240
+	stepActivityThrottleInterval = time.Second
+)
 
 func stepActivityFromLog(text string) string {
 	trimmed := strings.TrimSpace(text)
