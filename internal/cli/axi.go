@@ -53,16 +53,17 @@ func newAxiCmd() *cobra.Command {
 // axiEnv bundles the resources an axi subcommand needs. Most are DB-backed and
 // do not require the daemon; commands that mutate run state ensure it.
 type axiEnv struct {
-	p      *paths.Paths
-	d      *db.DB
-	repo   *db.Repo
-	cfg    *config.GlobalConfig
-	client *ipc.Client
+	p               *paths.Paths
+	d               *db.DB
+	repo            *db.Repo
+	cfg             *config.GlobalConfig
+	globalConfigErr error
+	client          *ipc.Client
 }
 
 type axiEnvOptions struct {
-	ensureDaemonConn    bool
-	requireGlobalConfig bool
+	ensureDaemonConn                       bool
+	deferGlobalConfigErrorForRunningDaemon bool
 }
 
 func (e *axiEnv) close() {
@@ -83,7 +84,7 @@ func openAxiEnv(ensureDaemonConn bool) (*axiEnv, error) {
 }
 
 func openAxiRunEnv() (*axiEnv, error) {
-	return openAxiEnvWithOptions(axiEnvOptions{ensureDaemonConn: true, requireGlobalConfig: true})
+	return openAxiEnvWithOptions(axiEnvOptions{ensureDaemonConn: true, deferGlobalConfigErrorForRunningDaemon: true})
 }
 
 func openAxiEnvWithOptions(opts axiEnvOptions) (*axiEnv, error) {
@@ -93,13 +94,19 @@ func openAxiEnvWithOptions(opts axiEnvOptions) (*axiEnv, error) {
 	}
 	globalCfg, err := config.LoadGlobal(p.ConfigFile())
 	if err != nil {
-		if opts.requireGlobalConfig {
+		if opts.deferGlobalConfigErrorForRunningDaemon {
+			alive, _ := daemon.IsRunning(p)
+			if !alive {
+				d.Close()
+				return nil, err
+			}
+		} else if opts.ensureDaemonConn {
 			d.Close()
 			return nil, err
 		}
 		globalCfg = config.DefaultGlobalConfig()
 	}
-	env := &axiEnv{p: p, d: d, cfg: globalCfg}
+	env := &axiEnv{p: p, d: d, cfg: globalCfg, globalConfigErr: err}
 	repo, err := findRepo(d)
 	if err != nil {
 		d.Close()

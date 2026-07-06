@@ -427,6 +427,18 @@ func TestActiveRunInfoForHeadRequiresMatchingHead(t *testing.T) {
 	}
 }
 
+func TestConfigErrorForFreshAxiRunAllowsReattach(t *testing.T) {
+	configErr := errors.New("parse global config: bad yaml")
+	env := &axiEnv{globalConfigErr: configErr}
+
+	if err := configErrorForFreshAxiRun(env, "run-1"); err != nil {
+		t.Fatalf("reattaching to an active run should not require global config: %v", err)
+	}
+	if err := configErrorForFreshAxiRun(env, ""); !errors.Is(err, configErr) {
+		t.Fatalf("fresh run config error = %v, want %v", err, configErr)
+	}
+}
+
 func TestRerunParamsIncludeSkipSteps(t *testing.T) {
 	params := rerunParams("repo-1", "feature/x", []types.StepName{types.StepReview}, "user goal")
 	if params.RepoID != "repo-1" || params.Branch != "feature/x" || params.Intent != "user goal" {
