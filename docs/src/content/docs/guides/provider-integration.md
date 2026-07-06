@@ -65,6 +65,7 @@ gh auth status
 
 `no-mistakes doctor` also checks for `gh` availability.
 For PR and workflow-run commands, no-mistakes passes the repository slug from the recorded upstream remote or PR URL to `gh`, so daemon-run commands do not depend on the daemon's current working directory.
+When `gh` predates v2.46 and does not support `gh pr checks --json`, no-mistakes falls back to GitHub's REST endpoints for check runs and commit statuses, including completion times used to recognize reruns.
 
 **What you get:**
 
