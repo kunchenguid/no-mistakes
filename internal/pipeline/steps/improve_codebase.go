@@ -25,11 +25,11 @@ type ImproveCodebaseStep struct{}
 func (s *ImproveCodebaseStep) Name() types.StepName { return types.StepImproveCodebase }
 
 type improveCodebaseChangedFile struct {
-	Path      string
-	OldPath   string
-	Status    string
-	Additions int
-	Deletions int
+	Path      string `json:"path"`
+	OldPath   string `json:"old_path,omitempty"`
+	Status    string `json:"status"`
+	Additions int    `json:"additions"`
+	Deletions int    `json:"deletions"`
 }
 
 type improveCodebaseDecision struct {
@@ -74,6 +74,10 @@ func (s *ImproveCodebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.Ste
 	if err != nil {
 		return nil, err
 	}
+	changeSetSection, err := improveCodebaseChangeSetPromptSection(files)
+	if err != nil {
+		return nil, err
+	}
 	defer cleanupAuditDir()
 	historySection := executionContextPromptSection() + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx)
 	prompt := fmt.Sprintf(
@@ -87,6 +91,9 @@ Context:
 - default branch: %s
 - trigger reason: %s
 - ignore patterns: %s
+
+Changed file diff stats:
+%s
 
 Task:
 - Use the installed local improve-codebase skill when available.
@@ -115,6 +122,7 @@ Rules:
 		sctx.Repo.DefaultBranch,
 		decision.Reason,
 		formatImproveCodebaseIgnorePatterns(sctx.Config),
+		changeSetSection,
 		historySection,
 	)
 
@@ -175,6 +183,14 @@ func prepareImproveCodebaseAuditCheckout(sctx *pipeline.StepContext) (string, fu
 		return "", nil, fmt.Errorf("clean improve-codebase audit checkout: %w", err)
 	}
 	return auditDir, cleanup, nil
+}
+
+func improveCodebaseChangeSetPromptSection(files []improveCodebaseChangedFile) (string, error) {
+	data, err := json.MarshalIndent(files, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("format improve-codebase changed files: %w", err)
+	}
+	return string(data), nil
 }
 
 func normalizeImproveCodebaseAuditActions(findings *Findings) {

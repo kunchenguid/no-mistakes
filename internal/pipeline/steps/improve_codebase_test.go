@@ -95,6 +95,58 @@ func TestImproveCodebaseStep_PromptIncludesIgnorePatterns(t *testing.T) {
 	}
 }
 
+func TestImproveCodebaseStep_PromptIncludesChangedFileDiffStats(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	lines := []string{"package service", ""}
+	for i := 0; i < 40; i++ {
+		lines = append(lines, fmt.Sprintf("// stable line %02d", i))
+	}
+	lines = append(lines, `func serviceName() string { return "old" }`)
+	mustWriteFile(t, filepath.Join(dir, "internal", "service", "old.go"), strings.Join(lines, "\n")+"\n")
+	mustWriteFile(t, filepath.Join(dir, "README.md"), "hello\n")
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "base")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	gitCmd(t, dir, "mv", "internal/service/old.go", "internal/service/new.go")
+	lines[len(lines)-1] = `func serviceName() string { return "new" }`
+	lines = append(lines, `func extra() string { return "extra" }`)
+	mustWriteFile(t, filepath.Join(dir, "internal", "service", "new.go"), strings.Join(lines, "\n")+"\n")
+	mustWriteFile(t, filepath.Join(dir, "README.md"), "hello\nworld\n")
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "rename and edit")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	findingsJSON, _ := json.Marshal(Findings{Summary: "clear"})
+	ag := &mockAgent{runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		for _, want := range []string{
+			"Changed file diff stats:",
+			`"path": "internal/service/new.go"`,
+			`"old_path": "internal/service/old.go"`,
+			`"status": "R`,
+			`"additions": 2`,
+			`"deletions": 1`,
+			`"path": "README.md"`,
+		} {
+			if !strings.Contains(opts.Prompt, want) {
+				t.Fatalf("prompt missing %q:\n%s", want, opts.Prompt)
+			}
+		}
+		return &agent.Result{Output: findingsJSON}, nil
+	}}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.ImproveCodebase.Mode = config.ImproveCodebaseModeAlways
+
+	if _, err := (&ImproveCodebaseStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestImproveCodebaseStep_RunsAgentInDisposableCheckout(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
