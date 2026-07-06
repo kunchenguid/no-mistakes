@@ -24,6 +24,7 @@ func TestDefaultUsesDotEnvInDevBuildWhenEnvMissing(t *testing.T) {
 
 	t.Setenv(umamiHostEnv, "")
 	t.Setenv(umamiWebsiteIDEnv, "")
+	t.Setenv(telemetryEnv, "")
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".env")
@@ -73,6 +74,7 @@ func TestDefaultPrefersEnvVarsOverDotEnvAndEmbeddedConfig(t *testing.T) {
 
 	t.Setenv(umamiHostEnv, "https://env.example")
 	t.Setenv(umamiWebsiteIDEnv, "website-from-env")
+	t.Setenv(telemetryEnv, "")
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".env")
@@ -122,6 +124,7 @@ func TestDefaultUsesEmbeddedTelemetryHostAndWebsiteID(t *testing.T) {
 
 	t.Setenv(umamiHostEnv, "")
 	t.Setenv(umamiWebsiteIDEnv, "")
+	t.Setenv(telemetryEnv, "")
 
 	sink := Default()
 	client, ok := sink.(*Client)
@@ -155,6 +158,7 @@ func TestDefaultUsesSelfHostedHostWhenHostConfigMissing(t *testing.T) {
 
 	t.Setenv(umamiHostEnv, "")
 	t.Setenv(umamiWebsiteIDEnv, "")
+	t.Setenv(telemetryEnv, "")
 
 	sink := Default()
 	client, ok := sink.(*Client)
