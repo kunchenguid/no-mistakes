@@ -52,7 +52,7 @@ Safest local verification sequence after non-trivial changes:
 - `cmd/no-mistakes`: process entrypoint
 - `internal/cli`: cobra commands and CLI wiring
 - `internal/daemon`: background daemon and run management
-- `internal/pipeline` and `internal/pipeline/steps`: orchestration plus review/test/lint/push/PR/CI steps
+- `internal/pipeline` and `internal/pipeline/steps`: orchestration plus review/improve-codebase/test/document/lint/push/PR/CI steps
 - `internal/agent`: Claude, Codex, Rovo Dev, OpenCode, Pi, Copilot, and ACP/acpx integrations
 - `internal/git`, `internal/ipc`, `internal/config`, `internal/db`, `internal/paths`, `internal/types`: shared infrastructure
 - `internal/tui`: terminal UI
@@ -156,7 +156,7 @@ Safest local verification sequence after non-trivial changes:
 
 - The daemon runs `commands.*` from `.no-mistakes.yaml` verbatim via `sh -c`, and `agent` selects which process launches (incl. `acp:` targets) with the maintainer's credentials. To prevent supply-chain RCE, the **code-executing selection fields (`commands.{test,lint,format}` and `agent`)** are loaded from the trusted default branch, never from the pushed SHA. See `internal/daemon/manager.go` `startRun` + `loadTrustedRepoConfig`, and `config.EffectiveRepoConfig`.
 - `startRun` fetches the default branch, resolves it to an exact commit SHA (`git.ResolveRef`), and `loadTrustedRepoConfig` reads `.no-mistakes.yaml` at that **pinned SHA** (not the `origin/<defaultBranch>` ref name). On fetch failure (or if the ref does not resolve) the trusted SHA is empty → `loadTrustedRepoConfig` returns nil → `EffectiveRepoConfig` forces empty `commands`/`agent`. This fails closed: a stale `origin/<default>` ref left in the shared bare repo by a previous run cannot serve a value the live default branch removed. Regression tests: `TestLoadTrustedRepoConfig_FailClosedOnFetchFailure`, `TestLoadTrustedRepoConfig_PinnedSHAReadsFreshDefaultBranch`.
-- Non-executing fields (`ignore_patterns`, `auto_fix`, `intent`, `test`) are still read from the pushed branch.
+- Non-executing per-change fields (`ignore_patterns`, `auto_fix`, `intent`, `test`) are still read from the pushed branch. Policy fields such as `improve_codebase.mode` are read from the trusted default-branch copy when present.
 - `allow_repo_commands` is **per-repo, read from the trusted default-branch copy of `.no-mistakes.yaml`** (declared on `RepoConfig`), never the global config and never the pushed SHA. It defaults `false`; when `true` the maintainer has opted in to honoring the pushed branch's `commands` and `agent` wholesale. A contributor cannot self-enable it from a pushed branch. When changing this logic, keep `commands`/`agent` locked to the default branch and update the e2e test `TestRepoConfigCommandsFromDefaultBranch` (incl. the `pushed_branch_cannot_self_enable` subtest).
 - The e2e harness models a trusted single-developer environment, so it commits `allow_repo_commands: true` to the default-branch `.no-mistakes.yaml` via `SetupOpts.AllowRepoCommands`; security tests pass `false` to exercise the secure default.
 

@@ -90,7 +90,7 @@ no-mistakes eject
 ```
 
 Removes the `no-mistakes` remote, deletes the bare repo, cleans up worktrees, and removes the database record.
-It does not remove repo-local agent skill files created by `no-mistakes init`.
+It does not remove user-level agent skills installed by `no-mistakes init`.
 
 ## Uninstall
 

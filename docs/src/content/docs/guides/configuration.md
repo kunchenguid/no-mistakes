@@ -15,6 +15,7 @@ work. Config exists for the parts that genuinely vary by machine or repo:
 - where test evidence artifacts should be stored
 - how aggressive the auto-fix loop should be
 - how soon AXI should call an active step quiet
+- when the read-only improve-codebase structural gate should run
 - whether no-mistakes should infer intent from recent local agent transcripts
 
 Config is split across two files:
@@ -112,6 +113,10 @@ test:
   evidence:
     store_in_repo: false
     dir: .no-mistakes/evidence
+
+# Conditional read-only structural gate after review and before test.
+improve_codebase:
+  mode: auto  # auto | always | off
 ```
 
 See [Global Config Reference](/no-mistakes/reference/global-config/) for the full field listing.
@@ -160,6 +165,11 @@ test:
   evidence:
     store_in_repo: true
     dir: .no-mistakes/evidence
+
+# Repo policy for the improve-codebase structural gate.
+# Read from the trusted default-branch copy for gated runs.
+improve_codebase:
+  mode: auto
 ```
 
 See [Repo Config Reference](/no-mistakes/reference/repo-config/) for the full field listing.
@@ -174,6 +184,7 @@ See [Repo Config Reference](/no-mistakes/reference/repo-config/) for the full fi
 - `auto_fix` from the repo config overlays global auto_fix. Fields not set in the repo config fall through to the global default.
 - `intent` from the repo config overlays global intent settings. Fields not set in the repo config fall through to the global default, except `intent.disabled_readers`, which adds to globally disabled readers.
 - `test.evidence` from the repo config overlays global test evidence settings. Fields not set in the repo config fall through to the global default.
+- `improve_codebase.mode` from repo config overlays global mode, but gated runs read the repo value from the trusted default-branch `.no-mistakes.yaml`, not the pushed branch.
 - `commands` and `ignore_patterns` are repo-only fields.
 - `ci_timeout` and `auto_fix.ci` are the canonical keys; `babysit_timeout` and `auto_fix.babysit` are still accepted as legacy aliases.
 - If `commands.test` is set, the test step runs it first as the baseline; when user intent is available, the agent may still run afterward to gather evidence-oriented validation.

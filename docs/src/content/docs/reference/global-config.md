@@ -53,6 +53,9 @@ test:
   evidence:
     store_in_repo: false
     dir: .no-mistakes/evidence
+
+improve_codebase:
+  mode: auto
 ```
 
 ## Fields

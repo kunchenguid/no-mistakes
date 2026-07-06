@@ -53,7 +53,8 @@
             ▼
    ┌───────────────────────────────────────────────┐
    │  用完即弃的 worktree —— 你的工作原地不动          │
-   │  review → test → docs → lint → push → PR → CI │
+   │  review → improve-codebase → test             │
+   │  docs → lint → push → PR → CI                 │
    └───────────────────────────────────────────────┘
             │  每项检查变绿
             ▼
@@ -81,7 +82,7 @@ $ no-mistakes init
     repo  /Users/you/src/my-repo
     gate  no-mistakes → /Users/you/.no-mistakes/repos/abc123def456.git
   remote  git@github.com:you/my-repo.git
-   skill  /no-mistakes installed for agents at user level
+   skill  /no-mistakes + improve-codebase installed for agents at user level
 
   Push through the gate with:
   git push no-mistakes <branch>
@@ -114,7 +115,7 @@ $ no-mistakes
 - **`no-mistakes`** —— TUI。改完之后运行它（无需先提交），向导会带你建分支、提交、推过网关，然后挂到这次运行上。`no-mistakes -y` 会把这一切自动做完。
 - **`/no-mistakes`** —— agent skill。用 `/no-mistakes <task>` 让编码 agent 完成一个任务再过网关，或用裸 `/no-mistakes` 为已提交的工作过网关。它跑完流水线、让流水线应用安全的修复，并在任何需要人来拍板的地方停下来问你。
 
-`no-mistakes init` 会为 Claude Code 及其他 agent 安装 `/no-mistakes` skill。底层上这个 skill 驱动的是 `no-mistakes axi` —— 同一套审批流程的非交互式 TOON 接口。
+`no-mistakes init` 会为 Claude Code 及其他 agent 安装 `/no-mistakes` skill 及其捆绑的 `improve-codebase` 依赖。底层上这个 skill 驱动的是 `no-mistakes axi` —— 同一套审批流程的非交互式 TOON 接口。
 
 完整的首次运行走查见[快速上手](https://kunchenguid.github.io/no-mistakes/start-here/quick-start/)。
 
