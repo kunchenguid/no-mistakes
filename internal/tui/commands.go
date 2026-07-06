@@ -74,13 +74,13 @@ func (m Model) rerunCmd(requestID uint64) tea.Cmd {
 }
 
 // maybeAutoApproveCmd auto-resolves the current awaiting step when yolo mode is
-// on, returning nil otherwise. Yolo means "agree to fix every finding": a gate
-// whose findings are actionable gets a fix request (all findings selected),
-// while a gate with only non-actionable (no-op) findings - or none at all - is
-// approved as-is. A step is fixed at most once; the fix re-runs the step and
-// re-enters the gate as a fix_review, which yolo then approves so the pipeline
-// runs to completion without looping. Each terminal action fires once so
-// duplicate events while waiting for the round-trip don't resend it.
+// on, returning nil otherwise. Yolo means "agree to fix every fixable finding":
+// a fixable gate whose findings are actionable gets a fix request (all findings
+// selected), while a gate with only non-actionable (no-op) findings - or none
+// at all - is approved as-is. A step is fixed at most once; the fix re-runs the
+// step and re-enters the gate as a fix_review, which yolo then approves so the
+// pipeline runs to completion without looping. Each terminal action fires once
+// so duplicate events while waiting for the round-trip don't resend it.
 func (m Model) maybeAutoApproveCmd() tea.Cmd {
 	if !m.yoloMode {
 		return nil
@@ -89,7 +89,7 @@ func (m Model) maybeAutoApproveCmd() tea.Cmd {
 	if step == nil || m.yoloApproved[step.StepName] {
 		return nil
 	}
-	if step.Status != types.StepStatusFixReview && !m.yoloFixed[step.StepName] && m.stepHasActionableFindings(step.StepName) {
+	if m.shouldYoloFixStep(step) {
 		m.yoloFixed[step.StepName] = true
 		m.resetFindingSelection(step.StepName)
 		return m.respondCmd(types.ActionFix)
@@ -98,12 +98,23 @@ func (m Model) maybeAutoApproveCmd() tea.Cmd {
 	return m.respondCmd(types.ActionApprove)
 }
 
+func (m Model) shouldYoloFixStep(step *ipc.StepResultInfo) bool {
+	return step != nil &&
+		step.StepName != types.StepImproveCodebase &&
+		step.Status != types.StepStatusFixReview &&
+		!m.yoloFixed[step.StepName] &&
+		m.stepHasActionableFindings(step.StepName)
+}
+
 func (m Model) respondCmd(action types.ApprovalAction) tea.Cmd {
 	step := awaitingStep(m.steps)
 	if step == nil {
 		return nil
 	}
 	if action == types.ActionFix {
+		if !canFixStep(step.StepName) {
+			return nil
+		}
 		ids := m.selectedFindingIDs(step.StepName)
 		userAdded := m.selectedUserAddedFindings(step.StepName)
 		if len(ids) == 0 && len(userAdded) == 0 && len(m.findingItems(step.StepName)) > 0 {

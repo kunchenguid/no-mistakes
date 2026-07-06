@@ -13,7 +13,7 @@ import (
 // TestExecutor_StepLifecycleEvents verifies the executor emits step_started
 // and step_completed IPC events for every step in order. The broader
 // happy-path orchestration (DB persistence, run/step status transitions,
-// timestamp + duration recording across all 8 real steps) is exercised by
+// timestamp + duration recording across the real pipeline steps) is exercised by
 // the e2e journey suite (internal/e2e), so this test focuses solely on
 // the IPC event contract that the TUI subscribes to.
 func TestExecutor_StepLifecycleEvents(t *testing.T) {

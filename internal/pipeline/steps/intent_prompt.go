@@ -15,7 +15,7 @@ import (
 // specifically for this prompt: it's the LLM-summarized output of an
 // agent conversation, which may have echoed adversarial text from the
 // transcript even after the summarizer's own filters. Because every
-// downstream step (review, test, lint, document, pr) embeds this text
+// downstream step (review, improve-codebase, test, lint, document, pr) embeds this text
 // verbatim into its agent prompt, we treat it as untrusted data:
 //
 //  1. RedactSecrets replaces likely credentials before they reach a

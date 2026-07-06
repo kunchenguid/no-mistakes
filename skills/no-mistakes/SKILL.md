@@ -1,13 +1,13 @@
 ---
 name: no-mistakes
-description: Validate your code changes through the no-mistakes pipeline - automated code review, tests, lint, docs, push, PR, and CI - before they reach the configured push target. Use when the user asks to run no-mistakes, gate or ship or validate their changes, push safely, asks you to do a task and then validate it, or invokes /no-mistakes.
+description: Validate your code changes through the no-mistakes pipeline - automated code review, improve-codebase structural gating, tests, lint, docs, push, PR, and CI - before they reach the configured push target. Use when the user asks to run no-mistakes, gate or ship or validate their changes, push safely, asks you to do a task and then validate it, or invokes /no-mistakes.
 user-invocable: true
 ---
 
 # no-mistakes
 
 `no-mistakes` is a local gate that validates your code changes through a pipeline
-(intent, rebase, review, test, document, lint, push, PR, CI) before they reach
+(intent, rebase, review, improve-codebase, test, document, lint, push, PR, CI) before they reach
 the configured push target. You drive it through the `no-mistakes axi` command family, which prints
 machine-readable [TOON](https://toonformat.dev) to stdout and progress to stderr.
 
@@ -88,8 +88,8 @@ Run the pipeline and decide on its findings as they come up:
    ```sh
    no-mistakes axi run --intent "<what the user set out to accomplish>"
    ```
-   `axi run` and every `axi respond` block synchronously - the review, test,
-   and CI steps can each take **several minutes**, so a single call may not
+   `axi run` and every `axi respond` block synchronously - the review,
+   improve-codebase, test, and CI steps can each take **several minutes**, so a single call may not
    return for a while. That is normal; allow a long timeout and do not cancel
    or re-issue the command because it seems slow. To check progress without
    disturbing the run, use `no-mistakes axi status` from a separate call.
@@ -119,6 +119,14 @@ Run the pipeline and decide on its findings as they come up:
      touches product behavior. This is a call only the user can make - see
      [Escalate `ask-user` findings](#escalate-ask-user-findings) below.
 
+   The improve-codebase step is a read-only structural gate that runs conditionally
+   after review when the change-set looks structurally risky, or when
+   `improve_codebase.mode: always` is configured. It can be skipped with
+   `--skip=improve-codebase`. It is audit-only: approve or skip its
+   findings; do not respond with `--action fix`. Repo
+   `improve_codebase.mode` is trusted default-branch policy, so a pushed
+   branch cannot disable the gate for the same run.
+
    **Review auto-fix is disabled by default** (`auto_fix.review: 0`; a repo
    or global `auto_fix.review > 0` override re-enables it), so blocking and
    ask-user review findings park for your decision rather than being silently
@@ -130,7 +138,7 @@ Run the pipeline and decide on its findings as they come up:
    # accept the step as-is and continue
    no-mistakes axi respond --action approve
 
-   # have the pipeline fix specific findings, then continue
+   # have the pipeline fix specific findings, then continue (fixable steps only)
    no-mistakes axi respond --action fix --findings <id1,id2> --instructions "<optional guidance>"
 
    # skip this step
@@ -212,7 +220,8 @@ review them.
 
 A gate whose findings are all `auto-fix` or `no-op` is safe to drive on your
 own judgment: respond with `--action fix` or `--action approve` as
-appropriate. But a finding marked
+appropriate. Improve-codebase is the exception: it is audit-only, so approve or
+skip its gate instead of fixing it. But a finding marked
 `ask-user` is a decision that belongs to the user, not you - the pipeline
 flagged it because it challenges their deliberate intent or changes product
 behavior. Do not approve, fix, or skip it on your own. Instead, stop and bring
@@ -230,10 +239,11 @@ drive every gate unattended, so under `--yes` you resolve `ask-user`
 findings automatically instead of stopping to ask.
 
 If you have clear consent to drive the run automatically, pass `--yes` to `axi run`
-or `axi respond`. It treats every actionable finding - `auto-fix` and
+or `axi respond`. It treats every actionable finding on fixable gates - `auto-fix` and
 `ask-user` alike - as consent to fix it, selects every current finding for one
 fix round, accepts the resulting fix review, and approves gates with only
-`no-op` findings. Only use it when the user has asked you to drive the whole
+`no-op` findings. Audit-only improve-codebase gates are approved, not fixed.
+Only use it when the user has asked you to drive the whole
 run without checking back.
 
 ## Inspecting state

@@ -398,6 +398,23 @@ func TestModel_View_HidesFixActionWhenNoFindingsSelected(t *testing.T) {
 	}
 }
 
+func TestModel_View_HidesFixActionForImproveCodebase(t *testing.T) {
+	run := testRun()
+	run.Steps[0].StepName = types.StepImproveCodebase
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	m := NewModel("/tmp/sock", nil, run)
+	m.stepFindings[types.StepImproveCodebase] = `{"findings":[{"id":"ic-1","severity":"warning","description":"structural risk"}],"summary":"1 issue"}`
+	m.ensureFindingSelection(types.StepImproveCodebase)
+
+	view := stripANSI(m.View())
+	if strings.Contains(view, "f fix") {
+		t.Fatal("expected fix action to be hidden for improve-codebase")
+	}
+	if !strings.Contains(view, "toggle") {
+		t.Fatal("expected selection controls to remain visible")
+	}
+}
+
 func TestModel_View_NoFindingsWhenNotAwaiting(t *testing.T) {
 	run := testRun()
 	m := NewModel("/tmp/sock", nil, run)

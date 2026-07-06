@@ -122,6 +122,56 @@ func TestExecutor_AwaitingAgentMarkerSetOnGateClearedOnRespond(t *testing.T) {
 	}
 }
 
+func TestExecutor_RejectsFixForNonFixableGate(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	callCount := 0
+	step := &adaptiveCallStep{
+		name: types.StepImproveCodebase,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			callCount++
+			return &StepOutcome{
+				NeedsApproval: true,
+				AutoFixable:   false,
+				DisableFix:    true,
+				Findings:      `{"findings":[{"id":"improve-codebase-1","severity":"warning","description":"audit-only finding","action":"ask-user"}],"summary":"1 issue"}`,
+			}, nil
+		},
+	}
+
+	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- exec.Execute(context.Background(), run, repo, workDir)
+	}()
+
+	waitForStepStatus(t, database, run.ID, types.StepImproveCodebase, types.StepStatusAwaitingApproval)
+
+	if err := exec.Respond(types.StepImproveCodebase, types.ActionFix, []string{"improve-codebase-1"}); err == nil {
+		t.Fatal("expected fix response to be rejected for non-fixable gate")
+	}
+	if callCount != 1 {
+		t.Fatalf("step call count = %d, want 1 before approval", callCount)
+	}
+	if err := exec.Respond(types.StepImproveCodebase, types.ActionApprove, nil); err != nil {
+		t.Fatalf("approve after rejected fix: %v", err)
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("expected no error after approval, got: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("executor timed out")
+	}
+	if callCount != 1 {
+		t.Fatalf("step call count = %d, want 1", callCount)
+	}
+}
+
 func TestExecutor_TracksApprovalAndUserFixTelemetry(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir := t.TempDir()

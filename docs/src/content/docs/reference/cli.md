@@ -9,7 +9,7 @@ Attach to the active pipeline run for the current branch when one exists. If non
 
 ```sh
 no-mistakes
-no-mistakes --skip test,lint
+no-mistakes --skip improve-codebase,test,lint
 ```
 
 | Flag | Type | Default | Description |
@@ -19,7 +19,7 @@ no-mistakes --skip test,lint
 
 Unlike `no-mistakes attach`, bare `no-mistakes` only auto-attaches to an active run on the current branch.
 `--skip` only applies when bare `no-mistakes` starts a new pipeline run through the wizard; it does not skip a step on an already-active run.
-Valid step names are `intent`, `rebase`, `review`, `test`, `document`, `lint`, `push`, `pr`, and `ci`.
+Valid step names are `intent`, `rebase`, `review`, `improve-codebase`, `test`, `document`, `lint`, `push`, `pr`, and `ci`.
 
 ## no-mistakes init
 
@@ -34,7 +34,7 @@ no-mistakes init --fork-url git@github.com:you/my-repo.git
 |---|---|---|---|
 | `--fork-url` | `string` | (none) | GitHub fork remote URL to push branches to while opening PRs against `origin` |
 
-Creates or refreshes a local bare repo, installs the post-receive hook, best-effort isolates the gate repo's hook path from shared git config changes when Git supports `config --worktree`, adds or repairs the `no-mistakes` git remote, detects the default branch, records or updates the repo in SQLite, installs the `/no-mistakes` agent skill at user level into `~/.claude/skills/no-mistakes/SKILL.md` and `~/.agents/skills/no-mistakes/SKILL.md`, and ensures the daemon is running, installing the managed service when available and falling back to a detached daemon otherwise.
+Creates or refreshes a local bare repo, installs the post-receive hook, best-effort isolates the gate repo's hook path from shared git config changes when Git supports `config --worktree`, adds or repairs the `no-mistakes` git remote, detects the default branch, records or updates the repo in SQLite, installs the `/no-mistakes` agent skill and bundled `improve-codebase` dependency at user level into `~/.claude/skills` and `~/.agents/skills`, and ensures the daemon is running, installing the managed service when available and falling back to a detached daemon otherwise.
 `init` writes no skill files into the repo; the user-level copies cover every supported agent (`~/.claude/skills` for Claude Code, `~/.agents/skills` for Codex, OpenCode, Rovo Dev, and Pi) across all repos.
 If the home `.claude` links to `.agents`, `.claude/skills` links to `.agents/skills`, or the reverse, `init` follows that layout and still makes the skill readable from both logical paths.
 If the repo still contains a vendored skill copy written by an older no-mistakes version, `init` leaves it untouched and prints a notice that it is no longer needed and can be removed.
@@ -81,6 +81,7 @@ An active run on another branch does not block starting validation for the curre
 ```sh
 no-mistakes axi run --intent "the user's goal"
 no-mistakes axi run --intent "the user's goal" --skip test,lint
+no-mistakes axi run --intent "the user's goal" --skip improve-codebase
 no-mistakes axi run --intent "the user's goal" --yes
 ```
 
@@ -96,7 +97,8 @@ Err on the side of completeness: include the goal, important decisions and trade
 When starting a new run, `axi run` refuses the default branch and uncommitted working trees with actionable errors instead of auto-branching or auto-committing.
 Reattaching to an in-flight run does not require `--intent`.
 Reattaching to an in-flight run can proceed while the daemon is already running even if the global config file has become invalid, but starting a fresh run still requires valid global config.
-With `--yes`, `axi run` treats both `action: auto-fix` and `action: ask-user` findings as standing consent for the pipeline to fix them by selecting every finding, then accepts the resulting fix review.
+With `--yes`, `axi run` treats both `action: auto-fix` and `action: ask-user` findings on fixable gates as standing consent for the pipeline to fix them by selecting every finding, then accepts the resulting fix review.
+Audit-only improve-codebase gates are approved instead of fixed.
 Gates with no findings or only `action: no-op` findings are approved as-is, and each step is fixed at most once so unresolved findings do not loop forever.
 Without `--yes`, an agent driving `axi run` should stop when a gate contains `action: ask-user` findings and relay each finding's ID, file, and full description to the user before responding.
 Review gates include a `note` field reminding agents that `auto_fix.review` defaults to `0`, so blocking and ask-user review findings park for a decision unless configuration explicitly opts back into review auto-fix.
@@ -120,6 +122,8 @@ no-mistakes axi respond --action fix --findings F1,F2 --instructions "optional g
 no-mistakes axi respond --action fix --add-finding '{"description":"...","action":"auto-fix"}'
 no-mistakes axi respond --action skip
 ```
+
+`--action fix` is rejected for audit-only gates such as improve-codebase; approve or skip those findings instead.
 
 | Flag | Type | Default | Description |
 |---|---|---|---|
@@ -161,9 +165,9 @@ For older active runs with no recorded activity timestamp, AXI falls back to the
 Show the log output of one pipeline step.
 
 ```sh
-no-mistakes axi logs --step review
-no-mistakes axi logs --step review --full
-no-mistakes axi logs --step review --run <id>
+no-mistakes axi logs --step improve-codebase
+no-mistakes axi logs --step improve-codebase --full
+no-mistakes axi logs --step improve-codebase --run <id>
 ```
 
 | Flag | Type | Default | Description |

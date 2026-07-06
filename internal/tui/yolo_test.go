@@ -148,6 +148,33 @@ func TestModel_Yolo_FixesActionableFindings(t *testing.T) {
 	}
 }
 
+func TestModel_Yolo_ApprovesImproveCodebaseFindings(t *testing.T) {
+	run := testRun()
+	run.Steps[0].StepName = types.StepImproveCodebase
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	fj := `{"findings":[{"id":"improve-codebase-1","severity":"warning","description":"structural risk","action":"ask-user"}],"summary":"1 issue"}`
+	run.Steps[0].FindingsJSON = &fj
+	m := NewModel("/tmp/sock", nil, run)
+	m.yoloMode = true
+
+	if m.shouldYoloFixStep(&run.Steps[0]) {
+		t.Fatal("improve-codebase gate should be approved by yolo, not fixed")
+	}
+}
+
+func TestModel_RespondFixBlockedForImproveCodebase(t *testing.T) {
+	run := testRun()
+	run.Steps[0].StepName = types.StepImproveCodebase
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	m := NewModel("/tmp/sock", nil, run)
+	m.stepFindings[types.StepImproveCodebase] = `{"findings":[{"id":"ic-1","severity":"warning","description":"structural risk"}],"summary":"1 issue"}`
+	m.ensureFindingSelection(types.StepImproveCodebase)
+
+	if cmd := m.respondCmd(types.ActionFix); cmd != nil {
+		t.Fatal("expected improve-codebase fix response to be blocked")
+	}
+}
+
 func TestModel_Yolo_FixesAllActionableFindingsDespiteManualDeselection(t *testing.T) {
 	sock, client, snapshot := captureRespond(t)
 

@@ -6,11 +6,11 @@ description: Reference for each step in the validation pipeline.
 This is the per-step reference. For the overview and rationale, see [Pipeline](/no-mistakes/concepts/pipeline/). For the fix loop, see [Auto-Fix Loop](/no-mistakes/concepts/auto-fix/).
 
 ```
-intent → rebase → review → test → document → lint → push → pr → ci
+intent → rebase → review → improve-codebase → test → document → lint → push → pr → ci
 ```
 
 Each step can produce findings, request approval, trigger auto-fix, or apply safe fixes during its own pass. Steps that encounter fatal errors stop the pipeline. Steps can also be pre-skipped when starting a run, skipped by the user, or skipped automatically by the pipeline.
-In the TUI, yolo mode is an explicit override that auto-resolves paused steps: `auto-fix` and `ask-user` findings are fixed once with every finding selected, fix-review gates are approved, and gates with only `no-op` findings are approved as-is.
+In the TUI, yolo mode is an explicit override that auto-resolves paused steps: fixable `auto-fix` and `ask-user` findings are fixed once with every finding selected, fix-review gates are approved, audit-only improve-codebase gates are approved, and gates with only `no-op` findings are approved as-is.
 Every pipeline agent invocation is prompt-steered to keep intentional writes inside the run worktree and avoid mutating system state outside it.
 This is a soft boundary, not OS-level sandbox enforcement.
 The steering still allows requested test evidence under the managed temporary `no-mistakes-evidence` directory or the configured in-repo evidence directory, plus incidental temp or cache writes from normal development tools.
@@ -19,7 +19,7 @@ Configured shell commands and one-shot agent subprocesses are scoped to their st
 ## Intent
 
 Uses agent-supplied intent when a run provides it, otherwise infers the author's intent from recent local Claude Code, Codex, OpenCode, Rovo Dev, Pi, or GitHub Copilot CLI transcripts.
-This is best-effort context, and when available it is included in rebase fixes, review checks and fixes, test detection, evidence validation, and fixes, documentation checks and fixes, lint detection and fixes, CI auto-fixes, and PR drafting.
+This is best-effort context, and when available it is included in rebase fixes, review checks and fixes, improve-codebase structural gating, test detection, evidence validation, and fixes, documentation checks and fixes, lint detection and fixes, CI auto-fixes, and PR drafting.
 
 **Behavior:**
 - Uses run-supplied intent verbatim and skips transcript-based inference, even when `intent.enabled` is false
@@ -70,6 +70,25 @@ AI code review of your diff.
 **Approval:** required if any finding has severity `error` or `warning`. Findings with `action: ask-user` pause for approval instead of entering the normal auto-fix loop. This is for findings that challenge the author's intent, not routine correctness, reliability, or security fixes that may need to re-add a small amount of deleted logic. With the default `auto_fix.review: 0`, blocking review findings park for approval even when their action is `auto-fix`; setting repo or global `auto_fix.review` above `0` re-enables the automatic review fix loop for eligible `auto-fix` findings. Findings with `action: no-op` are informational only.
 
 **Auto-fix:** the agent receives the selected previous findings plus any per-finding user notes, any selected user-authored findings from the TUI or AXI interface, and a sanitized history of prior rounds for that step, including earlier fix summaries and which findings the user left unselected. Follow-up review passes use that history to avoid re-reporting user-ignored findings unless the code now has a materially different problem. Fix commits use `no-mistakes(review): <summary>`.
+
+**Default auto-fix limit:** `0`.
+
+## Improve Codebase
+
+Runs a read-only structural/change-set gate after review and before tests.
+
+**Behavior:**
+- Defaults to `improve_codebase.mode: auto`.
+- In `auto` mode, skips small isolated changes and runs when the change-set has structural risk signals such as cross-directory moves, high-risk config or workflow changes, public-surface/boundary files, many source files, or a large diff.
+- Set `improve_codebase.mode: always` in global or trusted default-branch repo config to run it for every change-set.
+- Set `improve_codebase.mode: off` in global or trusted default-branch repo config to disable it.
+- Asks the configured agent to use the local `improve-codebase` skill as a narrowed, read-only audit of changed files, touched areas, callers, tests, configs, and module boundaries.
+- Does not edit files, create audit artifacts, run tests, format, or commit changes.
+- Returns structured findings with severity (`error`, `warning`, `info`), file location, description, and an `action` (`no-op` or `ask-user`).
+
+**Approval:** required if any finding has severity `error` or `warning`. Findings with `action: ask-user` pause for approval.
+
+**Auto-fix:** unsupported. The improve-codebase gate is audit-only; approve or skip its findings.
 
 **Default auto-fix limit:** `0`.
 
@@ -146,7 +165,7 @@ Pushes the validated branch to the configured push target.
 A remote branch can move without being rejected when all remote commits are already represented in the validated head, or when a run is intentionally rewriting history it already knew about.
 Any other out-of-band commit stops the push instead of being overwritten.
 
-This step never requires approval - it runs automatically after review, test, document, and lint pass.
+This step never requires approval - it runs automatically after review, improve-codebase when triggered, test, document, and lint pass.
 
 ## PR
 

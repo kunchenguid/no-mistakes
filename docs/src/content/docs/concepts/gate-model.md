@@ -17,7 +17,7 @@ flowchart TD
   gate --> hook["post-receive hook"]
   hook --> daemon["Daemon"]
   daemon --> worktree["Disposable worktree"]
-  worktree --> pipeline["intent -> rebase -> review -> test -> document -> lint -> push -> pr -> ci"]
+  worktree --> pipeline["intent -> rebase -> review -> improve-codebase -> test -> document -> lint -> push -> pr -> ci"]
   pipeline --> target["Push target"]
   daemon --> db["SQLite state"]
   daemon --> ipc["IPC socket"]
@@ -35,11 +35,11 @@ When you run `no-mistakes init` in a repo:
 4. It best-effort isolates the gate repo's hooks path from shared local Git config writes when Git supports `config --worktree`.
 5. It adds a `no-mistakes` remote to your working repo that points at the gate.
 6. When `--fork-url` is supplied, it records that GitHub fork as the branch push target while keeping `origin` as the parent repository used for PR bases.
-7. It installs or refreshes the `/no-mistakes` agent skill at user level, into `~/.claude/skills/no-mistakes/SKILL.md` and `~/.agents/skills/no-mistakes/SKILL.md`, on a best-effort basis, following existing symlinks between the home `.claude` and `.agents` skill directories. It writes no skill files into the repo; if the repo still carries a vendored copy from an older version, `init` prints a notice that the copy can be removed.
+7. It installs or refreshes the `/no-mistakes` agent skill and its bundled `improve-codebase` dependency at user level, into `~/.claude/skills` and `~/.agents/skills`, on a best-effort basis, following existing symlinks between the home `.claude` and `.agents` skill directories. It writes no skill files into the repo; if the repo still carries a vendored copy from an older version, `init` prints a notice that the copy can be removed.
 8. It makes sure the daemon is running so incoming pushes can start runs.
 
 `init` is idempotent.
-If the repo is already initialized, it refreshes the existing gate instead of failing: managed hook installation, push-option support, hook-path isolation, gate and working remotes, origin/default-branch metadata, and the `/no-mistakes` agent skill are repaired or updated where needed.
+If the repo is already initialized, it refreshes the existing gate instead of failing: managed hook installation, push-option support, hook-path isolation, gate and working remotes, origin/default-branch metadata, and the user-level agent skills are repaired or updated where needed.
 If the working repo was renamed or moved and the old path no longer exists, `init` reattaches the existing gate from the leftover `no-mistakes` remote, updates the stored working path, and preserves the repo ID plus run history.
 If the working repo was copied and the original path still exists, `init` treats the copy as a new repo and repoints the copied `no-mistakes` remote to a fresh gate.
 If daemon startup fails during a refresh, `init` reports the error but does not eject the pre-existing gate.
@@ -54,7 +54,7 @@ That is a core design choice, not an implementation detail.
 2. Git writes the push into the local bare gate repo, so the push itself stays fast.
 3. The gate repo's `post-receive` hook notifies the daemon.
 4. The daemon creates a detached worktree for this run.
-5. The pipeline runs in order: `intent -> rebase -> review -> test -> document -> lint -> push -> pr -> ci`.
+5. The pipeline runs in order: `intent -> rebase -> review -> improve-codebase -> test -> document -> lint -> push -> pr -> ci`.
 6. If a step pauses, you can attach with the TUI or use `no-mistakes axi respond` to approve, fix, or skip.
    Use `no-mistakes axi abort` only when you mean to cancel the whole run.
    AXI run objects show `awaiting_agent: parked <duration>` while a non-terminal run is parked at that gate, so a supervising agent can distinguish a waiting run from active work in one status read.
@@ -68,7 +68,7 @@ That is a core design choice, not an implementation detail.
 
 - **Named remote** - `origin` is never hijacked. You push to `no-mistakes` on purpose, so regular `git push` still works normally.
 - **Disposable worktrees** - each run happens in its own detached worktree under `~/.no-mistakes/worktrees/`. The daemon can safely modify files, run tests, and commit fixes without touching your working directory.
-- **Fixed pipeline** - the step order is opinionated and not configurable: `intent → rebase → review → test → document → lint → push → pr → ci`. What you _can_ configure is the commands each step runs, how many auto-fix attempts are allowed, and whether transcript-based intent extraction is used when intent is not supplied directly.
+- **Fixed pipeline** - the step order is opinionated and not configurable: `intent → rebase → review → improve-codebase → test → document → lint → push → pr → ci`. What you _can_ configure is the commands each step runs, whether the improve-codebase gate runs in auto/always/off mode from global or trusted default-branch repo config, how many auto-fix attempts are allowed, and whether transcript-based intent extraction is used when intent is not supplied directly.
 - **Remote data-loss guard** - force-pushes are checked against the live push target and refused when they would discard commits the run did not incorporate.
 
 ## Why it is built this way

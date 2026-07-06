@@ -37,6 +37,7 @@ type StepContext struct {
 type StepOutcome struct {
 	NeedsApproval bool // whether the step pauses for user action
 	AutoFixable   bool
+	DisableFix    bool   // whether manual/user fix responses are rejected for this gate
 	Findings      string // JSON findings for TUI display (optional)
 	ExitCode      int    // process exit code (0 = success)
 	PRURL         string // PR/MR URL if this step created or found one

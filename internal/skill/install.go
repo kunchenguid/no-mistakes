@@ -2,6 +2,7 @@ package skill
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,8 +18,9 @@ var InstallBases = []string{
 	filepath.Join(".agents", "skills"),
 }
 
-// InstallUser installs the skill into the agent skill directories under the
-// current user's home directory. It returns the home-relative paths written.
+// InstallUser installs the no-mistakes skill and its bundled dependency skills
+// into the agent skill directories under the current user's home directory. It
+// returns the home-relative SKILL.md entrypoint paths written.
 func InstallUser() ([]string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -27,9 +29,10 @@ func InstallUser() ([]string, error) {
 	return Install(home)
 }
 
-// Install writes SKILL.md into each agent skills directory under root
-// (normally the user's home directory), creating directories as needed. It
-// returns the root-relative paths written so the caller can report them.
+// Install writes the no-mistakes skill and its bundled dependency skills into
+// each agent skills directory under root (normally the user's home directory),
+// creating directories as needed. It returns the root-relative SKILL.md
+// entrypoint paths written so the caller can report them.
 // Writing is idempotent: re-running overwrites with identical content
 // (refreshing a stale SKILL.md from an older version).
 //
@@ -57,6 +60,50 @@ func Install(root string) ([]string, error) {
 			return written, err
 		}
 		written = append(written, rel)
+	}
+	deps, err := installBundledSkill(root, "improve-codebase", filepath.ToSlash(filepath.Join("bundled", "improve-codebase")))
+	written = append(written, deps...)
+	if err != nil {
+		return written, err
+	}
+	return written, nil
+}
+
+func installBundledSkill(root, name, embeddedRoot string) ([]string, error) {
+	written := make([]string, 0, len(InstallBases))
+	for _, base := range InstallBases {
+		skillDir := filepath.Join(root, base, name)
+		realSkillDir, err := resolveThroughSymlinks(skillDir)
+		if err != nil {
+			return written, err
+		}
+		if err := fs.WalkDir(bundledSkills, embeddedRoot, func(path string, entry fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			rel, err := filepath.Rel(embeddedRoot, path)
+			if err != nil {
+				return err
+			}
+			if rel == "." {
+				return os.MkdirAll(realSkillDir, 0o755)
+			}
+			target := filepath.Join(realSkillDir, filepath.FromSlash(rel))
+			if entry.IsDir() {
+				return os.MkdirAll(target, 0o755)
+			}
+			data, err := bundledSkills.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				return err
+			}
+			return os.WriteFile(target, data, 0o644)
+		}); err != nil {
+			return written, err
+		}
+		written = append(written, filepath.Join(base, name, "SKILL.md"))
 	}
 	return written, nil
 }

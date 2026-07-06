@@ -39,7 +39,7 @@ Navigate to any git repo with an `origin` remote:
 no-mistakes init
 ```
 
-This creates or refreshes a local bare repo at `~/.no-mistakes/repos/<id>.git`, installs a post-receive hook, best-effort isolates the gate's hooks path from shared local Git config writes when Git supports `config --worktree`, adds or repairs a `no-mistakes` git remote in your working repo, installs the `/no-mistakes` agent skill, and ensures the daemon is running.
+This creates or refreshes a local bare repo at `~/.no-mistakes/repos/<id>.git`, installs a post-receive hook, best-effort isolates the gate's hooks path from shared local Git config writes when Git supports `config --worktree`, adds or repairs a `no-mistakes` git remote in your working repo, installs the `/no-mistakes` agent skill plus its bundled `improve-codebase` dependency, and ensures the daemon is running.
 
 For GitHub fork contributions, keep `origin` pointed at the parent repository and pass your fork as the push target:
 
@@ -56,7 +56,7 @@ $ no-mistakes init
     repo  /Users/you/src/my-repo
     gate  no-mistakes → /Users/you/.no-mistakes/repos/abc123def456.git
   remote  git@github.com:you/my-repo.git
-   skill  /no-mistakes installed for agents at user level
+   skill  /no-mistakes + improve-codebase installed for agents at user level
 
   Push through the gate with:
   git push no-mistakes <branch>
@@ -95,7 +95,7 @@ The TUI shows each step's progress, streams agent output, and pauses for your ap
 ## Or let your agent run the gate
 
 If you are already working inside a coding agent like Claude Code, you don't have to switch to the terminal at all.
-`no-mistakes init` installed the `/no-mistakes` skill at user level, available in every repo, so you can ask the agent to do a task and gate it:
+`no-mistakes init` installed the `/no-mistakes` skill and bundled `improve-codebase` dependency at user level, available in every repo, so you can ask the agent to do a task and gate it:
 
 ```
 /no-mistakes add a --json flag to the status command

@@ -145,7 +145,7 @@ func newAxiLogsCmd() *cobra.Command {
 			})
 		},
 	}
-	cmd.Flags().StringVar(&step, "step", "", "step name: intent, rebase, review, test, document, lint, push, pr, ci (required)")
+	cmd.Flags().StringVar(&step, "step", "", "step name: intent, rebase, review, improve-codebase, test, document, lint, push, pr, ci (required)")
 	cmd.Flags().StringVar(&runID, "run", "", "run ID (default: active or most recent)")
 	cmd.Flags().BoolVar(&full, "full", false, "show the entire log instead of the tail")
 	return cmd
@@ -155,11 +155,11 @@ func runAxiLogs(cmd *cobra.Command, step, runID string, full bool) error {
 	step = strings.TrimSpace(step)
 	if step == "" {
 		return emitError(cmd, 2, "--step is required",
-			"Valid steps: intent, rebase, review, test, document, lint, push, pr, ci")
+			"Valid steps: intent, rebase, review, improve-codebase, test, document, lint, push, pr, ci")
 	}
 	if !validStep(types.StepName(step)) {
 		return emitError(cmd, 2, fmt.Sprintf("unknown step %q", step),
-			"Valid steps: intent, rebase, review, test, document, lint, push, pr, ci")
+			"Valid steps: intent, rebase, review, improve-codebase, test, document, lint, push, pr, ci")
 	}
 
 	env, err := openAxiEnv(false)

@@ -823,6 +823,31 @@ func TestFindingsSchema_Action(t *testing.T) {
 	}
 }
 
+func TestAuditOnlyFindingsSchema_DisallowsAutoFix(t *testing.T) {
+	t.Parallel()
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(auditOnlyFindingsSchema, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	props := parsed["properties"].(map[string]interface{})
+	items := props["findings"].(map[string]interface{})["items"].(map[string]interface{})
+	itemProps := items["properties"].(map[string]interface{})
+	action := itemProps["action"].(map[string]interface{})
+	enum := action["enum"].([]interface{})
+	got := map[string]bool{}
+	for _, value := range enum {
+		got[value.(string)] = true
+	}
+	if got[types.ActionAutoFix] {
+		t.Fatal("auditOnlyFindingsSchema must not allow auto-fix")
+	}
+	for _, want := range []string{types.ActionAskUser, types.ActionNoOp} {
+		if !got[want] {
+			t.Fatalf("auditOnlyFindingsSchema missing action %q", want)
+		}
+	}
+}
+
 func TestFindingsSchema_IncludesTestedArray(t *testing.T) {
 	t.Parallel()
 	var parsed map[string]interface{}

@@ -87,6 +87,7 @@ It does not auto-select ACP targets.
 Changing agents most directly affects:
 
 - review quality and tone
+- improve-codebase structural gate quality when that conditional step runs
 - test evidence collection, plus test and lint detection when commands are not configured
 - how good auto-fix attempts are for your stack
 - branch name and commit subject suggestions in the setup wizard
@@ -101,10 +102,10 @@ Use bare `/no-mistakes` to validate existing committed work.
 Use `/no-mistakes <task>` to have the agent first do the task, commit only that task's changes on a feature branch, then run the pipeline with the task text as `--intent`.
 In both modes, it resolves low-risk findings on its own and stops to relay anything that needs your decision.
 
-`no-mistakes init` installs that skill at user level: `~/.claude/skills/no-mistakes/SKILL.md` for Claude Code and `~/.agents/skills/no-mistakes/SKILL.md` for Codex, OpenCode, Rovo Dev, and Pi.
+`no-mistakes init` installs that skill and its bundled `improve-codebase` dependency at user level: under `~/.claude/skills` for Claude Code and `~/.agents/skills` for Codex, OpenCode, Rovo Dev, and Pi.
 One install makes the skill available to every supported agent in every repo, without committing tool-generated files to any repo.
 If your home directory consolidates `.claude` and `.agents` with symlinks, `init` follows the links and keeps the skill reachable from both logical paths.
-Re-run `no-mistakes init` after an upgrade to refresh that skill, including overwriting stale `SKILL.md` content from an older binary.
+Re-run `no-mistakes init` after an upgrade to refresh those skills, including overwriting stale `SKILL.md` content from an older binary.
 Older versions vendored the skill into each initialized repo's `.claude/skills` and `.agents/skills`; those copies are no longer needed, and `init` prints a notice when it finds one so you can remove it.
 The skill drives `no-mistakes axi`, a non-interactive command surface that prints TOON to stdout and progress to stderr.
 When CI is green but the PR is still open, `axi run` and `axi respond` return `outcome: checks-passed` with a help line pointing at the PR instead of waiting for a human merge.
@@ -127,7 +128,7 @@ Agents can also call `no-mistakes axi` directly:
 no-mistakes axi run --intent "the user's goal"
 no-mistakes axi status
 no-mistakes axi respond --action approve
-no-mistakes axi logs --step review --full
+no-mistakes axi logs --step improve-codebase --full
 no-mistakes axi abort
 no-mistakes axi abort --run <id>
 ```
@@ -157,8 +158,9 @@ A long-running `axi run` or `axi respond` call is working, not stalled, and an a
 An agent should resolve `action: auto-fix` findings on its own judgment, ignore `action: no-op` findings when approving, and stop on `action: ask-user` findings unless it is running with explicit `--yes` consent.
 Review auto-fix is disabled by default (`auto_fix.review: 0`; a repo or global `auto_fix.review > 0` override re-enables it), so blocking and ask-user review findings park for your decision rather than being silently self-fixed.
 The review gate output flags this with a `note`.
-When it stops for `ask-user`, it should relay each finding's ID, file, and full description to the user before choosing `approve`, `fix`, or `skip`.
-Resolving a finding always means responding with `no-mistakes axi respond --action fix`, which has the pipeline apply the fix and re-review it - the agent must not edit the code itself while a run is active.
+The improve-codebase step runs after review and before test when `improve_codebase.mode` is `always` or when auto mode detects structural-risk signals. It is read-only and can be skipped with `--skip improve-codebase`; repo `improve_codebase.mode` is trusted default-branch policy, so the pushed branch cannot disable it for its own run.
+When it stops for `ask-user`, relay each finding's ID, file, and full description to the user before choosing `approve` or `skip`.
+Resolving a fixable finding means responding with `no-mistakes axi respond --action fix`, which has the pipeline apply the fix and re-review it - the agent must not edit the code itself while a run is active. Improve-codebase findings are audit-only and must be approved or skipped instead.
 For the same reason, while a run is active the agent must not `abort` or `rerun` to go fix a finding itself - even a real bug in its own code - because that discards the pipeline's in-flight work and forces a full re-validation; `abort` and `rerun` are between-runs actions, correct only after a `failed` or `cancelled` outcome, never a way to circumvent a gate.
 Successful outputs can be `outcome: passed` for a completed run or `outcome: checks-passed` when CI has passed and the daemon is still monitoring the unmerged PR for humans, and may include a `fixes` table when the pipeline applied fixes.
 

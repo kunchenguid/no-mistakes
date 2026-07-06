@@ -1,18 +1,19 @@
 ---
 title: Pipeline
-description: The nine steps that run on every gated push.
+description: The ten steps that run on every gated push.
 ---
 
 The pipeline runs a fixed, opinionated sequence of steps. Order is not configurable. What each step runs *is*.
 
 ```
-intent → rebase → review → test → document → lint → push → pr → ci
+intent → rebase → review → improve-codebase → test → document → lint → push → pr → ci
 ```
 
 ```mermaid
 flowchart LR
-  intent["Intent"] --> rebase["Rebase"] --> review["Review"] --> test["Test"] --> document["Document"] --> lint["Lint"] --> push["Push"] --> pr["PR"] --> ci["CI"]
+  intent["Intent"] --> rebase["Rebase"] --> review["Review"] --> improve["Improve Codebase"] --> test["Test"] --> document["Document"] --> lint["Lint"] --> push["Push"] --> pr["PR"] --> ci["CI"]
   review -. findings .-> action["Approve / fix / skip / abort"]
+  improve -. findings .-> action
   test -. findings .-> action
   document -. findings .-> action
   lint -. findings .-> action
@@ -26,24 +27,25 @@ This page is the overview. For each step's exact behavior, defaults, skip rules,
 The pipeline is opinionated so that "passed the gate" has a stable meaning:
 
 - the branch was checked against fresh remote upstream and the pushed-branch target first
-- review, tests, user-facing test evidence when available, docs, and lint happened before any branch push to the configured target
+- review, improve-codebase when triggered, tests, user-facing test evidence when available, docs, and lint happened before any branch push to the configured target
 - the human stayed in control when a step needed judgment
 - the final branch update was guarded against discarding unincorporated commits already on the push target
 - push, PR creation, and CI monitoring only happened after the local gate was satisfied
 
-## The nine steps
+## The ten steps
 
 | # | Step | What it does | Default auto-fix limit |
 |---|---|---|---|
 | 1 | **Intent** | Use supplied intent or infer it from recent local agent transcripts | n/a |
 | 2 | **Rebase** | Fetch fresh remote upstream and the configured branch target, then rebase your branch onto them | `3` |
 | 3 | **Review** | AI code review of your diff | `0` (requires approval) |
-| 4 | **Test** | Run baseline tests and gather evidence for available intent | `3` |
-| 5 | **Document** | Update docs when needed and report unresolved gaps | initial pass |
-| 6 | **Lint** | Run lint/static analysis | `3` |
-| 7 | **Push** | Safely push the validated branch to the configured target | n/a |
-| 8 | **PR** | Create or update the pull request | n/a |
-| 9 | **CI** | Watch CI + mergeability, auto-fix failures | `3` |
+| 4 | **Improve Codebase** | Conditional read-only structural gate for risky change-sets | `0` |
+| 5 | **Test** | Run baseline tests and gather evidence for available intent | `3` |
+| 6 | **Document** | Update docs when needed and report unresolved gaps | initial pass |
+| 7 | **Lint** | Run lint/static analysis | `3` |
+| 8 | **Push** | Safely push the validated branch to the configured target | n/a |
+| 9 | **PR** | Create or update the pull request | n/a |
+| 10 | **CI** | Watch CI + mergeability, auto-fix failures | `3` |
 
 ## Why these steps, in this order
 
@@ -52,6 +54,7 @@ The pipeline is opinionated so that "passed the gate" has a stable meaning:
   It also stops when the branch would silently bundle commits from a local default branch that were never pushed to `origin/<default_branch>`.
   If there's no diff left after the rebase, the pipeline skips the rest.
 - **Review before test** so the agent reads fresh code, not code it may have touched during fixes.
+- **Improve-codebase after review** so structurally risky change-sets get a read-only boundary/topology check before test and docs work build on them.
 - **Document after test** so docs are updated against code that's known to work.
 - **Lint last among local checks** so it doesn't churn over code that may still change.
 - **Push → PR → CI** happens after all local checks pass.
@@ -79,6 +82,7 @@ You can't reorder steps. You *can*:
 - Set explicit `commands.test`, `commands.lint`, `commands.format`.
 - Store test evidence locally by default or opt into committed in-repo evidence with `test.evidence.store_in_repo`.
 - Control auto-fix limits per step.
+- Set `improve_codebase.mode` to `auto`, `always`, or `off` in global or trusted default-branch repo config.
 - Ignore paths during review and documentation checks.
 - Disable or tune transcript-based intent extraction when intent is not supplied directly.
 - Skip steps for one run with `no-mistakes --skip <steps>`, `git push -o no-mistakes.skip=<steps>`, `no-mistakes axi run --skip <steps>`, or from the TUI.
@@ -88,7 +92,7 @@ See [Configuration](/no-mistakes/guides/configuration/).
 ## What you can't configure
 
 - The step order.
-- Skipping specific steps permanently - per-run skips are allowed, but the pipeline itself always has all nine.
+- Skipping specific steps permanently - per-run skips are allowed, but the pipeline itself always has all ten.
 - Adding new steps.
 
 This is intentional. The pipeline is opinionated so that "passed the gate" means the same thing across repos.

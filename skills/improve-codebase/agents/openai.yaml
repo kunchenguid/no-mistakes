@@ -1,0 +1,7 @@
+interface:
+  display_name: "Improve Codebase"
+  short_description: "Full faceted codebase audit"
+  default_prompt: "Use $improve-codebase as a standalone read-only audit package: complete the five mandatory independent lens passes for Module Topology and File-Size Balance, Deepening, Operational Mechanics, Code Health and Cleanup, and Change-Set Quality. Use only package-local companion docs and local repository evidence, synthesize the lens reports through the registry, preserve evidence-backed findings, and end with remediation paths plus implementation backlog items."
+
+policy:
+  allow_implicit_invocation: false

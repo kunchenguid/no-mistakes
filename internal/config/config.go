@@ -54,6 +54,7 @@ type GlobalConfig struct {
 	AutoFix              AutoFixRaw
 	Intent               IntentRaw
 	Test                 TestRaw
+	ImproveCodebase      ImproveCodebaseRaw
 }
 
 // globalConfigRaw is the on-disk YAML representation with duration as string.
@@ -70,6 +71,7 @@ type globalConfigRaw struct {
 	AutoFix              AutoFixRaw          `yaml:"auto_fix"`
 	Intent               IntentRaw           `yaml:"intent"`
 	Test                 TestRaw             `yaml:"test"`
+	ImproveCodebase      ImproveCodebaseRaw  `yaml:"improve_codebase"`
 }
 
 // RepoConfig represents .no-mistakes.yaml in a repo root.
@@ -84,21 +86,23 @@ type RepoConfig struct {
 	// ONLY from the trusted default-branch copy of .no-mistakes.yaml (never
 	// the pushed SHA), so a contributor cannot self-enable. Default false:
 	// the pushed branch controls nothing that executes.
-	AllowRepoCommands bool       `yaml:"allow_repo_commands"`
-	AutoFix           AutoFixRaw `yaml:"auto_fix"`
-	Intent            IntentRaw  `yaml:"intent"`
-	Test              TestRaw    `yaml:"test"`
+	AllowRepoCommands bool               `yaml:"allow_repo_commands"`
+	AutoFix           AutoFixRaw         `yaml:"auto_fix"`
+	Intent            IntentRaw          `yaml:"intent"`
+	Test              TestRaw            `yaml:"test"`
+	ImproveCodebase   ImproveCodebaseRaw `yaml:"improve_codebase"`
 }
 
 func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 	type repoConfigRaw struct {
-		Agent             agentList  `yaml:"agent"`
-		Commands          Commands   `yaml:"commands"`
-		IgnorePatterns    []string   `yaml:"ignore_patterns"`
-		AllowRepoCommands bool       `yaml:"allow_repo_commands"`
-		AutoFix           AutoFixRaw `yaml:"auto_fix"`
-		Intent            IntentRaw  `yaml:"intent"`
-		Test              TestRaw    `yaml:"test"`
+		Agent             agentList          `yaml:"agent"`
+		Commands          Commands           `yaml:"commands"`
+		IgnorePatterns    []string           `yaml:"ignore_patterns"`
+		AllowRepoCommands bool               `yaml:"allow_repo_commands"`
+		AutoFix           AutoFixRaw         `yaml:"auto_fix"`
+		Intent            IntentRaw          `yaml:"intent"`
+		Test              TestRaw            `yaml:"test"`
+		ImproveCodebase   ImproveCodebaseRaw `yaml:"improve_codebase"`
 	}
 	var raw repoConfigRaw
 	if err := value.Decode(&raw); err != nil {
@@ -112,6 +116,7 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 	c.AutoFix = raw.AutoFix
 	c.Intent = raw.Intent
 	c.Test = raw.Test
+	c.ImproveCodebase = raw.ImproveCodebase
 	return nil
 }
 
@@ -161,6 +166,23 @@ type Config struct {
 	AutoFix              AutoFix
 	Intent               Intent
 	Test                 Test
+	ImproveCodebase      ImproveCodebase
+}
+
+const (
+	ImproveCodebaseModeAuto   = "auto"
+	ImproveCodebaseModeAlways = "always"
+	ImproveCodebaseModeOff    = "off"
+)
+
+// ImproveCodebaseRaw is the YAML representation of the improve-codebase gate.
+type ImproveCodebaseRaw struct {
+	Mode string `yaml:"mode"`
+}
+
+// ImproveCodebase is the resolved improve-codebase gate config.
+type ImproveCodebase struct {
+	Mode string
 }
 
 // TestRaw is the YAML representation of test-step settings.
@@ -311,13 +333,18 @@ auto_fix:
 # User-intent extraction. When you push a branch, no-mistakes can read recent
 # transcripts from your local agent (Claude Code, Codex, OpenCode, Rovo Dev, Pi,
 # Copilot CLI), pick the session that produced the change, summarize the user
-# intent, and feed it to review, test, document, lint, and PR agents so they
+# intent, and feed it to review, improve-codebase, test, document, lint, and PR agents so they
 # understand what you were trying to do - not just the diff.
 intent:
   enabled: true
   threshold: 0.2
   slack_days: 3
   # disabled_readers: [codex]
+
+# Conditional read-only structural gate after review and before test.
+# Options: auto, always, off
+improve_codebase:
+  mode: auto
 
 # Test-step evidence artifacts (screenshots, recordings, logs the test step
 # gathers to demonstrate the change works). By default they are kept in a
@@ -724,6 +751,10 @@ func LoadGlobal(path string) (*GlobalConfig, error) {
 	cfg.AutoFix = raw.AutoFix
 	cfg.Intent = raw.Intent
 	cfg.Test = raw.Test
+	cfg.ImproveCodebase = raw.ImproveCodebase
+	if err := validateImproveCodebaseRaw(cfg.ImproveCodebase); err != nil {
+		return nil, err
+	}
 
 	return cfg, nil
 }
@@ -764,6 +795,24 @@ func LoadRepo(dir string) (*RepoConfig, error) {
 	return parseRepoConfig(data)
 }
 
+// LoadPushedRepo reads a contributor-controlled repo config from dir.
+// Policy-sensitive improve-codebase settings are intentionally ignored here;
+// EffectiveRepoConfig sources them from the trusted default-branch copy.
+func LoadPushedRepo(dir string) (*RepoConfig, error) {
+	cfg := &RepoConfig{}
+
+	path := filepath.Join(dir, ".no-mistakes.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return cfg, nil
+		}
+		return nil, fmt.Errorf("read repo config: %w", err)
+	}
+
+	return parsePushedRepoConfig(data)
+}
+
 // LoadRepoFromBytes parses per-repo config from raw YAML bytes. It is the
 // trusted-config entry point: callers that read .no-mistakes.yaml from a
 // specific git ref (e.g. the default branch) use this to avoid honoring a
@@ -776,6 +825,40 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 	cfg := &RepoConfig{}
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("parse repo config: %w", err)
+	}
+	if cfg.AutoFix.CI == nil {
+		cfg.AutoFix.CI = cfg.AutoFix.Babysit
+	}
+	if err := validateImproveCodebaseRaw(cfg.ImproveCodebase); err != nil {
+		return nil, err
+	}
+
+	return cfg, nil
+}
+
+func parsePushedRepoConfig(data []byte) (*RepoConfig, error) {
+	type pushedRepoConfigRaw struct {
+		Agent             agentList  `yaml:"agent"`
+		Commands          Commands   `yaml:"commands"`
+		IgnorePatterns    []string   `yaml:"ignore_patterns"`
+		AllowRepoCommands bool       `yaml:"allow_repo_commands"`
+		AutoFix           AutoFixRaw `yaml:"auto_fix"`
+		Intent            IntentRaw  `yaml:"intent"`
+		Test              TestRaw    `yaml:"test"`
+	}
+	var raw pushedRepoConfigRaw
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("parse repo config: %w", err)
+	}
+	cfg := &RepoConfig{
+		Agent:             firstAgent(raw.Agent),
+		Agents:            copyAgents(raw.Agent),
+		Commands:          raw.Commands,
+		IgnorePatterns:    raw.IgnorePatterns,
+		AllowRepoCommands: raw.AllowRepoCommands,
+		AutoFix:           raw.AutoFix,
+		Intent:            raw.Intent,
+		Test:              raw.Test,
 	}
 	if cfg.AutoFix.CI == nil {
 		cfg.AutoFix.CI = cfg.AutoFix.Babysit
@@ -800,14 +883,20 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 // branch — this blocks the supply-chain vector for repos that ship
 // .no-mistakes.yaml only on feature branches.
 //
-// Non-executing fields (ignore patterns, auto-fix, intent, test) are always
-// taken from the pushed copy, matching prior behavior, since they cannot
-// run arbitrary shell or select a process.
+// Non-executing per-change fields (ignore patterns, auto-fix, intent, test)
+// are always taken from the pushed copy, matching prior behavior, since they
+// cannot run arbitrary shell or select a process. Improve-codebase mode is
+// maintainer policy and is taken from the trusted copy when available.
 func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *RepoConfig {
 	if pushed == nil {
 		pushed = &RepoConfig{}
 	}
 	effective := *pushed
+	if trusted != nil {
+		effective.ImproveCodebase = trusted.ImproveCodebase
+	} else {
+		effective.ImproveCodebase = ImproveCodebaseRaw{}
+	}
 	if allowRepoCommands {
 		return &effective
 	}
@@ -881,6 +970,29 @@ func testDefaults() Test {
 			StoreInRepo: false,
 			Dir:         ".no-mistakes/evidence",
 		},
+	}
+}
+
+func improveCodebaseDefaults() ImproveCodebase {
+	return ImproveCodebase{Mode: ImproveCodebaseModeAuto}
+}
+
+func validateImproveCodebaseRaw(raw ImproveCodebaseRaw) error {
+	if strings.TrimSpace(raw.Mode) == "" {
+		return nil
+	}
+	switch strings.ToLower(strings.TrimSpace(raw.Mode)) {
+	case ImproveCodebaseModeAuto, ImproveCodebaseModeAlways, ImproveCodebaseModeOff:
+		return nil
+	default:
+		return fmt.Errorf("invalid improve_codebase.mode %q (valid: auto, always, off)", raw.Mode)
+	}
+}
+
+func applyImproveCodebaseOverrides(dst *ImproveCodebase, src *ImproveCodebaseRaw) {
+	mode := strings.ToLower(strings.TrimSpace(src.Mode))
+	if mode != "" {
+		dst.Mode = mode
 	}
 }
 
@@ -965,6 +1077,10 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 	applyTestOverrides(&test, &global.Test)
 	applyTestOverrides(&test, &repo.Test)
 
+	improveCodebase := improveCodebaseDefaults()
+	applyImproveCodebaseOverrides(&improveCodebase, &global.ImproveCodebase)
+	applyImproveCodebaseOverrides(&improveCodebase, &repo.ImproveCodebase)
+
 	cfg := &Config{
 		Agent:                global.Agent,
 		Agents:               copyAgents(global.Agents),
@@ -980,6 +1096,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		AutoFix:              af,
 		Intent:               intent,
 		Test:                 test,
+		ImproveCodebase:      improveCodebase,
 	}
 
 	if repo.Agent != "" {

@@ -43,10 +43,11 @@ type Executor struct {
 
 	onEvent EventFunc
 
-	mu          sync.Mutex
-	approvalCh  chan approvalResponse // buffered channel for approval responses
-	waiting     bool                  // true when blocked on approval
-	waitingStep types.StepName        // which step is currently awaiting approval
+	mu            sync.Mutex
+	approvalCh    chan approvalResponse // buffered channel for approval responses
+	waiting       bool                  // true when blocked on approval
+	waitingStep   types.StepName        // which step is currently awaiting approval
+	waitingCanFix bool
 }
 
 // SetSkippedSteps configures steps that should be marked skipped without running.
@@ -96,6 +97,10 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 	if step != e.waitingStep {
 		e.mu.Unlock()
 		return fmt.Errorf("step mismatch: responding to %q but %q is awaiting approval", step, e.waitingStep)
+	}
+	if action == types.ActionFix && !e.waitingCanFix {
+		e.mu.Unlock()
+		return fmt.Errorf("step %s does not support fix responses", step)
 	}
 	e.waiting = false
 	e.mu.Unlock()
@@ -419,6 +424,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		e.mu.Lock()
 		e.waiting = true
 		e.waitingStep = stepName
+		e.waitingCanFix = !outcome.DisableFix
 		e.mu.Unlock()
 
 		// Surface the park as a pollable, run-level signal so a supervisor can
@@ -619,6 +625,7 @@ func (e *Executor) waitForApproval(ctx context.Context, stepName types.StepName)
 		e.mu.Lock()
 		e.waiting = false
 		e.waitingStep = ""
+		e.waitingCanFix = false
 		e.mu.Unlock()
 		// Drain any stale response that arrived after context cancellation
 		select {

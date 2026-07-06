@@ -68,8 +68,8 @@ Agent-driven findings now use an `action` field instead of `requires_human_revie
 - `no-op` - informational notes that do not need a fix
 
 `ask-user` is meant for findings that need human judgment - for example, questioning an intentional product or design choice, arguing that an intentional addition, removal, or guard should be undone, or reporting that the test step could not produce enough evidence for the available intent. Routine correctness, reliability, or security fixes still stay `auto-fix` even if the smallest fix reintroduces a small amount of previously deleted logic. Agents driving the AXI skill should relay `ask-user` findings to the user unless they have explicit `--yes` consent to resolve gates unattended.
-In the TUI, yolo mode is an explicit override that auto-resolves paused steps by treating `auto-fix` and `ask-user` findings as consent to run one fix round.
-Steps with only `no-op` findings are approved as-is.
+In the TUI, yolo mode is an explicit override that auto-resolves paused steps by treating `auto-fix` and `ask-user` findings on fixable gates as consent to run one fix round.
+Audit-only improve-codebase gates and gates with only `no-op` findings are approved as-is.
 
 The `review`, `test`, and configured-command `lint` steps use this shared model directly. The `document` step also uses the same `action` field, but unresolved documentation findings pause for approval because the initial document pass already attempted the documentation updates it could make safely.
 When `commands.lint` is empty, lint findings describe issues left after the agent already attempted safe fixes, so they pause for approval instead of remaining eligible for another automatic fix loop.
@@ -123,6 +123,6 @@ The full round history remains available in the run log.
 Round trigger types:
 - `initial` - first execution
 - `auto_fix` - triggered by the automatic fix loop
-- `auto_fix` - also used when you press `f` in the TUI or use `no-mistakes axi respond --action fix` to run a follow-up fix
+- `auto_fix` - also used when you press `f` in the TUI or use `no-mistakes axi respond --action fix` on a fixable gate to run a follow-up fix
 
 Legacy `user_fix` rounds are still rendered as `auto-fix` in PR summaries for backward compatibility.

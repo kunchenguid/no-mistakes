@@ -77,10 +77,7 @@ func TestInstallWritesBothPaths(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
-	wantRel := []string{
-		filepath.Join(".claude", "skills", Name, "SKILL.md"),
-		filepath.Join(".agents", "skills", Name, "SKILL.md"),
-	}
+	wantRel := expectedInstallEntrypoints()
 	if len(written) != len(wantRel) {
 		t.Fatalf("written = %v, want %v", written, wantRel)
 	}
@@ -88,13 +85,7 @@ func TestInstallWritesBothPaths(t *testing.T) {
 		if written[i] != rel {
 			t.Errorf("written[%d] = %q, want %q", i, written[i], rel)
 		}
-		data, err := os.ReadFile(filepath.Join(root, rel))
-		if err != nil {
-			t.Fatalf("read %s: %v", rel, err)
-		}
-		if string(data) != Markdown() {
-			t.Errorf("%s content does not match Markdown()", rel)
-		}
+		assertInstalledSkill(t, root, rel)
 	}
 }
 
@@ -111,17 +102,12 @@ func TestInstallUserWritesUnderHome(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InstallUser: %v", err)
 	}
-	if len(written) != len(InstallBases) {
-		t.Fatalf("written = %v, want one path per base", written)
+	if len(written) != len(InstallBases)*2 {
+		t.Fatalf("written = %v, want no-mistakes and improve-codebase under each base", written)
 	}
 	for _, base := range InstallBases {
-		data, err := os.ReadFile(filepath.Join(home, base, Name, "SKILL.md"))
-		if err != nil {
-			t.Fatalf("skill not installed under home at %s: %v", base, err)
-		}
-		if string(data) != Markdown() {
-			t.Errorf("%s content does not match Markdown()", base)
-		}
+		assertInstalledNoMistakes(t, filepath.Join(home, base, Name, "SKILL.md"))
+		assertInstalledBundledImproveCodebase(t, filepath.Join(home, base, "improve-codebase"))
 	}
 }
 
@@ -140,6 +126,7 @@ func TestInstallIsIdempotent(t *testing.T) {
 	if string(data) != Markdown() {
 		t.Errorf("content drifted after re-install")
 	}
+	assertInstalledBundledImproveCodebase(t, filepath.Join(root, ".claude", "skills", "improve-codebase"))
 }
 
 // TestInstallSymlinkLayouts covers home directories that consolidate the two
@@ -203,26 +190,14 @@ func TestInstallSymlinkLayouts(t *testing.T) {
 
 			// Every reported path must be readable with current content.
 			for _, rel := range written {
-				data, err := os.ReadFile(filepath.Join(root, rel))
-				if err != nil {
-					t.Fatalf("read reported %s: %v", rel, err)
-				}
-				if string(data) != Markdown() {
-					t.Errorf("%s content does not match Markdown()", rel)
-				}
+				assertInstalledSkill(t, root, rel)
 			}
 
-			// The skill must be discoverable via both logical bases no matter
+			// The skills must be discoverable via both logical bases no matter
 			// which side carries the symlink.
 			for _, base := range InstallBases {
-				p := filepath.Join(root, base, Name, "SKILL.md")
-				data, err := os.ReadFile(p)
-				if err != nil {
-					t.Fatalf("skill not reachable via %s: %v", base, err)
-				}
-				if string(data) != Markdown() {
-					t.Errorf("%s content does not match Markdown()", base)
-				}
+				assertInstalledNoMistakes(t, filepath.Join(root, base, Name, "SKILL.md"))
+				assertInstalledBundledImproveCodebase(t, filepath.Join(root, base, "improve-codebase"))
 			}
 		})
 	}
@@ -248,6 +223,15 @@ func TestInstallOverwritesStaleContent(t *testing.T) {
 	if string(data) != Markdown() {
 		t.Errorf("stale SKILL.md was not refreshed to current content")
 	}
+
+	staleBundled := filepath.Join(root, ".claude", "skills", "improve-codebase", "SKILL.md")
+	if err := os.WriteFile(staleBundled, []byte("---\nname: improve-codebase\n---\nstale body\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Install(root); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	assertInstalledBundledImproveCodebase(t, filepath.Dir(staleBundled))
 }
 
 func TestInstallRejectsSymlinkCycle(t *testing.T) {
@@ -331,6 +315,131 @@ func symlink(t *testing.T, target, link string) {
 	if err := os.Symlink(target, link); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func expectedInstallEntrypoints() []string {
+	return []string{
+		filepath.Join(".claude", "skills", Name, "SKILL.md"),
+		filepath.Join(".agents", "skills", Name, "SKILL.md"),
+		filepath.Join(".claude", "skills", "improve-codebase", "SKILL.md"),
+		filepath.Join(".agents", "skills", "improve-codebase", "SKILL.md"),
+	}
+}
+
+func assertInstalledSkill(t *testing.T, root, rel string) {
+	t.Helper()
+	switch filepath.Base(filepath.Dir(rel)) {
+	case Name:
+		assertInstalledNoMistakes(t, filepath.Join(root, rel))
+	case "improve-codebase":
+		assertInstalledBundledImproveCodebase(t, filepath.Dir(filepath.Join(root, rel)))
+	default:
+		t.Fatalf("unexpected installed skill path %s", rel)
+	}
+}
+
+func assertInstalledNoMistakes(t *testing.T, path string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read no-mistakes skill at %s: %v", path, err)
+	}
+	if string(data) != Markdown() {
+		t.Errorf("%s content does not match Markdown()", path)
+	}
+}
+
+func assertInstalledBundledImproveCodebase(t *testing.T, dir string) {
+	t.Helper()
+	skillPath := filepath.Join(dir, "SKILL.md")
+	data, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatalf("read improve-codebase skill at %s: %v", skillPath, err)
+	}
+	want, err := bundledSkills.ReadFile("bundled/improve-codebase/SKILL.md")
+	if err != nil {
+		t.Fatalf("read embedded improve-codebase skill: %v", err)
+	}
+	if string(data) != string(want) {
+		t.Errorf("%s content does not match embedded improve-codebase skill", skillPath)
+	}
+
+	// Guard against accidentally installing only the entrypoint without the
+	// supporting instruction files the standalone package references.
+	for _, rel := range []string{
+		"CHANGE-SET-QUALITY.md",
+		"CODE-HEALTH.md",
+		"LENS-ORCHESTRATION.md",
+		filepath.Join("agents", "openai.yaml"),
+	} {
+		supportFile := filepath.Join(dir, rel)
+		if _, err := os.Stat(supportFile); err != nil {
+			t.Fatalf("bundled improve-codebase support file missing at %s: %v", supportFile, err)
+		}
+	}
+}
+
+func TestBundledImproveCodebaseSkillHasStandaloneReadOnlyPackage(t *testing.T) {
+	data, err := bundledSkills.ReadFile("bundled/improve-codebase/SKILL.md")
+	if err != nil {
+		t.Fatalf("read embedded improve-codebase skill: %v", err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		"Standalone package with no required external tooling or hosted services",
+		"This skill is audit-only by default",
+		"Run one read-only, project-agnostic audit through five built-in lenses",
+		"LENS-ORCHESTRATION.md",
+		"CODE-HEALTH.md",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("bundled improve-codebase skill missing %q", want)
+		}
+	}
+}
+
+func TestBundledImproveCodebaseMatchesPublicSkill(t *testing.T) {
+	bundled := readSkillTree(t, filepath.Join("bundled", "improve-codebase"))
+	public := readSkillTree(t, filepath.Join("..", "..", "skills", "improve-codebase"))
+
+	for path, want := range public {
+		if got, ok := bundled[path]; !ok {
+			t.Fatalf("bundled improve-codebase skill missing %s", path)
+		} else if got != want {
+			t.Fatalf("bundled improve-codebase skill drifted from public copy at %s", path)
+		}
+	}
+	for path := range bundled {
+		if _, ok := public[path]; !ok {
+			t.Fatalf("bundled improve-codebase skill has extra file %s", path)
+		}
+	}
+}
+
+func readSkillTree(t *testing.T, root string) map[string]string {
+	t.Helper()
+	files := map[string]string{}
+	if err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		files[filepath.ToSlash(rel)] = string(data)
+		return nil
+	}); err != nil {
+		t.Fatalf("read skill tree %s: %v", root, err)
+	}
+	return files
 }
 
 func min(a, b int) int {

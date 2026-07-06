@@ -84,7 +84,7 @@ func newAxiRunCmd() *cobra.Command {
 				skipSteps, err := parseSkipSteps(skipValue)
 				if err != nil {
 					return emitError(cmd, 2, err.Error(),
-						"Valid steps: intent, rebase, review, test, document, lint, push, pr, ci")
+						"Valid steps: intent, rebase, review, improve-codebase, test, document, lint, push, pr, ci")
 				}
 				return runAxiRun(cmd, autoYes, skipSteps, intent)
 			})
@@ -379,6 +379,9 @@ func ciLogReader(p *paths.Paths) func(string) []string {
 // to zero selections) are approved.
 func gateResolution(gate stepView, alreadyFixed bool) (types.ApprovalAction, []string) {
 	if alreadyFixed || gate.Status == string(types.StepStatusFixReview) {
+		return types.ActionApprove, nil
+	}
+	if gate.Name == string(types.StepImproveCodebase) {
 		return types.ActionApprove, nil
 	}
 	parsed, err := types.ParseFindingsJSON(gate.FindingsJSON)

@@ -257,7 +257,7 @@ These are global defaults. Per-repo config can override individual steps.
 ### intent
 
 Transcript-based user-intent extraction settings.
-When enabled and no intent was supplied directly for the run, no-mistakes can read recent local agent transcripts, match the session that produced the change, summarize the author's intent, pass that summary to rebase, review, test, document, lint, CI auto-fix, and PR prompts, and include it in generated PR descriptions.
+When enabled and no intent was supplied directly for the run, no-mistakes can read recent local agent transcripts, match the session that produced the change, summarize the author's intent, pass that summary to rebase, review, improve-codebase, test, document, lint, CI auto-fix, and PR prompts, and include it in generated PR descriptions.
 
 | | |
 |---|---|
@@ -279,6 +279,22 @@ For multi-file diffs, no-mistakes still requires at least two overlapping files 
 Partial matches older than 24 hours are rejected unless their raw score is at least `0.8`.
 If exactly one accepted candidate has a raw score of at least `0.85`, that decisive candidate wins before recency ranking.
 Otherwise, accepted candidates are ranked by confidence, which combines the raw score with a small recency boost, with ties going to the most recent matching session, and ambiguous accepted candidates may be disambiguated by the configured pipeline agent.
+
+### improve_codebase
+
+Controls the read-only improve-codebase structural gate that runs after review and before test.
+
+| | |
+|---|---|
+| Type | `object` |
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `improve_codebase.mode` | `string` | `auto` | `auto` runs only for structurally risky change-sets, `always` runs every time, and `off` disables the step |
+
+This setting is policy only: it does not run shell commands or let repo config choose an arbitrary skill path.
+For gated runs, repo `improve_codebase.mode` is read from the trusted default-branch `.no-mistakes.yaml` copy when present, not from the pushed branch being validated.
+A pushed branch cannot disable the improve-codebase gate for its own run.
 
 ### test.evidence
 

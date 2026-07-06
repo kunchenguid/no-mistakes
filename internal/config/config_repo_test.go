@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -197,5 +198,63 @@ func TestLoadRepo_LegacyAutoFixBabysit(t *testing.T) {
 	}
 	if *cfg.AutoFix.CI != 0 {
 		t.Fatalf("ci auto-fix = %d, want 0", *cfg.AutoFix.CI)
+	}
+}
+
+func TestLoadRepo_ImproveCodebaseMode(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".no-mistakes.yaml")
+	if err := os.WriteFile(path, []byte("improve_codebase:\n  mode: always\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadRepo(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.ImproveCodebase.Mode != ImproveCodebaseModeAlways {
+		t.Fatalf("improve_codebase.mode = %q, want %q", cfg.ImproveCodebase.Mode, ImproveCodebaseModeAlways)
+	}
+}
+
+func TestLoadRepo_ImproveCodebaseInvalidMode(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".no-mistakes.yaml")
+	if err := os.WriteFile(path, []byte("improve_codebase:\n  mode: sometimes\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadRepo(dir)
+	if err == nil {
+		t.Fatal("expected invalid improve_codebase.mode to fail")
+	}
+	if !strings.Contains(err.Error(), "invalid improve_codebase.mode") {
+		t.Fatalf("error = %q, want improve_codebase mode validation", err)
+	}
+}
+
+func TestMerge_ImproveCodebaseDefaultsAndOverrides(t *testing.T) {
+	global := &GlobalConfig{
+		Agent:           types.AgentAuto,
+		Agents:          []types.AgentName{types.AgentAuto},
+		CITimeout:       DefaultCITimeout,
+		LogLevel:        "info",
+		ImproveCodebase: ImproveCodebaseRaw{Mode: ImproveCodebaseModeOff},
+	}
+	repo := &RepoConfig{ImproveCodebase: ImproveCodebaseRaw{Mode: ImproveCodebaseModeAlways}}
+
+	cfg := Merge(global, repo)
+	if cfg.ImproveCodebase.Mode != ImproveCodebaseModeAlways {
+		t.Fatalf("improve_codebase.mode = %q, want repo override %q", cfg.ImproveCodebase.Mode, ImproveCodebaseModeAlways)
+	}
+
+	cfg = Merge(global, &RepoConfig{})
+	if cfg.ImproveCodebase.Mode != ImproveCodebaseModeOff {
+		t.Fatalf("improve_codebase.mode = %q, want global override %q", cfg.ImproveCodebase.Mode, ImproveCodebaseModeOff)
+	}
+
+	cfg = Merge(&GlobalConfig{Agent: types.AgentAuto, Agents: []types.AgentName{types.AgentAuto}}, &RepoConfig{})
+	if cfg.ImproveCodebase.Mode != ImproveCodebaseModeAuto {
+		t.Fatalf("improve_codebase.mode = %q, want default %q", cfg.ImproveCodebase.Mode, ImproveCodebaseModeAuto)
 	}
 }

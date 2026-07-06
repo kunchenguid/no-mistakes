@@ -10,12 +10,12 @@ import (
 func TestParseSkipPushOptions(t *testing.T) {
 	got, err := parseSkipPushOptions([]string{
 		"ci.skip",
-		"no-mistakes.skip=test,lint",
+		"no-mistakes.skip=improve-codebase,test,lint",
 	})
 	if err != nil {
 		t.Fatalf("parseSkipPushOptions() error = %v", err)
 	}
-	want := []types.StepName{types.StepTest, types.StepLint}
+	want := []types.StepName{types.StepImproveCodebase, types.StepTest, types.StepLint}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("parseSkipPushOptions() = %v, want %v", got, want)
 	}

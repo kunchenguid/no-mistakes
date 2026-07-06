@@ -99,6 +99,15 @@ func TestGateResolution(t *testing.T) {
 			wantAction: types.ActionApprove,
 		},
 		{
+			name: "improve-codebase audit gate is approved instead of fixed",
+			gate: stepView{
+				Name:         string(types.StepImproveCodebase),
+				Status:       string(types.StepStatusAwaitingApproval),
+				FindingsJSON: `{"findings":[{"id":"improve-codebase-1","severity":"warning","description":"structural risk","action":"ask-user"}],"summary":"1"}`,
+			},
+			wantAction: types.ActionApprove,
+		},
+		{
 			name: "no findings are approved",
 			gate: stepView{
 				Name:         "push",

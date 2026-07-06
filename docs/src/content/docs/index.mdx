@@ -37,7 +37,7 @@ flowchart LR
   subgraph after[" With no-mistakes "]
     direction TB
     E["Local branch"] -->|"git push no-mistakes"| F["Local gate"]
-    F --> G["Rebase, review, test, docs, lint"]
+    F --> G["Rebase, review, improve-codebase, test, docs, lint"]
     G --> H["Push branch + open PR"]
     H --> I["Watch CI + auto-fix"]
   end

@@ -24,10 +24,14 @@ func (m Model) awaitingActionState() (showSelectionActions bool, allowFix bool, 
 	totalCount = len(items)
 	selected, ok := m.findingSelections[step.StepName]
 	if !ok {
-		return true, true, totalCount, totalCount
+		return true, canFixStep(step.StepName), totalCount, totalCount
 	}
 	selectedCount = len(selected)
-	return true, selectedCount > 0, selectedCount, totalCount
+	return true, canFixStep(step.StepName) && selectedCount > 0, selectedCount, totalCount
+}
+
+func canFixStep(step types.StepName) bool {
+	return step != types.StepImproveCodebase
 }
 
 // findingItems returns the complete list of findings rendered for the step,
