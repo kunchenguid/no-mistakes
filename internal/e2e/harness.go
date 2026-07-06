@@ -668,9 +668,21 @@ func (h *Harness) shutdown() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, h.NMBin, "daemon", "stop")
-	cmd.Dir = h.WorkDir
+	cmd.Dir = h.daemonStopDir()
 	cmd.Env = os.Environ()
 	_ = cmd.Run()
+}
+
+func (h *Harness) daemonStopDir() string {
+	for _, dir := range []string{h.WorkDir, h.HomeDir, os.TempDir()} {
+		if dir == "" {
+			continue
+		}
+		if info, err := os.Stat(dir); err == nil && info.IsDir() {
+			return dir
+		}
+	}
+	return "."
 }
 
 // ---- Binary build cache ----

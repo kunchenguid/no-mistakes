@@ -97,6 +97,16 @@ func TestCommitChangeCreatesMissingBranchFromMain(t *testing.T) {
 	}
 }
 
+func TestDaemonStopDirFallsBackWhenWorkDirMoved(t *testing.T) {
+	workDir := filepath.Join(t.TempDir(), "missing-work")
+	homeDir := t.TempDir()
+	h := &Harness{WorkDir: workDir, HomeDir: homeDir}
+
+	if got := h.daemonStopDir(); got != homeDir {
+		t.Fatalf("daemonStopDir() = %q, want home dir %q", got, homeDir)
+	}
+}
+
 func TestWaitForRunPrefersNewestRunOnBranch(t *testing.T) {
 	nmHome, err := os.MkdirTemp("/tmp", "nm-e2e-")
 	if err != nil {
