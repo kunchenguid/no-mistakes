@@ -82,6 +82,7 @@ Runs a read-only structural/change-set gate after review and before tests.
 - In `auto` mode, skips small isolated changes and runs when the change-set has structural risk signals such as cross-directory moves, high-risk config or workflow changes, public-surface/boundary files, many source files, or a large diff.
 - Set `improve_codebase.mode: always` in global or trusted default-branch repo config to run it for every change-set.
 - Set `improve_codebase.mode: off` in global or trusted default-branch repo config to disable it.
+- Filters out files matching `ignore_patterns` before deciding whether to run and before prompting the audit agent.
 - Asks the configured agent to use the local `improve-codebase` skill as a narrowed, read-only audit of changed files, touched areas, callers, tests, configs, and module boundaries.
 - Enforces read-only mode through the agent adapter when available: Claude runs in plan mode, Codex runs with a read-only sandbox, and OpenCode sessions deny edit and bash permissions. Agents without an enforced read-only mode fail this step before launch.
 - Does not edit files, create audit artifacts, run tests, format, or commit changes.

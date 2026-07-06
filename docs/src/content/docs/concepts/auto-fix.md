@@ -71,7 +71,7 @@ Agent-driven findings now use an `action` field instead of `requires_human_revie
 In the TUI, yolo mode is an explicit override that auto-resolves paused steps by treating `auto-fix` and `ask-user` findings on fixable gates as consent to run one fix round.
 Audit-only improve-codebase gates and gates with only `no-op` findings are approved as-is.
 
-The `review`, `test`, and configured-command `lint` steps use this shared model directly. The `document` step also uses the same `action` field, but unresolved documentation findings pause for approval because the initial document pass already attempted the documentation updates it could make safely.
+The `review`, `improve-codebase`, `test`, and configured-command `lint` steps use this shared model directly. Improve-codebase normalizes findings to `ask-user` or `no-op` because it is audit-only and cannot be fixed. The `document` step also uses the same `action` field, but unresolved documentation findings pause for approval because the initial document pass already attempted the documentation updates it could make safely.
 When `commands.lint` is empty, lint findings describe issues left after the agent already attempted safe fixes, so they pause for approval instead of remaining eligible for another automatic fix loop.
 
 Documentation findings use the same approval UI, but the `document` step treats any finding as an unresolved documentation gap or judgment call that should pause for approval.

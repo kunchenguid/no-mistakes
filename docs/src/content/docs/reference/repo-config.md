@@ -127,7 +127,7 @@ Do not rely on a configured command to leave a background server or watcher runn
 
 ### ignore_patterns
 
-Paths to exclude from review and documentation checks.
+Paths to exclude from review, improve-codebase, and documentation checks.
 
 | | |
 |---|---|

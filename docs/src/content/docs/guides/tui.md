@@ -52,6 +52,8 @@ Shows the branch name and run status in the header, followed by each step:
   │
   ⏸ Review     - awaiting approval       2/3 fixed
   │
+  ○ Improve Codebase
+  │
   ○ Test
   │
   ○ Document

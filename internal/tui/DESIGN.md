@@ -45,6 +45,8 @@ Steps connected by a vertical line to convey flow:
 ```
   ✓ Review  1.2s                  2/3 fixed
   │
+  ○ Improve Codebase
+  │
   ⏸ Test - awaiting approval
   │
   ○ Lint

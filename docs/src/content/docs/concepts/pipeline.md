@@ -83,7 +83,7 @@ You can't reorder steps. You *can*:
 - Store test evidence locally by default or opt into committed in-repo evidence with `test.evidence.store_in_repo`.
 - Control auto-fix limits per step.
 - Set `improve_codebase.mode` to `auto`, `always`, or `off` in global or trusted default-branch repo config.
-- Ignore paths during review and documentation checks.
+- Ignore paths during review, improve-codebase, and documentation checks.
 - Disable or tune transcript-based intent extraction when intent is not supplied directly.
 - Skip steps for one run with `no-mistakes --skip <steps>`, `git push -o no-mistakes.skip=<steps>`, `no-mistakes axi run --skip <steps>`, or from the TUI.
 

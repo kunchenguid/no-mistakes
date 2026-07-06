@@ -77,8 +77,8 @@ agent_args_override:
     - gpt-5.4
     - --full-auto
 
-# How long the CI step monitors an open PR (provider CI status plus GitHub/GitLab
-# mergeability) with no base-branch movement before giving up. Each base-branch
+# How long the CI step monitors an open PR (provider CI status plus GitHub,
+# GitLab, or Azure DevOps mergeability) with no base-branch movement before giving up. Each base-branch
 # advance re-arms the timer, so an actively-updated green PR keeps its monitor.
 # Use "unlimited" (or aliases "none", "off", "never", or any non-positive
 # duration) to monitor until the PR is merged, closed, or aborted.
@@ -145,7 +145,7 @@ commands:
   test: "go test -race ./..."
   format: "gofmt -w ."
 
-# Ignore these paths during review and documentation checks.
+# Ignore these paths during review, improve-codebase, and documentation checks.
 ignore_patterns:
   - "*.generated.go"
   - "vendor/**"
@@ -201,7 +201,7 @@ For lint, that gap includes safe formatter and linter fixes during the initial l
 
 ## Ignore pattern rules
 
-Patterns in `ignore_patterns` control which files are excluded from review and documentation checks:
+Patterns in `ignore_patterns` control which files are excluded from review, improve-codebase, and documentation checks:
 
 | Pattern | Match rule |
 |---|---|

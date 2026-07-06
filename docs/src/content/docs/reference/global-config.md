@@ -159,6 +159,7 @@ Smart defaults:
 
 - For `claude`, supplying `--permission-mode` (or `--dangerously-skip-permissions`) suppresses the default `--dangerously-skip-permissions`.
 - For `codex`, supplying `--ask-for-approval`, `--sandbox`, or `--dangerously-bypass-approvals-and-sandbox` suppresses the default `--dangerously-bypass-approvals-and-sandbox`.
+- Read-only audit invocations override conflicting Claude permission flags with `--permission-mode plan` and conflicting Codex sandbox flags with `--sandbox read-only`.
 
 Permission and sandbox flags affect the underlying agent, but they do not disable no-mistakes' pipeline prompt steering.
 Pipeline agents are still told to keep intentional writes inside the worktree and avoid mutating system state outside it.
