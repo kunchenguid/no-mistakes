@@ -115,6 +115,34 @@ func TestImproveCodebaseStep_CleansAgentWorktreeChanges(t *testing.T) {
 	}
 }
 
+func TestImproveCodebaseStep_CleansAfterRunContextCancelled(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	ag := &mockAgent{runFn: func(_ context.Context, _ agent.RunOpts) (*agent.Result, error) {
+		mustWriteFile(t, filepath.Join(dir, "agent-artifact.md"), "should not survive\n")
+		cancel()
+		return &agent.Result{Output: []byte(`{"findings":[],"summary":"clear"}`)}, nil
+	}}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Ctx = ctx
+	sctx.Config.ImproveCodebase.Mode = config.ImproveCodebaseModeAlways
+
+	_, err := (&ImproveCodebaseStep{}).Execute(sctx)
+	if err == nil {
+		t.Fatal("expected read-only violation")
+	}
+	if !strings.Contains(err.Error(), "modified the worktree") {
+		t.Fatalf("error = %v, want read-only violation", err)
+	}
+	if status := gitStatusPorcelain(t, dir); status != "" {
+		t.Fatalf("worktree status = %q, want clean after cleanup", status)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "agent-artifact.md")); !os.IsNotExist(err) {
+		t.Fatalf("agent artifact stat err = %v, want not exist", err)
+	}
+}
+
 func TestImproveCodebaseStep_RestoresAgentHeadChanges(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
@@ -261,7 +289,7 @@ func TestImproveCodebaseStep_RemovesCreatedProtectedRef(t *testing.T) {
 	}
 }
 
-func TestImproveCodebaseStep_FailsWithoutDeletingCreatedUnownedRefs(t *testing.T) {
+func TestImproveCodebaseStep_IgnoresUnownedSharedRefs(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
@@ -272,12 +300,12 @@ func TestImproveCodebaseStep_FailsWithoutDeletingCreatedUnownedRefs(t *testing.T
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Config.ImproveCodebase.Mode = config.ImproveCodebaseModeAlways
 
-	_, err := (&ImproveCodebaseStep{}).Execute(sctx)
-	if err == nil {
-		t.Fatal("expected read-only violation")
+	outcome, err := (&ImproveCodebaseStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(err.Error(), "modified the worktree") {
-		t.Fatalf("error = %v, want read-only violation", err)
+	if outcome.NeedsApproval {
+		t.Fatal("unowned shared ref changes should not block this worktree-local gate")
 	}
 	if got := gitCmd(t, dir, "rev-parse", "refs/tags/agent-tag"); got != headSHA {
 		t.Fatalf("created tag = %s, want %s", got, headSHA)
