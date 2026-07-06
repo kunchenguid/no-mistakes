@@ -2,10 +2,12 @@
 package github
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"strings"
 	"time"
@@ -320,11 +322,14 @@ func isUnsupportedJSONFlagError(stderr []byte) bool {
 	return strings.Contains(msg, "unknown flag") && strings.Contains(msg, "--json")
 }
 
-// getChecksLegacy re-runs `gh pr checks` without --json for gh CLIs older
-// than v2.46 and parses the tab-separated output (name, bucket, elapsed,
-// url, description). CompletedAt is not available in this format, so CI
-// re-run detection degrades gracefully on old gh versions.
+// getChecksLegacy reads checks through structured REST endpoints for gh CLIs
+// older than v2.46. Unscoped hosts retain the tab-separated fallback used by
+// legacy callers that do not provide a repository slug.
 func (h *Host) getChecksLegacy(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
+	if h.repo != "" {
+		return h.getChecksLegacyStructured(ctx, pr)
+	}
+
 	args := append([]string{"pr", "checks", pr.Number}, h.repoArgs()...)
 	cmd := h.cmd(ctx, "gh", args...)
 	out, err := cmd.Output()
@@ -352,6 +357,140 @@ func (h *Host) getChecksLegacy(ctx context.Context, pr *scm.PR) ([]scm.Check, er
 		return nil, parseErr
 	}
 	return checks, nil
+}
+
+type legacyCheckRun struct {
+	Name        string `json:"name"`
+	Status      string `json:"status"`
+	Conclusion  string `json:"conclusion"`
+	CompletedAt string `json:"completed_at"`
+}
+
+func (h *Host) getChecksLegacyStructured(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
+	headArgs := append([]string{"pr", "view", pr.Number}, h.repoArgs()...)
+	headArgs = append(headArgs, "--json", "headRefOid")
+	headOut, err := h.cmd(ctx, "gh", headArgs...).Output()
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		return nil, fmt.Errorf("gh pr view head: %w", err)
+	}
+	var head struct {
+		OID string `json:"headRefOid"`
+	}
+	if err := json.Unmarshal(headOut, &head); err != nil {
+		return nil, fmt.Errorf("parse PR head: %w", err)
+	}
+	head.OID = strings.TrimSpace(head.OID)
+	if head.OID == "" {
+		return nil, errors.New("parse PR head: empty headRefOid")
+	}
+
+	endpoint := fmt.Sprintf("repos/%s/commits/%s/check-runs", h.apiRepoSlug(), head.OID)
+	runsOut, err := h.cmd(ctx, "gh", h.apiArgs(endpoint, "--paginate")...).Output()
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		return nil, fmt.Errorf("gh api check-runs: %w", err)
+	}
+	runs, err := decodeLegacyCheckRuns(runsOut)
+	if err != nil {
+		return nil, err
+	}
+
+	endpoint = fmt.Sprintf("repos/%s/commits/%s/status", h.apiRepoSlug(), head.OID)
+	statusOut, err := h.cmd(ctx, "gh", h.apiArgs(endpoint)...).Output()
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		return nil, fmt.Errorf("gh api commit status: %w", err)
+	}
+	var statusPayload struct {
+		Statuses []struct {
+			Context string `json:"context"`
+			State   string `json:"state"`
+		} `json:"statuses"`
+	}
+	if err := json.Unmarshal(statusOut, &statusPayload); err != nil {
+		return nil, fmt.Errorf("parse commit statuses: %w", err)
+	}
+
+	checks := make([]scm.Check, 0, len(runs)+len(statusPayload.Statuses))
+	for _, run := range runs {
+		checks = append(checks, scm.Check{
+			Name:        run.Name,
+			Bucket:      legacyCheckRunBucket(run.Status, run.Conclusion),
+			CompletedAt: parseGitHubTime(run.CompletedAt),
+		})
+	}
+	for _, status := range statusPayload.Statuses {
+		checks = append(checks, scm.Check{
+			Name:   status.Context,
+			Bucket: normalizeCheckBucket("", status.State),
+		})
+	}
+	return checks, nil
+}
+
+func (h *Host) apiRepoSlug() string {
+	repo := strings.TrimSpace(h.repo)
+	if h.host != "" {
+		repo = strings.TrimPrefix(repo, strings.TrimSpace(h.host)+"/")
+	}
+	return repo
+}
+
+func (h *Host) apiArgs(endpoint string, extra ...string) []string {
+	args := []string{"api"}
+	if h.host != "" && !strings.EqualFold(h.host, "github.com") {
+		args = append(args, "--hostname", h.host)
+	}
+	args = append(args, endpoint)
+	return append(args, extra...)
+}
+
+func decodeLegacyCheckRuns(out []byte) ([]legacyCheckRun, error) {
+	decoder := json.NewDecoder(bytes.NewReader(out))
+	var runs []legacyCheckRun
+	seenPayload := false
+	for {
+		var payload struct {
+			CheckRuns []legacyCheckRun `json:"check_runs"`
+		}
+		err := decoder.Decode(&payload)
+		if errors.Is(err, io.EOF) {
+			if !seenPayload {
+				return nil, errors.New("parse check-runs: empty response")
+			}
+			return runs, nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf("parse check-runs: %w", err)
+		}
+		seenPayload = true
+		runs = append(runs, payload.CheckRuns...)
+	}
+}
+
+func legacyCheckRunBucket(status, conclusion string) scm.CheckBucket {
+	if !strings.EqualFold(strings.TrimSpace(status), "completed") {
+		return scm.CheckBucketPending
+	}
+	if bucket := normalizeCheckBucket("", conclusion); bucket != "" {
+		return bucket
+	}
+	return scm.CheckBucketPending
+}
+
+func parseGitHubTime(raw string) time.Time {
+	parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(raw))
+	if err != nil {
+		return time.Time{}
+	}
+	return parsed
 }
 
 // parseChecksTSV parses the plain `gh pr checks` table: one check per line,

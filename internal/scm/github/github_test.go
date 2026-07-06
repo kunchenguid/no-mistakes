@@ -315,6 +315,114 @@ func TestGetChecksFallsBackToLegacyOutputWhenJSONFlagUnsupported(t *testing.T) {
 	}
 }
 
+func TestLegacyCheckRunBucket(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		status     string
+		conclusion string
+		want       scm.CheckBucket
+	}{
+		{name: "success", status: "completed", conclusion: "success", want: scm.CheckBucketPass},
+		{name: "failure", status: "completed", conclusion: "failure", want: scm.CheckBucketFail},
+		{name: "timed out", status: "completed", conclusion: "timed_out", want: scm.CheckBucketFail},
+		{name: "action required", status: "completed", conclusion: "action_required", want: scm.CheckBucketFail},
+		{name: "startup failure", status: "completed", conclusion: "startup_failure", want: scm.CheckBucketFail},
+		{name: "cancelled", status: "completed", conclusion: "cancelled", want: scm.CheckBucketCancel},
+		{name: "skipped", status: "completed", conclusion: "skipped", want: scm.CheckBucketSkip},
+		{name: "neutral", status: "completed", conclusion: "neutral", want: scm.CheckBucketSkip},
+		{name: "stale", status: "completed", conclusion: "stale", want: scm.CheckBucketSkip},
+		{name: "queued", status: "queued", want: scm.CheckBucketPending},
+		{name: "in progress", status: "in_progress", want: scm.CheckBucketPending},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := legacyCheckRunBucket(tt.status, tt.conclusion)
+			if got != tt.want {
+				t.Fatalf("legacyCheckRunBucket(%q, %q) = %q, want %q", tt.status, tt.conclusion, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGetChecksLegacyUsesStructuredAPIsWhenRepoKnown(t *testing.T) {
+	t.Parallel()
+
+	page1 := `{"check_runs":[{"name":"build","status":"completed","conclusion":"success","completed_at":"2026-04-24T04:15:00Z"}]}`
+	page2 := `{"check_runs":[{"name":"deploy","status":"completed","conclusion":"cancelled","completed_at":"2026-04-24T04:16:00Z"},{"name":"test","status":"in_progress"}]}`
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr checks 123 --repo test/repo --json name,state,bucket,completedAt": {
+			stderr: "unknown flag: --json\n",
+			code:   1,
+		},
+		"gh pr view 123 --repo test/repo --json headRefOid": {
+			stdout: `{"headRefOid":"abc123"}` + "\n",
+		},
+		"gh api repos/test/repo/commits/abc123/check-runs --paginate": {
+			stdout: page1 + "\n" + page2 + "\n",
+		},
+		"gh api repos/test/repo/commits/abc123/status": {
+			stdout: `{"statuses":[{"context":"coverage","state":"success"},{"context":"external","state":"error"},{"context":"release","state":"pending"}]}` + "\n",
+		},
+	}), nil, "", "test/repo")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	want := []scm.Check{
+		{Name: "build", Bucket: scm.CheckBucketPass, CompletedAt: time.Date(2026, 4, 24, 4, 15, 0, 0, time.UTC)},
+		{Name: "deploy", Bucket: scm.CheckBucketCancel, CompletedAt: time.Date(2026, 4, 24, 4, 16, 0, 0, time.UTC)},
+		{Name: "test", Bucket: scm.CheckBucketPending},
+		{Name: "coverage", Bucket: scm.CheckBucketPass},
+		{Name: "external", Bucket: scm.CheckBucketFail},
+		{Name: "release", Bucket: scm.CheckBucketPending},
+	}
+	if len(checks) != len(want) {
+		t.Fatalf("checks = %+v, want %+v", checks, want)
+	}
+	for i := range want {
+		if checks[i].Name != want[i].Name || checks[i].Bucket != want[i].Bucket || !checks[i].CompletedAt.Equal(want[i].CompletedAt) {
+			t.Fatalf("checks[%d] = %+v, want %+v", i, checks[i], want[i])
+		}
+	}
+}
+
+func TestGetChecksLegacyStructuredReturnsEmptyWhenNoChecksExist(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr checks 123 --repo test/repo --json name,state,bucket,completedAt": {stderr: "unknown flag: --json\n", code: 1},
+		"gh pr view 123 --repo test/repo --json headRefOid":                      {stdout: `{"headRefOid":"abc123"}` + "\n"},
+		"gh api repos/test/repo/commits/abc123/check-runs --paginate":            {stdout: `{"check_runs":[]}` + "\n"},
+		"gh api repos/test/repo/commits/abc123/status":                           {stdout: `{"statuses":[]}` + "\n"},
+	}), nil, "", "test/repo")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 0 {
+		t.Fatalf("checks = %+v, want empty result", checks)
+	}
+}
+
+func TestGetChecksLegacyStructuredFailsClosedOnCommandError(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr checks 123 --repo test/repo --json name,state,bucket,completedAt": {stderr: "unknown flag: --json\n", code: 1},
+		"gh pr view 123 --repo test/repo --json headRefOid":                      {stdout: `{"headRefOid":"abc123"}` + "\n"},
+		"gh api repos/test/repo/commits/abc123/check-runs --paginate":            {stderr: "API unavailable\n", code: 1},
+	}), nil, "", "test/repo")
+
+	if _, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"}); err == nil {
+		t.Fatal("GetChecks() error = nil, want API failure")
+	}
+}
+
 func TestGetChecksLegacyFallbackReturnsEmptyWhenNoChecksReported(t *testing.T) {
 	t.Parallel()
 
