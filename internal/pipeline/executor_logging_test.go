@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -52,6 +53,84 @@ func TestExecutor_LogCallback(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected log message 'hello from review' in events, got: %v", logMessages)
+	}
+}
+
+func TestExecutor_LogCallbackTouchesStepActivity(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	step := &adaptiveCallStep{
+		name: types.StepReview,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			sctx.Log("heartbeat marker")
+			got, err := database.GetStepResult(sctx.StepResultID)
+			if err != nil {
+				t.Fatalf("get step result: %v", err)
+			}
+			if got.LastActivity == nil || !strings.Contains(*got.LastActivity, "heartbeat marker") {
+				t.Fatalf("last_activity = %v, want heartbeat marker", got.LastActivity)
+			}
+			return &StepOutcome{ExitCode: 0}, nil
+		},
+	}
+
+	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
+	if err := exec.Execute(context.Background(), run, repo, workDir); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+}
+
+type lifecycleTestAgent struct{}
+
+func (lifecycleTestAgent) Name() string { return "codex" }
+
+func (lifecycleTestAgent) Run(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+	if opts.OnLifecycle != nil {
+		opts.OnLifecycle(agent.LifecycleEvent{Agent: "codex", Phase: "start", PID: 4242, Message: "codex started pid=4242"})
+		opts.OnLifecycle(agent.LifecycleEvent{Agent: "codex", Phase: "exit", PID: 4242, Message: "codex exited pid=4242 status=success"})
+	}
+	return &agent.Result{Text: "ok"}, nil
+}
+
+func (lifecycleTestAgent) Close() error { return nil }
+
+func TestExecutor_AgentLifecycleLoggedAndClearsPID(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	step := &adaptiveCallStep{
+		name: types.StepReview,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			if _, err := sctx.Agent.Run(sctx.Ctx, agent.RunOpts{Prompt: "work", CWD: sctx.WorkDir}); err != nil {
+				t.Fatalf("agent run: %v", err)
+			}
+			return &StepOutcome{ExitCode: 0}, nil
+		},
+	}
+
+	exec := NewExecutor(database, p, nil, lifecycleTestAgent{}, []Step{step}, nil)
+	if err := exec.Execute(context.Background(), run, repo, workDir); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	logPath := filepath.Join(p.RunLogDir(run.ID), "review.log")
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	content := string(data)
+	for _, want := range []string{"codex started pid=4242", "codex exited pid=4242 status=success"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("log missing %q in:\n%s", want, content)
+		}
+	}
+	steps, err := database.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatalf("get steps: %v", err)
+	}
+	if steps[0].AgentPID != nil {
+		t.Fatalf("agent pid = %v, want nil after exit", steps[0].AgentPID)
 	}
 }
 

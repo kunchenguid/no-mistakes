@@ -35,6 +35,22 @@ type StepRound struct {
 	CreatedAt  int64
 }
 
+// StepRoundStats summarizes execution rounds for a step. It lets status
+// surfaces show whether a running/fixing step is in an initial pass or a fix
+// pass without reloading every round in callers.
+type StepRoundStats struct {
+	TotalRounds        int
+	FixRounds          int
+	LatestRound        int
+	LatestTrigger      string
+	LatestSelection    string
+	LatestRoundAt      int64
+	LatestFixRound     int
+	LatestFixRoundAt   int64
+	SelectedForFix     bool
+	AutoSelectedForFix bool
+}
+
 // IsFixRound reports whether this round was a fix attempt. Legacy "user_fix"
 // rounds count: they were fix rounds dispatched by an explicit user selection.
 func (r *StepRound) IsFixRound() bool {
@@ -60,6 +76,34 @@ func (d *DB) StepFixSummaries(stepResultID string) ([]string, error) {
 		summaries = append(summaries, summary)
 	}
 	return summaries, nil
+}
+
+// StepRoundStats returns aggregate round information for a step result.
+func (d *DB) StepRoundStats(stepResultID string) (StepRoundStats, error) {
+	rounds, err := d.GetRoundsByStep(stepResultID)
+	if err != nil {
+		return StepRoundStats{}, err
+	}
+	var stats StepRoundStats
+	for _, r := range rounds {
+		stats.TotalRounds++
+		stats.LatestRound = r.Round
+		stats.LatestTrigger = r.Trigger
+		stats.LatestRoundAt = r.CreatedAt
+		if r.SelectionSource != nil {
+			stats.LatestSelection = *r.SelectionSource
+		}
+		if r.SelectedFindingIDs != nil && *r.SelectedFindingIDs != "" {
+			stats.SelectedForFix = true
+			stats.AutoSelectedForFix = r.SelectionSource != nil && *r.SelectionSource == RoundSelectionSourceAutoFix
+		}
+		if r.IsFixRound() {
+			stats.FixRounds++
+			stats.LatestFixRound = stats.FixRounds
+			stats.LatestFixRoundAt = r.CreatedAt
+		}
+	}
+	return stats, nil
 }
 
 // InsertStepRound creates a new round record for a step result. fixSummary may

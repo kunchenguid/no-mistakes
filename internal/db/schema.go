@@ -25,18 +25,21 @@ CREATE TABLE IF NOT EXISTS runs (
 );
 
 CREATE TABLE IF NOT EXISTS step_results (
-    id            TEXT PRIMARY KEY,
-    run_id        TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
-    step_name     TEXT NOT NULL,
-    step_order    INTEGER NOT NULL,
-    status        TEXT NOT NULL DEFAULT 'pending',
-    exit_code     INTEGER,
-    duration_ms   INTEGER,
-    log_path      TEXT,
-    findings_json TEXT,
-    error         TEXT,
-    started_at    INTEGER,
-    completed_at  INTEGER
+    id               TEXT PRIMARY KEY,
+    run_id           TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    step_name        TEXT NOT NULL,
+    step_order       INTEGER NOT NULL,
+    status           TEXT NOT NULL DEFAULT 'pending',
+    exit_code        INTEGER,
+    duration_ms      INTEGER,
+    log_path         TEXT,
+    findings_json    TEXT,
+    error            TEXT,
+    started_at       INTEGER,
+    completed_at     INTEGER,
+    last_activity_at INTEGER,
+    last_activity    TEXT,
+    agent_pid        INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS step_rounds (
@@ -76,4 +79,7 @@ var migrationStatements = []string{
 	`ALTER TABLE runs ADD COLUMN intent_session_id TEXT`,
 	`ALTER TABLE runs ADD COLUMN intent_score REAL`,
 	`ALTER TABLE runs ADD COLUMN awaiting_agent_since INTEGER`,
+	`ALTER TABLE step_results ADD COLUMN last_activity_at INTEGER`,
+	`ALTER TABLE step_results ADD COLUMN last_activity TEXT`,
+	`ALTER TABLE step_results ADD COLUMN agent_pid INTEGER`,
 }

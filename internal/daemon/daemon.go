@@ -549,17 +549,20 @@ func runToInfo(d *db.DB, r *db.Run, steps []*db.StepResult) *ipc.RunInfo {
 
 func stepToInfo(d *db.DB, s *db.StepResult) ipc.StepResultInfo {
 	info := ipc.StepResultInfo{
-		ID:           s.ID,
-		RunID:        s.RunID,
-		StepName:     s.StepName,
-		StepOrder:    s.StepOrder,
-		Status:       s.Status,
-		ExitCode:     s.ExitCode,
-		DurationMS:   s.DurationMS,
-		FindingsJSON: s.FindingsJSON,
-		Error:        s.Error,
-		StartedAt:    s.StartedAt,
-		CompletedAt:  s.CompletedAt,
+		ID:             s.ID,
+		RunID:          s.RunID,
+		StepName:       s.StepName,
+		StepOrder:      s.StepOrder,
+		Status:         s.Status,
+		ExitCode:       s.ExitCode,
+		DurationMS:     s.DurationMS,
+		FindingsJSON:   s.FindingsJSON,
+		Error:          s.Error,
+		StartedAt:      s.StartedAt,
+		CompletedAt:    s.CompletedAt,
+		LastActivityAt: s.LastActivityAt,
+		LastActivity:   s.LastActivity,
+		AgentPID:       s.AgentPID,
 	}
 	if stats, err := d.StepFindingStats(s); err == nil {
 		info.ReportedFindings = stats.ReportedFindings
@@ -567,6 +570,10 @@ func stepToInfo(d *db.DB, s *db.StepResult) ipc.StepResultInfo {
 	}
 	if summaries, err := d.StepFixSummaries(s.ID); err == nil {
 		info.FixSummaries = summaries
+	}
+	if rounds, err := d.StepRoundStats(s.ID); err == nil {
+		info.RoundCount = rounds.TotalRounds
+		info.FixRoundCount = rounds.FixRounds
 	}
 	return info
 }

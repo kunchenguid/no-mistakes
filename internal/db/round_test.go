@@ -153,6 +153,39 @@ func TestStepFixSummaries(t *testing.T) {
 	}
 }
 
+func TestStepRoundStats(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
+	step, _ := d.InsertStepResult(run.ID, types.StepLint)
+
+	findings := `{"findings":[{"id":"lint-1","action":"auto-fix","description":"missing check"}]}`
+	round1, _ := d.InsertStepRound(step.ID, 1, "initial", &findings, nil, 800)
+	selected := `["lint-1"]`
+	if err := d.SetStepRoundSelection(round1.ID, &selected, RoundSelectionSourceAutoFix); err != nil {
+		t.Fatalf("set selection: %v", err)
+	}
+	fixSummary := "fix missing check"
+	d.InsertStepRound(step.ID, 2, "auto_fix", nil, &fixSummary, 600)
+
+	stats, err := d.StepRoundStats(step.ID)
+	if err != nil {
+		t.Fatalf("step round stats: %v", err)
+	}
+	if stats.TotalRounds != 2 {
+		t.Fatalf("total rounds = %d, want 2", stats.TotalRounds)
+	}
+	if stats.FixRounds != 1 {
+		t.Fatalf("fix rounds = %d, want 1", stats.FixRounds)
+	}
+	if stats.LatestRound != 2 || stats.LatestTrigger != "auto_fix" {
+		t.Fatalf("latest = round %d trigger %q, want round 2 auto_fix", stats.LatestRound, stats.LatestTrigger)
+	}
+	if !stats.SelectedForFix || !stats.AutoSelectedForFix {
+		t.Fatalf("selection flags = selected %v auto %v, want both true", stats.SelectedForFix, stats.AutoSelectedForFix)
+	}
+}
+
 func TestStepFixSummariesNoFixRounds(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")

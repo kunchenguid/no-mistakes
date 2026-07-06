@@ -178,6 +178,41 @@ func TestRunWithRetry_RetriesTransientThenSucceeds(t *testing.T) {
 	}
 }
 
+func TestRunWithRetry_EmitsRetryLifecycleWhenConfigured(t *testing.T) {
+	defer withFastBackoff(t)()
+
+	calls := 0
+	var chunks []string
+	var events []LifecycleEvent
+	opts := RunOpts{
+		OnChunk:     func(s string) { chunks = append(chunks, s) },
+		OnLifecycle: func(e LifecycleEvent) { events = append(events, e) },
+	}
+
+	_, err := runWithRetry(context.Background(), "codex", opts, 1, classifyTransient, nil, func() (*Result, error) {
+		calls++
+		if calls == 1 {
+			return nil, errors.New("API Error: 503 overloaded")
+		}
+		return &Result{Text: "ok"}, nil
+	})
+	if err != nil {
+		t.Fatalf("expected success after retry, got %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events = %v, want one retry lifecycle event", events)
+	}
+	if events[0].Agent != "codex" || events[0].Phase != LifecyclePhaseRetry {
+		t.Fatalf("event = %+v, want codex retry", events[0])
+	}
+	if !strings.Contains(events[0].Message, "attempt 2/2") || !strings.Contains(events[0].Message, "503") {
+		t.Fatalf("retry message = %q, want attempt and label", events[0].Message)
+	}
+	if len(chunks) != 0 {
+		t.Fatalf("OnChunk should not duplicate retry lifecycle events, got %v", chunks)
+	}
+}
+
 func TestRunWithRetry_CallsRetryRecoveryBeforeRetry(t *testing.T) {
 	defer withFastBackoff(t)()
 

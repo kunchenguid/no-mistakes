@@ -21,10 +21,20 @@ type Agent interface {
 
 // RunOpts configures a single agent invocation.
 type RunOpts struct {
-	Prompt     string
-	CWD        string
-	JSONSchema json.RawMessage   // structured output schema (optional)
-	OnChunk    func(text string) // streaming text callback (optional)
+	Prompt      string
+	CWD         string
+	JSONSchema  json.RawMessage      // structured output schema (optional)
+	OnChunk     func(text string)    // streaming text callback (optional)
+	OnLifecycle func(LifecycleEvent) // native agent lifecycle callback (optional)
+}
+
+// LifecycleEvent describes process-level activity for an agent invocation.
+// The pipeline records these as step log lines and active-step heartbeats.
+type LifecycleEvent struct {
+	Agent   string
+	Phase   string
+	PID     int
+	Message string
 }
 
 // Result holds the output of an agent invocation.

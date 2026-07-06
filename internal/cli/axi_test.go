@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 	toon "github.com/toon-format/toon-go"
@@ -145,6 +146,47 @@ func TestRunObjectRendersAwaitingAgent(t *testing.T) {
 	rv.Status = string(types.RunCompleted)
 	if out := axiDoc(runObjectField(rv)); strings.Contains(out, "awaiting_agent") {
 		t.Errorf("terminal run should not render awaiting_agent in:\n%s", out)
+	}
+}
+
+func TestRunObjectRendersActiveStepDiagnostics(t *testing.T) {
+	restore := nowUnix
+	nowUnix = func() int64 { return 1_000_000 }
+	defer func() { nowUnix = restore }()
+
+	started := int64(1_000_000 - 20*60)
+	last := int64(1_000_000 - 11*60)
+	pid := 4242
+	rv := runView{
+		ID:      "run-1",
+		Branch:  "feature/x",
+		Status:  string(types.RunRunning),
+		HeadSHA: "abcdef1234567890",
+		Steps: []stepView{
+			{
+				Name:           "review",
+				Status:         string(types.StepStatusFixing),
+				StartedAt:      &started,
+				LastActivityAt: &last,
+				LastActivity:   "codex started pid=4242",
+				AgentPID:       &pid,
+				FixRoundCount:  1,
+				AutoFixLimit:   3,
+				QuietWarning:   10 * time.Minute,
+			},
+		},
+	}
+	out := axiDoc(runObjectField(rv))
+
+	for _, want := range []string{
+		"active_steps[1]{step,status,active_for,last_activity,agent_pid,round}:\n",
+		"review,fixing,20m0s",
+		"quiet 11m0s ago: codex started pid=4242",
+		`,"4242",auto-fix 1/3`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("active diagnostics missing %q in:\n%s", want, out)
+		}
 	}
 }
 

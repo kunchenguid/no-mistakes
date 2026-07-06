@@ -71,6 +71,8 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 		return nil, fmt.Errorf("codex start: %w", err)
 	}
 	defer started.closePipes()
+	pid := started.pid()
+	emitAgentStarted(opts, "codex", pid)
 
 	stderrWG.Add(1)
 	go func() {
@@ -84,7 +86,9 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 	if err := parseCodexEvents(ctx, started.stdout, opts.OnChunk, &usage, &lastMessage, &codexErr); err != nil {
 		err = started.waitAfterParseError(err)
 		stderrWG.Wait()
-		return nil, fmt.Errorf("codex parse events: %w", err)
+		retErr := fmt.Errorf("codex parse events: %w", err)
+		emitAgentExited(opts, "codex", pid, retErr)
+		return nil, retErr
 	}
 
 	waitErr := started.wait()
@@ -97,10 +101,14 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 		} else if detail == "" {
 			detail = stderr
 		}
-		return nil, fmt.Errorf("codex exited: %w: %s", waitErr, detail)
+		retErr := fmt.Errorf("codex exited: %w: %s", waitErr, detail)
+		emitAgentExited(opts, "codex", pid, retErr)
+		return nil, retErr
 	}
 
-	return finalizeTextResult("codex", lastMessage, validationSchema, usage)
+	res, err := finalizeTextResult("codex", lastMessage, validationSchema, usage)
+	emitAgentExited(opts, "codex", pid, err)
+	return res, err
 }
 
 func (a *codexAgent) Close() error { return nil }

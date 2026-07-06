@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"errors"
-	"fmt"
 	"math/rand"
 	"regexp"
 	"strings"
@@ -53,7 +52,8 @@ func transientBackoffBaseDuration(attempt int, base time.Duration) time.Duration
 // runWithRetry invokes runOnce up to maxRetries+1 times, retrying when the
 // classifier marks the error as retriable. Between retries it sleeps with
 // exponential backoff (via transientBackoff) and respects ctx cancellation.
-// The retry attempt and classification label are surfaced to opts.OnChunk.
+// The retry attempt and classification label are surfaced to opts.OnLifecycle,
+// falling back to opts.OnChunk for older direct callers.
 func runWithRetry(
 	ctx context.Context,
 	name string,
@@ -67,12 +67,7 @@ func runWithRetry(
 	var lastLabel string
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
-			if opts.OnChunk != nil {
-				opts.OnChunk(fmt.Sprintf(
-					"%s retrying after transient error %q (attempt %d/%d)",
-					name, lastLabel, attempt+1, maxRetries+1,
-				))
-			}
+			emitAgentRetry(opts, name, lastLabel, attempt+1, maxRetries+1)
 			if err := transientBackoff(ctx, attempt); err != nil {
 				return nil, err
 			}

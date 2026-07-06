@@ -48,6 +48,8 @@ func (a *copilotAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, erro
 		return nil, fmt.Errorf("copilot start: %w", err)
 	}
 	defer started.closePipes()
+	pid := started.pid()
+	emitAgentStarted(opts, "copilot", pid)
 
 	stderrWG.Add(1)
 	go func() {
@@ -62,7 +64,9 @@ func (a *copilotAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, erro
 	if err := parseCopilotEvents(ctx, started.stdout, opts.OnChunk, &usage, &messages, &copilotErr, &exitCode); err != nil {
 		err = started.waitAfterParseError(err)
 		stderrWG.Wait()
-		return nil, fmt.Errorf("copilot parse events: %w", err)
+		retErr := fmt.Errorf("copilot parse events: %w", err)
+		emitAgentExited(opts, "copilot", pid, retErr)
+		return nil, retErr
 	}
 
 	waitErr := started.wait()
@@ -71,18 +75,28 @@ func (a *copilotAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, erro
 	detail := copilotErrorDetail(copilotErr, string(stderrBuf))
 	if waitErr != nil {
 		if detail != "" {
-			return nil, fmt.Errorf("copilot exited: %w: %s", waitErr, detail)
+			retErr := fmt.Errorf("copilot exited: %w: %s", waitErr, detail)
+			emitAgentExited(opts, "copilot", pid, retErr)
+			return nil, retErr
 		}
-		return nil, fmt.Errorf("copilot exited: %w", waitErr)
+		retErr := fmt.Errorf("copilot exited: %w", waitErr)
+		emitAgentExited(opts, "copilot", pid, retErr)
+		return nil, retErr
 	}
 	if exitCode != 0 {
 		if detail != "" {
-			return nil, fmt.Errorf("copilot reported exit code %d: %s", exitCode, detail)
+			retErr := fmt.Errorf("copilot reported exit code %d: %s", exitCode, detail)
+			emitAgentExited(opts, "copilot", pid, retErr)
+			return nil, retErr
 		}
-		return nil, fmt.Errorf("copilot reported exit code %d", exitCode)
+		retErr := fmt.Errorf("copilot reported exit code %d", exitCode)
+		emitAgentExited(opts, "copilot", pid, retErr)
+		return nil, retErr
 	}
 
-	return finalizeCopilotResult(messages, opts.JSONSchema, usage)
+	res, err := finalizeCopilotResult(messages, opts.JSONSchema, usage)
+	emitAgentExited(opts, "copilot", pid, err)
+	return res, err
 }
 
 // finalizeCopilotResult converts the assistant messages emitted during a run

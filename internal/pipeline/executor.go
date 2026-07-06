@@ -208,37 +208,75 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	if run != nil && run.Intent != nil {
 		userIntent = *run.Intent
 	}
+	touchLogActivity := func(text string) {
+		if activity := stepActivityFromLog(text); activity != "" {
+			if dbErr := e.db.TouchStepActivity(sr.ID, activity); dbErr != nil {
+				slog.Warn("failed to touch step activity in db", "step", stepName, "error", dbErr)
+			}
+		}
+	}
+	writeLog := func(text string) {
+		if text != "" {
+			prefix := ""
+			if !lastChunkNewline {
+				prefix = "\n"
+			}
+			text = prefix + strings.TrimRight(text, "\n") + "\n\n"
+			lastChunkNewline = true
+		}
+		e.emitLogChunk(run, repo, stepName, text)
+		fmt.Fprint(logFile, text)
+		touchLogActivity(text)
+	}
+	writeLogChunk := func(text string) {
+		if text != "" {
+			lastChunkNewline = strings.HasSuffix(text, "\n")
+		}
+		e.emitLogChunk(run, repo, stepName, text)
+		fmt.Fprint(logFile, text)
+		touchLogActivity(text)
+	}
+	onAgentLifecycle := func(event agent.LifecycleEvent) {
+		text := event.Message
+		if text == "" {
+			text = fmt.Sprintf("%s %s", event.Agent, event.Phase)
+		}
+		switch event.Phase {
+		case agent.LifecyclePhaseStart:
+			pid := event.PID
+			if dbErr := e.db.SetStepAgentActivity(sr.ID, text, &pid); dbErr != nil {
+				slog.Warn("failed to set step agent activity in db", "step", stepName, "error", dbErr)
+			}
+		case agent.LifecyclePhaseExit:
+			if dbErr := e.db.SetStepAgentActivity(sr.ID, text, nil); dbErr != nil {
+				slog.Warn("failed to set step agent activity in db", "step", stepName, "error", dbErr)
+			}
+		default:
+			if dbErr := e.db.TouchStepActivity(sr.ID, text); dbErr != nil {
+				slog.Warn("failed to touch step activity in db", "step", stepName, "error", dbErr)
+			}
+		}
+		writeLog(text)
+	}
+	stepAgent := e.agent
+	if stepAgent != nil {
+		stepAgent = &lifecycleAgent{inner: stepAgent, onLifecycle: onAgentLifecycle}
+	}
 	sctx := &StepContext{
 		Ctx:          ctx,
 		Run:          run,
 		Repo:         repo,
 		WorkDir:      workDir,
-		Agent:        e.agent,
+		Agent:        stepAgent,
 		Config:       e.config,
 		DB:           e.db,
 		StepResultID: sr.ID,
 		UserIntent:   userIntent,
-		Log: func(text string) {
-			if text != "" {
-				prefix := ""
-				if !lastChunkNewline {
-					prefix = "\n"
-				}
-				text = prefix + strings.TrimRight(text, "\n") + "\n\n"
-				lastChunkNewline = true
-			}
-			e.emitLogChunk(run, repo, stepName, text)
-			fmt.Fprint(logFile, text)
-		},
-		LogChunk: func(text string) {
-			if text != "" {
-				lastChunkNewline = strings.HasSuffix(text, "\n")
-			}
-			e.emitLogChunk(run, repo, stepName, text)
-			fmt.Fprint(logFile, text)
-		},
+		Log:          writeLog,
+		LogChunk:     writeLogChunk,
 		LogFile: func(text string) {
 			fmt.Fprintln(logFile, text)
+			touchLogActivity(text)
 		},
 	}
 
@@ -266,6 +304,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			// stderr from a rejected push); without this the step log shows the
 			// work starting but never why it stopped.
 			fmt.Fprintf(logFile, "\nerror: %s\n", err.Error())
+			touchLogActivity("error: " + err.Error())
 			if dbErr := e.db.FailStep(sr.ID, err.Error(), durationMS); dbErr != nil {
 				slog.Warn("failed to mark step as failed in db", "step", stepName, "error", dbErr)
 			}
@@ -321,6 +360,8 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 				telemetry.Track("fix", e.fixTelemetryFields("auto", stepName, findingsCount(fixableFindings), autoFixAttempts))
 				slog.Info("auto-fixing step", "step", stepName, "attempt", autoFixAttempts, "max", autoFixLimit)
 				executionMS += time.Since(phaseStart).Milliseconds()
+				fixCount := findingsCount(fixableFindings)
+				writeLog(fmt.Sprintf("auto-fix round %d/%d starting after round %d (%d %s)", autoFixAttempts, autoFixLimit, roundNum, fixCount, pluralize(fixCount, "finding", "findings")))
 				if dbErr := e.db.UpdateStepStatus(sr.ID, types.StepStatusFixing); dbErr != nil {
 					slog.Warn("failed to update step status in db", "step", stepName, "status", "fixing", "error", dbErr)
 				}
@@ -441,6 +482,8 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			telemetry.Track("fix", e.fixTelemetryFields("user", stepName, selectedFindingCount(outcome.Findings, response.findingIDs), 0))
 			// Fix - mark step as fixing, resume execution timer, re-execute.
 			phaseStart = time.Now()
+			selectedCount := selectedFindingCount(outcome.Findings, response.findingIDs)
+			writeLog(fmt.Sprintf("user-fix round starting after round %d (%d %s selected)", roundNum, selectedCount, pluralize(selectedCount, "finding", "findings")))
 			if dbErr := e.db.UpdateStepStatus(sr.ID, types.StepStatusFixing); dbErr != nil {
 				slog.Warn("failed to update step status in db", "step", stepName, "status", "fixing", "error", dbErr)
 			}
@@ -491,6 +534,65 @@ func roundInsertID(_ string, inserted *db.StepRound, err error) string {
 		return ""
 	}
 	return inserted.ID
+}
+
+type lifecycleAgent struct {
+	inner       agent.Agent
+	onLifecycle func(agent.LifecycleEvent)
+}
+
+func (a *lifecycleAgent) Name() string {
+	return a.inner.Name()
+}
+
+func (a *lifecycleAgent) Run(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+	previous := opts.OnLifecycle
+	opts.OnLifecycle = func(event agent.LifecycleEvent) {
+		if previous != nil {
+			previous(event)
+		}
+		if a.onLifecycle != nil {
+			a.onLifecycle(event)
+		}
+	}
+	return a.inner.Run(ctx, opts)
+}
+
+func (a *lifecycleAgent) Close() error {
+	return a.inner.Close()
+}
+
+const maxStepActivityText = 240
+
+func stepActivityFromLog(text string) string {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return ""
+	}
+	lines := strings.Split(trimmed, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		return "log: " + truncateActivity(line)
+	}
+	return ""
+}
+
+func truncateActivity(text string) string {
+	runes := []rune(text)
+	if len(runes) <= maxStepActivityText {
+		return text
+	}
+	return string(runes[:maxStepActivityText]) + "..."
+}
+
+func pluralize(n int, singular, plural string) string {
+	if n == 1 {
+		return singular
+	}
+	return plural
 }
 
 // waitForApproval blocks until a user action arrives or context is cancelled.

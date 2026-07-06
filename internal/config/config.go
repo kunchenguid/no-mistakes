@@ -30,6 +30,9 @@ import (
 const (
 	// DefaultCITimeout is the monitor's idle timeout when ci_timeout is unset.
 	DefaultCITimeout = 7 * 24 * time.Hour
+	// DefaultStepQuietWarning is how long a running/fixing step can go without
+	// a new log or lifecycle activity before AXI status marks it quiet.
+	DefaultStepQuietWarning = 10 * time.Minute
 	// CITimeoutUnlimited is the sentinel meaning "monitor until the PR is
 	// merged, closed, or the run is aborted - never self-terminate".
 	// Any non-positive ci_timeout, or the keywords "unlimited", "none",
@@ -46,6 +49,7 @@ type GlobalConfig struct {
 	AgentPathOverride    map[string]string   `yaml:"agent_path_override"`
 	AgentArgsOverride    map[string][]string `yaml:"agent_args_override"`
 	CITimeout            time.Duration       `yaml:"-"`
+	StepQuietWarning     time.Duration       `yaml:"-"`
 	LogLevel             string              `yaml:"log_level"`
 	AutoFix              AutoFixRaw
 	Intent               IntentRaw
@@ -61,6 +65,7 @@ type globalConfigRaw struct {
 	AgentArgsOverride    map[string][]string `yaml:"agent_args_override"`
 	CITimeout            string              `yaml:"ci_timeout"`
 	BabysitTimeout       string              `yaml:"babysit_timeout"`
+	StepQuietWarning     string              `yaml:"step_quiet_warning"`
 	LogLevel             string              `yaml:"log_level"`
 	AutoFix              AutoFixRaw          `yaml:"auto_fix"`
 	Intent               IntentRaw           `yaml:"intent"`
@@ -149,6 +154,7 @@ type Config struct {
 	AgentPathOverride    map[string]string
 	AgentArgsOverride    map[string][]string
 	CITimeout            time.Duration
+	StepQuietWarning     time.Duration
 	LogLevel             string
 	Commands             Commands
 	IgnorePatterns       []string
@@ -271,6 +277,11 @@ agent: auto
 # non-positive duration to monitor until the PR is merged, closed, or the run is
 # aborted with: no-mistakes axi abort --run <id>
 ci_timeout: "168h"
+
+# AXI status marks a running/fixing step as quiet when no step log or native
+# agent lifecycle activity has appeared for this long. This is observability
+# only; it never cancels work.
+step_quiet_warning: "10m"
 
 # Log level for daemon output
 # Options: debug, info, warn, error
@@ -638,10 +649,11 @@ func EnsureDefaultGlobalConfig(path string) {
 // LoadGlobal reads global config from path. Returns defaults if file doesn't exist.
 func LoadGlobal(path string) (*GlobalConfig, error) {
 	cfg := &GlobalConfig{
-		Agent:     types.AgentAuto,
-		Agents:    []types.AgentName{types.AgentAuto},
-		CITimeout: DefaultCITimeout,
-		LogLevel:  "info",
+		Agent:            types.AgentAuto,
+		Agents:           []types.AgentName{types.AgentAuto},
+		CITimeout:        DefaultCITimeout,
+		StepQuietWarning: DefaultStepQuietWarning,
+		LogLevel:         "info",
 	}
 
 	data, err := os.ReadFile(path)
@@ -688,6 +700,15 @@ func LoadGlobal(path string) (*GlobalConfig, error) {
 			return nil, err
 		}
 		cfg.CITimeout = d
+	}
+	if raw.StepQuietWarning != "" {
+		d, err := time.ParseDuration(raw.StepQuietWarning)
+		if err != nil {
+			return nil, fmt.Errorf("parse step_quiet_warning %q: %w", raw.StepQuietWarning, err)
+		}
+		if d > 0 {
+			cfg.StepQuietWarning = d
+		}
 	}
 	if raw.LogLevel != "" {
 		cfg.LogLevel = raw.LogLevel
@@ -947,6 +968,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		AgentPathOverride:    global.AgentPathOverride,
 		AgentArgsOverride:    global.AgentArgsOverride,
 		CITimeout:            global.CITimeout,
+		StepQuietWarning:     global.StepQuietWarning,
 		LogLevel:             global.LogLevel,
 		Commands:             repo.Commands,
 		IgnorePatterns:       repo.IgnorePatterns,

@@ -23,6 +23,9 @@ func TestLoadGlobal_Defaults(t *testing.T) {
 	if cfg.CITimeout != DefaultCITimeout {
 		t.Errorf("ci_timeout = %v, want %v", cfg.CITimeout, DefaultCITimeout)
 	}
+	if cfg.StepQuietWarning != DefaultStepQuietWarning {
+		t.Errorf("step_quiet_warning = %v, want %v", cfg.StepQuietWarning, DefaultStepQuietWarning)
+	}
 	if cfg.LogLevel != "info" {
 		t.Errorf("log_level = %q, want %q", cfg.LogLevel, "info")
 	}
@@ -45,6 +48,7 @@ func TestEnsureDefaultGlobalConfig_CreatesFile(t *testing.T) {
 	for _, want := range []string{
 		"agent: auto",
 		"ci_timeout:",
+		"step_quiet_warning:",
 		"log_level: info",
 		"# agent_path_override:",
 	} {
@@ -70,8 +74,27 @@ func TestEnsureDefaultGlobalConfig_CreatedConfigIsLoadable(t *testing.T) {
 	if cfg.CITimeout != DefaultCITimeout {
 		t.Errorf("ci_timeout = %v, want %v", cfg.CITimeout, DefaultCITimeout)
 	}
+	if cfg.StepQuietWarning != DefaultStepQuietWarning {
+		t.Errorf("step_quiet_warning = %v, want %v", cfg.StepQuietWarning, DefaultStepQuietWarning)
+	}
 	if cfg.LogLevel != "info" {
 		t.Errorf("log_level = %q, want %q", cfg.LogLevel, "info")
+	}
+}
+
+func TestLoadGlobal_StepQuietWarning(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("step_quiet_warning: 90s\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadGlobal(path)
+	if err != nil {
+		t.Fatalf("LoadGlobal: %v", err)
+	}
+	if cfg.StepQuietWarning != 90*time.Second {
+		t.Fatalf("step_quiet_warning = %v, want 90s", cfg.StepQuietWarning)
 	}
 }
 

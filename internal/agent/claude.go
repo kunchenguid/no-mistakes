@@ -53,6 +53,8 @@ func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 		return nil, fmt.Errorf("claude start: %w", err)
 	}
 	defer started.closePipes()
+	pid := started.pid()
+	emitAgentStarted(opts, "claude", pid)
 
 	stderrWG.Add(1)
 	go func() {
@@ -65,17 +67,23 @@ func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 	if err := parseClaudeEvents(ctx, started.stdout, opts.OnChunk, &usage, &result); err != nil {
 		err = started.waitAfterParseError(err)
 		stderrWG.Wait()
-		return nil, fmt.Errorf("claude parse events: %w", err)
+		retErr := fmt.Errorf("claude parse events: %w", err)
+		emitAgentExited(opts, "claude", pid, retErr)
+		return nil, retErr
 	}
 
 	waitErr := started.wait()
 	stderrWG.Wait()
 	if waitErr != nil {
-		return nil, fmt.Errorf("claude exited: %w: %s", waitErr, string(stderrBuf))
+		retErr := fmt.Errorf("claude exited: %w: %s", waitErr, string(stderrBuf))
+		emitAgentExited(opts, "claude", pid, retErr)
+		return nil, retErr
 	}
 
 	if result == nil {
-		return nil, fmt.Errorf("claude returned no result event")
+		retErr := fmt.Errorf("claude returned no result event")
+		emitAgentExited(opts, "claude", pid, retErr)
+		return nil, retErr
 	}
 
 	res, err := finalizeClaudeResult(result, opts.JSONSchema, usage)
@@ -84,6 +92,7 @@ func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 			result.Subtype, len(result.text), usage.InputTokens, usage.OutputTokens))
 		opts.OnChunk(fmt.Sprintf("raw result event: %s", string(result.rawEvent)))
 	}
+	emitAgentExited(opts, "claude", pid, err)
 	return res, err
 }
 

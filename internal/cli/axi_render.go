@@ -30,6 +30,15 @@ type stepRow struct {
 	DurationMS int64  `toon:"duration_ms"`
 }
 
+type activeStepRow struct {
+	Step         string `toon:"step"`
+	Status       string `toon:"status"`
+	ActiveFor    string `toon:"active_for"`
+	LastActivity string `toon:"last_activity"`
+	AgentPID     string `toon:"agent_pid"`
+	Round        string `toon:"round"`
+}
+
 type findingRow struct {
 	ID          string `toon:"id"`
 	Severity    string `toon:"severity"`
@@ -62,11 +71,20 @@ type fixRow struct {
 // stepView is a render-ready view of a single pipeline step, decoupled from
 // whether it came from the daemon (ipc) or the local database.
 type stepView struct {
-	Name         string
-	Status       string
-	DurationMS   int64
-	FindingsJSON string
-	FixSummaries []string
+	ID             string
+	Name           string
+	Status         string
+	DurationMS     int64
+	FindingsJSON   string
+	FixSummaries   []string
+	StartedAt      *int64
+	LastActivityAt *int64
+	LastActivity   string
+	AgentPID       *int
+	RoundCount     int
+	FixRoundCount  int
+	AutoFixLimit   int
+	QuietWarning   time.Duration
 }
 
 // runView is a render-ready view of a pipeline run.
@@ -95,7 +113,20 @@ func runViewFromIPC(r *ipc.RunInfo) runView {
 		rv.PRURL = *r.PRURL
 	}
 	for _, s := range r.Steps {
-		sv := stepView{Name: string(s.StepName), Status: string(s.Status), FixSummaries: s.FixSummaries}
+		sv := stepView{
+			ID:             s.ID,
+			Name:           string(s.StepName),
+			Status:         string(s.Status),
+			FixSummaries:   s.FixSummaries,
+			StartedAt:      s.StartedAt,
+			LastActivityAt: s.LastActivityAt,
+			AgentPID:       s.AgentPID,
+			RoundCount:     s.RoundCount,
+			FixRoundCount:  s.FixRoundCount,
+		}
+		if s.LastActivity != nil {
+			sv.LastActivity = *s.LastActivity
+		}
 		if s.DurationMS != nil {
 			sv.DurationMS = *s.DurationMS
 		}
@@ -119,7 +150,17 @@ func runViewFromDB(r *db.Run, steps []*db.StepResult) runView {
 		rv.PRURL = *r.PRURL
 	}
 	for _, s := range steps {
-		sv := stepView{Name: string(s.StepName), Status: string(s.Status)}
+		sv := stepView{
+			ID:             s.ID,
+			Name:           string(s.StepName),
+			Status:         string(s.Status),
+			StartedAt:      s.StartedAt,
+			LastActivityAt: s.LastActivityAt,
+			AgentPID:       s.AgentPID,
+		}
+		if s.LastActivity != nil {
+			sv.LastActivity = *s.LastActivity
+		}
 		if s.DurationMS != nil {
 			sv.DurationMS = *s.DurationMS
 		}
@@ -240,6 +281,93 @@ func (rv runView) fixRows() []fixRow {
 	return rows
 }
 
+func (rv runView) activeRows() []activeStepRow {
+	var rows []activeStepRow
+	for _, s := range rv.Steps {
+		if s.Status != string(types.StepStatusRunning) && s.Status != string(types.StepStatusFixing) {
+			continue
+		}
+		rows = append(rows, activeStepRow{
+			Step:         s.Name,
+			Status:       s.Status,
+			ActiveFor:    s.activeFor(),
+			LastActivity: s.lastActivitySummary(),
+			AgentPID:     s.agentPIDString(),
+			Round:        s.roundSummary(),
+		})
+	}
+	return rows
+}
+
+func (s stepView) activeFor() string {
+	if s.StartedAt == nil {
+		return ""
+	}
+	return formatDurationSince(*s.StartedAt)
+}
+
+func (s stepView) lastActivitySummary() string {
+	if s.LastActivityAt == nil {
+		return "unknown"
+	}
+	prefix := formatDurationSince(*s.LastActivityAt) + " ago"
+	secs := nowUnix() - *s.LastActivityAt
+	if secs < 0 {
+		secs = 0
+	}
+	if s.QuietWarning > 0 && time.Duration(secs)*time.Second >= s.QuietWarning {
+		prefix = "quiet " + prefix
+	}
+	if s.LastActivity == "" {
+		return prefix
+	}
+	return prefix + ": " + s.LastActivity
+}
+
+func (s stepView) agentPIDString() string {
+	if s.AgentPID == nil || *s.AgentPID == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%d", *s.AgentPID)
+}
+
+func (s stepView) roundSummary() string {
+	if s.Status == string(types.StepStatusFixing) {
+		if s.AutoFixLimit > 0 && s.FixRoundCount > 0 {
+			return fmt.Sprintf("auto-fix %d/%d", s.FixRoundCount, s.AutoFixLimit)
+		}
+		if s.FixRoundCount > 0 {
+			return fmt.Sprintf("fix %d", s.FixRoundCount)
+		}
+		return "fixing"
+	}
+	if s.RoundCount > 0 {
+		return fmt.Sprintf("round %d", s.RoundCount)
+	}
+	return "starting"
+}
+
+func formatDurationSince(sinceUnix int64) string {
+	secs := nowUnix() - sinceUnix
+	if secs < 0 {
+		secs = 0
+	}
+	return formatCompactDuration(time.Duration(secs) * time.Second)
+}
+
+func formatCompactDuration(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm%ds", int(d.Minutes()), int(d.Seconds())%60)
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
+	default:
+		return fmt.Sprintf("%dd%dh", int(d.Hours())/24, int(d.Hours())%24)
+	}
+}
+
 func joinComma(parts []string) string {
 	out := ""
 	for i, p := range parts {
@@ -281,6 +409,9 @@ func runObjectFieldWithKey(key string, rv runView) toon.Field {
 		rows = append(rows, stepRow{Step: s.Name, Status: s.Status, Findings: s.findingCount(), DurationMS: s.DurationMS})
 	}
 	fields = append(fields, toon.Field{Key: "steps", Value: rows})
+	if activeRows := rv.activeRows(); len(activeRows) > 0 {
+		fields = append(fields, toon.Field{Key: "active_steps", Value: activeRows})
+	}
 	return toon.Field{Key: key, Value: toon.NewObject(fields...)}
 }
 

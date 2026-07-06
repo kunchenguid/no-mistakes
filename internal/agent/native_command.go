@@ -96,6 +96,13 @@ func (c *nativeAgentCommand) markPipeDone() {
 	}
 }
 
+func (c *nativeAgentCommand) pid() int {
+	if c == nil || c.cmd == nil || c.cmd.Process == nil {
+		return 0
+	}
+	return c.cmd.Process.Pid
+}
+
 func (c *nativeAgentCommand) waitForPipes(waitErr error) error {
 	if c.cmd.WaitDelay <= 0 {
 		<-c.pipesDone

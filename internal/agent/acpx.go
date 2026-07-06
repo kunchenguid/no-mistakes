@@ -42,6 +42,8 @@ func (a *acpxAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) 
 		return nil, fmt.Errorf("acpx start: %w", err)
 	}
 	defer started.closePipes()
+	pid := started.pid()
+	emitAgentStarted(opts, a.Name(), pid)
 
 	var stderrBuf []byte
 	var stderrWG sync.WaitGroup
@@ -56,17 +58,23 @@ func (a *acpxAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) 
 	if err != nil {
 		err = started.waitAfterParseError(err)
 		stderrWG.Wait()
-		return nil, fmt.Errorf("acpx parse events: %w", err)
+		retErr := fmt.Errorf("acpx parse events: %w", err)
+		emitAgentExited(opts, a.Name(), pid, retErr)
+		return nil, retErr
 	}
 	waitErr := started.wait()
 	stderrWG.Wait()
 	if waitErr != nil {
-		return nil, fmt.Errorf("acpx exited: %w: %s", waitErr, acpxProcessErrorOutput(stderrBuf, stdoutErr))
+		retErr := fmt.Errorf("acpx exited: %w: %s", waitErr, acpxProcessErrorOutput(stderrBuf, stdoutErr))
+		emitAgentExited(opts, a.Name(), pid, retErr)
+		return nil, retErr
 	}
 	if usage.OutputTokens == 0 {
 		usage.OutputTokens = estimateAcpxTokens(len(text))
 	}
-	return finalizeTextResult(a.Name(), text, opts.JSONSchema, usage)
+	res, err := finalizeTextResult(a.Name(), text, opts.JSONSchema, usage)
+	emitAgentExited(opts, a.Name(), pid, err)
+	return res, err
 }
 
 func (a *acpxAgent) Close() error { return nil }

@@ -8,6 +8,7 @@ import (
 
 	toon "github.com/toon-format/toon-go"
 
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
@@ -55,6 +56,7 @@ type axiEnv struct {
 	p      *paths.Paths
 	d      *db.DB
 	repo   *db.Repo
+	cfg    *config.GlobalConfig
 	client *ipc.Client
 }
 
@@ -76,7 +78,12 @@ func openAxiEnv(ensureDaemonConn bool) (*axiEnv, error) {
 	if err != nil {
 		return nil, err
 	}
-	env := &axiEnv{p: p, d: d}
+	globalCfg, err := config.LoadGlobal(p.ConfigFile())
+	if err != nil {
+		d.Close()
+		return nil, fmt.Errorf("load global config: %w", err)
+	}
+	env := &axiEnv{p: p, d: d, cfg: globalCfg}
 	repo, err := findRepo(d)
 	if err != nil {
 		d.Close()
@@ -149,6 +156,7 @@ func runAxiHome(cmd *cobra.Command) error {
 	if currentActive != nil {
 		steps, _ := env.d.GetStepsByRun(currentActive.ID)
 		rv := runViewFromDB(currentActive, steps)
+		annotateRunView(env, &rv)
 		fields = append(fields, runObjectFieldWithKey("active_run", rv))
 		if gate, ok := rv.awaitingStep(); ok {
 			gated = true
@@ -157,6 +165,7 @@ func runAxiHome(cmd *cobra.Command) error {
 	} else if otherActive != nil {
 		steps, _ := env.d.GetStepsByRun(otherActive.ID)
 		rv := runViewFromDB(otherActive, steps)
+		annotateRunView(env, &rv)
 		fields = append(fields, runObjectFieldWithKey("other_branch_active_run", rv))
 	}
 
