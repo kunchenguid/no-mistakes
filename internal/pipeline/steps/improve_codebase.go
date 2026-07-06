@@ -1,15 +1,11 @@
 package steps
 
 import (
-	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
-	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
@@ -21,7 +17,6 @@ import (
 const (
 	improveCodebaseSourceFileThreshold = 8
 	improveCodebaseLineThreshold       = 800
-	gitZeroSHA                         = "0000000000000000000000000000000000000000"
 )
 
 // ImproveCodebaseStep runs a conditional structural codebase-health gate.
@@ -40,25 +35,6 @@ type improveCodebaseChangedFile struct {
 type improveCodebaseDecision struct {
 	Run    bool
 	Reason string
-}
-
-type improveCodebaseReadOnlySnapshot struct {
-	Head    string
-	HeadRef string
-	Status  string
-	Refs    map[string]improveCodebaseRefSnapshot
-	GitMeta map[string]improveCodebaseGitMetadataSnapshot
-}
-
-type improveCodebaseRefSnapshot struct {
-	Object string
-	Symref string
-}
-
-type improveCodebaseGitMetadataSnapshot struct {
-	Data   []byte
-	Mode   os.FileMode
-	Exists bool
 }
 
 func (s *ImproveCodebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
@@ -94,10 +70,11 @@ func (s *ImproveCodebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.Ste
 	if sctx.Fixing {
 		reviewScope = fmt.Sprintf("current worktree and HEAD changes relative to base commit %s (starting head %s)", baseSHA, sctx.Run.HeadSHA)
 	}
-	beforeSnapshot, err := snapshotImproveCodebaseReadOnly(sctx)
+	auditDir, cleanupAuditDir, err := prepareImproveCodebaseAuditCheckout(sctx)
 	if err != nil {
 		return nil, err
 	}
+	defer cleanupAuditDir()
 	historySection := executionContextPromptSection() + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx)
 	prompt := fmt.Sprintf(
 		`Run the local improve-codebase skill as a read-only structural/change-set gate.
@@ -143,14 +120,11 @@ Rules:
 
 	result, agentErr := sctx.Agent.Run(sctx.Ctx, agent.RunOpts{
 		Prompt:     prompt,
-		CWD:        sctx.WorkDir,
+		CWD:        auditDir,
 		JSONSchema: auditOnlyFindingsSchema,
 		OnChunk:    sctx.LogChunk,
 		ReadOnly:   true,
 	})
-	if err := enforceImproveCodebaseReadOnly(sctx, beforeSnapshot); err != nil {
-		return nil, err
-	}
 	if agentErr != nil {
 		return nil, fmt.Errorf("agent improve-codebase: %w", agentErr)
 	}
@@ -171,6 +145,35 @@ Rules:
 		DisableFix:    true,
 		Findings:      string(findingsJSON),
 	}, nil
+}
+
+func prepareImproveCodebaseAuditCheckout(sctx *pipeline.StepContext) (string, func(), error) {
+	auditDir, err := os.MkdirTemp("", "no-mistakes-improve-codebase-*")
+	if err != nil {
+		return "", nil, fmt.Errorf("create improve-codebase audit checkout: %w", err)
+	}
+	cleanup := func() {
+		if err := os.RemoveAll(auditDir); err != nil {
+			sctx.LogFile("cleanup improve-codebase audit checkout: " + err.Error())
+		}
+	}
+	if _, err := git.Run(sctx.Ctx, sctx.WorkDir, "clone", "--no-local", "--no-checkout", sctx.WorkDir, auditDir); err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("create improve-codebase audit checkout: %w", err)
+	}
+	if _, err := git.Run(sctx.Ctx, auditDir, "checkout", "--detach", sctx.Run.HeadSHA); err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("checkout improve-codebase audit head: %w", err)
+	}
+	if _, err := git.Run(sctx.Ctx, auditDir, "reset", "--hard", sctx.Run.HeadSHA); err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("reset improve-codebase audit checkout: %w", err)
+	}
+	if _, err := git.Run(sctx.Ctx, auditDir, "clean", "-ffdx"); err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("clean improve-codebase audit checkout: %w", err)
+	}
+	return auditDir, cleanup, nil
 }
 
 func normalizeImproveCodebaseAuditActions(findings *Findings) {
@@ -228,314 +231,6 @@ func improveCodebaseChangedFiles(sctx *pipeline.StepContext, baseSHA string) ([]
 		files = append(files, file)
 	}
 	return files, nil
-}
-
-func snapshotImproveCodebaseReadOnly(sctx *pipeline.StepContext) (improveCodebaseReadOnlySnapshot, error) {
-	snapshot, err := snapshotImproveCodebaseGitState(sctx)
-	if err != nil {
-		return improveCodebaseReadOnlySnapshot{}, err
-	}
-	gitMeta, err := snapshotImproveCodebaseGitMetadata(sctx)
-	if err != nil {
-		return improveCodebaseReadOnlySnapshot{}, err
-	}
-	snapshot.GitMeta = gitMeta
-	return snapshot, nil
-}
-
-func snapshotImproveCodebaseGitState(sctx *pipeline.StepContext) (improveCodebaseReadOnlySnapshot, error) {
-	head, err := git.Run(sctx.Ctx, sctx.WorkDir, "rev-parse", "HEAD")
-	if err != nil {
-		return improveCodebaseReadOnlySnapshot{}, fmt.Errorf("snapshot improve-codebase HEAD: %w", err)
-	}
-	headRef, err := git.Run(sctx.Ctx, sctx.WorkDir, "rev-parse", "--symbolic-full-name", "HEAD")
-	if err != nil {
-		return improveCodebaseReadOnlySnapshot{}, fmt.Errorf("snapshot improve-codebase HEAD ref: %w", err)
-	}
-	status, err := git.Run(sctx.Ctx, sctx.WorkDir, "status", "--porcelain", "--ignored")
-	if err != nil {
-		return improveCodebaseReadOnlySnapshot{}, fmt.Errorf("snapshot improve-codebase worktree status: %w", err)
-	}
-	refs, err := snapshotImproveCodebaseRefs(sctx)
-	if err != nil {
-		return improveCodebaseReadOnlySnapshot{}, err
-	}
-	return improveCodebaseReadOnlySnapshot{Head: head, HeadRef: headRef, Status: status, Refs: refs}, nil
-}
-
-func snapshotImproveCodebaseGitMetadata(sctx *pipeline.StepContext) (map[string]improveCodebaseGitMetadataSnapshot, error) {
-	paths, err := improveCodebaseGitMetadataPaths(sctx.Ctx, sctx.WorkDir)
-	if err != nil {
-		return nil, err
-	}
-	return snapshotImproveCodebaseGitMetadataPaths(paths)
-}
-
-func improveCodebaseGitMetadataPaths(ctx context.Context, workDir string) ([]string, error) {
-	names := []string{"config", "config.worktree", "info/exclude", "index"}
-	seen := map[string]bool{}
-	var paths []string
-	for _, name := range names {
-		out, err := git.Run(ctx, workDir, "rev-parse", "--git-path", name)
-		if err != nil {
-			return nil, fmt.Errorf("snapshot improve-codebase git metadata path %s: %w", name, err)
-		}
-		path := strings.TrimSpace(out)
-		if path == "" {
-			return nil, fmt.Errorf("snapshot improve-codebase git metadata path %s: empty path", name)
-		}
-		if !filepath.IsAbs(path) {
-			path = filepath.Join(workDir, path)
-		}
-		path = filepath.Clean(path)
-		if !seen[path] {
-			seen[path] = true
-			paths = append(paths, path)
-		}
-	}
-	return paths, nil
-}
-
-func snapshotImproveCodebaseGitMetadataPaths(paths []string) (map[string]improveCodebaseGitMetadataSnapshot, error) {
-	snapshots := map[string]improveCodebaseGitMetadataSnapshot{}
-	for _, path := range paths {
-		info, err := os.Lstat(path)
-		if os.IsNotExist(err) {
-			snapshots[path] = improveCodebaseGitMetadataSnapshot{}
-			continue
-		}
-		if err != nil {
-			return nil, fmt.Errorf("snapshot improve-codebase git metadata %s: %w", path, err)
-		}
-		if info.IsDir() {
-			return nil, fmt.Errorf("snapshot improve-codebase git metadata %s: is a directory", path)
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return nil, fmt.Errorf("snapshot improve-codebase git metadata %s: %w", path, err)
-		}
-		snapshots[path] = improveCodebaseGitMetadataSnapshot{
-			Data:   data,
-			Mode:   info.Mode().Perm(),
-			Exists: true,
-		}
-	}
-	return snapshots, nil
-}
-
-func snapshotImproveCodebaseRefs(sctx *pipeline.StepContext) (map[string]improveCodebaseRefSnapshot, error) {
-	refs := map[string]improveCodebaseRefSnapshot{}
-	output, err := git.Run(sctx.Ctx, sctx.WorkDir, "for-each-ref", "--format=%(refname)%00%(objectname)%00%(symref)", "refs")
-	if err != nil {
-		return nil, fmt.Errorf("snapshot improve-codebase refs: %w", err)
-	}
-	for _, line := range strings.Split(strings.TrimSuffix(output, "\n"), "\n") {
-		if line == "" {
-			continue
-		}
-		parts := strings.SplitN(line, "\x00", 3)
-		if len(parts) != 3 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
-			return nil, fmt.Errorf("snapshot improve-codebase refs: malformed ref line %q", line)
-		}
-		refs[parts[0]] = improveCodebaseRefSnapshot{Object: parts[1], Symref: parts[2]}
-	}
-	return refs, nil
-}
-
-func enforceImproveCodebaseReadOnly(sctx *pipeline.StepContext, before improveCodebaseReadOnlySnapshot) error {
-	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(sctx.Ctx), 30*time.Second)
-	defer cancel()
-	cleanupSctx := *sctx
-	cleanupSctx.Ctx = cleanupCtx
-
-	afterGitMeta, err := snapshotImproveCodebaseGitMetadataPaths(improveCodebaseGitMetadataSnapshotPaths(before.GitMeta))
-	if err != nil {
-		return err
-	}
-	gitMetaChanged := !improveCodebaseGitMetadataSnapshotsEqual(before.GitMeta, afterGitMeta)
-	if gitMetaChanged {
-		if metaErr := restoreImproveCodebaseGitMetadata(before.GitMeta); metaErr != nil {
-			return fmt.Errorf("improve-codebase gate modified the worktree, git metadata, or git refs and cleanup failed: %w", metaErr)
-		}
-	}
-	after, err := snapshotImproveCodebaseGitState(&cleanupSctx)
-	if err != nil {
-		return err
-	}
-	if !gitMetaChanged && improveCodebaseReadOnlyGitStateEqual(before, after) {
-		return nil
-	}
-	if _, checkoutErr := git.Run(cleanupCtx, sctx.WorkDir, "checkout", "--force", "--detach", before.Head); checkoutErr != nil {
-		return fmt.Errorf("improve-codebase gate modified the worktree, git metadata, or git refs and cleanup failed: %w", checkoutErr)
-	}
-	for ref, beforeRef := range before.Refs {
-		afterRef, exists := after.Refs[ref]
-		if exists && improveCodebaseRefSnapshotEqual(afterRef, beforeRef) {
-			continue
-		}
-		if refErr := restoreImproveCodebaseRef(cleanupCtx, sctx.WorkDir, ref, beforeRef, afterRef, exists); refErr != nil {
-			return fmt.Errorf("improve-codebase gate modified the worktree, git metadata, or git refs and cleanup failed: %w", refErr)
-		}
-	}
-	for ref, afterRef := range after.Refs {
-		if _, ok := before.Refs[ref]; ok {
-			continue
-		}
-		if refErr := removeImproveCodebaseRef(cleanupCtx, sctx.WorkDir, ref, afterRef); refErr != nil {
-			return fmt.Errorf("improve-codebase gate modified the worktree, git metadata, or git refs and cleanup failed: %w", refErr)
-		}
-	}
-	if _, resetErr := git.Run(cleanupCtx, sctx.WorkDir, "reset", "--hard", before.Head); resetErr != nil {
-		return fmt.Errorf("improve-codebase gate modified the worktree, git metadata, or git refs and cleanup failed: %w", resetErr)
-	}
-	if _, cleanErr := git.Run(cleanupCtx, sctx.WorkDir, "clean", "-ffdx"); cleanErr != nil {
-		return fmt.Errorf("improve-codebase gate modified the worktree, git metadata, or git refs and cleanup failed: %w", cleanErr)
-	}
-	if before.HeadRef != "HEAD" {
-		if _, headErr := git.Run(cleanupCtx, sctx.WorkDir, "symbolic-ref", "HEAD", before.HeadRef); headErr != nil {
-			return fmt.Errorf("improve-codebase gate modified the worktree, git metadata, or git refs and cleanup failed: %w", headErr)
-		}
-	}
-	if metaErr := restoreImproveCodebaseGitMetadata(before.GitMeta); metaErr != nil {
-		return fmt.Errorf("improve-codebase gate modified the worktree, git metadata, or git refs and cleanup failed: %w", metaErr)
-	}
-	return fmt.Errorf("improve-codebase gate modified the worktree, git metadata, or git refs despite read-only mode")
-}
-
-func improveCodebaseReadOnlyGitStateEqual(a, b improveCodebaseReadOnlySnapshot) bool {
-	if a.Head != b.Head || a.HeadRef != b.HeadRef || a.Status != b.Status || len(a.Refs) != len(b.Refs) {
-		return false
-	}
-	for ref, aRef := range a.Refs {
-		if !improveCodebaseRefSnapshotEqual(aRef, b.Refs[ref]) {
-			return false
-		}
-	}
-	return true
-}
-
-func improveCodebaseGitMetadataSnapshotPaths(snapshots map[string]improveCodebaseGitMetadataSnapshot) []string {
-	paths := make([]string, 0, len(snapshots))
-	for path := range snapshots {
-		paths = append(paths, path)
-	}
-	sort.Strings(paths)
-	return paths
-}
-
-func improveCodebaseGitMetadataSnapshotsEqual(a, b map[string]improveCodebaseGitMetadataSnapshot) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for path, aSnapshot := range a {
-		bSnapshot, ok := b[path]
-		if !ok {
-			return false
-		}
-		if aSnapshot.Exists != bSnapshot.Exists || aSnapshot.Mode != bSnapshot.Mode || !bytes.Equal(aSnapshot.Data, bSnapshot.Data) {
-			return false
-		}
-	}
-	return true
-}
-
-func restoreImproveCodebaseGitMetadata(snapshots map[string]improveCodebaseGitMetadataSnapshot) error {
-	for _, path := range improveCodebaseGitMetadataSnapshotPaths(snapshots) {
-		snapshot := snapshots[path]
-		if !snapshot.Exists {
-			if err := os.RemoveAll(path); err != nil {
-				return fmt.Errorf("restore git metadata %s: %w", path, err)
-			}
-			continue
-		}
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			return fmt.Errorf("restore git metadata %s: %w", path, err)
-		}
-		if err := os.RemoveAll(path); err != nil {
-			return fmt.Errorf("restore git metadata %s: %w", path, err)
-		}
-		mode := snapshot.Mode
-		if mode == 0 {
-			mode = 0o644
-		}
-		if err := os.WriteFile(path, snapshot.Data, mode); err != nil {
-			return fmt.Errorf("restore git metadata %s: %w", path, err)
-		}
-	}
-	return nil
-}
-
-func improveCodebaseRefSnapshotEqual(a, b improveCodebaseRefSnapshot) bool {
-	return a.Object == b.Object && a.Symref == b.Symref
-}
-
-func restoreImproveCodebaseRef(ctx context.Context, workDir, ref string, before, after improveCodebaseRefSnapshot, afterExists bool) error {
-	if before.Symref != "" {
-		if afterExists {
-			if err := ensureImproveCodebaseRefUnchanged(ctx, workDir, ref, after); err != nil {
-				return err
-			}
-		}
-		_, err := git.Run(ctx, workDir, "symbolic-ref", ref, before.Symref)
-		return err
-	}
-	if !afterExists {
-		_, err := git.Run(ctx, workDir, "update-ref", ref, before.Object, gitZeroSHA)
-		return err
-	}
-	if after.Symref != "" {
-		if err := ensureImproveCodebaseRefUnchanged(ctx, workDir, ref, after); err != nil {
-			return err
-		}
-		if _, err := git.Run(ctx, workDir, "update-ref", "--no-deref", "-d", ref); err != nil {
-			return err
-		}
-		_, err := git.Run(ctx, workDir, "update-ref", ref, before.Object, gitZeroSHA)
-		return err
-	}
-	_, err := git.Run(ctx, workDir, "update-ref", ref, before.Object, after.Object)
-	return err
-}
-
-func removeImproveCodebaseRef(ctx context.Context, workDir, ref string, after improveCodebaseRefSnapshot) error {
-	if after.Symref != "" {
-		if err := ensureImproveCodebaseRefUnchanged(ctx, workDir, ref, after); err != nil {
-			return err
-		}
-		_, err := git.Run(ctx, workDir, "symbolic-ref", "--delete", ref)
-		return err
-	}
-	_, err := git.Run(ctx, workDir, "update-ref", "-d", ref, after.Object)
-	return err
-}
-
-func ensureImproveCodebaseRefUnchanged(ctx context.Context, workDir, ref string, want improveCodebaseRefSnapshot) error {
-	current, exists, err := currentImproveCodebaseRefSnapshot(ctx, workDir, ref)
-	if err != nil {
-		return err
-	}
-	if !exists || !improveCodebaseRefSnapshotEqual(current, want) {
-		return fmt.Errorf("ref %s changed during cleanup", ref)
-	}
-	return nil
-}
-
-func currentImproveCodebaseRefSnapshot(ctx context.Context, workDir, ref string) (improveCodebaseRefSnapshot, bool, error) {
-	output, err := git.Run(ctx, workDir, "for-each-ref", "--format=%(refname)%00%(objectname)%00%(symref)", ref)
-	if err != nil {
-		return improveCodebaseRefSnapshot{}, false, err
-	}
-	for _, line := range strings.Split(strings.TrimSuffix(output, "\n"), "\n") {
-		if line == "" {
-			continue
-		}
-		parts := strings.SplitN(line, "\x00", 3)
-		if len(parts) != 3 || parts[0] != ref || strings.TrimSpace(parts[1]) == "" {
-			return improveCodebaseRefSnapshot{}, false, fmt.Errorf("snapshot improve-codebase ref %s: malformed ref line %q", ref, line)
-		}
-		return improveCodebaseRefSnapshot{Object: parts[1], Symref: parts[2]}, true, nil
-	}
-	return improveCodebaseRefSnapshot{}, false, nil
 }
 
 func formatImproveCodebaseIgnorePatterns(cfg *config.Config) string {

@@ -95,433 +95,60 @@ func TestImproveCodebaseStep_PromptIncludesIgnorePatterns(t *testing.T) {
 	}
 }
 
-func TestImproveCodebaseStep_CleansAgentWorktreeChanges(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-	ag := &mockAgent{runFn: func(_ context.Context, _ agent.RunOpts) (*agent.Result, error) {
-		mustWriteFile(t, filepath.Join(dir, "agent-artifact.md"), "should not survive\n")
-		mustWriteFile(t, filepath.Join(dir, "file.txt"), "agent edit\n")
-		return &agent.Result{Output: []byte(`{"findings":[],"summary":"clear"}`)}, nil
-	}}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Config.ImproveCodebase.Mode = config.ImproveCodebaseModeAlways
-
-	_, err := (&ImproveCodebaseStep{}).Execute(sctx)
-	if err == nil {
-		t.Fatal("expected read-only violation")
-	}
-	if !strings.Contains(err.Error(), "modified the worktree") {
-		t.Fatalf("error = %v, want read-only violation", err)
-	}
-	if status := gitStatusPorcelain(t, dir); status != "" {
-		t.Fatalf("worktree status = %q, want clean after cleanup", status)
-	}
-}
-
-func TestImproveCodebaseStep_CleansAfterRunContextCancelled(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	ag := &mockAgent{runFn: func(_ context.Context, _ agent.RunOpts) (*agent.Result, error) {
-		mustWriteFile(t, filepath.Join(dir, "agent-artifact.md"), "should not survive\n")
-		cancel()
-		return &agent.Result{Output: []byte(`{"findings":[],"summary":"clear"}`)}, nil
-	}}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Ctx = ctx
-	sctx.Config.ImproveCodebase.Mode = config.ImproveCodebaseModeAlways
-
-	_, err := (&ImproveCodebaseStep{}).Execute(sctx)
-	if err == nil {
-		t.Fatal("expected read-only violation")
-	}
-	if !strings.Contains(err.Error(), "modified the worktree") {
-		t.Fatalf("error = %v, want read-only violation", err)
-	}
-	if status := gitStatusPorcelain(t, dir); status != "" {
-		t.Fatalf("worktree status = %q, want clean after cleanup", status)
-	}
-	if _, err := os.Stat(filepath.Join(dir, "agent-artifact.md")); !os.IsNotExist(err) {
-		t.Fatalf("agent artifact stat err = %v, want not exist", err)
-	}
-}
-
-func TestImproveCodebaseStep_RestoresAgentHeadChanges(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-	ag := &mockAgent{runFn: func(_ context.Context, _ agent.RunOpts) (*agent.Result, error) {
-		mustWriteFile(t, filepath.Join(dir, "agent-commit.md"), "should not survive\n")
-		gitCmd(t, dir, "add", "-A")
-		gitCmd(t, dir, "commit", "-m", "agent commit")
-		return &agent.Result{Output: []byte(`{"findings":[],"summary":"clear"}`)}, nil
-	}}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Config.ImproveCodebase.Mode = config.ImproveCodebaseModeAlways
-
-	_, err := (&ImproveCodebaseStep{}).Execute(sctx)
-	if err == nil {
-		t.Fatal("expected read-only violation")
-	}
-	if !strings.Contains(err.Error(), "modified the worktree") {
-		t.Fatalf("error = %v, want read-only violation", err)
-	}
-	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != headSHA {
-		t.Fatalf("HEAD = %s, want %s", got, headSHA)
-	}
-	if status := gitStatusPorcelain(t, dir); status != "" {
-		t.Fatalf("worktree status = %q, want clean after cleanup", status)
-	}
-	if _, err := os.Stat(filepath.Join(dir, "agent-commit.md")); !os.IsNotExist(err) {
-		t.Fatalf("agent artifact stat err = %v, want not exist", err)
-	}
-}
-
-func TestImproveCodebaseStep_RestoresDetachedHeadWhenAgentChecksOutSameCommitBranch(t *testing.T) {
+func TestImproveCodebaseStep_RunsAgentInDisposableCheckout(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	gitCmd(t, dir, "checkout", "--detach", headSHA)
-
-	ag := &mockAgent{runFn: func(_ context.Context, _ agent.RunOpts) (*agent.Result, error) {
-		gitCmd(t, dir, "checkout", "feature")
-		return &agent.Result{Output: []byte(`{"findings":[],"summary":"clear"}`)}, nil
-	}}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Config.ImproveCodebase.Mode = config.ImproveCodebaseModeAlways
-
-	_, err := (&ImproveCodebaseStep{}).Execute(sctx)
+	originalGitFile, err := os.ReadFile(filepath.Join(dir, ".git"))
 	if err == nil {
-		t.Fatal("expected read-only violation")
+		t.Fatalf("test repo .git = %q, want git directory", originalGitFile)
 	}
-	if !strings.Contains(err.Error(), "modified the worktree") {
-		t.Fatalf("error = %v, want read-only violation", err)
-	}
-	if got := gitCmd(t, dir, "rev-parse", "--abbrev-ref", "HEAD"); got != "HEAD" {
-		t.Fatalf("HEAD ref = %s, want detached", got)
-	}
-	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != headSHA {
-		t.Fatalf("HEAD = %s, want %s", got, headSHA)
-	}
-	if status := gitStatusPorcelain(t, dir); status != "" {
-		t.Fatalf("worktree status = %q, want clean after cleanup", status)
-	}
-}
+	beforeStatus := gitCmd(t, dir, "status", "--porcelain", "--ignored")
+	var auditDir string
 
-func TestImproveCodebaseStep_RestoresAgentLocalGitConfigChanges(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-
-	ag := &mockAgent{runFn: func(_ context.Context, _ agent.RunOpts) (*agent.Result, error) {
-		gitCmd(t, dir, "config", "--local", "core.fsmonitor", "agent-hook")
-		return &agent.Result{Output: []byte(`{"findings":[],"summary":"clear"}`)}, nil
-	}}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Config.ImproveCodebase.Mode = config.ImproveCodebaseModeAlways
-
-	_, err := (&ImproveCodebaseStep{}).Execute(sctx)
-	if err == nil {
-		t.Fatal("expected read-only violation")
-	}
-	if !strings.Contains(err.Error(), "modified the worktree") {
-		t.Fatalf("error = %v, want read-only violation", err)
-	}
-	if got, err := git.Run(context.Background(), dir, "config", "--local", "--get", "core.fsmonitor"); err == nil {
-		t.Fatalf("core.fsmonitor = %q, want unset", got)
-	}
-}
-
-func TestImproveCodebaseStep_RestoresAgentIndexFlags(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-
-	ag := &mockAgent{runFn: func(_ context.Context, _ agent.RunOpts) (*agent.Result, error) {
-		gitCmd(t, dir, "update-index", "--skip-worktree", "feature.txt")
-		return &agent.Result{Output: []byte(`{"findings":[],"summary":"clear"}`)}, nil
-	}}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Config.ImproveCodebase.Mode = config.ImproveCodebaseModeAlways
-
-	_, err := (&ImproveCodebaseStep{}).Execute(sctx)
-	if err == nil {
-		t.Fatal("expected read-only violation")
-	}
-	if !strings.Contains(err.Error(), "modified the worktree") {
-		t.Fatalf("error = %v, want read-only violation", err)
-	}
-	if got := gitCmd(t, dir, "ls-files", "-v", "--", "feature.txt"); strings.HasPrefix(got, "S ") {
-		t.Fatalf("index flag = %q, want skip-worktree cleared", got)
-	}
-}
-
-func TestImproveCodebaseStep_CleansAgentIgnoredFiles(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-	mustWriteFile(t, filepath.Join(dir, ".gitignore"), "*.log\n")
-	gitCmd(t, dir, "add", ".gitignore")
-	gitCmd(t, dir, "commit", "-m", "ignore logs")
-	headSHA = gitCmd(t, dir, "rev-parse", "HEAD")
-
-	ag := &mockAgent{runFn: func(_ context.Context, _ agent.RunOpts) (*agent.Result, error) {
-		mustWriteFile(t, filepath.Join(dir, "agent.log"), "should not survive\n")
-		return &agent.Result{Output: []byte(`{"findings":[],"summary":"clear"}`)}, nil
-	}}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Config.ImproveCodebase.Mode = config.ImproveCodebaseModeAlways
-
-	_, err := (&ImproveCodebaseStep{}).Execute(sctx)
-	if err == nil {
-		t.Fatal("expected read-only violation")
-	}
-	if !strings.Contains(err.Error(), "modified the worktree") {
-		t.Fatalf("error = %v, want read-only violation", err)
-	}
-	if status := gitCmd(t, dir, "status", "--porcelain", "--ignored"); status != "" {
-		t.Fatalf("worktree status = %q, want clean after cleanup", status)
-	}
-	if _, err := os.Stat(filepath.Join(dir, "agent.log")); !os.IsNotExist(err) {
-		t.Fatalf("ignored artifact stat err = %v, want not exist", err)
-	}
-}
-
-func TestImproveCodebaseStep_CleansNestedGitRepos(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-
-	ag := &mockAgent{runFn: func(_ context.Context, _ agent.RunOpts) (*agent.Result, error) {
-		nested := filepath.Join(dir, "nested-repo")
-		if err := os.MkdirAll(nested, 0o755); err != nil {
+	ag := &mockAgent{runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		if opts.CWD == dir {
+			t.Fatal("agent CWD = original worktree, want disposable checkout")
+		}
+		auditDir = opts.CWD
+		if got := gitCmd(t, opts.CWD, "rev-parse", "HEAD"); got != headSHA {
+			t.Fatalf("disposable HEAD = %s, want %s", got, headSHA)
+		}
+		hooksDir := gitCmd(t, opts.CWD, "rev-parse", "--git-path", "hooks")
+		mustWriteFile(t, filepath.Join(hooksDir, "pre-commit"), "#!/bin/sh\nexit 1\n")
+		gitCmd(t, opts.CWD, "update-ref", "refs/tags/agent-tag", headSHA)
+		gitCmd(t, opts.CWD, "update-index", "--skip-worktree", "feature.txt")
+		gitCmd(t, opts.CWD, "config", "--local", "core.fsmonitor", "agent-hook")
+		if err := os.RemoveAll(filepath.Join(opts.CWD, ".git")); err != nil {
 			t.Fatal(err)
 		}
-		gitCmd(t, nested, "init")
-		mustWriteFile(t, filepath.Join(nested, "nested.txt"), "artifact\n")
+		mustWriteFile(t, filepath.Join(opts.CWD, ".git"), "poisoned\n")
 		return &agent.Result{Output: []byte(`{"findings":[],"summary":"clear"}`)}, nil
 	}}
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Config.ImproveCodebase.Mode = config.ImproveCodebaseModeAlways
 
-	_, err := (&ImproveCodebaseStep{}).Execute(sctx)
-	if err == nil {
-		t.Fatal("expected read-only violation")
+	outcome, err := (&ImproveCodebaseStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "nested-repo")); !os.IsNotExist(err) {
-		t.Fatalf("nested repo stat err = %v, want not exist", err)
+	if outcome.NeedsApproval {
+		t.Fatal("expected clean disposable audit findings not to need approval")
 	}
-}
-
-func TestImproveCodebaseStep_RestoresProtectedRefsOnAgentError(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-	beforeLocalFeature := headSHA
-	beforeOriginFeature := baseSHA
-	beforeForkFeature := headSHA
-	gitCmd(t, dir, "update-ref", "refs/heads/feature", beforeLocalFeature)
-	gitCmd(t, dir, "update-ref", "refs/remotes/origin/feature", beforeOriginFeature)
-	gitCmd(t, dir, "update-ref", forkBranchTrackingRef("feature"), beforeForkFeature)
-
-	ag := &mockAgent{runFn: func(_ context.Context, _ agent.RunOpts) (*agent.Result, error) {
-		gitCmd(t, dir, "update-ref", "refs/heads/feature", baseSHA)
-		gitCmd(t, dir, "update-ref", "refs/remotes/origin/feature", headSHA)
-		gitCmd(t, dir, "update-ref", forkBranchTrackingRef("feature"), baseSHA)
-		return nil, fmt.Errorf("agent failed")
-	}}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Config.ImproveCodebase.Mode = config.ImproveCodebaseModeAlways
-	sctx.Repo.ForkURL = "https://github.com/test/fork.git"
-
-	_, err := (&ImproveCodebaseStep{}).Execute(sctx)
-	if err == nil {
-		t.Fatal("expected read-only violation")
+	if _, err := os.Stat(auditDir); !os.IsNotExist(err) {
+		t.Fatalf("audit checkout stat err = %v, want removed", err)
 	}
-	if !strings.Contains(err.Error(), "modified the worktree") {
-		t.Fatalf("error = %v, want read-only violation", err)
+	if status := gitCmd(t, dir, "status", "--porcelain", "--ignored"); status != beforeStatus {
+		t.Fatalf("original status = %q, want %q", status, beforeStatus)
 	}
-	if got := gitCmd(t, dir, "rev-parse", "refs/heads/feature"); got != beforeLocalFeature {
-		t.Fatalf("local feature = %s, want %s", got, beforeLocalFeature)
+	if _, err := git.Run(context.Background(), dir, "rev-parse", "refs/tags/agent-tag"); err == nil {
+		t.Fatal("agent tag exists in original repo, want isolated disposable refs")
 	}
-	if got := gitCmd(t, dir, "rev-parse", "refs/remotes/origin/feature"); got != beforeOriginFeature {
-		t.Fatalf("origin/feature = %s, want %s", got, beforeOriginFeature)
+	if got := gitCmd(t, dir, "ls-files", "-v", "--", "feature.txt"); strings.HasPrefix(got, "S ") {
+		t.Fatalf("original index flag = %q, want skip-worktree absent", got)
 	}
-	if got := gitCmd(t, dir, "rev-parse", forkBranchTrackingRef("feature")); got != beforeForkFeature {
-		t.Fatalf("fork tracking ref = %s, want %s", got, beforeForkFeature)
-	}
-}
-
-func TestImproveCodebaseStep_RemovesCreatedProtectedRef(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-	if _, err := os.Stat(filepath.Join(dir, ".git", "refs", "remotes", "origin", "feature")); !os.IsNotExist(err) {
-		t.Fatalf("origin/feature should start absent, stat err = %v", err)
-	}
-
-	ag := &mockAgent{runFn: func(_ context.Context, _ agent.RunOpts) (*agent.Result, error) {
-		gitCmd(t, dir, "update-ref", "refs/remotes/origin/feature", headSHA)
-		return &agent.Result{Output: []byte(`{"findings":[],"summary":"clear"}`)}, nil
-	}}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Config.ImproveCodebase.Mode = config.ImproveCodebaseModeAlways
-
-	_, err := (&ImproveCodebaseStep{}).Execute(sctx)
-	if err == nil {
-		t.Fatal("expected read-only violation")
-	}
-	if _, err := os.Stat(filepath.Join(dir, ".git", "refs", "remotes", "origin", "feature")); !os.IsNotExist(err) {
-		t.Fatalf("created protected ref stat err = %v, want not exist", err)
-	}
-}
-
-func TestImproveCodebaseStep_RemovesCreatedSharedRefs(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-
-	ag := &mockAgent{runFn: func(_ context.Context, _ agent.RunOpts) (*agent.Result, error) {
-		gitCmd(t, dir, "update-ref", "refs/tags/agent-tag", headSHA)
-		gitCmd(t, dir, "update-ref", "refs/replace/"+headSHA, baseSHA)
-		return &agent.Result{Output: []byte(`{"findings":[],"summary":"clear"}`)}, nil
-	}}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Config.ImproveCodebase.Mode = config.ImproveCodebaseModeAlways
-
-	_, err := (&ImproveCodebaseStep{}).Execute(sctx)
-	if err == nil {
-		t.Fatal("expected read-only violation")
-	}
-	if _, err := os.Stat(filepath.Join(dir, ".git", "refs", "tags", "agent-tag")); !os.IsNotExist(err) {
-		t.Fatalf("created tag stat err = %v, want not exist", err)
-	}
-	if _, err := os.Stat(filepath.Join(dir, ".git", "refs", "replace", headSHA)); !os.IsNotExist(err) {
-		t.Fatalf("created replace ref stat err = %v, want not exist", err)
-	}
-}
-
-func TestImproveCodebaseStep_RestoresChangedSharedRefs(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-	beforeTag := baseSHA
-	gitCmd(t, dir, "update-ref", "refs/tags/release", beforeTag)
-
-	ag := &mockAgent{runFn: func(_ context.Context, _ agent.RunOpts) (*agent.Result, error) {
-		gitCmd(t, dir, "update-ref", "refs/tags/release", headSHA)
-		return &agent.Result{Output: []byte(`{"findings":[],"summary":"clear"}`)}, nil
-	}}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Config.ImproveCodebase.Mode = config.ImproveCodebaseModeAlways
-
-	_, err := (&ImproveCodebaseStep{}).Execute(sctx)
-	if err == nil {
-		t.Fatal("expected read-only violation")
-	}
-	if got := gitCmd(t, dir, "rev-parse", "refs/tags/release"); got != beforeTag {
-		t.Fatalf("tag = %s, want %s", got, beforeTag)
-	}
-}
-
-func TestImproveCodebaseStep_RestoresRefsDespiteUnmergedIndex(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-	beforeTag := baseSHA
-	gitCmd(t, dir, "update-ref", "refs/tags/release", beforeTag)
-
-	ag := &mockAgent{runFn: func(_ context.Context, _ agent.RunOpts) (*agent.Result, error) {
-		gitCmd(t, dir, "update-ref", "refs/tags/release", headSHA)
-		gitCmd(t, dir, "checkout", "-b", "agent-side", headSHA)
-		mustWriteFile(t, filepath.Join(dir, "base.txt"), "side\n")
-		gitCmd(t, dir, "add", "base.txt")
-		gitCmd(t, dir, "commit", "-m", "side edit")
-		gitCmd(t, dir, "checkout", "feature")
-		mustWriteFile(t, filepath.Join(dir, "base.txt"), "feature\n")
-		gitCmd(t, dir, "add", "base.txt")
-		gitCmd(t, dir, "commit", "-m", "feature edit")
-		if _, err := git.Run(context.Background(), dir, "merge", "agent-side"); err == nil {
-			t.Fatal("expected merge conflict")
-		}
-		return &agent.Result{Output: []byte(`{"findings":[],"summary":"clear"}`)}, nil
-	}}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Config.ImproveCodebase.Mode = config.ImproveCodebaseModeAlways
-
-	_, err := (&ImproveCodebaseStep{}).Execute(sctx)
-	if err == nil {
-		t.Fatal("expected read-only violation")
-	}
-	if got := gitCmd(t, dir, "rev-parse", "refs/tags/release"); got != beforeTag {
-		t.Fatalf("tag = %s, want %s", got, beforeTag)
-	}
-	if status := gitStatusPorcelain(t, dir); status != "" {
-		t.Fatalf("worktree status = %q, want clean after cleanup", status)
-	}
-}
-
-func TestImproveCodebaseStep_RestoresRetargetedSymbolicRef(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-	gitCmd(t, dir, "update-ref", "refs/remotes/origin/main", headSHA)
-	gitCmd(t, dir, "update-ref", "refs/remotes/origin/dev", headSHA)
-	gitCmd(t, dir, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
-
-	ag := &mockAgent{runFn: func(_ context.Context, _ agent.RunOpts) (*agent.Result, error) {
-		gitCmd(t, dir, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/dev")
-		return &agent.Result{Output: []byte(`{"findings":[],"summary":"clear"}`)}, nil
-	}}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Config.ImproveCodebase.Mode = config.ImproveCodebaseModeAlways
-
-	_, err := (&ImproveCodebaseStep{}).Execute(sctx)
-	if err == nil {
-		t.Fatal("expected read-only violation")
-	}
-	if got := gitCmd(t, dir, "symbolic-ref", "refs/remotes/origin/HEAD"); got != "refs/remotes/origin/main" {
-		t.Fatalf("origin/HEAD = %s, want refs/remotes/origin/main", got)
-	}
-}
-
-func TestImproveCodebaseStep_RemovesCreatedSymbolicRef(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-	gitCmd(t, dir, "update-ref", "refs/remotes/origin/main", headSHA)
-
-	ag := &mockAgent{runFn: func(_ context.Context, _ agent.RunOpts) (*agent.Result, error) {
-		gitCmd(t, dir, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
-		return &agent.Result{Output: []byte(`{"findings":[],"summary":"clear"}`)}, nil
-	}}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Config.ImproveCodebase.Mode = config.ImproveCodebaseModeAlways
-
-	_, err := (&ImproveCodebaseStep{}).Execute(sctx)
-	if err == nil {
-		t.Fatal("expected read-only violation")
-	}
-	if _, err := git.Run(context.Background(), dir, "symbolic-ref", "-q", "refs/remotes/origin/HEAD"); err == nil {
-		t.Fatal("origin/HEAD still exists, want removed")
-	}
-}
-
-func TestImproveCodebaseStep_DetachesBeforeRefRestore(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-	beforeLocalFeature := headSHA
-	gitCmd(t, dir, "update-ref", "refs/heads/feature", beforeLocalFeature)
-
-	ag := &mockAgent{runFn: func(_ context.Context, _ agent.RunOpts) (*agent.Result, error) {
-		gitCmd(t, dir, "checkout", "feature")
-		mustWriteFile(t, filepath.Join(dir, "branch-edit.txt"), "branch edit\n")
-		gitCmd(t, dir, "add", "-A")
-		gitCmd(t, dir, "commit", "-m", "agent branch commit")
-		return &agent.Result{Output: []byte(`{"findings":[],"summary":"clear"}`)}, nil
-	}}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Config.ImproveCodebase.Mode = config.ImproveCodebaseModeAlways
-
-	_, err := (&ImproveCodebaseStep{}).Execute(sctx)
-	if err == nil {
-		t.Fatal("expected read-only violation")
-	}
-	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != headSHA {
-		t.Fatalf("HEAD = %s, want %s", got, headSHA)
-	}
-	if got := gitCmd(t, dir, "rev-parse", "refs/heads/feature"); got != beforeLocalFeature {
-		t.Fatalf("local feature = %s, want %s", got, beforeLocalFeature)
-	}
-	if status := gitStatusPorcelain(t, dir); status != "" {
-		t.Fatalf("worktree status = %q, want clean after cleanup", status)
+	if got, err := git.Run(context.Background(), dir, "config", "--local", "--get", "core.fsmonitor"); err == nil {
+		t.Fatalf("original core.fsmonitor = %q, want unset", got)
 	}
 }
 
