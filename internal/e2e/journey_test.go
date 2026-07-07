@@ -1902,13 +1902,38 @@ func assertSupersededRunCancellation(t *testing.T, h *Harness) {
 	if cancelled.Error == nil || !strings.Contains(*cancelled.Error, "superseded by new push") {
 		t.Fatalf("expected superseded run error, got %v", deref(cancelled.Error))
 	}
-	second := h.WaitForRun("superseded-run", 60*time.Second)
-	if second.ID == first.ID {
-		t.Fatal("expected second superseded-run push to create a new run")
-	}
+	second := waitForBranchRunExcludingID(t, h, "superseded-run", first.ID, 60*time.Second)
 	if second.Status != types.RunCompleted {
 		t.Fatalf("superseding run did not complete: status=%s error=%v", second.Status, deref(second.Error))
 	}
+}
+
+func waitForBranchRunExcludingID(t *testing.T, h *Harness, branch, excludedID string, timeout time.Duration) *ipc.RunInfo {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var lastRun *ipc.RunInfo
+	for time.Now().Before(deadline) {
+		runs := h.Runs()
+		for i := range runs {
+			run := runs[i]
+			if run.Branch != branch || run.ID == excludedID {
+				continue
+			}
+			lastRun = &run
+			switch run.Status {
+			case types.RunCompleted, types.RunFailed, types.RunCancelled:
+				return &run
+			}
+			break
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	h.dumpDebugState()
+	if lastRun != nil {
+		t.Fatalf("replacement run for branch %s did not finish in %v (last status=%s)", branch, timeout, lastRun.Status)
+	}
+	t.Fatalf("replacement run for branch %s did not appear in %v", branch, timeout)
+	return nil
 }
 
 func assertDifferentBranchDoesNotCancelActiveRun(t *testing.T, h *Harness) {
