@@ -205,8 +205,9 @@ acpx_path: /Users/you/bin/acpx
 
 You can also set extra CLI flags for native agents in global config with
 `agent_args_override`. This is useful for things like model selection,
-reasoning level, or permission mode. Keep this in global config only, since it
+service tier, reasoning level, or permission mode. Keep this in global config only, since it
 reflects your local agent setup rather than repo policy.
+For example, Codex users can pass `-c service_tier="priority"` to request the priority speed lane and separately pass `-c model_reasoning_effort="low"` to reduce reasoning depth. no-mistakes reloads global config while setting up each run, so you can adjust this file before a run or use separately initialized `NM_HOME` roots as named profiles.
 
 ## Agent interface
 
@@ -258,6 +259,7 @@ Spawns a `claude` subprocess for each invocation with `--output-format stream-js
 ## Codex
 
 Spawns a `codex` subprocess for each invocation with `exec --json`. When structured output is requested, no-mistakes also writes a normalized schema file and passes it with `--output-schema`. By default it also adds `--dangerously-bypass-approvals-and-sandbox`, unless you already set your own Codex approval or sandbox flag through `agent_args_override`. Reads JSONL events. Structured output is returned from the final `agent_message` text, with fallback parsing that accepts JSON fences, inline fence markers, or a final bare JSON object after prose, then validates the result against the normalized schema.
+Codex model and config overrides, such as `-m gpt-5.4`, `-c service_tier="priority"`, or `-c model_reasoning_effort="low"`, belong in global `agent_args_override.codex`.
 
 ## Rovo Dev
 

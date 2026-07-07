@@ -74,7 +74,10 @@ agent_args_override:
   codex:
     - -m
     - gpt-5.4
-    - --full-auto
+    - -c
+    - service_tier="priority"
+    - -c
+    - model_reasoning_effort="low"
 
 # How long the CI step monitors an open PR (provider CI status plus GitHub/GitLab
 # mergeability) with no base-branch movement before giving up. Each base-branch
@@ -171,6 +174,8 @@ See [Repo Config Reference](/no-mistakes/reference/repo-config/) for the full fi
 - ACP agents are opt-in with `agent: acp:<target>` and are not considered by `agent: auto`.
 - `agent_path_override`, `agent_args_override`, `acpx_path`, and `acp_registry_overrides` are global-only fields.
 - `ci_timeout`, `step_quiet_warning`, and `log_level` are global-only fields.
+- For Codex-backed pipeline agents, `service_tier` controls the speed or priority lane and `model_reasoning_effort` controls reasoning depth. Set both through `agent_args_override.codex` with separate `-c` entries.
+- no-mistakes reloads global config while setting up each run. To adjust Codex behavior for the next run, edit `~/.no-mistakes/config.yaml` before starting it. For repeatable profiles such as fast or deep, use separately initialized `NM_HOME` roots; `NM_HOME` moves all no-mistakes state, not just config.
 - `auto_fix` from the repo config overlays global auto_fix. Fields not set in the repo config fall through to the global default.
 - `intent` from the repo config overlays global intent settings. Fields not set in the repo config fall through to the global default, except `intent.disabled_readers`, which adds to globally disabled readers.
 - `test.evidence` from the repo config overlays global test evidence settings. Fields not set in the repo config fall through to the global default.

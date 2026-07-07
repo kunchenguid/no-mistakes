@@ -27,7 +27,10 @@ agent_args_override:
   codex:
     - -m
     - gpt-5.4
-    - --full-auto
+    - -c
+    - service_tier="priority"
+    - -c
+    - model_reasoning_effort="low"
 
 ci_timeout: "168h"
 
@@ -131,7 +134,7 @@ Default native binary names when no override is set:
 ### agent_args_override
 
 Extra CLI flags to pass to each native agent.
-Use this to set model selection, reasoning effort, permission mode, or any other flag the underlying agent supports.
+Use this to set model selection, service tier, reasoning effort, permission mode, or any other flag the underlying agent supports.
 
 | | |
 |---|---|
@@ -172,7 +175,10 @@ agent_args_override:
   codex:
     - -m
     - gpt-5.4
-    - --full-auto
+    - -c
+    - service_tier="priority"
+    - -c
+    - model_reasoning_effort="low"
   rovodev:
     - --profile
     - work
@@ -183,6 +189,8 @@ agent_args_override:
     - --provider
     - google
 ```
+
+For Codex, `service_tier` and `model_reasoning_effort` tune different things: `service_tier` selects the speed or priority lane, while `model_reasoning_effort` selects reasoning depth. no-mistakes reloads global config while setting up each run, so edits made before `no-mistakes axi run` apply to that run. For repeatable profiles, use separately initialized `NM_HOME` directories; each has its own `config.yaml` and no-mistakes state.
 
 ### ci_timeout
 
