@@ -245,9 +245,43 @@ func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) 
 	cmd := h.cmd(ctx, "gh", args...)
 	cmd.Stdin = strings.NewReader(content.Body)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return nil, fmt.Errorf("gh pr edit: %s: %w", strings.TrimSpace(string(out)), err)
+		if apiErr := h.updatePRViaAPI(ctx, pr, content); apiErr != nil {
+			return nil, fmt.Errorf("gh pr edit: %s: %w; gh api fallback: %v", strings.TrimSpace(string(out)), err, apiErr)
+		}
 	}
 	return pr, nil
+}
+
+func (h *Host) updatePRViaAPI(ctx context.Context, pr *scm.PR, content scm.PRContent) error {
+	repo := h.apiRepoPath()
+	if repo == "" || strings.TrimSpace(pr.Number) == "" {
+		return fmt.Errorf("missing repo or PR number")
+	}
+	payload, err := json.Marshal(map[string]string{
+		"title": content.Title,
+		"body":  content.Body,
+	})
+	if err != nil {
+		return fmt.Errorf("encode PR update payload: %w", err)
+	}
+	args := []string{"api", "repos/" + repo + "/pulls/" + pr.Number, "--method", "PATCH", "--input", "-"}
+	cmd := h.cmd(ctx, "gh", args...)
+	cmd.Stdin = strings.NewReader(string(payload))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)
+	}
+	return nil
+}
+
+func (h *Host) apiRepoPath() string {
+	repo := strings.TrimSpace(h.repo)
+	if repo == "" {
+		return ""
+	}
+	if h.host != "" && strings.HasPrefix(repo, h.host+"/") {
+		return strings.TrimPrefix(repo, h.host+"/")
+	}
+	return repo
 }
 
 func (h *Host) GetPRState(ctx context.Context, pr *scm.PR) (scm.PRState, error) {
