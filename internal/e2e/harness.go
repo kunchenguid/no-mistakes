@@ -106,6 +106,7 @@ func NewHarness(t *testing.T, opts SetupOpts) *Harness {
 			t.Fatalf("mkdir %s: %v", dir, err)
 		}
 	}
+	h.writeLoginShellPathSeed()
 
 	// Symlink each agent name to the same fake binary. Codex and Claude
 	// dispatch by argv[0] basename; opencode the same. Symlinks (not
@@ -158,6 +159,19 @@ func NewHarness(t *testing.T, opts SetupOpts) *Harness {
 
 	t.Cleanup(h.shutdown)
 	return h
+}
+
+func (h *Harness) writeLoginShellPathSeed() {
+	line := "export PATH=" + shellQuote(h.BinDir) + ":$PATH\n"
+	for _, name := range []string{".zshenv", ".zprofile", ".bash_profile", ".profile"} {
+		if err := os.WriteFile(filepath.Join(h.HomeDir, name), []byte(line), 0o644); err != nil {
+			h.t.Fatalf("write %s: %v", name, err)
+		}
+	}
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
 // writeGlobalConfig writes a no-mistakes global config that pins the

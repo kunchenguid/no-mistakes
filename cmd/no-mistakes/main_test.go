@@ -4,6 +4,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -94,14 +95,24 @@ func TestDaemonRunRootFromArgs(t *testing.T) {
 	}
 }
 
-func TestDaemonRunRootFromArgs_EnvForcesDaemonMode(t *testing.T) {
+func TestDaemonRunRootFromArgs_EnvDoesNotForceDaemonModeForProbes(t *testing.T) {
 	t.Setenv("NM_DAEMON", "1")
 
-	gotRoot, gotOK, err := daemonRunRootFromArgs([]string{"status"})
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
+	tests := [][]string{
+		{"--version"},
+		{"daemon", "status"},
+		{"status"},
 	}
-	if gotRoot != "" || !gotOK {
-		t.Fatalf("got (%q, %v), want (%q, %v)", gotRoot, gotOK, "", true)
+
+	for _, args := range tests {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			gotRoot, gotOK, err := daemonRunRootFromArgs(args)
+			if err != nil {
+				t.Fatalf("unexpected err: %v", err)
+			}
+			if gotRoot != "" || gotOK {
+				t.Fatalf("got (%q, %v), want (%q, %v)", gotRoot, gotOK, "", false)
+			}
+		})
 	}
 }

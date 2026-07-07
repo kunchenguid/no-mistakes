@@ -27,8 +27,8 @@ var createDaemonPIDTempFile = os.CreateTemp
 var renameDaemonPIDFile = os.Rename
 
 // Run starts the daemon process. It blocks until a shutdown signal is received
-// or the shutdown IPC method is called. This is called when NM_DAEMON=1 or via
-// the hidden `no-mistakes daemon run` entrypoint used by the managed service.
+// or the shutdown IPC method is called. This is called via the hidden
+// `no-mistakes daemon run` entrypoint used by managed and detached services.
 func Run() error {
 	p, err := paths.New()
 	if err != nil {

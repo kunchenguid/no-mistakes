@@ -69,6 +69,11 @@ type Client struct {
 	mu      sync.Mutex // serializes calls on a single connection
 }
 
+const (
+	defaultDialTimeout = 250 * time.Millisecond
+	defaultCallTimeout = 30 * time.Second
+)
+
 // Dial connects to the IPC server at the given endpoint path.
 func Dial(socketPath string) (*Client, error) {
 	conn, err := dialEndpoint(socketPath)
@@ -105,6 +110,11 @@ func dialEndpoint(socketPath string) (net.Conn, error) {
 // The result is unmarshaled into the provided pointer.
 // If the server returns a JSON-RPC error, it is returned as *RPCError.
 func (c *Client) Call(method string, params interface{}, result interface{}) error {
+	return c.CallWithTimeout(method, params, result, defaultCallTimeout)
+}
+
+// CallWithTimeout is Call with a caller-selected read deadline.
+func (c *Client) CallWithTimeout(method string, params interface{}, result interface{}, timeout time.Duration) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -117,7 +127,10 @@ func (c *Client) Call(method string, params interface{}, result interface{}) err
 		return fmt.Errorf("send request: %w", err)
 	}
 
-	c.conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+	if timeout <= 0 {
+		timeout = defaultCallTimeout
+	}
+	c.conn.SetReadDeadline(time.Now().Add(timeout))
 	defer c.conn.SetReadDeadline(time.Time{})
 
 	if !c.scanner.Scan() {

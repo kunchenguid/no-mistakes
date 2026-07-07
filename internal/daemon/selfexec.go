@@ -47,9 +47,9 @@ func durationFromEnv(name string, fallback time.Duration) time.Duration {
 }
 
 // Start installs or refreshes the managed daemon service when supported and
-// starts it, falling back to a detached re-exec with NM_DAEMON=1 when managed
-// startup is unavailable or fails. It waits up to 5 seconds for the daemon to
-// become responsive on the IPC socket.
+// starts it, falling back to a detached explicit `daemon run --root` re-exec
+// when managed startup is unavailable or fails. It waits up to 5 seconds for
+// the daemon to become responsive on the IPC socket.
 //
 // When the daemon is already running, Start refreshes the installed service
 // definition and reloads the service manager if the on-disk definition is
@@ -249,9 +249,8 @@ func startDetachedDaemon(p *paths.Paths) error {
 	}
 	defer logFile.Close()
 
-	cmd := exec.Command(exe)
+	cmd := exec.Command(exe, "daemon", "run", "--root", p.Root())
 	cmd.Env = upsertEnv(os.Environ(), "NM_HOME", p.Root())
-	cmd.Env = upsertEnv(cmd.Env, "NM_DAEMON", "1")
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	// Detach from parent process group so daemon survives CLI exit.
@@ -378,15 +377,22 @@ func IsRunning(p *paths.Paths) (bool, error) {
 func daemonIsRunningViaIPC(p *paths.Paths) (bool, error) {
 	client, err := ipc.Dial(p.Socket())
 	if err != nil {
+		_, statErr := os.Stat(p.Socket())
+		if os.IsNotExist(statErr) {
+			return false, nil
+		}
 		if ipc.IsConnectTimeout(err) {
 			return false, err
 		}
-		return false, nil
+		if statErr != nil {
+			return false, fmt.Errorf("check daemon socket: %w", statErr)
+		}
+		return false, fmt.Errorf("connect to daemon socket: %w", err)
 	}
 	defer client.Close()
 
 	var result ipc.HealthResult
-	if err := client.Call(ipc.MethodHealth, &ipc.HealthParams{}, &result); err != nil {
+	if err := client.CallWithTimeout(ipc.MethodHealth, &ipc.HealthParams{}, &result, 250*time.Millisecond); err != nil {
 		return false, err
 	}
 	return result.Status == "ok", nil

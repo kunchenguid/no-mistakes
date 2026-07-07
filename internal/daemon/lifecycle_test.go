@@ -134,6 +134,94 @@ func TestEnsureDaemonDoesNotStartWhenHealthCheckTimesOut(t *testing.T) {
 	}
 }
 
+func TestIsRunningFailsFastWhenSocketAcceptsButDoesNotRespond(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix socket setup is platform-specific")
+	}
+
+	tmpDir, err := os.MkdirTemp("", "dtest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	p := paths.WithRoot(tmpDir)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("unix", p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		accepted <- conn
+	}()
+	t.Cleanup(func() {
+		select {
+		case conn := <-accepted:
+			_ = conn.Close()
+		default:
+		}
+	})
+
+	type result struct {
+		alive bool
+		err   error
+	}
+	done := make(chan result, 1)
+	go func() {
+		alive, err := IsRunning(p)
+		done <- result{alive: alive, err: err}
+	}()
+
+	select {
+	case got := <-done:
+		if got.alive {
+			t.Fatal("silent socket must not be reported running")
+		}
+		if got.err == nil {
+			t.Fatal("expected a clear health-check error from silent socket")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("IsRunning hung on a silent daemon socket")
+	}
+}
+
+func TestIsRunningSurfacesExistingDeadSocket(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix socket setup is platform-specific")
+	}
+
+	tmpDir, err := os.MkdirTemp("", "dtest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	p := paths.WithRoot(tmpDir)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.Socket(), []byte("dead"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	alive, err := IsRunning(p)
+	if alive {
+		t.Fatal("dead socket must not be reported running")
+	}
+	if err == nil || !strings.Contains(err.Error(), "connect to daemon socket") {
+		t.Fatalf("err = %v, want clear dead-socket connection error", err)
+	}
+}
+
 func TestStopDetachedDaemonFallsBackToPIDWhenSocketIsBroken(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("unix socket setup is platform-specific")
