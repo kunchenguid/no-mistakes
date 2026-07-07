@@ -109,6 +109,11 @@ Safest local verification sequence after non-trivial changes:
   `TestCodexAgent_Run_ReapsLeakedGrandchildOnCleanExit` (agent path),
   `TestRunShellCommandWithEnv_ReapsGrandchildOnCleanExit` (configured-command path),
   `TestTerminateShellCommandGroup_*` (the primitive).
+- On Windows the daemon runs console-less, so every console child it spawns (git, shell steps, native agents, provider CLIs, and helper commands such as `powershell`/`taskkill`/managed servers) would otherwise flash a fresh visible console window for its lifetime (#287).
+  Route each such `*exec.Cmd` through `winproc.Harden(cmd)` after building it: it OR-s `CREATE_NO_WINDOW` into any existing creation flags (preserving e.g. `CREATE_NEW_PROCESS_GROUP`) and sets `HideWindow`, leaves stdout/stderr redirection intact, is safe on a nil or already-populated `SysProcAttr` and safe to call more than once, and is a no-op on non-Windows platforms.
+  `shellenv.ConfigureShellCommand` already calls it, so cancellable step/agent subprocesses routed through that helper are covered; one-shot commands built directly (`git.Run`, `stepCmd`, `scm.AuthConfigured`, doctor's `git --version`, and the Windows service/taskkill/powershell/managed-server helpers) call it themselves, so apply it to any new such subprocess.
+  Intentionally detached background processes already run without a window: `update`'s detached spawn OR-s `CREATE_NO_WINDOW` into its own flags directly rather than calling `Harden`.
+  Regressions: `TestHarden*` in `internal/winproc`.
 - Use derived contexts and timeouts for cleanup and HTTP calls.
 - Use `context.Background()` mainly at top-level boundaries, background tasks, or in tests.
 - Protect shared mutable state with `sync.Mutex`, `sync.RWMutex`, `sync.Map`, or `atomic` where appropriate.
