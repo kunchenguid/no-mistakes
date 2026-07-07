@@ -102,7 +102,7 @@ $ no-mistakes
 
 如果是 GitHub fork 贡献，让 `origin` 指向父仓库，并用 `no-mistakes init --fork-url <your-fork-url>` 初始化。
 
-在 TUI 里你逐条处理 **finding**：**auto-fix** 类自动替你应用（或由你 approve 放行），**ask-user** 类需要你判断，由你 approve、fix 或 skip。
+在 TUI 里你逐条处理 **finding**：**auto-fix** 类自动替你应用（或由你 approve 放行），**ask-user** 类需要你判断，由你 approve、在该步骤支持修复时 fix，或 skip。
 每项检查变绿后，网关会把你的分支转发到配置的推送目标并替你开好 PR，不用手动 `git push origin`，也不用手写 PR 正文。
 想让编码 agent 无人值守地走完同一套流程？
 用 `/no-mistakes`（见下文）。

@@ -25,7 +25,7 @@ branch reaches the configured push target:
 
 - **Before** the code is public, it rebases, runs a structured AI code review, runs the conditional improve-codebase structural gate when the change-set looks risky, runs baseline tests, gathers user-facing test evidence when intent is available, checks that docs are in sync, runs lint, and only then pushes to the configured target and opens the PR.
 - **After** the push, it watches CI and auto-fixes failures. On GitHub, GitLab, and Azure DevOps it also watches PR mergeability and fixes merge conflicts on the branch.
-- **Throughout**, every step can pause for your approval. You see the findings, pick what to fix, and decide when to ship.
+- **Throughout**, every step can pause for your approval. You see the findings, pick what to fix on fixable gates, and decide when to ship.
 
 The whole thing runs in a disposable worktree. Your working directory is never
 touched, so you can keep coding while the pipeline runs.
@@ -66,13 +66,13 @@ When a branch passes the gate, it means:
 - it was checked against fresh upstream and the pushed-branch target
 - the fixed pipeline ran in order
 - review, improve-codebase when triggered, tests, user-facing test evidence when available, docs, and lint happened before the branch reached the configured push target
-- you had a chance to approve, fix, skip, or abort any blocking step
+- you had a chance to approve, fix on fixable gates, skip, or abort any blocking step
 
 ## What you get
 
 - A fixed, opinionated pipeline: `intent → rebase → review → improve-codebase → test → document → lint → push → pr → ci`. Order is not configurable; what each step runs is.
 - Choice of agent: `claude`, `codex`, `rovodev`, `opencode`, `pi`, `copilot`, or `acp:<target>` via `acpx`, with per-repo override and ordered fallbacks.
-- A TUI to watch, approve, fix, skip, or abort any step.
+- A TUI to watch, approve, fix on fixable gates, skip, or abort any step.
 - A `/no-mistakes` agent skill so a coding agent can do a task and gate it, or gate existing committed work, backed by a non-interactive `no-mistakes axi` interface.
 - A setup wizard when you run bare `no-mistakes` with no active run on the current branch - it walks you through creating a branch, committing, and pushing through the gate, then attaches if the daemon registers the new run.
 
@@ -81,7 +81,7 @@ When a branch passes the gate, it means:
 The pipeline is the same no matter how you start it. There are three first-class entry points, one for each way you tend to be working when a change is ready:
 
 - **`git push no-mistakes`** - the explicit Git path. You push a committed branch to the gate remote instead of `origin`, and the daemon takes it from there. See [Quick Start](/no-mistakes/start-here/quick-start/).
-- **`no-mistakes`** - the terminal UI. Run it after making changes and a [setup wizard](/no-mistakes/guides/setup-wizard/) walks you through branch, commit, and push, then attaches to the live run so you can watch, approve, fix, skip, or abort each step.
+- **`no-mistakes`** - the terminal UI. Run it after making changes and a [setup wizard](/no-mistakes/guides/setup-wizard/) walks you through branch, commit, and push, then attaches to the live run so you can watch, approve, fix on fixable gates, skip, or abort each step.
 - **`/no-mistakes`** - the agent skill. Tell a coding agent `/no-mistakes <task>` to have it do the task, commit it on a feature branch, and then gate it with that task as intent; use bare `/no-mistakes` to gate existing committed work. It resolves safe findings on its own and stops to relay anything that needs your decision. See [Driving no-mistakes as an agent](/no-mistakes/guides/agents/#driving-no-mistakes-as-an-agent).
 
 `no-mistakes init` installs the `/no-mistakes` skill and bundled `improve-codebase` dependency at user level for every supported agent, so it works in all your repos. The skill drives `no-mistakes axi`, a non-interactive command surface that prints [TOON](https://toonformat.dev) to stdout, so an agent reaches the same gate and the same approval points you get in the TUI.

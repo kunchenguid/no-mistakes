@@ -79,7 +79,7 @@ Runs a read-only structural/change-set gate after review and before tests.
 
 **Behavior:**
 - Defaults to `improve_codebase.mode: auto`.
-- In `auto` mode, skips small isolated changes and runs when the change-set has structural risk signals such as cross-directory moves, high-risk config or workflow changes, public-surface/boundary files, many source files, or a large diff.
+- In `auto` mode, skips small isolated changes and runs when the change-set has structural risk signals such as cross-directory moves, high-risk config or workflow changes, public-surface/boundary files, more than 8 non-generated/non-vendored source files, or more than 800 added+deleted lines.
 - Set `improve_codebase.mode: always` in global or trusted default-branch repo config to run it for every change-set.
 - Set `improve_codebase.mode: off` in global or trusted default-branch repo config to disable it.
 - Filters out files matching `ignore_patterns` before deciding whether to run and before prompting the audit agent.

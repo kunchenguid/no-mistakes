@@ -12,7 +12,7 @@ intent → rebase → review → improve-codebase → test → document → lint
 ```mermaid
 flowchart LR
   intent["Intent"] --> rebase["Rebase"] --> review["Review"] --> improve["Improve Codebase"] --> test["Test"] --> document["Document"] --> lint["Lint"] --> push["Push"] --> pr["PR"] --> ci["CI"]
-  review -. findings .-> action["Approve / fix / skip / abort"]
+  review -. findings .-> action["Approve / fix when allowed / skip / abort"]
   improve -. findings .-> action
   test -. findings .-> action
   document -. findings .-> action

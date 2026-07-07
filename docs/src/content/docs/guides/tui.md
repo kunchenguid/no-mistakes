@@ -155,7 +155,7 @@ When yolo mode is on, the footer changes from `y yolo` to `y end yolo`.
 | Key | Action |
 |---|---|
 | `a` | Approve - continue to next step |
-| `f` | Fix - send selected findings to agent for fixing |
+| `f` | Fix - send selected findings to agent for fixing when the step supports fixes |
 | `s` | Skip - skip this step and continue |
 | `x` | Abort - press twice to confirm (first press shows warning) |
 | `o` | Open PR URL in browser (when available) |

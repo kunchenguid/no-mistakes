@@ -237,7 +237,7 @@ The CI step keeps monitoring while the PR remains open, even after checks are cu
 Once checks are green and the PR is mergeable, the CI panel shows `✓ Checks passed` and the terminal title switches to `Checks passed`, so you can tell when to go merge the PR.
 The signal clears automatically if checks start re-running or a new failure appears.
 If the PR is still open at the timeout, the step pauses for approval with findings for the open monitoring state or any known unresolved failures.
-You can approve, fix, or skip from the TUI or `no-mistakes axi respond`.
+You can approve, fix on fixable gates, or skip from the TUI or `no-mistakes axi respond`.
 Use `no-mistakes axi abort` only when you mean to cancel the whole active run.
 
 ## Step looks quiet or wedged
