@@ -147,7 +147,9 @@ func TerminateShellCommandGroup(cmd *exec.Cmd) {
 		return
 	}
 	pid := strconv.Itoa(cmd.Process.Pid)
-	_ = exec.Command("taskkill", "/T", "/F", "/PID", pid).Run()
+	kill := exec.Command("taskkill", "/T", "/F", "/PID", pid)
+	winproc.Harden(kill)
+	_ = kill.Run()
 }
 
 func newShellCommandJob() (windows.Handle, error) {
