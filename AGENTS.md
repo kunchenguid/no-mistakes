@@ -23,7 +23,7 @@ Most implementation code lives under `internal/`.
 - Run unit/integration tests directly: `go test -race ./...`
 - Run end-to-end tests: `make e2e`
 - Re-record end-to-end fixtures: `make e2e-record`
-- Regenerate the committed agent skill: `make skill`
+- Regenerate the committed no-mistakes agent skill: `make skill`
 - Run skill drift check and vet: `make lint`
 - Run vet directly: `go vet ./...`
 - Format all Go files: `make fmt`
@@ -84,6 +84,7 @@ Safest local verification sequence after non-trivial changes:
 **Agent-Guidance Surfaces**
 
 - `skills/no-mistakes/SKILL.md` is **generated**, not hand-written: the source of truth is the `body` constant in `internal/skill/skill.go`. Edit the body, then `make skill` to regenerate; `make lint` runs `skill-check` (`genskill --check`) and fails CI on drift. Never edit `SKILL.md` directly. `no-mistakes init` installs/refreshes this same rendering at user level, so the strings in the Go source are what ships to agents.
+- `skills/improve-codebase/` is the public bundled dependency skill installed alongside `/no-mistakes`; `internal/skill/bundled/improve-codebase/` is the embedded copy that ships in the binary. Keep the two trees byte-for-byte identical when editing the skill package; `TestBundledImproveCodebaseMatchesPublicSkill` fails on drift.
 - The "how an agent drives the pipeline" guidance lives in **three surfaces that must stay in sync**: (1) the skill body above (loaded when an agent invokes `/no-mistakes`); (2) the live `axi` output strings in `internal/cli/axi*.go` - the home `help` (`axi.go`), the gate `note`/`help` and run/respond return help (`axi_render.go` `gateFields`), and the `--help` Long strings (`axi_drive.go`); and (3) the published `docs/src/content/docs/guides/agents.md`. When you change driving guidance in one, mirror it in the others. The point-of-use `axi` strings are the layer an agent reads while driving without reopening the skill.
 - Review auto-fix is disabled by default (`config.go` `autoFixDefaults` `Review: 0`; a repo or global `auto_fix.review > 0` override re-enables it through `AutoFixLimit(types.StepReview)` and the executor auto-fix loop), so blocking and ask-user review findings park for an agent decision rather than being silently self-fixed.
   An info-level auto-fix review finding under the default neither parks nor is fixed, so keep the skill, live `axi` note, and docs qualified if you touch review auto-fix.
