@@ -21,6 +21,10 @@ import (
 // parent console process group.
 const createNewProcessGroup = 0x00000200
 
+// createNoWindow prevents daemon-launched console subprocesses from flashing
+// transient windows when the daemon itself has no visible console.
+const createNoWindow = 0x08000000
+
 // taskkillExitNoSuchProcess is the nonzero exit code taskkill returns when no
 // process matches the given PID (the child had already exited before we could
 // kill it). All other nonzero codes are genuine kill failures that must not
@@ -57,7 +61,8 @@ func ConfigureShellCommand(cmd *exec.Cmd) {
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}
-	cmd.SysProcAttr.CreationFlags |= createNewProcessGroup
+	cmd.SysProcAttr.CreationFlags |= createNewProcessGroup | createNoWindow
+	cmd.SysProcAttr.HideWindow = true
 	if job, err := newShellCommandJobFunc(); err == nil {
 		shellCommandJobs.Store(cmd, &shellCommandJobState{handle: job})
 		cmd.SysProcAttr.CreationFlags |= windows.CREATE_SUSPENDED

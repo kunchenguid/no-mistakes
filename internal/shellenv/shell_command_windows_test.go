@@ -39,6 +39,21 @@ func TestIsTaskkillAlreadyGone(t *testing.T) {
 	}
 }
 
+func TestConfigureShellCommandHidesWindows(t *testing.T) {
+	cmd := exec.CommandContext(context.Background(), "cmd", "/c", "exit", "0")
+	ConfigureShellCommand(cmd)
+
+	if cmd.SysProcAttr == nil {
+		t.Fatal("ConfigureShellCommand did not assign SysProcAttr")
+	}
+	if !cmd.SysProcAttr.HideWindow {
+		t.Fatal("HideWindow = false, want true")
+	}
+	if cmd.SysProcAttr.CreationFlags&createNoWindow == 0 {
+		t.Fatalf("CreationFlags = %#x, want CREATE_NO_WINDOW set", cmd.SysProcAttr.CreationFlags)
+	}
+}
+
 func TestStartShellCommandFailsWhenJobSetupFails(t *testing.T) {
 	setupErr := errors.New("job setup denied")
 	oldNewJob := newShellCommandJobFunc
