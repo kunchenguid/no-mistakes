@@ -214,6 +214,7 @@ func runAxiHome(cmd *cobra.Command) error {
 	default:
 		help = append(help, "Run `no-mistakes axi status` to inspect the active run")
 	}
+	help = append(help, preserveGateFixCommitsGuidance)
 	help = append(help, "How to drive the pipeline: `no-mistakes axi run --help`, or the `/no-mistakes` skill (loaded when you invoke `/no-mistakes`)")
 	fields = append(fields, toon.Field{Key: "help", Value: help})
 

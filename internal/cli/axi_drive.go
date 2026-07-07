@@ -70,7 +70,8 @@ func newAxiRunCmd() *cobra.Command {
 			"accepting the result) until a decision point or outcome.\n\n" +
 			"--intent is required when starting a new run: pass what the user set out\n" +
 			"to accomplish (the goal behind the change, not a description of the diff)\n" +
-			"so no-mistakes uses it directly instead of inferring it from transcripts.",
+			"so no-mistakes uses it directly instead of inferring it from transcripts.\n\n" +
+			preserveGateFixCommitsGuidance,
 		Args:          cobra.NoArgs,
 		SilenceErrors: true,
 		SilenceUsage:  true,
@@ -517,9 +518,11 @@ func renderDriveResult(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool) error
 		return nil
 	}
 
+	help := []string{preserveGateFixCommitsGuidance}
 	if rv.PRURL != "" {
-		fields = append(fields, toon.Field{Key: "help", Value: []string{fmt.Sprintf("Open the PR: %s", rv.PRURL)}})
+		help = append([]string{fmt.Sprintf("Open the PR: %s", rv.PRURL)}, help...)
 	}
+	fields = append(fields, toon.Field{Key: "help", Value: help})
 	emitDoc(cmd, fields...)
 	return &exitError{code: 1}
 }
@@ -540,6 +543,7 @@ func successReportHelp(fixes []fixRow) []string {
 	if len(fixes) > 0 {
 		help = append(help, "The pipeline fixed findings the original change missed (see `fixes`) - acknowledge the misses and list each fix so the user can review them.")
 	}
+	help = append(help, preserveGateFixCommitsGuidance)
 	return help
 }
 
@@ -551,7 +555,8 @@ func newAxiRespondCmd() *cobra.Command {
 		Use:   "respond",
 		Short: "Answer the current approval gate and continue the run",
 		Long: "Sends approve/fix/skip for the step currently awaiting approval, then\n" +
-			"blocks until the next gate, CI-ready decision point, or final outcome.",
+			"blocks until the next gate, CI-ready decision point, or final outcome.\n\n" +
+			preserveGateFixCommitsGuidance,
 		Args:          cobra.NoArgs,
 		SilenceErrors: true,
 		SilenceUsage:  true,
@@ -619,7 +624,7 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 	}
 	if active.Run == nil {
 		return emitError(cmd, 1, "no active run to respond to",
-			"Run `no-mistakes axi run` to start one")
+			"Run `no-mistakes axi run --intent \"...\"` to start one")
 	}
 	runID := active.Run.ID
 
@@ -705,7 +710,8 @@ func newAxiAbortCmd() *cobra.Command {
 			"While a run is active, do NOT abort (or rerun) to go fix a finding\n" +
 			"yourself - that discards the pipeline's in-flight work and forces a full\n" +
 			"re-validation. abort and rerun are for between runs (after a failed or\n" +
-			"cancelled outcome), never to circumvent a gate.",
+			"cancelled outcome), never to circumvent a gate.\n\n" +
+			preserveGateFixCommitsGuidance,
 		Args:          cobra.NoArgs,
 		SilenceErrors: true,
 		SilenceUsage:  true,

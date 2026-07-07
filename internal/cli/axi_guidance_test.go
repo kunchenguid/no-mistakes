@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,6 +23,13 @@ var canonicalStaleMonitorPhrases = []string{
 	"never hand-rebase",
 	"re-pushes",
 	"no-mistakes rerun",
+}
+
+var canonicalPreserveGateFixPhrases = []string{
+	"no-mistakes axi run --intent",
+	"Never abort-and-restart",
+	"prior gate-fix commits",
+	"already-resolved findings do not re-surface",
 }
 
 // TestStaleMonitorGuidance_SyncedAcrossSurfaces guards the repo invariant that
@@ -79,6 +87,69 @@ func TestStaleMonitorGuidance_InChecksPassedOutput(t *testing.T) {
 			t.Errorf("checks-passed output missing stale-monitor guidance phrase %q in:\n%s", phrase, got)
 		}
 	}
+}
+
+func TestPreserveGateFixGuidance_SyncedAcrossSurfaces(t *testing.T) {
+	surfaces := map[string]string{
+		"skill body":       skill.Markdown(),
+		"agents guide":     readAgentsGuide(t),
+		"axi run help":     newAxiRunCmd().Long,
+		"axi respond help": newAxiRespondCmd().Long,
+		"axi abort help":   newAxiAbortCmd().Long,
+	}
+	for name, content := range surfaces {
+		for _, phrase := range canonicalPreserveGateFixPhrases {
+			if !strings.Contains(content, phrase) {
+				t.Errorf("%s is missing the canonical preserve-gate-fix guidance phrase %q", name, phrase)
+			}
+		}
+	}
+}
+
+func TestPreserveGateFixGuidance_InPointOfUseOutputs(t *testing.T) {
+	gate := stepView{
+		Name:   "review",
+		Status: "awaiting_approval",
+		FindingsJSON: findingsJSON(t, []types.Finding{
+			{ID: "review-1", Severity: "warning", File: "main.go", Action: types.ActionAskUser, Description: "calls os.Exit"},
+		}, "1 blocking issue"),
+	}
+	surfaces := map[string]string{
+		"gate output":          axiDoc(gateFields(gate)...),
+		"checks-passed output": renderDriveResultForGuidanceTest(t, true, types.RunRunning),
+		"failed output":        renderDriveResultForGuidanceTest(t, false, types.RunFailed),
+	}
+	for name, content := range surfaces {
+		for _, phrase := range canonicalPreserveGateFixPhrases {
+			if !strings.Contains(content, phrase) {
+				t.Errorf("%s is missing the canonical preserve-gate-fix guidance phrase %q in:\n%s", name, phrase, content)
+			}
+		}
+	}
+}
+
+func renderDriveResultForGuidanceTest(t *testing.T, ciReady bool, status types.RunStatus) string {
+	t.Helper()
+	run := &ipc.RunInfo{
+		ID:      "run-1",
+		Branch:  "feature/x",
+		Status:  status,
+		HeadSHA: "abcdef1234567890",
+		PRURL:   strptr("https://github.com/user/repo/pull/42"),
+		Steps: []ipc.StepResultInfo{
+			{StepName: types.StepCI, Status: types.StepStatusRunning},
+		},
+	}
+
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+	err := renderDriveResult(cmd, run, ciReady)
+	var exit *exitError
+	if err != nil && !errors.As(err, &exit) {
+		t.Fatalf("renderDriveResult returned unexpected error: %v", err)
+	}
+	return out.String()
 }
 
 func readAgentsGuide(t *testing.T) string {
