@@ -36,21 +36,40 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	if err := s.stageInRepoEvidence(sctx); err != nil {
 		return nil, err
 	}
-	status, _ := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
+	status, err := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
+	if err != nil {
+		return nil, fmt.Errorf("inspect agent changes: %w", err)
+	}
 	if strings.TrimSpace(status) != "" {
 		sctx.Log("committing agent changes...")
 		if _, err := git.Run(ctx, sctx.WorkDir, "add", "-A"); err != nil {
 			return nil, fmt.Errorf("stage agent changes: %w", err)
 		}
-		_, err := git.Run(ctx, sctx.WorkDir, "commit", "-m", "no-mistakes: apply agent fixes")
+		staged, err := git.Run(ctx, sctx.WorkDir, "diff", "--cached", "--name-only")
 		if err != nil {
-			return nil, fmt.Errorf("commit agent changes: %w", err)
+			return nil, fmt.Errorf("inspect staged agent changes: %w", err)
 		}
-		headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
-		if err != nil {
-			return nil, fmt.Errorf("resolve head after commit: %w", err)
+		if strings.TrimSpace(staged) == "" {
+			statusAfterAdd, err := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
+			if err != nil {
+				return nil, fmt.Errorf("inspect agent changes after staging: %w", err)
+			}
+			if strings.TrimSpace(statusAfterAdd) == "" {
+				sctx.Log("no agent changes remained after staging")
+			} else {
+				return nil, fmt.Errorf("stage agent changes produced no committable diff; status after staging:\n%s", statusAfterAdd)
+			}
+		} else {
+			_, err := git.Run(ctx, sctx.WorkDir, "commit", "-m", "no-mistakes: apply agent fixes")
+			if err != nil {
+				return nil, fmt.Errorf("commit agent changes: %w", err)
+			}
+			headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
+			if err != nil {
+				return nil, fmt.Errorf("resolve head after commit: %w", err)
+			}
+			newHeadSHA = headSHA
 		}
-		newHeadSHA = headSHA
 	}
 
 	ref := normalizedBranchRef(sctx.Run.Branch)

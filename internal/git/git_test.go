@@ -88,6 +88,19 @@ func TestRunError(t *testing.T) {
 	}
 }
 
+func TestRunErrorIncludesStdout(t *testing.T) {
+	dir := initTestRepo(t)
+	ctx := context.Background()
+
+	_, err := Run(ctx, dir, "commit", "-m", "empty")
+	if err == nil {
+		t.Fatal("expected empty commit to fail")
+	}
+	if !strings.Contains(err.Error(), "nothing to commit") {
+		t.Fatalf("expected error to include git stdout, got: %v", err)
+	}
+}
+
 func TestInitBare(t *testing.T) {
 	ctx := context.Background()
 	dir := filepath.Join(t.TempDir(), "test.git")
