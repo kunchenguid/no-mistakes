@@ -329,7 +329,7 @@ func mkdirAll(t *testing.T, dir string) {
 func symlink(t *testing.T, target, link string) {
 	t.Helper()
 	if err := os.Symlink(target, link); err != nil {
-		t.Fatal(err)
+		t.Skipf("symlinks unavailable: %v", err)
 	}
 }
 
