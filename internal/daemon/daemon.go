@@ -19,6 +19,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 var applyShellEnvToProcess = shellenv.ApplyToProcess
@@ -115,6 +116,21 @@ func RunWithResources(p *paths.Paths, d *db.DB) error {
 // RunWithOptions starts the daemon with optional overrides.
 // stepFactory overrides the default pipeline steps (for testing).
 func RunWithOptions(p *paths.Paths, d *db.DB, stepFactory StepFactory) error {
+	// Singleton guard: only one live daemon may own this NM_HOME at a time.
+	// This must be acquired before recoverOnStartup (global stale-run
+	// recovery and orphan-worktree cleanup) and before the IPC socket is
+	// bound, and held for the rest of the process lifetime - otherwise a
+	// second daemon racing to start against the same root can mark another
+	// live daemon's active runs as crashed and delete worktrees out from
+	// under it (see AGENTS.md "Daemon Singleton Lock"). Covers both the
+	// `daemon start` -> detached child path and a direct `daemon run --root`
+	// invocation, since both funnel through here.
+	lock, err := acquireSingletonLock(p)
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
+
 	defer func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 750*time.Millisecond)
 		defer cancel()
@@ -261,7 +277,20 @@ func recoverOnStartup(d *db.DB, p *paths.Paths) {
 		slog.Info("recovered stale runs from previous crash", "count", count)
 	}
 
-	// Clean up orphaned worktree directories.
+	cleanupOrphanWorktrees(d, p)
+}
+
+// cleanupOrphanWorktrees removes worktree directories left behind by runs
+// that are no longer active. It is DB-aware: a worktree is only removed when
+// its run row is terminal, or when there is no matching run row at all (and
+// then only past worktreeCleanupGracePeriod). This is what keeps cleanup from
+// deleting the checkout out from under a pipeline that is still actually
+// running (see skipWorktreeCleanup). Called from recoverOnStartup after
+// RecoverStaleRuns, so in the normal single-daemon path every run this loop
+// sees has already been resolved to a terminal status; it is factored out
+// separately so it can also be exercised - and its DB-aware skip behavior
+// verified - independent of stale-run recovery's side effects.
+func cleanupOrphanWorktrees(d *db.DB, p *paths.Paths) {
 	wtRoot := p.WorktreesDir()
 	entries, err := os.ReadDir(wtRoot)
 	if err != nil {
@@ -282,7 +311,12 @@ func recoverOnStartup(d *db.DB, p *paths.Paths) {
 			if !runEntry.IsDir() {
 				continue
 			}
-			wtPath := filepath.Join(repoPath, runEntry.Name())
+			runID := runEntry.Name()
+			wtPath := filepath.Join(repoPath, runID)
+			if skip, reason := skipWorktreeCleanup(d, runID); skip {
+				slog.Info("skipping worktree cleanup", "path", wtPath, "reason", reason)
+				continue
+			}
 			if err := git.WorktreeRemove(ctx, gateDir, wtPath); err != nil {
 				slog.Warn("git worktree remove failed, falling back to os.RemoveAll", "path", wtPath, "error", err)
 				if err := os.RemoveAll(wtPath); err != nil {
@@ -295,6 +329,27 @@ func recoverOnStartup(d *db.DB, p *paths.Paths) {
 		// Remove empty repo dir.
 		os.Remove(repoPath)
 	}
+}
+
+// skipWorktreeCleanup reports whether the worktree directory for runID must
+// be left alone during startup cleanup. It is the active-run guard that
+// makes cleanup safe even if the singleton lock were ever bypassed: a
+// worktree is never removed while its run is still pending or running -
+// only terminal-run leftovers or directories with no matching run row at
+// all (e.g. a directory left behind after its run row was independently
+// pruned) are eligible for removal. RunManager.startRun always inserts the
+// run row before creating the worktree directory, so on a single daemon a
+// "no matching run" directory is never one whose insert simply hasn't landed
+// yet - it is safe to remove immediately.
+func skipWorktreeCleanup(d *db.DB, runID string) (bool, string) {
+	run, err := d.GetRun(runID)
+	if err != nil {
+		return true, fmt.Sprintf("failed to look up run %s: %v", runID, err)
+	}
+	if run != nil && (run.Status == types.RunPending || run.Status == types.RunRunning) {
+		return true, fmt.Sprintf("run %s is %s", runID, run.Status)
+	}
+	return false, ""
 }
 
 // migrateGateConfigs walks every bare repo under p.ReposDir() and refreshes
