@@ -74,6 +74,9 @@ For PR and workflow-run commands, no-mistakes passes the repository slug from th
 - Failed job log fetching (`gh run view --log-failed`) for the CI auto-fix step
 - PR mergeability polling, and agent-driven resolution when the provider reports an actual merge conflict
 
+When a `gh` version does not support JSON output for `gh pr checks`, no-mistakes falls back to parsing the plain `gh pr checks` output so CI polling can still classify pass, fail, pending, cancelled, and skipped checks.
+If `gh pr edit` fails because GitHub's GraphQL response includes deprecated project fields, no-mistakes retries the same PR title/body update through the GitHub REST API.
+
 ### GitHub fork contributions
 
 Fork routing is available for GitHub when you need to push branches to your fork but open PRs against the parent repository.

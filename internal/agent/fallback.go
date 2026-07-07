@@ -12,7 +12,8 @@ type fallbackAgent struct {
 }
 
 // NewFallback returns an Agent that tries each agent in order when an
-// invocation fails because the current agent process is unavailable.
+// invocation fails because the current agent process is unavailable or cannot
+// satisfy invocation constraints such as adapter-enforced read-only mode.
 func NewFallback(agents []Agent) Agent {
 	switch len(agents) {
 	case 0:
