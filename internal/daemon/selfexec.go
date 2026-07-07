@@ -30,6 +30,21 @@ func daemonStartTimeout() time.Duration {
 	return durationFromEnv("NM_TEST_DAEMON_START_TIMEOUT", fallback)
 }
 
+// daemonStopTimeout bounds how long waitForDaemonStop polls the health check
+// for graceful shutdown before falling back to killing the daemon by PID.
+// Windows gets a longer window: closing the loopback TCP listener used for
+// its named-pipe-less IPC transport (transport_windows.go) does not make
+// pending/racing connections fail as immediately as a Unix domain socket
+// unlink does, so the health check can keep reporting an ambiguous error
+// for longer after a graceful shutdown request has already succeeded.
+func daemonStopTimeout() time.Duration {
+	fallback := 5 * time.Second
+	if runtimeGOOS == "windows" {
+		fallback = 15 * time.Second
+	}
+	return durationFromEnv("NM_TEST_DAEMON_STOP_TIMEOUT", fallback)
+}
+
 func daemonStartPollInterval() time.Duration {
 	return durationFromEnv("NM_TEST_DAEMON_START_POLL_INTERVAL", 100*time.Millisecond)
 }
@@ -472,6 +487,14 @@ func validateDaemonPIDFallback(p *paths.Paths, pid int) error {
 	if pid <= 0 {
 		return fmt.Errorf("invalid daemon pid %d", pid)
 	}
+	// A daemon is always a separate process from whatever is stopping it.
+	// A pid file recording our own pid means the "daemon" is actually
+	// running in-process (e.g. a test harness driving RunWithResources in
+	// a goroutine) rather than as a real detached process. Killing it here
+	// would kill the caller, not a daemon.
+	if pid == os.Getpid() {
+		return fmt.Errorf("refusing to kill our own pid %d", pid)
+	}
 	record, err := readDaemonPIDFile(p.PIDFile())
 	if err != nil {
 		return fmt.Errorf("read pid file: %w", err)
@@ -548,7 +571,7 @@ func daemonSocketAcceptingConnections(path string) (bool, error) {
 
 func waitForDaemonStop(p *paths.Paths) error {
 	// Wait for daemon to actually stop (socket becomes unavailable).
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(daemonStopTimeout())
 	for time.Now().Before(deadline) {
 		alive, err := daemonHealthCheck(p)
 		if err == nil && !alive {
