@@ -28,7 +28,7 @@ func TestLintStep_FixMode_CommitsChanges(t *testing.T) {
 		},
 	}
 
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Lint: "true"})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Lint: "exit 0"})
 	sctx.Fixing = true
 	sctx.PreviousFindings = previousFindings
 
