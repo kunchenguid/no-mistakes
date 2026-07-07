@@ -286,8 +286,9 @@ func TestRebaseStep_FixModeNonConflictFailureReturnsError(t *testing.T) {
 	gitCmd(t, dir, "push", "origin", "main")
 	gitCmd(t, dir, "checkout", "feature")
 
-	// Dirty the working tree so rebase fails without conflict
-	os.WriteFile(filepath.Join(dir, "b.txt"), []byte("dirty\n"), 0o644)
+	// Add an untracked file that origin/main would introduce. Git must stop
+	// before rebasing because the checkout would overwrite local data.
+	os.WriteFile(filepath.Join(dir, "c.txt"), []byte("dirty\n"), 0o644)
 
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
@@ -335,7 +336,9 @@ func TestRebaseStep_NonConflictFailureWithRebaseMetadataReturnsError(t *testing.
 	gitCmd(t, dir, "push", "origin", "main")
 	gitCmd(t, dir, "checkout", "feature")
 
-	os.WriteFile(filepath.Join(dir, "b.txt"), []byte("dirty\n"), 0o644)
+	// Add an untracked file that origin/main would introduce. Git must stop
+	// before rebasing because the checkout would overwrite local data.
+	os.WriteFile(filepath.Join(dir, "c.txt"), []byte("dirty\n"), 0o644)
 	rebaseMergeDir := gitCmd(t, dir, "rev-parse", "--git-path", "rebase-merge")
 	if err := os.MkdirAll(rebaseMergeDir, 0o755); err != nil {
 		t.Fatalf("mkdir rebase metadata: %v", err)
