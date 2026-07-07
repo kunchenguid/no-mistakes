@@ -211,18 +211,17 @@ Rules:
 		needsApproval := hasBlockingFindings(findings.Items)
 		autoFixable := needsApproval
 
-		// Check if agent wrote new test files
+		// Record any new test files the agent wrote as informational (no-op)
+		// findings. Their presence alone is not an actionable problem, so they
+		// must not force the test step into approval when tests pass (issue #140).
 		newTests := detectNewTestFiles(ctx, sctx.WorkDir)
-		if len(newTests) > 0 {
-			needsApproval = true
-			autoFixable = false
-			for _, f := range newTests {
-				findings.Items = append(findings.Items, Finding{
-					Severity:    "info",
-					File:        f,
-					Description: fmt.Sprintf("new test file written by agent: %s", f),
-				})
-			}
+		for _, f := range newTests {
+			findings.Items = append(findings.Items, Finding{
+				Severity:    "info",
+				Action:      types.ActionNoOp,
+				File:        f,
+				Description: fmt.Sprintf("new test file written by agent: %s", f),
+			})
 		}
 
 		findingsJSON, _ := json.Marshal(findings)
@@ -234,7 +233,9 @@ Rules:
 		}, nil
 	}
 
-	// Check if agent wrote new test files (fix mode uses agent before running tests)
+	// In fix mode the agent may add new test files while making tests pass.
+	// Record them as informational (no-op) findings but do not gate on them:
+	// passing tests with only informational findings proceed automatically (issue #140).
 	if sctx.Fixing && len(newTestsFromFix) > 0 {
 		findings := Findings{
 			Summary: "tests passed, but agent wrote new test files",
@@ -243,13 +244,14 @@ Rules:
 		for _, f := range newTestsFromFix {
 			findings.Items = append(findings.Items, Finding{
 				Severity:    "info",
+				Action:      types.ActionNoOp,
 				File:        f,
 				Description: fmt.Sprintf("new test file written by agent: %s", f),
 			})
 		}
 		findingsJSON, _ := json.Marshal(findings)
 		return &pipeline.StepOutcome{
-			NeedsApproval: true,
+			NeedsApproval: false,
 			Findings:      string(findingsJSON),
 			FixSummary:    fixSummary,
 		}, nil

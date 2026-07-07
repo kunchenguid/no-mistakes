@@ -11,6 +11,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 func TestTestStep_FixMode(t *testing.T) {
@@ -104,7 +105,7 @@ func TestTestStep_FixMode_UsesFallbackSummaryWhenStructuredSummaryMalformed(t *t
 	}
 }
 
-func TestTestStep_FixMode_AgentWritesNewTests_NeedsApproval(t *testing.T) {
+func TestTestStep_FixMode_AgentWritesNewTests_ProceedsAutomatically(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
@@ -126,8 +127,10 @@ func TestTestStep_FixMode_AgentWritesNewTests_NeedsApproval(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !outcome.NeedsApproval {
-		t.Error("expected approval needed when agent writes new test files in fix mode")
+	// Issue #140: a passing test run whose only finding is an informational
+	// "new test file written by agent" note must not require approval.
+	if outcome.NeedsApproval {
+		t.Error("expected no approval for an informational new-test-file finding when tests pass")
 	}
 	if callCount != 1 {
 		t.Errorf("expected 1 agent call in fix mode, got %d", callCount)
@@ -139,7 +142,9 @@ func TestTestStep_FixMode_AgentWritesNewTests_NeedsApproval(t *testing.T) {
 	for _, item := range f.Items {
 		if strings.Contains(item.Description, "component.spec.tsx") {
 			foundTestFile = true
-			break
+			if item.Action != types.ActionNoOp {
+				t.Errorf("expected new-test-file finding action %q, got %q", types.ActionNoOp, item.Action)
+			}
 		}
 	}
 	if !foundTestFile {
