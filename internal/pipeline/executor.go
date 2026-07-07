@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
@@ -573,27 +575,34 @@ const (
 )
 
 func stepActivityFromLog(text string) string {
-	trimmed := strings.TrimSpace(text)
-	if trimmed == "" {
+	end := len(text)
+	for end > 0 {
+		r, size := utf8.DecodeLastRuneInString(text[:end])
+		if !unicode.IsSpace(r) {
+			break
+		}
+		end -= size
+	}
+	if end == 0 {
 		return ""
 	}
-	lines := strings.Split(trimmed, "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		line := strings.TrimSpace(lines[i])
-		if line == "" {
-			continue
-		}
-		return "log: " + truncateActivity(line)
-	}
-	return ""
+	start := strings.LastIndexByte(text[:end], '\n') + 1
+	line := strings.TrimSpace(text[start:end])
+	return "log: " + truncateActivity(line)
 }
 
 func truncateActivity(text string) string {
-	runes := []rune(text)
-	if len(runes) <= maxStepActivityText {
+	if len(text) <= maxStepActivityText {
 		return text
 	}
-	return string(runes[:maxStepActivityText]) + "..."
+	runeCount := 0
+	for i := range text {
+		if runeCount == maxStepActivityText {
+			return text[:i] + "..."
+		}
+		runeCount++
+	}
+	return text
 }
 
 func pluralize(n int, singular, plural string) string {

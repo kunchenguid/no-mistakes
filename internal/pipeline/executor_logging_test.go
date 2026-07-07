@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"testing"
@@ -123,6 +125,38 @@ func TestExecutor_LogChunkThrottlesStepActivityWrites(t *testing.T) {
 	}
 	if updates > 5 {
 		t.Fatalf("step activity updates = %d, want throttled count <= 5", updates)
+	}
+}
+
+func TestStepActivityFromLogUsesBoundedAllocationForLargeLogs(t *testing.T) {
+	lastLine := strings.Repeat("x", maxStepActivityText+100)
+	largeLog := strings.Repeat("noise line\n", 8192) + lastLine + "\n\n"
+	want := "log: " + strings.Repeat("x", maxStepActivityText) + "..."
+
+	if got := stepActivityFromLog(largeLog); got != want {
+		t.Fatalf("stepActivityFromLog() = %q, want %q", got, want)
+	}
+
+	oldGC := debug.SetGCPercent(-1)
+	defer debug.SetGCPercent(oldGC)
+	runtime.GC()
+
+	var before runtime.MemStats
+	runtime.ReadMemStats(&before)
+
+	const iterations = 25
+	for i := 0; i < iterations; i++ {
+		if got := stepActivityFromLog(largeLog); got != want {
+			t.Fatalf("stepActivityFromLog() = %q, want %q", got, want)
+		}
+	}
+
+	var after runtime.MemStats
+	runtime.ReadMemStats(&after)
+
+	allocatedPerCall := (after.TotalAlloc - before.TotalAlloc) / iterations
+	if allocatedPerCall > 4*1024 {
+		t.Fatalf("stepActivityFromLog allocated %d bytes per call, want <= 4096", allocatedPerCall)
 	}
 }
 
