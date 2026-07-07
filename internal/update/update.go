@@ -61,11 +61,13 @@ type updater struct {
 	noColor            bool
 	includePrereleases bool
 	assumeYes          bool
+	force              bool
 }
 
 type RunOptions struct {
 	Beta  bool
 	Yes   bool
+	Force bool
 	Stdin io.Reader
 }
 
@@ -76,6 +78,7 @@ func Run(ctx context.Context, stdout, stderr io.Writer, opts RunOptions) error {
 	}
 	u.includePrereleases = opts.Beta
 	u.assumeYes = opts.Yes
+	u.force = opts.Force
 	if opts.Stdin != nil {
 		u.stdin = opts.Stdin
 	}
