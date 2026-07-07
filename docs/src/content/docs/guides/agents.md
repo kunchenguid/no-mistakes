@@ -205,9 +205,10 @@ acpx_path: /Users/you/bin/acpx
 
 You can also set extra CLI flags for native agents in global config with
 `agent_args_override`. This is useful for things like model selection,
-service tier, reasoning level, or permission mode. Keep this in global config only, since it
+service tier, reasoning depth, or permission mode. Keep this in global config only, since it
 reflects your local agent setup rather than repo policy.
-For example, Codex users can pass `-c service_tier="priority"` to request the priority speed lane and separately pass `-c model_reasoning_effort="low"` to reduce reasoning depth. no-mistakes reloads global config while setting up each run, so you can adjust this file before a run or use separately initialized `NM_HOME` roots as named profiles.
+
+For example, Codex users can pass `-c service_tier="priority"` to request the priority speed lane and separately pass `-c model_reasoning_effort="low"` to reduce reasoning depth. no-mistakes reloads global config while setting up each run, so edit this file before starting a run. For repeatable fast or deep profiles, use separately initialized `NM_HOME` roots; each root has its own config and no-mistakes state.
 
 ## Agent interface
 
