@@ -1,0 +1,18 @@
+Cancel a pipeline run. With no flags, cancels the active run on the
+current branch. Pass --run <id> to cancel a specific run by its id from
+anywhere - including outside its worktree - so an orphaned CI monitor
+(e.g. after a worktree was torn down) can be reaped deterministically.
+
+While a run is active, do NOT abort (or rerun) to go fix a finding
+yourself - that discards the pipeline's in-flight work and forces a full
+re-validation. abort and rerun are for between runs (after a failed or
+cancelled outcome), never to circumvent a gate.
+
+When you make an additional fix after a gate round has already produced fix commits, commit it on top of the existing branch and run `no-mistakes axi run --intent "..."` with the original user intent. Never abort-and-restart, reset the branch, or open a new branch in a way that drops prior gate-fix commits. A fresh run re-validates the branch's current state, so already-resolved findings do not re-surface.
+
+Usage:
+  no-mistakes axi abort [flags]
+
+Flags:
+  -h, --help         help for abort
+      --run string   cancel this run id directly, without resolving the current branch or worktree

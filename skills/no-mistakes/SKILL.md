@@ -263,10 +263,13 @@ note: Review auto-fix is disabled by default (auto_fix.review: 0; a repo or glob
 findings[2]{id,severity,file,line,action,description}:
   r1,warning,internal/pipeline/executor.go,,auto-fix,Error from os.Remove is ignored
   r2,error,cmd/no-mistakes/main.go,,ask-user,New --force flag bypasses the confirm prompt
-help[3]:
-  no-mistakes axi respond --action fix --findings r1
-  no-mistakes axi respond --action approve
-  A long-running call is working, not stalled - background it if your harness needs to, but the run never advances past a gate on its own. Read every return; on a gate, respond; loop until an outcome.
+help[6]:
+  Run `no-mistakes axi respond --action approve` to accept this step and continue
+  Run `no-mistakes axi respond --action fix --findings <ids>` to have the pipeline fix the selected findings (do not edit files yourself)
+  Run `no-mistakes axi respond --action skip` to skip this step
+  Run `no-mistakes axi logs --step review --full` to read the full step log
+  A long-running call is working, not stalled - background it if your harness needs to, but the run never advances past a gate on its own. Read every return; on a `gate:`, respond; loop until an `outcome:`.
+  When you make an additional fix after a gate round has already produced fix commits, commit it on top of the existing branch and run `no-mistakes axi run --intent "..."` with the original user intent. Never abort-and-restart, reset the branch, or open a new branch in a way that drops prior gate-fix commits. A fresh run re-validates the branch's current state, so already-resolved findings do not re-surface.
 ```
 
 Read the `action` column per row: decide `r1` (auto-fix) on your own

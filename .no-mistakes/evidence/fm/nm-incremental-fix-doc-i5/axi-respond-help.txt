@@ -1,0 +1,16 @@
+Sends approve/fix/skip for the step currently awaiting approval, then
+blocks until the next gate, CI-ready decision point, or final outcome.
+
+When you make an additional fix after a gate round has already produced fix commits, commit it on top of the existing branch and run `no-mistakes axi run --intent "..."` with the original user intent. Never abort-and-restart, reset the branch, or open a new branch in a way that drops prior gate-fix commits. A fresh run re-validates the branch's current state, so already-resolved findings do not re-surface.
+
+Usage:
+  no-mistakes axi respond [flags]
+
+Flags:
+      --action string         approve | fix | skip (required)
+      --add-finding string    JSON finding object to add and fix (with --action fix)
+      --findings string       comma-separated finding IDs to fix (with --action fix)
+  -h, --help                  help for respond
+      --instructions string   guidance applied to the selected findings (with --action fix)
+      --step string           step to respond to (default: the step awaiting approval)
+  -y, --yes                   auto-resolve every subsequent gate until a decision point or outcome
