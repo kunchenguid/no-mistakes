@@ -4,11 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 )
 
 func runClaude(args []string, scenario *Scenario) int {
-	prompt := extractClaudePrompt(args)
+	prompt := readClaudePrompt(args)
 	logInvocation("claude", prompt, args)
 
 	action := scenario.Match(prompt)
@@ -205,10 +206,23 @@ func hasClaudeSchema(args []string) bool {
 	return false
 }
 
-// extractClaudePrompt scans for the value following -p, matching the real
-// claude CLI's argv shape (claude -p "<prompt>" --verbose ...). Other
-// flags carrying values are skipped explicitly so we don't accidentally
-// pick up e.g. --output-format's argument.
+// readClaudePrompt returns the prompt the pipeline issued. The real claude
+// CLI reads the prompt from stdin in print mode (`claude -p` with no
+// positional argument), which is how no-mistakes invokes it to sidestep the
+// Windows command-line length limit, so the fake mirrors that by draining
+// stdin. It falls back to scanning argv for a positional -p value for any
+// caller (or test) that still passes the prompt that way.
+func readClaudePrompt(args []string) string {
+	if data, _ := io.ReadAll(os.Stdin); len(data) > 0 {
+		return string(data)
+	}
+	return extractClaudePrompt(args)
+}
+
+// extractClaudePrompt scans for the value following -p, matching the legacy
+// argv shape (claude -p "<prompt>" --verbose ...). Other flags carrying
+// values are skipped explicitly so we don't accidentally pick up e.g.
+// --output-format's argument.
 func extractClaudePrompt(args []string) string {
 	flagsWithValues := map[string]bool{
 		"--output-format":    true,

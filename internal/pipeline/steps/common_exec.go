@@ -163,6 +163,11 @@ func stepCmd(sctx *pipeline.StepContext, name string, args ...string) *exec.Cmd 
 	if missingFromPath {
 		cmd.Err = &exec.Error{Name: name, Err: exec.ErrNotFound}
 	}
+	// Suppress console-window popups on Windows. stepCmd is the shared builder
+	// for pipeline git commands and every SCM CLI call (the gh/glab/az
+	// CmdFactory injected in host.go routes through here), all launched by the
+	// windowless daemon.
+	shellenv.HideWindow(cmd)
 	return cmd
 }
 

@@ -58,6 +58,11 @@ func ConfigureShellCommand(cmd *exec.Cmd) {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}
 	cmd.SysProcAttr.CreationFlags |= createNewProcessGroup
+	// Never surface a console window for a managed command: the daemon runs
+	// windowless, so any console child it spawns (every native agent, every
+	// shell step) would otherwise be handed to the default terminal app and
+	// popped onto the user's screen.
+	HideWindow(cmd)
 	if job, err := newShellCommandJobFunc(); err == nil {
 		shellCommandJobs.Store(cmd, &shellCommandJobState{handle: job})
 		cmd.SysProcAttr.CreationFlags |= windows.CREATE_SUSPENDED

@@ -12,10 +12,10 @@ import (
 func TestClaudeAgent_BuildArgs(t *testing.T) {
 	ca := &claudeAgent{bin: "/usr/bin/claude"}
 	schema := json.RawMessage(`{"type":"object"}`)
-	args := ca.buildArgs("do something", schema)
+	args := ca.buildArgs(schema)
 
 	expected := []string{
-		"-p", "do something",
+		"-p",
 		"--verbose",
 		"--output-format", "stream-json",
 		"--json-schema", `{"type":"object"}`,
@@ -32,9 +32,31 @@ func TestClaudeAgent_BuildArgs(t *testing.T) {
 	}
 }
 
+// The prompt must never appear in argv: it is delivered on stdin so a large
+// prompt cannot blow past the Windows command-line length limit (error 206).
+func TestClaudeAgent_BuildArgs_OmitsPromptFromArgv(t *testing.T) {
+	ca := &claudeAgent{bin: "claude"}
+	prompt := strings.Repeat("x", 64*1024)
+	args := ca.buildArgs(json.RawMessage(`{"type":"object"}`))
+
+	for i, arg := range args {
+		if strings.Contains(arg, "xxxx") {
+			t.Fatalf("arg[%d] carries prompt text; prompt must go on stdin: %q", i, arg)
+		}
+	}
+	// -p is present and immediately followed by a flag, not a prompt value.
+	if args[0] != "-p" {
+		t.Fatalf("expected -p first, got %q", args[0])
+	}
+	if !strings.HasPrefix(args[1], "--") {
+		t.Fatalf("expected a flag after -p, got %q", args[1])
+	}
+	_ = prompt
+}
+
 func TestClaudeAgent_BuildArgs_NoSchema(t *testing.T) {
 	ca := &claudeAgent{bin: "claude"}
-	args := ca.buildArgs("prompt", nil)
+	args := ca.buildArgs(nil)
 
 	// Without schema, should not include --json-schema flag
 	for _, arg := range args {
@@ -43,18 +65,18 @@ func TestClaudeAgent_BuildArgs_NoSchema(t *testing.T) {
 		}
 	}
 	// Should still have core args
-	if args[0] != "-p" || args[1] != "prompt" {
+	if args[0] != "-p" {
 		t.Error("missing -p flag")
 	}
 }
 
 func TestClaudeAgent_BuildArgs_ExtraArgsPrepended(t *testing.T) {
 	ca := &claudeAgent{bin: "claude", extraArgs: []string{"--model", "sonnet"}}
-	args := ca.buildArgs("do it", nil)
+	args := ca.buildArgs(nil)
 
 	expected := []string{
 		"--model", "sonnet",
-		"-p", "do it",
+		"-p",
 		"--verbose",
 		"--output-format", "stream-json",
 		"--dangerously-skip-permissions",
@@ -77,7 +99,7 @@ func TestClaudeAgent_BuildArgs_UserPermissionModeSuppressesDefault(t *testing.T)
 	}
 	for _, extra := range tests {
 		ca := &claudeAgent{bin: "claude", extraArgs: extra}
-		args := ca.buildArgs("p", nil)
+		args := ca.buildArgs(nil)
 
 		dangerCount := 0
 		for _, a := range args {
