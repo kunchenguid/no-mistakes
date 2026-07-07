@@ -603,7 +603,7 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 			"Valid actions: approve, fix, skip")
 	}
 
-	env, err := openAxiEnv(true)
+	env, err := openAxiDaemonEnv()
 	if err != nil {
 		return emitError(cmd, 1, err.Error(), repoInitHelp(err)...)
 	}
@@ -725,7 +725,7 @@ func runAxiAbort(cmd *cobra.Command, runID string) error {
 	}
 
 	ctx := cmd.Context()
-	env, err := openAxiEnv(true)
+	env, err := openAxiDaemonEnv()
 	if err != nil {
 		return emitError(cmd, 1, err.Error(), repoInitHelp(err)...)
 	}

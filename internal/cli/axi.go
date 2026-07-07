@@ -83,8 +83,12 @@ func openAxiEnv(ensureDaemonConn bool) (*axiEnv, error) {
 	return openAxiEnvWithOptions(axiEnvOptions{ensureDaemonConn: ensureDaemonConn})
 }
 
-func openAxiRunEnv() (*axiEnv, error) {
+func openAxiDaemonEnv() (*axiEnv, error) {
 	return openAxiEnvWithOptions(axiEnvOptions{ensureDaemonConn: true, deferGlobalConfigErrorForRunningDaemon: true})
+}
+
+func openAxiRunEnv() (*axiEnv, error) {
+	return openAxiDaemonEnv()
 }
 
 func openAxiEnvWithOptions(opts axiEnvOptions) (*axiEnv, error) {

@@ -244,6 +244,60 @@ func TestAxiParkedAwaitingAgentSignal(t *testing.T) {
 	}
 }
 
+func TestAxiAttachCommandsIgnoreInvalidConfigWhenDaemonRunning(t *testing.T) {
+	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: axiScenario(t)})
+
+	h.CommitChange("init-invalid-config-attach", "seed.txt", "seed\n", "seed for invalid config attach")
+	initWorktree := h.AddWorktree("init-invalid-config-attach")
+	if out, err := h.RunInDir(initWorktree, "init"); err != nil {
+		t.Fatalf("nm init: %v\n%s", err, out)
+	}
+
+	h.CommitChange("feature/respond-invalid-config", "respond.txt", "change\n", "add respond invalid config")
+	respondWorktree := h.AddWorktree("feature/respond-invalid-config")
+	if out, err := h.RunInDir(respondWorktree, "axi", "run", "--intent", axiIntent); err != nil {
+		t.Fatalf("axi run respond branch: %v\n%s", err, out)
+	}
+	if gated := waitForStepStatus(t, h, "feature/respond-invalid-config", types.StepReview, types.StepStatusAwaitingApproval, 60*time.Second); gated == nil {
+		t.Fatal("expected respond branch to be awaiting approval")
+	}
+
+	h.CommitChange("feature/abort-invalid-config", "abort.txt", "change\n", "add abort invalid config")
+	abortWorktree := h.AddWorktree("feature/abort-invalid-config")
+	if out, err := h.RunInDir(abortWorktree, "axi", "run", "--intent", axiIntent); err != nil {
+		t.Fatalf("axi run abort branch: %v\n%s", err, out)
+	}
+	if gated := waitForStepStatus(t, h, "feature/abort-invalid-config", types.StepReview, types.StepStatusAwaitingApproval, 60*time.Second); gated == nil {
+		t.Fatal("expected abort branch to be awaiting approval")
+	}
+
+	if err := os.WriteFile(filepath.Join(h.NMHome, "config.yaml"), []byte("agent: [\n"), 0o644); err != nil {
+		t.Fatalf("write invalid config: %v", err)
+	}
+
+	doneOut, err := h.RunInDir(respondWorktree, "axi", "respond", "--action", "approve")
+	if err != nil {
+		t.Fatalf("axi respond with invalid config: %v\n%s", err, doneOut)
+	}
+	if !strings.Contains(doneOut, "outcome: passed") {
+		t.Fatalf("axi respond with invalid config did not complete:\n%s", doneOut)
+	}
+
+	abortOut, err := h.RunInDir(abortWorktree, "axi", "abort")
+	if err != nil {
+		t.Fatalf("axi abort with invalid config: %v\n%s", err, abortOut)
+	}
+	for _, want := range []string{"aborted: true", "branch: feature/abort-invalid-config"} {
+		if !strings.Contains(abortOut, want) {
+			t.Fatalf("axi abort output missing %q:\n%s", want, abortOut)
+		}
+	}
+	cancelled := h.WaitForRun("feature/abort-invalid-config", 60*time.Second)
+	if cancelled.Status != types.RunCancelled {
+		t.Fatalf("abort branch status = %s, want cancelled", cancelled.Status)
+	}
+}
+
 // TestAxiRunPreflightGuards proves `axi run` refuses to start a run with
 // structured, actionable errors instead of silently doing the wrong thing:
 // missing intent, the default branch, and an uncommitted working tree.
