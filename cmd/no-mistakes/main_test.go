@@ -1,12 +1,37 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestMain(m *testing.M) {
+	root, err := os.MkdirTemp("", "nm-main-test-")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "create test NM_HOME: %v\n", err)
+		os.Exit(1)
+	}
+	home, err := os.MkdirTemp("", "nm-main-home-")
+	if err != nil {
+		_ = os.RemoveAll(root)
+		fmt.Fprintf(os.Stderr, "create test HOME: %v\n", err)
+		os.Exit(1)
+	}
+	_ = os.Setenv("NM_HOME", root)
+	_ = os.Setenv("HOME", home)
+	_ = os.Setenv("NO_MISTAKES_TELEMETRY", "off")
+	_ = os.Setenv("NO_MISTAKES_NO_UPDATE_CHECK", "1")
+
+	code := m.Run()
+
+	_ = os.RemoveAll(root)
+	_ = os.RemoveAll(home)
+	os.Exit(code)
+}
 
 func TestCLILogWriterReturnsDiscardWhenLogsDirMissing(t *testing.T) {
 	nmHome := t.TempDir()

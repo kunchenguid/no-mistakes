@@ -60,6 +60,35 @@ func init() {
 	os.Exit(0)
 }
 
+func TestMain(m *testing.M) {
+	base := os.TempDir()
+	if runtime.GOOS != "windows" {
+		base = "/tmp"
+	}
+	root, err := os.MkdirTemp(base, "nm-cli-test-")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "create test NM_HOME: %v\n", err)
+		os.Exit(1)
+	}
+	home, err := os.MkdirTemp(base, "nm-cli-home-")
+	if err != nil {
+		_ = os.RemoveAll(root)
+		fmt.Fprintf(os.Stderr, "create test HOME: %v\n", err)
+		os.Exit(1)
+	}
+	_ = os.Setenv("NM_HOME", root)
+	_ = os.Setenv("HOME", home)
+	_ = os.Setenv("NO_MISTAKES_TELEMETRY", "off")
+	_ = os.Setenv("NO_MISTAKES_NO_UPDATE_CHECK", "1")
+
+	code := m.Run()
+
+	_ = daemon.Stop(paths.WithRoot(root))
+	_ = os.RemoveAll(root)
+	_ = os.RemoveAll(home)
+	os.Exit(code)
+}
+
 func explicitDaemonRunRootFromArgs(args []string) (string, bool) {
 	if len(args) < 2 || args[0] != "daemon" || args[1] != "run" {
 		return "", false
