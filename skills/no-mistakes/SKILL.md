@@ -112,8 +112,8 @@ Run the pipeline and decide on its findings as they come up:
    Read its `findings` table. Each finding has an `id`, `severity`,
    `file`, `description`, and an `action` that tells you how the
    pipeline classified it:
-   - `auto-fix` - mechanical and low-risk; you can authorize the fix on
-     your own judgment by responding with `--action fix`.
+   - `auto-fix` - mechanical and low-risk; on fixable gates you can
+     authorize the fix on your own judgment by responding with `--action fix`.
    - `no-op` - informational only; nothing to do.
    - `ask-user` - the finding challenges the user's deliberate intent or
      touches product behavior. This is a call only the user can make - see
@@ -149,8 +149,8 @@ Run the pipeline and decide on its findings as they come up:
    ```
    While a run is active, never fix findings by editing the code yourself -
    the pipeline owns both the findings and the fixes. Your job at a gate is to
-   decide and respond; `--action fix` has the pipeline apply the fix and
-   re-review the result. For the same reason, while a run is active do **not**
+   decide and respond; on fixable gates, `--action fix` has the pipeline
+   apply the fix and re-review the result. For the same reason, while a run is active do **not**
    `abort` or `rerun` to go fix a finding yourself - even a real bug in
    your own code - because that discards the pipeline's in-flight work and
    forces a full re-validation. `abort` and `rerun` are for *between*
@@ -160,7 +160,7 @@ Run the pipeline and decide on its findings as they come up:
     Each `respond` blocks until the next `gate:`, `checks-passed` decision point, or final outcome.
 
     Two extra flags are available on `respond` when you need them:
-    - `--add-finding '<json>'` (with `--action fix`) folds a finding you
+    - `--add-finding '<json>'` (with `--action fix` on a fixable gate) folds a finding you
       spotted yourself - one the pipeline did not surface - into the fix round,
       as a JSON finding object. Use it for a problem you noticed that is not in
       the gate's own `findings` table.
@@ -222,7 +222,7 @@ review them.
 ## Escalate `ask-user` findings
 
 A gate whose findings are all `auto-fix` or `no-op` is safe to drive on your
-own judgment: respond with `--action fix` or `--action approve` as
+own judgment: on fixable gates, respond with `--action fix` or `--action approve` as
 appropriate. Improve-codebase is the exception: it is audit-only, so approve or
 skip its gate instead of fixing it. But a finding marked
 `ask-user` is a decision that belongs to the user, not you - the pipeline
@@ -234,8 +234,8 @@ it to the user before you respond:
   `id`, `file`, and full `description` verbatim. Do not paraphrase,
   summarize away the detail, or pre-judge the answer.
 - Ask how they want to proceed, then translate their decision into the matching
-  `respond` call: `--action fix` (pass their guidance through
-  `--instructions`), `--action approve`, or `--action skip`.
+  `respond` call: `--action fix` on a fixable gate (pass their guidance
+  through `--instructions`), `--action approve`, or `--action skip`.
 
 The one exception is `--yes` (below): it is the user's standing consent to
 drive every gate unattended, so under `--yes` you resolve `ask-user`

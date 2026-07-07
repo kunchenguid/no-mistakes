@@ -68,7 +68,7 @@ Repo config takes precedence over global config.
 agent: [codex, claude]
 ```
 
-no-mistakes filters the list to agents available on the daemon's `PATH`, uses the first available entry as the primary agent, and keeps later available entries as fallbacks. If an invocation fails because the current agent process cannot start, exits with an unavailable/error condition, or cannot satisfy a read-only invocation, that invocation is retried with the next fallback. Structured findings and schema/output validation failures do not trigger fallback.
+no-mistakes filters the list to agents available on the daemon's `PATH`, uses the first available entry as the primary agent, and keeps later available entries as fallbacks. If an invocation fails because the current agent process cannot start, exits with an unavailable/error condition, or cannot satisfy an adapter-enforced read-only invocation, that invocation is retried with the next fallback. Structured findings and schema/output validation failures do not trigger fallback.
 
 ### Optional ACP target
 
@@ -159,7 +159,7 @@ An agent should resolve `action: auto-fix` findings on its own judgment, ignore 
 Review auto-fix is disabled by default (`auto_fix.review: 0`; a repo or global `auto_fix.review > 0` override re-enables it), so blocking and ask-user review findings park for your decision rather than being silently self-fixed.
 The review gate output flags this with a `note`.
 The improve-codebase step runs after review and before test when `improve_codebase.mode` is `always` or when auto mode detects structural-risk signals. It is read-only and can be skipped with `--skip improve-codebase`; repo `improve_codebase.mode` is trusted default-branch policy, so the pushed branch cannot disable it for its own run. The gate currently enforces read-only mode through Claude plan mode, the Codex read-only sandbox, or OpenCode read-only session permissions. Agents without enforced read-only mode are treated as unavailable for this invocation so fallback can try the next agent; if no read-only-capable agent remains, `auto` mode skips the gate and `always` mode fails it.
-When it stops for `ask-user`, relay each finding's ID, file, and full description to the user before choosing `approve` or `skip`.
+When it stops for `ask-user`, relay each finding's ID, file, and full description to the user before choosing `approve`, `fix` on a fixable gate, or `skip`.
 Resolving a fixable finding means responding with `no-mistakes axi respond --action fix`, which has the pipeline apply the fix and re-review it - the agent must not edit the code itself while a run is active. Improve-codebase findings are audit-only and must be approved or skipped instead.
 For the same reason, while a run is active the agent must not `abort` or `rerun` to go fix a finding itself - even a real bug in its own code - because that discards the pipeline's in-flight work and forces a full re-validation; `abort` and `rerun` are between-runs actions, correct only after a `failed` or `cancelled` outcome, never a way to circumvent a gate.
 Successful outputs can be `outcome: passed` for a completed run or `outcome: checks-passed` when CI has passed and the daemon is still monitoring the unmerged PR for humans, and may include a `fixes` table when the pipeline applied fixes.

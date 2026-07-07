@@ -202,7 +202,7 @@ Use it to reap an orphaned CI monitor whose worktree was torn down before the PR
 Aborting an id that is not an active run is a successful no-op.
 When the daemon is already running, `axi abort` can cancel an active run even if the global config file has become invalid, because it is not starting a fresh run.
 While a run is active, do not use `axi abort` or `no-mistakes rerun` to go fix a finding yourself.
-That cancels the pipeline's in-flight work and forces a full re-validation; use `axi respond --action fix` at the gate so the pipeline applies and re-checks the fix.
+That cancels the pipeline's in-flight work and forces a full re-validation; on fixable gates, use `axi respond --action fix` so the pipeline applies and re-checks the fix.
 
 ## no-mistakes eject
 

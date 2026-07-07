@@ -89,7 +89,7 @@ The agent receives the merged fix payload for that round: the selected agent fin
 That history includes which finding IDs were selected for a prior fix attempt, which findings were left unselected by the user, and any one-line summaries from earlier fix commits.
 On follow-up review passes, that history tells the agent not to re-report user-ignored findings unless the code now presents a materially different issue.
 
-After a user-triggered fix, the step re-runs and pauses again to show you the results (`fix_review` status). You can then approve, fix again, skip, or abort.
+After a user-triggered fix, the step re-runs and pauses again to show you the results (`fix_review` status). You can then approve, fix again on fixable gates, skip, or abort.
 Yolo and AXI `--yes` approve that fix review automatically after their one fix round, so a finding that remains after the fix does not trigger an unbounded fix loop.
 
 ## Fix commits
