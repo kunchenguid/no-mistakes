@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.34.0](https://github.com/kunchenguid/no-mistakes/compare/v1.33.0...v1.34.0) (2026-07-07)
+
+
+### Features
+
+* **agent:** support ordered fallback agent lists ([#379](https://github.com/kunchenguid/no-mistakes/issues/379)) ([59278f1](https://github.com/kunchenguid/no-mistakes/commit/59278f156c670e568ca5b75d507746dd4ab92088))
+* **cli:** surface AXI step activity and auto-fix diagnostics ([#413](https://github.com/kunchenguid/no-mistakes/issues/413)) ([6fcf9d5](https://github.com/kunchenguid/no-mistakes/commit/6fcf9d59df29facbcde28c5a4981187e9e2b5a90))
+* **scm:** add GitHub Enterprise Server provider detection and host-prefixed slug ([#377](https://github.com/kunchenguid/no-mistakes/issues/377)) ([d4f9274](https://github.com/kunchenguid/no-mistakes/commit/d4f927462ad942ed9fd50bf065f14bd66e0c5e92))
+
+
+### Bug Fixes
+
+* **daemon:** enforce single-daemon ownership per NM_HOME ([#411](https://github.com/kunchenguid/no-mistakes/issues/411)) ([bbdf1f0](https://github.com/kunchenguid/no-mistakes/commit/bbdf1f0be8edd5c2917cb6bcc8cc6441d1e6a78f))
+* **git:** name bare gate repos explicitly with --git-dir ([#384](https://github.com/kunchenguid/no-mistakes/issues/384)) ([7bd8384](https://github.com/kunchenguid/no-mistakes/commit/7bd83841c930d4de4d902a1f3af7bea6d7386e6c))
+* **git:** write worktree identity per-worktree to avoid shared config.lock ([#385](https://github.com/kunchenguid/no-mistakes/issues/385)) ([95b4482](https://github.com/kunchenguid/no-mistakes/commit/95b4482d2aaae1235b105ba948a839a8b74a291b))
+
 ## [1.33.0](https://github.com/kunchenguid/no-mistakes/compare/v1.32.2...v1.33.0) (2026-07-03)
 
 
