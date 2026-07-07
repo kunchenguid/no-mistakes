@@ -265,6 +265,9 @@ func (h *Host) updatePRViaAPI(ctx context.Context, pr *scm.PR, content scm.PRCon
 		return fmt.Errorf("encode PR update payload: %w", err)
 	}
 	args := []string{"api", "repos/" + repo + "/pulls/" + pr.Number, "--method", "PATCH", "--input", "-"}
+	if h.host != "" && !strings.EqualFold(h.host, "github.com") {
+		args = append(args, "--hostname", h.host)
+	}
 	cmd := h.cmd(ctx, "gh", args...)
 	cmd.Stdin = strings.NewReader(string(payload))
 	if out, err := cmd.CombinedOutput(); err != nil {

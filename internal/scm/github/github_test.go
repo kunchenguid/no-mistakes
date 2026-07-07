@@ -281,6 +281,35 @@ func TestUpdatePRFallsBackToAPIWhenPREditGraphQLBreaks(t *testing.T) {
 	}
 }
 
+func TestUpdatePRFallbackScopesAPIToEnterpriseHost(t *testing.T) {
+	t.Parallel()
+
+	const body = "## What Changed\n\n- update existing pull request bodies through REST fallback"
+	apiPayload := `{"body":"## What Changed\n\n- update existing pull request bodies through REST fallback","title":"fix: cap body"}`
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr edit 42 --repo ghe.example.com/test/repo --title fix: cap body --body-file -": {
+			stderr:    "GraphQL: Projects (classic) is being deprecated (repository.pullRequest.projectCards)\n",
+			wantStdin: body,
+			code:      1,
+		},
+		"gh api repos/test/repo/pulls/42 --method PATCH --input - --hostname ghe.example.com": {
+			wantStdin: apiPayload,
+		},
+	}), nil, "ghe.example.com", "ghe.example.com/test/repo")
+
+	pr := &scm.PR{Number: "42", URL: "https://ghe.example.com/test/repo/pull/42"}
+	updated, err := host.UpdatePR(context.Background(), pr, scm.PRContent{
+		Title: "fix: cap body",
+		Body:  body,
+	})
+	if err != nil {
+		t.Fatalf("UpdatePR() error = %v", err)
+	}
+	if updated != pr {
+		t.Fatalf("UpdatePR() = %+v, want original PR", updated)
+	}
+}
+
 func TestGetChecksFallsBackToStateWhenBucketMissing(t *testing.T) {
 	t.Parallel()
 
