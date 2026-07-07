@@ -174,6 +174,16 @@ Run the pipeline and decide on its findings as they come up:
      never mid-run to circumvent a gate. Do not leave the user at a `failed`
      outcome without either retrying or explaining what blocks it.
 
+The same applies to any additional fix that comes after a gate round has
+already produced fix commits - a newly surfaced finding, a reviewer's
+pre-merge request, or any other post-completion change: commit it on top of
+the existing branch and re-run `no-mistakes axi run`. Never abort-and-restart,
+reset the branch, or open a new branch in a way that drops the prior gate-fix
+commits (including the pipeline's own
+`no-mistakes(review|document|lint): ...` commits) - a re-run only
+re-validates the branch's current state, so those commits stay on the branch
+and already-resolved findings do not re-surface.
+
 The CI step deliberately keeps watching the PR after checks pass, so
 `axi run` returns `checks-passed` the moment checks are green rather than
 blocking on the human merge. Never poll or re-run waiting for the merge yourself.
