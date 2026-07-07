@@ -78,22 +78,23 @@ no-mistakes daemon start
 
 If you have multiple installs with different `NM_HOME` roots, each gets its own scoped service name (with a short suffix derived from the path). Make sure you're looking at the right one - `no-mistakes daemon status` reports which.
 
-## `no-mistakes update` prompts or aborts
+## `no-mistakes update` refuses or aborts
 
-Symptom: `update` warns about active pipeline runs, says the daemon is running from a different executable path, or aborts because the daemon executable path cannot be determined.
+Symptom: `update` refuses because active pipeline runs are in progress, prompts because the daemon is running from a different executable path, or aborts because the daemon executable path cannot be determined.
 
-When pending or running pipeline runs exist, `update` warns that restarting the daemon can cause those runs to fail and prompts before continuing.
-When the running daemon uses a different binary, `update` prompts before replacing it.
-Pass `no-mistakes update -y` to confirm non-interactively while still printing warnings.
+When pending or running pipeline runs exist, `update` refuses to restart the daemon and lists each active run's ID, status, branch, and short head SHA. Pass `no-mistakes update --force` to restart the daemon anyway and accept that those runs may fail. `-y`/`--yes` does **not** bypass this guard - it only answers the separate prompt below.
+When the running daemon uses a different binary, `update` still prompts before replacing it; pass `-y`/`--yes` to answer that prompt non-interactively.
 
 If the daemon executable path can't be determined at all (stale PID, permissions), the update aborts before replacing anything.
 
 Fix:
 
 ```sh
-no-mistakes daemon stop
+no-mistakes daemon stop --force
 no-mistakes update
 ```
+
+`daemon stop` refuses for the same active-run reason and needs its own `--force` too. Only force through once you've confirmed it's fine for the listed active runs to fail.
 
 ## Agent binary not detected
 

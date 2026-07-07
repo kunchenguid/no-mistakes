@@ -308,14 +308,14 @@ Update the installed binary and reset the daemon.
 no-mistakes update
 no-mistakes update --beta
 no-mistakes update -y
+no-mistakes update --force
 ```
 
 Downloads the latest release, verifies the SHA-256 checksum, atomically replaces the running binary, and resets the daemon when it is running or stale daemon artifacts exist so the new executable is picked up, preferring the managed service path and falling back to a detached daemon if service startup is unavailable or fails.
 By default this installs the latest stable release.
 Pass `--beta` to include prereleases and install the latest beta when one is newer than the current stable release.
-If pending or running pipeline runs exist, update warns that restarting the daemon can cause those runs to fail, prints each active run's ID, status, branch, and short head SHA, and prompts before continuing.
-If the daemon is running from a different executable path, update prompts before replacing it.
-Pass `-y` or `--yes` to continue through update safety prompts while still printing warnings.
+If pending or running pipeline runs exist, update refuses to restart the daemon by default, prints each active run's ID, status, branch, and short head SHA. Pass `--force` to restart the daemon anyway and accept that those runs may fail; `-y`/`--yes` does **not** bypass this guard.
+If the daemon is running from a different executable path, update still prompts before replacing it; pass `-y`/`--yes` to answer that prompt non-interactively.
 If the daemon executable path cannot be determined, the update aborts before replacement.
 If the daemon does not come back cleanly after a successful replacement, the command reports that failure.
 On macOS, removes the quarantine extended attribute.
@@ -342,7 +342,10 @@ Stop the running daemon process.
 
 ```sh
 no-mistakes daemon stop
+no-mistakes daemon stop --force
 ```
+
+If pending or running pipeline runs exist, `daemon stop` refuses by default and prints each active run's ID, status, branch, and short head SHA. Pass `--force` to stop the daemon anyway and accept that those runs may fail.
 
 This does not remove the managed service. A later `no-mistakes`, `no-mistakes daemon start`, `init`, `attach`, `rerun`, or `update` can start the daemon again through the same service manager when available, or as a detached daemon otherwise.
 
@@ -352,9 +355,11 @@ Restart the daemon.
 
 ```sh
 no-mistakes daemon restart
+no-mistakes daemon restart --force
 ```
 
 Stops the current daemon and starts it again. This works whether the daemon is currently running or not.
+If pending or running pipeline runs exist, `daemon restart` refuses by default and prints each active run's ID, status, branch, and short head SHA. Pass `--force` to restart the daemon anyway and accept that those runs may fail.
 
 ## no-mistakes daemon status
 
