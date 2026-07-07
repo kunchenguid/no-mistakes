@@ -633,6 +633,62 @@ func TestPRStep_AppendsTestingSectionFromTestStep(t *testing.T) {
 	}
 }
 
+func TestPRStep_UploadsLocalVisualEvidenceToSecretGist(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	env, logFile := fakeGH(t, "")
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Config.Test.Evidence.UploadToGist = true
+
+	evidenceDir := testEvidenceDir(sctx.Run.ID)
+	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(evidenceDir) })
+	imagePath := filepath.Join(evidenceDir, "checkout.png")
+	if err := os.WriteFile(imagePath, []byte{0x89, 'P', 'N', 'G'}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	findings := fmt.Sprintf(`{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[{"kind":"screenshot","label":"Checkout screenshot","path":%q}]}`, imagePath)
+	testStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepTest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.CompleteStep(testStep.ID, 0, 100, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.SetStepFindings(testStep.ID, findings); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := (&PRStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+
+	logData, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ghLog := string(logData)
+	if !strings.Contains(ghLog, "gist create --secret") {
+		t.Fatalf("expected gist create, got:\n%s", ghLog)
+	}
+	if !strings.Contains(ghLog, "![Checkout screenshot](https://gist.githubusercontent.com/tester/gist123/raw/01-Checkout-screenshot.png)") {
+		t.Fatalf("expected PR body to embed gist raw image, got:\n%s", ghLog)
+	}
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(run.EvidenceGistIDs) != 1 || run.EvidenceGistIDs[0] != "gist123" {
+		t.Fatalf("evidence gist IDs = %+v, want [gist123]", run.EvidenceGistIDs)
+	}
+}
+
 func TestPRStep_UnwrapsNestedJSONBody(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
@@ -1238,7 +1294,7 @@ func TestPRStep_BuildPRContentTruncatesGeneratedPipelineUpdates(t *testing.T) {
 		}
 	}
 
-	content, err := (&PRStep{}).buildPRContent(sctx, "feature", baseSHA, 0)
+	content, err := (&PRStep{}).buildPRContent(sctx, nil, "feature", baseSHA, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1857,7 +1913,7 @@ func TestPRStep_PromptRequiresReleaseTypesForProductImpact(t *testing.T) {
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 
 	step := &PRStep{}
-	if _, err := step.buildPRContent(sctx, "feature", baseSHA, 0); err != nil {
+	if _, err := step.buildPRContent(sctx, nil, "feature", baseSHA, 0); err != nil {
 		t.Fatal(err)
 	}
 	if len(ag.calls) != 1 {

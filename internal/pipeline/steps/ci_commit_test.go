@@ -248,6 +248,7 @@ func TestCIStep_CommitAndPush_UsesStepEnvForAllGitCommands(t *testing.T) {
 		"FAKE_CLI_MODE":     "git-passthrough",
 		"FAKE_CLI_REAL_GIT": realGit,
 	})
+	realGitPath := os.Getenv("PATH")
 	t.Setenv("PATH", t.TempDir())
 	realGitCmd := func(dir string, args ...string) string {
 		t.Helper()
@@ -258,6 +259,7 @@ func TestCIStep_CommitAndPush_UsesStepEnvForAllGitCommands(t *testing.T) {
 			"GIT_AUTHOR_EMAIL=test@test.com",
 			"GIT_COMMITTER_NAME=test",
 			"GIT_COMMITTER_EMAIL=test@test.com",
+			"PATH="+realGitPath,
 		)
 		out, err := cmd.CombinedOutput()
 		if err != nil {

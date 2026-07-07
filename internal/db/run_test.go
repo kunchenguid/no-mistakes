@@ -288,6 +288,40 @@ func TestUpdateRunPRURL(t *testing.T) {
 	}
 }
 
+func TestRunEvidenceGistIDsAppendAndClear(t *testing.T) {
+	d := openTestDB(t)
+	repo, err := d.InsertRepo("/tmp/repo", "https://github.com/test/repo", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := d.InsertRun(repo.ID, "feature", "head", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := d.AddRunEvidenceGistIDs(run.ID, []string{"gist1", "gist2", "gist1"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.EvidenceGistIDs) != 2 || got.EvidenceGistIDs[0] != "gist1" || got.EvidenceGistIDs[1] != "gist2" {
+		t.Fatalf("EvidenceGistIDs = %+v, want [gist1 gist2]", got.EvidenceGistIDs)
+	}
+
+	if err := d.ClearRunEvidenceGistIDs(run.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, err = d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.EvidenceGistIDs) != 0 {
+		t.Fatalf("EvidenceGistIDs after clear = %+v, want empty", got.EvidenceGistIDs)
+	}
+}
+
 func TestUpdateRunHeadSHA(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")

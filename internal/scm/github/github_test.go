@@ -352,6 +352,42 @@ func TestAvailableFallsBackToUnscopedAuthWhenHostUnknown(t *testing.T) {
 	}
 }
 
+func TestCreateSecretGistUsesGhAndReturnsRawURLs(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh gist create --secret /tmp/one.png /tmp/two.webm": {
+			stdout: "https://gist.github.com/user/abc123\n",
+		},
+		"gh api gists/abc123": {
+			stdout: `{"files":{"one.png":{"filename":"one.png","raw_url":"https://gist.githubusercontent.com/user/abc123/raw/one.png"},"two.webm":{"filename":"two.webm","raw_url":"https://gist.githubusercontent.com/user/abc123/raw/two.webm"}}}`,
+		},
+	}), func() bool { return true }, "github.com", "test/repo")
+
+	gist, err := host.CreateSecretGist(context.Background(), []string{"/tmp/one.png", "/tmp/two.webm"})
+	if err != nil {
+		t.Fatalf("CreateSecretGist() error = %v", err)
+	}
+	if gist.ID != "abc123" {
+		t.Fatalf("gist ID = %q, want abc123", gist.ID)
+	}
+	if len(gist.Files) != 2 {
+		t.Fatalf("files = %+v, want 2 raw files", gist.Files)
+	}
+}
+
+func TestDeleteGistUsesGhYesFlag(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh gist delete abc123 --yes": {},
+	}), func() bool { return true }, "github.com", "test/repo")
+
+	if err := host.DeleteGist(context.Background(), "abc123"); err != nil {
+		t.Fatalf("DeleteGist() error = %v", err)
+	}
+}
+
 type githubTestResponse struct {
 	stdout    string
 	stderr    string

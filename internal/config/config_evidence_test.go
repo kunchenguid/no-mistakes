@@ -14,6 +14,9 @@ func TestTestEvidenceDefaults(t *testing.T) {
 	if got.Evidence.Dir != ".no-mistakes/evidence" {
 		t.Errorf("default Dir = %q, want .no-mistakes/evidence", got.Evidence.Dir)
 	}
+	if !got.Evidence.UploadToGist {
+		t.Error("default UploadToGist should be true for PR-producing GitHub runs")
+	}
 }
 
 func TestTestEvidenceMerge_GlobalEnable(t *testing.T) {
@@ -57,6 +60,16 @@ func TestTestEvidenceMerge_BlankDirIgnored(t *testing.T) {
 	}
 }
 
+func TestTestEvidenceMerge_DisablesGistUpload(t *testing.T) {
+	disabled := false
+	repo := &RepoConfig{Test: TestRaw{Evidence: EvidenceRaw{UploadToGist: &disabled}}}
+
+	cfg := Merge(&GlobalConfig{}, repo)
+	if cfg.Test.Evidence.UploadToGist {
+		t.Error("repo upload_to_gist=false should disable evidence gist upload")
+	}
+}
+
 func TestLoadGlobalConfig_TestEvidenceParsed(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
@@ -65,6 +78,7 @@ agent: claude
 test:
   evidence:
     store_in_repo: true
+    upload_to_gist: false
     dir: artifacts/evidence
 `
 	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
@@ -80,6 +94,9 @@ test:
 	}
 	if cfg.Test.Evidence.Dir == nil || *cfg.Test.Evidence.Dir != "artifacts/evidence" {
 		t.Error("expected Dir=artifacts/evidence")
+	}
+	if cfg.Test.Evidence.UploadToGist == nil || *cfg.Test.Evidence.UploadToGist {
+		t.Error("expected UploadToGist=false")
 	}
 }
 

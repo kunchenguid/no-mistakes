@@ -410,7 +410,11 @@ func renderTestingArtifact(artifact types.TestArtifact, opts testingSummaryOptio
 func renderCompactTestingArtifact(artifact types.TestArtifact, opts testingSummaryOptions, label string, state *testingArtifactRenderState) string {
 	target := artifact.URL
 	if target == "" {
-		target = artifactLinkTargetForPath(artifact, opts)
+		if isImageArtifact(artifact.Kind, artifact.Path) || isVideoArtifact(artifact.Kind, artifact.Path) {
+			target = artifactTargetForPath(artifact, opts)
+		} else {
+			target = artifactLinkTargetForPath(artifact, opts)
+		}
 	}
 	localPath := localArtifactPath(artifact.Path, opts)
 	fileText, hasFile := embeddedArtifactText(artifact, opts, state)
@@ -423,6 +427,12 @@ func renderCompactTestingArtifact(artifact types.TestArtifact, opts testingSumma
 	// No embeddable text: render a link or local-file reference (images, videos, binaries).
 	if caption == "" && !hasFile {
 		if target != "" {
+			if isImageArtifact(artifact.Kind, target) {
+				return fmt.Sprintf("**%s**\n\n![%s](%s)\n", html.EscapeString(label), markdownAltText(label), target)
+			}
+			if isVideoArtifact(artifact.Kind, target) {
+				return fmt.Sprintf("- [Video: %s](%s)\n", html.EscapeString(label), target)
+			}
 			return fmt.Sprintf("- Evidence: [%s](%s)\n", html.EscapeString(label), target)
 		}
 		return renderLocalArtifactLine(label, localPath)

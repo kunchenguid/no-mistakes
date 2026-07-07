@@ -171,8 +171,9 @@ type TestRaw struct {
 // EvidenceRaw is the YAML representation of test-evidence settings.
 // Pointer fields distinguish "not set" (nil) from explicit zero/false values.
 type EvidenceRaw struct {
-	StoreInRepo *bool   `yaml:"store_in_repo"`
-	Dir         *string `yaml:"dir"`
+	StoreInRepo  *bool   `yaml:"store_in_repo"`
+	Dir          *string `yaml:"dir"`
+	UploadToGist *bool   `yaml:"upload_to_gist"`
 }
 
 // Test is the resolved test-step config.
@@ -185,8 +186,9 @@ type Test struct {
 // so they are committed, pushed, and viewable directly on the PR. Otherwise
 // evidence stays in a temporary directory referenced only by local path.
 type Evidence struct {
-	StoreInRepo bool
-	Dir         string
+	StoreInRepo  bool
+	Dir          string
+	UploadToGist bool
 }
 
 // IntentRaw is the YAML representation of user-intent extraction settings.
@@ -320,12 +322,14 @@ intent:
   # disabled_readers: [codex]
 
 # Test-step evidence artifacts (screenshots, recordings, logs the test step
-# gathers to demonstrate the change works). By default they are kept in a
-# temporary directory and referenced by local path. Opt in to store_in_repo to
-# commit them into the repo under a readable, branch-named directory so they are
-# pushed and render directly on the PR.
+# gathers to demonstrate the change works). By default visual evidence kept in
+# the temporary evidence directory is uploaded to secret GitHub gists when a PR
+# is created, so screenshots render in the PR body. Set upload_to_gist: false to
+# keep the old local-path-only behavior. Opt in to store_in_repo to commit
+# evidence into the repo under a readable, branch-named directory.
 # test:
 #   evidence:
+#     upload_to_gist: true
 #     store_in_repo: true
 #     dir: .no-mistakes/evidence
 `
@@ -878,8 +882,9 @@ func applyIntentOverrides(dst *Intent, src *IntentRaw) {
 func testDefaults() Test {
 	return Test{
 		Evidence: Evidence{
-			StoreInRepo: false,
-			Dir:         ".no-mistakes/evidence",
+			StoreInRepo:  false,
+			Dir:          ".no-mistakes/evidence",
+			UploadToGist: true,
 		},
 	}
 }
@@ -891,6 +896,9 @@ func applyTestOverrides(dst *Test, src *TestRaw) {
 	}
 	if src.Evidence.Dir != nil && strings.TrimSpace(*src.Evidence.Dir) != "" {
 		dst.Evidence.Dir = strings.TrimSpace(*src.Evidence.Dir)
+	}
+	if src.Evidence.UploadToGist != nil {
+		dst.Evidence.UploadToGist = *src.Evidence.UploadToGist
 	}
 }
 

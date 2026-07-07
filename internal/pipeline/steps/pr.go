@@ -74,7 +74,7 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 
 	// Resolve the branch base so PR summaries cover the full branch delta.
 	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
-	content, err := s.buildPRContent(sctx, branch, baseSHA, scm.MaxPRBodyChars(provider))
+	content, err := s.buildPRContent(sctx, host, branch, baseSHA, scm.MaxPRBodyChars(provider))
 	if err != nil {
 		return nil, err
 	}
@@ -128,13 +128,13 @@ func describePR(pr *scm.PR) string {
 	return ""
 }
 
-func (s *PRStep) buildPRContent(sctx *pipeline.StepContext, branch, baseSHA string, bodyLimit int) (prContent, error) {
+func (s *PRStep) buildPRContent(sctx *pipeline.StepContext, host scm.Host, branch, baseSHA string, bodyLimit int) (prContent, error) {
 	ctx := sctx.Ctx
 	commitLog, _ := git.Log(ctx, sctx.WorkDir, baseSHA, sctx.Run.HeadSHA)
 	diffStat, _ := git.Run(ctx, sctx.WorkDir, "diff", "--stat", baseSHA+".."+sctx.Run.HeadSHA)
 
 	// Build the deterministic sections from step rounds.
-	pipelineMD, riskLine, testingMD := s.buildPipelineSection(sctx)
+	pipelineMD, riskLine, testingMD := s.buildPipelineSection(sctx, host)
 
 	// Build pipeline context for the agent prompt so it can reference findings in the summary.
 	pipelineContext := ""
@@ -208,7 +208,7 @@ Diff stat:
 
 // buildPipelineSection queries step results and rounds from the DB and
 // produces the deterministic pipeline, risk, and testing sections.
-func (s *PRStep) buildPipelineSection(sctx *pipeline.StepContext) (string, string, string) {
+func (s *PRStep) buildPipelineSection(sctx *pipeline.StepContext, host scm.Host) (string, string, string) {
 	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
 	if err != nil {
 		slog.Warn("failed to query step results for pipeline summary", "error", err)
@@ -225,8 +225,15 @@ func (s *PRStep) buildPipelineSection(sctx *pipeline.StepContext) (string, strin
 		rounds[sr.ID] = r
 	}
 
+	opts := testingSummaryOptionsForGitHub(sctx.Repo.UpstreamURL, sctx.Run.HeadSHA)
+	opts.compactArtifacts = true
+	opts.summaryParagraph = true
+	opts.omitOutcome = true
+	opts.repoRoot = sctx.WorkDir
+	publishTestingEvidenceGists(sctx, host, steps, rounds, opts)
+
 	pipelineMD, riskLine := BuildPipelineSummary(steps, rounds)
-	testingMD := BuildTestingSummaryForPR(steps, rounds, sctx.Repo.UpstreamURL, sctx.Run.HeadSHA, sctx.WorkDir)
+	testingMD := buildTestingSummary(steps, rounds, opts)
 	return pipelineMD, riskLine, testingMD
 }
 

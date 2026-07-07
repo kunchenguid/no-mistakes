@@ -132,7 +132,7 @@ func repoOwner(slug string) string {
 func (h *Host) Provider() scm.Provider { return scm.ProviderGitHub }
 
 func (h *Host) Capabilities() scm.Capabilities {
-	return scm.Capabilities{MergeableState: true, FailedCheckLogs: true}
+	return scm.Capabilities{MergeableState: true, FailedCheckLogs: true, SecretGists: true}
 }
 
 func (h *Host) Available(ctx context.Context) error {
@@ -355,6 +355,87 @@ func (h *Host) FetchFailedCheckLogs(ctx context.Context, _ *scm.PR, branch, head
 		}
 	}
 	return "", nil
+}
+
+func (h *Host) CreateSecretGist(ctx context.Context, filePaths []string) (*scm.SecretGist, error) {
+	if len(filePaths) == 0 {
+		return nil, errors.New("no gist files")
+	}
+	args := append([]string{"gist", "create", "--secret"}, filePaths...)
+	cmd := h.cmd(ctx, "gh", args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("gh gist create: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	gistURL := strings.TrimSpace(string(out))
+	id := gistIDFromURL(gistURL)
+	if id == "" {
+		return nil, fmt.Errorf("gh gist create: could not parse gist id from %q", gistURL)
+	}
+	gist := &scm.SecretGist{ID: id, URL: gistURL}
+	files, err := h.fetchGistFiles(ctx, id)
+	if err != nil {
+		return gist, err
+	}
+	gist.Files = files
+	return gist, nil
+}
+
+func (h *Host) fetchGistFiles(ctx context.Context, id string) ([]scm.GistFile, error) {
+	cmd := h.cmd(ctx, "gh", "api", "gists/"+id)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("gh api gists/%s: %w", id, err)
+	}
+	var raw struct {
+		Files map[string]struct {
+			Filename string `json:"filename"`
+			RawURL   string `json:"raw_url"`
+		} `json:"files"`
+	}
+	if err := json.Unmarshal(out, &raw); err != nil {
+		return nil, fmt.Errorf("parse gist files: %w", err)
+	}
+	files := make([]scm.GistFile, 0, len(raw.Files))
+	for name, f := range raw.Files {
+		filename := strings.TrimSpace(f.Filename)
+		if filename == "" {
+			filename = name
+		}
+		rawURL := strings.TrimSpace(f.RawURL)
+		if filename == "" || rawURL == "" {
+			continue
+		}
+		files = append(files, scm.GistFile{Filename: filename, RawURL: rawURL})
+	}
+	return files, nil
+}
+
+func (h *Host) DeleteGist(ctx context.Context, id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return errors.New("gist id is required")
+	}
+	cmd := h.cmd(ctx, "gh", "gist", "delete", id, "--yes")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("gh gist delete %s: %s: %w", id, strings.TrimSpace(string(out)), err)
+	}
+	return nil
+}
+
+func gistIDFromURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	raw = strings.TrimRight(raw, "/")
+	if raw == "" {
+		return ""
+	}
+	if i := strings.LastIndex(raw, "/"); i >= 0 {
+		raw = raw[i+1:]
+	}
+	if strings.ContainsAny(raw, " \t\r\n?#") {
+		return ""
+	}
+	return raw
 }
 
 type githubRun struct {

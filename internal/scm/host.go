@@ -153,6 +153,7 @@ func (c Check) Pending() bool { return c.Bucket == CheckBucketPending }
 type Capabilities struct {
 	MergeableState  bool
 	FailedCheckLogs bool
+	SecretGists     bool
 }
 
 // ErrUnsupported is returned by optional Host methods that the provider
@@ -185,4 +186,24 @@ type Host interface {
 	// FetchFailedCheckLogs is optional; returns "" when no logs can be retrieved
 	// and ErrUnsupported when the provider has no log-fetching support at all.
 	FetchFailedCheckLogs(ctx context.Context, pr *PR, branch, headSHA string, failingNames []string) (string, error)
+}
+
+// GistFile is a file hosted in a secret gist.
+type GistFile struct {
+	Filename string
+	RawURL   string
+}
+
+// SecretGist is the result of creating a secret gist.
+type SecretGist struct {
+	ID    string
+	URL   string
+	Files []GistFile
+}
+
+// SecretGistHost is implemented by providers that can host evidence in secret
+// gists. Callers must check Capabilities().SecretGists before type-asserting.
+type SecretGistHost interface {
+	CreateSecretGist(ctx context.Context, filePaths []string) (*SecretGist, error)
+	DeleteGist(ctx context.Context, id string) error
 }

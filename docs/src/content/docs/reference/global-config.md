@@ -51,6 +51,7 @@ intent:
 
 test:
   evidence:
+    upload_to_gist: true
     store_in_repo: false
     dir: .no-mistakes/evidence
 ```
@@ -282,8 +283,8 @@ Otherwise, accepted candidates are ranked by confidence, which combines the raw 
 
 ### test.evidence
 
-Test-step evidence storage settings.
-By default, evidence artifacts stay in a temporary directory keyed by run ID and are referenced by local path.
+Test-step evidence storage and publishing settings.
+By default, visual evidence artifacts in the temporary evidence directory are uploaded to secret GitHub gists for GitHub PRs, so screenshots render inline in the PR body.
 
 | | |
 |---|---|
@@ -291,14 +292,17 @@ By default, evidence artifacts stay in a temporary directory keyed by run ID and
 
 | Field | Type | Default | Description |
 |---|---|---|---|
+| `test.evidence.upload_to_gist` | `bool` | `true` | Upload local image/video evidence to secret GitHub gists when assembling GitHub PR bodies |
 | `test.evidence.store_in_repo` | `bool` | `false` | Commit and push test evidence artifacts from inside the repo worktree |
 | `test.evidence.dir` | `string` | `.no-mistakes/evidence` | Repo-relative parent directory used when `store_in_repo` is true |
+
+When gist upload fails or is disabled, no-mistakes falls back to local file references. Delete uploaded evidence gists explicitly with `no-mistakes evidence prune --run <id>` or `--pr <number>`; pruning makes existing PR embeds and links 404.
 
 When `store_in_repo` is true, the test step writes evidence under `<dir>/<branch-slug>` and the push step stages files from that directory before committing agent changes.
 Branch slashes become nested directories, unsafe branch characters are replaced, and an empty branch slug falls back to the run ID.
 If `dir` is absolute, escapes the worktree, points into `.git`, crosses a symlink, or is ignored by Git, no-mistakes falls back to temporary evidence storage for that run.
 
-These are global defaults. Per-repo config can override either field.
+These are global defaults. Per-repo config can override these fields.
 
 ## Environment variables
 

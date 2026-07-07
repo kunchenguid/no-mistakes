@@ -41,6 +41,7 @@ intent:
 
 test:
   evidence:
+    upload_to_gist: true
     store_in_repo: true
     dir: .no-mistakes/evidence
 ```
@@ -180,15 +181,17 @@ Valid `disabled_readers` values are `claude`, `codex`, `opencode`, `rovodev`, `p
 
 ### test.evidence
 
-Override where evidence artifacts from the test step are stored.
+Override how evidence artifacts from the test step are published and stored.
 Fields not set here inherit from global config and then the built-in defaults.
 
 | Field | Type | Default |
 |---|---|---|
+| `test.evidence.upload_to_gist` | `bool` | Inherits from global (default `true`) |
 | `test.evidence.store_in_repo` | `bool` | Inherits from global (default `false`) |
 | `test.evidence.dir` | `string` | Inherits from global (default `.no-mistakes/evidence`) |
 
-By default, test evidence stays in a temporary directory keyed by run ID and is referenced by local path.
+By default, visual evidence in the temporary evidence directory is uploaded to secret GitHub gists for GitHub PRs, with local path rendering as the fallback if upload is disabled or fails.
+Use `no-mistakes evidence prune --run <id>` or `--pr <number>` for deliberate post-merge cleanup; deleted gists make existing PR screenshots and evidence links 404.
 Set `store_in_repo: true` to write evidence under `<dir>/<branch-slug>` inside the worktree so push can commit and publish it with the branch.
 Branch slashes become nested directories, unsafe branch characters are replaced, and an empty branch slug falls back to the run ID.
 If `dir` is absolute, escapes the worktree, points into `.git`, crosses a symlink, or is ignored by Git, no-mistakes falls back to temporary evidence storage for that run.

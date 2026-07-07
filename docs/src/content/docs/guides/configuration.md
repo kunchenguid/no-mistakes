@@ -107,9 +107,11 @@ intent:
   slack_days: 3
   disabled_readers: []
 
-# Test evidence defaults to temporary local storage.
+# Test evidence defaults to temporary local storage plus secret-gist upload for
+# visual artifacts in GitHub PRs.
 test:
   evidence:
+    upload_to_gist: true
     store_in_repo: false
     dir: .no-mistakes/evidence
 ```
@@ -158,6 +160,7 @@ intent:
 # Opt in when evidence artifacts should be committed and linked from the PR.
 test:
   evidence:
+    upload_to_gist: true
     store_in_repo: true
     dir: .no-mistakes/evidence
 ```

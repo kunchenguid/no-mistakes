@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -16,7 +17,11 @@ type Run struct {
 	BaseSHA string
 	Status  types.RunStatus
 	PRURL   *string
-	Error   *string
+	// EvidenceGistIDs records secret GitHub gist IDs created to host visual
+	// evidence for this run's PR body. Deleting these gists makes existing PR
+	// embeds 404, so cleanup is explicit.
+	EvidenceGistIDs []string
+	Error           *string
 	// AwaitingAgentSince is the unix-seconds timestamp at which the run parked
 	// at a gate awaiting the driving agent's response (an awaiting_approval or
 	// fix_review step). It is nil whenever the run is not parked: the executor
@@ -32,17 +37,24 @@ type Run struct {
 	UpdatedAt          int64
 }
 
-const runColumns = `id, repo_id, branch, head_sha, base_sha, status, pr_url, error, awaiting_agent_since, intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
+const runColumns = `id, repo_id, branch, head_sha, base_sha, status, pr_url, evidence_gist_ids, error, awaiting_agent_since, intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
 
 func scanRun(row interface {
 	Scan(...any) error
 }, r *Run) error {
-	return row.Scan(
+	var gistIDs sql.NullString
+	if err := row.Scan(
 		&r.ID, &r.RepoID, &r.Branch, &r.HeadSHA, &r.BaseSHA, &r.Status,
-		&r.PRURL, &r.Error, &r.AwaitingAgentSince,
+		&r.PRURL, &gistIDs, &r.Error, &r.AwaitingAgentSince,
 		&r.Intent, &r.IntentSource, &r.IntentSessionID, &r.IntentScore,
 		&r.CreatedAt, &r.UpdatedAt,
-	)
+	); err != nil {
+		return err
+	}
+	if gistIDs.Valid && gistIDs.String != "" {
+		_ = json.Unmarshal([]byte(gistIDs.String), &r.EvidenceGistIDs)
+	}
+	return nil
 }
 
 // InsertRun creates a new run record.
@@ -163,6 +175,53 @@ func (d *DB) UpdateRunPRURL(id, prURL string) error {
 		return fmt.Errorf("update run pr url: %w", err)
 	}
 	return nil
+}
+
+// AddRunEvidenceGistIDs appends newly-created evidence gist IDs to a run.
+func (d *DB) AddRunEvidenceGistIDs(id string, gistIDs []string) error {
+	clean := uniqueGistIDs(gistIDs)
+	if len(clean) == 0 {
+		return nil
+	}
+	r, err := d.GetRun(id)
+	if err != nil {
+		return err
+	}
+	if r == nil {
+		return fmt.Errorf("run %s not found", id)
+	}
+	all := uniqueGistIDs(append(r.EvidenceGistIDs, clean...))
+	data, err := json.Marshal(all)
+	if err != nil {
+		return fmt.Errorf("marshal evidence gist ids: %w", err)
+	}
+	_, err = d.sql.Exec(`UPDATE runs SET evidence_gist_ids = ?, updated_at = ? WHERE id = ?`, string(data), now(), id)
+	if err != nil {
+		return fmt.Errorf("update run evidence gist ids: %w", err)
+	}
+	return nil
+}
+
+// ClearRunEvidenceGistIDs clears recorded evidence gist IDs after explicit cleanup.
+func (d *DB) ClearRunEvidenceGistIDs(id string) error {
+	_, err := d.sql.Exec(`UPDATE runs SET evidence_gist_ids = NULL, updated_at = ? WHERE id = ?`, now(), id)
+	if err != nil {
+		return fmt.Errorf("clear run evidence gist ids: %w", err)
+	}
+	return nil
+}
+
+func uniqueGistIDs(ids []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, id := range ids {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
 }
 
 // UpdateRunHeadSHA updates the run head SHA and timestamp.

@@ -133,6 +133,17 @@ func fakeGHHandler(args []string) {
 		fmt.Println("https://github.com/test/repo/pull/99")
 		os.Exit(0)
 	}
+	if len(args) >= 3 && args[0] == "gist" && args[1] == "create" && args[2] == "--secret" {
+		fmt.Println("https://gist.github.com/tester/gist123")
+		os.Exit(0)
+	}
+	if len(args) >= 2 && args[0] == "api" && args[1] == "gists/gist123" {
+		fmt.Println(`{"files":{"01-Checkout-screenshot.png":{"filename":"01-Checkout-screenshot.png","raw_url":"https://gist.githubusercontent.com/tester/gist123/raw/01-Checkout-screenshot.png"}}}`)
+		os.Exit(0)
+	}
+	if len(args) >= 4 && args[0] == "gist" && args[1] == "delete" && args[2] == "gist123" && args[3] == "--yes" {
+		os.Exit(0)
+	}
 	os.Exit(1)
 }
 

@@ -449,8 +449,8 @@ func TestBuildTestingSummaryForPR_RendersEvidenceArtifactsCompactly(t *testing.T
 	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123", t.TempDir())
 	t.Logf("rendered PR testing markdown:\n%s", md)
 
-	if !strings.Contains(md, "- Evidence: [Checkout screenshot](https://github.com/example/widgets/blob/abc123/artifacts/checkout.png)") {
-		t.Fatalf("expected screenshot path to render as compact GitHub blob link, got:\n%s", md)
+	if !strings.Contains(md, "![Checkout screenshot](https://raw.githubusercontent.com/example/widgets/abc123/artifacts/checkout.png)") {
+		t.Fatalf("expected screenshot path to render as inline raw GitHub image, got:\n%s", md)
 	}
 	if !strings.Contains(md, "[Server log](https://github.com/example/widgets/blob/abc123/artifacts/server.log)") {
 		t.Fatalf("expected log path to render as GitHub blob URL, got:\n%s", md)
@@ -458,7 +458,7 @@ func TestBuildTestingSummaryForPR_RendersEvidenceArtifactsCompactly(t *testing.T
 	if !strings.Contains(md, "<details>\n<summary>Evidence: Placement rectangle evidence</summary>") || !strings.Contains(md, "```text\n{\"button\":{\"top\":169,\"left\":248,\"right\":272,\"bottom\":193}}\n```") {
 		t.Fatalf("expected content artifact to render in collapsible details, got:\n%s", md)
 	}
-	for _, broken := range []string{"![Checkout screenshot]", "raw.githubusercontent.com", "](artifacts/checkout.png)", "](artifacts/server.log)"} {
+	for _, broken := range []string{"https://github.com/example/widgets/blob/abc123/artifacts/checkout.png", "](artifacts/checkout.png)", "](artifacts/server.log)"} {
 		if strings.Contains(md, broken) {
 			t.Fatalf("did not expect broken or noisy artifact rendering %q, got:\n%s", broken, md)
 		}
@@ -532,7 +532,7 @@ func TestBuildTestingSummaryForPR_PrefersArtifactURLOverLocalPath(t *testing.T) 
 
 	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123", repoRoot)
 
-	if !strings.Contains(md, "- Evidence: [Checkout screenshot](https://example.com/checkout.png)") {
+	if !strings.Contains(md, "![Checkout screenshot](https://example.com/checkout.png)") {
 		t.Fatalf("expected artifact URL to take precedence, got:\n%s", md)
 	}
 	if strings.Contains(md, "local file:") || strings.Contains(md, localPath) {

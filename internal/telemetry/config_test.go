@@ -8,7 +8,13 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/buildinfo"
 )
 
+func enableTelemetryForTest(t *testing.T) {
+	t.Helper()
+	t.Setenv(telemetryEnv, "")
+}
+
 func TestDefaultUsesDotEnvInDevBuildWhenEnvMissing(t *testing.T) {
+	enableTelemetryForTest(t)
 	prevSink := defaultSink
 	defaultSink = nil
 	defer func() { defaultSink = prevSink }()
@@ -55,6 +61,7 @@ func TestDefaultUsesDotEnvInDevBuildWhenEnvMissing(t *testing.T) {
 }
 
 func TestDefaultPrefersEnvVarsOverDotEnvAndEmbeddedConfig(t *testing.T) {
+	enableTelemetryForTest(t)
 	prevSink := defaultSink
 	defaultSink = nil
 	defer func() { defaultSink = prevSink }()
@@ -104,6 +111,7 @@ func TestDefaultPrefersEnvVarsOverDotEnvAndEmbeddedConfig(t *testing.T) {
 }
 
 func TestDefaultUsesEmbeddedTelemetryHostAndWebsiteID(t *testing.T) {
+	enableTelemetryForTest(t)
 	prevSink := defaultSink
 	defaultSink = nil
 	defer func() { defaultSink = prevSink }()
@@ -137,6 +145,7 @@ func TestDefaultUsesEmbeddedTelemetryHostAndWebsiteID(t *testing.T) {
 }
 
 func TestDefaultUsesSelfHostedHostWhenHostConfigMissing(t *testing.T) {
+	enableTelemetryForTest(t)
 	prevSink := defaultSink
 	defaultSink = nil
 	defer func() { defaultSink = prevSink }()
@@ -186,6 +195,7 @@ func TestDefaultDisablesTelemetryWhenEnvIsOff(t *testing.T) {
 }
 
 func TestDefaultIgnoresDotEnvOutsideRepo(t *testing.T) {
+	enableTelemetryForTest(t)
 	prevSink := defaultSink
 	defaultSink = nil
 	defer func() { defaultSink = prevSink }()
