@@ -129,11 +129,11 @@ The installer prefers setting up the daemon as a managed background service, and
 Bare `no-mistakes` then attaches to the active run on the current branch when one exists, or routes to the setup wizard when it needs to create a new branch/run.
 If managed service install or startup is unavailable or fails, startup falls back to a detached daemon process.
 `update` resets the daemon after replacing the binary when the daemon is running or stale daemon artifacts exist.
-If pending or running pipeline runs exist, `update` warns that restarting the daemon can cause those runs to fail and prompts before continuing.
+If pending or running pipeline runs exist, `update` refuses to restart the daemon by default and prints each active run's ID, status, branch, and short head SHA; pass `--force` to restart it anyway and accept that those runs may fail.
 If the daemon is already running from a different executable path, `update` prompts before replacing it.
-The `-y` / `--yes` flag continues through update safety prompts while still printing warnings.
+The `-y` / `--yes` flag answers that executable-path prompt non-interactively; it does not bypass the active-run `--force` guard.
 If the daemon executable path cannot be determined, `update` aborts before replacing anything.
-You can also manage it explicitly with `no-mistakes daemon start|stop|restart|status`.
+You can also manage it explicitly with `no-mistakes daemon start|stop|restart|status`; `daemon stop` and `daemon restart` apply the same active-run guard and `--force` override.
 
 On startup, the daemon recovers from crashes by marking any stuck runs as failed, reaping orphaned managed agent servers, cleaning up orphaned worktrees (never one whose run is still pending or running), refreshing legacy no-mistakes-managed `post-receive` hooks, enabling push options for older gate repos, and reapplying gate hook-path isolation when Git supports `config --worktree`.
 
@@ -174,21 +174,22 @@ Repo records store the parent `upstream_url` and an optional `fork_url`; branch 
 
 Everything lives under `~/.no-mistakes/` by default. Set `NM_HOME` to relocate it.
 
-| Path | Contents |
-|---|---|
-| `state.sqlite` | SQLite database |
-| `socket` | Unix domain socket for IPC |
-| `daemon.pid` | Daemon identity record |
-| `daemon.lock` | Singleton lock; the OS lock a live daemon holds so a second daemon for the same root cannot start |
-| `config.yaml` | Global configuration |
-| `update-check.json` | Cached update check result |
-| `servers/` | PID-tracking records for managed agent servers |
-| `repos/<id>.git` | Bare gate repos |
-| `repos/<id>.git/notify-push.log` | Persistent hook notification failure log |
-| `worktrees/<repoID>/<runID>/` | Disposable worktrees (cleaned up after each run) |
-| `logs/<runID>/<step>.log` | Per-step log files |
-| `logs/daemon.log` | Daemon log |
-| `logs/wizard-agent.log` | Managed agent-server output captured during setup wizard runs |
+| Path                             | Contents                                                                                                                |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `state.sqlite`                   | SQLite database                                                                                                         |
+| `socket`                         | Unix domain socket for IPC                                                                                              |
+| `daemon.pid`                     | Daemon identity record                                                                                                  |
+| `daemon.lock`                    | Singleton lock; the OS lock a live daemon holds so a second daemon for the same root cannot start                       |
+| `config.yaml`                    | Global configuration                                                                                                    |
+| `update-check.json`              | Cached update check result                                                                                              |
+| `servers/`                       | PID-tracking records for managed agent servers                                                                          |
+| `repos/<id>.git`                 | Bare gate repos                                                                                                         |
+| `repos/<id>.git/notify-push.log` | Persistent hook notification failure log                                                                                |
+| `worktrees/<repoID>/<runID>/`    | Disposable worktrees (cleaned up after each run)                                                                        |
+| `logs/<runID>/<step>.log`        | Per-step log files                                                                                                      |
+| `logs/daemon.log`                | Daemon log                                                                                                              |
+| `logs/wizard-agent.log`          | Managed agent-server output captured during setup wizard runs                                                           |
+| `logs/cli.log`                   | Caller attribution (PID, parent PID, parent command line) for `daemon stop`, `daemon restart`, and `update` invocations |
 
 New repo IDs are the first 6 bytes (12 hex chars) of `sha256(absolute_working_path)`.
 When an initialized working repo is renamed or moved, `init` preserves the existing repo ID instead of deriving a new one from the new path.
