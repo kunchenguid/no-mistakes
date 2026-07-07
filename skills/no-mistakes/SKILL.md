@@ -125,7 +125,10 @@ Run the pipeline and decide on its findings as they come up:
    `--skip=improve-codebase`. It is audit-only: approve or skip its
    findings; do not respond with `--action fix`. Repo
    `improve_codebase.mode` is trusted default-branch policy, so a pushed
-   branch cannot disable the gate for the same run.
+   branch cannot disable the gate for the same run. Agents without enforced
+   read-only mode are treated as unavailable for this invocation so fallback can
+   try the next agent; if no read-only-capable agent remains, `auto` mode skips
+   the gate and `always` mode fails it.
 
    **Review auto-fix is disabled by default** (`auto_fix.review: 0`; a repo
    or global `auto_fix.review > 0` override re-enables it), so blocking and

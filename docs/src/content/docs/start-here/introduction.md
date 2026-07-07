@@ -12,7 +12,8 @@ target only after every check passes, and opens a clean PR automatically.
 
 AI agents can write and modify code faster than most teams can validate it. The
 expensive part is no longer producing the diff. It is making sure the diff is
-rebased, reviewed, tested, documented, linted, and safe to share.
+rebased, reviewed, structurally checked when risky, tested, documented, linted,
+and safe to share.
 
 Pre-commit hooks help, but they need to stay lightweight and they block your
 working tree. CI helps, but it usually runs after the push is already public.

@@ -16,6 +16,7 @@ Without any provider setup, `no-mistakes` still gives you the local gate:
 
 - rebase
 - review
+- improve-codebase when triggered
 - test
 - document
 - lint

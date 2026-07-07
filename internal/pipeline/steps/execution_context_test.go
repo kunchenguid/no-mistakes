@@ -18,7 +18,7 @@ func TestExecutionContextPromptSection_Mentions(t *testing.T) {
 	}
 }
 
-// The section is injected into review/test/lint/document/pr step prompts.
+// The section is injected into review/improve-codebase/test/lint/document/pr step prompts.
 // It must be task-neutral - words like "review" or "lint" leak the wrong
 // framing into other steps.
 func TestExecutionContextPromptSection_TaskNeutral(t *testing.T) {

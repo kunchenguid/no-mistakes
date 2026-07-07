@@ -68,7 +68,7 @@ Repo config takes precedence over global config.
 agent: [codex, claude]
 ```
 
-no-mistakes filters the list to agents available on the daemon's `PATH`, uses the first available entry as the primary agent, and keeps later available entries as fallbacks. If an invocation fails because the current agent process cannot start or exits with an unavailable/error condition, that invocation is retried with the next fallback. Structured findings and schema/output validation failures do not trigger fallback.
+no-mistakes filters the list to agents available on the daemon's `PATH`, uses the first available entry as the primary agent, and keeps later available entries as fallbacks. If an invocation fails because the current agent process cannot start, exits with an unavailable/error condition, or cannot satisfy a read-only invocation, that invocation is retried with the next fallback. Structured findings and schema/output validation failures do not trigger fallback.
 
 ### Optional ACP target
 
@@ -158,7 +158,7 @@ A long-running `axi run` or `axi respond` call is working, not stalled, and an a
 An agent should resolve `action: auto-fix` findings on its own judgment, ignore `action: no-op` findings when approving, and stop on `action: ask-user` findings unless it is running with explicit `--yes` consent.
 Review auto-fix is disabled by default (`auto_fix.review: 0`; a repo or global `auto_fix.review > 0` override re-enables it), so blocking and ask-user review findings park for your decision rather than being silently self-fixed.
 The review gate output flags this with a `note`.
-The improve-codebase step runs after review and before test when `improve_codebase.mode` is `always` or when auto mode detects structural-risk signals. It is read-only and can be skipped with `--skip improve-codebase`; repo `improve_codebase.mode` is trusted default-branch policy, so the pushed branch cannot disable it for its own run. The gate currently enforces read-only mode through Claude plan mode, the Codex read-only sandbox, or OpenCode read-only session permissions; agents without an enforced read-only mode fail the step before launch.
+The improve-codebase step runs after review and before test when `improve_codebase.mode` is `always` or when auto mode detects structural-risk signals. It is read-only and can be skipped with `--skip improve-codebase`; repo `improve_codebase.mode` is trusted default-branch policy, so the pushed branch cannot disable it for its own run. The gate currently enforces read-only mode through Claude plan mode, the Codex read-only sandbox, or OpenCode read-only session permissions. Agents without enforced read-only mode are treated as unavailable for this invocation so fallback can try the next agent; if no read-only-capable agent remains, `auto` mode skips the gate and `always` mode fails it.
 When it stops for `ask-user`, relay each finding's ID, file, and full description to the user before choosing `approve` or `skip`.
 Resolving a fixable finding means responding with `no-mistakes axi respond --action fix`, which has the pipeline apply the fix and re-review it - the agent must not edit the code itself while a run is active. Improve-codebase findings are audit-only and must be approved or skipped instead.
 For the same reason, while a run is active the agent must not `abort` or `rerun` to go fix a finding itself - even a real bug in its own code - because that discards the pipeline's in-flight work and forces a full re-validation; `abort` and `rerun` are between-runs actions, correct only after a `failed` or `cancelled` outcome, never a way to circumvent a gate.
@@ -269,7 +269,7 @@ Spawns a `codex` subprocess for each invocation with `exec --json`. When structu
 
 ## Rovo Dev
 
-Starts a persistent HTTP server (`acli rovodev serve`) on first use and reuses it across invocations. If a reused server refuses a connection, no-mistakes discards it and retries with a fresh server. Any `agent_args_override.rovodev` flags are inserted before no-mistakes' managed serve flags. Communicates via REST API and SSE streaming. Each invocation creates a session, sends the prompt, streams results, then deletes the session. Structured output is handled by injecting schema instructions into a system prompt, then parsing the final text with fallback parsing that accepts JSON fences, inline fence markers, or a final bare JSON object after prose, and validates the result against the requested schema while allowing `null` for optional fields. Rovo Dev does not currently support adapter-enforced read-only invocations, so read-only steps fail before launch.
+Starts a persistent HTTP server (`acli rovodev serve`) on first use and reuses it across invocations. If a reused server refuses a connection, no-mistakes discards it and retries with a fresh server. Any `agent_args_override.rovodev` flags are inserted before no-mistakes' managed serve flags. Communicates via REST API and SSE streaming. Each invocation creates a session, sends the prompt, streams results, then deletes the session. Structured output is handled by injecting schema instructions into a system prompt, then parsing the final text with fallback parsing that accepts JSON fences, inline fence markers, or a final bare JSON object after prose, and validates the result against the requested schema while allowing `null` for optional fields. Rovo Dev does not currently support adapter-enforced read-only invocations; fallback may try the next configured agent, and improve-codebase `auto` mode skips if no read-only-capable agent remains.
 
 ## OpenCode
 
@@ -281,7 +281,7 @@ Spawns a `pi` subprocess for each invocation with `--mode json --no-session`.
 Any `agent_args_override.pi` flags are inserted before no-mistakes' managed flags.
 Reads JSONL events from stdout and streams incremental text deltas to the TUI.
 When structured output is requested, no-mistakes injects the JSON schema into the prompt and validates the final text response.
-Pi does not currently support adapter-enforced read-only invocations, so read-only steps fail before launch.
+Pi does not currently support adapter-enforced read-only invocations; fallback may try the next configured agent, and improve-codebase `auto` mode skips if no read-only-capable agent remains.
 
 ## Copilot CLI
 
@@ -290,7 +290,7 @@ It also adds `--no-color` and `--no-ask-user` so the run is non-interactive, plu
 Any `agent_args_override.copilot` flags are inserted before no-mistakes' managed flags, so user choices such as `--model` or `--effort` take effect.
 Reads JSONL events from stdout, streaming incremental `assistant.message_delta` text to the TUI and capturing the final `assistant.message` content.
 The Copilot CLI has no output-schema flag, so when structured output is requested no-mistakes injects the JSON schema into the prompt and validates the final text response with the same JSON fence and bare-object fallback used by Pi and Rovo Dev.
-Copilot CLI does not currently support adapter-enforced read-only invocations, so read-only steps fail before launch.
+Copilot CLI does not currently support adapter-enforced read-only invocations; fallback may try the next configured agent, and improve-codebase `auto` mode skips if no read-only-capable agent remains.
 
 ## ACP via acpx
 
@@ -307,7 +307,7 @@ acp_registry_overrides:
 
 no-mistakes invokes acpx with JSON output, approve-all permissions, denied non-interactive permission prompts, and the repo worktree as `--cwd`.
 Structured output is handled by appending the requested JSON schema to the prompt and validating the final assistant text.
-ACP targets do not currently support adapter-enforced read-only invocations, so read-only steps fail before launch.
+ACP targets do not currently support adapter-enforced read-only invocations; fallback may try the next configured agent, and improve-codebase `auto` mode skips if no read-only-capable agent remains.
 
 ## Checking agent availability
 
