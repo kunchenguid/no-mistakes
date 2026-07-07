@@ -282,10 +282,10 @@ func recoverOnStartup(d *db.DB, p *paths.Paths) {
 
 // cleanupOrphanWorktrees removes worktree directories left behind by runs
 // that are no longer active. It is DB-aware: a worktree is only removed when
-// its run row is terminal, or when there is no matching run row at all (and
-// then only past worktreeCleanupGracePeriod). This is what keeps cleanup from
-// deleting the checkout out from under a pipeline that is still actually
-// running (see skipWorktreeCleanup). Called from recoverOnStartup after
+// its run row is terminal, or when there is no matching run row at all.
+// This is what keeps cleanup from deleting the checkout out from under a
+// pipeline that is still actually running (see skipWorktreeCleanup).
+// Called from recoverOnStartup after
 // RecoverStaleRuns, so in the normal single-daemon path every run this loop
 // sees has already been resolved to a terminal status; it is factored out
 // separately so it can also be exercised - and its DB-aware skip behavior

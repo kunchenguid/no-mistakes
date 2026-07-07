@@ -14,20 +14,18 @@ import (
 // process already holds the lock for the same NM_HOME.
 var ErrSingletonLockHeld = errors.New("a no-mistakes daemon is already running for this NM_HOME")
 
-// tryLockFile and unlockFile are platform-specific (lock_unix.go /
-// lock_windows.go). Both use the OS's native advisory file lock, which the
+// singletonLock guards NM_HOME against more than one live daemon process.
+// It must be acquired before any global, destructive startup operation
+// (stale-run recovery, orphan worktree cleanup) and before the IPC socket is
+// bound, and held for the lifetime of the process.
+//
+// The underlying lock (tryLockFile/unlockFile, platform-specific in
+// lock_unix.go / lock_windows.go) is the OS's native file lock, which the
 // kernel releases automatically when the owning process exits or dies for
 // any reason (including SIGKILL) - even without an explicit unlock. That
 // self-cleaning property is why this lock needs no separate "is the holder
 // still alive" staleness check the way the PID file does: the lock can only
 // be held by a process that is actually still running.
-var tryLockFileFunc = tryLockFile
-var unlockFileFunc = unlockFile
-
-// singletonLock guards NM_HOME against more than one live daemon process.
-// It must be acquired before any global, destructive startup operation
-// (stale-run recovery, orphan worktree cleanup) and before the IPC socket is
-// bound, and held for the lifetime of the process.
 type singletonLock struct {
 	file *os.File
 }
@@ -43,13 +41,13 @@ func acquireSingletonLock(p *paths.Paths) (*singletonLock, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open daemon lock %s: %w", path, err)
 	}
-	if err := tryLockFileFunc(f); err != nil {
+	if lockErr := tryLockFile(f); lockErr != nil {
 		holder := readLockHolder(f)
 		f.Close()
 		if holder != "" {
-			return nil, fmt.Errorf("%w (%s)", ErrSingletonLockHeld, holder)
+			return nil, fmt.Errorf("%w (%s): %w", ErrSingletonLockHeld, holder, lockErr)
 		}
-		return nil, fmt.Errorf("%w: %s", ErrSingletonLockHeld, path)
+		return nil, fmt.Errorf("%w: %s: %w", ErrSingletonLockHeld, path, lockErr)
 	}
 
 	// Best-effort diagnostics: record who holds the lock so a rejected
@@ -73,7 +71,7 @@ func (l *singletonLock) Release() {
 	if l == nil || l.file == nil {
 		return
 	}
-	_ = unlockFileFunc(l.file)
+	_ = unlockFile(l.file)
 	_ = l.file.Close()
 }
 
