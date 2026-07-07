@@ -11,10 +11,11 @@ intent → rebase → review → improve-codebase → test → document → lint
 
 Each step can produce findings, request approval, trigger auto-fix, or apply safe fixes during its own pass. Steps that encounter fatal errors stop the pipeline. Steps can also be pre-skipped when starting a run, skipped by the user, or skipped automatically by the pipeline.
 In the TUI, yolo mode is an explicit override that auto-resolves paused steps: fixable `auto-fix` and `ask-user` findings are fixed once with every finding selected, fix-review gates are approved, audit-only improve-codebase gates are approved, and gates with only `no-op` findings are approved as-is.
-Every pipeline agent invocation is prompt-steered to keep intentional writes inside the run worktree and avoid mutating system state outside it.
+Every pipeline agent invocation is prompt-steered to keep intentional writes inside its step workspace - normally the run worktree, and for the read-only improve-codebase gate a disposable audit checkout - and avoid mutating system state outside it.
 This is a soft boundary, not OS-level sandbox enforcement.
 The steering still allows requested test evidence under the managed temporary `no-mistakes-evidence` directory or the configured in-repo evidence directory, plus incidental temp or cache writes from normal development tools.
 Configured shell commands and one-shot agent subprocesses are scoped to their step: when the invocation exits, fails, or is cancelled, no-mistakes terminates remaining child processes it spawned so background workers do not outlive the run.
+On Windows, those daemon-launched console subprocesses are started hidden so managed runs do not flash transient terminal windows.
 
 ## Intent
 
@@ -83,7 +84,7 @@ Runs a read-only structural/change-set gate after review and before tests.
 - Set `improve_codebase.mode: always` in global or trusted default-branch repo config to run it for every change-set.
 - Set `improve_codebase.mode: off` in global or trusted default-branch repo config to disable it.
 - Filters out files matching `ignore_patterns` before deciding whether to run and before prompting the audit agent.
-- Asks the configured agent to use the local `improve-codebase` skill as a narrowed, read-only audit of changed files, touched areas, callers, tests, configs, and module boundaries.
+- Clones the validated head into a disposable audit checkout and asks the configured agent to use the local `improve-codebase` skill as a narrowed, read-only audit of changed files, touched areas, callers, tests, configs, and module boundaries.
 - Enforces read-only mode through the agent adapter when available: Claude runs in plan mode, Codex runs with a read-only sandbox, and OpenCode sessions deny edit and bash permissions. Agents without an enforced read-only mode are treated as unavailable for this invocation, so ordered fallback can try the next agent. If no read-only-capable agent remains, `auto` mode skips the gate and `always` mode fails it.
 - Does not edit files, create audit artifacts, run tests, format, or commit changes.
 - Returns structured findings with severity (`error`, `warning`, `info`), file location, description, and an `action` (`no-op` or `ask-user`).

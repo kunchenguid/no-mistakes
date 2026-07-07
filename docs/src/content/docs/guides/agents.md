@@ -158,7 +158,7 @@ A long-running `axi run` or `axi respond` call is working, not stalled, and an a
 An agent should resolve `action: auto-fix` findings on its own judgment, ignore `action: no-op` findings when approving, and stop on `action: ask-user` findings unless it is running with explicit `--yes` consent.
 Review auto-fix is disabled by default (`auto_fix.review: 0`; a repo or global `auto_fix.review > 0` override re-enables it), so blocking and ask-user review findings park for your decision rather than being silently self-fixed.
 The review gate output flags this with a `note`.
-The improve-codebase step runs after review and before test when `improve_codebase.mode` is `always` or when auto mode detects structural-risk signals. It is read-only and can be skipped with `--skip improve-codebase`; repo `improve_codebase.mode` is trusted default-branch policy, so the pushed branch cannot disable it for its own run. The gate currently enforces read-only mode through Claude plan mode, the Codex read-only sandbox, or OpenCode read-only session permissions. Agents without enforced read-only mode are treated as unavailable for this invocation so fallback can try the next agent; if no read-only-capable agent remains, `auto` mode skips the gate and `always` mode fails it.
+The improve-codebase step runs after review and before test when `improve_codebase.mode` is `always` or when auto mode detects structural-risk signals. It clones the validated head into a disposable audit checkout, runs read-only, and can be skipped with `--skip improve-codebase`; repo `improve_codebase.mode` is trusted default-branch policy, so the pushed branch cannot disable it for its own run. The gate currently enforces read-only mode through Claude plan mode, the Codex read-only sandbox, or OpenCode read-only session permissions. Agents without enforced read-only mode are treated as unavailable for this invocation so fallback can try the next agent; if no read-only-capable agent remains, `auto` mode skips the gate and `always` mode fails it.
 When it stops for `ask-user`, relay each finding's ID, file, and full description to the user before choosing `approve`, `fix` on a fixable gate, or `skip`.
 Resolving a fixable finding means responding with `no-mistakes axi respond --action fix`, which has the pipeline apply the fix and re-review it - the agent must not edit the code itself while a run is active. Improve-codebase findings are audit-only and must be approved or skipped instead.
 For the same reason, while a run is active the agent must not `abort` or `rerun` to go fix a finding itself - even a real bug in its own code - because that discards the pipeline's in-flight work and forces a full re-validation; `abort` and `rerun` are between-runs actions, correct only after a `failed` or `cancelled` outcome, never a way to circumvent a gate.
@@ -219,7 +219,7 @@ reflects your local agent setup rather than repo policy.
 All agents implement the same interface. Each invocation receives:
 
 - **Prompt** - the task description (review this diff, fix these findings, etc.), prefixed during pipeline runs with the workspace-boundary steering described above
-- **CWD** - the worktree directory
+- **CWD** - the invocation working directory, usually the run worktree; improve-codebase uses a disposable audit checkout
 - **ServerCWD** - optional stable working directory for persistent agent servers; when omitted it falls back to `CWD`
 - **Environment** - the daemon environment plus non-interactive Git overrides (`GIT_EDITOR=true`, `GIT_SEQUENCE_EDITOR=true`, and `GIT_TERMINAL_PROMPT=0`) so agent-invoked Git commands do not hang on editors or credential prompts
 - **JSONSchema** - optional structured output schema for typed responses
@@ -235,6 +235,7 @@ Each invocation returns:
 
 One-shot subprocess agents (Claude, Codex, Pi, Copilot CLI, and acpx) are invocation-scoped.
 After no-mistakes starts one, it terminates any remaining child processes when the invocation exits, fails, or is cancelled, so agent-spawned test workers, build watchers, and dev servers do not survive the step.
+On Windows, daemon-launched console subprocesses are started hidden so managed runs do not flash transient terminal windows.
 Step logs record their process lifecycle, including start and exit lines with the PID, and AXI status exposes that PID while the subprocess is still active.
 Persistent server agents (Rovo Dev and OpenCode) use their managed server lifecycle instead.
 

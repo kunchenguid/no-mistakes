@@ -94,6 +94,7 @@ Safest local verification sequence after non-trivial changes:
 - Prefer `exec.CommandContext` for subprocesses.
 - Route every long-lived subprocess spawned on behalf of a cancellable step/agent invocation through `shellenv.ConfigureShellCommand(cmd)` after building the `*exec.Cmd`.
   It puts the child in its own process tree boundary (Unix `Setpgid`, Windows job object with `taskkill` fallback) and installs `cmd.Cancel` to kill the whole tree on context cancellation.
+  On Windows it also hides daemon-launched console subprocess windows, so managed runs do not flash transient terminals.
   Without it, `exec.CommandContext` only kills the direct child and grandchildren survive (e.g. `npm` -> `node` test workers, agent-spawned git/build/editor), keep running, and hold the worktree locked so the next run on the same branch cannot proceed.
   Applied to the step shell runner (`runShellCommandWithEnv`) and the native agent `runOnce` builders (claude, codex, pi, copilot, acpx); apply it to any new subprocess in those paths.
 - `cmd.Cancel` only covers the **cancellation** half of the lifecycle.
