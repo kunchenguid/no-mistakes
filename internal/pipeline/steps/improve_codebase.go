@@ -2,6 +2,7 @@ package steps
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -135,6 +136,12 @@ Rules:
 		ReadOnly:   true,
 	})
 	if agentErr != nil {
+		if mode == config.ImproveCodebaseModeAuto && errors.Is(agentErr, agent.ErrReadOnlyUnsupported) {
+			reason := "read-only mode unsupported by configured agent; improve-codebase auto gate skipped"
+			sctx.Log("skipping improve-codebase: " + reason)
+			findingsJSON, _ := json.Marshal(Findings{Summary: reason})
+			return &pipeline.StepOutcome{Skipped: true, Findings: string(findingsJSON)}, nil
+		}
 		return nil, fmt.Errorf("agent improve-codebase: %w", agentErr)
 	}
 

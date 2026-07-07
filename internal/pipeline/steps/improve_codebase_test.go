@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -355,6 +356,60 @@ func TestImproveCodebaseStep_AutoRunsForManySourceFiles(t *testing.T) {
 	}
 	if outcome.Skipped {
 		t.Fatal("expected many source files to run")
+	}
+}
+
+func TestImproveCodebaseStep_AutoSkipsReadOnlyUnsupportedAgent(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, _ := setupGitRepo(t)
+	for i := 0; i < improveCodebaseSourceFileThreshold+1; i++ {
+		mustWriteFile(t, filepath.Join(dir, "pkg", "many", fmt.Sprintf("file%02d.go", i)), "package many\n")
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "touch many files")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	ag := &mockAgent{name: "copilot", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+		return nil, fmt.Errorf("copilot: %w", agent.ErrReadOnlyUnsupported)
+	}}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	var logs []string
+	sctx.Log = func(text string) {
+		logs = append(logs, text)
+	}
+
+	outcome, err := (&ImproveCodebaseStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.Skipped {
+		t.Fatal("expected auto mode to skip when no configured agent supports read-only mode")
+	}
+	if len(ag.calls) != 1 {
+		t.Fatalf("agent calls = %d, want 1", len(ag.calls))
+	}
+	for _, text := range []string{outcome.Findings, strings.Join(logs, "\n")} {
+		if !strings.Contains(text, "read-only mode unsupported by configured agent") {
+			t.Fatalf("missing unsupported read-only skip reason in %q", text)
+		}
+	}
+}
+
+func TestImproveCodebaseStep_AlwaysFailsReadOnlyUnsupportedAgent(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{name: "copilot", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+		return nil, fmt.Errorf("copilot: %w", agent.ErrReadOnlyUnsupported)
+	}}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.ImproveCodebase.Mode = config.ImproveCodebaseModeAlways
+
+	_, err := (&ImproveCodebaseStep{}).Execute(sctx)
+	if !errors.Is(err, agent.ErrReadOnlyUnsupported) {
+		t.Fatalf("Execute() error = %v, want ErrReadOnlyUnsupported", err)
+	}
+	if len(ag.calls) != 1 {
+		t.Fatalf("agent calls = %d, want 1", len(ag.calls))
 	}
 }
 
