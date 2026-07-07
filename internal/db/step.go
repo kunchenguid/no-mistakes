@@ -106,6 +106,8 @@ func (d *DB) StartStep(id string) error {
 	return d.StartStepWithAutoFixLimit(id, 0)
 }
 
+// StartStepWithAutoFixLimit marks a step as running and records the effective
+// auto-fix limit that status surfaces use while the step is active.
 func (d *DB) StartStepWithAutoFixLimit(id string, autoFixLimit int) error {
 	ts := now()
 	_, err := d.sql.Exec(`UPDATE step_results SET status = ?, started_at = ?, last_activity_at = ?, last_activity = ?, agent_pid = NULL, auto_fix_limit = ? WHERE id = ?`, types.StepStatusRunning, ts, ts, "step started", autoFixLimitDBValue(autoFixLimit), id)

@@ -31,6 +31,8 @@ agent_args_override:
 
 ci_timeout: "168h"
 
+step_quiet_warning: "10m"
+
 log_level: info
 
 auto_fix:
@@ -201,6 +203,23 @@ A genuinely idle/abandoned PR is still reaped after the timeout elapses.
 Set it to `unlimited` (`none`, `off`, and `never` are accepted aliases), `0`, or any non-positive duration to monitor until the PR is merged, closed, or the run is aborted with `no-mistakes axi abort --run <id>`.
 
 Legacy alias: `babysit_timeout`.
+
+### step_quiet_warning
+
+How long a running or fixing step can go without recorded step-log or native-agent lifecycle activity before AXI status marks the step as quiet.
+
+| | |
+|---|---|
+| Type | `string` (Go duration) |
+| Default | `10m` |
+
+Accepts any positive Go `time.ParseDuration` string: `30s`, `5m`, `1h`, etc.
+Non-positive values are ignored and keep the default.
+
+This is observability only.
+It does not cancel the step, change auto-fix behavior, or mark the run failed.
+AXI renders the quiet signal in the `active_steps` table as part of `last_activity`, for example `quiet 12m3s ago: codex started pid=4242`.
+For older active runs that do not yet have activity rows, AXI falls back to the step log file's modification time.
 
 ### log_level
 

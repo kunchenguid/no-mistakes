@@ -1,0 +1,52 @@
+# AXI wedge observability transcript
+
+Synthetic executor run is still active in review auto-fix while these commands are captured.
+
+$ NM_HOME=.no-mistakes/evidence/fm/nm-review-wedge-b6/scratch/nmhome-live no-mistakes axi status --run 01KWXEBZEXXRRZ0HHK6HA47T43
+run:
+  id: "01KWXEBZEXXRRZ0HHK6HA47T43"
+  branch: fm/nm-review-wedge-b6
+  status: running
+  head: f688b96d
+  findings: 1 auto-fix
+  steps[1]{step,status,findings,duration_ms}:
+    review,fixing,1,0
+  active_steps[1]{step,status,active_for,last_activity,agent_pid,round}:
+    review,fixing,2s,"quiet 2s ago: log: codex started pid=4242","4242",auto-fix 1/2
+
+$ NM_HOME=.no-mistakes/evidence/fm/nm-review-wedge-b6/scratch/nmhome-live no-mistakes axi logs --run 01KWXEBZEXXRRZ0HHK6HA47T43 --step review --full   # while auto-fix is active
+step: review
+run: "01KWXEBZEXXRRZ0HHK6HA47T43"
+lines: 5 total
+log[5]{line}:
+  review agent found a fixable issue
+  ""
+  auto-fix round 1/2 starting after round 1 (1 finding)
+  ""
+  codex started pid=4242
+
+$ NM_HOME=.no-mistakes/evidence/fm/nm-review-wedge-b6/scratch/nmhome-live no-mistakes axi logs --run 01KWXEBZEXXRRZ0HHK6HA47T43 --step review --full   # after the native agent exits
+step: review
+run: "01KWXEBZEXXRRZ0HHK6HA47T43"
+lines: 7 total
+log[7]{line}:
+  review agent found a fixable issue
+  ""
+  auto-fix round 1/2 starting after round 1 (1 finding)
+  ""
+  codex started pid=4242
+  ""
+  codex exited pid=4242 status=success
+
+$ legacy-style row with no last_activity_at uses the review log mtime as activity fallback
+$ NM_HOME=.no-mistakes/evidence/fm/nm-review-wedge-b6/scratch/nmhome-mtime no-mistakes axi status --run 01KWXEET3BFZQ1QG2T3695T4CW
+run:
+  id: "01KWXEET3BFZQ1QG2T3695T4CW"
+  branch: fm/nm-review-wedge-b6
+  status: running
+  head: f688b96d
+  findings: none
+  steps[1]{step,status,findings,duration_ms}:
+    review,running,0,0
+  active_steps[1]{step,status,active_for,last_activity,agent_pid,round}:
+    review,running,4s,"quiet 3s ago: step log updated","",starting

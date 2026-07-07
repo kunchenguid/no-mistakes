@@ -3,8 +3,11 @@ package agent
 import "fmt"
 
 const (
+	// LifecyclePhaseStart marks native subprocess startup.
 	LifecyclePhaseStart = "start"
-	LifecyclePhaseExit  = "exit"
+	// LifecyclePhaseExit marks native subprocess exit.
+	LifecyclePhaseExit = "exit"
+	// LifecyclePhaseRetry marks a transient retry before the next subprocess attempt.
 	LifecyclePhaseRetry = "retry"
 )
 

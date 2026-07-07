@@ -240,6 +240,26 @@ If the PR is still open at the timeout, the step pauses for approval with findin
 You can approve, fix, or skip from the TUI or `no-mistakes axi respond`.
 Use `no-mistakes axi abort` only when you mean to cancel the whole active run.
 
+## Step looks quiet or wedged
+
+Symptom: `no-mistakes axi status` shows an active step with `last_activity` prefixed by `quiet`, or a review/test/lint step appears to run for longer than expected.
+
+`quiet` means the step has not recorded a step-log line or native-agent lifecycle event for longer than `step_quiet_warning` in `~/.no-mistakes/config.yaml`.
+It is only a liveness signal.
+It does not cancel the step, fail the run, or mean the pipeline is safe to bypass.
+
+Start by reading the active run and the step log:
+
+```sh
+no-mistakes axi status
+no-mistakes axi logs --step <step> --full
+```
+
+The `active_steps` table shows how long the step has been active, the latest activity, the native subprocess PID when one is running, and the current round such as `round 1`, `auto-fix 1/3`, or `fix 2`.
+The step log records native subprocess start, exit, and retry lines plus markers for automatic and user-triggered fix rounds.
+If the step is parked at a gate, use `no-mistakes axi respond` instead of waiting.
+If the run is genuinely stuck and you want to discard it, use `no-mistakes axi abort` and then start a new run.
+
 ## Worktree won't clean up
 
 Symptom: `~/.no-mistakes/worktrees/<repoID>/<runID>/` sticks around after a run ends.

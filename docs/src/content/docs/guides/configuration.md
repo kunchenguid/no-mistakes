@@ -14,6 +14,7 @@ work. Config exists for the parts that genuinely vary by machine or repo:
 - which test or lint commands are the canonical ones for this repo
 - where test evidence artifacts should be stored
 - how aggressive the auto-fix loop should be
+- how soon AXI should call an active step quiet
 - whether no-mistakes should infer intent from recent local agent transcripts
 
 Config is split across two files:
@@ -81,6 +82,10 @@ agent_args_override:
 # Use "unlimited" (or aliases "none", "off", "never", or any non-positive
 # duration) to monitor until the PR is merged, closed, or aborted.
 ci_timeout: "168h"  # any Go duration string, or an unlimited keyword
+
+# How long AXI status waits without step-log or native-agent lifecycle activity
+# before marking a running/fixing step as quiet. This is observability only.
+step_quiet_warning: "10m"
 
 # Daemon log verbosity.
 log_level: info  # debug | info | warn | error
@@ -165,6 +170,7 @@ See [Repo Config Reference](/no-mistakes/reference/repo-config/) for the full fi
 - Global `agent: auto` resolves by checking `claude`, `codex`, `opencode`, `acli` for `rovodev`, `pi`, then `copilot` on `PATH`.
 - ACP agents are opt-in with `agent: acp:<target>` and are not considered by `agent: auto`.
 - `agent_path_override`, `agent_args_override`, `acpx_path`, and `acp_registry_overrides` are global-only fields.
+- `ci_timeout`, `step_quiet_warning`, and `log_level` are global-only fields.
 - `auto_fix` from the repo config overlays global auto_fix. Fields not set in the repo config fall through to the global default.
 - `intent` from the repo config overlays global intent settings. Fields not set in the repo config fall through to the global default, except `intent.disabled_readers`, which adds to globally disabled readers.
 - `test.evidence` from the repo config overlays global test evidence settings. Fields not set in the repo config fall through to the global default.
