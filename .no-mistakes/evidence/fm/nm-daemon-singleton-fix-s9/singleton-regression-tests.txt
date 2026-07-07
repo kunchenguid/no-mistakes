@@ -1,0 +1,38 @@
+$ go test -race -count=1 -v ./internal/daemon -run 'TestAcquireSingletonLock|TestSingletonLock_ReleaseNilSafe|TestRunWithResources_SecondDaemonForSameRootFailsWithoutStealingSocket|TestRunWithOptions_RequiresSingletonLockBeforeRecovery|TestRecoverOnStartup_DoesNotDeleteActiveRunWorktree|TestRecoverCleansUpOrphanedWorktrees'
+=== RUN   TestAcquireSingletonLock_SecondAcquireFails
+--- PASS: TestAcquireSingletonLock_SecondAcquireFails (0.01s)
+=== RUN   TestAcquireSingletonLock_ReleaseAllowsReacquire
+--- PASS: TestAcquireSingletonLock_ReleaseAllowsReacquire (0.01s)
+=== RUN   TestAcquireSingletonLock_ReportsExistingHolder
+--- PASS: TestAcquireSingletonLock_ReportsExistingHolder (0.01s)
+=== RUN   TestSingletonLock_ReleaseNilSafe
+--- PASS: TestSingletonLock_ReleaseNilSafe (0.00s)
+=== RUN   TestAcquireSingletonLock_CreatesLockFileUnderRoot
+--- PASS: TestAcquireSingletonLock_CreatesLockFileUnderRoot (0.01s)
+=== RUN   TestRunWithResources_SecondDaemonForSameRootFailsWithoutStealingSocket
+2026/07/06 18:30:20 INFO daemon starting socket=/var/folders/5x/4nqprlbx0518k3ybcb1sz6gr0000gn/T/dtest733738734/socket pid=80512
+2026/07/06 18:30:20 INFO ipc request method=shutdown
+2026/07/06 18:30:20 INFO shutting down reason="ipc request"
+2026/07/06 18:30:20 INFO daemon stopped
+--- PASS: TestRunWithResources_SecondDaemonForSameRootFailsWithoutStealingSocket (0.05s)
+=== RUN   TestRecoverOnStartup_DoesNotDeleteActiveRunWorktree
+2026/07/06 18:30:20 INFO skipping worktree cleanup path=/var/folders/5x/4nqprlbx0518k3ybcb1sz6gr0000gn/T/TestRecoverOnStartup_DoesNotDeleteActiveRunWorktree1576822875/001/worktrees/repo1/01KWX354M0XN1JMQ4428Z3SM69 reason="run 01KWX354M0XN1JMQ4428Z3SM69 is pending"
+2026/07/06 18:30:20 WARN git worktree remove failed, falling back to os.RemoveAll path=/var/folders/5x/4nqprlbx0518k3ybcb1sz6gr0000gn/T/TestRecoverOnStartup_DoesNotDeleteActiveRunWorktree1576822875/001/worktrees/repo1/01KWX354M1ZW4FFQHT11106TTK error="git worktree remove --force /var/folders/5x/4nqprlbx0518k3ybcb1sz6gr0000gn/T/TestRecoverOnStartup_DoesNotDeleteActiveRunWorktree1576822875/001/worktrees/repo1/01KWX354M1ZW4FFQHT11106TTK: chdir /var/folders/5x/4nqprlbx0518k3ybcb1sz6gr0000gn/T/TestRecoverOnStartup_DoesNotDeleteActiveRunWorktree1576822875/001/repos/repo1.git: no such file or directory: "
+--- PASS: TestRecoverOnStartup_DoesNotDeleteActiveRunWorktree (0.02s)
+=== RUN   TestRunWithOptions_RequiresSingletonLockBeforeRecovery
+--- PASS: TestRunWithOptions_RequiresSingletonLockBeforeRecovery (0.02s)
+=== RUN   TestRecoverCleansUpOrphanedWorktrees
+2026/07/06 18:30:20 WARN git worktree remove failed, falling back to os.RemoveAll path=/var/folders/5x/4nqprlbx0518k3ybcb1sz6gr0000gn/T/dtest4028181335/worktrees/some-repo/some-run error="git worktree remove --force /var/folders/5x/4nqprlbx0518k3ybcb1sz6gr0000gn/T/dtest4028181335/worktrees/some-repo/some-run: chdir /var/folders/5x/4nqprlbx0518k3ybcb1sz6gr0000gn/T/dtest4028181335/repos/some-repo.git: no such file or directory: "
+2026/07/06 18:30:20 INFO daemon starting socket=/var/folders/5x/4nqprlbx0518k3ybcb1sz6gr0000gn/T/dtest4028181335/socket pid=80512
+2026/07/06 18:30:20 INFO ipc request method=shutdown
+2026/07/06 18:30:20 INFO shutting down reason="ipc request"
+2026/07/06 18:30:20 INFO daemon stopped
+--- PASS: TestRecoverCleansUpOrphanedWorktrees (0.04s)
+PASS
+ok  	github.com/kunchenguid/no-mistakes/internal/daemon	1.697s
+
+$ go test -race -count=1 -v ./internal/ipc -run 'TestServe_SecondListenerForLiveSocketDoesNotStealIt'
+=== RUN   TestServe_SecondListenerForLiveSocketDoesNotStealIt
+--- PASS: TestServe_SecondListenerForLiveSocketDoesNotStealIt (0.01s)
+PASS
+ok  	github.com/kunchenguid/no-mistakes/internal/ipc	1.403s

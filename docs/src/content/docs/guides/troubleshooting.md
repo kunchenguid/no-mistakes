@@ -46,13 +46,20 @@ tail -f ~/.no-mistakes/logs/daemon.log
 
 ### Check for stale artifacts
 
-Stale PID files or sockets from a crashed daemon can block startup:
+A leftover socket from an unclean exit no longer blocks startup: the daemon probes the socket path before binding and removes it only when nothing is listening on it.
+A stale PID file can still confuse status reporting:
 
 ```sh
 ls -la ~/.no-mistakes/daemon.pid ~/.no-mistakes/socket
 ```
 
-If the PID file points at a process that's no longer running, remove both and run `no-mistakes daemon start` again.
+If the PID file points at a process that's no longer running, remove it and run `no-mistakes daemon start` again.
+
+### "a no-mistakes daemon is already running for this NM_HOME"
+
+The daemon holds an exclusive OS lock on `~/.no-mistakes/daemon.lock` for its whole lifetime, so a second daemon for the same root refuses to start instead of stealing the first one's socket.
+The OS releases the lock automatically when the holder exits or crashes, even on SIGKILL, so it cannot go stale: this error always means a genuinely live daemon, and the message includes the holder's PID and start time when available.
+Manage that daemon with `no-mistakes daemon status` and `no-mistakes daemon stop` instead of deleting the lock file - deleting the file does not release the lock and only weakens the guard.
 
 ### Managed service logs
 
@@ -258,7 +265,7 @@ When state is genuinely wedged:
 
 ```sh
 no-mistakes daemon stop
-rm -rf ~/.no-mistakes/worktrees ~/.no-mistakes/servers ~/.no-mistakes/socket ~/.no-mistakes/daemon.pid
+rm -rf ~/.no-mistakes/worktrees ~/.no-mistakes/servers ~/.no-mistakes/socket ~/.no-mistakes/daemon.pid ~/.no-mistakes/daemon.lock
 no-mistakes daemon start
 ```
 

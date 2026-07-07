@@ -19,7 +19,7 @@ When set, everything else moves under this root:
 - Worktrees: `$NM_HOME/worktrees/<repoID>/<runID>/`
 - Logs: `$NM_HOME/logs/`
 - Database: `$NM_HOME/state.sqlite`
-- Socket / PID: `$NM_HOME/socket` and `$NM_HOME/daemon.pid`
+- Socket / PID / singleton lock: `$NM_HOME/socket`, `$NM_HOME/daemon.pid`, and `$NM_HOME/daemon.lock`
 - Managed agent server PID records: `$NM_HOME/servers/`
 - Managed service names get a short stable suffix derived from `$NM_HOME` so multiple installs don't collide.
 

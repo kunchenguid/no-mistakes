@@ -319,6 +319,8 @@ no-mistakes daemon start
 
 Prefers the managed service path and falls back to a detached daemon if service install or startup is unavailable or fails. If the daemon is already running, the command refreshes a stale macOS `launchd` or Linux `systemd` service definition and restarts through the managed service; if the definition is unchanged, it reports that the daemon is already running.
 
+Only one live daemon can own an `NM_HOME`: at startup the daemon takes an exclusive OS lock on `$NM_HOME/daemon.lock`, so a second daemon started against the same root - however it was launched - fails with "a no-mistakes daemon is already running for this NM_HOME" instead of stealing the running daemon's socket.
+
 ## no-mistakes daemon stop
 
 Stop the running daemon process.

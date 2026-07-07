@@ -1,0 +1,43 @@
+### End-to-end demo: single live daemon per NM_HOME (duplicate-daemon wedge fix)
+### binary: no-mistakes built from this branch; NM_HOME: /tmp/nm-singleton-demo.vymZr6
+
+--- 1. Start daemon 1 (direct 'daemon run --root' path) ---
+$ no-mistakes daemon run --root "$NM_HOME" &
+time=2026-07-06T18:29:58.819-07:00 level=INFO msg="daemon starting" socket=/tmp/nm-singleton-demo.vymZr6/socket pid=78376
+
+$ no-mistakes daemon status
+  ● daemon running (pid 78376)
+
+$ cat "$NM_HOME/daemon.lock"   # holder diagnostics written by daemon 1
+{"pid":78376,"started_at":"2026-07-07T01:29:58.810407Z"}
+
+--- 2. Attempt daemon 2 against the SAME NM_HOME (must fail fast, not steal the socket) ---
+$ no-mistakes daemon run --root "$NM_HOME"
+2026/07/06 18:29:59 INFO daemon environment ready path_entries=19 path=/Users/kunchen/google-cloud-sdk/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/Users/kunchen/.nvm/versions/node/v24.13.1/bin:/Users/kunchen/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/etc/profiles/per-user/kunchen/bin:/run/current-system/sw/bin:/Users/kunchen/.local/bin:/Users/kunchen/go/bin:/Library/Frameworks/Python.framework/Versions/3.13/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Users/kunchen/.cargo/bin:/Users/kunchen/bin:/usr/local/sbin
+a no-mistakes daemon is already running for this NM_HOME (pid 78376, started 2026-07-07T01:29:58Z): resource temporarily unavailable
+(exit code: 1)
+
+--- 3. Daemon 1 must still be alive and reachable on its socket ---
+$ no-mistakes daemon status
+  ● daemon running (pid 78376)
+
+$ tail -1 "$NM_HOME/daemon1.log"   # no shutdown/steal happened; daemon 1 log is quiet
+time=2026-07-06T18:29:58.819-07:00 level=INFO msg="daemon starting" socket=/tmp/nm-singleton-demo.vymZr6/socket pid=78376
+
+--- 4. Crash daemon 1 with SIGKILL: kernel auto-releases the flock; socket path left behind stale ---
+$ kill -9 78376  # daemon 1
+$ ls -l "$NM_HOME/socket" "$NM_HOME/daemon.lock"   # stale leftovers still on disk
+-rw-r--r--@ /tmp/nm-singleton-demo.vymZr6/daemon.lock
+srwx------@ /tmp/nm-singleton-demo.vymZr6/socket
+
+--- 5. A new daemon after the crash must start cleanly (no staleness heuristic needed) ---
+$ no-mistakes daemon run --root "$NM_HOME" &
+time=2026-07-06T18:30:00.532-07:00 level=INFO msg="daemon starting" socket=/tmp/nm-singleton-demo.vymZr6/socket pid=78821
+$ no-mistakes daemon status
+  ● daemon running (pid 78821)
+
+--- cleanup ---
+$ no-mistakes daemon stop
+  ✓ daemon stopped
+
+### RESULT: second daemon rejected with ErrSingletonLockHeld + live-holder diagnostics; first daemon kept its socket; post-crash restart works without manual cleanup.

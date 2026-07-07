@@ -117,6 +117,7 @@ A long-running background process that manages pipeline runs. It:
 
 - Listens on a Unix socket at `~/.no-mistakes/socket`
 - Writes its identity record to `~/.no-mistakes/daemon.pid`
+- Holds an exclusive OS lock on `~/.no-mistakes/daemon.lock` for its whole lifetime, so only one live daemon can own an `NM_HOME` at a time
 - Serializes concurrent pushes to the same branch (new push cancels the in-progress run)
 - Creates and cleans up worktrees
 - Scopes configured commands and one-shot agent subprocesses to the step lifetime by terminating remaining child processes on completion, failure, or cancellation
@@ -133,7 +134,7 @@ The `-y` / `--yes` flag continues through update safety prompts while still prin
 If the daemon executable path cannot be determined, `update` aborts before replacing anything.
 You can also manage it explicitly with `no-mistakes daemon start|stop|restart|status`.
 
-On startup, the daemon recovers from crashes by marking any stuck runs as failed, reaping orphaned managed agent servers, cleaning up orphaned worktrees, refreshing legacy no-mistakes-managed `post-receive` hooks, enabling push options for older gate repos, and reapplying gate hook-path isolation when Git supports `config --worktree`.
+On startup, the daemon recovers from crashes by marking any stuck runs as failed, reaping orphaned managed agent servers, cleaning up orphaned worktrees (never one whose run is still pending or running), refreshing legacy no-mistakes-managed `post-receive` hooks, enabling push options for older gate repos, and reapplying gate hook-path isolation when Git supports `config --worktree`.
 
 ### Pipeline executor
 
@@ -180,6 +181,7 @@ Everything lives under `~/.no-mistakes/` by default. Set `NM_HOME` to relocate i
 | `state.sqlite` | SQLite database |
 | `socket` | Unix domain socket for IPC |
 | `daemon.pid` | Daemon identity record |
+| `daemon.lock` | Singleton lock; the OS lock a live daemon holds so a second daemon for the same root cannot start |
 | `config.yaml` | Global configuration |
 | `update-check.json` | Cached update check result |
 | `servers/` | PID-tracking records for managed agent servers |
