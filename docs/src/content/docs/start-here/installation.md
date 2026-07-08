@@ -81,7 +81,7 @@ Pass `-y` or `--yes` to continue through these prompts while still printing warn
 If the daemon executable path cannot be determined, the update aborts before replacing the binary.
 If the daemon does not come back cleanly after a successful replacement, the new binary stays installed but the command reports the daemon reset failure.
 
-Background update checks run automatically on each CLI invocation (except `update` itself). Suppress with `NO_MISTAKES_NO_UPDATE_CHECK=1`.
+Background update checks run automatically on each CLI invocation (except `update` itself and version queries `--version` / `-v`, which stay side-effect-free). Suppress with `NO_MISTAKES_NO_UPDATE_CHECK=1`.
 
 ## Remove from a repo
 
