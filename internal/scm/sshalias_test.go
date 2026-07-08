@@ -70,6 +70,31 @@ func TestCanonicalRemoteURL(t *testing.T) {
 	}
 }
 
+// TestCanonicalRemoteURL_LiteralHostSkipsAliasResolution guards the hot path: a
+// literal marker host must be returned unchanged without invoking the ssh
+// resolver.
+func TestCanonicalRemoteURL_LiteralHostSkipsAliasResolution(t *testing.T) {
+	prev := sshHostAliasResolver
+	t.Cleanup(func() { sshHostAliasResolver = prev })
+	sshHostAliasResolver = func(host string) (string, bool) {
+		t.Fatalf("ssh resolver must not run for a literal host, got %q", host)
+		return "", false
+	}
+
+	in := "git@github.com:acme/app.git"
+	if got := CanonicalRemoteURL(in); got != in {
+		t.Fatalf("CanonicalRemoteURL(%q) = %q, want unchanged", in, got)
+	}
+}
+
+// TestResolveHostAliasViaSSH_RejectsLeadingDashHost ensures a host that ssh
+// would parse as a flag never reaches the ssh invocation.
+func TestResolveHostAliasViaSSH_RejectsLeadingDashHost(t *testing.T) {
+	if resolved, ok := resolveHostAliasViaSSH("-F/etc/passwd"); ok || resolved != "" {
+		t.Fatalf("resolveHostAliasViaSSH(leading-dash) = (%q, %v), want (\"\", false)", resolved, ok)
+	}
+}
+
 func TestRemoteUsesSSH(t *testing.T) {
 	cases := []struct {
 		in   string

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kunchenguid/no-mistakes/internal/winproc"
+	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
 
 // sshHostAliasResolver resolves an SSH host alias (a `Host` block in
@@ -78,6 +78,13 @@ func CanonicalRemoteURL(remote string) string {
 		}
 	}
 
+	// A host that already carries a well-known provider marker is not an alias,
+	// so skip resolution and avoid spawning an ssh subprocess for the common
+	// literal-host remote.
+	if providerFromMarker(host) != ProviderUnknown {
+		return remote
+	}
+
 	resolved := ResolveHostAlias(host)
 	if resolved == "" || strings.EqualFold(resolved, host) {
 		return remote
@@ -119,14 +126,18 @@ func isAllDigits(s string) bool {
 // fail-closed behavior callers want. Any error (ssh absent, config error,
 // timeout) reports (\"\", false).
 func resolveHostAliasViaSSH(host string) (string, bool) {
+	// Reject a leading-dash host so ssh cannot parse it as a flag (e.g. -F/path).
+	if strings.HasPrefix(host, "-") {
+		return "", false
+	}
 	if _, err := exec.LookPath("ssh"); err != nil {
 		return "", false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "ssh", "-G", host)
-	winproc.Harden(cmd)
-	out, err := cmd.Output()
+	shellenv.ConfigureShellCommand(cmd)
+	out, err := shellenv.OutputShellCommand(cmd)
 	if err != nil {
 		return "", false
 	}
