@@ -879,6 +879,22 @@ func TestUpdaterMaybeNotifyAndCheck(t *testing.T) {
 	if spawned {
 		t.Fatal("update command should not spawn background refresh")
 	}
+
+	// Version queries are informational health checks: they must stay
+	// side-effect-free even with a stale cache and a newer version available
+	// (never print a notice, never spawn a background refresh) so callers can
+	// probe `--version` without turning it into an execution engine (#401).
+	for _, versionArgs := range [][]string{{"--version"}, {"-v"}} {
+		stderr.Reset()
+		spawned = false
+		u.maybeNotifyAndCheck(versionArgs)
+		if stderr.Len() != 0 {
+			t.Fatalf("%v should not notify, got %q", versionArgs, stderr.String())
+		}
+		if spawned {
+			t.Fatalf("%v should not spawn background refresh", versionArgs)
+		}
+	}
 }
 
 func TestUpdaterCheckLatestBetaUsesReleasesList(t *testing.T) {
