@@ -419,6 +419,7 @@ intent:
 // defaultBinary maps agent names to their default binary names.
 var defaultBinary = map[types.AgentName]string{
 	types.AgentClaude:   "claude",
+	types.AgentGemini:   "gemini",
 	types.AgentCodex:    "codex",
 	types.AgentRovoDev:  "acli",
 	types.AgentOpenCode: "opencode",
@@ -429,6 +430,7 @@ var defaultBinary = map[types.AgentName]string{
 // nativeAgentProbeOrder is the priority order for auto-detecting native agents.
 var nativeAgentProbeOrder = []types.AgentName{
 	types.AgentClaude,
+	types.AgentGemini,
 	types.AgentCodex,
 	types.AgentOpenCode,
 	types.AgentRovoDev,
@@ -775,6 +777,7 @@ func (c *Config) AgentArgsFor(name types.AgentName) []string {
 // agent_args_override.
 var agentArgsOverrideAgents = map[string]bool{
 	string(types.AgentClaude):   true,
+	string(types.AgentGemini):   true,
 	string(types.AgentCodex):    true,
 	string(types.AgentRovoDev):  true,
 	string(types.AgentOpenCode): true,
@@ -840,7 +843,7 @@ var reservedAgentArgs = map[string]map[string]bool{
 func validateAgentArgsOverride(override map[string][]string) error {
 	for name, args := range override {
 		if !agentArgsOverrideAgents[name] {
-			return fmt.Errorf("invalid agent name in agent_args_override: %q (valid: claude, codex, rovodev, opencode, pi, copilot)", name)
+			return fmt.Errorf("invalid agent name in agent_args_override: %q (valid: claude, gemini, codex, rovodev, opencode, pi, copilot)", name)
 		}
 		reserved := reservedAgentArgs[name]
 		for i, arg := range args {

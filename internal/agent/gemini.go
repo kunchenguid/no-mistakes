@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,7 +14,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
 
-// geminiAgent spawns the gemini CLI for each invocation.
 type geminiAgent struct {
 	bin       string
 	extraArgs []string
@@ -21,8 +21,20 @@ type geminiAgent struct {
 
 func (a *geminiAgent) Name() string { return "gemini" }
 
+const geminiMaxRetries = 3
+
+func geminiRetryClassifier(err error) (string, bool) {
+	if errors.Is(err, errNoStructuredOutput) {
+		return "missing structured output", true
+	}
+	if strings.Contains(err.Error(), "JSON output missing required field") || strings.Contains(err.Error(), "schema validation") {
+		return "schema validation failed", true
+	}
+	return classifyTransient(err)
+}
+
 func (a *geminiAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
-	return runWithRetry(ctx, "gemini", opts, claudeMaxRetries, claudeRetryClassifier, nil, func() (*Result, error) {
+	return runWithRetry(ctx, "gemini", opts, geminiMaxRetries, geminiRetryClassifier, nil, func() (*Result, error) {
 		return a.runOnce(ctx, opts)
 	})
 }
@@ -52,8 +64,8 @@ func (a *geminiAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 	}()
 
 	var usage TokenUsage
-	var result *claudeResult
-	if err := parseClaudeEvents(ctx, started.stdout, opts.OnChunk, &usage, &result); err != nil {
+	var result *geminiResult
+	if err := parseGeminiEvents(ctx, started.stdout, opts.OnChunk, &usage, &result); err != nil {
 		err = started.waitAfterParseError(err)
 		stderrWG.Wait()
 		retErr := fmt.Errorf("gemini parse events: %w", err)
@@ -75,12 +87,7 @@ func (a *geminiAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 		return nil, retErr
 	}
 
-	res, err := finalizeClaudeResult(result, opts.JSONSchema, usage)
-	if errors.Is(err, errNoStructuredOutput) && opts.OnChunk != nil {
-		opts.OnChunk(fmt.Sprintf("structured output missing: subtype=%s, text_len=%d, input_tokens=%d, output_tokens=%d",
-			result.Subtype, len(result.text), usage.InputTokens, usage.OutputTokens))
-		opts.OnChunk(fmt.Sprintf("raw result event: %s", string(result.rawEvent)))
-	}
+	res, err := finalizeGeminiResult(result, opts.JSONSchema, usage)
 	emitAgentExited(opts, "gemini", pid, err)
 	return res, err
 }
@@ -88,21 +95,20 @@ func (a *geminiAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 func (a *geminiAgent) Close() error { return nil }
 
 func (a *geminiAgent) buildArgs(prompt string, schema json.RawMessage) []string {
+	if len(schema) > 0 {
+		prompt = prompt + "\n\nCRITICAL: You must output your final answer as a single structured JSON block. Wrap your JSON in standard markdown fences (```json ... ```) so it can be extracted. It must strictly match this schema:\n```json\n" + string(schema) + "\n```\nPAY ATTENTION TO REQUIRED FIELDS: Use 'description' (not 'message') inside findings. Include 'risk_level' and 'risk_rationale' at the root. DO NOT OMIT REQUIRED FIELDS."
+	}
 	args := make([]string, 0, len(a.extraArgs)+10)
 	args = append(args, a.extraArgs...)
 	args = append(args,
 		"-p", prompt,
-		"--verbose",
 		"--output-format", "stream-json",
 	)
-	if len(schema) > 0 {
-		args = append(args, "--json-schema", string(schema))
-	}
 	if !geminiUserSetModel(a.extraArgs) {
-		args = append(args, "--model", "gemini-3.1-pro")
+		args = append(args, "--model", "gemini-3.1-pro-preview")
 	}
 	if !geminiUserSetPermissionMode(a.extraArgs) {
-		args = append(args, "--dangerously-skip-permissions")
+		args = append(args, "-y", "--no-sandbox")
 	}
 	return args
 }
@@ -118,11 +124,76 @@ func geminiUserSetModel(extraArgs []string) bool {
 
 func geminiUserSetPermissionMode(extraArgs []string) bool {
 	for _, arg := range extraArgs {
-		if arg == "--dangerously-skip-permissions" ||
-			arg == "--permission-mode" ||
-			strings.HasPrefix(arg, "--permission-mode=") {
+		if arg == "-y" || arg == "--yolo" || arg == "--no-sandbox" {
 			return true
 		}
 	}
 	return false
+}
+
+type geminiEvent struct {
+	Type    string `json:"type"`
+	Role    string `json:"role,omitempty"`
+	Content string `json:"content,omitempty"`
+	Status  string `json:"status,omitempty"`
+	Stats   struct {
+		InputTokens  int `json:"input_tokens"`
+		OutputTokens int `json:"output_tokens"`
+	} `json:"stats,omitempty"`
+}
+
+type geminiResult struct {
+	Status string
+	Text   string
+}
+
+func parseGeminiEvents(ctx context.Context, r io.Reader, onChunk func(string), usage *TokenUsage, result **geminiResult) error {
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 64*1024), claudeScannerMaxTokenSize)
+	var textBuf string
+
+	for scanner.Scan() {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+
+		var event geminiEvent
+		if err := json.Unmarshal(line, &event); err != nil {
+			continue
+		}
+
+		switch event.Type {
+		case "message":
+			if event.Role == "assistant" && event.Content != "" {
+				textBuf += event.Content
+				if onChunk != nil {
+					onChunk(event.Content)
+				}
+			}
+		case "result":
+			if result != nil {
+				*result = &geminiResult{
+					Status: event.Status,
+					Text:   textBuf,
+				}
+				usage.InputTokens = event.Stats.InputTokens
+				usage.OutputTokens = event.Stats.OutputTokens
+			}
+		}
+	}
+	return scanner.Err()
+}
+
+func finalizeGeminiResult(result *geminiResult, schema json.RawMessage, usage TokenUsage) (*Result, error) {
+	if result.Status != "success" {
+		return nil, fmt.Errorf("gemini error: status=%s", result.Status)
+	}
+	return finalizeTextResult("gemini", result.Text, schema, usage)
 }

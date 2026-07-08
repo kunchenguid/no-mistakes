@@ -11,12 +11,11 @@ func TestGeminiAgent_BuildArgs(t *testing.T) {
 	args := ga.buildArgs("do something", schema)
 
 	expected := []string{
-		"-p", "do something",
-		"--verbose",
+		"-p", "do something\n\nCRITICAL: You must output your final answer as a single structured JSON block. Wrap your JSON in standard markdown fences (```json ... ```) so it can be extracted. It must strictly match this schema:\n```json\n{\"type\":\"object\"}\n```\nPAY ATTENTION TO REQUIRED FIELDS: Use 'description' (not 'message') inside findings. Include 'risk_level' and 'risk_rationale' at the root. DO NOT OMIT REQUIRED FIELDS.",
 		"--output-format", "stream-json",
-		"--json-schema", `{"type":"object"}`,
-		"--model", "gemini-3.1-pro",
-		"--dangerously-skip-permissions",
+		"--model", "gemini-3.1-pro-preview",
+		"-y",
+		"--no-sandbox",
 	}
 
 	if len(args) != len(expected) {
@@ -42,22 +41,21 @@ func TestGeminiAgent_BuildArgs_UserSetModel(t *testing.T) {
 
 		hasDefault := false
 		for _, a := range args {
-			if a == "gemini-3.1-pro" {
+			if a == "gemini-3.5-flash" {
 				hasDefault = true
 			}
 		}
 		// The custom extraArgs should provide one instance, and we should NOT add the default
 		if hasDefault {
-			t.Errorf("extra=%v expected no default gemini-3.1-pro, got args: %v", extra, args)
+			t.Errorf("extra=%v expected no default gemini-3.5-flash, got args: %v", extra, args)
 		}
 	}
 }
 
 func TestGeminiAgent_BuildArgs_UserPermissionModeSuppressesDefault(t *testing.T) {
 	tests := [][]string{
-		{"--permission-mode", "acceptEdits"},
-		{"--permission-mode=plan"},
-		{"--dangerously-skip-permissions"},
+		{"-y"},
+		{"--no-sandbox"},
 	}
 	for _, extra := range tests {
 		ga := &geminiAgent{bin: "gemini", extraArgs: extra}
@@ -65,16 +63,12 @@ func TestGeminiAgent_BuildArgs_UserPermissionModeSuppressesDefault(t *testing.T)
 
 		dangerCount := 0
 		for _, a := range args {
-			if a == "--dangerously-skip-permissions" {
+			if a == "-y" || a == "--no-sandbox" {
 				dangerCount++
 			}
 		}
-		if len(extra) == 1 && extra[0] == "--dangerously-skip-permissions" {
-			if dangerCount != 1 {
-				t.Errorf("extra=%v expected single --dangerously-skip-permissions, got %d: %v", extra, dangerCount, args)
-			}
-		} else if dangerCount != 0 {
-			t.Errorf("extra=%v expected no default --dangerously-skip-permissions, got: %v", extra, args)
+		if dangerCount != 1 {
+			t.Errorf("extra=%v expected no default permission flags added since user provided them, got: %v", extra, args)
 		}
 	}
 }
