@@ -68,6 +68,8 @@ no-mistakes daemon stop
 no-mistakes daemon start
 ```
 
+If the socket file exists but nothing answers at all (a dead socket left behind by an unclean exit, e.g. a crash or `SIGKILL`), commands that ensure the daemon is running (`no-mistakes`, `init`, `attach`, `rerun`, `axi run`, `axi respond`) now fail fast with a `connect to daemon socket` error instead of silently starting a replacement daemon. Run `no-mistakes daemon start` directly to recover - it self-heals past a dead socket and starts a fresh daemon.
+
 ### Managed service logs
 
 - **macOS (launchd):** `launchctl list | grep no-mistakes` and check `~/Library/LaunchAgents/com.kunchenguid.no-mistakes.daemon.*.plist`
