@@ -107,10 +107,10 @@ intent:
   slack_days: 3
   disabled_readers: []
 
-# Test evidence defaults to temporary local storage.
+# Test evidence defaults to committed in-repo storage.
 test:
   evidence:
-    store_in_repo: false
+    store_in_repo: true
     dir: .no-mistakes/evidence
 ```
 
@@ -155,7 +155,7 @@ auto_fix:
 intent:
   enabled: true
 
-# Opt in when evidence artifacts should be committed and linked from the PR.
+# Override only when this repo needs a different in-repo evidence directory.
 test:
   evidence:
     store_in_repo: true
@@ -185,7 +185,7 @@ See [Repo Config Reference](/no-mistakes/reference/repo-config/) for the full fi
 The practical implication is simple: explicit commands give you deterministic
 baseline behavior, while leaving commands empty asks the agent to fill in the gap.
 For tests, available user intent can also trigger an evidence-oriented agent follow-up after the baseline command succeeds.
-By default, evidence stays in a temporary local directory; opt into `test.evidence.store_in_repo` when your team wants evidence artifacts committed, pushed, and linked directly from PRs.
+By default, evidence is committed, pushed, and linked directly from PRs under `test.evidence.dir`. Set `test.evidence.store_in_repo: false` only when local-only evidence paths are acceptable.
 For lint, that gap includes safe formatter and linter fixes during the initial lint pass.
 
 ## Ignore pattern rules

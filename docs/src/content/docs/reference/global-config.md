@@ -51,7 +51,7 @@ intent:
 
 test:
   evidence:
-    store_in_repo: false
+    store_in_repo: true
     dir: .no-mistakes/evidence
 ```
 
@@ -283,7 +283,7 @@ Otherwise, accepted candidates are ranked by confidence, which combines the raw 
 ### test.evidence
 
 Test-step evidence storage settings.
-By default, evidence artifacts stay in a temporary directory keyed by run ID and are referenced by local path.
+By default, evidence artifacts are written inside the worktree so screenshots, recordings, and other reviewer-visible files are committed, pushed, and linked from the PR.
 
 | | |
 |---|---|
@@ -291,12 +291,12 @@ By default, evidence artifacts stay in a temporary directory keyed by run ID and
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `test.evidence.store_in_repo` | `bool` | `false` | Commit and push test evidence artifacts from inside the repo worktree |
+| `test.evidence.store_in_repo` | `bool` | `true` | Commit and push test evidence artifacts from inside the repo worktree |
 | `test.evidence.dir` | `string` | `.no-mistakes/evidence` | Repo-relative parent directory used when `store_in_repo` is true |
 
 When `store_in_repo` is true, the test step writes evidence under `<dir>/<branch-slug>` and the push step stages files from that directory before committing agent changes.
 Branch slashes become nested directories, unsafe branch characters are replaced, and an empty branch slug falls back to the run ID.
-If `dir` is absolute, escapes the worktree, points into `.git`, crosses a symlink, or is ignored by Git, no-mistakes falls back to temporary evidence storage for that run.
+If `store_in_repo` is false, or if `dir` is absolute, escapes the worktree, points into `.git`, crosses a symlink, or is ignored by Git, no-mistakes falls back to temporary evidence storage for that run.
 
 These are global defaults. Per-repo config can override either field.
 

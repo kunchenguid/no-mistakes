@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 func TestTestStep_FixMode(t *testing.T) {
@@ -163,6 +165,7 @@ func TestTestStep_UserIntentRunsConfiguredCommandThenEvidenceAgent(t *testing.T)
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Test: testCmd})
 	sctx.UserIntent = "Show users a success screen after checkout"
+	sctx.Config.Test.Evidence = config.Evidence{StoreInRepo: true, Dir: ".no-mistakes/evidence"}
 
 	step := &TestStep{}
 	outcome, err := step.Execute(sctx)
@@ -197,8 +200,10 @@ func TestTestStep_UserIntentRunsConfiguredCommandThenEvidenceAgent(t *testing.T)
 		"For UI, HTML, CSS, Electron renderer, browser, visual layout, or copy-placement changes, attempt to capture reviewer-visible visual evidence",
 		"DOM snapshots, selector assertions, and text-only render summaries are not substitutes for visual evidence when a rendered surface is available",
 		"If a UI-facing change has no screenshot, image, video, GIF, or rendered HTML artifact, state why in testing_summary",
-		"Write new evidence files into this temporary evidence directory:",
-		filepath.Join(os.TempDir(), "no-mistakes-evidence", sctx.Run.ID),
+		"Write new evidence files into this in-repo evidence directory; it is committed and pushed automatically, so artifacts render directly on the PR:",
+		filepath.Join(dir, ".no-mistakes", "evidence", "refs", "heads", "feature"),
+		"Screenshots, images, GIFs, and videos must be reviewer-visible",
+		"A temp/local-only visual artifact will block the test step",
 		"Do not move, commit, or modify source files only to make evidence linkable",
 		"If no existing test produces sufficient evidence, write or improve a test",
 		"If automated testing cannot produce the needed evidence, execute manual verification steps",
@@ -210,11 +215,11 @@ func TestTestStep_UserIntentRunsConfiguredCommandThenEvidenceAgent(t *testing.T)
 			t.Fatalf("expected prompt to contain %q, got:\n%s", want, prompt)
 		}
 	}
-	if strings.Contains(prompt, "will be available from the pushed commit") || strings.Contains(prompt, "files that already exist in the repository") {
+	if strings.Contains(prompt, "Write new evidence files into this temporary evidence directory:") || strings.Contains(prompt, "files that already exist in the repository") {
 		t.Fatalf("expected prompt not to make the testing agent worry about committed evidence files, got:\n%s", prompt)
 	}
-	if _, err := os.Stat(filepath.Join(os.TempDir(), "no-mistakes-evidence", sctx.Run.ID)); err != nil {
-		t.Fatalf("expected temporary evidence directory to exist: %v", err)
+	if _, err := os.Stat(filepath.Join(dir, ".no-mistakes", "evidence", "refs", "heads", "feature")); err != nil {
+		t.Fatalf("expected in-repo evidence directory to exist: %v", err)
 	}
 
 	var findings Findings
@@ -224,6 +229,99 @@ func TestTestStep_UserIntentRunsConfiguredCommandThenEvidenceAgent(t *testing.T)
 	t.Logf("evidence findings JSON: %s", outcome.Findings)
 	if len(findings.Tested) != 2 || findings.Tested[0] != testCmd || findings.Tested[1] != "manual screenshot review" {
 		t.Fatalf("expected baseline command and agent-tested evidence to be recorded, got %+v", findings.Tested)
+	}
+}
+
+func TestTestStep_LocalVisualArtifactNeedsApproval(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	localPath := filepath.Join(os.TempDir(), "no-mistakes-evidence", "run-1", "checkout.png")
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: json.RawMessage(fmt.Sprintf(`{"findings":[],"summary":"","tested":["manual checkout"],"testing_summary":"captured checkout screenshot","artifacts":[{"kind":"screenshot","label":"Checkout screenshot","path":%q}]}`, localPath))}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.UserIntent = "Show users a success screen after checkout"
+	sctx.Config.Test.Evidence = config.Evidence{StoreInRepo: false, Dir: ".no-mistakes/evidence"}
+
+	step := &TestStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("expected approval when a visual artifact only has a local file path")
+	}
+
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, item := range findings.Items {
+		if item.ID == "test-artifact-1" {
+			found = true
+			if item.Action != types.ActionAskUser {
+				t.Fatalf("visual artifact finding action = %q, want %q", item.Action, types.ActionAskUser)
+			}
+			if !strings.Contains(item.Description, "repository path") || !strings.Contains(item.Description, "local file path") {
+				t.Fatalf("visual artifact finding should explain reviewer-visible evidence, got %q", item.Description)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected visual artifact warning, got %+v", findings.Items)
+	}
+}
+
+func TestTestStep_RepoVisualArtifactDoesNotNeedApproval(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"","tested":["manual checkout"],"testing_summary":"captured checkout screenshot","artifacts":[{"kind":"screenshot","label":"Checkout screenshot","path":".no-mistakes/evidence/refs/heads/feature/checkout.png"}]}`)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.UserIntent = "Show users a success screen after checkout"
+	sctx.Config.Test.Evidence = config.Evidence{StoreInRepo: true, Dir: ".no-mistakes/evidence"}
+
+	step := &TestStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatalf("expected repo visual artifact to pass without approval, got findings %s", outcome.Findings)
+	}
+}
+
+func TestTestStep_PublicURLVisualArtifactDoesNotNeedApproval(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"","tested":["manual checkout"],"testing_summary":"captured checkout screenshot","artifacts":[{"kind":"screenshot","label":"Checkout screenshot","url":"https://example.com/checkout.png"}]}`)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.UserIntent = "Show users a success screen after checkout"
+	sctx.Config.Test.Evidence = config.Evidence{StoreInRepo: false, Dir: ".no-mistakes/evidence"}
+
+	step := &TestStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatalf("expected public URL visual artifact to pass without approval, got findings %s", outcome.Findings)
 	}
 }
 

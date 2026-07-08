@@ -8,8 +8,8 @@ import (
 
 func TestTestEvidenceDefaults(t *testing.T) {
 	got := testDefaults()
-	if got.Evidence.StoreInRepo {
-		t.Error("default StoreInRepo should be false (opt-in)")
+	if !got.Evidence.StoreInRepo {
+		t.Error("default StoreInRepo should be true")
 	}
 	if got.Evidence.Dir != ".no-mistakes/evidence" {
 		t.Errorf("default Dir = %q, want .no-mistakes/evidence", got.Evidence.Dir)
@@ -28,6 +28,17 @@ func TestTestEvidenceMerge_GlobalEnable(t *testing.T) {
 	// Default dir preserved when not overridden.
 	if cfg.Test.Evidence.Dir != ".no-mistakes/evidence" {
 		t.Errorf("dir = %q, want default", cfg.Test.Evidence.Dir)
+	}
+}
+
+func TestTestEvidenceMerge_GlobalDisable(t *testing.T) {
+	disabled := false
+	global := &GlobalConfig{Test: TestRaw{Evidence: EvidenceRaw{StoreInRepo: &disabled}}}
+	repo := &RepoConfig{}
+
+	cfg := Merge(global, repo)
+	if cfg.Test.Evidence.StoreInRepo {
+		t.Error("global disable should override default")
 	}
 }
 

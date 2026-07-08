@@ -180,10 +180,11 @@ type Test struct {
 	Evidence Evidence
 }
 
-// Evidence is the resolved test-evidence config. When StoreInRepo is true, the
-// test step writes evidence artifacts into Dir (relative to the repo worktree)
-// so they are committed, pushed, and viewable directly on the PR. Otherwise
-// evidence stays in a temporary directory referenced only by local path.
+// Evidence is the resolved test-evidence config. StoreInRepo defaults true so
+// reviewer-visible artifacts such as screenshots land in Dir (relative to the
+// repo worktree), then are committed, pushed, and viewable directly on the PR.
+// If StoreInRepo is explicitly disabled, evidence stays in a temporary
+// directory referenced only by local path.
 type Evidence struct {
 	StoreInRepo bool
 	Dir         string
@@ -320,14 +321,14 @@ intent:
   # disabled_readers: [codex]
 
 # Test-step evidence artifacts (screenshots, recordings, logs the test step
-# gathers to demonstrate the change works). By default they are kept in a
-# temporary directory and referenced by local path. Opt in to store_in_repo to
-# commit them into the repo under a readable, branch-named directory so they are
-# pushed and render directly on the PR.
-# test:
-#   evidence:
-#     store_in_repo: true
-#     dir: .no-mistakes/evidence
+# gathers to demonstrate the change works). By default they are committed into
+# the repo under a readable, branch-named directory so they are pushed and
+# render directly on the PR. Set store_in_repo: false only when local-only
+# evidence paths are acceptable for the repository.
+test:
+  evidence:
+    store_in_repo: true
+    dir: .no-mistakes/evidence
 `
 
 // defaultBinary maps agent names to their default binary names.
@@ -874,11 +875,12 @@ func applyIntentOverrides(dst *Intent, src *IntentRaw) {
 }
 
 // testDefaults returns the default test-step settings. Evidence storage is
-// opt-in (off by default); when enabled it lands under .no-mistakes/evidence.
+// in-repo by default so screenshots and other reviewer-visible artifacts render
+// on PRs instead of leaking local temp paths.
 func testDefaults() Test {
 	return Test{
 		Evidence: Evidence{
-			StoreInRepo: false,
+			StoreInRepo: true,
 			Dir:         ".no-mistakes/evidence",
 		},
 	}

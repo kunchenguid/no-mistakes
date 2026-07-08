@@ -8,11 +8,11 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/config"
 )
 
-func TestResolveTestEvidenceDir_DefaultUsesTempRunID(t *testing.T) {
+func TestResolveTestEvidenceDir_DisabledUsesTempRunID(t *testing.T) {
 	got := resolveTestEvidenceDir("/work/tree", "feature/foo", "run-123", config.Evidence{StoreInRepo: false, Dir: ".no-mistakes/evidence"})
 	want := filepath.Join(os.TempDir(), "no-mistakes-evidence", "run-123")
 	if got != want {
-		t.Errorf("default dir = %q, want %q", got, want)
+		t.Errorf("disabled in-repo dir = %q, want %q", got, want)
 	}
 }
 

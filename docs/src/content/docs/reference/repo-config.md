@@ -185,10 +185,10 @@ Fields not set here inherit from global config and then the built-in defaults.
 
 | Field | Type | Default |
 |---|---|---|
-| `test.evidence.store_in_repo` | `bool` | Inherits from global (default `false`) |
+| `test.evidence.store_in_repo` | `bool` | Inherits from global (default `true`) |
 | `test.evidence.dir` | `string` | Inherits from global (default `.no-mistakes/evidence`) |
 
-By default, test evidence stays in a temporary directory keyed by run ID and is referenced by local path.
-Set `store_in_repo: true` to write evidence under `<dir>/<branch-slug>` inside the worktree so push can commit and publish it with the branch.
+By default, test evidence is written under `<dir>/<branch-slug>` inside the worktree so push can commit and publish it with the branch.
+Set `store_in_repo: false` only for repos where local-only evidence paths are acceptable.
 Branch slashes become nested directories, unsafe branch characters are replaced, and an empty branch slug falls back to the run ID.
-If `dir` is absolute, escapes the worktree, points into `.git`, crosses a symlink, or is ignored by Git, no-mistakes falls back to temporary evidence storage for that run.
+If `store_in_repo` is false, or if `dir` is absolute, escapes the worktree, points into `.git`, crosses a symlink, or is ignored by Git, no-mistakes falls back to temporary evidence storage for that run.

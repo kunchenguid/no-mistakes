@@ -18,13 +18,11 @@ func testEvidenceDir(runID string) string {
 
 // resolveTestEvidenceDir picks where the test step writes evidence artifacts.
 //
-// By default (opt-out), evidence lives in a temporary directory keyed by run ID
-// and is referenced only by local path. When the user opts in to storing
-// evidence in the repo, it instead lands under a readable, branch-named
-// directory inside the worktree so it is committed, pushed, and rendered
-// directly on the PR. An absolute or escaping configured directory is rejected
-// and falls back to the temporary location so evidence can never be written
-// outside the worktree.
+// By default, evidence lands under a readable, branch-named directory inside
+// the worktree so it is committed, pushed, and rendered directly on the PR.
+// When in-repo evidence is disabled, or the configured directory is absolute,
+// escapes the worktree, or crosses a symlink, evidence falls back to a temporary
+// run directory referenced only by local path.
 func resolveTestEvidenceDir(workDir, branch, runID string, ev config.Evidence) string {
 	location := resolveTestEvidenceLocation(workDir, branch, runID, ev)
 	return location.Dir

@@ -77,7 +77,7 @@ var testFindingsSchema = json.RawMessage(`{
 				"properties": {
 					"kind": {"type": "string", "description": "artifact type such as screenshot, gif, image, video, log, command-output, or other"},
 					"label": {"type": "string"},
-					"path": {"type": "string", "description": "artifact file path, including absolute paths for temporary local evidence files when available"},
+					"path": {"type": "string", "description": "artifact file path; screenshots/images/videos should use a repository path that will be pushed, while temporary absolute paths are only suitable for local text evidence"},
 					"url": {"type": "string", "description": "artifact URL when available"},
 					"content": {"type": "string", "description": "short log, command output, or textual artifact content to show inline"}
 				},

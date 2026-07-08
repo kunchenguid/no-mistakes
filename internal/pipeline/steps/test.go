@@ -28,6 +28,44 @@ func gitIgnoresPath(ctx context.Context, workDir, target string) bool {
 	return err == nil
 }
 
+func addLocalVisualArtifactFindings(findings *Findings, workDir string) {
+	for i, artifact := range findings.Artifacts {
+		if !isReviewerVisibleVisualArtifact(artifact) || artifactHasReviewerVisibleLocation(artifact, workDir) {
+			continue
+		}
+		label := sanitizePromptText(artifact.Label)
+		if label == "" {
+			label = fmt.Sprintf("artifact %d", i+1)
+		}
+		findings.Items = append(findings.Items, Finding{
+			ID:          fmt.Sprintf("test-artifact-%d", i+1),
+			Severity:    "warning",
+			Description: fmt.Sprintf("Visual evidence artifact %q is not reviewer-visible. Screenshots, images, GIFs, and videos must use a repository path that will be pushed or an externally visible URL; otherwise the PR only shows a local file path.", label),
+			Action:      types.ActionAskUser,
+		})
+	}
+}
+
+func isReviewerVisibleVisualArtifact(artifact types.TestArtifact) bool {
+	kind := strings.ToLower(sanitizePromptText(artifact.Kind))
+	target := strings.TrimSpace(artifact.Path)
+	if target == "" {
+		target = strings.TrimSpace(artifact.URL)
+	}
+	return isImageArtifact(kind, target) || isVideoArtifact(kind, target)
+}
+
+func artifactHasReviewerVisibleLocation(artifact types.TestArtifact, workDir string) bool {
+	if sanitizeArtifactURL(artifact.URL) != "" {
+		return true
+	}
+	cleanPath := sanitizeArtifactPath(artifact.Path, testingSummaryOptions{repoRoot: workDir})
+	if cleanPath == "" {
+		return false
+	}
+	return repoRelativeArtifactPath(cleanPath, testingSummaryOptions{repoRoot: workDir}) != ""
+}
+
 func (s *TestStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	ctx := sctx.Ctx
 	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
@@ -159,7 +197,8 @@ Task:
 - DOM snapshots, selector assertions, and text-only render summaries are not substitutes for visual evidence when a rendered surface is available.
 - If a UI-facing change has no screenshot, image, video, GIF, or rendered HTML artifact, state why in testing_summary.
 %s
-- Do not move, commit, or modify source files only to make evidence linkable. Record local evidence file paths exactly where you created them.
+- Screenshots, images, GIFs, and videos must be reviewer-visible: record a repository path that will be pushed or an externally visible URL. A temp/local-only visual artifact will block the test step.
+- Do not move, commit, or modify source files only to make evidence linkable. Leave evidence artifacts in the dedicated evidence directory and record their paths exactly where you created them.
 - Only use command output as an artifact when that output directly demonstrates the end-user experience or requested behavior. Generic pass/fail, coverage, or clean-worktree output is not sufficient evidence.
 - Look for existing tests that would generate sufficient evidence. If they exist, run the smallest relevant set.
 - If no existing test produces sufficient evidence, write or improve a test so that it does.
@@ -207,6 +246,7 @@ Rules:
 		if len(tested) > 0 {
 			findings.Tested = append(append([]string{}, tested...), findings.Tested...)
 		}
+		addLocalVisualArtifactFindings(&findings, sctx.WorkDir)
 
 		needsApproval := hasBlockingFindings(findings.Items)
 		autoFixable := needsApproval
