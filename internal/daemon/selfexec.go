@@ -407,7 +407,7 @@ func daemonIsRunningViaIPC(p *paths.Paths) (bool, error) {
 	defer client.Close()
 
 	var result ipc.HealthResult
-	if err := client.CallWithTimeout(ipc.MethodHealth, &ipc.HealthParams{}, &result, 250*time.Millisecond); err != nil {
+	if err := client.CallWithTimeout(ipc.MethodHealth, &ipc.HealthParams{}, &result, ipc.DefaultDialTimeout); err != nil {
 		return false, err
 	}
 	return result.Status == "ok", nil

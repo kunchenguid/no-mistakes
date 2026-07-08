@@ -70,7 +70,9 @@ type Client struct {
 }
 
 const (
-	defaultDialTimeout = 250 * time.Millisecond
+	// DefaultDialTimeout is the read deadline used for the daemon health check
+	// dial made by callers outside this package (see internal/daemon/selfexec.go).
+	DefaultDialTimeout = 250 * time.Millisecond
 	defaultCallTimeout = 30 * time.Second
 )
 
