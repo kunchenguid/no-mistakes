@@ -17,7 +17,11 @@ import (
 // working directory and environment. When the host cannot be constructed
 // (unknown provider, missing Bitbucket config, etc) it returns nil and a
 // human-readable skip reason suitable for logging.
-func buildHost(sctx *pipeline.StepContext, provider scm.Provider) (scm.Host, string) {
+//
+// upstreamURL is the repo's upstream remote with any SSH host alias already
+// resolved to its real host (see scm.CanonicalRemoteURL), so gh/glab receive
+// the canonical host for their --hostname/--repo scoping (issue #290).
+func buildHost(sctx *pipeline.StepContext, provider scm.Provider, upstreamURL string) (scm.Host, string) {
 	cmdFactory := func(_ context.Context, name string, args ...string) *exec.Cmd {
 		return stepCmd(sctx, name, args...)
 	}
@@ -30,8 +34,8 @@ func buildHost(sctx *pipeline.StepContext, provider scm.Provider) (scm.Host, str
 		// the upstream remote URL is unavailable. The hostname also scopes
 		// the auth-status check so a stale token on any other configured gh
 		// host cannot make this repo look unauthenticated.
-		host := scm.ExtractHost(sctx.Repo.UpstreamURL)
-		repo := github.HostPrefixedSlug(sctx.Repo.UpstreamURL)
+		host := scm.ExtractHost(upstreamURL)
+		repo := github.HostPrefixedSlug(upstreamURL)
 		if repo == "" && sctx.Run.PRURL != nil {
 			repo = github.HostPrefixedSlug(*sctx.Run.PRURL)
 			if host == "" {
@@ -55,8 +59,8 @@ func buildHost(sctx *pipeline.StepContext, provider scm.Provider) (scm.Host, str
 		return gitlab.New(
 			cmdFactory,
 			func() bool { return stepCLIAvailable(sctx, provider) },
-			scm.ExtractHost(sctx.Repo.UpstreamURL),
-			gitlab.ProjectPath(sctx.Repo.UpstreamURL),
+			scm.ExtractHost(upstreamURL),
+			gitlab.ProjectPath(upstreamURL),
 		), ""
 	case scm.ProviderBitbucket:
 		if sctx.Repo.ForkURL != "" {
@@ -69,7 +73,7 @@ func buildHost(sctx *pipeline.StepContext, provider scm.Provider) (scm.Host, str
 		if err != nil {
 			return nil, err.Error()
 		}
-		repo, err := resolveBitbucketRepoRef(sctx.Repo.UpstreamURL, sctx.Run.PRURL)
+		repo, err := resolveBitbucketRepoRef(upstreamURL, sctx.Run.PRURL)
 		if err != nil {
 			return nil, err.Error()
 		}
@@ -82,7 +86,7 @@ func buildHost(sctx *pipeline.StepContext, provider scm.Provider) (scm.Host, str
 			// end to end.
 			return nil, "fork PR routing for Azure DevOps is not implemented"
 		}
-		org, project, repo, ok := azuredevops.ParseRemote(sctx.Repo.UpstreamURL)
+		org, project, repo, ok := azuredevops.ParseRemote(upstreamURL)
 		if !ok && sctx.Run.PRURL != nil {
 			org, project, repo, ok = azuredevops.ParseRemote(*sctx.Run.PRURL)
 		}

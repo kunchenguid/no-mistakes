@@ -22,7 +22,51 @@ const (
 )
 
 func DetectProvider(url string) Provider {
-	lower := strings.ToLower(url)
+	if p := providerFromMarker(url); p != ProviderUnknown {
+		return p
+	}
+
+	// Fallback for self-hosted GitLab instances whose hostname carries no
+	// "gitlab" marker: consult the glab CLI's configured hosts. If the remote's
+	// host (or a host's api_host) is one glab is configured to talk to, treat it
+	// as GitLab. This reads whatever the user configured at runtime; no host is
+	// hardcoded.
+	//
+	// Fallback for GitHub Enterprise Server instances: consult the gh CLI's
+	// configured hosts (hosts.yml). If the remote's host is one gh is
+	// authenticated with, treat it as GitHub.
+	host := ExtractHost(url)
+	if host == "" {
+		return ProviderUnknown
+	}
+	if p := providerFromKnownHost(host); p != ProviderUnknown {
+		return p
+	}
+
+	// Fallback for SSH host aliases (a `Host github-work` block in ~/.ssh/config
+	// that maps to a real HostName). The push step works because git resolves
+	// the alias itself, but the literal host ("github-work") matches no marker,
+	// so pr/ci would silently skip (issue #290). Resolve the alias to its real
+	// host and re-classify. Only attempted for ssh/scp remotes, and fail-closed:
+	// an unresolved alias leaves detection unchanged.
+	if remoteUsesSSH(url) {
+		if resolved := ResolveHostAlias(host); !strings.EqualFold(resolved, host) {
+			if p := providerFromMarker(resolved); p != ProviderUnknown {
+				return p
+			}
+			if p := providerFromKnownHost(resolved); p != ProviderUnknown {
+				return p
+			}
+		}
+	}
+
+	return ProviderUnknown
+}
+
+// providerFromMarker classifies a remote URL or host by well-known hostname
+// markers. It returns ProviderUnknown when no marker matches.
+func providerFromMarker(s string) Provider {
+	lower := strings.ToLower(s)
 	switch {
 	case strings.Contains(lower, "github.com"):
 		return ProviderGitHub
@@ -35,25 +79,20 @@ func DetectProvider(url string) Provider {
 		// the legacy vs-ssh.visualstudio.com SSH host.
 		return ProviderAzureDevOps
 	}
+	return ProviderUnknown
+}
 
-	// Fallback for self-hosted GitLab instances whose hostname carries no
-	// "gitlab" marker: consult the glab CLI's configured hosts. If the remote's
-	// host (or a host's api_host) is one glab is configured to talk to, treat it
-	// as GitLab. This reads whatever the user configured at runtime; no host is
-	// hardcoded.
-	//
-	// Fallback for GitHub Enterprise Server instances: consult the gh CLI's
-	// configured hosts (hosts.yml). If the remote's host is one gh is
-	// authenticated with, treat it as GitHub.
-	if host := ExtractHost(url); host != "" {
-		if glabKnowsHost(host) {
-			return ProviderGitLab
-		}
-		if ghKnowsHost(host) {
-			return ProviderGitHub
-		}
+// providerFromKnownHost classifies a bare host by consulting the provider CLIs'
+// configured hosts (glab, then gh), for self-hosted GitLab / GitHub Enterprise
+// instances whose hostname carries no marker. It returns ProviderUnknown when
+// neither CLI recognizes the host.
+func providerFromKnownHost(host string) Provider {
+	if glabKnowsHost(host) {
+		return ProviderGitLab
 	}
-
+	if ghKnowsHost(host) {
+		return ProviderGitHub
+	}
 	return ProviderUnknown
 }
 
