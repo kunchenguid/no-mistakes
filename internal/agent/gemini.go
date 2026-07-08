@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -24,8 +23,8 @@ func (a *geminiAgent) Name() string { return "gemini" }
 const geminiMaxRetries = 3
 
 func geminiRetryClassifier(err error) (string, bool) {
-	if errors.Is(err, errNoStructuredOutput) {
-		return "missing structured output", true
+	if strings.Contains(err.Error(), "429") || strings.Contains(strings.ToLower(err.Error()), "quota exceeded") {
+		return "quota exceeded", true
 	}
 	if strings.Contains(err.Error(), "JSON output missing required field") || strings.Contains(err.Error(), "schema validation") {
 		return "schema validation failed", true
@@ -96,7 +95,7 @@ func (a *geminiAgent) Close() error { return nil }
 
 func (a *geminiAgent) buildArgs(prompt string, schema json.RawMessage) []string {
 	if len(schema) > 0 {
-		prompt = prompt + "\n\nCRITICAL: You must output your final answer as a single structured JSON block. Wrap your JSON in standard markdown fences (```json ... ```) so it can be extracted. It must strictly match this schema:\n```json\n" + string(schema) + "\n```\nPAY ATTENTION TO REQUIRED FIELDS: Use 'description' (not 'message') inside findings. Include 'risk_level' and 'risk_rationale' at the root. DO NOT OMIT REQUIRED FIELDS."
+		prompt = prompt + "\n\nCRITICAL: You must output your final answer as a single structured JSON block. Wrap your JSON in standard markdown fences (```json ... ```) so it can be extracted. It must strictly match this schema:\n```json\n" + string(schema) + "\n```"
 	}
 	args := make([]string, 0, len(a.extraArgs)+10)
 	args = append(args, a.extraArgs...)
@@ -166,6 +165,10 @@ func parseGeminiEvents(ctx context.Context, r io.Reader, onChunk func(string), u
 
 		var event geminiEvent
 		if err := json.Unmarshal(line, &event); err != nil {
+			textBuf += string(line) + "\n"
+			if onChunk != nil {
+				onChunk(string(line) + "\n")
+			}
 			continue
 		}
 
@@ -188,7 +191,14 @@ func parseGeminiEvents(ctx context.Context, r io.Reader, onChunk func(string), u
 			}
 		}
 	}
-	return scanner.Err()
+	err := scanner.Err()
+	if err == nil && result != nil && *result == nil && textBuf != "" {
+		*result = &geminiResult{
+			Status: "success",
+			Text:   textBuf,
+		}
+	}
+	return err
 }
 
 func finalizeGeminiResult(result *geminiResult, schema json.RawMessage, usage TokenUsage) (*Result, error) {

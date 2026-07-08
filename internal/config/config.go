@@ -789,6 +789,11 @@ var agentArgsOverrideAgents = map[string]bool{
 // users cannot override through agent_args_override. A flag is matched by its
 // bare form (e.g. "--color") as well as the "--color=value" form.
 var reservedAgentArgs = map[string]map[string]bool{
+	string(types.AgentGemini): {
+		"-p":              true,
+		"--output-format": true,
+	},
+
 	string(types.AgentClaude): {
 		"-p":              true,
 		"--print":         true,

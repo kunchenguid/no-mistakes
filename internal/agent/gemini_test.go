@@ -11,7 +11,7 @@ func TestGeminiAgent_BuildArgs(t *testing.T) {
 	args := ga.buildArgs("do something", schema)
 
 	expected := []string{
-		"-p", "do something\n\nCRITICAL: You must output your final answer as a single structured JSON block. Wrap your JSON in standard markdown fences (```json ... ```) so it can be extracted. It must strictly match this schema:\n```json\n{\"type\":\"object\"}\n```\nPAY ATTENTION TO REQUIRED FIELDS: Use 'description' (not 'message') inside findings. Include 'risk_level' and 'risk_rationale' at the root. DO NOT OMIT REQUIRED FIELDS.",
+		"-p", "do something\n\nCRITICAL: You must output your final answer as a single structured JSON block. Wrap your JSON in standard markdown fences (```json ... ```) so it can be extracted. It must strictly match this schema:\n```json\n{\"type\":\"object\"}\n```",
 		"--output-format", "stream-json",
 		"--model", "gemini-3.1-pro-preview",
 		"-y",
@@ -41,13 +41,13 @@ func TestGeminiAgent_BuildArgs_UserSetModel(t *testing.T) {
 
 		hasDefault := false
 		for _, a := range args {
-			if a == "gemini-3.5-flash" {
+			if a == "gemini-3.1-pro-preview" {
 				hasDefault = true
 			}
 		}
 		// The custom extraArgs should provide one instance, and we should NOT add the default
 		if hasDefault {
-			t.Errorf("extra=%v expected no default gemini-3.5-flash, got args: %v", extra, args)
+			t.Errorf("extra=%v expected no default gemini-3.1-pro-preview, got args: %v", extra, args)
 		}
 	}
 }
