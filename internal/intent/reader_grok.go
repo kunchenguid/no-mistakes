@@ -363,6 +363,10 @@ func unwrapGrokUserQuery(text string) string {
 }
 
 // grokToolPathsFromUpdates scans updates.jsonl for tool_call rawInput paths.
+// Paths are extracted with the shared extractToolPaths helper used by the
+// other transcript readers; Grok stores tool calls in a sidecar file rather
+// than in the assistant message body, so Load attaches them to the last
+// assistant turn (coarse file-overlap scoring only).
 func grokToolPathsFromUpdates(path string) []string {
 	f, err := os.Open(path)
 	if err != nil {
@@ -392,13 +396,7 @@ func grokToolPathsFromUpdates(path string) []string {
 		if ev.Params.Update.SessionUpdate != "tool_call" || ev.Params.Update.RawInput == nil {
 			continue
 		}
-		// Grok tools use snake_case path keys (file_path, target_directory, ...).
 		paths = append(paths, extractToolPaths(ev.Params.Update.RawInput)...)
-		for _, key := range []string{"target_directory", "target_file", "path", "file"} {
-			if s, ok := ev.Params.Update.RawInput[key].(string); ok && s != "" {
-				paths = append(paths, s)
-			}
-		}
 	}
 	return uniqueStrings(paths)
 }

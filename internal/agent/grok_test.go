@@ -172,7 +172,7 @@ func TestParseGrokStreamingEvents_CapturesError(t *testing.T) {
 
 func TestParseGrokJSONResult(t *testing.T) {
 	raw := `{"text":"{\"ok\":true}","stopReason":"EndTurn","sessionId":"s1","requestId":"r1"}`
-	text, grokErr, err := parseGrokJSONResult([]byte(raw))
+	text, structured, grokErr, err := parseGrokJSONResult([]byte(raw))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -182,22 +182,28 @@ func TestParseGrokJSONResult(t *testing.T) {
 	if text != `{"ok":true}` {
 		t.Errorf("text = %q", text)
 	}
+	if structured != nil {
+		t.Errorf("structured = %s, want nil", structured)
+	}
 }
 
-func TestParseGrokJSONResult_PrefersStructuredOutput(t *testing.T) {
+func TestParseGrokJSONResult_StructuredOutputSeparateFromText(t *testing.T) {
 	// Real grok --json-schema payloads include both prose/empty text and a
-	// native structuredOutput object. Prefer the constrained object.
+	// native structuredOutput object (Claude-shaped: field is separate).
 	raw := `{"text":"Here is the result.","stopReason":"EndTurn","structuredOutput":{"ok":true,"summary":"clean"},"sessionId":"s1"}`
-	text, grokErr, err := parseGrokJSONResult([]byte(raw))
+	text, structured, grokErr, err := parseGrokJSONResult([]byte(raw))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if grokErr != "" {
 		t.Fatalf("grokErr = %q", grokErr)
 	}
+	if text != "Here is the result." {
+		t.Errorf("text = %q, want prose preserved", text)
+	}
 	var got map[string]any
-	if err := json.Unmarshal([]byte(text), &got); err != nil {
-		t.Fatalf("preferred text is not JSON: %q (%v)", text, err)
+	if err := json.Unmarshal(structured, &got); err != nil {
+		t.Fatalf("structured is not JSON: %q (%v)", structured, err)
 	}
 	if got["ok"] != true {
 		t.Errorf("ok = %v, want true", got["ok"])
@@ -207,52 +213,74 @@ func TestParseGrokJSONResult_PrefersStructuredOutput(t *testing.T) {
 	}
 }
 
-func TestParseGrokJSONResult_StructuredOutputWhenTextEmpty(t *testing.T) {
-	raw := `{"text":"","stopReason":"EndTurn","structuredOutput":{"findings":[],"summary":"no issues"}}`
-	text, grokErr, err := parseGrokJSONResult([]byte(raw))
+func TestFinalizeGrokResult_PrefersStructuredOutput(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","properties":{"ok":{"type":"boolean"},"summary":{"type":"string"}},"required":["ok","summary"]}`)
+	res, err := finalizeGrokResult(
+		"Here is the result.",
+		json.RawMessage(`{"ok":true,"summary":"clean"}`),
+		schema,
+		TokenUsage{},
+	)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("finalize: %v", err)
 	}
-	if grokErr != "" {
-		t.Fatalf("grokErr = %q", grokErr)
+	var got map[string]any
+	if err := json.Unmarshal(res.Output, &got); err != nil {
+		t.Fatalf("Output: %v", err)
 	}
-	var got struct {
-		Findings []any  `json:"findings"`
-		Summary  string `json:"summary"`
+	if got["ok"] != true || got["summary"] != "clean" {
+		t.Errorf("Output = %s", res.Output)
 	}
-	if err := json.Unmarshal([]byte(text), &got); err != nil {
-		t.Fatalf("unmarshal %q: %v", text, err)
-	}
-	if got.Summary != "no issues" {
-		t.Errorf("summary = %q, want no issues", got.Summary)
-	}
-	if got.Findings == nil {
-		t.Error("findings should be present (empty array)")
+	if res.Text != "Here is the result." {
+		t.Errorf("Text = %q, want prose preserved like Claude", res.Text)
 	}
 }
 
-func TestParseGrokJSONResult_FallsBackToTextWhenStructuredNull(t *testing.T) {
-	raw := `{"text":"{\"ok\":true}","stopReason":"EndTurn","structuredOutput":null}`
-	text, grokErr, err := parseGrokJSONResult([]byte(raw))
+func TestFinalizeGrokResult_StructuredOutputWhenTextEmpty(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","properties":{"findings":{"type":"array"},"summary":{"type":"string"}},"required":["findings","summary"]}`)
+	res, err := finalizeGrokResult(
+		"",
+		json.RawMessage(`{"findings":[],"summary":"no issues"}`),
+		schema,
+		TokenUsage{},
+	)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("finalize: %v", err)
 	}
-	if grokErr != "" {
-		t.Fatalf("grokErr = %q", grokErr)
+	if !strings.Contains(string(res.Output), "no issues") {
+		t.Errorf("Output = %s", res.Output)
 	}
-	if text != `{"ok":true}` {
-		t.Errorf("text = %q, want text fallback", text)
+	if res.Text == "" {
+		t.Error("Text should fall back to structured JSON when envelope text is empty")
+	}
+}
+
+func TestFinalizeGrokResult_FallsBackToTextWhenStructuredNull(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}`)
+	res, err := finalizeGrokResult(`{"ok":true}`, nil, schema, TokenUsage{})
+	if err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(res.Output, &got); err != nil {
+		t.Fatalf("Output: %v", err)
+	}
+	if got["ok"] != true {
+		t.Errorf("Output = %s", res.Output)
 	}
 }
 
 func TestParseGrokJSONResult_ErrorObject(t *testing.T) {
 	raw := `{"type":"error","message":"Couldn't start session: boom"}`
-	text, grokErr, err := parseGrokJSONResult([]byte(raw))
+	text, structured, grokErr, err := parseGrokJSONResult([]byte(raw))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if text != "" {
 		t.Errorf("text = %q, want empty", text)
+	}
+	if structured != nil {
+		t.Errorf("structured = %s, want nil", structured)
 	}
 	if grokErr != "Couldn't start session: boom" {
 		t.Errorf("grokErr = %q", grokErr)
@@ -262,11 +290,15 @@ func TestParseGrokJSONResult_ErrorObject(t *testing.T) {
 func TestParseGrokJSONStdout_Success(t *testing.T) {
 	raw := `{"text":"{\"ok\":true}","stopReason":"EndTurn"}`
 	var text, grokErr string
-	if err := parseGrokJSONStdout(context.Background(), strings.NewReader(raw), &text, &grokErr); err != nil {
+	var structured json.RawMessage
+	if err := parseGrokJSONStdout(context.Background(), strings.NewReader(raw), &text, &structured, &grokErr); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if text != `{"ok":true}` {
 		t.Errorf("text = %q", text)
+	}
+	if structured != nil {
+		t.Errorf("structured = %s, want nil", structured)
 	}
 	if grokErr != "" {
 		t.Errorf("grokErr = %q", grokErr)
@@ -280,7 +312,8 @@ func TestParseGrokJSONStdout_CancelAfterRead(t *testing.T) {
 	errCh := make(chan error, 1)
 	go func() {
 		var text, grokErr string
-		errCh <- parseGrokJSONStdout(ctx, pr, &text, &grokErr)
+		var structured json.RawMessage
+		errCh <- parseGrokJSONStdout(ctx, pr, &text, &structured, &grokErr)
 	}()
 
 	cancel()

@@ -14,11 +14,18 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
 
+// grokScannerMaxTokenSize matches the buffer used by other JSONL native
+// agents (codex/pi) for large single-line events.
+const grokScannerMaxTokenSize = 256 * 1024 * 1024
+
 // grokAgent spawns the Grok CLI for each invocation. Headless mode uses
 // `grok -p <prompt>` with either streaming-json events or --json-schema
-// (which implies --output-format json). Schema-mode results prefer a non-empty
-// structuredOutput field over text. Lifecycle is codex/pi-shaped: one process
-// per Run, no managed server.
+// (which implies --output-format json). Lifecycle is codex/pi-shaped: one
+// process per Run, no managed server.
+//
+// Schema mode follows the same shape as Claude's native structured field:
+// prefer non-empty structuredOutput as Result.Output, otherwise fall back
+// to text + finalizeTextResult like the other text-parsed agents.
 type grokAgent struct {
 	bin       string
 	extraArgs []string
@@ -60,10 +67,11 @@ func (a *grokAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) 
 
 	var usage TokenUsage
 	var text string
+	var structured json.RawMessage
 	var grokErr string
 	var parseErr error
 	if len(opts.JSONSchema) > 0 {
-		parseErr = parseGrokJSONStdout(ctx, started.stdout, &text, &grokErr)
+		parseErr = parseGrokJSONStdout(ctx, started.stdout, &text, &structured, &grokErr)
 	} else {
 		parseErr = parseGrokStreamingEvents(ctx, started.stdout, opts.OnChunk, &usage, &text, &grokErr)
 	}
@@ -95,9 +103,28 @@ func (a *grokAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) 
 		return nil, retErr
 	}
 
-	res, err := finalizeTextResult("grok", text, opts.JSONSchema, usage)
+	res, err := finalizeGrokResult(text, structured, opts.JSONSchema, usage)
 	emitAgentExited(opts, "grok", pid, err)
 	return res, err
+}
+
+// finalizeGrokResult mirrors Claude's native structured-output path when
+// structuredOutput is present, otherwise falls back to the shared
+// finalizeTextResult used by codex/pi/copilot/acpx.
+func finalizeGrokResult(text string, structured json.RawMessage, schema json.RawMessage, usage TokenUsage) (*Result, error) {
+	structured = bytes.TrimSpace(structured)
+	hasStructured := len(structured) > 0 && !bytes.Equal(structured, []byte("null"))
+	if len(schema) > 0 && hasStructured {
+		if err := validateStructuredOutput(structured, schema); err != nil {
+			return nil, fmt.Errorf("grok structured output: %w", err)
+		}
+		outText := text
+		if outText == "" {
+			outText = string(structured)
+		}
+		return &Result{Output: structured, Text: outText, Usage: usage}, nil
+	}
+	return finalizeTextResult("grok", text, schema, usage)
 }
 
 func grokErrorDetail(grokErr, stderr string) string {
@@ -169,7 +196,7 @@ func parseGrokStreamingEvents(
 ) error {
 	_ = usage // Grok headless streaming events do not currently carry token usage.
 	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 64*1024), claudeScannerMaxTokenSize)
+	scanner.Buffer(make([]byte, 0, 64*1024), grokScannerMaxTokenSize)
 
 	var b strings.Builder
 	for scanner.Scan() {
@@ -215,7 +242,7 @@ func parseGrokStreamingEvents(
 
 // parseGrokJSONStdout reads the single JSON object emitted by
 // --output-format json (also implied by --json-schema).
-func parseGrokJSONStdout(ctx context.Context, r io.Reader, text, grokErr *string) error {
+func parseGrokJSONStdout(ctx context.Context, r io.Reader, text *string, structured *json.RawMessage, grokErr *string) error {
 	raw, readErr := io.ReadAll(r)
 	if err := ctx.Err(); err != nil {
 		return err
@@ -224,12 +251,15 @@ func parseGrokJSONStdout(ctx context.Context, r io.Reader, text, grokErr *string
 		return readErr
 	}
 
-	parsedText, parsedErr, err := parseGrokJSONResult(raw)
+	parsedText, parsedStructured, parsedErr, err := parseGrokJSONResult(raw)
 	if err != nil {
 		return err
 	}
 	if text != nil {
 		*text = parsedText
+	}
+	if structured != nil {
+		*structured = parsedStructured
 	}
 	if grokErr != nil {
 		*grokErr = parsedErr
@@ -240,12 +270,12 @@ func parseGrokJSONStdout(ctx context.Context, r io.Reader, text, grokErr *string
 // parseGrokJSONResult decodes a headless --output-format json payload.
 // Success: {"text":"...","stopReason":"..."} and, with --json-schema,
 // optionally {"structuredOutput":{...}}. Failure: {"type":"error","message":"..."}.
-// Prefer non-empty structuredOutput (native constrained JSON) over text so
-// schema-mode does not fail when text is empty or prose.
-func parseGrokJSONResult(raw []byte) (text, grokErr string, err error) {
-	trimmed := bytesTrimSpace(raw)
+// text is always the envelope's text field; structuredOutput is returned
+// separately so finalizeGrokResult can mirror Claude's native field path.
+func parseGrokJSONResult(raw []byte) (text string, structured json.RawMessage, grokErr string, err error) {
+	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 {
-		return "", "", nil
+		return "", nil, "", nil
 	}
 
 	var envelope struct {
@@ -256,19 +286,15 @@ func parseGrokJSONResult(raw []byte) (text, grokErr string, err error) {
 		StructuredOutput json.RawMessage `json:"structuredOutput"`
 	}
 	if err := json.Unmarshal(trimmed, &envelope); err != nil {
-		return "", "", fmt.Errorf("decode json result: %w", err)
+		return "", nil, "", fmt.Errorf("decode json result: %w", err)
 	}
-	structured := bytesTrimSpace(envelope.StructuredOutput)
+	structured = bytes.TrimSpace(envelope.StructuredOutput)
 	hasStructured := len(structured) > 0 && !bytes.Equal(structured, []byte("null"))
+	if !hasStructured {
+		structured = nil
+	}
 	if envelope.Type == "error" || (envelope.Message != "" && envelope.Text == "" && !hasStructured && envelope.StopReason == "") {
-		return "", firstNonEmpty(envelope.Message, "unknown error"), nil
+		return "", nil, firstNonEmpty(envelope.Message, "unknown error"), nil
 	}
-	if hasStructured {
-		return string(structured), "", nil
-	}
-	return envelope.Text, "", nil
-}
-
-func bytesTrimSpace(b []byte) []byte {
-	return bytes.TrimSpace(b)
+	return envelope.Text, structured, "", nil
 }

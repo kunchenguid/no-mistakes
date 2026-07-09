@@ -322,9 +322,14 @@ func parseClaudeAssistantMessage(raw json.RawMessage) (string, []string) {
 // extractToolPaths pulls plausible file paths from tool input fields.
 // Agent tools use several key names for path-like values; cover the common
 // variants here so transcript readers can share the same extraction logic.
+// Includes both snake_case and camelCase (Claude/Pi) plus Grok-style
+// target_file/target_directory keys used by many coding-agent tool schemas.
 func extractToolPaths(input map[string]any) []string {
 	var out []string
-	for _, key := range []string{"file_path", "filePath", "path", "notebook_path"} {
+	for _, key := range []string{
+		"file_path", "filePath", "path", "file",
+		"notebook_path", "target_file", "target_directory",
+	} {
 		if s, ok := input[key].(string); ok && s != "" {
 			out = append(out, s)
 		}

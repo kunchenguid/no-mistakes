@@ -280,7 +280,7 @@ Spawns a `grok` subprocess for each invocation with `-p <prompt>`.
 When structured output is requested, no-mistakes passes `--json-schema` (which implies `--output-format json`); otherwise it uses `--output-format streaming-json` and streams `text` events to the TUI.
 By default it also adds `--always-approve`, unless you already set your own Grok approval flag through `agent_args_override` (`--always-approve`, `--yolo`, or `--permission-mode`).
 Any `agent_args_override.grok` flags are inserted before no-mistakes' managed flags, so user choices such as `-m` or `--effort` take effect.
-When the JSON result includes a non-empty `structuredOutput` field (native constrained JSON from `--json-schema`), no-mistakes uses that in preference to `text`, so schema mode still succeeds when `text` is empty or prose.
+When the JSON result includes a non-empty `structuredOutput` field (native constrained JSON from `--json-schema`), no-mistakes treats it the same way Claude's `structured_output` is treated: it becomes the structured result directly (after schema validation), preserving any prose `text` separately.
 Otherwise it falls back to the `text` field and validates the payload against the requested schema with the same JSON fence and bare-object fallback used by other text-parsed agents.
 
 ## ACP via acpx
