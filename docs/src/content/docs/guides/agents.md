@@ -45,6 +45,7 @@ By default that directory is temporary and local to the machine; repos can opt i
 | OpenCode | `opencode` | Persistent HTTP server, SSE streaming |
 | Pi | `pi` | Subprocess per invocation, JSONL events |
 | Copilot | `copilot` | Subprocess per invocation, JSONL events |
+| Grok | `grok` | Subprocess per invocation, streaming-json / JSON schema |
 | ACP target | `acpx` | Optional user-installed ACP bridge |
 
 ## Runner requirements
@@ -136,7 +137,7 @@ Use bare `/no-mistakes` to validate existing committed work.
 Use `/no-mistakes <task>` to have the agent first do the task, commit only that task's changes on a feature branch, then run the pipeline with the task text as `--intent`.
 In both modes, it resolves low-risk findings on its own and stops to relay anything that needs your decision.
 
-`no-mistakes init` installs that skill at user level: `~/.claude/skills/no-mistakes/SKILL.md` for Claude Code and `~/.agents/skills/no-mistakes/SKILL.md` for Codex, OpenCode, Rovo Dev, and Pi.
+`no-mistakes init` installs that skill at user level: `~/.claude/skills/no-mistakes/SKILL.md` for Claude Code, `~/.agents/skills/no-mistakes/SKILL.md` for Codex, OpenCode, Rovo Dev, and Pi, and `~/.grok/skills/no-mistakes/SKILL.md` for Grok.
 One install makes the skill available to every supported agent in every repo, without committing tool-generated files to any repo.
 If your home directory consolidates `.claude` and `.agents` with symlinks, `init` follows the links and keeps the skill reachable from both logical paths.
 Re-run `no-mistakes init` after an upgrade to refresh that skill, including overwriting stale `SKILL.md` content from an older binary.

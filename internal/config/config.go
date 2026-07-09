@@ -295,7 +295,7 @@ const defaultConfigYAML = `# no-mistakes global configuration
 
 # Agent to use for code generation. This may also be an ordered fallback list,
 # for example: agent: [codex, claude]
-# Options: auto, claude, codex, rovodev, opencode, pi, copilot, acp:<target>
+# Options: auto, claude, codex, rovodev, opencode, pi, copilot, grok, acp:<target>
 # "auto" detects the first available native agent on your system
 # Use acp:<target> to run an optional user-installed acpx target, for example acp:gemini
 agent: auto
@@ -363,7 +363,7 @@ auto_fix:
 
 # User-intent extraction. When you push a branch, no-mistakes can read recent
 # transcripts from your local agent (Claude Code, Codex, OpenCode, Rovo Dev, Pi,
-# Copilot CLI), pick the session that produced the change, summarize the user
+# Copilot CLI, Grok), pick the session that produced the change, summarize the user
 # intent, and feed it to review, test, document, lint, and PR agents so they
 # understand what you were trying to do - not just the diff.
 intent:
@@ -391,6 +391,7 @@ var defaultBinary = map[types.AgentName]string{
 	types.AgentOpenCode: "opencode",
 	types.AgentPi:       "pi",
 	types.AgentCopilot:  "copilot",
+	types.AgentGrok:     "grok",
 }
 
 // agentProbeOrder is the priority order for auto-detecting agents.
@@ -401,6 +402,7 @@ var agentProbeOrder = []types.AgentName{
 	types.AgentRovoDev,
 	types.AgentPi,
 	types.AgentCopilot,
+	types.AgentGrok,
 }
 
 func isACPAgent(name types.AgentName) bool {
@@ -568,7 +570,7 @@ func (c *Config) resolveConfiguredAgent(ctx context.Context, name types.AgentNam
 		return resolved, err == nil, "auto", err
 	}
 	if _, ok := defaultBinary[name]; !ok && !isACPAgent(name) {
-		return "", false, string(name), fmt.Errorf("unknown agent %q; valid options: auto, claude, codex, rovodev, opencode, pi, copilot, acp:<target> (set 'agent' in ~/.no-mistakes/config.yaml)", name)
+		return "", false, string(name), fmt.Errorf("unknown agent %q; valid options: auto, claude, codex, rovodev, opencode, pi, copilot, grok, acp:<target> (set 'agent' in ~/.no-mistakes/config.yaml)", name)
 	}
 	bin := c.AgentPathFor(name)
 	resolvedBin, err := lookPath(bin)
@@ -637,6 +639,7 @@ var agentArgsOverrideAgents = map[string]bool{
 	string(types.AgentOpenCode): true,
 	string(types.AgentPi):       true,
 	string(types.AgentCopilot):  true,
+	string(types.AgentGrok):     true,
 }
 
 // reservedAgentArgs lists flags that no-mistakes manages internally and that
@@ -689,6 +692,12 @@ var reservedAgentArgs = map[string]map[string]bool{
 		"--output-format": true,
 		"--no-color":      true,
 	},
+	string(types.AgentGrok): {
+		"-p":              true,
+		"--single":        true,
+		"--output-format": true,
+		"--json-schema":   true,
+	},
 }
 
 // validateAgentArgsOverride ensures each agent key is a known agent name and
@@ -697,7 +706,7 @@ var reservedAgentArgs = map[string]map[string]bool{
 func validateAgentArgsOverride(override map[string][]string) error {
 	for name, args := range override {
 		if !agentArgsOverrideAgents[name] {
-			return fmt.Errorf("invalid agent name in agent_args_override: %q (valid: claude, codex, rovodev, opencode, pi, copilot)", name)
+			return fmt.Errorf("invalid agent name in agent_args_override: %q (valid: claude, codex, rovodev, opencode, pi, copilot, grok)", name)
 		}
 		reserved := reservedAgentArgs[name]
 		for i, arg := range args {

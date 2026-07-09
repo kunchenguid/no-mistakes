@@ -80,6 +80,7 @@ func TestInstallWritesBothPaths(t *testing.T) {
 	wantRel := []string{
 		filepath.Join(".claude", "skills", Name, "SKILL.md"),
 		filepath.Join(".agents", "skills", Name, "SKILL.md"),
+		filepath.Join(".grok", "skills", Name, "SKILL.md"),
 	}
 	if len(written) != len(wantRel) {
 		t.Fatalf("written = %v, want %v", written, wantRel)
@@ -281,6 +282,7 @@ func TestVendored(t *testing.T) {
 		want := []string{
 			filepath.Join(".claude", "skills", Name, "SKILL.md"),
 			filepath.Join(".agents", "skills", Name, "SKILL.md"),
+			filepath.Join(".grok", "skills", Name, "SKILL.md"),
 		}
 		got := Vendored(root)
 		if len(got) != len(want) {
