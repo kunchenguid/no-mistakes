@@ -309,26 +309,20 @@ func TestFinalizeGrokResult_AllowsNullOptionalFieldsInStructuredOutput(t *testin
 	}
 }
 
-func TestFinalizeGrokResult_FallsBackToTextWhenStructuredInvalid(t *testing.T) {
-	// Mismatched structuredOutput must not hard-fail when envelope text
-	// carries recoverable schema-valid JSON (finalizeTextResult path).
+func TestFinalizeGrokResult_InvalidStructuredWithTextReturnsValidationError(t *testing.T) {
+	// Claude-shaped: when structuredOutput is present and fails validation,
+	// do not succeed with freeform envelope text as Result.Output.
 	structured := json.RawMessage(`{"wrong":true}`)
 	text := `{"ok":true,"summary":"from text"}`
 	schema := json.RawMessage(`{"type":"object","properties":{"ok":{"type":"boolean"},"summary":{"type":"string"}},"required":["ok","summary"]}`)
 
-	res, err := finalizeGrokResult(text, structured, schema, TokenUsage{})
-	if err != nil {
-		t.Fatalf("finalize: %v", err)
+	_, err := finalizeGrokResult(text, structured, schema, TokenUsage{})
+	if err == nil {
+		t.Fatal("expected validation error, got nil")
 	}
-	var got map[string]any
-	if err := json.Unmarshal(res.Output, &got); err != nil {
-		t.Fatalf("Output: %v", err)
-	}
-	if got["ok"] != true || got["summary"] != "from text" {
-		t.Errorf("Output = %s, want text-path parse", res.Output)
-	}
-	if res.Text != text {
-		t.Errorf("Text = %q, want envelope text", res.Text)
+	msg := err.Error()
+	if !strings.Contains(msg, "structured output") && !strings.Contains(msg, "JSON output") {
+		t.Fatalf("error = %v, want structured validation detail", err)
 	}
 }
 
