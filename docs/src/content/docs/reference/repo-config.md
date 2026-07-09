@@ -191,7 +191,8 @@ Fields not set here inherit from global config and then the built-in defaults.
 | `test.evidence.dir` | `string` | Inherits from global (default `.no-mistakes/evidence`) |
 
 By default, visual evidence in the temporary evidence directory is uploaded to secret GitHub gists for GitHub PRs, with local path rendering as the fallback if upload is disabled or fails.
-Use `no-mistakes evidence prune --run <id>` or `--pr <number>` for deliberate post-merge cleanup; deleted gists make existing PR screenshots and evidence links 404.
+The CI monitor automatically deletes those gists when it sees the PR merge or close; deleted gists make existing PR screenshots and evidence links 404.
+Use `no-mistakes evidence prune --run <id>` or `--pr <number>` as a manual fallback for older runs, failed automatic cleanup, or monitors that are no longer running.
 Set `store_in_repo: true` to write evidence under `<dir>/<branch-slug>` inside the worktree so push can commit and publish it with the branch.
 Branch slashes become nested directories, unsafe branch characters are replaced, and an empty branch slug falls back to the run ID.
 If `dir` is absolute, escapes the worktree, points into `.git`, crosses a symlink, or is ignored by Git, no-mistakes falls back to temporary evidence storage for that run.

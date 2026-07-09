@@ -296,7 +296,9 @@ By default, visual evidence artifacts in the temporary evidence directory are up
 | `test.evidence.store_in_repo` | `bool` | `false` | Commit and push test evidence artifacts from inside the repo worktree |
 | `test.evidence.dir` | `string` | `.no-mistakes/evidence` | Repo-relative parent directory used when `store_in_repo` is true |
 
-When gist upload fails or is disabled, no-mistakes falls back to local file references. Delete uploaded evidence gists explicitly with `no-mistakes evidence prune --run <id>` or `--pr <number>`; pruning makes existing PR embeds and links 404.
+When gist upload fails or is disabled, no-mistakes falls back to local file references.
+The CI monitor automatically deletes uploaded evidence gists when it sees the PR merge or close; deleted gists make existing PR embeds and links 404.
+Use `no-mistakes evidence prune --run <id>` or `--pr <number>` as a manual fallback for older runs, failed automatic cleanup, or monitors that are no longer running.
 
 When `store_in_repo` is true, the test step writes evidence under `<dir>/<branch-slug>` and the push step stages files from that directory before committing agent changes.
 Branch slashes become nested directories, unsafe branch characters are replaced, and an empty branch slug falls back to the run ID.

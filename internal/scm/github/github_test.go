@@ -356,7 +356,7 @@ func TestCreateSecretGistUsesGhAndReturnsRawURLs(t *testing.T) {
 	t.Parallel()
 
 	host := New(githubTestCmdFactory(map[string]githubTestResponse{
-		"gh gist create --secret /tmp/one.png /tmp/two.webm": {
+		"gh gist create /tmp/one.png /tmp/two.webm": {
 			stdout: "https://gist.github.com/user/abc123\n",
 		},
 		"gh api gists/abc123": {

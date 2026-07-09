@@ -270,6 +270,41 @@ func TestCIStep_PRMergedExitsEarly(t *testing.T) {
 	}
 }
 
+func TestCIStep_PRMergedPrunesEvidenceGists(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	env := fakeCIGH(t, "MERGED", "[]")
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 10 * time.Second
+	if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, prURL); err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.AddRunEvidenceGistIDs(sctx.Run.ID, []string{"gist123"}); err != nil {
+		t.Fatal(err)
+	}
+
+	outcome, err := (&CIStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Error("expected no approval needed for merged PR")
+	}
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(run.EvidenceGistIDs) != 0 {
+		t.Fatalf("EvidenceGistIDs = %+v, want cleared", run.EvidenceGistIDs)
+	}
+}
+
 func TestCIStep_PRClosedExitsEarly(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
@@ -304,6 +339,105 @@ func TestCIStep_PRClosedExitsEarly(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected 'closed' in logs, got: %v", logs)
+	}
+}
+
+func TestCIStep_PRClosedPrunesEvidenceGists(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	env := fakeCIGH(t, "CLOSED", "[]")
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 10 * time.Second
+	if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, prURL); err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.AddRunEvidenceGistIDs(sctx.Run.ID, []string{"gist123"}); err != nil {
+		t.Fatal(err)
+	}
+
+	outcome, err := (&CIStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Error("expected no approval needed for closed PR")
+	}
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(run.EvidenceGistIDs) != 0 {
+		t.Fatalf("EvidenceGistIDs = %+v, want cleared", run.EvidenceGistIDs)
+	}
+}
+
+func TestCIStep_EvidenceGistDeleteFailureWarnsAndPreservesIDs(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	binDir := fakeCLIBinDir(t)
+	linkTestBinary(t, binDir, "gh")
+	logFile := filepath.Join(t.TempDir(), "gh.log")
+	env := fakeCLIEnv(binDir, map[string]string{
+		"FAKE_CLI_MODE":             "ci-gh",
+		"FAKE_CLI_STATE":            "MERGED",
+		"FAKE_CLI_CHECKS":           "[]",
+		"FAKE_CLI_LOG":              logFile,
+		"FAKE_CLI_GIST_DELETE_FAIL": "1",
+	})
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 10 * time.Second
+	if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, prURL); err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.AddRunEvidenceGistIDs(sctx.Run.ID, []string{"gist123"}); err != nil {
+		t.Fatal(err)
+	}
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	outcome, err := (&CIStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Error("expected no approval needed when gist cleanup fails")
+	}
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(run.EvidenceGistIDs) != 1 || run.EvidenceGistIDs[0] != "gist123" {
+		t.Fatalf("EvidenceGistIDs = %+v, want preserved [gist123]", run.EvidenceGistIDs)
+	}
+	logData, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(logData), "gist delete gist123 --yes"); got != evidenceGistDeleteAttempts {
+		t.Fatalf("gist delete attempts = %d, want %d; log:\n%s", got, evidenceGistDeleteAttempts, logData)
+	}
+	foundWarning := false
+	for _, l := range logs {
+		if strings.Contains(l, "warning: could not delete evidence gist gist123") {
+			foundWarning = true
+			break
+		}
+	}
+	if !foundWarning {
+		t.Fatalf("expected cleanup warning in logs, got: %v", logs)
 	}
 }
 

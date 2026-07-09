@@ -674,8 +674,11 @@ func TestPRStep_UploadsLocalVisualEvidenceToSecretGist(t *testing.T) {
 		t.Fatal(err)
 	}
 	ghLog := string(logData)
-	if !strings.Contains(ghLog, "gist create --secret") {
+	if !strings.Contains(ghLog, "gist create") {
 		t.Fatalf("expected gist create, got:\n%s", ghLog)
+	}
+	if strings.Contains(ghLog, "--secret") || strings.Contains(ghLog, "--public") {
+		t.Fatalf("gist create should rely on gh default secret visibility, got:\n%s", ghLog)
 	}
 	if !strings.Contains(ghLog, "![Checkout screenshot](https://gist.githubusercontent.com/tester/gist123/raw/01-Checkout-screenshot.png)") {
 		t.Fatalf("expected PR body to embed gist raw image, got:\n%s", ghLog)

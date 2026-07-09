@@ -18,8 +18,8 @@ type Run struct {
 	Status  types.RunStatus
 	PRURL   *string
 	// EvidenceGistIDs records secret GitHub gist IDs created to host visual
-	// evidence for this run's PR body. Deleting these gists makes existing PR
-	// embeds 404, so cleanup is explicit.
+	// evidence for this run's PR body. The CI monitor prunes them after the PR
+	// is merged or closed; deleting these gists makes existing PR embeds 404.
 	EvidenceGistIDs []string
 	Error           *string
 	// AwaitingAgentSince is the unix-seconds timestamp at which the run parked
@@ -202,7 +202,24 @@ func (d *DB) AddRunEvidenceGistIDs(id string, gistIDs []string) error {
 	return nil
 }
 
-// ClearRunEvidenceGistIDs clears recorded evidence gist IDs after explicit cleanup.
+// SetRunEvidenceGistIDs replaces the recorded evidence gist IDs for a run.
+func (d *DB) SetRunEvidenceGistIDs(id string, gistIDs []string) error {
+	clean := uniqueGistIDs(gistIDs)
+	if len(clean) == 0 {
+		return d.ClearRunEvidenceGistIDs(id)
+	}
+	data, err := json.Marshal(clean)
+	if err != nil {
+		return fmt.Errorf("marshal evidence gist ids: %w", err)
+	}
+	_, err = d.sql.Exec(`UPDATE runs SET evidence_gist_ids = ?, updated_at = ? WHERE id = ?`, string(data), now(), id)
+	if err != nil {
+		return fmt.Errorf("set run evidence gist ids: %w", err)
+	}
+	return nil
+}
+
+// ClearRunEvidenceGistIDs clears recorded evidence gist IDs after cleanup.
 func (d *DB) ClearRunEvidenceGistIDs(id string) error {
 	_, err := d.sql.Exec(`UPDATE runs SET evidence_gist_ids = NULL, updated_at = ? WHERE id = ?`, now(), id)
 	if err != nil {

@@ -361,7 +361,7 @@ func (h *Host) CreateSecretGist(ctx context.Context, filePaths []string) (*scm.S
 	if len(filePaths) == 0 {
 		return nil, errors.New("no gist files")
 	}
-	args := append([]string{"gist", "create", "--secret"}, filePaths...)
+	args := append([]string{"gist", "create"}, filePaths...)
 	cmd := h.cmd(ctx, "gh", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {

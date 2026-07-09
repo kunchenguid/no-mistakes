@@ -288,7 +288,7 @@ func TestUpdateRunPRURL(t *testing.T) {
 	}
 }
 
-func TestRunEvidenceGistIDsAppendAndClear(t *testing.T) {
+func TestRunEvidenceGistIDsAppendSetAndClear(t *testing.T) {
 	d := openTestDB(t)
 	repo, err := d.InsertRepo("/tmp/repo", "https://github.com/test/repo", "main")
 	if err != nil {
@@ -308,6 +308,17 @@ func TestRunEvidenceGistIDsAppendAndClear(t *testing.T) {
 	}
 	if len(got.EvidenceGistIDs) != 2 || got.EvidenceGistIDs[0] != "gist1" || got.EvidenceGistIDs[1] != "gist2" {
 		t.Fatalf("EvidenceGistIDs = %+v, want [gist1 gist2]", got.EvidenceGistIDs)
+	}
+
+	if err := d.SetRunEvidenceGistIDs(run.ID, []string{"gist2"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err = d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.EvidenceGistIDs) != 1 || got.EvidenceGistIDs[0] != "gist2" {
+		t.Fatalf("EvidenceGistIDs after set = %+v, want [gist2]", got.EvidenceGistIDs)
 	}
 
 	if err := d.ClearRunEvidenceGistIDs(run.ID); err != nil {

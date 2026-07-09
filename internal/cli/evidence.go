@@ -30,8 +30,9 @@ func newEvidencePruneCmd() *cobra.Command {
 		Use:   "prune",
 		Short: "Delete secret gists that host PR evidence for a run",
 		Long: "Delete secret GitHub gists recorded for a no-mistakes run.\n\n" +
-			"Warning: deleting these gists makes already-merged PR screenshots and video evidence links 404. " +
-			"Prune only when you deliberately want post-merge cleanup.",
+			"The CI monitor normally deletes these gists automatically when it sees the PR merge or close. " +
+			"Use this command as a manual fallback for older runs, failed automatic cleanup, or monitors that are no longer running.\n\n" +
+			"Warning: deleting these gists makes existing PR screenshots and video evidence links 404.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return trackCommand("evidence-prune", func() error {

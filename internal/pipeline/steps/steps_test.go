@@ -133,7 +133,7 @@ func fakeGHHandler(args []string) {
 		fmt.Println("https://github.com/test/repo/pull/99")
 		os.Exit(0)
 	}
-	if len(args) >= 3 && args[0] == "gist" && args[1] == "create" && args[2] == "--secret" {
+	if len(args) >= 2 && args[0] == "gist" && args[1] == "create" {
 		fmt.Println("https://gist.github.com/tester/gist123")
 		os.Exit(0)
 	}
@@ -279,6 +279,13 @@ func fakeCIGHHandler(args []string) {
 	}
 	if strings.Contains(joined, "run view") {
 		fmt.Println("error log output")
+		os.Exit(0)
+	}
+	if len(args) >= 4 && args[0] == "gist" && args[1] == "delete" && args[3] == "--yes" {
+		if os.Getenv("FAKE_CLI_GIST_DELETE_FAIL") == "1" {
+			fmt.Fprintln(os.Stderr, "delete failed")
+			os.Exit(1)
+		}
 		os.Exit(0)
 	}
 	os.Exit(1)
