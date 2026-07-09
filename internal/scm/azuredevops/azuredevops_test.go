@@ -320,6 +320,75 @@ func TestGetChecksExcludesApprovalGatesOnHealthyPR(t *testing.T) {
 	}
 }
 
+// TestGetChecksExcludesHumanGatesByIdentity is the classification guard. A PR
+// can carry human review / sign-off / attestation gates that are NOT the simple
+// own-type approval gates above: Code Review Compliance Policy is posted through
+// the generic "Status" policy type (so a naive Build/Status allow-list lets it
+// through and its blocking "rejected" pollutes the content signal), while
+// Ownership Enforcer and Proof Of Presence are their OWN policy types (confirmed
+// live on ADO PR 16330529). All three must be classified as human gates by
+// stable identity and excluded from the content-CI checks, even when rejected.
+func TestGetChecksExcludesHumanGatesByIdentity(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHost(map[string]azdoTestResponse{
+		"az repos pr policy list --id 42 --organization " + testOrg + " --output json": {
+			stdout: `[` +
+				// Human sign-off posted through the Status policy type - the leak a
+				// Build/Status allow-list alone does not catch. Matched on stable
+				// (genre, name), not the localizable displayName.
+				`{"status":"rejected","configuration":{"type":{"displayName":"Status"},"settings":{"displayName":"Code Review Compliance","statusGenre":"microsoft-policy-service","statusName":"CodeReviewCompliancePolicy"}}},` +
+				// Own-type human gates.
+				`{"status":"rejected","configuration":{"type":{"displayName":"Ownership Enforcer"}}},` +
+				`{"status":"rejected","configuration":{"type":{"displayName":"Proof Of Presence"}}}` +
+				`]` + "\n",
+		},
+	})
+
+	checks, err := h.GetChecks(context.Background(), &scm.PR{Number: "42"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 0 {
+		t.Fatalf("GetChecks() = %+v, want empty (human review/sign-off/attestation gates are not content CI checks)", checks)
+	}
+}
+
+// TestGetChecksGatesOnContentStatusChecks is the positive counterpart: content-
+// influenced automation posted through the Status policy type (Component
+// Governance security/license, code coverage) must still be gated on. Only the
+// specifically-identified human status genres are excluded; every other Status
+// gate stays a real content check so B2's fail-safe posture is preserved and the
+// human-gate exclusion never manufactures a vacuous green.
+func TestGetChecksGatesOnContentStatusChecks(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHost(map[string]azdoTestResponse{
+		"az repos pr policy list --id 42 --organization " + testOrg + " --output json": {
+			stdout: `[` +
+				`{"status":"approved","configuration":{"type":{"displayName":"Status"},"settings":{"displayName":"Component Governance","statusGenre":"security","statusName":"ComponentGovernance"}}},` +
+				`{"status":"running","configuration":{"type":{"displayName":"Status"},"settings":{"displayName":"Code coverage","statusGenre":"codecoverage","statusName":"coverage"}}},` +
+				// And a genuine human sign-off in the same list must still be excluded.
+				`{"status":"rejected","configuration":{"type":{"displayName":"Status"},"settings":{"displayName":"Code Review Compliance","statusGenre":"microsoft-policy-service","statusName":"CodeReviewCompliancePolicy"}}}` +
+				`]` + "\n",
+		},
+	})
+
+	checks, err := h.GetChecks(context.Background(), &scm.PR{Number: "42"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 2 {
+		t.Fatalf("len(checks) = %d, want 2 (Component Governance + coverage kept, human sign-off excluded): %+v", len(checks), checks)
+	}
+	if checks[0].Name != "Component Governance" || checks[0].Bucket != scm.CheckBucketPass {
+		t.Fatalf("checks[0] = %+v, want passing 'Component Governance'", checks[0])
+	}
+	if checks[1].Name != "Code coverage" || checks[1].Bucket != scm.CheckBucketPending {
+		t.Fatalf("checks[1] = %+v, want pending 'Code coverage'", checks[1])
+	}
+}
+
 func TestGetChecksEmpty(t *testing.T) {
 	t.Parallel()
 
@@ -412,6 +481,44 @@ func TestAzStatusBucket(t *testing.T) {
 			t.Parallel()
 			if got := azStatusBucket(tc.status); got != tc.want {
 				t.Fatalf("azStatusBucket(%q) = %q, want %q", tc.status, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestIsCICheck(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		typeName   string
+		genre      string
+		statusName string
+		want       bool
+	}{
+		{name: "build validation gates", typeName: "Build", want: true},
+		{name: "external status check gates", typeName: "Status", want: true},
+		{name: "component governance status gates", typeName: "Status", genre: "security", statusName: "ComponentGovernance", want: true},
+		{name: "code coverage status gates", typeName: "Status", genre: "codecoverage", statusName: "coverage", want: true},
+		{name: "min reviewers excluded (own type)", typeName: "Minimum number of reviewers", want: false},
+		{name: "required reviewers excluded (own type)", typeName: "Required reviewers", want: false},
+		{name: "comment requirements excluded (own type)", typeName: "Comment requirements", want: false},
+		{name: "merge strategy excluded (own type)", typeName: "Require a merge strategy", want: false},
+		{name: "work item linking excluded (own type)", typeName: "Work item linking", want: false},
+		{name: "ownership enforcer excluded (own type)", typeName: "Ownership Enforcer", want: false},
+		{name: "proof of presence excluded (own type)", typeName: "Proof Of Presence", want: false},
+		{name: "code review compliance excluded (Status-type human sign-off)", typeName: "Status", genre: "microsoft-policy-service", statusName: "CodeReviewCompliancePolicy", want: false},
+		{name: "code review compliance genre match is case-insensitive", typeName: "Status", genre: "Microsoft-Policy-Service", statusName: "codereviewcompliancepolicy", want: false},
+	}
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var e policyEval
+			e.Configuration.Type.DisplayName = tc.typeName
+			e.Configuration.Settings.StatusGenre = tc.genre
+			e.Configuration.Settings.StatusName = tc.statusName
+			if got := e.isCICheck(); got != tc.want {
+				t.Fatalf("isCICheck(type=%q genre=%q name=%q) = %v, want %v", tc.typeName, tc.genre, tc.statusName, got, tc.want)
 			}
 		})
 	}
