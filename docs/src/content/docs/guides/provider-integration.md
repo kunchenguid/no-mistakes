@@ -174,7 +174,10 @@ well as their SSH forms (`git@ssh.dev.azure.com:v3/...`).
   a final truncation backstop with a visible marker
 - CI status polling - Azure branch policy evaluations (build validation and
   status checks) are read via `az repos pr policy list` until the PR is
-  completed, abandoned, or the configured `ci_timeout` idle window elapses
+  completed, abandoned, or the configured `ci_timeout` idle window elapses. An
+  empty evaluation list is treated as ambiguous rather than ready: because an
+  unvalidated PR routinely reports no evaluations, the CI step pauses for
+  approval instead of reporting the PR ready
 - Merge-conflict polling and auto-fix from the PR's `mergeStatus`
 
 **What you don't get (yet):**
