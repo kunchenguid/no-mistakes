@@ -3,8 +3,15 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 func TestGrokAgent_BuildArgs_Streaming(t *testing.T) {
@@ -211,4 +218,204 @@ func containsPair(args []string, flag, value string) bool {
 		}
 	}
 	return false
+}
+
+func writeFakeGrok(t *testing.T, dir, posixScript, windowsScript string) string {
+	t.Helper()
+
+	name := "grok"
+	script := posixScript
+	if runtime.GOOS == "windows" {
+		name = "grok.cmd"
+		script = windowsScript
+	}
+	bin := filepath.Join(dir, name)
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake grok: %v", err)
+	}
+	return bin
+}
+
+func TestGrokAgent_Run_StreamingJSON(t *testing.T) {
+	dir := t.TempDir()
+	bin := writeFakeGrok(t, dir, `#!/bin/sh
+dir=$(dirname "$0")
+: > "$dir/args.txt"
+for arg do
+  printf '%s\n' "$arg" >> "$dir/args.txt"
+done
+printf '%s\n' '{"type":"thought","data":"thinking"}'
+printf '%s\n' '{"type":"text","data":"{\"ok\":"}'
+printf '%s\n' '{"type":"text","data":"true}"}'
+printf '%s\n' '{"type":"end","stopReason":"EndTurn","sessionId":"s1"}'
+`, strings.Join([]string{
+		"@echo off",
+		"setlocal",
+		"set \"dir=%~dp0\"",
+		"if exist \"%dir%args.txt\" del \"%dir%args.txt\"",
+		":loop",
+		"if \"%~1\"==\"\" goto done",
+		">> \"%dir%args.txt\" echo(%~1",
+		"shift",
+		"goto loop",
+		":done",
+		"echo {\"type\":\"thought\",\"data\":\"thinking\"}",
+		"echo {\"type\":\"text\",\"data\":\"{\\\"ok\\\":true}\"}",
+		"echo {\"type\":\"end\",\"stopReason\":\"EndTurn\",\"sessionId\":\"s1\"}",
+	}, "\r\n"))
+
+	var chunks []string
+	ga := &grokAgent{bin: bin}
+	result, err := ga.Run(context.Background(), RunOpts{
+		Prompt:  "do work",
+		CWD:     t.TempDir(),
+		OnChunk: func(s string) { chunks = append(chunks, s) },
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	// Streaming without JSONSchema fills Result.Text (not Output).
+	if result.Text != `{"ok":true}` {
+		t.Fatalf("Text = %q, want {\"ok\":true}", result.Text)
+	}
+	if strings.Join(chunks, "") != `{"ok":true}` {
+		t.Fatalf("chunks = %v", chunks)
+	}
+
+	argsRaw, err := os.ReadFile(filepath.Join(dir, "args.txt"))
+	if err != nil {
+		t.Fatalf("read args: %v", err)
+	}
+	args := strings.Split(strings.TrimSpace(strings.ReplaceAll(string(argsRaw), "\r\n", "\n")), "\n")
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "-p do work") {
+		t.Fatalf("args missing prompt: %v", args)
+	}
+	if !strings.Contains(joined, "--output-format streaming-json") {
+		t.Fatalf("args missing streaming-json: %v", args)
+	}
+	if !strings.Contains(joined, "--always-approve") {
+		t.Fatalf("args missing --always-approve: %v", args)
+	}
+	t.Logf("fake grok received args: %v", args)
+	t.Logf("agent text: %s", result.Text)
+}
+
+func TestGrokAgent_Run_JSONSchema(t *testing.T) {
+	dir := t.TempDir()
+	schema := `{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}`
+	bin := writeFakeGrok(t, dir, `#!/bin/sh
+dir=$(dirname "$0")
+: > "$dir/args.txt"
+for arg do
+  printf '%s\n' "$arg" >> "$dir/args.txt"
+done
+printf '%s\n' '{"text":"{\"ok\":true}","stopReason":"EndTurn","sessionId":"s2"}'
+`, strings.Join([]string{
+		"@echo off",
+		"setlocal",
+		"set \"dir=%~dp0\"",
+		"if exist \"%dir%args.txt\" del \"%dir%args.txt\"",
+		":loop",
+		"if \"%~1\"==\"\" goto done",
+		">> \"%dir%args.txt\" echo(%~1",
+		"shift",
+		"goto loop",
+		":done",
+		"echo {\"text\":\"{\\\"ok\\\":true}\",\"stopReason\":\"EndTurn\",\"sessionId\":\"s2\"}",
+	}, "\r\n"))
+
+	ga := &grokAgent{bin: bin}
+	result, err := ga.Run(context.Background(), RunOpts{
+		Prompt:     "return structured",
+		CWD:        t.TempDir(),
+		JSONSchema: json.RawMessage(schema),
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if string(result.Output) != `{"ok":true}` {
+		t.Fatalf("output = %q", string(result.Output))
+	}
+
+	argsRaw, err := os.ReadFile(filepath.Join(dir, "args.txt"))
+	if err != nil {
+		t.Fatalf("read args: %v", err)
+	}
+	argsText := strings.ReplaceAll(string(argsRaw), "\r\n", "\n")
+	if !strings.Contains(argsText, "--json-schema") {
+		t.Fatalf("missing --json-schema in args:\n%s", argsText)
+	}
+	if strings.Contains(argsText, "--output-format") {
+		t.Fatalf("must not set --output-format with schema:\n%s", argsText)
+	}
+	t.Logf("fake grok schema-mode args:\n%s", argsText)
+	t.Logf("structured agent output: %s", string(result.Output))
+}
+
+func TestGrokAgent_Run_ReportsStreamError(t *testing.T) {
+	dir := t.TempDir()
+	bin := writeFakeGrok(t, dir, `#!/bin/sh
+printf '%s\n' '{"type":"error","message":"auth failed"}'
+printf '%s\n' '{"type":"end","stopReason":"Error"}'
+exit 1
+`, strings.Join([]string{
+		"@echo off",
+		"echo {\"type\":\"error\",\"message\":\"auth failed\"}",
+		"echo {\"type\":\"end\",\"stopReason\":\"Error\"}",
+		"exit /b 1",
+	}, "\r\n"))
+
+	ga := &grokAgent{bin: bin}
+	_, err := ga.Run(context.Background(), RunOpts{
+		Prompt: "do work",
+		CWD:    t.TempDir(),
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "auth failed") {
+		t.Fatalf("error = %v, want auth failed detail", err)
+	}
+}
+
+func TestNewGrokAgent_EndToEndWithRealCLI(t *testing.T) {
+	if os.Getenv("NM_TEST_REAL_GROK") != "1" {
+		t.Skip("set NM_TEST_REAL_GROK=1 to exercise the real grok CLI")
+	}
+	if _, err := exec.LookPath("grok"); err != nil {
+		t.Skip("grok not on PATH")
+	}
+
+	a, err := New(types.AgentGrok, "grok", nil)
+	if err != nil {
+		t.Fatalf("New(AgentGrok): %v", err)
+	}
+	if a.Name() != "grok" {
+		t.Fatalf("Name() = %q", a.Name())
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	schema := json.RawMessage(`{"type":"object","properties":{"pong":{"type":"string"}},"required":["pong"]}`)
+	result, err := a.Run(ctx, RunOpts{
+		Prompt:     `Reply with JSON only matching the schema: {"pong":"ok"}`,
+		CWD:        t.TempDir(),
+		JSONSchema: schema,
+	})
+	if err != nil {
+		t.Fatalf("Run with real grok: %v", err)
+	}
+	t.Logf("real grok structured output: %s", string(result.Output))
+
+	var out struct {
+		Pong string `json:"pong"`
+	}
+	if err := json.Unmarshal(result.Output, &out); err != nil {
+		t.Fatalf("unmarshal %s: %v", string(result.Output), err)
+	}
+	if out.Pong == "" {
+		t.Fatalf("expected non-empty pong field, got %s", string(result.Output))
+	}
 }

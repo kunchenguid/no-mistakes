@@ -213,7 +213,7 @@ Each invocation returns:
 - **SessionID** and **Resumed** - the adapter-native session identity and whether this invocation resumed it, when supported
 - **Model** and **Provider** - adapter-reported serving metadata when available
 
-One-shot subprocess agents (Claude, Codex, Pi, Copilot CLI, and acpx) are invocation-scoped.
+One-shot subprocess agents (Claude, Codex, Pi, Copilot CLI, Grok, and acpx) are invocation-scoped.
 After no-mistakes starts one, it terminates any remaining child processes when the invocation exits, fails, or is cancelled, so agent-spawned test workers, build watchers, and dev servers do not survive the step.
 Step logs record their process lifecycle, including start and exit lines with the PID, and AXI status exposes that PID while the subprocess is still active.
 Persistent server agents (Rovo Dev and OpenCode) use their managed server lifecycle instead.
@@ -223,11 +223,11 @@ Transient API and network failures are retried up to three times with exponentia
 ## Intent extraction
 
 When an agent starts a run through `no-mistakes axi run --intent`, no-mistakes uses that supplied intent verbatim and skips transcript-based inference, even if `intent.enabled` is false.
-Otherwise, when `intent.enabled` is true, no-mistakes reads recent local transcripts from Claude Code, Codex, OpenCode, Rovo Dev, Pi, and the GitHub Copilot CLI during the `intent` pipeline step.
+Otherwise, when `intent.enabled` is true, no-mistakes reads recent local transcripts from Claude Code, Codex, OpenCode, Rovo Dev, Pi, the GitHub Copilot CLI, and Grok during the `intent` pipeline step.
 It matches sessions against non-deleted changed files when present, falls back to all changed files for all-deletion diffs, summarizes the likely author intent with the configured pipeline agent, includes that summary as untrusted context in rebase fixes, review checks and fixes, test detection, evidence validation, and fixes, lint detection and fixes, documentation checks and fixes, CI auto-fixes, and PR prompts, and renders it in generated PR descriptions.
 
 Transcript readers collect user and assistant text messages but exclude tool call output.
-They read Claude Code transcripts from `~/.claude/projects`, Codex metadata from `~/.codex/state_*.sqlite` plus referenced rollout files, OpenCode messages from `$XDG_DATA_HOME/opencode/opencode.db` or `~/.local/share/opencode/opencode.db`, Rovo Dev sessions from `~/.rovodev/sessions`, Pi transcripts from `~/.pi/agent/sessions`, and GitHub Copilot CLI sessions from `~/.copilot/session-state`.
+They read Claude Code transcripts from `~/.claude/projects`, Codex metadata from `~/.codex/state_*.sqlite` plus referenced rollout files, OpenCode messages from `$XDG_DATA_HOME/opencode/opencode.db` or `~/.local/share/opencode/opencode.db`, Rovo Dev sessions from `~/.rovodev/sessions`, Pi transcripts from `~/.pi/agent/sessions`, GitHub Copilot CLI sessions from `~/.copilot/session-state`, and Grok sessions from `~/.grok/sessions` (or `$GROK_HOME/sessions` when set).
 Sessions are eligible when they come from the same working directory or an equivalent Git checkout with the same common Git directory or normalized remote URL.
 ACP transcripts are not currently read for intent extraction.
 When deterministic matching leaves multiple plausible sessions, no-mistakes may ask the configured pipeline agent to choose among them using the matching file paths and sanitized transcript packet files.
@@ -274,6 +274,14 @@ Any `agent_args_override.copilot` flags are inserted before no-mistakes' managed
 Reads JSONL events from stdout, streaming incremental `assistant.message_delta` text to the TUI and capturing the final `assistant.message` content.
 The Copilot CLI has no output-schema flag, so when structured output is requested no-mistakes injects the JSON schema into the prompt and validates the final text response with the same JSON fence and bare-object fallback used by Pi and Rovo Dev.
 
+## Grok
+
+Spawns a `grok` subprocess for each invocation with `-p <prompt>`.
+When structured output is requested, no-mistakes passes `--json-schema` (which implies `--output-format json`); otherwise it uses `--output-format streaming-json` and streams `text` events to the TUI.
+By default it also adds `--always-approve`, unless you already set your own Grok approval flag through `agent_args_override` (`--always-approve`, `--yolo`, or `--permission-mode`).
+Any `agent_args_override.grok` flags are inserted before no-mistakes' managed flags, so user choices such as `-m` or `--effort` take effect.
+Structured output is taken from the JSON result's `text` field and validated against the requested schema with the same JSON fence and bare-object fallback used by other text-parsed agents.
+
 ## ACP via acpx
 
 ACP support is optional and requires a separately installed `acpx` binary.
@@ -307,6 +315,7 @@ $ no-mistakes doctor
   – opencode (not found)
   – pi (not found)
   – copilot (not found)
+  – grok (not found)
   – acpx (not found)
   ✓ gate validation claude is runnable
 ```

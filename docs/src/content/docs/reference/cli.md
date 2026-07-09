@@ -305,7 +305,7 @@ Checks:
 - Data directory (`~/.no-mistakes/`)
 - SQLite database
 - Daemon status
-- Agent runners: native binaries `claude`, `codex`, `acli`, `opencode`, `pi`, and `copilot`, plus the optional ACP bridge `acpx`
+- Agent runners: native binaries `claude`, `codex`, `acli`, `opencode`, `pi`, `copilot`, and `grok`, plus the optional ACP bridge `acpx`
 - Effective global agent configuration, reported as `gate validation`; an unavailable configured runner is a failed check because the gate cannot validate without it
 
 Uses indicators: `✓` (available), `–` (not found, optional), `✗` (problem detected).
