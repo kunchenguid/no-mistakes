@@ -16,8 +16,9 @@ import (
 
 // grokAgent spawns the Grok CLI for each invocation. Headless mode uses
 // `grok -p <prompt>` with either streaming-json events or --json-schema
-// (which implies --output-format json). Lifecycle is codex/pi-shaped: one
-// process per Run, no managed server.
+// (which implies --output-format json). Schema-mode results prefer a non-empty
+// structuredOutput field over text. Lifecycle is codex/pi-shaped: one process
+// per Run, no managed server.
 type grokAgent struct {
 	bin       string
 	extraArgs []string
