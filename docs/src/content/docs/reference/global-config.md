@@ -164,7 +164,7 @@ User-supplied flags are inserted ahead of no-mistakes' managed flags, so your ch
 | `opencode` | `serve`, `--hostname`, `--port`, `--print-logs`                                                             |
 | `pi`       | `--mode`, `--no-session`                                                                                    |
 | `copilot`  | `-p`, `--prompt`, `--output-format`, `--no-color`                                                          |
-| `grok`     | `-p`, `--single`, `--output-format`, `--json-schema`                                                     |
+| `grok`     | `-p`, `--single`, `--prompt-file`, `--prompt-json`, `--output-format`, `--json-schema`                   |
 
 For structured `codex` runs, no-mistakes also appends its own `--output-schema <tempfile>` after your overrides. Treat that flag as managed even though config validation does not currently reject it.
 The Claude and Codex session-control forms are reserved so no-mistakes can keep reviewer and fixer conversations role-isolated.

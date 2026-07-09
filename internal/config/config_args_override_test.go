@@ -120,6 +120,8 @@ func TestLoadGlobal_AgentArgsOverride_ReservedArgsRejected(t *testing.T) {
 		{"opencode", "--print-logs"},
 		{"grok", "-p"},
 		{"grok", "--single"},
+		{"grok", "--prompt-file"},
+		{"grok", "--prompt-json"},
 		{"grok", "--output-format"},
 		{"grok", "--json-schema"},
 	}

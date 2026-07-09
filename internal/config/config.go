@@ -695,6 +695,8 @@ var reservedAgentArgs = map[string]map[string]bool{
 	string(types.AgentGrok): {
 		"-p":              true,
 		"--single":        true,
+		"--prompt-file":   true,
+		"--prompt-json":   true,
 		"--output-format": true,
 		"--json-schema":   true,
 	},
