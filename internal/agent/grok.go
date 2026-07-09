@@ -216,18 +216,9 @@ func parseGrokStreamingEvents(
 // parseGrokJSONStdout reads the single JSON object emitted by
 // --output-format json (also implied by --json-schema).
 func parseGrokJSONStdout(ctx context.Context, r io.Reader, text, grokErr *string) error {
-	done := make(chan struct{})
-	var raw []byte
-	var readErr error
-	go func() {
-		defer close(done)
-		raw, readErr = io.ReadAll(r)
-	}()
-
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-done:
+	raw, readErr := io.ReadAll(r)
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if readErr != nil {
 		return readErr

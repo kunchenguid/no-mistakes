@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -254,6 +256,45 @@ func TestParseGrokJSONResult_ErrorObject(t *testing.T) {
 	}
 	if grokErr != "Couldn't start session: boom" {
 		t.Errorf("grokErr = %q", grokErr)
+	}
+}
+
+func TestParseGrokJSONStdout_Success(t *testing.T) {
+	raw := `{"text":"{\"ok\":true}","stopReason":"EndTurn"}`
+	var text, grokErr string
+	if err := parseGrokJSONStdout(context.Background(), strings.NewReader(raw), &text, &grokErr); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if text != `{"ok":true}` {
+		t.Errorf("text = %q", text)
+	}
+	if grokErr != "" {
+		t.Errorf("grokErr = %q", grokErr)
+	}
+}
+
+func TestParseGrokJSONStdout_CancelAfterRead(t *testing.T) {
+	pr, pw := io.Pipe()
+	ctx, cancel := context.WithCancel(context.Background())
+
+	errCh := make(chan error, 1)
+	go func() {
+		var text, grokErr string
+		errCh <- parseGrokJSONStdout(ctx, pr, &text, &grokErr)
+	}()
+
+	cancel()
+	if err := pw.Close(); err != nil {
+		t.Fatalf("close pipe: %v", err)
+	}
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("got %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for parseGrokJSONStdout")
 	}
 }
 
