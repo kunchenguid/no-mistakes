@@ -132,7 +132,9 @@ func TestCIStep_CIAutoFixDisabledWithZero(t *testing.T) {
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
 	pollCount := 0
+	frozenNow := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
 	step := &CIStep{
+		now: func() time.Time { return frozenNow },
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
 			return nil
@@ -952,7 +954,9 @@ func TestCIStep_AutoFixNoChanges_CountsAsAttempt(t *testing.T) {
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
 	pollCount := 0
+	frozenNow := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
 	step := &CIStep{
+		now: func() time.Time { return frozenNow },
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
 			return nil
