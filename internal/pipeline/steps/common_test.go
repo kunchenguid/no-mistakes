@@ -613,6 +613,85 @@ func TestCommitAgentFixes_UsesFallbackSummary(t *testing.T) {
 	}
 }
 
+func TestCommitAgentFixes_ExcludesDotnetCLIHomeCache(t *testing.T) {
+	// Regression: a C# format/lint agent that populates
+	// .tools/dotnet-cli-home (DOTNET_CLI_HOME) must not produce a
+	// no-mistakes(lint) commit shipping thousands of NuGet cache paths.
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	originalHead := sctx.Run.HeadSHA
+
+	// Real source fix the lint step should keep.
+	if err := os.WriteFile(filepath.Join(dir, "src", "App.cs"), []byte("namespace App;\n"), 0o644); err != nil {
+		// src/ may not exist in the template repo
+		if err := os.MkdirAll(filepath.Join(dir, "src"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "src", "App.cs"), []byte("namespace App;\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Simulated local DOTNET_CLI_HOME cache written during format.
+	cacheFile := filepath.Join(dir, ".tools", "dotnet-cli-home", "NuGet", "v3-cache", "sentinel")
+	if err := os.MkdirAll(filepath.Dir(cacheFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cacheFile, []byte("nuget junk\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := commitAgentFixes(sctx, types.StepLint, "Applied C# format and style fixes", "fix lint issues")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sctx.Run.HeadSHA == originalHead {
+		t.Fatal("expected a lint fix commit for App.cs")
+	}
+	if got := lastCommitMessage(t, dir); got != "no-mistakes(lint): Applied C# format and style fixes" {
+		t.Errorf("commit message = %q", got)
+	}
+	tree := gitCmd(t, dir, "ls-tree", "-r", "--name-only", "HEAD")
+	if strings.Contains(tree, ".tools") || strings.Contains(tree, "dotnet-cli-home") {
+		t.Fatalf("lint commit must not contain toolchain cache:\n%s", tree)
+	}
+	if !strings.Contains(tree, "App.cs") {
+		t.Fatalf("lint commit missing source fix:\n%s", tree)
+	}
+	// Cache remains on disk for the tool; just not committed.
+	if _, err := os.Stat(cacheFile); err != nil {
+		t.Fatalf("cache file should remain untracked on disk: %v", err)
+	}
+}
+
+func TestCommitAgentFixes_OnlyToolchainJunkSkipsCommit(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	originalHead := sctx.Run.HeadSHA
+
+	cacheFile := filepath.Join(dir, ".tools", "dotnet-cli-home", "x")
+	if err := os.MkdirAll(filepath.Dir(cacheFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cacheFile, []byte("junk\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := commitAgentFixes(sctx, types.StepLint, "should not commit", "fallback"); err != nil {
+		t.Fatal(err)
+	}
+	if sctx.Run.HeadSHA != originalHead {
+		t.Fatalf("HeadSHA changed when only toolchain junk was present: %s -> %s", originalHead, sctx.Run.HeadSHA)
+	}
+}
+
 func TestMatchIgnorePattern(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

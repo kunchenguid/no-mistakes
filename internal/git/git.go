@@ -342,17 +342,173 @@ func CreateBranch(ctx context.Context, dir, name string) error {
 	return err
 }
 
-// CommitAll stages every change in the working tree and creates a single commit
-// with the given message. Fails if there are no changes to commit.
+// localToolchainPathSegments are directory names that must never enter a
+// pipeline or wizard commit. Tools (dotnet format, npm install, package
+// managers, linters) often write caches under the worktree when env vars like
+// DOTNET_CLI_HOME point at a relative path. A bare `git add -A` would otherwise
+// ship thousands of NuGet/tooling files into the PR (see .tools/dotnet-cli-home).
+// Match any path component, not just the worktree root.
+var localToolchainPathSegments = map[string]struct{}{
+	".tools":          {},
+	"dotnet-cli-home": {},
+	"node_modules":    {},
+	".nuget":          {},
+	"__pycache__":     {},
+	".venv":           {},
+	".tox":            {},
+	".mypy_cache":     {},
+	".pytest_cache":   {},
+	".ruff_cache":     {},
+	".gradle":         {},
+	".parcel-cache":   {},
+	".next":           {},
+	".nuxt":           {},
+	".yarn":           {},
+	".pnpm-store":     {},
+	".turbo":          {},
+	".cache":          {},
+}
+
+// IsLocalToolchainPath reports whether path is under a known local toolchain
+// or package-manager cache directory that must never be committed by the gate.
+// Path may use either slash style; renames ("old -> new") use the new side.
+func IsLocalToolchainPath(path string) bool {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return false
+	}
+	// Porcelain renames: "old -> new"
+	if i := strings.Index(path, " -> "); i >= 0 {
+		path = path[i+4:]
+	}
+	path = filepath.ToSlash(path)
+	path = strings.TrimPrefix(path, "./")
+	for _, seg := range strings.Split(path, "/") {
+		if seg == "" || seg == "." {
+			continue
+		}
+		if _, ok := localToolchainPathSegments[strings.ToLower(seg)]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// GitRunner runs a git subcommand (args without the leading "git") and returns
+// trimmed stdout. Used so pipeline steps can inject StepContext env (tests and
+// per-step overrides) while sharing StageAll's exclusion logic.
+type GitRunner func(args ...string) (string, error)
+
+// StageAll stages every change in the working tree, then unstages known local
+// toolchain/cache paths so they never enter a commit. Returns the excluded
+// paths. Callers should treat a worktree that only contained excluded junk as
+// "nothing to commit" (HasStagedChanges will be false).
+func StageAll(ctx context.Context, dir string) (excluded []string, err error) {
+	return StageAllWith(func(args ...string) (string, error) {
+		return Run(ctx, dir, args...)
+	})
+}
+
+// StageAllWith is StageAll using an injected git runner (e.g. stepGitRun).
+func StageAllWith(run GitRunner) (excluded []string, err error) {
+	if _, err := run("add", "-A"); err != nil {
+		return nil, err
+	}
+	// After add -A, only staged paths matter. --name-only -z lists them as
+	// raw NUL-separated paths (no status prefix, no quoting).
+	out, err := run("diff", "--cached", "--name-only", "-z")
+	if err != nil {
+		return nil, err
+	}
+	if out == "" {
+		return nil, nil
+	}
+	seenFiles := make(map[string]struct{})
+	var junkFiles []string
+	for _, path := range strings.Split(out, "\x00") {
+		path = strings.TrimSpace(path)
+		if path == "" || !IsLocalToolchainPath(path) {
+			continue
+		}
+		if _, ok := seenFiles[path]; ok {
+			continue
+		}
+		seenFiles[path] = struct{}{}
+		junkFiles = append(junkFiles, path)
+	}
+	if len(junkFiles) == 0 {
+		return nil, nil
+	}
+	// Collapse to denylist roots (.tools, node_modules, …) so a multi-thousand
+	// path NuGet cache is one `git reset` arg, not ARG_MAX.
+	toUnstage := toolchainResetRoots(junkFiles)
+	// Reset unstages without deleting worktree files.
+	args := append([]string{"reset", "-q", "HEAD", "--"}, toUnstage...)
+	if _, err := run(args...); err != nil {
+		// Fallback: unstage one root at a time so one bad path does not leave
+		// the rest of the junk in the index.
+		for _, p := range toUnstage {
+			if _, rerr := run("reset", "-q", "HEAD", "--", p); rerr != nil {
+				return excluded, fmt.Errorf("unstage local toolchain path %q: %w", p, rerr)
+			}
+			excluded = append(excluded, p)
+		}
+		return excluded, nil
+	}
+	return toUnstage, nil
+}
+
+// toolchainResetRoots returns unique path prefixes ending at a denylist
+// segment (e.g. ".tools/dotnet-cli-home/a" → ".tools").
+func toolchainResetRoots(paths []string) []string {
+	seen := make(map[string]struct{})
+	var roots []string
+	for _, path := range paths {
+		slash := filepath.ToSlash(strings.TrimSpace(path))
+		slash = strings.TrimPrefix(slash, "./")
+		parts := strings.Split(slash, "/")
+		for i, seg := range parts {
+			if seg == "" || seg == "." {
+				continue
+			}
+			if _, ok := localToolchainPathSegments[strings.ToLower(seg)]; !ok {
+				continue
+			}
+			root := strings.Join(parts[:i+1], "/")
+			if _, ok := seen[root]; ok {
+				break
+			}
+			seen[root] = struct{}{}
+			roots = append(roots, root)
+			break
+		}
+	}
+	return roots
+}
+
+// HasStagedChanges reports whether the index differs from HEAD (something is
+// staged for commit). Untracked or unstaged worktree changes alone return false.
+func HasStagedChanges(ctx context.Context, dir string) (bool, error) {
+	// --cached diff exits 0 with empty stdout when the index matches HEAD.
+	out, err := Run(ctx, dir, "diff", "--cached", "--name-only")
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(out) != "", nil
+}
+
+// CommitAll stages every change in the working tree (excluding local toolchain
+// caches) and creates a single commit with the given message. Fails if there
+// are no non-excluded changes to commit.
 func CommitAll(ctx context.Context, dir, message string) error {
-	if _, err := Run(ctx, dir, "add", "-A"); err != nil {
+	if _, err := StageAll(ctx, dir); err != nil {
 		return err
 	}
-	dirty, err := HasUncommittedChanges(ctx, dir)
+	staged, err := HasStagedChanges(ctx, dir)
 	if err != nil {
 		return err
 	}
-	if !dirty {
+	if !staged {
 		return fmt.Errorf("no changes to commit")
 	}
 	_, err = Run(ctx, dir, "commit", "-m", message)

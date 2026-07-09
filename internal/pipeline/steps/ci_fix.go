@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
@@ -126,8 +127,29 @@ func (s *CIStep) commitAndPush(sctx *pipeline.StepContext) (bool, error) {
 		return false, nil
 	}
 
-	if _, err := stepGitRun(sctx, "add", "-A"); err != nil {
+	// Use stepGitRun so step env / test PATH overrides apply (same as status
+	// and push). StageAllWith still strips local toolchain caches.
+	excluded, err := git.StageAllWith(func(args ...string) (string, error) {
+		return stepGitRun(sctx, args...)
+	})
+	if err != nil {
 		return false, fmt.Errorf("stage CI changes: %w", err)
+	}
+	if len(excluded) > 0 {
+		sctx.Log(fmt.Sprintf("excluded %d local toolchain/cache path(s) from CI commit (e.g. %s)",
+			len(excluded), excluded[0]))
+	}
+	stagedOut, err := stepGitRun(sctx, "diff", "--cached", "--name-only")
+	if err != nil {
+		return false, fmt.Errorf("check staged CI changes: %w", err)
+	}
+	if strings.TrimSpace(stagedOut) == "" {
+		sctx.Log("no CI changes to commit after excluding local toolchain/cache paths")
+		headSHA, err := stepGitHeadSHA(sctx)
+		if err == nil && headSHA != sctx.Run.HeadSHA {
+			return s.pushUpdatedHeadSHA(sctx, headSHA)
+		}
+		return false, nil
 	}
 	if _, err := stepGitRun(sctx, "commit", "-m", "no-mistakes: apply CI fixes"); err != nil {
 		return false, fmt.Errorf("commit: %w", err)

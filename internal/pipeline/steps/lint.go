@@ -52,6 +52,7 @@ Rules:
 - Do not run tests or broader behavioral validation.
 - Focus on lint, format, and static-analysis issues only.
 - Do not report issues you already fixed.
+- Do not create or leave local toolchain caches in the worktree when avoidable (for example prefer the user's home for DOTNET_CLI_HOME/NUGET_PACKAGES, not a path under the repo). The gate will refuse to commit known cache trees, but avoid writing them here.
 - The summary must be one concise sentence fragment suitable for a git commit subject.
 - Keep the summary under 10 words.%s`,
 			sctx.Run.Branch,
@@ -118,6 +119,7 @@ Rules:
 - Do not refactor beyond what is needed for that root-cause fix.
 - Do not run tests or broader behavioral validation.
 - Re-run the relevant lint or format commands before finishing.
+- Do not create or leave local toolchain caches in the worktree when avoidable (for example prefer the user's home for DOTNET_CLI_HOME/NUGET_PACKAGES, not a path under the repo). The gate will refuse to commit known cache trees, but avoid writing them here.
 - Return JSON with a single "summary" field when you are done.
 - The summary must be one concise sentence fragment suitable for a git commit subject.
 - Keep the summary under 10 words.%s`,
