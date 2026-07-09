@@ -246,7 +246,10 @@ func parseGrokJSONStdout(ctx context.Context, r io.Reader, text, grokErr *string
 }
 
 // parseGrokJSONResult decodes a headless --output-format json payload.
-// Success: {"text":"...","stopReason":"..."}. Failure: {"type":"error","message":"..."}.
+// Success: {"text":"...","stopReason":"..."} and, with --json-schema,
+// optionally {"structuredOutput":{...}}. Failure: {"type":"error","message":"..."}.
+// Prefer non-empty structuredOutput (native constrained JSON) over text so
+// schema-mode does not fail when text is empty or prose.
 func parseGrokJSONResult(raw []byte) (text, grokErr string, err error) {
 	trimmed := bytesTrimSpace(raw)
 	if len(trimmed) == 0 {
@@ -254,16 +257,22 @@ func parseGrokJSONResult(raw []byte) (text, grokErr string, err error) {
 	}
 
 	var envelope struct {
-		Type       string `json:"type"`
-		Message    string `json:"message"`
-		Text       string `json:"text"`
-		StopReason string `json:"stopReason"`
+		Type             string          `json:"type"`
+		Message          string          `json:"message"`
+		Text             string          `json:"text"`
+		StopReason       string          `json:"stopReason"`
+		StructuredOutput json.RawMessage `json:"structuredOutput"`
 	}
 	if err := json.Unmarshal(trimmed, &envelope); err != nil {
 		return "", "", fmt.Errorf("decode json result: %w", err)
 	}
-	if envelope.Type == "error" || (envelope.Message != "" && envelope.Text == "" && envelope.StopReason == "") {
+	structured := bytesTrimSpace(envelope.StructuredOutput)
+	hasStructured := len(structured) > 0 && !bytes.Equal(structured, []byte("null"))
+	if envelope.Type == "error" || (envelope.Message != "" && envelope.Text == "" && !hasStructured && envelope.StopReason == "") {
 		return "", firstNonEmpty(envelope.Message, "unknown error"), nil
+	}
+	if hasStructured {
+		return string(structured), "", nil
 	}
 	return envelope.Text, "", nil
 }

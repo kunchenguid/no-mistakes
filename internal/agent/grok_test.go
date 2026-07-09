@@ -182,6 +182,67 @@ func TestParseGrokJSONResult(t *testing.T) {
 	}
 }
 
+func TestParseGrokJSONResult_PrefersStructuredOutput(t *testing.T) {
+	// Real grok --json-schema payloads include both prose/empty text and a
+	// native structuredOutput object. Prefer the constrained object.
+	raw := `{"text":"Here is the result.","stopReason":"EndTurn","structuredOutput":{"ok":true,"summary":"clean"},"sessionId":"s1"}`
+	text, grokErr, err := parseGrokJSONResult([]byte(raw))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if grokErr != "" {
+		t.Fatalf("grokErr = %q", grokErr)
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(text), &got); err != nil {
+		t.Fatalf("preferred text is not JSON: %q (%v)", text, err)
+	}
+	if got["ok"] != true {
+		t.Errorf("ok = %v, want true", got["ok"])
+	}
+	if got["summary"] != "clean" {
+		t.Errorf("summary = %v, want clean", got["summary"])
+	}
+}
+
+func TestParseGrokJSONResult_StructuredOutputWhenTextEmpty(t *testing.T) {
+	raw := `{"text":"","stopReason":"EndTurn","structuredOutput":{"findings":[],"summary":"no issues"}}`
+	text, grokErr, err := parseGrokJSONResult([]byte(raw))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if grokErr != "" {
+		t.Fatalf("grokErr = %q", grokErr)
+	}
+	var got struct {
+		Findings []any  `json:"findings"`
+		Summary  string `json:"summary"`
+	}
+	if err := json.Unmarshal([]byte(text), &got); err != nil {
+		t.Fatalf("unmarshal %q: %v", text, err)
+	}
+	if got.Summary != "no issues" {
+		t.Errorf("summary = %q, want no issues", got.Summary)
+	}
+	if got.Findings == nil {
+		t.Error("findings should be present (empty array)")
+	}
+}
+
+func TestParseGrokJSONResult_FallsBackToTextWhenStructuredNull(t *testing.T) {
+	raw := `{"text":"{\"ok\":true}","stopReason":"EndTurn","structuredOutput":null}`
+	text, grokErr, err := parseGrokJSONResult([]byte(raw))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if grokErr != "" {
+		t.Fatalf("grokErr = %q", grokErr)
+	}
+	if text != `{"ok":true}` {
+		t.Errorf("text = %q, want text fallback", text)
+	}
+}
+
 func TestParseGrokJSONResult_ErrorObject(t *testing.T) {
 	raw := `{"type":"error","message":"Couldn't start session: boom"}`
 	text, grokErr, err := parseGrokJSONResult([]byte(raw))
@@ -351,6 +412,31 @@ printf '%s\n' '{"text":"{\"ok\":true}","stopReason":"EndTurn","sessionId":"s2"}'
 	}
 	t.Logf("fake grok schema-mode args:\n%s", argsText)
 	t.Logf("structured agent output: %s", string(result.Output))
+}
+
+func TestGrokAgent_Run_JSONSchemaPrefersStructuredOutput(t *testing.T) {
+	dir := t.TempDir()
+	schema := `{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}`
+	// Mimic real grok: prose text plus native structuredOutput object.
+	bin := writeFakeGrok(t, dir, `#!/bin/sh
+printf '%s\n' '{"text":"Sure, here you go.","stopReason":"EndTurn","structuredOutput":{"ok":true},"sessionId":"s3"}'
+`, strings.Join([]string{
+		"@echo off",
+		"echo {\"text\":\"Sure, here you go.\",\"stopReason\":\"EndTurn\",\"structuredOutput\":{\"ok\":true},\"sessionId\":\"s3\"}",
+	}, "\r\n"))
+
+	ga := &grokAgent{bin: bin}
+	result, err := ga.Run(context.Background(), RunOpts{
+		Prompt:     "return structured",
+		CWD:        t.TempDir(),
+		JSONSchema: json.RawMessage(schema),
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if string(result.Output) != `{"ok":true}` {
+		t.Fatalf("output = %q, want {\"ok\":true} from structuredOutput", string(result.Output))
+	}
 }
 
 func TestGrokAgent_Run_ReportsStreamError(t *testing.T) {
