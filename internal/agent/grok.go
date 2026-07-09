@@ -108,21 +108,26 @@ func (a *grokAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) 
 	return res, err
 }
 
-// finalizeGrokResult mirrors Claude's native structured-output path when
-// structuredOutput is present, otherwise falls back to the shared
-// finalizeTextResult used by codex/pi/copilot/acpx.
+// finalizeGrokResult prefers non-empty structuredOutput as Result.Output
+// (Claude-shaped) when it validates under the same textValidationSchema
+// rules as finalizeTextResult (optional nulls allowed). On validation
+// failure or empty structuredOutput it falls back to envelope text via
+// finalizeTextResult so recoverable JSON is not hard-failed.
 func finalizeGrokResult(text string, structured json.RawMessage, schema json.RawMessage, usage TokenUsage) (*Result, error) {
 	structured = bytes.TrimSpace(structured)
 	hasStructured := len(structured) > 0 && !bytes.Equal(structured, []byte("null"))
 	if len(schema) > 0 && hasStructured {
-		if err := validateStructuredOutput(structured, schema); err != nil {
+		validationSchema, err := textValidationSchema(schema)
+		if err != nil {
 			return nil, fmt.Errorf("grok structured output: %w", err)
 		}
-		outText := text
-		if outText == "" {
-			outText = string(structured)
+		if err := validateStructuredOutput(structured, validationSchema); err == nil {
+			outText := text
+			if outText == "" {
+				outText = string(structured)
+			}
+			return &Result{Output: structured, Text: outText, Usage: usage}, nil
 		}
-		return &Result{Output: structured, Text: outText, Usage: usage}, nil
 	}
 	return finalizeTextResult("grok", text, schema, usage)
 }

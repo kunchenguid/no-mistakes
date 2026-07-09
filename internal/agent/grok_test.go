@@ -270,6 +270,68 @@ func TestFinalizeGrokResult_FallsBackToTextWhenStructuredNull(t *testing.T) {
 	}
 }
 
+func TestFinalizeGrokResult_AllowsNullOptionalFieldsInStructuredOutput(t *testing.T) {
+	// Pipeline findings schemas mark file/line as optional string/integer
+	// (not null-union). Grok's structuredOutput happy path must accept null
+	// optionals the same way finalizeTextResult does for codex/pi.
+	structured := json.RawMessage(`{"findings":[{"severity":"warning","file":null,"line":null,"description":"x","action":"auto-fix"}],"summary":"1 issue"}`)
+	schema := json.RawMessage(`{
+		"type":"object",
+		"properties":{
+			"findings":{
+				"type":"array",
+				"items":{
+					"type":"object",
+					"properties":{
+						"severity":{"type":"string","enum":["error","warning","info"]},
+						"file":{"type":"string"},
+						"line":{"type":"integer"},
+						"description":{"type":"string"},
+						"action":{"type":"string","enum":["no-op","auto-fix","ask-user"]}
+					},
+					"required":["severity","description","action"]
+				}
+			},
+			"summary":{"type":"string"}
+		},
+		"required":["findings","summary"]
+	}`)
+
+	res, err := finalizeGrokResult("Here are the findings.", structured, schema, TokenUsage{})
+	if err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	if string(res.Output) != string(structured) {
+		t.Fatalf("Output = %s, want Claude-shaped structured raw", res.Output)
+	}
+	if res.Text != "Here are the findings." {
+		t.Errorf("Text = %q, want prose preserved", res.Text)
+	}
+}
+
+func TestFinalizeGrokResult_FallsBackToTextWhenStructuredInvalid(t *testing.T) {
+	// Mismatched structuredOutput must not hard-fail when envelope text
+	// carries recoverable schema-valid JSON (finalizeTextResult path).
+	structured := json.RawMessage(`{"wrong":true}`)
+	text := `{"ok":true,"summary":"from text"}`
+	schema := json.RawMessage(`{"type":"object","properties":{"ok":{"type":"boolean"},"summary":{"type":"string"}},"required":["ok","summary"]}`)
+
+	res, err := finalizeGrokResult(text, structured, schema, TokenUsage{})
+	if err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(res.Output, &got); err != nil {
+		t.Fatalf("Output: %v", err)
+	}
+	if got["ok"] != true || got["summary"] != "from text" {
+		t.Errorf("Output = %s, want text-path parse", res.Output)
+	}
+	if res.Text != text {
+		t.Errorf("Text = %q, want envelope text", res.Text)
+	}
+}
+
 func TestParseGrokJSONResult_ErrorObject(t *testing.T) {
 	raw := `{"type":"error","message":"Couldn't start session: boom"}`
 	text, structured, grokErr, err := parseGrokJSONResult([]byte(raw))
