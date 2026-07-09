@@ -109,16 +109,30 @@ func normalizeMergeableState(raw string) scm.MergeableState {
 }
 
 func azStatusBucket(status string) scm.CheckBucket {
-	switch strings.ToLower(strings.TrimSpace(status)) {
+	normalized := strings.ToLower(strings.TrimSpace(status))
+	switch normalized {
 	case "approved":
 		return scm.CheckBucketPass
 	case "rejected", "broken":
 		return scm.CheckBucketFail
 	case "queued", "running":
 		return scm.CheckBucketPending
-	default:
-		// notApplicable and unknown statuses are omitted so they never gate CI.
+	case "notapplicable":
+		// notApplicable is a path-scoped build policy whose evaluation does not
+		// apply to this PR's changed paths - it is genuinely not
+		// content-influenced, so it is correctly ignored (dropped) and never
+		// gates CI.
 		return ""
+	case "":
+		// No status reported at all: nothing to gate on, drop it.
+		return ""
+	default:
+		// Any other NON-EMPTY status is one this switch does not recognize
+		// (a future or provider-specific value). Unlike notApplicable it is not
+		// known-irrelevant, so it must never be dropped as pass-equivalent:
+		// surface it as pending so an unexpected status can never silently
+		// vanish into an empty check list and manufacture a vacuous green. (B2)
+		return scm.CheckBucketPending
 	}
 }
 

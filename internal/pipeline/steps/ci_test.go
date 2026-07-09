@@ -542,6 +542,115 @@ func TestCIStep_EmptyChecksWaitsDuringGracePeriod(t *testing.T) {
 	}
 }
 
+// TestCIStep_AzureDevOpsEmptyChecksBlocksAfterGrace guards the A1 fix: for a
+// provider whose Capabilities().RequiresChecks is true (Azure DevOps), an empty
+// check list after the grace period must NOT be reported ready. It parks for a
+// human/agent decision instead of emitting NoChecksPassedMsg.
+func TestCIStep_AzureDevOpsEmptyChecksBlocksAfterGrace(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	// Empty policy list = no CI build-validation evaluations for this PR.
+	env := fakeCIAz(t, "active", "succeeded", "[]")
+
+	prURL := "https://dev.azure.com/myorg/myproject/_git/myrepo/pullrequest/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Repo.UpstreamURL = "https://dev.azure.com/myorg/myproject/_git/myrepo"
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 5 * time.Second
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	started := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
+	current := started
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	step := &CIStep{
+		checksGracePeriod:    50 * time.Millisecond,
+		pollIntervalOverride: 100 * time.Millisecond,
+		now:                  func() time.Time { return current },
+		baseBranchTip:        func(context.Context) (string, bool) { return "", false },
+		waitForNextPoll: func(_ context.Context, interval time.Duration) error {
+			current = current.Add(interval)
+			return nil
+		},
+	}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if outcome == nil || !outcome.NeedsApproval {
+		t.Fatalf("outcome = %+v, want NeedsApproval=true (empty ADO checks must park)", outcome)
+	}
+	if !strings.Contains(outcome.Findings, "cannot confirm the PR is validated") {
+		t.Fatalf("outcome.Findings = %q, want no-checks blocked summary", outcome.Findings)
+	}
+	for _, l := range logs {
+		if l == ciNoChecksPassedMsg {
+			t.Fatalf("ADO run emitted NoChecksPassedMsg (vacuous green), logs: %v", logs)
+		}
+	}
+}
+
+// TestCIStep_AzureDevOpsPassingBuildGateGoesGreen is the regression guard that
+// A1/B2 do not over-block: a PR with a real, passing build-validation gate
+// still reports checks passed for Azure DevOps.
+func TestCIStep_AzureDevOpsPassingBuildGateGoesGreen(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	policy := `[{"status":"approved","configuration":{"type":{"displayName":"Build"},"settings":{"displayName":"Build validation"}}}]`
+	env := fakeCIAz(t, "active", "succeeded", policy)
+
+	prURL := "https://dev.azure.com/myorg/myproject/_git/myrepo/pullrequest/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Repo.UpstreamURL = "https://dev.azure.com/myorg/myproject/_git/myrepo"
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 5 * time.Second
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	started := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
+	current := started
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	step := &CIStep{
+		pollIntervalOverride: 100 * time.Millisecond,
+		now:                  func() time.Time { return current },
+		baseBranchTip:        func(context.Context) (string, bool) { return "", false },
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			// Cancel after the first poll observed the passing gate.
+			cancel()
+			return ctx.Err()
+		},
+	}
+	_, err := step.Execute(sctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected open-PR monitoring to continue after passing checks, got %v", err)
+	}
+	found := false
+	for _, l := range logs {
+		if l == ciChecksPassedMsg {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected %q log for passing ADO build gate, got: %v", ciChecksPassedMsg, logs)
+	}
+}
+
 func TestCIStep_LogsWaitingForChecksDuringGracePeriod(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

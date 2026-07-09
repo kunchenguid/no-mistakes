@@ -46,9 +46,17 @@ func TestChecksPassed(t *testing.T) {
 			want: true,
 		},
 		{
-			name: "no checks reported",
+			name: "no checks reported (GitHub keeps ready-on-empty)",
 			logs: []string{NoChecksPassedMsg},
 			want: true,
+		},
+		{
+			// Azure DevOps parks instead of emitting NoChecksPassedMsg, so its
+			// no-checks summary must NOT read back as ready - keeping
+			// ChecksPassed honest for providers that require checks.
+			name: "ADO no-checks summary is not ready",
+			logs: []string{"no CI build-validation policies were observed for this PR - cannot confirm the PR is validated"},
+			want: false,
 		},
 		{
 			name: "still monitoring before checks pass",

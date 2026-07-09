@@ -62,6 +62,8 @@ func handleFakeCLI(mode string) {
 		fakeCIGlabHandler(args)
 	case "ci-glab-seq":
 		fakeCIGlabSequenceHandler(args)
+	case "ci-az":
+		fakeCIAzHandler(args)
 	default:
 		os.Exit(1)
 	}
@@ -460,6 +462,41 @@ func fakeCIGHNoChecksHandler(args []string) {
 	}
 	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json state") {
 		fmt.Println("OPEN")
+		os.Exit(0)
+	}
+	os.Exit(1)
+}
+
+// fakeCIAzHandler emulates the az CLI for Azure DevOps CI-monitoring tests.
+// It answers the availability probe, PR show (status + mergeStatus), and
+// policy list (the CI check surface) from environment-provided fixtures.
+func fakeCIAzHandler(args []string) {
+	joined := strings.Join(args, " ")
+	status := os.Getenv("FAKE_CLI_STATE")
+	if status == "" {
+		status = "active"
+	}
+	mergeStatus := os.Getenv("FAKE_CLI_MERGE_STATUS")
+	if mergeStatus == "" {
+		mergeStatus = "succeeded"
+	}
+	policyJSON := os.Getenv("FAKE_CLI_POLICY")
+	if policyJSON == "" {
+		policyJSON = "[]"
+	}
+
+	switch {
+	case strings.Contains(joined, "extension show"):
+		fmt.Println("{}")
+		os.Exit(0)
+	case strings.Contains(joined, "devops project list"):
+		fmt.Println("proj-id")
+		os.Exit(0)
+	case strings.Contains(joined, "repos pr show"):
+		fmt.Printf("{\"pullRequestId\":42,\"status\":%q,\"mergeStatus\":%q}\n", status, mergeStatus)
+		os.Exit(0)
+	case strings.Contains(joined, "repos pr policy list"):
+		fmt.Println(policyJSON)
 		os.Exit(0)
 	}
 	os.Exit(1)

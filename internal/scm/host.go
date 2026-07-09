@@ -153,6 +153,15 @@ func (c Check) Pending() bool { return c.Bucket == CheckBucketPending }
 type Capabilities struct {
 	MergeableState  bool
 	FailedCheckLogs bool
+	// RequiresChecks reports that an empty check list from GetChecks is NOT
+	// reliable proof that the PR has no CI configured, so it must never be
+	// treated as "passed / ready". Providers whose check surface routinely
+	// returns no evaluations for a PR that is not actually validated (Azure
+	// DevOps build-validation policies) set this true so the CI monitor fails
+	// safe and parks for a human/agent decision instead of reporting a vacuous
+	// green. Providers where an empty list genuinely means "no CI configured"
+	// (GitHub) leave this false and keep their existing ready-on-empty behavior.
+	RequiresChecks bool
 }
 
 // ErrUnsupported is returned by optional Host methods that the provider

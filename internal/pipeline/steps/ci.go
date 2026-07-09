@@ -315,6 +315,17 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 					// CI checks may not be registered yet, keep polling.
 					lastMonitorLog = ""
 					sctx.Log("no CI checks reported yet, waiting for checks to register...")
+				case len(checks) == 0 && host.Capabilities().RequiresChecks:
+					// A1: for providers where an empty check list is NOT reliable
+					// proof that no CI is configured (Azure DevOps build-validation
+					// policies routinely surface no evaluation for an unvalidated
+					// PR), an empty list after the grace period cannot confirm the
+					// PR was validated. Fail safe: park for a human/agent decision
+					// rather than emitting NoChecksPassedMsg and reporting a vacuous
+					// green. This deliberately never routes through cimonitor's
+					// ready-on-"no checks" path, keeping that signal honest.
+					sctx.Log(ciNoChecksBlockedSummary)
+					return ciNoChecksBlockedOutcome(), nil
 				case len(checks) == 0:
 					lastMonitorLog = logCIMonitorStatus(sctx, ciNoChecksPassedMsg, lastMonitorLog)
 				default:

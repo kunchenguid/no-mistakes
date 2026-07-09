@@ -36,6 +36,9 @@ func TestProviderAndCapabilities(t *testing.T) {
 	if caps.FailedCheckLogs {
 		t.Fatal("Capabilities().FailedCheckLogs = true, want false (not implemented)")
 	}
+	if !caps.RequiresChecks {
+		t.Fatal("Capabilities().RequiresChecks = false, want true (empty ADO checks must never be read as ready)")
+	}
 }
 
 func TestAvailableChecksExtensionAndAuth(t *testing.T) {
@@ -329,6 +332,88 @@ func TestGetChecksEmpty(t *testing.T) {
 	}
 	if len(checks) != 0 {
 		t.Fatalf("GetChecks() = %+v, want empty", checks)
+	}
+}
+
+// TestGetChecksSurfacesUnknownStatusAsPending guards the B2 fix: a build
+// validation eval reporting a status this connector does not recognize must be
+// surfaced as pending, never dropped. Dropping it would let an unexpected
+// status silently vanish into an empty check list and manufacture a vacuous
+// green - the exact false-green this fix closes.
+func TestGetChecksSurfacesUnknownStatusAsPending(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHost(map[string]azdoTestResponse{
+		"az repos pr policy list --id 42 --organization " + testOrg + " --output json": {
+			stdout: `[` +
+				`{"status":"someNewStatus","configuration":{"type":{"displayName":"Build"},"settings":{"displayName":"Build validation"}}}` +
+				`]` + "\n",
+		},
+	})
+	checks, err := h.GetChecks(context.Background(), &scm.PR{Number: "42"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 1 {
+		t.Fatalf("len(checks) = %d, want 1 (unknown status must not be dropped): %+v", len(checks), checks)
+	}
+	if checks[0].Bucket != scm.CheckBucketPending {
+		t.Fatalf("checks[0].Bucket = %q, want pending (unknown status surfaced, not passed)", checks[0].Bucket)
+	}
+}
+
+// TestGetChecksNotApplicableStaysIgnoredWithOtherPassingGate is the B2
+// regression guard: a path-scoped notApplicable policy is still correctly
+// dropped (it is genuinely not content-influenced), and a PR whose other real
+// build gate passed still yields a non-empty, all-passing check list so it can
+// go green. B2 must not over-block on notApplicable.
+func TestGetChecksNotApplicableStaysIgnoredWithOtherPassingGate(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHost(map[string]azdoTestResponse{
+		"az repos pr policy list --id 42 --organization " + testOrg + " --output json": {
+			stdout: `[` +
+				`{"status":"notApplicable","configuration":{"type":{"displayName":"Build"},"settings":{"displayName":"Path-scoped build"}}},` +
+				`{"status":"approved","configuration":{"type":{"displayName":"Build"},"settings":{"displayName":"Build validation"}}}` +
+				`]` + "\n",
+		},
+	})
+	checks, err := h.GetChecks(context.Background(), &scm.PR{Number: "42"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 1 {
+		t.Fatalf("len(checks) = %d, want 1 (notApplicable dropped, passing gate kept): %+v", len(checks), checks)
+	}
+	if checks[0].Name != "Build validation" || checks[0].Bucket != scm.CheckBucketPass {
+		t.Fatalf("checks[0] = %+v, want passing 'Build validation'", checks[0])
+	}
+}
+
+func TestAzStatusBucket(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		status string
+		want   scm.CheckBucket
+	}{
+		{name: "approved passes", status: "approved", want: scm.CheckBucketPass},
+		{name: "rejected fails", status: "rejected", want: scm.CheckBucketFail},
+		{name: "broken fails", status: "broken", want: scm.CheckBucketFail},
+		{name: "queued pending", status: "queued", want: scm.CheckBucketPending},
+		{name: "running pending", status: "running", want: scm.CheckBucketPending},
+		{name: "notApplicable dropped", status: "notApplicable", want: ""},
+		{name: "empty dropped", status: "", want: ""},
+		{name: "unknown non-empty surfaced as pending (B2)", status: "someFutureStatus", want: scm.CheckBucketPending},
+	}
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := azStatusBucket(tc.status); got != tc.want {
+				t.Fatalf("azStatusBucket(%q) = %q, want %q", tc.status, got, tc.want)
+			}
+		})
 	}
 }
 
