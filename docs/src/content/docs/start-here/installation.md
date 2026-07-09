@@ -6,7 +6,7 @@ description: All install options, prerequisites, update, and uninstall.
 ## macOS / Linux
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/davidkydd/no-mistakes/main/docs/install.sh | sh
 ```
 
 The installer keeps the real binary in `~/.no-mistakes/bin` and exposes `no-mistakes` through a symlink in `~/.local/bin` or `/usr/local/bin`. That keeps future `no-mistakes update` runs in a user-owned location instead of rewriting a system binary in place.
@@ -18,7 +18,7 @@ Official release binaries installed this way include the default self-hosted tel
 ## Windows (PowerShell)
 
 ```powershell
-irm https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.ps1 | iex
+irm https://raw.githubusercontent.com/davidkydd/no-mistakes/main/docs/install.ps1 | iex
 ```
 
 Installs the binary and restarts the background daemon automatically with `no-mistakes.exe daemon restart`, preferring a managed Task Scheduler task and falling back to a detached daemon if needed. If the restart fails, the install command fails.

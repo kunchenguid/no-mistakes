@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 
-$repo = "kunchenguid/no-mistakes"
+$repo = "davidkydd/no-mistakes"
 $installDir = "$env:LOCALAPPDATA\no-mistakes"
 $arch = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "arm64" } else { "amd64" }
 

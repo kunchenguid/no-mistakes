@@ -144,9 +144,12 @@ jobs:
       needs.checksums.result == 'success' &&
       needs.release-please.outputs.release_created == 'true'
     steps:
-      - name: Publish draft release as prerelease
+      - name: Publish draft release as latest
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.release-please.outputs.tag_name }}
-        run: gh release edit "$TAG" --draft=false --prerelease=true
+        # Publish as the latest stable release (not a prerelease) so the fork's
+        # docs/install.sh and `no-mistakes update` (both query /releases/latest,
+        # which excludes prereleases) can discover and download it.
+        run: gh release edit "$TAG" --draft=false --prerelease=false --latest

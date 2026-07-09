@@ -8,7 +8,7 @@ This walks you through your first gated push. For install options other than the
 ## 1. Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/davidkydd/no-mistakes/main/docs/install.sh | sh
 ```
 
 The installer drops the binary in `~/.no-mistakes/bin`, links it into `~/.local/bin` or `/usr/local/bin`, and restarts the background daemon. If the restart fails, the install command fails.
