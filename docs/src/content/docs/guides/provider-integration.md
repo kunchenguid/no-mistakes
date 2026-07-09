@@ -172,9 +172,19 @@ well as their SSH forms (`git@ssh.dev.azure.com:v3/...`).
   PR descriptions at 4000 characters, so the pipeline builds the body within
   that budget - shedding the Testing section first when needed, then applying
   a final truncation backstop with a visible marker
-- CI status polling - Azure branch policy evaluations (build validation and
-  status checks) are read via `az repos pr policy list` until the PR is
-  completed, abandoned, or the configured `ci_timeout` idle window elapses
+- CI status polling - Azure branch policy evaluations are read via
+  `az repos pr policy list` until the PR is completed, abandoned, or the
+  configured `ci_timeout` idle window elapses. Only content-influenced
+  automation gates are watched: build validation, code coverage, and
+  Component Governance (security + license) status checks. Human review /
+  sign-off / attestation gates (minimum/required reviewers, comment
+  requirements, merge-strategy, work-item linking, Code Review Compliance
+  Policy, Ownership Enforcer, Proof Of Presence) are ignored even when they
+  report `rejected`, because no code change can satisfy them
+- Because an empty policy list on Azure DevOps does not reliably mean "no CI
+  is configured" (a build-validation policy may simply not be queued or
+  evaluated yet), the CI step never reports a vacuous green there: after the
+  grace period an empty check list pauses for a human/agent decision instead
 - Merge-conflict polling and auto-fix from the PR's `mergeStatus`
 
 **What you don't get (yet):**
