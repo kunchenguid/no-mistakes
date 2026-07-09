@@ -349,6 +349,86 @@ func TestParseGrokJSONResult_ErrorObject(t *testing.T) {
 	}
 }
 
+func TestParseGrokJSONResult_CancelledStopReasonFails(t *testing.T) {
+	// Real grok --max-turns can exit with stopReason Cancelled and partial text.
+	// Incomplete runs must not be treated as success when text is non-empty.
+	raw := `{"text":"I'll start listing files.","stopReason":"Cancelled","sessionId":"s1"}`
+	text, structured, grokErr, err := parseGrokJSONResult([]byte(raw))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if text != "I'll start listing files." {
+		t.Errorf("text = %q, want partial text preserved", text)
+	}
+	if structured != nil {
+		t.Errorf("structured = %s, want nil", structured)
+	}
+	if !strings.Contains(grokErr, "Cancelled") {
+		t.Errorf("grokErr = %q, want Cancelled stopReason", grokErr)
+	}
+}
+
+func TestParseGrokJSONResult_StructuredOutputErrorSurfaced(t *testing.T) {
+	// Schema mode with null structuredOutput includes structuredOutputError;
+	// empty text must not become a generic "no text output" only.
+	raw := `{"text":"","stopReason":"EndTurn","structuredOutput":null,"structuredOutputError":"model did not produce structured output"}`
+	text, structured, grokErr, err := parseGrokJSONResult([]byte(raw))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if text != "" {
+		t.Errorf("text = %q, want empty", text)
+	}
+	if structured != nil {
+		t.Errorf("structured = %s, want nil", structured)
+	}
+	if !strings.Contains(grokErr, "model did not produce structured output") {
+		t.Errorf("grokErr = %q, want structuredOutputError", grokErr)
+	}
+}
+
+func TestParseGrokJSONResult_CancelledWithStructuredOutputError(t *testing.T) {
+	raw := `{"text":"{ \"files\": [] }","stopReason":"Cancelled","structuredOutput":null,"structuredOutputError":"model did not produce structured output"}`
+	text, _, grokErr, err := parseGrokJSONResult([]byte(raw))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if text != `{ "files": [] }` {
+		t.Errorf("text = %q", text)
+	}
+	if !strings.Contains(grokErr, "Cancelled") {
+		t.Errorf("grokErr = %q, want Cancelled", grokErr)
+	}
+	if !strings.Contains(grokErr, "model did not produce structured output") {
+		t.Errorf("grokErr = %q, want structuredOutputError detail", grokErr)
+	}
+}
+
+func TestParseGrokStreamingEvents_MaxTurnsAndCancelled(t *testing.T) {
+	events := strings.Join([]string{
+		`{"type":"text","data":"partial work"}`,
+		`{"type":"max_turns_reached"}`,
+		`{"type":"end","stopReason":"Cancelled","sessionId":"abc"}`,
+		"",
+	}, "\n")
+
+	var text string
+	var grokErr string
+	err := parseGrokStreamingEvents(context.Background(), strings.NewReader(events), nil, nil, &text, &grokErr)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if text != "partial work" {
+		t.Errorf("text = %q", text)
+	}
+	if grokErr == "" {
+		t.Fatal("expected grokErr for incomplete run")
+	}
+	if !strings.Contains(grokErr, "max turns") && !strings.Contains(grokErr, "Cancelled") {
+		t.Errorf("grokErr = %q, want max turns or Cancelled", grokErr)
+	}
+}
+
 func TestParseGrokJSONStdout_Success(t *testing.T) {
 	raw := `{"text":"{\"ok\":true}","stopReason":"EndTurn"}`
 	var text, grokErr string
@@ -598,6 +678,61 @@ exit 1
 	}
 	if !strings.Contains(err.Error(), "auth failed") {
 		t.Fatalf("error = %v, want auth failed detail", err)
+	}
+}
+
+func TestGrokAgent_Run_FailsOnCancelledDespitePartialText(t *testing.T) {
+	// Exit 0 with Cancelled + partial text must fail (not accept partial work).
+	dir := t.TempDir()
+	bin := writeFakeGrok(t, dir, `#!/bin/sh
+printf '%s\n' '{"type":"text","data":"partial answer"}'
+printf '%s\n' '{"type":"max_turns_reached"}'
+printf '%s\n' '{"type":"end","stopReason":"Cancelled","sessionId":"s1"}'
+exit 0
+`, strings.Join([]string{
+		"@echo off",
+		"echo {\"type\":\"text\",\"data\":\"partial answer\"}",
+		"echo {\"type\":\"max_turns_reached\"}",
+		"echo {\"type\":\"end\",\"stopReason\":\"Cancelled\",\"sessionId\":\"s1\"}",
+		"exit /b 0",
+	}, "\r\n"))
+
+	ga := &grokAgent{bin: bin}
+	_, err := ga.Run(context.Background(), RunOpts{
+		Prompt: "do work",
+		CWD:    t.TempDir(),
+	})
+	if err == nil {
+		t.Fatal("expected error for Cancelled incomplete run")
+	}
+	if !strings.Contains(err.Error(), "max turns") && !strings.Contains(err.Error(), "Cancelled") {
+		t.Fatalf("error = %v, want incomplete-run signal", err)
+	}
+}
+
+func TestGrokAgent_Run_JSONSchemaSurfacesStructuredOutputError(t *testing.T) {
+	dir := t.TempDir()
+	schema := `{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}`
+	bin := writeFakeGrok(t, dir, `#!/bin/sh
+printf '%s\n' '{"text":"","stopReason":"EndTurn","structuredOutput":null,"structuredOutputError":"model did not produce structured output"}'
+exit 0
+`, strings.Join([]string{
+		"@echo off",
+		"echo {\"text\":\"\",\"stopReason\":\"EndTurn\",\"structuredOutput\":null,\"structuredOutputError\":\"model did not produce structured output\"}",
+		"exit /b 0",
+	}, "\r\n"))
+
+	ga := &grokAgent{bin: bin}
+	_, err := ga.Run(context.Background(), RunOpts{
+		Prompt:     "return structured",
+		CWD:        t.TempDir(),
+		JSONSchema: json.RawMessage(schema),
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "model did not produce structured output") {
+		t.Fatalf("error = %v, want structuredOutputError", err)
 	}
 }
 

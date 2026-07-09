@@ -183,14 +183,37 @@ func grokUserSetApproval(extraArgs []string) bool {
 // grokStreamEvent is one newline-delimited JSON event from
 // --output-format streaming-json.
 type grokStreamEvent struct {
-	Type    string `json:"type"`
-	Data    string `json:"data,omitempty"`
-	Message string `json:"message,omitempty"`
+	Type       string `json:"type"`
+	Data       string `json:"data,omitempty"`
+	Message    string `json:"message,omitempty"`
+	StopReason string `json:"stopReason,omitempty"`
+}
+
+// grokStopReasonSuccess reports whether a Grok stopReason is a normal
+// completed turn. Empty is allowed for payloads that omit the field (error
+// envelopes, older fixtures); any other non-EndTurn value is incomplete.
+func grokStopReasonSuccess(reason string) bool {
+	switch strings.TrimSpace(reason) {
+	case "", "EndTurn":
+		return true
+	default:
+		return false
+	}
+}
+
+// setGrokErrIfEmpty records msg when no more specific error is already set.
+func setGrokErrIfEmpty(grokErr *string, msg string) {
+	if grokErr == nil || msg == "" || *grokErr != "" {
+		return
+	}
+	*grokErr = msg
 }
 
 // parseGrokStreamingEvents reads streaming-json lines, streams text chunks to
 // onChunk, accumulates the final assistant text, and records error messages.
 // Thought events are ignored for the final text (they are internal reasoning).
+// Non-success end stopReasons (e.g. Cancelled) and max_turns_reached set
+// grokErr so partial text is not treated as a completed run.
 func parseGrokStreamingEvents(
 	ctx context.Context,
 	r io.Reader,
@@ -234,6 +257,12 @@ func parseGrokStreamingEvents(
 			if msg := firstNonEmpty(event.Message, event.Data); msg != "" && grokErr != nil {
 				*grokErr = msg
 			}
+		case "max_turns_reached":
+			setGrokErrIfEmpty(grokErr, "max turns reached")
+		case "end":
+			if !grokStopReasonSuccess(event.StopReason) {
+				setGrokErrIfEmpty(grokErr, "stopReason="+strings.TrimSpace(event.StopReason))
+			}
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -273,8 +302,10 @@ func parseGrokJSONStdout(ctx context.Context, r io.Reader, text *string, structu
 }
 
 // parseGrokJSONResult decodes a headless --output-format json payload.
-// Success: {"text":"...","stopReason":"..."} and, with --json-schema,
-// optionally {"structuredOutput":{...}}. Failure: {"type":"error","message":"..."}.
+// Success: {"text":"...","stopReason":"EndTurn"} and, with --json-schema,
+// optionally {"structuredOutput":{...}}. Failure: {"type":"error","message":"..."},
+// non-EndTurn stopReason (e.g. Cancelled / max turns), or a structuredOutputError
+// with no usable structured or text payload.
 // text is always the envelope's text field; structuredOutput is returned
 // separately so finalizeGrokResult can mirror Claude's native field path.
 func parseGrokJSONResult(raw []byte) (text string, structured json.RawMessage, grokErr string, err error) {
@@ -284,11 +315,12 @@ func parseGrokJSONResult(raw []byte) (text string, structured json.RawMessage, g
 	}
 
 	var envelope struct {
-		Type             string          `json:"type"`
-		Message          string          `json:"message"`
-		Text             string          `json:"text"`
-		StopReason       string          `json:"stopReason"`
-		StructuredOutput json.RawMessage `json:"structuredOutput"`
+		Type                  string          `json:"type"`
+		Message               string          `json:"message"`
+		Text                  string          `json:"text"`
+		StopReason            string          `json:"stopReason"`
+		StructuredOutput      json.RawMessage `json:"structuredOutput"`
+		StructuredOutputError string          `json:"structuredOutputError"`
 	}
 	if err := json.Unmarshal(trimmed, &envelope); err != nil {
 		return "", nil, "", fmt.Errorf("decode json result: %w", err)
@@ -298,8 +330,19 @@ func parseGrokJSONResult(raw []byte) (text string, structured json.RawMessage, g
 	if !hasStructured {
 		structured = nil
 	}
+	soErr := strings.TrimSpace(envelope.StructuredOutputError)
 	if envelope.Type == "error" || (envelope.Message != "" && envelope.Text == "" && !hasStructured && envelope.StopReason == "") {
-		return "", nil, firstNonEmpty(envelope.Message, "unknown error"), nil
+		return "", nil, firstNonEmpty(envelope.Message, soErr, "unknown error"), nil
+	}
+	if !grokStopReasonSuccess(envelope.StopReason) {
+		msg := "stopReason=" + strings.TrimSpace(envelope.StopReason)
+		if soErr != "" {
+			msg = msg + ": " + soErr
+		}
+		return envelope.Text, structured, msg, nil
+	}
+	if soErr != "" && envelope.Text == "" && !hasStructured {
+		return "", nil, soErr, nil
 	}
 	return envelope.Text, structured, "", nil
 }
