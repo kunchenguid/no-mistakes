@@ -264,7 +264,9 @@ func TestCIStep_GitLabPendingChecksKeepMonitoringWhenDone(t *testing.T) {
 	sctx.Ctx = ctx
 
 	pollCount := 0
+	frozenNow := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
 	step := &CIStep{
+		now: func() time.Time { return frozenNow },
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
 			if pollCount == 1 {
