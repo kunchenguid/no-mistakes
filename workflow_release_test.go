@@ -89,7 +89,7 @@ func TestReleaseWorkflowEmbedsSelfHostedTelemetryConfig(t *testing.T) {
 }
 
 // Partial-release protection: release-please must create drafts so that a
-// release is never marked "latest" until all binaries and checksums are
+// release is never published until all binaries and checksums are
 // uploaded. A separate finalize job gates the promotion on every asset job
 // succeeding.
 func TestReleasePleaseConfigCreatesDrafts(t *testing.T) {
@@ -152,7 +152,7 @@ func TestReleaseWorkflowDoesNotOverrideReleaseType(t *testing.T) {
 	}
 }
 
-func TestReleaseWorkflowPublishesPrereleaseOnlyAfterAssetsComplete(t *testing.T) {
+func TestReleaseWorkflowPublishesLatestStableOnlyAfterAssetsComplete(t *testing.T) {
 	data, err := os.ReadFile(".github/workflows/release.yml")
 	if err != nil {
 		t.Fatalf("read workflow: %v", err)
@@ -169,15 +169,16 @@ func TestReleaseWorkflowPublishesPrereleaseOnlyAfterAssetsComplete(t *testing.T)
 		"needs.release-please.outputs.release_created == 'true'",
 		"gh release edit",
 		"--draft=false",
-		"--prerelease=true",
+		"--prerelease=false",
+		"--latest",
 	}
 	for _, req := range required {
 		if !strings.Contains(block, req) {
-			t.Fatalf("finalize job must contain %q so a draft is only published as prerelease after every asset job succeeds", req)
+			t.Fatalf("finalize job must contain %q so a draft is only published as latest stable after every asset job succeeds", req)
 		}
 	}
-	if strings.Contains(block, "--latest=true") {
-		t.Fatalf("finalize job must not auto-promote to latest; latest is set manually")
+	if strings.Contains(block, "--prerelease=true") {
+		t.Fatalf("finalize job must publish as stable, not a prerelease; install.sh and `no-mistakes update` query /releases/latest which excludes prereleases")
 	}
 
 	for _, dep := range []string{"release-please", "build-and-upload", "checksums"} {
