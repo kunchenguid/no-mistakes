@@ -402,10 +402,15 @@ func TestPushReceivedReturnsBeforeIntentSummarization(t *testing.T) {
 	// fetch, resolve-ref, config loads) staying well clear of the 3s the
 	// pipeline goroutine's slow agent call would take if it ever ran inline.
 	// Windows CI process-spawn overhead across those several git subprocess
-	// calls is much higher than on macOS/Linux, so the bound needs generous
-	// headroom there instead of the tight 2.5s previously used.
-	if elapsed := time.Since(started); elapsed > 8*time.Second {
-		t.Fatalf("PushReceived took %s, want under 8s", elapsed)
+	// calls is much higher than on macOS/Linux, so Windows gets generous
+	// headroom while non-Windows keeps the tight bound that would catch a
+	// real regression in startRun's synchronous git plumbing.
+	maxElapsed := 2500 * time.Millisecond
+	if runtimeGOOS == "windows" {
+		maxElapsed = 8 * time.Second
+	}
+	if elapsed := time.Since(started); elapsed > maxElapsed {
+		t.Fatalf("PushReceived took %s, want under %s", elapsed, maxElapsed)
 	}
 	if result.RunID == "" {
 		t.Fatal("expected non-empty run ID")
