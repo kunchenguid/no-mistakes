@@ -111,8 +111,9 @@ func (a *grokAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) 
 // finalizeGrokResult prefers non-empty structuredOutput as Result.Output
 // (Claude-shaped) when it validates under the same textValidationSchema
 // rules as finalizeTextResult (optional nulls allowed). On validation
-// failure or empty structuredOutput it falls back to envelope text via
-// finalizeTextResult so recoverable JSON is not hard-failed.
+// failure with recoverable envelope text it falls back via finalizeTextResult;
+// with empty text it returns the structured validation error instead of a
+// generic empty-text failure. Empty structuredOutput falls back to text.
 func finalizeGrokResult(text string, structured json.RawMessage, schema json.RawMessage, usage TokenUsage) (*Result, error) {
 	structured = bytes.TrimSpace(structured)
 	hasStructured := len(structured) > 0 && !bytes.Equal(structured, []byte("null"))
@@ -121,7 +122,11 @@ func finalizeGrokResult(text string, structured json.RawMessage, schema json.Raw
 		if err != nil {
 			return nil, fmt.Errorf("grok structured output: %w", err)
 		}
-		if err := validateStructuredOutput(structured, validationSchema); err == nil {
+		if err := validateStructuredOutput(structured, validationSchema); err != nil {
+			if strings.TrimSpace(text) == "" {
+				return nil, fmt.Errorf("grok structured output: %w", err)
+			}
+		} else {
 			outText := text
 			if outText == "" {
 				outText = string(structured)

@@ -332,6 +332,25 @@ func TestFinalizeGrokResult_FallsBackToTextWhenStructuredInvalid(t *testing.T) {
 	}
 }
 
+func TestFinalizeGrokResult_InvalidStructuredEmptyTextReturnsValidationError(t *testing.T) {
+	// Invalid structuredOutput with empty envelope text must surface the
+	// schema validation error, not collapse to "no text output".
+	structured := json.RawMessage(`{"wrong":true}`)
+	schema := json.RawMessage(`{"type":"object","properties":{"ok":{"type":"boolean"},"summary":{"type":"string"}},"required":["ok","summary"]}`)
+
+	_, err := finalizeGrokResult("", structured, schema, TokenUsage{})
+	if err == nil {
+		t.Fatal("expected validation error, got nil")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "no text output") {
+		t.Fatalf("error = %v, must not collapse to generic empty-text", err)
+	}
+	if !strings.Contains(msg, "structured output") && !strings.Contains(msg, "JSON output") {
+		t.Fatalf("error = %v, want structured validation detail", err)
+	}
+}
+
 func TestParseGrokJSONResult_ErrorObject(t *testing.T) {
 	raw := `{"type":"error","message":"Couldn't start session: boom"}`
 	text, structured, grokErr, err := parseGrokJSONResult([]byte(raw))
