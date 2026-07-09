@@ -411,6 +411,21 @@ func newTestContextWithDBRecords(t *testing.T, ag agent.Agent, workDir, baseSHA,
 	return sctx
 }
 
+// fakeCIAz creates a fake az binary for Azure DevOps CI-monitoring tests.
+// state is the PR status (active/completed/abandoned), mergeStatus the git
+// merge state, and policyJSON the `az repos pr policy list` payload.
+func fakeCIAz(t *testing.T, state, mergeStatus, policyJSON string) []string {
+	t.Helper()
+	binDir := fakeCLIBinDir(t)
+	linkTestBinary(t, binDir, "az")
+	return fakeCLIEnv(binDir, map[string]string{
+		"FAKE_CLI_MODE":         "ci-az",
+		"FAKE_CLI_STATE":        state,
+		"FAKE_CLI_MERGE_STATUS": mergeStatus,
+		"FAKE_CLI_POLICY":       policyJSON,
+	})
+}
+
 // fakeCIGH creates a fake gh binary that responds to CI-related
 // commands (pr view --json state, pr checks --json, pr view --json comments).
 func fakeCIGH(t *testing.T, state, checksJSON string) []string {

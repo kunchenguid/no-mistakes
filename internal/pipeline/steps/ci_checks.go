@@ -186,6 +186,40 @@ func ciMergeabilityOutcome(summary, description string) *pipeline.StepOutcome {
 	}
 }
 
+// ciNoChecksBlockedSummary is the human-facing reason a run parks when a
+// RequiresChecks provider (Azure DevOps) reports no CI checks after the grace
+// period. It is both logged and used as the finding summary.
+const ciNoChecksBlockedSummary = "no CI build-validation policies were observed for this PR - cannot confirm the PR is validated"
+
+// ciNoChecksBlockedOutcome parks the run for a human/agent decision when a
+// provider that requires checks (Capabilities().RequiresChecks) reported an
+// empty check list after the grace period. The whole job of this tool is to
+// not report a PR ready on an ambiguous/absent CI signal, so this fails safe
+// with NeedsApproval instead of a vacuous green.
+//
+// Follow-up (B3, deferred): this cannot yet distinguish "the target branch has
+// no build-validation policy at all" from "a required policy exists but hasn't
+// been queued/evaluated within the grace window". Closing that gap needs an
+// expected-gates cross-check against the repo's branch policies
+// (az repos policy list) to synthesize a pending check for a required-but-
+// not-yet-queued build. Until then both cases correctly park here rather than
+// going green.
+func ciNoChecksBlockedOutcome() *pipeline.StepOutcome {
+	findings := Findings{
+		Summary: ciNoChecksBlockedSummary,
+		Items: []Finding{{
+			Severity:    "warning",
+			Description: "No CI build-validation checks were reported for this PR after the grace period, so the pipeline cannot confirm the PR's changes were validated. A human or the driving agent should confirm whether CI is expected for this PR before it is merged.",
+			Action:      types.ActionAskUser,
+		}},
+	}
+	findingsJSON, _ := json.Marshal(findings)
+	return &pipeline.StepOutcome{
+		NeedsApproval: true,
+		Findings:      string(findingsJSON),
+	}
+}
+
 func ciMonitoringTimeoutOutcome() *pipeline.StepOutcome {
 	findings := Findings{
 		Summary: "CI monitoring timed out before PR was merged or closed",

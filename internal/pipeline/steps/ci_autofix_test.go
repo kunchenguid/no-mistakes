@@ -132,7 +132,9 @@ func TestCIStep_CIAutoFixDisabledWithZero(t *testing.T) {
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
 	pollCount := 0
+	frozenNow := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
 	step := &CIStep{
+		now: func() time.Time { return frozenNow },
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
 			return nil
@@ -330,7 +332,9 @@ func TestCIStep_CIAutoFixRetriesAfterChecksRerun(t *testing.T) {
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
 	pollCount := 0
+	frozenNow := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
 	step := &CIStep{
+		now: func() time.Time { return frozenNow },
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
 			return nil
@@ -604,7 +608,9 @@ func TestCIStep_CIAutoFixRetriesWhenSomeChecksStayFailing(t *testing.T) {
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
 	pollCount := 0
+	frozenNow := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
 	step := &CIStep{
+		now: func() time.Time { return frozenNow },
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
 			return nil
@@ -692,7 +698,9 @@ func TestCIStep_DoesNotRetryOnUnrelatedPendingCheck(t *testing.T) {
 	sctx.Ctx = ctx
 
 	pollCount := 0
+	frozenNow := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
 	step := &CIStep{
+		now: func() time.Time { return frozenNow },
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
 			if pollCount == 3 {
@@ -777,7 +785,9 @@ func TestCIStep_RetriesMergeConflictAfterRerun(t *testing.T) {
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
+	frozenNow := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
 	step := &CIStep{
+		now: func() time.Time { return frozenNow },
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			return nil
 		},
@@ -944,7 +954,9 @@ func TestCIStep_AutoFixNoChanges_CountsAsAttempt(t *testing.T) {
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
 	pollCount := 0
+	frozenNow := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
 	step := &CIStep{
+		now: func() time.Time { return frozenNow },
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
 			return nil

@@ -72,9 +72,12 @@ func (h *Host) Provider() scm.Provider { return scm.ProviderAzureDevOps }
 // Capabilities reports the Azure DevOps feature matrix. Merge status is
 // reliably available from `az repos pr show`. Failed-check log fetching is not
 // yet wired up - the az CLI has no first-class build-log command, so callers
-// gate on FailedCheckLogs and skip it.
+// gate on FailedCheckLogs and skip it. RequiresChecks is true because an empty
+// `az repos pr policy list` is a routine, ambiguous result for an unvalidated
+// PR (no build-validation policy configured, not yet queued, or path-scoped
+// notApplicable) and must never be read as "checks passed".
 func (h *Host) Capabilities() scm.Capabilities {
-	return scm.Capabilities{MergeableState: true, FailedCheckLogs: false}
+	return scm.Capabilities{MergeableState: true, FailedCheckLogs: false, RequiresChecks: true}
 }
 
 // orgArgs scopes a command to the organization. The show/update/policy-list
