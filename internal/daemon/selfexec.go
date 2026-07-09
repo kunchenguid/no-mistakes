@@ -640,7 +640,7 @@ func upsertEnv(env []string, key, value string) []string {
 func EnsureDaemon(p *paths.Paths) error {
 	alive, err := daemonHealthCheck(p)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w (run 'no-mistakes daemon start' to recover)", err)
 	}
 	if alive {
 		return nil
