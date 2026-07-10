@@ -51,7 +51,14 @@ func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 		resumeID = opts.Session.ID
 	}
 	args := a.buildArgs(opts.Prompt, opts.JSONSchema, resumeID)
-	cmd := exec.CommandContext(ctx, a.bin, args...)
+	// On Windows an npm-installed `claude` is a .cmd shim that Go's exec would
+	// run through cmd.exe, whose %* forwarding corrupts a multi-line -p prompt
+	// and, in a console-less daemon, never delivers it to the wrapped claude.exe.
+	// The CLI then starts interactive and emits no result (issue #427). Resolve
+	// the shim to the native claude.exe so exec launches it directly, passing
+	// argv as a proper array. It is a no-op off Windows and for non-shim binaries.
+	bin := resolveAgentBinary(a.bin)
+	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = opts.CWD
 	cmd.Stdin = nil
 	cmd.Env = gitSafeEnv(opts.CWD)
