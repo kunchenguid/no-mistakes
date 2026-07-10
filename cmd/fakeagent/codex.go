@@ -262,15 +262,33 @@ func extractCodexPrompt(args []string) string {
 	return positionals[0]
 }
 
-var promptLineageIDRE = regexp.MustCompile(`lineage id: (\S+)`)
+var promptLineageIDRE = regexp.MustCompile(`lineage (\S+),`)
 
-// substitutePromptLineageID replaces a PROMPT_LINEAGE_ID sentinel in the
-// structured verdict with the lineage id parsed from the verifier prompt.
+// substitutePromptLineageID replaces every PROMPT_LINEAGE_ID sentinel in the
+// structured verdict (including nested batch verdicts) with the first lineage
+// id parsed from the verifier prompt, so single-lineage repair journeys need
+// not hardcode a runtime ULID.
 func substitutePromptLineageID(structured map[string]any, prompt string) {
-	if structured["lineage_id"] != "PROMPT_LINEAGE_ID" {
+	m := promptLineageIDRE.FindStringSubmatch(prompt)
+	if len(m) != 2 {
 		return
 	}
-	if m := promptLineageIDRE.FindStringSubmatch(prompt); len(m) == 2 {
-		structured["lineage_id"] = m[1]
+	substituteLineageSentinel(structured, m[1])
+}
+
+func substituteLineageSentinel(v any, lineageID string) {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, val := range t {
+			if s, ok := val.(string); ok && s == "PROMPT_LINEAGE_ID" {
+				t[k] = lineageID
+			} else {
+				substituteLineageSentinel(val, lineageID)
+			}
+		}
+	case []any:
+		for _, item := range t {
+			substituteLineageSentinel(item, lineageID)
+		}
 	}
 }

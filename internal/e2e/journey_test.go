@@ -385,19 +385,21 @@ func cleanReviewScenario(t *testing.T) string {
           action: auto-fix
       risk_level: high
       risk_rationale: "a blocking bug must be fixed"
-  - match: "Fix exactly one code-review finding"
+  - match: "Fix the following"
     text: "fixed the logic bug"
     edits:
       - path: "repair.txt"
         new: "fixed\n"
     structured:
       summary: "guard the logic bug"
-  - match: "Independently verify whether one specific code-review finding"
+  - match: "Independently verify whether each of the following"
     text: "verified resolved"
     structured:
-      lineage_id: "PROMPT_LINEAGE_ID"
-      status: "resolved"
-      rationale: "the logic bug is now guarded"
+      verdicts:
+        - lineage_id: "PROMPT_LINEAGE_ID"
+          status: "resolved"
+          rationale: "the logic bug is now guarded"
+      new_findings: []
   - match: "branch: review-warning"
     text: "review found a warning"
     structured:
@@ -2886,10 +2888,10 @@ func assertReviewAutoFixRepairRun(t *testing.T, h *Harness) {
 	run := waitForStepStatus(t, h, "review-autofix-repair", types.StepReview, types.StepStatusAwaitingApproval, 60*time.Second)
 
 	invs := h.AgentInvocations()
-	if !sawPromptContaining(invs, "Fix exactly one code-review finding") {
+	if !sawPromptContaining(invs, "Fix the following") {
 		t.Fatalf("expected a routed fixer invocation; invocations:\n%s", summarisePrompts(invs))
 	}
-	if !sawPromptContaining(invs, "Independently verify whether one specific code-review finding") {
+	if !sawPromptContaining(invs, "Independently verify whether each of the following") {
 		t.Fatalf("expected a routed strong verifier invocation; invocations:\n%s", summarisePrompts(invs))
 	}
 

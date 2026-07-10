@@ -117,10 +117,10 @@ Provider failover remains inside a Profile and never advances the quality tier.
 
 **Blocked by:** Apply one fast verified blocking repair.
 
-- [ ] Blocking lineages advance `fix_fast → fix_balanced → authority_strong` exactly, and a failed deterministic check advances the affected batch without spending an intermediate strong-verifier invocation.
-- [ ] All unresolved selected lineages at one tier are fixed together, while resolved or differently tiered lineages do not rerun; unattributable shared-check failures conservatively advance every included lineage.
-- [ ] Patch-caused verifier findings inherit their root lineage’s next tier and remaining ceiling, while unrelated findings create separate roots and cannot disappear through prose or fuzzy-ID matching.
-- [ ] A Sol/Fable fixer can succeed only after a different fresh Sol/Fable-xhigh authority invocation; final-tier check failure, unresolved verdict, inconclusive verdict, or missing adjudication fails closed.
+- [x] Blocking lineages advance `fix_fast → fix_balanced → authority_strong` exactly, and a failed deterministic check advances the affected batch without spending an intermediate strong-verifier invocation.
+- [x] All unresolved selected lineages at one tier are fixed together, while resolved or differently tiered lineages do not rerun; unattributable shared-check failures conservatively advance every included lineage.
+- [x] Patch-caused verifier findings inherit their root lineage’s next tier and remaining ceiling, while unrelated findings create separate roots and cannot disappear through prose or fuzzy-ID matching.
+- [x] A Sol/Fable fixer can succeed only after a different fresh Sol/Fable-xhigh authority invocation; final-tier check failure, unresolved verdict, inconclusive verdict, or missing adjudication fails closed.
 
 ## Apply severity, consent, and unattended policies
 

@@ -16,6 +16,10 @@ type InvocationRequest struct {
 	Purpose types.Purpose
 	Scope   types.InvocationScope
 	Payload RunOpts
+	// Tier selects which Profile in the Purpose's Route to launch, so a repair
+	// coordinator can escalate through the cascade. Zero is the first (and only)
+	// tier for single-tier Routes.
+	Tier int
 }
 
 // ValidateInvocationRequest rejects invalid semantic ownership before any

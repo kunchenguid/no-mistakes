@@ -437,3 +437,39 @@ func TestExecutorSkipsLineagesForLegacyReview(t *testing.T) {
 		t.Fatalf("legacy review created %d lineages, want 0", len(byRun))
 	}
 }
+
+func TestRoutingInvokerLaunchesRequestedTier(t *testing.T) {
+	database, _, run, _ := setupTest(t)
+	scope := reservedReviewScope(t, database, run)
+	native := &recordingRoutedAgent{result: &agent.Result{Output: []byte(`{"summary":"x"}`)}}
+	ri := newRoutingInvoker(&recordingLegacyInvoker{}, config.DefaultRoutingConfig(), database, newProviderCircuits())
+	ri.newAgent = func(types.AgentName, string) (agent.Agent, error) { return native, nil }
+
+	if _, err := ri.Invoke(context.Background(), agent.InvocationRequest{
+		Purpose: types.PurposeStructuredFindingRepair, Tier: 1, Scope: scope, Payload: agent.RunOpts{Prompt: "fix"},
+	}); err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if native.opts.Model != "gpt-5.6-terra" || native.opts.Effort != types.EffortMedium {
+		t.Fatalf("tier 1 model/effort = %q/%q, want gpt-5.6-terra/medium", native.opts.Model, native.opts.Effort)
+	}
+	attempts, _ := database.GetInvocationAttemptsByStepResult(scope.StepResultID)
+	if len(attempts) != 1 || attempts[0].Start.Candidate.Profile != "fix_balanced" || attempts[0].Start.Candidate.Tier != 1 {
+		t.Fatalf("attempt candidate = %+v, want fix_balanced tier 1", attempts[0].Start.Candidate)
+	}
+}
+
+func TestRoutingInvokerRejectsOutOfRangeTier(t *testing.T) {
+	database, _, run, _ := setupTest(t)
+	scope := reservedReviewScope(t, database, run)
+	ri := newRoutingInvoker(&recordingLegacyInvoker{}, config.DefaultRoutingConfig(), database, newProviderCircuits())
+	ri.newAgent = func(types.AgentName, string) (agent.Agent, error) {
+		t.Fatal("no candidate may launch for an out-of-range tier")
+		return nil, nil
+	}
+	if _, err := ri.Invoke(context.Background(), agent.InvocationRequest{
+		Purpose: types.PurposeStructuredFindingRepair, Tier: 9, Scope: scope, Payload: agent.RunOpts{Prompt: "fix"},
+	}); err == nil {
+		t.Fatal("expected an out-of-range tier to fail closed")
+	}
+}

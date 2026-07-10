@@ -6,30 +6,12 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
-
-// repairVerdictSchema is the strong verifier's adjudication of one lineage.
-var repairVerdictSchema = json.RawMessage(`{
-	"type": "object",
-	"properties": {
-		"lineage_id": {"type": "string"},
-		"status": {"type": "string", "enum": ["resolved", "unresolved", "inconclusive"]},
-		"rationale": {"type": "string"}
-	},
-	"required": ["lineage_id", "status", "rationale"]
-}`)
-
-type repairVerdict struct {
-	LineageID string `json:"lineage_id"`
-	Status    string `json:"status"`
-	Rationale string `json:"rationale"`
-}
 
 // repairCheck is one deterministic check the coordinator runs before the strong
 // verifier. Run reports whether the check applies to this repair; an
@@ -39,41 +21,27 @@ type repairCheck struct {
 	Run     func(ctx context.Context) (applicable bool, exitCode int, output string)
 }
 
-// repairTarget is one blocking root finding selected for repair.
-type repairTarget struct {
-	LineageID       string
-	Finding         types.Finding
-	Intent          string
-	BaseSHA         string
-	Tier            int
-	RemainingBudget int
-}
-
-// repairResult is the terminal disposition of one repair cycle.
-type repairResult struct {
-	RepairID  string
-	Resolved  bool
-	Verdict   string
-	Rationale string
-}
-
-// repairCoordinator resolves one blocking root finding through a fresh fixer, a
-// fresh strong verifier, and the deterministic checks in between. Fixer and
-// verifier are separate journaled invocations routed through the provider
-// cascade. Every non-`resolved` outcome terminates safely: the coordinator
-// records the attempt and returns unresolved rather than looping.
+// repairCoordinator resolves blocking finding lineages through fresh fixers,
+// fresh strong verifiers, and the deterministic checks between them, escalating
+// unresolved lineages through the provider-routed quality cascade. Fixer and
+// verifier are separate journaled invocations; every non-resolved outcome is
+// recorded and either escalates or fails closed.
 type repairCoordinator struct {
-	invoker       agent.Invoker
-	db            *db.DB
-	run           *db.Run
-	stepResultID  string
-	workDir       string
-	branch        string
-	defaultBranch string
-	checks        []repairCheck
-	log           func(string)
-	logChunk      func(string)
-	reserveRound  func(trigger string) (*db.StepRound, error)
+	invoker         agent.Invoker
+	db              *db.DB
+	run             *db.Run
+	stepResultID    string
+	workDir         string
+	branch          string
+	defaultBranch   string
+	intent          string
+	baseSHA         string
+	reviewAttemptID string
+	maxTier         int
+	checks          []repairCheck
+	log             func(string)
+	logChunk        func(string)
+	reserveRound    func(trigger string) (*db.StepRound, error)
 }
 
 // fixerPurpose is the routed Purpose whose first tier is fix_fast (Luna/Sonnet).
@@ -82,115 +50,6 @@ const fixerPurpose = types.PurposeStructuredFindingRepair
 // verifierPurpose is the routed Purpose whose route is review_strong; it
 // adjudicates a repaired lineage with a fresh strong invocation.
 const verifierPurpose = types.PurposeNormalAggregateVerification
-
-// attemptRepair runs one fix→checks→verify cycle for the target finding. It
-// never returns an error for an unresolved outcome; an error means the cycle
-// could not be conducted (round reservation, journal, or git failure).
-func (rc *repairCoordinator) attemptRepair(ctx context.Context, target repairTarget) (repairResult, error) {
-	round, err := rc.reserveRound("auto_fix")
-	if err != nil {
-		return repairResult{}, fmt.Errorf("reserve repair round: %w", err)
-	}
-	scope := types.InvocationScope{Kind: types.InvocationScopePipeline, RunID: rc.run.ID, StepResultID: rc.stepResultID, StepRoundID: round.ID}
-	started := time.Now()
-
-	repairID, err := rc.db.StartFindingRepair(db.FindingRepairStart{
-		RunID:           rc.run.ID,
-		LineageID:       target.LineageID,
-		StepResultID:    rc.stepResultID,
-		StepRoundID:     round.ID,
-		Severity:        target.Finding.Severity,
-		Action:          target.Finding.Action,
-		Description:     target.Finding.Description,
-		File:            target.Finding.File,
-		Line:            target.Finding.Line,
-		Tier:            target.Tier,
-		RemainingBudget: target.RemainingBudget,
-	})
-	if err != nil {
-		_ = rc.db.TerminateReservedStepRound(round.ID, db.StepRoundFailed, time.Since(started).Milliseconds())
-		return repairResult{}, fmt.Errorf("persist finding repair: %w", err)
-	}
-	result := repairResult{RepairID: repairID}
-
-	// Terminate safely: record the disposition, complete the round, and return
-	// without escalating or looping.
-	finish := func(verdict, rationale, status string, resolved bool, summary string) (repairResult, error) {
-		if derr := rc.db.ResolveFindingRepair(repairID, verdict, rationale, status); derr != nil {
-			rc.logf("warning: record repair verdict: %v", derr)
-		}
-		if cerr := rc.db.CompleteReservedStepRound(round.ID, nil, ptrOrNil(summary), time.Since(started).Milliseconds()); cerr != nil {
-			return repairResult{}, fmt.Errorf("complete repair round: %w", cerr)
-		}
-		result.Resolved = resolved
-		result.Verdict = verdict
-		result.Rationale = rationale
-		return result, nil
-	}
-
-	preDiff := rc.reviewDiff(ctx, target.BaseSHA)
-
-	// Fresh fixer. Only structured facts reach the fixer: intent, diff, the
-	// finding lineage, and the remaining budget — never a prior transcript.
-	rc.log("repairing blocking finding with a fresh fixer...")
-	fixResult, fixErr := rc.invoker.Invoke(ctx, agent.InvocationRequest{
-		Purpose: fixerPurpose,
-		Scope:   scope,
-		Payload: agent.RunOpts{Prompt: buildFixerPrompt(target, preDiff), CWD: rc.workDir, JSONSchema: commitSummarySchemaJSON, OnChunk: rc.logChunk},
-	})
-	if attemptID := rc.succeededAttemptID(round.ID, fixerPurpose); attemptID != "" {
-		_ = rc.db.SetFindingRepairFixer(repairID, attemptID)
-	}
-	if fixErr != nil {
-		rc.logf("fixer failed: %v", fixErr)
-		return finish("", "", db.RepairStatusFailed, false, "")
-	}
-	summary := extractRepairSummary(fixResult)
-	if err := rc.commitFix(ctx, summary); err != nil {
-		return repairResult{}, fmt.Errorf("commit repair: %w", err)
-	}
-
-	// Applicable deterministic checks run before the verifier. A failed check
-	// terminates safely without spending a verifier invocation.
-	for _, check := range rc.checks {
-		applicable, exitCode, output := check.Run(ctx)
-		if err := rc.db.RecordFindingRepairCheck(repairID, check.Command, applicable, exitCode, output); err != nil {
-			rc.logf("warning: record repair check: %v", err)
-		}
-		if applicable && exitCode != 0 {
-			rc.logf("deterministic check failed (%s), leaving finding unresolved", check.Command)
-			return finish("", "", db.RepairStatusUnresolved, false, summary)
-		}
-	}
-
-	postDiff := rc.reviewDiff(ctx, target.BaseSHA)
-
-	// Fresh strong verifier that explicitly adjudicates the selected lineage.
-	rc.log("verifying the repair with a fresh strong reviewer...")
-	verifyResult, verifyErr := rc.invoker.Invoke(ctx, agent.InvocationRequest{
-		Purpose: verifierPurpose,
-		Scope:   scope,
-		Payload: agent.RunOpts{Prompt: buildVerifierPrompt(target, postDiff), CWD: rc.workDir, JSONSchema: repairVerdictSchema, OnChunk: rc.logChunk},
-	})
-	if attemptID := rc.succeededAttemptID(round.ID, verifierPurpose); attemptID != "" {
-		_ = rc.db.SetFindingRepairVerifier(repairID, attemptID)
-	}
-	if verifyErr != nil {
-		rc.logf("verifier failed: %v", verifyErr)
-		return finish("", "", db.RepairStatusUnresolved, false, summary)
-	}
-
-	verdict, ok := parseRepairVerdict(verifyResult)
-	// Fail closed: only an explicit `resolved` verdict that names exactly this
-	// lineage and carries a rationale succeeds. Missing IDs, silence, malformed
-	// adjudication, `unresolved`, and `inconclusive` all leave it unresolved.
-	if !ok || verdict.Status != db.RepairVerdictResolved || verdict.LineageID != target.LineageID || strings.TrimSpace(verdict.Rationale) == "" {
-		status := db.RepairStatusUnresolved
-		return finish(verdict.Status, verdict.Rationale, status, false, summary)
-	}
-	rc.log("verifier resolved the finding")
-	return finish(db.RepairVerdictResolved, verdict.Rationale, db.RepairStatusResolved, true, summary)
-}
 
 // succeededAttemptID returns the id of the latest succeeded attempt for a
 // purpose in a round, so the coordinator can link the fixer/verifier it drove.
@@ -268,17 +127,6 @@ func (rc *repairCoordinator) logf(format string, args ...any) {
 	}
 }
 
-func parseRepairVerdict(result *agent.Result) (repairVerdict, bool) {
-	if result == nil || result.Output == nil {
-		return repairVerdict{}, false
-	}
-	var verdict repairVerdict
-	if err := json.Unmarshal(result.Output, &verdict); err != nil {
-		return repairVerdict{}, false
-	}
-	return verdict, true
-}
-
 func extractRepairSummary(result *agent.Result) string {
 	if result == nil || result.Output == nil {
 		return ""
@@ -288,65 +136,6 @@ func extractRepairSummary(result *agent.Result) string {
 		return ""
 	}
 	return strings.Join(strings.Fields(s.Summary), " ")
-}
-
-func buildFixerPrompt(target repairTarget, diff string) string {
-	location := ""
-	if target.Finding.File != "" {
-		location = fmt.Sprintf("\nLocation: %s", target.Finding.File)
-		if target.Finding.Line > 0 {
-			location += fmt.Sprintf(":%d", target.Finding.Line)
-		}
-	}
-	intent := strings.TrimSpace(target.Intent)
-	if intent == "" {
-		intent = "(no recorded intent)"
-	}
-	return fmt.Sprintf(`Fix exactly one code-review finding. Apply the smallest correct change that resolves it and nothing else.
-
-Finding (lineage %s, severity %s, action %s):
-%s%s
-
-User intent for the change under review:
-%s
-
-Remaining repair budget: %d escalation tier(s) after this attempt.
-
-Diff currently under review:
-%s
-
-Rules:
-- Address only this finding; make no unrelated changes.
-- Prefer the minimal, targeted fix.
-- Return a one-line commit summary as {"summary": "<what you changed>"}.`,
-		target.LineageID, target.Finding.Severity, target.Finding.Action,
-		target.Finding.Description, location, intent, target.RemainingBudget, diff)
-}
-
-func buildVerifierPrompt(target repairTarget, diff string) string {
-	location := ""
-	if target.Finding.File != "" {
-		location = fmt.Sprintf(" (%s", target.Finding.File)
-		if target.Finding.Line > 0 {
-			location += fmt.Sprintf(":%d", target.Finding.Line)
-		}
-		location += ")"
-	}
-	return fmt.Sprintf(`Independently verify whether one specific code-review finding has been resolved by the latest changes. You did not write the fix; judge it fresh.
-
-Finding lineage id: %s
-Finding%s, severity %s:
-%s
-
-Changes to adjudicate:
-%s
-
-Return a JSON verdict of the form {"lineage_id": %q, "status": "resolved"|"unresolved"|"inconclusive", "rationale": "<one sentence>"}.
-- "resolved": the finding is fully and correctly addressed by these changes.
-- "unresolved": the finding is not addressed, or the change is wrong or incomplete.
-- "inconclusive": the evidence does not let you determine resolution.
-- The lineage_id field MUST be exactly %q.`,
-		target.LineageID, location, target.Finding.Severity, target.Finding.Description, diff, target.LineageID, target.LineageID)
 }
 
 func branchRef(branch string) string {
@@ -375,10 +164,10 @@ type commitSummaryJSON struct {
 	Summary string `json:"summary"`
 }
 
-// maybeRepairReviewFinding routes one blocking auto-fix review finding through a
-// single fresh verified repair before the executor falls through to the approval
-// gate. It runs only when routing is active; a non-resolved outcome terminates
-// safely (the finding remains and the step gates as before).
+// maybeRepairReviewFinding routes every blocking auto-fix review finding through
+// the escalation coordinator before the executor falls through to the approval
+// gate. It runs only when routing is active; unresolved findings terminate
+// safely (they remain and the step gates as before).
 func (e *Executor) maybeRepairReviewFinding(ctx context.Context, sctx *StepContext, run *db.Run, sr *db.StepResult, defaultBranch, reviewRoundID, findingsJSON string, reserveRound func(string) (*db.StepRound, error)) {
 	if sctx.Invoker == nil || e.config == nil || e.config.Routing.IsZero() || !routedPurposes[fixerPurpose] {
 		return
@@ -387,56 +176,64 @@ func (e *Executor) maybeRepairReviewFinding(ctx context.Context, sctx *StepConte
 	if err != nil {
 		return
 	}
-	target, ok := selectBlockingAutoFix(findings.Items)
-	if !ok {
+	blocking := selectAllBlockingAutoFix(findings.Items)
+	if len(blocking) == 0 {
 		return
 	}
-	lineageID := e.lineageForFinding(reviewRoundID, target.ID)
-	if lineageID == "" {
+	reviewAttemptID, byDisplay := e.reviewAttemptLineages(reviewRoundID)
+	if reviewAttemptID == "" {
+		return
+	}
+	var seeds []repairSeed
+	for _, f := range blocking {
+		lineageID := byDisplay[f.ID]
+		if lineageID == "" {
+			continue
+		}
+		seeds = append(seeds, repairSeed{LineageID: lineageID, Finding: f})
+	}
+	if len(seeds) == 0 {
 		return
 	}
 	rc := &repairCoordinator{
-		invoker:       sctx.Invoker,
-		db:            e.db,
-		run:           run,
-		stepResultID:  sr.ID,
-		workDir:       sctx.WorkDir,
-		branch:        run.Branch,
-		defaultBranch: defaultBranch,
-		log:           sctx.Log,
-		logChunk:      sctx.LogChunk,
-		reserveRound:  reserveRound,
+		invoker:         sctx.Invoker,
+		db:              e.db,
+		run:             run,
+		stepResultID:    sr.ID,
+		workDir:         sctx.WorkDir,
+		branch:          run.Branch,
+		defaultBranch:   defaultBranch,
+		intent:          sctx.UserIntent,
+		baseSHA:         run.BaseSHA,
+		reviewAttemptID: reviewAttemptID,
+		maxTier:         e.repairBudget(fixerPurpose, 0),
+		log:             sctx.Log,
+		logChunk:        sctx.LogChunk,
+		reserveRound:    reserveRound,
 	}
-	rt := repairTarget{
-		LineageID:       lineageID,
-		Finding:         target,
-		Intent:          sctx.UserIntent,
-		BaseSHA:         run.BaseSHA,
-		Tier:            0,
-		RemainingBudget: e.repairBudget(fixerPurpose, 0),
-	}
-	if _, err := rc.attemptRepair(ctx, rt); err != nil {
+	if _, err := rc.escalateBatch(ctx, seeds); err != nil {
 		slog.Warn("review repair could not be conducted", "error", err)
 	}
 }
 
-// selectBlockingAutoFix returns the first blocking finding whose action is
-// auto-fix — the single finding this ticket's fast repair targets.
-func selectBlockingAutoFix(items []types.Finding) (types.Finding, bool) {
+// selectAllBlockingAutoFix returns every blocking finding whose action is
+// auto-fix — the batch the escalation coordinator repairs together.
+func selectAllBlockingAutoFix(items []types.Finding) []types.Finding {
+	var out []types.Finding
 	for _, f := range items {
-		if f.Action == types.ActionAutoFix && (f.Severity == "error" || f.Severity == "warning") {
-			return f, true
+		if f.Action == types.ActionAutoFix && isBlockingSeverity(f.Severity) {
+			out = append(out, f)
 		}
 	}
-	return types.Finding{}, false
+	return out
 }
 
-// lineageForFinding resolves the run-wide root lineage id for a review finding's
-// display id, via the succeeded routed review attempt in the review round.
-func (e *Executor) lineageForFinding(reviewRoundID, displayID string) string {
+// reviewAttemptLineages returns the succeeded routed review attempt in a round
+// and a display-id → root-lineage-id map for its findings.
+func (e *Executor) reviewAttemptLineages(reviewRoundID string) (string, map[string]string) {
 	attempts, err := e.db.GetInvocationAttemptsByRound(reviewRoundID)
 	if err != nil {
-		return ""
+		return "", nil
 	}
 	reviewAttemptID := ""
 	for _, a := range attempts {
@@ -445,18 +242,17 @@ func (e *Executor) lineageForFinding(reviewRoundID, displayID string) string {
 		}
 	}
 	if reviewAttemptID == "" {
-		return ""
+		return "", nil
 	}
 	lineages, err := e.db.GetFindingLineagesByAttempt(reviewAttemptID)
 	if err != nil {
-		return ""
+		return "", nil
 	}
+	byDisplay := make(map[string]string, len(lineages))
 	for _, l := range lineages {
-		if l.DisplayID == displayID {
-			return l.ID
-		}
+		byDisplay[l.DisplayID] = l.ID
 	}
-	return ""
+	return reviewAttemptID, byDisplay
 }
 
 // repairBudget returns the escalation tiers remaining in a repair Purpose's

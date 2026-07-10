@@ -73,9 +73,13 @@ func (ri *routingInvoker) invokeRouted(ctx context.Context, request agent.Invoca
 	if len(profiles) == 0 {
 		return nil, fmt.Errorf("route for %q resolved no profile", request.Purpose)
 	}
-	// Initial review always uses the first (strong) tier; an initially
-	// high-risk result records risk but never escalates the discovery tier.
-	tier := 0
+	// The requested Tier selects which Profile in the Route to launch, so a
+	// repair coordinator can escalate through the cascade. Out-of-range tiers
+	// fail closed rather than silently clamping to a weaker or stronger Profile.
+	tier := request.Tier
+	if tier < 0 || tier >= len(profiles) {
+		return nil, fmt.Errorf("purpose %q has no tier %d in a %d-profile route", request.Purpose, tier, len(profiles))
+	}
 	profile := profiles[tier]
 	if len(profile.Candidates) == 0 {
 		return nil, fmt.Errorf("profile %q has no candidate", profile.Name)
