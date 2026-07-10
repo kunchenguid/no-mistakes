@@ -27,6 +27,10 @@ import (
 // StepFactory creates pipeline steps for a run. Defaults to steps.AllSteps.
 type StepFactory func() []pipeline.Step
 
+var recoveredConfigFetchTimeout = 10 * time.Second
+
+var fetchRecoveredRemoteBranch = git.FetchRemoteBranch
+
 // RunManager tracks active pipeline executors and manages run lifecycle.
 type RunManager struct {
 	mu           sync.Mutex
@@ -187,7 +191,9 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 	}
 	var trustedSHA string
 	if repo.DefaultBranch != "" {
-		if err := git.FetchRemoteBranch(ctx, workDir, "origin", repo.DefaultBranch); err != nil {
+		fetchCtx, cancel := context.WithTimeout(ctx, recoveredConfigFetchTimeout)
+		defer cancel()
+		if err := fetchRecoveredRemoteBranch(fetchCtx, workDir, "origin", repo.DefaultBranch); err != nil {
 			slog.Warn("failed to fetch default branch while recovering run; trusted config disabled", "run_id", run.ID, "branch", repo.DefaultBranch, "error", err)
 		} else if sha, err := git.ResolveRef(ctx, workDir, "refs/remotes/origin/"+repo.DefaultBranch); err != nil {
 			slog.Warn("failed to resolve default branch while recovering run; trusted config disabled", "run_id", run.ID, "branch", repo.DefaultBranch, "error", err)

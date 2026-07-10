@@ -2,13 +2,63 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
+	"github.com/kunchenguid/no-mistakes/internal/paths"
 )
+
+func TestLoadRecoveredConfig_BoundsFetchAndFailsClosed(t *testing.T) {
+	oldTimeout := recoveredConfigFetchTimeout
+	recoveredConfigFetchTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { recoveredConfigFetchTimeout = oldTimeout })
+
+	fetchResult := make(chan error, 1)
+	oldFetch := fetchRecoveredRemoteBranch
+	fetchRecoveredRemoteBranch = func(ctx context.Context, _, _, _ string) error {
+		select {
+		case <-ctx.Done():
+			fetchResult <- ctx.Err()
+			return ctx.Err()
+		case <-time.After(time.Second):
+			err := errors.New("fetch context was not bounded")
+			fetchResult <- err
+			return err
+		}
+	}
+	t.Cleanup(func() { fetchRecoveredRemoteBranch = oldFetch })
+
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	workDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workDir, ".no-mistakes.yaml"), []byte("commands:\n  lint: echo pushed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := NewRunManager(nil, p, nil)
+	started := time.Now()
+	cfg, err := mgr.loadRecoveredConfig(context.Background(), &db.Run{ID: "run"}, &db.Repo{DefaultBranch: "main"}, workDir)
+	if err != nil {
+		t.Fatalf("load recovered config: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("load recovered config took %s, want under 1s", elapsed)
+	}
+	if err := <-fetchResult; !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("fetch error = %v, want deadline exceeded", err)
+	}
+	if cfg.Commands.Lint != "" {
+		t.Fatalf("commands.lint = %q, want empty after fetch timeout", cfg.Commands.Lint)
+	}
+}
 
 // TestLoadTrustedRepoConfig_FailClosedOnFetchFailure is the regression test for
 // the supply-chain RCE review item #1: when the default-branch fetch fails,
