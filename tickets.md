@@ -229,10 +229,10 @@ Reject legacy configuration instead of rewriting or aliasing it.
 
 **Blocked by:** Install the dormant 10-gate canary; Route gate-scoped routine work; Route Wizard suggestions in standalone scope; Apply severity, consent, and unattended policies; Route Test evidence and repair; Route Lint, formatting, and repair; Author and independently verify documentation; Seal the publish candidate and make Push transport-only; Route Rebase conflict repair; Verify and republish CI repairs; Gate the final candidate with Verify.
 
-- [ ] The effective configuration, generated defaults, runtime construction, and Wizard contain no single-agent selector, fallback-agent list, arbitrary agent argument or path override, repository agent selector, or numeric per-Step auto-fix limit.
-- [ ] Legacy keys produce strict actionable errors, and no alias, compatibility spelling, automatic rewrite, implicit Profile, sticky fallback, or default-Purpose bridge remains reachable.
-- [ ] Doctor validates normalized runner executables, Profile Candidates, model/effort readiness, failure domains, trusted Route coverage, and provider availability instead of recommending a legacy Agent.
-- [ ] The canary baseline and policy fingerprint commit before the first clean routed gate is accepted, and every subsequent native launch is reachable only through a registered Purpose and immutable Candidate record.
+- [x] The effective configuration, generated defaults, runtime construction, and Wizard contain no single-agent selector, fallback-agent list, arbitrary agent argument or path override, repository agent selector, or numeric per-Step auto-fix limit.
+- [x] Legacy keys produce strict actionable errors, and no alias, compatibility spelling, automatic rewrite, implicit Profile, sticky fallback, or default-Purpose bridge remains reachable.
+- [x] Doctor validates normalized runner executables, Profile Candidates, model/effort readiness, failure domains, trusted Route coverage, and provider availability instead of recommending a legacy Agent.
+- [x] The canary baseline and policy fingerprint commit before the first clean routed gate is accepted, and every subsequent native launch is reachable only through a registered Purpose and immutable Candidate record.
 
 ## Prove the complete cutover end to end
 
