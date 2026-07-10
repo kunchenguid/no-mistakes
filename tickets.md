@@ -205,10 +205,10 @@ A CI failure produces a new patch, runs local deterministic checks, receives fre
 
 **Blocked by:** Apply severity, consent, and unattended policies; Seal the publish candidate and make Push transport-only.
 
-- [ ] CI failure and post-publication conflict repair start at `fix_balanced`, may escalate to `authority_strong`, and use the same finding-lineage and provider-circuit rules as pre-publish repair.
-- [ ] Every CI patch runs relevant local deterministic checks and a fresh strong verifier before commit or remote update.
-- [ ] CI seals and republishes the exact verified SHA, never pushes an unreviewed patch, and never jumps the executor backward to the earlier aggregate Verify Step.
-- [ ] Repeated remote failure consumes the existing lineage budget, while exhausted or inconclusive blocking work fails closed under unattended consent.
+- [x] CI failure and post-publication conflict repair start at `fix_balanced`, may escalate to `authority_strong`, and use the same finding-lineage and provider-circuit rules as pre-publish repair.
+- [x] Every CI patch runs relevant local deterministic checks and a fresh strong verifier before commit or remote update.
+- [x] CI seals and republishes the exact verified SHA, never pushes an unreviewed patch, and never jumps the executor backward to the earlier aggregate Verify Step.
+- [x] Repeated remote failure consumes the existing lineage budget, while exhausted or inconclusive blocking work fails closed under unattended consent.
 
 ## Gate the final candidate with Verify
 

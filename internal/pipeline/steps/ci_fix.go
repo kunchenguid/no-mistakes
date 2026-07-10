@@ -96,8 +96,9 @@ CI logs:
 	}
 	prompt += userIntentPromptSection(sctx)
 
-	sctx.Log("running agent to fix CI issues...")
-	_, err := sctx.InvokeAgent(types.PurposeUnstructuredCIRepair, agent.RunOpts{
+	tier := s.ciRepairTier(sctx)
+	sctx.Log(fmt.Sprintf("running agent to fix CI issues (tier %d)...", tier))
+	_, err := sctx.InvokeAgentTier(types.PurposeUnstructuredCIRepair, tier, agent.RunOpts{
 		Prompt:  prompt,
 		CWD:     sctx.WorkDir,
 		OnChunk: sctx.LogChunk,
@@ -106,7 +107,106 @@ CI logs:
 		return false, fmt.Errorf("agent CI fix: %w", err)
 	}
 
+	// When the agent produced new changes, run local deterministic checks and a
+	// fresh strong verifier BEFORE any commit or remote update. Unverified or
+	// failing work is reverted and fails closed, so CI never republishes an
+	// unreviewed patch.
+	status, err := stepGitRun(sctx, "status", "--porcelain")
+	if err != nil {
+		return false, fmt.Errorf("check CI changes: %w", err)
+	}
+	if strings.TrimSpace(status) != "" {
+		if verr := s.verifyCIPatch(sctx, baseSHA); verr != nil {
+			_, _ = stepGitRun(sctx, "reset", "--hard")
+			_, _ = stepGitRun(sctx, "clean", "-fd")
+			return false, fmt.Errorf("CI patch failed verification: %w", verr)
+		}
+	}
+
 	return s.commitAndPush(sctx)
+}
+
+// ciRepairTier escalates the CI repair from fix_balanced to authority_strong as
+// auto-fix attempts accumulate, mirroring pre-publish repair. The first attempt
+// starts at fix_balanced; later attempts climb the routed cascade.
+func (s *CIStep) ciRepairTier(sctx *pipeline.StepContext) int {
+	maxTier := 0
+	if sctx.Config != nil {
+		if profiles, err := sctx.Config.Routing.ResolveRoute(types.PurposeUnstructuredCIRepair); err == nil && len(profiles) > 0 {
+			maxTier = len(profiles) - 1
+		}
+	}
+	tier := s.ciFixAttempts - 1
+	if tier < 0 {
+		tier = 0
+	}
+	if tier > maxTier {
+		tier = maxTier
+	}
+	return tier
+}
+
+// verifyCIPatch runs the configured local deterministic checks and a fresh
+// strong verifier over the uncommitted CI patch. Any failing check, an
+// inconclusive verifier, or a blocking finding is returned as an error so the
+// caller fails closed without publishing.
+func (s *CIStep) verifyCIPatch(sctx *pipeline.StepContext, baseSHA string) error {
+	for _, chk := range []struct{ name, cmd string }{
+		{"test", sctx.Config.Commands.Test},
+		{"lint", sctx.Config.Commands.Lint},
+	} {
+		if strings.TrimSpace(chk.cmd) == "" {
+			continue
+		}
+		sctx.Log(fmt.Sprintf("running local %s check on CI patch...", chk.name))
+		output, exitCode, err := runStepShellCommand(sctx, chk.cmd)
+		if err != nil {
+			return fmt.Errorf("run %s check: %w", chk.name, err)
+		}
+		if exitCode != 0 {
+			return fmt.Errorf("local %s check failed (exit %d)", chk.name, exitCode)
+		}
+		_ = output
+	}
+
+	result, err := sctx.InvokeAgent(types.PurposeEscalatedAggregateVerification, agent.RunOpts{
+		Prompt:     buildCIVerifyPrompt(sctx, baseSHA),
+		CWD:        sctx.WorkDir,
+		JSONSchema: findingsSchema,
+		OnChunk:    sctx.LogChunk,
+	})
+	if err != nil {
+		return fmt.Errorf("strong verifier inconclusive: %w", err)
+	}
+	if result == nil || result.Output == nil {
+		return fmt.Errorf("strong verifier returned no structured findings")
+	}
+	findings, err := types.ParseFindingsJSON(string(result.Output))
+	if err != nil {
+		return fmt.Errorf("strong verifier returned unparseable output: %w", err)
+	}
+	if hasBlockingFindings(findings.Items) {
+		return fmt.Errorf("strong verifier rejected the CI patch: %s", findings.Summary)
+	}
+	return nil
+}
+
+func buildCIVerifyPrompt(sctx *pipeline.StepContext, baseSHA string) string {
+	prompt := fmt.Sprintf(
+		`You are independently verifying a CI-repair patch before it is republished.
+
+Base commit: %s
+
+The uncommitted changes in the worktree were produced to fix failing CI checks or a merge conflict. Verify them:
+- Confirm the patch actually addresses the failure without introducing correctness, security, or data-loss regressions.
+- Confirm the change is internally coherent and preserves the intent of the original work.
+- Treat inconclusive or unverifiable evidence as a blocking concern rather than a pass.
+
+Return structured findings. Use severity "error" or "warning" for anything that must block republishing, and return an empty findings list only when the patch is fully verified.`,
+		baseSHA,
+	)
+	prompt += userIntentPromptSection(sctx)
+	return prompt
 }
 
 // commitAndPush commits any uncommitted changes and force-pushes to the
@@ -176,6 +276,12 @@ func (s *CIStep) pushUpdatedHeadSHA(sctx *pipeline.StepContext, newHeadSHA strin
 	sctx.Run.HeadSHA = newHeadSHA
 	if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, newHeadSHA); err != nil {
 		return false, err
+	}
+	// Seal the exact republished candidate. Best-effort: the verified SHA is
+	// already published under the force-with-lease protections, so a
+	// bookkeeping-seal failure must not fail an otherwise successful republish.
+	if _, err := sctx.DB.CreateSeal(sctx.Run.ID, newHeadSHA, "ci_republish"); err != nil {
+		slog.Warn("failed to seal CI republished candidate", "run", sctx.Run.ID, "sha", newHeadSHA, "error", err)
 	}
 
 	sctx.Log("committed and pushed fixes")

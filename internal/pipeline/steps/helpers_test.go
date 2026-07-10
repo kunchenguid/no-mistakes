@@ -2,6 +2,7 @@ package steps
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -26,11 +27,24 @@ type mockAgent struct {
 	name  string
 	runFn func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error)
 	calls []agent.RunOpts
+	// ciVerifierOutput overrides the CI-patch verifier verdict the mock answers
+	// automatically. Empty means a clean (no-findings) verdict.
+	ciVerifierOutput string
 }
 
 func (m *mockAgent) Name() string { return m.name }
 
 func (m *mockAgent) Run(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+	// The CI-patch verifier is a separate strong invocation; the mock answers it
+	// directly so retry-logic tests only model the fixer. It is not recorded as a
+	// fixer call and does not reach runFn.
+	if strings.Contains(opts.Prompt, "independently verifying a CI-repair patch") {
+		out := m.ciVerifierOutput
+		if out == "" {
+			out = `{"findings":[]}`
+		}
+		return &agent.Result{Output: json.RawMessage(out)}, nil
+	}
 	m.calls = append(m.calls, opts)
 	if m.runFn != nil {
 		return m.runFn(ctx, opts)

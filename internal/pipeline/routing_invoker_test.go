@@ -122,9 +122,9 @@ func TestRoutingInvokerDelegatesUnmigratedPurpose(t *testing.T) {
 	}
 
 	if _, err := ri.Invoke(context.Background(), agent.InvocationRequest{
-		Purpose: types.PurposeUnstructuredCIRepair,
+		Purpose: types.Purpose("legacy_only_purpose"),
 		Scope:   scope,
-		Payload: agent.RunOpts{Prompt: "verify docs"},
+		Payload: agent.RunOpts{Prompt: "legacy path"},
 	}); err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
