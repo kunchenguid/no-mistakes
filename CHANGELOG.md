@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.34.1](https://github.com/kunchenguid/no-mistakes/compare/v1.34.0...v1.34.1) (2026-07-10)
+
+
+### Bug Fixes
+
+* **cli:** guard destructive daemon lifecycle commands against active runs ([#415](https://github.com/kunchenguid/no-mistakes/issues/415)) ([493fc69](https://github.com/kunchenguid/no-mistakes/commit/493fc69d62b3d6b841080233230ce90c5fcf7b6e))
+* **config:** fail gate validation when no pipeline agent is runnable ([#437](https://github.com/kunchenguid/no-mistakes/issues/437)) ([3752c1a](https://github.com/kunchenguid/no-mistakes/commit/3752c1a0fb7b76ff40f83143eea799fbd6e7d5b0))
+* **daemon:** bound IPC connect attempts with a configurable timeout ([#403](https://github.com/kunchenguid/no-mistakes/issues/403)) ([c663aee](https://github.com/kunchenguid/no-mistakes/commit/c663aeee95d34b07351c3a0fbd105acbfcf5ac3a))
+* **update:** make --version a side-effect-free read-only probe ([#423](https://github.com/kunchenguid/no-mistakes/issues/423)) ([65e37bc](https://github.com/kunchenguid/no-mistakes/commit/65e37bcce93507fea3680abd28bcb9f0ace1b077))
+* **winproc:** suppress console window flashing for child processes on windows ([#418](https://github.com/kunchenguid/no-mistakes/issues/418)) ([7625211](https://github.com/kunchenguid/no-mistakes/commit/7625211125c399c9665ff7e7edc1dd8aa17af075))
+
 ## [1.34.0](https://github.com/kunchenguid/no-mistakes/compare/v1.33.0...v1.34.0) (2026-07-07)
 
 
