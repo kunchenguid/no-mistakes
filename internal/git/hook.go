@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -22,7 +23,24 @@ func PostReceiveHookScript() string {
 	if err != nil {
 		exe = "no-mistakes"
 	}
-	return postReceiveHookScript(exe)
+	return postReceiveHookScript(hookBinPath(exe))
+}
+
+// hookBinPath normalizes the no-mistakes executable path for embedding in the
+// POSIX post-receive hook. On Windows os.Executable returns a backslash path
+// (e.g. C:\Users\me\AppData\Local\no-mistakes\no-mistakes.exe). Git always runs
+// the hook through a POSIX shell (Git for Windows' bundled sh, or Cygwin's sh),
+// never cmd.exe or PowerShell, regardless of the pushing client. Cygwin's sh
+// consumes the backslashes as escapes, so the embedded path fails to exec with
+// "command not found" (issue #427). A forward-slash Windows path
+// (C:/Users/me/...) runs under both shells (Git for Windows' sh tolerates the
+// backslash form too, but forward slashes are safe for both), so we convert.
+// No-op off Windows, where paths already use forward slashes.
+func hookBinPath(exe string) string {
+	if runtime.GOOS == "windows" {
+		return strings.ReplaceAll(exe, "\\", "/")
+	}
+	return exe
 }
 
 func postReceiveHookScript(command string) string {
