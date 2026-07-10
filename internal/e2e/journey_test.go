@@ -586,21 +586,18 @@ func assertDoctor(t *testing.T, h *Harness) {
 		"will be created on first use",
 		"daemon",
 		"stopped",
-		"Agents",
-		"claude",
+		"Routing",
+		"contract",
 		"codex",
-		"rovodev",
-		"opencode",
-		"pi",
-		"not found",
+		"claude",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("doctor output should contain %q, got:\n%s", want, out)
 		}
 	}
-	for _, agentName := range []string{"claude", "codex", "opencode"} {
-		if !strings.Contains(out, filepath.Join(h.BinDir, agentName)) {
-			t.Errorf("doctor output should report fake %s path, got:\n%s", agentName, out)
+	for _, runner := range []string{"codex", "claude"} {
+		if !strings.Contains(out, filepath.Join(h.BinDir, runner)) {
+			t.Errorf("doctor output should report fake %s runner path, got:\n%s", runner, out)
 		}
 	}
 	if strings.Contains(out, "some checks failed") {

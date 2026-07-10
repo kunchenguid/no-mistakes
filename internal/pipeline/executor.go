@@ -193,6 +193,10 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 		}
 	}
 
+	// Freeze the canary baseline + policy fingerprint before the first clean
+	// routed gate is accepted, so the routed cohort compares against a
+	// pre-routing baseline that excludes this run.
+	e.maybeActivateCanary(ctx, run, workDir)
 	// Mark run as completed
 	if err := e.db.UpdateRunStatus(run.ID, types.RunCompleted); err != nil {
 		return fmt.Errorf("update run status: %w", err)

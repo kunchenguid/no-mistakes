@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -484,5 +485,39 @@ func TestExecutorReservesRoundAndInvocationContextBeforeAgentLaunch(t *testing.T
 	}
 	if attempts[0].Terminal == nil || attempts[0].Terminal.Outcome != types.InvocationOutcomeSucceeded {
 		t.Fatalf("invocation terminal = %+v, want succeeded", attempts[0].Terminal)
+	}
+}
+
+// TestExecutor_ActivatesCanaryBeforeFirstCleanGate proves the routing canary is
+// frozen with the policy fingerprint the first time a run completes cleanly, so
+// the baseline captures pre-routing runs and the routed cohort records the
+// exact policy it ran under.
+func TestExecutor_ActivatesCanaryBeforeFirstCleanGate(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := gitInitTestDir(t)
+	cfg := &config.Config{Routing: config.DefaultRoutingConfig()}
+	steps := []Step{
+		newPassStep(types.StepReview),
+		newPassStep(types.StepTest),
+		newPassStep(types.StepLint),
+	}
+	exec := NewExecutor(database, p, cfg, nil, steps, nil)
+	if err := exec.Execute(context.Background(), run, repo, workDir); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	activated, err := database.IsCanaryActivated()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !activated {
+		t.Fatal("canary must be activated after the first clean routed gate")
+	}
+	report, err := database.GetCanaryReport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Fingerprint != cfg.Routing.Fingerprint() {
+		t.Fatalf("canary fingerprint = %q, want routing fingerprint %q", report.Fingerprint, cfg.Routing.Fingerprint())
 	}
 }

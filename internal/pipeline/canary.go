@@ -26,6 +26,37 @@ func (e *Executor) recordCanaryCohort(ctx context.Context, run *db.Run, workDir 
 	}
 }
 
+// maybeActivateCanary freezes the routing canary the first time a run is about
+// to complete cleanly under the routing policy. It records the policy
+// fingerprint and freezes the ten most recent completed runs as the
+// pre-routing baseline BEFORE this run is marked completed, so the routed
+// cohort this run seeds is compared against a baseline that excludes it. It is
+// advisory-only and never affects the run outcome.
+func (e *Executor) maybeActivateCanary(ctx context.Context, run *db.Run, workDir string) {
+	activated, err := e.db.IsCanaryActivated()
+	if err != nil {
+		slog.Warn("canary activation check failed", "run", run.ID, "error", err)
+		return
+	}
+	if activated {
+		return
+	}
+	fingerprint := ""
+	if e.config != nil {
+		fingerprint = e.config.Routing.Fingerprint()
+	}
+	changed := func(baseSHA, headSHA string) (int, int, bool) {
+		files, lines := canaryChangedStats(ctx, workDir, baseSHA, headSHA)
+		if files < 0 {
+			return 0, 0, false
+		}
+		return files, lines, true
+	}
+	if _, err := e.db.ActivateCanary(fingerprint, changed); err != nil {
+		slog.Warn("canary activation failed", "run", run.ID, "error", err)
+	}
+}
+
 // canaryChangedStats returns the changed-file and changed-line counts for a
 // run's diff, or (-1, -1) when the diff is unavailable. Binary files count
 // toward files but contribute no line deltas.

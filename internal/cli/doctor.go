@@ -4,12 +4,14 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/kunchenguid/no-mistakes/internal/winproc"
 	"github.com/spf13/cobra"
 )
@@ -98,26 +100,32 @@ func newDoctorCmd() *cobra.Command {
 					}
 				}
 
-				agents := []struct {
-					name   string
-					binary string
-				}{
-					{"claude", "claude"},
-					{"codex", "codex"},
-					{"rovodev", "acli"},
-					{"opencode", "opencode"},
-					{"pi", "pi"},
-					{"copilot", "copilot"},
-					{"acpx", "acpx"},
-				}
+
 				fmt.Fprintln(w)
-				fmt.Fprintf(w, "  %s\n", sCyan.Render("Agents"))
-				for _, a := range agents {
-					label := fmt.Sprintf("%-14s", a.name)
-					if path, err := exec.LookPath(a.binary); err != nil {
-						warn(label, "not found")
+				fmt.Fprintf(w, "  %s\n", sCyan.Render("Routing"))
+
+				routing := config.DefaultRoutingConfig()
+				if p != nil {
+					if gc, gerr := config.LoadGlobal(p.ConfigFile()); gerr != nil {
+						fail("config        ", gerr.Error())
+						allOK = false
+					} else if !gc.Routing.IsZero() {
+						routing = gc.Routing
+					}
+				}
+				if err := routing.Validate(); err != nil {
+					fail("contract      ", err.Error())
+					allOK = false
+				} else {
+					ok("contract      ", fmt.Sprintf("valid: %d profiles, %d purposes routed", len(routing.Profiles), len(routing.Routes)))
+				}
+				for _, name := range sortedDoctorRunners(routing.Runners) {
+					spec := routing.Runners[name]
+					label := fmt.Sprintf("%-14s", name)
+					if path, lerr := exec.LookPath(spec.Executable); lerr != nil {
+						warn(label, fmt.Sprintf("%s not found (%s provider)", spec.Executable, spec.FailureDomain))
 					} else {
-						ok(label, path)
+						ok(label, fmt.Sprintf("%s (%s provider)", path, spec.FailureDomain))
 					}
 				}
 
@@ -150,4 +158,15 @@ func newDoctorCmd() *cobra.Command {
 			})
 		},
 	}
+}
+
+// sortedDoctorRunners returns the routing runner names in a stable order so the
+// doctor report is deterministic.
+func sortedDoctorRunners(m map[types.Runner]config.RunnerSpec) []types.Runner {
+	out := make([]types.Runner, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
 }
