@@ -8,7 +8,7 @@ Most implementation code lives under `internal/`.
 
 **Environment**
 
-- Go version: `1.25.0` from `go.mod`
+- Go version: see `go.mod`
 - Build tooling: standard Go toolchain plus `Makefile`
 - CLI/UI libraries: `cobra`, `bubbletea`, `bubbles`, `lipgloss`
 - Database: SQLite via `modernc.org/sqlite`
@@ -200,3 +200,10 @@ Safest local verification sequence after non-trivial changes:
 
 - Whenever you must bring in new dependencies, check latest documentation for knowledge, and discuss with the user.
 - Always use test driven development for bug fixes and feature development.
+
+## Maintaining this file
+
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.
+When updating this file, preserve this bar for all agents and keep entries concise.
