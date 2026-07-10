@@ -94,6 +94,7 @@ type RepoConfig struct {
 	AutoFix           AutoFixRaw `yaml:"auto_fix"`
 	Intent            IntentRaw  `yaml:"intent"`
 	Test              TestRaw    `yaml:"test"`
+	PR                PRRaw      `yaml:"pr"`
 }
 
 func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
@@ -105,6 +106,7 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 		AutoFix           AutoFixRaw `yaml:"auto_fix"`
 		Intent            IntentRaw  `yaml:"intent"`
 		Test              TestRaw    `yaml:"test"`
+		PR                PRRaw      `yaml:"pr"`
 	}
 	var raw repoConfigRaw
 	if err := value.Decode(&raw); err != nil {
@@ -118,6 +120,7 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 	c.AutoFix = raw.AutoFix
 	c.Intent = raw.Intent
 	c.Test = raw.Test
+	c.PR = raw.PR
 	return nil
 }
 
@@ -167,6 +170,7 @@ type Config struct {
 	AutoFix              AutoFix
 	Intent               Intent
 	Test                 Test
+	PR                   PR
 }
 
 // TestRaw is the YAML representation of test-step settings.
@@ -210,6 +214,17 @@ type Intent struct {
 	Threshold       float64
 	SlackDays       int
 	DisabledReaders map[string]bool
+}
+
+// PRRaw is the YAML representation of PR-step settings.
+// Pointer fields distinguish "not set" (nil) from explicit zero/false values.
+type PRRaw struct {
+	Draft *bool `yaml:"draft"`
+}
+
+// PR is the resolved PR-step config.
+type PR struct {
+	Draft bool
 }
 
 type agentList []types.AgentName
@@ -856,7 +871,7 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 // branch — this blocks the supply-chain vector for repos that ship
 // .no-mistakes.yaml only on feature branches.
 //
-// Non-executing fields (ignore patterns, auto-fix, intent, test) are always
+// Non-executing fields (ignore patterns, auto-fix, intent, test, pr) are always
 // taken from the pushed copy, matching prior behavior, since they cannot
 // run arbitrary shell or select a process.
 func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *RepoConfig {
@@ -950,6 +965,20 @@ func applyTestOverrides(dst *Test, src *TestRaw) {
 	}
 }
 
+// prDefaults returns the default PR-step settings. Draft is on by default:
+// every PR opens as a draft unless a repo opts out with pr.draft: false in
+// its .no-mistakes.yaml.
+func prDefaults() PR {
+	return PR{Draft: true}
+}
+
+// applyPROverrides applies non-nil raw values onto resolved defaults.
+func applyPROverrides(dst *PR, src *PRRaw) {
+	if src.Draft != nil {
+		dst.Draft = *src.Draft
+	}
+}
+
 // autoFixDefaults returns the default auto-fix configuration.
 func autoFixDefaults() AutoFix {
 	return AutoFix{
@@ -1021,6 +1050,9 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 	applyTestOverrides(&test, &global.Test)
 	applyTestOverrides(&test, &repo.Test)
 
+	pr := prDefaults()
+	applyPROverrides(&pr, &repo.PR)
+
 	cfg := &Config{
 		Agent:                global.Agent,
 		Agents:               copyAgents(global.Agents),
@@ -1036,6 +1068,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		AutoFix:              af,
 		Intent:               intent,
 		Test:                 test,
+		PR:                   pr,
 	}
 
 	if repo.Agent != "" {

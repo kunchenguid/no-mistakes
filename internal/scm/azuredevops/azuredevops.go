@@ -150,6 +150,9 @@ func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PR
 		"--title", content.Title,
 		"--description", clampDescription(content.Body),
 	}
+	if content.Draft {
+		args = append(args, "--draft", "true")
+	}
 	args = append(args, h.scopeArgs()...)
 	args = append(args, "--output", "json")
 	out, err := outputJSON(h.cmd(ctx, "az", args...))
@@ -163,6 +166,12 @@ func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PR
 	return h.toPR(&pr), nil
 }
 
+// UpdatePR does not apply content.Draft even though az repos pr update
+// supports --draft: the PR step's only UpdatePR call site re-runs on every
+// pipeline re-run against an existing PR (e.g. a follow-up push), so forcing
+// --draft there would silently re-draft a PR a human already marked ready
+// for review, defeating the "explicit human mark-ready" workflow pr.draft
+// exists for. Draft state is only set at creation time.
 func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) (*scm.PR, error) {
 	id := h.prID(pr)
 	if id == "" {

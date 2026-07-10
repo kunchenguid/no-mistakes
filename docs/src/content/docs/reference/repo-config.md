@@ -6,7 +6,7 @@ description: All fields for .no-mistakes.yaml.
 Per-repo configuration lives in `.no-mistakes.yaml` at the root of your repository.
 
 :::caution[Security: code-executing fields are read from the default branch]
-`commands.*` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, and `agent` selects which process launches there (including ordered fallback lists and `acp:` targets) with the maintainer's credentials. To prevent a supply-chain attack where a contributor lands a hostile value on a gated branch, the daemon always reads **`commands` and `agent` from your default branch** (e.g. `origin/main`), never from the pushed SHA, and reads them at the exact commit a fresh fetch resolved (so a stale `origin/<default>` ref cannot serve a value the live default branch removed). If the fetch fails, both fields are forced empty — the run proceeds on built-in defaults rather than falling back to a potentially stale or hostile copy. Commit the `commands` and `agent` you want the gate to run to your default branch. Non-executing fields (`ignore_patterns`, `auto_fix`, `intent`, `test`) are still read from the pushed branch.
+`commands.*` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, and `agent` selects which process launches there (including ordered fallback lists and `acp:` targets) with the maintainer's credentials. To prevent a supply-chain attack where a contributor lands a hostile value on a gated branch, the daemon always reads **`commands` and `agent` from your default branch** (e.g. `origin/main`), never from the pushed SHA, and reads them at the exact commit a fresh fetch resolved (so a stale `origin/<default>` ref cannot serve a value the live default branch removed). If the fetch fails, both fields are forced empty — the run proceeds on built-in defaults rather than falling back to a potentially stale or hostile copy. Commit the `commands` and `agent` you want the gate to run to your default branch. Non-executing fields (`ignore_patterns`, `auto_fix`, `intent`, `test`, `pr`) are still read from the pushed branch.
 
 If you genuinely want per-branch `commands` and `agent` (for example, a single-developer repo where you trust your own feature branches), opt in with [`allow_repo_commands: true`](#allow_repo_commands) in this same file on your default branch. This re-enables the previous behavior with eyes open. The switch is read only from the trusted default-branch copy, so a contributor cannot self-enable it from a pushed branch.
 :::
@@ -43,6 +43,9 @@ test:
   evidence:
     store_in_repo: true
     dir: .no-mistakes/evidence
+
+pr:
+  draft: false
 ```
 
 ## Fields
@@ -198,3 +201,27 @@ By default, test evidence stays in a temporary directory keyed by run ID and is 
 Set `store_in_repo: true` to write evidence under `<dir>/<branch-slug>` inside the worktree so push can commit and publish it with the branch.
 Branch slashes become nested directories, unsafe branch characters are replaced, and an empty branch slug falls back to the run ID.
 If `dir` is absolute, escapes the worktree, points into `.git`, crosses a symlink, or is ignored by Git, no-mistakes falls back to temporary evidence storage for that run.
+
+### pr.draft
+
+Open pull/merge requests as drafts instead of ready-for-review.
+
+| | |
+|---|---|
+| Type | `bool` |
+| Default | `true` |
+
+Every PR opens as a draft by default, requiring an explicit human "mark ready" step before anyone is notified for review. Set `pr.draft: false` in a repo's `.no-mistakes.yaml` to opt that repo out and open PRs ready-for-review instead.
+
+Applied only when the PR/MR is first created. It is not re-applied on later updates (e.g. a follow-up push to an already-open PR), so marking a PR ready for review in the GitHub/GitLab/Azure DevOps UI sticks - a subsequent pipeline run does not silently re-draft it.
+
+Provider support:
+
+| Provider | Behavior |
+|---|---|
+| GitHub | `gh pr create --draft`. |
+| GitLab | `glab mr create --draft`. |
+| Azure DevOps | `az repos pr create --draft true`. |
+| Bitbucket Cloud | Ignored - Bitbucket Cloud has no draft-PR concept; PRs always open ready-for-review there regardless of this setting. |
+
+This is a repo-level-only setting; there is no global default.

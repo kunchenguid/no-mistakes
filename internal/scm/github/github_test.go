@@ -143,6 +143,45 @@ func TestCreatePRStreamsBodyThroughStdin(t *testing.T) {
 	}
 }
 
+func TestCreatePRPassesDraftFlag(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr create --head feature/draft --base main --repo test/repo --title fix: draft me --body-file - --draft": {
+			stdout: "https://github.com/test/repo/pull/7\n",
+		},
+	}), nil, "", "test/repo")
+
+	pr, err := host.CreatePR(context.Background(), "feature/draft", "main", scm.PRContent{
+		Title: "fix: draft me",
+		Body:  "body",
+		Draft: true,
+	})
+	if err != nil {
+		t.Fatalf("CreatePR() error = %v", err)
+	}
+	if pr == nil || pr.Number != "7" {
+		t.Fatalf("CreatePR() PR = %+v, want #7", pr)
+	}
+}
+
+func TestCreatePROmitsDraftFlagWhenFalse(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr create --head feature/ready --base main --repo test/repo --title fix: ready --body-file -": {
+			stdout: "https://github.com/test/repo/pull/8\n",
+		},
+	}), nil, "", "test/repo")
+
+	if _, err := host.CreatePR(context.Background(), "feature/ready", "main", scm.PRContent{
+		Title: "fix: ready",
+		Body:  "body",
+	}); err != nil {
+		t.Fatalf("CreatePR() error = %v", err)
+	}
+}
+
 func TestUpdatePRStreamsBodyThroughStdin(t *testing.T) {
 	t.Parallel()
 
@@ -163,6 +202,26 @@ func TestUpdatePRStreamsBodyThroughStdin(t *testing.T) {
 	}
 	if updated != pr {
 		t.Fatalf("UpdatePR() = %+v, want original PR", updated)
+	}
+}
+
+// TestUpdatePRIgnoresDraftFlag proves Draft is not applied on update: gh pr
+// edit has no draft toggle, so the fake exec factory's exact-command-string
+// match would fail this test if UpdatePR ever appended --draft.
+func TestUpdatePRIgnoresDraftFlag(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr edit 42 --repo test/repo --title fix: cap body --body-file -": {},
+	}), nil, "", "test/repo")
+
+	pr := &scm.PR{Number: "42"}
+	if _, err := host.UpdatePR(context.Background(), pr, scm.PRContent{
+		Title: "fix: cap body",
+		Body:  "body",
+		Draft: true,
+	}); err != nil {
+		t.Fatalf("UpdatePR() error = %v", err)
 	}
 }
 

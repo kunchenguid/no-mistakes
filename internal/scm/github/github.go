@@ -221,6 +221,9 @@ func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PR
 		"--base", base,
 	}, h.repoArgs()...)
 	args = append(args, "--title", content.Title, "--body-file", "-")
+	if content.Draft {
+		args = append(args, "--draft")
+	}
 	cmd := h.cmd(ctx, "gh", args...)
 	cmd.Stdin = strings.NewReader(content.Body)
 	out, err := cmd.CombinedOutput()
@@ -235,6 +238,9 @@ func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PR
 	return pr, nil
 }
 
+// UpdatePR does not apply content.Draft: gh pr edit has no draft toggle
+// (converting an existing PR requires the separate gh pr ready --undo
+// command), so draft state is only set at creation time.
 func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) (*scm.PR, error) {
 	id := pr.Number
 	if id == "" {

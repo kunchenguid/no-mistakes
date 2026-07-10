@@ -299,6 +299,59 @@ func TestPRStep_CreatesNewPR(t *testing.T) {
 	}
 }
 
+func TestPRStep_PassesDraftConfigToCreatePR(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	env, logFile := fakeGH(t, "")
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Config.PR.Draft = true
+
+	step := &PRStep{}
+	if _, err := step.Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+
+	logData, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ghLog := string(logData)
+	if !strings.Contains(ghLog, "pr create") || !strings.Contains(ghLog, "--draft") {
+		t.Fatalf("expected gh pr create to pass --draft when config.PR.Draft is true, got:\n%s", ghLog)
+	}
+}
+
+// TestPRStep_OmitsDraftFlagWhenConfigFalse covers the pr.draft: false
+// opt-out path (config.Merge now defaults PR.Draft to true; a repo overrides
+// it to false in its .no-mistakes.yaml to open PRs ready-for-review).
+func TestPRStep_OmitsDraftFlagWhenConfigFalse(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	env, logFile := fakeGH(t, "")
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Config.PR.Draft = false
+
+	step := &PRStep{}
+	if _, err := step.Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+
+	logData, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ghLog := string(logData)
+	if strings.Contains(ghLog, "--draft") {
+		t.Fatalf("expected no --draft flag when config.PR.Draft is false, got:\n%s", ghLog)
+	}
+}
+
 func TestPRStep_GitHubForkCreatesParentPRWithForkHead(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

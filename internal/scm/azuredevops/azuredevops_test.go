@@ -190,6 +190,41 @@ func TestCreatePRTruncatesOverlongDescription(t *testing.T) {
 	}
 }
 
+func TestCreatePRPassesDraftFlag(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHost(map[string]azdoTestResponse{
+		"az repos pr create --source-branch feature --target-branch main --title T --description B --draft true --organization " + testOrg + " --project " + testProject + " --repository " + testRepo + " --output json": {
+			stdout: `{"pullRequestId":9}` + "\n",
+		},
+	})
+
+	pr, err := h.CreatePR(context.Background(), "feature", "main", scm.PRContent{Title: "T", Body: "B", Draft: true})
+	if err != nil {
+		t.Fatalf("CreatePR() error = %v", err)
+	}
+	if pr.Number != "9" {
+		t.Fatalf("CreatePR() number = %q, want 9", pr.Number)
+	}
+}
+
+// TestUpdatePRIgnoresDraftFlag proves Draft is not applied on update, even
+// though az repos pr update supports --draft: forcing it here would re-draft
+// a PR a human already marked ready on a later pipeline re-run.
+func TestUpdatePRIgnoresDraftFlag(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHost(map[string]azdoTestResponse{
+		"az repos pr update --id 42 --title T --description B --organization " + testOrg + " --output json": {
+			stdout: `{"pullRequestId":42}` + "\n",
+		},
+	})
+
+	if _, err := h.UpdatePR(context.Background(), &scm.PR{Number: "42"}, scm.PRContent{Title: "T", Body: "B", Draft: true}); err != nil {
+		t.Fatalf("UpdatePR() error = %v", err)
+	}
+}
+
 func TestGetPRState(t *testing.T) {
 	t.Parallel()
 

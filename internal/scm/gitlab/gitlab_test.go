@@ -217,6 +217,67 @@ func TestGetChecksFallsBackForVariantUnsupportedMRFlagErrors(t *testing.T) {
 	}
 }
 
+func TestCreatePRPassesDraftFlag(t *testing.T) {
+	t.Parallel()
+
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab mr create --source-branch feature/draft --target-branch main --title draft me --description body --yes --draft": {
+			stdout: "https://gitlab.example.com/group/project/-/merge_requests/7\n",
+		},
+	}), nil, "", "")
+
+	pr, err := host.CreatePR(context.Background(), "feature/draft", "main", scm.PRContent{
+		Title: "draft me",
+		Body:  "body",
+		Draft: true,
+	})
+	if err != nil {
+		t.Fatalf("CreatePR() error = %v", err)
+	}
+	if pr == nil || pr.Number != "7" {
+		t.Fatalf("CreatePR() PR = %+v, want #7", pr)
+	}
+}
+
+func TestCreatePROmitsDraftFlagWhenFalse(t *testing.T) {
+	t.Parallel()
+
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab mr create --source-branch feature/ready --target-branch main --title ready --description body --yes": {
+			stdout: "https://gitlab.example.com/group/project/-/merge_requests/8\n",
+		},
+	}), nil, "", "")
+
+	if _, err := host.CreatePR(context.Background(), "feature/ready", "main", scm.PRContent{
+		Title: "ready",
+		Body:  "body",
+	}); err != nil {
+		t.Fatalf("CreatePR() error = %v", err)
+	}
+}
+
+// TestUpdatePRIgnoresDraftFlag proves Draft is not applied on update, even
+// though glab mr update supports --draft/--ready: forcing it here would
+// re-draft an MR a human already marked ready on a later pipeline re-run.
+func TestUpdatePRIgnoresDraftFlag(t *testing.T) {
+	t.Parallel()
+
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab mr update 42 --title updated --description body --yes": {
+			stdout: "updated\n",
+		},
+	}), nil, "", "")
+
+	pr := &scm.PR{Number: "42"}
+	if _, err := host.UpdatePR(context.Background(), pr, scm.PRContent{
+		Title: "updated",
+		Body:  "body",
+		Draft: true,
+	}); err != nil {
+		t.Fatalf("UpdatePR() error = %v", err)
+	}
+}
+
 func TestFindPRWithoutIIDKeepsNumberEmptyAndUpdatesByNumberFromURL(t *testing.T) {
 	t.Parallel()
 

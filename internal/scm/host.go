@@ -95,6 +95,11 @@ type PR struct {
 type PRContent struct {
 	Title string
 	Body  string
+	// Draft requests the PR/MR open as a draft instead of ready-for-review.
+	// Providers that support draft only at creation time (GitHub, GitLab)
+	// ignore it on UpdatePR; providers with no draft concept (Bitbucket)
+	// ignore it entirely.
+	Draft bool
 }
 
 // PRState is the normalized lifecycle state of a PR.

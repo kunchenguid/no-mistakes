@@ -22,6 +22,9 @@ type PRStep struct{}
 type prContent struct {
 	Title string `json:"title"`
 	Body  string `json:"body"`
+	// Draft is config-authored (pr.draft), not agent-authored; it is set on
+	// the result of buildPRContent rather than included in prContentSchema.
+	Draft bool `json:"-"`
 }
 
 var prContentSchema = json.RawMessage(`{
@@ -78,6 +81,7 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	if err != nil {
 		return nil, err
 	}
+	content.Draft = sctx.Config.PR.Draft
 
 	sctx.Log(fmt.Sprintf("checking for existing pull request on branch %s...", branch))
 	existing, err := host.FindPR(ctx, branch, sctx.Repo.DefaultBranch)

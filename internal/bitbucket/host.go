@@ -48,6 +48,8 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 	return h.toPR(pr), nil
 }
 
+// CreatePR intentionally ignores content.Draft: Bitbucket Cloud has no
+// draft-PR concept, so a repo configuring pr.draft has no effect here.
 func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PRContent) (*scm.PR, error) {
 	pr, err := h.client.CreatePR(ctx, h.repo, branch, base, content.Title, content.Body)
 	if err != nil {
