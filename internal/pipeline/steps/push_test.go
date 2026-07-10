@@ -225,3 +225,26 @@ func TestPushStep_DoesNotForceAddIgnoredEvidenceDirectory(t *testing.T) {
 		t.Fatalf("ignored evidence directory was staged: %q", status)
 	}
 }
+
+// TestPushStep_PropagatesGitStatusError ensures a failure of `git status
+// --porcelain` is propagated rather than discarded. Discarding it made status
+// "" which skipped the "commit agent changes" block, dropping uncommitted
+// agent edits when the worktree was removed — silent data loss.
+func TestPushStep_PropagatesGitStatusError(t *testing.T) {
+	t.Parallel()
+	// A directory that is not a git repository: `git status --porcelain` fails.
+	nonRepo := t.TempDir()
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, nonRepo, "abc", "def", config.Commands{})
+	sctx.Run.Branch = "feature"
+
+	step := &PushStep{}
+	_, err := step.Execute(sctx)
+	if err == nil {
+		t.Fatal("expected error from git status failure, got nil")
+	}
+	if !strings.Contains(err.Error(), "check worktree status") {
+		t.Fatalf("expected error to contain 'check worktree status', got %q", err)
+	}
+}

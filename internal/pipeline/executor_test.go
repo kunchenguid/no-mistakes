@@ -179,13 +179,14 @@ func TestExecutor_StepError_FailsRun(t *testing.T) {
 		t.Errorf("expected run status %q, got %q", types.RunFailed, updated.Status)
 	}
 
-	// Second step should be failed, third should be pending
+	// Second step should be failed, third should be skipped (not left pending,
+	// which would render as "⏳ pending" in the PR body).
 	dbSteps, _ := database.GetStepsByRun(run.ID)
 	if dbSteps[1].Status != types.StepStatusFailed {
 		t.Errorf("step test: expected %q, got %q", types.StepStatusFailed, dbSteps[1].Status)
 	}
-	if dbSteps[2].Status != types.StepStatusPending {
-		t.Errorf("step lint: expected %q, got %q", types.StepStatusPending, dbSteps[2].Status)
+	if dbSteps[2].Status != types.StepStatusSkipped {
+		t.Errorf("step lint: expected %q, got %q", types.StepStatusSkipped, dbSteps[2].Status)
 	}
 }
 
