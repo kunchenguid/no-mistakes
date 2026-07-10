@@ -35,6 +35,15 @@ func (s *RunShared) SetHousekeepingLint(result HousekeepingLintResult) {
 	s.housekeepingLint = &result
 }
 
+func (s *RunShared) ClearHousekeepingLint() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.housekeepingLint = nil
+}
+
 // TakeHousekeepingLint returns and consumes the combined pass's lint
 // assessment. The second call returns false so a lint fix round re-assesses
 // with its own agent pass instead of trusting a stale result.

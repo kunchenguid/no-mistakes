@@ -34,12 +34,7 @@ func newRunsCmd() *cobra.Command {
 					return "", "", fmt.Errorf("list runs: %w", err)
 				}
 
-				// Newest run id + status plus the total count captures every
-				// meaningful transition for telemetry dedupe of repeated calls.
-				fingerprint := fmt.Sprintf("%s|%d", repo.ID, len(runs))
-				if len(runs) > 0 {
-					fingerprint += fmt.Sprintf("|%s:%s", runs[0].ID, runs[0].Status)
-				}
+				fingerprint := repo.ID + "|" + renderedRunsFingerprint(runs, limit)
 
 				w := cmd.OutOrStdout()
 

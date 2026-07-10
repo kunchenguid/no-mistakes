@@ -200,7 +200,11 @@ func runAxiLogs(cmd *cobra.Command, step, runID string, full bool) (string, erro
 		return "", emitError(cmd, 1, "no run found to read logs from",
 			noRunLogsHelp())
 	}
-	fingerprint := run.ID + "|" + step
+	steps, err := env.d.GetStepsByRun(run.ID)
+	if err != nil {
+		return "", emitError(cmd, 1, fmt.Sprintf("load steps: %v", err))
+	}
+	fingerprint := runStateFingerprint(runViewFromDB(run, steps)) + "|log:" + step
 
 	path := filepath.Join(env.p.RunLogDir(run.ID), step+".log")
 	data, err := os.ReadFile(path)

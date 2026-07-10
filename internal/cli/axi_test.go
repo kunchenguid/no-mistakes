@@ -560,6 +560,26 @@ func TestAxiHomeStartsCurrentBranchWhenOtherBranchIsActive(t *testing.T) {
 	}
 }
 
+func TestRenderedRunsFingerprintChangesForEveryDisplayedRun(t *testing.T) {
+	runs := []*db.Run{
+		{ID: "newer", Branch: "feature/newer", HeadSHA: "head-newer", Status: types.RunRunning},
+		{ID: "older", Branch: "feature/older", HeadSHA: "head-older", Status: types.RunCompleted},
+	}
+	before := renderedRunsFingerprint(runs, 10)
+	runs[1].Status = types.RunFailed
+	after := renderedRunsFingerprint(runs, 10)
+	if before == after {
+		t.Fatal("changing a displayed older run must change the fingerprint")
+	}
+
+	limitedBefore := renderedRunsFingerprint(runs, 1)
+	runs[1].Status = types.RunCompleted
+	limitedAfter := renderedRunsFingerprint(runs, 1)
+	if limitedBefore != limitedAfter {
+		t.Fatal("a hidden run must not change the displayed-run fingerprint")
+	}
+}
+
 func TestAxiStatusIgnoresInvalidGlobalConfig(t *testing.T) {
 	repoDir := t.TempDir()
 	nmHome := t.TempDir()

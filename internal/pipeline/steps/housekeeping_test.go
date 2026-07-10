@@ -205,6 +205,37 @@ func TestLintStep_RunsOwnPassWithoutCombinedResult(t *testing.T) {
 	}
 }
 
+func TestDocumentStep_CombinedPassInvalidatesPriorLintResultWhenOutputIsUntrusted(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	calls := 0
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			calls++
+			if calls == 1 {
+				return &agent.Result{Output: json.RawMessage(`{"findings":[{"severity":"warning","description":"docs need a decision","action":"ask-user","category":"documentation"}],"summary":"docs need review"}`)}, nil
+			}
+			return &agent.Result{Text: "untrusted output"}, nil
+		},
+	}
+	sctx := newHousekeepingContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	step := &DocumentStep{}
+
+	if _, err := step.Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+
+	sctx.Fixing = true
+	if _, err := step.Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := sctx.Shared.TakeHousekeepingLint(); ok {
+		t.Fatal("untrusted combined rerun must not leave the prior lint result available")
+	}
+}
+
 // TestLintStep_FixRoundReassessesWithOwnAgentPass proves a user-driven lint
 // fix round does not trust the stale combined result: the fix turn runs the
 // lint agent itself.

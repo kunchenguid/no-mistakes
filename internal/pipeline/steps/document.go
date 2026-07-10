@@ -98,6 +98,9 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 	// lint command is configured; the lint step then consumes the result
 	// instead of paying its own cold agent invocation.
 	combinedLint := sctx.Config.Commands.Lint == ""
+	if combinedLint {
+		sctx.Shared.ClearHousekeepingLint()
+	}
 
 	// Skip entirely when nothing the agent would document has changed. No
 	// lint result is stashed, so the lint step falls back to its own pass -

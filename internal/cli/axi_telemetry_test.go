@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 // TestAxiMutationCommandsEmitPageviews verifies that state-changing axi
@@ -189,6 +190,19 @@ func TestAxiLogsCommandEventCarriesStep(t *testing.T) {
 	}
 	if got := event.fields["explicit_run_id"]; got != true {
 		t.Fatalf("explicit_run_id = %v, want true", got)
+	}
+}
+
+func TestRunStateFingerprintIncludesStepStatuses(t *testing.T) {
+	rv := runView{
+		ID:     "run-1",
+		Status: string(types.RunRunning),
+		Steps:  []stepView{{Name: "review", Status: string(types.StepStatusRunning)}},
+	}
+	before := runStateFingerprint(rv)
+	rv.Steps[0].Status = string(types.StepStatusCompleted)
+	if after := runStateFingerprint(rv); before == after {
+		t.Fatal("changing a step status must change the logs state fingerprint")
 	}
 }
 

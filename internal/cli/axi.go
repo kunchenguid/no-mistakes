@@ -198,7 +198,7 @@ func runAxiHome(cmd *cobra.Command) (string, error) {
 		rv := runViewFromDB(otherActive, steps)
 		annotateRunView(env, &rv)
 		fields = append(fields, runObjectFieldWithKey("other_branch_active_run", rv))
-		fingerprint += "|other:" + otherActive.ID + ":" + string(otherActive.Status)
+		fingerprint += "|other:" + runStateFingerprint(rv)
 	} else {
 		fingerprint += "|idle"
 	}
@@ -208,6 +208,7 @@ func runAxiHome(cmd *cobra.Command) (string, error) {
 		return "", emitError(cmd, 1, fmt.Sprintf("list runs: %v", err))
 	}
 	fields = append(fields, runsFields(runs, recentRunsHomeLimit)...)
+	fingerprint += "|runs:" + renderedRunsFingerprint(runs, recentRunsHomeLimit)
 
 	help := []string{}
 	switch {
@@ -252,6 +253,23 @@ func runsFields(runs []*db.Run, limit int) []toon.Field {
 		{Key: "count", Value: fmt.Sprintf("%d of %d total", len(shown), len(runs))},
 		{Key: "runs", Value: rows},
 	}
+}
+
+func renderedRunsFingerprint(runs []*db.Run, limit int) string {
+	shown := runs
+	if limit > 0 && len(shown) > limit {
+		shown = shown[:limit]
+	}
+	values := make([]string, 0, 1+len(shown)*5)
+	values = append(values, fmt.Sprintf("count:%d", len(runs)))
+	for _, r := range shown {
+		pr := ""
+		if r.PRURL != nil {
+			pr = *r.PRURL
+		}
+		values = append(values, r.ID, r.Branch, string(r.Status), r.HeadSHA, pr)
+	}
+	return strings.Join(values, "\x00")
 }
 
 // repoInitHelp returns an actionable hint when the failure is an uninitialized
