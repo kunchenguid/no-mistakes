@@ -164,3 +164,28 @@ func TestNonInteractiveEnv_PreservesCygwinOptions(t *testing.T) {
 		t.Errorf("MSYS = %q, want a single \"noglob\" (no duplicate)", got["MSYS"])
 	}
 }
+
+// TestLastEnvValue_CaseInsensitiveKey locks in that a mixed-case env entry is
+// matched. Windows env var names are case-insensitive, so an ambient
+// "Cygwin=winsymlinks:native" must be found under the "CYGWIN" key.
+func TestLastEnvValue_CaseInsensitiveKey(t *testing.T) {
+	env := []string{"PATH=/usr/bin", "Cygwin=winsymlinks:native"}
+	if got := lastEnvValue(env, "CYGWIN"); got != "winsymlinks:native" {
+		t.Errorf("lastEnvValue mixed-case key = %q, want \"winsymlinks:native\"", got)
+	}
+}
+
+// TestDisableChildArgGlobbing_PreservesMixedCaseCygwin guards the case-folding
+// fix: with a lowercase-keyed "Cygwin=winsymlinks:native" present, the appended
+// noglob entry must carry the preserved option. Otherwise os/exec's
+// case-insensitive last-wins dedup would let a bare "CYGWIN=noglob" shadow the
+// original and silently drop the user's winsymlinks:native.
+func TestDisableChildArgGlobbing_PreservesMixedCaseCygwin(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("CYGWIN/MSYS handling only applies on Windows")
+	}
+	env := disableChildArgGlobbing([]string{"Cygwin=winsymlinks:native"})
+	if got := lastEnvValue(env, "CYGWIN"); got != "winsymlinks:native noglob" {
+		t.Errorf("effective CYGWIN = %q, want \"winsymlinks:native noglob\"", got)
+	}
+}

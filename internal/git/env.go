@@ -83,13 +83,17 @@ func disableChildArgGlobbing(env []string) []string {
 }
 
 // lastEnvValue returns the value of the last KEY=VALUE entry for key in env,
-// matching the last-wins semantics os/exec uses for duplicate keys.
+// matching the last-wins semantics os/exec uses for duplicate keys. The key is
+// compared case-insensitively: Windows environment variable names are
+// case-insensitive, so an ambient "Cygwin=winsymlinks:native" must be found and
+// preserved rather than shadowed by a freshly appended uppercase "CYGWIN=noglob"
+// (which os/exec would let win under its own case-insensitive last-wins dedup).
 func lastEnvValue(env []string, key string) string {
-	prefix := key + "="
 	value := ""
 	for _, entry := range env {
-		if strings.HasPrefix(entry, prefix) {
-			value = strings.TrimPrefix(entry, prefix)
+		name, val, ok := strings.Cut(entry, "=")
+		if ok && strings.EqualFold(name, key) {
+			value = val
 		}
 	}
 	return value
