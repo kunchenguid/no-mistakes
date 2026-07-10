@@ -189,6 +189,10 @@ const (
 	InvocationOutcomeFailed      InvocationOutcome = "failed"
 	InvocationOutcomeCancelled   InvocationOutcome = "cancelled"
 	InvocationOutcomeInterrupted InvocationOutcome = "interrupted"
+	// InvocationOutcomeSkipped marks a Candidate a run-wide open provider
+	// circuit skipped without launching, recording the skipped-domain decision
+	// in immutable history. Its FailureDomain names the open circuit.
+	InvocationOutcomeSkipped InvocationOutcome = "skipped"
 )
 
 // FailureDomain groups operational failures expected to affect equivalent
@@ -214,7 +218,7 @@ type InvocationAttemptTerminal struct {
 // Validate checks a terminal fact before it is appended.
 func (terminal InvocationAttemptTerminal) Validate() error {
 	switch terminal.Outcome {
-	case InvocationOutcomeSucceeded, InvocationOutcomeFailed, InvocationOutcomeCancelled, InvocationOutcomeInterrupted:
+	case InvocationOutcomeSucceeded, InvocationOutcomeFailed, InvocationOutcomeCancelled, InvocationOutcomeInterrupted, InvocationOutcomeSkipped:
 	default:
 		return fmt.Errorf("unknown invocation outcome %q", terminal.Outcome)
 	}

@@ -60,7 +60,7 @@ func TestRoutingInvokerLaunchesReviewStrongCandidate(t *testing.T) {
 	legacy := &recordingLegacyInvoker{}
 	var factoryName types.AgentName
 	var factoryExe string
-	ri := newRoutingInvoker(legacy, config.DefaultRoutingConfig(), database)
+	ri := newRoutingInvoker(legacy, config.DefaultRoutingConfig(), database, newProviderCircuits())
 	ri.newAgent = func(name types.AgentName, executable string) (agent.Agent, error) {
 		factoryName, factoryExe = name, executable
 		return native, nil
@@ -115,7 +115,7 @@ func TestRoutingInvokerDelegatesUnmigratedPurpose(t *testing.T) {
 	scope := reservedReviewScope(t, database, run)
 	legacy := &recordingLegacyInvoker{}
 	factoryCalled := false
-	ri := newRoutingInvoker(legacy, config.DefaultRoutingConfig(), database)
+	ri := newRoutingInvoker(legacy, config.DefaultRoutingConfig(), database, newProviderCircuits())
 	ri.newAgent = func(types.AgentName, string) (agent.Agent, error) {
 		factoryCalled = true
 		return &recordingRoutedAgent{}, nil
@@ -140,7 +140,7 @@ func TestRoutingInvokerZeroRoutingDelegates(t *testing.T) {
 	database, _, run, _ := setupTest(t)
 	scope := reservedReviewScope(t, database, run)
 	legacy := &recordingLegacyInvoker{}
-	ri := newRoutingInvoker(legacy, config.RoutingConfig{}, database)
+	ri := newRoutingInvoker(legacy, config.RoutingConfig{}, database, newProviderCircuits())
 	ri.newAgent = func(types.AgentName, string) (agent.Agent, error) {
 		t.Fatal("factory must not run when routing is unconfigured")
 		return nil, nil
@@ -163,7 +163,7 @@ func TestRoutingInvokerFailsBeforeLaunchOnMissingRoute(t *testing.T) {
 	routing := config.DefaultRoutingConfig()
 	delete(routing.Routes, types.PurposeInitialReview)
 	legacy := &recordingLegacyInvoker{}
-	ri := newRoutingInvoker(legacy, routing, database)
+	ri := newRoutingInvoker(legacy, routing, database, newProviderCircuits())
 	ri.newAgent = func(types.AgentName, string) (agent.Agent, error) {
 		t.Fatal("no model may launch when routing data is missing")
 		return nil, nil
@@ -184,29 +184,188 @@ func TestRoutingInvokerFailsBeforeLaunchOnMissingRoute(t *testing.T) {
 	}
 }
 
-func TestRoutingInvokerRecordsOperationalFailureDomain(t *testing.T) {
+// perRunner dispatches the factory to a per-runner recording agent so a cascade
+// test can give codex and claude distinct behaviors.
+func perRunner(codex, claude agent.Agent) agentFactory {
+	return func(name types.AgentName, _ string) (agent.Agent, error) {
+		if name == types.AgentClaude {
+			return claude, nil
+		}
+		return codex, nil
+	}
+}
+
+func opError() error {
+	return &agent.OperationalError{Kind: agent.OpFailureOverload, Err: errStub("overloaded")}
+}
+
+func attemptForRunner(attempts []*db.InvocationAttempt, runner types.Runner) *db.InvocationAttempt {
+	for _, a := range attempts {
+		if a.Start.Candidate.Runner == runner {
+			return a
+		}
+	}
+	return nil
+}
+
+func TestRoutingInvokerFailsOverToBackupOnOperationalFailure(t *testing.T) {
 	database, _, run, _ := setupTest(t)
 	scope := reservedReviewScope(t, database, run)
-	native := &recordingRoutedAgent{err: &agent.OperationalError{Kind: agent.OpFailureOverload, Err: errStub("overloaded")}}
-	ri := newRoutingInvoker(&recordingLegacyInvoker{}, config.DefaultRoutingConfig(), database)
-	ri.newAgent = func(types.AgentName, string) (agent.Agent, error) { return native, nil }
+	codex := &recordingRoutedAgent{err: opError()}
+	claude := &recordingRoutedAgent{result: &agent.Result{Output: []byte(`{}`), Usage: agent.TokenUsage{InputTokens: 7}}}
+	circuits := newProviderCircuits()
+	ri := newRoutingInvoker(&recordingLegacyInvoker{}, config.DefaultRoutingConfig(), database, circuits)
+	ri.newAgent = perRunner(codex, claude)
 
-	if _, err := ri.Invoke(context.Background(), agent.InvocationRequest{
-		Purpose: types.PurposeInitialReview,
-		Scope:   scope,
-		Payload: agent.RunOpts{Prompt: "review"},
-	}); err == nil {
-		t.Fatal("expected the operational failure to surface")
+	result, err := ri.Invoke(context.Background(), agent.InvocationRequest{
+		Purpose: types.PurposeInitialReview, Scope: scope, Payload: agent.RunOpts{Prompt: "review"},
+	})
+	if err != nil {
+		t.Fatalf("failover should surface the backup success, got %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected the backup Candidate's result")
+	}
+	if codex.calls != 1 || claude.calls != 1 {
+		t.Fatalf("calls codex=%d claude=%d, want 1 and 1", codex.calls, claude.calls)
+	}
+	if !circuits.isOpen(types.FailureDomainOpenAI) || circuits.isOpen(types.FailureDomainAnthropic) {
+		t.Fatal("expected only the OpenAI circuit open after codex's operational failure")
 	}
 	attempts, _ := database.GetInvocationAttemptsByStepResult(scope.StepResultID)
-	if len(attempts) != 1 || attempts[0].Terminal == nil {
-		t.Fatalf("attempts = %+v, want one finalized attempt", attempts)
+	if len(attempts) != 2 {
+		t.Fatalf("attempts = %d, want 2 (failed codex, succeeded claude)", len(attempts))
 	}
-	if attempts[0].Terminal.Outcome != types.InvocationOutcomeFailed {
-		t.Fatalf("outcome = %q, want failed", attempts[0].Terminal.Outcome)
+	codexAttempt := attemptForRunner(attempts, types.RunnerCodex)
+	if codexAttempt.Terminal.Outcome != types.InvocationOutcomeFailed || codexAttempt.Terminal.FailureDomain != types.FailureDomainOpenAI {
+		t.Fatalf("codex attempt = %+v, want failed/openai", codexAttempt.Terminal)
 	}
-	if attempts[0].Terminal.FailureDomain != types.FailureDomainOpenAI {
-		t.Fatalf("failure domain = %q, want openai", attempts[0].Terminal.FailureDomain)
+	claudeAttempt := attemptForRunner(attempts, types.RunnerClaude)
+	if claudeAttempt.Terminal.Outcome != types.InvocationOutcomeSucceeded {
+		t.Fatalf("claude attempt = %+v, want succeeded", claudeAttempt.Terminal)
+	}
+}
+
+func TestRoutingInvokerOpensBothCircuitsAndFailsClosed(t *testing.T) {
+	database, _, run, _ := setupTest(t)
+	scope := reservedReviewScope(t, database, run)
+	codex := &recordingRoutedAgent{err: opError()}
+	claude := &recordingRoutedAgent{err: opError()}
+	circuits := newProviderCircuits()
+	ri := newRoutingInvoker(&recordingLegacyInvoker{}, config.DefaultRoutingConfig(), database, circuits)
+	ri.newAgent = perRunner(codex, claude)
+
+	if _, err := ri.Invoke(context.Background(), agent.InvocationRequest{
+		Purpose: types.PurposeInitialReview, Scope: scope, Payload: agent.RunOpts{Prompt: "review"},
+	}); err == nil {
+		t.Fatal("expected fail-closed after both candidates fail operationally")
+	}
+	if !circuits.isOpen(types.FailureDomainOpenAI) || !circuits.isOpen(types.FailureDomainAnthropic) {
+		t.Fatal("expected both provider circuits open")
+	}
+	attempts, _ := database.GetInvocationAttemptsByStepResult(scope.StepResultID)
+	if len(attempts) != 2 {
+		t.Fatalf("attempts = %d, want 2 failed", len(attempts))
+	}
+	if attemptForRunner(attempts, types.RunnerCodex).Terminal.FailureDomain != types.FailureDomainOpenAI {
+		t.Fatal("codex attempt should carry the openai failure domain")
+	}
+	if attemptForRunner(attempts, types.RunnerClaude).Terminal.FailureDomain != types.FailureDomainAnthropic {
+		t.Fatal("claude attempt should carry the anthropic failure domain")
+	}
+}
+
+func TestRoutingInvokerNonOperationalFailureDoesNotFailOver(t *testing.T) {
+	database, _, run, _ := setupTest(t)
+	scope := reservedReviewScope(t, database, run)
+	codex := &recordingRoutedAgent{err: errStub("strong review output malformed")}
+	claude := &recordingRoutedAgent{}
+	circuits := newProviderCircuits()
+	ri := newRoutingInvoker(&recordingLegacyInvoker{}, config.DefaultRoutingConfig(), database, circuits)
+	ri.newAgent = perRunner(codex, claude)
+
+	if _, err := ri.Invoke(context.Background(), agent.InvocationRequest{
+		Purpose: types.PurposeInitialReview, Scope: scope, Payload: agent.RunOpts{Prompt: "review"},
+	}); err == nil {
+		t.Fatal("expected the non-operational failure to surface")
+	}
+	if claude.calls != 0 {
+		t.Fatalf("claude launched %d times; a non-operational failure must not fail over", claude.calls)
+	}
+	if circuits.isOpen(types.FailureDomainOpenAI) {
+		t.Fatal("a non-operational failure must never open a provider circuit")
+	}
+	attempts, _ := database.GetInvocationAttemptsByStepResult(scope.StepResultID)
+	if len(attempts) != 1 {
+		t.Fatalf("attempts = %d, want 1 (no failover)", len(attempts))
+	}
+	if attempts[0].Terminal.Outcome != types.InvocationOutcomeFailed || attempts[0].Terminal.FailureDomain != "" {
+		t.Fatalf("attempt = %+v, want failed with no failure domain", attempts[0].Terminal)
+	}
+}
+
+func TestRoutingInvokerSkipsOpenCircuitDomain(t *testing.T) {
+	database, _, run, _ := setupTest(t)
+	scope := reservedReviewScope(t, database, run)
+	codex := &recordingRoutedAgent{}
+	claude := &recordingRoutedAgent{result: &agent.Result{Output: []byte(`{}`)}}
+	circuits := newProviderCircuits()
+	circuits.markOpen(types.FailureDomainOpenAI) // a prior routed invocation opened OpenAI
+	ri := newRoutingInvoker(&recordingLegacyInvoker{}, config.DefaultRoutingConfig(), database, circuits)
+	ri.newAgent = perRunner(codex, claude)
+
+	result, err := ri.Invoke(context.Background(), agent.InvocationRequest{
+		Purpose: types.PurposeInitialReview, Scope: scope, Payload: agent.RunOpts{Prompt: "review"},
+	})
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected the backup Candidate's result")
+	}
+	if codex.calls != 0 {
+		t.Fatalf("codex launched %d times; its provider circuit was open", codex.calls)
+	}
+	if claude.calls != 1 {
+		t.Fatalf("claude calls = %d, want 1", claude.calls)
+	}
+	attempts, _ := database.GetInvocationAttemptsByStepResult(scope.StepResultID)
+	if len(attempts) != 2 {
+		t.Fatalf("attempts = %d, want 2 (skipped codex, succeeded claude)", len(attempts))
+	}
+	codexAttempt := attemptForRunner(attempts, types.RunnerCodex)
+	if codexAttempt.Terminal.Outcome != types.InvocationOutcomeSkipped || codexAttempt.Terminal.FailureDomain != types.FailureDomainOpenAI {
+		t.Fatalf("codex attempt = %+v, want skipped/openai", codexAttempt.Terminal)
+	}
+	if attemptForRunner(attempts, types.RunnerClaude).Terminal.Outcome != types.InvocationOutcomeSucceeded {
+		t.Fatal("claude attempt should have succeeded")
+	}
+}
+
+func TestRoutingInvokerFailsClosedWhenAllCircuitsOpen(t *testing.T) {
+	database, _, run, _ := setupTest(t)
+	scope := reservedReviewScope(t, database, run)
+	circuits := newProviderCircuits()
+	circuits.markOpen(types.FailureDomainOpenAI)
+	circuits.markOpen(types.FailureDomainAnthropic)
+	ri := newRoutingInvoker(&recordingLegacyInvoker{}, config.DefaultRoutingConfig(), database, circuits)
+	ri.newAgent = func(types.AgentName, string) (agent.Agent, error) {
+		t.Fatal("no candidate may launch when every provider circuit is open")
+		return nil, nil
+	}
+	if _, err := ri.Invoke(context.Background(), agent.InvocationRequest{
+		Purpose: types.PurposeInitialReview, Scope: scope, Payload: agent.RunOpts{Prompt: "review"},
+	}); err == nil {
+		t.Fatal("expected fail-closed when all provider circuits are open")
+	}
+	attempts, _ := database.GetInvocationAttemptsByStepResult(scope.StepResultID)
+	if len(attempts) != 2 {
+		t.Fatalf("attempts = %d, want 2 skipped", len(attempts))
+	}
+	for _, a := range attempts {
+		if a.Terminal == nil || a.Terminal.Outcome != types.InvocationOutcomeSkipped {
+			t.Fatalf("attempt terminal = %+v, want skipped", a.Terminal)
+		}
 	}
 }
 

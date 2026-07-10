@@ -145,6 +145,10 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 	}
 
 	// Execute steps sequentially
+	// One run-wide provider-circuit state, shared by every routed step. A new
+	// gate starts with all circuits closed.
+	circuits := newProviderCircuits()
+
 	for i, step := range e.steps {
 		if ctx.Err() != nil {
 			return e.failRun(run, repo, context.Cause(ctx))
@@ -158,7 +162,7 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 			e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, step.Name(), string(types.StepStatusSkipped), "", "", "", nil)
 			continue
 		}
-		skipRemaining, err := e.executeStep(ctx, step, sr, run, repo, workDir, logDir, stepExecutionState{})
+		skipRemaining, err := e.executeStep(ctx, step, sr, run, repo, workDir, logDir, stepExecutionState{}, circuits)
 		if err != nil {
 			return e.failRun(run, repo, err, ctx)
 		}
@@ -236,6 +240,7 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		return e.failRun(run, repo, fmt.Errorf("create log dir: %w", err))
 	}
 	e.initializeRunScopes(run.ID)
+	circuits := newProviderCircuits()
 
 	e.mu.Lock()
 	e.waiting = true
@@ -286,13 +291,13 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 			return e.failRun(run, repo, fmt.Errorf("complete recovered step %s: %w", gate.step.Name(), err), ctx)
 		}
 		e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusCompleted), "", "", "", &duration)
-		return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, gate.index+1)
+		return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, gate.index+1, circuits)
 	case types.ActionSkip:
 		if err := e.db.CompleteStepWithStatus(gate.stepResult.ID, types.StepStatusSkipped, recoveredExitCode(gate.stepResult), duration, recoveredLogPath(gate.stepResult)); err != nil {
 			return e.failRun(run, repo, fmt.Errorf("skip recovered step %s: %w", gate.step.Name(), err), ctx)
 		}
 		e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusSkipped), "", "", "", &duration)
-		return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, gate.index+1)
+		return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, gate.index+1, circuits)
 	case types.ActionAbort:
 		if dbErr := e.db.FailStep(gate.stepResult.ID, "aborted by user", duration); dbErr != nil {
 			slog.Warn("failed to mark recovered step as aborted", "step", gate.step.Name(), "error", dbErr)
@@ -327,14 +332,14 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 			autoFixAttempts:  gate.autoFixes,
 			executionMS:      duration,
 			currentRoundID:   gate.lastRoundID,
-		})
+		}, circuits)
 		if err != nil {
 			return e.failRun(run, repo, err, ctx)
 		}
 		if skipRemaining {
 			return e.skipRecoveredRemainder(run, repo, gate.index+1)
 		}
-		return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, gate.index+1)
+		return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, gate.index+1, circuits)
 	default:
 		return e.failRun(run, repo, fmt.Errorf("step %s: unsupported approval action %q", gate.step.Name(), response.action), ctx)
 	}
@@ -399,7 +404,7 @@ func (e *Executor) recoveredGate(runID string) (*recoveredGate, error) {
 	return gate, nil
 }
 
-func (e *Executor) executeRecoveredRemainder(ctx context.Context, run *db.Run, repo *db.Repo, workDir, logDir string, start int) error {
+func (e *Executor) executeRecoveredRemainder(ctx context.Context, run *db.Run, repo *db.Repo, workDir, logDir string, start int, circuits *providerCircuits) error {
 	results, err := e.db.GetStepsByRun(run.ID)
 	if err != nil {
 		return e.failRun(run, repo, fmt.Errorf("get recovered steps: %w", err), ctx)
@@ -411,7 +416,7 @@ func (e *Executor) executeRecoveredRemainder(ctx context.Context, run *db.Run, r
 		if index >= len(results) || results[index].StepName != e.steps[index].Name() || results[index].Status != types.StepStatusPending {
 			return e.failRun(run, repo, fmt.Errorf("recovered step plan changed at %d", index), ctx)
 		}
-		skipRemaining, err := e.executeStep(ctx, e.steps[index], results[index], run, repo, workDir, logDir, stepExecutionState{})
+		skipRemaining, err := e.executeStep(ctx, e.steps[index], results[index], run, repo, workDir, logDir, stepExecutionState{}, circuits)
 		if err != nil {
 			return e.failRun(run, repo, err, ctx)
 		}
@@ -472,7 +477,7 @@ func recoveredLogPath(step *db.StepResult) string {
 
 // executeStep runs a single step with approval coordination.
 // Returns (skipRemaining, error).
-func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult, run *db.Run, repo *db.Repo, workDir, logDir string, state stepExecutionState) (bool, error) {
+func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult, run *db.Run, repo *db.Repo, workDir, logDir string, state stepExecutionState, circuits *providerCircuits) (bool, error) {
 	stepName := step.Name()
 	logPath := filepath.Join(logDir, string(stepName)+".log")
 	finalExitCode := 0
@@ -593,7 +598,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	if e.config != nil {
 		routingCfg = e.config.Routing
 	}
-	invoker := newRoutingInvoker(agent.NewLegacyInvoker(stepAgent, e.db), routingCfg, e.db)
+	invoker := newRoutingInvoker(agent.NewLegacyInvoker(stepAgent, e.db), routingCfg, e.db, circuits)
 	invoker.newAgent = func(name types.AgentName, executable string) (agent.Agent, error) {
 		native, err := agent.New(name, executable, nil)
 		if err != nil {
@@ -1208,7 +1213,13 @@ func (e *Executor) recordReviewLineages(run *db.Run, stepName types.StepName, ro
 	}
 	var reviewAttempt *db.InvocationAttempt
 	for _, attempt := range attempts {
-		if attempt.Start.Purpose == types.PurposeInitialReview && !attempt.Start.Candidate.IsZero() {
+		if attempt.Start.Purpose != types.PurposeInitialReview || attempt.Start.Candidate.IsZero() {
+			continue
+		}
+		// A cascade can record failed-over or circuit-skipped Candidates before
+		// the one that produced the findings; the lineage belongs to the
+		// Candidate that actually succeeded.
+		if attempt.Terminal != nil && attempt.Terminal.Outcome == types.InvocationOutcomeSucceeded {
 			reviewAttempt = attempt
 			break
 		}

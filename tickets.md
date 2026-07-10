@@ -53,10 +53,10 @@ After a native adapter exhausts its retries with a classified operational failur
 
 **Blocked by:** Route and surface the initial review.
 
-- [ ] Quota or usage limits, provider outage or overload, authentication failure, and an unavailable executable can open a circuit only after adapter retries finish.
-- [ ] Malformed output, bad edits, failed deterministic checks, unresolved findings, cancellation, and workspace failures never open a provider circuit.
-- [ ] Once OpenAI or Anthropic opens, no later invocation in the same gate probes that domain; a new gate starts with closed circuits.
-- [ ] Candidate order, circuit transitions, and skipped-domain decisions are visible in immutable history, providers are never raced, and exhausting all Candidates for a required Profile fails the gate rather than weakening the Profile.
+- [x] Quota or usage limits, provider outage or overload, authentication failure, and an unavailable executable can open a circuit only after adapter retries finish.
+- [x] Malformed output, bad edits, failed deterministic checks, unresolved findings, cancellation, and workspace failures never open a provider circuit.
+- [x] Once OpenAI or Anthropic opens, no later invocation in the same gate probes that domain; a new gate starts with closed circuits.
+- [x] Candidate order, circuit transitions, and skipped-domain decisions are visible in immutable history, providers are never raced, and exhausting all Candidates for a required Profile fails the gate rather than weakening the Profile.
 
 ## Install the dormant 10-gate canary
 
