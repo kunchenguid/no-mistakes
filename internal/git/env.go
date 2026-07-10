@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 // NonInteractiveEnv returns the environment for a subprocess that may invoke
@@ -44,5 +45,62 @@ func NonInteractiveEnv(dir string) []string {
 			env = append(env, "PWD="+abs)
 		}
 	}
+	return disableChildArgGlobbing(env)
+}
+
+// disableChildArgGlobbing appends "noglob" to the CYGWIN and MSYS environment
+// variables so a Cygwin- or MSYS2-linked git binary does not glob-expand the
+// arguments we pass it.
+//
+// On Windows a native process (our Go binary) can only hand a child a single
+// command-line string; Cygwin/MSYS2 programs re-parse it at startup and run
+// their own globber over it. That globber strips the braces from an argument
+// like `refs/heads/main^{commit}`, turning it into `refs/heads/main^commit`,
+// which git then rejects as an ambiguous argument (issue #427). From a Cygwin
+// shell the braces survive because argv is passed through Cygwin's own exec,
+// which is why the failure only shows up when our native daemon spawns git.
+//
+// We always pass git explicit, already-resolved arguments and never rely on
+// runtime globbing, so disabling it is safe. Any options the user already set
+// in CYGWIN/MSYS are preserved; "noglob" is appended only when absent. This is
+// a no-op off Windows, where these variables have no meaning.
+func disableChildArgGlobbing(env []string) []string {
+	if runtime.GOOS != "windows" {
+		return env
+	}
+	for _, key := range []string{"CYGWIN", "MSYS"} {
+		existing := lastEnvValue(env, key)
+		if containsWord(existing, "noglob") {
+			continue
+		}
+		value := "noglob"
+		if strings.TrimSpace(existing) != "" {
+			value = existing + " noglob"
+		}
+		env = append(env, key+"="+value)
+	}
 	return env
+}
+
+// lastEnvValue returns the value of the last KEY=VALUE entry for key in env,
+// matching the last-wins semantics os/exec uses for duplicate keys.
+func lastEnvValue(env []string, key string) string {
+	prefix := key + "="
+	value := ""
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			value = strings.TrimPrefix(entry, prefix)
+		}
+	}
+	return value
+}
+
+// containsWord reports whether space-separated value already contains word.
+func containsWord(value, word string) bool {
+	for _, field := range strings.Fields(value) {
+		if field == word {
+			return true
+		}
+	}
+	return false
 }

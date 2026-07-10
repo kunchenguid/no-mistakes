@@ -120,3 +120,47 @@ func TestNonInteractiveEnv_EmptyDirLeavesAmbientPWD(t *testing.T) {
 		t.Errorf("PWD = %q, want ambient \"/ambient/pwd\" when dir is empty", got["PWD"])
 	}
 }
+
+// TestNonInteractiveEnv_DisablesCygwinGlobbing locks in the issue #427 fix:
+// on Windows the env must set CYGWIN/MSYS to "noglob" so a Cygwin or MSYS2 git
+// does not strip the braces from arguments like `refs/heads/main^{commit}`.
+// Off Windows the variables are meaningless and must not be injected.
+func TestNonInteractiveEnv_DisablesCygwinGlobbing(t *testing.T) {
+	t.Setenv("CYGWIN", "")
+	t.Setenv("MSYS", "")
+
+	got := resolveEnv(NonInteractiveEnv(""))
+
+	if runtime.GOOS != "windows" {
+		if _, ok := got["CYGWIN"]; ok && got["CYGWIN"] != "" {
+			t.Errorf("CYGWIN = %q, want unset off Windows", got["CYGWIN"])
+		}
+		return
+	}
+	if !containsWord(got["CYGWIN"], "noglob") {
+		t.Errorf("CYGWIN = %q, want to contain \"noglob\"", got["CYGWIN"])
+	}
+	if !containsWord(got["MSYS"], "noglob") {
+		t.Errorf("MSYS = %q, want to contain \"noglob\"", got["MSYS"])
+	}
+}
+
+// TestNonInteractiveEnv_PreservesCygwinOptions ensures the noglob injection is
+// additive: any options the user already set in CYGWIN survive, and noglob is
+// not duplicated when already present.
+func TestNonInteractiveEnv_PreservesCygwinOptions(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("CYGWIN/MSYS handling only applies on Windows")
+	}
+	t.Setenv("CYGWIN", "winsymlinks:native")
+	t.Setenv("MSYS", "noglob")
+
+	got := resolveEnv(NonInteractiveEnv(""))
+
+	if got["CYGWIN"] != "winsymlinks:native noglob" {
+		t.Errorf("CYGWIN = %q, want \"winsymlinks:native noglob\"", got["CYGWIN"])
+	}
+	if fields := strings.Fields(got["MSYS"]); len(fields) != 1 || fields[0] != "noglob" {
+		t.Errorf("MSYS = %q, want a single \"noglob\" (no duplicate)", got["MSYS"])
+	}
+}
