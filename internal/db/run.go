@@ -24,22 +24,26 @@ type Run struct {
 	// wait is cancelled). It is observability only and does not affect gate
 	// resolution.
 	AwaitingAgentSince *int64
-	Intent             *string
-	IntentSource       *string
-	IntentSessionID    *string
-	IntentScore        *float64
-	CreatedAt          int64
-	UpdatedAt          int64
+	// ParkedMS accumulates the run's total parked-at-gate wall time in
+	// milliseconds across every gate wait (local performance telemetry;
+	// step duration_ms values exclude this time).
+	ParkedMS        int64
+	Intent          *string
+	IntentSource    *string
+	IntentSessionID *string
+	IntentScore     *float64
+	CreatedAt       int64
+	UpdatedAt       int64
 }
 
-const runColumns = `id, repo_id, branch, head_sha, base_sha, status, pr_url, error, awaiting_agent_since, intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
+const runColumns = `id, repo_id, branch, head_sha, base_sha, status, pr_url, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
 
 func scanRun(row interface {
 	Scan(...any) error
 }, r *Run) error {
 	return row.Scan(
 		&r.ID, &r.RepoID, &r.Branch, &r.HeadSHA, &r.BaseSHA, &r.Status,
-		&r.PRURL, &r.Error, &r.AwaitingAgentSince,
+		&r.PRURL, &r.Error, &r.AwaitingAgentSince, &r.ParkedMS,
 		&r.Intent, &r.IntentSource, &r.IntentSessionID, &r.IntentScore,
 		&r.CreatedAt, &r.UpdatedAt,
 	)
@@ -257,6 +261,19 @@ func (d *DB) ClearRunAwaitingAgent(id string) error {
 	return nil
 }
 
+// AddRunParkedDuration accumulates parked-at-gate wall time onto a run's
+// total. Called by the executor when a gate wait ends.
+func (d *DB) AddRunParkedDuration(id string, ms int64) error {
+	if ms <= 0 {
+		return nil
+	}
+	_, err := d.sql.Exec(`UPDATE runs SET parked_ms = COALESCE(parked_ms, 0) + ?, updated_at = ? WHERE id = ?`, ms, now(), id)
+	if err != nil {
+		return fmt.Errorf("add run parked duration: %w", err)
+	}
+	return nil
+}
+
 // RecoverStaleRuns marks any runs stuck in pending/running status as failed
 // and fails any in-progress steps. This is called at daemon startup to clean
 // up after a previous crash. Returns the number of recovered runs.
@@ -280,10 +297,16 @@ func (d *DB) RecoverStaleRuns(errMsg string) (int, error) {
 	}
 
 	// Fail stale runs. Clear any awaiting-agent marker so a recovered (now
-	// failed) run is never reported as still parked awaiting the agent.
+	// failed) run is never reported as still parked awaiting the agent,
+	// accumulating the marker's elapsed time into the run's parked total so
+	// the parked evidence survives the crash.
 	result, err := tx.Exec(
-		`UPDATE runs SET status = ?, error = ?, awaiting_agent_since = NULL, updated_at = ? WHERE status IN (?, ?)`,
-		types.RunFailed, errMsg, ts,
+		`UPDATE runs SET status = ?, error = ?,
+			parked_ms = COALESCE(parked_ms, 0) + CASE
+				WHEN awaiting_agent_since IS NOT NULL AND ? > awaiting_agent_since
+				THEN (? - awaiting_agent_since) * 1000 ELSE 0 END,
+			awaiting_agent_since = NULL, updated_at = ? WHERE status IN (?, ?)`,
+		types.RunFailed, errMsg, ts, ts, ts,
 		types.RunPending, types.RunRunning,
 	)
 	if err != nil {

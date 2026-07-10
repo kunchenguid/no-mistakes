@@ -534,7 +534,7 @@ func TestAxiHomeStartsCurrentBranchWhenOtherBranchIsActive(t *testing.T) {
 	cmd := &cobra.Command{}
 	cmd.SetContext(context.Background())
 	cmd.SetOut(&out)
-	if err := runAxiHome(cmd); err != nil {
+	if _, err := runAxiHome(cmd); err != nil {
 		t.Fatalf("axi home: %v\n%s", err, out.String())
 	}
 	got := out.String()
@@ -609,7 +609,7 @@ func TestAxiStatusIgnoresInvalidGlobalConfig(t *testing.T) {
 	cmd := &cobra.Command{}
 	cmd.SetContext(context.Background())
 	cmd.SetOut(&out)
-	if err := runAxiStatus(cmd, dbRun.ID); err != nil {
+	if _, err := runAxiStatus(cmd, dbRun.ID); err != nil {
 		t.Fatalf("axi status should not fail on invalid global config: %v\n%s", err, out.String())
 	}
 	got := out.String()

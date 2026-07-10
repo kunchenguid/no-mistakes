@@ -50,6 +50,19 @@ func (r *telemetryRecorder) record(name string, fields telemetry.Fields) {
 
 func (r *telemetryRecorder) Close(context.Context) error { return nil }
 
+func (r *telemetryRecorder) count(name string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	total := 0
+	for _, e := range r.events {
+		if e.name == name {
+			total++
+		}
+	}
+	return total
+}
+
 func (r *telemetryRecorder) find(name, field string, want any) *recordedTelemetryEvent {
 	r.mu.Lock()
 	defer r.mu.Unlock()

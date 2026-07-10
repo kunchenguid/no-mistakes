@@ -2,8 +2,11 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"math"
 	"strings"
+	"text/tabwriter"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/kunchenguid/no-mistakes/internal/db"
@@ -19,7 +22,9 @@ const (
 )
 
 func newStatsCmd() *cobra.Command {
-	return &cobra.Command{
+	var agents bool
+	var runID string
+	cmd := &cobra.Command{
 		Use:   "stats",
 		Short: "Show historical no-mistakes usage stats",
 		Args:  cobra.NoArgs,
@@ -31,6 +36,10 @@ func newStatsCmd() *cobra.Command {
 				}
 				defer database.Close()
 
+				if agents || runID != "" {
+					return renderAgentPerfReport(cmd.OutOrStdout(), database, runID)
+				}
+
 				stats, err := database.GetStats()
 				if err != nil {
 					return fmt.Errorf("get stats: %w", err)
@@ -41,6 +50,78 @@ func newStatsCmd() *cobra.Command {
 			})
 		},
 	}
+	cmd.Flags().BoolVar(&agents, "agents", false, "show local agent performance telemetry (per-purpose invocation aggregates)")
+	cmd.Flags().StringVar(&runID, "run", "", "show one run's agent invocations and parked time (implies --agents)")
+	return cmd
+}
+
+// renderAgentPerfReport prints the local performance telemetry: per-purpose
+// invocation aggregates, or one run's per-invocation detail with its
+// accumulated parked-at-gate time. This is read-only local evidence; none of
+// it is sent to remote analytics.
+func renderAgentPerfReport(w io.Writer, database *db.DB, runID string) error {
+	if runID != "" {
+		return renderRunAgentPerf(w, database, runID)
+	}
+
+	aggregates, err := database.AgentInvocationAggregates()
+	if err != nil {
+		return fmt.Errorf("agent invocation aggregates: %w", err)
+	}
+	if len(aggregates) == 0 {
+		fmt.Fprintln(w, "no agent invocations recorded yet")
+		return nil
+	}
+	tw := tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "PURPOSE\tCOUNT\tAVG\tTOTAL\tCOLD\tSTARTED\tRESUMED\tFALLBACK\tERRORS\tIN TOK\tOUT TOK\tCACHED TOK")
+	for _, a := range aggregates {
+		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n",
+			a.Purpose, a.Count,
+			formatMS(a.AvgDurationMS), formatMS(a.TotalDurationMS),
+			a.Cold, a.Started, a.Resumed, a.Fallback, a.Errors,
+			a.InputTokens, a.OutputTokens, a.CacheReadTokens,
+		)
+	}
+	return tw.Flush()
+}
+
+func renderRunAgentPerf(w io.Writer, database *db.DB, runID string) error {
+	run, err := database.GetRun(runID)
+	if err != nil {
+		return fmt.Errorf("get run: %w", err)
+	}
+	if run == nil {
+		return fmt.Errorf("run %q not found", runID)
+	}
+	invocations, err := database.GetAgentInvocationsByRun(runID)
+	if err != nil {
+		return fmt.Errorf("get agent invocations: %w", err)
+	}
+
+	fmt.Fprintf(w, "run %s (%s), parked at gates %s total\n", run.ID, run.Status, formatMS(run.ParkedMS))
+	if len(invocations) == 0 {
+		fmt.Fprintln(w, "no agent invocations recorded for this run")
+		return nil
+	}
+	tw := tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "STEP\tROUND\tPURPOSE\tAGENT\tMODEL\tSESSION\tKEY\tDURATION\tEXIT\tIN TOK\tOUT TOK\tCACHED TOK")
+	for _, inv := range invocations {
+		exit := inv.ExitStatus
+		if inv.FailureCategory != "" && inv.FailureCategory != inv.ExitStatus {
+			exit += "/" + inv.FailureCategory
+		}
+		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%d\t%d\n",
+			inv.StepName, inv.Round, inv.Purpose, inv.Agent, inv.Model,
+			inv.SessionMode, inv.SessionKey,
+			formatMS(inv.DurationMS), exit,
+			inv.InputTokens, inv.OutputTokens, inv.CacheReadTokens,
+		)
+	}
+	return tw.Flush()
+}
+
+func formatMS(ms int64) string {
+	return time.Duration(ms * int64(time.Millisecond)).Round(100 * time.Millisecond).String()
 }
 
 func renderStatsDashboard(stats *db.Stats) string {

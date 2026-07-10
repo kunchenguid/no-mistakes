@@ -46,6 +46,12 @@ func (p *Paths) UpdateCheckFile() string {
 	return filepath.Join(p.root, "update-check.json")
 }
 
+// TelemetryGateFile persists the read-surface telemetry dedupe state so
+// high-frequency status polling stays rate-limited across CLI processes.
+func (p *Paths) TelemetryGateFile() string {
+	return filepath.Join(p.root, "telemetry-gate.json")
+}
+
 func (p *Paths) ReposDir() string { return filepath.Join(p.root, "repos") }
 func (p *Paths) RepoDir(repoID string) string {
 	return filepath.Join(p.root, "repos", repoID+".git")

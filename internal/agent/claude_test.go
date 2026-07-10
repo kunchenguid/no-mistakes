@@ -12,7 +12,7 @@ import (
 func TestClaudeAgent_BuildArgs(t *testing.T) {
 	ca := &claudeAgent{bin: "/usr/bin/claude"}
 	schema := json.RawMessage(`{"type":"object"}`)
-	args := ca.buildArgs("do something", schema)
+	args := ca.buildArgs("do something", schema, "")
 
 	expected := []string{
 		"-p", "do something",
@@ -34,7 +34,7 @@ func TestClaudeAgent_BuildArgs(t *testing.T) {
 
 func TestClaudeAgent_BuildArgs_NoSchema(t *testing.T) {
 	ca := &claudeAgent{bin: "claude"}
-	args := ca.buildArgs("prompt", nil)
+	args := ca.buildArgs("prompt", nil, "")
 
 	// Without schema, should not include --json-schema flag
 	for _, arg := range args {
@@ -50,7 +50,7 @@ func TestClaudeAgent_BuildArgs_NoSchema(t *testing.T) {
 
 func TestClaudeAgent_BuildArgs_ExtraArgsPrepended(t *testing.T) {
 	ca := &claudeAgent{bin: "claude", extraArgs: []string{"--model", "sonnet"}}
-	args := ca.buildArgs("do it", nil)
+	args := ca.buildArgs("do it", nil, "")
 
 	expected := []string{
 		"--model", "sonnet",
@@ -77,7 +77,7 @@ func TestClaudeAgent_BuildArgs_UserPermissionModeSuppressesDefault(t *testing.T)
 	}
 	for _, extra := range tests {
 		ca := &claudeAgent{bin: "claude", extraArgs: extra}
-		args := ca.buildArgs("p", nil)
+		args := ca.buildArgs("p", nil, "")
 
 		dangerCount := 0
 		for _, a := range args {

@@ -146,9 +146,21 @@ Override or enable the telemetry website ID.
 
 When set, telemetry uses this website ID at runtime. If it is unset in a dev build, `no-mistakes` also checks a repo-local `.env` file for `NO_MISTAKES_UMAMI_WEBSITE_ID`. If no runtime value is found, it falls back to any website ID embedded at build time.
 
-When telemetry is enabled, `no-mistakes` sends command, run, approval, fix, and wizard events, completed step events with `awaiting_approval`, `fix_review`, or `failed` status, and pageviews for the human surfaces `/wizard` and `/tui` and the agent surfaces `/axi`, `/axi/run`, `/axi/respond`, `/axi/status`, `/axi/logs`, and `/axi/abort` to Umami.
-AXI pageviews are sent alongside command events, so command status and duration remain available.
-They include only flag-derived context: `/axi/run` records whether `--yes`, `--intent`, or `--skip` was present; `/axi/respond` records the sanitized action and whether `--yes` was present; `/axi/status` records whether `--run` was present; and `/axi/logs` records the sanitized step, whether `--full` was present, and whether `--run` was present.
+When telemetry is enabled, `no-mistakes` sends command, run, approval, fix, and wizard events, completed step events with `awaiting_approval`, `fix_review`, or `failed` status, and pageviews for the human surfaces `/wizard` and `/tui` and the state-changing agent surfaces `/axi/run`, `/axi/respond`, and `/axi/abort` to Umami.
+Mutation pageviews are sent alongside command events, so command status and duration remain available.
+They include only flag-derived context: `/axi/run` records whether `--yes`, `--intent`, or `--skip` was present, and `/axi/respond` records the sanitized action and whether `--yes` was present.
+
+Read-only surfaces (`axi` home, `axi status`, `axi logs`, `status`, `runs`) emit no pageview and rate-limit their command event: it is sent when the observed run state changed since the last emit, and otherwise at most once per 10 minutes, with the dedupe state persisted at `<NM_HOME>/telemetry-gate.json` so agent polling loops stay bounded across processes.
+The `axi logs` command event records the sanitized step, whether `--full` was present, and whether `--run` was present; `axi status` records whether `--run` was present.
+
+### What stays local and what leaves the machine
+
+Everything sent remotely is low-cardinality: command names, statuses, durations, counts, flag booleans, agent and step names, and - on the single terminal `run finished` event - the bounded performance rollup `agent_invocations`, `resumed_invocations`, and `fallback_invocations` (small counts only).
+Run IDs, repository paths, branch names, session identities, prompts, model outputs, diffs, and per-invocation performance records are never sent.
+
+Detailed performance evidence stays on the machine in the local state database (`<NM_HOME>/state.sqlite`): one `agent_invocations` row per agent invocation (run and step identity, purpose such as review/review-fix/housekeeping, provider and reported model, cold/started/resumed/fallback session mode, a truncated session-identity hash, timestamps, duration, exit status, failure category, and token usage), plus each run's accumulated parked-at-gate time.
+It never stores prompts, model outputs, diffs, or credentials.
+Inspect it with `no-mistakes stats --agents` (per-purpose aggregates) or `no-mistakes stats --run <id>` (one run's invocations and parked time).
 
 ## `NO_MISTAKES_TELEMETRY`
 

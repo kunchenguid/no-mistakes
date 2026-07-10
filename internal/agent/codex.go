@@ -23,6 +23,11 @@ type codexAgent struct {
 
 func (a *codexAgent) Name() string { return "codex" }
 
+// SupportsSessionResume reports codex's native durable-session capability:
+// `codex exec --json` emits thread.started with a thread_id, and
+// `codex exec resume <id> <prompt>` continues that thread.
+func (a *codexAgent) SupportsSessionResume() bool { return true }
+
 func (a *codexAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 	return runWithRetry(ctx, "codex", opts, claudeMaxRetries, classifyTransient, nil, func() (*Result, error) {
 		return a.runOnce(ctx, opts)
@@ -57,7 +62,11 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 		defer os.Remove(schemaPath)
 	}
 
-	args := a.buildArgs(opts.Prompt, schemaPath)
+	resumeID := ""
+	if opts.Session != nil {
+		resumeID = opts.Session.ID
+	}
+	args := a.buildArgs(opts.Prompt, schemaPath, resumeID)
 	cmd := exec.CommandContext(ctx, a.bin, args...)
 	cmd.Dir = opts.CWD
 	cmd.Stdin = nil
@@ -83,7 +92,8 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 	var usage TokenUsage
 	var lastMessage string
 	var codexErr string
-	if err := parseCodexEvents(ctx, started.stdout, opts.OnChunk, &usage, &lastMessage, &codexErr); err != nil {
+	var threadID string
+	if err := parseCodexEvents(ctx, started.stdout, opts.OnChunk, &usage, &lastMessage, &codexErr, &threadID); err != nil {
 		err = started.waitAfterParseError(err)
 		stderrWG.Wait()
 		retErr := fmt.Errorf("codex parse events: %w", err)
@@ -107,6 +117,10 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 	}
 
 	res, err := finalizeTextResult("codex", lastMessage, validationSchema, usage)
+	if res != nil {
+		res.SessionID = threadID
+		res.Resumed = resumeID != ""
+	}
 	emitAgentExited(opts, "codex", pid, err)
 	return res, err
 }
@@ -117,10 +131,20 @@ func (a *codexAgent) Close() error { return nil }
 // inserted between "exec" and the prompt so user flags (e.g. -m, --sandbox)
 // take effect. If the user declared their own execution-mode flag, the
 // default --dangerously-bypass-approvals-and-sandbox is not added.
-func (a *codexAgent) buildArgs(prompt, schemaPath string) []string {
-	args := make([]string, 0, len(a.extraArgs)+8)
+// A non-empty resumeID routes through `codex exec resume <id> <prompt>`,
+// which exposes a narrower flag surface than `codex exec` (no --color, no
+// -s/--sandbox as of codex 0.144): unsupported user extraArgs make the
+// invocation fail fast and the caller's cold fallback preserves correctness.
+func (a *codexAgent) buildArgs(prompt, schemaPath, resumeID string) []string {
+	args := make([]string, 0, len(a.extraArgs)+9)
 	args = append(args, "exec")
+	if resumeID != "" {
+		args = append(args, "resume")
+	}
 	args = append(args, a.extraArgs...)
+	if resumeID != "" {
+		args = append(args, resumeID)
+	}
 	args = append(args, prompt, "--json")
 	if schemaPath != "" {
 		args = append(args, "--output-schema", schemaPath)
@@ -128,7 +152,9 @@ func (a *codexAgent) buildArgs(prompt, schemaPath string) []string {
 	if !codexUserSetExecutionMode(a.extraArgs) {
 		args = append(args, "--dangerously-bypass-approvals-and-sandbox")
 	}
-	args = append(args, "--color", "never")
+	if resumeID == "" {
+		args = append(args, "--color", "never")
+	}
 	return args
 }
 
@@ -151,10 +177,11 @@ func codexUserSetExecutionMode(extraArgs []string) bool {
 
 // codexEvent is the top-level JSONL event from codex CLI.
 type codexEvent struct {
-	Type    string      `json:"type"`
-	Item    *codexItem  `json:"item,omitempty"`
-	Usage   *codexUsage `json:"usage,omitempty"`
-	Message string      `json:"message,omitempty"`
+	Type     string      `json:"type"`
+	Item     *codexItem  `json:"item,omitempty"`
+	Usage    *codexUsage `json:"usage,omitempty"`
+	Message  string      `json:"message,omitempty"`
+	ThreadID string      `json:"thread_id,omitempty"`
 }
 
 type codexItem struct {
@@ -169,8 +196,9 @@ type codexUsage struct {
 }
 
 // parseCodexEvents reads JSONL from the reader and dispatches events.
-// It captures the last agent_message text and accumulates token usage.
-func parseCodexEvents(ctx context.Context, r io.Reader, onChunk func(string), usage *TokenUsage, lastMessage *string, codexErr *string) error {
+// It captures the last agent_message text, the durable thread identity, and
+// accumulates token usage.
+func parseCodexEvents(ctx context.Context, r io.Reader, onChunk func(string), usage *TokenUsage, lastMessage *string, codexErr *string, threadID *string) error {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 256*1024*1024)
 
@@ -195,6 +223,11 @@ func parseCodexEvents(ctx context.Context, r io.Reader, onChunk func(string), us
 		case "error":
 			if event.Message != "" && codexErr != nil {
 				*codexErr = event.Message
+			}
+
+		case "thread.started":
+			if event.ThreadID != "" && threadID != nil {
+				*threadID = event.ThreadID
 			}
 
 		case "item.completed":

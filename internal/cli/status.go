@@ -15,10 +15,10 @@ func newStatusCmd() *cobra.Command {
 		Short: "Show status of the current repository",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return trackCommandStatus("status", func() (string, error) {
+			return trackReadSurface("status", nil, func() (string, string, error) {
 				p, d, err := openResources()
 				if err != nil {
-					return "", err
+					return "", "", err
 				}
 				defer d.Close()
 
@@ -28,7 +28,7 @@ func newStatusCmd() *cobra.Command {
 				repo, err := findRepo(d)
 				if err != nil {
 					fmt.Fprintln(w, err)
-					return "error", nil
+					return "uninitialized", "error", nil
 				}
 
 				fmt.Fprintf(w, "  %s  %s\n", sDim.Render("  repo:"), repo.WorkingPath)
@@ -44,6 +44,10 @@ func newStatusCmd() *cobra.Command {
 
 				// Check daemon status.
 				alive, _ := daemon.IsRunning(p)
+				daemonState := "stopped"
+				if alive {
+					daemonState = "running"
+				}
 				if alive {
 					fmt.Fprintf(w, "  %s  %s %s\n", sDim.Render("daemon:"), sGreen.Render("●"), "running")
 				} else {
@@ -53,9 +57,11 @@ func newStatusCmd() *cobra.Command {
 				// Check for active run.
 				activeRun, err := d.GetActiveRun(repo.ID, "")
 				if err != nil {
-					return "", fmt.Errorf("check active run: %w", err)
+					return "", "", fmt.Errorf("check active run: %w", err)
 				}
+				fingerprint := repo.ID + "|" + daemonState + "|idle"
 				if activeRun != nil {
+					fingerprint = fmt.Sprintf("%s|%s|%s:%s", repo.ID, daemonState, activeRun.ID, activeRun.Status)
 					fmt.Fprintln(w)
 					fmt.Fprintf(w, "  %s\n", sCyan.Render("Active run"))
 					sha := activeRun.HeadSHA[:minLen(len(activeRun.HeadSHA), 8)]
@@ -69,7 +75,7 @@ func newStatusCmd() *cobra.Command {
 					fmt.Fprintf(w, "\n  %s\n", sDim.Render("no active run"))
 				}
 
-				return "success", nil
+				return fingerprint, "success", nil
 			})
 		},
 	}

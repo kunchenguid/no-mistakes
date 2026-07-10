@@ -116,7 +116,14 @@ func TestDocumentStep_AgentManaged_UnresolvedFindingsNeedApprovalWithoutAutoFixL
 	}
 }
 
-func TestDocumentStep_PromptEmphasizesExhaustiveFixing(t *testing.T) {
+// TestDocumentStep_PromptAppliesPlacementPolicy pins the placement-policy
+// prompt contract from the 121-PR audit: each fact has one authoritative
+// owner, stale duplicates are removed or reduced to pointers (not
+// synchronized), AGENTS.md never receives incident narratives (invariant +
+// regression-test pointer instead), no new surfaces for perceived gaps, and
+// the scope stays on documentation this change made stale. The old
+// exhaustive-corpus-synchronization incentives must be gone.
+func TestDocumentStep_PromptAppliesPlacementPolicy(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
@@ -134,18 +141,78 @@ func TestDocumentStep_PromptEmphasizesExhaustiveFixing(t *testing.T) {
 	}
 	prompt := ag.calls[0].Prompt
 	for _, want := range []string{
-		"Be exhaustive",
-		"Do not stop after the first documentation gap",
-		"fix all of them yourself",
-		"report only",
+		// One owner per fact; duplicates become pointers, never synced copies.
+		"exactly one authoritative owner document",
+		"remove the duplicate or reduce it to a short pointer to the owner",
+		"never synchronize prose copies",
+		// No new surfaces, no AGENTS.md postmortems; invariants + test pointers.
+		"Do not create a new documentation surface merely to close a perceived gap",
+		"Do not add incident narratives or postmortems to AGENTS.md",
+		"point to the regression test or authoritative implementation",
+		// Ownership map for the standard surfaces.
+		"README.md owns the user-facing product introduction",
+		"CONTRIBUTING.md owns contribution mechanics",
+		"Code comments own non-obvious local intent",
+		// Scope discipline: only what this change made stale.
+		"Only touch documentation this change made stale",
+		"Do not opportunistically rewrite, expand, or restructure unrelated documentation",
+		"report one finding proposing the follow-up instead of multiplying edits",
+		// Changed behavior must still land in its authoritative location.
+		"Changed user-facing behavior must leave its authoritative user documentation accurate",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("expected document prompt to contain %q\nprompt:\n%s", want, prompt)
 		}
 	}
+	// The exhaustive-synchronization incentives from the pre-audit prompt
+	// must be gone: they are what produced doc commits in 90 of 121 PRs.
+	for _, forbidden := range []string{
+		"Be exhaustive",
+		"resolve every gap you can in this run",
+		"Enumerate all docs",
+	} {
+		if strings.Contains(prompt, forbidden) {
+			t.Errorf("document prompt still carries corpus-sweep incentive %q", forbidden)
+		}
+	}
 	// The fused prompt must not instruct read-only assessment.
 	if strings.Contains(prompt, "Do NOT make any file changes") {
 		t.Error("expected fused document prompt not to forbid file changes")
+	}
+}
+
+// TestDocumentStep_TrustedPolicyInstructionsAugmentPrompt proves a
+// repository's own ownership map (config document.instructions, loaded only
+// from the trusted default branch) reaches the prompt as an augmentation of
+// the built-in defaults, and that no-policy repositories keep the built-in
+// policy alone.
+func TestDocumentStep_TrustedPolicyInstructionsAugmentPrompt(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"docs current"}`)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.Document.Instructions = "docs/architecture.md owns the daemon lifecycle facts."
+
+	step := &DocumentStep{}
+	if _, err := step.Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	prompt := ag.calls[0].Prompt
+	if !strings.Contains(prompt, "docs/architecture.md owns the daemon lifecycle facts.") {
+		t.Fatalf("expected trusted repo policy in prompt:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "augments the defaults above and cannot weaken them") {
+		t.Fatal("expected the repo policy to be framed as augmenting, not replacing, the defaults")
+	}
+	// The built-in defaults remain active alongside the custom policy.
+	if !strings.Contains(prompt, "exactly one authoritative owner document") {
+		t.Fatal("expected built-in placement policy to remain with custom instructions present")
 	}
 }
 
@@ -174,7 +241,7 @@ func TestDocumentStep_UserFix_PassesPreviousFindingsIntoPrompt(t *testing.T) {
 		t.Error("expected no approval after resolving the user-selected findings")
 	}
 	prompt := ag.calls[0].Prompt
-	if !strings.Contains(prompt, "Previous documentation findings to address") {
+	if !strings.Contains(prompt, "Previous findings to address") {
 		t.Error("expected user-fix prompt to include previous findings section")
 	}
 	if !strings.Contains(prompt, "config section stale") {

@@ -109,7 +109,8 @@ Explicit lint command. Run via the platform shell - `sh -c` on POSIX, `cmd.exe /
 | Default | Empty (agent auto-detects) |
 
 When set, the lint step runs this exact command and checks the exit code.
-When empty, the agent detects relevant linters and formatters, applies safe fixes, reruns the relevant checks, commits any agent changes, and reports only unresolved issues.
+When empty, the agent-driven lint duty is folded into the document step's combined housekeeping pass: one agent invocation covers both documentation and lint, and the lint step consumes that result, reporting lint-category findings with the same gate semantics (blocking findings park for a decision).
+Neither responsibility is skipped: when the document step has nothing to run against (or its structured output cannot be trusted), the lint step runs its own agent pass as before.
 
 ### commands.format
 
@@ -121,6 +122,21 @@ Formatter command run before the push step commits agent fixes.
 | Default | Empty (no separate push-step formatter) |
 
 This does not prevent empty `commands.lint` from detecting and running formatters during the lint step.
+
+### document.instructions
+
+Repository-specific documentation ownership policy for the document step.
+
+| | |
+|---|---|
+| Type | `string` (multiline) |
+| Default | Empty (built-in placement policy only) |
+
+The document step always applies a built-in placement policy: every fact has exactly one authoritative owner document, stale duplicates are removed or reduced to pointers instead of synchronized, no new documentation surfaces are created merely to close perceived gaps, and incident lessons live as invariants near their owner (with a pointer to the regression test), never as AGENTS.md postmortems.
+`document.instructions` states this repository's ownership map or extra placement rules (for example, which file owns which class of facts).
+It augments or clarifies the built-in policy; it cannot disable documentation integrity.
+
+Like `commands.*` and `agent`, this field steers gate behavior, so it is honored **only from the trusted default-branch copy** of `.no-mistakes.yaml`: a contributor's pushed branch cannot weaken the documentation rules that gate its own review.
 
 ### Command process lifetime
 

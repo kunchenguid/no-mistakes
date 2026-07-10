@@ -26,6 +26,39 @@ type RunOpts struct {
 	JSONSchema  json.RawMessage      // structured output schema (optional)
 	OnChunk     func(text string)    // streaming text callback (optional)
 	OnLifecycle func(LifecycleEvent) // native agent lifecycle callback (optional)
+	// Session, when non-nil, asks a session-capable adapter (see
+	// SessionResumer) to start or resume a durable native session. Adapters
+	// without session support ignore it and run cold; the caller detects the
+	// fallback via an empty Result.SessionID.
+	Session *SessionRef
+	// SessionFallback marks this invocation as the fresh-session retry after
+	// a failed resume. Instrumentation only; adapters ignore it.
+	SessionFallback bool
+	// Purpose labels the pipeline duty this invocation serves (review,
+	// review-fix, test-evidence, ...). Instrumentation only; adapters
+	// ignore it.
+	Purpose string
+}
+
+// SessionRef identifies a durable adapter-native session for RunOpts.Session.
+type SessionRef struct {
+	// ID is the adapter-native session identity to resume. Empty starts a
+	// new resumable session whose identity is reported via Result.SessionID.
+	ID string
+}
+
+// SessionResumer is the optional adapter capability for durable native
+// session resume across invocations. Decorators must forward it; callers use
+// SupportsSessionResume so wrapping never hides the capability.
+type SessionResumer interface {
+	SupportsSessionResume() bool
+}
+
+// SupportsSessionResume reports whether a (possibly wrapped) agent can start
+// and resume durable native sessions.
+func SupportsSessionResume(a Agent) bool {
+	r, ok := a.(SessionResumer)
+	return ok && r.SupportsSessionResume()
 }
 
 // LifecycleEvent describes process-level activity for an agent invocation.
@@ -47,6 +80,14 @@ type Result struct {
 	Text string
 	// Usage tracks token consumption for the invocation.
 	Usage TokenUsage
+	// SessionID is the adapter-native session identity of this invocation
+	// when the adapter reports one. Callers persist it to resume later.
+	SessionID string
+	// Resumed reports whether this invocation resumed opts.Session.ID.
+	Resumed bool
+	// Model is the model the adapter reported serving this invocation, when
+	// available. Instrumentation only.
+	Model string
 }
 
 // TokenUsage tracks token consumption for an agent invocation.

@@ -56,9 +56,14 @@ type GlobalConfig struct {
 	StepQuietWarning     time.Duration       `yaml:"-"`
 	DaemonConnectTimeout time.Duration       `yaml:"-"`
 	LogLevel             string              `yaml:"log_level"`
-	AutoFix              AutoFixRaw
-	Intent               IntentRaw
-	Test                 TestRaw
+	// SessionReuse controls per-run, per-role agent session reuse in the
+	// review loop (one durable reviewer session across full reviews, a
+	// separate durable fixer session across fix turns). Default true; set
+	// session_reuse: false to force every invocation cold.
+	SessionReuse bool `yaml:"-"`
+	AutoFix      AutoFixRaw
+	Intent       IntentRaw
+	Test         TestRaw
 }
 
 // globalConfigRaw is the on-disk YAML representation with duration as string.
@@ -73,6 +78,7 @@ type globalConfigRaw struct {
 	BabysitTimeout       string              `yaml:"babysit_timeout"`
 	StepQuietWarning     string              `yaml:"step_quiet_warning"`
 	LogLevel             string              `yaml:"log_level"`
+	SessionReuse         *bool               `yaml:"session_reuse"`
 	AutoFix              AutoFixRaw          `yaml:"auto_fix"`
 	Intent               IntentRaw           `yaml:"intent"`
 	Test                 TestRaw             `yaml:"test"`
@@ -94,17 +100,32 @@ type RepoConfig struct {
 	AutoFix           AutoFixRaw `yaml:"auto_fix"`
 	Intent            IntentRaw  `yaml:"intent"`
 	Test              TestRaw    `yaml:"test"`
+	// Document carries the repository's documentation placement policy. It
+	// steers the document step's gate prompt, so it is honored ONLY from the
+	// trusted default-branch copy of .no-mistakes.yaml (see
+	// EffectiveRepoConfig): a contributor's pushed branch must not be able to
+	// weaken documentation rules for its own review.
+	Document DocumentRaw `yaml:"document"`
+}
+
+// DocumentRaw is the YAML representation of document-step settings.
+type DocumentRaw struct {
+	// Instructions augment (never replace) the built-in documentation
+	// placement policy with the repository's ownership map or extra
+	// placement rules.
+	Instructions string `yaml:"instructions"`
 }
 
 func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 	type repoConfigRaw struct {
-		Agent             agentList  `yaml:"agent"`
-		Commands          Commands   `yaml:"commands"`
-		IgnorePatterns    []string   `yaml:"ignore_patterns"`
-		AllowRepoCommands bool       `yaml:"allow_repo_commands"`
-		AutoFix           AutoFixRaw `yaml:"auto_fix"`
-		Intent            IntentRaw  `yaml:"intent"`
-		Test              TestRaw    `yaml:"test"`
+		Agent             agentList   `yaml:"agent"`
+		Commands          Commands    `yaml:"commands"`
+		IgnorePatterns    []string    `yaml:"ignore_patterns"`
+		AllowRepoCommands bool        `yaml:"allow_repo_commands"`
+		AutoFix           AutoFixRaw  `yaml:"auto_fix"`
+		Intent            IntentRaw   `yaml:"intent"`
+		Test              TestRaw     `yaml:"test"`
+		Document          DocumentRaw `yaml:"document"`
 	}
 	var raw repoConfigRaw
 	if err := value.Decode(&raw); err != nil {
@@ -118,6 +139,7 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 	c.AutoFix = raw.AutoFix
 	c.Intent = raw.Intent
 	c.Test = raw.Test
+	c.Document = raw.Document
 	return nil
 }
 
@@ -162,11 +184,20 @@ type Config struct {
 	CITimeout            time.Duration
 	StepQuietWarning     time.Duration
 	LogLevel             string
+	SessionReuse         bool
 	Commands             Commands
 	IgnorePatterns       []string
 	AutoFix              AutoFix
 	Intent               Intent
 	Test                 Test
+	Document             Document
+}
+
+// Document is the resolved document-step config. Instructions come from the
+// trusted default-branch repo config and augment the built-in placement
+// policy in the document prompt.
+type Document struct {
+	Instructions string
 }
 
 // TestRaw is the YAML representation of test-step settings.
@@ -292,6 +323,13 @@ step_quiet_warning: "10m"
 # Maximum time a CLI client waits for an existing daemon socket to accept a
 # connection before failing instead of hanging.
 daemon_connect_timeout: "3s"
+
+# Reuse one durable agent session per run for the review loop: the reviewer
+# keeps a single session across the initial review and every full rereview,
+# and review fixes keep a separate fixer session. Roles never share a session.
+# Supported for claude and codex; other agents run cold. Set false to force
+# every agent invocation cold.
+session_reuse: true
 
 # Log level for daemon output
 # Options: debug, info, warn, error
@@ -692,6 +730,7 @@ func DefaultGlobalConfig() *GlobalConfig {
 		StepQuietWarning:     DefaultStepQuietWarning,
 		DaemonConnectTimeout: DefaultDaemonConnectTimeout,
 		LogLevel:             "info",
+		SessionReuse:         true,
 	}
 }
 
@@ -762,6 +801,9 @@ func LoadGlobal(path string) (*GlobalConfig, error) {
 	}
 	if raw.LogLevel != "" {
 		cfg.LogLevel = raw.LogLevel
+	}
+	if raw.SessionReuse != nil {
+		cfg.SessionReuse = *raw.SessionReuse
 	}
 	if raw.AutoFix.CI == nil {
 		raw.AutoFix.CI = raw.AutoFix.Babysit
@@ -847,7 +889,10 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 // the daemon host) and Agent/Agents (select which processes launch with the
 // maintainer's credentials, including fallback lists and acp: targets) — are
 // taken only from the trusted copy when it is present, so a contributor's
-// pushed branch cannot inject shell or pick an agent. When allowRepoCommands is
+// pushed branch cannot inject shell or pick an agent. Document (the
+// documentation placement policy injected into the document gate prompt) is
+// trusted-only for the same reason: a pushed branch must not weaken the
+// documentation rules that gate itself. When allowRepoCommands is
 // true the maintainer has explicitly opted in (via allow_repo_commands on the
 // TRUSTED default-branch copy) to honoring the pushed-branch copy wholesale.
 // When there is no trusted copy and the maintainer has not opted in, both
@@ -871,10 +916,12 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		effective.Commands = trusted.Commands
 		effective.Agent = trusted.Agent
 		effective.Agents = copyAgents(trusted.Agents)
+		effective.Document = trusted.Document
 	} else {
 		effective.Commands = Commands{}
 		effective.Agent = ""
 		effective.Agents = nil
+		effective.Document = DocumentRaw{}
 	}
 	return &effective
 }
@@ -1031,11 +1078,13 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		CITimeout:            global.CITimeout,
 		StepQuietWarning:     global.StepQuietWarning,
 		LogLevel:             global.LogLevel,
+		SessionReuse:         global.SessionReuse,
 		Commands:             repo.Commands,
 		IgnorePatterns:       repo.IgnorePatterns,
 		AutoFix:              af,
 		Intent:               intent,
 		Test:                 test,
+		Document:             Document{Instructions: strings.TrimSpace(repo.Document.Instructions)},
 	}
 
 	if repo.Agent != "" {

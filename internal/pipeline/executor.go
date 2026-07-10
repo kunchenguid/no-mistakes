@@ -43,6 +43,11 @@ type Executor struct {
 
 	onEvent EventFunc
 
+	// sessions manages this run's durable review-loop agent sessions; shared
+	// carries run-scoped step-to-step results. Both are created per Execute.
+	sessions *RunSessions
+	shared   *RunShared
+
 	mu          sync.Mutex
 	approvalCh  chan approvalResponse // buffered channel for approval responses
 	waiting     bool                  // true when blocked on approval
@@ -126,6 +131,16 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
 		return e.failRun(run, repo, fmt.Errorf("create log dir: %w", err))
 	}
+
+	// Per-run session and shared-state scopes. Sessions are keyed strictly by
+	// this run's ID, so concurrent runs, branches, and repos stay isolated.
+	sessionsEnabled := e.config != nil && e.config.SessionReuse && e.agent != nil
+	agentName := ""
+	if e.agent != nil {
+		agentName = e.agent.Name()
+	}
+	e.sessions = NewRunSessions(e.db, run.ID, agentName, sessionsEnabled)
+	e.shared = &RunShared{}
 
 	// Create step result records in DB
 	stepRecords := make(map[types.StepName]*db.StepResult)
@@ -270,9 +285,21 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		}
 		writeLog(text)
 	}
+	// roundNum is shared with the perf wrapper's round closure below: an
+	// invocation during execution of round N+1 sees roundNum still at N.
+	autoFixAttempts := 0
+	roundNum := 0
+
 	stepAgent := e.agent
 	if stepAgent != nil {
 		stepAgent = &lifecycleAgent{inner: stepAgent, onLifecycle: onAgentLifecycle}
+		stepAgent = &perfRecordingAgent{
+			inner:    stepAgent,
+			db:       e.db,
+			runID:    run.ID,
+			stepName: stepName,
+			round:    func() int { return roundNum + 1 },
+		}
 	}
 	sctx := &StepContext{
 		Ctx:          ctx,
@@ -284,6 +311,8 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		DB:           e.db,
 		StepResultID: sr.ID,
 		UserIntent:   userIntent,
+		Sessions:     e.sessions,
+		Shared:       e.shared,
 		Log:          writeLog,
 		LogChunk:     writeLogChunk,
 		LogFile: func(text string) {
@@ -292,8 +321,6 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		},
 	}
 
-	autoFixAttempts := 0
-	roundNum := 0
 	nextTrigger := "initial"
 	skipRemaining := false
 	stepSkipped := false
@@ -435,12 +462,17 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		}
 		e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(approvalStatus), outcome.Findings, diffText, "", &executionMS)
 
+		parkStart := time.Now()
 		response, err := e.waitForApproval(ctx, stepName)
 		// The wait has ended (the agent responded, or it was cancelled): the run
 		// is no longer parked awaiting the agent. Clear the pollable marker
-		// before resuming so awaiting_agent_since is non-nil only while parked.
+		// before resuming so awaiting_agent_since is non-nil only while parked,
+		// and fold the wait into the run's accumulated parked total.
 		if dbErr := e.db.ClearRunAwaitingAgent(run.ID); dbErr != nil {
 			slog.Warn("failed to clear awaiting-agent marker in db", "step", stepName, "run", run.ID, "error", dbErr)
+		}
+		if dbErr := e.db.AddRunParkedDuration(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
+			slog.Warn("failed to accumulate parked duration in db", "step", stepName, "run", run.ID, "error", dbErr)
 		}
 		if err != nil {
 			if dbErr := e.db.FailStep(sr.ID, err.Error(), executionMS); dbErr != nil {
@@ -567,6 +599,12 @@ func (a *lifecycleAgent) Run(ctx context.Context, opts agent.RunOpts) (*agent.Re
 
 func (a *lifecycleAgent) Close() error {
 	return a.inner.Close()
+}
+
+// SupportsSessionResume forwards the wrapped adapter's session capability so
+// wrapping never hides it from the review loop's session manager.
+func (a *lifecycleAgent) SupportsSessionResume() bool {
+	return agent.SupportsSessionResume(a.inner)
 }
 
 const (

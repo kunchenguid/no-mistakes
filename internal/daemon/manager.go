@@ -518,10 +518,11 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 			if failedStep := telemetryFailedStepName(m.db, run.ID); failedStep != "" {
 				fields["failed_step"] = failedStep
 			}
+			addRunPerformanceSummary(m.db, run.ID, fields)
 			telemetry.Track("run", fields)
 			slog.Error("pipeline failed", "run_id", run.ID, "error", err)
 		} else {
-			telemetry.Track("run", telemetry.Fields{
+			fields := telemetry.Fields{
 				"action":      "finished",
 				"trigger":     trigger,
 				"agent":       string(cfg.Agent),
@@ -530,12 +531,28 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 				"duration_ms": time.Since(startedAt).Milliseconds(),
 				"step_count":  len(execSteps),
 				"pr_created":  run.PRURL != nil && *run.PRURL != "",
-			})
+			}
+			addRunPerformanceSummary(m.db, run.ID, fields)
+			telemetry.Track("run", fields)
 			slog.Info("pipeline completed", "run_id", run.ID)
 		}
 	}()
 
 	return run.ID, nil
+}
+
+// addRunPerformanceSummary attaches the bounded per-run performance rollup
+// to the terminal "run finished" event: low-cardinality counts only. The
+// detailed per-invocation evidence (session keys, models, timings, tokens)
+// stays in the local agent_invocations table and is never sent remotely.
+func addRunPerformanceSummary(database *db.DB, runID string, fields telemetry.Fields) {
+	summary, err := database.AgentInvocationSummaryForRun(runID)
+	if err != nil {
+		return
+	}
+	fields["agent_invocations"] = summary.Count
+	fields["resumed_invocations"] = summary.Resumed
+	fields["fallback_invocations"] = summary.Fallback
 }
 
 func telemetryBranchRole(branch, defaultBranch string) string {

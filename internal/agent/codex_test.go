@@ -12,7 +12,7 @@ import (
 
 func TestCodexAgent_BuildArgs(t *testing.T) {
 	ca := &codexAgent{bin: "codex"}
-	args := ca.buildArgs("fix the bug", "")
+	args := ca.buildArgs("fix the bug", "", "")
 
 	expected := []string{
 		"exec", "fix the bug",
@@ -33,7 +33,7 @@ func TestCodexAgent_BuildArgs(t *testing.T) {
 
 func TestCodexAgent_BuildArgs_ExtraArgsAfterExec(t *testing.T) {
 	ca := &codexAgent{bin: "codex", extraArgs: []string{"-m", "gpt-5.4"}}
-	args := ca.buildArgs("fix it", "")
+	args := ca.buildArgs("fix it", "", "")
 
 	expected := []string{
 		"exec",
@@ -62,7 +62,7 @@ func TestCodexAgent_BuildArgs_UserExecutionModeSuppressesBypass(t *testing.T) {
 	}
 	for _, extra := range tests {
 		ca := &codexAgent{bin: "codex", extraArgs: extra}
-		args := ca.buildArgs("p", "")
+		args := ca.buildArgs("p", "", "")
 
 		bypassCount := 0
 		for _, a := range args {
@@ -82,7 +82,7 @@ func TestCodexAgent_BuildArgs_UserExecutionModeSuppressesBypass(t *testing.T) {
 
 func TestCodexAgent_BuildArgs_WithOutputSchema(t *testing.T) {
 	ca := &codexAgent{bin: "codex"}
-	args := ca.buildArgs("review", "/tmp/schema.json")
+	args := ca.buildArgs("review", "/tmp/schema.json", "")
 
 	want := []string{
 		"exec", "review",
@@ -356,6 +356,7 @@ func TestParseCodexEvents_AgentMessage(t *testing.T) {
 		&usage,
 		&lastMessage,
 		nil,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -392,6 +393,7 @@ func TestParseCodexEvents_SeparatesMultipleMessages(t *testing.T) {
 		&usage,
 		&lastMessage,
 		nil,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -425,6 +427,7 @@ func TestParseCodexEvents_DoesNotSeparateSplitTurnMessages(t *testing.T) {
 		&usage,
 		&lastMessage,
 		nil,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -445,7 +448,7 @@ func TestParseCodexEvents_SkipsMalformedLines(t *testing.T) {
 
 	var usage TokenUsage
 	var lastMessage string
-	err := parseCodexEvents(context.Background(), strings.NewReader(events), nil, &usage, &lastMessage, nil)
+	err := parseCodexEvents(context.Background(), strings.NewReader(events), nil, &usage, &lastMessage, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

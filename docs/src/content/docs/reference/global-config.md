@@ -258,6 +258,21 @@ Daemon log verbosity.
 | Values  | `debug`, `info`, `warn`, `error` |
 | Default | `info`                           |
 
+### session_reuse
+
+Per-run, per-role agent session reuse for the review loop.
+
+|         |        |
+| ------- | ------ |
+| Type    | `bool` |
+| Default | `true` |
+
+When enabled and the pipeline agent supports native session resume (claude via `--resume`, codex via `exec resume`), each run keeps one durable reviewer session across the initial full review and every full rereview, and a separate durable fixer session across review-fix turns.
+The roles never share a session, other pipeline steps stay session-isolated in their own cold invocations, and different runs never reuse identities.
+Every review turn still performs a full review of the complete branch diff; only the reviewer's own prior context is carried.
+When resume is unavailable or fails, the invocation falls back to a cold run or a fresh same-role session and the fallback is recorded in the local `agent_invocations` telemetry.
+Set `false` to force every agent invocation cold.
+
 ### auto_fix
 
 Maximum follow-up auto-fix attempts per step. Set a step to `0` to disable the follow-up auto-fix loop, so findings require manual approval.
