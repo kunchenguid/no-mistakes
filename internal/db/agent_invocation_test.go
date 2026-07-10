@@ -140,6 +140,28 @@ func TestAddRunParkedDurationAccumulates(t *testing.T) {
 	}
 }
 
+func TestCompleteRunAwaitingAgentAccumulatesParkedDuration(t *testing.T) {
+	d, _, run := openSessionTestDB(t)
+
+	if err := d.SetRunAwaitingAgent(run.ID); err != nil {
+		t.Fatalf("set awaiting: %v", err)
+	}
+	if err := d.CompleteRunAwaitingAgent(run.ID, 1500); err != nil {
+		t.Fatalf("complete awaiting: %v", err)
+	}
+
+	got, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if got.AwaitingAgentSince != nil {
+		t.Fatal("AwaitingAgentSince must be cleared after completion")
+	}
+	if got.ParkedMS != 1500 {
+		t.Fatalf("ParkedMS = %d, want 1500", got.ParkedMS)
+	}
+}
+
 // TestRecoverStaleRunsAccumulatesParkedTime proves a crash while parked does
 // not lose the parked evidence: recovery folds the live awaiting marker into
 // the run's parked total.

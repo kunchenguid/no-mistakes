@@ -49,7 +49,10 @@ func (a *perfRecordingAgent) Run(ctx context.Context, opts agent.RunOpts) (*agen
 			previous(attempt)
 		}
 		attempts++
-		a.record(ctx, opts, attempt.Agent, attempt.Result, attempt.Err, attempt.StartedAt, attempt.CompletedAt)
+		attemptOpts := opts
+		attemptOpts.Session = attempt.Session
+		attemptOpts.SessionFallback = attempt.SessionFallback
+		a.record(ctx, attemptOpts, attempt.Agent, attempt.Result, attempt.Err, attempt.StartedAt, attempt.CompletedAt)
 	}
 	start := time.Now()
 	result, err := a.inner.Run(ctx, opts)

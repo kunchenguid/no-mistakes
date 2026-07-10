@@ -96,12 +96,22 @@ func emitAgentAttempt(opts RunOpts, name string, result *Result, err error, star
 		return
 	}
 	opts.OnAttempt(Attempt{
-		Agent:       name,
-		Result:      result,
-		Err:         err,
-		StartedAt:   startedAt,
-		CompletedAt: completedAt,
+		Agent:           name,
+		Result:          result,
+		Err:             err,
+		StartedAt:       startedAt,
+		CompletedAt:     completedAt,
+		Session:         cloneSessionRef(opts.Session),
+		SessionFallback: opts.SessionFallback,
 	})
+}
+
+func cloneSessionRef(session *SessionRef) *SessionRef {
+	if session == nil {
+		return nil
+	}
+	copy := *session
+	return &copy
 }
 
 // claudeRetryClassifier retries both transient API errors and the

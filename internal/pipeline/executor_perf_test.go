@@ -150,6 +150,36 @@ func TestPerfRecordingAgent_RecordsFallbackAttemptsSeparately(t *testing.T) {
 	}
 }
 
+func TestPerfRecordingAgent_MixedFallbackRecordsActualProviderCold(t *testing.T) {
+	database, _, run, _ := setupTest(t)
+	wrapped := &perfRecordingAgent{
+		inner: agent.NewFallback([]agent.Agent{
+			&fallbackUsageAgent{name: "pi", result: &agent.Result{Model: "pi-model"}},
+			&usageAgent{resumable: true},
+		}),
+		db:       database,
+		runID:    run.ID,
+		stepName: types.StepReview,
+		round:    func() int { return 1 },
+	}
+
+	sessions := NewRunSessions(database, run.ID, wrapped, true)
+	if _, err := sessions.Run(context.Background(), wrapped, SessionRoleReviewer, agent.RunOpts{Purpose: "review"}, nil); err != nil {
+		t.Fatalf("run session: %v", err)
+	}
+
+	invocations, err := database.GetAgentInvocationsByRun(run.ID)
+	if err != nil {
+		t.Fatalf("get invocations: %v", err)
+	}
+	if len(invocations) != 1 {
+		t.Fatalf("got %d invocation rows, want 1", len(invocations))
+	}
+	if got := invocations[0]; got.Agent != "pi" || got.SessionMode != db.InvocationModeCold {
+		t.Fatalf("invocation = %+v, want pi cold", got)
+	}
+}
+
 // TestExecutor_AccumulatesParkedDuration proves a gate wait lands in the
 // run's persisted parked total once the wait ends.
 func TestExecutor_AccumulatesParkedDuration(t *testing.T) {

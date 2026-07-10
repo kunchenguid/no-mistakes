@@ -69,10 +69,15 @@ func (a *fallbackAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) 
 	}
 	var lastErr error
 	for i, current := range candidates {
+		currentOpts := opts
+		if currentOpts.Session != nil && currentOpts.Session.ID == "" && !SupportsSessionResume(current) {
+			currentOpts.Session = nil
+			currentOpts.SessionFallback = false
+		}
 		startedAt := time.Now()
-		result, err := current.Run(ctx, opts)
+		result, err := current.Run(ctx, currentOpts)
 		if !ReportsAgentAttempts(current) {
-			emitAgentAttempt(opts, current.Name(), result, err, startedAt, time.Now())
+			emitAgentAttempt(currentOpts, current.Name(), result, err, startedAt, time.Now())
 		}
 		if err == nil {
 			if result != nil && result.Provider == "" {

@@ -460,15 +460,8 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 
 		parkStart := time.Now()
 		response, err := e.waitForApproval(ctx, stepName)
-		// The wait has ended (the agent responded, or it was cancelled): the run
-		// is no longer parked awaiting the agent. Clear the pollable marker
-		// before resuming so awaiting_agent_since is non-nil only while parked,
-		// and fold the wait into the run's accumulated parked total.
-		if dbErr := e.db.ClearRunAwaitingAgent(run.ID); dbErr != nil {
-			slog.Warn("failed to clear awaiting-agent marker in db", "step", stepName, "run", run.ID, "error", dbErr)
-		}
-		if dbErr := e.db.AddRunParkedDuration(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
-			slog.Warn("failed to accumulate parked duration in db", "step", stepName, "run", run.ID, "error", dbErr)
+		if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
+			slog.Warn("failed to complete awaiting-agent state in db", "step", stepName, "run", run.ID, "error", dbErr)
 		}
 		if err != nil {
 			if dbErr := e.db.FailStep(sr.ID, err.Error(), executionMS); dbErr != nil {

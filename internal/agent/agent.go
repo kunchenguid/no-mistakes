@@ -43,11 +43,13 @@ type RunOpts struct {
 }
 
 type Attempt struct {
-	Agent       string
-	Result      *Result
-	Err         error
-	StartedAt   time.Time
-	CompletedAt time.Time
+	Agent           string
+	Result          *Result
+	Err             error
+	StartedAt       time.Time
+	CompletedAt     time.Time
+	Session         *SessionRef
+	SessionFallback bool
 }
 
 // SessionRef identifies a durable adapter-native session for RunOpts.Session.

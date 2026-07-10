@@ -216,8 +216,8 @@ func runHappyPath(t *testing.T, agentName string) {
 	assertDocumentPrompt(t, h, run, invs)
 	assertDocumentStepNoGaps(t, run.Steps)
 	assertNoCommandTestStep(t, run.Steps, invs)
-	if !sawPromptContainingAll(invs, "Detect the linting and formatting tools", "branch: feature/e2e", "only unresolved") {
-		t.Errorf("expected a lint prompt with branch metadata and action guidance in invocations, got %d:\n%s", len(invs), summarisePrompts(invs))
+	if sawPromptContainingAll(invs, "Detect the linting and formatting tools", "branch: feature/e2e") {
+		t.Errorf("expected combined housekeeping to avoid a separate lint prompt, got %d:\n%s", len(invs), summarisePrompts(invs))
 	}
 	assertPromptsAbsent(t, invs,
 		"Draft a pull request title and summary for the full branch delta.",
@@ -985,7 +985,7 @@ func assertEmptyDiffAfterRebaseRun(t *testing.T, h *Harness) {
 	if sawPromptContainingAll(invs, "You are validating a code change by testing it", "branch: empty-after-rebase") {
 		t.Fatal("empty-after-rebase run should skip test without calling the agent")
 	}
-	if sawPromptContainingAll(invs, "Find every documentation gap", "branch: empty-after-rebase") {
+	if sawPromptContainingAll(invs, "Find what this change made stale", "branch: empty-after-rebase") {
 		t.Fatal("empty-after-rebase run should skip document without calling the agent")
 	}
 	if sawPromptContainingAll(invs, "Detect the linting and formatting tools", "branch: empty-after-rebase") {
@@ -1231,7 +1231,7 @@ func assertIgnoredOnlyRun(t *testing.T, h *Harness) {
 	if sawPromptContainingAll(invs, "Review the code changes", "branch: ignored-only") {
 		t.Fatal("ignored-only review should not call the agent")
 	}
-	if sawPromptContainingAll(invs, "Find every documentation gap", "branch: ignored-only") {
+	if sawPromptContainingAll(invs, "Find what this change made stale", "branch: ignored-only") {
 		t.Fatal("ignored-only document step should not call the agent")
 	}
 }
@@ -1571,7 +1571,7 @@ func assertExplicitAttachUsesRepoWideActiveRun(t *testing.T, h *Harness) {
 	t.Helper()
 	config := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  test: nm-explicit-attach-slow-e2e\n  lint: true\n"
 	slowCommand := filepath.Join(h.BinDir, "nm-explicit-attach-slow-e2e")
-	if err := os.WriteFile(slowCommand, []byte("#!/bin/sh\nsleep 10\n"), 0o755); err != nil {
+	if err := os.WriteFile(slowCommand, []byte("#!/bin/sh\nsleep 60\n"), 0o755); err != nil {
 		t.Fatalf("write explicit attach slow test command: %v", err)
 	}
 	h.CommitChange("explicit-attach-active", ".no-mistakes.yaml", config, "configure explicit attach slow test")
@@ -1625,7 +1625,7 @@ func assertTestMalformedStructuredOutputRun(t *testing.T, h *Harness) {
 
 func assertLintMalformedStructuredOutputRun(t *testing.T, h *Harness) {
 	t.Helper()
-	h.CommitChange("lint-malformed-structured-output", "lint-malformed-structured-output.txt", "lint malformed structured output\n", "add lint malformed structured output")
+	h.CommitChange("lint-malformed-structured-output", "lint-malformed-structured-output.generated.go", "lint malformed structured output\n", "add lint malformed structured output")
 	h.PushToGate("lint-malformed-structured-output")
 	run := h.WaitForRun("lint-malformed-structured-output", 60*time.Second)
 	if run.Status != types.RunCompleted {
@@ -2695,7 +2695,7 @@ func assertReviewStepInfoOnly(t *testing.T, steps []ipc.StepResultInfo) {
 
 func assertDocumentPrompt(t *testing.T, h *Harness, run *ipc.RunInfo, invs []Invocation) {
 	t.Helper()
-	prompt, ok := promptContainingAll(invs, "Find every documentation gap", "branch: feature/e2e")
+	prompt, ok := promptContainingAll(invs, "Find what this change made stale", "branch: feature/e2e")
 	if !ok {
 		t.Fatalf("expected a feature/e2e document prompt in invocations, got %d:\n%s", len(invs), summarisePrompts(invs))
 	}
@@ -2705,12 +2705,25 @@ func assertDocumentPrompt(t *testing.T, h *Harness, run *ipc.RunInfo, invs []Inv
 		baseSHA,
 		run.HeadSHA,
 		"ignore patterns: *.generated.go, vendor/**",
+		"Documentation placement policy",
+		"one authoritative owner document",
+		"Only touch documentation this change made stale",
+		"Do not create a new documentation surface merely to close a perceived gap.",
+		"Combined lint duty (same pass - no separate lint agent will run):",
+		`"category" set to "lint"`,
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("expected document prompt to contain %q, got:\n%s", want, prompt)
+		}
+	}
+	for _, unexpected := range []string{
+		"Find every documentation gap",
 		"Be exhaustive.",
 		"fix all of them yourself",
 		"Do not stop after the first documentation gap.",
 	} {
-		if !strings.Contains(prompt, want) {
-			t.Errorf("expected document prompt to contain %q, got:\n%s", want, prompt)
+		if strings.Contains(prompt, unexpected) {
+			t.Errorf("expected document prompt to exclude %q, got:\n%s", unexpected, prompt)
 		}
 	}
 }

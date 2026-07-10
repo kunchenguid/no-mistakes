@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -31,6 +32,9 @@ func TestDaemonRunUsesProvidedRoot(t *testing.T) {
 	cmd := exec.CommandContext(ctx, h.NMBin, "daemon", "run", "--root", wantRoot)
 	cmd.Dir = h.WorkDir
 	cmd.Env = os.Environ()
+	if runtime.GOOS != "windows" {
+		cmd.Env = mergedEnv(cmd.Env, map[string]string{"SHELL": "/bin/sh"})
+	}
 	var output bytes.Buffer
 	cmd.Stdout = &output
 	cmd.Stderr = &output
