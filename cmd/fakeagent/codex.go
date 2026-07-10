@@ -6,14 +6,20 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
 func runCodex(args []string, scenario *Scenario) int {
 	prompt := extractCodexPrompt(args)
-	logInvocation("codex", prompt, args)
+	model := extractCodexModel(args)
+	effort := extractCodexEffort(args)
+	logInvocation("codex", model, effort, prompt, args)
 
-	action := scenario.Match(prompt)
+	action := scenario.Match(prompt, model, effort)
+	if code, handled := maybeInjectFailure("codex", action); handled {
+		return code
+	}
 	if err := applyAction(action); err != nil {
 		return 1
 	}
@@ -264,31 +270,84 @@ func extractCodexPrompt(args []string) string {
 
 var promptLineageIDRE = regexp.MustCompile(`lineage (\S+),`)
 
-// substitutePromptLineageID replaces every PROMPT_LINEAGE_ID sentinel in the
-// structured verdict (including nested batch verdicts) with the first lineage
-// id parsed from the verifier prompt, so single-lineage repair journeys need
-// not hardcode a runtime ULID.
+// substitutePromptLineageID replaces PROMPT_LINEAGE_ID sentinels in the
+// structured verdict (including nested batch verdicts) with lineage ids parsed
+// from the verifier prompt, so repair journeys need not hardcode runtime ULIDs.
+// PROMPT_LINEAGE_ID and PROMPT_LINEAGE_ID_0 map to the first lineage;
+// PROMPT_LINEAGE_ID_<n> maps to the nth lineage in prompt order, letting a batch
+// verdict resolve every lineage it was asked to adjudicate.
 func substitutePromptLineageID(structured map[string]any, prompt string) {
-	m := promptLineageIDRE.FindStringSubmatch(prompt)
-	if len(m) != 2 {
+	matches := promptLineageIDRE.FindAllStringSubmatch(prompt, -1)
+	if len(matches) == 0 {
 		return
 	}
-	substituteLineageSentinel(structured, m[1])
+	ids := make([]string, len(matches))
+	for i, m := range matches {
+		ids[i] = m[1]
+	}
+	substituteLineageSentinel(structured, ids)
 }
 
-func substituteLineageSentinel(v any, lineageID string) {
+func substituteLineageSentinel(v any, ids []string) {
+	resolve := func(s string) (string, bool) {
+		if s == "PROMPT_LINEAGE_ID" {
+			return ids[0], true
+		}
+		if n, ok := strings.CutPrefix(s, "PROMPT_LINEAGE_ID_"); ok {
+			if idx, err := strconv.Atoi(n); err == nil && idx >= 0 && idx < len(ids) {
+				return ids[idx], true
+			}
+		}
+		return "", false
+	}
 	switch t := v.(type) {
 	case map[string]any:
 		for k, val := range t {
-			if s, ok := val.(string); ok && s == "PROMPT_LINEAGE_ID" {
-				t[k] = lineageID
-			} else {
-				substituteLineageSentinel(val, lineageID)
+			if s, ok := val.(string); ok {
+				if id, done := resolve(s); done {
+					t[k] = id
+					continue
+				}
 			}
+			substituteLineageSentinel(val, ids)
 		}
 	case []any:
 		for _, item := range t {
-			substituteLineageSentinel(item, lineageID)
+			substituteLineageSentinel(item, ids)
 		}
 	}
+}
+
+// extractCodexModel returns the routed model from `-m <model>` / `--model`.
+func extractCodexModel(args []string) string {
+	for i := 0; i < len(args); i++ {
+		switch {
+		case (args[i] == "-m" || args[i] == "--model") && i+1 < len(args):
+			return args[i+1]
+		case strings.HasPrefix(args[i], "-m="):
+			return strings.TrimPrefix(args[i], "-m=")
+		case strings.HasPrefix(args[i], "--model="):
+			return strings.TrimPrefix(args[i], "--model=")
+		}
+	}
+	return ""
+}
+
+// extractCodexEffort returns the routed effort encoded as
+// `-c model_reasoning_effort=<effort>`.
+func extractCodexEffort(args []string) string {
+	const key = "model_reasoning_effort="
+	for i := 0; i < len(args); i++ {
+		val := ""
+		switch {
+		case args[i] == "-c" && i+1 < len(args):
+			val = args[i+1]
+		case strings.HasPrefix(args[i], "-c="):
+			val = strings.TrimPrefix(args[i], "-c=")
+		}
+		if strings.HasPrefix(val, key) {
+			return strings.TrimPrefix(val, key)
+		}
+	}
+	return ""
 }

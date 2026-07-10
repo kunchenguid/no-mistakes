@@ -9,9 +9,14 @@ import (
 
 func runClaude(args []string, scenario *Scenario) int {
 	prompt := extractClaudePrompt(args)
-	logInvocation("claude", prompt, args)
+	model := extractClaudeModel(args)
+	effort := extractClaudeEffort(args)
+	logInvocation("claude", model, effort, prompt, args)
 
-	action := scenario.Match(prompt)
+	action := scenario.Match(prompt, model, effort)
+	if code, handled := maybeInjectFailure("claude", action); handled {
+		return code
+	}
 	if err := applyAction(action); err != nil {
 		return 1
 	}
@@ -239,5 +244,25 @@ func extractClaudePrompt(args []string) string {
 		}
 	}
 	fmt.Fprintln(os.Stderr, "fakeagent: claude prompt missing (no -p found)")
+	return ""
+}
+
+// extractClaudeModel returns the routed model from `--model <model>` / `-m`.
+func extractClaudeModel(args []string) string {
+	for i := 0; i < len(args); i++ {
+		if (args[i] == "--model" || args[i] == "-m") && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+
+// extractClaudeEffort returns the routed effort from `--effort <effort>`.
+func extractClaudeEffort(args []string) string {
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--effort" && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
 	return ""
 }

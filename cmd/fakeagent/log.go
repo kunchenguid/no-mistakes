@@ -16,12 +16,14 @@ var logMu sync.Mutex
 type invocation struct {
 	Time   string   `json:"time"`
 	Agent  string   `json:"agent"`
+	Model  string   `json:"model,omitempty"`
+	Effort string   `json:"effort,omitempty"`
 	Args   []string `json:"args"`
 	Prompt string   `json:"prompt"`
 	CWD    string   `json:"cwd,omitempty"`
 }
 
-func logInvocation(agent, prompt string, args []string) {
+func logInvocation(agent, model, effort, prompt string, args []string) {
 	path := os.Getenv("FAKEAGENT_LOG")
 	if path == "" {
 		return
@@ -30,6 +32,8 @@ func logInvocation(agent, prompt string, args []string) {
 	rec := invocation{
 		Time:   time.Now().UTC().Format(time.RFC3339Nano),
 		Agent:  agent,
+		Model:  model,
+		Effort: effort,
 		Args:   args,
 		Prompt: prompt,
 		CWD:    cwd,

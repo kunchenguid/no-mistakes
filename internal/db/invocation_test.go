@@ -269,3 +269,67 @@ func TestGetRecentUtilityScopesFiltersAndLimits(t *testing.T) {
 		t.Fatalf("limited wizard scopes = %d, want 2", len(limited))
 	}
 }
+
+// TestGetInvocationAttemptsByRunReconstructsRoutingHistory proves the accessor
+// returns every pipeline attempt for one run in start order, preserving each
+// routed Candidate and the skipped-domain terminal that reveals an open
+// provider circuit, while excluding other runs.
+func TestGetInvocationAttemptsByRunReconstructsRoutingHistory(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/byrun", "git@github.com:user/byrun.git", "main")
+	run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
+	other, _ := d.InsertRun(repo.ID, "other", "aaa", "def")
+
+	startPipeline := func(runID, stepResultID, roundID string, purpose types.Purpose, role types.InvocationRole, cand types.InvocationCandidate) string {
+		t.Helper()
+		key := types.LegacyCandidateKey
+		if !cand.IsZero() {
+			key = string(cand.Profile) + ":0:" + string(cand.Runner)
+		}
+		id, err := d.StartInvocationAttempt(types.InvocationAttemptStart{
+			Purpose:      purpose,
+			Role:         role,
+			Scope:        types.InvocationScope{Kind: types.InvocationScopePipeline, RunID: runID, StepResultID: stepResultID, StepRoundID: roundID},
+			CandidateKey: key,
+			Candidate:    cand,
+		})
+		if err != nil {
+			t.Fatalf("start invocation: %v", err)
+		}
+		return id
+	}
+
+	review, _ := d.InsertStepResult(run.ID, types.StepReview)
+	reviewRound, _ := d.ReserveStepRound(review.ID, 1, "initial")
+	routedID := startPipeline(run.ID, review.ID, reviewRound.ID, types.PurposeInitialReview, types.InvocationRoleVerifier,
+		types.InvocationCandidate{Profile: "review_strong", Runner: types.RunnerCodex, Model: "gpt-5.6-sol", Effort: types.EffortHigh})
+	if err := d.FinishInvocationAttempt(routedID, types.InvocationAttemptTerminal{Outcome: types.InvocationOutcomeSucceeded}); err != nil {
+		t.Fatalf("finish routed: %v", err)
+	}
+
+	test, _ := d.InsertStepResult(run.ID, types.StepTest)
+	testRound, _ := d.ReserveStepRound(test.ID, 1, "initial")
+	skippedID := startPipeline(run.ID, test.ID, testRound.ID, types.PurposeTestEvidence, types.InvocationRoleFixer,
+		types.InvocationCandidate{Profile: "tools_balanced", Runner: types.RunnerCodex, Model: "gpt-5.6-terra", Effort: types.EffortHigh})
+	if err := d.FinishInvocationAttempt(skippedID, types.InvocationAttemptTerminal{Outcome: types.InvocationOutcomeSkipped, FailureDomain: types.FailureDomainOpenAI}); err != nil {
+		t.Fatalf("finish skipped: %v", err)
+	}
+
+	otherStep, _ := d.InsertStepResult(other.ID, types.StepReview)
+	otherRound, _ := d.ReserveStepRound(otherStep.ID, 1, "initial")
+	startPipeline(other.ID, otherStep.ID, otherRound.ID, types.PurposeInitialReview, types.InvocationRoleVerifier, types.InvocationCandidate{})
+
+	attempts, err := d.GetInvocationAttemptsByRun(run.ID)
+	if err != nil {
+		t.Fatalf("by run: %v", err)
+	}
+	if len(attempts) != 2 {
+		t.Fatalf("got %d attempts, want 2 (other run excluded)", len(attempts))
+	}
+	if attempts[0].Start.Candidate.Model != "gpt-5.6-sol" || attempts[0].Terminal == nil || attempts[0].Terminal.Outcome != types.InvocationOutcomeSucceeded {
+		t.Fatalf("attempt[0] = %+v, want routed sol success", attempts[0])
+	}
+	if attempts[1].Terminal == nil || attempts[1].Terminal.Outcome != types.InvocationOutcomeSkipped || attempts[1].Terminal.FailureDomain != types.FailureDomainOpenAI {
+		t.Fatalf("attempt[1] = %+v, want skipped with openai failure domain", attempts[1])
+	}
+}

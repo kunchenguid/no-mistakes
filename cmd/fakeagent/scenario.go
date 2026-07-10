@@ -51,6 +51,34 @@ type Action struct {
 
 	// DelayMS pauses before responding, for e2e tests that need an observable active run.
 	DelayMS int `yaml:"delay_ms,omitempty"`
+
+	// Model and Effort, when non-empty, additionally require the invoked
+	// candidate's native model / reasoning-effort argument to contain the
+	// substring for the action to match. This lets one scenario return
+	// different behavior per routed Candidate (e.g. the fix_fast Luna fixer
+	// leaves a finding unresolved while the authority_strong Sol fixer
+	// resolves it), which prompt matching alone cannot express.
+	Model  string `yaml:"model,omitempty"`
+	Effort string `yaml:"effort,omitempty"`
+
+	// Fail injects a failure so the routing invoker exercises adapter retry,
+	// provider circuits, or non-operational handling. Empty means succeed.
+	//   - "operational": exit non-zero with a non-transient operational needle
+	//     in stderr, so the adapter classifies an OperationalError and opens the
+	//     runner's provider circuit (no adapter retry).
+	//   - "transient": exit non-zero with a retryable needle for the first
+	//     FailTimes execs (tracked in a per-action counter), then succeed,
+	//     proving the adapter retries within one invocation.
+	//   - "output": emit unparseable structured output so the adapter classifies
+	//     a non-operational model-output error that never opens a circuit.
+	Fail string `yaml:"fail,omitempty"`
+
+	// FailTimes bounds "transient" failures before success (default 2).
+	FailTimes int `yaml:"fail_times,omitempty"`
+
+	// FailNeedle overrides the error text emitted for operational/transient
+	// failures; empty uses a per-mode default.
+	FailNeedle string `yaml:"fail_needle,omitempty"`
 }
 
 // Edit performs a Replace of Old with New in Path. If Old is empty the
@@ -99,14 +127,22 @@ func defaultScenario() *Scenario {
 	}
 }
 
-// Match returns the first action whose Match substring is contained in the
-// prompt. An empty Match matches everything, so a single trailing entry
-// can serve as the catch-all.
-func (s *Scenario) Match(prompt string) Action {
+// Match returns the first action whose constraints all hold: its Match
+// substring is contained in the prompt (empty matches any prompt), and, when
+// set, its Model/Effort substrings are contained in the invoked candidate's
+// native model/effort. An action with no constraints is the catch-all.
+func (s *Scenario) Match(prompt, model, effort string) Action {
 	for _, a := range s.Actions {
-		if a.Match == "" || strings.Contains(prompt, a.Match) {
-			return a
+		if a.Match != "" && !strings.Contains(prompt, a.Match) {
+			continue
 		}
+		if a.Model != "" && !strings.Contains(model, a.Model) {
+			continue
+		}
+		if a.Effort != "" && !strings.Contains(effort, a.Effort) {
+			continue
+		}
+		return a
 	}
 	return Action{Text: "no matching scenario"}
 }

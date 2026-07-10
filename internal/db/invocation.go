@@ -269,6 +269,27 @@ func (d *DB) GetInvocationAttemptsByRound(roundID string) ([]*InvocationAttempt,
 	return attempts, rows.Err()
 }
 
+// GetInvocationAttemptsByRun returns every pipeline-scope attempt for a run in
+// durable start order, so a reconnect snapshot can reconstruct the full routing
+// history (escalation tiers, provider failovers, and circuit skips) from the
+// persisted starts and terminals.
+func (d *DB) GetInvocationAttemptsByRun(runID string) ([]*InvocationAttempt, error) {
+	rows, err := d.sql.Query(invocationAttemptProjection+` WHERE start.run_id = ? ORDER BY start.started_at, start.id`, runID)
+	if err != nil {
+		return nil, fmt.Errorf("get invocation attempts by run: %w", err)
+	}
+	defer rows.Close()
+	var attempts []*InvocationAttempt
+	for rows.Next() {
+		attempt, err := scanInvocationAttempt(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan invocation attempt: %w", err)
+		}
+		attempts = append(attempts, attempt)
+	}
+	return attempts, rows.Err()
+}
+
 // GetInvocationAttemptsByUtilityScope returns standalone attempts in durable
 // start order without synthesizing pipeline ownership.
 func (d *DB) GetInvocationAttemptsByUtilityScope(utilityScopeID string) ([]*InvocationAttempt, error) {
