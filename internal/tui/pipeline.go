@@ -180,6 +180,15 @@ func renderPipelineView(run *ipc.RunInfo, steps []ipc.StepResultInfo, width int,
 		b.WriteString(line)
 		b.WriteString("\n")
 
+		// Dim meta sub-line under the review step summarizing the routed
+		// initial-review Candidate. Legacy/unrouted review steps (nil routing)
+		// and every other step render exactly as before.
+		if meta := routedReviewMeta(step); meta != "" {
+			metaLine, _ := cutText("  "+meta, contentWidth)
+			b.WriteString(dimStyle.Render(metaLine))
+			b.WriteString("\n")
+		}
+
 		// Connector between steps (suppressed in compact mode for small terminals).
 		if i < len(steps)-1 && height >= 30 {
 			b.WriteString(dimStyle.Render("│") + "\n")
@@ -194,6 +203,26 @@ func renderPipelineView(run *ipc.RunInfo, steps []ipc.StepResultInfo, width int,
 		b.WriteString("\n" + errStyle.Render(errText) + "\n")
 	}
 	return renderBox("Pipeline", b.String(), boxWidth)
+}
+
+// routedReviewMeta renders the one-line dim summary of a review step's routed
+// initial-review Candidate, e.g.
+// "routed: review_strong · codex gpt-5.6-sol/high · succeeded" (with the
+// failure domain appended when set). It returns "" for non-review steps and
+// for legacy/unrouted review steps whose routing projection is nil or empty.
+func routedReviewMeta(step ipc.StepResultInfo) string {
+	if step.StepName != types.StepReview || step.ReviewRouting == nil || len(step.ReviewRouting.Candidates) == 0 {
+		return ""
+	}
+	c := step.ReviewRouting.Candidates[0]
+	meta := fmt.Sprintf("routed: %s · %s %s/%s", c.Profile, c.Runner, c.Model, c.Effort)
+	if c.Outcome != "" {
+		meta += " · " + c.Outcome
+	}
+	if c.FailureDomain != "" {
+		meta += " · " + c.FailureDomain
+	}
+	return meta
 }
 
 func appendRightLabel(line, label string, width int) string {

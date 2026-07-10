@@ -68,6 +68,44 @@ type fixRow struct {
 	Summary string `toon:"summary"`
 }
 
+// routingAttemptRow is one routed initial-review Candidate attempt, in durable
+// (cascade) start order. The routed facts live on the attempt row itself, so
+// the projection reconstructs each row without resolving the candidate key back
+// to config. Outcome is empty while the attempt is still active, and
+// failure_domain is present only when an operational failure was classified.
+type routingAttemptRow struct {
+	Profile             string `toon:"profile"`
+	Tier                int    `toon:"tier"`
+	CandidateIndex      int    `toon:"candidate_index"`
+	Runner              string `toon:"runner"`
+	Model               string `toon:"model"`
+	Effort              string `toon:"effort"`
+	Outcome             string `toon:"outcome"`
+	FailureDomain       string `toon:"failure_domain,omitempty"`
+	DurationMS          int64  `toon:"duration_ms"`
+	InputTokens         int64  `toon:"input_tokens"`
+	OutputTokens        int64  `toon:"output_tokens"`
+	CacheReadTokens     int64  `toon:"cache_read_tokens"`
+	CacheCreationTokens int64  `toon:"cache_creation_tokens"`
+}
+
+// lineageRow is one run-wide root finding lineage an attempt surfaced: the
+// stable ULID identity, the model's display id, and the run-wide ordinal.
+type lineageRow struct {
+	LineageID string `toon:"lineage_id"`
+	DisplayID string `toon:"display_id"`
+	Sequence  int    `toon:"sequence"`
+}
+
+// reviewRoutingView is the render-ready projection of the review step's
+// routing, reconstructed purely from durable tables. It is populated only on
+// the direct-DB path; the IPC path leaves it nil, so legacy or unrouted runs
+// emit a byte-identical document.
+type reviewRoutingView struct {
+	Attempts []routingAttemptRow
+	Lineages []lineageRow
+}
+
 // stepView is a render-ready view of a single pipeline step, decoupled from
 // whether it came from the daemon (ipc) or the local database.
 type stepView struct {
@@ -100,6 +138,11 @@ type runView struct {
 	// the top-level parked signal in the run object.
 	AwaitingAgentSince *int64
 	Steps              []stepView
+	// ReviewRouting is the durable routing projection for the review step,
+	// present only when reconstructed from the local database (the direct-DB
+	// path). Nil on the IPC path and for legacy/unrouted reviews, which keeps
+	// their output unchanged.
+	ReviewRouting *reviewRoutingView
 }
 
 func runViewFromIPC(r *ipc.RunInfo) runView {
@@ -141,7 +184,7 @@ func runViewFromIPC(r *ipc.RunInfo) runView {
 	return rv
 }
 
-func runViewFromDB(r *db.Run, steps []*db.StepResult) runView {
+func runViewFromDB(d *db.DB, r *db.Run, steps []*db.StepResult) runView {
 	rv := runView{
 		ID:                 r.ID,
 		Branch:             r.Branch,
@@ -174,6 +217,21 @@ func runViewFromDB(r *db.Run, steps []*db.StepResult) runView {
 			sv.FindingsJSON = *s.FindingsJSON
 		}
 		rv.Steps = append(rv.Steps, sv)
+	}
+	// Reconstruct the review step's routing straight from durable tables. Only
+	// the review step carries routed initial-review attempts, so the lookup is
+	// scoped to it. A nil db (plain unit views) or an unrouted/legacy review
+	// leaves ReviewRouting nil and the output identical to before.
+	if d != nil {
+		for _, s := range steps {
+			if s.StepName != types.StepReview {
+				continue
+			}
+			if proj, err := d.ReviewRoutingForStep(s.ID); err == nil {
+				rv.ReviewRouting = reviewRoutingViewFrom(proj)
+			}
+			break
+		}
 	}
 	return rv
 }
@@ -425,7 +483,60 @@ func runObjectFieldWithKey(key string, rv runView) toon.Field {
 	if activeRows := rv.activeRows(); len(activeRows) > 0 {
 		fields = append(fields, toon.Field{Key: "active_steps", Value: activeRows})
 	}
+	if rv.ReviewRouting != nil {
+		fields = append(fields, reviewRoutingField(rv.ReviewRouting))
+	}
 	return toon.Field{Key: key, Value: toon.NewObject(fields...)}
+}
+
+// reviewRoutingViewFrom converts the durable routing projection into a
+// render-ready view. A nil projection (legacy/unrouted review) yields nil, so
+// the caller emits no routing block.
+func reviewRoutingViewFrom(proj *db.ReviewRouting) *reviewRoutingView {
+	if proj == nil {
+		return nil
+	}
+	view := &reviewRoutingView{}
+	for _, a := range proj.Attempts {
+		row := routingAttemptRow{
+			Profile:        a.Start.Candidate.Profile,
+			Tier:           a.Start.Candidate.Tier,
+			CandidateIndex: a.Start.Candidate.CandidateIndex,
+			Runner:         string(a.Start.Candidate.Runner),
+			Model:          a.Start.Candidate.Model,
+			Effort:         string(a.Start.Candidate.Effort),
+		}
+		// Terminal facts land only once the attempt finishes; an active attempt
+		// keeps zeroed outcome and tokens so the row reads as still in flight.
+		if a.Terminal != nil {
+			row.Outcome = string(a.Terminal.Outcome)
+			row.FailureDomain = string(a.Terminal.FailureDomain)
+			row.DurationMS = a.Terminal.DurationMS
+			row.InputTokens = a.Terminal.InputTokens
+			row.OutputTokens = a.Terminal.OutputTokens
+			row.CacheReadTokens = a.Terminal.CacheReadTokens
+			row.CacheCreationTokens = a.Terminal.CacheCreationTokens
+		}
+		view.Attempts = append(view.Attempts, row)
+	}
+	for _, l := range proj.Lineages {
+		view.Lineages = append(view.Lineages, lineageRow{
+			LineageID: l.ID,
+			DisplayID: l.DisplayID,
+			Sequence:  l.Sequence,
+		})
+	}
+	return view
+}
+
+// reviewRoutingField renders the review routing projection as a nested object
+// with a cascade-ordered attempts table and a run-wide lineages table. The
+// field ordering is fixed so the emitted shape is deterministic across runs.
+func reviewRoutingField(v *reviewRoutingView) toon.Field {
+	return toon.Field{Key: "review_routing", Value: toon.NewObject(
+		toon.Field{Key: "attempts", Value: v.Attempts},
+		toon.Field{Key: "lineages", Value: v.Lineages},
+	)}
 }
 
 // gateFields renders the active approval gate: the awaiting step, its findings

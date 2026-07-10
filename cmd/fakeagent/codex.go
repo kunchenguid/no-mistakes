@@ -142,11 +142,14 @@ func extractCodexOutputSchema(args []string) string {
 	return ""
 }
 
-// filterStructuredToSchema drops fields from structured that are not
-// declared as properties on the top-level object schema at schemaPath.
-// Real codex would not emit undeclared fields under --output-schema, so
-// mirroring that behaviour keeps the fake consistent with no-mistakes'
-// additionalProperties:false validation. schemaPath == "" is a no-op.
+// filterStructuredToSchema makes the scenario's structured map schema-complete
+// the way real codex output does under --output-schema. no-mistakes rewrites the
+// schema's required set to every declared property (marking originally-optional
+// ones nullable), and validates the result with additionalProperties:false. So
+// the fake (a) drops undeclared fields real codex would never emit, and (b)
+// null-fills any required-but-nullable field the scenario omitted, mirroring the
+// schema-complete object constrained decoding produces. schemaPath == "" is a
+// no-op.
 func filterStructuredToSchema(structured map[string]any, schemaPath string) (map[string]any, error) {
 	if schemaPath == "" {
 		return structured, nil
@@ -169,7 +172,41 @@ func filterStructuredToSchema(structured map[string]any, schemaPath string) (map
 			filtered[key] = value
 		}
 	}
+	// Null-fill required fields the scenario left out, but only when the schema
+	// admits null for them (originally-optional fields no-mistakes made
+	// nullable). A required field with no null-typed schema must come from the
+	// scenario; leaving it absent surfaces a genuine fixture gap.
+	if required, ok := schema["required"].([]any); ok {
+		for _, r := range required {
+			key, ok := r.(string)
+			if !ok {
+				continue
+			}
+			if _, present := filtered[key]; present {
+				continue
+			}
+			if prop, ok := properties[key].(map[string]any); ok && schemaAllowsNull(prop) {
+				filtered[key] = nil
+			}
+		}
+	}
 	return filtered, nil
+}
+
+// schemaAllowsNull reports whether a property schema permits a null value,
+// i.e. its "type" is "null" or a list containing "null".
+func schemaAllowsNull(prop map[string]any) bool {
+	switch t := prop["type"].(type) {
+	case string:
+		return t == "null"
+	case []any:
+		for _, item := range t {
+			if s, ok := item.(string); ok && s == "null" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // extractCodexPrompt finds the prompt positional. Real codex argv is

@@ -602,3 +602,74 @@ func TestRenderFooter_WithAvailableUpdate_ShowsIndicator(t *testing.T) {
 		t.Fatalf("expected update indicator at right edge, got: %s", stripped)
 	}
 }
+
+func TestRenderPipelineView_ShowsRoutedReviewMeta(t *testing.T) {
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusCompleted
+	run.Steps[0].DurationMS = ptr(int64(1200))
+	run.Steps[0].ReviewRouting = &ipc.ReviewRoutingInfo{
+		Candidates: []ipc.RoutedCandidateInfo{{
+			Profile: "review_strong",
+			Runner:  "codex",
+			Model:   "gpt-5.6-sol",
+			Effort:  "high",
+			Outcome: "succeeded",
+		}},
+		LineageCount: 2,
+	}
+	run.Steps[1].Status = types.StepStatusRunning
+
+	plain := stripANSI(renderPipelineView(run, run.Steps, 80, 0, 40))
+	const want = "routed: review_strong · codex gpt-5.6-sol/high · succeeded"
+	if !strings.Contains(plain, want) {
+		t.Fatalf("expected routed sub-line %q in:\n%s", want, plain)
+	}
+
+	// Collect in-box content rows in render order.
+	var content []string
+	for _, line := range strings.Split(plain, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "│") && strings.HasSuffix(trimmed, "│") {
+			content = append(content, boxContentLine(line))
+		}
+	}
+	// The header spacer between header and steps stays a single blank row.
+	if len(content) < 2 || content[1] != "" {
+		t.Fatalf("expected header spacer blank row preserved, got %#v", content)
+	}
+	reviewIdx, routedIdx, testIdx := -1, -1, -1
+	for i, c := range content {
+		switch {
+		case routedIdx == -1 && strings.HasPrefix(c, "routed:"):
+			routedIdx = i
+		case reviewIdx == -1 && strings.Contains(c, "Review"):
+			reviewIdx = i
+		case testIdx == -1 && strings.Contains(c, "Test"):
+			testIdx = i
+		}
+	}
+	if reviewIdx == -1 || routedIdx == -1 || testIdx == -1 {
+		t.Fatalf("missing rows: review=%d routed=%d test=%d in %#v", reviewIdx, routedIdx, testIdx, content)
+	}
+	// The routed meta sits directly under the Review row (no blank line inserted)
+	// and inside the review step's box, before the Test row.
+	if routedIdx != reviewIdx+1 {
+		t.Errorf("routed sub-line at %d, want directly under review row %d: %#v", routedIdx, reviewIdx, content)
+	}
+	if routedIdx >= testIdx {
+		t.Errorf("routed sub-line %d should precede the Test row %d: %#v", routedIdx, testIdx, content)
+	}
+}
+
+func TestRenderPipelineView_NoRoutedReviewMetaWhenAbsent(t *testing.T) {
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusCompleted
+	run.Steps[0].DurationMS = ptr(int64(1200))
+	// ReviewRouting left nil: a legacy/unrouted review renders exactly as before.
+	run.Steps[1].Status = types.StepStatusRunning
+
+	plain := stripANSI(renderPipelineView(run, run.Steps, 80, 0, 40))
+	if strings.Contains(plain, "routed:") {
+		t.Errorf("expected no routed sub-line for legacy review, got:\n%s", plain)
+	}
+}

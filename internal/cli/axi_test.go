@@ -38,7 +38,7 @@ func TestRunViewFromDBAwaitingStep(t *testing.T) {
 		{StepName: types.StepReview, Status: types.StepStatusCompleted},
 		{StepName: types.StepTest, Status: types.StepStatusAwaitingApproval, FindingsJSON: strptr(`{"findings":[],"summary":"x"}`)},
 	}
-	rv := runViewFromDB(run, steps)
+	rv := runViewFromDB(nil, run, steps)
 	gate, ok := rv.awaitingStep()
 	if !ok {
 		t.Fatal("expected an awaiting step")
@@ -108,6 +108,145 @@ func TestWriteRunObjectShape(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("run object missing %q in:\n%s", want, out)
 		}
+	}
+}
+
+// seedRoutedReviewStep creates a review step result carrying one routed
+// initial-review Candidate attempt, and returns the run and its step results so
+// a caller can render the direct-DB view. finalize controls whether the attempt
+// is finished (succeeded with token facts) and whether finding lineages are
+// minted, so both the active and completed projections are exercisable.
+func seedRoutedReviewStep(t *testing.T, d *db.DB) (*db.Run, []*db.StepResult, []db.FindingLineage) {
+	t.Helper()
+	repo, err := d.InsertRepo("/home/user/routed", "git@github.com:user/routed.git", "main")
+	if err != nil {
+		t.Fatalf("insert repo: %v", err)
+	}
+	run, err := d.InsertRun(repo.ID, "feature/x", "abcdef1234567890", "base")
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+	step, err := d.InsertStepResult(run.ID, types.StepReview)
+	if err != nil {
+		t.Fatalf("insert step: %v", err)
+	}
+	round, err := d.ReserveStepRound(step.ID, 1, "initial")
+	if err != nil {
+		t.Fatalf("reserve round: %v", err)
+	}
+	attemptID, err := d.StartInvocationAttempt(types.InvocationAttemptStart{
+		Purpose:      types.PurposeInitialReview,
+		Role:         types.InvocationRoleVerifier,
+		Scope:        types.InvocationScope{Kind: types.InvocationScopePipeline, RunID: run.ID, StepResultID: step.ID, StepRoundID: round.ID},
+		CandidateKey: "review_strong:0:codex",
+		Candidate: types.InvocationCandidate{
+			Profile:        "review_strong",
+			Tier:           0,
+			CandidateIndex: 0,
+			Runner:         types.RunnerCodex,
+			Model:          "gpt-5.6-sol",
+			Effort:         types.EffortHigh,
+		},
+	})
+	if err != nil {
+		t.Fatalf("start routed attempt: %v", err)
+	}
+	if err := d.FinishInvocationAttempt(attemptID, types.InvocationAttemptTerminal{
+		Outcome:      types.InvocationOutcomeSucceeded,
+		DurationMS:   4200,
+		InputTokens:  120,
+		OutputTokens: 34,
+	}); err != nil {
+		t.Fatalf("finish attempt: %v", err)
+	}
+	lineages, err := d.CreateFindingLineages(run.ID, attemptID, []string{"review-1", "review-2"})
+	if err != nil {
+		t.Fatalf("create lineages: %v", err)
+	}
+	steps, err := d.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatalf("get steps: %v", err)
+	}
+	return run, steps, lineages
+}
+
+func TestWriteRunObjectRoutingBlock(t *testing.T) {
+	d := openTestDB(t)
+	run, steps, lineages := seedRoutedReviewStep(t, d)
+
+	out := axiDoc(runObjectField(runViewFromDB(d, run, steps)))
+
+	for _, want := range []string{
+		"  review_routing:\n",
+		"    attempts[1]{profile,tier,candidate_index,runner,model,effort,outcome,duration_ms,input_tokens,output_tokens,cache_read_tokens,cache_creation_tokens}:\n",
+		"      review_strong,0,0,codex,gpt-5.6-sol,high,succeeded,4200,120,34,0,0\n",
+		"    lineages[2]{lineage_id,display_id,sequence}:\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("routing block missing %q in:\n%s", want, out)
+		}
+	}
+
+	// Lineage rows render in run-wide sequence order carrying the durable ULID
+	// identity, not the model's display id. The ULIDs quote under TOON's
+	// leading-zero rule, so strip quotes before matching to assert content and
+	// order without depending on the quoting.
+	stripped := strings.ReplaceAll(out, `"`, "")
+	wantLineages := "      " + lineages[0].ID + ",review-1,0\n" +
+		"      " + lineages[1].ID + ",review-2,1\n"
+	if !strings.Contains(stripped, wantLineages) {
+		t.Errorf("lineage rows not in deterministic order; want:\n%s\ngot:\n%s", wantLineages, out)
+	}
+
+	// failure_domain is omitted when empty, so a clean succeeded attempt never
+	// carries the column.
+	if strings.Contains(out, "failure_domain") {
+		t.Errorf("failure_domain must be omitted when empty:\n%s", out)
+	}
+}
+
+func TestWriteRunObjectLegacyReviewNoRoutingBlock(t *testing.T) {
+	d := openTestDB(t)
+	repo, err := d.InsertRepo("/home/user/legacy", "git@github.com:user/legacy.git", "main")
+	if err != nil {
+		t.Fatalf("insert repo: %v", err)
+	}
+	run, err := d.InsertRun(repo.ID, "feature/x", "abcdef1234567890", "base")
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+	step, err := d.InsertStepResult(run.ID, types.StepReview)
+	if err != nil {
+		t.Fatalf("insert step: %v", err)
+	}
+	round, err := d.ReserveStepRound(step.ID, 1, "initial")
+	if err != nil {
+		t.Fatalf("reserve round: %v", err)
+	}
+	// A pre-routing review attempt: the legacy candidate key with no routed
+	// Candidate. The projection must treat this as unrouted and emit nothing.
+	if _, err := d.StartInvocationAttempt(types.InvocationAttemptStart{
+		Purpose:      types.PurposeInitialReview,
+		Role:         types.InvocationRoleVerifier,
+		Scope:        types.InvocationScope{Kind: types.InvocationScopePipeline, RunID: run.ID, StepResultID: step.ID, StepRoundID: round.ID},
+		CandidateKey: types.LegacyCandidateKey,
+	}); err != nil {
+		t.Fatalf("start legacy attempt: %v", err)
+	}
+	steps, err := d.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatalf("get steps: %v", err)
+	}
+
+	out := axiDoc(runObjectField(runViewFromDB(d, run, steps)))
+
+	// Legacy runs stay byte-identical: the steps table renders as before and no
+	// routing block is appended.
+	if !strings.Contains(out, "  steps[1]{step,status,findings,duration_ms}:\n") {
+		t.Errorf("legacy run lost its steps table:\n%s", out)
+	}
+	if strings.Contains(out, "review_routing") {
+		t.Errorf("legacy/unrouted review must emit no routing block:\n%s", out)
 	}
 }
 

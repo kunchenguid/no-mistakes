@@ -589,13 +589,25 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			round:    func() int { return roundNum + 1 },
 		}
 	}
+	var routingCfg config.RoutingConfig
+	if e.config != nil {
+		routingCfg = e.config.Routing
+	}
+	invoker := newRoutingInvoker(agent.NewLegacyInvoker(stepAgent, e.db), routingCfg, e.db)
+	invoker.newAgent = func(name types.AgentName, executable string) (agent.Agent, error) {
+		native, err := agent.New(name, executable, nil)
+		if err != nil {
+			return nil, err
+		}
+		return &lifecycleAgent{inner: native, onLifecycle: onAgentLifecycle}, nil
+	}
 	sctx := &StepContext{
 		Ctx:              ctx,
 		Run:              run,
 		Repo:             repo,
 		WorkDir:          workDir,
 		Agent:            stepAgent,
-		Invoker:          agent.NewLegacyInvoker(stepAgent, e.db),
+		Invoker:          invoker,
 		Config:           e.config,
 		DB:               e.db,
 		StepResultID:     sr.ID,
@@ -698,6 +710,10 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFailed), "", "", dbErr.Error(), &durationMS)
 			return false, fmt.Errorf("complete step %s round: %w", stepName, dbErr)
 		}
+
+		// Give every returned initial-review finding a durable run-wide root
+		// lineage tied to the routed Candidate attempt that surfaced it.
+		e.recordReviewLineages(run, stepName, currentRoundID, outcome.Findings)
 
 		// If the step produced a PR URL, propagate it to the run and emit an update.
 		if outcome.PRURL != "" {
@@ -1174,4 +1190,45 @@ func selectedFindingCount(raw string, ids []string) int {
 		return len(ids)
 	}
 	return findingsCount(raw)
+}
+
+// recordReviewLineages gives every returned initial-review finding a durable,
+// run-wide root lineage tied to the routed Candidate attempt that surfaced it.
+// It is best-effort: the findings are already persisted, and lineage is
+// tracking metadata for later repair. It no-ops for non-review steps and for
+// rounds with no routed initial-review attempt (e.g. the legacy fix path).
+func (e *Executor) recordReviewLineages(run *db.Run, stepName types.StepName, roundID, findingsJSON string) {
+	if stepName != types.StepReview || roundID == "" || findingsJSON == "" || run == nil {
+		return
+	}
+	attempts, err := e.db.GetInvocationAttemptsByRound(roundID)
+	if err != nil {
+		slog.Warn("failed to load review attempts for lineage", "step", stepName, "error", err)
+		return
+	}
+	var reviewAttempt *db.InvocationAttempt
+	for _, attempt := range attempts {
+		if attempt.Start.Purpose == types.PurposeInitialReview && !attempt.Start.Candidate.IsZero() {
+			reviewAttempt = attempt
+			break
+		}
+	}
+	if reviewAttempt == nil {
+		return
+	}
+	findings, err := types.ParseFindingsJSON(findingsJSON)
+	if err != nil {
+		slog.Warn("failed to parse review findings for lineage", "step", stepName, "error", err)
+		return
+	}
+	if len(findings.Items) == 0 {
+		return
+	}
+	displayIDs := make([]string, 0, len(findings.Items))
+	for _, finding := range findings.Items {
+		displayIDs = append(displayIDs, finding.ID)
+	}
+	if _, err := e.db.CreateFindingLineages(run.ID, reviewAttempt.ID, displayIDs); err != nil {
+		slog.Warn("failed to create finding lineages", "step", stepName, "error", err)
+	}
 }

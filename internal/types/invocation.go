@@ -132,6 +132,44 @@ func (scope InvocationScope) Validate() error {
 // during the expand phase. It does not pretend a Profile or model was selected.
 const LegacyCandidateKey = "legacy"
 
+// InvocationCandidate records the routed Candidate an attempt launched, so the
+// full routing decision (Profile, tier, position, runner, model, effort) is
+// durable and secret-free. Its zero value marks a legacy, unrouted attempt.
+type InvocationCandidate struct {
+	Profile        string
+	Tier           int
+	CandidateIndex int
+	Runner         Runner
+	Model          string
+	Effort         Effort
+}
+
+// IsZero reports whether no routed Candidate was recorded (a legacy attempt).
+func (c InvocationCandidate) IsZero() bool {
+	return c == InvocationCandidate{}
+}
+
+// Validate checks a routed Candidate's fields; it is only called for routed
+// attempts whose Candidate is non-zero.
+func (c InvocationCandidate) Validate() error {
+	if strings.TrimSpace(c.Profile) == "" {
+		return fmt.Errorf("invocation candidate requires a profile")
+	}
+	if c.Tier < 0 || c.CandidateIndex < 0 {
+		return fmt.Errorf("invocation candidate tier and index must be non-negative")
+	}
+	if err := c.Runner.Validate(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(c.Model) == "" {
+		return fmt.Errorf("invocation candidate requires a model")
+	}
+	if err := c.Effort.Validate(); err != nil {
+		return err
+	}
+	return nil
+}
+
 // InvocationAttemptStart is the immutable, secret-free start fact for one
 // selected Candidate attempt.
 type InvocationAttemptStart struct {
@@ -139,6 +177,8 @@ type InvocationAttemptStart struct {
 	Role         InvocationRole
 	Scope        InvocationScope
 	CandidateKey string
+	// Candidate is the routed Candidate facts. Zero for legacy attempts.
+	Candidate InvocationCandidate
 }
 
 // InvocationOutcome is the terminal result of a Candidate attempt.

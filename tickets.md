@@ -41,10 +41,10 @@ All unmigrated calls continue using the temporary internal legacy path.
 
 **Blocked by:** Establish durable invocation context; Resolve and launch normalized Profile candidates.
 
-- [ ] Initial Review always uses `review_strong`; an initially high-risk result records risk but does not upgrade the discovery invocation to xhigh.
-- [ ] Every attempted Candidate is recorded before launch and terminally finalized with Purpose, Route, Profile, tier, Candidate, runner, model, effort, failure domain, timing, token usage, role, outcome, and root-lineage relationships without storing prompts, reasoning, credentials, or environment values.
-- [ ] Every returned finding receives a stable run-wide root lineage independent of model-generated display IDs or finding prose, and malformed review output cannot count as a clean strong review.
-- [ ] AXI and TUI reconstruct active and completed review routing from durable structured state after reattach or restart without parsing logs; missing or unknown routing data fails before model launch.
+- [x] Initial Review always uses `review_strong`; an initially high-risk result records risk but does not upgrade the discovery invocation to xhigh.
+- [x] Every attempted Candidate is recorded before launch and terminally finalized with Purpose, Route, Profile, tier, Candidate, runner, model, effort, failure domain, timing, token usage, role, outcome, and root-lineage relationships without storing prompts, reasoning, credentials, or environment values.
+- [x] Every returned finding receives a stable run-wide root lineage independent of model-generated display IDs or finding prose, and malformed review output cannot count as a clean strong review.
+- [x] AXI and TUI reconstruct active and completed review routing from durable structured state after reattach or restart without parsing logs; missing or unknown routing data fails before model launch.
 
 ## Open run-wide provider circuits
 

@@ -35,6 +35,20 @@ func (r Runner) FailureDomain() (FailureDomain, error) {
 	}
 }
 
+// AgentName returns the native agent backend that executes this runner. It lets
+// the router construct a native agent for a routed Candidate without the legacy
+// agent-selection config.
+func (r Runner) AgentName() (AgentName, error) {
+	switch r {
+	case RunnerCodex:
+		return AgentCodex, nil
+	case RunnerClaude:
+		return AgentClaude, nil
+	default:
+		return "", fmt.Errorf("unsupported runner %q", r)
+	}
+}
+
 // Effort is the normalized reasoning effort a Candidate requests. Adapters
 // translate it to each runner's exact native argument.
 type Effort string

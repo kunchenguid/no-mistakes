@@ -202,8 +202,15 @@ func runHappyPath(t *testing.T, agentName string) {
 		t.Fatalf("expected fake agent to be invoked, got 0 invocations")
 	}
 	for _, inv := range invs {
-		if inv.Agent != agentName {
-			t.Errorf("expected invocations under %q, got %q (%v)", agentName, inv.Agent, inv.Args)
+		// The initial review is routed to review_strong's first Candidate
+		// (codex), independent of the configured agent; every other invocation
+		// is legacy and runs under the configured agent.
+		wantAgent := agentName
+		if strings.Contains(inv.Prompt, "Review the code changes") {
+			wantAgent = "codex"
+		}
+		if inv.Agent != wantAgent {
+			t.Errorf("expected invocation under %q, got %q (%v)", wantAgent, inv.Agent, inv.Args)
 		}
 	}
 
@@ -336,6 +343,12 @@ func cleanReviewScenario(t *testing.T) string {
         - severity: warning
           description: "README missing new CLI flag"
       summary: "README needs updating"
+  - match: "Review the code changes and return structured findings with a risk assessment.\n\nContext:\n- branch: document-missing-findings"
+    text: "clean review for document-missing-findings"
+    structured:
+      findings: []
+      risk_level: low
+      risk_rationale: "no risks detected in the diff"
   - match: "branch: document-missing-findings"
     text: "documentation missing findings field"
     structured:
@@ -1805,9 +1818,6 @@ func assertReviewWarningRun(t *testing.T, h *Harness) {
 	}
 	if len(findings.Items) != 1 || findings.Items[0].Severity != "warning" {
 		t.Fatalf("expected one review warning finding, got %+v", findings.Items)
-	}
-	if findings.Summary != "found 1 issue" {
-		t.Fatalf("review warning summary = %q", findings.Summary)
 	}
 	fetchedRun := h.RunInfo(run.ID)
 	if fetchedRun == nil {

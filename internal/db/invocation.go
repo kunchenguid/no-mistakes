@@ -113,16 +113,31 @@ func (d *DB) StartInvocationAttempt(start types.InvocationAttemptStart) (string,
 	if strings.TrimSpace(start.CandidateKey) == "" {
 		return "", fmt.Errorf("invocation candidate key is required")
 	}
+	if !start.Candidate.IsZero() {
+		if err := start.Candidate.Validate(); err != nil {
+			return "", fmt.Errorf("invocation candidate: %w", err)
+		}
+	}
 	if err := d.validateInvocationScopeOwnership(start.Scope); err != nil {
 		return "", err
 	}
 
+	var profile, runner, model, effort, tier, candidateIndex any
+	if !start.Candidate.IsZero() {
+		profile = start.Candidate.Profile
+		tier = start.Candidate.Tier
+		candidateIndex = start.Candidate.CandidateIndex
+		runner = string(start.Candidate.Runner)
+		model = start.Candidate.Model
+		effort = string(start.Candidate.Effort)
+	}
+
 	id := newID()
 	_, err = d.sql.Exec(
-		`INSERT INTO invocation_attempt_starts (id, purpose, role, scope_kind, run_id, step_result_id, step_round_id, utility_scope_id, candidate_key, started_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO invocation_attempt_starts (id, purpose, role, scope_kind, run_id, step_result_id, step_round_id, utility_scope_id, candidate_key, profile, tier, candidate_index, runner, model, effort, started_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, start.Purpose, start.Role, start.Scope.Kind,
 		nullIfEmpty(start.Scope.RunID), nullIfEmpty(start.Scope.StepResultID), nullIfEmpty(start.Scope.StepRoundID), nullIfEmpty(start.Scope.UtilityScopeID),
-		start.CandidateKey, now(),
+		start.CandidateKey, profile, tier, candidateIndex, runner, model, effort, now(),
 	)
 	if err != nil {
 		return "", fmt.Errorf("insert invocation attempt start: %w", err)
@@ -189,7 +204,8 @@ func nullFailureDomain(domain types.FailureDomain) any {
 const invocationAttemptProjection = `
 	SELECT start.id, start.purpose, start.role, start.scope_kind,
 	       start.run_id, start.step_result_id, start.step_round_id, start.utility_scope_id,
-	       start.candidate_key, start.started_at,
+	       start.candidate_key, start.profile, start.tier, start.candidate_index,
+	       start.runner, start.model, start.effort, start.started_at,
 	       terminal.outcome, terminal.failure_domain, terminal.terminal_at, terminal.duration_ms,
 	       terminal.input_tokens, terminal.output_tokens, terminal.cache_read_tokens, terminal.cache_creation_tokens
 	FROM invocation_attempt_starts AS start
@@ -247,12 +263,15 @@ func (d *DB) GetInvocationAttemptsByUtilityScope(utilityScopeID string) ([]*Invo
 func scanInvocationAttempt(row interface{ Scan(...any) error }) (*InvocationAttempt, error) {
 	attempt := &InvocationAttempt{}
 	var runID, stepResultID, stepRoundID, utilityScopeID sql.NullString
+	var profile, runner, model, effort sql.NullString
+	var tier, candidateIndex sql.NullInt64
 	var outcome, failureDomain sql.NullString
 	var terminalAt, durationMS, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens sql.NullInt64
 	if err := row.Scan(
 		&attempt.ID, &attempt.Start.Purpose, &attempt.Start.Role, &attempt.Start.Scope.Kind,
 		&runID, &stepResultID, &stepRoundID, &utilityScopeID,
-		&attempt.Start.CandidateKey, &attempt.StartedAt,
+		&attempt.Start.CandidateKey, &profile, &tier, &candidateIndex,
+		&runner, &model, &effort, &attempt.StartedAt,
 		&outcome, &failureDomain, &terminalAt, &durationMS,
 		&inputTokens, &outputTokens, &cacheReadTokens, &cacheCreationTokens,
 	); err != nil {
@@ -262,6 +281,14 @@ func scanInvocationAttempt(row interface{ Scan(...any) error }) (*InvocationAtte
 	attempt.Start.Scope.StepResultID = stepResultID.String
 	attempt.Start.Scope.StepRoundID = stepRoundID.String
 	attempt.Start.Scope.UtilityScopeID = utilityScopeID.String
+	attempt.Start.Candidate = types.InvocationCandidate{
+		Profile:        profile.String,
+		Tier:           int(tier.Int64),
+		CandidateIndex: int(candidateIndex.Int64),
+		Runner:         types.Runner(runner.String),
+		Model:          model.String,
+		Effort:         types.Effort(effort.String),
+	}
 	if outcome.Valid {
 		attempt.Terminal = &types.InvocationAttemptTerminal{
 			Outcome:             types.InvocationOutcome(outcome.String),

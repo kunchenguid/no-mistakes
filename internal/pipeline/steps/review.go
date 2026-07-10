@@ -209,13 +209,14 @@ Risk assessment (after listing all findings):
 		return nil, fmt.Errorf("agent review: %w", err)
 	}
 
-	// Parse structured findings
+	// The routed strong review must return parseable structured findings.
+	// Missing or malformed output cannot count as a clean review.
+	if result == nil || result.Output == nil {
+		return nil, fmt.Errorf("strong review returned no structured findings")
+	}
 	var findings Findings
-	if result.Output != nil {
-		if err := json.Unmarshal(result.Output, &findings); err != nil {
-			sctx.Log("could not parse structured output, using text response")
-			findings = Findings{Summary: result.Text}
-		}
+	if err := json.Unmarshal(result.Output, &findings); err != nil {
+		return nil, fmt.Errorf("strong review output malformed: %w", err)
 	}
 
 	needsApproval := hasBlockingFindings(findings.Items)

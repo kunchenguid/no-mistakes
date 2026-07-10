@@ -139,6 +139,49 @@ func TestFilterStructuredToSchemaKeepsOnlyDeclaredProperties(t *testing.T) {
 	}
 }
 
+func TestFilterStructuredToSchemaNullFillsMissingNullableRequired(t *testing.T) {
+	// Mirror the schema no-mistakes writes for codex: every property is
+	// required, and originally-optional fields (tested, testing_summary) admit
+	// null. A scenario that omits them must still produce a schema-complete
+	// object, like real codex constrained decoding.
+	schemaPath := filepath.Join(t.TempDir(), "schema.json")
+	schema := []byte(`{
+		"type": "object",
+		"properties": {
+			"findings": {"type": "array"},
+			"risk_level": {"type": "string"},
+			"risk_rationale": {"type": "string"},
+			"tested": {"type": ["array", "null"]},
+			"testing_summary": {"type": ["string", "null"]}
+		},
+		"required": ["findings", "risk_level", "risk_rationale", "tested", "testing_summary"]
+	}`)
+	if err := os.WriteFile(schemaPath, schema, 0o644); err != nil {
+		t.Fatalf("write schema: %v", err)
+	}
+
+	structured := map[string]any{
+		"findings":       []any{},
+		"risk_level":     "low",
+		"risk_rationale": "no risks",
+	}
+
+	got, err := filterStructuredToSchema(structured, schemaPath)
+	if err != nil {
+		t.Fatalf("filter: %v", err)
+	}
+	want := map[string]any{
+		"findings":        []any{},
+		"risk_level":      "low",
+		"risk_rationale":  "no risks",
+		"tested":          nil,
+		"testing_summary": nil,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("filtered = %#v\nwant = %#v", got, want)
+	}
+}
+
 func TestFilterStructuredToSchemaNilWhenNoSchema(t *testing.T) {
 	structured := map[string]any{"summary": "ok"}
 	got, err := filterStructuredToSchema(structured, "")

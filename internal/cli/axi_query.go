@@ -74,7 +74,7 @@ func runAxiStatus(cmd *cobra.Command, runID string) (string, error) {
 	if err != nil {
 		return "", emitError(cmd, 1, fmt.Sprintf("load steps: %v", err))
 	}
-	rv := runViewFromDB(run, steps)
+	rv := runViewFromDB(env.d, run, steps)
 	annotateRunView(env, &rv)
 	fields := []toon.Field{runObjectField(rv)}
 	if gate, ok := rv.awaitingStep(); ok {

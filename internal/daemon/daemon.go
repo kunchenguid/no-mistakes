@@ -643,5 +643,42 @@ func stepToInfo(d *db.DB, s *db.StepResult) ipc.StepResultInfo {
 		info.FixRoundCount = rounds.FixRounds
 		info.PendingFixSource = rounds.PendingFixSource
 	}
+	if s.StepName == types.StepReview {
+		if routing, err := d.ReviewRoutingForStep(s.ID); err == nil && routing != nil {
+			info.ReviewRouting = reviewRoutingToInfo(routing)
+		}
+	}
 	return info
+}
+
+// reviewRoutingToInfo flattens the durable review-routing projection into its
+// IPC wire form, reading routed facts straight off each attempt's start
+// Candidate and terminal fact (no config resolution).
+func reviewRoutingToInfo(routing *db.ReviewRouting) *ipc.ReviewRoutingInfo {
+	out := &ipc.ReviewRoutingInfo{
+		Candidates:   make([]ipc.RoutedCandidateInfo, 0, len(routing.Attempts)),
+		LineageCount: len(routing.Lineages),
+	}
+	for _, attempt := range routing.Attempts {
+		cand := attempt.Start.Candidate
+		entry := ipc.RoutedCandidateInfo{
+			Profile:        cand.Profile,
+			Tier:           cand.Tier,
+			CandidateIndex: cand.CandidateIndex,
+			Runner:         string(cand.Runner),
+			Model:          cand.Model,
+			Effort:         string(cand.Effort),
+		}
+		if terminal := attempt.Terminal; terminal != nil {
+			entry.Outcome = string(terminal.Outcome)
+			entry.FailureDomain = string(terminal.FailureDomain)
+			entry.DurationMS = terminal.DurationMS
+			entry.InputTokens = terminal.InputTokens
+			entry.OutputTokens = terminal.OutputTokens
+			entry.CacheReadTokens = terminal.CacheReadTokens
+			entry.CacheCreationTokens = terminal.CacheCreationTokens
+		}
+		out.Candidates = append(out.Candidates, entry)
+	}
+	return out
 }

@@ -115,6 +115,12 @@ CREATE TABLE IF NOT EXISTS invocation_attempt_starts (
     step_round_id    TEXT,
     utility_scope_id TEXT,
     candidate_key    TEXT NOT NULL,
+    profile          TEXT,
+    tier             INTEGER,
+    candidate_index  INTEGER,
+    runner           TEXT,
+    model            TEXT,
+    effort           TEXT,
     started_at       INTEGER NOT NULL,
     CHECK (
         (scope_kind = 'pipeline' AND run_id IS NOT NULL AND step_result_id IS NOT NULL AND step_round_id IS NOT NULL AND utility_scope_id IS NULL)
@@ -134,6 +140,18 @@ CREATE TABLE IF NOT EXISTS invocation_attempt_terminals (
     cache_read_tokens     INTEGER NOT NULL DEFAULT 0,
     cache_creation_tokens INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS finding_lineages (
+    id                TEXT PRIMARY KEY,
+    run_id            TEXT NOT NULL,
+    origin_attempt_id TEXT NOT NULL,
+    display_id        TEXT,
+    sequence          INTEGER NOT NULL,
+    created_at        INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS finding_lineages_run ON finding_lineages(run_id);
+CREATE INDEX IF NOT EXISTS finding_lineages_attempt ON finding_lineages(origin_attempt_id);
 
 CREATE TABLE IF NOT EXISTS intent_cache (
     cache_key   TEXT PRIMARY KEY,
@@ -160,6 +178,12 @@ var migrationStatements = []string{
 	`ALTER TABLE runs ADD COLUMN intent_source TEXT`,
 	`ALTER TABLE runs ADD COLUMN intent_session_id TEXT`,
 	`ALTER TABLE runs ADD COLUMN intent_score REAL`,
+	`ALTER TABLE invocation_attempt_starts ADD COLUMN profile TEXT`,
+	`ALTER TABLE invocation_attempt_starts ADD COLUMN tier INTEGER`,
+	`ALTER TABLE invocation_attempt_starts ADD COLUMN candidate_index INTEGER`,
+	`ALTER TABLE invocation_attempt_starts ADD COLUMN runner TEXT`,
+	`ALTER TABLE invocation_attempt_starts ADD COLUMN model TEXT`,
+	`ALTER TABLE invocation_attempt_starts ADD COLUMN effort TEXT`,
 	`ALTER TABLE runs ADD COLUMN awaiting_agent_since INTEGER`,
 	`ALTER TABLE runs ADD COLUMN parked_ms INTEGER`,
 	`ALTER TABLE step_results ADD COLUMN last_activity_at INTEGER`,

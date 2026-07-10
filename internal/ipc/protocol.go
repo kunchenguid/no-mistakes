@@ -236,6 +236,38 @@ type StepResultInfo struct {
 	LastActivityAt   *int64   `json:"last_activity_at,omitempty"`
 	LastActivity     *string  `json:"last_activity,omitempty"`
 	AgentPID         *int     `json:"agent_pid,omitempty"`
+	// ReviewRouting is the durable initial-review routing projection for a
+	// review step, reconstructed from SQLite on every snapshot so surfaces
+	// never parse logs. Nil for legacy, unrouted review steps and for every
+	// non-review step.
+	ReviewRouting *ReviewRoutingInfo `json:"review_routing,omitempty"`
+}
+
+// ReviewRoutingInfo is the IPC projection of a review step's durable initial-
+// review routing: one entry per routed Candidate attempt in durable start
+// order, plus the count of run-wide finding lineages those attempts produced.
+type ReviewRoutingInfo struct {
+	Candidates   []RoutedCandidateInfo `json:"candidates,omitempty"`
+	LineageCount int                   `json:"lineage_count,omitempty"`
+}
+
+// RoutedCandidateInfo is the flattened, JSON-serializable projection of one
+// routed initial-review Candidate attempt: its routed facts plus the terminal
+// outcome. The terminal fields stay zero while the attempt is still active.
+type RoutedCandidateInfo struct {
+	Profile             string `json:"profile"`
+	Tier                int    `json:"tier"`
+	CandidateIndex      int    `json:"candidate_index"`
+	Runner              string `json:"runner"`
+	Model               string `json:"model"`
+	Effort              string `json:"effort"`
+	Outcome             string `json:"outcome,omitempty"`
+	FailureDomain       string `json:"failure_domain,omitempty"`
+	DurationMS          int64  `json:"duration_ms,omitempty"`
+	InputTokens         int64  `json:"input_tokens,omitempty"`
+	OutputTokens        int64  `json:"output_tokens,omitempty"`
+	CacheReadTokens     int64  `json:"cache_read_tokens,omitempty"`
+	CacheCreationTokens int64  `json:"cache_creation_tokens,omitempty"`
 }
 
 // --- Events (for subscribe stream) ---
