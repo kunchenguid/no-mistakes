@@ -4,14 +4,14 @@ import "testing"
 
 func TestAllReaders_NoDisabled(t *testing.T) {
 	got := AllReaders(nil)
-	if len(got) != 6 {
+	if len(got) != 7 {
 		t.Errorf("expected 6 readers, got %d", len(got))
 	}
 }
 
 func TestAllReaders_Disabled(t *testing.T) {
 	got := AllReaders(map[string]bool{"codex": true, "rovodev": true})
-	if len(got) != 4 {
+	if len(got) != 5 {
 		t.Errorf("expected 4 readers, got %d", len(got))
 	}
 	for _, r := range got {
