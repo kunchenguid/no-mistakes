@@ -14,9 +14,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
 
-// grokScannerMaxTokenSize matches the buffer used by other JSONL native
-// agents (codex/pi) for large single-line events.
-const grokScannerMaxTokenSize = 256 * 1024 * 1024
+const grokOutputMaxBytes = 256 * 1024 * 1024
 
 // grokAgent spawns the Grok CLI for each invocation. Headless mode uses
 // `grok -p <prompt>` with either streaming-json events or --json-schema
@@ -227,7 +225,7 @@ func parseGrokStreamingEvents(
 ) error {
 	_ = usage // Grok headless streaming events do not currently carry token usage.
 	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 64*1024), grokScannerMaxTokenSize)
+	scanner.Buffer(make([]byte, 0, 64*1024), grokOutputMaxBytes)
 
 	var b strings.Builder
 	for scanner.Scan() {
@@ -280,7 +278,7 @@ func parseGrokStreamingEvents(
 // parseGrokJSONStdout reads the single JSON object emitted by
 // --output-format json (also implied by --json-schema).
 func parseGrokJSONStdout(ctx context.Context, r io.Reader, text *string, structured *json.RawMessage, grokErr *string) error {
-	raw, readErr := io.ReadAll(r)
+	raw, readErr := readGrokJSONStdout(r, grokOutputMaxBytes)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -302,6 +300,17 @@ func parseGrokJSONStdout(ctx context.Context, r io.Reader, text *string, structu
 		*grokErr = parsedErr
 	}
 	return nil
+}
+
+func readGrokJSONStdout(r io.Reader, maxBytes int64) ([]byte, error) {
+	raw, err := io.ReadAll(io.LimitReader(r, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(raw)) > maxBytes {
+		return nil, fmt.Errorf("Grok JSON output exceeds %d-byte output limit", maxBytes)
+	}
+	return raw, nil
 }
 
 // parseGrokJSONResult decodes a headless --output-format json payload.

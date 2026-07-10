@@ -460,6 +460,16 @@ func TestParseGrokJSONStdout_Success(t *testing.T) {
 	}
 }
 
+func TestReadGrokJSONStdout_RejectsOutputOverLimit(t *testing.T) {
+	_, err := readGrokJSONStdout(strings.NewReader(`{"text":"too long"}`), 8)
+	if err == nil {
+		t.Fatal("expected output limit error")
+	}
+	if !strings.Contains(err.Error(), "output limit") {
+		t.Fatalf("error = %v, want output limit", err)
+	}
+}
+
 func TestParseGrokJSONStdout_CancelAfterRead(t *testing.T) {
 	pr, pw := io.Pipe()
 	ctx, cancel := context.WithCancel(context.Background())
