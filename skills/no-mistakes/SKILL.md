@@ -123,11 +123,9 @@ Run the pipeline and decide on its findings as they come up:
      touches product behavior. This is a call only the user can make - see
      [Escalate `ask-user` findings](#escalate-ask-user-findings) below.
 
-   **Review auto-fix is disabled by default** (`auto_fix.review: 0`; a repo
-   or global `auto_fix.review > 0` override re-enables it), so blocking and
-   ask-user review findings park for your decision rather than being silently
-   self-fixed. (Other steps such as test and lint may auto-fix within the
-   pipeline and re-run before they ever gate.)
+   **Blocking and ask-user review findings park for your decision** rather than
+   being silently self-fixed. (Other steps such as test and lint may auto-fix
+   within the pipeline and re-run before they ever gate.)
 
    Choose one response:
    ```sh
@@ -263,7 +261,7 @@ A `gate:` waiting on you looks roughly like this - a `gate:` line naming the ste
 
 ```
 gate: review
-note: Review auto-fix is disabled by default (auto_fix.review: 0; a repo or global auto_fix.review > 0 override re-enables it), so blocking and ask-user review findings park for your decision rather than being silently self-fixed.
+note: Blocking and ask-user review findings park for your decision rather than being silently self-fixed.
 findings[2]{id,severity,file,line,action,description}:
   r1,warning,internal/pipeline/executor.go,,auto-fix,Error from os.Remove is ignored
   r2,error,cmd/no-mistakes/main.go,,ask-user,New --force flag bypasses the confirm prompt

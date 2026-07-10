@@ -553,11 +553,11 @@ func gateFields(gate stepView) []toon.Field {
 	if parsed.RiskLevel != "" {
 		gfields = append(gfields, toon.Field{Key: "risk", Value: parsed.RiskLevel})
 	}
-	// Point-of-use reminder at the review gate: review auto-fix defaults to
-	// disabled, so agents should expect blocking and ask-user findings to park
-	// unless config explicitly opts back in.
+	// Point-of-use reminder at the review gate: blocking and ask-user review
+	// findings park for the driving agent's decision rather than being silently
+	// self-fixed. Model selection and repair follow the routing contract.
 	if gate.Name == string(types.StepReview) {
-		gfields = append(gfields, toon.Field{Key: "note", Value: "Review auto-fix is disabled by default (`auto_fix.review: 0`; a repo or global `auto_fix.review > 0` override re-enables it), so blocking and ask-user review findings park for your decision rather than being silently self-fixed."})
+		gfields = append(gfields, toon.Field{Key: "note", Value: "Blocking and ask-user review findings park for your decision rather than being silently self-fixed."})
 	}
 	rows := make([]findingRow, 0, len(parsed.Items))
 	for _, f := range parsed.Items {

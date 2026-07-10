@@ -272,21 +272,31 @@ var legacyGlobalKeyOrder = []string{
 	"fallback_agents",
 }
 
+// rejectRemovedKeys fails closed with actionable guidance when a YAML document
+// carries any of the ordered keys, instead of silently ignoring or rewriting
+// them. format renders the offending key and its guidance into the returned
+// error. A malformed document returns nil so the typed decode that follows
+// reports it.
+func rejectRemovedKeys(data []byte, order []string, guidance map[string]string, format func(key, detail string) error) error {
+	var top map[string]yaml.Node
+	if err := yaml.Unmarshal(data, &top); err != nil {
+		return nil
+	}
+	for _, key := range order {
+		if _, present := top[key]; present {
+			return format(key, guidance[key])
+		}
+	}
+	return nil
+}
+
 // rejectLegacyGlobalKeys fails closed with actionable guidance when the global
 // config still carries a removed model-selection key, instead of silently
 // ignoring it or rewriting it to routing.
 func rejectLegacyGlobalKeys(data []byte) error {
-	var top map[string]yaml.Node
-	if err := yaml.Unmarshal(data, &top); err != nil {
-		// A malformed document is reported by the typed decode that follows.
-		return nil
-	}
-	for _, key := range legacyGlobalKeyOrder {
-		if _, present := top[key]; present {
-			return fmt.Errorf("global config key %q is no longer supported: %s", key, legacyGlobalKeys[key])
-		}
-	}
-	return nil
+	return rejectRemovedKeys(data, legacyGlobalKeyOrder, legacyGlobalKeys, func(key, detail string) error {
+		return fmt.Errorf("global config key %q is no longer supported: %s", key, detail)
+	})
 }
 
 // EnsureDefaultGlobalConfig writes the default config file at path if it does
@@ -477,26 +487,24 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 // runners, profiles, candidates, and agent selection are owned exclusively by
 // global configuration.
 func rejectRepoExecutionMechanics(data []byte) error {
-	var probe map[string]yaml.Node
-	if err := yaml.Unmarshal(data, &probe); err != nil {
-		// Malformed YAML is reported by the typed decode that follows.
-		return nil
-	}
-	guidance := map[string]string{
-		"agent":      "model selection is global-only through the routing contract; a repository cannot select an agent",
-		"auto_fix":   "per-step numeric auto-fix limits were removed; repair escalates through the routing cascade",
-		"candidates": "candidates are owned exclusively by global configuration",
-		"profiles":   "profiles are owned exclusively by global configuration",
-		"routing":    "repositories may only set 'routes' mapping purposes to existing global profiles",
-		"runners":    "runners are owned exclusively by global configuration",
-	}
-	for _, key := range []string{"agent", "auto_fix", "candidates", "profiles", "routing", "runners"} {
-		if _, ok := probe[key]; ok {
-			return fmt.Errorf("repo config may not define %q: %s", key, guidance[key])
-		}
-	}
-	return nil
+	return rejectRemovedKeys(data, repoExecutionMechanicsOrder, repoExecutionMechanics, func(key, detail string) error {
+		return fmt.Errorf("repo config may not define %q: %s", key, detail)
+	})
 }
+
+// repoExecutionMechanics maps repo-config keys a repository may not define to
+// actionable guidance. repoExecutionMechanicsOrder lists them in a stable order
+// so a config with several rejected keys reports a deterministic error.
+var repoExecutionMechanics = map[string]string{
+	"agent":      "model selection is global-only through the routing contract; a repository cannot select an agent",
+	"auto_fix":   "per-step numeric auto-fix limits were removed; repair escalates through the routing cascade",
+	"candidates": "candidates are owned exclusively by global configuration",
+	"profiles":   "profiles are owned exclusively by global configuration",
+	"routing":    "repositories may only set 'routes' mapping purposes to existing global profiles",
+	"runners":    "runners are owned exclusively by global configuration",
+}
+
+var repoExecutionMechanicsOrder = []string{"agent", "auto_fix", "candidates", "profiles", "routing", "runners"}
 
 // EffectiveRepoConfig returns the repo config that should drive the pipeline
 // given a pushed-branch copy and the trusted default-branch copy.

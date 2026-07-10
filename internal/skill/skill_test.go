@@ -57,10 +57,8 @@ func TestBodyDocumentsAxiGateGuidance(t *testing.T) {
 		"inspect it with `no-mistakes axi status`",
 		"drive it with `no-mistakes axi respond`",
 		"when it still matches your current `HEAD`",
-		"**Review auto-fix is disabled by default**",
-		"blocking and",
-		"ask-user review findings park for your decision",
-		"`auto_fix.review > 0`",
+		"**Blocking and ask-user review findings park for your decision**",
+		"being silently self-fixed",
 	} {
 		if !strings.Contains(md, want) {
 			t.Errorf("body should document AXI gate guidance: missing %q", want)

@@ -431,10 +431,10 @@ func TestWriteGateShape(t *testing.T) {
 		`    review-1,warning,main.go,ask-user,"calls os.Exit, leaks fd"`,
 		"no-mistakes axi respond --action approve",
 		"to have the pipeline fix the selected findings (do not edit files yourself)",
-		// Review gate carries the auto-fix-disabled note and the keep-driving
+		// Review gate carries the routing-era review note and the keep-driving
 		// reminder so an agent reads them at the point of use.
-		"Review auto-fix is disabled by default",
-		"auto_fix.review > 0",
+		"Blocking and ask-user review findings",
+		"park for your decision rather than being silently self-fixed",
 		"the run never advances past a gate on its own",
 	} {
 		if !strings.Contains(out, want) {
@@ -443,9 +443,8 @@ func TestWriteGateShape(t *testing.T) {
 	}
 }
 
-// TestGateNote_ReviewOnly verifies the review-auto-fix-disabled note appears
-// only at the review gate, while the keep-driving reminder appears at every
-// gate.
+// TestGateNote_ReviewOnly verifies the routing-era review note appears only at
+// the review gate, while the keep-driving reminder appears at every gate.
 func TestGateNote_ReviewOnly(t *testing.T) {
 	mk := func(step string) string {
 		gate := stepView{
@@ -459,15 +458,12 @@ func TestGateNote_ReviewOnly(t *testing.T) {
 	}
 
 	review := mk("review")
-	if !strings.Contains(review, "Review auto-fix is disabled by default") {
-		t.Errorf("review gate missing the auto-fix-disabled note in:\n%s", review)
-	}
-	if !strings.Contains(review, "auto_fix.review > 0") {
-		t.Errorf("review gate missing the auto-fix override note in:\n%s", review)
+	if !strings.Contains(review, "Blocking and ask-user review findings park for your decision") {
+		t.Errorf("review gate missing the routing-era review note in:\n%s", review)
 	}
 
 	lint := mk("lint")
-	if strings.Contains(lint, "Review auto-fix is disabled") {
+	if strings.Contains(lint, "park for your decision") {
 		t.Errorf("non-review gate should not carry the review note in:\n%s", lint)
 	}
 	if !strings.Contains(lint, "the run never advances past a gate on its own") {

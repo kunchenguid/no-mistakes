@@ -38,7 +38,7 @@ Safest local verification sequence after non-trivial changes:
 
 - `skills/no-mistakes/SKILL.md` is **generated**: the source of truth is the `body` constant in `internal/skill/skill.go`. Edit the body, then `make skill`; `make lint` fails CI on drift. Never edit `SKILL.md` directly. `no-mistakes init` ships this rendering to agents at user level.
 - Agent-driving guidance is owned by the skill body and the live `axi` output strings (`internal/cli/axi*.go`); `docs/src/content/docs/guides/agents.md` carries only the canonical invariant sentences pinned by `internal/cli/axi_guidance_test.go` plus a pointer to the skill. When you change driving guidance, change the skill body and the point-of-use `axi` strings together; that drift test is the sync check.
-- Review auto-fix is disabled by default (`auto_fix.review: 0` in `config.go` `autoFixDefaults`), so blocking and ask-user review findings park for an agent decision; keep the skill, the live `axi` gate `note`, and docs qualified if you touch review auto-fix.
+- Review blocking and ask-user findings park for an agent decision rather than being silently self-fixed. There is no `auto_fix` config key or numeric per-Step auto-fix limit: model selection and repair are the routing contract's job. Keep the skill body, live `axi` note, and the guide's canonical invariant sentence in sync if you touch review-gate driving guidance.
 
 **Context, Concurrency, and Processes**
 
@@ -87,10 +87,11 @@ Safest local verification sequence after non-trivial changes:
 
 **Repo Config Trust Boundary (security)**
 
-- The daemon runs `commands.*` from `.no-mistakes.yaml` verbatim via `sh -c`, and `agent` selects which process launches with the maintainer's credentials. The code-executing selection fields (`commands.{test,lint,format}` and `agent`) are therefore loaded from the trusted default branch at a **pinned SHA** resolved by a fresh fetch, never from the pushed SHA; on fetch failure the trusted config is nil and `EffectiveRepoConfig` forces empty `commands`/`agent` (fail closed - a stale `origin/<default>` ref cannot serve a removed value). See `internal/daemon/manager.go` `startRun` + `loadTrustedRepoConfig`.
-- `document.instructions` (the repo's documentation placement policy) is also trusted-only: a pushed branch must not weaken the documentation rules that gate its own review. Non-executing fields (`ignore_patterns`, `auto_fix`, `intent`, `test`) are still read from the pushed branch.
-- `allow_repo_commands` is per-repo, read only from the trusted default-branch copy, and defaults `false`; a contributor cannot self-enable it from a pushed branch. The e2e harness models a trusted single-developer environment and commits `allow_repo_commands: true` via `SetupOpts.AllowRepoCommands`; security tests pass `false`.
-- Regressions: `TestLoadTrustedRepoConfig_FailClosedOnFetchFailure`, `TestLoadTrustedRepoConfig_PinnedSHAReadsFreshDefaultBranch`, `TestEffectiveRepoConfig_DocumentPolicyTrustedOnly`, e2e `TestRepoConfigCommandsFromDefaultBranch` (incl. `pushed_branch_cannot_self_enable`).
+- The daemon runs `commands.*` from `.no-mistakes.yaml` verbatim via `sh -c` with the maintainer's credentials. To prevent supply-chain RCE, the code-executing `commands.{test,lint,format}` fields are loaded from the trusted default branch, never from the pushed SHA. Model selection is the global routing contract, not a per-repo executable selector.
+- `startRun` fetches the default branch, resolves an exact commit SHA, and `loadTrustedRepoConfig` reads `.no-mistakes.yaml` at that pinned SHA. On fetch or resolution failure, `EffectiveRepoConfig` forces empty commands and routes rather than trusting a stale remote ref.
+- `routes` and `document.instructions` are trusted-only: a pushed branch cannot choose its own model profile or weaken the documentation placement rules that gate it. Non-executing fields (`ignore_patterns`, `intent`, `test`) still come from the pushed branch.
+- `allow_repo_commands` is per-repo, read only from the trusted default-branch copy, and defaults `false`; a contributor cannot self-enable it from a pushed branch. It never permits pushed-branch route or documentation-policy overrides.
+- Regressions include `TestLoadTrustedRepoConfig_FailClosedOnFetchFailure`, `TestLoadTrustedRepoConfig_PinnedSHAReadsFreshDefaultBranch`, `TestEffectiveRepoConfig_DocumentPolicyTrustedOnly`, routing trust tests, and e2e `TestRepoConfigCommandsFromDefaultBranch`.
 
 **CI Monitor Lifecycle**
 

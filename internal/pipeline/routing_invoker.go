@@ -32,8 +32,15 @@ func newRoutingInvoker(routing config.RoutingConfig, journal agent.InvocationJou
 		routing:  routing,
 		journal:  journal,
 		circuits: circuits,
+		// Build a fresh native per Candidate and steer it so every routed
+		// invocation (pipeline or standalone utility) keeps writes inside the
+		// worktree. Tests override newAgent with a recording seam.
 		newAgent: func(name types.AgentName, executable string) (agent.Agent, error) {
-			return agent.New(name, executable, nil)
+			native, err := agent.New(name, executable, nil)
+			if err != nil {
+				return nil, err
+			}
+			return agent.WithSteering(native), nil
 		},
 	}
 }
