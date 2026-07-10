@@ -52,7 +52,7 @@ Everything else can usually wait.
 # Default agent for all repos and setup-wizard suggestions.
 # "auto" picks the first available native agent on PATH.
 # You can also use an ordered fallback list, for example: [codex, claude].
-agent: auto # auto | claude | codex | rovodev | opencode | pi | copilot | acp:<target>
+agent: auto # auto | claude | codex | rovodev | opencode | pi | copilot | omp | acp:<target>
 
 # Optional acpx path and target command overrides for agent: acp:<target>.
 acpx_path: acpx
@@ -179,7 +179,7 @@ See [Repo Config Reference](/no-mistakes/reference/repo-config/) for the full fi
 ## Precedence
 
 - Repo `agent` overrides global `agent`, including the full ordered fallback list when one is configured.
-- Global `agent: auto` resolves by checking `claude`, `codex`, `opencode`, `acli` for `rovodev`, `pi`, then `copilot` on `PATH`.
+- Global `agent: auto` resolves by checking `claude`, `codex`, `opencode`, `acli` for `rovodev`, `pi`, `copilot`, then `omp` on `PATH`.
 - ACP agents are opt-in with `agent: acp:<target>` and are not considered by `agent: auto`.
 - `agent_path_override`, `agent_args_override`, `acpx_path`, and `acp_registry_overrides` are global-only fields.
 - `ci_timeout`, `step_quiet_warning`, and `log_level` are global-only fields.

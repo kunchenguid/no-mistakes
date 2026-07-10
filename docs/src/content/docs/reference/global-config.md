@@ -69,10 +69,10 @@ Default agent for all repos and setup-wizard suggestions. Can be overridden per-
 |         |                                                                                   |
 | ------- | --------------------------------------------------------------------------------- |
 | Type    | `string` or `string[]`                                                            |
-| Values  | `auto`, `claude`, `codex`, `rovodev`, `opencode`, `pi`, `copilot`, `acp:<target>` |
+| Values  | `auto`, `claude`, `codex`, `rovodev`, `opencode`, `pi`, `copilot`, `omp`, `acp:<target>` |
 | Default | `auto`                                                                            |
 
-`auto` resolves to the first supported native agent found on `PATH` in this order: `claude`, `codex`, `opencode`, `acli` with `rovodev` support, `pi`, then `copilot`.
+`auto` resolves to the first supported native agent found on `PATH` in this order: `claude`, `codex`, `opencode`, `acli` with `rovodev` support, `pi`, `copilot`, then `omp`.
 `acp:<target>` uses the user-installed `acpx` binary to run an ACP target, for example `acp:gemini`.
 ACP agents are opt-in and are not considered by `agent: auto`.
 The effective agent configuration must resolve to a runnable runner before a new validation gate starts.
@@ -138,7 +138,7 @@ Default native binary names when no override is set:
 | `opencode` | `opencode` |
 | `pi`       | `pi`       |
 | `copilot`  | `copilot`  |
-
+| `omp`      | `omp`      |
 ### agent_args_override
 
 Extra CLI flags to pass to each native agent.
@@ -147,7 +147,7 @@ Use this to set model selection, service tier, reasoning effort, permission mode
 |         |                                                           |
 | ------- | --------------------------------------------------------- |
 | Type    | `map[string][]string`                                     |
-| Keys    | `claude`, `codex`, `rovodev`, `opencode`, `pi`, `copilot` |
+| Keys    | `claude`, `codex`, `rovodev`, `opencode`, `pi`, `copilot`, `omp` |
 | Default | Empty (no extra flags)                                    |
 
 User-supplied flags are inserted ahead of no-mistakes' managed flags, so your choices usually take precedence. A few flags are reserved because no-mistakes depends on them to communicate with the agent - setting any of these returns a config error on load:
@@ -160,6 +160,7 @@ User-supplied flags are inserted ahead of no-mistakes' managed flags, so your ch
 | `opencode` | `serve`, `--hostname`, `--port`, `--print-logs`                  |
 | `pi`       | `--mode`, `--no-session`                                         |
 | `copilot`  | `-p`, `--prompt`, `--output-format`, `--no-color`                |
+| `omp`      | `--mode`, `--no-session`                                         |
 
 For structured `codex` runs, no-mistakes also appends its own `--output-schema <tempfile>` after your overrides. Treat that flag as managed even though config validation does not currently reject it.
 
@@ -296,8 +297,7 @@ When enabled and no intent was supplied directly for the run, no-mistakes can re
 | `intent.threshold`        | `float`    | `0.2`   | Minimum raw match score for selecting a transcript session |
 | `intent.slack_days`       | `int`      | `3`     | Extra days to look back before the change window           |
 | `intent.disabled_readers` | `string[]` | Empty   | Transcript readers to disable                              |
-
-Valid `disabled_readers` values are `claude`, `codex`, `opencode`, `rovodev`, `pi`, and `copilot`.
+Valid `disabled_readers` values are `claude`, `codex`, `opencode`, `rovodev`, `pi`, `copilot`, and `omp`.
 
 The match score is the share of matching files mentioned in a transcript session; deleted files are ignored when the diff also contains non-deleted changes.
 All-deletion diffs still match against the deleted changed files.
