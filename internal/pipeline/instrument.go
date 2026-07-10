@@ -37,18 +37,32 @@ func (a *perfRecordingAgent) SupportsSessionResume() bool {
 	return agent.SupportsSessionResume(a.inner)
 }
 
+func (a *perfRecordingAgent) SupportsSessionProvider(provider string) bool {
+	return agent.SupportsSessionProvider(a.inner, provider)
+}
+
 func (a *perfRecordingAgent) Run(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+	attempts := 0
+	previous := opts.OnAttempt
+	opts.OnAttempt = func(attempt agent.Attempt) {
+		if previous != nil {
+			previous(attempt)
+		}
+		attempts++
+		a.record(ctx, opts, attempt.Agent, attempt.Result, attempt.Err, attempt.StartedAt, attempt.CompletedAt)
+	}
 	start := time.Now()
 	result, err := a.inner.Run(ctx, opts)
-	a.record(ctx, opts, result, err, start)
+	if attempts == 0 {
+		a.record(ctx, opts, a.inner.Name(), result, err, start, time.Now())
+	}
 	return result, err
 }
 
-func (a *perfRecordingAgent) record(ctx context.Context, opts agent.RunOpts, result *agent.Result, runErr error, start time.Time) {
+func (a *perfRecordingAgent) record(ctx context.Context, opts agent.RunOpts, agentName string, result *agent.Result, runErr error, startedAt, completedAt time.Time) {
 	if a.db == nil {
 		return
 	}
-	completed := time.Now()
 
 	purpose := opts.Purpose
 	if purpose == "" {
@@ -60,12 +74,12 @@ func (a *perfRecordingAgent) record(ctx context.Context, opts agent.RunOpts, res
 		StepName:    string(a.stepName),
 		Round:       a.round(),
 		Purpose:     purpose,
-		Agent:       a.inner.Name(),
+		Agent:       agentName,
 		SessionMode: invocationSessionMode(opts),
 		SessionKey:  invocationSessionKey(opts, result),
-		StartedAt:   start.Unix(),
-		CompletedAt: completed.Unix(),
-		DurationMS:  completed.Sub(start).Milliseconds(),
+		StartedAt:   startedAt.Unix(),
+		CompletedAt: completedAt.Unix(),
+		DurationMS:  completedAt.Sub(startedAt).Milliseconds(),
 		ExitStatus:  "ok",
 	}
 	if result != nil {

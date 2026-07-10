@@ -51,6 +51,11 @@ func (g *ReadSurfaceGate) ShouldEmit(surface, fingerprint string) bool {
 	if g == nil || g.path == "" {
 		return true
 	}
+	lock, err := acquireReadSurfaceLock(g.path + ".lock")
+	if err != nil {
+		return true
+	}
+	defer lock.Close()
 
 	now := g.now()
 	state := g.load()

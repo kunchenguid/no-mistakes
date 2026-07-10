@@ -32,32 +32,32 @@ const (
 // invocations. A nil *RunSessions runs everything cold, preserving the
 // pre-session behavior for steps outside the review loop and for tests.
 type RunSessions struct {
-	db        *db.DB
-	runID     string
-	agentName string
-	enabled   bool
+	db      *db.DB
+	runID   string
+	agent   agent.Agent
+	enabled bool
 
 	mu  sync.Mutex
-	ids map[SessionRole]string
+	ids map[SessionRole]agent.SessionRef
 }
 
 // NewRunSessions creates the manager for one run, loading any persisted
 // session identities recorded by a previous process for the same run and
 // agent. Identities stored for a different adapter are ignored: a session id
 // is only meaningful to the adapter that minted it.
-func NewRunSessions(database *db.DB, runID, agentName string, enabled bool) *RunSessions {
+func NewRunSessions(database *db.DB, runID string, sessionAgent agent.Agent, enabled bool) *RunSessions {
 	rs := &RunSessions{
-		db:        database,
-		runID:     runID,
-		agentName: agentName,
-		enabled:   enabled,
-		ids:       map[SessionRole]string{},
+		db:      database,
+		runID:   runID,
+		agent:   sessionAgent,
+		enabled: enabled,
+		ids:     map[SessionRole]agent.SessionRef{},
 	}
 	if database != nil {
 		if stored, err := database.GetRunAgentSessions(runID); err == nil {
 			for _, s := range stored {
-				if s.Agent == agentName && s.SessionID != "" {
-					rs.ids[SessionRole(s.Role)] = s.SessionID
+				if s.SessionID != "" && agent.SupportsSessionProvider(sessionAgent, s.Agent) {
+					rs.ids[SessionRole(s.Role)] = agent.SessionRef{ID: s.SessionID, Agent: s.Agent}
 				}
 			}
 		}
@@ -76,11 +76,12 @@ func (rs *RunSessions) Run(ctx context.Context, a agent.Agent, role SessionRole,
 		return a.Run(ctx, opts)
 	}
 
-	storedID := rs.id(role)
-	opts.Session = &agent.SessionRef{ID: storedID}
+	stored := rs.id(role)
+	storedID := stored.ID
+	opts.Session = &stored
 	result, err := a.Run(ctx, opts)
 	if err == nil {
-		rs.remember(role, result.SessionID)
+		rs.remember(role, result.SessionID, sessionProvider(a, result))
 		return result, nil
 	}
 	if storedID == "" || ctx.Err() != nil {
@@ -99,11 +100,11 @@ func (rs *RunSessions) Run(ctx context.Context, a agent.Agent, role SessionRole,
 	if err != nil {
 		return nil, err
 	}
-	rs.remember(role, result.SessionID)
+	rs.remember(role, result.SessionID, sessionProvider(a, result))
 	return result, nil
 }
 
-func (rs *RunSessions) id(role SessionRole) string {
+func (rs *RunSessions) id(role SessionRole) agent.SessionRef {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 	return rs.ids[role]
@@ -112,17 +113,31 @@ func (rs *RunSessions) id(role SessionRole) string {
 // remember stores the role's latest session identity in memory and persists
 // it so the run can resume the session across daemon process boundaries.
 // Persistence failures are ignored: reuse degrades, correctness does not.
-func (rs *RunSessions) remember(role SessionRole, sessionID string) {
+func (rs *RunSessions) remember(role SessionRole, sessionID, provider string) {
 	if sessionID == "" {
 		return
 	}
+	if provider == "" || !agent.SupportsSessionProvider(rs.agent, provider) {
+		return
+	}
+	identity := agent.SessionRef{ID: sessionID, Agent: provider}
 	rs.mu.Lock()
-	changed := rs.ids[role] != sessionID
-	rs.ids[role] = sessionID
+	changed := rs.ids[role] != identity
+	rs.ids[role] = identity
 	rs.mu.Unlock()
 	if changed && rs.db != nil {
-		_ = rs.db.UpsertRunAgentSession(rs.runID, string(role), rs.agentName, sessionID)
+		_ = rs.db.UpsertRunAgentSession(rs.runID, string(role), provider, sessionID)
 	}
+}
+
+func sessionProvider(a agent.Agent, result *agent.Result) string {
+	if result != nil && result.Provider != "" {
+		return result.Provider
+	}
+	if a == nil {
+		return ""
+	}
+	return a.Name()
 }
 
 func (rs *RunSessions) forget(role SessionRole) {

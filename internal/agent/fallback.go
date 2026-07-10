@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 )
 
 type fallbackAgent struct {
@@ -32,18 +33,58 @@ func (a *fallbackAgent) Name() string {
 	return a.agents[0].Name()
 }
 
+func (a *fallbackAgent) SupportsSessionResume() bool {
+	for _, current := range a.agents {
+		if SupportsSessionResume(current) {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *fallbackAgent) SupportsSessionProvider(provider string) bool {
+	for _, current := range a.agents {
+		if SupportsSessionProvider(current, provider) {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *fallbackAgent) ReportsAgentAttempts() bool { return true }
+
 func (a *fallbackAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
+	candidates := a.agents
+	if opts.Session != nil && opts.Session.ID != "" && opts.Session.Agent != "" {
+		candidates = nil
+		for _, current := range a.agents {
+			if SupportsSessionProvider(current, opts.Session.Agent) {
+				candidates = append(candidates, current)
+				break
+			}
+		}
+		if len(candidates) == 0 {
+			return nil, fmt.Errorf("session provider %q is not configured", opts.Session.Agent)
+		}
+	}
 	var lastErr error
-	for i, current := range a.agents {
+	for i, current := range candidates {
+		startedAt := time.Now()
 		result, err := current.Run(ctx, opts)
+		if !ReportsAgentAttempts(current) {
+			emitAgentAttempt(opts, current.Name(), result, err, startedAt, time.Now())
+		}
 		if err == nil {
+			if result != nil && result.Provider == "" {
+				result.Provider = current.Name()
+			}
 			return result, nil
 		}
 		lastErr = err
-		if i == len(a.agents)-1 || !isAgentUnavailableError(err) {
+		if i == len(candidates)-1 || !isAgentUnavailableError(err) {
 			return nil, err
 		}
-		next := a.agents[i+1]
+		next := candidates[i+1]
 		if opts.OnChunk != nil {
 			opts.OnChunk(fmt.Sprintf("\nagent %s failed (%s); falling back to %s\n", current.Name(), fallbackReason(err), next.Name()))
 		}

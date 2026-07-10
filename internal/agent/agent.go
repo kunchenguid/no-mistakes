@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -37,14 +38,24 @@ type RunOpts struct {
 	// Purpose labels the pipeline duty this invocation serves (review,
 	// review-fix, test-evidence, ...). Instrumentation only; adapters
 	// ignore it.
-	Purpose string
+	Purpose   string
+	OnAttempt func(Attempt)
+}
+
+type Attempt struct {
+	Agent       string
+	Result      *Result
+	Err         error
+	StartedAt   time.Time
+	CompletedAt time.Time
 }
 
 // SessionRef identifies a durable adapter-native session for RunOpts.Session.
 type SessionRef struct {
 	// ID is the adapter-native session identity to resume. Empty starts a
 	// new resumable session whose identity is reported via Result.SessionID.
-	ID string
+	ID    string
+	Agent string
 }
 
 // SessionResumer is the optional adapter capability for durable native
@@ -59,6 +70,29 @@ type SessionResumer interface {
 func SupportsSessionResume(a Agent) bool {
 	r, ok := a.(SessionResumer)
 	return ok && r.SupportsSessionResume()
+}
+
+type SessionProviderMatcher interface {
+	SupportsSessionProvider(string) bool
+}
+
+func SupportsSessionProvider(a Agent, provider string) bool {
+	if provider == "" {
+		return false
+	}
+	if matcher, ok := a.(SessionProviderMatcher); ok {
+		return matcher.SupportsSessionProvider(provider)
+	}
+	return a != nil && a.Name() == provider && SupportsSessionResume(a)
+}
+
+type AttemptReporter interface {
+	ReportsAgentAttempts() bool
+}
+
+func ReportsAgentAttempts(a Agent) bool {
+	r, ok := a.(AttemptReporter)
+	return ok && r.ReportsAgentAttempts()
 }
 
 // LifecycleEvent describes process-level activity for an agent invocation.
@@ -87,7 +121,8 @@ type Result struct {
 	Resumed bool
 	// Model is the model the adapter reported serving this invocation, when
 	// available. Instrumentation only.
-	Model string
+	Model    string
+	Provider string
 }
 
 // TokenUsage tracks token consumption for an agent invocation.

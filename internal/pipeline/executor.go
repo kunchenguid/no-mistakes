@@ -135,11 +135,7 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 	// Per-run session and shared-state scopes. Sessions are keyed strictly by
 	// this run's ID, so concurrent runs, branches, and repos stay isolated.
 	sessionsEnabled := e.config != nil && e.config.SessionReuse && e.agent != nil
-	agentName := ""
-	if e.agent != nil {
-		agentName = e.agent.Name()
-	}
-	e.sessions = NewRunSessions(e.db, run.ID, agentName, sessionsEnabled)
+	e.sessions = NewRunSessions(e.db, run.ID, e.agent, sessionsEnabled)
 	e.shared = &RunShared{}
 
 	// Create step result records in DB
@@ -605,6 +601,14 @@ func (a *lifecycleAgent) Close() error {
 // wrapping never hides it from the review loop's session manager.
 func (a *lifecycleAgent) SupportsSessionResume() bool {
 	return agent.SupportsSessionResume(a.inner)
+}
+
+func (a *lifecycleAgent) SupportsSessionProvider(provider string) bool {
+	return agent.SupportsSessionProvider(a.inner, provider)
+}
+
+func (a *lifecycleAgent) ReportsAgentAttempts() bool {
+	return agent.ReportsAgentAttempts(a.inner)
 }
 
 const (

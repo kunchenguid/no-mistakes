@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -36,6 +37,20 @@ func (u *usageAgent) Run(_ context.Context, opts agent.RunOpts) (*agent.Result, 
 	}
 	return result, nil
 }
+
+type fallbackUsageAgent struct {
+	name   string
+	result *agent.Result
+	err    error
+}
+
+func (a *fallbackUsageAgent) Name() string { return a.name }
+
+func (a *fallbackUsageAgent) Run(context.Context, agent.RunOpts) (*agent.Result, error) {
+	return a.result, a.err
+}
+
+func (a *fallbackUsageAgent) Close() error { return nil }
 
 // TestExecutor_RecordsAgentInvocationsLocally proves every agent invocation
 // produces one local agent_invocations row carrying run/step identity,
@@ -97,6 +112,41 @@ func TestExecutor_RecordsAgentInvocationsLocally(t *testing.T) {
 	evidence := invocations[1]
 	if evidence.SessionMode != db.InvocationModeCold || evidence.Purpose != "review" {
 		t.Fatalf("evidence row = %+v", evidence)
+	}
+}
+
+func TestPerfRecordingAgent_RecordsFallbackAttemptsSeparately(t *testing.T) {
+	database, _, run, _ := setupTest(t)
+	wrapped := &perfRecordingAgent{
+		inner: agent.NewFallback([]agent.Agent{
+			&fallbackUsageAgent{name: "codex", err: errors.New("codex start: executable not found")},
+			&fallbackUsageAgent{name: "claude", result: &agent.Result{Model: "test-model-2"}},
+		}),
+		db:       database,
+		runID:    run.ID,
+		stepName: types.StepReview,
+		round:    func() int { return 1 },
+	}
+
+	if _, err := wrapped.Run(context.Background(), agent.RunOpts{Purpose: "review"}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	invocations, err := database.GetAgentInvocationsByRun(run.ID)
+	if err != nil {
+		t.Fatalf("get invocations: %v", err)
+	}
+	if len(invocations) != 2 {
+		t.Fatalf("got %d invocation rows, want 2", len(invocations))
+	}
+	byAgent := map[string]db.AgentInvocation{}
+	for _, invocation := range invocations {
+		byAgent[invocation.Agent] = invocation
+	}
+	if got := byAgent["codex"]; got.ExitStatus != "error" || got.FailureCategory != "spawn" {
+		t.Fatalf("codex invocation = %+v", got)
+	}
+	if got := byAgent["claude"]; got.ExitStatus != "ok" || got.Model != "test-model-2" {
+		t.Fatalf("claude invocation = %+v", got)
 	}
 }
 

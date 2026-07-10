@@ -23,6 +23,8 @@ type acpxAgent struct {
 
 func (a *acpxAgent) Name() string { return "acp:" + a.target }
 
+func (a *acpxAgent) ReportsAgentAttempts() bool { return true }
+
 func (a *acpxAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 	return runWithRetry(ctx, a.Name(), opts, claudeMaxRetries, classifyTransient, nil, func() (*Result, error) {
 		return a.runOnce(ctx, opts)

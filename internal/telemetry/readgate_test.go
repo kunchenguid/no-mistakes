@@ -3,7 +3,10 @@ package telemetry
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -121,6 +124,86 @@ func TestReadSurfaceGate_PersistsAcrossProcesses(t *testing.T) {
 	}
 	if !second.ShouldEmit("axi-status", "run-1|completed") {
 		t.Fatal("second process must emit on state change")
+	}
+}
+
+func TestReadSurfaceGate_ConcurrentGatesEmitOnce(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "telemetry-gate.json")
+	now := time.Unix(1_700_000_000, 0)
+	clock := func() time.Time { return now }
+
+	const callers = 32
+	start := make(chan struct{})
+	results := make(chan bool, callers)
+	var wg sync.WaitGroup
+	for range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			gate := NewReadSurfaceGate(path, 10*time.Minute, clock)
+			<-start
+			results <- gate.ShouldEmit("axi-status", "run-1|running")
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+
+	emitted := 0
+	for result := range results {
+		if result {
+			emitted++
+		}
+	}
+	if emitted != 1 {
+		t.Fatalf("concurrent emits = %d, want 1", emitted)
+	}
+}
+
+func TestReadSurfaceGate_ConcurrentProcessesEmitOnce(t *testing.T) {
+	const helperEnv = "NO_MISTAKES_READ_GATE_HELPER"
+	if os.Getenv(helperEnv) == "1" {
+		gate := NewReadSurfaceGate(os.Getenv("NO_MISTAKES_READ_GATE_PATH"), 10*time.Minute, func() time.Time {
+			return time.Unix(1_700_000_000, 0)
+		})
+		if gate.ShouldEmit("axi-status", "run-1|running") {
+			fmt.Fprint(os.Stdout, "emit")
+		}
+		return
+	}
+
+	path := filepath.Join(t.TempDir(), "telemetry-gate.json")
+	const callers = 8
+	type commandResult struct {
+		output string
+		err    error
+	}
+	results := make(chan commandResult, callers)
+	for range callers {
+		go func() {
+			cmd := exec.Command(os.Args[0], "-test.run=^TestReadSurfaceGate_ConcurrentProcessesEmitOnce$")
+			cmd.Env = append(os.Environ(), helperEnv+"=1", "NO_MISTAKES_READ_GATE_PATH="+path)
+			output, err := cmd.CombinedOutput()
+			results <- commandResult{output: string(output), err: err}
+		}()
+	}
+
+	emitted := 0
+	for range callers {
+		result := <-results
+		if result.err != nil {
+			t.Fatalf("read gate helper: %v\n%s", result.err, result.output)
+		}
+		switch strings.TrimSpace(strings.TrimSuffix(result.output, "PASS\n")) {
+		case "emit":
+			emitted++
+		case "":
+		default:
+			t.Fatalf("unexpected helper output %q", result.output)
+		}
+	}
+	if emitted != 1 {
+		t.Fatalf("process emits = %d, want 1", emitted)
 	}
 }
 

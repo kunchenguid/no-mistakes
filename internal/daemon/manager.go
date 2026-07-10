@@ -483,6 +483,7 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 				if failedStep := telemetryFailedStepName(m.db, run.ID); failedStep != "" {
 					fields["failed_step"] = failedStep
 				}
+				addRunPerformanceSummary(m.db, run.ID, fields)
 				telemetry.Track("run", fields)
 				if dbErr := m.db.UpdateRunErrorStatus(run.ID, errMsg, types.RunFailed); dbErr != nil {
 					slog.Error("failed to update run after panic", "run_id", run.ID, "error", dbErr)

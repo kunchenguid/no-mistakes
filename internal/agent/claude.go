@@ -37,6 +37,8 @@ func (a *claudeAgent) Name() string { return "claude" }
 // continues that session in print mode with the same identity.
 func (a *claudeAgent) SupportsSessionResume() bool { return true }
 
+func (a *claudeAgent) ReportsAgentAttempts() bool { return true }
+
 func (a *claudeAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 	return runWithRetry(ctx, "claude", opts, claudeMaxRetries, claudeRetryClassifier, nil, func() (*Result, error) {
 		return a.runOnce(ctx, opts)

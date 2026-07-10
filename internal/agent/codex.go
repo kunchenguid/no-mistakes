@@ -28,6 +28,8 @@ func (a *codexAgent) Name() string { return "codex" }
 // `codex exec resume <id> <prompt>` continues that thread.
 func (a *codexAgent) SupportsSessionResume() bool { return true }
 
+func (a *codexAgent) ReportsAgentAttempts() bool { return true }
+
 func (a *codexAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 	return runWithRetry(ctx, "codex", opts, claudeMaxRetries, classifyTransient, nil, func() (*Result, error) {
 		return a.runOnce(ctx, opts)

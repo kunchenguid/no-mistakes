@@ -8,9 +8,10 @@ import (
 )
 
 type fallbackTestAgent struct {
-	name  string
-	run   func() (*Result, error)
-	calls int
+	name      string
+	run       func() (*Result, error)
+	calls     int
+	resumable bool
 }
 
 func (a *fallbackTestAgent) Name() string { return a.name }
@@ -21,6 +22,8 @@ func (a *fallbackTestAgent) Run(context.Context, RunOpts) (*Result, error) {
 }
 
 func (a *fallbackTestAgent) Close() error { return nil }
+
+func (a *fallbackTestAgent) SupportsSessionResume() bool { return a.resumable }
 
 func TestFallbackAgentFallsBackOnLaunchFailure(t *testing.T) {
 	first := &fallbackTestAgent{
@@ -102,5 +105,44 @@ func TestFallbackAgentDoesNotFallBackOnStructuredOutputError(t *testing.T) {
 	}
 	if first.calls != 1 || second.calls != 0 {
 		t.Fatalf("calls = first %d second %d, want 1/0", first.calls, second.calls)
+	}
+}
+
+func TestFallbackAgent_ForwardsSessionCapability(t *testing.T) {
+	first := &fallbackTestAgent{name: "codex", resumable: true, run: func() (*Result, error) { return &Result{}, nil }}
+	second := &fallbackTestAgent{name: "claude", resumable: true, run: func() (*Result, error) { return &Result{}, nil }}
+	if !SupportsSessionResume(NewFallback([]Agent{WithSteering(first), WithSteering(second)})) {
+		t.Fatal("fallback's primary resumable agent must retain session support")
+	}
+}
+
+func TestFallbackAgent_ReportsEveryAttempt(t *testing.T) {
+	first := &fallbackTestAgent{
+		name: "codex",
+		run: func() (*Result, error) {
+			return nil, errors.New(`codex start: executable not found`)
+		},
+	}
+	second := &fallbackTestAgent{
+		name: "claude",
+		run: func() (*Result, error) {
+			return &Result{Text: "ok"}, nil
+		},
+	}
+	var attempts []Attempt
+	_, err := NewFallback([]Agent{first, second}).Run(context.Background(), RunOpts{
+		OnAttempt: func(attempt Attempt) { attempts = append(attempts, attempt) },
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(attempts) != 2 {
+		t.Fatalf("attempts = %d, want 2", len(attempts))
+	}
+	if attempts[0].Agent != "codex" || attempts[0].Err == nil {
+		t.Fatalf("first attempt = %+v", attempts[0])
+	}
+	if attempts[1].Agent != "claude" || attempts[1].Result == nil || attempts[1].Result.Text != "ok" {
+		t.Fatalf("second attempt = %+v", attempts[1])
 	}
 }

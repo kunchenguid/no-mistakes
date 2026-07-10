@@ -483,6 +483,11 @@ func TestPushReceivedTracksRunTelemetryAfterPanic(t *testing.T) {
 	if _, ok := finished.fields["duration_ms"]; !ok {
 		t.Fatal("expected duration_ms in run finished telemetry after panic")
 	}
+	for _, field := range []string{"agent_invocations", "resumed_invocations", "fallback_invocations"} {
+		if got, ok := finished.fields[field]; !ok || got != 0 {
+			t.Fatalf("%s = %v, want 0", field, got)
+		}
+	}
 }
 
 func TestPushReceivedDemoModeBypassesAgentResolution(t *testing.T) {
