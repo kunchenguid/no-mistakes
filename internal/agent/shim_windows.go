@@ -17,8 +17,12 @@ import (
 //
 // The path is relative to the shim's own directory (%~dp0, sometimes captured
 // into a %dp0% variable first), so the capture group holds the portion after
-// that prefix. Matching is case-insensitive because .cmd shims are.
-var shimTargetPattern = regexp.MustCompile(`(?i)"%~?dp0%?\\(.+?\.exe)"`)
+// that prefix. Matching is case-insensitive because .cmd shims are. The
+// trailing %* is required so the match anchors to the real launch line: npm's
+// node-launcher shim form for a JS bin opens with an `IF EXIST "%dp0%\node.exe"`
+// guard whose quoted .exe has no %* after it, so that form correctly matches
+// nothing here and falls back to the shim rather than execing node.exe.
+var shimTargetPattern = regexp.MustCompile(`(?i)"%~?dp0%?\\(.+?\.exe)"\s*%\*`)
 
 // resolveAgentBinary returns the native executable a Windows npm .cmd/.bat shim
 // wraps, so exec can launch it directly instead of through cmd.exe. cmd.exe's

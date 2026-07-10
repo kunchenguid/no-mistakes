@@ -22,6 +22,29 @@ CALL :find_dp0
 "%dp0%\node_modules\@anthropic-ai\claude-code\bin\claude.exe"   %*
 `
 
+// npmNodeLauncherShim mirrors npm's cmd-shim form for a JS bin: it launches the
+// script through node rather than a wrapped .exe. Its only quoted "%dp0%\...exe"
+// is the IF EXIST guard for a locally bundled node.exe, which must NOT be treated
+// as the launch target.
+const npmNodeLauncherShim = `@ECHO off
+GOTO start
+:find_dp0
+SET dp0=%~dp0
+EXIT /b
+:start
+SETLOCAL
+CALL :find_dp0
+
+IF EXIST "%dp0%\node.exe" (
+  SET "_prog=%dp0%\node.exe"
+) ELSE (
+  SET "_prog=node"
+  SET PATHEXT=%PATHEXT:;.JS;=;%
+)
+
+endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\node_modules\somepackage\bin\cli.js" %*
+`
+
 // writeShim writes shim content plus, when target is non-empty, an empty file
 // at the shim-relative target path so os.Stat succeeds. It returns the shim path.
 func writeShim(t *testing.T, content, target string) string {
@@ -66,6 +89,15 @@ func TestShimNativeTarget_NonShimReturnsEmpty(t *testing.T) {
 	shim := writeShim(t, "@ECHO off\necho hello\n", "")
 	if got := shimNativeTarget(shim); got != "" {
 		t.Fatalf("shimNativeTarget = %q, want empty for a non-launcher .cmd", got)
+	}
+}
+
+func TestShimNativeTarget_NodeLauncherFallsBack(t *testing.T) {
+	// Even with a node.exe present next to the shim, the node-launcher form must
+	// not be resolved to node.exe: it has no wrapped-exe launch line.
+	shim := writeShim(t, npmNodeLauncherShim, "node.exe")
+	if got := shimNativeTarget(shim); got != "" {
+		t.Fatalf("shimNativeTarget = %q, want empty for a node-launcher shim", got)
 	}
 }
 
