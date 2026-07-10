@@ -202,12 +202,23 @@ func runHappyPath(t *testing.T, agentName string) {
 		t.Fatalf("expected fake agent to be invoked, got 0 invocations")
 	}
 	for _, inv := range invs {
-		// The initial review is routed to review_strong's first Candidate
-		// (codex), independent of the configured agent; every other invocation
-		// is legacy and runs under the configured agent.
+		// Routed purposes run their Route's first Candidate (codex),
+		// independent of the configured agent; every unmigrated invocation is
+		// legacy and runs under the configured agent. Review, review fix, test
+		// evidence, PR composition, and intent summary/disambiguation are routed.
 		wantAgent := agentName
-		if strings.Contains(inv.Prompt, "Review the code changes") {
-			wantAgent = "codex"
+		for _, routed := range []string{
+			"Review the code changes",
+			"Investigate previous review findings",
+			"You are validating a code change by testing it",
+			"Draft a pull request title and summary",
+			"You will receive a transcript of a developer's recent conversation",
+			"Choose which recent agent session most likely produced",
+		} {
+			if strings.Contains(inv.Prompt, routed) {
+				wantAgent = "codex"
+				break
+			}
 		}
 		if inv.Agent != wantAgent {
 			t.Errorf("expected invocation under %q, got %q (%v)", wantAgent, inv.Agent, inv.Args)
@@ -350,7 +361,7 @@ func cleanReviewScenario(t *testing.T) string {
       findings: []
       risk_level: low
       risk_rationale: "no risks detected in the diff"
-  - match: "branch: document-missing-findings"
+  - match: "report only what you could not resolve.\n\nContext:\n- branch: document-missing-findings"
     text: "documentation missing findings field"
     structured:
       summary: "docs status unavailable"
@@ -400,7 +411,7 @@ func cleanReviewScenario(t *testing.T) string {
           status: "resolved"
           rationale: "the logic bug is now guarded"
       new_findings: []
-  - match: "branch: review-warning"
+  - match: "Review the code changes and return structured findings with a risk assessment.\n\nContext:\n- branch: review-warning"
     text: "review found a warning"
     structured:
       findings:
@@ -512,6 +523,7 @@ func cleanReviewScenario(t *testing.T) string {
       tested:
         - "fakeagent: simulated test run"
       testing_summary: "simulated tests passed"
+      artifacts: []
       title: "feat: fakeagent change"
       body: "## Summary\nfakeagent canned PR body"
 `
@@ -1642,25 +1654,25 @@ func assertExplicitAttachUsesRepoWideActiveRun(t *testing.T, h *Harness) {
 
 func assertTestMalformedStructuredOutputRun(t *testing.T, h *Harness) {
 	t.Helper()
+	// Test evidence is a routed strong candidate, so the codex adapter enforces
+	// the output schema. Malformed structured output is a contract violation
+	// that fails the step closed rather than silently degrading to a text
+	// summary — consistent with the review step's malformed-output handling.
 	h.CommitChange("test-malformed-structured-output", "test-malformed-structured-output.txt", "test malformed structured output\n", "add test malformed structured output")
 	h.PushToGate("test-malformed-structured-output")
 	run := h.WaitForRun("test-malformed-structured-output", 60*time.Second)
-	if run.Status != types.RunCompleted {
-		t.Fatalf("test-malformed-structured-output run status=%s error=%v", run.Status, deref(run.Error))
+	if run.Status != types.RunFailed {
+		t.Fatalf("test-malformed-structured-output run status=%s, want failed (routed strict schema); error=%v", run.Status, deref(run.Error))
+	}
+	if err := deref(run.Error); !strings.Contains(err, "test") {
+		t.Fatalf("expected a test-step failure on malformed routed output, got error=%q", err)
 	}
 	testStep, ok := findStep(run.Steps, types.StepTest)
 	if !ok {
 		t.Fatal("expected test step in test-malformed-structured-output run")
 	}
-	if testStep.FindingsJSON == nil {
-		t.Fatal("expected malformed test structured output fallback to record findings JSON")
-	}
-	findings, err := types.ParseFindingsJSON(*testStep.FindingsJSON)
-	if err != nil {
-		t.Fatalf("parse malformed test output fallback findings: %v", err)
-	}
-	if !strings.Contains(findings.Summary, "tests found some issues") {
-		t.Fatalf("malformed test output fallback summary = %q, want tests found some issues", findings.Summary)
+	if testStep.Status != types.StepStatusFailed {
+		t.Fatalf("test step status=%s, want failed on malformed routed output", testStep.Status)
 	}
 }
 

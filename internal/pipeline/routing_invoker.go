@@ -12,17 +12,23 @@ import (
 )
 
 // routedPurposes is the set of Purposes migrated to the routing system. Every
-// other Purpose delegates to the legacy invoker unchanged. The review and its
-// repair coordinator (fixers + strong verifiers across severities) are routed;
-// the rest of the pipeline still uses the legacy path.
+// other Purpose delegates to the legacy invoker unchanged. Routed today: the
+// review and its repair coordinator (fixers + strong verifiers across
+// severities), plus the gate-scoped routine invocations — intent summary and
+// PR composition on prose_fast, intent disambiguation and test evidence on
+// tools_balanced. The remaining pipeline steps still use the legacy path.
 var routedPurposes = map[types.Purpose]bool{
-	types.PurposeInitialReview:                    true,
-	types.PurposeStructuredFindingRepair:          true,
-	types.PurposeIntentSensitiveRepair:            true,
-	types.PurposeInformationalRepair:              true,
-	types.PurposeInformationalRepairVerification:  true,
-	types.PurposeNormalAggregateVerification:      true,
-	types.PurposeEscalatedAggregateVerification:   true,
+	types.PurposeInitialReview:                   true,
+	types.PurposeStructuredFindingRepair:         true,
+	types.PurposeIntentSensitiveRepair:           true,
+	types.PurposeInformationalRepair:             true,
+	types.PurposeInformationalRepairVerification: true,
+	types.PurposeNormalAggregateVerification:     true,
+	types.PurposeEscalatedAggregateVerification:  true,
+	types.PurposeIntentSummarization:             true,
+	types.PurposePRComposition:                   true,
+	types.PurposeIntentDisambiguation:            true,
+	types.PurposeTestEvidence:                    true,
 }
 
 // agentFactory builds a fresh native agent for a runner executable. It is a

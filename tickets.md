@@ -79,10 +79,10 @@ Preserve established caller fallbacks and side-effect containment as explicit be
 
 **Blocked by:** Open run-wide provider circuits.
 
-- [ ] Intent summary and PR composition use `prose_fast`, while intent disambiguation and test evidence use `tools_balanced`, with exact Purpose and ownership in invocation history.
-- [ ] Disabled or inapplicable work skips without fake invocations, while an enabled required Route fails closed when all same-Profile Candidates are unavailable.
-- [ ] Intent disambiguation preserves its worktree restoration guarantee and cannot leave model edits behind.
-- [ ] A production-call audit proves these gate-scoped callers cannot invoke a native adapter directly or omit a registered Purpose.
+- [x] Intent summary and PR composition use `prose_fast`, while intent disambiguation and test evidence use `tools_balanced`, with exact Purpose and ownership in invocation history.
+- [x] Disabled or inapplicable work skips without fake invocations, while an enabled required Route fails closed when all same-Profile Candidates are unavailable.
+- [x] Intent disambiguation preserves its worktree restoration guarantee and cannot leave model edits behind.
+- [x] A production-call audit proves these gate-scoped callers cannot invoke a native adapter directly or omit a registered Purpose.
 
 ## Route Wizard suggestions in standalone scope
 

@@ -473,3 +473,76 @@ func TestRoutingInvokerRejectsOutOfRangeTier(t *testing.T) {
 		t.Fatal("expected an out-of-range tier to fail closed")
 	}
 }
+
+// TestRoutingInvokerLaunchesRoutineCandidates proves the four gate-scoped
+// routine Purposes route to their declared Profile/model/effort through a fresh
+// native Candidate — never the legacy invoker — and record ownership.
+func TestRoutingInvokerLaunchesRoutineCandidates(t *testing.T) {
+	cases := []struct {
+		name    string
+		purpose types.Purpose
+		profile string
+		model   string
+		effort  types.Effort
+		role    types.InvocationRole
+	}{
+		{"intent summary", types.PurposeIntentSummarization, "prose_fast", "gpt-5.6-luna", types.EffortLow, types.InvocationRoleVerifier},
+		{"pr composition", types.PurposePRComposition, "prose_fast", "gpt-5.6-luna", types.EffortLow, types.InvocationRoleFixer},
+		{"intent disambiguation", types.PurposeIntentDisambiguation, "tools_balanced", "gpt-5.6-terra", types.EffortHigh, types.InvocationRoleVerifier},
+		{"test evidence", types.PurposeTestEvidence, "tools_balanced", "gpt-5.6-terra", types.EffortHigh, types.InvocationRoleFixer},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			database, _, run, _ := setupTest(t)
+			scope := reservedReviewScope(t, database, run)
+			native := &recordingRoutedAgent{result: &agent.Result{}}
+			legacy := &recordingLegacyInvoker{}
+			var factoryName types.AgentName
+			ri := newRoutingInvoker(legacy, config.DefaultRoutingConfig(), database, newProviderCircuits())
+			ri.newAgent = func(name types.AgentName, _ string) (agent.Agent, error) {
+				factoryName = name
+				return native, nil
+			}
+			if _, err := ri.Invoke(context.Background(), agent.InvocationRequest{
+				Purpose: tc.purpose, Scope: scope, Payload: agent.RunOpts{Prompt: "go"},
+			}); err != nil {
+				t.Fatalf("Invoke: %v", err)
+			}
+			if legacy.calls != 0 {
+				t.Fatalf("legacy invoker called %d times; a routed routine purpose must not use legacy", legacy.calls)
+			}
+			if native.calls != 1 || factoryName != types.AgentCodex {
+				t.Fatalf("native calls=%d factory=%q; want 1 launch via codex", native.calls, factoryName)
+			}
+			if native.opts.Model != tc.model || native.opts.Effort != tc.effort {
+				t.Fatalf("native model/effort=(%q,%q), want (%q,%q)", native.opts.Model, native.opts.Effort, tc.model, tc.effort)
+			}
+			attempts, err := database.GetInvocationAttemptsByStepResult(scope.StepResultID)
+			if err != nil || len(attempts) != 1 {
+				t.Fatalf("attempts=%+v err=%v; want exactly one recorded", attempts, err)
+			}
+			got := attempts[0].Start
+			if got.Purpose != tc.purpose || got.Role != tc.role {
+				t.Fatalf("recorded purpose/role=%q/%q, want %q/%q", got.Purpose, got.Role, tc.purpose, tc.role)
+			}
+			if got.Candidate.Profile != tc.profile || got.Candidate.Model != tc.model || got.Candidate.Effort != tc.effort {
+				t.Fatalf("recorded candidate=%+v, want profile=%q model=%q effort=%q", got.Candidate, tc.profile, tc.model, tc.effort)
+			}
+		})
+	}
+}
+
+// TestRoutinegatePurposesAreRouted guards against a routine Purpose silently
+// dropping back to the legacy path.
+func TestRoutineGatePurposesAreRouted(t *testing.T) {
+	for _, p := range []types.Purpose{
+		types.PurposeIntentSummarization,
+		types.PurposePRComposition,
+		types.PurposeIntentDisambiguation,
+		types.PurposeTestEvidence,
+	} {
+		if !routedPurposes[p] {
+			t.Errorf("purpose %q is not routed; gate-scoped routine work would use the legacy adapter", p)
+		}
+	}
+}
