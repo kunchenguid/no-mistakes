@@ -479,3 +479,66 @@ func TestCopilotAgent_RunRecoversJSONWhenFinalMessageIsProse(t *testing.T) {
 		t.Fatalf("output = %s, want recovered summary 'done'", string(result.Output))
 	}
 }
+
+func TestCopilotPromptArg_SmallPromptStaysInline(t *testing.T) {
+	arg, spilled, cleanup, err := copilotPromptArg("fix the bug")
+	if err != nil {
+		t.Fatalf("copilotPromptArg error = %v", err)
+	}
+	if spilled || cleanup != nil {
+		t.Fatalf("small prompt should not spill: spilled=%v cleanup!=nil=%v", spilled, cleanup != nil)
+	}
+	if arg != "fix the bug" {
+		t.Errorf("prompt should be unchanged, got %q", arg)
+	}
+}
+
+func TestCopilotPromptArg_LargePromptSpilledOnWindows(t *testing.T) {
+	big := strings.Repeat("x", copilotMaxInlinePromptWindows+1)
+	arg, spilled, cleanup, err := copilotPromptArg(big)
+	if err != nil {
+		t.Fatalf("copilotPromptArg error = %v", err)
+	}
+
+	if runtime.GOOS != "windows" {
+		if spilled || cleanup != nil {
+			t.Fatalf("non-windows must never spill the prompt")
+		}
+		if arg != big {
+			t.Errorf("non-windows large prompt should stay inline")
+		}
+		return
+	}
+
+	if !spilled || cleanup == nil {
+		t.Fatalf("windows large prompt should spill: spilled=%v cleanup!=nil=%v", spilled, cleanup != nil)
+	}
+	if len(arg) >= len(big) {
+		t.Errorf("delegating instruction (%d) should be far shorter than the prompt (%d)", len(arg), len(big))
+	}
+
+	var path string
+	for _, line := range strings.Split(arg, "\n") {
+		if line = strings.TrimSpace(line); strings.HasSuffix(line, ".md") {
+			path = line
+			break
+		}
+	}
+	if path == "" {
+		t.Fatalf("delegating instruction did not reference a spilled file: %q", arg)
+	}
+	defer os.Remove(path)
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("spilled prompt file not readable: %v", err)
+	}
+	if string(data) != big {
+		t.Errorf("spilled file holds %d bytes, want %d", len(data), len(big))
+	}
+
+	cleanup()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("cleanup should remove the spilled file, stat err = %v", err)
+	}
+}
