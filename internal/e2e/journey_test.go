@@ -202,29 +202,11 @@ func runHappyPath(t *testing.T, agentName string) {
 		t.Fatalf("expected fake agent to be invoked, got 0 invocations")
 	}
 	for _, inv := range invs {
-		// Routed purposes run their Route's first Candidate (codex),
-		// independent of the configured agent; every unmigrated invocation is
-		// legacy and runs under the configured agent. Review, review fix, test
-		// evidence, PR composition, and intent summary/disambiguation are routed.
-		wantAgent := agentName
-		for _, routed := range []string{
-			"Review the code changes",
-			"Investigate previous review findings",
-			"You are validating a code change by testing it",
-			"Draft a pull request title and summary",
-			"You will receive a transcript of a developer's recent conversation",
-			"Choose which recent agent session most likely produced",
-			"Detect the linting and formatting tools",
-			"Bring the project documentation fully in sync",
-			"final aggregate verification of a sealed release candidate",
-		} {
-			if strings.Contains(inv.Prompt, routed) {
-				wantAgent = "codex"
-				break
-			}
-		}
-		if inv.Agent != wantAgent {
-			t.Errorf("expected invocation under %q, got %q (%v)", wantAgent, inv.Agent, inv.Args)
+		// Model selection is the routing contract: every invocation runs the
+		// Route's first Candidate (codex, the OpenAI provider), independent of
+		// any configured agent. There is no legacy single-agent path.
+		if inv.Agent != "codex" {
+			t.Errorf("expected invocation under routed candidate %q, got %q (%v)", "codex", inv.Agent, inv.Args)
 		}
 	}
 

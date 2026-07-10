@@ -208,7 +208,7 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 }
 
 func (e *Executor) initializeRunScopes(runID string) {
-	sessionsEnabled := e.config != nil && e.config.SessionReuse && e.agent != nil
+	sessionsEnabled := e.config != nil && e.config.SessionReuse
 	e.sessions = NewRunSessions(e.db, runID, e.agent, sessionsEnabled)
 	e.shared = &RunShared{}
 }
@@ -652,7 +652,8 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		if err != nil {
 			return nil, err
 		}
-		return &lifecycleAgent{inner: native, onLifecycle: onAgentLifecycle}, nil
+		steered := agent.WithSteering(native)
+		return &lifecycleAgent{inner: steered, onLifecycle: onAgentLifecycle}, nil
 	}
 	sctx := &StepContext{
 		Ctx:              ctx,
@@ -677,6 +678,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			touchLogActivity(text, true)
 		},
 	}
+
 
 	nextTrigger := "initial"
 	if sctx.Fixing {
@@ -801,37 +803,6 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			e.emitRunEvent(ipc.EventRunUpdated, run, repo)
 		}
 
-		// Check if auto-fix should be attempted.
-		// Only auto-fix findings whose action is "auto-fix".
-		// This runs before the NeedsApproval check so that all severity
-		// levels (including "info") get a chance at automatic fixing.
-		if outcome.AutoFixable && !coordinatorRepaired && autoFixLimit > 0 && autoFixAttempts < autoFixLimit {
-			fixableFindings := autoFixableFindingsJSON(outcome.Findings)
-			if fixableFindings != "" {
-				autoFixAttempts++
-				telemetry.Track("fix", e.fixTelemetryFields("auto", stepName, findingsCount(fixableFindings), autoFixAttempts))
-				slog.Info("auto-fixing step", "step", stepName, "attempt", autoFixAttempts, "max", autoFixLimit)
-				executionMS += time.Since(phaseStart).Milliseconds()
-				fixCount := findingsCount(fixableFindings)
-				writeLog(fmt.Sprintf("auto-fix round %d/%d starting after round %d (%d %s)", autoFixAttempts, autoFixLimit, roundNum, fixCount, pluralize(fixCount, "finding", "findings")))
-				if dbErr := e.db.UpdateStepStatus(sr.ID, types.StepStatusFixing); dbErr != nil {
-					slog.Warn("failed to update step status in db", "step", stepName, "status", "fixing", "error", dbErr)
-				}
-				if currentRoundID != "" {
-					if idsJSON := findingIDsJSON(fixableFindings); idsJSON != "" {
-						if dbErr := e.db.SetStepRoundSelection(currentRoundID, &idsJSON, db.RoundSelectionSourceAutoFix); dbErr != nil {
-							slog.Warn("failed to record selected finding ids", "step", stepName, "round", roundNum, "error", dbErr)
-						}
-					}
-				}
-				e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFixing), "", "", "", nil)
-				phaseStart = time.Now()
-				sctx.Fixing = true
-				sctx.PreviousFindings = fixableFindings
-				nextTrigger = "auto_fix"
-				continue
-			}
-		}
 
 		if !outcome.NeedsApproval && !hasAskUserFindingsJSON(outcome.Findings) {
 			// Step completed without needing approval.
@@ -1248,10 +1219,9 @@ func (e *Executor) emitLogChunk(run *db.Run, repo *db.Repo, stepName types.StepN
 }
 
 func (e *Executor) telemetryAgentName() string {
-	if e.config == nil || e.config.Agent == "" {
-		return ""
-	}
-	return string(e.config.Agent)
+	// Model selection is the routing contract; there is no single agent to
+	// name in run telemetry.
+	return ""
 }
 
 func (e *Executor) fixTelemetryFields(source string, stepName types.StepName, selectedCount int, attempt int) telemetry.Fields {

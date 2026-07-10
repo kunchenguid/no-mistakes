@@ -10,7 +10,7 @@ import (
 
 func TestLoadGlobalDefaultsRoutingWhenAbsent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(path, []byte("agent: codex\n"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("{}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := LoadGlobal(path)
@@ -106,8 +106,8 @@ func TestEffectiveRepoConfigRoutesIgnorePushedEvenWithOptIn(t *testing.T) {
 	pushed := &RepoConfig{Routes: map[types.Purpose]ProfileName{types.PurposeInitialReview: ProfileFixFast}}
 	trusted := &RepoConfig{Routes: map[types.Purpose]ProfileName{types.PurposeInitialReview: ProfileProseFast}}
 
-	// allow_repo_commands opts pushed commands/agent in, but routes must
-	// still come only from the trusted copy.
+	// allow_repo_commands opts pushed commands in, but routes must still come
+	// only from the trusted copy.
 	got := EffectiveRepoConfig(pushed, trusted, true)
 	if got.Routes[types.PurposeInitialReview] != ProfileProseFast {
 		t.Fatalf("effective route with opt-in = %q, want trusted %q", got.Routes[types.PurposeInitialReview], ProfileProseFast)

@@ -7,6 +7,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 // SessionRole identifies which durable review-loop session an invocation
@@ -56,7 +57,8 @@ func NewRunSessions(database *db.DB, runID string, sessionAgent agent.Agent, ena
 	if database != nil {
 		if stored, err := database.GetRunAgentSessions(runID); err == nil {
 			for _, s := range stored {
-				if s.SessionID != "" && agent.SupportsSessionProvider(sessionAgent, s.Agent) {
+				if s.SessionID != "" && s.Agent != "" &&
+					(sessionAgent == nil || agent.SupportsSessionProvider(sessionAgent, s.Agent)) {
 					rs.ids[SessionRole(s.Role)] = agent.SessionRef{ID: s.SessionID, Agent: s.Agent}
 				}
 			}
@@ -103,6 +105,54 @@ func (rs *RunSessions) Run(ctx context.Context, a agent.Agent, role SessionRole,
 	rs.remember(role, result.SessionID, sessionProvider(a, result))
 	return result, nil
 }
+// Invoke executes one routed, journaled turn for a durable role session. The
+// stored provider is carried in RunOpts so routing resumes only the Candidate
+// that minted the session; a failed resume is journaled, forgotten, and
+// retried cold through the same Purpose and route.
+func (rs *RunSessions) Invoke(ctx context.Context, invoker agent.Invoker, purpose types.Purpose, scope types.InvocationScope, role SessionRole, opts agent.RunOpts, logf func(string)) (*agent.Result, error) {
+	invoke := func(payload agent.RunOpts) (*agent.Result, error) {
+		if invoker == nil {
+			return nil, fmt.Errorf("session invoker is nil")
+		}
+		return invoker.Invoke(ctx, agent.InvocationRequest{
+			Purpose: purpose,
+			Scope:   scope,
+			Payload: payload,
+		})
+	}
+	if rs == nil || !rs.enabled {
+		return invoke(opts)
+	}
+
+	stored := rs.id(role)
+	storedID := stored.ID
+	opts.Session = &stored
+	result, err := invoke(opts)
+	if err == nil {
+		if result != nil {
+			rs.remember(role, result.SessionID, result.Provider)
+		}
+		return result, nil
+	}
+	if storedID == "" || ctx.Err() != nil {
+		return nil, err
+	}
+
+	if logf != nil {
+		logf(fmt.Sprintf("resume of %s session failed (%v); starting a fresh %s session", role, err, role))
+	}
+	rs.forget(role)
+	opts.Session = &agent.SessionRef{}
+	opts.SessionFallback = true
+	result, err = invoke(opts)
+	if err != nil {
+		return nil, err
+	}
+	if result != nil {
+		rs.remember(role, result.SessionID, result.Provider)
+	}
+	return result, nil
+}
 
 func (rs *RunSessions) id(role SessionRole) agent.SessionRef {
 	rs.mu.Lock()
@@ -117,7 +167,7 @@ func (rs *RunSessions) remember(role SessionRole, sessionID, provider string) {
 	if sessionID == "" {
 		return
 	}
-	if provider == "" || !agent.SupportsSessionProvider(rs.agent, provider) {
+	if provider == "" || (rs.agent != nil && !agent.SupportsSessionProvider(rs.agent, provider)) {
 		return
 	}
 	identity := agent.SessionRef{ID: sessionID, Agent: provider}

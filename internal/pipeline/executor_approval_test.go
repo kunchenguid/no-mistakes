@@ -239,7 +239,7 @@ func TestExecutor_TracksApprovalAndUserFixTelemetry(t *testing.T) {
 		},
 	}
 
-	exec := NewExecutor(database, p, &config.Config{Agent: types.AgentClaude}, nil, []Step{step}, nil)
+	exec := NewExecutor(database, p, &config.Config{}, nil, []Step{step}, nil)
 
 	done := make(chan error, 1)
 	go func() {
@@ -286,53 +286,5 @@ func TestExecutor_TracksApprovalAndUserFixTelemetry(t *testing.T) {
 	}
 	if got := stepEvent.fields["findings_count"]; fmt.Sprint(got) != "2" {
 		t.Fatalf("step findings_count = %v, want 2", got)
-	}
-	if got := stepEvent.fields["agent"]; got != string(types.AgentClaude) {
-		t.Fatalf("step agent = %v, want %q", got, types.AgentClaude)
-	}
-}
-
-func TestExecutor_TracksAutoFixTelemetry(t *testing.T) {
-	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
-
-	recorder := &telemetryRecorder{}
-	restore := telemetry.SetDefaultForTesting(recorder)
-	defer restore()
-
-	callCount := 0
-	step := &adaptiveCallStep{
-		name: types.StepReview,
-		fn: func(sctx *StepContext) (*StepOutcome, error) {
-			callCount++
-			if callCount == 1 {
-				return &StepOutcome{
-					AutoFixable: true,
-					Findings:    `{"findings":[{"severity":"error","description":"fix me","action":"auto-fix"}],"summary":"1 issue"}`,
-				}, nil
-			}
-			return &StepOutcome{ExitCode: 0}, nil
-		},
-	}
-
-	cfg := &config.Config{Agent: types.AgentClaude, AutoFix: config.AutoFix{Review: 1}}
-	exec := NewExecutor(database, p, cfg, nil, []Step{step}, nil)
-
-	if err := exec.Execute(context.Background(), run, repo, workDir); err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-
-	fixEvent := recorder.find("fix", "source", "auto")
-	if fixEvent == nil {
-		t.Fatal("expected auto-fix telemetry event")
-	}
-	if got := fixEvent.fields["step"]; got != string(types.StepReview) {
-		t.Fatalf("fix step = %v, want %q", got, types.StepReview)
-	}
-	if got := fixEvent.fields["selected_findings_count"]; fmt.Sprint(got) != "1" {
-		t.Fatalf("fix selected_findings_count = %v, want 1", got)
-	}
-	if got := fixEvent.fields["attempt"]; fmt.Sprint(got) != "1" {
-		t.Fatalf("fix attempt = %v, want 1", got)
 	}
 }

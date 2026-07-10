@@ -62,7 +62,6 @@ func TestCIStep_CIFailureAutoFix(t *testing.T) {
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.UserIntent = "user wanted CI autofix to preserve the extracted intent"
 	sctx.Config.CITimeout = 30 * time.Second
-	sctx.Config.AutoFix = config.AutoFix{CI: 3}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -72,7 +71,9 @@ func TestCIStep_CIFailureAutoFix(t *testing.T) {
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
 	pollCount := 0
+	n := 3
 	step := &CIStep{
+		fixBudget: &n,
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
 			if pollCount == 2 {
@@ -125,14 +126,15 @@ func TestCIStep_CIAutoFixDisabledWithZero(t *testing.T) {
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 5 * time.Second
-	sctx.Config.AutoFix = config.AutoFix{CI: 0} // disabled
 	sctx.Config.CITimeout = 3 * time.Second
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
 	pollCount := 0
+	n := 0
 	step := &CIStep{
+		fixBudget: &n,
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
 			return nil
@@ -230,13 +232,14 @@ func TestCIStep_CIAutoFixLimitExhausted(t *testing.T) {
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Config.CITimeout = 30 * time.Second
-	sctx.Config.AutoFix = config.AutoFix{CI: 1} // only 1 attempt allowed
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
 	pollCount := 0
+	n := 1
 	step := &CIStep{
+		fixBudget: &n,
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
 			return nil
@@ -324,13 +327,14 @@ func TestCIStep_CIAutoFixRetriesAfterChecksRerun(t *testing.T) {
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Config.CITimeout = 30 * time.Second
-	sctx.Config.AutoFix = config.AutoFix{CI: 2}
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
 	pollCount := 0
+	n := 2
 	step := &CIStep{
+		fixBudget: &n,
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
 			return nil
@@ -416,11 +420,12 @@ func TestCIStep_CIAutoFixRetriesWhenGitHubClockLagsLocalClock(t *testing.T) {
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Config.CITimeout = 5 * time.Minute
-	sctx.Config.AutoFix = config.AutoFix{CI: 2}
 
 	localNow := start.Add(30 * time.Minute)
+	n := 2
 	step := &CIStep{
-		now: func() time.Time { return localNow },
+		fixBudget: &n,
+		now:       func() time.Time { return localNow },
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			localNow = localNow.Add(3 * time.Minute)
 			return nil
@@ -500,15 +505,16 @@ func TestCIStep_CIAutoFixRetriesWhenFastChecksSkipPendingObservation(t *testing.
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Config.CITimeout = 1 * time.Hour
-	sctx.Config.AutoFix = config.AutoFix{CI: 2}
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
 	pollCount := 0
 	fakeNow := start
+	n := 2
 	step := &CIStep{
-		now: func() time.Time { return fakeNow },
+		fixBudget: &n,
+		now:       func() time.Time { return fakeNow },
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
 			// Advance fake clock past the autofix push so the second poll's
@@ -598,13 +604,14 @@ func TestCIStep_CIAutoFixRetriesWhenSomeChecksStayFailing(t *testing.T) {
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Config.CITimeout = 30 * time.Second
-	sctx.Config.AutoFix = config.AutoFix{CI: 2}
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
 	pollCount := 0
+	n := 2
 	step := &CIStep{
+		fixBudget: &n,
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
 			return nil
@@ -682,7 +689,6 @@ func TestCIStep_DoesNotRetryOnUnrelatedPendingCheck(t *testing.T) {
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Config.CITimeout = 30 * time.Second
-	sctx.Config.AutoFix = config.AutoFix{CI: 2}
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
@@ -692,7 +698,9 @@ func TestCIStep_DoesNotRetryOnUnrelatedPendingCheck(t *testing.T) {
 	sctx.Ctx = ctx
 
 	pollCount := 0
+	n := 2
 	step := &CIStep{
+		fixBudget: &n,
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
 			if pollCount == 3 {
@@ -772,12 +780,13 @@ func TestCIStep_RetriesMergeConflictAfterRerun(t *testing.T) {
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Config.CITimeout = 30 * time.Second
-	sctx.Config.AutoFix = config.AutoFix{CI: 2}
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
+	n := 2
 	step := &CIStep{
+		fixBudget: &n,
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			return nil
 		},
@@ -861,7 +870,6 @@ func TestCIStep_FixMode_ManualInterventionRunsCIFix(t *testing.T) {
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Config.CITimeout = 30 * time.Second
-	sctx.Config.AutoFix = config.AutoFix{CI: 0}
 	sctx.Fixing = true
 	sctx.PreviousFindings = string(findingsJSON)
 
@@ -870,7 +878,9 @@ func TestCIStep_FixMode_ManualInterventionRunsCIFix(t *testing.T) {
 	sctx.Ctx = ctx
 
 	pollCount := 0
+	n := 0
 	step := &CIStep{
+		fixBudget: &n,
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
 			if pollCount == 2 {
@@ -938,13 +948,14 @@ func TestCIStep_AutoFixNoChanges_CountsAsAttempt(t *testing.T) {
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Config.CITimeout = 30 * time.Second
-	sctx.Config.AutoFix = config.AutoFix{CI: 2}
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
 	pollCount := 0
+	n := 2
 	step := &CIStep{
+		fixBudget: &n,
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
 			return nil
@@ -1044,7 +1055,6 @@ func TestCIStep_FixMode_NoChanges_CountsAsAttempt(t *testing.T) {
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Config.CITimeout = 30 * time.Second
-	sctx.Config.AutoFix = config.AutoFix{CI: 0}
 	sctx.Fixing = true
 	sctx.PreviousFindings = string(findingsJSON)
 
@@ -1052,7 +1062,9 @@ func TestCIStep_FixMode_NoChanges_CountsAsAttempt(t *testing.T) {
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
 	pollCount := 0
+	n := 0
 	step := &CIStep{
+		fixBudget: &n,
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
 			return nil
@@ -1130,14 +1142,15 @@ func TestCIStep_AutoFixPromptIncludesMustFixInstruction(t *testing.T) {
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.UserIntent = "user wanted CI autofix to preserve the extracted intent"
 	sctx.Config.CITimeout = 30 * time.Second
-	sctx.Config.AutoFix = config.AutoFix{CI: 3}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	sctx.Ctx = ctx
 	sctx.Log = func(s string) {}
 
+	n := 3
 	step := &CIStep{
+		fixBudget: &n,
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			cancel()
 			return ctx.Err()

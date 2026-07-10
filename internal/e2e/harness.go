@@ -174,30 +174,16 @@ func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
-// writeGlobalConfig writes a no-mistakes global config that pins the
-// agent name and binary path. The path override forces no-mistakes'
-// agent.New to use our absolute fake-agent path instead of looking up the
-// agent name in PATH (which would also work, but the override removes a
-// confounding variable when something goes wrong).
+// writeGlobalConfig writes a routing-only no-mistakes global config. Model
+// selection is the routing contract: the fake agent is on PATH as both default
+// runners (codex, claude) via BinDir, so the built-in default routing launches
+// it. There is no agent selector, path override, or numeric auto-fix.
 func (h *Harness) writeGlobalConfig() {
 	configPath := filepath.Join(h.NMHome, "config.yaml")
 	if err := os.MkdirAll(h.NMHome, 0o755); err != nil {
 		h.t.Fatalf("mkdir nm home: %v", err)
 	}
-	binLink := filepath.Join(h.BinDir, h.agentName)
-	cfg := fmt.Sprintf(`agent: %s
-log_level: debug
-agent_path_override:
-  %s: %s
-auto_fix:
-  rebase: 0
-  lint: 0
-  test: 0
-  review: 0
-  document: 0
-  ci: 0
-`, h.agentName, h.agentName, binLink)
-	if err := os.WriteFile(configPath, []byte(cfg), 0o644); err != nil {
+	if err := os.WriteFile(configPath, []byte("log_level: debug\n"), 0o644); err != nil {
 		h.t.Fatalf("write config: %v", err)
 	}
 }

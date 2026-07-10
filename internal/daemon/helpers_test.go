@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -163,12 +162,9 @@ func startTestDaemonWithSteps(t *testing.T, sf StepFactory) (*paths.Paths, *db.D
 		t.Fatal(err)
 	}
 
-	// Keep daemon tests hermetic now that the default config auto-detects agents.
-	mockClaude := writeMockClaude(t, t.TempDir())
-	configYAML := "agent: claude\nagent_path_override:\n  claude: " + mockClaude + "\n"
-	if err := os.WriteFile(p.ConfigFile(), []byte(configYAML), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	// Model selection is the routing contract; the daemon writes the
+	// routing-only default config on startup. Fake steps launch no agents, so
+	// no runner binary is needed.
 
 	d, err := db.Open(p.DB())
 	if err != nil {
@@ -221,10 +217,6 @@ func setupTestGitRepo(t *testing.T, p *paths.Paths, d *db.DB, repoID string) (*d
 	gitCmd(t, workDir, "config", "user.email", "test@test.com")
 	gitCmd(t, workDir, "config", "user.name", "Test")
 	if err := os.WriteFile(filepath.Join(workDir, "test.txt"), []byte("hello"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	// Disable auto-fix so approval-based tests pause immediately.
-	if err := os.WriteFile(filepath.Join(workDir, ".no-mistakes.yaml"), []byte("auto_fix:\n  lint: 0\n  test: 0\n  review: 0\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	gitCmd(t, workDir, "add", ".")
@@ -289,47 +281,6 @@ func testJSONString(t *testing.T, s string) string {
 func testClaudeProjectDirName(cwd string) string {
 	replacer := strings.NewReplacer("/", "-", `\`, "-", ":", "-")
 	return replacer.Replace(cwd)
-}
-
-func writeMockClaude(t *testing.T, dir string) string {
-	t.Helper()
-	if runtime.GOOS == "windows" {
-		path := filepath.Join(dir, "claude.bat")
-		script := "@echo off\r\necho {\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"structured_output\":{\"findings\":[],\"summary\":\"clean\"}}\r\n"
-		if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		return path
-	}
-	path := filepath.Join(dir, "claude")
-	script := `#!/bin/sh
-printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"structured_output":{"findings":[],"summary":"clean"}}'
-`
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
-
-func writeSlowMockClaude(t *testing.T, dir string) string {
-	t.Helper()
-	if runtime.GOOS == "windows" {
-		path := filepath.Join(dir, "claude.bat")
-		script := "@echo off\r\ntimeout /t 3 /nobreak >nul\r\necho {\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"structured_output\":{\"summary\":\"slow intent\"}}\r\n"
-		if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		return path
-	}
-	path := filepath.Join(dir, "claude")
-	script := `#!/bin/sh
-sleep 3
-printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"structured_output":{"summary":"slow intent"}}'
-`
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	return path
 }
 
 func waitForRunTerminalState(t *testing.T, d *db.DB, runID string) *db.Run {

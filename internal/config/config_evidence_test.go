@@ -61,7 +61,6 @@ func TestLoadGlobalConfig_TestEvidenceParsed(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	yaml := `
-agent: claude
 test:
   evidence:
     store_in_repo: true

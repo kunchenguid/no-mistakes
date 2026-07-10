@@ -4,8 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 func TestLoadRepo_Defaults(t *testing.T) {
@@ -13,9 +11,6 @@ func TestLoadRepo_Defaults(t *testing.T) {
 	cfg, err := LoadRepo("/nonexistent/dir")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.Agent != "" {
-		t.Errorf("agent = %q, want empty", cfg.Agent)
 	}
 	if cfg.Commands.Lint != "" {
 		t.Errorf("lint = %q, want empty", cfg.Commands.Lint)
@@ -34,8 +29,7 @@ func TestLoadRepo_Defaults(t *testing.T) {
 func TestLoadRepo_FromFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".no-mistakes.yaml")
-	data := `agent: codex
-commands:
+	data := `commands:
   lint: "golangci-lint run ./..."
   test: "go test -race ./..."
   format: "gofmt -w ."
@@ -50,9 +44,6 @@ ignore_patterns:
 	cfg, err := LoadRepo(dir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.Agent != types.AgentCodex {
-		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentCodex)
 	}
 	if cfg.Commands.Lint != "golangci-lint run ./..." {
 		t.Errorf("lint = %q", cfg.Commands.Lint)
@@ -155,47 +146,5 @@ func TestLoadRepo_InvalidYAML(t *testing.T) {
 	_, err := LoadRepo(dir)
 	if err == nil {
 		t.Fatal("expected error for invalid YAML")
-	}
-}
-
-func TestLoadRepo_AutoFixFromFile(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, ".no-mistakes.yaml")
-	data := `auto_fix:
-  review: 0
-  ci: 2
-`
-	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg, err := LoadRepo(dir)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.AutoFix.Review == nil || *cfg.AutoFix.Review != 0 {
-		t.Errorf("review = %v, want 0", cfg.AutoFix.Review)
-	}
-	if cfg.AutoFix.CI == nil || *cfg.AutoFix.CI != 2 {
-		t.Errorf("ci =%v, want 2", cfg.AutoFix.CI)
-	}
-}
-
-func TestLoadRepo_LegacyAutoFixBabysit(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, ".no-mistakes.yaml")
-	if err := os.WriteFile(path, []byte("auto_fix:\n  babysit: 0\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg, err := LoadRepo(dir)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.AutoFix.CI == nil {
-		t.Fatal("ci auto-fix override was not loaded")
-	}
-	if *cfg.AutoFix.CI != 0 {
-		t.Fatalf("ci auto-fix = %d, want 0", *cfg.AutoFix.CI)
 	}
 }

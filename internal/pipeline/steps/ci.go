@@ -44,6 +44,22 @@ type CIStep struct {
 	// must not re-arm the timeout. Overridable for testing; defaults to
 	// fetching the upstream default branch.
 	baseBranchTip func(context.Context) (string, bool)
+	// fixBudget overrides the CI auto-fix attempt budget. nil uses
+	// ciRepairBudget; an explicit 0 disables CI auto-fix. Per-step numeric
+	// auto-fix config was removed, so the budget is a fixed routing-era policy.
+	fixBudget *int
+}
+
+// ciRepairBudget bounds CI auto-fix attempts per run. Model selection is the
+// routing contract and per-step numeric limits were removed, so the CI repair
+// budget is a fixed policy constant rather than user configuration.
+const ciRepairBudget = 3
+
+func (s *CIStep) ciFixLimit() int {
+	if s.fixBudget != nil {
+		return *s.fixBudget
+	}
+	return ciRepairBudget
 }
 
 func (s *CIStep) Name() types.StepName { return types.StepCI }
@@ -217,7 +233,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		}
 
 		// Check CI status - wait for all checks to complete before fixing
-		ciFixLimit := sctx.Config.AutoFix.CI
+		ciFixLimit := s.ciFixLimit()
 		checks, err := host.GetChecks(ctx, pr)
 		if err != nil {
 			lastMonitorLog = ""

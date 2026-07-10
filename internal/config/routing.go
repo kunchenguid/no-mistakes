@@ -191,6 +191,51 @@ func (rc RoutingConfig) Validate() error {
 	}
 	return nil
 }
+// ValidateRunnable verifies that every routed Profile has at least one
+// Candidate whose normalized runner executable can be launched. Routing may
+// retain unavailable backup Candidates, but a gate must fail before starting
+// if any reachable tier has no runnable provider at all.
+func (rc RoutingConfig) ValidateRunnable(lookPath func(string) (string, error)) error {
+	if err := rc.Validate(); err != nil {
+		return err
+	}
+	if lookPath == nil {
+		return fmt.Errorf("routing: executable resolver is nil")
+	}
+	checked := make(map[ProfileName]bool, len(rc.Profiles))
+	for _, purpose := range sortedRoutePurposes(rc.Routes) {
+		for _, profileName := range rc.Routes[purpose] {
+			if checked[profileName] {
+				continue
+			}
+			checked[profileName] = true
+			profile := rc.Profiles[profileName]
+			probed := make([]string, 0, len(profile.Candidates))
+			runnable := false
+			for _, candidate := range profile.Candidates {
+				executable := rc.Runners[candidate.Runner].Executable
+				probed = append(probed, executable)
+				if _, err := lookPath(executable); err == nil {
+					runnable = true
+					break
+				}
+			}
+			if !runnable {
+				return fmt.Errorf("routing profile %q has no runnable candidate (looked for: %s); the gate cannot validate without a configured runner", profileName, strings.Join(probed, ", "))
+			}
+		}
+	}
+	return nil
+}
+
+// ValidateRunnable checks the resolved routing contract and its runner
+// executables after trusted repository Route overrides have been merged.
+func (c *Config) ValidateRunnable(lookPath func(string) (string, error)) error {
+	if c == nil {
+		return fmt.Errorf("routing config is nil")
+	}
+	return c.Routing.ValidateRunnable(lookPath)
+}
 
 func sortedRunnerNames(m map[types.Runner]RunnerSpec) []types.Runner {
 	out := make([]types.Runner, 0, len(m))

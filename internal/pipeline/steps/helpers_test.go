@@ -20,7 +20,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
-	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 type mockAgent struct {
@@ -166,7 +165,7 @@ func newTestContext(t *testing.T, ag agent.Agent, workDir, baseSHA, headSHA stri
 		Repo:     &db.Repo{ID: "repo-1", WorkingPath: workDir, UpstreamURL: "https://github.com/test/repo", DefaultBranch: "main"},
 		WorkDir:  workDir,
 		Agent:    ag,
-		Config:   &config.Config{Agent: types.AgentClaude, Commands: cmds},
+		Config:   &config.Config{Commands: cmds},
 		DB:       database,
 		Log:      func(s string) {},
 		LogChunk: func(s string) {},

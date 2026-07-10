@@ -6,7 +6,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -87,97 +86,6 @@ func TestNeedsBranch(t *testing.T) {
 	}
 }
 
-func TestWizardAgentSuggester_IsLazy(t *testing.T) {
-	t.Helper()
-
-	lookups := 0
-	suggester := newWizardAgentSuggester(&config.Config{Agent: types.AgentAuto}, "/tmp/repo", func(context.Context, *config.Config) error {
-		lookups++
-		return errors.New("no supported agent found")
-	}, nil)
-	defer suggester.Close()
-
-	if lookups != 0 {
-		t.Fatalf("expected no agent resolution during setup, got %d", lookups)
-	}
-
-	if _, err := suggester.suggestBranch(context.Background()); err == nil {
-		t.Fatal("expected suggestion to fail when no agent is available")
-	}
-	if lookups != 1 {
-		t.Fatalf("expected one lazy resolution attempt, got %d", lookups)
-	}
-}
-
-func TestWizardAgentSuggester_ForwardsAgentArgsOverride(t *testing.T) {
-	t.Helper()
-
-	var (
-		gotName types.AgentName
-		gotBin  string
-		gotArgs []string
-		gotOpts agent.Options
-	)
-	suggester := newWizardAgentSuggester(
-		&config.Config{
-			Agent: types.AgentClaude,
-			AgentArgsOverride: map[string][]string{
-				"claude": {"--permission-mode", "acceptEdits"},
-			},
-		},
-		"/tmp/repo",
-		func(context.Context, *config.Config) error { return nil },
-		func(name types.AgentName, bin string, args []string, opts agent.Options) (agent.Agent, error) {
-			gotName = name
-			gotBin = bin
-			gotArgs = append([]string(nil), args...)
-			gotOpts = opts
-			return &fakeSuggesterAgent{}, nil
-		},
-	)
-	defer suggester.Close()
-
-	if err := suggester.ensure(context.Background()); err != nil {
-		t.Fatalf("ensure failed: %v", err)
-	}
-	if gotName != types.AgentClaude {
-		t.Fatalf("new agent name = %q, want %q", gotName, types.AgentClaude)
-	}
-	if gotBin != "claude" {
-		t.Fatalf("new agent bin = %q, want %q", gotBin, "claude")
-	}
-	if want := []string{"--permission-mode", "acceptEdits"}; !reflect.DeepEqual(gotArgs, want) {
-		t.Fatalf("new agent args = %v, want %v", gotArgs, want)
-	}
-	if gotOpts.ACPRegistryOverrides != nil {
-		t.Fatalf("new agent options = %+v, want zero options", gotOpts)
-	}
-}
-
-func TestWizardAgentSuggester_ForwardsACPRegistryOverrides(t *testing.T) {
-	var gotOpts agent.Options
-	suggester := newWizardAgentSuggester(
-		&config.Config{
-			Agent:                "acp:local-gemini",
-			ACPRegistryOverrides: map[string]string{"local-gemini": "node /tmp/mock-acp.mjs"},
-		},
-		"/tmp/repo",
-		func(context.Context, *config.Config) error { return nil },
-		func(_ types.AgentName, _ string, _ []string, opts agent.Options) (agent.Agent, error) {
-			gotOpts = opts
-			return &fakeSuggesterAgent{}, nil
-		},
-	)
-	defer suggester.Close()
-
-	if err := suggester.ensure(context.Background()); err != nil {
-		t.Fatalf("ensure failed: %v", err)
-	}
-	if got := gotOpts.ACPRegistryOverrides["local-gemini"]; got != "node /tmp/mock-acp.mjs" {
-		t.Fatalf("ACPRegistryOverrides[local-gemini] = %q", got)
-	}
-}
-
 type fakeSuggesterAgent struct {
 	mu    sync.Mutex
 	calls []agent.RunOpts
@@ -243,14 +151,30 @@ func (f *fakeSuggesterResponseAgent) callCount() int {
 	return len(f.calls)
 }
 
-func newFakeSuggester(t *testing.T, ag *fakeSuggesterAgent) *wizardAgentSuggester {
+func newFakeSuggester(t *testing.T, ag agent.Agent) *wizardAgentSuggester {
 	t.Helper()
-	return newWizardAgentSuggester(
-		&config.Config{Agent: types.AgentClaude},
-		"/tmp/repo",
-		func(context.Context, *config.Config) error { return nil },
-		func(types.AgentName, string, []string, agent.Options) (agent.Agent, error) { return ag, nil },
-	)
+
+	database, err := db.Open(filepath.Join(t.TempDir(), "state.sqlite"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := database.Close(); err != nil {
+			t.Errorf("close database: %v", err)
+		}
+	})
+	utilityScope, err := database.InsertUtilityScope(types.UtilityScopeWizard, os.Getpid())
+	if err != nil {
+		t.Fatalf("insert utility scope: %v", err)
+	}
+
+	s := newWizardAgentSuggester("/tmp/repo")
+	s.routingFactory = func(types.AgentName, string) (agent.Agent, error) { return ag, nil }
+	s.setInvocationContext(database, types.InvocationScope{
+		Kind:           types.InvocationScopeUtility,
+		UtilityScopeID: utilityScope.ID,
+	}, config.DefaultRoutingConfig())
+	return s
 }
 
 func TestWizardAgentSuggester_CachesCommitFromBranchCall(t *testing.T) {
@@ -289,12 +213,9 @@ func TestWizardAgentSuggesterJournalsOneCombinedUtilityInvocation(t *testing.T) 
 	if err != nil {
 		t.Fatalf("insert utility scope: %v", err)
 	}
-
 	ag := &fakeSuggesterAgent{}
-	s := newFakeSuggester(t, ag)
-	// Route through the trusted default policy; the factory yields the fake so
-	// no real binary launches. The Wizard suggestion must record one prose_fast
-	// Candidate under the utility scope — not a legacy attempt or a gate row.
+
+	s := newWizardAgentSuggester("/tmp/repo")
 	s.routingFactory = func(types.AgentName, string) (agent.Agent, error) { return ag, nil }
 	s.setInvocationContext(database, types.InvocationScope{
 		Kind:           types.InvocationScopeUtility,
@@ -420,12 +341,7 @@ func TestWizardAgentSuggester_EmptyRetryClearsCachedCommit(t *testing.T) {
 		},
 		commitOutput: `{"subject":"feat(cli): standalone"}`,
 	}
-	s := newWizardAgentSuggester(
-		&config.Config{Agent: types.AgentClaude},
-		"/tmp/repo",
-		func(context.Context, *config.Config) error { return nil },
-		func(types.AgentName, string, []string, agent.Options) (agent.Agent, error) { return ag, nil },
-	)
+	s := newFakeSuggester(t, ag)
 	defer s.Close()
 
 	if _, err := s.suggestBranch(context.Background()); err != nil {

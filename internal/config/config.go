@@ -2,19 +2,16 @@ package config
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/types"
-	"github.com/kunchenguid/no-mistakes/internal/winproc"
 	"gopkg.in/yaml.v3"
 )
 
@@ -44,24 +41,19 @@ const (
 	CITimeoutUnlimited = time.Duration(-1)
 )
 
-// GlobalConfig represents ~/.no-mistakes/config.yaml.
+// GlobalConfig represents ~/.no-mistakes/config.yaml. Model selection is owned
+// entirely by the routing contract (Runners, Profiles, Candidates, Routes);
+// there is no single-agent selector, fallback list, or per-agent override.
 type GlobalConfig struct {
-	Agent                types.AgentName     `yaml:"agent"`
-	Agents               []types.AgentName   `yaml:"-"`
-	ACPXPath             string              `yaml:"acpx_path"`
-	ACPRegistryOverrides map[string]string   `yaml:"acp_registry_overrides"`
-	AgentPathOverride    map[string]string   `yaml:"agent_path_override"`
-	AgentArgsOverride    map[string][]string `yaml:"agent_args_override"`
-	CITimeout            time.Duration       `yaml:"-"`
-	StepQuietWarning     time.Duration       `yaml:"-"`
-	DaemonConnectTimeout time.Duration       `yaml:"-"`
-	LogLevel             string              `yaml:"log_level"`
+	CITimeout            time.Duration `yaml:"-"`
+	StepQuietWarning     time.Duration `yaml:"-"`
+	DaemonConnectTimeout time.Duration `yaml:"-"`
+	LogLevel             string        `yaml:"log_level"`
 	// SessionReuse controls per-run, per-role agent session reuse in the
 	// review loop (one durable reviewer session across full reviews, a
 	// separate durable fixer session across fix turns). Default true; set
 	// session_reuse: false to force every invocation cold.
 	SessionReuse bool `yaml:"-"`
-	AutoFix      AutoFixRaw
 	Intent       IntentRaw
 	Test         TestRaw
 	Routing      RoutingConfig
@@ -69,37 +61,30 @@ type GlobalConfig struct {
 
 // globalConfigRaw is the on-disk YAML representation with duration as string.
 type globalConfigRaw struct {
-	Agent                agentList           `yaml:"agent"`
-	ACPXPath             string              `yaml:"acpx_path"`
-	ACPRegistryOverrides map[string]string   `yaml:"acp_registry_overrides"`
-	AgentPathOverride    map[string]string   `yaml:"agent_path_override"`
-	AgentArgsOverride    map[string][]string `yaml:"agent_args_override"`
-	CITimeout            string              `yaml:"ci_timeout"`
-	DaemonConnectTimeout string              `yaml:"daemon_connect_timeout"`
-	BabysitTimeout       string              `yaml:"babysit_timeout"`
-	StepQuietWarning     string              `yaml:"step_quiet_warning"`
-	LogLevel             string              `yaml:"log_level"`
-	SessionReuse         *bool               `yaml:"session_reuse"`
-	AutoFix              AutoFixRaw          `yaml:"auto_fix"`
-	Intent               IntentRaw           `yaml:"intent"`
-	Test                 TestRaw             `yaml:"test"`
-	Routing              *RoutingConfig      `yaml:"routing"`
+	CITimeout            string         `yaml:"ci_timeout"`
+	DaemonConnectTimeout string         `yaml:"daemon_connect_timeout"`
+	BabysitTimeout       string         `yaml:"babysit_timeout"`
+	StepQuietWarning     string         `yaml:"step_quiet_warning"`
+	LogLevel             string         `yaml:"log_level"`
+	SessionReuse         *bool          `yaml:"session_reuse"`
+	Intent               IntentRaw      `yaml:"intent"`
+	Test                 TestRaw        `yaml:"test"`
+	Routing              *RoutingConfig `yaml:"routing"`
 }
 
-// RepoConfig represents .no-mistakes.yaml in a repo root.
+// RepoConfig represents .no-mistakes.yaml in a repo root. A repository may map
+// purposes to existing global profiles via 'routes', but never selects an
+// agent or defines execution mechanics.
 type RepoConfig struct {
-	Agent          types.AgentName   `yaml:"agent"`
-	Agents         []types.AgentName `yaml:"-"`
-	Commands       Commands          `yaml:"commands"`
-	IgnorePatterns []string          `yaml:"ignore_patterns"`
+	Commands       Commands `yaml:"commands"`
+	IgnorePatterns []string `yaml:"ignore_patterns"`
 	// AllowRepoCommands opts in to honoring the code-executing selection
-	// fields (commands.{test,lint,format} and agent) from a contributor's
-	// pushed branch instead of the trusted default-branch copy. It is read
-	// ONLY from the trusted default-branch copy of .no-mistakes.yaml (never
-	// the pushed SHA), so a contributor cannot self-enable. Default false:
-	// the pushed branch controls nothing that executes.
+	// fields (commands.{test,lint,format}) from a contributor's pushed branch
+	// instead of the trusted default-branch copy. It is read ONLY from the
+	// trusted default-branch copy of .no-mistakes.yaml (never the pushed SHA),
+	// so a contributor cannot self-enable. Default false: the pushed branch
+	// controls nothing that executes.
 	AllowRepoCommands bool                          `yaml:"allow_repo_commands"`
-	AutoFix           AutoFixRaw                    `yaml:"auto_fix"`
 	Intent            IntentRaw                     `yaml:"intent"`
 	Test              TestRaw                       `yaml:"test"`
 	Routes            map[types.Purpose]ProfileName `yaml:"routes"`
@@ -119,34 +104,7 @@ type DocumentRaw struct {
 	Instructions string `yaml:"instructions"`
 }
 
-func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
-	type repoConfigRaw struct {
-		Agent             agentList   `yaml:"agent"`
-		Commands          Commands    `yaml:"commands"`
-		IgnorePatterns    []string    `yaml:"ignore_patterns"`
-		AllowRepoCommands bool        `yaml:"allow_repo_commands"`
-		AutoFix           AutoFixRaw  `yaml:"auto_fix"`
-		Intent            IntentRaw   `yaml:"intent"`
-		Test              TestRaw     `yaml:"test"`
-		Routes            map[types.Purpose]ProfileName `yaml:"routes"`
-		Document          DocumentRaw `yaml:"document"`
-	}
-	var raw repoConfigRaw
-	if err := value.Decode(&raw); err != nil {
-		return err
-	}
-	c.Agent = firstAgent(raw.Agent)
-	c.Agents = copyAgents(raw.Agent)
-	c.Commands = raw.Commands
-	c.IgnorePatterns = raw.IgnorePatterns
-	c.AllowRepoCommands = raw.AllowRepoCommands
-	c.AutoFix = raw.AutoFix
-	c.Intent = raw.Intent
-	c.Test = raw.Test
-	c.Routes = raw.Routes
-	c.Document = raw.Document
-	return nil
-}
+
 
 // Commands holds optional per-repo command overrides.
 type Commands struct {
@@ -155,44 +113,15 @@ type Commands struct {
 	Format string `yaml:"format"`
 }
 
-// AutoFixRaw is the YAML representation of auto-fix config.
-// Pointer fields distinguish "not set" (nil) from "set to 0" (disabled).
-type AutoFixRaw struct {
-	Lint     *int `yaml:"lint"`
-	Test     *int `yaml:"test"`
-	Review   *int `yaml:"review"`
-	Document *int `yaml:"document"`
-	CI       *int `yaml:"ci"`
-	Babysit  *int `yaml:"babysit"`
-	Rebase   *int `yaml:"rebase"`
-}
-
-// AutoFix holds resolved per-step auto-fix attempt limits.
-// A value of 0 means auto-fix is disabled (requires manual approval).
-type AutoFix struct {
-	Lint     int
-	Test     int
-	Review   int
-	Document int
-	CI       int
-	Rebase   int
-}
-
 // Config is the merged result of global + per-repo configuration.
 type Config struct {
-	Agent                types.AgentName
-	Agents               []types.AgentName
-	ACPXPath             string
-	ACPRegistryOverrides map[string]string
-	AgentPathOverride    map[string]string
-	AgentArgsOverride    map[string][]string
 	CITimeout            time.Duration
 	StepQuietWarning     time.Duration
+	DaemonConnectTimeout time.Duration
 	LogLevel             string
 	SessionReuse         bool
 	Commands             Commands
 	IgnorePatterns       []string
-	AutoFix              AutoFix
 	Intent               Intent
 	Test                 Test
 	Document             Document
@@ -249,69 +178,12 @@ type Intent struct {
 	DisabledReaders map[string]bool
 }
 
-type agentList []types.AgentName
-
-func (a *agentList) UnmarshalYAML(value *yaml.Node) error {
-	switch value.Kind {
-	case yaml.ScalarNode:
-		name := strings.TrimSpace(value.Value)
-		if name == "" {
-			*a = nil
-			return nil
-		}
-		*a = []types.AgentName{types.AgentName(name)}
-		return nil
-	case yaml.SequenceNode:
-		names := make([]types.AgentName, 0, len(value.Content))
-		for i, item := range value.Content {
-			if item.Kind != yaml.ScalarNode {
-				return fmt.Errorf("agent[%d] must be a string", i)
-			}
-			name := strings.TrimSpace(item.Value)
-			if name == "" {
-				return fmt.Errorf("agent[%d] must not be empty", i)
-			}
-			names = append(names, types.AgentName(name))
-		}
-		*a = names
-		return nil
-	default:
-		return fmt.Errorf("agent must be a string or a list of strings")
-	}
-}
-
-func firstAgent(names []types.AgentName) types.AgentName {
-	if len(names) == 0 {
-		return ""
-	}
-	return names[0]
-}
-
-func copyAgents(names []types.AgentName) []types.AgentName {
-	if len(names) == 0 {
-		return nil
-	}
-	out := make([]types.AgentName, len(names))
-	copy(out, names)
-	return out
-}
 
 // defaultConfigYAML is the template written when no global config file exists.
+// Model selection is intentionally absent: the built-in routing contract
+// applies unless overridden under 'routing'.
 const defaultConfigYAML = `# no-mistakes global configuration
 
-# Agent to use for code generation. This may also be an ordered fallback list,
-# for example: agent: [codex, claude]
-# Options: auto, claude, codex, rovodev, opencode, pi, copilot, acp:<target>
-# "auto" detects the first available native agent on your system
-# Use acp:<target> to run an optional user-installed acpx target, for example acp:gemini
-agent: auto
-
-# Optional path to the user-installed acpx binary for acp:<target> agents
-# acpx_path: acpx
-
-# Optional ACP target command overrides for acp:<target> agents
-# acp_registry_overrides:
-#   local-gemini: node /opt/mock-acp-agent.mjs
 
 # Maximum time the CI monitor babysits an open PR with no base-branch movement
 # before giving up. The monitor watches CI and auto-rebases when the base branch
@@ -341,37 +213,12 @@ session_reuse: true
 # Options: debug, info, warn, error
 log_level: info
 
-# Override native agent binary paths (optional)
-# agent_path_override:
-#   claude: /usr/local/bin/claude
-#   codex: /opt/codex
-
-# Extra native agent CLI flags (optional, global only)
-# Codex service_tier controls speed/priority; model_reasoning_effort controls reasoning depth.
-# agent_args_override:
-#   codex:
-#     - -m
-#     - gpt-5.4
-#     - -c
-#     - service_tier="priority"
-#     - -c
-#     - model_reasoning_effort="low"
-#
-# Maximum follow-up auto-fix attempts per step (0 = disabled after the initial pass)
-# Document fixes are attempted during the initial document pass.
-auto_fix:
-  rebase: 3
-  lint: 3
-  test: 3
-  review: 0
-  document: 3
-  ci: 3
 
 # User-intent extraction. When you push a branch, no-mistakes can read recent
-# transcripts from your local agent (Claude Code, Codex, OpenCode, Rovo Dev, Pi,
-# Copilot CLI), pick the session that produced the change, summarize the user
-# intent, and feed it to review, test, document, lint, and PR agents so they
-# understand what you were trying to do - not just the diff.
+# transcripts from your local agent, pick the session that produced the change,
+# summarize the user intent, and feed it to the routed review, test, document,
+# lint, and PR invocations so they understand what you were trying to do - not
+# just the diff.
 intent:
   enabled: true
   threshold: 0.2
@@ -387,336 +234,56 @@ intent:
 #   evidence:
 #     store_in_repo: true
 #     dir: .no-mistakes/evidence
+
+# Model selection is the routing contract: Runners (executables + failure
+# domains), Profiles (ordered provider Candidates of runner/model/effort), and
+# Routes (a Profile cascade per Purpose). The built-in defaults apply when
+# 'routing' is omitted. Override individual pieces to change models, efforts, or
+# runner executables.
+# routing:
+#   runners:
+#     codex: {executable: codex, failure_domain: openai}
+#     claude: {executable: claude, failure_domain: anthropic}
 `
 
-// defaultBinary maps agent names to their default binary names.
-var defaultBinary = map[types.AgentName]string{
-	types.AgentClaude:   "claude",
-	types.AgentCodex:    "codex",
-	types.AgentRovoDev:  "acli",
-	types.AgentOpenCode: "opencode",
-	types.AgentPi:       "pi",
-	types.AgentCopilot:  "copilot",
+// legacyGlobalKeys maps removed global config keys to the actionable guidance
+// LoadGlobal returns when one is present. Routing (runners, profiles,
+// candidates, routes) is the sole model-selection contract; there are no
+// aliases, compatibility spellings, or automatic rewrites.
+var legacyGlobalKeys = map[string]string{
+	"agent":                  "model selection is configured via `routing` (runners, profiles, routes); there is no single-agent selector",
+	"fallback_agents":        "provider fail-over is configured through routing profile candidates, not a fallback-agent list",
+	"acpx_path":              "acp agents were removed; declare runners under `routing.runners`",
+	"acp_registry_overrides": "acp agents were removed; declare runners under `routing.runners`",
+	"agent_path_override":    "runner executables are configured via `routing.runners.<name>.executable`",
+	"agent_args_override":    "native agent arguments are derived from routing profile candidates and cannot be overridden",
+	"auto_fix":               "per-step numeric auto-fix limits were removed; repair escalates through the routing cascade",
 }
 
-// agentProbeOrder is the priority order for auto-detecting agents.
-var agentProbeOrder = []types.AgentName{
-	types.AgentClaude,
-	types.AgentCodex,
-	types.AgentOpenCode,
-	types.AgentRovoDev,
-	types.AgentPi,
-	types.AgentCopilot,
+// legacyGlobalKeyOrder lists legacy keys in a stable order so a config with
+// several removed keys reports a deterministic error.
+var legacyGlobalKeyOrder = []string{
+	"acp_registry_overrides",
+	"acpx_path",
+	"agent",
+	"agent_args_override",
+	"agent_path_override",
+	"auto_fix",
+	"fallback_agents",
 }
 
-func isACPAgent(name types.AgentName) bool {
-	value := string(name)
-	if !strings.HasPrefix(value, "acp:") {
-		return false
-	}
-	target := strings.TrimPrefix(value, "acp:")
-	return target != "" && !strings.ContainsAny(target, " \t\r\n")
-}
-
-var probeRovoDevSupport = func(ctx context.Context, bin string) (bool, error) {
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, bin, "rovodev", "--help")
-	winproc.Harden(cmd)
-	output, err := cmd.CombinedOutput()
-	if err == nil {
-		return true, nil
-	}
-	if errors.Is(err, exec.ErrNotFound) || errors.Is(err, fs.ErrNotExist) {
-		return false, nil
-	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		return false, fmt.Errorf("probe rovodev support via %q timed out", bin)
-	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		text := strings.ToLower(string(output))
-		if strings.Contains(text, "unknown command") ||
-			strings.Contains(text, "unknown subcommand") ||
-			strings.Contains(text, "unrecognized command") ||
-			strings.Contains(text, "no help topic for") {
-			return false, nil
-		}
-		return false, fmt.Errorf("probe rovodev support via %q: %w", bin, err)
-	}
-	return false, fmt.Errorf("probe rovodev support via %q: %w", bin, err)
-}
-
-// ResolveAgent resolves configured agent names to available agents. A single
-// explicit agent must be runnable; auto is probed into the first available
-// native agent; an ordered list is filtered to available agents and kept as fallbacks.
-// The lookPath function should behave like exec.LookPath.
-func (c *Config) ResolveAgent(ctx context.Context, lookPath func(string) (string, error)) error {
-	candidates := c.configuredAgents()
-	if len(candidates) <= 1 {
-		c.Agent = firstAgent(candidates)
-		c.Agents = copyAgents(candidates)
-		if c.Agent == types.AgentAuto {
-			name, err := c.resolveAutoAgent(ctx, lookPath)
-			if err != nil {
-				return err
-			}
-			c.Agent = name
-			c.Agents = []types.AgentName{name}
-			return nil
-		}
-		name, ok, probe, err := c.resolveConfiguredAgent(ctx, c.Agent, lookPath)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return noRunnableAgentError([]types.AgentName{c.Agent}, []string{probe})
-		}
-		c.Agent = name
-		c.Agents = []types.AgentName{name}
+// rejectLegacyGlobalKeys fails closed with actionable guidance when the global
+// config still carries a removed model-selection key, instead of silently
+// ignoring it or rewriting it to routing.
+func rejectLegacyGlobalKeys(data []byte) error {
+	var top map[string]yaml.Node
+	if err := yaml.Unmarshal(data, &top); err != nil {
+		// A malformed document is reported by the typed decode that follows.
 		return nil
 	}
-
-	resolved, err := c.resolveAgentList(ctx, candidates, lookPath)
-	if err != nil {
-		return err
-	}
-	c.Agent = resolved[0]
-	c.Agents = resolved
-	return nil
-}
-
-func (c *Config) configuredAgents() []types.AgentName {
-	if len(c.Agents) > 0 {
-		return copyAgents(c.Agents)
-	}
-	if c.Agent != "" {
-		return []types.AgentName{c.Agent}
-	}
-	return []types.AgentName{types.AgentAuto}
-}
-
-func (c *Config) resolveAutoAgent(ctx context.Context, lookPath func(string) (string, error)) (types.AgentName, error) {
-	probed := make([]string, 0, len(agentProbeOrder))
-	for _, name := range agentProbeOrder {
-		bin := string(name)
-		if b, ok := defaultBinary[name]; ok {
-			bin = b
-		}
-		if c.AgentPathOverride != nil {
-			if p, ok := c.AgentPathOverride[string(name)]; ok {
-				bin = p
-			}
-		}
-		probed = append(probed, bin)
-		resolvedBin, err := lookPath(bin)
-		if err == nil {
-			if name == types.AgentRovoDev {
-				ok, probeErr := probeRovoDevSupport(ctx, resolvedBin)
-				if probeErr != nil {
-					return "", probeErr
-				}
-				if !ok {
-					continue
-				}
-			}
-			return name, nil
-		} else if !errors.Is(err, exec.ErrNotFound) && !errors.Is(err, fs.ErrNotExist) {
-			return "", fmt.Errorf("resolve %s agent from %q: %w", name, bin, err)
-		}
-	}
-	return "", noRunnableAgentError([]types.AgentName{types.AgentAuto}, probed)
-}
-
-func (c *Config) resolveAgentList(ctx context.Context, candidates []types.AgentName, lookPath func(string) (string, error)) ([]types.AgentName, error) {
-	resolved := make([]types.AgentName, 0, len(candidates))
-	seen := map[types.AgentName]bool{}
-	probed := make([]string, 0, len(candidates))
-	for _, candidate := range candidates {
-		name, ok, probe, err := c.resolveConfiguredAgent(ctx, candidate, lookPath)
-		if probe != "" {
-			probed = append(probed, probe)
-		}
-		if err != nil {
-			return nil, err
-		}
-		if !ok || seen[name] {
-			continue
-		}
-		seen[name] = true
-		resolved = append(resolved, name)
-	}
-	if len(resolved) == 0 {
-		return nil, noRunnableAgentError(candidates, probed)
-	}
-	return resolved, nil
-}
-
-func noRunnableAgentError(configured []types.AgentName, probed []string) error {
-	names := make([]string, 0, len(configured))
-	for _, name := range configured {
-		names = append(names, string(name))
-	}
-	return fmt.Errorf(
-		"no runnable agent found for configured agent %s (looked for: %s); the gate cannot validate without an agent; install a supported native agent, choose an available agent in ~/.no-mistakes/config.yaml, or configure agent: acp:<target> with acpx installed",
-		strings.Join(names, ", "),
-		strings.Join(probed, ", "),
-	)
-}
-
-func (c *Config) resolveConfiguredAgent(ctx context.Context, name types.AgentName, lookPath func(string) (string, error)) (types.AgentName, bool, string, error) {
-	if name == types.AgentAuto {
-		resolved, err := c.resolveAutoAgent(ctx, lookPath)
-		if err != nil && strings.HasPrefix(err.Error(), "no runnable agent found") {
-			return "", false, "auto", nil
-		}
-		return resolved, err == nil, "auto", err
-	}
-	if _, ok := defaultBinary[name]; !ok && !isACPAgent(name) {
-		return "", false, string(name), fmt.Errorf("unknown agent %q; valid options: auto, claude, codex, rovodev, opencode, pi, copilot, acp:<target> (set 'agent' in ~/.no-mistakes/config.yaml)", name)
-	}
-	bin := c.AgentPathFor(name)
-	resolvedBin, err := lookPath(bin)
-	if err != nil {
-		if errors.Is(err, exec.ErrNotFound) || errors.Is(err, fs.ErrNotExist) {
-			return "", false, bin, nil
-		}
-		return "", false, bin, fmt.Errorf("resolve %s agent from %q: %w", name, bin, err)
-	}
-	if name == types.AgentRovoDev {
-		ok, probeErr := probeRovoDevSupport(ctx, resolvedBin)
-		if probeErr != nil {
-			return "", false, bin, probeErr
-		}
-		if !ok {
-			return "", false, bin, nil
-		}
-	}
-	return name, true, bin, nil
-}
-
-// AgentPath returns the binary path for the configured agent.
-// ACP agents use acpx_path if set, otherwise acpx.
-// Native agents use agent_path_override if set, otherwise the default binary name.
-func (c *Config) AgentPath() string {
-	return c.AgentPathFor(c.Agent)
-}
-
-func (c *Config) AgentPathFor(name types.AgentName) string {
-	if isACPAgent(name) {
-		if c.ACPXPath != "" {
-			return c.ACPXPath
-		}
-		return "acpx"
-	}
-	if c.AgentPathOverride != nil {
-		if p, ok := c.AgentPathOverride[string(name)]; ok {
-			return p
-		}
-	}
-	if b, ok := defaultBinary[name]; ok {
-		return b
-	}
-	return string(name)
-}
-
-// AgentArgs returns extra CLI args for the configured native agent, as declared in
-// agent_args_override. Returns nil when no override is set for this agent.
-func (c *Config) AgentArgs() []string {
-	return c.AgentArgsFor(c.Agent)
-}
-
-func (c *Config) AgentArgsFor(name types.AgentName) []string {
-	if c.AgentArgsOverride == nil {
-		return nil
-	}
-	return c.AgentArgsOverride[string(name)]
-}
-
-// agentArgsOverrideAgents lists native agent names accepted as keys in
-// agent_args_override.
-var agentArgsOverrideAgents = map[string]bool{
-	string(types.AgentClaude):   true,
-	string(types.AgentCodex):    true,
-	string(types.AgentRovoDev):  true,
-	string(types.AgentOpenCode): true,
-	string(types.AgentPi):       true,
-	string(types.AgentCopilot):  true,
-}
-
-// reservedAgentArgs lists flags that no-mistakes manages internally and that
-// users cannot override through agent_args_override. A flag is matched by its
-// bare form (e.g. "--color") as well as the "--color=value" form.
-var reservedAgentArgs = map[string]map[string]bool{
-	string(types.AgentClaude): {
-		"-p":              true,
-		"--print":         true,
-		"--verbose":       true,
-		"--output-format": true,
-		"--json-schema":   true,
-		"-r":              true,
-		"--resume":        true,
-		"--session-id":    true,
-		"-c":              true,
-		"--continue":      true,
-		"--fork-session":  true,
-	},
-	string(types.AgentCodex): {
-		"exec":         true,
-		"resume":       true,
-		"--resume":     true,
-		"--session":    true,
-		"--session-id": true,
-		"--thread":     true,
-		"--thread-id":  true,
-		"--last":       true,
-		"--json":       true,
-		"--color":      true,
-	},
-	string(types.AgentRovoDev): {
-		"rovodev":                 true,
-		"serve":                   true,
-		"--disable-session-token": true,
-	},
-	string(types.AgentOpenCode): {
-		"serve":        true,
-		"--hostname":   true,
-		"--port":       true,
-		"--print-logs": true,
-	},
-	string(types.AgentPi): {
-		"--mode":       true,
-		"--no-session": true,
-	},
-	string(types.AgentCopilot): {
-		"-p":              true,
-		"--prompt":        true,
-		"--output-format": true,
-		"--no-color":      true,
-	},
-}
-
-// validateAgentArgsOverride ensures each agent key is a known agent name and
-// that no reserved flag appears. Empty args are rejected to catch trivially
-// broken YAML.
-func validateAgentArgsOverride(override map[string][]string) error {
-	for name, args := range override {
-		if !agentArgsOverrideAgents[name] {
-			return fmt.Errorf("invalid agent name in agent_args_override: %q (valid: claude, codex, rovodev, opencode, pi, copilot)", name)
-		}
-		reserved := reservedAgentArgs[name]
-		for i, arg := range args {
-			if strings.TrimSpace(arg) == "" {
-				return fmt.Errorf("invalid agent_args_override.%s[%d]: empty arg", name, i)
-			}
-			base := arg
-			if idx := strings.Index(arg, "="); idx > 0 {
-				base = arg[:idx]
-			}
-			if reserved[base] {
-				return fmt.Errorf("invalid agent_args_override.%s[%d]: %q is managed by no-mistakes and cannot be overridden", name, i, arg)
-			}
+	for _, key := range legacyGlobalKeyOrder {
+		if _, present := top[key]; present {
+			return fmt.Errorf("global config key %q is no longer supported: %s", key, legacyGlobalKeys[key])
 		}
 	}
 	return nil
@@ -743,8 +310,6 @@ func EnsureDefaultGlobalConfig(path string) {
 // DefaultGlobalConfig returns the built-in global defaults.
 func DefaultGlobalConfig() *GlobalConfig {
 	return &GlobalConfig{
-		Agent:                types.AgentAuto,
-		Agents:               []types.AgentName{types.AgentAuto},
 		CITimeout:            DefaultCITimeout,
 		StepQuietWarning:     DefaultStepQuietWarning,
 		DaemonConnectTimeout: DefaultDaemonConnectTimeout,
@@ -766,6 +331,10 @@ func LoadGlobal(path string) (*GlobalConfig, error) {
 		return nil, fmt.Errorf("read global config: %w", err)
 	}
 
+	if err := rejectLegacyGlobalKeys(data); err != nil {
+		return nil, err
+	}
+
 	var raw globalConfigRaw
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
@@ -773,25 +342,6 @@ func LoadGlobal(path string) (*GlobalConfig, error) {
 		return nil, fmt.Errorf("parse global config: %w", err)
 	}
 
-	if len(raw.Agent) > 0 {
-		cfg.Agents = copyAgents(raw.Agent)
-		cfg.Agent = firstAgent(cfg.Agents)
-	}
-	if raw.ACPXPath != "" {
-		cfg.ACPXPath = raw.ACPXPath
-	}
-	if raw.ACPRegistryOverrides != nil {
-		cfg.ACPRegistryOverrides = raw.ACPRegistryOverrides
-	}
-	if raw.AgentPathOverride != nil {
-		cfg.AgentPathOverride = raw.AgentPathOverride
-	}
-	if raw.AgentArgsOverride != nil {
-		if err := validateAgentArgsOverride(raw.AgentArgsOverride); err != nil {
-			return nil, err
-		}
-		cfg.AgentArgsOverride = raw.AgentArgsOverride
-	}
 	timeoutValue := raw.CITimeout
 	if timeoutValue == "" {
 		timeoutValue = raw.BabysitTimeout
@@ -825,10 +375,6 @@ func LoadGlobal(path string) (*GlobalConfig, error) {
 	if raw.SessionReuse != nil {
 		cfg.SessionReuse = *raw.SessionReuse
 	}
-	if raw.AutoFix.CI == nil {
-		raw.AutoFix.CI = raw.AutoFix.Babysit
-	}
-	cfg.AutoFix = raw.AutoFix
 	cfg.Intent = raw.Intent
 	cfg.Test = raw.Test
 	if raw.Routing == nil && globalConfigHasKey(data, "routing") {
@@ -922,26 +468,31 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("parse repo config: %w", err)
 	}
-	if cfg.AutoFix.CI == nil {
-		cfg.AutoFix.CI = cfg.AutoFix.Babysit
-	}
-
 	return cfg, nil
 }
 
-// rejectRepoExecutionMechanics fails when a repository's .no-mistakes.yaml
-// tries to define model-selection execution mechanics. Repositories may only
-// map purposes to existing global profiles via 'routes'; runners, profiles,
-// and candidates are owned exclusively by global configuration.
+// rejectRepoExecutionMechanics fails when a repository's .no-mistakes.yaml tries
+// to select an agent or define model-selection execution mechanics.
+// Repositories may only map purposes to existing global profiles via 'routes';
+// runners, profiles, candidates, and agent selection are owned exclusively by
+// global configuration.
 func rejectRepoExecutionMechanics(data []byte) error {
 	var probe map[string]yaml.Node
 	if err := yaml.Unmarshal(data, &probe); err != nil {
 		// Malformed YAML is reported by the typed decode that follows.
 		return nil
 	}
-	for _, key := range []string{"routing", "runners", "profiles", "candidates"} {
+	guidance := map[string]string{
+		"agent":      "model selection is global-only through the routing contract; a repository cannot select an agent",
+		"auto_fix":   "per-step numeric auto-fix limits were removed; repair escalates through the routing cascade",
+		"candidates": "candidates are owned exclusively by global configuration",
+		"profiles":   "profiles are owned exclusively by global configuration",
+		"routing":    "repositories may only set 'routes' mapping purposes to existing global profiles",
+		"runners":    "runners are owned exclusively by global configuration",
+	}
+	for _, key := range []string{"agent", "auto_fix", "candidates", "profiles", "routing", "runners"} {
 		if _, ok := probe[key]; ok {
-			return fmt.Errorf("repo config may not define execution mechanics (%q); repositories may only set 'routes' mapping purposes to existing global profiles", key)
+			return fmt.Errorf("repo config may not define %q: %s", key, guidance[key])
 		}
 	}
 	return nil
@@ -950,26 +501,22 @@ func rejectRepoExecutionMechanics(data []byte) error {
 // EffectiveRepoConfig returns the repo config that should drive the pipeline
 // given a pushed-branch copy and the trusted default-branch copy.
 //
-// The code-executing selection fields — Commands (run verbatim via sh -c on
-// the daemon host) and Agent/Agents (select which processes launch with the
-// maintainer's credentials, including fallback lists and acp: targets) — are
-// taken only from the trusted copy when it is present, so a contributor's
-// pushed branch cannot inject shell or pick an agent. Document (the
-// documentation placement policy injected into the document gate prompt) is
-// trusted-only for the same reason: a pushed branch must not weaken the
-// documentation rules that gate itself. When allowRepoCommands is
+// The code-executing selection field Commands (run verbatim via sh -c on the
+// daemon host) is taken only from the trusted copy when it is present, so a
+// contributor's pushed branch cannot inject shell. Routes and Document (the
+// documentation placement policy injected into the document gate prompt) are
+// always trusted-only: a pushed branch cannot select its own model route or
+// weaken the documentation rules that gate itself. When allowRepoCommands is
 // true the maintainer has explicitly opted in (via allow_repo_commands on the
-// TRUSTED default-branch copy) to honoring the pushed branch's commands and
-// agent selection.
-// When there is no trusted copy and the maintainer has not opted in, both
-// fields are forced empty (Agent "" and nil Agents inherit the global agent;
-// Commands{} yields built-in defaults) rather than falling back to the pushed
-// branch — this blocks the supply-chain vector for repos that ship
+// TRUSTED default-branch copy) to honoring pushed-branch commands.
+// When there is no trusted copy and the maintainer has not opted in, Commands
+// is forced empty (yielding built-in defaults) rather than falling back to the
+// pushed branch - this blocks the supply-chain vector for repos that ship
 // .no-mistakes.yaml only on feature branches.
 //
-// Non-executing fields (ignore patterns, auto-fix, intent, test) are always
-// taken from the pushed copy, matching prior behavior, since they cannot
-// run arbitrary shell or select a process.
+// Routes come only from the trusted default-branch copy. Non-executing fields
+// (ignore patterns, intent, test) are always taken from the pushed copy since
+// they cannot run arbitrary shell or select a process.
 func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *RepoConfig {
 	if pushed == nil {
 		pushed = &RepoConfig{}
@@ -989,12 +536,8 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 	}
 	if trusted != nil {
 		effective.Commands = trusted.Commands
-		effective.Agent = trusted.Agent
-		effective.Agents = copyAgents(trusted.Agents)
 	} else {
 		effective.Commands = Commands{}
-		effective.Agent = ""
-		effective.Agents = nil
 	}
 	return &effective
 }
@@ -1070,69 +613,10 @@ func applyTestOverrides(dst *Test, src *TestRaw) {
 	}
 }
 
-// autoFixDefaults returns the default auto-fix configuration.
-func autoFixDefaults() AutoFix {
-	return AutoFix{
-		Lint:     3,
-		Test:     3,
-		Review:   0,
-		Document: 3,
-		CI:       3,
-		Rebase:   3,
-	}
-}
-
-// applyAutoFixOverrides applies non-nil raw values onto resolved defaults.
-func applyAutoFixOverrides(dst *AutoFix, src *AutoFixRaw) {
-	if src.Lint != nil {
-		dst.Lint = *src.Lint
-	}
-	if src.Test != nil {
-		dst.Test = *src.Test
-	}
-	if src.Review != nil {
-		dst.Review = *src.Review
-	}
-	if src.Document != nil {
-		dst.Document = *src.Document
-	}
-	if src.CI != nil {
-		dst.CI = *src.CI
-	}
-	if src.Rebase != nil {
-		dst.Rebase = *src.Rebase
-	}
-}
-
-// AutoFixLimit returns the max auto-fix attempts for a given step.
-// Steps without auto-fix support return 0.
-func (c *Config) AutoFixLimit(step types.StepName) int {
-	switch step {
-	case types.StepLint:
-		return c.AutoFix.Lint
-	case types.StepTest:
-		return c.AutoFix.Test
-	case types.StepReview:
-		return c.AutoFix.Review
-	case types.StepDocument:
-		return c.AutoFix.Document
-	case types.StepCI:
-		return c.AutoFix.CI
-	case types.StepRebase:
-		return c.AutoFix.Rebase
-	default:
-		return 0
-	}
-}
-
-// Merge combines global and per-repo config. Per-repo agent values, including
-// ordered fallback lists, override global agent values when non-empty. Commands
-// and ignore patterns come from repo config only.
+// Merge combines global and per-repo configuration. Commands, ignore patterns,
+// and route overrides come from repo config; model selection is the global
+// routing contract with any trusted repository route overrides applied.
 func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
-	af := autoFixDefaults()
-	applyAutoFixOverrides(&af, &global.AutoFix)
-	applyAutoFixOverrides(&af, &repo.AutoFix)
-
 	intent := intentDefaults()
 	applyIntentOverrides(&intent, &global.Intent)
 	applyIntentOverrides(&intent, &repo.Intent)
@@ -1142,30 +626,16 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 	applyTestOverrides(&test, &repo.Test)
 
 	cfg := &Config{
-		Agent:                global.Agent,
-		Agents:               copyAgents(global.Agents),
-		ACPXPath:             global.ACPXPath,
-		ACPRegistryOverrides: global.ACPRegistryOverrides,
-		AgentPathOverride:    global.AgentPathOverride,
-		AgentArgsOverride:    global.AgentArgsOverride,
 		CITimeout:            global.CITimeout,
 		StepQuietWarning:     global.StepQuietWarning,
+		DaemonConnectTimeout: global.DaemonConnectTimeout,
 		LogLevel:             global.LogLevel,
 		SessionReuse:         global.SessionReuse,
 		Commands:             repo.Commands,
 		IgnorePatterns:       repo.IgnorePatterns,
-		AutoFix:              af,
 		Intent:               intent,
 		Test:                 test,
 		Document:             Document{Instructions: strings.TrimSpace(repo.Document.Instructions)},
-	}
-
-	if repo.Agent != "" {
-		cfg.Agent = repo.Agent
-		cfg.Agents = copyAgents(repo.Agents)
-		if len(cfg.Agents) == 0 {
-			cfg.Agents = []types.AgentName{repo.Agent}
-		}
 	}
 	routing := global.Routing
 	if routing.IsZero() {

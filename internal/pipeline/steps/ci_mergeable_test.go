@@ -261,11 +261,12 @@ func TestCIStep_TimeoutWithKnownFailureAndPendingCheck_NeedsApproval(t *testing.
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 2 * time.Second
-	sctx.Config.AutoFix = config.AutoFix{CI: 3}
 
 	started := time.Unix(1700000000, 0)
 	now := started
+	n := 3
 	step := &CIStep{
+		fixBudget: &n,
 		now: func() time.Time {
 			return now
 		},
@@ -403,7 +404,6 @@ func TestCIStep_WaitsForPendingChecksBeforeFixing(t *testing.T) {
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Config.CITimeout = 30 * time.Second
-	sctx.Config.AutoFix = config.AutoFix{CI: 3}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -413,7 +413,9 @@ func TestCIStep_WaitsForPendingChecksBeforeFixing(t *testing.T) {
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
 	pollCount := 0
+	n := 3
 	step := &CIStep{
+		fixBudget: &n,
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
 			if pollCount >= 3 {

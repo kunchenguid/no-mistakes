@@ -74,7 +74,6 @@ type recoveredRunPlan struct {
 	workDir string
 	gateDir string
 	cfg     *config.Config
-	agent   agent.Agent
 	steps   []pipeline.Step
 }
 
@@ -140,13 +139,11 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 	if err != nil {
 		return nil, err
 	}
-	ag, err := newPipelineAgent(ctx, cfg)
-	if err != nil {
+	if err := cfg.ValidateRunnable(exec.LookPath); err != nil {
 		return nil, err
 	}
 	if cfg.SessionReuse {
-		if err := validateRecoveredSessionProviders(m.db, run.ID, ag); err != nil {
-			_ = ag.Close()
+		if err := validateRecoveredSessionProviders(m.db, run.ID, cfg.Routing); err != nil {
 			return nil, err
 		}
 	}
@@ -156,12 +153,11 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 		workDir: workDir,
 		gateDir: gateDir,
 		cfg:     cfg,
-		agent:   ag,
 		steps:   execSteps,
 	}, nil
 }
 
-func validateRecoveredSessionProviders(database *db.DB, runID string, ag agent.Agent) error {
+func validateRecoveredSessionProviders(database *db.DB, runID string, routing config.RoutingConfig) error {
 	sessions, err := database.GetRunAgentSessions(runID)
 	if err != nil {
 		return fmt.Errorf("get run sessions: %w", err)
@@ -173,8 +169,29 @@ func validateRecoveredSessionProviders(database *db.DB, runID string, ag agent.A
 		if session.Agent == "" || session.SessionID == "" {
 			return fmt.Errorf("recovered run has incomplete session metadata")
 		}
-		if !agent.SupportsSessionProvider(ag, session.Agent) {
-			return fmt.Errorf("session provider %q is no longer configured", session.Agent)
+		purpose := types.PurposeInitialReview
+		if session.Role == string(pipeline.SessionRoleFixer) {
+			purpose = types.PurposeStructuredFindingRepair
+		}
+		profiles, err := routing.ResolveRoute(purpose)
+		if err != nil {
+			return fmt.Errorf("resolve recovered %s session route: %w", session.Role, err)
+		}
+		providerConfigured := false
+		for _, profile := range profiles {
+			for _, candidate := range profile.Candidates {
+				name, nameErr := candidate.Runner.AgentName()
+				if nameErr == nil && string(name) == session.Agent {
+					providerConfigured = true
+					break
+				}
+			}
+			if providerConfigured {
+				break
+			}
+		}
+		if !providerConfigured {
+			return fmt.Errorf("session provider %q is no longer configured for %s", session.Agent, session.Role)
 		}
 	}
 	return nil
@@ -206,32 +223,6 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 	return config.Merge(globalCfg, config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands)), nil
 }
 
-func newPipelineAgent(ctx context.Context, cfg *config.Config) (agent.Agent, error) {
-	if steps.IsDemoMode() {
-		return agent.NewNoop(), nil
-	}
-	if err := cfg.ResolveAgent(ctx, exec.LookPath); err != nil {
-		return nil, err
-	}
-	agents := cfg.Agents
-	if len(agents) == 0 {
-		agents = []types.AgentName{cfg.Agent}
-	}
-	created := make([]agent.Agent, 0, len(agents))
-	for _, name := range agents {
-		next, err := agent.NewWithOptions(name, cfg.AgentPathFor(name), cfg.AgentArgsFor(name), agent.Options{
-			ACPRegistryOverrides: cfg.ACPRegistryOverrides,
-		})
-		if err != nil {
-			for _, existing := range created {
-				_ = existing.Close()
-			}
-			return nil, fmt.Errorf("create agent %s: %w", name, err)
-		}
-		created = append(created, agent.WithSteering(next))
-	}
-	return agent.NewFallback(created), nil
-}
 
 func resolveGitPath(workDir, value string) string {
 	value = strings.TrimSpace(value)
@@ -261,11 +252,10 @@ func (m *RunManager) resumeRecoveredRuns(plans []recoveredRunPlan) {
 
 func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 	if m.shuttingDown.Load() {
-		_ = plan.agent.Close()
 		return
 	}
 	runCtx, cancel := context.WithCancelCause(context.Background())
-	executor := pipeline.NewExecutor(m.db, m.paths, plan.cfg, plan.agent, plan.steps, m.broadcast)
+	executor := pipeline.NewExecutor(m.db, m.paths, plan.cfg, nil, plan.steps, m.broadcast)
 	done := make(chan struct{})
 	m.mu.Lock()
 	m.executors[plan.run.ID] = executor
@@ -288,7 +278,6 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 				}
 			}
 			cancel(nil)
-			_ = plan.agent.Close()
 			m.closeSubscribers(plan.run.ID)
 			if err := git.WorktreeRemove(context.Background(), plan.gateDir, plan.workDir); err != nil {
 				slog.Warn("failed to remove recovered worktree", "path", plan.workDir, "error", err)
@@ -314,7 +303,6 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 		fields := telemetry.Fields{
 			"action":      "finished",
 			"trigger":     "recovery",
-			"agent":       string(plan.cfg.Agent),
 			"branch_role": telemetryBranchRole(plan.run.Branch, plan.repo.DefaultBranch),
 			"status":      string(plan.run.Status),
 			"duration_ms": time.Since(startedAt).Milliseconds(),
@@ -329,17 +317,6 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 	}()
 }
 
-func agentListsEqual(a, b []types.AgentName) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
 
 // Subscribe registers a channel to receive events for a run.
 // Returns the channel and an unsubscribe function.
@@ -601,14 +578,14 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	// than the origin/<defaultBranch> remote-tracking ref) is what makes a
 	// fetch failure fail closed: if the fetch errors or the ref does not
 	// resolve, trustedSHA stays empty, loadTrustedRepoConfig returns nil, and
-	// EffectiveRepoConfig drops the pushed branch's commands/agent. Without
+	// EffectiveRepoConfig drops the pushed branch's commands. Without
 	// the resolve, a stale origin/<defaultBranch> left in the shared bare
 	// repo by a previous run could serve a trusted copy that the live default
 	// branch has already removed — silently running stale shell.
 	var trustedSHA string
 	if repo.DefaultBranch != "" {
 		if err := git.FetchRemoteBranch(ctx, wtDir, "origin", repo.DefaultBranch); err != nil {
-			slog.Warn("failed to fetch default branch into worktree; trusted config disabled (commands/agent from pushed branch will be dropped)", "run_id", run.ID, "branch", repo.DefaultBranch, "error", err)
+			slog.Warn("failed to fetch default branch into worktree; trusted config disabled (commands from pushed branch will be dropped)", "run_id", run.ID, "branch", repo.DefaultBranch, "error", err)
 		} else if sha, err := git.ResolveRef(ctx, wtDir, "refs/remotes/origin/"+repo.DefaultBranch); err != nil {
 			slog.Warn("failed to resolve fetched default-branch ref; trusted config disabled", "run_id", run.ID, "branch", repo.DefaultBranch, "error", err)
 		} else {
@@ -639,75 +616,49 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 		trackStartFailure("load_repo_config")
 		return "", fmt.Errorf("load repo config: %w", err)
 	}
-	// SECURITY: load the code-executing selection fields (commands.* and
-	// agent) from the trusted default-branch copy of .no-mistakes.yaml rather
-	// than the pushed SHA. The worktree is checked out at headSHA (the
-	// contributor's branch), so reading repoCfg above would honor a
-	// contributor's commands/agent and let any pushed SHA run arbitrary shell
-	// (sh -c) or pick the launched agent (incl. acp: targets) on the daemon
-	// host with the maintainer's env (GH_TOKEN, SSH agent, ...).
-	// EffectiveRepoConfig replaces commands + agent with the trusted
-	// default-branch values unless the maintainer has explicitly opted in.
+	// SECURITY: load code-executing commands.* from the trusted default-branch
+	// copy of .no-mistakes.yaml rather than the pushed SHA. The worktree is
+	// checked out at headSHA (the contributor's branch), so reading repoCfg
+	// above would let any pushed SHA run arbitrary shell (sh -c) on the daemon
+	// host with the maintainer's environment (GH_TOKEN, SSH agent, ...).
+	// EffectiveRepoConfig replaces commands with the trusted default-branch
+	// values unless the maintainer has explicitly opted in.
 	//
 	// allow_repo_commands is itself read ONLY from the trusted copy: a
 	// contributor cannot self-enable it from the pushed branch. With no
-	// trusted copy (fetch failed, no default branch, or no file on it) the
-	// opt-in is false and commands/agent are forced empty — fail closed.
+	// trusted copy (fetch failed, no default branch, or no file on it), the
+	// opt-in is false and commands are forced empty — fail closed.
 	trustedRepoCfg := loadTrustedRepoConfig(ctx, wtDir, trustedSHA, run.ID)
 	allowRepoCommands := trustedRepoCfg != nil && trustedRepoCfg.AllowRepoCommands
 	effectiveRepoCfg := config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands)
 	if allowRepoCommands {
-		slog.Warn("allow_repo_commands is enabled on the default branch: honoring commands/agent from pushed branch", "run_id", run.ID, "branch", branch)
-	} else if repoCfg.Commands != effectiveRepoCfg.Commands || repoCfg.Agent != effectiveRepoCfg.Agent || !agentListsEqual(repoCfg.Agents, effectiveRepoCfg.Agents) {
+		slog.Warn("allow_repo_commands is enabled on the default branch: honoring commands from pushed branch", "run_id", run.ID, "branch", branch)
+	} else if repoCfg.Commands != effectiveRepoCfg.Commands {
 		// Surface the silent override so a maintainer who shipped a commands.*
-		// or agent change on a feature branch understands why it did not run.
-		// This is not an error: it is the secure default in action.
-		slog.Info("repo commands/agent loaded from default branch, not pushed branch", "run_id", run.ID, "branch", branch, "default_branch", repo.DefaultBranch)
+		// change on a feature branch understands why it did not run. This is
+		// not an error: it is the secure default in action.
+		slog.Info("repo commands loaded from default branch, not pushed branch", "run_id", run.ID, "branch", branch, "default_branch", repo.DefaultBranch)
 	}
 	cfg := config.Merge(globalCfg, effectiveRepoCfg)
-	if err := cfg.ValidateRouting(); err != nil {
+	if err := cfg.ValidateRunnable(exec.LookPath); err != nil {
 		m.db.UpdateRunError(run.ID, err.Error())
 		trackStartFailure("invalid_routing")
 		return "", fmt.Errorf("invalid routing config: %w", err)
 	}
 
-	// Create agent. In demo mode, skip resolution and use a no-op agent.
+	// Model selection is the routing contract: the pipeline's routing invoker
+	// builds fresh, steered native Candidates per invocation. In demo mode,
+	// route every candidate to a no-op agent instead.
 	var ag agent.Agent
 	if steps.IsDemoMode() {
 		ag = agent.NewNoop()
-	} else {
-		if err := cfg.ResolveAgent(ctx, exec.LookPath); err != nil {
-			m.db.UpdateRunError(run.ID, err.Error())
-			trackStartFailure("resolve_agent")
-			return "", err
-		}
-		agents := cfg.Agents
-		if len(agents) == 0 {
-			agents = []types.AgentName{cfg.Agent}
-		}
-		created := make([]agent.Agent, 0, len(agents))
-		for _, name := range agents {
-			next, agErr := agent.NewWithOptions(name, cfg.AgentPathFor(name), cfg.AgentArgsFor(name), agent.Options{
-				ACPRegistryOverrides: cfg.ACPRegistryOverrides,
-			})
-			if agErr != nil {
-				m.db.UpdateRunError(run.ID, fmt.Sprintf("create agent %s: %s", name, agErr))
-				trackStartFailure("create_agent")
-				return "", fmt.Errorf("create agent %s: %w", name, agErr)
-			}
-			// Steer every pipeline agent to keep writes inside the worktree and
-			// avoid mutating system state (e.g. brew/Homebrew touching
-			// /Applications), which triggers macOS App Management prompts.
-			created = append(created, agent.WithSteering(next))
-		}
-		ag = agent.NewFallback(created)
+
 	}
 
 	execSteps := m.steps()
 	telemetry.Track("run", telemetry.Fields{
 		"action":      "started",
 		"trigger":     trigger,
-		"agent":       string(cfg.Agent),
 		"branch_role": branchRole,
 		"step_count":  len(execSteps),
 		"demo_mode":   steps.IsDemoMode(),
@@ -744,7 +695,6 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 				fields := telemetry.Fields{
 					"action":      "finished",
 					"trigger":     trigger,
-					"agent":       string(cfg.Agent),
 					"branch_role": branchRole,
 					"status":      string(run.Status),
 					"duration_ms": time.Since(startedAt).Milliseconds(),
@@ -761,7 +711,9 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 				}
 			}
 			cancel(nil)
-			ag.Close()
+			if ag != nil {
+				ag.Close()
+			}
 			// Close subscriber channels for this run.
 			m.closeSubscribers(run.ID)
 			// Clean up worktree.
@@ -780,7 +732,6 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 			fields := telemetry.Fields{
 				"action":      "finished",
 				"trigger":     trigger,
-				"agent":       string(cfg.Agent),
 				"branch_role": branchRole,
 				"status":      string(run.Status),
 				"duration_ms": time.Since(startedAt).Milliseconds(),
@@ -797,7 +748,6 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 			fields := telemetry.Fields{
 				"action":      "finished",
 				"trigger":     trigger,
-				"agent":       string(cfg.Agent),
 				"branch_role": branchRole,
 				"status":      string(run.Status),
 				"duration_ms": time.Since(startedAt).Milliseconds(),

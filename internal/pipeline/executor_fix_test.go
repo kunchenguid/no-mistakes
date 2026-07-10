@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -734,57 +733,6 @@ func TestExecutor_UserFixRecordsSelectedFindingIDsAndFixSummary(t *testing.T) {
 
 	if rounds[1].FixSummary == nil || *rounds[1].FixSummary != "fix the warning" {
 		t.Fatalf("expected fix_summary %q on round 2, got %v", "fix the warning", rounds[1].FixSummary)
-	}
-}
-
-func TestExecutor_AutoFixRecordsSelectedFindingIDs(t *testing.T) {
-	database, p, run, repo := setupTest(t)
-	cfg := &config.Config{AutoFix: config.AutoFix{Review: 1}}
-	workDir := t.TempDir()
-
-	callCount := 0
-	step := &adaptiveCallStep{
-		name: types.StepReview,
-		fn: func(sctx *StepContext) (*StepOutcome, error) {
-			callCount++
-			if callCount == 1 {
-				return &StepOutcome{
-					AutoFixable: true,
-					Findings:    `{"findings":[{"id":"review-1","severity":"warning","description":"a","action":"auto-fix"},{"id":"review-2","severity":"warning","description":"b","action":"ask-user"}],"summary":"2"}`,
-				}, nil
-			}
-			return &StepOutcome{FixSummary: "apply cheap fix"}, nil
-		},
-	}
-
-	exec := NewExecutor(database, p, cfg, nil, []Step{step}, nil)
-	if err := exec.Execute(context.Background(), run, repo, workDir); err != nil {
-		t.Fatalf("execute: %v", err)
-	}
-
-	dbSteps, err := database.GetStepsByRun(run.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rounds, err := database.GetRoundsByStep(dbSteps[0].ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(rounds) != 2 {
-		t.Fatalf("expected 2 rounds, got %d", len(rounds))
-	}
-	if rounds[0].SelectedFindingIDs == nil {
-		t.Fatal("expected selected_finding_ids set on round 1 after auto-fix")
-	}
-	var ids []string
-	if err := json.Unmarshal([]byte(*rounds[0].SelectedFindingIDs), &ids); err != nil {
-		t.Fatalf("parse selected_finding_ids: %v", err)
-	}
-	if len(ids) != 1 || ids[0] != "review-1" {
-		t.Fatalf("expected only auto-fixable id to be recorded, got %v", ids)
-	}
-	if rounds[1].FixSummary == nil || *rounds[1].FixSummary != "apply cheap fix" {
-		t.Fatalf("expected fix_summary persisted on round 2, got %v", rounds[1].FixSummary)
 	}
 }
 

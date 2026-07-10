@@ -93,8 +93,21 @@ func (ri *routingInvoker) invokeRouted(ctx context.Context, request agent.Invoca
 	// never raced). Skip any whose provider circuit is already open, fail over
 	// to the backup family on a classified operational failure, and fail closed
 	// when every Candidate is unavailable rather than weakening the Profile.
+	resumeProvider := ""
+	if request.Payload.Session != nil && request.Payload.Session.ID != "" {
+		resumeProvider = request.Payload.Session.Agent
+	}
+	providerCandidate := resumeProvider == ""
 	var operationalFailure error
 	for index, candidate := range profile.Candidates {
+		candidateAgent, candidateErr := candidate.Runner.AgentName()
+		if candidateErr != nil {
+			return nil, candidateErr
+		}
+		if resumeProvider != "" && string(candidateAgent) != resumeProvider {
+			continue
+		}
+		providerCandidate = true
 		domain, derr := candidate.Runner.FailureDomain()
 		if derr != nil {
 			return nil, derr
@@ -122,6 +135,9 @@ func (ri *routingInvoker) invokeRouted(ctx context.Context, request agent.Invoca
 			continue
 		}
 		return result, runErr
+	}
+	if !providerCandidate {
+		return nil, fmt.Errorf("session provider %q is not configured in profile %q", resumeProvider, profile.Name)
 	}
 	if operationalFailure != nil {
 		return nil, fmt.Errorf("profile %q exhausted every candidate after operational failures: %w", profile.Name, operationalFailure)
@@ -199,6 +215,9 @@ func (ri *routingInvoker) launchCandidate(ctx context.Context, request agent.Inv
 
 	startedAt := time.Now()
 	result, runErr := nativeAgent.Run(ctx, payload)
+	if result != nil {
+		result.Provider = string(agentName)
+	}
 
 	terminal := types.InvocationAttemptTerminal{
 		Outcome:    routedOutcome(ctx, runErr),

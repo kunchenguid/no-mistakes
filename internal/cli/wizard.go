@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sync"
 	"time"
@@ -22,16 +21,11 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/wizard"
 )
 
-var resolveWizardAgent = func(ctx context.Context, cfg *config.Config) error {
-	return cfg.ResolveAgent(ctx, exec.LookPath)
-}
-
 // waitForRunFunc blocks until the daemon-created run for branch is visible.
 // Wired by attach.go; passed into the wizard so the wait happens inside the
 // alt screen and the handoff to the attach TUI is seamless.
 type waitForRunFunc func(ctx context.Context, branch string) error
 
-var newWizardAgent = agent.NewWithOptions
 var wizardRun = wizard.Run
 var wizardRunAuto = wizard.RunAuto
 var runWizardAutoVisible = func(ctx context.Context, p *paths.Paths, state *repoState, skipSteps []types.StepName, wait waitForRunFunc) (wizard.Result, error) {
@@ -42,15 +36,11 @@ var runWizardAuto = func(ctx context.Context, p *paths.Paths, state *repoState, 
 }
 
 type wizardAgentSuggester struct {
-	cfg            *config.Config
 	workDir        string
-	resolve        func(context.Context, *config.Config) error
-	new            func(types.AgentName, string, []string, agent.Options) (agent.Agent, error)
 	routing        config.RoutingConfig
 	routingFactory func(types.AgentName, string) (agent.Agent, error)
 
 	once            sync.Once
-	ag              agent.Agent
 	journal         agent.InvocationJournal
 	invocationScope types.InvocationScope
 	invocationAgent agent.Agent
@@ -63,14 +53,8 @@ type wizardAgentSuggester struct {
 	cachedCommit string
 }
 
-func newWizardAgentSuggester(cfg *config.Config, workDir string, resolve func(context.Context, *config.Config) error, new func(types.AgentName, string, []string, agent.Options) (agent.Agent, error)) *wizardAgentSuggester {
-	if resolve == nil {
-		resolve = resolveWizardAgent
-	}
-	if new == nil {
-		new = newWizardAgent
-	}
-	return &wizardAgentSuggester{cfg: cfg, workDir: workDir, resolve: resolve, new: new}
+func newWizardAgentSuggester(workDir string) *wizardAgentSuggester {
+	return &wizardAgentSuggester{workDir: workDir}
 }
 
 func (s *wizardAgentSuggester) setInvocationContext(journal agent.InvocationJournal, scope types.InvocationScope, routing config.RoutingConfig) {
@@ -79,44 +63,22 @@ func (s *wizardAgentSuggester) setInvocationContext(journal agent.InvocationJour
 	s.routing = routing
 }
 
-func (s *wizardAgentSuggester) ensure(ctx context.Context) error {
+func (s *wizardAgentSuggester) ensure(_ context.Context) error {
 	s.once.Do(func() {
-		if s.journal != nil && !s.routing.IsZero() {
-			// Routed standalone path: the trusted routing policy selects and
-			// launches fresh Candidates under this Wizard's own session
-			// circuits. No feature-branch agent is resolved or built, so a
-			// missing or misconfigured checked-out agent never blocks
-			// suggestions. Branch/commit suggestion is always routed, so the
-			// guard legacy delegate never runs.
-			invoker := pipeline.NewUtilityRoutingInvoker(s.routing, s.journal, s.routingFactory)
-			s.invocationAgent = agent.BindInvocation(
-				invoker,
-				types.PurposeBranchCommitSuggestion,
-				s.invocationScope,
-			)
+		// Model selection is the routing contract: the trusted routing policy
+		// selects and launches fresh Candidates under this Wizard's own session
+		// circuits. There is no feature-branch agent to resolve or build, so a
+		// missing or misconfigured checked-out agent never blocks suggestions.
+		if s.journal == nil || s.routing.IsZero() {
+			s.err = fmt.Errorf("branch/commit suggestions require a routing contract")
 			return
 		}
-		if err := s.resolve(ctx, s.cfg); err != nil {
-			s.err = fmt.Errorf("resolve agent: %w", err)
-			return
-		}
-		ag, err := s.new(s.cfg.Agent, s.cfg.AgentPath(), s.cfg.AgentArgs(), agent.Options{
-			ACPRegistryOverrides: s.cfg.ACPRegistryOverrides,
-		})
-		if err != nil {
-			s.err = fmt.Errorf("create agent: %w", err)
-			return
-		}
-		s.ag = ag
-		if s.journal != nil {
-			s.invocationAgent = agent.BindInvocation(
-				agent.NewLegacyInvoker(ag, s.journal),
-				types.PurposeBranchCommitSuggestion,
-				s.invocationScope,
-			)
-		} else {
-			s.invocationAgent = ag
-		}
+		invoker := pipeline.NewUtilityRoutingInvoker(s.routing, s.journal, s.routingFactory)
+		s.invocationAgent = agent.BindInvocation(
+			invoker,
+			types.PurposeBranchCommitSuggestion,
+			s.invocationScope,
+		)
 	})
 	return s.err
 }
@@ -158,10 +120,7 @@ func (s *wizardAgentSuggester) suggestCommit(ctx context.Context) (string, error
 }
 
 func (s *wizardAgentSuggester) Close() error {
-	if s.ag == nil {
-		return nil
-	}
-	return s.ag.Close()
+	return nil
 }
 
 // repoState captures the git state the wizard routing and the wizard itself
@@ -240,11 +199,12 @@ func runWizardWithMode(ctx context.Context, p *paths.Paths, state *repoState, sk
 	if err != nil {
 		return wizard.Result{}, fmt.Errorf("load global config: %w", err)
 	}
-	repoCfg, err := config.LoadRepo(workDir)
-	if err != nil {
+	// Load the repo config for validation (this rejects legacy repo keys); the
+	// wizard routes suggestions through the trusted global routing policy, so it
+	// needs no merged per-repo settings.
+	if _, err := config.LoadRepo(workDir); err != nil {
 		return wizard.Result{}, fmt.Errorf("load repo config: %w", err)
 	}
-	cfg := config.Merge(globalCfg, repoCfg)
 	// Route agent-server stdout/stderr to a log file so lines don't corrupt
 	// the wizard's alt-screen display. Any opencode/rovodev server started
 	// during the wizard inherits this sink.
@@ -272,7 +232,7 @@ func runWizardWithMode(ctx context.Context, p *paths.Paths, state *repoState, sk
 	if trustedRouting.IsZero() {
 		trustedRouting = config.DefaultRoutingConfig()
 	}
-	suggester := newWizardAgentSuggester(cfg, workDir, nil, nil)
+	suggester := newWizardAgentSuggester(workDir)
 	suggester.setInvocationContext(journalDB, types.InvocationScope{
 		Kind:           types.InvocationScopeUtility,
 		UtilityScopeID: utilityScope.ID,

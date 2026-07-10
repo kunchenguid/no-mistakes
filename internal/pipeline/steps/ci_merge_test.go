@@ -28,12 +28,13 @@ func TestCIStep_MergeConflictDetected_ReturnsNeedsApproval(t *testing.T) {
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 5 * time.Second
-	sctx.Config.AutoFix = config.AutoFix{CI: 0} // disabled
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
+	n := 0
 	step := &CIStep{
+		fixBudget: &n,
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			return nil
 		},
@@ -107,14 +108,15 @@ func TestCIStep_MergeConflictAndCIFailure_FixPromptIncludesBoth(t *testing.T) {
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Config.CITimeout = 30 * time.Second
-	sctx.Config.AutoFix = config.AutoFix{CI: 3}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	sctx.Ctx = ctx
 	sctx.Log = func(s string) {}
 
+	n := 3
 	step := &CIStep{
+		fixBudget: &n,
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			cancel()
 			return ctx.Err()
@@ -180,7 +182,6 @@ func TestCIStep_MergeConflictOnly_AutoFix(t *testing.T) {
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Config.CITimeout = 30 * time.Second
-	sctx.Config.AutoFix = config.AutoFix{CI: 3}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -189,7 +190,9 @@ func TestCIStep_MergeConflictOnly_AutoFix(t *testing.T) {
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
+	n := 3
 	step := &CIStep{
+		fixBudget: &n,
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			cancel()
 			return ctx.Err()
@@ -281,9 +284,9 @@ func TestCIStep_MergeConflictAutoFixPromptUsesBaseBranchTip(t *testing.T) {
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Repo.DefaultBranch = "main"
 	sctx.Config.CITimeout = 30 * time.Second
-	sctx.Config.AutoFix = config.AutoFix{CI: 1}
 
-	step := &CIStep{}
+	n := 1
+	step := &CIStep{fixBudget: &n}
 	host, skip := buildHost(sctx, scm.ProviderGitHub)
 	if host == nil {
 		t.Fatalf("buildHost returned nil: %s", skip)

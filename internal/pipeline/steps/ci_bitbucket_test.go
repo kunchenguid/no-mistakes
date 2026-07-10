@@ -111,9 +111,9 @@ func TestCIStep_BitbucketFailureNeedsApproval(t *testing.T) {
 	sctx.Run.PRURL = &prURL
 	sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
 	sctx.Config.CITimeout = 30 * time.Second
-	sctx.Config.AutoFix = config.AutoFix{CI: 0}
 
-	step := &CIStep{}
+	n := 0
+	step := &CIStep{fixBudget: &n}
 	outcome, err := step.Execute(sctx)
 	if err != nil {
 		t.Fatal(err)
@@ -209,13 +209,14 @@ func TestCIStep_BitbucketAutoFixIncludesPipelineLogs(t *testing.T) {
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Config.CITimeout = 30 * time.Second
-	sctx.Config.AutoFix = config.AutoFix{CI: 1}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	sctx.Ctx = ctx
 
+	n := 1
 	step := &CIStep{
+		fixBudget: &n,
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			cancel()
 			return ctx.Err()
@@ -290,13 +291,14 @@ func TestCIStep_BitbucketAutoFixUsesLivePRHeadSHAForLogs(t *testing.T) {
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Config.CITimeout = 30 * time.Second
-	sctx.Config.AutoFix = config.AutoFix{CI: 1}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	sctx.Ctx = ctx
 
+	n := 1
 	step := &CIStep{
+		fixBudget: &n,
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			cancel()
 			return ctx.Err()
@@ -376,13 +378,14 @@ func TestCIStep_BitbucketAutoFixUsesMatchingPipelineLogs(t *testing.T) {
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Config.CITimeout = 30 * time.Second
-	sctx.Config.AutoFix = config.AutoFix{CI: 1}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	sctx.Ctx = ctx
 
+	n := 1
 	step := &CIStep{
+		fixBudget: &n,
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			cancel()
 			return ctx.Err()

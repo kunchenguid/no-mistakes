@@ -59,9 +59,6 @@ func TestPushReceivedTracksRunTelemetry(t *testing.T) {
 	if got := started.fields["trigger"]; got != "push" {
 		t.Fatalf("started trigger = %v, want push", got)
 	}
-	if got := started.fields["agent"]; got != string(types.AgentClaude) {
-		t.Fatalf("started agent = %v, want %q", got, types.AgentClaude)
-	}
 	if got := started.fields["branch_role"]; got != "default" {
 		t.Fatalf("started branch_role = %v, want default", got)
 	}
@@ -372,10 +369,8 @@ func TestPushReceivedReturnsBeforeIntentSummarization(t *testing.T) {
 		return []pipeline.Step{step}
 	})
 
-	slowClaude := writeSlowMockClaude(t, t.TempDir())
-	if err := os.WriteFile(p.ConfigFile(), []byte("agent: claude\nagent_path_override:\n  claude: "+slowClaude+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	// Intent summarization runs asynchronously; the daemon's routing-only default
+	// config applies. Push must return without blocking on it.
 
 	repo, headSHA := setupTestGitRepo(t, p, d, "intent-start-run-repo")
 	writeManagerClaudeFixture(t, fakeHome, repo.WorkingPath, []string{
@@ -501,10 +496,6 @@ func TestPushReceivedDemoModeBypassesAgentResolution(t *testing.T) {
 	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
 		return []pipeline.Step{step}
 	})
-
-	if err := os.WriteFile(p.ConfigFile(), []byte("agent: claude\nagent_path_override:\n  claude: /path/that/does/not/exist\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 
 	_, headSHA := setupTestGitRepo(t, p, d, "testrepo-demo")
 

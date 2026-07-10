@@ -2,9 +2,7 @@ package agent
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -43,73 +41,6 @@ type InvocationJournal interface {
 // Invoker validates, records, and executes semantic invocation requests.
 type Invoker interface {
 	Invoke(ctx context.Context, request InvocationRequest) (*Result, error)
-}
-
-type legacyInvoker struct {
-	agent   Agent
-	journal InvocationJournal
-}
-
-// NewLegacyInvoker bridges semantic requests to the existing single-agent
-// execution path without changing runner, fallback, retry, or model behavior.
-func NewLegacyInvoker(agent Agent, journal InvocationJournal) Invoker {
-	return &legacyInvoker{agent: agent, journal: journal}
-}
-
-func (invoker *legacyInvoker) Invoke(ctx context.Context, request InvocationRequest) (*Result, error) {
-	if err := ValidateInvocationRequest(request); err != nil {
-		return nil, err
-	}
-	if invoker == nil || invoker.agent == nil {
-		return nil, fmt.Errorf("invocation agent is nil")
-	}
-	if invoker.journal == nil {
-		return nil, fmt.Errorf("invocation journal is nil")
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	definition, _ := types.PurposeDefinitionFor(request.Purpose)
-	attemptID, err := invoker.journal.StartInvocationAttempt(types.InvocationAttemptStart{
-		Purpose:      request.Purpose,
-		Role:         definition.Role,
-		Scope:        request.Scope,
-		CandidateKey: types.LegacyCandidateKey,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("record invocation start: %w", err)
-	}
-
-	startedAt := time.Now()
-	result, runErr := invoker.agent.Run(ctx, request.Payload)
-	terminal := types.InvocationAttemptTerminal{
-		Outcome:    invocationOutcome(ctx, runErr),
-		DurationMS: time.Since(startedAt).Milliseconds(),
-	}
-	if result != nil {
-		terminal.InputTokens = int64(result.Usage.InputTokens)
-		terminal.OutputTokens = int64(result.Usage.OutputTokens)
-		terminal.CacheReadTokens = int64(result.Usage.CacheReadTokens)
-		terminal.CacheCreationTokens = int64(result.Usage.CacheCreationTokens)
-	}
-	if journalErr := invoker.journal.FinishInvocationAttempt(attemptID, terminal); journalErr != nil {
-		journalErr = fmt.Errorf("record invocation terminal: %w", journalErr)
-		if runErr != nil {
-			return result, errors.Join(runErr, journalErr)
-		}
-		return result, journalErr
-	}
-	return result, runErr
-}
-
-func invocationOutcome(ctx context.Context, err error) types.InvocationOutcome {
-	if err == nil {
-		return types.InvocationOutcomeSucceeded
-	}
-	if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return types.InvocationOutcomeCancelled
-	}
-	return types.InvocationOutcomeFailed
 }
 
 // BoundAgent adapts a semantic Invoker back to the native Agent shape for

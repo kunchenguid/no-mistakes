@@ -277,9 +277,6 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager) {
 	count, err := d.RecoverStaleRunsExcept("daemon crashed during execution", preserved)
 	if err != nil {
 		slog.Error("failed to recover stale runs", "error", err)
-		for _, plan := range plans {
-			_ = plan.agent.Close()
-		}
 		return
 	}
 	if count > 0 {

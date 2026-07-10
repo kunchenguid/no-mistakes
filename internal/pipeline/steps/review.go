@@ -79,7 +79,6 @@ Previous review findings to address:
 			ErrorPrefix:             "agent fix",
 			FallbackSummary:         "address review findings",
 			SessionRole:             pipeline.SessionRoleFixer,
-			Purpose:                 "review-fix",
 		})
 		if err != nil {
 			return nil, err
@@ -198,7 +197,7 @@ Risk assessment (after listing all findings):
 	// still demands a full review of the complete branch diff each turn; the
 	// session only carries the reviewer's own prior context, never the
 	// fixer's (that role has its own isolated session in executeFixMode).
-	result, err := sctx.RunAgentSession(pipeline.SessionRoleReviewer, agent.RunOpts{
+	result, err := sctx.InvokeAgentSession(pipeline.SessionRoleReviewer, types.PurposeInitialReview, agent.RunOpts{
 		Prompt:     prompt,
 		CWD:        sctx.WorkDir,
 		JSONSchema: reviewFindingsSchema,

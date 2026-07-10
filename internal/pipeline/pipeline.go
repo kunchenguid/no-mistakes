@@ -63,6 +63,18 @@ func (sctx *StepContext) RunAgentSession(role SessionRole, opts agent.RunOpts) (
 	}
 	return sctx.Sessions.Run(sctx.Ctx, sctx.Agent, role, opts, sctx.Log)
 }
+// InvokeAgentSession routes and journals one durable reviewer or fixer turn.
+// Session identity is adapter-native, while Purpose, Candidate, and terminal
+// facts remain owned by the routing invocation lifecycle.
+func (sctx *StepContext) InvokeAgentSession(role SessionRole, purpose types.Purpose, opts agent.RunOpts) (*agent.Result, error) {
+	if _, err := types.PurposeDefinitionFor(purpose); err != nil {
+		return nil, err
+	}
+	if sctx.Invoker == nil {
+		return sctx.RunAgentSession(role, opts)
+	}
+	return sctx.Sessions.Invoke(sctx.Ctx, sctx.Invoker, purpose, sctx.InvocationScope, role, opts, sctx.Log)
+}
 
 // StepOutcome is the result of executing a pipeline step.
 type StepOutcome struct {

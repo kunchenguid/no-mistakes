@@ -130,7 +130,7 @@ func executeFixMode(sctx *pipeline.StepContext, stepName types.StepName, opts fi
 	var result *agent.Result
 	var err error
 	if opts.SessionRole != "" {
-		result, err = sctx.RunAgentSession(opts.SessionRole, runOpts)
+		result, err = sctx.InvokeAgentSession(opts.SessionRole, purpose, runOpts)
 	} else {
 		result, err = sctx.InvokeAgent(purpose, runOpts)
 	}

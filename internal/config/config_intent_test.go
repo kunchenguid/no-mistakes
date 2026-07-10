@@ -67,7 +67,6 @@ func TestLoadGlobalConfig_IntentParsed(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	yaml := `
-agent: claude
 intent:
   enabled: false
   threshold: 0.4

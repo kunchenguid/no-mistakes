@@ -139,11 +139,11 @@ func newDoctorCmd() *cobra.Command {
 						allOK = false
 					} else {
 						cfg := config.Merge(globalCfg, &config.RepoConfig{})
-						if err := cfg.ResolveAgent(cmd.Context(), exec.LookPath); err != nil {
+						if err := cfg.ValidateRunnable(exec.LookPath); err != nil {
 							fail("gate validation", err.Error())
 							allOK = false
 						} else {
-							ok("gate validation", fmt.Sprintf("%s is runnable", cfg.Agent))
+							ok("gate validation", "every routed profile has a runnable candidate")
 						}
 					}
 				}
