@@ -408,6 +408,45 @@ func TestRecoverStaleRunsMarksRunsFailed(t *testing.T) {
 	}
 }
 
+func TestRecoverStaleRunsExceptPreservesOnlyValidatedRuns(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/recovery-project", "git@github.com:user/recovery-project.git", "main")
+	preserved, _ := d.InsertRun(repo.ID, "feat-a", "aaa", "bbb")
+	stale, _ := d.InsertRun(repo.ID, "feat-b", "ccc", "ddd")
+	if err := d.UpdateRunStatus(preserved.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(stale.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	preservedStep, _ := d.InsertStepResult(preserved.ID, types.StepReview)
+	staleStep, _ := d.InsertStepResult(stale.ID, types.StepReview)
+	if err := d.StartStep(preservedStep.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.StartStep(staleStep.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	count, err := d.RecoverStaleRunsExcept("daemon crashed", map[string]struct{}{preserved.ID: {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("recovered count = %d, want 1", count)
+	}
+	gotPreserved, _ := d.GetRun(preserved.ID)
+	gotStale, _ := d.GetRun(stale.ID)
+	if gotPreserved.Status != types.RunRunning || gotStale.Status != types.RunFailed {
+		t.Fatalf("run statuses = preserved %s stale %s, want running and failed", gotPreserved.Status, gotStale.Status)
+	}
+	gotPreservedStep, _ := d.GetStepResult(preservedStep.ID)
+	gotStaleStep, _ := d.GetStepResult(staleStep.ID)
+	if gotPreservedStep.Status != types.StepStatusRunning || gotStaleStep.Status != types.StepStatusFailed {
+		t.Fatalf("step statuses = preserved %s stale %s, want running and failed", gotPreservedStep.Status, gotStaleStep.Status)
+	}
+}
+
 func TestRecoverStaleRunsMarksStepsFailed(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project2", "git@github.com:user/project2.git", "main")

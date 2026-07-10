@@ -164,8 +164,10 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 		return documentApprovalOutcome(summary), nil
 	}
 
-	docFindings, lintFindings := splitHousekeepingFindings(findings)
+	docFindings := findings
 	if combinedLint {
+		var lintFindings Findings
+		docFindings, lintFindings = splitHousekeepingFindings(findings)
 		lintJSON, err := types.MarshalFindingsJSON(lintFindings)
 		if err == nil {
 			sctx.Shared.SetHousekeepingLint(pipeline.HousekeepingLintResult{

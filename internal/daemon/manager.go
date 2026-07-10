@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -61,6 +62,265 @@ func NewRunManager(database *db.DB, p *paths.Paths, stepFactory StepFactory) *Ru
 		subscribers:   make(map[string][]chan<- ipc.Event),
 		completedRuns: make(map[string]bool),
 	}
+}
+
+type recoveredRunPlan struct {
+	run     *db.Run
+	repo    *db.Repo
+	workDir string
+	gateDir string
+	cfg     *config.Config
+	agent   agent.Agent
+	steps   []pipeline.Step
+}
+
+func (m *RunManager) recoverableParkedRuns(ctx context.Context) []recoveredRunPlan {
+	runs, err := m.db.GetActiveRuns()
+	if err != nil {
+		slog.Error("failed to list active runs for recovery", "error", err)
+		return nil
+	}
+	plans := make([]recoveredRunPlan, 0, len(runs))
+	branchCounts := make(map[string]int, len(runs))
+	for _, run := range runs {
+		branchCounts[run.RepoID+"\x00"+run.Branch]++
+	}
+	for _, run := range runs {
+		if branchCounts[run.RepoID+"\x00"+run.Branch] != 1 {
+			slog.Warn("active run cannot be safely resumed", "run_id", run.ID, "error", "conflicting active run for branch")
+			continue
+		}
+		plan, err := m.prepareRecoveredRun(ctx, run)
+		if err != nil {
+			slog.Warn("active run cannot be safely resumed", "run_id", run.ID, "error", err)
+			continue
+		}
+		plans = append(plans, *plan)
+	}
+	return plans
+}
+
+func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*recoveredRunPlan, error) {
+	if run == nil || run.Status != types.RunRunning || run.AwaitingAgentSince == nil || run.Branch == "" {
+		return nil, fmt.Errorf("run is not a parked running run")
+	}
+	repo, err := m.db.GetRepo(run.RepoID)
+	if err != nil {
+		return nil, fmt.Errorf("get repo: %w", err)
+	}
+	if repo == nil {
+		return nil, fmt.Errorf("run repository is missing")
+	}
+	workDir := m.paths.WorktreeDir(repo.ID, run.ID)
+	if info, err := os.Stat(workDir); err != nil || !info.IsDir() {
+		return nil, fmt.Errorf("worktree is missing")
+	}
+	headSHA, err := git.HeadSHA(ctx, workDir)
+	if err != nil || headSHA != run.HeadSHA {
+		return nil, fmt.Errorf("worktree head does not match run head")
+	}
+	gateDir := m.paths.RepoDir(repo.ID)
+	commonDir, err := git.Run(ctx, workDir, "rev-parse", "--git-common-dir")
+	if err != nil {
+		return nil, fmt.Errorf("resolve worktree common git dir: %w", err)
+	}
+	if !samePath(resolveGitPath(workDir, commonDir), gateDir) {
+		return nil, fmt.Errorf("worktree does not belong to its gate repository")
+	}
+
+	execSteps := m.steps()
+	if err := pipeline.ValidateRecoveredRun(m.db, run, execSteps); err != nil {
+		return nil, err
+	}
+	cfg, err := m.loadRecoveredConfig(ctx, run, repo, workDir)
+	if err != nil {
+		return nil, err
+	}
+	ag, err := newPipelineAgent(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.SessionReuse {
+		if err := validateRecoveredSessionProviders(m.db, run.ID, ag); err != nil {
+			_ = ag.Close()
+			return nil, err
+		}
+	}
+	return &recoveredRunPlan{
+		run:     run,
+		repo:    repo,
+		workDir: workDir,
+		gateDir: gateDir,
+		cfg:     cfg,
+		agent:   ag,
+		steps:   execSteps,
+	}, nil
+}
+
+func validateRecoveredSessionProviders(database *db.DB, runID string, ag agent.Agent) error {
+	sessions, err := database.GetRunAgentSessions(runID)
+	if err != nil {
+		return fmt.Errorf("get run sessions: %w", err)
+	}
+	for _, session := range sessions {
+		if session.Role != string(pipeline.SessionRoleReviewer) && session.Role != string(pipeline.SessionRoleFixer) {
+			return fmt.Errorf("recovered run has unknown session role %q", session.Role)
+		}
+		if session.Agent == "" || session.SessionID == "" {
+			return fmt.Errorf("recovered run has incomplete session metadata")
+		}
+		if !agent.SupportsSessionProvider(ag, session.Agent) {
+			return fmt.Errorf("session provider %q is no longer configured", session.Agent)
+		}
+	}
+	return nil
+}
+
+func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo *db.Repo, workDir string) (*config.Config, error) {
+	globalCfg, err := config.LoadGlobal(m.paths.ConfigFile())
+	if err != nil {
+		return nil, fmt.Errorf("load global config: %w", err)
+	}
+	repoCfg, err := config.LoadRepo(workDir)
+	if err != nil {
+		return nil, fmt.Errorf("load repo config: %w", err)
+	}
+	var trustedSHA string
+	if repo.DefaultBranch != "" {
+		if err := git.FetchRemoteBranch(ctx, workDir, "origin", repo.DefaultBranch); err != nil {
+			slog.Warn("failed to fetch default branch while recovering run; trusted config disabled", "run_id", run.ID, "branch", repo.DefaultBranch, "error", err)
+		} else if sha, err := git.ResolveRef(ctx, workDir, "refs/remotes/origin/"+repo.DefaultBranch); err != nil {
+			slog.Warn("failed to resolve default branch while recovering run; trusted config disabled", "run_id", run.ID, "branch", repo.DefaultBranch, "error", err)
+		} else {
+			trustedSHA = sha
+		}
+	}
+	trustedRepoCfg := loadTrustedRepoConfig(ctx, workDir, trustedSHA, run.ID)
+	allowRepoCommands := trustedRepoCfg != nil && trustedRepoCfg.AllowRepoCommands
+	return config.Merge(globalCfg, config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands)), nil
+}
+
+func newPipelineAgent(ctx context.Context, cfg *config.Config) (agent.Agent, error) {
+	if steps.IsDemoMode() {
+		return agent.NewNoop(), nil
+	}
+	if err := cfg.ResolveAgent(ctx, exec.LookPath); err != nil {
+		return nil, err
+	}
+	agents := cfg.Agents
+	if len(agents) == 0 {
+		agents = []types.AgentName{cfg.Agent}
+	}
+	created := make([]agent.Agent, 0, len(agents))
+	for _, name := range agents {
+		next, err := agent.NewWithOptions(name, cfg.AgentPathFor(name), cfg.AgentArgsFor(name), agent.Options{
+			ACPRegistryOverrides: cfg.ACPRegistryOverrides,
+		})
+		if err != nil {
+			for _, existing := range created {
+				_ = existing.Close()
+			}
+			return nil, fmt.Errorf("create agent %s: %w", name, err)
+		}
+		created = append(created, agent.WithSteering(next))
+	}
+	return agent.NewFallback(created), nil
+}
+
+func resolveGitPath(workDir, value string) string {
+	value = strings.TrimSpace(value)
+	if !filepath.IsAbs(value) {
+		value = filepath.Join(workDir, value)
+	}
+	return filepath.Clean(value)
+}
+
+func samePath(a, b string) bool {
+	a = filepath.Clean(a)
+	b = filepath.Clean(b)
+	if resolved, err := filepath.EvalSymlinks(a); err == nil {
+		a = resolved
+	}
+	if resolved, err := filepath.EvalSymlinks(b); err == nil {
+		b = resolved
+	}
+	return a == b
+}
+
+func (m *RunManager) resumeRecoveredRuns(plans []recoveredRunPlan) {
+	for _, plan := range plans {
+		m.resumeRecoveredRun(plan)
+	}
+}
+
+func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
+	if m.shuttingDown.Load() {
+		_ = plan.agent.Close()
+		return
+	}
+	runCtx, cancel := context.WithCancelCause(context.Background())
+	executor := pipeline.NewExecutor(m.db, m.paths, plan.cfg, plan.agent, plan.steps, m.broadcast)
+	done := make(chan struct{})
+	m.mu.Lock()
+	m.executors[plan.run.ID] = executor
+	m.cancels[plan.run.ID] = cancel
+	m.dones[plan.run.ID] = done
+	m.mu.Unlock()
+
+	m.wg.Add(1)
+	go func() {
+		startedAt := time.Now()
+		defer m.wg.Done()
+		defer close(done)
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				errMsg := fmt.Sprintf("internal panic: %v", recovered)
+				plan.run.Status = types.RunFailed
+				plan.run.Error = &errMsg
+				if err := m.db.UpdateRunErrorStatus(plan.run.ID, errMsg, types.RunFailed); err != nil {
+					slog.Error("failed to update recovered run after panic", "run_id", plan.run.ID, "error", err)
+				}
+			}
+			cancel(nil)
+			_ = plan.agent.Close()
+			m.closeSubscribers(plan.run.ID)
+			if err := git.WorktreeRemove(context.Background(), plan.gateDir, plan.workDir); err != nil {
+				slog.Warn("failed to remove recovered worktree", "path", plan.workDir, "error", err)
+			}
+			m.mu.Lock()
+			delete(m.executors, plan.run.ID)
+			delete(m.cancels, plan.run.ID)
+			delete(m.dones, plan.run.ID)
+			m.mu.Unlock()
+		}()
+
+		if err := executor.Resume(runCtx, plan.run, plan.repo, plan.workDir); err != nil {
+			if plan.run.Status == types.RunRunning {
+				errMsg := err.Error()
+				plan.run.Status = types.RunFailed
+				plan.run.Error = &errMsg
+				if dbErr := m.db.UpdateRunErrorStatus(plan.run.ID, errMsg, types.RunFailed); dbErr != nil {
+					slog.Error("failed to mark recovered run failed", "run_id", plan.run.ID, "error", dbErr)
+				}
+			}
+			slog.Error("recovered pipeline failed", "run_id", plan.run.ID, "error", err)
+		}
+		fields := telemetry.Fields{
+			"action":      "finished",
+			"trigger":     "recovery",
+			"agent":       string(plan.cfg.Agent),
+			"branch_role": telemetryBranchRole(plan.run.Branch, plan.repo.DefaultBranch),
+			"status":      string(plan.run.Status),
+			"duration_ms": time.Since(startedAt).Milliseconds(),
+			"step_count":  len(plan.steps),
+			"pr_created":  plan.run.PRURL != nil && *plan.run.PRURL != "",
+		}
+		if failedStep := telemetryFailedStepName(m.db, plan.run.ID); failedStep != "" {
+			fields["failed_step"] = failedStep
+		}
+		addRunPerformanceSummary(m.db, plan.run.ID, fields)
+		telemetry.Track("run", fields)
+	}()
 }
 
 func agentListsEqual(a, b []types.AgentName) bool {

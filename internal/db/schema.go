@@ -79,6 +79,9 @@ CREATE TABLE IF NOT EXISTS agent_invocations (
     cache_creation_tokens INTEGER
 );
 
+CREATE INDEX IF NOT EXISTS idx_agent_invocations_run_started_id
+    ON agent_invocations (run_id, started_at, id);
+
 CREATE TABLE IF NOT EXISTS run_agent_sessions (
     run_id     TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
     role       TEXT NOT NULL,

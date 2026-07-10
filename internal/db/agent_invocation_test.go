@@ -77,6 +77,29 @@ func TestAgentInvocations_PrivacySafeShape(t *testing.T) {
 	}
 }
 
+func TestAgentInvocations_HasRunTimelineIndex(t *testing.T) {
+	d, _, _ := openSessionTestDB(t)
+
+	rows, err := d.sql.Query(`SELECT name FROM pragma_index_list('agent_invocations')`)
+	if err != nil {
+		t.Fatalf("index list: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatal(err)
+		}
+		if name == "idx_agent_invocations_run_started_id" {
+			return
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	t.Fatal("agent invocations must have a run timeline index")
+}
+
 func TestAgentInvocationAggregatesAndRunSummary(t *testing.T) {
 	d, _, run := openSessionTestDB(t)
 

@@ -137,20 +137,20 @@ func RunWithOptions(p *paths.Paths, d *db.DB, stepFactory StepFactory) error {
 		_ = telemetry.Close(ctx)
 	}()
 
-	// Recover stale runs from a previous daemon crash.
-	recoverOnStartup(d, p)
-
 	// Point the agent package at our PID tracking dir so any managed
 	// servers we spawn from here on leave crash-recovery breadcrumbs.
 	agent.SetServerPIDsDir(p.ServerPIDsDir())
 	defer agent.SetServerPIDsDir("")
 
+	mgr := NewRunManager(d, p, stepFactory)
+
+	// Recover stale runs from a previous daemon crash.
+	recoverOnStartup(d, p, mgr)
+
 	srv := ipc.NewServer()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-
-	mgr := NewRunManager(d, p, stepFactory)
 
 	var shutdownOnce sync.Once
 	doShutdown := func(reason string) {
@@ -264,13 +264,21 @@ func writeDaemonPIDFile(path string, record daemonPIDFile) error {
 // best-effort migrates gate bare repos in place so older installs pick up
 // the per-worktree hookspath isolation introduced for issue #122 when Git
 // supports config --worktree.
-func recoverOnStartup(d *db.DB, p *paths.Paths) {
+func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager) {
 	reapOrphanedServers(p)
 	migrateGateConfigs(context.Background(), p)
 
-	count, err := d.RecoverStaleRuns("daemon crashed during execution")
+	plans := mgr.recoverableParkedRuns(context.Background())
+	preserved := make(map[string]struct{}, len(plans))
+	for _, plan := range plans {
+		preserved[plan.run.ID] = struct{}{}
+	}
+	count, err := d.RecoverStaleRunsExcept("daemon crashed during execution", preserved)
 	if err != nil {
 		slog.Error("failed to recover stale runs", "error", err)
+		for _, plan := range plans {
+			_ = plan.agent.Close()
+		}
 		return
 	}
 	if count > 0 {
@@ -278,6 +286,7 @@ func recoverOnStartup(d *db.DB, p *paths.Paths) {
 	}
 
 	cleanupOrphanWorktrees(d, p)
+	mgr.resumeRecoveredRuns(plans)
 }
 
 // cleanupOrphanWorktrees removes worktree directories left behind by runs

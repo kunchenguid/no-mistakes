@@ -121,6 +121,40 @@ func TestDocumentStep_ConfiguredLintCommandKeepsDocOnlyPrompt(t *testing.T) {
 	}
 }
 
+func TestDocumentStep_ConfiguredLintCommandKeepsLintCategorizedFindingInDocumentGate(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: json.RawMessage(`{
+				"findings":[{"severity":"warning","description":"documentation needs a decision","action":"ask-user","category":"lint"}],
+				"summary":"documentation needs review"
+			}`)}, nil
+		},
+	}
+	sctx := newHousekeepingContext(t, ag, dir, baseSHA, headSHA, config.Commands{Lint: "true"})
+
+	outcome, err := (&DocumentStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("a doc-only pass must keep every finding in the document gate")
+	}
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatalf("unmarshal document findings: %v", err)
+	}
+	if len(findings.Items) != 1 || findings.Items[0].Description != "documentation needs a decision" {
+		t.Fatalf("document findings = %+v, want the categorized finding retained", findings.Items)
+	}
+	if _, ok := sctx.Shared.TakeHousekeepingLint(); ok {
+		t.Fatal("a deterministic lint command must not receive a document-pass stash")
+	}
+}
+
 // TestLintStep_ConsumesCombinedResultWithoutAgentPass proves the lint step
 // reports the combined pass's lint findings with its own gate semantics and
 // pays no second agent invocation.
