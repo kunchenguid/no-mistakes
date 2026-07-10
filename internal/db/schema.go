@@ -129,6 +129,16 @@ CREATE TABLE IF NOT EXISTS invocation_attempt_starts (
     )
 );
 
+CREATE TABLE IF NOT EXISTS run_seals (
+    id         TEXT PRIMARY KEY,
+    run_id     TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    sha        TEXT NOT NULL,
+    reason     TEXT NOT NULL,
+    sealed_at  INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS run_seals_run_idx ON run_seals(run_id, sealed_at);
+
 CREATE TABLE IF NOT EXISTS invocation_attempt_terminals (
     attempt_id            TEXT PRIMARY KEY REFERENCES invocation_attempt_starts(id) ON DELETE CASCADE,
     outcome               TEXT NOT NULL,

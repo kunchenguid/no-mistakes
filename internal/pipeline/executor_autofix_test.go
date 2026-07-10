@@ -88,7 +88,7 @@ func TestExecutor_PersistsEffectiveAutoFixLimit(t *testing.T) {
 
 func TestExecutor_AutoFixRespectsMaxAttempts(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := gitInitTestDir(t)
 
 	// Config with auto-fix limited to 2 attempts for lint
 	cfg := &config.Config{AutoFix: config.AutoFix{Lint: 2}}
@@ -218,7 +218,7 @@ func TestExecutor_AutoFixNilConfigUsesDefaults(t *testing.T) {
 
 func TestExecutor_AutoFixEmitsEvents(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := gitInitTestDir(t)
 
 	cfg := &config.Config{AutoFix: config.AutoFix{Lint: 1}}
 

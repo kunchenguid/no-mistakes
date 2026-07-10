@@ -3,6 +3,9 @@ package pipeline
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
@@ -10,6 +13,29 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+// gitInitTestDir returns a committed git worktree, so executor tests that run
+// through the Lint slot satisfy the candidate seal (which records a clean HEAD).
+func gitInitTestDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	run := func(args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %s: %v", args, out, err)
+		}
+	}
+	run("init")
+	run("config", "user.name", "test")
+	run("config", "user.email", "test@test.com")
+	if err := os.WriteFile(filepath.Join(dir, "seed.txt"), []byte("seed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "-A")
+	run("commit", "-m", "seed")
+	return dir
+}
 
 // TestExecutor_StepLifecycleEvents verifies the executor emits step_started
 // and step_completed IPC events for every step in order. The broader
@@ -19,7 +45,7 @@ import (
 // the IPC event contract that the TUI subscribes to.
 func TestExecutor_StepLifecycleEvents(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	workDir := t.TempDir()
+	workDir := gitInitTestDir(t)
 
 	stepNames := []types.StepName{types.StepReview, types.StepTest, types.StepLint}
 	steps := make([]Step, len(stepNames))

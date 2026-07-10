@@ -42,6 +42,9 @@ func TestPushStep_ReconcilesStaleDatabaseHeadSHA(t *testing.T) {
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, staleHeadSHA, config.Commands{})
 	sctx.Repo.UpstreamURL = upstream
 
+	if _, err := sctx.DB.CreateSeal(sctx.Run.ID, actualHeadSHA, "pre_verify"); err != nil {
+		t.Fatal(err)
+	}
 	step := &PushStep{}
 	_, err := step.Execute(sctx)
 	if err != nil {
@@ -60,56 +63,6 @@ func TestPushStep_ReconcilesStaleDatabaseHeadSHA(t *testing.T) {
 	}
 	if dbRun.HeadSHA != actualHeadSHA {
 		t.Errorf("DB HeadSHA = %s, want %s", dbRun.HeadSHA, actualHeadSHA)
-	}
-}
-
-func TestPushStep_ForceAddsInRepoEvidenceArtifacts(t *testing.T) {
-	t.Parallel()
-	upstream := t.TempDir()
-	gitCmd(t, upstream, "init", "--bare")
-
-	dir := t.TempDir()
-	gitCmd(t, dir, "init")
-	gitCmd(t, dir, "config", "user.name", "test")
-	gitCmd(t, dir, "config", "user.email", "test@test.com")
-	gitCmd(t, dir, "checkout", "-b", "main")
-	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("*.png\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "initial")
-	gitCmd(t, dir, "remote", "add", "origin", upstream)
-	gitCmd(t, dir, "push", "origin", "main")
-
-	gitCmd(t, dir, "checkout", "-b", "feature")
-	baseSHA := gitCmd(t, dir, "rev-parse", "main")
-	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
-	evidenceDir := filepath.Join(dir, "evidence", "feature")
-	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(evidenceDir, "checkout.png"), []byte("png"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	ag := &mockAgent{name: "test"}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Repo.UpstreamURL = upstream
-	sctx.Run.Branch = "feature"
-	sctx.Config.Test.Evidence = config.Evidence{StoreInRepo: true, Dir: "evidence"}
-
-	step := &PushStep{}
-	if _, err := step.Execute(sctx); err != nil {
-		t.Fatal(err)
-	}
-
-	clone := t.TempDir()
-	gitCmd(t, clone, "clone", "--branch", "feature", upstream, ".")
-	if _, err := os.Stat(filepath.Join(clone, "evidence", "feature", "checkout.png")); err != nil {
-		t.Fatalf("expected ignored evidence artifact to be pushed: %v", err)
 	}
 }
 
@@ -149,6 +102,9 @@ func TestPushStep_TargetsForkWhenConfigured(t *testing.T) {
 	sctx.Repo.ForkURL = fork
 	sctx.Run.Branch = "feature"
 
+	if _, err := sctx.DB.CreateSeal(sctx.Run.ID, headSHA, "pre_verify"); err != nil {
+		t.Fatal(err)
+	}
 	step := &PushStep{}
 	if _, err := step.Execute(sctx); err != nil {
 		t.Fatal(err)
@@ -182,6 +138,9 @@ func TestPushStep_RedactsForkURLInGitErrors(t *testing.T) {
 	sctx.Repo.ForkURL = "https://user:secret@example.com/fork/project.git"
 	sctx.Run.Branch = "refs/heads/feature"
 
+	if _, err := sctx.DB.CreateSeal(sctx.Run.ID, headSHA, "pre_verify"); err != nil {
+		t.Fatal(err)
+	}
 	step := &PushStep{}
 	_, err = step.Execute(sctx)
 	if err == nil {
@@ -195,33 +154,58 @@ func TestPushStep_RedactsForkURLInGitErrors(t *testing.T) {
 	}
 }
 
-func TestPushStep_DoesNotForceAddIgnoredEvidenceDirectory(t *testing.T) {
+// TestPushStep_RefusesWithoutSeal proves transport-only Push fails closed when
+// no candidate has been sealed.
+func TestPushStep_RefusesWithoutSeal(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
-	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("evidence/\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	gitCmd(t, dir, "add", ".gitignore")
-	gitCmd(t, dir, "commit", "-m", "ignore evidence")
-	headSHA = gitCmd(t, dir, "rev-parse", "HEAD")
-	evidenceDir := filepath.Join(dir, "evidence", "feature")
-	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(evidenceDir, "stale.png"), []byte("png"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Run.Branch = "feature"
-	sctx.Config.Test.Evidence = config.Evidence{StoreInRepo: true, Dir: "evidence"}
-
+	sctx.Run.Branch = "refs/heads/feature"
 	step := &PushStep{}
-	if err := step.stageInRepoEvidence(sctx); err != nil {
+	if _, err := step.Execute(sctx); err == nil {
+		t.Fatal("expected push to fail closed with no sealed candidate")
+	}
+}
+
+// TestPushStep_RefusesDirtyWorktree proves Push refuses to publish a dirty
+// worktree even though the sealed commit is unchanged.
+func TestPushStep_RefusesDirtyWorktree(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.Branch = "refs/heads/feature"
+	if _, err := sctx.DB.CreateSeal(sctx.Run.ID, headSHA, "pre_verify"); err != nil {
 		t.Fatal(err)
 	}
-	if status := gitStatusPorcelain(t, dir); status != "" {
-		t.Fatalf("ignored evidence directory was staged: %q", status)
+	if err := os.WriteFile(filepath.Join(dir, "dirty.txt"), []byte("uncommitted"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	step := &PushStep{}
+	if _, err := step.Execute(sctx); err == nil {
+		t.Fatal("expected push to refuse a dirty worktree")
+	}
+}
+
+// TestPushStep_RefusesChangedHead proves Push refuses when HEAD advanced past
+// the sealed SHA, so a reverified candidate must be resealed before publishing.
+func TestPushStep_RefusesChangedHead(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.Branch = "refs/heads/feature"
+	if _, err := sctx.DB.CreateSeal(sctx.Run.ID, headSHA, "pre_verify"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "after.txt"), []byte("later"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "post-seal change")
+	step := &PushStep{}
+	if _, err := step.Execute(sctx); err == nil {
+		t.Fatal("expected push to refuse a HEAD that no longer matches the seal")
 	}
 }

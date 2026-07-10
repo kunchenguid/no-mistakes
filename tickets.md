@@ -181,10 +181,10 @@ Push must validate a clean worktree and the exact sealed SHA, then perform trans
 
 **Blocked by:** Route Test evidence and repair; Route Lint, formatting, and repair; Author and independently verify documentation.
 
-- [ ] Candidate sealing occurs only after every pre-Verify content mutator has completed, and it records the exact HEAD plus clean-worktree state.
-- [ ] Push does not format, stage, write evidence, create a generic catch-all commit, or otherwise mutate the sealed content.
-- [ ] Push refuses a changed HEAD or dirty worktree even when the recorded commit is unchanged, and a repaired/reverified candidate creates a new seal rather than rewriting the old one.
-- [ ] Existing force-with-lease and unseen-remote-commit protections remain intact and operate on the verified sealed SHA.
+- [x] Candidate sealing occurs only after every pre-Verify content mutator has completed, and it records the exact HEAD plus clean-worktree state.
+- [x] Push does not format, stage, write evidence, create a generic catch-all commit, or otherwise mutate the sealed content.
+- [x] Push refuses a changed HEAD or dirty worktree even when the recorded commit is unchanged, and a repaired/reverified candidate creates a new seal rather than rewriting the old one.
+- [x] Existing force-with-lease and unseen-remote-commit protections remain intact and operate on the verified sealed SHA.
 
 ## Route Rebase conflict repair
 

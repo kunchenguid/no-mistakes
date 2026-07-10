@@ -19,27 +19,33 @@ func (s *PushStep) Name() types.StepName { return types.StepPush }
 
 func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	ctx := sctx.Ctx
-	newHeadSHA := ""
 
-	// Commit any uncommitted changes from agent fixes
-	if err := s.stageInRepoEvidence(sctx); err != nil {
-		return nil, err
+	// Push is transport-only: it never formats, stages, writes evidence, or
+	// creates commits. It validates the sealed candidate - a clean worktree at
+	// the exact sealed SHA - then transports it under the existing
+	// force-with-lease and unseen-remote-commit protections.
+	seal, err := sctx.DB.LatestSeal(sctx.Run.ID)
+	if err != nil {
+		return nil, fmt.Errorf("load sealed candidate: %w", err)
 	}
-	status, _ := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
+	if seal == nil {
+		return nil, fmt.Errorf("push: no sealed candidate to publish")
+	}
+
+	status, err := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
+	if err != nil {
+		return nil, fmt.Errorf("read worktree status before push: %w", err)
+	}
 	if strings.TrimSpace(status) != "" {
-		sctx.Log("committing agent changes...")
-		if _, err := git.Run(ctx, sctx.WorkDir, "add", "-A"); err != nil {
-			return nil, fmt.Errorf("stage agent changes: %w", err)
-		}
-		_, err := git.Run(ctx, sctx.WorkDir, "commit", "-m", "no-mistakes: apply agent fixes")
-		if err != nil {
-			return nil, fmt.Errorf("commit agent changes: %w", err)
-		}
-		headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
-		if err != nil {
-			return nil, fmt.Errorf("resolve head after commit: %w", err)
-		}
-		newHeadSHA = headSHA
+		return nil, fmt.Errorf("push: refusing to publish a dirty worktree; sealed candidate %s must be published clean", shortSHA(seal.SHA))
+	}
+
+	headBeingPushed, err := git.HeadSHA(ctx, sctx.WorkDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve head before push: %w", err)
+	}
+	if headBeingPushed != seal.SHA {
+		return nil, fmt.Errorf("push: HEAD %s no longer matches sealed candidate %s; a reverified candidate must be resealed before publishing", shortSHA(headBeingPushed), shortSHA(seal.SHA))
 	}
 
 	ref := normalizedBranchRef(sctx.Run.Branch)
@@ -53,11 +59,6 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 		sctx.Log(fmt.Sprintf("pushing to fork %s (%s)...", safeurl.Redact(pushURL), ref))
 	} else {
 		sctx.Log(fmt.Sprintf("pushing to %s (%s)...", safeurl.Redact(pushURL), ref))
-	}
-
-	headBeingPushed, err := git.HeadSHA(ctx, sctx.WorkDir)
-	if err != nil {
-		return nil, fmt.Errorf("resolve head before push: %w", err)
 	}
 
 	// Decide whether force-pushing would discard commits the pipeline never saw.
@@ -87,47 +88,15 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 		}
 	}
 
-	if newHeadSHA != "" {
-		if _, err := git.Run(ctx, sctx.WorkDir, "update-ref", ref, newHeadSHA); err != nil {
-			return nil, fmt.Errorf("update local branch ref: %w", err)
-		}
-	}
-
-	headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
-	if err != nil {
-		return nil, fmt.Errorf("resolve HEAD after push: %w", err)
-	}
-	if headSHA != sctx.Run.HeadSHA {
-		sctx.Run.HeadSHA = headSHA
-		if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, headSHA); err != nil {
+	if sctx.Run.HeadSHA != seal.SHA {
+		sctx.Run.HeadSHA = seal.SHA
+		if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, seal.SHA); err != nil {
 			return nil, err
 		}
 	}
 
 	sctx.Log("pushed successfully")
 	return &pipeline.StepOutcome{}, nil
-}
-
-func (s *PushStep) stageInRepoEvidence(sctx *pipeline.StepContext) error {
-	ctx := sctx.Ctx
-	location := resolveTestEvidenceLocation(sctx.WorkDir, sctx.Run.Branch, sctx.Run.ID, sctx.Config.Test.Evidence)
-	if !location.StoreInRepo {
-		return nil
-	}
-	if gitIgnoresPath(ctx, sctx.WorkDir, location.Dir) {
-		return nil
-	}
-	if !dirHasFiles(location.Dir) {
-		return nil
-	}
-	rel, err := filepath.Rel(sctx.WorkDir, location.Dir)
-	if err != nil || rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-		return nil
-	}
-	if _, err := git.Run(ctx, sctx.WorkDir, "add", "-f", "--", filepath.ToSlash(rel)); err != nil {
-		return fmt.Errorf("stage test evidence: %w", err)
-	}
-	return nil
 }
 
 func dirHasFiles(dir string) bool {

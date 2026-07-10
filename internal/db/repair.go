@@ -216,9 +216,9 @@ func (d *DB) GetFindingRepairChecks(repairID string) ([]FindingRepairCheck, erro
 	var checks []FindingRepairCheck
 	for rows.Next() {
 		var (
-			c         FindingRepairCheck
+			c          FindingRepairCheck
 			applicable int
-			excerpt   sql.NullString
+			excerpt    sql.NullString
 		)
 		if err := rows.Scan(&c.ID, &c.RepairID, &c.Command, &applicable, &c.ExitCode, &excerpt, &c.RanAt); err != nil {
 			return nil, fmt.Errorf("scan finding repair check: %w", err)

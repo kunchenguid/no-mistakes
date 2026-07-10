@@ -160,11 +160,25 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 				return e.failRun(run, repo, fmt.Errorf("skip step %s: %w", step.Name(), err), ctx)
 			}
 			e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, step.Name(), string(types.StepStatusSkipped), "", "", "", nil)
+			// A skipped Lint still ends the pre-Verify mutator sequence: seal the
+			// candidate the earlier mutators produced so Push has a sealed SHA.
+			if step.Name() == types.StepLint {
+				if sealErr := e.sealCandidate(ctx, run, workDir); sealErr != nil {
+					return e.failRun(run, repo, sealErr, ctx)
+				}
+			}
 			continue
 		}
 		skipRemaining, err := e.executeStep(ctx, step, sr, run, repo, workDir, logDir, stepExecutionState{}, circuits)
 		if err != nil {
 			return e.failRun(run, repo, err, ctx)
+		}
+		// Seal the immutable publish candidate once the last pre-Verify content
+		// mutator (Lint) has completed, so Verify and Push operate on a fixed SHA.
+		if !skipRemaining && step.Name() == types.StepLint {
+			if sealErr := e.sealCandidate(ctx, run, workDir); sealErr != nil {
+				return e.failRun(run, repo, sealErr, ctx)
+			}
 		}
 		if skipRemaining {
 			// Mark all subsequent steps as skipped
@@ -476,6 +490,30 @@ func recoveredLogPath(step *db.StepResult) string {
 	return ""
 }
 
+
+// sealCandidate records an immutable publish candidate after the last pre-Verify
+// content mutator: it requires a clean worktree, captures the exact HEAD, and
+// appends a new seal so Verify and Push operate on a fixed SHA. A dirty worktree
+// fails closed - an earlier mutator that left uncommitted changes must be fixed
+// at its source rather than swept into the published candidate.
+func (e *Executor) sealCandidate(ctx context.Context, run *db.Run, workDir string) error {
+	status, err := git.Run(ctx, workDir, "status", "--porcelain")
+	if err != nil {
+		return fmt.Errorf("seal candidate: read worktree status: %w", err)
+	}
+	if strings.TrimSpace(status) != "" {
+		return fmt.Errorf("seal candidate: worktree is dirty, refusing to seal the publish candidate")
+	}
+	head, err := git.HeadSHA(ctx, workDir)
+	if err != nil {
+		return fmt.Errorf("seal candidate: resolve HEAD: %w", err)
+	}
+	if _, err := e.db.CreateSeal(run.ID, head, "pre_verify"); err != nil {
+		return err
+	}
+	slog.Info("sealed publish candidate", "run", run.ID, "sha", head)
+	return nil
+}
 // executeStep runs a single step with approval coordination.
 // Returns (skipRemaining, error).
 func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult, run *db.Run, repo *db.Repo, workDir, logDir string, state stepExecutionState, circuits *providerCircuits) (bool, error) {
