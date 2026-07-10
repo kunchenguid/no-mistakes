@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
@@ -440,7 +441,11 @@ func compactCLIError(stderr []byte) string {
 			continue
 		}
 		if len(line) > maxLen {
-			line = line[:maxLen]
+			cut := maxLen
+			for cut > 0 && !utf8.RuneStart(line[cut]) {
+				cut--
+			}
+			line = line[:cut]
 		}
 		return line
 	}

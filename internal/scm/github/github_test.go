@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
@@ -430,6 +431,43 @@ func TestGetChecksErrorWithoutStderrHasNoTrailingColon(t *testing.T) {
 	}
 	if strings.HasSuffix(err.Error(), ": ") || strings.HasSuffix(err.Error(), ":") {
 		t.Fatalf("GetChecks() error = %q, want no dangling colon when gh emitted no stderr", err.Error())
+	}
+}
+
+func TestCompactCLIErrorTruncatesOnRuneBoundary(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		stderr string
+		want   string
+	}{
+		{"empty", "", ""},
+		{"blank lines only", "\n  \n\t\n", ""},
+		{"first non-empty line", "\nerror: bad flag\nsecond line\n", "error: bad flag"},
+		{"short line untouched", "fehler: ungültig", "fehler: ungültig"},
+		{
+			"ascii truncated at cap",
+			strings.Repeat("a", 250),
+			strings.Repeat("a", 200),
+		},
+		{
+			"multibyte rune not split",
+			strings.Repeat("a", 199) + "é" + strings.Repeat("b", 50),
+			strings.Repeat("a", 199),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := compactCLIError([]byte(tc.stderr))
+			if got != tc.want {
+				t.Fatalf("compactCLIError(%q) = %q, want %q", tc.stderr, got, tc.want)
+			}
+			if !utf8.ValidString(got) {
+				t.Fatalf("compactCLIError(%q) = %q, want valid UTF-8", tc.stderr, got)
+			}
+		})
 	}
 }
 
