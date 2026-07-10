@@ -46,6 +46,16 @@ func TestOpenCreatesSchema(t *testing.T) {
 			t.Fatalf("step_results.%s column missing from fresh schema", column)
 		}
 	}
+	for _, table := range []string{"utility_scopes", "invocation_attempt_starts", "invocation_attempt_terminals"} {
+		if err := d.sql.QueryRow("SELECT count(*) FROM " + table).Scan(&count); err != nil {
+			t.Fatalf("%s table missing: %v", table, err)
+		}
+	}
+	for _, column := range []string{"state", "started_at", "completed_at"} {
+		if !hasColumn(t, d, "step_rounds", column) {
+			t.Fatalf("step_rounds.%s column missing from fresh schema", column)
+		}
+	}
 }
 
 func TestOpenCreatesStepRoundsTable(t *testing.T) {
@@ -73,6 +83,8 @@ func TestOpenMigratesExistingStepRoundsColumns(t *testing.T) {
 			duration_ms INTEGER NOT NULL,
 			created_at INTEGER NOT NULL
 		);
+		INSERT INTO step_rounds (id, step_result_id, round, trigger_type, duration_ms, created_at)
+		VALUES ('legacy-round', 'legacy-step', 1, 'initial', 17, 123);
 	`); err != nil {
 		legacyDB.Close()
 		t.Fatalf("create legacy step_rounds table: %v", err)
@@ -110,10 +122,21 @@ func TestOpenMigratesExistingStepRoundsColumns(t *testing.T) {
 		t.Fatalf("iterate table_info: %v", err)
 	}
 
-	for _, name := range []string{"selected_finding_ids", "selection_source", "fix_summary"} {
+	for _, name := range []string{"selected_finding_ids", "selection_source", "fix_summary", "user_findings_json", "state", "started_at", "completed_at"} {
 		if !columns[name] {
 			t.Fatalf("expected migrated column %q to exist", name)
 		}
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatalf("close table_info rows: %v", err)
+	}
+	var state string
+	var startedAt, completedAt any
+	if err := d.sql.QueryRow(`SELECT state, started_at, completed_at FROM step_rounds WHERE id = 'legacy-round'`).Scan(&state, &startedAt, &completedAt); err != nil {
+		t.Fatalf("query migrated legacy round: %v", err)
+	}
+	if state != StepRoundCompleted || startedAt != nil || completedAt != nil {
+		t.Fatalf("legacy lifecycle = (%q, %v, %v), want completed with nullable timestamps", state, startedAt, completedAt)
 	}
 }
 

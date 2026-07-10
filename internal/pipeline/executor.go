@@ -595,6 +595,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		Repo:             repo,
 		WorkDir:          workDir,
 		Agent:            stepAgent,
+		Invoker:          agent.NewLegacyInvoker(stepAgent, e.db),
 		Config:           e.config,
 		DB:               e.db,
 		StepResultID:     sr.ID,
@@ -620,13 +621,37 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	stepSkipped := false
 	currentRoundID := state.currentRoundID
 
-	// Execute with possible fix loop
+	// Execute with possible fix loop.
 	for {
-		outcome, err := step.Execute(sctx)
 		roundNum++
+		currentRound, reserveErr := e.db.ReserveStepRound(sr.ID, roundNum, nextTrigger)
+		if reserveErr != nil {
+			durationMS := executionMS + time.Since(phaseStart).Milliseconds()
+			if dbErr := e.db.FailStep(sr.ID, reserveErr.Error(), durationMS); dbErr != nil {
+				slog.Warn("failed to mark step as failed in db", "step", stepName, "error", dbErr)
+			}
+			e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFailed), "", "", reserveErr.Error(), &durationMS)
+			return false, fmt.Errorf("reserve step %s round: %w", stepName, reserveErr)
+		}
+		currentRoundID = currentRound.ID
+		sctx.CurrentRound = currentRound
+		sctx.InvocationScope = types.InvocationScope{
+			Kind:         types.InvocationScopePipeline,
+			RunID:        run.ID,
+			StepResultID: sr.ID,
+			StepRoundID:  currentRound.ID,
+		}
+		outcome, err := step.Execute(sctx)
 		roundDuration := time.Since(phaseStart).Milliseconds()
 		if err != nil {
 			durationMS := executionMS + roundDuration
+			roundState := db.StepRoundFailed
+			if ctx.Err() != nil {
+				roundState = db.StepRoundCancelled
+			}
+			if dbErr := e.db.TerminateReservedStepRound(currentRoundID, roundState, roundDuration); dbErr != nil {
+				slog.Warn("failed to terminate step round", "step", stepName, "round", roundNum, "error", dbErr)
+			}
 			// Persist the failure reason to the step's own log file. The error
 			// often carries the only detail of why the step failed (e.g. git
 			// stderr from a rejected push); without this the step log shows the
@@ -654,7 +679,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			}
 		}
 
-		// Persist this execution round.
+		// Append this execution's outcome to the round reserved before launch.
 		var findingsPtr *string
 		if outcome.Findings != "" {
 			findingsPtr = &outcome.Findings
@@ -664,11 +689,14 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			s := outcome.FixSummary
 			fixSummaryPtr = &s
 		}
-		if inserted, dbErr := e.db.InsertStepRound(sr.ID, roundNum, nextTrigger, findingsPtr, fixSummaryPtr, roundDuration); dbErr != nil {
-			currentRoundID = roundInsertID(currentRoundID, inserted, dbErr)
-			slog.Warn("failed to insert step round", "step", stepName, "round", roundNum, "error", dbErr)
-		} else {
-			currentRoundID = roundInsertID(currentRoundID, inserted, nil)
+		if dbErr := e.db.CompleteReservedStepRound(currentRoundID, findingsPtr, fixSummaryPtr, roundDuration); dbErr != nil {
+			durationMS := executionMS + roundDuration
+			fmt.Fprintf(logFile, "\nerror: complete step round: %s\n", dbErr.Error())
+			if failErr := e.db.FailStep(sr.ID, dbErr.Error(), durationMS); failErr != nil {
+				slog.Warn("failed to mark step as failed in db", "step", stepName, "error", failErr)
+			}
+			e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFailed), "", "", dbErr.Error(), &durationMS)
+			return false, fmt.Errorf("complete step %s round: %w", stepName, dbErr)
 		}
 
 		// If the step produced a PR URL, propagate it to the run and emit an update.

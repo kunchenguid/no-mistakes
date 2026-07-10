@@ -279,6 +279,46 @@ func TestWizardAgentSuggester_CachesCommitFromBranchCall(t *testing.T) {
 	}
 }
 
+func TestWizardAgentSuggesterJournalsOneCombinedUtilityInvocation(t *testing.T) {
+	database, err := db.Open(filepath.Join(t.TempDir(), "state.sqlite"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer database.Close()
+	utilityScope, err := database.InsertUtilityScope(types.UtilityScopeWizard, os.Getpid())
+	if err != nil {
+		t.Fatalf("insert utility scope: %v", err)
+	}
+
+	ag := &fakeSuggesterAgent{}
+	s := newFakeSuggester(t, ag)
+	s.setInvocationContext(database, types.InvocationScope{
+		Kind:           types.InvocationScopeUtility,
+		UtilityScopeID: utilityScope.ID,
+	})
+	defer s.Close()
+	if _, err := s.suggestBranch(context.Background()); err != nil {
+		t.Fatalf("suggestBranch: %v", err)
+	}
+	if _, err := s.suggestCommit(context.Background()); err != nil {
+		t.Fatalf("suggestCommit cached value: %v", err)
+	}
+
+	attempts, err := database.GetInvocationAttemptsByUtilityScope(utilityScope.ID)
+	if err != nil {
+		t.Fatalf("get utility attempts: %v", err)
+	}
+	if len(attempts) != 1 {
+		t.Fatalf("utility attempts = %+v, want one combined call", attempts)
+	}
+	if attempts[0].Start.Purpose != types.PurposeBranchCommitSuggestion || attempts[0].Start.Scope.Kind != types.InvocationScopeUtility {
+		t.Fatalf("utility attempt start = %+v", attempts[0].Start)
+	}
+	if attempts[0].Terminal == nil || attempts[0].Terminal.Outcome != types.InvocationOutcomeSucceeded {
+		t.Fatalf("utility attempt terminal = %+v, want succeeded", attempts[0].Terminal)
+	}
+}
+
 func TestWizardAgentSuggester_FallsBackToCommitCall(t *testing.T) {
 	// User typed the branch manually, so suggestBranch is never invoked and
 	// the cache stays empty — suggestCommit should fall back to its own call.

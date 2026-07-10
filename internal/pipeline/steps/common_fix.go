@@ -13,6 +13,7 @@ import (
 )
 
 type fixExecutionOptions struct {
+	Purpose                 types.Purpose
 	RequirePreviousFindings bool
 	MissingFindingsError    string
 	LogMessage              string
@@ -24,8 +25,6 @@ type fixExecutionOptions struct {
 	// session (the review step's fixer role). Steps outside the review loop
 	// leave it empty and stay session-isolated.
 	SessionRole pipeline.SessionRole
-	// Purpose labels the invocation for local performance telemetry.
-	Purpose string
 }
 
 type commitSummary struct {
@@ -119,21 +118,21 @@ func executeFixMode(sctx *pipeline.StepContext, stepName types.StepName, opts fi
 	}
 	purpose := opts.Purpose
 	if purpose == "" {
-		purpose = string(stepName) + "-fix"
+		purpose = types.Purpose(string(stepName) + "-fix")
 	}
 	runOpts := agent.RunOpts{
 		Prompt:     opts.Prompt,
 		CWD:        sctx.WorkDir,
 		JSONSchema: commitSummarySchema,
 		OnChunk:    sctx.LogChunk,
-		Purpose:    purpose,
+		Purpose:    string(purpose),
 	}
 	var result *agent.Result
 	var err error
 	if opts.SessionRole != "" {
 		result, err = sctx.RunAgentSession(opts.SessionRole, runOpts)
 	} else {
-		result, err = sctx.Agent.Run(sctx.Ctx, runOpts)
+		result, err = sctx.InvokeAgent(purpose, runOpts)
 	}
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", opts.ErrorPrefix, err)

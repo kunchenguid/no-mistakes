@@ -22,7 +22,11 @@ func roundHistoryPromptSection(sctx *pipeline.StepContext) string {
 	if sctx == nil || sctx.DB == nil || sctx.StepResultID == "" {
 		return ""
 	}
-	rounds, err := sctx.DB.GetRoundsByStep(sctx.StepResultID)
+	currentRoundID := ""
+	if sctx.CurrentRound != nil {
+		currentRoundID = sctx.CurrentRound.ID
+	}
+	rounds, err := sctx.DB.GetPriorCompletedRounds(sctx.StepResultID, currentRoundID)
 	if err != nil || len(rounds) == 0 {
 		return ""
 	}

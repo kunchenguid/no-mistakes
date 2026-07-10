@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/intent"
@@ -166,7 +167,7 @@ var errIntentEmptyDiff = errors.New("intent: empty diff")
 // defaultRunIntent is the production implementation: it derives intent
 // extraction inputs from the run's git state and calls intent.Extract.
 func defaultRunIntent(ctx context.Context, sctx *pipeline.StepContext) (*intent.Result, error) {
-	if sctx.Agent == nil {
+	if sctx.Agent == nil && sctx.Invoker == nil {
 		return nil, intent.ErrNoMatch
 	}
 
@@ -207,6 +208,13 @@ func defaultRunIntent(ctx context.Context, sctx *pipeline.StepContext) (*intent.
 		}
 	}
 
+	summarizerAgent := sctx.Agent
+	disambiguatorAgent := sctx.Agent
+	if sctx.Invoker != nil {
+		summarizerAgent = agent.BindInvocation(sctx.Invoker, types.PurposeIntentSummarization, sctx.InvocationScope)
+		disambiguatorAgent = agent.BindInvocation(sctx.Invoker, types.PurposeIntentDisambiguation, sctx.InvocationScope)
+	}
+
 	return intent.Extract(ctx, intent.ExtractParams{
 		OriginCWD:     repo.WorkingPath,
 		DiffFiles:     diffFiles,
@@ -216,8 +224,8 @@ func defaultRunIntent(ctx context.Context, sctx *pipeline.StepContext) (*intent.
 		Threshold:     cfg.Intent.Threshold,
 		Readers:       intent.AllReaders(cfg.Intent.DisabledReaders),
 		Cache:         intent.NewDBCache(sctx.DB),
-		Summarizer:    intent.NewAgentSummarizer(sctx.Agent, sctx.WorkDir),
-		Disambiguator: intent.NewAgentDisambiguator(sctx.Agent, sctx.WorkDir),
+		Summarizer:    intent.NewAgentSummarizer(summarizerAgent, sctx.WorkDir),
+		Disambiguator: intent.NewAgentDisambiguator(disambiguatorAgent, sctx.WorkDir),
 		Logf: func(format string, args ...any) {
 			sctx.Log(fmt.Sprintf("intent "+format, args...))
 		},

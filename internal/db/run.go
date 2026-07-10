@@ -317,6 +317,46 @@ func (d *DB) RecoverStaleRunsExcept(errMsg string, preserved map[string]struct{}
 	defer tx.Rollback()
 
 	placeholders, args := recoveryExclusionClause(preserved)
+
+	// Append one interruption terminal for every stale attempt whose pipeline
+	// run is not being reconstructed. The terminal table's primary key makes
+	// recovery idempotent without corrupting a preserved parked run.
+	attemptArgs := []any{
+		types.InvocationOutcomeInterrupted, ts, ts, types.InvocationScopePipeline,
+		types.RunPending, types.RunRunning,
+	}
+	attemptArgs = append(attemptArgs, args...)
+	_, err = tx.Exec(
+		`INSERT INTO invocation_attempt_terminals (attempt_id, outcome, terminal_at, duration_ms, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens)
+		 SELECT start.id, ?, ?, max(0, (? - start.started_at) * 1000), 0, 0, 0, 0
+		 FROM invocation_attempt_starts AS start
+		 LEFT JOIN invocation_attempt_terminals AS terminal ON terminal.attempt_id = start.id
+		 WHERE terminal.attempt_id IS NULL AND start.scope_kind = ?
+		   AND start.run_id IN (SELECT id FROM runs WHERE status IN (?, ?)`+placeholders+`)`,
+		attemptArgs...,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("recover invocation attempts: %w", err)
+	}
+
+	// Reserved rounds are audit evidence, not completed prompt/report history.
+	roundArgs := []any{StepRoundFailed, ts, ts, StepRoundReserved, types.RunPending, types.RunRunning}
+	roundArgs = append(roundArgs, args...)
+	_, err = tx.Exec(
+		`UPDATE step_rounds SET state = ?, completed_at = ?, duration_ms = max(0, (? - started_at) * 1000)
+		 WHERE state = ? AND step_result_id IN (
+			SELECT id FROM step_results WHERE run_id IN (
+				SELECT id FROM runs WHERE status IN (?, ?)`+placeholders+`
+			)
+		 )`,
+		roundArgs...,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("recover reserved rounds: %w", err)
+	}
+
+	// Fail stale steps first (running, awaiting_approval, fixing, fix_review),
+	// excluding any run the daemon proved it can reconstruct safely.
 	stepArgs := []any{
 		types.StepStatusFailed, errMsg, ts,
 		types.StepStatusRunning, types.StepStatusAwaitingApproval, types.StepStatusFixing, types.StepStatusFixReview,

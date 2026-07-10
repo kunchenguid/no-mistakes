@@ -54,6 +54,9 @@ CREATE TABLE IF NOT EXISTS step_rounds (
     selected_finding_ids TEXT,
     selection_source     TEXT,
     fix_summary          TEXT,
+    state                TEXT NOT NULL DEFAULT 'completed',
+    started_at           INTEGER,
+    completed_at         INTEGER,
     duration_ms          INTEGER NOT NULL,
     created_at           INTEGER NOT NULL
 );
@@ -92,6 +95,46 @@ CREATE TABLE IF NOT EXISTS run_agent_sessions (
     PRIMARY KEY (run_id, role)
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS step_rounds_step_round_unique
+    ON step_rounds(step_result_id, round);
+
+CREATE TABLE IF NOT EXISTS utility_scopes (
+    id         TEXT PRIMARY KEY,
+    kind       TEXT NOT NULL,
+    owner_pid  INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS invocation_attempt_starts (
+    id               TEXT PRIMARY KEY,
+    purpose          TEXT NOT NULL,
+    role             TEXT NOT NULL,
+    scope_kind       TEXT NOT NULL,
+    run_id           TEXT,
+    step_result_id   TEXT,
+    step_round_id    TEXT,
+    utility_scope_id TEXT,
+    candidate_key    TEXT NOT NULL,
+    started_at       INTEGER NOT NULL,
+    CHECK (
+        (scope_kind = 'pipeline' AND run_id IS NOT NULL AND step_result_id IS NOT NULL AND step_round_id IS NOT NULL AND utility_scope_id IS NULL)
+        OR
+        (scope_kind = 'utility' AND run_id IS NULL AND step_result_id IS NULL AND step_round_id IS NULL AND utility_scope_id IS NOT NULL)
+    )
+);
+
+CREATE TABLE IF NOT EXISTS invocation_attempt_terminals (
+    attempt_id            TEXT PRIMARY KEY REFERENCES invocation_attempt_starts(id) ON DELETE CASCADE,
+    outcome               TEXT NOT NULL,
+    failure_domain        TEXT,
+    terminal_at           INTEGER NOT NULL,
+    duration_ms           INTEGER NOT NULL,
+    input_tokens          INTEGER NOT NULL DEFAULT 0,
+    output_tokens         INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens     INTEGER NOT NULL DEFAULT 0,
+    cache_creation_tokens INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS intent_cache (
     cache_key   TEXT PRIMARY KEY,
     summary     TEXT NOT NULL,
@@ -110,6 +153,9 @@ var migrationStatements = []string{
 	`ALTER TABLE step_rounds ADD COLUMN selection_source TEXT`,
 	`ALTER TABLE step_rounds ADD COLUMN fix_summary TEXT`,
 	`ALTER TABLE step_rounds ADD COLUMN user_findings_json TEXT`,
+	`ALTER TABLE step_rounds ADD COLUMN state TEXT NOT NULL DEFAULT 'completed'`,
+	`ALTER TABLE step_rounds ADD COLUMN started_at INTEGER`,
+	`ALTER TABLE step_rounds ADD COLUMN completed_at INTEGER`,
 	`ALTER TABLE runs ADD COLUMN intent TEXT`,
 	`ALTER TABLE runs ADD COLUMN intent_source TEXT`,
 	`ALTER TABLE runs ADD COLUMN intent_session_id TEXT`,

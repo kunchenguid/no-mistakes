@@ -71,6 +71,7 @@ Previous review findings to address:
 			previousFindings,
 		)
 		summary, err := executeFixMode(sctx, s.Name(), fixExecutionOptions{
+			Purpose:                 types.PurposeStructuredFindingRepair,
 			RequirePreviousFindings: true,
 			MissingFindingsError:    "review fix requires previous review findings",
 			LogMessage:              "asking agent to fix identified issues...",

@@ -392,7 +392,7 @@ Instructions:
 	}
 	prompt += userIntentPromptSection(sctx)
 
-	_, err = sctx.Agent.Run(ctx, agent.RunOpts{
+	_, err = sctx.InvokeAgent(types.PurposeUnstructuredConflictRepair, agent.RunOpts{
 		Prompt:     prompt,
 		CWD:        sctx.WorkDir,
 		JSONSchema: commitSummarySchema,

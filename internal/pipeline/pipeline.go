@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
@@ -11,11 +12,16 @@ import (
 
 // StepContext provides shared resources to pipeline steps during execution.
 type StepContext struct {
-	Ctx              context.Context
-	Run              *db.Run
-	Repo             *db.Repo
-	WorkDir          string
-	Agent            agent.Agent
+	Ctx     context.Context
+	Run     *db.Run
+	Repo    *db.Repo
+	WorkDir string
+	Agent   agent.Agent
+	// Invoker is the semantic, journaled agent boundary used by production
+	// steps. Agent remains available as a legacy test seam.
+	Invoker          agent.Invoker
+	InvocationScope  types.InvocationScope
+	CurrentRound     *db.StepRound
 	Config           *config.Config
 	DB               *db.DB
 	Log              func(string) // discrete log line (newline-terminated, user-visible + file)
@@ -77,6 +83,27 @@ type StepOutcome struct {
 	// reported for this step. Used by demo mode to show realistic durations
 	// without actually waiting.
 	DurationOverrideMS int64
+}
+
+// InvokeAgent launches one semantic invocation owned by the current reserved
+// round. Production contexts always use the journaled Invoker; the direct
+// Agent path preserves focused step-test fixtures while still validating the
+// registered Purpose.
+func (sctx *StepContext) InvokeAgent(purpose types.Purpose, payload agent.RunOpts) (*agent.Result, error) {
+	if _, err := types.PurposeDefinitionFor(purpose); err != nil {
+		return nil, err
+	}
+	if sctx.Invoker != nil {
+		return sctx.Invoker.Invoke(sctx.Ctx, agent.InvocationRequest{
+			Purpose: purpose,
+			Scope:   sctx.InvocationScope,
+			Payload: payload,
+		})
+	}
+	if sctx.Agent == nil {
+		return nil, fmt.Errorf("agent is nil")
+	}
+	return sctx.Agent.Run(sctx.Ctx, payload)
 }
 
 // Step is the interface that each pipeline step implements.

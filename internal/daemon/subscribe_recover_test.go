@@ -611,3 +611,59 @@ exit 0
 		t.Fatalf("migrated hook should not silently swallow notify-push errors, got:\n%s", content)
 	}
 }
+
+func TestRecoverStaleUtilityInvocationsLeavesLiveOwnerActive(t *testing.T) {
+	database, err := db.Open(filepath.Join(t.TempDir(), "state.sqlite"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer database.Close()
+	attemptID := startWizardUtilityAttempt(t, database, os.Getpid())
+
+	recoverStaleUtilityInvocations(database)
+
+	attempt, err := database.GetInvocationAttempt(attemptID)
+	if err != nil {
+		t.Fatalf("get invocation: %v", err)
+	}
+	if attempt == nil || attempt.Terminal != nil {
+		t.Fatalf("live-owner attempt = %+v, want active", attempt)
+	}
+}
+
+func TestRecoverStaleUtilityInvocationsInterruptsDeadOwner(t *testing.T) {
+	database, err := db.Open(filepath.Join(t.TempDir(), "state.sqlite"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer database.Close()
+	attemptID := startWizardUtilityAttempt(t, database, 999999)
+
+	recoverStaleUtilityInvocations(database)
+
+	attempt, err := database.GetInvocationAttempt(attemptID)
+	if err != nil {
+		t.Fatalf("get invocation: %v", err)
+	}
+	if attempt == nil || attempt.Terminal == nil || attempt.Terminal.Outcome != types.InvocationOutcomeInterrupted {
+		t.Fatalf("dead-owner attempt = %+v, want interrupted", attempt)
+	}
+}
+
+func startWizardUtilityAttempt(t *testing.T, database *db.DB, ownerPID int) string {
+	t.Helper()
+	scope, err := database.InsertUtilityScope(types.UtilityScopeWizard, ownerPID)
+	if err != nil {
+		t.Fatalf("insert utility scope: %v", err)
+	}
+	attemptID, err := database.StartInvocationAttempt(types.InvocationAttemptStart{
+		Purpose:      types.PurposeBranchCommitSuggestion,
+		Role:         types.InvocationRoleFixer,
+		Scope:        types.InvocationScope{Kind: types.InvocationScopeUtility, UtilityScopeID: scope.ID},
+		CandidateKey: types.LegacyCandidateKey,
+	})
+	if err != nil {
+		t.Fatalf("start utility invocation: %v", err)
+	}
+	return attemptID
+}

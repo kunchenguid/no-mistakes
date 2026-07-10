@@ -67,6 +67,7 @@ Previous test findings to address:
 ` + sanitizedPreviousFindingsForPrompt(sctx.PreviousFindings)
 		}
 		summary, err := executeFixMode(sctx, s.Name(), fixExecutionOptions{
+			Purpose:         types.PurposeUnstructuredTestRepair,
 			LogMessage:      "asking agent to fix test failures...",
 			Prompt:          fixPrompt,
 			ErrorPrefix:     "agent fix tests",
@@ -139,7 +140,7 @@ Previous test findings to address:
 		if testCmd != "" {
 			configuredTestCommand = fmt.Sprintf("\nConfigured test command already ran successfully as baseline: `%s`\n", testCmd)
 		}
-		result, err := sctx.Agent.Run(ctx, agent.RunOpts{
+		result, err := sctx.InvokeAgent(types.PurposeTestEvidence, agent.RunOpts{
 			Prompt: fmt.Sprintf(
 				`You are validating a code change by testing it. Examine the repository and run the appropriate tests yourself.
 

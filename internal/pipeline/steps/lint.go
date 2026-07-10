@@ -65,7 +65,7 @@ Rules:
 Previous lint findings to address:
 ` + sanitizedPreviousFindingsForPrompt(sctx.PreviousFindings)
 		}
-		result, err := sctx.Agent.Run(ctx, agent.RunOpts{
+		result, err := sctx.InvokeAgent(types.PurposeLintInspection, agent.RunOpts{
 			Prompt:     prompt,
 			CWD:        sctx.WorkDir,
 			JSONSchema: findingsSchema,
@@ -133,6 +133,7 @@ Previous lint findings to address:
 ` + sanitizedPreviousFindingsForPrompt(sctx.PreviousFindings)
 		}
 		summary, err := executeFixMode(sctx, s.Name(), fixExecutionOptions{
+			Purpose:         types.PurposeLintInspection,
 			LogMessage:      "asking agent to fix lint issues...",
 			Prompt:          fixPrompt,
 			ErrorPrefix:     "agent fix lint",

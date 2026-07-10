@@ -267,6 +267,7 @@ func writeDaemonPIDFile(path string, record daemonPIDFile) error {
 func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager) {
 	reapOrphanedServers(p)
 	migrateGateConfigs(context.Background(), p)
+	recoverStaleUtilityInvocations(d)
 
 	plans := mgr.recoverableParkedRuns(context.Background())
 	preserved := make(map[string]struct{}, len(plans))
@@ -359,6 +360,40 @@ func skipWorktreeCleanup(d *db.DB, runID string) (bool, string) {
 		return true, fmt.Sprintf("run %s is %s", runID, run.Status)
 	}
 	return false, ""
+
+func recoverStaleUtilityInvocations(d *db.DB) {
+	scopes, err := d.GetOpenUtilityScopes()
+	if err != nil {
+		slog.Error("failed to list open utility invocation scopes", "error", err)
+		return
+	}
+	for _, scope := range scopes {
+		ownerAlive, err := processRunning(scope.OwnerPID)
+		if err != nil {
+			slog.Warn("could not inspect utility invocation owner", "scope_id", scope.ID, "owner_pid", scope.OwnerPID, "error", err)
+			continue
+		}
+		if ownerAlive {
+			startedAt, err := processStartTime(scope.OwnerPID)
+			if err != nil {
+				slog.Warn("could not verify utility invocation owner identity", "scope_id", scope.ID, "owner_pid", scope.OwnerPID, "error", err)
+				continue
+			}
+			// The observed-at timestamp is later than the real owner's process
+			// start. A later process start means the PID was reused.
+			if startedAt.UnixNano() <= scope.CreatedAt {
+				continue
+			}
+		}
+		count, err := d.InterruptUtilityScopeAttempts(scope.ID)
+		if err != nil {
+			slog.Error("failed to recover utility invocation scope", "scope_id", scope.ID, "owner_pid", scope.OwnerPID, "error", err)
+			continue
+		}
+		if count > 0 {
+			slog.Info("recovered interrupted utility invocations", "scope_id", scope.ID, "owner_pid", scope.OwnerPID, "count", count)
+		}
+	}
 }
 
 // migrateGateConfigs walks every bare repo under p.ReposDir() and refreshes

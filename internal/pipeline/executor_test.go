@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -385,5 +386,77 @@ func TestExecutor_ConfiguredSkippedStepDoesNotExecuteAndContinues(t *testing.T) 
 		if step.StepName == types.StepReview && step.Status != types.StepStatusSkipped {
 			t.Fatalf("review status = %s, want %s", step.Status, types.StepStatusSkipped)
 		}
+	}
+}
+
+type executorInvocationAgent struct {
+	calls int
+}
+
+func (a *executorInvocationAgent) Name() string { return "fake" }
+func (a *executorInvocationAgent) Close() error { return nil }
+func (a *executorInvocationAgent) Run(_ context.Context, _ agent.RunOpts) (*agent.Result, error) {
+	a.calls++
+	return &agent.Result{}, nil
+}
+
+func TestExecutorReservesRoundAndInvocationContextBeforeAgentLaunch(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+	baseAgent := &executorInvocationAgent{}
+	step := &adaptiveCallStep{
+		name: types.StepReview,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			if sctx.CurrentRound == nil || sctx.CurrentRound.ID == "" {
+				t.Fatal("step started without a stable reserved round")
+			}
+			stored, err := database.GetStepRound(sctx.CurrentRound.ID)
+			if err != nil {
+				t.Fatalf("get current round: %v", err)
+			}
+			if stored == nil || stored.State != "reserved" || stored.StepResultID != sctx.StepResultID {
+				t.Fatalf("current round before invocation = %+v", stored)
+			}
+			prior, err := database.GetPriorCompletedRounds(sctx.StepResultID, sctx.CurrentRound.ID)
+			if err != nil {
+				t.Fatalf("get prior rounds: %v", err)
+			}
+			if len(prior) != 0 {
+				t.Fatalf("current round leaked into its own history: %+v", prior)
+			}
+			if _, err := sctx.InvokeAgent(types.PurposeInitialReview, agent.RunOpts{Prompt: "review", CWD: sctx.WorkDir}); err != nil {
+				t.Fatalf("invoke agent: %v", err)
+			}
+			return &StepOutcome{}, nil
+		},
+	}
+
+	exec := NewExecutor(database, p, nil, baseAgent, []Step{step}, nil)
+	if err := exec.Execute(context.Background(), run, repo, workDir); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if baseAgent.calls != 1 {
+		t.Fatalf("agent calls = %d, want 1", baseAgent.calls)
+	}
+	steps, err := database.GetStepsByRun(run.ID)
+	if err != nil || len(steps) != 1 {
+		t.Fatalf("steps = %+v, err = %v", steps, err)
+	}
+	rounds, err := database.GetRoundsByStep(steps[0].ID)
+	if err != nil || len(rounds) != 1 {
+		t.Fatalf("completed rounds = %+v, err = %v", rounds, err)
+	}
+	attempts, err := database.GetInvocationAttemptsByRound(rounds[0].ID)
+	if err != nil {
+		t.Fatalf("get invocation attempts: %v", err)
+	}
+	if len(attempts) != 1 {
+		t.Fatalf("invocation attempts = %+v, want one", attempts)
+	}
+	if attempts[0].Start.Purpose != types.PurposeInitialReview || attempts[0].Start.Scope.StepRoundID != rounds[0].ID {
+		t.Fatalf("invocation start = %+v, want purpose and reserved round identity", attempts[0].Start)
+	}
+	if attempts[0].Terminal == nil || attempts[0].Terminal.Outcome != types.InvocationOutcomeSucceeded {
+		t.Fatalf("invocation terminal = %+v, want succeeded", attempts[0].Terminal)
 	}
 }

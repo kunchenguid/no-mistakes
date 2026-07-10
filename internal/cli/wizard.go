@@ -46,9 +46,12 @@ type wizardAgentSuggester struct {
 	resolve func(context.Context, *config.Config) error
 	new     func(types.AgentName, string, []string, agent.Options) (agent.Agent, error)
 
-	once sync.Once
-	ag   agent.Agent
-	err  error
+	once            sync.Once
+	ag              agent.Agent
+	journal         agent.InvocationJournal
+	invocationScope types.InvocationScope
+	invocationAgent agent.Agent
+	err             error
 
 	// cachedCommit holds a commit subject returned as a side-effect of the
 	// branch-name agent call, so the commit step can consume it without
@@ -67,6 +70,11 @@ func newWizardAgentSuggester(cfg *config.Config, workDir string, resolve func(co
 	return &wizardAgentSuggester{cfg: cfg, workDir: workDir, resolve: resolve, new: new}
 }
 
+func (s *wizardAgentSuggester) setInvocationContext(journal agent.InvocationJournal, scope types.InvocationScope) {
+	s.journal = journal
+	s.invocationScope = scope
+}
+
 func (s *wizardAgentSuggester) ensure(ctx context.Context) error {
 	s.once.Do(func() {
 		if err := s.resolve(ctx, s.cfg); err != nil {
@@ -81,6 +89,15 @@ func (s *wizardAgentSuggester) ensure(ctx context.Context) error {
 			return
 		}
 		s.ag = ag
+		if s.journal != nil {
+			s.invocationAgent = agent.BindInvocation(
+				agent.NewLegacyInvoker(ag, s.journal),
+				types.PurposeBranchCommitSuggestion,
+				s.invocationScope,
+			)
+		} else {
+			s.invocationAgent = ag
+		}
 	})
 	return s.err
 }
@@ -92,7 +109,7 @@ func (s *wizardAgentSuggester) suggestBranch(ctx context.Context) (string, error
 	s.cacheMu.Lock()
 	s.cachedCommit = ""
 	s.cacheMu.Unlock()
-	branch, commit, err := agent.SuggestBranchAndCommit(ctx, s.ag, s.workDir)
+	branch, commit, err := agent.SuggestBranchAndCommit(ctx, s.invocationAgent, s.workDir)
 	if err != nil {
 		return "", err
 	}
@@ -118,7 +135,7 @@ func (s *wizardAgentSuggester) suggestCommit(ctx context.Context) (string, error
 	if err := s.ensure(ctx); err != nil {
 		return "", err
 	}
-	return agent.SuggestCommitMessage(ctx, s.ag, s.workDir)
+	return agent.SuggestCommitMessage(ctx, s.invocationAgent, s.workDir)
 }
 
 func (s *wizardAgentSuggester) Close() error {
@@ -219,7 +236,21 @@ func runWizardWithMode(ctx context.Context, p *paths.Paths, state *repoState, sk
 	agent.SetServerPIDsDirForOwner(p.ServerPIDsDir(), agent.ServerPIDOwnerWizard)
 	defer agent.SetServerPIDsDirForOwner("", "")
 
+	journalDB, err := db.Open(p.DB())
+	if err != nil {
+		return wizard.Result{}, fmt.Errorf("open invocation journal: %w", err)
+	}
+	defer journalDB.Close()
+	utilityScope, err := journalDB.InsertUtilityScope(types.UtilityScopeWizard, os.Getpid())
+	if err != nil {
+		return wizard.Result{}, fmt.Errorf("create wizard invocation scope: %w", err)
+	}
+
 	suggester := newWizardAgentSuggester(cfg, workDir, nil, nil)
+	suggester.setInvocationContext(journalDB, types.InvocationScope{
+		Kind:           types.InvocationScopeUtility,
+		UtilityScopeID: utilityScope.ID,
+	})
 	defer suggester.Close()
 
 	wizCfg := wizard.Config{

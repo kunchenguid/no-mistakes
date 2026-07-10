@@ -1,10 +1,18 @@
 package db
 
-import "fmt"
+import (
+	"database/sql"
+	"fmt"
+)
 
 const (
 	RoundSelectionSourceUser    = "user"
 	RoundSelectionSourceAutoFix = "auto_fix"
+
+	StepRoundReserved  = "reserved"
+	StepRoundCompleted = "completed"
+	StepRoundFailed    = "failed"
+	StepRoundCancelled = "cancelled"
 )
 
 // StepRound represents one execution round within a pipeline step.
@@ -30,9 +38,12 @@ type StepRound struct {
 	// FixSummary, when non-nil, is the agent's one-line commit summary for
 	// the fix attempt performed during this round. It is only set when the
 	// round itself was a fix round (trigger=="auto_fix").
-	FixSummary *string
-	DurationMS int64
-	CreatedAt  int64
+	FixSummary  *string
+	State       string
+	StartedAt   *int64
+	CompletedAt *int64
+	DurationMS  int64
+	CreatedAt   int64
 }
 
 // StepRoundStats summarizes execution rounds for a step. It lets status
@@ -114,27 +125,108 @@ func (d *DB) StepRoundStats(stepResultID string) (StepRoundStats, error) {
 	return stats, nil
 }
 
-// InsertStepRound creates a new round record for a step result. fixSummary may
-// be nil for non-fix rounds or when the agent produced no summary.
-func (d *DB) InsertStepRound(stepResultID string, round int, trigger string, findingsJSON *string, fixSummary *string, durationMS int64) (*StepRound, error) {
-	r := &StepRound{
+const stepRoundColumns = `id, step_result_id, round, trigger_type, findings_json, user_findings_json, selected_finding_ids, selection_source, fix_summary, state, started_at, completed_at, duration_ms, created_at`
+
+func scanStepRound(row interface{ Scan(...any) error }, round *StepRound) error {
+	return row.Scan(
+		&round.ID, &round.StepResultID, &round.Round, &round.Trigger,
+		&round.FindingsJSON, &round.UserFindingsJSON, &round.SelectedFindingIDs,
+		&round.SelectionSource, &round.FixSummary, &round.State,
+		&round.StartedAt, &round.CompletedAt, &round.DurationMS, &round.CreatedAt,
+	)
+}
+
+// ReserveStepRound creates a stable round identity before step execution.
+func (d *DB) ReserveStepRound(stepResultID string, roundNumber int, trigger string) (*StepRound, error) {
+	ts := now()
+	round := &StepRound{
 		ID:           newID(),
 		StepResultID: stepResultID,
-		Round:        round,
+		Round:        roundNumber,
+		Trigger:      trigger,
+		State:        StepRoundReserved,
+		StartedAt:    &ts,
+		CreatedAt:    ts,
+	}
+	_, err := d.sql.Exec(
+		`INSERT INTO step_rounds (id, step_result_id, round, trigger_type, state, started_at, duration_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		round.ID, round.StepResultID, round.Round, round.Trigger, round.State, ts, 0, round.CreatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("reserve step round: %w", err)
+	}
+	return round, nil
+}
+
+// CompleteReservedStepRound appends the successful outcome facts to a
+// reservation. A terminal round cannot be completed a second time.
+func (d *DB) CompleteReservedStepRound(id string, findingsJSON *string, fixSummary *string, durationMS int64) error {
+	ts := now()
+	result, err := d.sql.Exec(
+		`UPDATE step_rounds SET findings_json = ?, fix_summary = ?, state = ?, completed_at = ?, duration_ms = ? WHERE id = ? AND state = ?`,
+		findingsJSON, fixSummary, StepRoundCompleted, ts, durationMS, id, StepRoundReserved,
+	)
+	if err != nil {
+		return fmt.Errorf("complete reserved step round: %w", err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("complete reserved step round rows affected: %w", err)
+	}
+	if changed != 1 {
+		return fmt.Errorf("complete reserved step round %q: reservation not active", id)
+	}
+	return nil
+}
+
+// TerminateReservedStepRound records a failed or cancelled execution while
+// keeping it outside completed prompt and report history.
+func (d *DB) TerminateReservedStepRound(id, state string, durationMS int64) error {
+	if state != StepRoundFailed && state != StepRoundCancelled {
+		return fmt.Errorf("invalid terminal step round state %q", state)
+	}
+	result, err := d.sql.Exec(
+		`UPDATE step_rounds SET state = ?, completed_at = ?, duration_ms = ? WHERE id = ? AND state = ?`,
+		state, now(), durationMS, id, StepRoundReserved,
+	)
+	if err != nil {
+		return fmt.Errorf("terminate reserved step round: %w", err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("terminate reserved step round rows affected: %w", err)
+	}
+	if changed != 1 {
+		return fmt.Errorf("terminate reserved step round %q: reservation not active", id)
+	}
+	return nil
+}
+
+// InsertStepRound preserves the completed-history helper used by fixtures and
+// non-executor callers.
+func (d *DB) InsertStepRound(stepResultID string, roundNumber int, trigger string, findingsJSON *string, fixSummary *string, durationMS int64) (*StepRound, error) {
+	ts := now()
+	round := &StepRound{
+		ID:           newID(),
+		StepResultID: stepResultID,
+		Round:        roundNumber,
 		Trigger:      trigger,
 		FindingsJSON: findingsJSON,
 		FixSummary:   fixSummary,
+		State:        StepRoundCompleted,
+		StartedAt:    &ts,
+		CompletedAt:  &ts,
 		DurationMS:   durationMS,
-		CreatedAt:    now(),
+		CreatedAt:    ts,
 	}
 	_, err := d.sql.Exec(
-		`INSERT INTO step_rounds (id, step_result_id, round, trigger_type, findings_json, user_findings_json, selected_finding_ids, selection_source, fix_summary, duration_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, r.StepResultID, r.Round, r.Trigger, r.FindingsJSON, r.UserFindingsJSON, r.SelectedFindingIDs, r.SelectionSource, r.FixSummary, r.DurationMS, r.CreatedAt,
+		`INSERT INTO step_rounds (id, step_result_id, round, trigger_type, findings_json, fix_summary, state, started_at, completed_at, duration_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		round.ID, round.StepResultID, round.Round, round.Trigger, round.FindingsJSON, round.FixSummary, round.State, ts, ts, round.DurationMS, round.CreatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert step round: %w", err)
 	}
-	return r, nil
+	return round, nil
 }
 
 // SetStepRoundSelection records which findings were selected for fix AFTER the
@@ -174,23 +266,49 @@ func (d *DB) SetStepRoundUserFindings(id string, userFindingsJSON *string) error
 	return nil
 }
 
-// GetRoundsByStep returns all rounds for a step result, ordered by round number.
+// GetStepRound returns any round by ID, including non-completed reservations.
+func (d *DB) GetStepRound(id string) (*StepRound, error) {
+	round := &StepRound{}
+	if err := scanStepRound(d.sql.QueryRow(`SELECT `+stepRoundColumns+` FROM step_rounds WHERE id = ?`, id), round); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get step round: %w", err)
+	}
+	return round, nil
+}
+
+// GetRoundsByStep returns completed rounds in their established order.
 func (d *DB) GetRoundsByStep(stepResultID string) ([]*StepRound, error) {
-	rows, err := d.sql.Query(
-		`SELECT id, step_result_id, round, trigger_type, findings_json, user_findings_json, selected_finding_ids, selection_source, fix_summary, duration_ms, created_at FROM step_rounds WHERE step_result_id = ? ORDER BY round`,
-		stepResultID,
-	)
+	return d.getCompletedRounds(stepResultID, "")
+}
+
+// GetPriorCompletedRounds returns completed history excluding the current
+// reservation explicitly, even if a caller races with its finalization.
+func (d *DB) GetPriorCompletedRounds(stepResultID, currentRoundID string) ([]*StepRound, error) {
+	return d.getCompletedRounds(stepResultID, currentRoundID)
+}
+
+func (d *DB) getCompletedRounds(stepResultID, excludedRoundID string) ([]*StepRound, error) {
+	query := `SELECT ` + stepRoundColumns + ` FROM step_rounds WHERE step_result_id = ? AND state = ?`
+	args := []any{stepResultID, StepRoundCompleted}
+	if excludedRoundID != "" {
+		query += ` AND id <> ?`
+		args = append(args, excludedRoundID)
+	}
+	query += ` ORDER BY round`
+	rows, err := d.sql.Query(query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("get rounds by step: %w", err)
+		return nil, fmt.Errorf("get completed rounds by step: %w", err)
 	}
 	defer rows.Close()
 	var rounds []*StepRound
 	for rows.Next() {
-		r := &StepRound{}
-		if err := rows.Scan(&r.ID, &r.StepResultID, &r.Round, &r.Trigger, &r.FindingsJSON, &r.UserFindingsJSON, &r.SelectedFindingIDs, &r.SelectionSource, &r.FixSummary, &r.DurationMS, &r.CreatedAt); err != nil {
+		round := &StepRound{}
+		if err := scanStepRound(rows, round); err != nil {
 			return nil, fmt.Errorf("scan step round: %w", err)
 		}
-		rounds = append(rounds, r)
+		rounds = append(rounds, round)
 	}
 	return rounds, rows.Err()
 }

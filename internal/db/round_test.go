@@ -267,3 +267,85 @@ func TestSetStepRoundSelectedFindingIDs(t *testing.T) {
 		t.Errorf("expected nil selection_source after clear, got %v", rounds[0].SelectionSource)
 	}
 }
+
+func TestReservedRoundIsStableAndExcludedUntilCompleted(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/reserved", "git@github.com:user/reserved.git", "main")
+	run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
+	step, _ := d.InsertStepResult(run.ID, types.StepReview)
+
+	round, err := d.ReserveStepRound(step.ID, 1, "initial")
+	if err != nil {
+		t.Fatalf("reserve round: %v", err)
+	}
+	if round.ID == "" || round.StepResultID != step.ID || round.Round != 1 || round.State != StepRoundReserved {
+		t.Fatalf("reserved round = %+v", round)
+	}
+	completed, err := d.GetRoundsByStep(step.ID)
+	if err != nil {
+		t.Fatalf("get completed rounds: %v", err)
+	}
+	if len(completed) != 0 {
+		t.Fatalf("completed rounds = %+v, want current reservation excluded", completed)
+	}
+	prior, err := d.GetPriorCompletedRounds(step.ID, round.ID)
+	if err != nil {
+		t.Fatalf("get prior completed rounds: %v", err)
+	}
+	if len(prior) != 0 {
+		t.Fatalf("prior rounds = %+v, want current reservation excluded", prior)
+	}
+
+	findings := `{"findings":[],"summary":"clean"}`
+	if err := d.CompleteReservedStepRound(round.ID, &findings, nil, 432); err != nil {
+		t.Fatalf("complete reserved round: %v", err)
+	}
+	completed, err = d.GetRoundsByStep(step.ID)
+	if err != nil {
+		t.Fatalf("get completed rounds: %v", err)
+	}
+	if len(completed) != 1 || completed[0].ID != round.ID || completed[0].State != StepRoundCompleted || completed[0].DurationMS != 432 {
+		t.Fatalf("completed rounds = %+v, want finalized original reservation", completed)
+	}
+	if err := d.CompleteReservedStepRound(round.ID, &findings, nil, 999); err == nil {
+		t.Fatal("second round completion succeeded, want terminal-state rejection")
+	}
+}
+
+func TestReservedRoundNumbersAreUniquePerStep(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/unique-round", "git@github.com:user/unique-round.git", "main")
+	run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
+	step, _ := d.InsertStepResult(run.ID, types.StepTest)
+	if _, err := d.ReserveStepRound(step.ID, 1, "initial"); err != nil {
+		t.Fatalf("first reserve: %v", err)
+	}
+	if _, err := d.ReserveStepRound(step.ID, 1, "initial"); err == nil {
+		t.Fatal("duplicate round number reserve succeeded")
+	}
+}
+
+func TestFailedReservedRoundRemainsAuditableButOutsideCompletedHistory(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/failed-round", "git@github.com:user/failed-round.git", "main")
+	run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
+	step, _ := d.InsertStepResult(run.ID, types.StepTest)
+	round, _ := d.ReserveStepRound(step.ID, 1, "initial")
+	if err := d.TerminateReservedStepRound(round.ID, StepRoundFailed, 321); err != nil {
+		t.Fatalf("terminate round: %v", err)
+	}
+	stored, err := d.GetStepRound(round.ID)
+	if err != nil {
+		t.Fatalf("get failed round: %v", err)
+	}
+	if stored == nil || stored.State != StepRoundFailed || stored.DurationMS != 321 {
+		t.Fatalf("failed round = %+v", stored)
+	}
+	history, err := d.GetRoundsByStep(step.ID)
+	if err != nil {
+		t.Fatalf("get completed history: %v", err)
+	}
+	if len(history) != 0 {
+		t.Fatalf("completed history = %+v, want failed reservation excluded", history)
+	}
+}

@@ -128,7 +128,7 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 		purpose = "housekeeping"
 	}
 
-	result, err := sctx.Agent.Run(ctx, agent.RunOpts{
+	result, err := sctx.InvokeAgent(types.PurposeDocumentationAuthoring, agent.RunOpts{
 		Prompt:     prompt,
 		CWD:        sctx.WorkDir,
 		JSONSchema: schema,

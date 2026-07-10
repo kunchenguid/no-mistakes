@@ -169,7 +169,7 @@ Diff stat:
 
 	prompt += prBodyBudgetPromptSection(bodyLimit)
 
-	result, err := sctx.Agent.Run(ctx, agent.RunOpts{
+	result, err := sctx.InvokeAgent(types.PurposePRComposition, agent.RunOpts{
 		Prompt:     prompt,
 		CWD:        sctx.WorkDir,
 		JSONSchema: prContentSchema,
