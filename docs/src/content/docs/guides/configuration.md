@@ -200,6 +200,7 @@ The practical implication is simple: explicit commands give you deterministic
 baseline behavior, while leaving commands empty asks the agent to fill in the gap.
 For tests, available user intent can also trigger an evidence-oriented agent follow-up after the baseline command succeeds.
 By default, evidence stays in a temporary local directory; opt into `test.evidence.store_in_repo` when your team wants evidence artifacts committed, pushed, and linked directly from PRs.
+If your repo ignores `.no-mistakes/`, choose a non-ignored `test.evidence.dir` such as `docs/evidence`; Git-ignored evidence directories fall back to temporary local storage.
 For lint, that gap includes safe formatter and linter fixes during the initial lint pass.
 
 ## Ignore pattern rules

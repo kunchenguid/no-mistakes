@@ -31,3 +31,6 @@ demo_raw.gif
 # Environment
 .env
 .env.local
+
+# no-mistakes local state and evidence (never commit)
+.no-mistakes/

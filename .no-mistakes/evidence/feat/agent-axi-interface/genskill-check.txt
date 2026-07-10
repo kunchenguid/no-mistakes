@@ -1,1 +1,0 @@
-genskill: skills/no-mistakes/SKILL.md is up to date
