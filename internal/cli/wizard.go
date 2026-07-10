@@ -42,10 +42,10 @@ var runWizardAuto = func(ctx context.Context, p *paths.Paths, state *repoState, 
 }
 
 type wizardAgentSuggester struct {
-	cfg     *config.Config
-	workDir string
-	resolve func(context.Context, *config.Config) error
-	new     func(types.AgentName, string, []string, agent.Options) (agent.Agent, error)
+	cfg            *config.Config
+	workDir        string
+	resolve        func(context.Context, *config.Config) error
+	new            func(types.AgentName, string, []string, agent.Options) (agent.Agent, error)
 	routing        config.RoutingConfig
 	routingFactory func(types.AgentName, string) (agent.Agent, error)
 

@@ -526,3 +526,18 @@ func TestDocumentationRepairUsesVerifierAndRoutes(t *testing.T) {
 		t.Fatalf("doc verifier = %q/%q, want documentation_verification", policy.verifierPurpose, policy.finalVerifierPurpose)
 	}
 }
+
+// TestVerifyRepairRoutesThroughStructuredCascade confirms Verify's aggregate
+// findings repair through the structured cascade with a strong verifier (ticket 17).
+func TestVerifyRepairRoutesThroughStructuredCascade(t *testing.T) {
+	policy, ok := stepRepairPolicyFor(config.DefaultRoutingConfig(), types.StepVerify)
+	if !ok {
+		t.Fatal("expected a repair policy for the Verify step")
+	}
+	if policy.fixerPurpose != types.PurposeStructuredFindingRepair {
+		t.Fatalf("verify fixer purpose = %q, want structured_finding_repair", policy.fixerPurpose)
+	}
+	if policy.finalVerifierPurpose != types.PurposeEscalatedAggregateVerification {
+		t.Fatalf("verify final verifier = %q, want escalated aggregate verification", policy.finalVerifierPurpose)
+	}
+}

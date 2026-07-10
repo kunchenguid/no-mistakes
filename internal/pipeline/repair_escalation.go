@@ -116,6 +116,10 @@ func stepRepairPolicyFor(routing config.RoutingConfig, stepName types.StepName) 
 		return blockingRepairPolicy(routing), true
 	case types.StepDocument:
 		return documentationRepairPolicy(routing), true
+	case types.StepVerify:
+		// Verify's aggregate findings repair through the structured cascade
+		// (fix_fast → fix_balanced → authority_strong) with a strong aggregate verifier.
+		return blockingRepairPolicy(routing), true
 	default:
 		return repairPolicy{}, false
 	}

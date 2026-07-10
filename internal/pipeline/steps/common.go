@@ -134,6 +134,7 @@ func AllSteps() []pipeline.Step {
 		&TestStep{},
 		&DocumentStep{},
 		&LintStep{},
+		&VerifyStep{},
 		&PushStep{},
 		&PRStep{},
 		&CIStep{},

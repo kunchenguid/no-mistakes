@@ -216,6 +216,7 @@ func runHappyPath(t *testing.T, agentName string) {
 			"Choose which recent agent session most likely produced",
 			"Detect the linting and formatting tools",
 			"Bring the project documentation fully in sync",
+			"final aggregate verification of a sealed release candidate",
 		} {
 			if strings.Contains(inv.Prompt, routed) {
 				wantAgent = "codex"
@@ -1024,7 +1025,7 @@ func assertEmptyDiffAfterRebaseRun(t *testing.T, h *Harness) {
 	if run.Status != types.RunCompleted {
 		t.Fatalf("empty-after-rebase run did not complete: status=%s error=%v", run.Status, deref(run.Error))
 	}
-	for _, stepName := range []types.StepName{types.StepReview, types.StepTest, types.StepDocument, types.StepLint, types.StepPush, types.StepPR, types.StepCI} {
+	for _, stepName := range []types.StepName{types.StepReview, types.StepTest, types.StepDocument, types.StepLint, types.StepVerify, types.StepPush, types.StepPR, types.StepCI} {
 		step, ok := findStep(run.Steps, stepName)
 		if !ok {
 			t.Fatalf("expected %s step in empty-after-rebase run", stepName)
@@ -1167,7 +1168,7 @@ func assertNonEmptyDiffAfterRebaseRun(t *testing.T, h *Harness) {
 	if strings.TrimSpace(string(mergeBase)) != strings.TrimSpace(string(mainSHA)) {
 		t.Fatalf("non-empty-after-rebase merge-base = %s, want upstream main %s", strings.TrimSpace(string(mergeBase)), strings.TrimSpace(string(mainSHA)))
 	}
-	for _, stepName := range []types.StepName{types.StepRebase, types.StepReview, types.StepTest, types.StepDocument, types.StepLint, types.StepPush} {
+	for _, stepName := range []types.StepName{types.StepRebase, types.StepReview, types.StepTest, types.StepDocument, types.StepLint, types.StepVerify, types.StepPush} {
 		step, ok := findStep(run.Steps, stepName)
 		if !ok {
 			t.Fatalf("expected %s step in non-empty-after-rebase run", stepName)
@@ -2103,7 +2104,7 @@ func assertFailingTestCommandRun(t *testing.T, h *Harness) {
 	if *completedTestStep.DurationMS > awaitingDurationMS+200 {
 		t.Fatalf("test step duration should exclude approval wait: awaiting=%dms completed=%dms", awaitingDurationMS, *completedTestStep.DurationMS)
 	}
-	for _, stepName := range []types.StepName{types.StepDocument, types.StepLint, types.StepPush} {
+	for _, stepName := range []types.StepName{types.StepDocument, types.StepLint, types.StepVerify, types.StepPush} {
 		step, ok := findStep(completed.Steps, stepName)
 		if !ok {
 			t.Fatalf("expected %s step after approving failing test command", stepName)
@@ -2590,7 +2591,7 @@ func assertPushedHead(t *testing.T, runHeadSHA, upstreamHeadSHA string) {
 
 func assertPipelineStepsInOrder(t *testing.T, steps []ipc.StepResultInfo) {
 	t.Helper()
-	expected := []types.StepName{types.StepIntent, types.StepRebase, types.StepReview, types.StepTest, types.StepDocument, types.StepLint, types.StepPush, types.StepPR, types.StepCI}
+	expected := []types.StepName{types.StepIntent, types.StepRebase, types.StepReview, types.StepTest, types.StepDocument, types.StepLint, types.StepVerify, types.StepPush, types.StepPR, types.StepCI}
 	if len(steps) != len(expected) {
 		t.Fatalf("pipeline recorded %d steps, want %d", len(steps), len(expected))
 	}

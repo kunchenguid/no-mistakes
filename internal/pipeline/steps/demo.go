@@ -88,6 +88,12 @@ func DemoSteps() []pipeline.Step {
 			},
 		},
 		&demoStep{
+			name:       types.StepVerify,
+			delay:      2 * time.Second,
+			displayDur: 6 * time.Second,
+			log:        "Verifying the sealed candidate against the reviewed baseline...\nAggregate verification passed.",
+		},
+		&demoStep{
 			name:       types.StepPush,
 			delay:      2 * time.Second,
 			displayDur: 5 * time.Second,

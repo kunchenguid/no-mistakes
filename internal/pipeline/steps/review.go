@@ -222,12 +222,33 @@ Risk assessment (after listing all findings):
 	needsApproval := hasBlockingFindings(findings.Items)
 	findingsJSON, _ := json.Marshal(findings)
 
+	// A clean strong review establishes the latest strong-reviewed candidate,
+	// which Verify later uses to skip re-review when nothing changed. Best-effort:
+	// if it cannot be recorded, Verify simply performs fresh verification.
+	if !needsApproval {
+		recordReviewedCandidate(sctx)
+	}
+
 	return &pipeline.StepOutcome{
 		NeedsApproval: needsApproval,
 		AutoFixable:   len(findings.Items) > 0,
 		Findings:      string(findingsJSON),
 		FixSummary:    fixSummary,
 	}, nil
+}
+
+// recordReviewedCandidate seals the current HEAD as the latest strong-reviewed
+// candidate. Best-effort: a failure only means Verify will re-review rather than
+// skip, so it never fails the Review step.
+func recordReviewedCandidate(sctx *pipeline.StepContext) {
+	head, err := git.HeadSHA(sctx.Ctx, sctx.WorkDir)
+	if err != nil {
+		sctx.LogFile(fmt.Sprintf("warning: could not resolve HEAD to record reviewed candidate: %v", err))
+		return
+	}
+	if _, err := sctx.DB.CreateSeal(sctx.Run.ID, head, "reviewed"); err != nil {
+		sctx.LogFile(fmt.Sprintf("warning: could not seal reviewed candidate: %v", err))
+	}
 }
 
 func sanitizedPreviousFindingsForPrompt(raw string) string {

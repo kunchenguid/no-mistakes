@@ -217,10 +217,10 @@ Verify compares the exact finalized candidate with the latest strong-reviewed HE
 
 **Blocked by:** Apply severity, consent, and unattended policies; Seal the publish candidate and make Push transport-only.
 
-- [ ] Every execution, persistence, AXI, and TUI representation uses the fixed sequence `Intent → Rebase → Review → Test → Document → Lint → Verify → Push → PR → CI`.
-- [ ] Verify skips only when the sealed candidate exactly matches the latest successful strong-reviewed candidate and otherwise reviews the aggregate later diff plus deterministic evidence in a fresh invocation.
-- [ ] Normal verification uses `review_strong`; initially high risk with later changes, intent-sensitive work, authority-tier work, a blocking finding surviving balanced repair, or inconclusive evidence uses `authority_strong`.
-- [ ] Verify findings enter the common lineage coordinator, unresolved or inconclusive blocking work prevents Push, and a successful repair produces a newly sealed and reviewed candidate.
+- [x] Every execution, persistence, AXI, and TUI representation uses the fixed sequence `Intent → Rebase → Review → Test → Document → Lint → Verify → Push → PR → CI`.
+- [x] Verify skips only when the sealed candidate exactly matches the latest successful strong-reviewed candidate and otherwise reviews the aggregate later diff plus deterministic evidence in a fresh invocation.
+- [x] Normal verification uses `review_strong`; initially high risk with later changes, intent-sensitive work, authority-tier work, a blocking finding surviving balanced repair, or inconclusive evidence uses `authority_strong`.
+- [x] Verify findings enter the common lineage coordinator, unresolved or inconclusive blocking work prevents Push, and a successful repair produces a newly sealed and reviewed candidate.
 
 ## Contract to routing-only configuration
 

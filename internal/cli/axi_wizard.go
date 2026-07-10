@@ -3,8 +3,8 @@ package cli
 import (
 	"fmt"
 
-	toon "github.com/toon-format/toon-go"
 	"github.com/spf13/cobra"
+	toon "github.com/toon-format/toon-go"
 
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )

@@ -51,3 +51,21 @@ func (d *DB) LatestSeal(runID string) (*Seal, error) {
 	}
 	return s, nil
 }
+
+// LatestSealByReason returns the most recent seal for a run with the given
+// reason, or nil when none exists. Verify uses it to find the last
+// strong-reviewed candidate independently of later pre-publish seals.
+func (d *DB) LatestSealByReason(runID, reason string) (*Seal, error) {
+	s := &Seal{}
+	err := d.sql.QueryRow(
+		`SELECT id, run_id, sha, reason, sealed_at FROM run_seals WHERE run_id = ? AND reason = ? ORDER BY sealed_at DESC, id DESC LIMIT 1`,
+		runID, reason,
+	).Scan(&s.ID, &s.RunID, &s.SHA, &s.Reason, &s.SealedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("latest seal by reason: %w", err)
+	}
+	return s, nil
+}

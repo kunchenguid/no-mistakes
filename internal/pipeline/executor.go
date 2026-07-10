@@ -778,6 +778,14 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			}
 		}
 
+		// A Verify repair mutates the sealed candidate, so reseal the new HEAD:
+		// a repaired/reverified candidate produces a fresh seal that Push validates.
+		if coordinatorRepaired && stepName == types.StepVerify {
+			if sealErr := e.sealCandidate(ctx, run, workDir); sealErr != nil {
+				return false, fmt.Errorf("reseal after verify repair: %w", sealErr)
+			}
+		}
+
 		// If the step produced a PR URL, propagate it to the run and emit an update.
 		if outcome.PRURL != "" {
 			run.PRURL = &outcome.PRURL

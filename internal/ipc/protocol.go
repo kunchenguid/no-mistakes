@@ -209,9 +209,9 @@ type RunInfo struct {
 	// BlockingRepairUnresolved is true when a blocking finding lineage ended its
 	// repair cascade unresolved (exhausted or inconclusive). Unattended consent
 	// must fail rather than approve when it is set.
-	BlockingRepairUnresolved bool `json:"blocking_repair_unresolved,omitempty"`
-	CreatedAt          int64            `json:"created_at"`
-	UpdatedAt          int64            `json:"updated_at"`
+	BlockingRepairUnresolved bool  `json:"blocking_repair_unresolved,omitempty"`
+	CreatedAt                int64 `json:"created_at"`
+	UpdatedAt                int64 `json:"updated_at"`
 }
 
 // StepResultInfo is the IPC representation of a step result.
