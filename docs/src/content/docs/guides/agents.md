@@ -217,6 +217,8 @@ After no-mistakes starts one, it terminates any remaining child processes when t
 Step logs record their process lifecycle, including start and exit lines with the PID, and AXI status exposes that PID while the subprocess is still active.
 Persistent server agents (Rovo Dev and OpenCode) use their managed server lifecycle instead.
 
+On Windows, when a resolved agent binary is an npm-installed `.cmd`/`.bat` shim, no-mistakes launches the native executable it wraps (for example `claude.exe`) directly rather than through `cmd.exe`. cmd.exe's `%*` forwarding corrupts a multi-line prompt and, in the console-less daemon, never delivers it to the wrapped process, so the CLI would start interactive and emit no result. This applies to every native subprocess agent (Claude, Codex, Pi, Copilot CLI, and acpx) and to the managed server agents (Rovo Dev and OpenCode) when their server is spawned. It is best-effort: a non-npm install or an unrecognizable shim falls back to launching the resolved binary as-is, and it is a no-op off Windows.
+
 Transient API and network failures are retried up to three times with exponential backoff. Retry messages are recorded as lifecycle activity for native subprocess agents, falling back to the streaming text path for direct callers that do not supply `OnLifecycle`.
 
 ## Intent extraction
@@ -242,8 +244,6 @@ Use `intent.disabled_readers` to disable specific transcript sources, or set `in
 
 Spawns a `claude` subprocess for each invocation with `--output-format stream-json`. By default it also adds `--dangerously-skip-permissions`, unless you already set your own Claude permission flag through `agent_args_override`. Reads JSONL events from stdout. Supports native structured output via `--json-schema`.
 For review-loop reuse, Claude starts a stream-json session and resumes it with `claude -p --resume <id>`.
-
-On Windows, when the resolved `claude` is an npm-installed `.cmd` shim, no-mistakes launches the native `claude.exe` it wraps directly rather than through `cmd.exe`, so the multi-line review prompt reaches the CLI intact. This is best-effort: a non-npm install or an unrecognizable shim falls back to launching the resolved binary as-is.
 
 ## Codex
 
