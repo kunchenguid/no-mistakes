@@ -125,7 +125,9 @@ func TestGrokReader_SkipsPipelineWorktreeSessions(t *testing.T) {
 
 	home := t.TempDir()
 	sessionID := "pipeline-run"
-	sessionDir := filepath.Join(home, ".grok", "sessions", url.PathEscape(worktreeCWD), sessionID)
+	// QueryEscape encodes the drive-letter colon on Windows, keeping the
+	// encoded CWD valid as a single sessions-directory component.
+	sessionDir := filepath.Join(home, ".grok", "sessions", url.QueryEscape(worktreeCWD), sessionID)
 	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
