@@ -349,7 +349,7 @@ Structured output is handled by appending the requested JSON schema to the promp
 
 ## Checking agent availability
 
-Run `no-mistakes doctor` to see which native agent binaries are installed and available:
+Run `no-mistakes doctor` to inspect individual native and ACP runner binaries and to check the effective global agent configuration:
 
 ```
 $ no-mistakes doctor
@@ -360,13 +360,17 @@ $ no-mistakes doctor
   ✓ daemon running
   ✓ claude
   – codex (not found)
-  – acli (not found)
+  – rovodev (not found)
   – opencode (not found)
   – pi (not found)
   – copilot (not found)
+  – acpx (not found)
+  ✓ gate validation claude is runnable
 ```
 
 `✓` = available, `–` = not found (optional), `✗` = problem detected.
+The `gate validation` line is the decisive result: when the configured global runner is unavailable, doctor fails because a complete gate cannot validate without it.
 
-For `agent: acp:<target>`, make sure `acpx` is installed on `PATH` or set `acpx_path` in global config.
-`no-mistakes doctor` does not validate ACP targets.
+For `agent: acp:<target>`, doctor verifies that `acpx` is installed on `PATH` or resolves through `acpx_path` in global config.
+It does not invoke the target or test its credentials.
+Every new validation run resolves its effective agent again after applying any trusted repository-level override.

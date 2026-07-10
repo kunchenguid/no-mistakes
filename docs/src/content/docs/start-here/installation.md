@@ -54,8 +54,9 @@ make install
   - `NO_MISTAKES_BITBUCKET_EMAIL` and `NO_MISTAKES_BITBUCKET_API_TOKEN` (Bitbucket Cloud)
   - `az` CLI with the `azure-devops` extension (Azure DevOps)
 
-Run `no-mistakes doctor` to check native agents and provider tools.
-For ACP agents, verify `acpx` or `acpx_path` separately because `doctor` does not validate ACP targets.
+Run `no-mistakes doctor` to check native agents, provider tools, and whether the configured global runner can start a validation gate.
+For `agent: acp:<target>`, doctor verifies that `acpx` or `acpx_path` resolves, but does not invoke the target or test its credentials.
+Every validation gate requires a runnable pipeline agent and otherwise fails before its first pipeline step.
 
 See [Provider Integration](/no-mistakes/guides/provider-integration/) for PR and CI setup per host.
 

@@ -60,6 +60,8 @@ Override the default agent for this repo and its setup-wizard suggestions.
 `auto` resolves to the first supported native agent found on `PATH` in this order: `claude`, `codex`, `opencode`, `acli` with `rovodev` support, `pi`, then `copilot`.
 `acp:<target>` uses the user-installed `acpx` binary configured in global config.
 ACP agents are opt-in and are not considered by `agent: auto`.
+The effective agent configuration must resolve to a runnable runner before a new validation gate starts.
+If the selected explicit agent or `auto` is unavailable, the gate fails before its first pipeline step rather than reporting partial validation as passed.
 
 You can also set an ordered fallback list:
 
@@ -67,7 +69,11 @@ You can also set an ordered fallback list:
 agent: [codex, claude]
 ```
 
-The list is filtered to entries available to the daemon at run startup, and the first available entry becomes the primary agent. If a pipeline invocation fails because that agent process cannot start or exits with an error, no-mistakes retries that invocation with the next available fallback. Structured findings and schema/output validation problems do not trigger fallback. This per-repo `agent` value, including every fallback entry, is still read from the trusted default-branch `.no-mistakes.yaml` unless `allow_repo_commands` is enabled there.
+The list is filtered to entries available to the daemon at run startup, and the first available entry becomes the primary agent.
+If no entry is available, the gate fails before its first pipeline step.
+If a pipeline invocation fails because that agent process cannot start or exits with an error, no-mistakes retries that invocation with the next available fallback.
+Structured findings and schema/output validation problems do not trigger fallback.
+This per-repo `agent` value, including every fallback entry, is still read from the trusted default-branch `.no-mistakes.yaml` unless `allow_repo_commands` is enabled there.
 
 ### allow_repo_commands
 

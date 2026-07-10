@@ -124,6 +124,10 @@ test:
 
 See [Global Config Reference](/no-mistakes/reference/global-config/) for the full field listing.
 
+Before a new validation gate starts, its effective agent configuration must resolve to a runnable native agent or ACP bridge.
+If `agent: auto`, an explicit agent, or every entry in a fallback list is unavailable, the gate fails before its first pipeline step, even when `commands.test` or `commands.lint` are configured.
+Run `no-mistakes doctor` to check the global runner; every run repeats the check after applying a trusted repository-level `agent` override.
+
 ## Environment variables
 
 Bitbucket Cloud PR creation and CI monitoring use environment variables instead of a provider CLI:
