@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/kunchenguid/no-mistakes/internal/paths"
 )
 
 // GrokReaderName is the agent name used in cache keys and DB rows.
@@ -89,7 +91,11 @@ func (r *grokReader) Discover(ctx context.Context, opts DiscoverOpts) ([]*Sessio
 			if cwd == "" {
 				cwd = groupCWD
 			}
-			if cwd == "" || !matcher.matches(ctx, cwd) {
+			// Native Grok pipeline runs write sessions from the daemon's
+			// worktree. Those transcripts contain no-mistakes prompts rather
+			// than the user's request, but share the working repo's remote and
+			// would otherwise pass matcher.matches.
+			if cwd == "" || grokPipelineWorktreeCWD(cwd) || !matcher.matches(ctx, cwd) {
 				continue
 			}
 			// Prefer chat_history for Load; skip sessions without it.
@@ -122,6 +128,26 @@ func (r *grokReader) Discover(ctx context.Context, opts DiscoverOpts) ([]*Sessio
 		}
 	}
 	return out, nil
+}
+
+// grokPipelineWorktreeCWD reports whether cwd belongs to a no-mistakes
+// worktree. Resolve both paths before comparing so equivalent paths such as
+// /var and /private/var work consistently on macOS.
+func grokPipelineWorktreeCWD(cwd string) bool {
+	p, err := paths.New()
+	if err != nil {
+		return false
+	}
+	worktrees := canonicalPath(p.WorktreesDir())
+	candidate := canonicalPath(cwd)
+	if worktrees == "" || candidate == "" {
+		return false
+	}
+	rel, err := filepath.Rel(worktrees, candidate)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
 }
 
 func (r *grokReader) Load(_ context.Context, s *Session) error {

@@ -112,6 +112,41 @@ func TestGrokReader_SkipsSubagentsAndMissingHistory(t *testing.T) {
 	}
 }
 
+func TestGrokReader_SkipsPipelineWorktreeSessions(t *testing.T) {
+	// A native Grok run inside a no-mistakes worktree has the same origin
+	// remote as the user's checkout, so normal repository matching accepts it.
+	// Its prompt is pipeline machinery, not user intent, and must never be
+	// considered for the next run.
+	nmHome := t.TempDir()
+	t.Setenv("NM_HOME", nmHome)
+	remote := "https://github.com/kunchenguid/no-mistakes.git"
+	originCWD := initGitRepoWithRemote(t, filepath.Join(t.TempDir(), "working"), remote)
+	worktreeCWD := initGitRepoWithRemote(t, filepath.Join(nmHome, "worktrees", "repo", "run"), remote)
+
+	home := t.TempDir()
+	sessionID := "pipeline-run"
+	sessionDir := filepath.Join(home, ".grok", "sessions", url.PathEscape(worktreeCWD), sessionID)
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	writeGrokSummary(t, sessionDir, sessionID, worktreeCWD, now, now, "")
+	if err := os.WriteFile(filepath.Join(sessionDir, "chat_history.jsonl"), []byte(`{"type":"user","content":"review the pipeline diff"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sessions, err := NewGrokReader().Discover(context.Background(), DiscoverOpts{
+		HomeDir:   home,
+		OriginCWD: originCWD,
+	})
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("pipeline worktree session must be excluded, got %d: %+v", len(sessions), sessions)
+	}
+}
+
 func TestGrokReader_MissingRootIsEmpty(t *testing.T) {
 	r := NewGrokReader()
 	sessions, err := r.Discover(context.Background(), DiscoverOpts{
