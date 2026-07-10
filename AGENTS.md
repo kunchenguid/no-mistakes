@@ -57,6 +57,10 @@ Safest local verification sequence after non-trivial changes:
 - `internal/git`, `internal/ipc`, `internal/config`, `internal/db`, `internal/paths`, `internal/types`: shared infrastructure
 - `internal/tui`: terminal UI
 
+**OpenCode Model Override**
+
+- `opencode serve` does not accept top-level run/tui flags like `--model`/`-m`. The OpenCode adapter parses `agent_args_override` entries of the form `--model <provider/model>`, `--model=<provider/model>`, `-m <provider/model>`, or `-m=<provider/model>` in `opencodeModelOverrideFromArgs` (`internal/agent/opencode_http.go`), strips them from the serve argv via `stripOpencodeModelArgs` so only serve-compatible extras (e.g. `--log-level`) reach `serve`, and sends the override on the message API payload as `model.providerID`/`model.modelID`. With no `--model` present, behavior is unchanged. Do not forward `--model`/`-m` to `serve` and do not swap OpenCode for another agent to set a model.
+
 **Fork Routing**
 
 - `repos.upstream_url` is the parent repository used for PR base routing.

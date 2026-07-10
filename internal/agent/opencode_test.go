@@ -105,6 +105,62 @@ func TestOpencodeAgent_FullFlow(t *testing.T) {
 	}
 }
 
+func TestOpencodeAgent_MessageUsesModelOverride(t *testing.T) {
+	messageBodies := make(chan map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/session" && r.Method == http.MethodPost:
+			fmt.Fprint(w, `{"id":"s1"}`)
+
+		case r.URL.Path == "/global/event" && r.Method == http.MethodGet:
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, "data: {\"payload\":{\"type\":\"session.idle\"}}\n\n")
+
+		case r.URL.Path == "/session/s1/message" && r.Method == http.MethodPost:
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode message body: %v", err)
+			}
+			messageBodies <- body
+			fmt.Fprint(w, `{"info":{"id":"msg1","role":"assistant"},"parts":[{"type":"text","text":"done"}]}`)
+
+		case r.URL.Path == "/session/s1" && r.Method == http.MethodDelete:
+			w.WriteHeader(http.StatusOK)
+
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	a := &opencodeAgent{
+		bin:       "opencode",
+		extraArgs: []string{"--model", "litellm/gpt-5.4-xhigh"},
+		server:    &managedServer{port: mustParsePort(server.URL)},
+	}
+
+	result, err := a.Run(context.Background(), RunOpts{
+		Prompt: "hello",
+		CWD:    t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Text != "done" {
+		t.Fatalf("expected result text done, got %q", result.Text)
+	}
+
+	body := <-messageBodies
+	model, ok := body["model"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected model object in message body, got %#v", body["model"])
+	}
+	if model["providerID"] != "litellm" || model["modelID"] != "gpt-5.4-xhigh" {
+		t.Fatalf("model = %#v, want litellm/gpt-5.4-xhigh", model)
+	}
+}
+
 func TestOpencodeAgent_BackfillsAssistantTextWhenStreamCannotClassifyOrphans(t *testing.T) {
 	calledPaths := make(map[string]bool)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

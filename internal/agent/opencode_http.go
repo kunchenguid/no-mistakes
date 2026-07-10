@@ -30,13 +30,78 @@ func (a *opencodeAgent) ensureServer(ctx context.Context, cwd string) (string, e
 }
 
 // buildOpencodeServeArgs builds `opencode serve`'s argv with user-supplied
-// extras inserted after the "serve" subcommand and before the managed flags.
+// server extras inserted after the "serve" subcommand and before the managed
+// flags. Top-level run/tui flags such as --model are handled on the message
+// request instead of being forwarded to `serve`, which does not accept them.
 func buildOpencodeServeArgs(extraArgs []string, port int) []string {
-	args := make([]string, 0, len(extraArgs)+6)
+	serverArgs := stripOpencodeModelArgs(extraArgs)
+	args := make([]string, 0, len(serverArgs)+6)
 	args = append(args, "serve")
-	args = append(args, extraArgs...)
+	args = append(args, serverArgs...)
 	args = append(args, "--hostname", "127.0.0.1", "--port", fmt.Sprintf("%d", port), "--print-logs")
 	return args
+}
+
+type opencodeModelOverride struct {
+	providerID string
+	modelID    string
+}
+
+// stripOpencodeModelArgs drops --model/-m (and their values) from extraArgs so
+// `opencode serve` never receives run/tui-only flags it does not understand.
+func stripOpencodeModelArgs(extraArgs []string) []string {
+	if len(extraArgs) == 0 {
+		return nil
+	}
+	filtered := make([]string, 0, len(extraArgs))
+	for i := 0; i < len(extraArgs); i++ {
+		arg := extraArgs[i]
+		switch {
+		case arg == "--model" || arg == "-m":
+			if i+1 < len(extraArgs) {
+				i++
+			}
+			continue
+		case strings.HasPrefix(arg, "--model=") || strings.HasPrefix(arg, "-m="):
+			continue
+		default:
+			filtered = append(filtered, arg)
+		}
+	}
+	return filtered
+}
+
+// opencodeModelOverrideFromArgs parses the first --model/-m (in long, equals,
+// or short form) into a provider/model override. It returns nil when no model
+// flag is present so callers can preserve the default behavior.
+func opencodeModelOverrideFromArgs(extraArgs []string) (*opencodeModelOverride, error) {
+	var model string
+	for i := 0; i < len(extraArgs); i++ {
+		arg := extraArgs[i]
+		switch {
+		case arg == "--model" || arg == "-m":
+			if i+1 >= len(extraArgs) {
+				return nil, fmt.Errorf("opencode %s requires a provider/model value", arg)
+			}
+			i++
+			model = strings.TrimSpace(extraArgs[i])
+		case strings.HasPrefix(arg, "--model="):
+			model = strings.TrimSpace(strings.TrimPrefix(arg, "--model="))
+		case strings.HasPrefix(arg, "-m="):
+			model = strings.TrimSpace(strings.TrimPrefix(arg, "-m="))
+		}
+	}
+	if model == "" {
+		return nil, nil
+	}
+	parts := strings.SplitN(model, "/", 2)
+	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
+		return nil, fmt.Errorf("opencode --model must be provider/model, got %q", model)
+	}
+	return &opencodeModelOverride{
+		providerID: strings.TrimSpace(parts[0]),
+		modelID:    strings.TrimSpace(parts[1]),
+	}, nil
 }
 
 func (a *opencodeAgent) createSession(ctx context.Context, baseURL, cwd string) (string, error) {
@@ -85,6 +150,16 @@ func (a *opencodeAgent) sendMessage(ctx context.Context, baseURL, sessionID, pro
 	body := map[string]any{
 		"role":  "user",
 		"parts": []map[string]string{{"type": "text", "text": prompt}},
+	}
+	model, err := opencodeModelOverrideFromArgs(a.extraArgs)
+	if err != nil {
+		return nil, err
+	}
+	if model != nil {
+		body["model"] = map[string]string{
+			"providerID": model.providerID,
+			"modelID":    model.modelID,
+		}
 	}
 	if len(schema) > 0 {
 		body["format"] = map[string]any{
