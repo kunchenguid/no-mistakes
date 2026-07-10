@@ -189,22 +189,6 @@ func TestCascadeLunaTerraSol(t *testing.T) {
 	h.WaitForRun("cascade-escalate", 60*time.Second)
 }
 
-// cascadeCleanCatchAll is the trailing clean action for journeys whose run
-// proceeds past review; it satisfies every later step's schema.
-const cascadeCleanCatchAll = `  - text: "no issues found"
-    structured:
-      findings: []
-      summary: "no issues found"
-      risk_level: low
-      risk_rationale: "no risks detected in the diff"
-      tested:
-        - "fakeagent: simulated test run"
-      testing_summary: "simulated tests passed"
-      artifacts: []
-      title: "feat: fakeagent change"
-      body: "## Summary\ncanned"
-`
-
 // TestCascadeLunaTerra proves a finding the fix_fast verifier leaves unresolved
 // escalates one tier to fix_balanced (Terra) and resolves there, without ever
 // reaching authority_strong. The two review_strong verifiers are identical in
@@ -501,7 +485,7 @@ func TestCascadeInformationalTermination(t *testing.T) {
           status: "resolved"
           rationale: "the nit is addressed"
       new_findings: []
-`+cascadeCleanCatchAll)
+`+cleanCatchAll)
 	h := NewHarness(t, SetupOpts{Agent: "codex", Scenario: scenario})
 	initGate(t, h)
 	h.CommitChange("cascade-info", "cascade.txt", "buggy line\n", "add cascade target")
@@ -577,7 +561,7 @@ func TestCascadeConsentedTerraSol(t *testing.T) {
           status: "unresolved"
           rationale: "not resolved at fix_balanced"
       new_findings: []
-`+cascadeCleanCatchAll)
+`+cleanCatchAll)
 	h := NewHarness(t, SetupOpts{Agent: "codex", Scenario: scenario})
 	initGate(t, h)
 	h.CommitChange("cascade-consent", "cascade.txt", "buggy line\n", "add cascade target")

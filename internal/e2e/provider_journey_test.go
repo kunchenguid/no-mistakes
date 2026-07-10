@@ -11,25 +11,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-// cleanCatchAll is the "everything is clean" catch-all action shared by the
-// provider journeys. Listed last, it satisfies every routed schema (review,
-// test, document, lint, pr) so a run that opens a circuit or leaves an
-// informational finding unresolved still sails through to completion on the
-// remaining candidate. It mirrors the daemon's built-in clean default.
-const cleanCatchAll = `  - text: "no issues found"
-    structured:
-      findings: []
-      summary: "no issues found"
-      risk_level: low
-      risk_rationale: "no risks detected in the diff"
-      tested:
-        - "fakeagent: simulated test run"
-      testing_summary: "simulated tests passed"
-      artifacts: []
-      title: "feat: fakeagent change"
-      body: "## Summary\nfakeagent canned PR body"
-`
-
 // countReviewExecs returns how many fake-agent execs carried the initial-review
 // prompt, so a transient-retry journey can prove the adapter re-execs the CLI
 // within one Invoke.

@@ -87,3 +87,22 @@ func assertCandidate(t *testing.T, a *db.InvocationAttempt, profile string, tier
 			c.Profile, c.Tier, c.Model, c.Effort, profile, tier, modelSubstr, effort)
 	}
 }
+
+// cleanCatchAll is the "everything is clean" catch-all action shared by every
+// routing journey whose run proceeds past review. Listed last (no match
+// constraints), it satisfies every routed step's schema (review, test,
+// document, lint, pr) so the run sails through to completion. It mirrors the
+// daemon's built-in clean default.
+const cleanCatchAll = `  - text: "no issues found"
+    structured:
+      findings: []
+      summary: "no issues found"
+      risk_level: low
+      risk_rationale: "no risks detected in the diff"
+      tested:
+        - "fakeagent: simulated test run"
+      testing_summary: "simulated tests passed"
+      artifacts: []
+      title: "feat: fakeagent change"
+      body: "## Summary\nfakeagent canned PR body"
+`

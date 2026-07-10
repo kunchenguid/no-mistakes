@@ -85,19 +85,7 @@ func TestPublicationSealsReviewedCandidateAtPushedHead(t *testing.T) {
       summary: "no blocking issues"
       risk_level: low
       risk_rationale: "informational finding only"
-  - text: "no issues found"
-    structured:
-      findings: []
-      summary: "no issues found"
-      risk_level: low
-      risk_rationale: "no risks detected in the diff"
-      tested:
-        - "fakeagent: simulated test run"
-      testing_summary: "simulated tests passed"
-      artifacts: []
-      title: "feat: publication change"
-      body: "## Summary\npublication body"
-`)
+`+cleanCatchAll)
 	h := NewHarness(t, SetupOpts{Agent: "codex", Scenario: scenario})
 	initGate(t, h)
 	h.CommitChange("publication-clean-seal", "pub.txt", "hello world\n", "add publication target")
@@ -157,19 +145,7 @@ func TestPublicationSkipsUnchangedVerify(t *testing.T) {
       summary: "no blocking issues"
       risk_level: low
       risk_rationale: "informational finding only"
-  - text: "no issues found"
-    structured:
-      findings: []
-      summary: "no issues found"
-      risk_level: low
-      risk_rationale: "no risks detected in the diff"
-      tested:
-        - "fakeagent: simulated test run"
-      testing_summary: "simulated tests passed"
-      artifacts: []
-      title: "feat: publication change"
-      body: "## Summary\npublication body"
-`)
+`+cleanCatchAll)
 	h := NewHarness(t, SetupOpts{Agent: "codex", Scenario: scenario})
 	initGate(t, h)
 	h.CommitChange("publication-verify-skip", "pub.txt", "hello world\n", "add publication target")
@@ -249,19 +225,7 @@ func TestPublicationVerifyEscalatesToAuthorityStrongXHigh(t *testing.T) {
       findings: []
       risk_level: low
       risk_rationale: "candidate fully verified"
-  - text: "no issues found"
-    structured:
-      findings: []
-      summary: "no issues found"
-      risk_level: low
-      risk_rationale: "no risks detected in the diff"
-      tested:
-        - "fakeagent: simulated test run"
-      testing_summary: "simulated tests passed"
-      artifacts: []
-      title: "feat: publication change"
-      body: "## Summary\npublication body"
-`)
+`+cleanCatchAll)
 	h := NewHarness(t, SetupOpts{Agent: "codex", Scenario: scenario})
 	initGate(t, h)
 	h.CommitChange("publication-verify-xhigh", "pub.txt", "buggy line\n", "add publication target")
@@ -329,19 +293,7 @@ func TestPublicationVerifyNormalUsesReviewStrong(t *testing.T) {
       findings: []
       risk_level: low
       risk_rationale: "candidate fully verified"
-  - text: "no issues found"
-    structured:
-      findings: []
-      summary: "no issues found"
-      risk_level: low
-      risk_rationale: "no risks detected in the diff"
-      tested:
-        - "fakeagent: simulated test run"
-      testing_summary: "simulated tests passed"
-      artifacts: []
-      title: "feat: publication change"
-      body: "## Summary\npublication body"
-`)
+`+cleanCatchAll)
 	h := NewHarness(t, SetupOpts{Agent: "codex", Scenario: scenario})
 	initGate(t, h)
 	h.CommitChange("publication-verify-normal", "pub.txt", "buggy line\n", "add publication target")
@@ -408,19 +360,7 @@ func TestPublicationRefusesPushOnUpstreamDrift(t *testing.T) {
       findings: []
       risk_level: low
       risk_rationale: "candidate fully verified"
-  - text: "no issues found"
-    structured:
-      findings: []
-      summary: "no issues found"
-      risk_level: low
-      risk_rationale: "no risks detected in the diff"
-      tested:
-        - "fakeagent: simulated test run"
-      testing_summary: "simulated tests passed"
-      artifacts: []
-      title: "feat: publication change"
-      body: "## Summary\npublication body"
-`)
+`+cleanCatchAll)
 	h := NewHarness(t, SetupOpts{Agent: "codex", Scenario: scenario})
 	initGate(t, h)
 	h.CommitChange("publication-drift", "pub.txt", "buggy line\n", "add publication target")
@@ -522,19 +462,7 @@ func TestPublicationCIRepublishSealsWithoutVerifyReentry(t *testing.T) {
       findings: []
       risk_level: low
       risk_rationale: "candidate fully verified"
-  - text: "no issues found"
-    structured:
-      findings: []
-      summary: "no issues found"
-      risk_level: low
-      risk_rationale: "no risks detected in the diff"
-      tested:
-        - "fakeagent: simulated test run"
-      testing_summary: "simulated tests passed"
-      artifacts: []
-      title: "feat: publication change"
-      body: "## Summary\npublication body"
-`)
+`+cleanCatchAll)
 	h := NewHarness(t, SetupOpts{Agent: "codex", Scenario: scenario})
 	initGate(t, h)
 	h.CommitChange("publication-ci-republish", "pub.txt", "buggy line\n", "add publication target")
@@ -608,4 +536,70 @@ func TestPublicationCIRepublishSealsWithoutVerifyReentry(t *testing.T) {
 	if len(vAfter) != len(vBefore) {
 		t.Fatalf("verify verifier count changed from %d to %d after republish; Verify must never be re-entered", len(vBefore), len(vAfter))
 	}
+}
+
+// TestPublicationVerifyEscalatesOnUserIntent proves criterion 245's intent
+// trigger in isolation: a normal-risk run carrying user intent escalates Verify
+// to authority_strong (xhigh) solely because UserIntent is set — no high-risk
+// review and no fix mode. Intent is set through the real transcript-extraction
+// path (like TestIntentJourney); an informational finding changes the candidate
+// so Verify runs rather than skipping.
+func TestPublicationVerifyEscalatesOnUserIntent(t *testing.T) {
+	scenario := writeScenario(t, `actions:
+  - match: "Review the code changes and return structured findings with a risk assessment.\n\nContext:\n- branch: publication-verify-intent"
+    text: "found an informational nit"
+    structured:
+      findings:
+        - id: "intent-nit"
+          severity: info
+          file: "verify-intent.txt"
+          line: 1
+          description: "informational nit"
+          action: auto-fix
+      risk_level: low
+      risk_rationale: "informational only"
+  - match: "Fix the following"
+    text: "addressed the nit"
+    edits:
+      - path: "verify-intent.txt"
+        new: "nit addressed\n"
+    structured:
+      summary: "addressed the nit"
+  - match: "Independently verify whether each of the following"
+    text: "nit resolved"
+    structured:
+      verdicts:
+        - lineage_id: "PROMPT_LINEAGE_ID"
+          status: "resolved"
+          rationale: "the nit is addressed"
+      new_findings: []
+  - match: "You are performing the final aggregate verification of a sealed release candidate before it is published."
+    text: "aggregate verification passed"
+    structured:
+      findings: []
+      risk_level: low
+      risk_rationale: "candidate fully verified"
+`+cleanCatchAll)
+	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: scenario})
+	seedClaudeTranscript(t, h.HomeDir, h.WorkDir, "verify-intent.txt")
+	initGate(t, h)
+	h.CommitChange("publication-verify-intent", "verify-intent.txt", "original line\n", "add intent target")
+	h.PushToGate("publication-verify-intent")
+
+	run := h.WaitForRun("publication-verify-intent", 120*time.Second)
+	if run.Status != types.RunCompleted {
+		t.Fatalf("run status = %s, want completed (error=%v)", run.Status, deref(run.Error))
+	}
+	intent := readRunIntent(t, h.NMHome, run.ID)
+	if intent.summary == nil || strings.TrimSpace(*intent.summary) == "" {
+		t.Fatalf("run intent is empty; the intent trigger requires a non-empty UserIntent")
+	}
+	va := verifyStepAttempts(t, h, run.ID, h.InvocationAttempts(t, run.ID))
+	if len(va) != 1 {
+		t.Fatalf("verify launched %d verifier(s), want exactly 1", len(va))
+	}
+	if va[0].Start.Purpose != types.PurposeEscalatedAggregateVerification {
+		t.Fatalf("verify purpose = %q, want %q (user intent escalates Verify)", va[0].Start.Purpose, types.PurposeEscalatedAggregateVerification)
+	}
+	assertCandidate(t, va[0], "authority_strong", 0, "sol", types.EffortXHigh)
 }
