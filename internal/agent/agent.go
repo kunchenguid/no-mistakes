@@ -43,6 +43,12 @@ type RunOpts struct {
 	// fallback-provider attempts, after it completes. It is instrumentation
 	// only and must not change invocation behavior.
 	OnAttempt func(Attempt)
+	// Model and Effort, when non-empty, are the normalized routed model and
+	// reasoning effort. The codex and claude adapters translate them to exact
+	// native arguments. Empty values preserve the legacy invocation, emitting
+	// no model or effort flags.
+	Model  string
+	Effort types.Effort
 }
 
 // Attempt describes one completed concrete adapter attempt for an agent
@@ -160,7 +166,7 @@ type Options struct {
 
 func finalizeTextResult(agentName, text string, schema json.RawMessage, usage TokenUsage) (*Result, error) {
 	if text == "" {
-		return nil, fmt.Errorf("%s returned no text output", agentName)
+		return nil, markModelOutput(fmt.Errorf("%s returned no text output", agentName))
 	}
 	if len(schema) == 0 {
 		return &Result{Text: text, Usage: usage}, nil
@@ -168,7 +174,7 @@ func finalizeTextResult(agentName, text string, schema json.RawMessage, usage To
 
 	output, err := parseStructuredTextOutput(text, schema)
 	if err != nil {
-		return nil, fmt.Errorf("%s output parse: %w (output snippet: %q)", agentName, err, outputSnippet(text))
+		return nil, markModelOutput(fmt.Errorf("%s output parse: %w (output snippet: %q)", agentName, err, outputSnippet(text)))
 	}
 
 	return &Result{Output: output, Text: text, Usage: usage}, nil

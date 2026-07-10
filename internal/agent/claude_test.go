@@ -12,7 +12,7 @@ import (
 func TestClaudeAgent_BuildArgs(t *testing.T) {
 	ca := &claudeAgent{bin: "/usr/bin/claude"}
 	schema := json.RawMessage(`{"type":"object"}`)
-	args := ca.buildArgs("do something", schema, "")
+	args := ca.buildArgs(RunOpts{Prompt: "do something", JSONSchema: schema})
 
 	expected := []string{
 		"-p", "do something",
@@ -34,7 +34,7 @@ func TestClaudeAgent_BuildArgs(t *testing.T) {
 
 func TestClaudeAgent_BuildArgs_NoSchema(t *testing.T) {
 	ca := &claudeAgent{bin: "claude"}
-	args := ca.buildArgs("prompt", nil, "")
+	args := ca.buildArgs(RunOpts{Prompt: "prompt"})
 
 	// Without schema, should not include --json-schema flag
 	for _, arg := range args {
@@ -50,7 +50,7 @@ func TestClaudeAgent_BuildArgs_NoSchema(t *testing.T) {
 
 func TestClaudeAgent_BuildArgs_ExtraArgsPrepended(t *testing.T) {
 	ca := &claudeAgent{bin: "claude", extraArgs: []string{"--model", "sonnet"}}
-	args := ca.buildArgs("do it", nil, "")
+	args := ca.buildArgs(RunOpts{Prompt: "do it"})
 
 	expected := []string{
 		"--model", "sonnet",
@@ -77,7 +77,7 @@ func TestClaudeAgent_BuildArgs_UserPermissionModeSuppressesDefault(t *testing.T)
 	}
 	for _, extra := range tests {
 		ca := &claudeAgent{bin: "claude", extraArgs: extra}
-		args := ca.buildArgs("p", nil, "")
+		args := ca.buildArgs(RunOpts{Prompt: "p"})
 
 		dangerCount := 0
 		for _, a := range args {
@@ -445,5 +445,80 @@ func TestParseClaudeEvents_ResultCapturesRawEvent(t *testing.T) {
 	}
 	if !strings.Contains(string(result.rawEvent), `"subtype":"success"`) {
 		t.Errorf("rawEvent should contain original JSON, got: %s", string(result.rawEvent))
+	}
+}
+
+func TestClaudeAgent_BuildArgs_TranslatesModelAndEffort(t *testing.T) {
+	ca := &claudeAgent{bin: "claude"}
+	joined := strings.Join(ca.buildArgs(RunOpts{Prompt: "fix it", Model: "claude-fable-5", Effort: "high"}), "\x00")
+	if !strings.Contains(joined, "--model\x00claude-fable-5") {
+		t.Fatalf("args missing routed model flag: %q", joined)
+	}
+	if !strings.Contains(joined, "--effort\x00high") {
+		t.Fatalf("args missing routed effort flag: %q", joined)
+	}
+}
+
+func TestClaudeAgent_BuildArgs_OmitsModelEffortWhenUnset(t *testing.T) {
+	ca := &claudeAgent{bin: "claude"}
+	joined := strings.Join(ca.buildArgs(RunOpts{Prompt: "p"}), "\x00")
+	if strings.Contains(joined, "--effort") || strings.Contains(joined, "--model") {
+		t.Fatalf("legacy invocation must not emit model/effort flags: %q", joined)
+	}
+}
+
+func TestFinalizeClaudeResultSurfacesProviderErrorDetail(t *testing.T) {
+	result := &claudeResult{Subtype: "error_during_execution", IsError: true, resultText: "overloaded_error: server is overloaded"}
+	_, err := finalizeClaudeResult(result, nil, TokenUsage{})
+	if err == nil {
+		t.Fatal("expected claude API error")
+	}
+	if kind, ok := classifyOperationalFailure(err); !ok || kind != OpFailureOverload {
+		t.Fatalf("claude provider error classified as (%q, %v), want overload", kind, ok)
+	}
+}
+
+func TestFinalizeClaudeResultDoesNotClassifyIncidentalRawNumbers(t *testing.T) {
+	// A failed result with no explicit provider detail must not be classified
+	// operational just because the raw event carries an incidental number such
+	// as duration_ms:429. Raw JSON is diagnostic-only, never a classifier input.
+	result := &claudeResult{
+		Subtype:  "error_during_execution",
+		IsError:  true,
+		rawEvent: json.RawMessage(`{"type":"result","is_error":true,"result":"","duration_ms":429,"num_turns":3}`),
+	}
+	_, err := finalizeClaudeResult(result, nil, TokenUsage{})
+	if err == nil {
+		t.Fatal("expected claude API error")
+	}
+	if kind, ok := classifyOperationalFailure(err); ok {
+		t.Fatalf("incidental raw number classified as operational %q", kind)
+	}
+}
+
+func TestClaudeAgent_BuildArgs_RoutedModelOverridesLegacyExtra(t *testing.T) {
+	ca := &claudeAgent{bin: "claude", extraArgs: []string{"--model", "sonnet-legacy"}}
+	joined := strings.Join(ca.buildArgs(RunOpts{Prompt: "p", Model: "claude-fable-5"}), "\x00")
+	if strings.Contains(joined, "sonnet-legacy") {
+		t.Fatalf("legacy --model survived a routed model: %q", joined)
+	}
+	if strings.Count(joined, "--model\x00") != 1 || !strings.Contains(joined, "--model\x00claude-fable-5") {
+		t.Fatalf("routed model must appear exactly once: %q", joined)
+	}
+}
+
+func TestFinalizeClaudeResultUsesAPIErrorStatus(t *testing.T) {
+	// Provider status is captured explicitly so a result with empty text and a
+	// truncated raw event can still be classified and retried.
+	result := &claudeResult{Subtype: "success", IsError: true, apiErrorStatus: 429}
+	_, err := finalizeClaudeResult(result, nil, TokenUsage{})
+	if err == nil {
+		t.Fatal("expected claude API error")
+	}
+	if !strings.Contains(err.Error(), "429") {
+		t.Fatalf("error %q must surface api_error_status", err)
+	}
+	if kind, ok := classifyOperationalFailure(err); !ok || kind != OpFailureOverload {
+		t.Fatalf("api_error_status 429 classified as (%q, %v), want overload", kind, ok)
 	}
 }

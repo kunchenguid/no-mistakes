@@ -40,9 +40,10 @@ func (a *claudeAgent) SupportsSessionResume() bool { return true }
 func (a *claudeAgent) ReportsAgentAttempts() bool { return true }
 
 func (a *claudeAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
-	return runWithRetry(ctx, "claude", opts, claudeMaxRetries, claudeRetryClassifier, nil, func() (*Result, error) {
+	res, err := runWithRetry(ctx, "claude", opts, claudeMaxRetries, claudeRetryClassifier, nil, func() (*Result, error) {
 		return a.runOnce(ctx, opts)
 	})
+	return res, withOperationalClassification(ctx, err)
 }
 
 func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
@@ -50,7 +51,7 @@ func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 	if opts.Session != nil {
 		resumeID = opts.Session.ID
 	}
-	args := a.buildArgs(opts.Prompt, opts.JSONSchema, resumeID)
+	args := a.buildArgs(opts)
 	cmd := exec.CommandContext(ctx, a.bin, args...)
 	cmd.Dir = opts.CWD
 	cmd.Stdin = nil
@@ -116,6 +117,9 @@ func (a *claudeAgent) Close() error { return nil }
 
 func finalizeClaudeResult(result *claudeResult, schema json.RawMessage, usage TokenUsage) (*Result, error) {
 	if result.IsError || result.Subtype != "success" {
+		if detail := claudeResultErrorDetail(result); detail != "" {
+			return nil, fmt.Errorf("claude error: subtype=%s: %s", result.Subtype, detail)
+		}
 		return nil, fmt.Errorf("claude error: subtype=%s", result.Subtype)
 	}
 	if len(schema) > 0 && result.StructuredOutput == nil {
@@ -129,31 +133,84 @@ func finalizeClaudeResult(result *claudeResult, schema json.RawMessage, usage To
 	}, nil
 }
 
+// claudeResultErrorDetail returns provider error detail from a failed result
+// event so retry and operational classification can see status codes and
+// overload/quota markers. It uses only explicit provider fields — the status
+// code and result text — never the raw event JSON, so an incidental number in
+// an unrelated field (e.g. duration_ms) can never be mistaken for a provider
+// status. Returns "" when the result carries no explicit provider detail.
+func claudeResultErrorDetail(result *claudeResult) string {
+	parts := make([]string, 0, 2)
+	if result.apiErrorStatus != 0 {
+		parts = append(parts, fmt.Sprintf("api_error_status=%d", result.apiErrorStatus))
+	}
+	if detail := strings.TrimSpace(result.resultText); detail != "" {
+		parts = append(parts, detail)
+	}
+	return strings.Join(parts, " ")
+}
+
 // buildArgs constructs the claude CLI arguments. User-supplied extraArgs
 // (from agent_args_override in the global config) are inserted ahead of the
 // managed flags, so user choices win over no-mistakes' defaults. If the user
 // supplied their own permission mode, the default --dangerously-skip-permissions
-// is not added. A non-empty resumeID continues that session via --resume
+// is not added. A non-empty Session ID continues that session via --resume
 // (never --fork-session: the session identity must stay stable so later
 // turns keep resuming the same conversation).
-func (a *claudeAgent) buildArgs(prompt string, schema json.RawMessage, resumeID string) []string {
-	args := make([]string, 0, len(a.extraArgs)+10)
-	args = append(args, a.extraArgs...)
+func (a *claudeAgent) buildArgs(opts RunOpts) []string {
+	args := make([]string, 0, len(a.extraArgs)+12)
+	args = append(args, routedClaudeExtraArgs(a.extraArgs, opts.Model != "", opts.Effort != "")...)
 	args = append(args,
-		"-p", prompt,
+		"-p", opts.Prompt,
 		"--verbose",
 		"--output-format", "stream-json",
 	)
-	if resumeID != "" {
-		args = append(args, "--resume", resumeID)
+	if opts.Session != nil && opts.Session.ID != "" {
+		args = append(args, "--resume", opts.Session.ID)
 	}
-	if len(schema) > 0 {
-		args = append(args, "--json-schema", string(schema))
+	if len(opts.JSONSchema) > 0 {
+		args = append(args, "--json-schema", string(opts.JSONSchema))
+	}
+	// Translate the normalized routed model and effort to claude's native
+	// arguments. Empty values (legacy invocations) emit nothing.
+	if opts.Model != "" {
+		args = append(args, "--model", opts.Model)
+	}
+	if opts.Effort != "" {
+		args = append(args, "--effort", string(opts.Effort))
 	}
 	if !claudeUserSetPermissionMode(a.extraArgs) {
 		args = append(args, "--dangerously-skip-permissions")
 	}
 	return args
+}
+
+// routedClaudeExtraArgs drops user-supplied model or effort flags when the
+// routed invocation supplies those values, so routed model/effort win over a
+// legacy override without emitting a duplicate flag. Non-conflicting extras are
+// preserved in order.
+func routedClaudeExtraArgs(extra []string, hasModel, hasEffort bool) []string {
+	if !hasModel && !hasEffort {
+		return extra
+	}
+	out := make([]string, 0, len(extra))
+	for i := 0; i < len(extra); i++ {
+		arg := extra[i]
+		switch {
+		case hasModel && (arg == "--model" || arg == "-m"):
+			i++
+			continue
+		case hasModel && (strings.HasPrefix(arg, "--model=") || strings.HasPrefix(arg, "-m=")):
+			continue
+		case hasEffort && arg == "--effort":
+			i++
+			continue
+		case hasEffort && strings.HasPrefix(arg, "--effort="):
+			continue
+		}
+		out = append(out, arg)
+	}
+	return out
 }
 
 // claudeUserSetPermissionMode reports whether extraArgs already declare a
@@ -179,6 +236,8 @@ type claudeEvent struct {
 	Subtype          string          `json:"subtype,omitempty"`
 	IsError          bool            `json:"is_error,omitempty"`
 	StructuredOutput json.RawMessage `json:"structured_output,omitempty"`
+	Result           string          `json:"result,omitempty"`
+	APIErrorStatus   int             `json:"api_error_status,omitempty"`
 	Usage            *claudeUsage    `json:"usage,omitempty"`
 }
 
@@ -191,6 +250,8 @@ type claudeResult struct {
 	rawEvent         json.RawMessage
 	sessionID        string // durable session identity from the event stream
 	model            string // model reported by assistant events
+	resultText       string // provider result/error text from the result event
+	apiErrorStatus   int    // provider HTTP status from the result event, if any
 }
 
 type claudeUsage struct {
@@ -272,6 +333,8 @@ func parseClaudeEvents(ctx context.Context, r io.Reader, onChunk func(string), u
 					Subtype:          event.Subtype,
 					IsError:          event.IsError,
 					StructuredOutput: event.StructuredOutput,
+					resultText:       event.Result,
+					apiErrorStatus:   event.APIErrorStatus,
 					text:             textBuf,
 					rawEvent:         raw,
 					sessionID:        lastSessionID,

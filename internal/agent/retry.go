@@ -123,7 +123,7 @@ func claudeRetryClassifier(err error) (string, bool) {
 	return classifyTransient(err)
 }
 
-var transientStatusRE = regexp.MustCompile(`\b(429|503|529)\b`)
+var transientStatusRE = regexp.MustCompile(`\b(429|500|502|503|504|529)\b`)
 
 // transientNeedles matches case-insensitive substrings emitted by Anthropic
 // API errors, the various agent CLIs, or Go's net stack when the underlying
@@ -144,6 +144,14 @@ var transientNeedles = []struct {
 	{"temporary failure in name resolution", "dns temporary failure"},
 	{"tls handshake", "tls handshake failure"},
 	{"unexpected eof", "unexpected eof"},
+	// Overload and outage signals that the operational classifier also treats
+	// as provider-availability failures: they must be retried here before a
+	// terminal operational classification, so classification happens only after
+	// adapter retries are exhausted.
+	{"overloaded", "overloaded"},
+	{"too many requests", "too many requests"},
+	{"bad gateway", "bad gateway"},
+	{"gateway timeout", "gateway timeout"},
 }
 
 // classifyTransient reports whether an error message looks like a transient
@@ -154,6 +162,13 @@ func classifyTransient(err error) (string, bool) {
 		return "", false
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return "", false
+	}
+	// Model-output failures (malformed or schema-invalid text) are never a
+	// transient provider signal, even when the model's text incidentally
+	// contains an overload/outage word, so they are not retried.
+	var modelOutput *modelOutputError
+	if errors.As(err, &modelOutput) {
 		return "", false
 	}
 	msg := strings.ToLower(err.Error())

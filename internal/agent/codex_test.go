@@ -12,7 +12,7 @@ import (
 
 func TestCodexAgent_BuildArgs(t *testing.T) {
 	ca := &codexAgent{bin: "codex"}
-	args := ca.buildArgs("fix the bug", "", "")
+	args := ca.buildArgs(RunOpts{Prompt: "fix the bug"}, "")
 
 	expected := []string{
 		"exec", "fix the bug",
@@ -33,7 +33,7 @@ func TestCodexAgent_BuildArgs(t *testing.T) {
 
 func TestCodexAgent_BuildArgs_ExtraArgsAfterExec(t *testing.T) {
 	ca := &codexAgent{bin: "codex", extraArgs: []string{"-m", "gpt-5.4"}}
-	args := ca.buildArgs("fix it", "", "")
+	args := ca.buildArgs(RunOpts{Prompt: "fix it"}, "")
 
 	expected := []string{
 		"exec",
@@ -62,7 +62,7 @@ func TestCodexAgent_BuildArgs_UserExecutionModeSuppressesBypass(t *testing.T) {
 	}
 	for _, extra := range tests {
 		ca := &codexAgent{bin: "codex", extraArgs: extra}
-		args := ca.buildArgs("p", "", "")
+		args := ca.buildArgs(RunOpts{Prompt: "p"}, "")
 
 		bypassCount := 0
 		for _, a := range args {
@@ -82,7 +82,7 @@ func TestCodexAgent_BuildArgs_UserExecutionModeSuppressesBypass(t *testing.T) {
 
 func TestCodexAgent_BuildArgs_WithOutputSchema(t *testing.T) {
 	ca := &codexAgent{bin: "codex"}
-	args := ca.buildArgs("review", "/tmp/schema.json", "")
+	args := ca.buildArgs(RunOpts{Prompt: "review"}, "/tmp/schema.json")
 
 	want := []string{
 		"exec", "review",
@@ -454,5 +454,86 @@ func TestParseCodexEvents_SkipsMalformedLines(t *testing.T) {
 	}
 	if usage.InputTokens != 10 {
 		t.Errorf("expected 10 input tokens, got %d", usage.InputTokens)
+	}
+}
+
+func TestCodexAgent_BuildArgs_TranslatesModelAndEffort(t *testing.T) {
+	ca := &codexAgent{bin: "codex"}
+	joined := strings.Join(ca.buildArgs(RunOpts{Prompt: "fix it", Model: "gpt-5.6-sol", Effort: "xhigh"}, ""), "\x00")
+	if !strings.Contains(joined, "-m\x00gpt-5.6-sol") {
+		t.Fatalf("args missing routed model flag: %q", joined)
+	}
+	if !strings.Contains(joined, "-c\x00model_reasoning_effort=xhigh") {
+		t.Fatalf("args missing routed effort flag: %q", joined)
+	}
+}
+
+func TestCodexAgent_BuildArgs_OmitsModelEffortWhenUnset(t *testing.T) {
+	ca := &codexAgent{bin: "codex"}
+	joined := strings.Join(ca.buildArgs(RunOpts{Prompt: "p"}, ""), "\x00")
+	if strings.Contains(joined, "model_reasoning_effort") || strings.Contains(joined, "\x00-m\x00") {
+		t.Fatalf("legacy invocation must not emit model/effort flags: %q", joined)
+	}
+}
+
+func TestCodexAgent_RunClassifiesOperationalFailureAfterRetries(t *testing.T) {
+	dir := t.TempDir()
+	bin := writeFakeCodex(t, dir, `#!/bin/sh
+dir=$(dirname "$0")
+echo x >> "$dir/count.txt"
+printf '%s\n' '{"type":"error","message":"http 429 too many requests"}'
+exit 1
+`, strings.Join([]string{
+		"@echo off",
+		"set \"dir=%~dp0\"",
+		">> \"%dir%count.txt\" echo x",
+		"echo {\"type\":\"error\",\"message\":\"http 429 too many requests\"}",
+		"exit /b 1",
+	}, "\r\n"))
+
+	prevBackoff := transientBackoff
+	transientBackoff = func(context.Context, int) error { return nil }
+	defer func() { transientBackoff = prevBackoff }()
+
+	ca := &codexAgent{bin: bin}
+	_, err := ca.Run(context.Background(), RunOpts{Prompt: "review", CWD: t.TempDir()})
+	if err == nil {
+		t.Fatal("expected operational error")
+	}
+	opErr, ok := err.(*OperationalError)
+	if !ok {
+		t.Fatalf("error type = %T, want *OperationalError: %v", err, err)
+	}
+	if opErr.Kind != OpFailureOverload {
+		t.Fatalf("operational kind = %q, want %q", opErr.Kind, OpFailureOverload)
+	}
+	countRaw, rerr := os.ReadFile(filepath.Join(dir, "count.txt"))
+	if rerr != nil {
+		t.Fatalf("read attempt count: %v", rerr)
+	}
+	if attempts := strings.Count(string(countRaw), "x"); attempts != claudeMaxRetries+1 {
+		t.Fatalf("attempts = %d, want %d (must retry before classifying)", attempts, claudeMaxRetries+1)
+	}
+}
+
+func TestCodexAgent_BuildArgs_RoutedModelOverridesLegacyExtra(t *testing.T) {
+	ca := &codexAgent{bin: "codex", extraArgs: []string{"-m", "gpt-legacy"}}
+	joined := strings.Join(ca.buildArgs(RunOpts{Prompt: "p", Model: "gpt-5.6-sol"}, ""), "\x00")
+	if strings.Contains(joined, "gpt-legacy") {
+		t.Fatalf("legacy -m survived a routed model: %q", joined)
+	}
+	if strings.Count(joined, "-m\x00") != 1 || !strings.Contains(joined, "-m\x00gpt-5.6-sol") {
+		t.Fatalf("routed model must appear exactly once: %q", joined)
+	}
+}
+
+func TestCodexAgent_BuildArgs_RoutedModelStripsAttachedLegacyModel(t *testing.T) {
+	ca := &codexAgent{bin: "codex", extraArgs: []string{"-mgpt-legacy"}}
+	joined := strings.Join(ca.buildArgs(RunOpts{Prompt: "p", Model: "gpt-5.6-sol"}, ""), "\x00")
+	if strings.Contains(joined, "gpt-legacy") {
+		t.Fatalf("attached legacy -m survived a routed model: %q", joined)
+	}
+	if !strings.Contains(joined, "-m\x00gpt-5.6-sol") {
+		t.Fatalf("routed model missing: %q", joined)
 	}
 }

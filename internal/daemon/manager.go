@@ -665,6 +665,11 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 		slog.Info("repo commands/agent loaded from default branch, not pushed branch", "run_id", run.ID, "branch", branch, "default_branch", repo.DefaultBranch)
 	}
 	cfg := config.Merge(globalCfg, effectiveRepoCfg)
+	if err := cfg.ValidateRouting(); err != nil {
+		m.db.UpdateRunError(run.ID, err.Error())
+		trackStartFailure("invalid_routing")
+		return "", fmt.Errorf("invalid routing config: %w", err)
+	}
 
 	// Create agent. In demo mode, skip resolution and use a no-op agent.
 	var ag agent.Agent

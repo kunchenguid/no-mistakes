@@ -64,6 +64,7 @@ type GlobalConfig struct {
 	AutoFix      AutoFixRaw
 	Intent       IntentRaw
 	Test         TestRaw
+	Routing      RoutingConfig
 }
 
 // globalConfigRaw is the on-disk YAML representation with duration as string.
@@ -82,6 +83,7 @@ type globalConfigRaw struct {
 	AutoFix              AutoFixRaw          `yaml:"auto_fix"`
 	Intent               IntentRaw           `yaml:"intent"`
 	Test                 TestRaw             `yaml:"test"`
+	Routing              *RoutingConfig      `yaml:"routing"`
 }
 
 // RepoConfig represents .no-mistakes.yaml in a repo root.
@@ -96,10 +98,11 @@ type RepoConfig struct {
 	// ONLY from the trusted default-branch copy of .no-mistakes.yaml (never
 	// the pushed SHA), so a contributor cannot self-enable. Default false:
 	// the pushed branch controls nothing that executes.
-	AllowRepoCommands bool       `yaml:"allow_repo_commands"`
-	AutoFix           AutoFixRaw `yaml:"auto_fix"`
-	Intent            IntentRaw  `yaml:"intent"`
-	Test              TestRaw    `yaml:"test"`
+	AllowRepoCommands bool                          `yaml:"allow_repo_commands"`
+	AutoFix           AutoFixRaw                    `yaml:"auto_fix"`
+	Intent            IntentRaw                     `yaml:"intent"`
+	Test              TestRaw                       `yaml:"test"`
+	Routes            map[types.Purpose]ProfileName `yaml:"routes"`
 	// Document carries the repository's documentation placement policy. It
 	// steers the document step's gate prompt, so it is honored ONLY from the
 	// trusted default-branch copy of .no-mistakes.yaml (see
@@ -125,6 +128,7 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 		AutoFix           AutoFixRaw  `yaml:"auto_fix"`
 		Intent            IntentRaw   `yaml:"intent"`
 		Test              TestRaw     `yaml:"test"`
+		Routes            map[types.Purpose]ProfileName `yaml:"routes"`
 		Document          DocumentRaw `yaml:"document"`
 	}
 	var raw repoConfigRaw
@@ -139,6 +143,7 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 	c.AutoFix = raw.AutoFix
 	c.Intent = raw.Intent
 	c.Test = raw.Test
+	c.Routes = raw.Routes
 	c.Document = raw.Document
 	return nil
 }
@@ -191,6 +196,7 @@ type Config struct {
 	Intent               Intent
 	Test                 Test
 	Document             Document
+	Routing              RoutingConfig
 }
 
 // Document is the resolved document-step config. Instructions come from the
@@ -744,6 +750,7 @@ func DefaultGlobalConfig() *GlobalConfig {
 		DaemonConnectTimeout: DefaultDaemonConnectTimeout,
 		LogLevel:             "info",
 		SessionReuse:         true,
+		Routing:              DefaultRoutingConfig(),
 	}
 }
 
@@ -824,8 +831,32 @@ func LoadGlobal(path string) (*GlobalConfig, error) {
 	cfg.AutoFix = raw.AutoFix
 	cfg.Intent = raw.Intent
 	cfg.Test = raw.Test
+	if raw.Routing == nil && globalConfigHasKey(data, "routing") {
+		// A present-but-null routing block (routing: / routing: null / ~) is an
+		// explicit, incomplete replacement, not an "unset" default.
+		return nil, fmt.Errorf("global routing: block is present but empty")
+	}
+	if raw.Routing != nil {
+		raw.Routing.normalizeProfileNames()
+		if err := raw.Routing.Validate(); err != nil {
+			return nil, fmt.Errorf("global routing: %w", err)
+		}
+		cfg.Routing = *raw.Routing
+	}
 
 	return cfg, nil
+}
+
+// globalConfigHasKey reports whether the raw global config YAML contains a
+// given top-level key, so an explicitly present but null block is
+// distinguishable from an absent one.
+func globalConfigHasKey(data []byte, key string) bool {
+	var probe map[string]yaml.Node
+	if err := yaml.Unmarshal(data, &probe); err != nil {
+		return false
+	}
+	_, ok := probe[key]
+	return ok
 }
 
 // parseCITimeout interprets the ci_timeout config value. The keyword
@@ -884,6 +915,9 @@ func LoadRepoFromBytes(data []byte) (*RepoConfig, error) {
 }
 
 func parseRepoConfig(data []byte) (*RepoConfig, error) {
+	if err := rejectRepoExecutionMechanics(data); err != nil {
+		return nil, err
+	}
 	cfg := &RepoConfig{}
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("parse repo config: %w", err)
@@ -893,6 +927,24 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 	}
 
 	return cfg, nil
+}
+
+// rejectRepoExecutionMechanics fails when a repository's .no-mistakes.yaml
+// tries to define model-selection execution mechanics. Repositories may only
+// map purposes to existing global profiles via 'routes'; runners, profiles,
+// and candidates are owned exclusively by global configuration.
+func rejectRepoExecutionMechanics(data []byte) error {
+	var probe map[string]yaml.Node
+	if err := yaml.Unmarshal(data, &probe); err != nil {
+		// Malformed YAML is reported by the typed decode that follows.
+		return nil
+	}
+	for _, key := range []string{"routing", "runners", "profiles", "candidates"} {
+		if _, ok := probe[key]; ok {
+			return fmt.Errorf("repo config may not define execution mechanics (%q); repositories may only set 'routes' mapping purposes to existing global profiles", key)
+		}
+	}
+	return nil
 }
 
 // EffectiveRepoConfig returns the repo config that should drive the pipeline
@@ -923,10 +975,14 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		pushed = &RepoConfig{}
 	}
 	effective := *pushed
+	// Routes and documentation ownership come only from the trusted
+	// default-branch copy, never the pushed branch, and are never influenced
+	// by the allow_repo_commands opt-in.
+	effective.Routes = nil
+	effective.Document = DocumentRaw{}
 	if trusted != nil {
+		effective.Routes = trusted.Routes
 		effective.Document = trusted.Document
-	} else {
-		effective.Document = DocumentRaw{}
 	}
 	if allowRepoCommands {
 		return &effective
@@ -1111,6 +1167,22 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 			cfg.Agents = []types.AgentName{repo.Agent}
 		}
 	}
+	routing := global.Routing
+	if routing.IsZero() {
+		routing = DefaultRoutingConfig()
+	}
+	routing = routing.clone()
+	for purpose, profile := range repo.Routes {
+		routing.Routes[purpose] = Route{profile}
+	}
+	cfg.Routing = routing
 
 	return cfg
+}
+
+// ValidateRouting checks the resolved routing contract, including any trusted
+// repository route overrides applied during Merge. It fails closed so a
+// misconfigured routing block or override never reaches model launch.
+func (c *Config) ValidateRouting() error {
+	return c.Routing.Validate()
 }

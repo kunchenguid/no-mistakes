@@ -28,10 +28,10 @@ Production callers remain on the legacy constructor until their vertical slice m
 
 **Blocked by:** Establish durable invocation context.
 
-- [ ] The six default Profiles resolve exactly to Luna-medium/Sonnet-medium, Luna-low/Sonnet-low, Terra-medium/Opus-medium, Terra-high/Opus-high, Sol-high/Fable-high, and Sol-xhigh/Fable-xhigh in that order.
-- [ ] Strict validation rejects incomplete or non-finite Routes, unknown Purposes or Profiles, empty Candidates, unsupported runners, invalid efforts, and repository attempts to define execution mechanics; Pro model selectors remain valid but are absent from defaults.
-- [ ] Repository Route overrides come only from the pinned trusted default-branch copy and cannot be controlled by the pushed branch or by the repository-command opt-in.
-- [ ] Codex and Claude translate normalized model and effort values to exact native arguments while preserving fresh sessions, schemas, streaming, token accounting, cancellation, process cleanup, and structured operational-failure classification after adapter retries.
+- [x] The six default Profiles resolve exactly to Luna-medium/Sonnet-medium, Luna-low/Sonnet-low, Terra-medium/Opus-medium, Terra-high/Opus-high, Sol-high/Fable-high, and Sol-xhigh/Fable-xhigh in that order.
+- [x] Strict validation rejects incomplete or non-finite Routes, unknown Purposes or Profiles, empty Candidates, unsupported runners, invalid efforts, and repository attempts to define execution mechanics; Pro model selectors remain valid but are absent from defaults.
+- [x] Repository Route overrides come only from the pinned trusted default-branch copy and cannot be controlled by the pushed branch or by the repository-command opt-in.
+- [x] Codex and Claude translate normalized model and effort values to exact native arguments while preserving fresh sessions, schemas, streaming, token accounting, cancellation, process cleanup, and structured operational-failure classification after adapter retries.
 
 ## Route and surface the initial review
 

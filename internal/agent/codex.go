@@ -31,9 +31,10 @@ func (a *codexAgent) SupportsSessionResume() bool { return true }
 func (a *codexAgent) ReportsAgentAttempts() bool { return true }
 
 func (a *codexAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
-	return runWithRetry(ctx, "codex", opts, claudeMaxRetries, classifyTransient, nil, func() (*Result, error) {
+	res, err := runWithRetry(ctx, "codex", opts, claudeMaxRetries, classifyTransient, nil, func() (*Result, error) {
 		return a.runOnce(ctx, opts)
 	})
+	return res, withOperationalClassification(ctx, err)
 }
 
 func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
@@ -68,7 +69,7 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 	if opts.Session != nil {
 		resumeID = opts.Session.ID
 	}
-	args := a.buildArgs(opts.Prompt, schemaPath, resumeID)
+	args := a.buildArgs(opts, schemaPath)
 	cmd := exec.CommandContext(ctx, a.bin, args...)
 	cmd.Dir = opts.CWD
 	cmd.Stdin = nil
@@ -133,23 +134,35 @@ func (a *codexAgent) Close() error { return nil }
 // inserted between "exec" and the prompt so user flags (e.g. -m, --sandbox)
 // take effect. If the user declared their own execution-mode flag, the
 // default --dangerously-bypass-approvals-and-sandbox is not added.
-// A non-empty resumeID routes through `codex exec resume <id> <prompt>`,
+// A non-empty Session ID routes through `codex exec resume <id> <prompt>`,
 // which exposes a narrower flag surface than `codex exec` (no --color, no
 // -s/--sandbox as of codex 0.144): unsupported user extraArgs make the
 // invocation fail fast and the caller's cold fallback preserves correctness.
-func (a *codexAgent) buildArgs(prompt, schemaPath, resumeID string) []string {
-	args := make([]string, 0, len(a.extraArgs)+9)
+func (a *codexAgent) buildArgs(opts RunOpts, schemaPath string) []string {
+	resumeID := ""
+	if opts.Session != nil {
+		resumeID = opts.Session.ID
+	}
+	args := make([]string, 0, len(a.extraArgs)+12)
 	args = append(args, "exec")
 	if resumeID != "" {
 		args = append(args, "resume")
 	}
-	args = append(args, a.extraArgs...)
+	args = append(args, routedCodexExtraArgs(a.extraArgs, opts.Model != "", opts.Effort != "")...)
 	if resumeID != "" {
 		args = append(args, resumeID)
 	}
-	args = append(args, prompt, "--json")
+	args = append(args, opts.Prompt, "--json")
 	if schemaPath != "" {
 		args = append(args, "--output-schema", schemaPath)
+	}
+	// Translate the normalized routed model and effort to codex's native
+	// arguments. Empty values (legacy invocations) emit nothing.
+	if opts.Model != "" {
+		args = append(args, "-m", opts.Model)
+	}
+	if opts.Effort != "" {
+		args = append(args, "-c", "model_reasoning_effort="+string(opts.Effort))
 	}
 	if !codexUserSetExecutionMode(a.extraArgs) {
 		args = append(args, "--dangerously-bypass-approvals-and-sandbox")
@@ -158,6 +171,40 @@ func (a *codexAgent) buildArgs(prompt, schemaPath, resumeID string) []string {
 		args = append(args, "--color", "never")
 	}
 	return args
+}
+
+// routedCodexExtraArgs drops user-supplied model or reasoning-effort flags when
+// the routed invocation supplies those values, so the authoritative routed
+// model/effort never collide with a legacy override — codex rejects a duplicate
+// -m. Non-conflicting extras are preserved in order.
+func routedCodexExtraArgs(extra []string, hasModel, hasEffort bool) []string {
+	if !hasModel && !hasEffort {
+		return extra
+	}
+	out := make([]string, 0, len(extra))
+	for i := 0; i < len(extra); i++ {
+		arg := extra[i]
+		switch {
+		case hasModel && (arg == "-m" || arg == "--model"):
+			i++
+			continue
+		case hasModel && (strings.HasPrefix(arg, "-m=") || strings.HasPrefix(arg, "--model=")):
+			continue
+		case hasModel && strings.HasPrefix(arg, "-m") && arg != "-m":
+			// Attached short form (-mVALUE); the value is part of this token.
+			continue
+		case hasEffort && arg == "--reasoning-effort":
+			i++
+			continue
+		case hasEffort && strings.HasPrefix(arg, "--reasoning-effort="):
+			continue
+		case hasEffort && arg == "-c" && i+1 < len(extra) && strings.HasPrefix(extra[i+1], "model_reasoning_effort="):
+			i++
+			continue
+		}
+		out = append(out, arg)
+	}
+	return out
 }
 
 // codexUserSetExecutionMode reports whether extraArgs already declare an
