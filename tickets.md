@@ -240,10 +240,10 @@ Reject legacy configuration instead of rewriting or aliasing it.
 
 **Blocked by:** Contract to routing-only configuration.
 
-- [ ] Journeys prove direct Luna success, Luna→Terra, Luna→Terra→Sol with a separate xhigh final reviewer, same-tier batching, patch-caused budget inheritance, informational termination, consented Terra→Sol, and terminal fail-closed exhaustion.
-- [ ] Provider journeys prove adapter retries, run-wide OpenAI circuit opening, Anthropic same-Profile backup, no later OpenAI probe, all-domain failure, and non-operational controls that never open a circuit.
-- [ ] Publication journeys prove immutable candidate sealing, unchanged Verify skip, every xhigh Verify trigger, Push refusal after drift, and checked/verified CI republish without Verify re-entry.
-- [ ] Reconnect snapshots and histories match persisted attempts, circuits, and lineages, while existing happy-path, approval, cancellation, intent, command, and remote-safety journeys remain green.
+- [x] Journeys prove direct Luna success, Luna→Terra, Luna→Terra→Sol with a separate xhigh final reviewer, same-tier batching, patch-caused budget inheritance, informational termination, consented Terra→Sol, and terminal fail-closed exhaustion.
+- [x] Provider journeys prove adapter retries, run-wide OpenAI circuit opening, Anthropic same-Profile backup, no later OpenAI probe, all-domain failure, and non-operational controls that never open a circuit.
+- [x] Publication journeys prove immutable candidate sealing, unchanged Verify skip, every xhigh Verify trigger, Push refusal after drift, and checked/verified CI republish without Verify re-entry.
+- [x] Reconnect snapshots and histories match persisted attempts, circuits, and lineages, while existing happy-path, approval, cancellation, intent, command, and remote-safety journeys remain green.
 
 ## Publish the public routing contract
 
