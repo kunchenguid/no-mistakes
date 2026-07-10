@@ -243,6 +243,8 @@ Use `intent.disabled_readers` to disable specific transcript sources, or set `in
 Spawns a `claude` subprocess for each invocation with `--output-format stream-json`. By default it also adds `--dangerously-skip-permissions`, unless you already set your own Claude permission flag through `agent_args_override`. Reads JSONL events from stdout. Supports native structured output via `--json-schema`.
 For review-loop reuse, Claude starts a stream-json session and resumes it with `claude -p --resume <id>`.
 
+On Windows, when the resolved `claude` is an npm-installed `.cmd` shim, no-mistakes launches the native `claude.exe` it wraps directly rather than through `cmd.exe`, so the multi-line review prompt reaches the CLI intact. This is best-effort: a non-npm install or an unrecognizable shim falls back to launching the resolved binary as-is.
+
 ## Codex
 
 Spawns a `codex` subprocess for each invocation with `exec --json`. When structured output is requested, no-mistakes also writes a normalized schema file and passes it with `--output-schema`. By default it also adds `--dangerously-bypass-approvals-and-sandbox`, unless you already set your own Codex approval or sandbox flag through `agent_args_override`. Reads JSONL events. Structured output is returned from the final `agent_message` text, with fallback parsing that accepts JSON fences, inline fence markers, or a final bare JSON object after prose, then validates the result against the normalized schema.
