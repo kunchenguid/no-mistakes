@@ -224,9 +224,15 @@ func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSt
 	if opt := formatIntentPushOption(intent); opt != "" {
 		pushOptions = append(pushOptions, opt)
 	}
+	priorRunIDs, err := runIDsForRepo(env.client, env.repo.ID)
+	if err != nil {
+		// An active run can still be found below. Without a baseline, however,
+		// a matching terminal run may predate this push, so do not attach to it.
+		priorRunIDs = nil
+	}
 	pushErr := git.PushWithOptions(ctx, ".", gate.RemoteName, "refs/heads/"+branch, "", false, pushOptions)
 
-	if run, _ := waitForActiveRunForHead(ctx, env.client, env.repo.ID, branch, headSHA, triggerWaitTimeout); run != nil {
+	if run, _ := waitForTriggeredRunForHead(ctx, env.client, env.repo.ID, branch, headSHA, priorRunIDs, triggerWaitTimeout); run != nil {
 		return run.ID, nil
 	}
 	if !shouldRerunAfterNoActiveRun(pushErr) {
@@ -242,7 +248,23 @@ func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSt
 	return rr.RunID, nil
 }
 
-func waitForActiveRunForHead(ctx context.Context, client *ipc.Client, repoID, branch, headSHA string, timeout time.Duration) (*ipc.RunInfo, error) {
+func runIDsForRepo(client *ipc.Client, repoID string) (map[string]struct{}, error) {
+	var result ipc.GetRunsResult
+	if err := client.Call(ipc.MethodGetRuns, &ipc.GetRunsParams{RepoID: repoID}, &result); err != nil {
+		return nil, err
+	}
+	ids := make(map[string]struct{}, len(result.Runs))
+	for _, run := range result.Runs {
+		ids[run.ID] = struct{}{}
+	}
+	return ids, nil
+}
+
+// waitForTriggeredRunForHead waits for the run created by this trigger. The
+// active-run lookup handles normal execution; the all-runs lookup catches a
+// run that fails before it can be observed as active. priorRunIDs prevents an
+// up-to-date push from attaching to a terminal run created by an earlier one.
+func waitForTriggeredRunForHead(ctx context.Context, client *ipc.Client, repoID, branch, headSHA string, priorRunIDs map[string]struct{}, timeout time.Duration) (*ipc.RunInfo, error) {
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 
@@ -259,6 +281,22 @@ func waitForActiveRunForHead(ctx context.Context, client *ipc.Client, repoID, br
 		}
 		if run := activeRunInfoForHead(result.Run, headSHA); run != nil {
 			return run, nil
+		}
+		if priorRunIDs != nil {
+			var runs ipc.GetRunsResult
+			if err := client.Call(ipc.MethodGetRuns, &ipc.GetRunsParams{RepoID: repoID}, &runs); err != nil {
+				return nil, err
+			}
+			for i := range runs.Runs {
+				run := &runs.Runs[i]
+				if run.Branch != branch || run.HeadSHA != headSHA {
+					continue
+				}
+				if _, existed := priorRunIDs[run.ID]; !existed {
+					return run, nil
+				}
+				break
+			}
 		}
 		select {
 		case <-ctx.Done():
