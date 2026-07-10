@@ -48,7 +48,7 @@ func TestRebaseStep_ForcePushSkipsOriginBranch(t *testing.T) {
 	// Simulate a prior pipeline run that added autofix commits on top and pushed
 	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("autofix-overwrote-user\n"), 0o644)
 	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "no-mistakes(review): autofix commit")
+	gitCmd(t, dir, "commit", "-m", "(review): autofix commit")
 	autofixSHA := gitCmd(t, dir, "rev-parse", "HEAD")
 	gitCmd(t, dir, "push", "origin", "feature")
 
@@ -113,7 +113,7 @@ func TestRebaseStep_ForcePushOnDefaultBranchSkipsRemoteSync(t *testing.T) {
 
 	os.WriteFile(filepath.Join(dir, "app.txt"), []byte("base\nautofix\n"), 0o644)
 	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "no-mistakes(review): autofix commit")
+	gitCmd(t, dir, "commit", "-m", "(review): autofix commit")
 	autofixSHA := gitCmd(t, dir, "rev-parse", "HEAD")
 	gitCmd(t, dir, "push", "origin", "main")
 
@@ -171,7 +171,7 @@ func TestRebaseStep_ForcePushOnDefaultBranchAllowsRewrittenRemoteHead(t *testing
 
 	os.WriteFile(filepath.Join(dir, "app.txt"), []byte("base\nautofix\n"), 0o644)
 	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "no-mistakes(review): autofix commit")
+	gitCmd(t, dir, "commit", "-m", "(review): autofix commit")
 	autofixSHA := gitCmd(t, dir, "rev-parse", "HEAD")
 	gitCmd(t, dir, "push", "origin", "main")
 
@@ -228,7 +228,7 @@ func TestRebaseStep_ForcePushOnDefaultBranchStopsWhenRemoteAdvanced(t *testing.T
 
 	os.WriteFile(filepath.Join(dir, "autofix.txt"), []byte("autofix\n"), 0o644)
 	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "no-mistakes(review): autofix commit")
+	gitCmd(t, dir, "commit", "-m", "(review): autofix commit")
 	autofixSHA := gitCmd(t, dir, "rev-parse", "HEAD")
 	gitCmd(t, dir, "push", "origin", "main")
 

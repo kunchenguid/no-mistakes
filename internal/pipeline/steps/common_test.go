@@ -608,7 +608,7 @@ func TestCommitAgentFixes_UsesFallbackSummary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := lastCommitMessage(t, dir); got != "no-mistakes(lint): fallback lint fix" {
+	if got := lastCommitMessage(t, dir); got != "(lint): fallback lint fix" {
 		t.Errorf("commit message = %q, want fallback-based message", got)
 	}
 }

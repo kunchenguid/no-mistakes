@@ -94,7 +94,7 @@ func deterministicFixCommitMessage(stepName types.StepName, summary string) stri
 	if summary == "" {
 		summary = "apply fixes"
 	}
-	return fmt.Sprintf("no-mistakes(%s): %s", stepName, summary)
+	return fmt.Sprintf("(%s): %s", stepName, summary)
 }
 
 // executeFixMode runs the fix agent and commits any resulting changes. It

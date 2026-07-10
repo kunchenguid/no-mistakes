@@ -104,7 +104,7 @@ func TestReviewStep_FixMode(t *testing.T) {
 	if status := gitStatusPorcelain(t, dir); status != "" {
 		t.Fatalf("expected clean worktree after fix commit, got %q", status)
 	}
-	if got := lastCommitMessage(t, dir); got != "no-mistakes(review): address review findings" {
+	if got := lastCommitMessage(t, dir); got != "(review): address review findings" {
 		t.Fatalf("last commit message = %q", got)
 	}
 	if branchSHA := gitCmd(t, dir, "rev-parse", "refs/heads/feature"); branchSHA != sctx.Run.HeadSHA {
