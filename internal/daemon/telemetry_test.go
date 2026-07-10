@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"testing"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 )
@@ -48,6 +50,19 @@ func (r *telemetryRecorder) find(name, field string, want any) *recordedTelemetr
 			cp := e
 			return &cp
 		}
+	}
+	return nil
+}
+
+func waitForTelemetryEvent(t *testing.T, recorder *telemetryRecorder, name, field string, want any) *recordedTelemetryEvent {
+	t.Helper()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if event := recorder.find(name, field, want); event != nil {
+			return event
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	return nil
 }
