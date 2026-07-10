@@ -731,6 +731,11 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		e.waitingStep = stepName
 		e.mu.Unlock()
 
+		// Parking starts before the gate becomes observable. This includes the
+		// small handoff from publishing the gate to receiving a response, and
+		// prevents a prompt response from being omitted from the parked total.
+		parkStart := time.Now()
+
 		// Surface the park as a pollable, run-level signal so a supervisor can
 		// tell in one `axi status` read that the run is waiting for the agent
 		// to drive this gate (versus actively running/fixing/ci). Observability
@@ -745,7 +750,6 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		}
 		e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(approvalStatus), outcome.Findings, diffText, "", &executionMS)
 
-		parkStart := time.Now()
 		response, err := e.waitForApproval(ctx, stepName)
 		if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
 			slog.Warn("failed to complete awaiting-agent state in db", "step", stepName, "run", run.ID, "error", dbErr)

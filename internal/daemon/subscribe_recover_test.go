@@ -442,8 +442,20 @@ func TestRecoverOnStartup_ResumesParkedRun(t *testing.T) {
 	if completed.AwaitingAgentSince != nil {
 		t.Fatal("recovered run remained parked after approval")
 	}
-	if _, err := os.Stat(worktree); !os.IsNotExist(err) {
-		t.Fatalf("recovered worktree still exists after completion: %v", err)
+	// The executor marks the run terminal before its owner goroutine performs
+	// worktree cleanup. Wait for that cleanup rather than assuming it completed
+	// in the same scheduling slice, which is especially unreliable on Windows.
+	cleanupDeadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(worktree); os.IsNotExist(err) {
+			break
+		} else if err != nil {
+			t.Fatalf("stat recovered worktree: %v", err)
+		}
+		if time.Now().After(cleanupDeadline) {
+			t.Fatalf("recovered worktree still exists after cleanup: %s", worktree)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 
