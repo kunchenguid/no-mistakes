@@ -133,6 +133,36 @@ func TestRunsByRepo(t *testing.T) {
 	}
 }
 
+func TestRunsByRepoHead(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+
+	older, _ := d.InsertRun(repo.ID, "feature", "head-1", "base")
+	d.InsertRun(repo.ID, "feature", "head-2", "base") // same branch, other head
+	d.InsertRun(repo.ID, "other", "head-1", "base")   // same head, other branch
+	newer, _ := d.InsertRun(repo.ID, "feature", "head-1", "base")
+
+	runs, err := d.GetRunsByRepoHead(repo.ID, "feature", "head-1")
+	if err != nil {
+		t.Fatalf("get runs by repo head: %v", err)
+	}
+	if len(runs) != 2 {
+		t.Fatalf("got %d runs for feature/head-1, want 2: %+v", len(runs), runs)
+	}
+	// newest first
+	if runs[0].ID != newer.ID || runs[1].ID != older.ID {
+		t.Errorf("runs = [%s %s], want [%s %s] (newest first)", runs[0].ID, runs[1].ID, newer.ID, older.ID)
+	}
+
+	none, err := d.GetRunsByRepoHead(repo.ID, "feature", "missing")
+	if err != nil {
+		t.Fatalf("get runs by repo head (missing): %v", err)
+	}
+	if len(none) != 0 {
+		t.Errorf("got %d runs for unknown head, want 0", len(none))
+	}
+}
+
 func TestActiveRun(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")

@@ -432,6 +432,26 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		return &ipc.GetRunsResult{Runs: infos}, nil
 	})
 
+	srv.Handle(ipc.MethodGetRunsForHead, func(_ context.Context, params json.RawMessage) (interface{}, error) {
+		var p ipc.GetRunsForHeadParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("invalid params: %w", err)
+		}
+		runs, err := d.GetRunsByRepoHead(p.RepoID, p.Branch, p.HeadSHA)
+		if err != nil {
+			return nil, fmt.Errorf("get runs for head: %w", err)
+		}
+		infos := make([]ipc.RunInfo, 0, len(runs))
+		for _, r := range runs {
+			steps, err := d.GetStepsByRun(r.ID)
+			if err != nil {
+				return nil, fmt.Errorf("get steps for run %s: %w", r.ID, err)
+			}
+			infos = append(infos, *runToInfo(d, r, steps))
+		}
+		return &ipc.GetRunsResult{Runs: infos}, nil
+	})
+
 	srv.Handle(ipc.MethodGetActiveRun, func(_ context.Context, params json.RawMessage) (interface{}, error) {
 		var p ipc.GetActiveRunParams
 		if err := json.Unmarshal(params, &p); err != nil {

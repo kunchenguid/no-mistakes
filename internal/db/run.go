@@ -99,6 +99,30 @@ func (d *DB) GetRunsByRepo(repoID string) ([]*Run, error) {
 	return runs, rows.Err()
 }
 
+// GetRunsByRepoHead returns the runs for a repo matching an exact branch and
+// head SHA, newest first. It lets a caller detect the run created by a specific
+// push without scanning (and rebuilding step data for) the repo's entire run
+// history, so the cost stays bounded to the handful of runs for one head.
+func (d *DB) GetRunsByRepoHead(repoID, branch, headSHA string) ([]*Run, error) {
+	rows, err := d.sql.Query(
+		`SELECT `+runColumns+` FROM runs WHERE repo_id = ? AND branch = ? AND head_sha = ? ORDER BY created_at DESC, id DESC`,
+		repoID, branch, headSHA,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get runs by repo head: %w", err)
+	}
+	defer rows.Close()
+	var runs []*Run
+	for rows.Next() {
+		r := &Run{}
+		if err := scanRun(rows, r); err != nil {
+			return nil, fmt.Errorf("scan run: %w", err)
+		}
+		runs = append(runs, r)
+	}
+	return runs, rows.Err()
+}
+
 // GetActiveRun returns the currently active run (pending or running) for a repo,
 // if any. When branch is non-empty, only a run on that exact branch is returned
 // - the setup wizard relies on this to decide whether a new run is needed for
