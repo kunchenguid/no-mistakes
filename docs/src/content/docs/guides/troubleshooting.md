@@ -98,7 +98,10 @@ no-mistakes update
 
 ## Agent binary not detected
 
-Symptom: `doctor` shows `–` for your native agent, or the pipeline errors with "agent binary not found."
+Symptom: `doctor` reports that gate validation is unavailable, or a run fails before its first pipeline step because no runnable agent was found.
+
+This is a hard failure, not a degraded validation mode.
+`no-mistakes` will not silently skip review, test evidence, documentation, or agent-assisted lint and report the remaining work as a passed gate.
 
 ### Check PATH
 
@@ -116,6 +119,9 @@ For `agent: acp:<target>`, set `acpx_path` instead:
 ```yaml
 acpx_path: /Users/you/.local/bin/acpx
 ```
+
+For Antigravity or Gemini-based driving agents, install a supported native agent CLI separately or configure a working ACP target such as `agent: acp:gemini` with `acpx` installed.
+The calling agent is the AXI driver, not an implicit pipeline-agent backend.
 
 The daemon logs its effective `PATH` at startup in `~/.no-mistakes/logs/daemon.log` with the message `daemon environment ready`. If the log contains `login shell environment resolution failed` or `login shell environment resolution returned no entries`, the daemon used a degraded fallback `PATH` that may omit version-manager directories such as nvm, fnm, or volta, so tools like `pnpm` may be missing.
 

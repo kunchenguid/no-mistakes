@@ -405,20 +405,29 @@ var probeRovoDevSupport = func(ctx context.Context, bin string) (bool, error) {
 }
 
 // ResolveAgent resolves configured agent names to available agents. A single
-// explicit agent is preserved; auto is probed into the first available native
-// agent; an ordered list is filtered to available agents and kept as fallbacks.
+// explicit agent must be runnable; auto is probed into the first available
+// native agent; an ordered list is filtered to available agents and kept as fallbacks.
 // The lookPath function should behave like exec.LookPath.
 func (c *Config) ResolveAgent(ctx context.Context, lookPath func(string) (string, error)) error {
 	candidates := c.configuredAgents()
 	if len(candidates) <= 1 {
 		c.Agent = firstAgent(candidates)
 		c.Agents = copyAgents(candidates)
-		if c.Agent != types.AgentAuto {
+		if c.Agent == types.AgentAuto {
+			name, err := c.resolveAutoAgent(ctx, lookPath)
+			if err != nil {
+				return err
+			}
+			c.Agent = name
+			c.Agents = []types.AgentName{name}
 			return nil
 		}
-		name, err := c.resolveAutoAgent(ctx, lookPath)
+		name, ok, probe, err := c.resolveConfiguredAgent(ctx, c.Agent, lookPath)
 		if err != nil {
 			return err
+		}
+		if !ok {
+			return noRunnableAgentError([]types.AgentName{c.Agent}, []string{probe})
 		}
 		c.Agent = name
 		c.Agents = []types.AgentName{name}
@@ -473,7 +482,7 @@ func (c *Config) resolveAutoAgent(ctx context.Context, lookPath func(string) (st
 			return "", fmt.Errorf("resolve %s agent from %q: %w", name, bin, err)
 		}
 	}
-	return "", fmt.Errorf("no supported agent found in PATH (looked for: %s); install one or set 'agent' in ~/.no-mistakes/config.yaml", strings.Join(probed, ", "))
+	return "", noRunnableAgentError([]types.AgentName{types.AgentAuto}, probed)
 }
 
 func (c *Config) resolveAgentList(ctx context.Context, candidates []types.AgentName, lookPath func(string) (string, error)) ([]types.AgentName, error) {
@@ -495,15 +504,27 @@ func (c *Config) resolveAgentList(ctx context.Context, candidates []types.AgentN
 		resolved = append(resolved, name)
 	}
 	if len(resolved) == 0 {
-		return nil, fmt.Errorf("no configured agent found in PATH (looked for: %s)", strings.Join(probed, ", "))
+		return nil, noRunnableAgentError(candidates, probed)
 	}
 	return resolved, nil
+}
+
+func noRunnableAgentError(configured []types.AgentName, probed []string) error {
+	names := make([]string, 0, len(configured))
+	for _, name := range configured {
+		names = append(names, string(name))
+	}
+	return fmt.Errorf(
+		"no runnable agent found for configured agent %s (looked for: %s); the gate cannot validate without an agent; install a supported native agent, choose an available agent in ~/.no-mistakes/config.yaml, or configure agent: acp:<target> with acpx installed",
+		strings.Join(names, ", "),
+		strings.Join(probed, ", "),
+	)
 }
 
 func (c *Config) resolveConfiguredAgent(ctx context.Context, name types.AgentName, lookPath func(string) (string, error)) (types.AgentName, bool, string, error) {
 	if name == types.AgentAuto {
 		resolved, err := c.resolveAutoAgent(ctx, lookPath)
-		if err != nil && strings.HasPrefix(err.Error(), "no supported agent found in PATH") {
+		if err != nil && strings.HasPrefix(err.Error(), "no runnable agent found") {
 			return "", false, "auto", nil
 		}
 		return resolved, err == nil, "auto", err

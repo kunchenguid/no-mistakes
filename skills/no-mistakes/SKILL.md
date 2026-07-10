@@ -49,6 +49,10 @@ the same way once the work is committed on a feature branch.
   validates committed history, not your uncommitted working tree.
 - You must be on a **feature branch**, not the repository's default branch.
 - The repository must already be initialized with `no-mistakes init`.
+- The daemon must have a runnable configured pipeline agent: a supported native
+  agent binary, or `acpx` for an `acp:<target>`. You are the AXI driver, not
+  an implicit pipeline-agent backend. If none is available, the run fails
+  before its first step; `no-mistakes doctor` reports the configuration problem.
 
 If any of these is not met, `axi run` returns an `error:` with the exact command
 to fix it - read it and act on it (commit your work, or create a branch). If the

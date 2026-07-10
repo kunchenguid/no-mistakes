@@ -53,6 +53,38 @@ func TestUserJourney(t *testing.T) {
 	}
 }
 
+func TestAgentlessRunFailsBeforePipelineStarts(t *testing.T) {
+	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: cleanReviewScenario(t)})
+	for _, name := range []string{"claude", "codex", "opencode"} {
+		if err := os.Remove(filepath.Join(h.BinDir, name)); err != nil {
+			t.Fatalf("remove fake %s agent: %v", name, err)
+		}
+	}
+
+	out, err := h.Run("init")
+	if err != nil {
+		t.Fatalf("nm init: %v\n%s", err, out)
+	}
+	h.CommitChange("agentless", "agentless.txt", "agentless validation\n", "test agentless validation")
+	h.PushToGate("agentless")
+	run := h.WaitForRun("agentless", 60*time.Second)
+
+	if run.Status != types.RunFailed {
+		t.Fatalf("agentless run status = %s, want failed", run.Status)
+	}
+	if run.Error == nil {
+		t.Fatal("agentless run should explain why validation cannot start")
+	}
+	for _, want := range []string{"no runnable agent", "gate cannot validate"} {
+		if !strings.Contains(*run.Error, want) {
+			t.Errorf("agentless run error should contain %q, got %q", want, *run.Error)
+		}
+	}
+	if len(run.Steps) != 0 {
+		t.Fatalf("agentless run started %d pipeline steps, want fail-fast before steps: %+v", len(run.Steps), run.Steps)
+	}
+}
+
 func runHappyPath(t *testing.T, agentName string) {
 	h := NewHarness(t, SetupOpts{Agent: agentName, Scenario: cleanReviewScenario(t)})
 
