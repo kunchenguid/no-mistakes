@@ -169,10 +169,10 @@ Luna/Sonnet-low authors documentation, deterministic integrity and applicable co
 
 **Blocked by:** Apply severity, consent, and unattended policies.
 
-- [ ] Documentation authoring uses `prose_fast` and never self-verifies semantically.
-- [ ] Deterministic documentation checks run before the fresh `tools_balanced` verifier, and no applicable check is represented explicitly rather than treated as implicit success.
-- [ ] Every changed-document result receives explicit verifier adjudication before commit; blocking or inconclusive documentation findings cannot pass as successful authoring.
-- [ ] A defect caused by the authoring patch inherits the next tier of its lineage rather than receiving a fresh Luna/Sonnet budget.
+- [x] Documentation authoring uses `prose_fast` and never self-verifies semantically.
+- [x] Deterministic documentation checks run before the fresh `tools_balanced` verifier, and no applicable check is represented explicitly rather than treated as implicit success.
+- [x] Every changed-document result receives explicit verifier adjudication before commit; blocking or inconclusive documentation findings cannot pass as successful authoring.
+- [x] A defect caused by the authoring patch inherits the next tier of its lineage rather than receiving a fresh Luna/Sonnet budget.
 
 ## Seal the publish candidate and make Push transport-only
 

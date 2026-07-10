@@ -506,3 +506,23 @@ func TestLintRepairUsesStructuredPolicyAndRoutes(t *testing.T) {
 		t.Fatalf("lint verifier purpose = %q, want a strong verifier", policy.verifierPurpose)
 	}
 }
+
+// TestDocumentationRepairUsesVerifierAndRoutes confirms doc authoring and its
+// independent verifier are routed and paired in the document policy (ticket 13).
+func TestDocumentationRepairUsesVerifierAndRoutes(t *testing.T) {
+	for _, p := range []types.Purpose{types.PurposeDocumentationAuthoring, types.PurposeDocumentationVerification} {
+		if !routedPurposes[p] {
+			t.Fatalf("purpose %q must be routed", p)
+		}
+	}
+	policy, ok := stepRepairPolicyFor(config.DefaultRoutingConfig(), types.StepDocument)
+	if !ok {
+		t.Fatal("expected a repair policy for the Document step")
+	}
+	if policy.fixerPurpose != types.PurposeDocumentationAuthoring {
+		t.Fatalf("doc fixer = %q, want documentation_authoring", policy.fixerPurpose)
+	}
+	if policy.verifierPurpose != types.PurposeDocumentationVerification || policy.finalVerifierPurpose != types.PurposeDocumentationVerification {
+		t.Fatalf("doc verifier = %q/%q, want documentation_verification", policy.verifierPurpose, policy.finalVerifierPurpose)
+	}
+}

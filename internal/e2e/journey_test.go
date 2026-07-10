@@ -215,6 +215,7 @@ func runHappyPath(t *testing.T, agentName string) {
 			"You will receive a transcript of a developer's recent conversation",
 			"Choose which recent agent session most likely produced",
 			"Detect the linting and formatting tools",
+			"Bring the project documentation fully in sync",
 		} {
 			if strings.Contains(inv.Prompt, routed) {
 				wantAgent = "codex"
@@ -337,7 +338,10 @@ func cleanReviewScenario(t *testing.T) string {
     text: "documentation warning finding"
     structured:
       findings:
-        - severity: warning
+        - id: "document-warning"
+          severity: warning
+          file: "README.md"
+          line: 1
           description: "README missing new CLI flag"
           action: auto-fix
       summary: "README needs updating"
@@ -1407,141 +1411,79 @@ func assertInvalidConfigPushCleansWorktree(t *testing.T, h *Harness) {
 
 func assertDocumentMissingFindingsRun(t *testing.T, h *Harness) {
 	t.Helper()
+	// Documentation authoring is a routed prose_fast candidate; the codex
+	// adapter enforces the output schema, so a response missing the required
+	// findings field fails the step closed rather than degrading to an ask-user
+	// fallback.
 	h.CommitChange("document-missing-findings", "document-missing-findings.txt", "document missing findings\n", "add document missing findings")
 	h.PushToGate("document-missing-findings")
-	run := waitForStepStatus(t, h, "document-missing-findings", types.StepDocument, types.StepStatusAwaitingApproval, 60*time.Second)
+	run := h.WaitForRun("document-missing-findings", 60*time.Second)
+	if run.Status != types.RunFailed {
+		t.Fatalf("document-missing-findings run status = %s, want failed (routed strict schema); error=%v", run.Status, deref(run.Error))
+	}
 	documentStep, ok := findStep(run.Steps, types.StepDocument)
 	if !ok {
 		t.Fatal("expected document step in document-missing-findings run")
 	}
-	if documentStep.FindingsJSON == nil {
-		t.Fatal("expected document missing findings fallback to record findings JSON")
-	}
-	findings, err := types.ParseFindingsJSON(*documentStep.FindingsJSON)
-	if err != nil {
-		t.Fatalf("parse document missing findings fallback: %v", err)
-	}
-	if findings.Summary != "docs status unavailable" {
-		t.Fatalf("document missing findings summary = %q, want docs status unavailable", findings.Summary)
-	}
-	if len(findings.Items) != 1 {
-		t.Fatalf("expected one fallback documentation finding, got %+v", findings.Items)
-	}
-	item := findings.Items[0]
-	if item.Action != types.ActionAskUser {
-		t.Fatalf("expected fallback documentation finding to ask user, got action %q", item.Action)
-	}
-	if item.Description != "docs status unavailable" {
-		t.Fatalf("fallback documentation finding description = %q, want docs status unavailable", item.Description)
-	}
-	h.Respond(run.ID, types.StepDocument, types.ActionAbort)
-	completed := h.WaitForRun("document-missing-findings", 60*time.Second)
-	if completed.Status != types.RunFailed {
-		t.Fatalf("document-missing-findings run status after abort = %s, want failed", completed.Status)
+	if documentStep.Status != types.StepStatusFailed {
+		t.Fatalf("document step status=%s, want failed on malformed routed output", documentStep.Status)
 	}
 }
 
 func assertDocumentMalformedFindingRun(t *testing.T, h *Harness) {
 	t.Helper()
+	// A finding missing its required action field is a schema violation the
+	// routed codex adapter rejects, failing the step closed.
 	h.CommitChange("document-malformed-finding", "document-malformed-finding.txt", "document malformed finding\n", "add document malformed finding")
 	h.PushToGate("document-malformed-finding")
-	run := waitForStepStatus(t, h, "document-malformed-finding", types.StepDocument, types.StepStatusAwaitingApproval, 60*time.Second)
+	run := h.WaitForRun("document-malformed-finding", 60*time.Second)
+	if run.Status != types.RunFailed {
+		t.Fatalf("document-malformed-finding run status = %s, want failed (routed strict schema); error=%v", run.Status, deref(run.Error))
+	}
 	documentStep, ok := findStep(run.Steps, types.StepDocument)
 	if !ok {
 		t.Fatal("expected document step in document-malformed-finding run")
 	}
-	if documentStep.FindingsJSON == nil {
-		t.Fatal("expected document malformed finding fallback to record findings JSON")
-	}
-	findings, err := types.ParseFindingsJSON(*documentStep.FindingsJSON)
-	if err != nil {
-		t.Fatalf("parse document malformed finding fallback: %v", err)
-	}
-	if findings.Summary != "README needs updating" {
-		t.Fatalf("document malformed finding summary = %q, want README needs updating", findings.Summary)
-	}
-	if len(findings.Items) != 1 {
-		t.Fatalf("expected one fallback documentation finding, got %+v", findings.Items)
-	}
-	item := findings.Items[0]
-	if item.Action != types.ActionAskUser {
-		t.Fatalf("expected fallback documentation finding to ask user, got action %q", item.Action)
-	}
-	if item.Description != "README needs updating" {
-		t.Fatalf("fallback documentation finding description = %q, want README needs updating", item.Description)
-	}
-	h.Respond(run.ID, types.StepDocument, types.ActionAbort)
-	completed := h.WaitForRun("document-malformed-finding", 60*time.Second)
-	if completed.Status != types.RunFailed {
-		t.Fatalf("document-malformed-finding run status after abort = %s, want failed", completed.Status)
+	if documentStep.Status != types.StepStatusFailed {
+		t.Fatalf("document step status=%s, want failed on malformed routed output", documentStep.Status)
 	}
 }
 
 func assertDocumentLegacyFindingRun(t *testing.T, h *Harness) {
 	t.Helper()
+	// The legacy items/requires_human_review shape is not the routed findings
+	// schema, so the codex adapter rejects it and the step fails closed.
 	h.CommitChange("document-legacy-finding", "document-legacy-finding.txt", "document legacy finding\n", "add document legacy finding")
 	h.PushToGate("document-legacy-finding")
-	run := waitForStepStatus(t, h, "document-legacy-finding", types.StepDocument, types.StepStatusAwaitingApproval, 60*time.Second)
+	run := h.WaitForRun("document-legacy-finding", 60*time.Second)
+	if run.Status != types.RunFailed {
+		t.Fatalf("document-legacy-finding run status = %s, want failed (routed strict schema); error=%v", run.Status, deref(run.Error))
+	}
 	documentStep, ok := findStep(run.Steps, types.StepDocument)
 	if !ok {
 		t.Fatal("expected document step in document-legacy-finding run")
 	}
-	if documentStep.FindingsJSON == nil {
-		t.Fatal("expected document legacy finding to record findings JSON")
-	}
-	findings, err := types.ParseFindingsJSON(*documentStep.FindingsJSON)
-	if err != nil {
-		t.Fatalf("parse document legacy finding: %v", err)
-	}
-	if findings.Summary != "README needs updating" {
-		t.Fatalf("document legacy finding summary = %q, want README needs updating", findings.Summary)
-	}
-	if len(findings.Items) != 1 {
-		t.Fatalf("expected one legacy documentation finding, got %+v", findings.Items)
-	}
-	if findings.Items[0].Action != types.ActionAutoFix {
-		t.Fatalf("expected legacy documentation finding to normalize to auto-fix, got action %q", findings.Items[0].Action)
-	}
-	h.Respond(run.ID, types.StepDocument, types.ActionAbort)
-	completed := h.WaitForRun("document-legacy-finding", 60*time.Second)
-	if completed.Status != types.RunFailed {
-		t.Fatalf("document-legacy-finding run status after abort = %s, want failed", completed.Status)
+	if documentStep.Status != types.StepStatusFailed {
+		t.Fatalf("document step status=%s, want failed on legacy-shaped routed output", documentStep.Status)
 	}
 }
 
 func assertDocumentMissingSummaryRun(t *testing.T, h *Harness) {
 	t.Helper()
+	// A response missing the required summary field is rejected by the routed
+	// codex adapter, failing the step closed.
 	h.CommitChange("document-missing-summary", "document-missing-summary.txt", "document missing summary\n", "add document missing summary")
 	h.PushToGate("document-missing-summary")
-	run := waitForStepStatus(t, h, "document-missing-summary", types.StepDocument, types.StepStatusAwaitingApproval, 60*time.Second)
+	run := h.WaitForRun("document-missing-summary", 60*time.Second)
+	if run.Status != types.RunFailed {
+		t.Fatalf("document-missing-summary run status = %s, want failed (routed strict schema); error=%v", run.Status, deref(run.Error))
+	}
 	documentStep, ok := findStep(run.Steps, types.StepDocument)
 	if !ok {
 		t.Fatal("expected document step in document-missing-summary run")
 	}
-	if documentStep.FindingsJSON == nil {
-		t.Fatal("expected document missing summary fallback to record findings JSON")
-	}
-	findings, err := types.ParseFindingsJSON(*documentStep.FindingsJSON)
-	if err != nil {
-		t.Fatalf("parse document missing summary fallback: %v", err)
-	}
-	if findings.Summary != "agent returned no structured output" {
-		t.Fatalf("document missing summary fallback summary = %q, want agent returned no structured output", findings.Summary)
-	}
-	if len(findings.Items) != 1 {
-		t.Fatalf("expected one fallback documentation finding, got %+v", findings.Items)
-	}
-	item := findings.Items[0]
-	if item.Action != types.ActionAskUser {
-		t.Fatalf("expected missing-summary fallback documentation finding to ask user, got action %q", item.Action)
-	}
-	if item.Description != "agent returned no structured output" {
-		t.Fatalf("missing-summary fallback description = %q, want agent returned no structured output", item.Description)
-	}
-	h.Respond(run.ID, types.StepDocument, types.ActionAbort)
-	completed := h.WaitForRun("document-missing-summary", 60*time.Second)
-	if completed.Status != types.RunFailed {
-		t.Fatalf("document-missing-summary run status after abort = %s, want failed", completed.Status)
+	if documentStep.Status != types.StepStatusFailed {
+		t.Fatalf("document step status=%s, want failed on malformed routed output", documentStep.Status)
 	}
 }
 

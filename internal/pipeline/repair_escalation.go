@@ -88,6 +88,21 @@ func unstructuredTestRepairPolicy(routing config.RoutingConfig) repairPolicy {
 	}
 }
 
+// documentationRepairPolicy resolves documentation-authoring findings: a
+// prose_fast author (fixer) closes doc gaps and a fresh tools_balanced
+// documentation verifier adjudicates accuracy and completeness. The author
+// route is single-tier, so an authoring-caused defect advances the lineage and
+// fails closed rather than restarting on a fresh author budget.
+func documentationRepairPolicy(routing config.RoutingConfig) repairPolicy {
+	return repairPolicy{
+		fixerPurpose:         types.PurposeDocumentationAuthoring,
+		verifierPurpose:      types.PurposeDocumentationVerification,
+		finalVerifierPurpose: types.PurposeDocumentationVerification,
+		blocking:             true,
+		maxTier:              routeMaxTier(routing, types.PurposeDocumentationAuthoring),
+	}
+}
+
 // stepRepairPolicyFor returns the repair policy for a non-review step whose
 // blocking findings route through the common coordinator, and whether such a
 // policy exists. Steps without a routed repair keep their legacy path.
@@ -99,6 +114,8 @@ func stepRepairPolicyFor(routing config.RoutingConfig, stepName types.StepName) 
 		// Structured lint repair uses the approved structured cascade
 		// (fix_fast → fix_balanced → authority_strong) with a strong verifier.
 		return blockingRepairPolicy(routing), true
+	case types.StepDocument:
+		return documentationRepairPolicy(routing), true
 	default:
 		return repairPolicy{}, false
 	}

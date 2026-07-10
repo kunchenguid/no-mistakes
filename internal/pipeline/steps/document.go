@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -188,6 +189,19 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 		AutoFixable:   false,
 		Findings:      string(findingsJSON),
 		FixSummary:    docFindings.Summary,
+		// Deterministic documentation integrity check the coordinator runs before
+		// the fresh tools_balanced verifier: reject conflict markers and
+		// whitespace corruption in the changed content.
+		RepairChecks: []pipeline.RepairCheck{{
+			Command: "git diff --check",
+			Run: func(ctx context.Context) (bool, int, string) {
+				out, cerr := git.Run(ctx, sctx.WorkDir, "diff", "--check", baseSHA, "HEAD")
+				if cerr != nil {
+					return true, 1, out
+				}
+				return true, 0, out
+			},
+		}},
 	}, nil
 }
 
