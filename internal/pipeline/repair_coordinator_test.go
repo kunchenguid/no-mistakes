@@ -487,3 +487,22 @@ func TestUnstructuredTestRepairPolicyStartsAtFixBalanced(t *testing.T) {
 		t.Fatalf("test repair maxTier = %d, want 1", policy.maxTier)
 	}
 }
+
+// TestLintRepairUsesStructuredPolicyAndRoutes confirms no-command lint
+// inspection is routed and blocking lint findings take the structured repair
+// cascade with a strong verifier (ticket 12).
+func TestLintRepairUsesStructuredPolicyAndRoutes(t *testing.T) {
+	if !routedPurposes[types.PurposeLintInspection] {
+		t.Fatal("PurposeLintInspection must be routed")
+	}
+	policy, ok := stepRepairPolicyFor(config.DefaultRoutingConfig(), types.StepLint)
+	if !ok {
+		t.Fatal("expected a repair policy for the Lint step")
+	}
+	if policy.fixerPurpose != types.PurposeStructuredFindingRepair {
+		t.Fatalf("lint fixer purpose = %q, want structured_finding_repair", policy.fixerPurpose)
+	}
+	if policy.verifierPurpose != types.PurposeNormalAggregateVerification {
+		t.Fatalf("lint verifier purpose = %q, want a strong verifier", policy.verifierPurpose)
+	}
+}

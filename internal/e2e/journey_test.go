@@ -214,6 +214,7 @@ func runHappyPath(t *testing.T, agentName string) {
 			"Draft a pull request title and summary",
 			"You will receive a transcript of a developer's recent conversation",
 			"Choose which recent agent session most likely produced",
+			"Detect the linting and formatting tools",
 		} {
 			if strings.Contains(inv.Prompt, routed) {
 				wantAgent = "codex"
@@ -1078,7 +1079,7 @@ func assertAgentEditCommitRun(t *testing.T, h *Harness) {
 	if err != nil {
 		t.Fatalf("read agent-edits upstream commit message: %v\n%s", err, message)
 	}
-	if strings.TrimSpace(string(message)) != "no-mistakes: apply agent fixes" {
+	if strings.TrimSpace(string(message)) != "no-mistakes(lint): apply formatting" {
 		t.Fatalf("agent-edits upstream commit message = %q", strings.TrimSpace(string(message)))
 	}
 	contents, err := h.runGit(ctx, h.UpstreamDir, "show", "refs/heads/agent-edits:agent-edit.txt")
@@ -1108,10 +1109,10 @@ func assertFormatFailureWarningRun(t *testing.T, h *Harness) {
 		t.Fatalf("format-fails run did not complete: status=%s error=%v", run.Status, deref(run.Error))
 	}
 	assertPushedHead(t, run.HeadSHA, h.UpstreamBranchSHA("format-fails"))
-	logPath := filepath.Join(h.NMHome, "logs", run.ID, "push.log")
+	logPath := filepath.Join(h.NMHome, "logs", run.ID, "lint.log")
 	logData, err := os.ReadFile(logPath)
 	if err != nil {
-		t.Fatalf("read format-fails push log: %v", err)
+		t.Fatalf("read format-fails lint log: %v", err)
 	}
 	logText := string(logData)
 	if !strings.Contains(logText, "warning") || !strings.Contains(logText, "format") {
@@ -1678,25 +1679,25 @@ func assertTestMalformedStructuredOutputRun(t *testing.T, h *Harness) {
 
 func assertLintMalformedStructuredOutputRun(t *testing.T, h *Harness) {
 	t.Helper()
+	// No-command lint inspection is a routed tools_balanced candidate, so the
+	// codex adapter enforces the output schema. Malformed structured output is a
+	// contract violation that fails the step closed rather than degrading to a
+	// text summary.
 	h.CommitChange("lint-malformed-structured-output", "lint-malformed-structured-output.generated.go", "lint malformed structured output\n", "add lint malformed structured output")
 	h.PushToGate("lint-malformed-structured-output")
 	run := h.WaitForRun("lint-malformed-structured-output", 60*time.Second)
-	if run.Status != types.RunCompleted {
-		t.Fatalf("lint-malformed-structured-output run status=%s error=%v", run.Status, deref(run.Error))
+	if run.Status != types.RunFailed {
+		t.Fatalf("lint-malformed-structured-output run status=%s, want failed (routed strict schema); error=%v", run.Status, deref(run.Error))
+	}
+	if err := deref(run.Error); !strings.Contains(err, "lint") {
+		t.Fatalf("expected a lint-step failure on malformed routed output, got error=%q", err)
 	}
 	lintStep, ok := findStep(run.Steps, types.StepLint)
 	if !ok {
 		t.Fatal("expected lint step in lint-malformed-structured-output run")
 	}
-	if lintStep.FindingsJSON == nil {
-		t.Fatal("expected malformed lint structured output fallback to record findings JSON")
-	}
-	findings, err := types.ParseFindingsJSON(*lintStep.FindingsJSON)
-	if err != nil {
-		t.Fatalf("parse malformed lint output fallback findings: %v", err)
-	}
-	if !strings.Contains(findings.Summary, "lint found some issues") {
-		t.Fatalf("malformed lint output fallback summary = %q, want lint found some issues", findings.Summary)
+	if lintStep.Status != types.StepStatusFailed {
+		t.Fatalf("lint step status=%s, want failed on malformed routed output", lintStep.Status)
 	}
 }
 

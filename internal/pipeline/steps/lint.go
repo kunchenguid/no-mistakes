@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 
@@ -18,6 +19,14 @@ func (s *LintStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	ctx := sctx.Ctx
 	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
 	lintCmd := sctx.Config.Commands.Lint
+
+	// Format the candidate and commit the result before any lint work, so the
+	// linter, the Verify gate, and Push all see the same formatted content and
+	// Push never has to format or commit. This also finalizes any earlier
+	// uncommitted candidate changes so Lint leaves a clean worktree.
+	if err := s.applyFormatting(sctx); err != nil {
+		return nil, err
+	}
 
 	if lintCmd == "" {
 		// The combined document+lint housekeeping pass already performed the
@@ -169,6 +178,16 @@ Previous lint findings to address:
 			Findings:      string(findingsJSON),
 			ExitCode:      exitCode,
 			FixSummary:    fixSummary,
+			RepairChecks: []pipeline.RepairCheck{{
+				Command: lintCmd,
+				Run: func(ctx context.Context) (bool, int, string) {
+					out, code, cerr := runShellCommandWithEnv(ctx, sctx.WorkDir, sctx.Env, lintCmd)
+					if cerr != nil {
+						return true, 1, cerr.Error()
+					}
+					return true, code, out
+				},
+			}},
 		}, nil
 	}
 
@@ -196,4 +215,22 @@ func lintOutcomeFromHousekeeping(sctx *pipeline.StepContext, stash pipeline.Hous
 		Findings:      stash.FindingsJSON,
 		FixSummary:    stash.Summary,
 	}, nil
+}
+
+// applyFormatting runs the configured formatter and commits the result (plus any
+// earlier uncommitted candidate changes) so the linted, verified, and pushed
+// candidate all match. A failing formatter is a warning, not a step failure.
+func (s *LintStep) applyFormatting(sctx *pipeline.StepContext) error {
+	fmtCmd := sctx.Config.Commands.Format
+	if fmtCmd == "" {
+		return nil
+	}
+	sctx.Log(fmt.Sprintf("running formatter: %s", fmtCmd))
+	output, exitCode, ferr := runStepShellCommand(sctx, fmtCmd)
+	if ferr != nil {
+		sctx.Log(fmt.Sprintf("warning: format command failed: %v", ferr))
+	} else if exitCode != 0 {
+		sctx.Log(fmt.Sprintf("warning: format command exited with code %d: %s", exitCode, output))
+	}
+	return commitAgentFixes(sctx, s.Name(), "apply formatting", "apply formatting")
 }

@@ -21,17 +21,6 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	ctx := sctx.Ctx
 	newHeadSHA := ""
 
-	// Run format command if configured (before committing, so changes are formatted)
-	if fmtCmd := sctx.Config.Commands.Format; fmtCmd != "" {
-		sctx.Log(fmt.Sprintf("running formatter: %s", fmtCmd))
-		output, exitCode, err := runStepShellCommand(sctx, fmtCmd)
-		if err != nil {
-			sctx.Log(fmt.Sprintf("warning: format command failed: %v", err))
-		} else if exitCode != 0 {
-			sctx.Log(fmt.Sprintf("warning: format command exited with code %d: %s", exitCode, output))
-		}
-	}
-
 	// Commit any uncommitted changes from agent fixes
 	if err := s.stageInRepoEvidence(sctx); err != nil {
 		return nil, err

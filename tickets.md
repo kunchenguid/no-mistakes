@@ -157,10 +157,10 @@ Structured lint repair uses the common coordinator and the configured determinis
 
 **Blocked by:** Apply severity, consent, and unattended policies.
 
-- [ ] No-command lint inspection uses `tools_balanced`, records its edits, and cannot act as the strong final verifier for its own patch.
-- [ ] Configured lint failures rerun the declared deterministic command before strong adjudication and use the approved structured repair policy.
-- [ ] Formatting runs before candidate sealing, and every formatter or lint change is committed and included in later aggregate verification.
-- [ ] Lint completion leaves no dirty formatter or lint changes for Push to discover.
+- [x] No-command lint inspection uses `tools_balanced`, records its edits, and cannot act as the strong final verifier for its own patch.
+- [x] Configured lint failures rerun the declared deterministic command before strong adjudication and use the approved structured repair policy.
+- [x] Formatting runs before candidate sealing, and every formatter or lint change is committed and included in later aggregate verification.
+- [x] Lint completion leaves no dirty formatter or lint changes for Push to discover.
 
 ## Author and independently verify documentation
 

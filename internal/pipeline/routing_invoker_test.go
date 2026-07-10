@@ -122,9 +122,9 @@ func TestRoutingInvokerDelegatesUnmigratedPurpose(t *testing.T) {
 	}
 
 	if _, err := ri.Invoke(context.Background(), agent.InvocationRequest{
-		Purpose: types.PurposeLintInspection,
+		Purpose: types.PurposeUnstructuredCIRepair,
 		Scope:   scope,
-		Payload: agent.RunOpts{Prompt: "lint"},
+		Payload: agent.RunOpts{Prompt: "verify docs"},
 	}); err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}

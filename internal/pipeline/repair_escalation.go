@@ -95,6 +95,10 @@ func stepRepairPolicyFor(routing config.RoutingConfig, stepName types.StepName) 
 	switch stepName {
 	case types.StepTest:
 		return unstructuredTestRepairPolicy(routing), true
+	case types.StepLint:
+		// Structured lint repair uses the approved structured cascade
+		// (fix_fast → fix_balanced → authority_strong) with a strong verifier.
+		return blockingRepairPolicy(routing), true
 	default:
 		return repairPolicy{}, false
 	}

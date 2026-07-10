@@ -31,6 +31,7 @@ var routedPurposes = map[types.Purpose]bool{
 	types.PurposeIntentDisambiguation:            true,
 	types.PurposeTestEvidence:                    true,
 	types.PurposeUnstructuredTestRepair:          true,
+	types.PurposeLintInspection:                  true,
 	types.PurposeBranchCommitSuggestion:          true,
 }
 
