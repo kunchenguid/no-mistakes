@@ -262,6 +262,7 @@ func runHappyPath(t *testing.T, agentName string) {
 		assertDocumentWarningRun(t, h)
 		assertDocumentInfoRun(t, h)
 		assertReviewWarningRun(t, h)
+		assertReviewAutoFixRepairRun(t, h)
 		assertTestAgentNewTestFileRun(t, h)
 		assertTestAgentStagedNewTestFileRun(t, h)
 	}
@@ -372,6 +373,31 @@ func cleanReviewScenario(t *testing.T) string {
       artifacts: []
       title: "docs: update README"
       body: "## Summary\ndocumentation update"
+  - match: "Review the code changes and return structured findings with a risk assessment.\n\nContext:\n- branch: review-autofix-repair"
+    text: "found a fixable bug"
+    structured:
+      findings:
+        - id: "repair-1"
+          severity: error
+          file: "repair.txt"
+          line: 1
+          description: "logic bug in repair target"
+          action: auto-fix
+      risk_level: high
+      risk_rationale: "a blocking bug must be fixed"
+  - match: "Fix exactly one code-review finding"
+    text: "fixed the logic bug"
+    edits:
+      - path: "repair.txt"
+        new: "fixed\n"
+    structured:
+      summary: "guard the logic bug"
+  - match: "Independently verify whether one specific code-review finding"
+    text: "verified resolved"
+    structured:
+      lineage_id: "PROMPT_LINEAGE_ID"
+      status: "resolved"
+      rationale: "the logic bug is now guarded"
   - match: "branch: review-warning"
     text: "review found a warning"
     structured:
@@ -2847,4 +2873,49 @@ func validatePromptsAbsent(invs []Invocation, unexpected ...string) []string {
 		}
 	}
 	return errs
+}
+
+// assertReviewAutoFixRepairRun proves the routed fast repair runs live: a
+// blocking auto-fix review finding drives a fresh fixer and a fresh strong
+// verifier through the real executor and routing invoker, and the durable
+// finding_repairs record shows a resolved verdict with both attempt links.
+func assertReviewAutoFixRepairRun(t *testing.T, h *Harness) {
+	t.Helper()
+	h.CommitChange("review-autofix-repair", "repair.txt", "buggy line\n", "add repair target")
+	h.PushToGate("review-autofix-repair")
+	run := waitForStepStatus(t, h, "review-autofix-repair", types.StepReview, types.StepStatusAwaitingApproval, 60*time.Second)
+
+	invs := h.AgentInvocations()
+	if !sawPromptContaining(invs, "Fix exactly one code-review finding") {
+		t.Fatalf("expected a routed fixer invocation; invocations:\n%s", summarisePrompts(invs))
+	}
+	if !sawPromptContaining(invs, "Independently verify whether one specific code-review finding") {
+		t.Fatalf("expected a routed strong verifier invocation; invocations:\n%s", summarisePrompts(invs))
+	}
+
+	database, err := db.Open(paths.WithRoot(h.NMHome).DB())
+	if err != nil {
+		t.Fatalf("open e2e db for repair record: %v", err)
+	}
+	defer database.Close()
+	repairs, err := database.GetFindingRepairsByRun(run.ID)
+	if err != nil {
+		t.Fatalf("get finding repairs: %v", err)
+	}
+	if len(repairs) != 1 {
+		t.Fatalf("finding repairs = %d, want exactly one", len(repairs))
+	}
+	r := repairs[0]
+	if r.Status != db.RepairStatusResolved || r.Verdict != db.RepairVerdictResolved || r.VerdictRationale == "" {
+		t.Fatalf("repair status/verdict/rationale = %q/%q/%q, want resolved", r.Status, r.Verdict, r.VerdictRationale)
+	}
+	if r.FixerAttemptID == "" || r.VerifierAttemptID == "" {
+		t.Fatalf("repair links missing: fixer=%q verifier=%q", r.FixerAttemptID, r.VerifierAttemptID)
+	}
+	if r.Tier != 0 || r.Severity != "error" || r.Action != "auto-fix" || r.Description != "logic bug in repair target" {
+		t.Fatalf("repair immutable content wrong: %+v", r)
+	}
+
+	h.Respond(run.ID, types.StepReview, types.ActionAbort)
+	h.WaitForRun("review-autofix-repair", 60*time.Second)
 }

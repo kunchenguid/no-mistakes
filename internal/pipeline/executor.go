@@ -720,6 +720,18 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		// lineage tied to the routed Candidate attempt that surfaced it.
 		e.recordReviewLineages(run, stepName, currentRoundID, outcome.Findings)
 
+		// Route one blocking auto-fix review finding through a fresh verified
+		// repair before the approval gate. Runs only on the initial review
+		// round; a non-resolved outcome terminates safely. The repair's own
+		// fixer/verifier rounds advance the shared round counter.
+		if stepName == types.StepReview && !sctx.Fixing {
+			reserveRepairRound := func(trigger string) (*db.StepRound, error) {
+				roundNum++
+				return e.db.ReserveStepRound(sr.ID, roundNum, trigger)
+			}
+			e.maybeRepairReviewFinding(ctx, sctx, run, sr, repo.DefaultBranch, currentRoundID, outcome.Findings, reserveRepairRound)
+		}
+
 		// If the step produced a PR URL, propagate it to the run and emit an update.
 		if outcome.PRURL != "" {
 			run.PRURL = &outcome.PRURL

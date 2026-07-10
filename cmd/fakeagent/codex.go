@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 )
 
@@ -29,6 +30,13 @@ func runCodex(args []string, scenario *Scenario) int {
 			return 1
 		}
 		action.Structured = filtered
+	}
+
+	// A real verifier echoes the lineage id it was asked to adjudicate; the fake
+	// substitutes the PROMPT_LINEAGE_ID sentinel with the id parsed from the
+	// prompt so repair-verdict journeys need not hardcode a runtime ULID.
+	if action.Structured != nil {
+		substitutePromptLineageID(action.Structured, prompt)
 	}
 
 	// Replay recorded codex output if a fixture is available. no-mistakes
@@ -252,4 +260,17 @@ func extractCodexPrompt(args []string) string {
 		return "" // resume without id+prompt is not a shape no-mistakes emits
 	}
 	return positionals[0]
+}
+
+var promptLineageIDRE = regexp.MustCompile(`lineage id: (\S+)`)
+
+// substitutePromptLineageID replaces a PROMPT_LINEAGE_ID sentinel in the
+// structured verdict with the lineage id parsed from the verifier prompt.
+func substitutePromptLineageID(structured map[string]any, prompt string) {
+	if structured["lineage_id"] != "PROMPT_LINEAGE_ID" {
+		return
+	}
+	if m := promptLineageIDRE.FindStringSubmatch(prompt); len(m) == 2 {
+		structured["lineage_id"] = m[1]
+	}
 }

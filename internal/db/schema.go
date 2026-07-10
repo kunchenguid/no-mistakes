@@ -160,6 +160,43 @@ CREATE TABLE IF NOT EXISTS intent_cache (
     session_id  TEXT NOT NULL,
     created_at  INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS finding_repairs (
+    id               TEXT PRIMARY KEY,
+    run_id           TEXT NOT NULL,
+    lineage_id       TEXT NOT NULL,
+    step_result_id   TEXT NOT NULL,
+    step_round_id    TEXT NOT NULL,
+    severity         TEXT NOT NULL,
+    action           TEXT NOT NULL,
+    description      TEXT NOT NULL,
+    file             TEXT,
+    line             INTEGER,
+    tier             INTEGER NOT NULL,
+    remaining_budget INTEGER NOT NULL,
+    fixer_attempt_id    TEXT,
+    verifier_attempt_id TEXT,
+    verdict          TEXT,
+    verdict_rationale TEXT,
+    status           TEXT NOT NULL DEFAULT 'pending',
+    created_at       INTEGER NOT NULL,
+    updated_at       INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS finding_repairs_run ON finding_repairs(run_id);
+CREATE INDEX IF NOT EXISTS finding_repairs_lineage ON finding_repairs(lineage_id);
+
+CREATE TABLE IF NOT EXISTS finding_repair_checks (
+    id             TEXT PRIMARY KEY,
+    repair_id      TEXT NOT NULL REFERENCES finding_repairs(id) ON DELETE CASCADE,
+    command        TEXT NOT NULL,
+    applicable     INTEGER NOT NULL,
+    exit_code      INTEGER NOT NULL,
+    output_excerpt TEXT,
+    ran_at         INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS finding_repair_checks_repair ON finding_repair_checks(repair_id);
 `
 
 // migrationStatements hold additive schema changes applied to databases that

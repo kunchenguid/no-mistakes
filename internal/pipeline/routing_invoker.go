@@ -15,7 +15,9 @@ import (
 // other Purpose delegates to the legacy invoker unchanged, so this ticket
 // routes only the initial review while the rest of the pipeline is untouched.
 var routedPurposes = map[types.Purpose]bool{
-	types.PurposeInitialReview: true,
+	types.PurposeInitialReview:               true,
+	types.PurposeStructuredFindingRepair:     true,
+	types.PurposeNormalAggregateVerification: true,
 }
 
 // agentFactory builds a fresh native agent for a runner executable. It is a

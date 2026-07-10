@@ -105,10 +105,10 @@ Until later escalation tiers exist, every non-resolved outcome must terminate sa
 
 **Blocked by:** Route and surface the initial review.
 
-- [ ] The selected root finding is persisted with immutable content, action, severity, tier, remaining budget, and links to the fixer, checks, and verifier.
-- [ ] The fixer receives only structured intent, diff, lineage, prior-attempt, deterministic-evidence, and remaining-budget data in a fresh invocation.
-- [ ] Applicable deterministic checks run before the verifier; passing or explicitly inapplicable checks lead to a different fresh `review_strong` invocation.
-- [ ] Only an explicit rationale-bearing `resolved` verdict for the selected lineage succeeds; failed checks, missing IDs, silence, malformed adjudication, `unresolved`, and `inconclusive` outcomes fail safely.
+- [x] The selected root finding is persisted with immutable content, action, severity, tier, remaining budget, and links to the fixer, checks, and verifier.
+- [x] The fixer receives only structured intent, diff, lineage, prior-attempt, deterministic-evidence, and remaining-budget data in a fresh invocation.
+- [x] Applicable deterministic checks run before the verifier; passing or explicitly inapplicable checks lead to a different fresh `review_strong` invocation.
+- [x] Only an explicit rationale-bearing `resolved` verdict for the selected lineage succeeds; failed checks, missing IDs, silence, malformed adjudication, `unresolved`, and `inconclusive` outcomes fail safely.
 
 ## Escalate and batch finding lineages
 
