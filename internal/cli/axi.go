@@ -49,6 +49,7 @@ func newAxiCmd() *cobra.Command {
 	cmd.AddCommand(newAxiLogsCmd())
 	cmd.AddCommand(newAxiAbortCmd())
 	cmd.AddCommand(newAxiWizardCmd())
+	cmd.AddCommand(newAxiCanaryCmd())
 	return cmd
 }
 

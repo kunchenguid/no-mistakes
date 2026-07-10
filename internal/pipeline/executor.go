@@ -185,6 +185,7 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 	}
 	run.Status = types.RunCompleted
 	e.emitRunEvent(ipc.EventRunCompleted, run, repo)
+	e.recordCanaryCohort(ctx, run, workDir)
 	return nil
 }
 

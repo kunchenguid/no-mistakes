@@ -66,10 +66,10 @@ Its 30% median-latency target is advisory and must never mutate routing.
 
 **Blocked by:** Open run-wide provider circuits.
 
-- [ ] One idempotent activation transaction freezes the prior ten successful run IDs, completion times, workload facts, finding counts, and comparable Step-round measurements before a routed run can enter the cohort.
-- [ ] The first ten successful routed runs enter the canary exactly once; failed, cancelled, duplicate, pre-activation, and later successful runs cannot replace either frozen cohort.
-- [ ] The report compares the same execution-only agent-bearing Step-round metric and supplements it with exact invocation duration, escalation, failover, changed-file, changed-line, and initial-finding facts where available.
-- [ ] Incomplete cohorts report their state truthfully, the 30% calculation handles zero and even-sized medians deterministically, and a missed target remains visible but never changes Profiles, Routes, circuits, or gate outcomes.
+- [x] One idempotent activation transaction freezes the prior ten successful run IDs, completion times, workload facts, finding counts, and comparable Step-round measurements before a routed run can enter the cohort.
+- [x] The first ten successful routed runs enter the canary exactly once; failed, cancelled, duplicate, pre-activation, and later successful runs cannot replace either frozen cohort.
+- [x] The report compares the same execution-only agent-bearing Step-round metric and supplements it with exact invocation duration, escalation, failover, changed-file, changed-line, and initial-finding facts where available.
+- [x] Incomplete cohorts report their state truthfully, the 30% calculation handles zero and even-sized medians deterministically, and a missed target remains visible but never changes Profiles, Routes, circuits, or gate outcomes.
 
 ## Route gate-scoped routine work
 

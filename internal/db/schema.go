@@ -197,6 +197,31 @@ CREATE TABLE IF NOT EXISTS finding_repair_checks (
 );
 
 CREATE INDEX IF NOT EXISTS finding_repair_checks_repair ON finding_repair_checks(repair_id);
+
+CREATE TABLE IF NOT EXISTS canary_activation (
+    id           INTEGER PRIMARY KEY CHECK (id = 1),
+    activated_at INTEGER NOT NULL,
+    fingerprint  TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS canary_cohort_runs (
+    cohort           TEXT NOT NULL,
+    position         INTEGER NOT NULL,
+    run_id           TEXT NOT NULL,
+    completed_at     INTEGER NOT NULL,
+    execution_ms     INTEGER NOT NULL,
+    invocation_ms    INTEGER NOT NULL,
+    escalations      INTEGER NOT NULL,
+    failovers        INTEGER NOT NULL,
+    changed_files    INTEGER NOT NULL,
+    changed_lines    INTEGER NOT NULL,
+    initial_findings INTEGER NOT NULL,
+    created_at       INTEGER NOT NULL,
+    PRIMARY KEY (cohort, position)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS canary_cohort_run_unique
+    ON canary_cohort_runs(cohort, run_id);
 `
 
 // migrationStatements hold additive schema changes applied to databases that
