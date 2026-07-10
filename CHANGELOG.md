@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.34.2](https://github.com/kunchenguid/no-mistakes/compare/v1.34.1...v1.34.2) (2026-07-10)
+
+
+### Bug Fixes
+
+* **daemon:** require explicit daemon run argv, fail fast on dead socket ([#416](https://github.com/kunchenguid/no-mistakes/issues/416)) ([b876724](https://github.com/kunchenguid/no-mistakes/commit/b87672422163865f0e2dfcc3f1432887ccea2124))
+* **git:** resolve gate hook paths robustly ([#383](https://github.com/kunchenguid/no-mistakes/issues/383)) ([df2db1e](https://github.com/kunchenguid/no-mistakes/commit/df2db1efd4d4d508679064481650195fb4b0b032))
+
 ## [1.34.1](https://github.com/kunchenguid/no-mistakes/compare/v1.34.0...v1.34.1) (2026-07-10)
 
 
