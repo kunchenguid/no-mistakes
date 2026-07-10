@@ -469,9 +469,6 @@ func TestStepRepairCheckAdvancesWithoutVerifier(t *testing.T) {
 // TestUnstructuredTestRepairPolicyStartsAtFixBalanced pins the test repair route
 // to fix_balanced → authority_strong and confirms the purpose is routed.
 func TestUnstructuredTestRepairPolicyStartsAtFixBalanced(t *testing.T) {
-	if !routedPurposes[types.PurposeUnstructuredTestRepair] {
-		t.Fatal("PurposeUnstructuredTestRepair must be routed")
-	}
 	policy, ok := stepRepairPolicyFor(config.DefaultRoutingConfig(), types.StepTest)
 	if !ok {
 		t.Fatal("expected a repair policy for the Test step")
@@ -492,9 +489,6 @@ func TestUnstructuredTestRepairPolicyStartsAtFixBalanced(t *testing.T) {
 // inspection is routed and blocking lint findings take the structured repair
 // cascade with a strong verifier (ticket 12).
 func TestLintRepairUsesStructuredPolicyAndRoutes(t *testing.T) {
-	if !routedPurposes[types.PurposeLintInspection] {
-		t.Fatal("PurposeLintInspection must be routed")
-	}
 	policy, ok := stepRepairPolicyFor(config.DefaultRoutingConfig(), types.StepLint)
 	if !ok {
 		t.Fatal("expected a repair policy for the Lint step")
@@ -510,11 +504,6 @@ func TestLintRepairUsesStructuredPolicyAndRoutes(t *testing.T) {
 // TestDocumentationRepairUsesVerifierAndRoutes confirms doc authoring and its
 // independent verifier are routed and paired in the document policy (ticket 13).
 func TestDocumentationRepairUsesVerifierAndRoutes(t *testing.T) {
-	for _, p := range []types.Purpose{types.PurposeDocumentationAuthoring, types.PurposeDocumentationVerification} {
-		if !routedPurposes[p] {
-			t.Fatalf("purpose %q must be routed", p)
-		}
-	}
 	policy, ok := stepRepairPolicyFor(config.DefaultRoutingConfig(), types.StepDocument)
 	if !ok {
 		t.Fatal("expected a repair policy for the Document step")

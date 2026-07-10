@@ -176,7 +176,7 @@ type commitSummaryJSON struct {
 // no-op findings are never repaired, and ask-user findings wait for consent. It
 // runs only when routing is active; unresolved findings terminate safely.
 func (e *Executor) maybeRepairReviewFinding(ctx context.Context, sctx *StepContext, run *db.Run, sr *db.StepResult, defaultBranch, reviewRoundID, findingsJSON string, reserveRound func(string) (*db.StepRound, error)) {
-	if sctx.Invoker == nil || e.config == nil || e.config.Routing.IsZero() || !routedPurposes[fixerPurpose] {
+	if sctx.Invoker == nil || e.config == nil || e.config.Routing.IsZero() {
 		return
 	}
 	findings, err := types.ParseFindingsJSON(findingsJSON)
@@ -239,7 +239,7 @@ func (e *Executor) maybeRepairStepFindings(ctx context.Context, sctx *StepContex
 		return false
 	}
 	policy, ok := stepRepairPolicyFor(e.config.Routing, stepName)
-	if !ok || !routedPurposes[policy.fixerPurpose] {
+	if !ok {
 		return false
 	}
 	findings, err := types.ParseFindingsJSON(findingsJSON)
@@ -344,7 +344,7 @@ func (e *Executor) reviewAttemptLineages(reviewRoundID string) (string, map[stri
 
 // routingActive reports whether routed repair is available for this run.
 func (e *Executor) routingActive() bool {
-	return e.config != nil && !e.config.Routing.IsZero() && routedPurposes[types.PurposeIntentSensitiveRepair]
+	return e.config != nil && !e.config.Routing.IsZero()
 }
 
 // repairConsentedFindings repairs the user- or unattended-consented review

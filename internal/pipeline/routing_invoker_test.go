@@ -28,17 +28,6 @@ func (a *recordingRoutedAgent) Run(_ context.Context, opts agent.RunOpts) (*agen
 	return a.result, a.err
 }
 
-type recordingLegacyInvoker struct {
-	calls int
-	last  agent.InvocationRequest
-}
-
-func (l *recordingLegacyInvoker) Invoke(_ context.Context, req agent.InvocationRequest) (*agent.Result, error) {
-	l.calls++
-	l.last = req
-	return &agent.Result{}, nil
-}
-
 func reservedReviewScope(t *testing.T, database *db.DB, run *db.Run) types.InvocationScope {
 	t.Helper()
 	step, err := database.InsertStepResult(run.ID, types.StepReview)
@@ -57,10 +46,9 @@ func TestRoutingInvokerLaunchesReviewStrongCandidate(t *testing.T) {
 	scope := reservedReviewScope(t, database, run)
 
 	native := &recordingRoutedAgent{result: &agent.Result{Usage: agent.TokenUsage{InputTokens: 100, OutputTokens: 20}}}
-	legacy := &recordingLegacyInvoker{}
 	var factoryName types.AgentName
 	var factoryExe string
-	ri := newRoutingInvoker(legacy, config.DefaultRoutingConfig(), database, newProviderCircuits())
+	ri := newRoutingInvoker(config.DefaultRoutingConfig(), database, newProviderCircuits())
 	ri.newAgent = func(name types.AgentName, executable string) (agent.Agent, error) {
 		factoryName, factoryExe = name, executable
 		return native, nil
@@ -73,9 +61,6 @@ func TestRoutingInvokerLaunchesReviewStrongCandidate(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Invoke: %v", err)
-	}
-	if legacy.calls != 0 {
-		t.Fatalf("legacy invoker called %d times for a routed purpose", legacy.calls)
 	}
 	if native.calls != 1 {
 		t.Fatalf("native agent calls = %d, want 1", native.calls)
@@ -110,37 +95,32 @@ func TestRoutingInvokerLaunchesReviewStrongCandidate(t *testing.T) {
 	}
 }
 
-func TestRoutingInvokerDelegatesUnmigratedPurpose(t *testing.T) {
+func TestRoutingInvokerFailsClosedOnUnroutablePurpose(t *testing.T) {
 	database, _, run, _ := setupTest(t)
 	scope := reservedReviewScope(t, database, run)
-	legacy := &recordingLegacyInvoker{}
 	factoryCalled := false
-	ri := newRoutingInvoker(legacy, config.DefaultRoutingConfig(), database, newProviderCircuits())
+	ri := newRoutingInvoker(config.DefaultRoutingConfig(), database, newProviderCircuits())
 	ri.newAgent = func(types.AgentName, string) (agent.Agent, error) {
 		factoryCalled = true
 		return &recordingRoutedAgent{}, nil
 	}
 
 	if _, err := ri.Invoke(context.Background(), agent.InvocationRequest{
-		Purpose: types.Purpose("legacy_only_purpose"),
+		Purpose: types.Purpose("unroutable_purpose"),
 		Scope:   scope,
-		Payload: agent.RunOpts{Prompt: "legacy path"},
-	}); err != nil {
-		t.Fatalf("Invoke: %v", err)
-	}
-	if legacy.calls != 1 {
-		t.Fatalf("legacy calls = %d, want 1 for an unmigrated purpose", legacy.calls)
+		Payload: agent.RunOpts{Prompt: "no route"},
+	}); err == nil {
+		t.Fatal("expected an unroutable purpose to fail closed with no legacy fallback")
 	}
 	if factoryCalled {
-		t.Fatal("routed native agent must not be built for an unmigrated purpose")
+		t.Fatal("no native agent may be built for an unroutable purpose")
 	}
 }
 
-func TestRoutingInvokerZeroRoutingDelegates(t *testing.T) {
+func TestRoutingInvokerFailsClosedWhenRoutingUnconfigured(t *testing.T) {
 	database, _, run, _ := setupTest(t)
 	scope := reservedReviewScope(t, database, run)
-	legacy := &recordingLegacyInvoker{}
-	ri := newRoutingInvoker(legacy, config.RoutingConfig{}, database, newProviderCircuits())
+	ri := newRoutingInvoker(config.RoutingConfig{}, database, newProviderCircuits())
 	ri.newAgent = func(types.AgentName, string) (agent.Agent, error) {
 		t.Fatal("factory must not run when routing is unconfigured")
 		return nil, nil
@@ -149,11 +129,8 @@ func TestRoutingInvokerZeroRoutingDelegates(t *testing.T) {
 		Purpose: types.PurposeInitialReview,
 		Scope:   scope,
 		Payload: agent.RunOpts{Prompt: "review"},
-	}); err != nil {
-		t.Fatalf("Invoke: %v", err)
-	}
-	if legacy.calls != 1 {
-		t.Fatalf("legacy calls = %d, want 1 when routing is unconfigured", legacy.calls)
+	}); err == nil {
+		t.Fatal("expected fail-closed error when routing is unconfigured, not a legacy fallback")
 	}
 }
 
@@ -162,8 +139,7 @@ func TestRoutingInvokerFailsBeforeLaunchOnMissingRoute(t *testing.T) {
 	scope := reservedReviewScope(t, database, run)
 	routing := config.DefaultRoutingConfig()
 	delete(routing.Routes, types.PurposeInitialReview)
-	legacy := &recordingLegacyInvoker{}
-	ri := newRoutingInvoker(legacy, routing, database, newProviderCircuits())
+	ri := newRoutingInvoker(routing, database, newProviderCircuits())
 	ri.newAgent = func(types.AgentName, string) (agent.Agent, error) {
 		t.Fatal("no model may launch when routing data is missing")
 		return nil, nil
@@ -214,7 +190,7 @@ func TestRoutingInvokerFailsOverToBackupOnOperationalFailure(t *testing.T) {
 	codex := &recordingRoutedAgent{err: opError()}
 	claude := &recordingRoutedAgent{result: &agent.Result{Output: []byte(`{}`), Usage: agent.TokenUsage{InputTokens: 7}}}
 	circuits := newProviderCircuits()
-	ri := newRoutingInvoker(&recordingLegacyInvoker{}, config.DefaultRoutingConfig(), database, circuits)
+	ri := newRoutingInvoker(config.DefaultRoutingConfig(), database, circuits)
 	ri.newAgent = perRunner(codex, claude)
 
 	result, err := ri.Invoke(context.Background(), agent.InvocationRequest{
@@ -252,7 +228,7 @@ func TestRoutingInvokerOpensBothCircuitsAndFailsClosed(t *testing.T) {
 	codex := &recordingRoutedAgent{err: opError()}
 	claude := &recordingRoutedAgent{err: opError()}
 	circuits := newProviderCircuits()
-	ri := newRoutingInvoker(&recordingLegacyInvoker{}, config.DefaultRoutingConfig(), database, circuits)
+	ri := newRoutingInvoker(config.DefaultRoutingConfig(), database, circuits)
 	ri.newAgent = perRunner(codex, claude)
 
 	if _, err := ri.Invoke(context.Background(), agent.InvocationRequest{
@@ -281,7 +257,7 @@ func TestRoutingInvokerNonOperationalFailureDoesNotFailOver(t *testing.T) {
 	codex := &recordingRoutedAgent{err: errStub("strong review output malformed")}
 	claude := &recordingRoutedAgent{}
 	circuits := newProviderCircuits()
-	ri := newRoutingInvoker(&recordingLegacyInvoker{}, config.DefaultRoutingConfig(), database, circuits)
+	ri := newRoutingInvoker(config.DefaultRoutingConfig(), database, circuits)
 	ri.newAgent = perRunner(codex, claude)
 
 	if _, err := ri.Invoke(context.Background(), agent.InvocationRequest{
@@ -311,7 +287,7 @@ func TestRoutingInvokerSkipsOpenCircuitDomain(t *testing.T) {
 	claude := &recordingRoutedAgent{result: &agent.Result{Output: []byte(`{}`)}}
 	circuits := newProviderCircuits()
 	circuits.markOpen(types.FailureDomainOpenAI) // a prior routed invocation opened OpenAI
-	ri := newRoutingInvoker(&recordingLegacyInvoker{}, config.DefaultRoutingConfig(), database, circuits)
+	ri := newRoutingInvoker(config.DefaultRoutingConfig(), database, circuits)
 	ri.newAgent = perRunner(codex, claude)
 
 	result, err := ri.Invoke(context.Background(), agent.InvocationRequest{
@@ -348,7 +324,7 @@ func TestRoutingInvokerFailsClosedWhenAllCircuitsOpen(t *testing.T) {
 	circuits := newProviderCircuits()
 	circuits.markOpen(types.FailureDomainOpenAI)
 	circuits.markOpen(types.FailureDomainAnthropic)
-	ri := newRoutingInvoker(&recordingLegacyInvoker{}, config.DefaultRoutingConfig(), database, circuits)
+	ri := newRoutingInvoker(config.DefaultRoutingConfig(), database, circuits)
 	ri.newAgent = func(types.AgentName, string) (agent.Agent, error) {
 		t.Fatal("no candidate may launch when every provider circuit is open")
 		return nil, nil
@@ -442,7 +418,7 @@ func TestRoutingInvokerLaunchesRequestedTier(t *testing.T) {
 	database, _, run, _ := setupTest(t)
 	scope := reservedReviewScope(t, database, run)
 	native := &recordingRoutedAgent{result: &agent.Result{Output: []byte(`{"summary":"x"}`)}}
-	ri := newRoutingInvoker(&recordingLegacyInvoker{}, config.DefaultRoutingConfig(), database, newProviderCircuits())
+	ri := newRoutingInvoker(config.DefaultRoutingConfig(), database, newProviderCircuits())
 	ri.newAgent = func(types.AgentName, string) (agent.Agent, error) { return native, nil }
 
 	if _, err := ri.Invoke(context.Background(), agent.InvocationRequest{
@@ -462,7 +438,7 @@ func TestRoutingInvokerLaunchesRequestedTier(t *testing.T) {
 func TestRoutingInvokerRejectsOutOfRangeTier(t *testing.T) {
 	database, _, run, _ := setupTest(t)
 	scope := reservedReviewScope(t, database, run)
-	ri := newRoutingInvoker(&recordingLegacyInvoker{}, config.DefaultRoutingConfig(), database, newProviderCircuits())
+	ri := newRoutingInvoker(config.DefaultRoutingConfig(), database, newProviderCircuits())
 	ri.newAgent = func(types.AgentName, string) (agent.Agent, error) {
 		t.Fatal("no candidate may launch for an out-of-range tier")
 		return nil, nil
@@ -496,9 +472,8 @@ func TestRoutingInvokerLaunchesRoutineCandidates(t *testing.T) {
 			database, _, run, _ := setupTest(t)
 			scope := reservedReviewScope(t, database, run)
 			native := &recordingRoutedAgent{result: &agent.Result{}}
-			legacy := &recordingLegacyInvoker{}
 			var factoryName types.AgentName
-			ri := newRoutingInvoker(legacy, config.DefaultRoutingConfig(), database, newProviderCircuits())
+			ri := newRoutingInvoker(config.DefaultRoutingConfig(), database, newProviderCircuits())
 			ri.newAgent = func(name types.AgentName, _ string) (agent.Agent, error) {
 				factoryName = name
 				return native, nil
@@ -507,9 +482,6 @@ func TestRoutingInvokerLaunchesRoutineCandidates(t *testing.T) {
 				Purpose: tc.purpose, Scope: scope, Payload: agent.RunOpts{Prompt: "go"},
 			}); err != nil {
 				t.Fatalf("Invoke: %v", err)
-			}
-			if legacy.calls != 0 {
-				t.Fatalf("legacy invoker called %d times; a routed routine purpose must not use legacy", legacy.calls)
 			}
 			if native.calls != 1 || factoryName != types.AgentCodex {
 				t.Fatalf("native calls=%d factory=%q; want 1 launch via codex", native.calls, factoryName)
@@ -535,14 +507,15 @@ func TestRoutingInvokerLaunchesRoutineCandidates(t *testing.T) {
 // TestRoutinegatePurposesAreRouted guards against a routine Purpose silently
 // dropping back to the legacy path.
 func TestRoutineGatePurposesAreRouted(t *testing.T) {
+	routing := config.DefaultRoutingConfig()
 	for _, p := range []types.Purpose{
 		types.PurposeIntentSummarization,
 		types.PurposePRComposition,
 		types.PurposeIntentDisambiguation,
 		types.PurposeTestEvidence,
 	} {
-		if !routedPurposes[p] {
-			t.Errorf("purpose %q is not routed; gate-scoped routine work would use the legacy adapter", p)
+		if _, err := routing.ResolveRoute(p); err != nil {
+			t.Errorf("purpose %q has no route: %v", p, err)
 		}
 	}
 }

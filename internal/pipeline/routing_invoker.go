@@ -11,53 +11,24 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-// routedPurposes is the set of Purposes migrated to the routing system. Every
-// other Purpose delegates to the legacy invoker unchanged. Routed today: the
-// review and its repair coordinator (fixers + strong verifiers across
-// severities), the gate-scoped routine invocations (intent summary and PR
-// composition on prose_fast, intent disambiguation and test evidence on
-// tools_balanced), and the standalone Wizard branch/commit suggestion on
-// prose_fast. The remaining pipeline steps still use the legacy path.
-var routedPurposes = map[types.Purpose]bool{
-	types.PurposeInitialReview:                   true,
-	types.PurposeStructuredFindingRepair:         true,
-	types.PurposeIntentSensitiveRepair:           true,
-	types.PurposeInformationalRepair:             true,
-	types.PurposeInformationalRepairVerification: true,
-	types.PurposeNormalAggregateVerification:     true,
-	types.PurposeEscalatedAggregateVerification:  true,
-	types.PurposeIntentSummarization:             true,
-	types.PurposePRComposition:                   true,
-	types.PurposeIntentDisambiguation:            true,
-	types.PurposeTestEvidence:                    true,
-	types.PurposeUnstructuredTestRepair:          true,
-	types.PurposeUnstructuredConflictRepair:      true,
-	types.PurposeUnstructuredCIRepair:            true,
-	types.PurposeLintInspection:                  true,
-	types.PurposeDocumentationAuthoring:          true,
-	types.PurposeDocumentationVerification:       true,
-	types.PurposeBranchCommitSuggestion:          true,
-}
-
 // agentFactory builds a fresh native agent for a runner executable. It is a
 // field so tests can inject a recording agent without launching a real binary.
 type agentFactory func(name types.AgentName, executable string) (agent.Agent, error)
 
-// routingInvoker resolves a migrated Purpose to a normalized Candidate, launches
-// it as a fresh native process, and records the full Candidate attempt. Every
-// unmigrated Purpose, and any invocation while routing is unconfigured, falls
-// through to the legacy invoker unchanged.
+// routingInvoker resolves a Purpose to a normalized Candidate, launches it as a
+// fresh native process, and records the full Candidate attempt. Routing is the
+// sole model-selection contract: there is no legacy single-agent fallback, so a
+// missing routing contract or an unroutable Purpose fails closed rather than
+// bridging to a configured agent.
 type routingInvoker struct {
-	legacy   agent.Invoker
 	routing  config.RoutingConfig
 	journal  agent.InvocationJournal
 	circuits *providerCircuits
 	newAgent agentFactory
 }
 
-func newRoutingInvoker(legacy agent.Invoker, routing config.RoutingConfig, journal agent.InvocationJournal, circuits *providerCircuits) *routingInvoker {
+func newRoutingInvoker(routing config.RoutingConfig, journal agent.InvocationJournal, circuits *providerCircuits) *routingInvoker {
 	return &routingInvoker{
-		legacy:   legacy,
 		routing:  routing,
 		journal:  journal,
 		circuits: circuits,
@@ -69,33 +40,21 @@ func newRoutingInvoker(legacy agent.Invoker, routing config.RoutingConfig, journ
 
 // NewUtilityRoutingInvoker builds a routing invoker for a standalone utility
 // caller (for example the Wizard). It carries its own fresh provider circuits
-// scoped to that caller's session, routes migrated Purposes through the trusted
-// routing config, and delegates every unrouted Purpose to legacy. factory
-// overrides the fresh-candidate constructor for tests; nil uses the default
-// native factory.
-func NewUtilityRoutingInvoker(legacy agent.Invoker, routing config.RoutingConfig, journal agent.InvocationJournal, factory func(types.AgentName, string) (agent.Agent, error)) agent.Invoker {
-	if legacy == nil {
-		legacy = unroutedGuardInvoker{}
-	}
-	ri := newRoutingInvoker(legacy, routing, journal, newProviderCircuits())
+// scoped to that caller's session and routes every Purpose through the trusted
+// routing config, failing closed when routing is unavailable. factory overrides
+// the fresh-candidate constructor for tests; nil uses the default native
+// factory.
+func NewUtilityRoutingInvoker(routing config.RoutingConfig, journal agent.InvocationJournal, factory func(types.AgentName, string) (agent.Agent, error)) agent.Invoker {
+	ri := newRoutingInvoker(routing, journal, newProviderCircuits())
 	if factory != nil {
 		ri.newAgent = factory
 	}
 	return ri
 }
 
-// unroutedGuardInvoker fails closed for any Purpose a standalone caller did not
-// route. A utility caller that routes every Purpose it uses (like the Wizard)
-// passes a nil legacy delegate and never reaches this guard.
-type unroutedGuardInvoker struct{}
-
-func (unroutedGuardInvoker) Invoke(_ context.Context, request agent.InvocationRequest) (*agent.Result, error) {
-	return nil, fmt.Errorf("purpose %q is not routed for this standalone caller", request.Purpose)
-}
-
 func (ri *routingInvoker) Invoke(ctx context.Context, request agent.InvocationRequest) (*agent.Result, error) {
-	if ri.routing.IsZero() || !routedPurposes[request.Purpose] {
-		return ri.legacy.Invoke(ctx, request)
+	if ri.routing.IsZero() {
+		return nil, fmt.Errorf("routing is not configured: model selection requires a routing contract")
 	}
 	return ri.invokeRouted(ctx, request)
 }

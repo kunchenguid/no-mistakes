@@ -637,12 +637,17 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			round:    func() int { return roundNum + 1 },
 		}
 	}
-	var routingCfg config.RoutingConfig
-	if e.config != nil {
+	routingCfg := config.DefaultRoutingConfig()
+	if e.config != nil && !e.config.Routing.IsZero() {
 		routingCfg = e.config.Routing
 	}
-	invoker := newRoutingInvoker(agent.NewLegacyInvoker(stepAgent, e.db), routingCfg, e.db, circuits)
+	invoker := newRoutingInvoker(routingCfg, e.db, circuits)
 	invoker.newAgent = func(name types.AgentName, executable string) (agent.Agent, error) {
+		if stepAgent != nil {
+			// Test seam: route every Candidate launch to the injected recording
+			// agent instead of spawning a real native binary.
+			return stepAgent, nil
+		}
 		native, err := agent.New(name, executable, nil)
 		if err != nil {
 			return nil, err

@@ -55,7 +55,7 @@ func TestAxiWizardShowsRoutedStandaloneHistory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("insert utility scope: %v", err)
 	}
-	invoker := pipeline.NewUtilityRoutingInvoker(nil, config.DefaultRoutingConfig(), database,
+	invoker := pipeline.NewUtilityRoutingInvoker(config.DefaultRoutingConfig(), database,
 		func(types.AgentName, string) (agent.Agent, error) { return &fakeSuggesterAgent{}, nil })
 	if _, err := invoker.Invoke(context.Background(), agent.InvocationRequest{
 		Purpose: types.PurposeBranchCommitSuggestion,

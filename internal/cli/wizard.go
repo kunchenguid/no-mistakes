@@ -88,7 +88,7 @@ func (s *wizardAgentSuggester) ensure(ctx context.Context) error {
 			// missing or misconfigured checked-out agent never blocks
 			// suggestions. Branch/commit suggestion is always routed, so the
 			// guard legacy delegate never runs.
-			invoker := pipeline.NewUtilityRoutingInvoker(nil, s.routing, s.journal, s.routingFactory)
+			invoker := pipeline.NewUtilityRoutingInvoker(s.routing, s.journal, s.routingFactory)
 			s.invocationAgent = agent.BindInvocation(
 				invoker,
 				types.PurposeBranchCommitSuggestion,
