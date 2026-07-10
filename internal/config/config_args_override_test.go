@@ -98,6 +98,14 @@ func TestLoadGlobal_AgentArgsOverride_ReservedArgsRejected(t *testing.T) {
 		{"opencode", "--hostname"},
 		{"opencode", "--port"},
 		{"opencode", "--print-logs"},
+		{"pi", "--mode"},
+		{"pi", "--no-session"},
+		{"copilot", "-p"},
+		{"copilot", "--prompt"},
+		{"copilot", "--output-format"},
+		{"copilot", "--no-color"},
+		{"omp", "--mode"},
+		{"omp", "--no-session"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.agent+"_"+tt.arg, func(t *testing.T) {
