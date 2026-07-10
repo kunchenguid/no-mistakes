@@ -21,6 +21,13 @@ func runClaude(args []string, scenario *Scenario) int {
 		return 1
 	}
 
+	// A repair verifier echoes the lineage id it was asked to adjudicate; mirror
+	// codex so a verdict routed through the claude (Anthropic backup) resolves
+	// too, rather than emitting the literal PROMPT_LINEAGE_ID sentinel.
+	if action.Structured != nil {
+		substitutePromptLineageID(action.Structured, prompt)
+	}
+
 	// Fixture mode: replay the real claude wire envelope captured by
 	// recordfixture, but splice in scenario-driven content for the
 	// fields no-mistakes parses (assistant text, result structured

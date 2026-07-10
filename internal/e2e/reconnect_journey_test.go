@@ -18,23 +18,32 @@ import (
 // invocation attempts, provider-circuit history, and finding lineages exactly.
 //
 // The journey first drives a single routed run that produces rich durable
-// history: a blocking finding escalates through the fixer cascade
-// (fix_fast->fix_balanced->authority_strong), and the fix_fast OpenAI primary
-// fails with a classified operational error that opens the OpenAI provider
-// circuit run-wide. From that point every OpenAI (codex) candidate is skipped
-// and the Anthropic (claude) backup carries the cascade to a resolved verdict.
-// That yields a mix of succeeded, failed (OpenAI), and skipped (OpenAI)
-// invocation terminals plus a three-tier finding lineage — a maximally varied
-// snapshot to compare across a reconnect.
+// history in one pass:
 //
-// It then aborts the run to a stable terminal status (so daemon recovery has
-// no in-flight pipeline attempt to reconcile — those are recovered as
-// interrupted by design, which is not what this criterion asserts), snapshots
-// the full durable history, restarts the daemon, and re-queries the SAME run
-// through a fresh DB open and through the reconnected IPC surface. The
-// pre/post-restart snapshots of attempts, lineages, and repairs must be
-// byte-for-byte identical, the terminal status and step history unchanged, and
-// the reconnected daemon's IPC view consistent with the DB.
+//   - A blocking finding escalates through the whole fixer cascade
+//     fix_fast -> fix_balanced -> authority_strong under one lineage and
+//     exhausts unresolved at the top tier.
+//   - At fix_balanced the OpenAI (codex) primary fixer fails with a classified
+//     operational error, which opens the OpenAI provider circuit run-wide and
+//     fails over to the Anthropic (claude) backup. Every later OpenAI candidate
+//     — the fix_balanced/authority_strong verifiers and the authority_strong
+//     primary fixer — is then skipped without launching.
+//
+// That yields a maximally varied durable snapshot: succeeded, failed (OpenAI),
+// and skipped (OpenAI) invocation terminals, a failover attempt, and a
+// three-tier finding lineage. The tier-0 fixer and verifier run entirely on
+// codex before the circuit opens, so the tier-0 repair carries a real,
+// parsed (non-empty) unresolved verdict — proving verdict content, not just
+// row existence, survives the reconnect.
+//
+// It then aborts the run to a stable terminal status (so daemon recovery has no
+// in-flight pipeline attempt to reconcile — crash-orphaned attempts are
+// recovered as interrupted by design, which is not what this criterion is
+// about), snapshots the full durable history, restarts the daemon, and
+// re-queries the SAME run through a fresh DB open and the reconnected IPC
+// surface. The pre/post-restart snapshots of attempts, lineages, and repairs
+// must be byte-for-byte identical, the terminal status and step history
+// unchanged, and the reconnected daemon's IPC view consistent with the DB.
 func TestReconnectSnapshotMatchesPersistedHistory(t *testing.T) {
 	const branch = "reconnect-cascade"
 	scenario := writeScenario(t, `actions:
@@ -52,15 +61,15 @@ func TestReconnectSnapshotMatchesPersistedHistory(t *testing.T) {
       risk_rationale: "a blocking bug must be fixed"
   - match: "Fix the following"
     model: "luna"
-    fail: operational
-  - match: "Fix the following"
-    model: "sonnet"
-    text: "fix_fast backup attempt"
+    text: "fix_fast attempt"
     edits:
       - path: "cascade.txt"
-        new: "sonnet fix\n"
+        new: "luna fix\n"
     structured:
-      summary: "fix_fast backup attempt"
+      summary: "fix_fast attempt"
+  - match: "Fix the following"
+    model: "terra"
+    fail: operational
   - match: "Fix the following"
     model: "opus"
     text: "fix_balanced backup attempt"
@@ -78,16 +87,7 @@ func TestReconnectSnapshotMatchesPersistedHistory(t *testing.T) {
     structured:
       summary: "authority backup attempt"
   - match: "Independently verify whether each of the following"
-    effort: "xhigh"
-    text: "authority verified resolved"
-    structured:
-      verdicts:
-        - lineage_id: "PROMPT_LINEAGE_ID"
-          status: "resolved"
-          rationale: "the authority reviewer confirms the fix"
-      new_findings: []
-  - match: "Independently verify whether each of the following"
-    text: "still unresolved at this tier"
+    text: "unresolved at every tier"
     structured:
       verdicts:
         - lineage_id: "PROMPT_LINEAGE_ID"
@@ -106,8 +106,8 @@ func TestReconnectSnapshotMatchesPersistedHistory(t *testing.T) {
 	attempts := h.InvocationAttempts(t, runID)
 	repairs := h.FindingRepairs(t, runID)
 
-	// The blocking finding escalated Luna->Terra->Sol under one lineage and
-	// resolved only at the top tier.
+	// The blocking finding escalated fix_fast -> fix_balanced -> authority_strong
+	// under one lineage and exhausted (no tier resolved).
 	byTier := map[int]*db.FindingRepair{}
 	lineage := ""
 	for _, r := range repairs {
@@ -122,46 +122,63 @@ func TestReconnectSnapshotMatchesPersistedHistory(t *testing.T) {
 		if byTier[tier] == nil {
 			t.Fatalf("missing repair row for tier %d; repairs=%+v", tier, repairs)
 		}
+		if byTier[tier].Status == db.RepairStatusResolved || byTier[tier].Verdict == db.RepairVerdictResolved {
+			t.Fatalf("tier %d resolved (status %q verdict %q), want an exhausting cascade", tier, byTier[tier].Status, byTier[tier].Verdict)
+		}
 	}
-	if byTier[0].Verdict != db.RepairVerdictUnresolved || byTier[1].Verdict != db.RepairVerdictUnresolved {
-		t.Fatalf("tier 0/1 verdicts = %q/%q, want both unresolved (escalating)", byTier[0].Verdict, byTier[1].Verdict)
+	// Tier 0's fixer and verifier ran on codex before the circuit opened, so the
+	// verdict is a real parsed value (not the empty default), proving verdict
+	// content itself is durable across the reconnect.
+	if byTier[0].Verdict != db.RepairVerdictUnresolved {
+		t.Fatalf("tier 0 verdict = %q, want a parsed %q from the codex verifier", byTier[0].Verdict, db.RepairVerdictUnresolved)
 	}
-	if byTier[2].Status != db.RepairStatusResolved || byTier[2].Verdict != db.RepairVerdictResolved {
-		t.Fatalf("tier 2 = status %q verdict %q, want resolved", byTier[2].Status, byTier[2].Verdict)
+	if !run.BlockingRepairUnresolved {
+		t.Fatalf("run.BlockingRepairUnresolved = false, want true for an exhausted blocking lineage")
 	}
 
-	// The first fixer candidate is the OpenAI primary that failed operationally
-	// and opened the circuit; the failover backup then resolved the tier.
-	fixerAttempts := attemptsForPurpose(attempts, types.PurposeStructuredFindingRepair)
-	if len(fixerAttempts) == 0 {
-		t.Fatalf("no fixer attempts recorded")
-	}
-	primary := fixerAttempts[0]
-	if primary.Terminal == nil || primary.Terminal.Outcome != types.InvocationOutcomeFailed || primary.Terminal.FailureDomain != types.FailureDomainOpenAI {
-		t.Fatalf("first fixer candidate terminal = %+v, want a failed OpenAI operational attempt that opens the circuit", primary.Terminal)
-	}
-	assertCandidate(t, primary, "fix_fast", 0, "luna", types.EffortMedium)
-
-	// The three succeeding fixers are all the Anthropic backups (candidate
-	// index 1), because the open OpenAI circuit forced failover at every tier.
+	// The fixer cascade succeeded once per tier: the fix_fast OpenAI primary,
+	// then the Anthropic backup at fix_balanced (failover) and authority_strong
+	// (post-circuit skip of the OpenAI primary).
 	fixers := succeededAttemptsFor(attempts, types.PurposeStructuredFindingRepair)
 	if len(fixers) != 3 {
-		t.Fatalf("succeeded fixer attempts = %d %v, want 3 Anthropic backups", len(fixers), candidateModels(fixers))
+		t.Fatalf("succeeded fixer attempts = %d %v, want 3 (fix_fast codex, then two claude backups)", len(fixers), candidateModels(fixers))
 	}
-	assertCandidate(t, fixers[0], "fix_fast", 0, "sonnet", types.EffortMedium)
+	assertCandidate(t, fixers[0], "fix_fast", 0, "luna", types.EffortMedium)
+	if fixers[0].Start.Candidate.Runner != types.RunnerCodex || fixers[0].Start.Candidate.CandidateIndex != 0 {
+		t.Fatalf("tier 0 fixer = %q idx %d, want the OpenAI primary (codex idx 0)", fixers[0].Start.Candidate.Runner, fixers[0].Start.Candidate.CandidateIndex)
+	}
 	assertCandidate(t, fixers[1], "fix_balanced", 1, "opus", types.EffortMedium)
 	assertCandidate(t, fixers[2], "authority_strong", 2, "fable", types.EffortXHigh)
-	for _, f := range fixers {
-		if f.Start.Candidate.CandidateIndex != 1 || f.Start.Candidate.Runner != types.RunnerClaude {
-			t.Fatalf("succeeded fixer %s ran candidate index %d runner %q, want the Anthropic backup (index 1, claude)", f.Start.Candidate.Model, f.Start.Candidate.CandidateIndex, f.Start.Candidate.Runner)
+	for _, f := range fixers[1:] {
+		if f.Start.Candidate.Runner != types.RunnerClaude || f.Start.Candidate.CandidateIndex != 1 {
+			t.Fatalf("escalated fixer %s = %q idx %d, want the Anthropic backup (claude idx 1)", f.Start.Candidate.Model, f.Start.Candidate.Runner, f.Start.Candidate.CandidateIndex)
 		}
 	}
 
-	// The open OpenAI circuit skipped later same-domain candidates run-wide,
-	// each recorded with the openai failure domain.
+	// Exactly one launched candidate failed operationally: the fix_balanced
+	// OpenAI primary, which opened the circuit and carried the openai domain.
+	var opFailure *db.InvocationAttempt
+	for _, a := range attempts {
+		if a.Terminal != nil && a.Terminal.Outcome == types.InvocationOutcomeFailed {
+			if opFailure != nil {
+				t.Fatalf("more than one failed attempt recorded; want exactly the circuit-opening primary")
+			}
+			opFailure = a
+		}
+	}
+	if opFailure == nil || opFailure.Terminal.FailureDomain != types.FailureDomainOpenAI {
+		t.Fatalf("circuit-opening attempt = %+v, want a failed OpenAI operational attempt", opFailure)
+	}
+	assertCandidate(t, opFailure, "fix_balanced", 1, "terra", types.EffortMedium)
+	if opFailure.Start.Candidate.Runner != types.RunnerCodex || opFailure.Start.Candidate.CandidateIndex != 0 {
+		t.Fatalf("circuit-opening candidate = %q idx %d, want the OpenAI primary (codex idx 0)", opFailure.Start.Candidate.Runner, opFailure.Start.Candidate.CandidateIndex)
+	}
+
+	// The open OpenAI circuit skipped every later same-domain candidate run-wide,
+	// each recorded with the openai failure domain and the codex runner.
 	skips := circuitSkips(attempts, types.FailureDomainOpenAI)
-	if len(skips) == 0 {
-		t.Fatalf("no OpenAI circuit skips recorded; the circuit did not stay open run-wide")
+	if len(skips) < 3 {
+		t.Fatalf("OpenAI circuit skips = %d, want at least 3 later same-domain candidates skipped run-wide", len(skips))
 	}
 	for _, s := range skips {
 		if s.Start.Candidate.Runner != types.RunnerCodex {

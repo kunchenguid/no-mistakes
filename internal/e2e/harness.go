@@ -627,6 +627,8 @@ func (h *Harness) AgentInvocations() []Invocation {
 type Invocation struct {
 	Time   string   `json:"time"`
 	Agent  string   `json:"agent"`
+	Model  string   `json:"model,omitempty"`
+	Effort string   `json:"effort,omitempty"`
 	Args   []string `json:"args"`
 	Prompt string   `json:"prompt"`
 	CWD    string   `json:"cwd,omitempty"`

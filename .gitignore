@@ -1,6 +1,12 @@
 # Build output
 bin/
 tmp/
+# Stray `go build ./cmd/fakeagent` output at the repo root (the e2e builds its
+# own binaries in a temp dir; this root artifact is never used).
+/fakeagent
+
+# Agent scratch / delegation notes (transient, never durable repo knowledge).
+.scratch/
 
 # Go
 *.exe
