@@ -195,14 +195,25 @@ func TestAxiLogsCommandEventCarriesStep(t *testing.T) {
 
 func TestRunStateFingerprintIncludesStepStatuses(t *testing.T) {
 	rv := runView{
-		ID:     "run-1",
-		Status: string(types.RunRunning),
-		Steps:  []stepView{{Name: "review", Status: string(types.StepStatusRunning)}},
+		ID:      "run-1",
+		Branch:  "feature/test",
+		Status:  string(types.RunRunning),
+		HeadSHA: "head-one",
+		PRURL:   "https://example.test/pr/1",
+		Steps:   []stepView{{Name: "review", Status: string(types.StepStatusRunning)}},
 	}
 	before := runStateFingerprint(rv)
 	rv.Steps[0].Status = string(types.StepStatusCompleted)
 	if after := runStateFingerprint(rv); before == after {
 		t.Fatal("changing a step status must change the logs state fingerprint")
+	}
+	rv.HeadSHA = "head-two"
+	if after := runStateFingerprint(rv); before == after {
+		t.Fatal("changing the displayed head must change the status fingerprint")
+	}
+	rv.PRURL = "https://example.test/pr/2"
+	if after := runStateFingerprint(rv); before == after {
+		t.Fatal("changing the displayed PR must change the status fingerprint")
 	}
 }
 

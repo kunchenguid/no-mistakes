@@ -73,13 +73,13 @@ func renderAgentPerfReport(w io.Writer, database *db.DB, runID string) error {
 		return nil
 	}
 	tw := tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "PURPOSE\tCOUNT\tAVG\tTOTAL\tCOLD\tSTARTED\tRESUMED\tFALLBACK\tERRORS\tIN TOK\tOUT TOK\tCACHED TOK")
+	fmt.Fprintln(tw, "PURPOSE\tCOUNT\tAVG\tTOTAL\tCOLD\tSTARTED\tRESUMED\tFALLBACK\tERRORS\tIN TOK\tOUT TOK\tCACHE READ TOK\tCACHE WRITE TOK")
 	for _, a := range aggregates {
-		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n",
+		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n",
 			a.Purpose, a.Count,
 			formatMS(a.AvgDurationMS), formatMS(a.TotalDurationMS),
 			a.Cold, a.Started, a.Resumed, a.Fallback, a.Errors,
-			a.InputTokens, a.OutputTokens, a.CacheReadTokens,
+			a.InputTokens, a.OutputTokens, a.CacheReadTokens, a.CacheCreationTokens,
 		)
 	}
 	return tw.Flush()
@@ -104,17 +104,17 @@ func renderRunAgentPerf(w io.Writer, database *db.DB, runID string) error {
 		return nil
 	}
 	tw := tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "STEP\tROUND\tPURPOSE\tAGENT\tMODEL\tSESSION\tKEY\tDURATION\tEXIT\tIN TOK\tOUT TOK\tCACHED TOK")
+	fmt.Fprintln(tw, "STEP\tROUND\tPURPOSE\tAGENT\tMODEL\tSESSION\tKEY\tDURATION\tEXIT\tIN TOK\tOUT TOK\tCACHE READ TOK\tCACHE WRITE TOK")
 	for _, inv := range invocations {
 		exit := inv.ExitStatus
 		if inv.FailureCategory != "" && inv.FailureCategory != inv.ExitStatus {
 			exit += "/" + inv.FailureCategory
 		}
-		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%d\t%d\n",
+		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%d\t%d\t%d\n",
 			inv.StepName, inv.Round, inv.Purpose, inv.Agent, inv.Model,
 			inv.SessionMode, inv.SessionKey,
 			formatMS(inv.DurationMS), exit,
-			inv.InputTokens, inv.OutputTokens, inv.CacheReadTokens,
+			inv.InputTokens, inv.OutputTokens, inv.CacheReadTokens, inv.CacheCreationTokens,
 		)
 	}
 	return tw.Flush()

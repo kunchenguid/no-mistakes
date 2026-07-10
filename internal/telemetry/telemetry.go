@@ -180,6 +180,11 @@ func Pageview(path string, fields Fields) {
 	Default().Pageview(path, fields)
 }
 
+func Enabled() bool {
+	_, disabled := Default().(noopSink)
+	return !disabled
+}
+
 func Close(ctx context.Context) error {
 	return Default().Close(ctx)
 }

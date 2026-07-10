@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -126,6 +127,34 @@ func TestStatusTracksSoftFailureAsError(t *testing.T) {
 	}
 	if got := event.fields["status"]; got != "error" {
 		t.Fatalf("status = %v, want error", got)
+	}
+}
+
+func TestReadSurfaceTelemetryOptOutDoesNotPersistGate(t *testing.T) {
+	nmHome := t.TempDir()
+	t.Setenv("NM_HOME", nmHome)
+	t.Setenv("NO_MISTAKES_TELEMETRY", "off")
+
+	if err := trackReadSurface("status", nil, func() (string, string, error) {
+		return "repo|idle", "success", nil
+	}); err != nil {
+		t.Fatalf("track read surface: %v", err)
+	}
+
+	p := paths.WithRoot(nmHome)
+	for _, path := range []string{p.TelemetryGateFile(), p.TelemetryGateFile() + ".lock"} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("telemetry opt-out created %q: %v", path, err)
+		}
+	}
+}
+
+func TestStatusFingerprintIncludesDisplayedRunHead(t *testing.T) {
+	run := &db.Run{ID: "run-1", Branch: "feature/test", Status: "running", HeadSHA: "head-one"}
+	before := statusFingerprint("repo", "running", run)
+	run.HeadSHA = "head-two"
+	if after := statusFingerprint("repo", "running", run); before == after {
+		t.Fatal("changing the displayed head must change the status fingerprint")
 	}
 }
 

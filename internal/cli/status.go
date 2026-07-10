@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 	"github.com/spf13/cobra"
 )
@@ -59,9 +60,8 @@ func newStatusCmd() *cobra.Command {
 				if err != nil {
 					return "", "", fmt.Errorf("check active run: %w", err)
 				}
-				fingerprint := repo.ID + "|" + daemonState + "|idle"
+				fingerprint := statusFingerprint(repo.ID, daemonState, activeRun)
 				if activeRun != nil {
-					fingerprint = fmt.Sprintf("%s|%s|%s:%s", repo.ID, daemonState, activeRun.ID, activeRun.Status)
 					fmt.Fprintln(w)
 					fmt.Fprintf(w, "  %s\n", sCyan.Render("Active run"))
 					sha := activeRun.HeadSHA[:minLen(len(activeRun.HeadSHA), 8)]
@@ -79,6 +79,13 @@ func newStatusCmd() *cobra.Command {
 			})
 		},
 	}
+}
+
+func statusFingerprint(repoID, daemonState string, activeRun *db.Run) string {
+	if activeRun == nil {
+		return repoID + "|" + daemonState + "|idle"
+	}
+	return fmt.Sprintf("%s|%s|%s:%s:%s:%s", repoID, daemonState, activeRun.ID, activeRun.Branch, activeRun.Status, activeRun.HeadSHA)
 }
 
 func minLen(a, b int) int {

@@ -60,6 +60,9 @@ func trackReadSurface(command string, fields telemetry.Fields, fn func() (string
 }
 
 func shouldEmitReadSurface(command, fingerprint string) bool {
+	if !telemetry.Enabled() {
+		return false
+	}
 	p, err := paths.New()
 	if err != nil {
 		return true // fail open: behave like the ungated pre-diet path

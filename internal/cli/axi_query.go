@@ -95,7 +95,13 @@ func runStateFingerprint(rv runView) string {
 	var b strings.Builder
 	b.WriteString(rv.ID)
 	b.WriteByte('|')
+	b.WriteString(rv.Branch)
+	b.WriteByte('|')
 	b.WriteString(rv.Status)
+	b.WriteByte('|')
+	b.WriteString(rv.HeadSHA)
+	b.WriteByte('|')
+	b.WriteString(rv.PRURL)
 	for _, step := range rv.Steps {
 		b.WriteByte('|')
 		b.WriteString(step.Name)
