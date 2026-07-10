@@ -241,3 +241,31 @@ func TestRecoverStaleRunsInterruptsOpenAttemptAfterOwnerDeletion(t *testing.T) {
 		t.Fatalf("orphaned pipeline attempt = %+v, want interrupted", attempt)
 	}
 }
+
+func TestGetRecentUtilityScopesFiltersAndLimits(t *testing.T) {
+	d := openTestDB(t)
+	for i := 0; i < 3; i++ {
+		if _, err := d.InsertUtilityScope(types.UtilityScopeWizard, os.Getpid()); err != nil {
+			t.Fatalf("insert utility scope %d: %v", i, err)
+		}
+	}
+	all, err := d.GetRecentUtilityScopes(types.UtilityScopeWizard, 0)
+	if err != nil {
+		t.Fatalf("get recent (default limit): %v", err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("recent wizard scopes = %d, want 3", len(all))
+	}
+	for _, sc := range all {
+		if sc.Kind != types.UtilityScopeWizard {
+			t.Fatalf("scope kind = %q, want wizard", sc.Kind)
+		}
+	}
+	limited, err := d.GetRecentUtilityScopes(types.UtilityScopeWizard, 2)
+	if err != nil {
+		t.Fatalf("get recent (limit 2): %v", err)
+	}
+	if len(limited) != 2 {
+		t.Fatalf("limited wizard scopes = %d, want 2", len(limited))
+	}
+}

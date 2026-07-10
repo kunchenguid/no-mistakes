@@ -14,9 +14,10 @@ import (
 // routedPurposes is the set of Purposes migrated to the routing system. Every
 // other Purpose delegates to the legacy invoker unchanged. Routed today: the
 // review and its repair coordinator (fixers + strong verifiers across
-// severities), plus the gate-scoped routine invocations — intent summary and
-// PR composition on prose_fast, intent disambiguation and test evidence on
-// tools_balanced. The remaining pipeline steps still use the legacy path.
+// severities), the gate-scoped routine invocations (intent summary and PR
+// composition on prose_fast, intent disambiguation and test evidence on
+// tools_balanced), and the standalone Wizard branch/commit suggestion on
+// prose_fast. The remaining pipeline steps still use the legacy path.
 var routedPurposes = map[types.Purpose]bool{
 	types.PurposeInitialReview:                   true,
 	types.PurposeStructuredFindingRepair:         true,
@@ -29,6 +30,7 @@ var routedPurposes = map[types.Purpose]bool{
 	types.PurposePRComposition:                   true,
 	types.PurposeIntentDisambiguation:            true,
 	types.PurposeTestEvidence:                    true,
+	types.PurposeBranchCommitSuggestion:          true,
 }
 
 // agentFactory builds a fresh native agent for a runner executable. It is a
@@ -57,6 +59,32 @@ func newRoutingInvoker(legacy agent.Invoker, routing config.RoutingConfig, journ
 			return agent.New(name, executable, nil)
 		},
 	}
+}
+
+// NewUtilityRoutingInvoker builds a routing invoker for a standalone utility
+// caller (for example the Wizard). It carries its own fresh provider circuits
+// scoped to that caller's session, routes migrated Purposes through the trusted
+// routing config, and delegates every unrouted Purpose to legacy. factory
+// overrides the fresh-candidate constructor for tests; nil uses the default
+// native factory.
+func NewUtilityRoutingInvoker(legacy agent.Invoker, routing config.RoutingConfig, journal agent.InvocationJournal, factory func(types.AgentName, string) (agent.Agent, error)) agent.Invoker {
+	if legacy == nil {
+		legacy = unroutedGuardInvoker{}
+	}
+	ri := newRoutingInvoker(legacy, routing, journal, newProviderCircuits())
+	if factory != nil {
+		ri.newAgent = factory
+	}
+	return ri
+}
+
+// unroutedGuardInvoker fails closed for any Purpose a standalone caller did not
+// route. A utility caller that routes every Purpose it uses (like the Wizard)
+// passes a nil legacy delegate and never reaches this guard.
+type unroutedGuardInvoker struct{}
+
+func (unroutedGuardInvoker) Invoke(_ context.Context, request agent.InvocationRequest) (*agent.Result, error) {
+	return nil, fmt.Errorf("purpose %q is not routed for this standalone caller", request.Purpose)
 }
 
 func (ri *routingInvoker) Invoke(ctx context.Context, request agent.InvocationRequest) (*agent.Result, error) {

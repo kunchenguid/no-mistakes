@@ -292,16 +292,23 @@ func TestWizardAgentSuggesterJournalsOneCombinedUtilityInvocation(t *testing.T) 
 
 	ag := &fakeSuggesterAgent{}
 	s := newFakeSuggester(t, ag)
+	// Route through the trusted default policy; the factory yields the fake so
+	// no real binary launches. The Wizard suggestion must record one prose_fast
+	// Candidate under the utility scope — not a legacy attempt or a gate row.
+	s.routingFactory = func(types.AgentName, string) (agent.Agent, error) { return ag, nil }
 	s.setInvocationContext(database, types.InvocationScope{
 		Kind:           types.InvocationScopeUtility,
 		UtilityScopeID: utilityScope.ID,
-	})
+	}, config.DefaultRoutingConfig())
 	defer s.Close()
 	if _, err := s.suggestBranch(context.Background()); err != nil {
 		t.Fatalf("suggestBranch: %v", err)
 	}
 	if _, err := s.suggestCommit(context.Background()); err != nil {
 		t.Fatalf("suggestCommit cached value: %v", err)
+	}
+	if got := ag.callCount(); got != 1 {
+		t.Fatalf("routed combined suggestion made %d calls, want 1 (commit served from cache)", got)
 	}
 
 	attempts, err := database.GetInvocationAttemptsByUtilityScope(utilityScope.ID)
@@ -311,8 +318,15 @@ func TestWizardAgentSuggesterJournalsOneCombinedUtilityInvocation(t *testing.T) 
 	if len(attempts) != 1 {
 		t.Fatalf("utility attempts = %+v, want one combined call", attempts)
 	}
-	if attempts[0].Start.Purpose != types.PurposeBranchCommitSuggestion || attempts[0].Start.Scope.Kind != types.InvocationScopeUtility {
-		t.Fatalf("utility attempt start = %+v", attempts[0].Start)
+	start := attempts[0].Start
+	if start.Purpose != types.PurposeBranchCommitSuggestion || start.Role != types.InvocationRoleFixer {
+		t.Fatalf("utility attempt purpose/role = %q/%q", start.Purpose, start.Role)
+	}
+	if start.Scope.Kind != types.InvocationScopeUtility || start.Scope.RunID != "" || start.Scope.StepResultID != "" || start.Scope.StepRoundID != "" {
+		t.Fatalf("utility attempt scope = %+v, want utility with no pipeline IDs", start.Scope)
+	}
+	if start.Candidate.Profile != "prose_fast" || start.Candidate.Model != "gpt-5.6-luna" || start.Candidate.Effort != types.EffortLow {
+		t.Fatalf("utility attempt candidate = %+v, want prose_fast/gpt-5.6-luna/low", start.Candidate)
 	}
 	if attempts[0].Terminal == nil || attempts[0].Terminal.Outcome != types.InvocationOutcomeSucceeded {
 		t.Fatalf("utility attempt terminal = %+v, want succeeded", attempts[0].Terminal)

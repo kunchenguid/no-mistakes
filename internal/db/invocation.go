@@ -66,6 +66,34 @@ func (d *DB) GetOpenUtilityScopes() ([]*UtilityScope, error) {
 	return scopes, rows.Err()
 }
 
+// GetRecentUtilityScopes returns the most recent utility scopes of a kind,
+// newest first, for standalone-history operator surfaces. It reads only the
+// utility_scopes table and never joins or fabricates pipeline rows.
+func (d *DB) GetRecentUtilityScopes(kind types.UtilityScopeKind, limit int) ([]*UtilityScope, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := d.sql.Query(`
+		SELECT id, kind, owner_pid, created_at
+		FROM utility_scopes
+		WHERE kind = ?
+		ORDER BY created_at DESC, id DESC
+		LIMIT ?`, kind, limit)
+	if err != nil {
+		return nil, fmt.Errorf("get recent utility scopes: %w", err)
+	}
+	defer rows.Close()
+	var scopes []*UtilityScope
+	for rows.Next() {
+		scope := &UtilityScope{}
+		if err := rows.Scan(&scope.ID, &scope.Kind, &scope.OwnerPID, &scope.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan recent utility scope: %w", err)
+		}
+		scopes = append(scopes, scope)
+	}
+	return scopes, rows.Err()
+}
+
 // InterruptUtilityScopeAttempts appends interruption terminals for every open
 // attempt owned by one utility scope. Callers must first prove the owner ended.
 func (d *DB) InterruptUtilityScopeAttempts(utilityScopeID string) (int64, error) {

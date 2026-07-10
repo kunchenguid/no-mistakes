@@ -92,10 +92,10 @@ Its provider circuit lasts only for the Wizard session.
 
 **Blocked by:** Open run-wide provider circuits.
 
-- [ ] Combined branch-and-commit and commit-only suggestions use the registered suggestion Purpose and `prose_fast`, preserving the existing cached commit result without a duplicate invocation.
-- [ ] Candidate attempts persist under one explicit utility-scope identity and never claim nonexistent pipeline ownership.
-- [ ] The Wizard uses trusted routing policy rather than current feature-branch execution settings, and cancellation closes its process, circuit, and active invocation state.
-- [ ] Standalone active and completed history is available through the appropriate structured operator surface without fabricated gate records.
+- [x] Combined branch-and-commit and commit-only suggestions use the registered suggestion Purpose and `prose_fast`, preserving the existing cached commit result without a duplicate invocation.
+- [x] Candidate attempts persist under one explicit utility-scope identity and never claim nonexistent pipeline ownership.
+- [x] The Wizard uses trusted routing policy rather than current feature-branch execution settings, and cancellation closes its process, circuit, and active invocation state.
+- [x] Standalone active and completed history is available through the appropriate structured operator surface without fabricated gate records.
 
 ## Apply one fast verified blocking repair
 

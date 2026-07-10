@@ -16,6 +16,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/kunchenguid/no-mistakes/internal/wizard"
@@ -45,6 +46,8 @@ type wizardAgentSuggester struct {
 	workDir string
 	resolve func(context.Context, *config.Config) error
 	new     func(types.AgentName, string, []string, agent.Options) (agent.Agent, error)
+	routing        config.RoutingConfig
+	routingFactory func(types.AgentName, string) (agent.Agent, error)
 
 	once            sync.Once
 	ag              agent.Agent
@@ -70,13 +73,29 @@ func newWizardAgentSuggester(cfg *config.Config, workDir string, resolve func(co
 	return &wizardAgentSuggester{cfg: cfg, workDir: workDir, resolve: resolve, new: new}
 }
 
-func (s *wizardAgentSuggester) setInvocationContext(journal agent.InvocationJournal, scope types.InvocationScope) {
+func (s *wizardAgentSuggester) setInvocationContext(journal agent.InvocationJournal, scope types.InvocationScope, routing config.RoutingConfig) {
 	s.journal = journal
 	s.invocationScope = scope
+	s.routing = routing
 }
 
 func (s *wizardAgentSuggester) ensure(ctx context.Context) error {
 	s.once.Do(func() {
+		if s.journal != nil && !s.routing.IsZero() {
+			// Routed standalone path: the trusted routing policy selects and
+			// launches fresh Candidates under this Wizard's own session
+			// circuits. No feature-branch agent is resolved or built, so a
+			// missing or misconfigured checked-out agent never blocks
+			// suggestions. Branch/commit suggestion is always routed, so the
+			// guard legacy delegate never runs.
+			invoker := pipeline.NewUtilityRoutingInvoker(nil, s.routing, s.journal, s.routingFactory)
+			s.invocationAgent = agent.BindInvocation(
+				invoker,
+				types.PurposeBranchCommitSuggestion,
+				s.invocationScope,
+			)
+			return
+		}
 		if err := s.resolve(ctx, s.cfg); err != nil {
 			s.err = fmt.Errorf("resolve agent: %w", err)
 			return
@@ -246,11 +265,18 @@ func runWizardWithMode(ctx context.Context, p *paths.Paths, state *repoState, sk
 		return wizard.Result{}, fmt.Errorf("create wizard invocation scope: %w", err)
 	}
 
+	// The Wizard routes suggestions through the trusted machine routing policy,
+	// never the checked-out feature branch's execution settings. Fall back to
+	// the built-in default contract when the global config carries no routing.
+	trustedRouting := globalCfg.Routing
+	if trustedRouting.IsZero() {
+		trustedRouting = config.DefaultRoutingConfig()
+	}
 	suggester := newWizardAgentSuggester(cfg, workDir, nil, nil)
 	suggester.setInvocationContext(journalDB, types.InvocationScope{
 		Kind:           types.InvocationScopeUtility,
 		UtilityScopeID: utilityScope.ID,
-	})
+	}, trustedRouting)
 	defer suggester.Close()
 
 	wizCfg := wizard.Config{
