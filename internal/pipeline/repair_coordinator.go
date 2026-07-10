@@ -27,21 +27,22 @@ type repairCheck struct {
 // verifier are separate journaled invocations; every non-resolved outcome is
 // recorded and either escalates or fails closed.
 type repairCoordinator struct {
-	invoker         agent.Invoker
-	db              *db.DB
-	run             *db.Run
-	stepResultID    string
-	workDir         string
-	branch          string
-	defaultBranch   string
-	intent          string
-	baseSHA         string
-	reviewAttemptID string
-	policy           repairPolicy
-	checks          []repairCheck
-	log             func(string)
-	logChunk        func(string)
-	reserveRound    func(trigger string) (*db.StepRound, error)
+	invoker            agent.Invoker
+	db                 *db.DB
+	run                *db.Run
+	stepResultID       string
+	stepName           types.StepName
+	workDir            string
+	branch             string
+	defaultBranch      string
+	intent             string
+	baseSHA            string
+	producingAttemptID string
+	policy             repairPolicy
+	checks             []repairCheck
+	log                func(string)
+	logChunk           func(string)
+	reserveRound       func(trigger string) (*db.StepRound, error)
 }
 
 // fixerPurpose is the routed Purpose whose first tier is fix_fast (Luna/Sonnet).
@@ -103,7 +104,11 @@ func (rc *repairCoordinator) commitFix(ctx context.Context, summary string) erro
 	if summary == "" {
 		summary = "apply review finding repair"
 	}
-	message := fmt.Sprintf("no-mistakes(review): %s", summary)
+	step := rc.stepName
+	if step == "" {
+		step = types.StepReview
+	}
+	message := fmt.Sprintf("no-mistakes(%s): %s", step, summary)
 	if _, err := git.Run(ctx, rc.workDir, "commit", "-m", message); err != nil {
 		return fmt.Errorf("commit repair changes: %w", err)
 	}
@@ -188,19 +193,20 @@ func (e *Executor) maybeRepairReviewFinding(ctx context.Context, sctx *StepConte
 		return
 	}
 	rc := &repairCoordinator{
-		invoker:         sctx.Invoker,
-		db:              e.db,
-		run:             run,
-		stepResultID:    sr.ID,
-		workDir:         sctx.WorkDir,
-		branch:          run.Branch,
-		defaultBranch:   defaultBranch,
-		intent:          sctx.UserIntent,
-		baseSHA:         run.BaseSHA,
-		reviewAttemptID: reviewAttemptID,
-		log:             sctx.Log,
-		logChunk:        sctx.LogChunk,
-		reserveRound:    reserveRound,
+		invoker:            sctx.Invoker,
+		db:                 e.db,
+		run:                run,
+		stepResultID:       sr.ID,
+		workDir:            sctx.WorkDir,
+		branch:             run.Branch,
+		defaultBranch:      defaultBranch,
+		intent:             sctx.UserIntent,
+		baseSHA:            run.BaseSHA,
+		stepName:           types.StepReview,
+		producingAttemptID: reviewAttemptID,
+		log:                sctx.Log,
+		logChunk:           sctx.LogChunk,
+		reserveRound:       reserveRound,
 	}
 	// Blocking findings escalate through the full cascade; informational
 	// findings take the cheap non-blocking two-tier cascade. Each batch runs
@@ -217,6 +223,65 @@ func (e *Executor) maybeRepairReviewFinding(ctx context.Context, sctx *StepConte
 			slog.Warn("informational review repair could not be conducted", "error", err)
 		}
 	}
+}
+
+// maybeRepairStepFindings routes a non-review step's blocking findings through
+// the common repair coordinator: a fresh fixer at the policy's first tier, the
+// step's deterministic checks, then a fresh strong verifier, escalating
+// unresolved lineages through the routed cascade and failing closed at the
+// budget. It returns true when it took ownership of the repair, so the executor
+// skips the legacy per-step auto-fix loop. A deterministic step failure carries
+// no producing agent attempt, so its lineages are synthetic run-local roots;
+// the coordinator still persists finding-repair rows against them, so
+// unresolved blocking work surfaces on the run.
+func (e *Executor) maybeRepairStepFindings(ctx context.Context, sctx *StepContext, run *db.Run, sr *db.StepResult, stepName types.StepName, findingsJSON string, checks []repairCheck, reserveRound func(string) (*db.StepRound, error)) bool {
+	if sctx.Invoker == nil || e.config == nil || e.config.Routing.IsZero() {
+		return false
+	}
+	policy, ok := stepRepairPolicyFor(e.config.Routing, stepName)
+	if !ok || !routedPurposes[policy.fixerPurpose] {
+		return false
+	}
+	findings, err := types.ParseFindingsJSON(findingsJSON)
+	if err != nil {
+		return false
+	}
+	blocking := selectFindings(findings.Items, func(f types.Finding) bool { return isBlockingSeverity(f.Severity) })
+	if len(blocking) == 0 {
+		return false
+	}
+	rc := &repairCoordinator{
+		invoker:       sctx.Invoker,
+		db:            e.db,
+		run:           run,
+		stepResultID:  sr.ID,
+		stepName:      stepName,
+		workDir:       sctx.WorkDir,
+		branch:        run.Branch,
+		defaultBranch: sctx.Repo.DefaultBranch,
+		intent:        sctx.UserIntent,
+		baseSHA:       run.BaseSHA,
+		policy:        policy,
+		checks:        checks,
+		log:           sctx.Log,
+		logChunk:      sctx.LogChunk,
+		reserveRound:  reserveRound,
+	}
+	if _, err := rc.escalateBatch(ctx, syntheticSeeds(run.ID, stepName, blocking)); err != nil {
+		slog.Warn("step repair could not be conducted", "step", stepName, "error", err)
+	}
+	return true
+}
+
+// syntheticSeeds mints an in-memory root lineage per deterministic step finding.
+// A configured-command failure has no producing agent attempt, so its lineage
+// id is run-local rather than a durable finding lineage tied to an attempt.
+func syntheticSeeds(runID string, stepName types.StepName, items []types.Finding) []repairSeed {
+	seeds := make([]repairSeed, 0, len(items))
+	for i, f := range items {
+		seeds = append(seeds, repairSeed{LineageID: fmt.Sprintf("det:%s:%s:%d", stepName, runID, i), Finding: f})
+	}
+	return seeds
 }
 
 func isBlockingAutoFix(f types.Finding) bool {
@@ -304,20 +369,21 @@ func (e *Executor) repairConsentedFindings(ctx context.Context, sctx *StepContex
 		return nil
 	}
 	rc := &repairCoordinator{
-		invoker:         sctx.Invoker,
-		db:              e.db,
-		run:             run,
-		stepResultID:    sr.ID,
-		workDir:         sctx.WorkDir,
-		branch:          run.Branch,
-		defaultBranch:   defaultBranch,
-		intent:          sctx.UserIntent,
-		baseSHA:         run.BaseSHA,
-		reviewAttemptID: reviewAttemptID,
-		policy:          intentSensitiveRepairPolicy(e.config.Routing),
-		log:             sctx.Log,
-		logChunk:        sctx.LogChunk,
-		reserveRound:    reserveRound,
+		invoker:            sctx.Invoker,
+		db:                 e.db,
+		run:                run,
+		stepResultID:       sr.ID,
+		workDir:            sctx.WorkDir,
+		branch:             run.Branch,
+		defaultBranch:      defaultBranch,
+		intent:             sctx.UserIntent,
+		baseSHA:            run.BaseSHA,
+		stepName:           types.StepReview,
+		producingAttemptID: reviewAttemptID,
+		policy:             intentSensitiveRepairPolicy(e.config.Routing),
+		log:                sctx.Log,
+		logChunk:           sctx.LogChunk,
+		reserveRound:       reserveRound,
 	}
 	states, err := rc.escalateBatch(ctx, seeds)
 	if err != nil {

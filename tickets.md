@@ -144,10 +144,10 @@ A failed configured test or unstructured test-log repair starts at Terra/Opus, r
 
 **Blocked by:** Apply severity, consent, and unattended policies.
 
-- [ ] Test evidence uses `tools_balanced` and records concrete evidence without becoming final authority over a repaired blocking lineage.
-- [ ] A configured test failure starts at `fix_balanced`, reruns the exact relevant check after each patch, and advances without an intermediate verifier when the check still fails.
-- [ ] New tests, source fixes, and opted-in repository evidence are committed during Test, while temporary evidence remains outside the publish candidate.
-- [ ] Existing generated-test safeguards, artifact handling, deterministic command behavior, and user-visible testing summaries remain intact.
+- [x] Test evidence uses `tools_balanced` and records concrete evidence without becoming final authority over a repaired blocking lineage.
+- [x] A configured test failure starts at `fix_balanced`, reruns the exact relevant check after each patch, and advances without an intermediate verifier when the check still fails.
+- [x] New tests, source fixes, and opted-in repository evidence are committed during Test, while temporary evidence remains outside the publish candidate.
+- [x] Existing generated-test safeguards, artifact handling, deterministic command behavior, and user-visible testing summaries remain intact.
 
 ## Route Lint, formatting, and repair
 

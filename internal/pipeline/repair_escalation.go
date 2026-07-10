@@ -74,6 +74,32 @@ func intentSensitiveRepairPolicy(routing config.RoutingConfig) repairPolicy {
 	}
 }
 
+// unstructuredTestRepairPolicy repairs a failed configured test (or an
+// unstructured test-log failure) through fix_balanced → authority_strong. The
+// deterministic test-command re-run is the primary gate: a still-failing check
+// advances the batch without spending a strong verifier.
+func unstructuredTestRepairPolicy(routing config.RoutingConfig) repairPolicy {
+	return repairPolicy{
+		fixerPurpose:         types.PurposeUnstructuredTestRepair,
+		verifierPurpose:      types.PurposeNormalAggregateVerification,
+		finalVerifierPurpose: types.PurposeEscalatedAggregateVerification,
+		blocking:             true,
+		maxTier:              routeMaxTier(routing, types.PurposeUnstructuredTestRepair),
+	}
+}
+
+// stepRepairPolicyFor returns the repair policy for a non-review step whose
+// blocking findings route through the common coordinator, and whether such a
+// policy exists. Steps without a routed repair keep their legacy path.
+func stepRepairPolicyFor(routing config.RoutingConfig, stepName types.StepName) (repairPolicy, bool) {
+	switch stepName {
+	case types.StepTest:
+		return unstructuredTestRepairPolicy(routing), true
+	default:
+		return repairPolicy{}, false
+	}
+}
+
 // batchVerdictSchema is the strong verifier's per-lineage adjudication of a
 // batch plus any new findings the fix introduced or exposed.
 var batchVerdictSchema = json.RawMessage(`{
@@ -365,7 +391,7 @@ type batchLineVerdict struct {
 // the verifier surfaced, so it is tracked independently rather than folded into
 // an existing lineage.
 func (rc *repairCoordinator) newUnrelatedRoot(f types.Finding) *lineageState {
-	lineages, err := rc.db.CreateFindingLineages(rc.run.ID, rc.reviewAttemptID, []string{""})
+	lineages, err := rc.db.CreateFindingLineages(rc.run.ID, rc.producingAttemptID, []string{""})
 	if err != nil || len(lineages) != 1 {
 		// Fall back to a synthetic id so the finding is still tracked in-memory
 		// and never silently dropped.

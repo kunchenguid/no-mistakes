@@ -83,7 +83,19 @@ type StepOutcome struct {
 	// reported for this step. Used by demo mode to show realistic durations
 	// without actually waiting.
 	DurationOverrideMS int64
+
+	// RepairChecks are deterministic checks (typically a re-run of the step's
+	// configured command) the repair coordinator runs after each fixer patch
+	// and before the strong verifier. A failed applicable check advances the
+	// repair to the next tier without spending a verifier. Steps build these
+	// because the shell runner lives in the steps package.
+	RepairChecks []RepairCheck
 }
+
+// RepairCheck is one deterministic check the repair coordinator runs before the
+// strong verifier. It is exported so steps can supply their configured command
+// re-run; the coordinator stores it internally.
+type RepairCheck = repairCheck
 
 // InvokeAgent launches one semantic invocation owned by the current reserved
 // round. Production contexts always use the journaled Invoker; the direct

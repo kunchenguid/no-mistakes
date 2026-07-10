@@ -173,18 +173,18 @@ func repairFixture(t *testing.T, fake *fakeRepairInvoker, findings []types.Findi
 	}
 	roundNum := 1
 	rc := &repairCoordinator{
-		invoker:         fake,
-		db:              database,
-		run:             run,
-		stepResultID:    step.ID,
-		workDir:         dir,
-		branch:          run.Branch,
-		intent:          "add F",
-		baseSHA:         baseSHA,
-		reviewAttemptID: reviewAttempt,
-		policy:          blockingRepairPolicy(config.DefaultRoutingConfig()),
-		log:             func(string) {},
-		logChunk:        func(string) {},
+		invoker:            fake,
+		db:                 database,
+		run:                run,
+		stepResultID:       step.ID,
+		workDir:            dir,
+		branch:             run.Branch,
+		intent:             "add F",
+		baseSHA:            baseSHA,
+		producingAttemptID: reviewAttempt,
+		policy:             blockingRepairPolicy(config.DefaultRoutingConfig()),
+		log:                func(string) {},
+		logChunk:           func(string) {},
 		reserveRound: func(trigger string) (*db.StepRound, error) {
 			roundNum++
 			return database.ReserveStepRound(step.ID, roundNum, trigger)
@@ -424,5 +424,66 @@ func TestEscalateIntentSensitiveStartsAtFixBalanced(t *testing.T) {
 	}
 	if firstFixer == nil || firstFixer.Start.Candidate.Profile != "fix_balanced" {
 		t.Fatalf("intent-sensitive fixer must start at fix_balanced, got %+v", firstFixer)
+	}
+}
+
+// TestStepRepairCheckAdvancesWithoutVerifier proves the configured test-command
+// re-run gates the verifier: a still-failing check advances the batch to the
+// next tier without spending a strong verifier, and a passing check lets the
+// verifier resolve the lineage (ticket 11 criterion).
+func TestStepRepairCheckAdvancesWithoutVerifier(t *testing.T) {
+	fake := &fakeRepairInvoker{verify: func(_ int, ids []string) verdictSpec {
+		return verdictSpec{resolved: allResolved(ids)}
+	}}
+	rc, seeds := repairFixture(t, fake, []types.Finding{blockingFinding("test-1", "tests failed")})
+	rc.stepName = types.StepTest
+	rc.policy = unstructuredTestRepairPolicy(config.DefaultRoutingConfig())
+	checkCalls := 0
+	rc.checks = []repairCheck{{
+		Command: "make test",
+		Run: func(context.Context) (bool, int, string) {
+			checkCalls++
+			if checkCalls == 1 {
+				return true, 1, "still failing"
+			}
+			return true, 0, "green"
+		},
+	}}
+	states, err := rc.escalateBatch(context.Background(), seeds)
+	if err != nil {
+		t.Fatalf("escalateBatch: %v", err)
+	}
+	// fix_balanced (tier 0) check fails -> advance without verifier;
+	// authority_strong (tier 1) check passes -> verifier resolves.
+	if len(fake.fixerTiers) != 2 || fake.fixerTiers[0] != 0 || fake.fixerTiers[1] != 1 {
+		t.Fatalf("fixer tiers = %v, want [0 1] (fix_balanced then authority_strong)", fake.fixerTiers)
+	}
+	if fake.verifyCalls != 1 {
+		t.Fatalf("verify calls = %d, want 1 (no verifier at the tier where the check failed)", fake.verifyCalls)
+	}
+	if !states[seeds[0].LineageID].resolved {
+		t.Fatalf("lineage not resolved after the check passed: %+v", states[seeds[0].LineageID])
+	}
+}
+
+// TestUnstructuredTestRepairPolicyStartsAtFixBalanced pins the test repair route
+// to fix_balanced → authority_strong and confirms the purpose is routed.
+func TestUnstructuredTestRepairPolicyStartsAtFixBalanced(t *testing.T) {
+	if !routedPurposes[types.PurposeUnstructuredTestRepair] {
+		t.Fatal("PurposeUnstructuredTestRepair must be routed")
+	}
+	policy, ok := stepRepairPolicyFor(config.DefaultRoutingConfig(), types.StepTest)
+	if !ok {
+		t.Fatal("expected a repair policy for the Test step")
+	}
+	if policy.fixerPurpose != types.PurposeUnstructuredTestRepair {
+		t.Fatalf("test fixer purpose = %q, want unstructured_test_repair", policy.fixerPurpose)
+	}
+	profiles, err := config.DefaultRoutingConfig().ResolveRoute(types.PurposeUnstructuredTestRepair)
+	if err != nil || len(profiles) != 2 || profiles[0].Name != config.ProfileFixBalanced || profiles[1].Name != config.ProfileAuthorityStrong {
+		t.Fatalf("test repair route = %+v (err %v), want [fix_balanced authority_strong]", profiles, err)
+	}
+	if policy.maxTier != 1 {
+		t.Fatalf("test repair maxTier = %d, want 1", policy.maxTier)
 	}
 }

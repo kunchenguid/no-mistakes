@@ -721,16 +721,23 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		// lineage tied to the routed Candidate attempt that surfaced it.
 		e.recordReviewLineages(run, stepName, currentRoundID, outcome.Findings)
 
-		// Route one blocking auto-fix review finding through a fresh verified
-		// repair before the approval gate. Runs only on the initial review
-		// round; a non-resolved outcome terminates safely. The repair's own
-		// fixer/verifier rounds advance the shared round counter.
-		if stepName == types.StepReview && !sctx.Fixing {
+		// Route this step's blocking findings through the common repair
+		// coordinator before the approval gate: a fresh fixer, the step's
+		// deterministic checks, then a fresh strong verifier, escalating through
+		// the routed cascade. Runs only on the initial round. When the
+		// coordinator owns a non-review step's repair, the legacy per-step
+		// auto-fix loop is skipped for that step.
+		coordinatorRepaired := false
+		if !sctx.Fixing {
 			reserveRepairRound := func(trigger string) (*db.StepRound, error) {
 				roundNum++
 				return e.db.ReserveStepRound(sr.ID, roundNum, trigger)
 			}
-			e.maybeRepairReviewFinding(ctx, sctx, run, sr, repo.DefaultBranch, currentRoundID, outcome.Findings, reserveRepairRound)
+			if stepName == types.StepReview {
+				e.maybeRepairReviewFinding(ctx, sctx, run, sr, repo.DefaultBranch, currentRoundID, outcome.Findings, reserveRepairRound)
+			} else {
+				coordinatorRepaired = e.maybeRepairStepFindings(ctx, sctx, run, sr, stepName, outcome.Findings, outcome.RepairChecks, reserveRepairRound)
+			}
 		}
 
 		// If the step produced a PR URL, propagate it to the run and emit an update.
@@ -743,7 +750,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		// Only auto-fix findings whose action is "auto-fix".
 		// This runs before the NeedsApproval check so that all severity
 		// levels (including "info") get a chance at automatic fixing.
-		if outcome.AutoFixable && autoFixLimit > 0 && autoFixAttempts < autoFixLimit {
+		if outcome.AutoFixable && !coordinatorRepaired && autoFixLimit > 0 && autoFixAttempts < autoFixLimit {
 			fixableFindings := autoFixableFindingsJSON(outcome.Findings)
 			if fixableFindings != "" {
 				autoFixAttempts++

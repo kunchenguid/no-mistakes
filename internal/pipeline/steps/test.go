@@ -111,6 +111,16 @@ Previous test findings to address:
 				Findings:      string(findingsJSON),
 				ExitCode:      exitCode,
 				FixSummary:    fixSummary,
+				RepairChecks: []pipeline.RepairCheck{{
+					Command: testCmd,
+					Run: func(ctx context.Context) (bool, int, string) {
+						out, code, cerr := runShellCommandWithEnv(ctx, sctx.WorkDir, sctx.Env, testCmd)
+						if cerr != nil {
+							return true, 1, cerr.Error()
+						}
+						return true, code, out
+					},
+				}},
 			}, nil
 		}
 	}
@@ -226,6 +236,14 @@ Rules:
 			}
 		}
 
+		// Commit the test step's publishable outputs — opted-in in-repo evidence
+		// and any new test files — during Test, so the sealed candidate carries
+		// them and Push never has to. Temporary evidence lives outside the
+		// worktree and is naturally excluded.
+		if err := commitTestOutputs(sctx, evidenceLocation, newTests); err != nil {
+			return nil, err
+		}
+
 		findingsJSON, _ := json.Marshal(findings)
 		return &pipeline.StepOutcome{
 			NeedsApproval: needsApproval,
@@ -259,4 +277,39 @@ Rules:
 	sctx.Log("all tests passed")
 	findingsJSON, _ := json.Marshal(Findings{Tested: tested})
 	return &pipeline.StepOutcome{Findings: string(findingsJSON), FixSummary: fixSummary}, nil
+}
+
+// commitTestOutputs stages and commits opted-in in-repo test evidence and any
+// new test files the agent wrote. It stages only those paths — never a blanket
+// add -A — so earlier steps' uncommitted work is left for their own owners.
+func commitTestOutputs(sctx *pipeline.StepContext, evidenceLocation testEvidenceLocation, newTests []string) error {
+	ctx := sctx.Ctx
+	if evidenceLocation.StoreInRepo && !gitIgnoresPath(ctx, sctx.WorkDir, evidenceLocation.Dir) && dirHasFiles(evidenceLocation.Dir) {
+		if rel, err := filepath.Rel(sctx.WorkDir, evidenceLocation.Dir); err == nil && rel != "." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel) {
+			if _, err := git.Run(ctx, sctx.WorkDir, "add", "-f", "--", filepath.ToSlash(rel)); err != nil {
+				return fmt.Errorf("stage test evidence: %w", err)
+			}
+		}
+	}
+	for _, f := range newTests {
+		if _, err := git.Run(ctx, sctx.WorkDir, "add", "--", f); err != nil {
+			return fmt.Errorf("stage new test file %s: %w", f, err)
+		}
+	}
+	cached, _ := git.Run(ctx, sctx.WorkDir, "diff", "--cached", "--name-only")
+	if strings.TrimSpace(cached) == "" {
+		return nil
+	}
+	if _, err := git.Run(ctx, sctx.WorkDir, "commit", "-m", "no-mistakes(test): record test evidence and new tests"); err != nil {
+		return fmt.Errorf("commit test outputs: %w", err)
+	}
+	headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
+	if err != nil {
+		return fmt.Errorf("resolve head after test commit: %w", err)
+	}
+	if _, err := git.Run(ctx, sctx.WorkDir, "update-ref", normalizedBranchRef(sctx.Run.Branch), headSHA); err != nil {
+		return fmt.Errorf("update local branch ref: %w", err)
+	}
+	sctx.Run.HeadSHA = headSHA
+	return sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, headSHA)
 }
