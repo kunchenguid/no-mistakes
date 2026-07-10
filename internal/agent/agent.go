@@ -38,7 +38,7 @@ type RunOpts struct {
 	// Purpose labels the pipeline duty this invocation serves (review,
 	// review-fix, test-evidence, ...). Instrumentation only; adapters
 	// ignore it.
-	Purpose   string
+	Purpose string
 	// OnAttempt receives each concrete adapter attempt, including retries and
 	// fallback-provider attempts, after it completes. It is instrumentation
 	// only and must not change invocation behavior.
