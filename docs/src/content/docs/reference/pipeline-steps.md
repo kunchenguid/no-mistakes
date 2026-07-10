@@ -15,6 +15,7 @@ Every pipeline agent invocation is prompt-steered to keep intentional writes ins
 This is a soft boundary, not OS-level sandbox enforcement.
 The steering still allows requested test evidence under the managed temporary `no-mistakes-evidence` directory or the configured in-repo evidence directory, plus incidental temp or cache writes from normal development tools.
 Configured shell commands and one-shot agent subprocesses are scoped to their step: when the invocation exits, fails, or is cancelled, no-mistakes terminates remaining child processes it spawned so background workers do not outlive the run.
+Every pipeline-generated commit excludes known local toolchain and package-manager cache trees, including `.tools/dotnet-cli-home`, `node_modules`, `.nuget`, Python caches and virtual environments, and common JavaScript build caches. The files remain in the worktree, but cache-only changes create no commit. This applies to agent fixes, push-step commits, and CI repairs.
 
 ## Intent
 
@@ -25,6 +26,7 @@ This is best-effort context, and when available it is included in rebase fixes, 
 - Uses run-supplied intent verbatim and skips transcript-based inference, even when `intent.enabled` is false
 - Runs transcript-based inference only when `intent.enabled` is true
 - Matches local agent transcripts against non-deleted changed files when present, falling back to all changed files for all-deletion diffs, may use the configured pipeline agent to disambiguate plausible matches, and summarizes the likely author intent with that agent
+- Excludes Grok sessions created inside no-mistakes daemon worktrees, even if they share the repository remote, because they contain pipeline prompts rather than the user's request
 - Stores the derived summary, source, session ID, and match score on the run
 - Logs accepted candidate diagnostics, including source, session, CWD, score, confidence, overlap, decision, and acceptance reason
 - Logs the matched source, score, and sanitized inferred intent when a transcript matches

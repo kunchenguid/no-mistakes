@@ -21,6 +21,7 @@ It tells agents to keep intentional source, project, user-data, and system file 
 The only intentional out-of-worktree write it allows is test evidence under the managed temporary `no-mistakes-evidence` directory when a testing prompt asks for it; when in-repo evidence is enabled, test evidence stays inside the configured evidence directory instead.
 Incidental temp or cache writes from normal development tools are still allowed.
 Testing prompts also ask agents to remove transient working-tree artifacts they created, such as downloaded models, caches, build outputs, large binaries, or generated data directories, before reporting completion.
+As a backstop, no-mistakes excludes known local toolchain and package-manager cache trees from every generated commit, including agent fixes, push-step commits, and CI repairs. This includes paths such as `.tools/dotnet-cli-home`, `node_modules`, `.nuget`, Python caches and virtual environments, and common JavaScript build caches. A cache-only change produces no commit and remains uncommitted in the worktree.
 
 ## How to choose quickly
 
@@ -229,6 +230,7 @@ It matches sessions against non-deleted changed files when present, falls back t
 Transcript readers collect user and assistant text messages but exclude tool call output.
 They read Claude Code transcripts from `~/.claude/projects`, Codex metadata from `~/.codex/state_*.sqlite` plus referenced rollout files, OpenCode messages from `$XDG_DATA_HOME/opencode/opencode.db` or `~/.local/share/opencode/opencode.db`, Rovo Dev sessions from `~/.rovodev/sessions`, Pi transcripts from `~/.pi/agent/sessions`, GitHub Copilot CLI sessions from `~/.copilot/session-state`, and Grok sessions from `~/.grok/sessions` (or `$GROK_HOME/sessions` when set).
 Sessions are eligible when they come from the same working directory or an equivalent Git checkout with the same common Git directory or normalized remote URL.
+Grok sessions created inside no-mistakes daemon worktrees are excluded even when they share the repository remote, because they contain pipeline prompts rather than the user's request.
 ACP transcripts are not currently read for intent extraction.
 When deterministic matching leaves multiple plausible sessions, no-mistakes may ask the configured pipeline agent to choose among them using the matching file paths and sanitized transcript packet files.
 The selected transcript text is then sent to the configured pipeline agent for summarization during the `intent` step, so intent extraction may incur additional agent or API invocations.
