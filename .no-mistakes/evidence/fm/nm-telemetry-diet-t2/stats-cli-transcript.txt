@@ -1,0 +1,11 @@
+$ NO_MISTAKES_TELEMETRY=off NM_HOME=<isolated evidence state> no-mistakes stats --agents
+PURPOSE     COUNT  AVG  TOTAL  COLD  STARTED  RESUMED  FALLBACK  ERRORS  IN TOK  OUT TOK  CACHE READ TOK  CACHE WRITE TOK
+review      2      45s  1m30s  0     1        1        0         0       1500    180      850             100
+review-fix  1      45s  45s    0     1        0        0         0       300     40       50              10
+
+$ NO_MISTAKES_TELEMETRY=off NM_HOME=<isolated evidence state> no-mistakes stats --run 01KX73QYFKYS04KE9PNHF55APW
+run 01KX73QYFKYS04KE9PNHF55APW (completed), parked at gates 1m30s total
+STEP    ROUND  PURPOSE     AGENT  MODEL    SESSION  KEY               DURATION  EXIT  IN TOK  OUT TOK  CACHE READ TOK  CACHE WRITE TOK
+review  1      review      codex  gpt-5.2  started  reviewer-key-000  1m0s      ok    1000    120      400             80
+review  2      review      codex  gpt-5.2  resumed  reviewer-key-000  30s       ok    500     60       450             20
+review  2      review-fix  codex  gpt-5.2  started  fixer-key-000000  45s       ok    300     40       50              10

@@ -8,7 +8,7 @@ It is not runner-free.
 Every validation run requires either a supported native agent binary or `acpx` configured for an ACP target.
 The default `agent: auto` setting picks the first supported native agent available on your system.
 
-The coding agent that calls `no-mistakes axi` drives approval gates, but it does not automatically become the pipeline agent that performs review, evidence testing, documentation, lint discovery, or fixes.
+The coding agent that calls `no-mistakes axi` drives approval gates, but it does not automatically become the pipeline agent that performs review, evidence testing, documentation, combined documentation-and-lint housekeeping, or fixes.
 Those jobs run in the daemon's disposable worktree through the configured pipeline agent.
 
 The agent is responsible for the parts of the gate that benefit from judgment:
@@ -62,7 +62,7 @@ This refusal also applies when deterministic test or lint commands are configure
 | Test without `commands.test`, or evidence validation with user intent | No | Requires the agent to discover checks and gather end-to-end evidence. |
 | Document | No | Requires the agent to discover and update documentation gaps. |
 | Lint with `commands.lint` | No, as part of a full gate | The command is deterministic, but the full gate still requires an agent. |
-| Lint without `commands.lint` and all fix rounds | No | Requires agent discovery or code changes. |
+| Lint without `commands.lint` and all fix rounds | No | The document step performs the initial combined housekeeping pass, and an agent is still needed for fallback assessment or code changes. |
 | Push, PR, and CI as part of a gate | No | They run only after the required validation steps, and PR or CI paths may invoke the agent themselves. |
 
 ### Antigravity and Gemini setups
@@ -254,7 +254,22 @@ You can also set extra CLI flags for native agents in global config with
 service tier, reasoning depth, or permission mode. Keep this in global config only, since it
 reflects your local agent setup rather than repo policy.
 
+no-mistakes rejects Claude and Codex session-control flags in this setting, including resume, continue, session, and thread selectors.
+It manages those flags itself so the reviewer and review-fixer never share a conversation.
+
 For example, Codex users can pass `-c service_tier="priority"` to request the priority speed lane and separately pass `-c model_reasoning_effort="low"` to reduce reasoning depth. no-mistakes reloads global config while setting up each run, so edit this file before starting a run. For repeatable fast or deep profiles, use separately initialized `NM_HOME` roots; each root has its own config and no-mistakes state.
+
+## Review session reuse
+
+`session_reuse` is a global setting that defaults to `true`.
+For Claude and Codex, no-mistakes keeps one durable reviewer session through the initial review and every full rereview, plus a separate durable fixer session through review-fix turns.
+Every rereview still evaluates the entire branch diff; only the reviewer's prior context is retained.
+Other pipeline duties remain cold and isolated.
+
+If a resume fails, no-mistakes discards that role's identity and reruns the same turn in a fresh session for the same role.
+If the saved provider is no longer available, that role retries from a fresh session through the configured fallback list; non-resuming providers run cold.
+Session metadata is local and contains only the adapter-native identity needed to resume, never prompts or transcripts.
+After a daemon restart, no-mistakes resumes only an unambiguous fully recorded approval gate; all other active runs fail closed as crash recovery.
 
 ## Agent interface
 
@@ -266,12 +281,16 @@ All agents implement the same interface. Each invocation receives:
 - **JSONSchema** - optional structured output schema for typed responses
 - **OnChunk** - callback for streaming text output to the TUI
 - **OnLifecycle** - callback for native subprocess start, exit, and retry activity that is recorded in step logs and AXI active-step status
+- **Session** - optional no-mistakes-owned native session identity for review-loop reuse
+- **Purpose** - local performance label for the pipeline duty served
 
 Each invocation returns:
 
 - **Output** - structured JSON output; native structured responses are returned as-is, while text-parsed fallbacks are validated before return and may use `null` for optional fields
 - **Text** - raw text output
 - **Usage** - token counts (input, output, cache read, cache creation)
+- **SessionID** and **Resumed** - the adapter-native session identity and whether this invocation resumed it, when supported
+- **Model** and **Provider** - adapter-reported serving metadata when available
 
 One-shot subprocess agents (Claude, Codex, Pi, Copilot CLI, and acpx) are invocation-scoped.
 After no-mistakes starts one, it terminates any remaining child processes when the invocation exits, fails, or is cancelled, so agent-spawned test workers, build watchers, and dev servers do not survive the step.
@@ -302,11 +321,14 @@ Use `intent.disabled_readers` to disable specific transcript sources, or set `in
 ## Claude
 
 Spawns a `claude` subprocess for each invocation with `--output-format stream-json`. By default it also adds `--dangerously-skip-permissions`, unless you already set your own Claude permission flag through `agent_args_override`. Reads JSONL events from stdout. Supports native structured output via `--json-schema`.
+For review-loop reuse, Claude starts a stream-json session and resumes it with `claude -p --resume <id>`.
 
 ## Codex
 
 Spawns a `codex` subprocess for each invocation with `exec --json`. When structured output is requested, no-mistakes also writes a normalized schema file and passes it with `--output-schema`. By default it also adds `--dangerously-bypass-approvals-and-sandbox`, unless you already set your own Codex approval or sandbox flag through `agent_args_override`. Reads JSONL events. Structured output is returned from the final `agent_message` text, with fallback parsing that accepts JSON fences, inline fence markers, or a final bare JSON object after prose, then validates the result against the normalized schema.
 Codex model and config overrides, such as `-m gpt-5.4`, `-c service_tier="priority"`, or `-c model_reasoning_effort="low"`, belong in global `agent_args_override.codex`.
+For review-loop reuse, Codex resumes the reported thread with `codex exec resume <id> <prompt>`.
+That resume command has a narrower flag surface than `codex exec`, so a resume that rejects an override falls back to a fresh same-role session rather than skipping the review turn.
 
 ## Rovo Dev
 

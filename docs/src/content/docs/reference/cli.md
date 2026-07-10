@@ -279,6 +279,16 @@ no-mistakes stats
 
 Displays total changes, rescued changes, rescue rate, reported and fixed mistakes, fixes by pipeline step, and the top repos by rescue activity.
 
+Use `--agents` for local, per-purpose agent performance aggregates, including duration, session mode, errors, and input, output, cache-read, and cache-creation tokens.
+Use `--run <id>` to inspect the individual agent invocations and total time parked at approval gates for one run; it implies `--agents`.
+
+```sh
+no-mistakes stats --agents
+no-mistakes stats --run <id>
+```
+
+This detailed performance evidence stays local in `state.sqlite`; it is not sent to telemetry.
+
 ## no-mistakes doctor
 
 Check system health and dependencies.

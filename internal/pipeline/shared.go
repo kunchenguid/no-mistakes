@@ -35,6 +35,9 @@ func (s *RunShared) SetHousekeepingLint(result HousekeepingLintResult) {
 	s.housekeepingLint = &result
 }
 
+// ClearHousekeepingLint discards a previous combined-pass lint assessment
+// before a document pass starts, so a later lint step never consumes stale
+// findings.
 func (s *RunShared) ClearHousekeepingLint() {
 	if s == nil {
 		return

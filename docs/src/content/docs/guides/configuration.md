@@ -15,6 +15,7 @@ work. Config exists for the parts that genuinely vary by machine or repo:
 - where test evidence artifacts should be stored
 - how aggressive the auto-fix loop should be
 - how soon AXI should call an active step quiet
+- whether the review loop reuses supported native agent sessions
 - whether no-mistakes should infer intent from recent local agent transcripts
 
 Config is split across two files:
@@ -98,6 +99,10 @@ step_quiet_warning: "10m"
 # Daemon log verbosity.
 log_level: info # debug | info | warn | error
 
+# Reuse supported native sessions for the review loop.
+# Claude and Codex keep separate reviewer and review-fixer sessions.
+session_reuse: true
+
 # Max follow-up auto-fix attempts per step. 0 = disabled after the initial step pass.
 # Document fixes are attempted during the initial document pass.
 auto_fix:
@@ -157,6 +162,11 @@ ignore_patterns:
   - "*.generated.go"
   - "vendor/**"
 
+# Optional documentation ownership policy, trusted from the default branch.
+document:
+  instructions: |
+    docs/ owns detailed product guidance; README.md owns the introduction.
+
 # Override follow-up auto-fix limits for this repo.
 # Document fixes are attempted during the initial document pass.
 auto_fix:
@@ -182,17 +192,18 @@ See [Repo Config Reference](/no-mistakes/reference/repo-config/) for the full fi
 - Global `agent: auto` resolves by checking `claude`, `codex`, `opencode`, `acli` for `rovodev`, `pi`, then `copilot` on `PATH`.
 - ACP agents are opt-in with `agent: acp:<target>` and are not considered by `agent: auto`.
 - `agent_path_override`, `agent_args_override`, `acpx_path`, and `acp_registry_overrides` are global-only fields.
-- `ci_timeout`, `step_quiet_warning`, and `log_level` are global-only fields.
+- `ci_timeout`, `step_quiet_warning`, `log_level`, and `session_reuse` are global-only fields.
 - For Codex-backed pipeline agents, `service_tier` controls the speed or priority lane and `model_reasoning_effort` controls reasoning depth. Set both through `agent_args_override.codex` with separate `-c` entries.
+- Session-control flags for Claude and Codex are reserved in `agent_args_override` so no-mistakes can preserve reviewer/fixer role isolation; configuration rejects them instead of accepting a competing session choice.
 - no-mistakes reloads global config while setting up each run. To adjust Codex behavior for the next run, edit `~/.no-mistakes/config.yaml` before starting it. For repeatable profiles such as fast or deep, use separately initialized `NM_HOME` roots; `NM_HOME` moves all no-mistakes state, not just config.
 - `auto_fix` from the repo config overlays global auto_fix. Fields not set in the repo config fall through to the global default.
 - `intent` from the repo config overlays global intent settings. Fields not set in the repo config fall through to the global default, except `intent.disabled_readers`, which adds to globally disabled readers.
 - `test.evidence` from the repo config overlays global test evidence settings. Fields not set in the repo config fall through to the global default.
-- `commands` and `ignore_patterns` are repo-only fields.
+- `commands`, `ignore_patterns`, and `document.instructions` are repo-only fields. `document.instructions` is always read from the trusted default branch because it controls the documentation policy that evaluates a pushed branch.
 - `ci_timeout` and `auto_fix.ci` are the canonical keys; `babysit_timeout` and `auto_fix.babysit` are still accepted as legacy aliases.
 - If `commands.test` is set, the test step runs it first as the baseline; when user intent is available, the agent may still run afterward to gather evidence-oriented validation.
 - If `commands.test` is empty, the agent detects and runs relevant tests itself.
-- If `commands.lint` is empty, the agent detects relevant linters and formatters, applies safe fixes, verifies them, commits any agent changes, and reports only unresolved issues.
+- If `commands.lint` is empty, the document step runs one combined documentation-and-lint housekeeping pass, then the lint step consumes its lint result. If that pass is skipped or cannot return trustworthy structured output, the lint step runs its own agent pass.
 - If `commands.format` is empty, no separate push-step formatter is run automatically.
 - Configured commands are step-scoped; no-mistakes terminates child processes they leave behind when the command exits, fails, or is cancelled.
 
@@ -200,7 +211,7 @@ The practical implication is simple: explicit commands give you deterministic
 baseline behavior, while leaving commands empty asks the agent to fill in the gap.
 For tests, available user intent can also trigger an evidence-oriented agent follow-up after the baseline command succeeds.
 By default, evidence stays in a temporary local directory; opt into `test.evidence.store_in_repo` when your team wants evidence artifacts committed, pushed, and linked directly from PRs.
-For lint, that gap includes safe formatter and linter fixes during the initial lint pass.
+For lint, that gap includes safe formatter and linter fixes during the combined housekeeping pass when no explicit lint command is configured.
 
 ## Ignore pattern rules
 

@@ -139,7 +139,8 @@ The `-y` / `--yes` flag answers that executable-path prompt non-interactively; i
 If the daemon executable path cannot be determined, `update` aborts before replacing anything.
 You can also manage it explicitly with `no-mistakes daemon start|stop|restart|status`; `daemon stop` and `daemon restart` apply the same active-run guard and `--force` override.
 
-On startup, the daemon recovers from crashes by marking any stuck runs as failed, reaping orphaned managed agent servers, cleaning up orphaned worktrees (never one whose run is still pending or running), refreshing legacy no-mistakes-managed `post-receive` hooks, enabling push options for older gate repos, and reapplying gate hook-path isolation when Git supports `config --worktree`.
+On startup, the daemon first reconstructs only unambiguous runs that were fully recorded as parked at an approval gate, including their local reviewer/fixer session metadata when available.
+It fails every other stuck or incomplete active run closed as a crash recovery, reaps orphaned managed agent servers, cleans up orphaned worktrees (never one whose run is still pending or running), refreshes legacy no-mistakes-managed `post-receive` hooks, enables push options for older gate repos, and reapplies gate hook-path isolation when Git supports `config --worktree`.
 
 ### Pipeline executor
 
@@ -154,6 +155,7 @@ branch, marking the remaining steps as skipped.
 
 While the executor is paused at an approval or fix-review gate, it persists a run-level awaiting-agent timestamp that AXI renders as `awaiting_agent: parked <duration>`.
 That timestamp is observability only and does not alter approval behavior.
+When the wait ends, it atomically clears the marker and adds the elapsed wall time to the run's local parked-time total, so a crash cannot leave that time undercounted.
 While a step is running or fixing, the executor also records the latest meaningful step activity from log lines and native subprocess lifecycle events.
 AXI renders that activity in `active_steps`, including a quiet prefix when no activity has arrived for longer than the configured `step_quiet_warning`.
 
@@ -163,7 +165,7 @@ Communication between the CLI and daemon uses JSON-RPC 2.0 over the Unix socket.
 
 ### Database
 
-SQLite at `~/.no-mistakes/state.sqlite` tracks repos, runs, step results, step rounds, and derived intent summaries.
+SQLite at `~/.no-mistakes/state.sqlite` tracks repos, runs, step results, step rounds, derived intent summaries, local agent invocation performance, and the minimum session metadata needed to resume review-loop roles.
 Step rounds record each execution attempt (initial, auto-fix) with its own findings and duration, plus selected finding IDs, whether the selection came from the user or auto-fix filtering, the merged finding payload actually sent to the fix agent for that round, and the one-line fix summary for fix rounds.
 Step results also store the last active timestamp, last activity text, native agent PID while a subprocess is active, and the effective auto-fix limit used by AXI status.
 That merged payload can include per-finding user notes and user-authored findings from the TUI or AXI interface.
@@ -171,7 +173,9 @@ Intent stores the summary, source, session ID, and match score on each run when 
 An agent-supplied AXI intent is stored directly on the run.
 Raw transcript text is not stored in this database.
 Legacy `user_fix` rounds are still read as `auto-fix` for backward compatibility.
-Run records also store the nullable `awaiting_agent_since` timestamp used only to render the AXI parked signal while a gate is waiting for the driving agent.
+Run records also store the nullable `awaiting_agent_since` timestamp used only to render the AXI parked signal while a gate is waiting for the driving agent, plus accumulated `parked_ms` for local performance reporting.
+Each agent invocation records local-only purpose, provider/model metadata, session mode and a truncated session-identity hash, timing, failure category, and token usage; prompts, outputs, diffs, and credentials are never stored there.
+Use `no-mistakes stats --agents` for aggregates or `no-mistakes stats --run <id>` for a run timeline and parked time.
 Repo records store the parent `upstream_url` and an optional `fork_url`; branch pushes use `fork_url` when present, while PR and CI provider context stays anchored to the parent.
 
 ## Local state
@@ -185,6 +189,7 @@ Everything lives under `~/.no-mistakes/` by default. Set `NM_HOME` to relocate i
 | `daemon.pid`                     | Daemon identity record                                                                                                  |
 | `daemon.lock`                    | Singleton lock; the OS lock a live daemon holds so a second daemon for the same root cannot start                       |
 | `config.yaml`                    | Global configuration                                                                                                    |
+| `telemetry-gate.json`            | Persistent read-only telemetry dedupe state                                                                             |
 | `update-check.json`              | Cached update check result                                                                                              |
 | `servers/`                       | PID-tracking records for managed agent servers                                                                          |
 | `repos/<id>.git`                 | Bare gate repos                                                                                                         |
