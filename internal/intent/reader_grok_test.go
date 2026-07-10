@@ -147,6 +147,23 @@ func TestGrokReader_SkipsPipelineWorktreeSessions(t *testing.T) {
 	}
 }
 
+func TestGrokPipelineWorktreeCWD_RecognizesDeletedWorktreeViaSymlink(t *testing.T) {
+	realHome := t.TempDir()
+	linkHome := filepath.Join(t.TempDir(), "no-mistakes")
+	if err := os.Symlink(realHome, linkHome); err != nil {
+		t.Skipf("create symlink: %v", err)
+	}
+	t.Setenv("NM_HOME", realHome)
+	if err := os.MkdirAll(filepath.Join(realHome, "worktrees", "repo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	deletedWorktree := filepath.Join(linkHome, "worktrees", "repo", "completed-run")
+	if !grokPipelineWorktreeCWD(deletedWorktree) {
+		t.Fatal("deleted worktree through symlink must be recognized")
+	}
+}
+
 func TestGrokReader_MissingRootIsEmpty(t *testing.T) {
 	r := NewGrokReader()
 	sessions, err := r.Discover(context.Background(), DiscoverOpts{

@@ -2,9 +2,12 @@ package git
 
 import (
 	"context"
+	"crypto/sha1"
+	"encoding/hex"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -61,6 +64,11 @@ func writeFile(t *testing.T, path, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func gitBlobSHA1(content string) string {
+	blob := sha1.Sum([]byte("blob " + strconv.Itoa(len(content)) + "\x00" + content))
+	return hex.EncodeToString(blob[:])
 }
 
 func TestRun(t *testing.T) {
@@ -339,6 +347,10 @@ func TestIsLocalToolchainPath(t *testing.T) {
 		{"src/.tools/cache", true},
 		{"node_modules/left-pad/index.js", true},
 		{"pkg/__pycache__/x.pyc", true},
+		{".yarn/unplugged/pkg/index.js", true},
+		{".yarn/install-state.gz", true},
+		{".yarn/cache/lodash-npm-1.0.0.zip", false},
+		{".yarn/releases/yarn-4.0.0.cjs", false},
 		{"internal/cli/status.go", false},
 		{"tools/scripts/setup.sh", false}, // "tools" without leading dot is source
 		{"README.md", false},
@@ -363,7 +375,8 @@ func TestStageAll_ExcludesDotnetCLIHomeCache(t *testing.T) {
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeFile(t, filepath.Join(cacheDir, "sentinel.nupkg"), "not a real package\n")
+	cacheContents := "cache blob must not enter the object database\n"
+	writeFile(t, filepath.Join(cacheDir, "sentinel.nupkg"), cacheContents)
 	// Also drop a node_modules tree the way npm would.
 	nm := filepath.Join(dir, "node_modules", "left-pad")
 	if err := os.MkdirAll(nm, 0o755); err != nil {
@@ -398,6 +411,9 @@ func TestStageAll_ExcludesDotnetCLIHomeCache(t *testing.T) {
 	if strings.Contains(cached, ".tools") || strings.Contains(cached, "node_modules") {
 		t.Fatalf("toolchain paths still staged:\n%s", cached)
 	}
+	if _, err := Run(ctx, dir, "cat-file", "-e", gitBlobSHA1(cacheContents)+"^{blob}"); err == nil {
+		t.Fatal("excluded cache blob was written to the object database")
+	}
 
 	if err := CommitAll(ctx, dir, "format Program.cs"); err != nil {
 		// StageAll already ran; CommitAll will StageAll again which is fine.
@@ -411,6 +427,55 @@ func TestStageAll_ExcludesDotnetCLIHomeCache(t *testing.T) {
 	}
 	if !strings.Contains(tree, "Program.cs") {
 		t.Fatalf("commit missing Program.cs:\n%s", tree)
+	}
+}
+
+func TestStageAll_DoesNotStoreLocalYarnState(t *testing.T) {
+	dir := initTestRepo(t)
+	ctx := context.Background()
+	if err := os.MkdirAll(filepath.Join(dir, ".yarn"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	contents := "local Yarn state must not enter the object database\n"
+	writeFile(t, filepath.Join(dir, ".yarn", "install-state.gz"), contents)
+
+	if _, err := StageAll(ctx, dir); err != nil {
+		t.Fatalf("StageAll: %v", err)
+	}
+	if _, err := Run(ctx, dir, "cat-file", "-e", gitBlobSHA1(contents)+"^{blob}"); err == nil {
+		t.Fatal("excluded Yarn state blob was written to the object database")
+	}
+}
+
+func TestStageAll_PreservesYarnZeroInstallFiles(t *testing.T) {
+	dir := initTestRepo(t)
+	ctx := context.Background()
+
+	writeFile(t, filepath.Join(dir, "app.js"), "console.log('ok')\n")
+	if err := os.MkdirAll(filepath.Join(dir, ".yarn", "cache"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, ".yarn", "releases"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, ".yarn", "unplugged", "app"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(dir, ".yarn", "cache", "app-npm-1.0.0.zip"), "package cache\n")
+	writeFile(t, filepath.Join(dir, ".yarn", "releases", "yarn-4.0.0.cjs"), "release\n")
+	writeFile(t, filepath.Join(dir, ".yarn", "unplugged", "app", "build.js"), "local build output\n")
+
+	if _, err := StageAll(ctx, dir); err != nil {
+		t.Fatalf("StageAll: %v", err)
+	}
+	cached := run(t, dir, "git", "diff", "--cached", "--name-only")
+	for _, path := range []string{"app.js", ".yarn/cache/app-npm-1.0.0.zip", ".yarn/releases/yarn-4.0.0.cjs"} {
+		if !strings.Contains(cached, path) {
+			t.Errorf("expected %q staged:\n%s", path, cached)
+		}
+	}
+	if strings.Contains(cached, ".yarn/unplugged/") {
+		t.Fatalf("local Yarn unplugged files were staged:\n%s", cached)
 	}
 }
 

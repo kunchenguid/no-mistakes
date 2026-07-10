@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -363,19 +364,28 @@ var localToolchainPathSegments = map[string]struct{}{
 	".parcel-cache":   {},
 	".next":           {},
 	".nuxt":           {},
-	".yarn":           {},
 	".pnpm-store":     {},
 	".turbo":          {},
 	".cache":          {},
+}
+
+var localToolchainPathPrefixes = map[string]struct{}{
+	".yarn/unplugged":        {},
+	".yarn/install-state.gz": {},
+	".yarn/build-state.yml":  {},
 }
 
 // IsLocalToolchainPath reports whether path is under a known local toolchain
 // or package-manager cache directory that must never be committed by the gate.
 // Path may use either slash style; renames ("old -> new") use the new side.
 func IsLocalToolchainPath(path string) bool {
+	return localToolchainPathRoot(path) != ""
+}
+
+func localToolchainPathRoot(path string) string {
 	path = strings.TrimSpace(path)
 	if path == "" {
-		return false
+		return ""
 	}
 	// Porcelain renames: "old -> new"
 	if i := strings.Index(path, " -> "); i >= 0 {
@@ -383,15 +393,22 @@ func IsLocalToolchainPath(path string) bool {
 	}
 	path = filepath.ToSlash(path)
 	path = strings.TrimPrefix(path, "./")
-	for _, seg := range strings.Split(path, "/") {
+	parts := strings.Split(path, "/")
+	for i, seg := range parts {
 		if seg == "" || seg == "." {
 			continue
 		}
 		if _, ok := localToolchainPathSegments[strings.ToLower(seg)]; ok {
-			return true
+			return strings.Join(parts[:i+1], "/")
+		}
+		if strings.EqualFold(seg, ".yarn") && i+1 < len(parts) {
+			prefix := ".yarn/" + strings.ToLower(parts[i+1])
+			if _, ok := localToolchainPathPrefixes[prefix]; ok {
+				return strings.Join(parts[:i+2], "/")
+			}
 		}
 	}
-	return false
+	return ""
 }
 
 // GitRunner runs a git subcommand (args without the leading "git") and returns
@@ -399,10 +416,9 @@ func IsLocalToolchainPath(path string) bool {
 // per-step overrides) while sharing StageAll's exclusion logic.
 type GitRunner func(args ...string) (string, error)
 
-// StageAll stages every change in the working tree, then unstages known local
-// toolchain/cache paths so they never enter a commit. Returns the excluded
-// paths. Callers should treat a worktree that only contained excluded junk as
-// "nothing to commit" (HasStagedChanges will be false).
+// StageAll stages every non-cache change in the working tree. Returns the
+// excluded paths. Callers should treat a worktree that only contained excluded
+// junk as "nothing to commit" (HasStagedChanges will be false).
 func StageAll(ctx context.Context, dir string) (excluded []string, err error) {
 	return StageAllWith(func(args ...string) (string, error) {
 		return Run(ctx, dir, args...)
@@ -411,17 +427,22 @@ func StageAll(ctx context.Context, dir string) (excluded []string, err error) {
 
 // StageAllWith is StageAll using an injected git runner (e.g. stepGitRun).
 func StageAllWith(run GitRunner) (excluded []string, err error) {
-	if _, err := run("add", "-A"); err != nil {
+	excluded, err = localToolchainStatusRoots(run)
+	if err != nil {
 		return nil, err
 	}
-	// After add -A, only staged paths matter. --name-only -z lists them as
-	// raw NUL-separated paths (no status prefix, no quoting).
+	args := append([]string{"add", "-A", "--", "."}, localToolchainExclusionPathspecs()...)
+	if _, err := run(args...); err != nil {
+		return nil, err
+	}
+	// Only cache paths that were already staged before this call can remain in
+	// the index. --name-only -z lists them as raw NUL-separated paths.
 	out, err := run("diff", "--cached", "--name-only", "-z")
 	if err != nil {
 		return nil, err
 	}
 	if out == "" {
-		return nil, nil
+		return excluded, nil
 	}
 	seenFiles := make(map[string]struct{})
 	var junkFiles []string
@@ -437,13 +458,14 @@ func StageAllWith(run GitRunner) (excluded []string, err error) {
 		junkFiles = append(junkFiles, path)
 	}
 	if len(junkFiles) == 0 {
-		return nil, nil
+		return excluded, nil
 	}
 	// Collapse to denylist roots (.tools, node_modules, …) so a multi-thousand
 	// path NuGet cache is one `git reset` arg, not ARG_MAX.
 	toUnstage := toolchainResetRoots(junkFiles)
+	excluded = appendUniqueToolchainRoots(excluded, toUnstage...)
 	// Reset unstages without deleting worktree files.
-	args := append([]string{"reset", "-q", "HEAD", "--"}, toUnstage...)
+	args = append([]string{"reset", "-q", "HEAD", "--"}, toUnstage...)
 	if _, err := run(args...); err != nil {
 		// Fallback: unstage one root at a time so one bad path does not leave
 		// the rest of the junk in the index.
@@ -451,11 +473,63 @@ func StageAllWith(run GitRunner) (excluded []string, err error) {
 			if _, rerr := run("reset", "-q", "HEAD", "--", p); rerr != nil {
 				return excluded, fmt.Errorf("unstage local toolchain path %q: %w", p, rerr)
 			}
-			excluded = append(excluded, p)
+			excluded = appendUniqueToolchainRoots(excluded, p)
 		}
 		return excluded, nil
 	}
-	return toUnstage, nil
+	return excluded, nil
+}
+
+func localToolchainStatusRoots(run GitRunner) ([]string, error) {
+	out, err := run("status", "--porcelain", "-z")
+	if err != nil || out == "" {
+		return nil, err
+	}
+	var roots []string
+	for _, record := range strings.Split(out, "\x00") {
+		if len(record) < 4 || record[2] != ' ' {
+			continue
+		}
+		if root := localToolchainPathRoot(record[3:]); root != "" {
+			roots = appendUniqueToolchainRoots(roots, root)
+		}
+	}
+	return roots, nil
+}
+
+func localToolchainExclusionPathspecs() []string {
+	segments := make([]string, 0, len(localToolchainPathSegments))
+	for segment := range localToolchainPathSegments {
+		segments = append(segments, segment)
+	}
+	prefixes := make([]string, 0, len(localToolchainPathPrefixes))
+	for prefix := range localToolchainPathPrefixes {
+		prefixes = append(prefixes, prefix)
+	}
+	sort.Strings(segments)
+	sort.Strings(prefixes)
+
+	paths := make([]string, 0, 2*(len(segments)+len(prefixes)))
+	for _, path := range append(segments, prefixes...) {
+		base := ":(exclude,glob)**/" + path
+		paths = append(paths, base, base+"/**")
+	}
+	return paths
+}
+
+func appendUniqueToolchainRoots(roots []string, additional ...string) []string {
+	seen := make(map[string]struct{}, len(roots)+len(additional))
+	for _, root := range roots {
+		seen[root] = struct{}{}
+	}
+	for _, root := range additional {
+		if _, ok := seen[root]; ok {
+			continue
+		}
+		seen[root] = struct{}{}
+		roots = append(roots, root)
+	}
+	return roots
 }
 
 // toolchainResetRoots returns unique path prefixes ending at a denylist
@@ -466,22 +540,15 @@ func toolchainResetRoots(paths []string) []string {
 	for _, path := range paths {
 		slash := filepath.ToSlash(strings.TrimSpace(path))
 		slash = strings.TrimPrefix(slash, "./")
-		parts := strings.Split(slash, "/")
-		for i, seg := range parts {
-			if seg == "" || seg == "." {
-				continue
-			}
-			if _, ok := localToolchainPathSegments[strings.ToLower(seg)]; !ok {
-				continue
-			}
-			root := strings.Join(parts[:i+1], "/")
-			if _, ok := seen[root]; ok {
-				break
-			}
-			seen[root] = struct{}{}
-			roots = append(roots, root)
-			break
+		root := localToolchainPathRoot(slash)
+		if root == "" {
+			continue
 		}
+		if _, ok := seen[root]; ok {
+			continue
+		}
+		seen[root] = struct{}{}
+		roots = append(roots, root)
 	}
 	return roots
 }

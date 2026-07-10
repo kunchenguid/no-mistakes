@@ -20,10 +20,7 @@ func resolveHome(override string) (string, error) {
 	return os.UserHomeDir()
 }
 
-// canonicalPath returns the path with symlinks evaluated and cleaned. It
-// silently falls back to filepath.Clean(abs) if EvalSymlinks fails (e.g.
-// the path does not exist), since both sides of the comparison receive
-// the same fallback treatment.
+// canonicalPath returns a cleaned absolute path, resolving symlinks as far as possible.
 func canonicalPath(p string) string {
 	if p == "" {
 		return ""
@@ -34,6 +31,17 @@ func canonicalPath(p string) string {
 	}
 	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
 		return filepath.Clean(resolved)
+	}
+	for ancestor := filepath.Dir(abs); ancestor != filepath.Dir(ancestor); ancestor = filepath.Dir(ancestor) {
+		resolved, err := filepath.EvalSymlinks(ancestor)
+		if err != nil {
+			continue
+		}
+		rel, err := filepath.Rel(ancestor, abs)
+		if err != nil {
+			break
+		}
+		return filepath.Clean(filepath.Join(resolved, rel))
 	}
 	return filepath.Clean(abs)
 }
