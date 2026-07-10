@@ -92,10 +92,36 @@ func (m Model) maybeAutoApproveCmd() tea.Cmd {
 	if step.Status != types.StepStatusFixReview && !m.yoloFixed[step.StepName] && m.stepHasActionableFindings(step.StepName) {
 		m.yoloFixed[step.StepName] = true
 		m.resetFindingSelection(step.StepName)
-		return m.respondCmd(types.ActionFix)
+		return m.yoloResolveCmd(step.StepName, true, m.selectedFindingIDs(step.StepName))
 	}
 	m.yoloApproved[step.StepName] = true
-	return m.respondCmd(types.ActionApprove)
+	return m.yoloResolveCmd(step.StepName, false, nil)
+}
+
+// yoloResolveCmd resolves a gate under unattended (yolo) consent, failing
+// closed: it re-fetches the run and aborts instead of fixing again or approving
+// when a blocking finding lineage remains unresolved after its repair cascade,
+// rather than accepting merely because a fix was attempted.
+func (m Model) yoloResolveCmd(stepName types.StepName, fix bool, fixIDs []string) tea.Cmd {
+	client := m.client
+	runID := m.runID
+	return func() tea.Msg {
+		var got ipc.GetRunResult
+		if err := client.Call(ipc.MethodGetRun, &ipc.GetRunParams{RunID: runID}, &got); err == nil && got.Run != nil && got.Run.BlockingRepairUnresolved {
+			_ = client.Call(ipc.MethodRespond, &ipc.RespondParams{RunID: runID, Step: stepName, Action: types.ActionAbort}, &ipc.RespondResult{})
+			return nil
+		}
+		params := &ipc.RespondParams{RunID: runID, Step: stepName, Action: types.ActionApprove}
+		if fix {
+			params.Action = types.ActionFix
+			params.FindingIDs = fixIDs
+		}
+		var result ipc.RespondResult
+		if err := client.Call(ipc.MethodRespond, params, &result); err != nil {
+			return errMsg{err}
+		}
+		return nil
+	}
 }
 
 func (m Model) respondCmd(action types.ApprovalAction) tea.Cmd {

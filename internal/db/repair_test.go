@@ -90,3 +90,42 @@ func TestFindingRepairLifecycle(t *testing.T) {
 		t.Fatalf("check = %+v", checks[0])
 	}
 }
+
+func TestHasUnresolvedBlockingRepair(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/unresolved", "git@github.com:user/unresolved.git", "main")
+	run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
+	step, _ := d.InsertStepResult(run.ID, types.StepReview)
+	round, _ := d.ReserveStepRound(step.ID, 1, "initial")
+
+	repair := func(lineage, severity string, tier int, status string) {
+		id, err := d.StartFindingRepair(FindingRepairStart{
+			RunID: run.ID, LineageID: lineage, StepResultID: step.ID, StepRoundID: round.ID,
+			Severity: severity, Action: "auto-fix", Description: "d", Tier: tier, RemainingBudget: 2 - tier,
+		})
+		if err != nil {
+			t.Fatalf("start repair: %v", err)
+		}
+		verdict := RepairVerdictUnresolved
+		if status == RepairStatusResolved {
+			verdict = RepairVerdictResolved
+		}
+		_ = d.ResolveFindingRepair(id, verdict, "r", status)
+	}
+
+	// A blocking lineage whose latest repair is unresolved.
+	repair("lin-A", "error", 0, RepairStatusUnresolved)
+	if got, _ := d.HasUnresolvedBlockingRepair(run.ID); !got {
+		t.Fatal("want true for an unresolved blocking lineage")
+	}
+	// Its higher tier resolves it: latest disposition wins.
+	repair("lin-A", "error", 1, RepairStatusResolved)
+	if got, _ := d.HasUnresolvedBlockingRepair(run.ID); got {
+		t.Fatal("want false once the lineage resolves at a higher tier")
+	}
+	// An unresolved informational lineage is non-blocking and must not count.
+	repair("lin-B", "info", 0, RepairStatusUnresolved)
+	if got, _ := d.HasUnresolvedBlockingRepair(run.ID); got {
+		t.Fatal("an unresolved info lineage must not count as blocking")
+	}
+}

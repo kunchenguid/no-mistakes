@@ -20,6 +20,8 @@ func TestPurposeRegistryCoversApprovedInvocationFamilies(t *testing.T) {
 		PurposeBranchCommitSuggestion,
 		PurposeNormalAggregateVerification,
 		PurposeEscalatedAggregateVerification,
+		PurposeInformationalRepair,
+		PurposeInformationalRepairVerification,
 	}
 	definitions := AllPurposeDefinitions()
 	if len(definitions) != len(want) {

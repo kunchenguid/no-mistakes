@@ -206,6 +206,10 @@ type RunInfo struct {
 	AwaitingAgent      bool             `json:"awaiting_agent,omitempty"`
 	AwaitingAgentSince *int64           `json:"awaiting_agent_since,omitempty"`
 	Steps              []StepResultInfo `json:"steps,omitempty"`
+	// BlockingRepairUnresolved is true when a blocking finding lineage ended its
+	// repair cascade unresolved (exhausted or inconclusive). Unattended consent
+	// must fail rather than approve when it is set.
+	BlockingRepairUnresolved bool `json:"blocking_repair_unresolved,omitempty"`
 	CreatedAt          int64            `json:"created_at"`
 	UpdatedAt          int64            `json:"updated_at"`
 }

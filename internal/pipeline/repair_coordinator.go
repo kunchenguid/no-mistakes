@@ -37,7 +37,7 @@ type repairCoordinator struct {
 	intent          string
 	baseSHA         string
 	reviewAttemptID string
-	maxTier         int
+	policy           repairPolicy
 	checks          []repairCheck
 	log             func(string)
 	logChunk        func(string)
@@ -164,10 +164,12 @@ type commitSummaryJSON struct {
 	Summary string `json:"summary"`
 }
 
-// maybeRepairReviewFinding routes every blocking auto-fix review finding through
-// the escalation coordinator before the executor falls through to the approval
-// gate. It runs only when routing is active; unresolved findings terminate
-// safely (they remain and the step gates as before).
+// maybeRepairReviewFinding routes review findings through the repair coordinator
+// before the executor falls through to the approval gate, applying the severity
+// policy: blocking (error/warning) auto-fix findings escalate through the full
+// cascade, informational auto-fix findings take the cheap non-blocking cascade,
+// no-op findings are never repaired, and ask-user findings wait for consent. It
+// runs only when routing is active; unresolved findings terminate safely.
 func (e *Executor) maybeRepairReviewFinding(ctx context.Context, sctx *StepContext, run *db.Run, sr *db.StepResult, defaultBranch, reviewRoundID, findingsJSON string, reserveRound func(string) (*db.StepRound, error)) {
 	if sctx.Invoker == nil || e.config == nil || e.config.Routing.IsZero() || !routedPurposes[fixerPurpose] {
 		return
@@ -176,23 +178,13 @@ func (e *Executor) maybeRepairReviewFinding(ctx context.Context, sctx *StepConte
 	if err != nil {
 		return
 	}
-	blocking := selectAllBlockingAutoFix(findings.Items)
-	if len(blocking) == 0 {
+	blocking := selectFindings(findings.Items, isBlockingAutoFix)
+	informational := selectFindings(findings.Items, isInformationalAutoFix)
+	if len(blocking) == 0 && len(informational) == 0 {
 		return
 	}
 	reviewAttemptID, byDisplay := e.reviewAttemptLineages(reviewRoundID)
 	if reviewAttemptID == "" {
-		return
-	}
-	var seeds []repairSeed
-	for _, f := range blocking {
-		lineageID := byDisplay[f.ID]
-		if lineageID == "" {
-			continue
-		}
-		seeds = append(seeds, repairSeed{LineageID: lineageID, Finding: f})
-	}
-	if len(seeds) == 0 {
 		return
 	}
 	rc := &repairCoordinator{
@@ -206,26 +198,56 @@ func (e *Executor) maybeRepairReviewFinding(ctx context.Context, sctx *StepConte
 		intent:          sctx.UserIntent,
 		baseSHA:         run.BaseSHA,
 		reviewAttemptID: reviewAttemptID,
-		maxTier:         e.repairBudget(fixerPurpose, 0),
 		log:             sctx.Log,
 		logChunk:        sctx.LogChunk,
 		reserveRound:    reserveRound,
 	}
-	if _, err := rc.escalateBatch(ctx, seeds); err != nil {
-		slog.Warn("review repair could not be conducted", "error", err)
+	// Blocking findings escalate through the full cascade; informational
+	// findings take the cheap non-blocking two-tier cascade. Each batch runs
+	// under its own policy.
+	if seeds := seedsForFindings(blocking, byDisplay); len(seeds) > 0 {
+		rc.policy = blockingRepairPolicy(e.config.Routing)
+		if _, err := rc.escalateBatch(ctx, seeds); err != nil {
+			slog.Warn("blocking review repair could not be conducted", "error", err)
+		}
+	}
+	if seeds := seedsForFindings(informational, byDisplay); len(seeds) > 0 {
+		rc.policy = informationalRepairPolicy(e.config.Routing)
+		if _, err := rc.escalateBatch(ctx, seeds); err != nil {
+			slog.Warn("informational review repair could not be conducted", "error", err)
+		}
 	}
 }
 
-// selectAllBlockingAutoFix returns every blocking finding whose action is
-// auto-fix — the batch the escalation coordinator repairs together.
-func selectAllBlockingAutoFix(items []types.Finding) []types.Finding {
+func isBlockingAutoFix(f types.Finding) bool {
+	return f.Action == types.ActionAutoFix && isBlockingSeverity(f.Severity)
+}
+
+func isInformationalAutoFix(f types.Finding) bool {
+	return f.Action == types.ActionAutoFix && f.Severity == "info"
+}
+
+// selectFindings returns the findings matching pred, preserving order.
+func selectFindings(items []types.Finding, pred func(types.Finding) bool) []types.Finding {
 	var out []types.Finding
 	for _, f := range items {
-		if f.Action == types.ActionAutoFix && isBlockingSeverity(f.Severity) {
+		if pred(f) {
 			out = append(out, f)
 		}
 	}
 	return out
+}
+
+// seedsForFindings pairs each finding with its root lineage id, dropping any
+// finding without a recorded lineage.
+func seedsForFindings(items []types.Finding, byDisplay map[string]string) []repairSeed {
+	var seeds []repairSeed
+	for _, f := range items {
+		if lineageID := byDisplay[f.ID]; lineageID != "" {
+			seeds = append(seeds, repairSeed{LineageID: lineageID, Finding: f})
+		}
+	}
+	return seeds
 }
 
 // reviewAttemptLineages returns the succeeded routed review attempt in a round
@@ -255,16 +277,67 @@ func (e *Executor) reviewAttemptLineages(reviewRoundID string) (string, map[stri
 	return reviewAttemptID, byDisplay
 }
 
-// repairBudget returns the escalation tiers remaining in a repair Purpose's
-// route after the given tier.
-func (e *Executor) repairBudget(purpose types.Purpose, tier int) int {
-	profiles, err := e.config.Routing.ResolveRoute(purpose)
+// routingActive reports whether routed repair is available for this run.
+func (e *Executor) routingActive() bool {
+	return e.config != nil && !e.config.Routing.IsZero() && routedPurposes[types.PurposeIntentSensitiveRepair]
+}
+
+// repairConsentedFindings repairs the user- or unattended-consented review
+// findings through the intent-sensitive cascade (starting at fix_balanced). It
+// is the only path that may repair an ask-user finding; no fixer runs for such
+// a finding before this consent. Returns the terminal lineage states.
+func (e *Executor) repairConsentedFindings(ctx context.Context, sctx *StepContext, run *db.Run, sr *db.StepResult, defaultBranch, reviewRoundID, findingsJSON string, findingIDs []string, reserveRound func(string) (*db.StepRound, error)) map[string]*lineageState {
+	findings, err := types.ParseFindingsJSON(findingsJSON)
 	if err != nil {
-		return 0
+		return nil
 	}
-	remaining := len(profiles) - 1 - tier
-	if remaining < 0 {
-		return 0
+	consented := findByIDs(findings.Items, findingIDs)
+	if len(consented) == 0 {
+		return nil
 	}
-	return remaining
+	reviewAttemptID, byDisplay := e.reviewAttemptLineages(reviewRoundID)
+	if reviewAttemptID == "" {
+		return nil
+	}
+	seeds := seedsForFindings(consented, byDisplay)
+	if len(seeds) == 0 {
+		return nil
+	}
+	rc := &repairCoordinator{
+		invoker:         sctx.Invoker,
+		db:              e.db,
+		run:             run,
+		stepResultID:    sr.ID,
+		workDir:         sctx.WorkDir,
+		branch:          run.Branch,
+		defaultBranch:   defaultBranch,
+		intent:          sctx.UserIntent,
+		baseSHA:         run.BaseSHA,
+		reviewAttemptID: reviewAttemptID,
+		policy:          intentSensitiveRepairPolicy(e.config.Routing),
+		log:             sctx.Log,
+		logChunk:        sctx.LogChunk,
+		reserveRound:    reserveRound,
+	}
+	states, err := rc.escalateBatch(ctx, seeds)
+	if err != nil {
+		slog.Warn("consented review repair could not be conducted", "error", err)
+	}
+	return states
+}
+
+// findByIDs returns the actionable findings whose display id was consented; a
+// no-op finding is never repaired even when its id is selected.
+func findByIDs(items []types.Finding, ids []string) []types.Finding {
+	want := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		want[id] = true
+	}
+	var out []types.Finding
+	for _, f := range items {
+		if want[f.ID] && f.Action != types.ActionNoOp {
+			out = append(out, f)
+		}
+	}
+	return out
 }

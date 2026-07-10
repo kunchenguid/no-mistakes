@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -15,6 +16,63 @@ import (
 // authorityVerifierPurpose routes to authority_strong (Sol/Fable-xhigh); the
 // final-tier fixer can succeed only after a fresh invocation of it.
 const authorityVerifierPurpose = types.PurposeEscalatedAggregateVerification
+
+// repairPolicy parameterizes the escalation cascade for one severity/action
+// class. Blocking policies gate the pipeline until resolved; the informational
+// policy never blocks and, routing only through fix_fast and tools_balanced,
+// never reaches a Sol/Fable profile.
+type repairPolicy struct {
+	fixerPurpose         types.Purpose
+	verifierPurpose      types.Purpose // strong verifier below the final tier
+	finalVerifierPurpose types.Purpose // verifier at the final tier
+	blocking             bool
+	maxTier              int
+}
+
+func routeMaxTier(routing config.RoutingConfig, purpose types.Purpose) int {
+	profiles, err := routing.ResolveRoute(purpose)
+	if err != nil || len(profiles) == 0 {
+		return 0
+	}
+	return len(profiles) - 1
+}
+
+// blockingRepairPolicy repairs error/warning auto-fix findings through the full
+// fix_fast → fix_balanced → authority_strong cascade with a strong verifier.
+func blockingRepairPolicy(routing config.RoutingConfig) repairPolicy {
+	return repairPolicy{
+		fixerPurpose:         types.PurposeStructuredFindingRepair,
+		verifierPurpose:      types.PurposeNormalAggregateVerification,
+		finalVerifierPurpose: types.PurposeEscalatedAggregateVerification,
+		blocking:             true,
+		maxTier:              routeMaxTier(routing, types.PurposeStructuredFindingRepair),
+	}
+}
+
+// informationalRepairPolicy repairs info findings with the cheap two-tier
+// fix_fast → tools_balanced cascade and a tools_balanced verifier; it never
+// invokes a Sol/Fable profile and never blocks the gate.
+func informationalRepairPolicy(routing config.RoutingConfig) repairPolicy {
+	return repairPolicy{
+		fixerPurpose:         types.PurposeInformationalRepair,
+		verifierPurpose:      types.PurposeInformationalRepairVerification,
+		finalVerifierPurpose: types.PurposeInformationalRepairVerification,
+		blocking:             false,
+		maxTier:              routeMaxTier(routing, types.PurposeInformationalRepair),
+	}
+}
+
+// intentSensitiveRepairPolicy repairs consented ask-user findings starting at
+// fix_balanced and escalating to authority_strong.
+func intentSensitiveRepairPolicy(routing config.RoutingConfig) repairPolicy {
+	return repairPolicy{
+		fixerPurpose:         types.PurposeIntentSensitiveRepair,
+		verifierPurpose:      types.PurposeNormalAggregateVerification,
+		finalVerifierPurpose: types.PurposeEscalatedAggregateVerification,
+		blocking:             true,
+		maxTier:              routeMaxTier(routing, types.PurposeIntentSensitiveRepair),
+	}
+}
 
 // batchVerdictSchema is the strong verifier's per-lineage adjudication of a
 // batch plus any new findings the fix introduced or exposed.
@@ -99,7 +157,7 @@ func (rc *repairCoordinator) escalateBatch(ctx context.Context, seeds []repairSe
 
 	// A generous cap bounds pathological verifier loops (each fix exposing new
 	// unrelated roots) without truncating legitimate escalation.
-	maxIterations := (rc.maxTier + 1) * (len(seeds) + 8)
+	maxIterations := (rc.policy.maxTier + 1) * (len(seeds) + 8)
 	for i := 0; i < maxIterations; i++ {
 		batch, tier := rc.lowestActiveTier(states)
 		if len(batch) == 0 {
@@ -148,7 +206,7 @@ func (rc *repairCoordinator) runTierBatch(ctx context.Context, batch []*lineageS
 	}
 	scope := types.InvocationScope{Kind: types.InvocationScopePipeline, RunID: rc.run.ID, StepResultID: rc.stepResultID, StepRoundID: round.ID}
 	started := time.Now()
-	remaining := rc.maxTier - tier
+	remaining := rc.policy.maxTier - tier
 
 	repairID := make(map[string]string, len(batch))
 	for _, st := range batch {
@@ -170,7 +228,7 @@ func (rc *repairCoordinator) runTierBatch(ctx context.Context, batch []*lineageS
 	// advance moves a lineage to its next tier, or fails it closed when the
 	// budget is spent. status/rationale are recorded on its repair row.
 	advance := func(st *lineageState, verdict, rationale string) {
-		if tier >= rc.maxTier {
+		if tier >= rc.policy.maxTier {
 			st.failed = true
 			st.verdict, st.rationale = verdict, rationale
 			_ = rc.db.ResolveFindingRepair(repairID[st.lineageID], verdict, rationale, db.RepairStatusUnresolved)
@@ -182,12 +240,12 @@ func (rc *repairCoordinator) runTierBatch(ctx context.Context, batch []*lineageS
 	}
 
 	diff := rc.reviewDiff(ctx, rc.baseSHA)
-	rc.logf("repairing %d blocking finding(s) at tier %d with a fresh fixer...", len(batch), tier)
+	rc.logf("repairing %d finding(s) at tier %d with a fresh fixer...", len(batch), tier)
 	fixResult, fixErr := rc.invoker.Invoke(ctx, agent.InvocationRequest{
-		Purpose: fixerPurpose, Tier: tier, Scope: scope,
+		Purpose: rc.policy.fixerPurpose, Tier: tier, Scope: scope,
 		Payload: agent.RunOpts{Prompt: buildBatchFixPrompt(batch, rc.intent, remaining, diff), CWD: rc.workDir, JSONSchema: commitSummarySchemaJSON, OnChunk: rc.logChunk},
 	})
-	if attemptID := rc.succeededAttemptID(round.ID, fixerPurpose); attemptID != "" {
+	if attemptID := rc.succeededAttemptID(round.ID, rc.policy.fixerPurpose); attemptID != "" {
 		for _, st := range batch {
 			_ = rc.db.SetFindingRepairFixer(repairID[st.lineageID], attemptID)
 		}
@@ -222,9 +280,9 @@ func (rc *repairCoordinator) runTierBatch(ctx context.Context, batch []*lineageS
 		}
 	}
 
-	vpurpose := verifierPurpose
-	if tier >= rc.maxTier {
-		vpurpose = authorityVerifierPurpose
+	vpurpose := rc.policy.verifierPurpose
+	if tier >= rc.policy.maxTier {
+		vpurpose = rc.policy.finalVerifierPurpose
 	}
 	rc.logf("verifying the batch with a fresh strong reviewer...")
 	verifyResult, verifyErr := rc.invoker.Invoke(ctx, agent.InvocationRequest{
@@ -279,7 +337,7 @@ func (rc *repairCoordinator) runTierBatch(ctx context.Context, batch []*lineageS
 		if pf, caused := patchCaused[st.lineageID]; caused {
 			// The fix introduced a regression under this root; keep escalating
 			// the same lineage with the patch-caused finding content.
-			if tier < rc.maxTier {
+			if tier < rc.policy.maxTier {
 				st.finding = pf
 			}
 			advance(st, db.RepairVerdictUnresolved, "patch introduced a new blocking issue under this lineage")

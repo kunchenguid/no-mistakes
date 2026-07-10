@@ -112,6 +112,8 @@ func defaultRoutes() map[types.Purpose]Route {
 		types.PurposeBranchCommitSuggestion:         {ProfileProseFast},
 		types.PurposeNormalAggregateVerification:    {ProfileReviewStrong},
 		types.PurposeEscalatedAggregateVerification: {ProfileAuthorityStrong},
+		types.PurposeInformationalRepair:             {ProfileFixFast, ProfileToolsBalanced},
+		types.PurposeInformationalRepairVerification: {ProfileToolsBalanced},
 	}
 }
 

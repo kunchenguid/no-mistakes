@@ -67,7 +67,7 @@ func (f *fakeRepairInvoker) Invoke(_ context.Context, req agent.InvocationReques
 	if err != nil {
 		return nil, err
 	}
-	if req.Purpose == fixerPurpose {
+	if def.Role == types.InvocationRoleFixer {
 		f.fixerTiers = append(f.fixerTiers, req.Tier)
 		if f.fixEdit != nil {
 			f.fixEdit(f.fixCalls)
@@ -93,11 +93,17 @@ func (f *fakeRepairInvoker) Invoke(_ context.Context, req agent.InvocationReques
 
 func profileForRequest(req agent.InvocationRequest) string {
 	switch req.Purpose {
-	case verifierPurpose:
+	case types.PurposeNormalAggregateVerification:
 		return "review_strong"
-	case authorityVerifierPurpose:
+	case types.PurposeEscalatedAggregateVerification:
 		return "authority_strong"
-	default: // fixer
+	case types.PurposeInformationalRepairVerification:
+		return "tools_balanced"
+	case types.PurposeIntentSensitiveRepair:
+		return []string{"fix_balanced", "authority_strong"}[req.Tier]
+	case types.PurposeInformationalRepair:
+		return []string{"fix_fast", "tools_balanced"}[req.Tier]
+	default: // structured_finding_repair fixer
 		return []string{"fix_fast", "fix_balanced", "authority_strong"}[req.Tier]
 	}
 }
@@ -176,7 +182,7 @@ func repairFixture(t *testing.T, fake *fakeRepairInvoker, findings []types.Findi
 		intent:          "add F",
 		baseSHA:         baseSHA,
 		reviewAttemptID: reviewAttempt,
-		maxTier:         len(config.DefaultRoutingConfig().Routes[types.PurposeStructuredFindingRepair]) - 1,
+		policy:          blockingRepairPolicy(config.DefaultRoutingConfig()),
 		log:             func(string) {},
 		logChunk:        func(string) {},
 		reserveRound: func(trigger string) (*db.StepRound, error) {
@@ -371,4 +377,52 @@ func allResolved(ids []string) map[string]bool {
 		m[id] = true
 	}
 	return m
+}
+
+func TestEscalateInfoPolicyNeverUsesSolFable(t *testing.T) {
+	fake := &fakeRepairInvoker{verify: func(int, []string) verdictSpec { return verdictSpec{} }}
+	rc, seeds := repairFixture(t, fake, []types.Finding{{ID: "review-1", Severity: "info", Action: types.ActionAutoFix, Description: "style nit", File: "app.go", Line: 3}})
+	rc.policy = informationalRepairPolicy(config.DefaultRoutingConfig())
+	states, _ := rc.escalateBatch(context.Background(), seeds)
+	if !states[seeds[0].LineageID].failed {
+		t.Fatal("an unresolved info finding should exhaust its two cheap tiers")
+	}
+	if fmt.Sprint(fake.fixerTiers) != "[0 1]" {
+		t.Fatalf("info fixer tiers = %v, want [0 1] (cheap two-tier)", fake.fixerTiers)
+	}
+	for _, p := range fake.verifierPurposes {
+		if p != types.PurposeInformationalRepairVerification {
+			t.Fatalf("info verifier = %q, want informational_repair_verification (tools_balanced)", p)
+		}
+	}
+	attempts, _ := rc.db.GetInvocationAttemptsByStepResult(rc.stepResultID)
+	for _, a := range attempts {
+		if a.Start.Purpose == types.PurposeInitialReview {
+			continue // the setup's review runs at review_strong by design
+		}
+		if p := a.Start.Candidate.Profile; p == "review_strong" || p == "authority_strong" {
+			t.Fatalf("info repair used a Sol/Fable profile %q", p)
+		}
+	}
+}
+
+func TestEscalateIntentSensitiveStartsAtFixBalanced(t *testing.T) {
+	fake := &fakeRepairInvoker{verify: func(_ int, ids []string) verdictSpec { return verdictSpec{resolved: allResolved(ids)} }}
+	rc, seeds := repairFixture(t, fake, []types.Finding{{ID: "review-1", Severity: "error", Action: types.ActionAskUser, Description: "intent-sensitive change", File: "app.go", Line: 3}})
+	rc.policy = intentSensitiveRepairPolicy(config.DefaultRoutingConfig())
+	states, _ := rc.escalateBatch(context.Background(), seeds)
+	if !states[seeds[0].LineageID].resolved {
+		t.Fatal("a consented intent-sensitive finding should resolve at fix_balanced")
+	}
+	attempts, _ := rc.db.GetInvocationAttemptsByStepResult(rc.stepResultID)
+	var firstFixer *db.InvocationAttempt
+	for _, a := range attempts {
+		if a.Start.Purpose == types.PurposeIntentSensitiveRepair {
+			firstFixer = a
+			break
+		}
+	}
+	if firstFixer == nil || firstFixer.Start.Candidate.Profile != "fix_balanced" {
+		t.Fatalf("intent-sensitive fixer must start at fix_balanced, got %+v", firstFixer)
+	}
 }

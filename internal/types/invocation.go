@@ -27,6 +27,10 @@ const (
 	PurposeBranchCommitSuggestion         Purpose = "branch_commit_suggestion"
 	PurposeNormalAggregateVerification    Purpose = "normal_aggregate_verification"
 	PurposeEscalatedAggregateVerification Purpose = "escalated_aggregate_verification"
+	// Informational (non-blocking) repair uses the cheap two-tier cascade and
+	// its own tools_balanced verifier, so it never reaches a Sol/Fable profile.
+	PurposeInformationalRepair             Purpose = "informational_repair"
+	PurposeInformationalRepairVerification Purpose = "informational_repair_verification"
 )
 
 // InvocationRole identifies whether an invocation is allowed to produce a
@@ -61,6 +65,8 @@ var purposeRegistry = [...]PurposeDefinition{
 	{Purpose: PurposeBranchCommitSuggestion, Role: InvocationRoleFixer},
 	{Purpose: PurposeNormalAggregateVerification, Role: InvocationRoleVerifier},
 	{Purpose: PurposeEscalatedAggregateVerification, Role: InvocationRoleVerifier},
+	{Purpose: PurposeInformationalRepair, Role: InvocationRoleFixer},
+	{Purpose: PurposeInformationalRepairVerification, Role: InvocationRoleVerifier},
 }
 
 // PurposeDefinitionFor returns the registered definition for purpose.

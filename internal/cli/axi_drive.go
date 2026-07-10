@@ -148,7 +148,7 @@ func runAxiRun(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, int
 		}
 	}
 
-	run, ciReady, err := driveRun(ctx, cmd.ErrOrStderr(), env.client, runID, autoYes, ciLogReader(env.p))
+	run, ciReady, err := driveRun(ctx, cmd.ErrOrStderr(), env.client, runID, autoYes, ciLogReader(env.p), env.d.HasUnresolvedBlockingRepair)
 	if err != nil {
 		return emitError(cmd, 1, fmt.Sprintf("drive run: %v", err))
 	}
@@ -348,7 +348,7 @@ func rerunParams(repoID, branch string, skipSteps []types.StepName, intent strin
 // ready for a human to merge. The daemon keeps monitoring in the background.
 // readCILog reads the CI step's log lines for runID; it may be nil (no early
 // stop) and returns nil when no log exists yet.
-func driveRun(ctx context.Context, progress io.Writer, client *ipc.Client, runID string, autoApprove bool, readCILog func(string) []string) (run *ipc.RunInfo, ciReady bool, err error) {
+func driveRun(ctx context.Context, progress io.Writer, client *ipc.Client, runID string, autoApprove bool, readCILog func(string) []string, blockingUnresolved func(string) (bool, error)) (run *ipc.RunInfo, ciReady bool, err error) {
 	pp := &progressPrinter{w: progress, seen: map[string]string{}}
 	fixedSteps := map[string]bool{}
 	for {
@@ -371,6 +371,15 @@ func driveRun(ctx context.Context, progress io.Writer, client *ipc.Client, runID
 		if gate, ok := rv.awaitingStep(); ok {
 			if !autoApprove {
 				return run, false, nil
+			}
+			// Unattended consent fails closed: reaching a gate while a blocking
+			// finding lineage is still unresolved after its repair cascade means
+			// the run cannot be accepted — abort rather than re-fix or approve.
+			if blockingUnresolved != nil {
+				if unresolved, uerr := blockingUnresolved(runID); uerr == nil && unresolved {
+					_ = sendRespond(client, runID, types.StepName(gate.Name), types.ActionAbort, nil, nil, nil)
+					return run, false, fmt.Errorf("unattended consent refused %s: a blocking finding remains unresolved after repair", gate.Name)
+				}
 			}
 			action, findingIDs := gateResolution(gate, fixedSteps[gate.Name])
 			if action == types.ActionFix {
@@ -730,7 +739,7 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 		return emitError(cmd, 1, fmt.Sprintf("wait for %s: %v", stepName, err))
 	}
 
-	final, ciReady, err := driveRun(ctx, cmd.ErrOrStderr(), env.client, runID, ra.autoYes, ciLogReader(env.p))
+	final, ciReady, err := driveRun(ctx, cmd.ErrOrStderr(), env.client, runID, ra.autoYes, ciLogReader(env.p), env.d.HasUnresolvedBlockingRepair)
 	if err != nil {
 		return emitError(cmd, 1, fmt.Sprintf("drive run: %v", err))
 	}

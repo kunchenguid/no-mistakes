@@ -243,3 +243,31 @@ func boolToInt(b bool) int {
 	}
 	return 0
 }
+
+// HasUnresolvedBlockingRepair reports whether any blocking (error or warning)
+// finding lineage in the run ended its repair cascade without a resolved
+// verdict — exhausted or inconclusive. Unattended consent must fail rather than
+// approve when this is true.
+func (d *DB) HasUnresolvedBlockingRepair(runID string) (bool, error) {
+	repairs, err := d.GetFindingRepairsByRun(runID)
+	if err != nil {
+		return false, err
+	}
+	// Keep only the latest (highest-tier) repair per blocking lineage; that row
+	// carries the lineage's terminal disposition.
+	latest := make(map[string]*FindingRepair)
+	for _, r := range repairs {
+		if r.Severity != "error" && r.Severity != "warning" {
+			continue
+		}
+		if cur, ok := latest[r.LineageID]; !ok || r.Tier > cur.Tier {
+			latest[r.LineageID] = r
+		}
+	}
+	for _, r := range latest {
+		if r.Status != RepairStatusResolved {
+			return true, nil
+		}
+	}
+	return false, nil
+}

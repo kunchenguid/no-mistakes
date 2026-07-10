@@ -131,10 +131,10 @@ Unattended consent authorizes configured repairs but can never waive final autho
 
 **Blocked by:** Escalate and batch finding lineages.
 
-- [ ] Informational auto-fixes use `fix_fast → tools_balanced`, never invoke Sol/Fable, remain visible when unresolved, and never block the gate.
-- [ ] An `ask-user` finding starts no fixer before consent; explicit human or unattended consent starts at `fix_balanced` and may escalate to `authority_strong`.
-- [ ] A `no-op` finding never enters a repair cascade.
-- [ ] AXI `--yes` and TUI unattended behavior fail on an exhausted or inconclusive blocking lineage instead of approving after one attempted fix or a missing finding ID.
+- [x] Informational auto-fixes use `fix_fast → tools_balanced`, never invoke Sol/Fable, remain visible when unresolved, and never block the gate.
+- [x] An `ask-user` finding starts no fixer before consent; explicit human or unattended consent starts at `fix_balanced` and may escalate to `authority_strong`.
+- [x] A `no-op` finding never enters a repair cascade.
+- [x] AXI `--yes` and TUI unattended behavior fail on an exhausted or inconclusive blocking lineage instead of approving after one attempted fix or a missing finding ID.
 
 ## Route Test evidence and repair
 

@@ -878,6 +878,18 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			if dbErr := e.db.UpdateStepStatus(sr.ID, types.StepStatusFixing); dbErr != nil {
 				slog.Warn("failed to update step status in db", "step", stepName, "status", "fixing", "error", dbErr)
 			}
+			// Routed consent: the human (or unattended consent) authorized a fix,
+			// so repair the consented findings through the intent-sensitive
+			// cascade. This is the only path that may fix an ask-user finding.
+			if stepName == types.StepReview && e.routingActive() {
+				reserveRepairRound := func(trigger string) (*db.StepRound, error) {
+					roundNum++
+					return e.db.ReserveStepRound(sr.ID, roundNum, trigger)
+				}
+				e.repairConsentedFindings(ctx, sctx, run, sr, repo.DefaultBranch, currentRoundID, outcome.Findings, response.findingIDs, reserveRepairRound)
+				e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFixing), "", "", "", nil)
+				goto done
+			}
 			sctx.Fixing = true
 			selectedFindings := filterFindingsJSON(outcome.Findings, response.findingIDs)
 			mergedFindings := mergeUserOverridesJSON(selectedFindings, response.instructions, response.addedFindings)

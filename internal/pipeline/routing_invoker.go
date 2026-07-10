@@ -12,12 +12,17 @@ import (
 )
 
 // routedPurposes is the set of Purposes migrated to the routing system. Every
-// other Purpose delegates to the legacy invoker unchanged, so this ticket
-// routes only the initial review while the rest of the pipeline is untouched.
+// other Purpose delegates to the legacy invoker unchanged. The review and its
+// repair coordinator (fixers + strong verifiers across severities) are routed;
+// the rest of the pipeline still uses the legacy path.
 var routedPurposes = map[types.Purpose]bool{
-	types.PurposeInitialReview:               true,
-	types.PurposeStructuredFindingRepair:     true,
-	types.PurposeNormalAggregateVerification: true,
+	types.PurposeInitialReview:                    true,
+	types.PurposeStructuredFindingRepair:          true,
+	types.PurposeIntentSensitiveRepair:            true,
+	types.PurposeInformationalRepair:              true,
+	types.PurposeInformationalRepairVerification:  true,
+	types.PurposeNormalAggregateVerification:      true,
+	types.PurposeEscalatedAggregateVerification:   true,
 }
 
 // agentFactory builds a fresh native agent for a runner executable. It is a
