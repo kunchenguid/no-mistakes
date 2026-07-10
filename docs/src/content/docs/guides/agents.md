@@ -21,7 +21,7 @@ It tells agents to keep intentional source, project, user-data, and system file 
 The only intentional out-of-worktree write it allows is test evidence under the managed temporary `no-mistakes-evidence` directory when a testing prompt asks for it; when in-repo evidence is enabled, test evidence stays inside the configured evidence directory instead.
 Incidental temp or cache writes from normal development tools are still allowed.
 Testing prompts also ask agents to remove transient working-tree artifacts they created, such as downloaded models, caches, build outputs, large binaries, or generated data directories, before reporting completion.
-As a backstop, no-mistakes excludes known local toolchain and package-manager cache trees from every generated commit, including agent fixes, push-step commits, and CI repairs. This includes paths such as `.tools/dotnet-cli-home`, `node_modules`, `.nuget`, Python caches and virtual environments, and common JavaScript build caches. A cache-only change produces no commit and remains uncommitted in the worktree.
+As a backstop, no-mistakes excludes known local toolchain and package-manager cache trees from every generated commit, including setup-wizard, agent-fix, push-step, and CI-repair commits. This includes `.tools` (for example `.tools/dotnet-cli-home`), `node_modules`, `.nuget`, Python caches and virtual environments, and common JavaScript build caches. A cache-only change produces no commit and remains uncommitted in the worktree.
 
 ## How to choose quickly
 
@@ -286,6 +286,7 @@ When the JSON result includes a non-empty `structuredOutput` field (native const
 If that validation fails, no-mistakes returns the validation error and does not fall back to freeform `text` — schema-mode callers must not treat envelope prose as a successful structured result.
 Only when `structuredOutput` is absent or null does it fall back to the `text` field and validate the payload against the requested schema with the same JSON fence and bare-object fallback used by other text-parsed agents.
 Non-success `stopReason` values (for example `Cancelled`) and `max_turns_reached` fail the invocation so partial output is not treated as a completed run.
+Schema-mode JSON output is limited to 256 MiB; output that exceeds that limit fails rather than being truncated or accepted.
 
 ## ACP via acpx
 
