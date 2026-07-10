@@ -68,7 +68,7 @@ For PR and workflow-run commands, no-mistakes passes the repository slug from th
 
 **What you get:**
 
-- PR creation and update on pushes
+- PR creation and update on pushes (optionally opened as drafts via `providers.github.draft_pull_requests`)
 - CI check polling with exponential backoff (30s → 60s → 120s) until the PR is merged, closed, or the configured `ci_timeout` idle window elapses
 - Failed job log fetching (`gh run view --log-failed`) for the CI auto-fix step
 - PR mergeability polling, and agent-driven resolution when the provider reports an actual merge conflict
@@ -106,7 +106,7 @@ glab auth login
 
 **What you get:**
 
-- PR (merge request) creation and update
+- PR (merge request) creation and update (optionally opened as drafts via `providers.gitlab.draft_pull_requests`)
 - CI pipeline status polling until the merge request is merged, closed, or the configured `ci_timeout` idle window elapses
 - Failed job trace fetching (`glab ci trace`) for the CI auto-fix step
 - Merge-conflict polling and auto-fix, same as GitHub
@@ -127,7 +127,7 @@ Get an API token from [Bitbucket account settings](https://bitbucket.org/account
 
 **What you get:**
 
-- PR creation and update
+- PR creation and update (optionally opened as drafts via `providers.bitbucket.draft_pull_requests`)
 - CI pipeline status polling until the PR is merged, declined, or the configured `ci_timeout` idle window elapses
 - Failed pipeline step log fetching for the CI auto-fix step
 
@@ -168,7 +168,8 @@ well as their SSH forms (`git@ssh.dev.azure.com:v3/...`).
 
 **What you get:**
 
-- PR creation and update (`az repos pr create` / `update`); Azure DevOps caps
+- PR creation and update (`az repos pr create` / `update`, optionally opened
+  as drafts via `providers.azuredevops.draft_pull_requests`); Azure DevOps caps
   PR descriptions at 4000 characters, so the pipeline builds the body within
   that budget - shedding the Testing section first when needed, then applying
   a final truncation backstop with a visible marker

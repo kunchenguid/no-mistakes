@@ -463,7 +463,7 @@ func TestCIStep_GetCIChecksBitbucketFallsBackToKeyWhenNameMissing(t *testing.T) 
 		t.Fatalf("new bitbucket client: %v", err)
 	}
 
-	host := bitbucket.NewHost(client, bitbucket.RepoRef{Workspace: "test", RepoSlug: "repo"})
+	host := bitbucket.NewHost(client, bitbucket.RepoRef{Workspace: "test", RepoSlug: "repo"}, false)
 	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "42"})
 	if err != nil {
 		t.Fatalf("GetChecks returned error: %v", err)

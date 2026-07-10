@@ -44,7 +44,8 @@ func buildHost(sctx *pipeline.StepContext, provider scm.Provider) (scm.Host, str
 			// the plain slug (without host prefix) is correct here.
 			forkRepo = github.RepoSlug(sctx.Repo.ForkURL)
 		}
-		return github.NewWithFork(cmdFactory, func() bool { return stepCLIAvailable(sctx, provider) }, host, repo, forkRepo), ""
+		draft := sctx.Config != nil && sctx.Config.Providers.GitHub.DraftPullRequests
+		return github.NewWithFork(cmdFactory, func() bool { return stepCLIAvailable(sctx, provider) }, host, repo, forkRepo, draft), ""
 	case scm.ProviderGitLab:
 		if sctx.Repo.ForkURL != "" {
 			// Fork MR routing for GitLab is intentionally not half-wired.
@@ -52,11 +53,13 @@ func buildHost(sctx *pipeline.StepContext, provider scm.Provider) (scm.Host, str
 			// GitLab source-project routing is implemented end to end.
 			return nil, "fork PR routing for GitLab is not implemented"
 		}
-		return gitlab.New(
+		draft := sctx.Config != nil && sctx.Config.Providers.GitLab.DraftPullRequests
+		return gitlab.NewWithDraft(
 			cmdFactory,
 			func() bool { return stepCLIAvailable(sctx, provider) },
 			scm.ExtractHost(sctx.Repo.UpstreamURL),
 			gitlab.ProjectPath(sctx.Repo.UpstreamURL),
+			draft,
 		), ""
 	case scm.ProviderBitbucket:
 		if sctx.Repo.ForkURL != "" {
@@ -73,7 +76,8 @@ func buildHost(sctx *pipeline.StepContext, provider scm.Provider) (scm.Host, str
 		if err != nil {
 			return nil, err.Error()
 		}
-		return bitbucket.NewHost(client, repo), ""
+		draft := sctx.Config != nil && sctx.Config.Providers.Bitbucket.DraftPullRequests
+		return bitbucket.NewHost(client, repo, draft), ""
 	case scm.ProviderAzureDevOps:
 		if sctx.Repo.ForkURL != "" {
 			// Fork PR routing for Azure DevOps is intentionally not half-wired,
@@ -89,7 +93,8 @@ func buildHost(sctx *pipeline.StepContext, provider scm.Provider) (scm.Host, str
 		if !ok {
 			return nil, "could not resolve Azure DevOps organization, project, and repository from the remote URL"
 		}
-		return azuredevops.New(cmdFactory, func() bool { return stepCLIAvailable(sctx, provider) }, org, project, repo), ""
+		draft := sctx.Config != nil && sctx.Config.Providers.AzureDevOps.DraftPullRequests
+		return azuredevops.NewWithDraft(cmdFactory, func() bool { return stepCLIAvailable(sctx, provider) }, org, project, repo, draft), ""
 	default:
 		return nil, fmt.Sprintf("provider %s is not supported yet", provider)
 	}
