@@ -102,6 +102,14 @@ type RepairCheck = repairCheck
 // Agent path preserves focused step-test fixtures while still validating the
 // registered Purpose.
 func (sctx *StepContext) InvokeAgent(purpose types.Purpose, payload agent.RunOpts) (*agent.Result, error) {
+	return sctx.InvokeAgentTier(purpose, 0, payload)
+}
+
+// InvokeAgentTier is InvokeAgent with an explicit Route tier, letting a step
+// escalate a repair through its Purpose's cascade (e.g. fix_balanced ->
+// authority_strong). The legacy Agent test seam ignores the tier and runs its
+// single configured agent.
+func (sctx *StepContext) InvokeAgentTier(purpose types.Purpose, tier int, payload agent.RunOpts) (*agent.Result, error) {
 	if _, err := types.PurposeDefinitionFor(purpose); err != nil {
 		return nil, err
 	}
@@ -109,6 +117,7 @@ func (sctx *StepContext) InvokeAgent(purpose types.Purpose, payload agent.RunOpt
 		return sctx.Invoker.Invoke(sctx.Ctx, agent.InvocationRequest{
 			Purpose: purpose,
 			Scope:   sctx.InvocationScope,
+			Tier:    tier,
 			Payload: payload,
 		})
 	}

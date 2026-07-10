@@ -126,6 +126,11 @@ func TestRebaseStep_FixModeCallsAgent(t *testing.T) {
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			if strings.Contains(opts.Prompt, "independently verifying") {
+				return &agent.Result{
+					Output: json.RawMessage(`{"findings":[],"summary":"conflict resolution verified"}`),
+				}, nil
+			}
 			// Resolve the conflict by writing the merged content
 			os.WriteFile(filepath.Join(dir, "shared.txt"), []byte("resolved content\n"), 0o644)
 			cmd := exec.Command("git", "add", "shared.txt")
@@ -168,8 +173,11 @@ func TestRebaseStep_FixModeCallsAgent(t *testing.T) {
 	if outcome.NeedsApproval {
 		t.Fatal("expected no approval after successful fix")
 	}
-	if len(ag.calls) != 1 {
-		t.Fatalf("expected 1 agent call, got %d", len(ag.calls))
+	if len(ag.calls) != 2 {
+		t.Fatalf("expected 2 agent calls (fixer + verifier), got %d", len(ag.calls))
+	}
+	if !strings.Contains(ag.calls[1].Prompt, "independently verifying") {
+		t.Fatalf("expected second call to be the independent verifier, got: %s", ag.calls[1].Prompt)
 	}
 	if !strings.Contains(ag.calls[0].Prompt, "shared.txt") {
 		t.Error("expected agent prompt to mention conflicting file")
@@ -185,6 +193,154 @@ func TestRebaseStep_FixModeCallsAgent(t *testing.T) {
 	originMain := gitCmd(t, dir, "rev-parse", "origin/main")
 	if mergeBase != originMain {
 		t.Fatalf("merge-base = %s, want origin/main %s", mergeBase, originMain)
+	}
+}
+
+// setupRebaseConflictRepo builds a repo where feature and origin/main both edit
+// shared.txt, so rebasing feature onto origin/main conflicts.
+func setupRebaseConflictRepo(t *testing.T) (dir, upstream, baseSHA, headSHA string) {
+	t.Helper()
+	upstream = t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir = t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	os.WriteFile(filepath.Join(dir, "shared.txt"), []byte("base content\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "base commit")
+	baseSHA = gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "main")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(dir, "shared.txt"), []byte("feature change\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature change")
+	headSHA = gitCmd(t, dir, "rev-parse", "HEAD")
+
+	gitCmd(t, dir, "checkout", "main")
+	os.WriteFile(filepath.Join(dir, "shared.txt"), []byte("main change\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "main conflict")
+	gitCmd(t, dir, "push", "origin", "main")
+	gitCmd(t, dir, "checkout", "feature")
+	return dir, upstream, baseSHA, headSHA
+}
+
+// resolveConflictContinue writes a merged shared.txt, stages it, and completes
+// the in-progress rebase, mirroring what a conflict-repair fixer does.
+func resolveConflictContinue(dir string) error {
+	if err := os.WriteFile(filepath.Join(dir, "shared.txt"), []byte("resolved content\n"), 0o644); err != nil {
+		return err
+	}
+	env := append(os.Environ(),
+		"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@test.com",
+		"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@test.com",
+		"GIT_EDITOR=true",
+	)
+	add := exec.Command("git", "add", "shared.txt")
+	add.Dir = dir
+	add.Env = env
+	if out, err := add.CombinedOutput(); err != nil {
+		return fmt.Errorf("git add: %s: %w", out, err)
+	}
+	cont := exec.Command("git", "rebase", "--continue")
+	cont.Dir = dir
+	cont.Env = env
+	if out, err := cont.CombinedOutput(); err != nil {
+		return fmt.Errorf("git rebase --continue: %s: %w", out, err)
+	}
+	return nil
+}
+
+// TestRebaseStep_FixModeEscalatesThenResolves proves the conflict repair climbs
+// from fix_balanced to authority_strong: the first tier leaves the rebase
+// unresolved, the loop aborts and retries at the next tier, which resolves.
+func TestRebaseStep_FixModeEscalatesThenResolves(t *testing.T) {
+	t.Parallel()
+	dir, upstream, baseSHA, headSHA := setupRebaseConflictRepo(t)
+
+	fixerCalls := 0
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			if strings.Contains(opts.Prompt, "independently verifying") {
+				return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"verified"}`)}, nil
+			}
+			fixerCalls++
+			if fixerCalls == 1 {
+				// Tier 0 (fix_balanced): fail to complete the rebase.
+				return &agent.Result{Output: json.RawMessage(`{"summary":"could not resolve"}`)}, nil
+			}
+			// Tier 1 (authority_strong): resolve and continue.
+			if err := resolveConflictContinue(dir); err != nil {
+				return nil, err
+			}
+			return &agent.Result{Output: json.RawMessage(`{"summary":"resolved"}`)}, nil
+		},
+	}
+
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Config.Routing = config.DefaultRoutingConfig() // enables the fix_balanced->authority_strong cascade
+	sctx.Fixing = true
+
+	step := &RebaseStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatal("expected no approval after escalated resolution")
+	}
+	if fixerCalls != 2 {
+		t.Fatalf("expected 2 fixer calls (tier 0 failure -> tier 1), got %d", fixerCalls)
+	}
+	mergeBase := gitCmd(t, dir, "merge-base", "HEAD", "origin/main")
+	originMain := gitCmd(t, dir, "rev-parse", "origin/main")
+	if mergeBase != originMain {
+		t.Fatalf("merge-base = %s, want origin/main %s (rebase not completed)", mergeBase, originMain)
+	}
+}
+
+// TestRebaseStep_FixModeFailsClosedOnVerifierRejection proves a completed
+// resolution that the independent verifier rejects fails closed and unwinds the
+// worktree to the pre-rebase HEAD rather than recording the branch update.
+func TestRebaseStep_FixModeFailsClosedOnVerifierRejection(t *testing.T) {
+	t.Parallel()
+	dir, upstream, baseSHA, headSHA := setupRebaseConflictRepo(t)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			if strings.Contains(opts.Prompt, "independently verifying") {
+				return &agent.Result{Output: json.RawMessage(`{"findings":[{"severity":"error","file":"shared.txt","description":"dropped upstream change"}],"summary":"incorrect resolution"}`)}, nil
+			}
+			if err := resolveConflictContinue(dir); err != nil {
+				return nil, err
+			}
+			return &agent.Result{Output: json.RawMessage(`{"summary":"resolved"}`)}, nil
+		},
+	}
+
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Fixing = true
+
+	step := &RebaseStep{}
+	if _, err := step.Execute(sctx); err == nil {
+		t.Fatal("expected a fail-closed error when the verifier rejects the resolution")
+	}
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != headSHA {
+		t.Fatalf("HEAD = %s, want pre-rebase %s (worktree not unwound)", got, headSHA)
+	}
+	if status := gitCmd(t, dir, "status", "--porcelain"); status != "" {
+		t.Fatalf("expected clean worktree after fail-closed unwind, got: %s", status)
 	}
 }
 

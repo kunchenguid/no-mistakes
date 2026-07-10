@@ -193,10 +193,10 @@ The repair starts at Terra/Opus, validates conflict resolution and applicable de
 
 **Blocked by:** Apply severity, consent, and unattended policies.
 
-- [ ] Conflict repair starts at `fix_balanced` and may escalate to `authority_strong`; it never uses the fast tier merely to infer scope.
-- [ ] Git conflict state and relevant deterministic checks run before strong adjudication, and unresolved or inconclusive conflict work fails closed.
-- [ ] Successful resolution updates the branch and routing history only after checks and independent verification complete.
-- [ ] Existing rebase safety, abort, and remote-update behavior remain observable and no legacy direct-agent repair path survives this slice.
+- [x] Conflict repair starts at `fix_balanced` and may escalate to `authority_strong`; it never uses the fast tier merely to infer scope.
+- [x] Git conflict state and relevant deterministic checks run before strong adjudication, and unresolved or inconclusive conflict work fails closed.
+- [x] Successful resolution updates the branch and routing history only after checks and independent verification complete.
+- [x] Existing rebase safety, abort, and remote-update behavior remain observable and no legacy direct-agent repair path survives this slice.
 
 ## Verify and republish CI repairs
 

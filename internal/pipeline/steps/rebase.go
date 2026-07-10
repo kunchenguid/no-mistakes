@@ -102,7 +102,7 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 
 	if sctx.Fixing {
 		for _, target := range targets {
-			if err := rebaseWithAgent(ctx, sctx, target); err != nil {
+			if err := rebaseWithRepair(ctx, sctx, target); err != nil {
 				return nil, err
 			}
 		}
@@ -347,8 +347,16 @@ func tryRebase(ctx context.Context, sctx *pipeline.StepContext, targetRef string
 	return nil, nil
 }
 
-// rebaseWithAgent performs a rebase and uses the agent to resolve any conflicts.
-func rebaseWithAgent(ctx context.Context, sctx *pipeline.StepContext, targetRef string) error {
+// rebaseWithRepair rebases onto targetRef and, on conflict, routes the
+// resolution through the escalating conflict-repair cascade
+// (fix_balanced -> authority_strong). Once a tier completes the rebase, the
+// deterministic git-state checks (no rebase in progress, no unresolved files)
+// run before an independent strong verifier adjudicates the resolution.
+// Unresolved work escalates to the next tier; an exhausted cascade or a
+// verifier that rejects or cannot conclude fails closed. The live rebase is
+// always aborted (or unwound to the pre-rebase HEAD) before returning an
+// error, so abort/remote safety and a clean worktree are preserved.
+func rebaseWithRepair(ctx context.Context, sctx *pipeline.StepContext, targetRef string) error {
 	skip, err := shouldSkipRebase(ctx, sctx, targetRef)
 	if err != nil {
 		return err
@@ -357,18 +365,71 @@ func rebaseWithAgent(ctx context.Context, sctx *pipeline.StepContext, targetRef 
 		return nil
 	}
 
-	sctx.Log(fmt.Sprintf("rebasing onto %s...", targetRef))
-	if _, err := git.Run(ctx, sctx.WorkDir, "rebase", targetRef); err == nil {
+	maxTier := conflictRepairMaxTier(sctx)
+	var lastErr error
+	for tier := 0; tier <= maxTier; tier++ {
+		sctx.Log(fmt.Sprintf("rebasing onto %s...", targetRef))
+		if _, err := git.Run(ctx, sctx.WorkDir, "rebase", targetRef); err == nil {
+			return nil // clean rebase, nothing to resolve
+		}
+
+		conflictFiles := rebaseConflictFiles(ctx, sctx.WorkDir)
+		if len(conflictFiles) == 0 {
+			_, _ = git.Run(ctx, sctx.WorkDir, "rebase", "--abort")
+			return fmt.Errorf("rebase onto %s failed (no conflicts detected)", targetRef)
+		}
+
+		sctx.Log(fmt.Sprintf("conflicts detected, resolving conflicts (tier %d)...", tier))
+		_, invokeErr := sctx.InvokeAgentTier(types.PurposeUnstructuredConflictRepair, tier, agent.RunOpts{
+			Prompt:     conflictRepairPrompt(sctx, targetRef, conflictFiles),
+			CWD:        sctx.WorkDir,
+			JSONSchema: commitSummarySchema,
+			OnChunk:    sctx.LogChunk,
+		})
+
+		// Deterministic git-state checks before any adjudication: the fixer
+		// must have driven the rebase to completion with no conflict markers
+		// left staged. A failure escalates to the next tier.
+		if invokeErr != nil || rebaseInProgress(ctx, sctx.WorkDir) || len(rebaseConflictFiles(ctx, sctx.WorkDir)) > 0 {
+			lastErr = invokeErr
+			if lastErr == nil {
+				lastErr = fmt.Errorf("conflict repair onto %s did not complete the rebase", targetRef)
+			}
+			_, _ = git.Run(ctx, sctx.WorkDir, "rebase", "--abort")
+			continue
+		}
+
+		// Independent strong verification before the resolution is accepted.
+		// The branch/history is recorded only after this passes (updateHeadSHA
+		// runs in the caller once every target resolves).
+		if verifyErr := verifyConflictResolution(ctx, sctx, targetRef); verifyErr != nil {
+			// A completed rebase cannot be --abort'd; unwind to the pre-rebase
+			// HEAD so the worktree stays clean and fail closed.
+			_, _ = git.Run(ctx, sctx.WorkDir, "reset", "--hard", "ORIG_HEAD")
+			return fmt.Errorf("conflict resolution onto %s failed verification: %w", targetRef, verifyErr)
+		}
 		return nil
 	}
 
-	if len(rebaseConflictFiles(ctx, sctx.WorkDir)) == 0 {
-		_, _ = git.Run(ctx, sctx.WorkDir, "rebase", "--abort")
-		return fmt.Errorf("rebase onto %s failed (no conflicts detected)", targetRef)
-	}
-	sctx.Log("conflicts detected, asking agent to resolve...")
-	conflictFiles := rebaseConflictFiles(ctx, sctx.WorkDir)
+	return fmt.Errorf("conflict repair onto %s exhausted the fix_balanced->authority_strong cascade: %w", targetRef, lastErr)
+}
 
+// conflictRepairMaxTier is the top tier of the conflict-repair route, so the
+// resolution can escalate from fix_balanced to authority_strong. It degrades to
+// tier 0 (single invocation) when routing is disabled or unresolved.
+func conflictRepairMaxTier(sctx *pipeline.StepContext) int {
+	if sctx.Config == nil {
+		return 0
+	}
+	profiles, err := sctx.Config.Routing.ResolveRoute(types.PurposeUnstructuredConflictRepair)
+	if err != nil || len(profiles) == 0 {
+		return 0
+	}
+	return len(profiles) - 1
+}
+
+// conflictRepairPrompt builds the fixer prompt for resolving a live rebase.
+func conflictRepairPrompt(sctx *pipeline.StepContext, targetRef string, conflictFiles []string) string {
 	prompt := fmt.Sprintf(
 		`Resolve git rebase conflicts. The rebase of the current branch onto %s has conflicts.
 
@@ -391,24 +452,42 @@ Instructions:
 		prompt += "\n\nPrevious findings:\n" + sctx.PreviousFindings
 	}
 	prompt += userIntentPromptSection(sctx)
+	return prompt
+}
 
-	_, err = sctx.InvokeAgent(types.PurposeUnstructuredConflictRepair, agent.RunOpts{
+// verifyConflictResolution runs an independent strong verifier over a completed
+// conflict resolution. Any blocking finding, an unparseable verdict, or an
+// invocation error is treated as inconclusive and fails closed.
+func verifyConflictResolution(ctx context.Context, sctx *pipeline.StepContext, targetRef string) error {
+	prompt := fmt.Sprintf(
+		`You are independently verifying a completed merge-conflict resolution. The current branch was rebased onto %s and another agent resolved the conflicts.
+
+Verify the resolution:
+- Confirm no conflict markers (<<<<<<< ======= >>>>>>>) remain in any file.
+- Confirm the resolution preserves the intent of BOTH the current branch changes and the upstream changes, and that no code was silently dropped.
+- Confirm the result is internally coherent.
+
+Return structured findings. Use severity "error" for any incorrect, unresolved, or dropped resolution, and return an empty findings list only when the resolution is fully correct.`,
+		targetRef,
+	)
+	prompt += userIntentPromptSection(sctx)
+
+	res, err := sctx.InvokeAgent(types.PurposeEscalatedAggregateVerification, agent.RunOpts{
 		Prompt:     prompt,
 		CWD:        sctx.WorkDir,
-		JSONSchema: commitSummarySchema,
+		JSONSchema: findingsSchema,
 		OnChunk:    sctx.LogChunk,
 	})
 	if err != nil {
-		_, _ = git.Run(ctx, sctx.WorkDir, "rebase", "--abort")
-		return fmt.Errorf("agent resolve conflicts: %w", err)
+		return fmt.Errorf("verifier inconclusive: %w", err)
 	}
-
-	// Verify rebase completed (no rebase still in progress)
-	if rebaseInProgress(ctx, sctx.WorkDir) {
-		_, _ = git.Run(ctx, sctx.WorkDir, "rebase", "--abort")
-		return fmt.Errorf("agent did not complete the rebase")
+	findings, err := types.ParseFindingsJSON(string(res.Output))
+	if err != nil {
+		return fmt.Errorf("verifier returned unparseable output: %w", err)
 	}
-
+	if hasBlockingFindings(findings.Items) {
+		return fmt.Errorf("verifier rejected the resolution: %s", findings.Summary)
+	}
 	return nil
 }
 
