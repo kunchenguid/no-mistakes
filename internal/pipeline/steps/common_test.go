@@ -342,6 +342,38 @@ func TestRunShellCommand(t *testing.T) {
 	})
 }
 
+func TestStepAuthConfigured_ReportsCommandStatus(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		mode string
+		want bool
+	}{
+		{name: "configured", mode: "gh", want: true},
+		{name: "unconfigured", mode: "auth-check-failure", want: false},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			binDir := fakeCLIBinDir(t)
+			linkTestBinary(t, binDir, "gh")
+			sctx := &pipeline.StepContext{
+				Ctx:     context.Background(),
+				WorkDir: t.TempDir(),
+				Env: fakeCLIEnv(binDir, map[string]string{
+					"FAKE_CLI_MODE": tt.mode,
+				}),
+			}
+
+			if got := stepAuthConfigured(sctx, scm.ProviderGitHub); got != tt.want {
+				t.Fatalf("stepAuthConfigured() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestStepCLIAvailable_ResolvesExecutableSuffixFromCustomPath(t *testing.T) {
 	t.Parallel()
 

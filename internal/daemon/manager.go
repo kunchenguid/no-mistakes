@@ -75,6 +75,7 @@ type recoveredRunPlan struct {
 	gateDir string
 	cfg     *config.Config
 	steps   []pipeline.Step
+	agent   agent.Agent
 }
 
 func (m *RunManager) recoverableParkedRuns(ctx context.Context) []recoveredRunPlan {
@@ -139,8 +140,15 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 	if err != nil {
 		return nil, err
 	}
-	if err := cfg.ValidateRunnable(exec.LookPath); err != nil {
-		return nil, err
+	demoMode := steps.IsDemoMode()
+	if !demoMode {
+		if err := cfg.ValidateRunnable(exec.LookPath); err != nil {
+			return nil, err
+		}
+	}
+	var recoveredAgent agent.Agent
+	if demoMode {
+		recoveredAgent = agent.NewNoop()
 	}
 	if cfg.SessionReuse {
 		if err := validateRecoveredSessions(m.db, run.ID); err != nil {
@@ -154,6 +162,7 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 		gateDir: gateDir,
 		cfg:     cfg,
 		steps:   execSteps,
+		agent:   recoveredAgent,
 	}, nil
 }
 
@@ -232,7 +241,7 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 		return
 	}
 	runCtx, cancel := context.WithCancelCause(context.Background())
-	executor := pipeline.NewExecutor(m.db, m.paths, plan.cfg, nil, plan.steps, m.broadcast)
+	executor := pipeline.NewExecutor(m.db, m.paths, plan.cfg, plan.agent, plan.steps, m.broadcast)
 	done := make(chan struct{})
 	m.mu.Lock()
 	m.executors[plan.run.ID] = executor

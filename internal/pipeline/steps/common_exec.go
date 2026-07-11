@@ -235,7 +235,7 @@ func stepAuthConfigured(sctx *pipeline.StepContext, provider scm.Provider) bool 
 		return false
 	}
 	cmd := stepCmd(sctx, args[0], args[1:]...)
-	return cmd.Run() == nil
+	return shellenv.RunShellCommand(cmd) == nil
 }
 
 // runShellCommand executes a shell command and returns stdout+stderr, exit code, and error.

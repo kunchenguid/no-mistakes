@@ -534,13 +534,79 @@ func (e *Executor) recoveredGateSourceRound(stepName types.StepName, rounds []*d
 			}
 		}
 	}
-	for index := len(rounds) - 1; index >= 0; index-- {
-		round := rounds[index]
-		if round.FindingsJSON != nil && *round.FindingsJSON == findings {
-			return round, nil
+
+	if len(rounds) == 0 {
+		return nil, nil
+	}
+	current, err := types.ParseFindingsJSON(findings)
+	if err != nil {
+		return nil, fmt.Errorf("parse recovered approval gate findings: %w", err)
+	}
+	if len(current.Items) == 0 {
+		return nil, nil
+	}
+
+	owned := make([]bool, len(current.Items))
+	roundByID := make(map[string]*db.StepRound, len(rounds))
+	var source *db.StepRound
+	advanceSource := func(candidate *db.StepRound) {
+		if candidate != nil && (source == nil || candidate.Round > source.Round) {
+			source = candidate
 		}
 	}
-	return nil, nil
+	for _, round := range rounds {
+		roundByID[round.ID] = round
+		if round.FindingsJSON == nil {
+			continue
+		}
+		produced, err := types.ParseFindingsJSON(*round.FindingsJSON)
+		if err != nil {
+			return nil, fmt.Errorf("parse recovered round %d findings: %w", round.Round, err)
+		}
+		for currentIndex, finding := range current.Items {
+			for _, producedFinding := range produced.Items {
+				if producedFinding == finding {
+					owned[currentIndex] = true
+					advanceSource(round)
+					break
+				}
+			}
+		}
+	}
+	for _, isOwned := range owned {
+		if !isOwned {
+			return nil, nil
+		}
+	}
+
+	stepResult, err := e.db.GetStepResult(rounds[0].StepResultID)
+	if err != nil {
+		return nil, fmt.Errorf("load recovered step result: %w", err)
+	}
+	repairs, err := e.db.GetFindingRepairsByRun(stepResult.RunID)
+	if err != nil {
+		return nil, fmt.Errorf("load recovered finding repairs: %w", err)
+	}
+	for _, repair := range repairs {
+		if repair.StepResultID != stepResult.ID {
+			continue
+		}
+		repairRound := roundByID[repair.StepRoundID]
+		if repairRound == nil {
+			return nil, fmt.Errorf("recovered finding repair references an unknown round")
+		}
+		for _, finding := range current.Items {
+			if repair.Severity == finding.Severity &&
+				repair.Action == finding.Action &&
+				repair.Description == finding.Description &&
+				repair.File == finding.File &&
+				repair.Line == finding.Line {
+				advanceSource(repairRound)
+				break
+			}
+		}
+	}
+	return source, nil
 }
 
 func (e *Executor) executeRecoveredRemainder(ctx context.Context, run *db.Run, repo *db.Repo, workDir, logDir string, start int, circuits *providerCircuits) error {

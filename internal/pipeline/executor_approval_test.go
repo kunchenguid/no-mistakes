@@ -295,6 +295,208 @@ func TestExecutorRecoveredGateUsesReviewSourceRoundAfterRepairFindings(t *testin
 	}
 }
 
+func TestExecutor_ResumeRestoresNonReviewCompositeFindingGate(t *testing.T) {
+	for _, stepName := range []types.StepName{types.StepTest, types.StepLint, types.StepDocument, types.StepVerify} {
+		t.Run(string(stepName), func(t *testing.T) {
+			database, p, run, repo := setupTest(t)
+			if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+				t.Fatal(err)
+			}
+			stepResult, err := database.InsertStepResult(run.ID, stepName)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := database.StartStep(stepResult.ID); err != nil {
+				t.Fatal(err)
+			}
+
+			originalID := string(stepName) + "-original"
+			originalDescription := string(stepName) + " still fails after automatic repair"
+			initialFindings := fmt.Sprintf(
+				`{"findings":[{"id":%q,"severity":"error","description":%q,"action":"auto-fix"}],"summary":"initial failure"}`,
+				originalID,
+				originalDescription,
+			)
+			if _, err := database.InsertStepRound(stepResult.ID, 1, "initial", &initialFindings, nil, 10); err != nil {
+				t.Fatal(err)
+			}
+
+			repairRound, err := database.ReserveStepRound(stepResult.ID, 2, "auto_fix")
+			if err != nil {
+				t.Fatal(err)
+			}
+			verifierAttempt, err := database.StartInvocationAttempt(types.InvocationAttemptStart{
+				Purpose: types.PurposeNormalAggregateVerification,
+				Role:    types.InvocationRoleVerifier,
+				Scope: types.InvocationScope{
+					Kind:         types.InvocationScopePipeline,
+					RunID:        run.ID,
+					StepResultID: stepResult.ID,
+					StepRoundID:  repairRound.ID,
+				},
+				CandidateKey: "review_strong:0:codex",
+				Candidate: types.InvocationCandidate{
+					Profile: "review_strong",
+					Runner:  types.RunnerCodex,
+					Model:   "test",
+					Effort:  types.EffortMedium,
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := database.FinishInvocationAttempt(verifierAttempt, types.InvocationAttemptTerminal{Outcome: types.InvocationOutcomeSucceeded}); err != nil {
+				t.Fatal(err)
+			}
+			lineages, err := database.CreateFindingLineages(run.ID, verifierAttempt, []string{""})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(lineages) != 1 {
+				t.Fatalf("verifier-created lineages = %d, want 1", len(lineages))
+			}
+			consentID := lineages[0].DisplayID
+			consentDescription := string(stepName) + " repair needs human judgment"
+			repairFindings := fmt.Sprintf(
+				`{"findings":[{"id":%q,"severity":"warning","description":%q,"action":"ask-user"}],"summary":"verifier-created finding"}`,
+				consentID,
+				consentDescription,
+			)
+			if err := database.CompleteReservedStepRound(repairRound.ID, &repairFindings, nil, 10); err != nil {
+				t.Fatal(err)
+			}
+			originalRepair, err := database.StartFindingRepair(db.FindingRepairStart{
+				RunID: run.ID, LineageID: "det:" + string(stepName) + ":" + run.ID + ":blocking:0",
+				StepResultID: stepResult.ID, StepRoundID: repairRound.ID,
+				Severity: "error", Action: types.ActionAutoFix, Description: originalDescription,
+				Tier: 0, RemainingBudget: 0,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := database.ResolveFindingRepair(originalRepair, db.RepairVerdictUnresolved, "still failing", db.RepairStatusUnresolved); err != nil {
+				t.Fatal(err)
+			}
+			consentRepair, err := database.StartFindingRepair(db.FindingRepairStart{
+				RunID: run.ID, LineageID: lineages[0].ID,
+				StepResultID: stepResult.ID, StepRoundID: repairRound.ID,
+				Severity: "warning", Action: types.ActionAskUser, Description: consentDescription,
+				Tier: 0, RemainingBudget: 0,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := database.ResolveFindingRepair(consentRepair, db.RepairVerdictUnresolved, "requires consent", db.RepairStatusUnresolved); err != nil {
+				t.Fatal(err)
+			}
+
+			compositeFindings := fmt.Sprintf(
+				`{"findings":[{"id":%q,"severity":"error","description":%q,"action":"auto-fix"},{"id":%q,"severity":"warning","description":%q,"action":"ask-user"}],"summary":"unresolved original and verifier-created consent gate"}`,
+				originalID,
+				originalDescription,
+				consentID,
+				consentDescription,
+			)
+			if err := database.SetStepFindings(stepResult.ID, compositeFindings); err != nil {
+				t.Fatal(err)
+			}
+			if err := database.UpdateStepStatusWithDuration(stepResult.ID, types.StepStatusAwaitingApproval, 20); err != nil {
+				t.Fatal(err)
+			}
+			if err := database.SetRunAwaitingAgent(run.ID); err != nil {
+				t.Fatal(err)
+			}
+			run, err = database.GetRun(run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			executor := NewExecutor(database, p, nil, nil, []Step{newPassStep(stepName)}, nil)
+			gate, err := executor.recoveredGate(run.ID)
+			if err != nil {
+				t.Fatalf("recover composite gate: %v", err)
+			}
+			if gate.lastRoundID != repairRound.ID {
+				t.Fatalf("recovered source round = %s, want producing repair round %s", gate.lastRoundID, repairRound.ID)
+			}
+
+			workDir := t.TempDir()
+			initGitRepo(t, workDir)
+			done := make(chan error, 1)
+			go func() {
+				done <- executor.Resume(context.Background(), run, repo, workDir)
+			}()
+			deadline := time.Now().Add(5 * time.Second)
+			for {
+				if err := executor.Respond(stepName, types.ActionSkip, nil); err == nil {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("recovered composite gate never accepted a response")
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("resume composite gate: %v", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("recovered composite gate timed out")
+			}
+			resumed, err := database.GetRun(run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resumed.Status != types.RunCompleted || resumed.AwaitingAgentSince != nil {
+				t.Fatalf("recovered run = status %s awaiting %v, want completed and unparked", resumed.Status, resumed.AwaitingAgentSince)
+			}
+		})
+	}
+}
+
+func TestExecutorRecoveredNonReviewCompositeGateRejectsCorruptOrUnownedFindings(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		findings string
+	}{
+		{name: "corrupt", findings: `{"findings":[`},
+		{name: "unowned", findings: `{"findings":[{"id":"test-original","severity":"error","description":"test failed","action":"auto-fix"},{"id":"intruder","severity":"warning","description":"not produced by any round","action":"ask-user"}],"summary":"contains unowned finding"}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			database, p, run, _ := setupTest(t)
+			if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+				t.Fatal(err)
+			}
+			stepResult, err := database.InsertStepResult(run.ID, types.StepTest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := database.StartStep(stepResult.ID); err != nil {
+				t.Fatal(err)
+			}
+			initialFindings := `{"findings":[{"id":"test-original","severity":"error","description":"test failed","action":"auto-fix"}],"summary":"initial failure"}`
+			if _, err := database.InsertStepRound(stepResult.ID, 1, "initial", &initialFindings, nil, 10); err != nil {
+				t.Fatal(err)
+			}
+			if err := database.SetStepFindings(stepResult.ID, test.findings); err != nil {
+				t.Fatal(err)
+			}
+			if err := database.UpdateStepStatusWithDuration(stepResult.ID, types.StepStatusAwaitingApproval, 10); err != nil {
+				t.Fatal(err)
+			}
+			if err := database.SetRunAwaitingAgent(run.ID); err != nil {
+				t.Fatal(err)
+			}
+
+			executor := NewExecutor(database, p, nil, nil, []Step{newPassStep(types.StepTest)}, nil)
+			if _, err := executor.recoveredGate(run.ID); err == nil {
+				t.Fatal("recoveredGate accepted corrupt or unowned findings")
+			}
+		})
+	}
+}
+
 func TestExecutor_ResumeRejectsApprovalWithUnresolvedRepair(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {

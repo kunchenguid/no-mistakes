@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	gitpkg "github.com/kunchenguid/no-mistakes/internal/git"
@@ -341,138 +343,261 @@ func TestRecoverStaleRunsOnStartup(t *testing.T) {
 }
 
 func TestRecoverOnStartup_ResumesParkedRun(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "dtest")
-	if err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name             string
+		demoMode         bool
+		runnersAvailable bool
+		wantStatus       types.RunStatus
+	}{
+		{
+			name:             "non-demo with runnable candidates",
+			runnersAvailable: true,
+			wantStatus:       types.RunCompleted,
+		},
+		{
+			name:       "demo with missing runner binaries",
+			demoMode:   true,
+			wantStatus: types.RunCompleted,
+		},
+		{
+			name:       "non-demo with missing runner binaries",
+			wantStatus: types.RunFailed,
+		},
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
-	p := paths.WithRoot(tmpDir)
-	if err := p.EnsureDirs(); err != nil {
-		t.Fatal(err)
-	}
-	routing := config.DefaultRoutingConfig()
-	executable, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for runner, spec := range routing.Runners {
-		spec.Executable = executable
-		routing.Runners[runner] = spec
-	}
-	globalConfig, err := yaml.Marshal(struct {
-		Routing config.RoutingConfig `yaml:"routing"`
-	}{Routing: routing})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(p.ConfigFile(), globalConfig, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	d, err := db.Open(p.DB())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer d.Close()
-	repo, headSHA := setupTestGitRepo(t, p, d, "resume-parked-run")
-	run, err := d.InsertRun(repo.ID, "main", headSHA, headSHA)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := d.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
-		t.Fatal(err)
-	}
-	worktree := p.WorktreeDir(repo.ID, run.ID)
-	if err := gitpkg.WorktreeAdd(context.Background(), p.RepoDir(repo.ID), worktree, headSHA); err != nil {
-		t.Fatal(err)
-	}
-	step, err := d.InsertStepResult(run.ID, types.StepReview)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := d.StartStep(step.ID); err != nil {
-		t.Fatal(err)
-	}
-	findings := `{"findings":[{"id":"review-1","severity":"warning","description":"needs approval","action":"ask-user"}],"summary":"needs approval"}`
-	if err := d.SetStepFindings(step.ID, findings); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := d.InsertStepRound(step.ID, 1, "initial", &findings, nil, 1); err != nil {
-		t.Fatal(err)
-	}
-	if err := d.UpdateStepStatusWithDuration(step.ID, types.StepStatusAwaitingApproval, 1); err != nil {
-		t.Fatal(err)
-	}
-	if err := d.SetRunAwaitingAgent(run.ID); err != nil {
-		t.Fatal(err)
-	}
-
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- RunWithOptions(p, d, func() []pipeline.Step {
-			return []pipeline.Step{&mockApprovalStep{name: types.StepReview}}
-		})
-	}()
-	defer func() {
-		client, err := ipc.Dial(p.Socket())
-		if err == nil {
-			_ = client.Call(ipc.MethodShutdown, &ipc.ShutdownParams{}, nil)
-			_ = client.Close()
-		}
-		select {
-		case <-errCh:
-		case <-time.After(3 * time.Second):
-			t.Error("daemon did not stop")
-		}
-	}()
-
-	deadline := time.Now().Add(5 * time.Second)
-	var lastErr error
-	for {
-		if time.Now().After(deadline) {
-			recovered, getErr := d.GetRun(run.ID)
-			t.Fatalf("recovered gate never accepted an approval: last error %v, run %#v, get run error %v", lastErr, recovered, getErr)
-		}
-		client, err := ipc.Dial(p.Socket())
-		if err == nil {
-			var response ipc.RespondResult
-			err = client.Call(ipc.MethodRespond, &ipc.RespondParams{
-				RunID:  run.ID,
-				Step:   types.StepReview,
-				Action: types.ActionApprove,
-			}, &response)
-			_ = client.Close()
-			if err == nil {
-				break
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.demoMode {
+				t.Setenv("NM_DEMO", "1")
+			} else {
+				t.Setenv("NM_DEMO", "0")
 			}
-			lastErr = err
-		} else {
-			lastErr = err
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
 
-	completed := waitForRunTerminalState(t, d, run.ID)
-	if completed.Status != types.RunCompleted {
-		t.Fatalf("recovered run status = %s, want completed", completed.Status)
+			tmpDir, err := os.MkdirTemp("", "dtest")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
+			p := paths.WithRoot(tmpDir)
+			if err := p.EnsureDirs(); err != nil {
+				t.Fatal(err)
+			}
+			routing := config.DefaultRoutingConfig()
+			executable := filepath.Join(tmpDir, "missing-agent-binary")
+			if tc.runnersAvailable {
+				executable, err = os.Executable()
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			for runner, spec := range routing.Runners {
+				spec.Executable = executable + "-" + string(runner)
+				if tc.runnersAvailable {
+					spec.Executable = executable
+				}
+				routing.Runners[runner] = spec
+			}
+			globalConfig, err := yaml.Marshal(struct {
+				Routing config.RoutingConfig `yaml:"routing"`
+			}{Routing: routing})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(p.ConfigFile(), globalConfig, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			d, err := db.Open(p.DB())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer d.Close()
+			repo, headSHA := setupTestGitRepo(t, p, d, "resume-parked-run")
+			run, err := d.InsertRun(repo.ID, "main", headSHA, headSHA)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := d.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+				t.Fatal(err)
+			}
+			worktree := p.WorktreeDir(repo.ID, run.ID)
+			if err := gitpkg.WorktreeAdd(context.Background(), p.RepoDir(repo.ID), worktree, headSHA); err != nil {
+				t.Fatal(err)
+			}
+			step, err := d.InsertStepResult(run.ID, types.StepReview)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := d.StartStep(step.ID); err != nil {
+				t.Fatal(err)
+			}
+			findings := `{"findings":[{"id":"review-1","severity":"warning","description":"needs approval","action":"ask-user"}],"summary":"needs approval"}`
+			if err := d.SetStepFindings(step.ID, findings); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := d.InsertStepRound(step.ID, 1, "initial", &findings, nil, 1); err != nil {
+				t.Fatal(err)
+			}
+			if err := d.UpdateStepStatusWithDuration(step.ID, types.StepStatusAwaitingApproval, 1); err != nil {
+				t.Fatal(err)
+			}
+			if tc.demoMode {
+				if _, err := d.InsertStepResult(run.ID, types.StepTest); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := d.SetRunAwaitingAgent(run.ID); err != nil {
+				t.Fatal(err)
+			}
+			parkedRun, err := d.GetRun(run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			var probe *recoveredDemoAgentProbeStep
+			stepFactory := func() []pipeline.Step {
+				execSteps := []pipeline.Step{&mockApprovalStep{name: types.StepReview}}
+				if tc.demoMode {
+					probe = &recoveredDemoAgentProbeStep{observedAgent: make(chan string, 1)}
+					execSteps = append(execSteps, probe)
+				}
+				return execSteps
+			}
+			mgr := NewRunManager(d, p, stepFactory)
+			plan, prepareErr := mgr.prepareRecoveredRun(context.Background(), parkedRun)
+			if tc.wantStatus == types.RunFailed {
+				if prepareErr == nil || !strings.Contains(prepareErr.Error(), "no runnable candidate") {
+					t.Fatalf("prepareRecoveredRun error = %v, want missing runnable candidate", prepareErr)
+				}
+			} else if prepareErr != nil {
+				t.Fatalf("prepareRecoveredRun: %v", prepareErr)
+			}
+			if tc.demoMode {
+				if plan.agent == nil || plan.agent.Name() != "noop" {
+					t.Fatalf("recovered demo agent = %v, want noop", plan.agent)
+				}
+			}
+
+			errCh := make(chan error, 1)
+			go func() {
+				errCh <- RunWithOptions(p, d, stepFactory)
+			}()
+			startupDeadline := time.Now().Add(3 * time.Second)
+			for {
+				if _, err := os.Stat(p.Socket()); err == nil {
+					break
+				}
+				select {
+				case err := <-errCh:
+					t.Fatalf("daemon stopped before binding IPC socket: %v", err)
+				default:
+				}
+				if time.Now().After(startupDeadline) {
+					t.Fatal("daemon did not bind IPC socket")
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			defer func() {
+				client, err := ipc.Dial(p.Socket())
+				if err == nil {
+					_ = client.Call(ipc.MethodShutdown, &ipc.ShutdownParams{}, nil)
+					_ = client.Close()
+				}
+				select {
+				case <-errCh:
+				case <-time.After(3 * time.Second):
+					t.Error("daemon did not stop")
+				}
+			}()
+
+			if tc.wantStatus == types.RunCompleted {
+				deadline := time.Now().Add(5 * time.Second)
+				var lastErr error
+				for {
+					if time.Now().After(deadline) {
+						recovered, getErr := d.GetRun(run.ID)
+						t.Fatalf("recovered gate never accepted an approval: last error %v, run %#v, get run error %v", lastErr, recovered, getErr)
+					}
+					client, err := ipc.Dial(p.Socket())
+					if err == nil {
+						var response ipc.RespondResult
+						err = client.Call(ipc.MethodRespond, &ipc.RespondParams{
+							RunID:  run.ID,
+							Step:   types.StepReview,
+							Action: types.ActionApprove,
+						}, &response)
+						_ = client.Close()
+						if err == nil {
+							break
+						}
+						lastErr = err
+					} else {
+						lastErr = err
+					}
+					time.Sleep(20 * time.Millisecond)
+				}
+			}
+
+			completed := waitForRunTerminalState(t, d, run.ID)
+			if completed.Status != tc.wantStatus {
+				t.Fatalf("recovered run status = %s, want %s (error: %v)", completed.Status, tc.wantStatus, completed.Error)
+			}
+			if completed.AwaitingAgentSince != nil {
+				t.Fatal("recovered run remained parked")
+			}
+			if tc.demoMode {
+				select {
+				case got := <-probe.observedAgent:
+					if got != "noop" {
+						t.Fatalf("recovered demo agent = %q, want noop", got)
+					}
+				default:
+					t.Fatal("recovered demo run did not route an invocation through the no-op agent")
+				}
+			}
+
+			// The executor marks the run terminal before its owner goroutine performs
+			// worktree cleanup. Wait for that cleanup rather than assuming it completed
+			// in the same scheduling slice, which is especially unreliable on Windows.
+			cleanupDeadline := time.Now().Add(5 * time.Second)
+			for {
+				if _, err := os.Stat(worktree); os.IsNotExist(err) {
+					break
+				} else if err != nil {
+					t.Fatalf("stat recovered worktree: %v", err)
+				}
+				if time.Now().After(cleanupDeadline) {
+					t.Fatalf("recovered worktree still exists after cleanup: %s", worktree)
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+		})
 	}
-	if completed.AwaitingAgentSince != nil {
-		t.Fatal("recovered run remained parked after approval")
+}
+
+type recoveredDemoAgentProbeStep struct {
+	observedAgent chan string
+}
+
+func (s *recoveredDemoAgentProbeStep) Name() types.StepName { return types.StepTest }
+
+func (s *recoveredDemoAgentProbeStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	if sctx.Agent == nil {
+		return nil, fmt.Errorf("recovered demo step has no injected agent")
 	}
-	// The executor marks the run terminal before its owner goroutine performs
-	// worktree cleanup. Wait for that cleanup rather than assuming it completed
-	// in the same scheduling slice, which is especially unreliable on Windows.
-	cleanupDeadline := time.Now().Add(5 * time.Second)
-	for {
-		if _, err := os.Stat(worktree); os.IsNotExist(err) {
-			break
-		} else if err != nil {
-			t.Fatalf("stat recovered worktree: %v", err)
-		}
-		if time.Now().After(cleanupDeadline) {
-			t.Fatalf("recovered worktree still exists after cleanup: %s", worktree)
-		}
-		time.Sleep(20 * time.Millisecond)
+	if sctx.Agent.Name() != "noop" {
+		return nil, fmt.Errorf("recovered demo step agent = %q, want noop", sctx.Agent.Name())
 	}
+	if sctx.Invoker == nil {
+		return nil, fmt.Errorf("recovered demo step has no routing invoker")
+	}
+	if _, err := sctx.Invoker.Invoke(sctx.Ctx, agent.InvocationRequest{
+		Purpose: types.PurposeIntentSummarization,
+		Scope:   sctx.InvocationScope,
+		Payload: agent.RunOpts{Prompt: "exercise recovered demo routing"},
+	}); err != nil {
+		return nil, fmt.Errorf("invoke recovered demo agent: %w", err)
+	}
+	s.observedAgent <- sctx.Agent.Name()
+	return &pipeline.StepOutcome{}, nil
 }
 
 func TestRecoverCleansUpOrphanedWorktrees(t *testing.T) {

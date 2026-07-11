@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
 
 func TestStepGitRun_ReapsGrandchildOnCleanExit(t *testing.T) {
@@ -38,6 +39,32 @@ func TestStepGitRun_ReapsGrandchildOnCleanExit(t *testing.T) {
 	}
 	if err := syscall.Kill(grandchild, 0); err != syscall.ESRCH {
 		t.Fatalf("grandchild pid %d not reaped after git returned: %v", grandchild, err)
+	}
+}
+
+func TestStepAuthConfigured_ReapsGrandchildOnCleanExit(t *testing.T) {
+	dir := t.TempDir()
+	binDir := t.TempDir()
+	heartbeat := filepath.Join(dir, "tick")
+	pidFile := filepath.Join(dir, "grandchild.pid")
+	script := "#!/bin/sh\n( i=0; while [ $i -lt 10000 ]; do printf '%s\\n' \"$i\" > " + strconv.Quote(heartbeat) + "; /bin/sleep 0.1; i=$((i+1)); done ) >/dev/null 2>&1 & grandchild=$!; echo \"$grandchild\" > " + strconv.Quote(pidFile) + "; while [ ! -s " + strconv.Quote(heartbeat) + " ]; do /bin/sleep 0.01; done; exit 0\n"
+	ghPath := filepath.Join(binDir, "gh")
+	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	sctx := &pipeline.StepContext{Ctx: context.Background(), WorkDir: dir, Env: []string{"PATH=" + binDir}}
+	if !stepAuthConfigured(sctx, scm.ProviderGitHub) {
+		t.Fatal("expected successful auth check to report configured")
+	}
+
+	grandchild := waitForIntFile(t, pidFile, 5*time.Second)
+	t.Cleanup(func() { _ = syscall.Kill(grandchild, syscall.SIGKILL) })
+	if !heartbeatHoldsWithin(t, heartbeat, 5*time.Second) {
+		t.Fatalf("auth-check grandchild pid %d still running after provider check returned", grandchild)
+	}
+	if err := syscall.Kill(grandchild, 0); err != syscall.ESRCH {
+		t.Fatalf("auth-check grandchild pid %d not reaped after provider check returned: %v", grandchild, err)
 	}
 }
 
