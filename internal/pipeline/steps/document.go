@@ -129,6 +129,11 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 		purpose = "housekeeping"
 	}
 
+	authorHead, err := git.HeadSHA(ctx, sctx.WorkDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve documentation author HEAD: %w", err)
+	}
+
 	result, err := sctx.InvokeAgent(types.PurposeDocumentationAuthoring, agent.RunOpts{
 		Prompt:     prompt,
 		CWD:        sctx.WorkDir,
@@ -139,56 +144,98 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 	if err != nil {
 		return nil, fmt.Errorf("agent document: %w", err)
 	}
-
-	// Commit whatever the agent edited, regardless of how trustworthy its
-	// structured output turns out to be.
-	commitSummary := extractDocumentSummary(result.Output, "")
-	fallbackSummary := "update documentation"
-	if combinedLint {
-		fallbackSummary = "update documentation and fix lint"
+	headAfterAuthor, err := git.HeadSHA(ctx, sctx.WorkDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve HEAD after documentation author: %w", err)
 	}
-	if err := commitAgentFixes(sctx, s.Name(), commitSummary, fallbackSummary); err != nil {
+	if headAfterAuthor != authorHead {
+		return nil, fmt.Errorf("documentation author changed HEAD before independent verification")
+	}
+
+	if result == nil {
+		return nil, fmt.Errorf("documentation author returned no result")
+	}
+	authorFindings, err := validateFindingsOutput(result.Output)
+	if err != nil {
+		return nil, fmt.Errorf("documentation author output inconclusive: %w", err)
+	}
+	if combinedLint {
+		_, lintFindings := splitHousekeepingFindings(authorFindings)
+		lintJSON, err := types.MarshalFindingsJSON(lintFindings)
+		if err != nil {
+			return nil, fmt.Errorf("marshal housekeeping lint findings: %w", err)
+		}
+		sctx.Shared.SetHousekeepingLint(pipeline.HousekeepingLintResult{
+			FindingsJSON: lintJSON,
+			Summary:      authorFindings.Summary,
+		})
+		sctx.Log(fmt.Sprintf("housekeeping lint result recorded for the lint step: %d unresolved items", len(lintFindings.Items)))
+	}
+
+	// Stage the author's complete candidate so deterministic checks and the
+	// verifier inspect tracked and newly created documentation alike.
+	if _, err := git.Run(ctx, sctx.WorkDir, "add", "-A"); err != nil {
+		return nil, fmt.Errorf("stage documentation candidate: %w", err)
+	}
+	if _, err := git.Run(ctx, sctx.WorkDir, "diff", "--cached", "--check"); err != nil {
+		return nil, fmt.Errorf("documentation deterministic checks failed: %w", err)
+	}
+	beforeVerification, err := captureDocumentationCandidate(sctx)
+	if err != nil {
 		return nil, err
 	}
 
-	// Without trustworthy structured output we cannot confirm the agent
-	// resolved every gap, so surface it for human review. Nothing is stashed
-	// for the lint step, which therefore re-assesses with its own pass.
-	var findings Findings
-	if result.Output == nil {
-		summary := fallbackDocumentSummary(result.Text)
-		sctx.Log("missing structured output, requiring approval")
-		return documentApprovalOutcome(summary), nil
-	} else if err := unmarshalRequiredFindings(result.Output, &findings); err != nil {
-		summary := fallbackDocumentSummary(extractDocumentSummary(result.Output, result.Text))
-		sctx.Log("could not parse structured output, requiring approval")
-		return documentApprovalOutcome(summary), nil
+	verifyResult, err := sctx.InvokeAgent(types.PurposeDocumentationVerification, agent.RunOpts{
+		Prompt: fmt.Sprintf(
+			`Independently verify the staged documentation candidate against the code and the complete branch diff.
+
+Base commit: %s
+Candidate HEAD before the staged documentation patch: %s
+
+Rules:
+- Do not modify, stage, or commit any files.
+- Check documentation accuracy, completeness, examples, configuration, public APIs, and removal of stale claims.
+- Treat anything inconclusive or not verifiable as a warning or error.
+- Return an empty findings array only when the staged documentation candidate is accurate and complete.`,
+			baseSHA,
+			beforeVerification.head,
+		) + executionContextPromptSection() + userIntentPromptSection(sctx),
+		CWD:        sctx.WorkDir,
+		JSONSchema: findingsSchema,
+		OnChunk:    sctx.LogChunk,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("documentation verification: %w", err)
+	}
+	afterVerification, err := captureDocumentationCandidate(sctx)
+	if err != nil {
+		return nil, err
+	}
+	if afterVerification != beforeVerification {
+		return nil, fmt.Errorf("documentation verifier mutated the candidate")
+	}
+	if verifyResult == nil {
+		return nil, fmt.Errorf("documentation verifier returned no result")
+	}
+	findings, err := validateFindingsOutput(verifyResult.Output)
+	if err != nil {
+		return nil, fmt.Errorf("documentation verification inconclusive: %w", err)
 	}
 
-	docFindings := findings
-	if combinedLint {
-		var lintFindings Findings
-		docFindings, lintFindings = splitHousekeepingFindings(findings)
-		lintJSON, err := types.MarshalFindingsJSON(lintFindings)
-		if err == nil {
-			sctx.Shared.SetHousekeepingLint(pipeline.HousekeepingLintResult{
-				FindingsJSON: lintJSON,
-				Summary:      findings.Summary,
-			})
-			sctx.Log(fmt.Sprintf("housekeeping lint result recorded for the lint step: %d unresolved items", len(lintFindings.Items)))
+	needsApproval := hasBlockingFindings(findings.Items)
+	if !needsApproval {
+		if err := commitAgentFixes(sctx, s.Name(), authorFindings.Summary, "update documentation"); err != nil {
+			return nil, err
 		}
 	}
-
-	needsApproval := len(docFindings.Items) > 0
-	findingsJSON, _ := json.Marshal(docFindings)
-
-	sctx.Log(fmt.Sprintf("document findings: %d unresolved items", len(docFindings.Items)))
+	findingsJSON, _ := json.Marshal(findings)
+	sctx.Log(fmt.Sprintf("document verification findings: %d unresolved items", len(findings.Items)))
 
 	return &pipeline.StepOutcome{
 		NeedsApproval: needsApproval,
 		AutoFixable:   false,
 		Findings:      string(findingsJSON),
-		FixSummary:    docFindings.Summary,
+		FixSummary:    authorFindings.Summary,
 		// Deterministic documentation integrity check the coordinator runs before
 		// the fresh tools_balanced verifier: reject conflict markers and
 		// whitespace corruption in the changed content.
@@ -320,25 +367,26 @@ func splitHousekeepingFindings(findings Findings) (doc Findings, lint Findings) 
 	return doc, lint
 }
 
-// documentApprovalOutcome builds a single ask-user finding for cases where the
-// agent's structured output is missing or unparsable, so a human can confirm
-// the documentation state instead of silently trusting an opaque response.
-func documentApprovalOutcome(summary string) *pipeline.StepOutcome {
-	findings := Findings{
-		Items: []Finding{{
-			Severity:    "warning",
-			Description: summary,
-			Action:      types.ActionAskUser,
-		}},
-		Summary: summary,
+type documentationCandidate struct {
+	head   string
+	status string
+	diff   string
+}
+
+func captureDocumentationCandidate(sctx *pipeline.StepContext) (documentationCandidate, error) {
+	head, err := git.HeadSHA(sctx.Ctx, sctx.WorkDir)
+	if err != nil {
+		return documentationCandidate{}, fmt.Errorf("resolve documentation candidate HEAD: %w", err)
 	}
-	findingsJSON, _ := json.Marshal(findings)
-	return &pipeline.StepOutcome{
-		NeedsApproval: true,
-		AutoFixable:   false,
-		Findings:      string(findingsJSON),
-		FixSummary:    summary,
+	status, err := git.Run(sctx.Ctx, sctx.WorkDir, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+	if err != nil {
+		return documentationCandidate{}, fmt.Errorf("capture documentation candidate status: %w", err)
 	}
+	diff, err := git.Run(sctx.Ctx, sctx.WorkDir, "diff", "--binary", "HEAD", "--")
+	if err != nil {
+		return documentationCandidate{}, fmt.Errorf("capture documentation candidate diff: %w", err)
+	}
+	return documentationCandidate{head: head, status: status, diff: diff}, nil
 }
 
 func hasNonIgnoredDocumentChanges(changedFiles string, ignorePatterns []string) bool {
@@ -359,56 +407,4 @@ func hasNonIgnoredDocumentChanges(changedFiles string, ignorePatterns []string) 
 		}
 	}
 	return false
-}
-
-func fallbackDocumentSummary(text string) string {
-	cleaned := strings.TrimSpace(text)
-	if cleaned == "" {
-		return "agent returned no structured output"
-	}
-	return cleaned
-}
-
-func extractDocumentSummary(raw []byte, fallback string) string {
-	var payload struct {
-		Summary string `json:"summary"`
-	}
-	if err := json.Unmarshal(raw, &payload); err == nil && strings.TrimSpace(payload.Summary) != "" {
-		return payload.Summary
-	}
-	return fallback
-}
-
-func unmarshalRequiredFindings(raw []byte, findings *Findings) error {
-	parsed, err := types.ParseFindingsJSON(string(raw))
-	if err != nil {
-		return err
-	}
-	var payload struct {
-		Summary  *string            `json:"summary"`
-		Findings *[]json.RawMessage `json:"findings"`
-		Items    *[]json.RawMessage `json:"items"`
-	}
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		return err
-	}
-	if payload.Findings == nil && payload.Items == nil {
-		return fmt.Errorf("missing findings array")
-	}
-	if payload.Summary == nil || strings.TrimSpace(*payload.Summary) == "" {
-		return fmt.Errorf("missing summary")
-	}
-	for i, item := range parsed.Items {
-		if strings.TrimSpace(item.Severity) == "" {
-			return fmt.Errorf("finding %d missing severity", i)
-		}
-		if strings.TrimSpace(item.Description) == "" {
-			return fmt.Errorf("finding %d missing description", i)
-		}
-		if strings.TrimSpace(item.Action) == "" {
-			return fmt.Errorf("finding %d missing action", i)
-		}
-	}
-	*findings = parsed
-	return nil
 }

@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -26,20 +27,19 @@ func (e *Executor) recordCanaryCohort(ctx context.Context, run *db.Run, workDir 
 	}
 }
 
-// maybeActivateCanary freezes the routing canary the first time a run is about
-// to complete cleanly under the routing policy. It records the policy
-// fingerprint and freezes the ten most recent completed runs as the
-// pre-routing baseline BEFORE this run is marked completed, so the routed
-// cohort this run seeds is compared against a baseline that excludes it. It is
-// advisory-only and never affects the run outcome.
-func (e *Executor) maybeActivateCanary(ctx context.Context, run *db.Run, workDir string) {
+// maybeActivateCanary freezes the routing canary before the first clean routed
+// gate can be accepted. The activation transaction persists the routing
+// fingerprint and the durable completion fence together with the frozen
+// pre-routing baseline. Any activation check or persistence failure is returned
+// so the caller can reject completion rather than admitting an untracked routed
+// result.
+func (e *Executor) maybeActivateCanary(ctx context.Context, run *db.Run, workDir string) error {
 	activated, err := e.db.IsCanaryActivated()
 	if err != nil {
-		slog.Warn("canary activation check failed", "run", run.ID, "error", err)
-		return
+		return fmt.Errorf("check canary activation: %w", err)
 	}
 	if activated {
-		return
+		return nil
 	}
 	fingerprint := ""
 	if e.config != nil {
@@ -53,8 +53,9 @@ func (e *Executor) maybeActivateCanary(ctx context.Context, run *db.Run, workDir
 		return files, lines, true
 	}
 	if _, err := e.db.ActivateCanary(fingerprint, changed); err != nil {
-		slog.Warn("canary activation failed", "run", run.ID, "error", err)
+		return fmt.Errorf("persist canary activation: %w", err)
 	}
+	return nil
 }
 
 // canaryChangedStats returns the changed-file and changed-line counts for a

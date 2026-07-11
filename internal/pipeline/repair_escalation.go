@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -223,7 +224,14 @@ func (rc *repairCoordinator) escalateBatch(ctx context.Context, seeds []repairSe
 			byLineage[st.lineageID] = st
 		}
 	}
-	return byLineage, nil
+	active := unresolvedStates(states)
+	if len(active) == 0 {
+		return byLineage, nil
+	}
+	if err := rc.persistIterationCap(active); err != nil {
+		return byLineage, err
+	}
+	return byLineage, fmt.Errorf("repair iteration cap reached with %d unresolved lineage(s)", len(active))
 }
 
 // lowestActiveTier returns the active (unresolved, unfailed) states sharing the
@@ -250,6 +258,54 @@ func (rc *repairCoordinator) lowestActiveTier(states []*lineageState) ([]*lineag
 	return batch, tier
 }
 
+func unresolvedStates(states []*lineageState) []*lineageState {
+	active := make([]*lineageState, 0, len(states))
+	for _, st := range states {
+		if !st.resolved && !st.failed {
+			active = append(active, st)
+		}
+	}
+	return active
+}
+
+func (rc *repairCoordinator) persistIterationCap(active []*lineageState) error {
+	round, err := rc.reserveRound("repair_exhausted")
+	if err != nil {
+		return fmt.Errorf("reserve iteration-cap round: %w", err)
+	}
+	started := time.Now()
+	abort := func(cause error) error {
+		if roundErr := rc.db.TerminateReservedStepRound(round.ID, db.StepRoundFailed, time.Since(started).Milliseconds()); roundErr != nil {
+			return errors.Join(cause, fmt.Errorf("terminate iteration-cap round: %w", roundErr))
+		}
+		return cause
+	}
+	for _, st := range active {
+		remaining := rc.policy.maxTier - st.tier
+		if remaining < 0 {
+			remaining = 0
+		}
+		id, err := rc.db.StartFindingRepair(db.FindingRepairStart{
+			RunID: rc.run.ID, LineageID: st.lineageID, StepResultID: rc.stepResultID, StepRoundID: round.ID,
+			Severity: st.finding.Severity, Action: st.finding.Action, Description: st.finding.Description,
+			File: st.finding.File, Line: st.finding.Line, Tier: st.tier, RemainingBudget: remaining,
+		})
+		if err != nil {
+			return abort(fmt.Errorf("persist iteration-cap repair: %w", err))
+		}
+		st.failed = true
+		st.verdict = db.RepairVerdictInconclusive
+		st.rationale = "repair iteration cap reached"
+		if err := rc.db.ResolveFindingRepair(id, st.verdict, st.rationale, db.RepairStatusUnresolved); err != nil {
+			return abort(fmt.Errorf("resolve iteration-cap repair: %w", err))
+		}
+	}
+	if err := rc.db.CompleteReservedStepRound(round.ID, nil, nil, time.Since(started).Milliseconds()); err != nil {
+		return abort(fmt.Errorf("complete iteration-cap round: %w", err))
+	}
+	return nil
+}
+
 func (rc *repairCoordinator) runTierBatch(ctx context.Context, batch []*lineageState, tier int) ([]*lineageState, error) {
 	round, err := rc.reserveRound("auto_fix")
 	if err != nil {
@@ -258,6 +314,20 @@ func (rc *repairCoordinator) runTierBatch(ctx context.Context, batch []*lineageS
 	scope := types.InvocationScope{Kind: types.InvocationScopePipeline, RunID: rc.run.ID, StepResultID: rc.stepResultID, StepRoundID: round.ID}
 	started := time.Now()
 	remaining := rc.policy.maxTier - tier
+	var roundFindings *string
+	abortRound := func(cause error) error {
+		roundErr := rc.db.TerminateReservedStepRound(round.ID, db.StepRoundFailed, time.Since(started).Milliseconds())
+		if roundErr != nil {
+			return errors.Join(cause, fmt.Errorf("terminate failed repair round: %w", roundErr))
+		}
+		return cause
+	}
+	completeRound := func(summary string) error {
+		if err := rc.db.CompleteReservedStepRound(round.ID, roundFindings, ptrOrNil(summary), time.Since(started).Milliseconds()); err != nil {
+			return abortRound(fmt.Errorf("complete repair round: %w", err))
+		}
+		return nil
+	}
 
 	repairID := make(map[string]string, len(batch))
 	for _, st := range batch {
@@ -267,27 +337,35 @@ func (rc *repairCoordinator) runTierBatch(ctx context.Context, batch []*lineageS
 			File: st.finding.File, Line: st.finding.Line, Tier: tier, RemainingBudget: remaining,
 		})
 		if err != nil {
-			_ = rc.db.TerminateReservedStepRound(round.ID, db.StepRoundFailed, time.Since(started).Milliseconds())
-			return nil, fmt.Errorf("persist finding repair: %w", err)
+			return nil, abortRound(fmt.Errorf("persist finding repair: %w", err))
 		}
 		repairID[st.lineageID] = id
 	}
 
-	complete := func(summary string) {
-		_ = rc.db.CompleteReservedStepRound(round.ID, nil, ptrOrNil(summary), time.Since(started).Milliseconds())
-	}
-	// advance moves a lineage to its next tier, or fails it closed when the
-	// budget is spent. status/rationale are recorded on its repair row.
-	advance := func(st *lineageState, verdict, rationale string) {
+	advance := func(st *lineageState, verdict, rationale string) error {
+		if strings.TrimSpace(verdict) == "" {
+			verdict = db.RepairVerdictInconclusive
+		}
 		if tier >= rc.policy.maxTier {
 			st.failed = true
-			st.verdict, st.rationale = verdict, rationale
-			_ = rc.db.ResolveFindingRepair(repairID[st.lineageID], verdict, rationale, db.RepairStatusUnresolved)
-			return
+		} else {
+			st.tier++
 		}
-		st.tier++
 		st.verdict, st.rationale = verdict, rationale
-		_ = rc.db.ResolveFindingRepair(repairID[st.lineageID], verdict, rationale, db.RepairStatusUnresolved)
+		if err := rc.db.ResolveFindingRepair(repairID[st.lineageID], verdict, rationale, db.RepairStatusUnresolved); err != nil {
+			return err
+		}
+		return nil
+	}
+	failBatch := func(verdict, rationale string) error {
+		for _, st := range batch {
+			st.failed = true
+			st.verdict, st.rationale = verdict, rationale
+			if err := rc.db.ResolveFindingRepair(repairID[st.lineageID], verdict, rationale, db.RepairStatusUnresolved); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 
 	diff := rc.reviewDiff(ctx, rc.baseSHA)
@@ -296,37 +374,55 @@ func (rc *repairCoordinator) runTierBatch(ctx context.Context, batch []*lineageS
 		Purpose: rc.policy.fixerPurpose, Tier: tier, Scope: scope,
 		Payload: agent.RunOpts{Prompt: buildBatchFixPrompt(batch, rc.intent, remaining, diff), CWD: rc.workDir, JSONSchema: commitSummarySchemaJSON, OnChunk: rc.logChunk},
 	})
-	if attemptID := rc.succeededAttemptID(round.ID, rc.policy.fixerPurpose); attemptID != "" {
-		for _, st := range batch {
-			_ = rc.db.SetFindingRepairFixer(repairID[st.lineageID], attemptID)
-		}
-	}
 	if fixErr != nil {
 		rc.logf("fixer failed at tier %d: %v", tier, fixErr)
-		for _, st := range batch {
-			advance(st, "", "fixer invocation failed")
+		if err := failBatch(db.RepairVerdictInconclusive, "fixer invocation failed"); err != nil {
+			return nil, abortRound(fmt.Errorf("record failed fixer outcome: %w", err))
 		}
-		complete("")
+		if err := completeRound(""); err != nil {
+			return nil, err
+		}
+		var unavailable *agent.ProfileUnavailableError
+		if errors.As(fixErr, &unavailable) {
+			return nil, fmt.Errorf("repair fixer profile unavailable: %w", fixErr)
+		}
 		return nil, nil
 	}
-	summary := extractRepairSummary(fixResult)
-	if err := rc.commitFix(ctx, summary); err != nil {
-		return nil, fmt.Errorf("commit repair: %w", err)
+	fixerAttemptID, err := rc.succeededAttemptID(round.ID, rc.policy.fixerPurpose)
+	if err != nil {
+		return nil, abortRound(fmt.Errorf("load fixer attempt: %w", err))
+	}
+	if fixerAttemptID == "" {
+		return nil, abortRound(fmt.Errorf("successful fixer invocation did not journal a succeeded attempt"))
+	}
+	for _, st := range batch {
+		if err := rc.db.SetFindingRepairFixer(repairID[st.lineageID], fixerAttemptID); err != nil {
+			return nil, abortRound(fmt.Errorf("link finding repair fixer: %w", err))
+		}
 	}
 
-	// Applicable deterministic checks run before the verifier. A failed check
-	// advances the whole batch to the next tier without spending a verifier.
+	summary := extractRepairSummary(fixResult)
+	if err := rc.commitFix(ctx, summary); err != nil {
+		return nil, abortRound(fmt.Errorf("commit repair: %w", err))
+	}
+
 	for _, check := range rc.checks {
 		applicable, exitCode, output := check.Run(ctx)
 		for _, st := range batch {
-			_ = rc.db.RecordFindingRepairCheck(repairID[st.lineageID], check.Command, applicable, exitCode, output)
+			if err := rc.db.RecordFindingRepairCheck(repairID[st.lineageID], check.Command, applicable, exitCode, output); err != nil {
+				return nil, abortRound(fmt.Errorf("persist finding repair check: %w", err))
+			}
 		}
 		if applicable && exitCode != 0 {
 			rc.logf("deterministic check failed (%s); advancing the batch without a verifier", check.Command)
 			for _, st := range batch {
-				advance(st, "", fmt.Sprintf("deterministic check failed: %s", check.Command))
+				if err := advance(st, db.RepairVerdictUnresolved, fmt.Sprintf("deterministic check failed: %s", check.Command)); err != nil {
+					return nil, abortRound(fmt.Errorf("record failed deterministic check: %w", err))
+				}
 			}
-			complete(summary)
+			if err := completeRound(summary); err != nil {
+				return nil, err
+			}
 			return nil, nil
 		}
 	}
@@ -340,70 +436,154 @@ func (rc *repairCoordinator) runTierBatch(ctx context.Context, batch []*lineageS
 		Purpose: vpurpose, Scope: scope,
 		Payload: agent.RunOpts{Prompt: buildBatchVerifyPrompt(batch, rc.reviewDiff(ctx, rc.baseSHA)), CWD: rc.workDir, JSONSchema: batchVerdictSchema, OnChunk: rc.logChunk},
 	})
-	if attemptID := rc.succeededAttemptID(round.ID, vpurpose); attemptID != "" {
-		for _, st := range batch {
-			_ = rc.db.SetFindingRepairVerifier(repairID[st.lineageID], attemptID)
-		}
-	}
 	if verifyErr != nil {
 		rc.logf("verifier failed at tier %d: %v", tier, verifyErr)
-		for _, st := range batch {
-			advance(st, "", "verifier invocation failed")
+		if err := failBatch(db.RepairVerdictInconclusive, "verifier invocation failed"); err != nil {
+			return nil, abortRound(fmt.Errorf("record failed verifier outcome: %w", err))
 		}
-		complete(summary)
+		if err := completeRound(summary); err != nil {
+			return nil, err
+		}
+		var unavailable *agent.ProfileUnavailableError
+		if errors.As(verifyErr, &unavailable) {
+			return nil, fmt.Errorf("repair verifier profile unavailable: %w", verifyErr)
+		}
 		return nil, nil
+	}
+	verifierAttemptID, err := rc.succeededAttemptID(round.ID, vpurpose)
+	if err != nil {
+		return nil, abortRound(fmt.Errorf("load verifier attempt: %w", err))
+	}
+	if verifierAttemptID == "" {
+		return nil, abortRound(fmt.Errorf("successful verifier invocation did not journal a succeeded attempt"))
+	}
+	for _, st := range batch {
+		if err := rc.db.SetFindingRepairVerifier(repairID[st.lineageID], verifierAttemptID); err != nil {
+			return nil, abortRound(fmt.Errorf("link finding repair verifier: %w", err))
+		}
 	}
 
 	bv, ok := parseBatchVerdict(verifyResult)
 	if !ok {
 		for _, st := range batch {
-			advance(st, "", "malformed batch adjudication")
+			if err := advance(st, db.RepairVerdictInconclusive, "malformed batch adjudication"); err != nil {
+				return nil, abortRound(fmt.Errorf("record malformed adjudication: %w", err))
+			}
 		}
-		complete(summary)
+		if err := completeRound(summary); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
+	verdicts, valid := validateBatchVerdicts(batch, bv)
+	if !valid {
+		for _, st := range batch {
+			if err := advance(st, db.RepairVerdictInconclusive, "batch adjudication did not contain exactly one verdict for every requested lineage"); err != nil {
+				return nil, abortRound(fmt.Errorf("record inconclusive adjudication: %w", err))
+			}
+		}
+		if err := completeRound(summary); err != nil {
+			return nil, err
+		}
 		return nil, nil
 	}
 
-	// A patch-caused new finding attaches to its named root lineage, forcing it
-	// to keep escalating with the new content even if its own verdict resolved.
-	// Unrelated findings become fresh roots and can never vanish by ID matching.
 	patchCaused := make(map[string]types.Finding)
+	consentRequired := make(map[string]types.Finding)
+	batchByLineage := make(map[string]*lineageState, len(batch))
+	for _, state := range batch {
+		batchByLineage[state.lineageID] = state
+	}
+	surfaced := make([]types.Finding, 0, len(bv.NewFindings))
 	var newRoots []*lineageState
 	for _, nf := range bv.NewFindings {
-		if !isBlockingSeverity(nf.Severity) {
-			continue
-		}
 		f := types.Finding{Severity: nf.Severity, Action: nf.Action, Description: nf.Description}
 		if _, isRoot := repairID[nf.CausedByLineageID]; isRoot && nf.CausedByLineageID != "" {
-			patchCaused[nf.CausedByLineageID] = f
+			f.ID = batchByLineage[nf.CausedByLineageID].finding.ID
+			surfaced = append(surfaced, f)
+			switch nf.Action {
+			case types.ActionAutoFix:
+				patchCaused[nf.CausedByLineageID] = f
+			case types.ActionAskUser:
+				consentRequired[nf.CausedByLineageID] = f
+			case types.ActionNoOp:
+			}
 			continue
 		}
-		newRoots = append(newRoots, rc.newUnrelatedRoot(f))
+		root, err := rc.newUnrelatedRoot(f, verifierAttemptID)
+		if err != nil {
+			return nil, abortRound(err)
+		}
+		surfaced = append(surfaced, root.finding)
+		switch nf.Action {
+		case types.ActionAutoFix:
+		case types.ActionAskUser:
+			root.failed = true
+			root.verdict = db.RepairVerdictUnresolved
+			root.rationale = "verifier-created finding requires consent"
+			id, err := rc.db.StartFindingRepair(db.FindingRepairStart{
+				RunID: rc.run.ID, LineageID: root.lineageID, StepResultID: rc.stepResultID, StepRoundID: round.ID,
+				Severity: f.Severity, Action: f.Action, Description: f.Description, Tier: tier, RemainingBudget: remaining,
+			})
+			if err != nil {
+				return nil, abortRound(fmt.Errorf("persist consent-required finding: %w", err))
+			}
+			if err := rc.db.ResolveFindingRepair(id, root.verdict, root.rationale, db.RepairStatusUnresolved); err != nil {
+				return nil, abortRound(fmt.Errorf("record consent-required finding: %w", err))
+			}
+		case types.ActionNoOp:
+			root.resolved = true
+		default:
+			root.failed = true
+			root.verdict = db.RepairVerdictInconclusive
+			root.rationale = "verifier returned an unknown finding action"
+		}
+		newRoots = append(newRoots, root)
+	}
+	if len(surfaced) > 0 {
+		raw, err := types.MarshalFindingsJSON(types.Findings{Items: surfaced, Summary: fmt.Sprintf("%d verifier-created finding(s)", len(surfaced))})
+		if err != nil {
+			return nil, abortRound(fmt.Errorf("marshal verifier-created findings: %w", err))
+		}
+		roundFindings = &raw
 	}
 
-	verdicts := make(map[string]batchLineVerdict, len(bv.Verdicts))
-	for _, v := range bv.Verdicts {
-		verdicts[v.LineageID] = batchLineVerdict{status: v.Status, rationale: v.Rationale}
-	}
 	for _, st := range batch {
+		if finding, needsConsent := consentRequired[st.lineageID]; needsConsent {
+			st.finding = finding
+			st.failed = true
+			st.verdict = db.RepairVerdictUnresolved
+			st.rationale = "patch introduced a finding that requires consent"
+			if err := rc.db.ResolveFindingRepair(repairID[st.lineageID], st.verdict, st.rationale, db.RepairStatusUnresolved); err != nil {
+				return nil, abortRound(fmt.Errorf("record consent-required patch finding: %w", err))
+			}
+			continue
+		}
 		if pf, caused := patchCaused[st.lineageID]; caused {
-			// The fix introduced a regression under this root; keep escalating
-			// the same lineage with the patch-caused finding content.
 			if tier < rc.policy.maxTier {
 				st.finding = pf
 			}
-			advance(st, db.RepairVerdictUnresolved, "patch introduced a new blocking issue under this lineage")
+			if err := advance(st, db.RepairVerdictUnresolved, "patch introduced a new auto-fix issue under this lineage"); err != nil {
+				return nil, abortRound(fmt.Errorf("record patch-caused finding: %w", err))
+			}
 			continue
 		}
 		v := verdicts[st.lineageID]
 		if v.status == db.RepairVerdictResolved && strings.TrimSpace(v.rationale) != "" {
 			st.resolved = true
 			st.verdict, st.rationale = db.RepairVerdictResolved, v.rationale
-			_ = rc.db.ResolveFindingRepair(repairID[st.lineageID], db.RepairVerdictResolved, v.rationale, db.RepairStatusResolved)
+			if err := rc.db.ResolveFindingRepair(repairID[st.lineageID], db.RepairVerdictResolved, v.rationale, db.RepairStatusResolved); err != nil {
+				return nil, abortRound(fmt.Errorf("record resolved finding repair: %w", err))
+			}
 			continue
 		}
-		advance(st, v.status, v.rationale)
+		if err := advance(st, v.status, v.rationale); err != nil {
+			return nil, abortRound(fmt.Errorf("record unresolved finding repair: %w", err))
+		}
 	}
-	complete(summary)
+	if err := completeRound(summary); err != nil {
+		return nil, err
+	}
 	return newRoots, nil
 }
 
@@ -412,17 +592,49 @@ type batchLineVerdict struct {
 	rationale string
 }
 
+// validateBatchVerdicts requires an exact one-to-one adjudication of the
+// requested batch. Duplicate, unknown, or missing lineage IDs make the entire
+// verdict inconclusive: accepting a partial or ambiguous answer could silently
+// approve a blocking finding.
+func validateBatchVerdicts(batch []*lineageState, bv batchVerdict) (map[string]batchLineVerdict, bool) {
+	requested := make(map[string]struct{}, len(batch))
+	for _, st := range batch {
+		requested[st.lineageID] = struct{}{}
+	}
+	if len(bv.Verdicts) != len(requested) {
+		return nil, false
+	}
+	verdicts := make(map[string]batchLineVerdict, len(bv.Verdicts))
+	for _, v := range bv.Verdicts {
+		if _, ok := requested[v.LineageID]; !ok {
+			return nil, false
+		}
+		if _, duplicate := verdicts[v.LineageID]; duplicate {
+			return nil, false
+		}
+		switch v.Status {
+		case db.RepairVerdictResolved, db.RepairVerdictUnresolved, db.RepairVerdictInconclusive:
+		default:
+			return nil, false
+		}
+		verdicts[v.LineageID] = batchLineVerdict{status: v.Status, rationale: v.Rationale}
+	}
+	return verdicts, true
+}
+
 // newUnrelatedRoot mints a fresh run-wide root lineage for an unrelated finding
 // the verifier surfaced, so it is tracked independently rather than folded into
 // an existing lineage.
-func (rc *repairCoordinator) newUnrelatedRoot(f types.Finding) *lineageState {
-	lineages, err := rc.db.CreateFindingLineages(rc.run.ID, rc.producingAttemptID, []string{""})
-	if err != nil || len(lineages) != 1 {
-		// Fall back to a synthetic id so the finding is still tracked in-memory
-		// and never silently dropped.
-		return &lineageState{lineageID: "unrooted:" + f.Description, finding: f}
+func (rc *repairCoordinator) newUnrelatedRoot(f types.Finding, producingAttemptID string) (*lineageState, error) {
+	lineages, err := rc.db.CreateFindingLineages(rc.run.ID, producingAttemptID, []string{""})
+	if err != nil {
+		return nil, fmt.Errorf("persist verifier-created finding lineage: %w", err)
 	}
-	return &lineageState{lineageID: lineages[0].ID, finding: f}
+	if len(lineages) != 1 {
+		return nil, fmt.Errorf("persist verifier-created finding lineage: created %d roots, want 1", len(lineages))
+	}
+	f.ID = lineages[0].DisplayID
+	return &lineageState{lineageID: lineages[0].ID, finding: f}, nil
 }
 
 func parseBatchVerdict(result *agent.Result) (batchVerdict, bool) {

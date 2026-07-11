@@ -13,7 +13,7 @@ func runClaude(args []string, scenario *Scenario) int {
 	effort := extractClaudeEffort(args)
 	logInvocation("claude", model, effort, prompt, args)
 
-	action := scenario.Match(prompt, model, effort)
+	action := scenario.MatchInDir(prompt, model, effort, ".")
 	if code, handled := maybeInjectFailure("claude", action); handled {
 		return code
 	}

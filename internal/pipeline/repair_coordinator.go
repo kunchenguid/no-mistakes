@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
@@ -54,10 +53,10 @@ const verifierPurpose = types.PurposeNormalAggregateVerification
 
 // succeededAttemptID returns the id of the latest succeeded attempt for a
 // purpose in a round, so the coordinator can link the fixer/verifier it drove.
-func (rc *repairCoordinator) succeededAttemptID(roundID string, purpose types.Purpose) string {
+func (rc *repairCoordinator) succeededAttemptID(roundID string, purpose types.Purpose) (string, error) {
 	attempts, err := rc.db.GetInvocationAttemptsByRound(roundID)
 	if err != nil {
-		return ""
+		return "", err
 	}
 	id := ""
 	for _, attempt := range attempts {
@@ -65,7 +64,7 @@ func (rc *repairCoordinator) succeededAttemptID(roundID string, purpose types.Pu
 			id = attempt.ID
 		}
 	}
-	return id
+	return id, nil
 }
 
 // reviewDiff returns the changed-code diff for the fixer and verifier prompts.
@@ -175,22 +174,53 @@ type commitSummaryJSON struct {
 // cascade, informational auto-fix findings take the cheap non-blocking cascade,
 // no-op findings are never repaired, and ask-user findings wait for consent. It
 // runs only when routing is active; unresolved findings terminate safely.
-func (e *Executor) maybeRepairReviewFinding(ctx context.Context, sctx *StepContext, run *db.Run, sr *db.StepResult, defaultBranch, reviewRoundID, findingsJSON string, reserveRound func(string) (*db.StepRound, error)) {
-	if sctx.Invoker == nil || e.config == nil || e.config.Routing.IsZero() {
-		return
+type repairResult struct {
+	Owned       bool
+	Resolved    bool
+	ResolvedIDs []string
+	NewFindings []types.Finding
+}
+
+func repairResultFromStates(states map[string]*lineageState, seeds []repairSeed) repairResult {
+	seedLineages := make(map[string]struct{}, len(seeds))
+	for _, seed := range seeds {
+		seedLineages[seed.LineageID] = struct{}{}
+	}
+	result := repairResult{Owned: len(states) > 0, Resolved: true}
+	for lineageID, state := range states {
+		if !state.resolved && state.finding.Action != types.ActionNoOp {
+			result.Resolved = false
+		}
+		if state.resolved && state.finding.Action != types.ActionNoOp {
+			result.ResolvedIDs = append(result.ResolvedIDs, state.finding.ID)
+		}
+		_, original := seedLineages[lineageID]
+		if !original || (state.finding.Action == types.ActionAskUser && !state.resolved) {
+			result.NewFindings = append(result.NewFindings, state.finding)
+		}
+	}
+	return result
+}
+
+func (e *Executor) maybeRepairReviewFinding(ctx context.Context, sctx *StepContext, run *db.Run, sr *db.StepResult, defaultBranch, reviewRoundID, findingsJSON string, reserveRound func(string) (*db.StepRound, error)) (repairResult, error) {
+	if sctx.Invoker == nil || e.config == nil || e.config.Routing.IsZero() || strings.TrimSpace(findingsJSON) == "" {
+		return repairResult{}, nil
 	}
 	findings, err := types.ParseFindingsJSON(findingsJSON)
 	if err != nil {
-		return
+		return repairResult{}, fmt.Errorf("parse review findings for repair: %w", err)
 	}
 	blocking := selectFindings(findings.Items, isBlockingAutoFix)
 	informational := selectFindings(findings.Items, isInformationalAutoFix)
 	if len(blocking) == 0 && len(informational) == 0 {
-		return
+		return repairResult{}, nil
 	}
-	reviewAttemptID, byDisplay := e.reviewAttemptLineages(reviewRoundID)
+	reviewAttemptID, byDisplay, err := e.reviewAttemptLineages(reviewRoundID)
+	if err != nil {
+		return repairResult{}, err
+	}
 	if reviewAttemptID == "" {
-		return
+		return repairResult{}, fmt.Errorf("repairable review findings have no producing attempt lineage")
 	}
 	rc := &repairCoordinator{
 		invoker:            sctx.Invoker,
@@ -208,47 +238,66 @@ func (e *Executor) maybeRepairReviewFinding(ctx context.Context, sctx *StepConte
 		logChunk:           sctx.LogChunk,
 		reserveRound:       reserveRound,
 	}
-	// Blocking findings escalate through the full cascade; informational
-	// findings take the cheap non-blocking two-tier cascade. Each batch runs
-	// under its own policy.
-	if seeds := seedsForFindings(blocking, byDisplay); len(seeds) > 0 {
+	result := repairResult{Resolved: true}
+	if len(blocking) > 0 {
+		seeds, err := seedsForFindings(blocking, byDisplay)
+		if err != nil {
+			return repairResult{}, err
+		}
 		rc.policy = blockingRepairPolicy(e.config.Routing)
-		if _, err := rc.escalateBatch(ctx, seeds); err != nil {
-			slog.Warn("blocking review repair could not be conducted", "error", err)
+		states, err := rc.escalateBatch(ctx, seeds)
+		if err != nil {
+			return repairResult{}, err
 		}
+		blockingResult := repairResultFromStates(states, seeds)
+		result.Owned = result.Owned || blockingResult.Owned
+		result.Resolved = result.Resolved && blockingResult.Resolved
+		result.NewFindings = append(result.NewFindings, blockingResult.NewFindings...)
+		result.ResolvedIDs = append(result.ResolvedIDs, blockingResult.ResolvedIDs...)
 	}
-	if seeds := seedsForFindings(informational, byDisplay); len(seeds) > 0 {
+	if len(informational) > 0 {
+		seeds, err := seedsForFindings(informational, byDisplay)
+		if err != nil {
+			return repairResult{}, err
+		}
 		rc.policy = informationalRepairPolicy(e.config.Routing)
-		if _, err := rc.escalateBatch(ctx, seeds); err != nil {
-			slog.Warn("informational review repair could not be conducted", "error", err)
+		states, err := rc.escalateBatch(ctx, seeds)
+		if err != nil {
+			return repairResult{}, err
 		}
+		infoResult := repairResultFromStates(states, seeds)
+		result.Owned = result.Owned || infoResult.Owned
+		result.NewFindings = append(result.NewFindings, infoResult.NewFindings...)
+		result.ResolvedIDs = append(result.ResolvedIDs, infoResult.ResolvedIDs...)
 	}
+	return result, nil
 }
 
-// maybeRepairStepFindings routes a non-review step's blocking findings through
-// the common repair coordinator: a fresh fixer at the policy's first tier, the
-// step's deterministic checks, then a fresh strong verifier, escalating
-// unresolved lineages through the routed cascade and failing closed at the
-// budget. It returns true when it took ownership of the repair, so the executor
-// skips the legacy per-step auto-fix loop. A deterministic step failure carries
-// no producing agent attempt, so its lineages are synthetic run-local roots;
-// the coordinator still persists finding-repair rows against them, so
-// unresolved blocking work surfaces on the run.
-func (e *Executor) maybeRepairStepFindings(ctx context.Context, sctx *StepContext, run *db.Run, sr *db.StepResult, stepName types.StepName, findingsJSON string, checks []repairCheck, reserveRound func(string) (*db.StepRound, error)) bool {
-	if sctx.Invoker == nil || e.config == nil || e.config.Routing.IsZero() {
-		return false
+// maybeRepairStepFindings routes a non-review step's auto-fix findings through
+// the common repair coordinator. Blocking findings use the step's strong
+// escalation policy and gate completion until resolved. Informational findings
+// use the cheap informational policy, remain visible when unresolved, and never
+// block the gate. Both paths run applicable deterministic checks before a fresh
+// verifier. A deterministic step failure carries no producing agent attempt, so
+// its lineages are synthetic run-local roots; the coordinator still persists
+// finding-repair rows against them so unresolved blocking work surfaces on the
+// run.
+func (e *Executor) maybeRepairStepFindings(ctx context.Context, sctx *StepContext, run *db.Run, sr *db.StepResult, stepName types.StepName, findingsJSON string, checks []repairCheck, reserveRound func(string) (*db.StepRound, error)) (repairResult, error) {
+	if sctx.Invoker == nil || e.config == nil || e.config.Routing.IsZero() || strings.TrimSpace(findingsJSON) == "" {
+		return repairResult{}, nil
 	}
-	policy, ok := stepRepairPolicyFor(e.config.Routing, stepName)
+	blockingPolicy, ok := stepRepairPolicyFor(e.config.Routing, stepName)
 	if !ok {
-		return false
+		return repairResult{}, nil
 	}
 	findings, err := types.ParseFindingsJSON(findingsJSON)
 	if err != nil {
-		return false
+		return repairResult{}, fmt.Errorf("parse %s findings for repair: %w", stepName, err)
 	}
-	blocking := selectFindings(findings.Items, func(f types.Finding) bool { return isBlockingSeverity(f.Severity) })
-	if len(blocking) == 0 {
-		return false
+	blocking := selectFindings(findings.Items, isBlockingAutoFix)
+	informational := selectFindings(findings.Items, isInformationalAutoFix)
+	if len(blocking) == 0 && len(informational) == 0 {
+		return repairResult{}, nil
 	}
 	rc := &repairCoordinator{
 		invoker:       sctx.Invoker,
@@ -261,27 +310,65 @@ func (e *Executor) maybeRepairStepFindings(ctx context.Context, sctx *StepContex
 		defaultBranch: sctx.Repo.DefaultBranch,
 		intent:        sctx.UserIntent,
 		baseSHA:       run.BaseSHA,
-		policy:        policy,
 		checks:        checks,
 		log:           sctx.Log,
 		logChunk:      sctx.LogChunk,
 		reserveRound:  reserveRound,
 	}
-	if _, err := rc.escalateBatch(ctx, syntheticSeeds(run.ID, stepName, blocking)); err != nil {
-		slog.Warn("step repair could not be conducted", "step", stepName, "error", err)
+	result := repairResult{Resolved: true}
+	if len(blocking) > 0 {
+		rc.policy = blockingPolicy
+		seeds := syntheticSeeds(run.ID, stepName, "blocking", blocking)
+		states, err := rc.escalateBatch(ctx, seeds)
+		if err != nil {
+			return repairResult{}, err
+		}
+		blockingResult := repairResultFromStates(states, seeds)
+		result.Owned = blockingResult.Owned
+		result.Resolved = blockingResult.Resolved
+		result.ResolvedIDs = append(result.ResolvedIDs, blockingResult.ResolvedIDs...)
+		result.NewFindings = append(result.NewFindings, blockingResult.NewFindings...)
 	}
-	return true
+	if len(informational) > 0 {
+		rc.policy = informationalRepairPolicy(e.config.Routing)
+		seeds := syntheticSeeds(run.ID, stepName, "informational", informational)
+		states, err := rc.escalateBatch(ctx, seeds)
+		if err != nil {
+			return repairResult{}, err
+		}
+		infoResult := repairResultFromStates(states, seeds)
+		result.Owned = result.Owned || infoResult.Owned
+		result.ResolvedIDs = append(result.ResolvedIDs, infoResult.ResolvedIDs...)
+		result.NewFindings = append(result.NewFindings, infoResult.NewFindings...)
+	}
+	return result, nil
 }
 
 // syntheticSeeds mints an in-memory root lineage per deterministic step finding.
 // A configured-command failure has no producing agent attempt, so its lineage
 // id is run-local rather than a durable finding lineage tied to an attempt.
-func syntheticSeeds(runID string, stepName types.StepName, items []types.Finding) []repairSeed {
+func syntheticSeeds(runID string, stepName types.StepName, class string, items []types.Finding) []repairSeed {
 	seeds := make([]repairSeed, 0, len(items))
 	for i, f := range items {
-		seeds = append(seeds, repairSeed{LineageID: fmt.Sprintf("det:%s:%s:%d", stepName, runID, i), Finding: f})
+		seeds = append(seeds, repairSeed{LineageID: fmt.Sprintf("det:%s:%s:%s:%d", stepName, runID, class, i), Finding: f})
 	}
 	return seeds
+}
+
+func hasBlockingFindingsJSON(raw string) bool {
+	if strings.TrimSpace(raw) == "" {
+		return false
+	}
+	findings, err := types.ParseFindingsJSON(raw)
+	if err != nil {
+		return true
+	}
+	for _, finding := range findings.Items {
+		if isBlockingSeverity(finding.Severity) {
+			return true
+		}
+	}
+	return false
 }
 
 func isBlockingAutoFix(f types.Finding) bool {
@@ -303,43 +390,51 @@ func selectFindings(items []types.Finding, pred func(types.Finding) bool) []type
 	return out
 }
 
-// seedsForFindings pairs each finding with its root lineage id, dropping any
-// finding without a recorded lineage.
-func seedsForFindings(items []types.Finding, byDisplay map[string]string) []repairSeed {
-	var seeds []repairSeed
+// seedsForFindings pairs every finding with its mandatory root lineage.
+func seedsForFindings(items []types.Finding, byDisplay map[string]string) ([]repairSeed, error) {
+	seeds := make([]repairSeed, 0, len(items))
 	for _, f := range items {
-		if lineageID := byDisplay[f.ID]; lineageID != "" {
-			seeds = append(seeds, repairSeed{LineageID: lineageID, Finding: f})
+		lineageID := byDisplay[f.ID]
+		if lineageID == "" {
+			return nil, fmt.Errorf("finding %q has no durable lineage", f.ID)
 		}
+		seeds = append(seeds, repairSeed{LineageID: lineageID, Finding: f})
 	}
-	return seeds
+	return seeds, nil
 }
 
 // reviewAttemptLineages returns the succeeded routed review attempt in a round
 // and a display-id → root-lineage-id map for its findings.
-func (e *Executor) reviewAttemptLineages(reviewRoundID string) (string, map[string]string) {
+func (e *Executor) reviewAttemptLineages(reviewRoundID string) (string, map[string]string, error) {
 	attempts, err := e.db.GetInvocationAttemptsByRound(reviewRoundID)
 	if err != nil {
-		return "", nil
+		return "", nil, fmt.Errorf("load review attempts for repair: %w", err)
 	}
-	reviewAttemptID := ""
-	for _, a := range attempts {
-		if a.Start.Purpose == types.PurposeInitialReview && a.Terminal != nil && a.Terminal.Outcome == types.InvocationOutcomeSucceeded {
-			reviewAttemptID = a.ID
+	var reviewAttempt *db.InvocationAttempt
+	for _, attempt := range attempts {
+		if attempt.Start.Purpose == types.PurposeInitialReview && attempt.Terminal != nil && attempt.Terminal.Outcome == types.InvocationOutcomeSucceeded {
+			reviewAttempt = attempt
 		}
 	}
-	if reviewAttemptID == "" {
-		return "", nil
+	if reviewAttempt == nil {
+		return "", nil, nil
 	}
-	lineages, err := e.db.GetFindingLineagesByAttempt(reviewAttemptID)
+	runID := reviewAttempt.Start.Scope.RunID
+	if runID == "" {
+		return "", nil, fmt.Errorf("succeeded review attempt has no run scope")
+	}
+	lineages, err := e.db.GetFindingLineagesByRun(runID)
 	if err != nil {
-		return "", nil
+		return "", nil, fmt.Errorf("load run finding lineages: %w", err)
 	}
 	byDisplay := make(map[string]string, len(lineages))
-	for _, l := range lineages {
-		byDisplay[l.DisplayID] = l.ID
+	for _, lineage := range lineages {
+		if _, duplicate := byDisplay[lineage.DisplayID]; duplicate {
+			return "", nil, fmt.Errorf("review finding display id %q has duplicate lineages", lineage.DisplayID)
+		}
+		byDisplay[lineage.DisplayID] = lineage.ID
 	}
-	return reviewAttemptID, byDisplay
+	return reviewAttempt.ID, byDisplay, nil
 }
 
 // routingActive reports whether routed repair is available for this run.
@@ -351,22 +446,25 @@ func (e *Executor) routingActive() bool {
 // findings through the intent-sensitive cascade (starting at fix_balanced). It
 // is the only path that may repair an ask-user finding; no fixer runs for such
 // a finding before this consent. Returns the terminal lineage states.
-func (e *Executor) repairConsentedFindings(ctx context.Context, sctx *StepContext, run *db.Run, sr *db.StepResult, defaultBranch, reviewRoundID, findingsJSON string, findingIDs []string, reserveRound func(string) (*db.StepRound, error)) map[string]*lineageState {
+func (e *Executor) repairConsentedFindings(ctx context.Context, sctx *StepContext, run *db.Run, sr *db.StepResult, defaultBranch, reviewRoundID, findingsJSON string, findingIDs []string, reserveRound func(string) (*db.StepRound, error)) (repairResult, error) {
 	findings, err := types.ParseFindingsJSON(findingsJSON)
 	if err != nil {
-		return nil
+		return repairResult{}, fmt.Errorf("parse consented review findings: %w", err)
 	}
 	consented := findByIDs(findings.Items, findingIDs)
 	if len(consented) == 0 {
-		return nil
+		return repairResult{}, nil
 	}
-	reviewAttemptID, byDisplay := e.reviewAttemptLineages(reviewRoundID)
+	reviewAttemptID, byDisplay, err := e.reviewAttemptLineages(reviewRoundID)
+	if err != nil {
+		return repairResult{}, err
+	}
 	if reviewAttemptID == "" {
-		return nil
+		return repairResult{}, fmt.Errorf("consented review findings have no producing attempt lineage")
 	}
-	seeds := seedsForFindings(consented, byDisplay)
-	if len(seeds) == 0 {
-		return nil
+	seeds, err := seedsForFindings(consented, byDisplay)
+	if err != nil {
+		return repairResult{}, err
 	}
 	rc := &repairCoordinator{
 		invoker:            sctx.Invoker,
@@ -387,9 +485,9 @@ func (e *Executor) repairConsentedFindings(ctx context.Context, sctx *StepContex
 	}
 	states, err := rc.escalateBatch(ctx, seeds)
 	if err != nil {
-		slog.Warn("consented review repair could not be conducted", "error", err)
+		return repairResult{}, err
 	}
-	return states
+	return repairResultFromStates(states, seeds), nil
 }
 
 // findByIDs returns the actionable findings whose display id was consented; a
@@ -406,4 +504,62 @@ func findByIDs(items []types.Finding, ids []string) []types.Finding {
 		}
 	}
 	return out
+}
+
+func mergeRepairFindingsJSON(raw string, additional []types.Finding) (string, error) {
+	if len(additional) == 0 {
+		return raw, nil
+	}
+	findings, err := types.ParseFindingsJSON(raw)
+	if err != nil {
+		return "", fmt.Errorf("parse findings before merging verifier output: %w", err)
+	}
+	byID := make(map[string]int, len(findings.Items))
+	for i, finding := range findings.Items {
+		byID[finding.ID] = i
+	}
+	for _, finding := range additional {
+		if i, exists := byID[finding.ID]; exists && finding.ID != "" {
+			findings.Items[i] = finding
+			continue
+		}
+		byID[finding.ID] = len(findings.Items)
+		findings.Items = append(findings.Items, finding)
+	}
+	findings.Summary = fmt.Sprintf("%d finding(s), including verifier-created findings", len(findings.Items))
+	merged, err := types.MarshalFindingsJSON(findings)
+	if err != nil {
+		return "", fmt.Errorf("marshal findings with verifier output: %w", err)
+	}
+	return merged, nil
+}
+
+func removeFindingsByID(raw string, ids []string) (string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return "", nil
+	}
+	findings, err := types.ParseFindingsJSON(raw)
+	if err != nil {
+		return "", fmt.Errorf("parse findings before removing resolved selection: %w", err)
+	}
+	remove := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		remove[id] = struct{}{}
+	}
+	remaining := findings.Items[:0]
+	for _, finding := range findings.Items {
+		if _, selected := remove[finding.ID]; !selected {
+			remaining = append(remaining, finding)
+		}
+	}
+	if len(remaining) == 0 {
+		return "", nil
+	}
+	findings.Items = remaining
+	findings.Summary = fmt.Sprintf("%d finding(s) remain after the selected repair", len(remaining))
+	raw, err = types.MarshalFindingsJSON(findings)
+	if err != nil {
+		return "", fmt.Errorf("marshal unselected findings: %w", err)
+	}
+	return raw, nil
 }

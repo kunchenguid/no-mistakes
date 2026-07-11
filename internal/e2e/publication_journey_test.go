@@ -11,16 +11,17 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 // The publication journeys prove ticket-19 criterion 245 end to end against the
 // real no-mistakes binary + fake agent: the pipeline seals an immutable reviewed
 // candidate, Verify skips an unchanged candidate but escalates a changed one to
-// authority_strong (xhigh), Push refuses to discard an out-of-band upstream
-// commit, and a CI republish is recorded as a ci_republish seal without
-// re-entering the Verify step. Every fact is asserted from the durable daemon DB
-// (seals, invocation attempts, step results), not just the prompt log.
+// authority_strong (xhigh), and Push refuses to discard an out-of-band upstream
+// commit. Every fact is asserted from the durable daemon DB (seals, invocation
+// attempts, step results), not just the prompt log. CI republish is exercised at
+// its real remote-and-seal seam in the focused pipeline step tests.
 
 // gitOOB runs a git subcommand in an out-of-band clone (or scratch worktree) and
 // returns trimmed stdout, failing the test on error. It uses the harness git env
@@ -65,6 +66,200 @@ func verifyStepAttempts(t *testing.T, h *Harness, runID string, attempts []*db.I
 	return out
 }
 
+func assertPublicationCompleted(t *testing.T, h *Harness, run *ipc.RunInfo, branch string, verifyCount int, purpose types.Purpose, profile string, effort types.Effort) {
+	t.Helper()
+	if run.Status != types.RunCompleted {
+		t.Fatalf("run status = %s, want completed (error=%v)", run.Status, deref(run.Error))
+	}
+	if run.AwaitingAgent {
+		t.Fatal("completed publication run still reports a stale approval wait")
+	}
+	assertPipelineStepsInOrder(t, run.Steps)
+	for _, want := range []struct {
+		name   types.StepName
+		status types.StepStatus
+	}{
+		{types.StepRebase, types.StepStatusCompleted},
+		{types.StepReview, types.StepStatusCompleted},
+		{types.StepTest, types.StepStatusCompleted},
+		{types.StepDocument, types.StepStatusCompleted},
+		{types.StepLint, types.StepStatusCompleted},
+		{types.StepVerify, types.StepStatusCompleted},
+		{types.StepPush, types.StepStatusCompleted},
+		{types.StepPR, types.StepStatusSkipped},
+		{types.StepCI, types.StepStatusSkipped},
+	} {
+		step, ok := findStep(run.Steps, want.name)
+		if !ok {
+			t.Fatalf("publication run has no %s step", want.name)
+		}
+		if step.Status != want.status {
+			t.Fatalf("%s step status = %s, want %s", want.name, step.Status, want.status)
+		}
+	}
+	if verifyCount > 0 {
+		review, _ := findStep(run.Steps, types.StepReview)
+		if review.FindingsJSON != nil {
+			t.Fatalf("resolved Review still exposes stale findings: %s", *review.FindingsJSON)
+		}
+	}
+	assertPublicationVerification(t, h, run, verifyCount, purpose, profile, effort)
+	assertPublicationSeals(t, h, run.ID, run.HeadSHA)
+	if upstream := h.UpstreamBranchSHA(branch); upstream != run.HeadSHA {
+		t.Fatalf("upstream branch SHA = %s, want exact sealed run head %s", upstream, run.HeadSHA)
+	}
+	assertNoPRCreated(t, run)
+	assertNoCIVerifyReentry(t, h, run)
+}
+
+func assertPublicationVerification(t *testing.T, h *Harness, run *ipc.RunInfo, wantCount int, purpose types.Purpose, profile string, effort types.Effort) {
+	t.Helper()
+	attempts := verifyStepAttempts(t, h, run.ID, h.InvocationAttempts(t, run.ID))
+	if len(attempts) != wantCount {
+		t.Fatalf("Verify launched %d verifier(s) %v, want exactly %d", len(attempts), candidateModels(attempts), wantCount)
+	}
+	if wantCount == 0 {
+		return
+	}
+	attempt := attempts[0]
+	if attempt.Start.Purpose != purpose {
+		t.Fatalf("Verify purpose = %q, want %q", attempt.Start.Purpose, purpose)
+	}
+	candidate := attempt.Start.Candidate
+	if candidate.Profile != profile || candidate.Tier != 0 || candidate.Effort != effort {
+		t.Fatalf("Verify candidate = {profile:%q tier:%d effort:%q}, want {profile:%q tier:0 effort:%q}",
+			candidate.Profile, candidate.Tier, candidate.Effort, profile, effort)
+	}
+	if attempt.Terminal == nil || attempt.Terminal.Outcome != types.InvocationOutcomeSucceeded {
+		t.Fatalf("Verify verifier did not succeed: %+v", attempt.Terminal)
+	}
+}
+
+func assertPublicationSeals(t *testing.T, h *Harness, runID, wantSHA string) {
+	t.Helper()
+	d := h.OpenDB(t)
+	defer d.Close()
+	reviewed, err := d.LatestSealByReason(runID, "reviewed")
+	if err != nil {
+		t.Fatalf("load reviewed seal: %v", err)
+	}
+	preVerify, err := d.LatestSealByReason(runID, "pre_verify")
+	if err != nil {
+		t.Fatalf("load pre-Verify seal: %v", err)
+	}
+	latest, err := d.LatestSeal(runID)
+	if err != nil {
+		t.Fatalf("load latest seal: %v", err)
+	}
+	if reviewed == nil || reviewed.SHA != wantSHA {
+		t.Fatalf("reviewed seal = %+v, want exact SHA %s", reviewed, wantSHA)
+	}
+	if preVerify == nil || preVerify.SHA != wantSHA {
+		t.Fatalf("pre-Verify seal = %+v, want exact SHA %s", preVerify, wantSHA)
+	}
+	if latest == nil || latest.SHA != wantSHA {
+		t.Fatalf("latest seal = %+v, want exact SHA %s", latest, wantSHA)
+	}
+}
+
+func assertNoCIVerifyReentry(t *testing.T, h *Harness, run *ipc.RunInfo) {
+	t.Helper()
+	ci, ok := findStep(run.Steps, types.StepCI)
+	if !ok {
+		t.Fatal("publication run has no CI step")
+	}
+	for _, attempt := range h.InvocationAttempts(t, run.ID) {
+		if attempt.Start.Scope.StepResultID != ci.ID {
+			continue
+		}
+		switch attempt.Start.Purpose {
+		case types.PurposeNormalAggregateVerification, types.PurposeEscalatedAggregateVerification:
+			t.Fatalf("CI re-entered Verify with purpose %q in attempt %s", attempt.Start.Purpose, attempt.ID)
+		}
+	}
+}
+
+func assertResolvedPublicationRepair(t *testing.T, h *Harness, run *ipc.RunInfo, description string, fixerPurpose, verifierPurpose types.Purpose) {
+	t.Helper()
+	repairs := h.FindingRepairs(t, run.ID)
+	if len(repairs) != 1 {
+		t.Fatalf("finding repairs = %d, want exactly one durable resolved repair", len(repairs))
+	}
+	repair := repairs[0]
+	review, ok := findStep(run.Steps, types.StepReview)
+	if !ok {
+		t.Fatal("publication run has no Review step")
+	}
+	if repair.Description != description || repair.Tier != 0 || repair.Status != db.RepairStatusResolved || repair.Verdict != db.RepairVerdictResolved {
+		t.Fatalf("repair = %+v, want description=%q tier=0 status/verdict=resolved", repair, description)
+	}
+	if repair.LineageID == "" || repair.StepRoundID == "" || repair.StepResultID != review.ID {
+		t.Fatalf("repair durable scope = lineage:%q round:%q step:%q, want populated lineage/round linked to Review %q",
+			repair.LineageID, repair.StepRoundID, repair.StepResultID, review.ID)
+	}
+	if repair.FixerAttemptID == "" || repair.VerifierAttemptID == "" || repair.FixerAttemptID == repair.VerifierAttemptID {
+		t.Fatalf("repair attempt links = fixer:%q verifier:%q, want distinct durable links", repair.FixerAttemptID, repair.VerifierAttemptID)
+	}
+	attempts := h.InvocationAttempts(t, run.ID)
+	fixer := publicationAttemptByID(t, attempts, repair.FixerAttemptID)
+	verifier := publicationAttemptByID(t, attempts, repair.VerifierAttemptID)
+	if fixer.Start.Purpose != fixerPurpose || verifier.Start.Purpose != verifierPurpose {
+		t.Fatalf("repair linked purposes = fixer:%q verifier:%q, want %q/%q",
+			fixer.Start.Purpose, verifier.Start.Purpose, fixerPurpose, verifierPurpose)
+	}
+	for role, attempt := range map[string]*db.InvocationAttempt{"fixer": fixer, "verifier": verifier} {
+		if attempt.Terminal == nil || attempt.Terminal.Outcome != types.InvocationOutcomeSucceeded {
+			t.Fatalf("linked %s attempt did not succeed: %+v", role, attempt.Terminal)
+		}
+	}
+}
+
+func publicationAttemptByID(t *testing.T, attempts []*db.InvocationAttempt, id string) *db.InvocationAttempt {
+	t.Helper()
+	for _, attempt := range attempts {
+		if attempt.ID == id {
+			return attempt
+		}
+	}
+	t.Fatalf("durably linked invocation attempt %q not found", id)
+	return nil
+}
+
+func assertPublicationInitialRisk(t *testing.T, h *Harness, run *ipc.RunInfo, want string) {
+	t.Helper()
+	review, ok := findStep(run.Steps, types.StepReview)
+	if !ok {
+		t.Fatal("publication run has no Review step")
+	}
+	d := h.OpenDB(t)
+	defer d.Close()
+	rounds, err := d.GetRoundsByStep(review.ID)
+	if err != nil {
+		t.Fatalf("load Review rounds: %v", err)
+	}
+	for _, round := range rounds {
+		if round.Round != 1 || round.FindingsJSON == nil {
+			continue
+		}
+		findings, err := types.ParseFindingsJSON(*round.FindingsJSON)
+		if err != nil {
+			t.Fatalf("parse durable initial Review findings: %v", err)
+		}
+		if findings.RiskLevel != want {
+			t.Fatalf("durable initial Review risk = %q, want %q", findings.RiskLevel, want)
+		}
+		return
+	}
+	t.Fatal("durable initial Review round with findings was not recorded")
+}
+
+func assertNoPublicationRepairs(t *testing.T, h *Harness, runID string) {
+	t.Helper()
+	if repairs := h.FindingRepairs(t, runID); len(repairs) != 0 {
+		t.Fatalf("clean publication recorded %d repair row(s), want none", len(repairs))
+	}
+}
+
 // TestPublicationSealsReviewedCandidateAtPushedHead proves criterion 245's
 // immutable candidate sealing: a clean routed run seals the strong-reviewed
 // candidate under the 'reviewed' reason, and that exact SHA is what Push
@@ -91,37 +286,9 @@ func TestPublicationSealsReviewedCandidateAtPushedHead(t *testing.T) {
 	h.CommitChange("publication-clean-seal", "pub.txt", "hello world\n", "add publication target")
 	h.PushToGate("publication-clean-seal")
 
-	run := h.WaitForRun("publication-clean-seal", 90*time.Second)
-	if run.Status != types.RunCompleted {
-		t.Fatalf("run status = %s, want completed (error=%v)", run.Status, deref(run.Error))
-	}
-
-	pushedHead := h.UpstreamBranchSHA("publication-clean-seal")
-	if run.HeadSHA != pushedHead {
-		t.Fatalf("run head %s != upstream head %s; a clean run must publish the sealed candidate", run.HeadSHA, pushedHead)
-	}
-
-	d := h.OpenDB(t)
-	defer d.Close()
-	reviewed, err := d.LatestSealByReason(run.ID, "reviewed")
-	if err != nil {
-		t.Fatalf("load reviewed seal: %v", err)
-	}
-	if reviewed == nil {
-		t.Fatalf("no 'reviewed' seal recorded; a clean routed run must seal the reviewed candidate")
-	}
-	if reviewed.SHA != pushedHead {
-		t.Fatalf("reviewed seal SHA %s != pushed head %s; the sealed candidate must be the published SHA", reviewed.SHA, pushedHead)
-	}
-	// The pre-Verify seal is taken at the same clean HEAD, so the immutable
-	// candidate Push validates (LatestSeal) matches the reviewed seal exactly.
-	sealed, err := d.LatestSeal(run.ID)
-	if err != nil {
-		t.Fatalf("load sealed candidate: %v", err)
-	}
-	if sealed == nil || sealed.SHA != pushedHead {
-		t.Fatalf("sealed candidate = %+v, want SHA %s", sealed, pushedHead)
-	}
+	run := h.WaitForRun("publication-clean-seal", 30*time.Second)
+	assertPublicationCompleted(t, h, run, "publication-clean-seal", 0, "", "", "")
+	assertNoPublicationRepairs(t, h, run.ID)
 }
 
 // TestPublicationSkipsUnchangedVerify proves criterion 245's unchanged-Verify
@@ -151,37 +318,9 @@ func TestPublicationSkipsUnchangedVerify(t *testing.T) {
 	h.CommitChange("publication-verify-skip", "pub.txt", "hello world\n", "add publication target")
 	h.PushToGate("publication-verify-skip")
 
-	run := h.WaitForRun("publication-verify-skip", 90*time.Second)
-	if run.Status != types.RunCompleted {
-		t.Fatalf("run status = %s, want completed (error=%v)", run.Status, deref(run.Error))
-	}
-
-	d := h.OpenDB(t)
-	defer d.Close()
-	reviewed, err := d.LatestSealByReason(run.ID, "reviewed")
-	if err != nil {
-		t.Fatalf("load reviewed seal: %v", err)
-	}
-	sealed, err := d.LatestSeal(run.ID)
-	if err != nil {
-		t.Fatalf("load sealed candidate: %v", err)
-	}
-	if reviewed == nil || sealed == nil {
-		t.Fatalf("seals missing: reviewed=%+v sealed=%+v", reviewed, sealed)
-	}
-	// The skip condition: the sealed candidate is exactly the latest
-	// strong-reviewed candidate. Verify records no new 'reviewed' seal on skip,
-	// so the reviewed seal is still the Review-step seal at the unchanged HEAD.
-	if sealed.SHA != reviewed.SHA {
-		t.Fatalf("sealed candidate %s != reviewed candidate %s; the unchanged-skip precondition did not hold", sealed.SHA, reviewed.SHA)
-	}
-
-	// The skip actually happened: Verify launched no aggregate verifier. Any
-	// attempt scoped to the Verify step would mean it ran a fresh verification.
-	va := verifyStepAttempts(t, h, run.ID, h.InvocationAttempts(t, run.ID))
-	if len(va) != 0 {
-		t.Fatalf("verify launched %d agent invocation(s) %v, want 0 (unchanged candidate must skip)", len(va), candidateModels(va))
-	}
+	run := h.WaitForRun("publication-verify-skip", 30*time.Second)
+	assertPublicationCompleted(t, h, run, "publication-verify-skip", 0, "", "", "")
+	assertNoPublicationRepairs(t, h, run.ID)
 }
 
 // TestPublicationVerifyEscalatesToAuthorityStrongXHigh proves criterion 245's
@@ -228,27 +367,16 @@ func TestPublicationVerifyEscalatesToAuthorityStrongXHigh(t *testing.T) {
 `+cleanCatchAll)
 	h := NewHarness(t, SetupOpts{Agent: "codex", Scenario: scenario})
 	initGate(t, h)
-	h.CommitChange("publication-verify-xhigh", "pub.txt", "buggy line\n", "add publication target")
+	originalHead := h.CommitChange("publication-verify-xhigh", "pub.txt", "buggy line\n", "add publication target")
 	h.PushToGate("publication-verify-xhigh")
 
-	run := waitForStepStatus(t, h, "publication-verify-xhigh", types.StepReview, types.StepStatusAwaitingApproval, 120*time.Second)
-	h.Respond(run.ID, types.StepReview, types.ActionApprove)
-	completed := h.WaitForRun("publication-verify-xhigh", 120*time.Second)
-	if completed.Status != types.RunCompleted {
-		t.Fatalf("run status = %s, want completed (error=%v)", completed.Status, deref(completed.Error))
+	run := h.WaitForRun("publication-verify-xhigh", 30*time.Second)
+	if run.HeadSHA == originalHead {
+		t.Fatalf("resolved repair did not change candidate head %s", originalHead)
 	}
-
-	va := verifyStepAttempts(t, h, run.ID, h.InvocationAttempts(t, run.ID))
-	if len(va) != 1 {
-		t.Fatalf("verify step launched %d verifier(s) %v, want exactly 1 (changed candidate must be re-verified)", len(va), candidateModels(va))
-	}
-	if va[0].Start.Purpose != types.PurposeEscalatedAggregateVerification {
-		t.Fatalf("verify purpose = %q, want %q (high-risk review escalates Verify)", va[0].Start.Purpose, types.PurposeEscalatedAggregateVerification)
-	}
-	if va[0].Terminal == nil || va[0].Terminal.Outcome != types.InvocationOutcomeSucceeded {
-		t.Fatalf("verify verifier did not succeed: %+v", va[0].Terminal)
-	}
-	assertCandidate(t, va[0], "authority_strong", 0, "sol", types.EffortXHigh)
+	assertPublicationInitialRisk(t, h, run, "high")
+	assertResolvedPublicationRepair(t, h, run, "high-risk blocking bug", types.PurposeStructuredFindingRepair, types.PurposeNormalAggregateVerification)
+	assertPublicationCompleted(t, h, run, "publication-verify-xhigh", 1, types.PurposeEscalatedAggregateVerification, "authority_strong", types.EffortXHigh)
 }
 
 // TestPublicationVerifyNormalUsesReviewStrong proves criterion 245's normal
@@ -296,49 +424,43 @@ func TestPublicationVerifyNormalUsesReviewStrong(t *testing.T) {
 `+cleanCatchAll)
 	h := NewHarness(t, SetupOpts{Agent: "codex", Scenario: scenario})
 	initGate(t, h)
-	h.CommitChange("publication-verify-normal", "pub.txt", "buggy line\n", "add publication target")
+	originalHead := h.CommitChange("publication-verify-normal", "pub.txt", "buggy line\n", "add publication target")
 	h.PushToGate("publication-verify-normal")
 
-	run := waitForStepStatus(t, h, "publication-verify-normal", types.StepReview, types.StepStatusAwaitingApproval, 120*time.Second)
-	h.Respond(run.ID, types.StepReview, types.ActionApprove)
-	completed := h.WaitForRun("publication-verify-normal", 120*time.Second)
-	if completed.Status != types.RunCompleted {
-		t.Fatalf("run status = %s, want completed (error=%v)", completed.Status, deref(completed.Error))
+	run := h.WaitForRun("publication-verify-normal", 30*time.Second)
+	if run.HeadSHA == originalHead {
+		t.Fatalf("resolved repair did not change candidate head %s", originalHead)
 	}
-
-	va := verifyStepAttempts(t, h, run.ID, h.InvocationAttempts(t, run.ID))
-	if len(va) != 1 {
-		t.Fatalf("verify step launched %d verifier(s) %v, want exactly 1", len(va), candidateModels(va))
-	}
-	if va[0].Start.Purpose != types.PurposeNormalAggregateVerification {
-		t.Fatalf("verify purpose = %q, want %q (ordinary-risk review uses normal verification)", va[0].Start.Purpose, types.PurposeNormalAggregateVerification)
-	}
-	if va[0].Terminal == nil || va[0].Terminal.Outcome != types.InvocationOutcomeSucceeded {
-		t.Fatalf("verify verifier did not succeed: %+v", va[0].Terminal)
-	}
-	assertCandidate(t, va[0], "review_strong", 0, "sol", types.EffortHigh)
+	assertPublicationInitialRisk(t, h, run, "medium")
+	assertResolvedPublicationRepair(t, h, run, "blocking bug at normal risk", types.PurposeStructuredFindingRepair, types.PurposeNormalAggregateVerification)
+	assertPublicationCompleted(t, h, run, "publication-verify-normal", 1, types.PurposeNormalAggregateVerification, "review_strong", types.EffortHigh)
 }
 
 // TestPublicationRefusesPushOnUpstreamDrift proves criterion 245's Push drift
-// refusal: while the run is parked at the Review gate (after its rebase captured
-// the remote state), an out-of-band commit lands on the upstream branch. When
-// the run is approved and reaches Push, a force-push would discard that commit,
-// so Push refuses - the run fails at Push and the out-of-band commit is
-// preserved upstream rather than clobbered.
+// refusal: after the automatic repair resolves, a separate ask-user finding
+// deliberately parks Review so an out-of-band commit can land after Rebase.
+// Approval continues through verification to Push, which must refuse to discard
+// that unseen commit and leave it intact upstream.
 func TestPublicationRefusesPushOnUpstreamDrift(t *testing.T) {
 	scenario := writeScenario(t, `actions:
   - match: "Review the code changes and return structured findings with a risk assessment.\n\nContext:\n- branch: publication-drift"
-    text: "found a blocking bug"
+    text: "found a repairable bug and a separate user decision"
     structured:
       findings:
         - id: "drift-1"
           severity: error
           file: "pub.txt"
           line: 1
-          description: "blocking bug that parks the run"
+          description: "blocking bug repaired before the deliberate gate"
           action: auto-fix
+        - id: "drift-decision"
+          severity: warning
+          file: "pub.txt"
+          line: 1
+          description: "human decision keeps the run parked before publication"
+          action: ask-user
       risk_level: high
-      risk_rationale: "a blocking bug must be fixed"
+      risk_rationale: "the repair and remaining user decision require high assurance"
   - match: "Fix the following"
     text: "fixed the bug"
     edits:
@@ -363,10 +485,10 @@ func TestPublicationRefusesPushOnUpstreamDrift(t *testing.T) {
 `+cleanCatchAll)
 	h := NewHarness(t, SetupOpts{Agent: "codex", Scenario: scenario})
 	initGate(t, h)
-	h.CommitChange("publication-drift", "pub.txt", "buggy line\n", "add publication target")
+	originalHead := h.CommitChange("publication-drift", "pub.txt", "buggy line\n", "add publication target")
 	h.PushToGate("publication-drift")
 
-	run := waitForStepStatus(t, h, "publication-drift", types.StepReview, types.StepStatusAwaitingApproval, 120*time.Second)
+	run := waitForStepStatus(t, h, "publication-drift", types.StepReview, types.StepStatusAwaitingApproval, 15*time.Second)
 
 	// Out-of-band: a separate clone lands a fresh commit on the upstream branch
 	// after the pipeline's last-seen remote state (the rebase step already ran).
@@ -386,9 +508,29 @@ func TestPublicationRefusesPushOnUpstreamDrift(t *testing.T) {
 
 	// Approve: the pipeline proceeds to Push, which must refuse the discard.
 	h.Respond(run.ID, types.StepReview, types.ActionApprove)
-	failed := h.WaitForRun("publication-drift", 120*time.Second)
+	failed := h.WaitForRun("publication-drift", 30*time.Second)
 	if failed.Status != types.RunFailed {
 		t.Fatalf("run status = %s, want failed (Push must refuse to discard the out-of-band commit)", failed.Status)
+	}
+	if failed.HeadSHA == originalHead {
+		t.Fatalf("resolved repair did not change candidate head %s", originalHead)
+	}
+	assertPublicationInitialRisk(t, h, failed, "high")
+	assertResolvedPublicationRepair(t, h, failed, "blocking bug repaired before the deliberate gate", types.PurposeStructuredFindingRepair, types.PurposeNormalAggregateVerification)
+	for _, name := range []types.StepName{types.StepReview, types.StepTest, types.StepDocument, types.StepLint, types.StepVerify} {
+		step, ok := findStep(failed.Steps, name)
+		if !ok || step.Status != types.StepStatusCompleted {
+			t.Fatalf("%s step = %+v, want completed before the Push refusal", name, step)
+		}
+	}
+	assertPublicationVerification(t, h, failed, 1, types.PurposeEscalatedAggregateVerification, "authority_strong", types.EffortXHigh)
+	assertPublicationSeals(t, h, failed.ID, failed.HeadSHA)
+	assertNoCIVerifyReentry(t, h, failed)
+	for _, name := range []types.StepName{types.StepPR, types.StepCI} {
+		step, ok := findStep(failed.Steps, name)
+		if !ok || step.Status != types.StepStatusPending {
+			t.Fatalf("%s step = %+v, want pending because Push failed closed first", name, step)
+		}
 	}
 
 	push, ok := findStep(failed.Steps, types.StepPush)
@@ -405,136 +547,6 @@ func TestPublicationRefusesPushOnUpstreamDrift(t *testing.T) {
 	// The out-of-band commit must survive: the branch was not overwritten.
 	if got := h.UpstreamBranchSHA("publication-drift"); got != oobSHA {
 		t.Fatalf("upstream branch SHA = %s, want out-of-band %s (Push must not clobber it)", got, oobSHA)
-	}
-}
-
-// TestPublicationCIRepublishSealsWithoutVerifyReentry proves criterion 245's CI
-// republish invariant at the tightest seam reachable from e2e.
-//
-// A full CI monitor loop cannot run in the e2e harness: the upstream is a
-// file:// path, which scm.DetectProvider does not recognize, so the CI step
-// gracefully skips (internal/pipeline/steps/ci.go:79-87; harness comment
-// internal/e2e/harness.go:190-192). The republish path therefore never executes
-// end to end here. That the CI step actually records a ci_republish seal at the
-// republished SHA is proven by the unit test
-// internal/pipeline/steps/ci_republish_test.go (TestCIStep_RepublishSealsVerifiedSHA),
-// and by construction the republish uses its own strong verifier
-// (CIStep.verifyCIPatch) after Push - it never re-enters the pre-Push VerifyStep.
-//
-// This test proves the durable invariant that underpins "no Verify re-entry":
-// on a real completed run whose Verify gate was entered exactly once, recording
-// a ci_republish seal via the same accessor the CI step uses
-// (db.CreateSeal(runID, sha, "ci_republish"), ci_fix.go:283) is retrievable at
-// that SHA and creates no new invocation attempt - the Verify step is never
-// launched again.
-func TestPublicationCIRepublishSealsWithoutVerifyReentry(t *testing.T) {
-	scenario := writeScenario(t, `actions:
-  - match: "Review the code changes and return structured findings with a risk assessment.\n\nContext:\n- branch: publication-ci-republish"
-    text: "found a blocking bug"
-    structured:
-      findings:
-        - id: "ci-1"
-          severity: error
-          file: "pub.txt"
-          line: 1
-          description: "blocking bug that runs Verify"
-          action: auto-fix
-      risk_level: high
-      risk_rationale: "a blocking bug must be fixed and re-verified"
-  - match: "Fix the following"
-    text: "fixed the bug"
-    edits:
-      - path: "pub.txt"
-        new: "fixed\n"
-    structured:
-      summary: "guarded the bug"
-  - match: "Independently verify whether each of the following"
-    text: "verified resolved at tier 0"
-    structured:
-      verdicts:
-        - lineage_id: "PROMPT_LINEAGE_ID"
-          status: "resolved"
-          rationale: "the bug is now guarded"
-      new_findings: []
-  - match: "You are performing the final aggregate verification of a sealed release candidate before it is published."
-    text: "aggregate verification passed"
-    structured:
-      findings: []
-      risk_level: low
-      risk_rationale: "candidate fully verified"
-`+cleanCatchAll)
-	h := NewHarness(t, SetupOpts{Agent: "codex", Scenario: scenario})
-	initGate(t, h)
-	h.CommitChange("publication-ci-republish", "pub.txt", "buggy line\n", "add publication target")
-	h.PushToGate("publication-ci-republish")
-
-	run := waitForStepStatus(t, h, "publication-ci-republish", types.StepReview, types.StepStatusAwaitingApproval, 120*time.Second)
-	h.Respond(run.ID, types.StepReview, types.ActionApprove)
-	completed := h.WaitForRun("publication-ci-republish", 120*time.Second)
-	if completed.Status != types.RunCompleted {
-		t.Fatalf("run status = %s, want completed (error=%v)", completed.Status, deref(completed.Error))
-	}
-
-	// The full CI loop is unreachable in e2e: CI skipped for want of a provider.
-	ci, ok := findStep(completed.Steps, types.StepCI)
-	if !ok {
-		t.Fatalf("no ci step recorded")
-	}
-	if ci.Status != types.StepStatusSkipped {
-		t.Fatalf("ci step status = %s, want skipped (file:// upstream has no SCM provider)", ci.Status)
-	}
-
-	// The Verify gate was entered exactly once (a single pre-Push verification).
-	attemptsBefore := h.InvocationAttempts(t, run.ID)
-	vBefore := verifyStepAttempts(t, h, run.ID, attemptsBefore)
-	if len(vBefore) != 1 {
-		t.Fatalf("verify launched %d verifier(s), want exactly 1 before any republish", len(vBefore))
-	}
-
-	d := h.OpenDB(t)
-	defer d.Close()
-	if pre, err := d.LatestSealByReason(run.ID, "ci_republish"); err != nil {
-		t.Fatalf("load ci_republish seal: %v", err)
-	} else if pre != nil {
-		t.Fatalf("unexpected ci_republish seal before any republish: %+v", pre)
-	}
-
-	// Build a genuine CI-fix HEAD atop the published candidate - the SHA a real
-	// autoFixCI republish would seal - without transporting it: this exercises
-	// only the republish seal-bookkeeping seam.
-	scratch := t.TempDir()
-	gitOOB(t, h, scratch, "clone", h.UpstreamDir, ".")
-	gitOOB(t, h, scratch, "config", "user.email", "ci@example.com")
-	gitOOB(t, h, scratch, "config", "user.name", "CI Fixer")
-	gitOOB(t, h, scratch, "checkout", "publication-ci-republish")
-	if err := os.WriteFile(filepath.Join(scratch, "ci-fix.txt"), []byte("ci fix\n"), 0o644); err != nil {
-		t.Fatalf("write ci-fix file: %v", err)
-	}
-	gitOOB(t, h, scratch, "add", "-A")
-	gitOOB(t, h, scratch, "commit", "-m", "ci autofix")
-	republishSHA := gitOOB(t, h, scratch, "rev-parse", "HEAD")
-
-	// Record the republish seal exactly as the CI step does (ci_fix.go:283).
-	if _, err := d.CreateSeal(run.ID, republishSHA, "ci_republish"); err != nil {
-		t.Fatalf("record ci_republish seal: %v", err)
-	}
-	seal, err := d.LatestSealByReason(run.ID, "ci_republish")
-	if err != nil {
-		t.Fatalf("reload ci_republish seal: %v", err)
-	}
-	if seal == nil || seal.SHA != republishSHA {
-		t.Fatalf("ci_republish seal = %+v, want SHA %s", seal, republishSHA)
-	}
-
-	// The republish must not re-enter Verify: no new invocation attempt exists,
-	// and the Verify step's verifier count is unchanged.
-	attemptsAfter := h.InvocationAttempts(t, run.ID)
-	if len(attemptsAfter) != len(attemptsBefore) {
-		t.Fatalf("invocation attempts grew from %d to %d after a ci_republish seal; the republish must not launch any agent", len(attemptsBefore), len(attemptsAfter))
-	}
-	vAfter := verifyStepAttempts(t, h, run.ID, attemptsAfter)
-	if len(vAfter) != len(vBefore) {
-		t.Fatalf("verify verifier count changed from %d to %d after republish; Verify must never be re-entered", len(vBefore), len(vAfter))
 	}
 }
 
@@ -583,23 +595,18 @@ func TestPublicationVerifyEscalatesOnUserIntent(t *testing.T) {
 	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: scenario})
 	seedClaudeTranscript(t, h.HomeDir, h.WorkDir, "verify-intent.txt")
 	initGate(t, h)
-	h.CommitChange("publication-verify-intent", "verify-intent.txt", "original line\n", "add intent target")
+	originalHead := h.CommitChange("publication-verify-intent", "verify-intent.txt", "original line\n", "add intent target")
 	h.PushToGate("publication-verify-intent")
 
-	run := h.WaitForRun("publication-verify-intent", 120*time.Second)
-	if run.Status != types.RunCompleted {
-		t.Fatalf("run status = %s, want completed (error=%v)", run.Status, deref(run.Error))
+	run := h.WaitForRun("publication-verify-intent", 30*time.Second)
+	if run.HeadSHA == originalHead {
+		t.Fatalf("resolved repair did not change candidate head %s", originalHead)
 	}
 	intent := readRunIntent(t, h.NMHome, run.ID)
 	if intent.summary == nil || strings.TrimSpace(*intent.summary) == "" {
 		t.Fatalf("run intent is empty; the intent trigger requires a non-empty UserIntent")
 	}
-	va := verifyStepAttempts(t, h, run.ID, h.InvocationAttempts(t, run.ID))
-	if len(va) != 1 {
-		t.Fatalf("verify launched %d verifier(s), want exactly 1", len(va))
-	}
-	if va[0].Start.Purpose != types.PurposeEscalatedAggregateVerification {
-		t.Fatalf("verify purpose = %q, want %q (user intent escalates Verify)", va[0].Start.Purpose, types.PurposeEscalatedAggregateVerification)
-	}
-	assertCandidate(t, va[0], "authority_strong", 0, "sol", types.EffortXHigh)
+	assertPublicationInitialRisk(t, h, run, "low")
+	assertResolvedPublicationRepair(t, h, run, "informational nit", types.PurposeInformationalRepair, types.PurposeInformationalRepairVerification)
+	assertPublicationCompleted(t, h, run, "publication-verify-intent", 1, types.PurposeEscalatedAggregateVerification, "authority_strong", types.EffortXHigh)
 }

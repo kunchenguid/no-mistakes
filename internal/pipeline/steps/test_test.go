@@ -158,7 +158,7 @@ func TestTestStep_UserIntentRunsConfiguredCommandThenEvidenceAgent(t *testing.T)
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 			callCount++
-			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"evidence demonstrates intent","tested":["manual screenshot review"],"testing_summary":"captured screenshot evidence"}`)}, nil
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"evidence demonstrates intent","tested":["manual screenshot review"],"testing_summary":"captured screenshot evidence","artifacts":[]}`)}, nil
 		},
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Test: testCmd})
@@ -227,6 +227,36 @@ func TestTestStep_UserIntentRunsConfiguredCommandThenEvidenceAgent(t *testing.T)
 	}
 }
 
+func TestTestStep_RejectsIncompleteEvidencePayload(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		output string
+	}{
+		{name: "missing summary", output: `{"findings":[],"tested":["manual check"],"testing_summary":"checked intent","artifacts":[]}`},
+		{name: "empty tested", output: `{"findings":[],"summary":"evidence gathered","tested":[],"testing_summary":"checked intent","artifacts":[]}`},
+		{name: "missing testing summary", output: `{"findings":[],"summary":"evidence gathered","tested":["manual check"],"artifacts":[]}`},
+		{name: "missing artifacts", output: `{"findings":[],"summary":"evidence gathered","tested":["manual check"],"testing_summary":"checked intent"}`},
+		{name: "incomplete finding", output: `{"findings":[{"severity":"warning","description":"evidence missing"}],"summary":"evidence gathered","tested":["manual check"],"testing_summary":"checked intent","artifacts":[]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, baseSHA, headSHA := setupGitRepo(t)
+			ag := &mockAgent{
+				name: "test",
+				runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+					return &agent.Result{Output: json.RawMessage(tc.output)}, nil
+				},
+			}
+			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+			sctx.UserIntent = "prove the requested behavior"
+
+			if _, err := (&TestStep{}).Execute(sctx); err == nil {
+				t.Fatal("expected incomplete test evidence to fail closed")
+			}
+		})
+	}
+}
+
 func TestTestStep_InRepoEvidenceFallsBackWhenConfiguredDirEscapesWorktree(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
@@ -234,7 +264,7 @@ func TestTestStep_InRepoEvidenceFallsBackWhenConfiguredDirEscapesWorktree(t *tes
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"","tested":["manual evidence check"],"testing_summary":"checked evidence"}`)}, nil
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"evidence gathered","tested":["manual evidence check"],"testing_summary":"checked evidence","artifacts":[]}`)}, nil
 		},
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
@@ -266,7 +296,7 @@ func TestTestStep_InRepoEvidenceFallsBackWhenEvidenceDirIsIgnored(t *testing.T) 
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"","tested":["manual evidence check"],"testing_summary":"checked evidence"}`)}, nil
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"evidence gathered","tested":["manual evidence check"],"testing_summary":"checked evidence","artifacts":[]}`)}, nil
 		},
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})

@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -307,6 +308,52 @@ func TestRebaseStep_FixModeEscalatesThenResolves(t *testing.T) {
 	}
 }
 
+func TestRebaseStep_FixModeStopsWhenProfileIsUnavailable(t *testing.T) {
+	t.Parallel()
+	dir, upstream, baseSHA, headSHA := setupRebaseConflictRepo(t)
+
+	fixerCalls := 0
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+			fixerCalls++
+			return nil, fmt.Errorf("route invocation failed: %w", &agent.ProfileUnavailableError{
+				Profile: "fix_balanced",
+				Cause:   errors.New("all providers unavailable"),
+			})
+		},
+	}
+
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Config.Routing = config.DefaultRoutingConfig()
+	sctx.Fixing = true
+
+	if _, err := (&RebaseStep{}).Execute(sctx); err == nil {
+		t.Fatal("expected unavailable fix_balanced profile to terminate conflict repair")
+	}
+	if fixerCalls != 1 {
+		t.Fatalf("fixer calls = %d, want 1 with no authority_strong tier jump", fixerCalls)
+	}
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != headSHA {
+		t.Fatalf("HEAD = %s, want pre-rebase %s", got, headSHA)
+	}
+	if status := gitCmd(t, dir, "status", "--porcelain"); status != "" {
+		t.Fatalf("expected clean worktree after unavailable profile, got: %s", status)
+	}
+	if sctx.Run.HeadSHA != headSHA {
+		t.Fatalf("Run.HeadSHA = %s, want unchanged %s", sctx.Run.HeadSHA, headSHA)
+	}
+	storedRun, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storedRun.HeadSHA != headSHA {
+		t.Fatalf("stored Run.HeadSHA = %s, want unchanged %s", storedRun.HeadSHA, headSHA)
+	}
+}
+
 // TestRebaseStep_FixModeFailsClosedOnVerifierRejection proves a completed
 // resolution that the independent verifier rejects fails closed and unwinds the
 // worktree to the pre-rebase HEAD rather than recording the branch update.
@@ -341,6 +388,85 @@ func TestRebaseStep_FixModeFailsClosedOnVerifierRejection(t *testing.T) {
 	}
 	if status := gitCmd(t, dir, "status", "--porcelain"); status != "" {
 		t.Fatalf("expected clean worktree after fail-closed unwind, got: %s", status)
+	}
+}
+
+func TestRebaseStep_FixModeRequiresConclusiveVerifierOutput(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		output     string
+		wantReject bool
+	}{
+		{name: "empty object", output: `{}`, wantReject: true},
+		{name: "missing findings", output: `{"summary":"verified"}`, wantReject: true},
+		{name: "missing summary", output: `{"findings":[]}`, wantReject: true},
+		{
+			name:       "unresolved and inconclusive",
+			output:     `{"findings":[{"severity":"info","description":"resolution remains unresolved and could not be conclusively verified","action":"no-op"}],"summary":"inconclusive"}`,
+			wantReject: true,
+		},
+		{name: "valid control", output: `{"findings":[],"summary":"conflict resolution verified"}`},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dir, upstream, baseSHA, headSHA := setupRebaseConflictRepo(t)
+
+			ag := &mockAgent{
+				name: "test",
+				runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+					if strings.Contains(opts.Prompt, "independently verifying") {
+						return &agent.Result{Output: json.RawMessage(tt.output)}, nil
+					}
+					if err := resolveConflictContinue(dir); err != nil {
+						return nil, err
+					}
+					return &agent.Result{Output: json.RawMessage(`{"summary":"resolved"}`)}, nil
+				},
+			}
+
+			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+			sctx.Run.Branch = "refs/heads/feature"
+			sctx.Repo.UpstreamURL = upstream
+			sctx.Fixing = true
+
+			_, err := (&RebaseStep{}).Execute(sctx)
+			if tt.wantReject {
+				if err == nil {
+					t.Fatal("expected verifier output to fail closed")
+				}
+				if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != headSHA {
+					t.Fatalf("HEAD = %s, want pre-rebase %s", got, headSHA)
+				}
+				if sctx.Run.HeadSHA != headSHA {
+					t.Fatalf("Run.HeadSHA = %s, want unchanged %s", sctx.Run.HeadSHA, headSHA)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("valid verifier output failed: %v", err)
+				}
+				currentHead := gitCmd(t, dir, "rev-parse", "HEAD")
+				if currentHead == headSHA {
+					t.Fatal("valid verifier output did not preserve the completed rebase")
+				}
+				if sctx.Run.HeadSHA != currentHead {
+					t.Fatalf("Run.HeadSHA = %s, want rebased HEAD %s", sctx.Run.HeadSHA, currentHead)
+				}
+			}
+			if status := gitCmd(t, dir, "status", "--porcelain"); status != "" {
+				t.Fatalf("expected clean worktree, got: %s", status)
+			}
+			storedRun, err := sctx.DB.GetRun(sctx.Run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if storedRun.HeadSHA != sctx.Run.HeadSHA {
+				t.Fatalf("stored Run.HeadSHA = %s, want %s", storedRun.HeadSHA, sctx.Run.HeadSHA)
+			}
+		})
 	}
 }
 

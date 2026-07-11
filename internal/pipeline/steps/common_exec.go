@@ -157,6 +157,7 @@ func stepCmd(sctx *pipeline.StepContext, name string, args ...string) *exec.Cmd 
 		}
 	}
 	cmd := exec.CommandContext(sctx.Ctx, resolved, args...)
+	shellenv.ConfigureShellCommand(cmd)
 	cmd.Dir = sctx.WorkDir
 	winproc.Harden(cmd)
 	if len(sctx.Env) > 0 {
@@ -187,7 +188,7 @@ func stepGitHeadSHA(sctx *pipeline.StepContext) (string, error) {
 	return stepGitRun(sctx, "rev-parse", "HEAD")
 }
 
-func stepGitPush(sctx *pipeline.StepContext, remote, ref, expectedSHA string, forceWithLease bool) error {
+func stepGitPush(sctx *pipeline.StepContext, remote, sourceSHA, ref, expectedSHA string, forceWithLease bool) error {
 	args := []string{"push", remote}
 	if forceWithLease {
 		if expectedSHA != "" {
@@ -196,7 +197,7 @@ func stepGitPush(sctx *pipeline.StepContext, remote, ref, expectedSHA string, fo
 			args = append(args, "--force-with-lease")
 		}
 	}
-	args = append(args, "HEAD:"+ref)
+	args = append(args, sourceSHA+":"+ref)
 	_, err := stepGitRun(sctx, args...)
 	return err
 }

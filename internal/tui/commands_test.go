@@ -388,6 +388,101 @@ func TestModel_SubscribeCmdReturnsScopedError(t *testing.T) {
 	}
 }
 
+func TestModel_SubscribeRefreshesDurableReviewRouting(t *testing.T) {
+	sock := testSocketPath(t)
+	srv := startTestIPCServer(t, sock)
+
+	fresh := testRun()
+	fresh.Steps[0].Status = types.StepStatusCompleted
+	fresh.Steps[0].ReviewRouting = &ipc.ReviewRoutingInfo{
+		Candidates: []ipc.RoutedCandidateInfo{
+			{Profile: "review_strong", CandidateIndex: 0, Runner: "codex", Model: "primary", Effort: "high", Outcome: "failed", FailureDomain: "openai"},
+			{Profile: "review_strong", CandidateIndex: 1, Runner: "claude", Model: "backup", Effort: "xhigh", Outcome: "succeeded"},
+		},
+		LineageCount: 2,
+	}
+	srv.Handle(ipc.MethodGetRun, func(_ context.Context, _ json.RawMessage) (interface{}, error) {
+		return &ipc.GetRunResult{Run: fresh}, nil
+	})
+	srv.HandleStream(ipc.MethodSubscribe, func(_ context.Context, _ json.RawMessage, _ func(interface{}) error) error {
+		return nil
+	})
+
+	client, err := ipc.Dial(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	attached := testRun()
+	attached.Steps[0].ReviewRouting = nil
+	m := NewModel(sock, client, attached)
+
+	msg := m.subscribeCmd()()
+	updated, _ := m.Update(msg)
+	model := updated.(Model)
+	routing := model.steps[0].ReviewRouting
+	if routing == nil || len(routing.Candidates) != 2 {
+		t.Fatalf("review routing after subscribe = %+v, want refreshed failover chain", routing)
+	}
+	if routing.Candidates[0].Model != "primary" || routing.Candidates[1].Model != "backup" {
+		t.Fatalf("review routing candidates = %+v, want durable order primary then backup", routing.Candidates)
+	}
+}
+
+func TestModel_ReviewCompletionRefreshesDurableRouting(t *testing.T) {
+	sock := testSocketPath(t)
+	srv := startTestIPCServer(t, sock)
+
+	fresh := testRun()
+	fresh.Steps[0].Status = types.StepStatusCompleted
+	fresh.Steps[0].ReviewRouting = &ipc.ReviewRoutingInfo{
+		Candidates: []ipc.RoutedCandidateInfo{
+			{Profile: "review_strong", CandidateIndex: 0, Runner: "codex", Model: "primary", Outcome: "failed", FailureDomain: "openai"},
+			{Profile: "review_strong", CandidateIndex: 1, Runner: "claude", Model: "backup", Outcome: "succeeded"},
+		},
+	}
+	srv.Handle(ipc.MethodGetRun, func(_ context.Context, _ json.RawMessage) (interface{}, error) {
+		return &ipc.GetRunResult{Run: fresh}, nil
+	})
+
+	client, err := ipc.Dial(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	attached := testRun()
+	attached.Steps[0].Status = types.StepStatusRunning
+	attached.Steps[0].ReviewRouting = nil
+	m := NewModel(sock, client, attached)
+
+	completed := string(types.StepStatusCompleted)
+	updated, cmd := m.Update(eventMsg{
+		event: ipc.Event{
+			Type: ipc.EventStepCompleted, RunID: attached.ID,
+			StepName: ptr(types.StepReview), Status: &completed,
+		},
+		subscriptionID: m.subscriptionID,
+	})
+	if cmd == nil {
+		t.Fatal("review completion did not schedule a durable routing refresh")
+	}
+	model := updated.(Model)
+	msg := cmd()
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		for _, pending := range batch {
+			updated, _ = model.Update(pending())
+			model = updated.(Model)
+		}
+	} else {
+		updated, _ = model.Update(msg)
+		model = updated.(Model)
+	}
+	routing := model.steps[0].ReviewRouting
+	if routing == nil || len(routing.Candidates) != 2 {
+		t.Fatalf("review routing after completion = %+v, want refreshed failover chain", routing)
+	}
+}
+
 func TestModel_Update_IgnoresStaleSubscriptionMessagesAfterRerun(t *testing.T) {
 	run := testRun()
 	m := NewModel("/tmp/sock", nil, run)

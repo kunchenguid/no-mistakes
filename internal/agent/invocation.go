@@ -20,6 +20,25 @@ type InvocationRequest struct {
 	Tier int
 }
 
+// ProfileUnavailableError means routing exhausted one Profile without a usable
+// Candidate. Cause is the last executed Candidate's operational failure, or nil
+// when every Candidate was skipped because its provider circuit was already
+// open. An executed Candidate's non-operational bad result is returned directly
+// and never classified as ProfileUnavailableError.
+type ProfileUnavailableError struct {
+	Profile string
+	Cause   error
+}
+
+func (e *ProfileUnavailableError) Error() string {
+	if e.Cause != nil {
+		return fmt.Sprintf("profile %q exhausted every candidate after operational failures: %v", e.Profile, e.Cause)
+	}
+	return fmt.Sprintf("profile %q has no available candidate: all provider circuits are open", e.Profile)
+}
+
+func (e *ProfileUnavailableError) Unwrap() error { return e.Cause }
+
 // ValidateInvocationRequest rejects invalid semantic ownership before any
 // native agent process can launch.
 func ValidateInvocationRequest(request InvocationRequest) error {

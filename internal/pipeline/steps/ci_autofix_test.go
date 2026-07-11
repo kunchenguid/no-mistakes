@@ -55,7 +55,7 @@ func TestCIStep_CIFailureAutoFix(t *testing.T) {
 	}
 
 	prURL := "https://github.com/test/repo/pull/42"
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Repo.UpstreamURL = upstream
@@ -122,7 +122,7 @@ func TestCIStep_CIAutoFixDisabledWithZero(t *testing.T) {
 	ag := &mockAgent{name: "test"}
 
 	prURL := "https://github.com/test/repo/pull/42"
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 5 * time.Second
@@ -226,7 +226,7 @@ func TestCIStep_CIAutoFixLimitExhausted(t *testing.T) {
 	}
 
 	prURL := "https://github.com/test/repo/pull/42"
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Repo.UpstreamURL = upstream
@@ -321,7 +321,7 @@ func TestCIStep_CIAutoFixRetriesAfterChecksRerun(t *testing.T) {
 	}
 
 	prURL := "https://github.com/test/repo/pull/42"
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Repo.UpstreamURL = upstream
@@ -414,7 +414,7 @@ func TestCIStep_CIAutoFixRetriesWhenGitHubClockLagsLocalClock(t *testing.T) {
 	}
 
 	prURL := "https://github.com/test/repo/pull/42"
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Repo.UpstreamURL = upstream
@@ -499,7 +499,7 @@ func TestCIStep_CIAutoFixRetriesWhenFastChecksSkipPendingObservation(t *testing.
 	}
 
 	prURL := "https://github.com/test/repo/pull/42"
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Repo.UpstreamURL = upstream
@@ -598,7 +598,7 @@ func TestCIStep_CIAutoFixRetriesWhenSomeChecksStayFailing(t *testing.T) {
 	}
 
 	prURL := "https://github.com/test/repo/pull/42"
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Repo.UpstreamURL = upstream
@@ -683,7 +683,7 @@ func TestCIStep_DoesNotRetryOnUnrelatedPendingCheck(t *testing.T) {
 	}
 
 	prURL := "https://github.com/test/repo/pull/42"
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Repo.UpstreamURL = upstream
@@ -774,7 +774,7 @@ func TestCIStep_RetriesMergeConflictAfterRerun(t *testing.T) {
 	}
 
 	prURL := "https://github.com/test/repo/pull/42"
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Repo.UpstreamURL = upstream
@@ -864,7 +864,7 @@ func TestCIStep_FixMode_ManualInterventionRunsCIFix(t *testing.T) {
 	}
 
 	prURL := "https://github.com/test/repo/pull/42"
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Repo.UpstreamURL = upstream
@@ -942,7 +942,7 @@ func TestCIStep_AutoFixNoChanges_CountsAsAttempt(t *testing.T) {
 	}
 
 	prURL := "https://github.com/test/repo/pull/42"
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Repo.UpstreamURL = upstream
@@ -1049,7 +1049,7 @@ func TestCIStep_FixMode_NoChanges_CountsAsAttempt(t *testing.T) {
 	}
 
 	prURL := "https://github.com/test/repo/pull/42"
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Repo.UpstreamURL = upstream
@@ -1135,7 +1135,7 @@ func TestCIStep_AutoFixPromptIncludesMustFixInstruction(t *testing.T) {
 	}
 
 	prURL := "https://github.com/test/repo/pull/42"
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Repo.UpstreamURL = upstream

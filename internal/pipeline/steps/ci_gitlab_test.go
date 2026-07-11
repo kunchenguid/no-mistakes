@@ -23,7 +23,7 @@ func TestCIStep_GitLabPassesWhenJobsPass(t *testing.T) {
 
 	prURL := "https://gitlab.com/test/repo/-/merge_requests/42"
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
 	sctx.Run.PRURL = &prURL
@@ -66,7 +66,7 @@ func TestCIStep_GitLabMergedMRExitsEarly(t *testing.T) {
 
 	prURL := "https://gitlab.com/test/repo/-/merge_requests/42"
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
 	sctx.Run.PRURL = &prURL
@@ -104,7 +104,7 @@ func TestCIStep_GitLabFailureNeedsApproval(t *testing.T) {
 
 	prURL := "https://gitlab.com/test/repo/-/merge_requests/42"
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
 	sctx.Run.PRURL = &prURL
@@ -138,7 +138,7 @@ func TestCIStep_GitLabMergeConflictDetected(t *testing.T) {
 
 	prURL := "https://gitlab.com/test/repo/-/merge_requests/42"
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
 	sctx.Run.PRURL = &prURL
@@ -208,7 +208,7 @@ func TestCIStep_GitLabAutoFixIncludesJobTrace(t *testing.T) {
 	}
 
 	prURL := "https://gitlab.com/test/repo/-/merge_requests/42"
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Repo.UpstreamURL = upstream
@@ -251,7 +251,7 @@ func TestCIStep_GitLabPendingChecksKeepMonitoringWhenDone(t *testing.T) {
 
 	prURL := "https://gitlab.com/test/repo/-/merge_requests/42"
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
 	sctx.Run.PRURL = &prURL

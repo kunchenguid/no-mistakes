@@ -196,7 +196,9 @@ func TestReconnectSnapshotMatchesPersistedHistory(t *testing.T) {
 	// ---- snapshot the full durable history from the terminal run ----
 	attemptsBefore := normalizeAttempts(h.InvocationAttempts(t, runID))
 	repairsBefore := normalizeRepairs(h.FindingRepairs(t, runID))
-	runBefore := normalizeRunStatus(h.RunInfo(runID))
+	runInfoBefore := h.RunInfo(runID)
+	runBefore := normalizeRunStatus(runInfoBefore)
+	reviewRoutingBefore := normalizeIPCReviewRouting(runInfoBefore)
 
 	// ---- restart the daemon; every IPC/DB call re-opens, so this reconnects ----
 	h.RestartDaemon(t)
@@ -208,6 +210,7 @@ func TestReconnectSnapshotMatchesPersistedHistory(t *testing.T) {
 
 	assertRowsUnchanged(t, "invocation attempts", attemptsBefore, attemptsAfter)
 	assertRowsUnchanged(t, "finding repairs", repairsBefore, repairsAfter)
+	assertRowsUnchanged(t, "IPC review routing", reviewRoutingBefore, normalizeIPCReviewRouting(runInfoAfter))
 
 	if got := normalizeRunStatus(runInfoAfter); got != runBefore {
 		t.Fatalf("run terminal status/step history changed across restart:\n before:\n%s\n  after:\n%s", runBefore, got)
@@ -220,6 +223,16 @@ func TestReconnectSnapshotMatchesPersistedHistory(t *testing.T) {
 	d := h.OpenDB(t)
 	dbRun, runErr := d.GetRun(runID)
 	dbSteps, stepErr := d.GetStepsByRun(runID)
+	var dbReviewRouting *db.ReviewRouting
+	if stepErr == nil {
+		for _, step := range dbSteps {
+			if step.StepName != types.StepReview {
+				continue
+			}
+			dbReviewRouting, stepErr = d.ReviewRoutingForStep(step.ID)
+			break
+		}
+	}
 	d.Close()
 	if runErr != nil || dbRun == nil {
 		t.Fatalf("get run %s from db after restart: %v", runID, runErr)
@@ -240,6 +253,7 @@ func TestReconnectSnapshotMatchesPersistedHistory(t *testing.T) {
 				i, ipcStep.StepName, ipcStep.StepOrder, ipcStep.Status, s.StepName, s.StepOrder, s.Status)
 		}
 	}
+	assertRowsUnchanged(t, "persisted/IPC review routing", normalizeDBReviewRouting(dbReviewRouting), normalizeIPCReviewRouting(runInfoAfter))
 
 	// ---- and the reconnected daemon lists the run consistently with the DB ----
 	found := false
@@ -336,6 +350,52 @@ func normalizeRunStatus(r *ipc.RunInfo) string {
 		fmt.Fprintf(&b, "\n  step name=%s order=%d status=%s exit=%s", s.StepName, s.StepOrder, s.Status, exit)
 	}
 	return b.String()
+}
+
+func normalizeIPCReviewRouting(run *ipc.RunInfo) []string {
+	for _, step := range run.Steps {
+		if step.StepName != types.StepReview || step.ReviewRouting == nil {
+			continue
+		}
+		routing := step.ReviewRouting
+		out := []string{fmt.Sprintf("lineages=%d candidates=%d", routing.LineageCount, len(routing.Candidates))}
+		for _, c := range routing.Candidates {
+			out = append(out, fmt.Sprintf(
+				"profile=%s tier=%d idx=%d runner=%s model=%s effort=%s outcome=%s domain=%s durMS=%d in=%d out=%d cacheR=%d cacheC=%d",
+				c.Profile, c.Tier, c.CandidateIndex, c.Runner, c.Model, c.Effort,
+				c.Outcome, c.FailureDomain, c.DurationMS, c.InputTokens, c.OutputTokens,
+				c.CacheReadTokens, c.CacheCreationTokens))
+		}
+		return out
+	}
+	return nil
+}
+
+func normalizeDBReviewRouting(routing *db.ReviewRouting) []string {
+	if routing == nil {
+		return nil
+	}
+	out := []string{fmt.Sprintf("lineages=%d candidates=%d", len(routing.Lineages), len(routing.Attempts))}
+	for _, attempt := range routing.Attempts {
+		c := attempt.Start.Candidate
+		var outcome types.InvocationOutcome
+		var domain types.FailureDomain
+		var duration, input, output, cacheRead, cacheCreation int64
+		if terminal := attempt.Terminal; terminal != nil {
+			outcome = terminal.Outcome
+			domain = terminal.FailureDomain
+			duration = terminal.DurationMS
+			input = terminal.InputTokens
+			output = terminal.OutputTokens
+			cacheRead = terminal.CacheReadTokens
+			cacheCreation = terminal.CacheCreationTokens
+		}
+		out = append(out, fmt.Sprintf(
+			"profile=%s tier=%d idx=%d runner=%s model=%s effort=%s outcome=%s domain=%s durMS=%d in=%d out=%d cacheR=%d cacheC=%d",
+			c.Profile, c.Tier, c.CandidateIndex, c.Runner, c.Model, c.Effort,
+			outcome, domain, duration, input, output, cacheRead, cacheCreation))
+	}
+	return out
 }
 
 // assertRowsUnchanged fails naming the first row that differs across a restart.

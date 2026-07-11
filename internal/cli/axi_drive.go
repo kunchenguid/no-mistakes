@@ -64,10 +64,16 @@ func newAxiRunCmd() *cobra.Command {
 		Use:   "run",
 		Short: "Validate your code changes, blocking until a decision point or the outcome",
 		Long: "Triggers a pipeline run for the current branch and drives it. Without\n" +
-			"--yes it blocks until the first approval gate, CI-ready point, or final outcome and\n" +
-			"prints it. With --yes it auto-resolves every gate (fixing actionable\n" +
-			"findings - including ask-user findings, with no escalation - then\n" +
-			"accepting the result) until a decision point or outcome.\n\n" +
+			"--yes it blocks until the first approval gate, CI-ready point, or final\n" +
+			"outcome and prints it. With --yes, the user's unattended consent drives\n" +
+			"approval gates: it sends every finding with an ID to one pipeline fix\n" +
+			"round when a gate has actionable findings, approves a fix-review or a\n" +
+			"gate with only no-op or no selectable findings, and continues until\n" +
+			"checks are ready or the run ends. Before each resolution it checks\n" +
+			"blocking repair lineages; if one ended unresolved or inconclusive, it\n" +
+			"aborts the run and returns an error instead of approving or retrying.\n" +
+			"--yes still stops at checks-passed, because a human must review and\n" +
+			"merge the PR.\n\n" +
 			"--intent is required when starting a new run: pass what the user set out\n" +
 			"to accomplish (the goal behind the change, not a description of the diff)\n" +
 			"so no-mistakes uses it directly instead of inferring it from transcripts.\n\n" +
@@ -87,13 +93,13 @@ func newAxiRunCmd() *cobra.Command {
 				skipSteps, err := parseSkipSteps(skipValue)
 				if err != nil {
 					return emitError(cmd, 2, err.Error(),
-						"Valid steps: intent, rebase, review, test, document, lint, push, pr, ci")
+						"Valid steps: intent, rebase, review, test, document, lint, verify, push, pr, ci")
 				}
 				return runAxiRun(cmd, autoYes, skipSteps, intent)
 			})
 		},
 	}
-	cmd.Flags().BoolVarP(&autoYes, "yes", "y", false, "auto-resolve every gate (fix findings, then accept) until a decision point or outcome")
+	cmd.Flags().BoolVarP(&autoYes, "yes", "y", false, "apply unattended consent at every gate; abort if a blocking repair remains unresolved")
 	cmd.Flags().StringVar(&skipValue, "skip", "", "comma-separated pipeline steps to skip")
 	cmd.Flags().StringVar(&intent, "intent", "", "what the user set out to accomplish (not a description of the diff); used instead of inferring from transcripts (required to start a run)")
 	return cmd
@@ -376,7 +382,11 @@ func driveRun(ctx context.Context, progress io.Writer, client *ipc.Client, runID
 			// finding lineage is still unresolved after its repair cascade means
 			// the run cannot be accepted — abort rather than re-fix or approve.
 			if blockingUnresolved != nil {
-				if unresolved, uerr := blockingUnresolved(runID); uerr == nil && unresolved {
+				unresolved, uerr := blockingUnresolved(runID)
+				if uerr != nil {
+					return run, false, fmt.Errorf("check unresolved blocking repair: %w", uerr)
+				}
+				if unresolved {
 					_ = sendRespond(client, runID, types.StepName(gate.Name), types.ActionAbort, nil, nil, nil)
 					return run, false, fmt.Errorf("unattended consent refused %s: a blocking finding remains unresolved after repair", gate.Name)
 				}
@@ -641,7 +651,7 @@ func newAxiRespondCmd() *cobra.Command {
 	cmd.Flags().StringVar(&findings, "findings", "", "comma-separated finding IDs to fix (with --action fix)")
 	cmd.Flags().StringVar(&instructions, "instructions", "", "guidance applied to the selected findings (with --action fix)")
 	cmd.Flags().StringVar(&addFinding, "add-finding", "", "JSON finding object to add and fix (with --action fix)")
-	cmd.Flags().BoolVarP(&autoYes, "yes", "y", false, "auto-resolve every subsequent gate until a decision point or outcome")
+	cmd.Flags().BoolVarP(&autoYes, "yes", "y", false, "apply unattended consent at subsequent gates; abort if a blocking repair remains unresolved")
 	return cmd
 }
 
@@ -726,6 +736,19 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 					`Expected a JSON object, e.g. {"description":"...","action":"auto-fix"}`)
 			}
 			added = append(added, f)
+		}
+	}
+
+	if ra.autoYes {
+		unresolved, err := env.d.HasUnresolvedBlockingRepair(runID)
+		if err != nil {
+			return emitError(cmd, 1, fmt.Sprintf("check unresolved blocking repair: %v", err))
+		}
+		if unresolved {
+			if err := sendRespond(env.client, runID, stepName, types.ActionAbort, nil, nil, nil); err != nil {
+				return emitError(cmd, 1, fmt.Sprintf("abort unresolved blocking repair at %s: %v", stepName, err))
+			}
+			return emitError(cmd, 1, fmt.Sprintf("unattended consent refused %s: a blocking finding remains unresolved after repair", stepName))
 		}
 	}
 

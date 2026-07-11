@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -39,6 +41,21 @@ func axiScenario(t *testing.T) string {
       summary: "found 1 issue"
       risk_level: medium
       risk_rationale: "warning requires human review"
+  - match: "Fix the following"
+    text: "fixed the consented review finding"
+    edits:
+      - path: "feature2.txt"
+        new: "change2\nfixed nil guard\n"
+    structured:
+      summary: "add the nil guard"
+  - match: "Independently verify whether each of the following"
+    text: "independent verifier resolved the repair"
+    structured:
+      verdicts:
+        - lineage_id: "PROMPT_LINEAGE_ID"
+          status: "resolved"
+          rationale: "the consented repair now guards the nil case"
+      new_findings: []
   - text: "no issues found"
     structured:
       findings: []
@@ -195,8 +212,39 @@ func TestAxiAgentJourney(t *testing.T) {
 	if !strings.Contains(autoOut, "outcome: passed") {
 		t.Errorf("axi run --yes did not report a passing outcome:\n%s", autoOut)
 	}
-	if autoRun := h.WaitForRun("feature/axi-yes", 60*time.Second); autoRun.Status != types.RunCompleted {
+	autoRun := h.WaitForRun("feature/axi-yes", 60*time.Second)
+	if autoRun.Status != types.RunCompleted {
 		t.Fatalf("feature/axi-yes run status = %s, want completed", autoRun.Status)
+	}
+
+	repairs := h.FindingRepairs(t, autoRun.ID)
+	if len(repairs) != 1 {
+		t.Fatalf("finding repairs = %d, want exactly one consented repair", len(repairs))
+	}
+	repair := repairs[0]
+	if repair.LineageID == "" ||
+		repair.Status != db.RepairStatusResolved ||
+		repair.Verdict != db.RepairVerdictResolved ||
+		repair.VerdictRationale == "" {
+		t.Fatalf("repair lineage/status/verdict/rationale = %q/%q/%q/%q, want durable resolved lineage", repair.LineageID, repair.Status, repair.Verdict, repair.VerdictRationale)
+	}
+	attempts := h.InvocationAttempts(t, autoRun.ID)
+	fixers := succeededAttemptsFor(attempts, types.PurposeIntentSensitiveRepair)
+	verifiers := succeededAttemptsFor(attempts, types.PurposeNormalAggregateVerification)
+	if len(fixers) != 1 || len(verifiers) != 1 {
+		t.Fatalf("repair attempts = %d fixers/%d verifiers, want one consented fixer and one independent verifier", len(fixers), len(verifiers))
+	}
+	if repair.FixerAttemptID != fixers[0].ID || repair.VerifierAttemptID != verifiers[0].ID {
+		t.Fatalf("repair links = fixer %q verifier %q, want exact succeeded attempts %q/%q", repair.FixerAttemptID, repair.VerifierAttemptID, fixers[0].ID, verifiers[0].ID)
+	}
+
+	gateDir := filepath.Join(h.NMHome, "repos", h.repoID()+".git")
+	repaired, err := h.runGit(context.Background(), gateDir, "show", "refs/heads/feature/axi-yes:feature2.txt")
+	if err != nil {
+		t.Fatalf("read durable unattended repair target: %v\n%s", err, repaired)
+	}
+	if string(repaired) != "change2\nfixed nil guard\n" {
+		t.Fatalf("durable unattended repair target = %q, want consented fix applied", repaired)
 	}
 }
 

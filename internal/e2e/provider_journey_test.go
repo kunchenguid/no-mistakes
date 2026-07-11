@@ -252,13 +252,12 @@ func TestProviderAllDomainsFailClosed(t *testing.T) {
 }
 
 // TestProviderNonOperationalNeverOpensCircuit proves a non-operational failure
-// never opens a provider circuit. The codex fixer emits wire-valid output with
-// no parseable structured result (fail: output), which the adapter classifies
-// as a model-output failure: it is recorded failed with no failure domain, opens
-// no circuit, and never fails over. The informational (non-blocking) review
-// repair therefore escalates codex from fix_fast to tools_balanced, the run is
-// never poisoned, and the codex candidate keeps being launched (not skipped) on
-// the subsequent Test and Lint steps.
+// never opens a provider circuit. A tier-0 informational fixer succeeds and its
+// independent verifier returns unresolved, which warrants escalation from
+// fix_fast to tools_balanced. The tier-1 codex fixer then emits wire-valid
+// output with no parseable structured result (fail: output). That model-output
+// failure conclusively ends the non-blocking lineage as inconclusive: it does
+// not fail over, open a circuit, or prevent later codex Test and Lint attempts.
 func TestProviderNonOperationalNeverOpensCircuit(t *testing.T) {
 	scenario := writeScenario(t, `actions:
   - match: "Review the code changes and return structured findings with a risk assessment.\n\nContext:\n- branch: provider-nonop-control"
@@ -274,6 +273,23 @@ func TestProviderNonOperationalNeverOpensCircuit(t *testing.T) {
       risk_level: low
       risk_rationale: "informational finding only"
   - match: "Fix the following"
+    model: "luna"
+    text: "first-tier cleanup attempt"
+    edits:
+      - path: "provider.txt"
+        new: "first-tier cleanup\n"
+    structured:
+      summary: "first-tier cleanup attempt"
+  - match: "Independently verify whether each of the following"
+    text: "cleanup remains unresolved"
+    structured:
+      verdicts:
+        - lineage_id: "PROMPT_LINEAGE_ID"
+          status: "unresolved"
+          rationale: "the first-tier cleanup is insufficient"
+      new_findings: []
+  - match: "Fix the following"
+    model: "terra"
     fail: output
 `+cleanCatchAll)
 	h := NewHarness(t, SetupOpts{Agent: "codex", Scenario: scenario})
@@ -282,46 +298,100 @@ func TestProviderNonOperationalNeverOpensCircuit(t *testing.T) {
 	h.PushToGate("provider-nonop-control")
 	run := h.WaitForRun("provider-nonop-control", 120*time.Second)
 	if run.Status != types.RunCompleted {
-		t.Fatalf("run status = %s, want completed (a non-operational failure never fails the run closed); error=%v", run.Status, deref(run.Error))
+		t.Fatalf("run status = %s, want completed (an inconclusive informational repair is non-blocking); error=%v", run.Status, deref(run.Error))
+	}
+	if run.BlockingRepairUnresolved {
+		t.Fatal("run.BlockingRepairUnresolved = true, want false for an informational lineage")
 	}
 
 	attempts := h.InvocationAttempts(t, run.ID)
 
-	// A non-operational failure opens no circuit anywhere in the run.
+	// No attempt carries an operational failure domain or a circuit-skip
+	// terminal. The model-output failure therefore leaves both provider circuits
+	// closed for the entire run.
+	for _, attempt := range attempts {
+		if attempt.Terminal == nil {
+			t.Fatalf("attempt %q for %q has no terminal outcome", attempt.ID, attempt.Start.Purpose)
+		}
+		if attempt.Terminal.FailureDomain != "" {
+			t.Fatalf("attempt for %q terminal failure domain = %q, want empty throughout the non-operational journey", attempt.Start.Purpose, attempt.Terminal.FailureDomain)
+		}
+		if attempt.Terminal.Outcome == types.InvocationOutcomeSkipped {
+			t.Fatalf("attempt for %q was circuit-skipped, want every candidate launched", attempt.Start.Purpose)
+		}
+	}
 	if skips := circuitSkips(attempts, types.FailureDomainOpenAI); len(skips) != 0 {
-		t.Fatalf("openai circuit skips = %d, want 0 (a model-output failure never opens a circuit)", len(skips))
+		t.Fatalf("openai circuit skips = %d, want 0", len(skips))
 	}
 	if skips := circuitSkips(attempts, types.FailureDomainAnthropic); len(skips) != 0 {
 		t.Fatalf("anthropic circuit skips = %d, want 0", len(skips))
 	}
 
-	// The informational fixer runs entirely on codex across both tiers, each a
-	// launched failure with NO failure domain (the classifier's non-operational
-	// verdict) and never fails over to anthropic.
+	// The unresolved tier-0 verifier is the evidence that warrants escalation.
+	// Both repair tiers stay on the codex primary; only the second tier fails.
 	fixers := attemptsForPurpose(attempts, types.PurposeInformationalRepair)
 	if len(fixers) != 2 {
-		t.Fatalf("informational repair attempts = %d %v, want 2 (fix_fast then tools_balanced, both codex)", len(fixers), candidateModels(fixers))
+		t.Fatalf("informational repair attempts = %d %v, want exactly 2 (fix_fast then warranted tools_balanced)", len(fixers), candidateModels(fixers))
 	}
-	for i, f := range fixers {
-		if f.Start.Candidate.Runner != types.RunnerCodex {
-			t.Fatalf("informational fixer[%d] runner = %q, want codex (non-operational failures never fail over)", i, f.Start.Candidate.Runner)
-		}
-		if f.Terminal == nil || f.Terminal.Outcome != types.InvocationOutcomeFailed || f.Terminal.FailureDomain != "" {
-			t.Fatalf("informational fixer[%d] terminal = %+v, want failed with empty failure domain (non-operational)", i, f.Terminal)
-		}
+	assertCandidate(t, fixers[0], "fix_fast", 0, "luna", types.EffortMedium)
+	if fixers[0].Start.Candidate.Runner != types.RunnerCodex || fixers[0].Start.Candidate.CandidateIndex != 0 ||
+		fixers[0].Terminal == nil || fixers[0].Terminal.Outcome != types.InvocationOutcomeSucceeded {
+		t.Fatalf("tier-0 informational fixer = %+v, want succeeded primary codex candidate", fixers[0])
+	}
+	assertCandidate(t, fixers[1], "tools_balanced", 1, "terra", types.EffortHigh)
+	if fixers[1].Start.Candidate.Runner != types.RunnerCodex || fixers[1].Start.Candidate.CandidateIndex != 0 ||
+		fixers[1].Terminal == nil || fixers[1].Terminal.Outcome != types.InvocationOutcomeFailed || fixers[1].Terminal.FailureDomain != "" {
+		t.Fatalf("tier-1 informational fixer = %+v, want failed primary codex candidate with no failure domain", fixers[1])
 	}
 
-	// The codex candidate keeps being launched on the subsequent steps: Test and
-	// Lint each run the primary codex candidate to success rather than skipping it.
-	assertCodexSucceeded := func(purpose types.Purpose) {
-		t.Helper()
-		for _, a := range succeededAttemptsFor(attempts, purpose) {
-			if a.Start.Candidate.Runner == types.RunnerCodex && a.Start.Candidate.CandidateIndex == 0 {
-				return
-			}
-		}
-		t.Fatalf("purpose %q recorded no succeeded primary codex attempt; the openai candidate must keep being tried on subsequent steps (attempts=%v)", purpose, candidateModels(attemptsForPurpose(attempts, purpose)))
+	verifiers := attemptsForPurpose(attempts, types.PurposeInformationalRepairVerification)
+	if len(verifiers) != 1 {
+		t.Fatalf("informational verifier attempts = %d %v, want exactly 1 at tier 0", len(verifiers), candidateModels(verifiers))
 	}
-	assertCodexSucceeded(types.PurposeTestEvidence)
-	assertCodexSucceeded(types.PurposeLintInspection)
+	assertCandidate(t, verifiers[0], "tools_balanced", 0, "terra", types.EffortHigh)
+	if verifiers[0].Start.Candidate.Runner != types.RunnerCodex || verifiers[0].Start.Candidate.CandidateIndex != 0 ||
+		verifiers[0].Terminal == nil || verifiers[0].Terminal.Outcome != types.InvocationOutcomeSucceeded {
+		t.Fatalf("tier-0 informational verifier = %+v, want succeeded primary codex candidate", verifiers[0])
+	}
+
+	// The durable lineage records a real unresolved adjudication at tier 0,
+	// followed by a terminal inconclusive tier-1 row. Invocation failure is not a
+	// verifier verdict, so the second row deliberately has no attempt links.
+	repairs := h.FindingRepairs(t, run.ID)
+	if len(repairs) != 2 {
+		t.Fatalf("finding repairs = %d, want exactly 2 durable tiers", len(repairs))
+	}
+	first, second := repairs[0], repairs[1]
+	if first.LineageID == "" || second.LineageID != first.LineageID {
+		t.Fatalf("repair lineage IDs = %q / %q, want one non-empty lineage", first.LineageID, second.LineageID)
+	}
+	if first.Severity != "info" || first.Action != string(types.ActionAutoFix) || first.Description != "a purely informational cleanup" ||
+		first.Tier != 0 || first.RemainingBudget != 1 || first.Status != db.RepairStatusUnresolved ||
+		first.Verdict != db.RepairVerdictUnresolved || first.VerdictRationale != "the first-tier cleanup is insufficient" ||
+		first.FixerAttemptID != fixers[0].ID || first.VerifierAttemptID != verifiers[0].ID {
+		t.Fatalf("tier-0 repair = %+v, want linked unresolved informational adjudication with one tier remaining", first)
+	}
+	if second.Severity != "info" || second.Action != string(types.ActionAutoFix) || second.Description != "a purely informational cleanup" ||
+		second.Tier != 1 || second.RemainingBudget != 0 || second.Status != db.RepairStatusUnresolved ||
+		second.Verdict != db.RepairVerdictInconclusive || second.VerdictRationale != "fixer invocation failed" ||
+		second.FixerAttemptID != "" || second.VerifierAttemptID != "" {
+		t.Fatalf("tier-1 repair = %+v, want terminal unlinked inconclusive informational disposition", second)
+	}
+
+	// Closed circuits keep the exact primary tools_balanced route available to
+	// later Test and Lint work.
+	assertLaterCodexSuccess := func(purpose types.Purpose) {
+		t.Helper()
+		got := attemptsForPurpose(attempts, purpose)
+		if len(got) != 1 {
+			t.Fatalf("purpose %q attempts = %d %v, want exactly one primary codex attempt", purpose, len(got), candidateModels(got))
+		}
+		assertCandidate(t, got[0], "tools_balanced", 0, "terra", types.EffortHigh)
+		if got[0].Start.Candidate.Runner != types.RunnerCodex || got[0].Start.Candidate.CandidateIndex != 0 ||
+			got[0].Terminal == nil || got[0].Terminal.Outcome != types.InvocationOutcomeSucceeded {
+			t.Fatalf("purpose %q attempt = %+v, want succeeded primary codex candidate", purpose, got[0])
+		}
+	}
+	assertLaterCodexSuccess(types.PurposeTestEvidence)
+	assertLaterCodexSuccess(types.PurposeLintInspection)
 }

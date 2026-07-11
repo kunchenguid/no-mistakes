@@ -11,8 +11,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-
-	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
 
 // codexAgent spawns the codex CLI for each invocation.
@@ -74,11 +72,9 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 	cmd.Dir = opts.CWD
 	cmd.Stdin = nil
 	cmd.Env = gitSafeEnv(opts.CWD)
-	shellenv.ConfigureShellCommand(cmd)
-
 	var stderrBuf []byte
 	var stderrWG sync.WaitGroup
-	started, err := startNativeAgentCommand(cmd)
+	started, err := startNativeProcess(cmd)
 	if err != nil {
 		return nil, fmt.Errorf("codex start: %w", err)
 	}
@@ -245,11 +241,14 @@ type codexUsage struct {
 }
 
 // parseCodexEvents reads JSONL from the reader and dispatches events.
-// It captures the last agent_message text, the durable thread identity, and
-// accumulates token usage.
+// It captures the last agent_message text, durable thread identity, and token usage.
 func parseCodexEvents(ctx context.Context, r io.Reader, onChunk func(string), usage *TokenUsage, lastMessage *string, codexErr *string, threadID *string) error {
+	return parseCodexEventsWithMaxTokenSize(ctx, r, onChunk, usage, lastMessage, codexErr, threadID, 256*1024*1024)
+}
+
+func parseCodexEventsWithMaxTokenSize(ctx context.Context, r io.Reader, onChunk func(string), usage *TokenUsage, lastMessage *string, codexErr *string, threadID *string, maxTokenSize int) error {
 	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 64*1024), 256*1024*1024)
+	scanner.Buffer(make([]byte, 0, min(64*1024, maxTokenSize)), maxTokenSize)
 
 	for scanner.Scan() {
 		select {

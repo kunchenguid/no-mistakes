@@ -196,7 +196,9 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 	// Freeze the canary baseline + policy fingerprint before the first clean
 	// routed gate is accepted, so the routed cohort compares against a
 	// pre-routing baseline that excludes this run.
-	e.maybeActivateCanary(ctx, run, workDir)
+	if err := e.maybeActivateCanary(ctx, run, workDir); err != nil {
+		return e.failRun(run, repo, err, ctx)
+	}
 	// Mark run as completed
 	if err := e.db.UpdateRunStatus(run.ID, types.RunCompleted); err != nil {
 		return fmt.Errorf("update run status: %w", err)
@@ -765,10 +767,13 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFailed), "", "", dbErr.Error(), &durationMS)
 			return false, fmt.Errorf("complete step %s round: %w", stepName, dbErr)
 		}
-
-		// Give every returned initial-review finding a durable run-wide root
-		// lineage tied to the routed Candidate attempt that surfaced it.
-		e.recordReviewLineages(run, stepName, currentRoundID, outcome.Findings)
+		// Give every returned routed initial-review finding a durable run-wide
+		// root lineage tied to the Candidate attempt that surfaced it. Lineage
+		// is load-bearing for repair and approval, so routed review cannot
+		// continue when these facts are not durable.
+		if err := e.recordReviewLineages(run, stepName, currentRoundID, outcome.Findings); err != nil {
+			return false, fmt.Errorf("record initial review lineages: %w", err)
+		}
 
 		// Route this step's blocking findings through the common repair
 		// coordinator before the approval gate: a fresh fixer, the step's
@@ -776,22 +781,49 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		// the routed cascade. Runs only on the initial round. When the
 		// coordinator owns a non-review step's repair, the legacy per-step
 		// auto-fix loop is skipped for that step.
-		coordinatorRepaired := false
+		coordinatorResult := repairResult{}
 		if !sctx.Fixing {
 			reserveRepairRound := func(trigger string) (*db.StepRound, error) {
 				roundNum++
 				return e.db.ReserveStepRound(sr.ID, roundNum, trigger)
 			}
+			var repairErr error
 			if stepName == types.StepReview {
-				e.maybeRepairReviewFinding(ctx, sctx, run, sr, repo.DefaultBranch, currentRoundID, outcome.Findings, reserveRepairRound)
+				coordinatorResult, repairErr = e.maybeRepairReviewFinding(ctx, sctx, run, sr, repo.DefaultBranch, currentRoundID, outcome.Findings, reserveRepairRound)
 			} else {
-				coordinatorRepaired = e.maybeRepairStepFindings(ctx, sctx, run, sr, stepName, outcome.Findings, outcome.RepairChecks, reserveRepairRound)
+				coordinatorResult, repairErr = e.maybeRepairStepFindings(ctx, sctx, run, sr, stepName, outcome.Findings, outcome.RepairChecks, reserveRepairRound)
+			}
+			if repairErr != nil {
+				return false, fmt.Errorf("repair %s findings: %w", stepName, repairErr)
+			}
+			if len(coordinatorResult.NewFindings) > 0 || len(coordinatorResult.ResolvedIDs) > 0 {
+				updated, err := mergeRepairFindingsJSON(outcome.Findings, coordinatorResult.NewFindings)
+				if err != nil {
+					return false, fmt.Errorf("merge verifier-created %s findings: %w", stepName, err)
+				}
+				updated, err = removeFindingsByID(updated, coordinatorResult.ResolvedIDs)
+				if err != nil {
+					return false, fmt.Errorf("remove resolved %s findings: %w", stepName, err)
+				}
+				if updated == "" {
+					if err := e.db.ClearStepFindings(sr.ID); err != nil {
+						return false, fmt.Errorf("clear resolved %s findings: %w", stepName, err)
+					}
+				} else if err := e.db.SetStepFindings(sr.ID, updated); err != nil {
+					return false, fmt.Errorf("persist current %s findings: %w", stepName, err)
+				}
+				outcome.Findings = updated
+			}
+			if coordinatorResult.Owned {
+				outcome.NeedsApproval = !coordinatorResult.Resolved ||
+					hasBlockingFindingsJSON(outcome.Findings) ||
+					hasAskUserFindingsJSON(outcome.Findings)
 			}
 		}
 
 		// A Verify repair mutates the sealed candidate, so reseal the new HEAD:
 		// a repaired/reverified candidate produces a fresh seal that Push validates.
-		if coordinatorRepaired && stepName == types.StepVerify {
+		if coordinatorResult.Owned && coordinatorResult.Resolved && stepName == types.StepVerify {
 			if sealErr := e.sealCandidate(ctx, run, workDir); sealErr != nil {
 				return false, fmt.Errorf("reseal after verify repair: %w", sealErr)
 			}
@@ -816,6 +848,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		// Freeze execution timer before entering approval wait.
 		executionMS += time.Since(phaseStart).Milliseconds()
 
+	approval:
 		// Determine approval status: fix_review after a fix cycle, awaiting_approval otherwise
 		approvalStatus := types.StepStatusAwaitingApproval
 		var diffText string
@@ -883,6 +916,13 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 
 		switch response.action {
 		case types.ActionApprove:
+			unresolved, err := e.db.HasUnresolvedBlockingRepair(run.ID)
+			if err != nil {
+				return false, fmt.Errorf("check unresolved repairs before approval: %w", err)
+			}
+			if unresolved {
+				return false, fmt.Errorf("%s cannot be approved while a blocking finding lineage remains unresolved", stepName)
+			}
 			// Approved - execution already frozen in executionMS, reset phaseStart
 			// so the done label computes no additional elapsed.
 			phaseStart = time.Now()
@@ -909,20 +949,58 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			phaseStart = time.Now()
 			selectedCount := selectedFindingCount(outcome.Findings, response.findingIDs)
 			writeLog(fmt.Sprintf("user-fix round starting after round %d (%d %s selected)", roundNum, selectedCount, pluralize(selectedCount, "finding", "findings")))
-			if dbErr := e.db.UpdateStepStatus(sr.ID, types.StepStatusFixing); dbErr != nil {
-				slog.Warn("failed to update step status in db", "step", stepName, "status", "fixing", "error", dbErr)
+			if err := e.db.UpdateStepStatus(sr.ID, types.StepStatusFixing); err != nil {
+				return false, fmt.Errorf("mark step %s fixing: %w", stepName, err)
 			}
 			// Routed consent: the human (or unattended consent) authorized a fix,
-			// so repair the consented findings through the intent-sensitive
-			// cascade. This is the only path that may fix an ask-user finding.
+			// so repair the explicitly selected findings through the
+			// intent-sensitive cascade. This is the only path that may fix an
+			// ask-user finding.
 			if stepName == types.StepReview && e.routingActive() {
+				if currentRoundID == "" {
+					return false, fmt.Errorf("consented review repair has no source round")
+				}
+				idsJSON := marshalFindingIDs(response.findingIDs)
+				if idsJSON == "" {
+					return false, fmt.Errorf("consented review repair requires explicit finding ids")
+				}
+				if err := e.db.SetStepRoundSelection(currentRoundID, &idsJSON, db.RoundSelectionSourceUser); err != nil {
+					return false, fmt.Errorf("record consented review selection: %w", err)
+				}
 				reserveRepairRound := func(trigger string) (*db.StepRound, error) {
 					roundNum++
 					return e.db.ReserveStepRound(sr.ID, roundNum, trigger)
 				}
-				e.repairConsentedFindings(ctx, sctx, run, sr, repo.DefaultBranch, currentRoundID, outcome.Findings, response.findingIDs, reserveRepairRound)
+				result, err := e.repairConsentedFindings(ctx, sctx, run, sr, repo.DefaultBranch, currentRoundID, outcome.Findings, response.findingIDs, reserveRepairRound)
+				if err != nil {
+					return false, fmt.Errorf("repair consented review findings: %w", err)
+				}
+				if !result.Owned || !result.Resolved {
+					return false, fmt.Errorf("consented review repair did not durably resolve every selected finding")
+				}
+				updatedFindings, err := mergeRepairFindingsJSON(outcome.Findings, result.NewFindings)
+				if err != nil {
+					return false, fmt.Errorf("merge consented review verifier findings: %w", err)
+				}
+				remainingFindings, err := removeFindingsByID(updatedFindings, response.findingIDs)
+				if err != nil {
+					return false, fmt.Errorf("retain unselected review findings: %w", err)
+				}
+				if remainingFindings == "" {
+					if err := e.db.ClearStepFindings(sr.ID); err != nil {
+						return false, fmt.Errorf("clear resolved consented review findings: %w", err)
+					}
+				} else if err := e.db.SetStepFindings(sr.ID, remainingFindings); err != nil {
+					return false, fmt.Errorf("persist unselected review findings: %w", err)
+				}
+				outcome.Findings = remainingFindings
 				e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFixing), "", "", "", nil)
-				goto done
+				if remainingFindings == "" {
+					goto done
+				}
+				sctx.Fixing = true
+				executionMS += time.Since(phaseStart).Milliseconds()
+				goto approval
 			}
 			sctx.Fixing = true
 			selectedFindings := filterFindingsJSON(outcome.Findings, response.findingIDs)
@@ -1256,47 +1334,52 @@ func selectedFindingCount(raw string, ids []string) int {
 
 // recordReviewLineages gives every returned initial-review finding a durable,
 // run-wide root lineage tied to the routed Candidate attempt that surfaced it.
-// It is best-effort: the findings are already persisted, and lineage is
-// tracking metadata for later repair. It no-ops for non-review steps and for
-// rounds with no routed initial-review attempt (e.g. the legacy fix path).
-func (e *Executor) recordReviewLineages(run *db.Run, stepName types.StepName, roundID, findingsJSON string) {
-	if stepName != types.StepReview || roundID == "" || findingsJSON == "" || run == nil {
-		return
+func (e *Executor) recordReviewLineages(run *db.Run, stepName types.StepName, roundID, findingsJSON string) error {
+	if stepName != types.StepReview || findingsJSON == "" {
+		return nil
+	}
+	if run == nil || roundID == "" {
+		return fmt.Errorf("routed initial review findings require a run and round")
+	}
+	findings, err := types.ParseFindingsJSON(findingsJSON)
+	if err != nil {
+		return fmt.Errorf("parse initial review findings for lineage: %w", err)
+	}
+	if len(findings.Items) == 0 {
+		return nil
 	}
 	attempts, err := e.db.GetInvocationAttemptsByRound(roundID)
 	if err != nil {
-		slog.Warn("failed to load review attempts for lineage", "step", stepName, "error", err)
-		return
+		return fmt.Errorf("load initial review attempts for lineage: %w", err)
 	}
 	var reviewAttempt *db.InvocationAttempt
+	sawRoutedAttempt := false
 	for _, attempt := range attempts {
 		if attempt.Start.Purpose != types.PurposeInitialReview || attempt.Start.Candidate.IsZero() {
 			continue
 		}
-		// A cascade can record failed-over or circuit-skipped Candidates before
-		// the one that produced the findings; the lineage belongs to the
-		// Candidate that actually succeeded.
+		sawRoutedAttempt = true
 		if attempt.Terminal != nil && attempt.Terminal.Outcome == types.InvocationOutcomeSucceeded {
 			reviewAttempt = attempt
 			break
 		}
 	}
 	if reviewAttempt == nil {
-		return
-	}
-	findings, err := types.ParseFindingsJSON(findingsJSON)
-	if err != nil {
-		slog.Warn("failed to parse review findings for lineage", "step", stepName, "error", err)
-		return
-	}
-	if len(findings.Items) == 0 {
-		return
+		if !sawRoutedAttempt {
+			return nil
+		}
+		return fmt.Errorf("routed initial review findings have no succeeded producing Candidate attempt")
 	}
 	displayIDs := make([]string, 0, len(findings.Items))
 	for _, finding := range findings.Items {
 		displayIDs = append(displayIDs, finding.ID)
 	}
-	if _, err := e.db.CreateFindingLineages(run.ID, reviewAttempt.ID, displayIDs); err != nil {
-		slog.Warn("failed to create finding lineages", "step", stepName, "error", err)
+	lineages, err := e.db.CreateFindingLineages(run.ID, reviewAttempt.ID, displayIDs)
+	if err != nil {
+		return fmt.Errorf("create initial review lineages: %w", err)
 	}
+	if len(lineages) != len(displayIDs) {
+		return fmt.Errorf("created %d initial review lineages for %d findings", len(lineages), len(displayIDs))
+	}
+	return nil
 }

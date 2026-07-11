@@ -28,7 +28,7 @@ func TestCIStep_PendingChecksUseAdaptivePollIntervals(t *testing.T) {
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 20 * time.Minute
@@ -85,7 +85,7 @@ func TestCIStep_UsesStepEnvForCLIStartupChecks(t *testing.T) {
 	env := fakeCIGH(t, "MERGED", "[]")
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 
@@ -118,7 +118,7 @@ func TestCIStep_InvalidPRURLReturnsError(t *testing.T) {
 
 	prURL := "https://github.com/test/repo/pull/42/files"
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 
@@ -140,7 +140,7 @@ func TestCIStep_ContextCancelled(t *testing.T) {
 	dir := t.TempDir()
 	ag := &mockAgent{name: "test"}
 	prURL := "https://github.com/test/repo/pull/1"
-	sctx := newTestContext(t, ag, dir, "abc", "def", config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, "abc", "def", config.Commands{})
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = time.Hour
 
@@ -241,7 +241,7 @@ func TestCIStep_PRMergedExitsEarly(t *testing.T) {
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 10 * time.Second
@@ -278,7 +278,7 @@ func TestCIStep_PRClosedExitsEarly(t *testing.T) {
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 10 * time.Second
@@ -313,7 +313,7 @@ func TestCIStep_GetCIChecksNoChecksReported(t *testing.T) {
 
 	dir := t.TempDir()
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, "abc", "def", config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, "abc", "def", config.Commands{})
 	sctx.Env = env
 
 	host, skip := buildHost(sctx, scm.ProviderGitHub)
@@ -341,7 +341,7 @@ func TestCIStep_AllChecksPassingKeepsMonitoringOpenPR(t *testing.T) {
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 10 * time.Second
@@ -397,7 +397,7 @@ func TestCIStep_CIWarningAllowsChecksPassedToBeReannounced(t *testing.T) {
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 10 * time.Second
@@ -445,7 +445,7 @@ func TestCIStep_OpenPRKeepsMonitoringAfterChecksPass(t *testing.T) {
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 10 * time.Second
@@ -480,7 +480,7 @@ func TestCIStep_EmptyChecksWaitsDuringGracePeriod(t *testing.T) {
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 5 * time.Second
@@ -550,7 +550,7 @@ func TestCIStep_LogsWaitingForChecksDuringGracePeriod(t *testing.T) {
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 5 * time.Second
@@ -597,7 +597,7 @@ func TestCIStep_NonEmptyPassingChecksSkipGracePeriodAndContinueMonitoring(t *tes
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 10 * time.Second
@@ -649,7 +649,7 @@ func TestCIStep_BaseBranchAdvanceRearmsTimeout(t *testing.T) {
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 10 * time.Second
@@ -721,7 +721,7 @@ func TestCIStep_StableBaseStillTimesOut(t *testing.T) {
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 10 * time.Second
@@ -772,7 +772,7 @@ func TestCIStep_UnresolvedFallbackBaseTipDoesNotRearmTimeout(t *testing.T) {
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 10 * time.Second
@@ -839,7 +839,7 @@ func TestCIStep_ExpiredTimeoutSkipsBaseTipResolver(t *testing.T) {
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 10 * time.Second
@@ -883,7 +883,7 @@ func TestCIStep_BaseTipResolverDeadlineIsBoundedByRemainingTimeout(t *testing.T)
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 10 * time.Second
@@ -938,7 +938,7 @@ func TestCIStep_UnlimitedTimeoutNeverExpires(t *testing.T) {
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = config.CITimeoutUnlimited

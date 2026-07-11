@@ -24,7 +24,7 @@ func TestCIStep_MergeConflictDetected_ReturnsNeedsApproval(t *testing.T) {
 
 	ag := &mockAgent{name: "test"}
 	prURL := "https://github.com/test/repo/pull/42"
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 5 * time.Second
@@ -102,7 +102,7 @@ func TestCIStep_MergeConflictAndCIFailure_FixPromptIncludesBoth(t *testing.T) {
 	}
 
 	prURL := "https://github.com/test/repo/pull/42"
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Repo.UpstreamURL = upstream
@@ -176,7 +176,7 @@ func TestCIStep_MergeConflictOnly_AutoFix(t *testing.T) {
 	}
 
 	prURL := "https://github.com/test/repo/pull/42"
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Repo.UpstreamURL = upstream
@@ -269,15 +269,13 @@ func TestCIStep_MergeConflictAutoFixPromptUsesBaseBranchTip(t *testing.T) {
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 			capturedPrompt = opts.Prompt
-			if err := os.WriteFile(filepath.Join(opts.CWD, "conflict-fix.txt"), []byte("resolved\n"), 0o644); err != nil {
-				t.Fatal(err)
-			}
+			gitCmd(t, opts.CWD, "rebase", mainTip)
 			return &agent.Result{}, nil
 		},
 	}
 
 	prURL := "https://github.com/test/repo/pull/42"
-	sctx := newTestContext(t, ag, dir, baseSHA, featureHead, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, featureHead, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Repo.UpstreamURL = upstream

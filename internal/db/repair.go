@@ -117,18 +117,26 @@ func (d *DB) StartFindingRepair(s FindingRepairStart) (string, error) {
 
 // SetFindingRepairFixer links the fixer invocation attempt to a repair cycle.
 func (d *DB) SetFindingRepairFixer(repairID, fixerAttemptID string) error {
-	if _, err := d.sql.Exec(`UPDATE finding_repairs SET fixer_attempt_id = ?, updated_at = ? WHERE id = ?`, fixerAttemptID, now(), repairID); err != nil {
+	if strings.TrimSpace(repairID) == "" || strings.TrimSpace(fixerAttemptID) == "" {
+		return fmt.Errorf("link finding repair fixer requires repair and attempt ids")
+	}
+	result, err := d.sql.Exec(`UPDATE finding_repairs SET fixer_attempt_id = ?, updated_at = ? WHERE id = ?`, fixerAttemptID, now(), repairID)
+	if err != nil {
 		return fmt.Errorf("link finding repair fixer: %w", err)
 	}
-	return nil
+	return requireFindingRepairUpdate(result, repairID, "link fixer")
 }
 
 // SetFindingRepairVerifier links the strong verifier invocation attempt.
 func (d *DB) SetFindingRepairVerifier(repairID, verifierAttemptID string) error {
-	if _, err := d.sql.Exec(`UPDATE finding_repairs SET verifier_attempt_id = ?, updated_at = ? WHERE id = ?`, verifierAttemptID, now(), repairID); err != nil {
+	if strings.TrimSpace(repairID) == "" || strings.TrimSpace(verifierAttemptID) == "" {
+		return fmt.Errorf("link finding repair verifier requires repair and attempt ids")
+	}
+	result, err := d.sql.Exec(`UPDATE finding_repairs SET verifier_attempt_id = ?, updated_at = ? WHERE id = ?`, verifierAttemptID, now(), repairID)
+	if err != nil {
 		return fmt.Errorf("link finding repair verifier: %w", err)
 	}
-	return nil
+	return requireFindingRepairUpdate(result, repairID, "link verifier")
 }
 
 // RecordFindingRepairCheck appends one deterministic check run to a repair cycle.
@@ -145,11 +153,33 @@ func (d *DB) RecordFindingRepairCheck(repairID, command string, applicable bool,
 // ResolveFindingRepair records the verifier's verdict, rationale, and the
 // repair cycle's terminal status.
 func (d *DB) ResolveFindingRepair(repairID, verdict, rationale, status string) error {
-	if _, err := d.sql.Exec(
+	switch verdict {
+	case RepairVerdictResolved, RepairVerdictUnresolved, RepairVerdictInconclusive:
+	default:
+		return fmt.Errorf("resolve finding repair requires a valid verdict")
+	}
+	switch status {
+	case RepairStatusResolved, RepairStatusUnresolved, RepairStatusFailed:
+	default:
+		return fmt.Errorf("resolve finding repair requires a terminal status")
+	}
+	result, err := d.sql.Exec(
 		`UPDATE finding_repairs SET verdict = ?, verdict_rationale = ?, status = ?, updated_at = ? WHERE id = ?`,
-		nullIfEmpty(verdict), nullIfEmpty(rationale), status, now(), repairID,
-	); err != nil {
+		verdict, nullIfEmpty(rationale), status, now(), repairID,
+	)
+	if err != nil {
 		return fmt.Errorf("resolve finding repair: %w", err)
+	}
+	return requireFindingRepairUpdate(result, repairID, "resolve")
+}
+
+func requireFindingRepairUpdate(result sql.Result, repairID, operation string) error {
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("%s finding repair rows affected: %w", operation, err)
+	}
+	if changed != 1 {
+		return fmt.Errorf("%s finding repair %q: not found", operation, repairID)
 	}
 	return nil
 }
@@ -260,7 +290,9 @@ func (d *DB) HasUnresolvedBlockingRepair(runID string) (bool, error) {
 		if r.Severity != "error" && r.Severity != "warning" {
 			continue
 		}
-		if cur, ok := latest[r.LineageID]; !ok || r.Tier > cur.Tier {
+		cur, ok := latest[r.LineageID]
+		if !ok || r.Tier > cur.Tier ||
+			(r.Tier == cur.Tier && (r.CreatedAt > cur.CreatedAt || (r.CreatedAt == cur.CreatedAt && r.ID > cur.ID))) {
 			latest[r.LineageID] = r
 		}
 	}

@@ -16,11 +16,13 @@ import (
 func newAxiCanaryCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "canary",
-		Short: "Show the routing canary baseline/routed comparison",
+		Short: "Show the required routing canary baseline/routed report",
 		Long: "Reports the dormant routing canary: the frozen pre-routing baseline\n" +
 			"cohort versus the first routed cohort, compared on the execution-only\n" +
-			"agent-bearing Step-round median. The 30% improvement target is advisory\n" +
-			"only and never changes Profiles, Routes, circuits, or gate outcomes.",
+			"agent-bearing Step-round median. This report is required. Until both\n" +
+			"cohorts are complete, samples are preliminary. Preliminary samples\n" +
+			"must not be treated as live results. The 30% improvement target is\n" +
+			"advisory only and never changes Profiles, Routes, circuits, or gate outcomes.",
 		Args:          cobra.NoArgs,
 		SilenceErrors: true,
 		SilenceUsage:  true,
@@ -45,12 +47,22 @@ func runAxiCanary(cmd *cobra.Command) error {
 		return emitError(cmd, 1, fmt.Sprintf("load canary report: %v", err))
 	}
 
-	fields := []toon.Field{{Key: "surface", Value: "routing-canary"}}
+	fields := []toon.Field{
+		{Key: "surface", Value: "routing-canary"},
+		{Key: "report_required", Value: true},
+	}
 	if !report.Activated {
 		fields = append(fields,
 			toon.Field{Key: "activated", Value: false},
+			toon.Field{Key: "target_reduction", Value: report.TargetReduction},
+			toon.Field{Key: "target_advisory", Value: true},
 			toon.Field{Key: "state", Value: "dormant: the routing cutover has not activated the canary yet"},
+			toon.Field{Key: "comparison_complete", Value: false},
+			toon.Field{Key: "result_state", Value: "dormant"},
 		)
+		fields = append(fields, canaryCohortFields("baseline", report.Baseline)...)
+		fields = append(fields, canaryCohortFields("routed", report.Routed)...)
+		fields = append(fields, toon.Field{Key: "target_met", Value: "pending"})
 		emitDoc(cmd, fields...)
 		return nil
 	}
@@ -58,6 +70,9 @@ func runAxiCanary(cmd *cobra.Command) error {
 	fields = append(fields,
 		toon.Field{Key: "activated", Value: true},
 		toon.Field{Key: "target_reduction", Value: report.TargetReduction},
+		toon.Field{Key: "target_advisory", Value: true},
+		toon.Field{Key: "comparison_complete", Value: report.Baseline.Complete && report.Routed.Complete},
+		toon.Field{Key: "result_state", Value: canaryResultState(report)},
 	)
 	fields = append(fields, canaryCohortFields("baseline", report.Baseline)...)
 	fields = append(fields, canaryCohortFields("routed", report.Routed)...)
@@ -73,6 +88,13 @@ func runAxiCanary(cmd *cobra.Command) error {
 	fields = append(fields, toon.Field{Key: "target_met", Value: met})
 	emitDoc(cmd, fields...)
 	return nil
+}
+
+func canaryResultState(report *db.CanaryReport) string {
+	if report.Baseline.Complete && report.Routed.Complete {
+		return "complete"
+	}
+	return "preliminary"
 }
 
 func canaryCohortFields(name string, c db.CanaryCohort) []toon.Field {

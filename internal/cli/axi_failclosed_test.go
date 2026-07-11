@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -62,6 +63,46 @@ func TestDriveRunUnattendedFailsClosedOnUnresolvedBlocking(t *testing.T) {
 	}
 	if respondedAction != types.ActionAbort {
 		t.Fatalf("unattended consent responded %q, want abort", respondedAction)
+	}
+}
+
+func TestDriveRunUnattendedFailsClosedWhenRepairStateIsUnknown(t *testing.T) {
+	dir, err := os.MkdirTemp("", "cli-ipc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	sock := filepath.Join(dir, "d.sock")
+
+	awaiting := &ipc.RunInfo{
+		ID: "run-unknown", RepoID: "repo-1", Branch: "feature", Status: types.RunRunning,
+		Steps: []ipc.StepResultInfo{{ID: "s1", RunID: "run-unknown", StepName: types.StepReview, Status: types.StepStatusAwaitingApproval}},
+	}
+	var responses int
+	srv := ipc.NewServer()
+	srv.Handle(ipc.MethodGetRun, func(_ context.Context, _ json.RawMessage) (interface{}, error) {
+		return &ipc.GetRunResult{Run: awaiting}, nil
+	})
+	srv.Handle(ipc.MethodRespond, func(_ context.Context, _ json.RawMessage) (interface{}, error) {
+		responses++
+		return &ipc.RespondResult{OK: true}, nil
+	})
+	go func() { _ = srv.Serve(sock) }()
+	t.Cleanup(srv.Close)
+
+	client := dialWithRetry(t, sock)
+	defer client.Close()
+
+	checkErr := errors.New("repair journal unavailable")
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	_, _, err = driveRun(ctx, io.Discard, client, awaiting.ID, true, nil,
+		func(string) (bool, error) { return false, checkErr })
+	if !errors.Is(err, checkErr) {
+		t.Fatalf("driveRun error = %v, want repair checker error %v", err, checkErr)
+	}
+	if responses != 0 {
+		t.Fatalf("respond calls = %d, want none when repair state is unknown", responses)
 	}
 }
 

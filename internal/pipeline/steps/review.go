@@ -191,6 +191,10 @@ Risk assessment (after listing all findings):
 		ignorePatterns,
 		historySection,
 	)
+	candidateSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
+	if err != nil {
+		return nil, fmt.Errorf("strong review: resolve candidate HEAD: %w", err)
+	}
 
 	// Every review turn - the initial review and every post-fix rereview -
 	// resumes the run's single durable reviewer session. The prompt above
@@ -207,25 +211,30 @@ Risk assessment (after listing all findings):
 	if err != nil {
 		return nil, fmt.Errorf("agent review: %w", err)
 	}
-
-	// The routed strong review must return parseable structured findings.
-	// Missing or malformed output cannot count as a clean review.
-	if result == nil || result.Output == nil {
-		return nil, fmt.Errorf("strong review returned no structured findings")
+	if err := requireUnchangedCleanCandidate(sctx, candidateSHA); err != nil {
+		return nil, fmt.Errorf("strong review: %w", err)
 	}
-	var findings Findings
-	if err := json.Unmarshal(result.Output, &findings); err != nil {
-		return nil, fmt.Errorf("strong review output malformed: %w", err)
+
+	// The routed strong review must be semantically complete even when an
+	// adapter claimed schema conformance.
+	if result == nil {
+		return nil, fmt.Errorf("strong review returned no result")
+	}
+	findings, err := validateReviewFindingsOutput(result.Output)
+	if err != nil {
+		return nil, fmt.Errorf("strong review returned inconclusive output: %w", err)
 	}
 
 	needsApproval := hasBlockingFindings(findings.Items)
 	findingsJSON, _ := json.Marshal(findings)
 
-	// A clean strong review establishes the latest strong-reviewed candidate,
-	// which Verify later uses to skip re-review when nothing changed. Best-effort:
-	// if it cannot be recorded, Verify simply performs fresh verification.
+	// A clean strong review establishes this exact unchanged SHA as the latest
+	// strong-reviewed candidate, which Verify later uses only when nothing
+	// changed.
 	if !needsApproval {
-		recordReviewedCandidate(sctx)
+		if err := sealReviewedCandidate(sctx, candidateSHA); err != nil {
+			return nil, fmt.Errorf("strong review: %w", err)
+		}
 	}
 
 	return &pipeline.StepOutcome{
@@ -236,18 +245,31 @@ Risk assessment (after listing all findings):
 	}, nil
 }
 
-// recordReviewedCandidate seals the current HEAD as the latest strong-reviewed
-// candidate. Best-effort: a failure only means Verify will re-review rather than
-// skip, so it never fails the Review step.
-func recordReviewedCandidate(sctx *pipeline.StepContext) {
+// requireUnchangedCleanCandidate proves a verifier did not mutate the candidate
+// it was asked to judge.
+func requireUnchangedCleanCandidate(sctx *pipeline.StepContext, expectedSHA string) error {
 	head, err := git.HeadSHA(sctx.Ctx, sctx.WorkDir)
 	if err != nil {
-		sctx.LogFile(fmt.Sprintf("warning: could not resolve HEAD to record reviewed candidate: %v", err))
-		return
+		return fmt.Errorf("resolve candidate HEAD after verifier: %w", err)
 	}
-	if _, err := sctx.DB.CreateSeal(sctx.Run.ID, head, "reviewed"); err != nil {
-		sctx.LogFile(fmt.Sprintf("warning: could not seal reviewed candidate: %v", err))
+	if head != expectedSHA {
+		return fmt.Errorf("verifier changed HEAD from %s to %s", shortSHA(expectedSHA), shortSHA(head))
 	}
+	status, err := git.Run(sctx.Ctx, sctx.WorkDir, "status", "--porcelain")
+	if err != nil {
+		return fmt.Errorf("check candidate worktree after verifier: %w", err)
+	}
+	if strings.TrimSpace(status) != "" {
+		return fmt.Errorf("verifier left candidate %s worktree dirty", shortSHA(expectedSHA))
+	}
+	return nil
+}
+
+func sealReviewedCandidate(sctx *pipeline.StepContext, validatedSHA string) error {
+	if _, err := sctx.DB.CreateSeal(sctx.Run.ID, validatedSHA, "reviewed"); err != nil {
+		return fmt.Errorf("seal reviewed candidate %s: %w", shortSHA(validatedSHA), err)
+	}
+	return nil
 }
 
 func sanitizedPreviousFindingsForPrompt(raw string) string {

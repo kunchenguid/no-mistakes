@@ -25,6 +25,25 @@ CREATE TABLE IF NOT EXISTS runs (
     updated_at           INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS run_completion_order (
+    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id   TEXT NOT NULL UNIQUE REFERENCES runs(id) ON DELETE CASCADE
+);
+
+CREATE TRIGGER IF NOT EXISTS runs_completion_order_after_insert
+AFTER INSERT ON runs
+WHEN NEW.status = 'completed'
+BEGIN
+    INSERT OR IGNORE INTO run_completion_order (run_id) VALUES (NEW.id);
+END;
+
+CREATE TRIGGER IF NOT EXISTS runs_completion_order_after_update
+AFTER UPDATE OF status ON runs
+WHEN NEW.status = 'completed' AND OLD.status <> 'completed'
+BEGIN
+    INSERT OR IGNORE INTO run_completion_order (run_id) VALUES (NEW.id);
+END;
+
 CREATE TABLE IF NOT EXISTS step_results (
     id               TEXT PRIMARY KEY,
     run_id           TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
@@ -209,9 +228,10 @@ CREATE TABLE IF NOT EXISTS finding_repair_checks (
 CREATE INDEX IF NOT EXISTS finding_repair_checks_repair ON finding_repair_checks(repair_id);
 
 CREATE TABLE IF NOT EXISTS canary_activation (
-    id           INTEGER PRIMARY KEY CHECK (id = 1),
-    activated_at INTEGER NOT NULL,
-    fingerprint  TEXT NOT NULL DEFAULT ''
+    id               INTEGER PRIMARY KEY CHECK (id = 1),
+    activated_at     INTEGER NOT NULL,
+    fingerprint      TEXT NOT NULL DEFAULT '',
+    completion_fence INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS canary_cohort_runs (
@@ -262,4 +282,14 @@ var migrationStatements = []string{
 	`ALTER TABLE step_results ADD COLUMN last_activity TEXT`,
 	`ALTER TABLE step_results ADD COLUMN agent_pid INTEGER`,
 	`ALTER TABLE step_results ADD COLUMN auto_fix_limit INTEGER`,
+	`ALTER TABLE canary_activation ADD COLUMN completion_fence INTEGER NOT NULL DEFAULT -1`,
+	`INSERT OR IGNORE INTO run_completion_order (run_id)
+		SELECT r.id
+		FROM runs r
+		WHERE r.status = 'completed'
+		  AND NOT EXISTS (SELECT 1 FROM run_completion_order c WHERE c.run_id = r.id)
+		ORDER BY r.updated_at, r.id`,
+	`UPDATE canary_activation
+		SET completion_fence = COALESCE((SELECT MAX(sequence) FROM run_completion_order), 0)
+		WHERE completion_fence = -1`,
 }

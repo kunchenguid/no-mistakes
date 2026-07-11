@@ -364,6 +364,42 @@ func TestWizardAgentSuggester_EmptyRetryClearsCachedCommit(t *testing.T) {
 	}
 }
 
+func TestLoadWizardRoutingUsesPinnedTrustedRoutesAndIgnoresFeatureRoutes(t *testing.T) {
+	ctx := context.Background()
+	work := t.TempDir()
+	origin := filepath.Join(t.TempDir(), "origin.git")
+	run(t, "", "git", "init", "--bare", origin)
+	run(t, work, "git", "init", "--initial-branch=main")
+	run(t, work, "git", "config", "user.email", "test@test.com")
+	run(t, work, "git", "config", "user.name", "Test")
+	run(t, work, "git", "remote", "add", "origin", origin)
+
+	trusted := "routes:\n  branch_commit_suggestion: authority_strong\n"
+	if err := os.WriteFile(filepath.Join(work, ".no-mistakes.yaml"), []byte(trusted), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(t, work, "git", "add", ".no-mistakes.yaml")
+	run(t, work, "git", "commit", "-m", "trusted route")
+	run(t, work, "git", "push", "origin", "main:refs/heads/main")
+
+	run(t, work, "git", "switch", "-c", "feature")
+	feature := "routes:\n  branch_commit_suggestion: fix_fast\n"
+	if err := os.WriteFile(filepath.Join(work, ".no-mistakes.yaml"), []byte(feature), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(t, work, "git", "add", ".no-mistakes.yaml")
+	run(t, work, "git", "commit", "-m", "feature route")
+
+	routing, err := loadWizardRouting(ctx, work, "main", &config.GlobalConfig{Routing: config.DefaultRoutingConfig()})
+	if err != nil {
+		t.Fatalf("loadWizardRouting: %v", err)
+	}
+	route := routing.Routes[types.PurposeBranchCommitSuggestion]
+	if len(route) != 1 || route[0] != config.ProfileAuthorityStrong {
+		t.Fatalf("wizard route = %v, want pinned trusted authority_strong override", route)
+	}
+}
+
 func TestRunWizardTracksPageview(t *testing.T) {
 	recorder := &telemetryRecorder{}
 	restoreTelemetry := telemetry.SetDefaultForTesting(recorder)

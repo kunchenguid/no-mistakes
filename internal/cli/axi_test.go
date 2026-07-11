@@ -174,12 +174,17 @@ func TestWriteRunObjectRoutingBlock(t *testing.T) {
 	d := openTestDB(t)
 	run, steps, lineages := seedRoutedReviewStep(t, d)
 
-	out := axiDoc(runObjectField(runViewFromDB(d, run, steps)))
+	field := runObjectField(runViewFromDB(d, run, steps))
+	out, err := toon.MarshalString(toon.NewObject(field))
+	if err != nil {
+		t.Fatalf("marshal routed run: %v", err)
+	}
 
 	for _, want := range []string{
 		"  review_routing:\n",
-		"    attempts[1]{profile,tier,candidate_index,runner,model,effort,outcome,duration_ms,input_tokens,output_tokens,cache_read_tokens,cache_creation_tokens}:\n",
-		"      review_strong,0,0,codex,gpt-5.6-sol,high,succeeded,4200,120,34,0,0\n",
+		"    lineage_count: 2\n",
+		"    attempts[1]{profile,tier,candidate_index,runner,model,effort,outcome,failure_domain,duration_ms,input_tokens,output_tokens,cache_read_tokens,cache_creation_tokens}:\n",
+		`      review_strong,0,0,codex,gpt-5.6-sol,high,succeeded,"",4200,120,34,0,0` + "\n",
 		"    lineages[2]{lineage_id,display_id,sequence}:\n",
 	} {
 		if !strings.Contains(out, want) {
@@ -187,21 +192,61 @@ func TestWriteRunObjectRoutingBlock(t *testing.T) {
 		}
 	}
 
-	// Lineage rows render in run-wide sequence order carrying the durable ULID
-	// identity, not the model's display id. The ULIDs quote under TOON's
-	// leading-zero rule, so strip quotes before matching to assert content and
-	// order without depending on the quoting.
 	stripped := strings.ReplaceAll(out, `"`, "")
-	wantLineages := "      " + lineages[0].ID + ",review-1,0\n" +
-		"      " + lineages[1].ID + ",review-2,1\n"
-	if !strings.Contains(stripped, wantLineages) {
-		t.Errorf("lineage rows not in deterministic order; want:\n%s\ngot:\n%s", wantLineages, out)
+	first := strings.Index(stripped, lineages[0].ID+",review-1,0")
+	second := strings.Index(stripped, lineages[1].ID+",review-2,1")
+	if first == -1 || second == -1 {
+		t.Fatalf("lineage rows missing from routed output:\n%s", out)
+	}
+	if first >= second {
+		t.Fatalf("lineage rows rendered out of sequence order:\n%s", out)
+	}
+}
+
+func TestRunViewFromIPCRendersFullFailoverRouting(t *testing.T) {
+	run := &ipc.RunInfo{
+		ID: "run-ipc", Branch: "feature/failover", HeadSHA: "abcdef1234567890", Status: types.RunRunning,
+		Steps: []ipc.StepResultInfo{{
+			ID: "review-step", StepName: types.StepReview, Status: types.StepStatusAwaitingApproval,
+			ReviewRouting: &ipc.ReviewRoutingInfo{
+				Candidates: []ipc.RoutedCandidateInfo{
+					{
+						Profile: "review_strong", Tier: 0, CandidateIndex: 0,
+						Runner: "codex", Model: "gpt-5.6-sol", Effort: "high",
+						Outcome: "failed", FailureDomain: "openai", DurationMS: 1250,
+						InputTokens: 101, OutputTokens: 17,
+					},
+					{
+						Profile: "review_strong", Tier: 0, CandidateIndex: 1,
+						Runner: "claude", Model: "fable", Effort: "xhigh",
+						Outcome: "succeeded", DurationMS: 2400,
+						InputTokens: 202, OutputTokens: 29, CacheReadTokens: 11, CacheCreationTokens: 7,
+					},
+				},
+				LineageCount: 3,
+			},
+		}},
 	}
 
-	// failure_domain is omitted when empty, so a clean succeeded attempt never
-	// carries the column.
-	if strings.Contains(out, "failure_domain") {
-		t.Errorf("failure_domain must be omitted when empty:\n%s", out)
+	var rendered bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&rendered)
+	if err := renderDriveResult(cmd, run, false); err != nil {
+		t.Fatalf("render routed AXI result: %v", err)
+	}
+	out := rendered.String()
+	for _, want := range []string{
+		"review_routing:",
+		"review_strong,0,0,codex,gpt-5.6-sol,high,failed,openai,1250,101,17,0,0",
+		`review_strong,0,1,claude,fable,xhigh,succeeded,"",2400,202,29,11,7`,
+		"lineage_count: 3",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("IPC routing output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Index(out, "gpt-5.6-sol") > strings.Index(out, "fable") {
+		t.Fatalf("candidate cascade rendered out of order:\n%s", out)
 	}
 }
 
@@ -433,8 +478,9 @@ func TestWriteGateShape(t *testing.T) {
 		"to have the pipeline fix the selected findings (do not edit files yourself)",
 		// Review gate carries the routing-era review note and the keep-driving
 		// reminder so an agent reads them at the point of use.
-		"Blocking and ask-user review findings",
-		"park for your decision rather than being silently self-fixed",
+		"Review findings are parked for explicit consent",
+		"ask-user requires the user's decision unless --yes supplies standing consent",
+		"--yes aborts rather than accepts an unresolved blocking repair",
 		"the run never advances past a gate on its own",
 	} {
 		if !strings.Contains(out, want) {
@@ -458,12 +504,12 @@ func TestGateNote_ReviewOnly(t *testing.T) {
 	}
 
 	review := mk("review")
-	if !strings.Contains(review, "Blocking and ask-user review findings park for your decision") {
+	if !strings.Contains(review, "Review findings are parked for explicit consent") {
 		t.Errorf("review gate missing the routing-era review note in:\n%s", review)
 	}
 
 	lint := mk("lint")
-	if strings.Contains(lint, "park for your decision") {
+	if strings.Contains(lint, "parked for explicit consent") {
 		t.Errorf("non-review gate should not carry the review note in:\n%s", lint)
 	}
 	if !strings.Contains(lint, "the run never advances past a gate on its own") {

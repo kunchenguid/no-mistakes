@@ -60,8 +60,9 @@ type CanaryReport struct {
 	Baseline        CanaryCohort
 	Routed          CanaryCohort
 	TargetReduction float64
-	// Met is nil while the comparison is not yet computable (either cohort
-	// empty); otherwise it reports whether the routed median met the target.
+	// Met is nil until both frozen cohorts contain ten successful runs.
+	// Otherwise it reports whether the complete routed cohort met the advisory
+	// target.
 	Met *bool
 }
 
@@ -103,13 +104,23 @@ func (d *DB) ActivateCanary(fingerprint string, changedStats func(baseSHA, headS
 		return false, nil
 	}
 
-	if _, err := tx.Exec(`INSERT INTO canary_activation (id, activated_at, fingerprint) VALUES (1, ?, ?)`, now(), fingerprint); err != nil {
+	var completionFence int64
+	if err := tx.QueryRow(`SELECT COALESCE(MAX(sequence), 0) FROM run_completion_order`).Scan(&completionFence); err != nil {
+		return false, fmt.Errorf("read canary completion fence: %w", err)
+	}
+	if _, err := tx.Exec(`INSERT INTO canary_activation (id, activated_at, fingerprint, completion_fence) VALUES (1, ?, ?, ?)`, now(), fingerprint, completionFence); err != nil {
 		return false, fmt.Errorf("record canary activation: %w", err)
 	}
 
 	type baselineRun struct{ id, baseSHA, headSHA string }
 	var baseline []baselineRun
-	rows, err := tx.Query(`SELECT id, base_sha, head_sha FROM runs WHERE status = ? ORDER BY updated_at DESC, id DESC LIMIT ?`, types.RunCompleted, canaryCohortSize)
+	rows, err := tx.Query(`
+		SELECT r.id, r.base_sha, r.head_sha
+		FROM runs r
+		JOIN run_completion_order c ON c.run_id = r.id
+		WHERE r.status = ?
+		ORDER BY c.sequence DESC
+		LIMIT ?`, types.RunCompleted, canaryCohortSize)
 	if err != nil {
 		return false, fmt.Errorf("select baseline runs: %w", err)
 	}
@@ -148,11 +159,13 @@ func (d *DB) ActivateCanary(fingerprint string, changedStats func(baseSHA, headS
 	return true, nil
 }
 
-// RecordRoutedRunInCanary adds one successful routed run to the routed cohort
-// when the canary is active, the run completed after activation, the cohort is
-// not yet full, and the run is not already recorded. It never replaces an
-// existing member, and failed, cancelled, pre-activation, and duplicate runs
-// are ignored. Returns true when the run was added.
+// RecordRoutedRunInCanary adds a successful routed run when its durable
+// completion ordinal is after the activation fence and among the first ten
+// successful completions after that fence. Completion ordinals, rather than
+// second-resolution timestamps or intake arrival order, exclude pre-activation
+// runs and give concurrent completions a stable total order. Failed, cancelled,
+// duplicate, pre-fence, and later successful runs are ignored. Returns true
+// when the run was added.
 func (d *DB) RecordRoutedRunInCanary(runID string, changedFiles, changedLines int) (bool, error) {
 	tx, err := d.sql.Begin()
 	if err != nil {
@@ -160,8 +173,8 @@ func (d *DB) RecordRoutedRunInCanary(runID string, changedFiles, changedLines in
 	}
 	defer tx.Rollback()
 
-	var activatedAt int64
-	switch err := tx.QueryRow(`SELECT activated_at FROM canary_activation WHERE id = 1`).Scan(&activatedAt); err {
+	var completionFence int64
+	switch err := tx.QueryRow(`SELECT completion_fence FROM canary_activation WHERE id = 1`).Scan(&completionFence); err {
 	case nil:
 	case sql.ErrNoRows:
 		return false, nil // dormant
@@ -171,22 +184,47 @@ func (d *DB) RecordRoutedRunInCanary(runID string, changedFiles, changedLines in
 
 	var status string
 	var completedAt int64
-	switch err := tx.QueryRow(`SELECT status, updated_at FROM runs WHERE id = ?`, runID).Scan(&status, &completedAt); err {
+	var completionSequence sql.NullInt64
+	switch err := tx.QueryRow(`
+		SELECT r.status, r.updated_at, c.sequence
+		FROM runs r
+		LEFT JOIN run_completion_order c ON c.run_id = r.id
+		WHERE r.id = ?`, runID).Scan(&status, &completedAt, &completionSequence); err {
 	case nil:
 	case sql.ErrNoRows:
 		return false, nil
 	default:
 		return false, fmt.Errorf("load canary run: %w", err)
 	}
-	if types.RunStatus(status) != types.RunCompleted || completedAt < activatedAt {
+	if types.RunStatus(status) != types.RunCompleted {
+		return false, nil
+	}
+	if !completionSequence.Valid {
+		return false, fmt.Errorf("completed canary run %s has no durable completion ordinal", runID)
+	}
+	if completionSequence.Int64 <= completionFence {
 		return false, nil
 	}
 
-	var count int
-	if err := tx.QueryRow(`SELECT count(*) FROM canary_cohort_runs WHERE cohort = ?`, canaryCohortRouted).Scan(&count); err != nil {
-		return false, fmt.Errorf("count routed cohort: %w", err)
+	var rank int
+	if err := tx.QueryRow(`
+		SELECT count(*)
+		FROM run_completion_order c
+		JOIN runs r ON r.id = c.run_id
+		WHERE r.status = ? AND c.sequence > ? AND c.sequence <= ?`,
+		types.RunCompleted, completionFence, completionSequence.Int64).Scan(&rank); err != nil {
+		return false, fmt.Errorf("rank routed canary completion: %w", err)
 	}
-	if count >= canaryCohortSize {
+	var preFenceMembers int
+	if err := tx.QueryRow(`
+		SELECT count(*)
+		FROM canary_cohort_runs cr
+		JOIN run_completion_order c ON c.run_id = cr.run_id
+		WHERE cr.cohort = ? AND c.sequence <= ?`,
+		canaryCohortRouted, completionFence).Scan(&preFenceMembers); err != nil {
+		return false, fmt.Errorf("count migrated routed canary members: %w", err)
+	}
+	if preFenceMembers+rank > canaryCohortSize {
 		return false, nil
 	}
 	var present int
@@ -202,7 +240,7 @@ func (d *DB) RecordRoutedRunInCanary(runID string, changedFiles, changedLines in
 		return false, err
 	}
 	facts.ChangedFiles, facts.ChangedLines = changedFiles, changedLines
-	if err := insertCanaryCohortRun(tx, canaryCohortRouted, count, facts); err != nil {
+	if err := insertCanaryCohortRun(tx, canaryCohortRouted, preFenceMembers+rank-1, facts); err != nil {
 		return false, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -235,7 +273,7 @@ func (d *DB) GetCanaryReport() (*CanaryReport, error) {
 	}
 	report.Baseline = baseline
 	report.Routed = routed
-	if len(baseline.Runs) > 0 && len(routed.Runs) > 0 {
+	if baseline.Complete && routed.Complete {
 		met := routed.MedianExecMS <= baseline.MedianExecMS*canaryRetainedPercent/100
 		report.Met = &met
 	}

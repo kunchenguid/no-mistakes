@@ -662,6 +662,36 @@ func TestRenderPipelineView_ShowsRoutedReviewMeta(t *testing.T) {
 	}
 }
 
+func TestRenderPipelineView_ShowsFullOrderedReviewFailoverChain(t *testing.T) {
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusCompleted
+	run.Steps[0].ReviewRouting = &ipc.ReviewRoutingInfo{
+		Candidates: []ipc.RoutedCandidateInfo{
+			{Profile: "review_strong", CandidateIndex: 0, Runner: "codex", Model: "gpt-primary", Effort: "high", Outcome: "failed", FailureDomain: "openai"},
+			{Profile: "review_strong", CandidateIndex: 1, Runner: "codex", Model: "gpt-skipped", Effort: "high", Outcome: "skipped", FailureDomain: "openai"},
+			{Profile: "review_strong", CandidateIndex: 2, Runner: "claude", Model: "backup-success", Effort: "xhigh", Outcome: "succeeded"},
+		},
+	}
+
+	plain := stripANSI(renderPipelineView(run, run.Steps, 100, 0, 40))
+	want := []string{
+		"routed: review_strong · codex gpt-primary/high · failed · openai",
+		"routed: review_strong · codex gpt-skipped/high · skipped · openai",
+		"routed: review_strong · claude backup-success/xhigh · succeeded",
+	}
+	last := -1
+	for _, row := range want {
+		idx := strings.Index(plain, row)
+		if idx == -1 {
+			t.Fatalf("missing routed candidate %q in:\n%s", row, plain)
+		}
+		if idx <= last {
+			t.Fatalf("routed candidates out of durable order in:\n%s", plain)
+		}
+		last = idx
+	}
+}
+
 func TestRenderPipelineView_NoRoutedReviewMetaWhenAbsent(t *testing.T) {
 	run := testRun()
 	run.Steps[0].Status = types.StepStatusCompleted
@@ -672,5 +702,35 @@ func TestRenderPipelineView_NoRoutedReviewMetaWhenAbsent(t *testing.T) {
 	plain := stripANSI(renderPipelineView(run, run.Steps, 80, 0, 40))
 	if strings.Contains(plain, "routed:") {
 		t.Errorf("expected no routed sub-line for legacy review, got:\n%s", plain)
+	}
+}
+
+// TestHelpOverlay_YoloConsentContract pins the visible unattended-consent
+// contract: the yolo toggle names explicit user consent, and both behavior
+// lines - fix each gate once then approve the fix review, abort when a
+// blocking repair remains unresolved - survive an 80-column overlay uncut,
+// whether yolo is off or on.
+func TestHelpOverlay_YoloConsentContract(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	for _, tt := range []struct {
+		name   string
+		yolo   bool
+		toggle string
+	}{
+		{"yolo off", false, "yolo: apply the user's unattended consent"},
+		{"yolo on", true, "end yolo (unattended consent)"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			plain := stripANSI(renderHelpOverlay(80, testRun(), true, false, false, false, tt.yolo))
+			for _, want := range []string{
+				tt.toggle,
+				"fixes each gate once, then approves the fix review",
+				"aborts if a blocking repair remains unresolved",
+			} {
+				if !strings.Contains(plain, want) {
+					t.Errorf("help overlay missing %q in:\n%s", want, plain)
+				}
+			}
+		})
 	}
 }

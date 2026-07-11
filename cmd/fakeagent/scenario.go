@@ -23,11 +23,14 @@ type Scenario struct {
 
 // Action describes a single canned response. Match is a substring tested
 // against the prompt; an empty Match always matches and is treated as a
-// catch-all when listed last. Edits are applied to the working directory
-// before the response is emitted, so subsequent pipeline steps see the
-// changes (this is how a "fix" round actually mutates files).
+// catch-all when listed last. MatchFile, when set, additionally requires the
+// relative path to exist in the invocation working directory. Edits are applied
+// to the working directory before the response is emitted, so subsequent
+// pipeline steps see the changes (this is how a "fix" round actually mutates
+// files).
 type Action struct {
-	Match string `yaml:"match"`
+	Match     string `yaml:"match"`
+	MatchFile string `yaml:"match_file,omitempty"`
 
 	// Structured is the JSON body returned in the structured-output slot
 	// (claude.result.structured_output, opencode.info.structured, or the
@@ -127,11 +130,14 @@ func defaultScenario() *Scenario {
 	}
 }
 
-// Match returns the first action whose constraints all hold: its Match
-// substring is contained in the prompt (empty matches any prompt), and, when
-// set, its Model/Effort substrings are contained in the invoked candidate's
-// native model/effort. An action with no constraints is the catch-all.
+// Match returns the first action whose prompt, model, and effort constraints
+// hold. File-constrained actions require MatchInDir.
 func (s *Scenario) Match(prompt, model, effort string) Action {
+	return s.MatchInDir(prompt, model, effort, "")
+}
+
+// MatchInDir additionally evaluates MatchFile relative to dir.
+func (s *Scenario) MatchInDir(prompt, model, effort, dir string) Action {
 	for _, a := range s.Actions {
 		if a.Match != "" && !strings.Contains(prompt, a.Match) {
 			continue
@@ -141,6 +147,15 @@ func (s *Scenario) Match(prompt, model, effort string) Action {
 		}
 		if a.Effort != "" && !strings.Contains(effort, a.Effort) {
 			continue
+		}
+		if a.MatchFile != "" {
+			clean := filepath.Clean(a.MatchFile)
+			if dir == "" || filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+				continue
+			}
+			if _, err := os.Stat(filepath.Join(dir, clean)); err != nil {
+				continue
+			}
 		}
 		return a
 	}

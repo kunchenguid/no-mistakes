@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 )
 
 func TestLoadRecoveredConfig_BoundsFetchAndFailsClosed(t *testing.T) {
@@ -124,7 +126,10 @@ func TestLoadTrustedRepoConfig_FailClosedOnFetchFailure(t *testing.T) {
 	// THE REGRESSION: fetch "failed" → startRun passes an empty trustedSHA.
 	// Even with origin/main present and carrying the stale command, the
 	// trusted config must be nil so the stale command cannot run.
-	got := loadTrustedRepoConfig(ctx, wt, "", "test-run")
+	got, err := loadTrustedRepoConfig(ctx, wt, "", "test-run")
+	if err != nil {
+		t.Fatalf("loadTrustedRepoConfig: %v", err)
+	}
 	if got != nil {
 		t.Fatalf("expected nil trusted config on empty SHA (fetch failure); got commands.lint=%q", got.Commands.Lint)
 	}
@@ -132,7 +137,7 @@ func TestLoadTrustedRepoConfig_FailClosedOnFetchFailure(t *testing.T) {
 	// And the effective config drops the pushed-branch command too — the
 	// secure default, not a fallback to a stale or hostile copy.
 	pushed := &config.RepoConfig{Commands: config.Commands{Lint: "echo pushed-branch-command"}}
-	eff := config.EffectiveRepoConfig(pushed, got, false)
+	eff := config.EffectiveRepoConfig(pushed, got)
 	if eff.Commands.Lint != "" {
 		t.Fatalf("SECURITY REGRESSION: command would run after fetch failure: %q", eff.Commands.Lint)
 	}
@@ -199,11 +204,81 @@ func TestLoadTrustedRepoConfig_PinnedSHAReadsFreshDefaultBranch(t *testing.T) {
 		t.Fatalf("resolved SHA %s != fresh default-branch tip %s", resolved, freshSHA)
 	}
 
-	trusted := loadTrustedRepoConfig(ctx, wt, resolved, "test-run")
+	trusted, err := loadTrustedRepoConfig(ctx, wt, resolved, "test-run")
+	if err != nil {
+		t.Fatalf("loadTrustedRepoConfig: %v", err)
+	}
 	if trusted == nil {
 		t.Fatal("expected trusted config at the pinned fresh SHA")
 	}
 	if trusted.Commands.Lint != "echo fresh-B" {
 		t.Fatalf("trusted lint = %q, want fresh-B (read at pinned SHA, not stale ref)", trusted.Commands.Lint)
+	}
+}
+
+func TestStartRunRejectsPresentInvalidTrustedConfigBeforeStepLaunch(t *testing.T) {
+	ctx := context.Background()
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	database, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	work := filepath.Join(t.TempDir(), "work")
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, work, "init", "--initial-branch=main")
+	gitCmd(t, work, "config", "user.email", "test@test.com")
+	gitCmd(t, work, "config", "user.name", "Test")
+	gitCmd(t, work, "config", "commit.gpgsign", "false")
+	if err := os.WriteFile(filepath.Join(work, ".no-mistakes.yaml"), []byte("routs:\n  initial_review: review_strong\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, work, "add", ".")
+	gitCmd(t, work, "commit", "-m", "invalid trusted config")
+	mainSHA := gitOutput(t, work, "rev-parse", "HEAD")
+
+	gitCmd(t, work, "switch", "-c", "feature")
+	if err := os.Remove(filepath.Join(work, ".no-mistakes.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(work, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, work, "add", ".")
+	gitCmd(t, work, "commit", "-m", "valid feature")
+	featureSHA := gitOutput(t, work, "rev-parse", "HEAD")
+
+	bare := p.RepoDir("invalid-trusted")
+	gitCmd(t, "", "init", "--bare", bare)
+	gitCmd(t, work, "remote", "add", "gate", bare)
+	gitCmd(t, work, "push", "gate", "main:refs/heads/main", "feature:refs/heads/feature")
+	if err := git.AddRemote(ctx, bare, "origin", bare); err != nil {
+		t.Fatalf("add origin: %v", err)
+	}
+	repo, err := database.InsertRepoWithID("invalid-trusted", work, bare, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stepsRequested := false
+	manager := NewRunManager(database, p, func() []pipeline.Step {
+		stepsRequested = true
+		return nil
+	})
+	_, err = manager.startRun(ctx, repo, "feature", featureSHA, mainSHA, "push", nil, "")
+	if err == nil {
+		t.Fatal("startRun accepted an invalid trusted default-branch config")
+	}
+	if !strings.Contains(err.Error(), "trusted repo config") || !strings.Contains(err.Error(), "routs") {
+		t.Fatalf("startRun error = %v, want invalid trusted config and unknown key", err)
+	}
+	if stepsRequested {
+		t.Fatal("startRun requested executable steps before rejecting trusted config")
 	}
 }

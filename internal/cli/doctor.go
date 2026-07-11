@@ -10,6 +10,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/kunchenguid/no-mistakes/internal/winproc"
@@ -104,28 +105,50 @@ func newDoctorCmd() *cobra.Command {
 				fmt.Fprintln(w)
 				fmt.Fprintf(w, "  %s\n", sCyan.Render("Routing"))
 
-				routing := config.DefaultRoutingConfig()
+				globalCfg := &config.GlobalConfig{Routing: config.DefaultRoutingConfig()}
 				if p != nil {
 					if gc, gerr := config.LoadGlobal(p.ConfigFile()); gerr != nil {
 						fail("config        ", gerr.Error())
 						allOK = false
-					} else if !gc.Routing.IsZero() {
-						routing = gc.Routing
+					} else {
+						globalCfg = gc
 					}
 				}
+				routing := globalCfg.Routing
+				if workDir, rerr := git.FindGitRoot("."); rerr == nil {
+					defaultBranch := git.DefaultBranch(cmd.Context(), workDir, "origin")
+					trustedRepoCfg, terr := loadPinnedTrustedRepoConfig(cmd.Context(), workDir, defaultBranch)
+					if terr != nil {
+						fail("repo config   ", terr.Error())
+						allOK = false
+					} else {
+						effectiveRepoCfg := config.EffectiveRepoConfig(&config.RepoConfig{}, trustedRepoCfg)
+						routing = config.Merge(globalCfg, effectiveRepoCfg).Routing
+					}
+				}
+				routingValid := true
 				if err := routing.Validate(); err != nil {
 					fail("contract      ", err.Error())
 					allOK = false
+					routingValid = false
 				} else {
 					ok("contract      ", fmt.Sprintf("valid: %d profiles, %d purposes routed", len(routing.Profiles), len(routing.Routes)))
 				}
+				availableRunners := make(map[types.Runner]bool, len(routing.Runners))
 				for _, name := range sortedDoctorRunners(routing.Runners) {
 					spec := routing.Runners[name]
 					label := fmt.Sprintf("%-14s", name)
 					if path, lerr := exec.LookPath(spec.Executable); lerr != nil {
 						warn(label, fmt.Sprintf("%s not found (%s provider)", spec.Executable, spec.FailureDomain))
 					} else {
+						availableRunners[name] = true
 						ok(label, fmt.Sprintf("%s (%s provider)", path, spec.FailureDomain))
+					}
+				}
+				if routingValid {
+					for _, profile := range unavailableDoctorProfiles(routing, availableRunners) {
+						fail("profile       ", fmt.Sprintf("%s has no available candidates", profile))
+						allOK = false
 					}
 				}
 
@@ -169,4 +192,35 @@ func sortedDoctorRunners(m map[types.Runner]config.RunnerSpec) []types.Runner {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
 	return out
+}
+
+// unavailableDoctorProfiles returns every Profile referenced by an effective
+// Route whose Candidates all resolve to unavailable runner executables.
+func unavailableDoctorProfiles(routing config.RoutingConfig, available map[types.Runner]bool) []config.ProfileName {
+	required := make(map[config.ProfileName]struct{})
+	for _, route := range routing.Routes {
+		for _, profile := range route {
+			required[profile] = struct{}{}
+		}
+	}
+	names := make([]config.ProfileName, 0, len(required))
+	for profile := range required {
+		names = append(names, profile)
+	}
+	sort.Slice(names, func(i, j int) bool { return names[i] < names[j] })
+
+	unavailable := names[:0]
+	for _, name := range names {
+		hasAvailableCandidate := false
+		for _, candidate := range routing.Profiles[name].Candidates {
+			if available[candidate.Runner] {
+				hasAvailableCandidate = true
+				break
+			}
+		}
+		if !hasAvailableCandidate {
+			unavailable = append(unavailable, name)
+		}
+	}
+	return unavailable
 }

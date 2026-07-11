@@ -5,8 +5,40 @@ import (
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+func TestRunToInfoFailsWhenRepairStateIsUnknown(t *testing.T) {
+	d, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	repo, err := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	if err != nil {
+		t.Fatalf("insert repo: %v", err)
+	}
+	run, err := d.InsertRun(repo.ID, "feature", "abc", "def")
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+
+	if _, err := runToInfo(d, run, nil); err == nil {
+		t.Fatal("runToInfo succeeded with unknown blocking-repair state")
+	}
+}
+
+func mustStepToInfo(t *testing.T, d *db.DB, step *db.StepResult) ipc.StepResultInfo {
+	t.Helper()
+	info, err := stepToInfo(d, step)
+	if err != nil {
+		t.Fatalf("stepToInfo: %v", err)
+	}
+	return info
+}
 
 func TestStepToInfoIncludesFixSummaries(t *testing.T) {
 	d, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
@@ -37,7 +69,7 @@ func TestStepToInfoIncludesFixSummaries(t *testing.T) {
 		t.Fatalf("insert round 2: %v", err)
 	}
 
-	info := stepToInfo(d, step)
+	info := mustStepToInfo(t, d, step)
 	if len(info.FixSummaries) != 1 || info.FixSummaries[0] != sum {
 		t.Errorf("fix summaries = %v, want [%q]", info.FixSummaries, sum)
 	}
@@ -66,7 +98,7 @@ func TestStepToInfoNoFixSummariesWithoutFixRounds(t *testing.T) {
 		t.Fatalf("insert round: %v", err)
 	}
 
-	info := stepToInfo(d, step)
+	info := mustStepToInfo(t, d, step)
 	if len(info.FixSummaries) != 0 {
 		t.Errorf("fix summaries = %v, want none", info.FixSummaries)
 	}
@@ -125,7 +157,7 @@ func TestStepToInfoIncludesReviewRouting(t *testing.T) {
 		t.Fatalf("create lineages: %v", err)
 	}
 
-	info := stepToInfo(d, step)
+	info := mustStepToInfo(t, d, step)
 	if info.ReviewRouting == nil {
 		t.Fatal("ReviewRouting = nil, want populated for a routed review step")
 	}
@@ -181,7 +213,7 @@ func TestStepToInfoNilReviewRoutingForLegacyReview(t *testing.T) {
 		t.Fatalf("start legacy attempt: %v", err)
 	}
 
-	info := stepToInfo(d, step)
+	info := mustStepToInfo(t, d, step)
 	if info.ReviewRouting != nil {
 		t.Errorf("ReviewRouting = %+v, want nil for legacy review", info.ReviewRouting)
 	}

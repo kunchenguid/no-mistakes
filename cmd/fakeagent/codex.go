@@ -16,7 +16,7 @@ func runCodex(args []string, scenario *Scenario) int {
 	effort := extractCodexEffort(args)
 	logInvocation("codex", model, effort, prompt, args)
 
-	action := scenario.Match(prompt, model, effort)
+	action := scenario.MatchInDir(prompt, model, effort, ".")
 	if code, handled := maybeInjectFailure("codex", action); handled {
 		return code
 	}

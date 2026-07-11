@@ -30,7 +30,7 @@ func TestReviewStep_FixMode(t *testing.T) {
 				return &agent.Result{Output: json.RawMessage(`{"summary":"  'address review findings.'  "}`)}, nil
 			}
 			// Review call — return clean findings
-			findings := Findings{Items: nil, Summary: "all clear"}
+			findings := Findings{Items: []Finding{}, RiskLevel: "low", RiskRationale: "all findings resolved"}
 			j, _ := json.Marshal(findings)
 			return &agent.Result{Output: j}, nil
 		},
@@ -111,6 +111,13 @@ func TestReviewStep_FixMode(t *testing.T) {
 	if branchSHA := gitCmd(t, dir, "rev-parse", "refs/heads/feature"); branchSHA != sctx.Run.HeadSHA {
 		t.Fatalf("branch SHA = %s, want %s", branchSHA, sctx.Run.HeadSHA)
 	}
+	reviewed, err := sctx.DB.LatestSealByReason(sctx.Run.ID, "reviewed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reviewed == nil || reviewed.SHA != sctx.Run.HeadSHA {
+		t.Fatalf("reviewed seal = %+v, want exact reviewed SHA %s", reviewed, sctx.Run.HeadSHA)
+	}
 }
 
 func TestReviewStep_FixMode_RequiresPreviousFindings(t *testing.T) {
@@ -143,7 +150,7 @@ func TestReviewStep_RoundHistorySanitizesAgentInput(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
-	findingsJSON, _ := json.Marshal(Findings{Summary: "clean"})
+	findingsJSON, _ := json.Marshal(Findings{Items: []Finding{}, RiskLevel: "low", RiskRationale: "bounded change"})
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
@@ -320,6 +327,46 @@ func hasAskUserFindings(t *testing.T, raw string) bool {
 		t.Fatalf("parse findings: %v", err)
 	}
 	return types.HasAskUserFindings(findings)
+func TestReviewStep_VerifierDirtyWorktreeCannotSealCandidate(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+			if err := os.WriteFile(filepath.Join(dir, "reviewer-mutation.txt"), []byte("not reviewed\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"risk_level":"low","risk_rationale":"bounded change"}`)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	if _, err := (&ReviewStep{}).Execute(sctx); err == nil {
+		t.Fatal("expected reviewer mutation to invalidate the review")
+	}
+	reviewed, err := sctx.DB.LatestSealByReason(sctx.Run.ID, "reviewed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reviewed != nil {
+		t.Fatalf("reviewer mutation produced reviewed seal %+v", reviewed)
+	}
+}
+
+func TestReviewStep_RejectsIncompleteVerdict(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"risk_level":"low","risk_rationale":" "}`)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	if _, err := (&ReviewStep{}).Execute(sctx); err == nil {
+		t.Fatal("expected incomplete review verdict to fail closed")
+	}
 }
 
 func mustLatestRoundID(t *testing.T, sctx *pipeline.StepContext) string {

@@ -208,12 +208,12 @@ Rules:
 			return nil, fmt.Errorf("agent run tests: %w", err)
 		}
 
-		var findings Findings
-		if result.Output != nil {
-			if err := json.Unmarshal(result.Output, &findings); err != nil {
-				sctx.Log("could not parse structured output, using text response")
-				findings = Findings{Summary: result.Text}
-			}
+		if result == nil {
+			return nil, fmt.Errorf("agent test evidence returned no result")
+		}
+		findings, err := validateTestFindingsOutput(result.Output)
+		if err != nil {
+			return nil, fmt.Errorf("agent test evidence inconclusive: %w", err)
 		}
 		if len(tested) > 0 {
 			findings.Tested = append(append([]string{}, tested...), findings.Tested...)

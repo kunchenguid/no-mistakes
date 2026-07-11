@@ -450,7 +450,11 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err != nil {
 			return nil, fmt.Errorf("get steps: %w", err)
 		}
-		return &ipc.GetRunResult{Run: runToInfo(d, run, steps)}, nil
+		info, err := runToInfo(d, run, steps)
+		if err != nil {
+			return nil, fmt.Errorf("project run: %w", err)
+		}
+		return &ipc.GetRunResult{Run: info}, nil
 	})
 
 	srv.Handle(ipc.MethodGetRuns, func(_ context.Context, params json.RawMessage) (interface{}, error) {
@@ -468,7 +472,11 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 			if err != nil {
 				return nil, fmt.Errorf("get steps for run %s: %w", r.ID, err)
 			}
-			infos = append(infos, *runToInfo(d, r, steps))
+			info, err := runToInfo(d, r, steps)
+			if err != nil {
+				return nil, fmt.Errorf("project run %s: %w", r.ID, err)
+			}
+			infos = append(infos, *info)
 		}
 		return &ipc.GetRunsResult{Runs: infos}, nil
 	})
@@ -509,7 +517,11 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err != nil {
 			return nil, fmt.Errorf("get steps: %w", err)
 		}
-		return &ipc.GetActiveRunResult{Run: runToInfo(d, run, steps)}, nil
+		info, err := runToInfo(d, run, steps)
+		if err != nil {
+			return nil, fmt.Errorf("project active run: %w", err)
+		}
+		return &ipc.GetActiveRunResult{Run: info}, nil
 	})
 
 	srv.Handle(ipc.MethodRerun, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
@@ -584,7 +596,7 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 	})
 }
 
-func runToInfo(d *db.DB, r *db.Run, steps []*db.StepResult) *ipc.RunInfo {
+func runToInfo(d *db.DB, r *db.Run, steps []*db.StepResult) (*ipc.RunInfo, error) {
 	info := &ipc.RunInfo{
 		ID:                 r.ID,
 		RepoID:             r.RepoID,
@@ -599,19 +611,25 @@ func runToInfo(d *db.DB, r *db.Run, steps []*db.StepResult) *ipc.RunInfo {
 		CreatedAt:          r.CreatedAt,
 		UpdatedAt:          r.UpdatedAt,
 	}
-	if unresolved, err := d.HasUnresolvedBlockingRepair(r.ID); err == nil {
-		info.BlockingRepairUnresolved = unresolved
+	unresolved, err := d.HasUnresolvedBlockingRepair(r.ID)
+	if err != nil {
+		return nil, fmt.Errorf("check unresolved blocking repair: %w", err)
 	}
+	info.BlockingRepairUnresolved = unresolved
 	if len(steps) > 0 {
 		info.Steps = make([]ipc.StepResultInfo, 0, len(steps))
 		for _, s := range steps {
-			info.Steps = append(info.Steps, stepToInfo(d, s))
+			step, err := stepToInfo(d, s)
+			if err != nil {
+				return nil, fmt.Errorf("project step %s: %w", s.ID, err)
+			}
+			info.Steps = append(info.Steps, step)
 		}
 	}
-	return info
+	return info, nil
 }
 
-func stepToInfo(d *db.DB, s *db.StepResult) ipc.StepResultInfo {
+func stepToInfo(d *db.DB, s *db.StepResult) (ipc.StepResultInfo, error) {
 	info := ipc.StepResultInfo{
 		ID:             s.ID,
 		RunID:          s.RunID,
@@ -631,24 +649,32 @@ func stepToInfo(d *db.DB, s *db.StepResult) ipc.StepResultInfo {
 	if s.AutoFixLimit != nil {
 		info.AutoFixLimit = *s.AutoFixLimit
 	}
-	if stats, err := d.StepFindingStats(s); err == nil {
-		info.ReportedFindings = stats.ReportedFindings
-		info.FixedFindings = stats.FixedFindings
+	stats, err := d.StepFindingStats(s)
+	if err != nil {
+		return ipc.StepResultInfo{}, fmt.Errorf("finding stats: %w", err)
 	}
-	if summaries, err := d.StepFixSummaries(s.ID); err == nil {
-		info.FixSummaries = summaries
+	info.ReportedFindings = stats.ReportedFindings
+	info.FixedFindings = stats.FixedFindings
+	summaries, err := d.StepFixSummaries(s.ID)
+	if err != nil {
+		return ipc.StepResultInfo{}, fmt.Errorf("fix summaries: %w", err)
 	}
+	info.FixSummaries = summaries
 	if rounds, err := d.StepRoundStats(s.ID); err == nil {
 		info.RoundCount = rounds.TotalRounds
 		info.FixRoundCount = rounds.FixRounds
 		info.PendingFixSource = rounds.PendingFixSource
 	}
 	if s.StepName == types.StepReview {
-		if routing, err := d.ReviewRoutingForStep(s.ID); err == nil && routing != nil {
+		routing, err := d.ReviewRoutingForStep(s.ID)
+		if err != nil {
+			return ipc.StepResultInfo{}, fmt.Errorf("review routing: %w", err)
+		}
+		if routing != nil {
 			info.ReviewRouting = reviewRoutingToInfo(routing)
 		}
 	}
-	return info
+	return info, nil
 }
 
 // reviewRoutingToInfo flattens the durable review-routing projection into its

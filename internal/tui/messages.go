@@ -29,11 +29,17 @@ type rerunErrMsg struct {
 	requestID uint64
 }
 
+type runRefreshedMsg struct {
+	run            *ipc.RunInfo
+	subscriptionID uint64
+}
+
 type spinnerTickMsg struct{}
 
 // connectedMsg signals that the event subscription is ready.
 type connectedMsg struct {
 	events         <-chan ipc.Event
+	run            *ipc.RunInfo
 	cancelSub      func()
 	subscriptionID uint64
 }

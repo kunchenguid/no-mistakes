@@ -237,9 +237,9 @@ intent:
 
 # Model selection is the routing contract: Runners (executables + failure
 # domains), Profiles (ordered provider Candidates of runner/model/effort), and
-# Routes (a Profile cascade per Purpose). The built-in defaults apply when
-# 'routing' is omitted. Override individual pieces to change models, efforts, or
-# runner executables.
+# Routes (a Profile cascade per Purpose). The built-in defaults apply only when
+# 'routing' is omitted. A present routing block completely replaces the defaults
+# and must declare every runner, profile, and Purpose route.
 # routing:
 #   runners:
 #     codex: {executable: codex, failure_domain: openai}
@@ -258,6 +258,7 @@ var legacyGlobalKeys = map[string]string{
 	"agent_path_override":    "runner executables are configured via `routing.runners.<name>.executable`",
 	"agent_args_override":    "native agent arguments are derived from routing profile candidates and cannot be overridden",
 	"auto_fix":               "per-step numeric auto-fix limits were removed; repair escalates through the routing cascade",
+
 }
 
 // legacyGlobalKeyOrder lists legacy keys in a stable order so a config with
@@ -475,7 +476,9 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 		return nil, err
 	}
 	cfg := &RepoConfig{}
-	if err := yaml.Unmarshal(data, cfg); err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(cfg); err != nil {
 		return nil, fmt.Errorf("parse repo config: %w", err)
 	}
 	return cfg, nil
@@ -496,15 +499,32 @@ func rejectRepoExecutionMechanics(data []byte) error {
 // actionable guidance. repoExecutionMechanicsOrder lists them in a stable order
 // so a config with several rejected keys reports a deterministic error.
 var repoExecutionMechanics = map[string]string{
-	"agent":      "model selection is global-only through the routing contract; a repository cannot select an agent",
-	"auto_fix":   "per-step numeric auto-fix limits were removed; repair escalates through the routing cascade",
-	"candidates": "candidates are owned exclusively by global configuration",
-	"profiles":   "profiles are owned exclusively by global configuration",
-	"routing":    "repositories may only set 'routes' mapping purposes to existing global profiles",
-	"runners":    "runners are owned exclusively by global configuration",
+	"agent":                  "model selection is global-only through the routing contract; a repository cannot select an agent",
+	"agent_args_override":    "native agent arguments are derived from global routing profile candidates and cannot be overridden by a repository",
+	"agent_path_override":    "runner executables are configured globally via `routing.runners.<name>.executable`",
+	"acp_registry_overrides": "acp agents were removed; repositories cannot define runner commands",
+	"acpx_path":              "acp agents were removed; repositories cannot define runner executables",
+	"auto_fix":               "per-step numeric auto-fix limits were removed; repair escalates through the routing cascade",
+	"candidates":             "candidates are owned exclusively by global configuration",
+	"fallback_agents":        "provider fail-over is configured through global routing profile candidates, not a repository fallback-agent list",
+	"profiles":               "profiles are owned exclusively by global configuration",
+	"routing":                "repositories may only set 'routes' mapping purposes to existing global profiles",
+	"runners":                "runners are owned exclusively by global configuration",
 }
 
-var repoExecutionMechanicsOrder = []string{"agent", "auto_fix", "candidates", "profiles", "routing", "runners"}
+var repoExecutionMechanicsOrder = []string{
+	"acp_registry_overrides",
+	"acpx_path",
+	"agent",
+	"agent_args_override",
+	"agent_path_override",
+	"auto_fix",
+	"candidates",
+	"fallback_agents",
+	"profiles",
+	"routing",
+	"runners",
+}
 
 // EffectiveRepoConfig returns the repo config that should drive the pipeline
 // given a pushed-branch copy and the trusted default-branch copy.
@@ -525,7 +545,7 @@ var repoExecutionMechanicsOrder = []string{"agent", "auto_fix", "candidates", "p
 // Routes come only from the trusted default-branch copy. Non-executing fields
 // (ignore patterns, intent, test) are always taken from the pushed copy since
 // they cannot run arbitrary shell or select a process.
-func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *RepoConfig {
+func EffectiveRepoConfig(pushed, trusted *RepoConfig) *RepoConfig {
 	if pushed == nil {
 		pushed = &RepoConfig{}
 	}
@@ -539,7 +559,7 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		effective.Routes = trusted.Routes
 		effective.Document = trusted.Document
 	}
-	if allowRepoCommands {
+	if trusted != nil && trusted.AllowRepoCommands {
 		return &effective
 	}
 	if trusted != nil {

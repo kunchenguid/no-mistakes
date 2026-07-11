@@ -106,7 +106,7 @@ func TestHelpOverlay_NavigationDescriptionsAligned(t *testing.T) {
 	var descColumns []int
 	for _, line := range lines {
 		for _, desc := range navDescriptions {
-			if col := visualColumn(line, desc); col >= 0 {
+			if col := entryDescColumn(line, desc); col >= 0 {
 				descColumns = append(descColumns, col)
 			}
 		}
@@ -136,7 +136,7 @@ func TestHelpOverlay_ActionDescriptionsAligned(t *testing.T) {
 	var descColumns []int
 	for _, line := range lines {
 		for _, desc := range actionDescriptions {
-			if col := visualColumn(line, desc); col >= 0 {
+			if col := entryDescColumn(line, desc); col >= 0 {
 				descColumns = append(descColumns, col)
 			}
 		}
@@ -426,7 +426,7 @@ func TestHelpOverlay_SelectionDescriptionsAligned(t *testing.T) {
 	var descColumns []int
 	for _, line := range lines {
 		for _, desc := range selDescriptions {
-			if col := visualColumn(line, desc); col >= 0 {
+			if col := entryDescColumn(line, desc); col >= 0 {
 				descColumns = append(descColumns, col)
 			}
 		}

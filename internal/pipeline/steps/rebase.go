@@ -386,6 +386,13 @@ func rebaseWithRepair(ctx context.Context, sctx *pipeline.StepContext, targetRef
 			JSONSchema: commitSummarySchema,
 			OnChunk:    sctx.LogChunk,
 		})
+		var profileUnavailable *agent.ProfileUnavailableError
+		if errors.As(invokeErr, &profileUnavailable) {
+			if _, abortErr := git.Run(ctx, sctx.WorkDir, "rebase", "--abort"); abortErr != nil {
+				return fmt.Errorf("abort conflict repair onto %s after unavailable profile: %w", targetRef, abortErr)
+			}
+			return fmt.Errorf("conflict repair onto %s cannot continue: %w", targetRef, invokeErr)
+		}
 
 		// Deterministic git-state checks before any adjudication: the fixer
 		// must have driven the rebase to completion with no conflict markers
@@ -481,11 +488,11 @@ Return structured findings. Use severity "error" for any incorrect, unresolved, 
 	if err != nil {
 		return fmt.Errorf("verifier inconclusive: %w", err)
 	}
-	findings, err := types.ParseFindingsJSON(string(res.Output))
+	findings, err := validateFindingsOutput(res.Output)
 	if err != nil {
-		return fmt.Errorf("verifier returned unparseable output: %w", err)
+		return fmt.Errorf("verifier returned incomplete output: %w", err)
 	}
-	if hasBlockingFindings(findings.Items) {
+	if len(findings.Items) > 0 {
 		return fmt.Errorf("verifier rejected the resolution: %s", findings.Summary)
 	}
 	return nil

@@ -93,7 +93,7 @@ func TestEffectiveRepoConfigRoutesComeFromTrustedOnly(t *testing.T) {
 	pushed := &RepoConfig{Routes: map[types.Purpose]ProfileName{types.PurposeInitialReview: ProfileFixFast}}
 	trusted := &RepoConfig{Routes: map[types.Purpose]ProfileName{types.PurposeInitialReview: ProfileProseFast}}
 
-	got := EffectiveRepoConfig(pushed, trusted, false)
+	got := EffectiveRepoConfig(pushed, trusted)
 	if got.Routes[types.PurposeInitialReview] != ProfileProseFast {
 		t.Fatalf("effective route = %q, want trusted %q", got.Routes[types.PurposeInitialReview], ProfileProseFast)
 	}
@@ -108,7 +108,7 @@ func TestEffectiveRepoConfigRoutesIgnorePushedEvenWithOptIn(t *testing.T) {
 
 	// allow_repo_commands opts pushed commands in, but routes must still come
 	// only from the trusted copy.
-	got := EffectiveRepoConfig(pushed, trusted, true)
+	got := EffectiveRepoConfig(pushed, trusted)
 	if got.Routes[types.PurposeInitialReview] != ProfileProseFast {
 		t.Fatalf("effective route with opt-in = %q, want trusted %q", got.Routes[types.PurposeInitialReview], ProfileProseFast)
 	}
@@ -116,7 +116,7 @@ func TestEffectiveRepoConfigRoutesIgnorePushedEvenWithOptIn(t *testing.T) {
 
 func TestEffectiveRepoConfigNoTrustedRoutesEmpty(t *testing.T) {
 	pushed := &RepoConfig{Routes: map[types.Purpose]ProfileName{types.PurposeInitialReview: ProfileFixFast}}
-	got := EffectiveRepoConfig(pushed, nil, false)
+	got := EffectiveRepoConfig(pushed, nil)
 	if len(got.Routes) != 0 {
 		t.Fatalf("effective routes = %v, want empty when no trusted copy", got.Routes)
 	}

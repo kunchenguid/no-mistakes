@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
@@ -24,6 +25,44 @@ func gitOut(t *testing.T, dir string, args ...string) string {
 		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
 	}
 	return strings.TrimSpace(string(out))
+}
+
+type scriptedExecutorRepairAgent struct {
+	initialFindings  string
+	resolve          bool
+	newFindingAction string
+	verifyCalls      int
+	repeatNewFinding bool
+	fixEdit          func(string)
+}
+
+func (a *scriptedExecutorRepairAgent) Name() string { return "scripted-repair" }
+func (a *scriptedExecutorRepairAgent) Close() error { return nil }
+func (a *scriptedExecutorRepairAgent) Run(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+	switch {
+	case strings.Contains(opts.Prompt, "Fix the following"):
+		if a.fixEdit != nil {
+			a.fixEdit(opts.CWD)
+		}
+		return &agent.Result{Output: []byte(`{"summary":"attempt repair"}`)}, nil
+	case strings.Contains(opts.Prompt, "Independently verify whether"):
+		matches := verifyLineageRE.FindAllStringSubmatch(opts.Prompt, -1)
+		ids := make([]string, 0, len(matches))
+		for _, match := range matches {
+			ids = append(ids, match[1])
+		}
+		spec := verdictSpec{}
+		if a.resolve {
+			spec.resolved = allResolved(ids)
+		}
+		if (a.verifyCalls == 0 || a.repeatNewFinding) && a.newFindingAction != "" {
+			spec.newFindings = []newFindingSpec{{description: "verifier needs human judgment", severity: "error", action: a.newFindingAction}}
+		}
+		a.verifyCalls++
+		return &agent.Result{Output: []byte(marshalBatchVerdict(ids, spec))}, nil
+	default:
+		return &agent.Result{Output: []byte(a.initialFindings)}, nil
+	}
 }
 
 // verdictSpec is a test's per-verifier-call adjudication of a batch.
@@ -47,7 +86,10 @@ var verifyLineageRE = regexp.MustCompile(`lineage (\S+), severity`)
 type fakeRepairInvoker struct {
 	db               *db.DB
 	verify           func(callIdx int, lineageIDs []string) verdictSpec
+	rawVerify        func(lineageIDs []string) string
 	fixEdit          func(callIdx int)
+	fixError         error
+	verifyError      error
 	fixerTiers       []int
 	verifierPurposes []types.Purpose
 	fixCalls         int
@@ -69,6 +111,11 @@ func (f *fakeRepairInvoker) Invoke(_ context.Context, req agent.InvocationReques
 	}
 	if def.Role == types.InvocationRoleFixer {
 		f.fixerTiers = append(f.fixerTiers, req.Tier)
+		if f.fixError != nil {
+			f.fixCalls++
+			_ = f.db.FinishInvocationAttempt(attemptID, types.InvocationAttemptTerminal{Outcome: types.InvocationOutcomeFailed})
+			return nil, f.fixError
+		}
 		if f.fixEdit != nil {
 			f.fixEdit(f.fixCalls)
 		}
@@ -77,6 +124,11 @@ func (f *fakeRepairInvoker) Invoke(_ context.Context, req agent.InvocationReques
 		return &agent.Result{Output: []byte(`{"summary":"apply repair"}`)}, nil
 	}
 	f.verifierPurposes = append(f.verifierPurposes, req.Purpose)
+	if f.verifyError != nil {
+		f.verifyCalls++
+		_ = f.db.FinishInvocationAttempt(attemptID, types.InvocationAttemptTerminal{Outcome: types.InvocationOutcomeFailed})
+		return nil, f.verifyError
+	}
 	lineageIDs := verifyLineageRE.FindAllStringSubmatch(req.Payload.Prompt, -1)
 	ids := make([]string, 0, len(lineageIDs))
 	for _, m := range lineageIDs {
@@ -88,6 +140,9 @@ func (f *fakeRepairInvoker) Invoke(_ context.Context, req agent.InvocationReques
 	}
 	f.verifyCalls++
 	_ = f.db.FinishInvocationAttempt(attemptID, types.InvocationAttemptTerminal{Outcome: types.InvocationOutcomeSucceeded})
+	if f.rawVerify != nil {
+		return &agent.Result{Output: []byte(f.rawVerify(ids))}, nil
+	}
 	return &agent.Result{Output: []byte(marshalBatchVerdict(ids, spec))}, nil
 }
 
@@ -201,6 +256,431 @@ func blockingFinding(id, desc string) types.Finding {
 	return types.Finding{ID: id, Severity: "error", Action: types.ActionAutoFix, Description: desc, File: "app.go", Line: 3}
 }
 
+func startExecutorRepairReview(t *testing.T, action string, resolve bool, newFindingAction ...string) (*db.DB, *db.Run, *mockStep, *Executor, <-chan error) {
+	t.Helper()
+	initial := fmt.Sprintf(`{"findings":[{"id":"review-1","severity":"error","file":"app.go","line":1,"description":"blocking review defect","action":%q}],"summary":"one finding"}`, action)
+	return startExecutorRepairReviewWithInitial(t, initial, resolve, newFindingAction...)
+}
+
+func startExecutorRepairReviewWithInitial(t *testing.T, initial string, resolve bool, newFindingAction ...string) (*db.DB, *db.Run, *mockStep, *Executor, <-chan error) {
+	t.Helper()
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+	initGitRepo(t, workDir)
+	scripted := &scriptedExecutorRepairAgent{initialFindings: initial, resolve: resolve}
+	if len(newFindingAction) > 0 {
+		scripted.newFindingAction = newFindingAction[0]
+	}
+	review := &adaptiveCallStep{
+		name: types.StepReview,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			result, err := sctx.Invoker.Invoke(sctx.Ctx, agent.InvocationRequest{
+				Purpose: types.PurposeInitialReview,
+				Scope:   sctx.InvocationScope,
+				Payload: agent.RunOpts{Prompt: "initial routed review", CWD: sctx.WorkDir},
+			})
+			if err != nil {
+				return nil, err
+			}
+			return &StepOutcome{NeedsApproval: true, Findings: string(result.Output)}, nil
+		},
+	}
+	next := newPassStep(types.StepTest)
+	cfg := &config.Config{Routing: config.DefaultRoutingConfig()}
+	executor := NewExecutor(database, p, cfg, scripted, []Step{review, next}, nil)
+	done := make(chan error, 1)
+	go func() {
+		done <- executor.Execute(context.Background(), run, repo, workDir)
+	}()
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
+	return database, run, next, executor, done
+}
+
+func TestExecutorConsentedRepairExhaustionCannotCompleteReview(t *testing.T) {
+	database, run, next, executor, done := startExecutorRepairReview(t, types.ActionAskUser, false)
+	if err := executor.Respond(types.StepReview, types.ActionFix, []string{"review-1"}); err != nil {
+		t.Fatalf("respond fix: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "did not durably resolve") {
+			t.Fatalf("executor error = %v, want durable-resolution failure", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("executor timed out after consented repair exhaustion")
+	}
+	if next.callCount() != 0 {
+		t.Fatalf("next step calls = %d, want 0 after unresolved consented repair", next.callCount())
+	}
+	unresolved, err := database.HasUnresolvedBlockingRepair(run.ID)
+	if err != nil {
+		t.Fatalf("query unresolved repair: %v", err)
+	}
+	if !unresolved {
+		t.Fatal("consented exhaustion was not durably unresolved")
+	}
+}
+
+func TestExecutorRejectsManualApproveAfterAutomaticRepairExhaustion(t *testing.T) {
+	_, _, next, executor, done := startExecutorRepairReview(t, types.ActionAutoFix, false)
+	if err := executor.Respond(types.StepReview, types.ActionApprove, nil); err != nil {
+		t.Fatalf("respond approve: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "cannot be approved") {
+			t.Fatalf("executor error = %v, want unresolved approval rejection", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("executor timed out after manual approval")
+	}
+	if next.callCount() != 0 {
+		t.Fatalf("next step calls = %d, want 0 after rejected approval", next.callCount())
+	}
+}
+
+func TestExecutorConsentedResolvedRepairCompletesReview(t *testing.T) {
+	_, _, next, executor, done := startExecutorRepairReview(t, types.ActionAskUser, true)
+	if err := executor.Respond(types.StepReview, types.ActionFix, []string{"review-1"}); err != nil {
+		t.Fatalf("respond fix: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("executor error: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("executor timed out after resolved consented repair")
+	}
+	if next.callCount() != 1 {
+		t.Fatalf("next step calls = %d, want 1 after durable resolution", next.callCount())
+	}
+}
+
+func TestExecutorConsentedRepairReparksUnselectedFinding(t *testing.T) {
+	initial := `{"findings":[{"id":"review-1","severity":"error","description":"selected defect","action":"ask-user"},{"id":"review-2","severity":"warning","description":"unselected defect","action":"ask-user"}],"summary":"two findings"}`
+	database, run, next, executor, done := startExecutorRepairReviewWithInitial(t, initial, true)
+	if err := executor.Respond(types.StepReview, types.ActionFix, []string{"review-1"}); err != nil {
+		t.Fatalf("respond fix: %v", err)
+	}
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
+	select {
+	case err := <-done:
+		t.Fatalf("executor completed before the unselected finding was disposed: %v", err)
+	default:
+	}
+	steps, err := database.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatalf("get steps: %v", err)
+	}
+	var remaining *string
+	for _, step := range steps {
+		if step.StepName == types.StepReview {
+			remaining = step.FindingsJSON
+			break
+		}
+	}
+	if remaining == nil {
+		t.Fatal("re-parked Review has no remaining findings")
+	}
+	items := mustParseFindingItems(t, *remaining)
+	if len(items) != 1 || items[0].ID != "review-2" {
+		t.Fatalf("remaining findings = %+v, want only unselected review-2", items)
+	}
+	if next.callCount() != 0 {
+		t.Fatalf("next step calls = %d, want 0 while Review is re-parked", next.callCount())
+	}
+	if err := executor.Respond(types.StepReview, types.ActionApprove, nil); err != nil {
+		t.Fatalf("approve remaining finding: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("executor error after explicit approval: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("executor timed out after explicit approval")
+	}
+}
+
+func TestExecutorVerifierCreatedAskUserFindingParksUntilConsent(t *testing.T) {
+	database, run, next, executor, done := startExecutorRepairReview(t, types.ActionAutoFix, true, types.ActionAskUser)
+	steps, err := database.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatalf("get steps: %v", err)
+	}
+	var review *db.StepResult
+	for _, step := range steps {
+		if step.StepName == types.StepReview {
+			review = step
+			break
+		}
+	}
+	if review == nil || review.FindingsJSON == nil {
+		t.Fatal("review did not persist verifier-created finding")
+	}
+	findings, err := types.ParseFindingsJSON(*review.FindingsJSON)
+	if err != nil {
+		t.Fatalf("parse review findings: %v", err)
+	}
+	var consentID string
+	for _, finding := range findings.Items {
+		if finding.Action == types.ActionAskUser {
+			consentID = finding.ID
+		}
+	}
+	if consentID == "" || strings.Contains(consentID, "verifier needs human judgment") {
+		t.Fatalf("verifier-created ask-user id = %q, want durable non-prose identity", consentID)
+	}
+	if err := executor.Respond(types.StepReview, types.ActionFix, []string{consentID}); err != nil {
+		t.Fatalf("consent to verifier-created finding: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("executor error after consent: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("executor timed out after verifier-created finding consent")
+	}
+	if next.callCount() != 1 {
+		t.Fatalf("next step calls = %d, want 1 after verifier-created finding resolution", next.callCount())
+	}
+}
+
+func TestExecutorIterationCapCannotResealOrAdvance(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+	initGitRepo(t, workDir)
+	initialHead := gitOut(t, workDir, "rev-parse", "HEAD")
+	scripted := &scriptedExecutorRepairAgent{
+		resolve:          true,
+		newFindingAction: types.ActionAutoFix,
+		repeatNewFinding: true,
+		fixEdit: func(cwd string) {
+			writeTestFile(t, cwd, "iteration-cap.txt", "repair attempt\n")
+		},
+	}
+	verify := &mockStep{name: types.StepVerify, outcome: &StepOutcome{
+		Findings: `{"findings":[{"id":"verify-1","severity":"error","description":"verification failed","action":"auto-fix"}],"summary":"one"}`,
+	}}
+	push := newPassStep(types.StepPush)
+	cfg := &config.Config{Routing: config.DefaultRoutingConfig()}
+	executor := NewExecutor(database, p, cfg, scripted, []Step{newPassStep(types.StepLint), verify, push}, nil)
+
+	err := executor.Execute(context.Background(), run, repo, workDir)
+	if err == nil || !strings.Contains(err.Error(), "repair iteration cap reached") {
+		t.Fatalf("executor error = %v, want iteration-cap failure", err)
+	}
+	seal, err := database.LatestSealByReason(run.ID, "pre_verify")
+	if err != nil || seal == nil {
+		t.Fatalf("load pre-Verify seal after iteration cap: %+v, %v", seal, err)
+	}
+	if seal.SHA != initialHead {
+		t.Fatalf("iteration-cap Verify repair resealed candidate %s, want original pre-Verify SHA %s", seal.SHA, initialHead)
+	}
+	if repairedHead := gitOut(t, workDir, "rev-parse", "HEAD"); repairedHead == initialHead {
+		t.Fatal("test fixture did not create a repaired HEAD distinct from the original seal")
+	}
+	if push.callCount() != 0 {
+		t.Fatalf("Push calls = %d, want 0 after iteration-cap Verify repair", push.callCount())
+	}
+}
+
+func TestExecutorResolvedDocumentRepairClearsFindingApproval(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+	initGitRepo(t, workDir)
+	scripted := &scriptedExecutorRepairAgent{resolve: true}
+	document := &mockStep{name: types.StepDocument, outcome: &StepOutcome{
+		NeedsApproval: true,
+		Findings:      `{"findings":[{"id":"document-1","severity":"warning","description":"documentation is stale","action":"auto-fix"}],"summary":"one"}`,
+	}}
+	next := newPassStep(types.StepTest)
+	cfg := &config.Config{Routing: config.DefaultRoutingConfig()}
+	executor := NewExecutor(database, p, cfg, scripted, []Step{document, next}, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	if err := executor.Execute(ctx, run, repo, workDir); err != nil {
+		t.Fatalf("executor parked after resolving every Document finding: %v", err)
+	}
+	if next.callCount() != 1 {
+		t.Fatalf("next step calls = %d, want 1 after resolved Document repair", next.callCount())
+	}
+	steps, err := database.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatalf("get steps: %v", err)
+	}
+	for _, step := range steps {
+		if step.StepName == types.StepDocument && step.FindingsJSON != nil {
+			t.Fatalf("resolved Document findings remained current: %s", *step.FindingsJSON)
+		}
+	}
+}
+
+func TestExecutorInformationalDocumentRepairUsesCheapNonBlockingCascade(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+	initGitRepo(t, workDir)
+	scripted := &scriptedExecutorRepairAgent{resolve: false}
+	document := &mockStep{name: types.StepDocument, outcome: &StepOutcome{
+		Findings: `{"findings":[{"id":"document-info-1","severity":"info","description":"documentation could be clearer","action":"auto-fix"}],"summary":"one informational finding"}`,
+	}}
+	next := newPassStep(types.StepTest)
+	cfg := &config.Config{Routing: config.DefaultRoutingConfig()}
+	executor := NewExecutor(database, p, cfg, scripted, []Step{document, next}, nil)
+
+	if err := executor.Execute(context.Background(), run, repo, workDir); err != nil {
+		t.Fatalf("informational Document repair blocked completion: %v", err)
+	}
+	if next.callCount() != 1 {
+		t.Fatalf("next step calls = %d, want 1 after non-blocking informational exhaustion", next.callCount())
+	}
+	repairs, err := database.GetFindingRepairsByRun(run.ID)
+	if err != nil {
+		t.Fatalf("get repairs: %v", err)
+	}
+	if len(repairs) != 2 {
+		t.Fatalf("informational repairs = %+v, want two cheap tiers", repairs)
+	}
+	for i, repair := range repairs {
+		if repair.Tier != i || repair.Severity != "info" || repair.Action != types.ActionAutoFix || repair.Status != db.RepairStatusUnresolved {
+			t.Fatalf("informational repair %d = %+v, want unresolved auto-fix info tier %d", i, repair, i)
+		}
+	}
+	steps, err := database.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatalf("get steps: %v", err)
+	}
+	var documentStep *db.StepResult
+	for _, step := range steps {
+		if step.StepName == types.StepDocument {
+			documentStep = step
+			break
+		}
+	}
+	if documentStep == nil || documentStep.FindingsJSON == nil {
+		t.Fatal("unresolved informational finding did not remain visible")
+	}
+	attempts, err := database.GetInvocationAttemptsByStepResult(documentStep.ID)
+	if err != nil {
+		t.Fatalf("get Document attempts: %v", err)
+	}
+	fixers, verifiers := 0, 0
+	for _, attempt := range attempts {
+		switch attempt.Start.Purpose {
+		case types.PurposeInformationalRepair:
+			fixers++
+		case types.PurposeInformationalRepairVerification:
+			verifiers++
+		}
+	}
+	if fixers != 2 || verifiers != 2 {
+		t.Fatalf("informational attempts = %d fixer/%d verifier, want 2/2", fixers, verifiers)
+	}
+}
+
+func TestExecutorResolvedVerifyRepairResealsAndAdvances(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+	initGitRepo(t, workDir)
+	scripted := &scriptedExecutorRepairAgent{resolve: true}
+	verify := &mockStep{name: types.StepVerify, outcome: &StepOutcome{
+		Findings: `{"findings":[{"id":"verify-1","severity":"error","description":"verification failed","action":"auto-fix"}],"summary":"one"}`,
+	}}
+	push := newPassStep(types.StepPush)
+	cfg := &config.Config{Routing: config.DefaultRoutingConfig()}
+	executor := NewExecutor(database, p, cfg, scripted, []Step{newPassStep(types.StepLint), verify, push}, nil)
+
+	if err := executor.Execute(context.Background(), run, repo, workDir); err != nil {
+		t.Fatalf("executor error: %v", err)
+	}
+	if push.callCount() != 1 {
+		t.Fatalf("Push calls = %d, want 1 after resolved Verify repair", push.callCount())
+	}
+	seal, err := database.LatestSealByReason(run.ID, "pre_verify")
+	if err != nil || seal == nil {
+		t.Fatalf("load resealed candidate: %+v, %v", seal, err)
+	}
+	repairs, err := database.GetFindingRepairsByRun(run.ID)
+	if err != nil {
+		t.Fatalf("get repairs: %v", err)
+	}
+	if len(repairs) != 1 || repairs[0].Status != db.RepairStatusResolved {
+		t.Fatalf("resolved Verify repairs = %+v, want one durable resolution", repairs)
+	}
+}
+
+func TestRecordReviewLineagesPropagatesCreationFailure(t *testing.T) {
+	database, p, run, _ := setupTest(t)
+	_, roundID, attemptID := recordRoutedReviewAttempt(t, database, run)
+	executor := NewExecutor(database, p, &config.Config{Routing: config.DefaultRoutingConfig()}, nil, nil, nil)
+	invalidRun := *run
+	invalidRun.ID = ""
+	findings := `{"findings":[{"id":"review-1","severity":"error","description":"bug","action":"auto-fix"}],"summary":"one"}`
+
+	err := executor.recordReviewLineages(&invalidRun, types.StepReview, roundID, findings)
+	if err == nil || !strings.Contains(err.Error(), "create initial review lineages") {
+		t.Fatalf("recordReviewLineages error = %v, want mandatory lineage creation failure", err)
+	}
+	lineages, queryErr := database.GetFindingLineagesByAttempt(attemptID)
+	if queryErr != nil {
+		t.Fatalf("get lineages: %v", queryErr)
+	}
+	if len(lineages) != 0 {
+		t.Fatalf("lineages = %d, want none after failed atomic creation", len(lineages))
+	}
+}
+
+func TestEscalatePropagatesFindingRepairWriteFailure(t *testing.T) {
+	fake := &fakeRepairInvoker{}
+	rc, seeds := repairFixture(t, fake, []types.Finding{blockingFinding("review-1", "nil deref")})
+	originalReserve := rc.reserveRound
+	rc.reserveRound = func(trigger string) (*db.StepRound, error) {
+		round, err := originalReserve(trigger)
+		if err == nil {
+			_ = rc.db.Close()
+		}
+		return round, err
+	}
+
+	_, err := rc.escalateBatch(context.Background(), seeds)
+	if err == nil || !strings.Contains(err.Error(), "persist finding repair") {
+		t.Fatalf("escalateBatch error = %v, want finding repair write failure", err)
+	}
+}
+
+func TestEscalatePropagatesRepairCheckWriteFailure(t *testing.T) {
+	fake := &fakeRepairInvoker{}
+	rc, seeds := repairFixture(t, fake, []types.Finding{blockingFinding("review-1", "nil deref")})
+	rc.checks = []repairCheck{{
+		Command: "make test",
+		Run: func(context.Context) (bool, int, string) {
+			_ = rc.db.Close()
+			return true, 0, "PASS"
+		},
+	}}
+
+	_, err := rc.escalateBatch(context.Background(), seeds)
+	if err == nil || !strings.Contains(err.Error(), "persist finding repair check") {
+		t.Fatalf("escalateBatch error = %v, want check journal write failure", err)
+	}
+}
+
+func TestEscalatePropagatesRepairRoundCompletionFailure(t *testing.T) {
+	fake := &fakeRepairInvoker{}
+	rc, seeds := repairFixture(t, fake, []types.Finding{blockingFinding("review-1", "nil deref")})
+	rc.reserveRound = func(string) (*db.StepRound, error) {
+		return &db.StepRound{ID: "missing-round"}, nil
+	}
+
+	_, err := rc.escalateBatch(context.Background(), seeds)
+	if err == nil || !strings.Contains(err.Error(), "complete repair round") {
+		t.Fatalf("escalateBatch error = %v, want round completion write failure", err)
+	}
+}
+
 func TestEscalateResolvesAtFixFast(t *testing.T) {
 	fake := &fakeRepairInvoker{verify: func(_ int, ids []string) verdictSpec {
 		return verdictSpec{resolved: allResolved(ids)}
@@ -243,6 +723,51 @@ func TestEscalateAdvancesThenResolves(t *testing.T) {
 	}
 }
 
+func TestEscalateTreatsProfileExhaustionAsTerminal(t *testing.T) {
+	fake := &fakeRepairInvoker{fixError: &agent.ProfileUnavailableError{Profile: "fix_fast", Cause: fmt.Errorf("providers exhausted")}}
+	rc, seeds := repairFixture(t, fake, []types.Finding{blockingFinding("review-1", "nil deref")})
+
+	states, err := rc.escalateBatch(context.Background(), seeds)
+	if err == nil || !strings.Contains(err.Error(), "profile unavailable") {
+		t.Fatalf("escalateBatch error = %v, want terminal Profile exhaustion", err)
+	}
+	state := states[seeds[0].LineageID]
+	if !state.failed || state.resolved || state.tier != 0 || state.verdict != db.RepairVerdictInconclusive {
+		t.Fatalf("profile exhaustion must fail the current tier terminally, got %+v", state)
+	}
+	if fmt.Sprint(fake.fixerTiers) != "[0]" {
+		t.Fatalf("fixer tiers = %v, want [0]; Profile exhaustion must not advance quality tier", fake.fixerTiers)
+	}
+	repairs, err := rc.db.GetFindingRepairsByLineage(seeds[0].LineageID)
+	if err != nil {
+		t.Fatalf("get repairs: %v", err)
+	}
+	if len(repairs) != 1 || repairs[0].Status != db.RepairStatusUnresolved {
+		t.Fatalf("repairs = %+v, want one terminal unresolved cycle", repairs)
+	}
+}
+
+func TestEscalateTreatsVerifierProfileExhaustionAsTerminal(t *testing.T) {
+	fake := &fakeRepairInvoker{verifyError: &agent.ProfileUnavailableError{Profile: "review_strong", Cause: fmt.Errorf("providers exhausted")}}
+	rc, seeds := repairFixture(t, fake, []types.Finding{blockingFinding("review-1", "nil deref")})
+
+	states, err := rc.escalateBatch(context.Background(), seeds)
+	if err == nil || !strings.Contains(err.Error(), "profile unavailable") {
+		t.Fatalf("escalateBatch error = %v, want terminal verifier Profile exhaustion", err)
+	}
+	state := states[seeds[0].LineageID]
+	if !state.failed || state.resolved || state.tier != 0 || state.verdict != db.RepairVerdictInconclusive {
+		t.Fatalf("verifier Profile exhaustion must fail the current tier terminally, got %+v", state)
+	}
+	repairs, err := rc.db.GetFindingRepairsByLineage(seeds[0].LineageID)
+	if err != nil {
+		t.Fatalf("get repairs: %v", err)
+	}
+	if len(repairs) != 1 || repairs[0].Status != db.RepairStatusUnresolved || repairs[0].FixerAttemptID == "" || repairs[0].VerifierAttemptID != "" {
+		t.Fatalf("repairs = %+v, want one fixer-linked, verifier-unlinked terminal unresolved cycle", repairs)
+	}
+}
+
 func TestEscalateFailsClosedAtAuthority(t *testing.T) {
 	fake := &fakeRepairInvoker{verify: func(int, []string) verdictSpec { return verdictSpec{} }}
 	rc, seeds := repairFixture(t, fake, []types.Finding{blockingFinding("review-1", "nil deref")})
@@ -261,6 +786,57 @@ func TestEscalateFailsClosedAtAuthority(t *testing.T) {
 	repairs, _ := rc.db.GetFindingRepairsByLineage(seeds[0].LineageID)
 	if len(repairs) != 3 {
 		t.Fatalf("repairs = %d, want 3 tiers", len(repairs))
+	}
+}
+
+func TestEscalateRejectsDuplicateLineageVerdicts(t *testing.T) {
+	fake := &fakeRepairInvoker{rawVerify: func(ids []string) string {
+		return fmt.Sprintf(`{"verdicts":[{"lineage_id":%q,"status":"unresolved","rationale":"still broken"},{"lineage_id":%q,"status":"resolved","rationale":"duplicate override"}],"new_findings":[]}`, ids[0], ids[0])
+	}}
+	rc, seeds := repairFixture(t, fake, []types.Finding{blockingFinding("review-1", "nil deref")})
+	rc.policy.maxTier = 0
+
+	states, err := rc.escalateBatch(context.Background(), seeds)
+	if err != nil {
+		t.Fatalf("escalateBatch: %v", err)
+	}
+	state := states[seeds[0].LineageID]
+	if state.resolved || !state.failed || state.verdict != db.RepairVerdictInconclusive {
+		t.Fatalf("duplicate verdict must fail closed as inconclusive, got %+v", state)
+	}
+	repairs, err := rc.db.GetFindingRepairsByLineage(seeds[0].LineageID)
+	if err != nil {
+		t.Fatalf("get repairs: %v", err)
+	}
+	if len(repairs) != 1 || repairs[0].Status != db.RepairStatusUnresolved || repairs[0].Verdict != db.RepairVerdictInconclusive {
+		t.Fatalf("durable repair = %+v, want one unresolved inconclusive row", repairs)
+	}
+}
+
+func TestEscalateRejectsMissingAndUnknownLineageVerdicts(t *testing.T) {
+	tests := map[string]func([]string) string{
+		"missing": func([]string) string {
+			return `{"verdicts":[],"new_findings":[]}`
+		},
+		"unknown": func([]string) string {
+			return `{"verdicts":[{"lineage_id":"unknown-lineage","status":"resolved","rationale":"wrong target"}],"new_findings":[]}`
+		},
+	}
+	for name, raw := range tests {
+		t.Run(name, func(t *testing.T) {
+			fake := &fakeRepairInvoker{rawVerify: raw}
+			rc, seeds := repairFixture(t, fake, []types.Finding{blockingFinding("review-1", "nil deref")})
+			rc.policy.maxTier = 0
+
+			states, err := rc.escalateBatch(context.Background(), seeds)
+			if err != nil {
+				t.Fatalf("escalateBatch: %v", err)
+			}
+			state := states[seeds[0].LineageID]
+			if state.resolved || !state.failed || state.verdict != db.RepairVerdictInconclusive {
+				t.Fatalf("%s verdict set must fail closed as inconclusive, got %+v", name, state)
+			}
+		})
 	}
 }
 
@@ -350,7 +926,8 @@ func TestEscalateUnrelatedFindingCreatesSeparateRoot(t *testing.T) {
 	fake := &fakeRepairInvoker{verify: func(call int, ids []string) verdictSpec {
 		if call == 0 {
 			return verdictSpec{
-				resolved:    map[string]bool{ids[0]: true},
+				resolved: map[string]bool{ids[0]: true},
+
 				newFindings: []newFindingSpec{{description: "unrelated new bug", severity: "error", action: "auto-fix", causedBy: ""}},
 			}
 		}
@@ -368,6 +945,158 @@ func TestEscalateUnrelatedFindingCreatesSeparateRoot(t *testing.T) {
 	}
 	if !descs["nil deref"] || !descs["unrelated new bug"] {
 		t.Fatalf("repairs should cover both roots, got %v", descs)
+	}
+}
+
+func TestEscalateParksVerifierCreatedAskUserFinding(t *testing.T) {
+	fake := &fakeRepairInvoker{verify: func(call int, ids []string) verdictSpec {
+		if call == 0 {
+			return verdictSpec{
+				resolved:    allResolved(ids),
+				newFindings: []newFindingSpec{{description: "needs product judgment", severity: "error", action: "ask-user"}},
+			}
+		}
+		return verdictSpec{resolved: allResolved(ids)}
+	}}
+	rc, seeds := repairFixture(t, fake, []types.Finding{blockingFinding("review-1", "nil deref")})
+
+	states, err := rc.escalateBatch(context.Background(), seeds)
+	if err != nil {
+		t.Fatalf("escalateBatch: %v", err)
+	}
+	if fake.fixCalls != 1 {
+		t.Fatalf("fixer calls = %d, want 1; verifier-created ask-user work must park until consent", fake.fixCalls)
+	}
+	if len(states) != 2 {
+		t.Fatalf("states = %d, want original plus verifier-created root", len(states))
+	}
+	lineages, err := rc.db.GetFindingLineagesByRun(rc.run.ID)
+	if err != nil {
+		t.Fatalf("get lineages: %v", err)
+	}
+	if len(lineages) != 2 {
+		t.Fatalf("lineages = %d, want 2", len(lineages))
+	}
+	root := lineages[1]
+	attempts, err := rc.db.GetInvocationAttemptsByStepResult(rc.stepResultID)
+	if err != nil {
+		t.Fatalf("get attempts: %v", err)
+	}
+	var verifierAttemptID string
+	for _, attempt := range attempts {
+		if attempt.Start.Purpose == types.PurposeNormalAggregateVerification {
+			verifierAttemptID = attempt.ID
+		}
+	}
+	if root.OriginAttemptID != verifierAttemptID {
+		t.Fatalf("new root origin = %q, want producing verifier attempt %q", root.OriginAttemptID, verifierAttemptID)
+	}
+	state := states[root.ID]
+	if state == nil || !state.failed || state.resolved || state.verdict != db.RepairVerdictUnresolved {
+		t.Fatalf("ask-user root must remain durably unresolved awaiting consent, got %+v", state)
+	}
+	repairs, err := rc.db.GetFindingRepairsByLineage(root.ID)
+	if err != nil {
+		t.Fatalf("get ask-user repair: %v", err)
+	}
+	if len(repairs) != 1 || repairs[0].Action != types.ActionAskUser || repairs[0].Status != db.RepairStatusUnresolved {
+		t.Fatalf("ask-user durable state = %+v, want one unresolved row", repairs)
+	}
+}
+
+func TestEscalatePersistsVerifierCreatedNoOpWithoutRepair(t *testing.T) {
+	fake := &fakeRepairInvoker{verify: func(call int, ids []string) verdictSpec {
+		if call == 0 {
+			return verdictSpec{
+				resolved:    allResolved(ids),
+				newFindings: []newFindingSpec{{description: "advisory only", severity: "warning", action: "no-op"}},
+			}
+		}
+		return verdictSpec{resolved: allResolved(ids)}
+	}}
+	rc, seeds := repairFixture(t, fake, []types.Finding{blockingFinding("review-1", "nil deref")})
+
+	states, err := rc.escalateBatch(context.Background(), seeds)
+	if err != nil {
+		t.Fatalf("escalateBatch: %v", err)
+	}
+	if fake.fixCalls != 1 {
+		t.Fatalf("fixer calls = %d, want 1; no-op findings must never enter repair", fake.fixCalls)
+	}
+	lineages, err := rc.db.GetFindingLineagesByRun(rc.run.ID)
+	if err != nil {
+		t.Fatalf("get lineages: %v", err)
+	}
+	if len(lineages) != 2 {
+		t.Fatalf("lineages = %d, want original plus durable no-op root", len(lineages))
+	}
+	root := lineages[1]
+	state := states[root.ID]
+	if state == nil || !state.resolved || state.failed {
+		t.Fatalf("no-op root should terminate without repair, got %+v", state)
+	}
+	repairs, err := rc.db.GetFindingRepairsByLineage(root.ID)
+	if err != nil {
+		t.Fatalf("get no-op repairs: %v", err)
+	}
+	if len(repairs) != 0 {
+		t.Fatalf("no-op repairs = %+v, want none", repairs)
+	}
+}
+
+func TestEscalateIterationCapPersistsUnresolvedTerminalRoot(t *testing.T) {
+	fake := &fakeRepairInvoker{verify: func(_ int, ids []string) verdictSpec {
+		return verdictSpec{
+			resolved:    allResolved(ids),
+			newFindings: []newFindingSpec{{description: "another unrelated defect", severity: "error", action: "auto-fix"}},
+		}
+	}}
+	rc, seeds := repairFixture(t, fake, []types.Finding{blockingFinding("review-1", "nil deref")})
+	rc.policy.maxTier = 0
+
+	states, err := rc.escalateBatch(context.Background(), seeds)
+	if err == nil || !strings.Contains(err.Error(), "repair iteration cap reached") {
+		t.Fatalf("escalateBatch error = %v, want iteration-cap failure", err)
+	}
+	var capped *lineageState
+	for _, state := range states {
+		if state.failed && state.verdict == db.RepairVerdictInconclusive && state.rationale == "repair iteration cap reached" {
+			capped = state
+			break
+		}
+	}
+	if capped == nil {
+		t.Fatalf("iteration cap did not fail its active verifier-created root closed; states=%+v", states)
+	}
+	repairs, err := rc.db.GetFindingRepairsByLineage(capped.lineageID)
+	if err != nil {
+		t.Fatalf("get capped root repairs: %v", err)
+	}
+	if len(repairs) != 1 || repairs[0].Status != db.RepairStatusUnresolved || repairs[0].Verdict != db.RepairVerdictInconclusive {
+		t.Fatalf("iteration-capped root = state %+v repairs %+v, want durable unresolved inconclusive", capped, repairs)
+	}
+}
+
+func TestEscalateIterationCapTerminatesEveryActiveRoot(t *testing.T) {
+	fake := &fakeRepairInvoker{verify: func(_ int, _ []string) verdictSpec {
+		return verdictSpec{
+			newFindings: []newFindingSpec{{description: "another unrelated defect", severity: "error", action: "auto-fix"}},
+		}
+	}}
+	rc, seeds := repairFixture(t, fake, []types.Finding{blockingFinding("review-1", "nil deref")})
+	rc.policy.maxTier = 2
+
+	states, err := rc.escalateBatch(context.Background(), seeds)
+	if err == nil || !strings.Contains(err.Error(), "repair iteration cap reached") {
+		t.Fatalf("escalateBatch error = %v, want iteration-cap failure", err)
+	}
+	for lineageID, state := range states {
+		if state.resolved {
+			t.Fatalf("lineage %s unexpectedly resolved: %+v", lineageID, state)
+		}
+		if !state.failed || state.verdict == "" {
+			t.Fatalf("iteration cap left lineage %s active: %+v", lineageID, state)
+		}
 	}
 }
 
@@ -482,6 +1211,50 @@ func TestUnstructuredTestRepairPolicyStartsAtFixBalanced(t *testing.T) {
 	}
 	if policy.maxTier != 1 {
 		t.Fatalf("test repair maxTier = %d, want 1", policy.maxTier)
+	}
+}
+
+func TestNonReviewAutomaticRepairAcceptsOnlyAutoFix(t *testing.T) {
+	for _, action := range []string{types.ActionAskUser, types.ActionNoOp} {
+		t.Run(action, func(t *testing.T) {
+			database, p, run, repo := setupTest(t)
+			step, err := database.InsertStepResult(run.ID, types.StepVerify)
+			if err != nil {
+				t.Fatalf("insert Verify step: %v", err)
+			}
+			fake := &fakeRepairInvoker{db: database}
+			cfg := &config.Config{Routing: config.DefaultRoutingConfig()}
+			executor := NewExecutor(database, p, cfg, nil, nil, nil)
+			sctx := &StepContext{Invoker: fake, Repo: repo}
+			findings := fmt.Sprintf(`{"findings":[{"id":"verify-1","severity":"error","description":"requires policy handling","action":%q}],"summary":"one"}`, action)
+			reserveCalled := false
+			result, err := executor.maybeRepairStepFindings(
+				context.Background(),
+				sctx,
+				run,
+				step,
+				types.StepVerify,
+				findings,
+				nil,
+				func(string) (*db.StepRound, error) {
+					reserveCalled = true
+					return nil, fmt.Errorf("unexpected repair round")
+				},
+			)
+			if err != nil {
+				t.Fatalf("maybeRepairStepFindings: %v", err)
+			}
+			if result.Owned || reserveCalled || fake.fixCalls != 0 {
+				t.Fatalf("action %q entered automatic repair: result=%+v reserve=%v fixer calls=%d", action, result, reserveCalled, fake.fixCalls)
+			}
+			repairs, err := database.GetFindingRepairsByRun(run.ID)
+			if err != nil {
+				t.Fatalf("get repairs: %v", err)
+			}
+			if len(repairs) != 0 {
+				t.Fatalf("action %q repairs = %+v, want none", action, repairs)
+			}
+		})
 	}
 }
 

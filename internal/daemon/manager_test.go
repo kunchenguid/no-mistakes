@@ -47,7 +47,31 @@ func TestPushReceivedTracksRunTelemetry(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	run := waitForRunTerminalState(t, d, result.RunID)
+	completed, cancelSubscription, err := ipc.Subscribe(p.Socket(), &ipc.SubscribeParams{RunID: result.RunID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancelSubscription()
+
+	timeout := time.After(5 * time.Second)
+	for completed != nil {
+		select {
+		case _, ok := <-completed:
+			if !ok {
+				completed = nil
+			}
+		case <-timeout:
+			t.Fatal("run lifecycle did not finish")
+		}
+	}
+
+	run, err := d.GetRun(result.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run == nil {
+		t.Fatal("completed run was not persisted")
+	}
 	if run.Status != types.RunCompleted {
 		t.Fatalf("run status = %q, want %q", run.Status, types.RunCompleted)
 	}

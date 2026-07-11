@@ -1,8 +1,11 @@
 package db
 
 import (
+	"database/sql"
 	"fmt"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -140,14 +143,13 @@ func TestRecordRoutedRunEntersCohortOnceWithExclusions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("insert repo: %v", err)
 	}
+	// Pre-activation completed run: excluded by the durable completion fence.
+	pre := seedCompletedCanaryRun(t, d, repo.ID, 1000, 0, 0, 0)
 	if _, err := d.ActivateCanary("fp", nil); err != nil {
 		t.Fatalf("activate: %v", err)
 	}
 	at := canaryActivatedAt(t, d)
 
-	// Pre-activation completed run: excluded.
-	pre := seedCompletedCanaryRun(t, d, repo.ID, 1000, 0, 0, 0)
-	setRunUpdatedAt(t, d, pre, at-10)
 	if added, err := d.RecordRoutedRunInCanary(pre, -1, -1); err != nil || added {
 		t.Fatalf("pre-activation run added=%v err=%v, want not added", added, err)
 	}
@@ -187,7 +189,40 @@ func TestRecordRoutedRunEntersCohortOnceWithExclusions(t *testing.T) {
 	}
 }
 
-func TestRecordRoutedRunCapsCohortAtTen(t *testing.T) {
+func TestRecordRoutedRunUsesCompletionOrderFenceAtEqualTimestamps(t *testing.T) {
+	d := openTestDB(t)
+	repo, err := d.InsertRepoWithID("repo-1", "/tmp/repo", "origin", "main")
+	if err != nil {
+		t.Fatalf("insert repo: %v", err)
+	}
+
+	preFence := seedCompletedCanaryRun(t, d, repo.ID, 1000, 0, 0, 0)
+	if _, err := d.ActivateCanary("fp", nil); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	at := canaryActivatedAt(t, d)
+	setRunUpdatedAt(t, d, preFence, at)
+
+	postFence := seedCompletedCanaryRun(t, d, repo.ID, 2000, 0, 0, 0)
+	setRunUpdatedAt(t, d, postFence, at)
+
+	if added, err := d.RecordRoutedRunInCanary(preFence, -1, -1); err != nil || added {
+		t.Fatalf("equal-timestamp pre-fence run added=%v err=%v, want excluded", added, err)
+	}
+	if added, err := d.RecordRoutedRunInCanary(postFence, -1, -1); err != nil || !added {
+		t.Fatalf("equal-timestamp post-fence run added=%v err=%v, want admitted", added, err)
+	}
+
+	report, err := d.GetCanaryReport()
+	if err != nil {
+		t.Fatalf("report: %v", err)
+	}
+	if len(report.Routed.Runs) != 1 || report.Routed.Runs[0].RunID != postFence {
+		t.Fatalf("routed cohort = %+v, want only post-fence run %s", report.Routed.Runs, postFence)
+	}
+}
+
+func TestRecordRoutedRunSelectsFirstTenConcurrentEqualTimestampCompletions(t *testing.T) {
 	d := openTestDB(t)
 	repo, err := d.InsertRepoWithID("repo-1", "/tmp/repo", "origin", "main")
 	if err != nil {
@@ -197,28 +232,51 @@ func TestRecordRoutedRunCapsCohortAtTen(t *testing.T) {
 		t.Fatalf("activate: %v", err)
 	}
 	at := canaryActivatedAt(t, d)
-	for i := 0; i < 10; i++ {
-		id := seedCompletedCanaryRun(t, d, repo.ID, 1000, 0, 0, 0)
-		setRunUpdatedAt(t, d, id, at+int64(1+i))
-		if added, err := d.RecordRoutedRunInCanary(id, -1, -1); err != nil || !added {
-			t.Fatalf("routed run %d added=%v err=%v, want added", i, added, err)
+
+	runIDs := make([]string, 12)
+	for i := range runIDs {
+		runIDs[i] = seedCompletedCanaryRun(t, d, repo.ID, int64(1000+i), 0, 0, 0)
+		setRunUpdatedAt(t, d, runIDs[i], at)
+	}
+	start := make(chan struct{})
+	added := make([]bool, len(runIDs))
+	errs := make([]error, len(runIDs))
+	var wg sync.WaitGroup
+	for i := range runIDs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			added[i], errs[i] = d.RecordRoutedRunInCanary(runIDs[i], -1, -1)
+		}()
+	}
+	close(start)
+	wg.Wait()
+	for i := range runIDs {
+		if errs[i] != nil {
+			t.Fatalf("offer completion %d: %v", i, errs[i])
+		}
+		wantAdded := i < canaryCohortSize
+		if added[i] != wantAdded {
+			t.Fatalf("completion %d added=%v, want %v", i, added[i], wantAdded)
 		}
 	}
-	overflow := seedCompletedCanaryRun(t, d, repo.ID, 1000, 0, 0, 0)
-	setRunUpdatedAt(t, d, overflow, at+100)
-	if added, err := d.RecordRoutedRunInCanary(overflow, -1, -1); err != nil || added {
-		t.Fatalf("eleventh routed run added=%v err=%v, want not added (cohort full)", added, err)
-	}
+
 	report, err := d.GetCanaryReport()
 	if err != nil {
 		t.Fatalf("report: %v", err)
 	}
-	if len(report.Routed.Runs) != 10 || !report.Routed.Complete {
+	if len(report.Routed.Runs) != canaryCohortSize || !report.Routed.Complete {
 		t.Fatalf("routed cohort = %d (complete=%v), want 10 complete", len(report.Routed.Runs), report.Routed.Complete)
+	}
+	for i, fact := range report.Routed.Runs {
+		if fact.RunID != runIDs[i] {
+			t.Fatalf("routed position %d = %s, want completion-order run %s", i, fact.RunID, runIDs[i])
+		}
 	}
 }
 
-func TestCanaryReportTargetAndDormancy(t *testing.T) {
+func TestCanaryReportTargetPendingUntilBothCohortsComplete(t *testing.T) {
 	d := openTestDB(t)
 	repo, err := d.InsertRepoWithID("repo-1", "/tmp/repo", "origin", "main")
 	if err != nil {
@@ -233,74 +291,78 @@ func TestCanaryReportTargetAndDormancy(t *testing.T) {
 		t.Fatalf("dormant report activated=%v met=%v", dormant.Activated, dormant.Met)
 	}
 
-	// Baseline of three: exec 10000/20000/30000 -> median 20000 (odd set).
-	for i, ms := range []int64{10000, 20000, 30000} {
-		id := seedCompletedCanaryRun(t, d, repo.ID, ms, 0, 0, 0)
-		setRunUpdatedAt(t, d, id, int64(100+i))
+	for range canaryCohortSize {
+		seedCompletedCanaryRun(t, d, repo.ID, 20000, 0, 0, 0)
 	}
 	if _, err := d.ActivateCanary("fp", nil); err != nil {
 		t.Fatalf("activate: %v", err)
 	}
-	at := canaryActivatedAt(t, d)
-
-	r0, err := d.GetCanaryReport()
+	report, err := d.GetCanaryReport()
 	if err != nil {
-		t.Fatalf("report: %v", err)
+		t.Fatalf("empty routed report: %v", err)
 	}
-	if r0.Met != nil {
-		t.Fatal("Met must be nil with an empty routed cohort")
-	}
-	if r0.Baseline.Complete {
-		t.Fatal("a baseline of three must report incomplete")
-	}
-	if r0.Baseline.MedianExecMS != 20000 {
-		t.Fatalf("baseline median = %d, want 20000", r0.Baseline.MedianExecMS)
+	if !report.Baseline.Complete || report.Routed.Complete || report.Met != nil {
+		t.Fatalf("empty routed state: baseline_complete=%v routed_complete=%v met=%v", report.Baseline.Complete, report.Routed.Complete, report.Met)
 	}
 
-	// Routed of three: exec 10000/12000/14000 -> median 12000 <= 70% of 20000.
-	for i, ms := range []int64{10000, 12000, 14000} {
-		id := seedCompletedCanaryRun(t, d, repo.ID, ms, 0, 0, 0)
-		setRunUpdatedAt(t, d, id, at+int64(10+i))
+	for i := range canaryCohortSize - 1 {
+		execMS := int64(12000)
+		if i >= 5 {
+			execMS = 16000
+		}
+		id := seedCompletedCanaryRun(t, d, repo.ID, execMS, 0, 0, 0)
 		if added, err := d.RecordRoutedRunInCanary(id, -1, -1); err != nil || !added {
 			t.Fatalf("routed run %d added=%v err=%v", i, added, err)
 		}
 	}
-	rm, err := d.GetCanaryReport()
+	preliminary, err := d.GetCanaryReport()
 	if err != nil {
-		t.Fatalf("report: %v", err)
+		t.Fatalf("preliminary report: %v", err)
 	}
-	if rm.Routed.MedianExecMS != 12000 {
-		t.Fatalf("routed median = %d, want 12000", rm.Routed.MedianExecMS)
+	if preliminary.Routed.Complete || preliminary.Met != nil {
+		t.Fatalf("nine-run report complete=%v met=%v, want incomplete and pending", preliminary.Routed.Complete, preliminary.Met)
 	}
-	if rm.Met == nil || !*rm.Met {
-		t.Fatalf("target should be met (baseline 20000, routed 12000 <= 14000); met=%v", rm.Met)
+
+	tenth := seedCompletedCanaryRun(t, d, repo.ID, 16000, 0, 0, 0)
+	if added, err := d.RecordRoutedRunInCanary(tenth, -1, -1); err != nil || !added {
+		t.Fatalf("tenth routed run added=%v err=%v", added, err)
+	}
+	complete, err := d.GetCanaryReport()
+	if err != nil {
+		t.Fatalf("complete report: %v", err)
+	}
+	if !complete.Routed.Complete || complete.Routed.MedianExecMS != 14000 {
+		t.Fatalf("complete routed state: complete=%v median=%d, want true/14000", complete.Routed.Complete, complete.Routed.MedianExecMS)
+	}
+	if complete.Met == nil || !*complete.Met {
+		t.Fatalf("30%% advisory target should be met at exact threshold 14000 <= 70%% of 20000; met=%v", complete.Met)
 	}
 }
 
-func TestCanaryReportTargetMissed(t *testing.T) {
+func TestCanaryReportCompleteCohortCanMissAdvisoryTarget(t *testing.T) {
 	d := openTestDB(t)
 	repo, err := d.InsertRepoWithID("repo-1", "/tmp/repo", "origin", "main")
 	if err != nil {
 		t.Fatalf("insert repo: %v", err)
 	}
-	// Baseline median 10000; routed median 9000 > 7000 (70%): target missed.
-	base := seedCompletedCanaryRun(t, d, repo.ID, 10000, 0, 0, 0)
-	setRunUpdatedAt(t, d, base, 100)
+	for range canaryCohortSize {
+		seedCompletedCanaryRun(t, d, repo.ID, 10000, 0, 0, 0)
+	}
 	if _, err := d.ActivateCanary("fp", nil); err != nil {
 		t.Fatalf("activate: %v", err)
 	}
-	at := canaryActivatedAt(t, d)
-	routed := seedCompletedCanaryRun(t, d, repo.ID, 9000, 0, 0, 0)
-	setRunUpdatedAt(t, d, routed, at+10)
-	if added, err := d.RecordRoutedRunInCanary(routed, -1, -1); err != nil || !added {
-		t.Fatalf("routed run added=%v err=%v", added, err)
+	for i := range canaryCohortSize {
+		id := seedCompletedCanaryRun(t, d, repo.ID, 9000, 0, 0, 0)
+		if added, err := d.RecordRoutedRunInCanary(id, -1, -1); err != nil || !added {
+			t.Fatalf("routed run %d added=%v err=%v", i, added, err)
+		}
 	}
 	report, err := d.GetCanaryReport()
 	if err != nil {
 		t.Fatalf("report: %v", err)
 	}
 	if report.Met == nil || *report.Met {
-		t.Fatalf("target should be missed (routed 9000 > 7000); met=%v", report.Met)
+		t.Fatalf("complete target should be missed (routed 9000 > 7000); met=%v", report.Met)
 	}
 }
 
@@ -345,5 +407,103 @@ func TestCanaryRunFactsCaptureSupplements(t *testing.T) {
 	}
 	if f.ChangedFiles != 7 || f.ChangedLines != 88 {
 		t.Errorf("changed files/lines = %d/%d, want 7/88", f.ChangedFiles, f.ChangedLines)
+	}
+}
+
+func TestCanaryCompletionFenceMigratesLegacyActivationDeterministically(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "legacy.sqlite")
+	legacy, err := sql.Open("sqlite", dbPath+"?_pragma=journal_mode(wal)&_pragma=foreign_keys(on)")
+	if err != nil {
+		t.Fatalf("open legacy db: %v", err)
+	}
+	if _, err := legacy.Exec(`
+		CREATE TABLE runs (
+			id TEXT PRIMARY KEY,
+			repo_id TEXT NOT NULL,
+			branch TEXT NOT NULL,
+			head_sha TEXT NOT NULL,
+			base_sha TEXT NOT NULL,
+			status TEXT NOT NULL,
+			pr_url TEXT,
+			error TEXT,
+			awaiting_agent_since INTEGER,
+			intent TEXT,
+			intent_source TEXT,
+			intent_session_id TEXT,
+			intent_score REAL,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		);
+		CREATE TABLE canary_activation (
+			id INTEGER PRIMARY KEY CHECK (id = 1),
+			activated_at INTEGER NOT NULL,
+			fingerprint TEXT NOT NULL DEFAULT ''
+		);
+		INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, status, created_at, updated_at)
+		VALUES
+			('run-b', 'repo-1', 'feature', 'b-head', 'base', 'completed', 1, 100),
+			('run-a', 'repo-1', 'feature', 'a-head', 'base', 'completed', 1, 100),
+			('run-c', 'repo-1', 'feature', 'c-head', 'base', 'running', 1, 100);
+		INSERT INTO canary_activation (id, activated_at, fingerprint) VALUES (1, 100, 'legacy-fp');
+	`); err != nil {
+		legacy.Close()
+		t.Fatalf("seed legacy canary: %v", err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatalf("close legacy db: %v", err)
+	}
+
+	d, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("migrate legacy db: %v", err)
+	}
+	t.Cleanup(func() { d.Close() })
+
+	var fence, aSequence, bSequence int64
+	if err := d.sql.QueryRow(`SELECT completion_fence FROM canary_activation WHERE id = 1`).Scan(&fence); err != nil {
+		t.Fatalf("read migrated fence: %v", err)
+	}
+	if err := d.sql.QueryRow(`SELECT sequence FROM run_completion_order WHERE run_id = 'run-a'`).Scan(&aSequence); err != nil {
+		t.Fatalf("read run-a sequence: %v", err)
+	}
+	if err := d.sql.QueryRow(`SELECT sequence FROM run_completion_order WHERE run_id = 'run-b'`).Scan(&bSequence); err != nil {
+		t.Fatalf("read run-b sequence: %v", err)
+	}
+	if aSequence != 1 || bSequence != 2 || fence != 2 {
+		t.Fatalf("legacy completion order a=%d b=%d fence=%d, want 1/2/2", aSequence, bSequence, fence)
+	}
+	if _, err := d.sql.Exec(`
+		INSERT INTO canary_cohort_runs
+			(cohort, position, run_id, completed_at, execution_ms, invocation_ms, escalations, failovers, changed_files, changed_lines, initial_findings, created_at)
+		VALUES ('routed', 0, 'run-a', 100, 0, 0, 0, 0, -1, -1, 0, 100)`); err != nil {
+		t.Fatalf("restore legacy routed cohort: %v", err)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatalf("close migrated db: %v", err)
+	}
+	d, err = Open(dbPath)
+	if err != nil {
+		t.Fatalf("reopen migrated db: %v", err)
+	}
+
+	if err := d.UpdateRunStatus("run-c", types.RunCompleted); err != nil {
+		t.Fatalf("complete post-migration run: %v", err)
+	}
+	var cSequence int64
+	if err := d.sql.QueryRow(`SELECT sequence FROM run_completion_order WHERE run_id = 'run-c'`).Scan(&cSequence); err != nil {
+		t.Fatalf("read run-c sequence: %v", err)
+	}
+	if cSequence != 3 {
+		t.Fatalf("post-migration completion sequence = %d, want 3", cSequence)
+	}
+	if added, err := d.RecordRoutedRunInCanary("run-c", -1, -1); err != nil || !added {
+		t.Fatalf("post-migration routed run added=%v err=%v, want appended after legacy member", added, err)
+	}
+	var position int
+	if err := d.sql.QueryRow(`SELECT position FROM canary_cohort_runs WHERE cohort = 'routed' AND run_id = 'run-c'`).Scan(&position); err != nil {
+		t.Fatalf("read post-migration routed position: %v", err)
+	}
+	if position != 1 {
+		t.Fatalf("post-migration routed position = %d, want 1 after legacy member", position)
 	}
 }

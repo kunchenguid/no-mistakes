@@ -71,6 +71,37 @@ func TestCIReadyToMerge(t *testing.T) {
 	}
 }
 
+// TestRunHelp_UnattendedConsentContract pins the agent-facing --yes contract on
+// axi run/respond: unattended consent fixes once then approves, fails closed by
+// aborting on an unresolved blocking repair lineage, and stops at checks-passed
+// for the human merge.
+func TestRunHelp_UnattendedConsentContract(t *testing.T) {
+	runCmd := newAxiRunCmd()
+	for _, want := range []string{
+		"unattended consent",
+		"blocking repair lineages",
+		"unresolved or inconclusive",
+		"aborts the run and returns an error instead of approving or retrying",
+		"--yes still stops at checks-passed",
+		"human must review and",
+	} {
+		if !strings.Contains(runCmd.Long, want) {
+			t.Errorf("axi run Long missing %q in:\n%s", want, runCmd.Long)
+		}
+	}
+	if strings.Contains(runCmd.Long, "no escalation") {
+		t.Errorf("axi run Long must not deny routed escalation for consented fixes:\n%s", runCmd.Long)
+	}
+	runFlag := runCmd.Flags().Lookup("yes")
+	if runFlag == nil || !strings.Contains(runFlag.Usage, "abort if a blocking repair remains unresolved") {
+		t.Errorf("axi run --yes usage must state the fail-closed abort, got %+v", runFlag)
+	}
+	respondFlag := newAxiRespondCmd().Flags().Lookup("yes")
+	if respondFlag == nil || !strings.Contains(respondFlag.Usage, "abort if a blocking repair remains unresolved") {
+		t.Errorf("axi respond --yes usage must state the fail-closed abort, got %+v", respondFlag)
+	}
+}
+
 func TestGateResolution(t *testing.T) {
 	tests := []struct {
 		name         string

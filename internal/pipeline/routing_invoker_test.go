@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
@@ -26,6 +27,15 @@ func (a *recordingRoutedAgent) Run(_ context.Context, opts agent.RunOpts) (*agen
 		return &agent.Result{}, nil
 	}
 	return a.result, a.err
+}
+
+type failingFinishJournal struct {
+	agent.InvocationJournal
+	err error
+}
+
+func (j failingFinishJournal) FinishInvocationAttempt(string, types.InvocationAttemptTerminal) error {
+	return j.err
 }
 
 func reservedReviewScope(t *testing.T, database *db.DB, run *db.Run) types.InvocationScope {
@@ -222,6 +232,50 @@ func TestRoutingInvokerFailsOverToBackupOnOperationalFailure(t *testing.T) {
 	}
 }
 
+func TestRoutingInvokerStopsCascadeWhenOperationalTerminalCannotBePersisted(t *testing.T) {
+	database, _, run, _ := setupTest(t)
+	scope := reservedReviewScope(t, database, run)
+	codex := &recordingRoutedAgent{err: opError()}
+	claude := &recordingRoutedAgent{}
+	circuits := newProviderCircuits()
+	journalErr := errStub("terminal journal unavailable")
+	ri := newRoutingInvoker(config.DefaultRoutingConfig(), failingFinishJournal{
+		InvocationJournal: database,
+		err:               journalErr,
+	}, circuits)
+	ri.newAgent = perRunner(codex, claude)
+
+	_, err := ri.Invoke(context.Background(), agent.InvocationRequest{
+		Purpose: types.PurposeInitialReview, Scope: scope, Payload: agent.RunOpts{Prompt: "review"},
+	})
+	if err == nil {
+		t.Fatal("expected terminal persistence failure")
+	}
+	var operational *agent.OperationalError
+	if errors.As(err, &operational) {
+		t.Fatalf("terminal persistence failure unwraps as operational provider error: %v", err)
+	}
+	if !errors.Is(err, journalErr) {
+		t.Fatalf("error = %v, want terminal journal cause", err)
+	}
+	if codex.calls != 1 || claude.calls != 0 {
+		t.Fatalf("calls codex=%d claude=%d, want 1 and 0", codex.calls, claude.calls)
+	}
+	if circuits.isOpen(types.FailureDomainOpenAI) || circuits.isOpen(types.FailureDomainAnthropic) {
+		t.Fatal("no circuit may open before its terminal fact is durable")
+	}
+	attempts, getErr := database.GetInvocationAttemptsByStepResult(scope.StepResultID)
+	if getErr != nil {
+		t.Fatalf("get attempts: %v", getErr)
+	}
+	if len(attempts) != 1 {
+		t.Fatalf("attempts = %d, want one durably active attempt", len(attempts))
+	}
+	if attempts[0].Terminal != nil {
+		t.Fatalf("terminal = %+v, want active attempt after terminal persistence failure", attempts[0].Terminal)
+	}
+}
+
 func TestRoutingInvokerOpensBothCircuitsAndFailsClosed(t *testing.T) {
 	database, _, run, _ := setupTest(t)
 	scope := reservedReviewScope(t, database, run)
@@ -231,10 +285,18 @@ func TestRoutingInvokerOpensBothCircuitsAndFailsClosed(t *testing.T) {
 	ri := newRoutingInvoker(config.DefaultRoutingConfig(), database, circuits)
 	ri.newAgent = perRunner(codex, claude)
 
-	if _, err := ri.Invoke(context.Background(), agent.InvocationRequest{
+	_, err := ri.Invoke(context.Background(), agent.InvocationRequest{
 		Purpose: types.PurposeInitialReview, Scope: scope, Payload: agent.RunOpts{Prompt: "review"},
-	}); err == nil {
+	})
+	if err == nil {
 		t.Fatal("expected fail-closed after both candidates fail operationally")
+	}
+	var unavailable *agent.ProfileUnavailableError
+	if !errors.As(err, &unavailable) {
+		t.Fatalf("error = %T %v, want identifiable ProfileUnavailableError", err, err)
+	}
+	if unavailable.Profile != "review_strong" || unavailable.Cause == nil {
+		t.Fatalf("profile unavailable error = %+v, want review_strong with operational cause", unavailable)
 	}
 	if !circuits.isOpen(types.FailureDomainOpenAI) || !circuits.isOpen(types.FailureDomainAnthropic) {
 		t.Fatal("expected both provider circuits open")
@@ -260,10 +322,15 @@ func TestRoutingInvokerNonOperationalFailureDoesNotFailOver(t *testing.T) {
 	ri := newRoutingInvoker(config.DefaultRoutingConfig(), database, circuits)
 	ri.newAgent = perRunner(codex, claude)
 
-	if _, err := ri.Invoke(context.Background(), agent.InvocationRequest{
+	_, err := ri.Invoke(context.Background(), agent.InvocationRequest{
 		Purpose: types.PurposeInitialReview, Scope: scope, Payload: agent.RunOpts{Prompt: "review"},
-	}); err == nil {
+	})
+	if err == nil {
 		t.Fatal("expected the non-operational failure to surface")
+	}
+	var unavailable *agent.ProfileUnavailableError
+	if errors.As(err, &unavailable) {
+		t.Fatalf("executed candidate's bad result was misclassified as profile unavailable: %v", err)
 	}
 	if claude.calls != 0 {
 		t.Fatalf("claude launched %d times; a non-operational failure must not fail over", claude.calls)
@@ -309,12 +376,14 @@ func TestRoutingInvokerSkipsOpenCircuitDomain(t *testing.T) {
 	if len(attempts) != 2 {
 		t.Fatalf("attempts = %d, want 2 (skipped codex, succeeded claude)", len(attempts))
 	}
-	codexAttempt := attemptForRunner(attempts, types.RunnerCodex)
-	if codexAttempt.Terminal.Outcome != types.InvocationOutcomeSkipped || codexAttempt.Terminal.FailureDomain != types.FailureDomainOpenAI {
-		t.Fatalf("codex attempt = %+v, want skipped/openai", codexAttempt.Terminal)
+	if attempts[0].Start.Candidate.Runner != types.RunnerCodex ||
+		attempts[0].Terminal.Outcome != types.InvocationOutcomeSkipped ||
+		attempts[0].Terminal.FailureDomain != types.FailureDomainOpenAI {
+		t.Fatalf("first attempt = %+v, want immutable codex skipped/openai fact", attempts[0])
 	}
-	if attemptForRunner(attempts, types.RunnerClaude).Terminal.Outcome != types.InvocationOutcomeSucceeded {
-		t.Fatal("claude attempt should have succeeded")
+	if attempts[1].Start.Candidate.Runner != types.RunnerClaude ||
+		attempts[1].Terminal.Outcome != types.InvocationOutcomeSucceeded {
+		t.Fatalf("second attempt = %+v, want claude success after skipped codex", attempts[1])
 	}
 }
 
@@ -329,10 +398,18 @@ func TestRoutingInvokerFailsClosedWhenAllCircuitsOpen(t *testing.T) {
 		t.Fatal("no candidate may launch when every provider circuit is open")
 		return nil, nil
 	}
-	if _, err := ri.Invoke(context.Background(), agent.InvocationRequest{
+	_, err := ri.Invoke(context.Background(), agent.InvocationRequest{
 		Purpose: types.PurposeInitialReview, Scope: scope, Payload: agent.RunOpts{Prompt: "review"},
-	}); err == nil {
+	})
+	if err == nil {
 		t.Fatal("expected fail-closed when all provider circuits are open")
+	}
+	var unavailable *agent.ProfileUnavailableError
+	if !errors.As(err, &unavailable) {
+		t.Fatalf("error = %T %v, want identifiable ProfileUnavailableError", err, err)
+	}
+	if unavailable.Profile != "review_strong" || unavailable.Cause != nil {
+		t.Fatalf("profile unavailable error = %+v, want review_strong with no executed-candidate cause", unavailable)
 	}
 	attempts, _ := database.GetInvocationAttemptsByStepResult(scope.StepResultID)
 	if len(attempts) != 2 {

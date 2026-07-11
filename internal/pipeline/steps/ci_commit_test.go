@@ -40,7 +40,7 @@ func TestCIStep_CommitAndPush(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("ci fix"), 0o644)
 
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
 
@@ -94,7 +94,7 @@ func TestCIStep_CommitAndPushTargetsForkWhenConfigured(t *testing.T) {
 	}
 
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Repo.UpstreamURL = parent
 	sctx.Repo.ForkURL = fork
 	sctx.Run.Branch = "refs/heads/feature"
@@ -135,7 +135,7 @@ func TestCIStep_CommitAndPushRedactsForkURLInGitErrors(t *testing.T) {
 	})
 
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Repo.UpstreamURL = "https://github.com/parent/project.git"
 	sctx.Repo.ForkURL = "https://user:secret@example.com/fork/project.git"
@@ -162,7 +162,7 @@ func TestCIStep_CommitAndPush_NoChanges(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Repo.UpstreamURL = "dummy"
 	sctx.Run.Branch = "refs/heads/feature"
 
@@ -193,7 +193,7 @@ func TestCIStep_CommitAndPush_StatusError(t *testing.T) {
 	})
 
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Repo.UpstreamURL = "dummy"
 	sctx.Run.Branch = "refs/heads/feature"
@@ -267,7 +267,7 @@ func TestCIStep_CommitAndPush_UsesStepEnvForAllGitCommands(t *testing.T) {
 	}
 
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"

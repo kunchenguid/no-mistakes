@@ -44,7 +44,17 @@ func TestAxiCanaryReportsDormantThenActivated(t *testing.T) {
 	}
 
 	dormant := captureCanary(t)
-	for _, want := range []string{"surface: routing-canary", "activated: false", "dormant"} {
+	for _, want := range []string{
+		"surface: routing-canary",
+		"report_required: true",
+		"activated: false",
+		"target_advisory: true",
+		"comparison_complete: false",
+		"result_state: dormant",
+		"baseline_complete: false",
+		"routed_complete: false",
+		"target_met: pending",
+	} {
 		if !strings.Contains(dormant, want) {
 			t.Fatalf("dormant canary missing %q in:\n%s", want, dormant)
 		}
@@ -56,12 +66,27 @@ func TestAxiCanaryReportsDormantThenActivated(t *testing.T) {
 	active := captureCanary(t)
 	for _, want := range []string{
 		"activated: true",
+		"report_required: true",
+		"target_advisory: true",
+		"comparison_complete: false",
+		"result_state: preliminary",
+		"baseline_complete: false",
+		"routed_complete: false",
 		"baseline_runs: 0",
 		"routed_runs: 0",
 		"target_met: pending",
 	} {
 		if !strings.Contains(active, want) {
 			t.Fatalf("activated canary missing %q in:\n%s", want, active)
+		}
+	}
+}
+
+func TestAxiCanaryHelpRequiresReportAndRejectsPreliminaryResults(t *testing.T) {
+	help := newAxiCanaryCmd().Long
+	for _, want := range []string{"report is required", "preliminary", "must not be treated as live results", "advisory"} {
+		if !strings.Contains(help, want) {
+			t.Fatalf("canary help missing %q in:\n%s", want, help)
 		}
 	}
 }

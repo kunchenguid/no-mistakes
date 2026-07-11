@@ -13,29 +13,55 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
+type documentRecordingInvoker struct {
+	requests []agent.InvocationRequest
+	run      func(agent.InvocationRequest) (*agent.Result, error)
+}
+
+func (i *documentRecordingInvoker) Invoke(_ context.Context, request agent.InvocationRequest) (*agent.Result, error) {
+	i.requests = append(i.requests, request)
+	return i.run(request)
+}
+
 func TestDocumentStep_AgentManaged_FixesAndCommitsWithoutApproval(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	gitCmd(t, dir, "checkout", "--detach", headSHA)
 
-	callCount := 0
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			callCount++
-			os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Updated\n"), 0o644)
+	invoker := &documentRecordingInvoker{}
+	invoker.run = func(request agent.InvocationRequest) (*agent.Result, error) {
+		switch request.Purpose {
+		case types.PurposeDocumentationAuthoring:
+			if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Updated\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
 			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"update README"}`)}, nil
-		},
+		case types.PurposeDocumentationVerification:
+			if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != headSHA {
+				t.Fatalf("documentation was committed before verification: HEAD = %s, want %s", got, headSHA)
+			}
+			if status := gitStatusPorcelain(t, dir); status == "" {
+				t.Fatal("expected verifier to inspect the uncommitted documentation candidate")
+			}
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"documentation verified"}`)}, nil
+		default:
+			t.Fatalf("unexpected documentation purpose %q", request.Purpose)
+			return nil, nil
+		}
 	}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "unused"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Invoker = invoker
 
 	step := &DocumentStep{}
 	outcome, err := step.Execute(sctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if callCount != 1 {
-		t.Fatalf("expected 1 agent call (discover+fix+verify in one pass), got %d", callCount)
+	if len(invoker.requests) != 2 {
+		t.Fatalf("expected author then independent verifier, got %d invocations", len(invoker.requests))
+	}
+	if invoker.requests[0].Purpose != types.PurposeDocumentationAuthoring || invoker.requests[1].Purpose != types.PurposeDocumentationVerification {
+		t.Fatalf("documentation purposes = %q then %q", invoker.requests[0].Purpose, invoker.requests[1].Purpose)
 	}
 	if outcome.NeedsApproval {
 		t.Error("expected no approval when agent resolved all documentation gaps")
@@ -51,6 +77,61 @@ func TestDocumentStep_AgentManaged_FixesAndCommitsWithoutApproval(t *testing.T) 
 	}
 	if sctx.Run.HeadSHA == headSHA {
 		t.Error("expected HeadSHA to advance after doc commit")
+	}
+}
+
+func TestDocumentStep_RejectsInconclusiveVerificationBeforeCommit(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+	invoker := &documentRecordingInvoker{}
+	invoker.run = func(request agent.InvocationRequest) (*agent.Result, error) {
+		if request.Purpose == types.PurposeDocumentationAuthoring {
+			if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Updated\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"update README"}`)}, nil
+		}
+		return &agent.Result{Output: json.RawMessage(`{"findings":[]}`)}, nil
+	}
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "unused"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Invoker = invoker
+
+	if _, err := (&DocumentStep{}).Execute(sctx); err == nil {
+		t.Fatal("expected schema-incomplete documentation verification to fail closed")
+	}
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != headSHA {
+		t.Fatalf("inconclusive verification committed HEAD %s, want %s", got, headSHA)
+	}
+	if got := lastCommitMessage(t, dir); got == "no-mistakes(document): update README" {
+		t.Fatal("inconclusive documentation verification created a documentation commit")
+	}
+}
+
+func TestDocumentStep_RejectsAuthorCommitBeforeVerification(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+	invoker := &documentRecordingInvoker{}
+	invoker.run = func(request agent.InvocationRequest) (*agent.Result, error) {
+		if request.Purpose == types.PurposeDocumentationAuthoring {
+			if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Updated\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			gitCmd(t, dir, "add", "--", "README.md")
+			gitCmd(t, dir, "commit", "-m", "author committed before verification")
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"update README"}`)}, nil
+		}
+		return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"documentation verified"}`)}, nil
+	}
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "unused"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Invoker = invoker
+
+	if _, err := (&DocumentStep{}).Execute(sctx); err == nil {
+		t.Fatal("expected an author-created commit to be rejected before verification")
+	}
+	if len(invoker.requests) != 1 {
+		t.Fatalf("expected rejection before verifier launch, got %d invocations", len(invoker.requests))
 	}
 }
 
@@ -283,7 +364,7 @@ func TestDocumentStep_NoChanges_SkipsAgent(t *testing.T) {
 	}
 }
 
-func TestDocumentStep_MalformedOutput_CommitsAndRequiresApproval(t *testing.T) {
+func TestDocumentStep_MalformedAuthorOutputFailsBeforeCommit(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	gitCmd(t, dir, "checkout", "--detach", headSHA)
@@ -300,34 +381,15 @@ func TestDocumentStep_MalformedOutput_CommitsAndRequiresApproval(t *testing.T) {
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 
-	step := &DocumentStep{}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
+	if _, err := (&DocumentStep{}).Execute(sctx); err == nil {
+		t.Fatal("expected malformed author output to fail closed")
 	}
-	if !outcome.NeedsApproval {
-		t.Fatal("expected malformed output to require approval")
-	}
-	if outcome.AutoFixable {
-		t.Fatal("expected malformed output not to trigger an auto-fix loop")
-	}
-	var findings Findings
-	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
-		t.Fatalf("unmarshal findings: %v", err)
-	}
-	if len(findings.Items) != 1 {
-		t.Fatalf("expected 1 finding, got %+v", findings.Items)
-	}
-	if findings.Items[0].Action != types.ActionAskUser {
-		t.Error("expected malformed output finding to require human review")
-	}
-	// Any edits the agent made should still be committed.
-	if status := gitStatusPorcelain(t, dir); status != "" {
-		t.Fatalf("expected agent edits committed despite malformed summary, got %q", status)
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != headSHA {
+		t.Fatalf("malformed author output committed HEAD %s, want %s", got, headSHA)
 	}
 }
 
-func TestDocumentStep_NoStructuredOutput_RequiresApproval(t *testing.T) {
+func TestDocumentStep_NoStructuredAuthorOutputFailsClosed(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
@@ -339,22 +401,7 @@ func TestDocumentStep_NoStructuredOutput_RequiresApproval(t *testing.T) {
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 
-	step := &DocumentStep{}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !outcome.NeedsApproval {
-		t.Fatal("expected missing structured output to require approval")
-	}
-	if outcome.AutoFixable {
-		t.Fatal("expected missing structured output not to trigger an auto-fix loop")
-	}
-	var findings Findings
-	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
-		t.Fatalf("unmarshal findings: %v", err)
-	}
-	if len(findings.Items) != 1 || findings.Items[0].Action != types.ActionAskUser {
-		t.Fatalf("expected 1 ask-user finding, got %+v", findings.Items)
+	if _, err := (&DocumentStep{}).Execute(sctx); err == nil {
+		t.Fatal("expected missing structured author output to fail closed")
 	}
 }

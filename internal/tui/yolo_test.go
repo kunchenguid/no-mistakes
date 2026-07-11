@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"slices"
 	"strings"
 	"sync"
@@ -49,7 +50,10 @@ func TestModel_Yolo_AutoApprovesAwaitingStep(t *testing.T) {
 		mu.Lock()
 		calls = append(calls, params)
 		mu.Unlock()
-		return &ipc.RespondResult{}, nil
+		return &ipc.RespondResult{OK: true}, nil
+	})
+	srv.Handle(ipc.MethodGetRun, func(_ context.Context, _ json.RawMessage) (interface{}, error) {
+		return &ipc.GetRunResult{Run: testRun()}, nil
 	})
 
 	client, err := ipc.Dial(sock)
@@ -84,6 +88,80 @@ func TestModel_Yolo_AutoApprovesAwaitingStep(t *testing.T) {
 	}
 }
 
+func TestModel_Yolo_DoesNotConsentWhenRunRefreshFails(t *testing.T) {
+	sock := testSocketPath(t)
+	srv := startTestIPCServer(t, sock)
+
+	checkErr := errors.New("repair projection unavailable")
+	srv.Handle(ipc.MethodGetRun, func(_ context.Context, _ json.RawMessage) (interface{}, error) {
+		return nil, checkErr
+	})
+	var responses int
+	srv.Handle(ipc.MethodRespond, func(_ context.Context, _ json.RawMessage) (interface{}, error) {
+		responses++
+		return &ipc.RespondResult{OK: true}, nil
+	})
+
+	client, err := ipc.Dial(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	m := NewModel(sock, client, run)
+	m.yoloMode = true
+
+	msg := m.maybeAutoApproveCmd()()
+	got, ok := msg.(errMsg)
+	if !ok || !strings.Contains(got.err.Error(), checkErr.Error()) {
+		t.Fatalf("yolo refresh result = %#v, want errMsg containing %q", msg, checkErr)
+	}
+	if responses != 0 {
+		t.Fatalf("respond calls = %d, want none when run state is unknown", responses)
+	}
+}
+
+func TestModel_Yolo_SurfacesAbortFailureWithoutApproving(t *testing.T) {
+	sock := testSocketPath(t)
+	srv := startTestIPCServer(t, sock)
+
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusFixReview
+	run.BlockingRepairUnresolved = true
+	srv.Handle(ipc.MethodGetRun, func(_ context.Context, _ json.RawMessage) (interface{}, error) {
+		return &ipc.GetRunResult{Run: run}, nil
+	})
+	abortErr := errors.New("abort transport failed")
+	var actions []types.ApprovalAction
+	srv.Handle(ipc.MethodRespond, func(_ context.Context, raw json.RawMessage) (interface{}, error) {
+		var params ipc.RespondParams
+		if err := json.Unmarshal(raw, &params); err != nil {
+			return nil, err
+		}
+		actions = append(actions, params.Action)
+		return nil, abortErr
+	})
+
+	client, err := ipc.Dial(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	m := NewModel(sock, client, run)
+	m.yoloMode = true
+
+	msg := m.maybeAutoApproveCmd()()
+	got, ok := msg.(errMsg)
+	if !ok || !strings.Contains(got.err.Error(), abortErr.Error()) {
+		t.Fatalf("yolo abort result = %#v, want errMsg containing %q", msg, abortErr)
+	}
+	if !slices.Equal(actions, []types.ApprovalAction{types.ActionAbort}) {
+		t.Fatalf("response actions = %v, want only abort", actions)
+	}
+}
+
 // captureRespond wires a model-facing IPC server that records every Respond
 // call, returning the connected client plus accessors for the captured params.
 func captureRespond(t *testing.T) (string, *ipc.Client, func() []ipc.RespondParams) {
@@ -101,7 +179,10 @@ func captureRespond(t *testing.T) (string, *ipc.Client, func() []ipc.RespondPara
 		mu.Lock()
 		calls = append(calls, params)
 		mu.Unlock()
-		return &ipc.RespondResult{}, nil
+		return &ipc.RespondResult{OK: true}, nil
+	})
+	srv.Handle(ipc.MethodGetRun, func(_ context.Context, _ json.RawMessage) (interface{}, error) {
+		return &ipc.GetRunResult{Run: testRun()}, nil
 	})
 
 	client, err := ipc.Dial(sock)

@@ -522,3 +522,62 @@ func TestFinalizeClaudeResultUsesAPIErrorStatus(t *testing.T) {
 		t.Fatalf("api_error_status 429 classified as (%q, %v), want overload", kind, ok)
 	}
 }
+
+func TestFinalizeClaudeResultValidatesStructuredOutput(t *testing.T) {
+	schema := json.RawMessage(`{
+		"type":"object",
+		"properties":{
+			"findings":{"type":"array"},
+			"summary":{"type":"string"}
+		},
+		"required":["findings","summary"]
+	}`)
+	tests := []struct {
+		name   string
+		output json.RawMessage
+	}{
+		{name: "null", output: json.RawMessage(`null`)},
+		{name: "missing required field", output: json.RawMessage(`{"findings":[]}`)},
+		{name: "wrong field type", output: json.RawMessage(`{"findings":"http 429 too many requests","summary":"bad"}`)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := finalizeClaudeResult(&claudeResult{
+				Subtype:          "success",
+				StructuredOutput: tt.output,
+			}, schema, TokenUsage{})
+			if err == nil {
+				t.Fatalf("accepted schema-invalid structured output: %s", tt.output)
+			}
+			if kind, ok := classifyOperationalFailure(err); ok {
+				t.Fatalf("schema-invalid output classified as operational %q: %v", kind, err)
+			}
+		})
+	}
+}
+
+func TestFinalizeClaudeResultAcceptsValidStructuredOutput(t *testing.T) {
+	schema := json.RawMessage(`{
+		"type":"object",
+		"properties":{
+			"findings":{"type":"array"},
+			"summary":{"type":"string"}
+		},
+		"required":["findings","summary"]
+	}`)
+	output := json.RawMessage(`{"findings":[],"summary":"clean"}`)
+
+	result, err := finalizeClaudeResult(&claudeResult{
+		Subtype:          "success",
+		StructuredOutput: output,
+	}, schema, TokenUsage{InputTokens: 3, OutputTokens: 4})
+	if err != nil {
+		t.Fatalf("valid structured output rejected: %v", err)
+	}
+	if string(result.Output) != string(output) {
+		t.Fatalf("output = %s, want %s", result.Output, output)
+	}
+	if result.Usage.InputTokens != 3 || result.Usage.OutputTokens != 4 {
+		t.Fatalf("usage = %+v, want input=3 output=4", result.Usage)
+	}
+}

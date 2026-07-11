@@ -3,10 +3,12 @@
 package e2e
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -42,12 +44,15 @@ func TestCascadeDirectLunaSuccess(t *testing.T) {
           status: "resolved"
           rationale: "the bug is now guarded"
       new_findings: []
-`)
+`+cleanCatchAll)
 	h := NewHarness(t, SetupOpts{Agent: "codex", Scenario: scenario})
 	initGate(t, h)
 	h.CommitChange("cascade-luna-direct", "cascade.txt", "buggy line\n", "add cascade target")
 	h.PushToGate("cascade-luna-direct")
-	run := waitForStepStatus(t, h, "cascade-luna-direct", types.StepReview, types.StepStatusAwaitingApproval, 90*time.Second)
+	run := h.WaitForRun("cascade-luna-direct", 30*time.Second)
+	if run.Status != types.RunCompleted {
+		t.Fatalf("run status = %s, want completed after resolved repair (error=%v)", run.Status, deref(run.Error))
+	}
 
 	repairs := h.FindingRepairs(t, run.ID)
 	if len(repairs) != 1 {
@@ -62,9 +67,14 @@ func TestCascadeDirectLunaSuccess(t *testing.T) {
 		t.Fatalf("fixer attempts = %d, want 1 (no escalation)", len(fixers))
 	}
 	assertCandidate(t, fixers[0], "fix_fast", 0, "luna", types.EffortMedium)
+	verifiers := succeededAttemptsFor(h.InvocationAttempts(t, run.ID), types.PurposeNormalAggregateVerification)
+	if len(verifiers) != 1 {
+		t.Fatalf("verifier attempts = %d, want exactly 1 for direct tier-0 resolution", len(verifiers))
+	}
+	assertCandidate(t, verifiers[0], "review_strong", 0, "sol", types.EffortHigh)
+	assertCascadeRepair(t, repairs[0], "direct luna bug", "error", string(types.ActionAutoFix), 0, 2, db.RepairStatusResolved, db.RepairVerdictResolved, fixers[0], verifiers[0])
 
-	h.Respond(run.ID, types.StepReview, types.ActionAbort)
-	h.WaitForRun("cascade-luna-direct", 60*time.Second)
+	assertCascadePublished(t, h, run, "cascade-luna-direct", types.PurposeEscalatedAggregateVerification, "authority_strong", types.EffortXHigh)
 }
 
 // TestCascadeLunaTerraSol proves a blocking finding the fix_fast and
@@ -126,12 +136,15 @@ func TestCascadeLunaTerraSol(t *testing.T) {
           status: "unresolved"
           rationale: "not resolved at this tier"
       new_findings: []
-`)
+`+cleanCatchAll)
 	h := NewHarness(t, SetupOpts{Agent: "codex", Scenario: scenario})
 	initGate(t, h)
 	h.CommitChange("cascade-escalate", "cascade.txt", "buggy line\n", "add cascade target")
 	h.PushToGate("cascade-escalate")
-	run := waitForStepStatus(t, h, "cascade-escalate", types.StepReview, types.StepStatusAwaitingApproval, 120*time.Second)
+	run := h.WaitForRun("cascade-escalate", 30*time.Second)
+	if run.Status != types.RunCompleted {
+		t.Fatalf("run status = %s, want completed after resolved repair cascade (error=%v)", run.Status, deref(run.Error))
+	}
 
 	// The finding escalates through all three quality tiers under one lineage,
 	// resolving only at the top.
@@ -176,17 +189,16 @@ func TestCascadeLunaTerraSol(t *testing.T) {
 	for _, v := range normal {
 		assertCandidate(t, v, "review_strong", 0, "sol", types.EffortHigh)
 	}
-	final := succeededAttemptsFor(attempts, types.PurposeEscalatedAggregateVerification)
-	if len(final) != 1 {
-		t.Fatalf("authority_strong final reviewer attempts = %d, want exactly 1", len(final))
+	final := attemptByID(t, attempts, byTier[2].VerifierAttemptID)
+	if final.Start.Purpose != types.PurposeEscalatedAggregateVerification {
+		t.Fatalf("top-tier repair verifier purpose = %q, want %q", final.Start.Purpose, types.PurposeEscalatedAggregateVerification)
 	}
-	assertCandidate(t, final[0], "authority_strong", 0, "sol", types.EffortXHigh)
-	if final[0].ID == fixers[2].ID {
-		t.Fatalf("final reviewer must be a separate invocation from the Sol fixer, got same attempt %q", final[0].ID)
-	}
+	assertCandidate(t, final, "authority_strong", 0, "sol", types.EffortXHigh)
+	assertCascadeRepair(t, byTier[0], "escalating bug", "error", string(types.ActionAutoFix), 0, 2, db.RepairStatusUnresolved, db.RepairVerdictUnresolved, fixers[0], normal[0])
+	assertCascadeRepair(t, byTier[1], "escalating bug", "error", string(types.ActionAutoFix), 1, 1, db.RepairStatusUnresolved, db.RepairVerdictUnresolved, fixers[1], normal[1])
+	assertCascadeRepair(t, byTier[2], "escalating bug", "error", string(types.ActionAutoFix), 2, 0, db.RepairStatusResolved, db.RepairVerdictResolved, fixers[2], final)
 
-	h.Respond(run.ID, types.StepReview, types.ActionAbort)
-	h.WaitForRun("cascade-escalate", 60*time.Second)
+	assertCascadePublished(t, h, run, "cascade-escalate", types.PurposeEscalatedAggregateVerification, "authority_strong", types.EffortXHigh)
 }
 
 // TestCascadeLunaTerra proves a finding the fix_fast verifier leaves unresolved
@@ -239,12 +251,15 @@ func TestCascadeLunaTerra(t *testing.T) {
           status: "unresolved"
           rationale: "the fix_fast attempt is insufficient"
       new_findings: []
-`)
+`+cleanCatchAll)
 	h := NewHarness(t, SetupOpts{Agent: "codex", Scenario: scenario})
 	initGate(t, h)
 	h.CommitChange("cascade-luna-terra", "cascade.txt", "buggy line\n", "add cascade target")
 	h.PushToGate("cascade-luna-terra")
-	run := waitForStepStatus(t, h, "cascade-luna-terra", types.StepReview, types.StepStatusAwaitingApproval, 120*time.Second)
+	run := h.WaitForRun("cascade-luna-terra", 30*time.Second)
+	if run.Status != types.RunCompleted {
+		t.Fatalf("run status = %s, want completed after resolved repair cascade (error=%v)", run.Status, deref(run.Error))
+	}
 
 	repairs := h.FindingRepairs(t, run.ID)
 	byTier := map[int]*db.FindingRepair{}
@@ -271,12 +286,17 @@ func TestCascadeLunaTerra(t *testing.T) {
 	}
 	assertCandidate(t, fixers[0], "fix_fast", 0, "luna", types.EffortMedium)
 	assertCandidate(t, fixers[1], "fix_balanced", 1, "terra", types.EffortMedium)
-	if final := succeededAttemptsFor(attempts, types.PurposeEscalatedAggregateVerification); len(final) != 0 {
-		t.Fatalf("authority_strong final reviewer attempts = %d, want 0 (resolved before the top tier)", len(final))
+	normal := succeededAttemptsFor(attempts, types.PurposeNormalAggregateVerification)
+	if len(normal) != 2 {
+		t.Fatalf("review_strong verifier attempts = %d, want 2 (one per repair tier)", len(normal))
 	}
+	for _, verifier := range normal {
+		assertCandidate(t, verifier, "review_strong", 0, "sol", types.EffortHigh)
+	}
+	assertCascadeRepair(t, byTier[0], "two tier bug", "error", string(types.ActionAutoFix), 0, 2, db.RepairStatusUnresolved, db.RepairVerdictUnresolved, fixers[0], normal[0])
+	assertCascadeRepair(t, byTier[1], "two tier bug", "error", string(types.ActionAutoFix), 1, 1, db.RepairStatusResolved, db.RepairVerdictResolved, fixers[1], normal[1])
 
-	h.Respond(run.ID, types.StepReview, types.ActionAbort)
-	h.WaitForRun("cascade-luna-terra", 60*time.Second)
+	assertCascadePublished(t, h, run, "cascade-luna-terra", types.PurposeEscalatedAggregateVerification, "authority_strong", types.EffortXHigh)
 }
 
 // TestCascadeSameTierBatching proves two blocking findings at the same tier are
@@ -320,12 +340,15 @@ func TestCascadeSameTierBatching(t *testing.T) {
           status: "resolved"
           rationale: "beta is guarded"
       new_findings: []
-`)
+`+cleanCatchAll)
 	h := NewHarness(t, SetupOpts{Agent: "codex", Scenario: scenario})
 	initGate(t, h)
 	h.CommitChange("cascade-batch", "cascade.txt", "bug one\nbug two\n", "add batch target")
 	h.PushToGate("cascade-batch")
-	run := waitForStepStatus(t, h, "cascade-batch", types.StepReview, types.StepStatusAwaitingApproval, 120*time.Second)
+	run := h.WaitForRun("cascade-batch", 30*time.Second)
+	if run.Status != types.RunCompleted {
+		t.Fatalf("run status = %s, want completed after resolved batched repairs (error=%v)", run.Status, deref(run.Error))
+	}
 
 	repairs := h.FindingRepairs(t, run.ID)
 	if len(repairs) != 2 {
@@ -349,12 +372,30 @@ func TestCascadeSameTierBatching(t *testing.T) {
 	if repairs[0].VerifierAttemptID == "" || repairs[0].VerifierAttemptID != repairs[1].VerifierAttemptID {
 		t.Fatalf("verifier attempts = %q / %q, want one shared batch verifier", repairs[0].VerifierAttemptID, repairs[1].VerifierAttemptID)
 	}
-	if fixers := succeededAttemptsFor(h.InvocationAttempts(t, run.ID), types.PurposeStructuredFindingRepair); len(fixers) != 1 {
+	attempts := h.InvocationAttempts(t, run.ID)
+	fixers := succeededAttemptsFor(attempts, types.PurposeStructuredFindingRepair)
+	if len(fixers) != 1 {
 		t.Fatalf("fixer invocations = %d, want 1 (the batch was fixed in a single invocation)", len(fixers))
 	}
+	assertCandidate(t, fixers[0], "fix_fast", 0, "luna", types.EffortMedium)
+	verifiers := succeededAttemptsFor(attempts, types.PurposeNormalAggregateVerification)
+	if len(verifiers) != 1 {
+		t.Fatalf("verifier invocations = %d, want 1 (the batch was verified in a single invocation)", len(verifiers))
+	}
+	assertCandidate(t, verifiers[0], "review_strong", 0, "sol", types.EffortHigh)
+	wantDescriptions := map[string]bool{"batch bug alpha": true, "batch bug beta": true}
+	for _, repair := range repairs {
+		if !wantDescriptions[repair.Description] {
+			t.Fatalf("batched repair description = %q, want one of the original findings", repair.Description)
+		}
+		delete(wantDescriptions, repair.Description)
+		assertCascadeRepair(t, repair, repair.Description, "error", string(types.ActionAutoFix), 0, 2, db.RepairStatusResolved, db.RepairVerdictResolved, fixers[0], verifiers[0])
+	}
+	if len(wantDescriptions) != 0 {
+		t.Fatalf("missing batched repair descriptions: %v", wantDescriptions)
+	}
 
-	h.Respond(run.ID, types.StepReview, types.ActionAbort)
-	h.WaitForRun("cascade-batch", 60*time.Second)
+	assertCascadePublished(t, h, run, "cascade-batch", types.PurposeEscalatedAggregateVerification, "authority_strong", types.EffortXHigh)
 }
 
 // TestCascadePatchCausedInheritance proves a new blocking finding the verifier
@@ -413,12 +454,15 @@ func TestCascadePatchCausedInheritance(t *testing.T) {
           status: "resolved"
           rationale: "the regression is now fixed"
       new_findings: []
-`)
+`+cleanCatchAll)
 	h := NewHarness(t, SetupOpts{Agent: "codex", Scenario: scenario})
 	initGate(t, h)
 	h.CommitChange("cascade-patch-caused", "cascade.txt", "buggy line\n", "add cascade target")
 	h.PushToGate("cascade-patch-caused")
-	run := waitForStepStatus(t, h, "cascade-patch-caused", types.StepReview, types.StepStatusAwaitingApproval, 120*time.Second)
+	run := h.WaitForRun("cascade-patch-caused", 30*time.Second)
+	if run.Status != types.RunCompleted {
+		t.Fatalf("run status = %s, want completed after resolved inherited repair (error=%v)", run.Status, deref(run.Error))
+	}
 
 	repairs := h.FindingRepairs(t, run.ID)
 	// One lineage only: the patch-caused finding reattached to the root rather
@@ -448,14 +492,30 @@ func TestCascadePatchCausedInheritance(t *testing.T) {
 	if byTier[1].Status != db.RepairStatusResolved {
 		t.Fatalf("tier 1 status = %q, want resolved", byTier[1].Status)
 	}
+	attempts := h.InvocationAttempts(t, run.ID)
+	fixers := succeededAttemptsFor(attempts, types.PurposeStructuredFindingRepair)
+	if len(fixers) != 2 {
+		t.Fatalf("fixer attempts = %d %v, want 2 (Luna then Terra)", len(fixers), candidateModels(fixers))
+	}
+	assertCandidate(t, fixers[0], "fix_fast", 0, "luna", types.EffortMedium)
+	assertCandidate(t, fixers[1], "fix_balanced", 1, "terra", types.EffortMedium)
+	verifiers := succeededAttemptsFor(attempts, types.PurposeNormalAggregateVerification)
+	if len(verifiers) != 2 {
+		t.Fatalf("review_strong verifier attempts = %d, want 2 (one per inherited repair tier)", len(verifiers))
+	}
+	for _, verifier := range verifiers {
+		assertCandidate(t, verifier, "review_strong", 0, "sol", types.EffortHigh)
+	}
+	assertCascadeRepair(t, byTier[0], "root bug", "error", string(types.ActionAutoFix), 0, 2, db.RepairStatusUnresolved, db.RepairVerdictUnresolved, fixers[0], verifiers[0])
+	assertCascadeRepair(t, byTier[1], "patch regression", "error", string(types.ActionAutoFix), 1, 1, db.RepairStatusResolved, db.RepairVerdictResolved, fixers[1], verifiers[1])
 
-	h.Respond(run.ID, types.StepReview, types.ActionAbort)
-	h.WaitForRun("cascade-patch-caused", 60*time.Second)
+	assertCascadePublished(t, h, run, "cascade-patch-caused", types.PurposeEscalatedAggregateVerification, "authority_strong", types.EffortXHigh)
 }
 
-// TestCascadeInformationalTermination proves an informational finding is
-// repaired through the cheap fix_fast -> tools_balanced cascade, never reaches a
-// Sol/Fable (authority_strong) profile, and never blocks the gate.
+// TestCascadeInformationalTermination proves an unresolved informational
+// auto-fix finding exhausts only the cheap fix_fast -> tools_balanced cascade,
+// remains visible without blocking publication, and a no-op finding never
+// enters the repair coordinator.
 func TestCascadeInformationalTermination(t *testing.T) {
 	scenario := writeScenario(t, `actions:
   - match: "Review the code changes and return structured findings with a risk assessment.\n\nContext:\n- branch: cascade-info"
@@ -468,47 +528,90 @@ func TestCascadeInformationalTermination(t *testing.T) {
           line: 1
           description: "informational nit"
           action: auto-fix
+        - id: "info-no-op"
+          severity: info
+          file: "cascade.txt"
+          line: 1
+          description: "informational observation"
+          action: no-op
       risk_level: low
       risk_rationale: "informational only"
   - match: "Fix the following"
-    text: "addressed the nit"
+    model: "luna"
+    text: "fix_fast inspected the nit"
     edits:
       - path: "cascade.txt"
-        new: "nit addressed\n"
+        new: "nit inspected by luna\n"
     structured:
-      summary: "addressed the nit"
+      summary: "the informational nit remains"
+  - match: "Fix the following"
+    model: "terra"
+    text: "tools_balanced inspected the nit"
+    edits:
+      - path: "cascade.txt"
+        new: "nit inspected by terra\n"
+    structured:
+      summary: "the informational nit remains"
   - match: "Independently verify whether each of the following"
-    text: "informational nit resolved"
+    text: "informational nit remains advisory"
     structured:
       verdicts:
         - lineage_id: "PROMPT_LINEAGE_ID"
-          status: "resolved"
-          rationale: "the nit is addressed"
+          status: "unresolved"
+          rationale: "the informational nit remains advisory"
       new_findings: []
 `+cleanCatchAll)
 	h := NewHarness(t, SetupOpts{Agent: "codex", Scenario: scenario})
 	initGate(t, h)
 	h.CommitChange("cascade-info", "cascade.txt", "buggy line\n", "add cascade target")
 	h.PushToGate("cascade-info")
-	run := h.WaitForRun("cascade-info", 120*time.Second)
+	run := h.WaitForRun("cascade-info", 30*time.Second)
 	if run.Status != types.RunCompleted {
 		t.Fatalf("run status = %s, want completed (an informational finding never blocks the gate)", run.Status)
 	}
 
 	attempts := h.InvocationAttempts(t, run.ID)
 	infoFixers := succeededAttemptsFor(attempts, types.PurposeInformationalRepair)
-	if len(infoFixers) == 0 {
-		t.Fatalf("expected an informational repair fixer; models=%v", candidateModels(attempts))
+	if len(infoFixers) != 2 {
+		t.Fatalf("informational fixer attempts = %d %v, want 2 (Luna then Terra)", len(infoFixers), candidateModels(infoFixers))
 	}
 	assertCandidate(t, infoFixers[0], "fix_fast", 0, "luna", types.EffortMedium)
-	for _, a := range attempts {
-		if a.Start.Candidate.Profile == "authority_strong" {
-			t.Fatalf("informational repair reached authority_strong (Sol/Fable): %+v", a.Start.Candidate)
+	assertCandidate(t, infoFixers[1], "tools_balanced", 1, "terra", types.EffortHigh)
+	verifiers := succeededAttemptsFor(attempts, types.PurposeInformationalRepairVerification)
+	if len(verifiers) != 2 {
+		t.Fatalf("informational verifier attempts = %d, want one tools_balanced verifier per tier", len(verifiers))
+	}
+	for _, verifier := range verifiers {
+		assertCandidate(t, verifier, "tools_balanced", 0, "terra", types.EffortHigh)
+	}
+	repairs := h.FindingRepairs(t, run.ID)
+	if len(repairs) != 2 {
+		t.Fatalf("finding repairs = %d, want exactly 2 informational auto-fix tiers and no no-op repair", len(repairs))
+	}
+	assertCascadeRepair(t, repairs[0], "informational nit", "info", string(types.ActionAutoFix), 0, 1, db.RepairStatusUnresolved, db.RepairVerdictUnresolved, infoFixers[0], verifiers[0])
+	assertCascadeRepair(t, repairs[1], "informational nit", "info", string(types.ActionAutoFix), 1, 0, db.RepairStatusUnresolved, db.RepairVerdictUnresolved, infoFixers[1], verifiers[1])
+
+	review, ok := findStep(run.Steps, types.StepReview)
+	if !ok || review.Status != types.StepStatusCompleted || review.FindingsJSON == nil {
+		t.Fatalf("informational Review step = %+v, want completed with visible unresolved findings", review)
+	}
+	findings, err := types.ParseFindingsJSON(*review.FindingsJSON)
+	if err != nil {
+		t.Fatalf("parse informational review findings: %v", err)
+	}
+	seen := map[string]string{}
+	for _, finding := range findings.Items {
+		seen[finding.Description] = finding.Action
+	}
+	if seen["informational nit"] != types.ActionAutoFix || seen["informational observation"] != types.ActionNoOp {
+		t.Fatalf("visible informational findings = %+v, want unresolved auto-fix and untouched no-op findings", findings.Items)
+	}
+	for _, attempt := range attempts {
+		if attempt.Start.Candidate.Profile == "authority_strong" {
+			t.Fatalf("informational repair reached authority_strong (Sol/Fable): %+v", attempt.Start.Candidate)
 		}
 	}
-	if esc := attemptsForPurpose(attempts, types.PurposeEscalatedAggregateVerification); len(esc) != 0 {
-		t.Fatalf("informational path invoked the escalated authority verifier %d times, want 0", len(esc))
-	}
+	assertCascadePublication(t, h, run, "cascade-info", types.PurposeNormalAggregateVerification, "review_strong", types.EffortHigh)
 }
 
 // TestCascadeConsentedTerraSol proves an ask-user finding starts no fixer until
@@ -566,7 +669,7 @@ func TestCascadeConsentedTerraSol(t *testing.T) {
 	initGate(t, h)
 	h.CommitChange("cascade-consent", "cascade.txt", "buggy line\n", "add cascade target")
 	h.PushToGate("cascade-consent")
-	run := waitForStepStatus(t, h, "cascade-consent", types.StepReview, types.StepStatusAwaitingApproval, 120*time.Second)
+	run := waitForStepStatus(t, h, "cascade-consent", types.StepReview, types.StepStatusAwaitingApproval, 15*time.Second)
 
 	// No fixer may run before consent.
 	before := succeededAttemptsFor(h.InvocationAttempts(t, run.ID), types.PurposeIntentSensitiveRepair)
@@ -576,7 +679,12 @@ func TestCascadeConsentedTerraSol(t *testing.T) {
 
 	// Consent to fixing the ask-user finding.
 	h.RespondFix(t, run.ID, types.StepReview, "consent-1")
-	h.WaitForRun("cascade-consent", 120*time.Second)
+	completed := h.WaitForRun("cascade-consent", 30*time.Second)
+	if completed.Status != types.RunCompleted {
+		t.Fatalf("run status = %s, want completed after consented repairs (error=%v)", completed.Status, deref(completed.Error))
+	}
+	// A consented lineage resolves and continues automatically once no user
+	// decision remains.
 
 	attempts := h.InvocationAttempts(t, run.ID)
 	fixers := succeededAttemptsFor(attempts, types.PurposeIntentSensitiveRepair)
@@ -585,11 +693,23 @@ func TestCascadeConsentedTerraSol(t *testing.T) {
 	}
 	assertCandidate(t, fixers[0], "fix_balanced", 0, "terra", types.EffortMedium)
 	assertCandidate(t, fixers[1], "authority_strong", 1, "sol", types.EffortXHigh)
-	for _, f := range fixers {
-		if f.Start.Candidate.Profile == "fix_fast" {
-			t.Fatalf("consented repair used fix_fast (Luna); an ask-user fix must start at fix_balanced")
-		}
+	normal := succeededAttemptsFor(attempts, types.PurposeNormalAggregateVerification)
+	if len(normal) != 1 {
+		t.Fatalf("review_strong verifier attempts = %d, want 1 at fix_balanced", len(normal))
 	}
+	assertCandidate(t, normal[0], "review_strong", 0, "sol", types.EffortHigh)
+	repairs := h.FindingRepairs(t, run.ID)
+	if len(repairs) != 2 {
+		t.Fatalf("consented repair rows = %d, want 2 (Terra then Sol)", len(repairs))
+	}
+	topVerifier := attemptByID(t, attempts, repairs[1].VerifierAttemptID)
+	if topVerifier.Start.Purpose != types.PurposeEscalatedAggregateVerification {
+		t.Fatalf("top-tier consented verifier purpose = %q, want %q", topVerifier.Start.Purpose, types.PurposeEscalatedAggregateVerification)
+	}
+	assertCandidate(t, topVerifier, "authority_strong", 0, "sol", types.EffortXHigh)
+	assertCascadeRepair(t, repairs[0], "intent sensitive issue", "error", string(types.ActionAskUser), 0, 1, db.RepairStatusUnresolved, db.RepairVerdictUnresolved, fixers[0], normal[0])
+	assertCascadeRepair(t, repairs[1], "intent sensitive issue", "error", string(types.ActionAskUser), 1, 0, db.RepairStatusResolved, db.RepairVerdictResolved, fixers[1], topVerifier)
+	assertCascadePublished(t, h, completed, "cascade-consent", types.PurposeEscalatedAggregateVerification, "authority_strong", types.EffortXHigh)
 }
 
 // TestCascadeTerminalFailClosed proves a blocking finding no tier resolves —
@@ -643,7 +763,7 @@ func TestCascadeTerminalFailClosed(t *testing.T) {
 	initGate(t, h)
 	h.CommitChange("cascade-failclosed", "cascade.txt", "buggy line\n", "add cascade target")
 	h.PushToGate("cascade-failclosed")
-	run := waitForStepStatus(t, h, "cascade-failclosed", types.StepReview, types.StepStatusAwaitingApproval, 120*time.Second)
+	run := waitForStepStatus(t, h, "cascade-failclosed", types.StepReview, types.StepStatusAwaitingApproval, 15*time.Second)
 
 	repairs := h.FindingRepairs(t, run.ID)
 	byTier := map[int]*db.FindingRepair{}
@@ -663,7 +783,111 @@ func TestCascadeTerminalFailClosed(t *testing.T) {
 			t.Fatalf("tier %d resolved, but no tier should resolve an unfixable finding", r.Tier)
 		}
 	}
+	attempts := h.InvocationAttempts(t, run.ID)
+	fixers := succeededAttemptsFor(attempts, types.PurposeStructuredFindingRepair)
+	if len(fixers) != 3 {
+		t.Fatalf("fixer attempts = %d %v, want 3 before fail-closed", len(fixers), candidateModels(fixers))
+	}
+	assertCandidate(t, fixers[0], "fix_fast", 0, "luna", types.EffortMedium)
+	assertCandidate(t, fixers[1], "fix_balanced", 1, "terra", types.EffortMedium)
+	assertCandidate(t, fixers[2], "authority_strong", 2, "sol", types.EffortXHigh)
+	normal := succeededAttemptsFor(attempts, types.PurposeNormalAggregateVerification)
+	if len(normal) != 2 {
+		t.Fatalf("review_strong verifier attempts = %d, want 2 before the terminal tier", len(normal))
+	}
+	for _, verifier := range normal {
+		assertCandidate(t, verifier, "review_strong", 0, "sol", types.EffortHigh)
+	}
+	topVerifier := attemptByID(t, attempts, byTier[2].VerifierAttemptID)
+	if topVerifier.Start.Purpose != types.PurposeEscalatedAggregateVerification {
+		t.Fatalf("terminal verifier purpose = %q, want %q", topVerifier.Start.Purpose, types.PurposeEscalatedAggregateVerification)
+	}
+	assertCandidate(t, topVerifier, "authority_strong", 0, "sol", types.EffortXHigh)
+	assertCascadeRepair(t, byTier[0], "unfixable bug", "error", string(types.ActionAutoFix), 0, 2, db.RepairStatusUnresolved, db.RepairVerdictUnresolved, fixers[0], normal[0])
+	assertCascadeRepair(t, byTier[1], "unfixable bug", "error", string(types.ActionAutoFix), 1, 1, db.RepairStatusUnresolved, db.RepairVerdictUnresolved, fixers[1], normal[1])
+	assertCascadeRepair(t, byTier[2], "unfixable bug", "error", string(types.ActionAutoFix), 2, 0, db.RepairStatusUnresolved, db.RepairVerdictUnresolved, fixers[2], topVerifier)
 
-	h.Respond(run.ID, types.StepReview, types.ActionAbort)
-	h.WaitForRun("cascade-failclosed", 60*time.Second)
+	h.Respond(run.ID, types.StepReview, types.ActionApprove)
+	failed := h.WaitForRun("cascade-failclosed", 15*time.Second)
+	if failed.Status != types.RunFailed {
+		t.Fatalf("terminally exhausted review status = %s, want failed after rejected approval", failed.Status)
+	}
+	if failed.Error == nil || !strings.Contains(*failed.Error, "cannot be approved") {
+		t.Fatalf("terminally exhausted review error = %v, want unresolved approval rejection", failed.Error)
+	}
+}
+
+func assertCascadeReviewCompleted(t *testing.T, run *ipc.RunInfo) {
+	t.Helper()
+	review, ok := findStep(run.Steps, types.StepReview)
+	if !ok {
+		t.Fatal("completed cascade run has no Review step")
+	}
+	if review.Status != types.StepStatusCompleted {
+		t.Fatalf("review status = %s, want completed without a stale approval gate", review.Status)
+	}
+	if review.FindingsJSON != nil {
+		t.Fatalf("resolved cascade still exposes blocking review findings: %s", *review.FindingsJSON)
+	}
+}
+
+func assertCascadeRepair(t *testing.T, repair *db.FindingRepair, description, severity, action string, tier, remaining int, status, verdict string, fixer, verifier *db.InvocationAttempt) {
+	t.Helper()
+	if repair.Description != description || repair.Severity != severity || repair.Action != action ||
+		repair.Tier != tier || repair.RemainingBudget != remaining || repair.Status != status || repair.Verdict != verdict {
+		t.Fatalf("repair = %+v, want description=%q severity=%q action=%q tier=%d remaining=%d status=%q verdict=%q",
+			repair, description, severity, action, tier, remaining, status, verdict)
+	}
+	if repair.FixerAttemptID != fixer.ID || repair.VerifierAttemptID != verifier.ID || fixer.ID == verifier.ID {
+		t.Fatalf("repair links = fixer %q verifier %q, want distinct exact attempts %q/%q",
+			repair.FixerAttemptID, repair.VerifierAttemptID, fixer.ID, verifier.ID)
+	}
+}
+
+func attemptByID(t *testing.T, attempts []*db.InvocationAttempt, id string) *db.InvocationAttempt {
+	t.Helper()
+	for _, attempt := range attempts {
+		if attempt.ID == id {
+			return attempt
+		}
+	}
+	t.Fatalf("invocation attempt %q not found", id)
+	return nil
+}
+
+func assertCascadePublished(t *testing.T, h *Harness, run *ipc.RunInfo, branch string, verifyPurpose types.Purpose, profile string, effort types.Effort) {
+	t.Helper()
+	assertCascadeReviewCompleted(t, run)
+	assertCascadePublication(t, h, run, branch, verifyPurpose, profile, effort)
+}
+
+func assertCascadePublication(t *testing.T, h *Harness, run *ipc.RunInfo, branch string, verifyPurpose types.Purpose, profile string, effort types.Effort) {
+	t.Helper()
+	verify, ok := findStep(run.Steps, types.StepVerify)
+	if !ok || verify.Status != types.StepStatusCompleted {
+		t.Fatalf("Verify step = %+v, want completed", verify)
+	}
+	attempts := verifyStepAttempts(t, h, run.ID, h.InvocationAttempts(t, run.ID))
+	if len(attempts) != 1 {
+		t.Fatalf("Verify attempts = %d %v, want exactly 1", len(attempts), candidateModels(attempts))
+	}
+	if attempts[0].Start.Purpose != verifyPurpose {
+		t.Fatalf("Verify purpose = %q, want %q", attempts[0].Start.Purpose, verifyPurpose)
+	}
+	assertCandidate(t, attempts[0], profile, 0, "sol", effort)
+
+	d := h.OpenDB(t)
+	defer d.Close()
+	reviewed, err := d.LatestSealByReason(run.ID, "reviewed")
+	if err != nil {
+		t.Fatalf("load reviewed seal: %v", err)
+	}
+	preVerify, err := d.LatestSealByReason(run.ID, "pre_verify")
+	if err != nil {
+		t.Fatalf("load pre-Verify seal: %v", err)
+	}
+	if reviewed == nil || reviewed.SHA != run.HeadSHA || preVerify == nil || preVerify.SHA != run.HeadSHA {
+		t.Fatalf("cascade seals = reviewed:%+v pre-Verify:%+v, want run head %s", reviewed, preVerify, run.HeadSHA)
+	}
+	assertPushedHead(t, run.HeadSHA, h.UpstreamBranchSHA(branch))
 }

@@ -23,7 +23,7 @@ func TestCIStep_BitbucketPassesWhenStatusesPass(t *testing.T) {
 
 	prURL := "https://bitbucket.org/test/repo/pull-requests/42"
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = fakeBitbucketEnv(api.server.URL)
 	sctx.Run.PRURL = &prURL
 	sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
@@ -75,7 +75,7 @@ func TestCIStep_BitbucketUsesProcessEnvWhenStepEnvIsNil(t *testing.T) {
 
 	prURL := "https://bitbucket.org/test/repo/pull-requests/42"
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Run.PRURL = &prURL
 	sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
 	sctx.Config.CITimeout = 30 * time.Second
@@ -106,7 +106,7 @@ func TestCIStep_BitbucketFailureNeedsApproval(t *testing.T) {
 
 	prURL := "https://bitbucket.org/test/repo/pull-requests/42"
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = fakeBitbucketEnv(api.server.URL)
 	sctx.Run.PRURL = &prURL
 	sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
@@ -141,7 +141,7 @@ func TestCIStep_BitbucketStoppedDoesNotNeedApproval(t *testing.T) {
 
 	prURL := "https://bitbucket.org/test/repo/pull-requests/42"
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = fakeBitbucketEnv(api.server.URL)
 	sctx.Run.PRURL = &prURL
 	sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
@@ -203,7 +203,7 @@ func TestCIStep_BitbucketAutoFixIncludesPipelineLogs(t *testing.T) {
 	}
 
 	prURL := "https://bitbucket.org/test/repo/pull-requests/42"
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = fakeBitbucketEnv(api.server.URL)
 	sctx.Run.PRURL = &prURL
 	sctx.Repo.UpstreamURL = upstream
@@ -285,7 +285,7 @@ func TestCIStep_BitbucketAutoFixUsesLivePRHeadSHAForLogs(t *testing.T) {
 	}
 
 	prURL := "https://bitbucket.org/test/repo/pull-requests/42"
-	sctx := newTestContext(t, ag, dir, baseSHA, staleHeadSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, staleHeadSHA, config.Commands{})
 	sctx.Env = fakeBitbucketEnv(api.server.URL)
 	sctx.Run.PRURL = &prURL
 	sctx.Repo.UpstreamURL = upstream
@@ -372,7 +372,7 @@ func TestCIStep_BitbucketAutoFixUsesMatchingPipelineLogs(t *testing.T) {
 	}
 
 	prURL := "https://bitbucket.org/test/repo/pull-requests/42"
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = fakeBitbucketEnv(api.server.URL)
 	sctx.Run.PRURL = &prURL
 	sctx.Repo.UpstreamURL = upstream

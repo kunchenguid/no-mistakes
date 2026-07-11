@@ -317,7 +317,8 @@ func cleanReviewScenario(t *testing.T) string {
     text: " "
     structured:
       findings: []
-  - match: "report only what you could not resolve.\n\nContext:\n- branch: document-warning"
+  - match: "Independently verify the staged documentation candidate against the code and the complete branch diff."
+    match_file: "document-warning.txt"
     text: "documentation warning finding"
     structured:
       findings:
@@ -328,6 +329,14 @@ func cleanReviewScenario(t *testing.T) string {
           description: "README missing new CLI flag"
           action: auto-fix
       summary: "README needs updating"
+  - match: "Fix the following"
+    match_file: "document-warning.txt"
+    text: "fixed the documentation warning"
+    edits:
+      - path: "README.md"
+        new: "# Document warning resolved\n"
+    structured:
+      summary: "document the new CLI flag"
   - match: "report only what you could not resolve.\n\nContext:\n- branch: document-legacy-finding"
     text: "documentation legacy finding"
     structured:
@@ -353,7 +362,8 @@ func cleanReviewScenario(t *testing.T) string {
     text: "documentation missing findings field"
     structured:
       summary: "docs status unavailable"
-  - match: "branch: document-info"
+  - match: "Independently verify the staged documentation candidate against the code and the complete branch diff."
+    match_file: "document-info.txt"
     text: "documentation info finding"
     structured:
       findings:
@@ -372,6 +382,20 @@ func cleanReviewScenario(t *testing.T) string {
       artifacts: []
       title: "docs: update README"
       body: "## Summary\ndocumentation update"
+  - match: "Fix the following"
+    match_file: "document-info.txt"
+    text: "inspected the informational documentation finding"
+    structured:
+      summary: "leave informational note unresolved"
+  - match: "Independently verify whether each of the following"
+    match_file: "document-info.txt"
+    text: "informational documentation finding remains"
+    structured:
+      verdicts:
+        - lineage_id: "PROMPT_LINEAGE_ID"
+          status: "unresolved"
+          rationale: "the informational note remains advisory"
+      new_findings: []
   - match: "Review the code changes and return structured findings with a risk assessment.\n\nContext:\n- branch: review-autofix-repair"
     text: "found a fixable bug"
     structured:
@@ -412,14 +436,14 @@ func cleanReviewScenario(t *testing.T) string {
       summary: "found 1 issue"
       risk_level: medium
       risk_rationale: "warning requires human review"
-  - match: "branch: agent-edits"
+  - match: "report only what you could not resolve.\n\nContext:\n- branch: agent-edits"
     text: "agent edited a file"
     edits:
-      - path: "agent-edit.txt"
+      - path: "agent-edit.md"
         new: "agent edited\n"
     structured:
       findings: []
-      summary: "no issues found"
+      summary: "add agent-authored documentation"
       risk_level: low
       risk_rationale: "agent edit is deterministic"
       tested:
@@ -1045,6 +1069,32 @@ func assertAgentEditCommitRun(t *testing.T, h *Harness) {
 	if run.Status != types.RunCompleted {
 		t.Fatalf("agent-edits run did not complete: status=%s error=%v", run.Status, deref(run.Error))
 	}
+	attempts := h.InvocationAttempts(t, run.ID)
+	if got := succeededAttemptsFor(attempts, types.PurposeDocumentationAuthoring); len(got) != 1 {
+		t.Fatalf("documentation author attempts = %d, want exactly 1", len(got))
+	}
+	if got := succeededAttemptsFor(attempts, types.PurposeDocumentationVerification); len(got) != 1 {
+		t.Fatalf("documentation verifier attempts = %d, want exactly 1", len(got))
+	}
+	if got := succeededAttemptsFor(attempts, types.PurposeNormalAggregateVerification); len(got) != 1 {
+		t.Fatalf("aggregate verifier attempts = %d, want exactly 1", len(got))
+	}
+	database := h.OpenDB(t)
+	defer database.Close()
+	preVerifySeal, err := database.LatestSealByReason(run.ID, "pre_verify")
+	if err != nil {
+		t.Fatalf("load pre-Verify seal: %v", err)
+	}
+	if preVerifySeal == nil || preVerifySeal.SHA != run.HeadSHA {
+		t.Fatalf("pre-Verify seal = %+v, want published head %s", preVerifySeal, run.HeadSHA)
+	}
+	reviewedSeal, err := database.LatestSealByReason(run.ID, "reviewed")
+	if err != nil {
+		t.Fatalf("load reviewed seal: %v", err)
+	}
+	if reviewedSeal == nil || reviewedSeal.SHA != run.HeadSHA {
+		t.Fatalf("latest reviewed seal = %+v, want published head %s", reviewedSeal, run.HeadSHA)
+	}
 	if run.HeadSHA == originalHead {
 		t.Fatalf("expected push step to commit agent changes, head remained %s", run.HeadSHA)
 	}
@@ -1066,12 +1116,19 @@ func assertAgentEditCommitRun(t *testing.T, h *Harness) {
 	if strings.TrimSpace(string(message)) != "no-mistakes(lint): apply formatting" {
 		t.Fatalf("agent-edits upstream commit message = %q", strings.TrimSpace(string(message)))
 	}
-	contents, err := h.runGit(ctx, h.UpstreamDir, "show", "refs/heads/agent-edits:agent-edit.txt")
+	documentMessage, err := h.runGit(ctx, h.UpstreamDir, "log", "-1", "--format=%s", "refs/heads/agent-edits", "--", "agent-edit.md")
+	if err != nil {
+		t.Fatalf("read agent-authored documentation commit message: %v\n%s", err, documentMessage)
+	}
+	if strings.TrimSpace(string(documentMessage)) != "no-mistakes(document): add agent-authored documentation" {
+		t.Fatalf("agent-authored documentation commit message = %q", strings.TrimSpace(string(documentMessage)))
+	}
+	contents, err := h.runGit(ctx, h.UpstreamDir, "show", "refs/heads/agent-edits:agent-edit.md")
 	if err != nil {
 		t.Fatalf("read committed agent edit from upstream: %v\n%s", err, contents)
 	}
 	if string(contents) != "agent edited\n" {
-		t.Fatalf("agent-edit.txt contents = %q", string(contents))
+		t.Fatalf("agent-edit.md contents = %q", string(contents))
 	}
 	formatted, err := h.runGit(ctx, h.UpstreamDir, "show", "refs/heads/agent-edits:formatted-by-push.txt")
 	if err != nil {
@@ -1627,38 +1684,49 @@ func assertDocumentWarningRun(t *testing.T, h *Harness) {
 	t.Helper()
 	h.CommitChange("document-warning", "document-warning.txt", "document warning\n", "add document warning")
 	h.PushToGate("document-warning")
-	run := waitForStepStatus(t, h, "document-warning", types.StepDocument, types.StepStatusAwaitingApproval, 60*time.Second)
+	run := h.WaitForRun("document-warning", 60*time.Second)
+	if run.Status != types.RunCompleted {
+		t.Fatalf("document-warning run status = %s, want completed after routed repair (error=%v)", run.Status, deref(run.Error))
+	}
 	documentStep, ok := findStep(run.Steps, types.StepDocument)
 	if !ok {
 		t.Fatal("expected document step in document-warning run")
 	}
-	if documentStep.FindingsJSON == nil {
-		t.Fatal("expected document warning to record findings JSON")
+	if documentStep.Status != types.StepStatusCompleted {
+		t.Fatalf("document-warning step status = %s, want completed", documentStep.Status)
 	}
-	findings, err := types.ParseFindingsJSON(*documentStep.FindingsJSON)
+	if documentStep.FindingsJSON != nil {
+		t.Fatalf("resolved document warning still gates the run: %s", *documentStep.FindingsJSON)
+	}
+
+	database := h.OpenDB(t)
+	defer database.Close()
+	repairs, err := database.GetFindingRepairsByRun(run.ID)
 	if err != nil {
-		t.Fatalf("parse document warning findings: %v", err)
+		t.Fatalf("get document-warning repairs: %v", err)
 	}
-	if findings.Summary != "README needs updating" {
-		t.Fatalf("document warning summary = %q, want README needs updating", findings.Summary)
+	if len(repairs) != 1 {
+		t.Fatalf("document-warning repairs = %d, want exactly one", len(repairs))
 	}
-	if len(findings.Items) != 1 {
-		t.Fatalf("expected one documentation warning finding, got %+v", findings.Items)
+	repair := repairs[0]
+	if repair.Status != db.RepairStatusResolved || repair.Verdict != db.RepairVerdictResolved || repair.VerdictRationale == "" {
+		t.Fatalf("document-warning repair status/verdict/rationale = %q/%q/%q, want resolved", repair.Status, repair.Verdict, repair.VerdictRationale)
 	}
-	item := findings.Items[0]
-	if item.Severity != "warning" {
-		t.Fatalf("expected documentation finding severity warning, got %q", item.Severity)
+	if repair.FixerAttemptID == "" || repair.VerifierAttemptID == "" || repair.FixerAttemptID == repair.VerifierAttemptID {
+		t.Fatalf("document-warning repair must link distinct fixer/verifier attempts: fixer=%q verifier=%q", repair.FixerAttemptID, repair.VerifierAttemptID)
 	}
-	if item.Description != "README missing new CLI flag" {
-		t.Fatalf("document warning description = %q, want README missing new CLI flag", item.Description)
+	if repair.Tier != 0 || repair.Severity != "warning" || repair.Action != "auto-fix" || repair.Description != "README missing new CLI flag" {
+		t.Fatalf("document-warning repair immutable content wrong: %+v", repair)
 	}
-	if item.Action != types.ActionAutoFix {
-		t.Fatalf("expected document warning to stay auto-fixable, got action %q", item.Action)
+	assertPushedHead(t, run.HeadSHA, h.UpstreamBranchSHA("document-warning"))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	readme, err := h.runGit(ctx, h.UpstreamDir, "show", "refs/heads/document-warning:README.md")
+	if err != nil {
+		t.Fatalf("read published documentation repair: %v\n%s", err, readme)
 	}
-	h.Respond(run.ID, types.StepDocument, types.ActionAbort)
-	completed := h.WaitForRun("document-warning", 60*time.Second)
-	if completed.Status != types.RunFailed {
-		t.Fatalf("document-warning run status after abort = %s, want failed", completed.Status)
+	if string(readme) != "# Document warning resolved\n" {
+		t.Fatalf("published documentation repair = %q", string(readme))
 	}
 }
 
@@ -1666,7 +1734,10 @@ func assertDocumentInfoRun(t *testing.T, h *Harness) {
 	t.Helper()
 	h.CommitChange("document-info", "document-info.txt", "document info\n", "add document info")
 	h.PushToGate("document-info")
-	run := waitForStepStatus(t, h, "document-info", types.StepDocument, types.StepStatusAwaitingApproval, 60*time.Second)
+	run := h.WaitForRun("document-info", 60*time.Second)
+	if run.Status != types.RunCompleted {
+		t.Fatalf("document-info run status = %s, want completed because informational findings are non-blocking (error=%v)", run.Status, deref(run.Error))
+	}
 	documentStep, ok := findStep(run.Steps, types.StepDocument)
 	if !ok {
 		t.Fatal("expected document step in document-info run")
@@ -1684,11 +1755,21 @@ func assertDocumentInfoRun(t *testing.T, h *Harness) {
 	if findings.Items[0].Action != types.ActionAutoFix {
 		t.Fatalf("expected info documentation finding to stay auto-fixable, got action %q", findings.Items[0].Action)
 	}
-	h.Respond(run.ID, types.StepDocument, types.ActionAbort)
-	completed := h.WaitForRun("document-info", 60*time.Second)
-	if completed.Status != types.RunFailed {
-		t.Fatalf("document-info run status after abort = %s, want failed", completed.Status)
+	attempts := h.InvocationAttempts(t, run.ID)
+	fixers := succeededAttemptsFor(attempts, types.PurposeInformationalRepair)
+	if len(fixers) != 2 {
+		t.Fatalf("informational documentation fixers = %d, want the two-tier cheap route", len(fixers))
 	}
+	assertCandidate(t, fixers[0], "fix_fast", 0, "luna", types.EffortMedium)
+	assertCandidate(t, fixers[1], "tools_balanced", 1, "terra", types.EffortHigh)
+	verifiers := succeededAttemptsFor(attempts, types.PurposeInformationalRepairVerification)
+	if len(verifiers) != 2 {
+		t.Fatalf("informational documentation verifiers = %d, want one independent verifier per tier", len(verifiers))
+	}
+	for _, verifier := range verifiers {
+		assertCandidate(t, verifier, "tools_balanced", 0, "terra", types.EffortHigh)
+	}
+	assertPushedHead(t, run.HeadSHA, h.UpstreamBranchSHA("document-info"))
 }
 
 func assertTestAgentNewTestFileRun(t *testing.T, h *Harness) {
@@ -2812,15 +2893,27 @@ func validatePromptsAbsent(invs []Invocation, unexpected ...string) []string {
 	return errs
 }
 
-// assertReviewAutoFixRepairRun proves the routed fast repair runs live: a
-// blocking auto-fix review finding drives a fresh fixer and a fresh strong
-// verifier through the real executor and routing invoker, and the durable
-// finding_repairs record shows a resolved verdict with both attempt links.
+// assertReviewAutoFixRepairRun proves a blocking auto-fix review finding drives
+// a fresh fixer and strong verifier, persists a resolved repair, clears the
+// finding, and continues through publication without an unnecessary approval.
 func assertReviewAutoFixRepairRun(t *testing.T, h *Harness) {
 	t.Helper()
 	h.CommitChange("review-autofix-repair", "repair.txt", "buggy line\n", "add repair target")
 	h.PushToGate("review-autofix-repair")
-	run := waitForStepStatus(t, h, "review-autofix-repair", types.StepReview, types.StepStatusAwaitingApproval, 60*time.Second)
+	run := h.WaitForRun("review-autofix-repair", 60*time.Second)
+	if run.Status != types.RunCompleted {
+		t.Fatalf("review-autofix-repair run status = %s, want completed after routed repair (error=%v)", run.Status, deref(run.Error))
+	}
+	reviewStep, ok := findStep(run.Steps, types.StepReview)
+	if !ok {
+		t.Fatal("expected review step in review-autofix-repair run")
+	}
+	if reviewStep.Status != types.StepStatusCompleted {
+		t.Fatalf("review-autofix-repair step status = %s, want completed", reviewStep.Status)
+	}
+	if reviewStep.FindingsJSON != nil {
+		t.Fatalf("resolved review finding still gates the run: %s", *reviewStep.FindingsJSON)
+	}
 
 	invs := h.AgentInvocations()
 	if !sawPromptContaining(invs, "Fix the following") {
@@ -2846,13 +2939,11 @@ func assertReviewAutoFixRepairRun(t *testing.T, h *Harness) {
 	if r.Status != db.RepairStatusResolved || r.Verdict != db.RepairVerdictResolved || r.VerdictRationale == "" {
 		t.Fatalf("repair status/verdict/rationale = %q/%q/%q, want resolved", r.Status, r.Verdict, r.VerdictRationale)
 	}
-	if r.FixerAttemptID == "" || r.VerifierAttemptID == "" {
-		t.Fatalf("repair links missing: fixer=%q verifier=%q", r.FixerAttemptID, r.VerifierAttemptID)
+	if r.FixerAttemptID == "" || r.VerifierAttemptID == "" || r.FixerAttemptID == r.VerifierAttemptID {
+		t.Fatalf("repair must link distinct fixer/verifier attempts: fixer=%q verifier=%q", r.FixerAttemptID, r.VerifierAttemptID)
 	}
 	if r.Tier != 0 || r.Severity != "error" || r.Action != "auto-fix" || r.Description != "logic bug in repair target" {
 		t.Fatalf("repair immutable content wrong: %+v", r)
 	}
-
-	h.Respond(run.ID, types.StepReview, types.ActionAbort)
-	h.WaitForRun("review-autofix-repair", 60*time.Second)
+	assertPushedHead(t, run.HeadSHA, h.UpstreamBranchSHA("review-autofix-repair"))
 }

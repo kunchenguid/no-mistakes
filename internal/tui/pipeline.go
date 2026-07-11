@@ -182,10 +182,10 @@ func renderPipelineView(run *ipc.RunInfo, steps []ipc.StepResultInfo, width int,
 		b.WriteString(line)
 		b.WriteString("\n")
 
-		// Dim meta sub-line under the review step summarizing the routed
-		// initial-review Candidate. Legacy/unrouted review steps (nil routing)
+		// Dim meta sub-lines under the review step show every routed Candidate
+		// in durable cascade order. Legacy/unrouted review steps (nil routing)
 		// and every other step render exactly as before.
-		if meta := routedReviewMeta(step); meta != "" {
+		for _, meta := range routedReviewMetas(step) {
 			metaLine, _ := cutText("  "+meta, contentWidth)
 			b.WriteString(dimStyle.Render(metaLine))
 			b.WriteString("\n")
@@ -207,24 +207,24 @@ func renderPipelineView(run *ipc.RunInfo, steps []ipc.StepResultInfo, width int,
 	return renderBox("Pipeline", b.String(), boxWidth)
 }
 
-// routedReviewMeta renders the one-line dim summary of a review step's routed
-// initial-review Candidate, e.g.
-// "routed: review_strong · codex gpt-5.6-sol/high · succeeded" (with the
-// failure domain appended when set). It returns "" for non-review steps and
-// for legacy/unrouted review steps whose routing projection is nil or empty.
-func routedReviewMeta(step ipc.StepResultInfo) string {
+// routedReviewMetas renders every initial-review Candidate in durable cascade
+// order. It returns nil for non-review steps and legacy/unrouted reviews.
+func routedReviewMetas(step ipc.StepResultInfo) []string {
 	if step.StepName != types.StepReview || step.ReviewRouting == nil || len(step.ReviewRouting.Candidates) == 0 {
-		return ""
+		return nil
 	}
-	c := step.ReviewRouting.Candidates[0]
-	meta := fmt.Sprintf("routed: %s · %s %s/%s", c.Profile, c.Runner, c.Model, c.Effort)
-	if c.Outcome != "" {
-		meta += " · " + c.Outcome
+	metas := make([]string, 0, len(step.ReviewRouting.Candidates))
+	for _, c := range step.ReviewRouting.Candidates {
+		meta := fmt.Sprintf("routed: %s · %s %s/%s", c.Profile, c.Runner, c.Model, c.Effort)
+		if c.Outcome != "" {
+			meta += " · " + c.Outcome
+		}
+		if c.FailureDomain != "" {
+			meta += " · " + c.FailureDomain
+		}
+		metas = append(metas, meta)
 	}
-	if c.FailureDomain != "" {
-		meta += " · " + c.FailureDomain
-	}
-	return meta
+	return metas
 }
 
 func appendRightLabel(line, label string, width int) string {
@@ -354,6 +354,16 @@ type helpEntry struct {
 	desc string
 }
 
+// yoloHelpLines is the visible contract for unattended (yolo) consent: it
+// fixes each gate once, approves the resulting fix review, and fails closed by
+// aborting when a blocking repair lineage remains unresolved. Each line fits an
+// 80-column help overlay uncut. It must stay in sync with the AXI --yes wording
+// and the /no-mistakes skill body.
+var yoloHelpLines = [2]string{
+	"fixes each gate once, then approves the fix review",
+	"aborts if a blocking repair remains unresolved",
+}
+
 // renderHelpOverlay renders a help box showing keybindings relevant to the current state.
 func renderHelpOverlay(width int, run *ipc.RunInfo, hasAwaitingStep bool, showDiff bool, hasDiff bool, done bool, yolo bool) string {
 	boldKey := lipgloss.NewStyle().Bold(true)
@@ -449,11 +459,15 @@ func renderHelpOverlay(width int, run *ipc.RunInfo, hasAwaitingStep bool, showDi
 		footerEntries = append(footerEntries, helpEntry{"x x", "abort pipeline"})
 	}
 	footerEntries = append(footerEntries, helpEntry{"?", "close help"})
-	yoloDesc := "auto-resolve every finding"
+	yoloDesc := "yolo: apply the user's unattended consent"
 	if yolo {
-		yoloDesc = "end yolo (auto-resolve)"
+		yoloDesc = "end yolo (unattended consent)"
 	}
-	footerEntries = append(footerEntries, helpEntry{"y", yoloDesc})
+	footerEntries = append(footerEntries,
+		helpEntry{"y", yoloDesc},
+		helpEntry{"", yoloHelpLines[0]},
+		helpEntry{"", yoloHelpLines[1]},
+	)
 	if canRerun(run) {
 		footerEntries = append(footerEntries, helpEntry{"r", "rerun pipeline"})
 	}

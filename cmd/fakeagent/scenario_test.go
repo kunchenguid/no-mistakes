@@ -46,6 +46,27 @@ func TestActionStructuredJSONUsesRawPayload(t *testing.T) {
 	}
 }
 
+func TestMatchInDirRequiresMatchFile(t *testing.T) {
+	dir := t.TempDir()
+	scenario := &Scenario{Actions: []Action{
+		{Match: "verify", MatchFile: "document-warning.txt", Text: "warning"},
+		{Match: "verify", Text: "clean"},
+	}}
+
+	if got := scenario.MatchInDir("verify documentation", "", "", dir); got.Text != "clean" {
+		t.Fatalf("match without required file = %q, want clean fallback", got.Text)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "document-warning.txt"), []byte("candidate\n"), 0o644); err != nil {
+		t.Fatalf("write match file: %v", err)
+	}
+	if got := scenario.MatchInDir("verify documentation", "", "", dir); got.Text != "warning" {
+		t.Fatalf("match with required file = %q, want warning", got.Text)
+	}
+	if got := scenario.Match("verify documentation", "", ""); got.Text != "clean" {
+		t.Fatalf("file-constrained Match without a directory = %q, want clean fallback", got.Text)
+	}
+}
+
 func TestApplyActionStagesFiles(t *testing.T) {
 	dir := t.TempDir()
 	gitCmd := func(args ...string) string {

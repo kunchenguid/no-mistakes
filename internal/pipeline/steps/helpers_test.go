@@ -40,7 +40,7 @@ func (m *mockAgent) Run(ctx context.Context, opts agent.RunOpts) (*agent.Result,
 	if strings.Contains(opts.Prompt, "independently verifying a CI-repair patch") {
 		out := m.ciVerifierOutput
 		if out == "" {
-			out = `{"findings":[]}`
+			out = `{"findings":[],"summary":"CI patch verified"}`
 		}
 		return &agent.Result{Output: json.RawMessage(out)}, nil
 	}

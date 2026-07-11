@@ -144,12 +144,12 @@ func (ri *routingInvoker) invokeRouted(ctx context.Context, request agent.Invoca
 		return result, runErr
 	}
 	if !providerCandidate {
-		return nil, fmt.Errorf("session provider %q is not configured in profile %q", resumeProvider, profile.Name)
+		operationalFailure = fmt.Errorf("session provider %q is not configured in profile %q", resumeProvider, profile.Name)
 	}
-	if operationalFailure != nil {
-		return nil, fmt.Errorf("profile %q exhausted every candidate after operational failures: %w", profile.Name, operationalFailure)
+	return nil, &agent.ProfileUnavailableError{
+		Profile: string(profile.Name),
+		Cause:   operationalFailure,
 	}
-	return nil, fmt.Errorf("profile %q has no available candidate: all provider circuits are open", profile.Name)
 }
 
 // startFor builds the immutable start fact for one Candidate attempt.
@@ -236,19 +236,22 @@ func (ri *routingInvoker) launchCandidate(ctx context.Context, request agent.Inv
 		terminal.CacheReadTokens = int64(result.Usage.CacheReadTokens)
 		terminal.CacheCreationTokens = int64(result.Usage.CacheCreationTokens)
 	}
-	// Only a classified operational failure carries a provider failure domain
-	// and opens the circuit; malformed output or a bad review never does.
+	// Only a classified operational failure carries a provider failure domain.
+	// Persist the terminal before opening the circuit: the durable terminal is
+	// the fact that authorizes a provider transition and any backup launch.
 	var opErr *agent.OperationalError
-	if errors.As(runErr, &opErr) {
+	operational := errors.As(runErr, &opErr)
+	if operational {
 		terminal.FailureDomain = domain
-		ri.circuits.markOpen(domain)
 	}
 	if journalErr := ri.journal.FinishInvocationAttempt(attemptID, terminal); journalErr != nil {
-		journalErr = fmt.Errorf("record routed invocation terminal: %w", journalErr)
-		if runErr != nil {
-			return result, errors.Join(runErr, journalErr), nil
-		}
-		return result, nil, journalErr
+		// A terminal-journal failure aborts the cascade and deliberately wraps
+		// only the persistence error. Exposing runErr here could make the fatal
+		// error unwrap as OperationalError and incorrectly authorize failover.
+		return result, nil, fmt.Errorf("record routed invocation terminal: %w", journalErr)
+	}
+	if operational {
+		ri.circuits.markOpen(domain)
 	}
 	return result, runErr, nil
 }

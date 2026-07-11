@@ -182,6 +182,52 @@ func detectRepoState(ctx context.Context, repo *db.Repo) (*repoState, error) {
 	}, nil
 }
 
+// loadPinnedTrustedRepoConfig reads repository policy from the freshly-fetched
+// default-branch commit, never from the checked-out feature branch. An
+// unavailable default branch or absent file means no repository policy; a
+// present but invalid file is fatal.
+func loadPinnedTrustedRepoConfig(ctx context.Context, workDir, defaultBranch string) (*config.RepoConfig, error) {
+	if defaultBranch == "" {
+		return nil, nil
+	}
+	if err := git.FetchRemoteBranch(ctx, workDir, "origin", defaultBranch); err != nil {
+		return nil, nil
+	}
+	sha, err := git.ResolveRef(ctx, workDir, "refs/remotes/origin/"+defaultBranch)
+	if err != nil {
+		return nil, nil
+	}
+	content, err := git.ShowFile(ctx, workDir, sha, ".no-mistakes.yaml")
+	if err != nil {
+		return nil, nil
+	}
+	repoCfg, err := config.LoadRepoFromBytes([]byte(content))
+	if err != nil {
+		return nil, fmt.Errorf("parse trusted repo config at %s: %w", sha, err)
+	}
+	return repoCfg, nil
+}
+
+// loadWizardRouting resolves the exact routing contract used by Wizard
+// suggestions. The checked-out copy is parsed for actionable configuration
+// errors, but only route overrides from the pinned trusted copy are merged.
+func loadWizardRouting(ctx context.Context, workDir, defaultBranch string, globalCfg *config.GlobalConfig) (config.RoutingConfig, error) {
+	pushedRepoCfg, err := config.LoadRepo(workDir)
+	if err != nil {
+		return config.RoutingConfig{}, fmt.Errorf("load repo config: %w", err)
+	}
+	trustedRepoCfg, err := loadPinnedTrustedRepoConfig(ctx, workDir, defaultBranch)
+	if err != nil {
+		return config.RoutingConfig{}, err
+	}
+	effectiveRepoCfg := config.EffectiveRepoConfig(pushedRepoCfg, trustedRepoCfg)
+	merged := config.Merge(globalCfg, effectiveRepoCfg)
+	if err := merged.ValidateRouting(); err != nil {
+		return config.RoutingConfig{}, fmt.Errorf("invalid wizard routing config: %w", err)
+	}
+	return merged.Routing, nil
+}
+
 // runWizard prepares optional suggestion hooks and runs the interactive
 // onboarding wizard against the supplied repo state.
 func runWizard(ctx context.Context, p *paths.Paths, state *repoState, wait waitForRunFunc) (wizard.Result, error) {
@@ -199,11 +245,9 @@ func runWizardWithMode(ctx context.Context, p *paths.Paths, state *repoState, sk
 	if err != nil {
 		return wizard.Result{}, fmt.Errorf("load global config: %w", err)
 	}
-	// Load the repo config for validation (this rejects legacy repo keys); the
-	// wizard routes suggestions through the trusted global routing policy, so it
-	// needs no merged per-repo settings.
-	if _, err := config.LoadRepo(workDir); err != nil {
-		return wizard.Result{}, fmt.Errorf("load repo config: %w", err)
+	trustedRouting, err := loadWizardRouting(ctx, workDir, state.defaultBranch, globalCfg)
+	if err != nil {
+		return wizard.Result{}, err
 	}
 	// Route agent-server stdout/stderr to a log file so lines don't corrupt
 	// the wizard's alt-screen display. Any opencode/rovodev server started
@@ -225,13 +269,9 @@ func runWizardWithMode(ctx context.Context, p *paths.Paths, state *repoState, sk
 		return wizard.Result{}, fmt.Errorf("create wizard invocation scope: %w", err)
 	}
 
-	// The Wizard routes suggestions through the trusted machine routing policy,
-	// never the checked-out feature branch's execution settings. Fall back to
-	// the built-in default contract when the global config carries no routing.
-	trustedRouting := globalCfg.Routing
-	if trustedRouting.IsZero() {
-		trustedRouting = config.DefaultRoutingConfig()
-	}
+	// Route suggestions through the global contract plus route overrides from
+	// the pinned trusted default-branch copy. Checked-out feature routes never
+	// influence Wizard model selection.
 	suggester := newWizardAgentSuggester(workDir)
 	suggester.setInvocationContext(journalDB, types.InvocationScope{
 		Kind:           types.InvocationScopeUtility,

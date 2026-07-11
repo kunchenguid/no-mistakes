@@ -155,6 +155,33 @@ func shouldBackfillPipelineSteps(runStatus types.RunStatus, steps []ipc.StepResu
 	return true
 }
 
+func (m *Model) refreshReviewRouting(run *ipc.RunInfo) {
+	if run == nil {
+		return
+	}
+	var routing *ipc.ReviewRoutingInfo
+	for _, step := range run.Steps {
+		if step.StepName == types.StepReview {
+			routing = step.ReviewRouting
+			break
+		}
+	}
+	for i := range m.steps {
+		if m.steps[i].StepName == types.StepReview {
+			m.steps[i].ReviewRouting = routing
+			break
+		}
+	}
+	if m.run != nil {
+		for i := range m.run.Steps {
+			if m.run.Steps[i].StepName == types.StepReview {
+				m.run.Steps[i].ReviewRouting = routing
+				break
+			}
+		}
+	}
+}
+
 func (m Model) Init() tea.Cmd {
 	return m.subscribeCmd()
 }
@@ -178,6 +205,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.events = msg.events
 		m.cancelSub = msg.cancelSub
+		m.refreshReviewRouting(msg.run)
 		return m, tea.Batch(m.waitForEvent(), m.startSpinnerIfNeeded())
 
 	case rerunStartedMsg:
@@ -210,7 +238,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.done {
 			return m, nil
 		}
-		return m, tea.Batch(m.waitForEvent(), m.startSpinnerIfNeeded(), m.maybeAutoApproveCmd())
+		cmds := []tea.Cmd{m.waitForEvent(), m.startSpinnerIfNeeded(), m.maybeAutoApproveCmd()}
+		if msg.event.Type == ipc.EventStepCompleted && msg.event.StepName != nil && *msg.event.StepName == types.StepReview {
+			cmds = append(cmds, m.refreshRunCmd())
+		}
+		return m, tea.Batch(cmds...)
+
+	case runRefreshedMsg:
+		if msg.subscriptionID != m.subscriptionID {
+			return m, nil
+		}
+		m.refreshReviewRouting(msg.run)
+		return m, nil
 
 	case subscriptionErrMsg:
 		if msg.subscriptionID != m.subscriptionID {

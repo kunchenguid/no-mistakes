@@ -867,9 +867,13 @@ func TestModel_View_HelpOverlay_HidesActionsWhenNoApproval(t *testing.T) {
 	if strings.Contains(plain, "j/k") {
 		t.Errorf("help should hide navigation keys without approval, got:\n%s", plain)
 	}
-	// Action keys should NOT be shown since no step is awaiting approval.
-	if strings.Contains(plain, "approve") {
-		t.Errorf("help should hide action keys when no step awaiting approval, got:\n%s", plain)
+	// Action keys should NOT be shown since no step is awaiting approval. The
+	// always-visible yolo consent description legitimately says "approves", so
+	// look for the approve entry itself rather than the bare substring.
+	for _, line := range strings.Split(plain, "\n") {
+		if entryDescColumn(line, "approve") >= 0 {
+			t.Errorf("help should hide action keys when no step awaiting approval, got:\n%s", plain)
+		}
 	}
 	// Selection keys should NOT be shown.
 	if strings.Contains(plain, "select all") {

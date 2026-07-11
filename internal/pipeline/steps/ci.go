@@ -32,13 +32,19 @@ const (
 // CIStep monitors an open PR until it is merged, closed, or its configured idle
 // timeout elapses, auto-fixing CI failures.
 type CIStep struct {
-	lastFixedChecks      string               // sorted check names from last fix attempt, to avoid re-fixing
-	lastFixedCompletedAt map[string]time.Time // failing check completion times seen before the last fix attempt
-	ciFixAttempts        int                  // number of CI auto-fix attempts made
-	checksGracePeriod    time.Duration        // minimum wait before trusting empty CI checks (0 = default 60s)
-	pollIntervalOverride time.Duration        // if set, overrides computed poll interval (for testing)
-	waitForNextPoll      func(context.Context, time.Duration) error
-	now                  func() time.Time
+	lastFixedChecks       string               // sorted check names from last fix attempt, to avoid re-fixing
+	lastFixedCompletedAt  map[string]time.Time // failing check completion times seen before the last fix attempt
+	verifiedCandidateTree string               // frozen tree independently checked before CI republish
+	activeCIRepairTier    int
+	activeCIRepairIDs     []string
+	ephemeralCIRepairs    map[string]int
+	activeCIRepairPlan    ciRepairPlan
+	activeCIRepairBudget  int
+	sealCIRepublish       func(*pipeline.StepContext, string) error
+	checksGracePeriod     time.Duration // minimum wait before trusting empty CI checks (0 = default 60s)
+	pollIntervalOverride  time.Duration // if set, overrides computed poll interval (for testing)
+	waitForNextPoll       func(context.Context, time.Duration) error
+	now                   func() time.Time
 	// baseBranchTip resolves the current tip SHA of the upstream default
 	// branch. The bool is false when the SHA is a fallback/unknown value and
 	// must not re-arm the timeout. Overridable for testing; defaults to
@@ -276,12 +282,34 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 						issueDesc = "merge conflict"
 					}
 				}
+				repairBudget := ciFixLimit
+				if sctx.Fixing && repairBudget <= 0 {
+					repairBudget = ciRepairBudget
+				}
+				repairPlan := ciRepairPlan{}
+				if repairBudget > 0 {
+					repairPlan, err = s.planCIRepair(sctx, pr, failing, mergeConflict, repairBudget)
+					if err != nil {
+						return nil, err
+					}
+				}
 				if sctx.Fixing && !manualFixAttempted {
 					manualFixAttempted = true
+					if len(repairPlan.Issues) == 0 {
+						sctx.Log(fmt.Sprintf("issues detected: %s - hosted failure repair budget exhausted...", issueDesc))
+						return ciFailureOutcome(failing, mergeConflict, "CI failures still present after hosted failure repair budget exhausted"), nil
+					}
 					sctx.Log(fmt.Sprintf("issues detected: %s - manual fix requested...", issueDesc))
 					previousHeadSHA := sctx.Run.HeadSHA
-					pushed, err := s.autoFixCI(sctx, host, pr, failing, mergeConflict)
+					pushed, err := s.runPlannedCIRepair(sctx, host, pr, repairPlan, repairBudget)
 					if err != nil {
+						if isCIJournalFailure(err) {
+							return nil, err
+						}
+						if isCIProfileExhaustion(err) {
+							sctx.Log(fmt.Sprintf("CI repair profile exhausted: %v", err))
+							return ciFailureOutcome(failing, mergeConflict, "CI repair profile exhausted with failures unresolved"), nil
+						}
 						sctx.Log(fmt.Sprintf("warning: CI manual fix failed: %v", err))
 					} else if pushed || sctx.Run.HeadSHA != previousHeadSHA {
 						s.lastFixedChecks = fixKey
@@ -295,25 +323,29 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 				} else if ciFixLimit <= 0 {
 					sctx.Log(fmt.Sprintf("issues detected: %s - auto-fix disabled, waiting for manual intervention...", issueDesc))
 					return ciFailureOutcome(failing, mergeConflict, "CI failures require manual intervention"), nil
-				} else if s.ciFixAttempts >= ciFixLimit {
-					sctx.Log(fmt.Sprintf("issues detected: %s - max auto-fix attempts (%d) reached, waiting for manual intervention...", issueDesc, ciFixLimit))
-					return ciFailureOutcome(failing, mergeConflict, "CI failures still present after auto-fix attempts"), nil
+				} else if len(repairPlan.Issues) == 0 {
+					sctx.Log(fmt.Sprintf("issues detected: %s - max auto-fix attempts (%d) reached for hosted failure lineage, waiting for manual intervention...", issueDesc, ciFixLimit))
+					return ciFailureOutcome(failing, mergeConflict, "CI failures still present after hosted failure repair budget exhausted"), nil
 				} else if fixKey == s.lastFixedChecks {
 					sctx.Log("fix already attempted for these issues, waiting for CI re-run...")
 				} else {
-					s.ciFixAttempts++
-					sctx.Log(fmt.Sprintf("issues detected: %s - auto-fixing (attempt %d/%d)...", issueDesc, s.ciFixAttempts, ciFixLimit))
+					sctx.Log(fmt.Sprintf("issues detected: %s - auto-fixing hosted failure tier %d/%d...", issueDesc, repairPlan.Tier+1, ciFixLimit))
 					previousHeadSHA := sctx.Run.HeadSHA
-					pushed, err := s.autoFixCI(sctx, host, pr, failing, mergeConflict)
+					pushed, err := s.runPlannedCIRepair(sctx, host, pr, repairPlan, repairBudget)
 					if err != nil {
+						if isCIJournalFailure(err) {
+							return nil, err
+						}
+						if isCIProfileExhaustion(err) {
+							sctx.Log(fmt.Sprintf("CI repair profile exhausted: %v", err))
+							return ciFailureOutcome(failing, mergeConflict, "CI repair profile exhausted with failures unresolved"), nil
+						}
 						sctx.Log(fmt.Sprintf("warning: CI auto-fix failed: %v", err))
 					} else if pushed || sctx.Run.HeadSHA != previousHeadSHA {
 						s.lastFixedChecks = fixKey
 						s.lastFixedCompletedAt = fixCompletedAt
 					} else {
-						// No changes produced - don't set lastFixedChecks so next
-						// poll treats this as a new failure and retries if attempts remain.
-						sctx.Log("CI fix produced no changes, will retry if attempts remain...")
+						sctx.Log("CI fix produced no changes, will retry if hosted failure budget remains...")
 					}
 				}
 			} else {
@@ -332,8 +364,14 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 					lastMonitorLog = ""
 					sctx.Log("no CI checks reported yet, waiting for checks to register...")
 				case len(checks) == 0:
+					if err := resolveHostedCIRepairs(sctx); err != nil {
+						return nil, err
+					}
 					lastMonitorLog = logCIMonitorStatus(sctx, ciNoChecksPassedMsg, lastMonitorLog)
 				default:
+					if err := resolveHostedCIRepairs(sctx); err != nil {
+						return nil, err
+					}
 					lastMonitorLog = logCIMonitorStatus(sctx, ciChecksPassedMsg, lastMonitorLog)
 				}
 			}

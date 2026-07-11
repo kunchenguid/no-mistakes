@@ -40,7 +40,6 @@ func TestLoadGlobalRejectsLegacyKeys(t *testing.T) {
 		"agent_path_override",
 		"agent_args_override",
 		"auto_fix",
-		"babysit_timeout",
 	} {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "config.yaml")
@@ -72,12 +71,36 @@ func TestLoadGlobalDefaultTemplateLoads(t *testing.T) {
 	}
 }
 
-// TestLoadRepoRejectsAgentAndAutoFix proves a repository cannot select an agent
-// or set numeric auto-fix limits; model selection is global-only.
-func TestLoadRepoRejectsAgentAndAutoFix(t *testing.T) {
-	for _, key := range []string{"agent", "auto_fix"} {
-		if _, err := LoadRepoFromBytes([]byte(key + ": value\n")); err == nil {
+func TestLoadRepoRejectsRemovedExecutionMechanicsActionably(t *testing.T) {
+	for _, key := range []string{
+		"agent",
+		"agent_args_override",
+		"agent_path_override",
+		"acp_registry_overrides",
+		"acpx_path",
+		"auto_fix",
+		"candidates",
+		"fallback_agents",
+		"profiles",
+		"routing",
+		"runners",
+	} {
+		_, err := LoadRepoFromBytes([]byte(key + ": value\n"))
+		if err == nil {
 			t.Fatalf("LoadRepoFromBytes accepted repo key %q, want an error", key)
 		}
+		if !strings.Contains(err.Error(), key) || !strings.Contains(err.Error(), "may not define") {
+			t.Fatalf("LoadRepoFromBytes(%q) error = %v, want an actionable rejection naming the key", key, err)
+		}
+	}
+}
+
+func TestLoadRepoRejectsUnknownKey(t *testing.T) {
+	_, err := LoadRepoFromBytes([]byte("routs:\n  initial_review: review_strong\n"))
+	if err == nil {
+		t.Fatal("LoadRepoFromBytes accepted misspelled key \"routs\"")
+	}
+	if !strings.Contains(err.Error(), "routs") {
+		t.Fatalf("LoadRepoFromBytes error = %v, want unknown key named", err)
 	}
 }

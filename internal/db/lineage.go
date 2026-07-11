@@ -45,8 +45,15 @@ func (d *DB) CreateFindingLineages(runID, originAttemptID string, displayIDs []s
 	ts := now()
 	lineages := make([]FindingLineage, 0, len(displayIDs))
 	for i, displayID := range displayIDs {
+		id := newID()
+		if strings.TrimSpace(displayID) == "" {
+			// Verifier-created findings do not carry a display ID. Use the
+			// durable lineage ULID itself so the finding is selectable without
+			// deriving identity from model prose.
+			displayID = id
+		}
 		lineage := FindingLineage{
-			ID:              newID(),
+			ID:              id,
 			RunID:           runID,
 			OriginAttemptID: originAttemptID,
 			DisplayID:       displayID,

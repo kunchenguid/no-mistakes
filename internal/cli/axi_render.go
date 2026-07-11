@@ -81,7 +81,7 @@ type routingAttemptRow struct {
 	Model               string `toon:"model"`
 	Effort              string `toon:"effort"`
 	Outcome             string `toon:"outcome"`
-	FailureDomain       string `toon:"failure_domain,omitempty"`
+	FailureDomain       string `toon:"failure_domain"`
 	DurationMS          int64  `toon:"duration_ms"`
 	InputTokens         int64  `toon:"input_tokens"`
 	OutputTokens        int64  `toon:"output_tokens"`
@@ -98,12 +98,12 @@ type lineageRow struct {
 }
 
 // reviewRoutingView is the render-ready projection of the review step's
-// routing, reconstructed purely from durable tables. It is populated only on
-// the direct-DB path; the IPC path leaves it nil, so legacy or unrouted runs
-// emit a byte-identical document.
+// routing. Direct-DB views carry full lineage rows; IPC views carry the
+// durable lineage count exposed by the daemon.
 type reviewRoutingView struct {
-	Attempts []routingAttemptRow
-	Lineages []lineageRow
+	Attempts     []routingAttemptRow
+	Lineages     []lineageRow
+	LineageCount int
 }
 
 // stepView is a render-ready view of a single pipeline step, decoupled from
@@ -138,10 +138,8 @@ type runView struct {
 	// the top-level parked signal in the run object.
 	AwaitingAgentSince *int64
 	Steps              []stepView
-	// ReviewRouting is the durable routing projection for the review step,
-	// present only when reconstructed from the local database (the direct-DB
-	// path). Nil on the IPC path and for legacy/unrouted reviews, which keeps
-	// their output unchanged.
+	// ReviewRouting is the durable routing projection for the review step.
+	// It may come from either a direct database read or an IPC snapshot.
 	ReviewRouting *reviewRoutingView
 }
 
@@ -180,6 +178,9 @@ func runViewFromIPC(r *ipc.RunInfo) runView {
 			sv.FindingsJSON = *s.FindingsJSON
 		}
 		rv.Steps = append(rv.Steps, sv)
+		if s.ReviewRouting != nil {
+			rv.ReviewRouting = reviewRoutingViewFromIPC(s.ReviewRouting)
+		}
 	}
 	return rv
 }
@@ -489,6 +490,31 @@ func runObjectFieldWithKey(key string, rv runView) toon.Field {
 	return toon.Field{Key: key, Value: toon.NewObject(fields...)}
 }
 
+func reviewRoutingViewFromIPC(proj *ipc.ReviewRoutingInfo) *reviewRoutingView {
+	if proj == nil {
+		return nil
+	}
+	view := &reviewRoutingView{LineageCount: proj.LineageCount}
+	for _, c := range proj.Candidates {
+		view.Attempts = append(view.Attempts, routingAttemptRow{
+			Profile:             c.Profile,
+			Tier:                c.Tier,
+			CandidateIndex:      c.CandidateIndex,
+			Runner:              c.Runner,
+			Model:               c.Model,
+			Effort:              c.Effort,
+			Outcome:             c.Outcome,
+			FailureDomain:       c.FailureDomain,
+			DurationMS:          c.DurationMS,
+			InputTokens:         c.InputTokens,
+			OutputTokens:        c.OutputTokens,
+			CacheReadTokens:     c.CacheReadTokens,
+			CacheCreationTokens: c.CacheCreationTokens,
+		})
+	}
+	return view
+}
+
 // reviewRoutingViewFrom converts the durable routing projection into a
 // render-ready view. A nil projection (legacy/unrouted review) yields nil, so
 // the caller emits no routing block.
@@ -496,7 +522,7 @@ func reviewRoutingViewFrom(proj *db.ReviewRouting) *reviewRoutingView {
 	if proj == nil {
 		return nil
 	}
-	view := &reviewRoutingView{}
+	view := &reviewRoutingView{LineageCount: len(proj.Lineages)}
 	for _, a := range proj.Attempts {
 		row := routingAttemptRow{
 			Profile:        a.Start.Candidate.Profile,
@@ -533,10 +559,14 @@ func reviewRoutingViewFrom(proj *db.ReviewRouting) *reviewRoutingView {
 // with a cascade-ordered attempts table and a run-wide lineages table. The
 // field ordering is fixed so the emitted shape is deterministic across runs.
 func reviewRoutingField(v *reviewRoutingView) toon.Field {
-	return toon.Field{Key: "review_routing", Value: toon.NewObject(
-		toon.Field{Key: "attempts", Value: v.Attempts},
-		toon.Field{Key: "lineages", Value: v.Lineages},
-	)}
+	fields := []toon.Field{
+		{Key: "lineage_count", Value: v.LineageCount},
+		{Key: "attempts", Value: v.Attempts},
+	}
+	if len(v.Lineages) > 0 {
+		fields = append(fields, toon.Field{Key: "lineages", Value: v.Lineages})
+	}
+	return toon.Field{Key: "review_routing", Value: toon.NewObject(fields...)}
 }
 
 // gateFields renders the active approval gate: the awaiting step, its findings
@@ -553,11 +583,12 @@ func gateFields(gate stepView) []toon.Field {
 	if parsed.RiskLevel != "" {
 		gfields = append(gfields, toon.Field{Key: "risk", Value: parsed.RiskLevel})
 	}
-	// Point-of-use reminder at the review gate: blocking and ask-user review
-	// findings park for the driving agent's decision rather than being silently
-	// self-fixed. Model selection and repair follow the routing contract.
+	// Point-of-use reminder at the review gate: review findings park for
+	// explicit consent, ask-user belongs to the user unless --yes supplies
+	// standing consent, and unattended consent fails closed on an unresolved
+	// blocking repair. Model selection and repair follow the routing contract.
 	if gate.Name == string(types.StepReview) {
-		gfields = append(gfields, toon.Field{Key: "note", Value: "Blocking and ask-user review findings park for your decision rather than being silently self-fixed."})
+		gfields = append(gfields, toon.Field{Key: "note", Value: "Review findings are parked for explicit consent. ask-user requires the user's decision unless --yes supplies standing consent; --yes aborts rather than accepts an unresolved blocking repair."})
 	}
 	rows := make([]findingRow, 0, len(parsed.Items))
 	for _, f := range parsed.Items {

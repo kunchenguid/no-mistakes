@@ -107,8 +107,24 @@ func (m Model) yoloResolveCmd(stepName types.StepName, fix bool, fixIDs []string
 	runID := m.runID
 	return func() tea.Msg {
 		var got ipc.GetRunResult
-		if err := client.Call(ipc.MethodGetRun, &ipc.GetRunParams{RunID: runID}, &got); err == nil && got.Run != nil && got.Run.BlockingRepairUnresolved {
-			_ = client.Call(ipc.MethodRespond, &ipc.RespondParams{RunID: runID, Step: stepName, Action: types.ActionAbort}, &ipc.RespondResult{})
+		if err := client.Call(ipc.MethodGetRun, &ipc.GetRunParams{RunID: runID}, &got); err != nil {
+			return errMsg{fmt.Errorf("refresh run before yolo response: %w", err)}
+		}
+		if got.Run == nil {
+			return errMsg{fmt.Errorf("refresh run before yolo response: run %s not found", runID)}
+		}
+		if got.Run.BlockingRepairUnresolved {
+			var result ipc.RespondResult
+			if err := client.Call(ipc.MethodRespond, &ipc.RespondParams{
+				RunID:  runID,
+				Step:   stepName,
+				Action: types.ActionAbort,
+			}, &result); err != nil {
+				return errMsg{fmt.Errorf("abort yolo response with unresolved blocking repair: %w", err)}
+			}
+			if !result.OK {
+				return errMsg{fmt.Errorf("abort yolo response with unresolved blocking repair: daemon rejected the response")}
+			}
 			return nil
 		}
 		params := &ipc.RespondParams{RunID: runID, Step: stepName, Action: types.ActionApprove}
@@ -119,6 +135,9 @@ func (m Model) yoloResolveCmd(stepName types.StepName, fix bool, fixIDs []string
 		var result ipc.RespondResult
 		if err := client.Call(ipc.MethodRespond, params, &result); err != nil {
 			return errMsg{err}
+		}
+		if !result.OK {
+			return errMsg{fmt.Errorf("yolo response rejected by daemon")}
 		}
 		return nil
 	}
@@ -194,7 +213,28 @@ func (m Model) subscribeCmd() tea.Cmd {
 		if err != nil {
 			return subscriptionErrMsg{err: fmt.Errorf("subscribe: %w", err), subscriptionID: m.subscriptionID}
 		}
-		return connectedMsg{events: events, cancelSub: cancel, subscriptionID: m.subscriptionID}
+		var result ipc.GetRunResult
+		if err := m.client.Call(ipc.MethodGetRun, &ipc.GetRunParams{RunID: m.runID}, &result); err != nil {
+			cancel()
+			return subscriptionErrMsg{err: fmt.Errorf("refresh subscribed run: %w", err), subscriptionID: m.subscriptionID}
+		}
+		if result.Run == nil {
+			cancel()
+			return subscriptionErrMsg{err: fmt.Errorf("refresh subscribed run: run %s not found", m.runID), subscriptionID: m.subscriptionID}
+		}
+		return connectedMsg{events: events, run: result.Run, cancelSub: cancel, subscriptionID: m.subscriptionID}
+	}
+}
+func (m Model) refreshRunCmd() tea.Cmd {
+	return func() tea.Msg {
+		var result ipc.GetRunResult
+		if err := m.client.Call(ipc.MethodGetRun, &ipc.GetRunParams{RunID: m.runID}, &result); err != nil {
+			return subscriptionErrMsg{err: fmt.Errorf("refresh run routing: %w", err), subscriptionID: m.subscriptionID}
+		}
+		if result.Run == nil {
+			return subscriptionErrMsg{err: fmt.Errorf("refresh run routing: run %s not found", m.runID), subscriptionID: m.subscriptionID}
+		}
+		return runRefreshedMsg{run: result.Run, subscriptionID: m.subscriptionID}
 	}
 }
 

@@ -10,8 +10,6 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
-
-	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
 
 // claudeMaxRetries is the number of additional attempts past the initial
@@ -56,11 +54,9 @@ func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 	cmd.Dir = opts.CWD
 	cmd.Stdin = nil
 	cmd.Env = gitSafeEnv(opts.CWD)
-	shellenv.ConfigureShellCommand(cmd)
-
 	var stderrBuf []byte
 	var stderrWG sync.WaitGroup
-	started, err := startNativeAgentCommand(cmd)
+	started, err := startNativeProcess(cmd)
 	if err != nil {
 		return nil, fmt.Errorf("claude start: %w", err)
 	}
@@ -122,8 +118,13 @@ func finalizeClaudeResult(result *claudeResult, schema json.RawMessage, usage To
 		}
 		return nil, fmt.Errorf("claude error: subtype=%s", result.Subtype)
 	}
-	if len(schema) > 0 && result.StructuredOutput == nil {
-		return nil, errNoStructuredOutput
+	if len(schema) > 0 {
+		if result.StructuredOutput == nil {
+			return nil, markModelOutput(errNoStructuredOutput)
+		}
+		if err := validateStructuredOutput(result.StructuredOutput, schema); err != nil {
+			return nil, markModelOutput(fmt.Errorf("claude structured output: %w", err))
+		}
 	}
 
 	return &Result{

@@ -123,9 +123,34 @@ func TestHasUnresolvedBlockingRepair(t *testing.T) {
 	if got, _ := d.HasUnresolvedBlockingRepair(run.ID); got {
 		t.Fatal("want false once the lineage resolves at a higher tier")
 	}
+	// A consented retry may resolve at the same policy tier. Its later durable
+	// disposition must supersede the earlier parked/unresolved row.
+	repair("lin-C", "warning", 0, RepairStatusUnresolved)
+	repair("lin-C", "warning", 0, RepairStatusResolved)
+	if got, _ := d.HasUnresolvedBlockingRepair(run.ID); got {
+		t.Fatal("want false once a later same-tier consent repair resolves")
+	}
 	// An unresolved informational lineage is non-blocking and must not count.
 	repair("lin-B", "info", 0, RepairStatusUnresolved)
 	if got, _ := d.HasUnresolvedBlockingRepair(run.ID); got {
 		t.Fatal("an unresolved info lineage must not count as blocking")
+	}
+}
+
+func TestFindingRepairLinksAndResolutionRejectUnknownRepair(t *testing.T) {
+	d := openTestDB(t)
+	for name, write := range map[string]func() error{
+		"fixer link":    func() error { return d.SetFindingRepairFixer("missing", "attempt") },
+		"verifier link": func() error { return d.SetFindingRepairVerifier("missing", "attempt") },
+		"check":         func() error { return d.RecordFindingRepairCheck("missing", "go test ./...", true, 1, "failed") },
+		"resolution": func() error {
+			return d.ResolveFindingRepair("missing", RepairVerdictResolved, "verified", RepairStatusResolved)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := write(); err == nil {
+				t.Fatal("unknown repair write succeeded")
+			}
+		})
 	}
 }

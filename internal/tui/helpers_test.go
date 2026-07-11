@@ -94,9 +94,19 @@ func boxContentLine(line string) string {
 	}
 	return ""
 }
-func visualColumn(line, needle string) int {
-	idx := strings.Index(line, needle)
-	if idx < 0 {
+
+// entryDescColumn returns the visual column where desc starts on line, but
+// only when desc is a complete help-entry description: preceded by the
+// two-space entry separator and followed by nothing but padding up to the
+// closing box border. A word that merely appears inside a longer description
+// (for example "approve" inside "then approves the fix review") is ignored.
+func entryDescColumn(line, desc string) int {
+	idx := strings.Index(line, desc)
+	if idx < 0 || idx < 2 || line[idx-2:idx] != "  " {
+		return -1
+	}
+	rest := strings.TrimSuffix(strings.TrimRight(line[idx+len(desc):], " "), "│")
+	if strings.TrimSpace(rest) != "" {
 		return -1
 	}
 	return lipgloss.Width(line[:idx])

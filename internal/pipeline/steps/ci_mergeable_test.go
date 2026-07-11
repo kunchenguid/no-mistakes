@@ -22,7 +22,7 @@ func TestCIStep_TimeoutWithOpenPRNeedsApprovalAndDoesNotSleepPastDeadline(t *tes
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 2 * time.Second
@@ -72,7 +72,7 @@ func TestCIStep_UnknownMergeableStateDoesNotExitCleanly(t *testing.T) {
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 10 * time.Second
@@ -112,7 +112,7 @@ func TestCIStep_MergeableLookupErrorDoesNotReportReadyWhenChecksPass(t *testing.
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 10 * time.Second
@@ -159,7 +159,7 @@ func TestCIStep_PRStateLookupErrorDoesNotReportReadyWhenChecksPass(t *testing.T)
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 10 * time.Second
@@ -206,7 +206,7 @@ func TestCIStep_TimeoutWithUnknownMergeableState_NeedsApproval(t *testing.T) {
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 2 * time.Second
@@ -257,7 +257,7 @@ func TestCIStep_TimeoutWithKnownFailureAndPendingCheck_NeedsApproval(t *testing.
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 2 * time.Second
@@ -313,7 +313,7 @@ func TestCIStep_TimeoutWithMergeConflictAndCheckLookupError_NeedsApproval(t *tes
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 2 * time.Second
@@ -398,7 +398,7 @@ func TestCIStep_WaitsForPendingChecksBeforeFixing(t *testing.T) {
 	}
 
 	prURL := "https://github.com/test/repo/pull/42"
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Repo.UpstreamURL = upstream
