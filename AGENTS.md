@@ -111,7 +111,10 @@ Safest local verification sequence after non-trivial changes:
 
 **Review Fixer Verification Discipline (`internal/pipeline/steps/review.go`)**
 
-- The review-fix prompt makes the fixer apply all fixes first, then run ONE focused verification limited to the changed area, and never run the whole repository test/lint suite in the fix round. The dedicated Test and Lint steps (pipeline order in `steps/common.go` is review→test→…→lint) are the authoritative test and lint gates, though their coverage may be focused when commands are unconfigured; the fixer prohibition stays universal. This mirrors the "relevant"-scoped, cross-tool-forbidden discipline already in the test/lint fix prompts and exists for wall-clock: a forensic audit of a real multi-round run measured the fixer re-running the full test+lint suite ~5x/round (27 runs / 5 rounds, ~784s of a 2419s review step). It is a prompt contract, not an enforced sandbox - the fixer agent has free shell access - so the regression guards the exact wording, not the runtime. Regression: `TestReviewStep_FixMode_FocusedVerificationContract`.
+- The review-fix prompt requires all fixes before one focused verification limited to the changed area and forbids the whole repository test/lint suite during the fix round.
+  The dedicated Test and Lint steps are the authoritative gates, although their coverage may be focused when commands are unconfigured.
+  This is a prompt contract, not an enforced sandbox.
+  Regression: `TestReviewStep_FixMode_FocusedVerificationContract`.
 
 **Intent Provenance & Conformance (`internal/pipeline/steps/intent_prompt.go`)**
 
