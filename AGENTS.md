@@ -31,13 +31,13 @@ Safest local verification sequence after non-trivial changes:
 
 - Keep `README.md` concise and high-level; the bar needs to be extremely high for what shows up there.
 - Most documentation lives in `docs/`, the published docs site.
-- One owner per fact: `docs/reference/global-config.md` and `docs/reference/repo-config.md` own configuration keys, `docs/reference/environment.md` owns environment variables and the telemetry local/remote split, `docs/concepts/daemon.md` owns the daemon lifecycle model, and guides pages explain purpose and link to those owners instead of restating tables and examples.
+- One owner per fact: `docs/src/content/docs/reference/global-config.md` and `docs/src/content/docs/reference/repo-config.md` own configuration keys, `docs/src/content/docs/reference/environment.md` owns environment variables and the telemetry local/remote split, `docs/src/content/docs/concepts/daemon.md` owns the daemon lifecycle model, and guides pages explain purpose and link to those owners instead of restating tables and examples.
 - The `document.instructions` block in `.no-mistakes.yaml` states this ownership map for the pipeline's document step; update it when ownership moves.
 
 **Agent-Guidance Surfaces**
 
 - `skills/no-mistakes/SKILL.md` is **generated**: the source of truth is the `body` constant in `internal/skill/skill.go`. Edit the body, then `make skill`; `make lint` fails CI on drift. Never edit `SKILL.md` directly. `no-mistakes init` ships this rendering to agents at user level.
-- Agent-driving guidance is owned by the skill body and the live `axi` output strings (`internal/cli/axi*.go`); `docs/guides/agents.md` carries only the canonical invariant sentences pinned by `internal/cli/axi_guidance_test.go` plus a pointer to the skill. When you change driving guidance, change the skill body and the point-of-use `axi` strings together; that drift test is the sync check.
+- Agent-driving guidance is owned by the skill body and the live `axi` output strings (`internal/cli/axi*.go`); `docs/src/content/docs/guides/agents.md` carries only the canonical invariant sentences pinned by `internal/cli/axi_guidance_test.go` plus a pointer to the skill. When you change driving guidance, change the skill body and the point-of-use `axi` strings together; that drift test is the sync check.
 - Review auto-fix is disabled by default (`auto_fix.review: 0` in `config.go` `autoFixDefaults`), so blocking and ask-user review findings park for an agent decision; keep the skill, the live `axi` gate `note`, and docs qualified if you touch review auto-fix.
 
 **Context, Concurrency, and Processes**
@@ -69,7 +69,7 @@ Safest local verification sequence after non-trivial changes:
 - Independent layers: `internal/ipc` `listen()` dials the socket before unlinking it and refuses to steal a live one; client probes bound the dial with `daemon_connect_timeout` and fail fast on a dead or wedged socket instead of starting a replacement daemon (`EnsureDaemon` surfaces the error with a `daemon start` recovery hint; the health RPC itself is bounded separately by `ipc.DefaultDialTimeout`).
 - Daemon execution is explicit-only (`no-mistakes daemon run --root`); never let inherited environment reinterpret probes like `--version` or `status` as daemon workers.
 - Startup worktree cleanup is DB-aware: never remove a worktree whose run row is `pending` or `running`; `startRun` inserts the run row before creating the worktree, so a no-row directory is safe to remove immediately.
-- The user-facing model lives in `docs/concepts/daemon.md`; the lock rationale lives in the `internal/daemon/lock.go` and `daemon.go` comments. Regressions: `TestAcquireSingletonLock_*`, `TestRunWithResources_SecondDaemonForSameRootFailsWithoutStealingSocket`, `TestRunWithOptions_RequiresSingletonLockBeforeRecovery`, `TestRecoverOnStartup_DoesNotDeleteActiveRunWorktree`, `TestServe_SecondListenerForLiveSocketDoesNotStealIt`, `TestDialConnectTimeoutFailsFastAndNamesSocket`, `TestIsRunningFailsFastWhenSocketAcceptsButDoesNotRespond`, `TestIsRunningSurfacesExistingDeadSocket`, `TestDaemonRunRootFromArgs_EnvDoesNotForceDaemonModeForProbes`, `TestValidateDaemonPIDFallback_RefusesToKillOwnProcess`.
+- The user-facing model lives in `docs/src/content/docs/concepts/daemon.md`; the lock rationale lives in the `internal/daemon/lock.go` and `daemon.go` comments. Regressions: `TestAcquireSingletonLock_*`, `TestRunWithResources_SecondDaemonForSameRootFailsWithoutStealingSocket`, `TestRunWithOptions_RequiresSingletonLockBeforeRecovery`, `TestRecoverOnStartup_DoesNotDeleteActiveRunWorktree`, `TestServe_SecondListenerForLiveSocketDoesNotStealIt`, `TestDialConnectTimeoutFailsFastAndNamesSocket`, `TestIsRunningFailsFastWhenSocketAcceptsButDoesNotRespond`, `TestIsRunningSurfacesExistingDeadSocket`, `TestDaemonRunRootFromArgs_EnvDoesNotForceDaemonModeForProbes`, `TestValidateDaemonPIDFallback_RefusesToKillOwnProcess`.
 
 **Destructive Daemon Lifecycle Guard (`internal/lifecycle/guard.go`)**
 
@@ -94,7 +94,7 @@ Safest local verification sequence after non-trivial changes:
 
 **CI Monitor Lifecycle**
 
-- `ci_timeout` is an idle timeout, not an absolute deadline: only `timeoutAnchor` re-arms when the upstream default-branch tip advances, `started` stays fixed for poll pacing, and re-arm only ever extends the deadline (fail-safe on transient base-tip failures). Value semantics (`0` unset, negative unlimited sentinel, keyword parsing) live in `config.go`; keep `config.DefaultCITimeout` and `defaultConfigYAML` in sync (`TestDefaultConfigYAML_MatchesGoDefaults`). User-facing semantics are owned by `docs/reference/global-config.md`.
+- `ci_timeout` is an idle timeout, not an absolute deadline: only `timeoutAnchor` re-arms when the upstream default-branch tip advances, `started` stays fixed for poll pacing, and re-arm only ever extends the deadline (fail-safe on transient base-tip failures). Value semantics (`0` unset, negative unlimited sentinel, keyword parsing) live in `config.go`; keep `config.DefaultCITimeout` and `defaultConfigYAML` in sync (`TestDefaultConfigYAML_MatchesGoDefaults`). User-facing semantics are owned by `docs/src/content/docs/reference/global-config.md`.
 - Reap an orphaned monitor from outside its worktree with `no-mistakes axi abort --run <id>`; it needs only `NM_HOME` plus the daemon, and an unknown id or stopped daemon is an idempotent no-op, not an error. Bare `axi abort` stays worktree/branch-scoped.
 
 **Parked / Awaiting-Agent Signal**
@@ -117,7 +117,7 @@ Safest local verification sequence after non-trivial changes:
 **Telemetry Shape**
 
 - Read-only surfaces (`axi` home/status/logs, `status`, `runs`) emit NO pageview and gate their command event through `telemetry.ReadSurfaceGate` (emit on state-fingerprint change, else at most once per 10 min, persisted at `<NM_HOME>/telemetry-gate.json`). Never reintroduce the pageview+command double emit for read surfaces - `axi-status` alone was 42% of all remote event rows. Mutation surfaces stay full-fidelity via `trackAxiSurface`/`trackCommand`.
-- Detailed performance evidence is LOCAL-ONLY (`agent_invocations` rows plus `runs.parked_ms`); never store prompts, outputs, or diffs there (shape-guard test `TestAgentInvocations_PrivacySafeShape`) and never send run IDs, paths, session identities, or per-invocation records to Umami - the only remote perf data is three bounded counts on the terminal `run finished` event. The local/remote split is documented in `docs/reference/environment.md`; read locally with `no-mistakes stats`.
+- Detailed performance evidence is LOCAL-ONLY (`agent_invocations` rows plus `runs.parked_ms`); never store prompts, outputs, or diffs there (shape-guard test `TestAgentInvocations_PrivacySafeShape`) and never send run IDs, paths, session identities, or per-invocation records to Umami - the only remote perf data is three bounded counts on the terminal `run finished` event. The local/remote split is documented in `docs/src/content/docs/reference/environment.md`; read locally with `no-mistakes stats`.
 
 **Rebase Base & Force-Push Safety (data-loss prevention)**
 
