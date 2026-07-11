@@ -29,6 +29,14 @@ func axiScenario(t *testing.T) string {
 	path := filepath.Join(t.TempDir(), "axi-scenario.yaml")
 	content := `actions:
   - match: "Review the code changes and return structured findings"
+    match_file: "axi-repair-resolved.txt"
+    text: "re-review confirmed the consented repair"
+    structured:
+      findings: []
+      summary: "consented repair remains resolved"
+      risk_level: low
+      risk_rationale: "the approved repair addresses the warning"
+  - match: "Review the code changes and return structured findings"
     text: "review found a warning"
     structured:
       findings:
@@ -46,6 +54,8 @@ func axiScenario(t *testing.T) string {
     edits:
       - path: "feature2.txt"
         new: "change2\nfixed nil guard\n"
+      - path: "axi-repair-resolved.txt"
+        new: "resolved\n"
     structured:
       summary: "add the nil guard"
   - match: "Independently verify whether each of the following"
@@ -207,12 +217,6 @@ func TestAxiAgentJourney(t *testing.T) {
 
 	autoOut, err := h.RunInDir(yw, "axi", "run", "--yes", "--intent", axiIntent)
 	if err != nil {
-		t.Logf("runs after axi --yes error: %+v", h.Runs())
-		for i, inv := range h.AgentInvocations() {
-			if strings.Contains(inv.Prompt, "Review the code changes and return structured findings") {
-				t.Logf("review prompt %d:\n%s", i, inv.Prompt)
-			}
-		}
 		t.Fatalf("axi run --yes (expected exit 0 on pass): %v\n%s", err, autoOut)
 	}
 	if !strings.Contains(autoOut, "outcome: passed") {

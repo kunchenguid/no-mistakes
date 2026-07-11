@@ -1,7 +1,9 @@
 package daemon
 
 import (
+	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
@@ -28,6 +30,47 @@ func TestRunToInfoFailsWhenRepairStateIsUnknown(t *testing.T) {
 
 	if _, err := runToInfo(d, run, nil); err == nil {
 		t.Fatal("runToInfo succeeded with unknown blocking-repair state")
+	}
+}
+
+func TestRunInfoHandlerFailsClosedWhenProjectionFails(t *testing.T) {
+	p, d := startTestDaemon(t)
+	repo, err := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	if err != nil {
+		t.Fatalf("insert repo: %v", err)
+	}
+	run, err := d.InsertRun(repo.ID, "feature", "abc", "def")
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+
+	raw, err := sql.Open("sqlite", p.DB())
+	if err != nil {
+		t.Fatalf("open raw db: %v", err)
+	}
+	defer raw.Close()
+	if _, err := raw.Exec("DROP TABLE finding_repairs"); err != nil {
+		t.Fatalf("break repair projection: %v", err)
+	}
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatalf("dial daemon: %v", err)
+	}
+	defer client.Close()
+	var result ipc.GetRunsResult
+	err = client.Call(ipc.MethodGetRunsForHead, &ipc.GetRunsForHeadParams{
+		RepoID:  repo.ID,
+		Branch:  run.Branch,
+		HeadSHA: run.HeadSHA,
+	}, &result)
+	if err == nil {
+		t.Fatal("get_runs_for_head returned an incomplete RunInfo after projection failure")
+	}
+	for _, want := range []string{"project run " + run.ID, "check unresolved blocking repair", "finding_repairs"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("get_runs_for_head error = %v, want %q", err, want)
+		}
 	}
 }
 
