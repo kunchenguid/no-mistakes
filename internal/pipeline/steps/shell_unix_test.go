@@ -11,7 +11,35 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 )
+
+func TestStepGitRun_ReapsGrandchildOnCleanExit(t *testing.T) {
+	dir := t.TempDir()
+	binDir := t.TempDir()
+	heartbeat := filepath.Join(dir, "tick")
+	pidFile := filepath.Join(dir, "grandchild.pid")
+	script := "#!/bin/sh\n( i=0; while [ $i -lt 10000 ]; do printf '%s\\n' \"$i\" > " + strconv.Quote(heartbeat) + "; sleep 0.1; i=$((i+1)); done ) >/dev/null 2>&1 & echo $! > " + strconv.Quote(pidFile) + "; printf ok\n"
+	gitPath := filepath.Join(binDir, "git")
+	if err := os.WriteFile(gitPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	sctx := &pipeline.StepContext{Ctx: context.Background(), WorkDir: dir, Env: []string{"PATH=" + binDir}}
+	if output, err := stepGitRun(sctx, "status"); err != nil || output != "ok" {
+		t.Fatalf("stepGitRun = %q, %v; want ok, nil", output, err)
+	}
+
+	grandchild := waitForIntFile(t, pidFile, 5*time.Second)
+	t.Cleanup(func() { _ = syscall.Kill(grandchild, syscall.SIGKILL) })
+	if !heartbeatHoldsWithin(t, heartbeat, 5*time.Second) {
+		t.Fatalf("grandchild pid %d still running after git returned", grandchild)
+	}
+	if err := syscall.Kill(grandchild, 0); err != syscall.ESRCH {
+		t.Fatalf("grandchild pid %d not reaped after git returned: %v", grandchild, err)
+	}
+}
 
 // TestRunShellCommandWithEnv_KillsGrandchildOnCancel is a regression test for
 // orphan subprocesses on cancellation. runShellCommandWithEnv must kill the

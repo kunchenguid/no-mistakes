@@ -19,6 +19,7 @@ import (
 
 type ciRepublishAgent struct {
 	fix            func(string) error
+	verify         func(string) error
 	fixerCalls     int
 	verifierCalls  int
 	verifierOutput string
@@ -29,6 +30,11 @@ func (a *ciRepublishAgent) Name() string { return "ci-republish-test" }
 func (a *ciRepublishAgent) Run(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
 	if strings.Contains(opts.Prompt, "independently verifying a CI-repair patch") {
 		a.verifierCalls++
+		if a.verify != nil {
+			if err := a.verify(opts.CWD); err != nil {
+				return nil, err
+			}
+		}
 		output := a.verifierOutput
 		if output == "" {
 			output = `{"findings":[],"summary":"candidate verified"}`
@@ -42,6 +48,31 @@ func (a *ciRepublishAgent) Run(_ context.Context, opts agent.RunOpts) (*agent.Re
 		}
 	}
 	return &agent.Result{}, nil
+}
+
+func TestCIStep_AutoFixRejectsVerifierHeadMutation(t *testing.T) {
+	upstream, dir, baseSHA, originalHead := setupCIRepublish(t)
+	ag := &ciRepublishAgent{
+		fix: func(cwd string) error {
+			return os.WriteFile(filepath.Join(cwd, "ci-fix.txt"), []byte("fixed\n"), 0o644)
+		},
+		verify: func(cwd string) error {
+			gitCmd(t, cwd, "commit", "-m", "verifier mutation")
+			return nil
+		},
+	}
+	step, sctx, host, pr := republishContext(t, ag, upstream, dir, baseSHA, originalHead, config.Commands{})
+
+	pushed, err := step.autoFixCI(sctx, host, pr, []string{"test"}, false)
+	if err == nil || !strings.Contains(err.Error(), "candidate HEAD changed") {
+		t.Fatalf("autoFixCI error = %v, want verifier HEAD mutation rejection", err)
+	}
+	if pushed {
+		t.Fatal("verifier-mutated candidate was republished")
+	}
+	if got := gitCmd(t, upstream, "rev-parse", "refs/heads/feature"); got != originalHead {
+		t.Fatalf("remote SHA = %s, want original %s", got, originalHead)
+	}
 }
 
 func (a *ciRepublishAgent) Close() error { return nil }

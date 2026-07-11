@@ -63,6 +63,33 @@ func TestLoadRecoveredConfig_BoundsFetchAndFailsClosed(t *testing.T) {
 	}
 }
 
+func TestValidateRecoveredSessionsAllowsUnavailableProvider(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	database, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	repo, err := database.InsertRepo(t.TempDir(), "https://example.com/test/repo", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := database.InsertRun(repo.ID, "feature", "head", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpsertRunAgentSession(run.ID, string(pipeline.SessionRoleReviewer), "retired-provider", "retired-session"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := validateRecoveredSessions(database, run.ID); err != nil {
+		t.Fatalf("validateRecoveredSessions: %v", err)
+	}
+}
+
 // TestLoadTrustedRepoConfig_FailClosedOnFetchFailure is the regression test for
 // the supply-chain RCE review item #1: when the default-branch fetch fails,
 // startRun passes an empty trustedSHA, and loadTrustedRepoConfig MUST return

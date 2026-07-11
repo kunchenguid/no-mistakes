@@ -105,6 +105,7 @@ CI logs:
 	}
 	prompt += userIntentPromptSection(sctx)
 
+	s.verifiedCandidateHead = ""
 	s.verifiedCandidateTree = ""
 	tier := s.ciRepairTier(sctx)
 	sctx.Log(fmt.Sprintf("running agent to fix CI issues (tier %d)...", tier))
@@ -140,7 +141,7 @@ CI logs:
 		return false, &ciJournalError{operation: "link hosted CI invocation", err: fmt.Errorf("no journaled %s attempt in current round", types.PurposeUnstructuredCIRepair)}
 	}
 
-	candidateChanged, candidateTree, err := s.prepareCICandidate(sctx, mergeConflict, rebaseBaseSHA)
+	candidateChanged, candidateHead, candidateTree, err := s.prepareCICandidate(sctx, mergeConflict, rebaseBaseSHA)
 	if err != nil {
 		s.discardCICandidate(sctx)
 		return false, err
@@ -152,10 +153,11 @@ CI logs:
 		s.discardCICandidate(sctx)
 		return false, fmt.Errorf("CI patch failed verification: %w", verr)
 	}
-	if err := validatePreparedCICandidate(sctx, candidateTree); err != nil {
+	if err := validatePreparedCICandidate(sctx, candidateHead, candidateTree); err != nil {
 		s.discardCICandidate(sctx)
 		return false, fmt.Errorf("CI patch changed during verification: %w", err)
 	}
+	s.verifiedCandidateHead = candidateHead
 	s.verifiedCandidateTree = candidateTree
 	return s.commitAndPush(sctx)
 }
@@ -163,33 +165,33 @@ CI logs:
 // prepareCICandidate freezes the agent's candidate in the index before local
 // checks and independent verification. A clean changed HEAD (for example a
 // completed rebase) is a candidate just as much as a dirty worktree.
-func (s *CIStep) prepareCICandidate(sctx *pipeline.StepContext, mergeConflict bool, rebaseBaseSHA string) (bool, string, error) {
+func (s *CIStep) prepareCICandidate(sctx *pipeline.StepContext, mergeConflict bool, rebaseBaseSHA string) (bool, string, string, error) {
 	status, err := stepGitRun(sctx, "status", "--porcelain")
 	if err != nil {
-		return false, "", fmt.Errorf("check CI changes: %w", err)
+		return false, "", "", fmt.Errorf("check CI changes: %w", err)
 	}
 	headSHA, err := stepGitHeadSHA(sctx)
 	if err != nil {
-		return false, "", fmt.Errorf("resolve CI candidate HEAD: %w", err)
+		return false, "", "", fmt.Errorf("resolve CI candidate HEAD: %w", err)
 	}
 	if strings.TrimSpace(status) == "" && headSHA == sctx.Run.HeadSHA {
-		return false, "", nil
+		return false, "", "", nil
 	}
 	if mergeConflict {
 		if err := validateCIConflictResolution(sctx, rebaseBaseSHA); err != nil {
-			return false, "", err
+			return false, "", "", err
 		}
 	}
 	if strings.TrimSpace(status) != "" {
 		if _, err := stepGitRun(sctx, "add", "-A"); err != nil {
-			return false, "", fmt.Errorf("stage CI candidate: %w", err)
+			return false, "", "", fmt.Errorf("stage CI candidate: %w", err)
 		}
 	}
 	tree, err := stepGitRun(sctx, "write-tree")
 	if err != nil {
-		return false, "", fmt.Errorf("snapshot CI candidate: %w", err)
+		return false, "", "", fmt.Errorf("snapshot CI candidate: %w", err)
 	}
-	return true, tree, nil
+	return true, headSHA, tree, nil
 }
 
 func validateCIConflictResolution(sctx *pipeline.StepContext, rebaseBaseSHA string) error {
@@ -223,7 +225,14 @@ func validateCIConflictResolution(sctx *pipeline.StepContext, rebaseBaseSHA stri
 	return nil
 }
 
-func validatePreparedCICandidate(sctx *pipeline.StepContext, wantTree string) error {
+func validatePreparedCICandidate(sctx *pipeline.StepContext, wantHead, wantTree string) error {
+	headSHA, err := stepGitHeadSHA(sctx)
+	if err != nil {
+		return err
+	}
+	if headSHA != wantHead {
+		return fmt.Errorf("candidate HEAD changed from %s to %s", shortSHA(wantHead), shortSHA(headSHA))
+	}
 	status, err := stepGitRun(sctx, "status", "--porcelain")
 	if err != nil {
 		return err
@@ -247,6 +256,7 @@ func validatePreparedCICandidate(sctx *pipeline.StepContext, wantTree string) er
 }
 
 func (s *CIStep) discardCICandidate(sctx *pipeline.StepContext) {
+	s.verifiedCandidateHead = ""
 	s.verifiedCandidateTree = ""
 	_, _ = stepGitRun(sctx, "reset", "--hard", sctx.Run.HeadSHA)
 	_, _ = stepGitRun(sctx, "clean", "-fd")
@@ -613,6 +623,11 @@ func (s *CIStep) commitAndPush(sctx *pipeline.StepContext) (bool, error) {
 		return false, fmt.Errorf("check CI changes: %w", err)
 	}
 	if strings.TrimSpace(status) == "" {
+		if s.verifiedCandidateTree != "" {
+			if err := validatePreparedCICandidate(sctx, s.verifiedCandidateHead, s.verifiedCandidateTree); err != nil {
+				return false, fmt.Errorf("verified CI candidate changed before republish: %w", err)
+			}
+		}
 		sctx.Log("no changes to commit")
 		headSHA, err := stepGitHeadSHA(sctx)
 		if err == nil && headSHA != sctx.Run.HeadSHA {
@@ -625,7 +640,7 @@ func (s *CIStep) commitAndPush(sctx *pipeline.StepContext) (bool, error) {
 		if _, err := stepGitRun(sctx, "add", "-A"); err != nil {
 			return false, fmt.Errorf("stage CI changes: %w", err)
 		}
-	} else if err := validatePreparedCICandidate(sctx, s.verifiedCandidateTree); err != nil {
+	} else if err := validatePreparedCICandidate(sctx, s.verifiedCandidateHead, s.verifiedCandidateTree); err != nil {
 		return false, fmt.Errorf("verified CI candidate changed before commit: %w", err)
 	}
 	if _, err := stepGitRun(sctx, "commit", "-m", "no-mistakes: apply CI fixes"); err != nil {

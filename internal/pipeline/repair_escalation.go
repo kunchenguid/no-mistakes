@@ -382,9 +382,13 @@ func (rc *repairCoordinator) runTierBatch(ctx context.Context, batch []*lineageS
 		return nil
 	}
 
+	sessions := rc.sessions
+	if rc.stepName != types.StepReview {
+		sessions = nil
+	}
 	diff := rc.reviewDiff(ctx, rc.baseSHA)
 	rc.logf("repairing %d finding(s) at tier %d with a fresh fixer...", len(batch), tier)
-	fixResult, fixErr := rc.sessions.InvokeRequest(ctx, rc.invoker, SessionRoleFixer, agent.InvocationRequest{
+	fixResult, fixErr := sessions.InvokeRequest(ctx, rc.invoker, SessionRoleFixer, agent.InvocationRequest{
 		Purpose: rc.policy.fixerPurpose, Tier: tier, Scope: scope,
 		Payload: agent.RunOpts{Prompt: buildBatchFixPrompt(batch, rc.intent, remaining, diff), CWD: rc.workDir, JSONSchema: commitSummarySchemaJSON, OnChunk: rc.logChunk},
 	}, rc.log)
@@ -455,7 +459,7 @@ func (rc *repairCoordinator) runTierBatch(ctx context.Context, batch []*lineageS
 		return nil, abortRound(integrityErr)
 	}
 	rc.logf("verifying the batch with a fresh strong reviewer...")
-	verifyResult, verifyErr := rc.sessions.InvokeRequest(ctx, rc.invoker, SessionRoleReviewer, agent.InvocationRequest{
+	verifyResult, verifyErr := sessions.InvokeRequest(ctx, rc.invoker, SessionRoleReviewer, agent.InvocationRequest{
 		Purpose: vpurpose, Scope: scope,
 		Payload: agent.RunOpts{Prompt: verifyPrompt, CWD: rc.workDir, JSONSchema: batchVerdictSchema, OnChunk: rc.logChunk},
 	}, rc.log)

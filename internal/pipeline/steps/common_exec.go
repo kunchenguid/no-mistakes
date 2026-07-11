@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -173,13 +174,17 @@ func stepCmd(sctx *pipeline.StepContext, name string, args ...string) *exec.Cmd 
 // It is like git.Run but respects sctx.Env so that tests can inject a fake git binary.
 func stepGitRun(sctx *pipeline.StepContext, args ...string) (string, error) {
 	cmd := stepCmd(sctx, "git", args...)
-	out, err := cmd.Output()
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := shellenv.OutputShellCommand(cmd)
 	if err != nil {
-		stderr := ""
+		stderrText := strings.TrimSpace(stderr.String())
 		if ee, ok := err.(*exec.ExitError); ok {
-			stderr = strings.TrimSpace(string(ee.Stderr))
+			if stderrText == "" {
+				stderrText = strings.TrimSpace(string(ee.Stderr))
+			}
 		}
-		return "", fmt.Errorf("git %s: %w: %s", safeurl.RedactText(strings.Join(args, " ")), err, safeurl.RedactText(stderr))
+		return "", fmt.Errorf("git %s: %w: %s", safeurl.RedactText(strings.Join(args, " ")), err, safeurl.RedactText(stderrText))
 	}
 	return strings.TrimSpace(string(out)), nil
 }

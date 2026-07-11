@@ -102,9 +102,16 @@ type fakeRepairInvoker struct {
 	verifierPurposes []types.Purpose
 	fixCalls         int
 	verifyCalls      int
+	sessions         []*agent.SessionRef
 }
 
 func (f *fakeRepairInvoker) Invoke(_ context.Context, req agent.InvocationRequest) (*agent.Result, error) {
+	if req.Payload.Session == nil {
+		f.sessions = append(f.sessions, nil)
+	} else {
+		session := *req.Payload.Session
+		f.sessions = append(f.sessions, &session)
+	}
 	def, _ := types.PurposeDefinitionFor(req.Purpose)
 	profile := profileForRequest(req)
 	attemptID, err := f.db.StartInvocationAttempt(types.InvocationAttemptStart{
@@ -530,6 +537,13 @@ func TestExecutorRecoveredRoutedConsentMergesUserOverridesIntoRepair(t *testing.
 	if err := database.CompleteReservedStepRound(sourceRound.ID, &findings, nil, 25); err != nil {
 		t.Fatal(err)
 	}
+	automaticRepair, err := database.ReserveStepRound(stepResult.ID, 2, "auto_fix")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.CompleteReservedStepRound(automaticRepair.ID, nil, nil, 25); err != nil {
+		t.Fatal(err)
+	}
 	if err := database.UpdateStepStatusWithDuration(stepResult.ID, types.StepStatusAwaitingApproval, 25); err != nil {
 		t.Fatal(err)
 	}
@@ -607,6 +621,20 @@ func TestExecutorRecoveredRoutedConsentMergesUserOverridesIntoRepair(t *testing.
 		!strings.Contains(*rounds[0].UserFindingsJSON, "repair recovered logger setup") ||
 		!strings.Contains(*rounds[0].SelectedFindingIDs, "user-1") {
 		t.Fatalf("recovered durable payload = findings %q, selection %q", *rounds[0].UserFindingsJSON, *rounds[0].SelectedFindingIDs)
+	}
+	seenRounds := make(map[int]bool, len(rounds))
+	continuedAfterAutomaticRepair := false
+	for _, repairRound := range rounds {
+		if seenRounds[repairRound.Round] {
+			t.Fatalf("recovered repair reused round number %d", repairRound.Round)
+		}
+		seenRounds[repairRound.Round] = true
+		if repairRound.Round > automaticRepair.Round {
+			continuedAfterAutomaticRepair = true
+		}
+	}
+	if !continuedAfterAutomaticRepair {
+		t.Fatalf("recovered repair did not continue after automatic round %d", automaticRepair.Round)
 	}
 }
 
@@ -1680,6 +1708,55 @@ func TestNonReviewAutomaticRepairAcceptsOnlyAutoFix(t *testing.T) {
 				t.Fatalf("action %q repairs = %+v, want none", action, repairs)
 			}
 		})
+	}
+}
+
+func TestNonReviewRepairDoesNotReuseReviewSessions(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	step, err := database.InsertStepResult(run.ID, types.StepDocument)
+	if err != nil {
+		t.Fatalf("insert Document step: %v", err)
+	}
+	if err := database.UpsertRunAgentSession(run.ID, string(SessionRoleFixer), "codex", "review-fixer-session"); err != nil {
+		t.Fatalf("seed review fixer session: %v", err)
+	}
+	fake := &fakeRepairInvoker{db: database, verify: func(_ int, ids []string) verdictSpec {
+		return verdictSpec{resolved: allResolved(ids)}
+	}}
+	executor := NewExecutor(database, p, &config.Config{Routing: config.DefaultRoutingConfig()}, nil, nil, nil)
+	workDir := t.TempDir()
+	initGitRepo(t, workDir)
+	sctx := &StepContext{
+		Invoker:  fake,
+		Repo:     repo,
+		Sessions: NewRunSessions(database, run.ID, nil, true),
+		WorkDir:  workDir,
+		Log:      func(string) {},
+	}
+	round := 0
+	_, err = executor.maybeRepairStepFindings(
+		context.Background(),
+		sctx,
+		run,
+		step,
+		types.StepDocument,
+		`{"findings":[{"id":"document-1","severity":"warning","description":"update the guide","action":"auto-fix"}],"summary":"one"}`,
+		nil,
+		func(trigger string) (*db.StepRound, error) {
+			round++
+			return database.ReserveStepRound(step.ID, round, trigger)
+		},
+	)
+	if err != nil {
+		t.Fatalf("maybeRepairStepFindings: %v", err)
+	}
+	if len(fake.sessions) == 0 {
+		t.Fatal("expected routed repair invocations")
+	}
+	for _, session := range fake.sessions {
+		if session != nil {
+			t.Fatalf("non-review repair reused review session %+v", session)
+		}
 	}
 }
 

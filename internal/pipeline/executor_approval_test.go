@@ -221,6 +221,80 @@ func TestExecutor_ResumeRestoresParkedGateAndReviewSessions(t *testing.T) {
 	}
 }
 
+func TestExecutorRecoveredGateUsesReviewSourceRoundAfterRepairFindings(t *testing.T) {
+	database, p, run, _ := setupTest(t)
+	if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	step, err := database.InsertStepResult(run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.StartStep(step.ID); err != nil {
+		t.Fatal(err)
+	}
+	initialFindings := `{"findings":[{"id":"review-1","severity":"warning","description":"initial finding","action":"auto-fix"}],"summary":"initial"}`
+	currentFindings := `{"findings":[{"id":"verifier-1","severity":"warning","description":"needs consent","action":"ask-user"}],"summary":"verifier finding"}`
+	if err := database.SetStepFindings(step.ID, currentFindings); err != nil {
+		t.Fatal(err)
+	}
+	source, err := database.ReserveStepRound(step.ID, 1, "initial")
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := database.StartInvocationAttempt(types.InvocationAttemptStart{
+		Purpose: types.PurposeInitialReview,
+		Role:    types.InvocationRoleVerifier,
+		Scope: types.InvocationScope{
+			Kind:         types.InvocationScopePipeline,
+			RunID:        run.ID,
+			StepResultID: step.ID,
+			StepRoundID:  source.ID,
+		},
+		CandidateKey: "review_strong:0:codex",
+		Candidate: types.InvocationCandidate{
+			Profile: "review_strong",
+			Runner:  types.RunnerCodex,
+			Model:   "test",
+			Effort:  types.EffortMedium,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.FinishInvocationAttempt(attempt, types.InvocationAttemptTerminal{Outcome: types.InvocationOutcomeSucceeded}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.CompleteReservedStepRound(source.ID, &initialFindings, nil, 10); err != nil {
+		t.Fatal(err)
+	}
+	repair, err := database.ReserveStepRound(step.ID, 2, "auto_fix")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.CompleteReservedStepRound(repair.ID, &currentFindings, nil, 10); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateStepStatusWithDuration(step.ID, types.StepStatusAwaitingApproval, 20); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetRunAwaitingAgent(run.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	executor := NewExecutor(database, p, nil, nil, []Step{newPassStep(types.StepReview)}, nil)
+	gate, err := executor.recoveredGate(run.ID)
+	if err != nil {
+		t.Fatalf("recoveredGate: %v", err)
+	}
+	if gate.lastRoundID != source.ID {
+		t.Fatalf("recovered source round = %s, want original review round %s", gate.lastRoundID, source.ID)
+	}
+	if gate.round != repair.Round {
+		t.Fatalf("recovered highest round = %d, want repair round %d", gate.round, repair.Round)
+	}
+}
+
 func TestExecutor_ResumeRejectsApprovalWithUnresolvedRepair(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {

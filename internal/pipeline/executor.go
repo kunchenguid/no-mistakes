@@ -486,8 +486,11 @@ func (e *Executor) recoveredGate(runID string) (*recoveredGate, error) {
 			if err != nil || len(rounds) == 0 {
 				return nil, fmt.Errorf("recovered approval gate has no complete round")
 			}
-			latest := rounds[len(rounds)-1]
-			if latest.FindingsJSON == nil || *latest.FindingsJSON != *result.FindingsJSON {
+			source, sourceErr := e.recoveredGateSourceRound(result.StepName, rounds, *result.FindingsJSON)
+			if sourceErr != nil {
+				return nil, sourceErr
+			}
+			if source == nil {
 				return nil, fmt.Errorf("recovered approval gate findings are incomplete")
 			}
 			gate = &recoveredGate{
@@ -495,8 +498,8 @@ func (e *Executor) recoveredGate(runID string) (*recoveredGate, error) {
 				step:        e.steps[index],
 				stepResult:  result,
 				findings:    *result.FindingsJSON,
-				round:       latest.Round,
-				lastRoundID: latest.ID,
+				round:       rounds[len(rounds)-1].Round,
+				lastRoundID: source.ID,
 			}
 			continue
 		}
@@ -514,6 +517,30 @@ func (e *Executor) recoveredGate(runID string) (*recoveredGate, error) {
 		return nil, fmt.Errorf("recovered run has no approval gate")
 	}
 	return gate, nil
+}
+
+func (e *Executor) recoveredGateSourceRound(stepName types.StepName, rounds []*db.StepRound, findings string) (*db.StepRound, error) {
+	if stepName == types.StepReview {
+		for index := len(rounds) - 1; index >= 0; index-- {
+			round := rounds[index]
+			attempts, err := e.db.GetInvocationAttemptsByRound(round.ID)
+			if err != nil {
+				return nil, fmt.Errorf("load recovered review attempts: %w", err)
+			}
+			for _, attempt := range attempts {
+				if attempt.Start.Purpose == types.PurposeInitialReview && attempt.Terminal != nil && attempt.Terminal.Outcome == types.InvocationOutcomeSucceeded {
+					return round, nil
+				}
+			}
+		}
+	}
+	for index := len(rounds) - 1; index >= 0; index-- {
+		round := rounds[index]
+		if round.FindingsJSON != nil && *round.FindingsJSON == findings {
+			return round, nil
+		}
+	}
+	return nil, nil
 }
 
 func (e *Executor) executeRecoveredRemainder(ctx context.Context, run *db.Run, repo *db.Repo, workDir, logDir string, start int, circuits *providerCircuits) error {

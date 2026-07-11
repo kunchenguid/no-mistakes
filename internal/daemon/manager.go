@@ -143,7 +143,7 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 		return nil, err
 	}
 	if cfg.SessionReuse {
-		if err := validateRecoveredSessionProviders(m.db, run.ID, cfg.Routing); err != nil {
+		if err := validateRecoveredSessions(m.db, run.ID); err != nil {
 			return nil, err
 		}
 	}
@@ -157,7 +157,7 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 	}, nil
 }
 
-func validateRecoveredSessionProviders(database *db.DB, runID string, routing config.RoutingConfig) error {
+func validateRecoveredSessions(database *db.DB, runID string) error {
 	sessions, err := database.GetRunAgentSessions(runID)
 	if err != nil {
 		return fmt.Errorf("get run sessions: %w", err)
@@ -168,30 +168,6 @@ func validateRecoveredSessionProviders(database *db.DB, runID string, routing co
 		}
 		if session.Agent == "" || session.SessionID == "" {
 			return fmt.Errorf("recovered run has incomplete session metadata")
-		}
-		purpose := types.PurposeInitialReview
-		if session.Role == string(pipeline.SessionRoleFixer) {
-			purpose = types.PurposeStructuredFindingRepair
-		}
-		profiles, err := routing.ResolveRoute(purpose)
-		if err != nil {
-			return fmt.Errorf("resolve recovered %s session route: %w", session.Role, err)
-		}
-		providerConfigured := false
-		for _, profile := range profiles {
-			for _, candidate := range profile.Candidates {
-				name, nameErr := candidate.Runner.AgentName()
-				if nameErr == nil && string(name) == session.Agent {
-					providerConfigured = true
-					break
-				}
-			}
-			if providerConfigured {
-				break
-			}
-		}
-		if !providerConfigured {
-			return fmt.Errorf("session provider %q is no longer configured for %s", session.Agent, session.Role)
 		}
 	}
 	return nil

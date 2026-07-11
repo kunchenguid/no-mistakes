@@ -34,7 +34,8 @@ const (
 type CIStep struct {
 	lastFixedChecks       string               // sorted check names from last fix attempt, to avoid re-fixing
 	lastFixedCompletedAt  map[string]time.Time // failing check completion times seen before the last fix attempt
-	verifiedCandidateTree string               // frozen tree independently checked before CI republish
+	verifiedCandidateHead string
+	verifiedCandidateTree string // frozen tree independently checked before CI republish
 	activeCIRepairTier    int
 	activeCIRepairIDs     []string
 	ephemeralCIRepairs    map[string]int
