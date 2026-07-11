@@ -39,9 +39,10 @@ func (s *ReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	// entire test+lint suite ~5x per round (27 runs across 5 rounds, ~784s of
 	// the 2419s review step), plus the model round-trips that poll those long
 	// subprocesses. Review runs before the dedicated Test and Lint steps
-	// (pipeline order in common.go), which run the configured full-suite
-	// commands and are the authoritative full-suite gates; the fixer only needs
-	// to confirm its own edits hold, not re-gate the whole repository. This
+	// (pipeline order in common.go), which are the authoritative test and lint
+	// gates; their coverage may be focused when the repository has no configured
+	// commands. The fixer prohibition stays universal because the fixer only
+	// needs to confirm its own edits hold, not re-gate the whole repository. This
 	// mirrors the same "relevant"-scoped, cross-tool-forbidden discipline the
 	// test and lint fix prompts already carry. The instruction is a contract,
 	// not an enforced sandbox - the agent has free shell access - so the pinned
@@ -71,7 +72,7 @@ Rules:
 - Do not add code comments explaining your fixes.
 - Apply all the fixes you intend to make first; do not run any verification in between individual fixes.
 - After all fixes are applied, run one focused verification limited to the changed area (the specific package, file, or test you touched) at the end of the fix round to confirm the fixes hold.
-- Do NOT run the complete repository test suite or lint suite during this fix round. The pipeline has dedicated test and lint steps that run the full suite after review; those are the authoritative full-suite gates.
+- Do NOT run the complete repository test suite or lint suite during this fix round. The pipeline has dedicated test and lint steps after review that are the authoritative test and lint gates; their coverage may itself be focused on the changed area when the repository has no configured test or lint commands.
 - Return JSON with a single "summary" field when you are done.
 - The summary must be one concise sentence fragment suitable for a git commit subject.
 - Keep the summary under 10 words.%s
