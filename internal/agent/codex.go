@@ -36,6 +36,9 @@ func (a *codexAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 }
 
 func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
+	if err := validateInvocationRole(opts.Role); err != nil {
+		return nil, fmt.Errorf("codex: %w", err)
+	}
 	schemaPath := ""
 	validationSchema := opts.JSONSchema
 	if len(opts.JSONSchema) > 0 {
@@ -126,14 +129,14 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 
 func (a *codexAgent) Close() error { return nil }
 
-// buildArgs constructs the codex CLI arguments. User-supplied extraArgs are
-// inserted between "exec" and the prompt so user flags (e.g. -m, --sandbox)
-// take effect. If the user declared their own execution-mode flag, the
-// default --dangerously-bypass-approvals-and-sandbox is not added.
-// A non-empty Session ID routes through `codex exec resume <id> <prompt>`,
-// which exposes a narrower flag surface than `codex exec` (no --color, no
-// -s/--sandbox as of codex 0.144): unsupported user extraArgs make the
-// invocation fail fast and the caller's cold fallback preserves correctness.
+// buildArgs constructs the codex CLI arguments. Verifier invocations discard
+// configured execution-mode overrides and force Codex's read-only sandbox.
+// Fixer and legacy direct invocations preserve configured execution flags, or
+// default to the write-capable bypass required for repair work.
+//
+// A non-empty Session ID routes through `codex exec resume <id> <prompt>`.
+// Resume lacks the top-level sandbox flag, so verifier resumes use Codex's
+// equivalent authoritative config overrides for approval and sandbox policy.
 func (a *codexAgent) buildArgs(opts RunOpts, schemaPath string) []string {
 	resumeID := ""
 	if opts.Session != nil {
@@ -144,7 +147,21 @@ func (a *codexAgent) buildArgs(opts RunOpts, schemaPath string) []string {
 	if resumeID != "" {
 		args = append(args, "resume")
 	}
-	args = append(args, routedCodexExtraArgs(a.extraArgs, opts.Model != "", opts.Effort != "")...)
+	extraArgs := routedCodexExtraArgs(a.extraArgs, opts.Model != "", opts.Effort != "")
+	if isVerifierRole(opts.Role) {
+		extraArgs = codexVerifierExtraArgs(extraArgs)
+	}
+	args = append(args, extraArgs...)
+	if isVerifierRole(opts.Role) {
+		if resumeID != "" {
+			args = append(args,
+				"-c", `approval_policy="never"`,
+				"-c", `sandbox_mode="read-only"`,
+			)
+		} else {
+			args = append(args, "-c", `approval_policy="never"`, "--sandbox", "read-only")
+		}
+	}
 	if resumeID != "" {
 		args = append(args, resumeID)
 	}
@@ -160,7 +177,7 @@ func (a *codexAgent) buildArgs(opts RunOpts, schemaPath string) []string {
 	if opts.Effort != "" {
 		args = append(args, "-c", "model_reasoning_effort="+string(opts.Effort))
 	}
-	if !codexUserSetExecutionMode(a.extraArgs) {
+	if !isVerifierRole(opts.Role) && !codexUserSetExecutionMode(a.extraArgs) {
 		args = append(args, "--dangerously-bypass-approvals-and-sandbox")
 	}
 	if resumeID == "" {
@@ -218,6 +235,50 @@ func codexUserSetExecutionMode(extraArgs []string) bool {
 		}
 	}
 	return false
+}
+
+// codexVerifierExtraArgs removes every configured execution-mode override so
+// the managed read-only sandbox is authoritative for verifier launches.
+func codexVerifierExtraArgs(extraArgs []string) []string {
+	out := make([]string, 0, len(extraArgs))
+	for i := 0; i < len(extraArgs); i++ {
+		arg := extraArgs[i]
+		switch {
+		case arg == "--dangerously-bypass-approvals-and-sandbox":
+			continue
+		case arg == "--ask-for-approval", arg == "--sandbox", arg == "-a", arg == "-s":
+			if i+1 < len(extraArgs) {
+				i++
+			}
+			continue
+		case (arg == "-c" || arg == "--config") &&
+			i+1 < len(extraArgs) &&
+			codexVerifierSecurityConfig(extraArgs[i+1]):
+			i++
+			continue
+		case strings.HasPrefix(arg, "-c=") &&
+			codexVerifierSecurityConfig(strings.TrimPrefix(arg, "-c=")):
+			continue
+		case strings.HasPrefix(arg, "--config=") &&
+			codexVerifierSecurityConfig(strings.TrimPrefix(arg, "--config=")):
+			continue
+		case strings.HasPrefix(arg, "--ask-for-approval="),
+			strings.HasPrefix(arg, "--sandbox="):
+			continue
+		}
+		out = append(out, arg)
+	}
+	return out
+}
+
+func codexVerifierSecurityConfig(value string) bool {
+	key, _, _ := strings.Cut(strings.TrimSpace(value), "=")
+	switch strings.TrimSpace(key) {
+	case "approval_policy", "sandbox_mode", "sandbox_permissions":
+		return true
+	default:
+		return false
+	}
 }
 
 // codexEvent is the top-level JSONL event from codex CLI.

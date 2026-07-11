@@ -32,12 +32,11 @@ var canonicalPreserveGateFixPhrases = []string{
 	"already-resolved findings do not re-surface",
 }
 
-// TestStaleMonitorGuidance_SyncedAcrossSurfaces guards the repo invariant that
-// agent-driving guidance stays in sync across its three surfaces: the skill
-// body, the published agents guide, and the live axi help string. The earlier
-// wrong wording (telling agents to re-run a stale PR with `axi run`) shipped to
-// only one surface; this keeps the corrected guidance present on all three.
-func TestStaleMonitorGuidance_SyncedAcrossSurfaces(t *testing.T) {
+// TestStaleMonitorRecoveryInvariant_SyncedAcrossSurfaces guards the narrow
+// recovery invariant repeated outside the skill and live axi guidance.
+// The agents guide carries these pinned phrases instead of duplicating the
+// complete agent-driving workflow.
+func TestStaleMonitorRecoveryInvariant_SyncedAcrossSurfaces(t *testing.T) {
 	surfaces := map[string]string{
 		"skill body":      skill.Markdown(),
 		"agents guide":    readAgentsGuide(t),
@@ -89,7 +88,7 @@ func TestStaleMonitorGuidance_InChecksPassedOutput(t *testing.T) {
 	}
 }
 
-func TestPreserveGateFixGuidance_SyncedAcrossSurfaces(t *testing.T) {
+func TestPreserveGateFixRecoveryInvariant_SyncedAcrossSurfaces(t *testing.T) {
 	surfaces := map[string]string{
 		"skill body":       skill.Markdown(),
 		"agents guide":     readAgentsGuide(t),
@@ -102,6 +101,35 @@ func TestPreserveGateFixGuidance_SyncedAcrossSurfaces(t *testing.T) {
 			if !strings.Contains(content, phrase) {
 				t.Errorf("%s is missing the canonical preserve-gate-fix guidance phrase %q", name, phrase)
 			}
+		}
+	}
+}
+
+func TestAgentsGuide_PointsToCurrentDrivingGuidance(t *testing.T) {
+	content := readAgentsGuide(t)
+
+	required := []string{
+		"[installable `/no-mistakes` skill](https://github.com/kunchenguid/no-mistakes/blob/main/skills/no-mistakes/SKILL.md)",
+		"[AXI command reference](/no-mistakes/reference/cli/#no-mistakes-axi)",
+		"`no-mistakes axi run --help`",
+	}
+	for _, phrase := range required {
+		if !strings.Contains(content, phrase) {
+			t.Errorf("agents guide is missing source-of-truth pointer %q", phrase)
+		}
+	}
+
+	forbidden := []string{
+		"```sh",
+		"Agents can also call",
+		"Before starting validation",
+		"A long-running `axi run`",
+		"ACP",
+		"acpx",
+	}
+	for _, phrase := range forbidden {
+		if strings.Contains(content, phrase) {
+			t.Errorf("agents guide duplicates operational or legacy guidance %q", phrase)
 		}
 	}
 }

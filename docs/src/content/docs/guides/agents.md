@@ -1,202 +1,124 @@
 ---
 title: Routing and agents
-description: How no-mistakes routes every agent invocation and how an agent drives the pipeline.
+description: How no-mistakes routes agent work and where agents find current instructions.
 ---
 
 `no-mistakes` routes every agent invocation through one global routing contract.
-Each invocation starts from a registered semantic purpose, such as `initial_review` or `pr_composition`.
+This guide explains the stable rules that affect routing.
+See the [routing reference](/no-mistakes/reference/routing/) for the exact default profiles, routes and configuration.
+
+## The routing contract
+
+Every invocation has a registered semantic purpose, such as `initial_review` or `pr_composition`.
 A route maps that purpose to a finite, ordered cascade of profiles.
-A profile is an ordered list of provider candidates.
-A candidate names a runner, a model, and a normalized effort.
-A runner identifies the executable and its provider failure domain: `codex` maps to `openai` and `claude` maps to `anthropic`.
-The normalized efforts are `low`, `medium`, `high`, and `xhigh`.
+A profile contains an ordered list of provider candidates.
+A candidate names a runner, a model and a normalized effort.
+A runner identifies its executable and provider failure domain.
+The only runners are `codex` and `claude`.
+The normalized efforts are `low`, `medium`, `high` and `xhigh`.
 
-There is no single-agent selector, no fallback-agent list, no arbitrary agent-argument or path override, and no numeric per-step attempt limit.
-Model selection and repair escalation are the routing contract's job.
+There is no single-agent selector or fallback-agent list.
+There is no arbitrary agent argument, path or model override outside the routing contract.
+There is no numeric attempt limit for a pipeline step.
+Model selection, provider failover and repair escalation belong to the routing contract.
 
-## How an invocation is routed
+## How routing works
 
-Every invocation resolves through the same chain: purpose, then route, then profile, then ordered candidates, then runner.
-The router selects exactly one requested route tier.
-It tries that profile's candidates serially, in their declared order.
-It constructs a fresh native process for each launched candidate and supplies that candidate's model and normalized effort.
-If routing for a purpose is unavailable, the invocation fails closed with an error instead of guessing.
+The routing chain is purpose, route, profile, ordered candidate and runner.
+The router selects one requested route tier and tries its candidates in order.
+Each launched candidate gets a fresh native process with its declared model and effort.
+An unavailable purpose or invalid tier fails closed instead of selecting another route.
 
-## Default profiles
-
-The built-in contract defines six profiles.
-Each pairs an OpenAI-family first candidate with an Anthropic backup at the same effort.
-
-The exact profile table lives in the [routing reference](/no-mistakes/reference/routing/#default-profiles).
-
-The defaults deliberately omit pro model selectors.
-Custom profiles may use them.
-
-## Default routes
-
-Every registered purpose has a route.
-A multi-tier route escalates left to right: a later profile is tried only after an earlier tier fails to resolve the work.
-
-The exact purpose-to-route table lives in the [routing reference](/no-mistakes/reference/routing/#default-routes).
+The built-in profiles prefer an OpenAI candidate and use an Anthropic candidate as backup.
+See the [default routing tables](/no-mistakes/reference/routing/#default-profiles) for the current candidates and purpose mappings.
 
 ## Provider circuits
 
-A provider circuit is scoped to one pipeline run, and every circuit starts closed.
-Only a terminal classified operational failure opens a candidate's provider domain: quota, outage, overload, auth, or a missing executable.
-The native adapter exhausts its own retries first, so a transient error never opens a circuit.
-When a domain opens, the profile tries its backup candidate.
-A later candidate in an open domain is not launched; it is persisted as skipped with that failure domain.
-If no candidate remains available, the invocation fails closed.
-Non-operational failures, such as malformed model output or a cancelled invocation, fail immediately: they neither open a circuit nor fail over.
+Provider circuits last for one pipeline run and start closed.
+A terminal operational failure can open a provider domain after the native adapter has exhausted its retries.
+Operational failures include quota, outage, overload, authentication and a missing executable.
+The profile then tries the next candidate in another available provider domain.
+A candidate in an open domain is recorded as skipped instead of being launched.
+The invocation fails closed when no candidate remains.
 
-## Repair lineages and fail-closed exhaustion
+Malformed output, schema errors and cancellation do not open a circuit.
+These failures stop the invocation without provider failover.
 
-Blocking review findings, with severity `error` or `warning`, enter a routed repair cascade when a fix is authorized.
-Each blocking finding is recorded as a lineage: a durable, run-wide identity that is independent of the model's display ID.
-At each tier, the pipeline creates a fresh fixer, commits its patch, runs the applicable deterministic checks, then invokes a fresh verifier.
-A lineage that finishes its finite cascade unresolved or inconclusive stays blocking.
-Unattended mode aborts the run instead of approving or retrying it.
-A normal gate stays parked for an explicit user decision.
+## Repair lineages
 
-## Session reuse in the review loop
+Each blocking review finding has a durable identity across the run.
+An authorized repair moves through its finite route one tier at a time.
+Each tier uses a fresh fixer and a fresh verifier.
+The verifier judges the existing candidate independently and does not patch it.
+The pipeline records the repair, deterministic checks and verifier result for each tier.
+
+An unresolved or inconclusive finding stays blocking after its route is exhausted.
+Unattended mode aborts instead of approving or retrying that finding.
+A normal gate stays parked for an explicit decision.
+
+## Review session reuse
 
 `session_reuse` defaults to `true` and applies only to the review loop.
-Each run keeps one reviewer session across the initial review and every full rereview.
-The same run keeps a separate review-fixer session across fix turns, so the reviewer never inherits the fixer's context.
-Sessions never cross runs, roles, branches, or repositories.
+A run keeps one reviewer session for the initial review and full rereviews.
+It keeps a separate fixer session for review fixes.
+Sessions never cross runs, roles, branches or repositories.
 
-Claude resumes its native session with `claude -p --resume <id>`.
-Codex resumes its native thread with `codex exec resume <id> <prompt>`.
-Other runners do not advertise native resume support and run each turn cold.
-Set `session_reuse: false` in the global config to force every review-loop turn to run cold.
+A resumed session stays with the provider and semantic purpose that created it.
+If resume fails, no-mistakes removes that stored identity and retries the same routed turn cold.
+A cancelled turn does not start a cold fallback.
+No-mistakes stores native session IDs but does not store prompts or transcripts.
 
-A resume is pinned to the provider that created the stored session.
-It keeps the same semantic purpose, route tier, and durable scope.
-If resume fails, no-mistakes deletes that role's stored identity and reruns the same turn cold through the same routed request.
-The routed invocation journal records both the failed resume and the cold fallback.
-A cancelled invocation does not start a fallback turn.
+## Routing history
 
-No-mistakes persists only the run, role, provider, and native session ID, never prompts or transcripts.
-A daemon restart restores a safely recoverable parked run at its recorded gate and reloads both role sessions.
-It does not rerun the completed review pass.
-Recovery fails closed if the parked gate, worktree, trusted routing, or stored session provider cannot be validated.
+No-mistakes records each native launch before it starts.
+The record identifies the purpose, role, durable owner, profile, tier, candidate, runner, model and effort.
+The terminal record adds the outcome, failure domain, duration and token counts.
+This immutable history reconstructs escalation, provider failover and circuit skips without reading current configuration.
+`no-mistakes axi status` shows the review routing attempts and repair lineages for the run.
 
-## Durable routing observability
+## Configure routing
 
-Before each native launch, no-mistakes appends an immutable, secret-free attempt record: the purpose, role, durable owner, and the candidate's profile, tier, index, runner, model, and effort.
-When the attempt finishes, it appends at most one terminal fact: the outcome, the classified failure domain when there is one, the duration, and token counts.
-The persisted history reconstructs escalation, provider failover, and circuit skips without re-reading current configuration.
-`no-mistakes axi status` projects this history for the review step as a `review_routing` object with an attempts table and a lineages table.
+Omit `routing` from `~/.no-mistakes/config.yaml` to use the built-in contract.
+A declared `routing` block replaces the whole contract.
+It must define every runner, profile and registered purpose before any agent can launch.
 
-## Configuring routing
-
-Omit `routing` from `~/.no-mistakes/config.yaml` to use the built-in contract above.
-A declared `routing` block is a complete replacement, not a patch: it must declare runners, profiles, and a non-empty route for every registered purpose, and it is validated before use.
-A repository's `.no-mistakes.yaml` may only map a purpose to one existing global profile through `routes`.
-It cannot define runners, profiles, candidates, or execution mechanics.
-Repository routes are read from the trusted default branch, never from the pushed branch.
-See [Configuration](/no-mistakes/guides/configuration/) for the full schema.
+A repository can map a purpose to one existing global profile through trusted `routes` configuration.
+It cannot define runners, profiles, candidates or execution mechanics.
+No-mistakes reads repository routes from the trusted default branch.
+See the [configuration guide](/no-mistakes/guides/configuration/) for the supported files and trust rules.
 
 ## Driving no-mistakes as an agent
 
-The primary way to put a change through the gate from inside a coding agent is the `/no-mistakes` skill.
-A skill-aware tool like Claude Code supports two invocation modes.
-Use bare `/no-mistakes` to validate existing committed work.
-Use `/no-mistakes <task>` to have the agent first do the task, commit only that task's changes on a feature branch, then run the ten-step pipeline (intent, rebase, review, test, document, lint, verify, push, PR, CI) with the task text as `--intent`.
-In both modes, it resolves low-risk findings on its own and stops to relay anything that needs your decision.
+`no-mistakes init` installs the generated [installable `/no-mistakes` skill](https://github.com/kunchenguid/no-mistakes/blob/main/skills/no-mistakes/SKILL.md) at user level.
+It installs the skill at `~/.claude/skills/no-mistakes/SKILL.md` and `~/.agents/skills/no-mistakes/SKILL.md`.
+Re-run `no-mistakes init` after an upgrade to refresh the installed skill.
 
-`no-mistakes init` installs that skill at user level: `~/.claude/skills/no-mistakes/SKILL.md` for Claude Code and `~/.agents/skills/no-mistakes/SKILL.md` for other skill-aware tools.
-One install makes the skill available in every repo, without committing tool-generated files to any repo.
-If your home directory consolidates `.claude` and `.agents` with symlinks, `init` follows the links and keeps the skill reachable from both logical paths.
-Re-run `no-mistakes init` after an upgrade to refresh that skill, including overwriting stale `SKILL.md` content from an older binary.
-The skill drives `no-mistakes axi`, a non-interactive command surface that prints TOON to stdout and progress to stderr.
+The installed skill owns the current workflow for starting, resuming and responding to a run.
+Live AXI output owns the next action at each gate and outcome.
+Run `no-mistakes axi run --help` for the current options.
+The [AXI command reference](/no-mistakes/reference/cli/#no-mistakes-axi) explains the command surface.
 
-Agents can also call `no-mistakes axi` directly:
+Only these recovery invariants are repeated here because getting them wrong can discard validated work.
+If a monitored pull request falls behind or conflicts after `checks-passed`, the monitor resolves the conflict and re-pushes the branch.
+Run no command and never hand-rebase while that monitor is active.
+Use `no-mistakes rerun` only after the monitor has stopped.
 
-```sh
-no-mistakes axi run --intent "the user's goal"
-no-mistakes axi status
-no-mistakes axi respond --action approve
-no-mistakes axi logs --step review --full
-no-mistakes axi abort
-no-mistakes axi abort --run <id>
-```
-
-Before starting validation, agents should run the `no-mistakes axi` home view.
-If it shows `active_run`, inspect that current-branch run with `no-mistakes axi status`.
-If it is parked at a gate, drive it with `no-mistakes axi respond`.
-Reattach an in-flight run by re-running `no-mistakes axi run` when it still matches your current `HEAD`.
-If it shows `other_branch_active_run`, leave that run alone and start validation for the current branch with `no-mistakes axi run --intent "..."`.
-Use `no-mistakes axi abort --run <id>` only when you need to cancel a specific active run by id from outside its worktree.
-
-When an agent starts a new run, `--intent` is required and must describe what the user wanted to accomplish, not what files changed.
-No-mistakes stores this explicit intent as the authoritative acceptance criteria and uses it verbatim instead of transcript inference, even when intent extraction is disabled.
-Required constraints in the explicit intent must remain present, and forbidden behavior must remain absent.
-If a review or rereview finds that the change contradicts those criteria, it emits an `ask-user` finding and parks for a decision.
-The finding must identify the specific criterion and the contradicting diff, or the required behavior missing from the change.
-
-Only runs without explicit intent can use transcript inference.
-An inferred intent may be partial or wrong, so downstream prompts treat it as a guarded hint rather than ground truth.
-Both explicit and inferred intent are sanitized and delimited as data, not executable prompt instructions.
-Agents should prefer a few complete sentences for explicit intent, capturing user decisions, tradeoffs, constraints, ruled-out approaches, and requests that would not be obvious from the diff alone.
-If the repo is on the default branch or has uncommitted changes, direct `axi run` returns a structured error with the command the agent should run instead of silently creating a branch or commit.
-
-Approval gates are exposed as `gate:` objects with finding IDs, severities, files, actions, descriptions, and help commands for `no-mistakes axi respond`.
-Review findings are parked for explicit consent; the review gate output flags this with a `note`.
-Each finding's `action` sets what consent means:
-
-- `auto-fix` findings may be sent to the pipeline with `--action fix`, which puts them into the routed repair cascade
-- `no-op` findings are informational and are never repaired, even when selected
-- `ask-user` findings require an explicit user decision unless `--yes` supplies standing consent
-
-A fix applies only to the finding IDs the responder selects.
-Findings left unselected park again for a decision at the next gate.
-When an agent stops for `ask-user`, it should relay each finding's ID, file, and full description to the user before choosing `approve`, `fix`, or `skip`.
-Resolving a finding always means responding with `no-mistakes axi respond --action fix`, which has the pipeline apply the fix and re-review it.
-The agent must not edit the code itself while a run is active.
-
-While a non-terminal run is parked at an `awaiting_approval` or `fix_review` gate, the run object includes `awaiting_agent: parked <duration>`.
-Use that field in `axi status` output to tell in one read that the run is waiting for the driving agent to send `axi respond`.
-It is observability only: it does not auto-resume the run, change gate resolution, or make `--yes` the default.
-A long-running `axi run` or `axi respond` call is working, not stalled.
-The run never advances past a gate on its own, so the agent must read every return, respond at each `gate:`, and loop until an `outcome:`.
-
-With `--yes`, the user's explicit standing consent drives gates unattended.
-At an awaiting-approval gate it selects every finding that has an ID for one pipeline fix round when any finding is actionable, approves a gate with only `no-op` findings or no selectable findings, and approves the resulting fix review rather than starting another fix cycle.
-Before every unattended resolution, no-mistakes checks the run's blocking repair lineages.
-If any blocking lineage ended its routed repair cascade unresolved or inconclusive, unattended driving sends `abort` and returns an error; it does not approve or retry the gate.
-The TUI's yolo mode applies the same unattended consent and the same fail-closed abort.
-
-`--yes` still stops at `checks-passed`, because a human must review and merge the PR.
-When CI is green but the PR is still open, `axi run` and `axi respond` return `outcome: checks-passed` with a help line pointing at the PR instead of waiting for a human merge.
-That is a successful agent stopping point: report that the PR is ready and ask the user to review and merge it.
-If this PR later falls behind the default branch or hits a merge conflict, the CI monitor rebases onto the base, resolves it, and re-pushes the branch automatically - run no command and never hand-rebase.
-Only when that monitor is no longer running (PR closed, run aborted, idle-timeout, or auto-fix exhausted) recover with `no-mistakes rerun`.
-Successful outcomes also instruct the agent to summarize the run, and include a `fixes` table when the pipeline applied fixes, so the agent can acknowledge what it missed and the user can review each fix.
-
-After a `failed` or `cancelled` outcome, address the reported problem, commit the correction on the same feature branch, then start a fresh validation with `no-mistakes axi run --intent "..."` or use the TUI rerun action.
-Never abort or rerun an active run to bypass a gate; those are between-runs actions.
-When you make an additional fix after a gate round has already produced fix commits, commit it on top of the existing branch and run `no-mistakes axi run --intent "..."` with the original user intent.
-Never abort-and-restart, reset the branch, or open a new branch in a way that drops prior gate-fix commits.
-A fresh run re-validates the branch's current state, so already-resolved findings do not re-surface.
-`no-mistakes axi abort` is idempotent: no active run is a successful no-op.
+After a failed or cancelled run, commit the correction on the same feature branch and start fresh validation with `no-mistakes axi run --intent`.
+Never abort-and-restart, reset the branch or create another branch in a way that discards prior gate-fix commits.
+A fresh run validates the branch's current state, so already-resolved findings do not re-surface.
 
 ## Wizard utility routing
 
-Setup-wizard branch and commit suggestions are standalone routed utility invocations, not fabricated pipeline work.
-The wizard creates a durable `wizard` utility scope and binds the `branch_commit_suggestion` purpose to it.
-It uses the trusted global routing configuration, or the built-in default when none is configured.
-It has a fresh provider-circuit set for its own session.
-It never derives model selection from the checked-out feature branch's execution settings.
-If routing is unavailable, the wizard fails closed with an error instead of guessing a model.
+Setup-wizard branch and commit suggestions are standalone routed utility invocations.
+The wizard uses the `branch_commit_suggestion` purpose and a durable `wizard` scope.
+It uses trusted global routing and gets a fresh provider-circuit set for its session.
+It fails closed when routing is unavailable.
+See the [setup wizard guide](/no-mistakes/guides/setup-wizard/) for the user workflow.
 
-## The routing canary
+## Routing canary
 
-`no-mistakes axi canary` is the required observability report for the routing cutover.
-It reports whether the canary is dormant or activated, the frozen baseline and routed cohort counts and completeness, execution-only agent-bearing step-round medians, escalation and failover counts, and the target status.
-Activation freezes the ten most recent completed pre-activation runs as the baseline.
-The routed cohort then admits successful post-activation runs, in completion order, until it has ten members.
-The comparison target is a 30% median execution-time reduction: the routed median at or below 70% of the baseline median.
-The target is advisory only: it never changes profiles, routes, circuits, or gate outcomes.
-Until both cohorts are complete, the report labels itself preliminary, and preliminary samples must not be treated as live results.
-`target_met` stays `pending` until the cohorts are complete, so no live result is claimed before `routed_complete` reports ten successful routed gates.
+`no-mistakes axi canary` reports on the routing cutover.
+It compares a frozen pre-activation baseline with a routed cohort using execution-only, agent-bearing measurements.
+Its target is advisory and never changes routes, profiles, circuits or gate outcomes.
+Results stay preliminary until both cohorts are complete.
+See the [routing canary reference](/no-mistakes/reference/routing/#canary) for the current cohort and target rules.

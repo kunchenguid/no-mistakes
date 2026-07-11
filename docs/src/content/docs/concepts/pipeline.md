@@ -64,7 +64,7 @@ The pipeline is opinionated so that "passed the gate" has a stable meaning:
 - Document runs after Test so docs are updated against code that is known to work.
   It enforces one authoritative owner per fact and independently verifies documentation, even when its authoring pass also handles agent-driven lint.
 - Lint runs last among the content mutators.
-  When `commands.lint` is empty, it consumes the combined housekeeping result once or runs a standalone lint pass if no trustworthy result exists.
+  When `commands.lint` is empty, it consumes the combined housekeeping result once or runs a standalone lint pass if no result is available.
   It runs the configured formatter first and commits every formatter and lint change, so no later step rewrites content.
 - After Lint the executor seals the publish candidate: the exact `HEAD` commit with a clean worktree.
   Everything after the seal validates or transports that exact commit; nothing after the seal mutates it in place.
@@ -97,7 +97,7 @@ Document still stages the complete candidate and sends it to a separate fresh do
 That verifier checks documentation only and cannot modify the candidate.
 Lint later consumes the lint result once, without paying for another cold pass.
 
-Malformed combined output fails closed.
+A present malformed result fails closed.
 If Document was skipped, no result survived a process boundary, or a lint fix round starts, Lint runs a fresh standalone pass.
 The optimization never removes either gate.
 

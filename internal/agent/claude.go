@@ -45,6 +45,9 @@ func (a *claudeAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 }
 
 func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
+	if err := validateInvocationRole(opts.Role); err != nil {
+		return nil, fmt.Errorf("claude: %w", err)
+	}
 	resumeID := ""
 	if opts.Session != nil {
 		resumeID = opts.Session.ID
@@ -151,16 +154,19 @@ func claudeResultErrorDetail(result *claudeResult) string {
 	return strings.Join(parts, " ")
 }
 
-// buildArgs constructs the claude CLI arguments. User-supplied extraArgs
-// (from agent_args_override in the global config) are inserted ahead of the
-// managed flags, so user choices win over no-mistakes' defaults. If the user
-// supplied their own permission mode, the default --dangerously-skip-permissions
-// is not added. A non-empty Session ID continues that session via --resume
-// (never --fork-session: the session identity must stay stable so later
-// turns keep resuming the same conversation).
+// buildArgs constructs the claude CLI arguments. Verifier invocations discard
+// configured permission overrides and force Claude's read-only plan mode.
+// Fixer and legacy direct invocations preserve configured permission flags, or
+// default to the write-capable permission bypass required for repair work.
+// A non-empty Session ID continues that session via --resume (never
+// --fork-session: the session identity must stay stable across turns).
 func (a *claudeAgent) buildArgs(opts RunOpts) []string {
 	args := make([]string, 0, len(a.extraArgs)+12)
-	args = append(args, routedClaudeExtraArgs(a.extraArgs, opts.Model != "", opts.Effort != "")...)
+	extraArgs := routedClaudeExtraArgs(a.extraArgs, opts.Model != "", opts.Effort != "")
+	if isVerifierRole(opts.Role) {
+		extraArgs = claudeVerifierExtraArgs(extraArgs)
+	}
+	args = append(args, extraArgs...)
 	args = append(args,
 		"-p", opts.Prompt,
 		"--verbose",
@@ -180,7 +186,12 @@ func (a *claudeAgent) buildArgs(opts RunOpts) []string {
 	if opts.Effort != "" {
 		args = append(args, "--effort", string(opts.Effort))
 	}
-	if !claudeUserSetPermissionMode(a.extraArgs) {
+	if isVerifierRole(opts.Role) {
+		args = append(args,
+			"--permission-mode", "plan",
+			"--tools", "Read,Glob,Grep,WebFetch,WebSearch",
+		)
+	} else if !claudeUserSetPermissionMode(a.extraArgs) {
 		args = append(args, "--dangerously-skip-permissions")
 	}
 	return args
@@ -225,6 +236,34 @@ func claudeUserSetPermissionMode(extraArgs []string) bool {
 		}
 	}
 	return false
+}
+
+// claudeVerifierExtraArgs removes every configured permission override so the
+// managed plan-mode restriction is authoritative for verifier launches.
+func claudeVerifierExtraArgs(extraArgs []string) []string {
+	out := make([]string, 0, len(extraArgs))
+	for i := 0; i < len(extraArgs); i++ {
+		arg := extraArgs[i]
+		switch {
+		case arg == "--dangerously-skip-permissions":
+			continue
+		case arg == "--permission-mode",
+			arg == "--tools",
+			arg == "--allowedTools",
+			arg == "--disallowedTools":
+			if i+1 < len(extraArgs) {
+				i++
+			}
+			continue
+		case strings.HasPrefix(arg, "--permission-mode="),
+			strings.HasPrefix(arg, "--tools="),
+			strings.HasPrefix(arg, "--allowedTools="),
+			strings.HasPrefix(arg, "--disallowedTools="):
+			continue
+		}
+		out = append(out, arg)
+	}
+	return out
 }
 
 // claudeEvent is the top-level JSONL event from claude CLI.

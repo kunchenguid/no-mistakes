@@ -14,13 +14,11 @@ import (
 	"syscall"
 	"testing"
 	"time"
-
-	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
 
 const nativeAgentEscapedPipeHelperEnv = "NM_AGENT_NATIVE_PIPE_HELPER"
 
-func TestNativeAgentCommand_WaitDelayClosesEscapedPipeHolder(t *testing.T) {
+func TestNativeProcess_WaitDelayClosesEscapedPipeHolder(t *testing.T) {
 	dir := t.TempDir()
 	readyFile := filepath.Join(dir, "ready")
 	pidFile := filepath.Join(dir, "escaped.pid")
@@ -30,12 +28,11 @@ func TestNativeAgentCommand_WaitDelayClosesEscapedPipeHolder(t *testing.T) {
 		"NM_AGENT_NATIVE_PIPE_READY="+readyFile,
 		"NM_AGENT_NATIVE_PIPE_PID="+pidFile,
 	)
-	shellenv.ConfigureShellCommand(cmd)
 	cmd.WaitDelay = 100 * time.Millisecond
 
-	started, err := startNativeAgentCommand(cmd)
+	started, err := startNativeProcess(cmd)
 	if err != nil {
-		t.Fatalf("startNativeAgentCommand: %v", err)
+		t.Fatalf("startNativeProcess: %v", err)
 	}
 	defer started.closePipes()
 

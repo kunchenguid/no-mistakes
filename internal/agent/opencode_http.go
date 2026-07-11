@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 func (a *opencodeAgent) ensureServer(ctx context.Context, cwd string) (string, error) {
@@ -39,12 +41,13 @@ func buildOpencodeServeArgs(extraArgs []string, port int) []string {
 	return args
 }
 
-func (a *opencodeAgent) createSession(ctx context.Context, baseURL, cwd string) (string, error) {
+func (a *opencodeAgent) createSession(ctx context.Context, baseURL, cwd string, role types.InvocationRole) (string, error) {
+	if err := validateInvocationRole(role); err != nil {
+		return "", err
+	}
 	body := map[string]any{
-		"directory": cwd,
-		"permission": []map[string]string{
-			{"permission": "*", "pattern": "*", "action": "allow"},
-		},
+		"directory":  cwd,
+		"permission": opencodeSessionPermissions(role),
 	}
 	resp, err := doJSON(ctx, http.MethodPost, baseURL+"/session", nil, body)
 	if err != nil {
@@ -58,6 +61,26 @@ func (a *opencodeAgent) createSession(ctx context.Context, baseURL, cwd string) 
 		return "", fmt.Errorf("opencode create session parse: %w", err)
 	}
 	return result.ID, nil
+}
+
+func opencodeSessionPermissions(role types.InvocationRole) []map[string]string {
+	if !isVerifierRole(role) {
+		return []map[string]string{
+			{"permission": "*", "pattern": "*", "action": "allow"},
+		}
+	}
+
+	permissions := []map[string]string{
+		{"permission": "*", "pattern": "*", "action": "deny"},
+	}
+	for _, permission := range []string{"read", "glob", "grep", "lsp", "webfetch", "websearch", "skill"} {
+		permissions = append(permissions, map[string]string{
+			"permission": permission,
+			"pattern":    "*",
+			"action":     "allow",
+		})
+	}
+	return permissions
 }
 
 func (a *opencodeAgent) connectEventStream(ctx context.Context, baseURL string) (io.ReadCloser, error) {

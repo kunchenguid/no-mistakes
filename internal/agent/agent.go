@@ -39,6 +39,10 @@ type RunOpts struct {
 	// review-fix, test-evidence, ...). Instrumentation only; adapters
 	// ignore it.
 	Purpose string
+	// Role is the registry-derived mutability boundary for the invocation.
+	// Verifier launches must be enforced read-only by the native adapter.
+	// Empty preserves write-capable legacy direct invocations.
+	Role types.InvocationRole
 	// OnAttempt receives each concrete adapter attempt, including retries and
 	// fallback-provider attempts, after it completes. It is instrumentation
 	// only and must not change invocation behavior.
@@ -49,6 +53,19 @@ type RunOpts struct {
 	// no model or effort flags.
 	Model  string
 	Effort types.Effort
+}
+
+func validateInvocationRole(role types.InvocationRole) error {
+	switch role {
+	case "", types.InvocationRoleFixer, types.InvocationRoleVerifier:
+		return nil
+	default:
+		return fmt.Errorf("unsupported invocation role %q", role)
+	}
+}
+
+func isVerifierRole(role types.InvocationRole) bool {
+	return role == types.InvocationRoleVerifier
 }
 
 // Attempt describes one completed concrete adapter attempt for an agent

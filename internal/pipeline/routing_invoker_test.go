@@ -81,6 +81,9 @@ func TestRoutingInvokerLaunchesReviewStrongCandidate(t *testing.T) {
 	if native.opts.Model != "gpt-5.6-sol" || native.opts.Effort != types.EffortHigh {
 		t.Fatalf("native run opts model/effort = (%q,%q), want (gpt-5.6-sol,high)", native.opts.Model, native.opts.Effort)
 	}
+	if native.opts.Role != types.InvocationRoleVerifier {
+		t.Fatalf("native run role = %q, want registry-derived verifier", native.opts.Role)
+	}
 	if native.opts.Prompt != "review the diff" {
 		t.Fatalf("native prompt = %q, want the review prompt", native.opts.Prompt)
 	}
@@ -569,6 +572,9 @@ func TestRoutingInvokerLaunchesRoutineCandidates(t *testing.T) {
 			if native.opts.Model != tc.model || native.opts.Effort != tc.effort {
 				t.Fatalf("native model/effort=(%q,%q), want (%q,%q)", native.opts.Model, native.opts.Effort, tc.model, tc.effort)
 			}
+			if native.opts.Role != tc.role {
+				t.Fatalf("native role=%q, want registry-derived %q", native.opts.Role, tc.role)
+			}
 			attempts, err := database.GetInvocationAttemptsByStepResult(scope.StepResultID)
 			if err != nil || len(attempts) != 1 {
 				t.Fatalf("attempts=%+v err=%v; want exactly one recorded", attempts, err)
@@ -597,5 +603,34 @@ func TestRoutineGatePurposesAreRouted(t *testing.T) {
 		if _, err := routing.ResolveRoute(p); err != nil {
 			t.Errorf("purpose %q has no route: %v", p, err)
 		}
+	}
+}
+
+func TestRoutingInvokerPropagatesEveryRegisteredPurposeRoleToNativeLaunch(t *testing.T) {
+	for _, definition := range types.AllPurposeDefinitions() {
+		t.Run(string(definition.Purpose), func(t *testing.T) {
+			database, _, run, _ := setupTest(t)
+			scope := reservedReviewScope(t, database, run)
+			native := &recordingRoutedAgent{result: &agent.Result{}}
+			ri := newRoutingInvoker(config.DefaultRoutingConfig(), database, newProviderCircuits())
+			ri.newAgent = func(types.AgentName, string) (agent.Agent, error) {
+				return native, nil
+			}
+
+			_, err := ri.Invoke(context.Background(), agent.InvocationRequest{
+				Purpose: definition.Purpose,
+				Scope:   scope,
+				Payload: agent.RunOpts{Prompt: "exercise role propagation"},
+			})
+			if err != nil {
+				t.Fatalf("Invoke: %v", err)
+			}
+			if native.calls != 1 {
+				t.Fatalf("native agent calls = %d, want 1", native.calls)
+			}
+			if native.opts.Role != definition.Role {
+				t.Fatalf("native role = %q, want registry-derived %q", native.opts.Role, definition.Role)
+			}
+		})
 	}
 }

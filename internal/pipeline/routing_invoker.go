@@ -218,6 +218,7 @@ func (ri *routingInvoker) launchCandidate(ctx context.Context, request agent.Inv
 
 	payload := request.Payload
 	payload.Purpose = string(request.Purpose)
+	payload.Role = definition.Role
 	payload.Model = candidate.Model
 	payload.Effort = candidate.Effort
 

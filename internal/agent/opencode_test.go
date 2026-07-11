@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 func TestOpencodeAgent_CloseWithoutServer(t *testing.T) {
@@ -518,5 +520,57 @@ func TestOpencodeAgent_StructuredOutputError(t *testing.T) {
 	}
 	if strings.Contains(msg, "Now I need to find the failing test") {
 		t.Errorf("error must not embed the reasoning prose snippet, got %q", msg)
+	}
+}
+
+func TestOpencodeAgent_CreateVerifierSessionDeniesMutatingTools(t *testing.T) {
+	var gotPermissions []map[string]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Permissions []map[string]string `json:"permission"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode session body: %v", err)
+		}
+		gotPermissions = body.Permissions
+		fmt.Fprint(w, `{"id":"readonly-session"}`)
+	}))
+	defer server.Close()
+
+	a := &opencodeAgent{bin: "opencode"}
+	if _, err := a.createSession(
+		context.Background(),
+		server.URL,
+		t.TempDir(),
+		types.InvocationRoleVerifier,
+	); err != nil {
+		t.Fatalf("create verifier session: %v", err)
+	}
+
+	actions := make(map[string]string, len(gotPermissions))
+	for _, permission := range gotPermissions {
+		actions[permission["permission"]] = permission["action"]
+	}
+	if actions["*"] != "deny" {
+		t.Fatalf("verifier permissions = %v, want default deny", gotPermissions)
+	}
+	for _, allowed := range []string{"read", "glob", "grep", "lsp", "webfetch", "websearch", "skill"} {
+		if actions[allowed] != "allow" {
+			t.Fatalf("verifier permissions = %v, want %s allowed", gotPermissions, allowed)
+		}
+	}
+	for _, forbidden := range []string{"edit", "bash", "task", "external_directory"} {
+		if actions[forbidden] == "allow" {
+			t.Fatalf("verifier permissions = %v, mutating permission %s is allowed", gotPermissions, forbidden)
+		}
+	}
+}
+
+func TestOpencodeAgent_FixerSessionAllowsMutatingTools(t *testing.T) {
+	permissions := opencodeSessionPermissions(types.InvocationRoleFixer)
+	if len(permissions) != 1 ||
+		permissions[0]["permission"] != "*" ||
+		permissions[0]["action"] != "allow" {
+		t.Fatalf("fixer permissions = %v, want wildcard allow", permissions)
 	}
 }

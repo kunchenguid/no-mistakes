@@ -9,8 +9,6 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
-
-	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
 
 // copilotAgent spawns the GitHub Copilot CLI for each invocation. Copilot
@@ -41,11 +39,10 @@ func (a *copilotAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, erro
 	cmd.Dir = opts.CWD
 	cmd.Stdin = nil
 	cmd.Env = gitSafeEnv(opts.CWD)
-	shellenv.ConfigureShellCommand(cmd)
 
 	var stderrBuf []byte
 	var stderrWG sync.WaitGroup
-	started, err := startNativeAgentCommand(cmd)
+	started, err := startNativeProcess(cmd)
 	if err != nil {
 		return nil, fmt.Errorf("copilot start: %w", err)
 	}

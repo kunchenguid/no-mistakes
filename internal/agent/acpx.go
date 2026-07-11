@@ -9,8 +9,6 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
-
-	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
 
 const acpxScannerMaxTokenSize = 256 * 1024 * 1024
@@ -37,9 +35,8 @@ func (a *acpxAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) 
 	cmd.Dir = opts.CWD
 	cmd.Stdin = nil
 	cmd.Env = gitSafeEnv(opts.CWD)
-	shellenv.ConfigureShellCommand(cmd)
 
-	started, err := startNativeAgentCommand(cmd)
+	started, err := startNativeProcess(cmd)
 	if err != nil {
 		return nil, fmt.Errorf("acpx start: %w", err)
 	}

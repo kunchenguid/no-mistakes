@@ -80,8 +80,8 @@ Run via the platform shell - `sh -c` on POSIX, `cmd.exe /c` on Windows.
 When set, the lint step runs this exact command and checks the exit code.
 When empty, the Document authoring pass also detects relevant linters and formatters, applies safe fixes, reruns the checks, and categorizes unresolved lint findings for the Lint gate.
 Lint consumes that result once.
-If no trustworthy result exists, Lint runs a standalone agent pass rather than skipping lint.
-Malformed combined output fails closed.
+If no combined result is available, Lint runs a standalone agent pass rather than skipping lint.
+Malformed combined author output fails Document, and a present malformed lint result fails Lint instead of triggering the fallback.
 
 ### commands.format
 

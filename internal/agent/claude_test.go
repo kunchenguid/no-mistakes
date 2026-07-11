@@ -7,12 +7,14 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 func TestClaudeAgent_BuildArgs(t *testing.T) {
 	ca := &claudeAgent{bin: "/usr/bin/claude"}
 	schema := json.RawMessage(`{"type":"object"}`)
-	args := ca.buildArgs(RunOpts{Prompt: "do something", JSONSchema: schema})
+	args := ca.buildArgs(RunOpts{Prompt: "do something", JSONSchema: schema, Role: types.InvocationRoleFixer})
 
 	expected := []string{
 		"-p", "do something",
@@ -28,6 +30,31 @@ func TestClaudeAgent_BuildArgs(t *testing.T) {
 	for i, want := range expected {
 		if args[i] != want {
 			t.Errorf("arg[%d]: expected %q, got %q", i, want, args[i])
+		}
+	}
+}
+
+func TestClaudeAgent_BuildArgs_VerifierEnforcesPlanMode(t *testing.T) {
+	ca := &claudeAgent{
+		bin: "claude",
+		extraArgs: []string{
+			"--dangerously-skip-permissions",
+			"--permission-mode", "acceptEdits",
+			"--tools", "Read,Edit,Bash",
+		},
+	}
+	args := ca.buildArgs(RunOpts{Prompt: "review", Role: types.InvocationRoleVerifier})
+	joined := strings.Join(args, "\x00")
+
+	if !strings.Contains(joined, "--permission-mode\x00plan") {
+		t.Fatalf("verifier args = %q, want enforced plan permission mode", args)
+	}
+	if !strings.Contains(joined, "--tools\x00Read,Glob,Grep,WebFetch,WebSearch") {
+		t.Fatalf("verifier args = %q, want read-only tool allowlist", args)
+	}
+	for _, forbidden := range []string{"--dangerously-skip-permissions", "acceptEdits", "Read,Edit,Bash"} {
+		if strings.Contains(joined, forbidden) {
+			t.Fatalf("verifier args = %q, forbidden %q survived", args, forbidden)
 		}
 	}
 }

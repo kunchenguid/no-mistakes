@@ -40,14 +40,17 @@ func (a *opencodeAgent) recoverTransientRetry(label string) {
 }
 
 func (a *opencodeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
+	if err := validateInvocationRole(opts.Role); err != nil {
+		return nil, fmt.Errorf("opencode: %w", err)
+	}
 	// Start server on first invocation (synchronized)
 	baseURL, err := a.ensureServer(ctx, opts.CWD)
 	if err != nil {
 		return nil, err
 	}
 
-	// Create session with blanket permissions
-	sessionID, err := a.createSession(ctx, baseURL, opts.CWD)
+	// Create a session whose permission contract matches invocation mutability.
+	sessionID, err := a.createSession(ctx, baseURL, opts.CWD, opts.Role)
 	if err != nil {
 		return nil, err
 	}

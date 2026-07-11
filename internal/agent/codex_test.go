@@ -8,11 +8,13 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 func TestCodexAgent_BuildArgs(t *testing.T) {
 	ca := &codexAgent{bin: "codex"}
-	args := ca.buildArgs(RunOpts{Prompt: "fix the bug"}, "")
+	args := ca.buildArgs(RunOpts{Prompt: "fix the bug", Role: types.InvocationRoleFixer}, "")
 
 	expected := []string{
 		"exec", "fix the bug",
@@ -27,6 +29,52 @@ func TestCodexAgent_BuildArgs(t *testing.T) {
 	for i, want := range expected {
 		if args[i] != want {
 			t.Errorf("arg[%d]: expected %q, got %q", i, want, args[i])
+		}
+	}
+}
+
+func TestCodexAgent_BuildArgs_VerifierEnforcesReadOnlySandbox(t *testing.T) {
+	ca := &codexAgent{
+		bin: "codex",
+		extraArgs: []string{
+			"--dangerously-bypass-approvals-and-sandbox",
+			"--sandbox", "workspace-write",
+			"--ask-for-approval", "never",
+			"-c", `sandbox_mode="workspace-write"`,
+		},
+	}
+	args := ca.buildArgs(RunOpts{Prompt: "review", Role: types.InvocationRoleVerifier}, "")
+	joined := strings.Join(args, "\x00")
+
+	if !strings.Contains(joined, "--sandbox\x00read-only") {
+		t.Fatalf("verifier args = %q, want enforced read-only sandbox", args)
+	}
+	if !strings.Contains(joined, `approval_policy="never"`) {
+		t.Fatalf("verifier args = %q, want non-interactive approval policy", args)
+	}
+	for _, forbidden := range []string{"--dangerously-bypass-approvals-and-sandbox", "workspace-write"} {
+		if strings.Contains(joined, forbidden) {
+			t.Fatalf("verifier args = %q, forbidden %q survived", args, forbidden)
+		}
+	}
+}
+
+func TestCodexAgent_BuildArgs_VerifierResumeUsesReadOnlyConfig(t *testing.T) {
+	ca := &codexAgent{bin: "codex"}
+	args := ca.buildArgs(RunOpts{
+		Prompt:  "re-review",
+		Role:    types.InvocationRoleVerifier,
+		Session: &SessionRef{ID: "thread-1", Agent: "codex"},
+	}, "")
+	joined := strings.Join(args, "\x00")
+	for _, required := range []string{`approval_policy="never"`, `sandbox_mode="read-only"`} {
+		if !strings.Contains(joined, required) {
+			t.Fatalf("verifier resume args = %q, want managed config %q", args, required)
+		}
+	}
+	for _, forbidden := range []string{"--dangerously-bypass-approvals-and-sandbox", "workspace-write"} {
+		if strings.Contains(joined, forbidden) {
+			t.Fatalf("verifier resume args = %q, forbidden %q survived", args, forbidden)
 		}
 	}
 }

@@ -1,9 +1,11 @@
 package steps
 
 import (
+	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -21,7 +23,7 @@ import (
 // commits and pushes to the configured push remote.
 // Returns (true, nil) when changes were committed and pushed, (false, nil)
 // when the agent produced no changes, or (false, err) on failure.
-func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, failingNames []string, mergeConflict bool) (bool, error) {
+func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, failingNames []string, mergeConflict bool) (pushed bool, retErr error) {
 	ctx := sctx.Ctx
 	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
 	rebaseBaseSHA, rebaseBaseResolved := resolveDefaultBranchTip(ctx, sctx.WorkDir, sctx.Repo.UpstreamURL, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
@@ -120,14 +122,29 @@ CI logs:
 	if priorErr != nil {
 		return false, priorErr
 	}
-	_, err := sctx.InvokeAgentTier(types.PurposeUnstructuredCIRepair, tier, agent.RunOpts{
+	candidateBeforeRepair, err := captureCICandidate(sctx)
+	if err != nil {
+		return false, fmt.Errorf("snapshot candidate before CI repair: %w", err)
+	}
+	defer func() {
+		rollbackContext := *sctx
+		rollbackContext.Ctx = context.WithoutCancel(sctx.Ctx)
+		if retErr != nil {
+			s.verifiedCandidateHead = ""
+			s.verifiedCandidateTree = ""
+			if restoreErr := candidateBeforeRepair.restore(&rollbackContext); restoreErr != nil {
+				retErr = errors.Join(retErr, fmt.Errorf("restore candidate after failed CI repair: %w", restoreErr))
+			}
+		}
+		candidateBeforeRepair.cleanup(&rollbackContext)
+	}()
+	_, err = sctx.InvokeAgentTier(types.PurposeUnstructuredCIRepair, tier, agent.RunOpts{
 		Prompt:  prompt,
 		CWD:     sctx.WorkDir,
 		OnChunk: sctx.LogChunk,
 	})
 	linked, linkErr := linkCIInvocationAfter(sctx, s.activeCIRepairIDs, types.PurposeUnstructuredCIRepair, true, priorAttempts)
 	if linkErr != nil {
-		s.discardCICandidate(sctx)
 		if err != nil {
 			return false, fmt.Errorf("%w; additionally agent CI fix failed: %v", linkErr, err)
 		}
@@ -137,24 +154,20 @@ CI logs:
 		return false, fmt.Errorf("agent CI fix: %w", err)
 	}
 	if !linked {
-		s.discardCICandidate(sctx)
 		return false, &ciJournalError{operation: "link hosted CI invocation", err: fmt.Errorf("no journaled %s attempt in current round", types.PurposeUnstructuredCIRepair)}
 	}
 
 	candidateChanged, candidateHead, candidateTree, err := s.prepareCICandidate(sctx, mergeConflict, rebaseBaseSHA)
 	if err != nil {
-		s.discardCICandidate(sctx)
 		return false, err
 	}
 	if !candidateChanged {
 		return false, nil
 	}
 	if verr := s.verifyCIPatch(sctx, baseSHA); verr != nil {
-		s.discardCICandidate(sctx)
 		return false, fmt.Errorf("CI patch failed verification: %w", verr)
 	}
 	if err := validatePreparedCICandidate(sctx, candidateHead, candidateTree); err != nil {
-		s.discardCICandidate(sctx)
 		return false, fmt.Errorf("CI patch changed during verification: %w", err)
 	}
 	s.verifiedCandidateHead = candidateHead
@@ -255,11 +268,203 @@ func validatePreparedCICandidate(sctx *pipeline.StepContext, wantHead, wantTree 
 	return nil
 }
 
-func (s *CIStep) discardCICandidate(sctx *pipeline.StepContext) {
-	s.verifiedCandidateHead = ""
-	s.verifiedCandidateTree = ""
-	_, _ = stepGitRun(sctx, "reset", "--hard", sctx.Run.HeadSHA)
-	_, _ = stepGitRun(sctx, "clean", "-fd")
+type ciCandidateSnapshot struct {
+	head          string
+	headRef       string
+	indexTree     string
+	status        string
+	trackedDiff   string
+	trackedRef    string
+	untrackedDir  string
+	untrackedPath []string
+}
+
+func captureCICandidate(sctx *pipeline.StepContext) (ciCandidateSnapshot, error) {
+	var snapshot ciCandidateSnapshot
+	var err error
+	snapshot.head, err = stepGitHeadSHA(sctx)
+	if err != nil {
+		return ciCandidateSnapshot{}, fmt.Errorf("resolve HEAD: %w", err)
+	}
+	snapshot.headRef, err = stepGitRun(sctx, "rev-parse", "--symbolic-full-name", "HEAD")
+	if err != nil {
+		return ciCandidateSnapshot{}, fmt.Errorf("resolve HEAD reference: %w", err)
+	}
+	snapshot.indexTree, err = stepGitRun(sctx, "write-tree")
+	if err != nil {
+		return ciCandidateSnapshot{}, fmt.Errorf("snapshot index: %w", err)
+	}
+	snapshot.status, err = stepGitRun(sctx, "status", "--porcelain=v1", "--untracked-files=all")
+	if err != nil {
+		return ciCandidateSnapshot{}, fmt.Errorf("snapshot status: %w", err)
+	}
+	snapshot.trackedDiff, err = stepGitRun(sctx, "diff", "--binary", "--no-ext-diff", "--")
+	if err != nil {
+		return ciCandidateSnapshot{}, fmt.Errorf("snapshot tracked worktree: %w", err)
+	}
+	snapshot.untrackedDir, err = os.MkdirTemp("", "no-mistakes-ci-candidate-*")
+	if err != nil {
+		return ciCandidateSnapshot{}, fmt.Errorf("create untracked snapshot: %w", err)
+	}
+	complete := false
+	defer func() {
+		if !complete {
+			snapshot.cleanup(sctx)
+		}
+	}()
+	snapshot.untrackedPath, err = snapshotCIUntracked(sctx, snapshot.untrackedDir)
+	if err != nil {
+		return ciCandidateSnapshot{}, err
+	}
+	stashOID, err := stepGitRun(sctx, "stash", "create")
+	if err != nil {
+		return ciCandidateSnapshot{}, fmt.Errorf("snapshot tracked candidate: %w", err)
+	}
+	if stashOID != "" {
+		refSuffix := sha256.Sum256([]byte(snapshot.untrackedDir))
+		snapshot.trackedRef = fmt.Sprintf("refs/no-mistakes/ci-repair-snapshots/%s-%x", stashOID, refSuffix[:8])
+		if _, err := stepGitRun(sctx, "update-ref", snapshot.trackedRef, stashOID); err != nil {
+			return ciCandidateSnapshot{}, fmt.Errorf("retain tracked candidate snapshot: %w", err)
+		}
+	}
+	complete = true
+	return snapshot, nil
+}
+
+func snapshotCIUntracked(sctx *pipeline.StepContext, snapshotDir string) ([]string, error) {
+	cmd := stepCmd(sctx, "git", "ls-files", "--others", "--exclude-standard", "-z")
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("list untracked candidate paths: %w", err)
+	}
+	var paths []string
+	for _, path := range strings.Split(string(output), "\x00") {
+		if path == "" {
+			continue
+		}
+		if !filepath.IsLocal(path) {
+			return nil, fmt.Errorf("snapshot unsafe untracked candidate path %q", path)
+		}
+		if err := copyCICandidatePath(filepath.Join(sctx.WorkDir, path), filepath.Join(snapshotDir, path)); err != nil {
+			return nil, fmt.Errorf("snapshot untracked candidate path %q: %w", path, err)
+		}
+		paths = append(paths, path)
+	}
+	return paths, nil
+}
+
+func copyCICandidatePath(source, destination string) error {
+	info, err := os.Lstat(source)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		target, err := os.Readlink(source)
+		if err != nil {
+			return err
+		}
+		return os.Symlink(target, destination)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("unsupported file mode %s", info.Mode())
+	}
+	input, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+	defer input.Close()
+	output, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode().Perm())
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(output, input); err != nil {
+		_ = output.Close()
+		return err
+	}
+	if err := output.Close(); err != nil {
+		return err
+	}
+	return os.Chmod(destination, info.Mode().Perm())
+}
+
+func (snapshot ciCandidateSnapshot) restore(sctx *pipeline.StepContext) error {
+	if _, err := stepGitRun(sctx, "reset", "--hard"); err != nil {
+		return err
+	}
+	if snapshot.headRef == "HEAD" {
+		if _, err := stepGitRun(sctx, "checkout", "--detach", "--force", snapshot.head); err != nil {
+			return err
+		}
+	} else {
+		if _, err := stepGitRun(sctx, "symbolic-ref", "HEAD", snapshot.headRef); err != nil {
+			return err
+		}
+	}
+	if _, err := stepGitRun(sctx, "reset", "--hard", snapshot.head); err != nil {
+		return err
+	}
+	if _, err := stepGitRun(sctx, "clean", "-ffd"); err != nil {
+		return err
+	}
+	if snapshot.trackedRef != "" {
+		if _, err := stepGitRun(sctx, "stash", "apply", "--index", snapshot.trackedRef); err != nil {
+			return err
+		}
+	}
+	for _, path := range snapshot.untrackedPath {
+		if err := copyCICandidatePath(filepath.Join(snapshot.untrackedDir, path), filepath.Join(sctx.WorkDir, path)); err != nil {
+			return fmt.Errorf("restore untracked candidate path %q: %w", path, err)
+		}
+	}
+	return snapshot.validate(sctx)
+}
+
+func (snapshot ciCandidateSnapshot) validate(sctx *pipeline.StepContext) error {
+	head, err := stepGitHeadSHA(sctx)
+	if err != nil {
+		return err
+	}
+	if head != snapshot.head {
+		return fmt.Errorf("restored HEAD %s, want %s", shortSHA(head), shortSHA(snapshot.head))
+	}
+	indexTree, err := stepGitRun(sctx, "write-tree")
+	if err != nil {
+		return err
+	}
+	if indexTree != snapshot.indexTree {
+		return fmt.Errorf("restored index tree %s, want %s", shortSHA(indexTree), shortSHA(snapshot.indexTree))
+	}
+	status, err := stepGitRun(sctx, "status", "--porcelain=v1", "--untracked-files=all")
+	if err != nil {
+		return err
+	}
+	if status != snapshot.status {
+		return fmt.Errorf("restored worktree status differs from pre-repair candidate")
+	}
+	trackedDiff, err := stepGitRun(sctx, "diff", "--binary", "--no-ext-diff", "--")
+	if err != nil {
+		return err
+	}
+	if trackedDiff != snapshot.trackedDiff {
+		return fmt.Errorf("restored tracked worktree content differs from pre-repair candidate")
+	}
+	return nil
+}
+
+func (snapshot ciCandidateSnapshot) cleanup(sctx *pipeline.StepContext) {
+	if snapshot.trackedRef != "" {
+		if _, err := stepGitRun(sctx, "update-ref", "-d", snapshot.trackedRef); err != nil {
+			slog.Warn("failed to release CI candidate snapshot", "err", err)
+		}
+	}
+	if snapshot.untrackedDir != "" {
+		if err := os.RemoveAll(snapshot.untrackedDir); err != nil {
+			slog.Warn("failed to remove CI candidate snapshot", "err", err)
+		}
+	}
 }
 
 type ciJournalError struct {

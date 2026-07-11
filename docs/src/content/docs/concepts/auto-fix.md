@@ -132,8 +132,8 @@ Combined lint findings do not enter the routed repair coordinator automatically 
 If you authorize a lint fix, Lint runs a fresh standalone pass instead of trusting the consumed result.
 
 Malformed combined author output fails Document and invalidates any earlier lint result.
-A malformed result already handed to Lint fails Lint as inconclusive.
-When there is no trustworthy result to hand over, including after a skipped Document pass or a process boundary, Lint runs its own agent pass so the lint duty is not lost.
+A malformed result already handed to Lint fails Lint as inconclusive instead of triggering a fallback.
+When execution reaches Lint with no result available, including after a skipped Document pass or a process boundary, Lint runs its own agent pass so the lint duty is not lost.
 
 ## User-triggered fixes
 

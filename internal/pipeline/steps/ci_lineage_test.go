@@ -3,6 +3,9 @@ package steps
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
@@ -109,6 +112,149 @@ func TestCIStep_FailedHostedRepairPersistsBeforeInvocation(t *testing.T) {
 	}
 	if repairs[0].Status != db.RepairStatusFailed || repairs[0].Verdict != db.RepairVerdictInconclusive {
 		t.Fatalf("repair = %+v, want failed inconclusive repair", repairs[0])
+	}
+}
+
+func TestCIStep_FailedHostedRepairRestoresExactCandidateBeforeRetry(t *testing.T) {
+	upstream, dir, baseSHA, headSHA := setupCIRepublish(t)
+	if err := os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("legitimate staged feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "legitimate-staged.txt"), []byte("legitimate staged\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "feature.txt", "legitimate-staged.txt")
+	if err := os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("legitimate unstaged\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "legitimate-untracked.txt"), []byte("legitimate untracked\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	beforeStatus := gitCmd(t, dir, "status", "--porcelain=v1", "--untracked-files=all")
+	beforeIndex := gitCmd(t, dir, "write-tree")
+
+	fixerCalls := 0
+	verified := false
+	fixer := &ciRepublishAgent{
+		fix: func(cwd string) error {
+			fixerCalls++
+			if fixerCalls == 1 {
+				if err := os.WriteFile(filepath.Join(cwd, "failed-committed.txt"), []byte("failed committed\n"), 0o644); err != nil {
+					return err
+				}
+				gitCmd(t, cwd, "add", "failed-committed.txt")
+				gitCmd(t, cwd, "commit", "-m", "failed repair commit")
+				if err := os.WriteFile(filepath.Join(cwd, "failed-staged.txt"), []byte("failed staged\n"), 0o644); err != nil {
+					return err
+				}
+				gitCmd(t, cwd, "add", "failed-staged.txt")
+				if err := os.WriteFile(filepath.Join(cwd, "feature.txt"), []byte("failed tracked\n"), 0o644); err != nil {
+					return err
+				}
+				if err := os.WriteFile(filepath.Join(cwd, "failed-untracked.txt"), []byte("failed untracked\n"), 0o644); err != nil {
+					return err
+				}
+				return errors.New("repair process exited after partial mutation")
+			}
+			if got := gitCmd(t, cwd, "rev-parse", "HEAD"); got != headSHA {
+				t.Fatalf("retry started at HEAD %s, want %s", got, headSHA)
+			}
+			if got := gitCmd(t, cwd, "write-tree"); got != beforeIndex {
+				t.Fatalf("retry index tree = %s, want %s", got, beforeIndex)
+			}
+			if got := gitCmd(t, cwd, "status", "--porcelain=v1", "--untracked-files=all"); got != beforeStatus {
+				t.Fatalf("retry status = %q, want %q", got, beforeStatus)
+			}
+			if got, err := os.ReadFile(filepath.Join(cwd, "feature.txt")); err != nil || string(got) != "legitimate unstaged\n" {
+				t.Fatalf("retry tracked content = %q, %v; want legitimate state", got, err)
+			}
+			for path, want := range map[string]string{
+				"legitimate-staged.txt":    "legitimate staged\n",
+				"legitimate-untracked.txt": "legitimate untracked\n",
+			} {
+				got, err := os.ReadFile(filepath.Join(cwd, path))
+				if err != nil || string(got) != want {
+					t.Fatalf("retry content for %s = %q, %v; want %q", path, got, err, want)
+				}
+			}
+			if err := os.WriteFile(filepath.Join(cwd, "successful-ci-fix.txt"), []byte("successful\n"), 0o644); err != nil {
+				return err
+			}
+			return nil
+		},
+		verify: func(cwd string) error {
+			for _, path := range []string{"failed-committed.txt", "failed-staged.txt", "failed-untracked.txt"} {
+				if _, err := os.Lstat(filepath.Join(cwd, path)); !os.IsNotExist(err) {
+					return errors.New("verifier observed failed repair content: " + path)
+				}
+			}
+			verified = true
+			return nil
+		},
+	}
+	step, sctx, host, pr := republishContext(t, fixer, upstream, dir, baseSHA, headSHA, config.Commands{})
+	stepResult, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepCI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	round, err := sctx.DB.ReserveStepRound(stepResult.ID, 1, "initial")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sctx.StepResultID = stepResult.ID
+	sctx.CurrentRound = round
+
+	firstPlan, err := step.planCIRepair(sctx, pr, []string{"build"}, false, ciRepairBudget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pushed, err := step.runPlannedCIRepair(sctx, host, pr, firstPlan, ciRepairBudget); err == nil {
+		t.Fatalf("first repair = pushed %v, nil error; want failed invocation", pushed)
+	}
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != headSHA {
+		t.Fatalf("failed repair left HEAD %s, want %s", got, headSHA)
+	}
+	if got := gitCmd(t, dir, "write-tree"); got != beforeIndex {
+		t.Fatalf("failed repair left index tree %s, want %s", got, beforeIndex)
+	}
+	if got := gitCmd(t, dir, "status", "--porcelain=v1", "--untracked-files=all"); got != beforeStatus {
+		t.Fatalf("failed repair left status %q, want %q", got, beforeStatus)
+	}
+	if got, err := os.ReadFile(filepath.Join(dir, "legitimate-untracked.txt")); err != nil || string(got) != "legitimate untracked\n" {
+		t.Fatalf("failed repair restored untracked content = %q, %v", got, err)
+	}
+	firstRepairs, err := sctx.DB.GetFindingRepairsByLineage(firstPlan.Issues[0].LineageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(firstRepairs) != 1 || firstRepairs[0].Status != db.RepairStatusFailed {
+		t.Fatalf("failed repair journal = %+v, want one durable failed row", firstRepairs)
+	}
+	pushed, err := step.autoFixCI(sctx, host, pr, []string{"build"}, false)
+	if err != nil {
+		t.Fatalf("second repair: %v", err)
+	}
+	if !pushed || !verified {
+		t.Fatalf("second repair = pushed %v, verified %v; want clean verified publication", pushed, verified)
+	}
+	remoteFiles := gitCmd(t, upstream, "ls-tree", "-r", "--name-only", "refs/heads/feature")
+	if strings.Contains(remoteFiles, "failed-") {
+		t.Fatalf("published tree contains failed repair content: %q", remoteFiles)
+	}
+	for _, path := range []string{"legitimate-staged.txt", "legitimate-untracked.txt", "successful-ci-fix.txt"} {
+		if !strings.Contains(remoteFiles, path) {
+			t.Fatalf("published tree %q lost legitimate/successful path %q", remoteFiles, path)
+		}
+	}
+	if got := gitCmd(t, upstream, "show", "refs/heads/feature:feature.txt"); got != "legitimate unstaged" {
+		t.Fatalf("published tracked content = %q, want legitimate pre-repair state", got)
+	}
+	repairs, err := sctx.DB.GetFindingRepairsByLineage(firstPlan.Issues[0].LineageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repairs) != 1 || repairs[0].Status != db.RepairStatusFailed {
+		t.Fatalf("repair journal = %+v, want durable failed row after later publication", repairs)
 	}
 }
 

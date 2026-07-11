@@ -3,11 +3,15 @@ package agent
 import (
 	"bytes"
 	"context"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
 
 // TestStartServerWithPort_DetectsEarlyExit verifies that when the spawned
@@ -36,6 +40,37 @@ func TestStartServerWithPort_DetectsEarlyExit(t *testing.T) {
 	}
 }
 
+func TestStartServerWithPortUsesSharedNativeLifecycleExactlyOnce(t *testing.T) {
+	bin, err := exec.LookPath("true")
+	if err != nil {
+		t.Skip("true binary not available")
+	}
+
+	var startCalls atomic.Int32
+	var terminateCalls atomic.Int32
+	replaceNativeProcessLifecycleForTest(t, nativeProcessLifecycle{
+		start: func(cmd *exec.Cmd) error {
+			startCalls.Add(1)
+			return shellenv.StartShellCommand(cmd)
+		},
+		terminate: func(cmd *exec.Cmd) {
+			terminateCalls.Add(1)
+			shellenv.TerminateShellCommandGroup(cmd)
+		},
+	})
+
+	_, err = startServerWithPort(context.Background(), "opencode", bin, nil, t.TempDir(), "/healthcheck", 1)
+	if err == nil {
+		t.Fatal("expected server to exit before becoming healthy")
+	}
+	if got := startCalls.Load(); got != 1 {
+		t.Fatalf("shared native lifecycle start calls = %d, want 1", got)
+	}
+	if got := terminateCalls.Load(); got != 1 {
+		t.Fatalf("shared native lifecycle terminate calls = %d, want 1", got)
+	}
+}
+
 // TestDefaultHealthTimeout pins the cold-start budget for a freshly spawned
 // managed server. Bumped to 60s to absorb opencode boots of 15s+ when the
 // host is under load.
@@ -54,19 +89,21 @@ func TestWaitForHealth_TimesOut(t *testing.T) {
 		t.Skip("sleep binary not available")
 	}
 
-	cmd := exec.Command(bin, "30")
-	if err := cmd.Start(); err != nil {
+	process, err := startNativeProcess(exec.CommandContext(context.Background(), bin, "30"))
+	if err != nil {
 		t.Fatalf("start sleep: %v", err)
 	}
-	defer func() { _ = cmd.Process.Kill() }()
+	go func() { _, _ = io.Copy(io.Discard, process.stdout) }()
+	go func() { _, _ = io.Copy(io.Discard, process.stderr) }()
 
 	// Port 1 has nothing listening, so health probes fail with connection
 	// refused but the process never exits — exercising the deadline path.
-	srv := &managedServer{cmd: cmd, port: 1, exited: make(chan struct{}), healthTimeout: 100 * time.Millisecond}
+	srv := &managedServer{process: process, port: 1, exited: make(chan struct{}), healthTimeout: 100 * time.Millisecond}
 	go func() {
-		srv.waitErr = cmd.Wait()
+		srv.waitErr = process.wait()
 		close(srv.exited)
 	}()
+	defer srv.shutdown()
 
 	start := time.Now()
 	err = srv.waitForHealth(context.Background(), "/healthcheck")
@@ -168,14 +205,15 @@ func TestManagedServerShutdown_RemovesPIDFile(t *testing.T) {
 	SetServerPIDsDir(pidsDir)
 	t.Cleanup(func() { SetServerPIDsDir("") })
 
-	cmd := exec.Command(sh, "-c", "sleep 30")
-	configureManagedServerCmd(cmd)
-	if err := cmd.Start(); err != nil {
+	process, err := startNativeProcess(exec.CommandContext(context.Background(), sh, "-c", "sleep 30"))
+	if err != nil {
 		t.Fatalf("start sh: %v", err)
 	}
+	go func() { _, _ = io.Copy(io.Discard, process.stdout) }()
+	go func() { _, _ = io.Copy(io.Discard, process.stderr) }()
 
 	pidFile := writeServerPIDFile(pidsDir, ServerPIDInfo{
-		PID:       cmd.Process.Pid,
+		PID:       process.pid(),
 		Agent:     "test",
 		Bin:       sh,
 		Port:      0,
@@ -185,9 +223,9 @@ func TestManagedServerShutdown_RemovesPIDFile(t *testing.T) {
 		t.Fatal("expected pid file path")
 	}
 
-	srv := &managedServer{cmd: cmd, pidFile: pidFile, exited: make(chan struct{})}
+	srv := &managedServer{process: process, pidFile: pidFile, exited: make(chan struct{})}
 	go func() {
-		srv.waitErr = cmd.Wait()
+		srv.waitErr = process.wait()
 		close(srv.exited)
 	}()
 

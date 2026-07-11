@@ -40,6 +40,17 @@ func currentManagedServerOutput() io.Writer {
 	return managedServerOutput
 }
 
+type synchronizedWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (w *synchronizedWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.w.Write(p)
+}
+
 // defaultHealthTimeout bounds how long startServerWithPort waits for a freshly
 // spawned server to answer its health endpoint before giving up. It is generous
 // enough to absorb cold starts under host load: opencode has been observed
@@ -48,11 +59,11 @@ const defaultHealthTimeout = 60 * time.Second
 
 // managedServer manages a persistent HTTP server process (used by rovodev and opencode agents).
 type managedServer struct {
-	cmd           *exec.Cmd
+	process       *nativeProcess
 	port          int
 	pidFile       string        // path to the on-disk PID record; empty if tracking disabled
-	exited        chan struct{} // closed exactly once when cmd.Wait returns
-	waitErr       error         // result of cmd.Wait; only read after exited is closed
+	exited        chan struct{} // closed exactly once when process.wait returns
+	waitErr       error         // result of process.wait; only read after exited is closed
 	healthTimeout time.Duration // health-check deadline; defaults to defaultHealthTimeout when zero
 }
 
@@ -72,21 +83,25 @@ func getAvailablePort() (int, error) {
 // ctx is only used for the health check timeout.
 // agentName tags the PID tracking file so crash-recovery can identify orphans.
 func startServerWithPort(ctx context.Context, agentName, bin string, args []string, cwd string, healthPath string, port int) (*managedServer, error) {
-	cmd := exec.Command(bin, args...)
+	cmd := exec.CommandContext(context.Background(), bin, args...)
 	cmd.Dir = cwd
 	cmd.Stdin = nil
 	cmd.Env = gitSafeEnv(cwd)
-	out := currentManagedServerOutput()
-	cmd.Stdout = out // server stdout goes to the configured sink for debugging
-	cmd.Stderr = out
-	configureManagedServerCmd(cmd)
 
-	if err := cmd.Start(); err != nil {
+	process, err := startNativeProcess(cmd)
+	if err != nil {
 		return nil, fmt.Errorf("start server %s: %w", bin, err)
 	}
+	out := &synchronizedWriter{w: currentManagedServerOutput()}
+	go func() {
+		_, _ = io.Copy(out, process.stdout)
+	}()
+	go func() {
+		_, _ = io.Copy(out, process.stderr)
+	}()
 
 	pidFile := writeServerPIDFile(currentServerPIDsDir(), ServerPIDInfo{
-		PID:            cmd.Process.Pid,
+		PID:            process.pid(),
 		Owner:          currentServerPIDOwner(),
 		OwnerPID:       os.Getpid(),
 		OwnerStartedAt: CurrentProcessStartedAt(),
@@ -96,9 +111,16 @@ func startServerWithPort(ctx context.Context, agentName, bin string, args []stri
 		StartedAt:      time.Now().UTC(),
 	})
 
-	srv := &managedServer{cmd: cmd, port: port, pidFile: pidFile, exited: make(chan struct{}), healthTimeout: defaultHealthTimeout}
+	srv := &managedServer{
+		process:       process,
+		port:          port,
+		pidFile:       pidFile,
+		exited:        make(chan struct{}),
+		healthTimeout: defaultHealthTimeout,
+	}
 	go func() {
-		srv.waitErr = cmd.Wait()
+		srv.waitErr = process.wait()
+		process.closePipes()
 		close(srv.exited)
 	}()
 
@@ -164,19 +186,16 @@ func (s *managedServer) waitForHealth(ctx context.Context, path string) error {
 	}
 }
 
-// shutdown gracefully stops the server process. The long-running goroutine
-// spawned in startServerWithPort owns cmd.Wait(); shutdown signals the
-// process and waits on s.exited to observe termination.
-// The PID tracking file is removed only after the process is confirmed
-// exited - if SIGKILL fails to reap it, the file is left on disk so a
-// future daemon can finish the job.
+// shutdown terminates the server through the shared native process lifecycle
+// and waits for its single wait owner to observe exit. The PID tracking file is
+// removed only after confirmed exit; otherwise recovery retains the durable
+// record and can finish reaping the process tree.
 func (s *managedServer) shutdown() {
-	if s.cmd == nil || s.cmd.Process == nil {
+	if s.process == nil {
 		removeServerPIDFile(s.pidFile)
 		return
 	}
 
-	// Already exited (e.g. early-exit path)?
 	select {
 	case <-s.exited:
 		removeServerPIDFile(s.pidFile)
@@ -184,22 +203,13 @@ func (s *managedServer) shutdown() {
 	default:
 	}
 
-	_ = signalManagedProcess(s.cmd, false)
-
+	s.process.terminate()
+	timer := time.NewTimer(nativeProcessWaitDelay + time.Second)
+	defer timer.Stop()
 	select {
 	case <-s.exited:
 		removeServerPIDFile(s.pidFile)
-		return
-	case <-time.After(3 * time.Second):
-	}
-
-	slog.Warn("server did not exit gracefully, sending SIGKILL", "pid", s.cmd.Process.Pid)
-	_ = signalManagedProcess(s.cmd, true)
-
-	select {
-	case <-s.exited:
-		removeServerPIDFile(s.pidFile)
-	case <-time.After(5 * time.Second):
-		slog.Warn("server process did not exit after SIGKILL", "pid", s.cmd.Process.Pid)
+	case <-timer.C:
+		slog.Warn("server process did not exit after termination", "pid", s.process.pid())
 	}
 }
