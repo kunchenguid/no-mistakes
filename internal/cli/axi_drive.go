@@ -78,8 +78,8 @@ func newAxiRunCmd() *cobra.Command {
 			"to accomplish (the goal behind the change, not a description of the diff)\n" +
 			"so no-mistakes uses it directly instead of inferring it from transcripts.\n\n" +
 			"The calling agent drives AXI approval gates but does not become the pipeline\n" +
-			"agent. The daemon requires a supported native agent binary or a configured\n" +
-			"ACP target through acpx, and fails before the first step when none can run.\n\n" +
+			"agent. The daemon requires a supported native agent binary and fails before\n" +
+			"the first step when none can run.\n\n" +
 			preserveGateFixCommitsGuidance,
 		Args:          cobra.NoArgs,
 		SilenceErrors: true,

@@ -420,4 +420,8 @@ func TestPipeline_ConfiguredLintCommandStaysFirstClassGate(t *testing.T) {
 	if outcome.ExitCode != 3 {
 		t.Fatalf("exit code = %d, want 3", outcome.ExitCode)
 	}
+	findings, err := types.ParseFindingsJSON(outcome.Findings)
+	if err != nil || len(findings.Items) != 1 || findings.Items[0].Action != types.ActionAutoFix {
+		t.Fatalf("configured lint findings = %+v, %v; want one auto-fix finding", findings, err)
+	}
 }

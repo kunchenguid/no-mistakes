@@ -168,6 +168,7 @@ Previous lint findings to address:
 			Items: []Finding{{
 				Severity:    "warning",
 				Description: fmt.Sprintf("linter found issues (exit code %d)", exitCode),
+				Action:      types.ActionAutoFix,
 			}},
 			Summary: output,
 		}

@@ -97,10 +97,11 @@ Previous test findings to address:
 
 		if exitCode != 0 {
 			findings := Findings{
-				Items: []Finding{{
-					Severity:    "error",
-					Description: fmt.Sprintf("tests failed with exit code %d", exitCode),
-				}},
+			Items: []Finding{{
+				Severity:    "error",
+				Description: fmt.Sprintf("tests failed with exit code %d", exitCode),
+				Action:      types.ActionAutoFix,
+			}},
 				Summary: output,
 				Tested:  tested,
 			}

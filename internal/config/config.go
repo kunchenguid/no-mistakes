@@ -61,15 +61,12 @@ type GlobalConfig struct {
 
 // globalConfigRaw is the on-disk YAML representation with duration as string.
 type globalConfigRaw struct {
-	CITimeout            string         `yaml:"ci_timeout"`
-	DaemonConnectTimeout string         `yaml:"daemon_connect_timeout"`
-	BabysitTimeout       string         `yaml:"babysit_timeout"`
-	StepQuietWarning     string         `yaml:"step_quiet_warning"`
-	LogLevel             string         `yaml:"log_level"`
-	SessionReuse         *bool          `yaml:"session_reuse"`
-	Intent               IntentRaw      `yaml:"intent"`
-	Test                 TestRaw        `yaml:"test"`
-	Routing              *RoutingConfig `yaml:"routing"`
+	CITimeout    string         `yaml:"ci_timeout"`
+	LogLevel     string         `yaml:"log_level"`
+	SessionReuse *bool          `yaml:"session_reuse"`
+	Intent       IntentRaw      `yaml:"intent"`
+	Test         TestRaw        `yaml:"test"`
+	Routing      *RoutingConfig `yaml:"routing"`
 }
 
 // RepoConfig represents .no-mistakes.yaml in a repo root. A repository may map
@@ -190,15 +187,6 @@ const defaultConfigYAML = `# no-mistakes global configuration
 # aborted with: no-mistakes axi abort --run <id>
 ci_timeout: "168h"
 
-# AXI status marks a running/fixing step as quiet when no step log or native
-# agent lifecycle activity has appeared for this long. This is observability
-# only; it never cancels work.
-step_quiet_warning: "10m"
-
-# Maximum time a CLI client waits for an existing daemon socket to accept a
-# connection before failing instead of hanging.
-daemon_connect_timeout: "3s"
-
 # Reuse one durable agent session per run for the review loop: the reviewer
 # keeps a single session across the initial review and every full rereview,
 # and review fixes keep a separate fixer session. Roles never share a session.
@@ -255,6 +243,9 @@ var legacyGlobalKeys = map[string]string{
 	"agent_path_override":    "runner executables are configured via `routing.runners.<name>.executable`",
 	"agent_args_override":    "native agent arguments are derived from routing profile candidates and cannot be overridden",
 	"auto_fix":               "per-step numeric auto-fix limits were removed; repair escalates through the routing cascade",
+	"babysit_timeout":        "use `ci_timeout`; the old spelling is not an alias",
+	"daemon_connect_timeout": "daemon connection readiness is managed internally and is not configurable",
+	"step_quiet_warning":     "step liveness reporting is managed internally and is not configurable",
 }
 
 // legacyGlobalKeyOrder lists legacy keys in a stable order so a config with
@@ -266,7 +257,10 @@ var legacyGlobalKeyOrder = []string{
 	"agent_args_override",
 	"agent_path_override",
 	"auto_fix",
+	"babysit_timeout",
+	"daemon_connect_timeout",
 	"fallback_agents",
+	"step_quiet_warning",
 }
 
 // rejectRemovedKeys fails closed with actionable guidance when a YAML document
@@ -350,31 +344,12 @@ func LoadGlobal(path string) (*GlobalConfig, error) {
 	}
 
 	timeoutValue := raw.CITimeout
-	if timeoutValue == "" {
-		timeoutValue = raw.BabysitTimeout
-	}
 	if timeoutValue != "" {
 		d, err := parseCITimeout(timeoutValue)
 		if err != nil {
 			return nil, err
 		}
 		cfg.CITimeout = d
-	}
-	if raw.StepQuietWarning != "" {
-		d, err := time.ParseDuration(raw.StepQuietWarning)
-		if err != nil {
-			return nil, fmt.Errorf("parse step_quiet_warning %q: %w", raw.StepQuietWarning, err)
-		}
-		if d > 0 {
-			cfg.StepQuietWarning = d
-		}
-	}
-	if raw.DaemonConnectTimeout != "" {
-		d, err := parsePositiveDuration("daemon_connect_timeout", raw.DaemonConnectTimeout)
-		if err != nil {
-			return nil, err
-		}
-		cfg.DaemonConnectTimeout = d
 	}
 	if raw.LogLevel != "" {
 		cfg.LogLevel = raw.LogLevel

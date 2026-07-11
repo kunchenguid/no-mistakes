@@ -3,6 +3,7 @@ package pipeline
 import (
 	"sync"
 
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -41,4 +42,15 @@ func (c *providerCircuits) markOpen(domain types.FailureDomain) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.open[domain] = true
+}
+
+func providerCircuitsFromAttempts(attempts []*db.InvocationAttempt) *providerCircuits {
+	circuits := newProviderCircuits()
+	for _, attempt := range attempts {
+		if attempt == nil || attempt.Terminal == nil || attempt.Terminal.FailureDomain == "" {
+			continue
+		}
+		circuits.markOpen(attempt.Terminal.FailureDomain)
+	}
+	return circuits
 }

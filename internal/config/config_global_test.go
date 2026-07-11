@@ -43,8 +43,6 @@ func TestEnsureDefaultGlobalConfig_CreatesFile(t *testing.T) {
 	content := string(data)
 	for _, want := range []string{
 		"ci_timeout:",
-		"step_quiet_warning:",
-		"daemon_connect_timeout:",
 		"log_level: info",
 	} {
 		if !strings.Contains(content, want) {
@@ -77,19 +75,15 @@ func TestEnsureDefaultGlobalConfig_CreatedConfigIsLoadable(t *testing.T) {
 	}
 }
 
-func TestLoadGlobal_StepQuietWarning(t *testing.T) {
+func TestLoadGlobal_RejectsStepQuietWarning(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	if err := os.WriteFile(path, []byte("step_quiet_warning: 90s\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	cfg, err := LoadGlobal(path)
-	if err != nil {
-		t.Fatalf("LoadGlobal: %v", err)
-	}
-	if cfg.StepQuietWarning != 90*time.Second {
-		t.Fatalf("step_quiet_warning = %v, want 90s", cfg.StepQuietWarning)
+	if _, err := LoadGlobal(path); err == nil {
+		t.Fatal("expected step_quiet_warning to be rejected")
 	}
 }
 
@@ -164,7 +158,6 @@ func TestLoadGlobal_FromFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	data := `ci_timeout: "2h30m"
-daemon_connect_timeout: "4s"
 log_level: "debug"
 `
 	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
@@ -178,9 +171,6 @@ log_level: "debug"
 
 	if cfg.CITimeout != 2*time.Hour+30*time.Minute {
 		t.Errorf("ci_timeout = %v, want %v", cfg.CITimeout, 2*time.Hour+30*time.Minute)
-	}
-	if cfg.DaemonConnectTimeout != 4*time.Second {
-		t.Errorf("daemon_connect_timeout = %v, want 4s", cfg.DaemonConnectTimeout)
 	}
 	if cfg.LogLevel != "debug" {
 		t.Errorf("log_level = %q, want %q", cfg.LogLevel, "debug")
@@ -303,13 +293,6 @@ func TestDefaultConfigYAML_MatchesGoDefaults(t *testing.T) {
 	}
 	if d != DefaultCITimeout {
 		t.Errorf("YAML ci_timeout = %v, Go default = %v", d, DefaultCITimeout)
-	}
-	d, err = time.ParseDuration(raw.DaemonConnectTimeout)
-	if err != nil {
-		t.Fatalf("YAML daemon_connect_timeout %q is not a valid duration: %v", raw.DaemonConnectTimeout, err)
-	}
-	if d != DefaultDaemonConnectTimeout {
-		t.Errorf("YAML daemon_connect_timeout = %v, Go default = %v", d, DefaultDaemonConnectTimeout)
 	}
 	if raw.LogLevel != "info" {
 		t.Errorf("YAML log_level = %q, Go default = %q", raw.LogLevel, "info")

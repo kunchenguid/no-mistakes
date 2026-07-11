@@ -3,11 +3,13 @@ package pipeline
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -216,6 +218,66 @@ func TestExecutor_ResumeRestoresParkedGateAndReviewSessions(t *testing.T) {
 	}
 	if resumed.Status != types.RunCompleted || resumed.AwaitingAgentSince != nil {
 		t.Fatalf("recovered run = status %s awaiting %v, want completed and unparked", resumed.Status, resumed.AwaitingAgentSince)
+	}
+}
+
+func TestExecutor_ResumeRejectsApprovalWithUnresolvedRepair(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	stepResult, err := database.InsertStepResult(run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.StartStep(stepResult.ID); err != nil {
+		t.Fatal(err)
+	}
+	findings := `{"findings":[{"id":"review-1","severity":"error","description":"unresolved","action":"ask-user"}],"summary":"one issue"}`
+	if err := database.SetStepFindings(stepResult.ID, findings); err != nil {
+		t.Fatal(err)
+	}
+	round, err := database.InsertStepRound(stepResult.ID, 1, "initial", &findings, nil, 25)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.StartFindingRepair(db.FindingRepairStart{
+		RunID: run.ID, LineageID: "review-1", StepResultID: stepResult.ID, StepRoundID: round.ID,
+		Severity: "error", Action: types.ActionAskUser, Description: "unresolved", Tier: 0,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateStepStatusWithDuration(stepResult.ID, types.StepStatusAwaitingApproval, 25); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetRunAwaitingAgent(run.ID); err != nil {
+		t.Fatal(err)
+	}
+	run, err = database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	exec := NewExecutor(database, p, nil, nil, []Step{newPassStep(types.StepReview)}, nil)
+	done := make(chan error, 1)
+	go func() { done <- exec.Resume(context.Background(), run, repo, t.TempDir()) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if err := exec.Respond(types.StepReview, types.ActionApprove, nil); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("recovered gate never accepted approval")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "cannot be approved") {
+			t.Fatalf("resume error = %v, want unresolved repair rejection", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("recovered executor timed out")
 	}
 }
 

@@ -57,15 +57,21 @@ type CIStep struct {
 }
 
 // ciRepairBudget bounds CI auto-fix attempts per run. Model selection is the
-// routing contract and per-step numeric limits were removed, so the CI repair
-// budget is a fixed policy constant rather than user configuration.
 const ciRepairBudget = 3
 
-func (s *CIStep) ciFixLimit() int {
+func (s *CIStep) ciFixLimit(sctx *pipeline.StepContext) int {
 	if s.fixBudget != nil {
 		return *s.fixBudget
 	}
-	return ciRepairBudget
+	routing := config.DefaultRoutingConfig()
+	if sctx != nil && sctx.Config != nil && !sctx.Config.Routing.IsZero() {
+		routing = sctx.Config.Routing
+	}
+	profiles, err := routing.ResolveRoute(types.PurposeUnstructuredCIRepair)
+	if err != nil {
+		return 0
+	}
+	return len(profiles)
 }
 
 func (s *CIStep) Name() types.StepName { return types.StepCI }
@@ -239,7 +245,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		}
 
 		// Check CI status - wait for all checks to complete before fixing
-		ciFixLimit := s.ciFixLimit()
+		ciFixLimit := s.ciFixLimit(sctx)
 		checks, err := host.GetChecks(ctx, pr)
 		if err != nil {
 			lastMonitorLog = ""

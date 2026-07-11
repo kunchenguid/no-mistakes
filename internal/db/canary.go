@@ -348,7 +348,16 @@ func computeCanaryRunFacts(q canaryQueryer, runID string) (*CanaryRunFacts, erro
 		return nil, fmt.Errorf("count failovers: %w", err)
 	}
 	var reviewFindings sql.NullString
-	switch err := q.QueryRow(`SELECT findings_json FROM step_results WHERE run_id = ? AND step_name = ? LIMIT 1`, runID, types.StepReview).Scan(&reviewFindings); err {
+	switch err := q.QueryRow(`
+		SELECT round.findings_json
+		FROM step_rounds AS round
+		JOIN step_results AS step ON step.id = round.step_result_id
+		WHERE step.run_id = ?
+		  AND step.step_name = ?
+		  AND round.trigger_type = 'initial'
+		  AND round.state = ?
+		ORDER BY round.round ASC, round.created_at ASC, round.id ASC
+		LIMIT 1`, runID, types.StepReview, StepRoundCompleted).Scan(&reviewFindings); err {
 	case nil, sql.ErrNoRows:
 	default:
 		return nil, fmt.Errorf("load review findings: %w", err)

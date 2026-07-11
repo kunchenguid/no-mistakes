@@ -69,6 +69,13 @@ func TestBodyDocumentsAxiGateGuidance(t *testing.T) {
 	}
 }
 
+func TestBodyDoesNotAdvertiseRemovedACPAgents(t *testing.T) {
+	md := Markdown()
+	if strings.Contains(md, "acpx") || strings.Contains(md, "acp:<target>") {
+		t.Fatal("skill body advertises removed ACP pipeline agents")
+	}
+}
+
 // TestBodyGateTranscriptShape pins the example gate transcript to the AXI
 // renderer's actual output shape: the findings header carries no `line`
 // column, and the help list is the renderer's six entries (approve, fix,

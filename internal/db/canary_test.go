@@ -31,7 +31,10 @@ func seedCompletedCanaryRun(t *testing.T, d *DB, repoID string, execMS int64, ti
 	if err != nil {
 		t.Fatalf("insert step: %v", err)
 	}
+	var initialFindings *string
 	if findings > 0 {
+		value := canaryFindingsJSON(findings)
+		initialFindings = &value
 		if err := d.SetStepFindings(step.ID, canaryFindingsJSON(findings)); err != nil {
 			t.Fatalf("set findings: %v", err)
 		}
@@ -53,13 +56,50 @@ func seedCompletedCanaryRun(t *testing.T, d *DB, repoID string, execMS int64, ti
 	if err := d.FinishInvocationAttempt(attemptID, types.InvocationAttemptTerminal{Outcome: types.InvocationOutcomeSucceeded, DurationMS: execMS}); err != nil {
 		t.Fatalf("finish attempt: %v", err)
 	}
-	if err := d.CompleteReservedStepRound(round.ID, nil, nil, execMS); err != nil {
+	if err := d.CompleteReservedStepRound(round.ID, initialFindings, nil, execMS); err != nil {
 		t.Fatalf("complete round: %v", err)
 	}
 	if err := d.UpdateRunStatus(run.ID, types.RunCompleted); err != nil {
 		t.Fatalf("complete run: %v", err)
 	}
 	return run.ID
+}
+
+func TestComputeCanaryRunFactsRetainsInitialReviewFindings(t *testing.T) {
+	d := openTestDB(t)
+	repo, err := d.InsertRepoWithID("repo-1", "/tmp/repo", "origin", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := d.InsertRun(repo.ID, "feature", "head", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	step, err := d.InsertStepResult(run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial := canaryFindingsJSON(2)
+	if err := d.SetStepFindings(step.ID, initial); err != nil {
+		t.Fatal(err)
+	}
+	round, err := d.ReserveStepRound(step.ID, 1, "initial")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.CompleteReservedStepRound(round.ID, &initial, nil, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.ClearStepFindings(step.ID); err != nil {
+		t.Fatal(err)
+	}
+	facts, err := computeCanaryRunFacts(d, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if facts.InitialFindings != 2 {
+		t.Fatalf("initial findings = %d, want 2 after repair clears current findings", facts.InitialFindings)
+	}
 }
 
 func setRunUpdatedAt(t *testing.T, d *DB, runID string, ts int64) {

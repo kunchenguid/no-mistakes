@@ -11,6 +11,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 func TestTestStep_FixMode(t *testing.T) {
@@ -72,6 +73,19 @@ func TestTestStep_FixMode(t *testing.T) {
 	}
 	if got := lastCommitMessage(t, dir); got != "no-mistakes(test): fix test failures" {
 		t.Fatalf("last commit message = %q", got)
+	}
+}
+
+func TestTestStep_ConfiguredFailureIsAutoFixable(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{Test: "exit 1"})
+	outcome, err := (&TestStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	findings, err := types.ParseFindingsJSON(outcome.Findings)
+	if err != nil || len(findings.Items) != 1 || findings.Items[0].Action != types.ActionAutoFix {
+		t.Fatalf("configured test findings = %+v, %v; want one auto-fix finding", findings, err)
 	}
 }
 

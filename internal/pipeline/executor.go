@@ -193,13 +193,38 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 		}
 	}
 
-	// Freeze the canary baseline + policy fingerprint before the first clean
-	// routed gate is accepted, so the routed cohort compares against a
-	// pre-routing baseline that excludes this run.
+	return e.completeRun(ctx, run, repo, workDir)
+}
+
+func (e *Executor) initializeRunScopes(runID string) {
+	sessionsEnabled := e.config != nil && e.config.SessionReuse
+	e.sessions = NewRunSessions(e.db, runID, e.agent, sessionsEnabled)
+	e.shared = &RunShared{}
+}
+
+func (e *Executor) restoreProviderCircuits(runID string) (*providerCircuits, error) {
+	attempts, err := e.db.GetInvocationAttemptsByRun(runID)
+	if err != nil {
+		return nil, err
+	}
+	return providerCircuitsFromAttempts(attempts), nil
+}
+
+func (e *Executor) requireResolvedBlockingRepairs(runID string, stepName types.StepName) error {
+	unresolved, err := e.db.HasUnresolvedBlockingRepair(runID)
+	if err != nil {
+		return fmt.Errorf("check unresolved repairs before approval: %w", err)
+	}
+	if unresolved {
+		return fmt.Errorf("%s cannot be approved while a blocking finding lineage remains unresolved", stepName)
+	}
+	return nil
+}
+
+func (e *Executor) completeRun(ctx context.Context, run *db.Run, repo *db.Repo, workDir string) error {
 	if err := e.maybeActivateCanary(ctx, run, workDir); err != nil {
 		return e.failRun(run, repo, err, ctx)
 	}
-	// Mark run as completed
 	if err := e.db.UpdateRunStatus(run.ID, types.RunCompleted); err != nil {
 		return fmt.Errorf("update run status: %w", err)
 	}
@@ -209,18 +234,14 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 	return nil
 }
 
-func (e *Executor) initializeRunScopes(runID string) {
-	sessionsEnabled := e.config != nil && e.config.SessionReuse
-	e.sessions = NewRunSessions(e.db, runID, e.agent, sessionsEnabled)
-	e.shared = &RunShared{}
-}
-
 type stepExecutionState struct {
-	fixing           bool
-	previousFindings string
-	roundNum         int
-	executionMS      int64
-	currentRoundID   string
+	fixing            bool
+	previousFindings  string
+	roundNum          int
+	executionMS       int64
+	currentRoundID    string
+	consentedFindings string
+	consentedIDs      []string
 }
 
 type recoveredGate struct {
@@ -259,7 +280,10 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		return e.failRun(run, repo, fmt.Errorf("create log dir: %w", err))
 	}
 	e.initializeRunScopes(run.ID)
-	circuits := newProviderCircuits()
+	circuits, err := e.restoreProviderCircuits(run.ID)
+	if err != nil {
+		return e.failRun(run, repo, fmt.Errorf("restore provider circuits: %w", err), ctx)
+	}
 
 	e.mu.Lock()
 	e.waiting = true
@@ -306,16 +330,29 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 	telemetry.Track("approval", approvalFields)
 	switch response.action {
 	case types.ActionApprove:
+		if err := e.requireResolvedBlockingRepairs(run.ID, gate.step.Name()); err != nil {
+			return e.failRun(run, repo, err, ctx)
+		}
 		if err := e.db.CompleteStepWithStatus(gate.stepResult.ID, types.StepStatusCompleted, recoveredExitCode(gate.stepResult), duration, recoveredLogPath(gate.stepResult)); err != nil {
 			return e.failRun(run, repo, fmt.Errorf("complete recovered step %s: %w", gate.step.Name(), err), ctx)
 		}
 		e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusCompleted), "", "", "", &duration)
+		if gate.step.Name() == types.StepLint {
+			if err := e.sealCandidate(ctx, run, workDir); err != nil {
+				return e.failRun(run, repo, err, ctx)
+			}
+		}
 		return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, gate.index+1, circuits)
 	case types.ActionSkip:
 		if err := e.db.CompleteStepWithStatus(gate.stepResult.ID, types.StepStatusSkipped, recoveredExitCode(gate.stepResult), duration, recoveredLogPath(gate.stepResult)); err != nil {
 			return e.failRun(run, repo, fmt.Errorf("skip recovered step %s: %w", gate.step.Name(), err), ctx)
 		}
 		e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusSkipped), "", "", "", &duration)
+		if gate.step.Name() == types.StepLint {
+			if err := e.sealCandidate(ctx, run, workDir); err != nil {
+				return e.failRun(run, repo, err, ctx)
+			}
+		}
 		return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, gate.index+1, circuits)
 	case types.ActionAbort:
 		if dbErr := e.db.FailStep(gate.stepResult.ID, "aborted by user", duration); dbErr != nil {
@@ -350,12 +387,19 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 			roundNum:         gate.round,
 			executionMS:      duration,
 			currentRoundID:   gate.lastRoundID,
+			consentedFindings: gate.findings,
+			consentedIDs:      response.findingIDs,
 		}, circuits)
 		if err != nil {
 			return e.failRun(run, repo, err, ctx)
 		}
 		if skipRemaining {
-			return e.skipRecoveredRemainder(run, repo, gate.index+1)
+			return e.skipRecoveredRemainder(ctx, run, repo, workDir, gate.index+1)
+		}
+		if gate.step.Name() == types.StepLint {
+			if err := e.sealCandidate(ctx, run, workDir); err != nil {
+				return e.failRun(run, repo, err, ctx)
+			}
 		}
 		return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, gate.index+1, circuits)
 	default:
@@ -432,18 +476,18 @@ func (e *Executor) executeRecoveredRemainder(ctx context.Context, run *db.Run, r
 			return e.failRun(run, repo, err, ctx)
 		}
 		if skipRemaining {
-			return e.skipRecoveredRemainder(run, repo, index+1)
+			return e.skipRecoveredRemainder(ctx, run, repo, workDir, index+1)
+		}
+		if e.steps[index].Name() == types.StepLint {
+			if err := e.sealCandidate(ctx, run, workDir); err != nil {
+				return e.failRun(run, repo, err, ctx)
+			}
 		}
 	}
-	if err := e.db.UpdateRunStatus(run.ID, types.RunCompleted); err != nil {
-		return fmt.Errorf("complete recovered run: %w", err)
-	}
-	run.Status = types.RunCompleted
-	e.emitRunEvent(ipc.EventRunCompleted, run, repo)
-	return nil
+	return e.completeRun(ctx, run, repo, workDir)
 }
 
-func (e *Executor) skipRecoveredRemainder(run *db.Run, repo *db.Repo, start int) error {
+func (e *Executor) skipRecoveredRemainder(ctx context.Context, run *db.Run, repo *db.Repo, workDir string, start int) error {
 	results, err := e.db.GetStepsByRun(run.ID)
 	if err != nil {
 		return e.failRun(run, repo, fmt.Errorf("get recovered steps: %w", err))
@@ -457,12 +501,7 @@ func (e *Executor) skipRecoveredRemainder(run *db.Run, repo *db.Repo, start int)
 		}
 		e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, e.steps[index].Name(), string(types.StepStatusSkipped), "", "", "", nil)
 	}
-	if err := e.db.UpdateRunStatus(run.ID, types.RunCompleted); err != nil {
-		return fmt.Errorf("complete recovered run: %w", err)
-	}
-	run.Status = types.RunCompleted
-	e.emitRunEvent(ipc.EventRunCompleted, run, repo)
-	return nil
+	return e.completeRun(ctx, run, repo, workDir)
 }
 
 func recoveredStepDuration(step *db.StepResult) int64 {
@@ -674,6 +713,21 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	stepSkipped := false
 	currentRoundID := state.currentRoundID
 	postRepairRereview := false
+	var recoveredOutcome *StepOutcome
+	if state.consentedFindings != "" && stepName == types.StepReview && e.routingActive() {
+		remaining, err := e.repairConsentedReviewAtGate(ctx, sctx, run, sr, state.consentedFindings, state.consentedIDs, currentRoundID, &roundNum)
+		if err != nil {
+			return false, err
+		}
+		if remaining == "" {
+			sctx.Fixing = false
+			postRepairRereview = true
+			nextTrigger = "auto_fix"
+		} else {
+			sctx.Fixing = true
+			recoveredOutcome = &StepOutcome{NeedsApproval: true, Findings: remaining}
+		}
+	}
 
 	// Execute with possible fix loop.
 	for {
@@ -695,7 +749,13 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			StepResultID: sr.ID,
 			StepRoundID:  currentRound.ID,
 		}
-		outcome, err := step.Execute(sctx)
+		outcome := recoveredOutcome
+		var err error
+		if outcome == nil {
+			outcome, err = step.Execute(sctx)
+		} else {
+			recoveredOutcome = nil
+		}
 		roundDuration := time.Since(phaseStart).Milliseconds()
 		if err != nil {
 			durationMS := executionMS + roundDuration
@@ -910,12 +970,8 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 
 		switch response.action {
 		case types.ActionApprove:
-			unresolved, err := e.db.HasUnresolvedBlockingRepair(run.ID)
-			if err != nil {
-				return false, fmt.Errorf("check unresolved repairs before approval: %w", err)
-			}
-			if unresolved {
-				return false, fmt.Errorf("%s cannot be approved while a blocking finding lineage remains unresolved", stepName)
+			if err := e.requireResolvedBlockingRepairs(run.ID, stepName); err != nil {
+				return false, err
 			}
 			// Approved - execution already frozen in executionMS, reset phaseStart
 			// so the done label computes no additional elapsed.
@@ -951,41 +1007,9 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			// intent-sensitive cascade. This is the only path that may fix an
 			// ask-user finding.
 			if stepName == types.StepReview && e.routingActive() {
-				if currentRoundID == "" {
-					return false, fmt.Errorf("consented review repair has no source round")
-				}
-				idsJSON := marshalFindingIDs(response.findingIDs)
-				if idsJSON == "" {
-					return false, fmt.Errorf("consented review repair requires explicit finding ids")
-				}
-				if err := e.db.SetStepRoundSelection(currentRoundID, &idsJSON, db.RoundSelectionSourceUser); err != nil {
-					return false, fmt.Errorf("record consented review selection: %w", err)
-				}
-				reserveRepairRound := func(trigger string) (*db.StepRound, error) {
-					roundNum++
-					return e.db.ReserveStepRound(sr.ID, roundNum, trigger)
-				}
-				result, err := e.repairConsentedFindings(ctx, sctx, run, sr, repo.DefaultBranch, currentRoundID, outcome.Findings, response.findingIDs, reserveRepairRound)
+				remainingFindings, err := e.repairConsentedReviewAtGate(ctx, sctx, run, sr, outcome.Findings, response.findingIDs, currentRoundID, &roundNum)
 				if err != nil {
-					return false, fmt.Errorf("repair consented review findings: %w", err)
-				}
-				if !result.Owned || !result.Resolved {
-					return false, fmt.Errorf("consented review repair did not durably resolve every selected finding")
-				}
-				updatedFindings, err := mergeRepairFindingsJSON(outcome.Findings, result.NewFindings)
-				if err != nil {
-					return false, fmt.Errorf("merge consented review verifier findings: %w", err)
-				}
-				remainingFindings, err := removeFindingsByID(updatedFindings, response.findingIDs)
-				if err != nil {
-					return false, fmt.Errorf("retain unselected review findings: %w", err)
-				}
-				if remainingFindings == "" {
-					if err := e.db.ClearStepFindings(sr.ID); err != nil {
-						return false, fmt.Errorf("clear resolved consented review findings: %w", err)
-					}
-				} else if err := e.db.SetStepFindings(sr.ID, remainingFindings); err != nil {
-					return false, fmt.Errorf("persist unselected review findings: %w", err)
+					return false, err
 				}
 				outcome.Findings = remainingFindings
 				e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFixing), "", "", "", nil)

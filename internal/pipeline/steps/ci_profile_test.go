@@ -7,6 +7,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -72,5 +73,17 @@ func TestCIStep_ProfileExhaustionStopsWithoutTierJump(t *testing.T) {
 	}
 	if got := gitCmd(t, upstream, "rev-parse", "refs/heads/feature"); got != headSHA {
 		t.Fatalf("remote changed to %s after profile exhaustion; want %s", got, headSHA)
+	}
+}
+
+func TestCIStep_CIRepairLimitFollowsRoute(t *testing.T) {
+	routing := config.DefaultRoutingConfig()
+	profiles, err := routing.ResolveRoute(types.PurposeUnstructuredCIRepair)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sctx := &pipeline.StepContext{Config: &config.Config{Routing: routing}}
+	if got := (&CIStep{}).ciFixLimit(sctx); got != len(profiles) {
+		t.Fatalf("CI repair limit = %d, want route length %d", got, len(profiles))
 	}
 }

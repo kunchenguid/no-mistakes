@@ -1,8 +1,6 @@
 package steps
 
 import (
-	"strings"
-
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/intent"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
@@ -89,9 +87,8 @@ func cleanedUserIntent(sctx *pipeline.StepContext) string {
 	if sctx == nil {
 		return ""
 	}
-	raw := strings.TrimSpace(sctx.UserIntent)
-	if raw == "" {
+	if sctx.UserIntent == "" {
 		return ""
 	}
-	return intent.RedactSecrets(intent.StripAdversarial(sanitizePromptMultilineText(raw)))
+	return intent.CleanForPrompt(sctx.UserIntent)
 }

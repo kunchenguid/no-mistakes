@@ -7,6 +7,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/git"
+	"github.com/kunchenguid/no-mistakes/internal/intent"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -300,12 +301,5 @@ func sanitizePromptText(text string) string {
 }
 
 func sanitizePromptMultilineText(text string) string {
-	text = strings.NewReplacer("<<<<<<<", " ", "=======", " ", ">>>>>>>", " ").Replace(text)
-	text = strings.ReplaceAll(text, "\r\n", "\n")
-	text = strings.ReplaceAll(text, "\r", "\n")
-	lines := strings.Split(text, "\n")
-	for i := range lines {
-		lines[i] = strings.Join(strings.Fields(lines[i]), " ")
-	}
-	return strings.TrimSpace(strings.Join(lines, "\n"))
+	return intent.CleanForPrompt(text)
 }

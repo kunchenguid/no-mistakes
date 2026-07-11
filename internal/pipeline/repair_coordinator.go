@@ -494,6 +494,46 @@ func (e *Executor) repairConsentedFindings(ctx context.Context, sctx *StepContex
 	return repairResultFromStates(states, seeds), nil
 }
 
+func (e *Executor) repairConsentedReviewAtGate(ctx context.Context, sctx *StepContext, run *db.Run, sr *db.StepResult, findingsJSON string, findingIDs []string, sourceRoundID string, roundNum *int) (string, error) {
+	if sourceRoundID == "" {
+		return "", fmt.Errorf("consented review repair has no source round")
+	}
+	idsJSON := marshalFindingIDs(findingIDs)
+	if idsJSON == "" {
+		return "", fmt.Errorf("consented review repair requires explicit finding ids")
+	}
+	if err := e.db.SetStepRoundSelection(sourceRoundID, &idsJSON, db.RoundSelectionSourceUser); err != nil {
+		return "", fmt.Errorf("record consented review selection: %w", err)
+	}
+	reserveRepairRound := func(trigger string) (*db.StepRound, error) {
+		*roundNum = *roundNum + 1
+		return e.db.ReserveStepRound(sr.ID, *roundNum, trigger)
+	}
+	result, err := e.repairConsentedFindings(ctx, sctx, run, sr, sctx.Repo.DefaultBranch, sourceRoundID, findingsJSON, findingIDs, reserveRepairRound)
+	if err != nil {
+		return "", fmt.Errorf("repair consented review findings: %w", err)
+	}
+	if !result.Owned || !result.Resolved {
+		return "", fmt.Errorf("consented review repair did not durably resolve every selected finding")
+	}
+	updatedFindings, err := mergeRepairFindingsJSON(findingsJSON, result.NewFindings)
+	if err != nil {
+		return "", fmt.Errorf("merge consented review verifier findings: %w", err)
+	}
+	remainingFindings, err := removeFindingsByID(updatedFindings, findingIDs)
+	if err != nil {
+		return "", fmt.Errorf("retain unselected review findings: %w", err)
+	}
+	if remainingFindings == "" {
+		if err := e.db.ClearStepFindings(sr.ID); err != nil {
+			return "", fmt.Errorf("clear resolved consented review findings: %w", err)
+		}
+	} else if err := e.db.SetStepFindings(sr.ID, remainingFindings); err != nil {
+		return "", fmt.Errorf("persist unselected review findings: %w", err)
+	}
+	return remainingFindings, nil
+}
+
 // findByIDs returns the actionable findings whose display id was consented; a
 // no-op finding is never repaired even when its id is selected.
 func findByIDs(items []types.Finding, ids []string) []types.Finding {
