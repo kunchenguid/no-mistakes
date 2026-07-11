@@ -271,6 +271,38 @@ func TestTestStep_RejectsIncompleteEvidencePayload(t *testing.T) {
 	}
 }
 
+func TestTestStep_RejectsStagedPathsOutsidePublishableOutputs(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			evidenceDir := filepath.Join(dir, ".no-mistakes", "evidence", "refs", "heads", "feature")
+			if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
+				return nil, err
+			}
+			if err := os.WriteFile(filepath.Join(evidenceDir, "result.txt"), []byte("passed"), 0o644); err != nil {
+				return nil, err
+			}
+			if err := os.WriteFile(filepath.Join(dir, "unrelated.go"), []byte("package unrelated\n"), 0o644); err != nil {
+				return nil, err
+			}
+			gitCmd(t, dir, "add", "unrelated.go")
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"evidence gathered","tested":["manual evidence check"],"testing_summary":"checked evidence","artifacts":[]}`)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.UserIntent = "Show users a success screen after checkout"
+	sctx.Config.Test.Evidence = config.Evidence{StoreInRepo: true, Dir: ".no-mistakes/evidence"}
+
+	if _, err := (&TestStep{}).Execute(sctx); err == nil {
+		t.Fatal("expected test step to reject an unrelated cached path")
+	}
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != headSHA {
+		t.Fatalf("HEAD = %s, want no test-output commit from a mixed index", got)
+	}
+}
+
 func TestTestStep_InRepoEvidenceFallsBackWhenConfiguredDirEscapesWorktree(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

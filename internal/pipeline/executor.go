@@ -520,21 +520,6 @@ func (e *Executor) recoveredGate(runID string) (*recoveredGate, error) {
 }
 
 func (e *Executor) recoveredGateSourceRound(stepName types.StepName, rounds []*db.StepRound, findings string) (*db.StepRound, error) {
-	if stepName == types.StepReview {
-		for index := len(rounds) - 1; index >= 0; index-- {
-			round := rounds[index]
-			attempts, err := e.db.GetInvocationAttemptsByRound(round.ID)
-			if err != nil {
-				return nil, fmt.Errorf("load recovered review attempts: %w", err)
-			}
-			for _, attempt := range attempts {
-				if attempt.Start.Purpose == types.PurposeInitialReview && attempt.Terminal != nil && attempt.Terminal.Outcome == types.InvocationOutcomeSucceeded {
-					return round, nil
-				}
-			}
-		}
-	}
-
 	if len(rounds) == 0 {
 		return nil, nil
 	}
@@ -603,6 +588,20 @@ func (e *Executor) recoveredGateSourceRound(stepName types.StepName, rounds []*d
 				repair.Line == finding.Line {
 				advanceSource(repairRound)
 				break
+			}
+		}
+	}
+	if stepName == types.StepReview {
+		for index := len(rounds) - 1; index >= 0; index-- {
+			round := rounds[index]
+			attempts, err := e.db.GetInvocationAttemptsByRound(round.ID)
+			if err != nil {
+				return nil, fmt.Errorf("load recovered review attempts: %w", err)
+			}
+			for _, attempt := range attempts {
+				if attempt.Start.Purpose == types.PurposeInitialReview && attempt.Terminal != nil && attempt.Terminal.Outcome == types.InvocationOutcomeSucceeded {
+					return round, nil
+				}
 			}
 		}
 	}

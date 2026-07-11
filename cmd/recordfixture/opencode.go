@@ -173,11 +173,30 @@ func captureOpencodeFlavour(ctx context.Context, baseURL, dir, prompt, schema st
 	}
 
 	idleCtx, idleCancel := context.WithTimeout(ctx, 5*time.Second)
-	idleSeen := sseCapture.WaitForIdle(idleCtx) == nil
+	var (
+		idleSeen   bool
+		streamDone bool
+		streamErr  error
+	)
+	select {
+	case <-sseCapture.idleDone():
+		idleSeen = true
+	case streamErr = <-sseDone:
+		streamDone = true
+		select {
+		case <-sseCapture.idleDone():
+			idleSeen = true
+		default:
+		}
+	case <-idleCtx.Done():
+	}
 	idleCancel()
 	sseCancel()
-	if err := <-sseDone; err != nil && !errors.Is(err, context.Canceled) {
-		return fmt.Errorf("capture SSE: %w", err)
+	if !streamDone {
+		streamErr = <-sseDone
+	}
+	if streamErr != nil && !errors.Is(streamErr, context.Canceled) {
+		return fmt.Errorf("capture SSE: %w", streamErr)
 	}
 	if !idleSeen {
 		return fmt.Errorf("capture SSE: missing session.idle event")

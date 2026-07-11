@@ -132,7 +132,8 @@ By default, evidence artifacts stay in a temporary directory keyed by run ID and
 | `test.evidence.store_in_repo` | `bool` | `false` | Commit and push test evidence artifacts from inside the repo worktree |
 | `test.evidence.dir` | `string` | `.no-mistakes/evidence` | Repo-relative parent directory used when `store_in_repo` is true |
 
-When `store_in_repo` is true, the test step writes evidence under `<dir>/<branch-slug>` and the push step stages files from that directory before committing agent changes.
+When `store_in_repo` is true, the test step writes, stages, and commits evidence under `<dir>/<branch-slug>` before the candidate is sealed.
+Push transports that sealed candidate without staging or committing files.
 Branch slashes become nested directories, unsafe branch characters are replaced, and an empty branch slug falls back to the run ID.
 If `dir` is absolute, escapes the worktree, points into `.git`, crosses a symlink, or is ignored by Git, no-mistakes falls back to temporary evidence storage for that run.
 

@@ -97,11 +97,11 @@ Previous test findings to address:
 
 		if exitCode != 0 {
 			findings := Findings{
-			Items: []Finding{{
-				Severity:    "error",
-				Description: fmt.Sprintf("tests failed with exit code %d", exitCode),
-				Action:      types.ActionAutoFix,
-			}},
+				Items: []Finding{{
+					Severity:    "error",
+					Description: fmt.Sprintf("tests failed with exit code %d", exitCode),
+					Action:      types.ActionAutoFix,
+				}},
 				Summary: output,
 				Tested:  tested,
 			}
@@ -285,21 +285,38 @@ Rules:
 // add -A — so earlier steps' uncommitted work is left for their own owners.
 func commitTestOutputs(sctx *pipeline.StepContext, evidenceLocation testEvidenceLocation, newTests []string) error {
 	ctx := sctx.Ctx
+	evidencePath := ""
 	if evidenceLocation.StoreInRepo && !gitIgnoresPath(ctx, sctx.WorkDir, evidenceLocation.Dir) && dirHasFiles(evidenceLocation.Dir) {
 		if rel, err := filepath.Rel(sctx.WorkDir, evidenceLocation.Dir); err == nil && rel != "." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel) {
+			evidencePath = filepath.ToSlash(rel)
 			if _, err := git.Run(ctx, sctx.WorkDir, "add", "-f", "--", filepath.ToSlash(rel)); err != nil {
 				return fmt.Errorf("stage test evidence: %w", err)
 			}
 		}
 	}
+	newTestPaths := make(map[string]struct{}, len(newTests))
 	for _, f := range newTests {
 		if _, err := git.Run(ctx, sctx.WorkDir, "add", "--", f); err != nil {
 			return fmt.Errorf("stage new test file %s: %w", f, err)
 		}
+		newTestPaths[filepath.ToSlash(f)] = struct{}{}
 	}
-	cached, _ := git.Run(ctx, sctx.WorkDir, "diff", "--cached", "--name-only")
-	if strings.TrimSpace(cached) == "" {
+	cached, err := git.Run(ctx, sctx.WorkDir, "diff", "--cached", "--name-only", "-z")
+	if err != nil {
+		return fmt.Errorf("list cached test outputs: %w", err)
+	}
+	if cached == "" {
 		return nil
+	}
+	for _, path := range strings.Split(cached, "\x00") {
+		if path == "" {
+			continue
+		}
+		_, isNewTest := newTestPaths[path]
+		isEvidence := evidencePath != "" && (path == evidencePath || strings.HasPrefix(path, evidencePath+"/"))
+		if !isNewTest && !isEvidence {
+			return fmt.Errorf("refuse to commit cached path outside test outputs: %s", path)
+		}
 	}
 	if _, err := git.Run(ctx, sctx.WorkDir, "commit", "-m", "no-mistakes(test): record test evidence and new tests"); err != nil {
 		return fmt.Errorf("commit test outputs: %w", err)

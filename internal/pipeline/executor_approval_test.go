@@ -497,6 +497,75 @@ func TestExecutorRecoveredNonReviewCompositeGateRejectsCorruptOrUnownedFindings(
 	}
 }
 
+func TestExecutorRecoveredReviewGateRejectsCorruptOrUnownedFindings(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		findings string
+	}{
+		{name: "corrupt", findings: `{"findings":[`},
+		{name: "unowned", findings: `{"findings":[{"id":"review-original","severity":"error","description":"review failed","action":"auto-fix"},{"id":"intruder","severity":"warning","description":"not produced by any round","action":"ask-user"}],"summary":"contains unowned finding"}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			database, p, run, _ := setupTest(t)
+			if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+				t.Fatal(err)
+			}
+			stepResult, err := database.InsertStepResult(run.ID, types.StepReview)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := database.StartStep(stepResult.ID); err != nil {
+				t.Fatal(err)
+			}
+			initialFindings := `{"findings":[{"id":"review-original","severity":"error","description":"review failed","action":"auto-fix"}],"summary":"initial failure"}`
+			round, err := database.ReserveStepRound(stepResult.ID, 1, "initial")
+			if err != nil {
+				t.Fatal(err)
+			}
+			attempt, err := database.StartInvocationAttempt(types.InvocationAttemptStart{
+				Purpose: types.PurposeInitialReview,
+				Role:    types.InvocationRoleVerifier,
+				Scope: types.InvocationScope{
+					Kind:         types.InvocationScopePipeline,
+					RunID:        run.ID,
+					StepResultID: stepResult.ID,
+					StepRoundID:  round.ID,
+				},
+				CandidateKey: "review_strong:0:codex",
+				Candidate: types.InvocationCandidate{
+					Profile: "review_strong",
+					Runner:  types.RunnerCodex,
+					Model:   "test",
+					Effort:  types.EffortMedium,
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := database.FinishInvocationAttempt(attempt, types.InvocationAttemptTerminal{Outcome: types.InvocationOutcomeSucceeded}); err != nil {
+				t.Fatal(err)
+			}
+			if err := database.CompleteReservedStepRound(round.ID, &initialFindings, nil, 10); err != nil {
+				t.Fatal(err)
+			}
+			if err := database.SetStepFindings(stepResult.ID, test.findings); err != nil {
+				t.Fatal(err)
+			}
+			if err := database.UpdateStepStatusWithDuration(stepResult.ID, types.StepStatusAwaitingApproval, 10); err != nil {
+				t.Fatal(err)
+			}
+			if err := database.SetRunAwaitingAgent(run.ID); err != nil {
+				t.Fatal(err)
+			}
+
+			executor := NewExecutor(database, p, nil, nil, []Step{newPassStep(types.StepReview)}, nil)
+			if _, err := executor.recoveredGate(run.ID); err == nil {
+				t.Fatal("recoveredGate accepted corrupt or unowned review findings")
+			}
+		})
+	}
+}
+
 func TestExecutor_ResumeRejectsApprovalWithUnresolvedRepair(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {

@@ -44,6 +44,8 @@ func TestCaptureOpencodeFlavourRequiresSessionIdle(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/":
+			w.WriteHeader(http.StatusNotFound)
 		case r.Method == http.MethodPost && r.URL.Path == "/session":
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"id":"sess-123"}`))
@@ -69,6 +71,7 @@ func TestCaptureOpencodeFlavourRequiresSessionIdle(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
+	started := time.Now()
 	err := captureOpencodeFlavour(ctx, server.URL, dir, "hi", "")
 	if err == nil {
 		t.Fatal("expected error when session.idle is missing")
@@ -78,6 +81,9 @@ func TestCaptureOpencodeFlavourRequiresSessionIdle(t *testing.T) {
 	}
 	if _, statErr := os.Stat(filepath.Join(dir, "sse.txt")); !os.IsNotExist(statErr) {
 		t.Fatalf("sse.txt should not be written on truncated capture, stat err = %v", statErr)
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("capture waited %s after the SSE stream ended without session.idle", elapsed)
 	}
 }
 
@@ -90,6 +96,8 @@ func TestCaptureOpencodeFlavourWaitsForSSESubscription(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/":
+			w.WriteHeader(http.StatusNotFound)
 		case r.Method == http.MethodPost && r.URL.Path == "/session":
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"id":"sess-123"}`))
