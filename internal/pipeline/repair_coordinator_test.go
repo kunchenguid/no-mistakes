@@ -1375,6 +1375,42 @@ func TestEscalatePatchCausedInheritsNextTier(t *testing.T) {
 	}
 }
 
+func TestEscalatePreservesEveryPatchCausedFinding(t *testing.T) {
+	fake := &fakeRepairInvoker{verify: func(call int, ids []string) verdictSpec {
+		if call == 0 {
+			return verdictSpec{
+				resolved: map[string]bool{ids[0]: true},
+				newFindings: []newFindingSpec{
+					{description: "first regression from the fix", severity: "error", action: "auto-fix", causedBy: ids[0]},
+					{description: "second regression from the fix", severity: "warning", action: "auto-fix", causedBy: ids[0]},
+				},
+			}
+		}
+		return verdictSpec{resolved: allResolved(ids)}
+	}}
+	rc, seeds := repairFixture(t, fake, []types.Finding{blockingFinding("review-1", "nil deref")})
+	states, err := rc.escalateBatch(context.Background(), seeds)
+	if err != nil {
+		t.Fatalf("escalateBatch: %v", err)
+	}
+	if len(states) != 2 {
+		t.Fatalf("states = %d, want every active patch-caused finding", len(states))
+	}
+	repairs, err := rc.db.GetFindingRepairsByRun(rc.run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptions := map[string]bool{}
+	for _, repair := range repairs {
+		descriptions[repair.Description] = true
+	}
+	for _, description := range []string{"nil deref", "first regression from the fix", "second regression from the fix"} {
+		if !descriptions[description] {
+			t.Fatalf("repair history dropped %q: %+v", description, repairs)
+		}
+	}
+}
+
 func TestEscalateUnrelatedFindingCreatesSeparateRoot(t *testing.T) {
 	fake := &fakeRepairInvoker{verify: func(call int, ids []string) verdictSpec {
 		if call == 0 {

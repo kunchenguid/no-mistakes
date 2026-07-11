@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -197,7 +198,7 @@ type lineageState struct {
 // repairCandidateSnapshot identifies the complete publishable candidate around
 // a verifier invocation. HEAD and the index tree protect committed and staged
 // state; the binary diff protects tracked worktree content; porcelain status
-// plus content hashes protect every non-ignored untracked path.
+// plus content hashes protect every untracked and ignored path.
 type repairCandidateSnapshot struct {
 	head          string
 	indexTree     string
@@ -209,7 +210,7 @@ type repairCandidateSnapshot struct {
 // repairAttemptSnapshot is the transaction boundary for one routed fixer
 // request and every concrete adapter attempt nested inside it. The retained
 // stash commit captures staged and unstaged tracked state, while the private
-// temporary tree captures every non-ignored untracked path, including content,
+// temporary tree captures every untracked and ignored path, including content,
 // symlink targets, and permission modes.
 type repairAttemptSnapshot struct {
 	restoreContext context.Context
@@ -228,6 +229,27 @@ type repairAttemptSnapshot struct {
 	cleaned bool
 }
 
+type rebaseRepairAttemptSnapshot struct {
+	restoreContext context.Context
+	workDir        string
+	target         string
+	headRef        string
+	originalHead   string
+	status         string
+	conflictHash   string
+	untrackedDir   string
+	untrackedPaths []string
+	untrackedHash  string
+
+	mu      sync.Mutex
+	cleaned bool
+}
+
+type repairAttemptIsolation interface {
+	agent.AttemptIsolation
+	cleanup()
+}
+
 // prepareFixerAttemptIsolation installs one exact candidate snapshot only for
 // the registry-authorized fixer role. An existing isolation is reused so
 // session, routing, and native retry layers all restore the same baseline.
@@ -243,7 +265,12 @@ func prepareFixerAttemptIsolation(ctx context.Context, role types.InvocationRole
 	return snapshot.cleanup, nil
 }
 
-func captureRepairAttempt(ctx context.Context, workDir string) (*repairAttemptSnapshot, error) {
+func captureRepairAttempt(ctx context.Context, workDir string) (repairAttemptIsolation, error) {
+	if rebaseSnapshot, active, err := captureRebaseRepairAttempt(ctx, workDir); err != nil {
+		return nil, err
+	} else if active {
+		return rebaseSnapshot, nil
+	}
 	snapshot := &repairAttemptSnapshot{
 		restoreContext: context.WithoutCancel(ctx),
 		workDir:        workDir,
@@ -302,24 +329,169 @@ func captureRepairAttempt(ctx context.Context, workDir string) (*repairAttemptSn
 	return snapshot, nil
 }
 
-func snapshotRepairUntracked(ctx context.Context, workDir, snapshotDir string) ([]string, error) {
-	output, err := repairGitOutput(ctx, workDir, "ls-files", "--others", "--exclude-standard", "-z")
+func captureRebaseRepairAttempt(ctx context.Context, workDir string) (*rebaseRepairAttemptSnapshot, bool, error) {
+	rebaseDir, err := repairRebaseDir(ctx, workDir)
 	if err != nil {
-		return nil, fmt.Errorf("list untracked fixer candidate paths: %w", err)
+		return nil, false, err
 	}
-	var paths []string
+	if rebaseDir == "" {
+		return nil, false, nil
+	}
+	conflictHash, err := captureRepairConflictHash(ctx, workDir)
+	if err != nil {
+		return nil, false, err
+	}
+	if conflictHash == "" {
+		return nil, false, nil
+	}
+	target, err := readRepairRebaseFile(rebaseDir, "onto")
+	if err != nil {
+		return nil, false, err
+	}
+	headRef, err := readRepairRebaseFile(rebaseDir, "head-name")
+	if err != nil {
+		return nil, false, err
+	}
+	originalHead, err := readRepairRebaseFile(rebaseDir, "orig-head")
+	if err != nil {
+		return nil, false, err
+	}
+	status, err := git.Run(ctx, workDir, "status", "--porcelain=v1", "--untracked-files=all")
+	if err != nil {
+		return nil, false, fmt.Errorf("snapshot conflicted fixer candidate status: %w", err)
+	}
+	snapshot := &rebaseRepairAttemptSnapshot{
+		restoreContext: context.WithoutCancel(ctx),
+		workDir:        workDir,
+		target:         target,
+		headRef:        headRef,
+		originalHead:   originalHead,
+		status:         status,
+		conflictHash:   conflictHash,
+	}
+	var complete bool
+	defer func() {
+		if !complete {
+			snapshot.cleanup()
+		}
+	}()
+	snapshot.untrackedDir, err = os.MkdirTemp("", "no-mistakes-rebase-candidate-*")
+	if err != nil {
+		return nil, false, fmt.Errorf("create conflicted fixer candidate snapshot: %w", err)
+	}
+	snapshot.untrackedPaths, err = snapshotRepairUntracked(ctx, workDir, snapshot.untrackedDir)
+	if err != nil {
+		return nil, false, err
+	}
+	snapshot.untrackedHash, err = captureRepairUntrackedHash(ctx, workDir)
+	if err != nil {
+		return nil, false, err
+	}
+	complete = true
+	return snapshot, true, nil
+}
+
+func repairRebaseDir(ctx context.Context, workDir string) (string, error) {
+	for _, name := range []string{"rebase-merge", "rebase-apply"} {
+		path, err := git.Run(ctx, workDir, "rev-parse", "--git-path", name)
+		if err != nil {
+			return "", fmt.Errorf("resolve rebase state path: %w", err)
+		}
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(workDir, path)
+		}
+		if info, err := os.Stat(path); err == nil && info.IsDir() {
+			return path, nil
+		} else if err != nil && !os.IsNotExist(err) {
+			return "", fmt.Errorf("inspect rebase state path: %w", err)
+		}
+	}
+	return "", nil
+}
+
+func readRepairRebaseFile(rebaseDir, name string) (string, error) {
+	contents, err := os.ReadFile(filepath.Join(rebaseDir, name))
+	if err != nil {
+		return "", fmt.Errorf("read rebase %s: %w", name, err)
+	}
+	value := strings.TrimSpace(string(contents))
+	if value == "" {
+		return "", fmt.Errorf("rebase %s is empty", name)
+	}
+	return value, nil
+}
+
+func captureRepairConflictHash(ctx context.Context, workDir string) (string, error) {
+	output, err := repairGitOutput(ctx, workDir, "diff", "--name-only", "--diff-filter=U", "-z")
+	if err != nil {
+		return "", fmt.Errorf("list conflicted fixer candidate paths: %w", err)
+	}
+	var snapshot strings.Builder
 	for _, path := range strings.Split(string(output), "\x00") {
 		if path == "" {
 			continue
 		}
+		info, err := os.Lstat(filepath.Join(workDir, path))
+		if err != nil {
+			return "", fmt.Errorf("inspect conflicted fixer candidate path %q: %w", path, err)
+		}
+		var content string
+		if info.Mode()&os.ModeSymlink != 0 {
+			content, err = os.Readlink(filepath.Join(workDir, path))
+		} else {
+			content, err = git.Run(ctx, workDir, "hash-object", "--no-filters", "--", path)
+		}
+		if err != nil {
+			return "", fmt.Errorf("hash conflicted fixer candidate path %q: %w", path, err)
+		}
+		snapshot.WriteString(path)
+		snapshot.WriteByte(0)
+		fmt.Fprintf(&snapshot, "%#o", info.Mode())
+		snapshot.WriteByte(0)
+		snapshot.WriteString(content)
+		snapshot.WriteByte(0)
+	}
+	return snapshot.String(), nil
+}
+
+func snapshotRepairUntracked(ctx context.Context, workDir, snapshotDir string) ([]string, error) {
+	paths, err := repairUntrackedPaths(ctx, workDir)
+	if err != nil {
+		return nil, err
+	}
+	for _, path := range paths {
 		if !filepath.IsLocal(path) {
 			return nil, fmt.Errorf("snapshot unsafe untracked fixer candidate path %q", path)
 		}
 		if err := copyRepairCandidatePath(filepath.Join(workDir, path), filepath.Join(snapshotDir, path)); err != nil {
 			return nil, fmt.Errorf("snapshot untracked fixer candidate path %q: %w", path, err)
 		}
+	}
+	return paths, nil
+}
+
+func repairUntrackedPaths(ctx context.Context, workDir string) ([]string, error) {
+	commands := [][]string{
+		{"ls-files", "--others", "--exclude-standard", "-z"},
+		{"ls-files", "--others", "--ignored", "--exclude-standard", "-z"},
+	}
+	seen := map[string]struct{}{}
+	for _, args := range commands {
+		output, err := repairGitOutput(ctx, workDir, args...)
+		if err != nil {
+			return nil, fmt.Errorf("list untracked fixer candidate paths: %w", err)
+		}
+		for _, path := range strings.Split(string(output), "\x00") {
+			if path != "" {
+				seen[path] = struct{}{}
+			}
+		}
+	}
+	paths := make([]string, 0, len(seen))
+	for path := range seen {
 		paths = append(paths, path)
 	}
+	sort.Strings(paths)
 	return paths, nil
 }
 
@@ -395,7 +567,7 @@ func (snapshot *repairAttemptSnapshot) RestoreFailedAttempt() error {
 	if _, err := git.Run(ctx, snapshot.workDir, "reset", "--hard", snapshot.head); err != nil {
 		return fmt.Errorf("restore fixer candidate HEAD: %w", err)
 	}
-	if _, err := git.Run(ctx, snapshot.workDir, "clean", "-ffd"); err != nil {
+	if _, err := git.Run(ctx, snapshot.workDir, "clean", "-ffdx"); err != nil {
 		return fmt.Errorf("remove failed fixer candidate paths: %w", err)
 	}
 	if snapshot.trackedRef != "" {
@@ -439,7 +611,7 @@ func (snapshot *repairAttemptSnapshot) validate() error {
 		return err
 	}
 	if status != snapshot.status {
-		return fmt.Errorf("restored fixer candidate status differs from pre-attempt candidate")
+		return fmt.Errorf("restored fixer candidate status differs from pre-attempt candidate: got %q, want %q", status, snapshot.status)
 	}
 	trackedDiff, err := git.Run(ctx, snapshot.workDir, "diff", "--binary", "--no-ext-diff", "HEAD", "--")
 	if err != nil {
@@ -468,6 +640,70 @@ func (snapshot *repairAttemptSnapshot) cleanup() {
 	if snapshot.trackedRef != "" {
 		_, _ = git.Run(snapshot.restoreContext, snapshot.workDir, "update-ref", "-d", snapshot.trackedRef)
 	}
+	_ = os.RemoveAll(snapshot.untrackedDir)
+}
+
+func (snapshot *rebaseRepairAttemptSnapshot) RestoreFailedAttempt() error {
+	snapshot.mu.Lock()
+	defer snapshot.mu.Unlock()
+	if snapshot.cleaned {
+		return fmt.Errorf("conflicted fixer candidate snapshot was already cleaned")
+	}
+	ctx := snapshot.restoreContext
+	_, _ = git.Run(ctx, snapshot.workDir, "rebase", "--abort")
+	if _, err := git.Run(ctx, snapshot.workDir, "checkout", "--force", snapshot.headRef); err != nil {
+		return fmt.Errorf("restore conflicted fixer candidate branch: %w", err)
+	}
+	if _, err := git.Run(ctx, snapshot.workDir, "reset", "--hard", snapshot.originalHead); err != nil {
+		return fmt.Errorf("restore conflicted fixer candidate HEAD: %w", err)
+	}
+	if _, err := git.Run(ctx, snapshot.workDir, "clean", "-ffdx"); err != nil {
+		return fmt.Errorf("remove failed conflicted fixer candidate paths: %w", err)
+	}
+	if _, err := git.Run(ctx, snapshot.workDir, "rebase", snapshot.target); err == nil {
+		return fmt.Errorf("restore conflicted fixer candidate: rebase onto %s unexpectedly completed", snapshot.target)
+	}
+	for _, path := range snapshot.untrackedPaths {
+		if err := copyRepairCandidatePath(filepath.Join(snapshot.untrackedDir, path), filepath.Join(snapshot.workDir, path)); err != nil {
+			return fmt.Errorf("restore conflicted untracked fixer candidate path %q: %w", path, err)
+		}
+	}
+	return snapshot.validate()
+}
+
+func (snapshot *rebaseRepairAttemptSnapshot) validate() error {
+	ctx := snapshot.restoreContext
+	status, err := git.Run(ctx, snapshot.workDir, "status", "--porcelain=v1", "--untracked-files=all")
+	if err != nil {
+		return err
+	}
+	if status != snapshot.status {
+		return fmt.Errorf("restored conflicted fixer candidate status differs from pre-attempt candidate: got %q, want %q", status, snapshot.status)
+	}
+	conflictHash, err := captureRepairConflictHash(ctx, snapshot.workDir)
+	if err != nil {
+		return err
+	}
+	if conflictHash != snapshot.conflictHash {
+		return fmt.Errorf("restored conflicted fixer candidate differs from pre-attempt candidate")
+	}
+	untrackedHash, err := captureRepairUntrackedHash(ctx, snapshot.workDir)
+	if err != nil {
+		return err
+	}
+	if untrackedHash != snapshot.untrackedHash {
+		return fmt.Errorf("restored conflicted fixer candidate untracked state differs from pre-attempt candidate")
+	}
+	return nil
+}
+
+func (snapshot *rebaseRepairAttemptSnapshot) cleanup() {
+	snapshot.mu.Lock()
+	defer snapshot.mu.Unlock()
+	if snapshot.cleaned {
+		return
+	}
+	snapshot.cleaned = true
 	_ = os.RemoveAll(snapshot.untrackedDir)
 }
 
@@ -820,20 +1056,60 @@ func (rc *repairCoordinator) runTierBatch(ctx context.Context, batch []*lineageS
 	for _, state := range batch {
 		batchByLineage[state.lineageID] = state
 	}
+	seenRelated := make(map[string]bool, len(batch))
 	surfaced := make([]types.Finding, 0, len(bv.NewFindings))
 	var newRoots []*lineageState
 	for _, nf := range bv.NewFindings {
 		f := types.Finding{Severity: nf.Severity, Action: nf.Action, Description: nf.Description}
 		if _, isRoot := repairID[nf.CausedByLineageID]; isRoot && nf.CausedByLineageID != "" {
-			f.ID = batchByLineage[nf.CausedByLineageID].finding.ID
-			surfaced = append(surfaced, f)
+			if !seenRelated[nf.CausedByLineageID] {
+				seenRelated[nf.CausedByLineageID] = true
+				f.ID = batchByLineage[nf.CausedByLineageID].finding.ID
+				surfaced = append(surfaced, f)
+				switch nf.Action {
+				case types.ActionAutoFix:
+					patchCaused[nf.CausedByLineageID] = f
+				case types.ActionAskUser:
+					consentRequired[nf.CausedByLineageID] = f
+				}
+				continue
+			}
+			child, err := rc.newUnrelatedRoot(f, verifierAttemptID)
+			if err != nil {
+				return nil, abortRound(err)
+			}
+			child.tier = tier + 1
+			surfaced = append(surfaced, child.finding)
 			switch nf.Action {
 			case types.ActionAutoFix:
-				patchCaused[nf.CausedByLineageID] = f
+				if child.tier <= rc.policy.maxTier {
+					newRoots = append(newRoots, child)
+					continue
+				}
+				child.failed = true
+				child.verdict = db.RepairVerdictUnresolved
+				child.rationale = "patch introduced a new auto-fix issue after the repair budget was exhausted"
 			case types.ActionAskUser:
-				consentRequired[nf.CausedByLineageID] = f
+				child.failed = true
+				child.verdict = db.RepairVerdictUnresolved
+				child.rationale = "verifier-created finding requires consent"
 			case types.ActionNoOp:
+				child.resolved = true
+				newRoots = append(newRoots, child)
+				continue
 			}
+			id, err := rc.db.StartFindingRepair(db.FindingRepairStart{
+				RunID: rc.run.ID, LineageID: child.lineageID, StepResultID: rc.stepResultID, StepRoundID: round.ID,
+				Severity: child.finding.Severity, Action: child.finding.Action, Description: child.finding.Description,
+				File: child.finding.File, Line: child.finding.Line, Tier: tier, RemainingBudget: remaining,
+			})
+			if err != nil {
+				return nil, abortRound(fmt.Errorf("persist patch-caused finding: %w", err))
+			}
+			if err := rc.db.ResolveFindingRepair(id, child.verdict, child.rationale, db.RepairStatusUnresolved); err != nil {
+				return nil, abortRound(fmt.Errorf("record patch-caused finding: %w", err))
+			}
+			newRoots = append(newRoots, child)
 			continue
 		}
 		root, err := rc.newUnrelatedRoot(f, verifierAttemptID)
@@ -1009,15 +1285,12 @@ func captureRepairCandidate(ctx context.Context, workDir string) (repairCandidat
 }
 
 func captureRepairUntrackedHash(ctx context.Context, workDir string) (string, error) {
-	output, err := repairGitOutput(ctx, workDir, "ls-files", "--others", "--exclude-standard", "-z")
+	paths, err := repairUntrackedPaths(ctx, workDir)
 	if err != nil {
-		return "", fmt.Errorf("list untracked candidate paths: %w", err)
+		return "", err
 	}
 	var snapshot strings.Builder
-	for _, path := range strings.Split(string(output), "\x00") {
-		if path == "" {
-			continue
-		}
+	for _, path := range paths {
 		info, err := os.Lstat(filepath.Join(workDir, path))
 		if err != nil {
 			return "", fmt.Errorf("inspect untracked candidate path %q: %w", path, err)

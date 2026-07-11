@@ -406,82 +406,248 @@ func (d *DB) GetPendingApprovalAction(gateID string) (*ApprovalAction, error) {
 	return action, nil
 }
 
-// CompleteApprovalAction marks an action applied and resumes its run in one
-// transaction. Repeating completion for an already-applied action is a no-op.
-func (d *DB) CompleteApprovalAction(actionID string, parkedMS int64) error {
-	if strings.TrimSpace(actionID) == "" {
-		return fmt.Errorf("complete approval action: action ID is required")
+func (d *DB) GetApprovalAction(gateID string) (*ApprovalAction, error) {
+	action := &ApprovalAction{}
+	err := scanApprovalAction(d.sql.QueryRow(
+		`SELECT `+approvalActionColumns+` FROM approval_actions WHERE gate_id = ?`,
+		gateID,
+	), action)
+	if err == sql.ErrNoRows {
+		return nil, nil
 	}
-	if parkedMS < 0 {
-		return fmt.Errorf("complete approval action: parked duration must not be negative")
+	if err != nil {
+		return nil, fmt.Errorf("get approval action: %w", err)
+	}
+	return action, nil
+}
+
+type ApplyApprovalFixInput struct {
+	ActionID         string
+	ParkedMS         int64
+	SelectedIDsJSON  *string
+	UserFindingsJSON *string
+}
+
+func (d *DB) ApplyApprovalFix(input ApplyApprovalFixInput) error {
+	if strings.TrimSpace(input.ActionID) == "" {
+		return fmt.Errorf("apply approval fix: action ID is required")
+	}
+	if input.ParkedMS < 0 {
+		return fmt.Errorf("apply approval fix: parked duration must not be negative")
 	}
 	tx, err := d.sql.Begin()
 	if err != nil {
-		return fmt.Errorf("begin complete approval action: %w", err)
+		return fmt.Errorf("begin apply approval fix: %w", err)
 	}
 	defer tx.Rollback()
 
 	var appliedAt *int64
-	var gateID, runID string
+	var action types.ApprovalAction
+	var gateID, runID, stepID, roundID string
 	var gateStatus, stepStatus types.StepStatus
 	var currentGateID *string
 	var runStatus types.RunStatus
 	var awaitingAgentSince *int64
 	err = tx.QueryRow(`
-		SELECT aa.applied_at, aa.gate_id, aa.run_id, g.status,
-		       s.status, s.approval_gate_id, r.status, r.awaiting_agent_since
+		SELECT aa.applied_at, aa.action, aa.gate_id, aa.run_id, aa.step_result_id, aa.step_round_id,
+		       g.status, s.status, s.approval_gate_id, r.status, r.awaiting_agent_since
 		FROM approval_actions aa
 		JOIN approval_gates g ON g.id = aa.gate_id
-		JOIN step_results s ON s.id = g.step_result_id
+		JOIN step_results s ON s.id = aa.step_result_id
 		JOIN runs r ON r.id = aa.run_id
-		WHERE aa.id = ?`, actionID,
+		WHERE aa.id = ?`, input.ActionID,
 	).Scan(
-		&appliedAt, &gateID, &runID, &gateStatus,
-		&stepStatus, &currentGateID, &runStatus, &awaitingAgentSince,
+		&appliedAt, &action, &gateID, &runID, &stepID, &roundID,
+		&gateStatus, &stepStatus, &currentGateID, &runStatus, &awaitingAgentSince,
 	)
 	if err == sql.ErrNoRows {
-		return fmt.Errorf("complete approval action: action %q not found", actionID)
+		return fmt.Errorf("apply approval fix: action %q not found", input.ActionID)
 	}
 	if err != nil {
-		return fmt.Errorf("validate approval action completion: %w", err)
+		return fmt.Errorf("validate approval fix: %w", err)
+	}
+	if action != types.ActionFix {
+		return fmt.Errorf("apply approval fix: action %q is not a fix", action)
 	}
 	if appliedAt != nil {
 		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("commit repeated approval action completion: %w", err)
+			return fmt.Errorf("commit repeated approval fix: %w", err)
 		}
 		return nil
 	}
 	if currentGateID == nil || *currentGateID != gateID || stepStatus != gateStatus {
-		return fmt.Errorf("complete approval action: gate %q is stale or no longer current", gateID)
+		return fmt.Errorf("apply approval fix: gate %q is stale or no longer current", gateID)
 	}
 	if runStatus != types.RunRunning || awaitingAgentSince == nil {
-		return fmt.Errorf("complete approval action: gate %q is not parked", gateID)
+		return fmt.Errorf("apply approval fix: gate %q is not parked", gateID)
 	}
 
 	ts := now()
-	result, err := tx.Exec(`UPDATE approval_actions SET applied_at = ? WHERE id = ? AND applied_at IS NULL`, ts, actionID)
-	if err != nil {
-		return fmt.Errorf("mark approval action applied: %w", err)
+	if input.SelectedIDsJSON != nil {
+		result, err := tx.Exec(`UPDATE step_rounds SET selected_finding_ids = ?, selection_source = ? WHERE id = ? AND step_result_id = ? AND state = ?`, input.SelectedIDsJSON, RoundSelectionSourceUser, roundID, stepID, StepRoundCompleted)
+		if err != nil {
+			return fmt.Errorf("record approval fix selection: %w", err)
+		}
+		if err := requireOneRow(result, "record approval fix selection"); err != nil {
+			return err
+		}
 	}
-	if err := requireOneRow(result, "mark approval action applied"); err != nil {
+	if input.UserFindingsJSON != nil {
+		result, err := tx.Exec(`UPDATE step_rounds SET user_findings_json = ? WHERE id = ? AND step_result_id = ? AND state = ?`, input.UserFindingsJSON, roundID, stepID, StepRoundCompleted)
+		if err != nil {
+			return fmt.Errorf("record approval fix findings: %w", err)
+		}
+		if err := requireOneRow(result, "record approval fix findings"); err != nil {
+			return err
+		}
+	}
+	result, err := tx.Exec(`
+		UPDATE step_results SET status = ?, last_activity_at = ?, last_activity = ?
+		WHERE id = ? AND run_id = ? AND status = ? AND approval_gate_id = ?`,
+		types.StepStatusFixing, ts, fmt.Sprintf("status: %s", types.StepStatusFixing), stepID, runID, gateStatus, gateID,
+	)
+	if err != nil {
+		return fmt.Errorf("apply approval fix transition: %w", err)
+	}
+	if err := requireOneRow(result, "apply approval fix transition"); err != nil {
+		return err
+	}
+	result, err = tx.Exec(`UPDATE approval_actions SET applied_at = ? WHERE id = ? AND applied_at IS NULL`, ts, input.ActionID)
+	if err != nil {
+		return fmt.Errorf("mark approval fix applied: %w", err)
+	}
+	if err := requireOneRow(result, "mark approval fix applied"); err != nil {
 		return err
 	}
 	result, err = tx.Exec(`
-		UPDATE runs
-		SET awaiting_agent_since = NULL,
-		    parked_ms = COALESCE(parked_ms, 0) + ?,
-		    updated_at = ?
+		UPDATE runs SET awaiting_agent_since = NULL, parked_ms = COALESCE(parked_ms, 0) + ?, updated_at = ?
 		WHERE id = ? AND status = ? AND awaiting_agent_since IS NOT NULL`,
-		parkedMS, ts, runID, types.RunRunning,
+		input.ParkedMS, ts, runID, types.RunRunning,
 	)
 	if err != nil {
-		return fmt.Errorf("complete approval action run marker: %w", err)
+		return fmt.Errorf("resume approval fix run marker: %w", err)
 	}
-	if err := requireOneRow(result, "complete approval action run marker"); err != nil {
+	if err := requireOneRow(result, "resume approval fix run marker"); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit approval action completion: %w", err)
+		return fmt.Errorf("commit approval fix: %w", err)
+	}
+	return nil
+}
+
+type ApplyApprovalTerminalInput struct {
+	ActionID   string
+	ParkedMS   int64
+	Status     types.StepStatus
+	ExitCode   int
+	DurationMS int64
+	LogPath    string
+	Error      string
+}
+
+func (d *DB) ApplyApprovalTerminal(input ApplyApprovalTerminalInput) error {
+	if strings.TrimSpace(input.ActionID) == "" {
+		return fmt.Errorf("apply approval terminal: action ID is required")
+	}
+	if input.ParkedMS < 0 || input.DurationMS < 0 {
+		return fmt.Errorf("apply approval terminal: duration must not be negative")
+	}
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return fmt.Errorf("begin apply approval terminal: %w", err)
+	}
+	defer tx.Rollback()
+
+	var appliedAt *int64
+	var action types.ApprovalAction
+	var gateID, runID, stepID string
+	var gateStatus, stepStatus types.StepStatus
+	var currentGateID *string
+	var runStatus types.RunStatus
+	var awaitingAgentSince *int64
+	err = tx.QueryRow(`
+		SELECT aa.applied_at, aa.action, aa.gate_id, aa.run_id, aa.step_result_id,
+		       g.status, s.status, s.approval_gate_id, r.status, r.awaiting_agent_since
+		FROM approval_actions aa
+		JOIN approval_gates g ON g.id = aa.gate_id
+		JOIN step_results s ON s.id = aa.step_result_id
+		JOIN runs r ON r.id = aa.run_id
+		WHERE aa.id = ?`, input.ActionID,
+	).Scan(&appliedAt, &action, &gateID, &runID, &stepID, &gateStatus, &stepStatus, &currentGateID, &runStatus, &awaitingAgentSince)
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("apply approval terminal: action %q not found", input.ActionID)
+	}
+	if err != nil {
+		return fmt.Errorf("validate approval terminal: %w", err)
+	}
+	expectedStatus := types.StepStatus("")
+	switch action {
+	case types.ActionApprove:
+		expectedStatus = types.StepStatusCompleted
+	case types.ActionSkip:
+		expectedStatus = types.StepStatusSkipped
+	case types.ActionAbort:
+		expectedStatus = types.StepStatusFailed
+	default:
+		return fmt.Errorf("apply approval terminal: action %q is not terminal", action)
+	}
+	if input.Status != expectedStatus {
+		return fmt.Errorf("apply approval terminal: action %q requires status %q", action, expectedStatus)
+	}
+	if appliedAt != nil {
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit repeated approval terminal: %w", err)
+		}
+		return nil
+	}
+	if currentGateID == nil || *currentGateID != gateID || stepStatus != gateStatus {
+		return fmt.Errorf("apply approval terminal: gate %q is stale or no longer current", gateID)
+	}
+	if runStatus != types.RunRunning || awaitingAgentSince == nil {
+		return fmt.Errorf("apply approval terminal: gate %q is not parked", gateID)
+	}
+
+	ts := now()
+	result, err := tx.Exec(`
+		UPDATE step_results SET status = ?, exit_code = ?, duration_ms = ?, log_path = ?, error = ?, completed_at = ?, last_activity_at = ?, last_activity = ?, agent_pid = NULL
+		WHERE id = ? AND run_id = ? AND status = ? AND approval_gate_id = ?`,
+		input.Status, input.ExitCode, input.DurationMS, input.LogPath, nullIfEmpty(input.Error), ts, ts, fmt.Sprintf("status: %s", input.Status), stepID, runID, gateStatus, gateID,
+	)
+	if err != nil {
+		return fmt.Errorf("apply approval terminal step: %w", err)
+	}
+	if err := requireOneRow(result, "apply approval terminal step"); err != nil {
+		return err
+	}
+	result, err = tx.Exec(`UPDATE approval_actions SET applied_at = ? WHERE id = ? AND applied_at IS NULL`, ts, input.ActionID)
+	if err != nil {
+		return fmt.Errorf("mark approval terminal applied: %w", err)
+	}
+	if err := requireOneRow(result, "mark approval terminal applied"); err != nil {
+		return err
+	}
+	if action == types.ActionAbort {
+		result, err = tx.Exec(`
+			UPDATE runs SET status = ?, error = ?, awaiting_agent_since = NULL, parked_ms = COALESCE(parked_ms, 0) + ?, updated_at = ?
+			WHERE id = ? AND status = ? AND awaiting_agent_since IS NOT NULL`,
+			types.RunFailed, nullIfEmpty(input.Error), input.ParkedMS, ts, runID, types.RunRunning,
+		)
+	} else {
+		result, err = tx.Exec(`
+			UPDATE runs SET awaiting_agent_since = NULL, parked_ms = COALESCE(parked_ms, 0) + ?, updated_at = ?
+			WHERE id = ? AND status = ? AND awaiting_agent_since IS NOT NULL`,
+			input.ParkedMS, ts, runID, types.RunRunning,
+		)
+	}
+	if err != nil {
+		return fmt.Errorf("resume approval terminal run marker: %w", err)
+	}
+	if err := requireOneRow(result, "resume approval terminal run marker"); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit approval terminal: %w", err)
 	}
 	return nil
 }

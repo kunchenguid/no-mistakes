@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -652,17 +653,34 @@ type routedCandidateState struct {
 	untrackedContent string
 	untrackedMode    os.FileMode
 	untrackedLink    string
+	ignoredContent   string
+	ignoredMode      os.FileMode
+	ignoredDirValue  string
 }
 
 func seedRoutedCandidateState(t *testing.T) (string, routedCandidateState) {
 	t.Helper()
 	dir := t.TempDir()
 	initGitRepo(t, dir)
+	writeTestFile(t, dir, ".gitignore", "*.ignored\n")
+	execGit(t, dir, "add", ".gitignore")
+	execGit(t, dir, "commit", "-m", "ignore generated files")
 	writeTestFile(t, dir, "README.md", "legitimate staged\n")
 	execGit(t, dir, "add", "README.md")
 	writeTestFile(t, dir, "README.md", "legitimate unstaged\n")
 	untracked := filepath.Join(dir, "legitimate-untracked.sh")
 	if err := os.WriteFile(untracked, []byte("#!/bin/sh\necho legitimate\n"), 0o751); err != nil {
+		t.Fatal(err)
+	}
+	ignored := filepath.Join(dir, "legitimate.ignored")
+	if err := os.WriteFile(ignored, []byte("legitimate ignored\n"), 0o741); err != nil {
+		t.Fatal(err)
+	}
+	ignoredDir := filepath.Join(dir, "legitimate-cache.ignored")
+	if err := os.MkdirAll(ignoredDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ignoredDir, "nested.txt"), []byte("legitimate ignored directory\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	linkTarget := ""
@@ -676,6 +694,10 @@ func seedRoutedCandidateState(t *testing.T) (string, routedCandidateState) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	ignoredInfo, err := os.Stat(ignored)
+	if err != nil {
+		t.Fatal(err)
+	}
 	return dir, routedCandidateState{
 		head:             gitOut(t, dir, "rev-parse", "HEAD"),
 		headRef:          gitOut(t, dir, "rev-parse", "--symbolic-full-name", "HEAD"),
@@ -685,6 +707,9 @@ func seedRoutedCandidateState(t *testing.T) (string, routedCandidateState) {
 		untrackedContent: "#!/bin/sh\necho legitimate\n",
 		untrackedMode:    info.Mode().Perm(),
 		untrackedLink:    linkTarget,
+		ignoredContent:   "legitimate ignored\n",
+		ignoredMode:      ignoredInfo.Mode().Perm(),
+		ignoredDirValue:  "legitimate ignored directory\n",
 	}
 }
 
@@ -729,6 +754,22 @@ func assertRoutedCandidateBase(t *testing.T, dir string, want routedCandidateSta
 			t.Fatalf("untracked symlink target = %q, err = %v, want %q", target, err, want.untrackedLink)
 		}
 	}
+	ignoredPath := filepath.Join(dir, "legitimate.ignored")
+	ignored, err := os.ReadFile(ignoredPath)
+	if err != nil || string(ignored) != want.ignoredContent {
+		t.Fatalf("ignored content = %q, err = %v, want %q", ignored, err, want.ignoredContent)
+	}
+	ignoredInfo, err := os.Stat(ignoredPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ignoredInfo.Mode().Perm(); got != want.ignoredMode {
+		t.Fatalf("ignored mode = %o, want %o", got, want.ignoredMode)
+	}
+	ignoredDir, err := os.ReadFile(filepath.Join(dir, "legitimate-cache.ignored", "nested.txt"))
+	if err != nil || string(ignoredDir) != want.ignoredDirValue {
+		t.Fatalf("ignored directory content = %q, err = %v, want %q", ignoredDir, err, want.ignoredDirValue)
+	}
 }
 
 func mutateFailedRoutedCandidate(t *testing.T, dir, label string) {
@@ -742,6 +783,16 @@ func mutateFailedRoutedCandidate(t *testing.T, dir, label string) {
 	if err := os.Chmod(filepath.Join(dir, "legitimate-untracked.sh"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(dir, "legitimate.ignored"), []byte(label+" ignored mutation\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(dir, "legitimate.ignored"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "legitimate-cache.ignored", "nested.txt"), []byte(label+" ignored directory mutation\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, dir, label+".ignored", label+" ignored mutation\n")
 	if runtime.GOOS != "windows" {
 		if err := os.Remove(filepath.Join(dir, "legitimate-link")); err != nil {
 			t.Fatal(err)
@@ -754,6 +805,72 @@ func mutateFailedRoutedCandidate(t *testing.T, dir, label string) {
 	execGit(t, dir, "commit", "-m", label+" failed attempt")
 	execGit(t, dir, "checkout", "--detach", "HEAD")
 	writeTestFile(t, dir, label+"-after-commit.txt", label+" after commit\n")
+}
+
+func conflictedRebaseWorktree(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+	baseBranch := gitOut(t, dir, "branch", "--show-current")
+	execGit(t, dir, "checkout", "-b", "feature")
+	writeTestFile(t, dir, "README.md", "feature change\n")
+	execGit(t, dir, "add", "README.md")
+	execGit(t, dir, "commit", "-m", "feature change")
+	execGit(t, dir, "checkout", baseBranch)
+	writeTestFile(t, dir, "README.md", "base change\n")
+	execGit(t, dir, "add", "README.md")
+	execGit(t, dir, "commit", "-m", "base change")
+	execGit(t, dir, "checkout", "feature")
+	rebase := exec.Command("git", "rebase", baseBranch)
+	rebase.Dir = dir
+	if out, err := rebase.CombinedOutput(); err == nil {
+		t.Fatalf("rebase unexpectedly completed without a conflict:\n%s", out)
+	}
+	if got := gitOut(t, dir, "diff", "--name-only", "--diff-filter=U"); got != "README.md" {
+		t.Fatalf("conflicted paths = %q, want README.md", got)
+	}
+	return dir
+}
+
+func TestRoutingInvokerRestoresConflictedRebaseBeforeProviderFailover(t *testing.T) {
+	database, _, run, _ := setupTest(t)
+	scope := reservedReviewScope(t, database, run)
+	dir := conflictedRebaseWorktree(t)
+
+	codex := &recordingRoutedAgent{runFn: func(opts agent.RunOpts) (*agent.Result, error) {
+		writeTestFile(t, opts.CWD, "README.md", "premature conflict resolution\n")
+		execGit(t, opts.CWD, "add", "README.md")
+		continueRebase := exec.Command("git", "rebase", "--continue")
+		continueRebase.Dir = opts.CWD
+		continueRebase.Env = append(os.Environ(), "GIT_EDITOR=true")
+		if out, err := continueRebase.CombinedOutput(); err != nil {
+			t.Fatalf("complete failed provider rebase: %v\n%s", err, out)
+		}
+		return nil, opError()
+	}}
+	claude := &recordingRoutedAgent{runFn: func(opts agent.RunOpts) (*agent.Result, error) {
+		content, err := os.ReadFile(filepath.Join(opts.CWD, "README.md"))
+		if err != nil || !strings.Contains(string(content), "<<<<<<<") {
+			t.Fatalf("backup provider received a mutated conflict: %q, err=%v", content, err)
+		}
+		if got := gitOut(t, opts.CWD, "diff", "--name-only", "--diff-filter=U"); got != "README.md" {
+			t.Fatalf("backup provider conflict paths = %q, want README.md", got)
+		}
+		return &agent.Result{Output: []byte(`{"summary":"retry from conflict"}`)}, nil
+	}}
+	ri := newRoutingInvoker(config.DefaultRoutingConfig(), database, newProviderCircuits())
+	ri.newAgent = perRunner(codex, claude)
+
+	if _, err := ri.Invoke(context.Background(), agent.InvocationRequest{
+		Purpose: types.PurposeUnstructuredConflictRepair,
+		Scope:   scope,
+		Payload: agent.RunOpts{Prompt: "resolve conflict", CWD: dir},
+	}); err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if codex.calls != 1 || claude.calls != 1 {
+		t.Fatalf("provider calls = codex %d, claude %d; want one failed attempt and one clean failover", codex.calls, claude.calls)
+	}
 }
 
 func TestRoutingInvokerRestoresFailedProviderBeforeBackupAndCommitsOnlySuccessfulMutation(t *testing.T) {
@@ -788,6 +905,9 @@ func TestRoutingInvokerRestoresFailedProviderBeforeBackupAndCommitsOnlySuccessfu
 		if _, err := os.Lstat(filepath.Join(dir, failed)); !os.IsNotExist(err) {
 			t.Fatalf("failed provider mutation %q survived: %v", failed, err)
 		}
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "failed-codex.ignored")); !os.IsNotExist(err) {
+		t.Fatalf("failed provider ignored mutation survived: %v", err)
 	}
 	execGit(t, dir, "add", "-A")
 	execGit(t, dir, "commit", "-m", "accepted repair")
@@ -826,7 +946,7 @@ func TestRoutingInvokerRestoresExactCandidateWhenEveryProviderFails(t *testing.T
 	assertRoutedCandidateState(t, dir, before)
 	for _, failed := range []string{
 		"failed-codex-staged.txt", "failed-codex-untracked.txt", "failed-codex-after-commit.txt",
-		"failed-claude-staged.txt", "failed-claude-untracked.txt", "failed-claude-after-commit.txt",
+		"failed-codex.ignored", "failed-claude-staged.txt", "failed-claude-untracked.txt", "failed-claude-after-commit.txt", "failed-claude.ignored",
 	} {
 		if _, err := os.Lstat(filepath.Join(dir, failed)); !os.IsNotExist(err) {
 			t.Fatalf("failed provider mutation %q survived final error: %v", failed, err)

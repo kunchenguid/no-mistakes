@@ -916,13 +916,10 @@ func (s *CIStep) pushUpdatedHeadSHA(sctx *pipeline.StepContext, newHeadSHA strin
 			return false, fmt.Errorf("republish SHA %s does not name verified tree %s", shortSHA(newHeadSHA), shortSHA(s.verifiedCandidateTree))
 		}
 	}
-	if err := protectCIRepublishCandidate(sctx, newHeadSHA); err != nil {
+	if err := s.ensureCIRepublishSeal(sctx, newHeadSHA); err != nil {
 		return false, err
 	}
-	if err := s.ensureCIRepublishSeal(sctx, newHeadSHA); err != nil {
-		if cleanupErr := clearCIRepublishPending(sctx); cleanupErr != nil {
-			return false, errors.Join(err, cleanupErr)
-		}
+	if err := protectCIRepublishCandidate(sctx, newHeadSHA); err != nil {
 		return false, err
 	}
 	pendingError := func(err error) error {
@@ -1011,6 +1008,15 @@ func (s *CIStep) retryPendingCIRepublish(sctx *pipeline.StepContext) (bool, erro
 	seal, err := sctx.DB.LatestSealByReason(sctx.Run.ID, "ci_republish")
 	if err != nil {
 		return true, &ciJournalError{operation: "load pending CI republish seal", err: err}
+	}
+	if seal == nil {
+		if err := s.ensureCIRepublishSeal(sctx, sha); err != nil {
+			return true, err
+		}
+		seal, err = sctx.DB.LatestSealByReason(sctx.Run.ID, "ci_republish")
+		if err != nil {
+			return true, &ciJournalError{operation: "confirm repaired CI republish seal", err: err}
+		}
 	}
 	if seal == nil || seal.SHA != sha {
 		return true, &ciJournalError{operation: "load pending CI republish seal", err: fmt.Errorf("protected candidate %s is not the latest durable seal", shortSHA(sha))}

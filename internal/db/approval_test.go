@@ -83,6 +83,11 @@ func validApprovalActionInput(f approvalFixture) ApprovalActionInput {
 	}
 }
 
+func applyApprovalFixtureFix(f approvalFixture, actionID string, parkedMS int64) error {
+	selected := testSelectedFindings
+	return f.d.ApplyApprovalFix(ApplyApprovalFixInput{ActionID: actionID, ParkedMS: parkedMS, SelectedIDsJSON: &selected})
+}
+
 func countRows(t *testing.T, d *DB, table string) int {
 	t.Helper()
 	var count int
@@ -220,11 +225,8 @@ func TestParkApprovalGateCreatesDistinctIdentityForRepeatedStepGate(t *testing.T
 	if err != nil {
 		t.Fatalf("insert first action: %v", err)
 	}
-	if err := f.d.CompleteApprovalAction(firstAction.ID, 11); err != nil {
-		t.Fatalf("complete first action: %v", err)
-	}
-	if err := f.d.UpdateStepStatus(f.step.ID, types.StepStatusFixing); err != nil {
-		t.Fatalf("start fixing: %v", err)
+	if err := applyApprovalFixtureFix(f, firstAction.ID, 11); err != nil {
+		t.Fatalf("apply first fix: %v", err)
 	}
 	secondGate, err := f.d.ParkApprovalGate(ParkApprovalGateInput{
 		RunID: f.runID, StepResultID: f.step.ID, SourceRoundID: f.round.ID,
@@ -411,15 +413,15 @@ func TestApprovalActionPayloadCannotBeUpdated(t *testing.T) {
 	}
 }
 
-func TestCompleteApprovalActionAtomicallyAppliesAndClearsMarker(t *testing.T) {
+func TestApplyApprovalFixAtomicallyAppliesAndClearsMarker(t *testing.T) {
 	f := newApprovalFixture(t)
 	f.park(t)
 	action, err := f.d.InsertApprovalAction(validApprovalActionInput(f))
 	if err != nil {
 		t.Fatalf("insert action: %v", err)
 	}
-	if err := f.d.CompleteApprovalAction(action.ID, 47); err != nil {
-		t.Fatalf("complete action: %v", err)
+	if err := applyApprovalFixtureFix(f, action.ID, 47); err != nil {
+		t.Fatalf("apply fix: %v", err)
 	}
 	var applied sql.NullInt64
 	if err := f.d.sql.QueryRow(`SELECT applied_at FROM approval_actions WHERE id = ?`, action.ID).Scan(&applied); err != nil {
@@ -441,8 +443,8 @@ func TestCompleteApprovalActionAtomicallyAppliesAndClearsMarker(t *testing.T) {
 		t.Fatalf("pending after completion = (%+v, %v), want nil, nil", pending, err)
 	}
 
-	if err := f.d.CompleteApprovalAction(action.ID, 999); err != nil {
-		t.Fatalf("repeat completion: %v", err)
+	if err := applyApprovalFixtureFix(f, action.ID, 999); err != nil {
+		t.Fatalf("repeat fix application: %v", err)
 	}
 	var appliedAgain int64
 	if err := f.d.sql.QueryRow(`SELECT applied_at FROM approval_actions WHERE id = ?`, action.ID).Scan(&appliedAgain); err != nil {
@@ -459,7 +461,7 @@ func TestCompleteApprovalActionAtomicallyAppliesAndClearsMarker(t *testing.T) {
 	}
 }
 
-func TestCompleteApprovalActionRollsBackWhenAppliedUpdateFails(t *testing.T) {
+func TestApplyApprovalFixRollsBackWhenAppliedUpdateFails(t *testing.T) {
 	f := newApprovalFixture(t)
 	f.park(t)
 	action, err := f.d.InsertApprovalAction(validApprovalActionInput(f))
@@ -467,13 +469,13 @@ func TestCompleteApprovalActionRollsBackWhenAppliedUpdateFails(t *testing.T) {
 		t.Fatalf("insert action: %v", err)
 	}
 	installFailTrigger(t, f.d, "fail_approval_applied_update", "UPDATE OF applied_at ON approval_actions")
-	if err := f.d.CompleteApprovalAction(action.ID, 47); err == nil || !strings.Contains(err.Error(), "injected fail_approval_applied_update failure") {
-		t.Fatalf("complete error = %v, want injected action failure", err)
+	if err := applyApprovalFixtureFix(f, action.ID, 47); err == nil || !strings.Contains(err.Error(), "injected fail_approval_applied_update failure") {
+		t.Fatalf("apply error = %v, want injected action failure", err)
 	}
 	assertActionStillPendingAndParked(t, f, action.ID)
 }
 
-func TestCompleteApprovalActionRollsBackWhenMarkerClearFails(t *testing.T) {
+func TestApplyApprovalFixRollsBackWhenMarkerClearFails(t *testing.T) {
 	f := newApprovalFixture(t)
 	f.park(t)
 	action, err := f.d.InsertApprovalAction(validApprovalActionInput(f))
@@ -481,13 +483,13 @@ func TestCompleteApprovalActionRollsBackWhenMarkerClearFails(t *testing.T) {
 		t.Fatalf("insert action: %v", err)
 	}
 	installFailTrigger(t, f.d, "fail_approval_marker_clear", "UPDATE OF awaiting_agent_since ON runs")
-	if err := f.d.CompleteApprovalAction(action.ID, 47); err == nil || !strings.Contains(err.Error(), "injected fail_approval_marker_clear failure") {
-		t.Fatalf("complete error = %v, want injected marker failure", err)
+	if err := applyApprovalFixtureFix(f, action.ID, 47); err == nil || !strings.Contains(err.Error(), "injected fail_approval_marker_clear failure") {
+		t.Fatalf("apply error = %v, want injected marker failure", err)
 	}
 	assertActionStillPendingAndParked(t, f, action.ID)
 }
 
-func TestCompleteApprovalActionRejectsUnparkedGateWithoutApplying(t *testing.T) {
+func TestApplyApprovalFixRejectsUnparkedGateWithoutApplying(t *testing.T) {
 	f := newApprovalFixture(t)
 	f.park(t)
 	action, err := f.d.InsertApprovalAction(validApprovalActionInput(f))
@@ -497,8 +499,8 @@ func TestCompleteApprovalActionRejectsUnparkedGateWithoutApplying(t *testing.T) 
 	if _, err := f.d.sql.Exec(`UPDATE runs SET awaiting_agent_since = NULL WHERE id = ?`, f.runID); err != nil {
 		t.Fatalf("clear marker: %v", err)
 	}
-	if err := f.d.CompleteApprovalAction(action.ID, 47); err == nil {
-		t.Fatal("complete unparked action succeeded")
+	if err := applyApprovalFixtureFix(f, action.ID, 47); err == nil {
+		t.Fatal("apply unparked action succeeded")
 	}
 	var applied any
 	if err := f.d.sql.QueryRow(`SELECT applied_at FROM approval_actions WHERE id = ?`, action.ID).Scan(&applied); err != nil {

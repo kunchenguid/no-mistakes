@@ -232,6 +232,27 @@ func TestCIStep_AutoFixSealsBeforeRemoteChanges(t *testing.T) {
 	}
 }
 
+func TestCIStep_AutoFixDoesNotExposePendingCandidateBeforeSeal(t *testing.T) {
+	upstream, dir, baseSHA, originalHead := setupCIRepublish(t)
+	ag := &ciRepublishAgent{fix: func(cwd string) error {
+		return os.WriteFile(filepath.Join(cwd, "ci-fix.txt"), []byte("fixed\n"), 0o644)
+	}}
+	step, sctx, host, pr := republishContext(t, ag, upstream, dir, baseSHA, originalHead, config.Commands{})
+	step.sealCIRepublish = func(sctx *pipeline.StepContext, _ string) error {
+		if pending := gitCmd(t, sctx.WorkDir, "for-each-ref", "--format=%(objectname)", ciRepublishPendingRef(sctx)); pending != "" {
+			t.Fatalf("pending CI candidate %s was exposed before its seal", pending)
+		}
+		return errors.New("injected seal failure")
+	}
+
+	if pushed, err := step.autoFixCI(sctx, host, pr, []string{"test"}, false); err == nil || pushed {
+		t.Fatalf("autoFixCI = pushed %v, err %v; want failed unsealed candidate", pushed, err)
+	}
+	if got := gitCmd(t, upstream, "rev-parse", "refs/heads/feature"); got != originalHead {
+		t.Fatalf("remote SHA = %s, want %s", got, originalHead)
+	}
+}
+
 func TestCIStep_AutoFixUpToDateCandidateEnsuresSeal(t *testing.T) {
 	upstream, dir, baseSHA, originalHead := setupCIRepublish(t)
 	if err := os.WriteFile(filepath.Join(dir, "already-pushed.txt"), []byte("candidate\n"), 0o644); err != nil {
@@ -400,6 +421,36 @@ func TestCIStep_FailedPushRetainsDurableVerifiedSealForRetry(t *testing.T) {
 	}
 	if retriedSeal == nil || retriedSeal.ID != seal.ID {
 		t.Fatalf("retry replaced durable seal %+v with %+v", seal, retriedSeal)
+	}
+}
+
+func TestCIStep_RetryRepairsLegacyUnsealedPendingCandidate(t *testing.T) {
+	upstream, dir, baseSHA, originalHead := setupCIRepublish(t)
+	step, sctx, _, _ := republishContext(t, &ciRepublishAgent{}, upstream, dir, baseSHA, originalHead, config.Commands{})
+	if err := os.WriteFile(filepath.Join(dir, "legacy-pending.txt"), []byte("candidate\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "legacy-pending.txt")
+	gitCmd(t, dir, "commit", "-m", "legacy pending candidate")
+	candidateSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "update-ref", ciRepublishPendingRef(sctx), candidateSHA)
+
+	pending, err := step.retryPendingCIRepublish(sctx)
+	if err != nil {
+		t.Fatalf("retryPendingCIRepublish: %v", err)
+	}
+	if !pending {
+		t.Fatal("retry did not recognize the protected legacy candidate")
+	}
+	if got := gitCmd(t, upstream, "rev-parse", "refs/heads/feature"); got != candidateSHA {
+		t.Fatalf("remote SHA = %s, want reconciled candidate %s", got, candidateSHA)
+	}
+	seal, err := sctx.DB.LatestSealByReason(sctx.Run.ID, "ci_republish")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seal == nil || seal.SHA != candidateSHA {
+		t.Fatalf("reconciled seal = %+v, want %s", seal, candidateSHA)
 	}
 }
 

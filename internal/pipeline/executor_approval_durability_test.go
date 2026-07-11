@@ -4,11 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -102,6 +104,116 @@ func TestExecutorRespondJournalsBeforeAcknowledging(t *testing.T) {
 	}
 }
 
+func TestExecutorFixActionStaysReplayableUntilItsTransitionCommits(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	findings := `{"findings":[{"id":"review-1","severity":"warning","description":"needs approval","action":"ask-user"}],"summary":"one"}`
+	executor := NewExecutor(database, p, nil, nil, []Step{newApprovalStep(types.StepReview, findings)}, nil)
+	done := make(chan error, 1)
+	go func() { done <- executor.Execute(context.Background(), run, repo, t.TempDir()) }()
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
+	steps, err := database.GetStepsByRun(run.ID)
+	if err != nil || len(steps) != 1 {
+		t.Fatalf("steps = %+v, err = %v", steps, err)
+	}
+	step := steps[0]
+
+	faultDB, err := sql.Open("sqlite", p.DB()+"?_pragma=foreign_keys(on)&_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer faultDB.Close()
+	if _, err := faultDB.Exec(`
+		CREATE TRIGGER reject_fix_transition
+		BEFORE UPDATE OF status ON step_results
+		WHEN NEW.status = 'fixing'
+		BEGIN
+			SELECT RAISE(FAIL, 'injected fixing transition failure');
+		END;
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if err := executor.Respond(types.StepReview, types.ActionFix, []string{"review-1"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "injected fixing transition failure") {
+			t.Fatalf("Execute error = %v, want failed fixing transition", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("executor did not surface the failed fixing transition")
+	}
+	gate := waitForApprovalGate(t, database, step.ID)
+	pending, err := database.GetPendingApprovalAction(gate.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending == nil || pending.Action != types.ActionFix {
+		t.Fatalf("failed fix transition consumed a non-replayable action: %+v", pending)
+	}
+	persistedRun, err := database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persistedRun.AwaitingAgentSince == nil {
+		t.Fatal("failed fix transition cleared the approval park")
+	}
+}
+
+func TestExecutorSkipActionStaysReplayableUntilItsTransitionCommits(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	findings := `{"findings":[{"id":"review-1","severity":"warning","description":"needs approval","action":"ask-user"}],"summary":"one"}`
+	executor := NewExecutor(database, p, nil, nil, []Step{newApprovalStep(types.StepReview, findings)}, nil)
+	done := make(chan error, 1)
+	go func() { done <- executor.Execute(context.Background(), run, repo, t.TempDir()) }()
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
+	steps, err := database.GetStepsByRun(run.ID)
+	if err != nil || len(steps) != 1 {
+		t.Fatalf("steps = %+v, err = %v", steps, err)
+	}
+	faultDB, err := sql.Open("sqlite", p.DB()+"?_pragma=foreign_keys(on)&_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer faultDB.Close()
+	if _, err := faultDB.Exec(`
+		CREATE TRIGGER reject_skip_transition
+		BEFORE UPDATE OF status ON step_results
+		WHEN NEW.status = 'skipped'
+		BEGIN
+			SELECT RAISE(FAIL, 'injected skipped transition failure');
+		END;
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if err := executor.Respond(types.StepReview, types.ActionSkip, nil); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "injected skipped transition failure") {
+			t.Fatalf("Execute error = %v, want failed skipped transition", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("executor did not surface the failed skipped transition")
+	}
+	gate := waitForApprovalGate(t, database, steps[0].ID)
+	pending, err := database.GetPendingApprovalAction(gate.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending == nil || pending.Action != types.ActionSkip {
+		t.Fatalf("failed skip transition consumed a non-replayable action: %+v", pending)
+	}
+	persistedRun, err := database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persistedRun.AwaitingAgentSince == nil {
+		t.Fatal("failed skip transition cleared the approval park")
+	}
+}
+
 func TestExecutorResumeReplaysPersistedApprovalActions(t *testing.T) {
 	for _, tc := range []struct {
 		action   types.ApprovalAction
@@ -171,6 +283,85 @@ func TestExecutorResumeReplaysPersistedApprovalActions(t *testing.T) {
 				t.Fatalf("replayed %s left pending action %+v", tc.action, pending)
 			}
 		})
+	}
+}
+
+func TestExecutorResumeReplaysAppliedFixAfterCrash(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	workDir := gitInitTestDir(t)
+	headSHA, err := git.HeadSHA(context.Background(), workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunHeadSHA(run.ID, headSHA); err != nil {
+		t.Fatal(err)
+	}
+	run, err = database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	step, err := database.InsertStepResult(run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.StartStep(step.ID); err != nil {
+		t.Fatal(err)
+	}
+	findings := `{"findings":[{"id":"review-1","severity":"warning","description":"needs approval","action":"ask-user"}],"summary":"one"}`
+	round, err := database.InsertStepRound(step.ID, 1, "initial", &findings, nil, 17)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate, err := database.ParkApprovalGate(db.ParkApprovalGateInput{
+		RunID: run.ID, StepResultID: step.ID, SourceRoundID: round.ID,
+		Status: types.StepStatusAwaitingApproval, FindingsJSON: findings, DurationMS: 17,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	action, err := database.InsertApprovalAction(db.ApprovalActionInput{
+		GateID: gate.ID, RunID: run.ID, StepResultID: step.ID, StepRoundID: round.ID,
+		Action: types.ActionFix, SelectedFindingIDsJSON: `["review-1"]`, InstructionsJSON: `{}`, AddedFindingsJSON: `[]`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected := `["review-1"]`
+	if err := database.ApplyApprovalFix(db.ApplyApprovalFixInput{ActionID: action.ID, ParkedMS: 5, SelectedIDsJSON: &selected}); err != nil {
+		t.Fatal(err)
+	}
+	run, err = database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor := NewExecutor(database, p, nil, nil, []Step{newApprovalStep(types.StepReview, findings)}, nil)
+	done := make(chan error, 1)
+	go func() { done <- executor.ResumeRecoveredPrefix(context.Background(), run, repo, workDir) }()
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
+	if err := executor.Respond(types.StepReview, types.ActionSkip, nil); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("ResumeRecoveredPrefix: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("recovered applied fix did not reach its next approval gate")
+	}
+	persistedRun, err := database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persistedStep, err := database.GetStepResult(step.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persistedRun.Status != types.RunCompleted || persistedStep.Status != types.StepStatusSkipped {
+		t.Fatalf("applied-fix recovery = run %s step %s, want completed/skipped", persistedRun.Status, persistedStep.Status)
 	}
 }
 

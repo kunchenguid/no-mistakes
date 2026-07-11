@@ -74,27 +74,6 @@ func buildUserFixPayload(raw string, response approvalResponse) userFixPayload {
 	}
 }
 
-// persistUserFixPayload journals the exact batch dispatched for a user fix.
-// Selection is always durable; the merged payload is additionally retained when
-// the user supplied instructions or authored findings.
-func (e *Executor) persistUserFixPayload(roundID string, payload userFixPayload) error {
-	if roundID == "" {
-		return nil
-	}
-	if idsJSON := marshalFindingIDs(payload.findingIDs); idsJSON != "" {
-		if err := e.db.SetStepRoundSelection(roundID, &idsJSON, db.RoundSelectionSourceUser); err != nil {
-			return fmt.Errorf("record selected finding ids: %w", err)
-		}
-	}
-	if payload.hasOverrides {
-		merged := payload.findingsJSON
-		if err := e.db.SetStepRoundUserFindings(roundID, &merged); err != nil {
-			return fmt.Errorf("record user finding overrides: %w", err)
-		}
-	}
-	return nil
-}
-
 // Executor runs pipeline steps sequentially and coordinates approval interactions.
 type Executor struct {
 	db     *db.DB
@@ -321,6 +300,12 @@ type recoveredGate struct {
 	lastRoundID string
 }
 
+type recoveredAppliedFix struct {
+	gate    recoveredGate
+	action  *db.ApprovalAction
+	payload userFixPayload
+}
+
 func ValidateRecoveredRun(database *db.DB, run *db.Run, steps []Step) error {
 	if run == nil || run.Status != types.RunRunning || run.AwaitingAgentSince == nil {
 		return fmt.Errorf("run is not a recoverable parked run")
@@ -338,6 +323,11 @@ func ValidateRecoveredPrefix(database *db.DB, run *db.Run, steps []Step) error {
 		return fmt.Errorf("run is not a recoverable completed prefix")
 	}
 	executor := &Executor{db: database, steps: steps}
+	if appliedFix, err := executor.recoveredAppliedFix(run.ID); err != nil {
+		return err
+	} else if appliedFix != nil {
+		return nil
+	}
 	start, err := executor.recoveredPrefixStart(run.ID)
 	if err != nil {
 		return err
@@ -395,6 +385,151 @@ func (e *Executor) recoveredPrefixStart(runID string) (int, error) {
 	return firstPending, nil
 }
 
+func (e *Executor) recoveredAppliedFix(runID string) (*recoveredAppliedFix, error) {
+	results, err := e.db.GetStepsByRun(runID)
+	if err != nil {
+		return nil, fmt.Errorf("get recovered steps: %w", err)
+	}
+	if len(results) != len(e.steps) {
+		return nil, fmt.Errorf("recovered run has %d step records for %d steps", len(results), len(e.steps))
+	}
+	hasFixing := false
+	for _, result := range results {
+		if result.Status == types.StepStatusFixing {
+			hasFixing = true
+			break
+		}
+	}
+	if !hasFixing {
+		return nil, nil
+	}
+	fixIndex := -1
+	for index, result := range results {
+		if result.StepName != e.steps[index].Name() {
+			return nil, fmt.Errorf("recovered step %d is %q, want %q", index, result.StepName, e.steps[index].Name())
+		}
+		if result.Status == types.StepStatusFixing {
+			if fixIndex != -1 {
+				return nil, fmt.Errorf("recovered run has multiple applied approval fixes")
+			}
+			fixIndex = index
+			continue
+		}
+		if fixIndex == -1 {
+			if result.Status != types.StepStatusCompleted && result.Status != types.StepStatusSkipped {
+				return nil, fmt.Errorf("recovered step %s is %s before applied approval fix", result.StepName, result.Status)
+			}
+			if result.CompletedAt == nil || result.ExitCode == nil || result.DurationMS == nil || result.LogPath == nil || result.Error != nil || result.AgentPID != nil {
+				return nil, fmt.Errorf("recovered terminal step %s is incomplete", result.StepName)
+			}
+			if result.Status == types.StepStatusCompleted && result.StartedAt == nil {
+				return nil, fmt.Errorf("recovered completed step %s was never started", result.StepName)
+			}
+			continue
+		}
+		if result.Status != types.StepStatusPending {
+			return nil, fmt.Errorf("recovered step %s is %s after applied approval fix", result.StepName, result.Status)
+		}
+		if result.StartedAt != nil || result.CompletedAt != nil || result.ExitCode != nil || result.DurationMS != nil || result.LogPath != nil || result.FindingsJSON != nil || result.Error != nil || result.AgentPID != nil || result.AutoFixLimit != nil {
+			return nil, fmt.Errorf("recovered pending step %s contains execution state", result.StepName)
+		}
+	}
+	stepResult := results[fixIndex]
+	if stepResult.StartedAt == nil || stepResult.DurationMS == nil || stepResult.AgentPID != nil {
+		return nil, fmt.Errorf("recovered applied approval fix is incomplete")
+	}
+	gate, err := e.db.GetCurrentApprovalGate(stepResult.ID)
+	if err != nil {
+		return nil, fmt.Errorf("load applied approval fix gate: %w", err)
+	}
+	if gate == nil || gate.RunID != runID || gate.StepResultID != stepResult.ID {
+		return nil, fmt.Errorf("recovered applied approval fix has no current gate")
+	}
+	action, err := e.db.GetApprovalAction(gate.ID)
+	if err != nil {
+		return nil, fmt.Errorf("load applied approval fix action: %w", err)
+	}
+	if action == nil || action.Action != types.ActionFix || action.AppliedAt == nil || action.RunID != runID || action.StepResultID != stepResult.ID || action.StepRoundID != gate.SourceRoundID {
+		return nil, fmt.Errorf("recovered applied approval fix has no durable fix action")
+	}
+	response, err := approvalResponseFromRecord(action)
+	if err != nil {
+		return nil, fmt.Errorf("decode applied approval fix: %w", err)
+	}
+	payload := buildUserFixPayload(gate.FindingsJSON, response)
+	round, err := e.db.GetStepRound(gate.SourceRoundID)
+	if err != nil {
+		return nil, fmt.Errorf("load applied approval fix source round: %w", err)
+	}
+	if round == nil || round.StepResultID != stepResult.ID || round.State != db.StepRoundCompleted {
+		return nil, fmt.Errorf("recovered applied approval fix source round is invalid")
+	}
+	selection := marshalFindingIDs(payload.findingIDs)
+	if selection == "" || round.SelectedFindingIDs == nil || *round.SelectedFindingIDs != selection || round.SelectionSource == nil || *round.SelectionSource != db.RoundSelectionSourceUser {
+		return nil, fmt.Errorf("recovered applied approval fix selection is incomplete")
+	}
+	if payload.hasOverrides && (round.UserFindingsJSON == nil || *round.UserFindingsJSON != payload.findingsJSON) {
+		return nil, fmt.Errorf("recovered applied approval fix findings are incomplete")
+	}
+	return &recoveredAppliedFix{
+		gate: recoveredGate{
+			index:       fixIndex,
+			step:        e.steps[fixIndex],
+			stepResult:  stepResult,
+			durableGate: gate,
+			findings:    gate.FindingsJSON,
+			round:       round.Round,
+			lastRoundID: round.ID,
+		},
+		action:  action,
+		payload: payload,
+	}, nil
+}
+
+func (e *Executor) resumeRecoveredAppliedFix(ctx context.Context, run *db.Run, repo *db.Repo, workDir string, recovered *recoveredAppliedFix) error {
+	headSHA, err := git.HeadSHA(ctx, workDir)
+	if err != nil {
+		return fmt.Errorf("resolve recovered worktree head: %w", err)
+	}
+	if headSHA != run.HeadSHA {
+		return fmt.Errorf("recovered worktree head does not match run head")
+	}
+	logDir := e.paths.RunLogDir(run.ID)
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		return e.failRun(run, repo, fmt.Errorf("create log dir: %w", err))
+	}
+	e.initializeRunScopes(run.ID)
+	circuits, err := e.restoreProviderCircuits(run.ID)
+	if err != nil {
+		return e.failRun(run, repo, fmt.Errorf("restore provider circuits: %w", err), ctx)
+	}
+	duration := recoveredStepDuration(recovered.gate.stepResult)
+	e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, recovered.gate.step.Name(), string(types.StepStatusFixing), "", "", "", &duration)
+	skipRemaining, err := e.executeStep(ctx, recovered.gate.step, recovered.gate.stepResult, run, repo, workDir, logDir, stepExecutionState{
+		fixing:                  true,
+		previousFindings:        recovered.payload.findingsJSON,
+		roundNum:                recovered.gate.round,
+		executionMS:             duration,
+		currentRoundID:          recovered.gate.lastRoundID,
+		approvalActionID:        recovered.action.ID,
+		consentedSourceFindings: recovered.gate.findings,
+		consentedRepairFindings: recovered.payload.findingsJSON,
+		consentedIDs:            recovered.payload.findingIDs,
+	}, circuits)
+	if err != nil {
+		return e.failRun(run, repo, err, ctx)
+	}
+	if skipRemaining {
+		return e.skipRecoveredRemainder(ctx, run, repo, workDir, recovered.gate.index+1)
+	}
+	if recovered.gate.step.Name() == types.StepLint {
+		if err := e.sealCandidate(ctx, run, workDir); err != nil {
+			return e.failRun(run, repo, err, ctx)
+		}
+	}
+	return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, recovered.gate.index+1, circuits)
+}
+
 // ResumeRecoveredPrefix continues a previously validated completed/skipped
 // prefix at its first pending step, or finalizes an all-terminal run. It never
 // replays a terminal step.
@@ -404,6 +539,13 @@ func (e *Executor) ResumeRecoveredPrefix(ctx context.Context, run *db.Run, repo 
 	}
 	if err := ValidateRecoveredPrefix(e.db, run, e.steps); err != nil {
 		return err
+	}
+	appliedFix, err := e.recoveredAppliedFix(run.ID)
+	if err != nil {
+		return err
+	}
+	if appliedFix != nil {
+		return e.resumeRecoveredAppliedFix(ctx, run, repo, workDir, appliedFix)
 	}
 	start, err := e.recoveredPrefixStart(run.ID)
 	if err != nil {
@@ -490,10 +632,6 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusFailed), "", "", err.Error(), &duration)
 		return e.failRun(run, repo, fmt.Errorf("step %s: waiting for approval: %w", gate.step.Name(), err), ctx)
 	}
-	if err := e.db.CompleteApprovalAction(response.actionID, time.Since(parkStart).Milliseconds()); err != nil {
-		return e.failRun(run, repo, fmt.Errorf("consume approval action: %w", err), ctx)
-	}
-
 	duration := recoveredStepDuration(gate.stepResult)
 	approvalFields := telemetry.Fields{
 		"step":       string(gate.step.Name()),
@@ -516,8 +654,11 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 			e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusFailed), "", "", err.Error(), &duration)
 			return e.failRun(run, repo, err, ctx)
 		}
-		if err := e.db.CompleteStepWithStatus(gate.stepResult.ID, types.StepStatusCompleted, recoveredExitCode(gate.stepResult), duration, recoveredLogPath(gate.stepResult)); err != nil {
-			return e.failRun(run, repo, fmt.Errorf("complete recovered step %s: %w", gate.step.Name(), err), ctx)
+		if err := e.db.ApplyApprovalTerminal(db.ApplyApprovalTerminalInput{
+			ActionID: response.actionID, ParkedMS: time.Since(parkStart).Milliseconds(),
+			Status: types.StepStatusCompleted, ExitCode: recoveredExitCode(gate.stepResult), DurationMS: duration, LogPath: recoveredLogPath(gate.stepResult),
+		}); err != nil {
+			return e.failRun(run, repo, fmt.Errorf("apply recovered approved step %s: %w", gate.step.Name(), err), ctx)
 		}
 		e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusCompleted), "", "", "", &duration)
 		if gate.step.Name() == types.StepLint {
@@ -527,8 +668,11 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		}
 		return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, gate.index+1, circuits)
 	case types.ActionSkip:
-		if err := e.db.CompleteStepWithStatus(gate.stepResult.ID, types.StepStatusSkipped, recoveredExitCode(gate.stepResult), duration, recoveredLogPath(gate.stepResult)); err != nil {
-			return e.failRun(run, repo, fmt.Errorf("skip recovered step %s: %w", gate.step.Name(), err), ctx)
+		if err := e.db.ApplyApprovalTerminal(db.ApplyApprovalTerminalInput{
+			ActionID: response.actionID, ParkedMS: time.Since(parkStart).Milliseconds(),
+			Status: types.StepStatusSkipped, ExitCode: recoveredExitCode(gate.stepResult), DurationMS: duration, LogPath: recoveredLogPath(gate.stepResult),
+		}); err != nil {
+			return e.failRun(run, repo, fmt.Errorf("apply recovered skipped step %s: %w", gate.step.Name(), err), ctx)
 		}
 		e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusSkipped), "", "", "", &duration)
 		if gate.step.Name() == types.StepLint {
@@ -538,19 +682,31 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		}
 		return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, gate.index+1, circuits)
 	case types.ActionAbort:
-		if dbErr := e.db.FailStep(gate.stepResult.ID, "aborted by user", duration); dbErr != nil {
-			slog.Warn("failed to mark recovered step as aborted", "step", gate.step.Name(), "error", dbErr)
+		if err := e.db.ApplyApprovalTerminal(db.ApplyApprovalTerminalInput{
+			ActionID: response.actionID, ParkedMS: time.Since(parkStart).Milliseconds(),
+			Status: types.StepStatusFailed, ExitCode: recoveredExitCode(gate.stepResult), DurationMS: duration, LogPath: recoveredLogPath(gate.stepResult), Error: "aborted by user",
+		}); err != nil {
+			return e.failRun(run, repo, fmt.Errorf("apply recovered aborted step %s: %w", gate.step.Name(), err), ctx)
 		}
 		e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusFailed), "", "", "aborted by user", &duration)
 		return e.failRun(run, repo, fmt.Errorf("step %s: aborted by user", gate.step.Name()), ctx)
 	case types.ActionFix:
 		telemetry.Track("fix", e.fixTelemetryFields("user", gate.step.Name(), selectedFindingCount(gate.findings, response.findingIDs), 0))
 		payload := buildUserFixPayload(gate.findings, response)
-		if err := e.persistUserFixPayload(gate.lastRoundID, payload); err != nil {
-			return e.failRun(run, repo, fmt.Errorf("persist recovered user fix for step %s: %w", gate.step.Name(), err), ctx)
+		selection := marshalFindingIDs(payload.findingIDs)
+		var selectedIDs *string
+		if selection != "" {
+			selectedIDs = &selection
 		}
-		if dbErr := e.db.UpdateStepStatus(gate.stepResult.ID, types.StepStatusFixing); dbErr != nil {
-			return e.failRun(run, repo, fmt.Errorf("mark recovered step %s fixing: %w", gate.step.Name(), dbErr), ctx)
+		var userFindings *string
+		if payload.hasOverrides {
+			userFindings = &payload.findingsJSON
+		}
+		if err := e.db.ApplyApprovalFix(db.ApplyApprovalFixInput{
+			ActionID: response.actionID, ParkedMS: time.Since(parkStart).Milliseconds(),
+			SelectedIDsJSON: selectedIDs, UserFindingsJSON: userFindings,
+		}); err != nil {
+			return e.failRun(run, repo, fmt.Errorf("apply recovered user fix for step %s: %w", gate.step.Name(), err), ctx)
 		}
 		e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusFixing), "", "", "", nil)
 		skipRemaining, err := e.executeStep(ctx, gate.step, gate.stepResult, run, repo, workDir, logDir, stepExecutionState{
@@ -836,11 +992,12 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	logPath := filepath.Join(logDir, string(stepName)+".log")
 	finalExitCode := 0
 
-	// Mark step as running
-	if err := e.db.StartStep(sr.ID); err != nil {
-		return false, fmt.Errorf("start step %s: %w", stepName, err)
+	if !state.fixing {
+		if err := e.db.StartStep(sr.ID); err != nil {
+			return false, fmt.Errorf("start step %s: %w", stepName, err)
+		}
+		e.emitStepEvent(ipc.EventStepStarted, run, repo, stepName, string(types.StepStatusRunning))
 	}
-	e.emitStepEvent(ipc.EventStepStarted, run, repo, stepName, string(types.StepStatusRunning))
 
 	// Track execution-only time, excluding approval wait periods.
 	phaseStart := time.Now()
@@ -991,6 +1148,8 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	}
 	skipRemaining := false
 	stepSkipped := false
+	approvalTerminal := false
+	approvalTerminalDuration := int64(0)
 	currentRoundID := state.currentRoundID
 	postRepairRereview := false
 	var recoveredOutcome *StepOutcome
@@ -1272,10 +1431,6 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFailed), "", "", err.Error(), &executionMS)
 			return false, fmt.Errorf("step %s: waiting for approval: %w", stepName, err)
 		}
-		if err := e.db.CompleteApprovalAction(response.actionID, time.Since(parkStart).Milliseconds()); err != nil {
-			return false, fmt.Errorf("consume %s approval action: %w", stepName, err)
-		}
-
 		approvalFields := telemetry.Fields{
 			"step":       string(stepName),
 			"action":     string(response.action),
@@ -1298,22 +1453,36 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 				e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFailed), "", "", err.Error(), &executionMS)
 				return false, err
 			}
-			// Approved - execution already frozen in executionMS, reset phaseStart
-			// so the done label computes no additional elapsed.
-			phaseStart = time.Now()
+			approvalDuration := executionMS
+			if durationOverrideMS > 0 {
+				approvalDuration = durationOverrideMS
+			}
+			if err := e.db.ApplyApprovalTerminal(db.ApplyApprovalTerminalInput{
+				ActionID: response.actionID, ParkedMS: time.Since(parkStart).Milliseconds(),
+				Status: types.StepStatusCompleted, ExitCode: finalExitCode, DurationMS: approvalDuration, LogPath: logPath,
+			}); err != nil {
+				return false, fmt.Errorf("apply approved %s step: %w", stepName, err)
+			}
+			approvalTerminal = true
+			approvalTerminalDuration = approvalDuration
 			goto done
 
 		case types.ActionSkip:
-			// Skip - mark step skipped and return (not an error)
-			if err := e.db.CompleteStepWithStatus(sr.ID, types.StepStatusSkipped, finalExitCode, executionMS, logPath); err != nil {
-				return false, fmt.Errorf("complete step %s (skip): %w", stepName, err)
+			if err := e.db.ApplyApprovalTerminal(db.ApplyApprovalTerminalInput{
+				ActionID: response.actionID, ParkedMS: time.Since(parkStart).Milliseconds(),
+				Status: types.StepStatusSkipped, ExitCode: finalExitCode, DurationMS: executionMS, LogPath: logPath,
+			}); err != nil {
+				return false, fmt.Errorf("apply skipped %s step: %w", stepName, err)
 			}
 			e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusSkipped), "", "", "", &executionMS)
 			return false, nil
 
 		case types.ActionAbort:
-			if dbErr := e.db.FailStep(sr.ID, "aborted by user", executionMS); dbErr != nil {
-				slog.Warn("failed to mark step as failed in db", "step", stepName, "error", dbErr)
+			if err := e.db.ApplyApprovalTerminal(db.ApplyApprovalTerminalInput{
+				ActionID: response.actionID, ParkedMS: time.Since(parkStart).Milliseconds(),
+				Status: types.StepStatusFailed, ExitCode: finalExitCode, DurationMS: executionMS, LogPath: logPath, Error: "aborted by user",
+			}); err != nil {
+				return false, fmt.Errorf("apply aborted %s step: %w", stepName, err)
 			}
 			e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFailed), "", "", "aborted by user", &executionMS)
 			return false, fmt.Errorf("step %s: aborted by user", stepName)
@@ -1324,12 +1493,21 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			phaseStart = time.Now()
 			selectedCount := selectedFindingCount(outcome.Findings, response.findingIDs)
 			writeLog(fmt.Sprintf("user-fix round starting after round %d (%d %s selected)", roundNum, selectedCount, pluralize(selectedCount, "finding", "findings")))
-			if err := e.db.UpdateStepStatus(sr.ID, types.StepStatusFixing); err != nil {
-				return false, fmt.Errorf("mark step %s fixing: %w", stepName, err)
-			}
 			payload := buildUserFixPayload(outcome.Findings, response)
-			if err := e.persistUserFixPayload(currentRoundID, payload); err != nil {
-				return false, fmt.Errorf("persist user fix for step %s: %w", stepName, err)
+			selection := marshalFindingIDs(payload.findingIDs)
+			var selectedIDs *string
+			if selection != "" {
+				selectedIDs = &selection
+			}
+			var userFindings *string
+			if payload.hasOverrides {
+				userFindings = &payload.findingsJSON
+			}
+			if err := e.db.ApplyApprovalFix(db.ApplyApprovalFixInput{
+				ActionID: response.actionID, ParkedMS: time.Since(parkStart).Milliseconds(),
+				SelectedIDsJSON: selectedIDs, UserFindingsJSON: userFindings,
+			}); err != nil {
+				return false, fmt.Errorf("apply user fix for step %s: %w", stepName, err)
 			}
 			// Routed consent: the human (or unattended consent) authorized a fix,
 			// so repair the explicitly selected findings through the
@@ -1419,6 +1597,9 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 done:
 	// Mark step completed with execution-only timing.
 	durationMS := executionMS + time.Since(phaseStart).Milliseconds()
+	if approvalTerminal {
+		durationMS = approvalTerminalDuration
+	}
 	if durationOverrideMS > 0 {
 		durationMS = durationOverrideMS
 	}
@@ -1426,8 +1607,10 @@ done:
 	if stepSkipped {
 		status = types.StepStatusSkipped
 	}
-	if err := e.db.CompleteStepWithStatus(sr.ID, status, finalExitCode, durationMS, logPath); err != nil {
-		return false, fmt.Errorf("complete step %s: %w", stepName, err)
+	if !approvalTerminal {
+		if err := e.db.CompleteStepWithStatus(sr.ID, status, finalExitCode, durationMS, logPath); err != nil {
+			return false, fmt.Errorf("complete step %s: %w", stepName, err)
+		}
 	}
 	e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(status), "", "", "", &durationMS)
 	return skipRemaining, nil
