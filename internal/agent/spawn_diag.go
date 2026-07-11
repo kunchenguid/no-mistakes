@@ -110,13 +110,16 @@ func (d *spawnDiag) wrapStdout(r io.Reader) io.Reader {
 
 // logExit records how the invocation ended: which branch (ok, no-result-event,
 // parse-error, wait-error), the error, whether a result was parsed, stdout
-// volume and head, and full stderr.
+// volume and head, and full stderr. It does not report the process image name:
+// by the time any exit branch runs the child has already been reaped (every
+// path follows started.wait or waitAfterParseError), so a lookup would report
+// "gone" or, worse, a reused PID. The live image is captured by logStarted.
 func (d *spawnDiag) logExit(pid int, path string, pathErr error, gotResult bool, stderr []byte) {
 	if !d.enabled {
 		return
 	}
-	d.emit(fmt.Sprintf("exit path=%s pid=%d image=%q dur=%s err=%s gotResult=%t stdoutBytes=%d",
-		path, pid, processImageName(pid), time.Since(d.start).Round(time.Millisecond), errStr(pathErr), gotResult, d.capture.n))
+	d.emit(fmt.Sprintf("exit path=%s pid=%d dur=%s err=%s gotResult=%t stdoutBytes=%d",
+		path, pid, time.Since(d.start).Round(time.Millisecond), errStr(pathErr), gotResult, d.capture.n))
 	d.emit(fmt.Sprintf("stdout-head=%q", d.capture.head()))
 	d.emit(fmt.Sprintf("stderr=%q", strings.TrimSpace(string(stderr))))
 }
