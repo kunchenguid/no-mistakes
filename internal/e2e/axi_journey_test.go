@@ -5,6 +5,7 @@ package e2e
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -260,10 +261,17 @@ func TestAxiAgentJourney(t *testing.T) {
 
 func TestAxiRunReportsImmediateAgentlessFailureWithoutRerun(t *testing.T) {
 	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: cleanReviewScenario(t)})
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("find git for isolated agentless PATH: %v", err)
+	}
+	if err := os.Symlink(gitPath, filepath.Join(h.BinDir, "git")); err != nil {
+		t.Fatalf("link git into isolated agentless PATH: %v", err)
+	}
 
 	h.CommitChange("init-axi-agentless", "seed.txt", "seed\n", "seed for axi init")
 	initWorktree := h.AddWorktree("init-axi-agentless")
-	if out, err := h.RunInDir(initWorktree, "init"); err != nil {
+	if out, err := h.RunInDirWithEnv(initWorktree, map[string]string{"PATH": h.BinDir}, "init"); err != nil {
 		t.Fatalf("nm init: %v\n%s", err, out)
 	}
 
@@ -280,7 +288,8 @@ func TestAxiRunReportsImmediateAgentlessFailureWithoutRerun(t *testing.T) {
 	if err == nil {
 		t.Fatalf("axi run should return the failed outcome:\n%s", out)
 	}
-	for _, want := range []string{"outcome: failed", "no runnable agent", "gate cannot validate"} {
+	wantRoutingFailure := `error: "routing profile \"prose_fast\" has no runnable candidate (looked for: codex, claude); the gate cannot validate without a configured runner"`
+	for _, want := range []string{"outcome: failed", wantRoutingFailure} {
 		if !strings.Contains(out, want) {
 			t.Errorf("axi run output missing %q in:\n%s", want, out)
 		}

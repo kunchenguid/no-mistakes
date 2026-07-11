@@ -18,6 +18,13 @@ import (
 func TestCascadeDirectLunaSuccess(t *testing.T) {
 	scenario := writeScenario(t, `actions:
   - match: "Review the code changes and return structured findings with a risk assessment.\n\nContext:\n- branch: cascade-luna-direct"
+    match_file: "cascade-luna-direct-resolved.txt"
+    text: "clean full rereview after direct Luna repair"
+    structured:
+      findings: []
+      risk_level: low
+      risk_rationale: "the repaired branch is clean"
+  - match: "Review the code changes and return structured findings with a risk assessment.\n\nContext:\n- branch: cascade-luna-direct"
     text: "found a fixable bug"
     structured:
       findings:
@@ -34,6 +41,8 @@ func TestCascadeDirectLunaSuccess(t *testing.T) {
     edits:
       - path: "cascade.txt"
         new: "luna fix\n"
+      - path: "cascade-luna-direct-resolved.txt"
+        new: "resolved\n"
     structured:
       summary: "guarded the bug"
   - match: "Independently verify whether each of the following"
@@ -74,7 +83,7 @@ func TestCascadeDirectLunaSuccess(t *testing.T) {
 	assertCandidate(t, verifiers[0], "review_strong", 0, "sol", types.EffortHigh)
 	assertCascadeRepair(t, repairs[0], "direct luna bug", "error", string(types.ActionAutoFix), 0, 2, db.RepairStatusResolved, db.RepairVerdictResolved, fixers[0], verifiers[0])
 
-	assertCascadePublished(t, h, run, "cascade-luna-direct", types.PurposeEscalatedAggregateVerification, "authority_strong", types.EffortXHigh)
+	assertCascadePublished(t, h, run, "cascade-luna-direct")
 }
 
 // TestCascadeLunaTerraSol proves a blocking finding the fix_fast and
@@ -83,6 +92,13 @@ func TestCascadeDirectLunaSuccess(t *testing.T) {
 // — a distinct invocation from the Sol fixer — resolves it.
 func TestCascadeLunaTerraSol(t *testing.T) {
 	scenario := writeScenario(t, `actions:
+  - match: "Review the code changes and return structured findings with a risk assessment.\n\nContext:\n- branch: cascade-escalate"
+    match_file: "cascade-escalate-resolved.txt"
+    text: "clean full rereview after Luna-Terra-Sol repair"
+    structured:
+      findings: []
+      risk_level: low
+      risk_rationale: "the repaired branch is clean"
   - match: "Review the code changes and return structured findings with a risk assessment.\n\nContext:\n- branch: cascade-escalate"
     text: "found a stubborn bug"
     structured:
@@ -117,6 +133,8 @@ func TestCascadeLunaTerraSol(t *testing.T) {
     edits:
       - path: "cascade.txt"
         new: "sol fix\n"
+      - path: "cascade-escalate-resolved.txt"
+        new: "resolved\n"
     structured:
       summary: "authority attempt"
   - match: "Independently verify whether each of the following"
@@ -198,7 +216,7 @@ func TestCascadeLunaTerraSol(t *testing.T) {
 	assertCascadeRepair(t, byTier[1], "escalating bug", "error", string(types.ActionAutoFix), 1, 1, db.RepairStatusUnresolved, db.RepairVerdictUnresolved, fixers[1], normal[1])
 	assertCascadeRepair(t, byTier[2], "escalating bug", "error", string(types.ActionAutoFix), 2, 0, db.RepairStatusResolved, db.RepairVerdictResolved, fixers[2], final)
 
-	assertCascadePublished(t, h, run, "cascade-escalate", types.PurposeEscalatedAggregateVerification, "authority_strong", types.EffortXHigh)
+	assertCascadePublished(t, h, run, "cascade-escalate")
 }
 
 // TestCascadeLunaTerra proves a finding the fix_fast verifier leaves unresolved
@@ -207,6 +225,13 @@ func TestCascadeLunaTerraSol(t *testing.T) {
 // model/effort, so the tier is distinguished by the diff the fixer produced.
 func TestCascadeLunaTerra(t *testing.T) {
 	scenario := writeScenario(t, `actions:
+  - match: "Review the code changes and return structured findings with a risk assessment.\n\nContext:\n- branch: cascade-luna-terra"
+    match_file: "cascade-luna-terra-resolved.txt"
+    text: "clean full rereview after Luna-Terra repair"
+    structured:
+      findings: []
+      risk_level: low
+      risk_rationale: "the repaired branch is clean"
   - match: "Review the code changes and return structured findings with a risk assessment.\n\nContext:\n- branch: cascade-luna-terra"
     text: "found a two-tier bug"
     structured:
@@ -233,6 +258,8 @@ func TestCascadeLunaTerra(t *testing.T) {
     edits:
       - path: "cascade.txt"
         new: "TERRA_RESOLVED_MARKER\n"
+      - path: "cascade-luna-terra-resolved.txt"
+        new: "resolved\n"
     structured:
       summary: "fix_balanced attempt"
   - match: "TERRA_RESOLVED_MARKER"
@@ -296,7 +323,7 @@ func TestCascadeLunaTerra(t *testing.T) {
 	assertCascadeRepair(t, byTier[0], "two tier bug", "error", string(types.ActionAutoFix), 0, 2, db.RepairStatusUnresolved, db.RepairVerdictUnresolved, fixers[0], normal[0])
 	assertCascadeRepair(t, byTier[1], "two tier bug", "error", string(types.ActionAutoFix), 1, 1, db.RepairStatusResolved, db.RepairVerdictResolved, fixers[1], normal[1])
 
-	assertCascadePublished(t, h, run, "cascade-luna-terra", types.PurposeEscalatedAggregateVerification, "authority_strong", types.EffortXHigh)
+	assertCascadePublished(t, h, run, "cascade-luna-terra")
 }
 
 // TestCascadeSameTierBatching proves two blocking findings at the same tier are
@@ -304,6 +331,13 @@ func TestCascadeLunaTerra(t *testing.T) {
 // invocation at tier 0 cover both lineages, which resolve together.
 func TestCascadeSameTierBatching(t *testing.T) {
 	scenario := writeScenario(t, `actions:
+  - match: "Review the code changes and return structured findings with a risk assessment.\n\nContext:\n- branch: cascade-batch"
+    match_file: "cascade-batch-resolved.txt"
+    text: "clean full rereview after batched repair"
+    structured:
+      findings: []
+      risk_level: low
+      risk_rationale: "the repaired branch is clean"
   - match: "Review the code changes and return structured findings with a risk assessment.\n\nContext:\n- branch: cascade-batch"
     text: "found two bugs"
     structured:
@@ -327,6 +361,8 @@ func TestCascadeSameTierBatching(t *testing.T) {
     edits:
       - path: "cascade.txt"
         new: "batch fixed\n"
+      - path: "cascade-batch-resolved.txt"
+        new: "resolved\n"
     structured:
       summary: "fixed the batch"
   - match: "Independently verify whether each of the following"
@@ -395,7 +431,7 @@ func TestCascadeSameTierBatching(t *testing.T) {
 		t.Fatalf("missing batched repair descriptions: %v", wantDescriptions)
 	}
 
-	assertCascadePublished(t, h, run, "cascade-batch", types.PurposeEscalatedAggregateVerification, "authority_strong", types.EffortXHigh)
+	assertCascadePublished(t, h, run, "cascade-batch")
 }
 
 // TestCascadePatchCausedInheritance proves a new blocking finding the verifier
@@ -404,6 +440,13 @@ func TestCascadeSameTierBatching(t *testing.T) {
 // than starting a fresh lineage with a full budget.
 func TestCascadePatchCausedInheritance(t *testing.T) {
 	scenario := writeScenario(t, `actions:
+  - match: "Review the code changes and return structured findings with a risk assessment.\n\nContext:\n- branch: cascade-patch-caused"
+    match_file: "cascade-patch-caused-resolved.txt"
+    text: "clean full rereview after inherited repair"
+    structured:
+      findings: []
+      risk_level: low
+      risk_rationale: "the repaired branch is clean"
   - match: "Review the code changes and return structured findings with a risk assessment.\n\nContext:\n- branch: cascade-patch-caused"
     text: "found a root bug"
     structured:
@@ -430,6 +473,8 @@ func TestCascadePatchCausedInheritance(t *testing.T) {
     edits:
       - path: "cascade.txt"
         new: "ROUND1_FIX\n"
+      - path: "cascade-patch-caused-resolved.txt"
+        new: "resolved\n"
     structured:
       summary: "fix_balanced attempt"
   - match: "severity error: root bug"
@@ -509,7 +554,7 @@ func TestCascadePatchCausedInheritance(t *testing.T) {
 	assertCascadeRepair(t, byTier[0], "root bug", "error", string(types.ActionAutoFix), 0, 2, db.RepairStatusUnresolved, db.RepairVerdictUnresolved, fixers[0], verifiers[0])
 	assertCascadeRepair(t, byTier[1], "patch regression", "error", string(types.ActionAutoFix), 1, 1, db.RepairStatusResolved, db.RepairVerdictResolved, fixers[1], verifiers[1])
 
-	assertCascadePublished(t, h, run, "cascade-patch-caused", types.PurposeEscalatedAggregateVerification, "authority_strong", types.EffortXHigh)
+	assertCascadePublished(t, h, run, "cascade-patch-caused")
 }
 
 // TestCascadeInformationalTermination proves an unresolved informational
@@ -611,7 +656,7 @@ func TestCascadeInformationalTermination(t *testing.T) {
 			t.Fatalf("informational repair reached authority_strong (Sol/Fable): %+v", attempt.Start.Candidate)
 		}
 	}
-	assertCascadePublication(t, h, run, "cascade-info", types.PurposeNormalAggregateVerification, "review_strong", types.EffortHigh)
+	assertCascadePublication(t, h, run, "cascade-info", 2)
 }
 
 // TestCascadeConsentedTerraSol proves an ask-user finding starts no fixer until
@@ -619,6 +664,13 @@ func TestCascadeInformationalTermination(t *testing.T) {
 // (Terra) and escalates to authority_strong (Sol) — never fix_fast.
 func TestCascadeConsentedTerraSol(t *testing.T) {
 	scenario := writeScenario(t, `actions:
+  - match: "Review the code changes and return structured findings with a risk assessment.\n\nContext:\n- branch: cascade-consent"
+    match_file: "cascade-consent-resolved.txt"
+    text: "clean full rereview after consented escalation"
+    structured:
+      findings: []
+      risk_level: low
+      risk_rationale: "the repaired branch is clean"
   - match: "Review the code changes and return structured findings with a risk assessment.\n\nContext:\n- branch: cascade-consent"
     text: "found an intent-sensitive issue"
     structured:
@@ -645,6 +697,8 @@ func TestCascadeConsentedTerraSol(t *testing.T) {
     edits:
       - path: "cascade.txt"
         new: "sol consent fix\n"
+      - path: "cascade-consent-resolved.txt"
+        new: "resolved\n"
     structured:
       summary: "authority attempt"
   - match: "Independently verify whether each of the following"
@@ -709,7 +763,7 @@ func TestCascadeConsentedTerraSol(t *testing.T) {
 	assertCandidate(t, topVerifier, "authority_strong", 0, "sol", types.EffortXHigh)
 	assertCascadeRepair(t, repairs[0], "intent sensitive issue", "error", string(types.ActionAskUser), 0, 1, db.RepairStatusUnresolved, db.RepairVerdictUnresolved, fixers[0], normal[0])
 	assertCascadeRepair(t, repairs[1], "intent sensitive issue", "error", string(types.ActionAskUser), 1, 0, db.RepairStatusResolved, db.RepairVerdictResolved, fixers[1], topVerifier)
-	assertCascadePublished(t, h, completed, "cascade-consent", types.PurposeEscalatedAggregateVerification, "authority_strong", types.EffortXHigh)
+	assertCascadePublished(t, h, completed, "cascade-consent")
 }
 
 // TestCascadeTerminalFailClosed proves a blocking finding no tier resolves —
@@ -826,8 +880,15 @@ func assertCascadeReviewCompleted(t *testing.T, run *ipc.RunInfo) {
 	if review.Status != types.StepStatusCompleted {
 		t.Fatalf("review status = %s, want completed without a stale approval gate", review.Status)
 	}
-	if review.FindingsJSON != nil {
-		t.Fatalf("resolved cascade still exposes blocking review findings: %s", *review.FindingsJSON)
+	if review.FindingsJSON == nil {
+		t.Fatal("resolved cascade rereview has no durable clean findings result")
+	}
+	findings, err := types.ParseFindingsJSON(*review.FindingsJSON)
+	if err != nil {
+		t.Fatalf("parse resolved cascade rereview findings: %v", err)
+	}
+	if len(findings.Items) != 0 {
+		t.Fatalf("resolved cascade rereview still exposes findings: %+v", findings.Items)
 	}
 }
 
@@ -855,26 +916,36 @@ func attemptByID(t *testing.T, attempts []*db.InvocationAttempt, id string) *db.
 	return nil
 }
 
-func assertCascadePublished(t *testing.T, h *Harness, run *ipc.RunInfo, branch string, verifyPurpose types.Purpose, profile string, effort types.Effort) {
+func assertCascadePublished(t *testing.T, h *Harness, run *ipc.RunInfo, branch string) {
 	t.Helper()
 	assertCascadeReviewCompleted(t, run)
-	assertCascadePublication(t, h, run, branch, verifyPurpose, profile, effort)
+	assertCascadePublication(t, h, run, branch, 2)
 }
 
-func assertCascadePublication(t *testing.T, h *Harness, run *ipc.RunInfo, branch string, verifyPurpose types.Purpose, profile string, effort types.Effort) {
+func assertCascadePublication(t *testing.T, h *Harness, run *ipc.RunInfo, branch string, wantFullReviews int) {
 	t.Helper()
 	verify, ok := findStep(run.Steps, types.StepVerify)
 	if !ok || verify.Status != types.StepStatusCompleted {
 		t.Fatalf("Verify step = %+v, want completed", verify)
 	}
-	attempts := verifyStepAttempts(t, h, run.ID, h.InvocationAttempts(t, run.ID))
-	if len(attempts) != 1 {
-		t.Fatalf("Verify attempts = %d %v, want exactly 1", len(attempts), candidateModels(attempts))
+	allAttempts := h.InvocationAttempts(t, run.ID)
+	verifyAttempts := verifyStepAttempts(t, h, run.ID, allAttempts)
+	if len(verifyAttempts) != 0 {
+		t.Fatalf("Verify attempts = %d %v, want 0 because the sealed candidate is unchanged since strong review", len(verifyAttempts), candidateModels(verifyAttempts))
 	}
-	if attempts[0].Start.Purpose != verifyPurpose {
-		t.Fatalf("Verify purpose = %q, want %q", attempts[0].Start.Purpose, verifyPurpose)
+	reviews := succeededAttemptsFor(allAttempts, types.PurposeInitialReview)
+	if len(reviews) != wantFullReviews {
+		t.Fatalf("full review attempts = %d %v, want exactly %d", len(reviews), candidateModels(reviews), wantFullReviews)
 	}
-	assertCandidate(t, attempts[0], profile, 0, "sol", effort)
+	for _, review := range reviews {
+		assertCandidate(t, review, "review_strong", 0, "sol", types.EffortHigh)
+		if review.Start.Candidate.Runner != types.RunnerCodex || review.Start.Candidate.CandidateIndex != 0 {
+			t.Fatalf("full review candidate = {runner:%q index:%d}, want primary codex candidate", review.Start.Candidate.Runner, review.Start.Candidate.CandidateIndex)
+		}
+	}
+	if len(reviews) == 2 && reviews[0].ID == reviews[1].ID {
+		t.Fatalf("initial review and mandatory full rereview share attempt %q, want distinct attempts", reviews[0].ID)
+	}
 
 	d := h.OpenDB(t)
 	defer d.Close()
