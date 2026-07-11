@@ -111,11 +111,11 @@ func TestGateResolution(t *testing.T) {
 		wantIDs      []string
 	}{
 		{
-			name: "actionable findings are fixed with every finding selected",
+			name: "mixed actionable and no-op findings fix only actionable IDs",
 			gate: stepView{
 				Name:         "review",
 				Status:       string(types.StepStatusAwaitingApproval),
-				FindingsJSON: `{"findings":[{"id":"review-1","severity":"warning","description":"design choice","action":"ask-user"},{"id":"review-2","severity":"info","description":"fyi","action":"no-op"}],"summary":"2"}`,
+				FindingsJSON: `{"findings":[{"id":"review-1","severity":"warning","description":"design choice","action":"ask-user"},{"id":"review-2","severity":"warning","description":"fixable bug","action":"auto-fix"},{"id":"review-3","severity":"info","description":"fyi","action":"no-op"}],"summary":"3"}`,
 			},
 			wantAction: types.ActionFix,
 			wantIDs:    []string{"review-1", "review-2"},

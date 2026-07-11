@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -164,11 +165,24 @@ CI logs:
 	if !candidateChanged {
 		return false, nil
 	}
-	if verr := s.verifyCIPatch(sctx, baseSHA); verr != nil {
-		return false, fmt.Errorf("CI patch failed verification: %w", verr)
+	verificationCandidate, err := captureCICandidate(sctx)
+	if err != nil {
+		return false, fmt.Errorf("snapshot CI candidate before verification: %w", err)
 	}
-	if err := validatePreparedCICandidate(sctx, candidateHead, candidateTree); err != nil {
-		return false, fmt.Errorf("CI patch changed during verification: %w", err)
+	verificationErr := s.verifyCIPatch(sctx, baseSHA)
+	integrityContext := *sctx
+	integrityContext.Ctx = context.WithoutCancel(sctx.Ctx)
+	integrityErr := verificationCandidate.validate(&integrityContext)
+	verificationCandidate.cleanup(sctx)
+	if integrityErr != nil {
+		integrityErr = fmt.Errorf("CI patch changed during verification: %w", integrityErr)
+		if verificationErr != nil {
+			return false, errors.Join(integrityErr, fmt.Errorf("CI patch failed verification: %w", verificationErr))
+		}
+		return false, integrityErr
+	}
+	if verificationErr != nil {
+		return false, fmt.Errorf("CI patch failed verification: %w", verificationErr)
 	}
 	s.verifiedCandidateHead = candidateHead
 	s.verifiedCandidateTree = candidateTree
@@ -269,14 +283,13 @@ func validatePreparedCICandidate(sctx *pipeline.StepContext, wantHead, wantTree 
 }
 
 type ciCandidateSnapshot struct {
-	head          string
-	headRef       string
-	indexTree     string
-	status        string
-	trackedDiff   string
-	trackedRef    string
-	untrackedDir  string
-	untrackedPath []string
+	head             string
+	headRef          string
+	indexTree        string
+	status           string
+	trackedDiff      string
+	worktreeDir      string
+	rebaseInProgress bool
 }
 
 func captureCICandidate(sctx *pipeline.StepContext) (ciCandidateSnapshot, error) {
@@ -302,9 +315,13 @@ func captureCICandidate(sctx *pipeline.StepContext) (ciCandidateSnapshot, error)
 	if err != nil {
 		return ciCandidateSnapshot{}, fmt.Errorf("snapshot tracked worktree: %w", err)
 	}
-	snapshot.untrackedDir, err = os.MkdirTemp("", "no-mistakes-ci-candidate-*")
+	snapshot.rebaseInProgress, err = ciRebaseState(sctx)
 	if err != nil {
-		return ciCandidateSnapshot{}, fmt.Errorf("create untracked snapshot: %w", err)
+		return ciCandidateSnapshot{}, fmt.Errorf("snapshot rebase state: %w", err)
+	}
+	snapshot.worktreeDir, err = os.MkdirTemp("", "no-mistakes-ci-candidate-*")
+	if err != nil {
+		return ciCandidateSnapshot{}, fmt.Errorf("create worktree snapshot: %w", err)
 	}
 	complete := false
 	defer func() {
@@ -312,45 +329,27 @@ func captureCICandidate(sctx *pipeline.StepContext) (ciCandidateSnapshot, error)
 			snapshot.cleanup(sctx)
 		}
 	}()
-	snapshot.untrackedPath, err = snapshotCIUntracked(sctx, snapshot.untrackedDir)
-	if err != nil {
-		return ciCandidateSnapshot{}, err
-	}
-	stashOID, err := stepGitRun(sctx, "stash", "create")
-	if err != nil {
-		return ciCandidateSnapshot{}, fmt.Errorf("snapshot tracked candidate: %w", err)
-	}
-	if stashOID != "" {
-		refSuffix := sha256.Sum256([]byte(snapshot.untrackedDir))
-		snapshot.trackedRef = fmt.Sprintf("refs/no-mistakes/ci-repair-snapshots/%s-%x", stashOID, refSuffix[:8])
-		if _, err := stepGitRun(sctx, "update-ref", snapshot.trackedRef, stashOID); err != nil {
-			return ciCandidateSnapshot{}, fmt.Errorf("retain tracked candidate snapshot: %w", err)
-		}
+	if err := copyCIWorktree(sctx.WorkDir, snapshot.worktreeDir); err != nil {
+		return ciCandidateSnapshot{}, fmt.Errorf("snapshot candidate worktree: %w", err)
 	}
 	complete = true
 	return snapshot, nil
 }
 
-func snapshotCIUntracked(sctx *pipeline.StepContext, snapshotDir string) ([]string, error) {
-	cmd := stepCmd(sctx, "git", "ls-files", "--others", "--exclude-standard", "-z")
-	output, err := cmd.Output()
+func copyCIWorktree(sourceDir, destinationDir string) error {
+	entries, err := os.ReadDir(sourceDir)
 	if err != nil {
-		return nil, fmt.Errorf("list untracked candidate paths: %w", err)
+		return err
 	}
-	var paths []string
-	for _, path := range strings.Split(string(output), "\x00") {
-		if path == "" {
+	for _, entry := range entries {
+		if entry.Name() == ".git" {
 			continue
 		}
-		if !filepath.IsLocal(path) {
-			return nil, fmt.Errorf("snapshot unsafe untracked candidate path %q", path)
+		if err := copyCICandidatePath(filepath.Join(sourceDir, entry.Name()), filepath.Join(destinationDir, entry.Name())); err != nil {
+			return fmt.Errorf("copy candidate path %q: %w", entry.Name(), err)
 		}
-		if err := copyCICandidatePath(filepath.Join(sctx.WorkDir, path), filepath.Join(snapshotDir, path)); err != nil {
-			return nil, fmt.Errorf("snapshot untracked candidate path %q: %w", path, err)
-		}
-		paths = append(paths, path)
 	}
-	return paths, nil
+	return nil
 }
 
 func copyCICandidatePath(source, destination string) error {
@@ -369,7 +368,7 @@ func copyCICandidatePath(source, destination string) error {
 		return os.Symlink(target, destination)
 	}
 	if info.IsDir() {
-		if err := os.MkdirAll(destination, info.Mode().Perm()); err != nil {
+		if err := os.MkdirAll(destination, ciCandidateMode(info.Mode())); err != nil {
 			return err
 		}
 		entries, err := os.ReadDir(source)
@@ -381,7 +380,7 @@ func copyCICandidatePath(source, destination string) error {
 				return err
 			}
 		}
-		return os.Chmod(destination, info.Mode().Perm())
+		return os.Chmod(destination, ciCandidateMode(info.Mode()))
 	}
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("unsupported file mode %s", info.Mode())
@@ -391,7 +390,7 @@ func copyCICandidatePath(source, destination string) error {
 		return err
 	}
 	defer input.Close()
-	output, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode().Perm())
+	output, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, ciCandidateMode(info.Mode()))
 	if err != nil {
 		return err
 	}
@@ -402,10 +401,17 @@ func copyCICandidatePath(source, destination string) error {
 	if err := output.Close(); err != nil {
 		return err
 	}
-	return os.Chmod(destination, info.Mode().Perm())
+	return os.Chmod(destination, ciCandidateMode(info.Mode()))
+}
+
+func ciCandidateMode(mode os.FileMode) os.FileMode {
+	return mode.Perm() | mode&(os.ModeSetuid|os.ModeSetgid|os.ModeSticky)
 }
 
 func (snapshot ciCandidateSnapshot) restore(sctx *pipeline.StepContext) error {
+	if err := snapshot.reconcileRebase(sctx); err != nil {
+		return err
+	}
 	if _, err := stepGitRun(sctx, "reset", "--hard"); err != nil {
 		return err
 	}
@@ -421,20 +427,92 @@ func (snapshot ciCandidateSnapshot) restore(sctx *pipeline.StepContext) error {
 	if _, err := stepGitRun(sctx, "reset", "--hard", snapshot.head); err != nil {
 		return err
 	}
-	if _, err := stepGitRun(sctx, "clean", "-ffd"); err != nil {
+	if err := clearCIWorktree(sctx.WorkDir); err != nil {
+		return fmt.Errorf("clear failed CI candidate: %w", err)
+	}
+	if err := copyCIWorktree(snapshot.worktreeDir, sctx.WorkDir); err != nil {
+		return fmt.Errorf("restore candidate worktree: %w", err)
+	}
+	if _, err := stepGitRun(sctx, "read-tree", snapshot.indexTree); err != nil {
+		return fmt.Errorf("restore candidate index: %w", err)
+	}
+	return snapshot.validate(sctx)
+}
+
+func (snapshot ciCandidateSnapshot) reconcileRebase(sctx *pipeline.StepContext) error {
+	current, err := ciRebaseState(sctx)
+	if err != nil {
+		return fmt.Errorf("inspect failed repair rebase state: %w", err)
+	}
+	if snapshot.rebaseInProgress || !current {
+		return nil
+	}
+	if _, err := stepGitRun(sctx, "rebase", "--abort"); err == nil {
+		return nil
+	} else {
+		abortErr := err
+		if _, quitErr := stepGitRun(sctx, "rebase", "--quit"); quitErr != nil {
+			return errors.Join(fmt.Errorf("abort failed repair rebase: %w", abortErr), fmt.Errorf("quit failed repair rebase: %w", quitErr))
+		}
+	}
+	return nil
+}
+
+func ciRebaseState(sctx *pipeline.StepContext) (bool, error) {
+	for _, state := range []string{"rebase-merge", "rebase-apply"} {
+		path, err := stepGitRun(sctx, "rev-parse", "--git-path", state)
+		if err != nil {
+			return false, err
+		}
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(sctx.WorkDir, path)
+		}
+		if _, err := os.Lstat(path); err == nil {
+			return true, nil
+		} else if !os.IsNotExist(err) {
+			return false, err
+		}
+	}
+	return false, nil
+}
+
+func clearCIWorktree(workDir string) error {
+	entries, err := os.ReadDir(workDir)
+	if err != nil {
 		return err
 	}
-	if snapshot.trackedRef != "" {
-		if _, err := stepGitRun(sctx, "stash", "apply", "--index", snapshot.trackedRef); err != nil {
+	for _, entry := range entries {
+		if entry.Name() == ".git" {
+			continue
+		}
+		if err := removeCICandidatePath(filepath.Join(workDir, entry.Name())); err != nil {
+			return fmt.Errorf("remove candidate path %q: %w", entry.Name(), err)
+		}
+	}
+	return nil
+}
+
+func removeCICandidatePath(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return os.Remove(path)
+	}
+	if err := os.Chmod(path, 0o700); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if err := removeCICandidatePath(filepath.Join(path, entry.Name())); err != nil {
 			return err
 		}
 	}
-	for _, path := range snapshot.untrackedPath {
-		if err := copyCICandidatePath(filepath.Join(snapshot.untrackedDir, path), filepath.Join(sctx.WorkDir, path)); err != nil {
-			return fmt.Errorf("restore untracked candidate path %q: %w", path, err)
-		}
-	}
-	return snapshot.validate(sctx)
+	return os.Remove(path)
 }
 
 func (snapshot ciCandidateSnapshot) validate(sctx *pipeline.StepContext) error {
@@ -443,40 +521,162 @@ func (snapshot ciCandidateSnapshot) validate(sctx *pipeline.StepContext) error {
 		return err
 	}
 	if head != snapshot.head {
-		return fmt.Errorf("restored HEAD %s, want %s", shortSHA(head), shortSHA(snapshot.head))
+		return fmt.Errorf("candidate HEAD changed from %s to %s", shortSHA(snapshot.head), shortSHA(head))
 	}
 	indexTree, err := stepGitRun(sctx, "write-tree")
 	if err != nil {
 		return err
 	}
 	if indexTree != snapshot.indexTree {
-		return fmt.Errorf("restored index tree %s, want %s", shortSHA(indexTree), shortSHA(snapshot.indexTree))
+		return fmt.Errorf("candidate index tree %s, want %s", shortSHA(indexTree), shortSHA(snapshot.indexTree))
 	}
 	status, err := stepGitRun(sctx, "status", "--porcelain=v1", "--untracked-files=all")
 	if err != nil {
 		return err
 	}
 	if status != snapshot.status {
-		return fmt.Errorf("restored worktree status differs from pre-repair candidate")
+		return fmt.Errorf("candidate worktree status differs from snapshot")
 	}
 	trackedDiff, err := stepGitRun(sctx, "diff", "--binary", "--no-ext-diff", "--")
 	if err != nil {
 		return err
 	}
 	if trackedDiff != snapshot.trackedDiff {
-		return fmt.Errorf("restored tracked worktree content differs from pre-repair candidate")
+		return fmt.Errorf("candidate tracked worktree content differs from snapshot")
+	}
+	if err := compareCIWorktrees(snapshot.worktreeDir, sctx.WorkDir); err != nil {
+		return fmt.Errorf("candidate filesystem differs from snapshot: %w", err)
 	}
 	return nil
 }
 
-func (snapshot ciCandidateSnapshot) cleanup(sctx *pipeline.StepContext) {
-	if snapshot.trackedRef != "" {
-		if _, err := stepGitRun(sctx, "update-ref", "-d", snapshot.trackedRef); err != nil {
-			slog.Warn("failed to release CI candidate snapshot", "err", err)
+type ciFileCompareBuffers struct {
+	expected [32 * 1024]byte
+	actual   [32 * 1024]byte
+}
+
+func compareCIWorktrees(expectedDir, actualDir string) error {
+	expected, err := os.ReadDir(expectedDir)
+	if err != nil {
+		return err
+	}
+	actual, err := os.ReadDir(actualDir)
+	if err != nil {
+		return err
+	}
+	filteredActual := actual[:0]
+	for _, entry := range actual {
+		if entry.Name() != ".git" {
+			filteredActual = append(filteredActual, entry)
 		}
 	}
-	if snapshot.untrackedDir != "" {
-		if err := os.RemoveAll(snapshot.untrackedDir); err != nil {
+	if len(expected) != len(filteredActual) {
+		return fmt.Errorf("top-level entry count is %d, want %d", len(filteredActual), len(expected))
+	}
+	buffers := &ciFileCompareBuffers{}
+	for i := range expected {
+		if expected[i].Name() != filteredActual[i].Name() {
+			return fmt.Errorf("top-level path %q, want %q", filteredActual[i].Name(), expected[i].Name())
+		}
+		if err := compareCICandidatePath(filepath.Join(expectedDir, expected[i].Name()), filepath.Join(actualDir, filteredActual[i].Name()), buffers); err != nil {
+			return fmt.Errorf("%s: %w", expected[i].Name(), err)
+		}
+	}
+	return nil
+}
+
+func compareCICandidatePath(expected, actual string, buffers *ciFileCompareBuffers) error {
+	expectedInfo, err := os.Lstat(expected)
+	if err != nil {
+		return err
+	}
+	actualInfo, err := os.Lstat(actual)
+	if err != nil {
+		return err
+	}
+	if expectedInfo.Mode().Type() != actualInfo.Mode().Type() {
+		return fmt.Errorf("type is %s, want %s", actualInfo.Mode().Type(), expectedInfo.Mode().Type())
+	}
+	if ciCandidateMode(expectedInfo.Mode()) != ciCandidateMode(actualInfo.Mode()) {
+		return fmt.Errorf("mode is %s, want %s", ciCandidateMode(actualInfo.Mode()), ciCandidateMode(expectedInfo.Mode()))
+	}
+	if expectedInfo.Mode()&os.ModeSymlink != 0 {
+		expectedTarget, err := os.Readlink(expected)
+		if err != nil {
+			return err
+		}
+		actualTarget, err := os.Readlink(actual)
+		if err != nil {
+			return err
+		}
+		if expectedTarget != actualTarget {
+			return fmt.Errorf("symlink target is %q, want %q", actualTarget, expectedTarget)
+		}
+		return nil
+	}
+	if expectedInfo.IsDir() {
+		expectedEntries, err := os.ReadDir(expected)
+		if err != nil {
+			return err
+		}
+		actualEntries, err := os.ReadDir(actual)
+		if err != nil {
+			return err
+		}
+		if len(expectedEntries) != len(actualEntries) {
+			return fmt.Errorf("directory entry count is %d, want %d", len(actualEntries), len(expectedEntries))
+		}
+		for i := range expectedEntries {
+			if expectedEntries[i].Name() != actualEntries[i].Name() {
+				return fmt.Errorf("directory path %q, want %q", actualEntries[i].Name(), expectedEntries[i].Name())
+			}
+			if err := compareCICandidatePath(filepath.Join(expected, expectedEntries[i].Name()), filepath.Join(actual, actualEntries[i].Name()), buffers); err != nil {
+				return fmt.Errorf("%s: %w", expectedEntries[i].Name(), err)
+			}
+		}
+		return nil
+	}
+	if expectedInfo.Size() != actualInfo.Size() {
+		return fmt.Errorf("size is %d, want %d", actualInfo.Size(), expectedInfo.Size())
+	}
+	return compareCIFileContents(expected, actual, buffers)
+}
+
+func compareCIFileContents(expected, actual string, buffers *ciFileCompareBuffers) error {
+	expectedFile, err := os.Open(expected)
+	if err != nil {
+		return err
+	}
+	defer expectedFile.Close()
+	actualFile, err := os.Open(actual)
+	if err != nil {
+		return err
+	}
+	defer actualFile.Close()
+	for {
+		expectedN, expectedErr := io.ReadFull(expectedFile, buffers.expected[:])
+		actualN, actualErr := io.ReadFull(actualFile, buffers.actual[:])
+		if expectedN != actualN || !bytes.Equal(buffers.expected[:expectedN], buffers.actual[:actualN]) {
+			return fmt.Errorf("file content differs")
+		}
+		if expectedErr == io.EOF && actualErr == io.EOF {
+			return nil
+		}
+		if expectedErr == io.ErrUnexpectedEOF && actualErr == io.ErrUnexpectedEOF {
+			return nil
+		}
+		if expectedErr != nil {
+			return expectedErr
+		}
+		if actualErr != nil {
+			return actualErr
+		}
+	}
+}
+
+func (snapshot ciCandidateSnapshot) cleanup(_ *pipeline.StepContext) {
+	if snapshot.worktreeDir != "" {
+		if err := os.RemoveAll(snapshot.worktreeDir); err != nil {
 			slog.Warn("failed to remove CI candidate snapshot", "err", err)
 		}
 	}

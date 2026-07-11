@@ -533,3 +533,100 @@ func assertActionStillPendingAndParked(t *testing.T, f approvalFixture, actionID
 		t.Fatalf("pending action after rollback = (%+v, %v)", pending, err)
 	}
 }
+
+func TestRejectApprovalAtomicallyFinalizesGate(t *testing.T) {
+	f := newApprovalFixture(t)
+	f.park(t)
+	input := validApprovalActionInput(f)
+	input.Action = types.ActionApprove
+	input.SelectedFindingIDsJSON = "null"
+	input.InstructionsJSON = "null"
+	input.AddedFindingsJSON = "null"
+	action, err := f.d.InsertApprovalAction(input)
+	if err != nil {
+		t.Fatalf("insert approve action: %v", err)
+	}
+
+	const rejection = "Review cannot be approved while a blocking finding lineage remains unresolved"
+	if err := f.d.RejectApproval(RejectApprovalInput{
+		ActionID: action.ID, ParkedMS: 47, ExitCode: 1, DurationMS: 317, LogPath: "review.log", Error: rejection,
+	}); err != nil {
+		t.Fatalf("reject approval: %v", err)
+	}
+
+	step, err := f.d.GetStepResult(f.step.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := f.d.GetRun(f.runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := f.d.GetPendingApprovalAction(f.gate.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentGate, err := f.d.GetCurrentApprovalGate(f.step.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if step.Status != types.StepStatusFailed || step.Error == nil || *step.Error != rejection {
+		t.Fatalf("rejected step = %+v, want failed with rejection", step)
+	}
+	if run.Status != types.RunFailed || run.Error == nil || *run.Error != rejection || run.AwaitingAgentSince != nil {
+		t.Fatalf("rejected run = %+v, want terminal failed and unparked", run)
+	}
+	if pending != nil || currentGate != nil {
+		t.Fatalf("rejected gate = pending %+v current %+v, want finalized and cleared", pending, currentGate)
+	}
+}
+
+func TestRejectApprovalRollsBackWhenMarkerClearFails(t *testing.T) {
+	f := newApprovalFixture(t)
+	f.park(t)
+	input := validApprovalActionInput(f)
+	input.Action = types.ActionApprove
+	input.SelectedFindingIDsJSON = "null"
+	input.InstructionsJSON = "null"
+	input.AddedFindingsJSON = "null"
+	action, err := f.d.InsertApprovalAction(input)
+	if err != nil {
+		t.Fatalf("insert approve action: %v", err)
+	}
+	installFailTrigger(t, f.d, "fail_rejected_approval_marker_clear", "UPDATE OF awaiting_agent_since ON runs")
+
+	err = f.d.RejectApproval(RejectApprovalInput{
+		ActionID: action.ID, ParkedMS: 47, ExitCode: 1, DurationMS: 317, LogPath: "review.log", Error: "unresolved repair",
+	})
+	if err == nil || !strings.Contains(err.Error(), "injected fail_rejected_approval_marker_clear failure") {
+		t.Fatalf("reject approval error = %v, want injected marker failure", err)
+	}
+	assertActionStillPendingAndParked(t, f, action.ID)
+	step, getErr := f.d.GetStepResult(f.step.ID)
+	if getErr != nil {
+		t.Fatal(getErr)
+	}
+	if step.Status != types.StepStatusAwaitingApproval {
+		t.Fatalf("step status after rollback = %s, want awaiting approval", step.Status)
+	}
+}
+
+func TestParkApprovalGatePersistsRepairCheckIdentity(t *testing.T) {
+	f := newApprovalFixture(t)
+	const repairChecks = `[{"kind":"shell","command":"go version"}]`
+	gate, err := f.d.ParkApprovalGate(ParkApprovalGateInput{
+		RunID: f.runID, StepResultID: f.step.ID, SourceRoundID: f.round.ID,
+		Status: types.StepStatusAwaitingApproval, FindingsJSON: testGateFindings,
+		RepairChecksJSON: repairChecks, DurationMS: 317,
+	})
+	if err != nil {
+		t.Fatalf("park approval gate: %v", err)
+	}
+	recovered, err := f.d.GetCurrentApprovalGate(f.step.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gate.RepairChecksJSON != repairChecks || recovered == nil || recovered.RepairChecksJSON != repairChecks {
+		t.Fatalf("repair checks = inserted %q recovered %+v, want %q", gate.RepairChecksJSON, recovered, repairChecks)
+	}
+}

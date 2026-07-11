@@ -325,6 +325,27 @@ func TestHasActionableFindings(t *testing.T) {
 	}
 }
 
+func TestActionableFindingIDs(t *testing.T) {
+	findings := Findings{Items: []Finding{
+		{ID: "auto-1", Action: ActionAutoFix},
+		{ID: "note-1", Action: ActionNoOp},
+		{Action: ActionAskUser},
+		{ID: "ask-1", Action: ActionAskUser},
+		{ID: "default-1"},
+	}}
+
+	got := ActionableFindingIDs(findings)
+	want := []string{"auto-1", "ask-1", "default-1"}
+	if len(got) != len(want) {
+		t.Fatalf("ActionableFindingIDs() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("ActionableFindingIDs() = %v, want %v", got, want)
+		}
+	}
+}
+
 func TestMarshalFindingsJSON_AlwaysIncludesRiskFields(t *testing.T) {
 	f := Findings{
 		Items:   []Finding{{Severity: "info", Description: "note"}},

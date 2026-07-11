@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -234,6 +235,61 @@ func TestVerifyStep_VerifierCommitCannotBlessMutatedCandidate(t *testing.T) {
 	}
 	if reviewed != nil {
 		t.Fatalf("verifier mutation produced reviewed seal %+v", reviewed)
+	}
+}
+
+func TestVerifyStep_MutatingVerifierErrorCannotBypassIntegrityCheck(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+			if err := os.WriteFile(filepath.Join(dir, "verifier-mutation.txt"), []byte("not verified\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return nil, errors.New("aggregate verifier transport failed")
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	if _, err := sctx.DB.CreateSeal(sctx.Run.ID, headSHA, "pre_verify"); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := (&VerifyStep{}).Execute(sctx)
+	if err == nil || !strings.Contains(err.Error(), "worktree dirty") {
+		t.Fatalf("verify error = %v, want candidate-integrity failure", err)
+	}
+	if !strings.Contains(err.Error(), "aggregate verifier transport failed") {
+		t.Fatalf("verify error = %v, want underlying invocation failure retained", err)
+	}
+	reviewed, dbErr := sctx.DB.LatestSealByReason(sctx.Run.ID, "reviewed")
+	if dbErr != nil {
+		t.Fatal(dbErr)
+	}
+	if reviewed != nil {
+		t.Fatalf("mutating verifier error produced reviewed seal %+v", reviewed)
+	}
+}
+
+func TestVerifyStep_MutationTakesPrecedenceOverParseError(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+			if err := os.WriteFile(filepath.Join(dir, "verifier-mutation.txt"), []byte("not verified\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return &agent.Result{Output: json.RawMessage(`{"findings":`)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	if _, err := sctx.DB.CreateSeal(sctx.Run.ID, headSHA, "pre_verify"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := (&VerifyStep{}).Execute(sctx); err == nil || !strings.Contains(err.Error(), "worktree dirty") {
+		t.Fatalf("verify error = %v, want candidate-integrity failure before parse error", err)
 	}
 }
 

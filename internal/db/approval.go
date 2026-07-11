@@ -13,25 +13,27 @@ import (
 // approval point. A step can create multiple gates over its lifetime; its
 // approval_gate_id always identifies the current one.
 type ApprovalGate struct {
-	ID            string
-	RunID         string
-	StepResultID  string
-	SourceRoundID string
-	Status        types.StepStatus
-	FindingsJSON  string
-	DurationMS    int64
-	CreatedAt     int64
+	ID               string
+	RunID            string
+	StepResultID     string
+	SourceRoundID    string
+	Status           types.StepStatus
+	FindingsJSON     string
+	RepairChecksJSON string
+	DurationMS       int64
+	CreatedAt        int64
 }
 
 // ParkApprovalGateInput contains the complete step result that becomes visible
 // when a run parks at an approval gate.
 type ParkApprovalGateInput struct {
-	RunID         string
-	StepResultID  string
-	SourceRoundID string
-	Status        types.StepStatus
-	FindingsJSON  string
-	DurationMS    int64
+	RunID            string
+	StepResultID     string
+	SourceRoundID    string
+	Status           types.StepStatus
+	FindingsJSON     string
+	RepairChecksJSON string
+	DurationMS       int64
 }
 
 // ApprovalAction is an immutable response journal entry. AppliedAt remains nil
@@ -66,12 +68,12 @@ type ApprovalActionInput struct {
 
 const approvalActionColumns = `id, gate_id, run_id, step_result_id, step_round_id, action, selected_finding_ids_json, instructions_json, added_findings_json, created_at, applied_at`
 
-const approvalGateColumns = `id, run_id, step_result_id, source_round_id, status, findings_json, duration_ms, created_at`
+const approvalGateColumns = `id, run_id, step_result_id, source_round_id, status, findings_json, repair_checks_json, duration_ms, created_at`
 
 func scanApprovalGate(row interface{ Scan(...any) error }, gate *ApprovalGate) error {
 	return row.Scan(
 		&gate.ID, &gate.RunID, &gate.StepResultID, &gate.SourceRoundID,
-		&gate.Status, &gate.FindingsJSON, &gate.DurationMS, &gate.CreatedAt,
+		&gate.Status, &gate.FindingsJSON, &gate.RepairChecksJSON, &gate.DurationMS, &gate.CreatedAt,
 	)
 }
 
@@ -105,7 +107,7 @@ func (d *DB) GetApprovalGate(id string) (*ApprovalGate, error) {
 func (d *DB) GetCurrentApprovalGate(stepResultID string) (*ApprovalGate, error) {
 	gate := &ApprovalGate{}
 	err := scanApprovalGate(d.sql.QueryRow(
-		`SELECT g.id, g.run_id, g.step_result_id, g.source_round_id, g.status, g.findings_json, g.duration_ms, g.created_at
+		`SELECT g.id, g.run_id, g.step_result_id, g.source_round_id, g.status, g.findings_json, g.repair_checks_json, g.duration_ms, g.created_at
 		 FROM approval_gates g
 		 JOIN step_results s ON s.approval_gate_id = g.id
 		 WHERE s.id = ?`,
@@ -124,6 +126,9 @@ func (d *DB) GetCurrentApprovalGate(stepResultID string) (*ApprovalGate, error) 
 // step, and marks the run parked in one transaction. Any failed validation or
 // write leaves all three surfaces unchanged.
 func (d *DB) ParkApprovalGate(input ParkApprovalGateInput) (*ApprovalGate, error) {
+	if strings.TrimSpace(input.RepairChecksJSON) == "" {
+		input.RepairChecksJSON = "[]"
+	}
 	if err := validateParkApprovalGateInput(input); err != nil {
 		return nil, err
 	}
@@ -196,21 +201,22 @@ func (d *DB) ParkApprovalGate(input ParkApprovalGateInput) (*ApprovalGate, error
 
 	ts := now()
 	gate := &ApprovalGate{
-		ID:            newID(),
-		RunID:         input.RunID,
-		StepResultID:  input.StepResultID,
-		SourceRoundID: input.SourceRoundID,
-		Status:        input.Status,
-		FindingsJSON:  input.FindingsJSON,
-		DurationMS:    input.DurationMS,
-		CreatedAt:     ts,
+		ID:               newID(),
+		RunID:            input.RunID,
+		StepResultID:     input.StepResultID,
+		SourceRoundID:    input.SourceRoundID,
+		Status:           input.Status,
+		FindingsJSON:     input.FindingsJSON,
+		RepairChecksJSON: input.RepairChecksJSON,
+		DurationMS:       input.DurationMS,
+		CreatedAt:        ts,
 	}
 	if _, err := tx.Exec(`
 		INSERT INTO approval_gates
-		    (id, run_id, step_result_id, source_round_id, status, findings_json, duration_ms, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		    (id, run_id, step_result_id, source_round_id, status, findings_json, repair_checks_json, duration_ms, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		gate.ID, gate.RunID, gate.StepResultID, gate.SourceRoundID,
-		gate.Status, gate.FindingsJSON, gate.DurationMS, gate.CreatedAt,
+		gate.Status, gate.FindingsJSON, gate.RepairChecksJSON, gate.DurationMS, gate.CreatedAt,
 	); err != nil {
 		return nil, fmt.Errorf("insert approval gate: %w", err)
 	}
@@ -258,6 +264,13 @@ func validateParkApprovalGateInput(input ParkApprovalGateInput) error {
 	}
 	if !json.Valid([]byte(input.FindingsJSON)) {
 		return fmt.Errorf("park approval gate: findings_json is not valid JSON")
+	}
+	if !json.Valid([]byte(input.RepairChecksJSON)) {
+		return fmt.Errorf("park approval gate: repair_checks_json is not valid JSON")
+	}
+	var repairChecks []json.RawMessage
+	if err := json.Unmarshal([]byte(input.RepairChecksJSON), &repairChecks); err != nil {
+		return fmt.Errorf("park approval gate: repair_checks_json must be a JSON array")
 	}
 	return nil
 }
@@ -532,6 +545,117 @@ func (d *DB) ApplyApprovalFix(input ApplyApprovalFixInput) error {
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit approval fix: %w", err)
+	}
+	return nil
+}
+
+// RejectApproval atomically consumes an approve response that cannot be
+// honored because a blocking repair remains unresolved. The step and run
+// become terminal, the parked marker and current-gate pointer are cleared, and
+// the response is marked applied in the same transaction.
+type RejectApprovalInput struct {
+	ActionID   string
+	ParkedMS   int64
+	ExitCode   int
+	DurationMS int64
+	LogPath    string
+	Error      string
+}
+
+func (d *DB) RejectApproval(input RejectApprovalInput) error {
+	if strings.TrimSpace(input.ActionID) == "" {
+		return fmt.Errorf("reject approval: action ID is required")
+	}
+	if input.ParkedMS < 0 || input.DurationMS < 0 {
+		return fmt.Errorf("reject approval: duration must not be negative")
+	}
+	if strings.TrimSpace(input.Error) == "" {
+		return fmt.Errorf("reject approval: error is required")
+	}
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return fmt.Errorf("begin reject approval: %w", err)
+	}
+	defer tx.Rollback()
+
+	var appliedAt *int64
+	var action types.ApprovalAction
+	var gateID, runID, stepID string
+	var gateStatus, stepStatus types.StepStatus
+	var currentGateID *string
+	var runStatus types.RunStatus
+	var awaitingAgentSince *int64
+	err = tx.QueryRow(`
+		SELECT aa.applied_at, aa.action, aa.gate_id, aa.run_id, aa.step_result_id,
+		       g.status, s.status, s.approval_gate_id, r.status, r.awaiting_agent_since
+		FROM approval_actions aa
+		JOIN approval_gates g ON g.id = aa.gate_id
+		JOIN step_results s ON s.id = aa.step_result_id
+		JOIN runs r ON r.id = aa.run_id
+		WHERE aa.id = ?`, input.ActionID,
+	).Scan(&appliedAt, &action, &gateID, &runID, &stepID, &gateStatus, &stepStatus, &currentGateID, &runStatus, &awaitingAgentSince)
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("reject approval: action %q not found", input.ActionID)
+	}
+	if err != nil {
+		return fmt.Errorf("validate rejected approval: %w", err)
+	}
+	if action != types.ActionApprove {
+		return fmt.Errorf("reject approval: action %q is not approve", action)
+	}
+	if appliedAt != nil {
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit repeated rejected approval: %w", err)
+		}
+		return nil
+	}
+	if currentGateID == nil || *currentGateID != gateID || stepStatus != gateStatus {
+		return fmt.Errorf("reject approval: gate %q is stale or no longer current", gateID)
+	}
+	if runStatus != types.RunRunning || awaitingAgentSince == nil {
+		return fmt.Errorf("reject approval: gate %q is not parked", gateID)
+	}
+
+	ts := now()
+	result, err := tx.Exec(`
+		UPDATE step_results
+		SET status = ?, error = ?, exit_code = ?, duration_ms = ?, log_path = ?,
+		    completed_at = ?, last_activity_at = ?, last_activity = ?,
+		    agent_pid = NULL, approval_gate_id = NULL
+		WHERE id = ? AND run_id = ? AND status = ? AND approval_gate_id = ?`,
+		types.StepStatusFailed, input.Error, input.ExitCode, input.DurationMS, input.LogPath,
+		ts, ts, "step failed: "+input.Error,
+		stepID, runID, gateStatus, gateID,
+	)
+	if err != nil {
+		return fmt.Errorf("fail rejected approval step: %w", err)
+	}
+	if err := requireOneRow(result, "fail rejected approval step"); err != nil {
+		return err
+	}
+	result, err = tx.Exec(`UPDATE approval_actions SET applied_at = ? WHERE id = ? AND applied_at IS NULL`, ts, input.ActionID)
+	if err != nil {
+		return fmt.Errorf("finalize rejected approval action: %w", err)
+	}
+	if err := requireOneRow(result, "finalize rejected approval action"); err != nil {
+		return err
+	}
+	result, err = tx.Exec(`
+		UPDATE runs
+		SET status = ?, error = ?, awaiting_agent_since = NULL,
+		    parked_ms = COALESCE(parked_ms, 0) + ?, updated_at = ?
+		WHERE id = ? AND status = ? AND awaiting_agent_since IS NOT NULL`,
+		types.RunFailed, input.Error, input.ParkedMS, ts,
+		runID, types.RunRunning,
+	)
+	if err != nil {
+		return fmt.Errorf("fail rejected approval run: %w", err)
+	}
+	if err := requireOneRow(result, "fail rejected approval run"); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit rejected approval: %w", err)
 	}
 	return nil
 }

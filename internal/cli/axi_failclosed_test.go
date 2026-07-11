@@ -107,7 +107,8 @@ func TestDriveRunUnattendedFailsClosedWhenRepairStateIsUnknown(t *testing.T) {
 }
 
 // TestDriveRunUnattendedProceedsWhenResolved shows the drive resolves the gate
-// normally when no blocking lineage is unresolved.
+// normally when no blocking lineage is unresolved and sends only actionable
+// finding IDs to the executor-facing response boundary.
 func TestDriveRunUnattendedProceedsWhenResolved(t *testing.T) {
 	dir, err := os.MkdirTemp("", "cli-ipc")
 	if err != nil {
@@ -116,11 +117,13 @@ func TestDriveRunUnattendedProceedsWhenResolved(t *testing.T) {
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	sock := filepath.Join(dir, "d.sock")
 
+	findings := `{"findings":[{"id":"review-1","severity":"warning","description":"fixable","action":"auto-fix"},{"id":"review-2","severity":"warning","description":"needs consent","action":"ask-user"},{"id":"review-3","severity":"info","description":"context only","action":"no-op"}],"summary":"3 findings"}`
 	run := &ipc.RunInfo{
 		ID: "run-2", RepoID: "repo-1", Branch: "feature", Status: types.RunRunning,
-		Steps: []ipc.StepResultInfo{{ID: "s1", RunID: "run-2", StepName: types.StepReview, Status: types.StepStatusAwaitingApproval}},
+		Steps: []ipc.StepResultInfo{{ID: "s1", RunID: "run-2", StepName: types.StepReview, Status: types.StepStatusAwaitingApproval, FindingsJSON: &findings}},
 	}
 	responded := false
+	var response ipc.RespondParams
 	srv := ipc.NewServer()
 	srv.Handle(ipc.MethodGetRun, func(_ context.Context, _ json.RawMessage) (interface{}, error) {
 		// Once a response arrives, report the run completed so the drive ends.
@@ -132,7 +135,10 @@ func TestDriveRunUnattendedProceedsWhenResolved(t *testing.T) {
 		}
 		return &ipc.GetRunResult{Run: run}, nil
 	})
-	srv.Handle(ipc.MethodRespond, func(_ context.Context, _ json.RawMessage) (interface{}, error) {
+	srv.Handle(ipc.MethodRespond, func(_ context.Context, raw json.RawMessage) (interface{}, error) {
+		if err := json.Unmarshal(raw, &response); err != nil {
+			return nil, err
+		}
 		responded = true
 		return &ipc.RespondResult{OK: true}, nil
 	})
@@ -149,6 +155,12 @@ func TestDriveRunUnattendedProceedsWhenResolved(t *testing.T) {
 	}
 	if final == nil || final.Status != types.RunCompleted {
 		t.Fatalf("final run = %+v, want completed", final)
+	}
+	if response.Action != types.ActionFix {
+		t.Fatalf("response action = %s, want %s", response.Action, types.ActionFix)
+	}
+	if got := response.FindingIDs; len(got) != 2 || got[0] != "review-1" || got[1] != "review-2" {
+		t.Fatalf("response finding IDs = %v, want actionable IDs [review-1 review-2]", got)
 	}
 }
 

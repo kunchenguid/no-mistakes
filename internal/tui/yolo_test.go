@@ -247,8 +247,13 @@ func TestModel_Yolo_ResolutionMatchesAXISelectableIDContract(t *testing.T) {
 			wantAction: types.ActionApprove,
 		},
 		{
-			name:       "mixed ID and ID-less findings fix the selectable finding",
+			name:       "no-op ID does not make an ID-less actionable finding selectable",
 			findings:   `{"findings":[{"id":"review-1","severity":"info","description":"selectable context","action":"no-op"},{"severity":"warning","description":"actionable but not selectable","action":"auto-fix"}],"summary":"2 findings"}`,
+			wantAction: types.ActionApprove,
+		},
+		{
+			name:       "mixed actionable and no-op findings fix only actionable IDs",
+			findings:   `{"findings":[{"id":"review-1","severity":"warning","description":"fixable issue","action":"auto-fix"},{"id":"review-2","severity":"info","description":"informational","action":"no-op"}],"summary":"2 findings"}`,
 			wantAction: types.ActionFix,
 			wantIDs:    []string{"review-1"},
 		},
@@ -325,6 +330,36 @@ func TestModel_Yolo_FixesAllActionableFindingsDespiteManualDeselection(t *testin
 	}
 	if got, want := calls[0].FindingIDs, []string{"review-1", "review-2"}; !slices.Equal(got, want) {
 		t.Fatalf("FindingIDs = %v, want %v", got, want)
+	}
+}
+
+func TestModel_ManualFixPreservesActionableSelectionAndDropsNoOp(t *testing.T) {
+	sock, client, snapshot := captureRespond(t)
+
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	findings := `{"findings":[{"id":"review-1","severity":"warning","description":"leave deselected","action":"auto-fix"},{"id":"review-2","severity":"warning","description":"selected fix","action":"ask-user"},{"id":"review-3","severity":"info","description":"selected note","action":"no-op"}],"summary":"3 findings"}`
+	run.Steps[0].FindingsJSON = &findings
+	m := NewModel(sock, client, run)
+	m.findingSelections[types.StepReview] = map[string]bool{
+		"review-2": true,
+		"review-3": true,
+	}
+
+	cmd := m.respondCmd(types.ActionFix)
+	if cmd == nil {
+		t.Fatal("expected a manual fix command for the selected actionable finding")
+	}
+	if msg := cmd(); msg != nil {
+		t.Fatalf("expected nil msg, got %#v", msg)
+	}
+
+	calls := snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("respond calls = %d, want 1", len(calls))
+	}
+	if got, want := calls[0].FindingIDs, []string{"review-2"}; !slices.Equal(got, want) {
+		t.Fatalf("FindingIDs = %v, want manually selected actionable IDs %v", got, want)
 	}
 }
 

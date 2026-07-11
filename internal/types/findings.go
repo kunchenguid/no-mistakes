@@ -234,11 +234,24 @@ func HasAskUserFindings(findings Findings) bool {
 // accept the step as-is.
 func HasActionableFindings(findings Findings) bool {
 	for _, item := range findings.Items {
-		if item.actionOrDefault() != ActionNoOp {
+		if item.IsActionable() {
 			return true
 		}
 	}
 	return false
+}
+
+// ActionableFindingIDs returns the non-empty IDs of actionable findings in
+// source order. It is the canonical selection for unattended consent surfaces:
+// no-op findings are visible context, never repair instructions.
+func ActionableFindingIDs(findings Findings) []string {
+	var ids []string
+	for _, item := range findings.Items {
+		if item.ID != "" && item.IsActionable() {
+			ids = append(ids, item.ID)
+		}
+	}
+	return ids
 }
 
 func summarizeSelectedFindings(count int) string {
@@ -343,4 +356,9 @@ func (f Finding) actionOrDefault() string {
 		return ActionAskUser
 	}
 	return f.Action
+}
+
+// IsActionable reports whether a fixer may act on this finding.
+func (f Finding) IsActionable() bool {
+	return f.actionOrDefault() != ActionNoOp
 }

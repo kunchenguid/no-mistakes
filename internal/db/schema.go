@@ -88,6 +88,7 @@ CREATE TABLE IF NOT EXISTS approval_gates (
     source_round_id TEXT NOT NULL REFERENCES step_rounds(id) ON DELETE CASCADE,
     status          TEXT NOT NULL CHECK (status IN ('awaiting_approval', 'fix_review')),
     findings_json   TEXT NOT NULL CHECK (json_valid(findings_json)),
+    repair_checks_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(repair_checks_json) AND json_type(repair_checks_json) = 'array'),
     duration_ms     INTEGER NOT NULL CHECK (duration_ms >= 0),
     created_at      INTEGER NOT NULL
 );
@@ -346,6 +347,7 @@ var migrationStatements = []string{
 	`ALTER TABLE step_results ADD COLUMN agent_pid INTEGER`,
 	`ALTER TABLE step_results ADD COLUMN auto_fix_limit INTEGER`,
 	`ALTER TABLE step_results ADD COLUMN approval_gate_id TEXT`,
+	`ALTER TABLE approval_gates ADD COLUMN repair_checks_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(repair_checks_json) AND json_type(repair_checks_json) = 'array')`,
 	`ALTER TABLE canary_activation ADD COLUMN completion_fence INTEGER NOT NULL DEFAULT -1`,
 	`INSERT OR IGNORE INTO run_completion_order (run_id)
 		SELECT r.id

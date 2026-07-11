@@ -408,7 +408,8 @@ func TestExecutorResumeReplaysPersistedNonReviewFix(t *testing.T) {
 	}
 	gate, err := database.ParkApprovalGate(db.ParkApprovalGateInput{
 		RunID: run.ID, StepResultID: stepResult.ID, SourceRoundID: round.ID,
-		Status: types.StepStatusAwaitingApproval, FindingsJSON: findings, DurationMS: 11,
+		Status: types.StepStatusAwaitingApproval, FindingsJSON: findings,
+		RepairChecksJSON: `[{"kind":"shell","command":"go version"}]`, DurationMS: 11,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -451,6 +452,13 @@ func TestExecutorResumeReplaysPersistedNonReviewFix(t *testing.T) {
 	if len(repairs) != 1 || repairs[0].Status != db.RepairStatusResolved {
 		t.Fatalf("replayed repair cycles = %+v, want one resolved cycle", repairs)
 	}
+	checks, err := database.GetFindingRepairChecks(repairs[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(checks) != 1 || checks[0].Command != "go version" || !checks[0].Applicable || checks[0].ExitCode != 0 {
+		t.Fatalf("replayed deterministic checks = %+v, want successful persisted go version check", checks)
+	}
 	persistedRun, err := database.GetRun(run.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -471,7 +479,28 @@ func TestExecutorNonReviewUserFixRequiresDurableVerifiedRepair(t *testing.T) {
 				findingID,
 				string(stepName)+" requires a user-authorized repair",
 			)
+			liveCheckCalls := 0
+			repairChecks := make([]RepairCheck, 0, 1)
+			switch stepName {
+			case types.StepTest, types.StepLint:
+				repairChecks = append(repairChecks, RepairCheck{
+					Command: "go version",
+					Run: func(context.Context) (bool, int, string) {
+						liveCheckCalls++
+						return true, 0, "go version"
+					},
+				})
+			case types.StepDocument:
+				repairChecks = append(repairChecks, RepairCheck{
+					Command: "git diff --check",
+					Run: func(context.Context) (bool, int, string) {
+						liveCheckCalls++
+						return true, 0, ""
+					},
+				})
+			}
 			step := newApprovalStep(stepName, findings)
+			step.outcome.RepairChecks = repairChecks
 			repairAgent := &scriptedExecutorRepairAgent{resolve: true}
 			executor := NewExecutor(
 				database,
@@ -484,6 +513,14 @@ func TestExecutorNonReviewUserFixRequiresDurableVerifiedRepair(t *testing.T) {
 			done := make(chan error, 1)
 			go func() { done <- executor.Execute(context.Background(), run, repo, workDir) }()
 			waitForStepStatus(t, database, run.ID, stepName, types.StepStatusAwaitingApproval)
+			steps, err := database.GetStepsByRun(run.ID)
+			if err != nil || len(steps) != 1 {
+				t.Fatalf("parked step = %+v, err = %v", steps, err)
+			}
+			gate := waitForApprovalGate(t, database, steps[0].ID)
+			if (len(repairChecks) == 0) != (gate.RepairChecksJSON == "[]") {
+				t.Fatalf("durable %s repair checks = %s, want %d identities", stepName, gate.RepairChecksJSON, len(repairChecks))
+			}
 			if err := executor.Respond(stepName, types.ActionFix, []string{findingID}); err != nil {
 				t.Fatal(err)
 			}
@@ -510,6 +547,13 @@ func TestExecutorNonReviewUserFixRequiresDurableVerifiedRepair(t *testing.T) {
 					t.Fatalf("repair = %+v, want independently verified resolved cycle", repair)
 				}
 			}
+			recordedChecks, err := database.GetFindingRepairChecks(repairs[0].ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if liveCheckCalls != len(repairChecks) || len(recordedChecks) != len(repairChecks) {
+				t.Fatalf("%s live checks = calls %d journal %+v, want %d identical checks", stepName, liveCheckCalls, recordedChecks, len(repairChecks))
+			}
 			persistedRun, err := database.GetRun(run.ID)
 			if err != nil {
 				t.Fatal(err)
@@ -522,5 +566,170 @@ func TestExecutorNonReviewUserFixRequiresDurableVerifiedRepair(t *testing.T) {
 				t.Fatalf("completed user fix = run %s unresolved %v", persistedRun.Status, unresolved)
 			}
 		})
+	}
+}
+
+func TestExecutorResumeFinalizesRejectedApprovalAfterCrash(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	step, err := database.InsertStepResult(run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.StartStep(step.ID); err != nil {
+		t.Fatal(err)
+	}
+	findings := `{"findings":[{"id":"review-1","severity":"error","description":"repair exhausted","action":"auto-fix"}],"summary":"one"}`
+	round, err := database.InsertStepRound(step.ID, 1, "initial", &findings, nil, 17)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repair, err := database.StartFindingRepair(db.FindingRepairStart{
+		RunID: run.ID, LineageID: "review-unresolved", StepResultID: step.ID, StepRoundID: round.ID,
+		Severity: "error", Action: types.ActionAutoFix, Description: "repair exhausted", Tier: 0, RemainingBudget: 0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.ResolveFindingRepair(repair, db.RepairVerdictUnresolved, "still failing", db.RepairStatusUnresolved); err != nil {
+		t.Fatal(err)
+	}
+	gate, err := database.ParkApprovalGate(db.ParkApprovalGateInput{
+		RunID: run.ID, StepResultID: step.ID, SourceRoundID: round.ID,
+		Status: types.StepStatusAwaitingApproval, FindingsJSON: findings, DurationMS: 17,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.InsertApprovalAction(approvalActionInput(gate, types.ActionApprove)); err != nil {
+		t.Fatal(err)
+	}
+	run, err = database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	executor := NewExecutor(database, p, nil, nil, []Step{newPassStep(types.StepReview)}, nil)
+	err = executor.Resume(context.Background(), run, repo, t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "cannot be approved") {
+		t.Fatalf("Resume error = %v, want unresolved approval rejection", err)
+	}
+	rejectedStep, err := database.GetStepResult(step.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rejectedRun, err := database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := database.GetPendingApprovalAction(gate.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentGate, err := database.GetCurrentApprovalGate(step.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rejectedStep.Status != types.StepStatusFailed || rejectedRun.Status != types.RunFailed || rejectedRun.AwaitingAgentSince != nil {
+		t.Fatalf("replayed rejection = step %s run %s parked %v, want terminal failed and unparked", rejectedStep.Status, rejectedRun.Status, rejectedRun.AwaitingAgentSince)
+	}
+	if pending != nil || currentGate != nil {
+		t.Fatalf("replayed rejection left pending action %+v or current gate %+v", pending, currentGate)
+	}
+}
+
+func TestExecutorResumeRestoresEveryNonReviewRepairCheckSet(t *testing.T) {
+	for _, tc := range []struct {
+		stepName      types.StepName
+		repairChecks  func(string) string
+		wantCheckRuns int
+	}{
+		{stepName: types.StepLint, repairChecks: func(string) string {
+			return `[{"kind":"shell","command":"go version"}]`
+		}, wantCheckRuns: 1},
+		{stepName: types.StepDocument, repairChecks: func(baseSHA string) string {
+			return fmt.Sprintf(`[{"kind":"document_diff","command":"git diff --check","base_sha":%q}]`, baseSHA)
+		}, wantCheckRuns: 1},
+		{stepName: types.StepVerify, repairChecks: func(string) string { return `[]` }},
+	} {
+		t.Run(string(tc.stepName), func(t *testing.T) {
+			database, p, run, repo := setupTest(t)
+			if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+				t.Fatal(err)
+			}
+			workDir := gitInitTestDir(t)
+			headSHA, err := git.HeadSHA(context.Background(), workDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stepResult, err := database.InsertStepResult(run.ID, tc.stepName)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := database.StartStep(stepResult.ID); err != nil {
+				t.Fatal(err)
+			}
+			findingID := string(tc.stepName) + "-1"
+			findings := fmt.Sprintf(
+				`{"findings":[{"id":%q,"severity":"error","description":"repair after crash","action":"ask-user"}],"summary":"one"}`,
+				findingID,
+			)
+			round, err := database.InsertStepRound(stepResult.ID, 1, "initial", &findings, nil, 11)
+			if err != nil {
+				t.Fatal(err)
+			}
+			gate, err := database.ParkApprovalGate(db.ParkApprovalGateInput{
+				RunID: run.ID, StepResultID: stepResult.ID, SourceRoundID: round.ID,
+				Status: types.StepStatusAwaitingApproval, FindingsJSON: findings,
+				RepairChecksJSON: tc.repairChecks(headSHA), DurationMS: 11,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := database.InsertApprovalAction(db.ApprovalActionInput{
+				GateID: gate.ID, RunID: run.ID, StepResultID: stepResult.ID, StepRoundID: round.ID,
+				Action: types.ActionFix, SelectedFindingIDsJSON: fmt.Sprintf("[%q]", findingID), InstructionsJSON: `{}`, AddedFindingsJSON: `[]`,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			run, err = database.GetRun(run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			executor := NewExecutor(
+				database,
+				p,
+				&config.Config{Routing: config.DefaultRoutingConfig()},
+				&scriptedExecutorRepairAgent{resolve: true},
+				[]Step{newPassStep(tc.stepName)},
+				nil,
+			)
+			if err := executor.Resume(context.Background(), run, repo, workDir); err != nil {
+				t.Fatalf("Resume persisted %s fix: %v", tc.stepName, err)
+			}
+			repairs, err := database.GetFindingRepairsByRun(run.ID)
+			if err != nil || len(repairs) != 1 || repairs[0].Status != db.RepairStatusResolved {
+				t.Fatalf("replayed %s repairs = %+v, err = %v", tc.stepName, repairs, err)
+			}
+			checks, err := database.GetFindingRepairChecks(repairs[0].ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(checks) != tc.wantCheckRuns {
+				t.Fatalf("replayed %s deterministic checks = %+v, want %d", tc.stepName, checks, tc.wantCheckRuns)
+			}
+		})
+	}
+}
+
+func TestDecodeDurableRepairChecksPreservesEmptyVerifySet(t *testing.T) {
+	checks, err := decodeDurableRepairChecks(types.StepVerify, `[]`, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checks == nil || len(checks) != 0 {
+		t.Fatalf("recovered Verify checks = %#v, want non-nil empty set", checks)
 	}
 }

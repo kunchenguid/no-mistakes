@@ -645,17 +645,19 @@ func TestRoutingInvokerPropagatesEveryRegisteredPurposeRoleToNativeLaunch(t *tes
 }
 
 type routedCandidateState struct {
-	head             string
-	headRef          string
-	indexTree        string
-	status           string
-	trackedContent   string
-	untrackedContent string
-	untrackedMode    os.FileMode
-	untrackedLink    string
-	ignoredContent   string
-	ignoredMode      os.FileMode
-	ignoredDirValue  string
+	head                 string
+	headRef              string
+	indexTree            string
+	status               string
+	trackedContent       string
+	untrackedContent     string
+	untrackedMode        os.FileMode
+	untrackedLink        string
+	symlinkParentTarget  string
+	ignoredContent       string
+	ignoredMode          os.FileMode
+	directoryModes       map[string]os.FileMode
+	directoryFileContent map[string]string
 }
 
 func seedRoutedCandidateState(t *testing.T) (string, routedCandidateState) {
@@ -668,25 +670,58 @@ func seedRoutedCandidateState(t *testing.T) (string, routedCandidateState) {
 	writeTestFile(t, dir, "README.md", "legitimate staged\n")
 	execGit(t, dir, "add", "README.md")
 	writeTestFile(t, dir, "README.md", "legitimate unstaged\n")
+
 	untracked := filepath.Join(dir, "legitimate-untracked.sh")
 	if err := os.WriteFile(untracked, []byte("#!/bin/sh\necho legitimate\n"), 0o751); err != nil {
 		t.Fatal(err)
 	}
+	untrackedTree := filepath.Join(dir, "legitimate-tree")
+	untrackedNested := filepath.Join(untrackedTree, "nested")
+	untrackedEmpty := filepath.Join(untrackedNested, "empty")
+	if err := os.MkdirAll(untrackedEmpty, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, dir, "legitimate-tree/nested/value.txt", "legitimate untracked tree\n")
+	for path, mode := range map[string]os.FileMode{
+		untrackedTree:   0o751,
+		untrackedNested: 0o711,
+		untrackedEmpty:  0o701,
+	} {
+		if err := os.Chmod(path, mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+
 	ignored := filepath.Join(dir, "legitimate.ignored")
 	if err := os.WriteFile(ignored, []byte("legitimate ignored\n"), 0o741); err != nil {
 		t.Fatal(err)
 	}
-	ignoredDir := filepath.Join(dir, "legitimate-cache.ignored")
-	if err := os.MkdirAll(ignoredDir, 0o755); err != nil {
+	ignoredTree := filepath.Join(dir, "legitimate-cache.ignored")
+	ignoredNested := filepath.Join(ignoredTree, "nested")
+	ignoredEmpty := filepath.Join(ignoredNested, "empty")
+	if err := os.MkdirAll(ignoredEmpty, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(ignoredDir, "nested.txt"), []byte("legitimate ignored directory\n"), 0o644); err != nil {
-		t.Fatal(err)
+	writeTestFile(t, dir, "legitimate-cache.ignored/nested/value.txt", "legitimate ignored tree\n")
+	for path, mode := range map[string]os.FileMode{
+		ignoredTree:   0o750,
+		ignoredNested: 0o710,
+		ignoredEmpty:  0o700,
+	} {
+		if err := os.Chmod(path, mode); err != nil {
+			t.Fatal(err)
+		}
 	}
+
 	linkTarget := ""
+	symlinkParentTarget := ""
 	if runtime.GOOS != "windows" {
 		linkTarget = "legitimate-untracked.sh"
 		if err := os.Symlink(linkTarget, filepath.Join(dir, "legitimate-link")); err != nil {
+			t.Fatal(err)
+		}
+		symlinkParentTarget = "legitimate-tree/nested"
+		if err := os.Symlink(symlinkParentTarget, filepath.Join(dir, "legitimate-parent-link")); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -699,17 +734,29 @@ func seedRoutedCandidateState(t *testing.T) (string, routedCandidateState) {
 		t.Fatal(err)
 	}
 	return dir, routedCandidateState{
-		head:             gitOut(t, dir, "rev-parse", "HEAD"),
-		headRef:          gitOut(t, dir, "rev-parse", "--symbolic-full-name", "HEAD"),
-		indexTree:        gitOut(t, dir, "write-tree"),
-		status:           gitOut(t, dir, "status", "--porcelain=v1", "--untracked-files=all"),
-		trackedContent:   "legitimate unstaged\n",
-		untrackedContent: "#!/bin/sh\necho legitimate\n",
-		untrackedMode:    info.Mode().Perm(),
-		untrackedLink:    linkTarget,
-		ignoredContent:   "legitimate ignored\n",
-		ignoredMode:      ignoredInfo.Mode().Perm(),
-		ignoredDirValue:  "legitimate ignored directory\n",
+		head:                gitOut(t, dir, "rev-parse", "HEAD"),
+		headRef:             gitOut(t, dir, "rev-parse", "--symbolic-full-name", "HEAD"),
+		indexTree:           gitOut(t, dir, "write-tree"),
+		status:              gitOut(t, dir, "status", "--porcelain=v1", "--untracked-files=all"),
+		trackedContent:      "legitimate unstaged\n",
+		untrackedContent:    "#!/bin/sh\necho legitimate\n",
+		untrackedMode:       info.Mode().Perm(),
+		untrackedLink:       linkTarget,
+		symlinkParentTarget: symlinkParentTarget,
+		ignoredContent:      "legitimate ignored\n",
+		ignoredMode:         ignoredInfo.Mode().Perm(),
+		directoryModes: map[string]os.FileMode{
+			"legitimate-tree":                       0o751,
+			"legitimate-tree/nested":                0o711,
+			"legitimate-tree/nested/empty":          0o701,
+			"legitimate-cache.ignored":              0o750,
+			"legitimate-cache.ignored/nested":       0o710,
+			"legitimate-cache.ignored/nested/empty": 0o700,
+		},
+		directoryFileContent: map[string]string{
+			"legitimate-tree/nested/value.txt":          "legitimate untracked tree\n",
+			"legitimate-cache.ignored/nested/value.txt": "legitimate ignored tree\n",
+		},
 	}
 }
 
@@ -754,6 +801,16 @@ func assertRoutedCandidateBase(t *testing.T, dir string, want routedCandidateSta
 			t.Fatalf("untracked symlink target = %q, err = %v, want %q", target, err, want.untrackedLink)
 		}
 	}
+	if want.symlinkParentTarget != "" {
+		target, err := os.Readlink(filepath.Join(dir, "legitimate-parent-link"))
+		if err != nil || target != want.symlinkParentTarget {
+			t.Fatalf("untracked symlink parent target = %q, err = %v, want %q", target, err, want.symlinkParentTarget)
+		}
+		throughParent, err := os.ReadFile(filepath.Join(dir, "legitimate-parent-link", "value.txt"))
+		if err != nil || string(throughParent) != want.directoryFileContent["legitimate-tree/nested/value.txt"] {
+			t.Fatalf("content through restored symlink parent = %q, err = %v", throughParent, err)
+		}
+	}
 	ignoredPath := filepath.Join(dir, "legitimate.ignored")
 	ignored, err := os.ReadFile(ignoredPath)
 	if err != nil || string(ignored) != want.ignoredContent {
@@ -766,9 +823,23 @@ func assertRoutedCandidateBase(t *testing.T, dir string, want routedCandidateSta
 	if got := ignoredInfo.Mode().Perm(); got != want.ignoredMode {
 		t.Fatalf("ignored mode = %o, want %o", got, want.ignoredMode)
 	}
-	ignoredDir, err := os.ReadFile(filepath.Join(dir, "legitimate-cache.ignored", "nested.txt"))
-	if err != nil || string(ignoredDir) != want.ignoredDirValue {
-		t.Fatalf("ignored directory content = %q, err = %v, want %q", ignoredDir, err, want.ignoredDirValue)
+	for path, wantMode := range want.directoryModes {
+		info, err := os.Lstat(filepath.Join(dir, filepath.FromSlash(path)))
+		if err != nil {
+			t.Fatalf("restored directory %q: %v", path, err)
+		}
+		if !info.IsDir() {
+			t.Fatalf("restored path %q has type %s, want directory", path, info.Mode())
+		}
+		if got := info.Mode().Perm(); got != wantMode {
+			t.Fatalf("restored directory %q mode = %o, want %o", path, got, wantMode)
+		}
+	}
+	for path, wantContent := range want.directoryFileContent {
+		content, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(path)))
+		if err != nil || string(content) != wantContent {
+			t.Fatalf("restored tree content %q = %q, err = %v, want %q", path, content, err, wantContent)
+		}
 	}
 }
 
@@ -789,8 +860,23 @@ func mutateFailedRoutedCandidate(t *testing.T, dir, label string) {
 	if err := os.Chmod(filepath.Join(dir, "legitimate.ignored"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "legitimate-cache.ignored", "nested.txt"), []byte(label+" ignored directory mutation\n"), 0o600); err != nil {
-		t.Fatal(err)
+	for _, path := range []string{"legitimate-tree", "legitimate-cache.ignored"} {
+		if err := os.RemoveAll(filepath.Join(dir, path)); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(dir, path), 0o777); err != nil {
+			t.Fatal(err)
+		}
+		writeTestFile(t, dir, path+"/replacement.txt", label+" replacement tree\n")
+		if err := os.Chmod(filepath.Join(dir, path), 0o777); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, path := range []string{label + "-tree/deep", label + "-tree.ignored/deep"} {
+		if err := os.MkdirAll(filepath.Join(dir, path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeTestFile(t, dir, path+"/file.txt", label+" attempt-created tree\n")
 	}
 	writeTestFile(t, dir, label+".ignored", label+" ignored mutation\n")
 	if runtime.GOOS != "windows" {
@@ -800,6 +886,13 @@ func mutateFailedRoutedCandidate(t *testing.T, dir, label string) {
 		if err := os.Symlink(label+"-untracked.txt", filepath.Join(dir, "legitimate-link")); err != nil {
 			t.Fatal(err)
 		}
+		if err := os.Remove(filepath.Join(dir, "legitimate-parent-link")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(dir, "legitimate-parent-link"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeTestFile(t, dir, "legitimate-parent-link/value.txt", label+" replaced symlink parent\n")
 	}
 	execGit(t, dir, "add", "README.md", label+"-staged.txt", "legitimate-untracked.sh")
 	execGit(t, dir, "commit", "-m", label+" failed attempt")
@@ -829,6 +922,26 @@ func conflictedRebaseWorktree(t *testing.T) string {
 	if got := gitOut(t, dir, "diff", "--name-only", "--diff-filter=U"); got != "README.md" {
 		t.Fatalf("conflicted paths = %q, want README.md", got)
 	}
+	if err := os.WriteFile(filepath.Join(dir, ".git", "info", "exclude"), []byte("rebase-cache/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for path, mode := range map[string]os.FileMode{
+		"rebase-tree":               0o751,
+		"rebase-tree/nested":        0o711,
+		"rebase-tree/nested/empty":  0o701,
+		"rebase-cache":              0o750,
+		"rebase-cache/nested":       0o710,
+		"rebase-cache/nested/empty": 0o700,
+	} {
+		if err := os.MkdirAll(filepath.Join(dir, filepath.FromSlash(path)), mode); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(filepath.Join(dir, filepath.FromSlash(path)), mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeTestFile(t, dir, "rebase-tree/nested/value.txt", "untracked rebase candidate\n")
+	writeTestFile(t, dir, "rebase-cache/nested/value.txt", "ignored rebase candidate\n")
 	return dir
 }
 
@@ -846,6 +959,15 @@ func TestRoutingInvokerRestoresConflictedRebaseBeforeProviderFailover(t *testing
 		if out, err := continueRebase.CombinedOutput(); err != nil {
 			t.Fatalf("complete failed provider rebase: %v\n%s", err, out)
 		}
+		for _, path := range []string{"rebase-tree", "rebase-cache"} {
+			if err := os.RemoveAll(filepath.Join(opts.CWD, path)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.MkdirAll(filepath.Join(opts.CWD, "failed-rebase-tree.ignored", "deep"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeTestFile(t, opts.CWD, "failed-rebase-tree.ignored/deep/value.txt", "failed provider\n")
 		return nil, opError()
 	}}
 	claude := &recordingRoutedAgent{runFn: func(opts agent.RunOpts) (*agent.Result, error) {
@@ -855,6 +977,31 @@ func TestRoutingInvokerRestoresConflictedRebaseBeforeProviderFailover(t *testing
 		}
 		if got := gitOut(t, opts.CWD, "diff", "--name-only", "--diff-filter=U"); got != "README.md" {
 			t.Fatalf("backup provider conflict paths = %q, want README.md", got)
+		}
+		for path, wantMode := range map[string]os.FileMode{
+			"rebase-tree":               0o751,
+			"rebase-tree/nested":        0o711,
+			"rebase-tree/nested/empty":  0o701,
+			"rebase-cache":              0o750,
+			"rebase-cache/nested":       0o710,
+			"rebase-cache/nested/empty": 0o700,
+		} {
+			info, err := os.Lstat(filepath.Join(opts.CWD, filepath.FromSlash(path)))
+			if err != nil || !info.IsDir() || info.Mode().Perm() != wantMode {
+				t.Fatalf("restored conflicted directory %q = mode %v, err=%v; want directory %o", path, info, err, wantMode)
+			}
+		}
+		for path, want := range map[string]string{
+			"rebase-tree/nested/value.txt":  "untracked rebase candidate\n",
+			"rebase-cache/nested/value.txt": "ignored rebase candidate\n",
+		} {
+			content, err := os.ReadFile(filepath.Join(opts.CWD, filepath.FromSlash(path)))
+			if err != nil || string(content) != want {
+				t.Fatalf("restored conflicted tree content %q = %q, err=%v; want %q", path, content, err, want)
+			}
+		}
+		if _, err := os.Lstat(filepath.Join(opts.CWD, "failed-rebase-tree.ignored")); !os.IsNotExist(err) {
+			t.Fatalf("attempt-created conflicted tree survived provider failover: %v", err)
 		}
 		return &agent.Result{Output: []byte(`{"summary":"retry from conflict"}`)}, nil
 	}}
@@ -901,7 +1048,10 @@ func TestRoutingInvokerRestoresFailedProviderBeforeBackupAndCommitsOnlySuccessfu
 	if _, err := os.Stat(filepath.Join(dir, "successful-claude.txt")); err != nil {
 		t.Fatalf("successful backup mutation missing: %v", err)
 	}
-	for _, failed := range []string{"failed-codex-staged.txt", "failed-codex-untracked.txt", "failed-codex-after-commit.txt"} {
+	for _, failed := range []string{
+		"failed-codex-staged.txt", "failed-codex-untracked.txt", "failed-codex-after-commit.txt",
+		"failed-codex-tree", "failed-codex-tree.ignored",
+	} {
 		if _, err := os.Lstat(filepath.Join(dir, failed)); !os.IsNotExist(err) {
 			t.Fatalf("failed provider mutation %q survived: %v", failed, err)
 		}
@@ -946,7 +1096,9 @@ func TestRoutingInvokerRestoresExactCandidateWhenEveryProviderFails(t *testing.T
 	assertRoutedCandidateState(t, dir, before)
 	for _, failed := range []string{
 		"failed-codex-staged.txt", "failed-codex-untracked.txt", "failed-codex-after-commit.txt",
-		"failed-codex.ignored", "failed-claude-staged.txt", "failed-claude-untracked.txt", "failed-claude-after-commit.txt", "failed-claude.ignored",
+		"failed-codex.ignored", "failed-codex-tree", "failed-codex-tree.ignored",
+		"failed-claude-staged.txt", "failed-claude-untracked.txt", "failed-claude-after-commit.txt",
+		"failed-claude.ignored", "failed-claude-tree", "failed-claude-tree.ignored",
 	} {
 		if _, err := os.Lstat(filepath.Join(dir, failed)); !os.IsNotExist(err) {
 			t.Fatalf("failed provider mutation %q survived final error: %v", failed, err)

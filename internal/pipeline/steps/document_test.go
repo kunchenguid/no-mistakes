@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -105,6 +106,69 @@ func TestDocumentStep_RejectsInconclusiveVerificationBeforeCommit(t *testing.T) 
 	}
 	if got := lastCommitMessage(t, dir); got == "no-mistakes(document): update README" {
 		t.Fatal("inconclusive documentation verification created a documentation commit")
+	}
+}
+
+func TestDocumentStep_MutatingVerifierErrorCannotBypassIntegrityCheck(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+	invoker := &documentRecordingInvoker{}
+	invoker.run = func(request agent.InvocationRequest) (*agent.Result, error) {
+		if request.Purpose == types.PurposeDocumentationAuthoring {
+			if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Updated\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"update README"}`)}, nil
+		}
+		if err := os.WriteFile(filepath.Join(dir, "verifier-mutation.txt"), []byte("not verified\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return nil, errors.New("documentation verifier transport failed")
+	}
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "unused"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Invoker = invoker
+
+	_, err := (&DocumentStep{}).Execute(sctx)
+	if err == nil || !strings.Contains(err.Error(), "documentation verifier mutated the candidate") {
+		t.Fatalf("document error = %v, want candidate-integrity failure", err)
+	}
+	if !strings.Contains(err.Error(), "documentation verifier transport failed") {
+		t.Fatalf("document error = %v, want underlying invocation failure retained", err)
+	}
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != headSHA {
+		t.Fatalf("mutating verifier error committed HEAD %s, want %s", got, headSHA)
+	}
+	if got := lastCommitMessage(t, dir); got == "no-mistakes(document): update README" {
+		t.Fatal("mutating verifier error accepted the documentation candidate")
+	}
+}
+
+func TestDocumentStep_MutationTakesPrecedenceOverParseError(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+	invoker := &documentRecordingInvoker{}
+	invoker.run = func(request agent.InvocationRequest) (*agent.Result, error) {
+		if request.Purpose == types.PurposeDocumentationAuthoring {
+			if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Updated\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"update README"}`)}, nil
+		}
+		if err := os.WriteFile(filepath.Join(dir, "verifier-mutation.txt"), []byte("not verified\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return &agent.Result{Output: json.RawMessage(`{"findings":`)}, nil
+	}
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "unused"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Invoker = invoker
+
+	if _, err := (&DocumentStep{}).Execute(sctx); err == nil || !strings.Contains(err.Error(), "documentation verifier mutated the candidate") {
+		t.Fatalf("document error = %v, want candidate-integrity failure before parse error", err)
+	}
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != headSHA {
+		t.Fatalf("mutating parse error committed HEAD %s, want %s", got, headSHA)
 	}
 }
 

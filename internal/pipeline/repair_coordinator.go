@@ -4,11 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
+	"runtime"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
+	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -18,6 +22,172 @@ import (
 type repairCheck struct {
 	Command string
 	Run     func(ctx context.Context) (applicable bool, exitCode int, output string)
+}
+
+const (
+	durableRepairCheckShell        = "shell"
+	durableRepairCheckDocumentDiff = "document_diff"
+)
+
+type durableRepairCheck struct {
+	Kind    string `json:"kind"`
+	Command string `json:"command"`
+	BaseSHA string `json:"base_sha,omitempty"`
+}
+
+func encodeDurableRepairChecks(ctx context.Context, stepName types.StepName, checks []repairCheck, run *db.Run, repo *db.Repo, workDir string) (string, error) {
+	specs := make([]durableRepairCheck, 0, len(checks))
+	for _, check := range checks {
+		if strings.TrimSpace(check.Command) == "" || check.Run == nil {
+			return "", fmt.Errorf("%s repair check is incomplete", stepName)
+		}
+		spec := durableRepairCheck{Kind: durableRepairCheckShell, Command: check.Command}
+		switch stepName {
+		case types.StepTest, types.StepLint:
+		case types.StepDocument:
+			if check.Command != "git diff --check" {
+				return "", fmt.Errorf("unsupported Document repair check %q", check.Command)
+			}
+			if run == nil || repo == nil {
+				return "", fmt.Errorf("Document repair check has no run or repository")
+			}
+			spec.Kind = durableRepairCheckDocumentDiff
+			spec.BaseSHA = repairCheckBranchBaseSHA(ctx, workDir, run.BaseSHA, repo.DefaultBranch)
+		case types.StepVerify:
+			return "", fmt.Errorf("unsupported Verify repair check %q", check.Command)
+		default:
+			return "", fmt.Errorf("step %s cannot persist repair check %q", stepName, check.Command)
+		}
+		specs = append(specs, spec)
+	}
+	encoded, err := json.Marshal(specs)
+	if err != nil {
+		return "", fmt.Errorf("encode %s repair checks: %w", stepName, err)
+	}
+	return string(encoded), nil
+}
+
+func decodeDurableRepairChecks(stepName types.StepName, encoded, workDir string, env []string) ([]repairCheck, error) {
+	var specs []durableRepairCheck
+	if err := json.Unmarshal([]byte(encoded), &specs); err != nil {
+		return nil, fmt.Errorf("decode recovered %s repair checks: %w", stepName, err)
+	}
+	if specs == nil {
+		specs = []durableRepairCheck{}
+	}
+	checks := make([]repairCheck, 0, len(specs))
+	for _, spec := range specs {
+		if strings.TrimSpace(spec.Command) == "" {
+			return nil, fmt.Errorf("recovered %s repair check has no command", stepName)
+		}
+		switch spec.Kind {
+		case durableRepairCheckShell:
+			if stepName != types.StepTest && stepName != types.StepLint {
+				return nil, fmt.Errorf("recovered %s repair check has invalid kind %q", stepName, spec.Kind)
+			}
+			command := spec.Command
+			checks = append(checks, repairCheck{
+				Command: command,
+				Run: func(ctx context.Context) (bool, int, string) {
+					output, exitCode, err := runRecoveredRepairShell(ctx, workDir, env, command)
+					if err != nil {
+						return true, 1, err.Error()
+					}
+					return true, exitCode, output
+				},
+			})
+		case durableRepairCheckDocumentDiff:
+			if stepName != types.StepDocument || spec.Command != "git diff --check" || strings.TrimSpace(spec.BaseSHA) == "" {
+				return nil, fmt.Errorf("recovered %s repair check has invalid document identity", stepName)
+			}
+			baseSHA := spec.BaseSHA
+			checks = append(checks, repairCheck{
+				Command: spec.Command,
+				Run: func(ctx context.Context) (bool, int, string) {
+					output, err := git.Run(ctx, workDir, "diff", "--check", baseSHA, "HEAD")
+					if err != nil {
+						return true, 1, output
+					}
+					return true, 0, output
+				},
+			})
+		default:
+			return nil, fmt.Errorf("recovered %s repair check has unknown kind %q", stepName, spec.Kind)
+		}
+	}
+	return checks, nil
+}
+
+func repairCheckBranchBaseSHA(ctx context.Context, workDir, fallbackBaseSHA, defaultBranch string) string {
+	if strings.TrimSpace(defaultBranch) != "" {
+		for _, ref := range []string{"origin/" + defaultBranch, defaultBranch} {
+			base, err := git.Run(ctx, workDir, "merge-base", "HEAD", ref)
+			if err == nil && strings.TrimSpace(base) != "" {
+				return strings.TrimSpace(base)
+			}
+		}
+	}
+	if !git.IsZeroSHA(fallbackBaseSHA) {
+		return fallbackBaseSHA
+	}
+	return git.EmptyTreeSHA
+}
+
+func runRecoveredRepairShell(ctx context.Context, workDir string, env []string, command string) (string, int, error) {
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		cmd = exec.CommandContext(ctx, "cmd.exe", "/c", command)
+	} else {
+		cmd = exec.CommandContext(ctx, "sh", "-c", command)
+	}
+	shellenv.ConfigureShellCommand(cmd)
+	cmd.Dir = workDir
+	if len(env) > 0 {
+		cmd.Env = mergeRepairCheckEnv(env)
+	}
+	output, err := shellenv.CombinedOutputShellCommand(cmd)
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return string(output), exitErr.ExitCode(), nil
+		}
+		return "", -1, fmt.Errorf("run command %q: %w", command, err)
+	}
+	return string(output), 0, nil
+}
+
+func mergeRepairCheckEnv(extra []string) []string {
+	key := func(entry string) string {
+		name, _, found := strings.Cut(entry, "=")
+		if !found {
+			name = entry
+		}
+		if runtime.GOOS == "windows" {
+			return strings.ToUpper(name)
+		}
+		return name
+	}
+	merged := make([]string, 0, len(os.Environ())+len(extra))
+	overrides := make(map[string]string, len(extra))
+	for _, entry := range extra {
+		overrides[key(entry)] = entry
+	}
+	for _, entry := range os.Environ() {
+		name := key(entry)
+		if override, ok := overrides[name]; ok {
+			merged = append(merged, override)
+			delete(overrides, name)
+		} else {
+			merged = append(merged, entry)
+		}
+	}
+	for _, entry := range extra {
+		name := key(entry)
+		if override, ok := overrides[name]; ok {
+			merged = append(merged, override)
+			delete(overrides, name)
+		}
+	}
+	return merged
 }
 
 // repairCoordinator resolves blocking finding lineages through fresh fixers,

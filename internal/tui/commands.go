@@ -75,9 +75,10 @@ func (m Model) rerunCmd(requestID uint64) tea.Cmd {
 
 // maybeAutoApproveCmd auto-resolves the current awaiting step when yolo mode is
 // on, returning nil otherwise. Yolo means "agree to fix every selectable
-// finding": a gate whose findings are actionable gets a fix request only when
-// at least one finding has an ID, while a gate with only non-actionable (no-op)
-// findings, no selectable findings, or no findings at all is approved as-is.
+// actionable finding": a gate whose findings are actionable gets a fix request
+// only when at least one actionable finding has an ID, while a gate with only
+// non-actionable (no-op) findings, no selectable actionable findings, or no
+// findings at all is approved as-is.
 // A step is fixed at most once; the fix re-runs the step and re-enters the gate
 // as a fix_review, which yolo then approves so the pipeline
 // runs to completion without looping. Each terminal action fires once so

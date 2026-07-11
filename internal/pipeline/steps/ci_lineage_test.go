@@ -3,7 +3,9 @@ package steps
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -256,6 +258,226 @@ func TestCIStep_FailedHostedRepairRestoresExactCandidateBeforeRetry(t *testing.T
 	if len(repairs) != 1 || repairs[0].Status != db.RepairStatusFailed {
 		t.Fatalf("repair journal = %+v, want durable failed row after later publication", repairs)
 	}
+}
+
+func TestCIStep_FailedRepairAbortsAttemptStartedRebaseBeforeRestore(t *testing.T) {
+	upstream, dir, baseSHA, originalHead := setupCIRepublish(t)
+	gitCmd(t, dir, "checkout", "main")
+	if err := os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("base version\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "feature.txt")
+	gitCmd(t, dir, "commit", "-m", "conflicting base change")
+	baseTip := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "main")
+	gitCmd(t, dir, "checkout", "feature")
+
+	fixer := &ciRepublishAgent{fix: func(cwd string) error {
+		cmd := exec.Command("git", "rebase", baseTip)
+		cmd.Dir = cwd
+		cmd.Env = append(os.Environ(), "GIT_EDITOR=true")
+		if output, err := cmd.CombinedOutput(); err == nil {
+			return errors.New("rebase unexpectedly completed")
+		} else {
+			return fmt.Errorf("repair stopped during rebase: %s: %w", output, err)
+		}
+	}}
+	step, sctx, host, pr := republishContext(t, fixer, upstream, dir, baseSHA, originalHead, config.Commands{})
+	sctx.Repo.DefaultBranch = "main"
+
+	if pushed, err := step.autoFixCI(sctx, host, pr, nil, true); err == nil {
+		t.Fatalf("autoFixCI = pushed %v, nil error; want failed rebase attempt", pushed)
+	}
+	if ciRebaseInProgress(t, dir) {
+		t.Fatal("failed repair left its rebase in progress")
+	}
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != originalHead {
+		t.Fatalf("failed rebase repair restored HEAD %s, want %s", got, originalHead)
+	}
+	if got := gitCmd(t, dir, "status", "--porcelain"); got != "" {
+		t.Fatalf("failed rebase repair left worktree changes: %q", got)
+	}
+}
+
+func TestCIStep_FailedRepairDoesNotAbortPreExistingRebase(t *testing.T) {
+	upstream, dir, baseSHA, originalHead := setupCIRepublish(t)
+	cmd := exec.Command("git", "rebase", "--force-rebase", "--exec", "false", "main")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GIT_EDITOR=true")
+	if output, err := cmd.CombinedOutput(); err == nil {
+		t.Fatalf("pre-existing rebase unexpectedly completed: %s", output)
+	}
+	if !ciRebaseInProgress(t, dir) {
+		t.Fatal("fixture did not leave a pre-existing rebase")
+	}
+	preAttemptHead := gitCmd(t, dir, "rev-parse", "HEAD")
+	preAttemptStatus := gitCmd(t, dir, "status", "--porcelain=v1", "--untracked-files=all")
+
+	fixer := &ciRepublishAgent{fix: func(string) error {
+		return errors.New("repair failed without touching the pre-existing rebase")
+	}}
+	step, sctx, host, pr := republishContext(t, fixer, upstream, dir, baseSHA, originalHead, config.Commands{})
+
+	if pushed, err := step.autoFixCI(sctx, host, pr, []string{"test"}, false); err == nil {
+		t.Fatalf("autoFixCI = pushed %v, nil error; want failed repair", pushed)
+	}
+	if !ciRebaseInProgress(t, dir) {
+		t.Fatal("rollback aborted a rebase that predated the repair attempt")
+	}
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != preAttemptHead {
+		t.Fatalf("pre-existing rebase HEAD = %s after rollback, want %s", got, preAttemptHead)
+	}
+	if got := gitCmd(t, dir, "status", "--porcelain=v1", "--untracked-files=all"); got != preAttemptStatus {
+		t.Fatalf("pre-existing rebase status = %q after rollback, want %q", got, preAttemptStatus)
+	}
+}
+
+func TestCIStep_FailedRepairRestoresIgnoredFilesystemExactlyBeforeRetry(t *testing.T) {
+	upstream, dir, baseSHA, headSHA := setupCIRepublish(t)
+	excludePath := gitCmd(t, dir, "rev-parse", "--git-path", "info/exclude")
+	if !filepath.IsAbs(excludePath) {
+		excludePath = filepath.Join(dir, excludePath)
+	}
+	if err := os.WriteFile(excludePath, []byte("ignored-*\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	write := func(path, content string, mode os.FileMode) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, path), []byte(content), mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("ignored-modified.txt", "original modified file\n", 0o644)
+	write("ignored-deleted.txt", "original deleted file\n", 0o644)
+	write("ignored-mode.sh", "#!/bin/sh\n", 0o755)
+	write("ignored-target-a.txt", "target a\n", 0o644)
+	write("ignored-target-b.txt", "target b\n", 0o644)
+	if err := os.Symlink("ignored-target-a.txt", filepath.Join(dir, "ignored-link")); err != nil {
+		t.Skipf("symlink setup unavailable: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "ignored-dir"), 0o711); err != nil {
+		t.Fatal(err)
+	}
+	write(filepath.Join("ignored-dir", "content.txt"), "original directory content\n", 0o640)
+	if err := os.Mkdir(filepath.Join(dir, "ignored-dir", "empty"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if status := gitCmd(t, dir, "status", "--porcelain=v1", "--untracked-files=all"); status != "" {
+		t.Fatalf("ignored fixture unexpectedly visible to git: %q", status)
+	}
+
+	assertOriginal := func(cwd string) error {
+		for path, want := range map[string]string{
+			"ignored-modified.txt":                      "original modified file\n",
+			"ignored-deleted.txt":                       "original deleted file\n",
+			filepath.Join("ignored-dir", "content.txt"): "original directory content\n",
+		} {
+			got, err := os.ReadFile(filepath.Join(cwd, path))
+			if err != nil || string(got) != want {
+				return fmt.Errorf("%s = %q, %v; want %q", path, got, err, want)
+			}
+		}
+		for _, path := range []string{"ignored-created.txt", "ignored-created-dir", "ignored-created-link"} {
+			if _, err := os.Lstat(filepath.Join(cwd, path)); !os.IsNotExist(err) {
+				return fmt.Errorf("failed-attempt ignored path %s remains: %v", path, err)
+			}
+		}
+		linkTarget, err := os.Readlink(filepath.Join(cwd, "ignored-link"))
+		if err != nil || linkTarget != "ignored-target-a.txt" {
+			return fmt.Errorf("ignored symlink target = %q, %v; want ignored-target-a.txt", linkTarget, err)
+		}
+		for path, want := range map[string]os.FileMode{
+			"ignored-mode.sh":                     0o755,
+			"ignored-dir":                         0o711,
+			filepath.Join("ignored-dir", "empty"): 0o700,
+		} {
+			info, err := os.Lstat(filepath.Join(cwd, path))
+			if err != nil || info.Mode().Perm() != want {
+				return fmt.Errorf("%s mode = %v, %v; want %v", path, info, err, want)
+			}
+		}
+		return nil
+	}
+
+	fixerCalls := 0
+	fixer := &ciRepublishAgent{
+		fix: func(cwd string) error {
+			fixerCalls++
+			if fixerCalls == 1 {
+				if err := os.WriteFile(filepath.Join(cwd, "ignored-modified.txt"), []byte("failed mutation\n"), 0o600); err != nil {
+					return err
+				}
+				if err := os.Remove(filepath.Join(cwd, "ignored-deleted.txt")); err != nil {
+					return err
+				}
+				if err := os.Chmod(filepath.Join(cwd, "ignored-mode.sh"), 0o600); err != nil {
+					return err
+				}
+				if err := os.Remove(filepath.Join(cwd, "ignored-link")); err != nil {
+					return err
+				}
+				if err := os.Symlink("ignored-target-b.txt", filepath.Join(cwd, "ignored-link")); err != nil {
+					return err
+				}
+				if err := os.RemoveAll(filepath.Join(cwd, "ignored-dir")); err != nil {
+					return err
+				}
+				if err := os.Mkdir(filepath.Join(cwd, "ignored-dir"), 0o755); err != nil {
+					return err
+				}
+				if err := os.WriteFile(filepath.Join(cwd, "ignored-created.txt"), []byte("failed create\n"), 0o644); err != nil {
+					return err
+				}
+				if err := os.Mkdir(filepath.Join(cwd, "ignored-created-dir"), 0o755); err != nil {
+					return err
+				}
+				if err := os.Symlink("ignored-target-b.txt", filepath.Join(cwd, "ignored-created-link")); err != nil {
+					return err
+				}
+				return errors.New("repair failed after ignored filesystem mutations")
+			}
+			if err := assertOriginal(cwd); err != nil {
+				return fmt.Errorf("retry candidate was not clean: %w", err)
+			}
+			return os.WriteFile(filepath.Join(cwd, "successful-ci-fix.txt"), []byte("successful\n"), 0o644)
+		},
+		verify: assertOriginal,
+	}
+	step, sctx, host, pr := republishContext(t, fixer, upstream, dir, baseSHA, headSHA, config.Commands{})
+
+	if pushed, err := step.autoFixCI(sctx, host, pr, []string{"test"}, false); err == nil {
+		t.Fatalf("first repair = pushed %v, nil error; want failed attempt", pushed)
+	}
+	if err := assertOriginal(dir); err != nil {
+		t.Fatalf("failed repair did not restore ignored candidate: %v", err)
+	}
+	pushed, err := step.autoFixCI(sctx, host, pr, []string{"test"}, false)
+	if err != nil {
+		t.Fatalf("clean retry: %v", err)
+	}
+	if !pushed {
+		t.Fatal("clean retry did not publish its verified fix")
+	}
+	if got := gitCmd(t, upstream, "show", "refs/heads/feature:successful-ci-fix.txt"); got != "successful" {
+		t.Fatalf("published retry content = %q, want successful", got)
+	}
+}
+
+func ciRebaseInProgress(t *testing.T, dir string) bool {
+	t.Helper()
+	for _, state := range []string{"rebase-merge", "rebase-apply"} {
+		path := gitCmd(t, dir, "rev-parse", "--git-path", state)
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(dir, path)
+		}
+		if _, err := os.Stat(path); err == nil {
+			return true
+		} else if !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+	}
+	return false
 }
 
 func TestCIStep_DistinctHostedFailuresHaveDistinctBudgets(t *testing.T) {

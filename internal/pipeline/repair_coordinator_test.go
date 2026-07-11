@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -664,7 +666,12 @@ func TestExecutorConsentedRepairExhaustionCannotCompleteReview(t *testing.T) {
 }
 
 func TestExecutorRejectsManualApproveAfterAutomaticRepairExhaustion(t *testing.T) {
-	_, _, next, executor, done := startExecutorRepairReview(t, types.ActionAutoFix, false)
+	database, run, next, executor, done := startExecutorRepairReview(t, types.ActionAutoFix, false)
+	steps, err := database.GetStepsByRun(run.ID)
+	if err != nil || len(steps) < 1 {
+		t.Fatalf("load parked review step: steps=%+v err=%v", steps, err)
+	}
+	gate := waitForApprovalGate(t, database, steps[0].ID)
 	if err := executor.Respond(types.StepReview, types.ActionApprove, nil); err != nil {
 		t.Fatalf("respond approve: %v", err)
 	}
@@ -678,6 +685,28 @@ func TestExecutorRejectsManualApproveAfterAutomaticRepairExhaustion(t *testing.T
 	}
 	if next.callCount() != 0 {
 		t.Fatalf("next step calls = %d, want 0 after rejected approval", next.callCount())
+	}
+	rejectedStep, err := database.GetStepResult(steps[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rejectedRun, err := database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := database.GetPendingApprovalAction(gate.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentGate, err := database.GetCurrentApprovalGate(steps[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rejectedStep.Status != types.StepStatusFailed || rejectedRun.Status != types.RunFailed || rejectedRun.AwaitingAgentSince != nil {
+		t.Fatalf("rejected approval = step %s run %s parked %v, want terminal failed and unparked", rejectedStep.Status, rejectedRun.Status, rejectedRun.AwaitingAgentSince)
+	}
+	if pending != nil || currentGate != nil {
+		t.Fatalf("rejected approval left pending action %+v or current gate %+v", pending, currentGate)
 	}
 }
 
@@ -1150,6 +1179,83 @@ func TestEscalateRejectsVerifierDirtyWorktreeWithoutCleaningIt(t *testing.T) {
 			round, err := rc.db.GetStepRound(repairs[0].StepRoundID)
 			if err != nil || round == nil || round.State != db.StepRoundFailed {
 				t.Fatalf("repair round = %+v, %v; want failed", round, err)
+			}
+		})
+	}
+}
+
+func TestEscalateRejectsVerifierDirectoryMetadataMutation(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(*testing.T, string) string
+	}{
+		{
+			name: "ignored nested directory with content",
+			setup: func(t *testing.T, workDir string) string {
+				exclude := filepath.Join(workDir, ".git", "info", "exclude")
+				if err := os.WriteFile(exclude, []byte("candidate-tree/\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				path := filepath.Join(workDir, "candidate-tree", "nested")
+				if err := os.MkdirAll(path, 0o711); err != nil {
+					t.Fatal(err)
+				}
+				writeTestFile(t, workDir, "candidate-tree/nested/value.txt", "candidate\n")
+				if err := os.Chmod(path, 0o711); err != nil {
+					t.Fatal(err)
+				}
+				return path
+			},
+		},
+		{
+			name: "empty ignored nested directory",
+			setup: func(t *testing.T, workDir string) string {
+				exclude := filepath.Join(workDir, ".git", "info", "exclude")
+				file, err := os.OpenFile(exclude, os.O_APPEND|os.O_WRONLY, 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := file.WriteString("\ncandidate-cache/\n"); err != nil {
+					_ = file.Close()
+					t.Fatal(err)
+				}
+				if err := file.Close(); err != nil {
+					t.Fatal(err)
+				}
+				path := filepath.Join(workDir, "candidate-cache", "nested", "empty")
+				if err := os.MkdirAll(path, 0o701); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(path, 0o701); err != nil {
+					t.Fatal(err)
+				}
+				return path
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeRepairInvoker{
+				verify: func(_ int, ids []string) verdictSpec {
+					return verdictSpec{resolved: allResolved(ids)}
+				},
+			}
+			rc, seeds := repairFixture(t, fake, []types.Finding{blockingFinding("review-1", "nil deref")})
+			rc.policy.maxTier = 0
+			mutatedDir := tc.setup(t, rc.workDir)
+			fake.verifyEdit = func(int) {
+				if err := os.Chmod(mutatedDir, 0o777); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			states, err := rc.escalateBatch(context.Background(), seeds)
+			if err == nil || !strings.Contains(err.Error(), "verifier mutated the repair candidate") {
+				t.Fatalf("escalateBatch error = %v, want directory metadata mutation rejection", err)
+			}
+			state := states[seeds[0].LineageID]
+			if state.resolved || !state.failed || state.verdict != db.RepairVerdictInconclusive {
+				t.Fatalf("directory metadata mutation must fail closed as inconclusive, got %+v", state)
 			}
 		})
 	}

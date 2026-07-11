@@ -109,9 +109,9 @@ func (m *Model) resetFindingSelection(step types.StepName) {
 	m.findingCursor[step] = 0
 }
 
-// selectedFindingIDs returns the IDs of selected agent-produced findings.
-// User-authored findings are conveyed via addedFindings separately because
-// the daemon only recognizes agent IDs in the FindingIDs list.
+// selectedFindingIDs returns the IDs of selected actionable agent-produced
+// findings. User-authored findings are conveyed via addedFindings separately
+// because the daemon only recognizes agent IDs in the FindingIDs list.
 func (m *Model) selectedFindingIDs(step types.StepName) []string {
 	selected := m.findingSelections[step]
 	if len(selected) == 0 {
@@ -119,7 +119,7 @@ func (m *Model) selectedFindingIDs(step types.StepName) []string {
 	}
 	var ids []string
 	for _, item := range m.agentFindingItems(step) {
-		if selected[item.ID] {
+		if item.ID != "" && selected[item.ID] && item.IsActionable() {
 			ids = append(ids, item.ID)
 		}
 	}

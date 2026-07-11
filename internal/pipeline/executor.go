@@ -279,15 +279,16 @@ func (e *Executor) completeRun(ctx context.Context, run *db.Run, repo *db.Repo, 
 }
 
 type stepExecutionState struct {
-	fixing                  bool
-	previousFindings        string
-	roundNum                int
-	executionMS             int64
-	currentRoundID          string
-	approvalActionID        string
-	consentedSourceFindings string
-	consentedRepairFindings string
-	consentedIDs            []string
+	fixing                    bool
+	previousFindings          string
+	roundNum                  int
+	executionMS               int64
+	currentRoundID            string
+	approvalActionID          string
+	consentedSourceFindings   string
+	consentedRepairFindings   string
+	consentedRepairChecksJSON string
+	consentedIDs              []string
 }
 
 type recoveredGate struct {
@@ -506,15 +507,16 @@ func (e *Executor) resumeRecoveredAppliedFix(ctx context.Context, run *db.Run, r
 	duration := recoveredStepDuration(recovered.gate.stepResult)
 	e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, recovered.gate.step.Name(), string(types.StepStatusFixing), "", "", "", &duration)
 	skipRemaining, err := e.executeStep(ctx, recovered.gate.step, recovered.gate.stepResult, run, repo, workDir, logDir, stepExecutionState{
-		fixing:                  true,
-		previousFindings:        recovered.payload.findingsJSON,
-		roundNum:                recovered.gate.round,
-		executionMS:             duration,
-		currentRoundID:          recovered.gate.lastRoundID,
-		approvalActionID:        recovered.action.ID,
-		consentedSourceFindings: recovered.gate.findings,
-		consentedRepairFindings: recovered.payload.findingsJSON,
-		consentedIDs:            recovered.payload.findingIDs,
+		fixing:                    true,
+		previousFindings:          recovered.payload.findingsJSON,
+		roundNum:                  recovered.gate.round,
+		executionMS:               duration,
+		currentRoundID:            recovered.gate.lastRoundID,
+		approvalActionID:          recovered.action.ID,
+		consentedSourceFindings:   recovered.gate.findings,
+		consentedRepairFindings:   recovered.payload.findingsJSON,
+		consentedRepairChecksJSON: recovered.gate.durableGate.RepairChecksJSON,
+		consentedIDs:              recovered.payload.findingIDs,
 	}, circuits)
 	if err != nil {
 		return e.failRun(run, repo, err, ctx)
@@ -648,11 +650,14 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 	switch response.action {
 	case types.ActionApprove:
 		if err := e.requireResolvedBlockingRepairs(run.ID, gate.step.Name()); err != nil {
-			if dbErr := e.db.FailStepWithResult(gate.stepResult.ID, err.Error(), recoveredExitCode(gate.stepResult), duration, recoveredLogPath(gate.stepResult)); dbErr != nil {
-				slog.Warn("failed to mark recovered step as failed after rejected approval", "step", gate.step.Name(), "error", dbErr)
+			if rejectErr := e.db.RejectApproval(db.RejectApprovalInput{
+				ActionID: response.actionID, ParkedMS: time.Since(parkStart).Milliseconds(),
+				ExitCode: recoveredExitCode(gate.stepResult), DurationMS: duration, LogPath: recoveredLogPath(gate.stepResult), Error: err.Error(),
+			}); rejectErr != nil {
+				return e.failRun(run, repo, fmt.Errorf("%w; finalize rejected approval: %v", err, rejectErr), ctx)
 			}
 			e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusFailed), "", "", err.Error(), &duration)
-			return e.failRun(run, repo, err, ctx)
+			return err
 		}
 		if err := e.db.ApplyApprovalTerminal(db.ApplyApprovalTerminalInput{
 			ActionID: response.actionID, ParkedMS: time.Since(parkStart).Milliseconds(),
@@ -710,15 +715,16 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		}
 		e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusFixing), "", "", "", nil)
 		skipRemaining, err := e.executeStep(ctx, gate.step, gate.stepResult, run, repo, workDir, logDir, stepExecutionState{
-			fixing:                  true,
-			previousFindings:        payload.findingsJSON,
-			roundNum:                gate.round,
-			executionMS:             duration,
-			currentRoundID:          gate.lastRoundID,
-			approvalActionID:        response.actionID,
-			consentedSourceFindings: gate.findings,
-			consentedRepairFindings: payload.findingsJSON,
-			consentedIDs:            payload.findingIDs,
+			fixing:                    true,
+			previousFindings:          payload.findingsJSON,
+			roundNum:                  gate.round,
+			executionMS:               duration,
+			currentRoundID:            gate.lastRoundID,
+			approvalActionID:          response.actionID,
+			consentedSourceFindings:   gate.findings,
+			consentedRepairFindings:   payload.findingsJSON,
+			consentedRepairChecksJSON: gate.durableGate.RepairChecksJSON,
+			consentedIDs:              payload.findingIDs,
 		}, circuits)
 		if err != nil {
 			return e.failRun(run, repo, err, ctx)
@@ -1168,13 +1174,17 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 				recoveredOutcome = &StepOutcome{NeedsApproval: true, Findings: remaining}
 			}
 		} else if stepName != types.StepReview {
+			recoveredChecks, err := decodeDurableRepairChecks(stepName, state.consentedRepairChecksJSON, workDir, sctx.Env)
+			if err != nil {
+				return false, err
+			}
 			reserveRepairRound := func(trigger string) (*db.StepRound, error) {
 				roundNum++
 				return e.db.ReserveStepRound(sr.ID, roundNum, trigger)
 			}
 			result, err := e.repairConsentedStepFindings(
 				ctx, sctx, run, sr, stepName, state.approvalActionID,
-				state.consentedRepairFindings, state.consentedIDs, nil, reserveRepairRound,
+				state.consentedRepairFindings, state.consentedIDs, recoveredChecks, reserveRepairRound,
 			)
 			if err != nil {
 				return false, fmt.Errorf("repair recovered user-consented %s findings: %w", stepName, err)
@@ -1191,13 +1201,13 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 					return false, fmt.Errorf("clear recovered resolved %s findings: %w", stepName, err)
 				}
 				sctx.Fixing = false
-				recoveredOutcome = &StepOutcome{}
+				recoveredOutcome = &StepOutcome{RepairChecks: recoveredChecks}
 			} else {
 				if err := e.db.SetStepFindings(sr.ID, remaining); err != nil {
 					return false, fmt.Errorf("persist recovered remaining %s findings: %w", stepName, err)
 				}
 				sctx.Fixing = true
-				recoveredOutcome = &StepOutcome{NeedsApproval: true, Findings: remaining}
+				recoveredOutcome = &StepOutcome{NeedsApproval: true, Findings: remaining, RepairChecks: recoveredChecks}
 			}
 		}
 	}
@@ -1400,13 +1410,18 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		if sourceRound == nil {
 			return false, fmt.Errorf("%s approval findings are corrupt or not attributable to a completed round", stepName)
 		}
+		repairChecksJSON, checkErr := encodeDurableRepairChecks(ctx, stepName, outcome.RepairChecks, run, repo, workDir)
+		if checkErr != nil {
+			return false, fmt.Errorf("persist %s approval repair checks: %w", stepName, checkErr)
+		}
 		gate, parkErr := e.db.ParkApprovalGate(db.ParkApprovalGateInput{
-			RunID:         run.ID,
-			StepResultID:  sr.ID,
-			SourceRoundID: sourceRound.ID,
-			Status:        approvalStatus,
-			FindingsJSON:  outcome.Findings,
-			DurationMS:    executionMS,
+			RunID:            run.ID,
+			StepResultID:     sr.ID,
+			SourceRoundID:    sourceRound.ID,
+			Status:           approvalStatus,
+			FindingsJSON:     outcome.Findings,
+			RepairChecksJSON: repairChecksJSON,
+			DurationMS:       executionMS,
 		})
 		if parkErr != nil {
 			return false, fmt.Errorf("park %s approval gate: %w", stepName, parkErr)
@@ -1447,8 +1462,11 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		switch response.action {
 		case types.ActionApprove:
 			if err := e.requireResolvedBlockingRepairs(run.ID, stepName); err != nil {
-				if dbErr := e.db.FailStepWithResult(sr.ID, err.Error(), finalExitCode, executionMS, logPath); dbErr != nil {
-					slog.Warn("failed to mark step as failed after rejected approval", "step", stepName, "error", dbErr)
+				if rejectErr := e.db.RejectApproval(db.RejectApprovalInput{
+					ActionID: response.actionID, ParkedMS: time.Since(parkStart).Milliseconds(),
+					ExitCode: finalExitCode, DurationMS: executionMS, LogPath: logPath, Error: err.Error(),
+				}); rejectErr != nil {
+					return false, fmt.Errorf("%w; finalize rejected approval: %v", err, rejectErr)
 				}
 				e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFailed), "", "", err.Error(), &executionMS)
 				return false, err

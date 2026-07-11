@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -358,6 +359,55 @@ func TestReviewStep_VerifierDirtyWorktreeCannotSealCandidate(t *testing.T) {
 	}
 	if reviewed != nil {
 		t.Fatalf("reviewer mutation produced reviewed seal %+v", reviewed)
+	}
+}
+
+func TestReviewStep_MutatingVerifierErrorCannotBypassIntegrityCheck(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+			if err := os.WriteFile(filepath.Join(dir, "reviewer-mutation.txt"), []byte("not reviewed\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return nil, errors.New("reviewer transport failed")
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	_, err := (&ReviewStep{}).Execute(sctx)
+	if err == nil || !strings.Contains(err.Error(), "worktree dirty") {
+		t.Fatalf("review error = %v, want candidate-integrity failure", err)
+	}
+	if !strings.Contains(err.Error(), "reviewer transport failed") {
+		t.Fatalf("review error = %v, want underlying invocation failure retained", err)
+	}
+	reviewed, dbErr := sctx.DB.LatestSealByReason(sctx.Run.ID, "reviewed")
+	if dbErr != nil {
+		t.Fatal(dbErr)
+	}
+	if reviewed != nil {
+		t.Fatalf("mutating verifier error produced reviewed seal %+v", reviewed)
+	}
+}
+
+func TestReviewStep_MutationTakesPrecedenceOverParseError(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+			if err := os.WriteFile(filepath.Join(dir, "reviewer-mutation.txt"), []byte("not reviewed\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return &agent.Result{Output: json.RawMessage(`{"findings":`)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	if _, err := (&ReviewStep{}).Execute(sctx); err == nil || !strings.Contains(err.Error(), "worktree dirty") {
+		t.Fatalf("review error = %v, want candidate-integrity failure before parse error", err)
 	}
 }
 

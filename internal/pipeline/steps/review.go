@@ -1,7 +1,9 @@
 package steps
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -209,11 +211,18 @@ Risk assessment (after listing all findings):
 		OnChunk:    sctx.LogChunk,
 		Purpose:    "review",
 	})
+	integrityContext := *sctx
+	integrityContext.Ctx = context.WithoutCancel(sctx.Ctx)
+	integrityErr := requireUnchangedCleanCandidate(&integrityContext, candidateSHA)
+	if integrityErr != nil {
+		integrityErr = fmt.Errorf("strong review: %w", integrityErr)
+		if err != nil {
+			return nil, errors.Join(integrityErr, fmt.Errorf("agent review: %w", err))
+		}
+		return nil, integrityErr
+	}
 	if err != nil {
 		return nil, fmt.Errorf("agent review: %w", err)
-	}
-	if err := requireUnchangedCleanCandidate(sctx, candidateSHA); err != nil {
-		return nil, fmt.Errorf("strong review: %w", err)
 	}
 
 	// The routed strong review must be semantically complete even when an

@@ -1,7 +1,9 @@
 package steps
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -74,11 +76,18 @@ func (s *VerifyStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 		JSONSchema: reviewFindingsSchema,
 		OnChunk:    sctx.LogChunk,
 	})
+	integrityContext := *sctx
+	integrityContext.Ctx = context.WithoutCancel(sctx.Ctx)
+	integrityErr := requireUnchangedCleanCandidate(&integrityContext, candidateSHA)
+	if integrityErr != nil {
+		integrityErr = fmt.Errorf("verify: %w", integrityErr)
+		if err != nil {
+			return nil, errors.Join(integrityErr, fmt.Errorf("verify: aggregate verification: %w", err))
+		}
+		return nil, integrityErr
+	}
 	if err != nil {
 		return nil, fmt.Errorf("verify: aggregate verification: %w", err)
-	}
-	if err := requireUnchangedCleanCandidate(sctx, candidateSHA); err != nil {
-		return nil, fmt.Errorf("verify: %w", err)
 	}
 	// A schema-incomplete verdict is inconclusive, which must block rather than
 	// pass as verified even when an adapter claimed schema conformance.

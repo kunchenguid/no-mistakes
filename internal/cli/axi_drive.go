@@ -66,9 +66,9 @@ func newAxiRunCmd() *cobra.Command {
 		Long: "Triggers a pipeline run for the current branch and drives it. Without\n" +
 			"--yes it blocks until the first approval gate, CI-ready point, or final\n" +
 			"outcome and prints it. With --yes, the user's unattended consent drives\n" +
-			"approval gates: it sends every finding with an ID to one pipeline fix\n" +
-			"round when a gate has actionable findings, approves a fix-review or a\n" +
-			"gate with only no-op or no selectable findings, and continues until\n" +
+			"approval gates: it sends every actionable finding with an ID to one\n" +
+			"pipeline fix round, approves the resulting fix-review or a gate with only\n" +
+			"no-op or no selectable actionable findings, and continues until\n" +
 			"checks are ready or the run ends. Before each resolution it checks\n" +
 			"blocking repair lineages; if one ended unresolved or inconclusive, it\n" +
 			"aborts the run and returns an error instead of approving or retrying.\n" +
@@ -341,11 +341,11 @@ func rerunParams(repoID, branch string, skipSteps []types.StepName, intent strin
 // autoApprove is set it resolves each gate and continues; otherwise it returns
 // at the first gate so the caller can surface it for a human/agent decision.
 //
-// Auto-resolution means "agree to fix every finding": a gate with actionable
-// findings is fixed (every finding selected), and the resulting fix_review is
-// accepted; gates with only non-actionable findings are approved. Each step is
-// fixed at most once so a finding the fix cannot clear converges to an approval
-// instead of looping forever.
+// Auto-resolution means "agree to fix every actionable finding": a gate with
+// actionable findings is fixed with every actionable finding ID selected, and
+// the resulting fix_review is accepted. Gates with only no-op findings are
+// approved. Each step is fixed at most once so a finding the fix cannot clear
+// converges to an approval instead of looping forever.
 //
 // The CI step monitors an open PR until a human merges or closes it (a live
 // status the TUI shows), so it never reaches a terminal state on its own. An
@@ -441,26 +441,20 @@ func ciLogReader(p *paths.Paths) func(string) []string {
 }
 
 // gateResolution decides how --yes answers an approval gate. A gate with
-// actionable findings (anything other than purely informational "no-op") is
-// fixed with every finding selected, unless this step was already fixed once -
-// in which case the gate is approved so the run converges instead of looping on
-// a finding the fix cannot clear. Gates with only non-actionable findings, no
-// findings, or actionable findings that carry no IDs (which a fix would resolve
-// to zero selections) are approved.
+// actionable findings is fixed with every actionable finding ID selected,
+// unless this step was already fixed once - in which case the gate is approved
+// so the run converges instead of looping on a finding the fix cannot clear.
+// Gates with only non-actionable findings, no findings, or actionable findings
+// that carry no IDs (which a fix would resolve to zero selections) are approved.
 func gateResolution(gate stepView, alreadyFixed bool) (types.ApprovalAction, []string) {
 	if alreadyFixed || gate.Status == string(types.StepStatusFixReview) {
 		return types.ActionApprove, nil
 	}
 	parsed, err := types.ParseFindingsJSON(gate.FindingsJSON)
-	if err != nil || !types.HasActionableFindings(parsed) {
+	if err != nil {
 		return types.ActionApprove, nil
 	}
-	ids := make([]string, 0, len(parsed.Items))
-	for _, f := range parsed.Items {
-		if f.ID != "" {
-			ids = append(ids, f.ID)
-		}
-	}
+	ids := types.ActionableFindingIDs(parsed)
 	if len(ids) == 0 {
 		return types.ActionApprove, nil
 	}

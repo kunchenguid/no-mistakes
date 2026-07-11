@@ -539,7 +539,10 @@ func TestRunSessionsRestoresFailedResumeBeforeColdFixerFallback(t *testing.T) {
 	if got, err := os.ReadFile(filepath.Join(dir, "successful-cold-fallback.txt")); err != nil || string(got) != "successful fallback\n" {
 		t.Fatalf("successful fallback mutation = %q, err = %v", got, err)
 	}
-	for _, failed := range []string{"failed-resume-staged.txt", "failed-resume-untracked.txt", "failed-resume-after-commit.txt"} {
+	for _, failed := range []string{
+		"failed-resume-staged.txt", "failed-resume-untracked.txt", "failed-resume-after-commit.txt",
+		"failed-resume-tree", "failed-resume-tree.ignored",
+	} {
 		if _, err := os.Lstat(filepath.Join(dir, failed)); !os.IsNotExist(err) {
 			t.Fatalf("failed resume mutation %q survived cold fallback: %v", failed, err)
 		}

@@ -198,7 +198,8 @@ type lineageState struct {
 // repairCandidateSnapshot identifies the complete publishable candidate around
 // a verifier invocation. HEAD and the index tree protect committed and staged
 // state; the binary diff protects tracked worktree content; porcelain status
-// plus content hashes protect every untracked and ignored path.
+// plus a recursive filesystem fingerprint protect every untracked and ignored
+// tree's topology, types, modes, symlink targets, and leaf content.
 type repairCandidateSnapshot struct {
 	head          string
 	indexTree     string
@@ -210,8 +211,8 @@ type repairCandidateSnapshot struct {
 // repairAttemptSnapshot is the transaction boundary for one routed fixer
 // request and every concrete adapter attempt nested inside it. The retained
 // stash commit captures staged and unstaged tracked state, while the private
-// temporary tree captures every untracked and ignored path, including content,
-// symlink targets, and permission modes.
+// temporary tree recursively captures every untracked and ignored root,
+// including empty directories and directory metadata.
 type repairAttemptSnapshot struct {
 	restoreContext context.Context
 	workDir        string
@@ -472,26 +473,51 @@ func snapshotRepairUntracked(ctx context.Context, workDir, snapshotDir string) (
 
 func repairUntrackedPaths(ctx context.Context, workDir string) ([]string, error) {
 	commands := [][]string{
-		{"ls-files", "--others", "--exclude-standard", "-z"},
-		{"ls-files", "--others", "--ignored", "--exclude-standard", "-z"},
+		{"ls-files", "--others", "--exclude-standard", "--directory", "-z"},
+		{"ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"},
 	}
-	seen := map[string]struct{}{}
+	seen := map[string]bool{}
 	for _, args := range commands {
 		output, err := repairGitOutput(ctx, workDir, args...)
 		if err != nil {
 			return nil, fmt.Errorf("list untracked fixer candidate paths: %w", err)
 		}
-		for _, path := range strings.Split(string(output), "\x00") {
-			if path != "" {
-				seen[path] = struct{}{}
+		for _, rawPath := range strings.Split(string(output), "\x00") {
+			if rawPath == "" {
+				continue
 			}
+			isDir := strings.HasSuffix(rawPath, "/")
+			path := strings.TrimSuffix(rawPath, "/")
+			if !filepath.IsLocal(filepath.FromSlash(path)) {
+				return nil, fmt.Errorf("list unsafe untracked fixer candidate path %q", rawPath)
+			}
+			seen[path] = seen[path] || isDir
 		}
 	}
-	paths := make([]string, 0, len(seen))
+	candidates := make([]string, 0, len(seen))
 	for path := range seen {
-		paths = append(paths, path)
+		candidates = append(candidates, path)
 	}
-	sort.Strings(paths)
+	sort.Strings(candidates)
+
+	paths := make([]string, 0, len(candidates))
+	directoryRoots := make([]string, 0, len(candidates))
+	for _, path := range candidates {
+		covered := false
+		for _, root := range directoryRoots {
+			if strings.HasPrefix(path, root+"/") {
+				covered = true
+				break
+			}
+		}
+		if covered {
+			continue
+		}
+		paths = append(paths, path)
+		if seen[path] {
+			directoryRoots = append(directoryRoots, path)
+		}
+	}
 	return paths, nil
 }
 
@@ -523,7 +549,7 @@ func copyRepairCandidatePath(source, destination string) error {
 				return err
 			}
 		}
-		return os.Chmod(destination, info.Mode().Perm())
+		return os.Chmod(destination, info.Mode())
 	}
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("unsupported file mode %s", info.Mode())
@@ -544,7 +570,7 @@ func copyRepairCandidatePath(source, destination string) error {
 	if err := output.Close(); err != nil {
 		return err
 	}
-	return os.Chmod(destination, info.Mode().Perm())
+	return os.Chmod(destination, info.Mode())
 }
 
 func (snapshot *repairAttemptSnapshot) RestoreFailedAttempt() error {
@@ -1291,22 +1317,60 @@ func captureRepairUntrackedHash(ctx context.Context, workDir string) (string, er
 	}
 	var snapshot strings.Builder
 	for _, path := range paths {
-		info, err := os.Lstat(filepath.Join(workDir, path))
-		if err != nil {
-			return "", fmt.Errorf("inspect untracked candidate path %q: %w", path, err)
+		if err := appendRepairCandidateHash(&snapshot, workDir, path); err != nil {
+			return "", err
 		}
-		hash, err := git.Run(ctx, workDir, "hash-object", "--no-filters", "--", path)
-		if err != nil {
-			return "", fmt.Errorf("hash untracked candidate path %q: %w", path, err)
-		}
-		snapshot.WriteString(path)
-		snapshot.WriteByte(0)
-		fmt.Fprintf(&snapshot, "%#o", info.Mode())
-		snapshot.WriteByte(0)
-		snapshot.WriteString(hash)
-		snapshot.WriteByte(0)
 	}
 	return snapshot.String(), nil
+}
+
+func appendRepairCandidateHash(snapshot *strings.Builder, workDir, path string) error {
+	fullPath := filepath.Join(workDir, filepath.FromSlash(path))
+	info, err := os.Lstat(fullPath)
+	if err != nil {
+		return fmt.Errorf("inspect untracked candidate path %q: %w", path, err)
+	}
+	snapshot.WriteString(path)
+	snapshot.WriteByte(0)
+	fmt.Fprintf(snapshot, "%#o", info.Mode())
+	snapshot.WriteByte(0)
+
+	switch {
+	case info.Mode()&os.ModeSymlink != 0:
+		target, err := os.Readlink(fullPath)
+		if err != nil {
+			return fmt.Errorf("read untracked candidate symlink %q: %w", path, err)
+		}
+		snapshot.WriteString(target)
+	case info.IsDir():
+		entries, err := os.ReadDir(fullPath)
+		if err != nil {
+			return fmt.Errorf("read untracked candidate directory %q: %w", path, err)
+		}
+		for _, entry := range entries {
+			if err := appendRepairCandidateHash(snapshot, workDir, path+"/"+entry.Name()); err != nil {
+				return err
+			}
+		}
+	case info.Mode().IsRegular():
+		file, err := os.Open(fullPath)
+		if err != nil {
+			return fmt.Errorf("open untracked candidate path %q: %w", path, err)
+		}
+		hash := sha256.New()
+		if _, err := io.Copy(hash, file); err != nil {
+			_ = file.Close()
+			return fmt.Errorf("hash untracked candidate path %q: %w", path, err)
+		}
+		if err := file.Close(); err != nil {
+			return fmt.Errorf("close untracked candidate path %q: %w", path, err)
+		}
+		fmt.Fprintf(snapshot, "%x", hash.Sum(nil))
+	default:
+		return fmt.Errorf("unsupported untracked candidate path %q mode %s", path, info.Mode())
+	}
+	snapshot.WriteByte(0)
+	return nil
 }
 
 func buildBatchFixPrompt(batch []*lineageState, userIntent string, remaining int, diff string) string {

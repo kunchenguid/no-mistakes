@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -185,7 +186,7 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 		return nil, err
 	}
 
-	verifyResult, err := sctx.InvokeAgent(types.PurposeDocumentationVerification, agent.RunOpts{
+	verifyResult, verifyErr := sctx.InvokeAgent(types.PurposeDocumentationVerification, agent.RunOpts{
 		Prompt: fmt.Sprintf(
 			`Independently verify the staged documentation candidate against the code and the complete branch diff.
 
@@ -204,15 +205,25 @@ Rules:
 		JSONSchema: findingsSchema,
 		OnChunk:    sctx.LogChunk,
 	})
-	if err != nil {
-		return nil, fmt.Errorf("documentation verification: %w", err)
-	}
-	afterVerification, err := captureDocumentationCandidate(sctx)
-	if err != nil {
-		return nil, err
+	integrityContext := *sctx
+	integrityContext.Ctx = context.WithoutCancel(sctx.Ctx)
+	afterVerification, captureErr := captureDocumentationCandidate(&integrityContext)
+	if captureErr != nil {
+		integrityErr := fmt.Errorf("capture documentation candidate after verifier: %w", captureErr)
+		if verifyErr != nil {
+			return nil, errors.Join(integrityErr, fmt.Errorf("documentation verification: %w", verifyErr))
+		}
+		return nil, integrityErr
 	}
 	if afterVerification != beforeVerification {
-		return nil, fmt.Errorf("documentation verifier mutated the candidate")
+		integrityErr := fmt.Errorf("documentation verifier mutated the candidate")
+		if verifyErr != nil {
+			return nil, errors.Join(integrityErr, fmt.Errorf("documentation verification: %w", verifyErr))
+		}
+		return nil, integrityErr
+	}
+	if verifyErr != nil {
+		return nil, fmt.Errorf("documentation verification: %w", verifyErr)
 	}
 	if verifyResult == nil {
 		return nil, fmt.Errorf("documentation verifier returned no result")

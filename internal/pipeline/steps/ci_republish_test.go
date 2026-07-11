@@ -78,6 +78,70 @@ func TestCIStep_AutoFixRejectsVerifierHeadMutation(t *testing.T) {
 	}
 }
 
+func TestCIStep_MutatingVerifierErrorCannotBypassIntegrityCheck(t *testing.T) {
+	upstream, dir, baseSHA, originalHead := setupCIRepublish(t)
+	ag := &ciRepublishAgent{
+		fix: func(cwd string) error {
+			return os.WriteFile(filepath.Join(cwd, "ci-fix.txt"), []byte("fixed\n"), 0o644)
+		},
+		verify: func(cwd string) error {
+			if err := os.WriteFile(filepath.Join(cwd, "feature.txt"), []byte("verifier mutation\n"), 0o644); err != nil {
+				return err
+			}
+			return errors.New("CI verifier transport failed")
+		},
+	}
+	step, sctx, host, pr := republishContext(t, ag, upstream, dir, baseSHA, originalHead, config.Commands{})
+
+	pushed, err := step.autoFixCI(sctx, host, pr, []string{"test"}, false)
+	if err == nil || !strings.Contains(err.Error(), "CI patch changed during verification") {
+		t.Fatalf("autoFixCI error = %v, want candidate-integrity failure", err)
+	}
+	if !strings.Contains(err.Error(), "CI verifier transport failed") {
+		t.Fatalf("autoFixCI error = %v, want underlying invocation failure retained", err)
+	}
+	if pushed {
+		t.Fatal("mutating verifier error republished a candidate")
+	}
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != originalHead {
+		t.Fatalf("mutating verifier error left HEAD %s, want %s", got, originalHead)
+	}
+	if got := gitCmd(t, dir, "status", "--porcelain"); got != "" {
+		t.Fatalf("mutating verifier error left worktree changes: %q", got)
+	}
+	if got := gitCmd(t, upstream, "rev-parse", "refs/heads/feature"); got != originalHead {
+		t.Fatalf("mutating verifier error moved remote to %s, want %s", got, originalHead)
+	}
+}
+
+func TestCIStep_MutationTakesPrecedenceOverVerifierParseError(t *testing.T) {
+	upstream, dir, baseSHA, originalHead := setupCIRepublish(t)
+	ag := &ciRepublishAgent{
+		fix: func(cwd string) error {
+			return os.WriteFile(filepath.Join(cwd, "ci-fix.txt"), []byte("fixed\n"), 0o644)
+		},
+		verify: func(cwd string) error {
+			return os.WriteFile(filepath.Join(cwd, "feature.txt"), []byte("verifier mutation\n"), 0o644)
+		},
+		verifierOutput: `{"findings":`,
+	}
+	step, sctx, host, pr := republishContext(t, ag, upstream, dir, baseSHA, originalHead, config.Commands{})
+
+	pushed, err := step.autoFixCI(sctx, host, pr, []string{"test"}, false)
+	if err == nil || !strings.Contains(err.Error(), "CI patch changed during verification") {
+		t.Fatalf("autoFixCI error = %v, want candidate-integrity failure before parse error", err)
+	}
+	if pushed {
+		t.Fatal("mutating verifier parse error republished a candidate")
+	}
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != originalHead {
+		t.Fatalf("mutating verifier parse error left HEAD %s, want %s", got, originalHead)
+	}
+	if got := gitCmd(t, dir, "status", "--porcelain"); got != "" {
+		t.Fatalf("mutating verifier parse error left worktree changes: %q", got)
+	}
+}
+
 func (a *ciRepublishAgent) Close() error { return nil }
 
 func setupCIRepublish(t *testing.T) (upstream, dir, baseSHA, headSHA string) {
