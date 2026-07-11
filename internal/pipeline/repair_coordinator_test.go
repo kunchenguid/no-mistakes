@@ -95,6 +95,7 @@ type fakeRepairInvoker struct {
 	verify           func(callIdx int, lineageIDs []string) verdictSpec
 	rawVerify        func(lineageIDs []string) string
 	fixEdit          func(callIdx int)
+	verifyEdit       func(callIdx int)
 	fixError         error
 	verifyError      error
 	fixerTiers       []int
@@ -140,6 +141,9 @@ func (f *fakeRepairInvoker) Invoke(_ context.Context, req agent.InvocationReques
 	ids := make([]string, 0, len(lineageIDs))
 	for _, m := range lineageIDs {
 		ids = append(ids, m[1])
+	}
+	if f.verifyEdit != nil {
+		f.verifyEdit(f.verifyCalls)
 	}
 	spec := verdictSpec{}
 	if f.verify != nil {
@@ -1009,6 +1013,117 @@ func TestEscalateResolvesAtFixFast(t *testing.T) {
 	repairs, _ := rc.db.GetFindingRepairsByLineage(seeds[0].LineageID)
 	if len(repairs) != 1 || repairs[0].Tier != 0 || repairs[0].Status != db.RepairStatusResolved {
 		t.Fatalf("repairs = %+v, want one resolved tier-0", repairs)
+	}
+}
+
+func TestEscalateRejectsVerifierCommitWithoutResettingIt(t *testing.T) {
+	var candidateHead string
+	fake := &fakeRepairInvoker{
+		verify: func(_ int, ids []string) verdictSpec {
+			return verdictSpec{resolved: allResolved(ids)}
+		},
+	}
+	rc, seeds := repairFixture(t, fake, []types.Finding{blockingFinding("review-1", "nil deref")})
+	rc.policy.maxTier = 0
+	fake.verifyEdit = func(int) {
+		candidateHead = gitOut(t, rc.workDir, "rev-parse", "HEAD")
+		writeTestFile(t, rc.workDir, "verifier-commit.txt", "verifier mutation\n")
+		gitOut(t, rc.workDir, "add", "verifier-commit.txt")
+		gitOut(t, rc.workDir, "commit", "-m", "verifier mutation")
+	}
+
+	states, err := rc.escalateBatch(context.Background(), seeds)
+	if err == nil || !strings.Contains(err.Error(), "verifier mutated the repair candidate") {
+		t.Fatalf("escalateBatch error = %v, want verifier mutation rejection", err)
+	}
+	state := states[seeds[0].LineageID]
+	if state.resolved || !state.failed || state.verdict != db.RepairVerdictInconclusive {
+		t.Fatalf("verifier commit must fail closed as inconclusive, got %+v", state)
+	}
+	if got := gitOut(t, rc.workDir, "rev-parse", "HEAD"); got == candidateHead {
+		t.Fatal("verifier commit was silently reset")
+	}
+	storedRun, err := rc.db.GetRun(rc.run.ID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if storedRun.HeadSHA != candidateHead {
+		t.Fatalf("accepted candidate = %s, want pre-verifier candidate %s", storedRun.HeadSHA, candidateHead)
+	}
+	repairs, err := rc.db.GetFindingRepairsByLineage(seeds[0].LineageID)
+	if err != nil {
+		t.Fatalf("get repairs: %v", err)
+	}
+	if len(repairs) != 1 || repairs[0].Status != db.RepairStatusUnresolved || repairs[0].Verdict != db.RepairVerdictInconclusive {
+		t.Fatalf("durable repair = %+v, want one unresolved inconclusive row", repairs)
+	}
+	round, err := rc.db.GetStepRound(repairs[0].StepRoundID)
+	if err != nil || round == nil || round.State != db.StepRoundFailed {
+		t.Fatalf("repair round = %+v, %v; want failed", round, err)
+	}
+}
+
+func TestEscalateRejectsVerifierDirtyWorktreeWithoutCleaningIt(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*testing.T, *repairCoordinator)
+	}{
+		{
+			name: "unstaged",
+			mutate: func(t *testing.T, rc *repairCoordinator) {
+				writeTestFile(t, rc.workDir, "app.go", "package app\n\nfunc F(p *int) int { return 0 }\n")
+			},
+		},
+		{
+			name: "staged",
+			mutate: func(t *testing.T, rc *repairCoordinator) {
+				writeTestFile(t, rc.workDir, "staged-by-verifier.txt", "verifier mutation\n")
+				gitOut(t, rc.workDir, "add", "staged-by-verifier.txt")
+			},
+		},
+		{
+			name: "untracked",
+			mutate: func(t *testing.T, rc *repairCoordinator) {
+				writeTestFile(t, rc.workDir, "untracked-by-verifier.txt", "verifier mutation\n")
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeRepairInvoker{
+				verify: func(_ int, ids []string) verdictSpec {
+					return verdictSpec{resolved: allResolved(ids)}
+				},
+			}
+			rc, seeds := repairFixture(t, fake, []types.Finding{blockingFinding("review-1", "nil deref")})
+			rc.policy.maxTier = 0
+			fake.verifyEdit = func(int) {
+				tc.mutate(t, rc)
+			}
+
+			states, err := rc.escalateBatch(context.Background(), seeds)
+			if err == nil || !strings.Contains(err.Error(), "verifier mutated the repair candidate") {
+				t.Fatalf("escalateBatch error = %v, want verifier mutation rejection", err)
+			}
+			state := states[seeds[0].LineageID]
+			if state.resolved || !state.failed || state.verdict != db.RepairVerdictInconclusive {
+				t.Fatalf("dirty verifier must fail closed as inconclusive, got %+v", state)
+			}
+			if status := gitOut(t, rc.workDir, "status", "--porcelain"); status == "" {
+				t.Fatal("verifier worktree mutation was silently cleaned")
+			}
+			repairs, err := rc.db.GetFindingRepairsByLineage(seeds[0].LineageID)
+			if err != nil {
+				t.Fatalf("get repairs: %v", err)
+			}
+			if len(repairs) != 1 || repairs[0].Status != db.RepairStatusUnresolved || repairs[0].Verdict != db.RepairVerdictInconclusive {
+				t.Fatalf("durable repair = %+v, want one unresolved inconclusive row", repairs)
+			}
+			round, err := rc.db.GetStepRound(repairs[0].StepRoundID)
+			if err != nil || round == nil || round.State != db.StepRoundFailed {
+				t.Fatalf("repair round = %+v, %v; want failed", round, err)
+			}
+		})
 	}
 }
 

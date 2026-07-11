@@ -353,9 +353,9 @@ func tryRebase(ctx context.Context, sctx *pipeline.StepContext, targetRef string
 // deterministic git-state checks (no rebase in progress, no unresolved files)
 // run before an independent strong verifier adjudicates the resolution.
 // Unresolved work escalates to the next tier; an exhausted cascade or a
-// verifier that rejects or cannot conclude fails closed. The live rebase is
-// always aborted (or unwound to the pre-rebase HEAD) before returning an
-// error, so abort/remote safety and a clean worktree are preserved.
+// verifier that rejects or cannot conclude fails closed. Failed fixer
+// candidates are unwound to the pre-rebase HEAD. Verifier mutations also fail
+// closed but remain visible for diagnosis instead of being silently reset.
 func rebaseWithRepair(ctx context.Context, sctx *pipeline.StepContext, targetRef string) error {
 	skip, err := shouldSkipRebase(ctx, sctx, targetRef)
 	if err != nil {
@@ -410,9 +410,13 @@ func rebaseWithRepair(ctx context.Context, sctx *pipeline.StepContext, targetRef
 		// The branch/history is recorded only after this passes (updateHeadSHA
 		// runs in the caller once every target resolves).
 		if verifyErr := verifyConflictResolution(ctx, sctx, targetRef); verifyErr != nil {
-			// A completed rebase cannot be --abort'd; unwind to the pre-rebase
-			// HEAD so the worktree stays clean and fail closed.
-			_, _ = git.Run(ctx, sctx.WorkDir, "reset", "--hard", "ORIG_HEAD")
+			var integrityErr *rebaseVerifierIntegrityError
+			if !errors.As(verifyErr, &integrityErr) {
+				// A completed rebase cannot be --abort'd; unwind a rejected
+				// fixer candidate to the pre-rebase HEAD. Verifier mutations
+				// are deliberately left visible instead of being reset away.
+				_, _ = git.Run(ctx, sctx.WorkDir, "reset", "--hard", "ORIG_HEAD")
+			}
 			return fmt.Errorf("conflict resolution onto %s failed verification: %w", targetRef, verifyErr)
 		}
 		return nil
@@ -479,14 +483,25 @@ Return structured findings. Use severity "error" for any incorrect, unresolved, 
 	)
 	prompt += userIntentPromptSection(sctx)
 
-	res, err := sctx.InvokeAgent(types.PurposeEscalatedAggregateVerification, agent.RunOpts{
+	candidate, err := captureRebaseCandidate(ctx, sctx.WorkDir)
+	if err != nil {
+		return fmt.Errorf("snapshot completed rebase candidate: %w", err)
+	}
+	res, invokeErr := sctx.InvokeAgent(types.PurposeEscalatedAggregateVerification, agent.RunOpts{
 		Prompt:     prompt,
 		CWD:        sctx.WorkDir,
 		JSONSchema: findingsSchema,
 		OnChunk:    sctx.LogChunk,
 	})
-	if err != nil {
-		return fmt.Errorf("verifier inconclusive: %w", err)
+	verifiedCandidate, captureErr := captureRebaseCandidate(ctx, sctx.WorkDir)
+	if captureErr != nil {
+		return &rebaseVerifierIntegrityError{cause: fmt.Errorf("capture candidate after verification: %w", captureErr)}
+	}
+	if verifiedCandidate != candidate {
+		return &rebaseVerifierIntegrityError{}
+	}
+	if invokeErr != nil {
+		return fmt.Errorf("verifier inconclusive: %w", invokeErr)
 	}
 	findings, err := validateFindingsOutput(res.Output)
 	if err != nil {
@@ -496,6 +511,73 @@ Return structured findings. Use severity "error" for any incorrect, unresolved, 
 		return fmt.Errorf("verifier rejected the resolution: %s", findings.Summary)
 	}
 	return nil
+}
+
+type rebaseCandidate struct {
+	head          string
+	indexTree     string
+	status        string
+	worktreeDiff  string
+	untrackedHash string
+}
+
+type rebaseVerifierIntegrityError struct {
+	cause error
+}
+
+func (e *rebaseVerifierIntegrityError) Error() string {
+	if e.cause != nil {
+		return "verifier may have mutated the completed rebase candidate: " + e.cause.Error()
+	}
+	return "verifier mutated the completed rebase candidate"
+}
+
+func (e *rebaseVerifierIntegrityError) Unwrap() error {
+	return e.cause
+}
+
+func captureRebaseCandidate(ctx context.Context, workDir string) (rebaseCandidate, error) {
+	head, err := git.HeadSHA(ctx, workDir)
+	if err != nil {
+		return rebaseCandidate{}, fmt.Errorf("resolve HEAD: %w", err)
+	}
+	indexTree, err := git.Run(ctx, workDir, "write-tree")
+	if err != nil {
+		return rebaseCandidate{}, fmt.Errorf("capture index: %w", err)
+	}
+	status, err := git.Run(ctx, workDir, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+	if err != nil {
+		return rebaseCandidate{}, fmt.Errorf("capture worktree status: %w", err)
+	}
+	worktreeDiff, err := git.Run(ctx, workDir, "diff", "--binary", "--no-ext-diff", "--")
+	if err != nil {
+		return rebaseCandidate{}, fmt.Errorf("capture tracked worktree: %w", err)
+	}
+	untracked, err := git.Run(ctx, workDir, "ls-files", "--others", "--exclude-standard", "-z")
+	if err != nil {
+		return rebaseCandidate{}, fmt.Errorf("list untracked files: %w", err)
+	}
+	var untrackedHash strings.Builder
+	for _, path := range strings.Split(untracked, "\x00") {
+		if path == "" {
+			continue
+		}
+		hash, err := git.Run(ctx, workDir, "hash-object", "--no-filters", "--", path)
+		if err != nil {
+			return rebaseCandidate{}, fmt.Errorf("hash untracked file %q: %w", path, err)
+		}
+		untrackedHash.WriteString(path)
+		untrackedHash.WriteByte(0)
+		untrackedHash.WriteString(hash)
+		untrackedHash.WriteByte(0)
+	}
+	return rebaseCandidate{
+		head:          head,
+		indexTree:     indexTree,
+		status:        status,
+		worktreeDiff:  worktreeDiff,
+		untrackedHash: untrackedHash.String(),
+	}, nil
 }
 
 // shouldSkipRebase checks whether a rebase onto targetRef can be skipped.

@@ -11,6 +11,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/intent"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -184,6 +185,18 @@ type lineageState struct {
 	failed    bool
 	verdict   string
 	rationale string
+}
+
+// repairCandidateSnapshot identifies the complete publishable candidate around
+// a verifier invocation. HEAD and the index tree protect committed and staged
+// state; the binary diff protects tracked worktree content; porcelain status
+// plus content hashes protect every non-ignored untracked path.
+type repairCandidateSnapshot struct {
+	head          string
+	indexTree     string
+	status        string
+	trackedDiff   string
+	untrackedHash string
 }
 
 // repairSeed is a blocking root finding entering the escalation cascade.
@@ -432,11 +445,31 @@ func (rc *repairCoordinator) runTierBatch(ctx context.Context, batch []*lineageS
 	if tier >= rc.policy.maxTier {
 		vpurpose = rc.policy.finalVerifierPurpose
 	}
+	verifyPrompt := buildBatchVerifyPrompt(batch, rc.reviewDiff(ctx, rc.baseSHA))
+	beforeVerification, err := captureRepairCandidate(ctx, rc.workDir)
+	if err != nil {
+		integrityErr := fmt.Errorf("capture repair candidate before verifier launch: %w", err)
+		if persistErr := failBatch(db.RepairVerdictInconclusive, "repair candidate integrity could not be established before verifier launch"); persistErr != nil {
+			integrityErr = errors.Join(integrityErr, fmt.Errorf("record repair candidate integrity failure: %w", persistErr))
+		}
+		return nil, abortRound(integrityErr)
+	}
 	rc.logf("verifying the batch with a fresh strong reviewer...")
 	verifyResult, verifyErr := rc.sessions.InvokeRequest(ctx, rc.invoker, SessionRoleReviewer, agent.InvocationRequest{
 		Purpose: vpurpose, Scope: scope,
-		Payload: agent.RunOpts{Prompt: buildBatchVerifyPrompt(batch, rc.reviewDiff(ctx, rc.baseSHA)), CWD: rc.workDir, JSONSchema: batchVerdictSchema, OnChunk: rc.logChunk},
+		Payload: agent.RunOpts{Prompt: verifyPrompt, CWD: rc.workDir, JSONSchema: batchVerdictSchema, OnChunk: rc.logChunk},
 	}, rc.log)
+	afterVerification, candidateErr := captureRepairCandidate(ctx, rc.workDir)
+	if candidateErr != nil || afterVerification != beforeVerification {
+		integrityErr := fmt.Errorf("verifier mutated the repair candidate")
+		if candidateErr != nil {
+			integrityErr = fmt.Errorf("%w: inspect candidate after verifier: %v", integrityErr, candidateErr)
+		}
+		if persistErr := failBatch(db.RepairVerdictInconclusive, "verifier mutated the repair candidate"); persistErr != nil {
+			integrityErr = errors.Join(integrityErr, fmt.Errorf("record verifier candidate mutation: %w", persistErr))
+		}
+		return nil, abortRound(integrityErr)
+	}
 	if verifyErr != nil {
 		rc.logf("verifier failed at tier %d: %v", tier, verifyErr)
 		if err := failBatch(db.RepairVerdictInconclusive, "verifier invocation failed"); err != nil {
@@ -653,6 +686,58 @@ func isBlockingSeverity(severity string) bool {
 	return severity == "error" || severity == "warning"
 }
 
+func captureRepairCandidate(ctx context.Context, workDir string) (repairCandidateSnapshot, error) {
+	head, err := git.HeadSHA(ctx, workDir)
+	if err != nil {
+		return repairCandidateSnapshot{}, fmt.Errorf("resolve HEAD: %w", err)
+	}
+	indexTree, err := git.Run(ctx, workDir, "write-tree")
+	if err != nil {
+		return repairCandidateSnapshot{}, fmt.Errorf("capture index tree: %w", err)
+	}
+	status, err := git.Run(ctx, workDir, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+	if err != nil {
+		return repairCandidateSnapshot{}, fmt.Errorf("capture worktree status: %w", err)
+	}
+	trackedDiff, err := git.Run(ctx, workDir, "diff", "--binary", "--no-ext-diff", "HEAD", "--")
+	if err != nil {
+		return repairCandidateSnapshot{}, fmt.Errorf("capture tracked worktree diff: %w", err)
+	}
+	untrackedHash, err := captureRepairUntrackedHash(ctx, workDir)
+	if err != nil {
+		return repairCandidateSnapshot{}, err
+	}
+	return repairCandidateSnapshot{
+		head:          head,
+		indexTree:     indexTree,
+		status:        status,
+		trackedDiff:   trackedDiff,
+		untrackedHash: untrackedHash,
+	}, nil
+}
+
+func captureRepairUntrackedHash(ctx context.Context, workDir string) (string, error) {
+	paths, err := git.Run(ctx, workDir, "ls-files", "--others", "--exclude-standard", "-z")
+	if err != nil {
+		return "", fmt.Errorf("list untracked candidate paths: %w", err)
+	}
+	var snapshot strings.Builder
+	for _, path := range strings.Split(paths, "\x00") {
+		if path == "" {
+			continue
+		}
+		hash, err := git.Run(ctx, workDir, "hash-object", "--no-filters", "--", path)
+		if err != nil {
+			return "", fmt.Errorf("hash untracked candidate path %q: %w", path, err)
+		}
+		snapshot.WriteString(path)
+		snapshot.WriteByte(0)
+		snapshot.WriteString(hash)
+		snapshot.WriteByte(0)
+	}
+	return snapshot.String(), nil
+}
+
 func buildBatchFixPrompt(batch []*lineageState, userIntent string, remaining int, diff string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Fix the following %d code-review finding(s). Apply the smallest correct change for each and nothing unrelated.\n\n", len(batch))
@@ -680,7 +765,7 @@ func buildBatchFixPrompt(batch []*lineageState, userIntent string, remaining int
 
 func buildBatchVerifyPrompt(batch []*lineageState, diff string) string {
 	var b strings.Builder
-	b.WriteString("Independently verify whether each of the following code-review findings has been resolved by the latest changes. You did not write the fix; judge it fresh.\n\n")
+	b.WriteString("Independently verify whether each of the following code-review findings has been resolved by the latest changes. You did not write the fix; judge it fresh. Do not modify, stage, or commit any files.\n\n")
 	for _, st := range batch {
 		fmt.Fprintf(&b, "- lineage %s, severity %s: %s\n", st.lineageID, st.finding.Severity, st.finding.Description)
 	}

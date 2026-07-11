@@ -470,6 +470,122 @@ func TestRebaseStep_FixModeRequiresConclusiveVerifierOutput(t *testing.T) {
 	}
 }
 
+func TestRebaseStep_FixModeRejectsVerifierCommitWithoutHidingIt(t *testing.T) {
+	t.Parallel()
+	dir, upstream, baseSHA, headSHA := setupRebaseConflictRepo(t)
+
+	var fixerCandidateSHA, verifierCommitSHA string
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			if strings.Contains(opts.Prompt, "independently verifying") {
+				fixerCandidateSHA = gitCmd(t, dir, "rev-parse", "HEAD")
+				if err := os.WriteFile(filepath.Join(dir, "verifier.txt"), []byte("verifier mutation\n"), 0o644); err != nil {
+					return nil, err
+				}
+				gitCmd(t, dir, "add", "--", "verifier.txt")
+				gitCmd(t, dir, "commit", "-m", "verifier mutation")
+				verifierCommitSHA = gitCmd(t, dir, "rev-parse", "HEAD")
+				return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"verified"}`)}, nil
+			}
+			if err := resolveConflictContinue(dir); err != nil {
+				return nil, err
+			}
+			return &agent.Result{Output: json.RawMessage(`{"summary":"resolved"}`)}, nil
+		},
+	}
+
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Fixing = true
+
+	if _, err := (&RebaseStep{}).Execute(sctx); err == nil {
+		t.Fatal("expected verifier-created commit to fail closed")
+	}
+	if fixerCandidateSHA == "" || fixerCandidateSHA == headSHA {
+		t.Fatalf("fixer candidate HEAD = %q, want completed rebased candidate", fixerCandidateSHA)
+	}
+	if verifierCommitSHA == "" || verifierCommitSHA == fixerCandidateSHA {
+		t.Fatalf("verifier commit HEAD = %q, want commit after fixer candidate %s", verifierCommitSHA, fixerCandidateSHA)
+	}
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != verifierCommitSHA {
+		t.Fatalf("HEAD = %s, want visible verifier mutation %s", got, verifierCommitSHA)
+	}
+	if sctx.Run.HeadSHA != headSHA {
+		t.Fatalf("Run.HeadSHA = %s, want unchanged %s", sctx.Run.HeadSHA, headSHA)
+	}
+	storedRun, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storedRun.HeadSHA != headSHA {
+		t.Fatalf("stored Run.HeadSHA = %s, want unchanged %s", storedRun.HeadSHA, headSHA)
+	}
+}
+
+func TestRebaseStep_FixModeRejectsVerifierDirtyWorktreeWithoutHidingIt(t *testing.T) {
+	t.Parallel()
+	dir, upstream, baseSHA, headSHA := setupRebaseConflictRepo(t)
+	if err := os.WriteFile(filepath.Join(dir, "candidate-untracked.txt"), []byte("fixer candidate content\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var fixerCandidateSHA string
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			if strings.Contains(opts.Prompt, "independently verifying") {
+				fixerCandidateSHA = gitCmd(t, dir, "rev-parse", "HEAD")
+				if err := os.WriteFile(filepath.Join(dir, "candidate-untracked.txt"), []byte("verifier changed untracked content\n"), 0o644); err != nil {
+					return nil, err
+				}
+				return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"verified"}`)}, nil
+			}
+			if err := resolveConflictContinue(dir); err != nil {
+				return nil, err
+			}
+			return &agent.Result{Output: json.RawMessage(`{"summary":"resolved"}`)}, nil
+		},
+	}
+
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Fixing = true
+
+	if _, err := (&RebaseStep{}).Execute(sctx); err == nil {
+		t.Fatal("expected verifier worktree mutation to fail closed")
+	}
+	if fixerCandidateSHA == "" || fixerCandidateSHA == headSHA {
+		t.Fatalf("fixer candidate HEAD = %q, want completed rebased candidate", fixerCandidateSHA)
+	}
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != fixerCandidateSHA {
+		t.Fatalf("HEAD = %s, want visible fixer candidate %s", got, fixerCandidateSHA)
+	}
+	status := gitCmd(t, dir, "status", "--porcelain", "--untracked-files=all")
+	if !strings.Contains(status, "candidate-untracked.txt") {
+		t.Fatalf("expected verifier mutation to remain visible, got status:\n%s", status)
+	}
+	content, err := os.ReadFile(filepath.Join(dir, "candidate-untracked.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(content); got != "verifier changed untracked content\n" {
+		t.Fatalf("untracked candidate content = %q, want visible verifier mutation", got)
+	}
+	if sctx.Run.HeadSHA != headSHA {
+		t.Fatalf("Run.HeadSHA = %s, want unchanged %s", sctx.Run.HeadSHA, headSHA)
+	}
+	storedRun, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storedRun.HeadSHA != headSHA {
+		t.Fatalf("stored Run.HeadSHA = %s, want unchanged %s", storedRun.HeadSHA, headSHA)
+	}
+}
+
 func TestRebaseStep_ForkSyncsPushBranchBeforeDefaultBranch(t *testing.T) {
 	t.Parallel()
 	parent := t.TempDir()
