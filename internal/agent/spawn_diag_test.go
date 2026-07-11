@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -21,6 +22,32 @@ func TestRedactArgv_HidesPromptAndSchema(t *testing.T) {
 	for _, want := range []string{"--model", "sonnet", "-p", "--verbose", "--json-schema", "<redacted len=18>"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("redactArgv = %q, want to contain %q", got, want)
+		}
+	}
+}
+
+// TestRedactArgv_RedactsClaudeBuildArgs pins the coupling between buildArgs and
+// redactArgv: redaction hides the prompt and schema only because buildArgs
+// emits them as the flag-then-value pairs redactArgv scans for. If buildArgs
+// ever moves to a "-p=<prompt>" form or reorders these, redaction would silently
+// leak, so exercise the real argv here rather than a hand-built one.
+func TestRedactArgv_RedactsClaudeBuildArgs(t *testing.T) {
+	const prompt = "PROMPT-SENTINEL-do-not-log"
+	const schema = `{"type":"object","title":"SCHEMA-SENTINEL"}`
+
+	a := &claudeAgent{extraArgs: []string{"--model", "sonnet"}}
+	args := a.buildArgs(prompt, json.RawMessage(schema), "")
+	got := redactArgv(args)
+
+	if strings.Contains(got, prompt) {
+		t.Errorf("prompt leaked through buildArgs into %q", got)
+	}
+	if strings.Contains(got, "SCHEMA-SENTINEL") {
+		t.Errorf("schema leaked through buildArgs into %q", got)
+	}
+	for _, want := range []string{"-p", "--json-schema", "<redacted len="} {
+		if !strings.Contains(got, want) {
+			t.Errorf("redactArgv(buildArgs) = %q, want to contain %q", got, want)
 		}
 	}
 }
