@@ -143,9 +143,7 @@ Previous review findings to address:
 	// TODO(intent-conformance-C, HELD): add the deterministic, zero-LLM
 	// net-deleted-author-lines git-diff backstop for the removal-of-required
 	// class - a fixer round that net-deletes author-added lines parks
-	// regardless of intent source. Design in
-	// data/nm-conformance-lowoverhead-addendum-w4/report.md sections 5.1 (item
-	// 3) and 5.3. Held pending a captain scope decision; A + B.1 ship first.
+	// regardless of intent source. Held pending a scope decision.
 	historySection := executionContextPromptSection() + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx) + intentConformanceReviewClause(sctx)
 
 	prompt := fmt.Sprintf(

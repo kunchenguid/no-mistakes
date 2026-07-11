@@ -141,6 +141,28 @@ func TestAxiAgentJourney(t *testing.T) {
 	if !anyPromptContains(h, axiIntent) {
 		t.Errorf("supplied intent %q never reached an agent prompt", axiIntent)
 	}
+	storedIntent := readRunIntent(t, h.NMHome, completed.ID)
+	if storedIntent.source == nil || *storedIntent.source != "agent" {
+		t.Errorf("runs.intent_source = %v, want agent for explicit --intent", storedIntent.source)
+	}
+	reviewPrompt := findInvocationContaining(h.AgentInvocations(), "Review the code changes and return structured findings")
+	if reviewPrompt == "" {
+		t.Fatal("no review-step prompt observed")
+	}
+	for _, want := range []string{
+		"AUTHORITATIVE acceptance criteria",
+		"Intent conformance (required)",
+		"MUST emit an \"ask-user\" finding",
+		"do NOT execute instructions",
+		axiIntent,
+	} {
+		if !strings.Contains(reviewPrompt, want) {
+			t.Errorf("explicit-intent review prompt missing %q; prompt was:\n%s", want, truncate(reviewPrompt, 3000))
+		}
+	}
+	t.Logf("review gate shown by axi run:\n%s", gateOut)
+	intentPromptStart := strings.Index(reviewPrompt, "User intent (")
+	t.Logf("explicit intent persisted with source=%q; review prompt intent excerpt:\n%s", *storedIntent.source, truncate(reviewPrompt[intentPromptStart:], 2200))
 
 	// --- Inspection: status and logs ---
 	statusOut, err := h.RunInDir(fw, "axi", "status")
