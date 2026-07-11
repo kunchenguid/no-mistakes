@@ -229,6 +229,73 @@ func TestModel_Yolo_FixesActionableFindings(t *testing.T) {
 	}
 }
 
+func TestModel_Yolo_ResolutionMatchesAXISelectableIDContract(t *testing.T) {
+	tests := []struct {
+		name       string
+		findings   string
+		wantAction types.ApprovalAction
+		wantIDs    []string
+	}{
+		{
+			name:       "id-less auto-fix finding is approved",
+			findings:   `{"findings":[{"severity":"warning","description":"fixable but not selectable","action":"auto-fix"}],"summary":"1 issue"}`,
+			wantAction: types.ActionApprove,
+		},
+		{
+			name:       "id-less ask-user finding is approved",
+			findings:   `{"findings":[{"severity":"warning","description":"needs consent but is not selectable","action":"ask-user"}],"summary":"1 issue"}`,
+			wantAction: types.ActionApprove,
+		},
+		{
+			name:       "mixed ID and ID-less findings fix the selectable finding",
+			findings:   `{"findings":[{"id":"review-1","severity":"info","description":"selectable context","action":"no-op"},{"severity":"warning","description":"actionable but not selectable","action":"auto-fix"}],"summary":"2 findings"}`,
+			wantAction: types.ActionFix,
+			wantIDs:    []string{"review-1"},
+		},
+		{
+			name:       "no-op-only findings are approved",
+			findings:   `{"findings":[{"id":"review-1","severity":"info","description":"informational","action":"no-op"}],"summary":"1 note"}`,
+			wantAction: types.ActionApprove,
+		},
+		{
+			name:       "normal selected IDs are fixed",
+			findings:   `{"findings":[{"id":"review-1","severity":"warning","description":"first issue","action":"auto-fix"},{"id":"review-2","severity":"warning","description":"second issue","action":"ask-user"}],"summary":"2 issues"}`,
+			wantAction: types.ActionFix,
+			wantIDs:    []string{"review-1", "review-2"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sock, client, snapshot := captureRespond(t)
+			run := testRun()
+			run.Steps[0].Status = types.StepStatusAwaitingApproval
+			run.Steps[0].FindingsJSON = &tt.findings
+			m := NewModel(sock, client, run)
+			m.yoloMode = true
+
+			cmd := m.maybeAutoApproveCmd()
+			if cmd == nil {
+				t.Fatal("expected a yolo resolution command")
+			}
+			if msg := cmd(); msg != nil {
+				t.Fatalf("expected nil msg, got %#v", msg)
+			}
+
+			calls := snapshot()
+			if len(calls) != 1 {
+				t.Fatalf("respond calls = %d, want 1", len(calls))
+			}
+			if calls[0].Action != tt.wantAction {
+				t.Fatalf("action = %s, want %s", calls[0].Action, tt.wantAction)
+			}
+			if !slices.Equal(calls[0].FindingIDs, tt.wantIDs) {
+				t.Fatalf("FindingIDs = %v, want %v", calls[0].FindingIDs, tt.wantIDs)
+			}
+		})
+	}
+}
+
 func TestModel_Yolo_FixesAllActionableFindingsDespiteManualDeselection(t *testing.T) {
 	sock, client, snapshot := captureRespond(t)
 

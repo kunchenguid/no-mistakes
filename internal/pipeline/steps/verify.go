@@ -35,6 +35,24 @@ func (s *VerifyStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 		return nil, fmt.Errorf("verify: no sealed candidate to verify")
 	}
 
+	// Historical seals authorize a skip only after the live candidate is proven
+	// to be the same clean commit that the pre-Verify seal captured.
+	dirty, err := git.HasUncommittedChanges(ctx, sctx.WorkDir)
+	if err != nil {
+		return nil, fmt.Errorf("verify: inspect candidate worktree: %w", err)
+	}
+	if dirty {
+		return nil, fmt.Errorf("verify: candidate worktree is dirty")
+	}
+
+	candidateSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
+	if err != nil {
+		return nil, fmt.Errorf("verify: resolve candidate HEAD: %w", err)
+	}
+	if candidateSHA != seal.SHA {
+		return nil, fmt.Errorf("verify: candidate HEAD %s does not match sealed candidate %s", shortSHA(candidateSHA), shortSHA(seal.SHA))
+	}
+
 	// Skip only when the sealed candidate exactly matches the latest successful
 	// strong-reviewed candidate - i.e. nothing changed since the strong review.
 	reviewed, err := sctx.DB.LatestSealByReason(sctx.Run.ID, "reviewed")
@@ -49,14 +67,6 @@ func (s *VerifyStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
 	purpose := verifyPurpose(sctx)
 	sctx.Log(fmt.Sprintf("verifying candidate %s (%s)...", shortSHA(seal.SHA), purpose))
-
-	candidateSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
-	if err != nil {
-		return nil, fmt.Errorf("verify: resolve candidate HEAD: %w", err)
-	}
-	if candidateSHA != seal.SHA {
-		return nil, fmt.Errorf("verify: candidate HEAD %s does not match sealed candidate %s", shortSHA(candidateSHA), shortSHA(seal.SHA))
-	}
 
 	result, err := sctx.InvokeAgent(purpose, agent.RunOpts{
 		Prompt:     buildVerifyPrompt(sctx, baseSHA, seal, reviewed),

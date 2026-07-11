@@ -261,3 +261,79 @@ func TestStepToInfoNilReviewRoutingForLegacyReview(t *testing.T) {
 		t.Errorf("ReviewRouting = %+v, want nil for legacy review", info.ReviewRouting)
 	}
 }
+
+func TestRunToInfoTerminalRunHasNoActiveRoutingStateAfterRecovery(t *testing.T) {
+	d, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer d.Close()
+
+	repo, err := d.InsertRepo("/home/user/recovered-projection", "git@github.com:user/project.git", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := d.InsertRun(repo.ID, "feature", "abc", "def")
+	if err != nil {
+		t.Fatal(err)
+	}
+	step, err := d.InsertStepResult(run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	round, err := d.ReserveStepRound(step.ID, 1, "initial")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.StartInvocationAttempt(types.InvocationAttemptStart{
+		Purpose: types.PurposeInitialReview,
+		Role:    types.InvocationRoleVerifier,
+		Scope: types.InvocationScope{
+			Kind: types.InvocationScopePipeline, RunID: run.ID, StepResultID: step.ID, StepRoundID: round.ID,
+		},
+		CandidateKey: "review_strong:0:codex",
+		Candidate: types.InvocationCandidate{
+			Profile: "review_strong", Runner: types.RunnerCodex, Model: "gpt-5.6-sol", Effort: types.EffortHigh,
+		},
+	}); err != nil {
+		t.Fatalf("start routed attempt: %v", err)
+	}
+	if err := d.UpdateRunStatus(run.ID, types.RunCompleted); err != nil {
+		t.Fatalf("complete parent run: %v", err)
+	}
+	if _, err := d.RecoverStaleRuns("daemon restarted"); err != nil {
+		t.Fatalf("recover terminal run children: %v", err)
+	}
+
+	recoveredRun, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recoveredStep, err := d.GetStepResult(step.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := runToInfo(d, recoveredRun, []*db.StepResult{recoveredStep})
+	if err != nil {
+		t.Fatalf("project recovered run: %v", err)
+	}
+	if info.Status != types.RunCompleted {
+		t.Fatalf("run status = %s, want completed", info.Status)
+	}
+	if len(info.Steps) != 1 || info.Steps[0].ReviewRouting == nil || len(info.Steps[0].ReviewRouting.Candidates) != 1 {
+		t.Fatalf("review routing projection = %+v, want one terminal candidate", info.Steps)
+	}
+	if got := info.Steps[0].ReviewRouting.Candidates[0].Outcome; got != string(types.InvocationOutcomeInterrupted) {
+		t.Fatalf("candidate outcome = %q, want interrupted", got)
+	}
+	if info.Steps[0].RoundCount != 0 {
+		t.Fatalf("completed round count = %d, want 0 for interrupted reservation", info.Steps[0].RoundCount)
+	}
+	recoveredRound, err := d.GetStepRound(round.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recoveredRound == nil || recoveredRound.State != db.StepRoundFailed {
+		t.Fatalf("round = %+v, want failed", recoveredRound)
+	}
+}

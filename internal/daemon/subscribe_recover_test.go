@@ -430,13 +430,8 @@ func TestRecoverOnStartup_ResumesParkedRun(t *testing.T) {
 				t.Fatal(err)
 			}
 			findings := `{"findings":[{"id":"review-1","severity":"warning","description":"needs approval","action":"ask-user"}],"summary":"needs approval"}`
-			if err := d.SetStepFindings(step.ID, findings); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := d.InsertStepRound(step.ID, 1, "initial", &findings, nil, 1); err != nil {
-				t.Fatal(err)
-			}
-			if err := d.UpdateStepStatusWithDuration(step.ID, types.StepStatusAwaitingApproval, 1); err != nil {
+			round, err := d.InsertStepRound(step.ID, 1, "initial", &findings, nil, 1)
+			if err != nil {
 				t.Fatal(err)
 			}
 			if tc.demoMode {
@@ -444,7 +439,10 @@ func TestRecoverOnStartup_ResumesParkedRun(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if err := d.SetRunAwaitingAgent(run.ID); err != nil {
+			if _, err := d.ParkApprovalGate(db.ParkApprovalGateInput{
+				RunID: run.ID, StepResultID: step.ID, SourceRoundID: round.ID,
+				Status: types.StepStatusAwaitingApproval, FindingsJSON: findings, DurationMS: 1,
+			}); err != nil {
 				t.Fatal(err)
 			}
 			parkedRun, err := d.GetRun(run.ID)

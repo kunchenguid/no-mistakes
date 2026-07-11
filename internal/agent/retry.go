@@ -3,7 +3,8 @@ package agent
 import (
 	"context"
 	"errors"
-	"math/rand"
+	"fmt"
+	"math/rand/v2"
 	"regexp"
 	"strings"
 	"time"
@@ -23,7 +24,7 @@ var transientBackoff = func(ctx context.Context, attempt int) error {
 		span := int64(delay) / 2
 		if span > 0 {
 			//nolint:gosec // non-cryptographic jitter is fine here.
-			delay += time.Duration(rand.Int63n(span+1)) - delay/4
+			delay += time.Duration(rand.Int64N(span+1)) - delay/4
 		}
 	}
 	timer := time.NewTimer(delay)
@@ -47,6 +48,35 @@ func transientBackoffBaseDuration(attempt int, base time.Duration) time.Duration
 		delay *= 4
 	}
 	return delay
+}
+
+// failedAttemptRestoreError preserves both failures in its message while
+// unwrapping only to the restore failure. In particular, an operational
+// provider error from the abandoned attempt must not authorize provider
+// failover when the candidate itself could not be restored.
+type failedAttemptRestoreError struct {
+	attemptErr error
+	restoreErr error
+}
+
+func (e *failedAttemptRestoreError) Error() string {
+	return fmt.Sprintf("attempt failed (%v); restore failed: %v", e.attemptErr, e.restoreErr)
+}
+
+func (e *failedAttemptRestoreError) Unwrap() error { return e.restoreErr }
+
+// RestoreFailedAttempt runs the idempotent candidate restore installed by the
+// routing layer. Nil means either no isolation was required or restoration
+// succeeded. A non-nil result is fatal and deliberately cannot unwrap to the
+// abandoned attempt's OperationalError.
+func RestoreFailedAttempt(opts RunOpts, attemptErr error) error {
+	if attemptErr == nil || opts.AttemptIsolation == nil {
+		return nil
+	}
+	if err := opts.AttemptIsolation.RestoreFailedAttempt(); err != nil {
+		return &failedAttemptRestoreError{attemptErr: attemptErr, restoreErr: err}
+	}
+	return nil
 }
 
 // runWithRetry invokes runOnce up to maxRetries+1 times, retrying when the
@@ -77,6 +107,9 @@ func runWithRetry(
 		emitAgentAttempt(opts, name, result, err, startedAt, time.Now())
 		if err == nil {
 			return result, nil
+		}
+		if restoreErr := RestoreFailedAttempt(opts, err); restoreErr != nil {
+			return nil, restoreErr
 		}
 		label, retry := classify(err)
 		if !retry {

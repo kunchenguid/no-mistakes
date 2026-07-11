@@ -76,13 +76,13 @@ type recoveredRunPlan struct {
 	cfg     *config.Config
 	steps   []pipeline.Step
 	agent   agent.Agent
+	prefix  bool
 }
 
-func (m *RunManager) recoverableParkedRuns(ctx context.Context) []recoveredRunPlan {
+func (m *RunManager) recoverableRuns(ctx context.Context) ([]recoveredRunPlan, error) {
 	runs, err := m.db.GetActiveRuns()
 	if err != nil {
-		slog.Error("failed to list active runs for recovery", "error", err)
-		return nil
+		return nil, fmt.Errorf("list active runs for recovery: %w", err)
 	}
 	plans := make([]recoveredRunPlan, 0, len(runs))
 	branchCounts := make(map[string]int, len(runs))
@@ -101,12 +101,12 @@ func (m *RunManager) recoverableParkedRuns(ctx context.Context) []recoveredRunPl
 		}
 		plans = append(plans, *plan)
 	}
-	return plans
+	return plans, nil
 }
 
 func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*recoveredRunPlan, error) {
-	if run == nil || run.Status != types.RunRunning || run.AwaitingAgentSince == nil || run.Branch == "" {
-		return nil, fmt.Errorf("run is not a parked running run")
+	if run == nil || run.Status != types.RunRunning || run.Branch == "" {
+		return nil, fmt.Errorf("run is not an active recoverable run")
 	}
 	repo, err := m.db.GetRepo(run.RepoID)
 	if err != nil {
@@ -133,7 +133,24 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 	}
 
 	execSteps := m.steps()
-	if err := pipeline.ValidateRecoveredRun(m.db, run, execSteps); err != nil {
+	prefix := run.AwaitingAgentSince == nil
+	prefixTerminal := false
+	if prefix {
+		if err := pipeline.ValidateRecoveredPrefix(m.db, run, execSteps); err != nil {
+			return nil, err
+		}
+		results, err := m.db.GetStepsByRun(run.ID)
+		if err != nil {
+			return nil, fmt.Errorf("get recovered prefix steps: %w", err)
+		}
+		prefixTerminal = true
+		for _, result := range results {
+			if result.Status == types.StepStatusPending {
+				prefixTerminal = false
+				break
+			}
+		}
+	} else if err := pipeline.ValidateRecoveredRun(m.db, run, execSteps); err != nil {
 		return nil, err
 	}
 	cfg, err := m.loadRecoveredConfig(ctx, run, repo, workDir)
@@ -141,7 +158,7 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 		return nil, err
 	}
 	demoMode := steps.IsDemoMode()
-	if !demoMode {
+	if !demoMode && !prefixTerminal {
 		if err := cfg.ValidateRunnable(exec.LookPath); err != nil {
 			return nil, err
 		}
@@ -150,7 +167,7 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 	if demoMode {
 		recoveredAgent = agent.NewNoop()
 	}
-	if cfg.SessionReuse {
+	if cfg.SessionReuse && !prefixTerminal {
 		if err := validateRecoveredSessions(m.db, run.ID); err != nil {
 			return nil, err
 		}
@@ -163,6 +180,7 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 		cfg:     cfg,
 		steps:   execSteps,
 		agent:   recoveredAgent,
+		prefix:  prefix,
 	}, nil
 }
 
@@ -275,16 +293,22 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 			m.mu.Unlock()
 		}()
 
-		if err := executor.Resume(runCtx, plan.run, plan.repo, plan.workDir); err != nil {
+		var resumeErr error
+		if plan.prefix {
+			resumeErr = executor.ResumeRecoveredPrefix(runCtx, plan.run, plan.repo, plan.workDir)
+		} else {
+			resumeErr = executor.Resume(runCtx, plan.run, plan.repo, plan.workDir)
+		}
+		if resumeErr != nil {
 			if plan.run.Status == types.RunRunning {
-				errMsg := err.Error()
+				errMsg := resumeErr.Error()
 				plan.run.Status = types.RunFailed
 				plan.run.Error = &errMsg
 				if dbErr := m.db.UpdateRunErrorStatus(plan.run.ID, errMsg, types.RunFailed); dbErr != nil {
 					slog.Error("failed to mark recovered run failed", "run_id", plan.run.ID, "error", dbErr)
 				}
 			}
-			slog.Error("recovered pipeline failed", "run_id", plan.run.ID, "error", err)
+			slog.Error("recovered pipeline failed", "run_id", plan.run.ID, "error", resumeErr)
 		}
 		fields := telemetry.Fields{
 			"action":      "finished",

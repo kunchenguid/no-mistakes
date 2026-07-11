@@ -17,7 +17,7 @@ const Name = "no-mistakes"
 // Description is the trigger-shaped frontmatter description: what the skill
 // does and when to use it. It is the single most important field for the
 // agent's decision to load the skill, so it leads with outcomes and keywords.
-const Description = "Validate your code changes through the no-mistakes pipeline - automated code review, tests, lint, docs, push, PR, and CI - before they reach the configured push target. Use when the user asks to run no-mistakes, gate or ship or validate their changes, push safely, asks you to do a task and then validate it, or invokes /no-mistakes."
+const Description = "Validate code changes through local review, test, lint, docs, and verification gates before Push publishes the exact sealed commit, then open a PR and watch CI. Use when the user asks to run no-mistakes, gate or ship or validate their changes, push safely, asks you to do a task and then validate it, or invokes /no-mistakes."
 
 // Markdown returns the complete SKILL.md document (YAML frontmatter plus body).
 // The output is deterministic so it can be regenerated and diff-checked. It is
@@ -45,10 +45,10 @@ func Markdown() string {
 const body = `
 # no-mistakes
 
-` + "`no-mistakes`" + ` is a local gate that validates your code changes through a pipeline
-(intent, rebase, review, test, document, lint, verify, push, PR, CI) before they reach
-the configured push target. You drive it through the ` + "`no-mistakes axi`" + ` command family, which prints
-machine-readable [TOON](https://toonformat.dev) to stdout and progress to stderr.
+` + "`no-mistakes`" + ` validates code through the same ten-step pipeline: (intent, rebase, review, test, document, lint, verify, push, PR, CI).
+Local and pre-push gates through Verify must pass before Push publishes the exact sealed commit.
+PR creation and hosted CI happen after publication.
+You drive the pipeline through the ` + "`no-mistakes axi`" + ` command family, which prints machine-readable [TOON](https://toonformat.dev) to stdout and progress to stderr.
 
 When the user invokes ` + "`/no-mistakes`" + `, report the outcome at the end. If the user
 asks for something specific, translate that request into the matching ` + "`axi run`" + `
@@ -148,17 +148,15 @@ Run the pipeline and decide on its findings as they come up:
    Read its ` + "`findings`" + ` table. Each finding has an ` + "`id`" + `, ` + "`severity`" + `,
    ` + "`file`" + `, ` + "`description`" + `, and an ` + "`action`" + ` that tells you how the
    pipeline classified it:
-   - ` + "`auto-fix`" + ` - mechanical and low-risk; you can authorize the fix on
-     your own judgment by responding with ` + "`--action fix`" + `, which sends it
-     into the pipeline's routed repair cascade.
+   - ` + "`auto-fix`" + ` - objective repair work.
+     Review automatically sends every ` + "`auto-fix`" + ` finding into its routed repair cascade before presenting a gate.
    - ` + "`no-op`" + ` - informational only; it is never repaired, even when selected.
-   - ` + "`ask-user`" + ` - the finding challenges the user's deliberate intent or
-     touches product behavior. This is a call only the user can make - see
-     [Escalate ` + "`ask-user`" + ` findings](#escalate-ask-user-findings) below.
+   - ` + "`ask-user`" + ` - the finding challenges the user's deliberate intent or touches product behavior.
+     ` + "`ask-user`" + ` findings park before any fixer runs.
+     This is a call only the user can make - see [Escalate ` + "`ask-user`" + ` findings](#escalate-ask-user-findings) below.
 
-   **Blocking and ask-user review findings park for your decision** rather than
-   being silently self-fixed. (Other steps such as test and lint may auto-fix
-   within the pipeline and re-run before they ever gate.)
+   When a blocking Review lineage finishes its automatic cascade unresolved or inconclusive, a normal run stays parked for an explicit user decision.
+   Other steps such as test and lint may auto-fix within the pipeline and re-run before they ever gate.
 
    Choose one response:
    ` + "```sh" + `
@@ -237,13 +235,10 @@ review them.
 
 ## Escalate ` + "`ask-user`" + ` findings
 
-A gate whose findings are all ` + "`auto-fix`" + ` or ` + "`no-op`" + ` is safe to drive on your
-own judgment: respond with ` + "`--action fix`" + ` or ` + "`--action approve`" + ` as
-appropriate. But a finding marked
-` + "`ask-user`" + ` is a decision that belongs to the user, not you - the pipeline
-flagged it because it challenges their deliberate intent or changes product
-behavior. Do not approve, fix, or skip it on your own. Instead, stop and bring
-it to the user before you respond:
+Review handles objective ` + "`auto-fix`" + ` findings automatically before presenting a gate.
+At a Review gate, an ` + "`ask-user`" + ` finding or an unresolved blocking repair lineage requires the user's decision.
+Do not approve, fix, or skip either on your own.
+For each ` + "`ask-user`" + ` finding, stop and bring it to the user before you respond:
 
 - Relay each ` + "`ask-user`" + ` finding to them as the pipeline wrote it - its
   ` + "`id`" + `, ` + "`file`" + `, and full ` + "`description`" + ` verbatim. Do not paraphrase,
@@ -269,10 +264,8 @@ stops at ` + "`checks-passed`" + `, because a human must review and merge the PR
 Only use ` + "`--yes`" + ` when the user has asked you to drive the whole run
 without checking back.
 
-Routing repair records each blocking finding as a lineage. A lineage that
-finishes its finite repair cascade unresolved or inconclusive is not consented
-away: unattended driving aborts, and a normal gate stays parked for an
-explicit user decision.
+Routing repair records each blocking finding as a lineage.
+A lineage that finishes its finite repair cascade unresolved or inconclusive is not consented away: unattended driving aborts, and a normal run stays parked for an explicit user decision.
 
 ## Inspecting state
 
@@ -299,17 +292,16 @@ gate:
   step: review
   status: awaiting_approval
   summary: 1 ask-user decision and 1 mechanical fix
-  note: Review findings are parked for explicit consent. ask-user requires the user's decision unless --yes supplies standing consent; --yes aborts rather than accepts an unresolved blocking repair.
+  note: Review runs auto-fix cascades before a gate; ask-user findings and unresolved blocking repair lineages park for explicit user decision; --yes aborts rather than accepts an unresolved blocking repair.
   findings[2]{id,severity,file,action,description}:
     r1,warning,internal/pipeline/executor.go,auto-fix,Error from os.Remove is ignored
     r2,error,cmd/no-mistakes/main.go,ask-user,New --force flag bypasses the confirm prompt
 help[6]: Run ` + "`no-mistakes axi respond --action approve`" + ` to accept this step and continue,Run ` + "`no-mistakes axi respond --action fix --findings <ids>`" + ` to have the pipeline fix the selected findings (do not edit files yourself),Run ` + "`no-mistakes axi respond --action skip`" + ` to skip this step,Run ` + "`no-mistakes axi logs --step review --full`" + ` to read the full step log,"A long-running call is working, not stalled - background it if your harness needs to, but the run never advances past a gate on its own. Read every return; on a ` + "`gate:`" + `, respond; loop until an ` + "`outcome:`" + `.","When you make an additional fix after a gate round has already produced fix commits, commit it on top of the existing branch and run ` + "`no-mistakes axi run --intent \\\"...\\\"`" + ` with the original user intent. Never abort-and-restart, reset the branch, or open a new branch in a way that drops prior gate-fix commits. A fresh run re-validates the branch's current state, so already-resolved findings do not re-surface."
 ` + "```" + `
 
-Read the ` + "`action`" + ` column per row: decide ` + "`r1`" + ` (auto-fix) on your own
-judgment - ` + "`respond --action fix --findings r1`" + ` hands it to the pipeline to
-fix - but stop and escalate ` + "`r2`" + ` (ask-user) to the user before responding. A
-final state
+At this Review gate, ` + "`r1`" + ` is an unresolved blocking repair lineage and ` + "`r2`" + ` requires consent.
+Stop and escalate both findings to the user before responding.
+A final state
 instead shows ` + "`outcome: <checks-passed|passed|failed|cancelled>`" + ` with no
 ` + "`findings`" + ` table. Field names and exact columns can vary by step and version,
 so read the actual ` + "`findings`" + ` header rather than assuming this layout.

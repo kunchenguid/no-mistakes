@@ -25,7 +25,7 @@ func TestExecutor_ApprovalFix(t *testing.T) {
 		fn: func(sctx *StepContext) (*StepOutcome, error) {
 			callCount++
 			if callCount == 1 {
-				return &StepOutcome{NeedsApproval: true, Findings: `{"issues":["bug"]}`}, nil
+				return &StepOutcome{NeedsApproval: true, Findings: `{"findings":[{"id":"review-1","severity":"warning","description":"bug","action":"ask-user"}],"summary":"one"}`}, nil
 			}
 			// After fix, re-evaluate passes
 			return &StepOutcome{NeedsApproval: false, ExitCode: 0}, nil
@@ -138,16 +138,14 @@ func TestExecutor_ResumeRestoresParkedGateAndReviewSessions(t *testing.T) {
 		t.Fatal(err)
 	}
 	findings := `{"findings":[{"id":"review-1","severity":"warning","description":"needs a fix","action":"ask-user"}],"summary":"one issue"}`
-	if err := database.SetStepFindings(stepResult.ID, findings); err != nil {
+	round, err := database.InsertStepRound(stepResult.ID, 1, "initial", &findings, nil, 25)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := database.InsertStepRound(stepResult.ID, 1, "initial", &findings, nil, 25); err != nil {
-		t.Fatal(err)
-	}
-	if err := database.UpdateStepStatusWithDuration(stepResult.ID, types.StepStatusAwaitingApproval, 25); err != nil {
-		t.Fatal(err)
-	}
-	if err := database.SetRunAwaitingAgent(run.ID); err != nil {
+	if _, err := database.ParkApprovalGate(db.ParkApprovalGateInput{
+		RunID: run.ID, StepResultID: stepResult.ID, SourceRoundID: round.ID,
+		Status: types.StepStatusAwaitingApproval, FindingsJSON: findings, DurationMS: 25,
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := database.UpsertRunAgentSession(run.ID, string(SessionRoleReviewer), "fake", "reviewer-session"); err != nil {
@@ -275,10 +273,10 @@ func TestExecutorRecoveredGateUsesReviewSourceRoundAfterRepairFindings(t *testin
 	if err := database.CompleteReservedStepRound(repair.ID, &currentFindings, nil, 10); err != nil {
 		t.Fatal(err)
 	}
-	if err := database.UpdateStepStatusWithDuration(step.ID, types.StepStatusAwaitingApproval, 20); err != nil {
-		t.Fatal(err)
-	}
-	if err := database.SetRunAwaitingAgent(run.ID); err != nil {
+	if _, err := database.ParkApprovalGate(db.ParkApprovalGateInput{
+		RunID: run.ID, StepResultID: step.ID, SourceRoundID: source.ID,
+		Status: types.StepStatusAwaitingApproval, FindingsJSON: currentFindings, DurationMS: 20,
+	}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -397,13 +395,10 @@ func TestExecutor_ResumeRestoresNonReviewCompositeFindingGate(t *testing.T) {
 				consentID,
 				consentDescription,
 			)
-			if err := database.SetStepFindings(stepResult.ID, compositeFindings); err != nil {
-				t.Fatal(err)
-			}
-			if err := database.UpdateStepStatusWithDuration(stepResult.ID, types.StepStatusAwaitingApproval, 20); err != nil {
-				t.Fatal(err)
-			}
-			if err := database.SetRunAwaitingAgent(run.ID); err != nil {
+			if _, err := database.ParkApprovalGate(db.ParkApprovalGateInput{
+				RunID: run.ID, StepResultID: stepResult.ID, SourceRoundID: repairRound.ID,
+				Status: types.StepStatusAwaitingApproval, FindingsJSON: compositeFindings, DurationMS: 20,
+			}); err != nil {
 				t.Fatal(err)
 			}
 			run, err = database.GetRun(run.ID)
@@ -476,17 +471,19 @@ func TestExecutorRecoveredNonReviewCompositeGateRejectsCorruptOrUnownedFindings(
 				t.Fatal(err)
 			}
 			initialFindings := `{"findings":[{"id":"test-original","severity":"error","description":"test failed","action":"auto-fix"}],"summary":"initial failure"}`
-			if _, err := database.InsertStepRound(stepResult.ID, 1, "initial", &initialFindings, nil, 10); err != nil {
+			initialRound, err := database.InsertStepRound(stepResult.ID, 1, "initial", &initialFindings, nil, 10)
+			if err != nil {
 				t.Fatal(err)
 			}
-			if err := database.SetStepFindings(stepResult.ID, test.findings); err != nil {
-				t.Fatal(err)
-			}
-			if err := database.UpdateStepStatusWithDuration(stepResult.ID, types.StepStatusAwaitingApproval, 10); err != nil {
-				t.Fatal(err)
-			}
-			if err := database.SetRunAwaitingAgent(run.ID); err != nil {
-				t.Fatal(err)
+			_, parkErr := database.ParkApprovalGate(db.ParkApprovalGateInput{
+				RunID: run.ID, StepResultID: stepResult.ID, SourceRoundID: initialRound.ID,
+				Status: types.StepStatusAwaitingApproval, FindingsJSON: test.findings, DurationMS: 10,
+			})
+			if parkErr != nil {
+				if test.name == "corrupt" {
+					return
+				}
+				t.Fatal(parkErr)
 			}
 
 			executor := NewExecutor(database, p, nil, nil, []Step{newPassStep(types.StepTest)}, nil)
@@ -548,14 +545,15 @@ func TestExecutorRecoveredReviewGateRejectsCorruptOrUnownedFindings(t *testing.T
 			if err := database.CompleteReservedStepRound(round.ID, &initialFindings, nil, 10); err != nil {
 				t.Fatal(err)
 			}
-			if err := database.SetStepFindings(stepResult.ID, test.findings); err != nil {
-				t.Fatal(err)
-			}
-			if err := database.UpdateStepStatusWithDuration(stepResult.ID, types.StepStatusAwaitingApproval, 10); err != nil {
-				t.Fatal(err)
-			}
-			if err := database.SetRunAwaitingAgent(run.ID); err != nil {
-				t.Fatal(err)
+			_, parkErr := database.ParkApprovalGate(db.ParkApprovalGateInput{
+				RunID: run.ID, StepResultID: stepResult.ID, SourceRoundID: round.ID,
+				Status: types.StepStatusAwaitingApproval, FindingsJSON: test.findings, DurationMS: 10,
+			})
+			if parkErr != nil {
+				if test.name == "corrupt" {
+					return
+				}
+				t.Fatal(parkErr)
 			}
 
 			executor := NewExecutor(database, p, nil, nil, []Step{newPassStep(types.StepReview)}, nil)
@@ -579,9 +577,7 @@ func TestExecutor_ResumeRejectsApprovalWithUnresolvedRepair(t *testing.T) {
 		t.Fatal(err)
 	}
 	findings := `{"findings":[{"id":"review-1","severity":"error","description":"unresolved","action":"ask-user"}],"summary":"one issue"}`
-	if err := database.SetStepFindings(stepResult.ID, findings); err != nil {
-		t.Fatal(err)
-	}
+
 	round, err := database.InsertStepRound(stepResult.ID, 1, "initial", &findings, nil, 25)
 	if err != nil {
 		t.Fatal(err)
@@ -592,10 +588,10 @@ func TestExecutor_ResumeRejectsApprovalWithUnresolvedRepair(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := database.UpdateStepStatusWithDuration(stepResult.ID, types.StepStatusAwaitingApproval, 25); err != nil {
-		t.Fatal(err)
-	}
-	if err := database.SetRunAwaitingAgent(run.ID); err != nil {
+	if _, err := database.ParkApprovalGate(db.ParkApprovalGateInput{
+		RunID: run.ID, StepResultID: stepResult.ID, SourceRoundID: round.ID,
+		Status: types.StepStatusAwaitingApproval, FindingsJSON: findings, DurationMS: 25,
+	}); err != nil {
 		t.Fatal(err)
 	}
 	run, err = database.GetRun(run.ID)

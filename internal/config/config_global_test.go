@@ -301,3 +301,18 @@ func TestDefaultConfigYAML_MatchesGoDefaults(t *testing.T) {
 		t.Errorf("YAML session_reuse = %v, Go default = true", raw.SessionReuse)
 	}
 }
+
+func TestDefaultConfigYAML_DocumentsRoleScopedSessionReuse(t *testing.T) {
+	for _, want := range []string{
+		"one durable agent session per run for the review loop",
+		"Roles never share a session.",
+		"Set false to force every review-loop invocation to start fresh.",
+	} {
+		if !strings.Contains(defaultConfigYAML, want) {
+			t.Errorf("default config session guidance missing %q", want)
+		}
+	}
+	if strings.Contains(defaultConfigYAML, "other agents run cold") {
+		t.Error("default config advertises unsupported runner behavior")
+	}
+}

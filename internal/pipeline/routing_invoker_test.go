@@ -3,6 +3,10 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
@@ -16,6 +20,7 @@ type recordingRoutedAgent struct {
 	opts   agent.RunOpts
 	result *agent.Result
 	err    error
+	runFn  func(agent.RunOpts) (*agent.Result, error)
 }
 
 func (a *recordingRoutedAgent) Name() string { return "recording" }
@@ -23,6 +28,9 @@ func (a *recordingRoutedAgent) Close() error { return nil }
 func (a *recordingRoutedAgent) Run(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
 	a.calls++
 	a.opts = opts
+	if a.runFn != nil {
+		return a.runFn(opts)
+	}
 	if a.result == nil && a.err == nil {
 		return &agent.Result{}, nil
 	}
@@ -632,5 +640,284 @@ func TestRoutingInvokerPropagatesEveryRegisteredPurposeRoleToNativeLaunch(t *tes
 				t.Fatalf("native role = %q, want registry-derived %q", native.opts.Role, definition.Role)
 			}
 		})
+	}
+}
+
+type routedCandidateState struct {
+	head             string
+	headRef          string
+	indexTree        string
+	status           string
+	trackedContent   string
+	untrackedContent string
+	untrackedMode    os.FileMode
+	untrackedLink    string
+}
+
+func seedRoutedCandidateState(t *testing.T) (string, routedCandidateState) {
+	t.Helper()
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+	writeTestFile(t, dir, "README.md", "legitimate staged\n")
+	execGit(t, dir, "add", "README.md")
+	writeTestFile(t, dir, "README.md", "legitimate unstaged\n")
+	untracked := filepath.Join(dir, "legitimate-untracked.sh")
+	if err := os.WriteFile(untracked, []byte("#!/bin/sh\necho legitimate\n"), 0o751); err != nil {
+		t.Fatal(err)
+	}
+	linkTarget := ""
+	if runtime.GOOS != "windows" {
+		linkTarget = "legitimate-untracked.sh"
+		if err := os.Symlink(linkTarget, filepath.Join(dir, "legitimate-link")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	info, err := os.Stat(untracked)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir, routedCandidateState{
+		head:             gitOut(t, dir, "rev-parse", "HEAD"),
+		headRef:          gitOut(t, dir, "rev-parse", "--symbolic-full-name", "HEAD"),
+		indexTree:        gitOut(t, dir, "write-tree"),
+		status:           gitOut(t, dir, "status", "--porcelain=v1", "--untracked-files=all"),
+		trackedContent:   "legitimate unstaged\n",
+		untrackedContent: "#!/bin/sh\necho legitimate\n",
+		untrackedMode:    info.Mode().Perm(),
+		untrackedLink:    linkTarget,
+	}
+}
+
+func assertRoutedCandidateState(t *testing.T, dir string, want routedCandidateState) {
+	t.Helper()
+	assertRoutedCandidateBase(t, dir, want)
+	if got := gitOut(t, dir, "status", "--porcelain=v1", "--untracked-files=all"); got != want.status {
+		t.Fatalf("status after failed attempt:\n%s\nwant:\n%s", got, want.status)
+	}
+}
+
+func assertRoutedCandidateBase(t *testing.T, dir string, want routedCandidateState) {
+	t.Helper()
+	if got := gitOut(t, dir, "rev-parse", "HEAD"); got != want.head {
+		t.Fatalf("HEAD = %s, want %s", got, want.head)
+	}
+	if got := gitOut(t, dir, "rev-parse", "--symbolic-full-name", "HEAD"); got != want.headRef {
+		t.Fatalf("HEAD ref = %q, want %q", got, want.headRef)
+	}
+	if got := gitOut(t, dir, "write-tree"); got != want.indexTree {
+		t.Fatalf("index tree = %s, want %s", got, want.indexTree)
+	}
+	tracked, err := os.ReadFile(filepath.Join(dir, "README.md"))
+	if err != nil || string(tracked) != want.trackedContent {
+		t.Fatalf("tracked content = %q, err = %v, want %q", tracked, err, want.trackedContent)
+	}
+	untrackedPath := filepath.Join(dir, "legitimate-untracked.sh")
+	untracked, err := os.ReadFile(untrackedPath)
+	if err != nil || string(untracked) != want.untrackedContent {
+		t.Fatalf("untracked content = %q, err = %v, want %q", untracked, err, want.untrackedContent)
+	}
+	info, err := os.Stat(untrackedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != want.untrackedMode {
+		t.Fatalf("untracked mode = %o, want %o", got, want.untrackedMode)
+	}
+	if want.untrackedLink != "" {
+		target, err := os.Readlink(filepath.Join(dir, "legitimate-link"))
+		if err != nil || target != want.untrackedLink {
+			t.Fatalf("untracked symlink target = %q, err = %v, want %q", target, err, want.untrackedLink)
+		}
+	}
+}
+
+func mutateFailedRoutedCandidate(t *testing.T, dir, label string) {
+	t.Helper()
+	writeTestFile(t, dir, "README.md", label+" tracked mutation\n")
+	writeTestFile(t, dir, label+"-staged.txt", label+" staged\n")
+	writeTestFile(t, dir, label+"-untracked.txt", label+" untracked\n")
+	if err := os.WriteFile(filepath.Join(dir, "legitimate-untracked.sh"), []byte(label+" corrupted\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(dir, "legitimate-untracked.sh"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" {
+		if err := os.Remove(filepath.Join(dir, "legitimate-link")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(label+"-untracked.txt", filepath.Join(dir, "legitimate-link")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	execGit(t, dir, "add", "README.md", label+"-staged.txt", "legitimate-untracked.sh")
+	execGit(t, dir, "commit", "-m", label+" failed attempt")
+	execGit(t, dir, "checkout", "--detach", "HEAD")
+	writeTestFile(t, dir, label+"-after-commit.txt", label+" after commit\n")
+}
+
+func TestRoutingInvokerRestoresFailedProviderBeforeBackupAndCommitsOnlySuccessfulMutation(t *testing.T) {
+	database, _, run, _ := setupTest(t)
+	scope := reservedReviewScope(t, database, run)
+	dir, before := seedRoutedCandidateState(t)
+
+	codex := &recordingRoutedAgent{runFn: func(opts agent.RunOpts) (*agent.Result, error) {
+		mutateFailedRoutedCandidate(t, opts.CWD, "failed-codex")
+		return nil, opError()
+	}}
+	claude := &recordingRoutedAgent{runFn: func(opts agent.RunOpts) (*agent.Result, error) {
+		assertRoutedCandidateState(t, opts.CWD, before)
+		writeTestFile(t, opts.CWD, "successful-claude.txt", "successful backup\n")
+		return &agent.Result{Output: []byte(`{"summary":"successful backup"}`)}, nil
+	}}
+	ri := newRoutingInvoker(config.DefaultRoutingConfig(), database, newProviderCircuits())
+	ri.newAgent = perRunner(codex, claude)
+
+	if _, err := ri.Invoke(context.Background(), agent.InvocationRequest{
+		Purpose: types.PurposeStructuredFindingRepair,
+		Scope:   scope,
+		Payload: agent.RunOpts{Prompt: "repair", CWD: dir},
+	}); err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	assertRoutedCandidateBase(t, dir, before)
+	if _, err := os.Stat(filepath.Join(dir, "successful-claude.txt")); err != nil {
+		t.Fatalf("successful backup mutation missing: %v", err)
+	}
+	for _, failed := range []string{"failed-codex-staged.txt", "failed-codex-untracked.txt", "failed-codex-after-commit.txt"} {
+		if _, err := os.Lstat(filepath.Join(dir, failed)); !os.IsNotExist(err) {
+			t.Fatalf("failed provider mutation %q survived: %v", failed, err)
+		}
+	}
+	execGit(t, dir, "add", "-A")
+	execGit(t, dir, "commit", "-m", "accepted repair")
+	names := gitOut(t, dir, "show", "--format=", "--name-only", "HEAD")
+	if !strings.Contains(names, "successful-claude.txt") || strings.Contains(names, "failed-codex") {
+		t.Fatalf("accepted repair commit attribution = %q", names)
+	}
+}
+
+func TestRoutingInvokerRestoresExactCandidateWhenEveryProviderFails(t *testing.T) {
+	database, _, run, _ := setupTest(t)
+	scope := reservedReviewScope(t, database, run)
+	dir, before := seedRoutedCandidateState(t)
+
+	codex := &recordingRoutedAgent{runFn: func(opts agent.RunOpts) (*agent.Result, error) {
+		mutateFailedRoutedCandidate(t, opts.CWD, "failed-codex")
+		return nil, opError()
+	}}
+	claude := &recordingRoutedAgent{runFn: func(opts agent.RunOpts) (*agent.Result, error) {
+		assertRoutedCandidateState(t, opts.CWD, before)
+		mutateFailedRoutedCandidate(t, opts.CWD, "failed-claude")
+		return nil, opError()
+	}}
+	ri := newRoutingInvoker(config.DefaultRoutingConfig(), database, newProviderCircuits())
+	ri.newAgent = perRunner(codex, claude)
+
+	_, err := ri.Invoke(context.Background(), agent.InvocationRequest{
+		Purpose: types.PurposeStructuredFindingRepair,
+		Scope:   scope,
+		Payload: agent.RunOpts{Prompt: "repair", CWD: dir},
+	})
+	var unavailable *agent.ProfileUnavailableError
+	if !errors.As(err, &unavailable) {
+		t.Fatalf("error = %v, want ProfileUnavailableError", err)
+	}
+	assertRoutedCandidateState(t, dir, before)
+	for _, failed := range []string{
+		"failed-codex-staged.txt", "failed-codex-untracked.txt", "failed-codex-after-commit.txt",
+		"failed-claude-staged.txt", "failed-claude-untracked.txt", "failed-claude-after-commit.txt",
+	} {
+		if _, err := os.Lstat(filepath.Join(dir, failed)); !os.IsNotExist(err) {
+			t.Fatalf("failed provider mutation %q survived final error: %v", failed, err)
+		}
+	}
+}
+
+func TestRoutingInvokerRestoresClaudeStructuredOutputRetryBeforeSuccess(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX fake Claude executable")
+	}
+	database, _, run, _ := setupTest(t)
+	scope := reservedReviewScope(t, database, run)
+	dir, before := seedRoutedCandidateState(t)
+	countPath := filepath.Join(t.TempDir(), "attempt-count")
+	t.Setenv("NM_ATTEMPT_COUNT", countPath)
+	script := filepath.Join(t.TempDir(), "claude")
+	contents := `#!/bin/sh
+count=0
+if [ -f "$NM_ATTEMPT_COUNT" ]; then count=$(cat "$NM_ATTEMPT_COUNT"); fi
+count=$((count + 1))
+printf '%s' "$count" > "$NM_ATTEMPT_COUNT"
+if [ "$count" -eq 1 ]; then
+  printf '%s\n' 'failed structured retry' > "$PWD/failed-structured.txt"
+  printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id":"failed-session"}'
+  exit 0
+fi
+if [ -e "$PWD/failed-structured.txt" ]; then
+  printf '%s\n' '{"type":"result","subtype":"error","is_error":true,"result":"failed mutation survived"}'
+  exit 0
+fi
+printf '%s\n' 'successful structured retry' > "$PWD/successful-structured.txt"
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id":"successful-session","structured_output":{"summary":"successful retry"}}'
+`
+	if err := os.WriteFile(script, []byte(contents), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	routing := config.DefaultRoutingConfig()
+	profile := routing.Profiles[config.ProfileFixFast]
+	profile.Candidates = []config.Candidate{{Runner: types.RunnerClaude, Model: "claude-sonnet-5", Effort: types.EffortMedium}}
+	routing.Profiles[config.ProfileFixFast] = profile
+	runner := routing.Runners[types.RunnerClaude]
+	runner.Executable = script
+	routing.Runners[types.RunnerClaude] = runner
+	ri := newRoutingInvoker(routing, database, newProviderCircuits())
+
+	result, err := ri.Invoke(context.Background(), agent.InvocationRequest{
+		Purpose: types.PurposeStructuredFindingRepair,
+		Scope:   scope,
+		Payload: agent.RunOpts{Prompt: "repair", CWD: dir, JSONSchema: commitSummarySchemaJSON},
+	})
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if result == nil || string(result.Output) != `{"summary":"successful retry"}` {
+		t.Fatalf("result = %+v", result)
+	}
+	assertRoutedCandidateBase(t, dir, before)
+	if _, err := os.Lstat(filepath.Join(dir, "failed-structured.txt")); !os.IsNotExist(err) {
+		t.Fatalf("failed structured-output mutation survived retry: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(dir, "successful-structured.txt")); err != nil || string(got) != "successful structured retry\n" {
+		t.Fatalf("successful structured-output mutation = %q, err = %v", got, err)
+	}
+}
+
+func TestRoutingInvokerRestoresFailedFixerAfterCallerCancellation(t *testing.T) {
+	database, _, run, _ := setupTest(t)
+	scope := reservedReviewScope(t, database, run)
+	dir, before := seedRoutedCandidateState(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	codex := &recordingRoutedAgent{runFn: func(opts agent.RunOpts) (*agent.Result, error) {
+		mutateFailedRoutedCandidate(t, opts.CWD, "cancelled-codex")
+		cancel()
+		return nil, context.Canceled
+	}}
+	ri := newRoutingInvoker(config.DefaultRoutingConfig(), database, newProviderCircuits())
+	ri.newAgent = perRunner(codex, &recordingRoutedAgent{})
+
+	_, err := ri.Invoke(ctx, agent.InvocationRequest{
+		Purpose: types.PurposeStructuredFindingRepair,
+		Scope:   scope,
+		Payload: agent.RunOpts{Prompt: "repair", CWD: dir},
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context cancellation", err)
+	}
+	assertRoutedCandidateState(t, dir, before)
+	for _, failed := range []string{"cancelled-codex-staged.txt", "cancelled-codex-untracked.txt", "cancelled-codex-after-commit.txt"} {
+		if _, err := os.Lstat(filepath.Join(dir, failed)); !os.IsNotExist(err) {
+			t.Fatalf("cancelled fixer mutation %q survived: %v", failed, err)
+		}
 	}
 }

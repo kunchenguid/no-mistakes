@@ -209,3 +209,118 @@ func TestPushStep_RefusesChangedHead(t *testing.T) {
 		t.Fatal("expected push to refuse a HEAD that no longer matches the seal")
 	}
 }
+
+func TestPushStep_PublishesSealedSHAWhenHeadMovesBeforeNormalPush(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir, baseSHA, sealedSHA := setupGitRepo(t)
+	if err := os.WriteFile(filepath.Join(dir, "raced.txt"), []byte("not verified"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "unsealed race winner")
+	racedSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "reset", "--hard", sealedSHA)
+	armHeadMoveOnNextPush(t, racedSHA)
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, baseSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "refs/heads/feature"
+	if _, err := sctx.DB.CreateSeal(sctx.Run.ID, sealedSHA, "pre_verify"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := (&PushStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != racedSHA {
+		t.Fatalf("race seam did not move HEAD: got %s, want %s", got, racedSHA)
+	}
+	publishedSHA := gitCmd(t, upstream, "rev-parse", "refs/heads/feature")
+	if publishedSHA != sealedSHA {
+		t.Fatalf("published SHA = %s, want sealed SHA %s", publishedSHA, sealedSHA)
+	}
+	if sctx.Run.HeadSHA != publishedSHA {
+		t.Fatalf("Run.HeadSHA = %s, want published SHA %s", sctx.Run.HeadSHA, publishedSHA)
+	}
+	dbRun, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dbRun.HeadSHA != publishedSHA {
+		t.Fatalf("DB HeadSHA = %s, want published SHA %s", dbRun.HeadSHA, publishedSHA)
+	}
+}
+
+func TestPushStep_PublishesSealedSHAWhenHeadMovesBeforeForcePush(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir, baseSHA, previousSHA := setupGitRepo(t)
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	gitCmd(t, dir, "reset", "--hard", baseSHA)
+	if err := os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("verified rewrite"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "sealed rewrite")
+	sealedSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	if err := os.WriteFile(filepath.Join(dir, "raced.txt"), []byte("not verified"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "unsealed race winner")
+	racedSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "reset", "--hard", sealedSHA)
+	armHeadMoveOnNextPush(t, racedSHA)
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, previousSHA, previousSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "refs/heads/feature"
+	if _, err := sctx.DB.CreateSeal(sctx.Run.ID, sealedSHA, "pre_verify"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := (&PushStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != racedSHA {
+		t.Fatalf("race seam did not move HEAD: got %s, want %s", got, racedSHA)
+	}
+	publishedSHA := gitCmd(t, upstream, "rev-parse", "refs/heads/feature")
+	if publishedSHA != sealedSHA {
+		t.Fatalf("published SHA = %s, want sealed SHA %s", publishedSHA, sealedSHA)
+	}
+	if sctx.Run.HeadSHA != publishedSHA {
+		t.Fatalf("Run.HeadSHA = %s, want published SHA %s", sctx.Run.HeadSHA, publishedSHA)
+	}
+	dbRun, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dbRun.HeadSHA != publishedSHA {
+		t.Fatalf("DB HeadSHA = %s, want published SHA %s", dbRun.HeadSHA, publishedSHA)
+	}
+}
+
+func armHeadMoveOnNextPush(t *testing.T, raceSHA string) {
+	t.Helper()
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	binDir := fakeCLIBinDir(t)
+	linkTestBinary(t, binDir, "git")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_CLI_MODE", "git-move-head-on-push")
+	t.Setenv("FAKE_CLI_REAL_GIT", realGit)
+	t.Setenv("FAKE_CLI_RACE_SHA", raceSHA)
+}

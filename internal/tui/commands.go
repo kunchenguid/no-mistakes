@@ -74,11 +74,12 @@ func (m Model) rerunCmd(requestID uint64) tea.Cmd {
 }
 
 // maybeAutoApproveCmd auto-resolves the current awaiting step when yolo mode is
-// on, returning nil otherwise. Yolo means "agree to fix every finding": a gate
-// whose findings are actionable gets a fix request (all findings selected),
-// while a gate with only non-actionable (no-op) findings - or none at all - is
-// approved as-is. A step is fixed at most once; the fix re-runs the step and
-// re-enters the gate as a fix_review, which yolo then approves so the pipeline
+// on, returning nil otherwise. Yolo means "agree to fix every selectable
+// finding": a gate whose findings are actionable gets a fix request only when
+// at least one finding has an ID, while a gate with only non-actionable (no-op)
+// findings, no selectable findings, or no findings at all is approved as-is.
+// A step is fixed at most once; the fix re-runs the step and re-enters the gate
+// as a fix_review, which yolo then approves so the pipeline
 // runs to completion without looping. Each terminal action fires once so
 // duplicate events while waiting for the round-trip don't resend it.
 func (m Model) maybeAutoApproveCmd() tea.Cmd {
@@ -90,9 +91,11 @@ func (m Model) maybeAutoApproveCmd() tea.Cmd {
 		return nil
 	}
 	if step.Status != types.StepStatusFixReview && !m.yoloFixed[step.StepName] && m.stepHasActionableFindings(step.StepName) {
-		m.yoloFixed[step.StepName] = true
 		m.resetFindingSelection(step.StepName)
-		return m.yoloResolveCmd(step.StepName, true, m.selectedFindingIDs(step.StepName))
+		if ids := m.selectedFindingIDs(step.StepName); len(ids) > 0 {
+			m.yoloFixed[step.StepName] = true
+			return m.yoloResolveCmd(step.StepName, true, ids)
+		}
 	}
 	m.yoloApproved[step.StepName] = true
 	return m.yoloResolveCmd(step.StepName, false, nil)

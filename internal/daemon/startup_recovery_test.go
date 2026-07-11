@@ -18,13 +18,12 @@ import (
 // (observed live as "chdir .../worktrees/...: no such file or directory").
 // A worktree whose run row is pending or running must survive cleanup.
 //
-// This exercises cleanupOrphanWorktrees directly (rather than the full
-// recoverOnStartup) because RecoverStaleRuns, which runs first in
-// production, unconditionally marks every pending/running run failed - so by
-// design there is no pending/running row left by the time cleanup runs in
-// the normal single-daemon path. Testing cleanupOrphanWorktrees in isolation
-// verifies its DB-aware skip logic as defense in depth, independent of
-// whatever recovery step runs before it.
+// This exercises cleanupOrphanWorktrees directly rather than full startup.
+// Startup now preserves only active runs whose durable state can be
+// reconstructed and marks every other active run failed before cleanup. This
+// fixture deliberately lacks a reconstructable worktree, so full recovery
+// would fail it. The direct call verifies the DB-aware active-run guard as
+// defense in depth, independent of recovery planning.
 func TestRecoverOnStartup_DoesNotDeleteActiveRunWorktree(t *testing.T) {
 	p := paths.WithRoot(t.TempDir())
 	if err := p.EnsureDirs(); err != nil {

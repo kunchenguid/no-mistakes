@@ -503,3 +503,206 @@ func TestRecoverStaleRunsNoStaleRuns(t *testing.T) {
 		t.Errorf("recovered count = %d, want 0", count)
 	}
 }
+
+func TestRecoverStaleRunsFinalizesTerminalRunChildren(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		openAttempt bool
+		openRound   bool
+	}{
+		{name: "open attempt", openAttempt: true},
+		{name: "open round", openRound: true},
+		{name: "open attempt and round", openAttempt: true, openRound: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := openTestDB(t)
+			repo, _ := d.InsertRepo("/home/user/terminal-"+tc.name, "git@github.com:user/project.git", "main")
+			run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
+			step, _ := d.InsertStepResult(run.ID, types.StepReview)
+			round, err := d.ReserveStepRound(step.ID, 1, "initial")
+			if err != nil {
+				t.Fatalf("reserve round: %v", err)
+			}
+
+			var attemptID string
+			if tc.openAttempt {
+				attemptID, err = d.StartInvocationAttempt(types.InvocationAttemptStart{
+					Purpose:      types.PurposeInitialReview,
+					Role:         types.InvocationRoleVerifier,
+					Scope:        types.InvocationScope{Kind: types.InvocationScopePipeline, RunID: run.ID, StepResultID: step.ID, StepRoundID: round.ID},
+					CandidateKey: types.LegacyCandidateKey,
+				})
+				if err != nil {
+					t.Fatalf("start invocation attempt: %v", err)
+				}
+			}
+			if !tc.openRound {
+				if err := d.TerminateReservedStepRound(round.ID, StepRoundCancelled, 7); err != nil {
+					t.Fatalf("terminate round before recovery: %v", err)
+				}
+			}
+			if err := d.UpdateRunStatus(run.ID, types.RunCompleted); err != nil {
+				t.Fatalf("complete parent run: %v", err)
+			}
+
+			count, err := d.RecoverStaleRuns("daemon restarted")
+			if err != nil {
+				t.Fatalf("recover terminal parent children: %v", err)
+			}
+			if count != 0 {
+				t.Fatalf("recovered run count = %d, want 0 for already-terminal parent", count)
+			}
+
+			if tc.openAttempt {
+				attempt, err := d.GetInvocationAttempt(attemptID)
+				if err != nil {
+					t.Fatalf("get recovered attempt: %v", err)
+				}
+				if attempt.Terminal == nil || attempt.Terminal.Outcome != types.InvocationOutcomeInterrupted {
+					t.Fatalf("attempt terminal = %+v, want interrupted", attempt.Terminal)
+				}
+			}
+			recoveredRound, err := d.GetStepRound(round.ID)
+			if err != nil {
+				t.Fatalf("get recovered round: %v", err)
+			}
+			wantRoundState := StepRoundCancelled
+			if tc.openRound {
+				wantRoundState = StepRoundFailed
+			}
+			if recoveredRound == nil || recoveredRound.State != wantRoundState {
+				t.Fatalf("round = %+v, want %s", recoveredRound, wantRoundState)
+			}
+		})
+	}
+}
+
+func TestRecoverStaleRunsTerminalFactsAreIdempotent(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/repeated-recovery", "git@github.com:user/project.git", "main")
+	run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
+	step, _ := d.InsertStepResult(run.ID, types.StepReview)
+	round, _ := d.ReserveStepRound(step.ID, 1, "initial")
+	attemptID, err := d.StartInvocationAttempt(types.InvocationAttemptStart{
+		Purpose:      types.PurposeInitialReview,
+		Role:         types.InvocationRoleVerifier,
+		Scope:        types.InvocationScope{Kind: types.InvocationScopePipeline, RunID: run.ID, StepResultID: step.ID, StepRoundID: round.ID},
+		CandidateKey: types.LegacyCandidateKey,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(run.ID, types.RunFailed); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := d.RecoverStaleRuns("first restart"); err != nil {
+		t.Fatalf("first recovery: %v", err)
+	}
+	first, err := d.GetInvocationAttempt(attemptID)
+	if err != nil || first.Terminal == nil || first.TerminalAt == nil {
+		t.Fatalf("first recovered attempt = %+v, %v", first, err)
+	}
+	firstTerminalAt := *first.TerminalAt
+	if _, err := d.RecoverStaleRuns("second restart"); err != nil {
+		t.Fatalf("second recovery: %v", err)
+	}
+	second, err := d.GetInvocationAttempt(attemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Terminal == nil || second.Terminal.Outcome != types.InvocationOutcomeInterrupted || second.TerminalAt == nil || *second.TerminalAt != firstTerminalAt {
+		t.Fatalf("second recovered attempt = %+v, want original interrupted terminal", second)
+	}
+	var terminalCount int
+	if err := d.sql.QueryRow(`SELECT count(*) FROM invocation_attempt_terminals WHERE attempt_id = ?`, attemptID).Scan(&terminalCount); err != nil {
+		t.Fatal(err)
+	}
+	if terminalCount != 1 {
+		t.Fatalf("terminal facts = %d, want exactly 1", terminalCount)
+	}
+	recoveredRound, err := d.GetStepRound(round.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recoveredRound == nil || recoveredRound.State != StepRoundFailed {
+		t.Fatalf("round after repeated recovery = %+v, want failed", recoveredRound)
+	}
+}
+
+func TestRecoverStaleRunsExcludesUtilityAttempts(t *testing.T) {
+	d := openTestDB(t)
+	scope, err := d.InsertUtilityScope(types.UtilityScopeWizard, 1234)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attemptID, err := d.StartInvocationAttempt(types.InvocationAttemptStart{
+		Purpose:      types.PurposeBranchCommitSuggestion,
+		Role:         types.InvocationRoleFixer,
+		Scope:        types.InvocationScope{Kind: types.InvocationScopeUtility, UtilityScopeID: scope.ID},
+		CandidateKey: types.LegacyCandidateKey,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := d.RecoverStaleRuns("daemon restarted"); err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := d.GetInvocationAttempt(attemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempt.Terminal != nil {
+		t.Fatalf("utility attempt terminal = %+v, want active", attempt.Terminal)
+	}
+}
+
+func TestRecoverStaleRunsExceptPreservesLiveRunChildren(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/preserved-children", "git@github.com:user/project.git", "main")
+	run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
+	if err := d.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	step, _ := d.InsertStepResult(run.ID, types.StepReview)
+	round, _ := d.ReserveStepRound(step.ID, 1, "initial")
+	attemptID, err := d.StartInvocationAttempt(types.InvocationAttemptStart{
+		Purpose:      types.PurposeInitialReview,
+		Role:         types.InvocationRoleVerifier,
+		Scope:        types.InvocationScope{Kind: types.InvocationScopePipeline, RunID: run.ID, StepResultID: step.ID, StepRoundID: round.ID},
+		CandidateKey: types.LegacyCandidateKey,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	count, err := d.RecoverStaleRunsExcept("daemon restarted", map[string]struct{}{run.ID: {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("recovered run count = %d, want 0", count)
+	}
+	attempt, err := d.GetInvocationAttempt(attemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempt.Terminal != nil {
+		t.Fatalf("preserved attempt terminal = %+v, want active", attempt.Terminal)
+	}
+	recoveredRound, err := d.GetStepRound(round.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recoveredRound == nil || recoveredRound.State != StepRoundReserved {
+		t.Fatalf("preserved round = %+v, want reserved", recoveredRound)
+	}
+	gotRun, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotRun.Status != types.RunRunning {
+		t.Fatalf("preserved run status = %s, want running", gotRun.Status)
+	}
+}

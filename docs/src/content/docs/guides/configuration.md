@@ -33,6 +33,11 @@ Set `NM_HOME` to relocate the global config directory (the global file becomes `
 Model selection is deliberately not a per-repo choice.
 The global routing contract owns runners, profiles, and candidates; a repository can only point a purpose at an existing global profile.
 
+By default, no-mistakes loads `commands.test`, `commands.lint`, and `commands.format` from the pinned trusted default branch, not from the pushed SHA.
+A trusted default-branch config can set `allow_repo_commands: true` to honor commands from pushed branches.
+Use this exception only when you trust every pushed branch, such as in a single-developer repository.
+`routes` and `document.instructions` always remain trusted-only, even when this exception is enabled.
+
 If your config predates the routing cutover, read [migrating to routing](/no-mistakes/guides/migrating-to-routing/) first.
 Removed keys such as `agent` or `auto_fix` now stop the config from loading.
 
@@ -88,6 +93,10 @@ See the [global config reference](/no-mistakes/reference/global-config/) for the
 ```yaml
 # .no-mistakes.yaml (in repo root)
 
+
+# Keep commands on the trusted default branch by default.
+# Set true only when the trusted default branch opts into commands from every pushed branch.
+allow_repo_commands: false
 # Explicit commands for test/lint/format steps.
 commands:
   lint: "golangci-lint run ./..."
@@ -120,7 +129,9 @@ See the [repo config reference](/no-mistakes/reference/repo-config/) for the ful
 
 - Model selection resolves in one direction: the built-in routing contract applies unless global config declares a complete replacement `routing` block, and trusted repo `routes` overrides are applied on top of the effective global contract.
 - A repo `routes` entry replaces that purpose's complete global cascade with a one-element route naming one existing global profile.
-- `routes`, like `commands`, is read from the trusted default-branch copy of `.no-mistakes.yaml`, never from the pushed branch.
+- `routes` and `document.instructions` always come from the trusted default-branch copy of `.no-mistakes.yaml`, never from the pushed branch.
+- `commands` also come from the trusted default branch unless that trusted copy sets `allow_repo_commands: true`.
+- The `allow_repo_commands` exception affects only commands, so routes and documentation ownership remain trusted-only.
 - The resolved routing contract is validated before any model launch and fails closed on any error.
 - `intent` from the repo config overlays global intent settings. Fields not set in the repo config fall through to the global default, except `intent.disabled_readers`, which adds to globally disabled readers.
 - `test.evidence` from the repo config overlays global test evidence settings. Fields not set in the repo config fall through to the global default.

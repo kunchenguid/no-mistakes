@@ -95,6 +95,15 @@ func (ri *routingInvoker) invokeRouted(ctx context.Context, request agent.Invoca
 	if len(profile.Candidates) == 0 {
 		return nil, fmt.Errorf("profile %q has no candidate", profile.Name)
 	}
+	cleanupIsolation := func() {}
+	if request.Scope.Kind == types.InvocationScopePipeline {
+		var isolationErr error
+		cleanupIsolation, isolationErr = prepareFixerAttemptIsolation(ctx, definition.Role, &request.Payload)
+		if isolationErr != nil {
+			return nil, fmt.Errorf("snapshot candidate before routed fixer attempt: %w", isolationErr)
+		}
+	}
+	defer cleanupIsolation()
 
 	// Try Candidates in provider-preference order, one at a time (providers are
 	// never raced). Skip any whose provider circuit is already open, fail over
@@ -227,6 +236,7 @@ func (ri *routingInvoker) launchCandidate(ctx context.Context, request agent.Inv
 	if result != nil {
 		result.Provider = string(agentName)
 	}
+	restoreErr := agent.RestoreFailedAttempt(payload, runErr)
 
 	terminal := types.InvocationAttemptTerminal{
 		Outcome:    routedOutcome(ctx, runErr),
@@ -247,10 +257,20 @@ func (ri *routingInvoker) launchCandidate(ctx context.Context, request agent.Inv
 		terminal.FailureDomain = domain
 	}
 	if journalErr := ri.journal.FinishInvocationAttempt(attemptID, terminal); journalErr != nil {
-		// A terminal-journal failure aborts the cascade and deliberately wraps
-		// only the persistence error. Exposing runErr here could make the fatal
-		// error unwrap as OperationalError and incorrectly authorize failover.
-		return result, nil, fmt.Errorf("record routed invocation terminal: %w", journalErr)
+		// A successful process is not an accepted Candidate until its terminal
+		// fact is durable. Restore its mutations before returning the fatal
+		// journal error just as for any other failed invocation boundary.
+		if runErr == nil {
+			restoreErr = agent.RestoreFailedAttempt(payload, journalErr)
+		}
+		fatalErr := fmt.Errorf("record routed invocation terminal: %w", journalErr)
+		if restoreErr != nil {
+			fatalErr = errors.Join(fatalErr, restoreErr)
+		}
+		return result, nil, fatalErr
+	}
+	if restoreErr != nil {
+		return result, nil, restoreErr
 	}
 	if operational {
 		ri.circuits.markOpen(domain)

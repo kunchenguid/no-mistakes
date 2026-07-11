@@ -71,11 +71,24 @@ func NewRunSessions(database *db.DB, runID string, sessionAgent agent.Agent, ena
 // session when the adapter supports it. logf (optional) receives operator-
 // visible notes about session reuse and fallbacks.
 func (rs *RunSessions) Run(ctx context.Context, a agent.Agent, role SessionRole, opts agent.RunOpts, logf func(string)) (*agent.Result, error) {
+	isolationRole := opts.Role
+	if role == SessionRoleFixer {
+		isolationRole = types.InvocationRoleFixer
+	}
+	cleanupIsolation, isolationErr := prepareFixerAttemptIsolation(ctx, isolationRole, &opts)
+	if isolationErr != nil {
+		return nil, fmt.Errorf("snapshot candidate before session attempt: %w", isolationErr)
+	}
+	defer cleanupIsolation()
 	if rs == nil || !rs.enabled || !agent.SupportsSessionResume(a) {
 		if rs != nil && rs.enabled && logf != nil {
 			logf(fmt.Sprintf("agent %s does not support session resume; running cold", a.Name()))
 		}
-		return a.Run(ctx, opts)
+		result, err := a.Run(ctx, opts)
+		if restoreErr := agent.RestoreFailedAttempt(opts, err); restoreErr != nil {
+			return nil, restoreErr
+		}
+		return result, err
 	}
 
 	stored := rs.id(role)
@@ -85,6 +98,9 @@ func (rs *RunSessions) Run(ctx context.Context, a agent.Agent, role SessionRole,
 	if err == nil {
 		rs.remember(role, result.SessionID, sessionProvider(a, result))
 		return result, nil
+	}
+	if restoreErr := agent.RestoreFailedAttempt(opts, err); restoreErr != nil {
+		return nil, restoreErr
 	}
 	if storedID == "" || ctx.Err() != nil {
 		return nil, err
@@ -100,6 +116,9 @@ func (rs *RunSessions) Run(ctx context.Context, a agent.Agent, role SessionRole,
 	opts.SessionFallback = true
 	result, err = a.Run(ctx, opts)
 	if err != nil {
+		if restoreErr := agent.RestoreFailedAttempt(opts, err); restoreErr != nil {
+			return nil, restoreErr
+		}
 		return nil, err
 	}
 	rs.remember(role, result.SessionID, sessionProvider(a, result))
@@ -128,8 +147,19 @@ func (rs *RunSessions) InvokeRequest(ctx context.Context, invoker agent.Invoker,
 		return invoker.Invoke(ctx, next)
 	}
 	opts := request.Payload
+	if definition, definitionErr := types.PurposeDefinitionFor(request.Purpose); definitionErr == nil {
+		cleanupIsolation, isolationErr := prepareFixerAttemptIsolation(ctx, definition.Role, &opts)
+		if isolationErr != nil {
+			return nil, fmt.Errorf("snapshot candidate before routed session attempt: %w", isolationErr)
+		}
+		defer cleanupIsolation()
+	}
 	if rs == nil || !rs.enabled {
-		return invoke(opts)
+		result, err := invoke(opts)
+		if restoreErr := agent.RestoreFailedAttempt(opts, err); restoreErr != nil {
+			return nil, restoreErr
+		}
+		return result, err
 	}
 
 	stored := rs.id(role)
@@ -141,6 +171,9 @@ func (rs *RunSessions) InvokeRequest(ctx context.Context, invoker agent.Invoker,
 			rs.remember(role, result.SessionID, result.Provider)
 		}
 		return result, nil
+	}
+	if restoreErr := agent.RestoreFailedAttempt(opts, err); restoreErr != nil {
+		return nil, restoreErr
 	}
 	if storedID == "" || ctx.Err() != nil {
 		return nil, err
@@ -154,6 +187,9 @@ func (rs *RunSessions) InvokeRequest(ctx context.Context, invoker agent.Invoker,
 	opts.SessionFallback = true
 	result, err = invoke(opts)
 	if err != nil {
+		if restoreErr := agent.RestoreFailedAttempt(opts, err); restoreErr != nil {
+			return nil, restoreErr
+		}
 		return nil, err
 	}
 	if result != nil {

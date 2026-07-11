@@ -60,7 +60,8 @@ CREATE TABLE IF NOT EXISTS step_results (
     last_activity_at INTEGER,
     last_activity    TEXT,
     agent_pid        INTEGER,
-    auto_fix_limit   INTEGER
+    auto_fix_limit   INTEGER,
+    approval_gate_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS step_rounds (
@@ -79,6 +80,39 @@ CREATE TABLE IF NOT EXISTS step_rounds (
     duration_ms          INTEGER NOT NULL,
     created_at           INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS approval_gates (
+    id              TEXT PRIMARY KEY,
+    run_id          TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    step_result_id  TEXT NOT NULL REFERENCES step_results(id) ON DELETE CASCADE,
+    source_round_id TEXT NOT NULL REFERENCES step_rounds(id) ON DELETE CASCADE,
+    status          TEXT NOT NULL CHECK (status IN ('awaiting_approval', 'fix_review')),
+    findings_json   TEXT NOT NULL CHECK (json_valid(findings_json)),
+    duration_ms     INTEGER NOT NULL CHECK (duration_ms >= 0),
+    created_at      INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS approval_actions (
+    id                        TEXT PRIMARY KEY,
+    gate_id                   TEXT NOT NULL UNIQUE REFERENCES approval_gates(id) ON DELETE CASCADE,
+    run_id                    TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    step_result_id            TEXT NOT NULL REFERENCES step_results(id) ON DELETE CASCADE,
+    step_round_id             TEXT NOT NULL REFERENCES step_rounds(id) ON DELETE CASCADE,
+    action                    TEXT NOT NULL CHECK (action IN ('approve', 'fix', 'skip', 'abort')),
+    selected_finding_ids_json TEXT NOT NULL CHECK (json_valid(selected_finding_ids_json) AND json_type(selected_finding_ids_json) IN ('array', 'null')),
+    instructions_json         TEXT NOT NULL CHECK (json_valid(instructions_json) AND json_type(instructions_json) IN ('object', 'null')),
+    added_findings_json       TEXT NOT NULL CHECK (json_valid(added_findings_json) AND json_type(added_findings_json) IN ('array', 'null')),
+    created_at                INTEGER NOT NULL,
+    applied_at                INTEGER
+);
+
+CREATE TRIGGER IF NOT EXISTS approval_actions_payload_immutable
+BEFORE UPDATE OF gate_id, run_id, step_result_id, step_round_id, action,
+    selected_finding_ids_json, instructions_json, added_findings_json, created_at
+ON approval_actions
+BEGIN
+    SELECT RAISE(ABORT, 'approval action payload is immutable');
+END;
 
 CREATE TABLE IF NOT EXISTS agent_invocations (
     id                    TEXT PRIMARY KEY,
@@ -311,6 +345,7 @@ var migrationStatements = []string{
 	`ALTER TABLE step_results ADD COLUMN last_activity TEXT`,
 	`ALTER TABLE step_results ADD COLUMN agent_pid INTEGER`,
 	`ALTER TABLE step_results ADD COLUMN auto_fix_limit INTEGER`,
+	`ALTER TABLE step_results ADD COLUMN approval_gate_id TEXT`,
 	`ALTER TABLE canary_activation ADD COLUMN completion_fence INTEGER NOT NULL DEFAULT -1`,
 	`INSERT OR IGNORE INTO run_completion_order (run_id)
 		SELECT r.id

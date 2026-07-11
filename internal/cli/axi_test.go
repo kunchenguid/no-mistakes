@@ -468,10 +468,10 @@ func TestWriteGateShape(t *testing.T) {
 		`    review-1,warning,main.go,ask-user,"calls os.Exit, leaks fd"`,
 		"no-mistakes axi respond --action approve",
 		"to have the pipeline fix the selected findings (do not edit files yourself)",
-		// Review gate carries the routing-era review note and the keep-driving
-		// reminder so an agent reads them at the point of use.
-		"Review findings are parked for explicit consent",
-		"ask-user requires the user's decision unless --yes supplies standing consent",
+		// Review gate distinguishes the automatic cascade from findings that
+		// remain parked, and keeps the fail-closed unattended reminder.
+		"Review runs auto-fix cascades before a gate",
+		"ask-user findings and unresolved blocking repair lineages park for explicit user decision",
 		"--yes aborts rather than accepts an unresolved blocking repair",
 		"the run never advances past a gate on its own",
 	} {
@@ -496,12 +496,12 @@ func TestGateNote_ReviewOnly(t *testing.T) {
 	}
 
 	review := mk("review")
-	if !strings.Contains(review, "Review findings are parked for explicit consent") {
-		t.Errorf("review gate missing the routing-era review note in:\n%s", review)
+	if !strings.Contains(review, "Review runs auto-fix cascades before a gate") {
+		t.Errorf("review gate missing the automatic-repair note in:\n%s", review)
 	}
 
 	lint := mk("lint")
-	if strings.Contains(lint, "parked for explicit consent") {
+	if strings.Contains(lint, "Review runs auto-fix cascades before a gate") {
 		t.Errorf("non-review gate should not carry the review note in:\n%s", lint)
 	}
 	if !strings.Contains(lint, "the run never advances past a gate on its own") {

@@ -370,3 +370,36 @@ func TestTransientBackoffDuration_Progression(t *testing.T) {
 		}
 	}
 }
+
+type failingAttemptIsolation struct {
+	calls int
+	err   error
+}
+
+func (i *failingAttemptIsolation) RestoreFailedAttempt() error {
+	i.calls++
+	return i.err
+}
+
+func TestRunWithRetryRestoreFailureIsFatalAndCannotAuthorizeProviderFailover(t *testing.T) {
+	restoreErr := errors.New("candidate restore failed")
+	isolation := &failingAttemptIsolation{err: restoreErr}
+	attempts := 0
+	_, err := runWithRetry(context.Background(), "codex", RunOpts{AttemptIsolation: isolation}, 3, classifyTransient, nil, func() (*Result, error) {
+		attempts++
+		return nil, &OperationalError{Kind: OpFailureOverload, Err: errors.New("overloaded")}
+	})
+	if err == nil {
+		t.Fatal("expected fatal restore error")
+	}
+	if attempts != 1 || isolation.calls != 1 {
+		t.Fatalf("attempts = %d, restores = %d; want one of each", attempts, isolation.calls)
+	}
+	if !errors.Is(err, restoreErr) {
+		t.Fatalf("error = %v, want restore cause", err)
+	}
+	var operational *OperationalError
+	if errors.As(err, &operational) {
+		t.Fatalf("restore failure unwraps to abandoned operational error: %v", err)
+	}
+}

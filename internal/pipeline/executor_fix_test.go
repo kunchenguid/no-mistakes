@@ -30,7 +30,7 @@ func TestExecutor_FixEmitsDiffAndFixReviewStatus(t *testing.T) {
 				writeTestFile(t, workDir, "fix.txt", "agent fix\n")
 				execGit(t, workDir, "add", "fix.txt")
 			}
-			return &StepOutcome{NeedsApproval: true, Findings: `{"items":[]}`}, nil
+			return &StepOutcome{NeedsApproval: true, Findings: `{"findings":[{"id":"review-1","severity":"warning","description":"manual repair","action":"ask-user"}],"summary":"one"}`}, nil
 		},
 	}
 
@@ -56,7 +56,9 @@ func TestExecutor_FixEmitsDiffAndFixReviewStatus(t *testing.T) {
 	}
 
 	// Send fix action
-	exec.Respond(types.StepReview, types.ActionFix, nil)
+	if err := exec.Respond(types.StepReview, types.ActionFix, []string{"review-1"}); err != nil {
+		t.Fatal(err)
+	}
 
 	// Find the fix_review event
 	fixEvent := waitForEvent(t, events, ipc.EventStepCompleted, string(types.StepStatusFixReview))
@@ -93,7 +95,7 @@ func TestExecutor_FixEmitsFixingStatusImmediately(t *testing.T) {
 		fn: func(sctx *StepContext) (*StepOutcome, error) {
 			callCount++
 			if callCount == 1 {
-				return &StepOutcome{NeedsApproval: true, Findings: `{"issues":["bug"]}`}, nil
+				return &StepOutcome{NeedsApproval: true, Findings: `{"findings":[{"id":"review-1","severity":"warning","description":"bug","action":"ask-user"}],"summary":"one"}`}, nil
 			}
 			close(fixStarted)
 			<-releaseFix
@@ -207,7 +209,7 @@ func TestExecutor_FixReviewNoChanges(t *testing.T) {
 		name: types.StepReview,
 		fn: func(sctx *StepContext) (*StepOutcome, error) {
 			callCount++
-			return &StepOutcome{NeedsApproval: true, Findings: `{"items":[]}`}, nil
+			return &StepOutcome{NeedsApproval: true, Findings: `{"findings":[{"id":"review-1","severity":"warning","description":"manual repair","action":"ask-user"}],"summary":"one"}`}, nil
 		},
 	}
 
@@ -220,7 +222,9 @@ func TestExecutor_FixReviewNoChanges(t *testing.T) {
 	}()
 
 	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
-	exec.Respond(types.StepReview, types.ActionFix, nil)
+	if err := exec.Respond(types.StepReview, types.ActionFix, []string{"review-1"}); err != nil {
+		t.Fatal(err)
+	}
 
 	// No changes made — diff should not be in event
 	fixEvent := waitForEvent(t, events, ipc.EventStepCompleted, string(types.StepStatusFixReview))
@@ -269,7 +273,9 @@ func TestExecutor_FixSetsPreviousFindings(t *testing.T) {
 	}()
 
 	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
-	exec.Respond(types.StepReview, types.ActionFix, nil)
+	if err := exec.Respond(types.StepReview, types.ActionFix, []string{"review-1"}); err != nil {
+		t.Fatal(err)
+	}
 
 	select {
 	case err := <-done:
@@ -284,11 +290,11 @@ func TestExecutor_FixSetsPreviousFindings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse PreviousFindings: %v", err)
 	}
-	if len(payload.Items) != 0 {
-		t.Fatalf("expected 0 findings, got %d", len(payload.Items))
+	if len(payload.Items) != 1 || payload.Items[0].ID != "review-1" {
+		t.Fatalf("selected PreviousFindings = %+v, want review-1", payload.Items)
 	}
-	if payload.Summary != "0 selected findings" {
-		t.Fatalf("summary = %q, want %q", payload.Summary, "0 selected findings")
+	if payload.Summary != "1 error found" {
+		t.Fatalf("summary = %q, want original selected finding summary", payload.Summary)
 	}
 }
 

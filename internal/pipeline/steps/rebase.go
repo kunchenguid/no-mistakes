@@ -514,11 +514,11 @@ Return structured findings. Use severity "error" for any incorrect, unresolved, 
 }
 
 type rebaseCandidate struct {
-	head          string
-	indexTree     string
-	status        string
-	worktreeDiff  string
-	untrackedHash string
+	head           string
+	indexTree      string
+	status         string
+	worktreeDiff   string
+	untrackedState string
 }
 
 type rebaseVerifierIntegrityError struct {
@@ -557,27 +557,61 @@ func captureRebaseCandidate(ctx context.Context, workDir string) (rebaseCandidat
 	if err != nil {
 		return rebaseCandidate{}, fmt.Errorf("list untracked files: %w", err)
 	}
-	var untrackedHash strings.Builder
+	var untrackedState strings.Builder
 	for _, path := range strings.Split(untracked, "\x00") {
 		if path == "" {
 			continue
 		}
-		hash, err := git.Run(ctx, workDir, "hash-object", "--no-filters", "--", path)
+		info, err := os.Lstat(filepath.Join(workDir, path))
 		if err != nil {
-			return rebaseCandidate{}, fmt.Errorf("hash untracked file %q: %w", path, err)
+			return rebaseCandidate{}, fmt.Errorf("inspect untracked file %q: %w", path, err)
 		}
-		untrackedHash.WriteString(path)
-		untrackedHash.WriteByte(0)
-		untrackedHash.WriteString(hash)
-		untrackedHash.WriteByte(0)
+		payload, err := rebaseCandidateUntrackedPayload(ctx, workDir, path, info.Mode())
+		if err != nil {
+			return rebaseCandidate{}, err
+		}
+		untrackedState.WriteString(path)
+		untrackedState.WriteByte(0)
+		untrackedState.WriteString(rebaseCandidateGitMode(info.Mode()))
+		untrackedState.WriteByte(0)
+		untrackedState.WriteString(payload)
+		untrackedState.WriteByte(0)
 	}
 	return rebaseCandidate{
-		head:          head,
-		indexTree:     indexTree,
-		status:        status,
-		worktreeDiff:  worktreeDiff,
-		untrackedHash: untrackedHash.String(),
+		head:           head,
+		indexTree:      indexTree,
+		status:         status,
+		worktreeDiff:   worktreeDiff,
+		untrackedState: untrackedState.String(),
 	}, nil
+}
+
+func rebaseCandidateGitMode(mode os.FileMode) string {
+	switch {
+	case mode&os.ModeSymlink != 0:
+		return "120000"
+	case !mode.IsRegular():
+		return mode.Type().String()
+	case mode.Perm()&0o111 != 0:
+		return "100755"
+	default:
+		return "100644"
+	}
+}
+
+func rebaseCandidateUntrackedPayload(ctx context.Context, workDir, path string, mode os.FileMode) (string, error) {
+	if mode&os.ModeSymlink != 0 {
+		target, err := os.Readlink(filepath.Join(workDir, path))
+		if err != nil {
+			return "", fmt.Errorf("read untracked symlink %q: %w", path, err)
+		}
+		return target, nil
+	}
+	hash, err := git.Run(ctx, workDir, "hash-object", "--no-filters", "--", path)
+	if err != nil {
+		return "", fmt.Errorf("hash untracked file %q: %w", path, err)
+	}
+	return hash, nil
 }
 
 // shouldSkipRebase checks whether a rebase onto targetRef can be skipped.

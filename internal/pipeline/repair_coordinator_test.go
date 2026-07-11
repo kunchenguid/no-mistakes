@@ -544,10 +544,10 @@ func TestExecutorRecoveredRoutedConsentMergesUserOverridesIntoRepair(t *testing.
 	if err := database.CompleteReservedStepRound(automaticRepair.ID, nil, nil, 25); err != nil {
 		t.Fatal(err)
 	}
-	if err := database.UpdateStepStatusWithDuration(stepResult.ID, types.StepStatusAwaitingApproval, 25); err != nil {
-		t.Fatal(err)
-	}
-	if err := database.SetRunAwaitingAgent(run.ID); err != nil {
+	if _, err := database.ParkApprovalGate(db.ParkApprovalGateInput{
+		RunID: run.ID, StepResultID: stepResult.ID, SourceRoundID: sourceRound.ID,
+		Status: types.StepStatusAwaitingApproval, FindingsJSON: findings, DurationMS: 25,
+	}); err != nil {
 		t.Fatal(err)
 	}
 	run, err = database.GetRun(run.ID)

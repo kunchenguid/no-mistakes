@@ -63,7 +63,7 @@ A run keeps one reviewer session for the initial review and full rereviews.
 It keeps a separate fixer session for review fixes.
 Sessions never cross runs, roles, branches or repositories.
 
-A resumed session stays with the provider and semantic purpose that created it.
+A resumed session stays with the provider and Review role that created it.
 If resume fails, no-mistakes removes that stored identity and retries the same routed turn cold.
 A cancelled turn does not start a cold fallback.
 No-mistakes stores native session IDs but does not store prompts or transcripts.
@@ -84,7 +84,9 @@ It must define every runner, profile and registered purpose before any agent can
 
 A repository can map a purpose to one existing global profile through trusted `routes` configuration.
 It cannot define runners, profiles, candidates or execution mechanics.
-No-mistakes reads repository routes from the trusted default branch.
+By default, repository commands come from the pinned trusted default branch.
+`allow_repo_commands` can opt pushed-branch commands in when the trusted default branch enables it.
+Repository `routes` and `document.instructions` always remain trusted-only.
 See the [configuration guide](/no-mistakes/guides/configuration/) for the supported files and trust rules.
 
 ## Driving no-mistakes as an agent

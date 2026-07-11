@@ -368,6 +368,21 @@ func copyCICandidatePath(source, destination string) error {
 		}
 		return os.Symlink(target, destination)
 	}
+	if info.IsDir() {
+		if err := os.MkdirAll(destination, info.Mode().Perm()); err != nil {
+			return err
+		}
+		entries, err := os.ReadDir(source)
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			if err := copyCICandidatePath(filepath.Join(source, entry.Name()), filepath.Join(destination, entry.Name())); err != nil {
+				return err
+			}
+		}
+		return os.Chmod(destination, info.Mode().Perm())
+	}
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("unsupported file mode %s", info.Mode())
 	}
@@ -483,6 +498,22 @@ func isCIJournalFailure(err error) bool {
 func isCIProfileExhaustion(err error) bool {
 	var exhausted *agent.ProfileUnavailableError
 	return errors.As(err, &exhausted)
+}
+
+type ciPublicationPendingError struct {
+	sha string
+	err error
+}
+
+func (e *ciPublicationPendingError) Error() string {
+	return fmt.Sprintf("publish sealed CI candidate %s: %v", shortSHA(e.sha), e.err)
+}
+
+func (e *ciPublicationPendingError) Unwrap() error { return e.err }
+
+func isCIPublicationPending(err error) bool {
+	var pendingErr *ciPublicationPendingError
+	return errors.As(err, &pendingErr)
 }
 
 type ciRepairIssue struct {
@@ -681,10 +712,14 @@ func (s *CIStep) runPlannedCIRepair(sctx *pipeline.StepContext, host scm.Host, p
 	pushed, repairErr := s.autoFixCI(sctx, host, pr, failingNames, mergeConflict)
 	if repairErr != nil {
 		status := db.RepairStatusFailed
+		verdict := db.RepairVerdictInconclusive
 		if isCIProfileExhaustion(repairErr) {
 			status = db.RepairStatusUnavailable
+		} else if isCIPublicationPending(repairErr) {
+			status = db.RepairStatusUnresolved
+			verdict = db.RepairVerdictUnresolved
 		}
-		if finishErr := finishCIRepairs(sctx, s.activeCIRepairIDs, db.RepairVerdictInconclusive, repairErr.Error(), status); finishErr != nil {
+		if finishErr := finishCIRepairs(sctx, s.activeCIRepairIDs, verdict, repairErr.Error(), status); finishErr != nil {
 			return false, fmt.Errorf("%v; additionally failed to journal hosted CI repair: %w", repairErr, finishErr)
 		}
 		return false, repairErr
@@ -872,17 +907,6 @@ func (s *CIStep) pushUpdatedHeadSHA(sctx *pipeline.StepContext, newHeadSHA strin
 	ref := normalizedBranchRef(sctx.Run.Branch)
 	pushURL := sctx.Repo.PushURL()
 
-	// Anchor the force-with-lease to the head the run last recorded for this
-	// branch (what the pipeline last pushed/observed), NOT to a SHA freshly read
-	// from the remote a moment before pushing - that self-defeating anchor always
-	// passes and lets an auto-fix rebased from stale local state overwrite a
-	// commit that reached origin out of band. resolveForcePushDecision refuses
-	// the push when the remote carries commits this run never incorporated.
-	gitRun := func(args ...string) (string, error) { return stepGitRun(sctx, args...) }
-	decision, err := resolveForcePushDecision(gitRun, pushURL, ref, newHeadSHA, sctx.Run.HeadSHA, sctx.Run.BaseSHA)
-	if err != nil {
-		return false, err
-	}
 	if s.verifiedCandidateTree != "" {
 		tree, err := stepGitRun(sctx, "rev-parse", newHeadSHA+"^{tree}")
 		if err != nil {
@@ -892,32 +916,117 @@ func (s *CIStep) pushUpdatedHeadSHA(sctx *pipeline.StepContext, newHeadSHA strin
 			return false, fmt.Errorf("republish SHA %s does not name verified tree %s", shortSHA(newHeadSHA), shortSHA(s.verifiedCandidateTree))
 		}
 	}
-	if err := s.ensureCIRepublishSeal(sctx, newHeadSHA); err != nil {
+	if err := protectCIRepublishCandidate(sctx, newHeadSHA); err != nil {
 		return false, err
 	}
-	if decision.upToDate {
-		if _, err := stepGitRun(sctx, "update-ref", ref, newHeadSHA); err != nil {
-			return false, fmt.Errorf("update local branch ref: %w", err)
+	if err := s.ensureCIRepublishSeal(sctx, newHeadSHA); err != nil {
+		if cleanupErr := clearCIRepublishPending(sctx); cleanupErr != nil {
+			return false, errors.Join(err, cleanupErr)
 		}
-		sctx.Run.HeadSHA = newHeadSHA
-		if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, newHeadSHA); err != nil {
-			return false, err
-		}
-		return false, nil
+		return false, err
 	}
-	if err := stepGitPush(sctx, pushURL, newHeadSHA, ref, decision.remoteSHA, !decision.newBranch); err != nil {
-		return false, fmt.Errorf("push: %w", err)
+	pendingError := func(err error) error {
+		return &ciPublicationPendingError{sha: newHeadSHA, err: err}
+	}
+
+	// Anchor the force-with-lease to the head the run last recorded for this
+	// branch (what the pipeline last pushed/observed), NOT to a SHA freshly read
+	// from the remote a moment before pushing. The durable pending ref above
+	// protects the sealed commit while this transport decision or push retries.
+	gitRun := func(args ...string) (string, error) { return stepGitRun(sctx, args...) }
+	decision, err := resolveForcePushDecision(gitRun, pushURL, ref, newHeadSHA, sctx.Run.HeadSHA, sctx.Run.BaseSHA)
+	if err != nil {
+		return false, pendingError(err)
+	}
+	pushed := false
+	if !decision.upToDate {
+		if err := stepGitPush(sctx, pushURL, newHeadSHA, ref, decision.remoteSHA, !decision.newBranch); err != nil {
+			return false, pendingError(fmt.Errorf("push: %w", err))
+		}
+		pushed = true
 	}
 
 	if _, err := stepGitRun(sctx, "update-ref", ref, newHeadSHA); err != nil {
-		return false, fmt.Errorf("update local branch ref: %w", err)
+		return false, pendingError(fmt.Errorf("update local branch ref: %w", err))
 	}
 	sctx.Run.HeadSHA = newHeadSHA
 	if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, newHeadSHA); err != nil {
-		return false, err
+		return false, pendingError(err)
+	}
+	if err := clearCIRepublishPending(sctx); err != nil {
+		return false, pendingError(err)
 	}
 
-	sctx.Log("committed and pushed fixes")
+	if pushed {
+		sctx.Log("committed and pushed fixes")
+	}
+	return pushed, nil
+}
+
+func ciRepublishPendingRef(sctx *pipeline.StepContext) string {
+	sum := sha256.Sum256([]byte(sctx.Run.ID))
+	return fmt.Sprintf("refs/no-mistakes/ci-republish-pending/%x", sum[:])
+}
+
+func protectCIRepublishCandidate(sctx *pipeline.StepContext, sha string) error {
+	if _, err := stepGitRun(sctx, "update-ref", ciRepublishPendingRef(sctx), sha); err != nil {
+		return fmt.Errorf("protect sealed CI candidate %s: %w", shortSHA(sha), err)
+	}
+	return nil
+}
+
+func clearCIRepublishPending(sctx *pipeline.StepContext) error {
+	if _, err := stepGitRun(sctx, "update-ref", "-d", ciRepublishPendingRef(sctx)); err != nil {
+		return fmt.Errorf("clear pending CI publication: %w", err)
+	}
+	return nil
+}
+
+func pendingCIRepublishSHA(sctx *pipeline.StepContext) (string, error) {
+	sha, err := stepGitRun(sctx, "for-each-ref", "--format=%(objectname)", ciRepublishPendingRef(sctx))
+	if err != nil {
+		return "", fmt.Errorf("load pending CI publication: %w", err)
+	}
+	fields := strings.Fields(sha)
+	if len(fields) == 0 {
+		return "", nil
+	}
+	if len(fields) != 1 {
+		return "", fmt.Errorf("load pending CI publication: expected one protected candidate, got %d", len(fields))
+	}
+	if _, err := stepGitRun(sctx, "cat-file", "-e", fields[0]+"^{commit}"); err != nil {
+		return "", fmt.Errorf("validate pending CI publication %s: %w", shortSHA(fields[0]), err)
+	}
+	return fields[0], nil
+}
+
+func (s *CIStep) retryPendingCIRepublish(sctx *pipeline.StepContext) (bool, error) {
+	sha, err := pendingCIRepublishSHA(sctx)
+	if err != nil {
+		return true, err
+	}
+	if sha == "" {
+		return false, nil
+	}
+	seal, err := sctx.DB.LatestSealByReason(sctx.Run.ID, "ci_republish")
+	if err != nil {
+		return true, &ciJournalError{operation: "load pending CI republish seal", err: err}
+	}
+	if seal == nil || seal.SHA != sha {
+		return true, &ciJournalError{operation: "load pending CI republish seal", err: fmt.Errorf("protected candidate %s is not the latest durable seal", shortSHA(sha))}
+	}
+
+	sctx.Log(fmt.Sprintf("retrying publication of sealed CI candidate %s...", shortSHA(sha)))
+	if _, err := s.pushUpdatedHeadSHA(sctx, sha); err != nil {
+		return true, err
+	}
+	if _, err := stepGitRun(sctx, "reset", "--hard", sha); err != nil {
+		if protectErr := protectCIRepublishCandidate(sctx, sha); protectErr != nil {
+			err = errors.Join(err, protectErr)
+		}
+		return true, &ciPublicationPendingError{sha: sha, err: fmt.Errorf("reconcile worktree after publication: %w", err)}
+	}
+	sctx.Log(fmt.Sprintf("published sealed CI candidate %s", shortSHA(sha)))
 	return true, nil
 }
 

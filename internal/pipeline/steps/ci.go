@@ -172,6 +172,30 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		}
 		return ciMonitoringTimeoutOutcome(), nil
 	}
+	waitForPoll := func() error {
+		interval := s.pollIntervalOverride
+		if interval == 0 {
+			interval = pollInterval(now().Sub(started))
+		}
+		if !unlimited {
+			remaining := timeout - now().Sub(timeoutAnchor)
+			if remaining < interval {
+				interval = remaining
+			}
+		}
+		waitForNextPoll := s.waitForNextPoll
+		if waitForNextPoll == nil {
+			waitForNextPoll = func(ctx context.Context, interval time.Duration) error {
+				select {
+				case <-time.After(interval):
+					return nil
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+		}
+		return waitForNextPoll(ctx, interval)
+	}
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -221,6 +245,19 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		} else if state == scm.PRStateClosed {
 			sctx.Log("PR has been closed")
 			return &pipeline.StepOutcome{}, nil
+		}
+
+		if publicationPending, retryErr := s.retryPendingCIRepublish(sctx); publicationPending {
+			if retryErr != nil {
+				if isCIJournalFailure(retryErr) {
+					return nil, retryErr
+				}
+				sctx.Log(fmt.Sprintf("warning: sealed CI candidate publication still pending: %v", retryErr))
+			}
+			if err := waitForPoll(); err != nil {
+				return nil, err
+			}
+			continue
 		}
 
 		// Check mergeable state if the provider supports it
@@ -384,29 +421,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			}
 		}
 
-		// Sleep for poll interval
-		interval := s.pollIntervalOverride
-		if interval == 0 {
-			interval = pollInterval(now().Sub(started))
-		}
-		if !unlimited {
-			remaining := timeout - now().Sub(timeoutAnchor)
-			if remaining < interval {
-				interval = remaining
-			}
-		}
-		waitForNextPoll := s.waitForNextPoll
-		if waitForNextPoll == nil {
-			waitForNextPoll = func(ctx context.Context, interval time.Duration) error {
-				select {
-				case <-time.After(interval):
-					return nil
-				case <-ctx.Done():
-					return ctx.Err()
-				}
-			}
-		}
-		if err := waitForNextPoll(ctx, interval); err != nil {
+		if err := waitForPoll(); err != nil {
 			return nil, err
 		}
 	}

@@ -38,6 +38,10 @@ Parsing is strict.
 An unknown key is a load error, and a removed key fails with actionable guidance instead of being ignored or rewritten.
 See [removed keys](#removed-keys) below.
 
+`allow_repo_commands` is not a global setting.
+Repository commands come from the pinned trusted default branch unless that branch's repo config enables the exception.
+`routes` and `document.instructions` remain trusted-only even when the command exception is enabled.
+
 ## Fields
 
 ### ci_timeout
@@ -70,12 +74,11 @@ Whether the review loop reuses durable, provider-native sessions within one run.
 The initial review and every full rereview share one reviewer session.
 Review-fix turns share a separate fixer session, so the roles never share context.
 Claude resumes with `claude -p --resume <id>`, and Codex resumes with `codex exec resume <id> <prompt>`.
-Other runners stay cold.
 
-Session identities are scoped to one run and role.
+Session identities are scoped to one run and Review role.
 No-mistakes stores only the run, role, provider, and native session ID so a parked run can restore them after a daemon restart.
 A routed resume stays pinned to the provider that created the session.
-If it fails, no-mistakes deletes the identity and journals a cold retry of the same purpose, route tier, and durable scope.
+If a resume fails, no-mistakes deletes the identity and journals a cold retry for the same Review role and routed turn.
 Set this field to `false` to make every review-loop invocation cold.
 
 ### log_level

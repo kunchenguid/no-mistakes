@@ -52,6 +52,8 @@ func handleFakeCLI(mode string) {
 		fakeGitStatusErrorHandler(args)
 	case "git-remote-error":
 		fakeGitRemoteErrorHandler(args)
+	case "git-move-head-on-push":
+		fakeGitMoveHeadOnPushHandler(args)
 	case "ci-gh":
 		fakeCIGHHandler(args)
 	case "ci-gh-seq":
@@ -155,6 +157,25 @@ func fakeGitRemoteErrorHandler(args []string) {
 	if len(args) > 0 && (args[0] == "ls-remote" || args[0] == "push") {
 		fmt.Fprintf(os.Stderr, "remote failed: %s\n", strings.Join(args, " "))
 		os.Exit(1)
+	}
+	fakeGitForward(args, realGit)
+}
+
+func fakeGitMoveHeadOnPushHandler(args []string) {
+	realGit := os.Getenv("FAKE_CLI_REAL_GIT")
+	if len(args) > 0 && args[0] == "push" {
+		raceSHA := os.Getenv("FAKE_CLI_RACE_SHA")
+		if raceSHA == "" {
+			fmt.Fprintln(os.Stderr, "missing FAKE_CLI_RACE_SHA")
+			os.Exit(1)
+		}
+		cmd := exec.Command(realGit, "reset", "--hard", raceSHA)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	}
 	fakeGitForward(args, realGit)
 }

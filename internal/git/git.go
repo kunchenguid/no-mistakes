@@ -282,14 +282,14 @@ func FetchRemoteBranchToRef(ctx context.Context, dir, remote, branch, localRef s
 	return err
 }
 
-// Push pushes a ref to a remote. If forceWithLease is true, uses
-// --force-with-lease with the expectedSHA for safe force-push.
-func Push(ctx context.Context, dir, remote, ref, expectedSHA string, forceWithLease bool) error {
-	return PushWithOptions(ctx, dir, remote, ref, expectedSHA, forceWithLease, nil)
+// Push pushes sourceRef to destinationRef on a remote. If forceWithLease is
+// true, it uses --force-with-lease with expectedSHA for safe force-push.
+func Push(ctx context.Context, dir, remote, sourceRef, destinationRef, expectedSHA string, forceWithLease bool) error {
+	return PushWithOptions(ctx, dir, remote, sourceRef, destinationRef, expectedSHA, forceWithLease, nil)
 }
 
-// PushWithOptions pushes a ref to a remote with per-push options.
-func PushWithOptions(ctx context.Context, dir, remote, ref, expectedSHA string, forceWithLease bool, pushOptions []string) error {
+// PushWithOptions pushes sourceRef to destinationRef with per-push options.
+func PushWithOptions(ctx context.Context, dir, remote, sourceRef, destinationRef, expectedSHA string, forceWithLease bool, pushOptions []string) error {
 	args := []string{"push"}
 	for _, option := range pushOptions {
 		args = append(args, "-o", option)
@@ -297,12 +297,12 @@ func PushWithOptions(ctx context.Context, dir, remote, ref, expectedSHA string, 
 	args = append(args, remote)
 	if forceWithLease {
 		if expectedSHA != "" {
-			args = append(args, fmt.Sprintf("--force-with-lease=%s:%s", ref, expectedSHA))
+			args = append(args, fmt.Sprintf("--force-with-lease=%s:%s", destinationRef, expectedSHA))
 		} else {
 			args = append(args, "--force-with-lease")
 		}
 	}
-	args = append(args, "HEAD:"+ref)
+	args = append(args, sourceRef+":"+destinationRef)
 	_, err := Run(ctx, dir, args...)
 	return err
 }

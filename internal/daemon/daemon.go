@@ -144,8 +144,12 @@ func RunWithOptions(p *paths.Paths, d *db.DB, stepFactory StepFactory) error {
 
 	mgr := NewRunManager(d, p, stepFactory)
 
-	// Recover stale runs from a previous daemon crash.
-	recoverOnStartup(d, p, mgr)
+	// Recover stale runs from a previous daemon crash before binding IPC. A
+	// failed recovery must abort startup: serving after partially preparing
+	// resumable runs would leave them active in the database but unmanaged.
+	if err := recoverOnStartup(d, p, mgr); err != nil {
+		return fmt.Errorf("startup recovery: %w", err)
+	}
 
 	srv := ipc.NewServer()
 
@@ -258,26 +262,30 @@ func writeDaemonPIDFile(path string, record daemonPIDFile) error {
 	return nil
 }
 
-// recoverOnStartup cleans up after a previous daemon crash by marking stale
-// runs/steps as failed, killing orphaned managed-server subprocesses
-// (opencode, rovodev), and removing orphaned worktree directories. It also
-// best-effort migrates gate bare repos in place so older installs pick up
-// the per-worktree hookspath isolation introduced for issue #122 when Git
-// supports config --worktree.
-func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager) {
+// recoverOnStartup reconstructs every valid active run, marks all other stale
+// runs and steps failed, kills orphaned managed-server subprocesses (opencode,
+// rovodev), and removes orphaned worktree directories. It also best-effort
+// migrates gate bare repos in place so older installs pick up the per-worktree
+// hookspath isolation introduced for issue #122 when Git supports config
+// --worktree. Recovery-plan discovery and stale-run cleanup are startup
+// prerequisites: failures are returned so the daemon never serves with prepared
+// runs stranded outside a live manager.
+func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager) error {
 	reapOrphanedServers(p)
 	migrateGateConfigs(context.Background(), p)
 	recoverStaleUtilityInvocations(d)
 
-	plans := mgr.recoverableParkedRuns(context.Background())
+	plans, err := mgr.recoverableRuns(context.Background())
+	if err != nil {
+		return fmt.Errorf("prepare recovery plans: %w", err)
+	}
 	preserved := make(map[string]struct{}, len(plans))
 	for _, plan := range plans {
 		preserved[plan.run.ID] = struct{}{}
 	}
 	count, err := d.RecoverStaleRunsExcept("daemon crashed during execution", preserved)
 	if err != nil {
-		slog.Error("failed to recover stale runs", "error", err)
-		return
+		return fmt.Errorf("recover stale runs: %w", err)
 	}
 	if count > 0 {
 		slog.Info("recovered stale runs from previous crash", "count", count)
@@ -285,6 +293,7 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager) {
 
 	cleanupOrphanWorktrees(d, p)
 	mgr.resumeRecoveredRuns(plans)
+	return nil
 }
 
 // cleanupOrphanWorktrees removes worktree directories left behind by runs
@@ -292,11 +301,10 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager) {
 // its run row is terminal, or when there is no matching run row at all.
 // This is what keeps cleanup from deleting the checkout out from under a
 // pipeline that is still actually running (see skipWorktreeCleanup).
-// Called from recoverOnStartup after
-// RecoverStaleRuns, so in the normal single-daemon path every run this loop
-// sees has already been resolved to a terminal status; it is factored out
-// separately so it can also be exercised - and its DB-aware skip behavior
-// verified - independent of stale-run recovery's side effects.
+// recoverOnStartup calls this after its stale-run transaction: rejected runs
+// are terminal and removable, while validated recovery plans remain active and
+// are skipped until their resumed executors finish. The helper stays separate
+// so its DB-aware guard can be verified independently of recovery side effects.
 func cleanupOrphanWorktrees(d *db.DB, p *paths.Paths) {
 	wtRoot := p.WorktreesDir()
 	entries, err := os.ReadDir(wtRoot)

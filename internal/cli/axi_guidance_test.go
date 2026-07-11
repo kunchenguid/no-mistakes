@@ -132,6 +132,62 @@ func TestAgentsGuide_PointsToCurrentDrivingGuidance(t *testing.T) {
 			t.Errorf("agents guide duplicates operational or legacy guidance %q", phrase)
 		}
 	}
+
+	navPath := filepath.Join("..", "..", "docs", "astro.config.mjs")
+	navigation, err := os.ReadFile(navPath)
+	if err != nil {
+		t.Fatalf("read docs navigation %s: %v", navPath, err)
+	}
+	const sidebarEntry = `{ label: "Routing and agents", slug: "guides/agents" }`
+	if !strings.Contains(string(navigation), sidebarEntry) {
+		t.Errorf("docs navigation is missing agents guide entry %q", sidebarEntry)
+	}
+}
+
+func TestConfigurationGuides_DocumentTrustedCommandsAndRoleScopedSessions(t *testing.T) {
+	configuration := readGuidanceFile(t, "guides", "configuration.md")
+	for _, phrase := range []string{
+		"`commands.test`, `commands.lint`, and `commands.format` from the pinned trusted default branch",
+		"`allow_repo_commands: true`",
+		"`routes` and `document.instructions` always remain trusted-only",
+	} {
+		if !strings.Contains(configuration, phrase) {
+			t.Errorf("configuration guide is missing trust-boundary wording %q", phrase)
+		}
+	}
+
+	agents := readAgentsGuide(t)
+	for _, phrase := range []string{
+		"provider and Review role that created it",
+		"`allow_repo_commands` can opt pushed-branch commands in",
+		"Repository `routes` and `document.instructions` always remain trusted-only",
+	} {
+		if !strings.Contains(agents, phrase) {
+			t.Errorf("agents guide is missing role or trust wording %q", phrase)
+		}
+	}
+
+	globalConfig := readGuidanceFile(t, "reference", "global-config.md")
+	for _, phrase := range []string{
+		"Session identities are scoped to one run and Review role.",
+		"`allow_repo_commands` is not a global setting",
+		"`routes` and `document.instructions` remain trusted-only",
+	} {
+		if !strings.Contains(globalConfig, phrase) {
+			t.Errorf("global config reference is missing role or trust wording %q", phrase)
+		}
+	}
+
+	for name, content := range map[string]string{
+		"agents guide":            agents,
+		"global config reference": globalConfig,
+	} {
+		for _, unsupported := range []string{"semantic purpose that created it", "Other runners stay cold"} {
+			if strings.Contains(content, unsupported) {
+				t.Errorf("%s still contains unsupported session wording %q", name, unsupported)
+			}
+		}
+	}
 }
 
 func TestPreserveGateFixGuidance_InPointOfUseOutputs(t *testing.T) {
@@ -182,11 +238,16 @@ func renderDriveResultForGuidanceTest(t *testing.T, ciReady bool, status types.R
 
 func readAgentsGuide(t *testing.T) string {
 	t.Helper()
+	return readGuidanceFile(t, "guides", "agents.md")
+}
+
+func readGuidanceFile(t *testing.T, parts ...string) string {
+	t.Helper()
 	// internal/cli -> repo root is two levels up.
-	path := filepath.Join("..", "..", "docs", "src", "content", "docs", "guides", "agents.md")
+	path := filepath.Join(append([]string{"..", "..", "docs", "src", "content", "docs"}, parts...)...)
 	data, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("read agents guide %s: %v", path, err)
+		t.Fatalf("read guidance file %s: %v", path, err)
 	}
 	return string(data)
 }

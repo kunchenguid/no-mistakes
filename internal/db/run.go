@@ -318,12 +318,13 @@ func (d *DB) RecoverStaleRunsExcept(errMsg string, preserved map[string]struct{}
 
 	placeholders, args := recoveryExclusionClause(preserved)
 
-	// Append one interruption terminal for every stale attempt whose pipeline
-	// run is not being reconstructed. The terminal table's primary key makes
-	// recovery idempotent without corrupting a preserved parked run.
+	// Append one interruption terminal for every open pipeline attempt whose run
+	// is not being reconstructed. This intentionally includes children of runs
+	// that are already terminal: a crash can persist the parent transition
+	// before its child terminal facts. The terminal table's primary key and the
+	// anti-join make repeated recovery idempotent.
 	attemptArgs := []any{
 		types.InvocationOutcomeInterrupted, ts, ts, types.InvocationScopePipeline,
-		types.RunPending, types.RunRunning,
 	}
 	attemptArgs = append(attemptArgs, args...)
 	_, err = tx.Exec(
@@ -332,7 +333,7 @@ func (d *DB) RecoverStaleRunsExcept(errMsg string, preserved map[string]struct{}
 		 FROM invocation_attempt_starts AS start
 		 LEFT JOIN invocation_attempt_terminals AS terminal ON terminal.attempt_id = start.id
 		 WHERE terminal.attempt_id IS NULL AND start.scope_kind = ?
-		   AND start.run_id IN (SELECT id FROM runs WHERE status IN (?, ?)`+placeholders+`)`,
+		   AND start.run_id IN (SELECT id FROM runs WHERE 1 = 1`+placeholders+`)`,
 		attemptArgs...,
 	)
 	if err != nil {
@@ -340,13 +341,15 @@ func (d *DB) RecoverStaleRunsExcept(errMsg string, preserved map[string]struct{}
 	}
 
 	// Reserved rounds are audit evidence, not completed prompt/report history.
-	roundArgs := []any{StepRoundFailed, ts, ts, StepRoundReserved, types.RunPending, types.RunRunning}
+	// Finalize every orphaned reservation, including one whose parent run was
+	// already made terminal before the daemon crashed.
+	roundArgs := []any{StepRoundFailed, ts, ts, StepRoundReserved}
 	roundArgs = append(roundArgs, args...)
 	_, err = tx.Exec(
 		`UPDATE step_rounds SET state = ?, completed_at = ?, duration_ms = max(0, (? - started_at) * 1000)
 		 WHERE state = ? AND step_result_id IN (
 			SELECT id FROM step_results WHERE run_id IN (
-				SELECT id FROM runs WHERE status IN (?, ?)`+placeholders+`
+				SELECT id FROM runs WHERE 1 = 1`+placeholders+`
 			)
 		 )`,
 		roundArgs...,

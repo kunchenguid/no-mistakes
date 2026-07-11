@@ -586,6 +586,291 @@ func TestRebaseStep_FixModeRejectsVerifierDirtyWorktreeWithoutHidingIt(t *testin
 	}
 }
 
+func TestRebaseStep_FixModeRejectsVerifierUntrackedExecutableBitMutationWithoutHidingIt(t *testing.T) {
+	t.Parallel()
+	dir, upstream, baseSHA, headSHA := setupRebaseConflictRepo(t)
+	candidatePath := filepath.Join(dir, "candidate-untracked.sh")
+	if err := os.WriteFile(candidatePath, []byte("#!/bin/sh\nexit 0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(candidatePath, 0o755); err != nil {
+		t.Skipf("executable-bit setup unavailable: %v", err)
+	}
+	info, err := os.Lstat(candidatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm()&0o111 == 0 {
+		t.Skip("filesystem does not preserve executable bits")
+	}
+	if err := os.Chmod(candidatePath, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var fixerCandidateSHA string
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			if strings.Contains(opts.Prompt, "independently verifying") {
+				fixerCandidateSHA = gitCmd(t, dir, "rev-parse", "HEAD")
+				if err := os.Chmod(candidatePath, 0o755); err != nil {
+					return nil, err
+				}
+				return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"verified"}`)}, nil
+			}
+			if err := resolveConflictContinue(dir); err != nil {
+				return nil, err
+			}
+			return &agent.Result{Output: json.RawMessage(`{"summary":"resolved"}`)}, nil
+		},
+	}
+
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Fixing = true
+
+	if _, err := (&RebaseStep{}).Execute(sctx); err == nil {
+		t.Fatal("expected verifier executable-bit mutation to fail closed")
+	}
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != fixerCandidateSHA {
+		t.Fatalf("HEAD = %s, want visible fixer candidate %s", got, fixerCandidateSHA)
+	}
+	info, err = os.Lstat(candidatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm()&0o111 == 0 {
+		t.Fatalf("untracked candidate mode = %o, want visible verifier executable bit", info.Mode().Perm())
+	}
+	if sctx.Run.HeadSHA != headSHA {
+		t.Fatalf("Run.HeadSHA = %s, want unchanged %s", sctx.Run.HeadSHA, headSHA)
+	}
+	storedRun, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storedRun.HeadSHA != headSHA {
+		t.Fatalf("stored Run.HeadSHA = %s, want unchanged %s", storedRun.HeadSHA, headSHA)
+	}
+}
+
+func TestRebaseStep_FixModeRejectsVerifierUntrackedSymlinkPayloadMutationWithoutHidingIt(t *testing.T) {
+	t.Parallel()
+	dir, upstream, baseSHA, headSHA := setupRebaseConflictRepo(t)
+	for _, name := range []string{"candidate-target-a.txt", "candidate-target-b.txt"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("same target content\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	candidatePath := filepath.Join(dir, "candidate-untracked-link")
+	if err := os.Symlink("candidate-target-a.txt", candidatePath); err != nil {
+		t.Skipf("symlink setup unavailable: %v", err)
+	}
+
+	var fixerCandidateSHA string
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			if strings.Contains(opts.Prompt, "independently verifying") {
+				fixerCandidateSHA = gitCmd(t, dir, "rev-parse", "HEAD")
+				if err := os.Remove(candidatePath); err != nil {
+					return nil, err
+				}
+				if err := os.Symlink("candidate-target-b.txt", candidatePath); err != nil {
+					return nil, err
+				}
+				return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"verified"}`)}, nil
+			}
+			if err := resolveConflictContinue(dir); err != nil {
+				return nil, err
+			}
+			return &agent.Result{Output: json.RawMessage(`{"summary":"resolved"}`)}, nil
+		},
+	}
+
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Fixing = true
+
+	if _, err := (&RebaseStep{}).Execute(sctx); err == nil {
+		t.Fatal("expected verifier symlink-payload mutation to fail closed")
+	}
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != fixerCandidateSHA {
+		t.Fatalf("HEAD = %s, want visible fixer candidate %s", got, fixerCandidateSHA)
+	}
+	target, err := os.Readlink(candidatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target != "candidate-target-b.txt" {
+		t.Fatalf("untracked candidate symlink target = %q, want visible verifier target", target)
+	}
+	if sctx.Run.HeadSHA != headSHA {
+		t.Fatalf("Run.HeadSHA = %s, want unchanged %s", sctx.Run.HeadSHA, headSHA)
+	}
+	storedRun, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storedRun.HeadSHA != headSHA {
+		t.Fatalf("stored Run.HeadSHA = %s, want unchanged %s", storedRun.HeadSHA, headSHA)
+	}
+}
+
+func TestRebaseStep_FixModeRejectsVerifierUntrackedFileTypeMutationWithoutHidingIt(t *testing.T) {
+	t.Parallel()
+	dir, upstream, baseSHA, headSHA := setupRebaseConflictRepo(t)
+	const payload = "same candidate content\n"
+	targetName := "candidate-target.txt"
+	if err := os.WriteFile(filepath.Join(dir, targetName), []byte(payload), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	candidatePath := filepath.Join(dir, "candidate-untracked")
+	if err := os.WriteFile(candidatePath, []byte(payload), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	probePath := filepath.Join(dir, ".candidate-symlink-probe")
+	if err := os.Symlink(targetName, probePath); err != nil {
+		t.Skipf("symlink setup unavailable: %v", err)
+	}
+	if err := os.Remove(probePath); err != nil {
+		t.Fatal(err)
+	}
+
+	var fixerCandidateSHA string
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			if strings.Contains(opts.Prompt, "independently verifying") {
+				fixerCandidateSHA = gitCmd(t, dir, "rev-parse", "HEAD")
+				if err := os.Remove(candidatePath); err != nil {
+					return nil, err
+				}
+				if err := os.Symlink(targetName, candidatePath); err != nil {
+					return nil, err
+				}
+				return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"verified"}`)}, nil
+			}
+			if err := resolveConflictContinue(dir); err != nil {
+				return nil, err
+			}
+			return &agent.Result{Output: json.RawMessage(`{"summary":"resolved"}`)}, nil
+		},
+	}
+
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Fixing = true
+
+	if _, err := (&RebaseStep{}).Execute(sctx); err == nil {
+		t.Fatal("expected verifier file-type mutation to fail closed")
+	}
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != fixerCandidateSHA {
+		t.Fatalf("HEAD = %s, want visible fixer candidate %s", got, fixerCandidateSHA)
+	}
+	info, err := os.Lstat(candidatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("untracked candidate mode = %s, want visible verifier symlink", info.Mode())
+	}
+	target, err := os.Readlink(candidatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target != targetName {
+		t.Fatalf("untracked candidate symlink target = %q, want %q", target, targetName)
+	}
+	if sctx.Run.HeadSHA != headSHA {
+		t.Fatalf("Run.HeadSHA = %s, want unchanged %s", sctx.Run.HeadSHA, headSHA)
+	}
+	storedRun, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storedRun.HeadSHA != headSHA {
+		t.Fatalf("stored Run.HeadSHA = %s, want unchanged %s", storedRun.HeadSHA, headSHA)
+	}
+}
+
+func TestRebaseStep_FixModeAcceptsCleanVerifierWithUntrackedModesAndSymlinks(t *testing.T) {
+	t.Parallel()
+	dir, upstream, baseSHA, headSHA := setupRebaseConflictRepo(t)
+	executablePath := filepath.Join(dir, "candidate-untracked.sh")
+	if err := os.WriteFile(executablePath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	executableInfo, err := os.Lstat(executablePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if executableInfo.Mode().Perm()&0o111 == 0 {
+		t.Skip("filesystem does not preserve executable bits")
+	}
+	targetName := "candidate-target.txt"
+	if err := os.WriteFile(filepath.Join(dir, targetName), []byte("target content\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	linkPath := filepath.Join(dir, "candidate-untracked-link")
+	if err := os.Symlink(targetName, linkPath); err != nil {
+		t.Skipf("symlink setup unavailable: %v", err)
+	}
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			if strings.Contains(opts.Prompt, "independently verifying") {
+				return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"verified"}`)}, nil
+			}
+			if err := resolveConflictContinue(dir); err != nil {
+				return nil, err
+			}
+			return &agent.Result{Output: json.RawMessage(`{"summary":"resolved"}`)}, nil
+		},
+	}
+
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Fixing = true
+
+	if _, err := (&RebaseStep{}).Execute(sctx); err != nil {
+		t.Fatalf("clean verifier failed: %v", err)
+	}
+	currentHead := gitCmd(t, dir, "rev-parse", "HEAD")
+	if currentHead == headSHA {
+		t.Fatal("clean verifier did not preserve the completed rebase")
+	}
+	if sctx.Run.HeadSHA != currentHead {
+		t.Fatalf("Run.HeadSHA = %s, want rebased HEAD %s", sctx.Run.HeadSHA, currentHead)
+	}
+	info, err := os.Lstat(executablePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm()&0o111 == 0 {
+		t.Fatalf("untracked executable mode = %o, want executable bit", info.Mode().Perm())
+	}
+	target, err := os.Readlink(linkPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target != targetName {
+		t.Fatalf("untracked candidate symlink target = %q, want %q", target, targetName)
+	}
+	storedRun, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storedRun.HeadSHA != currentHead {
+		t.Fatalf("stored Run.HeadSHA = %s, want rebased HEAD %s", storedRun.HeadSHA, currentHead)
+	}
+}
+
 func TestRebaseStep_ForkSyncsPushBranchBeforeDefaultBranch(t *testing.T) {
 	t.Parallel()
 	parent := t.TempDir()

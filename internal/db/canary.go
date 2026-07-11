@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"math/big"
 	"sort"
 
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -49,6 +50,7 @@ type CanaryCohort struct {
 	Runs         []CanaryRunFacts
 	Complete     bool
 	MedianExecMS int64
+	exactMedian  exactInt64Median
 }
 
 // CanaryReport compares the frozen baseline cohort against the routed cohort. It
@@ -309,7 +311,7 @@ func (d *DB) GetCanaryReport() (*CanaryReport, error) {
 	report.Baseline = baseline
 	report.Routed = routed
 	if baseline.Complete && routed.Complete {
-		met := routed.MedianExecMS <= baseline.MedianExecMS*canaryRetainedPercent/100
+		met := canaryTargetMet(baseline.exactMedian, routed.exactMedian)
 		report.Met = &met
 	}
 	return report, nil
@@ -337,7 +339,8 @@ func (d *DB) loadCanaryCohort(cohort string) (CanaryCohort, error) {
 		return CanaryCohort{}, fmt.Errorf("iterate canary cohort %q: %w", cohort, err)
 	}
 	c.Complete = len(c.Runs) >= canaryCohortSize
-	c.MedianExecMS = medianInt64(execs)
+	c.exactMedian = exactMedianInt64(execs)
+	c.MedianExecMS = c.exactMedian.floor()
 	return c, nil
 }
 
@@ -403,16 +406,43 @@ func computeCanaryRunFacts(q canaryQueryer, runID string) (*CanaryRunFacts, erro
 	return facts, nil
 }
 
-func medianInt64(vals []int64) int64 {
+type exactInt64Median struct {
+	lower int64
+	upper int64
+}
+
+func exactMedianInt64(vals []int64) exactInt64Median {
 	n := len(vals)
 	if n == 0 {
-		return 0
+		return exactInt64Median{}
 	}
 	sorted := make([]int64, n)
 	copy(sorted, vals)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
 	if n%2 == 1 {
-		return sorted[n/2]
+		return exactInt64Median{lower: sorted[n/2], upper: sorted[n/2]}
 	}
-	return (sorted[n/2-1] + sorted[n/2]) / 2
+	return exactInt64Median{lower: sorted[n/2-1], upper: sorted[n/2]}
+}
+
+func (m exactInt64Median) floor() int64 {
+	return (m.lower + m.upper) / 2
+}
+
+func medianInt64(vals []int64) int64 {
+	return exactMedianInt64(vals).floor()
+}
+
+func canaryTargetMet(baseline, routed exactInt64Median) bool {
+	// Both exact medians have denominator two, so it cancels. big.Int keeps the
+	// cross-products exact even when persisted millisecond totals approach the
+	// int64 limit.
+	var baselineSum, routedSum, term, scale big.Int
+	baselineSum.SetInt64(baseline.lower)
+	baselineSum.Add(&baselineSum, term.SetInt64(baseline.upper))
+	baselineSum.Mul(&baselineSum, scale.SetInt64(canaryRetainedPercent))
+	routedSum.SetInt64(routed.lower)
+	routedSum.Add(&routedSum, term.SetInt64(routed.upper))
+	routedSum.Mul(&routedSum, scale.SetInt64(100))
+	return routedSum.Cmp(&baselineSum) <= 0
 }

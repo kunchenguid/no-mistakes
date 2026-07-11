@@ -26,6 +26,7 @@ import (
 type EventFunc func(ipc.Event)
 
 type approvalResponse struct {
+	actionID      string
 	action        types.ApprovalAction
 	findingIDs    []string
 	instructions  map[string]string
@@ -111,9 +112,10 @@ type Executor struct {
 	shared   *RunShared
 
 	mu          sync.Mutex
-	approvalCh  chan approvalResponse // buffered channel for approval responses
+	approvalCh  chan approvalResponse // buffered channel for durable approval responses
 	waiting     bool                  // true when blocked on approval
 	waitingStep types.StepName        // which step is currently awaiting approval
+	waitingGate *db.ApprovalGate      // durable gate that the response must match
 }
 
 // SetSkippedSteps configures steps that should be marked skipped without running.
@@ -156,23 +158,24 @@ func (e *Executor) Respond(step types.StepName, action types.ApprovalAction, fin
 // findings on a fix action before the fix agent runs.
 func (e *Executor) RespondWithOverrides(step types.StepName, action types.ApprovalAction, findingIDs []string, instructions map[string]string, addedFindings []types.Finding) error {
 	e.mu.Lock()
-	if !e.waiting {
-		e.mu.Unlock()
+	defer e.mu.Unlock()
+	if !e.waiting || e.waitingGate == nil {
 		return fmt.Errorf("no step awaiting approval")
 	}
 	if step != e.waitingStep {
-		e.mu.Unlock()
 		return fmt.Errorf("step mismatch: responding to %q but %q is awaiting approval", step, e.waitingStep)
 	}
-	e.waiting = false
-	e.mu.Unlock()
-
-	e.approvalCh <- approvalResponse{
-		action:        action,
-		findingIDs:    findingIDs,
-		instructions:  instructions,
-		addedFindings: addedFindings,
+	response, input, err := approvalActionForGate(e.waitingGate, action, findingIDs, instructions, addedFindings)
+	if err != nil {
+		return err
 	}
+	persisted, err := e.db.InsertApprovalAction(input)
+	if err != nil {
+		return fmt.Errorf("persist approval action: %w", err)
+	}
+	response.actionID = persisted.ID
+	e.waiting = false
+	e.approvalCh <- response
 	return nil
 }
 
@@ -302,6 +305,7 @@ type stepExecutionState struct {
 	roundNum                int
 	executionMS             int64
 	currentRoundID          string
+	approvalActionID        string
 	consentedSourceFindings string
 	consentedRepairFindings string
 	consentedIDs            []string
@@ -311,6 +315,7 @@ type recoveredGate struct {
 	index       int
 	step        Step
 	stepResult  *db.StepResult
+	durableGate *db.ApprovalGate
 	findings    string
 	round       int
 	lastRoundID string
@@ -322,6 +327,105 @@ func ValidateRecoveredRun(database *db.DB, run *db.Run, steps []Step) error {
 	}
 	_, err := (&Executor{db: database, steps: steps}).recoveredGate(run.ID)
 	return err
+}
+
+// ValidateRecoveredPrefix proves that an active, non-parked run consists of a
+// completed/skipped prefix followed only by pending steps. An all-terminal
+// sequence is valid: the daemon may have crashed after the final step but
+// before the run itself was marked completed.
+func ValidateRecoveredPrefix(database *db.DB, run *db.Run, steps []Step) error {
+	if run == nil || run.Status != types.RunRunning || run.AwaitingAgentSince != nil {
+		return fmt.Errorf("run is not a recoverable completed prefix")
+	}
+	executor := &Executor{db: database, steps: steps}
+	start, err := executor.recoveredPrefixStart(run.ID)
+	if err != nil {
+		return err
+	}
+	for index := range start {
+		if steps[index].Name() != types.StepPush {
+			continue
+		}
+		seal, err := database.LatestSeal(run.ID)
+		if err != nil {
+			return fmt.Errorf("load recovered publication seal: %w", err)
+		}
+		if seal == nil || seal.SHA != run.HeadSHA {
+			return fmt.Errorf("recovered published prefix is not pinned to the run head")
+		}
+	}
+	return nil
+}
+
+func (e *Executor) recoveredPrefixStart(runID string) (int, error) {
+	results, err := e.db.GetStepsByRun(runID)
+	if err != nil {
+		return 0, fmt.Errorf("get recovered steps: %w", err)
+	}
+	if len(results) != len(e.steps) {
+		return 0, fmt.Errorf("recovered run has %d step records for %d steps", len(results), len(e.steps))
+	}
+	firstPending := len(results)
+	for index, result := range results {
+		if result.StepName != e.steps[index].Name() {
+			return 0, fmt.Errorf("recovered step %d is %q, want %q", index, result.StepName, e.steps[index].Name())
+		}
+		switch result.Status {
+		case types.StepStatusCompleted, types.StepStatusSkipped:
+			if firstPending != len(results) {
+				return 0, fmt.Errorf("recovered step %s is %s after pending step", result.StepName, result.Status)
+			}
+			if result.CompletedAt == nil || result.ExitCode == nil || result.DurationMS == nil || result.LogPath == nil || result.Error != nil || result.AgentPID != nil {
+				return 0, fmt.Errorf("recovered terminal step %s is incomplete", result.StepName)
+			}
+			if result.Status == types.StepStatusCompleted && result.StartedAt == nil {
+				return 0, fmt.Errorf("recovered completed step %s was never started", result.StepName)
+			}
+		case types.StepStatusPending:
+			if firstPending == len(results) {
+				firstPending = index
+			}
+			if result.StartedAt != nil || result.CompletedAt != nil || result.ExitCode != nil || result.DurationMS != nil || result.LogPath != nil || result.FindingsJSON != nil || result.Error != nil || result.AgentPID != nil || result.AutoFixLimit != nil {
+				return 0, fmt.Errorf("recovered pending step %s contains execution state", result.StepName)
+			}
+		default:
+			return 0, fmt.Errorf("recovered step %s has non-reconstructable status %s", result.StepName, result.Status)
+		}
+	}
+	return firstPending, nil
+}
+
+// ResumeRecoveredPrefix continues a previously validated completed/skipped
+// prefix at its first pending step, or finalizes an all-terminal run. It never
+// replays a terminal step.
+func (e *Executor) ResumeRecoveredPrefix(ctx context.Context, run *db.Run, repo *db.Repo, workDir string) error {
+	if repo == nil {
+		return fmt.Errorf("recovered run has no repository")
+	}
+	if err := ValidateRecoveredPrefix(e.db, run, e.steps); err != nil {
+		return err
+	}
+	start, err := e.recoveredPrefixStart(run.ID)
+	if err != nil {
+		return err
+	}
+	headSHA, err := git.HeadSHA(ctx, workDir)
+	if err != nil {
+		return fmt.Errorf("resolve recovered worktree head: %w", err)
+	}
+	if headSHA != run.HeadSHA {
+		return fmt.Errorf("recovered worktree head does not match run head")
+	}
+	logDir := e.paths.RunLogDir(run.ID)
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		return e.failRun(run, repo, fmt.Errorf("create log dir: %w", err))
+	}
+	e.initializeRunScopes(run.ID)
+	circuits, err := e.restoreProviderCircuits(run.ID)
+	if err != nil {
+		return e.failRun(run, repo, fmt.Errorf("restore provider circuits: %w", err), ctx)
+	}
+	return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, start, circuits)
 }
 
 // Resume restores a run that was durably parked at an approval gate when the
@@ -348,10 +452,6 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		return e.failRun(run, repo, fmt.Errorf("restore provider circuits: %w", err), ctx)
 	}
 
-	e.mu.Lock()
-	e.waiting = true
-	e.waitingStep = gate.step.Name()
-	e.mu.Unlock()
 	e.emitStepEventWithFindingsDiffAndError(
 		ipc.EventStepCompleted,
 		run,
@@ -363,19 +463,35 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		"",
 		gate.stepResult.DurationMS,
 	)
-
 	parkStart := time.Unix(*run.AwaitingAgentSince, 0)
-	response, err := e.waitForApproval(ctx, gate.step.Name())
-	if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
-		slog.Warn("failed to complete awaiting-agent state in db", "step", gate.step.Name(), "run", run.ID, "error", dbErr)
+	persistedAction, err := e.db.GetPendingApprovalAction(gate.durableGate.ID)
+	if err != nil {
+		return e.failRun(run, repo, fmt.Errorf("load pending approval action: %w", err), ctx)
+	}
+	var response approvalResponse
+	if persistedAction != nil {
+		response, err = approvalResponseFromRecord(persistedAction)
+	} else {
+		e.mu.Lock()
+		e.waiting = true
+		e.waitingStep = gate.step.Name()
+		e.waitingGate = gate.durableGate
+		e.mu.Unlock()
+		response, err = e.waitForApproval(ctx, gate.step.Name())
 	}
 	if err != nil {
+		if persistedAction == nil {
+			_ = e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds())
+		}
 		duration := recoveredStepDuration(gate.stepResult)
 		if dbErr := e.db.FailStep(gate.stepResult.ID, err.Error(), duration); dbErr != nil {
 			slog.Warn("failed to mark recovered step as failed in db", "step", gate.step.Name(), "error", dbErr)
 		}
 		e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusFailed), "", "", err.Error(), &duration)
 		return e.failRun(run, repo, fmt.Errorf("step %s: waiting for approval: %w", gate.step.Name(), err), ctx)
+	}
+	if err := e.db.CompleteApprovalAction(response.actionID, time.Since(parkStart).Milliseconds()); err != nil {
+		return e.failRun(run, repo, fmt.Errorf("consume approval action: %w", err), ctx)
 	}
 
 	duration := recoveredStepDuration(gate.stepResult)
@@ -443,6 +559,7 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 			roundNum:                gate.round,
 			executionMS:             duration,
 			currentRoundID:          gate.lastRoundID,
+			approvalActionID:        response.actionID,
 			consentedSourceFindings: gate.findings,
 			consentedRepairFindings: payload.findingsJSON,
 			consentedIDs:            payload.findingIDs,
@@ -493,13 +610,27 @@ func (e *Executor) recoveredGate(runID string) (*recoveredGate, error) {
 			if source == nil {
 				return nil, fmt.Errorf("recovered approval gate findings are incomplete")
 			}
+			durableGate, gateErr := e.db.GetCurrentApprovalGate(result.ID)
+			if gateErr != nil {
+				return nil, fmt.Errorf("load durable recovered approval gate: %w", gateErr)
+			}
+			if durableGate == nil ||
+				durableGate.RunID != runID ||
+				durableGate.StepResultID != result.ID ||
+				durableGate.SourceRoundID != source.ID ||
+				durableGate.Status != result.Status ||
+				durableGate.FindingsJSON != *result.FindingsJSON ||
+				durableGate.DurationMS != *result.DurationMS {
+				return nil, fmt.Errorf("recovered approval gate does not match its durable snapshot")
+			}
 			gate = &recoveredGate{
 				index:       index,
 				step:        e.steps[index],
 				stepResult:  result,
-				findings:    *result.FindingsJSON,
+				durableGate: durableGate,
+				findings:    durableGate.FindingsJSON,
 				round:       rounds[len(rounds)-1].Round,
-				lastRoundID: source.ID,
+				lastRoundID: durableGate.SourceRoundID,
 			}
 			continue
 		}
@@ -528,7 +659,7 @@ func (e *Executor) recoveredGateSourceRound(stepName types.StepName, rounds []*d
 		return nil, fmt.Errorf("parse recovered approval gate findings: %w", err)
 	}
 	if len(current.Items) == 0 {
-		return nil, nil
+		return rounds[len(rounds)-1], nil
 	}
 
 	owned := make([]bool, len(current.Items))
@@ -863,18 +994,52 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	currentRoundID := state.currentRoundID
 	postRepairRereview := false
 	var recoveredOutcome *StepOutcome
-	if state.consentedRepairFindings != "" && stepName == types.StepReview && e.routingActive() {
-		remaining, err := e.repairConsentedReviewAtGate(ctx, sctx, run, sr, state.consentedSourceFindings, state.consentedRepairFindings, state.consentedIDs, currentRoundID, &roundNum)
-		if err != nil {
-			return false, err
-		}
-		if remaining == "" {
-			sctx.Fixing = false
-			postRepairRereview = true
-			nextTrigger = "auto_fix"
-		} else {
-			sctx.Fixing = true
-			recoveredOutcome = &StepOutcome{NeedsApproval: true, Findings: remaining}
+	if state.consentedRepairFindings != "" {
+		if stepName == types.StepReview && e.routingActive() {
+			remaining, err := e.repairConsentedReviewAtGate(ctx, sctx, run, sr, state.consentedSourceFindings, state.consentedRepairFindings, state.consentedIDs, currentRoundID, &roundNum)
+			if err != nil {
+				return false, err
+			}
+			if remaining == "" {
+				sctx.Fixing = false
+				postRepairRereview = true
+				nextTrigger = "auto_fix"
+			} else {
+				sctx.Fixing = true
+				recoveredOutcome = &StepOutcome{NeedsApproval: true, Findings: remaining}
+			}
+		} else if stepName != types.StepReview {
+			reserveRepairRound := func(trigger string) (*db.StepRound, error) {
+				roundNum++
+				return e.db.ReserveStepRound(sr.ID, roundNum, trigger)
+			}
+			result, err := e.repairConsentedStepFindings(
+				ctx, sctx, run, sr, stepName, state.approvalActionID,
+				state.consentedRepairFindings, state.consentedIDs, nil, reserveRepairRound,
+			)
+			if err != nil {
+				return false, fmt.Errorf("repair recovered user-consented %s findings: %w", stepName, err)
+			}
+			if !result.Owned || !result.Resolved {
+				return false, fmt.Errorf("recovered user-consented %s repair did not independently resolve every selected blocking finding", stepName)
+			}
+			remaining, err := removeFindingsByID(state.consentedSourceFindings, result.ResolvedIDs)
+			if err != nil {
+				return false, fmt.Errorf("remove recovered resolved %s findings: %w", stepName, err)
+			}
+			if remaining == "" {
+				if err := e.db.ClearStepFindings(sr.ID); err != nil {
+					return false, fmt.Errorf("clear recovered resolved %s findings: %w", stepName, err)
+				}
+				sctx.Fixing = false
+				recoveredOutcome = &StepOutcome{}
+			} else {
+				if err := e.db.SetStepFindings(sr.ID, remaining); err != nil {
+					return false, fmt.Errorf("persist recovered remaining %s findings: %w", stepName, err)
+				}
+				sctx.Fixing = true
+				recoveredOutcome = &StepOutcome{NeedsApproval: true, Findings: remaining}
+			}
 		}
 	}
 
@@ -1065,43 +1230,50 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			}
 		}
 
-		// Mark executor as ready to receive approval before updating DB or
-		// emitting events, so that callers who poll the DB status can
-		// immediately call Respond once they see it.
+		rounds, sourceErr := e.db.GetRoundsByStep(sr.ID)
+		if sourceErr != nil {
+			return false, fmt.Errorf("load %s rounds before approval: %w", stepName, sourceErr)
+		}
+		sourceRound, sourceErr := e.recoveredGateSourceRound(stepName, rounds, outcome.Findings)
+		if sourceErr != nil {
+			return false, fmt.Errorf("validate %s approval findings: %w", stepName, sourceErr)
+		}
+		if sourceRound == nil {
+			return false, fmt.Errorf("%s approval findings are corrupt or not attributable to a completed round", stepName)
+		}
+		gate, parkErr := e.db.ParkApprovalGate(db.ParkApprovalGateInput{
+			RunID:         run.ID,
+			StepResultID:  sr.ID,
+			SourceRoundID: sourceRound.ID,
+			Status:        approvalStatus,
+			FindingsJSON:  outcome.Findings,
+			DurationMS:    executionMS,
+		})
+		if parkErr != nil {
+			return false, fmt.Errorf("park %s approval gate: %w", stepName, parkErr)
+		}
+		currentRoundID = sourceRound.ID
+		parkStart := time.Now()
 		e.mu.Lock()
 		e.waiting = true
 		e.waitingStep = stepName
+		e.waitingGate = gate
 		e.mu.Unlock()
-
-		// Parking starts before the gate becomes observable. This includes the
-		// small handoff from publishing the gate to receiving a response, and
-		// prevents a prompt response from being omitted from the parked total.
-		parkStart := time.Now()
-
-		// Surface the park as a pollable, run-level signal so a supervisor can
-		// tell in one `axi status` read that the run is waiting for the agent
-		// to drive this gate (versus actively running/fixing/ci). Observability
-		// only: it does not change the wait below. Cleared once the wait ends.
-		if dbErr := e.db.SetRunAwaitingAgent(run.ID); dbErr != nil {
-			slog.Warn("failed to set awaiting-agent marker in db", "step", stepName, "run", run.ID, "error", dbErr)
-		}
-
-		// Step needs approval - store execution-only duration and wait for user action.
-		if dbErr := e.db.UpdateStepStatusWithDuration(sr.ID, approvalStatus, executionMS); dbErr != nil {
-			slog.Warn("failed to update step status and duration in db", "step", stepName, "status", approvalStatus, "error", dbErr)
-		}
 		e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(approvalStatus), outcome.Findings, diffText, "", &executionMS)
 
 		response, err := e.waitForApproval(ctx, stepName)
-		if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
-			slog.Warn("failed to complete awaiting-agent state in db", "step", stepName, "run", run.ID, "error", dbErr)
-		}
 		if err != nil {
+			if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
+				err = fmt.Errorf("%w; clear approval park: %v", err, dbErr)
+			}
 			if dbErr := e.db.FailStep(sr.ID, err.Error(), executionMS); dbErr != nil {
 				slog.Warn("failed to mark step as failed in db", "step", stepName, "error", dbErr)
 			}
 			e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFailed), "", "", err.Error(), &executionMS)
 			return false, fmt.Errorf("step %s: waiting for approval: %w", stepName, err)
+		}
+		if err := e.db.CompleteApprovalAction(response.actionID, time.Since(parkStart).Milliseconds()); err != nil {
+			return false, fmt.Errorf("consume %s approval action: %w", stepName, err)
 		}
 
 		approvalFields := telemetry.Fields{
@@ -1181,6 +1353,59 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 				sctx.Fixing = true
 				executionMS += time.Since(phaseStart).Milliseconds()
 				goto approval
+			}
+			if stepName != types.StepReview {
+				reserveRepairRound := func(trigger string) (*db.StepRound, error) {
+					roundNum++
+					return e.db.ReserveStepRound(sr.ID, roundNum, trigger)
+				}
+				result, err := e.repairConsentedStepFindings(
+					ctx,
+					sctx,
+					run,
+					sr,
+					stepName,
+					response.actionID,
+					payload.findingsJSON,
+					payload.findingIDs,
+					outcome.RepairChecks,
+					reserveRepairRound,
+				)
+				if err != nil {
+					return false, fmt.Errorf("repair user-consented %s findings: %w", stepName, err)
+				}
+				if !result.Owned || !result.Resolved {
+					return false, fmt.Errorf("user-consented %s repair did not independently resolve every selected blocking finding", stepName)
+				}
+				updated, err := mergeRepairFindingsJSON(outcome.Findings, result.NewFindings)
+				if err != nil {
+					return false, fmt.Errorf("merge consented %s verifier findings: %w", stepName, err)
+				}
+				updated, err = removeFindingsByID(updated, result.ResolvedIDs)
+				if err != nil {
+					return false, fmt.Errorf("remove resolved consented %s findings: %w", stepName, err)
+				}
+				outcome.Findings = updated
+				if updated == "" {
+					if err := e.db.ClearStepFindings(sr.ID); err != nil {
+						return false, fmt.Errorf("clear resolved consented %s findings: %w", stepName, err)
+					}
+				} else if err := e.db.SetStepFindings(sr.ID, updated); err != nil {
+					return false, fmt.Errorf("persist remaining consented %s findings: %w", stepName, err)
+				}
+				if stepName == types.StepVerify {
+					if err := e.sealCandidate(ctx, run, workDir); err != nil {
+						return false, fmt.Errorf("reseal after consented verify repair: %w", err)
+					}
+				}
+				executionMS += time.Since(phaseStart).Milliseconds()
+				if hasBlockingFindingsJSON(updated) || hasAskUserFindingsJSON(updated) {
+					sctx.Fixing = true
+					goto approval
+				}
+				sctx.Fixing = false
+				phaseStart = time.Now()
+				goto done
 			}
 			sctx.Fixing = true
 			sctx.PreviousFindings = payload.findingsJSON
@@ -1305,6 +1530,7 @@ func (e *Executor) waitForApproval(ctx context.Context, stepName types.StepName)
 		e.mu.Lock()
 		e.waiting = false
 		e.waitingStep = ""
+		e.waitingGate = nil
 		e.mu.Unlock()
 		// Drain any stale response that arrived after context cancellation
 		select {

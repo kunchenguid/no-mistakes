@@ -32,7 +32,8 @@
 
 `no-mistakes` puts a local git proxy in front of your real remote.
 Push to `no-mistakes` instead of `origin` and it runs an AI-driven validation pipeline in a disposable worktree.
-The branch reaches the configured push target only after every check passes, and a clean PR opens automatically.
+Local and pre-push gates must pass before Push publishes the exact commit certified by Verify.
+PR creation and hosted CI happen after publication.
 
 What you get:
 
@@ -55,16 +56,16 @@ Full documentation: <https://kunchenguid.github.io/no-mistakes/>
    │  intent → rebase → review → test → document    │
    │  → lint → verify → push → PR → CI              │
    └────────────────────────────────────────────────┘
-            │  every check green
+            │  local and pre-push gates pass before Push
             ▼
-        clean PR, opened for you
+        verified commit published, clean PR opened, hosted CI green
 ```
 
 The pipeline always runs the same ten steps: intent, rebase, review, test, document, lint, verify, push, PR, CI.
 Each step passes on its own or stops with a finding.
 Safe findings are repaired for you; anything that touches your intent waits for your decision.
 The push step transports only the exact commit the verify step certified.
-Nothing reaches the configured push target until every check is green.
+Nothing reaches the configured push target until every local and pre-push gate is green.
 
 ## How model calls are chosen
 
@@ -113,7 +114,9 @@ For GitHub fork contributions, keep `origin` pointed at the parent repository an
 
 From the TUI you act on each finding.
 The pipeline repairs safe findings itself and verifies each repair independently; judgment calls stop the run for you to approve, fix, or skip.
-Once every check is green, the gate forwards the verified commit to the configured push target and opens the PR for you, so there is no manual `git push origin` and no hand-written PR body.
+After every local and pre-push gate is green, Push forwards the verified commit to the configured push target.
+The PR opens after publication, and hosted CI then checks the published commit.
+You do not need to run `git push origin` or write the PR body.
 Prefer to let your coding agent drive the same flow headlessly?
 Use `/no-mistakes` (see below).
 

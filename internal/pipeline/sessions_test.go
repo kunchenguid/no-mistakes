@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -31,6 +32,7 @@ type fakeSessionAgent struct {
 	failResumes  map[string]error // session id -> error returned when resumed
 	failNext     error            // error returned on the next call regardless
 	supportsFlag bool
+	beforeRun    func(agent.RunOpts, int)
 }
 
 func newFakeSessionAgent() *fakeSessionAgent {
@@ -52,6 +54,9 @@ func (f *fakeSessionAgent) Run(_ context.Context, opts agent.RunOpts) (*agent.Re
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, sessionCall{prompt: opts.Prompt, session: opts.Session, fallback: opts.SessionFallback})
+	if f.beforeRun != nil {
+		f.beforeRun(opts, len(f.calls))
+	}
 
 	if f.failNext != nil {
 		err := f.failNext
@@ -489,5 +494,54 @@ func TestRunSessions_AgentChangeDiscardsStoredSession(t *testing.T) {
 	}
 	if call := fake.calls[0]; call.session == nil || call.session.ID != "" {
 		t.Fatalf("stored session for another agent must be discarded, got %+v", call.session)
+	}
+}
+
+func TestRunSessionsRestoresFailedResumeBeforeColdFixerFallback(t *testing.T) {
+	d, run := sessionTestDB(t)
+	scope := reservedReviewScope(t, d, run)
+	if err := d.UpsertRunAgentSession(run.ID, string(SessionRoleFixer), "codex", "dead-codex-session"); err != nil {
+		t.Fatalf("seed fixer session: %v", err)
+	}
+	dir, before := seedRoutedCandidateState(t)
+
+	codex := newFakeSessionAgent()
+	codex.name = "codex"
+	codex.failResumes["dead-codex-session"] = errors.New("session not found")
+	codex.beforeRun = func(opts agent.RunOpts, call int) {
+		switch call {
+		case 1:
+			mutateFailedRoutedCandidate(t, opts.CWD, "failed-resume")
+		case 2:
+			assertRoutedCandidateState(t, opts.CWD, before)
+			writeTestFile(t, opts.CWD, "successful-cold-fallback.txt", "successful fallback\n")
+		}
+	}
+	claude := newFakeSessionAgent()
+	claude.name = "claude"
+	invoker := newRoutingInvoker(config.DefaultRoutingConfig(), d, newProviderCircuits())
+	invoker.newAgent = perRunner(codex, claude)
+	sessions := NewRunSessions(d, run.ID, nil, true)
+
+	result, err := sessions.InvokeRequest(context.Background(), invoker, SessionRoleFixer, agent.InvocationRequest{
+		Purpose: types.PurposeStructuredFindingRepair,
+		Tier:    1,
+		Scope:   scope,
+		Payload: agent.RunOpts{Prompt: "repair", CWD: dir},
+	}, nil)
+	if err != nil {
+		t.Fatalf("InvokeRequest: %v", err)
+	}
+	if result == nil || result.SessionID != "sess-1" {
+		t.Fatalf("fallback result = %+v", result)
+	}
+	assertRoutedCandidateBase(t, dir, before)
+	if got, err := os.ReadFile(filepath.Join(dir, "successful-cold-fallback.txt")); err != nil || string(got) != "successful fallback\n" {
+		t.Fatalf("successful fallback mutation = %q, err = %v", got, err)
+	}
+	for _, failed := range []string{"failed-resume-staged.txt", "failed-resume-untracked.txt", "failed-resume-after-commit.txt"} {
+		if _, err := os.Lstat(filepath.Join(dir, failed)); !os.IsNotExist(err) {
+			t.Fatalf("failed resume mutation %q survived cold fallback: %v", failed, err)
+		}
 	}
 }

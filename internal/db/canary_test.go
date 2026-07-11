@@ -453,6 +453,83 @@ func TestCanaryReportTargetPendingUntilBothCohortsComplete(t *testing.T) {
 	}
 }
 
+func TestCanaryReportTargetUsesExactFractionalMedians(t *testing.T) {
+	d := openTestDB(t)
+	repo, err := d.InsertRepoWithID("repo-1", "/tmp/repo", "origin", "main")
+	if err != nil {
+		t.Fatalf("insert repo: %v", err)
+	}
+	for _, execMS := range []int64{1, 2, 3, 4, 10, 11, 12, 13, 14, 15} {
+		seedCompletedCanaryRun(t, d, repo.ID, execMS, 0, 0, 0)
+	}
+	if _, err := d.ActivateCanary("fp", nil); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	for i, execMS := range []int64{1, 2, 3, 4, 7, 8, 9, 10, 11, 12} {
+		id := seedCompletedCanaryRun(t, d, repo.ID, execMS, 0, 0, 0)
+		if added, err := d.RecordRoutedRunInCanary(id, -1, -1); err != nil || !added {
+			t.Fatalf("routed run %d added=%v err=%v", i, added, err)
+		}
+	}
+
+	report, err := d.GetCanaryReport()
+	if err != nil {
+		t.Fatalf("report: %v", err)
+	}
+	if report.Baseline.MedianExecMS != 10 || report.Routed.MedianExecMS != 7 {
+		t.Fatalf("display medians = %d/%d, want compatible integer fields 10/7", report.Baseline.MedianExecMS, report.Routed.MedianExecMS)
+	}
+	if report.Met == nil || *report.Met {
+		t.Fatalf("target met = %v, want false: exact medians 10.5 and 7.5 improve by less than 30%%", report.Met)
+	}
+}
+
+func TestCanaryTargetMetBoundaries(t *testing.T) {
+	tests := []struct {
+		name     string
+		baseline []int64
+		routed   []int64
+	}{
+		{
+			name:     "exactly 30 percent with fractional routed median",
+			baseline: []int64{15, 15},
+			routed:   []int64{10, 11},
+		},
+		{
+			name:     "more than 30 percent with fractional baseline",
+			baseline: []int64{10, 11},
+			routed:   []int64{7, 7},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !canaryTargetMet(exactMedianInt64(tt.baseline), exactMedianInt64(tt.routed)) {
+				t.Fatal("target met = false, want true")
+			}
+		})
+	}
+}
+
+func TestMedianInt64EmptyOddAndEven(t *testing.T) {
+	tests := []struct {
+		name string
+		vals []int64
+		want int64
+	}{
+		{name: "empty", want: 0},
+		{name: "odd unsorted", vals: []int64{9, 1, 5}, want: 5},
+		{name: "even integral", vals: []int64{12, 4, 8, 6}, want: 7},
+		{name: "even fractional floors display", vals: []int64{11, 10}, want: 10},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := medianInt64(tt.vals); got != tt.want {
+				t.Fatalf("medianInt64(%v) = %d, want %d", tt.vals, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestCanaryReportCompleteCohortCanMissAdvisoryTarget(t *testing.T) {
 	d := openTestDB(t)
 	repo, err := d.InsertRepoWithID("repo-1", "/tmp/repo", "origin", "main")

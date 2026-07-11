@@ -347,6 +347,100 @@ func (e *Executor) maybeRepairStepFindings(ctx context.Context, sctx *StepContex
 	return result, nil
 }
 
+// repairConsentedStepFindings routes a user-authorized non-Review repair
+// through the same fixer -> deterministic checks -> independent verifier
+// journal as automatic repairs. The approval action identity is the stable
+// lineage namespace, so replay after a crash reuses already-resolved cycles
+// instead of silently treating a generic step rerun as repair evidence.
+func (e *Executor) repairConsentedStepFindings(
+	ctx context.Context,
+	sctx *StepContext,
+	run *db.Run,
+	sr *db.StepResult,
+	stepName types.StepName,
+	actionID string,
+	findingsJSON string,
+	findingIDs []string,
+	checks []repairCheck,
+	reserveRound func(string) (*db.StepRound, error),
+) (repairResult, error) {
+	if !e.routingActive() || sctx.Invoker == nil {
+		return repairResult{}, fmt.Errorf("consented %s repair requires configured routing", stepName)
+	}
+	if strings.TrimSpace(actionID) == "" {
+		return repairResult{}, fmt.Errorf("consented %s repair has no durable approval action", stepName)
+	}
+	policy, ok := stepRepairPolicyFor(e.config.Routing, stepName)
+	if !ok {
+		return repairResult{}, fmt.Errorf("step %s has no routed repair policy", stepName)
+	}
+	findings, err := types.ParseFindingsJSON(findingsJSON)
+	if err != nil {
+		return repairResult{}, fmt.Errorf("parse consented %s findings: %w", stepName, err)
+	}
+	consented := findByIDs(findings.Items, findingIDs)
+	if len(consented) != len(findingIDs) || len(consented) == 0 {
+		return repairResult{}, fmt.Errorf("consented %s repair requires exact attributable finding ids", stepName)
+	}
+	seeds := make([]repairSeed, 0, len(consented))
+	for _, finding := range consented {
+		if !isBlockingSeverity(finding.Severity) {
+			continue
+		}
+		seeds = append(seeds, repairSeed{
+			LineageID: fmt.Sprintf("approval:%s:%s", actionID, finding.ID),
+			Finding:   finding,
+		})
+	}
+	if len(seeds) == 0 {
+		return repairResult{}, fmt.Errorf("consented %s repair selected no blocking findings", stepName)
+	}
+
+	result := repairResult{Owned: true, Resolved: true}
+	pending := make([]repairSeed, 0, len(seeds))
+	for _, seed := range seeds {
+		repairs, err := e.db.GetFindingRepairsByLineage(seed.LineageID)
+		if err != nil {
+			return repairResult{}, fmt.Errorf("load consented %s repair lineage: %w", stepName, err)
+		}
+		if len(repairs) > 0 && repairs[len(repairs)-1].Status == db.RepairStatusResolved {
+			result.ResolvedIDs = append(result.ResolvedIDs, seed.Finding.ID)
+			continue
+		}
+		pending = append(pending, seed)
+	}
+	if len(pending) == 0 {
+		return result, nil
+	}
+	rc := &repairCoordinator{
+		invoker:       sctx.Invoker,
+		sessions:      sctx.Sessions,
+		db:            e.db,
+		run:           run,
+		stepResultID:  sr.ID,
+		stepName:      stepName,
+		workDir:       sctx.WorkDir,
+		branch:        run.Branch,
+		defaultBranch: sctx.Repo.DefaultBranch,
+		intent:        sctx.UserIntent,
+		baseSHA:       run.BaseSHA,
+		checks:        checks,
+		policy:        policy,
+		log:           sctx.Log,
+		logChunk:      sctx.LogChunk,
+		reserveRound:  reserveRound,
+	}
+	states, err := rc.escalateBatch(ctx, pending)
+	if err != nil {
+		return repairResult{}, err
+	}
+	repaired := repairResultFromStates(states, pending)
+	result.Resolved = repaired.Resolved
+	result.ResolvedIDs = append(result.ResolvedIDs, repaired.ResolvedIDs...)
+	result.NewFindings = append(result.NewFindings, repaired.NewFindings...)
+	return result, nil
+}
+
 // syntheticSeeds mints an in-memory root lineage per deterministic step finding.
 // A configured-command failure has no producing agent attempt, so its lineage
 // id is run-local rather than a durable finding lineage tied to an attempt.

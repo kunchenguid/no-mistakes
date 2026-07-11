@@ -20,6 +20,15 @@ type Agent interface {
 	Close() error
 }
 
+// AttemptIsolation restores the candidate after one concrete write-capable
+// attempt fails. The implementation owns the exact pre-attempt snapshot and
+// must use an uncancelled context so cancellation cannot strand partial edits.
+// Calls are idempotent because adapter, routing, and session fallback layers
+// each defend their own retry boundary.
+type AttemptIsolation interface {
+	RestoreFailedAttempt() error
+}
+
 // RunOpts configures a single agent invocation.
 type RunOpts struct {
 	Prompt      string
@@ -47,6 +56,11 @@ type RunOpts struct {
 	// fallback-provider attempts, after it completes. It is instrumentation
 	// only and must not change invocation behavior.
 	OnAttempt func(Attempt)
+	// AttemptIsolation is installed only for registry-authorized fixer
+	// invocations. Native retry loops call it after every failed concrete
+	// attempt; routing and session layers repeat the restore defensively before
+	// provider or cold-session fallback and before returning a final error.
+	AttemptIsolation AttemptIsolation
 	// Model and Effort, when non-empty, are the normalized routed model and
 	// reasoning effort. The codex and claude adapters translate them to exact
 	// native arguments. Empty values preserve the legacy invocation, emitting

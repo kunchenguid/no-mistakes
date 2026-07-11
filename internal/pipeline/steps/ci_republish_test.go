@@ -3,15 +3,18 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -217,6 +220,15 @@ func TestCIStep_AutoFixSealsBeforeRemoteChanges(t *testing.T) {
 		t.Fatal(err)
 	} else if seal != nil {
 		t.Fatalf("injected seal failure still recorded %+v", seal)
+	}
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != originalHead {
+		t.Fatalf("failed pre-seal repair left HEAD %s, want %s", got, originalHead)
+	}
+	if got := gitCmd(t, dir, "status", "--porcelain"); got != "" {
+		t.Fatalf("failed pre-seal repair left worktree changes: %q", got)
+	}
+	if got := gitCmd(t, dir, "for-each-ref", "--format=%(objectname)", ciRepublishPendingRef(sctx)); got != "" {
+		t.Fatalf("failed pre-seal repair left an unsealed pending ref at %s", got)
 	}
 }
 
@@ -458,5 +470,186 @@ func TestCIStep_RejectedCleanChangedHeadRestoresRecordedCandidate(t *testing.T) 
 	}
 	if got := gitCmd(t, upstream, "rev-parse", "refs/heads/feature"); got != originalHead {
 		t.Fatalf("rejected candidate moved remote to %s; want %s", got, originalHead)
+	}
+}
+
+func TestCIStep_PollRetriesSealedCandidateWithoutAnotherRepairTier(t *testing.T) {
+	upstream, dir, baseSHA, originalHead := setupCIRepublish(t)
+	ag := &ciRepublishAgent{fix: func(cwd string) error {
+		return os.WriteFile(filepath.Join(cwd, "retryable-ci-fix.txt"), []byte("fixed\n"), 0o644)
+	}}
+	step, sctx, _, pr := republishContext(t, ag, upstream, dir, baseSHA, originalHead, config.Commands{})
+	configureCIPollRepublishTest(t, sctx, pr)
+	installRejectFirstPushHook(t, upstream)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	sctx.Ctx = ctx
+	waits := 0
+	oneTier := 1
+	step.fixBudget = &oneTier
+	step.waitForNextPoll = func(ctx context.Context, _ time.Duration) error {
+		waits++
+		if waits == 2 {
+			cancel()
+		}
+		return ctx.Err()
+	}
+
+	if _, err := step.Execute(sctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Execute error = %v, want cancellation after sealed republish", err)
+	}
+	if ag.fixerCalls != 1 || ag.verifierCalls != 1 {
+		t.Fatalf("agent calls = fixer %d, verifier %d; want one repair tier and one verification", ag.fixerCalls, ag.verifierCalls)
+	}
+	assertCIPollRepublishedSeal(t, sctx, upstream, pr, 0)
+}
+
+func TestCIStep_RestartRetriesSealedCandidateWithoutAnotherRepairTier(t *testing.T) {
+	upstream, dir, baseSHA, originalHead := setupCIRepublish(t)
+	ag := &ciRepublishAgent{fix: func(cwd string) error {
+		return os.WriteFile(filepath.Join(cwd, "restart-ci-fix.txt"), []byte("fixed\n"), 0o644)
+	}}
+	firstStep, sctx, _, pr := republishContext(t, ag, upstream, dir, baseSHA, originalHead, config.Commands{})
+	configureCIPollRepublishTest(t, sctx, pr)
+	hook := installRejectAllPushesHook(t, upstream)
+
+	firstCtx, firstCancel := context.WithCancel(context.Background())
+	sctx.Ctx = firstCtx
+	oneTier := 1
+	firstStep.fixBudget = &oneTier
+	firstStep.waitForNextPoll = func(ctx context.Context, _ time.Duration) error {
+		firstCancel()
+		return ctx.Err()
+	}
+	if _, err := firstStep.Execute(sctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("first Execute error = %v, want cancellation after rejected publication", err)
+	}
+	if ag.fixerCalls != 1 || ag.verifierCalls != 1 {
+		t.Fatalf("first process agent calls = fixer %d, verifier %d; want one each", ag.fixerCalls, ag.verifierCalls)
+	}
+	seal, err := sctx.DB.LatestSealByReason(sctx.Run.ID, "ci_republish")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seal == nil {
+		t.Fatal("rejected publication did not leave a durable seal")
+	}
+	if got := gitCmd(t, dir, "for-each-ref", "--format=%(objectname)", ciRepublishPendingRef(sctx)); got != seal.SHA {
+		t.Fatalf("pending ref = %q, want sealed SHA %s", got, seal.SHA)
+	}
+	if got := gitCmd(t, upstream, "rev-parse", "refs/heads/feature"); got != originalHead {
+		t.Fatalf("first process moved remote to %s, want %s", got, originalHead)
+	}
+
+	if err := os.Remove(hook); err != nil {
+		t.Fatal(err)
+	}
+	reloadedRun, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sctx.Run = reloadedRun
+	secondCtx, secondCancel := context.WithCancel(context.Background())
+	t.Cleanup(secondCancel)
+	sctx.Ctx = secondCtx
+	restartedStep := &CIStep{fixBudget: &oneTier}
+	restartedStep.waitForNextPoll = func(ctx context.Context, _ time.Duration) error {
+		secondCancel()
+		return ctx.Err()
+	}
+	if _, err := restartedStep.Execute(sctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("restarted Execute error = %v, want cancellation after sealed republish", err)
+	}
+	if ag.fixerCalls != 1 || ag.verifierCalls != 1 {
+		t.Fatalf("restart agent calls = fixer %d, verifier %d; want no rerun", ag.fixerCalls, ag.verifierCalls)
+	}
+	assertCIPollRepublishedSeal(t, sctx, upstream, pr, 0)
+}
+
+func configureCIPollRepublishTest(t *testing.T, sctx *pipeline.StepContext, pr *scm.PR) {
+	t.Helper()
+	sctx.Env = fakeCIGH(t, "OPEN", `[{"name":"test","status":"COMPLETED","conclusion":"failure","bucket":"fail"}]`)
+	sctx.Run.PRURL = &pr.URL
+	if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, pr.URL); err != nil {
+		t.Fatal(err)
+	}
+	sctx.Config.CITimeout = time.Minute
+	stepResult, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepCI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	round, err := sctx.DB.ReserveStepRound(stepResult.ID, 1, "initial")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sctx.StepResultID = stepResult.ID
+	sctx.CurrentRound = round
+	sctx.InvocationScope = types.InvocationScope{
+		Kind:         types.InvocationScopePipeline,
+		RunID:        sctx.Run.ID,
+		StepResultID: stepResult.ID,
+		StepRoundID:  round.ID,
+	}
+	sctx.Invoker = pipeline.NewUtilityRoutingInvoker(
+		config.DefaultRoutingConfig(),
+		sctx.DB,
+		func(types.AgentName, string) (agent.Agent, error) {
+			return sctx.Agent, nil
+		},
+	)
+}
+
+func installRejectFirstPushHook(t *testing.T, upstream string) string {
+	t.Helper()
+	hook := filepath.Join(upstream, "hooks", "pre-receive")
+	script := `#!/bin/sh
+marker="$(dirname "$0")/rejected-once"
+if [ ! -e "$marker" ]; then
+	: > "$marker"
+	exit 1
+fi
+exit 0
+`
+	if err := os.WriteFile(hook, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return hook
+}
+
+func installRejectAllPushesHook(t *testing.T, upstream string) string {
+	t.Helper()
+	hook := filepath.Join(upstream, "hooks", "pre-receive")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return hook
+}
+
+func assertCIPollRepublishedSeal(t *testing.T, sctx *pipeline.StepContext, upstream string, pr *scm.PR, wantTier int) {
+	t.Helper()
+	seal, err := sctx.DB.LatestSealByReason(sctx.Run.ID, "ci_republish")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seal == nil {
+		t.Fatal("CI poll did not retain a durable republish seal")
+	}
+	if got := gitCmd(t, upstream, "rev-parse", "refs/heads/feature"); got != seal.SHA {
+		t.Fatalf("remote SHA = %s, want sealed SHA %s", got, seal.SHA)
+	}
+	if got := gitCmd(t, sctx.WorkDir, "for-each-ref", "--format=%(objectname)", ciRepublishPendingRef(sctx)); got != "" {
+		t.Fatalf("successful publication left pending ref at %s", got)
+	}
+	lineage := ciHostedFailureLineage(sctx.Run.ID, pr.URL, "check", "test")
+	repairs, err := sctx.DB.GetFindingRepairsByLineage(lineage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repairs) != 1 {
+		t.Fatalf("durable CI repairs = %d, want one repair tier: %+v", len(repairs), repairs)
+	}
+	if repairs[0].Tier != wantTier || repairs[0].Status != db.RepairStatusUnresolved {
+		t.Fatalf("durable CI repair = tier %d/status %q, want tier %d/status %q", repairs[0].Tier, repairs[0].Status, wantTier, db.RepairStatusUnresolved)
 	}
 }

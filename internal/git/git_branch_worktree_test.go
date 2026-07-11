@@ -111,7 +111,7 @@ func TestPush(t *testing.T) {
 	run(t, src, "git", "remote", "add", "dest", bare)
 
 	// push main branch
-	if err := Push(ctx, src, "dest", "refs/heads/main", "", false); err != nil {
+	if err := Push(ctx, src, "dest", "HEAD", "refs/heads/main", "", false); err != nil {
 		t.Fatalf("Push failed: %v", err)
 	}
 
@@ -123,6 +123,33 @@ func TestPush(t *testing.T) {
 	expected := run(t, src, "git", "rev-parse", "HEAD")
 	if out != expected {
 		t.Fatalf("expected %q, got %q", expected, out)
+	}
+}
+
+func TestPushExplicitSourceRef(t *testing.T) {
+	ctx := context.Background()
+	src := initTestRepo(t)
+	bare := filepath.Join(t.TempDir(), "dest.git")
+	if err := InitBare(ctx, bare); err != nil {
+		t.Fatal(err)
+	}
+	run(t, src, "git", "remote", "add", "dest", bare)
+
+	sealedSHA := run(t, src, "git", "rev-parse", "HEAD")
+	writeFile(t, filepath.Join(src, "unsealed.txt"), "not verified\n")
+	run(t, src, "git", "add", ".")
+	run(t, src, "git", "commit", "-m", "unsealed commit")
+
+	if err := Push(ctx, src, "dest", sealedSHA, "refs/heads/main", "", false); err != nil {
+		t.Fatalf("Push explicit source failed: %v", err)
+	}
+
+	publishedSHA, err := Run(ctx, bare, "rev-parse", "refs/heads/main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if publishedSHA != sealedSHA {
+		t.Fatalf("published SHA = %s, want explicit source %s", publishedSHA, sealedSHA)
 	}
 }
 
@@ -142,7 +169,7 @@ func TestPushWithOptionsForwardsPushOptions(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := PushWithOptions(ctx, src, "dest", "refs/heads/main", "", false, []string{"no-mistakes.skip=test,lint"}); err != nil {
+	if err := PushWithOptions(ctx, src, "dest", "HEAD", "refs/heads/main", "", false, []string{"no-mistakes.skip=test,lint"}); err != nil {
 		t.Fatalf("PushWithOptions failed: %v", err)
 	}
 
@@ -173,7 +200,7 @@ func TestPushForceWithLease(t *testing.T) {
 	run(t, src, "git", "commit", "-m", "new commit")
 
 	// force-with-lease should succeed with correct expected SHA
-	if err := Push(ctx, src, "dest", "refs/heads/main", expectedSHA, true); err != nil {
+	if err := Push(ctx, src, "dest", "HEAD", "refs/heads/main", expectedSHA, true); err != nil {
 		t.Fatalf("PushForceWithLease failed: %v", err)
 	}
 

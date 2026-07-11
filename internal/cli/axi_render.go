@@ -583,12 +583,12 @@ func gateFields(gate stepView) []toon.Field {
 	if parsed.RiskLevel != "" {
 		gfields = append(gfields, toon.Field{Key: "risk", Value: parsed.RiskLevel})
 	}
-	// Point-of-use reminder at the review gate: review findings park for
-	// explicit consent, ask-user belongs to the user unless --yes supplies
-	// standing consent, and unattended consent fails closed on an unresolved
-	// blocking repair. Model selection and repair follow the routing contract.
+	// Point-of-use reminder at the review gate: objective auto-fix findings
+	// enter repair before the gate, while ask-user findings and unresolved
+	// blocking lineages require explicit consent. Unattended consent still
+	// fails closed on an unresolved blocking repair.
 	if gate.Name == string(types.StepReview) {
-		gfields = append(gfields, toon.Field{Key: "note", Value: "Review findings are parked for explicit consent. ask-user requires the user's decision unless --yes supplies standing consent; --yes aborts rather than accepts an unresolved blocking repair."})
+		gfields = append(gfields, toon.Field{Key: "note", Value: "Review runs auto-fix cascades before a gate; ask-user findings and unresolved blocking repair lineages park for explicit user decision; --yes aborts rather than accepts an unresolved blocking repair."})
 	}
 	rows := make([]findingRow, 0, len(parsed.Items))
 	for _, f := range parsed.Items {

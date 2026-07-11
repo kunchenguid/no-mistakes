@@ -57,8 +57,8 @@ func TestBodyDocumentsAxiGateGuidance(t *testing.T) {
 		"inspect it with `no-mistakes axi status`",
 		"drive it with `no-mistakes axi respond`",
 		"when it still matches your current `HEAD`",
-		"**Blocking and ask-user review findings park for your decision**",
-		"being silently self-fixed",
+		"Review automatically sends every `auto-fix` finding into its routed repair cascade",
+		"`ask-user` findings park before any fixer runs",
 	} {
 		if !strings.Contains(md, want) {
 			t.Errorf("body should document AXI gate guidance: missing %q", want)
@@ -122,11 +122,88 @@ func TestBodyConsentFailClosedWording(t *testing.T) {
 		"it does not approve or retry the gate",
 		"stops at `checks-passed`, because a human must review and merge the PR",
 		"Routing repair records each blocking finding as a lineage",
-		"Review findings are parked for explicit consent",
+		"Review runs auto-fix cascades before a gate",
 	} {
 		if !strings.Contains(md, want) {
 			t.Errorf("body missing consent/fail-closed wording %q", want)
 		}
+	}
+}
+
+func TestBodyDocumentsPublicationBoundary(t *testing.T) {
+	md := Markdown()
+	for _, want := range []string{
+		"(intent, rebase, review, test, document, lint, verify, push, PR, CI)",
+		"Local and pre-push gates through Verify must pass before Push publishes the exact sealed commit.",
+		"PR creation and hosted CI happen after publication.",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("body should document the publication boundary: missing %q", want)
+		}
+	}
+	if strings.Contains(md, "before they reach\nthe configured push target") {
+		t.Error("body still claims that post-publication PR and CI run before publication")
+	}
+}
+
+func TestBodyDocumentsAutomaticReviewRepair(t *testing.T) {
+	md := Markdown()
+	for _, want := range []string{
+		"Review automatically sends every `auto-fix` finding into its routed repair cascade before presenting a gate.",
+		"`ask-user` findings park before any fixer runs.",
+		"a normal run stays parked for an explicit user decision",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("body should distinguish automatic Review repair from parked findings: missing %q", want)
+		}
+	}
+	if strings.Contains(md, "**Blocking and ask-user review findings park for your decision**") {
+		t.Error("body still claims all blocking Review findings park before automatic repair")
+	}
+}
+
+func TestReadmesDocumentPublicationBoundary(t *testing.T) {
+	tests := []struct {
+		name      string
+		path      string
+		required  []string
+		forbidden string
+	}{
+		{
+			name: "English",
+			path: filepath.Join("..", "..", "README.md"),
+			required: []string{
+				"Local and pre-push gates must pass before Push publishes the exact commit certified by Verify.",
+				"PR creation and hosted CI happen after publication.",
+			},
+			forbidden: "Nothing reaches the configured push target until every check is green.",
+		},
+		{
+			name: "Simplified Chinese",
+			path: filepath.Join("..", "..", "README.zh-CN.md"),
+			required: []string{
+				"所有本地及推送前 gate 都必须通过，Push 才会发布 Verify 认证的确切提交。",
+				"PR 创建和托管 CI 都发生在发布之后。",
+			},
+			forbidden: "在每项检查都变绿之前，任何东西都不会到达配置的推送目标。",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := os.ReadFile(tc.path)
+			if err != nil {
+				t.Fatalf("read %s: %v", tc.path, err)
+			}
+			content := string(data)
+			for _, phrase := range tc.required {
+				if !strings.Contains(content, phrase) {
+					t.Errorf("%s is missing publication wording %q", tc.path, phrase)
+				}
+			}
+			if strings.Contains(content, tc.forbidden) {
+				t.Errorf("%s still contains false pre-publication wording %q", tc.path, tc.forbidden)
+			}
+		})
 	}
 }
 

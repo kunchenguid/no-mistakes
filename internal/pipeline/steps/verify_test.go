@@ -19,7 +19,7 @@ import (
 // the sealed candidate exactly matches the latest strong-reviewed candidate.
 func TestVerifyStep_SkipsWhenUnchanged(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
+	dir, baseSHA, headSHA := setupGitRepo(t)
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
@@ -27,11 +27,11 @@ func TestVerifyStep_SkipsWhenUnchanged(t *testing.T) {
 			return nil, nil
 		},
 	}
-	sctx := newTestContextWithDBRecords(t, ag, dir, "base", "head", config.Commands{})
-	if _, err := sctx.DB.CreateSeal(sctx.Run.ID, "same-sha", "reviewed"); err != nil {
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	if _, err := sctx.DB.CreateSeal(sctx.Run.ID, headSHA, "reviewed"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := sctx.DB.CreateSeal(sctx.Run.ID, "same-sha", "pre_verify"); err != nil {
+	if _, err := sctx.DB.CreateSeal(sctx.Run.ID, headSHA, "pre_verify"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -45,6 +45,120 @@ func TestVerifyStep_SkipsWhenUnchanged(t *testing.T) {
 	}
 	if len(ag.calls) != 0 {
 		t.Fatalf("expected no agent calls on skip, got %d", len(ag.calls))
+	}
+}
+
+func TestVerifyStep_RejectsDirtyCandidateBeforeUnchangedSkip(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			t.Fatal("verify must reject a dirty candidate before invoking the agent")
+			return nil, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	if _, err := sctx.DB.CreateSeal(sctx.Run.ID, headSHA, "reviewed"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sctx.DB.CreateSeal(sctx.Run.ID, headSHA, "pre_verify"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	outcome, err := (&VerifyStep{}).Execute(sctx)
+	if err == nil {
+		t.Fatal("expected dirty candidate to fail verification")
+	}
+	if outcome != nil {
+		t.Fatalf("outcome = %+v, want nil on verification failure", outcome)
+	}
+	if !strings.Contains(err.Error(), "worktree is dirty") {
+		t.Fatalf("error = %q, want dirty worktree failure", err)
+	}
+	if len(ag.calls) != 0 {
+		t.Fatalf("expected no agent calls for dirty candidate, got %d", len(ag.calls))
+	}
+}
+
+func TestVerifyStep_RejectsDirtyIndexBeforeUnchangedSkip(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			t.Fatal("verify must reject a dirty index before invoking the agent")
+			return nil, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	if _, err := sctx.DB.CreateSeal(sctx.Run.ID, headSHA, "reviewed"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sctx.DB.CreateSeal(sctx.Run.ID, headSHA, "pre_verify"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "staged.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "--", "staged.txt")
+
+	outcome, err := (&VerifyStep{}).Execute(sctx)
+	if err == nil {
+		t.Fatal("expected dirty index to fail verification")
+	}
+	if outcome != nil {
+		t.Fatalf("outcome = %+v, want nil on verification failure", outcome)
+	}
+	if !strings.Contains(err.Error(), "worktree is dirty") {
+		t.Fatalf("error = %q, want dirty worktree failure", err)
+	}
+	if len(ag.calls) != 0 {
+		t.Fatalf("expected no agent calls for dirty index, got %d", len(ag.calls))
+	}
+}
+
+func TestVerifyStep_RejectsMovedHEADBeforeUnchangedSkip(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, sealedSHA := setupGitRepo(t)
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			t.Fatal("verify must reject a moved HEAD before invoking the agent")
+			return nil, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, sealedSHA, config.Commands{})
+	if _, err := sctx.DB.CreateSeal(sctx.Run.ID, sealedSHA, "reviewed"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sctx.DB.CreateSeal(sctx.Run.ID, sealedSHA, "pre_verify"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "later-commit.txt"), []byte("later\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "--", "later-commit.txt")
+	gitCmd(t, dir, "commit", "-m", "move candidate head")
+	if status := gitCmd(t, dir, "status", "--porcelain"); status != "" {
+		t.Fatalf("moved HEAD fixture must remain clean, got status %q", status)
+	}
+
+	outcome, err := (&VerifyStep{}).Execute(sctx)
+	if err == nil {
+		t.Fatal("expected moved HEAD to fail verification")
+	}
+	if outcome != nil {
+		t.Fatalf("outcome = %+v, want nil on verification failure", outcome)
+	}
+	if !strings.Contains(err.Error(), "does not match sealed candidate") {
+		t.Fatalf("error = %q, want sealed candidate mismatch", err)
+	}
+	if len(ag.calls) != 0 {
+		t.Fatalf("expected no agent calls for moved HEAD, got %d", len(ag.calls))
 	}
 }
 
