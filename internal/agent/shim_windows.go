@@ -49,6 +49,14 @@ func resolveAgentBinary(bin string) string {
 // the native executable it launches, or "" if the file is not a recognizable
 // shim or the target does not exist on disk. The captured path is relative to
 // the shim's own directory (%~dp0).
+//
+// The resolved target must live under a node_modules directory. npm installs a
+// package's binary there whether the launcher sits in a project's
+// node_modules/.bin or the global prefix, so this both confirms the shim is an
+// npm-generated launcher and scopes the bypass to npm-managed executables. A
+// hand-written .cmd wrapper that performs its own setup before launching an
+// unrelated .exe would resolve outside node_modules and is left alone, so exec
+// runs the wrapper and its setup rather than skipping straight to the .exe.
 func shimNativeTarget(path string) string {
 	content, err := os.ReadFile(path)
 	if err != nil {
@@ -58,9 +66,25 @@ func shimNativeTarget(path string) string {
 	if m == nil {
 		return ""
 	}
-	target := filepath.Join(filepath.Dir(path), string(m[1]))
+	target := filepath.Clean(filepath.Join(filepath.Dir(path), string(m[1])))
+	if !underNodeModules(target) {
+		return ""
+	}
 	if _, err := os.Stat(target); err != nil {
 		return ""
 	}
-	return filepath.Clean(target)
+	return target
+}
+
+// underNodeModules reports whether path has a "node_modules" path segment,
+// matched case-insensitively because Windows paths are. It checks whole
+// segments so an unrelated directory like "my_node_modules_backup" does not
+// qualify.
+func underNodeModules(path string) bool {
+	for _, seg := range strings.Split(filepath.ToSlash(path), "/") {
+		if strings.EqualFold(seg, "node_modules") {
+			return true
+		}
+	}
+	return false
 }

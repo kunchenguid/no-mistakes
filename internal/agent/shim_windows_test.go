@@ -45,6 +45,15 @@ IF EXIST "%dp0%\node.exe" (
 endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\node_modules\somepackage\bin\cli.js" %*
 `
 
+// nonNpmWrapperShim mirrors a hand-written .cmd wrapper that performs its own
+// setup and then launches an unrelated .exe living outside node_modules. Its
+// launch line matches the pattern, but the target must NOT be resolved: execing
+// it directly would skip the wrapper's setup.
+const nonNpmWrapperShim = `@ECHO off
+SET SOME_TOOL_FLAG=1
+"%~dp0\tools\vendortool.exe"   %*
+`
+
 // writeShim writes shim content plus, when target is non-empty, an empty file
 // at the shim-relative target path so os.Stat succeeds. It returns the shim path.
 func writeShim(t *testing.T, content, target string) string {
@@ -98,6 +107,17 @@ func TestShimNativeTarget_NodeLauncherFallsBack(t *testing.T) {
 	shim := writeShim(t, npmNodeLauncherShim, "node.exe")
 	if got := shimNativeTarget(shim); got != "" {
 		t.Fatalf("shimNativeTarget = %q, want empty for a node-launcher shim", got)
+	}
+}
+
+func TestShimNativeTarget_NonNpmWrapperFallsBack(t *testing.T) {
+	// The wrapped .exe exists and the launch line matches, but it lives outside
+	// node_modules, so it must not be resolved: the wrapper's own setup would be
+	// bypassed. Only npm-managed executables (under node_modules) are resolved.
+	target := filepath.Join("tools", "vendortool.exe")
+	shim := writeShim(t, nonNpmWrapperShim, target)
+	if got := shimNativeTarget(shim); got != "" {
+		t.Fatalf("shimNativeTarget = %q, want empty for a non-npm wrapper outside node_modules", got)
 	}
 }
 
