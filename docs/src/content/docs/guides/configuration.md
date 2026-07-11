@@ -59,7 +59,8 @@ The rest of this page covers only the cross-cutting rules that involve both file
 
 ## Explicit commands versus agent detection
 
-Explicit `commands.*` give you deterministic baseline behavior, while leaving them empty asks the configured agent to fill the gap: empty `commands.test` has the agent detect and run tests, and empty `commands.lint` folds lint into the document step's combined housekeeping pass.
+Explicit `commands.test` and `commands.lint` give you deterministic baseline behavior, while leaving either empty asks the configured agent to fill the gap: empty `commands.test` has the agent detect and run tests, and empty `commands.lint` folds lint into the document step's combined housekeeping pass.
+An empty `commands.format` runs no separate formatter, so configure it explicitly when the push step must format agent changes.
 Either way, available user intent can trigger an evidence-oriented agent follow-up after a successful test baseline, and evidence stays in a temporary local directory unless the repo opts into `test.evidence.store_in_repo`.
 The [Repo Config Reference](/no-mistakes/reference/repo-config/) owns the exact per-command semantics, including command process lifetime and the `ignore_patterns` match rules.
 
