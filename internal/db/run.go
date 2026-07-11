@@ -217,6 +217,14 @@ func (d *DB) UpdateRunErrorStatus(id, errMsg string, status types.RunStatus) err
 	return nil
 }
 
+// RunIntentSourceAgent is the intent_source value stamped when the driving
+// agent supplied the intent explicitly via `axi run --intent`. It marks an
+// authoritative, author-stated goal (score 1) as opposed to a transcript
+// inference (whose source is the matched agent name: "claude", "codex", ...).
+// Prompt-construction code branches on this to frame an explicit intent as
+// authoritative acceptance criteria rather than a low-confidence hint.
+const RunIntentSourceAgent = "agent"
+
 // RunIntent carries the four intent-related columns persisted on a run.
 type RunIntent struct {
 	Summary   string

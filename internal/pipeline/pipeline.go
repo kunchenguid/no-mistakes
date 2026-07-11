@@ -28,9 +28,17 @@ type StepContext struct {
 	StepResultID string
 	Env          []string // extra environment variables for subprocesses (used in tests)
 	// UserIntent is a short, possibly-empty summary of what the change author
-	// was trying to accomplish, inferred from local agent transcripts. It's
-	// surfaced in step prompts so agents have context beyond the diff.
+	// was trying to accomplish. It's surfaced in step prompts so agents have
+	// context beyond the diff. Its authority depends on IntentSource: an
+	// explicit `--intent` is the author's own goal statement, while an
+	// inferred summary comes from a local agent transcript.
 	UserIntent string
+	// IntentSource records the provenance of UserIntent so steps can weigh
+	// its authority. db.RunIntentSourceAgent ("agent") means the driving
+	// agent supplied it explicitly via `axi run --intent` (authoritative
+	// acceptance criteria); an agent name ("claude", "codex", ...) means it
+	// was inferred from a transcript (a hint). Empty when no intent exists.
+	IntentSource string
 	// Sessions manages the run's durable review-loop agent sessions
 	// (reviewer and fixer roles). nil runs every invocation cold.
 	Sessions *RunSessions

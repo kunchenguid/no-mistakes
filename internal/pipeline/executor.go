@@ -504,8 +504,18 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	// so Log knows whether it needs a leading \n to flush a streaming partial.
 	lastChunkNewline := true
 	userIntent := ""
-	if run != nil && run.Intent != nil {
-		userIntent = *run.Intent
+	userIntentSource := ""
+	if run != nil {
+		if run.Intent != nil {
+			userIntent = *run.Intent
+		}
+		// Propagate provenance alongside the text so steps can distinguish an
+		// explicit, authoritative `--intent` (Source=="agent") from a
+		// transcript-inferred hint. Dropping this is the provenance-erasure
+		// bug that let an authoritative intent be demoted to an ignorable hint.
+		if run.IntentSource != nil {
+			userIntentSource = *run.IntentSource
+		}
 	}
 	lastLogActivityAt := time.Time{}
 	touchLogActivity := func(text string, force bool) {
@@ -589,6 +599,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		DB:               e.db,
 		StepResultID:     sr.ID,
 		UserIntent:       userIntent,
+		IntentSource:     userIntentSource,
 		Sessions:         e.sessions,
 		Shared:           e.shared,
 		Fixing:           state.fixing,

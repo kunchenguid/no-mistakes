@@ -10,6 +10,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -190,6 +191,135 @@ func TestReviewStep_RoundHistorySanitizesAgentInput(t *testing.T) {
 	if len(ag.calls) != 1 {
 		t.Fatalf("expected 1 agent call, got %d", len(ag.calls))
 	}
+}
+
+// An explicit --intent (Source=="agent") makes the review prompt carry the
+// intent-conformance obligation and the authoritative-criteria framing; an
+// inferred intent carries neither, leaving the prompt unchanged.
+func TestReviewStep_ConformanceObligationTracksIntentProvenance(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name            string
+		source          string
+		wantConformance bool
+		wantAuthority   bool
+	}{
+		{"agent source is authoritative", db.RunIntentSourceAgent, true, true},
+		{"inferred source stays a hint", "claude", false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir, baseSHA, headSHA := setupGitRepo(t)
+
+			findingsJSON, _ := json.Marshal(Findings{Summary: "clean"})
+			ag := &mockAgent{
+				name: "test",
+				runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+					return &agent.Result{Output: findingsJSON}, nil
+				},
+			}
+			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+			sctx.UserIntent = "REQUIRED: keep the guarded stale-lock removal. FORBIDDEN: a cleanup mutex."
+			sctx.IntentSource = tc.source
+
+			step := &ReviewStep{}
+			if _, err := step.Execute(sctx); err != nil {
+				t.Fatal(err)
+			}
+			if len(ag.calls) != 1 {
+				t.Fatalf("expected 1 agent call, got %d", len(ag.calls))
+			}
+			prompt := ag.calls[0].Prompt
+
+			hasConformance := strings.Contains(prompt, "Intent conformance (required)")
+			if hasConformance != tc.wantConformance {
+				t.Errorf("conformance obligation present = %v, want %v\nprompt:\n%s", hasConformance, tc.wantConformance, prompt)
+			}
+			hasAuthority := strings.Contains(prompt, "AUTHORITATIVE acceptance criteria")
+			if hasAuthority != tc.wantAuthority {
+				t.Errorf("authoritative framing present = %v, want %v\nprompt:\n%s", hasAuthority, tc.wantAuthority, prompt)
+			}
+			if tc.wantConformance {
+				if !strings.Contains(prompt, `you MUST emit an "ask-user" finding`) {
+					t.Errorf("conformance clause missing the ask-user obligation:\n%s", prompt)
+				}
+			}
+		})
+	}
+}
+
+// A post-fix rereview that detects a contradiction with the authoritative
+// acceptance criteria (here: the fixer resolved a finding by deleting a
+// required behavior) surfaces it as an ask-user finding, so the run parks for
+// a human instead of silently completing. This is the forensic's removal-delete
+// regression, caught by the conformance obligation.
+func TestReviewStep_RereviewFlagsIntentContradictionAsAskUser(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	callCount := 0
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			callCount++
+			if callCount == 1 {
+				// Fixer turn: "resolve" the race finding by deleting the
+				// required guarded removal (retry-only).
+				os.WriteFile(filepath.Join(dir, "fleet-sync.txt"), []byte("retry-only\n"), 0o644)
+				return &agent.Result{Output: json.RawMessage(`{"summary":"leave persistent refs locks intact"}`)}, nil
+			}
+			// Rereview: the change now contradicts the authoritative criteria,
+			// so the reviewer emits an ask-user finding even though retry-only
+			// is otherwise risk-clean.
+			if !strings.Contains(opts.Prompt, "Intent conformance (required)") {
+				t.Errorf("rereview prompt missing conformance obligation:\n%s", opts.Prompt)
+			}
+			findings := Findings{
+				Items: []Finding{{
+					ID:          "intent-removed-required-behavior",
+					Severity:    "error",
+					Action:      types.ActionAskUser,
+					Description: "the fix deletes the intent-required guarded stale-lock removal, leaving rejected retry-only",
+				}},
+				RiskLevel: "high",
+			}
+			j, _ := json.Marshal(findings)
+			return &agent.Result{Output: j}, nil
+		},
+	}
+
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Fixing = true
+	sctx.UserIntent = "REQUIRED: retry then guarded removal of a provably-stale lock. REJECTED: retry-only."
+	sctx.IntentSource = db.RunIntentSourceAgent
+	sctx.PreviousFindings = `{"findings":[{"id":"race","severity":"error","action":"auto-fix","description":"unlink can race a live lock"}],"summary":"1 issue"}`
+
+	step := &ReviewStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if callCount != 2 {
+		t.Fatalf("expected 2 agent calls (fix + rereview), got %d", callCount)
+	}
+	if !outcome.NeedsApproval {
+		t.Error("expected the intent contradiction to require approval")
+	}
+	if !hasAskUserFindings(t, outcome.Findings) {
+		t.Errorf("expected an ask-user finding in outcome, got %s", outcome.Findings)
+	}
+}
+
+func hasAskUserFindings(t *testing.T, raw string) bool {
+	t.Helper()
+	findings, err := types.ParseFindingsJSON(raw)
+	if err != nil {
+		t.Fatalf("parse findings: %v", err)
+	}
+	return types.HasAskUserFindings(findings)
 }
 
 func mustLatestRoundID(t *testing.T, sctx *pipeline.StepContext) string {

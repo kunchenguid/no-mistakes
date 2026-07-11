@@ -133,7 +133,20 @@ Previous review findings to address:
 	// Ask agent to review
 	sctx.Log("reviewing changes...")
 
-	historySection := executionContextPromptSection() + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx)
+	// The review turn (initial and every post-fix rereview) carries the intent
+	// conformance obligation: when the intent is authoritative acceptance
+	// criteria (explicit --intent), a change that contradicts it must park via
+	// an ask-user finding. The clause is empty for inferred intent, leaving the
+	// prompt unchanged. This is what makes a fixer round that removed a
+	// required behavior park instead of silently completing.
+	//
+	// TODO(intent-conformance-C, HELD): add the deterministic, zero-LLM
+	// net-deleted-author-lines git-diff backstop for the removal-of-required
+	// class - a fixer round that net-deletes author-added lines parks
+	// regardless of intent source. Design in
+	// data/nm-conformance-lowoverhead-addendum-w4/report.md sections 5.1 (item
+	// 3) and 5.3. Held pending a captain scope decision; A + B.1 ship first.
+	historySection := executionContextPromptSection() + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx) + intentConformanceReviewClause(sctx)
 
 	prompt := fmt.Sprintf(
 		`Review the code changes and return structured findings with a risk assessment.

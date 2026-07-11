@@ -572,11 +572,11 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	// inference. A persist failure is non-fatal: the intent step would simply
 	// fall back to inference.
 	if trimmed := strings.TrimSpace(intent); trimmed != "" {
-		if err := m.db.UpdateRunIntent(run.ID, db.RunIntent{Summary: trimmed, Source: "agent", Score: 1}); err != nil {
+		if err := m.db.UpdateRunIntent(run.ID, db.RunIntent{Summary: trimmed, Source: db.RunIntentSourceAgent, Score: 1}); err != nil {
 			slog.Warn("failed to persist agent-supplied intent", "run_id", run.ID, "error", err)
 		} else {
 			run.Intent = &trimmed
-			source := "agent"
+			source := db.RunIntentSourceAgent
 			run.IntentSource = &source
 			score := 1.0
 			run.IntentScore = &score
