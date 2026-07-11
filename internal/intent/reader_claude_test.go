@@ -175,3 +175,29 @@ func TestClaudeReader_NoHomeNoCrash(t *testing.T) {
 		t.Errorf("expected 0 sessions when projects dir missing, got %d", len(sessions))
 	}
 }
+
+func TestExtractToolPaths_SharedKeys(t *testing.T) {
+	// Shared helper must cover keys used across agent tool schemas so readers
+	// do not reimplement path extraction per agent.
+	paths := extractToolPaths(map[string]any{
+		"file_path":        "a.go",
+		"filePath":         "b.go",
+		"target_file":      "c.go",
+		"target_directory": "internal/",
+		"file":             "d.go",
+		"path":             "e.go",
+		"unrelated":        "skip",
+	})
+	want := map[string]bool{
+		"a.go": true, "b.go": true, "c.go": true,
+		"internal/": true, "d.go": true, "e.go": true,
+	}
+	if len(paths) != len(want) {
+		t.Fatalf("paths = %v, want %d entries", paths, len(want))
+	}
+	for _, p := range paths {
+		if !want[p] {
+			t.Errorf("unexpected path %q in %v", p, paths)
+		}
+	}
+}

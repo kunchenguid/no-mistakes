@@ -22,6 +22,7 @@ agent_path_override:
   opencode: /usr/local/bin/opencode
   pi: /usr/local/bin/pi
   copilot: /usr/local/bin/copilot
+  grok: /usr/local/bin/grok
 
 agent_args_override:
   codex:
@@ -71,10 +72,10 @@ Default agent for all repos and setup-wizard suggestions. Can be overridden per-
 |         |                                                                                   |
 | ------- | --------------------------------------------------------------------------------- |
 | Type    | `string` or `string[]`                                                            |
-| Values  | `auto`, `claude`, `codex`, `rovodev`, `opencode`, `pi`, `copilot`, `acp:<target>` |
+| Values  | `auto`, `claude`, `codex`, `rovodev`, `opencode`, `pi`, `copilot`, `grok`, `acp:<target>` |
 | Default | `auto`                                                                            |
 
-`auto` resolves to the first supported native agent found on `PATH` in this order: `claude`, `codex`, `opencode`, `acli` with `rovodev` support, `pi`, then `copilot`.
+`auto` resolves to the first supported native agent found on `PATH` in this order: `claude`, `codex`, `opencode`, `acli` with `rovodev` support, `pi`, `copilot`, then `grok`.
 `acp:<target>` uses the user-installed `acpx` binary to run an ACP target, for example `acp:gemini`.
 ACP agents are opt-in and are not considered by `agent: auto`.
 The effective agent configuration must resolve to a runnable runner before a new validation gate starts.
@@ -140,6 +141,7 @@ Default native binary names when no override is set:
 | `opencode` | `opencode` |
 | `pi`       | `pi`       |
 | `copilot`  | `copilot`  |
+| `grok`     | `grok`     |
 
 ### agent_args_override
 
@@ -149,7 +151,7 @@ Use this to set model selection, service tier, reasoning effort, permission mode
 |         |                                                           |
 | ------- | --------------------------------------------------------- |
 | Type    | `map[string][]string`                                     |
-| Keys    | `claude`, `codex`, `rovodev`, `opencode`, `pi`, `copilot` |
+| Keys    | `claude`, `codex`, `rovodev`, `opencode`, `pi`, `copilot`, `grok` |
 | Default | Empty (no extra flags)                                    |
 
 User-supplied flags are inserted ahead of no-mistakes' managed flags, so your choices usually take precedence. A few flags are reserved because no-mistakes depends on them to communicate with the agent - setting any of these returns a config error on load:
@@ -162,6 +164,7 @@ User-supplied flags are inserted ahead of no-mistakes' managed flags, so your ch
 | `opencode` | `serve`, `--hostname`, `--port`, `--print-logs`                                                             |
 | `pi`       | `--mode`, `--no-session`                                                                                    |
 | `copilot`  | `-p`, `--prompt`, `--output-format`, `--no-color`                                                          |
+| `grok`     | `-p`, `--single`, `--prompt-file`, `--prompt-json`, `--output-format`, `--json-schema`                   |
 
 For structured `codex` runs, no-mistakes also appends its own `--output-schema <tempfile>` after your overrides. Treat that flag as managed even though config validation does not currently reject it.
 The Claude and Codex session-control forms are reserved so no-mistakes can keep reviewer and fixer conversations role-isolated.
@@ -170,6 +173,7 @@ Smart defaults:
 
 - For `claude`, supplying `--permission-mode` (or `--dangerously-skip-permissions`) suppresses the default `--dangerously-skip-permissions`.
 - For `codex`, supplying `--ask-for-approval`, `--sandbox`, or `--dangerously-bypass-approvals-and-sandbox` suppresses the default `--dangerously-bypass-approvals-and-sandbox`.
+- For `grok`, supplying `--always-approve`, `--yolo`, or `--permission-mode` suppresses the default `--always-approve`.
 
 Permission and sandbox flags affect the underlying agent, but they do not disable no-mistakes' pipeline prompt steering.
 Pipeline agents are still told to keep intentional writes inside the worktree and avoid mutating system state outside it.
@@ -317,7 +321,7 @@ When enabled and no intent was supplied directly for the run, no-mistakes can re
 | `intent.slack_days`       | `int`      | `3`     | Extra days to look back before the change window           |
 | `intent.disabled_readers` | `string[]` | Empty   | Transcript readers to disable                              |
 
-Valid `disabled_readers` values are `claude`, `codex`, `opencode`, `rovodev`, `pi`, and `copilot`.
+Valid `disabled_readers` values are `claude`, `codex`, `opencode`, `rovodev`, `pi`, `copilot`, and `grok`.
 
 The match score is the share of matching files mentioned in a transcript session; deleted files are ignored when the diff also contains non-deleted changes.
 All-deletion diffs still match against the deleted changed files.

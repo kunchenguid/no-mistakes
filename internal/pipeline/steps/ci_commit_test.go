@@ -60,6 +60,62 @@ func TestCIStep_CommitAndPush(t *testing.T) {
 	}
 }
 
+func TestCIStep_CommitAndPush_OnlyToolchainCacheSkipsCommit(t *testing.T) {
+	t.Parallel()
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	if err := os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	cacheFile := filepath.Join(dir, ".tools", "dotnet-cli-home", "NuGet", "v3-cache", "sentinel")
+	if err := os.MkdirAll(filepath.Dir(cacheFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cacheFile, []byte("local cache\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "refs/heads/feature"
+
+	pushed, err := (&CIStep{}).commitAndPush(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pushed {
+		t.Fatal("cache-only CI changes must not create and push a commit")
+	}
+	if got := gitCmd(t, upstream, "rev-parse", "refs/heads/feature"); got != headSHA {
+		t.Fatalf("cache-only CI changes advanced feature branch: got %s, want %s", got, headSHA)
+	}
+	if _, err := os.Stat(cacheFile); err != nil {
+		t.Fatalf("cache should remain untracked on disk: %v", err)
+	}
+}
+
 func TestCIStep_CommitAndPushTargetsForkWhenConfigured(t *testing.T) {
 	t.Parallel()
 	parent := t.TempDir()

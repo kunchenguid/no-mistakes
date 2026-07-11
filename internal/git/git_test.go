@@ -2,9 +2,12 @@ package git
 
 import (
 	"context"
+	"crypto/sha1"
+	"encoding/hex"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -61,6 +64,11 @@ func writeFile(t *testing.T, path, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func gitBlobSHA1(content string) string {
+	blob := sha1.Sum([]byte("blob " + strconv.Itoa(len(content)) + "\x00" + content))
+	return hex.EncodeToString(blob[:])
 }
 
 func TestRun(t *testing.T) {
@@ -327,6 +335,166 @@ func TestCommitAllNoChanges(t *testing.T) {
 
 	if err := CommitAll(ctx, dir, "nothing"); err == nil {
 		t.Fatal("expected error committing with no changes")
+	}
+}
+
+func TestIsLocalToolchainPath(t *testing.T) {
+	tests := []struct {
+		path string
+		want bool
+	}{
+		{".tools/dotnet-cli-home/NuGet/foo.nupkg", true},
+		{"src/.tools/cache", true},
+		{"node_modules/left-pad/index.js", true},
+		{"pkg/__pycache__/x.pyc", true},
+		{".yarn/unplugged/pkg/index.js", true},
+		{".yarn/install-state.gz", true},
+		{".yarn/cache/lodash-npm-1.0.0.zip", false},
+		{".yarn/releases/yarn-4.0.0.cjs", false},
+		{"internal/cli/status.go", false},
+		{"tools/scripts/setup.sh", false}, // "tools" without leading dot is source
+		{"README.md", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		if got := IsLocalToolchainPath(tt.path); got != tt.want {
+			t.Errorf("IsLocalToolchainPath(%q) = %v, want %v", tt.path, got, tt.want)
+		}
+	}
+}
+
+func TestStageAll_ExcludesDotnetCLIHomeCache(t *testing.T) {
+	// Regression: pipeline lint/format runs that set DOTNET_CLI_HOME to a
+	// worktree-relative path (e.g. .tools/dotnet-cli-home) must not ship the
+	// NuGet/tool cache into a gate commit via git add -A.
+	dir := initTestRepo(t)
+	ctx := context.Background()
+
+	writeFile(t, filepath.Join(dir, "Program.cs"), "class Program {}\n")
+	cacheDir := filepath.Join(dir, ".tools", "dotnet-cli-home", "NuGet", "packages")
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cacheContents := "cache blob must not enter the object database\n"
+	writeFile(t, filepath.Join(cacheDir, "sentinel.nupkg"), cacheContents)
+	// Also drop a node_modules tree the way npm would.
+	nm := filepath.Join(dir, "node_modules", "left-pad")
+	if err := os.MkdirAll(nm, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(nm, "index.js"), "module.exports = 1\n")
+
+	excluded, err := StageAll(ctx, dir)
+	if err != nil {
+		t.Fatalf("StageAll: %v", err)
+	}
+	if len(excluded) == 0 {
+		t.Fatal("expected toolchain paths to be excluded")
+	}
+	for _, p := range excluded {
+		if !IsLocalToolchainPath(p) {
+			t.Errorf("excluded non-toolchain path %q", p)
+		}
+	}
+
+	staged, err := HasStagedChanges(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !staged {
+		t.Fatal("expected Program.cs to remain staged")
+	}
+	cached := run(t, dir, "git", "diff", "--cached", "--name-only")
+	if !strings.Contains(cached, "Program.cs") {
+		t.Fatalf("Program.cs missing from index:\n%s", cached)
+	}
+	if strings.Contains(cached, ".tools") || strings.Contains(cached, "node_modules") {
+		t.Fatalf("toolchain paths still staged:\n%s", cached)
+	}
+	if _, err := Run(ctx, dir, "cat-file", "-e", gitBlobSHA1(cacheContents)+"^{blob}"); err == nil {
+		t.Fatal("excluded cache blob was written to the object database")
+	}
+
+	if err := CommitAll(ctx, dir, "format Program.cs"); err != nil {
+		// StageAll already ran; CommitAll will StageAll again which is fine.
+		// But index may already be staged - CommitAll does StageAll then commit.
+		t.Fatalf("CommitAll: %v", err)
+	}
+	// Ensure committed tree has no .tools
+	tree := run(t, dir, "git", "ls-tree", "-r", "--name-only", "HEAD")
+	if strings.Contains(tree, ".tools") || strings.Contains(tree, "node_modules") {
+		t.Fatalf("commit contains toolchain paths:\n%s", tree)
+	}
+	if !strings.Contains(tree, "Program.cs") {
+		t.Fatalf("commit missing Program.cs:\n%s", tree)
+	}
+}
+
+func TestStageAll_DoesNotStoreLocalYarnState(t *testing.T) {
+	dir := initTestRepo(t)
+	ctx := context.Background()
+	if err := os.MkdirAll(filepath.Join(dir, ".yarn"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	contents := "local Yarn state must not enter the object database\n"
+	writeFile(t, filepath.Join(dir, ".yarn", "install-state.gz"), contents)
+
+	if _, err := StageAll(ctx, dir); err != nil {
+		t.Fatalf("StageAll: %v", err)
+	}
+	if _, err := Run(ctx, dir, "cat-file", "-e", gitBlobSHA1(contents)+"^{blob}"); err == nil {
+		t.Fatal("excluded Yarn state blob was written to the object database")
+	}
+}
+
+func TestStageAll_PreservesYarnZeroInstallFiles(t *testing.T) {
+	dir := initTestRepo(t)
+	ctx := context.Background()
+
+	writeFile(t, filepath.Join(dir, "app.js"), "console.log('ok')\n")
+	if err := os.MkdirAll(filepath.Join(dir, ".yarn", "cache"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, ".yarn", "releases"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, ".yarn", "unplugged", "app"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(dir, ".yarn", "cache", "app-npm-1.0.0.zip"), "package cache\n")
+	writeFile(t, filepath.Join(dir, ".yarn", "releases", "yarn-4.0.0.cjs"), "release\n")
+	writeFile(t, filepath.Join(dir, ".yarn", "unplugged", "app", "build.js"), "local build output\n")
+
+	if _, err := StageAll(ctx, dir); err != nil {
+		t.Fatalf("StageAll: %v", err)
+	}
+	cached := run(t, dir, "git", "diff", "--cached", "--name-only")
+	for _, path := range []string{"app.js", ".yarn/cache/app-npm-1.0.0.zip", ".yarn/releases/yarn-4.0.0.cjs"} {
+		if !strings.Contains(cached, path) {
+			t.Errorf("expected %q staged:\n%s", path, cached)
+		}
+	}
+	if strings.Contains(cached, ".yarn/unplugged/") {
+		t.Fatalf("local Yarn unplugged files were staged:\n%s", cached)
+	}
+}
+
+func TestCommitAll_OnlyToolchainJunkIsNoOpError(t *testing.T) {
+	dir := initTestRepo(t)
+	ctx := context.Background()
+
+	cacheDir := filepath.Join(dir, ".tools", "dotnet-cli-home")
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(cacheDir, "x"), "cache\n")
+
+	if err := CommitAll(ctx, dir, "should not commit junk"); err == nil {
+		t.Fatal("expected error when only toolchain junk is present")
+	}
+	// Cache must remain on disk (untracked), not deleted.
+	if _, err := os.Stat(filepath.Join(cacheDir, "x")); err != nil {
+		t.Fatalf("toolchain file should remain on disk: %v", err)
 	}
 }
 

@@ -21,6 +21,7 @@ It tells agents to keep intentional source, project, user-data, and system file 
 The only intentional out-of-worktree write it allows is test evidence under the managed temporary `no-mistakes-evidence` directory when a testing prompt asks for it; when in-repo evidence is enabled, test evidence stays inside the configured evidence directory instead.
 Incidental temp or cache writes from normal development tools are still allowed.
 Testing prompts also ask agents to remove transient working-tree artifacts they created, such as downloaded models, caches, build outputs, large binaries, or generated data directories, before reporting completion.
+As a backstop, no-mistakes excludes known local toolchain and package-manager cache trees from every generated commit, including setup-wizard, agent-fix, push-step, and CI-repair commits. This includes `.tools` (for example `.tools/dotnet-cli-home`), `node_modules`, `.nuget`, Python caches and virtual environments, and common JavaScript build caches. A cache-only change produces no commit and remains uncommitted in the worktree.
 
 ## How to choose quickly
 
@@ -45,6 +46,7 @@ By default that directory is temporary and local to the machine; repos can opt i
 | OpenCode | `opencode` | Persistent HTTP server, SSE streaming |
 | Pi | `pi` | Subprocess per invocation, JSONL events |
 | Copilot | `copilot` | Subprocess per invocation, JSONL events |
+| Grok | `grok` | Subprocess per invocation, streaming-json / JSON schema |
 | ACP target | `acpx` | Optional user-installed ACP bridge |
 
 ## Runner requirements
@@ -136,7 +138,7 @@ Use bare `/no-mistakes` to validate existing committed work.
 Use `/no-mistakes <task>` to have the agent first do the task, commit only that task's changes on a feature branch, then run the pipeline with the task text as `--intent`.
 In both modes, it resolves low-risk findings on its own and stops to relay anything that needs your decision.
 
-`no-mistakes init` installs that skill at user level: `~/.claude/skills/no-mistakes/SKILL.md` for Claude Code and `~/.agents/skills/no-mistakes/SKILL.md` for Codex, OpenCode, Rovo Dev, and Pi.
+`no-mistakes init` installs that skill at user level: `~/.claude/skills/no-mistakes/SKILL.md` for Claude Code, `~/.agents/skills/no-mistakes/SKILL.md` for Codex, OpenCode, Rovo Dev, and Pi, and `~/.grok/skills/no-mistakes/SKILL.md` for Grok.
 One install makes the skill available to every supported agent in every repo, without committing tool-generated files to any repo.
 If your home directory consolidates `.claude` and `.agents` with symlinks, `init` follows the links and keeps the skill reachable from both logical paths.
 Re-run `no-mistakes init` after an upgrade to refresh that skill, including overwriting stale `SKILL.md` content from an older binary.
@@ -212,7 +214,7 @@ Each invocation returns:
 - **SessionID** and **Resumed** - the adapter-native session identity and whether this invocation resumed it, when supported
 - **Model** and **Provider** - adapter-reported serving metadata when available
 
-One-shot subprocess agents (Claude, Codex, Pi, Copilot CLI, and acpx) are invocation-scoped.
+One-shot subprocess agents (Claude, Codex, Pi, Copilot CLI, Grok, and acpx) are invocation-scoped.
 After no-mistakes starts one, it terminates any remaining child processes when the invocation exits, fails, or is cancelled, so agent-spawned test workers, build watchers, and dev servers do not survive the step.
 Step logs record their process lifecycle, including start and exit lines with the PID, and AXI status exposes that PID while the subprocess is still active.
 Persistent server agents (Rovo Dev and OpenCode) use their managed server lifecycle instead.
@@ -222,12 +224,13 @@ Transient API and network failures are retried up to three times with exponentia
 ## Intent extraction
 
 When an agent starts a run through `no-mistakes axi run --intent`, no-mistakes uses that supplied intent verbatim and skips transcript-based inference, even if `intent.enabled` is false.
-Otherwise, when `intent.enabled` is true, no-mistakes reads recent local transcripts from Claude Code, Codex, OpenCode, Rovo Dev, Pi, and the GitHub Copilot CLI during the `intent` pipeline step.
+Otherwise, when `intent.enabled` is true, no-mistakes reads recent local transcripts from Claude Code, Codex, OpenCode, Rovo Dev, Pi, the GitHub Copilot CLI, and Grok during the `intent` pipeline step.
 It matches sessions against non-deleted changed files when present, falls back to all changed files for all-deletion diffs, summarizes the likely author intent with the configured pipeline agent, includes that summary as untrusted context in rebase fixes, review checks and fixes, test detection, evidence validation, and fixes, lint detection and fixes, documentation checks and fixes, CI auto-fixes, and PR prompts, and renders it in generated PR descriptions.
 
 Transcript readers collect user and assistant text messages but exclude tool call output.
-They read Claude Code transcripts from `~/.claude/projects`, Codex metadata from `~/.codex/state_*.sqlite` plus referenced rollout files, OpenCode messages from `$XDG_DATA_HOME/opencode/opencode.db` or `~/.local/share/opencode/opencode.db`, Rovo Dev sessions from `~/.rovodev/sessions`, Pi transcripts from `~/.pi/agent/sessions`, and GitHub Copilot CLI sessions from `~/.copilot/session-state`.
+They read Claude Code transcripts from `~/.claude/projects`, Codex metadata from `~/.codex/state_*.sqlite` plus referenced rollout files, OpenCode messages from `$XDG_DATA_HOME/opencode/opencode.db` or `~/.local/share/opencode/opencode.db`, Rovo Dev sessions from `~/.rovodev/sessions`, Pi transcripts from `~/.pi/agent/sessions`, GitHub Copilot CLI sessions from `~/.copilot/session-state`, and Grok sessions from `~/.grok/sessions` (or `$GROK_HOME/sessions` when set).
 Sessions are eligible when they come from the same working directory or an equivalent Git checkout with the same common Git directory or normalized remote URL.
+Grok sessions created inside no-mistakes daemon worktrees are excluded even when they share the repository remote, because they contain pipeline prompts rather than the user's request.
 ACP transcripts are not currently read for intent extraction.
 When deterministic matching leaves multiple plausible sessions, no-mistakes may ask the configured pipeline agent to choose among them using the matching file paths and sanitized transcript packet files.
 The selected transcript text is then sent to the configured pipeline agent for summarization during the `intent` step, so intent extraction may incur additional agent or API invocations.
@@ -273,6 +276,18 @@ Any `agent_args_override.copilot` flags are inserted before no-mistakes' managed
 Reads JSONL events from stdout, streaming incremental `assistant.message_delta` text to the TUI and capturing the final `assistant.message` content.
 The Copilot CLI has no output-schema flag, so when structured output is requested no-mistakes injects the JSON schema into the prompt and validates the final text response with the same JSON fence and bare-object fallback used by Pi and Rovo Dev.
 
+## Grok
+
+Spawns a `grok` subprocess for each invocation with `-p <prompt>`.
+When structured output is requested, no-mistakes passes `--json-schema` (which implies `--output-format json`); otherwise it uses `--output-format streaming-json` and streams `text` events to the TUI.
+By default it also adds `--always-approve`, unless you already set your own Grok approval flag through `agent_args_override` (`--always-approve`, `--yolo`, or `--permission-mode`).
+Any `agent_args_override.grok` flags are inserted before no-mistakes' managed flags, so user choices such as `-m` or `--effort` take effect.
+When the JSON result includes a non-empty `structuredOutput` field (native constrained JSON from `--json-schema`), no-mistakes treats it the same way Claude's `structured_output` is treated: it validates that payload against the requested schema (allowing `null` for optional fields), uses it as the structured result, and preserves any prose `text` separately.
+If that validation fails, no-mistakes returns the validation error and does not fall back to freeform `text` — schema-mode callers must not treat envelope prose as a successful structured result.
+Only when `structuredOutput` is absent or null does it fall back to the `text` field and validate the payload against the requested schema with the same JSON fence and bare-object fallback used by other text-parsed agents.
+Non-success `stopReason` values (for example `Cancelled`) and `max_turns_reached` fail the invocation so partial output is not treated as a completed run.
+Schema-mode JSON output is limited to 256 MiB; output that exceeds that limit fails rather than being truncated or accepted.
+
 ## ACP via acpx
 
 ACP support is optional and requires a separately installed `acpx` binary.
@@ -306,6 +321,7 @@ $ no-mistakes doctor
   – opencode (not found)
   – pi (not found)
   – copilot (not found)
+  – grok (not found)
   – acpx (not found)
   ✓ gate validation claude is runnable
 ```

@@ -57,8 +57,21 @@ func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summa
 		sctx.Log("no agent changes to commit")
 		return nil
 	}
-	if _, err := git.Run(ctx, sctx.WorkDir, "add", "-A"); err != nil {
+	excluded, err := git.StageAll(ctx, sctx.WorkDir)
+	if err != nil {
 		return fmt.Errorf("stage %s changes: %w", stepName, err)
+	}
+	if len(excluded) > 0 {
+		sctx.Log(fmt.Sprintf("excluded %d local toolchain/cache path(s) from %s commit (e.g. %s)",
+			len(excluded), stepName, excluded[0]))
+	}
+	staged, err := git.HasStagedChanges(ctx, sctx.WorkDir)
+	if err != nil {
+		return fmt.Errorf("check staged %s changes: %w", stepName, err)
+	}
+	if !staged {
+		sctx.Log("no agent changes to commit after excluding local toolchain/cache paths")
+		return nil
 	}
 	if summary == "" {
 		summary = fallbackSummary

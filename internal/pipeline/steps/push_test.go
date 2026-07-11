@@ -113,6 +113,59 @@ func TestPushStep_ForceAddsInRepoEvidenceArtifacts(t *testing.T) {
 	}
 }
 
+func TestPushStep_ExcludesDotnetCLIHomeCache(t *testing.T) {
+	t.Parallel()
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	if err := os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	if err := os.WriteFile(filepath.Join(dir, "real-fix.txt"), []byte("keep this fix\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cacheFile := filepath.Join(dir, ".tools", "dotnet-cli-home", "NuGet", "v3-cache", "sentinel")
+	if err := os.MkdirAll(filepath.Dir(cacheFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cacheFile, []byte("local cache\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "feature"
+
+	if _, err := (&PushStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+
+	tree := gitCmd(t, upstream, "ls-tree", "-r", "--name-only", "refs/heads/feature")
+	if !strings.Contains(tree, "real-fix.txt") {
+		t.Fatalf("push commit lost source fix:\n%s", tree)
+	}
+	if strings.Contains(tree, ".tools") || strings.Contains(tree, "dotnet-cli-home") {
+		t.Fatalf("push commit contains local toolchain cache:\n%s", tree)
+	}
+	if _, err := os.Stat(cacheFile); err != nil {
+		t.Fatalf("cache should remain untracked on disk: %v", err)
+	}
+}
+
 func TestPushStep_TargetsForkWhenConfigured(t *testing.T) {
 	t.Parallel()
 	parent := t.TempDir()

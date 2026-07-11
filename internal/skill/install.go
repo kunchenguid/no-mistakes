@@ -9,12 +9,14 @@ import (
 
 // InstallBases are the user-level agent skill parent directories, relative to
 // the user's home directory, that init populates. `~/.claude/skills` is Claude
-// Code's personal-skill location (OpenCode reads it too); `~/.agents/skills`
-// is the vendor-neutral user-level convention Codex, OpenCode, Rovo Dev, and
-// Pi all read.
+// Code's personal-skill location (OpenCode and Grok read it too);
+// `~/.agents/skills` is the vendor-neutral user-level convention Codex,
+// OpenCode, Rovo Dev, Pi, and Grok all read; `~/.grok/skills` is Grok's
+// native personal-skill location.
 var InstallBases = []string{
 	filepath.Join(".claude", "skills"),
 	filepath.Join(".agents", "skills"),
+	filepath.Join(".grok", "skills"),
 }
 
 // InstallUser installs the skill into the agent skill directories under the
@@ -33,11 +35,11 @@ func InstallUser() ([]string, error) {
 // Writing is idempotent: re-running overwrites with identical content
 // (refreshing a stale SKILL.md from an older version).
 //
-// Users may consolidate the two bases with a symlink - `.claude/skills` ->
+// Users may consolidate skill bases with a symlink - `.claude/skills` ->
 // `.agents/skills`, the whole `.claude` dir -> `.agents`, or the reverse. Install
 // follows such links transparently, including when the symlinked target dir does
 // not exist yet (a plain os.MkdirAll would fail with "file exists" on a dangling
-// symlink). Both logical bases stay readable afterward via the link.
+// symlink). Linked bases stay readable afterward via the link.
 func Install(root string) ([]string, error) {
 	content := []byte(Markdown())
 	written := make([]string, 0, len(InstallBases))

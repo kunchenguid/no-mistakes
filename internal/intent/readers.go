@@ -11,6 +11,7 @@ func AllReaders(disabled map[string]bool) []Reader {
 		NewRovoDevReader(),
 		NewPiReader(),
 		NewCopilotReader(),
+		NewGrokReader(),
 	}
 	if len(disabled) == 0 {
 		return all

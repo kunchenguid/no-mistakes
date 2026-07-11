@@ -102,6 +102,18 @@ Data directory used to discover OpenCode transcripts for intent extraction.
 When set, no-mistakes looks for OpenCode's intent transcript database at `$XDG_DATA_HOME/opencode/opencode.db`.
 When unset, it falls back to `~/.local/share/opencode/opencode.db`.
 
+## `GROK_HOME`
+
+Override Grok's home directory for intent transcript discovery.
+
+|         |           |
+| ------- | --------- |
+| Type    | `string`  |
+| Default | `~/.grok` |
+
+When set, no-mistakes looks for Grok CLI sessions under `$GROK_HOME/sessions`.
+When unset, it falls back to `~/.grok/sessions`.
+
 ## `GLAB_CONFIG_DIR`
 
 Directory holding glab's `config.yml`, consulted when detecting self-hosted GitLab.

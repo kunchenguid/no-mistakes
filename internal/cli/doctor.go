@@ -108,6 +108,7 @@ func newDoctorCmd() *cobra.Command {
 					{"opencode", "opencode"},
 					{"pi", "pi"},
 					{"copilot", "copilot"},
+					{"grok", "grok"},
 					{"acpx", "acpx"},
 				}
 				fmt.Fprintln(w)

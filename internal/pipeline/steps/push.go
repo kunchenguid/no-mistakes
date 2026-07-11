@@ -39,18 +39,30 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	status, _ := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
 	if strings.TrimSpace(status) != "" {
 		sctx.Log("committing agent changes...")
-		if _, err := git.Run(ctx, sctx.WorkDir, "add", "-A"); err != nil {
+		excluded, err := git.StageAll(ctx, sctx.WorkDir)
+		if err != nil {
 			return nil, fmt.Errorf("stage agent changes: %w", err)
 		}
-		_, err := git.Run(ctx, sctx.WorkDir, "commit", "-m", "no-mistakes: apply agent fixes")
-		if err != nil {
-			return nil, fmt.Errorf("commit agent changes: %w", err)
+		if len(excluded) > 0 {
+			sctx.Log(fmt.Sprintf("excluded %d local toolchain/cache path(s) from push commit (e.g. %s)",
+				len(excluded), excluded[0]))
 		}
-		headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
+		staged, err := git.HasStagedChanges(ctx, sctx.WorkDir)
 		if err != nil {
-			return nil, fmt.Errorf("resolve head after commit: %w", err)
+			return nil, fmt.Errorf("check staged agent changes: %w", err)
 		}
-		newHeadSHA = headSHA
+		if staged {
+			if _, err := git.Run(ctx, sctx.WorkDir, "commit", "-m", "no-mistakes: apply agent fixes"); err != nil {
+				return nil, fmt.Errorf("commit agent changes: %w", err)
+			}
+			headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
+			if err != nil {
+				return nil, fmt.Errorf("resolve head after commit: %w", err)
+			}
+			newHeadSHA = headSHA
+		} else {
+			sctx.Log("no agent changes to commit after excluding local toolchain/cache paths")
+		}
 	}
 
 	ref := normalizedBranchRef(sctx.Run.Branch)

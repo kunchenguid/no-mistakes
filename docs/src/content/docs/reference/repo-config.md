@@ -59,10 +59,10 @@ Override the default agent for this repo and its setup-wizard suggestions.
 | | |
 |---|---|
 | Type | `string` or `string[]` |
-| Values | `auto`, `claude`, `codex`, `rovodev`, `opencode`, `pi`, `copilot`, `acp:<target>` |
+| Values | `auto`, `claude`, `codex`, `rovodev`, `opencode`, `pi`, `copilot`, `grok`, `acp:<target>` |
 | Default | Inherits from global config |
 
-`auto` resolves to the first supported native agent found on `PATH` in this order: `claude`, `codex`, `opencode`, `acli` with `rovodev` support, `pi`, then `copilot`.
+`auto` resolves to the first supported native agent found on `PATH` in this order: `claude`, `codex`, `opencode`, `acli` with `rovodev` support, `pi`, `copilot`, then `grok`.
 `acp:<target>` uses the user-installed `acpx` binary configured in global config.
 ACP agents are opt-in and are not considered by `agent: auto`.
 The effective agent configuration must resolve to a runnable runner before a new validation gate starts.
@@ -203,7 +203,7 @@ Fields not set here inherit from global config and then the built-in defaults.
 | `intent.slack_days` | `int` | Inherits from global (default `3`) |
 | `intent.disabled_readers` | `string[]` | Adds to globally disabled readers |
 
-Valid `disabled_readers` values are `claude`, `codex`, `opencode`, `rovodev`, `pi`, and `copilot`.
+Valid `disabled_readers` values are `claude`, `codex`, `opencode`, `rovodev`, `pi`, `copilot`, and `grok`.
 
 ### test.evidence
 
