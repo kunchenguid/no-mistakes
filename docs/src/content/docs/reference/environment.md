@@ -185,6 +185,19 @@ Disable telemetry collection.
 
 When set to a disabling value, telemetry stays off even if a runtime or embedded website ID is available.
 
+## `NM_SPAWN_DIAG`
+
+Enable verbose agent-spawn diagnostics for troubleshooting native agent launches, primarily failing agent invocations on Windows/Cygwin ([issue #427](https://github.com/kunchenguid/no-mistakes/issues/427)).
+
+|         |                                                       |
+| ------- | ----------------------------------------------------- |
+| Type    | any non-empty value to enable                         |
+| Default | unset (diagnostics off, zero overhead)                |
+
+When enabled, the claude native agent invocation emits `spawn-diag[claude]` trace lines to the step output and the daemon log covering the resolved binary and redacted argv, the tracked PID and its OS image name (which exposes a `.cmd` wrapper being tracked instead of the native process), stdout volume and a leading snippet, raw stderr, and the exact exit path. Prompt and JSON-schema values are replaced with their lengths, so a diagnostic run never writes prompt content or the schema into the logs.
+
+Because the managed daemon runs with a curated environment that a shell-set variable does not reach, you can also toggle diagnostics with a sentinel file: create `<NM_HOME>/spawn-diag` (stat-checked once per spawn), reproduce the failure, then remove it. The env variable and the sentinel file are independent; either one turns diagnostics on.
+
 ## Environment the daemon sees
 
 When the daemon runs through a managed service (launchd, systemd user service, Task Scheduler), the macOS and Linux service definitions include a default `PATH` with common user and system binary directories. They also bake in any proxy variables (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, `ALL_PROXY`) that were set when you installed or refreshed the service, so the daemon and the agents it spawns can reach the network through your proxy even when the login-shell probe is unavailable. Once baked in, the values are preserved across later service refreshes and restarts even when the proxy variables are not exported in that shell, so a routine `daemon restart` or a binary upgrade will not strip them; export the variables again only when you need to change or remove them. Both the upper- and lower-case spellings are forwarded exactly as you set them, because tooling is inconsistent about which it reads (curl, for example, honors only the lower-case `http_proxy` for plain-HTTP requests). Because a proxy URL can embed credentials (for example `http://user:pass@host`), the generated service file is restricted to owner-only `0600` permissions whenever proxy values are forwarded into it. When no proxy variables are set, the generated definition is unchanged and keeps the conventional `0644` mode. Windows Task Scheduler inherits your logon environment and needs no forwarding. At daemon startup, the daemon resolves environment from your login shell on macOS and Linux, preserves your shell `PATH` order, and appends any missing well-known directories such as `~/.local/bin`, `~/go/bin`, `~/.cargo/bin`, `~/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`, and `/bin`. If login-shell resolution fails or returns no entries, the daemon logs a warning and uses an augmented process-environment fallback that may omit version-manager directories such as nvm, fnm, or volta. On Windows it reuses the current process environment.
