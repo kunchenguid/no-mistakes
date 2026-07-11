@@ -126,7 +126,7 @@ func durableHistoryRequiresAuthority(sctx *pipeline.StepContext) bool {
 		return true
 	}
 	for _, repair := range repairs {
-		if repair.Verdict == db.RepairVerdictInconclusive || repair.Status == db.RepairStatusPending || repair.Status == db.RepairStatusFailed {
+		if repair.Verdict == db.RepairVerdictInconclusive || repair.Status == db.RepairStatusPending || repair.Status == db.RepairStatusFailed || repair.Status == db.RepairStatusUnavailable {
 			return true
 		}
 		if repair.Severity != "error" && repair.Severity != "warning" {

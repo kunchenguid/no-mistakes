@@ -7,7 +7,9 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -68,8 +70,15 @@ func TestCIStep_ProfileExhaustionStopsWithoutTierJump(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(repairs) != 0 {
-		t.Fatalf("durable repairs = %+v, want no spent quality tier after profile exhaustion", repairs)
+	if len(repairs) != 1 || repairs[0].Status != db.RepairStatusUnavailable || repairs[0].Tier != 0 {
+		t.Fatalf("durable repairs = %+v, want one unavailable tier-0 repair", repairs)
+	}
+	plan, err := step.planCIRepair(sctx, &scm.PR{URL: prURL}, []string{"test"}, false, ciRepairBudget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Tier != 0 || len(plan.Issues) != 1 {
+		t.Fatalf("retry plan = %+v, want the same tier after profile exhaustion", plan)
 	}
 	if got := gitCmd(t, upstream, "rev-parse", "refs/heads/feature"); got != headSHA {
 		t.Fatalf("remote changed to %s after profile exhaustion; want %s", got, headSHA)

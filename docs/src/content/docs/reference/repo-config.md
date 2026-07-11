@@ -85,7 +85,7 @@ Malformed combined output fails closed.
 
 ### commands.format
 
-Formatter command run before the push step commits agent fixes.
+Formatter command run at the start of the Lint step before it commits agent fixes.
 
 | | |
 |---|---|

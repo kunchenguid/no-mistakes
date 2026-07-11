@@ -8,10 +8,11 @@ import (
 
 // Repair statuses track a repair cycle's terminal disposition.
 const (
-	RepairStatusPending    = "pending"
-	RepairStatusResolved   = "resolved"
-	RepairStatusUnresolved = "unresolved"
-	RepairStatusFailed     = "failed"
+	RepairStatusPending     = "pending"
+	RepairStatusResolved    = "resolved"
+	RepairStatusUnresolved  = "unresolved"
+	RepairStatusFailed      = "failed"
+	RepairStatusUnavailable = "unavailable"
 )
 
 // Repair verdicts are the strong verifier's adjudication of a lineage. Only
@@ -159,7 +160,7 @@ func (d *DB) ResolveFindingRepair(repairID, verdict, rationale, status string) e
 		return fmt.Errorf("resolve finding repair requires a valid verdict")
 	}
 	switch status {
-	case RepairStatusResolved, RepairStatusUnresolved, RepairStatusFailed:
+	case RepairStatusResolved, RepairStatusUnresolved, RepairStatusFailed, RepairStatusUnavailable:
 	default:
 		return fmt.Errorf("resolve finding repair requires a terminal status")
 	}
@@ -283,16 +284,15 @@ func (d *DB) HasUnresolvedBlockingRepair(runID string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	// Keep only the latest (highest-tier) repair per blocking lineage; that row
-	// carries the lineage's terminal disposition.
+	// Keep only the latest repair per blocking lineage; that row carries the
+	// lineage's terminal disposition.
 	latest := make(map[string]*FindingRepair)
 	for _, r := range repairs {
 		if r.Severity != "error" && r.Severity != "warning" {
 			continue
 		}
 		cur, ok := latest[r.LineageID]
-		if !ok || r.Tier > cur.Tier ||
-			(r.Tier == cur.Tier && (r.CreatedAt > cur.CreatedAt || (r.CreatedAt == cur.CreatedAt && r.ID > cur.ID))) {
+		if !ok || r.CreatedAt > cur.CreatedAt || (r.CreatedAt == cur.CreatedAt && r.ID > cur.ID) {
 			latest[r.LineageID] = r
 		}
 	}

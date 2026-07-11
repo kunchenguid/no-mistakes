@@ -123,6 +123,11 @@ func TestHasUnresolvedBlockingRepair(t *testing.T) {
 	if got, _ := d.HasUnresolvedBlockingRepair(run.ID); got {
 		t.Fatal("want false once the lineage resolves at a higher tier")
 	}
+	repair("lin-D", "error", 2, RepairStatusUnresolved)
+	repair("lin-D", "error", 0, RepairStatusResolved)
+	if got, _ := d.HasUnresolvedBlockingRepair(run.ID); got {
+		t.Fatal("want false once a later lower-tier repair resolves")
+	}
 	// A consented retry may resolve at the same policy tier. Its later durable
 	// disposition must supersede the earlier parked/unresolved row.
 	repair("lin-C", "warning", 0, RepairStatusUnresolved)

@@ -108,25 +108,36 @@ CI logs:
 	s.verifiedCandidateTree = ""
 	tier := s.ciRepairTier(sctx)
 	sctx.Log(fmt.Sprintf("running agent to fix CI issues (tier %d)...", tier))
+	if len(s.activeCIRepairPlan.Issues) > 0 {
+		repairIDs, beginErr := s.beginCIRepairs(sctx, s.activeCIRepairPlan, s.activeCIRepairBudget)
+		if beginErr != nil {
+			return false, beginErr
+		}
+		s.activeCIRepairIDs = repairIDs
+	}
+	priorAttempts, priorErr := ciInvocationAttemptIDs(sctx, s.activeCIRepairIDs)
+	if priorErr != nil {
+		return false, priorErr
+	}
 	_, err := sctx.InvokeAgentTier(types.PurposeUnstructuredCIRepair, tier, agent.RunOpts{
 		Prompt:  prompt,
 		CWD:     sctx.WorkDir,
 		OnChunk: sctx.LogChunk,
 	})
+	linked, linkErr := linkCIInvocationAfter(sctx, s.activeCIRepairIDs, types.PurposeUnstructuredCIRepair, true, priorAttempts)
+	if linkErr != nil {
+		s.discardCICandidate(sctx)
+		if err != nil {
+			return false, fmt.Errorf("%w; additionally agent CI fix failed: %v", linkErr, err)
+		}
+		return false, linkErr
+	}
 	if err != nil {
 		return false, fmt.Errorf("agent CI fix: %w", err)
 	}
-	if len(s.activeCIRepairPlan.Issues) > 0 {
-		repairIDs, beginErr := s.beginCIRepairs(sctx, s.activeCIRepairPlan, s.activeCIRepairBudget)
-		if beginErr != nil {
-			s.discardCICandidate(sctx)
-			return false, beginErr
-		}
-		s.activeCIRepairIDs = repairIDs
-	}
-	if linkErr := linkLatestCIInvocation(sctx, s.activeCIRepairIDs, types.PurposeUnstructuredCIRepair, true); linkErr != nil {
+	if !linked {
 		s.discardCICandidate(sctx)
-		return false, linkErr
+		return false, &ciJournalError{operation: "link hosted CI invocation", err: fmt.Errorf("no journaled %s attempt in current round", types.PurposeUnstructuredCIRepair)}
 	}
 
 	candidateChanged, candidateTree, err := s.prepareCICandidate(sctx, mergeConflict, rebaseBaseSHA)
@@ -334,7 +345,13 @@ func (s *CIStep) ciLineageTier(sctx *pipeline.StepContext, lineageID string) (in
 		if err != nil {
 			return 0, &ciJournalError{operation: "load hosted CI repair lineage", err: err}
 		}
-		return len(repairs), nil
+		tier := 0
+		for _, repair := range repairs {
+			if repair.Status != db.RepairStatusUnavailable && repair.Tier >= tier {
+				tier = repair.Tier + 1
+			}
+		}
+		return tier, nil
 	}
 	if s.ephemeralCIRepairs == nil {
 		s.ephemeralCIRepairs = make(map[string]int)
@@ -385,23 +402,41 @@ func finishCIRepairs(sctx *pipeline.StepContext, repairIDs []string, verdict, ra
 	return nil
 }
 
-func linkLatestCIInvocation(sctx *pipeline.StepContext, repairIDs []string, purpose types.Purpose, fixer bool) error {
+func ciInvocationAttemptIDs(sctx *pipeline.StepContext, repairIDs []string) (map[string]struct{}, error) {
 	if len(repairIDs) == 0 || sctx.CurrentRound == nil {
-		return nil
+		return nil, nil
 	}
 	attempts, err := sctx.DB.GetInvocationAttemptsByRound(sctx.CurrentRound.ID)
 	if err != nil {
-		return &ciJournalError{operation: "load hosted CI invocation attempts", err: err}
+		return nil, &ciJournalError{operation: "load hosted CI invocation attempts", err: err}
+	}
+	ids := make(map[string]struct{}, len(attempts))
+	for _, attempt := range attempts {
+		ids[attempt.ID] = struct{}{}
+	}
+	return ids, nil
+}
+
+func linkCIInvocationAfter(sctx *pipeline.StepContext, repairIDs []string, purpose types.Purpose, fixer bool, priorAttempts map[string]struct{}) (bool, error) {
+	if len(repairIDs) == 0 || sctx.CurrentRound == nil {
+		return true, nil
+	}
+	attempts, err := sctx.DB.GetInvocationAttemptsByRound(sctx.CurrentRound.ID)
+	if err != nil {
+		return false, &ciJournalError{operation: "load hosted CI invocation attempts", err: err}
 	}
 	attemptID := ""
 	for i := len(attempts) - 1; i >= 0; i-- {
 		if attempts[i].Start.Purpose == purpose {
+			if _, alreadyPresent := priorAttempts[attempts[i].ID]; alreadyPresent {
+				continue
+			}
 			attemptID = attempts[i].ID
 			break
 		}
 	}
 	if attemptID == "" {
-		return &ciJournalError{operation: "link hosted CI invocation", err: fmt.Errorf("no journaled %s attempt in current round", purpose)}
+		return false, nil
 	}
 	for _, repairID := range repairIDs {
 		if fixer {
@@ -410,10 +445,10 @@ func linkLatestCIInvocation(sctx *pipeline.StepContext, repairIDs []string, purp
 			err = sctx.DB.SetFindingRepairVerifier(repairID, attemptID)
 		}
 		if err != nil {
-			return &ciJournalError{operation: "link hosted CI invocation", err: err}
+			return false, &ciJournalError{operation: "link hosted CI invocation", err: err}
 		}
 	}
-	return nil
+	return true, nil
 }
 
 func (s *CIStep) runPlannedCIRepair(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, plan ciRepairPlan, budget int) (bool, error) {
@@ -430,7 +465,11 @@ func (s *CIStep) runPlannedCIRepair(sctx *pipeline.StepContext, host scm.Host, p
 	failingNames, mergeConflict := selectedCIRepairIssues(plan)
 	pushed, repairErr := s.autoFixCI(sctx, host, pr, failingNames, mergeConflict)
 	if repairErr != nil {
-		if finishErr := finishCIRepairs(sctx, s.activeCIRepairIDs, db.RepairVerdictInconclusive, repairErr.Error(), db.RepairStatusFailed); finishErr != nil {
+		status := db.RepairStatusFailed
+		if isCIProfileExhaustion(repairErr) {
+			status = db.RepairStatusUnavailable
+		}
+		if finishErr := finishCIRepairs(sctx, s.activeCIRepairIDs, db.RepairVerdictInconclusive, repairErr.Error(), status); finishErr != nil {
 			return false, fmt.Errorf("%v; additionally failed to journal hosted CI repair: %w", repairErr, finishErr)
 		}
 		return false, repairErr
@@ -513,17 +552,25 @@ func (s *CIStep) verifyCIPatch(sctx *pipeline.StepContext, baseSHA string) error
 		}
 	}
 
+	priorAttempts, priorErr := ciInvocationAttemptIDs(sctx, s.activeCIRepairIDs)
+	if priorErr != nil {
+		return priorErr
+	}
 	result, err := sctx.InvokeAgent(types.PurposeEscalatedAggregateVerification, agent.RunOpts{
 		Prompt:     buildCIVerifyPrompt(sctx, baseSHA),
 		CWD:        sctx.WorkDir,
 		JSONSchema: findingsSchema,
 		OnChunk:    sctx.LogChunk,
 	})
-	if linkErr := linkLatestCIInvocation(sctx, s.activeCIRepairIDs, types.PurposeEscalatedAggregateVerification, false); linkErr != nil {
+	linked, linkErr := linkCIInvocationAfter(sctx, s.activeCIRepairIDs, types.PurposeEscalatedAggregateVerification, false, priorAttempts)
+	if linkErr != nil {
 		return linkErr
 	}
 	if err != nil {
 		return fmt.Errorf("strong verifier inconclusive: %w", err)
+	}
+	if !linked {
+		return &ciJournalError{operation: "link hosted CI invocation", err: fmt.Errorf("no journaled %s attempt in current round", types.PurposeEscalatedAggregateVerification)}
 	}
 	if result == nil || result.Output == nil {
 		return fmt.Errorf("strong verifier returned no structured findings")

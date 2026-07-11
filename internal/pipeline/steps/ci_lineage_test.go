@@ -1,8 +1,11 @@
 package steps
 
 import (
+	"context"
+	"errors"
 	"testing"
 
+	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
@@ -68,6 +71,44 @@ func TestCIStep_RestartRetainsHostedFailureLineageTier(t *testing.T) {
 	}
 	if unresolved, err := sctx.DB.HasUnresolvedBlockingRepair(sctx.Run.ID); err != nil || !unresolved {
 		t.Fatalf("unattended unresolved = %v, %v; want true for hosted CI lineage", unresolved, err)
+	}
+}
+
+func TestCIStep_FailedHostedRepairPersistsBeforeInvocation(t *testing.T) {
+	upstream, dir, baseSHA, headSHA := setupCIRepublish(t)
+	fixer := &mockAgent{
+		name: "failing",
+		runFn: func(_ context.Context, _ agent.RunOpts) (*agent.Result, error) {
+			return nil, errors.New("fixer unavailable")
+		},
+	}
+	step, sctx, host, pr := republishContext(t, fixer, upstream, dir, baseSHA, headSHA, config.Commands{})
+	stepResult, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepCI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	round, err := sctx.DB.ReserveStepRound(stepResult.ID, 1, "initial")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sctx.StepResultID = stepResult.ID
+	sctx.CurrentRound = round
+	plan, err := step.planCIRepair(sctx, pr, []string{"build"}, false, ciRepairBudget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := step.runPlannedCIRepair(sctx, host, pr, plan, ciRepairBudget); err == nil {
+		t.Fatal("expected failed CI repair invocation")
+	}
+	repairs, err := sctx.DB.GetFindingRepairsByLineage(plan.Issues[0].LineageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repairs) != 1 {
+		t.Fatalf("repair rows = %d, want 1", len(repairs))
+	}
+	if repairs[0].Status != db.RepairStatusFailed || repairs[0].Verdict != db.RepairVerdictInconclusive {
+		t.Fatalf("repair = %+v, want failed inconclusive repair", repairs[0])
 	}
 }
 
