@@ -93,7 +93,7 @@ func TestComputeCanaryRunFactsRetainsInitialReviewFindings(t *testing.T) {
 	if err := d.ClearStepFindings(step.ID); err != nil {
 		t.Fatal(err)
 	}
-	facts, err := computeCanaryRunFacts(d, run.ID)
+	facts, err := computeCanaryRunFacts(d.sql, run.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

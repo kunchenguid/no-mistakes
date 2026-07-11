@@ -653,7 +653,7 @@ func isBlockingSeverity(severity string) bool {
 	return severity == "error" || severity == "warning"
 }
 
-func buildBatchFixPrompt(batch []*lineageState, intent string, remaining int, diff string) string {
+func buildBatchFixPrompt(batch []*lineageState, userIntent string, remaining int, diff string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Fix the following %d code-review finding(s). Apply the smallest correct change for each and nothing unrelated.\n\n", len(batch))
 	for _, st := range batch {
@@ -667,7 +667,7 @@ func buildBatchFixPrompt(batch []*lineageState, intent string, remaining int, di
 		}
 		fmt.Fprintf(&b, "- lineage %s, severity %s%s: %s\n", st.lineageID, st.finding.Severity, loc, st.finding.Description)
 	}
-	in := intent.CleanForPrompt(intent)
+	in := intent.CleanForPrompt(userIntent)
 	if in == "" {
 		in = "(no recorded intent)"
 	}
