@@ -24,16 +24,23 @@ func processImageName(pid int) string {
 	if err != nil {
 		return "unknown(" + err.Error() + ")"
 	}
+	return parseTasklistImageName(out)
+}
+
+// parseTasklistImageName extracts the image name from `tasklist ... /FO CSV /NH`
+// output. A match is a CSV row whose first field is the quoted image name. When
+// nothing matches, tasklist prints a "no tasks" info line instead of a CSV row;
+// that message is localized, so rather than key on the English "INFO:" prefix,
+// treat any output that is not a quoted CSV row (including empty output) as the
+// process being gone.
+func parseTasklistImageName(out []byte) string {
 	line := strings.TrimSpace(string(out))
-	// tasklist prints an "INFO: No tasks..." line to stdout when nothing matches.
-	if line == "" || strings.HasPrefix(line, "INFO:") {
+	if !strings.HasPrefix(line, "\"") {
 		return "gone"
 	}
 	// CSV row: "Image Name","PID","Session Name",...  Take the first field.
-	if strings.HasPrefix(line, "\"") {
-		if end := strings.IndexByte(line[1:], '"'); end >= 0 {
-			return line[1 : 1+end]
-		}
+	if end := strings.IndexByte(line[1:], '"'); end >= 0 {
+		return line[1 : 1+end]
 	}
-	return line
+	return "gone"
 }

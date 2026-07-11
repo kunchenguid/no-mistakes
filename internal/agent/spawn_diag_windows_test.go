@@ -20,6 +20,29 @@ func TestProcessImageName_CurrentProcess(t *testing.T) {
 	}
 }
 
+func TestParseTasklistImageName(t *testing.T) {
+	cases := []struct {
+		name string
+		out  string
+		want string
+	}{
+		{"match", `"claude.exe","1234","Console","1","12,345 K"`, "claude.exe"},
+		{"match with trailing newline", "\"cmd.exe\",\"5678\",\"Console\",\"1\",\"1 K\"\r\n", "cmd.exe"},
+		{"empty output", "", "gone"},
+		{"english no-match", "INFO: No tasks are running which match the specified criteria.", "gone"},
+		// A localized "no tasks" line does not start with a quoted CSV field, so
+		// it must read as gone rather than being mistaken for an image name.
+		{"localized no-match", "INFORMATION: Es werden keine Tasks ausgefuehrt.", "gone"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := parseTasklistImageName([]byte(tc.out)); got != tc.want {
+				t.Errorf("parseTasklistImageName(%q) = %q, want %q", tc.out, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestSpawnDiag_EndToEndCmdShim drives runOnce against a fake claude .cmd shim
 // (as npm installs on Windows) with NM_SPAWN_DIAG set, and asserts the
 // diagnostic surfaces the tracked image, stdout volume, and exit path. This is
