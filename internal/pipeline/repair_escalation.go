@@ -370,10 +370,10 @@ func (rc *repairCoordinator) runTierBatch(ctx context.Context, batch []*lineageS
 
 	diff := rc.reviewDiff(ctx, rc.baseSHA)
 	rc.logf("repairing %d finding(s) at tier %d with a fresh fixer...", len(batch), tier)
-	fixResult, fixErr := rc.invoker.Invoke(ctx, agent.InvocationRequest{
+	fixResult, fixErr := rc.sessions.InvokeRequest(ctx, rc.invoker, SessionRoleFixer, agent.InvocationRequest{
 		Purpose: rc.policy.fixerPurpose, Tier: tier, Scope: scope,
 		Payload: agent.RunOpts{Prompt: buildBatchFixPrompt(batch, rc.intent, remaining, diff), CWD: rc.workDir, JSONSchema: commitSummarySchemaJSON, OnChunk: rc.logChunk},
-	})
+	}, rc.log)
 	if fixErr != nil {
 		rc.logf("fixer failed at tier %d: %v", tier, fixErr)
 		if err := failBatch(db.RepairVerdictInconclusive, "fixer invocation failed"); err != nil {
@@ -432,10 +432,10 @@ func (rc *repairCoordinator) runTierBatch(ctx context.Context, batch []*lineageS
 		vpurpose = rc.policy.finalVerifierPurpose
 	}
 	rc.logf("verifying the batch with a fresh strong reviewer...")
-	verifyResult, verifyErr := rc.invoker.Invoke(ctx, agent.InvocationRequest{
+	verifyResult, verifyErr := rc.sessions.InvokeRequest(ctx, rc.invoker, SessionRoleReviewer, agent.InvocationRequest{
 		Purpose: vpurpose, Scope: scope,
 		Payload: agent.RunOpts{Prompt: buildBatchVerifyPrompt(batch, rc.reviewDiff(ctx, rc.baseSHA)), CWD: rc.workDir, JSONSchema: batchVerdictSchema, OnChunk: rc.logChunk},
-	})
+	}, rc.log)
 	if verifyErr != nil {
 		rc.logf("verifier failed at tier %d: %v", tier, verifyErr)
 		if err := failBatch(db.RepairVerdictInconclusive, "verifier invocation failed"); err != nil {

@@ -63,6 +63,7 @@ func (sctx *StepContext) RunAgentSession(role SessionRole, opts agent.RunOpts) (
 	}
 	return sctx.Sessions.Run(sctx.Ctx, sctx.Agent, role, opts, sctx.Log)
 }
+
 // InvokeAgentSession routes and journals one durable reviewer or fixer turn.
 // Session identity is adapter-native, while Purpose, Candidate, and terminal
 // facts remain owned by the routing invocation lifecycle.

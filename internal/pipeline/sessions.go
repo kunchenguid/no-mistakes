@@ -105,21 +105,29 @@ func (rs *RunSessions) Run(ctx context.Context, a agent.Agent, role SessionRole,
 	rs.remember(role, result.SessionID, sessionProvider(a, result))
 	return result, nil
 }
-// Invoke executes one routed, journaled turn for a durable role session. The
-// stored provider is carried in RunOpts so routing resumes only the Candidate
-// that minted the session; a failed resume is journaled, forgotten, and
-// retried cold through the same Purpose and route.
+
+// Invoke executes one routed, journaled turn for a durable role session.
 func (rs *RunSessions) Invoke(ctx context.Context, invoker agent.Invoker, purpose types.Purpose, scope types.InvocationScope, role SessionRole, opts agent.RunOpts, logf func(string)) (*agent.Result, error) {
+	return rs.InvokeRequest(ctx, invoker, role, agent.InvocationRequest{
+		Purpose: purpose,
+		Scope:   scope,
+		Payload: opts,
+	}, logf)
+}
+
+// InvokeRequest executes a complete routed request in a durable role session.
+// Resume and cold-fallback retries mutate only the native session payload:
+// semantic purpose, route tier, and durable scope remain exactly unchanged.
+func (rs *RunSessions) InvokeRequest(ctx context.Context, invoker agent.Invoker, role SessionRole, request agent.InvocationRequest, logf func(string)) (*agent.Result, error) {
 	invoke := func(payload agent.RunOpts) (*agent.Result, error) {
 		if invoker == nil {
 			return nil, fmt.Errorf("session invoker is nil")
 		}
-		return invoker.Invoke(ctx, agent.InvocationRequest{
-			Purpose: purpose,
-			Scope:   scope,
-			Payload: payload,
-		})
+		next := request
+		next.Payload = payload
+		return invoker.Invoke(ctx, next)
 	}
+	opts := request.Payload
 	if rs == nil || !rs.enabled {
 		return invoke(opts)
 	}

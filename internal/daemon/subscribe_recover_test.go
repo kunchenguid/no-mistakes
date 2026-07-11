@@ -9,12 +9,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	gitpkg "github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
+	"gopkg.in/yaml.v3"
 )
 
 func TestSubscribeReceivesEvents(t *testing.T) {
@@ -348,8 +350,22 @@ func TestRecoverOnStartup_ResumesParkedRun(t *testing.T) {
 	if err := p.EnsureDirs(); err != nil {
 		t.Fatal(err)
 	}
-	mockClaude := writeMockClaude(t, t.TempDir())
-	if err := os.WriteFile(p.ConfigFile(), []byte("agent: claude\nagent_path_override:\n  claude: "+mockClaude+"\n"), 0o644); err != nil {
+	routing := config.DefaultRoutingConfig()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for runner, spec := range routing.Runners {
+		spec.Executable = executable
+		routing.Runners[runner] = spec
+	}
+	globalConfig, err := yaml.Marshal(struct {
+		Routing config.RoutingConfig `yaml:"routing"`
+	}{Routing: routing})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.ConfigFile(), globalConfig, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	d, err := db.Open(p.DB())

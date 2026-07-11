@@ -32,6 +32,7 @@ type scriptedExecutorRepairAgent struct {
 	resolve          bool
 	newFindingAction string
 	verifyCalls      int
+	reviewCalls      int
 	repeatNewFinding bool
 	fixEdit          func(string)
 }
@@ -61,6 +62,10 @@ func (a *scriptedExecutorRepairAgent) Run(_ context.Context, opts agent.RunOpts)
 		a.verifyCalls++
 		return &agent.Result{Output: []byte(marshalBatchVerdict(ids, spec))}, nil
 	default:
+		a.reviewCalls++
+		if a.reviewCalls > 1 {
+			return &agent.Result{Output: []byte(`{"findings":[],"summary":"clean rereview"}`)}, nil
+		}
 		return &agent.Result{Output: []byte(a.initialFindings)}, nil
 	}
 }
@@ -282,7 +287,11 @@ func startExecutorRepairReviewWithInitial(t *testing.T, initial string, resolve 
 			if err != nil {
 				return nil, err
 			}
-			return &StepOutcome{NeedsApproval: true, Findings: string(result.Output)}, nil
+			findings := string(result.Output)
+			return &StepOutcome{
+				NeedsApproval: hasBlockingFindingsJSON(findings) || hasAskUserFindingsJSON(findings),
+				Findings:      findings,
+			}, nil
 		},
 	}
 	next := newPassStep(types.StepTest)

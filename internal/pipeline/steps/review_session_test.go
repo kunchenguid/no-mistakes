@@ -21,9 +21,11 @@ import (
 // It mints deterministic session ids ("sess-1", "sess-2", ...) for new
 // sessions and echoes resumed ids, recording every invocation.
 type sessionMockAgent struct {
-	mu     sync.Mutex
-	calls  []agent.RunOpts
-	nextID int
+	mu                sync.Mutex
+	calls             []agent.RunOpts
+	nextID            int
+	failResumePurpose string
+	failedResume      bool
 	// respond picks the reply for one invocation (called under the lock).
 	respond func(opts agent.RunOpts) *agent.Result
 }
@@ -32,12 +34,20 @@ func (m *sessionMockAgent) Name() string { return "session-mock" }
 
 func (m *sessionMockAgent) SupportsSessionResume() bool { return true }
 
+func (m *sessionMockAgent) SupportsSessionProvider(provider string) bool {
+	return provider == string(types.AgentCodex) || provider == string(types.AgentClaude)
+}
+
 func (m *sessionMockAgent) Close() error { return nil }
 
 func (m *sessionMockAgent) Run(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.calls = append(m.calls, opts)
+	if opts.Session != nil && opts.Session.ID != "" && opts.Purpose == m.failResumePurpose && !m.failedResume {
+		m.failedResume = true
+		return nil, fmt.Errorf("session %s is no longer resumable", opts.Session.ID)
+	}
 
 	result := m.respond(opts)
 	if opts.Session != nil {
@@ -56,6 +66,23 @@ func (m *sessionMockAgent) snapshot() []agent.RunOpts {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return append([]agent.RunOpts(nil), m.calls...)
+}
+
+func repairVerifierResult(opts agent.RunOpts, status string) *agent.Result {
+	const prefix = "- lineage "
+	start := strings.Index(opts.Prompt, prefix)
+	if start < 0 {
+		return &agent.Result{Output: []byte(`{"verdicts":[],"new_findings":[]}`)}
+	}
+	lineage := opts.Prompt[start+len(prefix):]
+	if end := strings.Index(lineage, ","); end >= 0 {
+		lineage = lineage[:end]
+	}
+	return &agent.Result{Output: []byte(fmt.Sprintf(
+		`{"verdicts":[{"lineage_id":%q,"status":%q,"rationale":"scripted adjudication"}],"new_findings":[]}`,
+		strings.TrimSpace(lineage),
+		status,
+	))}
 }
 
 // reviewSessionHarness wires a real executor around real steps with a
@@ -80,8 +107,7 @@ func reviewSessionHarness(t *testing.T, mock *sessionMockAgent, steps []pipeline
 	}
 
 	cfg := &config.Config{
-		Agent:        types.AgentClaude,
-		AutoFix:      config.AutoFix{Review: 3},
+		Routing:      config.DefaultRoutingConfig(),
 		SessionReuse: true,
 	}
 	exec := pipeline.NewExecutor(database, paths.WithRoot(t.TempDir()), cfg, mock, steps, nil)
@@ -91,7 +117,7 @@ func reviewSessionHarness(t *testing.T, mock *sessionMockAgent, steps []pipeline
 func reviewCalls(calls []agent.RunOpts) []agent.RunOpts {
 	var out []agent.RunOpts
 	for _, c := range calls {
-		if c.Purpose == "review" {
+		if c.Purpose == string(types.PurposeInitialReview) {
 			out = append(out, c)
 		}
 	}
@@ -101,7 +127,19 @@ func reviewCalls(calls []agent.RunOpts) []agent.RunOpts {
 func fixCalls(calls []agent.RunOpts) []agent.RunOpts {
 	var out []agent.RunOpts
 	for _, c := range calls {
-		if c.Purpose == "review-fix" {
+		if c.Purpose == string(types.PurposeStructuredFindingRepair) ||
+			c.Purpose == string(types.PurposeIntentSensitiveRepair) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+func verifierCalls(calls []agent.RunOpts) []agent.RunOpts {
+	var out []agent.RunOpts
+	for _, c := range calls {
+		if c.Purpose == string(types.PurposeNormalAggregateVerification) ||
+			c.Purpose == string(types.PurposeEscalatedAggregateVerification) {
 			out = append(out, c)
 		}
 	}
@@ -116,20 +154,26 @@ func fixCalls(calls []agent.RunOpts) []agent.RunOpts {
 // pass of the branch.
 func TestReviewLoop_OneReviewerSessionOneFixerSession(t *testing.T) {
 	reviewRound := 0
+	verifyRound := 0
 	mock := &sessionMockAgent{}
 	mock.respond = func(opts agent.RunOpts) *agent.Result {
 		switch opts.Purpose {
-		case "review":
+		case string(types.PurposeInitialReview):
 			reviewRound++
-			if reviewRound <= 2 {
-				return &agent.Result{Output: []byte(fmt.Sprintf(
-					`{"findings":[{"id":"f-%d","severity":"error","description":"bug %d","action":"auto-fix"}],"summary":"issues","risk_level":"medium","risk_rationale":"bugs"}`,
-					reviewRound, reviewRound,
-				))}
+			if reviewRound == 1 {
+				return &agent.Result{Output: []byte(
+					`{"findings":[{"id":"f-1","severity":"error","description":"bug","action":"auto-fix"}],"summary":"issues","risk_level":"medium","risk_rationale":"bug"}`,
+				)}
 			}
 			return &agent.Result{Output: []byte(`{"findings":[],"summary":"clean","risk_level":"low","risk_rationale":"clean"}`)}
-		case "review-fix":
+		case string(types.PurposeStructuredFindingRepair):
 			return &agent.Result{Output: []byte(`{"summary":"fix the bug"}`)}
+		case string(types.PurposeNormalAggregateVerification):
+			verifyRound++
+			if verifyRound == 1 {
+				return repairVerifierResult(opts, "unresolved")
+			}
+			return repairVerifierResult(opts, "resolved")
 		default:
 			t.Errorf("unexpected agent purpose %q", opts.Purpose)
 			return &agent.Result{Output: []byte(`{}`)}
@@ -144,21 +188,29 @@ func TestReviewLoop_OneReviewerSessionOneFixerSession(t *testing.T) {
 	calls := mock.snapshot()
 	reviews := reviewCalls(calls)
 	fixes := fixCalls(calls)
-	if len(reviews) != 3 {
-		t.Fatalf("expected 3 review rounds, got %d", len(reviews))
+	verifiers := verifierCalls(calls)
+	if len(reviews) != 2 {
+		t.Fatalf("expected initial review + full rereview, got %d", len(reviews))
 	}
 	if len(fixes) != 2 {
-		t.Fatalf("expected 2 fix rounds, got %d", len(fixes))
+		t.Fatalf("expected 2 repair tiers, got %d", len(fixes))
+	}
+	if len(verifiers) != 2 {
+		t.Fatalf("expected 2 repair verifiers, got %d", len(verifiers))
 	}
 
-	// One reviewer session: started on round 1, resumed on rounds 2 and 3.
+	// One reviewer session: the initial review starts it, every targeted
+	// verifier and the final full rereview resume it.
 	if reviews[0].Session == nil || reviews[0].Session.ID != "" {
-		t.Fatalf("round 1 review must start the reviewer session, got %+v", reviews[0].Session)
+		t.Fatalf("initial review must start the reviewer session, got %+v", reviews[0].Session)
 	}
 	reviewerID := "sess-1"
-	for i, call := range reviews[1:] {
+	if reviews[1].Session == nil || reviews[1].Session.ID != reviewerID {
+		t.Fatalf("full rereview must resume %s, got %+v", reviewerID, reviews[1].Session)
+	}
+	for i, call := range verifiers {
 		if call.Session == nil || call.Session.ID != reviewerID {
-			t.Fatalf("review round %d must resume %s, got %+v", i+2, reviewerID, call.Session)
+			t.Fatalf("repair verifier %d must resume %s, got %+v", i+1, reviewerID, call.Session)
 		}
 	}
 
@@ -205,8 +257,8 @@ func TestReviewLoop_OneReviewerSessionOneFixerSession(t *testing.T) {
 		t.Fatalf("expected 2 persisted role sessions, got %d", len(sessions))
 	}
 	for _, s := range sessions {
-		if s.SessionID == "" || s.Agent != "session-mock" {
-			t.Fatalf("unexpected persisted session: %+v", s)
+		if s.SessionID == "" || s.Agent != string(types.AgentCodex) {
+			t.Fatalf("unexpected persisted routed session: %+v", s)
 		}
 	}
 }
@@ -219,7 +271,7 @@ func TestReviewLoop_ParkRespondFixKeepsRoleSessions(t *testing.T) {
 	mock := &sessionMockAgent{}
 	mock.respond = func(opts agent.RunOpts) *agent.Result {
 		switch opts.Purpose {
-		case "review":
+		case string(types.PurposeInitialReview):
 			reviewRound++
 			if reviewRound == 1 {
 				return &agent.Result{Output: []byte(
@@ -227,8 +279,13 @@ func TestReviewLoop_ParkRespondFixKeepsRoleSessions(t *testing.T) {
 				)}
 			}
 			return &agent.Result{Output: []byte(`{"findings":[],"summary":"clean","risk_level":"low","risk_rationale":"clean"}`)}
-		default:
+		case string(types.PurposeIntentSensitiveRepair):
 			return &agent.Result{Output: []byte(`{"summary":"apply decision"}`)}
+		case string(types.PurposeNormalAggregateVerification):
+			return repairVerifierResult(opts, "resolved")
+		default:
+			t.Errorf("unexpected agent purpose %q", opts.Purpose)
+			return &agent.Result{Output: []byte(`{}`)}
 		}
 	}
 
@@ -255,8 +312,9 @@ func TestReviewLoop_ParkRespondFixKeepsRoleSessions(t *testing.T) {
 	calls := mock.snapshot()
 	reviews := reviewCalls(calls)
 	fixes := fixCalls(calls)
-	if len(reviews) != 2 || len(fixes) != 1 {
-		t.Fatalf("expected 2 reviews + 1 fix, got %d + %d", len(reviews), len(fixes))
+	verifiers := verifierCalls(calls)
+	if len(reviews) != 2 || len(fixes) != 1 || len(verifiers) != 1 {
+		t.Fatalf("expected 2 reviews + 1 fix + 1 verifier, got %d + %d + %d", len(reviews), len(fixes), len(verifiers))
 	}
 	if reviews[1].Session == nil || reviews[1].Session.ID != "sess-1" {
 		t.Fatalf("post-park rereview must resume the reviewer session, got %+v", reviews[1].Session)
@@ -264,8 +322,80 @@ func TestReviewLoop_ParkRespondFixKeepsRoleSessions(t *testing.T) {
 	if fixes[0].Session == nil || fixes[0].Session.ID != "" {
 		t.Fatalf("user-driven fix must start the fixer session, got %+v", fixes[0].Session)
 	}
+	if verifiers[0].Session == nil || verifiers[0].Session.ID != "sess-1" {
+		t.Fatalf("post-fix verifier must resume the reviewer session, got %+v", verifiers[0].Session)
+	}
 	if !strings.Contains(reviews[1].Prompt, "Do a full review pass before returning") {
 		t.Fatalf("post-fix rereview lost the full-review demand:\n%s", reviews[1].Prompt)
+	}
+}
+
+func TestReviewLoop_FailedReviewerResumeFallsBackColdWithoutRoleLeakage(t *testing.T) {
+	reviewRound := 0
+	mock := &sessionMockAgent{failResumePurpose: string(types.PurposeNormalAggregateVerification)}
+	mock.respond = func(opts agent.RunOpts) *agent.Result {
+		switch opts.Purpose {
+		case string(types.PurposeInitialReview):
+			reviewRound++
+			if reviewRound == 1 {
+				return &agent.Result{Output: []byte(
+					`{"findings":[{"id":"f-1","severity":"error","description":"bug","action":"auto-fix"}],"summary":"issue","risk_level":"medium","risk_rationale":"bug"}`,
+				)}
+			}
+			return &agent.Result{Output: []byte(`{"findings":[],"summary":"clean","risk_level":"low","risk_rationale":"clean"}`)}
+		case string(types.PurposeStructuredFindingRepair):
+			return &agent.Result{Output: []byte(`{"summary":"fix bug"}`)}
+		case string(types.PurposeNormalAggregateVerification):
+			return repairVerifierResult(opts, "resolved")
+		default:
+			t.Errorf("unexpected agent purpose %q", opts.Purpose)
+			return &agent.Result{Output: []byte(`{}`)}
+		}
+	}
+
+	exec, database, run, repo, workDir := reviewSessionHarness(t, mock, []pipeline.Step{&ReviewStep{}})
+	if err := exec.Execute(context.Background(), run, repo, workDir); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	calls := mock.snapshot()
+	reviews := reviewCalls(calls)
+	fixes := fixCalls(calls)
+	verifiers := verifierCalls(calls)
+	if len(reviews) != 2 || len(fixes) != 1 || len(verifiers) != 2 {
+		t.Fatalf("calls = %d reviews, %d fixes, %d verifier attempts; want 2, 1, 2", len(reviews), len(fixes), len(verifiers))
+	}
+	if verifiers[0].Session == nil || verifiers[0].Session.ID != "sess-1" || verifiers[0].Session.Agent != string(types.AgentCodex) {
+		t.Fatalf("failed resume did not pin the original reviewer provider: %+v", verifiers[0].Session)
+	}
+	if verifiers[1].Session == nil || verifiers[1].Session.ID != "" || !verifiers[1].SessionFallback {
+		t.Fatalf("fallback verifier must retry cold with the same routed request: %+v", verifiers[1])
+	}
+	if reviews[1].Session == nil || reviews[1].Session.ID != "sess-3" || reviews[1].Session.Agent != string(types.AgentCodex) {
+		t.Fatalf("full rereview must resume the replacement reviewer session: %+v", reviews[1].Session)
+	}
+	if fixes[0].Session == nil || fixes[0].Session.ID != "" {
+		t.Fatalf("fixer must keep its distinct fresh role session: %+v", fixes[0].Session)
+	}
+
+	sessions, err := database.GetRunAgentSessions(run.ID)
+	if err != nil {
+		t.Fatalf("get sessions: %v", err)
+	}
+	byRole := make(map[string]db.RunAgentSession, len(sessions))
+	for _, session := range sessions {
+		byRole[session.Role] = session
+	}
+	reviewer, hasReviewer := byRole[string(pipeline.SessionRoleReviewer)]
+	fixer, hasFixer := byRole[string(pipeline.SessionRoleFixer)]
+	if !hasReviewer || reviewer.SessionID != "sess-3" || reviewer.Agent != string(types.AgentCodex) {
+		t.Fatalf("persisted replacement reviewer session = %+v", reviewer)
+	}
+	if !hasFixer || fixer.SessionID != "sess-2" || fixer.Agent != string(types.AgentCodex) {
+		t.Fatalf("persisted fixer session = %+v", fixer)
+	}
+	if reviewer.SessionID == fixer.SessionID {
+		t.Fatal("fallback leaked the fixer identity into the reviewer role")
 	}
 }
 
@@ -276,7 +406,7 @@ func TestReviewLoop_OtherStepsStaySessionIsolated(t *testing.T) {
 	mock := &sessionMockAgent{}
 	mock.respond = func(opts agent.RunOpts) *agent.Result {
 		switch opts.Purpose {
-		case "review":
+		case string(types.PurposeInitialReview):
 			return &agent.Result{Output: []byte(`{"findings":[],"summary":"clean","risk_level":"low","risk_rationale":"clean"}`)}
 		default:
 			return &agent.Result{Output: []byte(`{"findings":[],"summary":"nothing to do"}`)}
@@ -290,7 +420,7 @@ func TestReviewLoop_OtherStepsStaySessionIsolated(t *testing.T) {
 	}
 
 	for _, call := range mock.snapshot() {
-		if call.Purpose == "review" || call.Purpose == "review-fix" {
+		if call.Purpose == string(types.PurposeInitialReview) {
 			continue
 		}
 		if call.Session != nil {

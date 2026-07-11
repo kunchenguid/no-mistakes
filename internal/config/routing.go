@@ -191,6 +191,7 @@ func (rc RoutingConfig) Validate() error {
 	}
 	return nil
 }
+
 // ValidateRunnable verifies that every routed Profile has at least one
 // Candidate whose normalized runner executable can be launched. Routing may
 // retain unavailable backup Candidates, but a gate must fail before starting

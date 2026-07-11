@@ -15,13 +15,24 @@ import (
 
 // usageAgent is a minimal agent that reports token usage and echoes session
 // starts, for perf-recording tests.
-type usageAgent struct{ resumable bool }
+type usageAgent struct {
+	name      string
+	resumable bool
+	calls     int
+}
 
-func (u *usageAgent) Name() string                { return "usage-agent" }
+func (u *usageAgent) Name() string {
+	if u.name != "" {
+		return u.name
+	}
+	return "usage-agent"
+}
+
 func (u *usageAgent) Close() error                { return nil }
 func (u *usageAgent) SupportsSessionResume() bool { return u.resumable }
 
 func (u *usageAgent) Run(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+	u.calls++
 	result := &agent.Result{
 		Output: json.RawMessage(`{}`),
 		Model:  "test-model-1",
@@ -42,11 +53,13 @@ type fallbackUsageAgent struct {
 	name   string
 	result *agent.Result
 	err    error
+	calls  int
 }
 
 func (a *fallbackUsageAgent) Name() string { return a.name }
 
 func (a *fallbackUsageAgent) Run(context.Context, agent.RunOpts) (*agent.Result, error) {
+	a.calls++
 	return a.result, a.err
 }
 
@@ -63,18 +76,22 @@ func TestExecutor_RecordsAgentInvocationsLocally(t *testing.T) {
 	step := &adaptiveCallStep{
 		name: types.StepReview,
 		fn: func(sctx *StepContext) (*StepOutcome, error) {
-			if _, err := sctx.RunAgentSession(SessionRoleReviewer, agent.RunOpts{Prompt: "review", Purpose: "review"}); err != nil {
+			if _, err := sctx.InvokeAgentSession(
+				SessionRoleReviewer,
+				types.PurposeInitialReview,
+				agent.RunOpts{Prompt: "review"},
+			); err != nil {
 				return nil, err
 			}
-			if _, err := sctx.Agent.Run(sctx.Ctx, agent.RunOpts{Prompt: "evidence"}); err != nil {
+			if _, err := sctx.InvokeAgent(types.PurposeTestEvidence, agent.RunOpts{Prompt: "evidence"}); err != nil {
 				return nil, err
 			}
 			return &StepOutcome{}, nil
 		},
 	}
 
-	cfg := &config.Config{Agent: types.AgentClaude, SessionReuse: true}
-	exec := NewExecutor(database, p, cfg, &usageAgent{resumable: true}, []Step{step}, nil)
+	cfg := &config.Config{Routing: config.DefaultRoutingConfig(), SessionReuse: true}
+	exec := NewExecutor(database, p, cfg, &usageAgent{name: "codex", resumable: true}, []Step{step}, nil)
 	if err := exec.Execute(context.Background(), run, repo, workDir); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -86,9 +103,13 @@ func TestExecutor_RecordsAgentInvocationsLocally(t *testing.T) {
 	if len(invocations) != 2 {
 		t.Fatalf("got %d invocation rows, want 2", len(invocations))
 	}
+	byPurpose := make(map[string]db.AgentInvocation, len(invocations))
+	for _, invocation := range invocations {
+		byPurpose[invocation.Purpose] = invocation
+	}
 
-	review := invocations[0]
-	if review.Purpose != "review" || review.StepName != "review" || review.Round != 1 {
+	review, ok := byPurpose[string(types.PurposeInitialReview)]
+	if !ok || review.StepName != "review" || review.Round != 1 {
 		t.Fatalf("review row = %+v", review)
 	}
 	if review.SessionMode != db.InvocationModeStarted {
@@ -97,7 +118,7 @@ func TestExecutor_RecordsAgentInvocationsLocally(t *testing.T) {
 	if review.SessionKey == "" || review.SessionKey == "sess-new" {
 		t.Fatalf("session key must be a fingerprint, not empty or the raw id: %q", review.SessionKey)
 	}
-	if review.Agent != "usage-agent" || review.Model != "test-model-1" {
+	if review.Agent != "codex" || review.Model != "test-model-1" {
 		t.Fatalf("agent/model = %q/%q", review.Agent, review.Model)
 	}
 	if review.InputTokens != 100 || review.OutputTokens != 20 || review.CacheReadTokens != 60 {
@@ -107,29 +128,47 @@ func TestExecutor_RecordsAgentInvocationsLocally(t *testing.T) {
 		t.Fatalf("timing/exit not recorded: %+v", review)
 	}
 
-	// The second invocation ran outside any session and defaults its purpose
-	// to the step name.
-	evidence := invocations[1]
-	if evidence.SessionMode != db.InvocationModeCold || evidence.Purpose != "review" {
-		t.Fatalf("evidence row = %+v", evidence)
+	// The second routed invocation ran outside any session and keeps its
+	// semantic Purpose even though it executes during the Review step.
+	evidence, ok := byPurpose[string(types.PurposeTestEvidence)]
+	if !ok || evidence.SessionMode != db.InvocationModeCold {
+		t.Fatalf("evidence row = %+v, found = %t", evidence, ok)
 	}
 }
 
-func TestPerfRecordingAgent_RecordsFallbackAttemptsSeparately(t *testing.T) {
+func TestPerfRecordingAgent_RecordsRoutedFallbackAttemptsSeparately(t *testing.T) {
 	database, _, run, _ := setupTest(t)
-	wrapped := &perfRecordingAgent{
-		inner: agent.NewFallback([]agent.Agent{
-			&fallbackUsageAgent{name: "codex", err: errors.New("codex start: executable not found")},
-			&fallbackUsageAgent{name: "claude", result: &agent.Result{Model: "test-model-2"}},
-		}),
-		db:       database,
-		runID:    run.ID,
-		stepName: types.StepReview,
-		round:    func() int { return 1 },
+	scope := reservedReviewScope(t, database, run)
+	round := func() int { return 1 }
+	codex := &fallbackUsageAgent{
+		name: "codex",
+		err: &agent.OperationalError{
+			Kind: agent.OpFailureExecutable,
+			Err:  errors.New("codex start: executable not found"),
+		},
 	}
+	claude := &fallbackUsageAgent{
+		name:   "claude",
+		result: &agent.Result{Model: "test-model-2"},
+	}
+	wrap := func(inner agent.Agent) agent.Agent {
+		return &perfRecordingAgent{
+			inner:    inner,
+			db:       database,
+			runID:    run.ID,
+			stepName: types.StepReview,
+			round:    round,
+		}
+	}
+	invoker := newRoutingInvoker(config.DefaultRoutingConfig(), database, newProviderCircuits())
+	invoker.newAgent = perRunner(wrap(codex), wrap(claude))
 
-	if _, err := wrapped.Run(context.Background(), agent.RunOpts{Purpose: "review"}); err != nil {
-		t.Fatalf("Run: %v", err)
+	if _, err := invoker.Invoke(context.Background(), agent.InvocationRequest{
+		Purpose: types.PurposeInitialReview,
+		Scope:   scope,
+		Payload: agent.RunOpts{Purpose: "review"},
+	}); err != nil {
+		t.Fatalf("Invoke: %v", err)
 	}
 	invocations, err := database.GetAgentInvocationsByRun(run.ID)
 	if err != nil {
@@ -150,22 +189,46 @@ func TestPerfRecordingAgent_RecordsFallbackAttemptsSeparately(t *testing.T) {
 	}
 }
 
-func TestPerfRecordingAgent_MixedFallbackRecordsActualProviderCold(t *testing.T) {
+func TestPerfRecordingAgent_RoutedResumeRecordsActualProvider(t *testing.T) {
 	database, _, run, _ := setupTest(t)
-	wrapped := &perfRecordingAgent{
-		inner: agent.NewFallback([]agent.Agent{
-			&fallbackUsageAgent{name: "pi", result: &agent.Result{Model: "pi-model"}},
-			&usageAgent{resumable: true},
-		}),
-		db:       database,
-		runID:    run.ID,
-		stepName: types.StepReview,
-		round:    func() int { return 1 },
+	scope := reservedReviewScope(t, database, run)
+	if err := database.UpsertRunAgentSession(run.ID, string(SessionRoleReviewer), "claude", "claude-session"); err != nil {
+		t.Fatalf("seed session: %v", err)
 	}
 
-	sessions := NewRunSessions(database, run.ID, wrapped, true)
-	if _, err := sessions.Run(context.Background(), wrapped, SessionRoleReviewer, agent.RunOpts{Purpose: "review"}, nil); err != nil {
-		t.Fatalf("run session: %v", err)
+	codex := &fallbackUsageAgent{name: "codex", result: &agent.Result{Model: "codex-model"}}
+	claude := &usageAgent{name: "claude", resumable: true}
+	round := func() int { return 1 }
+	wrap := func(inner agent.Agent) agent.Agent {
+		return &perfRecordingAgent{
+			inner:    inner,
+			db:       database,
+			runID:    run.ID,
+			stepName: types.StepReview,
+			round:    round,
+		}
+	}
+	invoker := newRoutingInvoker(config.DefaultRoutingConfig(), database, newProviderCircuits())
+	invoker.newAgent = perRunner(wrap(codex), wrap(claude))
+	sessions := NewRunSessions(database, run.ID, nil, true)
+
+	result, err := sessions.Invoke(
+		context.Background(),
+		invoker,
+		types.PurposeInitialReview,
+		scope,
+		SessionRoleReviewer,
+		agent.RunOpts{Purpose: "review"},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("resume routed session: %v", err)
+	}
+	if result == nil || !result.Resumed || result.Provider != "claude" {
+		t.Fatalf("result = %+v, want resumed claude session", result)
+	}
+	if codex.calls != 0 || claude.calls != 1 {
+		t.Fatalf("calls codex=%d claude=%d, want provider-pinned resume", codex.calls, claude.calls)
 	}
 
 	invocations, err := database.GetAgentInvocationsByRun(run.ID)
@@ -175,8 +238,8 @@ func TestPerfRecordingAgent_MixedFallbackRecordsActualProviderCold(t *testing.T)
 	if len(invocations) != 1 {
 		t.Fatalf("got %d invocation rows, want 1", len(invocations))
 	}
-	if got := invocations[0]; got.Agent != "pi" || got.SessionMode != db.InvocationModeCold {
-		t.Fatalf("invocation = %+v, want pi cold", got)
+	if got := invocations[0]; got.Agent != "claude" || got.SessionMode != db.InvocationModeResumed {
+		t.Fatalf("invocation = %+v, want resumed claude provider", got)
 	}
 }
 

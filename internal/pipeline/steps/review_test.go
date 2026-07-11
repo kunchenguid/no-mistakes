@@ -220,7 +220,12 @@ func TestReviewStep_ConformanceObligationTracksIntentProvenance(t *testing.T) {
 			t.Parallel()
 			dir, baseSHA, headSHA := setupGitRepo(t)
 
-			findingsJSON, _ := json.Marshal(Findings{Summary: "clean"})
+			findingsJSON, _ := json.Marshal(Findings{
+				Items:         []Finding{},
+				Summary:       "clean",
+				RiskLevel:     "low",
+				RiskRationale: "no findings in the reviewed change",
+			})
 			ag := &mockAgent{
 				name: "test",
 				runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
@@ -291,7 +296,9 @@ func TestReviewStep_RereviewFlagsIntentContradictionAsAskUser(t *testing.T) {
 					Action:      types.ActionAskUser,
 					Description: "the fix deletes the intent-required guarded stale-lock removal, leaving rejected retry-only",
 				}},
-				RiskLevel: "high",
+				Summary:       "the repair contradicts an authoritative intent requirement",
+				RiskLevel:     "high",
+				RiskRationale: "the repair removes required behavior and needs explicit human approval",
 			}
 			j, _ := json.Marshal(findings)
 			return &agent.Result{Output: j}, nil
@@ -327,6 +334,7 @@ func hasAskUserFindings(t *testing.T, raw string) bool {
 		t.Fatalf("parse findings: %v", err)
 	}
 	return types.HasAskUserFindings(findings)
+}
 func TestReviewStep_VerifierDirtyWorktreeCannotSealCandidate(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

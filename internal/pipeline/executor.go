@@ -219,7 +219,6 @@ type stepExecutionState struct {
 	fixing           bool
 	previousFindings string
 	roundNum         int
-	autoFixAttempts  int
 	executionMS      int64
 	currentRoundID   string
 }
@@ -230,7 +229,6 @@ type recoveredGate struct {
 	stepResult  *db.StepResult
 	findings    string
 	round       int
-	autoFixes   int
 	lastRoundID string
 }
 
@@ -350,7 +348,6 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 			fixing:           true,
 			previousFindings: merged,
 			roundNum:         gate.round,
-			autoFixAttempts:  gate.autoFixes,
 			executionMS:      duration,
 			currentRoundID:   gate.lastRoundID,
 		}, circuits)
@@ -392,19 +389,12 @@ func (e *Executor) recoveredGate(runID string) (*recoveredGate, error) {
 			if latest.FindingsJSON == nil || *latest.FindingsJSON != *result.FindingsJSON {
 				return nil, fmt.Errorf("recovered approval gate findings are incomplete")
 			}
-			autoFixes := 0
-			for _, round := range rounds {
-				if round.SelectionSource != nil && *round.SelectionSource == db.RoundSelectionSourceAutoFix {
-					autoFixes++
-				}
-			}
 			gate = &recoveredGate{
 				index:       index,
 				step:        e.steps[index],
 				stepResult:  result,
 				findings:    *result.FindingsJSON,
 				round:       latest.Round,
-				autoFixes:   autoFixes,
 				lastRoundID: latest.ID,
 			}
 			continue
@@ -496,7 +486,6 @@ func recoveredLogPath(step *db.StepResult) string {
 	return ""
 }
 
-
 // sealCandidate records an immutable publish candidate after the last pre-Verify
 // content mutator: it requires a clean worktree, captures the exact HEAD, and
 // appends a new seal so Verify and Push operate on a fixed SHA. A dirty worktree
@@ -520,6 +509,7 @@ func (e *Executor) sealCandidate(ctx context.Context, run *db.Run, workDir strin
 	slog.Info("sealed publish candidate", "run", run.ID, "sha", head)
 	return nil
 }
+
 // executeStep runs a single step with approval coordination.
 // Returns (skipRemaining, error).
 func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult, run *db.Run, repo *db.Repo, workDir, logDir string, state stepExecutionState, circuits *providerCircuits) (bool, error) {
@@ -619,9 +609,8 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		}
 		writeLog(text)
 	}
-	// roundNum is shared with the perf wrapper's round closure below: an
-	// invocation during execution of round N+1 sees roundNum still at N.
-	autoFixAttempts := state.autoFixAttempts
+	// roundNum is shared with the perf wrapper's closure below and advances
+	// immediately before each round is reserved, so telemetry sees that round.
 	roundNum := state.roundNum
 
 	stepAgent := e.agent
@@ -632,7 +621,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			db:       e.db,
 			runID:    run.ID,
 			stepName: stepName,
-			round:    func() int { return roundNum + 1 },
+			round:    func() int { return roundNum },
 		}
 	}
 	routingCfg := config.DefaultRoutingConfig()
@@ -677,7 +666,6 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		},
 	}
 
-
 	nextTrigger := "initial"
 	if sctx.Fixing {
 		nextTrigger = "auto_fix"
@@ -685,6 +673,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	skipRemaining := false
 	stepSkipped := false
 	currentRoundID := state.currentRoundID
+	postRepairRereview := false
 
 	// Execute with possible fix loop.
 	for {
@@ -778,7 +767,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		// coordinator owns a non-review step's repair, the legacy per-step
 		// auto-fix loop is skipped for that step.
 		coordinatorResult := repairResult{}
-		if !sctx.Fixing {
+		if !sctx.Fixing && !postRepairRereview {
 			reserveRepairRound := func(trigger string) (*db.StepRound, error) {
 				roundNum++
 				return e.db.ReserveStepRound(sr.ID, roundNum, trigger)
@@ -815,6 +804,16 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 					hasBlockingFindingsJSON(outcome.Findings) ||
 					hasAskUserFindingsJSON(outcome.Findings)
 			}
+		}
+		if stepName == types.StepReview && coordinatorResult.Owned && coordinatorResult.Resolved &&
+			!hasBlockingFindingsJSON(outcome.Findings) && !hasAskUserFindingsJSON(outcome.Findings) {
+			// A targeted verifier can resolve the repaired lineage, but it does
+			// not replace the reviewer's full adversarial pass over the complete
+			// branch. Run exactly one full rereview in the durable reviewer
+			// session, without re-entering automatic repair from that rereview.
+			postRepairRereview = true
+			nextTrigger = "auto_fix"
+			continue
 		}
 
 		// A Verify repair mutates the sealed candidate, so reseal the new HEAD:
@@ -991,7 +990,12 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 				outcome.Findings = remainingFindings
 				e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFixing), "", "", "", nil)
 				if remainingFindings == "" {
-					goto done
+					sctx.Fixing = false
+					postRepairRereview = true
+					nextTrigger = "auto_fix"
+					executionMS += time.Since(phaseStart).Milliseconds()
+					phaseStart = time.Now()
+					continue
 				}
 				sctx.Fixing = true
 				executionMS += time.Since(phaseStart).Milliseconds()

@@ -2,6 +2,7 @@ package db
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -182,6 +183,37 @@ func TestRecoverStaleRunsLeavesLiveUtilityAttemptOpen(t *testing.T) {
 	}
 }
 
+func TestRecoverStaleRunsExceptLeavesPreservedPipelineAttemptOpen(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/live-recovery", "git@github.com:user/live-recovery.git", "main")
+	run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
+	if err := d.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatalf("mark run running: %v", err)
+	}
+	step, _ := d.InsertStepResult(run.ID, types.StepReview)
+	round, _ := d.ReserveStepRound(step.ID, 1, "initial")
+	attemptID, err := d.StartInvocationAttempt(types.InvocationAttemptStart{
+		Purpose:      types.PurposeInitialReview,
+		Role:         types.InvocationRoleVerifier,
+		Scope:        types.InvocationScope{Kind: types.InvocationScopePipeline, RunID: run.ID, StepResultID: step.ID, StepRoundID: round.ID},
+		CandidateKey: types.LegacyCandidateKey,
+	})
+	if err != nil {
+		t.Fatalf("start preserved invocation: %v", err)
+	}
+
+	if _, err := d.RecoverStaleRunsExcept("daemon restarted", map[string]struct{}{run.ID: {}}); err != nil {
+		t.Fatalf("recover stale runs except preserved run: %v", err)
+	}
+	attempt, err := d.GetInvocationAttempt(attemptID)
+	if err != nil {
+		t.Fatalf("get preserved invocation: %v", err)
+	}
+	if attempt == nil || attempt.Terminal != nil {
+		t.Fatalf("preserved pipeline invocation after recovery = %+v, want still active", attempt)
+	}
+}
+
 func TestInvocationFactsSurvivePipelineOwnerDeletion(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/retention", "git@github.com:user/retention.git", "main")
@@ -213,32 +245,86 @@ func TestInvocationFactsSurvivePipelineOwnerDeletion(t *testing.T) {
 }
 
 func TestRecoverStaleRunsInterruptsOpenAttemptAfterOwnerDeletion(t *testing.T) {
-	d := openTestDB(t)
+	dbPath := filepath.Join(t.TempDir(), "orphaned-attempt.sqlite")
+	d, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open test db: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+
 	repo, _ := d.InsertRepo("/home/user/orphaned-attempt", "git@github.com:user/orphaned-attempt.git", "main")
 	run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
 	step, _ := d.InsertStepResult(run.ID, types.StepReview)
 	round, _ := d.ReserveStepRound(step.ID, 1, "initial")
-	attemptID, err := d.StartInvocationAttempt(types.InvocationAttemptStart{
-		Purpose:      types.PurposeInitialReview,
-		Role:         types.InvocationRoleVerifier,
-		Scope:        types.InvocationScope{Kind: types.InvocationScopePipeline, RunID: run.ID, StepResultID: step.ID, StepRoundID: round.ID},
+
+	attemptIDs := make([]string, 2)
+	for i := range attemptIDs {
+		attemptIDs[i], err = d.StartInvocationAttempt(types.InvocationAttemptStart{
+			Purpose:      types.PurposeInitialReview,
+			Role:         types.InvocationRoleVerifier,
+			Scope:        types.InvocationScope{Kind: types.InvocationScopePipeline, RunID: run.ID, StepResultID: step.ID, StepRoundID: round.ID},
+			CandidateKey: types.LegacyCandidateKey,
+		})
+		if err != nil {
+			t.Fatalf("start pipeline invocation %d: %v", i, err)
+		}
+	}
+
+	utility, err := d.InsertUtilityScope(types.UtilityScopeWizard, os.Getpid())
+	if err != nil {
+		t.Fatalf("insert utility scope: %v", err)
+	}
+	utilityAttemptID, err := d.StartInvocationAttempt(types.InvocationAttemptStart{
+		Purpose:      types.PurposeBranchCommitSuggestion,
+		Role:         types.InvocationRoleFixer,
+		Scope:        types.InvocationScope{Kind: types.InvocationScopeUtility, UtilityScopeID: utility.ID},
 		CandidateKey: types.LegacyCandidateKey,
 	})
 	if err != nil {
-		t.Fatalf("start invocation: %v", err)
+		t.Fatalf("start utility invocation: %v", err)
 	}
+
 	if err := d.DeleteRepo(repo.ID); err != nil {
 		t.Fatalf("delete pipeline owner: %v", err)
+	}
+	for _, attemptID := range attemptIDs {
+		attempt, err := d.GetInvocationAttempt(attemptID)
+		if err != nil {
+			t.Fatalf("get invocation immediately after owner deletion: %v", err)
+		}
+		if attempt == nil || attempt.Terminal == nil || attempt.Terminal.Outcome != types.InvocationOutcomeInterrupted {
+			t.Fatalf("pipeline invocation after owner deletion = %+v, want interrupted", attempt)
+		}
+		if attempt.Terminal.DurationMS < 0 {
+			t.Fatalf("same-second interruption duration = %d, want non-negative", attempt.Terminal.DurationMS)
+		}
+	}
+
+	if err := d.Close(); err != nil {
+		t.Fatalf("close DB after owner deletion: %v", err)
+	}
+	d, err = Open(dbPath)
+	if err != nil {
+		t.Fatalf("reopen DB after owner deletion: %v", err)
 	}
 	if _, err := d.RecoverStaleRuns("daemon restarted"); err != nil {
 		t.Fatalf("recover stale runs: %v", err)
 	}
-	attempt, err := d.GetInvocationAttempt(attemptID)
-	if err != nil {
-		t.Fatalf("get recovered invocation: %v", err)
+	for _, attemptID := range attemptIDs {
+		attempt, err := d.GetInvocationAttempt(attemptID)
+		if err != nil {
+			t.Fatalf("get durable recovered invocation: %v", err)
+		}
+		if attempt == nil || attempt.Terminal == nil || attempt.Terminal.Outcome != types.InvocationOutcomeInterrupted {
+			t.Fatalf("durable orphaned pipeline invocation = %+v, want interrupted", attempt)
+		}
 	}
-	if attempt == nil || attempt.Terminal == nil || attempt.Terminal.Outcome != types.InvocationOutcomeInterrupted {
-		t.Fatalf("orphaned pipeline attempt = %+v, want interrupted", attempt)
+	utilityAttempt, err := d.GetInvocationAttempt(utilityAttemptID)
+	if err != nil {
+		t.Fatalf("get utility invocation after recovery: %v", err)
+	}
+	if utilityAttempt == nil || utilityAttempt.Terminal != nil {
+		t.Fatalf("utility invocation after pipeline owner deletion = %+v, want still active", utilityAttempt)
 	}
 }
 

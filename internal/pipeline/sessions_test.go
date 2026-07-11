@@ -9,7 +9,9 @@ import (
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 // sessionCall records one invocation the fake adapter received.
@@ -332,17 +334,30 @@ func TestRunSessions_PersistsAcrossManagers(t *testing.T) {
 	}
 }
 
-func TestRunSessions_FallbackResumesWithItsActualProvider(t *testing.T) {
+func TestRunSessions_RoutedFallbackResumesWithItsActualProvider(t *testing.T) {
 	d, run := sessionTestDB(t)
+	scope := reservedReviewScope(t, d, run)
 	codex := newFakeSessionAgent()
 	codex.name = "codex"
-	codex.failNext = errors.New("codex start: executable not found")
+	codex.failNext = &agent.OperationalError{
+		Kind: agent.OpFailureExecutable,
+		Err:  errors.New("codex start: executable not found"),
+	}
 	claude := newFakeSessionAgent()
 	claude.name = "claude"
-	fallback := agent.NewFallback([]agent.Agent{codex, claude})
+	invoker := newRoutingInvoker(config.DefaultRoutingConfig(), d, newProviderCircuits())
+	invoker.newAgent = perRunner(codex, claude)
 
-	rs := NewRunSessions(d, run.ID, fallback, true)
-	if _, err := rs.Run(context.Background(), fallback, SessionRoleReviewer, agent.RunOpts{Prompt: "review"}, nil); err != nil {
+	rs := NewRunSessions(d, run.ID, nil, true)
+	if _, err := rs.Invoke(
+		context.Background(),
+		invoker,
+		types.PurposeInitialReview,
+		scope,
+		SessionRoleReviewer,
+		agent.RunOpts{Prompt: "review"},
+		nil,
+	); err != nil {
 		t.Fatalf("initial: %v", err)
 	}
 	stored, err := d.GetRunAgentSessions(run.ID)
@@ -353,8 +368,16 @@ func TestRunSessions_FallbackResumesWithItsActualProvider(t *testing.T) {
 		t.Fatalf("stored session = %+v", stored)
 	}
 
-	rs = NewRunSessions(d, run.ID, fallback, true)
-	if _, err := rs.Run(context.Background(), fallback, SessionRoleReviewer, agent.RunOpts{Prompt: "rereview"}, nil); err != nil {
+	rs = NewRunSessions(d, run.ID, nil, true)
+	if _, err := rs.Invoke(
+		context.Background(),
+		invoker,
+		types.PurposeInitialReview,
+		scope,
+		SessionRoleReviewer,
+		agent.RunOpts{Prompt: "rereview"},
+		nil,
+	); err != nil {
 		t.Fatalf("rereview: %v", err)
 	}
 	if len(codex.calls) != 1 {
@@ -362,7 +385,92 @@ func TestRunSessions_FallbackResumesWithItsActualProvider(t *testing.T) {
 	}
 	last := claude.calls[len(claude.calls)-1]
 	if last.session == nil || last.session.ID != "sess-1" || last.session.Agent != "claude" {
-		t.Fatalf("fallback did not route the stored session to claude: %+v", last.session)
+		t.Fatalf("routing did not pin the stored session to claude: %+v", last.session)
+	}
+}
+
+func TestRunSessions_InvokeRequestPreservesRoutingAcrossColdFallback(t *testing.T) {
+	d, run := sessionTestDB(t)
+	scope := reservedReviewScope(t, d, run)
+	if err := d.UpsertRunAgentSession(run.ID, string(SessionRoleFixer), "codex", "dead-codex-session"); err != nil {
+		t.Fatalf("seed fixer session: %v", err)
+	}
+
+	codex := newFakeSessionAgent()
+	codex.name = "codex"
+	codex.failResumes["dead-codex-session"] = errors.New("session not found")
+	claude := newFakeSessionAgent()
+	claude.name = "claude"
+	invoker := newRoutingInvoker(config.DefaultRoutingConfig(), d, newProviderCircuits())
+	invoker.newAgent = perRunner(codex, claude)
+	sessions := NewRunSessions(d, run.ID, nil, true)
+
+	request := agent.InvocationRequest{
+		Purpose: types.PurposeStructuredFindingRepair,
+		Tier:    1,
+		Scope:   scope,
+		Payload: agent.RunOpts{Prompt: "repair at the balanced tier"},
+	}
+	result, err := sessions.InvokeRequest(
+		context.Background(),
+		invoker,
+		SessionRoleFixer,
+		request,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("invoke request: %v", err)
+	}
+	if result == nil || result.SessionID != "sess-1" || result.Provider != "codex" {
+		t.Fatalf("fallback result = %+v, want fresh codex sess-1", result)
+	}
+	if len(codex.calls) != 2 {
+		t.Fatalf("codex calls = %d, want failed resume plus cold fallback", len(codex.calls))
+	}
+	resume, fallback := codex.calls[0], codex.calls[1]
+	if resume.session == nil || resume.session.ID != "dead-codex-session" || resume.session.Agent != "codex" || resume.fallback {
+		t.Fatalf("resume call = %+v, want pinned codex resume", resume)
+	}
+	if fallback.session == nil || fallback.session.ID != "" || !fallback.fallback {
+		t.Fatalf("fallback call = %+v, want marked fresh session", fallback)
+	}
+	if len(claude.calls) != 0 {
+		t.Fatalf("claude calls = %d, want no provider leak after non-operational resume failure", len(claude.calls))
+	}
+
+	attempts, err := d.GetInvocationAttemptsByStepResult(scope.StepResultID)
+	if err != nil {
+		t.Fatalf("get attempts: %v", err)
+	}
+	if len(attempts) != 2 {
+		t.Fatalf("attempts = %d, want failed resume plus succeeded fallback", len(attempts))
+	}
+	outcomes := map[types.InvocationOutcome]int{}
+	for _, attempt := range attempts {
+		if attempt.Start.Purpose != request.Purpose ||
+			attempt.Start.Scope != request.Scope ||
+			attempt.Start.Candidate.Tier != request.Tier ||
+			attempt.Start.Candidate.Profile != string(config.ProfileFixBalanced) {
+			t.Fatalf("fallback changed routed request: %+v", attempt.Start)
+		}
+		if attempt.Terminal == nil {
+			t.Fatalf("attempt has no durable terminal: %+v", attempt)
+		}
+		outcomes[attempt.Terminal.Outcome]++
+	}
+	if outcomes[types.InvocationOutcomeFailed] != 1 || outcomes[types.InvocationOutcomeSucceeded] != 1 {
+		t.Fatalf("terminal outcomes = %+v, want one failed and one succeeded", outcomes)
+	}
+
+	stored, err := d.GetRunAgentSessions(run.ID)
+	if err != nil {
+		t.Fatalf("get stored sessions: %v", err)
+	}
+	if len(stored) != 1 ||
+		stored[0].Role != string(SessionRoleFixer) ||
+		stored[0].Agent != "codex" ||
+		stored[0].SessionID != "sess-1" {
+		t.Fatalf("stored role session = %+v, want only replacement fixer session", stored)
 	}
 }
 

@@ -67,7 +67,7 @@ func TestRoutingInvokerLaunchesReviewStrongCandidate(t *testing.T) {
 	_, err := ri.Invoke(context.Background(), agent.InvocationRequest{
 		Purpose: types.PurposeInitialReview,
 		Scope:   scope,
-		Payload: agent.RunOpts{Prompt: "review the diff"},
+		Payload: agent.RunOpts{Prompt: "review the diff", Purpose: "legacy-review-label"},
 	})
 	if err != nil {
 		t.Fatalf("Invoke: %v", err)
@@ -83,6 +83,9 @@ func TestRoutingInvokerLaunchesReviewStrongCandidate(t *testing.T) {
 	}
 	if native.opts.Prompt != "review the diff" {
 		t.Fatalf("native prompt = %q, want the review prompt", native.opts.Prompt)
+	}
+	if native.opts.Purpose != string(types.PurposeInitialReview) {
+		t.Fatalf("native purpose = %q, want semantic routed purpose %q", native.opts.Purpose, types.PurposeInitialReview)
 	}
 
 	attempts, err := database.GetInvocationAttemptsByStepResult(scope.StepResultID)

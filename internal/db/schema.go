@@ -170,6 +170,35 @@ CREATE TABLE IF NOT EXISTS invocation_attempt_terminals (
     cache_creation_tokens INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TRIGGER IF NOT EXISTS runs_interrupt_open_invocations_before_delete
+BEFORE DELETE ON runs
+BEGIN
+    INSERT INTO invocation_attempt_terminals (
+        attempt_id,
+        outcome,
+        terminal_at,
+        duration_ms,
+        input_tokens,
+        output_tokens,
+        cache_read_tokens,
+        cache_creation_tokens
+    )
+    SELECT
+        start.id,
+        'interrupted',
+        CAST(strftime('%s', 'now') AS INTEGER),
+        max(0, (CAST(strftime('%s', 'now') AS INTEGER) - start.started_at) * 1000),
+        0,
+        0,
+        0,
+        0
+    FROM invocation_attempt_starts AS start
+    LEFT JOIN invocation_attempt_terminals AS terminal ON terminal.attempt_id = start.id
+    WHERE start.scope_kind = 'pipeline'
+      AND start.run_id = OLD.id
+      AND terminal.attempt_id IS NULL;
+END;
+
 CREATE TABLE IF NOT EXISTS finding_lineages (
     id                TEXT PRIMARY KEY,
     run_id            TEXT NOT NULL,

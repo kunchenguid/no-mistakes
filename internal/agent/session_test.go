@@ -36,7 +36,12 @@ func TestSupportsSessionResume_PerAdapter(t *testing.T) {
 
 func TestClaudeAgent_BuildArgs_Resume(t *testing.T) {
 	ca := &claudeAgent{bin: "claude"}
-	args := ca.buildArgs("re-review the branch", nil, "sess-1234")
+	args := ca.buildArgs(RunOpts{
+		Prompt:  "re-review the branch",
+		Session: &SessionRef{ID: "sess-1234", Agent: "claude"},
+		Model:   "claude-fable-5",
+		Effort:  "high",
+	})
 
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "--resume sess-1234") {
@@ -45,6 +50,12 @@ func TestClaudeAgent_BuildArgs_Resume(t *testing.T) {
 	if !strings.Contains(joined, "-p re-review the branch") {
 		t.Fatalf("resume args must keep print-mode prompt: %v", args)
 	}
+	if !strings.Contains(joined, "--model claude-fable-5") {
+		t.Fatalf("resume args must keep the routed model: %v", args)
+	}
+	if !strings.Contains(joined, "--effort high") {
+		t.Fatalf("resume args must keep the routed effort: %v", args)
+	}
 	if strings.Contains(joined, "--fork-session") {
 		t.Fatalf("resume must continue the same session, not fork: %v", args)
 	}
@@ -52,7 +63,7 @@ func TestClaudeAgent_BuildArgs_Resume(t *testing.T) {
 
 func TestClaudeAgent_BuildArgs_NoResumeByDefault(t *testing.T) {
 	ca := &claudeAgent{bin: "claude"}
-	args := ca.buildArgs("review", nil, "")
+	args := ca.buildArgs(RunOpts{Prompt: "review"})
 	for _, a := range args {
 		if a == "--resume" {
 			t.Fatalf("cold invocation must not pass --resume: %v", args)
@@ -98,7 +109,10 @@ func TestParseClaudeEvents_SessionIDFallsBackToLastSeen(t *testing.T) {
 
 func TestCodexAgent_BuildArgs_Resume(t *testing.T) {
 	ca := &codexAgent{bin: "codex"}
-	args := ca.buildArgs("re-review the branch", "/tmp/schema.json", "thread-99")
+	args := ca.buildArgs(
+		RunOpts{Prompt: "re-review the branch", Session: &SessionRef{ID: "thread-99", Agent: "codex"}},
+		"/tmp/schema.json",
+	)
 
 	joined := strings.Join(args, " ")
 	if !strings.HasPrefix(joined, "exec resume thread-99 ") {
@@ -122,7 +136,7 @@ func TestCodexAgent_BuildArgs_Resume(t *testing.T) {
 
 func TestCodexAgent_BuildArgs_ResumeKeepsExtraArgs(t *testing.T) {
 	ca := &codexAgent{bin: "codex", extraArgs: []string{"-m", "gpt-5.2-codex"}}
-	args := ca.buildArgs("prompt", "", "thread-1")
+	args := ca.buildArgs(RunOpts{Prompt: "prompt", Session: &SessionRef{ID: "thread-1", Agent: "codex"}}, "")
 
 	joined := strings.Join(args, " ")
 	if !strings.HasPrefix(joined, "exec resume -m gpt-5.2-codex thread-1 prompt") {

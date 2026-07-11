@@ -101,7 +101,6 @@ func newDoctorCmd() *cobra.Command {
 					}
 				}
 
-
 				fmt.Fprintln(w)
 				fmt.Fprintf(w, "  %s\n", sCyan.Render("Routing"))
 

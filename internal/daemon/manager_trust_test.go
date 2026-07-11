@@ -14,6 +14,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 func TestLoadRecoveredConfig_BoundsFetchAndFailsClosed(t *testing.T) {
@@ -280,5 +281,135 @@ func TestStartRunRejectsPresentInvalidTrustedConfigBeforeStepLaunch(t *testing.T
 	}
 	if stepsRequested {
 		t.Fatal("startRun requested executable steps before rejecting trusted config")
+	}
+}
+
+func setupRecoveredConfigHistory(t *testing.T, trustedConfig, pushedConfig string) string {
+	t.Helper()
+	workDir := t.TempDir()
+	gitCmd(t, workDir, "init", "--initial-branch=main")
+	gitCmd(t, workDir, "config", "user.email", "test@test.com")
+	gitCmd(t, workDir, "config", "user.name", "Test")
+	gitCmd(t, workDir, "config", "commit.gpgsign", "false")
+	if err := os.WriteFile(filepath.Join(workDir, ".no-mistakes.yaml"), []byte(trustedConfig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, workDir, "add", ".no-mistakes.yaml")
+	gitCmd(t, workDir, "commit", "-m", "trusted config")
+	trustedSHA := gitOutput(t, workDir, "rev-parse", "HEAD")
+
+	if err := os.WriteFile(filepath.Join(workDir, ".no-mistakes.yaml"), []byte(pushedConfig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, workDir, "add", ".no-mistakes.yaml")
+	gitCmd(t, workDir, "commit", "-m", "pushed config")
+	gitCmd(t, workDir, "update-ref", "refs/remotes/origin/main", trustedSHA)
+	return workDir
+}
+
+func TestLoadRecoveredConfigPreservesTrustedPolicyAndCommandConsent(t *testing.T) {
+	oldFetch := fetchRecoveredRemoteBranch
+	fetchRecoveredRemoteBranch = func(context.Context, string, string, string) error { return nil }
+	t.Cleanup(func() { fetchRecoveredRemoteBranch = oldFetch })
+
+	const pushedConfig = `allow_repo_commands: true
+commands:
+  lint: echo pushed
+routes:
+  initial_review: review_strong
+document:
+  instructions: pushed placement policy
+`
+	for _, tc := range []struct {
+		name               string
+		allowPushedCommand bool
+		wantCommand        string
+	}{
+		{name: "trusted commands", wantCommand: "echo trusted"},
+		{name: "trusted consent allows pushed commands", allowPushedCommand: true, wantCommand: "echo pushed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			allow := "false"
+			if tc.allowPushedCommand {
+				allow = "true"
+			}
+			trustedConfig := strings.Replace(`allow_repo_commands: ALLOW
+commands:
+  lint: echo trusted
+routes:
+  initial_review: authority_strong
+document:
+  instructions: trusted placement policy
+`, "ALLOW", allow, 1)
+			workDir := setupRecoveredConfigHistory(t, trustedConfig, pushedConfig)
+			p := paths.WithRoot(t.TempDir())
+			if err := p.EnsureDirs(); err != nil {
+				t.Fatal(err)
+			}
+			mgr := NewRunManager(nil, p, nil)
+			cfg, err := mgr.loadRecoveredConfig(context.Background(), &db.Run{ID: "recover-policy"}, &db.Repo{DefaultBranch: "main"}, workDir)
+			if err != nil {
+				t.Fatalf("load recovered config: %v", err)
+			}
+			if cfg.Commands.Lint != tc.wantCommand {
+				t.Fatalf("commands.lint = %q, want %q", cfg.Commands.Lint, tc.wantCommand)
+			}
+			route := cfg.Routing.Routes[types.PurposeInitialReview]
+			if len(route) != 1 || route[0] != config.ProfileAuthorityStrong {
+				t.Fatalf("initial-review route = %v, want trusted authority_strong", route)
+			}
+			if cfg.Document.Instructions != "trusted placement policy" {
+				t.Fatalf("document instructions = %q, want trusted policy", cfg.Document.Instructions)
+			}
+		})
+	}
+}
+
+func TestLoadRecoveredConfigRejectsMalformedTrustedPolicy(t *testing.T) {
+	oldFetch := fetchRecoveredRemoteBranch
+	fetchRecoveredRemoteBranch = func(context.Context, string, string, string) error { return nil }
+	t.Cleanup(func() { fetchRecoveredRemoteBranch = oldFetch })
+
+	workDir := setupRecoveredConfigHistory(t,
+		"routs:\n  initial_review: authority_strong\n",
+		"commands:\n  lint: echo pushed\n",
+	)
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	mgr := NewRunManager(nil, p, nil)
+	if _, err := mgr.loadRecoveredConfig(context.Background(), &db.Run{ID: "recover-invalid"}, &db.Repo{DefaultBranch: "main"}, workDir); err == nil {
+		t.Fatal("loadRecoveredConfig accepted malformed trusted policy")
+	} else if !strings.Contains(err.Error(), "load trusted repo config") || !strings.Contains(err.Error(), "routs") {
+		t.Fatalf("loadRecoveredConfig error = %v, want trusted-config parse error", err)
+	}
+}
+
+func TestLoadTrustedRepoConfigDistinguishesMissingPolicyFromReadFailure(t *testing.T) {
+	workDir := t.TempDir()
+	gitCmd(t, workDir, "init", "--initial-branch=main")
+	gitCmd(t, workDir, "config", "user.email", "test@test.com")
+	gitCmd(t, workDir, "config", "user.name", "Test")
+	gitCmd(t, workDir, "config", "commit.gpgsign", "false")
+	if err := os.WriteFile(filepath.Join(workDir, "README.md"), []byte("no policy\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, workDir, "add", "README.md")
+	gitCmd(t, workDir, "commit", "-m", "no config")
+	sha := gitOutput(t, workDir, "rev-parse", "HEAD")
+
+	trusted, err := loadTrustedRepoConfig(context.Background(), workDir, sha, "recover-missing")
+	if err != nil {
+		t.Fatalf("missing trusted config returned error: %v", err)
+	}
+	if trusted != nil {
+		t.Fatalf("missing trusted config = %+v, want nil", trusted)
+	}
+
+	if _, err := loadTrustedRepoConfig(context.Background(), workDir, "not-a-commit", "recover-unreadable"); err == nil {
+		t.Fatal("unreadable trusted commit was treated as a missing policy")
+	} else if !strings.Contains(err.Error(), "inspect trusted repo config") {
+		t.Fatalf("unreadable trusted commit error = %v, want inspection failure", err)
 	}
 }

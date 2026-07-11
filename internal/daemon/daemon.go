@@ -497,7 +497,11 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 			if err != nil {
 				return nil, fmt.Errorf("get steps for run %s: %w", r.ID, err)
 			}
-			infos = append(infos, *runToInfo(d, r, steps))
+			info, err := runToInfo(d, r, steps)
+			if err != nil {
+				return nil, fmt.Errorf("project run %s: %w", r.ID, err)
+			}
+			infos = append(infos, *info)
 		}
 		return &ipc.GetRunsResult{Runs: infos}, nil
 	})
@@ -661,11 +665,13 @@ func stepToInfo(d *db.DB, s *db.StepResult) (ipc.StepResultInfo, error) {
 		return ipc.StepResultInfo{}, fmt.Errorf("fix summaries: %w", err)
 	}
 	info.FixSummaries = summaries
-	if rounds, err := d.StepRoundStats(s.ID); err == nil {
-		info.RoundCount = rounds.TotalRounds
-		info.FixRoundCount = rounds.FixRounds
-		info.PendingFixSource = rounds.PendingFixSource
+	rounds, err := d.StepRoundStats(s.ID)
+	if err != nil {
+		return ipc.StepResultInfo{}, fmt.Errorf("round stats: %w", err)
 	}
+	info.RoundCount = rounds.TotalRounds
+	info.FixRoundCount = rounds.FixRounds
+	info.PendingFixSource = rounds.PendingFixSource
 	if s.StepName == types.StepReview {
 		routing, err := d.ReviewRoutingForStep(s.ID)
 		if err != nil {

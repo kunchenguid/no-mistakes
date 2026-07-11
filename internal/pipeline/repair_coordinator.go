@@ -27,6 +27,7 @@ type repairCheck struct {
 // recorded and either escalates or fails closed.
 type repairCoordinator struct {
 	invoker            agent.Invoker
+	sessions           *RunSessions
 	db                 *db.DB
 	run                *db.Run
 	stepResultID       string
@@ -224,6 +225,7 @@ func (e *Executor) maybeRepairReviewFinding(ctx context.Context, sctx *StepConte
 	}
 	rc := &repairCoordinator{
 		invoker:            sctx.Invoker,
+		sessions:           sctx.Sessions,
 		db:                 e.db,
 		run:                run,
 		stepResultID:       sr.ID,
@@ -301,6 +303,7 @@ func (e *Executor) maybeRepairStepFindings(ctx context.Context, sctx *StepContex
 	}
 	rc := &repairCoordinator{
 		invoker:       sctx.Invoker,
+		sessions:      sctx.Sessions,
 		db:            e.db,
 		run:           run,
 		stepResultID:  sr.ID,
@@ -468,6 +471,7 @@ func (e *Executor) repairConsentedFindings(ctx context.Context, sctx *StepContex
 	}
 	rc := &repairCoordinator{
 		invoker:            sctx.Invoker,
+		sessions:           sctx.Sessions,
 		db:                 e.db,
 		run:                run,
 		stepResultID:       sr.ID,

@@ -104,7 +104,6 @@ type DocumentRaw struct {
 	Instructions string `yaml:"instructions"`
 }
 
-
 // Commands holds optional per-repo command overrides.
 type Commands struct {
 	Lint   string `yaml:"lint"`

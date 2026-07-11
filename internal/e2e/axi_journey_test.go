@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -207,6 +207,12 @@ func TestAxiAgentJourney(t *testing.T) {
 
 	autoOut, err := h.RunInDir(yw, "axi", "run", "--yes", "--intent", axiIntent)
 	if err != nil {
+		t.Logf("runs after axi --yes error: %+v", h.Runs())
+		for i, inv := range h.AgentInvocations() {
+			if strings.Contains(inv.Prompt, "Review the code changes and return structured findings") {
+				t.Logf("review prompt %d:\n%s", i, inv.Prompt)
+			}
+		}
 		t.Fatalf("axi run --yes (expected exit 0 on pass): %v\n%s", err, autoOut)
 	}
 	if !strings.Contains(autoOut, "outcome: passed") {

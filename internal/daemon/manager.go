@@ -218,11 +218,12 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 			trustedSHA = sha
 		}
 	}
-	trustedRepoCfg := loadTrustedRepoConfig(ctx, workDir, trustedSHA, run.ID)
-	allowRepoCommands := trustedRepoCfg != nil && trustedRepoCfg.AllowRepoCommands
-	return config.Merge(globalCfg, config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands)), nil
+	trustedRepoCfg, err := loadTrustedRepoConfig(ctx, workDir, trustedSHA, run.ID)
+	if err != nil {
+		return nil, fmt.Errorf("load trusted repo config: %w", err)
+	}
+	return config.Merge(globalCfg, config.EffectiveRepoConfig(repoCfg, trustedRepoCfg)), nil
 }
-
 
 func resolveGitPath(workDir, value string) string {
 	value = strings.TrimSpace(value)
@@ -411,10 +412,17 @@ func loadTrustedRepoConfig(ctx context.Context, wtDir, trustedSHA, runID string)
 	if trustedSHA == "" {
 		return nil, nil
 	}
-	content, err := git.ShowFile(ctx, wtDir, trustedSHA, ".no-mistakes.yaml")
+	path := ".no-mistakes.yaml"
+	matches, err := git.Run(ctx, wtDir, "ls-tree", "--name-only", trustedSHA, "--", path)
 	if err != nil {
-		slog.Debug("trusted repo config: not present or unavailable on default branch", "run_id", runID, "sha", trustedSHA, "error", err)
+		return nil, fmt.Errorf("inspect trusted repo config at %s: %w", trustedSHA, err)
+	}
+	if strings.TrimSpace(matches) == "" {
 		return nil, nil
+	}
+	content, err := git.ShowFile(ctx, wtDir, trustedSHA, path)
+	if err != nil {
+		return nil, fmt.Errorf("read trusted repo config at %s: %w", trustedSHA, err)
 	}
 	trusted, err := config.LoadRepoFromBytes([]byte(content))
 	if err != nil {

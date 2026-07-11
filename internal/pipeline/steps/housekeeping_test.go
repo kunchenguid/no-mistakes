@@ -24,6 +24,10 @@ func newHousekeepingContext(t *testing.T, ag agent.Agent, workDir, baseSHA, head
 	return sctx
 }
 
+func isDocumentationVerification(opts agent.RunOpts) bool {
+	return strings.Contains(opts.Prompt, "Independently verify the staged documentation candidate")
+}
+
 // TestDocumentStep_CombinedPassCoversBothDutiesAndSplitsFindings proves the
 // combined pass asks for both duties in ONE invocation and routes each
 // finding category to its owning gate: documentation findings park the
@@ -35,6 +39,12 @@ func TestDocumentStep_CombinedPassCoversBothDutiesAndSplitsFindings(t *testing.T
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			if isDocumentationVerification(opts) {
+				return &agent.Result{Output: json.RawMessage(`{
+					"findings":[{"severity":"warning","description":"config docs conflict","action":"ask-user"}],
+					"summary":"documentation needs review"
+				}`)}, nil
+			}
 			return &agent.Result{Output: json.RawMessage(`{
 				"findings":[
 					{"severity":"warning","description":"config docs conflict","action":"ask-user","category":"documentation"},
@@ -52,9 +62,10 @@ func TestDocumentStep_CombinedPassCoversBothDutiesAndSplitsFindings(t *testing.T
 		t.Fatal(err)
 	}
 
-	// One invocation covered both duties.
-	if len(ag.calls) != 1 {
-		t.Fatalf("combined pass must be one agent invocation, got %d", len(ag.calls))
+	// One authoring invocation covered both housekeeping duties; the separate
+	// independent verifier remains a documentation-only trust boundary.
+	if len(ag.calls) != 2 {
+		t.Fatalf("combined pass must use one author plus one verifier, got %d invocations", len(ag.calls))
 	}
 	prompt := ag.calls[0].Prompt
 	if !strings.Contains(prompt, "Combined lint duty") {
@@ -212,6 +223,28 @@ func TestLintStep_ConsumesCombinedResultWithoutAgentPass(t *testing.T) {
 	}
 }
 
+func TestLintStep_RejectsMalformedCombinedResult(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+			t.Fatal("malformed combined result must fail before another agent invocation")
+			return nil, nil
+		},
+	}
+	sctx := newHousekeepingContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Shared.SetHousekeepingLint(pipeline.HousekeepingLintResult{
+		FindingsJSON: `{"findings":[`,
+		Summary:      "unreadable",
+	})
+
+	_, err := (&LintStep{}).Execute(sctx)
+	if err == nil || !strings.Contains(err.Error(), "combined housekeeping lint result inconclusive") {
+		t.Fatalf("Execute() error = %v, want fail-closed malformed-stash error", err)
+	}
+}
+
 // TestLintStep_RunsOwnPassWithoutCombinedResult proves the lint duty is
 // never silently dropped: with no stashed result (document step skipped or
 // failed to produce trustworthy output) the lint step runs its own pass.
@@ -243,12 +276,15 @@ func TestDocumentStep_CombinedPassInvalidatesPriorLintResultWhenOutputIsUntruste
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
-	calls := 0
+	authorCalls := 0
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			calls++
-			if calls == 1 {
+			if isDocumentationVerification(opts) {
+				return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"verified"}`)}, nil
+			}
+			authorCalls++
+			if authorCalls == 1 {
 				return &agent.Result{Output: json.RawMessage(`{"findings":[{"severity":"warning","description":"docs need a decision","action":"ask-user","category":"documentation"}],"summary":"docs need review"}`)}, nil
 			}
 			return &agent.Result{Text: "untrusted output"}, nil
@@ -262,8 +298,8 @@ func TestDocumentStep_CombinedPassInvalidatesPriorLintResultWhenOutputIsUntruste
 	}
 
 	sctx.Fixing = true
-	if _, err := step.Execute(sctx); err != nil {
-		t.Fatal(err)
+	if _, err := step.Execute(sctx); err == nil || !strings.Contains(err.Error(), "documentation author output inconclusive") {
+		t.Fatalf("untrusted combined rerun error = %v, want fail-closed author error", err)
 	}
 	if _, ok := sctx.Shared.TakeHousekeepingLint(); ok {
 		t.Fatal("untrusted combined rerun must not leave the prior lint result available")
@@ -296,11 +332,12 @@ func TestLintStep_FixRoundReassessesWithOwnAgentPass(t *testing.T) {
 	}
 }
 
-// TestPipeline_DocumentPlusLintIsOneAgentInvocation is the cold-start
+// TestPipeline_DocumentPlusLintIsOneHousekeepingInvocation is the cold-start
 // regression: driving the real document and lint steps through the executor
-// with agent-driven lint used to cost two cold agent passes; the combined
-// pass must cost exactly one.
-func TestPipeline_DocumentPlusLintIsOneAgentInvocation(t *testing.T) {
+// with agent-driven lint used to cost two authoring passes; the combined
+// pass must cost exactly one routed housekeeping authoring invocation while
+// retaining the independent documentation verifier.
+func TestPipeline_DocumentPlusLintIsOneHousekeepingInvocation(t *testing.T) {
 	workDir, baseSHA, headSHA := setupGitRepo(t)
 
 	database, err := db.Open(filepath.Join(t.TempDir(), "state.sqlite"))
@@ -317,23 +354,31 @@ func TestPipeline_DocumentPlusLintIsOneAgentInvocation(t *testing.T) {
 		t.Fatalf("insert run: %v", err)
 	}
 
-	calls := 0
+	authorCalls := 0
+	verifierCalls := 0
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			calls++
+			switch opts.Purpose {
+			case string(types.PurposeDocumentationAuthoring):
+				authorCalls++
+			case string(types.PurposeDocumentationVerification):
+				verifierCalls++
+			default:
+				t.Fatalf("unexpected housekeeping purpose %q", opts.Purpose)
+			}
 			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"housekeeping clean"}`)}, nil
 		},
 	}
 
-	cfg := &config.Config{Agent: types.AgentClaude}
+	cfg := &config.Config{Routing: config.DefaultRoutingConfig()}
 	exec := pipeline.NewExecutor(database, paths.WithRoot(t.TempDir()), cfg, ag, []pipeline.Step{&DocumentStep{}, &LintStep{}}, nil)
 	if err := exec.Execute(context.Background(), run, repo, workDir); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
 
-	if calls != 1 {
-		t.Fatalf("document+lint cost %d agent invocations, want 1 (combined housekeeping pass)", calls)
+	if authorCalls != 1 || verifierCalls != 1 {
+		t.Fatalf("document+lint used %d authoring and %d verification invocations, want one routed pass for each", authorCalls, verifierCalls)
 	}
 
 	steps, err := database.GetStepsByRun(run.ID)
