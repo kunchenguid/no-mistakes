@@ -109,6 +109,10 @@ Safest local verification sequence after non-trivial changes:
 - `codex exec resume` has a narrower flag surface than `codex exec`, so an unsupported override fails the resume and falls back; the e2e fakeagent must keep parsing both codex argv shapes (`extractCodexPrompt`).
 - Regressions: `internal/pipeline/sessions_test.go`, `internal/pipeline/steps/review_session_test.go`, `internal/agent/session_test.go`.
 
+**Review Fixer Verification Discipline (`internal/pipeline/steps/review.go`)**
+
+- The review-fix prompt makes the fixer apply all fixes first, then run ONE focused verification limited to the changed area, and never run the whole repository test/lint suite in the fix round. The dedicated Test and Lint steps (pipeline order in `steps/common.go` is review→test→…→lint) run the configured full-suite commands and are the authoritative full-suite gates. This mirrors the "relevant"-scoped, cross-tool-forbidden discipline already in the test/lint fix prompts and exists for wall-clock: a forensic audit of a real multi-round run measured the fixer re-running the full test+lint suite ~5x/round (27 runs / 5 rounds, ~784s of a 2419s review step). It is a prompt contract, not an enforced sandbox - the fixer agent has free shell access - so the regression guards the exact wording, not the runtime. Regression: `TestReviewStep_FixMode_FocusedVerificationContract`.
+
 **Intent Provenance & Conformance (`internal/pipeline/steps/intent_prompt.go`)**
 
 - Intent carries provenance: an explicit `axi run --intent` persists `Source==db.RunIntentSourceAgent` ("agent", score 1); a transcript match persists the agent name ("claude"/"codex"/...). The executor propagates it as `StepContext.IntentSource` alongside `UserIntent` (`executor.go`).
