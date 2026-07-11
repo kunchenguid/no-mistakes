@@ -16,8 +16,9 @@ import (
 // agent invocation on Windows/Cygwin (issue #427): the resolved binary, the
 // tracked PID and its OS image name (to expose a .cmd wrapper being tracked
 // instead of the native process), stdout volume, raw stderr, and the exact exit
-// path. Unset (and no sentinel present) and spawnDiag is a no-op with zero
-// overhead.
+// path. Only the exact value 1 enables it; any other value (including 0 or
+// false) and unset leave it disabled. With diagnostics off and no sentinel
+// present, spawnDiag is a no-op with zero overhead.
 const spawnDiagEnv = "NM_SPAWN_DIAG"
 
 // spawnDiagSentinel is a file under NM_HOME that also enables diagnostics. The
@@ -31,7 +32,7 @@ const spawnDiagSentinel = "spawn-diag"
 // via either the environment variable or the sentinel file. The sentinel is
 // stat-checked once per spawn, which is negligible against launching a process.
 func spawnDiagEnabled() bool {
-	if os.Getenv(spawnDiagEnv) != "" {
+	if os.Getenv(spawnDiagEnv) == "1" {
 		return true
 	}
 	if root := diagHome(); root != "" {
