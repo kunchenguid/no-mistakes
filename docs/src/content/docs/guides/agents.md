@@ -179,6 +179,7 @@ The [CLI reference](/no-mistakes/reference/cli/) documents each `axi` command an
 
 When the daemon is running through a managed service, its `PATH` comes from your login shell environment on macOS and Linux plus common user, Homebrew, and system binary directories; on Windows it reuses the current process environment.
 If native agent discovery does not resolve the binary you expect, check `~/.no-mistakes/logs/daemon.log` and set an explicit override; [Environment the daemon sees](/no-mistakes/reference/environment/#environment-the-daemon-sees) owns the full resolution story.
+On Windows or Cygwin, where a `.cmd` shim can be launched in place of the native `.exe`, enable [`NM_SPAWN_DIAG`](/no-mistakes/reference/environment/#nm_spawn_diag) to log the resolved binary path and the tracked process image name.
 
 Three global config fields tune resolution and invocation, and the [Global Config Reference](/no-mistakes/reference/global-config/) owns each one:
 
