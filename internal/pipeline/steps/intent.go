@@ -271,6 +271,6 @@ func commitReachable(ctx context.Context, workDir, sha string) bool {
 	if strings.TrimSpace(sha) == "" {
 		return false
 	}
-	_, err := git.Run(ctx, workDir, "cat-file", "-e", sha+"^{commit}")
+	_, err := git.Run(ctx, workDir, "cat-file", "-e", sha+"^0")
 	return err == nil
 }
