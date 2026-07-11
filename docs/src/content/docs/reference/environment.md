@@ -192,7 +192,7 @@ Enable verbose agent-spawn diagnostics for troubleshooting native agent launches
 |         |                                                       |
 | ------- | ----------------------------------------------------- |
 | Type    | set to `1` to enable; any other value or unset is off |
-| Default | unset (diagnostics off, zero overhead)                |
+| Default | unset (off, aside from a per-spawn sentinel stat)     |
 
 When enabled, the claude native agent invocation emits `spawn-diag[claude]` trace lines to the step output and the daemon log covering the resolved binary and redacted argv, the tracked PID and its OS image name (which exposes a `.cmd` wrapper being tracked instead of the native process), stdout volume and a leading snippet, raw stderr, and the exact exit path. Prompt and JSON-schema values are replaced with their lengths, so a diagnostic run never writes prompt content or the schema into the logs.
 

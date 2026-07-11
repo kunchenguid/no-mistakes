@@ -17,16 +17,19 @@ import (
 // tracked PID and its OS image name (to expose a .cmd wrapper being tracked
 // instead of the native process), stdout volume, raw stderr, and the exact exit
 // path. Only the exact value 1 enables it; any other value (including 0 or
-// false) and unset leave it disabled. With diagnostics off and no sentinel
-// present, spawnDiag is a no-op with zero overhead.
+// false) and unset leave it disabled. When disabled, spawnDiag adds no work to
+// the spawn beyond the single sentinel stat that spawnDiagEnabled does per
+// invocation (negligible against launching a process); every log method and the
+// stdout wrap are no-ops.
 //
 // WARNING: when enabled, the diagnostic writes the agent's raw stdout head and
-// its full stderr to the daemon log verbatim. The argv prompt and JSON schema
-// are redacted, but the captured streams are not: stdout reflects the model's
-// response (and may carry the structured-output JSON) and stderr can carry
-// secrets. Enable this only for a controlled, short-lived debug session, then
-// unset the variable or remove the sentinel. Do not leave it on in a shared or
-// long-running deployment.
+// its full stderr verbatim to the daemon log and, when the caller sets an
+// OnChunk sink, to that sink (the step output stream) as well. The argv prompt
+// and JSON schema are redacted, but the captured streams are not: stdout
+// reflects the model's response (and may carry the structured-output JSON) and
+// stderr can carry secrets. Enable this only for a controlled, short-lived
+// debug session, then unset the variable or remove the sentinel. Do not leave
+// it on in a shared or long-running deployment.
 const spawnDiagEnv = "NM_SPAWN_DIAG"
 
 // spawnDiagSentinel is a file under NM_HOME that also enables diagnostics. The
