@@ -116,6 +116,11 @@ func addSubmodule(t *testing.T, superDir, name, remoteDir string) string {
 	if err != nil {
 		t.Fatalf("abs remote: %v", err)
 	}
+	// superDir may itself be a submodule checkout (nested case), which never
+	// had a commit identity configured; set one so the commit below does not
+	// fail with "empty ident name" on runners without an ambient git identity.
+	run(t, superDir, "git", "config", "user.email", "test@test.com")
+	run(t, superDir, "git", "config", "user.name", "Test")
 	run(t, superDir, "git", "-c", "protocol.file.allow=always", "submodule", "add", absRemote, name)
 	run(t, superDir, "git", "-c", "protocol.file.allow=always", "submodule", "init", name)
 	run(t, superDir, "git", "-c", "protocol.file.allow=always", "submodule", "update", name)
