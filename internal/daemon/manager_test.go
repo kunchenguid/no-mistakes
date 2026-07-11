@@ -520,6 +520,7 @@ func TestPushReceivedDemoModeBypassesAgentResolution(t *testing.T) {
 	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
 		return []pipeline.Step{step}
 	})
+	writeTestRoutingConfig(t, p, filepath.Join(t.TempDir(), "missing-agent"))
 
 	_, headSHA := setupTestGitRepo(t, p, d, "testrepo-demo")
 

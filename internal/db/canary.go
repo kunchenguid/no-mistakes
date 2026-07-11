@@ -159,14 +159,23 @@ func (d *DB) ActivateCanary(fingerprint string, changedStats func(baseSHA, headS
 	return true, nil
 }
 
-// RecordRoutedRunInCanary adds a successful routed run when its durable
-// completion ordinal is after the activation fence and among the first ten
-// successful completions after that fence. Completion ordinals, rather than
-// second-resolution timestamps or intake arrival order, exclude pre-activation
-// runs and give concurrent completions a stable total order. Failed, cancelled,
-// duplicate, pre-fence, and later successful runs are ignored. Returns true
-// when the run was added.
+// RecordRoutedRunInCanary offers a successful routed run to the durable
+// first-ten cohort and backfills any earlier eligible completion whose intake
+// was missed. Completion ordinals, rather than second-resolution timestamps or
+// intake arrival order, exclude pre-activation runs and give concurrent
+// completions a stable total order. Failed, cancelled, duplicate, pre-fence,
+// and later successful runs are not themselves added. Returns true only when
+// runID was added by this call.
 func (d *DB) RecordRoutedRunInCanary(runID string, changedFiles, changedLines int) (bool, error) {
+	return d.backfillRoutedCanary(runID, changedFiles, changedLines)
+}
+
+// backfillRoutedCanary reconstructs missing routed cohort members from the
+// durable completion order. currentRunID is optional; when supplied, its
+// changed-file facts are retained and the return value reports whether that run
+// was inserted. Facts backfilled at a later boundary use the established -1
+// marker for changed-file data that can no longer be recomputed safely.
+func (d *DB) backfillRoutedCanary(currentRunID string, changedFiles, changedLines int) (bool, error) {
 	tx, err := d.sql.Begin()
 	if err != nil {
 		return false, fmt.Errorf("begin canary intake: %w", err)
@@ -182,39 +191,31 @@ func (d *DB) RecordRoutedRunInCanary(runID string, changedFiles, changedLines in
 		return false, fmt.Errorf("check canary activation: %w", err)
 	}
 
-	var status string
-	var completedAt int64
-	var completionSequence sql.NullInt64
-	switch err := tx.QueryRow(`
-		SELECT r.status, r.updated_at, c.sequence
-		FROM runs r
-		LEFT JOIN run_completion_order c ON c.run_id = r.id
-		WHERE r.id = ?`, runID).Scan(&status, &completedAt, &completionSequence); err {
-	case nil:
-	case sql.ErrNoRows:
-		return false, nil
-	default:
-		return false, fmt.Errorf("load canary run: %w", err)
-	}
-	if types.RunStatus(status) != types.RunCompleted {
-		return false, nil
-	}
-	if !completionSequence.Valid {
-		return false, fmt.Errorf("completed canary run %s has no durable completion ordinal", runID)
-	}
-	if completionSequence.Int64 <= completionFence {
-		return false, nil
+	if currentRunID != "" {
+		var status string
+		var completionSequence sql.NullInt64
+		switch err := tx.QueryRow(`
+			SELECT r.status, c.sequence
+			FROM runs r
+			LEFT JOIN run_completion_order c ON c.run_id = r.id
+			WHERE r.id = ?`, currentRunID).Scan(&status, &completionSequence); err {
+		case nil:
+		case sql.ErrNoRows:
+			return false, nil
+		default:
+			return false, fmt.Errorf("load canary run: %w", err)
+		}
+		if types.RunStatus(status) != types.RunCompleted {
+			return false, nil
+		}
+		if !completionSequence.Valid {
+			return false, fmt.Errorf("completed canary run %s has no durable completion ordinal", currentRunID)
+		}
+		if completionSequence.Int64 <= completionFence {
+			return false, nil
+		}
 	}
 
-	var rank int
-	if err := tx.QueryRow(`
-		SELECT count(*)
-		FROM run_completion_order c
-		JOIN runs r ON r.id = c.run_id
-		WHERE r.status = ? AND c.sequence > ? AND c.sequence <= ?`,
-		types.RunCompleted, completionFence, completionSequence.Int64).Scan(&rank); err != nil {
-		return false, fmt.Errorf("rank routed canary completion: %w", err)
-	}
 	var preFenceMembers int
 	if err := tx.QueryRow(`
 		SELECT count(*)
@@ -224,35 +225,69 @@ func (d *DB) RecordRoutedRunInCanary(runID string, changedFiles, changedLines in
 		canaryCohortRouted, completionFence).Scan(&preFenceMembers); err != nil {
 		return false, fmt.Errorf("count migrated routed canary members: %w", err)
 	}
-	if preFenceMembers+rank > canaryCohortSize {
-		return false, nil
-	}
-	var present int
-	if err := tx.QueryRow(`SELECT count(*) FROM canary_cohort_runs WHERE cohort = ? AND run_id = ?`, canaryCohortRouted, runID).Scan(&present); err != nil {
-		return false, fmt.Errorf("check routed cohort membership: %w", err)
-	}
-	if present > 0 {
+	remaining := canaryCohortSize - preFenceMembers
+	if remaining <= 0 {
 		return false, nil
 	}
 
-	facts, err := computeCanaryRunFacts(tx, runID)
+	rows, err := tx.Query(`
+		SELECT r.id
+		FROM run_completion_order c
+		JOIN runs r ON r.id = c.run_id
+		WHERE r.status = ? AND c.sequence > ?
+		ORDER BY c.sequence
+		LIMIT ?`, types.RunCompleted, completionFence, remaining)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("select routed canary completions: %w", err)
 	}
-	facts.ChangedFiles, facts.ChangedLines = changedFiles, changedLines
-	if err := insertCanaryCohortRun(tx, canaryCohortRouted, preFenceMembers+rank-1, facts); err != nil {
-		return false, err
+	runIDs := make([]string, 0, remaining)
+	for rows.Next() {
+		var runID string
+		if err := rows.Scan(&runID); err != nil {
+			rows.Close()
+			return false, fmt.Errorf("scan routed canary completion: %w", err)
+		}
+		runIDs = append(runIDs, runID)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("iterate routed canary completions: %w", err)
+	}
+
+	addedCurrent := false
+	for rank, runID := range runIDs {
+		var present int
+		if err := tx.QueryRow(`SELECT count(*) FROM canary_cohort_runs WHERE cohort = ? AND run_id = ?`, canaryCohortRouted, runID).Scan(&present); err != nil {
+			return false, fmt.Errorf("check routed cohort membership: %w", err)
+		}
+		if present > 0 {
+			continue
+		}
+		facts, err := computeCanaryRunFacts(tx, runID)
+		if err != nil {
+			return false, err
+		}
+		if runID == currentRunID {
+			facts.ChangedFiles, facts.ChangedLines = changedFiles, changedLines
+			addedCurrent = true
+		}
+		if err := insertCanaryCohortRun(tx, canaryCohortRouted, preFenceMembers+rank, facts); err != nil {
+			return false, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return false, fmt.Errorf("commit canary intake: %w", err)
 	}
-	return true, nil
+	return addedCurrent, nil
 }
 
-// GetCanaryReport projects the baseline and routed cohorts, their medians, and
-// the advisory 30% target status. An unactivated canary reports Activated=false
-// with empty cohorts.
+// GetCanaryReport retries durable routed-cohort backfill, then projects the
+// baseline and routed cohorts, their medians, and the advisory 30% target
+// status. An unactivated canary reports Activated=false with empty cohorts.
 func (d *DB) GetCanaryReport() (*CanaryReport, error) {
+	if _, err := d.backfillRoutedCanary("", -1, -1); err != nil {
+		return nil, fmt.Errorf("backfill routed canary report: %w", err)
+	}
 	report := &CanaryReport{TargetReduction: canaryTargetReduction}
 	switch err := d.sql.QueryRow(`SELECT activated_at, fingerprint FROM canary_activation WHERE id = 1`).Scan(&report.ActivatedAt, &report.Fingerprint); err {
 	case nil:

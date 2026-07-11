@@ -644,17 +644,20 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 		slog.Info("repo commands loaded from default branch, not pushed branch", "run_id", run.ID, "branch", branch, "default_branch", repo.DefaultBranch)
 	}
 	cfg := config.Merge(globalCfg, effectiveRepoCfg)
-	if err := cfg.ValidateRunnable(exec.LookPath); err != nil {
-		m.db.UpdateRunError(run.ID, err.Error())
-		trackStartFailure("invalid_routing")
-		return "", fmt.Errorf("invalid routing config: %w", err)
+	demoMode := steps.IsDemoMode()
+	if !demoMode {
+		if err := cfg.ValidateRunnable(exec.LookPath); err != nil {
+			m.db.UpdateRunError(run.ID, err.Error())
+			trackStartFailure("invalid_routing")
+			return "", fmt.Errorf("invalid routing config: %w", err)
+		}
 	}
 
 	// Model selection is the routing contract: the pipeline's routing invoker
 	// builds fresh, steered native Candidates per invocation. In demo mode,
 	// route every candidate to a no-op agent instead.
 	var ag agent.Agent
-	if steps.IsDemoMode() {
+	if demoMode {
 		ag = agent.NewNoop()
 
 	}
@@ -665,7 +668,7 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 		"trigger":     trigger,
 		"branch_role": branchRole,
 		"step_count":  len(execSteps),
-		"demo_mode":   steps.IsDemoMode(),
+		"demo_mode":   demoMode,
 	})
 
 	// Create executor with event broadcast.

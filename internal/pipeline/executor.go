@@ -32,6 +32,68 @@ type approvalResponse struct {
 	addedFindings []types.Finding
 }
 
+type userFixPayload struct {
+	findingsJSON string
+	findingIDs   []string
+	hasOverrides bool
+}
+
+// buildUserFixPayload applies overrides to the complete finding set before
+// selecting the repair batch. Merging first lets user-added findings avoid IDs
+// already used by unselected findings while retaining per-finding instructions
+// on the selected originals.
+func buildUserFixPayload(raw string, response approvalResponse) userFixPayload {
+	mergedAll := mergeUserOverridesJSON(raw, response.instructions, response.addedFindings)
+	ids := append([]string(nil), response.findingIDs...)
+	if len(response.addedFindings) > 0 {
+		originalCount := 0
+		if original, err := types.ParseFindingsJSON(raw); err == nil {
+			originalCount = len(original.Items)
+		}
+		if merged, err := types.ParseFindingsJSON(mergedAll); err == nil && originalCount <= len(merged.Items) {
+			for _, finding := range merged.Items[originalCount:] {
+				ids = append(ids, finding.ID)
+			}
+		}
+	}
+	seen := make(map[string]bool, len(ids))
+	uniqueIDs := ids[:0]
+	for _, id := range ids {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		uniqueIDs = append(uniqueIDs, id)
+	}
+	ids = uniqueIDs
+	return userFixPayload{
+		findingsJSON: filterFindingsJSON(mergedAll, ids),
+		findingIDs:   ids,
+		hasOverrides: len(response.instructions) > 0 || len(response.addedFindings) > 0,
+	}
+}
+
+// persistUserFixPayload journals the exact batch dispatched for a user fix.
+// Selection is always durable; the merged payload is additionally retained when
+// the user supplied instructions or authored findings.
+func (e *Executor) persistUserFixPayload(roundID string, payload userFixPayload) error {
+	if roundID == "" {
+		return nil
+	}
+	if idsJSON := marshalFindingIDs(payload.findingIDs); idsJSON != "" {
+		if err := e.db.SetStepRoundSelection(roundID, &idsJSON, db.RoundSelectionSourceUser); err != nil {
+			return fmt.Errorf("record selected finding ids: %w", err)
+		}
+	}
+	if payload.hasOverrides {
+		merged := payload.findingsJSON
+		if err := e.db.SetStepRoundUserFindings(roundID, &merged); err != nil {
+			return fmt.Errorf("record user finding overrides: %w", err)
+		}
+	}
+	return nil
+}
+
 // Executor runs pipeline steps sequentially and coordinates approval interactions.
 type Executor struct {
 	db     *db.DB
@@ -235,13 +297,14 @@ func (e *Executor) completeRun(ctx context.Context, run *db.Run, repo *db.Repo, 
 }
 
 type stepExecutionState struct {
-	fixing            bool
-	previousFindings  string
-	roundNum          int
-	executionMS       int64
-	currentRoundID    string
-	consentedFindings string
-	consentedIDs      []string
+	fixing                  bool
+	previousFindings        string
+	roundNum                int
+	executionMS             int64
+	currentRoundID          string
+	consentedSourceFindings string
+	consentedRepairFindings string
+	consentedIDs            []string
 }
 
 type recoveredGate struct {
@@ -331,6 +394,10 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 	switch response.action {
 	case types.ActionApprove:
 		if err := e.requireResolvedBlockingRepairs(run.ID, gate.step.Name()); err != nil {
+			if dbErr := e.db.FailStepWithResult(gate.stepResult.ID, err.Error(), recoveredExitCode(gate.stepResult), duration, recoveredLogPath(gate.stepResult)); dbErr != nil {
+				slog.Warn("failed to mark recovered step as failed after rejected approval", "step", gate.step.Name(), "error", dbErr)
+			}
+			e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusFailed), "", "", err.Error(), &duration)
 			return e.failRun(run, repo, err, ctx)
 		}
 		if err := e.db.CompleteStepWithStatus(gate.stepResult.ID, types.StepStatusCompleted, recoveredExitCode(gate.stepResult), duration, recoveredLogPath(gate.stepResult)); err != nil {
@@ -362,33 +429,23 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		return e.failRun(run, repo, fmt.Errorf("step %s: aborted by user", gate.step.Name()), ctx)
 	case types.ActionFix:
 		telemetry.Track("fix", e.fixTelemetryFields("user", gate.step.Name(), selectedFindingCount(gate.findings, response.findingIDs), 0))
-		selected := filterFindingsJSON(gate.findings, response.findingIDs)
-		merged := mergeUserOverridesJSON(selected, response.instructions, response.addedFindings)
-		if gate.lastRoundID != "" {
-			allSelectedIDs := combineSelectedFindingIDs(response.findingIDs, merged)
-			if idsJSON := marshalFindingIDs(allSelectedIDs); idsJSON != "" {
-				if dbErr := e.db.SetStepRoundSelection(gate.lastRoundID, &idsJSON, db.RoundSelectionSourceUser); dbErr != nil {
-					slog.Warn("failed to record recovered selected finding ids", "step", gate.step.Name(), "round", gate.round, "error", dbErr)
-				}
-			}
-			if merged != "" && merged != selected {
-				if dbErr := e.db.SetStepRoundUserFindings(gate.lastRoundID, &merged); dbErr != nil {
-					slog.Warn("failed to record recovered user findings", "step", gate.step.Name(), "round", gate.round, "error", dbErr)
-				}
-			}
+		payload := buildUserFixPayload(gate.findings, response)
+		if err := e.persistUserFixPayload(gate.lastRoundID, payload); err != nil {
+			return e.failRun(run, repo, fmt.Errorf("persist recovered user fix for step %s: %w", gate.step.Name(), err), ctx)
 		}
 		if dbErr := e.db.UpdateStepStatus(gate.stepResult.ID, types.StepStatusFixing); dbErr != nil {
 			return e.failRun(run, repo, fmt.Errorf("mark recovered step %s fixing: %w", gate.step.Name(), dbErr), ctx)
 		}
 		e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusFixing), "", "", "", nil)
 		skipRemaining, err := e.executeStep(ctx, gate.step, gate.stepResult, run, repo, workDir, logDir, stepExecutionState{
-			fixing:           true,
-			previousFindings: merged,
-			roundNum:         gate.round,
-			executionMS:      duration,
-			currentRoundID:   gate.lastRoundID,
-			consentedFindings: gate.findings,
-			consentedIDs:      response.findingIDs,
+			fixing:                  true,
+			previousFindings:        payload.findingsJSON,
+			roundNum:                gate.round,
+			executionMS:             duration,
+			currentRoundID:          gate.lastRoundID,
+			consentedSourceFindings: gate.findings,
+			consentedRepairFindings: payload.findingsJSON,
+			consentedIDs:            payload.findingIDs,
 		}, circuits)
 		if err != nil {
 			return e.failRun(run, repo, err, ctx)
@@ -714,8 +771,8 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	currentRoundID := state.currentRoundID
 	postRepairRereview := false
 	var recoveredOutcome *StepOutcome
-	if state.consentedFindings != "" && stepName == types.StepReview && e.routingActive() {
-		remaining, err := e.repairConsentedReviewAtGate(ctx, sctx, run, sr, state.consentedFindings, state.consentedIDs, currentRoundID, &roundNum)
+	if state.consentedRepairFindings != "" && stepName == types.StepReview && e.routingActive() {
+		remaining, err := e.repairConsentedReviewAtGate(ctx, sctx, run, sr, state.consentedSourceFindings, state.consentedRepairFindings, state.consentedIDs, currentRoundID, &roundNum)
 		if err != nil {
 			return false, err
 		}
@@ -971,6 +1028,10 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		switch response.action {
 		case types.ActionApprove:
 			if err := e.requireResolvedBlockingRepairs(run.ID, stepName); err != nil {
+				if dbErr := e.db.FailStepWithResult(sr.ID, err.Error(), finalExitCode, executionMS, logPath); dbErr != nil {
+					slog.Warn("failed to mark step as failed after rejected approval", "step", stepName, "error", dbErr)
+				}
+				e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFailed), "", "", err.Error(), &executionMS)
 				return false, err
 			}
 			// Approved - execution already frozen in executionMS, reset phaseStart
@@ -1002,12 +1063,16 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			if err := e.db.UpdateStepStatus(sr.ID, types.StepStatusFixing); err != nil {
 				return false, fmt.Errorf("mark step %s fixing: %w", stepName, err)
 			}
+			payload := buildUserFixPayload(outcome.Findings, response)
+			if err := e.persistUserFixPayload(currentRoundID, payload); err != nil {
+				return false, fmt.Errorf("persist user fix for step %s: %w", stepName, err)
+			}
 			// Routed consent: the human (or unattended consent) authorized a fix,
 			// so repair the explicitly selected findings through the
 			// intent-sensitive cascade. This is the only path that may fix an
 			// ask-user finding.
 			if stepName == types.StepReview && e.routingActive() {
-				remainingFindings, err := e.repairConsentedReviewAtGate(ctx, sctx, run, sr, outcome.Findings, response.findingIDs, currentRoundID, &roundNum)
+				remainingFindings, err := e.repairConsentedReviewAtGate(ctx, sctx, run, sr, outcome.Findings, payload.findingsJSON, payload.findingIDs, currentRoundID, &roundNum)
 				if err != nil {
 					return false, err
 				}
@@ -1026,24 +1091,8 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 				goto approval
 			}
 			sctx.Fixing = true
-			selectedFindings := filterFindingsJSON(outcome.Findings, response.findingIDs)
-			mergedFindings := mergeUserOverridesJSON(selectedFindings, response.instructions, response.addedFindings)
-			sctx.PreviousFindings = mergedFindings
+			sctx.PreviousFindings = payload.findingsJSON
 			nextTrigger = "auto_fix"
-			if currentRoundID != "" {
-				allSelectedIDs := combineSelectedFindingIDs(response.findingIDs, mergedFindings)
-				if idsJSON := marshalFindingIDs(allSelectedIDs); idsJSON != "" {
-					if dbErr := e.db.SetStepRoundSelection(currentRoundID, &idsJSON, db.RoundSelectionSourceUser); dbErr != nil {
-						slog.Warn("failed to record selected finding ids", "step", stepName, "round", roundNum, "error", dbErr)
-					}
-				}
-				if mergedFindings != "" && mergedFindings != selectedFindings {
-					merged := mergedFindings
-					if dbErr := e.db.SetStepRoundUserFindings(currentRoundID, &merged); dbErr != nil {
-						slog.Warn("failed to record user findings", "step", stepName, "round", roundNum, "error", dbErr)
-					}
-				}
-			}
 			e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFixing), "", "", "", nil)
 			slog.Info("step fix requested, re-executing", "step", stepName)
 			continue // loop back to step.Execute

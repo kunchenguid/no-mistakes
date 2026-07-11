@@ -415,20 +415,20 @@ func (e *Executor) reviewAttemptLineages(reviewRoundID string) (string, map[stri
 	}
 	var reviewAttempt *db.InvocationAttempt
 	for _, attempt := range attempts {
-		if attempt.Start.Purpose == types.PurposeInitialReview && attempt.Terminal != nil && attempt.Terminal.Outcome == types.InvocationOutcomeSucceeded {
+		if attempt.Start.Purpose != types.PurposeInitialReview || attempt.Start.Candidate.IsZero() {
+			continue
+		}
+		if attempt.Terminal != nil && attempt.Terminal.Outcome == types.InvocationOutcomeSucceeded {
 			reviewAttempt = attempt
+			break
 		}
 	}
 	if reviewAttempt == nil {
 		return "", nil, nil
 	}
-	runID := reviewAttempt.Start.Scope.RunID
-	if runID == "" {
-		return "", nil, fmt.Errorf("succeeded review attempt has no run scope")
-	}
-	lineages, err := e.db.GetFindingLineagesByRun(runID)
+	lineages, err := e.db.GetFindingLineagesByAttempt(reviewAttempt.ID)
 	if err != nil {
-		return "", nil, fmt.Errorf("load run finding lineages: %w", err)
+		return "", nil, fmt.Errorf("load review-attempt finding lineages: %w", err)
 	}
 	byDisplay := make(map[string]string, len(lineages))
 	for _, lineage := range lineages {
@@ -465,6 +465,43 @@ func (e *Executor) repairConsentedFindings(ctx context.Context, sctx *StepContex
 	if reviewAttemptID == "" {
 		return repairResult{}, fmt.Errorf("consented review findings have no producing attempt lineage")
 	}
+	// An unrelated verifier-created finding uses its durable lineage ULID as
+	// its display ID. It is intentionally not part of the producing review
+	// attempt's lineage set, so recover only an exact ID=display-ID match rather
+	// than widening reviewAttemptLineages back to the whole run.
+	runLineages, err := e.db.GetFindingLineagesByRun(run.ID)
+	if err != nil {
+		return repairResult{}, fmt.Errorf("load run lineages for consented verifier finding: %w", err)
+	}
+	for _, finding := range consented {
+		if _, exists := byDisplay[finding.ID]; exists {
+			continue
+		}
+		for _, lineage := range runLineages {
+			if lineage.ID == finding.ID && lineage.DisplayID == finding.ID {
+				byDisplay[finding.ID] = lineage.ID
+				break
+			}
+		}
+	}
+	missingUserIDs := make([]string, 0)
+	for _, finding := range consented {
+		if _, exists := byDisplay[finding.ID]; !exists && finding.Source == types.FindingSourceUser {
+			missingUserIDs = append(missingUserIDs, finding.ID)
+		}
+	}
+	if len(missingUserIDs) > 0 {
+		lineages, err := e.db.CreateFindingLineages(run.ID, reviewAttemptID, missingUserIDs)
+		if err != nil {
+			return repairResult{}, fmt.Errorf("create consented user finding lineages: %w", err)
+		}
+		if len(lineages) != len(missingUserIDs) {
+			return repairResult{}, fmt.Errorf("created %d consented user finding lineages for %d findings", len(lineages), len(missingUserIDs))
+		}
+		for _, lineage := range lineages {
+			byDisplay[lineage.DisplayID] = lineage.ID
+		}
+	}
 	seeds, err := seedsForFindings(consented, byDisplay)
 	if err != nil {
 		return repairResult{}, err
@@ -494,29 +531,25 @@ func (e *Executor) repairConsentedFindings(ctx context.Context, sctx *StepContex
 	return repairResultFromStates(states, seeds), nil
 }
 
-func (e *Executor) repairConsentedReviewAtGate(ctx context.Context, sctx *StepContext, run *db.Run, sr *db.StepResult, findingsJSON string, findingIDs []string, sourceRoundID string, roundNum *int) (string, error) {
+func (e *Executor) repairConsentedReviewAtGate(ctx context.Context, sctx *StepContext, run *db.Run, sr *db.StepResult, sourceFindingsJSON, repairFindingsJSON string, findingIDs []string, sourceRoundID string, roundNum *int) (string, error) {
 	if sourceRoundID == "" {
 		return "", fmt.Errorf("consented review repair has no source round")
 	}
-	idsJSON := marshalFindingIDs(findingIDs)
-	if idsJSON == "" {
+	if marshalFindingIDs(findingIDs) == "" {
 		return "", fmt.Errorf("consented review repair requires explicit finding ids")
-	}
-	if err := e.db.SetStepRoundSelection(sourceRoundID, &idsJSON, db.RoundSelectionSourceUser); err != nil {
-		return "", fmt.Errorf("record consented review selection: %w", err)
 	}
 	reserveRepairRound := func(trigger string) (*db.StepRound, error) {
 		*roundNum = *roundNum + 1
 		return e.db.ReserveStepRound(sr.ID, *roundNum, trigger)
 	}
-	result, err := e.repairConsentedFindings(ctx, sctx, run, sr, sctx.Repo.DefaultBranch, sourceRoundID, findingsJSON, findingIDs, reserveRepairRound)
+	result, err := e.repairConsentedFindings(ctx, sctx, run, sr, sctx.Repo.DefaultBranch, sourceRoundID, repairFindingsJSON, findingIDs, reserveRepairRound)
 	if err != nil {
 		return "", fmt.Errorf("repair consented review findings: %w", err)
 	}
 	if !result.Owned || !result.Resolved {
 		return "", fmt.Errorf("consented review repair did not durably resolve every selected finding")
 	}
-	updatedFindings, err := mergeRepairFindingsJSON(findingsJSON, result.NewFindings)
+	updatedFindings, err := mergeRepairFindingsJSON(sourceFindingsJSON, result.NewFindings)
 	if err != nil {
 		return "", fmt.Errorf("merge consented review verifier findings: %w", err)
 	}

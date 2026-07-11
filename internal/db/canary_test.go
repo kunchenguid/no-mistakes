@@ -296,9 +296,10 @@ func TestRecordRoutedRunSelectsFirstTenConcurrentEqualTimestampCompletions(t *te
 		if errs[i] != nil {
 			t.Fatalf("offer completion %d: %v", i, errs[i])
 		}
-		wantAdded := i < canaryCohortSize
-		if added[i] != wantAdded {
-			t.Fatalf("completion %d added=%v, want %v", i, added[i], wantAdded)
+		// A concurrently offered first-ten run may already have been inserted by
+		// another call's completion-order backfill. Later runs are never members.
+		if i >= canaryCohortSize && added[i] {
+			t.Fatalf("later completion %d added=true, want excluded", i)
 		}
 	}
 
@@ -312,6 +313,79 @@ func TestRecordRoutedRunSelectsFirstTenConcurrentEqualTimestampCompletions(t *te
 	for i, fact := range report.Routed.Runs {
 		if fact.RunID != runIDs[i] {
 			t.Fatalf("routed position %d = %s, want completion-order run %s", i, fact.RunID, runIDs[i])
+		}
+	}
+}
+
+func TestCanaryReportBackfillsTransientTenthIntakeFailureInCompletionOrder(t *testing.T) {
+	d := openTestDB(t)
+	repo, err := d.InsertRepoWithID("repo-1", "/tmp/repo", "origin", "main")
+	if err != nil {
+		t.Fatalf("insert repo: %v", err)
+	}
+	for range canaryCohortSize {
+		seedCompletedCanaryRun(t, d, repo.ID, 20000, 0, 0, 0)
+	}
+	if _, err := d.ActivateCanary("fp", nil); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+
+	runIDs := make([]string, canaryCohortSize)
+	for i := range runIDs {
+		runIDs[i] = seedCompletedCanaryRun(t, d, repo.ID, int64(10000+i), 0, 0, 0)
+		if i == canaryCohortSize-1 {
+			continue
+		}
+		if added, err := d.RecordRoutedRunInCanary(runIDs[i], i, i*10); err != nil || !added {
+			t.Fatalf("record routed run %d added=%v err=%v", i, added, err)
+		}
+	}
+	if _, err := d.sql.Exec(`
+		CREATE TRIGGER reject_tenth_routed_canary_intake
+		BEFORE INSERT ON canary_cohort_runs
+		WHEN NEW.cohort = 'routed'
+		BEGIN
+			SELECT RAISE(FAIL, 'injected tenth routed canary intake failure');
+		END;
+	`); err != nil {
+		t.Fatalf("install tenth intake failure: %v", err)
+	}
+	if added, err := d.RecordRoutedRunInCanary(runIDs[canaryCohortSize-1], 9, 90); err == nil || added {
+		t.Fatalf("failed tenth intake added=%v err=%v, want transient error", added, err)
+	}
+	if _, err := d.sql.Exec(`DROP TRIGGER reject_tenth_routed_canary_intake`); err != nil {
+		t.Fatalf("remove tenth intake failure: %v", err)
+	}
+
+	report, err := d.GetCanaryReport()
+	if err != nil {
+		t.Fatalf("backfilled report: %v", err)
+	}
+	if !report.Routed.Complete || len(report.Routed.Runs) != canaryCohortSize {
+		t.Fatalf("routed cohort = %d runs (complete=%v), want backfilled ten-run report", len(report.Routed.Runs), report.Routed.Complete)
+	}
+	for i, fact := range report.Routed.Runs {
+		if fact.RunID != runIDs[i] {
+			t.Fatalf("routed position %d = %s, want completion-order run %s", i, fact.RunID, runIDs[i])
+		}
+	}
+	if report.Routed.Runs[canaryCohortSize-1].ChangedFiles != -1 || report.Routed.Runs[canaryCohortSize-1].ChangedLines != -1 {
+		t.Fatalf("backfilled changed stats = %+v, want unavailable markers", report.Routed.Runs[canaryCohortSize-1])
+	}
+
+	if added, err := d.RecordRoutedRunInCanary(runIDs[canaryCohortSize-1], 9, 90); err != nil || added {
+		t.Fatalf("idempotent tenth retry added=%v err=%v, want no-op", added, err)
+	}
+	retried, err := d.GetCanaryReport()
+	if err != nil {
+		t.Fatalf("report after retry: %v", err)
+	}
+	if len(retried.Routed.Runs) != canaryCohortSize {
+		t.Fatalf("routed cohort after retry = %d runs, want %d", len(retried.Routed.Runs), canaryCohortSize)
+	}
+	for i, fact := range retried.Routed.Runs {
+		if fact.RunID != runIDs[i] {
+			t.Fatalf("retried routed position %d = %s, want %s", i, fact.RunID, runIDs[i])
 		}
 	}
 }

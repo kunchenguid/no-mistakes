@@ -13,11 +13,22 @@ import (
 
 const nativeProcessWaitDelay = 5 * time.Second
 
+type nativeProcessLifecycle struct {
+	start     func(*exec.Cmd) error
+	terminate func(*exec.Cmd)
+}
+
+var nativeProcessShellLifecycle = nativeProcessLifecycle{
+	start:     shellenv.StartShellCommand,
+	terminate: shellenv.TerminateShellCommandGroup,
+}
+
 type nativeProcess struct {
 	cmd            *exec.Cmd
 	stdout         *nativeProcessPipe
 	stderr         *nativeProcessPipe
 	waitCh         chan error
+	lifecycle      nativeProcessLifecycle
 	terminateOnce  sync.Once
 	closePipesOnce sync.Once
 	pipeMu         sync.Mutex
@@ -74,7 +85,8 @@ func startNativeProcess(cmd *exec.Cmd) (*nativeProcess, error) {
 	if cmd.WaitDelay == 0 {
 		cmd.WaitDelay = nativeProcessWaitDelay
 	}
-	if err := cmd.Start(); err != nil {
+	lifecycle := nativeProcessShellLifecycle
+	if err := lifecycle.start(cmd); err != nil {
 		_ = stdoutR.Close()
 		_ = stdoutW.Close()
 		_ = stderrR.Close()
@@ -87,6 +99,7 @@ func startNativeProcess(cmd *exec.Cmd) (*nativeProcess, error) {
 	started := &nativeProcess{
 		cmd:            cmd,
 		waitCh:         make(chan error, 1),
+		lifecycle:      lifecycle,
 		remainingPipes: 2,
 		pipesDone:      make(chan struct{}),
 	}
@@ -126,9 +139,7 @@ func (p *nativeProcess) waitForPipes(waitErr error) error {
 
 func (p *nativeProcess) terminate() {
 	p.terminateOnce.Do(func() {
-		if p.cmd.Cancel != nil {
-			_ = p.cmd.Cancel()
-		}
+		p.lifecycle.terminate(p.cmd)
 	})
 }
 

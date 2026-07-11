@@ -69,8 +69,11 @@ func TestBodyDocumentsAxiGateGuidance(t *testing.T) {
 	}
 }
 
-func TestBodyDoesNotAdvertiseRemovedACPAgents(t *testing.T) {
+func TestBodyDocumentsSupportedNativeAgentsOnly(t *testing.T) {
 	md := Markdown()
+	if !strings.Contains(md, "a runnable configured pipeline agent: a supported native\n  agent binary") {
+		t.Fatal("skill body must document the supported native pipeline-agent contract")
+	}
 	if strings.Contains(md, "acpx") || strings.Contains(md, "acp:<target>") {
 		t.Fatal("skill body advertises removed ACP pipeline agents")
 	}

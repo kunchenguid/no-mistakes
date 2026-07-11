@@ -11,11 +11,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
+	"gopkg.in/yaml.v3"
 )
 
 func TestMain(m *testing.M) {
@@ -147,6 +149,24 @@ func (s *mockPanicStep) Execute(_ *pipeline.StepContext) (*pipeline.StepOutcome,
 	panic("boom")
 }
 
+func writeTestRoutingConfig(t *testing.T, p *paths.Paths, executable string) {
+	t.Helper()
+	routing := config.DefaultRoutingConfig()
+	for runner, spec := range routing.Runners {
+		spec.Executable = executable
+		routing.Runners[runner] = spec
+	}
+	data, err := yaml.Marshal(struct {
+		Routing config.RoutingConfig `yaml:"routing"`
+	}{Routing: routing})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.ConfigFile(), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // startTestDaemonWithSteps starts a daemon with a custom step factory.
 func startTestDaemonWithSteps(t *testing.T, sf StepFactory) (*paths.Paths, *db.DB) {
 	t.Helper()
@@ -162,9 +182,14 @@ func startTestDaemonWithSteps(t *testing.T, sf StepFactory) (*paths.Paths, *db.D
 		t.Fatal(err)
 	}
 
-	// Model selection is the routing contract; the daemon writes the
-	// routing-only default config on startup. Fake steps launch no agents, so
-	// no runner binary is needed.
+	// Run creation validates every routed profile before the fake steps run.
+	// Point both runners at this executable so the fixture exercises daemon
+	// behavior without depending on developer-installed agent binaries.
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestRoutingConfig(t, p, executable)
 
 	d, err := db.Open(p.DB())
 	if err != nil {

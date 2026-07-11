@@ -2157,36 +2157,31 @@ func assertFailingTestCommandRun(t *testing.T, h *Harness) {
 	if testStep.DurationMS == nil {
 		t.Fatal("expected awaiting failing test step to expose execution duration")
 	}
-	awaitingDurationMS := *testStep.DurationMS
-	time.Sleep(300 * time.Millisecond)
 	h.Respond(run.ID, types.StepTest, types.ActionApprove)
-	completed := h.WaitForRun("failing-test-command", 60*time.Second)
-	if completed.Status != types.RunCompleted {
-		t.Fatalf("failing test command run did not complete after approve: status=%s error=%v", completed.Status, deref(completed.Error))
+	failed := h.WaitForRun("failing-test-command", 60*time.Second)
+	if failed.Status != types.RunFailed {
+		t.Fatalf("failing test command run status = %s, want fail-closed after unresolved repair approval (error=%v)", failed.Status, deref(failed.Error))
 	}
-	completedTestStep, ok := findStep(completed.Steps, types.StepTest)
+	if failed.Error == nil || !strings.Contains(*failed.Error, "test cannot be approved while a blocking finding lineage remains unresolved") {
+		t.Fatalf("failing test command error = %v, want unresolved-lineage approval rejection", deref(failed.Error))
+	}
+	failedTestStep, ok := findStep(failed.Steps, types.StepTest)
 	if !ok {
-		t.Fatal("expected completed test step in failing test command run")
+		t.Fatal("expected test step in failed test command run")
 	}
-	if completedTestStep.Status != types.StepStatusCompleted {
-		t.Fatalf("expected completed test step after approve, got %s", completedTestStep.Status)
+	if failedTestStep.Status != types.StepStatusFailed {
+		t.Fatalf("failing test step status = %s, want failed", failedTestStep.Status)
 	}
-	if completedTestStep.ExitCode == nil || *completedTestStep.ExitCode != 1 {
-		t.Fatalf("failing test command exit code = %v, want 1", completedTestStep.ExitCode)
-	}
-	if completedTestStep.DurationMS == nil {
-		t.Fatal("expected completed failing test step to expose execution duration")
-	}
-	if *completedTestStep.DurationMS > awaitingDurationMS+200 {
-		t.Fatalf("test step duration should exclude approval wait: awaiting=%dms completed=%dms", awaitingDurationMS, *completedTestStep.DurationMS)
+	if failedTestStep.ExitCode == nil || *failedTestStep.ExitCode != 1 {
+		t.Fatalf("failing test command exit code = %v, want 1", failedTestStep.ExitCode)
 	}
 	for _, stepName := range []types.StepName{types.StepDocument, types.StepLint, types.StepVerify, types.StepPush} {
-		step, ok := findStep(completed.Steps, stepName)
+		step, ok := findStep(failed.Steps, stepName)
 		if !ok {
-			t.Fatalf("expected %s step after approving failing test command", stepName)
+			t.Fatalf("expected persisted %s step after failing test command", stepName)
 		}
-		if step.Status != types.StepStatusCompleted {
-			t.Fatalf("expected %s to continue after approved test step, got %s", stepName, step.Status)
+		if step.Status == types.StepStatusCompleted {
+			t.Fatalf("%s completed after unresolved test repair was rejected", stepName)
 		}
 	}
 }

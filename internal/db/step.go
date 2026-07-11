@@ -160,6 +160,19 @@ func (d *DB) FailStep(id string, errMsg string, durationMS int64) error {
 	return nil
 }
 
+// FailStepWithResult marks a step as failed while preserving the command result
+// that produced the findings rejected at approval time.
+func (d *DB) FailStepWithResult(id, errMsg string, exitCode int, durationMS int64, logPath string) error {
+	_, err := d.sql.Exec(
+		`UPDATE step_results SET status = ?, error = ?, exit_code = ?, duration_ms = ?, log_path = ?, completed_at = ?, last_activity_at = ?, last_activity = ?, agent_pid = NULL WHERE id = ?`,
+		types.StepStatusFailed, errMsg, exitCode, durationMS, logPath, now(), now(), "step failed: "+errMsg, id,
+	)
+	if err != nil {
+		return fmt.Errorf("fail step with result: %w", err)
+	}
+	return nil
+}
+
 // TouchStepActivity records the latest meaningful activity for an active step
 // without changing its status or current agent pid.
 func (d *DB) TouchStepActivity(id string, text string) error {

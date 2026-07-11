@@ -279,6 +279,13 @@ func TestExecutor_ResumeRejectsApprovalWithUnresolvedRepair(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("recovered executor timed out")
 	}
+	persisted, err := database.GetStepResult(stepResult.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Status != types.StepStatusFailed || persisted.Error == nil || !strings.Contains(*persisted.Error, "cannot be approved") {
+		t.Fatalf("recovered rejected step = status %s error %v, want durable failed state", persisted.Status, persisted.Error)
+	}
 }
 
 func TestExecutor_TracksApprovalAndUserFixTelemetry(t *testing.T) {
