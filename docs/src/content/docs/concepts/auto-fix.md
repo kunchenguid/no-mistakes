@@ -37,27 +37,9 @@ Unresolved documentation findings and unresolved blocking lint findings pause fo
 
 ## Configuration
 
-Set limits in global or repo config:
-
-```yaml
-auto_fix:
-  rebase: 3
-  review: 0    # disabled by default, requires manual approval
-  test: 3
-  document: 3
-  lint: 3
-  ci: 3        # shared by CI for failures, and on GitHub/GitLab/Azure DevOps for merge conflicts
-```
-
-Setting a step to `0` disables the follow-up auto-fix loop, so the pipeline pauses for human input when that step finds issues.
-The document step does not use this limit for automatic follow-up loops because it attempts documentation fixes during its initial pass.
-For empty `commands.lint`, the combined housekeeping pass can also apply safe lint fixes before reporting unresolved issues.
-
-`auto_fix.review` defaults to `0`, so review findings require manual approval unless you opt in.
-
-`auto_fix.ci` applies to the CI step. The same limit covers CI-failure fixes for supported providers, plus merge-conflict fixes on GitHub, GitLab, and Azure DevOps.
-
-Repo config overlays global config - you can set `auto_fix.lint: 5` in a repo's `.no-mistakes.yaml` to override just that step while inheriting the rest from global.
+Per-step attempt limits come from the `auto_fix` config object; the [`auto_fix` field reference](/no-mistakes/reference/global-config/#auto_fix) owns the defaults, per-step meanings, and the legacy alias.
+Setting a step to `0` disables the follow-up auto-fix loop, so the pipeline pauses for human input when that step finds issues; `auto_fix.review` defaults to `0`, so review findings require manual approval unless you opt in.
+Repo config overlays global config field by field - you can set `auto_fix.lint: 5` in a repo's `.no-mistakes.yaml` to override just that step while inheriting the rest from global.
 
 ## Finding actions
 

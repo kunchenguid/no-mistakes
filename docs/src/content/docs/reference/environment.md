@@ -67,6 +67,17 @@ Override the Bitbucket Cloud API base URL.
 
 Useful for mocking in tests or pointing at a proxy.
 
+## `AZURE_DEVOPS_EXT_PAT`
+
+Azure DevOps Personal Access Token inherited by the daemon for non-interactive `az` CLI auth.
+
+|         |                                                    |
+| ------- | -------------------------------------------------- |
+| Type    | `string`                                           |
+| Default | (none; `az devops login` credentials work too)     |
+
+See [Provider Integration](/no-mistakes/guides/provider-integration/#azure-devops).
+
 ## `NO_MISTAKES_NO_UPDATE_CHECK`
 
 Disable background update checks.

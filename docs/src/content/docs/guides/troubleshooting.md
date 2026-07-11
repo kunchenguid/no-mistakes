@@ -57,11 +57,10 @@ If the PID file points at a process that's no longer running, remove it and run 
 
 ### "a no-mistakes daemon is already running for this NM_HOME"
 
-The daemon holds an exclusive OS lock on `~/.no-mistakes/daemon.lock` for its whole lifetime, so a second daemon for the same root refuses to start instead of stealing the first one's socket.
-The OS releases the lock automatically when the holder exits or crashes, even on SIGKILL, so it cannot go stale: this error always means a genuinely live daemon, and the message includes the holder's PID and start time when available.
+This error always means a genuinely live daemon: the lock it reports cannot go stale (see [Daemon & Worktrees](/no-mistakes/concepts/daemon/) for the singleton-lock model).
 Manage that daemon with `no-mistakes daemon status` and `no-mistakes daemon stop` instead of deleting the lock file - deleting the file does not release the lock and only weakens the guard.
 
-If the socket exists and the process is running but stuck or unresponsive, `no-mistakes` no longer hangs on the connection attempt: it bounds the wait with `daemon_connect_timeout` (default `3s`, override with `NM_DAEMON_CONNECT_TIMEOUT` or the config field) and fails fast with an error naming the socket path instead of silently starting a second daemon. Restart the stuck daemon:
+If the socket exists and the process is running but stuck or unresponsive, `no-mistakes` bounds the connection wait with [`daemon_connect_timeout`](/no-mistakes/reference/global-config/#daemon_connect_timeout) and fails fast with an error naming the socket path instead of silently starting a second daemon. Restart the stuck daemon:
 
 ```sh
 no-mistakes daemon stop
@@ -84,19 +83,14 @@ If you have multiple installs with different `NM_HOME` roots, each gets its own 
 
 Symptom: `update` refuses because active pipeline runs are in progress, prompts because the daemon is running from a different executable path, or aborts because the daemon executable path cannot be determined.
 
-When pending or running pipeline runs exist, `update` refuses to restart the daemon and lists each active run's ID, status, branch, and short head SHA. Pass `no-mistakes update --force` to restart the daemon anyway and accept that those runs may fail. `-y`/`--yes` does **not** bypass this guard - it only answers the separate prompt below.
-When the running daemon uses a different binary, `update` still prompts before replacing it; pass `-y`/`--yes` to answer that prompt non-interactively.
+`update`, `daemon stop`, and `daemon restart` all refuse by default while pipeline runs are active and list the affected runs; [Daemon & Worktrees](/no-mistakes/concepts/daemon/#starting-and-stopping) owns the guard's exact rules, including why `-y`/`--yes` does not bypass it.
 
-If the daemon executable path can't be determined at all (stale PID, permissions), the update aborts before replacing anything.
-
-Fix:
+Fix, once you have confirmed it is fine for the listed active runs to fail:
 
 ```sh
 no-mistakes daemon stop --force
 no-mistakes update
 ```
-
-`daemon stop` refuses for the same active-run reason and needs its own `--force` too. Only force through once you've confirmed it's fine for the listed active runs to fail.
 
 ## Agent binary not detected
 
@@ -231,29 +225,12 @@ Check the [Provider Integration](/no-mistakes/guides/provider-integration/) requ
 
 Symptom: CI step keeps monitoring an open PR longer than expected, or pauses after the idle timeout.
 
-`ci_timeout` defaults to `168h` (7 days) and is an idle timeout.
-It re-arms whenever the upstream default branch advances, so an active long-lived PR keeps being watched.
-If the provider later reports an actual GitHub, GitLab, or Azure DevOps merge conflict, the CI auto-fix path rebases and re-pushes the branch; a clean behind PR needs no command.
-Set it in `~/.no-mistakes/config.yaml` to choose a different idle window:
+Monitoring while the PR remains open - even after checks are currently healthy - is intended behavior, because a later default-branch update can make the PR conflict or rerun CI.
+Once checks are green and the PR is mergeable, the CI panel shows `✓ Checks passed` and the terminal title switches to `Checks passed`, so you can tell when to go merge the PR; the signal clears automatically if checks start re-running or a new failure appears.
 
-```yaml
-ci_timeout: "24h"
-```
+How long the monitor runs is controlled by `ci_timeout` in `~/.no-mistakes/config.yaml`, an idle timeout that re-arms whenever the upstream default branch advances; the [`ci_timeout` field reference](/no-mistakes/reference/global-config/#ci_timeout) owns the default, the `unlimited` keyword and its aliases, and the exact re-arm semantics.
+Older config files may still contain an explicit `ci_timeout: "4h"` value; update it if you want the newer default behavior.
 
-Set it to `unlimited` to monitor until the PR is merged, closed, or aborted:
-
-```yaml
-ci_timeout: "unlimited"
-```
-
-`none`, `off`, `never`, `0`, and other non-positive durations are accepted too.
-
-Older config files may still contain an explicit `ci_timeout: "4h"` value.
-Update that value if you want the newer default behavior.
-
-The CI step keeps monitoring while the PR remains open, even after checks are currently healthy, because a later default-branch update can make the PR conflict or rerun CI.
-Once checks are green and the PR is mergeable, the CI panel shows `✓ Checks passed` and the terminal title switches to `Checks passed`, so you can tell when to go merge the PR.
-The signal clears automatically if checks start re-running or a new failure appears.
 If the PR is still open at the timeout, the step pauses for approval with findings for the open monitoring state or any known unresolved failures.
 You can approve, fix, or skip from the TUI or `no-mistakes axi respond`.
 Use `no-mistakes axi abort` only when you mean to cancel the whole active run.
@@ -262,7 +239,7 @@ Use `no-mistakes axi abort` only when you mean to cancel the whole active run.
 
 Symptom: `no-mistakes axi status` shows an active step with `last_activity` prefixed by `quiet`, or a review/test/lint step appears to run for longer than expected.
 
-`quiet` means the step has not recorded a step-log line or native-agent lifecycle event for longer than `step_quiet_warning` in `~/.no-mistakes/config.yaml`.
+`quiet` means the step has not recorded a step-log line or native-agent lifecycle event for longer than [`step_quiet_warning`](/no-mistakes/reference/global-config/#step_quiet_warning).
 It is only a liveness signal.
 It does not cancel the step, fail the run, or mean the pipeline is safe to bypass.
 
