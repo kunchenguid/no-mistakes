@@ -27,6 +27,11 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      # The committed skills/no-mistakes/SKILL.md is generated from
+      # internal/skill; fail the build when it drifts from the generator.
+      - name: Skill freshness
+        run: make skill-check
+
   test:
     strategy:
       fail-fast: false

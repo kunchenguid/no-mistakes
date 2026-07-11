@@ -22,10 +22,6 @@
   /></a>
 </p>
 
-<p align="center">
-  <a href="https://trendshift.io/repositories/27829?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-27829" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/27829" alt="kunchenguid%2Fno-mistakes | Trendshift" width="250" height="55"/></a>
-</p>
-
 <h3 align="center">干掉所有 slop，开出干净的 PR。</h3>
 
 <p align="center"><a href="README.md">English</a> · <strong>简体中文</strong></p>
@@ -35,13 +31,16 @@
 </p>
 
 `no-mistakes` 在你真实的远端前面放了一个本地 git 代理。
-把分支推给 `no-mistakes` 而不是 `origin`，它会拉起一个用完即弃的 worktree，跑一条 AI 驱动的校验流水线，**只有每一项检查都通过后**才把分支转发到配置的推送目标，并自动开出一个干净的 PR。
+把分支推给 `no-mistakes` 而不是 `origin`，它就会在一个用完即弃的 worktree 里跑一条 AI 驱动的校验流水线。
+只有每一项检查都通过后，分支才会到达配置的推送目标，并自动开出一个干净的 PR。
 
-- **不阻塞** —— 流水线在隔离的 worktree 里跑，不打断你手头的工作。
-- **不挑 agent** —— 支持 `claude`、`codex`、`rovodev`、`opencode`、`pi`、`copilot`，或通过 `acpx` 用 `acp:<target>`，并支持有序 fallback。
-- **agent 原生** —— `/no-mistakes` 既能让编码 agent 完成一个任务再过网关，也能直接为已提交的工作过网关：它跑完流水线、让流水线应用安全的修复，剩下的升级给你。
-- **人始终说了算** —— 自动修复，还是逐条审查 findings，你决定。
-- **默认就是干净 PR** —— 推送、开 PR、盯 CI、自动修复失败，一气呵成。
+你会得到：
+
+- 一条隔离的流水线，绝不阻塞你的工作副本
+- 按语义用途（Purpose）路由的模型调用，可在 OpenAI 与 Anthropic 之间做提供商故障切换
+- 一个 `/no-mistakes` skill，让你的编码 agent 完成任务并过网关，或直接为已提交的工作过网关
+- 每次修复都先应用、再经确定性检查和独立验证，之后才允许发布任何内容
+- 替你开出干净的 PR 并盯好 CI，需要人拍板的事仍由你决定
 
 完整文档：<https://kunchenguid.github.io/no-mistakes/>
 
@@ -51,18 +50,30 @@
         你的分支
             │  git push no-mistakes
             ▼
-   ┌───────────────────────────────────────────────┐
-   │  用完即弃的 worktree —— 你的工作原地不动          │
-   │  review → test → docs → lint → push → PR → CI │
-   └───────────────────────────────────────────────┘
+   ┌────────────────────────────────────────────────┐
+   │  用完即弃的 worktree —— 你的工作原地不动        │
+   │  intent → rebase → review → test → document    │
+   │  → lint → verify → push → PR → CI              │
+   └────────────────────────────────────────────────┘
             │  每项检查变绿
             ▼
         干净的 PR，已替你开好
 ```
 
-每一步要么自己通过，要么停下来给你一条 **finding** 让你处理。
-安全、机械性的修复会自动应用；任何牵涉到你**意图**的，都会升级给你来 **approve（批准）**、**fix（修复）** 或 **skip（跳过）**。
-在每项检查都变绿之前，没有任何东西会到达配置的推送目标。
+流水线永远按同样的十个步骤运行：intent（意图）→ rebase（变基）→ review（评审）→ test（测试）→ document（文档）→ lint（静态检查）→ verify（验证）→ push（推送）→ PR → CI。
+每个步骤要么自行通过，要么停下来留下一条 finding。
+系统会替你修复可安全修复的 finding；任何触及你意图的事项都会等待你作出决定。
+push 步骤只负责传输 verify 步骤认证过的那一个确切提交。
+在每项检查都变绿之前，任何东西都不会到达配置的推送目标。
+
+## 模型调用如何选定
+
+每一次模型调用都始于一个语义用途（Purpose），例如首次评审或 PR 撰写。
+Purpose 选定一条由能力档位（Profile）组成的有限路由（Route），每个 Profile 按优先顺序列出各提供商的候选（Candidate）。
+一旦某次调用出现已分类的运行故障（例如配额耗尽或服务中断），该候选所属提供商的熔断器就会在本次运行期间保持打开，并由同一 Profile 内的备用候选接管。
+当所有候选都不可用时，这次调用会直接以失败收场（fail closed），而不是悄悄降级。
+系统会将每条 finding 作为持久谱系（lineage）追踪：先由新的修复执行者处理，再运行确定性检查，最后由独立验证者验证，并沿 Route 逐级升级，直到该 finding 被解决或以失败关闭（fail closed）的方式终止。
+完整契约见[路由参考](https://kunchenguid.github.io/no-mistakes/reference/routing/)。
 
 ## 安装
 
@@ -70,6 +81,7 @@
 curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.sh | sh
 ```
 
+你需要 `git`，以及 `PATH` 上至少一个已接入路由的 runner CLI：`codex` 或 `claude`。
 Windows、Go install 以及从源码构建的说明，见[安装指南](https://kunchenguid.github.io/no-mistakes/start-here/installation/)。
 
 ## 快速上手
@@ -99,22 +111,25 @@ $ no-mistakes
 # 打开当前运行的 TUI
 ```
 
-如果是 GitHub fork 贡献，让 `origin` 指向父仓库，并用 `no-mistakes init --fork-url <your-fork-url>` 初始化。
+若要通过 GitHub fork 贡献代码，请让 `origin` 保持指向父仓库，并使用 `no-mistakes init --fork-url <your-fork-url>` 初始化。
 
-在 TUI 里你逐条处理 **finding**：**auto-fix** 类自动替你应用（或由你 approve 放行），**ask-user** 类需要你判断，由你 approve、fix 或 skip。
-每项检查变绿后，网关会把你的分支转发到配置的推送目标并替你开好 PR，不用手动 `git push origin`，也不用手写 PR 正文。
-想让编码 agent 无人值守地走完同一套流程？
+在 TUI 里你逐条处理 finding。
+流水线会自行修复安全的 finding，并对每次修复做独立验证；需要人拍板的事项会让运行停下来，由你 approve（批准）、fix（修复）或 skip（跳过）。
+每项检查变绿后，网关会把验证过的提交转发到配置的推送目标，并替你开好 PR，不用手动 `git push origin`，也不用手写 PR 正文。
+希望让编码智能体以无界面方式驱动同一流程？
 用 `/no-mistakes`（见下文）。
 
 ## 触发网关的三种方式
 
-每一处改动都走同一条流水线。改动就绪时，挑一个最贴合你当下工作方式的入口：
+每一处改动都走同一条流水线。
+改动就绪时，挑一个最贴合你当下工作方式的入口：
 
-- **`git push no-mistakes`** —— 显式的 Git 路径。把已提交的分支推给网关 remote，而不是 `origin`。
-- **`no-mistakes`** —— TUI。改完之后运行它（无需先提交），向导会带你建分支、提交、推过网关，然后挂到这次运行上。`no-mistakes -y` 会把这一切自动做完。
-- **`/no-mistakes`** —— agent skill。用 `/no-mistakes <task>` 让编码 agent 完成一个任务再过网关，或用裸 `/no-mistakes` 为已提交的工作过网关。它跑完流水线、让流水线应用安全的修复，并在任何需要人来拍板的地方停下来问你。
+- `git push no-mistakes` —— 显式的 Git 路径：把已提交的分支推给网关 remote，而不是 `origin`
+- `no-mistakes` —— TUI：改动后运行它（无需先提交），向导会根据需要处理分支和提交，再完成推送并连接到该运行；`no-mistakes -y` 会自动完成这些步骤
+- `/no-mistakes` —— agent skill：用 `/no-mistakes <task>` 让编码 agent 完成一个任务并过网关，或用裸 `/no-mistakes` 为已提交的工作过网关；它让流水线修复安全的 finding，并在任何需要人拍板的地方停下来问你
 
-`no-mistakes init` 会为 Claude Code 及其他 agent 安装 `/no-mistakes` skill。底层上这个 skill 驱动的是 `no-mistakes axi` —— 同一套审批流程的非交互式 TOON 接口。
+`no-mistakes init` 会为 Claude Code 及其他 agent 安装 `/no-mistakes` skill。
+在底层，该技能会驱动 `no-mistakes axi`，后者是同一审批流程的非交互式 TOON 接口。
 
 完整的首次运行走查见[快速上手](https://kunchenguid.github.io/no-mistakes/start-here/quick-start/)。
 
@@ -123,8 +138,8 @@ $ no-mistakes
 ```sh
 make build   # 构建 bin/no-mistakes（带版本信息）
 make test    # 运行 go test -race ./...（不含 e2e 套件）
-make e2e     # 运行打了标签的端到端 agent 旅程套件
-make e2e-record # agent 线格式变化时，重新录制 e2e fixtures
+make e2e     # 运行带标签的端到端智能体旅程测试套件
+make e2e-record # 智能体通信格式变更时，重新录制 e2e 测试夹具
 make lint    # 检查生成的 skill 是否漂移，并跑 go vet ./...
 make skill   # 重新生成已提交的 no-mistakes skill 文件
 make fmt     # 运行 gofmt -w .

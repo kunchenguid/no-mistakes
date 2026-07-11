@@ -1,9 +1,10 @@
 ---
-title: Quick Start
+title: Quick start
 description: Initialize no-mistakes and run your first gated push.
 ---
 
-This walks you through your first gated push. For install options other than the macOS/Linux one-liner, see [Installation](/no-mistakes/start-here/installation/).
+This walks you through your first gated push.
+For install options other than the macOS and Linux one-liner, see [installation](/no-mistakes/start-here/installation/).
 
 ## 1. Install
 
@@ -11,9 +12,11 @@ This walks you through your first gated push. For install options other than the
 curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.sh | sh
 ```
 
-The installer drops the binary in `~/.no-mistakes/bin`, links it into `~/.local/bin` or `/usr/local/bin`, and restarts the background daemon. If the restart fails, the install command fails.
+The installer drops the binary in `~/.no-mistakes/bin`, links it into `~/.local/bin` or `/usr/local/bin`, and restarts the background daemon.
+If the restart fails, the install command fails.
 
-Official release binaries installed this way include the default self-hosted telemetry host and website ID. Disable telemetry with `NO_MISTAKES_TELEMETRY=0`, or override the host and website ID with `NO_MISTAKES_UMAMI_HOST` and `NO_MISTAKES_UMAMI_WEBSITE_ID`.
+Official release binaries installed this way include the default self-hosted telemetry host and website ID.
+Disable telemetry with `NO_MISTAKES_TELEMETRY=0`, or override the host and website ID with `NO_MISTAKES_UMAMI_HOST` and `NO_MISTAKES_UMAMI_WEBSITE_ID`.
 
 ## 2. Check prerequisites
 
@@ -24,14 +27,13 @@ no-mistakes doctor
 You need:
 
 - `git`
-- One supported agent binary (`claude`, `codex`, `acli` for Rovo Dev, `opencode`, `pi`, or `copilot`), or a separately installed `acpx` binary for `agent: acp:<target>`
-- For PRs and CI: `gh` (GitHub), `glab` (GitLab), Bitbucket Cloud credentials, or `az` with the `azure-devops` extension (Azure DevOps)
+- at least one routed runner CLI: `codex` (OpenAI provider) or `claude` (Anthropic provider)
+- for PRs and CI: `gh` (GitHub), `glab` (GitLab), or Bitbucket Cloud credentials
 
-`no-mistakes doctor` reports whether the configured global runner can start a validation gate.
-For `agent: acp:<target>`, it verifies that `acpx` or `acpx_path` resolves, but does not invoke the target or test its credentials.
-Every validation gate requires a runnable pipeline agent and otherwise fails before its first pipeline step.
+Every model call is routed through profiles that pair a Codex candidate with a Claude backup, so one runner is enough and installing both adds provider failover.
+`no-mistakes doctor` validates the routing contract, checks the runner binaries, and fails when a routed profile has no available candidate.
 
-See [Provider Integration](/no-mistakes/guides/provider-integration/) for PR/CI setup.
+See [provider integration](/no-mistakes/guides/provider-integration/) for PR and CI setup.
 
 ## 3. Initialize a repo
 
@@ -90,13 +92,17 @@ The push lands in the local bare repo, the hook notifies the daemon, and the dae
 no-mistakes
 ```
 
-If the current branch has an active run, this attaches directly. If not, the setup wizard can walk you through creating a branch, committing, and pushing through the gate, then attach if the daemon registers the new run. By default that path is interactive in a TTY. With `no-mistakes -y`, the wizard accepts defaults automatically, stays visible and auto-advances in a TTY, and falls back to the headless path without a TTY.
+If the current branch has an active run, this attaches directly.
+If not, the setup wizard can walk you through creating a branch, committing, and pushing through the gate, then attach if the daemon registers the new run.
+By default that path is interactive in a TTY.
+With `no-mistakes -y`, the wizard accepts defaults automatically, stays visible and auto-advances in a TTY, and falls back to the headless path without a TTY.
 
-The TUI shows each step's progress, streams agent output, and pauses for your approval when findings need attention. See [Using the TUI](/no-mistakes/guides/tui/) for keybindings and layout.
+The TUI shows each step's progress, streams agent output, and pauses for your approval when findings need attention.
+See [using the TUI](/no-mistakes/guides/tui/) for keybindings and layout.
 
 ## Or let your agent run the gate
 
-If you are already working inside a coding agent like Claude Code, you don't have to switch to the terminal at all.
+If you are already working inside a coding agent like Claude Code, you do not have to switch to the terminal at all.
 `no-mistakes init` installed the `/no-mistakes` skill at user level, available in every repo, so you can ask the agent to do a task and gate it:
 
 ```
@@ -111,23 +117,26 @@ Or, if the work is already committed on a feature branch, use bare `/no-mistakes
 
 In task-first mode, the agent inspects scope, preserves unrelated work, commits only the task changes on a feature branch, and passes your task text as `--intent`.
 In validate-only mode, it validates the existing committed work.
-Either way, it applies low-risk fixes itself and stops to relay any finding that needs your judgment.
+Either way, it lets the pipeline repair low-risk findings and stops to relay any finding that needs your judgment.
 It drives the same gate as the TUI through `no-mistakes axi`, a non-interactive command surface that uses flags only, prints TOON on stdout, and exposes the same approval gates through `no-mistakes axi respond`.
 
-See [Driving no-mistakes as an agent](/no-mistakes/guides/agents/#driving-no-mistakes-as-an-agent) for the full agent workflow.
+See [driving no-mistakes as an agent](/no-mistakes/guides/agents/#driving-no-mistakes-as-an-agent) for the full agent workflow.
 
 ## What happens next
 
-The pipeline runs these steps in order:
+The pipeline runs these ten steps in order:
 
-1. **Intent** - use agent-supplied intent when present, otherwise infer author intent from recent local agent transcripts
-2. **Rebase** - onto the latest upstream and pushed-branch target
-3. **Review** - AI code review of your diff
-4. **Test** - baseline tests plus evidence checks when intent is known
-5. **Document** - updates docs and reports unresolved gaps
-6. **Lint** - your linters (configured command or agent-detected)
-7. **Push** - to the configured push target
-8. **PR** - create or update the pull request
-9. **CI** - poll CI, watch PR mergeability, auto-fix failures
+1. Intent - use agent-supplied intent when present, otherwise infer author intent from recent local agent transcripts.
+2. Rebase - onto the latest upstream and pushed-branch target.
+3. Review - AI code review of your diff; blocking findings enter the routed repair cascade.
+4. Test - baseline tests plus evidence checks when intent is known.
+5. Document - updates docs and reports unresolved gaps.
+6. Lint - your linters, from the configured command or routed lint inspection.
+7. Verify - a fresh, independent verification of the sealed candidate whenever anything changed after the strong review.
+8. Push - transports the exact verified commit to the configured push target.
+9. PR - create or update the pull request.
+10. CI - poll CI, watch PR mergeability, and fix failures.
 
-Steps that find issues pause for your approval. See the [Pipeline concept page](/no-mistakes/concepts/pipeline/) for the overview and [Pipeline Steps](/no-mistakes/reference/pipeline-steps/) for each step's exact behavior.
+Steps that find issues pause for your approval.
+Model selection for every step follows the [routing contract](/no-mistakes/reference/routing/).
+See the [pipeline concept page](/no-mistakes/concepts/pipeline/) for the overview and [pipeline steps](/no-mistakes/reference/pipeline-steps/) for each step's exact behavior.

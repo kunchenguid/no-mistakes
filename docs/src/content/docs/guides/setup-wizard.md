@@ -1,5 +1,5 @@
 ---
-title: Setup Wizard
+title: Setup wizard
 description: What bare `no-mistakes` does when there's no active run on the current branch.
 ---
 
@@ -21,7 +21,9 @@ The wizard kicks in when:
 
 In non-interactive contexts, bare `no-mistakes` without `-y` falls back to listing the last 5 runs instead.
 
-With `-y` / `--yes`, the wizard takes the default automated path for each step: use agent suggestions for branch and commit when needed, then push to the gate. In a TTY, that path stays visible and auto-advances through the wizard. Without a TTY, it falls back to the headless path.
+With `-y` / `--yes`, the wizard takes the default automated path for each step: use routed suggestions for branch and commit when needed, then push to the gate.
+In a TTY, that path stays visible and auto-advances through the wizard.
+Without a TTY, it falls back to the headless path.
 
 Pass `--skip` to skip comma-separated pipeline steps for the new run created by the wizard, for example `no-mistakes --skip test,lint`.
 It only applies when the wizard starts a new pipeline run; if bare `no-mistakes` attaches to an active run or lists recent runs, `--skip` exits with an error.
@@ -55,7 +57,7 @@ While the wizard is running, it also updates your terminal window title with the
 Shown when you're on the default branch or a detached `HEAD`. Prompts for a branch name.
 
 - Type a name to create a new branch.
-- Leave blank and press enter to ask the configured agent for a branch name suggestion based on your local changes.
+- Leave blank and press enter to request a routed branch name suggestion based on your local changes.
 - Press `q` to quit.
 
 ### 2. Commit
@@ -63,7 +65,7 @@ Shown when you're on the default branch or a detached `HEAD`. Prompts for a bran
 Shown when you have uncommitted changes. Prompts for a commit message.
 
 - Type a message to commit all changes.
-- Leave blank and press enter to ask the configured agent for a commit subject suggestion based on the diff.
+- Leave blank and press enter to request a routed commit subject suggestion based on the diff.
 
 ### 3. Push
 
@@ -79,7 +81,8 @@ not ask for one. If everything is already committed, it skips straight to push.
 
 ## Retry on failure
 
-If any step fails (git error, agent error, network error), the interactive wizard shows the error and lets you press `r` to retry the step without restarting the whole flow.
+If a git action fails (creating the branch, committing, or pushing), the interactive wizard shows the error and lets you press `r` to retry the step without restarting the whole flow.
+A failed agent suggestion does not enter that failed state: the wizard returns you to the text input with an `agent unavailable: …` placeholder so you can enter the value yourself.
 
 With `-y` / `--yes`, the wizard exits on the first error instead of prompting to retry, whether it is auto-advancing in a TTY or running headlessly.
 
@@ -92,14 +95,24 @@ If the wizard has already created a branch or commit on your behalf, quitting re
 That double-confirm is intentional. The wizard is allowed to make real Git side
 effects, so exiting should not be too easy once those side effects exist.
 
-## Agent suggestions
+## Routed suggestions
 
-When you leave branch name or commit subject blank, the wizard invokes the configured agent (global or per-repo `agent` setting, including fallback lists) to produce a suggestion. The agent sees the local diff and returns:
+When you leave the branch name or commit subject blank, the wizard requests a suggestion through the `branch_commit_suggestion` purpose of the global routing contract.
+That purpose routes to the `prose_fast` profile by default; see the [default profile and route tables](/no-mistakes/reference/routing/#default-routes).
+The wizard is a standalone utility caller, not a fabricated pipeline run.
+It records a durable `wizard` utility scope, gets a fresh provider-circuit set for its own session, and journals every routed suggestion attempt.
+Inspect that history with `no-mistakes axi wizard`.
 
-- A kebab-case branch name prefixed with a type (`feat/`, `fix/`, `chore/`, etc.)
-- A conventional-commit subject line, using `feat` or `fix` for user-facing product impact so release automation can pick it up
+The routing contract the wizard uses is trusted: the global configuration plus any `routes` overrides read from the pinned default-branch copy of `.no-mistakes.yaml`.
+Routes on the checked-out feature branch never influence wizard model selection.
+If routing is unavailable or invalid, the wizard fails closed with an error instead of guessing a model.
 
-The managed agent server (Rovo Dev or OpenCode) writes its output to `~/.no-mistakes/logs/wizard-agent.log` during these runs.
+The routed invocation sees the local diff and returns:
+
+- a branch name: the prompt asks for kebab-case with a conventional type prefix (`feat/`, `fix/`, `chore/`, and so on), and the wizard sanitizes the reply into a valid lowercase git ref
+- a commit subject: the prompt asks for conventional-commit format, using `feat` or `fix` for user-facing product impact so release automation can pick it up, and the wizard trims the reply to one line but keeps whatever valid type the model chose
+
+Any managed agent-server output during the wizard is captured in `~/.no-mistakes/logs/wizard-agent.log`.
 
 ## Environment sanity
 
@@ -107,10 +120,10 @@ The wizard requires:
 
 - The gate to be initialized (`no-mistakes init` has run).
 - A clean enough state to commit and push.
-- A configured native agent binary available on `PATH` (or via `agent_path_override`), or `acpx` available on `PATH` (or via `acpx_path`) for `agent: acp:<target>`, only when the wizard needs to suggest a branch name or commit subject. For an ordered fallback list, at least one configured entry must be available.
-  If you already have a branch and clean working tree, or you enter those values yourself in the interactive flow, the wizard can continue without agent suggestions.
+- A valid routing contract.
+  Every wizard session loads and validates routing before the interface starts, even when you type every value yourself, so an invalid contract blocks the wizard.
+- A runner executable on `PATH` (`codex` or `claude` with the built-in defaults), only when you leave a value blank and a routed suggestion launches.
+  If you enter the branch name and commit subject yourself, the wizard never launches a runner.
 
 If any of those are missing, the wizard reports the problem and exits.
-`no-mistakes doctor` is the fastest way to check whether the configured global runner can start a validation gate.
-For ACP targets, it verifies that `acpx_path` resolves but does not invoke the target or test its credentials.
-The wizard can proceed without an agent when it does not need a suggestion, but the pushed validation gate still fails before its first step unless the effective pipeline-agent configuration resolves to a runnable runner.
+`no-mistakes doctor` is the fastest way to check the routing contract and runner availability.

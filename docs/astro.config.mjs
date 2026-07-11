@@ -17,29 +17,30 @@ export default defineConfig({
       },
       sidebar: [
         {
-          label: "Start Here",
+          label: "Start here",
           items: [
             { label: "Introduction", slug: "start-here/introduction" },
-            { label: "Quick Start", slug: "start-here/quick-start" },
+            { label: "Quick start", slug: "start-here/quick-start" },
             { label: "Installation", slug: "start-here/installation" },
           ],
         },
         {
           label: "Concepts",
           items: [
-            { label: "The Gate Model", slug: "concepts/gate-model" },
+            { label: "The gate model", slug: "concepts/gate-model" },
             { label: "Pipeline", slug: "concepts/pipeline" },
-            { label: "Auto-Fix Loop", slug: "concepts/auto-fix" },
-            { label: "Daemon & Worktrees", slug: "concepts/daemon" },
+            { label: "Automatic repair", slug: "concepts/auto-fix" },
+            { label: "Daemon and worktrees", slug: "concepts/daemon" },
           ],
         },
         {
           label: "Guides",
           items: [
             { label: "Configuration", slug: "guides/configuration" },
-            { label: "Choosing an Agent", slug: "guides/agents" },
-            { label: "Provider Integration", slug: "guides/provider-integration" },
-            { label: "Setup Wizard", slug: "guides/setup-wizard" },
+            { label: "Routing and agents", slug: "guides/agents" },
+            { label: "Migrating to routing", slug: "guides/migrating-to-routing" },
+            { label: "Provider integration", slug: "guides/provider-integration" },
+            { label: "Setup wizard", slug: "guides/setup-wizard" },
             { label: "Using the TUI", slug: "guides/tui" },
             { label: "Troubleshooting", slug: "guides/troubleshooting" },
           ],
@@ -47,11 +48,12 @@ export default defineConfig({
         {
           label: "Reference",
           items: [
-            { label: "CLI Commands", slug: "reference/cli" },
-            { label: "Pipeline Steps", slug: "reference/pipeline-steps" },
-            { label: "Global Config", slug: "reference/global-config" },
-            { label: "Repo Config", slug: "reference/repo-config" },
-            { label: "Environment Variables", slug: "reference/environment" },
+            { label: "CLI commands", slug: "reference/cli" },
+            { label: "Pipeline steps", slug: "reference/pipeline-steps" },
+            { label: "Global config", slug: "reference/global-config" },
+            { label: "Repo config", slug: "reference/repo-config" },
+            { label: "Routing", slug: "reference/routing" },
+            { label: "Environment variables", slug: "reference/environment" },
           ],
         },
       ],

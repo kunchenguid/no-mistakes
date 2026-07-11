@@ -1,5 +1,5 @@
 ---
-title: CLI Commands
+title: CLI commands
 description: Complete reference for all no-mistakes commands and flags.
 ---
 
@@ -12,14 +12,14 @@ no-mistakes
 no-mistakes --skip test,lint
 ```
 
-| Flag          | Type     | Default | Description                                          |
-| ------------- | -------- | ------- | ---------------------------------------------------- |
-| `-y`, `--yes` | `bool`   | `false` | Run setup wizard and accept defaults automatically   |
-| `--skip`      | `string` | (none)  | Comma-separated pipeline steps to skip for a new run |
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `-y`, `--yes` | `bool` | `false` | Run setup wizard and accept defaults automatically |
+| `--skip` | `string` | (none) | Comma-separated pipeline steps to skip for a new run |
 
 Unlike `no-mistakes attach`, bare `no-mistakes` only auto-attaches to an active run on the current branch.
 `--skip` only applies when bare `no-mistakes` starts a new pipeline run through the wizard; it does not skip a step on an already-active run.
-Valid step names are `intent`, `rebase`, `review`, `test`, `document`, `lint`, `push`, `pr`, and `ci`.
+Valid step names are `intent`, `rebase`, `review`, `test`, `document`, `lint`, `verify`, `push`, `pr`, and `ci`.
 
 ## no-mistakes init
 
@@ -30,18 +30,18 @@ no-mistakes init
 no-mistakes init --fork-url git@github.com:you/my-repo.git
 ```
 
-| Flag         | Type     | Default | Description                                                                   |
-| ------------ | -------- | ------- | ----------------------------------------------------------------------------- |
-| `--fork-url` | `string` | (none)  | GitHub fork remote URL to push branches to while opening PRs against `origin` |
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `--fork-url` | `string` | (none) | GitHub fork remote URL to push branches to while opening PRs against `origin` |
 
 Creates or refreshes a local bare repo, installs the post-receive hook, best-effort isolates the gate repo's hook path from shared git config changes when Git supports `config --worktree`, adds or repairs the `no-mistakes` git remote, detects the default branch, records or updates the repo in SQLite, installs the `/no-mistakes` agent skill at user level into `~/.claude/skills/no-mistakes/SKILL.md` and `~/.agents/skills/no-mistakes/SKILL.md`, and ensures the daemon is running, installing the managed service when available and falling back to a detached daemon otherwise.
-`init` writes no skill files into the repo; the user-level copies cover every supported agent (`~/.claude/skills` for Claude Code, `~/.agents/skills` for Codex, OpenCode, Rovo Dev, and Pi) across all repos.
+`init` writes no skill files into the repo; the user-level copies cover Claude Code (`~/.claude/skills`) and other skill-aware tools (`~/.agents/skills`) across all repos.
 If the home `.claude` links to `.agents`, `.claude/skills` links to `.agents/skills`, or the reverse, `init` follows that layout and still makes the skill readable from both logical paths.
 If the repo still contains a vendored skill copy written by an older no-mistakes version, `init` leaves it untouched and prints a notice that it is no longer needed and can be removed.
 The gate advertises Git push-option support, so you can skip steps for one push with `git push -o no-mistakes.skip=test,lint no-mistakes <branch>`.
 
 For GitHub fork contributions, keep `origin` pointed at the parent repository and pass `--fork-url` with your fork remote URL.
-The push, rebase branch-sync, and CI auto-fix pushes use the fork, while GitHub PR and CI commands stay scoped to the parent repository and create PRs with `--head <fork-owner>:<branch>`.
+The push, rebase branch-sync, and routed CI repair pushes use the fork, while GitHub PR and CI commands stay scoped to the parent repository and create PRs with `--head <fork-owner>:<branch>`.
 Fork routing currently requires both `origin` and `--fork-url` to be GitHub remotes with owner/repo paths.
 
 Re-running `init` on an already-initialized repo succeeds and reports `Gate already initialized (refreshed)`.
@@ -58,7 +58,6 @@ Skill installation is best-effort: if the skill write fails, init reports it and
 Agent eXperience Interface for non-interactive agents.
 Most agent workflows use the installed `/no-mistakes` skill, which drives this command surface underneath.
 It prints TOON to stdout, prints progress to stderr, and uses structured stdout errors with exit code `1` for operational failures and `2` for bad usage.
-The calling agent drives AXI approval gates but does not replace the configured pipeline agent that performs validation.
 
 ```sh
 no-mistakes axi
@@ -68,11 +67,7 @@ With no subcommand, shows the executable path, description, repo, current branch
 When the current branch has an active run, that run appears as `active_run` with any approval gate and help for `axi respond` when it is parked or `axi status` when it is still running.
 If an active run object is parked at a decision gate, it includes `awaiting_agent: parked <duration>` immediately after `status`.
 That field is observability only; the `gate:` object still tells the agent which response to send.
-If a step is actively `running` or `fixing`, the run object can also include an `active_steps` table with `active_for`, `last_activity`, native `agent_pid` when one is currently running, and the current execution or fix round.
 When only another branch has an active run, that run appears as `other_branch_active_run`; the help tells agents to leave it alone and start validation for the current branch.
-AXI help and outputs also repeat the preserve-prior-gate-progress contract: after a gate round has already produced fix commits, additional fixes belong on the same branch followed by a fresh `no-mistakes axi run --intent "..."` with the original user intent.
-Agents must not abort-and-restart, reset, or create a replacement branch in a way that drops prior gate-fix commits.
-A fresh run re-validates the current branch state, so already-resolved findings do not re-surface.
 
 ## no-mistakes axi run
 
@@ -85,31 +80,26 @@ no-mistakes axi run --intent "the user's goal" --skip test,lint
 no-mistakes axi run --intent "the user's goal" --yes
 ```
 
-| Flag          | Type     | Default | Description                                                      |
-| ------------- | -------- | ------- | ---------------------------------------------------------------- |
-| `--intent`    | `string` | (none)  | What the user set out to accomplish; required to start a new run |
-| `-y`, `--yes` | `bool`   | `false` | Auto-resolve every gate until a decision point or outcome        |
-| `--skip`      | `string` | (none)  | Comma-separated pipeline steps to skip                           |
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `--intent` | `string` | (none) | What the user set out to accomplish; required to start a new run |
+| `-y`, `--yes` | `bool` | `false` | Apply unattended consent at every gate; abort if a blocking repair remains unresolved |
+| `--skip` | `string` | (none) | Comma-separated pipeline steps to skip |
 
 `--intent` is not a description of the diff.
 It is the user's goal or request, and no-mistakes uses it verbatim instead of transcript inference.
 Err on the side of completeness: include the goal, important decisions and tradeoffs, constraints or approaches ruled in or out, and explicit requests that might otherwise look surprising in the diff.
 When starting a new run, `axi run` refuses the default branch and uncommitted working trees with actionable errors instead of auto-branching or auto-committing.
 Reattaching to an in-flight run does not require `--intent`.
-Reattaching to an in-flight run can proceed while the daemon is already running even if the global config file has become invalid, but starting a fresh run still requires valid global config.
-Starting a fresh run also requires a runnable effective pipeline agent.
-If the configured native agent or ACP bridge is unavailable, the run fails before any pipeline step starts instead of reporting command-only validation as a passed gate.
 With `--yes`, `axi run` treats both `action: auto-fix` and `action: ask-user` findings as standing consent for the pipeline to fix them by selecting every finding, then accepts the resulting fix review.
 Gates with no findings or only `action: no-op` findings are approved as-is, and each step is fixed at most once so unresolved findings do not loop forever.
+Unattended consent fails closed: before resolving each gate, `--yes` checks the run's blocking repair lineages, and if one ended its routed repair cascade unresolved or inconclusive, it aborts the run and returns an error instead of approving or retrying.
 Without `--yes`, an agent driving `axi run` should stop when a gate contains `action: ask-user` findings and relay each finding's ID, file, and full description to the user before responding.
-Review gates include a `note` field reminding agents that `auto_fix.review` defaults to `0`, so blocking and ask-user review findings park for a decision unless configuration explicitly opts back into review auto-fix.
+Review gates include a `note` field reminding agents that review findings are parked for explicit consent: `ask-user` requires the user's decision unless `--yes` supplies standing consent, and `--yes` aborts rather than accepts an unresolved blocking repair.
 Long-running `axi run` calls are working, not stalled; if one returns a `gate:`, read that output and answer it with `axi respond`.
 Backgrounding a call is fine for an agent harness, but the run never advances past a gate on its own.
 When the CI step is still monitoring an open PR and checks are green, `axi run` exits successfully with `outcome: checks-passed` instead of waiting for a human merge.
 Treat that as the agent stopping point: ask the user to review and merge the PR from the `help` line.
-If that PR later falls behind the default branch or hits a merge conflict, do not run `axi run`, `rerun`, or a manual rebase while the CI monitor is still running.
-The monitor auto-rebases onto the base, resolves actual conflicts, and re-pushes the branch; a PR that is merely behind but clean needs no command.
-Use `no-mistakes rerun` only after that monitor is no longer running, such as a closed PR, aborted or superseded run, idle timeout, or exhausted CI auto-fix attempts.
 Successful outcomes (`checks-passed` and `passed`) also carry `help` instructions telling the agent to summarize the run.
 When the pipeline applied fixes, they include a `fixes` table and a `help` instruction to acknowledge the misses and list those fixes for the user's review.
 
@@ -124,19 +114,19 @@ no-mistakes axi respond --action fix --add-finding '{"description":"...","action
 no-mistakes axi respond --action skip
 ```
 
-| Flag             | Type     | Default       | Description                                                          |
-| ---------------- | -------- | ------------- | -------------------------------------------------------------------- |
-| `--action`       | `string` | (none)        | `approve`, `fix`, or `skip`; required                                |
-| `--step`         | `string` | awaiting step | Step to respond to                                                   |
-| `--findings`     | `string` | (none)        | Comma-separated finding IDs for `--action fix`                       |
-| `--instructions` | `string` | (none)        | Guidance applied to selected findings                                |
-| `--add-finding`  | `string` | (none)        | JSON finding object to add and fix                                   |
-| `-y`, `--yes`    | `bool`   | `false`       | Auto-resolve every subsequent gate until a decision point or outcome |
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `--action` | `string` | (none) | `approve`, `fix`, or `skip`; required |
+| `--step` | `string` | awaiting step | Step to respond to |
+| `--findings` | `string` | (none) | Comma-separated finding IDs for `--action fix` |
+| `--instructions` | `string` | (none) | Guidance applied to selected findings |
+| `--add-finding` | `string` | (none) | JSON finding object to add and fix |
+| `-y`, `--yes` | `bool` | `false` | Apply unattended consent at subsequent gates; abort if a blocking repair remains unresolved |
 
 After the explicit response, `--yes` uses the same auto-resolution behavior as `axi run --yes`: have the pipeline fix `auto-fix` and `ask-user` findings once, approve the fix review, approve gates that only contain non-actionable `no-op` findings, and stop at `outcome: checks-passed` when CI is green but the PR still needs a human merge.
+It fails closed the same way: a blocking finding lineage that ended its repair cascade unresolved or inconclusive makes unattended driving abort the run instead of approving it.
 Each `axi respond` blocks until the next gate, CI-ready decision point, or final outcome.
 If it returns another `gate:`, answer that gate; do not idle-wait for the run to move forward by itself.
-When the daemon is already running, `axi respond` can continue an active run even if the global config file has become invalid, because it is not starting a fresh run.
 The same successful-output reporting instructions apply to `axi respond` results.
 
 ## no-mistakes axi status
@@ -148,16 +138,20 @@ no-mistakes axi status
 no-mistakes axi status --run <id>
 ```
 
-| Flag    | Type     | Default      | Description               |
-| ------- | -------- | ------------ | ------------------------- |
+| Flag | Type | Default | Description |
+|---|---|---|---|
 | `--run` | `string` | resolved run | Inspect a specific run ID |
 
 When the resolved run is parked at an `awaiting_approval` or `fix_review` gate, its top-level `run:` object includes `awaiting_agent: parked <duration>` immediately after `status`.
 The field disappears after `axi respond`, on cancel, and on terminal outcomes; use it to distinguish a run waiting for the driving agent from one actively running, fixing, or watching CI.
-When the resolved run has a `running` or `fixing` step, the run object includes `active_steps`.
-Each row reports how long the step has been active, the latest meaningful log or native-agent lifecycle activity, the native agent PID if one is currently running, and the current round such as `round 1`, `auto-fix 1/3`, or `fix 2`.
-If no activity arrives for longer than `step_quiet_warning`, `last_activity` is prefixed with `quiet`; this is only a liveness signal and does not cancel the step.
-For older active runs with no recorded activity timestamp, AXI falls back to the step log file modification time.
+
+When the run's review step was routed, the `run:` object includes a `review_routing` object reconstructed from the durable invocation journal.
+It carries `lineage_count`, an `attempts` table with one row per candidate attempt in cascade order (`profile`, `tier`, `candidate_index`, `runner`, `model`, `effort`, `outcome`, `failure_domain`, `duration_ms`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_creation_tokens`), and a `lineages` table (`lineage_id`, `display_id`, `sequence`) when the review produced run-wide finding lineages.
+An attempt still in flight has an empty `outcome`; `failure_domain` is present only when an operational failure was classified.
+A candidate that was never launched because its provider circuit was already open appears with `outcome: skipped` and its failure domain.
+Because the projection is rebuilt from SQLite, escalation, provider failover, and circuit skips stay fully visible after a detach, reconnect, or daemon restart.
+Legacy, unrouted runs have no `review_routing` object.
+See the [default profile and route tables](/no-mistakes/reference/routing/#default-profiles) for what the profiles and routes mean.
 
 ## no-mistakes axi logs
 
@@ -169,15 +163,13 @@ no-mistakes axi logs --step review --full
 no-mistakes axi logs --step review --run <id>
 ```
 
-| Flag     | Type     | Default      | Description                             |
-| -------- | -------- | ------------ | --------------------------------------- |
-| `--step` | `string` | (none)       | Step name; required                     |
-| `--run`  | `string` | resolved run | Run ID to inspect                       |
-| `--full` | `bool`   | `false`      | Show the entire log instead of the tail |
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `--step` | `string` | (none) | Step name; required |
+| `--run` | `string` | resolved run | Run ID to inspect |
+| `--full` | `bool` | `false` | Show the entire log instead of the tail |
 
 Without `--full`, long logs show the last 40 lines and a help hint for the full log.
-Step logs include native subprocess agent lifecycle lines such as `codex started pid=4242`, `codex exited pid=4242 status=success`, and transient retry messages when the selected agent supports lifecycle events.
-They also include fix-loop markers such as `auto-fix round 1/3 starting after round 1` and `user-fix round starting after round 2`.
 
 ## no-mistakes axi abort
 
@@ -199,9 +191,41 @@ no-mistakes axi abort --run <id>
 `--run` does not need a repo, branch, or worktree, so it works from anywhere.
 Use it to reap an orphaned CI monitor whose worktree was torn down before the PR merged - the run id is shown in `axi run` output and in the `axi` home view.
 Aborting an id that is not an active run is a successful no-op.
-When the daemon is already running, `axi abort` can cancel an active run even if the global config file has become invalid, because it is not starting a fresh run.
 While a run is active, do not use `axi abort` or `no-mistakes rerun` to go fix a finding yourself.
 That cancels the pipeline's in-flight work and forces a full re-validation; use `axi respond --action fix` at the gate so the pipeline applies and re-checks the fix.
+
+## no-mistakes axi wizard
+
+Show the standalone setup wizard's branch and commit suggestion history.
+
+```sh
+no-mistakes axi wizard
+no-mistakes axi wizard --limit 20
+```
+
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `--limit` | `int` | `10` | Maximum wizard sessions to show |
+
+Lists the routed `branch_commit_suggestion` attempts the wizard recorded under its standalone utility scopes.
+The output carries `surface: wizard-suggestion-history`, a `sessions` count, an `active_attempts` count, and an `attempts` table with one row per attempt (`session`, `purpose`, `profile`, `runner`, `model`, `effort`, `outcome`, `duration_ms`).
+An attempt still in flight reports `outcome: active`.
+Wizard suggestions are standalone utility invocations; this history never fabricates pipeline run, step, or gate rows.
+
+## no-mistakes axi canary
+
+Show the required routing canary report.
+
+```sh
+no-mistakes axi canary
+```
+
+The canary compares a frozen baseline cohort (the ten completed runs before routing activation) against the routed cohort (the first ten successful runs after activation) on the execution-only agent-bearing step-round median.
+The output always carries `surface: routing-canary`, `report_required: true`, `activated`, `target_reduction`, `target_advisory: true`, `comparison_complete`, `result_state`, the per-cohort fields (`baseline_runs`, `baseline_complete`, `baseline_median_exec_ms`, `baseline_escalations`, `baseline_failovers`, and the same `routed_*` fields), and `target_met`.
+Before activation, `result_state` is `dormant` and a `state` field explains that the routing cutover has not activated the canary yet.
+Until both cohorts are complete, `result_state` is `preliminary` and `target_met` stays `pending`; preliminary samples must not be treated as live results.
+`target_met` becomes `true` or `false` only once both cohorts are complete.
+The 30% median execution-time reduction target is advisory only: it never changes profiles, routes, circuits, or gate outcomes.
 
 ## no-mistakes eject
 
@@ -222,9 +246,9 @@ Attach to the active pipeline run.
 no-mistakes attach [--run <id>]
 ```
 
-| Flag    | Type     | Default | Description                                           |
-| ------- | -------- | ------- | ----------------------------------------------------- |
-| `--run` | `string` | (none)  | Attach to a specific run ID instead of the active run |
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `--run` | `string` | (none) | Attach to a specific run ID instead of the active run |
 
 Opens the TUI for the active run anywhere in the current repo. If `--run` is specified, attaches to that specific run regardless of branch. Unlike bare `no-mistakes`, this does not stay branch-scoped before falling back.
 
@@ -249,10 +273,9 @@ no-mistakes status
 ```
 
 Displays:
-
 - Repo path, upstream URL, and fork URL when configured
 - Gate path
-- Daemon status (running/stopped, PID)
+- Daemon status (running or stopped)
 - Active run details: ID, branch, status, head SHA, start time
 
 ## no-mistakes runs
@@ -263,9 +286,9 @@ List recorded pipeline runs for the current repo.
 no-mistakes runs [--limit <n>]
 ```
 
-| Flag      | Type  | Default | Description                       |
-| --------- | ----- | ------- | --------------------------------- |
-| `--limit` | `int` | `10`    | Maximum number of runs to display |
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `--limit` | `int` | `10` | Maximum number of runs to display |
 
 Shows runs newest-first with branch, status (styled), short SHA, timestamp, and PR URL if set.
 
@@ -279,16 +302,6 @@ no-mistakes stats
 
 Displays total changes, rescued changes, rescue rate, reported and fixed mistakes, fixes by pipeline step, and the top repos by rescue activity.
 
-Use `--agents` for local, per-purpose agent performance aggregates, including duration, session mode, errors, and input, output, cache-read, and cache-creation tokens.
-Use `--run <id>` to inspect the individual agent invocations and total time parked at approval gates for one run; it implies `--agents`.
-
-```sh
-no-mistakes stats --agents
-no-mistakes stats --run <id>
-```
-
-This detailed performance evidence stays local in `state.sqlite`; it is not sent to telemetry.
-
 ## no-mistakes doctor
 
 Check system health and dependencies.
@@ -297,23 +310,28 @@ Check system health and dependencies.
 no-mistakes doctor
 ```
 
-Checks:
+Checks, in two sections:
 
+System:
 - `git` binary
 - `gh` CLI (optional, needed for GitHub PR and CI steps)
-- `az` CLI (optional, needed for Azure DevOps PR and CI steps)
 - Data directory (`~/.no-mistakes/`)
 - SQLite database
 - Daemon status
-- Agent runners: native binaries `claude`, `codex`, `acli`, `opencode`, `pi`, and `copilot`, plus the optional ACP bridge `acpx`
-- Effective global agent configuration, reported as `gate validation`; an unavailable configured runner is a failed check because the gate cannot validate without it
+
+Routing:
+- `config` - the global config loads, with removed legacy keys (such as `agent`, `fallback_agents`, `acpx_path`, `agent_path_override`, `agent_args_override`, and `auto_fix`) rejected with actionable guidance
+- `repo config` - the trusted default-branch `.no-mistakes.yaml` parses when run inside a repo
+- `contract` - the resolved routing contract validates, reporting profile and routed-purpose counts
+- one line per runner - the executable resolves on `PATH`, reported with its provider failure domain
+- `profile` - fails for any routed profile whose candidates are all unavailable
 
 Uses indicators: `✓` (available), `–` (not found, optional), `✗` (problem detected).
 
-For `agent: acp:<target>`, `doctor` verifies that `acpx` resolves but does not invoke the target or test its credentials.
-Each validation run performs the authoritative agent resolution again after applying any trusted repository-level override.
-
-`doctor` checks `gh` and `az` availability. For GitLab PR and CI steps, install and authenticate `glab`. For Bitbucket Cloud PR and CI steps, set `NO_MISTAKES_BITBUCKET_EMAIL` and `NO_MISTAKES_BITBUCKET_API_TOKEN`. For Azure DevOps PR and CI steps, install the `azure-devops` extension and provide a PAT.
+`doctor` checks `gh` availability only among host CLIs.
+For GitLab PR and CI steps, install and authenticate `glab`.
+For Bitbucket Cloud PR and CI steps, set `NO_MISTAKES_BITBUCKET_EMAIL` and `NO_MISTAKES_BITBUCKET_API_TOKEN`.
+See the [default profile and route tables](/no-mistakes/reference/routing/#default-profiles) for the routing contract doctor validates.
 
 ## no-mistakes update
 
@@ -323,21 +341,21 @@ Update the installed binary and reset the daemon.
 no-mistakes update
 no-mistakes update --beta
 no-mistakes update -y
-no-mistakes update --force
 ```
 
 Downloads the latest release, verifies the SHA-256 checksum, atomically replaces the running binary, and resets the daemon when it is running or stale daemon artifacts exist so the new executable is picked up, preferring the managed service path and falling back to a detached daemon if service startup is unavailable or fails.
 By default this installs the latest stable release.
 Pass `--beta` to include prereleases and install the latest beta when one is newer than the current stable release.
-If pending or running pipeline runs exist, update refuses to restart the daemon by default, prints each active run's ID, status, branch, and short head SHA. Pass `--force` to restart the daemon anyway and accept that those runs may fail; `-y`/`--yes` does **not** bypass this guard.
-If the daemon is running from a different executable path, update still prompts before replacing it; pass `-y`/`--yes` to answer that prompt non-interactively.
+If pending or running pipeline runs exist, update warns that restarting the daemon can cause those runs to fail, prints each active run's ID, status, branch, and short head SHA, and prompts before continuing.
+If the daemon is running from a different executable path, update prompts before replacing it.
+Pass `-y` or `--yes` to continue through update safety prompts while still printing warnings.
 If the daemon executable path cannot be determined, the update aborts before replacement.
 If the daemon does not come back cleanly after a successful replacement, the command reports that failure.
 On macOS, removes the quarantine extended attribute.
 
 Because `update` installs the latest official release binary, the replacement binary includes the default self-hosted telemetry host and website ID. Disable telemetry with `NO_MISTAKES_TELEMETRY=0`, or override the host and website ID with `NO_MISTAKES_UMAMI_HOST` and `NO_MISTAKES_UMAMI_WEBSITE_ID`.
 
-Background update checks run automatically on each CLI invocation (except `update` itself and version queries `--version` / `-v`, which stay side-effect-free). If a newer version is available, a notification is printed to stderr. Suppressed for dev builds or when `NO_MISTAKES_NO_UPDATE_CHECK=1` is set.
+Background update checks run automatically on each CLI invocation (except `update` itself). If a newer version is available, a notification is printed to stderr. Suppressed for dev builds or when `NO_MISTAKES_NO_UPDATE_CHECK=1` is set.
 
 ## no-mistakes daemon start
 
@@ -349,18 +367,13 @@ no-mistakes daemon start
 
 Prefers the managed service path and falls back to a detached daemon if service install or startup is unavailable or fails. If the daemon is already running, the command refreshes a stale macOS `launchd` or Linux `systemd` service definition and restarts through the managed service; if the definition is unchanged, it reports that the daemon is already running.
 
-Only one live daemon can own an `NM_HOME`: at startup the daemon takes an exclusive OS lock on `$NM_HOME/daemon.lock`, so a second daemon started against the same root - however it was launched - fails with "a no-mistakes daemon is already running for this NM_HOME" instead of stealing the running daemon's socket.
-
 ## no-mistakes daemon stop
 
 Stop the running daemon process.
 
 ```sh
 no-mistakes daemon stop
-no-mistakes daemon stop --force
 ```
-
-If pending or running pipeline runs exist, `daemon stop` refuses by default and prints each active run's ID, status, branch, and short head SHA. Pass `--force` to stop the daemon anyway and accept that those runs may fail.
 
 This does not remove the managed service. A later `no-mistakes`, `no-mistakes daemon start`, `init`, `attach`, `rerun`, or `update` can start the daemon again through the same service manager when available, or as a detached daemon otherwise.
 
@@ -370,11 +383,9 @@ Restart the daemon.
 
 ```sh
 no-mistakes daemon restart
-no-mistakes daemon restart --force
 ```
 
 Stops the current daemon and starts it again. This works whether the daemon is currently running or not.
-If pending or running pipeline runs exist, `daemon restart` refuses by default and prints each active run's ID, status, branch, and short head SHA. Pass `--force` to restart the daemon anyway and accept that those runs may fail.
 
 ## no-mistakes daemon status
 

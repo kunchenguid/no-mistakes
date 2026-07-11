@@ -69,6 +69,60 @@ func TestBodyDocumentsAxiGateGuidance(t *testing.T) {
 	}
 }
 
+// TestBodyGateTranscriptShape pins the example gate transcript to the AXI
+// renderer's actual output shape: the findings header carries no `line`
+// column, and the help list is the renderer's five entries (approve, fix,
+// skip, logs, keep-driving). The cross-package guard that diffs the transcript
+// against the live renderer lives in internal/cli's
+// TestSkillGateTranscriptMatchesRenderer.
+func TestBodyGateTranscriptShape(t *testing.T) {
+	md := Markdown()
+	for _, want := range []string{
+		"findings[2]{id,severity,file,action,description}:",
+		"help[5]: Run `no-mistakes axi respond --action approve` to accept this step and continue",
+		"to have the pipeline fix the selected findings (do not edit files yourself)",
+		"Run `no-mistakes axi respond --action skip` to skip this step",
+		"Run `no-mistakes axi logs --step review --full` to read the full step log",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("gate transcript missing %q", want)
+		}
+	}
+	if strings.Contains(md, "{id,severity,file,line,action,description}") {
+		t.Errorf("gate transcript still shows the removed `line` findings column")
+	}
+}
+
+// TestBodyConsentFailClosedWording pins the unattended-consent contract in the
+// skill body to AXI/TUI behavior: --yes is explicit standing consent, it fixes
+// once then approves the fix review, it aborts instead of approving or
+// retrying when a blocking repair lineage ends unresolved or inconclusive, and
+// it stops at checks-passed for the human merge.
+func TestBodyConsentFailClosedWording(t *testing.T) {
+	md := Markdown()
+	for _, want := range []string{
+		"(intent, rebase, review, test, document, lint, verify, push, PR, CI)",
+		"routed repair cascade",
+		"never repaired, even when selected",
+		"A fix applies only to the finding IDs you select",
+		"explicit standing",
+		"approves the resulting fix review rather than starting another",
+		"blocking repair lineages",
+		"unresolved or inconclusive",
+		"it does not approve or retry the gate",
+		"stops at `checks-passed`, because a human must review and merge the PR",
+		"Routing repair records each blocking finding as a lineage",
+		"Review findings are parked for explicit consent",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("body missing consent/fail-closed wording %q", want)
+		}
+	}
+	if strings.Contains(md, "no-mistakes rerun") {
+		t.Errorf("body should not suggest the removed `no-mistakes rerun` command form")
+	}
+}
+
 func TestInstallWritesBothPaths(t *testing.T) {
 	root := t.TempDir()
 	written, err := Install(root)

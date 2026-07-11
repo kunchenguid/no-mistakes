@@ -3,8 +3,8 @@ title: Troubleshooting
 description: Common problems and how to debug them.
 ---
 
-Most problems fall into one of three buckets: daemon not running, agent not
-found, or push not triggering the pipeline. This page walks each one.
+Most problems fall into one of three buckets: daemon not running, routing or a runner unavailable, or push not triggering the pipeline.
+This page walks each one.
 
 First stop for anything: `no-mistakes doctor`.
 
@@ -17,7 +17,7 @@ flowchart TD
   daemon -- "yes" --> daemonpath["Check daemon status and daemon.log"]
   daemon -- "no" --> triggered{"Did the push trigger a run?"}
   triggered -- "no" --> gate["Check remote, hook, and socket"]
-  triggered -- "yes" --> provider["Check agent or provider setup"]
+  triggered -- "yes" --> provider["Check routing or provider setup"]
 ```
 
 That order matches the actual boundaries in the system:
@@ -28,7 +28,7 @@ That order matches the actual boundaries in the system:
 
 ## Daemon won't start
 
-Symptoms: `no-mistakes daemon status` shows stopped, or `no-mistakes` exits with "daemon not running."
+Symptoms: `no-mistakes daemon status` prints `daemon not running`, or bare `no-mistakes` exits with a `start daemon: …` error.
 
 ### Start it manually
 
@@ -46,28 +46,13 @@ tail -f ~/.no-mistakes/logs/daemon.log
 
 ### Check for stale artifacts
 
-A leftover socket from an unclean exit no longer blocks startup: the daemon probes the socket path before binding and removes it only when nothing is listening on it.
-A stale PID file can still confuse status reporting:
+Stale PID files or sockets from a crashed daemon can block startup:
 
 ```sh
 ls -la ~/.no-mistakes/daemon.pid ~/.no-mistakes/socket
 ```
 
-If the PID file points at a process that's no longer running, remove it and run `no-mistakes daemon start` again.
-
-### "a no-mistakes daemon is already running for this NM_HOME"
-
-This error always means a genuinely live daemon: the lock it reports cannot go stale (see [Daemon & Worktrees](/no-mistakes/concepts/daemon/) for the singleton-lock model).
-Manage that daemon with `no-mistakes daemon status` and `no-mistakes daemon stop` instead of deleting the lock file - deleting the file does not release the lock and only weakens the guard.
-
-If the socket exists and the process is running but stuck or unresponsive, `no-mistakes` bounds the connection wait with [`daemon_connect_timeout`](/no-mistakes/reference/global-config/#daemon_connect_timeout) and fails fast with an error naming the socket path instead of silently starting a second daemon. Restart the stuck daemon:
-
-```sh
-no-mistakes daemon stop
-no-mistakes daemon start
-```
-
-If the socket file exists but nothing answers at all (a dead socket left behind by an unclean exit, e.g. a crash or `SIGKILL`), commands that ensure the daemon is running (`no-mistakes`, `init`, `attach`, `rerun`, `axi run`, `axi respond`) now fail fast with a `connect to daemon socket` error instead of silently starting a replacement daemon. The error message itself includes a `(run 'no-mistakes daemon start' to recover)` hint - run `no-mistakes daemon start` directly to recover, since it self-heals past a dead socket and starts a fresh daemon.
+If the PID file points at a process that's no longer running, remove both and run `no-mistakes daemon start` again.
 
 ### Managed service logs
 
@@ -79,60 +64,85 @@ If the socket file exists but nothing answers at all (a dead socket left behind 
 
 If you have multiple installs with different `NM_HOME` roots, each gets its own scoped service name (with a short suffix derived from the path). Make sure you're looking at the right one - `no-mistakes daemon status` reports which.
 
-## `no-mistakes update` refuses or aborts
+## `no-mistakes update` prompts or aborts
 
-Symptom: `update` refuses because active pipeline runs are in progress, prompts because the daemon is running from a different executable path, or aborts because the daemon executable path cannot be determined.
+Symptom: `update` warns about active pipeline runs, says the daemon is running from a different executable path, or aborts because the daemon executable path cannot be determined.
 
-`update`, `daemon stop`, and `daemon restart` all refuse by default while pipeline runs are active and list the affected runs; [Daemon & Worktrees](/no-mistakes/concepts/daemon/#starting-and-stopping) owns the guard's exact rules, including why `-y`/`--yes` does not bypass it.
+When pending or running pipeline runs exist, `update` warns that restarting the daemon can cause those runs to fail and prompts before continuing.
+When the running daemon uses a different binary, `update` prompts before replacing it.
+Pass `no-mistakes update -y` to confirm non-interactively while still printing warnings.
 
-Fix, once you have confirmed it is fine for the listed active runs to fail:
+If the daemon executable path can't be determined at all (stale PID, permissions), the update aborts before replacing anything.
+
+Fix:
 
 ```sh
-no-mistakes daemon stop --force
+no-mistakes daemon stop
 no-mistakes update
 ```
 
-## Agent binary not detected
+## Routing contract or runner unavailable
 
-Symptom: `doctor` reports that gate validation is unavailable, or a run fails before its first pipeline step because no runnable agent was found.
+Symptom: `doctor` reports a routing problem, or a run fails with a routing error such as `profile "fix_fast" exhausted every candidate after operational failures`.
 
-This is a hard failure, not a degraded validation mode.
-`no-mistakes` will not silently skip review, test evidence, documentation, or agent-assisted lint and report the remaining work as a passed gate.
+`no-mistakes doctor` validates the full routing chain:
+
+- `config` fails when `~/.no-mistakes/config.yaml` is invalid, including removed legacy keys such as `agent`, `fallback_agents`, `acpx_path`, `agent_path_override`, `agent_args_override`, and `auto_fix`, each rejected with actionable guidance
+- `repo config` fails when the trusted default-branch `.no-mistakes.yaml` is invalid
+- `contract` confirms the resolved routing contract is valid and reports how many profiles and purposes are routed
+- each runner reports its resolved executable path and provider failure domain, with `–` when the executable is not found
+- `profile` fails when every candidate of a routed profile is unavailable
+
+There is no per-agent path, argument, or ACP override.
+Runner executables are configured with `routing.runners.<name>.executable` in `~/.no-mistakes/config.yaml`.
+A declared `routing` block completely replaces the built-in defaults, so it must route every registered purpose and declare every profile and runner it references.
+See [custom routing](/no-mistakes/reference/routing/#custom-routing) and the [default profile and route tables](/no-mistakes/reference/routing/#default-profiles).
+If your config predates the routing cutover, [migrating to routing](/no-mistakes/guides/migrating-to-routing/) covers every removed key and its replacement.
 
 ### Check PATH
 
-The daemon uses the same binary-discovery order described in [Choosing an Agent](/no-mistakes/guides/agents/). When it's running through a managed service, it reloads `PATH` from your login shell on macOS and Linux and appends common install locations such as `~/.local/bin`, `~/go/bin`, `~/.cargo/bin`, `~/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`, and `/bin`.
+The daemon resolves runner executables (`codex` and `claude` with the built-in defaults) from its own `PATH`.
+When it's running through a managed service, it resolves `PATH` from your login shell at startup on macOS and Linux, caches it for the daemon's lifetime, and appends common install locations such as `~/.local/bin`, `~/go/bin`, `~/.cargo/bin`, `~/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`, and `/bin`.
 
-If a native agent is installed in a version-manager shim directory or another nonstandard location, set an explicit override in `~/.no-mistakes/config.yaml`:
-
-```yaml
-agent_path_override:
-  claude: /Users/you/.local/bin/claude
-```
-
-For `agent: acp:<target>`, set `acpx_path` instead:
+If a runner is installed in a version-manager shim directory or another nonstandard location, declare a full `routing` block in `~/.no-mistakes/config.yaml` and set that runner's `executable` to the absolute path:
 
 ```yaml
-acpx_path: /Users/you/.local/bin/acpx
+routing:
+  runners:
+    claude:
+      executable: /Users/you/.local/bin/claude
+      failure_domain: anthropic
+    # a declared routing block is a complete replacement: route every
+    # purpose and declare every profile and runner you reference
 ```
 
-For Antigravity or Gemini-based driving agents, install a supported native agent CLI separately or configure a working ACP target such as `agent: acp:gemini` with `acpx` installed.
-The calling agent is the AXI driver, not an implicit pipeline-agent backend.
+The daemon logs its effective `PATH` at startup in `~/.no-mistakes/logs/daemon.log` with the message `daemon environment ready`.
+If the log contains `login shell environment resolution failed` or `login shell environment resolution returned no entries`, the daemon used a degraded fallback `PATH` that may omit version-manager directories such as nvm, fnm, or volta, so tools like `pnpm` may be missing.
 
-The daemon logs its effective `PATH` at startup in `~/.no-mistakes/logs/daemon.log` with the message `daemon environment ready`. If the log contains `login shell environment resolution failed` or `login shell environment resolution returned no entries`, the daemon used a degraded fallback `PATH` that may omit version-manager directories such as nvm, fnm, or volta, so tools like `pnpm` may be missing.
-
-### Restart the daemon after installing a new agent
+### Restart the daemon after installing a runner
 
 ```sh
 no-mistakes daemon stop
 no-mistakes daemon start
 ```
 
-## Agents fail with "403 Request not allowed" behind a proxy
+## A provider circuit opened during a run
 
-Symptom: runs fail and the step log shows agents (for example `claude --print`) unable to reach the network, often with `403 Request not allowed`.
+Symptom: `no-mistakes axi status` shows a `review_routing` attempt with a `failure_domain`, or later candidates recorded as skipped.
 
-A managed daemon started by launchd or systemd inherits only a minimal environment, so it does not see the `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` / `ALL_PROXY` variables from your shell. `no-mistakes` bakes any proxy variables that are set when you install or refresh the service into the generated service definition. If you set up the proxy after installing, re-run the installer or `no-mistakes daemon restart` (with the proxy variables exported) so they get baked in, then confirm them in `~/.config/systemd/user/no-mistakes-daemon-*.service` on Linux or `~/Library/LaunchAgents/com.kunchenguid.no-mistakes.daemon.*.plist` on macOS. Once baked in, the values survive later restarts and binary upgrades even from a shell that does not export them, so you only need the variables exported the first time. Windows Task Scheduler inherits your logon environment and needs no forwarding.
+A provider circuit is scoped to one run and opens only on a terminal classified operational failure: quota, outage, overload, auth, or a missing executable.
+The native adapter retries transient errors first, so a single network blip never opens a circuit.
+Once a domain opens, the profile fails over to its backup candidate, and candidates in the open domain are recorded as skipped rather than launched.
+If no candidate remains, the invocation fails closed and the run reports the operational cause.
+Fix the provider problem - quota, auth, or the missing executable - then start a fresh validation.
+
+## Unattended consent aborted the run
+
+Symptom: `no-mistakes axi run --yes` or `axi respond --yes` aborts the run and returns `unattended consent refused <step>: a blocking finding remains unresolved after repair`, or TUI yolo mode aborts the run at a gate.
+
+This is intentional and fails closed.
+A blocking finding lineage ended its routed repair cascade unresolved or inconclusive, so unattended driving refuses to approve or retry the gate.
+Start a fresh validation without `--yes`, inspect the parked gate with `no-mistakes axi status`, and decide each finding explicitly with `no-mistakes axi respond`.
 
 ## macOS App Management prompts during agent runs
 
@@ -194,8 +204,6 @@ ls -la <gate-path>/hooks/post-receive
 
 The hook should be executable. If it's missing or non-executable, `no-mistakes init` will reinstall it for an existing no-mistakes-managed gate.
 For existing gate repos, `no-mistakes daemon restart` also installs missing no-mistakes-managed hooks and refreshes legacy managed hooks without overwriting custom hooks.
-Current managed hooks resolve the gate as an absolute bare-repo path before notifying the daemon, so a shell with a bad `PWD` value cannot accidentally report the gate as `.`.
-If `notify-push.log` mentions `invalid gate path: .`, refresh the managed hook with `no-mistakes init` or `no-mistakes daemon restart`, then push again.
 
 Also check `<gate-path>/notify-push.log`. The hook now appends daemon notification failures there and prints the same error back to the pushing client.
 
@@ -210,50 +218,44 @@ That protects the gate hook if a tool such as Husky wrote `core.hookspath` into 
 
 Symptom: pipeline completes but the PR step shows `skipped`.
 
-Check the [Provider Integration](/no-mistakes/guides/provider-integration/) requirements. Most common causes:
+Check the [provider integration](/no-mistakes/guides/provider-integration/) requirements. Most common causes:
 
 - `gh` or `glab` not installed
 - `gh auth status` shows not authenticated
 - Bitbucket env vars not set in the daemon's environment
-- Upstream is on a host that isn't supported (GitHub, GitLab, `bitbucket.org`, or Azure DevOps)
-- Self-hosted GitHub Enterprise on a hostname that is not `github.com` isn't detected because `gh` isn't configured for the host; run `gh auth login --hostname your-ghe.example.com` so detection finds it. Once detection succeeds, the availability check is host-scoped (`gh auth status --hostname your-ghe.example.com`), so a stale token on `github.com` or any other configured gh host can no longer falsely mark the GHE repo as unauthenticated.
-- Self-hosted GitLab on a hostname with no `gitlab` marker isn't detected because `glab` isn't configured for the host; run `glab auth login --hostname your-gitlab.example.com` so detection finds it. Once detection succeeds, the availability check is host-scoped (`glab auth status --hostname your-gitlab.example.com`), so a stale token on `gitlab.com` or any other configured glab host can no longer falsely mark the self-hosted repo as unauthenticated.
-- A GitLab, Bitbucket, or Azure DevOps repo record has a fork URL set; fork MR/PR routing is currently GitHub-only
+- Upstream is on a host that isn't supported (GitHub, GitLab, or `bitbucket.org`)
+- A GitLab or Bitbucket repo record has a fork URL set; fork MR/PR routing is currently GitHub-only
 - You pushed the default branch (PR step always skips on the default branch)
 
 ## CI step stuck or timed out
 
 Symptom: CI step keeps monitoring an open PR longer than expected, or pauses after the idle timeout.
 
-Monitoring while the PR remains open - even after checks are currently healthy - is intended behavior, because a later default-branch update can make the PR conflict or rerun CI.
-Once checks are green and the PR is mergeable, the CI panel shows `✓ Checks passed` and the terminal title switches to `Checks passed`, so you can tell when to go merge the PR; the signal clears automatically if checks start re-running or a new failure appears.
+`ci_timeout` defaults to `168h` (7 days) and is an idle timeout.
+It re-arms whenever the upstream default branch advances, so an active long-lived PR keeps being watched and rebased.
+Set it in `~/.no-mistakes/config.yaml` to choose a different idle window:
 
-How long the monitor runs is controlled by `ci_timeout` in `~/.no-mistakes/config.yaml`, an idle timeout that re-arms whenever the upstream default branch advances; the [`ci_timeout` field reference](/no-mistakes/reference/global-config/#ci_timeout) owns the default, the `unlimited` keyword and its aliases, and the exact re-arm semantics.
-Older config files may still contain an explicit `ci_timeout: "4h"` value; update it if you want the newer default behavior.
+```yaml
+ci_timeout: "24h"
+```
 
+Set it to `unlimited` to monitor until the PR is merged, closed, or aborted:
+
+```yaml
+ci_timeout: "unlimited"
+```
+
+`none`, `off`, `never`, `0`, and other non-positive durations are accepted too.
+
+Older config files may still contain an explicit `ci_timeout: "4h"` value.
+Update that value if you want the newer default behavior.
+
+The CI step keeps monitoring while the PR remains open, even after checks are currently healthy, because a later default-branch update can make the PR conflict or rerun CI.
+Once checks are green and the PR is mergeable, the CI panel shows `✓ Checks passed` and the terminal title switches to `Checks passed`, so you can tell when to go merge the PR.
+The signal clears automatically if checks start re-running or a new failure appears.
 If the PR is still open at the timeout, the step pauses for approval with findings for the open monitoring state or any known unresolved failures.
 You can approve, fix, or skip from the TUI or `no-mistakes axi respond`.
 Use `no-mistakes axi abort` only when you mean to cancel the whole active run.
-
-## Step looks quiet or wedged
-
-Symptom: `no-mistakes axi status` shows an active step with `last_activity` prefixed by `quiet`, or a review/test/lint step appears to run for longer than expected.
-
-`quiet` means the step has not recorded a step-log line or native-agent lifecycle event for longer than [`step_quiet_warning`](/no-mistakes/reference/global-config/#step_quiet_warning).
-It is only a liveness signal.
-It does not cancel the step, fail the run, or mean the pipeline is safe to bypass.
-
-Start by reading the active run and the step log:
-
-```sh
-no-mistakes axi status
-no-mistakes axi logs --step <step> --full
-```
-
-The `active_steps` table shows how long the step has been active, the latest activity, the native subprocess PID when one is running, and the current round such as `round 1`, `auto-fix 1/3`, or `fix 2`.
-The step log records native subprocess start, exit, and retry lines plus markers for automatic and user-triggered fix rounds.
-If the step is parked at a gate, use `no-mistakes axi respond` instead of waiting.
-If the run is genuinely stuck and you want to discard it, use `no-mistakes axi abort` and then start a new run.
 
 ## Worktree won't clean up
 
@@ -279,13 +281,12 @@ no-mistakes daemon start
 When state is genuinely wedged:
 
 ```sh
-no-mistakes daemon stop --force
-rm -rf ~/.no-mistakes/worktrees ~/.no-mistakes/servers ~/.no-mistakes/socket ~/.no-mistakes/daemon.pid ~/.no-mistakes/daemon.lock
+no-mistakes daemon stop
+rm -rf ~/.no-mistakes/worktrees ~/.no-mistakes/servers ~/.no-mistakes/socket ~/.no-mistakes/daemon.pid
 no-mistakes daemon start
 ```
 
-This keeps your gate repos, database, and config but clears transient state. For a full wipe, see the [Uninstall section](/no-mistakes/start-here/installation/#uninstall).
-Wedged state often means a run is stuck `pending` or `running`, so `daemon stop` refuses without `--force`; only force through once you've confirmed it's fine for the listed runs to fail.
+This keeps your gate repos, database, and config but clears transient state. For a full wipe, see the [uninstall section](/no-mistakes/start-here/installation/#uninstall).
 
 ## Still stuck
 

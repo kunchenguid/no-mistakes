@@ -252,7 +252,7 @@ Generate the installed skill through its supported source-first workflow.
 
 **Blocked by:** Contract to routing-only configuration.
 
-- [ ] Configuration, provider, pipeline, repair, daemon, AXI, Wizard, troubleshooting, and migration guidance contains the exact default Profile and Route tables and no legacy single-agent, arbitrary-argument, fallback-agent, or numeric-attempt examples.
+- [x] Configuration, provider, pipeline, repair, daemon, AXI, Wizard, troubleshooting, and migration guidance contains the exact default Profile and Route tables and no legacy single-agent, arbitrary-argument, fallback-agent, or numeric-attempt examples.
 - [ ] Both top-level language variants accurately show the ten-Step pipeline and normalized routing behavior and receive independent human review.
-- [ ] The installable skill source is updated first and generated output is refreshed through the supported generator, with consent and fail-closed wording matching AXI and TUI behavior.
-- [ ] Canary documentation distinguishes the required report from the advisory 30% target and never claims a live result before ten successful routed gates exist.
+- [x] The installable skill source is updated first and generated output is refreshed through the supported generator, with consent and fail-closed wording matching AXI and TUI behavior.
+- [x] Canary documentation distinguishes the required report from the advisory 30% target and never claims a live result before ten successful routed gates exist.

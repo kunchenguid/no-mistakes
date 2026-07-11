@@ -10,7 +10,7 @@ Think of it as the control surface for the gate. It is optimized for one job:
 show you where the run is, why it paused, what changed, and what your choices
 are without making you bounce between logs, diffs, and provider tabs.
 
-Bare `no-mistakes` can also open the [Setup Wizard](/no-mistakes/guides/setup-wizard/) first when there is no active run on the current branch and you need to create one.
+Bare `no-mistakes` can also open the [setup wizard](/no-mistakes/guides/setup-wizard/) first when there is no active run on the current branch and you need to create one.
 
 ## What the TUI is for
 
@@ -57,6 +57,8 @@ Shows the branch name and run status in the header, followed by each step:
   ○ Document
   │
   ○ Lint
+  │
+  ○ Verify
   │
   ○ Push
   │
@@ -127,10 +129,11 @@ On narrow terminals, the log panel expands to fill the remaining vertical space 
 
 While the CI step is active, the TUI shows a dedicated CI panel instead of the generic findings view.
 It shows the PR label, the latest CI activity, and a log tail.
-When a real CI auto-fix attempt starts, the panel increments `CI auto-fixes: N`.
+When a routed CI repair attempt starts, the panel increments `CI auto-fixes: N`.
 Once checks are green and known mergeability is clear, the panel shows `✓ Checks passed` with `still monitoring until merged or closed`, and the terminal title switches to `Checks passed`.
 That text means the CI monitor is still active; it can still pause later if the configured idle timeout elapses with no base-branch movement.
 That ready signal clears if checks start running again, new failures appear, provider state becomes uncertain, or the PR is merged or closed.
+`no-mistakes` never merges the PR itself; once checks pass, reviewing and merging stay with you.
 
 ### Footer
 
@@ -143,10 +146,10 @@ When yolo mode is on, the footer changes from `y yolo` to `y end yolo`.
 
 | Key | Action |
 |---|---|
-| `j` / `k` | Scroll down / up |
-| `g` / `G` | Jump to start / end |
-| `Ctrl+d` / `Ctrl+u` | Half-page down / up |
-| `n` / `p` | Next / previous finding |
+| `j` / `k` | Findings list: next / previous finding. Diff view: scroll down / up |
+| `g` / `G` | Findings list: first / last finding. Diff view: jump to start / end |
+| `Ctrl+d` / `Ctrl+u` | Half-page down / up, in the findings list or the diff view |
+| `n` / `p` | Next / previous finding (diff view only) |
 
 ### Actions (when a step is awaiting approval)
 
@@ -178,7 +181,7 @@ When the instruction editor is open, press `Ctrl+s` or `Ctrl+enter` to save, or 
 | `d` | Toggle diff view (after fix cycle) |
 | `esc` | Exit diff view back to findings |
 | `?` | Toggle help overlay |
-| `y` | Toggle yolo mode, which auto-resolves paused steps |
+| `y` | Toggle yolo mode, which applies your unattended consent to paused gates |
 | `r` | Start a rerun after a failed or cancelled run |
 | `q` | Detach from TUI (or quit if run is done) |
 
@@ -198,9 +201,13 @@ The `f fix (3/5)` label shows how many findings are selected out of the total.
 
 Press `e` to add or edit extra guidance for the current finding. Press `+` to add your own finding to the list. User-authored findings start selected by default and can be removed with `D`.
 
-Press `y` to toggle yolo mode when you want paused approval gates to resolve automatically.
-Yolo fixes gates with `auto-fix` and `ask-user` findings by selecting every finding, then approves the resulting fix-review gate.
+Press `y` to toggle yolo mode when you want paused approval gates to resolve with your standing, unattended consent.
+Yolo fixes a gate with actionable `auto-fix` or `ask-user` findings by selecting every finding, then approves the resulting fix-review gate.
 It approves gates with no findings or only `action: no-op` findings as-is, and fixes each step at most once so unresolved findings do not loop forever.
+Yolo fails closed: before resolving any gate it re-checks the run, and if a blocking finding lineage ended its routed repair cascade unresolved or inconclusive, it aborts the run instead of fixing again or approving.
+Repair itself escalates through the routing contract's profile cascades; see the [default profile and route tables](/no-mistakes/reference/routing/#default-routes).
+This is the same unattended-consent contract as `no-mistakes axi run --yes`.
+The help overlay (`?`) shows the same contract next to the `y` binding.
 
 ## Outcome banner
 

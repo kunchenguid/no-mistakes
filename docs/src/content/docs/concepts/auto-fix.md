@@ -1,113 +1,165 @@
 ---
-title: Auto-Fix Loop
-description: How the automatic fix loop works.
+title: Automatic repair
+description: How routed repair resolves findings through escalation, deterministic checks, and independent verification.
 ---
 
-When a pipeline step finds issues, `no-mistakes` can automatically ask the agent to fix them before pausing for your approval. This is controlled by the `auto_fix` configuration.
+When a pipeline step finds issues, `no-mistakes` can repair them automatically before pausing for your approval.
+Repair is governed by the routing contract, not by user-configurable attempt limits.
+There is no `auto_fix` configuration key: a finding escalates through a fixed quality cascade and fails closed when the cascade is exhausted.
+Hosted-CI repair has an internal finite budget, but users cannot configure a numeric attempt count.
 
-```mermaid
-flowchart TD
-  run["Run step"] --> findings{"Findings?"}
-  findings -- "no" --> done["Step completes"]
-  findings -- "yes" --> eligible{"Auto-fix enabled and eligible findings?"}
-  eligible -- "no" --> pause["Pause for user approval"]
-  eligible -- "yes" --> fix["Agent applies fixes"]
-  fix --> rerun["Re-run step"]
-  rerun --> clean{"Blocking findings remain?"}
-  clean -- "no" --> done
-  clean -- "yes, attempts left" --> eligible
-  clean -- "yes, limit hit" --> pause
-```
+Two roles never mix.
+A fixer produces a patch.
+A separate, fresh verifier judges that patch.
+No model's own claim of success can resolve a blocking finding, and no unverified patch can reach the push target.
 
-## How it works
+The exact profile and route tables live in the [routing reference](/no-mistakes/reference/routing/#default-routes).
 
-1. A step executes and returns findings (e.g., test failures, lint warnings, review issues)
-2. If `auto_fix` is enabled for that step (limit > 0) and the attempt count is below the limit, the executor re-runs the step with `fixing=true`
-3. The agent receives the previous findings and applies fixes
-4. The step re-runs to verify the fixes
-5. If issues remain and attempts are left, the loop continues
-6. Once the limit is reached or all issues are resolved:
-   - If issues remain, the step pauses for user approval
-   - If everything passes, the step completes and the pipeline moves on
+## Findings: severity and action
 
-The document step applies fixes during its initial pass instead of relying on a follow-up automatic fix loop.
-When `commands.lint` is empty, that same invocation is a combined documentation-and-lint housekeeping pass: it updates documentation, detects relevant linters and formatters, applies safe fixes, verifies both duties, and categorizes any unresolved findings for the document or lint gate.
-The lint step consumes a usable lint result from that pass instead of starting a second cold agent invocation; when the combined pass is skipped, cannot produce trustworthy structured output, or loses its in-memory result across a daemon restart, lint falls back to its own agent pass.
-Unresolved documentation findings and unresolved blocking lint findings pause for approval instead of entering another automatic fix loop.
+Every finding carries a severity and an action.
 
-## Configuration
+Severity says how much a finding matters:
 
-Per-step attempt limits come from the `auto_fix` config object; the [`auto_fix` field reference](/no-mistakes/reference/global-config/#auto_fix) owns the defaults, per-step meanings, and the legacy alias.
-Setting a step to `0` disables the follow-up auto-fix loop, so the pipeline pauses for human input when that step finds issues; `auto_fix.review` defaults to `0`, so review findings require manual approval unless you opt in.
-Repo config overlays global config field by field - you can set `auto_fix.lint: 5` in a repo's `.no-mistakes.yaml` to override just that step while inheriting the rest from global.
+- `error` and `warning` are blocking - they gate the pipeline until resolved
+- `info` is informational and never blocks
 
-## Finding actions
+Action says who may act on it:
 
-Agent-driven findings now use an `action` field instead of `requires_human_review`:
+- `auto-fix` - an objective issue that can be repaired without questioning the author's intent
+- `ask-user` - an intent-sensitive or ambiguous issue that waits for explicit consent before any fixer runs
+- `no-op` - a note that needs no action; a `no-op` finding never enters a repair cascade, even when its ID is selected for a fix
 
-- `auto-fix` - objective issues that can be fixed automatically
-- `ask-user` - intent-sensitive or ambiguous issues that pause for approval instead of entering the normal auto-fix loop
-- `no-op` - informational notes that do not need a fix
+## Root finding lineages
 
-If an agent or integration omits `action`, no-mistakes fails closed by treating the finding as `ask-user`.
-An unclassified finding is never eligible for automatic fixing.
+Every finding that enters repair gets a root lineage: a durable, run-wide identity that survives re-reviews, restarts, and model rewording.
 
-`ask-user` is meant for findings that need human judgment - for example, questioning an intentional product or design choice, arguing that an intentional addition, removal, or guard should be undone, or reporting that the test step could not produce enough evidence for the available intent. Routine correctness, reliability, or security fixes still stay `auto-fix` even if the smallest fix reintroduces a small amount of previously deleted logic. Agents driving the AXI skill should relay `ask-user` findings to the user unless they have explicit `--yes` consent to resolve gates unattended.
-In the TUI, yolo mode is an explicit override that auto-resolves paused steps by treating `auto-fix` and `ask-user` findings as consent to run one fix round.
-Steps with only `no-op` findings are approved as-is.
+- an initial review finding's lineage is recorded against the exact routed model attempt that produced it, before any repair or approval
+- a lineage is independent of the model's display ID and of the finding prose, so a finding cannot disappear through rewording or fuzzy ID matching
+- findings from other steps get run-local root lineages, because a deterministic command failure has no producing model attempt
+- each repair round persists the lineage's immutable finding content, action, severity, current tier, remaining budget, and links to the fixer attempt, the deterministic checks, and the verifier attempt
 
-The `review`, `test`, and configured-command `lint` steps use this shared model directly. The `document` step also uses the same `action` field, but unresolved documentation findings pause for approval because the initial document pass already attempted the documentation updates it could make safely.
-When `commands.lint` is empty, the combined housekeeping pass routes documentation and lint findings to their owning gates. Its unresolved lint findings describe issues left after safe fixes, so blocking findings pause for approval instead of remaining eligible for another automatic fix loop.
+This history is what `no-mistakes axi status` and the TUI reconstruct after a restart, without parsing logs.
 
-Documentation findings use the same approval UI, but the `document` step treats any finding as an unresolved documentation gap or judgment call that should pause for approval.
+## The blocking cascade
+
+Blocking `auto-fix` findings escalate through the structured repair route: `fix_fast` → `fix_balanced` → `authority_strong`.
+Each tier runs the same shape:
+
+1. One fresh fixer receives the whole batch of unresolved same-tier lineages, with the diff, the lineage details, and the remaining budget.
+2. The fixer's changes are committed with a one-line summary.
+3. The step's applicable deterministic checks run, and their command, exit code, and output are recorded on every lineage in the batch.
+4. If an applicable check fails, the whole batch advances one tier immediately - no verifier invocation is spent on a patch a command already rejected.
+5. Otherwise one separate, fresh strong verifier adjudicates every lineage in the batch by ID.
+
+The verifier's adjudication is strict:
+
+- only an explicit `resolved` verdict with a rationale resolves a lineage
+- a missing, duplicate, or unknown lineage ID makes the entire verdict inconclusive, because a partial answer could silently approve a blocking finding
+- malformed output, an `unresolved` verdict, an `inconclusive` verdict, or silence advances the lineage instead of resolving it
+
+At the final tier the verifier is `authority_strong`.
+A `fix_fast` or `fix_balanced` tier is verified by a fresh `review_strong` invocation.
+An `authority_strong` fixer can succeed only after a different, fresh `authority_strong` (xhigh) invocation adjudicates its work.
+
+## Batching and new findings
+
+- all unresolved lineages at the lowest active tier are fixed together in one batch; resolved or differently tiered lineages do not rerun
+- a shared deterministic check failure cannot be attributed to one lineage, so it conservatively advances every lineage in the batch
+- a verifier finding caused by the patch inherits its root lineage's next tier and remaining ceiling, rather than receiving a fresh budget
+- a verifier finding unrelated to the batch creates a separate new root lineage and is tracked independently
+- a verifier finding that requires consent (`ask-user`) stops that lineage until a human or standing consent decides
+
+## Fail-closed exhaustion
+
+When a lineage exhausts its cascade without a clean verdict, it is persisted as unresolved and the gate fails closed.
+
+- the step pauses for a human decision instead of completing
+- approval is refused while any blocking lineage on the run remains unresolved
+- under unattended consent, an exhausted or inconclusive blocking lineage aborts the run instead of being approved or retried
+
+## Informational repair
+
+Informational review findings - `info` severity with action `auto-fix` - take a cheap two-tier cascade: `fix_fast` → `tools_balanced`, with a `tools_balanced` verifier.
+
+- it never invokes a `review_strong` or `authority_strong` profile
+- it never blocks the gate
+- an unresolved informational finding stays visible on the run instead of gating it
+
+## Consent for intent-sensitive findings
+
+An `ask-user` finding starts no fixer before consent.
+
+- explicit consent is a fix action with the finding's ID selected, from the TUI or `no-mistakes axi respond --action fix`
+- unattended consent is TUI yolo mode or AXI `--yes`, which the user grants as standing consent for the run
+- a consented repair starts at `fix_balanced` and may escalate to `authority_strong`; it never uses the fast tier
+- a consented repair must durably resolve every selected finding, or the run fails instead of quietly continuing
+
+Unattended consent can never waive final authority.
+Yolo and `--yes` fix each gate once with every finding selected, then approve the resulting fix review.
+If a blocking lineage remains unresolved or inconclusive after its cascade, they abort the run rather than approve it.
+
+## Provider failover is not escalation
+
+Escalation changes the quality tier.
+Failover changes the provider inside the same tier.
+
+- within a profile, candidates are tried in provider-preference order, and a classified operational failure opens that provider's circuit for the rest of the run
+- when every candidate in a required profile is unavailable, the invocation fails closed and the gate fails, rather than borrowing a weaker or stronger profile
+- provider failover never advances the quality tier
+
+See [provider circuits](/no-mistakes/reference/routing/#provider-circuits) for the full rules.
+
+## Deterministic command failures
+
+A configured `commands.test` or `commands.lint` failure pauses the step with the command output as a blocking finding.
+When a fix is authorized, a fresh routed fixer repairs the failure and the step re-runs the exact configured command as the primary gate.
+Test repair starts at `fix_balanced` because a failing test log is unstructured evidence; the fast tier is never used merely to infer scope.
+The same principle covers rebase conflicts and CI failures: see the [pipeline steps reference](/no-mistakes/reference/pipeline-steps/) for each step's repair behavior.
 
 ## User-triggered fixes
 
-When the pipeline pauses for approval, you can manually trigger a fix from the TUI or AXI interface:
+When the pipeline pauses for approval, you can trigger a fix yourself from the TUI or the AXI interface:
 
-1. The findings panel shows all findings with checkboxes
-2. Toggle individual findings with `space`, or use `A` (all) / `N` (none)
-3. Optionally press `e` to attach a note to the current finding, or `+` to add your own finding to the fix request
-4. Press `f` to fix the selected findings
+1. The findings panel shows all findings with checkboxes.
+2. Toggle individual findings with `space`, or use `A` (all) and `N` (none).
+3. Optionally press `e` to attach a note to the current finding, or `+` to add your own finding to the fix request.
+4. Press `f` to fix the selected findings.
 
-The agent receives the merged fix payload for that round: the selected agent findings, any per-finding user notes, any selected user-authored findings added from the TUI or AXI interface, and a sanitized history of previous rounds for that step.
-That history includes which finding IDs were selected for a prior fix attempt, which findings were left unselected by the user, and any one-line summaries from earlier fix commits.
-On follow-up review passes, that history tells the agent not to re-report user-ignored findings unless the code now presents a materially different issue.
+The fixer receives the merged payload for that round: the selected findings, any per-finding user notes, any selected user-authored findings, and a sanitized history of previous rounds for that step.
+That history includes which finding IDs were selected before, which findings you left unselected, and one-line summaries from earlier fix commits.
+Follow-up review passes use that history to avoid re-reporting user-ignored findings unless the code now has a materially different problem.
 
-After a user-triggered fix, the step re-runs and pauses again to show you the results (`fix_review` status). You can then approve, fix again, skip, or abort.
-Yolo and AXI `--yes` approve that fix review automatically after their one fix round, so a finding that remains after the fix does not trigger an unbounded fix loop.
+After a user-triggered fix, the step re-runs and pauses again to show the results (`fix_review` status).
+You can then approve, fix again, skip, or abort.
 
 ## Fix commits
 
-Each auto-fix cycle commits its changes with a descriptive message. The combined document-and-lint housekeeping pass runs in the Document step, so its documentation and safe lint fixes use the Document prefix; configured-command lint fixes use the Lint prefix:
+Every repair commit carries a step-scoped message so the branch history explains itself:
 
-| Step | Commit prefix |
+| Source | Commit message |
 |---|---|
-| Rebase | `no-mistakes(rebase): <summary>` |
-| Review | `no-mistakes(review): <summary>` |
-| Test | `no-mistakes(test): <summary>` |
-| Document | `no-mistakes(document): <summary>` |
-| Lint | `no-mistakes(lint): <summary>` |
+| Rebase conflict resolution | the branch's own commits, completed through `git rebase --continue` |
+| Review repair | `no-mistakes(review): <summary>` |
+| Test repair | `no-mistakes(test): <summary>` |
+| Document authoring | `no-mistakes(document): <summary>` |
+| Lint and formatting | `no-mistakes(lint): <summary>` |
+| Verify repair | `no-mistakes(verify): <summary>` |
+| CI repair | `no-mistakes: apply CI fixes` |
 
-The push step commits any remaining uncommitted changes with `no-mistakes: apply agent fixes`.
+Push commits nothing.
+It transports the sealed candidate exactly as verified.
 
 ## Step rounds
 
-Each execution of a step (initial run or follow-up auto-fix run) is recorded as a "round" in the database.
-A round stores its findings, duration, any selected finding IDs and whether that selection came from the user or auto-fix filtering, the merged finding payload actually sent to the fix agent for that round, and any one-line fix summary from that execution.
-That merged payload can include per-finding user notes and user-authored findings added from the TUI or AXI interface.
-AXI status uses the same round history and the persisted auto-fix limit to show the active fix attempt, for example `auto-fix 1/3` or `fix 2`.
-The step log records a marker when each automatic or user-triggered fix round starts.
-The PR body's deterministic risk assessment, testing, and pipeline sections are built from these rounds, giving reviewers visibility into test results, review risk, what was fixed, and how many attempts it took.
-In PR pipeline details, auto-fix rounds are rendered as an issue -> fix -> verification narrative instead of a round-numbered log: each fix summary is followed by either a successful re-check or the findings still open after that fix.
-On very long runs, the PR body uses a 63,488-byte safety cap, which leaves a 2 KB buffer below GitHub's 65,536-character body limit.
-It first keeps the newest pipeline update rounds and replaces older rounds with an omission marker at whole-update boundaries.
-If the newest update or essential body content is still too large, the PR step truncates at line or section boundaries and adds an explicit marker.
-The full round history remains available in the run log.
+Each execution of a step is recorded as a round in the database.
+A round stores its findings, duration, any selected finding IDs and whether the selection came from the user or automatic filtering, the merged finding payload actually sent to the fixer, and the one-line fix summary.
 
 Round trigger types:
-- `initial` - first execution
-- `auto_fix` - triggered by the automatic fix loop
-- `auto_fix` - also used when you press `f` in the TUI or use `no-mistakes axi respond --action fix` to run a follow-up fix
 
-Legacy `user_fix` rounds are still rendered as `auto-fix` in PR summaries for backward compatibility.
+- `initial` - the step's first execution
+- `auto_fix` - a repair-cascade round, or a fix you trigger with `f` in the TUI or `no-mistakes axi respond --action fix`
+- `repair_exhausted` - the terminal record written when a cascade fails closed with unresolved lineages
+
+Legacy `user_fix` rounds from older versions are still rendered as `auto-fix` in PR summaries.
+The PR body's risk assessment, testing, and pipeline sections are built from these rounds, so reviewers can see what was found, what was fixed, and how it was verified.

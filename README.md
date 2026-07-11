@@ -22,10 +22,6 @@
   /></a>
 </p>
 
-<p align="center">
-  <a href="https://trendshift.io/repositories/27829?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-27829" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/27829" alt="kunchenguid%2Fno-mistakes | Trendshift" width="250" height="55"/></a>
-</p>
-
 <h3 align="center">Kill all the slop. Raise clean PR.</h3>
 
 <p align="center"><strong>English</strong> · <a href="README.zh-CN.md">简体中文</a></p>
@@ -35,13 +31,16 @@
 </p>
 
 `no-mistakes` puts a local git proxy in front of your real remote.
-Push to `no-mistakes` instead of `origin`, and it spins up a disposable worktree, runs an AI-driven validation pipeline, forwards the branch to the configured push target only after every check passes, and opens a clean PR automatically.
+Push to `no-mistakes` instead of `origin` and it runs an AI-driven validation pipeline in a disposable worktree.
+The branch reaches the configured push target only after every check passes, and a clean PR opens automatically.
 
-- **Non-blocking** - the pipeline runs in an isolated worktree without disrupting your work.
-- **Agent-agnostic** - `claude`, `codex`, `rovodev`, `opencode`, `pi`, `copilot`, or `acp:<target>` via `acpx`, with ordered fallbacks; every gate requires a runnable configured pipeline agent.
-- **Agent-native** - `/no-mistakes` lets your coding agent do a task and gate it, or gate existing committed work: it runs the pipeline, has the pipeline apply safe fixes, and escalates the rest to you.
-- **Human stays in charge** - auto-fix or review findings, your call.
-- **Clean PRs by default** - push, open PR, watch CI, and auto-fix failures in one shot.
+What you get:
+
+- an isolated pipeline that never blocks your working copy
+- purpose-routed model calls with provider failover between OpenAI and Anthropic
+- a `/no-mistakes` skill so your coding agent can do a task and gate it, or gate existing committed work
+- repairs that are applied, checked deterministically, and independently verified before anything ships
+- a clean PR raised and CI watched for you, with judgment calls left to you
 
 Full documentation: <https://kunchenguid.github.io/no-mistakes/>
 
@@ -53,16 +52,26 @@ Full documentation: <https://kunchenguid.github.io/no-mistakes/>
             ▼
    ┌────────────────────────────────────────────────┐
    │  disposable worktree — your work stays put     │
-   │  review → test → docs → lint → push → PR → CI  │
+   │  intent → rebase → review → test → document    │
+   │  → lint → verify → push → PR → CI              │
    └────────────────────────────────────────────────┘
             │  every check green
             ▼
         clean PR, opened for you
 ```
 
-Each step either passes on its own or stops with a **finding** for you to act on.
-Safe, mechanical fixes are applied automatically; anything that touches your intent is escalated for you to **approve**, **fix**, or **skip**.
+The pipeline always runs the same ten steps: intent, rebase, review, test, document, lint, verify, push, PR, CI.
+Each step passes on its own or stops with a finding.
+Safe findings are repaired for you; anything that touches your intent waits for your decision.
+The push step transports only the exact commit the verify step certified.
 Nothing reaches the configured push target until every check is green.
+
+## How model calls are chosen
+
+Every model call is routed by its purpose, with ordered provider failover between OpenAI and Anthropic.
+An operational failure, such as quota or an outage, moves the rest of the run to the backup provider; when no candidate is available, the call fails closed instead of downgrading.
+Repairs escalate the same way, and every fix is independently verified, until the finding resolves or fails closed.
+See the [routing reference](https://kunchenguid.github.io/no-mistakes/reference/routing/) for the exact profiles, routes, and circuit rules.
 
 ## Install
 
@@ -70,9 +79,10 @@ Nothing reaches the configured push target until every check is green.
 curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.sh | sh
 ```
 
+You need `git` and at least one routed runner CLI, `codex` or `claude`, on your `PATH`.
 Windows, Go install, and build-from-source instructions are in the [installation guide](https://kunchenguid.github.io/no-mistakes/start-here/installation/).
 
-## Quick Start
+## Quick start
 
 ```sh
 $ no-mistakes init
@@ -101,20 +111,23 @@ $ no-mistakes
 
 For GitHub fork contributions, keep `origin` pointed at the parent repository and initialize with `no-mistakes init --fork-url <your-fork-url>`.
 
-From the TUI you act on each **finding**: **auto-fix** ones are applied for you (or approve to let them), **ask-user** ones are a judgement call you approve, fix, or skip.
-Once every check is green, the gate forwards your branch to the configured push target and opens the PR for you, so there is no manual `git push origin` and no hand-written PR body.
+From the TUI you act on each finding.
+The pipeline repairs safe findings itself and verifies each repair independently; judgment calls stop the run for you to approve, fix, or skip.
+Once every check is green, the gate forwards the verified commit to the configured push target and opens the PR for you, so there is no manual `git push origin` and no hand-written PR body.
 Prefer to let your coding agent drive the same flow headlessly?
 Use `/no-mistakes` (see below).
 
 ## Three ways to trigger the gate
 
-Every change runs through the same pipeline. Pick the entry point that fits how you're working when the change is ready:
+Every change runs through the same pipeline.
+Pick the entry point that fits how you are working when the change is ready:
 
-- **`git push no-mistakes`** - the explicit Git path. Push a committed branch to the gate remote instead of `origin`.
-- **`no-mistakes`** - the TUI. Run it after making changes (no commit needed) and a wizard walks you through creating a branch, committing, and pushing through the gate, then attaches to the run. `no-mistakes -y` does all of that automatically.
-- **`/no-mistakes`** - the agent skill. Tell the coding agent to do a task and gate it with `/no-mistakes <task>`, or use bare `/no-mistakes` to gate existing committed work. It runs the pipeline, has the pipeline apply safe fixes, and stops to ask you about anything that needs a human call.
+- `git push no-mistakes` - the explicit Git path: push a committed branch to the gate remote instead of `origin`
+- `no-mistakes` - the TUI: run it after making changes (no commit needed) and a wizard walks you through branch, commit, and push, then attaches to the run; `no-mistakes -y` does all of that automatically
+- `/no-mistakes` - the agent skill: tell the coding agent to do a task and gate it with `/no-mistakes <task>`, or use bare `/no-mistakes` to gate existing committed work; it lets the pipeline repair safe findings and stops to ask you about anything that needs a human call
 
-`no-mistakes init` installs the `/no-mistakes` skill for Claude Code and other agents. Under the hood the skill drives `no-mistakes axi`, a non-interactive TOON interface to the same approval flow.
+`no-mistakes init` installs the `/no-mistakes` skill for Claude Code and other agents.
+Under the hood the skill drives `no-mistakes axi`, a non-interactive TOON interface to the same approval flow.
 
 See the [quick start](https://kunchenguid.github.io/no-mistakes/start-here/quick-start/) for the full first-run walkthrough.
 
