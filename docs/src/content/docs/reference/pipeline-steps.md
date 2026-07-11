@@ -116,36 +116,61 @@ Repair commits use `no-mistakes(test): <summary>`.
 
 ## Document
 
-Authors documentation updates for the code change, then verifies them with a separate fresh model before anything is committed.
+Authors documentation updates for the code change under a placement policy.
+When `commands.lint` is empty, the same authoring invocation also performs the agent-driven lint duty.
+A separate fresh model then verifies the documentation before anything is committed.
 
 What it does:
 
 - diffs the base commit against head and skips the step when there are no non-ignored changed files to document
-- a fresh `documentation_authoring` invocation (`prose_fast`) finds every documentation gap, updates docs or doc comments for all gaps it can resolve, and reports only unresolved gaps or judgment calls
-- the author must not commit: a changed `HEAD` before independent verification fails the step
-- stages the complete authored candidate and runs the deterministic documentation check (`git diff --cached --check`) before verification
-- a fresh `documentation_verification` invocation (`tools_balanced`) independently verifies accuracy, completeness, examples, configuration, public APIs, and removal of stale claims
-- the verifier must not modify, stage, or commit anything; a mutated candidate fails the step
-- the verifier's findings are the step's findings, so authored documentation never self-verifies semantically
+- leaves no lint result when it skips, so Lint runs its own pass instead of silently losing the lint duty
+- uses a fresh `documentation_authoring` invocation (`prose_fast`) to update each stale fact in its authoritative owner and report only unresolved gaps or judgment calls
+- applies the built-in placement policy: one authoritative owner per fact, stale duplicates removed or reduced to pointers, and no unrelated corpus rewrite
+- augments the built-in policy with `document.instructions` from the trusted default-branch config when present; pushed-branch instructions cannot weaken the gate
+- when `commands.lint` is empty, asks that authoring invocation to discover relevant linters and formatters, apply safe mechanical fixes, rerun the checks, and categorize unresolved findings as `documentation` or `lint`
+- treats an uncategorized combined finding as documentation, so ambiguous ownership goes to the stricter gate
+- fails closed on malformed or schema-incomplete author output and clears any earlier lint result before each combined pass
+- records the lint category for Lint to consume once; the documentation category does not replace independent verification
+- requires the author to leave `HEAD` unchanged before verification
+- stages the complete authored candidate and runs the deterministic documentation check (`git diff --cached --check`)
+- uses a fresh `documentation_verification` invocation (`tools_balanced`) to verify documentation accuracy, completeness, examples, configuration, public APIs, and removal of stale claims
+- forbids the verifier from modifying, staging, or committing anything; a mutated candidate fails the step
+- uses only the fresh documentation verifier's findings as the Document gate findings
 - commits the authored changes with `no-mistakes(document): <summary>` only when verification returns no blocking findings
 
-Repair: blocking documentation findings pause the step and route through the documentation repair policy: the `prose_fast` author is the fixer and a fresh `tools_balanced` documentation verifier adjudicates each round.
-The author route is single-tier, so a defect caused by the authoring patch advances the lineage and fails closed rather than restarting on a fresh author budget.
+The documentation verifier is a documentation-only trust boundary.
+It does not certify the lint half of the combined authoring pass.
+
+Repair: blocking documentation findings route through the repair coordinator's fixed documentation policy.
+The `prose_fast` author is the single-tier fixer, and a fresh `tools_balanced` documentation verifier adjudicates the patch after `git diff --check`.
+An unresolved, malformed, or inconclusive verdict exhausts that finite route and fails closed rather than receiving a user-configurable retry budget.
 
 ## Lint
 
-Runs the formatter and linters, commits the results, and repairs failures.
-Lint is the last content mutator: it must leave a clean worktree, because the publish candidate is sealed immediately after it.
+Runs the formatter and lint gate, commits any changes it makes, and repairs configured-command failures.
+Lint is the last content mutator.
+It must leave a clean worktree because the executor seals the publish candidate immediately afterwards.
 
 What it does:
 
-- if `commands.format` is set, runs it first and commits the result (plus any earlier uncommitted candidate changes) as `no-mistakes(lint): apply formatting`, so the linted, verified, and pushed candidate all match; a failing formatter is logged as a warning, not a step failure
-- if `commands.lint` is empty: a fresh `lint_inspection` invocation (`tools_balanced`) detects the project's linters and formatters, applies safe fixes, re-runs the relevant checks, commits its changes, and returns findings only for unresolved issues
-- if `commands.lint` is set: runs it via the platform shell; a non-zero exit pauses the step with a `warning` finding, the command output, and the exact command registered as the repair's deterministic check
+- if `commands.format` is set, runs it first and commits the result, plus any earlier uncommitted candidate changes, as `no-mistakes(lint): apply formatting`
+- logs a failing formatter as a warning rather than failing the step
+- if `commands.lint` is set, runs it through the platform shell; a non-zero exit pauses with a `warning`, command output, and the exact command as the repair's deterministic check
+- if `commands.lint` is empty and a trusted combined result exists, consumes its lint findings once without another agent invocation
+- treats errors and warnings from the combined result as blocking, while information-only findings remain visible without blocking
+- does not send combined lint findings straight into automatic repair because the combined pass already attempted safe fixes
+- fails closed when a combined result exists but is malformed
+- if no combined result exists, runs a fresh `lint_inspection` invocation (`tools_balanced`) to detect relevant tools, apply safe fixes, rerun checks, commit changes, and report only unresolved issues
+- also runs the standalone lint pass for a fix round instead of reusing a stale or consumed combined result
 
-Repair: blocking `auto-fix` lint findings route through the structured cascade `fix_fast → fix_balanced → authority_strong`.
-The declared lint command is re-run as the deterministic check after each patch and must pass before strong adjudication.
-When `commands.lint` is empty, unresolved findings pause for approval instead, because the inspection invocation already attempted safe fixes; that inspection can never act as the strong verifier for its own patch.
+A combined result is in-memory and consume-once.
+It does not survive a process boundary.
+A skipped Document pass, an absent result, or a lint fix round therefore falls back to Lint's standalone pass.
+
+Repair: a failing configured lint command routes blocking `auto-fix` findings through the fixed structured cascade `fix_fast → fix_balanced → authority_strong`.
+The command reruns after each patch and must pass before a fresh strong verifier adjudicates the repair.
+The cascade has a finite routing-owned budget and no numeric repository setting.
+Agent-driven lint findings pause for approval because that pass already attempted safe fixes.
 Repair commits use `no-mistakes(lint): <summary>`.
 
 ## Sealing the candidate

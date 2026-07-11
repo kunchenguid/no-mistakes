@@ -131,7 +131,13 @@ The `-y` / `--yes` flag continues through update safety prompts while still prin
 If the daemon executable path cannot be determined, `update` aborts before replacing anything.
 You can also manage it explicitly with `no-mistakes daemon start|stop|restart|status`.
 
-On startup, the daemon recovers from crashes by marking any stuck runs as failed, reaping orphaned managed agent servers, cleaning up orphaned worktrees, refreshing legacy no-mistakes-managed `post-receive` hooks, enabling push options for older gate repos, and reapplying gate hook-path isolation when Git supports `config --worktree`.
+On startup, the daemon acquires its singleton lock before it changes run state or cleans worktrees.
+It resumes only a running run that was durably parked at one fully reconstructable approval or fix-review gate.
+Recovery verifies the run is the only active run for its repo and branch, the worktree still belongs to the gate at the recorded `HEAD`, the stored steps and latest round agree, and the recovered routing configuration is runnable.
+When session reuse is active, every stored review-loop session must also name a provider still available in its recovered route.
+The daemon returns a verified run to the same gate without rerunning completed steps, so you continue it with the normal `no-mistakes axi respond` command.
+Every other stale pending or running run fails closed with `daemon crashed during execution`.
+That failure also closes active step and round state, appends `interrupted` terminal facts to open routing attempts, retains any elapsed parked time, and makes the orphaned worktree eligible for cleanup.
 
 ### Pipeline executor
 
@@ -145,8 +151,12 @@ It can end early after Rebase if the branch has no diff against the default bran
 5. Refuse approval while any blocking finding lineage on the run remains unresolved; the user can fix selected findings, skip the step, or cancel the run instead.
 6. After Lint, seal the publish candidate; after a Verify repair, seal the repaired candidate again.
 
-While the executor is paused at an approval or fix-review gate, it persists a run-level awaiting-agent timestamp that AXI renders as `awaiting_agent: parked <duration>`.
+While the executor is paused at an approval or fix-review gate, it persists a live run-level awaiting-agent timestamp that AXI renders as `awaiting_agent: parked <duration>`.
 That timestamp is observability only and does not alter approval behavior.
+When the wait ends, the executor clears the timestamp and adds the elapsed wall time to the run's durable parked total.
+A safely recovered gate keeps the original timestamp, so the total includes the wait before the crash and the daemon downtime.
+Recovery clears an unsafe run's timestamp only after adding that elapsed wait to its total.
+`no-mistakes stats --run <id>` reports the accumulated parked total separately from step execution duration.
 
 ### IPC
 
@@ -169,6 +179,13 @@ The routing cutover added append-only tables that make every model decision reco
 - utility scopes record standalone (non-pipeline) owners such as a Wizard session, so utility invocations never fabricate pipeline rows
 - canary tables freeze the pre-routing baseline cohort and collect the first ten successful routed runs for the [canary report](/no-mistakes/reference/routing/#canary)
 
+The routing attempt journal and local invocation performance records are separate contracts.
+The append-only routing start and terminal facts are authoritative for candidate selection, escalation, provider failover, circuit skips, and reconnect projections.
+The `agent_invocations` table is best-effort local performance evidence recorded after each concrete native invocation.
+It stores the step, round, purpose, provider, reported model, session mode, fingerprinted session key, duration, bounded exit category, and token counts.
+It never stores prompts, model output, diffs, credentials, raw errors, or raw session identities.
+`no-mistakes stats --agents` and `no-mistakes stats --run <id>` read these local performance records, not the routing journal.
+
 Intent stores the summary, source, session ID, and match score on each run when transcript matching is used, plus cached summaries for matching transcript sessions.
 An agent-supplied AXI intent is stored directly on the run.
 Raw transcript text is not stored in this database.
@@ -188,6 +205,7 @@ Set `NM_HOME` to relocate it.
 | `daemon.pid` | Daemon identity record |
 | `config.yaml` | Global configuration |
 | `update-check.json` | Cached update check result |
+| `telemetry-gate.json` | Local cross-process sampling state for high-frequency read-only command telemetry |
 | `servers/` | PID-tracking records for managed agent servers |
 | `repos/<id>.git` | Bare gate repos |
 | `repos/<id>.git/notify-push.log` | Persistent hook notification failure log |

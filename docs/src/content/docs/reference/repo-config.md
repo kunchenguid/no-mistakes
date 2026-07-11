@@ -11,8 +11,8 @@ To prevent a supply-chain attack where a contributor lands a hostile value on a 
 It reads them at the exact commit a fresh fetch resolved, so a stale `origin/<default>` ref cannot serve a value the live default branch removed.
 If the fetch fails, `commands` is forced empty and the run proceeds on built-in defaults rather than falling back to a potentially stale or hostile copy.
 Commit the `commands` you want the gate to run to your default branch.
-Route overrides under `routes` are also read only from the default branch.
-Non-executing fields (`ignore_patterns`, `intent`, `test`) are still read from the pushed branch.
+Route overrides under `routes` and documentation placement rules under `document.instructions` are also read only from the default branch.
+Non-executing fields (`ignore_patterns`, `intent`, and `test`) are still read from the pushed branch.
 
 If you genuinely want per-branch `commands` (for example, a single-developer repo where you trust your own feature branches), opt in with [`allow_repo_commands: true`](#allow_repo_commands) in this same file on your default branch.
 The switch is read only from the trusted default-branch copy, so a contributor cannot self-enable it from a pushed branch.
@@ -37,6 +37,11 @@ test:
   evidence:
     store_in_repo: true
     dir: .no-mistakes/evidence
+
+document:
+  instructions: |
+    README.md owns the user-facing introduction.
+    docs/reference/ owns detailed contracts.
 
 routes:
   documentation_authoring: fix_balanced
@@ -70,10 +75,13 @@ Run via the platform shell - `sh -c` on POSIX, `cmd.exe /c` on Windows.
 | | |
 |---|---|
 | Type | `string` |
-| Default | Empty (the routed agent auto-detects) |
+| Default | Empty (Document combines lint with documentation housekeeping) |
 
 When set, the lint step runs this exact command and checks the exit code.
-When empty, the routed agent detects relevant linters and formatters, applies safe fixes, reruns the relevant checks, commits any agent changes, and reports only unresolved issues.
+When empty, the Document authoring pass also detects relevant linters and formatters, applies safe fixes, reruns the checks, and categorizes unresolved lint findings for the Lint gate.
+Lint consumes that result once.
+If no trustworthy result exists, Lint runs a standalone agent pass rather than skipping lint.
+Malformed combined output fails closed.
 
 ### commands.format
 
@@ -84,7 +92,7 @@ Formatter command run before the push step commits agent fixes.
 | Type | `string` |
 | Default | Empty (no separate push-step formatter) |
 
-This does not prevent empty `commands.lint` from detecting and running formatters during the lint step.
+This does not prevent empty `commands.lint` from detecting and running formatters during the combined housekeeping pass or Lint's standalone fallback.
 
 ### allow_repo_commands
 
@@ -100,7 +108,7 @@ By default the daemon reads `commands` from your default branch so a pushed SHA 
 Leave this `false` for any repo that accepts contributions.
 Set it to `true` only for a single-developer environment where you trust every branch you push, for example a personal repo gated by your own daemon.
 
-`allow_repo_commands` never affects `routes`: route overrides always come from the trusted default-branch copy.
+`allow_repo_commands` never affects `routes` or `document.instructions`: both always come from the trusted default-branch copy.
 
 ### ignore_patterns
 
@@ -118,6 +126,35 @@ Pattern matching rules:
 | `*.generated.go` | No slash - matches by basename |
 | `vendor/**` | Ends with `/**` - matches entire subtree |
 | `some/path/file.go` | Contains a slash - full path glob |
+
+### document.instructions
+
+Repository-specific ownership and placement rules for the Document step.
+
+| | |
+|---|---|
+| Type | `string` |
+| Default | Empty (the built-in placement policy applies) |
+
+Use this field to name the authoritative owner for repository-specific facts.
+For example:
+
+```yaml
+document:
+  instructions: |
+    README.md owns the quickstart.
+    docs/reference/api.md owns the public API contract.
+```
+
+These instructions augment the built-in policy and cannot weaken it.
+The built-in policy requires one authoritative owner per fact.
+It removes stale duplicate prose or reduces it to a pointer instead of synchronizing copies.
+It also limits the pass to documentation the change made stale.
+
+`document.instructions` always comes from the trusted default-branch copy of `.no-mistakes.yaml`.
+A pushed branch cannot change the rules used to gate its own documentation, even when `allow_repo_commands` is `true`.
+If no trusted copy is available, pushed-branch instructions are discarded and the built-in policy remains active.
+A malformed trusted config is a load error and stops the run.
 
 ### intent
 

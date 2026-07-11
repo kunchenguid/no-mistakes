@@ -294,13 +294,44 @@ Shows runs newest-first with branch, status (styled), short SHA, timestamp, and 
 
 ## no-mistakes stats
 
-Show historical usage stats across all repos.
+Show historical usage and local agent performance stats across all repos.
 
 ```sh
 no-mistakes stats
+no-mistakes stats --agents
+no-mistakes stats --run <id>
 ```
 
-Displays total changes, rescued changes, rescue rate, reported and fixed mistakes, fixes by pipeline step, and the top repos by rescue activity.
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `--agents` | `bool` | `false` | Show per-purpose local invocation aggregates |
+| `--run` | `string` | (none) | Show one run's invocation timeline and parked time; implies `--agents` |
+
+With no flag, the command displays total changes, rescued changes, rescue rate, reported and fixed mistakes, fixes by pipeline step, and the top repos by rescue activity.
+
+`no-mistakes stats --agents` groups local invocation records by purpose across all repos.
+It reports invocation count, average and total duration, errors, token totals, and counts for each session mode.
+The aggregate view does not group by provider or model.
+
+`no-mistakes stats --run <id>` shows invocation records in execution order and starts with the run's accumulated `parked at gates` time.
+Parked time is wall time spent waiting at approval and fix-review gates, including a safely recovered wait across daemon downtime.
+It is separate from invocation and step execution duration.
+Each row includes the step, round, purpose, concrete provider in `AGENT`, adapter-reported `MODEL`, `SESSION` mode, privacy-safe session `KEY`, duration, bounded exit category, and token counts.
+`MODEL` can be empty when the adapter did not report one.
+`KEY` is a 16-character truncated SHA-256 fingerprint and is empty when no session identity was available.
+
+Session modes have these meanings:
+
+- `cold` means the invocation did not use a durable session
+- `started` means it started a new durable session
+- `resumed` means it reused an existing durable session
+- `fallback` means a resume failed and the same role retried in a fresh session
+
+These reports read best-effort local performance records from `state.sqlite`.
+They never expose prompts, model output, diffs, credentials, raw errors, or raw resumable session IDs.
+They are not the immutable routing attempt journal that powers `axi status` review-routing history after reconnects.
+Remote analytics receives neither the detailed rows nor the provider, model, session key, timing, or token fields.
+See [environment variables](/no-mistakes/reference/environment/#no_mistakes_telemetry) for the remote telemetry boundary.
 
 ## no-mistakes doctor
 
@@ -366,6 +397,10 @@ no-mistakes daemon start
 ```
 
 Prefers the managed service path and falls back to a detached daemon if service install or startup is unavailable or fails. If the daemon is already running, the command refreshes a stale macOS `launchd` or Linux `systemd` service definition and restarts through the managed service; if the definition is unchanged, it reports that the daemon is already running.
+Daemon startup safely resumes a run only when it was durably parked at a fully reconstructable approval or fix-review gate.
+The resumed run returns to the same gate without rerunning completed steps.
+Other stale pending or running runs fail closed instead of continuing from guessed state.
+See [the gate model](/no-mistakes/concepts/gate-model/#daemon) for recovery checks and parked-time accounting.
 
 ## no-mistakes daemon stop
 

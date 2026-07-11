@@ -32,8 +32,8 @@ For how every model invocation is selected, see the [routing reference](/no-mist
 The pipeline is opinionated so that "passed the gate" has a stable meaning:
 
 - the branch was checked against the freshly fetched remote upstream and the pushed-branch target first
-- a fresh strong review, tests with user-facing evidence when available, independently verified documentation, and lint all happened before any branch push to the configured target
-- every repair in a routed repair cascade was independently adjudicated by a separate fresh verifier before it counted as resolved; the agent-driven lint safe-fix path instead re-runs its own checks and reports anything unresolved as findings
+- a fresh strong review, tests with user-facing evidence when available, and lint all happened before any branch push to the configured target
+- documentation was authored under its ownership policy and passed an independent documentation-only verification, even when authoring and agent-driven lint shared one housekeeping pass
 - the publish candidate was sealed as one exact commit, verified, and pushed unchanged
 - the human stayed in control: intent-sensitive findings waited for explicit consent
 - the final branch update was guarded against discarding unincorporated commits already on the push target
@@ -47,8 +47,8 @@ The pipeline is opinionated so that "passed the gate" has a stable meaning:
 | 2 | Rebase | Fetch fresh remote state and rebase your branch onto it |
 | 3 | Review | Fresh strong AI review of your diff, with routed repair of blocking findings |
 | 4 | Test | Run baseline tests, gather evidence for the intent, and commit publishable test outputs |
-| 5 | Document | Author documentation updates, then verify them with a separate fresh model |
-| 6 | Lint | Run the formatter and linters, commit the results, and repair failures |
+| 5 | Document | Author documentation updates and verify them with a separate fresh model; also perform agent-driven lint housekeeping when no lint command is configured |
+| 6 | Lint | Run the formatter, then run the configured lint command or consume the combined result; gate unresolved findings and repair command failures |
 | 7 | Verify | Freshly verify the sealed publish candidate before anything leaves the machine |
 | 8 | Push | Transport the exact sealed commit to the configured push target |
 | 9 | PR | Create or update the pull request |
@@ -62,7 +62,9 @@ The pipeline is opinionated so that "passed the gate" has a stable meaning:
   If there is no diff left after the rebase, the pipeline skips the rest.
 - Review runs before Test so the reviewer reads fresh code, not code a fixer may have touched.
 - Document runs after Test so docs are updated against code that is known to work.
+  It enforces one authoritative owner per fact and independently verifies documentation, even when its authoring pass also handles agent-driven lint.
 - Lint runs last among the content mutators.
+  When `commands.lint` is empty, it consumes the combined housekeeping result once or runs a standalone lint pass if no trustworthy result exists.
   It runs the configured formatter first and commits every formatter and lint change, so no later step rewrites content.
 - After Lint the executor seals the publish candidate: the exact `HEAD` commit with a clean worktree.
   Everything after the seal validates or transports that exact commit; nothing after the seal mutates it in place.
@@ -86,12 +88,26 @@ Every step can:
 
 See [automatic repair](/no-mistakes/concepts/auto-fix/) for how the repair cascade works, and [using the TUI](/no-mistakes/guides/tui/) for what the approval UI looks like.
 
+## Combined housekeeping keeps two gates
+
+When `commands.lint` is empty, Document combines documentation authoring and agent-driven lint into one routed authoring pass.
+The pass applies safe fixes and categorizes unresolved findings for their owning gate.
+
+Document still stages the complete candidate and sends it to a separate fresh documentation verifier.
+That verifier checks documentation only and cannot modify the candidate.
+Lint later consumes the lint result once, without paying for another cold pass.
+
+Malformed combined output fails closed.
+If Document was skipped, no result survived a process boundary, or a lint fix round starts, Lint runs a fresh standalone pass.
+The optimization never removes either gate.
+
 ## What you can configure
 
 You cannot reorder steps.
 You can:
 
 - set explicit `commands.test`, `commands.lint`, and `commands.format`
+- define a trusted documentation ownership map with `document.instructions`
 - store test evidence locally by default, or opt into committed in-repo evidence with `test.evidence.store_in_repo`
 - ignore paths during review and documentation checks with `ignore_patterns`
 - disable or tune transcript-based intent extraction when intent is not supplied directly

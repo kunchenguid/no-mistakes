@@ -117,6 +117,24 @@ When a fix is authorized, a fresh routed fixer repairs the failure and the step 
 Test repair starts at `fix_balanced` because a failing test log is unstructured evidence; the fast tier is never used merely to infer scope.
 The same principle covers rebase conflicts and CI failures: see the [pipeline steps reference](/no-mistakes/reference/pipeline-steps/) for each step's repair behavior.
 
+## Combined housekeeping findings
+
+When `commands.lint` is empty, the Document authoring pass also performs the agent-driven lint duty.
+It applies safe lint and format fixes, then categorizes every unresolved finding as `documentation` or `lint`.
+
+The two categories keep separate owners:
+
+- a fresh documentation-only verifier produces the findings that gate Document
+- the combined pass hands lint findings to Lint once, where errors and warnings pause for approval
+- an uncategorized combined finding stays with Document, which is the stricter fail-safe gate
+
+Combined lint findings do not enter the routed repair coordinator automatically because the authoring pass already attempted safe fixes.
+If you authorize a lint fix, Lint runs a fresh standalone pass instead of trusting the consumed result.
+
+Malformed combined author output fails Document and invalidates any earlier lint result.
+A malformed result already handed to Lint fails Lint as inconclusive.
+When there is no trustworthy result to hand over, including after a skipped Document pass or a process boundary, Lint runs its own agent pass so the lint duty is not lost.
+
 ## User-triggered fixes
 
 When the pipeline pauses for approval, you can trigger a fix yourself from the TUI or the AXI interface:

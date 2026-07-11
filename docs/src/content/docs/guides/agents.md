@@ -58,6 +58,29 @@ A lineage that finishes its finite cascade unresolved or inconclusive stays bloc
 Unattended mode aborts the run instead of approving or retrying it.
 A normal gate stays parked for an explicit user decision.
 
+## Session reuse in the review loop
+
+`session_reuse` defaults to `true` and applies only to the review loop.
+Each run keeps one reviewer session across the initial review and every full rereview.
+The same run keeps a separate review-fixer session across fix turns, so the reviewer never inherits the fixer's context.
+Sessions never cross runs, roles, branches, or repositories.
+
+Claude resumes its native session with `claude -p --resume <id>`.
+Codex resumes its native thread with `codex exec resume <id> <prompt>`.
+Other runners do not advertise native resume support and run each turn cold.
+Set `session_reuse: false` in the global config to force every review-loop turn to run cold.
+
+A resume is pinned to the provider that created the stored session.
+It keeps the same semantic purpose, route tier, and durable scope.
+If resume fails, no-mistakes deletes that role's stored identity and reruns the same turn cold through the same routed request.
+The routed invocation journal records both the failed resume and the cold fallback.
+A cancelled invocation does not start a fallback turn.
+
+No-mistakes persists only the run, role, provider, and native session ID, never prompts or transcripts.
+A daemon restart restores a safely recoverable parked run at its recorded gate and reloads both role sessions.
+It does not rerun the completed review pass.
+Recovery fails closed if the parked gate, worktree, trusted routing, or stored session provider cannot be validated.
+
 ## Durable routing observability
 
 Before each native launch, no-mistakes appends an immutable, secret-free attempt record: the purpose, role, durable owner, and the candidate's profile, tier, index, runner, model, and effort.
@@ -106,8 +129,16 @@ Reattach an in-flight run by re-running `no-mistakes axi run` when it still matc
 If it shows `other_branch_active_run`, leave that run alone and start validation for the current branch with `no-mistakes axi run --intent "..."`.
 Use `no-mistakes axi abort --run <id>` only when you need to cancel a specific active run by id from outside its worktree.
 
-When an agent starts a new run, `--intent` is required and should describe what the user wanted to accomplish, not what files changed.
-Agents should prefer a few complete sentences over a terse summary, capturing user decisions, tradeoffs, constraints, ruled-out approaches, and explicit requests that would not be obvious from the diff alone.
+When an agent starts a new run, `--intent` is required and must describe what the user wanted to accomplish, not what files changed.
+No-mistakes stores this explicit intent as the authoritative acceptance criteria and uses it verbatim instead of transcript inference, even when intent extraction is disabled.
+Required constraints in the explicit intent must remain present, and forbidden behavior must remain absent.
+If a review or rereview finds that the change contradicts those criteria, it emits an `ask-user` finding and parks for a decision.
+The finding must identify the specific criterion and the contradicting diff, or the required behavior missing from the change.
+
+Only runs without explicit intent can use transcript inference.
+An inferred intent may be partial or wrong, so downstream prompts treat it as a guarded hint rather than ground truth.
+Both explicit and inferred intent are sanitized and delimited as data, not executable prompt instructions.
+Agents should prefer a few complete sentences for explicit intent, capturing user decisions, tradeoffs, constraints, ruled-out approaches, and requests that would not be obvious from the diff alone.
 If the repo is on the default branch or has uncommitted changes, direct `axi run` returns a structured error with the command the agent should run instead of silently creating a branch or commit.
 
 Approval gates are exposed as `gate:` objects with finding IDs, severities, files, actions, descriptions, and help commands for `no-mistakes axi respond`.

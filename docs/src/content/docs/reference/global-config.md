@@ -14,6 +14,8 @@ Without a config file, no-mistakes uses the defaults shown below and the [built-
 
 ci_timeout: "168h"
 
+session_reuse: true
+
 log_level: info
 
 intent:
@@ -56,6 +58,26 @@ Set it to `unlimited` (`none`, `off`, and `never` are accepted keywords), `0`, o
 
 The former `babysit_timeout` key was removed and is not an alias; a config that still sets it fails to load.
 
+### session_reuse
+
+Whether the review loop reuses durable, provider-native sessions within one run.
+
+| | |
+|---|---|
+| Type | `bool` |
+| Default | `true` |
+
+The initial review and every full rereview share one reviewer session.
+Review-fix turns share a separate fixer session, so the roles never share context.
+Claude resumes with `claude -p --resume <id>`, and Codex resumes with `codex exec resume <id> <prompt>`.
+Other runners stay cold.
+
+Session identities are scoped to one run and role.
+No-mistakes stores only the run, role, provider, and native session ID so a parked run can restore them after a daemon restart.
+A routed resume stays pinned to the provider that created the session.
+If it fails, no-mistakes deletes the identity and journals a cold retry of the same purpose, route tier, and durable scope.
+Set this field to `false` to make every review-loop invocation cold.
+
 ### log_level
 
 Daemon log verbosity.
@@ -70,6 +92,10 @@ Daemon log verbosity.
 
 Transcript-based user-intent extraction settings.
 When enabled and no intent was supplied directly for the run, no-mistakes can read recent local agent transcripts, match the session that produced the change, summarize the author's intent, pass that summary to the routed rebase, review, test, document, lint, CI repair, and PR invocations, and include it in generated PR descriptions.
+These settings control transcript inference only.
+An explicit `no-mistakes axi run --intent "..."` bypasses inference even when `intent.enabled` is `false`.
+Downstream prompts treat explicit intent as authoritative acceptance criteria and inferred intent as a guarded hint.
+If a review finds that the change contradicts explicit required or forbidden criteria, it emits an `ask-user` finding and parks for a decision.
 
 | | |
 |---|---|

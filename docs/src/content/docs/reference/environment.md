@@ -21,6 +21,7 @@ When set, everything else moves under this root:
 - Database: `$NM_HOME/state.sqlite`
 - Socket / PID: `$NM_HOME/socket` and `$NM_HOME/daemon.pid`
 - Managed agent server PID records: `$NM_HOME/servers/`
+- Read-command telemetry sampling state: `$NM_HOME/telemetry-gate.json`
 - Managed service names get a short stable suffix derived from `$NM_HOME` so multiple installs don't collide.
 
 ## `NO_MISTAKES_BITBUCKET_EMAIL`
@@ -102,10 +103,31 @@ Override or enable the telemetry website ID.
 
 When set, telemetry uses this website ID at runtime. If it is unset in a dev build, `no-mistakes` also checks a repo-local `.env` file for `NO_MISTAKES_UMAMI_WEBSITE_ID`. If no runtime value is found, it falls back to any website ID embedded at build time.
 
-When telemetry is enabled, `no-mistakes` sends command, run, approval, fix, and wizard events, completed step events with `awaiting_approval`, `fix_review`, or `failed` status, and pageviews for the human surfaces `/wizard` and `/tui` and the agent surfaces `/axi`, `/axi/run`, `/axi/respond`, `/axi/status`, `/axi/logs`, `/axi/abort`, `/axi/wizard`, and `/axi/canary` to Umami.
-AXI pageviews are sent alongside command events, so command status and duration remain available.
-They include only flag-derived context: `/axi/run` records whether `--yes`, `--intent`, or `--skip` was present; `/axi/respond` records the sanitized action and whether `--yes` was present; `/axi/status` records whether `--run` was present; and `/axi/logs` records the sanitized step, whether `--full` was present, and whether `--run` was present.
-The `/axi`, `/axi/abort`, `/axi/wizard`, and `/axi/canary` pageviews carry no flag-derived context.
+When telemetry is enabled, `no-mistakes` sends command, run, approval, fix, and wizard events.
+It also sends completed step events with `awaiting_approval`, `fix_review`, or `failed` status.
+Human pageviews use `/wizard` and `/tui`.
+Non-polling AXI pageviews use `/axi/run`, `/axi/respond`, `/axi/abort`, `/axi/wizard`, and `/axi/canary`.
+Each AXI pageview is paired with a command event so command status and duration remain available.
+
+The high-frequency read-only commands `axi`, `axi status`, `axi logs`, `status`, and `runs` send no pageviews.
+They send one command event on the first observation, immediately after a local state fingerprint changes, or after a 10-minute heartbeat while state remains unchanged.
+The deduplication state persists across CLI processes in `$NM_HOME/telemetry-gate.json`.
+Sampler read, lock, or write failures fail open and can cause an extra event rather than hiding a meaningful state change.
+The local fingerprint is never included in the remote event.
+
+Remote AXI context is limited to bounded flag-derived fields.
+`/axi/run` records only whether `--yes`, `--intent`, or `--skip` was present, not the intent or skip values.
+`/axi/respond` records the sanitized `approve`, `fix`, or `skip` action and whether `--yes` was present.
+The sampled `axi status` command records only whether `--run` was present.
+The sampled `axi logs` command records a registered step name or `invalid`, whether `--full` was present, and whether `--run` was present.
+No raw run ID is sent.
+The other listed AXI surfaces carry no flag-derived context.
+
+`no-mistakes stats`, including `--agents` and `--run <id>`, sends only the ordinary command name, status, and duration.
+Terminal run events add only `agent_invocations`, `resumed_invocations`, and `fallback_invocations` counts.
+Detailed local invocation records are not sent remotely.
+The terminal performance roll-up does not include run IDs, paths, providers, models, session keys, timings, token counts, prompts, model output, diffs, credentials, or raw errors.
+See [`no-mistakes stats`](/no-mistakes/reference/cli/#no-mistakes-stats) for the local report.
 
 ## `NO_MISTAKES_TELEMETRY`
 
