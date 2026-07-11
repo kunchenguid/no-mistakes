@@ -13,7 +13,6 @@ import (
 	"github.com/spf13/cobra"
 	toon "github.com/toon-format/toon-go"
 
-	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
@@ -414,21 +413,14 @@ func TestStatusRendersCurrentAutoFixAttemptWithPersistedLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load steps: %v", err)
 	}
-	rv := runViewFromDB(run, steps)
-	reviewLimit := 9
+	rv := runViewFromDB(database, run, steps)
 	annotateRunView(&axiEnv{
 		d: database,
 		p: paths.WithRoot(t.TempDir()),
-		cfg: &config.GlobalConfig{
-			AutoFix: config.AutoFixRaw{Review: &reviewLimit},
-		},
 	}, &rv)
 	out := axiDoc(runObjectField(rv))
 	if !strings.Contains(out, `review,fixing`) || !strings.Contains(out, `auto-fix 1/2`) {
 		t.Fatalf("status should render the in-flight first auto-fix attempt with persisted limit, got:\n%s", out)
-	}
-	if strings.Contains(out, `auto-fix 1/9`) {
-		t.Fatalf("status should not use the current global config limit, got:\n%s", out)
 	}
 }
 

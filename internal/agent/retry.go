@@ -172,13 +172,13 @@ func classifyTransient(err error) (string, bool) {
 		return "", false
 	}
 	msg := strings.ToLower(err.Error())
+	if m := transientStatusRE.FindString(msg); m != "" {
+		return "http " + m, true
+	}
 	for _, sig := range transientNeedles {
 		if strings.Contains(msg, sig.needle) {
 			return sig.label, true
 		}
-	}
-	if m := transientStatusRE.FindString(msg); m != "" {
-		return "http " + m, true
 	}
 	return "", false
 }

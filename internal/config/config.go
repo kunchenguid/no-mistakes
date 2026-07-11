@@ -105,7 +105,6 @@ type DocumentRaw struct {
 }
 
 
-
 // Commands holds optional per-repo command overrides.
 type Commands struct {
 	Lint   string `yaml:"lint"`
@@ -177,7 +176,6 @@ type Intent struct {
 	SlackDays       int
 	DisabledReaders map[string]bool
 }
-
 
 // defaultConfigYAML is the template written when no global config file exists.
 // Model selection is intentionally absent: the built-in routing contract
@@ -258,7 +256,6 @@ var legacyGlobalKeys = map[string]string{
 	"agent_path_override":    "runner executables are configured via `routing.runners.<name>.executable`",
 	"agent_args_override":    "native agent arguments are derived from routing profile candidates and cannot be overridden",
 	"auto_fix":               "per-step numeric auto-fix limits were removed; repair escalates through the routing cascade",
-
 }
 
 // legacyGlobalKeyOrder lists legacy keys in a stable order so a config with

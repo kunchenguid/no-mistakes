@@ -297,7 +297,6 @@ func TestDefaultConfigYAML_MatchesGoDefaults(t *testing.T) {
 		t.Fatalf("defaultConfigYAML is not valid YAML: %v", err)
 	}
 
-
 	d, err := time.ParseDuration(raw.CITimeout)
 	if err != nil {
 		t.Fatalf("YAML ci_timeout %q is not a valid duration: %v", raw.CITimeout, err)

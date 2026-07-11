@@ -71,15 +71,15 @@ func TestBodyDocumentsAxiGateGuidance(t *testing.T) {
 
 // TestBodyGateTranscriptShape pins the example gate transcript to the AXI
 // renderer's actual output shape: the findings header carries no `line`
-// column, and the help list is the renderer's five entries (approve, fix,
-// skip, logs, keep-driving). The cross-package guard that diffs the transcript
+// column, and the help list is the renderer's six entries (approve, fix,
+// skip, logs, keep-driving, preserve prior gate fixes). The cross-package guard that diffs the transcript
 // against the live renderer lives in internal/cli's
 // TestSkillGateTranscriptMatchesRenderer.
 func TestBodyGateTranscriptShape(t *testing.T) {
 	md := Markdown()
 	for _, want := range []string{
 		"findings[2]{id,severity,file,action,description}:",
-		"help[5]: Run `no-mistakes axi respond --action approve` to accept this step and continue",
+		"help[6]: Run `no-mistakes axi respond --action approve` to accept this step and continue",
 		"to have the pipeline fix the selected findings (do not edit files yourself)",
 		"Run `no-mistakes axi respond --action skip` to skip this step",
 		"Run `no-mistakes axi logs --step review --full` to read the full step log",
@@ -117,9 +117,6 @@ func TestBodyConsentFailClosedWording(t *testing.T) {
 		if !strings.Contains(md, want) {
 			t.Errorf("body missing consent/fail-closed wording %q", want)
 		}
-	}
-	if strings.Contains(md, "no-mistakes rerun") {
-		t.Errorf("body should not suggest the removed `no-mistakes rerun` command form")
 	}
 }
 

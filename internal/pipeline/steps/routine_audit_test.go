@@ -261,7 +261,7 @@ func TestPRCompositionUsesJournaledPurposeRouteAndCurrentRound(t *testing.T) {
 	}
 	invoker := routeRoutineCalls(sctx, routed)
 
-	content, err := (&PRStep{}).buildPRContent(sctx, "feature/routing", baseSHA)
+	content, err := (&PRStep{}).buildPRContent(sctx, "feature/routing", baseSHA, 0)
 	if err != nil {
 		t.Fatalf("build PR content: %v", err)
 	}

@@ -172,9 +172,22 @@ Run the pipeline and decide on its findings as they come up:
      successful no-op. Do not leave the user at a `failed` outcome without
      either retrying or explaining what blocks it.
 
+When you make an additional fix after a gate round has already produced fix
+commits, commit it on top of the existing branch and run
+`no-mistakes axi run --intent "..."` with the original user intent.
+Never abort-and-restart, reset the branch, or open a new branch in a way that
+drops prior gate-fix commits.
+A fresh run re-validates the branch's current state, so already-resolved
+findings do not re-surface.
+
 The CI step deliberately keeps watching the PR after checks pass, so
 `axi run` returns `checks-passed` the moment checks are green rather than
 blocking on the human merge. Never poll or re-run waiting for the merge yourself.
+If this PR later falls behind the default branch or hits a merge conflict, the
+CI monitor rebases onto the base, resolves it, and re-pushes the branch
+automatically - run no command and never hand-rebase.
+Only when that monitor is no longer running (PR closed, run aborted,
+idle-timeout, or auto-fix exhausted) recover with `no-mistakes rerun`.
 
 On a successful outcome (`checks-passed` or `passed`), close the loop with the
 user: summarize what happened during the pipeline in a concise, easily readable
@@ -251,7 +264,7 @@ gate:
   findings[2]{id,severity,file,action,description}:
     r1,warning,internal/pipeline/executor.go,auto-fix,Error from os.Remove is ignored
     r2,error,cmd/no-mistakes/main.go,ask-user,New --force flag bypasses the confirm prompt
-help[5]: Run `no-mistakes axi respond --action approve` to accept this step and continue,Run `no-mistakes axi respond --action fix --findings <ids>` to have the pipeline fix the selected findings (do not edit files yourself),Run `no-mistakes axi respond --action skip` to skip this step,Run `no-mistakes axi logs --step review --full` to read the full step log,"A long-running call is working, not stalled - background it if your harness needs to, but the run never advances past a gate on its own. Read every return; on a `gate:`, respond; loop until an `outcome:`."
+help[6]: Run `no-mistakes axi respond --action approve` to accept this step and continue,Run `no-mistakes axi respond --action fix --findings <ids>` to have the pipeline fix the selected findings (do not edit files yourself),Run `no-mistakes axi respond --action skip` to skip this step,Run `no-mistakes axi logs --step review --full` to read the full step log,"A long-running call is working, not stalled - background it if your harness needs to, but the run never advances past a gate on its own. Read every return; on a `gate:`, respond; loop until an `outcome:`.","When you make an additional fix after a gate round has already produced fix commits, commit it on top of the existing branch and run `no-mistakes axi run --intent \"...\"` with the original user intent. Never abort-and-restart, reset the branch, or open a new branch in a way that drops prior gate-fix commits. A fresh run re-validates the branch's current state, so already-resolved findings do not re-surface."
 ```
 
 Read the `action` column per row: decide `r1` (auto-fix) on your own

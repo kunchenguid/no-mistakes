@@ -317,7 +317,6 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 	}()
 }
 
-
 // Subscribe registers a channel to receive events for a run.
 // Returns the channel and an unsubscribe function.
 // If the run has already completed, the returned channel is immediately closed.

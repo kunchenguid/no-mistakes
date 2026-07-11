@@ -139,10 +139,15 @@ The TUI's yolo mode applies the same unattended consent and the same fail-closed
 `--yes` still stops at `checks-passed`, because a human must review and merge the PR.
 When CI is green but the PR is still open, `axi run` and `axi respond` return `outcome: checks-passed` with a help line pointing at the PR instead of waiting for a human merge.
 That is a successful agent stopping point: report that the PR is ready and ask the user to review and merge it.
+If this PR later falls behind the default branch or hits a merge conflict, the CI monitor rebases onto the base, resolves it, and re-pushes the branch automatically - run no command and never hand-rebase.
+Only when that monitor is no longer running (PR closed, run aborted, idle-timeout, or auto-fix exhausted) recover with `no-mistakes rerun`.
 Successful outcomes also instruct the agent to summarize the run, and include a `fixes` table when the pipeline applied fixes, so the agent can acknowledge what it missed and the user can review each fix.
 
 After a `failed` or `cancelled` outcome, address the reported problem, commit the correction on the same feature branch, then start a fresh validation with `no-mistakes axi run --intent "..."` or use the TUI rerun action.
 Never abort or rerun an active run to bypass a gate; those are between-runs actions.
+When you make an additional fix after a gate round has already produced fix commits, commit it on top of the existing branch and run `no-mistakes axi run --intent "..."` with the original user intent.
+Never abort-and-restart, reset the branch, or open a new branch in a way that drops prior gate-fix commits.
+A fresh run re-validates the branch's current state, so already-resolved findings do not re-surface.
 `no-mistakes axi abort` is idempotent: no active run is a successful no-op.
 
 ## Wizard utility routing

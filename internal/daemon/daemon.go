@@ -357,6 +357,7 @@ func skipWorktreeCleanup(d *db.DB, runID string) (bool, string) {
 		return true, fmt.Sprintf("run %s is %s", runID, run.Status)
 	}
 	return false, ""
+}
 
 func recoverStaleUtilityInvocations(d *db.DB) {
 	scopes, err := d.GetOpenUtilityScopes()
