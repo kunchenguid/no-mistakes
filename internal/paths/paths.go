@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
+	"testing"
 )
 
 // Paths provides access to all no-mistakes filesystem locations.
@@ -19,7 +19,7 @@ func New() (*Paths, error) {
 	if env := os.Getenv("NM_HOME"); env != "" {
 		return &Paths{root: env}, nil
 	}
-	if runningUnderGoTest() && os.Getenv("NO_MISTAKES_ALLOW_DEFAULT_ROOT_IN_TESTS") != "1" {
+	if testing.Testing() && os.Getenv("NO_MISTAKES_ALLOW_DEFAULT_ROOT_IN_TESTS") != "1" {
 		return nil, fmt.Errorf("NM_HOME must be set under go test to avoid touching the real no-mistakes daemon root")
 	}
 	home, err := os.UserHomeDir()
@@ -27,11 +27,6 @@ func New() (*Paths, error) {
 		return nil, err
 	}
 	return &Paths{root: filepath.Join(home, ".no-mistakes")}, nil
-}
-
-func runningUnderGoTest() bool {
-	name := filepath.Base(os.Args[0])
-	return strings.HasSuffix(name, ".test") || strings.HasSuffix(name, ".test.exe")
 }
 
 // WithRoot returns Paths rooted at a custom directory (for testing).
