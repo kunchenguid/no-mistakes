@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.35.0](https://github.com/kunchenguid/no-mistakes/compare/v1.34.2...v1.35.0) (2026-07-11)
+
+
+### Features
+
+* **pipeline:** reuse review sessions and streamline telemetry ([#444](https://github.com/kunchenguid/no-mistakes/issues/444)) ([48bd29f](https://github.com/kunchenguid/no-mistakes/commit/48bd29f6c04eef9876d4e85bf97af465de023df4))
+
 ## [1.34.2](https://github.com/kunchenguid/no-mistakes/compare/v1.34.1...v1.34.2) (2026-07-10)
 
 
