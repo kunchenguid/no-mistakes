@@ -19,6 +19,14 @@ import (
 // path. Only the exact value 1 enables it; any other value (including 0 or
 // false) and unset leave it disabled. With diagnostics off and no sentinel
 // present, spawnDiag is a no-op with zero overhead.
+//
+// WARNING: when enabled, the diagnostic writes the agent's raw stdout head and
+// its full stderr to the daemon log verbatim. The argv prompt and JSON schema
+// are redacted, but the captured streams are not: stdout reflects the model's
+// response (and may carry the structured-output JSON) and stderr can carry
+// secrets. Enable this only for a controlled, short-lived debug session, then
+// unset the variable or remove the sentinel. Do not leave it on in a shared or
+// long-running deployment.
 const spawnDiagEnv = "NM_SPAWN_DIAG"
 
 // spawnDiagSentinel is a file under NM_HOME that also enables diagnostics. The
@@ -115,6 +123,9 @@ func (d *spawnDiag) wrapStdout(r io.Reader) io.Reader {
 // by the time any exit branch runs the child has already been reaped (every
 // path follows started.wait or waitAfterParseError), so a lookup would report
 // "gone" or, worse, a reused PID. The live image is captured by logStarted.
+//
+// The stdout head and stderr are logged verbatim; see the spawnDiagEnv warning
+// about enabling this only for a controlled debug session.
 func (d *spawnDiag) logExit(pid int, path string, pathErr error, gotResult bool, stderr []byte) {
 	if !d.enabled {
 		return
