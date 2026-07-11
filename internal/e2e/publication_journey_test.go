@@ -66,7 +66,7 @@ func verifyStepAttempts(t *testing.T, h *Harness, runID string, attempts []*db.I
 	return out
 }
 
-func assertPublicationCompleted(t *testing.T, h *Harness, run *ipc.RunInfo, branch string, verifyCount int, purpose types.Purpose, profile string, effort types.Effort) {
+func assertPublicationCompleted(t *testing.T, h *Harness, run *ipc.RunInfo, branch string, verifyCount int, purpose types.Purpose, profile string, runner types.Runner, model string, effort types.Effort) {
 	t.Helper()
 	if run.Status != types.RunCompleted {
 		t.Fatalf("run status = %s, want completed (error=%v)", run.Status, deref(run.Error))
@@ -99,11 +99,18 @@ func assertPublicationCompleted(t *testing.T, h *Harness, run *ipc.RunInfo, bran
 	}
 	if verifyCount > 0 {
 		review, _ := findStep(run.Steps, types.StepReview)
-		if review.FindingsJSON != nil {
+		if review.FindingsJSON == nil {
+			t.Fatal("resolved Review has no durable full-rereview result")
+		}
+		findings, err := types.ParseFindingsJSON(*review.FindingsJSON)
+		if err != nil {
+			t.Fatalf("parse resolved Review findings: %v", err)
+		}
+		if len(findings.Items) != 0 {
 			t.Fatalf("resolved Review still exposes stale findings: %s", *review.FindingsJSON)
 		}
 	}
-	assertPublicationVerification(t, h, run, verifyCount, purpose, profile, effort)
+	assertPublicationVerification(t, h, run, verifyCount, purpose, profile, runner, model, effort)
 	assertPublicationSeals(t, h, run.ID, run.HeadSHA)
 	if upstream := h.UpstreamBranchSHA(branch); upstream != run.HeadSHA {
 		t.Fatalf("upstream branch SHA = %s, want exact sealed run head %s", upstream, run.HeadSHA)
@@ -112,7 +119,7 @@ func assertPublicationCompleted(t *testing.T, h *Harness, run *ipc.RunInfo, bran
 	assertNoCIVerifyReentry(t, h, run)
 }
 
-func assertPublicationVerification(t *testing.T, h *Harness, run *ipc.RunInfo, wantCount int, purpose types.Purpose, profile string, effort types.Effort) {
+func assertPublicationVerification(t *testing.T, h *Harness, run *ipc.RunInfo, wantCount int, purpose types.Purpose, profile string, runner types.Runner, model string, effort types.Effort) {
 	t.Helper()
 	attempts := verifyStepAttempts(t, h, run.ID, h.InvocationAttempts(t, run.ID))
 	if len(attempts) != wantCount {
@@ -125,10 +132,12 @@ func assertPublicationVerification(t *testing.T, h *Harness, run *ipc.RunInfo, w
 	if attempt.Start.Purpose != purpose {
 		t.Fatalf("Verify purpose = %q, want %q", attempt.Start.Purpose, purpose)
 	}
-	candidate := attempt.Start.Candidate
-	if candidate.Profile != profile || candidate.Tier != 0 || candidate.Effort != effort {
-		t.Fatalf("Verify candidate = {profile:%q tier:%d effort:%q}, want {profile:%q tier:0 effort:%q}",
-			candidate.Profile, candidate.Tier, candidate.Effort, profile, effort)
+	wantCandidate := types.InvocationCandidate{
+		Profile: profile, Tier: 0, CandidateIndex: 0,
+		Runner: runner, Model: model, Effort: effort,
+	}
+	if attempt.Start.Candidate != wantCandidate {
+		t.Fatalf("Verify candidate = %+v, want exact routed candidate %+v", attempt.Start.Candidate, wantCandidate)
 	}
 	if attempt.Terminal == nil || attempt.Terminal.Outcome != types.InvocationOutcomeSucceeded {
 		t.Fatalf("Verify verifier did not succeed: %+v", attempt.Terminal)
@@ -287,7 +296,7 @@ func TestPublicationSealsReviewedCandidateAtPushedHead(t *testing.T) {
 	h.PushToGate("publication-clean-seal")
 
 	run := h.WaitForRun("publication-clean-seal", 30*time.Second)
-	assertPublicationCompleted(t, h, run, "publication-clean-seal", 0, "", "", "")
+	assertPublicationCompleted(t, h, run, "publication-clean-seal", 0, "", "", "", "", "")
 	assertNoPublicationRepairs(t, h, run.ID)
 }
 
@@ -319,18 +328,26 @@ func TestPublicationSkipsUnchangedVerify(t *testing.T) {
 	h.PushToGate("publication-verify-skip")
 
 	run := h.WaitForRun("publication-verify-skip", 30*time.Second)
-	assertPublicationCompleted(t, h, run, "publication-verify-skip", 0, "", "", "")
+	assertPublicationCompleted(t, h, run, "publication-verify-skip", 0, "", "", "", "", "")
 	assertNoPublicationRepairs(t, h, run.ID)
 }
 
 // TestPublicationVerifyEscalatesToAuthorityStrongXHigh proves criterion 245's
-// xhigh Verify trigger: when the initial review was high risk (and the candidate
-// then changed via repair), Verify runs at authority_strong / EffortXHigh under
+// xhigh Verify trigger: after a high-risk repair receives its mandatory clean
+// full rereview, housekeeping changes the reviewed candidate. Verify must then
+// certify the later candidate at authority_strong / EffortXHigh under
 // PurposeEscalatedAggregateVerification. The blocking finding is resolved at
 // tier 0 (its repair verifier is the review_strong normal verifier), so the sole
 // escalated aggregate verification in the run is the Verify step's own gate.
 func TestPublicationVerifyEscalatesToAuthorityStrongXHigh(t *testing.T) {
 	scenario := writeScenario(t, `actions:
+  - match: "Review the code changes and return structured findings with a risk assessment.\n\nContext:\n- branch: publication-verify-xhigh"
+    match_file: "publication-verify-xhigh-resolved.txt"
+    text: "clean full rereview after authority-triggering repair"
+    structured:
+      findings: []
+      risk_level: low
+      risk_rationale: "the repaired branch is clean"
   - match: "Review the code changes and return structured findings with a risk assessment.\n\nContext:\n- branch: publication-verify-xhigh"
     text: "found a blocking bug"
     structured:
@@ -348,6 +365,8 @@ func TestPublicationVerifyEscalatesToAuthorityStrongXHigh(t *testing.T) {
     edits:
       - path: "pub.txt"
         new: "fixed\n"
+      - path: "publication-verify-xhigh-resolved.txt"
+        new: "resolved\n"
     structured:
       summary: "guarded the bug"
   - match: "Independently verify whether each of the following"
@@ -358,6 +377,15 @@ func TestPublicationVerifyEscalatesToAuthorityStrongXHigh(t *testing.T) {
           status: "resolved"
           rationale: "the bug is now guarded"
       new_findings: []
+  - match: "Perform the combined documentation and lint housekeeping pass for this change."
+    match_file: "publication-verify-xhigh-resolved.txt"
+    text: "documented the authority-triggering repair after full rereview"
+    edits:
+      - path: "publication-verify-xhigh-note.md"
+        new: "The high-risk repair was documented after full rereview.\n"
+    structured:
+      findings: []
+      summary: "documented the repaired candidate"
   - match: "You are performing the final aggregate verification of a sealed release candidate before it is published."
     text: "aggregate verification passed"
     structured:
@@ -376,18 +404,25 @@ func TestPublicationVerifyEscalatesToAuthorityStrongXHigh(t *testing.T) {
 	}
 	assertPublicationInitialRisk(t, h, run, "high")
 	assertResolvedPublicationRepair(t, h, run, "high-risk blocking bug", types.PurposeStructuredFindingRepair, types.PurposeNormalAggregateVerification)
-	assertPublicationCompleted(t, h, run, "publication-verify-xhigh", 1, types.PurposeEscalatedAggregateVerification, "authority_strong", types.EffortXHigh)
+	assertPublicationCompleted(t, h, run, "publication-verify-xhigh", 1, types.PurposeEscalatedAggregateVerification, "authority_strong", types.RunnerCodex, "gpt-5.6-sol", types.EffortXHigh)
 }
 
 // TestPublicationVerifyNormalUsesReviewStrong proves criterion 245's normal
-// Verify case: when the candidate changed (a blocking finding was repaired) but
-// the initial review was NOT high risk and there is no user intent or fix mode,
-// Verify runs under PurposeNormalAggregateVerification at review_strong /
-// EffortHigh - not escalated. It is the risk_level-only counterpart to the xhigh
-// test, isolating the Verify step's verifier from the tier-0 repair verifier
-// (which shares the normal purpose) by the Verify step's result id.
+// Verify case: after an ordinary-risk repair receives its mandatory clean full
+// rereview, housekeeping changes the reviewed candidate. With no user intent,
+// high-risk history, or fix mode, Verify must certify the later candidate under
+// PurposeNormalAggregateVerification at review_strong / EffortHigh. This
+// isolates the Verify step's verifier from the tier-0 repair verifier (which
+// shares the normal purpose) by the Verify step's result id.
 func TestPublicationVerifyNormalUsesReviewStrong(t *testing.T) {
 	scenario := writeScenario(t, `actions:
+  - match: "Review the code changes and return structured findings with a risk assessment.\n\nContext:\n- branch: publication-verify-normal"
+    match_file: "publication-verify-normal-resolved.txt"
+    text: "clean full rereview after normal-risk repair"
+    structured:
+      findings: []
+      risk_level: low
+      risk_rationale: "the repaired branch is clean"
   - match: "Review the code changes and return structured findings with a risk assessment.\n\nContext:\n- branch: publication-verify-normal"
     text: "found a blocking bug"
     structured:
@@ -405,6 +440,8 @@ func TestPublicationVerifyNormalUsesReviewStrong(t *testing.T) {
     edits:
       - path: "pub.txt"
         new: "fixed\n"
+      - path: "publication-verify-normal-resolved.txt"
+        new: "resolved\n"
     structured:
       summary: "guarded the bug"
   - match: "Independently verify whether each of the following"
@@ -415,6 +452,15 @@ func TestPublicationVerifyNormalUsesReviewStrong(t *testing.T) {
           status: "resolved"
           rationale: "the bug is now guarded"
       new_findings: []
+  - match: "Perform the combined documentation and lint housekeeping pass for this change."
+    match_file: "publication-verify-normal-resolved.txt"
+    text: "documented the normal-risk repair after full rereview"
+    edits:
+      - path: "publication-verify-normal-note.md"
+        new: "The normal-risk repair was documented after full rereview.\n"
+    structured:
+      findings: []
+      summary: "documented the repaired candidate"
   - match: "You are performing the final aggregate verification of a sealed release candidate before it is published."
     text: "aggregate verification passed"
     structured:
@@ -433,7 +479,7 @@ func TestPublicationVerifyNormalUsesReviewStrong(t *testing.T) {
 	}
 	assertPublicationInitialRisk(t, h, run, "medium")
 	assertResolvedPublicationRepair(t, h, run, "blocking bug at normal risk", types.PurposeStructuredFindingRepair, types.PurposeNormalAggregateVerification)
-	assertPublicationCompleted(t, h, run, "publication-verify-normal", 1, types.PurposeNormalAggregateVerification, "review_strong", types.EffortHigh)
+	assertPublicationCompleted(t, h, run, "publication-verify-normal", 1, types.PurposeNormalAggregateVerification, "review_strong", types.RunnerCodex, "gpt-5.6-sol", types.EffortHigh)
 }
 
 // TestPublicationRefusesPushOnUpstreamDrift proves criterion 245's Push drift
@@ -523,7 +569,7 @@ func TestPublicationRefusesPushOnUpstreamDrift(t *testing.T) {
 			t.Fatalf("%s step = %+v, want completed before the Push refusal", name, step)
 		}
 	}
-	assertPublicationVerification(t, h, failed, 1, types.PurposeEscalatedAggregateVerification, "authority_strong", types.EffortXHigh)
+	assertPublicationVerification(t, h, failed, 1, types.PurposeEscalatedAggregateVerification, "authority_strong", types.RunnerCodex, "gpt-5.6-sol", types.EffortXHigh)
 	assertPublicationSeals(t, h, failed.ID, failed.HeadSHA)
 	assertNoCIVerifyReentry(t, h, failed)
 	for _, name := range []types.StepName{types.StepPR, types.StepCI} {
@@ -551,13 +597,20 @@ func TestPublicationRefusesPushOnUpstreamDrift(t *testing.T) {
 }
 
 // TestPublicationVerifyEscalatesOnUserIntent proves criterion 245's intent
-// trigger in isolation: a normal-risk run carrying user intent escalates Verify
-// to authority_strong (xhigh) solely because UserIntent is set — no high-risk
-// review and no fix mode. Intent is set through the real transcript-extraction
-// path (like TestIntentJourney); an informational finding changes the candidate
-// so Verify runs rather than skipping.
+// trigger in isolation: UserIntent alone escalates Verify to authority_strong
+// (xhigh), with no high-risk review or fix mode.
+// Intent is set through the real transcript-extraction
+// path (like TestIntentJourney); after the informational repair receives its
+// mandatory clean rereview, a housekeeping change makes Verify necessary.
 func TestPublicationVerifyEscalatesOnUserIntent(t *testing.T) {
 	scenario := writeScenario(t, `actions:
+  - match: "Review the code changes and return structured findings with a risk assessment.\n\nContext:\n- branch: publication-verify-intent"
+    match_file: "publication-verify-intent-resolved.txt"
+    text: "clean full rereview after intent-aware repair"
+    structured:
+      findings: []
+      risk_level: low
+      risk_rationale: "the repaired branch still satisfies user intent"
   - match: "Review the code changes and return structured findings with a risk assessment.\n\nContext:\n- branch: publication-verify-intent"
     text: "found an informational nit"
     structured:
@@ -575,6 +628,8 @@ func TestPublicationVerifyEscalatesOnUserIntent(t *testing.T) {
     edits:
       - path: "verify-intent.txt"
         new: "nit addressed\n"
+      - path: "publication-verify-intent-resolved.txt"
+        new: "resolved\n"
     structured:
       summary: "addressed the nit"
   - match: "Independently verify whether each of the following"
@@ -585,6 +640,15 @@ func TestPublicationVerifyEscalatesOnUserIntent(t *testing.T) {
           status: "resolved"
           rationale: "the nit is addressed"
       new_findings: []
+  - match: "Perform the combined documentation and lint housekeeping pass for this change."
+    match_file: "publication-verify-intent-resolved.txt"
+    text: "documented the intent-aware repair after full rereview"
+    edits:
+      - path: "publication-verify-intent-note.md"
+        new: "The intent-aware repair was documented after full rereview.\n"
+    structured:
+      findings: []
+      summary: "documented the repaired candidate"
   - match: "You are performing the final aggregate verification of a sealed release candidate before it is published."
     text: "aggregate verification passed"
     structured:
@@ -608,5 +672,5 @@ func TestPublicationVerifyEscalatesOnUserIntent(t *testing.T) {
 	}
 	assertPublicationInitialRisk(t, h, run, "low")
 	assertResolvedPublicationRepair(t, h, run, "informational nit", types.PurposeInformationalRepair, types.PurposeInformationalRepairVerification)
-	assertPublicationCompleted(t, h, run, "publication-verify-intent", 1, types.PurposeEscalatedAggregateVerification, "authority_strong", types.EffortXHigh)
+	assertPublicationCompleted(t, h, run, "publication-verify-intent", 1, types.PurposeEscalatedAggregateVerification, "authority_strong", types.RunnerCodex, "gpt-5.6-sol", types.EffortXHigh)
 }

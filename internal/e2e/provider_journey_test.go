@@ -253,13 +253,21 @@ func TestProviderAllDomainsFailClosed(t *testing.T) {
 
 // TestProviderNonOperationalNeverOpensCircuit proves a non-operational failure
 // never opens a provider circuit. A tier-0 informational fixer succeeds and its
-// independent verifier returns unresolved, which warrants escalation from
-// fix_fast to tools_balanced. The tier-1 codex fixer then emits wire-valid
-// output with no parseable structured result (fail: output). That model-output
-// failure conclusively ends the non-blocking lineage as inconclusive: it does
-// not fail over, open a circuit, or prevent later codex Test and Lint attempts.
+// independent verifier returns unresolved, warranting tools_balanced escalation.
+// The resumed tier-1 fixer and its required cold-session fallback both emit
+// wire-valid output with no parseable structured result (fail: output). Those
+// two journal attempts are one logical repair turn, and their model-output
+// failures do not fail over, open a circuit, or prevent the mandatory full
+// rereview and later codex Test and combined-housekeeping attempts.
 func TestProviderNonOperationalNeverOpensCircuit(t *testing.T) {
 	scenario := writeScenario(t, `actions:
+  - match: "Review the code changes and return structured findings with a risk assessment.\n\nContext:\n- branch: provider-nonop-control"
+    match_file: "provider-nonop-control-repaired.txt"
+    text: "clean full rereview after the durable informational repair"
+    structured:
+      findings: []
+      risk_level: low
+      risk_rationale: "the repaired candidate is clean"
   - match: "Review the code changes and return structured findings with a risk assessment.\n\nContext:\n- branch: provider-nonop-control"
     text: "informational cleanup suggestion"
     structured:
@@ -278,6 +286,8 @@ func TestProviderNonOperationalNeverOpensCircuit(t *testing.T) {
     edits:
       - path: "provider.txt"
         new: "first-tier cleanup\n"
+      - path: "provider-nonop-control-repaired.txt"
+        new: "durable informational repair applied\n"
     structured:
       summary: "first-tier cleanup attempt"
   - match: "Independently verify whether each of the following"
@@ -305,6 +315,21 @@ func TestProviderNonOperationalNeverOpensCircuit(t *testing.T) {
 	}
 
 	attempts := h.InvocationAttempts(t, run.ID)
+	reviews := attemptsForPurpose(attempts, types.PurposeInitialReview)
+	if len(reviews) != 2 {
+		t.Fatalf("initial-review purpose attempts = %d %v, want initial review plus one mandatory full rereview", len(reviews), candidateModels(reviews))
+	}
+	for i, review := range reviews {
+		assertCandidate(t, review, "review_strong", 0, "sol", types.EffortHigh)
+		if review.Start.Candidate.Runner != types.RunnerCodex || review.Start.Candidate.CandidateIndex != 0 ||
+			review.Terminal == nil || review.Terminal.Outcome != types.InvocationOutcomeSucceeded {
+			t.Fatalf("review attempt %d = %+v, want succeeded primary codex review_strong candidate", i, review)
+		}
+	}
+	if reviews[0].Start.Scope.StepRoundID == "" || reviews[1].Start.Scope.StepRoundID == "" ||
+		reviews[0].Start.Scope.StepRoundID == reviews[1].Start.Scope.StepRoundID {
+		t.Fatalf("review round IDs = %q / %q, want distinct durable initial-review and full-rereview rounds", reviews[0].Start.Scope.StepRoundID, reviews[1].Start.Scope.StepRoundID)
+	}
 
 	// No attempt carries an operational failure domain or a circuit-skip
 	// terminal. The model-output failure therefore leaves both provider circuits
@@ -327,21 +352,33 @@ func TestProviderNonOperationalNeverOpensCircuit(t *testing.T) {
 		t.Fatalf("anthropic circuit skips = %d, want 0", len(skips))
 	}
 
-	// The unresolved tier-0 verifier is the evidence that warrants escalation.
-	// Both repair tiers stay on the codex primary; only the second tier fails.
+	// The unresolved tier-0 verifier warrants escalation. The first tier-1
+	// attempt resumes the fixer session established by Luna; its output failure
+	// triggers the required cold-session fallback under the same semantic
+	// purpose, profile, tier, and durable repair round. It is not a third tier.
 	fixers := attemptsForPurpose(attempts, types.PurposeInformationalRepair)
-	if len(fixers) != 2 {
-		t.Fatalf("informational repair attempts = %d %v, want exactly 2 (fix_fast then warranted tools_balanced)", len(fixers), candidateModels(fixers))
+	if len(fixers) != 3 {
+		t.Fatalf("informational repair attempts = %d %v, want Luna tier 0 plus resumed and cold-fallback Terra attempts at tier 1", len(fixers), candidateModels(fixers))
 	}
 	assertCandidate(t, fixers[0], "fix_fast", 0, "luna", types.EffortMedium)
 	if fixers[0].Start.Candidate.Runner != types.RunnerCodex || fixers[0].Start.Candidate.CandidateIndex != 0 ||
 		fixers[0].Terminal == nil || fixers[0].Terminal.Outcome != types.InvocationOutcomeSucceeded {
 		t.Fatalf("tier-0 informational fixer = %+v, want succeeded primary codex candidate", fixers[0])
 	}
-	assertCandidate(t, fixers[1], "tools_balanced", 1, "terra", types.EffortHigh)
-	if fixers[1].Start.Candidate.Runner != types.RunnerCodex || fixers[1].Start.Candidate.CandidateIndex != 0 ||
-		fixers[1].Terminal == nil || fixers[1].Terminal.Outcome != types.InvocationOutcomeFailed || fixers[1].Terminal.FailureDomain != "" {
-		t.Fatalf("tier-1 informational fixer = %+v, want failed primary codex candidate with no failure domain", fixers[1])
+	if fixers[0].Start.Scope.StepRoundID == "" {
+		t.Fatal("tier-0 informational fixer has no durable repair round")
+	}
+	for i, fixer := range fixers[1:] {
+		assertCandidate(t, fixer, "tools_balanced", 1, "terra", types.EffortHigh)
+		if fixer.Start.Candidate.Runner != types.RunnerCodex || fixer.Start.Candidate.CandidateIndex != 0 ||
+			fixer.Terminal == nil || fixer.Terminal.Outcome != types.InvocationOutcomeFailed || fixer.Terminal.FailureDomain != "" {
+			t.Fatalf("tier-1 informational fixer attempt %d = %+v, want failed primary codex candidate with no failure domain", i, fixer)
+		}
+	}
+	if fixers[1].ID == fixers[2].ID || fixers[1].Start.Scope.StepRoundID == "" ||
+		fixers[1].Start.Scope.StepRoundID != fixers[2].Start.Scope.StepRoundID ||
+		fixers[0].Start.Scope.StepRoundID == fixers[1].Start.Scope.StepRoundID {
+		t.Fatalf("informational repair attempt rounds = [%q %q %q], want tier-0 round then two distinct attempts in one tier-1 fallback round", fixers[0].Start.Scope.StepRoundID, fixers[1].Start.Scope.StepRoundID, fixers[2].Start.Scope.StepRoundID)
 	}
 
 	verifiers := attemptsForPurpose(attempts, types.PurposeInformationalRepairVerification)
@@ -378,20 +415,26 @@ func TestProviderNonOperationalNeverOpensCircuit(t *testing.T) {
 		t.Fatalf("tier-1 repair = %+v, want terminal unlinked inconclusive informational disposition", second)
 	}
 
-	// Closed circuits keep the exact primary tools_balanced route available to
-	// later Test and Lint work.
-	assertLaterCodexSuccess := func(purpose types.Purpose) {
+	// Closed circuits keep later primary codex work available. Test uses the
+	// tools_balanced route directly. With no configured lint command, Document
+	// performs the lint duty in its combined authoring pass and Lint consumes
+	// that result without launching a separate lint_inspection attempt.
+	assertLaterCodexSuccess := func(purpose types.Purpose, profile, model string, effort types.Effort) {
 		t.Helper()
 		got := attemptsForPurpose(attempts, purpose)
 		if len(got) != 1 {
 			t.Fatalf("purpose %q attempts = %d %v, want exactly one primary codex attempt", purpose, len(got), candidateModels(got))
 		}
-		assertCandidate(t, got[0], "tools_balanced", 0, "terra", types.EffortHigh)
+		assertCandidate(t, got[0], profile, 0, model, effort)
 		if got[0].Start.Candidate.Runner != types.RunnerCodex || got[0].Start.Candidate.CandidateIndex != 0 ||
 			got[0].Terminal == nil || got[0].Terminal.Outcome != types.InvocationOutcomeSucceeded {
 			t.Fatalf("purpose %q attempt = %+v, want succeeded primary codex candidate", purpose, got[0])
 		}
 	}
-	assertLaterCodexSuccess(types.PurposeTestEvidence)
-	assertLaterCodexSuccess(types.PurposeLintInspection)
+	assertLaterCodexSuccess(types.PurposeTestEvidence, "tools_balanced", "terra", types.EffortHigh)
+	assertLaterCodexSuccess(types.PurposeDocumentationAuthoring, "prose_fast", "luna", types.EffortLow)
+	assertLaterCodexSuccess(types.PurposeDocumentationVerification, "tools_balanced", "terra", types.EffortHigh)
+	if lint := attemptsForPurpose(attempts, types.PurposeLintInspection); len(lint) != 0 {
+		t.Fatalf("lint inspection attempts = %d %v, want 0 because the combined housekeeping pass supplied the lint result", len(lint), candidateModels(lint))
+	}
 }

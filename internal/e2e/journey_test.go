@@ -55,16 +55,24 @@ func TestUserJourney(t *testing.T) {
 
 func TestAgentlessRunFailsBeforePipelineStarts(t *testing.T) {
 	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: cleanReviewScenario(t)})
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("find git for isolated agentless PATH: %v", err)
+	}
+	if err := os.Symlink(gitPath, filepath.Join(h.BinDir, "git")); err != nil {
+		t.Fatalf("link git into isolated agentless PATH: %v", err)
+	}
+
+	out, err := h.RunInDirWithEnv(h.WorkDir, map[string]string{"PATH": h.BinDir}, "init")
+	if err != nil {
+		t.Fatalf("nm init: %v\n%s", err, out)
+	}
 	for _, name := range []string{"claude", "codex", "opencode"} {
 		if err := os.Remove(filepath.Join(h.BinDir, name)); err != nil {
 			t.Fatalf("remove fake %s agent: %v", name, err)
 		}
 	}
 
-	out, err := h.Run("init")
-	if err != nil {
-		t.Fatalf("nm init: %v\n%s", err, out)
-	}
 	h.CommitChange("agentless", "agentless.txt", "agentless validation\n", "test agentless validation")
 	h.PushToGate("agentless")
 	run := h.WaitForRun("agentless", 60*time.Second)
@@ -75,10 +83,9 @@ func TestAgentlessRunFailsBeforePipelineStarts(t *testing.T) {
 	if run.Error == nil {
 		t.Fatal("agentless run should explain why validation cannot start")
 	}
-	for _, want := range []string{"no runnable agent", "gate cannot validate"} {
-		if !strings.Contains(*run.Error, want) {
-			t.Errorf("agentless run error should contain %q, got %q", want, *run.Error)
-		}
+	wantRoutingFailure := `routing profile "prose_fast" has no runnable candidate (looked for: codex, claude); the gate cannot validate without a configured runner`
+	if *run.Error != wantRoutingFailure {
+		t.Errorf("agentless run error = %q, want exact routing failure %q", *run.Error, wantRoutingFailure)
 	}
 	if len(run.Steps) != 0 {
 		t.Fatalf("agentless run started %d pipeline steps, want fail-fast before steps: %+v", len(run.Steps), run.Steps)
@@ -258,10 +265,10 @@ func runHappyPath(t *testing.T, agentName string) {
 		assertDocumentWarningRun(t, h)
 		assertDocumentInfoRun(t, h)
 		assertReviewWarningRun(t, h)
-		assertReviewAutoFixRepairRun(t, h)
 		assertTestAgentNewTestFileRun(t, h)
 		assertTestAgentStagedNewTestFileRun(t, h)
 	}
+	assertReviewAutoFixRepairRun(t, h)
 	assertRunsDefaultLimit(t, h)
 	assertGateRefDeletionDoesNotCreateRun(t, h, "configured-commands")
 	assertStatusShortHeadSHA(t, h)
@@ -397,6 +404,13 @@ func cleanReviewScenario(t *testing.T) string {
           rationale: "the informational note remains advisory"
       new_findings: []
   - match: "Review the code changes and return structured findings with a risk assessment.\n\nContext:\n- branch: review-autofix-repair"
+    match_file: "review-autofix-repair-resolved.txt"
+    text: "clean full rereview after resolved repair"
+    structured:
+      findings: []
+      risk_level: low
+      risk_rationale: "the repaired branch is clean"
+  - match: "Review the code changes and return structured findings with a risk assessment.\n\nContext:\n- branch: review-autofix-repair"
     text: "found a fixable bug"
     structured:
       findings:
@@ -413,6 +427,8 @@ func cleanReviewScenario(t *testing.T) string {
     edits:
       - path: "repair.txt"
         new: "fixed\n"
+      - path: "review-autofix-repair-resolved.txt"
+        new: "resolved\n"
     structured:
       summary: "guard the logic bug"
   - match: "Independently verify whether each of the following"
@@ -2911,8 +2927,15 @@ func assertReviewAutoFixRepairRun(t *testing.T, h *Harness) {
 	if reviewStep.Status != types.StepStatusCompleted {
 		t.Fatalf("review-autofix-repair step status = %s, want completed", reviewStep.Status)
 	}
-	if reviewStep.FindingsJSON != nil {
-		t.Fatalf("resolved review finding still gates the run: %s", *reviewStep.FindingsJSON)
+	if reviewStep.FindingsJSON == nil {
+		t.Fatal("resolved Review has no durable full-rereview result")
+	}
+	findings, err := types.ParseFindingsJSON(*reviewStep.FindingsJSON)
+	if err != nil {
+		t.Fatalf("parse resolved Review findings: %v", err)
+	}
+	if len(findings.Items) != 0 {
+		t.Fatalf("resolved Review still exposes stale findings: %s", *reviewStep.FindingsJSON)
 	}
 
 	invs := h.AgentInvocations()
