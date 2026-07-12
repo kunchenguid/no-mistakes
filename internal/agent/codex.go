@@ -26,7 +26,7 @@ func (a *codexAgent) Name() string { return "codex" }
 
 // SupportsSessionResume reports codex's native durable-session capability:
 // `codex exec --json` emits thread.started with a thread_id, and
-// `codex exec resume <id> <prompt>` continues that thread.
+// `codex exec resume <id> -` continues that thread with the prompt on stdin.
 func (a *codexAgent) SupportsSessionResume() bool { return true }
 
 func (a *codexAgent) ReportsAgentAttempts() bool { return true }
@@ -72,7 +72,10 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 	args := a.buildArgs(opts.Prompt, schemaPath, resumeID)
 	cmd := exec.CommandContext(ctx, a.bin, args...)
 	cmd.Dir = opts.CWD
-	cmd.Stdin = nil
+	// Deliver the prompt through stdin (the "-" argument in buildArgs) rather
+	// than argv. Review prompts embed the diff and can exceed Windows'
+	// CreateProcess command-line limit.
+	cmd.Stdin = strings.NewReader(opts.Prompt)
 	cmd.Env = gitSafeEnv(opts.CWD)
 	shellenv.ConfigureShellCommand(cmd)
 
@@ -95,9 +98,10 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 	var usage TokenUsage
 	var lastMessage string
 	var codexErr string
+	var turnFailedErr string
 	var threadID string
 	metrics := newCodexMetricsAccumulator()
-	if err := parseCodexEvents(ctx, started.stdout, opts.OnChunk, &usage, &lastMessage, &codexErr, &threadID, metrics); err != nil {
+	if err := parseCodexEvents(ctx, started.stdout, opts.OnChunk, &usage, &lastMessage, &codexErr, &turnFailedErr, &threadID, metrics); err != nil {
 		err = started.waitAfterParseError(err)
 		stderrWG.Wait()
 		retErr := fmt.Errorf("codex parse events: %w", err)
@@ -108,7 +112,10 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 	waitErr := started.wait()
 	stderrWG.Wait()
 	if waitErr != nil {
-		detail := strings.TrimSpace(codexErr)
+		detail := strings.TrimSpace(turnFailedErr)
+		if detail == "" {
+			detail = strings.TrimSpace(codexErr)
+		}
 		stderr := strings.TrimSpace(string(stderrBuf))
 		if detail != "" && stderr != "" {
 			detail += "; " + stderr
@@ -118,6 +125,23 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 		retErr := fmt.Errorf("codex exited: %w: %s", waitErr, detail)
 		emitAgentExited(opts, "codex", pid, retErr)
 		return nil, retErr
+	}
+
+	if detail := strings.TrimSpace(turnFailedErr); detail != "" {
+		err := fmt.Errorf("codex: %s", detail)
+		emitAgentExited(opts, "codex", pid, err)
+		return nil, err
+	}
+
+	// codex can exit successfully without an agent message after turn.failed.
+	// Preserve the actual provider reason instead of collapsing it into the
+	// opaque "codex returned no text output" error.
+	if lastMessage == "" {
+		if detail := strings.TrimSpace(codexErr); detail != "" {
+			err := fmt.Errorf("codex: %s", detail)
+			emitAgentExited(opts, "codex", pid, err)
+			return nil, err
+		}
 	}
 
 	res, err := finalizeTextResult("codex", lastMessage, validationSchema, usage)
@@ -139,14 +163,16 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 func (a *codexAgent) Close() error { return nil }
 
 // buildArgs constructs the codex CLI arguments. User-supplied extraArgs are
-// inserted between "exec" and the prompt so user flags (e.g. -m, --sandbox)
-// take effect. If the user declared their own execution-mode flag, the
+// inserted between "exec" and the prompt-source flag so user flags (e.g. -m,
+// --sandbox) take effect. The prompt itself is delivered on stdin: "-" tells
+// codex to read instructions from stdin and avoids Windows' command-line
+// length limit. If the user declared their own execution-mode flag, the
 // default --dangerously-bypass-approvals-and-sandbox is not added.
-// A non-empty resumeID routes through `codex exec resume <id> <prompt>`,
+// A non-empty resumeID routes through `codex exec resume <id> -`,
 // which exposes a narrower flag surface than `codex exec` (no --color, no
 // -s/--sandbox as of codex 0.144): unsupported user extraArgs make the
 // invocation fail fast and the caller's cold fallback preserves correctness.
-func (a *codexAgent) buildArgs(prompt, schemaPath, resumeID string) []string {
+func (a *codexAgent) buildArgs(_ string, schemaPath, resumeID string) []string {
 	args := make([]string, 0, len(a.extraArgs)+9)
 	args = append(args, "exec")
 	if resumeID != "" {
@@ -156,7 +182,7 @@ func (a *codexAgent) buildArgs(prompt, schemaPath, resumeID string) []string {
 	if resumeID != "" {
 		args = append(args, resumeID)
 	}
-	args = append(args, prompt, "--json")
+	args = append(args, "-", "--json")
 	if schemaPath != "" {
 		args = append(args, "--output-schema", schemaPath)
 	}
@@ -193,6 +219,12 @@ type codexEvent struct {
 	Usage    *codexUsage `json:"usage,omitempty"`
 	Message  string      `json:"message,omitempty"`
 	ThreadID string      `json:"thread_id,omitempty"`
+	Error    *codexError `json:"error,omitempty"`
+}
+
+// codexError carries the nested reason emitted by turn.failed events.
+type codexError struct {
+	Message string `json:"message"`
 }
 
 type codexItem struct {
@@ -216,7 +248,7 @@ type codexUsage struct {
 // evidence (round-trips, tool calls + categories, subprocess wait time). It is
 // clocked by time.Now as events arrive, so a tool item's started->completed gap
 // is its real subprocess wall time.
-func parseCodexEvents(ctx context.Context, r io.Reader, onChunk func(string), usage *TokenUsage, lastMessage *string, codexErr *string, threadID *string, metrics *codexMetricsAccumulator) error {
+func parseCodexEvents(ctx context.Context, r io.Reader, onChunk func(string), usage *TokenUsage, lastMessage *string, codexErr *string, turnFailedErr *string, threadID *string, metrics *codexMetricsAccumulator) error {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 256*1024*1024)
 
@@ -241,6 +273,11 @@ func parseCodexEvents(ctx context.Context, r io.Reader, onChunk func(string), us
 		case "error":
 			if event.Message != "" && codexErr != nil {
 				*codexErr = event.Message
+			}
+
+		case "turn.failed":
+			if event.Error != nil && event.Error.Message != "" && turnFailedErr != nil {
+				*turnFailedErr = event.Error.Message
 			}
 
 		case "thread.started":

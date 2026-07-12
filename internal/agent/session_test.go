@@ -101,7 +101,7 @@ func TestCodexAgent_BuildArgs_Resume(t *testing.T) {
 	args := ca.buildArgs("re-review the branch", "/tmp/schema.json", "thread-99")
 
 	joined := strings.Join(args, " ")
-	if !strings.HasPrefix(joined, "exec resume thread-99 ") {
+	if !strings.HasPrefix(joined, "exec resume thread-99 - ") {
 		t.Fatalf("resume args must start with exec resume <id>: %v", args)
 	}
 	if !strings.Contains(joined, "--json") {
@@ -125,7 +125,7 @@ func TestCodexAgent_BuildArgs_ResumeKeepsExtraArgs(t *testing.T) {
 	args := ca.buildArgs("prompt", "", "thread-1")
 
 	joined := strings.Join(args, " ")
-	if !strings.HasPrefix(joined, "exec resume -m gpt-5.2-codex thread-1 prompt") {
+	if !strings.HasPrefix(joined, "exec resume -m gpt-5.2-codex thread-1 -") {
 		t.Fatalf("resume args must interleave user extraArgs before the session id: %v", args)
 	}
 }
@@ -137,7 +137,7 @@ func TestParseCodexEvents_CapturesThreadID(t *testing.T) {
 `
 	var usage TokenUsage
 	var lastMessage, codexErr, threadID string
-	if err := parseCodexEvents(context.Background(), strings.NewReader(events), nil, &usage, &lastMessage, &codexErr, &threadID, nil); err != nil {
+	if err := parseCodexEvents(context.Background(), strings.NewReader(events), nil, &usage, &lastMessage, &codexErr, nil, &threadID, nil); err != nil {
 		t.Fatalf("parse: %v", err)
 	}
 	if threadID != "019f4d4d-5dc0-75c1-8efe-adf4531bd733" {
