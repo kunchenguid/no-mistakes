@@ -142,6 +142,29 @@ exit 0
 	}
 }
 
+func TestCodexAgent_RunSurfacesTurnFailedAfterPartialMessage(t *testing.T) {
+	dir := t.TempDir()
+	bin := writeFakeCodex(t, dir, `#!/bin/sh
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"partial"}}'
+printf '%s\n' '{"type":"turn.failed","error":{"message":"terminal failure"}}'
+exit 0
+`, strings.Join([]string{
+		"@echo off",
+		"echo {\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"partial\"}}",
+		"echo {\"type\":\"turn.failed\",\"error\":{\"message\":\"terminal failure\"}}",
+		"exit /b 0",
+	}, "\r\n"))
+
+	ca := &codexAgent{bin: bin}
+	_, err := ca.Run(context.Background(), RunOpts{Prompt: "review", CWD: t.TempDir()})
+	if err == nil {
+		t.Fatal("expected terminal failure to override partial output")
+	}
+	if !strings.Contains(err.Error(), "terminal failure") {
+		t.Fatalf("expected terminal failure reason, got %v", err)
+	}
+}
+
 func TestCodexAgent_RunWritesOutputSchemaFile(t *testing.T) {
 	dir := t.TempDir()
 	bin := writeFakeCodex(t, dir, `#!/bin/sh
@@ -382,6 +405,7 @@ func TestParseCodexEvents_AgentMessage(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -404,16 +428,16 @@ func TestParseCodexEvents_TurnFailedCapturesError(t *testing.T) {
 	events := "{\"type\":\"turn.failed\",\"error\":{\"message\":\"rate limited\"}}\n"
 
 	var usage TokenUsage
-	var lastMessage, codexErr string
+	var lastMessage, codexErr, turnFailedErr string
 	err := parseCodexEvents(
 		context.Background(), strings.NewReader(events), nil,
-		&usage, &lastMessage, &codexErr, nil, nil,
+		&usage, &lastMessage, &codexErr, &turnFailedErr, nil, nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if codexErr != "rate limited" {
-		t.Fatalf("expected captured turn.failed reason, got %q", codexErr)
+	if turnFailedErr != "rate limited" {
+		t.Fatalf("expected captured turn.failed reason, got %q", turnFailedErr)
 	}
 }
 
@@ -434,6 +458,7 @@ func TestParseCodexEvents_SeparatesMultipleMessages(t *testing.T) {
 		func(text string) { chunks = append(chunks, text) },
 		&usage,
 		&lastMessage,
+		nil,
 		nil,
 		nil,
 		nil,
@@ -472,6 +497,7 @@ func TestParseCodexEvents_DoesNotSeparateSplitTurnMessages(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -492,7 +518,7 @@ func TestParseCodexEvents_SkipsMalformedLines(t *testing.T) {
 
 	var usage TokenUsage
 	var lastMessage string
-	err := parseCodexEvents(context.Background(), strings.NewReader(events), nil, &usage, &lastMessage, nil, nil, nil)
+	err := parseCodexEvents(context.Background(), strings.NewReader(events), nil, &usage, &lastMessage, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

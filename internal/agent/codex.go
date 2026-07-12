@@ -98,9 +98,10 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 	var usage TokenUsage
 	var lastMessage string
 	var codexErr string
+	var turnFailedErr string
 	var threadID string
 	metrics := newCodexMetricsAccumulator()
-	if err := parseCodexEvents(ctx, started.stdout, opts.OnChunk, &usage, &lastMessage, &codexErr, &threadID, metrics); err != nil {
+	if err := parseCodexEvents(ctx, started.stdout, opts.OnChunk, &usage, &lastMessage, &codexErr, &turnFailedErr, &threadID, metrics); err != nil {
 		err = started.waitAfterParseError(err)
 		stderrWG.Wait()
 		retErr := fmt.Errorf("codex parse events: %w", err)
@@ -121,6 +122,12 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 		retErr := fmt.Errorf("codex exited: %w: %s", waitErr, detail)
 		emitAgentExited(opts, "codex", pid, retErr)
 		return nil, retErr
+	}
+
+	if detail := strings.TrimSpace(turnFailedErr); detail != "" {
+		err := fmt.Errorf("codex: %s", detail)
+		emitAgentExited(opts, "codex", pid, err)
+		return nil, err
 	}
 
 	// codex can exit successfully without an agent message after turn.failed.
@@ -238,7 +245,7 @@ type codexUsage struct {
 // evidence (round-trips, tool calls + categories, subprocess wait time). It is
 // clocked by time.Now as events arrive, so a tool item's started->completed gap
 // is its real subprocess wall time.
-func parseCodexEvents(ctx context.Context, r io.Reader, onChunk func(string), usage *TokenUsage, lastMessage *string, codexErr *string, threadID *string, metrics *codexMetricsAccumulator) error {
+func parseCodexEvents(ctx context.Context, r io.Reader, onChunk func(string), usage *TokenUsage, lastMessage *string, codexErr *string, turnFailedErr *string, threadID *string, metrics *codexMetricsAccumulator) error {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 256*1024*1024)
 
@@ -266,8 +273,8 @@ func parseCodexEvents(ctx context.Context, r io.Reader, onChunk func(string), us
 			}
 
 		case "turn.failed":
-			if event.Error != nil && event.Error.Message != "" && codexErr != nil {
-				*codexErr = event.Error.Message
+			if event.Error != nil && event.Error.Message != "" && turnFailedErr != nil {
+				*turnFailedErr = event.Error.Message
 			}
 
 		case "thread.started":

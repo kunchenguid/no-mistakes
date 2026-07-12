@@ -89,7 +89,7 @@ func TestParseCodexEvents_ExtractsMetricsAndReasoning(t *testing.T) {
 	var usage TokenUsage
 	var lastMessage, codexErr, threadID string
 	metrics := newCodexMetricsAccumulator()
-	if err := parseCodexEvents(context.Background(), strings.NewReader(events), nil, &usage, &lastMessage, &codexErr, &threadID, metrics); err != nil {
+	if err := parseCodexEvents(context.Background(), strings.NewReader(events), nil, &usage, &lastMessage, &codexErr, nil, &threadID, metrics); err != nil {
 		t.Fatalf("parse: %v", err)
 	}
 	if usage.ReasoningTokens != 7 {
@@ -111,7 +111,7 @@ func TestParseCodexEvents_MissingUsageLeavesZero(t *testing.T) {
 	var usage TokenUsage
 	var lastMessage string
 	metrics := newCodexMetricsAccumulator()
-	if err := parseCodexEvents(context.Background(), strings.NewReader(events), nil, &usage, &lastMessage, nil, nil, metrics); err != nil {
+	if err := parseCodexEvents(context.Background(), strings.NewReader(events), nil, &usage, &lastMessage, nil, nil, nil, metrics); err != nil {
 		t.Fatalf("parse: %v", err)
 	}
 	if usage.InputTokens != 0 || usage.ReasoningTokens != 0 {
