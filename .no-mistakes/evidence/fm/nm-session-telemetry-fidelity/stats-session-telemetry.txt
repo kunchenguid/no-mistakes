@@ -1,0 +1,26 @@
+=== RUN   TestTelemetryEvidence
+$ no-mistakes stats --agents
+PURPOSE     COUNT  AVG  TOTAL  COLD  STARTED  RESUMED  FALLBACK  ERRORS  IN TOK  OUT TOK  CACHE READ TOK  CACHE WRITE TOK  FRESH IN TOK  REASON TOK
+review      2      10s  20s    0     1        1        0         0       3500    350      2400            -                1100          18
+review-fix  1      3s   3s     0     1        0        0         0       0       0        0               -                -             -
+
+PURPOSE     METRICS  SUBPROC  ROUNDTRIPS  TOOLS  WAIT  TEST/LINT  EDIT  READ  GIT  OTHER
+review      2/2      4s       8           14     0     4          6     2     2    0
+review-fix  0/1      -        -           -      -     -          -     -     -    -
+
+$ no-mistakes stats --run 01KXAMTD409HWPJE53XT2E2DKZ
+run 01KXAMTD409HWPJE53XT2E2DKZ (pending), parked at gates 0s total
+"-" means the field was not reported for that invocation (unknown), which is distinct from a recorded 0.
+
+STEP    ROUND  PURPOSE     AGENT  MODEL        SESSION  KEY             DURATION  MODEL  SUBPROC  RT  TOOLS (w/t/e/r/g/o)  FIND  WORK (f/l)  FALLBACK  EXIT
+review  1      review      codex  gpt-5.6-sol  started  review-session  10s       8s     2s       4   7 0/2/3/1/1/0        1     12/1060     -         ok
+review  2      review      codex  gpt-5.6-sol  resumed  review-session  10s       8s     2s       4   7 0/2/3/1/1/0        1     12/1060     -         ok
+review  2      review-fix  codex  -            started  fixer-session   3s        -      -        -   -                    -     -           -         ok
+
+STEP    ROUND  PURPOSE     SESSION  Δ IN (round)  Δ OUT  Δ CACHE RD  IN (raw)  OUT (raw)  CACHE RD (raw)  CACHE WR  FRESH IN  REASON
+review  1      review      started  1000          100    600         1000      100        600             -         400       9
+review  2      review      resumed  1500          150    1200        2500      250        1800            -         700       9
+review  2      review-fix  started  -             -      -           0         0          0               -         -         -
+--- PASS: TestTelemetryEvidence (0.01s)
+PASS
+ok  	github.com/kunchenguid/no-mistakes/internal/cli	0.336s
