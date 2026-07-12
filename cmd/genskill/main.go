@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/skill"
 )
@@ -36,7 +37,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "genskill --check: read %s: %v\n", rel, err)
 			os.Exit(1)
 		}
-		if string(got) != want {
+		if strings.ReplaceAll(string(got), "\r\n", "\n") != want {
 			fmt.Fprintf(os.Stderr, "genskill --check: %s is stale; run `go run ./cmd/genskill` and commit the result\n", rel)
 			os.Exit(1)
 		}
