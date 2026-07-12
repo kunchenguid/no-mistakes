@@ -242,6 +242,33 @@ func DiffNameOnly(ctx context.Context, dir, base, head string) ([]string, error)
 	return files, nil
 }
 
+// DiffStat returns the bounded size of the diff between base and head: the
+// number of changed files and the net changed lines (insertions + deletions)
+// from `git diff --numstat`. Binary files (numstat "-") contribute a changed
+// file but no line count. It carries no paths or content - just two counts.
+func DiffStat(ctx context.Context, dir, base, head string) (files, lines int, err error) {
+	out, err := Run(ctx, dir, "diff", "--numstat", base+".."+head)
+	if err != nil {
+		return 0, 0, err
+	}
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			continue
+		}
+		files++
+		added, aerr := strconv.Atoi(fields[0])
+		deleted, derr := strconv.Atoi(fields[1])
+		if aerr == nil {
+			lines += added
+		}
+		if derr == nil {
+			lines += deleted
+		}
+	}
+	return files, lines, nil
+}
+
 // CommitTime returns the committer timestamp for a SHA in UTC.
 func CommitTime(ctx context.Context, dir, sha string) (time.Time, error) {
 	out, err := Run(ctx, dir, "show", "-s", "--format=%ct", sha)

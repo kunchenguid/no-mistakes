@@ -96,6 +96,7 @@ func (rs *RunSessions) Run(ctx context.Context, a agent.Agent, role SessionRole,
 	rs.forget(role)
 	opts.Session = &agent.SessionRef{}
 	opts.SessionFallback = true
+	opts.SessionFallbackReason = classifyFallbackReason(err)
 	result, err = a.Run(ctx, opts)
 	if err != nil {
 		return nil, err

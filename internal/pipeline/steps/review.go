@@ -30,6 +30,11 @@ func (s *ReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 		reviewScope = fmt.Sprintf("current worktree and HEAD changes relative to base commit %s (starting head %s)", baseSHA, sctx.Run.HeadSHA)
 	}
 
+	// Bounded workload size (changed files + net lines) for local telemetry, so
+	// review/fix efficiency can be normalized without external git archaeology.
+	// Best-effort: a diff-stat failure leaves the workload unknown.
+	workload := reviewWorkload(ctx, sctx.WorkDir, baseSHA, sctx.Run.HeadSHA)
+
 	// In fix mode, ask the agent to fix issues first.
 	//
 	// The verification-discipline rules below (apply all fixes first, then one
@@ -97,6 +102,7 @@ Previous review findings to address:
 			FallbackSummary:         "address review findings",
 			SessionRole:             pipeline.SessionRoleFixer,
 			Purpose:                 "review-fix",
+			Workload:                workload,
 		})
 		if err != nil {
 			return nil, err
@@ -221,6 +227,7 @@ Risk assessment (after listing all findings):
 		JSONSchema: reviewFindingsSchema,
 		OnChunk:    sctx.LogChunk,
 		Purpose:    "review",
+		Workload:   workload,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("agent review: %w", err)

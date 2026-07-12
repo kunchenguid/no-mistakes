@@ -102,6 +102,15 @@ func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 		res.SessionID = result.sessionID
 		res.Resumed = resumeID != ""
 		res.Model = result.model
+		// Claude reports cache-creation cost per message, so the accumulated
+		// value is meaningful (recorded as a real number, not unknown). Its
+		// stream-json usage is per-invocation, not cumulative across --resume,
+		// so SessionUsageCumulative stays false and per-round deltas equal the
+		// raw counters.
+		res.CacheCreationReported = true
+		if result.model != "" {
+			res.ModelProvider = "anthropic"
+		}
 	}
 	if errors.Is(err, errNoStructuredOutput) && opts.OnChunk != nil {
 		opts.OnChunk(fmt.Sprintf("structured output missing: subtype=%s, text_len=%d, input_tokens=%d, output_tokens=%d",

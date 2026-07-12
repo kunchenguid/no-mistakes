@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
@@ -95,7 +96,8 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 	var lastMessage string
 	var codexErr string
 	var threadID string
-	if err := parseCodexEvents(ctx, started.stdout, opts.OnChunk, &usage, &lastMessage, &codexErr, &threadID); err != nil {
+	metrics := newCodexMetricsAccumulator()
+	if err := parseCodexEvents(ctx, started.stdout, opts.OnChunk, &usage, &lastMessage, &codexErr, &threadID, metrics); err != nil {
 		err = started.waitAfterParseError(err)
 		stderrWG.Wait()
 		retErr := fmt.Errorf("codex parse events: %w", err)
@@ -122,6 +124,13 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 	if res != nil {
 		res.SessionID = threadID
 		res.Resumed = resumeID != ""
+		// codex reports usage cumulatively across a resumed thread and does not
+		// surface cache-creation cost, so mark both so the pipeline records
+		// correct per-round deltas and an honest unknown for cache creation.
+		res.SessionUsageCumulative = true
+		m := metrics.metrics()
+		res.Metrics = &m
+		res.Model, res.ModelProvider = resolveCodexModel(threadID, time.Now())
 	}
 	emitAgentExited(opts, "codex", pid, err)
 	return res, err
@@ -187,20 +196,27 @@ type codexEvent struct {
 }
 
 type codexItem struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	ID      string `json:"id"`
+	Type    string `json:"type"`
+	Text    string `json:"text"`
+	Command string `json:"command"`
 }
 
 type codexUsage struct {
-	InputTokens       int `json:"input_tokens"`
-	CachedInputTokens int `json:"cached_input_tokens"`
-	OutputTokens      int `json:"output_tokens"`
+	InputTokens         int `json:"input_tokens"`
+	CachedInputTokens   int `json:"cached_input_tokens"`
+	OutputTokens        int `json:"output_tokens"`
+	ReasoningOutputToks int `json:"reasoning_output_tokens"`
 }
 
 // parseCodexEvents reads JSONL from the reader and dispatches events.
 // It captures the last agent_message text, the durable thread identity, and
 // accumulates token usage.
-func parseCodexEvents(ctx context.Context, r io.Reader, onChunk func(string), usage *TokenUsage, lastMessage *string, codexErr *string, threadID *string) error {
+// metrics, when non-nil, accumulates the bounded per-invocation activity
+// evidence (round-trips, tool calls + categories, subprocess wait time). It is
+// clocked by time.Now as events arrive, so a tool item's started->completed gap
+// is its real subprocess wall time.
+func parseCodexEvents(ctx context.Context, r io.Reader, onChunk func(string), usage *TokenUsage, lastMessage *string, codexErr *string, threadID *string, metrics *codexMetricsAccumulator) error {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 256*1024*1024)
 
@@ -232,7 +248,11 @@ func parseCodexEvents(ctx context.Context, r io.Reader, onChunk func(string), us
 				*threadID = event.ThreadID
 			}
 
+		case "item.started":
+			metrics.onItem(event.Type, event.Item, time.Now())
+
 		case "item.completed":
+			metrics.onItem(event.Type, event.Item, time.Now())
 			if event.Item != nil && event.Item.Type == "agent_message" {
 				*lastMessage = event.Item.Text
 				if onChunk != nil {
@@ -246,6 +266,7 @@ func parseCodexEvents(ctx context.Context, r io.Reader, onChunk func(string), us
 					InputTokens:     event.Usage.InputTokens,
 					OutputTokens:    event.Usage.OutputTokens,
 					CacheReadTokens: event.Usage.CachedInputTokens,
+					ReasoningTokens: event.Usage.ReasoningOutputToks,
 				})
 			}
 		}

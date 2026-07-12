@@ -25,7 +25,7 @@ func TestAgentInvocations_InsertAndReadBack(t *testing.T) {
 		InputTokens:         1000,
 		OutputTokens:        200,
 		CacheReadTokens:     800,
-		CacheCreationTokens: 50,
+		CacheCreationTokens: intPtr(50),
 	}
 	if _, err := d.InsertAgentInvocation(inv); err != nil {
 		t.Fatalf("insert: %v", err)
@@ -43,7 +43,83 @@ func TestAgentInvocations_InsertAndReadBack(t *testing.T) {
 		back.DurationMS != 90_000 || back.InputTokens != 1000 || back.CacheReadTokens != 800 || back.Model != "gpt-5.2-codex" {
 		t.Fatalf("readback mismatch: %+v", back)
 	}
+	if back.CacheCreationTokens == nil || *back.CacheCreationTokens != 50 {
+		t.Fatalf("cache creation readback = %v, want 50", back.CacheCreationTokens)
+	}
 }
+
+func intPtr(v int) *int { return &v }
+
+// TestAgentInvocations_NullableFidelityFieldsRoundTrip proves the session-
+// fidelity columns survive an insert/read cycle both when populated and when
+// left unknown (NULL), so missing data reads back as nil rather than zero.
+func TestAgentInvocations_NullableFidelityFieldsRoundTrip(t *testing.T) {
+	d, _, run := openSessionTestDB(t)
+
+	// Fully populated row.
+	full := AgentInvocation{
+		RunID: run.ID, StepName: "review", Round: 2, Purpose: "review", Agent: "codex",
+		Model: "gpt-5.6-sol", ModelProvider: strPtr("openai"),
+		SessionMode: InvocationModeFallback, SessionKey: "key1", FallbackReason: strPtr(FallbackReasonExit),
+		StartedAt: 1, CompletedAt: 2, DurationMS: 5000, SubprocessWaitMS: int64Ptr(1200),
+		ExitStatus: "ok", InputTokens: 2500, OutputTokens: 250, CacheReadTokens: 1800,
+		CacheCreationTokens: intPtr(0), FreshInputTokens: intPtr(700), ReasoningTokens: intPtr(9),
+		DeltaInputTokens: intPtr(1500), DeltaOutputTokens: intPtr(150), DeltaCacheReadTokens: intPtr(1200),
+		ModelRoundtrips: intPtr(4), ToolCalls: intPtr(3),
+		ToolWaitCalls: intPtr(0), ToolTestLintCalls: intPtr(1), ToolEditCalls: intPtr(1),
+		ToolReadCalls: intPtr(1), ToolGitCalls: intPtr(0), ToolOtherCalls: intPtr(0),
+		WorkloadFiles: intPtr(4), WorkloadLines: intPtr(120), FindingCount: intPtr(2),
+	}
+	if _, err := d.InsertAgentInvocation(full); err != nil {
+		t.Fatalf("insert full: %v", err)
+	}
+	// Minimal row: every nullable field unknown.
+	minimal := AgentInvocation{
+		RunID: run.ID, StepName: "test", Round: 1, Purpose: "test-evidence", Agent: "codex",
+		SessionMode: InvocationModeCold, StartedAt: 3, CompletedAt: 4, DurationMS: 10, ExitStatus: "ok",
+	}
+	if _, err := d.InsertAgentInvocation(minimal); err != nil {
+		t.Fatalf("insert minimal: %v", err)
+	}
+
+	got, err := d.GetAgentInvocationsByRun(run.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d rows, want 2", len(got))
+	}
+	f := got[0]
+	if f.ModelProvider == nil || *f.ModelProvider != "openai" ||
+		f.FallbackReason == nil || *f.FallbackReason != FallbackReasonExit ||
+		f.SubprocessWaitMS == nil || *f.SubprocessWaitMS != 1200 ||
+		f.CacheCreationTokens == nil || *f.CacheCreationTokens != 0 ||
+		f.DeltaInputTokens == nil || *f.DeltaInputTokens != 1500 ||
+		f.ToolTestLintCalls == nil || *f.ToolTestLintCalls != 1 ||
+		f.FindingCount == nil || *f.FindingCount != 2 {
+		t.Fatalf("full row lost a fidelity field: %+v", f)
+	}
+	m := got[1]
+	for name, isNil := range map[string]bool{
+		"ModelProvider":    m.ModelProvider == nil,
+		"FallbackReason":   m.FallbackReason == nil,
+		"SubprocessWaitMS": m.SubprocessWaitMS == nil,
+		"CacheCreation":    m.CacheCreationTokens == nil,
+		"FreshInput":       m.FreshInputTokens == nil,
+		"DeltaInput":       m.DeltaInputTokens == nil,
+		"ModelRoundtrips":  m.ModelRoundtrips == nil,
+		"ToolCalls":        m.ToolCalls == nil,
+		"WorkloadFiles":    m.WorkloadFiles == nil,
+		"FindingCount":     m.FindingCount == nil,
+	} {
+		if !isNil {
+			t.Fatalf("minimal row %s should read back as unknown (nil)", name)
+		}
+	}
+}
+
+func strPtr(s string) *string { return &s }
+func int64Ptr(v int64) *int64 { return &v }
 
 // TestAgentInvocations_PrivacySafeShape guards the privacy boundary: the
 // table has no column that could hold prompts, outputs, or diffs, and the
@@ -254,5 +330,71 @@ func TestOpenMigratesAgentInvocationsAndParkedMS(t *testing.T) {
 	}
 	if _, err := d.InsertAgentInvocation(AgentInvocation{RunID: run.ID, StepName: "review", Round: 1, Purpose: "review", Agent: "codex", SessionMode: InvocationModeCold, StartedAt: 1, CompletedAt: 2, DurationMS: 1, ExitStatus: "ok"}); err != nil {
 		t.Fatalf("agent_invocations table missing after migration: %v", err)
+	}
+}
+
+// TestOpenMigratesSessionFidelityColumns proves a database whose
+// agent_invocations table predates the session-fidelity columns gains them on
+// reopen, and that pre-existing rows read those columns back as unknown (nil)
+// rather than a fabricated zero.
+func TestOpenMigratesSessionFidelityColumns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.sqlite")
+	d, err := Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	repo, err := d.InsertRepo("/tmp/repo", "https://github.com/test/repo", "main")
+	if err != nil {
+		t.Fatalf("insert repo: %v", err)
+	}
+	run, err := d.InsertRun(repo.ID, "b", "h", "b")
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+	// Simulate a pre-fidelity table by dropping the new columns, then insert a
+	// legacy row that has no fidelity data.
+	for _, col := range []string{"model_provider", "fallback_reason", "subprocess_wait_ms",
+		"fresh_input_tokens", "reasoning_tokens", "model_roundtrips", "tool_calls", "finding_count"} {
+		if _, err := d.sql.Exec(`ALTER TABLE agent_invocations DROP COLUMN ` + col); err != nil {
+			t.Fatalf("drop %s: %v", col, err)
+		}
+	}
+	if _, err := d.sql.Exec(`INSERT INTO agent_invocations
+		(id, run_id, step_name, round, purpose, agent, model, session_mode, session_key, exit_status, failure_category, started_at, completed_at, duration_ms, input_tokens, output_tokens, cache_read_tokens)
+		VALUES ('legacy1', ?, 'review', 1, 'review', 'codex', '', 'started', '', 'ok', '', 1, 2, 100, 500, 20, 300)`, run.ID); err != nil {
+		t.Fatalf("insert legacy row: %v", err)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	d, err = Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer d.Close()
+
+	got, err := d.GetAgentInvocationsByRun(run.ID)
+	if err != nil {
+		t.Fatalf("get after migration: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d rows, want 1", len(got))
+	}
+	legacy := got[0]
+	if legacy.InputTokens != 500 {
+		t.Fatalf("legacy input tokens = %d, want 500", legacy.InputTokens)
+	}
+	if legacy.ModelProvider != nil || legacy.SubprocessWaitMS != nil ||
+		legacy.ModelRoundtrips != nil || legacy.ToolCalls != nil || legacy.FindingCount != nil {
+		t.Fatalf("legacy row must read new columns as unknown, got %+v", legacy)
+	}
+	// The migrated table now accepts the new fields.
+	if _, err := d.InsertAgentInvocation(AgentInvocation{
+		RunID: run.ID, StepName: "review", Round: 2, Purpose: "review", Agent: "codex",
+		SessionMode: InvocationModeResumed, StartedAt: 3, CompletedAt: 4, DurationMS: 1, ExitStatus: "ok",
+		ModelRoundtrips: intPtr(3), ToolCalls: intPtr(2), SubprocessWaitMS: int64Ptr(500),
+	}); err != nil {
+		t.Fatalf("insert after migration: %v", err)
 	}
 }

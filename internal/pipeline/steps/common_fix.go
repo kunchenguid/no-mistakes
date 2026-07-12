@@ -26,6 +26,9 @@ type fixExecutionOptions struct {
 	SessionRole pipeline.SessionRole
 	// Purpose labels the invocation for local performance telemetry.
 	Purpose string
+	// Workload records the bounded size of the change under fix for local
+	// telemetry. Optional; nil leaves the invocation's workload unknown.
+	Workload *agent.InvocationWorkload
 }
 
 type commitSummary struct {
@@ -127,6 +130,7 @@ func executeFixMode(sctx *pipeline.StepContext, stepName types.StepName, opts fi
 		JSONSchema: commitSummarySchema,
 		OnChunk:    sctx.LogChunk,
 		Purpose:    purpose,
+		Workload:   opts.Workload,
 	}
 	var result *agent.Result
 	var err error

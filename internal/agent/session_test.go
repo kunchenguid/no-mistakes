@@ -137,7 +137,7 @@ func TestParseCodexEvents_CapturesThreadID(t *testing.T) {
 `
 	var usage TokenUsage
 	var lastMessage, codexErr, threadID string
-	if err := parseCodexEvents(context.Background(), strings.NewReader(events), nil, &usage, &lastMessage, &codexErr, &threadID); err != nil {
+	if err := parseCodexEvents(context.Background(), strings.NewReader(events), nil, &usage, &lastMessage, &codexErr, &threadID, nil); err != nil {
 		t.Fatalf("parse: %v", err)
 	}
 	if threadID != "019f4d4d-5dc0-75c1-8efe-adf4531bd733" {
