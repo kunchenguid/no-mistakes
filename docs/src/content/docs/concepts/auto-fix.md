@@ -81,6 +81,9 @@ Yolo and AXI `--yes` approve that fix review automatically after their one fix r
 
 Each auto-fix cycle commits its changes with a descriptive message. The combined document-and-lint housekeeping pass runs in the Document step, so its documentation and safe lint fixes use the Document prefix; configured-command lint fixes use the Lint prefix:
 
+Before a step-specific fix commit, the pipeline verifies that the live worktree HEAD still descends from the head recorded after its previous commit.
+It allows a legitimate forward commit made by an agent, but aborts the run if an out-of-band backward or divergent reset would drop the reviewed history.
+
 | Step | Commit prefix |
 |---|---|
 | Rebase | `no-mistakes(rebase): <summary>` |
