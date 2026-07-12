@@ -83,6 +83,18 @@ func startTestDaemon(t *testing.T) (*paths.Paths, *db.DB) {
 		time.Sleep(20 * time.Millisecond)
 	}
 
+	// Wait for the daemon to accept IPC connections. On Windows the endpoint
+	// file exists before the serve loop calls Accept, so a caller that
+	// immediately dials (e.g. Stop) races the startup and can fall through to
+	// PID-based shutdown, which refuses to kill the in-process test daemon.
+	readyDeadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(readyDeadline) {
+		if alive, _ := IsRunning(p); alive {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
 	t.Cleanup(func() {
 		// Ensure daemon stops.
 		client, err := ipc.Dial(p.Socket())
