@@ -165,6 +165,27 @@ exit 0
 	}
 }
 
+func TestCodexAgent_RunSurfacesTurnFailedOnExitFailure(t *testing.T) {
+	dir := t.TempDir()
+	bin := writeFakeCodex(t, dir, `#!/bin/sh
+printf '%s\n' '{"type":"turn.failed","error":{"message":"usage limit reached"}}'
+exit 1
+`, strings.Join([]string{
+		"@echo off",
+		"echo {\"type\":\"turn.failed\",\"error\":{\"message\":\"usage limit reached\"}}",
+		"exit /b 1",
+	}, "\r\n"))
+
+	ca := &codexAgent{bin: bin}
+	_, err := ca.Run(context.Background(), RunOpts{Prompt: "review", CWD: t.TempDir()})
+	if err == nil {
+		t.Fatal("expected codex failure")
+	}
+	if !strings.Contains(err.Error(), "usage limit reached") {
+		t.Fatalf("expected provider reason in error, got %v", err)
+	}
+}
+
 func TestCodexAgent_RunWritesOutputSchemaFile(t *testing.T) {
 	dir := t.TempDir()
 	bin := writeFakeCodex(t, dir, `#!/bin/sh

@@ -112,7 +112,10 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 	waitErr := started.wait()
 	stderrWG.Wait()
 	if waitErr != nil {
-		detail := strings.TrimSpace(codexErr)
+		detail := strings.TrimSpace(turnFailedErr)
+		if detail == "" {
+			detail = strings.TrimSpace(codexErr)
+		}
 		stderr := strings.TrimSpace(string(stderrBuf))
 		if detail != "" && stderr != "" {
 			detail += "; " + stderr
