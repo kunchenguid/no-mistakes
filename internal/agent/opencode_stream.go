@@ -15,6 +15,7 @@ func opencodeTokensToUsage(t *opencodeTokens) TokenUsage {
 	if t.Cache != nil {
 		u.CacheReadTokens = t.Cache.Read
 		u.CacheCreationTokens = t.Cache.Write
+		u.CacheCreationReported = true
 	}
 	return u
 }

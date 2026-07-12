@@ -231,12 +231,22 @@ func acpxUpdateUsage(update acpxSessionUpdate) TokenUsage {
 	if update.Used > usage.InputTokens {
 		usage.InputTokens = update.Used
 	}
+	usage.CacheCreationReported = true
 	return usage
 }
 
 func acpxUsageFieldsToTokenUsage(fields acpxUsageFields) TokenUsage {
 	return TokenUsage{
 		Reported: fields != (acpxUsageFields{}),
+		CacheCreationReported: acpxFirstPositive(
+			fields.CacheCreationInputTokens,
+			fields.CacheWriteInputTokens,
+			fields.CacheWriteTokens,
+			fields.CacheCreationInputTokensCamel,
+			fields.CacheCreationTokensCamel,
+			fields.CacheWriteTokensCamel,
+			fields.CachedWriteTokensCamel,
+		) > 0,
 		InputTokens: acpxFirstPositive(
 			fields.InputTokens,
 			fields.InputTokensCamel,
@@ -268,11 +278,12 @@ func acpxUsageFieldsToTokenUsage(fields acpxUsageFields) TokenUsage {
 
 func acpxMaxUsage(a, b TokenUsage) TokenUsage {
 	return TokenUsage{
-		Reported:            a.Reported || b.Reported,
-		InputTokens:         max(a.InputTokens, b.InputTokens),
-		OutputTokens:        max(a.OutputTokens, b.OutputTokens),
-		CacheReadTokens:     max(a.CacheReadTokens, b.CacheReadTokens),
-		CacheCreationTokens: max(a.CacheCreationTokens, b.CacheCreationTokens),
+		Reported:              a.Reported || b.Reported,
+		CacheCreationReported: a.CacheCreationReported || b.CacheCreationReported,
+		InputTokens:           max(a.InputTokens, b.InputTokens),
+		OutputTokens:          max(a.OutputTokens, b.OutputTokens),
+		CacheReadTokens:       max(a.CacheReadTokens, b.CacheReadTokens),
+		CacheCreationTokens:   max(a.CacheCreationTokens, b.CacheCreationTokens),
 	}
 }
 

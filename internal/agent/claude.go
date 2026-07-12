@@ -132,10 +132,11 @@ func finalizeClaudeResult(result *claudeResult, schema json.RawMessage, usage To
 	}
 
 	return &Result{
-		Output:        result.StructuredOutput,
-		Text:          result.text,
-		Usage:         usage,
-		UsageReported: usage.Reported,
+		Output:                result.StructuredOutput,
+		Text:                  result.text,
+		Usage:                 usage,
+		UsageReported:         usage.Reported,
+		CacheCreationReported: usage.CacheCreationReported,
 	}, nil
 }
 
@@ -260,11 +261,12 @@ func parseClaudeEvents(ctx context.Context, r io.Reader, onChunk func(string), u
 				lastModel = msg.Model
 			}
 			usage.Add(TokenUsage{
-				InputTokens:         msg.Usage.InputTokens,
-				OutputTokens:        msg.Usage.OutputTokens,
-				CacheReadTokens:     msg.Usage.CacheReadInputTokens,
-				CacheCreationTokens: msg.Usage.CacheCreationInputTokens,
-				Reported:            true,
+				InputTokens:           msg.Usage.InputTokens,
+				OutputTokens:          msg.Usage.OutputTokens,
+				CacheReadTokens:       msg.Usage.CacheReadInputTokens,
+				CacheCreationTokens:   msg.Usage.CacheCreationInputTokens,
+				Reported:              true,
+				CacheCreationReported: true,
 			})
 			for _, c := range msg.Content {
 				if c.Type == "text" && c.Text != "" {

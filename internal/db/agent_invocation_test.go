@@ -241,6 +241,25 @@ func TestAgentInvocationAggregatesPreserveUnknownMetrics(t *testing.T) {
 	}
 }
 
+func TestAgentInvocationAggregatesHidePartialMetrics(t *testing.T) {
+	d, _, run := openSessionTestDB(t)
+	for _, inv := range []AgentInvocation{
+		{RunID: run.ID, StepName: "review", Round: 1, Purpose: "review", Agent: "codex", SessionMode: InvocationModeCold, StartedAt: 1, CompletedAt: 2, DurationMS: 10, ExitStatus: "ok", FreshInputTokens: intPtr(3)},
+		{RunID: run.ID, StepName: "review", Round: 2, Purpose: "review", Agent: "codex", SessionMode: InvocationModeCold, StartedAt: 3, CompletedAt: 4, DurationMS: 10, ExitStatus: "ok"},
+	} {
+		if _, err := d.InsertAgentInvocation(inv); err != nil {
+			t.Fatal(err)
+		}
+	}
+	aggregates, err := d.AgentInvocationAggregates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if aggregates[0].FreshInputTokens != nil {
+		t.Fatalf("partial fresh input = %v, want nil", *aggregates[0].FreshInputTokens)
+	}
+}
+
 func TestAddRunParkedDurationAccumulates(t *testing.T) {
 	d, _, run := openSessionTestDB(t)
 

@@ -179,8 +179,9 @@ type TokenUsage struct {
 	CacheCreationTokens int
 	// ReasoningTokens is the output tokens the model spent on hidden reasoning,
 	// when the provider reports it separately. Zero when not reported.
-	ReasoningTokens int
-	Reported        bool
+	ReasoningTokens       int
+	Reported              bool
+	CacheCreationReported bool
 }
 
 // InvocationWorkload is the bounded size of the change an invocation works
@@ -201,7 +202,7 @@ func finalizeTextResult(agentName, text string, schema json.RawMessage, usage To
 		return nil, fmt.Errorf("%s returned no text output", agentName)
 	}
 	if len(schema) == 0 {
-		return &Result{Text: text, Usage: usage, UsageReported: usage.Reported}, nil
+		return &Result{Text: text, Usage: usage, UsageReported: usage.Reported, CacheCreationReported: usage.CacheCreationReported}, nil
 	}
 
 	output, err := parseStructuredTextOutput(text, schema)
@@ -209,7 +210,7 @@ func finalizeTextResult(agentName, text string, schema json.RawMessage, usage To
 		return nil, fmt.Errorf("%s output parse: %w (output snippet: %q)", agentName, err, outputSnippet(text))
 	}
 
-	return &Result{Output: output, Text: text, Usage: usage, UsageReported: usage.Reported}, nil
+	return &Result{Output: output, Text: text, Usage: usage, UsageReported: usage.Reported, CacheCreationReported: usage.CacheCreationReported}, nil
 }
 
 // outputSnippet returns a trimmed, length-capped excerpt of agent output for
@@ -718,6 +719,7 @@ func (u *TokenUsage) Add(other TokenUsage) {
 	u.CacheCreationTokens += other.CacheCreationTokens
 	u.ReasoningTokens += other.ReasoningTokens
 	u.Reported = u.Reported || other.Reported
+	u.CacheCreationReported = u.CacheCreationReported || other.CacheCreationReported
 }
 
 // New creates an agent by name with the given binary path.

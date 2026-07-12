@@ -298,11 +298,12 @@ func parseRovodevSSE(r io.Reader, onChunk func(string), usage *TokenUsage, lates
 		switch kind {
 		case "request-usage":
 			usage.Add(TokenUsage{
-				InputTokens:         payload.InputTokens,
-				OutputTokens:        payload.OutputTokens,
-				CacheReadTokens:     payload.CacheReadTokens,
-				CacheCreationTokens: payload.CacheWriteTokens,
-				Reported:            true,
+				InputTokens:           payload.InputTokens,
+				OutputTokens:          payload.OutputTokens,
+				CacheReadTokens:       payload.CacheReadTokens,
+				CacheCreationTokens:   payload.CacheWriteTokens,
+				Reported:              true,
+				CacheCreationReported: true,
 			})
 
 		case "text":
