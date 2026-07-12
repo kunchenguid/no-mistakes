@@ -41,6 +41,9 @@ func (m *codexMetricsAccumulator) onItem(eventType string, item *codexItem, at t
 			m.starts[item.ID] = at
 		}
 	case "item.completed":
+		if !isTool && item.Type != "agent_message" {
+			return
+		}
 		m.modelRoundtrips++
 		if !isTool {
 			return
@@ -77,8 +80,7 @@ func (m *codexMetricsAccumulator) metrics() InvocationMetrics {
 
 // codexToolItemKind classifies a codex item type: whether it is a tool call,
 // its default category when it carries no shell command, and whether its
-// command string should be classified. Non-tool items (messages, reasoning)
-// still count as model round-trips.
+// command string should be classified.
 func codexToolItemKind(itemType string) (isTool bool, defaultCategory ToolCategory, classifyCommand bool) {
 	switch itemType {
 	case "command_execution", "local_shell_call", "exec_command":

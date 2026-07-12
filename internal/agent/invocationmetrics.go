@@ -220,25 +220,58 @@ func trimMatchingQuotes(s string) string {
 // splitCompoundCommand splits a script into sub-commands on the shell operators
 // that sequence separate commands: &&, ||, ;, |, and newlines.
 func splitCompoundCommand(script string) []string {
-	fields := strings.FieldsFunc(script, func(r rune) bool {
-		return r == '\n' || r == ';'
-	})
 	var subs []string
-	for _, part := range fields {
-		for _, piece := range splitOnOperators(part) {
-			piece = strings.TrimSpace(piece)
-			if piece != "" {
-				subs = append(subs, piece)
+	start := 0
+	var quote rune
+	escaped := false
+	runes := []rune(script)
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if r == '\\' && quote != '\'' {
+			escaped = true
+			continue
+		}
+		if quote != 0 {
+			if r == quote {
+				quote = 0
+			}
+			continue
+		}
+		if r == '\'' || r == '"' {
+			quote = r
+			continue
+		}
+		separatorWidth := 0
+		switch r {
+		case '\n', ';':
+			separatorWidth = 1
+		case '|':
+			separatorWidth = 1
+			if i+1 < len(runes) && runes[i+1] == '|' {
+				separatorWidth = 2
+			}
+		case '&':
+			if i+1 < len(runes) && runes[i+1] == '&' {
+				separatorWidth = 2
 			}
 		}
+		if separatorWidth == 0 {
+			continue
+		}
+		if sub := strings.TrimSpace(string(runes[start:i])); sub != "" {
+			subs = append(subs, sub)
+		}
+		start = i + separatorWidth
+		i += separatorWidth - 1
+	}
+	if sub := strings.TrimSpace(string(runes[start:])); sub != "" {
+		subs = append(subs, sub)
 	}
 	return subs
-}
-
-// splitOnOperators splits a single line on &&, ||, and | boundaries.
-func splitOnOperators(line string) []string {
-	replacer := strings.NewReplacer("&&", "\x00", "||", "\x00", "|", "\x00")
-	return strings.Split(replacer.Replace(line), "\x00")
 }
 
 // testLintVerbs are standalone linters, formatters, and test runners.

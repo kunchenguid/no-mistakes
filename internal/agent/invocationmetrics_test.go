@@ -97,6 +97,21 @@ func TestClassifyToolCommand_UnwrapsShellAndClassifiesVerbs(t *testing.T) {
 			want:    []ToolCategory{ToolRead, ToolRead},
 		},
 		{
+			name:    "quoted operators stay within one sub-command",
+			command: `rg 'foo|bar;baz'`,
+			want:    []ToolCategory{ToolRead},
+		},
+		{
+			name:    "escaped operators stay within one sub-command",
+			command: `printf a\|b\;c && git status`,
+			want:    []ToolCategory{ToolOther, ToolGit},
+		},
+		{
+			name:    "logical or splits sub-commands",
+			command: `rg foo || printf missing`,
+			want:    []ToolCategory{ToolRead, ToolOther},
+		},
+		{
 			name:    "no shell wrapper classifies directly",
 			command: "git status",
 			want:    []ToolCategory{ToolGit},

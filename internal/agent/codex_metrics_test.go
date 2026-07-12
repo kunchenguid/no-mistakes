@@ -58,6 +58,21 @@ func TestCodexMetricsAccumulator_NilSafe(t *testing.T) {
 	m.onItem("item.completed", &codexItem{Type: "agent_message"}, time.Now()) // must not panic
 }
 
+func TestCodexMetricsAccumulator_IgnoresNonModelItems(t *testing.T) {
+	m := newCodexMetricsAccumulator()
+	at := time.Unix(1_700_000_000, 0)
+
+	m.onItem("item.completed", &codexItem{ID: "reasoning", Type: "reasoning"}, at)
+	m.onItem("item.completed", &codexItem{ID: "unknown", Type: "metadata"}, at)
+	m.onItem("item.completed", &codexItem{ID: "message", Type: "agent_message"}, at)
+	m.onItem("item.completed", &codexItem{ID: "tool", Type: "mcp_tool_call"}, at)
+
+	got := m.metrics()
+	if got.ModelRoundtrips != 2 {
+		t.Fatalf("ModelRoundtrips = %d, want 2", got.ModelRoundtrips)
+	}
+}
+
 // TestParseCodexEvents_ExtractsMetricsAndReasoning proves the live-stream parser
 // fills the metrics accumulator and captures reasoning tokens from usage.
 func TestParseCodexEvents_ExtractsMetricsAndReasoning(t *testing.T) {
