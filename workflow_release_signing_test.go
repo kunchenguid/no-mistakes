@@ -458,8 +458,9 @@ func TestReleaseWorkflowFailsClosedOnBadSignature(t *testing.T) {
 		if !strings.Contains(run, "runtime") {
 			t.Errorf("darwin job %q must assert the hardened runtime flag", job.name)
 		}
-		if !strings.Contains(run, "Timestamp=") {
-			t.Errorf("darwin job %q must assert a secure timestamp", job.name)
+		if !regexp.MustCompile(`(?s)TIMESTAMP=.*Timestamp=.*-z "\$TIMESTAMP"`).MatchString(run) ||
+			!regexp.MustCompile(`(?i)grep -qi ['"]?\^none\$`).MatchString(run) {
+			t.Errorf("darwin job %q must reject an empty or none secure timestamp", job.name)
 		}
 	}
 }

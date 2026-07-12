@@ -167,7 +167,10 @@ jobs:
           fi
 
           # 4. Secure (RFC-3161) timestamp present.
-          grep -q 'Timestamp=' <<<"$SIG"
+          TIMESTAMP="$(sed -n 's/^Timestamp=//p' <<<"$SIG")"
+          if [[ -z "$TIMESTAMP" ]] || grep -qi '^none$' <<<"$TIMESTAMP"; then
+            echo "::error::secure timestamp is missing" >&2; exit 1
+          fi
 
           # 5. Designated requirement is identity-based, never a content hash.
           DR="$(codesign -d -r- "$BIN" 2>&1)"
