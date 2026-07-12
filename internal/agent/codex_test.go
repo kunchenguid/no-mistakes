@@ -15,7 +15,7 @@ func TestCodexAgent_BuildArgs(t *testing.T) {
 	args := ca.buildArgs("fix the bug", "", "")
 
 	expected := []string{
-		"exec", "fix the bug",
+		"exec", "-",
 		"--json",
 		"--dangerously-bypass-approvals-and-sandbox",
 		"--color", "never",
@@ -38,7 +38,7 @@ func TestCodexAgent_BuildArgs_ExtraArgsAfterExec(t *testing.T) {
 	expected := []string{
 		"exec",
 		"-m", "gpt-5.4",
-		"fix it",
+		"-",
 		"--json",
 		"--dangerously-bypass-approvals-and-sandbox",
 		"--color", "never",
@@ -85,7 +85,7 @@ func TestCodexAgent_BuildArgs_WithOutputSchema(t *testing.T) {
 	args := ca.buildArgs("review", "/tmp/schema.json", "")
 
 	want := []string{
-		"exec", "review",
+		"exec", "-",
 		"--json",
 		"--output-schema", "/tmp/schema.json",
 		"--dangerously-bypass-approvals-and-sandbox",
@@ -116,6 +116,30 @@ func writeFakeCodex(t *testing.T, dir, posixScript, windowsScript string) string
 		t.Fatalf("write fake codex: %v", err)
 	}
 	return bin
+}
+
+func TestCodexAgent_RunSurfacesErrorWhenNoMessage(t *testing.T) {
+	dir := t.TempDir()
+	bin := writeFakeCodex(t, dir, `#!/bin/sh
+printf '%s\n' '{"type":"turn.failed","error":{"message":"usage limit reached"}}'
+exit 0
+`, strings.Join([]string{
+		"@echo off",
+		"echo {\"type\":\"turn.failed\",\"error\":{\"message\":\"usage limit reached\"}}",
+		"exit /b 0",
+	}, "\r\n"))
+
+	ca := &codexAgent{bin: bin}
+	_, err := ca.Run(context.Background(), RunOpts{Prompt: "review", CWD: t.TempDir()})
+	if err == nil {
+		t.Fatal("expected error when codex produced no message")
+	}
+	if !strings.Contains(err.Error(), "usage limit reached") {
+		t.Fatalf("expected provider reason in error, got %v", err)
+	}
+	if strings.Contains(err.Error(), "no text output") {
+		t.Fatalf("expected specific reason, got %v", err)
+	}
 }
 
 func TestCodexAgent_RunWritesOutputSchemaFile(t *testing.T) {
@@ -373,6 +397,23 @@ func TestParseCodexEvents_AgentMessage(t *testing.T) {
 	}
 	if usage.CacheReadTokens != 50 {
 		t.Errorf("expected cache read tokens 50, got %d", usage.CacheReadTokens)
+	}
+}
+
+func TestParseCodexEvents_TurnFailedCapturesError(t *testing.T) {
+	events := "{\"type\":\"turn.failed\",\"error\":{\"message\":\"rate limited\"}}\n"
+
+	var usage TokenUsage
+	var lastMessage, codexErr string
+	err := parseCodexEvents(
+		context.Background(), strings.NewReader(events), nil,
+		&usage, &lastMessage, &codexErr, nil, nil,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if codexErr != "rate limited" {
+		t.Fatalf("expected captured turn.failed reason, got %q", codexErr)
 	}
 }
 
