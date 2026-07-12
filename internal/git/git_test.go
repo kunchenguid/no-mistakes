@@ -205,6 +205,50 @@ func TestFindGitRootNotFound(t *testing.T) {
 	}
 }
 
+// TestFindMainRepoRoot_Submodule verifies that FindMainRepoRoot returns the
+// submodule working tree root, not a path inside the superproject's
+// .git/modules/ directory (issue #328).
+func TestFindMainRepoRoot_Submodule(t *testing.T) {
+	// Create the superproject.
+	superDir := initTestRepo(t)
+
+	// Create the sub-repo that will be embedded as a submodule.
+	subRepoDir := initTestRepo(t)
+
+	// Newer Git versions block file:// submodule clones by default.
+	// Allow it only for this test by overriding the protocol allowlist.
+	runWithEnv := func(dir string, env []string, name string, args ...string) {
+		t.Helper()
+		cmd := exec.Command(name, args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), env...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("%s %v failed: %v\n%s", name, args, err, out)
+		}
+	}
+
+	// Add subRepoDir as a submodule inside the superproject.
+	runWithEnv(superDir, []string{"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=protocol.file.allow", "GIT_CONFIG_VALUE_0=always"},
+		"git", "submodule", "add", subRepoDir, "sub")
+	run(t, superDir, "git", "commit", "-m", "add submodule")
+
+	// The submodule working tree is at superDir/sub.
+	submoduleDir := filepath.Join(superDir, "sub")
+
+	got, err := FindMainRepoRoot(submoduleDir)
+	if err != nil {
+		t.Fatalf("FindMainRepoRoot in submodule failed: %v", err)
+	}
+
+	want, _ := filepath.EvalSymlinks(submoduleDir)
+	gotResolved, _ := filepath.EvalSymlinks(got)
+
+	if gotResolved != want {
+		t.Fatalf("FindMainRepoRoot in submodule = %q, want %q (submodule working tree, not superproject .git/modules path)", gotResolved, want)
+	}
+}
+
 func TestHasUncommittedChangesClean(t *testing.T) {
 	dir := initTestRepo(t)
 	ctx := context.Background()

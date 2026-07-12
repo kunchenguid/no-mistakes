@@ -141,11 +141,25 @@ func FindGitRoot(path string) (string, error) {
 // repository. For a regular repo this is the same as FindGitRoot. For a
 // worktree it resolves back to the main repository root by inspecting
 // git's common dir.
+//
+// Git submodules are NOT treated as linked worktrees: their common-dir lives
+// under the superproject's .git/modules/ tree, so taking its parent would
+// give the wrong path. Submodules are detected via
+// --show-superproject-working-tree and resolved using --show-toplevel instead.
 func FindMainRepoRoot(path string) (string, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return "", err
 	}
+
+	// Detect git submodules: if --show-superproject-working-tree is non-empty
+	// we are inside a submodule and should treat it as its own repo root.
+	superCmd := exec.Command("git", "rev-parse", "--show-superproject-working-tree")
+	superCmd.Dir = abs
+	if superOut, err := superCmd.Output(); err == nil && strings.TrimSpace(string(superOut)) != "" {
+		return FindGitRoot(abs)
+	}
+
 	cmd := exec.Command("git", "rev-parse", "--git-common-dir")
 	cmd.Dir = abs
 	winproc.Harden(cmd)
