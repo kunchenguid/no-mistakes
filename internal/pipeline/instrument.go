@@ -129,8 +129,10 @@ func (a *perfRecordingAgent) recordResult(inv *db.AgentInvocation, sessionKey st
 	inv.OutputTokens = result.Usage.OutputTokens
 	inv.CacheReadTokens = result.Usage.CacheReadTokens
 
-	fresh := agent.FreshInputTokens(result.Usage.InputTokens, result.Usage.CacheReadTokens)
-	inv.FreshInputTokens = &fresh
+	if result.UsageReported {
+		fresh := agent.FreshInputTokens(result.Usage.InputTokens, result.Usage.CacheReadTokens)
+		inv.FreshInputTokens = &fresh
+	}
 
 	if result.CacheCreationReported {
 		cacheCreation := result.Usage.CacheCreationTokens
@@ -140,20 +142,24 @@ func (a *perfRecordingAgent) recordResult(inv *db.AgentInvocation, sessionKey st
 	// Per-round deltas: for a resumed session whose raw counters are cumulative,
 	// subtract the same session's prior cumulative so the row cannot be mistaken
 	// for per-round usage. Read the prior BEFORE this row is inserted.
-	priorInput, priorOutput, priorCache, _ := a.db.LatestSessionCumulative(a.runID, sessionKey)
-	deltaInput := agent.PerRoundTokens(result.Usage.InputTokens, priorInput, result.SessionUsageCumulative)
-	deltaOutput := agent.PerRoundTokens(result.Usage.OutputTokens, priorOutput, result.SessionUsageCumulative)
-	deltaCache := agent.PerRoundTokens(result.Usage.CacheReadTokens, priorCache, result.SessionUsageCumulative)
-	inv.DeltaInputTokens = &deltaInput
-	inv.DeltaOutputTokens = &deltaOutput
-	inv.DeltaCacheReadTokens = &deltaCache
+	if result.UsageReported {
+		priorInput, priorOutput, priorCache, _ := a.db.LatestSessionCumulative(a.runID, sessionKey)
+		deltaInput := agent.PerRoundTokens(result.Usage.InputTokens, priorInput, result.SessionUsageCumulative)
+		deltaOutput := agent.PerRoundTokens(result.Usage.OutputTokens, priorOutput, result.SessionUsageCumulative)
+		deltaCache := agent.PerRoundTokens(result.Usage.CacheReadTokens, priorCache, result.SessionUsageCumulative)
+		inv.DeltaInputTokens = &deltaInput
+		inv.DeltaOutputTokens = &deltaOutput
+		inv.DeltaCacheReadTokens = &deltaCache
+	}
 
 	if result.Metrics != nil {
 		m := result.Metrics
 		// Reasoning tokens are reported only by adapters that also report
 		// activity metrics (codex); a real zero there is meaningful.
-		reasoning := result.Usage.ReasoningTokens
-		inv.ReasoningTokens = &reasoning
+		if result.UsageReported {
+			reasoning := result.Usage.ReasoningTokens
+			inv.ReasoningTokens = &reasoning
+		}
 		roundtrips := m.ModelRoundtrips
 		inv.ModelRoundtrips = &roundtrips
 		toolCalls := m.ToolCalls

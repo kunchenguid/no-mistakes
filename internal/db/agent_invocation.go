@@ -224,15 +224,14 @@ func (d *DB) LatestSessionCumulative(runID, sessionKey string) (input, output, c
 }
 
 // AgentInvocationAggregate summarizes invocations for one purpose, powering
-// the read-only performance report. Token and metric sums fold NULLs to zero
-// via COALESCE; MetricsRows reports how many rows in the group actually carried
-// activity metrics, so the reader can tell a real zero from missing data.
+// the read-only performance report. Nullable sums preserve unknown when no row
+// reported that metric. MetricsRows reports activity-metric coverage.
 type AgentInvocationAggregate struct {
 	Purpose             string
 	Count               int
 	TotalDurationMS     int64
 	AvgDurationMS       int64
-	SubprocessWaitMS    int64
+	SubprocessWaitMS    *int64
 	Cold                int
 	Started             int
 	Resumed             int
@@ -241,17 +240,17 @@ type AgentInvocationAggregate struct {
 	InputTokens         int64
 	OutputTokens        int64
 	CacheReadTokens     int64
-	CacheCreationTokens int64
-	FreshInputTokens    int64
-	ReasoningTokens     int64
-	ModelRoundtrips     int64
-	ToolCalls           int64
-	ToolWaitCalls       int64
-	ToolTestLintCalls   int64
-	ToolEditCalls       int64
-	ToolReadCalls       int64
-	ToolGitCalls        int64
-	ToolOtherCalls      int64
+	CacheCreationTokens *int64
+	FreshInputTokens    *int64
+	ReasoningTokens     *int64
+	ModelRoundtrips     *int64
+	ToolCalls           *int64
+	ToolWaitCalls       *int64
+	ToolTestLintCalls   *int64
+	ToolEditCalls       *int64
+	ToolReadCalls       *int64
+	ToolGitCalls        *int64
+	ToolOtherCalls      *int64
 	// MetricsRows counts invocations in the group whose adapter reported
 	// activity metrics (model_roundtrips is non-NULL).
 	MetricsRows int
@@ -264,7 +263,7 @@ func (d *DB) AgentInvocationAggregates() ([]AgentInvocationAggregate, error) {
 		SELECT purpose,
 		       COUNT(*),
 		       COALESCE(SUM(duration_ms), 0),
-		       COALESCE(SUM(subprocess_wait_ms), 0),
+		       SUM(subprocess_wait_ms),
 		       COALESCE(SUM(CASE WHEN session_mode = 'cold' THEN 1 ELSE 0 END), 0),
 		       COALESCE(SUM(CASE WHEN session_mode = 'started' THEN 1 ELSE 0 END), 0),
 		       COALESCE(SUM(CASE WHEN session_mode = 'resumed' THEN 1 ELSE 0 END), 0),
@@ -273,17 +272,17 @@ func (d *DB) AgentInvocationAggregates() ([]AgentInvocationAggregate, error) {
 		       COALESCE(SUM(input_tokens), 0),
 		       COALESCE(SUM(output_tokens), 0),
 		       COALESCE(SUM(cache_read_tokens), 0),
-		       COALESCE(SUM(cache_creation_tokens), 0),
-		       COALESCE(SUM(fresh_input_tokens), 0),
-		       COALESCE(SUM(reasoning_tokens), 0),
-		       COALESCE(SUM(model_roundtrips), 0),
-		       COALESCE(SUM(tool_calls), 0),
-		       COALESCE(SUM(tool_wait_calls), 0),
-		       COALESCE(SUM(tool_test_lint_calls), 0),
-		       COALESCE(SUM(tool_edit_calls), 0),
-		       COALESCE(SUM(tool_read_calls), 0),
-		       COALESCE(SUM(tool_git_calls), 0),
-		       COALESCE(SUM(tool_other_calls), 0),
+		       SUM(cache_creation_tokens),
+		       SUM(fresh_input_tokens),
+		       SUM(reasoning_tokens),
+		       SUM(model_roundtrips),
+		       SUM(tool_calls),
+		       SUM(tool_wait_calls),
+		       SUM(tool_test_lint_calls),
+		       SUM(tool_edit_calls),
+		       SUM(tool_read_calls),
+		       SUM(tool_git_calls),
+		       SUM(tool_other_calls),
 		       COALESCE(SUM(CASE WHEN model_roundtrips IS NOT NULL THEN 1 ELSE 0 END), 0)
 		FROM agent_invocations
 		GROUP BY purpose

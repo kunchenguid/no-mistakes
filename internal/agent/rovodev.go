@@ -302,6 +302,7 @@ func parseRovodevSSE(r io.Reader, onChunk func(string), usage *TokenUsage, lates
 				OutputTokens:        payload.OutputTokens,
 				CacheReadTokens:     payload.CacheReadTokens,
 				CacheCreationTokens: payload.CacheWriteTokens,
+				Reported:            true,
 			})
 
 		case "text":

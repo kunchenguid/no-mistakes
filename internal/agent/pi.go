@@ -407,6 +407,7 @@ func piIntField(m map[string]any, names ...string) int {
 
 func piUsageFrom(usage map[string]any) TokenUsage {
 	return TokenUsage{
+		Reported:            len(usage) > 0,
 		InputTokens:         piIntField(usage, "input"),
 		OutputTokens:        piIntField(usage, "output"),
 		CacheReadTokens:     piIntField(usage, "cacheRead"),
@@ -416,6 +417,7 @@ func piUsageFrom(usage map[string]any) TokenUsage {
 
 func piUsageAdd(a, b TokenUsage) TokenUsage {
 	return TokenUsage{
+		Reported:            a.Reported || b.Reported,
 		InputTokens:         a.InputTokens + b.InputTokens,
 		OutputTokens:        a.OutputTokens + b.OutputTokens,
 		CacheReadTokens:     a.CacheReadTokens + b.CacheReadTokens,

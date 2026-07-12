@@ -267,6 +267,7 @@ func parseCodexEvents(ctx context.Context, r io.Reader, onChunk func(string), us
 					OutputTokens:    event.Usage.OutputTokens,
 					CacheReadTokens: event.Usage.CachedInputTokens,
 					ReasoningTokens: event.Usage.ReasoningOutputToks,
+					Reported:        true,
 				})
 			}
 		}

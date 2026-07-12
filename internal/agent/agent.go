@@ -139,7 +139,8 @@ type Result struct {
 	// Text is the raw text output.
 	Text string
 	// Usage tracks token consumption for the invocation.
-	Usage TokenUsage
+	Usage         TokenUsage
+	UsageReported bool
 	// SessionID is the adapter-native session identity of this invocation
 	// when the adapter reports one. Callers persist it to resume later.
 	SessionID string
@@ -179,6 +180,7 @@ type TokenUsage struct {
 	// ReasoningTokens is the output tokens the model spent on hidden reasoning,
 	// when the provider reports it separately. Zero when not reported.
 	ReasoningTokens int
+	Reported        bool
 }
 
 // InvocationWorkload is the bounded size of the change an invocation works
@@ -199,7 +201,7 @@ func finalizeTextResult(agentName, text string, schema json.RawMessage, usage To
 		return nil, fmt.Errorf("%s returned no text output", agentName)
 	}
 	if len(schema) == 0 {
-		return &Result{Text: text, Usage: usage}, nil
+		return &Result{Text: text, Usage: usage, UsageReported: usage.Reported}, nil
 	}
 
 	output, err := parseStructuredTextOutput(text, schema)
@@ -207,7 +209,7 @@ func finalizeTextResult(agentName, text string, schema json.RawMessage, usage To
 		return nil, fmt.Errorf("%s output parse: %w (output snippet: %q)", agentName, err, outputSnippet(text))
 	}
 
-	return &Result{Output: output, Text: text, Usage: usage}, nil
+	return &Result{Output: output, Text: text, Usage: usage, UsageReported: usage.Reported}, nil
 }
 
 // outputSnippet returns a trimmed, length-capped excerpt of agent output for
@@ -715,6 +717,7 @@ func (u *TokenUsage) Add(other TokenUsage) {
 	u.CacheReadTokens += other.CacheReadTokens
 	u.CacheCreationTokens += other.CacheCreationTokens
 	u.ReasoningTokens += other.ReasoningTokens
+	u.Reported = u.Reported || other.Reported
 }
 
 // New creates an agent by name with the given binary path.

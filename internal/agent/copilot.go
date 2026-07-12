@@ -272,7 +272,7 @@ func parseCopilotEvents(
 			if event.Data == nil {
 				continue
 			}
-			usage.Add(TokenUsage{OutputTokens: event.Data.OutputTokens})
+			usage.Add(TokenUsage{OutputTokens: event.Data.OutputTokens, Reported: true})
 			if event.Data.Content != "" && messages != nil {
 				*messages = append(*messages, event.Data.Content)
 			}

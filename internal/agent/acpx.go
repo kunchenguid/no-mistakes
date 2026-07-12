@@ -236,6 +236,7 @@ func acpxUpdateUsage(update acpxSessionUpdate) TokenUsage {
 
 func acpxUsageFieldsToTokenUsage(fields acpxUsageFields) TokenUsage {
 	return TokenUsage{
+		Reported: fields != (acpxUsageFields{}),
 		InputTokens: acpxFirstPositive(
 			fields.InputTokens,
 			fields.InputTokensCamel,
@@ -267,6 +268,7 @@ func acpxUsageFieldsToTokenUsage(fields acpxUsageFields) TokenUsage {
 
 func acpxMaxUsage(a, b TokenUsage) TokenUsage {
 	return TokenUsage{
+		Reported:            a.Reported || b.Reported,
 		InputTokens:         max(a.InputTokens, b.InputTokens),
 		OutputTokens:        max(a.OutputTokens, b.OutputTokens),
 		CacheReadTokens:     max(a.CacheReadTokens, b.CacheReadTokens),

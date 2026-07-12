@@ -79,12 +79,12 @@ func renderAgentPerfReport(w io.Writer, database *db.DB, runID string) error {
 	tw := tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "PURPOSE\tCOUNT\tAVG\tTOTAL\tCOLD\tSTARTED\tRESUMED\tFALLBACK\tERRORS\tIN TOK\tOUT TOK\tCACHE READ TOK\tCACHE WRITE TOK\tFRESH IN TOK\tREASON TOK")
 	for _, a := range aggregates {
-		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n",
+		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%s\n",
 			a.Purpose, a.Count,
 			formatMS(a.AvgDurationMS), formatMS(a.TotalDurationMS),
 			a.Cold, a.Started, a.Resumed, a.Fallback, a.Errors,
-			a.InputTokens, a.OutputTokens, a.CacheReadTokens, a.CacheCreationTokens,
-			a.FreshInputTokens, a.ReasoningTokens,
+			a.InputTokens, a.OutputTokens, a.CacheReadTokens, optInt64(a.CacheCreationTokens),
+			optInt64(a.FreshInputTokens), optInt64(a.ReasoningTokens),
 		)
 	}
 	if err := tw.Flush(); err != nil {
@@ -99,10 +99,10 @@ func renderAgentPerfReport(w io.Writer, database *db.DB, runID string) error {
 	fmt.Fprintln(tw, "PURPOSE\tMETRICS\tSUBPROC\tROUNDTRIPS\tTOOLS\tWAIT\tTEST/LINT\tEDIT\tREAD\tGIT\tOTHER")
 	for _, a := range aggregates {
 		metricsCov := fmt.Sprintf("%d/%d", a.MetricsRows, a.Count)
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n",
-			a.Purpose, metricsCov, formatMS(a.SubprocessWaitMS),
-			a.ModelRoundtrips, a.ToolCalls,
-			a.ToolWaitCalls, a.ToolTestLintCalls, a.ToolEditCalls, a.ToolReadCalls, a.ToolGitCalls, a.ToolOtherCalls,
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			a.Purpose, metricsCov, optMS(a.SubprocessWaitMS),
+			optInt64(a.ModelRoundtrips), optInt64(a.ToolCalls),
+			optInt64(a.ToolWaitCalls), optInt64(a.ToolTestLintCalls), optInt64(a.ToolEditCalls), optInt64(a.ToolReadCalls), optInt64(a.ToolGitCalls), optInt64(a.ToolOtherCalls),
 		)
 	}
 	return tw.Flush()
@@ -175,6 +175,13 @@ func optInt(p *int) string {
 		return "-"
 	}
 	return strconv.Itoa(*p)
+}
+
+func optInt64(p *int64) string {
+	if p == nil {
+		return "-"
+	}
+	return strconv.FormatInt(*p, 10)
 }
 
 // optMS renders a nullable duration: "-" when nil, else a rounded duration.

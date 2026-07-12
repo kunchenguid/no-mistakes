@@ -107,7 +107,7 @@ func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 		// stream-json usage is per-invocation, not cumulative across --resume,
 		// so SessionUsageCumulative stays false and per-round deltas equal the
 		// raw counters.
-		res.CacheCreationReported = true
+		res.CacheCreationReported = res.UsageReported
 		if result.model != "" {
 			res.ModelProvider = "anthropic"
 		}
@@ -132,9 +132,10 @@ func finalizeClaudeResult(result *claudeResult, schema json.RawMessage, usage To
 	}
 
 	return &Result{
-		Output: result.StructuredOutput,
-		Text:   result.text,
-		Usage:  usage,
+		Output:        result.StructuredOutput,
+		Text:          result.text,
+		Usage:         usage,
+		UsageReported: usage.Reported,
 	}, nil
 }
 
@@ -263,6 +264,7 @@ func parseClaudeEvents(ctx context.Context, r io.Reader, onChunk func(string), u
 				OutputTokens:        msg.Usage.OutputTokens,
 				CacheReadTokens:     msg.Usage.CacheReadInputTokens,
 				CacheCreationTokens: msg.Usage.CacheCreationInputTokens,
+				Reported:            true,
 			})
 			for _, c := range msg.Content {
 				if c.Type == "text" && c.Text != "" {

@@ -217,6 +217,30 @@ func TestAgentInvocationAggregatesAndRunSummary(t *testing.T) {
 	}
 }
 
+func TestAgentInvocationAggregatesPreserveUnknownMetrics(t *testing.T) {
+	d, _, run := openSessionTestDB(t)
+	inv := AgentInvocation{
+		RunID: run.ID, StepName: "review", Round: 1, Purpose: "review", Agent: "codex",
+		SessionMode: InvocationModeCold, StartedAt: 1, CompletedAt: 2, DurationMS: 10, ExitStatus: "ok",
+	}
+	if _, err := d.InsertAgentInvocation(inv); err != nil {
+		t.Fatal(err)
+	}
+	aggregates, err := d.AgentInvocationAggregates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(aggregates) != 1 {
+		t.Fatalf("got %d aggregates, want 1", len(aggregates))
+	}
+	a := aggregates[0]
+	if a.SubprocessWaitMS != nil || a.CacheCreationTokens != nil ||
+		a.FreshInputTokens != nil || a.ReasoningTokens != nil ||
+		a.ModelRoundtrips != nil || a.ToolCalls != nil {
+		t.Fatalf("unknown aggregate metrics became recorded values: %+v", a)
+	}
+}
+
 func TestAddRunParkedDurationAccumulates(t *testing.T) {
 	d, _, run := openSessionTestDB(t)
 

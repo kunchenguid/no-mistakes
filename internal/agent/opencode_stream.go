@@ -10,6 +10,7 @@ func opencodeTokensToUsage(t *opencodeTokens) TokenUsage {
 	u := TokenUsage{
 		InputTokens:  t.Input,
 		OutputTokens: t.Output,
+		Reported:     true,
 	}
 	if t.Cache != nil {
 		u.CacheReadTokens = t.Cache.Read

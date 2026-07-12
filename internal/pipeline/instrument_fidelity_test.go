@@ -47,6 +47,7 @@ func (a *cumulativeSessionAgent) Run(_ context.Context, opts agent.RunOpts) (*ag
 			CacheReadTokens: a.cumCache,
 			ReasoningTokens: 5 * a.round,
 		},
+		UsageReported: true,
 		Metrics: &agent.InvocationMetrics{
 			ModelRoundtrips:  4,
 			ToolCalls:        3,
@@ -226,6 +227,10 @@ func TestPerfRecording_MissingProviderUsageIsUnknown(t *testing.T) {
 		"model_roundtrips": inv.ModelRoundtrips,
 		"tool_calls":       inv.ToolCalls,
 		"cache_creation":   inv.CacheCreationTokens,
+		"fresh_input":      inv.FreshInputTokens,
+		"delta_input":      inv.DeltaInputTokens,
+		"delta_output":     inv.DeltaOutputTokens,
+		"delta_cache_read": inv.DeltaCacheReadTokens,
 		"reasoning":        inv.ReasoningTokens,
 		"finding_count":    inv.FindingCount,
 		"workload_files":   inv.WorkloadFiles,
