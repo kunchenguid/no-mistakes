@@ -22,6 +22,7 @@ agent_path_override:
   opencode: /usr/local/bin/opencode
   pi: /usr/local/bin/pi
   copilot: /usr/local/bin/copilot
+  hermes: /usr/local/bin/hermes
 
 agent_args_override:
   codex:
@@ -68,13 +69,13 @@ test:
 
 Default agent for all repos and setup-wizard suggestions. Can be overridden per-repo.
 
-|         |                                                                                   |
-| ------- | --------------------------------------------------------------------------------- |
-| Type    | `string` or `string[]`                                                            |
-| Values  | `auto`, `claude`, `codex`, `rovodev`, `opencode`, `pi`, `copilot`, `acp:<target>` |
-| Default | `auto`                                                                            |
+|         |                                                                                             |
+| ------- | ------------------------------------------------------------------------------------------- |
+| Type    | `string` or `string[]`                                                                      |
+| Values  | `auto`, `claude`, `codex`, `rovodev`, `opencode`, `pi`, `copilot`, `hermes`, `acp:<target>` |
+| Default | `auto`                                                                                      |
 
-`auto` resolves to the first supported native agent found on `PATH` in this order: `claude`, `codex`, `opencode`, `acli` with `rovodev` support, `pi`, then `copilot`.
+`auto` resolves to the first supported native agent found on `PATH` in this order: `claude`, `codex`, `opencode`, `acli` with `rovodev` support, `pi`, `copilot`, then `hermes`.
 `acp:<target>` uses the user-installed `acpx` binary to run an ACP target, for example `acp:gemini`.
 ACP agents are opt-in and are not considered by `agent: auto`.
 The effective agent configuration must resolve to a runnable runner before a new validation gate starts.
@@ -140,28 +141,30 @@ Default native binary names when no override is set:
 | `opencode` | `opencode` |
 | `pi`       | `pi`       |
 | `copilot`  | `copilot`  |
+| `hermes`   | `hermes`   |
 
 ### agent_args_override
 
 Extra CLI flags to pass to each native agent.
 Use this to set model selection, service tier, reasoning effort, permission mode, or any other flag the underlying agent supports.
 
-|         |                                                           |
-| ------- | --------------------------------------------------------- |
-| Type    | `map[string][]string`                                     |
-| Keys    | `claude`, `codex`, `rovodev`, `opencode`, `pi`, `copilot` |
-| Default | Empty (no extra flags)                                    |
+|         |                                                                     |
+| ------- | ------------------------------------------------------------------- |
+| Type    | `map[string][]string`                                               |
+| Keys    | `claude`, `codex`, `rovodev`, `opencode`, `pi`, `copilot`, `hermes` |
+| Default | Empty (no extra flags)                                              |
 
 User-supplied flags are inserted ahead of no-mistakes' managed flags, so your choices usually take precedence. A few flags are reserved because no-mistakes depends on them to communicate with the agent - setting any of these returns a config error on load:
 
-| Agent      | Reserved flags                                                                                              |
-| ---------- | ----------------------------------------------------------------------------------------------------------- |
+| Agent      | Reserved flags                                                                                                                           |
+| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
 | `claude`   | `-p`, `--print`, `--verbose`, `--output-format`, `--json-schema`, `-r`, `--resume`, `--session-id`, `-c`, `--continue`, `--fork-session` |
-| `codex`    | `exec`, `resume`, `--resume`, `--session`, `--session-id`, `--thread`, `--thread-id`, `--last`, `--json`, `--color` |
-| `rovodev`  | `rovodev`, `serve`, `--disable-session-token`                                                               |
-| `opencode` | `serve`, `--hostname`, `--port`, `--print-logs`                                                             |
-| `pi`       | `--mode`, `--no-session`                                                                                    |
-| `copilot`  | `-p`, `--prompt`, `--output-format`, `--no-color`                                                          |
+| `codex`    | `exec`, `resume`, `--resume`, `--session`, `--session-id`, `--thread`, `--thread-id`, `--last`, `--json`, `--color`                      |
+| `rovodev`  | `rovodev`, `serve`, `--disable-session-token`                                                                                            |
+| `opencode` | `serve`, `--hostname`, `--port`, `--print-logs`                                                                                          |
+| `pi`       | `--mode`, `--no-session`                                                                                                                 |
+| `copilot`  | `-p`, `--prompt`, `--output-format`, `--no-color`                                                                                        |
+| `hermes`   | `-z`, `--oneshot`, `--yolo`, `--ignore-rules`                                                                                            |
 
 For structured `codex` runs, no-mistakes also appends its own `--output-schema <tempfile>` after your overrides. Treat that flag as managed even though config validation does not currently reject it.
 The Claude and Codex session-control forms are reserved so no-mistakes can keep reviewer and fixer conversations role-isolated.

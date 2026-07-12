@@ -45,6 +45,7 @@ By default that directory is temporary and local to the machine; repos can opt i
 | OpenCode | `opencode` | Persistent HTTP server, SSE streaming |
 | Pi | `pi` | Subprocess per invocation, JSONL events |
 | Copilot | `copilot` | Subprocess per invocation, JSONL events |
+| Hermes | `hermes` | Subprocess per invocation, plain-text output |
 | ACP target | `acpx` | Optional user-installed ACP bridge |
 
 ## Runner requirements
@@ -274,6 +275,17 @@ Any `agent_args_override.copilot` flags are inserted before no-mistakes' managed
 Reads JSONL events from stdout, streaming incremental `assistant.message_delta` text to the TUI and capturing the final `assistant.message` content.
 The Copilot CLI has no output-schema flag, so when structured output is requested no-mistakes injects the JSON schema into the prompt and validates the final text response with the same JSON fence and bare-object fallback used by Pi and Rovo Dev.
 
+## Hermes
+
+Spawns a `hermes` subprocess for each invocation with `-z <prompt> --yolo`.
+It also adds `--ignore-rules` so Hermes runs as a clean-slate code agent rather than loading your full `SOUL.md` router, skills, and delegation profiles; without it, a code-review prompt can route to an unrelated skill and return non-JSON output that fails schema parsing.
+`--ignore-user-config` is intentionally not added, because it also suppresses provider, model, and credential resolution and would make Hermes fail to authenticate.
+Any `agent_args_override.hermes` flags, such as `--model` or `--provider`, are inserted ahead of no-mistakes' managed flags, so your choices take precedence.
+The default `--yolo` is suppressed when you already supply `--yolo` or `--safe-mode`.
+Hermes prints plain text to stdout instead of a JSONL event stream, so no-mistakes reads the full response after the process exits.
+The Hermes CLI has no structured-output flag, so when structured output is requested no-mistakes injects the JSON schema into the prompt and validates the final text response with the same JSON fence and bare-object fallback used by Pi, Copilot, and Rovo Dev.
+Hermes has no durable session capability, so every review-loop turn runs cold with no reviewer/fixer session reuse.
+
 ## ACP via acpx
 
 ACP support is optional and requires a separately installed `acpx` binary.
@@ -307,6 +319,7 @@ $ no-mistakes doctor
   – opencode (not found)
   – pi (not found)
   – copilot (not found)
+  – hermes (not found)
   – acpx (not found)
   ✓ gate validation claude is runnable
 ```
