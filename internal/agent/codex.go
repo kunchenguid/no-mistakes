@@ -26,7 +26,7 @@ func (a *codexAgent) Name() string { return "codex" }
 
 // SupportsSessionResume reports codex's native durable-session capability:
 // `codex exec --json` emits thread.started with a thread_id, and
-// `codex exec resume <id> <prompt>` continues that thread.
+// `codex exec resume <id> -` continues that thread with the prompt on stdin.
 func (a *codexAgent) SupportsSessionResume() bool { return true }
 
 func (a *codexAgent) ReportsAgentAttempts() bool { return true }
