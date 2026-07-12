@@ -128,6 +128,41 @@ func TestCommitAgentFixes_RefusesOnBackwardReset(t *testing.T) {
 	}
 }
 
+func TestCommitAgentFixes_RefusesResetDuringCommit(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	sctx := newTestContext(t, &mockAgent{name: "codex"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Fixing = true
+
+	gitDir := gitCmd(t, dir, "rev-parse", "--git-dir")
+	if !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(dir, gitDir)
+	}
+	hook := filepath.Join(gitDir, "hooks", "post-commit")
+	hookBody := "#!/bin/sh\ngit reset --hard " + baseSHA + "\n"
+	if err := os.WriteFile(hook, []byte(hookBody), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("reviewed fix\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := commitAgentFixes(sctx, types.StepDocument, "update docs", "fallback")
+	if err == nil {
+		t.Fatal("expected refusal when HEAD is reset during commit")
+	}
+	if !strings.Contains(err.Error(), "not a descendant") {
+		t.Fatalf("expected a head-divergence error, got: %v", err)
+	}
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != baseSHA {
+		t.Fatalf("expected hook to reset HEAD to %s, got %s", baseSHA, got)
+	}
+	if sctx.Run.HeadSHA != headSHA {
+		t.Fatalf("recorded head changed to %s; expected %s", sctx.Run.HeadSHA, headSHA)
+	}
+}
+
 // TestCommitAgentFixes_AllowsForwardAgentCommit confirms the guard does not
 // false-positive when an agent legitimately advances HEAD forward (e.g. a
 // `git rebase --continue` during conflict resolution) before the pipeline
