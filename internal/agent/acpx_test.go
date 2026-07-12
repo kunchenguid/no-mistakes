@@ -166,6 +166,8 @@ func TestAcpxUsageFieldsToTokenUsage(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			tc.want.Reported = tc.want != (TokenUsage{})
+			tc.want.CacheCreationReported = tc.want.CacheCreationTokens > 0
 			got := acpxUsageFieldsToTokenUsage(tc.fields)
 			if got != tc.want {
 				t.Errorf("acpxUsageFieldsToTokenUsage(%+v) = %+v, want %+v", tc.fields, got, tc.want)
@@ -185,27 +187,27 @@ func TestAcpxUsageFields_JSONFieldAliases(t *testing.T) {
 		want TokenUsage
 	}{
 		// Input aliases
-		{name: "input_tokens", json: `{"input_tokens":7}`, want: TokenUsage{InputTokens: 7}},
-		{name: "inputTokens", json: `{"inputTokens":7}`, want: TokenUsage{InputTokens: 7}},
+		{name: "input_tokens", json: `{"input_tokens":7}`, want: TokenUsage{InputTokens: 7, Reported: true}},
+		{name: "inputTokens", json: `{"inputTokens":7}`, want: TokenUsage{InputTokens: 7, Reported: true}},
 		// Output aliases
-		{name: "output_tokens", json: `{"output_tokens":9}`, want: TokenUsage{OutputTokens: 9}},
-		{name: "outputTokens", json: `{"outputTokens":9}`, want: TokenUsage{OutputTokens: 9}},
+		{name: "output_tokens", json: `{"output_tokens":9}`, want: TokenUsage{OutputTokens: 9, Reported: true}},
+		{name: "outputTokens", json: `{"outputTokens":9}`, want: TokenUsage{OutputTokens: 9, Reported: true}},
 		// Cache read aliases
-		{name: "cache_read_input_tokens", json: `{"cache_read_input_tokens":11}`, want: TokenUsage{CacheReadTokens: 11}},
-		{name: "cache_read_tokens", json: `{"cache_read_tokens":11}`, want: TokenUsage{CacheReadTokens: 11}},
-		{name: "cached_input_tokens", json: `{"cached_input_tokens":11}`, want: TokenUsage{CacheReadTokens: 11}},
-		{name: "cacheReadInputTokens", json: `{"cacheReadInputTokens":11}`, want: TokenUsage{CacheReadTokens: 11}},
-		{name: "cachedInputTokens", json: `{"cachedInputTokens":11}`, want: TokenUsage{CacheReadTokens: 11}},
-		{name: "cacheReadTokens", json: `{"cacheReadTokens":11}`, want: TokenUsage{CacheReadTokens: 11}},
-		{name: "cachedReadTokens", json: `{"cachedReadTokens":11}`, want: TokenUsage{CacheReadTokens: 11}},
+		{name: "cache_read_input_tokens", json: `{"cache_read_input_tokens":11}`, want: TokenUsage{CacheReadTokens: 11, Reported: true}},
+		{name: "cache_read_tokens", json: `{"cache_read_tokens":11}`, want: TokenUsage{CacheReadTokens: 11, Reported: true}},
+		{name: "cached_input_tokens", json: `{"cached_input_tokens":11}`, want: TokenUsage{CacheReadTokens: 11, Reported: true}},
+		{name: "cacheReadInputTokens", json: `{"cacheReadInputTokens":11}`, want: TokenUsage{CacheReadTokens: 11, Reported: true}},
+		{name: "cachedInputTokens", json: `{"cachedInputTokens":11}`, want: TokenUsage{CacheReadTokens: 11, Reported: true}},
+		{name: "cacheReadTokens", json: `{"cacheReadTokens":11}`, want: TokenUsage{CacheReadTokens: 11, Reported: true}},
+		{name: "cachedReadTokens", json: `{"cachedReadTokens":11}`, want: TokenUsage{CacheReadTokens: 11, Reported: true}},
 		// Cache creation aliases
-		{name: "cache_creation_input_tokens", json: `{"cache_creation_input_tokens":13}`, want: TokenUsage{CacheCreationTokens: 13}},
-		{name: "cache_write_input_tokens", json: `{"cache_write_input_tokens":13}`, want: TokenUsage{CacheCreationTokens: 13}},
-		{name: "cache_write_tokens", json: `{"cache_write_tokens":13}`, want: TokenUsage{CacheCreationTokens: 13}},
-		{name: "cacheCreationInputTokens", json: `{"cacheCreationInputTokens":13}`, want: TokenUsage{CacheCreationTokens: 13}},
-		{name: "cacheCreationTokens", json: `{"cacheCreationTokens":13}`, want: TokenUsage{CacheCreationTokens: 13}},
-		{name: "cacheWriteTokens", json: `{"cacheWriteTokens":13}`, want: TokenUsage{CacheCreationTokens: 13}},
-		{name: "cachedWriteTokens", json: `{"cachedWriteTokens":13}`, want: TokenUsage{CacheCreationTokens: 13}},
+		{name: "cache_creation_input_tokens", json: `{"cache_creation_input_tokens":13}`, want: TokenUsage{CacheCreationTokens: 13, Reported: true, CacheCreationReported: true}},
+		{name: "cache_write_input_tokens", json: `{"cache_write_input_tokens":13}`, want: TokenUsage{CacheCreationTokens: 13, Reported: true, CacheCreationReported: true}},
+		{name: "cache_write_tokens", json: `{"cache_write_tokens":13}`, want: TokenUsage{CacheCreationTokens: 13, Reported: true, CacheCreationReported: true}},
+		{name: "cacheCreationInputTokens", json: `{"cacheCreationInputTokens":13}`, want: TokenUsage{CacheCreationTokens: 13, Reported: true, CacheCreationReported: true}},
+		{name: "cacheCreationTokens", json: `{"cacheCreationTokens":13}`, want: TokenUsage{CacheCreationTokens: 13, Reported: true, CacheCreationReported: true}},
+		{name: "cacheWriteTokens", json: `{"cacheWriteTokens":13}`, want: TokenUsage{CacheCreationTokens: 13, Reported: true, CacheCreationReported: true}},
+		{name: "cachedWriteTokens", json: `{"cachedWriteTokens":13}`, want: TokenUsage{CacheCreationTokens: 13, Reported: true, CacheCreationReported: true}},
 	}
 
 	for _, tc := range cases {
@@ -214,6 +216,7 @@ func TestAcpxUsageFields_JSONFieldAliases(t *testing.T) {
 			if err := json.Unmarshal([]byte(tc.json), &fields); err != nil {
 				t.Fatalf("unmarshal %s: %v", tc.json, err)
 			}
+			markAcpxUsageFields(json.RawMessage(tc.json), &fields)
 			got := acpxUsageFieldsToTokenUsage(fields)
 			if got != tc.want {
 				t.Errorf("json %s -> %+v, want %+v", tc.json, got, tc.want)
@@ -236,14 +239,14 @@ func TestAcpxUpdateUsage(t *testing.T) {
 		{
 			name:   "only Used bumps InputTokens",
 			update: acpxSessionUpdate{Used: 500},
-			want:   TokenUsage{InputTokens: 500},
+			want:   TokenUsage{InputTokens: 500, Reported: true},
 		},
 		{
 			name: "direct usage fields",
 			update: acpxSessionUpdate{
 				acpxUsageFields: acpxUsageFields{InputTokens: 10, OutputTokens: 20},
 			},
-			want: TokenUsage{InputTokens: 10, OutputTokens: 20},
+			want: TokenUsage{InputTokens: 10, OutputTokens: 20, Reported: true},
 		},
 		{
 			name: "_meta.usage contributes when direct fields zero",
@@ -252,7 +255,7 @@ func TestAcpxUpdateUsage(t *testing.T) {
 					Usage acpxUsageFields `json:"usage"`
 				}{Usage: acpxUsageFields{OutputTokens: 33, CacheReadInputTokens: 5}},
 			},
-			want: TokenUsage{OutputTokens: 33, CacheReadTokens: 5},
+			want: TokenUsage{OutputTokens: 33, CacheReadTokens: 5, Reported: true},
 		},
 		{
 			name: "_meta.usage maxed against direct fields per-field",
@@ -262,7 +265,7 @@ func TestAcpxUpdateUsage(t *testing.T) {
 					Usage acpxUsageFields `json:"usage"`
 				}{Usage: acpxUsageFields{InputTokens: 1, OutputTokens: 200}},
 			},
-			want: TokenUsage{InputTokens: 100, OutputTokens: 200},
+			want: TokenUsage{InputTokens: 100, OutputTokens: 200, Reported: true},
 		},
 		{
 			name: "Used overrides InputTokens when larger",
@@ -270,7 +273,7 @@ func TestAcpxUpdateUsage(t *testing.T) {
 				acpxUsageFields: acpxUsageFields{InputTokens: 50},
 				Used:            100,
 			},
-			want: TokenUsage{InputTokens: 100},
+			want: TokenUsage{InputTokens: 100, Reported: true},
 		},
 		{
 			name: "Used does not override when not strictly greater",
@@ -278,14 +281,14 @@ func TestAcpxUpdateUsage(t *testing.T) {
 				acpxUsageFields: acpxUsageFields{InputTokens: 100},
 				Used:            100,
 			},
-			want: TokenUsage{InputTokens: 100},
+			want: TokenUsage{InputTokens: 100, Reported: true},
 		},
 		{
 			name: "Used does not affect OutputTokens",
 			update: acpxSessionUpdate{
 				Used: 999,
 			},
-			want: TokenUsage{InputTokens: 999},
+			want: TokenUsage{InputTokens: 999, Reported: true},
 		},
 	}
 
@@ -536,7 +539,7 @@ func TestParseAcpxJSONEvents_UsageUpdate(t *testing.T) {
 	}
 	// used=100 overrides input_tokens=50 (100 > 50); output from direct fields;
 	// cache read from direct; cache creation from _meta.usage.
-	want := TokenUsage{InputTokens: 100, OutputTokens: 25, CacheReadTokens: 10, CacheCreationTokens: 5}
+	want := TokenUsage{InputTokens: 100, OutputTokens: 25, CacheReadTokens: 10, CacheCreationTokens: 5, Reported: true, CacheCreationReported: true}
 	if usage != want {
 		t.Errorf("usage = %+v, want %+v", usage, want)
 	}
@@ -553,9 +556,27 @@ func TestParseAcpxJSONEvents_ResultUsageNormalized(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := TokenUsage{InputTokens: 7, OutputTokens: 9, CacheReadTokens: 11, CacheCreationTokens: 13}
+	want := TokenUsage{InputTokens: 7, OutputTokens: 9, CacheReadTokens: 11, CacheCreationTokens: 13, Reported: true, CacheCreationReported: true}
 	if usage != want {
 		t.Errorf("usage = %+v, want %+v", usage, want)
+	}
+}
+
+func TestParseAcpxJSONEvents_PreservesUsagePresence(t *testing.T) {
+	events := strings.Join([]string{
+		`{"method":"session/update","params":{"update":{"sessionUpdate":"usage_update","used":42}}}`,
+		`{"method":"session/update","params":{"update":{"sessionUpdate":"usage_update","cache_write_tokens":0}}}`,
+		"",
+	}, "\n")
+	var usage TokenUsage
+	if _, _, err := parseAcpxJSONEvents(context.Background(), strings.NewReader(events), nil, &usage); err != nil {
+		t.Fatal(err)
+	}
+	if !usage.Reported || usage.InputTokens != 42 {
+		t.Fatalf("used-only usage = %+v", usage)
+	}
+	if !usage.CacheCreationReported || usage.CacheCreationTokens != 0 {
+		t.Fatalf("zero cache creation = %+v", usage)
 	}
 }
 
